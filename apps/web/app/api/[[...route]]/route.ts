@@ -4,14 +4,14 @@ import {
   completeMultipartUploadSchema,
   generateProjectRequestSchema,
   presignUploadSchema,
-} from "@clipforge/validators";
-import { projectService } from "@clipforge/services";
+} from "@narriflow/validators";
+import { projectService } from "@narriflow/services";
 
 export const runtime = "nodejs";
 
 const app = new Hono().basePath("/api");
 
-app.get("/health", (c) => c.json({ ok: true, service: "clipforge-web-api" }));
+app.get("/health", (c) => c.json({ ok: true, service: "narriflow-web-api" }));
 
 app.post("/projects/:id/generate", async (c) => {
   const projectId = c.req.param("id");

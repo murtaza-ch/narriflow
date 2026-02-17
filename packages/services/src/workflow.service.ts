@@ -1,5 +1,5 @@
 import Redis from "ioredis";
-import { workflowStageUpdatedEventSchema, type WorkflowStageUpdatedEvent } from "@clipforge/validators";
+import { workflowStageUpdatedEventSchema, type WorkflowStageUpdatedEvent } from "@narriflow/validators";
 
 const redisUrl = process.env.UPSTASH_REDIS_URL;
 const MAX_EVENTS_PER_PROJECT = 250;

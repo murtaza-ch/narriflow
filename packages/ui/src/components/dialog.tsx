@@ -4,8 +4,8 @@ import * as React from "react"
 import { XIcon } from "lucide-react"
 import { Dialog as DialogPrimitive } from "radix-ui"
 
-import { cn } from "@clipforge/ui/lib/utils"
-import { Button } from "@clipforge/ui/components/button"
+import { cn } from "@narriflow/ui/lib/utils"
+import { Button } from "@narriflow/ui/components/button"
 
 function Dialog({
   ...props

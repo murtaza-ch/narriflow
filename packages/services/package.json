@@ -1,5 +1,5 @@
 {
-  "name": "@clipforge/services",
+  "name": "@narriflow/services",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -27,8 +27,8 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@clipforge/db": "workspace:*",
-    "@clipforge/validators": "workspace:*",
+    "@narriflow/db": "workspace:*",
+    "@narriflow/validators": "workspace:*",
     "ioredis": "5.8.1"
   },
   "devDependencies": {

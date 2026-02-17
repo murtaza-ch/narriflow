@@ -1,6 +1,6 @@
-# ClipForge Monorepo
+# Narriflow Monorepo
 
-Bun-first monorepo for ClipForge.
+Bun-first monorepo for Narriflow.
 
 ## Toolchain
 

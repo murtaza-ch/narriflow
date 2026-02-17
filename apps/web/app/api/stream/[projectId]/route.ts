@@ -1,5 +1,5 @@
 import Redis from "ioredis";
-import { getWorkflowChannel, getWorkflowEventsSince } from "@clipforge/services";
+import { getWorkflowChannel, getWorkflowEventsSince } from "@narriflow/services";
 
 export const runtime = "nodejs";
 

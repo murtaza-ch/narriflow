@@ -3,21 +3,21 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "clipforge",
+      "name": "narriflow",
       "devDependencies": {
         "turbo": "2.5.8",
         "typescript": "5.9.2",
       },
     },
     "apps/web": {
-      "name": "@clipforge/web",
+      "name": "@narriflow/web",
       "version": "0.0.0",
       "dependencies": {
         "@clerk/nextjs": "latest",
-        "@clipforge/db": "workspace:*",
-        "@clipforge/services": "workspace:*",
-        "@clipforge/ui": "workspace:*",
-        "@clipforge/validators": "workspace:*",
+        "@narriflow/db": "workspace:*",
+        "@narriflow/services": "workspace:*",
+        "@narriflow/ui": "workspace:*",
+        "@narriflow/validators": "workspace:*",
         "@hono/zod-openapi": "1.1.1",
         "@posthog/nextjs": "latest",
         "@prisma/client": "7.3.0",
@@ -44,11 +44,11 @@
       },
     },
     "apps/worker": {
-      "name": "@clipforge/worker",
+      "name": "@narriflow/worker",
       "version": "0.0.0",
       "dependencies": {
-        "@clipforge/services": "workspace:*",
-        "@clipforge/validators": "workspace:*",
+        "@narriflow/services": "workspace:*",
+        "@narriflow/validators": "workspace:*",
         "@trigger.dev/sdk": "latest",
       },
       "devDependencies": {
@@ -56,11 +56,11 @@
       },
     },
     "packages/config": {
-      "name": "@clipforge/config",
+      "name": "@narriflow/config",
       "version": "0.0.0",
     },
     "packages/db": {
-      "name": "@clipforge/db",
+      "name": "@narriflow/db",
       "version": "0.0.0",
       "dependencies": {
         "@prisma/client": "7.3.0",
@@ -71,11 +71,11 @@
       },
     },
     "packages/services": {
-      "name": "@clipforge/services",
+      "name": "@narriflow/services",
       "version": "0.0.0",
       "dependencies": {
-        "@clipforge/db": "workspace:*",
-        "@clipforge/validators": "workspace:*",
+        "@narriflow/db": "workspace:*",
+        "@narriflow/validators": "workspace:*",
         "ioredis": "5.8.1",
       },
       "devDependencies": {
@@ -83,7 +83,7 @@
       },
     },
     "packages/ui": {
-      "name": "@clipforge/ui",
+      "name": "@narriflow/ui",
       "version": "0.0.0",
       "dependencies": {
         "@hookform/resolvers": "^5.2.2",
@@ -109,7 +109,7 @@
       },
     },
     "packages/validators": {
-      "name": "@clipforge/validators",
+      "name": "@narriflow/validators",
       "version": "0.0.0",
       "dependencies": {
         "zod": "4.1.11",
@@ -177,19 +177,19 @@
 
     "@clerk/types": ["@clerk/types@4.101.15", "", { "dependencies": { "@clerk/shared": "^3.45.0" } }, "sha512-Tb9FYlBQcUkyeX4ILMpNPzvZPwokk/gsDlWOayV+PQKcWvhWD2+xZYrXGv4eaxqIcbXLAMaUo8Gal+lVjQFDeg=="],
 
-    "@clipforge/config": ["@clipforge/config@workspace:packages/config"],
+    "@narriflow/config": ["@narriflow/config@workspace:packages/config"],
 
-    "@clipforge/db": ["@clipforge/db@workspace:packages/db"],
+    "@narriflow/db": ["@narriflow/db@workspace:packages/db"],
 
-    "@clipforge/services": ["@clipforge/services@workspace:packages/services"],
+    "@narriflow/services": ["@narriflow/services@workspace:packages/services"],
 
-    "@clipforge/ui": ["@clipforge/ui@workspace:packages/ui"],
+    "@narriflow/ui": ["@narriflow/ui@workspace:packages/ui"],
 
-    "@clipforge/validators": ["@clipforge/validators@workspace:packages/validators"],
+    "@narriflow/validators": ["@narriflow/validators@workspace:packages/validators"],
 
-    "@clipforge/web": ["@clipforge/web@workspace:apps/web"],
+    "@narriflow/web": ["@narriflow/web@workspace:apps/web"],
 
-    "@clipforge/worker": ["@clipforge/worker@workspace:apps/worker"],
+    "@narriflow/worker": ["@narriflow/worker@workspace:apps/worker"],
 
     "@electric-sql/client": ["@electric-sql/client@1.0.14", "", { "dependencies": { "@microsoft/fetch-event-source": "^2.0.1" }, "optionalDependencies": { "@rollup/rollup-darwin-arm64": "^4.18.1" } }, "sha512-LtPAfeMxXRiYS0hyDQ5hue2PjljUiK9stvzsVyVb4nwxWQxfOWTSF42bHTs/o5i3x1T4kAQ7mwHpxa4A+f8X7Q=="],
 
@@ -1473,9 +1473,9 @@
 
     "@clerk/shared/csstype": ["csstype@3.1.3", "", {}, "sha512-M1uQkMl8rQK/szD0LNhtqxIPLpimGm8sOBwU7lLnCpSbTyY3yeU1Vc7l4KT5zT4s/yOxHH5O7tIuuLOCnLADRw=="],
 
-    "@clipforge/validators/zod": ["zod@4.1.11", "", {}, "sha512-WPsqwxITS2tzx1bzhIKsEs19ABD5vmCVa4xBo2tq/SrV4RNZtfws1EnCWQXM6yh8bD08a1idvkB5MZSBiZsjwg=="],
+    "@narriflow/validators/zod": ["zod@4.1.11", "", {}, "sha512-WPsqwxITS2tzx1bzhIKsEs19ABD5vmCVa4xBo2tq/SrV4RNZtfws1EnCWQXM6yh8bD08a1idvkB5MZSBiZsjwg=="],
 
-    "@clipforge/web/zod": ["zod@4.1.11", "", {}, "sha512-WPsqwxITS2tzx1bzhIKsEs19ABD5vmCVa4xBo2tq/SrV4RNZtfws1EnCWQXM6yh8bD08a1idvkB5MZSBiZsjwg=="],
+    "@narriflow/web/zod": ["zod@4.1.11", "", {}, "sha512-WPsqwxITS2tzx1bzhIKsEs19ABD5vmCVa4xBo2tq/SrV4RNZtfws1EnCWQXM6yh8bD08a1idvkB5MZSBiZsjwg=="],
 
     "@opentelemetry/exporter-logs-otlp-http/@opentelemetry/api-logs": ["@opentelemetry/api-logs@0.203.0", "", { "dependencies": { "@opentelemetry/api": "^1.3.0" } }, "sha512-9B9RU0H7Ya1Dx/Rkyc4stuBZSGVQF27WigitInx2QQoj6KUpEFYPKoWjdFTunJYxmXmh17HeBvbMa1EhGyPmqQ=="],
 

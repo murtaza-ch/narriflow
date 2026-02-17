@@ -11,10 +11,10 @@
   },
   "iconLibrary": "lucide",
   "aliases": {
-    "components": "@clipforge/ui/components",
-    "utils": "@clipforge/ui/lib/utils",
-    "ui": "@clipforge/ui/components",
-    "lib": "@clipforge/ui/lib",
-    "hooks": "@clipforge/ui/hooks"
+    "components": "@narriflow/ui/components",
+    "utils": "@narriflow/ui/lib/utils",
+    "ui": "@narriflow/ui/components",
+    "lib": "@narriflow/ui/lib",
+    "hooks": "@narriflow/ui/hooks"
   }
 }

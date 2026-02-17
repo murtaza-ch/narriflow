@@ -1,7 +1,7 @@
 import { revalidatePath } from "next/cache";
 import { actionClient } from "./safe-action";
-import { createProjectSchema, generateProjectRequestSchema } from "@clipforge/validators";
-import { projectService } from "@clipforge/services";
+import { createProjectSchema, generateProjectRequestSchema } from "@narriflow/validators";
+import { projectService } from "@narriflow/services";
 
 const safeActionClient: any = actionClient;
 

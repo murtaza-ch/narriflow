@@ -6,7 +6,7 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
       <header className="border-b border-border">
         <div className="mx-auto flex w-full max-w-6xl items-center justify-between px-6 py-4">
           <Link href="/dashboard" className="text-sm font-semibold tracking-tight">
-            ClipForge App
+            Narriflow App
           </Link>
           <nav className="flex items-center gap-4 text-sm text-muted-foreground">
             <Link href="/dashboard">Dashboard</Link>

@@ -1,5 +1,5 @@
 {
-  "name": "@clipforge/web",
+  "name": "@narriflow/web",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -14,10 +14,10 @@
   },
   "dependencies": {
     "@clerk/nextjs": "latest",
-    "@clipforge/db": "workspace:*",
-    "@clipforge/services": "workspace:*",
-    "@clipforge/ui": "workspace:*",
-    "@clipforge/validators": "workspace:*",
+    "@narriflow/db": "workspace:*",
+    "@narriflow/services": "workspace:*",
+    "@narriflow/ui": "workspace:*",
+    "@narriflow/validators": "workspace:*",
     "@prisma/client": "7.3.0",
     "@hono/zod-openapi": "1.1.1",
     "@posthog/nextjs": "latest",

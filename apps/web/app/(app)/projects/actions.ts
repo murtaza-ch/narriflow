@@ -3,8 +3,8 @@
 import { randomUUID } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { projectService } from "@clipforge/services";
-import type { GenerateProjectInput } from "@clipforge/validators";
+import { projectService } from "@narriflow/services";
+import type { GenerateProjectInput } from "@narriflow/validators";
 
 const defaultContentPack: GenerateProjectInput["contentPack"] = {
   outputTypes: ["short_clip"],

@@ -1,6 +1,6 @@
 import * as React from "react"
 
-import { cn } from "@clipforge/ui/lib/utils"
+import { cn } from "@narriflow/ui/lib/utils"
 
 function Textarea({ className, ...props }: React.ComponentProps<"textarea">) {
   return (

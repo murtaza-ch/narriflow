@@ -1,7 +1,7 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  transpilePackages: ["@clipforge/db", "@clipforge/services", "@clipforge/ui", "@clipforge/validators"],
+  transpilePackages: ["@narriflow/db", "@narriflow/services", "@narriflow/ui", "@narriflow/validators"],
 };
 
 export default nextConfig;

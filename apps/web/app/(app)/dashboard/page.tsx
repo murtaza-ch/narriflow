@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Button } from "@clipforge/ui/components/button";
+import { Button } from "@narriflow/ui/components/button";
 
 export default function DashboardPage() {
   return (

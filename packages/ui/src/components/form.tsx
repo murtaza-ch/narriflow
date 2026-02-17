@@ -13,8 +13,8 @@ import {
   type FieldValues,
 } from "react-hook-form"
 
-import { cn } from "@clipforge/ui/lib/utils"
-import { Label } from "@clipforge/ui/components/label"
+import { cn } from "@narriflow/ui/lib/utils"
+import { Label } from "@narriflow/ui/components/label"
 
 const Form = FormProvider
 

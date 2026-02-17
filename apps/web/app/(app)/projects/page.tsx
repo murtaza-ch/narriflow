@@ -1,7 +1,7 @@
 import Link from "next/link";
-import { Button } from "@clipforge/ui/components/button";
+import { Button } from "@narriflow/ui/components/button";
 import { createProjectFormAction } from "./actions";
-import { projectService } from "@clipforge/services";
+import { projectService } from "@narriflow/services";
 
 export default async function ProjectsPage() {
   const projects = await projectService.listProjects();

@@ -1,4 +1,4 @@
-import type { OutputType } from "@clipforge/validators";
+import type { OutputType } from "@narriflow/validators";
 
 export interface ProcessMediaTaskInput {
   projectId: string;

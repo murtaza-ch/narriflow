@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 import { randomUUID } from "node:crypto";
-import { Button } from "@clipforge/ui/components/button";
-import { projectService } from "@clipforge/services";
+import { Button } from "@narriflow/ui/components/button";
+import { projectService } from "@narriflow/services";
 import { ProjectEvents } from "./project-events";
 import { queueGenerationFormAction } from "../actions";
 

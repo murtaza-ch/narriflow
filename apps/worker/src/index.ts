@@ -6,7 +6,7 @@ const port = Number(process.env.PORT || 0);
 const server = createServer(async (req, res) => {
   if (req.url === "/health") {
     res.writeHead(200, { "content-type": "application/json" });
-    res.end(JSON.stringify({ ok: true, service: "clipforge-worker" }));
+    res.end(JSON.stringify({ ok: true, service: "narriflow-worker" }));
     return;
   }
 
@@ -29,5 +29,5 @@ const server = createServer(async (req, res) => {
 server.listen(port, () => {
   const address = server.address();
   const resolvedPort = typeof address === "object" && address ? address.port : port;
-  console.log(`clipforge worker listening on :${resolvedPort}`);
+  console.log(`narriflow worker listening on :${resolvedPort}`);
 });

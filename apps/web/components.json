@@ -12,8 +12,8 @@
   "iconLibrary": "lucide",
   "aliases": {
     "components": "@/app/components",
-    "utils": "@clipforge/ui/lib/utils",
-    "ui": "@clipforge/ui/components",
+    "utils": "@narriflow/ui/lib/utils",
+    "ui": "@narriflow/ui/components",
     "lib": "@/lib",
     "hooks": "@/hooks"
   }

@@ -1,11 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { getPrismaClient } from "@clipforge/db/client";
+import { getPrismaClient } from "@narriflow/db/client";
 import {
   createProjectSchema,
   generateProjectRequestSchema,
   type CreateProjectInput,
   type GenerateProjectInput,
-} from "@clipforge/validators";
+} from "@narriflow/validators";
 import {
   getActiveWorkflowRun,
   getLastWorkflowSeq,

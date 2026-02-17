@@ -1,5 +1,5 @@
 {
-  "name": "@clipforge/worker",
+  "name": "@narriflow/worker",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -13,8 +13,8 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@clipforge/services": "workspace:*",
-    "@clipforge/validators": "workspace:*",
+    "@narriflow/services": "workspace:*",
+    "@narriflow/validators": "workspace:*",
     "@trigger.dev/sdk": "latest"
   },
   "devDependencies": {

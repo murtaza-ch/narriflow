@@ -1,5 +1,5 @@
 {
-  "name": "@clipforge/db",
+  "name": "@narriflow/db",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -16,7 +16,7 @@
     }
   },
   "scripts": {
-    "prisma:generate": "DATABASE_URL=${DATABASE_URL:-postgresql://user:password@localhost:5432/clipforge?schema=public} prisma generate",
+    "prisma:generate": "DATABASE_URL=${DATABASE_URL:-postgresql://user:password@localhost:5432/narriflow?schema=public} prisma generate",
     "prisma:migrate:dev": "prisma migrate dev",
     "build": "bun run prisma:generate && tsc -p tsconfig.build.json",
     "lint": "echo 'db lint: no-op'",

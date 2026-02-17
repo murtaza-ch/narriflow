@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Button } from "@clipforge/ui/components/button";
+import { Button } from "@narriflow/ui/components/button";
 
 export default function MarketingHomePage() {
   return (
@@ -11,7 +11,7 @@ export default function MarketingHomePage() {
         Turn one long-form recording into clips, carousels, threads, and newsletters.
       </h1>
       <p className="max-w-2xl text-balance text-base text-muted-foreground sm:text-lg">
-        ClipForge orchestrates ingest, transcription, moment detection, rendering, and distribution from one
+        Narriflow orchestrates ingest, transcription, moment detection, rendering, and distribution from one
         workflow.
       </p>
       <div className="flex items-center gap-3">
