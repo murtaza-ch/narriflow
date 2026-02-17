@@ -32,6 +32,29 @@ app.post("/projects/:id/generate", async (c) => {
   return c.json(result, 202);
 });
 
+app.get("/projects/:id", async (c) => {
+  const projectId = c.req.param("id");
+  const snapshot = await projectService.getProjectSnapshot(projectId);
+
+  if (!snapshot.project) {
+    return c.json({ error: "Project not found" }, 404);
+  }
+
+  return c.json(snapshot, 200);
+});
+
+app.get("/projects/:id/runs/:workflowRunId", async (c) => {
+  const projectId = c.req.param("id");
+  const workflowRunId = c.req.param("workflowRunId");
+  const snapshot = await projectService.getWorkflowRun(projectId, workflowRunId);
+
+  if (!snapshot.run) {
+    return c.json({ error: "Workflow run not found" }, 404);
+  }
+
+  return c.json(snapshot, 200);
+});
+
 app.post("/uploads/presign", async (c) => {
   const payload = await c.req.json().catch(() => null);
   const parsed = presignUploadSchema.safeParse(payload);

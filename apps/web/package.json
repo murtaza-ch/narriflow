@@ -18,6 +18,7 @@
     "@clipforge/services": "workspace:*",
     "@clipforge/ui": "workspace:*",
     "@clipforge/validators": "workspace:*",
+    "@prisma/client": "7.3.0",
     "@hono/zod-openapi": "1.1.1",
     "@posthog/nextjs": "latest",
     "@sentry/nextjs": "latest",

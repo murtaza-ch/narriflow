@@ -14,10 +14,13 @@ export const workflowStatusSchema = z.enum(["queued", "running", "completed", "f
 export const workflowStageUpdatedEventSchema = z.object({
   event: z.literal("workflow.stage.updated"),
   projectId: z.string().uuid(),
+  workflowRunId: z.string().uuid(),
+  seq: z.number().int().positive(),
   stage: workflowStageSchema,
   status: workflowStatusSchema,
   progress: z.number().min(0).max(100),
   errorCode: z.string().nullable().default(null),
+  emittedAt: z.string().datetime(),
 });
 
 export type WorkflowStageUpdatedEvent = z.infer<typeof workflowStageUpdatedEventSchema>;

@@ -6,23 +6,71 @@ import {
   type CreateProjectInput,
   type GenerateProjectInput,
 } from "@clipforge/validators";
-import { publishWorkflowStageUpdated } from "./workflow.service";
+import {
+  getActiveWorkflowRun,
+  getLastWorkflowSeq,
+  getWorkflowEventsSince,
+  getWorkflowRunSnapshot,
+  publishWorkflowStageUpdated,
+} from "./workflow.service";
+
+interface ProjectSnapshot {
+  id: string;
+  title: string;
+  sourceMediaUrl: string;
+  persisted: boolean;
+  createdAt: string;
+}
+
+const projects = new Map<string, ProjectSnapshot>();
+const idempotencyRuns = new Map<string, string>();
+
+function getIdempotencyKey(projectId: string, idempotencyKey: string) {
+  return `${projectId}:${idempotencyKey}`;
+}
 
 function hasDatabase() {
   return Boolean(getPrismaClient());
 }
 
 export class ProjectService {
+  async listProjects() {
+    const prisma = getPrismaClient();
+
+    if (!prisma) {
+      return Array.from(projects.values()).sort((left, right) =>
+        right.createdAt.localeCompare(left.createdAt),
+      );
+    }
+
+    const rows = await prisma.project.findMany({
+      orderBy: { createdAt: "desc" },
+      take: 50,
+    });
+
+    return rows.map((row) => ({
+      id: row.id,
+      title: row.title,
+      sourceMediaUrl: row.sourceMediaUrl,
+      persisted: true,
+      createdAt: row.createdAt.toISOString(),
+    }));
+  }
+
   async createProject(input: CreateProjectInput) {
     const parsed = createProjectSchema.parse(input);
 
     if (!hasDatabase()) {
-      return {
+      const project: ProjectSnapshot = {
         id: randomUUID(),
         title: parsed.title,
         sourceMediaUrl: parsed.sourceMediaUrl,
         persisted: false,
+        createdAt: new Date().toISOString(),
       };
+
+      projects.set(project.id, project);
+      return project;
     }
 
     const prisma = getPrismaClient();
@@ -42,6 +90,51 @@ export class ProjectService {
       title: project.title,
       sourceMediaUrl: project.sourceMediaUrl,
       persisted: true,
+      createdAt: project.createdAt.toISOString(),
+    };
+  }
+
+  async getProjectSnapshot(projectId: string) {
+    const prisma = getPrismaClient();
+
+    if (!prisma) {
+      const project = projects.get(projectId) ?? null;
+      return {
+        project,
+        activeRun: getActiveWorkflowRun(projectId),
+        lastSeq: getLastWorkflowSeq(projectId),
+      };
+    }
+
+    const row = await prisma.project.findUnique({ where: { id: projectId } });
+    const project =
+      row === null
+        ? null
+        : {
+            id: row.id,
+            title: row.title,
+            sourceMediaUrl: row.sourceMediaUrl,
+            persisted: true,
+            createdAt: row.createdAt.toISOString(),
+          };
+
+    return {
+      project,
+      activeRun: getActiveWorkflowRun(projectId),
+      lastSeq: getLastWorkflowSeq(projectId),
+    };
+  }
+
+  async getWorkflowRun(projectId: string, workflowRunId: string) {
+    const run = getWorkflowRunSnapshot(projectId, workflowRunId);
+    const timeline = getWorkflowEventsSince(projectId, 0).filter(
+      (event) => event.workflowRunId === workflowRunId,
+    );
+
+    return {
+      run,
+      timeline,
+      lastSeq: getLastWorkflowSeq(projectId),
     };
   }
 
@@ -52,7 +145,17 @@ export class ProjectService {
       throw new Error("idempotency key is required");
     }
 
+    const existingRunId = idempotencyRuns.get(getIdempotencyKey(projectId, idempotencyKey));
+    if (existingRunId) {
+      return {
+        workflowRunId: existingRunId,
+        acceptedAt: new Date().toISOString(),
+        initialSeq: getLastWorkflowSeq(projectId),
+      };
+    }
+
     const workflowRunId = randomUUID();
+    idempotencyRuns.set(getIdempotencyKey(projectId, idempotencyKey), workflowRunId);
 
     if (hasDatabase()) {
       const prisma = getPrismaClient();
@@ -84,16 +187,21 @@ export class ProjectService {
       });
     }
 
-    await publishWorkflowStageUpdated({
+    const event = await publishWorkflowStageUpdated({
       event: "workflow.stage.updated",
       projectId,
+      workflowRunId,
       stage: "ingest",
       status: "queued",
       progress: 0,
       errorCode: null,
     });
 
-    return { workflowRunId };
+    return {
+      workflowRunId,
+      acceptedAt: event.emittedAt,
+      initialSeq: event.seq,
+    };
   }
 
   async presignMultipartUpload(fileName: string, partCount: number) {

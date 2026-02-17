@@ -1,5 +1,5 @@
 import Redis from "ioredis";
-import { getWorkflowChannel } from "@clipforge/services";
+import { getWorkflowChannel, getWorkflowEventsSince } from "@clipforge/services";
 
 export const runtime = "nodejs";
 
@@ -14,6 +14,7 @@ export async function GET(
   const { projectId } = await context.params;
   const channel = getWorkflowChannel(projectId);
   const redisUrl = process.env.UPSTASH_REDIS_URL;
+  const sinceSeq = Number(req.url ? new URL(req.url).searchParams.get("sinceSeq") ?? "0" : "0");
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream<Uint8Array>({
@@ -23,10 +24,15 @@ export async function GET(
           sseEvent("connected", {
             projectId,
             channel,
+            sinceSeq,
             ts: new Date().toISOString(),
           }),
         ),
       );
+
+      for (const event of getWorkflowEventsSince(projectId, Number.isFinite(sinceSeq) ? sinceSeq : 0)) {
+        controller.enqueue(encoder.encode(sseEvent("workflow.stage.updated", event)));
+      }
 
       let subscriber: Redis | null = null;
 
@@ -43,7 +49,12 @@ export async function GET(
             return;
           }
 
-          controller.enqueue(encoder.encode(sseEvent("workflow.stage.updated", JSON.parse(message))));
+          try {
+            const payload = JSON.parse(message) as unknown;
+            controller.enqueue(encoder.encode(sseEvent("workflow.stage.updated", payload)));
+          } catch {
+            // Ignore malformed messages from pub/sub.
+          }
         });
       }
 
