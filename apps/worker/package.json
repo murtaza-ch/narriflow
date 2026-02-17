@@ -1,0 +1,23 @@
+{
+  "name": "@clipforge/worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run src/index.ts",
+    "build": "tsc -p tsconfig.json --noEmit",
+    "start": "bun run src/index.ts",
+    "lint": "echo 'worker lint: no-op'",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "echo 'worker test: no-op'",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@clipforge/services": "workspace:*",
+    "@clipforge/validators": "workspace:*",
+    "@trigger.dev/sdk": "latest"
+  },
+  "devDependencies": {
+    "@types/node": "latest"
+  }
+}

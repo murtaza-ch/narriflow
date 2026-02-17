@@ -1,0 +1,37 @@
+{
+  "name": "@clipforge/services",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./project": {
+      "types": "./src/project.service.ts",
+      "default": "./src/project.service.ts"
+    },
+    "./workflow": {
+      "types": "./src/workflow.service.ts",
+      "default": "./src/workflow.service.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "lint": "echo 'services lint: no-op'",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "echo 'services test: no-op'",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@clipforge/db": "workspace:*",
+    "@clipforge/validators": "workspace:*",
+    "ioredis": "5.8.1"
+  },
+  "devDependencies": {
+    "@types/node": "latest"
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "extends": "../../packages/config/tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "types": ["node"],
+    "paths": {
+      "@clipforge/services": ["../../packages/services/src/index.ts"],
+      "@clipforge/services/*": ["../../packages/services/src/*"],
+      "@clipforge/validators": ["../../packages/validators/src/index.ts"],
+      "@clipforge/validators/*": ["../../packages/validators/src/*"]
+    }
+  },
+  "include": ["src"]
+}

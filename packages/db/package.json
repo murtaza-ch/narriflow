@@ -1,0 +1,34 @@
+{
+  "name": "@clipforge/db",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    },
+    "./client": {
+      "types": "./src/client.ts",
+      "default": "./src/client.ts"
+    }
+  },
+  "scripts": {
+    "prisma:generate": "DATABASE_URL=${DATABASE_URL:-postgresql://user:password@localhost:5432/clipforge?schema=public} prisma generate",
+    "prisma:migrate:dev": "prisma migrate dev",
+    "build": "bun run prisma:generate && tsc -p tsconfig.build.json",
+    "lint": "echo 'db lint: no-op'",
+    "typecheck": "bun run prisma:generate && tsc -p tsconfig.json --noEmit",
+    "test": "echo 'db test: no-op'",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@prisma/client": "7.3.0"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "prisma": "7.3.0"
+  }
+}

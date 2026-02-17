@@ -1,0 +1,19 @@
+{
+  "extends": "../../packages/config/tsconfig.nextjs.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./*"],
+      "@clipforge/db": ["../../packages/db/src/index.ts"],
+      "@clipforge/db/*": ["../../packages/db/src/*"],
+      "@clipforge/services": ["../../packages/services/src/index.ts"],
+      "@clipforge/services/*": ["../../packages/services/src/*"],
+      "@clipforge/ui": ["../../packages/ui/src/index.ts"],
+      "@clipforge/ui/*": ["../../packages/ui/src/*"],
+      "@clipforge/validators": ["../../packages/validators/src/index.ts"],
+      "@clipforge/validators/*": ["../../packages/validators/src/*"]
+    }
+  },
+  "include": ["next-env.d.ts", "**/*.ts", "**/*.tsx", ".next/types/**/*.ts"],
+  "exclude": ["node_modules"]
+}

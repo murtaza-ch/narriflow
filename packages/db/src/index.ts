@@ -1,0 +1,1 @@
+export { getPrismaClient } from "./client";

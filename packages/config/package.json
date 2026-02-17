@@ -1,0 +1,18 @@
+{
+  "name": "@clipforge/config",
+  "version": "0.0.0",
+  "private": true,
+  "exports": {
+    "./tsconfig/base": "./tsconfig.base.json",
+    "./tsconfig/nextjs": "./tsconfig.nextjs.json",
+    "./eslint": "./eslint.base.mjs",
+    "./prettier": "./prettier.base.json"
+  },
+  "scripts": {
+    "build": "echo 'config build: no-op'",
+    "lint": "echo 'config lint: no-op'",
+    "typecheck": "echo 'config typecheck: no-op'",
+    "test": "echo 'config test: no-op'",
+    "clean": "echo 'config clean: no-op'"
+  }
+}

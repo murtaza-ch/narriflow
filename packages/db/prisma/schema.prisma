@@ -1,0 +1,60 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum OutputType {
+  short_clip
+  audiogram
+  linkedin_carousel
+  x_thread
+  newsletter_excerpt
+  blog_post
+  show_notes
+  quote_cards
+  thumbnail_set
+}
+
+model Project {
+  id             String        @id @default(uuid())
+  title          String
+  sourceMediaUrl String
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  contentPacks   ContentPack[]
+  workflowRuns   WorkflowRun[]
+}
+
+model ContentPack {
+  id                      String       @id @default(uuid())
+  projectId               String
+  outputTypes             OutputType[]
+  clipCountTarget         Int
+  clipDurationSecTarget   Int
+  toneConstraints         Json
+  captionPreset           String
+  platformPlaybookVersion String
+  createdAt               DateTime     @default(now())
+  updatedAt               DateTime     @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+}
+
+model WorkflowRun {
+  id             String   @id @default(uuid())
+  projectId      String
+  idempotencyKey String
+  stage          String
+  status         String
+  progress       Int      @default(0)
+  errorCode      String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, idempotencyKey])
+}

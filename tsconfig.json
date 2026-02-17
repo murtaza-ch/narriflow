@@ -1,0 +1,17 @@
+{
+  "extends": "./packages/config/tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "paths": {
+      "@clipforge/config/*": ["packages/config/*"],
+      "@clipforge/db": ["packages/db/src/index.ts"],
+      "@clipforge/db/*": ["packages/db/src/*"],
+      "@clipforge/services": ["packages/services/src/index.ts"],
+      "@clipforge/services/*": ["packages/services/src/*"],
+      "@clipforge/ui": ["packages/ui/src/index.ts"],
+      "@clipforge/ui/*": ["packages/ui/src/*"],
+      "@clipforge/validators": ["packages/validators/src/index.ts"],
+      "@clipforge/validators/*": ["packages/validators/src/*"]
+    }
+  }
+}
