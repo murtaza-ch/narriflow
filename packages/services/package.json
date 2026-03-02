@@ -29,7 +29,8 @@
   "dependencies": {
     "@narriflow/db": "workspace:*",
     "@narriflow/validators": "workspace:*",
-    "ioredis": "5.8.1"
+    "ioredis": "^5.9.3",
+    "resend": "latest"
   },
   "devDependencies": {
     "@types/node": "latest"
