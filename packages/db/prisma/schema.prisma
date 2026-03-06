@@ -1,9 +1,17 @@
 generator client {
   provider = "prisma-client-js"
+  engineType = "binary"
 }
 
 datasource db {
   provider = "postgresql"
+}
+
+enum PricingTier {
+  free
+  starter
+  creator
+  pro
 }
 
 enum OutputType {
@@ -18,19 +26,98 @@ enum OutputType {
   thumbnail_set
 }
 
+enum SourceType {
+  upload
+  youtube
+  rss
+}
+
+enum IngestStatus {
+  pending
+  uploading
+  queued
+  downloading
+  normalizing
+  ready
+  failed
+}
+
+enum UploadSessionStatus {
+  initiated
+  completed
+  aborted
+  expired
+}
+
+enum IngestJobType {
+  upload_finalize
+  youtube_import
+  rss_import
+}
+
+enum IngestJobStatus {
+  queued
+  running
+  completed
+  failed
+}
+
+enum TranscriptStatus {
+  queued
+  processing
+  completed
+  failed
+}
+
+enum AuthProvider {
+  google
+  facebook
+  microsoft
+  email_password
+}
+
+enum TeamRole {
+  admin
+  editor
+  viewer
+}
+
+enum WebhookProvider {
+  clerk
+  resend
+}
+
 model Project {
-  id             String        @id @default(uuid())
+  id             String        @id @default(uuid()) @db.Uuid
   title          String
   sourceMediaUrl String
+  sourceType     SourceType    @default(upload)
+  sourceInput    String?
+  sourceStorageKey String?
+  sourceMimeType String?
+  sourceSizeBytes BigInt?
+  sourceDurationSeconds Int?
+  ingestStatus   IngestStatus  @default(pending)
+  ingestErrorCode String?
+  ingestCompletedAt DateTime?
+  userId         String        @db.Uuid
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
   contentPacks   ContentPack[]
+  uploadSessions UploadSession[]
+  ingestJobs     IngestJob[]
+  transcript     Transcript?
+  user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   workflowRuns   WorkflowRun[]
+  workflowEvents WorkflowEvent[]
+
+  @@index([userId, createdAt])
+  @@index([userId, ingestStatus, createdAt])
 }
 
 model ContentPack {
-  id                      String       @id @default(uuid())
-  projectId               String
+  id                      String       @id @default(uuid()) @db.Uuid
+  projectId               String       @db.Uuid
   outputTypes             OutputType[]
   clipCountTarget         Int
   clipDurationSecTarget   Int
@@ -44,8 +131,8 @@ model ContentPack {
 }
 
 model WorkflowRun {
-  id             String   @id @default(uuid())
-  projectId      String
+  id             String   @id @default(uuid()) @db.Uuid
+  projectId      String   @db.Uuid
   idempotencyKey String
   stage          String
   status         String
@@ -57,4 +144,187 @@ model WorkflowRun {
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
   @@unique([projectId, idempotencyKey])
+}
+
+model Transcript {
+  id             String           @id @default(uuid()) @db.Uuid
+  projectId      String           @unique @db.Uuid
+  status         TranscriptStatus @default(queued)
+  provider       String?
+  providerModel  String?
+  languageCode   String?
+  text           String?
+  utterancesJson Json?
+  speakerCount   Int?
+  durationSeconds Int?
+  errorCode      String?
+  rawStorageKey  String?
+  completedAt    DateTime?
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  project        Project          @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([status, updatedAt])
+}
+
+model UploadSession {
+  id               String              @id @default(uuid()) @db.Uuid
+  projectId        String              @db.Uuid
+  providerUploadId String
+  storageKey       String
+  partCount        Int
+  expiresAt        DateTime
+  status           UploadSessionStatus @default(initiated)
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+  project          Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, providerUploadId])
+  @@index([projectId, status, createdAt])
+  @@index([expiresAt])
+}
+
+model IngestJob {
+  id           String          @id @default(uuid()) @db.Uuid
+  projectId    String          @db.Uuid
+  jobType      IngestJobType
+  payload      Json
+  status       IngestJobStatus @default(queued)
+  attemptCount Int             @default(0)
+  lastError    String?
+  createdAt    DateTime        @default(now())
+  updatedAt    DateTime        @updatedAt
+  startedAt    DateTime?
+  completedAt  DateTime?
+  project      Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt])
+  @@index([projectId, status, createdAt])
+}
+
+model WorkflowEvent {
+  id            String   @id @default(uuid()) @db.Uuid
+  projectId     String   @db.Uuid
+  workflowRunId String   @db.Uuid
+  seq           Int
+  stage         String
+  status        String
+  progress      Int      @default(0)
+  errorCode     String?
+  emittedAt     DateTime
+  createdAt     DateTime @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, seq])
+  @@index([projectId, seq])
+}
+
+model User {
+  id                    String           @id @default(uuid()) @db.Uuid
+  clerkId               String           @unique
+  primaryEmail          String?          @unique
+  emailVerifiedAt       DateTime?
+  firstName             String?
+  lastName              String?
+  imageUrl              String?
+  pricingTier           PricingTier      @default(free)
+  onboardingCompletedAt DateTime?
+  lastSignInAt          DateTime?
+  stripeCustomerId      String?          @unique
+  deletedAt             DateTime?
+  createdAt             DateTime         @default(now())
+  updatedAt             DateTime         @updatedAt
+  authIdentities        AuthIdentity[]
+  apiKeys               ApiKey[]
+  ownedTeams            Team[]           @relation("TeamOwner")
+  projects              Project[]
+  teamMemberships       TeamMember[]
+
+  @@index([clerkId])
+}
+
+model AuthIdentity {
+  id             String       @id @default(uuid()) @db.Uuid
+  userId         String       @db.Uuid
+  provider       AuthProvider
+  providerUserId String
+  email          String?
+  linkedAt       DateTime     @default(now())
+  lastUsedAt     DateTime?
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerUserId])
+  @@index([userId])
+}
+
+model Team {
+  id          String       @id @default(uuid()) @db.Uuid
+  name        String
+  ownerUserId String       @db.Uuid
+  seatLimit   Int          @default(1)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  invites     TeamInvite[]
+  members     TeamMember[]
+  owner       User         @relation("TeamOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+
+  @@index([ownerUserId])
+}
+
+model TeamMember {
+  id       String   @id @default(uuid()) @db.Uuid
+  teamId   String   @db.Uuid
+  userId   String   @db.Uuid
+  role     TeamRole @default(viewer)
+  joinedAt DateTime @default(now())
+  team     Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([teamId, userId])
+  @@index([userId])
+}
+
+model TeamInvite {
+  id         String   @id @default(uuid()) @db.Uuid
+  teamId     String   @db.Uuid
+  email      String
+  role       TeamRole @default(viewer)
+  tokenHash  String   @unique
+  expiresAt  DateTime
+  acceptedAt DateTime?
+  createdAt  DateTime @default(now())
+  team       Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
+
+  @@index([teamId, email])
+}
+
+model ApiKey {
+  id           String    @id @default(uuid()) @db.Uuid
+  userId       String    @db.Uuid
+  name         String
+  prefix       String    @unique
+  hashedSecret String
+  scopes       String[]
+  lastUsedAt   DateTime?
+  revokedAt    DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt])
+}
+
+model WebhookDeliveryLog {
+  id          String          @id @default(uuid()) @db.Uuid
+  provider    WebhookProvider
+  eventId     String
+  eventType   String
+  status      String
+  payload     Json?
+  processedAt DateTime        @default(now())
+  createdAt   DateTime        @default(now())
+
+  @@unique([provider, eventId])
+  @@index([provider, eventType, createdAt])
 }

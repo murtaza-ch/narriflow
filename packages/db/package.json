@@ -25,10 +25,11 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@prisma/client": "^7.4.1"
+    "@prisma/adapter-neon": "^7.4.2",
+    "@prisma/client": "^7.4.2"
   },
   "devDependencies": {
     "@types/node": "latest",
-    "prisma": "^7.4.1"
+    "prisma": "^7.4.2"
   }
 }
