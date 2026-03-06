@@ -2,6 +2,10 @@ import { z } from "zod";
 
 export const workflowStageSchema = z.enum([
   "ingest",
+  "ingest_queued",
+  "ingest_downloading",
+  "ingest_normalizing",
+  "ingest_ready",
   "stt",
   "moment_detection",
   "clip_rendering",
