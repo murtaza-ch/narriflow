@@ -1,0 +1,27 @@
+{
+  "name": "@narriflow/email",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "lint": "echo 'email lint: no-op'",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "echo 'email test: no-op'",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "resend": "latest"
+  },
+  "devDependencies": {
+    "@types/node": "latest"
+  }
+}
