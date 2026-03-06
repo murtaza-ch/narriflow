@@ -3,6 +3,7 @@
 import { randomUUID } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import { requireCurrentAppUser } from "@narriflow/auth";
 import { projectService } from "@narriflow/services";
 import type { GenerateProjectInput } from "@narriflow/validators";
 
@@ -12,14 +13,15 @@ const defaultContentPack: GenerateProjectInput["contentPack"] = {
   clipDurationSecTarget: 30,
   toneConstraints: ["concise", "conversational"],
   captionPreset: "default",
-  platformPlaybookVersion: "2026.1",
+  platformPlaybookVersion: "2026.2",
 };
 
 export async function createProjectFormAction(formData: FormData) {
+  const appUser = await requireCurrentAppUser();
   const title = String(formData.get("title") ?? "");
   const sourceMediaUrl = String(formData.get("sourceMediaUrl") ?? "");
 
-  const project = await projectService.createProject({
+  const project = await projectService.createProject(appUser.id, {
     title,
     sourceMediaUrl,
   });
@@ -28,7 +30,8 @@ export async function createProjectFormAction(formData: FormData) {
   redirect(`/projects/${project.id}`);
 }
 
-export async function queueGenerationFormAction(formData: FormData) {
+export async function queueTranscriptionFormAction(formData: FormData) {
+  const appUser = await requireCurrentAppUser();
   const projectId = String(formData.get("projectId") ?? "");
   const idempotencyKey = String(formData.get("idempotencyKey") ?? randomUUID());
 
@@ -37,6 +40,7 @@ export async function queueGenerationFormAction(formData: FormData) {
   }
 
   await projectService.triggerGeneration(
+    appUser.id,
     projectId,
     {
       contentPack: defaultContentPack,
@@ -47,3 +51,5 @@ export async function queueGenerationFormAction(formData: FormData) {
 
   revalidatePath(`/projects/${projectId}`);
 }
+
+export const queueGenerationFormAction = queueTranscriptionFormAction;

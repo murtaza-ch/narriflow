@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
 
 type WorkflowStageUpdatedEvent = {
   event: "workflow.stage.updated";
@@ -15,8 +16,10 @@ type WorkflowStageUpdatedEvent = {
 };
 
 export function ProjectEvents({ projectId, initialSeq }: { projectId: string; initialSeq: number }) {
+  const router = useRouter();
   const [lastSeq, setLastSeq] = useState(initialSeq);
   const [events, setEvents] = useState<WorkflowStageUpdatedEvent[]>([]);
+  const refreshedStages = useRef(new Set<string>());
 
   useEffect(() => {
     let currentSeq = initialSeq;
@@ -36,6 +39,12 @@ export function ProjectEvents({ projectId, initialSeq }: { projectId: string; in
       });
       currentSeq = Math.max(currentSeq, parsed.seq);
       setLastSeq(currentSeq);
+
+      const isTerminal = parsed.status === "completed" || parsed.status === "failed";
+      if (isTerminal && !refreshedStages.current.has(parsed.stage)) {
+        refreshedStages.current.add(parsed.stage);
+        router.refresh();
+      }
     };
 
     source.addEventListener("workflow.stage.updated", onWorkflowUpdate as EventListener);
@@ -44,7 +53,7 @@ export function ProjectEvents({ projectId, initialSeq }: { projectId: string; in
       source.removeEventListener("workflow.stage.updated", onWorkflowUpdate as EventListener);
       source.close();
     };
-  }, [projectId, initialSeq]);
+  }, [projectId, initialSeq, router]);
 
   const latest = useMemo(() => events.at(-1) ?? null, [events]);
 

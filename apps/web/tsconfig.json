@@ -4,8 +4,12 @@
     "baseUrl": ".",
     "paths": {
       "@/*": ["./*"],
+      "@narriflow/auth": ["../../packages/auth/src/index.ts"],
+      "@narriflow/auth/*": ["../../packages/auth/src/*"],
       "@narriflow/db": ["../../packages/db/src/index.ts"],
       "@narriflow/db/*": ["../../packages/db/src/*"],
+      "@narriflow/email": ["../../packages/email/src/index.ts"],
+      "@narriflow/email/*": ["../../packages/email/src/*"],
       "@narriflow/services": ["../../packages/services/src/index.ts"],
       "@narriflow/services/*": ["../../packages/services/src/*"],
       "@narriflow/ui": ["../../packages/ui/src/index.ts"],
