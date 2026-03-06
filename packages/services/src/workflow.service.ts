@@ -1,30 +1,11 @@
 import Redis from "ioredis";
+import { getPrismaClient } from "@narriflow/db/client";
 import { workflowStageUpdatedEventSchema, type WorkflowStageUpdatedEvent } from "@narriflow/validators";
 
 const redisUrl = process.env.UPSTASH_REDIS_URL;
-const MAX_EVENTS_PER_PROJECT = 250;
-
-export interface WorkflowRunSnapshot {
-  workflowRunId: string;
-  projectId: string;
-  stage: WorkflowStageUpdatedEvent["stage"];
-  status: WorkflowStageUpdatedEvent["status"];
-  progress: number;
-  errorCode: string | null;
-  createdAt: string;
-  updatedAt: string;
-  lastSeq: number;
-}
-
-interface ProjectWorkflowState {
-  lastSeq: number;
-  events: WorkflowStageUpdatedEvent[];
-  runs: Map<string, WorkflowRunSnapshot>;
-}
-
-const workflowState = new Map<string, ProjectWorkflowState>();
 
 let publisher: Redis | null = null;
+let publisherReady: Promise<void> | null = null;
 
 function getPublisher() {
   if (!redisUrl) {
@@ -35,104 +16,100 @@ function getPublisher() {
     publisher = new Redis(redisUrl, {
       maxRetriesPerRequest: 3,
       enableOfflineQueue: false,
+      lazyConnect: true,
     });
+    publisherReady = publisher.connect();
   }
 
-  return publisher;
-}
-
-function getProjectWorkflowState(projectId: string) {
-  let state = workflowState.get(projectId);
-
-  if (!state) {
-    state = {
-      lastSeq: 0,
-      events: [],
-      runs: new Map(),
-    };
-    workflowState.set(projectId, state);
-  }
-
-  return state;
-}
-
-function upsertRunSnapshot(event: WorkflowStageUpdatedEvent) {
-  const state = getProjectWorkflowState(event.projectId);
-  const existing = state.runs.get(event.workflowRunId);
-  const createdAt = existing?.createdAt ?? event.emittedAt;
-
-  state.runs.set(event.workflowRunId, {
-    workflowRunId: event.workflowRunId,
-    projectId: event.projectId,
-    stage: event.stage,
-    status: event.status,
-    progress: event.progress,
-    errorCode: event.errorCode,
-    createdAt,
-    updatedAt: event.emittedAt,
-    lastSeq: event.seq,
-  });
+  return { client: publisher, ready: publisherReady! };
 }
 
 export function getWorkflowChannel(projectId: string) {
   return `workflow:${projectId}`;
 }
 
-export function getLastWorkflowSeq(projectId: string) {
-  return getProjectWorkflowState(projectId).lastSeq;
-}
+export async function getLastWorkflowSeq(projectId: string) {
+  const prisma = getPrismaClient();
+  if (!prisma) return 0;
 
-export function getWorkflowEventsSince(projectId: string, sinceSeq = 0) {
-  const state = getProjectWorkflowState(projectId);
-  return state.events.filter((event) => event.seq > sinceSeq);
-}
-
-export function getWorkflowRunSnapshot(projectId: string, workflowRunId: string) {
-  const state = getProjectWorkflowState(projectId);
-  return state.runs.get(workflowRunId) ?? null;
-}
-
-export function getActiveWorkflowRun(projectId: string) {
-  const state = getProjectWorkflowState(projectId);
-  const runs = Array.from(state.runs.values());
-
-  if (runs.length === 0) {
-    return null;
-  }
-
-  runs.sort((left, right) => {
-    if (left.updatedAt === right.updatedAt) {
-      return right.lastSeq - left.lastSeq;
-    }
-
-    return right.updatedAt.localeCompare(left.updatedAt);
+  const result = await prisma.workflowEvent.aggregate({
+    where: { projectId },
+    _max: { seq: true },
   });
 
-  return runs[0] ?? null;
+  return result._max.seq ?? 0;
+}
+
+export async function getWorkflowEventsSince(projectId: string, sinceSeq = 0) {
+  const prisma = getPrismaClient();
+  if (!prisma) return [];
+
+  const rows = await prisma.workflowEvent.findMany({
+    where: {
+      projectId,
+      seq: { gt: sinceSeq },
+    },
+    orderBy: { seq: "asc" },
+  });
+
+  return rows.map((row) => ({
+    event: "workflow.stage.updated" as const,
+    projectId: row.projectId,
+    workflowRunId: row.workflowRunId,
+    seq: row.seq,
+    stage: row.stage,
+    status: row.status,
+    progress: row.progress,
+    errorCode: row.errorCode,
+    emittedAt: row.emittedAt.toISOString(),
+  }));
 }
 
 export async function publishWorkflowStageUpdated(
   event: Omit<WorkflowStageUpdatedEvent, "seq" | "emittedAt">,
 ) {
-  const state = getProjectWorkflowState(event.projectId);
-  const parsed = workflowStageUpdatedEventSchema.parse({
-    ...event,
-    seq: state.lastSeq + 1,
-    emittedAt: new Date().toISOString(),
+  const prisma = getPrismaClient();
+  if (!prisma) return null;
+
+  const emittedAt = new Date();
+
+  const nextSeq = await prisma.$transaction(async (tx) => {
+    const result = await tx.workflowEvent.aggregate({
+      where: { projectId: event.projectId },
+      _max: { seq: true },
+    });
+    const seq = (result._max.seq ?? 0) + 1;
+
+    await tx.workflowEvent.create({
+      data: {
+        projectId: event.projectId,
+        workflowRunId: event.workflowRunId,
+        seq,
+        stage: event.stage,
+        status: event.status,
+        progress: event.progress,
+        errorCode: event.errorCode,
+        emittedAt,
+      },
+    });
+
+    return seq;
   });
 
-  state.lastSeq = parsed.seq;
-  state.events.push(parsed);
+  const parsed = workflowStageUpdatedEventSchema.parse({
+    ...event,
+    seq: nextSeq,
+    emittedAt: emittedAt.toISOString(),
+  });
 
-  if (state.events.length > MAX_EVENTS_PER_PROJECT) {
-    state.events.splice(0, state.events.length - MAX_EVENTS_PER_PROJECT);
-  }
-
-  upsertRunSnapshot(parsed);
-
-  const client = getPublisher();
-  if (client) {
-    await client.publish(getWorkflowChannel(parsed.projectId), JSON.stringify(parsed));
+  const pub = getPublisher();
+  if (pub) {
+    try {
+      await pub.ready;
+      await pub.client.publish(getWorkflowChannel(parsed.projectId), JSON.stringify(parsed));
+    } catch {
+      // Redis unavailable — event is persisted in DB, just no real-time push.
+    }
   }
 
   return parsed;
