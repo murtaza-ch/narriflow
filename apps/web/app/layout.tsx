@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
 import { ClerkProvider } from "@clerk/nextjs";
+import { Provider } from "@narriflow/ui/provider";
+import { Toaster } from "@narriflow/ui/components/toaster";
 import { validateCoreEnv } from "../lib/env";
-import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Narriflow",
@@ -12,9 +13,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   validateCoreEnv();
 
   return (
-    <html lang="en">
+    <html lang="en" suppressHydrationWarning>
       <body>
-        <ClerkProvider>{children}</ClerkProvider>
+        <Provider>
+          <ClerkProvider>{children}</ClerkProvider>
+          <Toaster />
+        </Provider>
       </body>
     </html>
   );

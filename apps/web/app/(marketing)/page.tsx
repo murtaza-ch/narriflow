@@ -1,27 +1,28 @@
 import Link from "next/link";
 import { Button } from "@narriflow/ui/components/button";
+import { Flex, VStack, Heading, Text, HStack, Box } from "@chakra-ui/react";
 
 export default function MarketingHomePage() {
   return (
-    <main className="mx-auto flex min-h-[calc(100vh-65px)] w-full max-w-6xl flex-col items-center justify-center gap-8 px-6 py-16 text-center">
-      <span className="rounded-full border border-border px-3 py-1 text-xs text-muted-foreground">
+    <VStack as="main" mx="auto" minH="calc(100vh - 65px)" w="full" maxW="6xl" justify="center" gap="8" px="6" py="16" textAlign="center">
+      <Text as="span" rounded="full" borderWidth="1px" borderColor="border" px="3" py="1" textStyle="xs" color="fg.muted">
         AI Content Repurposing Platform
-      </span>
-      <h1 className="max-w-4xl text-balance text-4xl font-semibold tracking-tight sm:text-5xl">
+      </Text>
+      <Heading maxW="4xl" size={{ base: "2xl", sm: "3xl" }} fontWeight="semibold" letterSpacing="tight">
         Turn one long-form recording into clips, carousels, threads, and newsletters.
-      </h1>
-      <p className="max-w-2xl text-balance text-base text-muted-foreground sm:text-lg">
+      </Heading>
+      <Text maxW="2xl" textStyle={{ base: "md", sm: "lg" }} color="fg.muted">
         Narriflow orchestrates ingest, transcription, moment detection, rendering, and distribution from one
         workflow.
-      </p>
-      <div className="flex items-center gap-3">
+      </Text>
+      <HStack gap="3">
         <Button asChild>
           <Link href="/projects">Start in App</Link>
         </Button>
         <Button variant="outline" asChild>
           <Link href="/pricing">View Pricing</Link>
         </Button>
-      </div>
-    </main>
+      </HStack>
+    </VStack>
   );
 }

@@ -2,10 +2,10 @@
 
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
+import { Box, Flex, HStack, SimpleGrid, Stack, Text } from "@chakra-ui/react";
 import { Button } from "@narriflow/ui/components/button";
 import { Input } from "@narriflow/ui/components/input";
 import { Progress } from "@narriflow/ui/components/progress";
-import { cn } from "@narriflow/ui/lib/utils";
 
 type TabId = "file" | "youtube" | "rss";
 
@@ -338,32 +338,29 @@ export function UploadWorkspace() {
   }
 
   return (
-    <div className="space-y-6 rounded-xl border border-border p-6">
-      <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+    <Stack gap="6" borderWidth="1px" borderColor="border" rounded="xl" p="6">
+      <SimpleGrid columns={{ base: 1, sm: 3 }} gap="2">
         {([
           ["file", "File Upload"],
           ["youtube", "YouTube URL"],
           ["rss", "RSS Feed"],
         ] as const).map(([tabId, label]) => (
-          <button
+          <Button
             key={tabId}
-            className={cn(
-              "rounded-md border px-3 py-2 text-left text-sm",
-              activeTab === tabId
-                ? "border-foreground bg-foreground text-background"
-                : "border-border text-foreground",
-            )}
+            variant={activeTab === tabId ? "solid" : "outline"}
+            size="sm"
             onClick={() => setActiveTab(tabId)}
             type="button"
+            textAlign="left"
           >
             {label}
-          </button>
+          </Button>
         ))}
-      </div>
+      </SimpleGrid>
 
-      <div className="space-y-2">
-        <label className="text-sm font-medium" htmlFor="upload-title">
-          Project title
+      <Stack gap="2">
+        <label htmlFor="upload-title">
+          <Text textStyle="sm" fontWeight="medium">Project title</Text>
         </label>
         <Input
           id="upload-title"
@@ -371,18 +368,18 @@ export function UploadWorkspace() {
           placeholder="Episode 45 - Founder interview"
           value={title}
         />
-      </div>
+      </Stack>
 
       {activeTab === "file" ? (
-        <div className="space-y-4">
+        <Stack gap="4">
           <Input
             accept="video/mp4,video/quicktime,video/webm,video/x-matroska,audio/mpeg,audio/wav,audio/x-wav,audio/mp4,audio/aac"
             onChange={(event) => setFile(event.target.files?.[0] ?? null)}
             type="file"
           />
           {uploading || progress > 0 ? <Progress value={progress} /> : null}
-          {uploadMessage ? <p className="text-sm text-muted-foreground">{uploadMessage}</p> : null}
-          <div className="flex flex-wrap gap-2">
+          {uploadMessage ? <Text textStyle="sm" color="fg.muted">{uploadMessage}</Text> : null}
+          <HStack wrap="wrap" gap="2">
             <Button disabled={uploading || !file} onClick={handleFileUpload} type="button">
               {uploading ? "Uploading..." : "Start Upload"}
             </Button>
@@ -394,34 +391,34 @@ export function UploadWorkspace() {
             >
               Cancel Upload
             </Button>
-          </div>
-        </div>
+          </HStack>
+        </Stack>
       ) : null}
 
       {activeTab === "youtube" ? (
-        <div className="space-y-4">
+        <Stack gap="4">
           <Input
             onChange={(event) => setYoutubeUrl(event.target.value)}
             placeholder="https://www.youtube.com/watch?v=..."
             type="url"
             value={youtubeUrl}
           />
-          {youtubeMessage ? <p className="text-sm text-muted-foreground">{youtubeMessage}</p> : null}
+          {youtubeMessage ? <Text textStyle="sm" color="fg.muted">{youtubeMessage}</Text> : null}
           <Button disabled={youtubeLoading} onClick={handleYoutubeImport} type="button">
             {youtubeLoading ? "Queueing..." : "Import YouTube Video"}
           </Button>
-        </div>
+        </Stack>
       ) : null}
 
       {activeTab === "rss" ? (
-        <div className="space-y-4">
+        <Stack gap="4">
           <Input
             onChange={(event) => setRssUrl(event.target.value)}
             placeholder="https://example.com/feed.xml"
             type="url"
             value={rssUrl}
           />
-          <div className="flex flex-wrap gap-2">
+          <HStack wrap="wrap" gap="2">
             <Button disabled={rssPreviewLoading} onClick={handleRssPreview} type="button" variant="outline">
               {rssPreviewLoading ? "Loading feed..." : "Preview Episodes"}
             </Button>
@@ -432,30 +429,40 @@ export function UploadWorkspace() {
             >
               {rssImportLoading ? "Importing..." : `Import Selected (${selectedEpisodeIds.length})`}
             </Button>
-          </div>
-          {rssMessage ? <p className="text-sm text-muted-foreground">{rssMessage}</p> : null}
+          </HStack>
+          {rssMessage ? <Text textStyle="sm" color="fg.muted">{rssMessage}</Text> : null}
           {rssEpisodes.length > 0 ? (
-            <ul className="space-y-2 rounded-md border border-border p-3">
+            <Stack
+              as="ul"
+              gap="2"
+              borderWidth="1px"
+              borderColor="border"
+              rounded="md"
+              p="3"
+              listStyleType="none"
+            >
               {rssEpisodes.map((episode) => (
-                <li key={episode.id} className="flex items-start gap-3 text-sm">
+                <Flex as="li" key={episode.id} align="start" gap="3" textStyle="sm">
                   <input
-                    checked={selectedEpisodeIds.includes(episode.id)}
-                    className="mt-1"
-                    onChange={(event) => toggleEpisode(episode.id, event.target.checked)}
                     type="checkbox"
+                    checked={selectedEpisodeIds.includes(episode.id)}
+                    style={{ marginTop: "4px" }}
+                    onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
+                      toggleEpisode(episode.id, event.target.checked)
+                    }
                   />
-                  <div>
-                    <p className="font-medium">{episode.title}</p>
-                    <p className="text-xs text-muted-foreground">
+                  <Box>
+                    <Text fontWeight="medium">{episode.title}</Text>
+                    <Text textStyle="xs" color="fg.muted">
                       {episode.publishedAt ?? "Unknown publish date"}
-                    </p>
-                  </div>
-                </li>
+                    </Text>
+                  </Box>
+                </Flex>
               ))}
-            </ul>
+            </Stack>
           ) : null}
-        </div>
+        </Stack>
       ) : null}
-    </div>
+    </Stack>
   );
 }

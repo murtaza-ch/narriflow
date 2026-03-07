@@ -1,8 +1,7 @@
 "use client"
 
 import * as React from "react"
-import type { Label as LabelPrimitive } from "radix-ui"
-import { Slot } from "radix-ui"
+import { Field } from "@chakra-ui/react"
 import {
   Controller,
   FormProvider,
@@ -12,9 +11,6 @@ import {
   type FieldPath,
   type FieldValues,
 } from "react-hook-form"
-
-import { cn } from "@narriflow/ui/lib/utils"
-import { Label } from "@narriflow/ui/components/label"
 
 const Form = FormProvider
 
@@ -26,7 +22,7 @@ type FormFieldContextValue<
 }
 
 const FormFieldContext = React.createContext<FormFieldContextValue>(
-  {} as FormFieldContextValue
+  {} as FormFieldContextValue,
 )
 
 const FormField = <
@@ -70,88 +66,78 @@ type FormItemContextValue = {
 }
 
 const FormItemContext = React.createContext<FormItemContextValue>(
-  {} as FormItemContextValue
+  {} as FormItemContextValue,
 )
 
-function FormItem({ className, ...props }: React.ComponentProps<"div">) {
+function FormItem({
+  children,
+  ...props
+}: React.ComponentProps<typeof Field.Root>) {
   const id = React.useId()
 
   return (
     <FormItemContext.Provider value={{ id }}>
-      <div
-        data-slot="form-item"
-        className={cn("grid gap-2", className)}
-        {...props}
-      />
+      <Field.Root {...props}>{children}</Field.Root>
     </FormItemContext.Provider>
   )
 }
 
-function FormLabel({
-  className,
-  ...props
-}: React.ComponentProps<typeof LabelPrimitive.Root>) {
+function FormLabel(props: React.ComponentProps<typeof Field.Label>) {
   const { error, formItemId } = useFormField()
 
   return (
-    <Label
-      data-slot="form-label"
-      data-error={!!error}
-      className={cn("data-[error=true]:text-destructive", className)}
+    <Field.Label
       htmlFor={formItemId}
+      color={error ? "red.500" : undefined}
       {...props}
     />
   )
 }
 
-function FormControl({ ...props }: React.ComponentProps<typeof Slot.Root>) {
-  const { error, formItemId, formDescriptionId, formMessageId } = useFormField()
+function FormControl({ children }: { children: React.ReactNode }) {
+  const { error, formItemId, formDescriptionId, formMessageId } =
+    useFormField()
 
   return (
-    <Slot.Root
-      data-slot="form-control"
-      id={formItemId}
-      aria-describedby={
-        !error
-          ? `${formDescriptionId}`
-          : `${formDescriptionId} ${formMessageId}`
-      }
-      aria-invalid={!!error}
-      {...props}
-    />
+    <>
+      {React.Children.map(children, (child) => {
+        if (!React.isValidElement(child)) return child
+        return React.cloneElement(
+          child as React.ReactElement<Record<string, unknown>>,
+          {
+            id: formItemId,
+            "aria-describedby": !error
+              ? formDescriptionId
+              : `${formDescriptionId} ${formMessageId}`,
+            "aria-invalid": !!error,
+          },
+        )
+      })}
+    </>
   )
 }
 
-function FormDescription({ className, ...props }: React.ComponentProps<"p">) {
+function FormDescription(props: React.ComponentProps<typeof Field.HelperText>) {
   const { formDescriptionId } = useFormField()
 
-  return (
-    <p
-      data-slot="form-description"
-      id={formDescriptionId}
-      className={cn("text-muted-foreground text-sm", className)}
-      {...props}
-    />
-  )
+  return <Field.HelperText id={formDescriptionId} {...props} />
 }
 
-function FormMessage({ className, ...props }: React.ComponentProps<"p">) {
+function FormMessage({
+  children,
+  ...props
+}: React.ComponentProps<typeof Field.ErrorText>) {
   const { error, formMessageId } = useFormField()
-  const body = error ? String(error?.message ?? "") : props.children
+  const body = error ? String(error?.message ?? "") : children
 
   if (!body) {
     return null
   }
 
   return (
-    <p
-      data-slot="form-message"
-      id={formMessageId}
-      className={cn("text-destructive text-sm", className)}
-      {...props}
-    >
+    <Field.ErrorText id={formMessageId} {...props}>
       {body}
-    </p>
+    </Field.ErrorText>
   )
 }
 

@@ -6,6 +6,7 @@ import { projectService } from "@narriflow/services";
 import { ProjectEvents } from "./project-events";
 import { queueTranscriptionFormAction } from "../actions";
 import { TranscriptPanel } from "./transcript-panel";
+import { Stack, Box, Heading, Text, Flex } from "@chakra-ui/react";
 
 export default async function ProjectDetailPage({
   params,
@@ -29,60 +30,66 @@ export default async function ProjectDetailPage({
     transcript?.status === "queued" || transcript?.status === "processing";
 
   return (
-    <section className="space-y-8">
-      <div className="space-y-2">
-        <h1 className="text-3xl font-semibold tracking-tight">
-          {snapshot.project.title}
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          {snapshot.project.sourceMediaUrl}
-        </p>
-        <p className="text-sm text-muted-foreground">
-          Source: {snapshot.project.sourceType} - Ingest status:{" "}
-          {snapshot.project.ingestStatus}
-        </p>
-        {snapshot.project.ingestErrorCode ? (
-          <p className="text-sm text-destructive">
-            Last ingest error: {snapshot.project.ingestErrorCode}
-          </p>
-        ) : null}
-      </div>
+    <Box as="section">
+      <Stack gap="8">
+        <Stack gap="2">
+          <Heading size="xl" fontWeight="semibold" letterSpacing="tight">
+            {snapshot.project.title}
+          </Heading>
+          <Text textStyle="sm" color="fg.muted">
+            {snapshot.project.sourceMediaUrl}
+          </Text>
+          <Text textStyle="sm" color="fg.muted">
+            Source: {snapshot.project.sourceType} - Ingest status:{" "}
+            {snapshot.project.ingestStatus}
+          </Text>
+          {snapshot.project.ingestErrorCode ? (
+            <Text textStyle="sm" color="red.500">
+              Last ingest error: {snapshot.project.ingestErrorCode}
+            </Text>
+          ) : null}
+        </Stack>
 
-      <form
-        action={queueTranscriptionFormAction}
-        className="rounded-xl border border-border p-6"
-      >
-        <input type="hidden" name="projectId" value={projectId} />
-        <input type="hidden" name="idempotencyKey" value={randomUUID()} />
-        <div className="flex items-center justify-between gap-4">
-          <div>
-            <p className="text-sm font-medium">AI Transcription</p>
-            <p className="text-xs text-muted-foreground">
-              Queue the `stt` workflow stage and persist a read-only transcript
-              with subtitle exports.
-            </p>
-            {!isIngestReady ? (
-              <p className="mt-1 text-xs text-amber-600">
-                Transcription is disabled until ingest is ready.
-              </p>
-            ) : null}
-          </div>
-          <Button
-            disabled={!isIngestReady || transcriptReady || transcriptInFlight}
-            type="submit"
+        <form action={queueTranscriptionFormAction}>
+          <Box
+            rounded="xl"
+            borderWidth="1px"
+            borderColor="border"
+            p="6"
           >
-            {transcriptReady
-              ? "Transcript Ready"
-              : transcriptInFlight
-                ? "Transcribing..."
-                : "Start Transcription"}
-          </Button>
-        </div>
-      </form>
+            <input type="hidden" name="projectId" value={projectId} />
+            <input type="hidden" name="idempotencyKey" value={randomUUID()} />
+            <Flex align="center" justify="space-between" gap="4">
+              <Box>
+                <Text textStyle="sm" fontWeight="medium">AI Transcription</Text>
+                <Text textStyle="xs" color="fg.muted">
+                  Queue the `stt` workflow stage and persist a read-only transcript
+                  with subtitle exports.
+                </Text>
+                {!isIngestReady ? (
+                  <Text mt="1" textStyle="xs" color="orange.500">
+                    Transcription is disabled until ingest is ready.
+                  </Text>
+                ) : null}
+              </Box>
+              <Button
+                disabled={!isIngestReady || transcriptReady || transcriptInFlight}
+                type="submit"
+              >
+                {transcriptReady
+                  ? "Transcript Ready"
+                  : transcriptInFlight
+                    ? "Transcribing..."
+                    : "Start Transcription"}
+              </Button>
+            </Flex>
+          </Box>
+        </form>
 
-      <TranscriptPanel projectId={projectId} transcript={transcript} />
+        <TranscriptPanel projectId={projectId} transcript={transcript} />
 
-      <ProjectEvents projectId={projectId} initialSeq={snapshot.lastSeq} />
-    </section>
+        <ProjectEvents projectId={projectId} initialSeq={snapshot.lastSeq} />
+      </Stack>
+    </Box>
   );
 }

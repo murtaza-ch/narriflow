@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import { Box, Heading, Stack, Text } from "@chakra-ui/react";
 
 type WorkflowStageUpdatedEvent = {
   event: "workflow.stage.updated";
@@ -58,26 +59,28 @@ export function ProjectEvents({ projectId, initialSeq }: { projectId: string; in
   const latest = useMemo(() => events.at(-1) ?? null, [events]);
 
   return (
-    <section className="space-y-3 rounded-xl border border-border p-4">
-      <h2 className="text-sm font-semibold">Workflow Events</h2>
-      {latest ? (
-        <p className="text-xs text-muted-foreground">
-          Last update: seq {latest.seq} - {latest.stage} ({latest.status})
-        </p>
-      ) : (
-        <p className="text-xs text-muted-foreground">Waiting for workflow updates.</p>
-      )}
-      <ul className="space-y-2">
-        {events.map((event) => (
-          <li key={event.seq} className="rounded-md border border-border p-3 text-xs">
-            <div>seq {event.seq}</div>
-            <div>
-              {event.stage} - {event.status} - {event.progress}%
-            </div>
-            <div className="text-muted-foreground">{event.emittedAt}</div>
-          </li>
-        ))}
-      </ul>
-    </section>
+    <Box as="section" borderWidth="1px" borderColor="border" rounded="xl" p="4">
+      <Stack gap="3">
+        <Heading size="sm" fontWeight="semibold">Workflow Events</Heading>
+        {latest ? (
+          <Text textStyle="xs" color="fg.muted">
+            Last update: seq {latest.seq} - {latest.stage} ({latest.status})
+          </Text>
+        ) : (
+          <Text textStyle="xs" color="fg.muted">Waiting for workflow updates.</Text>
+        )}
+        <Stack as="ul" gap="2" listStyleType="none">
+          {events.map((event) => (
+            <Box as="li" key={event.seq} borderWidth="1px" borderColor="border" rounded="md" p="3" textStyle="xs">
+              <Box>seq {event.seq}</Box>
+              <Box>
+                {event.stage} - {event.status} - {event.progress}%
+              </Box>
+              <Text color="fg.muted">{event.emittedAt}</Text>
+            </Box>
+          ))}
+        </Stack>
+      </Stack>
+    </Box>
   );
 }

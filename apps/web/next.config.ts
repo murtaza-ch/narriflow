@@ -9,6 +9,9 @@ const nextConfig: NextConfig = {
     "@narriflow/ui",
     "@narriflow/validators",
   ],
+  experimental: {
+    optimizePackageImports: ["@chakra-ui/react"],
+  },
 };
 
 export default nextConfig;

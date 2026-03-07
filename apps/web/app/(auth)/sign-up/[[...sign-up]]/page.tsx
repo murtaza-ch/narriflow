@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { useSignUp } from "@clerk/nextjs";
+import { Box, Flex, SimpleGrid, Stack, Text } from "@chakra-ui/react";
 import { Button } from "@narriflow/ui/components/button";
 import { Input } from "@narriflow/ui/components/input";
 import { Label } from "@narriflow/ui/components/label";
@@ -122,122 +123,127 @@ export default function SignUpPage() {
   }
 
   return (
-    <div className="space-y-6">
+    <Stack gap="6">
       {awaitingVerification ? (
-        <form className="space-y-4" onSubmit={onVerifyEmail}>
-          <div className="space-y-2">
-            <Label htmlFor="verificationCode">Verification code</Label>
-            <Input
-              autoComplete="one-time-code"
-              id="verificationCode"
-              name="verificationCode"
-              onChange={(event) => setVerificationCode(event.target.value)}
-              placeholder="Enter code from your email"
-              required
-              value={verificationCode}
-            />
-            <p className="text-xs text-muted-foreground">
-              We sent a verification code to <span className="font-medium text-foreground">{email}</span>.
-            </p>
-          </div>
+        <form onSubmit={onVerifyEmail}>
+          <Stack gap="4">
+            <Stack gap="2">
+              <Label htmlFor="verificationCode">Verification code</Label>
+              <Input
+                autoComplete="one-time-code"
+                id="verificationCode"
+                name="verificationCode"
+                onChange={(event) => setVerificationCode(event.target.value)}
+                placeholder="Enter code from your email"
+                required
+                value={verificationCode}
+              />
+              <Text textStyle="xs" color="fg.muted">
+                We sent a verification code to <Box as="span" fontWeight="medium" color="fg">{email}</Box>.
+              </Text>
+            </Stack>
 
-          {error ? <p className="text-sm text-destructive">{error}</p> : null}
+            {error ? <Text textStyle="sm" color="red.500">{error}</Text> : null}
 
-          <div className="flex gap-2">
-            <Button className="flex-1" disabled={submitting || verificationCode.trim().length === 0} type="submit">
-              {submitting ? "Verifying..." : "Verify email"}
-            </Button>
-            <Button disabled={submitting} onClick={onResendCode} type="button" variant="outline">
-              Resend code
-            </Button>
-          </div>
+            <Flex gap="2">
+              <Button flex="1" disabled={submitting || verificationCode.trim().length === 0} type="submit" variant="solid">
+                {submitting ? "Verifying..." : "Verify email"}
+              </Button>
+              <Button disabled={submitting} onClick={onResendCode} type="button" variant="outline">
+                Resend code
+              </Button>
+            </Flex>
+          </Stack>
         </form>
       ) : (
         <>
-          <form className="space-y-4" onSubmit={onCreateAccount}>
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor="firstName">First name</Label>
+          <form onSubmit={onCreateAccount}>
+            <Stack gap="4">
+              <SimpleGrid columns={{ base: 1, sm: 2 }} gap="4">
+                <Stack gap="2">
+                  <Label htmlFor="firstName">First name</Label>
+                  <Input
+                    autoComplete="given-name"
+                    id="firstName"
+                    name="firstName"
+                    onChange={(event) => setFirstName(event.target.value)}
+                    type="text"
+                    value={firstName}
+                  />
+                </Stack>
+                <Stack gap="2">
+                  <Label htmlFor="lastName">Last name</Label>
+                  <Input
+                    autoComplete="family-name"
+                    id="lastName"
+                    name="lastName"
+                    onChange={(event) => setLastName(event.target.value)}
+                    type="text"
+                    value={lastName}
+                  />
+                </Stack>
+              </SimpleGrid>
+
+              <Stack gap="2">
+                <Label htmlFor="email">Email</Label>
                 <Input
-                  autoComplete="given-name"
-                  id="firstName"
-                  name="firstName"
-                  onChange={(event) => setFirstName(event.target.value)}
-                  type="text"
-                  value={firstName}
+                  autoComplete="email"
+                  id="email"
+                  name="email"
+                  onChange={(event) => setEmail(event.target.value)}
+                  placeholder="you@example.com"
+                  required
+                  type="email"
+                  value={email}
                 />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="lastName">Last name</Label>
+              </Stack>
+
+              <Stack gap="2">
+                <Label htmlFor="password">Password</Label>
                 <Input
-                  autoComplete="family-name"
-                  id="lastName"
-                  name="lastName"
-                  onChange={(event) => setLastName(event.target.value)}
-                  type="text"
-                  value={lastName}
+                  autoComplete="new-password"
+                  id="password"
+                  name="password"
+                  onChange={(event) => setPassword(event.target.value)}
+                  required
+                  type="password"
+                  value={password}
                 />
-              </div>
-            </div>
+              </Stack>
 
-            <div className="space-y-2">
-              <Label htmlFor="email">Email</Label>
-              <Input
-                autoComplete="email"
-                id="email"
-                name="email"
-                onChange={(event) => setEmail(event.target.value)}
-                placeholder="you@example.com"
-                required
-                type="email"
-                value={email}
-              />
-            </div>
+              <Stack gap="2">
+                <Label htmlFor="confirmPassword">Confirm password</Label>
+                <Input
+                  autoComplete="new-password"
+                  id="confirmPassword"
+                  name="confirmPassword"
+                  onChange={(event) => setConfirmPassword(event.target.value)}
+                  required
+                  type="password"
+                  value={confirmPassword}
+                />
+              </Stack>
 
-            <div className="space-y-2">
-              <Label htmlFor="password">Password</Label>
-              <Input
-                autoComplete="new-password"
-                id="password"
-                name="password"
-                onChange={(event) => setPassword(event.target.value)}
-                required
-                type="password"
-                value={password}
-              />
-            </div>
+              {error ? <Text textStyle="sm" color="red.500">{error}</Text> : null}
 
-            <div className="space-y-2">
-              <Label htmlFor="confirmPassword">Confirm password</Label>
-              <Input
-                autoComplete="new-password"
-                id="confirmPassword"
-                name="confirmPassword"
-                onChange={(event) => setConfirmPassword(event.target.value)}
-                required
-                type="password"
-                value={confirmPassword}
-              />
-            </div>
+              <Button
+                width="full"
+                disabled={
+                  submitting || email.trim().length === 0 || password.trim().length === 0 || confirmPassword.length === 0
+                }
+                type="submit"
+                variant="solid"
+              >
+                {submitting ? "Creating account..." : "Create account"}
+              </Button>
 
-            {error ? <p className="text-sm text-destructive">{error}</p> : null}
-
-            <Button
-              className="w-full"
-              disabled={
-                submitting || email.trim().length === 0 || password.trim().length === 0 || confirmPassword.length === 0
-              }
-              type="submit"
-            >
-              {submitting ? "Creating account..." : "Create account"}
-            </Button>
-
-            <div id="clerk-captcha" />
+              <Box id="clerk-captcha" />
+            </Stack>
           </form>
 
-          <div className="space-y-3">
-            <p className="text-center text-xs uppercase tracking-wide text-muted-foreground">or continue with</p>
-            <div className="grid grid-cols-1 gap-2">
+          <Stack gap="3">
+            <Text textAlign="center" textStyle="xs" textTransform="uppercase" letterSpacing="wide" color="fg.muted">or continue with</Text>
+            <Stack gap="2">
               <Button
                 disabled={Boolean(oauthLoading)}
                 onClick={() => onOAuthSignUp("oauth_google")}
@@ -262,17 +268,19 @@ export default function SignUpPage() {
               >
                 {oauthLoading === "oauth_microsoft" ? "Connecting Microsoft..." : "Continue with Microsoft"}
               </Button>
-            </div>
-          </div>
+            </Stack>
+          </Stack>
         </>
       )}
 
-      <p className="text-center text-sm text-muted-foreground">
+      <Text textAlign="center" textStyle="sm" color="fg.muted">
         Already have an account?{" "}
-        <Link className="font-medium text-foreground hover:underline" href="/sign-in">
-          Sign in
-        </Link>
-      </p>
-    </div>
+        <Box asChild fontWeight="medium" color="fg" _hover={{ textDecoration: "underline" }}>
+          <Link href="/sign-in">
+            Sign in
+          </Link>
+        </Box>
+      </Text>
+    </Stack>
   );
 }

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import { useSignIn } from "@clerk/nextjs";
+import { Box, Flex, Stack, Text } from "@chakra-ui/react";
 import { Button } from "@narriflow/ui/components/button";
 import { Input } from "@narriflow/ui/components/input";
 import { Label } from "@narriflow/ui/components/label";
@@ -74,49 +75,53 @@ export default function SignInPage() {
   }
 
   return (
-    <div className="space-y-6">
-      <form className="space-y-4" onSubmit={onSubmit}>
-        <div className="space-y-2">
-          <Label htmlFor="email">Email</Label>
-          <Input
-            autoComplete="email"
-            id="email"
-            name="email"
-            onChange={(event) => setEmail(event.target.value)}
-            placeholder="you@example.com"
-            required
-            type="email"
-            value={email}
-          />
-        </div>
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <Label htmlFor="password">Password</Label>
-            <Link className="text-xs text-muted-foreground hover:text-foreground" href="/forgot-password">
-              Forgot password?
-            </Link>
-          </div>
-          <Input
-            autoComplete="current-password"
-            id="password"
-            name="password"
-            onChange={(event) => setPassword(event.target.value)}
-            required
-            type="password"
-            value={password}
-          />
-        </div>
+    <Stack gap="6">
+      <form onSubmit={onSubmit}>
+        <Stack gap="4">
+          <Stack gap="2">
+            <Label htmlFor="email">Email</Label>
+            <Input
+              autoComplete="email"
+              id="email"
+              name="email"
+              onChange={(event) => setEmail(event.target.value)}
+              placeholder="you@example.com"
+              required
+              type="email"
+              value={email}
+            />
+          </Stack>
+          <Stack gap="2">
+            <Flex align="center" justify="space-between">
+              <Label htmlFor="password">Password</Label>
+              <Box asChild textStyle="xs" color="fg.muted" _hover={{ color: "fg" }}>
+                <Link href="/forgot-password">
+                  Forgot password?
+                </Link>
+              </Box>
+            </Flex>
+            <Input
+              autoComplete="current-password"
+              id="password"
+              name="password"
+              onChange={(event) => setPassword(event.target.value)}
+              required
+              type="password"
+              value={password}
+            />
+          </Stack>
 
-        {error ? <p className="text-sm text-destructive">{error}</p> : null}
+          {error ? <Text textStyle="sm" color="red.500">{error}</Text> : null}
 
-        <Button className="w-full" disabled={!canSubmit} type="submit">
-          {submitting ? "Signing in..." : "Sign in"}
-        </Button>
+          <Button width="full" disabled={!canSubmit} type="submit" variant="solid">
+            {submitting ? "Signing in..." : "Sign in"}
+          </Button>
+        </Stack>
       </form>
 
-      <div className="space-y-3">
-        <p className="text-center text-xs uppercase tracking-wide text-muted-foreground">or continue with</p>
-        <div className="grid grid-cols-1 gap-2">
+      <Stack gap="3">
+        <Text textAlign="center" textStyle="xs" textTransform="uppercase" letterSpacing="wide" color="fg.muted">or continue with</Text>
+        <Stack gap="2">
           <Button
             disabled={Boolean(oauthLoading)}
             onClick={() => onOAuthSignIn("oauth_google")}
@@ -141,15 +146,17 @@ export default function SignInPage() {
           >
             {oauthLoading === "oauth_microsoft" ? "Connecting Microsoft..." : "Continue with Microsoft"}
           </Button>
-        </div>
-      </div>
+        </Stack>
+      </Stack>
 
-      <p className="text-center text-sm text-muted-foreground">
+      <Text textAlign="center" textStyle="sm" color="fg.muted">
         New to Narriflow?{" "}
-        <Link className="font-medium text-foreground hover:underline" href="/sign-up">
-          Create an account
-        </Link>
-      </p>
-    </div>
+        <Box asChild fontWeight="medium" color="fg" _hover={{ textDecoration: "underline" }}>
+          <Link href="/sign-up">
+            Create an account
+          </Link>
+        </Box>
+      </Text>
+    </Stack>
   );
 }

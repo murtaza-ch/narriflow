@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { Button } from "@narriflow/ui/components/button";
 import { getCurrentAppUser } from "@narriflow/auth";
 import { completeOnboardingAction } from "../actions/onboarding";
+import { VStack, Stack, Box, Heading, Text } from "@chakra-ui/react";
 
 export default async function OnboardingPage() {
   const appUser = await getCurrentAppUser();
@@ -15,26 +16,28 @@ export default async function OnboardingPage() {
   }
 
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-2xl flex-col justify-center gap-8 px-6 py-16">
-      <div className="space-y-3">
-        <h1 className="text-4xl font-semibold tracking-tight">Finish onboarding</h1>
-        <p className="text-muted-foreground">
+    <VStack as="main" mx="auto" minH="100vh" w="full" maxW="2xl" justify="center" gap="8" px="6" py="16" align="stretch">
+      <Stack gap="3">
+        <Heading size="2xl" fontWeight="semibold" letterSpacing="tight">Finish onboarding</Heading>
+        <Text color="fg.muted">
           Your workspace is ready. Complete onboarding to unlock project creation and workflow generation.
-        </p>
-      </div>
+        </Text>
+      </Stack>
 
-      <section className="rounded-xl border border-border p-6">
-        <h2 className="text-lg font-semibold">What happens next</h2>
-        <ul className="mt-3 list-disc space-y-2 pl-5 text-sm text-muted-foreground">
-          <li>Your account is linked to your workspace and usage tracking.</li>
-          <li>New projects are scoped securely to your user identity.</li>
-          <li>Generation APIs enforce authenticated ownership checks.</li>
-        </ul>
+      <Box as="section" rounded="xl" borderWidth="1px" borderColor="border" p="6">
+        <Heading as="h2" size="lg" fontWeight="semibold">What happens next</Heading>
+        <Stack as="ul" mt="3" listStyleType="disc" gap="2" pl="5" textStyle="sm" color="fg.muted">
+          <Box as="li">Your account is linked to your workspace and usage tracking.</Box>
+          <Box as="li">New projects are scoped securely to your user identity.</Box>
+          <Box as="li">Generation APIs enforce authenticated ownership checks.</Box>
+        </Stack>
 
-        <form action={completeOnboardingAction} className="mt-6">
-          <Button type="submit">Complete Onboarding</Button>
+        <form action={completeOnboardingAction}>
+          <Box mt="6">
+            <Button type="submit">Complete Onboarding</Button>
+          </Box>
         </form>
-      </section>
-    </main>
+      </Box>
+    </VStack>
   );
 }

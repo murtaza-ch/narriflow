@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useClerk } from "@clerk/nextjs";
+import { Box, Flex, Image, Stack, Text } from "@chakra-ui/react";
 import { Button } from "@narriflow/ui/components/button";
 
 interface AccountMenuProps {
@@ -77,30 +78,58 @@ export function AccountMenu({ firstName, lastName, email, imageUrl }: AccountMen
   }
 
   return (
-    <div className="relative" ref={containerRef}>
+    <Box position="relative" ref={containerRef}>
       <button
+        type="button"
         aria-expanded={open}
         aria-haspopup="menu"
-        className="flex h-9 w-9 items-center justify-center overflow-hidden rounded-full border border-border bg-muted text-xs font-semibold text-foreground transition hover:border-foreground/30"
         onClick={() => setOpen((value) => !value)}
-        type="button"
+        style={{ all: "unset", cursor: "pointer" }}
       >
-        {imageUrl ? <img alt={displayName} className="h-full w-full object-cover" src={imageUrl} /> : initials}
+        <Flex
+          h="9" w="9"
+          align="center"
+          justify="center"
+          overflow="hidden"
+          rounded="full"
+          borderWidth="1px"
+          borderColor="border"
+          bg="bg.muted"
+          textStyle="xs"
+          fontWeight="semibold"
+          color="fg"
+          _hover={{ borderColor: "fg/30" }}
+        >
+          {imageUrl ? <Image alt={displayName} h="full" w="full" objectFit="cover" src={imageUrl} /> : initials}
+        </Flex>
       </button>
 
       {open ? (
-        <div className="absolute right-0 top-11 z-40 w-64 rounded-xl border border-border bg-card p-3 shadow-xl" role="menu">
-          <div className="border-b border-border pb-3">
-            <p className="text-sm font-semibold text-foreground">{displayName}</p>
-            <p className="truncate text-xs text-muted-foreground">{email ?? "No email"}</p>
-          </div>
-          <div className="pt-3">
-            <Button className="w-full" disabled={isSigningOut} onClick={onSignOut} type="button" variant="outline">
+        <Box
+          position="absolute"
+          right="0"
+          top="11"
+          zIndex="40"
+          w="64"
+          rounded="xl"
+          borderWidth="1px"
+          borderColor="border"
+          bg="bg.panel"
+          p="3"
+          shadow="xl"
+          role="menu"
+        >
+          <Box borderBottomWidth="1px" borderColor="border" pb="3">
+            <Text textStyle="sm" fontWeight="semibold" color="fg">{displayName}</Text>
+            <Text truncate textStyle="xs" color="fg.muted">{email ?? "No email"}</Text>
+          </Box>
+          <Box pt="3">
+            <Button width="full" disabled={isSigningOut} onClick={onSignOut} type="button" variant="outline">
               {isSigningOut ? "Signing out..." : "Sign out"}
             </Button>
-          </div>
-        </div>
+          </Box>
+        </Box>
       ) : null}
-    </div>
+    </Box>
   );
 }

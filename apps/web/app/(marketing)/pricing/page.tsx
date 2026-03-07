@@ -1,8 +1,14 @@
+import { Box, Heading, Text } from "@chakra-ui/react";
+
 export default function PricingPage() {
   return (
-    <main className="mx-auto w-full max-w-5xl px-6 py-16">
-      <h1 className="text-3xl font-semibold tracking-tight">Pricing</h1>
-      <p className="mt-2 text-muted-foreground">Starter pricing placeholder. Connect Stripe product catalog next.</p>
-    </main>
+    <Box as="main" mx="auto" w="full" maxW="5xl" px="6" py="16">
+      <Heading size="xl" fontWeight="semibold" letterSpacing="tight">
+        Pricing
+      </Heading>
+      <Text mt="2" color="fg.muted">
+        Starter pricing placeholder. Connect Stripe product catalog next.
+      </Text>
+    </Box>
   );
 }

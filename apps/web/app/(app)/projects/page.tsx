@@ -2,59 +2,68 @@ import Link from "next/link";
 import { Button } from "@narriflow/ui/components/button";
 import { requireCurrentAppUser } from "@narriflow/auth";
 import { projectService } from "@narriflow/services";
+import { Stack, Box, Heading, Text, Flex } from "@chakra-ui/react";
 
 export default async function ProjectsPage() {
   const appUser = await requireCurrentAppUser();
   const projects = await projectService.listProjects(appUser.id);
 
   return (
-    <section className="space-y-8">
-      <div className="space-y-2">
-        <h1 className="text-3xl font-semibold tracking-tight">Projects</h1>
-        <p className="text-muted-foreground">
-          Manage imports, queue transcription, and review project progress.
-        </p>
-      </div>
+    <Box as="section">
+      <Stack gap="8">
+        <Stack gap="2">
+          <Heading size="xl" fontWeight="semibold" letterSpacing="tight">Projects</Heading>
+          <Text color="fg.muted">
+            Manage imports, queue transcription, and review project progress.
+          </Text>
+        </Stack>
 
-      <div className="rounded-xl border border-border p-6">
-        <p className="text-sm text-muted-foreground">
-          Start new imports from the dedicated upload flow.
-        </p>
-        <Button className="mt-4" asChild>
-          <Link href="/upload">Open Upload Workspace</Link>
-        </Button>
-      </div>
+        <Box rounded="xl" borderWidth="1px" borderColor="border" p="6">
+          <Text textStyle="sm" color="fg.muted">
+            Start new imports from the dedicated upload flow.
+          </Text>
+          <Box mt="4">
+            <Button asChild>
+              <Link href="/upload">Open Upload Workspace</Link>
+            </Button>
+          </Box>
+        </Box>
 
-      <div className="space-y-3">
-        <h2 className="text-lg font-semibold">Recent Projects</h2>
-        {projects.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No projects yet.</p>
-        ) : (
-          <ul className="space-y-2">
-            {projects.map((project) => (
-              <li
-                key={project.id}
-                className="rounded-lg border border-border p-4"
-              >
-                <div className="flex items-center justify-between gap-4">
-                  <div>
-                    <p className="font-medium">{project.title}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {project.sourceMediaUrl}
-                    </p>
-                    <p className="text-xs text-muted-foreground">
-                      Ingest: {project.ingestStatus}
-                    </p>
-                  </div>
-                  <Button variant="outline" asChild>
-                    <Link href={`/projects/${project.id}`}>Open</Link>
-                  </Button>
-                </div>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-    </section>
+        <Stack gap="3">
+          <Heading as="h2" size="lg" fontWeight="semibold">Recent Projects</Heading>
+          {projects.length === 0 ? (
+            <Text textStyle="sm" color="fg.muted">No projects yet.</Text>
+          ) : (
+            <Stack as="ul" gap="2">
+              {projects.map((project) => (
+                <Box
+                  as="li"
+                  key={project.id}
+                  rounded="lg"
+                  borderWidth="1px"
+                  borderColor="border"
+                  p="4"
+                >
+                  <Flex align="center" justify="space-between" gap="4">
+                    <Box>
+                      <Text fontWeight="medium">{project.title}</Text>
+                      <Text textStyle="xs" color="fg.muted">
+                        {project.sourceMediaUrl}
+                      </Text>
+                      <Text textStyle="xs" color="fg.muted">
+                        Ingest: {project.ingestStatus}
+                      </Text>
+                    </Box>
+                    <Button variant="outline" asChild>
+                      <Link href={`/projects/${project.id}`}>Open</Link>
+                    </Button>
+                  </Flex>
+                </Box>
+              ))}
+            </Stack>
+          )}
+        </Stack>
+      </Stack>
+    </Box>
   );
 }

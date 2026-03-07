@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useSignUp } from "@clerk/nextjs";
+import { Box, Heading, Stack, Text } from "@chakra-ui/react";
 import { Button } from "@narriflow/ui/components/button";
 import { Input } from "@narriflow/ui/components/input";
 import { Label } from "@narriflow/ui/components/label";
@@ -117,44 +118,46 @@ export default function ContinueSignUpPage() {
   }
 
   return (
-    <div className="space-y-6">
-      <div className="space-y-1">
-        <h2 className="text-lg font-semibold tracking-tight">Complete your account</h2>
-        <p className="text-sm text-muted-foreground">We need a few more details before creating your account.</p>
-      </div>
+    <Stack gap="6">
+      <Stack gap="1">
+        <Heading as="h2" textStyle="lg" fontWeight="semibold" letterSpacing="tight">Complete your account</Heading>
+        <Text textStyle="sm" color="fg.muted">We need a few more details before creating your account.</Text>
+      </Stack>
 
-      <form className="space-y-4" onSubmit={onSubmit}>
-        {missingFields.length === 0 ? (
-          <p className="text-sm text-muted-foreground">Finalizing your sign up...</p>
-        ) : (
-          missingFields.map((field) => (
-            <div className="space-y-2" key={field}>
-              <Label htmlFor={field}>{formatLabel(field)}</Label>
-              <Input
-                id={field}
-                name={field}
-                onChange={(event) =>
-                  setValues((current) => ({
-                    ...current,
-                    [field]: event.target.value,
-                  }))
-                }
-                required
-                type={getInputType(field)}
-                value={values[field] ?? ""}
-              />
-            </div>
-          ))
-        )}
+      <form onSubmit={onSubmit}>
+        <Stack gap="4">
+          {missingFields.length === 0 ? (
+            <Text textStyle="sm" color="fg.muted">Finalizing your sign up...</Text>
+          ) : (
+            missingFields.map((field) => (
+              <Stack gap="2" key={field}>
+                <Label htmlFor={field}>{formatLabel(field)}</Label>
+                <Input
+                  id={field}
+                  name={field}
+                  onChange={(event) =>
+                    setValues((current) => ({
+                      ...current,
+                      [field]: event.target.value,
+                    }))
+                  }
+                  required
+                  type={getInputType(field)}
+                  value={values[field] ?? ""}
+                />
+              </Stack>
+            ))
+          )}
 
-        {error ? <p className="text-sm text-destructive">{error}</p> : null}
+          {error ? <Text textStyle="sm" color="red.500">{error}</Text> : null}
 
-        <Button className="w-full" disabled={submitting || missingFields.length === 0} type="submit">
-          {submitting ? "Saving..." : "Continue"}
-        </Button>
+          <Button width="full" disabled={submitting || missingFields.length === 0} type="submit" variant="solid">
+            {submitting ? "Saving..." : "Continue"}
+          </Button>
 
-        <div id="clerk-captcha" />
+          <Box id="clerk-captcha" />
+        </Stack>
       </form>
-    </div>
+    </Stack>
   );
 }
