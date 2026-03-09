@@ -2,10 +2,11 @@
 
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { Box, Flex, HStack, SimpleGrid, Stack, Text } from "@chakra-ui/react";
+import { Box, Flex, HStack, Stack, Text } from "@chakra-ui/react";
 import { Button } from "@narriflow/ui/components/button";
 import { Input } from "@narriflow/ui/components/input";
 import { Progress } from "@narriflow/ui/components/progress";
+import { Upload, Video, Rss } from "lucide-react";
 
 type TabId = "file" | "youtube" | "rss";
 
@@ -37,10 +38,7 @@ function getFileFingerprint(file: File) {
 function loadUploadSession(fingerprint: string): UploadSession | null {
   try {
     const raw = localStorage.getItem(SESSION_STORAGE_KEY);
-    if (!raw) {
-      return null;
-    }
-
+    if (!raw) return null;
     const parsed = JSON.parse(raw) as UploadSession;
     return parsed.fingerprint === fingerprint ? parsed : null;
   } catch {
@@ -53,9 +51,14 @@ function saveUploadSession(session: UploadSession | null) {
     localStorage.removeItem(SESSION_STORAGE_KEY);
     return;
   }
-
   localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
 }
+
+const tabs: { id: TabId; label: string; icon: React.ReactNode }[] = [
+  { id: "file", label: "File Upload", icon: <Upload size={16} /> },
+  { id: "youtube", label: "YouTube URL", icon: <Video size={16} /> },
+  { id: "rss", label: "RSS Feed", icon: <Rss size={16} /> },
+];
 
 export function UploadWorkspace() {
   const router = useRouter();
@@ -153,9 +156,7 @@ export function UploadWorkspace() {
         }
 
         const url = urlMap.get(partNumber);
-        if (!url) {
-          throw new Error(`Missing upload URL for part ${partNumber}`);
-        }
+        if (!url) throw new Error(`Missing upload URL for part ${partNumber}`);
 
         const start = (partNumber - 1) * CHUNK_SIZE;
         const end = Math.min(start + CHUNK_SIZE, file.size);
@@ -167,14 +168,10 @@ export function UploadWorkspace() {
           signal: abortController.signal,
         });
 
-        if (!putRes.ok) {
-          throw new Error(`Part ${partNumber} upload failed (${putRes.status})`);
-        }
+        if (!putRes.ok) throw new Error(`Part ${partNumber} upload failed (${putRes.status})`);
 
         const etag = putRes.headers.get("ETag") ?? putRes.headers.get("etag");
-        if (!etag) {
-          throw new Error(`Missing ETag for part ${partNumber}`);
-        }
+        if (!etag) throw new Error(`Missing ETag for part ${partNumber}`);
 
         etagMap.set(partNumber, etag.replaceAll('"', ""));
         setProgress(Math.round((partNumber / presignJson.partCount) * 100));
@@ -329,140 +326,209 @@ export function UploadWorkspace() {
 
   function toggleEpisode(episodeId: string, checked: boolean) {
     setSelectedEpisodeIds((current) => {
-      if (checked) {
-        return Array.from(new Set([...current, episodeId]));
-      }
-
+      if (checked) return Array.from(new Set([...current, episodeId]));
       return current.filter((id) => id !== episodeId);
     });
   }
 
   return (
-    <Stack gap="6" borderWidth="1px" borderColor="border" rounded="xl" p="6">
-      <SimpleGrid columns={{ base: 1, sm: 3 }} gap="2">
-        {([
-          ["file", "File Upload"],
-          ["youtube", "YouTube URL"],
-          ["rss", "RSS Feed"],
-        ] as const).map(([tabId, label]) => (
-          <Button
-            key={tabId}
-            variant={activeTab === tabId ? "solid" : "outline"}
-            size="sm"
-            onClick={() => setActiveTab(tabId)}
-            type="button"
-            textAlign="left"
+    <Stack gap="24px">
+      {/* Tab bar */}
+      <Flex gap="0" borderBottomWidth="1px" borderColor="border">
+        {tabs.map((tab) => (
+          <Flex
+            key={tab.id}
+            as="button"
+            onClick={() => setActiveTab(tab.id)}
+            align="center"
+            gap="6px"
+            px="16px"
+            py="10px"
+            fontSize="13px"
+            fontWeight={activeTab === tab.id ? "500" : "400"}
+            color={activeTab === tab.id ? "fg" : "fg.muted"}
+            borderBottomWidth="2px"
+            borderColor={activeTab === tab.id ? "accent.solid" : "transparent"}
+            cursor="pointer"
+            transition="all 150ms ease"
+            _hover={{ color: "fg" }}
+            mb="-1px"
           >
-            {label}
-          </Button>
+            {tab.icon}
+            <Text display={{ base: "none", sm: "block" }}>{tab.label}</Text>
+          </Flex>
         ))}
-      </SimpleGrid>
+      </Flex>
 
-      <Stack gap="2">
-        <label htmlFor="upload-title">
-          <Text textStyle="sm" fontWeight="medium">Project title</Text>
-        </label>
+      {/* Project title */}
+      <Stack gap="6px">
+        <Text fontSize="13px" fontWeight="500" color="fg">
+          Project title
+        </Text>
         <Input
-          id="upload-title"
           onChange={(event) => setTitle(event.target.value)}
           placeholder="Episode 45 - Founder interview"
           value={title}
         />
       </Stack>
 
-      {activeTab === "file" ? (
-        <Stack gap="4">
-          <Input
-            accept="video/mp4,video/quicktime,video/webm,video/x-matroska,audio/mpeg,audio/wav,audio/x-wav,audio/mp4,audio/aac"
-            onChange={(event) => setFile(event.target.files?.[0] ?? null)}
-            type="file"
-          />
-          {uploading || progress > 0 ? <Progress value={progress} /> : null}
-          {uploadMessage ? <Text textStyle="sm" color="fg.muted">{uploadMessage}</Text> : null}
-          <HStack wrap="wrap" gap="2">
-            <Button disabled={uploading || !file} onClick={handleFileUpload} type="button">
+      {/* File Upload Tab */}
+      {activeTab === "file" && (
+        <Stack gap="16px">
+          {/* Drop zone */}
+          <Box
+            as="label"
+            borderRadius="12px"
+            borderWidth="2px"
+            borderStyle="dashed"
+            borderColor={file ? "border.accent" : "border"}
+            bg={file ? "accent.subtle" : "transparent"}
+            p="48px"
+            textAlign="center"
+            cursor="pointer"
+            transition="all 150ms ease"
+            _hover={{ borderColor: "border.accent", bg: "accent.subtle" }}
+          >
+            <input
+              type="file"
+              accept="video/mp4,video/quicktime,video/webm,video/x-matroska,audio/mpeg,audio/wav,audio/x-wav,audio/mp4,audio/aac"
+              onChange={(event) => setFile(event.target.files?.[0] ?? null)}
+              style={{ display: "none" }}
+            />
+            <Flex direction="column" align="center" gap="8px">
+              <Upload size={24} color="var(--chakra-colors-fg-muted)" />
+              <Text fontSize="13px" color="fg.muted">
+                {file ? file.name : "Drag and drop or click to browse"}
+              </Text>
+              {file && (
+                <Text fontSize="11px" color="fg.subtle">
+                  {(file.size / (1024 * 1024)).toFixed(1)} MB
+                </Text>
+              )}
+            </Flex>
+          </Box>
+
+          {(uploading || progress > 0) && <Progress value={progress} />}
+          {uploadMessage && (
+            <Text fontSize="13px" color="fg.muted">{uploadMessage}</Text>
+          )}
+
+          <HStack gap="8px">
+            <Button disabled={uploading || !file} onClick={handleFileUpload} type="button" size="sm">
               {uploading ? "Uploading..." : "Start Upload"}
             </Button>
-            <Button
-              disabled={!uploading}
-              onClick={() => uploadAbortController?.abort()}
-              type="button"
-              variant="outline"
-            >
-              Cancel Upload
-            </Button>
+            {uploading && (
+              <Button
+                onClick={() => uploadAbortController?.abort()}
+                type="button"
+                variant="outline"
+                size="sm"
+              >
+                Cancel
+              </Button>
+            )}
           </HStack>
         </Stack>
-      ) : null}
+      )}
 
-      {activeTab === "youtube" ? (
-        <Stack gap="4">
+      {/* YouTube Tab */}
+      {activeTab === "youtube" && (
+        <Stack gap="16px">
           <Input
             onChange={(event) => setYoutubeUrl(event.target.value)}
             placeholder="https://www.youtube.com/watch?v=..."
             type="url"
             value={youtubeUrl}
           />
-          {youtubeMessage ? <Text textStyle="sm" color="fg.muted">{youtubeMessage}</Text> : null}
-          <Button disabled={youtubeLoading} onClick={handleYoutubeImport} type="button">
-            {youtubeLoading ? "Queueing..." : "Import YouTube Video"}
-          </Button>
+          {youtubeMessage && (
+            <Text fontSize="13px" color="fg.muted">{youtubeMessage}</Text>
+          )}
+          <Box>
+            <Button disabled={youtubeLoading} onClick={handleYoutubeImport} type="button" size="sm">
+              {youtubeLoading ? "Queueing..." : "Import YouTube Video"}
+            </Button>
+          </Box>
         </Stack>
-      ) : null}
+      )}
 
-      {activeTab === "rss" ? (
-        <Stack gap="4">
+      {/* RSS Tab */}
+      {activeTab === "rss" && (
+        <Stack gap="16px">
           <Input
             onChange={(event) => setRssUrl(event.target.value)}
             placeholder="https://example.com/feed.xml"
             type="url"
             value={rssUrl}
           />
-          <HStack wrap="wrap" gap="2">
-            <Button disabled={rssPreviewLoading} onClick={handleRssPreview} type="button" variant="outline">
+          <HStack gap="8px">
+            <Button
+              disabled={rssPreviewLoading}
+              onClick={handleRssPreview}
+              type="button"
+              variant="outline"
+              size="sm"
+            >
               {rssPreviewLoading ? "Loading feed..." : "Preview Episodes"}
             </Button>
-            <Button
-              disabled={rssImportLoading || selectedEpisodeIds.length === 0}
-              onClick={handleRssImport}
-              type="button"
-            >
-              {rssImportLoading ? "Importing..." : `Import Selected (${selectedEpisodeIds.length})`}
-            </Button>
+            {selectedEpisodeIds.length > 0 && (
+              <Button
+                disabled={rssImportLoading}
+                onClick={handleRssImport}
+                type="button"
+                size="sm"
+              >
+                {rssImportLoading ? "Importing..." : `Import Selected (${selectedEpisodeIds.length})`}
+              </Button>
+            )}
           </HStack>
-          {rssMessage ? <Text textStyle="sm" color="fg.muted">{rssMessage}</Text> : null}
-          {rssEpisodes.length > 0 ? (
+          {rssMessage && (
+            <Text fontSize="13px" color="fg.muted">{rssMessage}</Text>
+          )}
+          {rssEpisodes.length > 0 && (
             <Stack
-              as="ul"
-              gap="2"
+              gap="0"
+              borderRadius="12px"
               borderWidth="1px"
               borderColor="border"
-              rounded="md"
-              p="3"
-              listStyleType="none"
+              overflow="hidden"
             >
-              {rssEpisodes.map((episode) => (
-                <Flex as="li" key={episode.id} align="start" gap="3" textStyle="sm">
+              {rssEpisodes.map((episode, index) => (
+                <Flex
+                  key={episode.id}
+                  as="label"
+                  align="center"
+                  gap="12px"
+                  px="16px"
+                  py="12px"
+                  fontSize="13px"
+                  cursor="pointer"
+                  borderBottomWidth={index < rssEpisodes.length - 1 ? "1px" : "0"}
+                  borderColor="border"
+                  transition="background 150ms ease"
+                  _hover={{ bg: "bg.subtle" }}
+                >
                   <input
                     type="checkbox"
                     checked={selectedEpisodeIds.includes(episode.id)}
-                    style={{ marginTop: "4px" }}
                     onChange={(event: React.ChangeEvent<HTMLInputElement>) =>
                       toggleEpisode(episode.id, event.target.checked)
                     }
+                    style={{ accentColor: "var(--chakra-colors-accent-600)" }}
                   />
-                  <Box>
-                    <Text fontWeight="medium">{episode.title}</Text>
-                    <Text textStyle="xs" color="fg.muted">
+                  <Box overflow="hidden">
+                    <Text fontWeight="500" color="fg" truncate>
+                      {episode.title}
+                    </Text>
+                    <Text fontSize="11px" color="fg.subtle" mt="1px">
                       {episode.publishedAt ?? "Unknown publish date"}
                     </Text>
                   </Box>
                 </Flex>
               ))}
             </Stack>
-          ) : null}
+          )}
         </Stack>
-      ) : null}
+      )}
     </Stack>
   );
 }

@@ -16,6 +16,11 @@
       "sourceType": "github",
       "computedHash": "eb5e668b7575567d3252382d52320d69867e18df968695c946af066ffa686bad"
     },
+    "frontend-design": {
+      "source": "anthropics/skills",
+      "sourceType": "github",
+      "computedHash": "063a0e6448123cd359ad0044cc46b0e490cc7964d45ef4bb9fd842bd2ffbca67"
+    },
     "neon-postgres": {
       "source": "neondatabase/agent-skills",
       "sourceType": "github",

@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { useSignIn } from "@clerk/nextjs";
-import { Box, Flex, Stack, Text } from "@chakra-ui/react";
+import { Box, Flex, Heading, Stack, Text } from "@chakra-ui/react";
 import { Button } from "@narriflow/ui/components/button";
 import { Input } from "@narriflow/ui/components/input";
 import { Label } from "@narriflow/ui/components/label";
@@ -22,10 +22,7 @@ export default function ForgotPasswordPage() {
 
   async function sendResetCode(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-
-    if (!isLoaded || !signIn) {
-      return;
-    }
+    if (!isLoaded || !signIn) return;
 
     setError(null);
     setSubmitting(true);
@@ -45,10 +42,7 @@ export default function ForgotPasswordPage() {
 
   async function resetPassword(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-
-    if (!isLoaded || !signIn) {
-      return;
-    }
+    if (!isLoaded || !signIn) return;
 
     setError(null);
     setSubmitting(true);
@@ -75,11 +69,22 @@ export default function ForgotPasswordPage() {
   }
 
   return (
-    <Stack gap="6">
+    <Stack gap="24px">
+      <Stack gap="4px" textAlign="center">
+        <Heading size="lg" fontWeight="600" letterSpacing="-0.02em">
+          Reset your password
+        </Heading>
+        <Text fontSize="13px" color="fg.muted">
+          {step === "request"
+            ? "Enter your email to receive a reset code."
+            : "Enter the code and your new password."}
+        </Text>
+      </Stack>
+
       {step === "request" ? (
         <form onSubmit={sendResetCode}>
-          <Stack gap="4">
-            <Stack gap="2">
+          <Stack gap="16px">
+            <Stack gap="6px">
               <Label htmlFor="email">Email</Label>
               <Input
                 autoComplete="email"
@@ -91,20 +96,19 @@ export default function ForgotPasswordPage() {
                 type="email"
                 value={email}
               />
-              <Text textStyle="xs" color="fg.muted">We'll email a reset code to this address.</Text>
             </Stack>
 
-            {error ? <Text textStyle="sm" color="red.500">{error}</Text> : null}
+            {error && <Text fontSize="13px" color="danger.fg">{error}</Text>}
 
-            <Button width="full" disabled={submitting || email.trim().length === 0} type="submit" variant="solid">
+            <Button width="full" disabled={submitting || email.trim().length === 0} type="submit">
               {submitting ? "Sending code..." : "Send reset code"}
             </Button>
           </Stack>
         </form>
       ) : (
         <form onSubmit={resetPassword}>
-          <Stack gap="4">
-            <Stack gap="2">
+          <Stack gap="16px">
+            <Stack gap="6px">
               <Label htmlFor="code">Reset code</Label>
               <Input
                 autoComplete="one-time-code"
@@ -116,7 +120,7 @@ export default function ForgotPasswordPage() {
                 value={code}
               />
             </Stack>
-            <Stack gap="2">
+            <Stack gap="6px">
               <Label htmlFor="newPassword">New password</Label>
               <Input
                 autoComplete="new-password"
@@ -129,23 +133,19 @@ export default function ForgotPasswordPage() {
               />
             </Stack>
 
-            {error ? <Text textStyle="sm" color="red.500">{error}</Text> : null}
+            {error && <Text fontSize="13px" color="danger.fg">{error}</Text>}
 
-            <Flex gap="2">
+            <Flex gap="8px">
               <Button
                 flex="1"
                 disabled={submitting || code.trim().length === 0 || newPassword.trim().length === 0}
                 type="submit"
-                variant="solid"
               >
                 {submitting ? "Resetting..." : "Reset password"}
               </Button>
               <Button
                 disabled={submitting}
-                onClick={() => {
-                  setStep("request");
-                  setError(null);
-                }}
+                onClick={() => { setStep("request"); setError(null); }}
                 type="button"
                 variant="outline"
               >
@@ -156,13 +156,13 @@ export default function ForgotPasswordPage() {
         </form>
       )}
 
-      <Text textAlign="center" textStyle="sm" color="fg.muted">
+      <Text textAlign="center" fontSize="13px" color="fg.muted">
         Remembered it?{" "}
-        <Box asChild fontWeight="medium" color="fg" _hover={{ textDecoration: "underline" }}>
-          <Link href="/sign-in">
+        <Link href="/sign-in">
+          <Box as="span" fontWeight="500" color="fg.accent" _hover={{ textDecoration: "underline" }}>
             Sign in
-          </Link>
-        </Box>
+          </Box>
+        </Link>
       </Text>
     </Stack>
   );

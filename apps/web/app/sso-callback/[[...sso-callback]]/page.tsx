@@ -1,10 +1,21 @@
 import { AuthenticateWithRedirectCallback } from "@clerk/nextjs";
-import { Box, Flex } from "@chakra-ui/react";
+import { Box, Flex, Text } from "@chakra-ui/react";
 
 export default function SSOCallbackPage() {
   return (
-    <Flex minH="100vh" w="full" maxW="md" mx="auto" align="center" justify="center" px="6" py="10">
-      <Box w="full" borderWidth="1px" borderColor="border" rounded="xl" bg="bg.panel" p="6">
+    <Flex minH="100vh" w="full" align="center" justify="center" bg="bg" color="fg" px="6" py="10">
+      <Box
+        w="full"
+        maxW="400px"
+        borderWidth="1px"
+        borderColor="border"
+        borderRadius="16px"
+        bg="bg.panel"
+        p="32px"
+        shadow="md"
+        textAlign="center"
+      >
+        <Text fontSize="13px" color="fg.muted" mb="16px">Completing sign in...</Text>
         <AuthenticateWithRedirectCallback
           continueSignUpUrl="/sign-up/continue"
           signInFallbackRedirectUrl="/onboarding"

@@ -1,4 +1,4 @@
-import { Box, Heading, Text } from "@chakra-ui/react";
+import { Box, Heading, Text, VStack } from "@chakra-ui/react";
 
 export default async function BlogPostPage({
   params,
@@ -8,13 +8,17 @@ export default async function BlogPostPage({
   const { slug } = await params;
 
   return (
-    <Box as="main" mx="auto" w="full" maxW="3xl" px="6" py="16">
-      <Heading size="xl" fontWeight="semibold" letterSpacing="tight">
-        Blog: {slug}
+    <VStack as="main" mx="auto" w="full" maxW="720px" px="6" py="80px" gap="16px" align="start">
+      <Heading
+        fontSize={{ base: "28px", md: "36px" }}
+        fontWeight="700"
+        letterSpacing="-0.03em"
+      >
+        {slug.replace(/-/g, " ")}
       </Heading>
-      <Text mt="3" color="fg.muted">
+      <Text fontSize="15px" color="fg.muted">
         CMS integration placeholder for marketing content.
       </Text>
-    </Box>
+    </VStack>
   );
 }

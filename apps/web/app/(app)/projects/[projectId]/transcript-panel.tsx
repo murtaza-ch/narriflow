@@ -1,4 +1,5 @@
 import { Button } from "@narriflow/ui/components/button";
+import { StatusBadge } from "@narriflow/ui/components/status-badge";
 import type { TranscriptSnapshot } from "@narriflow/validators";
 import { Stack, Box, Flex, Heading, Text } from "@chakra-ui/react";
 
@@ -24,11 +25,10 @@ export function TranscriptPanel({
 }) {
   if (!transcript) {
     return (
-      <Box as="section" rounded="xl" borderWidth="1px" borderColor="border" p="6">
-        <Heading as="h2" size="lg" fontWeight="semibold">Transcript</Heading>
-        <Text mt="2" textStyle="sm" color="fg.muted">
-          No transcript has been generated yet. Start transcription once ingest
-          is ready.
+      <Box borderRadius="12px" borderWidth="1px" borderColor="border" bg="bg.panel" p="20px">
+        <Text fontSize="14px" fontWeight="500" color="fg">Transcript</Text>
+        <Text mt="4px" fontSize="13px" color="fg.muted">
+          No transcript yet. Start transcription once ingest is ready.
         </Text>
       </Box>
     );
@@ -37,85 +37,81 @@ export function TranscriptPanel({
   const isReady = transcript.status === "completed";
 
   return (
-    <Box as="section" rounded="xl" borderWidth="1px" borderColor="border" p="6">
-      <Stack gap="4">
-        <Flex wrap="wrap" align="flex-start" justify="space-between" gap="3">
+    <Box borderRadius="12px" borderWidth="1px" borderColor="border" bg="bg.panel" p="20px">
+      <Stack gap="16px">
+        <Flex wrap="wrap" align="flex-start" justify="space-between" gap="12px">
           <Box>
-            <Heading as="h2" size="lg" fontWeight="semibold">Transcript</Heading>
-            <Text mt="1" textStyle="sm" color="fg.muted">
-              Status: {transcript.status}
-              {transcript.languageCode
-                ? ` \u00b7 Language: ${transcript.languageCode}`
-                : ""}
+            <Flex align="center" gap="8px">
+              <Text fontSize="14px" fontWeight="500" color="fg">Transcript</Text>
+              <StatusBadge status={transcript.status as "processing" | "completed" | "failed"} />
+            </Flex>
+            <Text mt="4px" fontSize="12px" color="fg.muted">
+              {transcript.languageCode ? `Language: ${transcript.languageCode}` : ""}
               {typeof transcript.speakerCount === "number"
-                ? ` \u00b7 Speakers: ${transcript.speakerCount}`
+                ? ` · Speakers: ${transcript.speakerCount}`
                 : ""}
             </Text>
-            {transcript.errorCode ? (
-              <Text mt="1" textStyle="sm" color="red.500">
-                Last transcription error: {transcript.errorCode}
+            {transcript.errorCode && (
+              <Text mt="4px" fontSize="12px" color="danger.fg">
+                Error: {transcript.errorCode}
               </Text>
-            ) : null}
+            )}
           </Box>
-          {isReady ? (
-            <Flex wrap="wrap" gap="2">
-              <Button asChild size="sm" variant="outline">
-                <a
-                  href={`/api/projects/${projectId}/transcript/export?format=txt`}
-                >
-                  TXT
-                </a>
-              </Button>
-              <Button asChild size="sm" variant="outline">
-                <a
-                  href={`/api/projects/${projectId}/transcript/export?format=srt`}
-                >
-                  SRT
-                </a>
-              </Button>
-              <Button asChild size="sm" variant="outline">
-                <a
-                  href={`/api/projects/${projectId}/transcript/export?format=vtt`}
-                >
-                  VTT
-                </a>
-              </Button>
+          {isReady && (
+            <Flex gap="6px">
+              {["txt", "srt", "vtt"].map((format) => (
+                <Button key={format} asChild size="sm" variant="outline">
+                  <a href={`/api/projects/${projectId}/transcript/export?format=${format}`}>
+                    {format.toUpperCase()}
+                  </a>
+                </Button>
+              ))}
             </Flex>
-          ) : null}
+          )}
         </Flex>
 
         {!isReady ? (
-          <Text textStyle="sm" color="fg.muted">
-            Narriflow is preparing a read-only transcript with speaker labels and
-            export-ready subtitles.
+          <Text fontSize="13px" color="fg.muted">
+            Preparing transcript with speaker labels and subtitle exports.
           </Text>
         ) : transcript.utterances.length > 0 ? (
-          <Stack maxH="32rem" gap="3" overflowY="auto" pr="2">
-            {transcript.utterances.map((utterance) => (
+          <Stack maxH="32rem" gap="0" overflowY="auto" borderRadius="8px" borderWidth="1px" borderColor="border">
+            {transcript.utterances.map((utterance, index) => (
               <Box
-                as="article"
                 key={`${utterance.index}-${utterance.startSec}`}
-                rounded="lg"
-                borderWidth="1px"
+                px="16px"
+                py="12px"
+                borderBottomWidth={index < transcript.utterances.length - 1 ? "1px" : "0"}
                 borderColor="border"
-                p="4"
               >
-                <Flex wrap="wrap" align="center" gap="2" textStyle="xs" color="fg.muted">
-                  <Text as="span" fontWeight="medium" color="fg">
+                <Flex gap="8px" align="center" mb="4px">
+                  <Text fontSize="13px" fontWeight="500" color="fg">
                     {utterance.speakerLabel}
                   </Text>
-                  <Text as="span">{formatTimestamp(utterance.startSec)}</Text>
-                  <Text as="span">-</Text>
-                  <Text as="span">{formatTimestamp(utterance.endSec)}</Text>
+                  <Text fontSize="11px" fontFamily="mono" color="fg.subtle">
+                    {formatTimestamp(utterance.startSec)} - {formatTimestamp(utterance.endSec)}
+                  </Text>
                 </Flex>
-                <Text mt="2" textStyle="sm" lineHeight="tall">{utterance.text}</Text>
+                <Text fontSize="13px" lineHeight="1.6" color="fg">
+                  {utterance.text}
+                </Text>
               </Box>
             ))}
           </Stack>
         ) : (
-          <Box as="pre" maxH="32rem" overflow="auto" rounded="lg" bg="bg.muted" p="4" textStyle="sm" lineHeight="tall" whiteSpace="pre-wrap">
-            {transcript.text ??
-              "Transcript completed, but no utterances were returned."}
+          <Box
+            as="pre"
+            maxH="32rem"
+            overflow="auto"
+            borderRadius="8px"
+            bg="bg.muted"
+            p="16px"
+            fontSize="13px"
+            fontFamily="mono"
+            lineHeight="1.6"
+            whiteSpace="pre-wrap"
+          >
+            {transcript.text ?? "Transcript completed, but no utterances were returned."}
           </Box>
         )}
       </Stack>

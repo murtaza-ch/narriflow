@@ -9,12 +9,12 @@ export interface ButtonProps extends ChakraButtonProps {}
 
 export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
   function Button(props, ref) {
-    return <ChakraButton ref={ref} colorPalette="brand" {...props} />
+    return <ChakraButton ref={ref} colorPalette="accent" {...props} />
   },
 )
 
 export const IconButton = React.forwardRef<HTMLButtonElement, ChakraButtonProps>(
   function IconButton(props, ref) {
-    return <ChakraIconButton ref={ref} colorPalette="brand" {...props} />
+    return <ChakraIconButton ref={ref} colorPalette="accent" {...props} />
   },
 )

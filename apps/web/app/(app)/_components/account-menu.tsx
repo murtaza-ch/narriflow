@@ -2,8 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useClerk } from "@clerk/nextjs";
-import { Box, Flex, Image, Stack, Text } from "@chakra-ui/react";
-import { Button } from "@narriflow/ui/components/button";
+import { Box, Flex, Image, Text } from "@chakra-ui/react";
+import { LogOut } from "lucide-react";
 
 interface AccountMenuProps {
   firstName: string | null;
@@ -19,15 +19,12 @@ function getDisplayName(firstName: string | null, lastName: string | null) {
 
 function getInitials(firstName: string | null, lastName: string | null, email: string | null) {
   const source = [firstName, lastName].filter(Boolean) as string[];
-
   if (source.length > 0) {
     return source.map((part) => part.charAt(0).toUpperCase()).join("").slice(0, 2);
   }
-
   if (email && email.length > 0) {
     return email.charAt(0).toUpperCase();
   }
-
   return "U";
 }
 
@@ -63,12 +60,8 @@ export function AccountMenu({ firstName, lastName, email, imageUrl }: AccountMen
   }, []);
 
   async function onSignOut() {
-    if (isSigningOut) {
-      return;
-    }
-
+    if (isSigningOut) return;
     setIsSigningOut(true);
-
     try {
       await signOut({ redirectUrl: "/" });
     } finally {
@@ -83,53 +76,80 @@ export function AccountMenu({ firstName, lastName, email, imageUrl }: AccountMen
         type="button"
         aria-expanded={open}
         aria-haspopup="menu"
-        onClick={() => setOpen((value) => !value)}
+        onClick={() => setOpen((v) => !v)}
         style={{ all: "unset", cursor: "pointer" }}
       >
         <Flex
-          h="9" w="9"
+          h="32px"
+          w="32px"
           align="center"
           justify="center"
           overflow="hidden"
-          rounded="full"
-          borderWidth="1px"
+          borderRadius="full"
+          borderWidth="1.5px"
           borderColor="border"
           bg="bg.muted"
-          textStyle="xs"
-          fontWeight="semibold"
+          fontSize="11px"
+          fontWeight="600"
           color="fg"
-          _hover={{ borderColor: "fg/30" }}
+          transition="border-color 150ms ease"
+          _hover={{ borderColor: "border.accent" }}
         >
-          {imageUrl ? <Image alt={displayName} h="full" w="full" objectFit="cover" src={imageUrl} /> : initials}
+          {imageUrl ? (
+            <Image alt={displayName} h="full" w="full" objectFit="cover" src={imageUrl} />
+          ) : (
+            initials
+          )}
         </Flex>
       </button>
 
-      {open ? (
+      {open && (
         <Box
           position="absolute"
           right="0"
-          top="11"
+          top="40px"
           zIndex="40"
-          w="64"
-          rounded="xl"
+          w="200px"
+          borderRadius="12px"
           borderWidth="1px"
           borderColor="border"
           bg="bg.panel"
-          p="3"
-          shadow="xl"
+          p="4px"
+          shadow="md"
           role="menu"
         >
-          <Box borderBottomWidth="1px" borderColor="border" pb="3">
-            <Text textStyle="sm" fontWeight="semibold" color="fg">{displayName}</Text>
-            <Text truncate textStyle="xs" color="fg.muted">{email ?? "No email"}</Text>
+          <Box px="12px" py="8px" borderBottomWidth="1px" borderColor="border" mb="4px">
+            <Text fontSize="13px" fontWeight="500" color="fg" truncate>
+              {displayName}
+            </Text>
+            <Text fontSize="11px" color="fg.subtle" truncate>
+              {email ?? "No email"}
+            </Text>
           </Box>
-          <Box pt="3">
-            <Button width="full" disabled={isSigningOut} onClick={onSignOut} type="button" variant="outline">
-              {isSigningOut ? "Signing out..." : "Sign out"}
-            </Button>
-          </Box>
+          <Flex
+            as="button"
+            onClick={onSignOut}
+            aria-disabled={isSigningOut}
+            opacity={isSigningOut ? 0.5 : 1}
+            pointerEvents={isSigningOut ? "none" : "auto"}
+            align="center"
+            gap="8px"
+            w="full"
+            px="12px"
+            py="8px"
+            borderRadius="8px"
+            fontSize="13px"
+            color="fg.muted"
+            cursor="pointer"
+            transition="all 150ms ease"
+            _hover={{ bg: "bg.subtle", color: "fg" }}
+            role="menuitem"
+          >
+            <LogOut size={14} />
+            <Text>{isSigningOut ? "Signing out..." : "Sign out"}</Text>
+          </Flex>
         </Box>
-      ) : null}
+      )}
     </Box>
   );
 }

@@ -120,8 +120,8 @@ export default function ContinueSignUpPage() {
   return (
     <Stack gap="6">
       <Stack gap="1">
-        <Heading as="h2" textStyle="lg" fontWeight="semibold" letterSpacing="tight">Complete your account</Heading>
-        <Text textStyle="sm" color="fg.muted">We need a few more details before creating your account.</Text>
+        <Heading size="lg" fontWeight="600" letterSpacing="-0.02em">Complete your account</Heading>
+        <Text fontSize="13px" color="fg.muted">We need a few more details before creating your account.</Text>
       </Stack>
 
       <form onSubmit={onSubmit}>
@@ -149,7 +149,7 @@ export default function ContinueSignUpPage() {
             ))
           )}
 
-          {error ? <Text textStyle="sm" color="red.500">{error}</Text> : null}
+          {error ? <Text textStyle="sm" color="danger.fg">{error}</Text> : null}
 
           <Button width="full" disabled={submitting || missingFields.length === 0} type="submit" variant="solid">
             {submitting ? "Saving..." : "Continue"}

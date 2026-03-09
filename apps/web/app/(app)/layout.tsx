@@ -1,8 +1,9 @@
-import Link from "next/link";
-import { getCurrentAppUser } from "@narriflow/auth";
 import { redirect } from "next/navigation";
+import { getCurrentAppUser } from "@narriflow/auth";
+import { Box, Flex } from "@chakra-ui/react";
+import { Sidebar } from "./_components/sidebar";
+import { MobileNav } from "./_components/mobile-nav";
 import { AccountMenu } from "./_components/account-menu";
-import { Box, Flex, HStack, Text } from "@chakra-ui/react";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const appUser = await getCurrentAppUser();
@@ -17,28 +18,46 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   return (
     <Box minH="100vh" bg="bg" color="fg">
-      <Box as="header" borderBottomWidth="1px" borderColor="border">
-        <Flex mx="auto" w="full" maxW="6xl" align="center" justify="space-between" px="6" py="4">
-          <Link href="/dashboard">
-            <Text textStyle="sm" fontWeight="semibold" letterSpacing="tight">Narriflow App</Text>
-          </Link>
-          <HStack gap="4">
-            <HStack as="nav" gap="4" textStyle="sm" color="fg.muted">
-              <Link href="/dashboard">Dashboard</Link>
-              <Link href="/upload">Upload</Link>
-              <Link href="/projects">Projects</Link>
-              <Link href="/">Marketing</Link>
-            </HStack>
-            <AccountMenu
-              email={appUser.primaryEmail}
-              firstName={appUser.firstName}
-              imageUrl={appUser.imageUrl}
-              lastName={appUser.lastName}
-            />
-          </HStack>
+      {/* Desktop sidebar */}
+      <Sidebar
+        email={appUser.primaryEmail}
+        firstName={appUser.firstName}
+        imageUrl={appUser.imageUrl}
+        lastName={appUser.lastName}
+      />
+
+      {/* Mobile nav */}
+      <MobileNav />
+
+      {/* Main content area */}
+      <Box
+        ml={{ base: "0", lg: "240px" }}
+        pt={{ base: "52px", lg: "0" }}
+        minH="100vh"
+      >
+        {/* Top bar (desktop only) */}
+        <Flex
+          h="52px"
+          align="center"
+          justify="flex-end"
+          px="24px"
+          borderBottomWidth="1px"
+          borderColor="border"
+          display={{ base: "none", lg: "flex" }}
+        >
+          <AccountMenu
+            email={appUser.primaryEmail}
+            firstName={appUser.firstName}
+            imageUrl={appUser.imageUrl}
+            lastName={appUser.lastName}
+          />
         </Flex>
+
+        {/* Page content */}
+        <Box as="main" maxW="1024px" px="24px" py="32px">
+          {children}
+        </Box>
       </Box>
-      <Box as="main" mx="auto" w="full" maxW="6xl" px="6" py="8">{children}</Box>
     </Box>
   );
 }

@@ -4,10 +4,11 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { useSignUp } from "@clerk/nextjs";
-import { Box, Flex, SimpleGrid, Stack, Text } from "@chakra-ui/react";
+import { Box, Flex, Heading, SimpleGrid, Stack, Text } from "@chakra-ui/react";
 import { Button } from "@narriflow/ui/components/button";
 import { Input } from "@narriflow/ui/components/input";
 import { Label } from "@narriflow/ui/components/label";
+import { LabeledDivider } from "@narriflow/ui/components/divider";
 import { getClerkErrorMessage } from "../../_lib/clerk-error";
 
 export default function SignUpPage() {
@@ -26,10 +27,7 @@ export default function SignUpPage() {
 
   async function onCreateAccount(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-
-    if (!isLoaded || !signUp) {
-      return;
-    }
+    if (!isLoaded || !signUp) return;
 
     if (password !== confirmPassword) {
       setError("Passwords do not match.");
@@ -46,7 +44,6 @@ export default function SignUpPage() {
         emailAddress: email.trim(),
         password,
       });
-
       await signUp.prepareEmailAddressVerification({ strategy: "email_code" });
       setAwaitingVerification(true);
     } catch (authError) {
@@ -58,10 +55,7 @@ export default function SignUpPage() {
 
   async function onVerifyEmail(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
-
-    if (!isLoaded || !signUp) {
-      return;
-    }
+    if (!isLoaded || !signUp) return;
 
     setSubmitting(true);
     setError(null);
@@ -70,12 +64,10 @@ export default function SignUpPage() {
       const result = await signUp.attemptEmailAddressVerification({
         code: verificationCode.trim(),
       });
-
       if (result.status !== "complete") {
         setError("Verification is incomplete. Please enter the latest code.");
         return;
       }
-
       await setActive({ session: result.createdSessionId });
       router.push("/onboarding");
     } catch (authError) {
@@ -86,9 +78,7 @@ export default function SignUpPage() {
   }
 
   async function onResendCode() {
-    if (!isLoaded || !signUp) {
-      return;
-    }
+    if (!isLoaded || !signUp) return;
 
     setSubmitting(true);
     setError(null);
@@ -103,9 +93,7 @@ export default function SignUpPage() {
   }
 
   async function onOAuthSignUp(strategy: "oauth_google" | "oauth_facebook" | "oauth_microsoft") {
-    if (!isLoaded || !signUp) {
-      return;
-    }
+    if (!isLoaded || !signUp) return;
 
     setError(null);
     setOauthLoading(strategy);
@@ -123,11 +111,22 @@ export default function SignUpPage() {
   }
 
   return (
-    <Stack gap="6">
+    <Stack gap="24px">
+      <Stack gap="4px" textAlign="center">
+        <Heading size="lg" fontWeight="600" letterSpacing="-0.02em">
+          {awaitingVerification ? "Verify your email" : "Create your account"}
+        </Heading>
+        <Text fontSize="13px" color="fg.muted">
+          {awaitingVerification
+            ? "Enter the code we sent to your email."
+            : "Start turning long-form content into social-ready assets."}
+        </Text>
+      </Stack>
+
       {awaitingVerification ? (
         <form onSubmit={onVerifyEmail}>
-          <Stack gap="4">
-            <Stack gap="2">
+          <Stack gap="16px">
+            <Stack gap="6px">
               <Label htmlFor="verificationCode">Verification code</Label>
               <Input
                 autoComplete="one-time-code"
@@ -138,19 +137,19 @@ export default function SignUpPage() {
                 required
                 value={verificationCode}
               />
-              <Text textStyle="xs" color="fg.muted">
-                We sent a verification code to <Box as="span" fontWeight="medium" color="fg">{email}</Box>.
+              <Text fontSize="12px" color="fg.muted">
+                We sent a code to <Box as="span" fontWeight="500" color="fg">{email}</Box>.
               </Text>
             </Stack>
 
-            {error ? <Text textStyle="sm" color="red.500">{error}</Text> : null}
+            {error && <Text fontSize="13px" color="danger.fg">{error}</Text>}
 
-            <Flex gap="2">
-              <Button flex="1" disabled={submitting || verificationCode.trim().length === 0} type="submit" variant="solid">
+            <Flex gap="8px">
+              <Button flex="1" disabled={submitting || verificationCode.trim().length === 0} type="submit">
                 {submitting ? "Verifying..." : "Verify email"}
               </Button>
               <Button disabled={submitting} onClick={onResendCode} type="button" variant="outline">
-                Resend code
+                Resend
               </Button>
             </Flex>
           </Stack>
@@ -158,9 +157,9 @@ export default function SignUpPage() {
       ) : (
         <>
           <form onSubmit={onCreateAccount}>
-            <Stack gap="4">
-              <SimpleGrid columns={{ base: 1, sm: 2 }} gap="4">
-                <Stack gap="2">
+            <Stack gap="16px">
+              <SimpleGrid columns={{ base: 1, sm: 2 }} gap="16px">
+                <Stack gap="6px">
                   <Label htmlFor="firstName">First name</Label>
                   <Input
                     autoComplete="given-name"
@@ -171,7 +170,7 @@ export default function SignUpPage() {
                     value={firstName}
                   />
                 </Stack>
-                <Stack gap="2">
+                <Stack gap="6px">
                   <Label htmlFor="lastName">Last name</Label>
                   <Input
                     autoComplete="family-name"
@@ -184,7 +183,7 @@ export default function SignUpPage() {
                 </Stack>
               </SimpleGrid>
 
-              <Stack gap="2">
+              <Stack gap="6px">
                 <Label htmlFor="email">Email</Label>
                 <Input
                   autoComplete="email"
@@ -198,7 +197,7 @@ export default function SignUpPage() {
                 />
               </Stack>
 
-              <Stack gap="2">
+              <Stack gap="6px">
                 <Label htmlFor="password">Password</Label>
                 <Input
                   autoComplete="new-password"
@@ -211,7 +210,7 @@ export default function SignUpPage() {
                 />
               </Stack>
 
-              <Stack gap="2">
+              <Stack gap="6px">
                 <Label htmlFor="confirmPassword">Confirm password</Label>
                 <Input
                   autoComplete="new-password"
@@ -224,15 +223,12 @@ export default function SignUpPage() {
                 />
               </Stack>
 
-              {error ? <Text textStyle="sm" color="red.500">{error}</Text> : null}
+              {error && <Text fontSize="13px" color="danger.fg">{error}</Text>}
 
               <Button
                 width="full"
-                disabled={
-                  submitting || email.trim().length === 0 || password.trim().length === 0 || confirmPassword.length === 0
-                }
+                disabled={submitting || email.trim().length === 0 || password.trim().length === 0 || confirmPassword.length === 0}
                 type="submit"
-                variant="solid"
               >
                 {submitting ? "Creating account..." : "Create account"}
               </Button>
@@ -241,45 +237,47 @@ export default function SignUpPage() {
             </Stack>
           </form>
 
-          <Stack gap="3">
-            <Text textAlign="center" textStyle="xs" textTransform="uppercase" letterSpacing="wide" color="fg.muted">or continue with</Text>
-            <Stack gap="2">
-              <Button
-                disabled={Boolean(oauthLoading)}
-                onClick={() => onOAuthSignUp("oauth_google")}
-                type="button"
-                variant="outline"
-              >
-                {oauthLoading === "oauth_google" ? "Connecting Google..." : "Continue with Google"}
-              </Button>
-              <Button
-                disabled={Boolean(oauthLoading)}
-                onClick={() => onOAuthSignUp("oauth_facebook")}
-                type="button"
-                variant="outline"
-              >
-                {oauthLoading === "oauth_facebook" ? "Connecting Facebook..." : "Continue with Facebook"}
-              </Button>
-              <Button
-                disabled={Boolean(oauthLoading)}
-                onClick={() => onOAuthSignUp("oauth_microsoft")}
-                type="button"
-                variant="outline"
-              >
-                {oauthLoading === "oauth_microsoft" ? "Connecting Microsoft..." : "Continue with Microsoft"}
-              </Button>
-            </Stack>
+          <LabeledDivider label="or continue with" />
+
+          <Stack gap="8px">
+            <Button
+              disabled={Boolean(oauthLoading)}
+              onClick={() => onOAuthSignUp("oauth_google")}
+              type="button"
+              variant="outline"
+              w="full"
+            >
+              {oauthLoading === "oauth_google" ? "Connecting..." : "Google"}
+            </Button>
+            <Button
+              disabled={Boolean(oauthLoading)}
+              onClick={() => onOAuthSignUp("oauth_facebook")}
+              type="button"
+              variant="outline"
+              w="full"
+            >
+              {oauthLoading === "oauth_facebook" ? "Connecting..." : "Facebook"}
+            </Button>
+            <Button
+              disabled={Boolean(oauthLoading)}
+              onClick={() => onOAuthSignUp("oauth_microsoft")}
+              type="button"
+              variant="outline"
+              w="full"
+            >
+              {oauthLoading === "oauth_microsoft" ? "Connecting..." : "Microsoft"}
+            </Button>
           </Stack>
         </>
       )}
 
-      <Text textAlign="center" textStyle="sm" color="fg.muted">
+      <Text textAlign="center" fontSize="13px" color="fg.muted">
         Already have an account?{" "}
-        <Box asChild fontWeight="medium" color="fg" _hover={{ textDecoration: "underline" }}>
-          <Link href="/sign-in">
+        <Link href="/sign-in">
+          <Box as="span" fontWeight="500" color="fg.accent" _hover={{ textDecoration: "underline" }}>
             Sign in
-          </Link>
-        </Box>
+          </Box>
+        </Link>
       </Text>
     </Stack>
   );

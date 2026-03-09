@@ -1,20 +1,52 @@
 import Link from "next/link";
-import { Flex, Stack, Box, Heading, Text } from "@chakra-ui/react";
+import { Flex, Stack, Box } from "@chakra-ui/react";
+import { Logo } from "@narriflow/ui/components/logo";
 
 export default function AuthLayout({ children }: { children: React.ReactNode }) {
   return (
-    <Flex as="main" minH="100vh" align="center" justify="center" bg="bg" px="6" py="10" color="fg">
-      <Stack w="full" maxW="md" gap="6" rounded="xl" borderWidth="1px" borderColor="border" bg="bg.panel" p="6" shadow="sm">
-        <Stack gap="2" textAlign="center">
-          <Link href="/">
-            <Text textStyle="sm" fontWeight="semibold" letterSpacing="tight">Narriflow</Text>
-          </Link>
-          <Heading size="lg" fontWeight="semibold" letterSpacing="tight">Welcome to Narriflow</Heading>
-          <Text textStyle="sm" color="fg.muted">
-            Sign in or create an account to continue turning long-form content into social-ready assets.
-          </Text>
+    <Flex
+      as="main"
+      minH="100vh"
+      align="center"
+      justify="center"
+      bg="bg"
+      px="6"
+      py="10"
+      color="fg"
+      position="relative"
+    >
+      {/* Subtle background accent glow */}
+      <Box
+        position="absolute"
+        top="50%"
+        left="50%"
+        transform="translate(-50%, -50%)"
+        w="600px"
+        h="600px"
+        borderRadius="full"
+        bg="accent.subtle"
+        opacity="0.3"
+        filter="blur(120px)"
+        pointerEvents="none"
+      />
+
+      <Stack gap="6" align="center" position="relative">
+        <Link href="/">
+          <Logo size="lg" />
+        </Link>
+        <Stack
+          w="full"
+          maxW="400px"
+          gap="6"
+          borderRadius="16px"
+          borderWidth="1px"
+          borderColor="border"
+          bg="bg.panel"
+          p="32px"
+          shadow="md"
+        >
+          {children}
         </Stack>
-        {children}
       </Stack>
     </Flex>
   );
