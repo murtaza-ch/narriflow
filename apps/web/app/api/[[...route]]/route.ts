@@ -3,14 +3,18 @@ import { handle } from "hono/vercel";
 import { getCurrentAppUser } from "@narriflow/auth";
 import {
   completeMultipartUploadSchema,
+  clipDownloadQuerySchema,
   generateProjectRequestSchema,
   rssImportSchema,
   rssPreviewSchema,
   presignUploadSchema,
   transcriptExportFormatSchema,
+  triggerClipRenderSchema,
+  updateClipBoundariesSchema,
+  updateClipStatusSchema,
   youtubeIngestSchema,
 } from "@narriflow/validators";
-import { projectService } from "@narriflow/services";
+import { clipService, projectService } from "@narriflow/services";
 
 export const runtime = "nodejs";
 
@@ -400,6 +404,233 @@ app.get("/ingest/:projectId", async (c) => {
   }
 
   return c.json(snapshot, 200);
+});
+
+// --- Clips routes ---
+
+app.get("/projects/:id/clips", async (c) => {
+  const appUser = await getCurrentAppUser();
+
+  if (!appUser) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const projectId = c.req.param("id");
+  const access = await projectService.getProjectAccess(appUser.id, projectId);
+
+  if (access === "missing") {
+    return c.json({ error: "Project not found" }, 404);
+  }
+
+  if (access === "forbidden") {
+    return c.json({ error: "Forbidden" }, 403);
+  }
+
+  const clips = await clipService.listClips(appUser.id, projectId);
+  return c.json({ clips }, 200);
+});
+
+app.patch("/projects/:id/clips/:clipId", async (c) => {
+  const appUser = await getCurrentAppUser();
+
+  if (!appUser) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const projectId = c.req.param("id");
+  const access = await projectService.getProjectAccess(appUser.id, projectId);
+
+  if (access === "missing") {
+    return c.json({ error: "Project not found" }, 404);
+  }
+
+  if (access === "forbidden") {
+    return c.json({ error: "Forbidden" }, 403);
+  }
+
+  const clipId = c.req.param("clipId");
+  const payload = await c.req.json().catch(() => null);
+
+  if (!payload || typeof payload !== "object") {
+    return c.json({ error: "Invalid payload" }, 400);
+  }
+
+  try {
+    // Check if this is a status update or boundary update
+    const statusParsed = updateClipStatusSchema.safeParse(payload);
+    if (statusParsed.success) {
+      const clip = await clipService.updateClipStatus(
+        appUser.id,
+        projectId,
+        clipId,
+        statusParsed.data.status,
+      );
+      return c.json(clip, 200);
+    }
+
+    const boundariesParsed = updateClipBoundariesSchema.safeParse(payload);
+    if (boundariesParsed.success) {
+      const clip = await clipService.updateClipBoundaries(
+        appUser.id,
+        projectId,
+        clipId,
+        boundariesParsed.data,
+      );
+      return c.json(clip, 200);
+    }
+
+    return c.json(
+      {
+        error: "Invalid payload",
+        issues: boundariesParsed.error.issues,
+      },
+      400,
+    );
+  } catch (error) {
+    return c.json(
+      { error: "clip_update_failed", message: errorMessage(error) },
+      400,
+    );
+  }
+});
+
+app.post("/projects/:id/clips/regenerate", async (c) => {
+  const appUser = await getCurrentAppUser();
+
+  if (!appUser) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const projectId = c.req.param("id");
+  const access = await projectService.getProjectAccess(appUser.id, projectId);
+
+  if (access === "missing") {
+    return c.json({ error: "Project not found" }, 404);
+  }
+
+  if (access === "forbidden") {
+    return c.json({ error: "Forbidden" }, 403);
+  }
+
+  const idempotencyKey = c.req.header("idempotency-key") ?? "";
+
+  if (!idempotencyKey) {
+    return c.json({ error: "Missing idempotency-key header" }, 400);
+  }
+
+  try {
+    const result = await clipService.regenerateClips(
+      appUser.id,
+      projectId,
+      idempotencyKey,
+    );
+    return c.json(result, 202);
+  } catch (error) {
+    return c.json(
+      { error: "clip_regeneration_failed", message: errorMessage(error) },
+      400,
+    );
+  }
+});
+
+// --- Clip rendering routes ---
+
+app.post("/projects/:id/clips/render", async (c) => {
+  const appUser = await getCurrentAppUser();
+
+  if (!appUser) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const projectId = c.req.param("id");
+  const access = await projectService.getProjectAccess(appUser.id, projectId);
+
+  if (access === "missing") {
+    return c.json({ error: "Project not found" }, 404);
+  }
+
+  if (access === "forbidden") {
+    return c.json({ error: "Forbidden" }, 403);
+  }
+
+  const idempotencyKey = c.req.header("idempotency-key") ?? "";
+
+  if (!idempotencyKey) {
+    return c.json({ error: "Missing idempotency-key header" }, 400);
+  }
+
+  const payload = await c.req.json().catch(() => ({}));
+  const parsed = triggerClipRenderSchema.safeParse(payload);
+
+  if (!parsed.success) {
+    return c.json(
+      { error: "Invalid payload", issues: parsed.error.issues },
+      400,
+    );
+  }
+
+  try {
+    const result = await clipService.triggerClipRendering(
+      appUser.id,
+      projectId,
+      idempotencyKey,
+      parsed.data.clipIds,
+      parsed.data.aspectRatios,
+    );
+    return c.json(result, 202);
+  } catch (error) {
+    return c.json(
+      { error: "clip_render_failed", message: errorMessage(error) },
+      400,
+    );
+  }
+});
+
+app.get("/projects/:id/clips/:clipId/download", async (c) => {
+  const appUser = await getCurrentAppUser();
+
+  if (!appUser) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const projectId = c.req.param("id");
+  const access = await projectService.getProjectAccess(appUser.id, projectId);
+
+  if (access === "missing") {
+    return c.json({ error: "Project not found" }, 404);
+  }
+
+  if (access === "forbidden") {
+    return c.json({ error: "Forbidden" }, 403);
+  }
+
+  const clipId = c.req.param("clipId");
+  const parsedQuery = clipDownloadQuerySchema.safeParse({
+    aspectRatio:
+      new URL(c.req.url).searchParams.get("aspectRatio") ?? undefined,
+  });
+
+  if (!parsedQuery.success) {
+    return c.json(
+      { error: "Invalid query", issues: parsedQuery.error.issues },
+      400,
+    );
+  }
+
+  try {
+    const result = await clipService.getClipDownloadUrl(
+      appUser.id,
+      projectId,
+      clipId,
+      parsedQuery.data.aspectRatio,
+    );
+    return c.json(result, 200);
+  } catch (error) {
+    return c.json(
+      { error: "clip_download_failed", message: errorMessage(error) },
+      400,
+    );
+  }
 });
 
 const honoHandler = handle(app);
