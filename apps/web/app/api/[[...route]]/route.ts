@@ -11,6 +11,7 @@ import {
   transcriptExportFormatSchema,
   triggerClipRenderSchema,
   updateClipBoundariesSchema,
+  updateClipCaptionPresetSchema,
   updateClipStatusSchema,
   youtubeIngestSchema,
 } from "@narriflow/validators";
@@ -475,6 +476,17 @@ app.patch("/projects/:id/clips/:clipId", async (c) => {
         projectId,
         clipId,
         boundariesParsed.data,
+      );
+      return c.json(clip, 200);
+    }
+
+    const captionPresetParsed = updateClipCaptionPresetSchema.safeParse(payload);
+    if (captionPresetParsed.success) {
+      const clip = await clipService.updateClipCaptionPreset(
+        appUser.id,
+        projectId,
+        clipId,
+        captionPresetParsed.data.captionPreset,
       );
       return c.json(clip, 200);
     }

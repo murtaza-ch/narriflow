@@ -5,6 +5,7 @@ import { requireCurrentAppUser } from "@narriflow/auth";
 import { clipService } from "@narriflow/services";
 import { Stack, Box, Heading, Text, Flex } from "@chakra-ui/react";
 import { ChevronRight } from "lucide-react";
+import { CaptionPresetForm } from "./caption-preset-form";
 
 export default async function ClipEditPage({
   params,
@@ -42,27 +43,34 @@ export default async function ClipEditPage({
         </Text>
       </Stack>
 
-      {/* Placeholder */}
+      {/* Caption preset */}
       <Box
         borderRadius="12px"
         borderWidth="1px"
         borderColor="border"
-        borderStyle="dashed"
         bg="bg.panel"
-        p="40px"
-        display="flex"
-        flexDirection="column"
-        alignItems="center"
-        gap="12px"
+        p="20px"
       >
-        <Text fontSize="14px" fontWeight="500" color="fg">Clip Editor</Text>
-        <Text fontSize="13px" color="fg.muted" textAlign="center" maxW="400px">
-          The visual clip editor is coming soon. For now, use the boundary editor on the project page to adjust start and end times.
-        </Text>
-        <Button asChild size="sm" variant="outline" mt="8px">
-          <Link href={`/projects/${projectId}`}>Back to Project</Link>
-        </Button>
+        <Stack gap="16px">
+          <Box>
+            <Text fontSize="14px" fontWeight="500" color="fg">Caption style</Text>
+            <Text fontSize="12px" color="fg.muted" mt="2px">
+              Customize the look of burnt-in captions for this clip. Applies to all new renders.
+            </Text>
+          </Box>
+          <CaptionPresetForm
+            projectId={projectId}
+            clipId={clipId}
+            initialPreset={clip.captionPreset}
+          />
+        </Stack>
       </Box>
+
+      <Flex>
+        <Button asChild size="sm" variant="outline">
+          <Link href={`/projects/${projectId}`}>Back to project</Link>
+        </Button>
+      </Flex>
     </Stack>
   );
 }
