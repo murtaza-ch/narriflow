@@ -1,6 +1,8 @@
 import { createServer } from "node:http";
 import { projectService } from "@narriflow/services";
+import { processClipDetectionRun } from "./tasks/detect-clips";
 import { processIngestJob } from "./tasks/ingest";
+import { processClipRenderingRun } from "./tasks/render-clips";
 import { processTranscriptRun } from "./tasks/transcribe";
 
 const port = Number(process.env.PORT || 0);
@@ -28,11 +30,28 @@ async function pollIngestQueue() {
 
     const workflowRun = await projectService.claimNextWorkflowRun("stt");
 
-    if (!workflowRun) {
+    if (workflowRun) {
+      await processTranscriptRun(workflowRun);
+      processedCount += 1;
       return;
     }
 
-    await processTranscriptRun(workflowRun);
+    const clipRun = await projectService.claimNextWorkflowRun("moment_detection");
+
+    if (clipRun) {
+      await processClipDetectionRun(clipRun);
+      processedCount += 1;
+      return;
+    }
+
+    const renderRun =
+      await projectService.claimNextWorkflowRun("clip_rendering");
+
+    if (!renderRun) {
+      return;
+    }
+
+    await processClipRenderingRun(renderRun);
     processedCount += 1;
   } catch (error) {
     console.error(
