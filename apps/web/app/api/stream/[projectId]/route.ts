@@ -43,6 +43,20 @@ export async function GET(
   const sinceSeq = Number(req.url ? new URL(req.url).searchParams.get("sinceSeq") ?? "0" : "0");
   const encoder = new TextEncoder();
 
+  let heartbeat: ReturnType<typeof setInterval> | null = null;
+  let subscriber: Redis | null = null;
+
+  function cleanup() {
+    if (heartbeat !== null) {
+      clearInterval(heartbeat);
+      heartbeat = null;
+    }
+    if (subscriber) {
+      void subscriber.unsubscribe(channel).finally(() => subscriber?.disconnect());
+      subscriber = null;
+    }
+  }
+
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       controller.enqueue(
@@ -60,8 +74,6 @@ export async function GET(
       for (const event of cachedEvents) {
         controller.enqueue(encoder.encode(sseEvent("workflow.stage.updated", event)));
       }
-
-      let subscriber: Redis | null = null;
 
       if (redisUrl) {
         try {
@@ -88,22 +100,25 @@ export async function GET(
           });
         } catch {
           // Redis unavailable — degrade gracefully. Cached events already sent.
-          subscriber?.disconnect();
-          subscriber = null;
+          cleanup();
         }
       }
 
-      const heartbeat = setInterval(() => {
-        controller.enqueue(encoder.encode(sseEvent("ping", { ts: Date.now() })));
+      heartbeat = setInterval(() => {
+        try {
+          controller.enqueue(encoder.encode(sseEvent("ping", { ts: Date.now() })));
+        } catch {
+          cleanup();
+        }
       }, 15000);
 
       req.signal.addEventListener("abort", () => {
-        clearInterval(heartbeat);
-        if (subscriber) {
-          void subscriber.unsubscribe(channel).finally(() => subscriber?.disconnect());
-        }
+        cleanup();
         controller.close();
       });
+    },
+    cancel() {
+      cleanup();
     },
   });
 

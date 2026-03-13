@@ -4,8 +4,8 @@ import { randomUUID } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireCurrentAppUser } from "@narriflow/auth";
-import { projectService } from "@narriflow/services";
-import type { GenerateProjectInput } from "@narriflow/validators";
+import { clipService, projectService } from "@narriflow/services";
+import type { ClipAspectRatio, GenerateProjectInput } from "@narriflow/validators";
 
 const defaultContentPack: GenerateProjectInput["contentPack"] = {
   outputTypes: ["short_clip"],
@@ -53,3 +53,45 @@ export async function queueTranscriptionFormAction(formData: FormData) {
 }
 
 export const queueGenerationFormAction = queueTranscriptionFormAction;
+
+export async function regenerateClipsFormAction(formData: FormData) {
+  const appUser = await requireCurrentAppUser();
+  const projectId = String(formData.get("projectId") ?? "");
+  const idempotencyKey = String(
+    formData.get("idempotencyKey") ?? randomUUID(),
+  );
+
+  if (!projectId) {
+    throw new Error("projectId is required");
+  }
+
+  await clipService.regenerateClips(appUser.id, projectId, idempotencyKey);
+
+  revalidatePath(`/projects/${projectId}`);
+}
+
+export async function renderClipsFormAction(formData: FormData) {
+  const appUser = await requireCurrentAppUser();
+  const projectId = String(formData.get("projectId") ?? "");
+  const idempotencyKey = String(
+    formData.get("idempotencyKey") ?? randomUUID(),
+  );
+  const aspectRatios = formData
+    .getAll("aspectRatios")
+    .map((value) => String(value))
+    .filter(Boolean) as ClipAspectRatio[];
+
+  if (!projectId) {
+    throw new Error("projectId is required");
+  }
+
+  await clipService.triggerClipRendering(
+    appUser.id,
+    projectId,
+    idempotencyKey,
+    undefined,
+    aspectRatios.length > 0 ? aspectRatios : undefined,
+  );
+
+  revalidatePath(`/projects/${projectId}`);
+}

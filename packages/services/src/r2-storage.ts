@@ -4,6 +4,7 @@ import {
   AbortMultipartUploadCommand,
   CompleteMultipartUploadCommand,
   CreateMultipartUploadCommand,
+  DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
   ListPartsCommand,
@@ -268,6 +269,41 @@ export async function downloadObjectToFile(params: {
     key: params.key,
     contentType: response.ContentType ?? null,
   };
+}
+
+export async function presignDownloadUrl(params: {
+  key: string;
+  expiresIn?: number;
+  fileName?: string;
+}): Promise<string> {
+  const client = getClient();
+  const { bucket } = getR2Config();
+
+  return getSignedUrl(
+    client,
+    new GetObjectCommand({
+      Bucket: bucket,
+      Key: params.key,
+      ...(params.fileName && {
+        ResponseContentDisposition: `attachment; filename="${params.fileName}"`,
+      }),
+    }),
+    { expiresIn: params.expiresIn ?? 3600 },
+  );
+}
+
+export async function deleteObject(key: string) {
+  const client = getClient();
+  const { bucket } = getR2Config();
+
+  await client.send(
+    new DeleteObjectCommand({
+      Bucket: bucket,
+      Key: key,
+    }),
+  );
+
+  return { key };
 }
 
 export async function putJson(params: {
