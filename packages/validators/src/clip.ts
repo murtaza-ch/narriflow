@@ -114,6 +114,20 @@ export const clipAspectRatioFromDb = {
   z.infer<typeof clipAspectRatioSchema>
 >;
 
+export const captionPresetSchema = z.object({
+  fontName: z.string().max(100).optional(),
+  primaryColor: z.string().regex(/^#[0-9A-Fa-f]{6}$/).optional(),
+  outlineColor: z.string().regex(/^#[0-9A-Fa-f]{6}$/).optional(),
+  outlineWidth: z.number().int().min(0).max(4).optional(),
+  shadow: z.number().int().min(0).max(1).optional(),
+  bold: z.boolean().optional(),
+  position: z.enum(["bottom", "top"]).optional(),
+});
+
+export const updateClipCaptionPresetSchema = z.object({
+  captionPreset: captionPresetSchema.nullable(),
+});
+
 export const clipRenderVariantSchema = z.object({
   aspectRatio: clipAspectRatioSchema,
   status: clipRenderStatusSchema,
@@ -145,6 +159,7 @@ export const clipSnapshotSchema = z.object({
   instagramScore: z.number().int().min(1).max(100),
   transcriptSlice: z.array(transcriptUtteranceSchema),
   renderVariants: z.array(clipRenderVariantSchema),
+  captionPreset: captionPresetSchema.nullable().optional(),
   createdAt: z.string().datetime(),
 });
 
@@ -195,6 +210,7 @@ export type ClipStatus = z.infer<typeof clipStatusSchema>;
 export type ClipRenderStatus = z.infer<typeof clipRenderStatusSchema>;
 export type ClipAspectRatio = z.infer<typeof clipAspectRatioSchema>;
 export type ClipAspectRatioDb = z.infer<typeof clipAspectRatioDbSchema>;
+export type CaptionPreset = z.infer<typeof captionPresetSchema>;
 export type ClipRenderVariant = z.infer<typeof clipRenderVariantSchema>;
 export type ClipSnapshot = z.infer<typeof clipSnapshotSchema>;
 export type UpdateClipBoundaries = z.infer<typeof updateClipBoundariesSchema>;
@@ -204,3 +220,4 @@ export type ClipDownloadQuery = z.infer<typeof clipDownloadQuerySchema>;
 export type ClipDetectionLlmResponse = z.infer<
   typeof clipDetectionLlmResponseSchema
 >;
+export type UpdateClipCaptionPreset = z.infer<typeof updateClipCaptionPresetSchema>;
