@@ -2,12 +2,14 @@ import { randomUUID } from "node:crypto";
 import type { Clip, ClipRender, Prisma } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
+  captionPresetSchema,
   clipAspectRatioDbSchema,
   clipAspectRatioFromDb,
   clipAspectRatioOptions,
   clipAspectRatioToDb,
 } from "@narriflow/validators";
 import type {
+  CaptionPreset,
   ClipAspectRatio,
   ClipCategory,
   ClipRenderVariant,
@@ -119,6 +121,9 @@ function toClipSnapshot(clip: ClipWithRenders): ClipSnapshot {
           (aspectRatioOrder.get(left.aspectRatio) ?? Number.MAX_SAFE_INTEGER) -
           (aspectRatioOrder.get(right.aspectRatio) ?? Number.MAX_SAFE_INTEGER),
       ),
+    captionPreset: clip.captionPreset
+      ? captionPresetSchema.parse(clip.captionPreset)
+      : null,
     createdAt: clip.createdAt.toISOString(),
   };
 }
@@ -675,6 +680,114 @@ export class ClipService {
       expiresInSeconds: 3600,
       fileName,
     };
+  }
+
+  async updateClipCaptionPreset(
+    userId: string,
+    projectId: string,
+    clipId: string,
+    preset: CaptionPreset | null,
+  ): Promise<ClipSnapshot> {
+    const prisma = requirePrisma();
+
+    const clip = await prisma.clip.findFirst({
+      where: {
+        id: clipId,
+        projectId,
+        project: { userId },
+      },
+    });
+
+    if (!clip) {
+      throw new Error("clip not found");
+    }
+
+    const updated = await prisma.clip.update({
+      where: { id: clipId },
+      data: {
+        captionPreset: preset !== null ? (preset as Prisma.InputJsonValue) : Prisma.JsonNull,
+      },
+      include: { renders: true },
+    });
+
+    return toClipSnapshot(updated);
+  }
+
+  async autoQueueDefaultRenders(
+    projectId: string,
+    detectionWorkflowRunId: string,
+  ): Promise<void> {
+    const prisma = requirePrisma();
+
+    const clips = await prisma.clip.findMany({
+      where: { projectId, status: { not: "rejected" } },
+      select: { id: true },
+    });
+
+    if (clips.length === 0) {
+      return;
+    }
+
+    const aspectRatioDb = clipAspectRatioToDb["9:16"];
+    const clipIds = clips.map((c) => c.id);
+
+    const existingRenders = await prisma.clipRender.findMany({
+      where: {
+        clipId: { in: clipIds },
+        aspectRatio: aspectRatioDb,
+        status: { in: ["pending", "rendering"] },
+      },
+      select: { clipId: true },
+    });
+
+    const alreadyQueued = new Set(existingRenders.map((r) => r.clipId));
+    const toCreate = clipIds.filter((id) => !alreadyQueued.has(id));
+
+    if (toCreate.length > 0) {
+      await prisma.clipRender.createMany({
+        data: toCreate.map((clipId) => ({
+          clipId,
+          aspectRatio: aspectRatioDb,
+          status: "pending" as const,
+        })),
+        skipDuplicates: true,
+      });
+    }
+
+    const existingWorkflowRun = await prisma.workflowRun.findFirst({
+      where: {
+        projectId,
+        stage: "clip_rendering",
+        status: { in: ["queued", "running"] },
+      },
+    });
+
+    if (existingWorkflowRun) {
+      return;
+    }
+
+    const workflowRunId = randomUUID();
+
+    await prisma.workflowRun.create({
+      data: {
+        id: workflowRunId,
+        projectId,
+        idempotencyKey: `auto-render-${detectionWorkflowRunId}`,
+        stage: "clip_rendering",
+        status: "queued",
+        progress: 0,
+      },
+    });
+
+    await publishWorkflowStageUpdated({
+      event: "workflow.stage.updated",
+      projectId,
+      workflowRunId,
+      stage: "clip_rendering",
+      status: "queued",
+      progress: 0,
+      errorCode: null,
+    });
   }
 }
 
