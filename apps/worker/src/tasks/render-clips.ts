@@ -10,11 +10,12 @@ import {
   putFileFromPath,
 } from "@narriflow/services";
 import {
+  captionPresetSchema,
   clipAspectRatioDbSchema,
   clipAspectRatioFromDb,
   clipAspectRatioOptions,
 } from "@narriflow/validators";
-import type { ClipAspectRatio, TranscriptUtterance } from "@narriflow/validators";
+import type { CaptionPreset, ClipAspectRatio, TranscriptUtterance } from "@narriflow/validators";
 
 interface WorkflowRunJob {
   id: string;
@@ -231,9 +232,18 @@ function escapeSubtitlePath(filePath: string) {
   return filePath.replace(/\\/g, "\\\\").replace(/:/g, "\\:");
 }
 
+function hexToFfmpegColor(hex: string): string {
+  // Converts #RRGGBB to \&H00BBGGRR\& (FFmpeg ASS BGRA color format, alpha=00=opaque)
+  const r = hex.slice(1, 3);
+  const g = hex.slice(3, 5);
+  const b = hex.slice(5, 7);
+  return `\\&H00${b}${g}${r}\\&`;
+}
+
 function buildSubtitleFilter(
   aspectRatio: ClipAspectRatio,
   srtPath: string | null,
+  captionPreset?: CaptionPreset | null,
 ) {
   if (!srtPath) {
     return null;
@@ -241,9 +251,22 @@ function buildSubtitleFilter(
 
   const captionStyle = captionStyleByAspectRatio[aspectRatio];
   const escapedSrtPath = escapeSubtitlePath(srtPath);
+
+  const fontName = captionPreset?.fontName ?? "Arial";
+  const primaryColor = captionPreset?.primaryColor
+    ? hexToFfmpegColor(captionPreset.primaryColor)
+    : "\\&H00FFFFFF\\&";
+  const outlineColor = captionPreset?.outlineColor
+    ? hexToFfmpegColor(captionPreset.outlineColor)
+    : "\\&H00000000\\&";
+  const outlineWidth = captionPreset?.outlineWidth ?? 2;
+  const shadow = captionPreset?.shadow ?? 1;
+  const bold = captionPreset?.bold !== false ? 1 : 0;
+  const alignment = captionPreset?.position === "top" ? 8 : 2;
+
   const forceStyle =
-    `FontSize=${captionStyle.fontSize},Alignment=2,MarginV=${captionStyle.marginV},FontName=Arial,` +
-    "PrimaryColour=\\&H00FFFFFF\\&,OutlineColour=\\&H00000000\\&,Outline=2,Shadow=1,Bold=1";
+    `FontSize=${captionStyle.fontSize},Alignment=${alignment},MarginV=${captionStyle.marginV},FontName=${fontName},` +
+    `PrimaryColour=${primaryColor},OutlineColour=${outlineColor},Outline=${outlineWidth},Shadow=${shadow},Bold=${bold}`;
 
   return `subtitles='${escapedSrtPath}':force_style='${forceStyle}'`;
 }
@@ -286,9 +309,10 @@ function buildSingleVideoFilter(
   probe: SourceProbe,
   aspectRatio: ClipAspectRatio,
   srtPath: string | null,
+  captionPreset?: CaptionPreset | null,
 ) {
   const chain = [buildCropAndScaleFilter(probe, aspectRatio)];
-  const subtitleFilter = buildSubtitleFilter(aspectRatio, srtPath);
+  const subtitleFilter = buildSubtitleFilter(aspectRatio, srtPath, captionPreset);
 
   if (subtitleFilter) {
     chain.push(subtitleFilter);
@@ -305,11 +329,13 @@ function buildSingleVideoArgs(params: {
   aspectRatio: ClipAspectRatio;
   probe: SourceProbe;
   srtPath: string | null;
+  captionPreset?: CaptionPreset | null;
 }) {
   const videoFilter = buildSingleVideoFilter(
     params.probe,
     params.aspectRatio,
     params.srtPath,
+    params.captionPreset,
   );
 
   const args = [
@@ -356,6 +382,7 @@ function buildMultiVideoArgs(params: {
   endSec: number;
   probe: SourceProbe;
   srtPath: string | null;
+  captionPreset?: CaptionPreset | null;
 }) {
   const splitOutputs = params.outputs
     .map((_, index) => `[v${index}]`)
@@ -368,6 +395,7 @@ function buildMultiVideoArgs(params: {
         params.probe,
         output.aspectRatio,
         params.srtPath,
+        params.captionPreset,
       );
       return `[v${index}]${singleFilter}[outv${index}]`;
     }),
@@ -420,6 +448,7 @@ function buildAudioOnlyArgs(params: {
   aspectRatio: ClipAspectRatio;
   clipDurationSec: number;
   srtPath: string | null;
+  captionPreset?: CaptionPreset | null;
 }) {
   const config = aspectRatioConfig.get(params.aspectRatio);
 
@@ -430,7 +459,7 @@ function buildAudioOnlyArgs(params: {
     );
   }
 
-  const subtitleFilter = buildSubtitleFilter(params.aspectRatio, params.srtPath);
+  const subtitleFilter = buildSubtitleFilter(params.aspectRatio, params.srtPath, params.captionPreset);
   const args = [
     "-y",
     "-ss",
@@ -597,6 +626,9 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
       const clip = renderGroup[0]!.clip;
       const clipDurationSec = clip.endSec - clip.startSec;
       const utterances = clip.transcriptSlice as unknown as TranscriptUtterance[];
+      const captionPreset = clip.captionPreset
+        ? captionPresetSchema.nullable().parse(clip.captionPreset)
+        : null;
       const srtContent = generateSrtFromSlice(utterances, clip.startSec);
       let srtPath: string | null = null;
 
@@ -640,6 +672,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
               aspectRatio: output.aspectRatio,
               clipDurationSec,
               srtPath,
+              captionPreset,
             });
 
             await execCommand("ffmpeg", ffmpegArgs);
@@ -682,6 +715,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
                   aspectRatio: outputs[0]!.aspectRatio,
                   probe,
                   srtPath,
+                  captionPreset,
                 })
               : buildMultiVideoArgs({
                   sourcePath,
@@ -690,6 +724,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
                   endSec: clip.endSec,
                   probe,
                   srtPath,
+                  captionPreset,
                 });
 
           await execCommand("ffmpeg", ffmpegArgs);

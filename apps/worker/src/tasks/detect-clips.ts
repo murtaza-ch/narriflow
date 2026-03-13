@@ -501,6 +501,17 @@ export async function processClipDetectionRun(run: WorkflowRunJob) {
       totalTokensUsed,
     });
 
+    // Auto-queue 9:16 default render for all detected clips
+    try {
+      await clipService.autoQueueDefaultRenders(run.projectId, run.id);
+    } catch (error) {
+      log("error", "auto_render_queue_failed", {
+        workflowRunId: run.id,
+        projectId: run.projectId,
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+
     // Complete workflow run
     await projectService.completeClipDetectionWorkflowRun(run.id);
 
