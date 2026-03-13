@@ -376,6 +376,7 @@ model Clip {
   reasoning       String
   category        ClipCategory
   transcriptSlice Json
+  captionPreset   Json?
 
   viralityScore           Int
   hookStrengthScore       Int
