@@ -20,7 +20,7 @@ export function getPrismaClient() {
   if (!globalForPrisma.narriflowPrismaClient) {
     globalForPrisma.narriflowPrismaClient = new PrismaClient({
       adapter: globalForPrisma.narriflowAdapter,
-      log: process.env.NODE_ENV === "development" ? ["query", "error", "warn"] : ["error"],
+      log: ["error"],
     });
   }
 

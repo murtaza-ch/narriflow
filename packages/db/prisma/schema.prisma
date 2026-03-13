@@ -69,6 +69,40 @@ enum TranscriptStatus {
   failed
 }
 
+enum ClipStatus {
+  detected
+  accepted
+  rejected
+  edited
+}
+
+enum ClipCategory {
+  hook
+  insight
+  story
+  humor
+  controversy
+  emotional
+  tutorial
+  quote
+  debate
+  surprise
+}
+
+enum ClipRenderStatus {
+  pending
+  rendering
+  completed
+  failed
+}
+
+enum ClipAspectRatio {
+  ratio_9_16
+  ratio_1_1
+  ratio_16_9
+  ratio_4_5
+}
+
 enum AuthProvider {
   google
   facebook
@@ -107,6 +141,7 @@ model Project {
   uploadSessions UploadSession[]
   ingestJobs     IngestJob[]
   transcript     Transcript?
+  clips          Clip[]
   user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   workflowRuns   WorkflowRun[]
   workflowEvents WorkflowEvent[]
@@ -327,4 +362,61 @@ model WebhookDeliveryLog {
 
   @@unique([provider, eventId])
   @@index([provider, eventType, createdAt])
+}
+
+model Clip {
+  id              String       @id @default(uuid()) @db.Uuid
+  projectId       String       @db.Uuid
+  workflowRunId   String       @db.Uuid
+  index           Int
+  status          ClipStatus   @default(detected)
+  startSec        Float
+  endSec          Float
+  hookText        String
+  reasoning       String
+  category        ClipCategory
+  transcriptSlice Json
+
+  viralityScore           Int
+  hookStrengthScore       Int
+  emotionalIntensityScore Int
+  pacingScore             Int
+  durationOptimalityScore Int
+
+  tiktokScore    Int
+  youtubeScore   Int
+  instagramScore Int
+
+  llmProvider   String
+  llmModel      String
+  llmTokensUsed Int?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  project Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  renders ClipRender[]
+
+  @@index([projectId, viralityScore(sort: Desc)])
+  @@unique([projectId, workflowRunId, index])
+}
+
+model ClipRender {
+  id          String           @id @default(uuid()) @db.Uuid
+  clipId      String           @db.Uuid
+  aspectRatio ClipAspectRatio
+  status      ClipRenderStatus @default(pending)
+  storageKey  String?
+  sizeBytes   BigInt?
+  durationSec Float?
+  errorCode   String?
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  clip Clip @relation(fields: [clipId], references: [id], onDelete: Cascade)
+
+  @@unique([clipId, aspectRatio])
+  @@index([clipId])
 }
