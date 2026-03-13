@@ -965,21 +965,23 @@ export class ProjectService {
       return this.claimNextWorkflowRun(stage);
     }
 
-    await prisma.transcript.upsert({
-      where: { projectId: queued.projectId },
-      create: {
-        projectId: queued.projectId,
-        status: "processing",
-        provider: "deepgram",
-        providerModel: "nova-3",
-      },
-      update: {
-        status: "processing",
-        provider: "deepgram",
-        providerModel: "nova-3",
-        errorCode: null,
-      },
-    });
+    if (stage === "stt") {
+      await prisma.transcript.upsert({
+        where: { projectId: queued.projectId },
+        create: {
+          projectId: queued.projectId,
+          status: "processing",
+          provider: "deepgram",
+          providerModel: "nova-3",
+        },
+        update: {
+          status: "processing",
+          provider: "deepgram",
+          providerModel: "nova-3",
+          errorCode: null,
+        },
+      });
+    }
 
     await this.publishWorkflowRunEvent({
       projectId: queued.projectId,
@@ -1119,6 +1121,153 @@ export class ProjectService {
       status: "completed",
       progress: 100,
       errorCode: null,
+    });
+
+    // Auto-advance: queue moment_detection stage
+    const mdIdempotencyKey = `${run.idempotencyKey}__moment_detection`;
+    const mdRun = await prisma.workflowRun.create({
+      data: {
+        projectId: run.projectId,
+        idempotencyKey: mdIdempotencyKey,
+        stage: "moment_detection",
+        status: "queued",
+        progress: 0,
+      },
+    });
+
+    await this.publishWorkflowRunEvent({
+      projectId: run.projectId,
+      workflowRunId: mdRun.id,
+      stage: "moment_detection",
+      status: "queued",
+      progress: 0,
+      errorCode: null,
+    });
+  }
+
+  async completeClipDetectionWorkflowRun(workflowRunId: string) {
+    const prisma = this.requirePrisma();
+    const run = await prisma.workflowRun.findUnique({
+      where: { id: workflowRunId },
+    });
+
+    if (!run) {
+      throw new Error("workflow run not found");
+    }
+
+    await prisma.workflowRun.update({
+      where: { id: run.id },
+      data: {
+        stage: "moment_detection",
+        status: "completed",
+        progress: 100,
+        errorCode: null,
+      },
+    });
+
+    await this.publishWorkflowRunEvent({
+      projectId: run.projectId,
+      workflowRunId: run.id,
+      stage: "moment_detection",
+      status: "completed",
+      progress: 100,
+      errorCode: null,
+    });
+  }
+
+  async failClipDetectionWorkflowRun(
+    workflowRunId: string,
+    errorCode: string,
+  ) {
+    const prisma = this.requirePrisma();
+    const run = await prisma.workflowRun.findUnique({
+      where: { id: workflowRunId },
+    });
+
+    if (!run) {
+      throw new Error("workflow run not found");
+    }
+
+    await prisma.workflowRun.update({
+      where: { id: run.id },
+      data: {
+        stage: "moment_detection",
+        status: "failed",
+        progress: 100,
+        errorCode,
+      },
+    });
+
+    await this.publishWorkflowRunEvent({
+      projectId: run.projectId,
+      workflowRunId: run.id,
+      stage: "moment_detection",
+      status: "failed",
+      progress: 100,
+      errorCode,
+    });
+  }
+
+  async completeClipRenderingWorkflowRun(workflowRunId: string) {
+    const prisma = this.requirePrisma();
+    const run = await prisma.workflowRun.findUnique({
+      where: { id: workflowRunId },
+    });
+
+    if (!run) {
+      throw new Error("workflow run not found");
+    }
+
+    await prisma.workflowRun.update({
+      where: { id: run.id },
+      data: {
+        stage: "clip_rendering",
+        status: "completed",
+        progress: 100,
+        errorCode: null,
+      },
+    });
+
+    await this.publishWorkflowRunEvent({
+      projectId: run.projectId,
+      workflowRunId: run.id,
+      stage: "clip_rendering",
+      status: "completed",
+      progress: 100,
+      errorCode: null,
+    });
+  }
+
+  async failClipRenderingWorkflowRun(
+    workflowRunId: string,
+    errorCode: string,
+  ) {
+    const prisma = this.requirePrisma();
+    const run = await prisma.workflowRun.findUnique({
+      where: { id: workflowRunId },
+    });
+
+    if (!run) {
+      throw new Error("workflow run not found");
+    }
+
+    await prisma.workflowRun.update({
+      where: { id: run.id },
+      data: {
+        stage: "clip_rendering",
+        status: "failed",
+        progress: 100,
+        errorCode,
+      },
+    });
+
+    await this.publishWorkflowRunEvent({
+      projectId: run.projectId,
+      workflowRunId: run.id,
+      stage: "clip_rendering",
+      status: "failed",
+      progress: 100,
+      errorCode,
     });
   }
 
@@ -1300,6 +1449,37 @@ export class ProjectService {
       eventStatus: "running",
       errorCode: null,
     });
+  }
+
+  async getTranscriptForWorker(projectId: string) {
+    const prisma = this.requirePrisma();
+    return prisma.transcript.findUnique({
+      where: { projectId },
+    });
+  }
+
+  async getLatestContentPack(projectId: string) {
+    const prisma = this.requirePrisma();
+    return prisma.contentPack.findFirst({
+      where: { projectId },
+      orderBy: { createdAt: "desc" },
+    });
+  }
+
+  async publishWorkflowProgress(input: {
+    projectId: string;
+    workflowRunId: string;
+    stage:
+      | "stt"
+      | "moment_detection"
+      | "clip_rendering"
+      | "output_pack_generation"
+      | "export_bundle";
+    status: "queued" | "running" | "completed" | "failed";
+    progress: number;
+    errorCode: string | null;
+  }) {
+    return this.publishWorkflowRunEvent(input);
   }
 
   private async publishWorkflowRunEvent(input: {
