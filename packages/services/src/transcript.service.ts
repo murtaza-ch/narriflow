@@ -8,6 +8,9 @@ import { transcriptSnapshotSchema } from "@narriflow/validators";
 interface DeepgramWord {
   word?: string;
   punctuated_word?: string;
+  start?: number;
+  end?: number;
+  confidence?: number;
 }
 
 interface DeepgramUtterance {
@@ -150,6 +153,20 @@ export function normalizeDeepgramTranscript(
           typeof utterance.confidence === "number"
             ? utterance.confidence
             : null,
+        words: (utterance.words ?? [])
+          .filter(
+            (w) =>
+              (w.word || w.punctuated_word) &&
+              typeof w.start === "number" &&
+              typeof w.end === "number",
+          )
+          .map((w) => ({
+            word: w.punctuated_word ?? w.word ?? "",
+            startSec: w.start!,
+            endSec: w.end!,
+            confidence:
+              typeof w.confidence === "number" ? w.confidence : null,
+          })),
       } satisfies TranscriptUtterance;
     })
     .filter(

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { Clip, ClipRender, Prisma } from "@prisma/client";
+import { Prisma } from "@prisma/client";
+import type { Clip, ClipRender } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
   captionPresetSchema,
@@ -706,6 +707,38 @@ export class ClipService {
       where: { id: clipId },
       data: {
         captionPreset: preset !== null ? (preset as Prisma.InputJsonValue) : Prisma.JsonNull,
+      },
+      include: { renders: true },
+    });
+
+    return toClipSnapshot(updated);
+  }
+
+  async updateClipTranscriptSlice(
+    userId: string,
+    projectId: string,
+    clipId: string,
+    transcriptSlice: TranscriptUtterance[],
+  ): Promise<ClipSnapshot> {
+    const prisma = requirePrisma();
+
+    const clip = await prisma.clip.findFirst({
+      where: {
+        id: clipId,
+        projectId,
+        project: { userId },
+      },
+    });
+
+    if (!clip) {
+      throw new Error("clip not found");
+    }
+
+    const updated = await prisma.clip.update({
+      where: { id: clipId },
+      data: {
+        transcriptSlice: transcriptSlice as unknown as Prisma.InputJsonValue,
+        status: "edited",
       },
       include: { renders: true },
     });

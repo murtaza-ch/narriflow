@@ -115,13 +115,18 @@ export const clipAspectRatioFromDb = {
 >;
 
 export const captionPresetSchema = z.object({
-  fontName: z.string().max(100).optional(),
-  primaryColor: z.string().regex(/^#[0-9A-Fa-f]{6}$/).optional(),
-  outlineColor: z.string().regex(/^#[0-9A-Fa-f]{6}$/).optional(),
-  outlineWidth: z.number().int().min(0).max(4).optional(),
-  shadow: z.number().int().min(0).max(1).optional(),
-  bold: z.boolean().optional(),
-  position: z.enum(["bottom", "top"]).optional(),
+  fontName: z.string().max(100).default("Bebas Neue"),
+  primaryColor: z.string().regex(/^#[0-9A-Fa-f]{6}$/).default("#FFFFFF"),
+  outlineColor: z.string().regex(/^#[0-9A-Fa-f]{6}$/).default("#000000"),
+  outlineWidth: z.number().int().min(0).max(4).default(2),
+  shadow: z.number().int().min(0).max(1).default(1),
+  bold: z.boolean().default(true),
+  position: z.enum(["bottom", "top", "center"]).default("bottom"),
+  highlightColor: z.string().regex(/^#[0-9A-Fa-f]{6}$/).default("#00FF88"),
+  animation: z.enum(["none", "word-by-word", "karaoke", "bounce"]).default("word-by-word"),
+  fontSize: z.number().min(8).max(120).default(36),
+  positionX: z.number().min(0).max(100).optional(),
+  positionY: z.number().min(0).max(100).optional(),
 });
 
 export const updateClipCaptionPresetSchema = z.object({
@@ -178,6 +183,10 @@ export const updateClipBoundariesSchema = z
     message: "Clip must be at most 120 seconds",
   });
 
+export const updateClipTranscriptSliceSchema = z.object({
+  transcriptSlice: z.array(transcriptUtteranceSchema),
+});
+
 export const updateClipStatusSchema = z.object({
   status: z.enum(["accepted", "rejected"]),
 });
@@ -221,3 +230,4 @@ export type ClipDetectionLlmResponse = z.infer<
   typeof clipDetectionLlmResponseSchema
 >;
 export type UpdateClipCaptionPreset = z.infer<typeof updateClipCaptionPresetSchema>;
+export type UpdateClipTranscriptSlice = z.infer<typeof updateClipTranscriptSliceSchema>;

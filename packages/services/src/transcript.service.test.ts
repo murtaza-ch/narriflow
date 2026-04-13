@@ -24,6 +24,12 @@ describe("normalizeDeepgramTranscript", () => {
             transcript: "Welcome back to Narriflow.",
             confidence: 0.98,
             speaker: 0,
+            words: [
+              { word: "welcome", punctuated_word: "Welcome", start: 0.2, end: 0.8, confidence: 0.99 },
+              { word: "back", punctuated_word: "back", start: 0.9, end: 1.3, confidence: 0.98 },
+              { word: "to", punctuated_word: "to", start: 1.4, end: 1.6, confidence: 0.97 },
+              { word: "narriflow", punctuated_word: "Narriflow.", start: 1.7, end: 4.8, confidence: 0.96 },
+            ],
           },
           {
             start: 5.1,
@@ -31,6 +37,15 @@ describe("normalizeDeepgramTranscript", () => {
             transcript: "Today we are talking about transcription quality.",
             confidence: 0.95,
             speaker: 1,
+            words: [
+              { word: "today", punctuated_word: "Today", start: 5.1, end: 5.5, confidence: 0.97 },
+              { word: "we", punctuated_word: "we", start: 5.6, end: 5.8, confidence: 0.98 },
+              { word: "are", punctuated_word: "are", start: 5.9, end: 6.1, confidence: 0.96 },
+              { word: "talking", punctuated_word: "talking", start: 6.2, end: 6.8, confidence: 0.95 },
+              { word: "about", punctuated_word: "about", start: 6.9, end: 7.2, confidence: 0.97 },
+              { word: "transcription", punctuated_word: "transcription", start: 7.3, end: 8.5, confidence: 0.93 },
+              { word: "quality", punctuated_word: "quality.", start: 8.6, end: 9.6, confidence: 0.94 },
+            ],
           },
         ],
         channels: [
@@ -60,6 +75,62 @@ describe("normalizeDeepgramTranscript", () => {
       }),
     );
   });
+
+  test("captures word-level timing from Deepgram utterances", () => {
+    const normalized = normalizeDeepgramTranscript({
+      metadata: { duration: 10 },
+      results: {
+        utterances: [
+          {
+            start: 1.0,
+            end: 3.5,
+            transcript: "hello world",
+            confidence: 0.95,
+            speaker: 0,
+            words: [
+              { word: "hello", punctuated_word: "Hello", start: 1.0, end: 1.8, confidence: 0.97 },
+              { word: "world", punctuated_word: "world", start: 2.0, end: 3.5, confidence: 0.93 },
+            ],
+          },
+        ],
+        channels: [{ alternatives: [{ transcript: "hello world" }] }],
+      },
+    });
+
+    expect(normalized.utterances[0]!.words).toHaveLength(2);
+    expect(normalized.utterances[0]!.words[0]).toEqual({
+      word: "Hello",
+      startSec: 1.0,
+      endSec: 1.8,
+      confidence: 0.97,
+    });
+    expect(normalized.utterances[0]!.words[1]).toEqual({
+      word: "world",
+      startSec: 2.0,
+      endSec: 3.5,
+      confidence: 0.93,
+    });
+  });
+
+  test("returns empty words array when utterance has no word data", () => {
+    const normalized = normalizeDeepgramTranscript({
+      metadata: { duration: 5 },
+      results: {
+        utterances: [
+          {
+            start: 0,
+            end: 5,
+            transcript: "Hello world",
+            confidence: 0.9,
+            speaker: 0,
+          },
+        ],
+        channels: [{ alternatives: [{ transcript: "Hello world" }] }],
+      },
+    });
+
+    expect(normalized.utterances[0]!.words).toEqual([]);
+  });
 });
 
 describe("exportTranscript", () => {
@@ -79,6 +150,7 @@ describe("exportTranscript", () => {
         endSec: 4.8,
         text: "Welcome back to Narriflow.",
         confidence: 0.98,
+        words: [],
       },
       {
         index: 1,
@@ -88,6 +160,7 @@ describe("exportTranscript", () => {
         endSec: 9.6,
         text: "Today we are talking about transcription quality.",
         confidence: 0.95,
+        words: [],
       },
     ],
     speakerCount: 2,

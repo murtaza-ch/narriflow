@@ -9,6 +9,13 @@ export const transcriptStatusSchema = z.enum([
 
 export const transcriptExportFormatSchema = z.enum(["txt", "srt", "vtt"]);
 
+export const transcriptWordSchema = z.object({
+  word: z.string().min(1),
+  startSec: z.number().nonnegative(),
+  endSec: z.number().nonnegative(),
+  confidence: z.number().min(0).max(1).nullable(),
+});
+
 export const transcriptUtteranceSchema = z.object({
   index: z.number().int().nonnegative(),
   speaker: z.number().int().nonnegative().nullable(),
@@ -17,6 +24,7 @@ export const transcriptUtteranceSchema = z.object({
   endSec: z.number().nonnegative(),
   text: z.string().min(1),
   confidence: z.number().min(0).max(1).nullable(),
+  words: z.array(transcriptWordSchema).default([]),
 });
 
 export const transcriptSnapshotSchema = z.object({
@@ -34,6 +42,7 @@ export const transcriptSnapshotSchema = z.object({
   updatedAt: z.string().datetime().nullable(),
 });
 
+export type TranscriptWord = z.infer<typeof transcriptWordSchema>;
 export type TranscriptStatus = z.infer<typeof transcriptStatusSchema>;
 export type TranscriptExportFormat = z.infer<
   typeof transcriptExportFormatSchema
