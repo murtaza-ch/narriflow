@@ -41,6 +41,7 @@ interface PendingRenderOutput {
   aspectRatio: ClipAspectRatio;
   outputPath: string;
   storageKey: string;
+  subtitlePath?: string | null;
 }
 
 class WorkflowWorkerError extends Error {
@@ -219,13 +220,112 @@ function generateSrtFromSlice(
     return "";
   }
 
-  return utterances
-    .map((utterance, index) => {
+  const WORDS_PER_CUE = 3;
+  const cues: string[] = [];
+  let cueIndex = 1;
+
+  for (const utterance of utterances) {
+    const words = utterance.words;
+
+    if (words.length > 0) {
+      // Word-level mode: group into 2-3 word cues
+      for (let i = 0; i < words.length; i += WORDS_PER_CUE) {
+        const group = words.slice(i, i + WORDS_PER_CUE);
+        const start = Math.max(0, group[0]!.startSec - clipStartSec);
+        const end = Math.max(start + 0.1, group[group.length - 1]!.endSec - clipStartSec);
+        const text = group.map((w) => w.word).join(" ");
+        cues.push(`${cueIndex}\n${formatSrtTimestamp(start)} --> ${formatSrtTimestamp(end)}\n${text}\n`);
+        cueIndex++;
+      }
+    } else {
+      // Fallback: utterance-level cue
       const start = Math.max(0, utterance.startSec - clipStartSec);
       const end = Math.max(start + 0.1, utterance.endSec - clipStartSec);
-      return `${index + 1}\n${formatSrtTimestamp(start)} --> ${formatSrtTimestamp(end)}\n${utterance.text}\n`;
-    })
-    .join("\n");
+      cues.push(`${cueIndex}\n${formatSrtTimestamp(start)} --> ${formatSrtTimestamp(end)}\n${utterance.text}\n`);
+      cueIndex++;
+    }
+  }
+
+  return cues.join("\n");
+}
+
+function formatAssTimestamp(seconds: number): string {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  const cs = Math.round((seconds % 1) * 100);
+  return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${String(cs).padStart(2, "0")}`;
+}
+
+function hexToAssColor(hex: string): string {
+  const r = hex.slice(1, 3);
+  const g = hex.slice(3, 5);
+  const b = hex.slice(5, 7);
+  return `&H00${b}${g}${r}`;
+}
+
+function generateAssFromSlice(
+  utterances: TranscriptUtterance[],
+  clipStartSec: number,
+  aspectRatio: ClipAspectRatio,
+  captionPreset: CaptionPreset,
+): string {
+  const config = aspectRatioConfig.get(aspectRatio);
+  if (!config) return "";
+
+  const resX = config.width;
+  const resY = config.height;
+  const posXPx = Math.round(((captionPreset.positionX ?? 50) / 100) * resX);
+  const posYPx = Math.round(((captionPreset.positionY ?? 88) / 100) * resY);
+
+  const fontName = captionPreset.fontName ?? "Arial";
+  const fontSize = captionPreset.fontSize ?? captionStyleByAspectRatio[aspectRatio].fontSize;
+  const primaryColor = hexToAssColor(captionPreset.primaryColor ?? "#FFFFFF");
+  const outlineColor = hexToAssColor(captionPreset.outlineColor ?? "#000000");
+  const bold = captionPreset.bold !== false ? -1 : 0;
+  const outlineWidth = captionPreset.outlineWidth ?? 2;
+  const shadow = captionPreset.shadow ?? 1;
+
+  const header = [
+    "[Script Info]",
+    "ScriptType: v4.00+",
+    `PlayResX: ${resX}`,
+    `PlayResY: ${resY}`,
+    "",
+    "[V4+ Styles]",
+    "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+    `Style: Default,${fontName},${fontSize},${primaryColor},${primaryColor},${outlineColor},&H00000000,${bold},0,0,0,100,100,0,0,1,${outlineWidth},${shadow},5,0,0,0,1`,
+    "",
+    "[Events]",
+    "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+  ].join("\n");
+
+  const WORDS_PER_CUE = 3;
+  const events: string[] = [];
+
+  for (const utterance of utterances) {
+    const words = utterance.words;
+
+    if (words.length > 0) {
+      for (let i = 0; i < words.length; i += WORDS_PER_CUE) {
+        const group = words.slice(i, i + WORDS_PER_CUE);
+        const start = Math.max(0, group[0]!.startSec - clipStartSec);
+        const end = Math.max(start + 0.1, group[group.length - 1]!.endSec - clipStartSec);
+        const text = group.map((w) => w.word).join(" ");
+        events.push(
+          `Dialogue: 0,${formatAssTimestamp(start)},${formatAssTimestamp(end)},Default,,0,0,0,,{\\pos(${posXPx},${posYPx})}${text}`,
+        );
+      }
+    } else {
+      const start = Math.max(0, utterance.startSec - clipStartSec);
+      const end = Math.max(start + 0.1, utterance.endSec - clipStartSec);
+      events.push(
+        `Dialogue: 0,${formatAssTimestamp(start)},${formatAssTimestamp(end)},Default,,0,0,0,,{\\pos(${posXPx},${posYPx})}${utterance.text}`,
+      );
+    }
+  }
+
+  return header + "\n" + events.join("\n") + "\n";
 }
 
 function escapeSubtitlePath(filePath: string) {
@@ -242,15 +342,23 @@ function hexToFfmpegColor(hex: string): string {
 
 function buildSubtitleFilter(
   aspectRatio: ClipAspectRatio,
-  srtPath: string | null,
+  subtitlePath: string | null,
   captionPreset?: CaptionPreset | null,
 ) {
-  if (!srtPath) {
+  if (!subtitlePath) {
     return null;
   }
 
+  const escapedPath = escapeSubtitlePath(subtitlePath);
+
+  // ASS files carry their own styling and positioning
+  if (subtitlePath.endsWith(".ass")) {
+    return `ass='${escapedPath}'`;
+  }
+
+  // SRT path: apply force_style
   const captionStyle = captionStyleByAspectRatio[aspectRatio];
-  const escapedSrtPath = escapeSubtitlePath(srtPath);
+  const fontSize = captionPreset?.fontSize ?? captionStyle.fontSize;
 
   const fontName = captionPreset?.fontName ?? "Arial";
   const primaryColor = captionPreset?.primaryColor
@@ -262,13 +370,15 @@ function buildSubtitleFilter(
   const outlineWidth = captionPreset?.outlineWidth ?? 2;
   const shadow = captionPreset?.shadow ?? 1;
   const bold = captionPreset?.bold !== false ? 1 : 0;
-  const alignment = captionPreset?.position === "top" ? 8 : 2;
+  const alignment =
+    captionPreset?.position === "top" ? 8 :
+    captionPreset?.position === "center" ? 5 : 2;
 
   const forceStyle =
-    `FontSize=${captionStyle.fontSize},Alignment=${alignment},MarginV=${captionStyle.marginV},FontName=${fontName},` +
+    `FontSize=${fontSize},Alignment=${alignment},MarginV=${captionStyle.marginV},FontName=${fontName},` +
     `PrimaryColour=${primaryColor},OutlineColour=${outlineColor},Outline=${outlineWidth},Shadow=${shadow},Bold=${bold}`;
 
-  return `subtitles='${escapedSrtPath}':force_style='${forceStyle}'`;
+  return `subtitles='${escapedPath}':force_style='${forceStyle}'`;
 }
 
 function buildCropAndScaleFilter(
@@ -391,10 +501,11 @@ function buildMultiVideoArgs(params: {
   const filterSections = [
     `[0:v]split=${params.outputs.length}${splitOutputs}`,
     ...params.outputs.map((output, index) => {
+      const subtitlePath = output.subtitlePath ?? params.srtPath;
       const singleFilter = buildSingleVideoFilter(
         params.probe,
         output.aspectRatio,
-        params.srtPath,
+        subtitlePath,
         params.captionPreset,
       );
       return `[v${index}]${singleFilter}[outv${index}]`;
@@ -629,10 +740,14 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
       const captionPreset = clip.captionPreset
         ? captionPresetSchema.nullable().parse(clip.captionPreset)
         : null;
+      const hasCustomPosition =
+        captionPreset?.positionX !== undefined &&
+        captionPreset?.positionY !== undefined;
+
       const srtContent = generateSrtFromSlice(utterances, clip.startSec);
       let srtPath: string | null = null;
 
-      if (srtContent.length > 0) {
+      if (!hasCustomPosition && srtContent.length > 0) {
         srtPath = join(tempDir, `clip-${clip.id}.srt`);
         await writeFile(srtPath, srtContent, "utf-8");
       }
@@ -655,6 +770,26 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
         };
       });
 
+      // Generate per-aspect-ratio ASS files when custom position is set
+      if (hasCustomPosition && captionPreset && utterances.length > 0) {
+        for (const output of outputs) {
+          const assContent = generateAssFromSlice(
+            utterances,
+            clip.startSec,
+            output.aspectRatio,
+            captionPreset,
+          );
+          if (assContent.length > 0) {
+            const assPath = join(
+              tempDir,
+              `clip-${clip.id}-${output.aspectRatio.replace(":", "x")}.ass`,
+            );
+            await writeFile(assPath, assContent, "utf-8");
+            output.subtitlePath = assPath;
+          }
+        }
+      }
+
       await Promise.all(
         outputs.map((output) =>
           clipService.markClipRenderVariantRendering(output.clipRenderId),
@@ -671,7 +806,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
               endSec: clip.endSec,
               aspectRatio: output.aspectRatio,
               clipDurationSec,
-              srtPath,
+              srtPath: output.subtitlePath ?? srtPath,
               captionPreset,
             });
 
@@ -714,7 +849,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
                   endSec: clip.endSec,
                   aspectRatio: outputs[0]!.aspectRatio,
                   probe,
-                  srtPath,
+                  srtPath: outputs[0]!.subtitlePath ?? srtPath,
                   captionPreset,
                 })
               : buildMultiVideoArgs({
