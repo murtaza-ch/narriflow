@@ -7,8 +7,10 @@ import React, {
   useCallback,
   useEffect,
   useRef,
+  useMemo,
 } from "react";
 import { Box, Flex } from "@chakra-ui/react";
+import type { TranscriptUtterance } from "@narriflow/validators";
 import { TopBar } from "./top-bar";
 import { TranscriptPanel } from "./transcript-panel";
 import { VideoPreview } from "./video-preview";
@@ -40,8 +42,11 @@ export interface CaptionPreset {
   shadow: number;
   bold: boolean;
   position: "top" | "center" | "bottom";
-  highlightColor?: string;
-  animation?: CaptionAnimation;
+  highlightColor: string;
+  animation: CaptionAnimation;
+  fontSize: number;
+  positionX?: number;
+  positionY?: number;
 }
 
 export interface TranscriptItem {
@@ -86,6 +91,7 @@ interface StudioState {
   timelineZoom: number;
   selectedSegmentId: string | null;
   captionPreset: CaptionPreset;
+  captionSelected: boolean;
   transcriptOnly: boolean;
   credits: number;
   segments: TimelineSegment[];
@@ -99,6 +105,11 @@ interface StudioContextValue extends StudioState {
   transcript: TranscriptItem[];
   clipInfo: ClipInfo;
   videoRef: React.RefObject<HTMLVideoElement | null>;
+  sourceVideoUrl: string | null;
+  clipStartSec: number;
+  clipEndSec: number;
+  utterances: TranscriptUtterance[];
+  updateUtteranceText: (index: number, newText: string) => void;
   setCurrentTime: (t: number) => void;
   setIsPlaying: (v: boolean) => void;
   setActiveTool: (t: ToolId | null) => void;
@@ -110,6 +121,8 @@ interface StudioContextValue extends StudioState {
   setTimelineZoom: React.Dispatch<React.SetStateAction<number>>;
   setSelectedSegmentId: (id: string | null) => void;
   setCaptionPreset: (p: CaptionPreset | ((prev: CaptionPreset) => CaptionPreset)) => void;
+  selectCaption: () => void;
+  deselectCaption: () => void;
   setTranscriptOnly: (v: boolean) => void;
   setSegments: (s: TimelineSegment[]) => void;
   togglePlay: () => void;
@@ -133,18 +146,41 @@ export function useStudio() {
 
 interface StudioShellProps {
   clipInfo: ClipInfo;
-  transcript: TranscriptItem[];
+  transcript: TranscriptUtterance[];
   timelineSegments: TimelineSegment[];
   initialCaptionPreset: CaptionPreset;
+  sourceVideoUrl?: string | null;
+  clipStartSec?: number;
+  clipEndSec?: number;
 }
 
 export function StudioShell({
   clipInfo,
-  transcript,
+  transcript: initialUtterances,
   timelineSegments,
   initialCaptionPreset,
+  sourceVideoUrl = null,
+  clipStartSec = 0,
+  clipEndSec = 0,
 }: StudioShellProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+
+  // Mutable utterances state (for editable transcript)
+  const [utterances, setUtterances] = useState<TranscriptUtterance[]>(
+    Array.isArray(initialUtterances) ? initialUtterances : [],
+  );
+
+  // Derive TranscriptItem[] from utterances for existing TranscriptPanel
+  const derivedTranscript: TranscriptItem[] = useMemo(
+    () =>
+      utterances.map((u, i) => ({
+        id: `u-${u.index ?? i}`,
+        type: "speech" as const,
+        text: u.text,
+        timestamp: u.startSec - clipStartSec,
+      })),
+    [utterances, clipStartSec],
+  );
 
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -158,6 +194,7 @@ export function StudioShell({
   const [timelineZoom, setTimelineZoom] = useState(1);
   const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(null);
   const [captionPreset, setCaptionPreset] = useState<CaptionPreset>(initialCaptionPreset);
+  const [captionSelected, setCaptionSelected] = useState(false);
   const [transcriptOnly, setTranscriptOnly] = useState(false);
   const [credits] = useState(clipInfo.credits);
   const [segments, setSegments] = useState<TimelineSegment[]>(timelineSegments);
@@ -165,12 +202,45 @@ export function StudioShell({
   const [undoStack, setUndoStack] = useState<string[]>([]);
   const [redoStack, setRedoStack] = useState<string[]>([]);
 
+  // Update utterance text with proportional timing redistribution
+  const updateUtteranceText = useCallback((utteranceIndex: number, newText: string) => {
+    setUtterances((prev) => {
+      const updated = [...prev];
+      const utterance = updated[utteranceIndex];
+      if (!utterance) return prev;
+
+      const newWordTexts = newText.trim().split(/\s+/).filter(Boolean);
+      if (newWordTexts.length === 0) return prev;
+
+      const utteranceDuration = utterance.endSec - utterance.startSec;
+      const wordDuration = utteranceDuration / newWordTexts.length;
+
+      updated[utteranceIndex] = {
+        ...utterance,
+        text: newText.trim(),
+        words: newWordTexts.map((word, i) => ({
+          word,
+          startSec: utterance.startSec + i * wordDuration,
+          endSec: utterance.startSec + (i + 1) * wordDuration,
+          confidence: null,
+        })),
+      };
+
+      return updated;
+    });
+  }, []);
+
   const togglePlay = useCallback(() => {
     const video = videoRef.current;
-    if (!video) {
+    if (!video || !sourceVideoUrl) {
       // No video — just toggle state for UI demo
       setIsPlaying((v) => !v);
       return;
+    }
+    // If at end or before start, reset to clip start
+    if (video.currentTime >= clipEndSec || video.currentTime < clipStartSec) {
+      video.currentTime = clipStartSec;
+      setCurrentTime(0);
     }
     if (video.paused) {
       video.play().catch(() => {});
@@ -179,15 +249,15 @@ export function StudioShell({
       video.pause();
       setIsPlaying(false);
     }
-  }, []);
+  }, [sourceVideoUrl, clipStartSec, clipEndSec]);
 
   const seekTo = useCallback((t: number) => {
     const clamped = Math.max(0, Math.min(duration, t));
     setCurrentTime(clamped);
-    if (videoRef.current) {
-      videoRef.current.currentTime = clamped;
+    if (videoRef.current && sourceVideoUrl) {
+      videoRef.current.currentTime = clipStartSec + clamped;
     }
-  }, [duration]);
+  }, [duration, clipStartSec, sourceVideoUrl]);
 
   const splitAtPlayhead = useCallback(() => {
     const active = segments.find(
@@ -217,10 +287,23 @@ export function StudioShell({
 
   const handleSave = useCallback(async () => {
     setSaveState("saving");
-    await new Promise((r) => setTimeout(r, 800));
-    setSaveState("saved");
-    setTimeout(() => setSaveState("idle"), 2000);
-  }, []);
+    try {
+      await fetch(`/api/projects/${clipInfo.projectId}/clips/${clipInfo.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ captionPreset }),
+      });
+      await fetch(`/api/projects/${clipInfo.projectId}/clips/${clipInfo.id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ transcriptSlice: utterances }),
+      });
+      setSaveState("saved");
+      setTimeout(() => setSaveState("idle"), 2000);
+    } catch {
+      setSaveState("idle");
+    }
+  }, [clipInfo.projectId, clipInfo.id, captionPreset, utterances]);
 
   const handleUndo = useCallback(() => {
     if (undoStack.length === 0) return;
@@ -238,11 +321,26 @@ export function StudioShell({
     setSegments(JSON.parse(next) as TimelineSegment[]);
   }, [redoStack, segments]);
 
+  const selectCaption = useCallback(() => {
+    setCaptionSelected(true);
+    setActiveTool("captions");
+  }, []);
+
+  const deselectCaption = useCallback(() => {
+    setCaptionSelected(false);
+    setActiveTool((prev) => (prev === "captions" ? null : prev));
+  }, []);
+
   // Keyboard shortcuts
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       const tag = (e.target as HTMLElement)?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if (
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT" ||
+        (e.target as HTMLElement)?.isContentEditable
+      ) return;
 
       switch (e.key) {
         case " ":
@@ -301,17 +399,37 @@ export function StudioShell({
           else if (e.ctrlKey || e.metaKey) { e.preventDefault(); handleUndo(); }
           break;
         case "Escape":
+          if (captionSelected) { deselectCaption(); break; }
           setShowShortcuts(false);
           break;
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [togglePlay, seekTo, currentTime, duration, splitAtPlayhead, deleteSelectedSegment, handleUndo, handleRedo]);
+  }, [togglePlay, seekTo, currentTime, duration, splitAtPlayhead, deleteSelectedSegment, handleUndo, handleRedo, captionSelected, deselectCaption]);
 
-  // Simulate time advancing when playing (no real video)
+  // Sync currentTime from video element (real playback)
   useEffect(() => {
-    if (!isPlaying) return;
+    const video = videoRef.current;
+    if (!video || !sourceVideoUrl) return;
+
+    const handleTimeUpdate = () => {
+      const clipRelativeTime = video.currentTime - clipStartSec;
+      setCurrentTime(Math.max(0, clipRelativeTime));
+
+      if (video.currentTime >= clipEndSec) {
+        video.pause();
+        setIsPlaying(false);
+      }
+    };
+
+    video.addEventListener("timeupdate", handleTimeUpdate);
+    return () => video.removeEventListener("timeupdate", handleTimeUpdate);
+  }, [sourceVideoUrl, clipStartSec, clipEndSec]);
+
+  // Simulated time advancing when playing (fallback: no real video)
+  useEffect(() => {
+    if (!isPlaying || sourceVideoUrl) return;
     const interval = setInterval(() => {
       setCurrentTime((t) => {
         if (t >= duration) {
@@ -322,16 +440,50 @@ export function StudioShell({
       });
     }, 100);
     return () => clearInterval(interval);
-  }, [isPlaying, duration]);
+  }, [isPlaying, duration, sourceVideoUrl]);
+
+  // Debounced auto-save for transcript and caption preset changes
+  const isInitialRender = useRef(true);
+  useEffect(() => {
+    if (isInitialRender.current) {
+      isInitialRender.current = false;
+      return;
+    }
+
+    const timeoutId = setTimeout(async () => {
+      setSaveState("saving");
+      try {
+        await fetch(`/api/projects/${clipInfo.projectId}/clips/${clipInfo.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ captionPreset }),
+        });
+        await fetch(`/api/projects/${clipInfo.projectId}/clips/${clipInfo.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ transcriptSlice: utterances }),
+        });
+        setSaveState("saved");
+        setTimeout(() => setSaveState("idle"), 2000);
+      } catch {
+        setSaveState("idle");
+      }
+    }, 1500);
+
+    return () => clearTimeout(timeoutId);
+  }, [utterances, captionPreset, clipInfo.projectId, clipInfo.id]);
 
   const ctx: StudioContextValue = {
     isPlaying, currentTime, duration, activeTool, showTimeline, aspectRatio,
     layoutMode, trackerEnabled, showShortcuts, timelineZoom, selectedSegmentId,
-    captionPreset, transcriptOnly, credits, segments, saveState, undoStack, redoStack,
-    transcript, clipInfo, videoRef,
+    captionPreset, captionSelected, transcriptOnly, credits, segments, saveState, undoStack, redoStack,
+    transcript: derivedTranscript, clipInfo, videoRef,
+    sourceVideoUrl, clipStartSec, clipEndSec,
+    utterances, updateUtteranceText,
     setCurrentTime, setIsPlaying, setActiveTool, setShowTimeline, setAspectRatio,
     setLayoutMode, setTrackerEnabled, setShowShortcuts, setTimelineZoom,
-    setSelectedSegmentId, setCaptionPreset, setTranscriptOnly, setSegments,
+    setSelectedSegmentId, setCaptionPreset, selectCaption, deselectCaption,
+    setTranscriptOnly, setSegments,
     togglePlay, seekTo, splitAtPlayhead, deleteSelectedSegment, handleSave,
     handleUndo, handleRedo,
   };

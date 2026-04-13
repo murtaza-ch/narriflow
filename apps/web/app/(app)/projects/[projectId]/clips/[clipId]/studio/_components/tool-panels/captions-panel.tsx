@@ -296,24 +296,82 @@ export function CaptionsPanel() {
           </Flex>
         </Box>
 
+        {/* Font size */}
+        <Box>
+          <SectionLabel>Font size</SectionLabel>
+          <Flex align="center" gap="10px">
+            <Slider.Root
+              value={[captionPreset.fontSize]}
+              min={8}
+              max={120}
+              step={1}
+              onValueChange={(e) => update({ fontSize: e.value[0]! })}
+              size="sm"
+              colorPalette="purple"
+              flex="1"
+            >
+              <Slider.Control>
+                <Slider.Track>
+                  <Slider.Range />
+                </Slider.Track>
+                <Slider.Thumbs />
+              </Slider.Control>
+            </Slider.Root>
+            <Text fontSize="12px" color="#888" fontFamily="mono" w="28px">
+              {captionPreset.fontSize}
+            </Text>
+          </Flex>
+        </Box>
+
         {/* Position */}
         <Box>
           <SectionLabel>Position</SectionLabel>
           <Flex gap="6px">
-            {(["top", "center", "bottom"] as Position[]).map((pos) => (
-              <ToggleBtn
-                key={pos}
-                icon={
-                  pos === "top" ? <MoveUp size={14} /> :
-                  pos === "center" ? <AlignCenter size={14} /> :
-                  <MoveDown size={14} />
-                }
-                label={pos.charAt(0).toUpperCase() + pos.slice(1)}
-                active={captionPreset.position === pos}
-                onClick={() => update({ position: pos })}
-              />
-            ))}
+            {(["top", "center", "bottom"] as Position[]).map((pos) => {
+              const presetYMap = { top: 10, center: 50, bottom: 88 };
+              const py = captionPreset.positionY ?? presetYMap[captionPreset.position];
+              const px = captionPreset.positionX ?? 50;
+              const isActive = Math.abs(px - 50) < 5 && Math.abs(py - presetYMap[pos]) < 5;
+
+              return (
+                <ToggleBtn
+                  key={pos}
+                  icon={
+                    pos === "top" ? <MoveUp size={14} /> :
+                    pos === "center" ? <AlignCenter size={14} /> :
+                    <MoveDown size={14} />
+                  }
+                  label={pos.charAt(0).toUpperCase() + pos.slice(1)}
+                  active={isActive}
+                  onClick={() => update({
+                    position: pos,
+                    positionX: 50,
+                    positionY: presetYMap[pos],
+                  })}
+                />
+              );
+            })}
           </Flex>
+          {captionPreset.positionX !== undefined && (
+            <Flex gap="8px" mt="6px" align="center">
+              <Text fontSize="10px" color="#555">
+                X: {captionPreset.positionX.toFixed(1)}%
+              </Text>
+              <Text fontSize="10px" color="#555">
+                Y: {captionPreset.positionY?.toFixed(1)}%
+              </Text>
+              <Box
+                as="button"
+                fontSize="10px"
+                color="#6366F1"
+                cursor="pointer"
+                _hover={{ textDecoration: "underline" }}
+                onClick={() => update({ positionX: undefined, positionY: undefined })}
+              >
+                Reset
+              </Box>
+            </Flex>
+          )}
         </Box>
 
         {/* Animation */}

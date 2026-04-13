@@ -584,7 +584,7 @@ export function ClipCard({
           <Button
             size="xs"
             variant="outline"
-            onClick={() => router.push(`/projects/${clip.projectId}/clips/${clip.id}/edit`)}
+            onClick={() => router.push(`/projects/${clip.projectId}/clips/${clip.id}/studio`)}
           >
             <Pencil size={12} />
             <Text ml="4px">Edit</Text>

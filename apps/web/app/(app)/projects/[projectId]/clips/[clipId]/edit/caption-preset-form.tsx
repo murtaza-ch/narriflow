@@ -17,7 +17,7 @@ const FONT_OPTIONS = [
   "Bebas Neue",
 ];
 
-const DEFAULT_PRESET: Required<CaptionPreset> = {
+const DEFAULT_PRESET: CaptionPreset = {
   fontName: "Arial",
   primaryColor: "#FFFFFF",
   outlineColor: "#000000",
@@ -25,6 +25,9 @@ const DEFAULT_PRESET: Required<CaptionPreset> = {
   shadow: 1,
   bold: true,
   position: "bottom",
+  highlightColor: "#00FF88",
+  animation: "word-by-word",
+  fontSize: 36,
 };
 
 function ColorSwatch({ color }: { color: string }) {
@@ -74,8 +77,14 @@ export function CaptionPresetForm({
   const [bold, setBold] = useState(
     initialPreset?.bold ?? DEFAULT_PRESET.bold,
   );
-  const [position, setPosition] = useState<"bottom" | "top">(
+  const [position, setPosition] = useState<"bottom" | "top" | "center">(
     initialPreset?.position ?? DEFAULT_PRESET.position,
+  );
+  const [highlightColor, setHighlightColor] = useState(
+    initialPreset?.highlightColor ?? DEFAULT_PRESET.highlightColor,
+  );
+  const [animation, setAnimation] = useState(
+    initialPreset?.animation ?? DEFAULT_PRESET.animation,
   );
 
   async function handleSave() {
@@ -91,6 +100,9 @@ export function CaptionPresetForm({
       shadow,
       bold,
       position,
+      highlightColor,
+      animation,
+      fontSize: initialPreset?.fontSize ?? DEFAULT_PRESET.fontSize,
     };
 
     try {
@@ -128,6 +140,8 @@ export function CaptionPresetForm({
     setShadow(DEFAULT_PRESET.shadow);
     setBold(DEFAULT_PRESET.bold);
     setPosition(DEFAULT_PRESET.position);
+    setHighlightColor(DEFAULT_PRESET.highlightColor);
+    setAnimation(DEFAULT_PRESET.animation);
     setSaved(false);
   }
 
@@ -267,14 +281,57 @@ export function CaptionPresetForm({
           </Text>
           <select
             value={position}
-            onChange={(e) => setPosition(e.target.value as "bottom" | "top")}
+            onChange={(e) => setPosition(e.target.value as "bottom" | "top" | "center")}
             style={{ ...inputStyle, maxWidth: "160px" }}
           >
             <option value="bottom">Bottom</option>
+            <option value="center">Center</option>
             <option value="top">Top</option>
           </select>
         </Box>
       </Flex>
+
+      {/* Highlight color */}
+      <Box>
+        <Text fontSize="12px" fontWeight="500" color="fg.muted" mb="6px">
+          Highlight color
+        </Text>
+        <HStack gap="8px">
+          <ColorSwatch color={highlightColor} />
+          <input
+            type="color"
+            value={highlightColor}
+            onChange={(e) => setHighlightColor(e.target.value)}
+            style={{ width: "40px", height: "28px", cursor: "pointer", borderRadius: "4px" }}
+          />
+          <input
+            type="text"
+            value={highlightColor}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (/^#[0-9A-Fa-f]{0,6}$/.test(v)) setHighlightColor(v);
+            }}
+            style={{ ...inputStyle, maxWidth: "100px", fontFamily: "monospace" }}
+          />
+        </HStack>
+      </Box>
+
+      {/* Animation */}
+      <Box>
+        <Text fontSize="12px" fontWeight="500" color="fg.muted" mb="6px">
+          Caption animation
+        </Text>
+        <select
+          value={animation}
+          onChange={(e) => setAnimation(e.target.value as CaptionPreset["animation"])}
+          style={{ ...inputStyle, maxWidth: "200px" }}
+        >
+          <option value="none">None</option>
+          <option value="word-by-word">Word by word</option>
+          <option value="karaoke">Karaoke</option>
+          <option value="bounce">Bounce</option>
+        </select>
+      </Box>
 
       {/* Preview hint */}
       <Box

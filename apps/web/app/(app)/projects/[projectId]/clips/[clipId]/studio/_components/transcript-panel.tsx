@@ -1,174 +1,246 @@
 "use client";
 
-import { useRef, useEffect, useCallback, useState } from "react";
-import { Box, Flex, Text, Stack, Checkbox } from "@chakra-ui/react";
-import { Plus, Trash2, GripVertical } from "lucide-react";
+import { useRef, useEffect, useCallback, useState, useMemo } from "react";
+import { Box, Flex, Text, Checkbox } from "@chakra-ui/react";
+import { Plus } from "lucide-react";
+import type { TranscriptUtterance, TranscriptWord } from "@narriflow/validators";
 import { useStudio } from "./studio-shell";
-import type { TranscriptItem } from "./studio-shell";
 
-const HIGHLIGHT_COLORS: Record<string, string> = {
-  green: "#4ade80",
-  amber: "#fbbf24",
-  orange: "#fb923c",
-};
+// ─── Pause threshold (seconds) ──────────────────────────────────────────────
 
-function WordSpan({
-  word,
-  highlight,
-  isActive,
-  onClick,
-}: {
-  word: string;
-  highlight?: { color: string } | undefined;
-  isActive: boolean;
-  onClick: () => void;
-}) {
-  const color = highlight ? HIGHLIGHT_COLORS[highlight.color] ?? "#e5e5e5" : "#d4d4d4";
+const PAUSE_THRESHOLD = 0.4;
+
+// ─── Build words with pause indicators ──────────────────────────────────────
+
+interface DisplayToken {
+  type: "word" | "pause";
+  word: TranscriptWord;
+  pauseDuration?: number;
+}
+
+function buildDisplayTokens(words: TranscriptWord[]): DisplayToken[] {
+  const tokens: DisplayToken[] = [];
+  for (let i = 0; i < words.length; i++) {
+    tokens.push({ type: "word", word: words[i]! });
+
+    if (i < words.length - 1) {
+      const gap = words[i + 1]!.startSec - words[i]!.endSec;
+      if (gap >= PAUSE_THRESHOLD) {
+        tokens.push({
+          type: "pause",
+          word: words[i]!,
+          pauseDuration: gap,
+        });
+      }
+    }
+  }
+  return tokens;
+}
+
+// ─── Pause indicator ────────────────────────────────────────────────────────
+
+function PauseIndicator({ duration }: { duration: number }) {
+  const label = `${duration.toFixed(1)}s`;
   return (
     <Box
       as="span"
-      display="inline"
-      color={color}
-      onClick={onClick}
-      cursor="pointer"
-      borderRadius="2px"
-      transition="all 100ms"
-      bg={isActive ? "rgba(99,102,241,0.2)" : "transparent"}
-      borderBottomWidth={isActive ? "2px" : "0"}
-      borderColor="#6366F1"
-      _hover={{ bg: "rgba(255,255,255,0.06)" }}
-      userSelect="none"
+      display="inline-flex"
+      alignItems="center"
+      gap="3px"
+      mx="4px"
+      px="6px"
+      py="1px"
+      borderRadius="4px"
+      bg="rgba(255,255,255,0.06)"
+      verticalAlign="middle"
+      title={`${label} pause`}
+      cursor="default"
     >
-      {word}
+      <Box
+        as="span"
+        display="inline-flex"
+        gap="2px"
+        alignItems="center"
+      >
+        {[0, 1, 2].map((d) => (
+          <Box
+            key={d}
+            w="4px"
+            h="4px"
+            borderRadius="full"
+            bg="#555"
+          />
+        ))}
+      </Box>
     </Box>
   );
 }
 
-function SpeechBlock({
-  item,
-  currentTime,
-  onSeek,
-}: {
-  item: TranscriptItem;
-  currentTime: number;
-  onSeek: (t: number) => void;
-}) {
-  const words = (item.text ?? "").split(" ");
-  const isBlockActive = currentTime >= (item.timestamp ?? 0);
+// ─── Editable Utterance ─────────────────────────────────────────────────────
 
+function EditableUtterance({
+  utterance,
+  utteranceIndex,
+  isActive,
+  onSeek,
+  absoluteTime,
+}: {
+  utterance: TranscriptUtterance;
+  utteranceIndex: number;
+  isActive: boolean;
+  onSeek: (clipRelativeTime: number) => void;
+  absoluteTime: number;
+}) {
+  const { updateUtteranceText, clipStartSec, captionPreset } = useStudio();
+  const blockRef = useRef<HTMLDivElement>(null);
+  const [isEditing, setIsEditing] = useState(false);
+
+  const handleBlur = useCallback(() => {
+    setIsEditing(false);
+    const text = blockRef.current?.innerText?.trim();
+    if (text && text !== utterance.text) {
+      updateUtteranceText(utteranceIndex, text);
+    }
+  }, [utteranceIndex, utterance.text, updateUtteranceText]);
+
+  const handleFocus = useCallback(() => {
+    setIsEditing(true);
+  }, []);
+
+  // Build words (with fallback for utterances without word-level timing)
+  const words: TranscriptWord[] = useMemo(() => {
+    if (utterance.words.length > 0) return utterance.words;
+    const textWords = utterance.text.split(/\s+/).filter(Boolean);
+    const count = textWords.length;
+    const dur = (utterance.endSec - utterance.startSec) / count;
+    return textWords.map((w, i) => ({
+      word: w,
+      startSec: utterance.startSec + i * dur,
+      endSec: utterance.startSec + (i + 1) * dur,
+      confidence: null,
+    }));
+  }, [utterance]);
+
+  // Build display tokens with pause indicators
+  const tokens = useMemo(() => buildDisplayTokens(words), [words]);
+
+  // Find the active word index
+  const activeWordIndex = useMemo(() => {
+    if (!isActive) return -1;
+    return words.findIndex(
+      (w) => absoluteTime >= w.startSec && absoluteTime < w.endSec,
+    );
+  }, [isActive, absoluteTime, words]);
+
+  const highlightColor = captionPreset.highlightColor;
+
+  // When not editing, render clickable word spans with highlights
+  if (!isEditing) {
+    return (
+      <Box
+        ref={blockRef}
+        px="16px"
+        py="8px"
+        lineHeight="1.75"
+        fontSize="13.5px"
+        borderRadius="4px"
+        bg={isActive ? "rgba(99,102,241,0.08)" : "transparent"}
+        _hover={{ bg: "rgba(255,255,255,0.04)" }}
+        transition="background 150ms"
+        contentEditable
+        suppressContentEditableWarning
+        onFocus={handleFocus}
+        onBlur={handleBlur}
+        outline="none"
+        cursor="text"
+      >
+        {tokens.map((token, i) => {
+          if (token.type === "pause") {
+            return (
+              <PauseIndicator
+                key={`pause-${i}`}
+                duration={token.pauseDuration!}
+              />
+            );
+          }
+
+          const wordIdx = words.indexOf(token.word);
+          const isActiveWord = wordIdx === activeWordIndex;
+
+          return (
+            <Box as="span" key={i} display="inline">
+              <Box
+                as="span"
+                display="inline"
+                color={isActiveWord ? highlightColor : "#d4d4d4"}
+                fontWeight="inherit"
+                cursor="pointer"
+                borderRadius="2px"
+                transition="color 80ms ease-out"
+                _hover={{ bg: "rgba(255,255,255,0.06)" }}
+                onClick={(e: React.MouseEvent) => {
+                  e.preventDefault();
+                  onSeek(token.word.startSec - clipStartSec);
+                }}
+              >
+                {token.word.word}
+              </Box>
+              {i < tokens.length - 1 && tokens[i + 1]?.type !== "pause"
+                ? " "
+                : tokens[i + 1]?.type === "pause"
+                  ? ""
+                  : ""}
+            </Box>
+          );
+        })}
+      </Box>
+    );
+  }
+
+  // Editing mode — plain contentEditable text
   return (
     <Box
+      ref={blockRef}
+      contentEditable
+      suppressContentEditableWarning
+      onBlur={handleBlur}
+      onFocus={handleFocus}
+      outline="none"
+      cursor="text"
       px="16px"
       py="8px"
       lineHeight="1.75"
       fontSize="13.5px"
+      borderRadius="4px"
+      bg="rgba(99,102,241,0.12)"
+      boxShadow="0 0 0 1px rgba(99,102,241,0.3)"
+      color="#e0e0e0"
+      transition="background 150ms"
     >
-      {words.map((word, i) => {
-        const cleanWord = word.replace(/[^a-zA-Z0-9]/g, "").toLowerCase();
-        const highlight = item.highlights?.find(
-          (h) => h.word.toLowerCase() === cleanWord,
-        );
-        return (
-          <Box as="span" key={i} display="inline">
-            <WordSpan
-              word={word}
-              highlight={highlight}
-              isActive={isBlockActive && i === Math.floor(words.length / 2)}
-              onClick={() => onSeek(item.timestamp ?? 0)}
-            />
-            {i < words.length - 1 ? " " : ""}
-          </Box>
-        );
-      })}
+      {utterance.text}
     </Box>
   );
 }
 
-function BRollCard({
-  item,
-  onRemove,
-}: {
-  item: TranscriptItem;
-  onRemove: (id: string) => void;
-}) {
-  const [hovered, setHovered] = useState(false);
-
-  return (
-    <Box
-      mx="16px"
-      my="6px"
-      px="12px"
-      py="10px"
-      bg="#1a1a1a"
-      borderWidth="1px"
-      borderColor="#2a2a2a"
-      borderRadius="8px"
-      position="relative"
-      onMouseEnter={() => setHovered(true)}
-      onMouseLeave={() => setHovered(false)}
-      transition="border-color 150ms"
-      _hover={{ borderColor: "#3a3a3a" }}
-    >
-      <Flex align="flex-start" gap="10px">
-        <GripVertical size={14} color="#444" style={{ marginTop: "2px", flexShrink: 0, cursor: "grab" }} />
-        <Box flex="1">
-          <Text
-            fontSize="11px"
-            fontFamily="mono"
-            color="#6366F1"
-            fontWeight="600"
-            mb="3px"
-          >
-            {item.timestamp}s:
-          </Text>
-          <Text fontSize="12.5px" color="#888" lineHeight="1.5">
-            {item.description}
-          </Text>
-        </Box>
-        {hovered && (
-          <Box
-            as="button"
-            onClick={() => onRemove(item.id)}
-            p="4px"
-            borderRadius="4px"
-            color="#555"
-            cursor="pointer"
-            flexShrink={0}
-            bg="transparent"
-            border="none"
-            _hover={{ color: "#ef4444", bg: "rgba(239,68,68,0.1)" }}
-            transition="all 150ms"
-          >
-            <Trash2 size={13} />
-          </Box>
-        )}
-      </Flex>
-    </Box>
-  );
-}
+// ─── Main Panel ─────────────────────────────────────────────────────────────
 
 export function TranscriptPanel() {
   const {
-    transcript,
+    utterances,
     transcriptOnly,
     setTranscriptOnly,
     currentTime,
     seekTo,
+    clipStartSec,
   } = useStudio();
 
-  const [localTranscript, setLocalTranscript] = useState<TranscriptItem[]>(transcript);
   const scrollRef = useRef<HTMLDivElement>(null);
   const manualScrollRef = useRef(false);
   const manualScrollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const handleRemoveBRoll = useCallback((id: string) => {
-    setLocalTranscript((prev) => prev.filter((item) => item.id !== id));
-  }, []);
-
   // Auto-scroll to follow current time
   useEffect(() => {
     if (manualScrollRef.current) return;
-    // find the active speech block and scroll to it
     const container = scrollRef.current;
     if (!container) return;
     const blocks = container.querySelectorAll("[data-timestamp]");
@@ -190,9 +262,20 @@ export function TranscriptPanel() {
     }, 3000);
   }, []);
 
-  const visibleItems = transcriptOnly
-    ? localTranscript.filter((i) => i.type === "speech")
-    : localTranscript;
+  // Determine active utterance
+  const absoluteTime = currentTime + clipStartSec;
+
+  // Detect pauses between utterances
+  const utterancePauses = useMemo(() => {
+    const pauses: Map<number, number> = new Map();
+    for (let i = 0; i < utterances.length - 1; i++) {
+      const gap = utterances[i + 1]!.startSec - utterances[i]!.endSec;
+      if (gap >= PAUSE_THRESHOLD) {
+        pauses.set(i, gap);
+      }
+    }
+    return pauses;
+  }, [utterances]);
 
   return (
     <Box
@@ -269,19 +352,58 @@ export function TranscriptPanel() {
           "&::-webkit-scrollbar-thumb": { background: "#2a2a2a", borderRadius: "4px" },
         }}
       >
-        {visibleItems.map((item) => (
-          <Box key={item.id} data-timestamp={item.timestamp}>
-            {item.type === "speech" ? (
-              <SpeechBlock
-                item={item}
-                currentTime={currentTime}
+        {utterances.map((utterance, i) => {
+          const isActive =
+            absoluteTime >= utterance.startSec &&
+            absoluteTime < utterance.endSec;
+          const clipRelativeTimestamp = utterance.startSec - clipStartSec;
+          const pauseAfter = utterancePauses.get(i);
+
+          return (
+            <Box key={`u-${utterance.index ?? i}`} data-timestamp={clipRelativeTimestamp}>
+              {/* Speaker label */}
+              <Text
+                fontSize="11px"
+                fontWeight="600"
+                color="#6366F1"
+                px="16px"
+                pt={i === 0 ? "4px" : "12px"}
+                pb="2px"
+              >
+                {utterance.speakerLabel}
+              </Text>
+
+              <EditableUtterance
+                utterance={utterance}
+                utteranceIndex={i}
+                isActive={isActive}
                 onSeek={seekTo}
+                absoluteTime={absoluteTime}
               />
-            ) : (
-              <BRollCard item={item} onRemove={handleRemoveBRoll} />
-            )}
-          </Box>
-        ))}
+
+              {/* Pause between utterances */}
+              {pauseAfter !== undefined && (
+                <Flex
+                  px="16px"
+                  py="4px"
+                  align="center"
+                  gap="6px"
+                >
+                  <Box flex="1" h="1px" bg="#1e1e1e" />
+                  <Flex align="center" gap="3px" px="6px" py="2px" borderRadius="4px" bg="rgba(255,255,255,0.03)">
+                    {[0, 1, 2].map((d) => (
+                      <Box key={d} w="4px" h="4px" borderRadius="full" bg="#444" />
+                    ))}
+                    <Text fontSize="10px" color="#444" ml="2px">
+                      {pauseAfter.toFixed(1)}s
+                    </Text>
+                  </Flex>
+                  <Box flex="1" h="1px" bg="#1e1e1e" />
+                </Flex>
+              )}
+            </Box>
+          );
+        })}
 
         {/* Bottom padding */}
         <Box h="32px" />
