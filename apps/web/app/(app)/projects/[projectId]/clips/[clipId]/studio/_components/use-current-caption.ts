@@ -14,12 +14,15 @@ export interface CaptionState {
   activeWordIndex: number;
 }
 
-const WINDOW_SIZE = 3;
+const CHUNK_SIZE = 3;
 
 /**
  * Given the current playback time and transcript utterances,
  * determines which utterance and word is currently active,
- * returning a sliding window of visible words with the active one flagged.
+ * returning the fixed-size chunk that contains the active word with that
+ * word flagged. Chunks are aligned to word index multiples of CHUNK_SIZE,
+ * so the visible group only changes when the active word crosses a chunk
+ * boundary — no sliding-window shift.
  *
  * @param currentTime - Clip-relative time (0 to duration)
  * @param utterances - TranscriptUtterance[] with words[]
@@ -64,21 +67,14 @@ export function useCurrentCaption(
         }
       }
 
-      // Compute sliding window centered on active word
-      const halfWindow = Math.floor(WINDOW_SIZE / 2);
-      let windowStart = Math.max(0, activeWordIdx - halfWindow);
-      const windowEnd = Math.min(words.length, windowStart + WINDOW_SIZE);
-
-      // Adjust start if at end boundary
-      if (windowEnd - windowStart < WINDOW_SIZE && windowEnd === words.length) {
-        windowStart = Math.max(0, windowEnd - WINDOW_SIZE);
-      }
+      const chunkStart = Math.floor(activeWordIdx / CHUNK_SIZE) * CHUNK_SIZE;
+      const chunkEnd = Math.min(words.length, chunkStart + CHUNK_SIZE);
 
       const visibleWords: CaptionWord[] = words
-        .slice(windowStart, windowEnd)
+        .slice(chunkStart, chunkEnd)
         .map((w, i) => ({
           word: w.word,
-          isActive: windowStart + i === activeWordIdx,
+          isActive: chunkStart + i === activeWordIdx,
         }));
 
       return { visibleWords, utteranceIndex: utteranceIdx, activeWordIndex: activeWordIdx };
@@ -95,19 +91,14 @@ export function useCurrentCaption(
       Math.floor(progress * textWords.length),
     );
 
-    const halfWindow = Math.floor(WINDOW_SIZE / 2);
-    let windowStart = Math.max(0, estimatedActiveIdx - halfWindow);
-    const windowEnd = Math.min(textWords.length, windowStart + WINDOW_SIZE);
-
-    if (windowEnd - windowStart < WINDOW_SIZE && windowEnd === textWords.length) {
-      windowStart = Math.max(0, windowEnd - WINDOW_SIZE);
-    }
+    const chunkStart = Math.floor(estimatedActiveIdx / CHUNK_SIZE) * CHUNK_SIZE;
+    const chunkEnd = Math.min(textWords.length, chunkStart + CHUNK_SIZE);
 
     const visibleWords: CaptionWord[] = textWords
-      .slice(windowStart, windowEnd)
+      .slice(chunkStart, chunkEnd)
       .map((w, i) => ({
         word: w,
-        isActive: windowStart + i === estimatedActiveIdx,
+        isActive: chunkStart + i === estimatedActiveIdx,
       }));
 
     return { visibleWords, utteranceIndex: utteranceIdx, activeWordIndex: estimatedActiveIdx };
