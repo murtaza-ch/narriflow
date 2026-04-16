@@ -130,6 +130,73 @@ function CaptionResizeHandles({
   );
 }
 
+// ─── Animation Props Factory ─────────────────────────────────────────────────
+
+function getWordMotionProps(
+  animation: string,
+  isActive: boolean,
+  index: number,
+): Record<string, unknown> {
+  const stagger = index * 0.08;
+
+  switch (animation) {
+    case "blur-in":
+      return {
+        initial: { filter: "blur(10px)", opacity: 0 },
+        animate: { filter: "blur(0px)", opacity: 1 },
+        transition: { duration: 0.4, ease: "easeOut", delay: stagger },
+      };
+    case "grow":
+      return {
+        initial: { scale: 0.2, opacity: 0 },
+        animate: { scale: 1, opacity: 1 },
+        transition: { type: "spring", stiffness: 260, damping: 20, delay: stagger },
+      };
+    case "breathe":
+      return isActive
+        ? {
+            animate: { scale: [1, 1.08, 1] },
+            transition: { repeat: Infinity, duration: 1.2, ease: "easeInOut" },
+          }
+        : {};
+    case "soft-landing":
+      return {
+        initial: { y: -20, opacity: 0 },
+        animate: { y: 0, opacity: 1 },
+        transition: { duration: 0.5, ease: [0.22, 1, 0.36, 1], delay: stagger },
+      };
+    case "glitch":
+      return {
+        initial: { opacity: 0 },
+        animate: { opacity: 1, x: [0, -3, 4, -2, 0], skewX: [0, -5, 3, -1, 0] },
+        transition: { duration: 0.35, delay: stagger },
+      };
+    case "seamless-bounce":
+      return {
+        initial: { y: 12, opacity: 0, scale: 0.95 },
+        animate: { y: 0, opacity: 1, scale: 1 },
+        transition: { type: "spring", stiffness: 300, damping: 15, delay: stagger },
+      };
+    case "bounce":
+      return {
+        initial: { y: 10, opacity: 0 },
+        animate: { y: 0, opacity: 1 },
+        transition: { type: "spring", stiffness: 400, damping: 10, delay: stagger },
+      };
+    default:
+      return {};
+  }
+}
+
+// ─── Hex to RGBA helper ─────────────────────────────────────────────────────
+
+function hexToRgba(hex: string, opacity: number): string {
+  const r = parseInt(hex.slice(1, 3), 16);
+  const g = parseInt(hex.slice(3, 5), 16);
+  const b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${r},${g},${b},${opacity})`;
+}
+
 // ─── Caption Text Content ────────────────────────────────────────────────────
 
 function CaptionTextContent({
@@ -144,7 +211,10 @@ function CaptionTextContent({
 
   const preset = captionPreset;
   const highlight = preset.highlightColor;
+  const textTransform = (preset.textTransform ?? "uppercase") as React.CSSProperties["textTransform"];
+  const letterSpacing = `${preset.letterSpacing ?? 0.04}em`;
 
+  // Build text-shadow
   const outlineWidth = preset.outlineWidth;
   const outlineColor = preset.outlineColor;
   const shadowParts: string[] = [];
@@ -162,29 +232,96 @@ function CaptionTextContent({
     shadowParts.push("0 2px 8px rgba(0,0,0,0.9)");
   }
 
+  // Glow effect
+  if (preset.glowColor) {
+    const intensity = preset.glowIntensity ?? 8;
+    shadowParts.push(`0 0 ${intensity}px ${preset.glowColor}`);
+    shadowParts.push(`0 0 ${intensity * 2}px ${preset.glowColor}40`);
+  }
+
+  const textShadow = shadowParts.length > 0 ? shadowParts.join(", ") : undefined;
+
+  // Check for backdrop / highlight box
+  const hasBackdrop = !!preset.backgroundColor;
+  const hasHighlightBox = !!preset.highlightBoxColor;
+
   return (
-    <Flex gap="6px" align="center" flexWrap="wrap" justify="center">
-      {caption.visibleWords.map((item, i) => (
-        <Text
-          key={`${caption.utteranceIndex}-${i}`}
-          fontSize={`${displayFontSize}px`}
-          fontWeight={preset.bold ? "900" : "600"}
-          letterSpacing="0.04em"
-          color={item.isActive ? highlight : preset.primaryColor}
+    <Box position="relative">
+      {/* Backdrop behind all text */}
+      {hasBackdrop && (
+        <Box
+          position="absolute"
+          inset="-6px -10px"
+          borderRadius="6px"
+          pointerEvents="none"
           style={{
-            fontFamily: `"${preset.fontName}", Impact, sans-serif`,
-            textShadow:
-              shadowParts.length > 0 ? shadowParts.join(", ") : undefined,
-            transition: "color 80ms ease-out",
-            textTransform: "uppercase",
-            pointerEvents: "none",
-            userSelect: "none",
+            backgroundColor: hexToRgba(
+              preset.backgroundColor!,
+              preset.backgroundOpacity ?? 0.6,
+            ),
           }}
-        >
-          {item.word}
-        </Text>
-      ))}
-    </Flex>
+        />
+      )}
+
+      <Flex
+        gap="6px"
+        align="center"
+        flexWrap="nowrap"
+        justify="center"
+        position="relative"
+        zIndex={1}
+      >
+        {caption.visibleWords.map((item, i) => {
+          const motionProps = getWordMotionProps(preset.animation, item.isActive, i);
+          const showBox = hasHighlightBox && item.isActive;
+
+          return (
+            <Box
+              key={`${caption.utteranceIndex}-${i}`}
+              position="relative"
+              display="inline-flex"
+            >
+              {/* Highlight box behind active word */}
+              {showBox && (
+                <Box
+                  position="absolute"
+                  inset="-2px -4px"
+                  borderRadius="4px"
+                  pointerEvents="none"
+                  style={{
+                    backgroundColor: hexToRgba(
+                      preset.highlightBoxColor!,
+                      preset.highlightBoxOpacity ?? 1,
+                    ),
+                  }}
+                />
+              )}
+
+              <motion.span
+                {...motionProps}
+                style={{
+                  position: "relative",
+                  zIndex: 1,
+                  fontSize: `${displayFontSize}px`,
+                  fontWeight: preset.bold ? "900" : "600",
+                  letterSpacing,
+                  color: item.isActive ? highlight : preset.primaryColor,
+                  fontFamily: `"${preset.fontName}", Impact, sans-serif`,
+                  textShadow,
+                  transition: "color 80ms ease-out",
+                  textTransform,
+                  pointerEvents: "none",
+                  userSelect: "none",
+                  display: "inline-block",
+                }}
+              >
+                {item.word}
+              </motion.span>
+            </Box>
+          );
+        })}
+      </Flex>
+    </Box>
   );
 }
 
@@ -335,66 +472,75 @@ export function InteractiveCaptionOverlay({
       {/* Snap guide lines rendered at video container level */}
       <SnapGuideLines guides={snapGuides} />
 
-      <motion.div
+      {/* Wrapper owns the center-anchor offset so Framer Motion's
+          x/y-driven transform on the inner motion.div can't clobber it. */}
+      <div
         style={{
           position: "absolute",
           left: `${posX}%`,
           top: `${posY}%`,
-          x: motionX,
-          y: motionY,
           transform: "translate(-50%, -50%)",
-          cursor: captionSelected
-            ? isResizing
-              ? "nwse-resize"
-              : "move"
-            : "pointer",
+          width: "max-content",
           zIndex: 5,
-          padding: "8px 12px",
         }}
-        drag={captionSelected && !isResizing}
-        dragConstraints={videoContainerRef}
-        dragMomentum={false}
-        dragElastic={0}
-        onDrag={handleDrag}
-        onDragEnd={handleDragEnd}
-        onClick={handleClick}
-        onMouseEnter={() => setHovered(true)}
-        onMouseLeave={() => setHovered(false)}
       >
-        {/* Hover border */}
-        {showHoverBorder && (
-          <Box
-            position="absolute"
-            inset="-2px"
-            border="1px dashed rgba(99,102,241,0.6)"
-            borderRadius="4px"
-            pointerEvents="none"
-          />
-        )}
+        <motion.div
+          style={{
+            x: motionX,
+            y: motionY,
+            position: "relative",
+            padding: "8px 12px",
+            cursor: captionSelected
+              ? isResizing
+                ? "nwse-resize"
+                : "move"
+              : "pointer",
+          }}
+          drag={captionSelected && !isResizing}
+          dragConstraints={videoContainerRef}
+          dragMomentum={false}
+          dragElastic={0}
+          onDrag={handleDrag}
+          onDragEnd={handleDragEnd}
+          onClick={handleClick}
+          onMouseEnter={() => setHovered(true)}
+          onMouseLeave={() => setHovered(false)}
+        >
+          {/* Hover border */}
+          {showHoverBorder && (
+            <Box
+              position="absolute"
+              inset="-2px"
+              border="1px dashed rgba(99,102,241,0.6)"
+              borderRadius="4px"
+              pointerEvents="none"
+            />
+          )}
 
-        {/* Selection border */}
-        {showSelection && (
-          <Box
-            position="absolute"
-            inset="-2px"
-            border="1.5px solid #6366F1"
-            borderRadius="4px"
-            pointerEvents="none"
-          />
-        )}
+          {/* Selection border */}
+          {showSelection && (
+            <Box
+              position="absolute"
+              inset="-2px"
+              border="1.5px solid #6366F1"
+              borderRadius="4px"
+              pointerEvents="none"
+            />
+          )}
 
-        {/* Resize handles */}
-        {showSelection && (
-          <CaptionResizeHandles
-            onResizeStart={handleResizeStart}
-            onResize={handleResize}
-            onResizeEnd={handleResizeEnd}
-          />
-        )}
+          {/* Resize handles */}
+          {showSelection && (
+            <CaptionResizeHandles
+              onResizeStart={handleResizeStart}
+              onResize={handleResize}
+              onResizeEnd={handleResizeEnd}
+            />
+          )}
 
-        {/* Caption text */}
-        <CaptionTextContent displayFontSize={displayFontSize} />
-      </motion.div>
+          {/* Caption text */}
+          <CaptionTextContent displayFontSize={displayFontSize} />
+        </motion.div>
+      </div>
     </>
   );
 }

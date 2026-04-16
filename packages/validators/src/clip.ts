@@ -114,6 +114,13 @@ export const clipAspectRatioFromDb = {
   z.infer<typeof clipAspectRatioSchema>
 >;
 
+export const captionAnimationSchema = z.enum([
+  "none", "word-by-word", "karaoke", "bounce",
+  "blur-in", "grow", "breathe", "soft-landing", "glitch", "seamless-bounce",
+]);
+
+export type CaptionAnimation = z.infer<typeof captionAnimationSchema>;
+
 export const captionPresetSchema = z.object({
   fontName: z.string().max(100).default("Bebas Neue"),
   primaryColor: z.string().regex(/^#[0-9A-Fa-f]{6}$/).default("#FFFFFF"),
@@ -123,10 +130,26 @@ export const captionPresetSchema = z.object({
   bold: z.boolean().default(true),
   position: z.enum(["bottom", "top", "center"]).default("bottom"),
   highlightColor: z.string().regex(/^#[0-9A-Fa-f]{6}$/).default("#00FF88"),
-  animation: z.enum(["none", "word-by-word", "karaoke", "bounce"]).default("word-by-word"),
+  animation: captionAnimationSchema.default("word-by-word"),
   fontSize: z.number().min(8).max(120).default(36),
   positionX: z.number().min(0).max(100).optional(),
   positionY: z.number().min(0).max(100).optional(),
+
+  // Backdrop behind all caption text
+  backgroundColor: z.string().regex(/^#[0-9A-Fa-f]{6}$/).optional(),
+  backgroundOpacity: z.number().min(0).max(1).optional(),
+
+  // Colored box behind the active word
+  highlightBoxColor: z.string().regex(/^#[0-9A-Fa-f]{6}$/).optional(),
+  highlightBoxOpacity: z.number().min(0).max(1).optional(),
+
+  // Glow effect
+  glowColor: z.string().regex(/^#[0-9A-Fa-f]{6}$/).optional(),
+  glowIntensity: z.number().min(0).max(20).optional(),
+
+  // Text styling
+  textTransform: z.enum(["uppercase", "lowercase", "capitalize", "none"]).optional(),
+  letterSpacing: z.number().min(-0.1).max(0.5).optional(),
 });
 
 export const updateClipCaptionPresetSchema = z.object({

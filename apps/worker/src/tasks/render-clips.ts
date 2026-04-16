@@ -215,6 +215,7 @@ function formatSrtTimestamp(seconds: number): string {
 function generateSrtFromSlice(
   utterances: TranscriptUtterance[],
   clipStartSec: number,
+  textTransform?: string,
 ): string {
   if (utterances.length === 0) {
     return "";
@@ -233,7 +234,7 @@ function generateSrtFromSlice(
         const group = words.slice(i, i + WORDS_PER_CUE);
         const start = Math.max(0, group[0]!.startSec - clipStartSec);
         const end = Math.max(start + 0.1, group[group.length - 1]!.endSec - clipStartSec);
-        const text = group.map((w) => w.word).join(" ");
+        const text = applyTextTransform(group.map((w) => w.word).join(" "), textTransform);
         cues.push(`${cueIndex}\n${formatSrtTimestamp(start)} --> ${formatSrtTimestamp(end)}\n${text}\n`);
         cueIndex++;
       }
@@ -241,7 +242,8 @@ function generateSrtFromSlice(
       // Fallback: utterance-level cue
       const start = Math.max(0, utterance.startSec - clipStartSec);
       const end = Math.max(start + 0.1, utterance.endSec - clipStartSec);
-      cues.push(`${cueIndex}\n${formatSrtTimestamp(start)} --> ${formatSrtTimestamp(end)}\n${utterance.text}\n`);
+      const text = applyTextTransform(utterance.text, textTransform);
+      cues.push(`${cueIndex}\n${formatSrtTimestamp(start)} --> ${formatSrtTimestamp(end)}\n${text}\n`);
       cueIndex++;
     }
   }
@@ -257,11 +259,20 @@ function formatAssTimestamp(seconds: number): string {
   return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${String(cs).padStart(2, "0")}`;
 }
 
-function hexToAssColor(hex: string): string {
+function hexToAssColor(hex: string, alphaHex = "00"): string {
   const r = hex.slice(1, 3);
   const g = hex.slice(3, 5);
   const b = hex.slice(5, 7);
-  return `&H00${b}${g}${r}`;
+  return `&H${alphaHex}${b}${g}${r}`;
+}
+
+function applyTextTransform(text: string, transform?: string): string {
+  switch (transform) {
+    case "uppercase": return text.toUpperCase();
+    case "lowercase": return text.toLowerCase();
+    case "capitalize": return text.replace(/\b\w/g, (c) => c.toUpperCase());
+    default: return text;
+  }
 }
 
 function generateAssFromSlice(
@@ -281,20 +292,33 @@ function generateAssFromSlice(
   const fontName = captionPreset.fontName ?? "Arial";
   const fontSize = captionPreset.fontSize ?? captionStyleByAspectRatio[aspectRatio].fontSize;
   const primaryColor = hexToAssColor(captionPreset.primaryColor ?? "#FFFFFF");
+  const highlightColor = hexToAssColor(captionPreset.highlightColor ?? "#00FF88");
   const outlineColor = hexToAssColor(captionPreset.outlineColor ?? "#000000");
   const bold = captionPreset.bold !== false ? -1 : 0;
   const outlineWidth = captionPreset.outlineWidth ?? 2;
   const shadow = captionPreset.shadow ?? 1;
+  const spacing = Math.round((captionPreset.letterSpacing ?? 0) * fontSize);
+
+  // Backdrop: use BorderStyle=3 (opaque box) with BackColour
+  let borderStyle = 1;
+  let backColour = "&H00000000";
+  if (captionPreset.backgroundColor) {
+    borderStyle = 3;
+    const bgAlpha = Math.round((1 - (captionPreset.backgroundOpacity ?? 0.6)) * 255);
+    const bgAlphaHex = bgAlpha.toString(16).toUpperCase().padStart(2, "0");
+    backColour = hexToAssColor(captionPreset.backgroundColor, bgAlphaHex);
+  }
 
   const header = [
     "[Script Info]",
     "ScriptType: v4.00+",
     `PlayResX: ${resX}`,
     `PlayResY: ${resY}`,
+    "WrapStyle: 2",
     "",
     "[V4+ Styles]",
     "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
-    `Style: Default,${fontName},${fontSize},${primaryColor},${primaryColor},${outlineColor},&H00000000,${bold},0,0,0,100,100,0,0,1,${outlineWidth},${shadow},5,0,0,0,1`,
+    `Style: Default,${fontName},${fontSize},${primaryColor},${primaryColor},${outlineColor},${backColour},${bold},0,0,0,100,100,${spacing},0,${borderStyle},${outlineWidth},${shadow},5,0,0,0,1`,
     "",
     "[Events]",
     "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
@@ -303,24 +327,43 @@ function generateAssFromSlice(
   const WORDS_PER_CUE = 3;
   const events: string[] = [];
 
+  const txtTransform = captionPreset.textTransform;
+
   for (const utterance of utterances) {
     const words = utterance.words;
 
     if (words.length > 0) {
       for (let i = 0; i < words.length; i += WORDS_PER_CUE) {
         const group = words.slice(i, i + WORDS_PER_CUE);
-        const start = Math.max(0, group[0]!.startSec - clipStartSec);
-        const end = Math.max(start + 0.1, group[group.length - 1]!.endSec - clipStartSec);
-        const text = group.map((w) => w.word).join(" ");
-        events.push(
-          `Dialogue: 0,${formatAssTimestamp(start)},${formatAssTimestamp(end)},Default,,0,0,0,,{\\pos(${posXPx},${posYPx})}${text}`,
-        );
+        const groupEnd = Math.max(0, group[group.length - 1]!.endSec - clipStartSec);
+        const transformedWords = group.map((w) => applyTextTransform(w.word, txtTransform));
+
+        for (let j = 0; j < group.length; j++) {
+          const activeStart = Math.max(0, group[j]!.startSec - clipStartSec);
+          const activeEnd =
+            j + 1 < group.length
+              ? Math.max(activeStart + 0.05, group[j + 1]!.startSec - clipStartSec)
+              : Math.max(activeStart + 0.1, groupEnd);
+
+          const text = transformedWords
+            .map((word, k) =>
+              k === j
+                ? `{\\1c${highlightColor}&}${word}{\\1c${primaryColor}&}`
+                : word,
+            )
+            .join(" ");
+
+          events.push(
+            `Dialogue: 0,${formatAssTimestamp(activeStart)},${formatAssTimestamp(activeEnd)},Default,,0,0,0,,{\\pos(${posXPx},${posYPx})}${text}`,
+          );
+        }
       }
     } else {
       const start = Math.max(0, utterance.startSec - clipStartSec);
       const end = Math.max(start + 0.1, utterance.endSec - clipStartSec);
+      const text = applyTextTransform(utterance.text, txtTransform);
       events.push(
-        `Dialogue: 0,${formatAssTimestamp(start)},${formatAssTimestamp(end)},Default,,0,0,0,,{\\pos(${posXPx},${posYPx})}${utterance.text}`,
+        `Dialogue: 0,${formatAssTimestamp(start)},${formatAssTimestamp(end)},Default,,0,0,0,,{\\pos(${posXPx},${posYPx})}${text}`,
       );
     }
   }
@@ -374,9 +417,25 @@ function buildSubtitleFilter(
     captionPreset?.position === "top" ? 8 :
     captionPreset?.position === "center" ? 5 : 2;
 
+  const spacing = Math.round((captionPreset?.letterSpacing ?? 0) * fontSize);
+
+  let borderStyle = 1;
+  let backColour = "";
+  if (captionPreset?.backgroundColor) {
+    borderStyle = 3;
+    const bgAlpha = Math.round((1 - (captionPreset.backgroundOpacity ?? 0.6)) * 255);
+    const bgAlphaHex = bgAlpha.toString(16).toUpperCase().padStart(2, "0");
+    const r = captionPreset.backgroundColor.slice(1, 3);
+    const g = captionPreset.backgroundColor.slice(3, 5);
+    const b = captionPreset.backgroundColor.slice(5, 7);
+    backColour = `,BackColour=\\&H${bgAlphaHex}${b}${g}${r}\\&,BorderStyle=${borderStyle}`;
+  }
+
   const forceStyle =
     `FontSize=${fontSize},Alignment=${alignment},MarginV=${captionStyle.marginV},FontName=${fontName},` +
-    `PrimaryColour=${primaryColor},OutlineColour=${outlineColor},Outline=${outlineWidth},Shadow=${shadow},Bold=${bold}`;
+    `PrimaryColour=${primaryColor},OutlineColour=${outlineColor},Outline=${outlineWidth},Shadow=${shadow},Bold=${bold}` +
+    (spacing > 0 ? `,Spacing=${spacing}` : "") +
+    backColour;
 
   return `subtitles='${escapedPath}':force_style='${forceStyle}'`;
 }
@@ -744,7 +803,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
         captionPreset?.positionX !== undefined &&
         captionPreset?.positionY !== undefined;
 
-      const srtContent = generateSrtFromSlice(utterances, clip.startSec);
+      const srtContent = generateSrtFromSlice(utterances, clip.startSec, captionPreset?.textTransform);
       let srtPath: string | null = null;
 
       if (!hasCustomPosition && srtContent.length > 0) {

@@ -10,7 +10,7 @@ import React, {
   useMemo,
 } from "react";
 import { Box, Flex } from "@chakra-ui/react";
-import type { TranscriptUtterance } from "@narriflow/validators";
+import type { TranscriptUtterance, CaptionPreset, CaptionAnimation } from "@narriflow/validators";
 import { TopBar } from "./top-bar";
 import { TranscriptPanel } from "./transcript-panel";
 import { VideoPreview } from "./video-preview";
@@ -22,7 +22,7 @@ import { KeyboardShortcutsModal } from "./keyboard-shortcuts-modal";
 
 export type AspectRatio = "9:16" | "1:1" | "16:9" | "4:5";
 export type LayoutMode = "fill" | "fit" | "blur";
-export type CaptionAnimation = "none" | "word-by-word" | "karaoke" | "bounce";
+export type { CaptionAnimation, CaptionPreset };
 export type ToolId =
   | "ai-enhance"
   | "captions"
@@ -33,21 +33,6 @@ export type ToolId =
   | "text"
   | "music"
   | "ai-hook";
-
-export interface CaptionPreset {
-  fontName: string;
-  primaryColor: string;
-  outlineColor: string;
-  outlineWidth: number;
-  shadow: number;
-  bold: boolean;
-  position: "top" | "center" | "bottom";
-  highlightColor: string;
-  animation: CaptionAnimation;
-  fontSize: number;
-  positionX?: number;
-  positionY?: number;
-}
 
 export interface TranscriptItem {
   id: string;
