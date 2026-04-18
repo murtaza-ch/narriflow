@@ -6,6 +6,7 @@ import {
   presignDownloadUrl,
 } from "@narriflow/services";
 import type { TranscriptUtterance, CaptionPreset } from "@narriflow/validators";
+import { getEffectiveClipTiming } from "@narriflow/validators";
 import { StudioShell } from "./_components/studio-shell";
 import type { ClipInfo, TimelineSegment } from "./_components/studio-shell";
 
@@ -22,16 +23,40 @@ const DEFAULT_CAPTION_PRESET: CaptionPreset = {
   fontSize: 36,
 };
 
+function clampTimelineTime(timeSec: number, clipDurationSec: number) {
+  return Math.max(0, Math.min(clipDurationSec, timeSec));
+}
+
 function buildSegmentsFromUtterances(
   utterances: TranscriptUtterance[],
   clipStartSec: number,
+  clipDurationSec: number,
 ): TimelineSegment[] {
-  return utterances.map((u, i) => ({
-    id: `seg-${i}`,
-    label: "Fill",
-    startSec: u.startSec - clipStartSec,
-    endSec: u.endSec - clipStartSec,
-  }));
+  if (utterances.length === 0) {
+    return [{ id: "seg-0", label: "Fill", startSec: 0, endSec: clipDurationSec }];
+  }
+
+  const segments: TimelineSegment[] = [];
+  let cursorSec = 0;
+
+  for (let i = 0; i < utterances.length; i++) {
+    const nextUtterance = utterances[i + 1];
+    const nextBoundarySec = nextUtterance
+      ? clampTimelineTime(nextUtterance.startSec - clipStartSec, clipDurationSec)
+      : clipDurationSec;
+    const endSec = Math.max(cursorSec, nextBoundarySec);
+
+    segments.push({
+      id: `seg-${i}`,
+      label: "Fill",
+      startSec: cursorSec,
+      endSec,
+    });
+
+    cursorSec = endSec;
+  }
+
+  return segments.filter((segment) => segment.endSec > segment.startSec);
 }
 
 export default async function StudioPage({
@@ -65,7 +90,13 @@ export default async function StudioPage({
     }
   }
 
-  const utterances = clip.transcriptSlice;
+  const effective = getEffectiveClipTiming({
+    utterances: clip.transcriptSlice,
+    startSec: clip.startSec,
+    endSec: clip.endSec,
+    sourceDurationSec: snapshot.project.sourceDurationSeconds,
+  });
+  const utterances = effective.transcriptSlice;
 
   const captionPreset: CaptionPreset = clip.captionPreset
     ? { ...DEFAULT_CAPTION_PRESET, ...clip.captionPreset }
@@ -75,9 +106,9 @@ export default async function StudioPage({
     id: clip.id,
     projectId: clip.projectId,
     title: clip.hookText,
-    duration: clip.durationSec,
-    startSec: clip.startSec,
-    endSec: clip.endSec,
+    duration: effective.durationSec,
+    startSec: effective.startSec,
+    endSec: effective.endSec,
     aspectRatio: clip.renderVariants[0]?.aspectRatio ?? "9:16",
     viralityScore: clip.viralityScore,
     category: clip.category,
@@ -88,11 +119,16 @@ export default async function StudioPage({
     <StudioShell
       clipInfo={clipInfo}
       transcript={utterances}
-      timelineSegments={buildSegmentsFromUtterances(utterances, clip.startSec)}
+      timelineSegments={buildSegmentsFromUtterances(
+        utterances,
+        effective.startSec,
+        effective.durationSec,
+      )}
       initialCaptionPreset={captionPreset}
       sourceVideoUrl={sourceVideoUrl}
-      clipStartSec={clip.startSec}
-      clipEndSec={clip.endSec}
+      sourcePreviewId={snapshot.project.sourceStorageKey ?? snapshot.project.id}
+      clipStartSec={effective.startSec}
+      clipEndSec={effective.endSec}
     />
   );
 }

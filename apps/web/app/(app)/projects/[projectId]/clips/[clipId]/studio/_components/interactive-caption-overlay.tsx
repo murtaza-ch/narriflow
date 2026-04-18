@@ -4,9 +4,14 @@ import { useRef, useState, useCallback, useEffect } from "react";
 import { Box, Flex, Text } from "@chakra-ui/react";
 import { motion, useMotionValue } from "framer-motion";
 import { useStudio } from "./studio-shell";
-import { useCurrentCaption } from "./use-current-caption";
+import {
+  getCurrentCaptionState,
+  type CaptionState,
+} from "./use-current-caption";
 import { computeSnap, type SnapGuide } from "./snap-guides";
 import { clipAspectRatioOptions } from "@narriflow/validators";
+import type { TranscriptUtterance } from "@narriflow/validators";
+import type { PlaybackClock } from "./playback-clock";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -197,15 +202,53 @@ function hexToRgba(hex: string, opacity: number): string {
   return `rgba(${r},${g},${b},${opacity})`;
 }
 
+function captionSignature(caption: CaptionState | null) {
+  if (!caption) return "none";
+  return `${caption.utteranceIndex}:${caption.activeWordIndex}:${caption.visibleWords
+    .map((word) => `${word.word}:${word.isActive ? 1 : 0}`)
+    .join("|")}`;
+}
+
+function useLiveCaption(
+  playbackClock: PlaybackClock,
+  utterances: TranscriptUtterance[],
+  clipStartSec: number,
+) {
+  const [caption, setCaption] = useState<CaptionState | null>(() =>
+    getCurrentCaptionState(playbackClock.getSnapshot(), utterances, clipStartSec),
+  );
+  const signatureRef = useRef(captionSignature(caption));
+
+  useEffect(() => {
+    const update = () => {
+      const next = getCurrentCaptionState(
+        playbackClock.getSnapshot(),
+        utterances,
+        clipStartSec,
+      );
+      const signature = captionSignature(next);
+      if (signature === signatureRef.current) return;
+      signatureRef.current = signature;
+      setCaption(next);
+    };
+
+    update();
+    return playbackClock.subscribe(update);
+  }, [clipStartSec, playbackClock, utterances]);
+
+  return caption;
+}
+
 // ─── Caption Text Content ────────────────────────────────────────────────────
 
 function CaptionTextContent({
   displayFontSize,
+  caption,
 }: {
   displayFontSize: number;
+  caption: CaptionState;
 }) {
-  const { currentTime, captionPreset, utterances, clipStartSec } = useStudio();
-  const caption = useCurrentCaption(currentTime, utterances, clipStartSec);
+  const { captionPreset } = useStudio();
 
   if (!caption || caption.visibleWords.length === 0) return null;
 
@@ -339,12 +382,12 @@ export function InteractiveCaptionOverlay({
     selectCaption,
     deselectCaption,
     aspectRatio,
-    currentTime,
     utterances,
     clipStartSec,
+    playbackClock,
   } = useStudio();
 
-  const caption = useCurrentCaption(currentTime, utterances, clipStartSec);
+  const caption = useLiveCaption(playbackClock, utterances, clipStartSec);
 
   const [hovered, setHovered] = useState(false);
   const [snapGuides, setSnapGuides] = useState<SnapGuide[]>([]);
@@ -538,7 +581,10 @@ export function InteractiveCaptionOverlay({
           )}
 
           {/* Caption text */}
-          <CaptionTextContent displayFontSize={displayFontSize} />
+          <CaptionTextContent
+            displayFontSize={displayFontSize}
+            caption={caption}
+          />
         </motion.div>
       </div>
     </>

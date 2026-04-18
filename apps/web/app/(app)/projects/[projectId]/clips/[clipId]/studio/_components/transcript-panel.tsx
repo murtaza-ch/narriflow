@@ -1,10 +1,11 @@
 "use client";
 
-import { useRef, useEffect, useCallback, useState, useMemo } from "react";
+import { memo, useRef, useEffect, useCallback, useState, useMemo } from "react";
 import { Box, Flex, Text, Checkbox } from "@chakra-ui/react";
 import { Plus } from "lucide-react";
 import type { TranscriptUtterance, TranscriptWord } from "@narriflow/validators";
 import { useStudio } from "./studio-shell";
+import type { PlaybackClock } from "./playback-clock";
 
 // ─── Pause threshold (seconds) ──────────────────────────────────────────────
 
@@ -35,6 +36,44 @@ function buildDisplayTokens(words: TranscriptWord[]): DisplayToken[] {
     }
   }
   return tokens;
+}
+
+function getWordsForUtterance(utterance: TranscriptUtterance): TranscriptWord[] {
+  if (utterance.words.length > 0) return utterance.words;
+
+  const textWords = utterance.text.split(/\s+/).filter(Boolean);
+  const count = Math.max(1, textWords.length);
+  const duration = Math.max(0.001, utterance.endSec - utterance.startSec);
+  const wordDuration = duration / count;
+
+  return textWords.map((word, i) => ({
+    word,
+    startSec: utterance.startSec + i * wordDuration,
+    endSec: utterance.startSec + (i + 1) * wordDuration,
+    confidence: null,
+  }));
+}
+
+function getActiveTranscriptState(
+  playbackClock: PlaybackClock,
+  utterances: TranscriptUtterance[],
+  clipStartSec: number,
+) {
+  const absoluteTime = playbackClock.getSnapshot() + clipStartSec;
+  const utteranceIndex = utterances.findIndex(
+    (u) => absoluteTime >= u.startSec && absoluteTime < u.endSec,
+  );
+
+  if (utteranceIndex === -1) {
+    return { utteranceIndex: -1, wordIndex: -1 };
+  }
+
+  const words = getWordsForUtterance(utterances[utteranceIndex]!);
+  const wordIndex = words.findIndex(
+    (w) => absoluteTime >= w.startSec && absoluteTime < w.endSec,
+  );
+
+  return { utteranceIndex, wordIndex };
 }
 
 // ─── Pause indicator ────────────────────────────────────────────────────────
@@ -78,18 +117,18 @@ function PauseIndicator({ duration }: { duration: number }) {
 
 // ─── Editable Utterance ─────────────────────────────────────────────────────
 
-function EditableUtterance({
+const EditableUtterance = memo(function EditableUtterance({
   utterance,
   utteranceIndex,
   isActive,
+  activeWordIndex,
   onSeek,
-  absoluteTime,
 }: {
   utterance: TranscriptUtterance;
   utteranceIndex: number;
   isActive: boolean;
+  activeWordIndex: number;
   onSeek: (clipRelativeTime: number) => void;
-  absoluteTime: number;
 }) {
   const { updateUtteranceText, clipStartSec, captionPreset } = useStudio();
   const blockRef = useRef<HTMLDivElement>(null);
@@ -109,28 +148,11 @@ function EditableUtterance({
 
   // Build words (with fallback for utterances without word-level timing)
   const words: TranscriptWord[] = useMemo(() => {
-    if (utterance.words.length > 0) return utterance.words;
-    const textWords = utterance.text.split(/\s+/).filter(Boolean);
-    const count = textWords.length;
-    const dur = (utterance.endSec - utterance.startSec) / count;
-    return textWords.map((w, i) => ({
-      word: w,
-      startSec: utterance.startSec + i * dur,
-      endSec: utterance.startSec + (i + 1) * dur,
-      confidence: null,
-    }));
+    return getWordsForUtterance(utterance);
   }, [utterance]);
 
   // Build display tokens with pause indicators
   const tokens = useMemo(() => buildDisplayTokens(words), [words]);
-
-  // Find the active word index
-  const activeWordIndex = useMemo(() => {
-    if (!isActive) return -1;
-    return words.findIndex(
-      (w) => absoluteTime >= w.startSec && absoluteTime < w.endSec,
-    );
-  }, [isActive, absoluteTime, words]);
 
   const highlightColor = captionPreset.highlightColor;
 
@@ -220,7 +242,7 @@ function EditableUtterance({
       {utterance.text}
     </Box>
   );
-}
+});
 
 // ─── Main Panel ─────────────────────────────────────────────────────────────
 
@@ -229,30 +251,54 @@ export function TranscriptPanel() {
     utterances,
     transcriptOnly,
     setTranscriptOnly,
-    currentTime,
     seekTo,
     clipStartSec,
+    playbackClock,
   } = useStudio();
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const manualScrollRef = useRef(false);
   const manualScrollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [activeState, setActiveState] = useState(() =>
+    getActiveTranscriptState(playbackClock, utterances, clipStartSec),
+  );
 
-  // Auto-scroll to follow current time
+  useEffect(() => {
+    const update = () => {
+      const next = getActiveTranscriptState(playbackClock, utterances, clipStartSec);
+      setActiveState((prev) =>
+        prev.utteranceIndex === next.utteranceIndex && prev.wordIndex === next.wordIndex
+          ? prev
+          : next,
+      );
+    };
+
+    update();
+    return playbackClock.subscribe(update);
+  }, [clipStartSec, playbackClock, utterances]);
+
+  // Auto-scroll when the active utterance changes, not on every playback tick.
   useEffect(() => {
     if (manualScrollRef.current) return;
     const container = scrollRef.current;
     if (!container) return;
-    const blocks = container.querySelectorAll("[data-timestamp]");
-    let best: Element | null = null;
-    for (const el of blocks) {
-      const ts = parseFloat(el.getAttribute("data-timestamp") ?? "0");
-      if (ts <= currentTime) best = el;
+    if (activeState.utteranceIndex < 0) return;
+
+    const active = container.querySelector(
+      `[data-utterance-index="${activeState.utteranceIndex}"]`,
+    );
+    if (!active) return;
+
+    const containerRect = container.getBoundingClientRect();
+    const activeRect = active.getBoundingClientRect();
+    const isOutside =
+      activeRect.top < containerRect.top + 16 ||
+      activeRect.bottom > containerRect.bottom - 16;
+
+    if (isOutside) {
+      active.scrollIntoView({ behavior: "smooth", block: "nearest" });
     }
-    if (best) {
-      best.scrollIntoView({ behavior: "smooth", block: "nearest" });
-    }
-  }, [currentTime]);
+  }, [activeState.utteranceIndex]);
 
   const handleScroll = useCallback(() => {
     manualScrollRef.current = true;
@@ -261,9 +307,6 @@ export function TranscriptPanel() {
       manualScrollRef.current = false;
     }, 3000);
   }, []);
-
-  // Determine active utterance
-  const absoluteTime = currentTime + clipStartSec;
 
   // Detect pauses between utterances
   const utterancePauses = useMemo(() => {
@@ -353,14 +396,16 @@ export function TranscriptPanel() {
         }}
       >
         {utterances.map((utterance, i) => {
-          const isActive =
-            absoluteTime >= utterance.startSec &&
-            absoluteTime < utterance.endSec;
+          const isActive = activeState.utteranceIndex === i;
           const clipRelativeTimestamp = utterance.startSec - clipStartSec;
           const pauseAfter = utterancePauses.get(i);
 
           return (
-            <Box key={`u-${utterance.index ?? i}`} data-timestamp={clipRelativeTimestamp}>
+            <Box
+              key={`u-${utterance.index ?? i}`}
+              data-timestamp={clipRelativeTimestamp}
+              data-utterance-index={i}
+            >
               {/* Speaker label */}
               <Text
                 fontSize="11px"
@@ -377,8 +422,8 @@ export function TranscriptPanel() {
                 utterance={utterance}
                 utteranceIndex={i}
                 isActive={isActive}
+                activeWordIndex={isActive ? activeState.wordIndex : -1}
                 onSeek={seekTo}
-                absoluteTime={absoluteTime}
               />
 
               {/* Pause between utterances */}

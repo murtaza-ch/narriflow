@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useCallback, useEffect, useMemo } from "react";
+import { memo, useRef, useCallback, useEffect, useMemo, useState, type RefObject } from "react";
 import { Box, Flex, Text, Slider } from "@chakra-ui/react";
 import {
   Eye,
@@ -19,6 +19,12 @@ import {
 } from "lucide-react";
 import type { TranscriptUtterance } from "@narriflow/validators";
 import { useStudio } from "./studio-shell";
+import { usePlaybackTime } from "./playback-clock";
+import {
+  getCachedTimelineThumbnail,
+  requestTimelineThumbnail,
+  setTimelineThumbnailPlaybackActive,
+} from "./timeline-preview-manager";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -38,15 +44,28 @@ function formatRulerLabel(secs: number) {
   return `${s}`;
 }
 
-// ─── Thumbnail strip (canvas-based, no CORS needed) ──────────────────────────
+// ─── Thumbnail strip (canvas-based, memory-only session cache) ───────────────
+
+function drawCachedStrip(
+  target: HTMLCanvasElement,
+  cached: HTMLCanvasElement,
+  width: number,
+  height: number,
+) {
+  const ctx = target.getContext("2d");
+  if (!ctx) return;
+
+  ctx.clearRect(0, 0, width, height);
+  ctx.drawImage(cached, 0, 0, width, height);
+}
 
 /**
- * Renders video frame thumbnails directly via canvas elements appended to the DOM.
- * This avoids CORS issues because we never call toDataURL/toBlob — we just
- * drawImage() onto visible canvases (tainting is fine since we don't read back).
+ * Renders one cached canvas strip per segment. The canvas is intentionally capped
+ * in internal pixel width so long clips do not create huge browser surfaces.
  */
-function SegmentThumbnails({
+const SegmentThumbnails = memo(function SegmentThumbnails({
   sourceVideoUrl,
+  sourcePreviewId,
   clipStartSec,
   segStartSec,
   segEndSec,
@@ -54,120 +73,155 @@ function SegmentThumbnails({
   height,
 }: {
   sourceVideoUrl: string | null;
+  sourcePreviewId: string;
   clipStartSec: number;
   segStartSec: number;
   segEndSec: number;
   width: number;
   height: number;
 }) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const generatedRef = useRef(false);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [status, setStatus] = useState<"idle" | "loading" | "ready" | "error">("idle");
+
+  const renderWidth = Math.max(1, Math.round(width));
+  const renderHeight = Math.max(1, Math.round(height));
 
   useEffect(() => {
-    const container = containerRef.current;
-    if (!container || !sourceVideoUrl || width <= 0 || generatedRef.current)
-      return;
+    const canvas = canvasRef.current;
+    if (!canvas || width <= 0 || height <= 0) return;
+
+    canvas.width = renderWidth;
+    canvas.height = renderHeight;
+
+    const cachedRefined = getCachedTimelineThumbnail({
+      sourcePreviewId,
+      clipStartSec,
+      segStartSec,
+      segEndSec,
+      width: renderWidth,
+      height: renderHeight,
+      quality: "refined",
+    });
+    const cachedCoarse = getCachedTimelineThumbnail({
+      sourcePreviewId,
+      clipStartSec,
+      segStartSec,
+      segEndSec,
+      width: renderWidth,
+      height: renderHeight,
+      quality: "coarse",
+    });
+    const cached = cachedRefined ?? cachedCoarse;
+
+    if (cached) {
+      drawCachedStrip(canvas, cached, renderWidth, renderHeight);
+      setStatus("ready");
+      if (cachedRefined) return;
+    } else {
+      const ctx = canvas.getContext("2d");
+      if (!ctx) return;
+
+      ctx.clearRect(0, 0, renderWidth, renderHeight);
+      ctx.fillStyle = "#141414";
+      ctx.fillRect(0, 0, renderWidth, renderHeight);
+      ctx.fillStyle = "rgba(255,255,255,0.04)";
+      for (let x = 0; x < renderWidth; x += 42) {
+        ctx.fillRect(x, 0, 18, renderHeight);
+      }
+    }
+
+    setStatus(sourceVideoUrl ? (cached ? "ready" : "loading") : "idle");
+
+    if (!sourceVideoUrl) return;
 
     const segDuration = segEndSec - segStartSec;
     if (segDuration <= 0) return;
 
-    generatedRef.current = true;
-
-    const THUMB_WIDTH = 80;
-    const count = Math.max(1, Math.min(30, Math.ceil(width / THUMB_WIDTH)));
-    const interval = segDuration / count;
-    const thumbPxWidth = width / count;
-
-    // Aspect: 16:9 internal resolution
-    const CW = 160;
-    const CH = 90;
-
-    const video = document.createElement("video");
-    video.muted = true;
-    video.preload = "auto";
-    video.playsInline = true;
-    // No crossOrigin — avoids CORS blocking
-
-    const canvases: HTMLCanvasElement[] = [];
-    for (let i = 0; i < count; i++) {
-      const c = document.createElement("canvas");
-      c.width = CW;
-      c.height = CH;
-      c.style.width = `${thumbPxWidth}px`;
-      c.style.height = `${height}px`;
-      c.style.objectFit = "cover";
-      c.style.flexShrink = "0";
-      c.style.display = "block";
-      canvases.push(c);
-      container.appendChild(c);
-    }
-
-    let idx = 0;
     let cancelled = false;
-
-    const captureNext = () => {
-      if (cancelled || idx >= count) return;
-      video.currentTime = clipStartSec + segStartSec + idx * interval;
+    const drawStrip = (strip: HTMLCanvasElement, isComplete: boolean) => {
+      if (cancelled) return;
+      const target = canvasRef.current;
+      if (!target) return;
+      drawCachedStrip(target, strip, renderWidth, renderHeight);
+      if (isComplete) setStatus("ready");
     };
 
-    const onSeeked = () => {
-      if (cancelled || idx >= count) return;
-      const ctx = canvases[idx]?.getContext("2d");
-      if (ctx) {
-        ctx.drawImage(video, 0, 0, CW, CH);
-      }
-      idx++;
-      if (idx < count) {
-        captureNext();
-      } else {
-        // Done — clean up video
-        video.pause();
-        video.src = "";
-      }
-    };
+    const cancelCoarse =
+      cachedCoarse || cachedRefined
+        ? () => {}
+        : requestTimelineThumbnail({
+            sourcePreviewId,
+            sourceVideoUrl,
+            clipStartSec,
+            segStartSec,
+            segEndSec,
+            width: renderWidth,
+            height: renderHeight,
+            quality: "coarse",
+            onFrame: drawStrip,
+            onError: () => {
+              if (!cancelled) setStatus("error");
+            },
+          });
 
-    const onCanPlay = () => {
-      video.removeEventListener("canplay", onCanPlay);
-      captureNext();
-    };
-
-    const onError = () => {
-      generatedRef.current = false;
-    };
-
-    video.addEventListener("seeked", onSeeked);
-    video.addEventListener("canplay", onCanPlay);
-    video.addEventListener("error", onError);
-    video.src = sourceVideoUrl;
+    let cancelRefined = () => {};
+    const refinedTimer = window.setTimeout(() => {
+      if (cancelled || cachedRefined) return;
+      cancelRefined = requestTimelineThumbnail({
+        sourcePreviewId,
+        sourceVideoUrl,
+        clipStartSec,
+        segStartSec,
+        segEndSec,
+        width: renderWidth,
+        height: renderHeight,
+        quality: "refined",
+        onFrame: drawStrip,
+        onError: () => {
+          if (!cancelled) setStatus(cachedCoarse ? "ready" : "error");
+        },
+      });
+    }, cachedCoarse ? 60 : 180);
 
     return () => {
       cancelled = true;
-      generatedRef.current = false;
-      video.removeEventListener("seeked", onSeeked);
-      video.removeEventListener("canplay", onCanPlay);
-      video.removeEventListener("error", onError);
-      video.pause();
-      video.src = "";
-      canvases.forEach((c) => c.remove());
+      window.clearTimeout(refinedTimer);
+      cancelCoarse();
+      cancelRefined();
     };
-  }, [sourceVideoUrl, clipStartSec, segStartSec, segEndSec, width, height]);
+  }, [clipStartSec, height, renderHeight, renderWidth, segEndSec, segStartSec, sourcePreviewId, sourceVideoUrl, width]);
 
   return (
     <div
-      ref={containerRef}
       style={{
-        display: "flex",
         position: "absolute",
         inset: 0,
         overflow: "hidden",
+        background:
+          status === "ready"
+            ? "#111"
+            : "linear-gradient(90deg, #111 0%, #181818 45%, #101010 100%)",
       }}
-    />
+    >
+      <canvas
+        ref={canvasRef}
+        style={{
+          width: "100%",
+          height: "100%",
+          display: "block",
+          opacity: status === "ready" ? 1 : 0.55,
+          transition: "opacity 120ms ease",
+        }}
+      />
+    </div>
   );
-}
+});
 
 // ─── Waveform canvas ──────────────────────────────────────────────────────────
 
-function WaveformCanvas({
+const MAX_WAVEFORM_CANVAS_WIDTH = 2400;
+
+const WaveformCanvas = memo(function WaveformCanvas({
   utterances,
   clipStartSec,
   duration,
@@ -181,20 +235,36 @@ function WaveformCanvas({
   height: number;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const canvasWidth = Math.max(
+    1,
+    Math.min(MAX_WAVEFORM_CANVAS_WIDTH, Math.ceil(width)),
+  );
+  const timingIndex = useMemo(() => {
+    const speechRanges = utterances
+      .map((u) => ({ startSec: u.startSec, endSec: u.endSec }))
+      .sort((a, b) => a.startSec - b.startSec);
+    const wordRanges = utterances
+      .flatMap((u) =>
+        u.words.map((w) => ({ startSec: w.startSec, endSec: w.endSec })),
+      )
+      .sort((a, b) => a.startSec - b.startSec);
+
+    return { speechRanges, wordRanges };
+  }, [utterances]);
 
   // Stable seed for consistent random-looking waveform
   const seedRef = useRef<number[]>([]);
-  if (seedRef.current.length !== Math.ceil(width)) {
-    seedRef.current = Array.from({ length: Math.ceil(width) }, () =>
+  if (seedRef.current.length !== canvasWidth) {
+    seedRef.current = Array.from({ length: canvasWidth }, () =>
       Math.random(),
     );
   }
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    if (!canvas || width <= 0 || duration <= 0) return;
+    if (!canvas || canvasWidth <= 0 || duration <= 0) return;
 
-    canvas.width = Math.ceil(width);
+    canvas.width = canvasWidth;
     canvas.height = height;
     const ctx = canvas.getContext("2d");
     if (!ctx) return;
@@ -204,43 +274,41 @@ function WaveformCanvas({
     const secPerPx = duration / canvas.width;
     const midY = canvas.height / 2;
     const seeds = seedRef.current;
+    const speechRanges = timingIndex.speechRanges;
+    const wordRanges = timingIndex.wordRanges;
+    let speechIndex = 0;
+    let wordIndex = 0;
+    const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
+    gradient.addColorStop(0, "rgba(160,170,190,0.7)");
+    gradient.addColorStop(0.5, "rgba(130,140,160,0.5)");
+    gradient.addColorStop(1, "rgba(160,170,190,0.7)");
+    ctx.fillStyle = gradient;
 
     for (let px = 0; px < canvas.width; px++) {
       const absoluteTime = clipStartSec + px * secPerPx;
 
       let amplitude = 0.03;
-      for (const u of utterances) {
-        if (absoluteTime >= u.startSec && absoluteTime <= u.endSec) {
-          if (u.words && u.words.length > 0) {
-            let inWord = false;
-            for (const w of u.words) {
-              if (absoluteTime >= w.startSec && absoluteTime <= w.endSec) {
-                inWord = true;
-                break;
-              }
-            }
-            amplitude = inWord
-              ? 0.35 + (seeds[px] ?? 0.5) * 0.55
-              : 0.08 + (seeds[px] ?? 0.5) * 0.12;
-          } else {
-            amplitude = 0.3 + (seeds[px] ?? 0.5) * 0.5;
-          }
-          break;
-        }
+      while (speechRanges[speechIndex] && speechRanges[speechIndex]!.endSec < absoluteTime) {
+        speechIndex += 1;
+      }
+      while (wordRanges[wordIndex] && wordRanges[wordIndex]!.endSec < absoluteTime) {
+        wordIndex += 1;
+      }
+
+      const speech = speechRanges[speechIndex];
+      if (speech && absoluteTime >= speech.startSec && absoluteTime <= speech.endSec) {
+        const word = wordRanges[wordIndex];
+        const inWord =
+          word && absoluteTime >= word.startSec && absoluteTime <= word.endSec;
+        amplitude = inWord
+          ? 0.35 + (seeds[px] ?? 0.5) * 0.55
+          : 0.08 + (seeds[px] ?? 0.5) * 0.12;
       }
 
       const barH = amplitude * midY;
-
-      // Gradient from center outward
-      const gradient = ctx.createLinearGradient(px, midY - barH, px, midY + barH);
-      gradient.addColorStop(0, "rgba(160,170,190,0.7)");
-      gradient.addColorStop(0.5, "rgba(130,140,160,0.5)");
-      gradient.addColorStop(1, "rgba(160,170,190,0.7)");
-
-      ctx.fillStyle = gradient;
       ctx.fillRect(px, midY - barH, 1, barH * 2);
     }
-  }, [utterances, clipStartSec, duration, width, height]);
+  }, [timingIndex, clipStartSec, duration, canvasWidth, height]);
 
   return (
     <canvas
@@ -252,7 +320,7 @@ function WaveformCanvas({
       }}
     />
   );
-}
+});
 
 // ─── Control button ───────────────────────────────────────────────────────────
 
@@ -300,12 +368,283 @@ const TRACK_HEIGHT = 64;
 const WAVEFORM_HEIGHT = 36;
 const RULER_HEIGHT = 24;
 const LEFT_GUTTER = 40;
+const TIMELINE_OVERSCAN_PX = 900;
+const PAUSE_MARKER_THRESHOLD_SEC = 0.4;
+
+function useTimelineViewport(ref: RefObject<HTMLDivElement | null>) {
+  const [viewport, setViewport] = useState({ scrollLeft: 0, clientWidth: 0 });
+  const frameRef = useRef(0);
+
+  const measure = useCallback(() => {
+    const el = ref.current;
+    if (!el) return;
+
+    setViewport((prev) => {
+      if (prev.scrollLeft === el.scrollLeft && prev.clientWidth === el.clientWidth) {
+        return prev;
+      }
+      return { scrollLeft: el.scrollLeft, clientWidth: el.clientWidth };
+    });
+  }, [ref]);
+
+  const onScroll = useCallback(() => {
+    if (frameRef.current) return;
+    frameRef.current = window.requestAnimationFrame(() => {
+      frameRef.current = 0;
+      measure();
+    });
+  }, [measure]);
+
+  useEffect(() => {
+    measure();
+    const el = ref.current;
+    if (!el) return;
+
+    const observer = new ResizeObserver(measure);
+    observer.observe(el);
+
+    return () => {
+      if (frameRef.current) window.cancelAnimationFrame(frameRef.current);
+      observer.disconnect();
+    };
+  }, [measure, ref]);
+
+  return { viewport, onScroll };
+}
+
+const TimelineSegmentBlock = memo(function TimelineSegmentBlock({
+  id,
+  label,
+  startSec,
+  endSec,
+  isSelected,
+  pxPerSec,
+  sourceVideoUrl,
+  sourcePreviewId,
+  clipStartSec,
+  setSelectedSegmentId,
+}: {
+  id: string;
+  label: string;
+  startSec: number;
+  endSec: number;
+  isSelected: boolean;
+  pxPerSec: number;
+  sourceVideoUrl: string | null;
+  sourcePreviewId: string;
+  clipStartSec: number;
+  setSelectedSegmentId: (id: string | null) => void;
+}) {
+  const x = startSec * pxPerSec;
+  const w = (endSec - startSec) * pxPerSec;
+
+  const handleClick = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      setSelectedSegmentId(isSelected ? null : id);
+    },
+    [id, isSelected, setSelectedSegmentId],
+  );
+
+  return (
+    <Box
+      position="absolute"
+      style={{ left: `${x}px`, width: `${Math.max(w - 1, 4)}px` }}
+      top="0"
+      bottom="0"
+      borderRadius="4px"
+      overflow="hidden"
+      border="1.5px solid"
+      borderColor={isSelected ? "#6366F1" : "#252525"}
+      bg="#111"
+      cursor="pointer"
+      transition="border-color 120ms"
+      _hover={{
+        borderColor: isSelected ? "#818cf8" : "#3a3a3a",
+      }}
+      onClick={handleClick}
+      contain="layout paint"
+    >
+      <SegmentThumbnails
+        sourceVideoUrl={sourceVideoUrl}
+        sourcePreviewId={sourcePreviewId}
+        clipStartSec={clipStartSec}
+        segStartSec={startSec}
+        segEndSec={endSec}
+        width={Math.max(w - 3, 4)}
+        height={TRACK_HEIGHT - 3}
+      />
+
+      <Flex
+        position="absolute"
+        top="3px"
+        left="4px"
+        px="5px"
+        h="16px"
+        align="center"
+        borderRadius="3px"
+        bg="rgba(0,0,0,0.6)"
+        backdropFilter="blur(4px)"
+      >
+        <Text
+          fontSize="9px"
+          fontWeight="700"
+          color={isSelected ? "#a5b4fc" : "#aaa"}
+          letterSpacing="0.04em"
+          textTransform="capitalize"
+        >
+          {label}
+        </Text>
+      </Flex>
+
+      <Box
+        position="absolute"
+        left="0"
+        top="0"
+        bottom="0"
+        w="5px"
+        bg="rgba(99,102,241,0.6)"
+        cursor="ew-resize"
+        opacity={isSelected ? 1 : 0}
+        transition="opacity 120ms"
+        _hover={{ opacity: 1, bg: "#6366F1" }}
+        borderLeftRadius="4px"
+      />
+      <Box
+        position="absolute"
+        right="0"
+        top="0"
+        bottom="0"
+        w="5px"
+        bg="rgba(99,102,241,0.6)"
+        cursor="ew-resize"
+        opacity={isSelected ? 1 : 0}
+        transition="opacity 120ms"
+        _hover={{ opacity: 1, bg: "#6366F1" }}
+        borderRightRadius="4px"
+      />
+    </Box>
+  );
+});
+
+const TimelineTimecode = memo(function TimelineTimecode({
+  duration,
+}: {
+  duration: number;
+}) {
+  const { playbackClock } = useStudio();
+  const currentTime = usePlaybackTime(playbackClock);
+  const safeCurrentTime = Math.min(duration, Math.max(0, currentTime));
+
+  return (
+    <Text
+      fontFamily="mono"
+      fontSize="12px"
+      color="#888"
+      ml="8px"
+      whiteSpace="nowrap"
+    >
+      {formatTimecode(safeCurrentTime)}
+      <Box as="span" color="#444" mx="6px">
+        /
+      </Box>
+      {formatTimecode(duration)}
+    </Text>
+  );
+});
+
+const TimelinePlayhead = memo(function TimelinePlayhead({
+  duration,
+  isPlaying,
+  timeToX,
+  scrollRootRef,
+}: {
+  duration: number;
+  isPlaying: boolean;
+  timeToX: (time: number) => number;
+  scrollRootRef: RefObject<HTMLDivElement | null>;
+}) {
+  const { playbackClock } = useStudio();
+  const playheadRef = useRef<HTMLDivElement>(null);
+  const lastAutoScrollAtRef = useRef(0);
+
+  const updatePlayhead = useCallback(() => {
+    const el = playheadRef.current;
+    const currentTime = Math.min(duration, Math.max(0, playbackClock.getSnapshot()));
+    const playheadX = timeToX(currentTime);
+
+    if (el) {
+      el.style.transform = `translate3d(${playheadX}px, 0, 0)`;
+    }
+
+    const scrollRoot = scrollRootRef.current;
+    if (!scrollRoot || !isPlaying) return;
+
+    const now = performance.now();
+    if (now - lastAutoScrollAtRef.current < 250) return;
+
+    const { scrollLeft, clientWidth } = scrollRoot;
+    if (
+      playheadX < scrollLeft + 60 ||
+      playheadX > scrollLeft + clientWidth - 60
+    ) {
+      scrollRoot.scrollLeft = playheadX - clientWidth / 2;
+      lastAutoScrollAtRef.current = now;
+    }
+  }, [duration, isPlaying, playbackClock, scrollRootRef, timeToX]);
+
+  useEffect(() => {
+    updatePlayhead();
+    return playbackClock.subscribe(updatePlayhead);
+  }, [playbackClock, updatePlayhead]);
+
+  return (
+    <Box
+      ref={playheadRef}
+      position="absolute"
+      top="0"
+      bottom="0"
+      w="1.5px"
+      bg="white"
+      style={{
+        left: 0,
+        transform: `translate3d(${timeToX(Math.min(duration, Math.max(0, playbackClock.getSnapshot())))}px, 0, 0)`,
+        pointerEvents: "none",
+        willChange: "transform",
+      }}
+      zIndex={10}
+    >
+      <Box
+        position="absolute"
+        top="0"
+        left="50%"
+        transform="translateX(-50%)"
+        w="0"
+        h="0"
+        style={{
+          borderLeft: "5px solid transparent",
+          borderRight: "5px solid transparent",
+          borderTop: "7px solid white",
+        }}
+      />
+      <Box
+        position="absolute"
+        bottom="-1px"
+        left="50%"
+        transform="translateX(-50%)"
+        w="5px"
+        h="5px"
+        borderRadius="full"
+        bg="white"
+      />
+    </Box>
+  );
+});
 
 export function Timeline() {
   const {
     isPlaying,
     togglePlay,
-    currentTime,
     duration,
     seekTo,
     showTimeline,
@@ -318,15 +657,22 @@ export function Timeline() {
     splitAtPlayhead,
     deleteSelectedSegment,
     sourceVideoUrl,
+    sourcePreviewId,
     clipStartSec,
     utterances,
   } = useStudio();
 
   const stripRef = useRef<HTMLDivElement>(null);
-  const isDragging = useRef(false);
+  const { viewport, onScroll } = useTimelineViewport(stripRef);
 
+  const safeDuration = Math.max(0, duration);
   const TIMELINE_PX_PER_SEC = 80 * timelineZoom;
-  const totalWidth = duration * TIMELINE_PX_PER_SEC;
+  const totalWidth = safeDuration * TIMELINE_PX_PER_SEC;
+
+  useEffect(() => {
+    setTimelineThumbnailPlaybackActive(isPlaying);
+    return () => setTimelineThumbnailPlaybackActive(false);
+  }, [isPlaying]);
 
   // Ruler ticks — adaptive intervals
   const tickInterval = useMemo(() => {
@@ -341,13 +687,75 @@ export function Timeline() {
   const ticks = useMemo(() => {
     const result: { time: number; major: boolean }[] = [];
     const subInterval = tickInterval / subTickCount;
-    for (let t = 0; t <= duration + 0.01; t += subInterval) {
+    for (let t = 0; t <= safeDuration + 0.01; t += subInterval) {
       const rounded = Math.round(t * 100) / 100;
       const isMajor = Math.abs(rounded % tickInterval) < 0.01;
       result.push({ time: rounded, major: isMajor });
     }
     return result;
-  }, [duration, tickInterval, subTickCount]);
+  }, [safeDuration, tickInterval, subTickCount]);
+
+  const visibleRange = useMemo(() => {
+    const startX = Math.max(0, viewport.scrollLeft - TIMELINE_OVERSCAN_PX);
+    const endX =
+      viewport.scrollLeft + Math.max(1, viewport.clientWidth) + TIMELINE_OVERSCAN_PX;
+
+    return {
+      startSec: Math.max(0, (startX - LEFT_GUTTER) / TIMELINE_PX_PER_SEC),
+      endSec: Math.min(
+        safeDuration,
+        Math.max(0, (endX - LEFT_GUTTER) / TIMELINE_PX_PER_SEC),
+      ),
+    };
+  }, [TIMELINE_PX_PER_SEC, safeDuration, viewport.clientWidth, viewport.scrollLeft]);
+
+  const visibleTicks = useMemo(
+    () =>
+      ticks.filter(
+        ({ time }) =>
+          time >= visibleRange.startSec - tickInterval &&
+          time <= visibleRange.endSec + tickInterval,
+      ),
+    [ticks, visibleRange.endSec, visibleRange.startSec, tickInterval],
+  );
+
+  const visibleSegments = useMemo(
+    () =>
+      segments.filter(
+        (seg) =>
+          seg.endSec >= visibleRange.startSec &&
+          seg.startSec <= visibleRange.endSec,
+      ),
+    [segments, visibleRange.endSec, visibleRange.startSec],
+  );
+
+  const visiblePauseMarkers = useMemo(() => {
+    const markers: { id: string; startSec: number; endSec: number; duration: number }[] = [];
+
+    for (let i = 0; i < utterances.length - 1; i++) {
+      const current = utterances[i]!;
+      const next = utterances[i + 1]!;
+      const gap = next.startSec - current.endSec;
+
+      if (gap < PAUSE_MARKER_THRESHOLD_SEC) continue;
+
+      const startSec = Math.max(0, current.endSec - clipStartSec);
+      const endSec = Math.min(safeDuration, next.startSec - clipStartSec);
+
+      if (endSec <= visibleRange.startSec || startSec >= visibleRange.endSec) {
+        continue;
+      }
+
+      markers.push({
+        id: `pause-${i}`,
+        startSec,
+        endSec,
+        duration: gap,
+      });
+    }
+
+    return markers;
+  }, [clipStartSec, safeDuration, utterances, visibleRange.endSec, visibleRange.startSec]);
 
   const timeToX = useCallback(
     (t: number) => LEFT_GUTTER + t * TIMELINE_PX_PER_SEC,
@@ -364,9 +772,9 @@ export function Timeline() {
       const rect = e.currentTarget.getBoundingClientRect();
       const x = e.clientX - rect.left + (stripRef.current?.scrollLeft ?? 0);
       const t = xToTime(x);
-      if (t >= 0 && t <= duration) seekTo(t);
+      if (t >= 0 && t <= safeDuration) seekTo(t);
     },
-    [seekTo, xToTime, duration],
+    [seekTo, xToTime, safeDuration],
   );
 
   const handleWheel = useCallback(
@@ -379,20 +787,6 @@ export function Timeline() {
     },
     [setTimelineZoom],
   );
-
-  // Scroll playhead into view
-  useEffect(() => {
-    const el = stripRef.current;
-    if (!el || !isPlaying) return;
-    const playheadX = timeToX(currentTime);
-    const { scrollLeft, clientWidth } = el;
-    if (
-      playheadX < scrollLeft + 60 ||
-      playheadX > scrollLeft + clientWidth - 60
-    ) {
-      el.scrollLeft = playheadX - clientWidth / 2;
-    }
-  }, [currentTime, timeToX, isPlaying]);
 
   const trackAreaHeight = RULER_HEIGHT + TRACK_HEIGHT + WAVEFORM_HEIGHT + 8;
 
@@ -465,22 +859,10 @@ export function Timeline() {
           </Flex>
           <CtrlBtn
             icon={<SkipForward size={15} />}
-            onClick={() => seekTo(duration)}
+            onClick={() => seekTo(safeDuration)}
             title="Go to end"
           />
-          <Text
-            fontFamily="mono"
-            fontSize="12px"
-            color="#888"
-            ml="8px"
-            whiteSpace="nowrap"
-          >
-            {formatTimecode(currentTime)}
-            <Box as="span" color="#444" mx="6px">
-              /
-            </Box>
-            {formatTimecode(duration)}
-          </Text>
+          <TimelineTimecode duration={safeDuration} />
         </Flex>
 
         {/* Right: Zoom */}
@@ -523,11 +905,13 @@ export function Timeline() {
       {showTimeline && (
         <Box
           ref={stripRef}
+          data-timeline-scroll-root
           overflowX="auto"
           overflowY="hidden"
           style={{ height: `${trackAreaHeight}px` }}
           position="relative"
           onWheel={handleWheel}
+          onScroll={onScroll}
           css={{
             "&::-webkit-scrollbar": { height: "6px" },
             "&::-webkit-scrollbar-track": { background: "transparent" },
@@ -552,7 +936,7 @@ export function Timeline() {
               onClick={handleStripClick}
               cursor="pointer"
             >
-              {ticks.map(({ time, major }) => (
+              {visibleTicks.map(({ time, major }) => (
                 <Box
                   key={time}
                   position="absolute"
@@ -632,94 +1016,43 @@ export function Timeline() {
                 <Plus size={12} />
               </Flex>
 
-              {segments.map((seg) => {
-                const x = seg.startSec * TIMELINE_PX_PER_SEC;
-                const w = (seg.endSec - seg.startSec) * TIMELINE_PX_PER_SEC;
-                const isSelected = selectedSegmentId === seg.id;
+              {visibleSegments.map((seg) => (
+                <TimelineSegmentBlock
+                  key={seg.id}
+                  id={seg.id}
+                  label={seg.label}
+                  startSec={seg.startSec}
+                  endSec={seg.endSec}
+                  isSelected={selectedSegmentId === seg.id}
+                  pxPerSec={TIMELINE_PX_PER_SEC}
+                  sourceVideoUrl={sourceVideoUrl}
+                  sourcePreviewId={sourcePreviewId}
+                  clipStartSec={clipStartSec}
+                  setSelectedSegmentId={setSelectedSegmentId}
+                />
+              ))}
+
+              {visiblePauseMarkers.map((marker) => {
+                const left = marker.startSec * TIMELINE_PX_PER_SEC;
+                const width = Math.max(
+                  2,
+                  (marker.endSec - marker.startSec) * TIMELINE_PX_PER_SEC,
+                );
 
                 return (
                   <Box
-                    key={seg.id}
+                    key={marker.id}
                     position="absolute"
-                    style={{ left: `${x}px`, width: `${Math.max(w - 1, 4)}px` }}
                     top="0"
                     bottom="0"
-                    borderRadius="4px"
-                    overflow="hidden"
-                    border="1.5px solid"
-                    borderColor={isSelected ? "#6366F1" : "#252525"}
-                    bg="#111"
-                    cursor="pointer"
-                    transition="border-color 120ms"
-                    _hover={{
-                      borderColor: isSelected ? "#818cf8" : "#3a3a3a",
-                    }}
-                    onClick={(e: React.MouseEvent) => {
-                      e.stopPropagation();
-                      setSelectedSegmentId(isSelected ? null : seg.id);
-                    }}
-                  >
-                    {/* Video thumbnails (canvas-based) */}
-                    <SegmentThumbnails
-                      sourceVideoUrl={sourceVideoUrl}
-                      clipStartSec={clipStartSec}
-                      segStartSec={seg.startSec}
-                      segEndSec={seg.endSec}
-                      width={Math.max(w - 3, 4)}
-                      height={TRACK_HEIGHT - 3}
-                    />
-
-                    {/* Label tag */}
-                    <Flex
-                      position="absolute"
-                      top="3px"
-                      left="4px"
-                      px="5px"
-                      h="16px"
-                      align="center"
-                      borderRadius="3px"
-                      bg="rgba(0,0,0,0.6)"
-                      backdropFilter="blur(4px)"
-                    >
-                      <Text
-                        fontSize="9px"
-                        fontWeight="700"
-                        color={isSelected ? "#a5b4fc" : "#aaa"}
-                        letterSpacing="0.04em"
-                        textTransform="capitalize"
-                      >
-                        {seg.label}
-                      </Text>
-                    </Flex>
-
-                    {/* Trim handles (visible on select/hover) */}
-                    <Box
-                      position="absolute"
-                      left="0"
-                      top="0"
-                      bottom="0"
-                      w="5px"
-                      bg="rgba(99,102,241,0.6)"
-                      cursor="ew-resize"
-                      opacity={isSelected ? 1 : 0}
-                      transition="opacity 120ms"
-                      _hover={{ opacity: 1, bg: "#6366F1" }}
-                      borderLeftRadius="4px"
-                    />
-                    <Box
-                      position="absolute"
-                      right="0"
-                      top="0"
-                      bottom="0"
-                      w="5px"
-                      bg="rgba(99,102,241,0.6)"
-                      cursor="ew-resize"
-                      opacity={isSelected ? 1 : 0}
-                      transition="opacity 120ms"
-                      _hover={{ opacity: 1, bg: "#6366F1" }}
-                      borderRightRadius="4px"
-                    />
-                  </Box>
+                    style={{ left: `${left}px`, width: `${width}px` }}
+                    bg="rgba(255,255,255,0.08)"
+                    borderLeft="1px solid rgba(255,255,255,0.16)"
+                    borderRight="1px solid rgba(255,255,255,0.12)"
+                    pointerEvents="none"
+                    title={`${marker.duration.toFixed(1)}s pause`}
+                    zIndex={6}
+                  />
                 );
               })}
 
@@ -765,54 +1098,19 @@ export function Timeline() {
               <WaveformCanvas
                 utterances={utterances}
                 clipStartSec={clipStartSec}
-                duration={duration}
+                duration={safeDuration}
                 width={totalWidth}
                 height={WAVEFORM_HEIGHT}
               />
             </Box>
 
             {/* ── Playhead ─────────────────────────────────────── */}
-            <Box
-              position="absolute"
-              top="0"
-              bottom="0"
-              w="1.5px"
-              bg="white"
-              style={{
-                left: `${timeToX(currentTime)}px`,
-                pointerEvents: "none",
-                transition: isDragging.current
-                  ? "none"
-                  : "left 80ms linear",
-              }}
-              zIndex={10}
-            >
-              {/* Triangle handle */}
-              <Box
-                position="absolute"
-                top="0"
-                left="50%"
-                transform="translateX(-50%)"
-                w="0"
-                h="0"
-                style={{
-                  borderLeft: "5px solid transparent",
-                  borderRight: "5px solid transparent",
-                  borderTop: "7px solid white",
-                }}
-              />
-              {/* Bottom dot */}
-              <Box
-                position="absolute"
-                bottom="-1px"
-                left="50%"
-                transform="translateX(-50%)"
-                w="5px"
-                h="5px"
-                borderRadius="full"
-                bg="white"
-              />
-            </Box>
+            <TimelinePlayhead
+              duration={safeDuration}
+              isPlaying={isPlaying}
+              timeToX={timeToX}
+              scrollRootRef={stripRef}
+            />
           </Box>
         </Box>
       )}

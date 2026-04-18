@@ -73,6 +73,7 @@ export function VideoPreview() {
     trackerEnabled, setTrackerEnabled,
     selectedSegmentId,
     videoRef,
+    playbackClock,
     sourceVideoUrl,
     clipStartSec,
     deselectCaption,
@@ -100,12 +101,13 @@ export function VideoPreview() {
 
     const handleLoaded = () => {
       video.currentTime = clipStartSec;
+      playbackClock.setTime(0);
       setVideoLoaded(true);
     };
 
     video.addEventListener("loadedmetadata", handleLoaded);
     return () => video.removeEventListener("loadedmetadata", handleLoaded);
-  }, [sourceVideoUrl, clipStartSec, videoRef]);
+  }, [sourceVideoUrl, clipStartSec, videoRef, playbackClock]);
 
   // Calculate video dimensions to fit within container while maintaining aspect ratio
   const videoW = arConfig.w;

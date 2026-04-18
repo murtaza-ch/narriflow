@@ -17,6 +17,7 @@ import { VideoPreview } from "./video-preview";
 import { ToolSidebar } from "./tool-sidebar";
 import { Timeline } from "./timeline";
 import { KeyboardShortcutsModal } from "./keyboard-shortcuts-modal";
+import { createPlaybackClock, type PlaybackClock } from "./playback-clock";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -65,7 +66,6 @@ export interface ClipInfo {
 
 interface StudioState {
   isPlaying: boolean;
-  currentTime: number;
   duration: number;
   activeTool: ToolId | null;
   showTimeline: boolean;
@@ -90,12 +90,13 @@ interface StudioContextValue extends StudioState {
   transcript: TranscriptItem[];
   clipInfo: ClipInfo;
   videoRef: React.RefObject<HTMLVideoElement | null>;
+  playbackClock: PlaybackClock;
   sourceVideoUrl: string | null;
+  sourcePreviewId: string;
   clipStartSec: number;
   clipEndSec: number;
   utterances: TranscriptUtterance[];
   updateUtteranceText: (index: number, newText: string) => void;
-  setCurrentTime: (t: number) => void;
   setIsPlaying: (v: boolean) => void;
   setActiveTool: (t: ToolId | null) => void;
   setShowTimeline: (v: boolean) => void;
@@ -135,6 +136,7 @@ interface StudioShellProps {
   timelineSegments: TimelineSegment[];
   initialCaptionPreset: CaptionPreset;
   sourceVideoUrl?: string | null;
+  sourcePreviewId?: string;
   clipStartSec?: number;
   clipEndSec?: number;
 }
@@ -145,14 +147,20 @@ export function StudioShell({
   timelineSegments,
   initialCaptionPreset,
   sourceVideoUrl = null,
+  sourcePreviewId = "source",
   clipStartSec = 0,
   clipEndSec = 0,
 }: StudioShellProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const playbackClock = useMemo(() => createPlaybackClock(), []);
 
   // Mutable utterances state (for editable transcript)
   const [utterances, setUtterances] = useState<TranscriptUtterance[]>(
     Array.isArray(initialUtterances) ? initialUtterances : [],
+  );
+  const duration = useMemo(
+    () => Math.max(0, clipEndSec - clipStartSec || clipInfo.duration),
+    [clipEndSec, clipStartSec, clipInfo.duration],
   );
 
   // Derive TranscriptItem[] from utterances for existing TranscriptPanel
@@ -168,8 +176,6 @@ export function StudioShell({
   );
 
   const [isPlaying, setIsPlaying] = useState(false);
-  const [currentTime, setCurrentTime] = useState(0);
-  const [duration] = useState(clipInfo.duration);
   const [activeTool, setActiveTool] = useState<ToolId | null>(null);
   const [showTimeline, setShowTimeline] = useState(true);
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>(clipInfo.aspectRatio);
@@ -217,15 +223,22 @@ export function StudioShell({
 
   const togglePlay = useCallback(() => {
     const video = videoRef.current;
+    const currentTime = playbackClock.getSnapshot();
     if (!video || !sourceVideoUrl) {
-      // No video — just toggle state for UI demo
+      if (currentTime >= duration - 0.02) {
+        playbackClock.setTime(0);
+      }
       setIsPlaying((v) => !v);
       return;
     }
-    // If at end or before start, reset to clip start
-    if (video.currentTime >= clipEndSec || video.currentTime < clipStartSec) {
+
+    if (
+      video.currentTime >= clipEndSec - 0.02 ||
+      video.currentTime < clipStartSec ||
+      currentTime >= duration - 0.02
+    ) {
       video.currentTime = clipStartSec;
-      setCurrentTime(0);
+      playbackClock.setTime(0);
     }
     if (video.paused) {
       video.play().catch(() => {});
@@ -234,17 +247,18 @@ export function StudioShell({
       video.pause();
       setIsPlaying(false);
     }
-  }, [sourceVideoUrl, clipStartSec, clipEndSec]);
+  }, [sourceVideoUrl, clipStartSec, clipEndSec, duration, playbackClock]);
 
   const seekTo = useCallback((t: number) => {
     const clamped = Math.max(0, Math.min(duration, t));
-    setCurrentTime(clamped);
+    playbackClock.setTime(clamped);
     if (videoRef.current && sourceVideoUrl) {
       videoRef.current.currentTime = clipStartSec + clamped;
     }
-  }, [duration, clipStartSec, sourceVideoUrl]);
+  }, [duration, clipStartSec, sourceVideoUrl, playbackClock]);
 
   const splitAtPlayhead = useCallback(() => {
+    const currentTime = playbackClock.getSnapshot();
     const active = segments.find(
       (s) => currentTime >= s.startSec && currentTime <= s.endSec,
     );
@@ -254,13 +268,13 @@ export function StudioShell({
       if (s.id !== active.id) return [s];
       return [
         { ...s, endSec: currentTime },
-        { id: `${s.id}-b`, label: s.label, startSec: currentTime + 0.05, endSec: s.endSec },
+        { id: `${s.id}-b`, label: s.label, startSec: currentTime, endSec: s.endSec },
       ];
     });
     setSegments(newSegments);
     setUndoStack((prev) => [...prev, JSON.stringify(segments)]);
     setRedoStack([]);
-  }, [segments, currentTime]);
+  }, [segments, playbackClock]);
 
   const deleteSelectedSegment = useCallback(() => {
     if (!selectedSegmentId) return;
@@ -334,11 +348,11 @@ export function StudioShell({
           break;
         case "ArrowRight":
           e.preventDefault();
-          seekTo(currentTime + (e.shiftKey ? 5 : 1 / 30));
+          seekTo(playbackClock.getSnapshot() + (e.shiftKey ? 5 : 1 / 30));
           break;
         case "ArrowLeft":
           e.preventDefault();
-          seekTo(currentTime - (e.shiftKey ? 5 : 1 / 30));
+          seekTo(playbackClock.getSnapshot() - (e.shiftKey ? 5 : 1 / 30));
           break;
         case "d":
         case "D":
@@ -391,41 +405,59 @@ export function StudioShell({
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [togglePlay, seekTo, currentTime, duration, splitAtPlayhead, deleteSelectedSegment, handleUndo, handleRedo, captionSelected, deselectCaption]);
+  }, [togglePlay, seekTo, playbackClock, duration, splitAtPlayhead, deleteSelectedSegment, handleUndo, handleRedo, captionSelected, deselectCaption]);
 
-  // Sync currentTime from video element (real playback)
+  // Keep the clock aligned with explicit media updates without routing every
+  // playback frame through the top-level React context.
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !sourceVideoUrl) return;
 
     const handleTimeUpdate = () => {
-      const clipRelativeTime = video.currentTime - clipStartSec;
-      setCurrentTime(Math.max(0, clipRelativeTime));
+      const clipRelativeTime = Math.max(0, video.currentTime - clipStartSec);
+      const clampedTime = Math.min(duration, clipRelativeTime);
 
-      if (video.currentTime >= clipEndSec) {
+      if (video.currentTime >= clipEndSec - 0.02 || clampedTime >= duration) {
         video.pause();
+        video.currentTime = clipEndSec;
+        playbackClock.setTime(duration);
         setIsPlaying(false);
+        return;
+      }
+
+      if (video.paused) {
+        playbackClock.setTime(clampedTime);
       }
     };
 
     video.addEventListener("timeupdate", handleTimeUpdate);
     return () => video.removeEventListener("timeupdate", handleTimeUpdate);
-  }, [sourceVideoUrl, clipStartSec, clipEndSec]);
+  }, [sourceVideoUrl, clipStartSec, clipEndSec, duration, playbackClock]);
+
+  useEffect(() => {
+    if (!isPlaying || !sourceVideoUrl) return;
+
+    return playbackClock.startVideo({
+      video: videoRef.current,
+      clipStartSec,
+      clipEndSec,
+      duration,
+      onEnded: () => {
+        const video = videoRef.current;
+        if (video) {
+          video.pause();
+          video.currentTime = clipEndSec;
+        }
+        setIsPlaying(false);
+      },
+    });
+  }, [isPlaying, sourceVideoUrl, clipStartSec, clipEndSec, duration, playbackClock]);
 
   // Simulated time advancing when playing (fallback: no real video)
   useEffect(() => {
     if (!isPlaying || sourceVideoUrl) return;
-    const interval = setInterval(() => {
-      setCurrentTime((t) => {
-        if (t >= duration) {
-          setIsPlaying(false);
-          return 0;
-        }
-        return t + 0.1;
-      });
-    }, 100);
-    return () => clearInterval(interval);
-  }, [isPlaying, duration, sourceVideoUrl]);
+    return playbackClock.startSynthetic(duration, () => setIsPlaying(false));
+  }, [isPlaying, duration, sourceVideoUrl, playbackClock]);
 
   // Debounced auto-save for transcript and caption preset changes
   const isInitialRender = useRef(true);
@@ -459,13 +491,13 @@ export function StudioShell({
   }, [utterances, captionPreset, clipInfo.projectId, clipInfo.id]);
 
   const ctx: StudioContextValue = {
-    isPlaying, currentTime, duration, activeTool, showTimeline, aspectRatio,
+    isPlaying, duration, activeTool, showTimeline, aspectRatio,
     layoutMode, trackerEnabled, showShortcuts, timelineZoom, selectedSegmentId,
     captionPreset, captionSelected, transcriptOnly, credits, segments, saveState, undoStack, redoStack,
-    transcript: derivedTranscript, clipInfo, videoRef,
-    sourceVideoUrl, clipStartSec, clipEndSec,
+    transcript: derivedTranscript, clipInfo, videoRef, playbackClock,
+    sourceVideoUrl, sourcePreviewId, clipStartSec, clipEndSec,
     utterances, updateUtteranceText,
-    setCurrentTime, setIsPlaying, setActiveTool, setShowTimeline, setAspectRatio,
+    setIsPlaying, setActiveTool, setShowTimeline, setAspectRatio,
     setLayoutMode, setTrackerEnabled, setShowShortcuts, setTimelineZoom,
     setSelectedSegmentId, setCaptionPreset, selectCaption, deselectCaption,
     setTranscriptOnly, setSegments,
