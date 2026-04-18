@@ -108,8 +108,22 @@ function getRequiredDeepgramApiKey() {
 
 async function transcribeWithDeepgram(audioPath: string) {
   const apiKey = getRequiredDeepgramApiKey();
+  const model = process.env.DEEPGRAM_MODEL?.trim() || "nova-3";
+  const language = process.env.DEEPGRAM_LANGUAGE?.trim() || "en";
+  const params = new URLSearchParams({
+    model,
+    smart_format: "true",
+    diarize: "true",
+    punctuate: "true",
+    utterances: "true",
+  });
+
+  if (language) {
+    params.set("language", language);
+  }
+
   const response = await fetch(
-    "https://api.deepgram.com/v1/listen?model=nova-3&smart_format=true&diarize=true&punctuate=true&utterances=true",
+    `https://api.deepgram.com/v1/listen?${params.toString()}`,
     {
       method: "POST",
       headers: {

@@ -1071,47 +1071,47 @@ export class ProjectService {
       throw new Error("workflow run not found");
     }
 
-    await prisma.$transaction(async (tx) => {
-      await tx.transcript.upsert({
-        where: { projectId: run.projectId },
-        create: {
-          projectId: run.projectId,
-          status: "completed",
-          provider: input.provider,
-          providerModel: input.providerModel,
-          languageCode: input.languageCode,
-          text: input.text,
-          utterancesJson: input.utterances as Prisma.InputJsonValue,
-          speakerCount: input.speakerCount,
-          durationSeconds: input.durationSeconds,
-          rawStorageKey: input.rawStorageKey,
-          errorCode: null,
-          completedAt: new Date(),
-        },
-        update: {
-          status: "completed",
-          provider: input.provider,
-          providerModel: input.providerModel,
-          languageCode: input.languageCode,
-          text: input.text,
-          utterancesJson: input.utterances as Prisma.InputJsonValue,
-          speakerCount: input.speakerCount,
-          durationSeconds: input.durationSeconds,
-          rawStorageKey: input.rawStorageKey,
-          errorCode: null,
-          completedAt: new Date(),
-        },
-      });
+    const completedAt = new Date();
 
-      await tx.workflowRun.update({
-        where: { id: run.id },
-        data: {
-          stage: "stt",
-          status: "completed",
-          progress: 100,
-          errorCode: null,
-        },
-      });
+    await prisma.transcript.upsert({
+      where: { projectId: run.projectId },
+      create: {
+        projectId: run.projectId,
+        status: "completed",
+        provider: input.provider,
+        providerModel: input.providerModel,
+        languageCode: input.languageCode,
+        text: input.text,
+        utterancesJson: input.utterances as Prisma.InputJsonValue,
+        speakerCount: input.speakerCount,
+        durationSeconds: input.durationSeconds,
+        rawStorageKey: input.rawStorageKey,
+        errorCode: null,
+        completedAt,
+      },
+      update: {
+        status: "completed",
+        provider: input.provider,
+        providerModel: input.providerModel,
+        languageCode: input.languageCode,
+        text: input.text,
+        utterancesJson: input.utterances as Prisma.InputJsonValue,
+        speakerCount: input.speakerCount,
+        durationSeconds: input.durationSeconds,
+        rawStorageKey: input.rawStorageKey,
+        errorCode: null,
+        completedAt,
+      },
+    });
+
+    await prisma.workflowRun.update({
+      where: { id: run.id },
+      data: {
+        stage: "stt",
+        status: "completed",
+        progress: 100,
+        errorCode: null,
+      },
     });
 
     await this.publishWorkflowRunEvent({

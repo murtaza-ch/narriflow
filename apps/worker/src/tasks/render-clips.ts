@@ -14,6 +14,7 @@ import {
   clipAspectRatioDbSchema,
   clipAspectRatioFromDb,
   clipAspectRatioOptions,
+  getEffectiveClipTiming,
 } from "@narriflow/validators";
 import type { CaptionPreset, ClipAspectRatio, TranscriptUtterance } from "@narriflow/validators";
 
@@ -205,10 +206,11 @@ async function probeSource(sourcePath: string): Promise<SourceProbe> {
 }
 
 function formatSrtTimestamp(seconds: number): string {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = Math.floor(seconds % 60);
-  const ms = Math.round((seconds % 1) * 1000);
+  const totalMs = Math.max(0, Math.round(seconds * 1000));
+  const h = Math.floor(totalMs / 3_600_000);
+  const m = Math.floor((totalMs % 3_600_000) / 60_000);
+  const s = Math.floor((totalMs % 60_000) / 1000);
+  const ms = totalMs % 1000;
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")},${String(ms).padStart(3, "0")}`;
 }
 
@@ -252,10 +254,11 @@ function generateSrtFromSlice(
 }
 
 function formatAssTimestamp(seconds: number): string {
-  const h = Math.floor(seconds / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = Math.floor(seconds % 60);
-  const cs = Math.round((seconds % 1) * 100);
+  const totalCs = Math.max(0, Math.round(seconds * 100));
+  const h = Math.floor(totalCs / 360_000);
+  const m = Math.floor((totalCs % 360_000) / 6000);
+  const s = Math.floor((totalCs % 6000) / 100);
+  const cs = totalCs % 100;
   return `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}.${String(cs).padStart(2, "0")}`;
 }
 
@@ -511,8 +514,8 @@ function buildSingleVideoArgs(params: {
     "-y",
     "-ss",
     String(params.startSec),
-    "-to",
-    String(params.endSec),
+    "-t",
+    String(params.endSec - params.startSec),
     "-i",
     params.sourcePath,
     "-filter_complex",
@@ -575,8 +578,8 @@ function buildMultiVideoArgs(params: {
     "-y",
     "-ss",
     String(params.startSec),
-    "-to",
-    String(params.endSec),
+    "-t",
+    String(params.endSec - params.startSec),
     "-i",
     params.sourcePath,
     "-filter_complex",
@@ -634,8 +637,8 @@ function buildAudioOnlyArgs(params: {
     "-y",
     "-ss",
     String(params.startSec),
-    "-to",
-    String(params.endSec),
+    "-t",
+    String(params.endSec - params.startSec),
     "-i",
     params.sourcePath,
     "-f",
@@ -794,8 +797,16 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
     for (let clipGroupIndex = 0; clipGroupIndex < clipGroups.length; clipGroupIndex++) {
       const renderGroup = clipGroups[clipGroupIndex]!;
       const clip = renderGroup[0]!.clip;
-      const clipDurationSec = clip.endSec - clip.startSec;
-      const utterances = clip.transcriptSlice as unknown as TranscriptUtterance[];
+      const rawUtterances = clip.transcriptSlice as unknown as TranscriptUtterance[];
+      const effective = getEffectiveClipTiming({
+        utterances: rawUtterances,
+        startSec: clip.startSec,
+        endSec: clip.endSec,
+      });
+      const clipStartSec = effective.startSec;
+      const clipEndSec = effective.endSec;
+      const clipDurationSec = effective.durationSec;
+      const utterances = effective.transcriptSlice;
       const captionPreset = clip.captionPreset
         ? captionPresetSchema.nullable().parse(clip.captionPreset)
         : null;
@@ -803,7 +814,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
         captionPreset?.positionX !== undefined &&
         captionPreset?.positionY !== undefined;
 
-      const srtContent = generateSrtFromSlice(utterances, clip.startSec, captionPreset?.textTransform);
+      const srtContent = generateSrtFromSlice(utterances, clipStartSec, captionPreset?.textTransform);
       let srtPath: string | null = null;
 
       if (!hasCustomPosition && srtContent.length > 0) {
@@ -834,7 +845,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
         for (const output of outputs) {
           const assContent = generateAssFromSlice(
             utterances,
-            clip.startSec,
+            clipStartSec,
             output.aspectRatio,
             captionPreset,
           );
@@ -861,8 +872,8 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
             const ffmpegArgs = buildAudioOnlyArgs({
               sourcePath,
               outputPath: output.outputPath,
-              startSec: clip.startSec,
-              endSec: clip.endSec,
+              startSec: clipStartSec,
+              endSec: clipEndSec,
               aspectRatio: output.aspectRatio,
               clipDurationSec,
               srtPath: output.subtitlePath ?? srtPath,
@@ -904,8 +915,8 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
               ? buildSingleVideoArgs({
                   sourcePath,
                   outputPath: outputs[0]!.outputPath,
-                  startSec: clip.startSec,
-                  endSec: clip.endSec,
+                  startSec: clipStartSec,
+                  endSec: clipEndSec,
                   aspectRatio: outputs[0]!.aspectRatio,
                   probe,
                   srtPath: outputs[0]!.subtitlePath ?? srtPath,
@@ -914,8 +925,8 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
               : buildMultiVideoArgs({
                   sourcePath,
                   outputs,
-                  startSec: clip.startSec,
-                  endSec: clip.endSec,
+                  startSec: clipStartSec,
+                  endSec: clipEndSec,
                   probe,
                   srtPath,
                   captionPreset,

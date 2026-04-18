@@ -8,6 +8,8 @@ import {
   clipAspectRatioFromDb,
   clipAspectRatioOptions,
   clipAspectRatioToDb,
+  getEffectiveClipTiming,
+  normalizeTranscriptSliceForClip,
 } from "@narriflow/validators";
 import type {
   CaptionPreset,
@@ -46,7 +48,10 @@ interface LlmMeta {
   totalTokensUsed: number | null;
 }
 
-type ClipWithRenders = Clip & { renders: ClipRender[] };
+type ClipWithRenders = Clip & {
+  renders: ClipRender[];
+  project?: { sourceDurationSeconds: number | null } | null;
+};
 
 const DEFAULT_RENDER_ASPECT_RATIOS: ClipAspectRatio[] = ["9:16"];
 const aspectRatioOrder = new Map(
@@ -95,14 +100,21 @@ function toClipRenderVariantSnapshot(render: ClipRender): ClipRenderVariant {
 }
 
 function toClipSnapshot(clip: ClipWithRenders): ClipSnapshot {
+  const effective = getEffectiveClipTiming({
+    utterances: clip.transcriptSlice as unknown as TranscriptUtterance[],
+    startSec: clip.startSec,
+    endSec: clip.endSec,
+    sourceDurationSec: clip.project?.sourceDurationSeconds ?? null,
+  });
+
   return {
     id: clip.id,
     projectId: clip.projectId,
     index: clip.index,
     status: clip.status as ClipSnapshot["status"],
-    startSec: clip.startSec,
-    endSec: clip.endSec,
-    durationSec: Math.round((clip.endSec - clip.startSec) * 10) / 10,
+    startSec: effective.startSec,
+    endSec: effective.endSec,
+    durationSec: Math.round(effective.durationSec * 10) / 10,
     hookText: clip.hookText,
     reasoning: clip.reasoning,
     category: clip.category as ClipSnapshot["category"],
@@ -114,7 +126,7 @@ function toClipSnapshot(clip: ClipWithRenders): ClipSnapshot {
     tiktokScore: clip.tiktokScore,
     youtubeScore: clip.youtubeScore,
     instagramScore: clip.instagramScore,
-    transcriptSlice: clip.transcriptSlice as unknown as TranscriptUtterance[],
+    transcriptSlice: effective.transcriptSlice,
     renderVariants: clip.renders
       .map(toClipRenderVariantSnapshot)
       .sort(
@@ -215,6 +227,7 @@ export class ClipService {
         project: { userId },
       },
       include: {
+        project: { select: { sourceDurationSeconds: true } },
         renders: true,
       },
       orderBy: { viralityScore: "desc" },
@@ -252,11 +265,15 @@ export class ClipService {
     const utterances = clip.project.transcript?.utterancesJson as
       | TranscriptUtterance[]
       | null;
-    const newSlice = utterances
-      ? sliceTranscriptForClip(utterances, input.startSec, input.endSec)
-      : [];
+    const effective = getEffectiveClipTiming({
+      utterances: utterances ?? [],
+      startSec: input.startSec,
+      endSec: input.endSec,
+      sourceDurationSec: clip.project.sourceDurationSeconds,
+    });
+    const newSlice = utterances ? effective.transcriptSlice : [];
 
-    const durationSec = input.endSec - input.startSec;
+    const durationSec = effective.durationSec;
     const durationOptimalityScore = computeDurationOptimality(durationSec);
 
     const tiktokScore = computePlatformScore(
@@ -287,8 +304,8 @@ export class ClipService {
       return tx.clip.update({
         where: { id: clipId },
         data: {
-          startSec: input.startSec,
-          endSec: input.endSec,
+          startSec: effective.startSec,
+          endSec: effective.endSec,
           status: "edited",
           transcriptSlice: newSlice as unknown as Prisma.InputJsonValue,
           durationOptimalityScore,
@@ -734,10 +751,18 @@ export class ClipService {
       throw new Error("clip not found");
     }
 
+    const effective = getEffectiveClipTiming({
+      utterances: transcriptSlice,
+      startSec: clip.startSec,
+      endSec: clip.endSec,
+    });
+
     const updated = await prisma.clip.update({
       where: { id: clipId },
       data: {
-        transcriptSlice: transcriptSlice as unknown as Prisma.InputJsonValue,
+        startSec: effective.startSec,
+        endSec: effective.endSec,
+        transcriptSlice: effective.transcriptSlice as unknown as Prisma.InputJsonValue,
         status: "edited",
       },
       include: { renders: true },
@@ -831,9 +856,7 @@ export function sliceTranscriptForClip(
   startSec: number,
   endSec: number,
 ): TranscriptUtterance[] {
-  return utterances.filter(
-    (u) => u.endSec > startSec && u.startSec < endSec,
-  );
+  return normalizeTranscriptSliceForClip(utterances, startSec, endSec);
 }
 
 export function computeDurationOptimality(durationSec: number): number {

@@ -5,10 +5,10 @@ import {
   computePlatformScore,
   computeViralityScore,
   projectService,
-  sliceTranscriptForClip,
 } from "@narriflow/services";
 import {
   clipDetectionLlmResponseSchema,
+  getEffectiveClipTiming,
   type TranscriptUtterance,
 } from "@narriflow/validators";
 
@@ -207,6 +207,77 @@ function deduplicateClips(clips: RawDetectedClip[]): RawDetectedClip[] {
   return kept.sort((a, b) => a.startSec - b.startSec);
 }
 
+const CLIP_DETECTION_JSON_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["clips"],
+  properties: {
+    clips: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: [
+          "start_time",
+          "end_time",
+          "hook_text",
+          "reasoning",
+          "category",
+          "hook_strength",
+          "emotional_intensity",
+        ],
+        properties: {
+          start_time: { type: "number", minimum: 0 },
+          end_time: { type: "number", minimum: 0 },
+          hook_text: { type: "string", minLength: 1 },
+          reasoning: { type: "string", minLength: 1 },
+          category: {
+            type: "string",
+            enum: [
+              "hook",
+              "insight",
+              "story",
+              "humor",
+              "controversy",
+              "emotional",
+              "tutorial",
+              "quote",
+              "debate",
+              "surprise",
+            ],
+          },
+          hook_strength: { type: "integer", minimum: 1, maximum: 100 },
+          emotional_intensity: { type: "integer", minimum: 1, maximum: 100 },
+        },
+      },
+    },
+  },
+} as const;
+
+function extractResponseText(payload: unknown): string | null {
+  const response = payload as {
+    output_text?: unknown;
+    output?: Array<{
+      content?: Array<{
+        text?: unknown;
+        type?: unknown;
+      }>;
+    }>;
+  };
+
+  if (typeof response.output_text === "string") {
+    return response.output_text;
+  }
+
+  const textParts =
+    response.output
+      ?.flatMap((item) => item.content ?? [])
+      .map((content) => content.text)
+      .filter((text): text is string => typeof text === "string") ?? [];
+
+  return textParts.length > 0 ? textParts.join("") : null;
+}
+
 async function callOpenAI(
   apiKey: string,
   systemPrompt: string,
@@ -214,7 +285,7 @@ async function callOpenAI(
   model: string,
 ): Promise<{ content: string; tokensUsed: number }> {
   const response = await fetch(
-    "https://api.openai.com/v1/chat/completions",
+    "https://api.openai.com/v1/responses",
     {
       method: "POST",
       headers: {
@@ -223,19 +294,31 @@ async function callOpenAI(
       },
       body: JSON.stringify({
         model,
-        messages: [
+        input: [
           { role: "system", content: systemPrompt },
           { role: "user", content: userPrompt },
         ],
-        response_format: { type: "json_object" },
-        temperature: 0.7,
+        reasoning: {
+          effort: process.env.OPENAI_CLIP_REASONING_EFFORT ?? "medium",
+        },
+        text: {
+          format: {
+            type: "json_schema",
+            name: "clip_detection",
+            strict: true,
+            schema: CLIP_DETECTION_JSON_SCHEMA,
+          },
+        },
       }),
     },
   );
 
   const payload = (await response.json().catch(() => null)) as {
-    choices?: Array<{ message?: { content?: string } }>;
-    usage?: { total_tokens?: number };
+    usage?: {
+      total_tokens?: number;
+      input_tokens?: number;
+      output_tokens?: number;
+    };
     error?: { message?: string };
   } | null;
 
@@ -246,7 +329,7 @@ async function callOpenAI(
     throw new WorkflowWorkerError("openai_request_failed", message);
   }
 
-  const content = payload.choices?.[0]?.message?.content;
+  const content = extractResponseText(payload);
   if (!content) {
     throw new WorkflowWorkerError(
       "openai_request_failed",
@@ -256,7 +339,9 @@ async function callOpenAI(
 
   return {
     content,
-    tokensUsed: payload.usage?.total_tokens ?? 0,
+    tokensUsed:
+      payload.usage?.total_tokens ??
+      (payload.usage?.input_tokens ?? 0) + (payload.usage?.output_tokens ?? 0),
   };
 }
 
@@ -268,7 +353,7 @@ export async function processClipDetectionRun(run: WorkflowRunJob) {
 
   try {
     const apiKey = getRequiredOpenAIApiKey();
-    const model = process.env.OPENAI_CLIP_MODEL ?? "gpt-4o-mini";
+    const model = process.env.OPENAI_CLIP_MODEL ?? "gpt-5.4-mini";
 
     // Load transcript from DB via service layer
     const transcriptRow = await projectService.getTranscriptForWorker(
@@ -427,13 +512,19 @@ export async function processClipDetectionRun(run: WorkflowRunJob) {
       chunks.length > 1 ? deduplicateClips(allRawClips) : allRawClips;
 
     // Compute heuristic scores and build final clips
-    const finalClips = deduped.map((raw) => {
-      const durationSec = raw.endSec - raw.startSec;
-      const clipUtterances = sliceTranscriptForClip(
+    const finalClips = deduped.flatMap((raw) => {
+      const effective = getEffectiveClipTiming({
         utterances,
-        raw.startSec,
-        raw.endSec,
-      );
+        startSec: raw.startSec,
+        endSec: raw.endSec,
+        sourceDurationSec: run.project.sourceDurationSeconds,
+      });
+      const durationSec = effective.durationSec;
+      const clipUtterances = effective.transcriptSlice;
+
+      if (clipUtterances.length === 0) {
+        return [];
+      }
 
       const hookStrengthScore = Math.min(100, Math.max(1, raw.hookStrength));
       const emotionalIntensityScore = Math.min(
@@ -467,8 +558,8 @@ export async function processClipDetectionRun(run: WorkflowRunJob) {
       );
 
       return {
-        startSec: raw.startSec,
-        endSec: raw.endSec,
+        startSec: effective.startSec,
+        endSec: effective.endSec,
         hookText: raw.hookText,
         reasoning: raw.reasoning,
         category: raw.category as
@@ -493,6 +584,13 @@ export async function processClipDetectionRun(run: WorkflowRunJob) {
         transcriptSlice: clipUtterances,
       };
     });
+
+    if (finalClips.length === 0) {
+      throw new WorkflowWorkerError(
+        "no_clips_detected",
+        "Detected clips did not contain transcript words after timing normalization",
+      );
+    }
 
     // Persist clips
     await clipService.persistDetectedClips(run.projectId, run.id, finalClips, {

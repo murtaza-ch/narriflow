@@ -1,4 +1,5 @@
 export * from "./clip";
+export * from "./clip-timing";
 export * from "./content-pack";
 export * from "./ingest";
 export * from "./output-type";
