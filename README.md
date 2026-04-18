@@ -14,21 +14,112 @@ Bun-first monorepo for Narriflow.
 - Live workflow events: Upstash Redis pub/sub
 - Auth: Clerk
 - Speech-to-text: Deepgram `nova-3`
+- Clip detection: OpenAI Responses API, default `gpt-5.4-mini`
+- Rendering: FFmpeg/ffprobe
 
 ## Before Testing
 
-You need these accounts and credentials before the ingest + transcription flow can be tested end to end:
+You need these accounts and credentials before the ingest, transcription, clip detection, and rendering flow can be tested end to end:
 
 | Service | Required now | Why |
 | --- | --- | --- |
 | PostgreSQL / Neon / Supabase Postgres | Yes | Stores projects, ingest jobs, workflow runs, and transcripts |
 | Clerk | Yes | Required for sign-in and project ownership |
-| Cloudflare R2 | Yes | Stores uploaded files, normalized source media, and raw transcription payloads |
+| Cloudflare R2 | Yes | Stores uploaded files, normalized source media, raw transcription payloads, and rendered clips |
 | Deepgram | Yes | Required for the transcription stage |
 | Upstash Redis | Recommended for real testing | Required for live workflow updates between the separate web and worker processes |
-| Resend | Optional for this milestone | Only needed for email/webhook flows |
-| Stripe | Optional for this milestone | Billing is not part of the current transcription milestone |
-| OpenAI | Optional for this milestone | Reserved for later generation stages |
+| Resend | Optional for this workflow | Only needed for email/webhook flows |
+| Stripe | Optional for this workflow | Billing is not part of the current clips workflow |
+| OpenAI | Yes for clip generation | Required for AI moment/clip detection after transcription |
+
+## End-to-End Clips Workflow
+
+Narriflow turns a source media input into rendered short clips through four background stages:
+
+1. Ingest: accepts an uploaded file, YouTube URL, or RSS episode and stores the normalized source media in Cloudflare R2.
+2. Transcription: extracts audio with FFmpeg and sends it to Deepgram `nova-3` for speech-to-text, speaker labels, utterance timing, and word timing.
+3. Moment detection: sends the completed transcript to OpenAI through the Responses API. The default model is `gpt-5.4-mini`, and the worker requests strict JSON output for clip candidates.
+4. Clip rendering: creates subtitle files, crops/scales video for the requested aspect ratios, burns captions with FFmpeg, uploads MP4 renders to R2, and exposes downloads through presigned URLs.
+
+The worker polls work in this order: ingest jobs, `stt`, `moment_detection`, then `clip_rendering`.
+
+```mermaid
+flowchart TD
+  A["User input source"] --> B{"Source type"}
+  B --> C["File upload"]
+  B --> D["YouTube URL"]
+  B --> E["RSS episode"]
+
+  C --> F["Web API: presign multipart upload"]
+  F --> G["Browser uploads directly to Cloudflare R2"]
+  G --> H["Web API: complete upload"]
+  H --> I["IngestJob: upload_finalize"]
+
+  D --> J["IngestJob: youtube_import"]
+  J --> K["Worker downloads with yt-dlp"]
+  E --> L["IngestJob: rss_import"]
+  L --> M["Worker downloads enclosure"]
+
+  I --> N["Project source stored in R2"]
+  K --> N
+  M --> N
+
+  N --> O["User starts generation"]
+  O --> P["WorkflowRun: stt"]
+  P --> Q["Worker downloads media from R2"]
+  Q --> R["FFmpeg extracts mono 16 kHz audio"]
+  R --> S["Deepgram nova-3 transcription"]
+  S --> T["Transcript saved in Postgres; raw payload saved in R2"]
+
+  T --> U["Auto-queue WorkflowRun: moment_detection"]
+  U --> V["Worker formats transcript chunks"]
+  V --> W["OpenAI gpt-5.4-mini finds clip-worthy moments"]
+  W --> X["Validate JSON; normalize timing; compute scores"]
+  X --> Y["Clip rows saved in Postgres"]
+  Y --> Z["Auto-queue default 9:16 renders"]
+  Z --> AA["WorkflowRun: clip_rendering"]
+  AA --> AB["ffprobe inspects source media"]
+  AB --> AC["Generate SRT or ASS captions"]
+  AC --> AD["FFmpeg crops, scales, burns captions, encodes MP4"]
+  AD --> AE["Rendered clips uploaded to R2"]
+  AE --> AF["User downloads via presigned R2 URL"]
+
+  P -.progress.-> GG["WorkflowEvent table + Upstash Redis pub/sub"]
+  U -.progress.-> GG
+  AA -.progress.-> GG
+  GG --> HH["SSE stream updates project page"]
+```
+
+## Service Responsibilities
+
+| Service or model | Role in the workflow |
+| --- | --- |
+| Clerk | Authenticates users and gates project access. |
+| Cloudflare R2 | Stores source media, raw transcription JSON, and rendered MP4 clips. |
+| PostgreSQL + Prisma | Stores projects, ingest jobs, workflow runs, transcripts, clips, render variants, and workflow events. |
+| Upstash Redis | Broadcasts workflow events to the web app for live progress updates. Events are also persisted in Postgres. |
+| Deepgram `nova-3` | Converts extracted audio into transcript text, speaker-separated utterances, punctuation, and word timings. |
+| OpenAI `gpt-5.4-mini` | Analyzes transcripts and returns structured clip candidates with timestamps, hook text, category, reasoning, and scores. |
+| FFmpeg | Extracts audio for transcription and renders final MP4 clips with cropped video and burned captions. |
+| ffprobe | Reads source media stream metadata such as width, height, audio presence, and video presence. |
+| yt-dlp | Downloads YouTube sources before they are stored in R2. |
+
+## Technical Terms
+
+- Ingest: preparing an input source so the rest of the pipeline can process it.
+- Workflow run: a queued background stage such as `stt`, `moment_detection`, or `clip_rendering`.
+- Ingest job: a queued background task for source preparation, such as YouTube or RSS import.
+- STT: speech-to-text.
+- Utterance: a timed block of speech, usually a speaker turn or sentence-like segment.
+- Diarization: separating speakers in a transcript.
+- Word timing: timestamps for individual words, used for accurate captions.
+- Content pack: generation preferences such as target clip count, target duration, tone constraints, and caption preset.
+- Idempotency key: a request key that helps avoid duplicate queued work.
+- SRT: a simple subtitle format with numbered timestamp cues.
+- ASS: a richer subtitle format that supports positioning and per-word styling.
+- Presigned URL: a temporary URL for uploading or downloading R2 objects without exposing storage credentials.
+- SSE: Server-Sent Events, a browser stream used for one-way live updates from the server.
+- Pub/sub: publish/subscribe messaging; here, Redis broadcasts workflow events to connected clients.
 
 ## Local Environment Files
 
@@ -38,7 +129,7 @@ Use app-local env files instead of inventing a root `.env`.
 
 Copy [`apps/web/.env.example`](/Users/murtaza/Documents/dev/narriflow/apps/web/.env.example) to `apps/web/.env.local`.
 
-Minimum values for the current milestone:
+Minimum values for the current clips workflow:
 
 - `DATABASE_URL`
 - `CLERK_PUBLISHABLE_KEY`
@@ -54,14 +145,14 @@ Minimum values for the current milestone:
 Notes:
 
 - `CLERK_WEBHOOK_SECRET`, `RESEND_API_KEY`, and `NARRIFLOW_EMAIL_FROM` are only required if you are exercising the Clerk webhook and email path locally.
-- `DEEPGRAM_API_KEY` is listed in the web example because many deployments share one secret set, but the web app does not use it directly for the current transcription flow.
+- `DEEPGRAM_API_KEY` and `OPENAI_API_KEY` are listed in the web example because many deployments share one secret set, but the web app does not use them directly in the current worker-driven generation flow.
 - `TRIGGER_SECRET_KEY` is not used by the current custom worker polling flow.
 
 ### Worker
 
 Copy [`apps/worker/.env.example`](/Users/murtaza/Documents/dev/narriflow/apps/worker/.env.example) to `apps/worker/.env`.
 
-Minimum values for the current milestone:
+Minimum values for the current clips workflow:
 
 - `DATABASE_URL`
 - `UPSTASH_REDIS_URL`
@@ -71,11 +162,16 @@ Minimum values for the current milestone:
 - `R2_SECRET_ACCESS_KEY`
 - `R2_BUCKET`
 - `DEEPGRAM_API_KEY`
+- `OPENAI_API_KEY`
 
 Useful runtime settings:
 
 - `PORT=4001`
 - `INGEST_POLL_INTERVAL_MS=2500`
+- `DEEPGRAM_MODEL=nova-3`
+- `DEEPGRAM_LANGUAGE=en`
+- `OPENAI_CLIP_MODEL=gpt-5.4-mini`
+- `OPENAI_CLIP_REASONING_EFFORT=medium`
 
 ## Third-Party Setup
 
@@ -97,6 +193,12 @@ Useful runtime settings:
 1. Create a Deepgram account.
 2. Generate an API key.
 3. Set `DEEPGRAM_API_KEY` in the worker env.
+
+### OpenAI
+
+1. Create an OpenAI API key.
+2. Set `OPENAI_API_KEY` in the worker env.
+3. Optionally override the clip detection model with `OPENAI_CLIP_MODEL`.
 
 ### Upstash Redis
 
@@ -165,7 +267,7 @@ Runtime ports:
 - Web: `http://localhost:3000`
 - Worker health: `http://localhost:4001/health`
 
-## Test Flow For The Current Milestone
+## Test Flow
 
 1. Start the web app and worker.
 2. Sign in through Clerk.
@@ -174,7 +276,11 @@ Runtime ports:
 5. Start transcription from the project page.
 6. Confirm the worker claims an `stt` workflow run.
 7. Confirm the transcript appears in the project page.
-8. Export `TXT`, `SRT`, and `VTT`.
+8. Confirm the worker auto-queues and completes `moment_detection`.
+9. Confirm detected clips appear in the project page.
+10. Confirm the worker auto-queues default `9:16` renders, or trigger rendering manually.
+11. Download completed rendered clips from the project page.
+12. Export transcript `TXT`, `SRT`, and `VTT` if needed.
 
 ## Pre-Test Checklist
 
@@ -183,6 +289,7 @@ Runtime ports:
 - Web and worker env files both exist.
 - R2 credentials work from both processes.
 - `DEEPGRAM_API_KEY` is present in the worker.
+- `OPENAI_API_KEY` is present in the worker for clip detection.
 - Upstash credentials are present in both processes if you want live progress updates.
 - `ffmpeg` and `yt-dlp` are installed on the worker host, or you are using the worker container.
 
