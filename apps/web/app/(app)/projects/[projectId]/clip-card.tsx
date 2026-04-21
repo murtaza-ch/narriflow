@@ -42,6 +42,12 @@ const platformLabels = [
   { key: "instagramScore" as const, label: "Instagram" },
 ];
 
+const platformFitLabels: Record<string, string> = {
+  tiktok: "TikTok",
+  youtube_shorts: "Shorts",
+  instagram_reels: "Reels",
+};
+
 function getInitialAspectRatio(clip: ClipSnapshot): ClipAspectRatio {
   const preferred = clip.renderVariants.find(
     (render) => render.aspectRatio === "9:16" && render.hasAsset,
@@ -277,6 +283,15 @@ export function ClipCard({
     }
   }
 
+  function snapBoundariesToTranscript() {
+    if (clip.transcriptSlice.length === 0) {
+      return;
+    }
+
+    setStartSec(clip.transcriptSlice[0]!.startSec);
+    setEndSec(clip.transcriptSlice.at(-1)!.endSec);
+  }
+
   async function handleRenderAspectRatio(aspectRatio: ClipAspectRatio) {
     setSelectedAspectRatio(aspectRatio);
     setQueuedAspectRatios((current) =>
@@ -446,8 +461,19 @@ export function ClipCard({
         </Flex>
 
         <Text fontSize="14px" fontWeight="500" color="fg" lineHeight="1.5">
-          {clip.hookText}
+          {clip.title ?? clip.hookText}
         </Text>
+        {clip.title ? (
+          <Text fontSize="13px" color="fg.muted" lineHeight="1.5">
+            {clip.hookText}
+          </Text>
+        ) : null}
+
+        {clip.durationSec < 30 || clip.durationSec > 60 ? (
+          <Text fontSize="11px" color="warning.fg">
+            Outside preferred 30-60s range.
+          </Text>
+        ) : null}
 
         <HStack gap="12px" flexWrap="wrap">
           {platformLabels.map(({ key, label }) => (
@@ -471,11 +497,17 @@ export function ClipCard({
               </Text>
             </HStack>
           ))}
+          {clip.platformFit.map((platform) => (
+            <Badge key={platform} size="sm" variant="outline">
+              {platformFitLabels[platform] ?? platform}
+            </Badge>
+          ))}
         </HStack>
 
         <Stack gap="4px">
           <SubScoreBar label="Hook" value={clip.hookStrengthScore} />
           <SubScoreBar label="Emotion" value={clip.emotionalIntensityScore} />
+          <SubScoreBar label="Story" value={clip.storyCompletenessScore} />
           <SubScoreBar label="Pacing" value={clip.pacingScore} />
           <SubScoreBar label="Duration" value={clip.durationOptimalityScore} />
         </Stack>
@@ -496,6 +528,11 @@ export function ClipCard({
               <Text fontSize="13px" color="fg" lineHeight="1.6">
                 {clip.reasoning}
               </Text>
+              {clip.payoffText ? (
+                <Text mt="6px" fontSize="13px" color="fg.muted" lineHeight="1.6">
+                  Payoff: {clip.payoffText}
+                </Text>
+              ) : null}
             </Box>
 
             {clip.transcriptSlice.length > 0 ? (
@@ -663,6 +700,15 @@ export function ClipCard({
             </Box>
             <Button size="xs" onClick={handleBoundarySave} disabled={saving || isRefreshing}>
               <Text>{saving ? "Saving..." : "Save"}</Text>
+            </Button>
+            <Button
+              size="xs"
+              variant="outline"
+              type="button"
+              onClick={snapBoundariesToTranscript}
+              disabled={clip.transcriptSlice.length === 0}
+            >
+              <Text>Snap to Transcript</Text>
             </Button>
           </Flex>
         ) : null}

@@ -4,6 +4,7 @@ import { getCurrentAppUser } from "@narriflow/auth";
 import {
   completeMultipartUploadSchema,
   clipDownloadQuerySchema,
+  contentPackSchema,
   generateProjectRequestSchema,
   rssImportSchema,
   rssPreviewSchema,
@@ -543,10 +544,18 @@ app.post("/projects/:id/clips/regenerate", async (c) => {
   }
 
   try {
+    const payload = await c.req.json().catch(() => ({}));
+    const contentPackParsed = contentPackSchema.safeParse(
+      payload?.contentPack,
+    );
+    const contentPack = contentPackParsed.success
+      ? contentPackParsed.data
+      : undefined;
     const result = await clipService.regenerateClips(
       appUser.id,
       projectId,
       idempotencyKey,
+      contentPack,
     );
     return c.json(result, 202);
   } catch (error) {

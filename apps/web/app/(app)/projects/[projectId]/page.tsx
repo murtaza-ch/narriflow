@@ -13,6 +13,7 @@ import {
 import { TranscriptPanel } from "./transcript-panel";
 import { ClipsPanel } from "./clips-panel";
 import { RenderClipsButton } from "./render-clips-button";
+import { AdvancedClipSettings } from "./advanced-clip-settings";
 import { Stack, Box, Heading, Text, Flex } from "@chakra-ui/react";
 import { ChevronRight } from "lucide-react";
 
@@ -98,33 +99,36 @@ export default async function ProjectDetailPage({
         >
           <input type="hidden" name="projectId" value={projectId} />
           <input type="hidden" name="idempotencyKey" value={randomUUID()} />
-          <Flex align="center" justify="space-between" gap="16px">
-            <Box>
-              <Text fontSize="14px" fontWeight="500" color="fg">
-                AI Transcription
-              </Text>
-              <Text fontSize="13px" color="fg.muted" mt="2px">
-                Queue the transcription workflow and persist subtitle exports.
-              </Text>
-              {!isIngestReady && (
-                <Text mt="4px" fontSize="12px" color="warning.fg">
-                  Transcription is disabled until ingest is ready.
+          <Stack gap="16px">
+            <Flex align="center" justify="space-between" gap="16px">
+              <Box>
+                <Text fontSize="14px" fontWeight="500" color="fg">
+                  AI Transcription
                 </Text>
-              )}
-            </Box>
-            <Button
-              disabled={!isIngestReady || transcriptReady || transcriptInFlight}
-              type="submit"
-              size="sm"
-              flexShrink={0}
-            >
-              {transcriptReady
-                ? "Transcript Ready"
-                : transcriptInFlight
-                  ? "Transcribing..."
-                  : "Start Transcription"}
-            </Button>
-          </Flex>
+                <Text fontSize="13px" color="fg.muted" mt="2px">
+                  Queue transcription with the current clip preferences.
+                </Text>
+                {!isIngestReady && (
+                  <Text mt="4px" fontSize="12px" color="warning.fg">
+                    Transcription is disabled until ingest is ready.
+                  </Text>
+                )}
+              </Box>
+              <Button
+                disabled={!isIngestReady || transcriptReady || transcriptInFlight}
+                type="submit"
+                size="sm"
+                flexShrink={0}
+              >
+                {transcriptReady
+                  ? "Transcript Ready"
+                  : transcriptInFlight
+                    ? "Transcribing..."
+                    : "Start Transcription"}
+              </Button>
+            </Flex>
+            {!transcriptReady && <AdvancedClipSettings />}
+          </Stack>
         </Box>
       </form>
 
@@ -142,19 +146,22 @@ export default async function ProjectDetailPage({
           >
             <input type="hidden" name="projectId" value={projectId} />
             <input type="hidden" name="idempotencyKey" value={randomUUID()} />
-            <Flex align="center" justify="space-between" gap="16px">
-              <Box>
-                <Text fontSize="14px" fontWeight="500" color="fg">
-                  AI Clip Detection
-                </Text>
-                <Text fontSize="13px" color="fg.muted" mt="2px">
-                  Detect clip-worthy moments and score them for virality.
-                </Text>
-              </Box>
-              <Button type="submit" size="sm" flexShrink={0}>
-                Detect Clips
-              </Button>
-            </Flex>
+            <Stack gap="16px">
+              <Flex align="center" justify="space-between" gap="16px">
+                <Box>
+                  <Text fontSize="14px" fontWeight="500" color="fg">
+                    AI Clip Detection
+                  </Text>
+                  <Text fontSize="13px" color="fg.muted" mt="2px">
+                    Detect clip-worthy moments and score them for virality.
+                  </Text>
+                </Box>
+                <Button type="submit" size="sm" flexShrink={0}>
+                  Detect Clips
+                </Button>
+              </Flex>
+              <AdvancedClipSettings />
+            </Stack>
           </Box>
         </form>
       )}
@@ -197,6 +204,9 @@ export default async function ProjectDetailPage({
               <form action={regenerateClipsFormAction}>
                 <input type="hidden" name="projectId" value={projectId} />
                 <input type="hidden" name="idempotencyKey" value={randomUUID()} />
+                <Box mb="8px">
+                  <AdvancedClipSettings />
+                </Box>
                 <Button type="submit" size="sm" variant="outline">
                   Regenerate Clips
                 </Button>

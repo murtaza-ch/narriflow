@@ -35,6 +35,23 @@ export function TranscriptPanel({
   }
 
   const isReady = transcript.status === "completed";
+  const utterancesWithConfidence = transcript.utterances.filter(
+    (utterance) => typeof utterance.confidence === "number",
+  );
+  const averageConfidence =
+    utterancesWithConfidence.length > 0
+      ? utterancesWithConfidence.reduce(
+          (sum, utterance) => sum + (utterance.confidence ?? 0),
+          0,
+        ) / utterancesWithConfidence.length
+      : null;
+  const utterancesWithWords = transcript.utterances.filter(
+    (utterance) => utterance.words.length > 0,
+  ).length;
+  const wordTimingHealth =
+    transcript.utterances.length > 0
+      ? Math.round((utterancesWithWords / transcript.utterances.length) * 100)
+      : null;
 
   return (
     <Box borderRadius="12px" borderWidth="1px" borderColor="border" bg="bg.panel" p="20px">
@@ -49,6 +66,12 @@ export function TranscriptPanel({
               {transcript.languageCode ? `Language: ${transcript.languageCode}` : ""}
               {typeof transcript.speakerCount === "number"
                 ? ` · Speakers: ${transcript.speakerCount}`
+                : ""}
+              {averageConfidence !== null
+                ? ` · Confidence: ${Math.round(averageConfidence * 100)}%`
+                : ""}
+              {wordTimingHealth !== null
+                ? ` · Word timing: ${wordTimingHealth}%`
                 : ""}
             </Text>
             {transcript.errorCode && (
