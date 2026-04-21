@@ -114,6 +114,7 @@ flowchart TD
 - Diarization: separating speakers in a transcript.
 - Word timing: timestamps for individual words, used for accurate captions.
 - Content pack: generation preferences such as target clip count, target duration, tone constraints, and caption preset.
+- Clip generation mode: the moment detection strategy. The current default is `best`, which keeps a selective ranked set instead of surfacing every possible clip.
 - Idempotency key: a request key that helps avoid duplicate queued work.
 - SRT: a simple subtitle format with numbered timestamp cues.
 - ASS: a richer subtitle format that supports positioning and per-word styling.
@@ -172,6 +173,20 @@ Useful runtime settings:
 - `ASSEMBLYAI_POLL_TIMEOUT_MS=7200000`
 - `OPENAI_CLIP_MODEL=gpt-5.4-mini`
 - `OPENAI_CLIP_REASONING_EFFORT=medium`
+- `ASSEMBLYAI_KEYTERMS_PROMPT=comma,separated,terms` to add project-specific names or brands to the default keyterms prompt.
+
+## AI Clip Generation Controls
+
+Clip detection settings are stored in the latest content pack for each project:
+
+- Default mode: best clips.
+- Default count: 10 clips, configurable from 3 to 30.
+- Default preferred duration: 30-60 seconds.
+- Default hard duration: 15-90 seconds.
+- Default platform targets: TikTok, YouTube Shorts, and Instagram Reels.
+- Default render behavior: detection only. Users render selected clips explicitly unless auto-render is enabled.
+
+The worker asks OpenAI for a larger candidate pool than the final clip count, repairs timings against word-level transcript data, deduplicates overlaps, then selects a diverse set across the source timeline. Ranking combines hook strength, emotional intensity, story completeness, pacing, duration fit, and platform scores.
 
 ## Third-Party Setup
 
