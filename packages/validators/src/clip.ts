@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { clipPlatformTargetSchema } from "./content-pack";
 import { transcriptUtteranceSchema } from "./transcript";
 
 export const clipCategorySchema = z.enum([
@@ -174,12 +175,16 @@ export const clipSnapshotSchema = z.object({
   startSec: z.number().nonnegative(),
   endSec: z.number().nonnegative(),
   durationSec: z.number().positive(),
+  title: z.string().nullable(),
   hookText: z.string().min(1),
+  payoffText: z.string().nullable(),
   reasoning: z.string().min(1),
   category: clipCategorySchema,
+  platformFit: z.array(clipPlatformTargetSchema),
   viralityScore: z.number().int().min(1).max(100),
   hookStrengthScore: z.number().int().min(1).max(100),
   emotionalIntensityScore: z.number().int().min(1).max(100),
+  storyCompletenessScore: z.number().int().min(1).max(100),
   pacingScore: z.number().int().min(1).max(100),
   durationOptimalityScore: z.number().int().min(1).max(100),
   tiktokScore: z.number().int().min(1).max(100),
@@ -226,13 +231,17 @@ export const clipDownloadQuerySchema = z.object({
 export const clipDetectionLlmResponseSchema = z.object({
   clips: z.array(
     z.object({
+      title: z.string().min(1),
       start_time: z.number().nonnegative(),
       end_time: z.number().nonnegative(),
       hook_text: z.string().min(1),
+      payoff_text: z.string().min(1),
       reasoning: z.string().min(1),
       category: clipCategorySchema,
+      platform_fit: z.array(clipPlatformTargetSchema).min(1),
       hook_strength: z.number().int().min(1).max(100),
       emotional_intensity: z.number().int().min(1).max(100),
+      story_completeness_score: z.number().int().min(1).max(100),
     }),
   ),
 });

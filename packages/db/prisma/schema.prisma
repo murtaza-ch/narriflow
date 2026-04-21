@@ -154,8 +154,15 @@ model ContentPack {
   id                      String       @id @default(uuid()) @db.Uuid
   projectId               String       @db.Uuid
   outputTypes             OutputType[]
+  clipGenerationMode      String       @default("best")
   clipCountTarget         Int
   clipDurationSecTarget   Int
+  minDurationSec          Int          @default(15)
+  preferredMinDurationSec Int          @default(30)
+  preferredMaxDurationSec Int          @default(60)
+  maxDurationSec          Int          @default(90)
+  platformTargets         String[]     @default(["tiktok", "youtube_shorts", "instagram_reels"])
+  autoRenderClips         Boolean      @default(false)
   toneConstraints         Json
   captionPreset           String
   platformPlaybookVersion String
@@ -373,15 +380,19 @@ model Clip {
   status          ClipStatus   @default(detected)
   startSec        Float
   endSec          Float
+  title           String?
   hookText        String
+  payoffText      String?
   reasoning       String
   category        ClipCategory
+  platformFit     String[]     @default([])
   transcriptSlice Json
   captionPreset   Json?
 
   viralityScore           Int
   hookStrengthScore       Int
   emotionalIntensityScore Int
+  storyCompletenessScore  Int    @default(50)
   pacingScore             Int
   durationOptimalityScore Int
 
