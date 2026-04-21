@@ -1,6 +1,11 @@
 {
   "version": 1,
   "skills": {
+    "assemblyai": {
+      "source": "AssemblyAI/assemblyai-skill",
+      "sourceType": "github",
+      "computedHash": "982d6b5ca9975721158f67a0308d4417b316bf6b5c2b973bec3267a045f29bd2"
+    },
     "clerk": {
       "source": "clerk/skills",
       "sourceType": "github",
