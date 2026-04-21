@@ -31,6 +31,14 @@ class WorkflowWorkerError extends Error {
 
 const ASSEMBLYAI_BASE_URL = "https://api.assemblyai.com";
 const ASSEMBLYAI_MODEL_PREFERENCE = ["universal-3-pro", "universal-2"];
+const DEFAULT_KEYTERMS_PROMPT = [
+  "MrBeast",
+  "Xavien",
+  "Juan",
+  "Fort Freezy",
+  "Square",
+  "Coca-Cola",
+];
 const DEFAULT_ASSEMBLYAI_POLL_INTERVAL_MS = 5000;
 const DEFAULT_ASSEMBLYAI_POLL_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 
@@ -126,6 +134,15 @@ function getAssemblyAiPollTimeoutMs() {
     : DEFAULT_ASSEMBLYAI_POLL_TIMEOUT_MS;
 }
 
+function getAssemblyAiKeytermsPrompt() {
+  const extraTerms =
+    process.env.ASSEMBLYAI_KEYTERMS_PROMPT?.split(",")
+      .map((term) => term.trim())
+      .filter(Boolean) ?? [];
+
+  return [...new Set([...DEFAULT_KEYTERMS_PROMPT, ...extraTerms])];
+}
+
 function getErrorCode(error: unknown) {
   if (
     error &&
@@ -204,6 +221,7 @@ async function submitAssemblyAiTranscript(uploadUrl: string, apiKey: string) {
     body: JSON.stringify({
       audio_url: uploadUrl,
       speech_models: ASSEMBLYAI_MODEL_PREFERENCE,
+      keyterms_prompt: getAssemblyAiKeytermsPrompt(),
       speaker_labels: true,
       language_detection: true,
     }),
