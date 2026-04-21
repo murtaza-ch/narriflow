@@ -8,6 +8,7 @@ import {
   clipAspectRatioFromDb,
   clipAspectRatioOptions,
   clipAspectRatioToDb,
+  contentPackSchema,
   getEffectiveClipTiming,
   normalizeTranscriptSliceForClip,
 } from "@narriflow/validators";
@@ -15,8 +16,10 @@ import type {
   CaptionPreset,
   ClipAspectRatio,
   ClipCategory,
+  ClipPlatformTarget,
   ClipRenderVariant,
   ClipSnapshot,
+  ContentPack,
   TranscriptUtterance,
 } from "@narriflow/validators";
 import {
@@ -28,11 +31,15 @@ import { deleteObject, presignDownloadUrl } from "./r2-storage";
 interface DetectedClip {
   startSec: number;
   endSec: number;
+  title: string | null;
   hookText: string;
+  payoffText: string | null;
   reasoning: string;
   category: ClipCategory;
+  platformFit: ClipPlatformTarget[];
   hookStrengthScore: number;
   emotionalIntensityScore: number;
+  storyCompletenessScore: number;
   pacingScore: number;
   durationOptimalityScore: number;
   viralityScore: number;
@@ -115,12 +122,16 @@ function toClipSnapshot(clip: ClipWithRenders): ClipSnapshot {
     startSec: effective.startSec,
     endSec: effective.endSec,
     durationSec: Math.round(effective.durationSec * 10) / 10,
+    title: clip.title,
     hookText: clip.hookText,
+    payoffText: clip.payoffText,
     reasoning: clip.reasoning,
     category: clip.category as ClipSnapshot["category"],
+    platformFit: clip.platformFit as ClipPlatformTarget[],
     viralityScore: clip.viralityScore,
     hookStrengthScore: clip.hookStrengthScore,
     emotionalIntensityScore: clip.emotionalIntensityScore,
+    storyCompletenessScore: clip.storyCompletenessScore,
     pacingScore: clip.pacingScore,
     durationOptimalityScore: clip.durationOptimalityScore,
     tiktokScore: clip.tiktokScore,
@@ -190,14 +201,18 @@ export class ClipService {
             index: i,
             startSec: clip.startSec,
             endSec: clip.endSec,
+            title: clip.title,
             hookText: clip.hookText,
+            payoffText: clip.payoffText,
             reasoning: clip.reasoning,
             category: clip.category,
+            platformFit: clip.platformFit,
             transcriptSlice:
               clip.transcriptSlice as unknown as Prisma.InputJsonValue,
             viralityScore: clip.viralityScore,
             hookStrengthScore: clip.hookStrengthScore,
             emotionalIntensityScore: clip.emotionalIntensityScore,
+            storyCompletenessScore: clip.storyCompletenessScore,
             pacingScore: clip.pacingScore,
             durationOptimalityScore: clip.durationOptimalityScore,
             tiktokScore: clip.tiktokScore,
@@ -359,8 +374,12 @@ export class ClipService {
     userId: string,
     projectId: string,
     idempotencyKey: string,
+    contentPack?: ContentPack,
   ) {
     const prisma = requirePrisma();
+    const parsedContentPack = contentPack
+      ? contentPackSchema.parse(contentPack)
+      : null;
 
     const project = await prisma.project.findFirst({
       where: { id: projectId, userId },
@@ -396,15 +415,38 @@ export class ClipService {
 
     const workflowRunId = randomUUID();
 
-    await prisma.workflowRun.create({
-      data: {
-        id: workflowRunId,
-        projectId,
-        idempotencyKey,
-        stage: "moment_detection",
-        status: "queued",
-        progress: 0,
-      },
+    await prisma.$transaction(async (tx) => {
+      if (parsedContentPack) {
+        await tx.contentPack.create({
+          data: {
+            projectId,
+            outputTypes: parsedContentPack.outputTypes,
+            clipGenerationMode: parsedContentPack.clipGenerationMode,
+            clipCountTarget: parsedContentPack.clipCountTarget,
+            clipDurationSecTarget: parsedContentPack.clipDurationSecTarget,
+            minDurationSec: parsedContentPack.minDurationSec,
+            preferredMinDurationSec: parsedContentPack.preferredMinDurationSec,
+            preferredMaxDurationSec: parsedContentPack.preferredMaxDurationSec,
+            maxDurationSec: parsedContentPack.maxDurationSec,
+            platformTargets: parsedContentPack.platformTargets,
+            autoRenderClips: parsedContentPack.autoRenderClips,
+            toneConstraints: parsedContentPack.toneConstraints,
+            captionPreset: parsedContentPack.captionPreset,
+            platformPlaybookVersion: parsedContentPack.platformPlaybookVersion,
+          },
+        });
+      }
+
+      await tx.workflowRun.create({
+        data: {
+          id: workflowRunId,
+          projectId,
+          idempotencyKey,
+          stage: "moment_detection",
+          status: "queued",
+          progress: 0,
+        },
+      });
     });
 
     const event = await publishWorkflowStageUpdated({
@@ -859,19 +901,39 @@ export function sliceTranscriptForClip(
   return normalizeTranscriptSliceForClip(utterances, startSec, endSec);
 }
 
-export function computeDurationOptimality(durationSec: number): number {
-  if (durationSec >= 30 && durationSec <= 60) return 100;
-  if (durationSec >= 15 && durationSec < 30) {
-    return Math.round(60 + ((durationSec - 15) / 15) * 40);
+export function computeDurationOptimality(
+  durationSec: number,
+  policy: {
+    minDurationSec?: number;
+    preferredMinDurationSec?: number;
+    preferredMaxDurationSec?: number;
+    maxDurationSec?: number;
+  } = {},
+): number {
+  const minDurationSec = policy.minDurationSec ?? 15;
+  const preferredMinDurationSec = policy.preferredMinDurationSec ?? 30;
+  const preferredMaxDurationSec = policy.preferredMaxDurationSec ?? 60;
+  const maxDurationSec = policy.maxDurationSec ?? 120;
+
+  if (
+    durationSec >= preferredMinDurationSec &&
+    durationSec <= preferredMaxDurationSec
+  ) {
+    return 100;
   }
-  if (durationSec > 60 && durationSec <= 90) {
-    return Math.round(100 - ((durationSec - 60) / 30) * 30);
+
+  if (durationSec >= minDurationSec && durationSec < preferredMinDurationSec) {
+    const span = Math.max(1, preferredMinDurationSec - minDurationSec);
+    return Math.round(60 + ((durationSec - minDurationSec) / span) * 40);
   }
-  if (durationSec > 90 && durationSec <= 120) {
-    return Math.round(70 - ((durationSec - 90) / 30) * 30);
+
+  if (durationSec > preferredMaxDurationSec && durationSec <= maxDurationSec) {
+    const span = Math.max(1, maxDurationSec - preferredMaxDurationSec);
+    return Math.round(100 - ((durationSec - preferredMaxDurationSec) / span) * 60);
   }
-  if (durationSec < 15) {
-    return Math.max(20, Math.round((durationSec / 15) * 60));
+
+  if (durationSec < minDurationSec) {
+    return Math.max(20, Math.round((durationSec / minDurationSec) * 60));
   }
 
   return 20;
@@ -906,14 +968,16 @@ export function computePacingScore(
 export function computeViralityScore(subScores: {
   hookStrength: number;
   emotionalIntensity: number;
+  storyCompleteness?: number;
   pacing: number;
   durationOptimality: number;
 }): number {
   return Math.round(
-    subScores.hookStrength * 0.35 +
-      subScores.emotionalIntensity * 0.25 +
-      subScores.pacing * 0.2 +
-      subScores.durationOptimality * 0.2,
+    subScores.hookStrength * 0.3 +
+      subScores.emotionalIntensity * 0.22 +
+      (subScores.storyCompleteness ?? 50) * 0.18 +
+      subScores.pacing * 0.15 +
+      subScores.durationOptimality * 0.15,
   );
 }
 
