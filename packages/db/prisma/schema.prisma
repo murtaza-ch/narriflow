@@ -187,6 +187,7 @@ model Transcript {
   status         TranscriptStatus @default(queued)
   provider       String?
   providerModel  String?
+  providerJobId  String?
   languageCode   String?
   text           String?
   utterancesJson Json?

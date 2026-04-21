@@ -33,6 +33,38 @@ const warningUtterance: TranscriptUtterance = {
   ],
 };
 
+function makeMarketWindowUtterances(durationSec: number): TranscriptUtterance[] {
+  const utterances: TranscriptUtterance[] = [];
+
+  for (let start = 0; start < durationSec; start += 2) {
+    const words = [0, 1]
+      .map((offset) => start + offset)
+      .filter((second) => second < durationSec)
+      .map((second) => {
+        const isSentenceEnd = second % 10 === 9;
+        return {
+          word: `word${second}${isSentenceEnd ? "." : ""}`,
+          startSec: second,
+          endSec: second + 0.5,
+          confidence: 0.98,
+        };
+      });
+
+    utterances.push({
+      index: utterances.length,
+      speaker: 0,
+      speakerLabel: "Speaker 1",
+      startSec: words[0]!.startSec,
+      endSec: words[words.length - 1]!.endSec,
+      text: words.map((word) => word.word).join(" "),
+      confidence: 0.98,
+      words,
+    });
+  }
+
+  return utterances;
+}
+
 describe("clip timing normalization", () => {
   test("extends a clipped ending to complete the active sentence", () => {
     const timing = expandClipToCompleteSpeech({
@@ -74,6 +106,25 @@ describe("clip timing normalization", () => {
     expect(effective.transcriptSlice[0]!.text).toContain("warning if a missile");
     expect(effective.transcriptSlice[0]!.words.at(-1)?.word).toBe("planet.");
     expect(effective.endSec).toBe(28.45);
+  });
+
+  test("market-window timing repairs tiny AssemblyAI-style ranges into a usable clip", () => {
+    const effective = getEffectiveClipTiming({
+      utterances: makeMarketWindowUtterances(70),
+      startSec: 8.2,
+      endSec: 9.4,
+      sourceDurationSec: 70,
+      minDurationSec: 15,
+      preferredMinDurationSec: 30,
+      preferredMaxDurationSec: 75,
+      maxDurationSec: 90,
+    });
+
+    expect(effective.startSec).toBe(0);
+    expect(effective.durationSec).toBeGreaterThanOrEqual(30);
+    expect(effective.durationSec).toBeLessThanOrEqual(75);
+    expect(effective.transcriptSlice.length).toBeGreaterThan(10);
+    expect(effective.transcriptSlice.at(-1)?.text).toContain("word39.");
   });
 
   test("service sliceTranscriptForClip uses clamped word-level slicing", () => {

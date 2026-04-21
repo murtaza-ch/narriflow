@@ -6,6 +6,9 @@ export interface ClipTimingInput {
   endSec: number;
   sourceDurationSec?: number | null;
   tailPadSec?: number;
+  minDurationSec?: number;
+  preferredMinDurationSec?: number;
+  preferredMaxDurationSec?: number;
   maxDurationSec?: number;
 }
 
@@ -19,6 +22,12 @@ const DEFAULT_TAIL_PAD_SEC = 0.25;
 const DEFAULT_MAX_DURATION_SEC = 120;
 const MIN_WORD_DURATION_SEC = 0.01;
 const TERMINAL_PUNCTUATION_RE = /[.!?]["')\]]?$/;
+
+interface SpeechToken {
+  startSec: number;
+  endSec: number;
+  terminal: boolean;
+}
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
@@ -47,6 +56,221 @@ function getTimedWords(utterance: TranscriptUtterance[]) {
       word,
     })),
   );
+}
+
+function getSpeechTokens(utterances: TranscriptUtterance[]): SpeechToken[] {
+  const words = utterances.flatMap((utterance) =>
+    utterance.words.map((word) => ({
+      startSec: word.startSec,
+      endSec: word.endSec,
+      terminal: isTerminalWord(word),
+    })),
+  );
+
+  if (words.length > 0) {
+    return words
+      .filter((word) => word.endSec >= word.startSec)
+      .sort((a, b) => a.startSec - b.startSec || a.endSec - b.endSec);
+  }
+
+  return utterances
+    .map((utterance) => ({
+      startSec: utterance.startSec,
+      endSec: utterance.endSec,
+      terminal: true,
+    }))
+    .filter((utterance) => utterance.endSec >= utterance.startSec)
+    .sort((a, b) => a.startSec - b.startSec || a.endSec - b.endSec);
+}
+
+function findTokenIndexForRange(
+  tokens: SpeechToken[],
+  startSec: number,
+  endSec: number,
+) {
+  const overlapping = tokens.findIndex(
+    (token) => token.endSec > startSec && token.startSec < endSec,
+  );
+
+  if (overlapping >= 0) {
+    return overlapping;
+  }
+
+  const next = tokens.findIndex((token) => token.startSec >= startSec);
+
+  if (next >= 0) {
+    return next;
+  }
+
+  return tokens.length - 1;
+}
+
+function findSentenceStartTokenIndex(tokens: SpeechToken[], tokenIndex: number) {
+  let index = clamp(tokenIndex, 0, tokens.length - 1);
+
+  while (index > 0 && !tokens[index - 1]!.terminal) {
+    index -= 1;
+  }
+
+  return index;
+}
+
+function chooseMarketWindowEnd(input: {
+  tokens: SpeechToken[];
+  startIndex: number;
+  startSec: number;
+  sourceDurationSec: number;
+  minDurationSec: number;
+  preferredMinDurationSec: number;
+  preferredMaxDurationSec: number;
+  maxDurationSec: number;
+  tailPadSec: number;
+}) {
+  const minEnd = Math.min(
+    input.sourceDurationSec,
+    input.startSec + input.minDurationSec,
+  );
+  const preferredMinEnd = Math.min(
+    input.sourceDurationSec,
+    input.startSec + input.preferredMinDurationSec,
+  );
+  const preferredMaxEnd = Math.min(
+    input.sourceDurationSec,
+    input.startSec + input.preferredMaxDurationSec,
+  );
+  const maxEnd = Math.min(
+    input.sourceDurationSec,
+    input.startSec + input.maxDurationSec,
+  );
+  const terminalEnds: number[] = [];
+  let lastTokenEnd: number | null = null;
+
+  for (let index = input.startIndex; index < input.tokens.length; index++) {
+    const token = input.tokens[index]!;
+
+    if (token.startSec > maxEnd) {
+      break;
+    }
+
+    const paddedEnd = Math.min(
+      input.sourceDurationSec,
+      token.endSec + input.tailPadSec,
+    );
+
+    if (paddedEnd <= input.startSec) {
+      continue;
+    }
+
+    lastTokenEnd = paddedEnd;
+
+    if (token.terminal) {
+      terminalEnds.push(paddedEnd);
+    }
+  }
+
+  const preferredTerminal = terminalEnds.find(
+    (endSec) => endSec >= preferredMinEnd && endSec <= preferredMaxEnd,
+  );
+
+  if (preferredTerminal !== undefined) {
+    return preferredTerminal;
+  }
+
+  const validTerminal = terminalEnds.find(
+    (endSec) => endSec >= minEnd && endSec <= maxEnd,
+  );
+
+  if (validTerminal !== undefined) {
+    return validTerminal;
+  }
+
+  const lastTerminalWithinMax = terminalEnds
+    .filter((endSec) => endSec <= maxEnd)
+    .at(-1);
+
+  if (lastTerminalWithinMax !== undefined) {
+    return lastTerminalWithinMax;
+  }
+
+  return lastTokenEnd ?? maxEnd;
+}
+
+export function expandClipToMarketWindow(
+  input: ClipTimingInput,
+): EffectiveClipTiming {
+  const completeSpeechTiming = expandClipToCompleteSpeech(input);
+  const minDurationSec = input.minDurationSec;
+  const preferredMinDurationSec = input.preferredMinDurationSec;
+  const preferredMaxDurationSec = input.preferredMaxDurationSec;
+
+  if (
+    typeof minDurationSec !== "number" ||
+    typeof preferredMinDurationSec !== "number" ||
+    typeof preferredMaxDurationSec !== "number"
+  ) {
+    return completeSpeechTiming;
+  }
+
+  const sourceDurationSec =
+    typeof input.sourceDurationSec === "number" && input.sourceDurationSec > 0
+      ? input.sourceDurationSec
+      : Number.POSITIVE_INFINITY;
+  const maxDurationSec = input.maxDurationSec ?? DEFAULT_MAX_DURATION_SEC;
+  const tailPadSec = input.tailPadSec ?? DEFAULT_TAIL_PAD_SEC;
+  const tokens = getSpeechTokens(input.utterances);
+
+  if (tokens.length === 0) {
+    return completeSpeechTiming;
+  }
+
+  const rawStart = Math.min(sourceDurationSec, Math.max(0, input.startSec));
+  const rawEnd = Math.min(
+    sourceDurationSec,
+    Math.max(rawStart + MIN_WORD_DURATION_SEC, input.endSec),
+  );
+  const hookIndex = findTokenIndexForRange(tokens, rawStart, rawEnd);
+  let startIndex = findSentenceStartTokenIndex(tokens, hookIndex);
+  let effectiveStart = tokens[startIndex]!.startSec;
+  let effectiveEnd = chooseMarketWindowEnd({
+    tokens,
+    startIndex,
+    startSec: effectiveStart,
+    sourceDurationSec,
+    minDurationSec,
+    preferredMinDurationSec,
+    preferredMaxDurationSec,
+    maxDurationSec,
+    tailPadSec,
+  });
+
+  while (
+    effectiveEnd - effectiveStart < minDurationSec &&
+    startIndex > 0
+  ) {
+    startIndex = findSentenceStartTokenIndex(tokens, startIndex - 1);
+    effectiveStart = tokens[startIndex]!.startSec;
+  }
+
+  effectiveStart = normalizeTime(clamp(effectiveStart, 0, sourceDurationSec));
+  effectiveEnd = normalizeTime(
+    clamp(
+      effectiveEnd,
+      effectiveStart,
+      Math.min(sourceDurationSec, effectiveStart + maxDurationSec),
+    ),
+  );
+
+  if (effectiveEnd <= effectiveStart) {
+    effectiveEnd = normalizeTime(
+      Math.min(sourceDurationSec, effectiveStart + MIN_WORD_DURATION_SEC),
+    );
+  }
+
+  return {
+    startSec: effectiveStart,
+    endSec: effectiveEnd,
+    durationSec: normalizeTime(effectiveEnd - effectiveStart),
+  };
 }
 
 function findLastOverlappingWord(
@@ -220,7 +444,7 @@ export function normalizeTranscriptSliceForClip(
 }
 
 export function getEffectiveClipTiming(input: ClipTimingInput) {
-  const timing = expandClipToCompleteSpeech(input);
+  const timing = expandClipToMarketWindow(input);
   const transcriptSlice = normalizeTranscriptSliceForClip(
     input.utterances,
     timing.startSec,

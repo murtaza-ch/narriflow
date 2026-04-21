@@ -13,7 +13,7 @@ Bun-first monorepo for Narriflow.
 - Media storage: Cloudflare R2
 - Live workflow events: Upstash Redis pub/sub
 - Auth: Clerk
-- Speech-to-text: Deepgram `nova-3`
+- Speech-to-text: AssemblyAI Universal-3 Pro with Universal-2 fallback
 - Clip detection: OpenAI Responses API, default `gpt-5.4-mini`
 - Rendering: FFmpeg/ffprobe
 
@@ -26,7 +26,7 @@ You need these accounts and credentials before the ingest, transcription, clip d
 | PostgreSQL / Neon / Supabase Postgres | Yes | Stores projects, ingest jobs, workflow runs, and transcripts |
 | Clerk | Yes | Required for sign-in and project ownership |
 | Cloudflare R2 | Yes | Stores uploaded files, normalized source media, raw transcription payloads, and rendered clips |
-| Deepgram | Yes | Required for the transcription stage |
+| AssemblyAI | Yes | Required for the transcription stage |
 | Upstash Redis | Recommended for real testing | Required for live workflow updates between the separate web and worker processes |
 | Resend | Optional for this workflow | Only needed for email/webhook flows |
 | Stripe | Optional for this workflow | Billing is not part of the current clips workflow |
@@ -37,7 +37,7 @@ You need these accounts and credentials before the ingest, transcription, clip d
 Narriflow turns a source media input into rendered short clips through four background stages:
 
 1. Ingest: accepts an uploaded file, YouTube URL, or RSS episode and stores the normalized source media in Cloudflare R2.
-2. Transcription: extracts audio with FFmpeg and sends it to Deepgram `nova-3` for speech-to-text, speaker labels, utterance timing, and word timing.
+2. Transcription: extracts audio with FFmpeg, uploads it to AssemblyAI, and requests Universal-3 Pro with Universal-2 fallback for speech-to-text, speaker labels, utterance timing, and word timing.
 3. Moment detection: sends the completed transcript to OpenAI through the Responses API. The default model is `gpt-5.4-mini`, and the worker requests strict JSON output for clip candidates.
 4. Clip rendering: creates subtitle files, crops/scales video for the requested aspect ratios, burns captions with FFmpeg, uploads MP4 renders to R2, and exposes downloads through presigned URLs.
 
@@ -68,7 +68,7 @@ flowchart TD
   O --> P["WorkflowRun: stt"]
   P --> Q["Worker downloads media from R2"]
   Q --> R["FFmpeg extracts mono 16 kHz audio"]
-  R --> S["Deepgram nova-3 transcription"]
+  R --> S["AssemblyAI transcription"]
   S --> T["Transcript saved in Postgres; raw payload saved in R2"]
 
   T --> U["Auto-queue WorkflowRun: moment_detection"]
@@ -98,7 +98,7 @@ flowchart TD
 | Cloudflare R2 | Stores source media, raw transcription JSON, and rendered MP4 clips. |
 | PostgreSQL + Prisma | Stores projects, ingest jobs, workflow runs, transcripts, clips, render variants, and workflow events. |
 | Upstash Redis | Broadcasts workflow events to the web app for live progress updates. Events are also persisted in Postgres. |
-| Deepgram `nova-3` | Converts extracted audio into transcript text, speaker-separated utterances, punctuation, and word timings. |
+| AssemblyAI Universal-3 Pro + Universal-2 | Converts extracted audio into transcript text, speaker-separated utterances, punctuation, and word timings. |
 | OpenAI `gpt-5.4-mini` | Analyzes transcripts and returns structured clip candidates with timestamps, hook text, category, reasoning, and scores. |
 | FFmpeg | Extracts audio for transcription and renders final MP4 clips with cropped video and burned captions. |
 | ffprobe | Reads source media stream metadata such as width, height, audio presence, and video presence. |
@@ -145,7 +145,7 @@ Minimum values for the current clips workflow:
 Notes:
 
 - `CLERK_WEBHOOK_SECRET`, `RESEND_API_KEY`, and `NARRIFLOW_EMAIL_FROM` are only required if you are exercising the Clerk webhook and email path locally.
-- `DEEPGRAM_API_KEY` and `OPENAI_API_KEY` are listed in the web example because many deployments share one secret set, but the web app does not use them directly in the current worker-driven generation flow.
+- `ASSEMBLYAI_API_KEY` and `OPENAI_API_KEY` are listed in the web example because many deployments share one secret set, but the web app does not use them directly in the current worker-driven generation flow.
 - `TRIGGER_SECRET_KEY` is not used by the current custom worker polling flow.
 
 ### Worker
@@ -161,15 +161,15 @@ Minimum values for the current clips workflow:
 - `R2_ACCESS_KEY_ID`
 - `R2_SECRET_ACCESS_KEY`
 - `R2_BUCKET`
-- `DEEPGRAM_API_KEY`
+- `ASSEMBLYAI_API_KEY`
 - `OPENAI_API_KEY`
 
 Useful runtime settings:
 
 - `PORT=4001`
 - `INGEST_POLL_INTERVAL_MS=2500`
-- `DEEPGRAM_MODEL=nova-3`
-- `DEEPGRAM_LANGUAGE=en`
+- `ASSEMBLYAI_POLL_INTERVAL_MS=5000`
+- `ASSEMBLYAI_POLL_TIMEOUT_MS=7200000`
 - `OPENAI_CLIP_MODEL=gpt-5.4-mini`
 - `OPENAI_CLIP_REASONING_EFFORT=medium`
 
@@ -188,11 +188,12 @@ Useful runtime settings:
 2. Create an API token with object read/write access for that bucket.
 3. Copy `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, and `R2_BUCKET` into both the web and worker env files.
 
-### Deepgram
+### AssemblyAI
 
-1. Create a Deepgram account.
+1. Create an AssemblyAI account.
 2. Generate an API key.
-3. Set `DEEPGRAM_API_KEY` in the worker env.
+3. Set `ASSEMBLYAI_API_KEY` in the worker env.
+4. The worker uses `speech_models: ["universal-3-pro", "universal-2"]`, `speaker_labels: true`, and `language_detection: true`.
 
 ### OpenAI
 
@@ -220,7 +221,7 @@ Install these on the machine that runs the worker:
 
 Why:
 
-- `ffmpeg` is required to extract transcription-ready audio before sending it to Deepgram.
+- `ffmpeg` is required to extract transcription-ready audio before uploading it to AssemblyAI.
 - `yt-dlp` is required for the YouTube import path.
 
 If you use the worker container, [`apps/worker/Dockerfile`](/Users/murtaza/Documents/dev/narriflow/apps/worker/Dockerfile) now installs both tools.
@@ -282,13 +283,27 @@ Runtime ports:
 11. Download completed rendered clips from the project page.
 12. Export transcript `TXT`, `SRT`, and `VTT` if needed.
 
+## Transcription Validation
+
+For a local AssemblyAI transcription test, configure the worker env with `ASSEMBLYAI_API_KEY`, start the web app and worker, ingest a source, and start transcription from the project page. The completed transcript row should show provider `assemblyai`, the raw AssemblyAI JSON should be stored under `projects/{projectId}/transcripts/` in R2, and clip detection should auto-queue without provider-specific changes.
+
+For a quality bakeoff against older archived outputs, run the same source media through the AssemblyAI pipeline and compare:
+
+- full transcript quality
+- speaker consistency
+- utterance boundaries
+- word timestamp alignment
+- burned caption sync after FFmpeg rendering
+- GPT-5.4-mini clip candidate quality
+- total STT cost per hour
+
 ## Pre-Test Checklist
 
 - `DATABASE_URL` points to a live Postgres database.
 - Prisma migration for the `Transcript` model has been applied.
 - Web and worker env files both exist.
 - R2 credentials work from both processes.
-- `DEEPGRAM_API_KEY` is present in the worker.
+- `ASSEMBLYAI_API_KEY` is present in the worker.
 - `OPENAI_API_KEY` is present in the worker for clip detection.
 - Upstash credentials are present in both processes if you want live progress updates.
 - `ffmpeg` and `yt-dlp` are installed on the worker host, or you are using the worker container.

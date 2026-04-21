@@ -102,6 +102,8 @@ const projects = new Map<string, ProjectSnapshot>();
 const idempotencyRuns = new Map<string, string>();
 
 const UPLOAD_SESSION_EXPIRY_MS = 24 * 60 * 60 * 1000;
+const STT_PROVIDER = "assemblyai";
+const STT_PROVIDER_MODEL = "universal-3-pro,universal-2";
 
 function getIdempotencyKey(projectId: string, idempotencyKey: string) {
   return `${projectId}:${idempotencyKey}`;
@@ -175,6 +177,7 @@ function toTranscriptSnapshot(row: PrismaTranscript): TranscriptSnapshot {
     status: row.status,
     provider: row.provider,
     providerModel: row.providerModel,
+    providerJobId: row.providerJobId,
     languageCode: row.languageCode,
     text: row.text,
     utterancesJson: row.utterancesJson,
@@ -554,14 +557,16 @@ export class ProjectService {
           create: {
             projectId,
             status: "queued",
-            provider: "deepgram",
-            providerModel: "nova-3",
+            provider: STT_PROVIDER,
+            providerModel: STT_PROVIDER_MODEL,
+            providerJobId: null,
             errorCode: null,
           },
           update: {
             status: "queued",
-            provider: "deepgram",
-            providerModel: "nova-3",
+            provider: STT_PROVIDER,
+            providerModel: STT_PROVIDER_MODEL,
+            providerJobId: null,
             errorCode: null,
             completedAt: null,
           },
@@ -971,13 +976,15 @@ export class ProjectService {
         create: {
           projectId: queued.projectId,
           status: "processing",
-          provider: "deepgram",
-          providerModel: "nova-3",
+          provider: STT_PROVIDER,
+          providerModel: STT_PROVIDER_MODEL,
+          providerJobId: null,
         },
         update: {
           status: "processing",
-          provider: "deepgram",
-          providerModel: "nova-3",
+          provider: STT_PROVIDER,
+          providerModel: STT_PROVIDER_MODEL,
+          providerJobId: null,
           errorCode: null,
         },
       });
@@ -1054,6 +1061,7 @@ export class ProjectService {
     input: {
       provider: string;
       providerModel: string;
+      providerJobId: string | null;
       languageCode: string | null;
       text: string;
       utterances: unknown;
@@ -1080,6 +1088,7 @@ export class ProjectService {
         status: "completed",
         provider: input.provider,
         providerModel: input.providerModel,
+        providerJobId: input.providerJobId,
         languageCode: input.languageCode,
         text: input.text,
         utterancesJson: input.utterances as Prisma.InputJsonValue,
@@ -1093,6 +1102,7 @@ export class ProjectService {
         status: "completed",
         provider: input.provider,
         providerModel: input.providerModel,
+        providerJobId: input.providerJobId,
         languageCode: input.languageCode,
         text: input.text,
         utterancesJson: input.utterances as Prisma.InputJsonValue,
@@ -1287,12 +1297,14 @@ export class ProjectService {
         create: {
           projectId: run.projectId,
           status: "failed",
-          provider: "deepgram",
-          providerModel: "nova-3",
+          provider: STT_PROVIDER,
+          providerModel: STT_PROVIDER_MODEL,
           errorCode,
         },
         update: {
           status: "failed",
+          provider: STT_PROVIDER,
+          providerModel: STT_PROVIDER_MODEL,
           errorCode,
           completedAt: null,
         },

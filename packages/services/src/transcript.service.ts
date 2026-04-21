@@ -5,51 +5,54 @@ import type {
 } from "@narriflow/validators";
 import { transcriptSnapshotSchema } from "@narriflow/validators";
 
-interface DeepgramWord {
-  word?: string;
-  punctuated_word?: string;
+interface AssemblyAiWord {
   start?: number;
   end?: number;
+  text?: string;
   confidence?: number;
+  speaker?: string | null;
 }
 
-interface DeepgramUtterance {
-  start?: number;
+interface AssemblyAiUtterance {
+  confidence?: number;
   end?: number;
-  transcript?: string;
-  confidence?: number;
-  speaker?: number;
-  words?: DeepgramWord[];
+  speaker?: string | null;
+  start?: number;
+  text?: string;
+  words?: AssemblyAiWord[];
 }
 
-interface DeepgramAlternative {
-  transcript?: string;
-  languages?: string[];
-}
-
-interface DeepgramPayload {
-  metadata?: {
-    duration?: number;
-    model_info?: Record<string, { name?: string }>;
-    models?: string[];
-  };
-  results?: {
-    utterances?: DeepgramUtterance[];
-    channels?: Array<{
-      alternatives?: DeepgramAlternative[];
-    }>;
-  };
+interface AssemblyAiPayload {
+  id?: string;
+  text?: string;
+  language_code?: string;
+  speech_model?: string;
+  speech_model_used?: string;
+  speech_models?: string[];
+  audio_duration?: number;
+  utterances?: AssemblyAiUtterance[];
 }
 
 export interface NormalizedTranscript {
-  provider: "deepgram";
+  provider: "assemblyai";
   providerModel: string;
+  providerJobId: string | null;
   languageCode: string | null;
   text: string;
   utterances: TranscriptUtterance[];
   speakerCount: number;
   durationSeconds: number | null;
   rawPayload: unknown;
+}
+
+export class TranscriptNormalizationError extends Error {
+  code: string;
+
+  constructor(code: string, message: string) {
+    super(message);
+    this.name = "TranscriptNormalizationError";
+    this.code = code;
+  }
 }
 
 function asObject(value: unknown): Record<string, unknown> | null {
@@ -68,19 +71,47 @@ function formatSpeakerLabel(speaker: number | null) {
   return `Speaker ${speaker + 1}`;
 }
 
-function coerceUtteranceText(utterance: DeepgramUtterance) {
-  const direct = utterance.transcript?.trim();
+function coerceUtteranceText(utterance: AssemblyAiUtterance) {
+  const direct = utterance.text?.trim();
 
   if (direct) {
     return direct;
   }
 
   const fromWords = (utterance.words ?? [])
-    .map((word) => word.punctuated_word ?? word.word ?? "")
+    .map((word) => word.text ?? "")
     .join(" ")
     .trim();
 
   return fromWords;
+}
+
+function millisecondsToSeconds(value: number) {
+  return Math.round((value / 1000) * 1000) / 1000;
+}
+
+function getAssemblyAiProviderModel(payload: AssemblyAiPayload) {
+  return (
+    payload.speech_model_used ??
+    payload.speech_model ??
+    payload.speech_models?.join(",") ??
+    "universal-3-pro,universal-2"
+  );
+}
+
+function getSpeakerIndex(
+  speakerLabel: string,
+  speakerMap: Map<string, number>,
+) {
+  const existing = speakerMap.get(speakerLabel);
+
+  if (existing !== undefined) {
+    return existing;
+  }
+
+  const next = speakerMap.size;
+  speakerMap.set(speakerLabel, next);
+  return next;
 }
 
 function formatCueTimestamp(totalSeconds: number, decimalSeparator: "." | ",") {
@@ -114,38 +145,85 @@ function formatReadableTimestamp(totalSeconds: number) {
   return `${minutes}:${String(seconds).padStart(2, "0")}`;
 }
 
-export function normalizeDeepgramTranscript(
+export function normalizeAssemblyAiTranscript(
   rawPayload: unknown,
 ): NormalizedTranscript {
-  const payload = rawPayload as DeepgramPayload;
-  const alternative = payload.results?.channels?.[0]?.alternatives?.[0];
-  const fallbackText = alternative?.transcript?.trim() ?? "";
-  const languageCode = alternative?.languages?.[0] ?? null;
-  const modelEntry = payload.metadata?.model_info
-    ? Object.values(payload.metadata.model_info)[0]
-    : null;
-  const providerModel =
-    modelEntry?.name ?? payload.metadata?.models?.[0] ?? "nova-3";
+  const payload = rawPayload as AssemblyAiPayload;
+  const utterances = payload.utterances ?? [];
 
-  const normalizedUtterances = (payload.results?.utterances ?? [])
-    .map((utterance, index) => {
+  if (utterances.length === 0) {
+    throw new TranscriptNormalizationError(
+      "assemblyai_utterances_missing",
+      "AssemblyAI transcript did not include diarized utterances",
+    );
+  }
+
+  const speakerMap = new Map<string, number>();
+  const normalizedUtterances = utterances
+    .map((utterance, index): TranscriptUtterance | null => {
       const text = coerceUtteranceText(utterance);
-      const startSec =
-        typeof utterance.start === "number" ? utterance.start : 0;
-      const endSec =
-        typeof utterance.end === "number" ? utterance.end : startSec;
+      const startSec = millisecondsToSeconds(
+        typeof utterance.start === "number" ? utterance.start : 0,
+      );
+      const endSec = millisecondsToSeconds(
+        typeof utterance.end === "number" ? utterance.end : utterance.start ?? 0,
+      );
+      const rawSpeaker =
+        typeof utterance.speaker === "string" ? utterance.speaker.trim() : "";
 
       if (!text) {
         return null;
       }
 
+      if (!rawSpeaker) {
+        throw new TranscriptNormalizationError(
+          "assemblyai_speaker_labels_missing",
+          "AssemblyAI utterance was missing a speaker label",
+        );
+      }
+
+      const speaker = getSpeakerIndex(rawSpeaker, speakerMap);
+      const words = (utterance.words ?? []).map((word) => {
+        const wordText = word.text?.trim() ?? "";
+
+        if (!wordText) {
+          return null;
+        }
+
+        if (typeof word.start !== "number" || typeof word.end !== "number") {
+          throw new TranscriptNormalizationError(
+            "assemblyai_word_timestamps_missing",
+            "AssemblyAI word was missing start or end timestamp",
+          );
+        }
+
+        return {
+          word: wordText,
+          startSec: millisecondsToSeconds(word.start),
+          endSec: Math.max(
+            millisecondsToSeconds(word.end),
+            millisecondsToSeconds(word.start),
+          ),
+          confidence:
+            typeof word.confidence === "number" ? word.confidence : null,
+        };
+      });
+
+      const normalizedWords = words.filter(
+        (word): word is TranscriptUtterance["words"][number] => word !== null,
+      );
+
+      if (normalizedWords.length === 0) {
+        throw new TranscriptNormalizationError(
+          "assemblyai_word_timestamps_missing",
+          "AssemblyAI utterance did not include timed words",
+        );
+      }
+
       return {
         index,
-        speaker:
-          typeof utterance.speaker === "number" ? utterance.speaker : null,
-        speakerLabel: formatSpeakerLabel(
-          typeof utterance.speaker === "number" ? utterance.speaker : null,
-        ),
+        speaker,
+        speakerLabel: formatSpeakerLabel(speaker),
         startSec,
         endSec: Math.max(endSec, startSec),
         text,
@@ -153,40 +231,32 @@ export function normalizeDeepgramTranscript(
           typeof utterance.confidence === "number"
             ? utterance.confidence
             : null,
-        words: (utterance.words ?? [])
-          .filter(
-            (w) =>
-              (w.word || w.punctuated_word) &&
-              typeof w.start === "number" &&
-              typeof w.end === "number",
-          )
-          .map((w) => ({
-            word: w.punctuated_word ?? w.word ?? "",
-            startSec: w.start!,
-            endSec: w.end!,
-            confidence:
-              typeof w.confidence === "number" ? w.confidence : null,
-          })),
+        words: normalizedWords,
       } satisfies TranscriptUtterance;
     })
     .filter(
       (utterance): utterance is TranscriptUtterance => utterance !== null,
     );
 
+  if (normalizedUtterances.length === 0) {
+    throw new TranscriptNormalizationError(
+      "assemblyai_utterances_missing",
+      "AssemblyAI transcript did not include usable utterances",
+    );
+  }
+
+  const directText = payload.text?.trim();
   const text =
-    normalizedUtterances.length > 0
-      ? normalizedUtterances.map((utterance) => utterance.text).join("\n\n")
-      : fallbackText;
+    directText ||
+    normalizedUtterances.map((utterance) => utterance.text).join("\n\n");
 
   const speakers = new Set(
-    normalizedUtterances
-      .map((utterance) => utterance.speaker)
-      .filter((speaker): speaker is number => speaker !== null),
+    normalizedUtterances.map((utterance) => utterance.speaker),
   );
 
   const durationSeconds =
-    typeof payload.metadata?.duration === "number"
-      ? Math.round(payload.metadata.duration)
+    typeof payload.audio_duration === "number"
+      ? Math.round(payload.audio_duration)
       : normalizedUtterances.length > 0
         ? Math.round(
             Math.max(
@@ -196,17 +266,13 @@ export function normalizeDeepgramTranscript(
         : null;
 
   return {
-    provider: "deepgram",
-    providerModel,
-    languageCode,
+    provider: "assemblyai",
+    providerModel: getAssemblyAiProviderModel(payload),
+    providerJobId: payload.id ?? null,
+    languageCode: payload.language_code ?? null,
     text,
     utterances: normalizedUtterances,
-    speakerCount:
-      speakers.size > 0
-        ? speakers.size
-        : normalizedUtterances.length > 0
-          ? 1
-          : 0,
+    speakerCount: speakers.size,
     durationSeconds,
     rawPayload,
   };
@@ -217,6 +283,7 @@ export function buildTranscriptSnapshot(input: {
   status: string;
   provider: string | null;
   providerModel: string | null;
+  providerJobId: string | null;
   languageCode: string | null;
   text: string | null;
   utterancesJson: unknown;
@@ -235,6 +302,7 @@ export function buildTranscriptSnapshot(input: {
     status: input.status,
     provider: input.provider,
     providerModel: input.providerModel,
+    providerJobId: input.providerJobId,
     languageCode: input.languageCode,
     text: input.text,
     utterances: Array.isArray(utterances) ? utterances : [],

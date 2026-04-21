@@ -9,7 +9,7 @@ import type { ClipAspectRatio, GenerateProjectInput } from "@narriflow/validator
 
 const defaultContentPack: GenerateProjectInput["contentPack"] = {
   outputTypes: ["short_clip"],
-  clipCountTarget: 3,
+  clipCountTarget: 5,
   clipDurationSecTarget: 30,
   toneConstraints: ["concise", "conversational"],
   captionPreset: "default",

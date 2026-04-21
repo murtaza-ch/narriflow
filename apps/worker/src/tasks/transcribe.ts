@@ -1,14 +1,15 @@
 import { readFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { basename, extname, join } from "node:path";
+import { extname, join } from "node:path";
 import { spawn } from "node:child_process";
+import { setTimeout as sleep } from "node:timers/promises";
 import {
   downloadObjectToFile,
+  normalizeAssemblyAiTranscript,
   putJson,
   projectService,
 } from "@narriflow/services";
-import { normalizeDeepgramTranscript } from "@narriflow/services";
 
 interface WorkflowRunJob {
   id: string;
@@ -27,6 +28,11 @@ class WorkflowWorkerError extends Error {
     this.code = code;
   }
 }
+
+const ASSEMBLYAI_BASE_URL = "https://api.assemblyai.com";
+const ASSEMBLYAI_MODEL_PREFERENCE = ["universal-3-pro", "universal-2"];
+const DEFAULT_ASSEMBLYAI_POLL_INTERVAL_MS = 5000;
+const DEFAULT_ASSEMBLYAI_POLL_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 
 function sanitizeFileName(name: string) {
   return name
@@ -93,59 +99,230 @@ async function execCommand(command: string, args: string[]) {
   });
 }
 
-function getRequiredDeepgramApiKey() {
-  const apiKey = process.env.DEEPGRAM_API_KEY?.trim();
+function getRequiredAssemblyAiApiKey() {
+  const apiKey = process.env.ASSEMBLYAI_API_KEY?.trim();
 
   if (!apiKey) {
     throw new WorkflowWorkerError(
-      "deepgram_api_key_missing",
-      "DEEPGRAM_API_KEY is not configured",
+      "assemblyai_api_key_missing",
+      "ASSEMBLYAI_API_KEY is not configured",
     );
   }
 
   return apiKey;
 }
 
-async function transcribeWithDeepgram(audioPath: string) {
-  const apiKey = getRequiredDeepgramApiKey();
-  const model = process.env.DEEPGRAM_MODEL?.trim() || "nova-3";
-  const language = process.env.DEEPGRAM_LANGUAGE?.trim() || "en";
-  const params = new URLSearchParams({
-    model,
-    smart_format: "true",
-    diarize: "true",
-    punctuate: "true",
-    utterances: "true",
+function getAssemblyAiPollIntervalMs() {
+  const value = Number(process.env.ASSEMBLYAI_POLL_INTERVAL_MS);
+  return Number.isFinite(value) && value > 0
+    ? value
+    : DEFAULT_ASSEMBLYAI_POLL_INTERVAL_MS;
+}
+
+function getAssemblyAiPollTimeoutMs() {
+  const value = Number(process.env.ASSEMBLYAI_POLL_TIMEOUT_MS);
+  return Number.isFinite(value) && value > 0
+    ? value
+    : DEFAULT_ASSEMBLYAI_POLL_TIMEOUT_MS;
+}
+
+function getErrorCode(error: unknown) {
+  if (
+    error &&
+    typeof error === "object" &&
+    "code" in error &&
+    typeof error.code === "string"
+  ) {
+    return error.code;
+  }
+
+  return "workflow_unhandled_error";
+}
+
+async function parseJsonResponse(response: Response) {
+  return response.json().catch(() => null) as Promise<unknown>;
+}
+
+function getResponseMessage(
+  payload: unknown,
+  fallback: string,
+) {
+  if (payload && typeof payload === "object") {
+    const record = payload as Record<string, unknown>;
+    const error = record.error ?? record.message;
+
+    if (typeof error === "string" && error.trim()) {
+      return error;
+    }
+  }
+
+  return fallback;
+}
+
+async function uploadAssemblyAiAudio(audioPath: string, apiKey: string) {
+  const response = await fetch(`${ASSEMBLYAI_BASE_URL}/v2/upload`, {
+    method: "POST",
+    headers: {
+      Authorization: apiKey,
+      "Content-Type": "application/octet-stream",
+    },
+    body: readFileSync(audioPath),
+    duplex: "half",
+  } as RequestInit & { duplex: "half" });
+
+  const payload = await parseJsonResponse(response);
+
+  if (!response.ok || !payload || typeof payload !== "object") {
+    throw new WorkflowWorkerError(
+      "assemblyai_upload_failed",
+      getResponseMessage(
+        payload,
+        `AssemblyAI upload failed with status ${response.status}`,
+      ),
+    );
+  }
+
+  const uploadUrl = (payload as Record<string, unknown>).upload_url;
+
+  if (typeof uploadUrl !== "string" || !uploadUrl) {
+    throw new WorkflowWorkerError(
+      "assemblyai_upload_url_missing",
+      "AssemblyAI upload did not return an upload URL",
+    );
+  }
+
+  return uploadUrl;
+}
+
+async function submitAssemblyAiTranscript(uploadUrl: string, apiKey: string) {
+  const response = await fetch(`${ASSEMBLYAI_BASE_URL}/v2/transcript`, {
+    method: "POST",
+    headers: {
+      Authorization: apiKey,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      audio_url: uploadUrl,
+      speech_models: ASSEMBLYAI_MODEL_PREFERENCE,
+      speaker_labels: true,
+      language_detection: true,
+    }),
   });
 
-  if (language) {
-    params.set("language", language);
+  const payload = await parseJsonResponse(response);
+
+  if (!response.ok || !payload || typeof payload !== "object") {
+    throw new WorkflowWorkerError(
+      "assemblyai_transcription_submit_failed",
+      getResponseMessage(
+        payload,
+        `AssemblyAI transcription submit failed with status ${response.status}`,
+      ),
+    );
   }
 
+  const transcriptId = (payload as Record<string, unknown>).id;
+
+  if (typeof transcriptId !== "string" || !transcriptId) {
+    throw new WorkflowWorkerError(
+      "assemblyai_transcript_id_missing",
+      "AssemblyAI transcription submit did not return a transcript id",
+    );
+  }
+
+  return transcriptId;
+}
+
+async function getAssemblyAiTranscript(transcriptId: string, apiKey: string) {
   const response = await fetch(
-    `https://api.deepgram.com/v1/listen?${params.toString()}`,
+    `${ASSEMBLYAI_BASE_URL}/v2/transcript/${transcriptId}`,
     {
-      method: "POST",
       headers: {
-        Authorization: `Token ${apiKey}`,
-        "Content-Type": "audio/mpeg",
+        Authorization: apiKey,
       },
-      body: readFileSync(audioPath),
-      duplex: "half",
-    } as RequestInit & { duplex: "half" },
+    },
   );
 
-  const payload = await response.json().catch(() => null);
+  const payload = await parseJsonResponse(response);
 
-  if (!response.ok || !payload) {
-    const message =
-      payload && typeof payload === "object" && "err_msg" in payload
-        ? String((payload as Record<string, unknown>).err_msg)
-        : `Deepgram transcription failed with status ${response.status}`;
-    throw new WorkflowWorkerError("deepgram_transcription_failed", message);
+  if (!response.ok || !payload || typeof payload !== "object") {
+    throw new WorkflowWorkerError(
+      "assemblyai_transcription_poll_failed",
+      getResponseMessage(
+        payload,
+        `AssemblyAI transcription poll failed with status ${response.status}`,
+      ),
+    );
   }
 
-  return payload;
+  return payload as Record<string, unknown>;
+}
+
+async function transcribeWithAssemblyAi(
+  audioPath: string,
+  run: WorkflowRunJob,
+) {
+  const apiKey = getRequiredAssemblyAiApiKey();
+
+  const uploadUrl = await uploadAssemblyAiAudio(audioPath, apiKey);
+  await projectService.publishWorkflowProgress({
+    projectId: run.projectId,
+    workflowRunId: run.id,
+    stage: "stt",
+    status: "running",
+    progress: 30,
+    errorCode: null,
+  });
+
+  const transcriptId = await submitAssemblyAiTranscript(uploadUrl, apiKey);
+  await projectService.publishWorkflowProgress({
+    projectId: run.projectId,
+    workflowRunId: run.id,
+    stage: "stt",
+    status: "running",
+    progress: 40,
+    errorCode: null,
+  });
+
+  const pollIntervalMs = getAssemblyAiPollIntervalMs();
+  const pollTimeoutMs = getAssemblyAiPollTimeoutMs();
+  const deadline = Date.now() + pollTimeoutMs;
+
+  while (Date.now() < deadline) {
+    const payload = await getAssemblyAiTranscript(transcriptId, apiKey);
+    const status = payload.status;
+
+    if (status === "completed") {
+      return payload;
+    }
+
+    if (status === "error") {
+      throw new WorkflowWorkerError(
+        "assemblyai_transcription_failed",
+        getResponseMessage(payload, "AssemblyAI transcription failed"),
+      );
+    }
+
+    const elapsedRatio = Math.min(
+      1,
+      (Date.now() - (deadline - pollTimeoutMs)) / pollTimeoutMs,
+    );
+    await projectService.publishWorkflowProgress({
+      projectId: run.projectId,
+      workflowRunId: run.id,
+      stage: "stt",
+      status: "running",
+      progress: Math.min(90, 40 + Math.round(elapsedRatio * 45)),
+      errorCode: null,
+    });
+
+    await sleep(pollIntervalMs);
+  }
+
+  throw new WorkflowWorkerError(
+    "assemblyai_transcription_timeout",
+    "AssemblyAI transcription did not complete before the polling timeout",
+  );
 }
 
 async function extractTranscriptionAudio(
@@ -193,27 +370,39 @@ export async function processTranscriptRun(run: WorkflowRunJob) {
     });
 
     await extractTranscriptionAudio(sourcePath, audioPath);
+    await projectService.publishWorkflowProgress({
+      projectId: run.projectId,
+      workflowRunId: run.id,
+      stage: "stt",
+      status: "running",
+      progress: 20,
+      errorCode: null,
+    });
 
-    const deepgramPayload = await transcribeWithDeepgram(audioPath);
-    const normalized = normalizeDeepgramTranscript(deepgramPayload);
-    const rawStorageKey = `projects/${run.projectId}/transcripts/${Date.now()}-${sanitizeFileName(
-      basename(run.project.title || "transcript"),
-    )}-deepgram.json`;
+    const assemblyAiPayload = await transcribeWithAssemblyAi(audioPath, run);
+    const normalized = normalizeAssemblyAiTranscript(assemblyAiPayload);
+    const rawStorageKey = `projects/${run.projectId}/transcripts/${run.id}-assemblyai-${sanitizeFileName(
+      normalized.providerModel,
+    ) || "universal-3-pro-universal-2"}.json`;
 
     await putJson({
       key: rawStorageKey,
-      value: deepgramPayload,
+      value: assemblyAiPayload,
       metadata: {
         project_id: run.projectId,
         workflow_run_id: run.id,
-        provider: "deepgram",
+        provider: "assemblyai",
         model: normalized.providerModel,
+        ...(normalized.providerJobId
+          ? { provider_job_id: normalized.providerJobId }
+          : {}),
       },
     });
 
     await projectService.completeTranscriptWorkflowRun(run.id, {
       provider: normalized.provider,
       providerModel: normalized.providerModel,
+      providerJobId: normalized.providerJobId,
       languageCode: normalized.languageCode,
       text: normalized.text,
       utterances: normalized.utterances,
@@ -228,10 +417,7 @@ export async function processTranscriptRun(run: WorkflowRunJob) {
       utteranceCount: normalized.utterances.length,
     });
   } catch (error) {
-    const code =
-      error instanceof WorkflowWorkerError
-        ? error.code
-        : "workflow_unhandled_error";
+    const code = getErrorCode(error);
     await projectService.failTranscriptWorkflowRun(run.id, code);
     log("error", "transcription_run_failed", {
       workflowRunId: run.id,

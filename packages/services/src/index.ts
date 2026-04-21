@@ -11,7 +11,8 @@ export { projectService, ProjectService } from "./project.service";
 export {
   buildTranscriptSnapshot,
   exportTranscript,
-  normalizeDeepgramTranscript,
+  normalizeAssemblyAiTranscript,
+  TranscriptNormalizationError,
 } from "./transcript.service";
 export {
   deleteObject,
