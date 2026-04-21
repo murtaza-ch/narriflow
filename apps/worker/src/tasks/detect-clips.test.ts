@@ -2,8 +2,10 @@ import { describe, expect, test } from "bun:test";
 import type { TranscriptUtterance } from "@narriflow/validators";
 import {
   buildMarketCompliantClipCandidates,
+  resolveCandidateCountTarget,
   formatTimestamp,
   formatTranscriptForLlm,
+  resolveDefaultClipCountTarget,
   resolveClipCountTarget,
 } from "./detect-clips";
 
@@ -61,10 +63,17 @@ describe("clip detection helpers", () => {
   });
 
   test("resolves duration-based clip counts for long-form content", () => {
-    expect(resolveClipCountTarget(3, 60 * 60)).toBe(5);
-    expect(resolveClipCountTarget(12, 60 * 60)).toBe(8);
-    expect(resolveClipCountTarget(3, 20 * 60)).toBe(4);
-    expect(resolveClipCountTarget(1, 5 * 60)).toBe(2);
+    expect(resolveDefaultClipCountTarget(60 * 60)).toBe(10);
+    expect(resolveClipCountTarget(null, 60 * 60)).toBe(10);
+    expect(resolveClipCountTarget(5, 60 * 60)).toBe(5);
+    expect(resolveClipCountTarget(12, 60 * 60)).toBe(12);
+    expect(resolveClipCountTarget(3, 20 * 60)).toBe(3);
+    expect(resolveClipCountTarget(1, 5 * 60)).toBe(3);
+  });
+
+  test("resolves larger candidate pools for long-form content", () => {
+    expect(resolveCandidateCountTarget(10, 60 * 60)).toBeGreaterThanOrEqual(36);
+    expect(resolveCandidateCountTarget(30, 60 * 60)).toBe(90);
   });
 
   test("repairs tiny LLM ranges before candidate selection", () => {
@@ -73,11 +82,15 @@ describe("clip detection helpers", () => {
         {
           startSec: 8.2,
           endSec: 9.4,
+          title: "The real hook",
           hookText: "The real hook",
+          payoffText: "The payoff",
           reasoning: "Strong insight",
           category: "insight",
+          platformFit: ["tiktok", "youtube_shorts", "instagram_reels"],
           hookStrength: 85,
           emotionalIntensity: 70,
+          storyCompleteness: 82,
         },
       ],
       utterances: makeUtterances(70),
@@ -96,11 +109,15 @@ describe("clip detection helpers", () => {
         {
           startSec: 1,
           endSec: 2,
+          title: "Too short",
           hookText: "Too short",
+          payoffText: "No payoff",
           reasoning: "Not enough source material",
           category: "insight",
+          platformFit: ["tiktok"],
           hookStrength: 85,
           emotionalIntensity: 70,
+          storyCompleteness: 40,
         },
       ],
       utterances: makeUtterances(10),

@@ -8,8 +8,11 @@ import {
 } from "@narriflow/services";
 import {
   clipDetectionLlmResponseSchema,
+  contentPackSchema,
   getEffectiveClipTiming,
   type ClipCategory,
+  type ClipPlatformTarget,
+  type ContentPack,
   type TranscriptUtterance,
 } from "@narriflow/validators";
 
@@ -63,11 +66,19 @@ function getRequiredOpenAIApiKey() {
 export const CLIP_DURATION_POLICY = {
   minDurationSec: 15,
   preferredMinDurationSec: 30,
-  preferredMaxDurationSec: 75,
+  preferredMaxDurationSec: 60,
   maxDurationSec: 90,
 } as const;
 
-const MIN_CANDIDATE_MULTIPLIER = 2;
+const MIN_CANDIDATE_MULTIPLIER = 3;
+const MAX_CANDIDATE_COUNT_TARGET = 90;
+
+interface ClipDurationPolicy {
+  minDurationSec: number;
+  preferredMinDurationSec: number;
+  preferredMaxDurationSec: number;
+  maxDurationSec: number;
+}
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
@@ -75,6 +86,21 @@ function clamp(value: number, min: number, max: number) {
 
 function roundSeconds(value: number) {
   return Math.round(value * 1000) / 1000;
+}
+
+function resolveDurationPolicy(contentPack: ContentPack | null): ClipDurationPolicy {
+  return {
+    minDurationSec:
+      contentPack?.minDurationSec ?? CLIP_DURATION_POLICY.minDurationSec,
+    preferredMinDurationSec:
+      contentPack?.preferredMinDurationSec ??
+      CLIP_DURATION_POLICY.preferredMinDurationSec,
+    preferredMaxDurationSec:
+      contentPack?.preferredMaxDurationSec ??
+      CLIP_DURATION_POLICY.preferredMaxDurationSec,
+    maxDurationSec:
+      contentPack?.maxDurationSec ?? CLIP_DURATION_POLICY.maxDurationSec,
+  };
 }
 
 function formatSeconds(seconds: number): string {
@@ -114,29 +140,37 @@ Your task is to identify the best moments that would make compelling short clips
 - Question/answer exchanges with strong payoffs
 
 For each clip, provide:
+- A concise title for the clip
 - Precise start and end timestamps (in seconds)
 - A hook text: the compelling first sentence or headline for the clip
+- A payoff text: the strongest reveal, punchline, decision, or emotional turn
 - Why this moment is engaging (reasoning)
 - A category classifying the type of moment
+- Platform fit: which requested platforms this clip suits
 - Hook strength score (1-100): how compelling the opening is
 - Emotional intensity score (1-100): how emotionally resonant the content is
+- Story completeness score (1-100): whether the clip has a full setup/escalation/payoff arc
 
 Respond with a JSON object containing a "clips" array. Each clip object must have these exact fields:
+- title: string
 - start_time: number (seconds)
 - end_time: number (seconds)
 - hook_text: string
+- payoff_text: string
 - reasoning: string
 - category: one of "hook", "insight", "story", "humor", "controversy", "emotional", "tutorial", "quote", "debate", "surprise"
+- platform_fit: array containing one or more of "tiktok", "youtube_shorts", "instagram_reels"
 - hook_strength: integer 1-100
 - emotional_intensity: integer 1-100
+- story_completeness_score: integer 1-100
 
 Important constraints:
 - Each returned clip must be between 15 and 90 seconds long.
-- Prefer complete clips between 30 and 75 seconds.
+- Prefer complete clips between 30 and 60 seconds unless a longer story arc is clearly stronger.
 - Use the transcript's start_sec and end_sec values as absolute seconds.
 - Clips should have natural start and end points (complete thoughts).
 - Avoid starting mid-sentence.
-- Prioritize quality over quantity.`;
+- Prioritize quality over quantity, but return the requested number of candidates when the transcript contains enough distinct moments.`;
 
 function buildUserPrompt(
   title: string,
@@ -144,6 +178,8 @@ function buildUserPrompt(
   candidateCountTarget: number,
   finalClipCountTarget: number,
   clipDurationSecTarget: number,
+  durationPolicy: ClipDurationPolicy,
+  platformTargets: ClipPlatformTarget[],
   toneConstraints: string[],
   speakerCount: number,
   durationMinutes: number,
@@ -159,8 +195,16 @@ Content title: "${title}"
 Duration: ~${durationMinutes} minutes
 Speakers: ${speakerCount}
 Target clip duration: ~${clipDurationSecTarget} seconds
-Required duration window: ${CLIP_DURATION_POLICY.minDurationSec}-${CLIP_DURATION_POLICY.maxDurationSec} seconds
-Preferred duration window: ${CLIP_DURATION_POLICY.preferredMinDurationSec}-${CLIP_DURATION_POLICY.preferredMaxDurationSec} seconds${toneNote}
+Required duration window: ${durationPolicy.minDurationSec}-${durationPolicy.maxDurationSec} seconds
+Preferred duration window: ${durationPolicy.preferredMinDurationSec}-${durationPolicy.preferredMaxDurationSec} seconds
+Platform targets: ${platformTargets.join(", ")}${toneNote}
+
+Selection guidance:
+- Return distinct moments from different story beats or phases of the video.
+- Prefer a complete mini-story: setup, escalation, payoff, and clean ending.
+- The first 3 seconds must work as a hook without extra context.
+- Avoid near-duplicates and avoid clips that only make sense after watching earlier clips.
+- For each clip, platform_fit must include every target platform this moment fits naturally.
 
 TRANSCRIPT:
 ${formattedTranscript}
@@ -208,21 +252,29 @@ function chunkUtterances(
 interface RawDetectedClip {
   startSec: number;
   endSec: number;
+  title: string;
   hookText: string;
+  payoffText: string;
   reasoning: string;
   category: string;
+  platformFit: ClipPlatformTarget[];
   hookStrength: number;
   emotionalIntensity: number;
+  storyCompleteness: number;
 }
 
 interface FinalDetectedClip {
   startSec: number;
   endSec: number;
+  title: string | null;
   hookText: string;
+  payoffText: string | null;
   reasoning: string;
   category: ClipCategory;
+  platformFit: ClipPlatformTarget[];
   hookStrengthScore: number;
   emotionalIntensityScore: number;
+  storyCompletenessScore: number;
   pacingScore: number;
   durationOptimalityScore: number;
   viralityScore: number;
@@ -250,29 +302,45 @@ interface DroppedClipCandidate {
   repairedDurationSec?: number;
 }
 
-export function resolveClipCountTarget(
-  requestedTarget: number,
-  sourceDurationSec: number,
-) {
-  const requested = Number.isFinite(requestedTarget)
-    ? Math.max(1, Math.round(requestedTarget))
-    : 5;
-
+export function resolveDefaultClipCountTarget(sourceDurationSec: number) {
   if (sourceDurationSec >= 45 * 60) {
-    return clamp(Math.max(requested, 5), 5, 8);
+    return 10;
   }
 
   if (sourceDurationSec >= 15 * 60) {
-    return clamp(Math.max(requested, 4), 4, 6);
+    return 6;
   }
 
-  return clamp(Math.max(requested, 2), 2, 4);
+  return 4;
 }
 
-export function resolveCandidateCountTarget(finalClipCountTarget: number) {
+export function resolveClipCountTarget(
+  requestedTarget: number | null | undefined,
+  sourceDurationSec: number,
+) {
+  if (Number.isFinite(requestedTarget)) {
+    return clamp(Math.round(requestedTarget as number), 3, 30);
+  }
+
+  return resolveDefaultClipCountTarget(sourceDurationSec);
+}
+
+export function resolveCandidateCountTarget(
+  finalClipCountTarget: number,
+  sourceDurationSec = 0,
+) {
+  const durationScaledLimit = Math.max(
+    finalClipCountTarget,
+    Math.ceil((sourceDurationSec / 60) * 0.6),
+  );
+
   return Math.min(
-    20,
-    Math.max(finalClipCountTarget + 3, finalClipCountTarget * MIN_CANDIDATE_MULTIPLIER),
+    MAX_CANDIDATE_COUNT_TARGET,
+    Math.max(
+      finalClipCountTarget + 5,
+      finalClipCountTarget * MIN_CANDIDATE_MULTIPLIER,
+      durationScaledLimit,
+    ),
   );
 }
 
@@ -304,26 +372,82 @@ function deduplicateClipCandidates<T extends { startSec: number; endSec: number;
   return kept.sort((a, b) => a.startSec - b.startSec);
 }
 
+function selectDiverseClipCandidates<T extends {
+  startSec: number;
+  endSec: number;
+  rankingScore: number;
+}>(
+  candidates: T[],
+  targetCount: number,
+  sourceDurationSec: number | null,
+): T[] {
+  const ranked = [...candidates].sort((a, b) => b.rankingScore - a.rankingScore);
+  const selected: T[] = [];
+  const sourceDuration =
+    typeof sourceDurationSec === "number" && sourceDurationSec > 0
+      ? sourceDurationSec
+      : null;
+  const preferredSpacingSec = sourceDuration
+    ? Math.max(45, sourceDuration / Math.max(targetCount * 2, 1))
+    : 45;
+
+  for (const candidate of ranked) {
+    if (selected.length >= targetCount) {
+      break;
+    }
+
+    const center = (candidate.startSec + candidate.endSec) / 2;
+    const tooClose = selected.some((existing) => {
+      const existingCenter = (existing.startSec + existing.endSec) / 2;
+      return Math.abs(existingCenter - center) < preferredSpacingSec;
+    });
+
+    if (!tooClose) {
+      selected.push(candidate);
+    }
+  }
+
+  if (selected.length < targetCount) {
+    for (const candidate of ranked) {
+      if (selected.length >= targetCount) {
+        break;
+      }
+
+      if (!selected.includes(candidate)) {
+        selected.push(candidate);
+      }
+    }
+  }
+
+  return selected;
+}
+
 function getRankingScore(clip: {
   viralityScore: number;
   durationOptimalityScore: number;
   hookStrengthScore: number;
+  storyCompletenessScore: number;
 }) {
   return (
-    clip.viralityScore * 0.7 +
-    clip.durationOptimalityScore * 0.2 +
-    clip.hookStrengthScore * 0.1
+    clip.viralityScore * 0.62 +
+    clip.storyCompletenessScore * 0.18 +
+    clip.durationOptimalityScore * 0.12 +
+    clip.hookStrengthScore * 0.08
   );
 }
 
 function normalizeLlmClip(clip: {
+  title: string;
   start_time: number;
   end_time: number;
   hook_text: string;
+  payoff_text: string;
   reasoning: string;
   category: ClipCategory;
+  platform_fit: ClipPlatformTarget[];
   hook_strength: number;
   emotional_intensity: number;
+  story_completeness_score: number;
 }): RawDetectedClip | null {
   if (!Number.isFinite(clip.start_time) || !Number.isFinite(clip.end_time)) {
     return null;
@@ -336,11 +460,15 @@ function normalizeLlmClip(clip: {
   return {
     startSec: clip.start_time,
     endSec: clip.end_time,
+    title: clip.title,
     hookText: clip.hook_text,
+    payoffText: clip.payoff_text,
     reasoning: clip.reasoning,
     category: clip.category,
+    platformFit: clip.platform_fit,
     hookStrength: clip.hook_strength,
     emotionalIntensity: clip.emotional_intensity,
+    storyCompleteness: clip.story_completeness_score,
   };
 }
 
@@ -348,9 +476,11 @@ export function buildMarketCompliantClipCandidates(input: {
   rawClips: RawDetectedClip[];
   utterances: TranscriptUtterance[];
   sourceDurationSec: number | null;
+  durationPolicy?: ClipDurationPolicy;
 }) {
   const candidates: ClipCandidate[] = [];
   const dropped: DroppedClipCandidate[] = [];
+  const durationPolicy = input.durationPolicy ?? CLIP_DURATION_POLICY;
 
   for (const raw of input.rawClips) {
     const rawDurationSec = roundSeconds(raw.endSec - raw.startSec);
@@ -380,7 +510,7 @@ export function buildMarketCompliantClipCandidates(input: {
       startSec: raw.startSec,
       endSec: raw.endSec,
       sourceDurationSec: input.sourceDurationSec,
-      ...CLIP_DURATION_POLICY,
+      ...durationPolicy,
     });
     const durationSec = effective.durationSec;
     const clipUtterances = effective.transcriptSlice;
@@ -399,8 +529,8 @@ export function buildMarketCompliantClipCandidates(input: {
     }
 
     if (
-      durationSec < CLIP_DURATION_POLICY.minDurationSec ||
-      durationSec > CLIP_DURATION_POLICY.maxDurationSec
+      durationSec < durationPolicy.minDurationSec ||
+      durationSec > durationPolicy.maxDurationSec
     ) {
       dropped.push({
         rawStartSec: raw.startSec,
@@ -419,12 +549,20 @@ export function buildMarketCompliantClipCandidates(input: {
       100,
       Math.max(1, raw.emotionalIntensity),
     );
+    const storyCompletenessScore = Math.min(
+      100,
+      Math.max(1, raw.storyCompleteness),
+    );
     const pacingScore = computePacingScore(clipUtterances, durationSec);
-    const durationOptimalityScore = computeDurationOptimality(durationSec);
+    const durationOptimalityScore = computeDurationOptimality(
+      durationSec,
+      durationPolicy,
+    );
 
     const viralityScore = computeViralityScore({
       hookStrength: hookStrengthScore,
       emotionalIntensity: emotionalIntensityScore,
+      storyCompleteness: storyCompletenessScore,
       pacing: pacingScore,
       durationOptimality: durationOptimalityScore,
     });
@@ -448,11 +586,15 @@ export function buildMarketCompliantClipCandidates(input: {
     const candidate = {
       startSec: effective.startSec,
       endSec: effective.endSec,
+      title: raw.title,
       hookText: raw.hookText,
+      payoffText: raw.payoffText,
       reasoning: raw.reasoning,
       category: raw.category as ClipCategory,
+      platformFit: raw.platformFit,
       hookStrengthScore,
       emotionalIntensityScore,
+      storyCompletenessScore,
       pacingScore,
       durationOptimalityScore,
       viralityScore,
@@ -506,18 +648,24 @@ const CLIP_DETECTION_JSON_SCHEMA = {
         type: "object",
         additionalProperties: false,
         required: [
+          "title",
           "start_time",
           "end_time",
           "hook_text",
+          "payoff_text",
           "reasoning",
           "category",
+          "platform_fit",
           "hook_strength",
           "emotional_intensity",
+          "story_completeness_score",
         ],
         properties: {
+          title: { type: "string", minLength: 1 },
           start_time: { type: "number", minimum: 0 },
           end_time: { type: "number", minimum: 0 },
           hook_text: { type: "string", minLength: 1 },
+          payoff_text: { type: "string", minLength: 1 },
           reasoning: { type: "string", minLength: 1 },
           category: {
             type: "string",
@@ -534,8 +682,21 @@ const CLIP_DETECTION_JSON_SCHEMA = {
               "surprise",
             ],
           },
+          platform_fit: {
+            type: "array",
+            minItems: 1,
+            items: {
+              type: "string",
+              enum: ["tiktok", "youtube_shorts", "instagram_reels"],
+            },
+          },
           hook_strength: { type: "integer", minimum: 1, maximum: 100 },
           emotional_intensity: { type: "integer", minimum: 1, maximum: 100 },
+          story_completeness_score: {
+            type: "integer",
+            minimum: 1,
+            maximum: 100,
+          },
         },
       },
     },
@@ -668,18 +829,25 @@ export async function processClipDetectionRun(run: WorkflowRunJob) {
     }
 
     // Load ContentPack for targets
-    const contentPack = await projectService.getLatestContentPack(
+    const contentPackRow = await projectService.getLatestContentPack(
       run.projectId,
     );
+    const contentPack = contentPackRow
+      ? contentPackSchema.parse(contentPackRow)
+      : null;
 
-    const requestedClipCountTarget = contentPack?.clipCountTarget ?? 5;
+    const requestedClipCountTarget = contentPack?.clipCountTarget;
     const finalClipCountTarget = resolveClipCountTarget(
       requestedClipCountTarget,
       totalDurationSec,
     );
     const candidateCountTarget =
-      resolveCandidateCountTarget(finalClipCountTarget);
-    const clipDurationSecTarget = contentPack?.clipDurationSecTarget ?? 30;
+      resolveCandidateCountTarget(finalClipCountTarget, totalDurationSec);
+    const durationPolicy = resolveDurationPolicy(contentPack);
+    const clipDurationSecTarget =
+      contentPack?.clipDurationSecTarget ?? durationPolicy.preferredMinDurationSec;
+    const platformTargets =
+      contentPack?.platformTargets ?? ["tiktok", "youtube_shorts", "instagram_reels"];
     const toneConstraints = (contentPack?.toneConstraints ?? []) as string[];
     const sourceDurationSec =
       (run.project.sourceDurationSeconds ?? totalDurationSec) || null;
@@ -695,7 +863,9 @@ export async function processClipDetectionRun(run: WorkflowRunJob) {
       requestedClipCountTarget,
       finalClipCountTarget,
       candidateCountTarget,
-      durationPolicy: CLIP_DURATION_POLICY,
+      durationPolicy,
+      platformTargets,
+      autoRenderClips: contentPack?.autoRenderClips ?? false,
     });
 
     // Update progress
@@ -727,6 +897,8 @@ export async function processClipDetectionRun(run: WorkflowRunJob) {
         chunks.length > 1 ? clipsPerChunk : candidateCountTarget,
         finalClipCountTarget,
         clipDurationSecTarget,
+        durationPolicy,
+        platformTargets,
         toneConstraints,
         speakerCount,
         durationMinutes,
@@ -800,6 +972,7 @@ export async function processClipDetectionRun(run: WorkflowRunJob) {
       rawClips: allRawClips,
       utterances,
       sourceDurationSec,
+      durationPolicy,
     });
 
     for (const droppedClip of dropped) {
@@ -811,9 +984,11 @@ export async function processClipDetectionRun(run: WorkflowRunJob) {
     }
 
     const dedupedCandidates = deduplicateClipCandidates(candidates);
-    const selectedCandidates = [...dedupedCandidates]
-      .sort((a, b) => b.rankingScore - a.rankingScore)
-      .slice(0, finalClipCountTarget)
+    const selectedCandidates = selectDiverseClipCandidates(
+      dedupedCandidates,
+      finalClipCountTarget,
+      sourceDurationSec,
+    )
       .sort((a, b) => a.startSec - b.startSec);
     const finalClips: FinalDetectedClip[] = selectedCandidates.map(
       ({
@@ -861,15 +1036,16 @@ export async function processClipDetectionRun(run: WorkflowRunJob) {
       totalTokensUsed,
     });
 
-    // Auto-queue 9:16 default render for all detected clips
-    try {
-      await clipService.autoQueueDefaultRenders(run.projectId, run.id);
-    } catch (error) {
-      log("error", "auto_render_queue_failed", {
-        workflowRunId: run.id,
-        projectId: run.projectId,
-        message: error instanceof Error ? error.message : String(error),
-      });
+    if (contentPack?.autoRenderClips) {
+      try {
+        await clipService.autoQueueDefaultRenders(run.projectId, run.id);
+      } catch (error) {
+        log("error", "auto_render_queue_failed", {
+          workflowRunId: run.id,
+          projectId: run.projectId,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
     }
 
     // Complete workflow run
