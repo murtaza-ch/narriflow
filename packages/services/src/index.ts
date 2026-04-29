@@ -1,4 +1,10 @@
 export {
+  brandTemplateService,
+  BrandTemplateService,
+  BrandTemplateForbiddenError,
+  BrandTemplateNotFoundError,
+} from "./brand-template.service";
+export {
   clipService,
   ClipService,
   computeDurationOptimality,
@@ -22,6 +28,7 @@ export {
   deleteObject,
   downloadObjectToFile,
   presignDownloadUrl,
+  presignSingleUploadUrl,
   putFileFromPath,
   putJson,
 } from "./r2-storage";

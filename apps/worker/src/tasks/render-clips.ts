@@ -10,13 +10,28 @@ import {
   putFileFromPath,
 } from "@narriflow/services";
 import {
+  brandTemplateSnapshotSchema,
   captionPresetSchema,
   clipAspectRatioDbSchema,
   clipAspectRatioFromDb,
   clipAspectRatioOptions,
   getEffectiveClipTiming,
 } from "@narriflow/validators";
-import type { CaptionPreset, ClipAspectRatio, TranscriptUtterance } from "@narriflow/validators";
+import type {
+  BrandTemplateSnapshot,
+  CaptionPreset,
+  ClipAspectRatio,
+  TranscriptUtterance,
+} from "@narriflow/validators";
+
+interface LogoOverlay {
+  filePath: string;
+  position: BrandTemplateSnapshot["logoPosition"];
+  opacity: number;
+  scalePct: number;
+}
+
+const LOGO_MARGIN_PX = 24;
 
 interface WorkflowRunJob {
   id: string;
@@ -443,6 +458,52 @@ function buildSubtitleFilter(
   return `subtitles='${escapedPath}':force_style='${forceStyle}'`;
 }
 
+function buildLogoOverlayPosition(
+  position: BrandTemplateSnapshot["logoPosition"],
+): { x: string; y: string } {
+  const [vertical, horizontal] = position.split("-") as [
+    "top" | "mid" | "bot",
+    "left" | "center" | "right",
+  ];
+  let x: string;
+  let y: string;
+
+  if (horizontal === "left") x = `${LOGO_MARGIN_PX}`;
+  else if (horizontal === "right") x = `W-w-${LOGO_MARGIN_PX}`;
+  else x = `(W-w)/2`;
+
+  if (vertical === "top") y = `${LOGO_MARGIN_PX}`;
+  else if (vertical === "bot") y = `H-h-${LOGO_MARGIN_PX}`;
+  else y = `(H-h)/2`;
+
+  return { x, y };
+}
+
+function computeLogoTargetWidth(
+  logo: LogoOverlay,
+  videoWidth: number,
+): number {
+  return Math.max(40, Math.round(videoWidth * (logo.scalePct / 100)));
+}
+
+function buildLogoFilter(
+  logo: LogoOverlay,
+  videoWidth: number,
+  inputStreamRef: string,
+  outputStreamRef: string,
+  logoInputIndex: number,
+  scratchSuffix: string,
+): string {
+  const opacity = Math.max(0.1, Math.min(1, logo.opacity / 100));
+  const targetWidth = computeLogoTargetWidth(logo, videoWidth);
+  const { x, y } = buildLogoOverlayPosition(logo.position);
+  const scratchLabel = `brandlogo${scratchSuffix}`;
+  return [
+    `[${logoInputIndex}:v]scale=${targetWidth}:-1,format=rgba,colorchannelmixer=aa=${opacity.toFixed(3)}[${scratchLabel}]`,
+    `${inputStreamRef}[${scratchLabel}]overlay=${x}:${y}${outputStreamRef}`,
+  ].join(";");
+}
+
 function buildCropAndScaleFilter(
   probe: SourceProbe,
   aspectRatio: ClipAspectRatio,
@@ -502,6 +563,7 @@ function buildSingleVideoArgs(params: {
   probe: SourceProbe;
   srtPath: string | null;
   captionPreset?: CaptionPreset | null;
+  logo?: LogoOverlay | null;
 }) {
   const videoFilter = buildSingleVideoFilter(
     params.probe,
@@ -509,6 +571,33 @@ function buildSingleVideoArgs(params: {
     params.srtPath,
     params.captionPreset,
   );
+
+  let finalLabel: string;
+  const filterParts: string[] = [];
+  if (params.logo) {
+    const aspectConfig = aspectRatioConfig.get(params.aspectRatio);
+    if (!aspectConfig) {
+      throw new WorkflowWorkerError(
+        "unsupported_aspect_ratio",
+        `Unsupported aspect ratio: ${params.aspectRatio}`,
+      );
+    }
+    filterParts.push(`[0:v]${videoFilter}[outvbase]`);
+    filterParts.push(
+      buildLogoFilter(
+        params.logo,
+        aspectConfig.width,
+        "[outvbase]",
+        "[outv]",
+        1,
+        "",
+      ),
+    );
+    finalLabel = "[outv]";
+  } else {
+    filterParts.push(`[0:v]${videoFilter}[outv]`);
+    finalLabel = "[outv]";
+  }
 
   const args = [
     "-y",
@@ -518,17 +607,24 @@ function buildSingleVideoArgs(params: {
     String(params.endSec - params.startSec),
     "-i",
     params.sourcePath,
+  ];
+
+  if (params.logo) {
+    args.push("-i", params.logo.filePath);
+  }
+
+  args.push(
     "-filter_complex",
-    `[0:v]${videoFilter}[outv]`,
+    filterParts.join(";"),
     "-map",
-    "[outv]",
+    finalLabel,
     "-c:v",
     "libx264",
     "-preset",
     "medium",
     "-crf",
     "23",
-  ];
+  );
 
   if (params.probe.hasAudio) {
     args.push("-map", "0:a:0?", "-c:a", "aac", "-b:a", "128k");
@@ -555,12 +651,13 @@ function buildMultiVideoArgs(params: {
   probe: SourceProbe;
   srtPath: string | null;
   captionPreset?: CaptionPreset | null;
+  logo?: LogoOverlay | null;
 }) {
   const splitOutputs = params.outputs
     .map((_, index) => `[v${index}]`)
     .join("");
 
-  const filterSections = [
+  const baseSections = [
     `[0:v]split=${params.outputs.length}${splitOutputs}`,
     ...params.outputs.map((output, index) => {
       const subtitlePath = output.subtitlePath ?? params.srtPath;
@@ -570,9 +667,42 @@ function buildMultiVideoArgs(params: {
         subtitlePath,
         params.captionPreset,
       );
-      return `[v${index}]${singleFilter}[outv${index}]`;
+      const baseLabel = params.logo ? `[outvbase${index}]` : `[outv${index}]`;
+      return `[v${index}]${singleFilter}${baseLabel}`;
     }),
   ];
+
+  const filterSections = [...baseSections];
+
+  if (params.logo) {
+    const logo = params.logo;
+    const logoOpacity = Math.max(0.1, Math.min(1, logo.opacity / 100));
+    const { x, y } = buildLogoOverlayPosition(logo.position);
+
+    // Pre-process logo once (alpha-blend), then split into N branches and scale
+    // each branch to that output's target video width.
+    const logoSplitRefs = params.outputs
+      .map((_, index) => `[logosrc${index}]`)
+      .join("");
+    filterSections.push(
+      `[1:v]format=rgba,colorchannelmixer=aa=${logoOpacity.toFixed(3)},split=${params.outputs.length}${logoSplitRefs}`,
+    );
+
+    for (const [index, output] of params.outputs.entries()) {
+      const aspectConfig = aspectRatioConfig.get(output.aspectRatio);
+      if (!aspectConfig) {
+        throw new WorkflowWorkerError(
+          "unsupported_aspect_ratio",
+          `Unsupported aspect ratio: ${output.aspectRatio}`,
+        );
+      }
+      const targetWidth = computeLogoTargetWidth(logo, aspectConfig.width);
+      filterSections.push(
+        `[logosrc${index}]scale=${targetWidth}:-1[logo${index}]`,
+        `[outvbase${index}][logo${index}]overlay=${x}:${y}[outv${index}]`,
+      );
+    }
+  }
 
   const args = [
     "-y",
@@ -582,9 +712,13 @@ function buildMultiVideoArgs(params: {
     String(params.endSec - params.startSec),
     "-i",
     params.sourcePath,
-    "-filter_complex",
-    filterSections.join(";"),
   ];
+
+  if (params.logo) {
+    args.push("-i", params.logo.filePath);
+  }
+
+  args.push("-filter_complex", filterSections.join(";"));
 
   for (const [index, output] of params.outputs.entries()) {
     args.push("-map", `[outv${index}]`);
@@ -760,6 +894,45 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
       hasAudio: probe.hasAudio,
     });
 
+    let brandLogo: LogoOverlay | null = null;
+    try {
+      const rawSnapshot = await projectService.getProjectBrandSnapshot(run.projectId);
+      if (rawSnapshot) {
+        const snapshot = brandTemplateSnapshotSchema.parse(rawSnapshot);
+        if (snapshot.logoStorageKey && probe.hasVideo) {
+          const logoExt = extname(snapshot.logoStorageKey) || ".png";
+          const logoPath = join(tempDir, `brand-logo${logoExt}`);
+          try {
+            await downloadObjectToFile({
+              key: snapshot.logoStorageKey,
+              filePath: logoPath,
+            });
+            brandLogo = {
+              filePath: logoPath,
+              position: snapshot.logoPosition,
+              opacity: snapshot.logoOpacity,
+              scalePct: snapshot.logoScalePct,
+            };
+          } catch (logoError) {
+            log("error", "brand_logo_download_failed", {
+              workflowRunId: run.id,
+              projectId: run.projectId,
+              key: snapshot.logoStorageKey,
+              message:
+                logoError instanceof Error ? logoError.message : "unknown",
+            });
+          }
+        }
+      }
+    } catch (snapshotError) {
+      log("error", "brand_snapshot_parse_failed", {
+        workflowRunId: run.id,
+        projectId: run.projectId,
+        message:
+          snapshotError instanceof Error ? snapshotError.message : "unknown",
+      });
+    }
+
     const pendingRenders = await clipService.getPendingClipRendersForProject(
       run.projectId,
     );
@@ -921,6 +1094,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
                   probe,
                   srtPath: outputs[0]!.subtitlePath ?? srtPath,
                   captionPreset,
+                  logo: brandLogo,
                 })
               : buildMultiVideoArgs({
                   sourcePath,
@@ -930,6 +1104,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
                   probe,
                   srtPath,
                   captionPreset,
+                  logo: brandLogo,
                 });
 
           await execCommand("ffmpeg", ffmpegArgs);

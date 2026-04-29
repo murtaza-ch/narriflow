@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
+import { Prisma } from "@prisma/client";
 import type {
   IngestJobType,
   IngestStatus as PrismaIngestStatus,
   Project,
-  Prisma,
   Transcript as PrismaTranscript,
   TranscriptStatus as PrismaTranscriptStatus,
   WorkflowRun as PrismaWorkflowRun,
@@ -11,11 +11,13 @@ import type {
 import { getPrismaClient } from "@narriflow/db/client";
 import {
   completeMultipartUploadSchema,
+  contentPackSchema,
   createProjectSchema,
   generateProjectRequestSchema,
   presignUploadSchema,
   rssImportSchema,
   rssPreviewSchema,
+  type ContentPack,
   type CreateProjectInput,
   type GenerateProjectInput,
   type PresignUploadInput,
@@ -34,6 +36,7 @@ import {
   listUploadedParts,
   presignMultipartPartUrls,
 } from "./r2-storage";
+import { brandTemplateService } from "./brand-template.service";
 import { fetchRssEpisodes } from "./rss";
 import {
   buildTranscriptSnapshot,
@@ -402,10 +405,28 @@ export class ProjectService {
         sourceInput: parsed.sourceMediaUrl,
         ingestStatus: "ready",
         ingestCompletedAt: new Date(),
+        languageCode: parsed.languageCode ?? null,
       },
     });
 
     return toProjectSnapshot(project);
+  }
+
+  async updateProjectLanguage(
+    userId: string,
+    projectId: string,
+    languageCode: string | null,
+  ) {
+    if (!hasDatabase()) {
+      const existing = projects.get(projectId);
+      if (!existing || existing.userId !== userId) return;
+      return;
+    }
+    const prisma = this.requirePrisma();
+    await prisma.project.updateMany({
+      where: { id: projectId, userId },
+      data: { languageCode },
+    });
   }
 
   async getProjectSnapshot(userId: string, projectId: string) {
@@ -640,8 +661,20 @@ export class ProjectService {
             toneConstraints: parsed.contentPack.toneConstraints,
             captionPreset: parsed.contentPack.captionPreset,
             platformPlaybookVersion: parsed.contentPack.platformPlaybookVersion,
+            mode: parsed.contentPack.mode,
+            autoHook: parsed.contentPack.autoHook,
+            specificMoments: parsed.contentPack.specificMoments,
+            processingStartSec: parsed.contentPack.processingStartSec,
+            processingEndSec: parsed.contentPack.processingEndSec,
           },
         });
+
+        if (parsed.languageCode !== undefined) {
+          await tx.project.update({
+            where: { id: projectId },
+            data: { languageCode: parsed.languageCode },
+          });
+        }
 
         await tx.transcript.upsert({
           where: { projectId },
@@ -749,6 +782,11 @@ export class ProjectService {
       };
     }
 
+    const brandResolved = await brandTemplateService.resolveSnapshotForUser(
+      userId,
+      parsed.brandTemplateId ?? null,
+    );
+
     const project = await prisma.project.create({
       data: {
         userId,
@@ -757,6 +795,10 @@ export class ProjectService {
         sourceType: "upload",
         sourceInput: parsed.fileName,
         ingestStatus: "uploading",
+        brandTemplateId: brandResolved?.templateId ?? null,
+        brandSnapshot: brandResolved
+          ? (brandResolved.snapshot as unknown as Prisma.InputJsonValue)
+          : Prisma.JsonNull,
       },
     });
 
@@ -908,6 +950,11 @@ export class ProjectService {
     const parsed = youtubeIngestSchema.parse(input);
     const prisma = this.requirePrisma();
 
+    const brandResolved = await brandTemplateService.resolveSnapshotForUser(
+      userId,
+      parsed.brandTemplateId ?? null,
+    );
+
     const project = await prisma.project.create({
       data: {
         userId,
@@ -916,6 +963,10 @@ export class ProjectService {
         sourceType: "youtube",
         sourceInput: parsed.youtubeUrl,
         ingestStatus: "queued",
+        brandTemplateId: brandResolved?.templateId ?? null,
+        brandSnapshot: brandResolved
+          ? (brandResolved.snapshot as unknown as Prisma.InputJsonValue)
+          : Prisma.JsonNull,
       },
     });
 
@@ -958,6 +1009,11 @@ export class ProjectService {
     const parsed = rssImportSchema.parse(input);
     const prisma = this.requirePrisma();
 
+    const brandResolved = await brandTemplateService.resolveSnapshotForUser(
+      userId,
+      parsed.brandTemplateId ?? null,
+    );
+
     const createdProjects: Array<{
       project: ProjectSnapshot;
       queuedJobId: string;
@@ -976,6 +1032,10 @@ export class ProjectService {
           ingestStatus: "queued",
           sourceMimeType: episode.mimeType ?? null,
           sourceDurationSeconds: episode.durationSeconds ?? null,
+          brandTemplateId: brandResolved?.templateId ?? null,
+          brandSnapshot: brandResolved
+            ? (brandResolved.snapshot as unknown as Prisma.InputJsonValue)
+            : Prisma.JsonNull,
         },
       });
 
@@ -1486,6 +1546,19 @@ export class ProjectService {
       eventStatus: "completed",
       errorCode: null,
     });
+
+    try {
+      await this.triggerGenerationIfPending(job.projectId);
+    } catch (error) {
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          message: "trigger_generation_after_ingest_failed",
+          projectId: job.projectId,
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      );
+    }
   }
 
   async failIngestJob(jobId: string, errorCode: string, errorMessage: string) {
@@ -1567,6 +1640,139 @@ export class ProjectService {
       where: { projectId },
       orderBy: { createdAt: "desc" },
     });
+  }
+
+  async getProjectBrandSnapshot(projectId: string): Promise<unknown | null> {
+    const prisma = this.requirePrisma();
+    const row = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { brandSnapshot: true },
+    });
+    return row?.brandSnapshot ?? null;
+  }
+
+  async getProjectLanguageCode(projectId: string): Promise<string | null> {
+    const prisma = this.requirePrisma();
+    const row = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { languageCode: true },
+    });
+    return row?.languageCode ?? null;
+  }
+
+  async prepareGenerationContext(
+    userId: string,
+    projectId: string,
+    contentPack: ContentPack,
+    languageCode: string | null,
+  ) {
+    const prisma = this.requirePrisma();
+
+    const project = await prisma.project.findFirst({
+      where: { id: projectId, userId },
+      select: { id: true, brandSnapshot: true, brandTemplateId: true },
+    });
+
+    if (!project) {
+      throw new Error("project not found");
+    }
+
+    let brandSnapshotData: Prisma.InputJsonValue | typeof Prisma.JsonNull | undefined;
+    let brandTemplateIdData: string | null | undefined;
+    if (!project.brandSnapshot) {
+      const brandResolved = await brandTemplateService.resolveSnapshotForUser(
+        userId,
+        null,
+      );
+      if (brandResolved) {
+        brandSnapshotData = brandResolved.snapshot as unknown as Prisma.InputJsonValue;
+        brandTemplateIdData = brandResolved.templateId;
+      }
+    }
+
+    await prisma.$transaction(async (tx) => {
+      await tx.project.update({
+        where: { id: projectId },
+        data: {
+          languageCode,
+          ...(brandSnapshotData !== undefined && { brandSnapshot: brandSnapshotData }),
+          ...(brandTemplateIdData !== undefined && {
+            brandTemplateId: brandTemplateIdData,
+          }),
+        },
+      });
+
+      await tx.contentPack.create({
+        data: {
+          projectId,
+          outputTypes: contentPack.outputTypes,
+          clipGenerationMode: contentPack.clipGenerationMode,
+          clipCountTarget: contentPack.clipCountTarget,
+          clipDurationSecTarget: contentPack.clipDurationSecTarget,
+          minDurationSec: contentPack.minDurationSec,
+          preferredMinDurationSec: contentPack.preferredMinDurationSec,
+          preferredMaxDurationSec: contentPack.preferredMaxDurationSec,
+          maxDurationSec: contentPack.maxDurationSec,
+          platformTargets: contentPack.platformTargets,
+          autoRenderClips: contentPack.autoRenderClips,
+          toneConstraints: contentPack.toneConstraints,
+          captionPreset: contentPack.captionPreset,
+          platformPlaybookVersion: contentPack.platformPlaybookVersion,
+          mode: contentPack.mode,
+          autoHook: contentPack.autoHook,
+          specificMoments: contentPack.specificMoments,
+          processingStartSec: contentPack.processingStartSec,
+          processingEndSec: contentPack.processingEndSec,
+        },
+      });
+    });
+  }
+
+  async triggerGenerationIfPending(projectId: string): Promise<boolean> {
+    const prisma = this.requirePrisma();
+
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: {
+        id: true,
+        userId: true,
+        ingestStatus: true,
+        languageCode: true,
+      },
+    });
+
+    if (!project || project.ingestStatus !== "ready") {
+      return false;
+    }
+
+    const [latestRun, contentPackRow] = await Promise.all([
+      prisma.workflowRun.findFirst({
+        where: { projectId },
+        orderBy: { updatedAt: "desc" },
+      }),
+      prisma.contentPack.findFirst({
+        where: { projectId },
+        orderBy: { createdAt: "desc" },
+      }),
+    ]);
+
+    if (latestRun) return false;
+    if (!contentPackRow) return false;
+
+    const contentPack = contentPackSchema.parse(contentPackRow);
+
+    await this.triggerGeneration(
+      project.userId,
+      projectId,
+      {
+        contentPack,
+        forceRegenerate: false,
+        languageCode: project.languageCode ?? null,
+      },
+      randomUUID(),
+    );
+
+    return true;
   }
 
   async publishWorkflowProgress(input: {

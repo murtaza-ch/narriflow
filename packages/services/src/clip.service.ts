@@ -182,13 +182,28 @@ export class ClipService {
     llmMeta: LlmMeta,
   ) {
     const prisma = requirePrisma();
-    const staleRenderKeys = await prisma.clipRender.findMany({
-      where: {
-        clip: { projectId },
-        storageKey: { not: null },
-      },
-      select: { storageKey: true },
-    });
+    const [staleRenderKeys, project] = await Promise.all([
+      prisma.clipRender.findMany({
+        where: {
+          clip: { projectId },
+          storageKey: { not: null },
+        },
+        select: { storageKey: true },
+      }),
+      prisma.project.findUnique({
+        where: { id: projectId },
+        select: { brandSnapshot: true },
+      }),
+    ]);
+
+    let templateCaptionPreset: Prisma.InputJsonValue | null = null;
+    const snapshotRaw = project?.brandSnapshot;
+    if (snapshotRaw && typeof snapshotRaw === "object" && !Array.isArray(snapshotRaw)) {
+      const snap = snapshotRaw as Record<string, unknown>;
+      if (snap.captionPreset && typeof snap.captionPreset === "object") {
+        templateCaptionPreset = snap.captionPreset as Prisma.InputJsonValue;
+      }
+    }
 
     await prisma.$transaction(async (tx) => {
       await tx.clip.deleteMany({ where: { projectId } });
@@ -209,6 +224,7 @@ export class ClipService {
             platformFit: clip.platformFit,
             transcriptSlice:
               clip.transcriptSlice as unknown as Prisma.InputJsonValue,
+            captionPreset: templateCaptionPreset ?? Prisma.JsonNull,
             viralityScore: clip.viralityScore,
             hookStrengthScore: clip.hookStrengthScore,
             emotionalIntensityScore: clip.emotionalIntensityScore,
@@ -433,6 +449,11 @@ export class ClipService {
             toneConstraints: parsedContentPack.toneConstraints,
             captionPreset: parsedContentPack.captionPreset,
             platformPlaybookVersion: parsedContentPack.platformPlaybookVersion,
+            mode: parsedContentPack.mode,
+            autoHook: parsedContentPack.autoHook,
+            specificMoments: parsedContentPack.specificMoments,
+            processingStartSec: parsedContentPack.processingStartSec,
+            processingEndSec: parsedContentPack.processingEndSec,
           },
         });
       }
@@ -816,6 +837,7 @@ export class ClipService {
   async autoQueueDefaultRenders(
     projectId: string,
     detectionWorkflowRunId: string,
+    aspectRatio: ClipAspectRatio = "9:16",
   ): Promise<void> {
     const prisma = requirePrisma();
 
@@ -828,7 +850,7 @@ export class ClipService {
       return;
     }
 
-    const aspectRatioDb = clipAspectRatioToDb["9:16"];
+    const aspectRatioDb = clipAspectRatioToDb[aspectRatio];
     const clipIds = clips.map((c) => c.id);
 
     const existingRenders = await prisma.clipRender.findMany({

@@ -183,11 +183,30 @@ function buildUserPrompt(
   toneConstraints: string[],
   speakerCount: number,
   durationMinutes: number,
+  options: {
+    autoHook: boolean;
+    specificMoments: string;
+    processingStartSec: number | null;
+    processingEndSec: number | null;
+  },
 ): string {
   const toneNote =
     toneConstraints.length > 0
       ? `\nTone preferences: ${toneConstraints.join(", ")}`
       : "";
+
+  const windowNote =
+    options.processingStartSec !== null || options.processingEndSec !== null
+      ? `\nProcessing window: ${options.processingStartSec ?? 0}s to ${options.processingEndSec ?? "end"}s. Only return clips inside this window.`
+      : "";
+
+  const hookGuidance = options.autoHook
+    ? "- The first 3 seconds must work as a hook without extra context."
+    : "- A strong opening hook is preferred but NOT required. Favor clips with high story_completeness_score (full setup/escalation/payoff arc) over clips with the strongest hook.";
+
+  const userPriorities = options.specificMoments.trim()
+    ? `\n\nUSER-SPECIFIED PRIORITIES (boost moments matching this guidance):\n${options.specificMoments.trim()}`
+    : "";
 
   return `Analyze the following transcript and identify ${candidateCountTarget} candidate clip-worthy moments. The system will keep the best ${finalClipCountTarget}.
 
@@ -197,14 +216,14 @@ Speakers: ${speakerCount}
 Target clip duration: ~${clipDurationSecTarget} seconds
 Required duration window: ${durationPolicy.minDurationSec}-${durationPolicy.maxDurationSec} seconds
 Preferred duration window: ${durationPolicy.preferredMinDurationSec}-${durationPolicy.preferredMaxDurationSec} seconds
-Platform targets: ${platformTargets.join(", ")}${toneNote}
+Platform targets: ${platformTargets.join(", ")}${toneNote}${windowNote}
 
 Selection guidance:
 - Return distinct moments from different story beats or phases of the video.
 - Prefer a complete mini-story: setup, escalation, payoff, and clean ending.
-- The first 3 seconds must work as a hook without extra context.
+${hookGuidance}
 - Avoid near-duplicates and avoid clips that only make sense after watching earlier clips.
-- For each clip, platform_fit must include every target platform this moment fits naturally.
+- For each clip, platform_fit must include every target platform this moment fits naturally.${userPriorities}
 
 TRANSCRIPT:
 ${formattedTranscript}
@@ -816,12 +835,12 @@ export async function processClipDetectionRun(run: WorkflowRunJob) {
       );
     }
 
-    const utterances = (transcriptRow.utterancesJson ?? []) as unknown as TranscriptUtterance[];
+    const allUtterances = (transcriptRow.utterancesJson ?? []) as unknown as TranscriptUtterance[];
     const fullText = transcriptRow.text ?? "";
     const speakerCount = transcriptRow.speakerCount ?? 1;
-    const totalDurationSec = transcriptRow.durationSeconds ?? 0;
+    const fullDurationSec = transcriptRow.durationSeconds ?? 0;
 
-    if (utterances.length === 0 && fullText.length === 0) {
+    if (allUtterances.length === 0 && fullText.length === 0) {
       throw new WorkflowWorkerError(
         "transcript_not_ready",
         "Transcript has no content",
@@ -836,6 +855,90 @@ export async function processClipDetectionRun(run: WorkflowRunJob) {
       ? contentPackSchema.parse(contentPackRow)
       : null;
 
+    const sourceDurationSec =
+      (run.project.sourceDurationSeconds ?? fullDurationSec) || null;
+    const processingStartSec = contentPack?.processingStartSec ?? null;
+    const processingEndSec = contentPack?.processingEndSec ?? null;
+    const windowStart = processingStartSec ?? 0;
+    const windowEnd =
+      processingEndSec ?? sourceDurationSec ?? fullDurationSec ?? 0;
+
+    if (contentPack?.mode === "caption_only") {
+      log("info", "clip_detection_caption_only_short_circuit", {
+        workflowRunId: run.id,
+        projectId: run.projectId,
+        windowStart,
+        windowEnd,
+      });
+
+      const captionClip: FinalDetectedClip = {
+        startSec: windowStart,
+        endSec: windowEnd > windowStart ? windowEnd : (sourceDurationSec ?? fullDurationSec),
+        title: run.project.title,
+        hookText: run.project.title,
+        payoffText: null,
+        reasoning: "Caption-only mode: full-length captioned render",
+        category: "story",
+        platformFit: contentPack.platformTargets ?? [],
+        hookStrengthScore: 0,
+        emotionalIntensityScore: 0,
+        storyCompletenessScore: 100,
+        pacingScore: 0,
+        durationOptimalityScore: 0,
+        viralityScore: 0,
+        tiktokScore: 0,
+        youtubeScore: 0,
+        instagramScore: 0,
+        transcriptSlice: allUtterances.filter(
+          (u) => u.startSec >= windowStart && u.endSec <= (windowEnd || u.endSec + 1),
+        ),
+      };
+
+      await clipService.persistDetectedClips(
+        run.projectId,
+        run.id,
+        [captionClip],
+        { provider: "openai", model: "caption-only", totalTokensUsed: 0 },
+      );
+
+      try {
+        await clipService.autoQueueDefaultRenders(
+          run.projectId,
+          run.id,
+          "16:9",
+        );
+      } catch (error) {
+        log("error", "auto_render_queue_failed", {
+          workflowRunId: run.id,
+          projectId: run.projectId,
+          message: error instanceof Error ? error.message : String(error),
+        });
+      }
+
+      await projectService.completeClipDetectionWorkflowRun(run.id);
+      return;
+    }
+
+    const utterances =
+      processingStartSec !== null || processingEndSec !== null
+        ? allUtterances.filter((u) => {
+            const startsAfter = processingStartSec === null || u.endSec > processingStartSec;
+            const endsBefore = processingEndSec === null || u.startSec < processingEndSec;
+            return startsAfter && endsBefore;
+          })
+        : allUtterances;
+    const totalDurationSec =
+      processingStartSec !== null || processingEndSec !== null
+        ? Math.max(0, windowEnd - windowStart)
+        : fullDurationSec;
+
+    if (utterances.length === 0) {
+      throw new WorkflowWorkerError(
+        "transcript_processing_window_empty",
+        "Processing window contains no transcript content",
+      );
+    }
+
     const requestedClipCountTarget = contentPack?.clipCountTarget;
     const finalClipCountTarget = resolveClipCountTarget(
       requestedClipCountTarget,
@@ -849,8 +952,8 @@ export async function processClipDetectionRun(run: WorkflowRunJob) {
     const platformTargets =
       contentPack?.platformTargets ?? ["tiktok", "youtube_shorts", "instagram_reels"];
     const toneConstraints = (contentPack?.toneConstraints ?? []) as string[];
-    const sourceDurationSec =
-      (run.project.sourceDurationSeconds ?? totalDurationSec) || null;
+    const autoHook = contentPack?.autoHook ?? true;
+    const specificMoments = contentPack?.specificMoments ?? "";
 
     // Chunk transcript if needed
     const chunks = chunkUtterances(utterances, totalDurationSec);
@@ -902,6 +1005,12 @@ export async function processClipDetectionRun(run: WorkflowRunJob) {
         toneConstraints,
         speakerCount,
         durationMinutes,
+        {
+          autoHook,
+          specificMoments,
+          processingStartSec,
+          processingEndSec,
+        },
       );
 
       const result = await callOpenAI(apiKey, SYSTEM_PROMPT, userPrompt, model);

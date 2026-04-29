@@ -292,6 +292,25 @@ export async function presignDownloadUrl(params: {
   );
 }
 
+export async function presignSingleUploadUrl(params: {
+  key: string;
+  contentType: string;
+  expiresIn?: number;
+}): Promise<string> {
+  const client = getClient();
+  const { bucket } = getR2Config();
+
+  return getSignedUrl(
+    client,
+    new PutObjectCommand({
+      Bucket: bucket,
+      Key: params.key,
+      ContentType: params.contentType,
+    }),
+    { expiresIn: params.expiresIn ?? SIGNED_URL_TTL_SECONDS },
+  );
+}
+
 export async function deleteObject(key: string) {
   const client = getClient();
   const { bucket } = getR2Config();

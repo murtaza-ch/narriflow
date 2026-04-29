@@ -134,13 +134,20 @@ function getAssemblyAiPollTimeoutMs() {
     : DEFAULT_ASSEMBLYAI_POLL_TIMEOUT_MS;
 }
 
-function getAssemblyAiKeytermsPrompt() {
-  const extraTerms =
+function getAssemblyAiKeytermsPrompt(extra: string[] = []) {
+  const envTerms =
     process.env.ASSEMBLYAI_KEYTERMS_PROMPT?.split(",")
       .map((term) => term.trim())
       .filter(Boolean) ?? [];
 
-  return [...new Set([...DEFAULT_KEYTERMS_PROMPT, ...extraTerms])];
+  const userTerms = extra
+    .flatMap((entry) => entry.split(/[,\n]/))
+    .map((term) => term.trim())
+    .filter(Boolean);
+
+  return [
+    ...new Set([...DEFAULT_KEYTERMS_PROMPT, ...envTerms, ...userTerms]),
+  ];
 }
 
 function getErrorCode(error: unknown) {
@@ -211,7 +218,22 @@ async function uploadAssemblyAiAudio(audioPath: string, apiKey: string) {
   return uploadUrl;
 }
 
-async function submitAssemblyAiTranscript(uploadUrl: string, apiKey: string) {
+async function submitAssemblyAiTranscript(
+  uploadUrl: string,
+  apiKey: string,
+  options: {
+    languageCode: string | null;
+    specificMoments: string;
+  },
+) {
+  const languageBranch = options.languageCode
+    ? { language_code: options.languageCode }
+    : { language_detection: true };
+
+  const userKeyterms = options.specificMoments
+    ? [options.specificMoments]
+    : [];
+
   const response = await fetch(`${ASSEMBLYAI_BASE_URL}/v2/transcript`, {
     method: "POST",
     headers: {
@@ -221,9 +243,9 @@ async function submitAssemblyAiTranscript(uploadUrl: string, apiKey: string) {
     body: JSON.stringify({
       audio_url: uploadUrl,
       speech_models: ASSEMBLYAI_MODEL_PREFERENCE,
-      keyterms_prompt: getAssemblyAiKeytermsPrompt(),
+      keyterms_prompt: getAssemblyAiKeytermsPrompt(userKeyterms),
       speaker_labels: true,
-      language_detection: true,
+      ...languageBranch,
     }),
   });
 
@@ -279,6 +301,10 @@ async function getAssemblyAiTranscript(transcriptId: string, apiKey: string) {
 async function transcribeWithAssemblyAi(
   audioPath: string,
   run: WorkflowRunJob,
+  options: {
+    languageCode: string | null;
+    specificMoments: string;
+  },
 ) {
   const apiKey = getRequiredAssemblyAiApiKey();
 
@@ -292,7 +318,11 @@ async function transcribeWithAssemblyAi(
     errorCode: null,
   });
 
-  const transcriptId = await submitAssemblyAiTranscript(uploadUrl, apiKey);
+  const transcriptId = await submitAssemblyAiTranscript(
+    uploadUrl,
+    apiKey,
+    options,
+  );
   await projectService.publishWorkflowProgress({
     projectId: run.projectId,
     workflowRunId: run.id,
@@ -397,7 +427,15 @@ export async function processTranscriptRun(run: WorkflowRunJob) {
       errorCode: null,
     });
 
-    const assemblyAiPayload = await transcribeWithAssemblyAi(audioPath, run);
+    const [languageCode, contentPack] = await Promise.all([
+      projectService.getProjectLanguageCode(run.projectId),
+      projectService.getLatestContentPack(run.projectId),
+    ]);
+
+    const assemblyAiPayload = await transcribeWithAssemblyAi(audioPath, run, {
+      languageCode,
+      specificMoments: contentPack?.specificMoments ?? "",
+    });
     const normalized = normalizeAssemblyAiTranscript(assemblyAiPayload);
     const rawStorageKey = `projects/${run.projectId}/transcripts/${run.id}-assemblyai-${sanitizeFileName(
       normalized.providerModel,
