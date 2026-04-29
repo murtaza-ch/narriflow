@@ -2,10 +2,14 @@ import { Hono } from "hono";
 import { handle } from "hono/vercel";
 import { getCurrentAppUser } from "@narriflow/auth";
 import {
+  brandTemplateInputSchema,
+  brandTemplateUpdateSchema,
   completeMultipartUploadSchema,
   clipDownloadQuerySchema,
   contentPackSchema,
+  duplicateBrandTemplateSchema,
   generateProjectRequestSchema,
+  presignBrandLogoSchema,
   rssImportSchema,
   rssPreviewSchema,
   presignUploadSchema,
@@ -17,7 +21,13 @@ import {
   updateClipTranscriptSliceSchema,
   youtubeIngestSchema,
 } from "@narriflow/validators";
-import { clipService, projectService } from "@narriflow/services";
+import {
+  brandTemplateService,
+  BrandTemplateForbiddenError,
+  BrandTemplateNotFoundError,
+  clipService,
+  projectService,
+} from "@narriflow/services";
 
 export const runtime = "nodejs";
 
@@ -663,6 +673,156 @@ app.get("/projects/:id/clips/:clipId/download", async (c) => {
       { error: "clip_download_failed", message: errorMessage(error) },
       400,
     );
+  }
+});
+
+function brandTemplateErrorResponse(error: unknown) {
+  if (error instanceof BrandTemplateNotFoundError) {
+    return { status: 404 as const, body: { error: "brand_template_not_found" } };
+  }
+  if (error instanceof BrandTemplateForbiddenError) {
+    return { status: 403 as const, body: { error: "brand_template_forbidden" } };
+  }
+  return {
+    status: 400 as const,
+    body: { error: "brand_template_failed", message: errorMessage(error) },
+  };
+}
+
+app.get("/brand-templates", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  const result = await brandTemplateService.list(appUser.id);
+  return c.json(result, 200);
+});
+
+app.get("/brand-templates/:id", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  try {
+    const template = await brandTemplateService.get(appUser.id, c.req.param("id"));
+    return c.json(template, 200);
+  } catch (error) {
+    const { status, body } = brandTemplateErrorResponse(error);
+    return c.json(body, status);
+  }
+});
+
+app.post("/brand-templates", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  const payload = await c.req.json().catch(() => null);
+  const parsed = brandTemplateInputSchema.safeParse(payload);
+  if (!parsed.success) {
+    return c.json({ error: "Invalid payload", issues: parsed.error.issues }, 400);
+  }
+  try {
+    const template = await brandTemplateService.create(appUser.id, parsed.data);
+    return c.json(template, 201);
+  } catch (error) {
+    const { status, body } = brandTemplateErrorResponse(error);
+    return c.json(body, status);
+  }
+});
+
+app.patch("/brand-templates/:id", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  const payload = await c.req.json().catch(() => null);
+  const parsed = brandTemplateUpdateSchema.safeParse(payload);
+  if (!parsed.success) {
+    return c.json({ error: "Invalid payload", issues: parsed.error.issues }, 400);
+  }
+  try {
+    const template = await brandTemplateService.update(
+      appUser.id,
+      c.req.param("id"),
+      parsed.data,
+    );
+    return c.json(template, 200);
+  } catch (error) {
+    const { status, body } = brandTemplateErrorResponse(error);
+    return c.json(body, status);
+  }
+});
+
+app.delete("/brand-templates/:id", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  try {
+    await brandTemplateService.softDelete(appUser.id, c.req.param("id"));
+    return c.json({ ok: true }, 200);
+  } catch (error) {
+    const { status, body } = brandTemplateErrorResponse(error);
+    return c.json(body, status);
+  }
+});
+
+app.post("/brand-templates/:id/set-default", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  try {
+    await brandTemplateService.setDefault(appUser.id, c.req.param("id"));
+    return c.json({ ok: true }, 200);
+  } catch (error) {
+    const { status, body } = brandTemplateErrorResponse(error);
+    return c.json(body, status);
+  }
+});
+
+app.post("/brand-templates/:id/duplicate", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  const payload = await c.req.json().catch(() => ({}));
+  const parsed = duplicateBrandTemplateSchema.safeParse(payload);
+  if (!parsed.success) {
+    return c.json({ error: "Invalid payload", issues: parsed.error.issues }, 400);
+  }
+  try {
+    const template = await brandTemplateService.duplicate(
+      appUser.id,
+      c.req.param("id"),
+      parsed.data.name,
+    );
+    return c.json(template, 201);
+  } catch (error) {
+    const { status, body } = brandTemplateErrorResponse(error);
+    return c.json(body, status);
+  }
+});
+
+app.post("/brand-templates/logo/presign", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  const payload = await c.req.json().catch(() => null);
+  const parsed = presignBrandLogoSchema.safeParse(payload);
+  if (!parsed.success) {
+    return c.json({ error: "Invalid payload", issues: parsed.error.issues }, 400);
+  }
+  try {
+    const result = await brandTemplateService.presignLogoUpload(appUser.id, parsed.data);
+    return c.json(result, 200);
+  } catch (error) {
+    return c.json(
+      { error: "brand_template_logo_presign_failed", message: errorMessage(error) },
+      400,
+    );
+  }
+});
+
+app.get("/brand-templates/:id/logo-url", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  try {
+    const url = await brandTemplateService.getLogoDownloadUrl(
+      appUser.id,
+      c.req.param("id"),
+    );
+    if (!url) return c.json({ error: "brand_template_logo_missing" }, 404);
+    return c.json({ url }, 200);
+  } catch (error) {
+    const { status, body } = brandTemplateErrorResponse(error);
+    return c.json(body, status);
   }
 });
 

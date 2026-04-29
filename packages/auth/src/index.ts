@@ -321,7 +321,39 @@ export async function syncClerkUserPayload(clerkUser: Partial<UserJSON> | Record
   const identities = extractIdentities(payload);
   await Promise.all(identities.map((identity) => upsertIdentity(appUser.id, identity)));
 
+  await ensureFirstUseBrandTemplate(appUser.id);
+
   return appUser;
+}
+
+const FIRST_USE_BRAND_TEMPLATE_KEY = "karaoke";
+
+async function ensureFirstUseBrandTemplate(userId: string): Promise<void> {
+  const prisma = getRequiredPrisma();
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { defaultBrandTemplateId: true },
+  });
+  if (!user) return;
+
+  if (user.defaultBrandTemplateId) {
+    const stillExists = await prisma.brandTemplate.findFirst({
+      where: { id: user.defaultBrandTemplateId, deletedAt: null },
+      select: { id: true },
+    });
+    if (stillExists) return;
+  }
+
+  const fallback = await prisma.brandTemplate.findFirst({
+    where: { isBuiltIn: true, builtInKey: FIRST_USE_BRAND_TEMPLATE_KEY, deletedAt: null },
+    select: { id: true },
+  });
+  if (!fallback) return;
+
+  await prisma.user.update({
+    where: { id: userId },
+    data: { defaultBrandTemplateId: fallback.id },
+  });
 }
 
 export async function markUserDeletedByClerkId(clerkId: string) {
@@ -366,6 +398,9 @@ export async function getCurrentAppUser(): Promise<AppUser | null> {
   });
 
   if (existing) {
+    if (!existing.defaultBrandTemplateId) {
+      await ensureFirstUseBrandTemplate(existing.id);
+    }
     if (needsUserRefresh(existing)) {
       const clerkUser = await currentUser();
       if (clerkUser) {
