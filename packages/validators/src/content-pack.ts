@@ -9,6 +9,16 @@ export const clipPlatformTargetSchema = z.enum([
   "instagram_reels",
 ]);
 
+export const generationModeSchema = z.enum(["clip", "caption_only"]);
+
+export const clipLengthPresetSchema = z.enum([
+  "auto",
+  "under_30s",
+  "30_to_60s",
+  "60_to_120s",
+  "120_to_180s",
+]);
+
 export const contentPackSchema = z.object({
   outputTypes: z.array(outputTypeSchema).min(1),
   clipGenerationMode: clipGenerationModeSchema.default("best"),
@@ -26,6 +36,12 @@ export const contentPackSchema = z.object({
   toneConstraints: z.array(z.string()).default([]),
   captionPreset: z.string().min(1),
   platformPlaybookVersion: z.string().min(1),
+  mode: generationModeSchema.default("clip"),
+  autoHook: z.boolean().default(true),
+  specificMoments: z.string().max(500).default(""),
+  processingStartSec: z.number().int().min(0).nullable().default(null),
+  processingEndSec: z.number().int().min(0).nullable().default(null),
+  clipLengthPreset: clipLengthPresetSchema.default("auto"),
 }).superRefine((data, ctx) => {
   if (data.minDurationSec > data.preferredMinDurationSec) {
     ctx.addIssue({
@@ -58,8 +74,69 @@ export const contentPackSchema = z.object({
       message: "clipDurationSecTarget must be inside the hard duration range",
     });
   }
+
+  if (
+    data.processingStartSec !== null &&
+    data.processingEndSec !== null &&
+    data.processingStartSec >= data.processingEndSec
+  ) {
+    ctx.addIssue({
+      code: "custom",
+      path: ["processingEndSec"],
+      message: "processingEndSec must be greater than processingStartSec",
+    });
+  }
 });
 
 export type ContentPack = z.infer<typeof contentPackSchema>;
 export type ClipGenerationMode = z.infer<typeof clipGenerationModeSchema>;
 export type ClipPlatformTarget = z.infer<typeof clipPlatformTargetSchema>;
+export type GenerationMode = z.infer<typeof generationModeSchema>;
+export type ClipLengthPreset = z.infer<typeof clipLengthPresetSchema>;
+
+export const clipLengthPresetRanges: Record<
+  ClipLengthPreset,
+  {
+    clipDurationSecTarget: number;
+    minDurationSec: number;
+    preferredMinDurationSec: number;
+    preferredMaxDurationSec: number;
+    maxDurationSec: number;
+  }
+> = {
+  auto: {
+    clipDurationSecTarget: 45,
+    minDurationSec: 15,
+    preferredMinDurationSec: 30,
+    preferredMaxDurationSec: 60,
+    maxDurationSec: 90,
+  },
+  under_30s: {
+    clipDurationSecTarget: 25,
+    minDurationSec: 10,
+    preferredMinDurationSec: 15,
+    preferredMaxDurationSec: 30,
+    maxDurationSec: 35,
+  },
+  "30_to_60s": {
+    clipDurationSecTarget: 45,
+    minDurationSec: 25,
+    preferredMinDurationSec: 30,
+    preferredMaxDurationSec: 60,
+    maxDurationSec: 70,
+  },
+  "60_to_120s": {
+    clipDurationSecTarget: 90,
+    minDurationSec: 55,
+    preferredMinDurationSec: 60,
+    preferredMaxDurationSec: 120,
+    maxDurationSec: 130,
+  },
+  "120_to_180s": {
+    clipDurationSecTarget: 150,
+    minDurationSec: 115,
+    preferredMinDurationSec: 120,
+    preferredMaxDurationSec: 180,
+    maxDurationSec: 180,
+  },
+};

@@ -24,6 +24,7 @@ export const presignUploadSchema = z.object({
   fileSizeBytes: z.number().int().positive().max(MAX_UPLOAD_SIZE_BYTES),
   mimeType: uploadMimeTypeSchema,
   partCount: z.number().int().positive().max(10_000),
+  brandTemplateId: z.string().uuid().nullable().optional(),
 });
 
 export const completeMultipartUploadSchema = z.object({

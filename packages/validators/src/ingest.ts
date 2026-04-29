@@ -19,6 +19,7 @@ export const youtubeIngestSchema = z.object({
   youtubeUrl: z.string().url().refine(isYoutubeUrl, {
     message: "youtubeUrl must be a valid YouTube URL",
   }),
+  brandTemplateId: z.string().uuid().nullable().optional(),
 });
 
 export const rssPreviewSchema = z.object({
@@ -38,6 +39,7 @@ export const rssImportSchema = z.object({
   rssUrl: z.string().url(),
   episodes: z.array(rssEpisodeSchema).min(1).max(25),
   titlePrefix: z.string().min(1).max(100).optional(),
+  brandTemplateId: z.string().uuid().nullable().optional(),
 });
 
 export const ingestStatusSchema = z.enum([

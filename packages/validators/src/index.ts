@@ -1,3 +1,4 @@
+export * from "./brand-template";
 export * from "./clip";
 export * from "./clip-timing";
 export * from "./content-pack";
