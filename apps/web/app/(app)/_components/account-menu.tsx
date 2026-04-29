@@ -3,7 +3,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useClerk } from "@clerk/nextjs";
 import { Box, Flex, Image, Text } from "@chakra-ui/react";
-import { LogOut } from "lucide-react";
+import Link from "next/link";
+import { LogOut, Palette } from "lucide-react";
 
 interface AccountMenuProps {
   firstName: string | null;
@@ -126,6 +127,29 @@ export function AccountMenu({ firstName, lastName, email, imageUrl }: AccountMen
               {email ?? "No email"}
             </Text>
           </Box>
+          <Link
+            href="/settings/brand-templates"
+            style={{ textDecoration: "none" }}
+            onClick={() => setOpen(false)}
+          >
+            <Flex
+              align="center"
+              gap="8px"
+              w="full"
+              px="12px"
+              py="8px"
+              borderRadius="8px"
+              fontSize="13px"
+              color="fg.muted"
+              cursor="pointer"
+              transition="all 150ms ease"
+              _hover={{ bg: "bg.subtle", color: "fg" }}
+              role="menuitem"
+            >
+              <Palette size={14} />
+              <Text>Brand templates</Text>
+            </Flex>
+          </Link>
           <Flex
             as="button"
             onClick={onSignOut}
