@@ -62,6 +62,17 @@ interface ProjectSnapshot {
   createdAt: string;
 }
 
+export interface ProjectListItem extends ProjectSnapshot {
+  clipCount: number;
+  avgViralityScore: number | null;
+  transcript: {
+    languageCode: string | null;
+    speakerCount: number | null;
+    durationSeconds: number | null;
+    status: PrismaTranscriptStatus;
+  } | null;
+}
+
 type ProjectAccessResult = "owned" | "forbidden" | "missing";
 
 type IngestLifecycleStatus =
@@ -280,6 +291,79 @@ export class ProjectService {
     });
 
     return rows.map((row) => toProjectSnapshot(row));
+  }
+
+  async listProjectsWithStats(userId: string): Promise<ProjectListItem[]> {
+    const prisma = getPrismaClient();
+
+    if (!prisma) {
+      return Array.from(projects.values())
+        .filter((project) => project.userId === userId)
+        .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+        .map((project) => ({
+          ...project,
+          clipCount: 0,
+          avgViralityScore: null,
+          transcript: null,
+        }));
+    }
+
+    const rows = await prisma.project.findMany({
+      where: { userId },
+      orderBy: { createdAt: "desc" },
+      take: 50,
+    });
+
+    if (rows.length === 0) {
+      return [];
+    }
+
+    const projectIds = rows.map((row) => row.id);
+
+    const [clipAggregates, transcripts] = await Promise.all([
+      prisma.clip.groupBy({
+        by: ["projectId"],
+        where: { projectId: { in: projectIds } },
+        _count: { _all: true },
+        _avg: { viralityScore: true },
+      }),
+      prisma.transcript.findMany({
+        where: { projectId: { in: projectIds } },
+        select: {
+          projectId: true,
+          languageCode: true,
+          speakerCount: true,
+          durationSeconds: true,
+          status: true,
+        },
+      }),
+    ]);
+
+    const clipMap = new Map(
+      clipAggregates.map((entry) => [entry.projectId, entry] as const),
+    );
+    const transcriptMap = new Map(
+      transcripts.map((entry) => [entry.projectId, entry] as const),
+    );
+
+    return rows.map((row) => {
+      const clip = clipMap.get(row.id);
+      const transcript = transcriptMap.get(row.id) ?? null;
+
+      return {
+        ...toProjectSnapshot(row),
+        clipCount: clip?._count._all ?? 0,
+        avgViralityScore: clip?._avg.viralityScore ?? null,
+        transcript: transcript
+          ? {
+              languageCode: transcript.languageCode,
+              speakerCount: transcript.speakerCount,
+              durationSeconds: transcript.durationSeconds,
+              status: transcript.status,
+            }
+          : null,
+      };
+    });
   }
 
   async createProject(userId: string, input: CreateProjectInput) {

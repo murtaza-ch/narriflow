@@ -7,7 +7,11 @@ export {
   computeViralityScore,
   sliceTranscriptForClip,
 } from "./clip.service";
-export { projectService, ProjectService } from "./project.service";
+export {
+  projectService,
+  ProjectService,
+  type ProjectListItem,
+} from "./project.service";
 export {
   buildTranscriptSnapshot,
   exportTranscript,
