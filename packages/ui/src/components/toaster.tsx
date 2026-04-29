@@ -7,9 +7,10 @@ import {
   Stack,
   Toast,
   createToaster,
+  type CreateToasterReturn,
 } from "@chakra-ui/react"
 
-export const toaster = createToaster({
+export const toaster: CreateToasterReturn = createToaster({
   placement: "bottom-end",
   pauseOnPageIdle: true,
 })

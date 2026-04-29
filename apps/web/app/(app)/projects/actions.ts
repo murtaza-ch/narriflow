@@ -5,87 +5,11 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { requireCurrentAppUser } from "@narriflow/auth";
 import { clipService, projectService } from "@narriflow/services";
+import { type ClipAspectRatio } from "@narriflow/validators";
 import {
-  contentPackSchema,
-  type ClipAspectRatio,
-  type ClipPlatformTarget,
-  type GenerateProjectInput,
-} from "@narriflow/validators";
-
-const defaultContentPack: GenerateProjectInput["contentPack"] = {
-  outputTypes: ["short_clip"],
-  clipGenerationMode: "best",
-  clipCountTarget: 10,
-  clipDurationSecTarget: 45,
-  minDurationSec: 15,
-  preferredMinDurationSec: 30,
-  preferredMaxDurationSec: 60,
-  maxDurationSec: 90,
-  platformTargets: ["tiktok", "youtube_shorts", "instagram_reels"],
-  autoRenderClips: false,
-  toneConstraints: ["concise", "conversational"],
-  captionPreset: "default",
-  platformPlaybookVersion: "2026.2",
-};
-
-function readNumber(formData: FormData, key: string, fallback: number) {
-  const value = Number(formData.get(key));
-  return Number.isFinite(value) ? value : fallback;
-}
-
-function readContentPackFormData(formData: FormData) {
-  const platformTargets = formData
-    .getAll("platformTargets")
-    .map((value) => String(value))
-    .filter(Boolean) as ClipPlatformTarget[];
-  const toneConstraints = String(formData.get("toneConstraints") ?? "")
-    .split(",")
-    .map((tone) => tone.trim())
-    .filter(Boolean);
-
-  return contentPackSchema.parse({
-    ...defaultContentPack,
-    clipCountTarget: readNumber(
-      formData,
-      "clipCountTarget",
-      defaultContentPack.clipCountTarget,
-    ),
-    clipDurationSecTarget: readNumber(
-      formData,
-      "clipDurationSecTarget",
-      defaultContentPack.clipDurationSecTarget,
-    ),
-    minDurationSec: readNumber(
-      formData,
-      "minDurationSec",
-      defaultContentPack.minDurationSec,
-    ),
-    preferredMinDurationSec: readNumber(
-      formData,
-      "preferredMinDurationSec",
-      defaultContentPack.preferredMinDurationSec,
-    ),
-    preferredMaxDurationSec: readNumber(
-      formData,
-      "preferredMaxDurationSec",
-      defaultContentPack.preferredMaxDurationSec,
-    ),
-    maxDurationSec: readNumber(
-      formData,
-      "maxDurationSec",
-      defaultContentPack.maxDurationSec,
-    ),
-    platformTargets:
-      platformTargets.length > 0
-        ? platformTargets
-        : defaultContentPack.platformTargets,
-    autoRenderClips: formData.get("autoRenderClips") === "on",
-    toneConstraints:
-      toneConstraints.length > 0
-        ? toneConstraints
-        : defaultContentPack.toneConstraints,
-  });
-}
+  readContentPackFromForm,
+  readLanguageCodeFromForm,
+} from "../upload/_lib/content-pack-form";
 
 export async function createProjectFormAction(formData: FormData) {
   const appUser = await requireCurrentAppUser();
@@ -114,8 +38,9 @@ export async function queueTranscriptionFormAction(formData: FormData) {
     appUser.id,
     projectId,
     {
-      contentPack: readContentPackFormData(formData),
+      contentPack: readContentPackFromForm(formData),
       forceRegenerate: false,
+      languageCode: readLanguageCodeFromForm(formData),
     },
     idempotencyKey,
   );
@@ -140,7 +65,7 @@ export async function regenerateClipsFormAction(formData: FormData) {
     appUser.id,
     projectId,
     idempotencyKey,
-    readContentPackFormData(formData),
+    readContentPackFromForm(formData),
   );
 
   revalidatePath(`/projects/${projectId}`);

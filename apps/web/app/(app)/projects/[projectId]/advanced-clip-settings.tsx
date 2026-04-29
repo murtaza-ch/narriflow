@@ -1,11 +1,47 @@
-import { Box, Flex, Grid, Stack, Text } from "@chakra-ui/react";
+"use client";
+
+import {
+  Box,
+  createListCollection,
+  Flex,
+  Grid,
+  Portal,
+  Select,
+  Stack,
+  Text,
+} from "@chakra-ui/react";
 import { SlidersHorizontal } from "lucide-react";
+import { LANGUAGE_OPTIONS } from "../../upload/_lib/languages";
 
 const platformOptions = [
   { value: "tiktok", label: "TikTok" },
   { value: "youtube_shorts", label: "YouTube Shorts" },
   { value: "instagram_reels", label: "Instagram Reels" },
 ] as const;
+
+const clipLengthCollection = createListCollection({
+  items: [
+    { value: "auto", label: "Auto (use numeric)" },
+    { value: "under_30s", label: "Under 30s" },
+    { value: "30_to_60s", label: "30s – 60s" },
+    { value: "60_to_120s", label: "1 – 2 min" },
+    { value: "120_to_180s", label: "2 – 3 min" },
+  ],
+});
+
+const modeCollection = createListCollection({
+  items: [
+    { value: "clip", label: "AI clipping" },
+    { value: "caption_only", label: "Caption only (full length)" },
+  ],
+});
+
+const languageCollection = createListCollection({
+  items: LANGUAGE_OPTIONS.map((option) => ({
+    label: option.label,
+    value: option.code,
+  })),
+});
 
 function NumberField({
   name,
@@ -63,6 +99,109 @@ export function AdvancedClipSettings() {
         </Flex>
 
         <input type="hidden" name="clipGenerationMode" value="best" />
+
+        <Grid templateColumns={{ base: "1fr 1fr", md: "1fr 1fr 1fr" }} gap="10px">
+          <Box>
+            <Text fontSize="11px" color="fg.muted" mb="2px">
+              Mode
+            </Text>
+            <Select.Root
+              collection={modeCollection}
+              defaultValue={["clip"]}
+              size="sm"
+              name="mode"
+            >
+              <Select.HiddenSelect />
+              <Select.Control>
+                <Select.Trigger>
+                  <Select.ValueText placeholder="Select mode" />
+                </Select.Trigger>
+                <Select.IndicatorGroup>
+                  <Select.Indicator />
+                </Select.IndicatorGroup>
+              </Select.Control>
+              <Portal>
+                <Select.Positioner>
+                  <Select.Content>
+                    {modeCollection.items.map((item) => (
+                      <Select.Item item={item} key={item.value}>
+                        {item.label}
+                        <Select.ItemIndicator />
+                      </Select.Item>
+                    ))}
+                  </Select.Content>
+                </Select.Positioner>
+              </Portal>
+            </Select.Root>
+          </Box>
+          <Box>
+            <Text fontSize="11px" color="fg.muted" mb="2px">
+              Language
+            </Text>
+            <Select.Root
+              collection={languageCollection}
+              defaultValue={["auto"]}
+              size="sm"
+              name="languageCode"
+            >
+              <Select.HiddenSelect />
+              <Select.Control>
+                <Select.Trigger>
+                  <Select.ValueText placeholder="Select language" />
+                </Select.Trigger>
+                <Select.IndicatorGroup>
+                  <Select.Indicator />
+                </Select.IndicatorGroup>
+              </Select.Control>
+              <Portal>
+                <Select.Positioner>
+                  <Select.Content>
+                    {languageCollection.items.map((item) => (
+                      <Select.Item item={item} key={item.value}>
+                        {item.label}
+                        <Select.ItemIndicator />
+                      </Select.Item>
+                    ))}
+                  </Select.Content>
+                </Select.Positioner>
+              </Portal>
+            </Select.Root>
+          </Box>
+          <Box>
+            <Text fontSize="11px" color="fg.muted" mb="2px">
+              Clip length
+            </Text>
+            <Select.Root
+              collection={clipLengthCollection}
+              defaultValue={["auto"]}
+              size="sm"
+              name="clipLengthPreset"
+            >
+              <Select.HiddenSelect />
+              <Select.Control>
+                <Select.Trigger>
+                  <Select.ValueText placeholder="Select clip length" />
+                </Select.Trigger>
+                <Select.IndicatorGroup>
+                  <Select.Indicator />
+                </Select.IndicatorGroup>
+              </Select.Control>
+              <Portal>
+                <Select.Positioner>
+                  <Select.Content>
+                    {clipLengthCollection.items.map((item) => (
+                      <Select.Item item={item} key={item.value}>
+                        {item.label}
+                        <Select.ItemIndicator />
+                      </Select.Item>
+                    ))}
+                  </Select.Content>
+                </Select.Positioner>
+              </Portal>
+            </Select.Root>
+          </Box>
+        </Grid>
+
         <Grid templateColumns={{ base: "1fr 1fr", md: "repeat(6, 1fr)" }} gap="10px">
           <NumberField name="clipCountTarget" label="Clips" defaultValue={10} min={3} max={30} />
           <NumberField name="clipDurationSecTarget" label="Target sec" defaultValue={45} min={15} max={120} />
@@ -70,6 +209,34 @@ export function AdvancedClipSettings() {
           <NumberField name="preferredMinDurationSec" label="Pref min" defaultValue={30} min={5} max={120} />
           <NumberField name="preferredMaxDurationSec" label="Pref max" defaultValue={60} min={5} max={180} />
           <NumberField name="maxDurationSec" label="Max sec" defaultValue={90} min={10} max={180} />
+        </Grid>
+
+        <Grid templateColumns={{ base: "1fr", md: "1fr 1fr" }} gap="10px">
+          <Box as="label" cursor="pointer" display="inline-flex" alignItems="center" gap="6px">
+            <input type="checkbox" name="autoHook" defaultChecked />
+            <Text fontSize="12px" color="fg.muted">
+              Auto-hook (favor strong opening clips)
+            </Text>
+          </Box>
+          <Box>
+            <Text fontSize="11px" color="fg.muted" mb="2px">
+              Specific moments (optional)
+            </Text>
+            <input
+              name="specificMoments"
+              placeholder="Find moments where they discuss pricing"
+              maxLength={500}
+              style={{
+                width: "100%",
+                padding: "7px 9px",
+                fontSize: "13px",
+                borderRadius: "6px",
+                border: "1px solid var(--chakra-colors-border)",
+                background: "transparent",
+                color: "inherit",
+              }}
+            />
+          </Box>
         </Grid>
 
         <Flex gap="8px" flexWrap="wrap">
