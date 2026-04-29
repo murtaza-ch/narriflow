@@ -131,10 +131,13 @@ model Project {
   sourceMimeType String?
   sourceSizeBytes BigInt?
   sourceDurationSeconds Int?
+  languageCode   String?
   ingestStatus   IngestStatus  @default(pending)
   ingestErrorCode String?
   ingestCompletedAt DateTime?
   userId         String        @db.Uuid
+  brandTemplateId String?      @db.Uuid
+  brandSnapshot  Json?
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
   contentPacks   ContentPack[]
@@ -143,11 +146,13 @@ model Project {
   transcript     Transcript?
   clips          Clip[]
   user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  brandTemplate  BrandTemplate? @relation(fields: [brandTemplateId], references: [id], onDelete: SetNull)
   workflowRuns   WorkflowRun[]
   workflowEvents WorkflowEvent[]
 
   @@index([userId, createdAt])
   @@index([userId, ingestStatus, createdAt])
+  @@index([brandTemplateId])
 }
 
 model ContentPack {
@@ -166,6 +171,11 @@ model ContentPack {
   toneConstraints         Json
   captionPreset           String
   platformPlaybookVersion String
+  mode                    String       @default("clip")
+  autoHook                Boolean      @default(true)
+  specificMoments         String       @default("")
+  processingStartSec      Int?
+  processingEndSec        Int?
   createdAt               DateTime     @default(now())
   updatedAt               DateTime     @updatedAt
 
@@ -264,25 +274,28 @@ model WorkflowEvent {
 }
 
 model User {
-  id                    String           @id @default(uuid()) @db.Uuid
-  clerkId               String           @unique
-  primaryEmail          String?          @unique
-  emailVerifiedAt       DateTime?
-  firstName             String?
-  lastName              String?
-  imageUrl              String?
-  pricingTier           PricingTier      @default(free)
-  onboardingCompletedAt DateTime?
-  lastSignInAt          DateTime?
-  stripeCustomerId      String?          @unique
-  deletedAt             DateTime?
-  createdAt             DateTime         @default(now())
-  updatedAt             DateTime         @updatedAt
-  authIdentities        AuthIdentity[]
-  apiKeys               ApiKey[]
-  ownedTeams            Team[]           @relation("TeamOwner")
-  projects              Project[]
-  teamMemberships       TeamMember[]
+  id                     String           @id @default(uuid()) @db.Uuid
+  clerkId                String           @unique
+  primaryEmail           String?          @unique
+  emailVerifiedAt        DateTime?
+  firstName              String?
+  lastName               String?
+  imageUrl               String?
+  pricingTier            PricingTier      @default(free)
+  onboardingCompletedAt  DateTime?
+  lastSignInAt           DateTime?
+  stripeCustomerId       String?          @unique
+  defaultBrandTemplateId String?          @db.Uuid
+  deletedAt              DateTime?
+  createdAt              DateTime         @default(now())
+  updatedAt              DateTime         @updatedAt
+  authIdentities         AuthIdentity[]
+  apiKeys                ApiKey[]
+  ownedTeams             Team[]           @relation("TeamOwner")
+  projects               Project[]
+  teamMemberships        TeamMember[]
+  brandTemplates         BrandTemplate[]  @relation("UserBrandTemplates")
+  defaultBrandTemplate   BrandTemplate?   @relation("UserDefaultBrandTemplate", fields: [defaultBrandTemplateId], references: [id], onDelete: SetNull)
 
   @@index([clerkId])
 }
@@ -432,4 +445,34 @@ model ClipRender {
 
   @@unique([clipId, aspectRatio])
   @@index([clipId])
+}
+
+model BrandTemplate {
+  id             String   @id @default(uuid()) @db.Uuid
+  userId         String?  @db.Uuid
+  name           String
+  isBuiltIn      Boolean  @default(false)
+  builtInKey     String?  @unique
+
+  captionPreset  Json
+
+  logoStorageKey String?
+  logoPosition   String   @default("bot-right")
+  logoOpacity    Int      @default(80)
+  logoScalePct   Int      @default(15)
+
+  primaryColor   String   @default("#FFFFFF")
+  secondaryColor String   @default("#00FF88")
+  accentColor    String?
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+  deletedAt      DateTime?
+
+  user           User?    @relation("UserBrandTemplates", fields: [userId], references: [id], onDelete: Cascade)
+  defaultForUsers User[]  @relation("UserDefaultBrandTemplate")
+  projects       Project[]
+
+  @@index([userId, deletedAt, createdAt])
+  @@index([isBuiltIn])
 }
