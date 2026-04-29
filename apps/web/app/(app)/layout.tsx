@@ -54,7 +54,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         </Flex>
 
         {/* Page content */}
-        <Box as="main" maxW="1024px" px="24px" py="32px">
+        <Box as="main" w="full" px={{ base: "16px", md: "32px" }} py="32px">
           {children}
         </Box>
       </Box>
