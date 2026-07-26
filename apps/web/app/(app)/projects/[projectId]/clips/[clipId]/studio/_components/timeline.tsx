@@ -21,6 +21,7 @@ import {
   getCachedTimelineThumbnail,
   requestTimelineThumbnail,
   setTimelineThumbnailPlaybackActive,
+  type ThumbnailVideoKind,
 } from "./timeline-preview-manager";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -63,7 +64,9 @@ function drawCachedStrip(
  * in internal pixel width so long clips do not create huge browser surfaces.
  */
 const SegmentThumbnails = memo(function SegmentThumbnails({
-  sourceVideoUrl,
+  thumbnailVideoUrl,
+  videoKind,
+  offsetSec,
   sourcePreviewId,
   clipStartSec,
   segStartSec,
@@ -71,7 +74,16 @@ const SegmentThumbnails = memo(function SegmentThumbnails({
   width,
   height,
 }: {
-  sourceVideoUrl: string | null;
+  /** The proxy when one exists, else the source once the user has opted
+   *  in, else null — same resolution rule as the main player's
+   *  `activeVideoUrl` (see studio-shell.tsx), so the timeline never opens a
+   *  full-source reader the player itself wouldn't also open. */
+  thumbnailVideoUrl: string | null;
+  videoKind: ThumbnailVideoKind;
+  /** Source time -> `thumbnailVideoUrl`-local time offset (studio-shell.tsx's
+   *  `activeOffsetSec`). Subtracted from every seek target before it reaches
+   *  the hidden scrub `<video>` — see `sourceTimeToVideoTime`. */
+  offsetSec: number;
   sourcePreviewId: string;
   clipStartSec: number;
   segStartSec: number;
@@ -94,6 +106,7 @@ const SegmentThumbnails = memo(function SegmentThumbnails({
 
     const cachedRefined = getCachedTimelineThumbnail({
       sourcePreviewId,
+      videoKind,
       clipStartSec,
       segStartSec,
       segEndSec,
@@ -103,6 +116,7 @@ const SegmentThumbnails = memo(function SegmentThumbnails({
     });
     const cachedCoarse = getCachedTimelineThumbnail({
       sourcePreviewId,
+      videoKind,
       clipStartSec,
       segStartSec,
       segEndSec,
@@ -130,9 +144,9 @@ const SegmentThumbnails = memo(function SegmentThumbnails({
       }
     }
 
-    setStatus(sourceVideoUrl ? (cached ? "ready" : "loading") : "idle");
+    setStatus(thumbnailVideoUrl ? (cached ? "ready" : "loading") : "idle");
 
-    if (!sourceVideoUrl) return;
+    if (!thumbnailVideoUrl) return;
 
     const segDuration = segEndSec - segStartSec;
     if (segDuration <= 0) return;
@@ -151,7 +165,9 @@ const SegmentThumbnails = memo(function SegmentThumbnails({
         ? () => {}
         : requestTimelineThumbnail({
             sourcePreviewId,
-            sourceVideoUrl,
+            sourceVideoUrl: thumbnailVideoUrl,
+            videoKind,
+            offsetSec,
             clipStartSec,
             segStartSec,
             segEndSec,
@@ -169,7 +185,9 @@ const SegmentThumbnails = memo(function SegmentThumbnails({
       if (cancelled || cachedRefined) return;
       cancelRefined = requestTimelineThumbnail({
         sourcePreviewId,
-        sourceVideoUrl,
+        sourceVideoUrl: thumbnailVideoUrl,
+        videoKind,
+        offsetSec,
         clipStartSec,
         segStartSec,
         segEndSec,
@@ -189,7 +207,7 @@ const SegmentThumbnails = memo(function SegmentThumbnails({
       cancelCoarse();
       cancelRefined();
     };
-  }, [clipStartSec, height, renderHeight, renderWidth, segEndSec, segStartSec, sourcePreviewId, sourceVideoUrl, width]);
+  }, [clipStartSec, height, offsetSec, renderHeight, renderWidth, segEndSec, segStartSec, sourcePreviewId, thumbnailVideoUrl, videoKind, width]);
 
   return (
     <div
@@ -421,7 +439,9 @@ const TimelineSegmentBlock = memo(function TimelineSegmentBlock({
   endSec,
   isSelected,
   pxPerSec,
-  sourceVideoUrl,
+  thumbnailVideoUrl,
+  videoKind,
+  offsetSec,
   sourcePreviewId,
   clipStartSec,
   setSelectedSegmentId,
@@ -432,7 +452,9 @@ const TimelineSegmentBlock = memo(function TimelineSegmentBlock({
   endSec: number;
   isSelected: boolean;
   pxPerSec: number;
-  sourceVideoUrl: string | null;
+  thumbnailVideoUrl: string | null;
+  videoKind: ThumbnailVideoKind;
+  offsetSec: number;
   sourcePreviewId: string;
   clipStartSec: number;
   setSelectedSegmentId: (id: string | null) => void;
@@ -484,7 +506,9 @@ const TimelineSegmentBlock = memo(function TimelineSegmentBlock({
       contain="layout paint"
     >
       <SegmentThumbnails
-        sourceVideoUrl={sourceVideoUrl}
+        thumbnailVideoUrl={thumbnailVideoUrl}
+        videoKind={videoKind}
+        offsetSec={offsetSec}
         sourcePreviewId={sourcePreviewId}
         clipStartSec={clipStartSec}
         segStartSec={startSec}
@@ -653,7 +677,9 @@ export function Timeline() {
     setSelectedSegmentId,
     splitAtPlayhead,
     deleteSelectedSegment,
-    sourceVideoUrl,
+    activeVideoUrl,
+    activeOffsetSec,
+    activeVideoKind,
     sourcePreviewId,
     clipStartSec,
     utterances,
@@ -1023,7 +1049,9 @@ export function Timeline() {
                   endSec={seg.endSec}
                   isSelected={selectedSegmentId === seg.id}
                   pxPerSec={TIMELINE_PX_PER_SEC}
-                  sourceVideoUrl={sourceVideoUrl}
+                  thumbnailVideoUrl={activeVideoUrl}
+                  videoKind={activeVideoKind}
+                  offsetSec={activeOffsetSec}
                   sourcePreviewId={sourcePreviewId}
                   clipStartSec={clipStartSec}
                   setSelectedSegmentId={setSelectedSegmentId}

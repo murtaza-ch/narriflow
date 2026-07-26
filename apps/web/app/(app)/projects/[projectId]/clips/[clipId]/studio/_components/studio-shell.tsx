@@ -26,6 +26,10 @@ import { ToolSidebar } from "./tool-sidebar";
 import { Timeline } from "./timeline";
 import { KeyboardShortcutsModal } from "./keyboard-shortcuts-modal";
 import { createPlaybackClock, type PlaybackClock } from "./playback-clock";
+import {
+  releaseTimelineThumbnailResources,
+  type ThumbnailVideoKind,
+} from "./timeline-preview-manager";
 
 /**
  * Below this width the transcript panel has already hidden (it collapses
@@ -140,8 +144,25 @@ interface StudioContextValue extends StudioState {
   setUseOriginalSourceFallback: (v: boolean) => void;
   /** Whichever URL is actually meant to be fed to the `<video>` element:
    *  the proxy when ready, else the source only once the user opts in,
-   *  else null (nothing to play yet). */
+   *  else null (nothing to play yet). Also what the timeline scrubs
+   *  thumbnails from (see timeline-preview-manager.ts) — thumbnails
+   *  deliberately mirror the player's source choice instead of eagerly
+   *  opening the full source on their own, which was the bug this same
+   *  proxy work fixed for playback. */
   activeVideoUrl: string | null;
+  /** Source time -> `activeVideoUrl`-local time offset: `previewStartSec`
+   *  when `activeVideoUrl` is the proxy, 0 when it's the source (or null).
+   *  Same role as `playerClipStartSec`/`playerClipEndSec` below but as a
+   *  standalone delta — the timeline thumbnail pipeline seeks arbitrary
+   *  in-clip points rather than clip start/end, so it subtracts this
+   *  directly (see `sourceTimeToVideoTime` in timeline-preview-manager.ts)
+   *  instead of reusing the start/end pair. */
+  activeOffsetSec: number;
+  /** Which physical file `activeVideoUrl` resolves to. Threaded through to
+   *  the timeline's thumbnail cache keys so a strip captured from the
+   *  source before the proxy existed is never handed back once the proxy
+   *  takes over (see `ThumbnailVideoKind` in timeline-preview-manager.ts). */
+  activeVideoKind: ThumbnailVideoKind;
   /** `clipStartSec`/`clipEndSec` re-expressed in *whichever* file
    *  `activeVideoUrl` points at — identical to `clipStartSec`/`clipEndSec`
    *  when playing the source, shifted back by `previewStartSec` when
@@ -230,6 +251,11 @@ export function StudioShell({
   // Source time -> "whichever file is actually playing" time. Zero when
   // there's no proxy (i.e. we're playing the source as-is, or nothing).
   const activeOffsetSec = previewVideoUrl ? previewStartSec : 0;
+  // Mirrors activeOffsetSec's own condition: the proxy wins whenever it
+  // exists, regardless of useOriginalSourceFallback (that flag only decides
+  // what happens in ITS absence). Consumers only need to branch on this when
+  // activeVideoUrl is non-null.
+  const activeVideoKind: ThumbnailVideoKind = previewVideoUrl ? "proxy" : "source";
   const playerClipStartSec = clipStartSec - activeOffsetSec;
   const playerClipEndSec = clipEndSec - activeOffsetSec;
 
@@ -734,6 +760,18 @@ export function StudioShell({
     [],
   );
 
+  // The timeline's thumbnail cache and hidden scrub <video> elements
+  // (timeline-preview-manager.ts) live in module scope, not React state, so
+  // they survive across re-renders on purpose (that's the whole point of the
+  // cache) but never get released on their own. Free them once, when the
+  // studio itself unmounts — not when the timeline panel is merely toggled
+  // hidden, which unmounts <Timeline /> far more often.
+  useEffect(() => {
+    return () => {
+      releaseTimelineThumbnailResources();
+    };
+  }, []);
+
   // Below the minimum usable width, skip the three-pane editor entirely
   // rather than rendering a transcript-less, inspector-cramped studio. All
   // hooks above have already run unconditionally, so this early return is
@@ -787,7 +825,7 @@ export function StudioShell({
     transcript: derivedTranscript, clipInfo, videoRef, playbackClock,
     sourceVideoUrl, sourcePreviewId, clipStartSec, clipEndSec,
     previewVideoUrl, previewStartSec, useOriginalSourceFallback, setUseOriginalSourceFallback,
-    activeVideoUrl, playerClipStartSec, playerClipEndSec,
+    activeVideoUrl, activeOffsetSec, activeVideoKind, playerClipStartSec, playerClipEndSec,
     utterances, updateUtteranceText,
     setIsPlaying, setActiveTool, setShowTimeline, setAspectRatio,
     setLayoutMode, setShowShortcuts, setTimelineZoom,
