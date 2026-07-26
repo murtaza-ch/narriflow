@@ -30,6 +30,7 @@ enum SourceType {
   upload
   youtube
   rss
+  link
 }
 
 enum IngestStatus {
@@ -53,6 +54,7 @@ enum IngestJobType {
   upload_finalize
   youtube_import
   rss_import
+  link_import
 }
 
 enum IngestJobStatus {
@@ -96,6 +98,13 @@ enum ClipRenderStatus {
   failed
 }
 
+enum DubStatus {
+  queued
+  processing
+  completed
+  failed
+}
+
 enum ClipAspectRatio {
   ratio_9_16
   ratio_1_1
@@ -121,11 +130,53 @@ enum WebhookProvider {
   resend
 }
 
+enum SocialPlatform {
+  tiktok
+  youtube_shorts
+  instagram_reels
+  linkedin
+  x
+}
+
+enum SocialPostStatus {
+  draft
+  scheduled
+  publishing
+  posted
+  failed
+  cancelled
+}
+
+enum SocialAccountStatus {
+  active
+  expired
+  revoked
+}
+
+enum AutopilotStatus {
+  active
+  paused
+  running
+  failed
+}
+
+enum AnalyticsEventType {
+  render_completed
+  download_opened
+  social_scheduled
+  social_cancelled
+  social_posted
+  social_failed
+  dub_completed
+  dub_download_opened
+}
+
 model Project {
   id             String        @id @default(uuid()) @db.Uuid
   title          String
   sourceMediaUrl String
   sourceType     SourceType    @default(upload)
+  sourceProvider String?
   sourceInput    String?
   sourceStorageKey String?
   sourceMimeType String?
@@ -149,10 +200,32 @@ model Project {
   brandTemplate  BrandTemplate? @relation(fields: [brandTemplateId], references: [id], onDelete: SetNull)
   workflowRuns   WorkflowRun[]
   workflowEvents WorkflowEvent[]
+  contentAssets  ContentAsset[]
+  socialPosts    SocialPost[]
+  socialPostMetrics SocialPostMetric[]
+  analyticsEvents ProjectAnalyticsEvent[]
+  clipDubs        ClipDub[]
 
   @@index([userId, createdAt])
   @@index([userId, ingestStatus, createdAt])
   @@index([brandTemplateId])
+}
+
+/// Repurposed text outputs generated from the transcript (blog, thread,
+/// LinkedIn post, show notes, quote cards). One row per (project, type).
+model ContentAsset {
+  id        String     @id @default(uuid()) @db.Uuid
+  projectId String     @db.Uuid
+  type      OutputType
+  title     String
+  body      String
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, type])
+  @@index([projectId, createdAt])
 }
 
 model ContentPack {
@@ -293,11 +366,52 @@ model User {
   apiKeys                ApiKey[]
   ownedTeams             Team[]           @relation("TeamOwner")
   projects               Project[]
+  autopilotRules         AutopilotRule[]
+  socialAccounts         SocialAccount[]
+  socialOAuthStates      SocialOAuthState[]
   teamMemberships        TeamMember[]
   brandTemplates         BrandTemplate[]  @relation("UserBrandTemplates")
   defaultBrandTemplate   BrandTemplate?   @relation("UserDefaultBrandTemplate", fields: [defaultBrandTemplateId], references: [id], onDelete: SetNull)
 
   @@index([clerkId])
+}
+
+model AutopilotRule {
+  id                String          @id @default(uuid()) @db.Uuid
+  userId            String          @db.Uuid
+  name              String
+  rssUrl            String
+  titlePrefix       String?
+  brandTemplateId   String?         @db.Uuid
+  languageCode      String?
+  contentPack       Json
+  intervalMinutes   Int             @default(1440)
+  maxEpisodesPerRun Int             @default(3)
+  status            AutopilotStatus @default(active)
+  lastCheckedAt     DateTime?
+  nextRunAt         DateTime        @default(now())
+  lastError         String?
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  user     User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  episodes AutopilotEpisode[]
+
+  @@index([userId, status, createdAt])
+  @@index([status, nextRunAt])
+}
+
+model AutopilotEpisode {
+  id         String   @id @default(uuid()) @db.Uuid
+  ruleId     String   @db.Uuid
+  episodeId  String
+  projectId  String?  @db.Uuid
+  importedAt DateTime @default(now())
+
+  rule AutopilotRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+
+  @@unique([ruleId, episodeId])
+  @@index([projectId])
 }
 
 model AuthIdentity {
@@ -371,6 +485,47 @@ model ApiKey {
   @@index([userId, revokedAt])
 }
 
+model SocialAccount {
+  id                    String              @id @default(uuid()) @db.Uuid
+  userId                String              @db.Uuid
+  platform              SocialPlatform
+  providerAccountId     String
+  displayName           String
+  handle                String?
+  avatarUrl             String?
+  accessTokenEncrypted  String
+  refreshTokenEncrypted String?
+  scopes                String[]            @default([])
+  expiresAt             DateTime?
+  status                SocialAccountStatus @default(active)
+  metadata              Json?
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  socialPosts SocialPost[]
+
+  @@unique([userId, platform, providerAccountId])
+  @@index([userId, platform, status])
+  @@index([status, expiresAt])
+}
+
+model SocialOAuthState {
+  id           String         @id @default(uuid()) @db.Uuid
+  userId       String         @db.Uuid
+  platform     SocialPlatform
+  state        String         @unique
+  codeVerifier String?
+  redirectPath String?
+  expiresAt    DateTime
+  createdAt    DateTime       @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, platform, createdAt])
+  @@index([expiresAt])
+}
+
 model WebhookDeliveryLog {
   id          String          @id @default(uuid()) @db.Uuid
   provider    WebhookProvider
@@ -401,6 +556,23 @@ model Clip {
   platformFit     String[]     @default([])
   transcriptSlice Json
   captionPreset   Json?
+  brollUrl        String?
+  studioEdits     Json?
+
+  // LLM-suggested B-roll cutaway moments produced by the clip-detection call:
+  // [{ atSec, query, reason }], atSec relative to the clip's own start. Without
+  // this the detector's cues are computed and then thrown away, and the render
+  // falls back to keyword-derived Pexels queries.
+  brollCues       Json?
+
+  // Lightweight 540p faststart proxy covering this clip's range (plus padding
+  // for boundary tweaks). The studio and the clip cards play this instead of
+  // the multi-hundred-MB source, which is what made the editor take 44s to show
+  // a first frame. `previewStartSec` is the proxy's t=0 in source time, so
+  // player time maps back to source time.
+  previewStorageKey  String?
+  previewStartSec    Float?
+  previewDurationSec Float?
 
   viralityScore           Int
   hookStrengthScore       Int
@@ -422,6 +594,9 @@ model Clip {
 
   project Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
   renders ClipRender[]
+  socialPosts SocialPost[]
+  analyticsEvents ProjectAnalyticsEvent[]
+  dubs ClipDub[]
 
   @@index([projectId, viralityScore(sort: Desc)])
   @@unique([projectId, workflowRunId, index])
@@ -445,6 +620,37 @@ model ClipRender {
 
   @@unique([clipId, aspectRatio])
   @@index([clipId])
+}
+
+model ClipDub {
+  id                 String          @id @default(uuid()) @db.Uuid
+  projectId          String          @db.Uuid
+  clipId             String          @db.Uuid
+  aspectRatio        ClipAspectRatio @default(ratio_9_16)
+  targetLanguageCode String
+  voice              String
+  provider           String          @default("openai")
+  model              String
+  status             DubStatus       @default(queued)
+  transcriptText     String?
+  translatedText     String?
+  audioStorageKey    String?
+  renderStorageKey   String?
+  audioSizeBytes     BigInt?
+  renderSizeBytes    BigInt?
+  durationSec        Float?
+  errorCode          String?
+  startedAt          DateTime?
+  completedAt        DateTime?
+  createdAt          DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  clip    Clip    @relation(fields: [clipId], references: [id], onDelete: Cascade)
+
+  @@unique([clipId, targetLanguageCode, voice, aspectRatio])
+  @@index([projectId, status, createdAt])
+  @@index([clipId, status])
 }
 
 model BrandTemplate {
@@ -475,4 +681,72 @@ model BrandTemplate {
 
   @@index([userId, deletedAt, createdAt])
   @@index([isBuiltIn])
+}
+
+model SocialPost {
+  id           String           @id @default(uuid()) @db.Uuid
+  projectId    String           @db.Uuid
+  clipId       String?          @db.Uuid
+  socialAccountId String?       @db.Uuid
+  platform     SocialPlatform
+  status       SocialPostStatus @default(scheduled)
+  caption      String
+  aspectRatio  ClipAspectRatio?
+  scheduledFor DateTime?
+  postedAt     DateTime?
+  externalUrl  String?
+  errorCode    String?
+  metadata     Json?
+  createdAt    DateTime         @default(now())
+  updatedAt    DateTime         @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  clip    Clip?   @relation(fields: [clipId], references: [id], onDelete: SetNull)
+  socialAccount SocialAccount? @relation(fields: [socialAccountId], references: [id], onDelete: SetNull)
+  metrics SocialPostMetric[]
+
+  @@index([projectId, scheduledFor])
+  @@index([status, scheduledFor])
+  @@index([clipId])
+  @@index([socialAccountId])
+}
+
+model SocialPostMetric {
+  id               String         @id @default(uuid()) @db.Uuid
+  projectId        String         @db.Uuid
+  postId           String         @db.Uuid
+  platform         SocialPlatform
+  views            Int            @default(0)
+  likes            Int            @default(0)
+  comments         Int            @default(0)
+  shares           Int            @default(0)
+  saves            Int            @default(0)
+  watchTimeSeconds Int?
+  metadata         Json?
+  capturedAt       DateTime       @default(now())
+  createdAt        DateTime       @default(now())
+
+  project Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  post    SocialPost @relation(fields: [postId], references: [id], onDelete: Cascade)
+
+  @@index([projectId, capturedAt])
+  @@index([postId, capturedAt])
+  @@index([platform, capturedAt])
+}
+
+model ProjectAnalyticsEvent {
+  id        String             @id @default(uuid()) @db.Uuid
+  projectId String             @db.Uuid
+  clipId    String?            @db.Uuid
+  type      AnalyticsEventType
+  platform  SocialPlatform?
+  metadata  Json?
+  createdAt DateTime           @default(now())
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  clip    Clip?   @relation(fields: [clipId], references: [id], onDelete: SetNull)
+
+  @@index([projectId, createdAt])
+  @@index([clipId, type])
+  @@index([type, createdAt])
 }
