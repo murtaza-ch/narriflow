@@ -1,63 +1,86 @@
 "use client";
 
 import { Box, Flex, Text, HStack } from "@chakra-ui/react";
-import {
-  ArrowLeft,
-  Undo2,
-  Redo2,
-  Keyboard,
-  ChevronDown,
-  Zap,
-  Check,
-  Loader,
-} from "lucide-react";
+import { ArrowLeft, Undo2, Redo2, Keyboard, Check } from "lucide-react";
 import { useRouter } from "next/navigation";
+import { Button, ScoreMeter, Spinner } from "@narriflow/ui";
+import { formatDuration } from "@/lib/format";
 import { useStudio } from "./studio-shell";
-
-const BTN = {
-  display: "flex",
-  alignItems: "center",
-  justifyContent: "center",
-  borderRadius: "6px",
-  cursor: "pointer",
-  transition: "background 120ms ease, color 120ms ease",
-  border: "none",
-  background: "transparent",
-  color: "#888",
-  padding: "6px",
-} as const;
-
-const BTN_HOVER = "#1e1e1e";
 
 function IconBtn({
   icon,
   onClick,
   disabled,
-  title,
-  size = 16,
+  label,
 }: {
   icon: React.ReactNode;
   onClick?: () => void;
   disabled?: boolean;
-  title?: string;
-  size?: number;
+  label: string;
 }) {
   return (
-    <Box
+    <Flex
       as="button"
-      style={{
-        ...BTN,
-        opacity: disabled ? 0.35 : 1,
-        cursor: disabled ? "not-allowed" : "pointer",
-        width: "32px",
-        height: "32px",
-      }}
-      title={title}
+      align="center"
+      justify="center"
+      w="32px"
+      h="32px"
+      borderRadius="l1"
+      bg="transparent"
+      border="none"
+      color={disabled ? "fg.disabled" : "studio.fgMuted"}
+      cursor={disabled ? "not-allowed" : "pointer"}
+      title={label}
+      aria-label={label}
+      aria-disabled={disabled}
       onClick={disabled ? undefined : onClick}
-      _hover={disabled ? {} : { bg: BTN_HOVER, color: "#e5e5e5" }}
+      transition="background 120ms ease, color 120ms ease"
+      _hover={disabled ? {} : { bg: "studio.raised", color: "studio.fg" }}
     >
       {icon}
-    </Box>
+    </Flex>
+  );
+}
+
+/**
+ * Ambient autosave indicator — a small status dot plus micro-copy. Failures
+ * additionally surface as an error toast from the shell.
+ */
+function AutosaveIndicator({
+  saveState,
+}: {
+  saveState: "idle" | "saving" | "saved" | "error";
+}) {
+  if (saveState === "saving") {
+    return (
+      <HStack gap="6px" aria-live="polite">
+        <Spinner size="xs" />
+        <Text fontSize="12px" color="studio.fgMuted">
+          Saving…
+        </Text>
+      </HStack>
+    );
+  }
+
+  const isError = saveState === "error";
+  return (
+    <HStack gap="6px" aria-live="polite">
+      <Box
+        w="6px"
+        h="6px"
+        borderRadius="full"
+        bg={
+          isError
+            ? "danger.solid"
+            : saveState === "saved"
+              ? "success.solid"
+              : "studio.fgSubtle"
+        }
+      />
+      <Text fontSize="12px" color={isError ? "danger.fg" : "studio.fgMuted"}>
+        {isError ? "Save failed" : "Saved"}
+      </Text>
+    </HStack>
   );
 }
 
@@ -69,166 +92,104 @@ export function TopBar() {
     redoStack,
     showShortcuts,
     setShowShortcuts,
-    handleSave,
+    handleExport,
     handleUndo,
     handleRedo,
     saveState,
-    credits,
+    exportState,
+    aspectRatio,
   } = useStudio();
 
   return (
     <Flex
       h="48px"
       align="center"
-      px="12px"
-      gap="4px"
-      bg="#111111"
+      px="3"
+      gap="1"
+      bg="studio.surface"
       borderBottomWidth="1px"
-      borderColor="#222222"
+      borderColor="studio.border"
       flexShrink={0}
     >
-      {/* Left: Back + Title */}
-      <HStack gap="8px" flex="1" minW="0">
+      {/* Left: back + title + clip data */}
+      <HStack gap="2" flex="1" minW="0">
         <IconBtn
           icon={<ArrowLeft size={16} />}
           onClick={() => router.back()}
-          title="Back"
+          label="Back"
         />
         <Text
+          fontFamily="display"
           fontSize="13px"
-          fontWeight="500"
-          color="#e5e5e5"
+          fontWeight="600"
+          color="studio.fg"
           whiteSpace="nowrap"
           overflow="hidden"
           textOverflow="ellipsis"
-          maxW="340px"
+          maxW="300px"
         >
           {clipInfo.title}
         </Text>
+
+        <Box w="1px" h="20px" bg="studio.border" mx="1" flexShrink={0} />
+
+        <HStack gap="2" flexShrink={0} display={{ base: "none", md: "flex" }}>
+          <Text textStyle="data" fontSize="12px" color="studio.timecode">
+            {formatDuration(clipInfo.duration)}
+          </Text>
+          <Text textStyle="data" fontSize="12px" color="studio.fgMuted">
+            {aspectRatio}
+          </Text>
+          <ScoreMeter score={clipInfo.viralityScore} size="sm" />
+        </HStack>
       </HStack>
 
-      {/* Right: Actions */}
-      <HStack gap="4px" flexShrink={0}>
+      {/* Right: autosave + history + shortcuts + export */}
+      <HStack gap="1" flexShrink={0}>
+        <AutosaveIndicator saveState={saveState} />
+
+        <Box w="1px" h="20px" bg="studio.border" mx="1" />
+
         <IconBtn
           icon={<Undo2 size={16} />}
           onClick={handleUndo}
           disabled={undoStack.length === 0}
-          title="Undo (Ctrl+Z)"
+          label="Undo (Ctrl+Z)"
         />
         <IconBtn
           icon={<Redo2 size={16} />}
           onClick={handleRedo}
           disabled={redoStack.length === 0}
-          title="Redo (Ctrl+Shift+Z)"
+          label="Redo (Ctrl+Shift+Z)"
         />
-
-        {/* Divider */}
-        <Box w="1px" h="20px" bg="#2a2a2a" mx="4px" />
-
         <IconBtn
           icon={<Keyboard size={16} />}
           onClick={() => setShowShortcuts(!showShortcuts)}
-          title="Keyboard shortcuts"
+          label="Keyboard shortcuts"
         />
 
-        {/* Divider */}
-        <Box w="1px" h="20px" bg="#2a2a2a" mx="4px" />
+        <Box w="1px" h="20px" bg="studio.border" mx="1" />
 
-        {/* Save button */}
-        <button
-          onClick={handleSave}
-          disabled={saveState === "saving"}
-          style={{
-            padding: "0 12px",
-            height: "32px",
-            borderRadius: "6px",
-            border: "1px solid #2a2a2a",
-            background: "transparent",
-            color: saveState === "saved" ? "#4ade80" : "#c4c4c4",
-            fontSize: "13px",
-            fontWeight: "500",
-            cursor: saveState === "saving" ? "not-allowed" : "pointer",
-            display: "flex",
-            alignItems: "center",
-            gap: "6px",
-            transition: "all 150ms ease",
-          }}
-          onMouseEnter={(e) => {
-            if (saveState !== "saving") {
-              (e.currentTarget as HTMLButtonElement).style.background = "#1e1e1e";
-              (e.currentTarget as HTMLButtonElement).style.color = "#e5e5e5";
-            }
-          }}
-          onMouseLeave={(e) => {
-            (e.currentTarget as HTMLButtonElement).style.background = "transparent";
-            (e.currentTarget as HTMLButtonElement).style.color = saveState === "saved" ? "#4ade80" : "#c4c4c4";
-          }}
+        {/* Export — the one solid button in the studio view */}
+        <Button
+          size="sm"
+          colorPalette="accent"
+          variant="solid"
+          onClick={exportState === "idle" ? handleExport : undefined}
+          loading={exportState === "exporting"}
+          loadingText="Exporting…"
+          aria-label={`Export ${aspectRatio}`}
         >
-          {saveState === "saving" && <Loader size={13} style={{ animation: "spin 1s linear infinite" }} />}
-          {saveState === "saved" && <Check size={13} />}
-          {saveState === "saving" ? "Saving..." : saveState === "saved" ? "Saved" : "Save changes"}
-        </button>
-
-        {/* Export button */}
-        <Flex
-          as="button"
-          align="center"
-          gap="4px"
-          px="12px"
-          h="32px"
-          borderRadius="6px"
-          bg="#6366F1"
-          color="white"
-          fontSize="13px"
-          fontWeight="600"
-          cursor="pointer"
-          transition="background 150ms ease"
-          _hover={{ bg: "#4F46E5" }}
-        >
-          Export
-          <ChevronDown size={13} />
-        </Flex>
-
-        {/* Credits badge */}
-        <Flex
-          align="center"
-          gap="4px"
-          px="10px"
-          h="28px"
-          borderRadius="99px"
-          bg="#2a1f00"
-          border="1px solid #3d2e00"
-          ml="4px"
-        >
-          <Zap size={12} color="#f59e0b" fill="#f59e0b" />
-          <Text fontSize="12px" fontWeight="600" color="#f59e0b">
-            {credits}
-          </Text>
-        </Flex>
-
-        {/* Avatar */}
-        <Box
-          w="28px"
-          h="28px"
-          borderRadius="full"
-          bg="#6366F1"
-          ml="4px"
-          display="flex"
-          alignItems="center"
-          justifyContent="center"
-          fontSize="11px"
-          fontWeight="600"
-          color="white"
-          flexShrink={0}
-        >
-          U
-        </Box>
+          {exportState === "queued" ? (
+            <>
+              <Check size={13} />
+              Queued
+            </>
+          ) : (
+            <>Export {aspectRatio}</>
+          )}
+        </Button>
       </HStack>
-
-      {/* Spin animation */}
-      <style>{`
-        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-      `}</style>
     </Flex>
   );
 }

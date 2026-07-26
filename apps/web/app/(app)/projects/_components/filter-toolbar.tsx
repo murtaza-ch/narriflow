@@ -1,21 +1,23 @@
 "use client";
 
 import {
-  createListCollection,
-  Flex,
+  Box,
   HStack,
   Input,
   InputGroup,
-  Portal,
-  SegmentGroup,
-  Select,
   Text,
+  VisuallyHidden,
 } from "@chakra-ui/react";
-import { Search } from "lucide-react";
+import { LayoutGrid, Rows3, Search } from "lucide-react";
+import { Button } from "@narriflow/ui/components/button";
+import { Select } from "@narriflow/ui/components/select";
+import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
+import { Toolbar } from "@narriflow/ui/components/toolbar";
 import type {
   SourceFilter,
   SortOption,
   StatusFilter,
+  ViewMode,
 } from "./projects-explorer";
 
 interface FilterToolbarProps {
@@ -27,8 +29,14 @@ interface FilterToolbarProps {
   onSourceChange: (value: SourceFilter) => void;
   sort: SortOption;
   onSortChange: (value: SortOption) => void;
+  view: ViewMode;
+  onViewChange: (value: ViewMode) => void;
+  /** Per-status counts among the loaded projects (source + search applied). */
+  statusCounts: Record<StatusFilter, number>;
+  /** Projects visible after all filters. */
   resultCount: number;
-  totalCount: number;
+  /** Projects loaded from the server so far — the honest denominator. */
+  loadedCount: number;
 }
 
 const STATUS_ITEMS: { value: StatusFilter; label: string }[] = [
@@ -42,22 +50,23 @@ const STATUS_ITEMS: { value: StatusFilter; label: string }[] = [
 const SOURCE_ITEMS: { value: SourceFilter; label: string }[] = [
   { value: "all", label: "All sources" },
   { value: "youtube", label: "YouTube" },
+  { value: "link", label: "Link import" },
   { value: "upload", label: "Upload" },
   { value: "rss", label: "RSS" },
 ];
 
-const sortCollection = createListCollection<{
-  value: SortOption;
-  label: string;
-}>({
-  items: [
-    { value: "newest", label: "Newest first" },
-    { value: "oldest", label: "Oldest first" },
-    { value: "title", label: "Title A→Z" },
-    { value: "clips", label: "Most clips" },
-  ],
-});
+const SORT_ITEMS: { value: SortOption; label: string }[] = [
+  { value: "newest", label: "Newest first" },
+  { value: "oldest", label: "Oldest first" },
+  { value: "title", label: "Title A→Z" },
+  { value: "clips", label: "Most clips" },
+];
 
+/**
+ * FilterToolbar — the slim sticky command row that replaces the boxed filter
+ * panel: search, status chips with live mono counts, compact source + sort
+ * selects, and a grid/list view toggle.
+ */
 export function FilterToolbar({
   query,
   onQueryChange,
@@ -67,137 +76,144 @@ export function FilterToolbar({
   onSourceChange,
   sort,
   onSortChange,
+  view,
+  onViewChange,
+  statusCounts,
   resultCount,
-  totalCount,
+  loadedCount,
 }: FilterToolbarProps) {
   return (
-    <Flex
-      direction="column"
-      gap="14px"
-      p="16px"
-      borderRadius="14px"
-      borderWidth="1px"
-      borderColor="border"
-      bg="bg.subtle"
-    >
-      <Flex
-        direction={{ base: "column", md: "row" }}
-        align={{ base: "stretch", md: "center" }}
-        justify="space-between"
-        gap="12px"
+    <Toolbar h="auto" minH="12" py="2" flexWrap="wrap" gap="2" columnGap="3">
+      <InputGroup
+        w={{ base: "full", md: "220px" }}
+        flexShrink={0}
+        color="fg.subtle"
+        startElement={<Search size={13} />}
       >
-        <InputGroup
-          maxW={{ md: "340px" }}
-          flex={{ md: "0 0 auto" }}
-          startElement={<Search size={14} />}
-        >
-          <Input
-            value={query}
-            onChange={(event) => onQueryChange(event.currentTarget.value)}
-            placeholder="Search projects"
-            size="sm"
-            variant="subtle"
-            bg="bg.panel"
-            borderColor="border"
-            fontSize="13px"
+        <Input
+          value={query}
+          onChange={(event) => onQueryChange(event.currentTarget.value)}
+          placeholder="Search projects"
+          aria-label="Search projects"
+          size="sm"
+          // Pin to the shared 32px toolbar control height (sm recipe is
+          // 36px); the var also drives the InputGroup icon inset.
+          css={{ "--input-height": "sizes.8" }}
+          fontSize="13px"
+        />
+      </InputGroup>
+
+      <HStack gap="1" flexWrap="wrap" role="group" aria-label="Filter by status">
+        {STATUS_ITEMS.map((item) => (
+          <StatusChip
+            key={item.value}
+            label={item.label}
+            count={statusCounts[item.value]}
+            active={status === item.value}
+            danger={item.value === "failed"}
+            onClick={() => onStatusChange(item.value)}
           />
-        </InputGroup>
+        ))}
+      </HStack>
 
-        <HStack gap="12px" align="center">
-          <Text
-            fontFamily="mono"
-            fontSize="11px"
-            color="fg.subtle"
-            letterSpacing="0.04em"
-          >
-            {resultCount} of {totalCount}
-          </Text>
+      <Box flex="1" minW="2" />
 
-          <Select.Root
-            collection={sortCollection}
-            size="sm"
-            width="170px"
-            value={[sort]}
-            onValueChange={(event) => {
-              const next = event.value[0] as SortOption | undefined;
-              if (next) onSortChange(next);
-            }}
-            positioning={{ sameWidth: true }}
-          >
-            <Select.HiddenSelect />
-            <Select.Control>
-              <Select.Trigger
-                bg="bg.panel"
-                borderColor="border"
-                fontFamily="mono"
-                fontSize="12px"
-              >
-                <Select.ValueText placeholder="Sort" />
-              </Select.Trigger>
-              <Select.IndicatorGroup>
-                <Select.Indicator />
-              </Select.IndicatorGroup>
-            </Select.Control>
-            <Portal>
-              <Select.Positioner>
-                <Select.Content
-                  bg="bg.panel"
-                  borderColor="border"
-                  borderWidth="1px"
-                  shadow="lg"
-                >
-                  {sortCollection.items.map((item) => (
-                    <Select.Item
-                      key={item.value}
-                      item={item}
-                      fontSize="12px"
-                      fontFamily="mono"
-                    >
-                      <Select.ItemText>{item.label}</Select.ItemText>
-                      <Select.ItemIndicator />
-                    </Select.Item>
-                  ))}
-                </Select.Content>
-              </Select.Positioner>
-            </Portal>
-          </Select.Root>
-        </HStack>
-      </Flex>
-
-      <Flex
-        direction={{ base: "column", lg: "row" }}
-        gap="12px"
-        align={{ lg: "center" }}
-        justify="space-between"
+      <Text
+        textStyle="data"
+        fontSize="11px"
+        color="fg.subtle"
+        flexShrink={0}
+        aria-live="polite"
       >
-        <SegmentGroup.Root
-          size="xs"
-          value={status}
-          onValueChange={(event) => {
-            if (event.value) onStatusChange(event.value as StatusFilter);
-          }}
-          bg="bg.panel"
-          borderWidth="1px"
-          borderColor="border"
-        >
-          <SegmentGroup.Indicator />
-          <SegmentGroup.Items items={STATUS_ITEMS} />
-        </SegmentGroup.Root>
+        {resultCount} of {loadedCount} shown
+      </Text>
 
-        <SegmentGroup.Root
-          size="xs"
+      <HStack gap="2" flexShrink={0}>
+        <Select
+          items={SOURCE_ITEMS}
           value={source}
-          onValueChange={(event) => {
-            if (event.value) onSourceChange(event.value as SourceFilter);
-          }}
-          bg="bg.panel"
-          borderWidth="1px"
-          borderColor="border"
-        >
-          <SegmentGroup.Indicator />
-          <SegmentGroup.Items items={SOURCE_ITEMS} />
-        </SegmentGroup.Root>
-      </Flex>
-    </Flex>
+          onValueChange={(value) => onSourceChange(value as SourceFilter)}
+          size="sm"
+          width="128px"
+          aria-label="Filter by source"
+        />
+        <Select
+          items={SORT_ITEMS}
+          value={sort}
+          onValueChange={(value) => onSortChange(value as SortOption)}
+          size="sm"
+          width="136px"
+          aria-label="Sort projects"
+        />
+        <SegmentedControl
+          size="sm"
+          // Match the 32px control row (sm track is ~30px on its own).
+          h="8"
+          alignItems="center"
+          value={view}
+          onValueChange={(value) => onViewChange(value as ViewMode)}
+          aria-label="View mode"
+          items={[
+            {
+              value: "grid",
+              label: (
+                <>
+                  <LayoutGrid size={13} aria-hidden="true" />
+                  <VisuallyHidden>Grid view</VisuallyHidden>
+                </>
+              ),
+            },
+            {
+              value: "list",
+              label: (
+                <>
+                  <Rows3 size={13} aria-hidden="true" />
+                  <VisuallyHidden>List view</VisuallyHidden>
+                </>
+              ),
+            },
+          ]}
+        />
+      </HStack>
+    </Toolbar>
+  );
+}
+
+function StatusChip({
+  label,
+  count,
+  active,
+  danger,
+  onClick,
+}: {
+  label: string;
+  count: number;
+  active: boolean;
+  danger?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <Button
+      size="xs"
+      variant="ghost"
+      onClick={onClick}
+      aria-pressed={active}
+      px="2"
+      gap="1.5"
+      color={active ? "fg" : "fg.muted"}
+      bg={active ? "bg.muted" : "transparent"}
+      fontWeight={active ? "600" : "500"}
+      _hover={{ bg: active ? "bg.muted" : "bg.subtle", color: "fg" }}
+    >
+      {label}
+      <Text
+        as="span"
+        textStyle="data"
+        fontSize="11px"
+        color={danger && count > 0 ? "danger.fg" : active ? "fg.muted" : "fg.subtle"}
+      >
+        {count}
+      </Text>
+    </Button>
   );
 }

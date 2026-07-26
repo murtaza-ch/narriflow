@@ -1,216 +1,209 @@
 "use client";
 
-import { useState } from "react";
-import { Box, Flex, Text, Stack, Slider, ColorPicker, HStack, Portal, parseColor } from "@chakra-ui/react";
-import { Upload, LayoutGrid } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { Box, Flex, Stack, Text } from "@chakra-ui/react";
+import { AlertTriangle, Check, LayoutGrid } from "lucide-react";
+import { Spinner } from "@narriflow/ui";
+import type { BrandTemplateSummary } from "@narriflow/validators";
+import { useStudio } from "../studio-shell";
 
-const POSITION_GRID = [
-  ["top-left", "top-center", "top-right"],
-  ["mid-left", "center",     "mid-right"],
-  ["bot-left", "bot-center", "bot-right"],
-];
+interface BrandTemplateResponse {
+  builtIns: BrandTemplateSummary[];
+  mine: BrandTemplateSummary[];
+  defaultId: string | null;
+}
 
-const BRAND_PRESETS = [
-  { id: "minimal",   label: "Minimal",   accent: "#6366F1" },
-  { id: "bold",      label: "Bold",      accent: "#f59e0b" },
-  { id: "dark",      label: "Dark",      accent: "#1a1a1a" },
-  { id: "vibrant",   label: "Vibrant",   accent: "#ec4899" },
-];
+function TemplateRow({
+  template,
+  selected,
+  onSelect,
+}: {
+  template: BrandTemplateSummary;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <Flex
+      as="button"
+      aria-pressed={selected}
+      align="center"
+      gap="10px"
+      w="100%"
+      p="10px"
+      borderRadius="l2"
+      border="1px solid"
+      borderColor={selected ? "studio.accent" : "studio.border"}
+      bg={selected ? "studio.raised" : "studio.subtle"}
+      cursor="pointer"
+      textAlign="left"
+      transition="background 120ms ease, border-color 120ms ease"
+      _hover={{ borderColor: selected ? "studio.accent" : "studio.borderStrong" }}
+      onClick={onSelect}
+    >
+      {/* User brand colors — literal by design */}
+      <Flex flexShrink={0} gap="3px">
+        <Box w="14px" h="28px" borderRadius="4px 0 0 4px" bg={template.primaryColor} />
+        <Box w="14px" h="28px" borderRadius="0 4px 4px 0" bg={template.secondaryColor} />
+      </Flex>
+      <Box minW="0" flex="1">
+        <Text fontSize="12px" fontWeight="600" color="studio.fg" truncate>
+          {template.name}
+        </Text>
+        <Text fontSize="11px" color="studio.fgMuted" mt="1px">
+          {template.captionPreset.fontName} · {template.captionPreset.position}
+        </Text>
+      </Box>
+      {selected ? (
+        <Box color="studio.accentFg" flexShrink={0}>
+          <Check size={14} />
+        </Box>
+      ) : null}
+    </Flex>
+  );
+}
 
 export function BrandTemplatePanel() {
-  const [logoPos, setLogoPos] = useState("bot-right");
-  const [opacity, setOpacity] = useState(80);
-  const [primaryColor, setPrimaryColor] = useState("#6366F1");
-  const [secondaryColor, setSecondaryColor] = useState("#0c0c0c");
+  const { setCaptionPreset } = useStudio();
+  const [templates, setTemplates] = useState<BrandTemplateResponse | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [loadState, setLoadState] = useState<"loading" | "ready" | "error">(
+    "loading",
+  );
+  const [applyState, setApplyState] = useState<
+    "idle" | "applied" | "missing"
+  >("idle");
+
+  useEffect(() => {
+    let canceled = false;
+    async function loadTemplates() {
+      setLoadState("loading");
+      try {
+        const response = await fetch("/api/brand-templates");
+        if (!response.ok) throw new Error("failed");
+        const payload = (await response.json()) as BrandTemplateResponse;
+        if (canceled) return;
+        setTemplates(payload);
+        setSelectedId(payload.defaultId ?? payload.mine[0]?.id ?? payload.builtIns[0]?.id ?? null);
+        setLoadState("ready");
+      } catch {
+        if (!canceled) setLoadState("error");
+      }
+    }
+    void loadTemplates();
+    return () => {
+      canceled = true;
+    };
+  }, []);
+
+  const allTemplates = useMemo(
+    () => [...(templates?.mine ?? []), ...(templates?.builtIns ?? [])],
+    [templates],
+  );
+  const selectedTemplate = allTemplates.find((template) => template.id === selectedId);
+
+  function applyTemplate() {
+    if (!selectedTemplate) {
+      setApplyState("missing");
+      setTimeout(() => setApplyState("idle"), 2500);
+      return;
+    }
+
+    setCaptionPreset((current) => ({
+      ...current,
+      ...selectedTemplate.captionPreset,
+      positionX: current.positionX,
+      positionY: current.positionY,
+      fontSize: current.fontSize,
+    }));
+    setApplyState("applied");
+    setTimeout(() => setApplyState("idle"), 2000);
+  }
+
+  if (loadState === "loading") {
+    return (
+      <Flex align="center" justify="center" h="160px" color="studio.fgMuted" gap="8px">
+        <Spinner size="xs" />
+        <Text fontSize="12px" color="studio.fgMuted">Loading templates</Text>
+      </Flex>
+    );
+  }
+
+  if (loadState === "error") {
+    return (
+      <Flex role="alert" align="center" gap="8px" p="12px" color="danger.400">
+        <AlertTriangle size={14} />
+        <Text fontSize="12px" color="danger.400">
+          Brand templates could not be loaded.
+        </Text>
+      </Flex>
+    );
+  }
 
   return (
-    <Stack gap="16px" p="12px">
-      {/* Logo upload */}
-      <Box>
-        <Text fontSize="10px" color="#555" fontWeight="600" textTransform="uppercase" letterSpacing="0.07em" mb="8px">
-          Logo / Watermark
-        </Text>
-        <Flex
-          direction="column"
-          align="center"
-          justify="center"
-          h="80px"
-          borderRadius="8px"
-          border="2px dashed #2a2a2a"
-          bg="#111"
-          cursor="pointer"
-          gap="6px"
-          color="#444"
-          transition="all 150ms"
-          _hover={{ bg: "#161616", borderColor: "#3a3a3a", color: "#666" }}
-        >
-          <Upload size={18} />
-          <Text fontSize="11px">Upload logo (PNG, SVG)</Text>
-        </Flex>
-      </Box>
-
-      {/* Watermark position */}
-      <Box>
-        <Text fontSize="10px" color="#555" fontWeight="600" textTransform="uppercase" letterSpacing="0.07em" mb="8px">
-          Position
-        </Text>
-        <Box
-          display="inline-grid"
-          style={{ gridTemplateColumns: "repeat(3, 32px)", gap: "4px" }}
-        >
-          {POSITION_GRID.flat().map((pos) => (
-            <Box
-              key={pos}
-              w="32px"
-              h="32px"
-              borderRadius="5px"
-              bg={logoPos === pos ? "rgba(99,102,241,0.2)" : "#1a1a1a"}
-              border="1px solid"
-              borderColor={logoPos === pos ? "#6366F1" : "#2a2a2a"}
-              cursor="pointer"
-              onClick={() => setLogoPos(pos)}
-              transition="all 150ms"
-              _hover={{ borderColor: "#444" }}
+    <Stack gap="14px" p="12px">
+      {templates?.mine.length ? (
+        <Stack gap="8px">
+          <Text textStyle="eyebrow" color="studio.fgMuted">
+            My templates
+          </Text>
+          {templates.mine.map((template) => (
+            <TemplateRow
+              key={template.id}
+              template={template}
+              selected={template.id === selectedId}
+              onSelect={() => setSelectedId(template.id)}
             />
           ))}
-        </Box>
-      </Box>
+        </Stack>
+      ) : null}
 
-      {/* Opacity */}
-      <Box>
-        <Flex align="center" justify="space-between" mb="6px">
-          <Text fontSize="10px" color="#555" fontWeight="600" textTransform="uppercase" letterSpacing="0.07em">
-            Opacity
+      {templates?.builtIns.length ? (
+        <Stack gap="8px">
+          <Text textStyle="eyebrow" color="studio.fgMuted">
+            Built-in
           </Text>
-          <Text fontSize="11px" color="#888" fontFamily="mono">{opacity}%</Text>
-        </Flex>
-        <Slider.Root
-          value={[opacity]}
-          min={10}
-          max={100}
-          onValueChange={(e) => setOpacity(e.value[0]!)}
-          size="sm"
-          colorPalette="purple"
-          w="100%"
-        >
-          <Slider.Control>
-            <Slider.Track>
-              <Slider.Range />
-            </Slider.Track>
-            <Slider.Thumbs />
-          </Slider.Control>
-        </Slider.Root>
-      </Box>
-
-      {/* Brand colors */}
-      <Box>
-        <Text fontSize="10px" color="#555" fontWeight="600" textTransform="uppercase" letterSpacing="0.07em" mb="8px">
-          Brand colors
-        </Text>
-        <Flex gap="12px">
-          <Box>
-            <Text fontSize="10px" color="#555" mb="5px">Primary</Text>
-            <ColorPicker.Root
-              value={parseColor(primaryColor)}
-              onValueChange={(e) => setPrimaryColor(e.value.toString("hex"))}
-              size="xs"
-            >
-              <ColorPicker.HiddenInput />
-              <ColorPicker.Control>
-                <ColorPicker.Trigger w="32px" h="32px" borderRadius="6px" border="1px solid #2a2a2a" cursor="pointer" p="2px">
-                  <ColorPicker.ValueSwatch w="100%" h="100%" borderRadius="4px" />
-                </ColorPicker.Trigger>
-              </ColorPicker.Control>
-              <Portal>
-                <ColorPicker.Positioner>
-                  <ColorPicker.Content>
-                    <ColorPicker.Area />
-                    <HStack>
-                      <ColorPicker.EyeDropper size="xs" variant="outline" />
-                      <ColorPicker.Sliders />
-                    </HStack>
-                  </ColorPicker.Content>
-                </ColorPicker.Positioner>
-              </Portal>
-            </ColorPicker.Root>
-          </Box>
-          <Box>
-            <Text fontSize="10px" color="#555" mb="5px">Secondary</Text>
-            <ColorPicker.Root
-              value={parseColor(secondaryColor)}
-              onValueChange={(e) => setSecondaryColor(e.value.toString("hex"))}
-              size="xs"
-            >
-              <ColorPicker.HiddenInput />
-              <ColorPicker.Control>
-                <ColorPicker.Trigger w="32px" h="32px" borderRadius="6px" border="1px solid #2a2a2a" cursor="pointer" p="2px">
-                  <ColorPicker.ValueSwatch w="100%" h="100%" borderRadius="4px" />
-                </ColorPicker.Trigger>
-              </ColorPicker.Control>
-              <Portal>
-                <ColorPicker.Positioner>
-                  <ColorPicker.Content>
-                    <ColorPicker.Area />
-                    <HStack>
-                      <ColorPicker.EyeDropper size="xs" variant="outline" />
-                      <ColorPicker.Sliders />
-                    </HStack>
-                  </ColorPicker.Content>
-                </ColorPicker.Positioner>
-              </Portal>
-            </ColorPicker.Root>
-          </Box>
-        </Flex>
-      </Box>
-
-      {/* Preset templates */}
-      <Box>
-        <Text fontSize="10px" color="#555" fontWeight="600" textTransform="uppercase" letterSpacing="0.07em" mb="8px">
-          Quick presets
-        </Text>
-        <Flex gap="6px" flexWrap="wrap">
-          {BRAND_PRESETS.map((p) => (
-            <Flex
-              key={p.id}
-              as="button"
-              align="center"
-              gap="6px"
-              px="10px"
-              py="6px"
-              borderRadius="6px"
-              bg="#1a1a1a"
-              border="1px solid #2a2a2a"
-              cursor="pointer"
-              fontSize="11px"
-              color="#888"
-              transition="all 150ms"
-              _hover={{ bg: "#1e1e1e", borderColor: "#333" }}
-              onClick={() => setPrimaryColor(p.accent)}
-            >
-              <Box w="10px" h="10px" borderRadius="full" bg={p.accent} />
-              {p.label}
-            </Flex>
+          {templates.builtIns.map((template) => (
+            <TemplateRow
+              key={template.id}
+              template={template}
+              selected={template.id === selectedId}
+              onSelect={() => setSelectedId(template.id)}
+            />
           ))}
-        </Flex>
-      </Box>
+        </Stack>
+      ) : null}
 
+      {/* Secondary action — Export owns the view's solid button */}
       <Flex
         as="button"
         align="center"
         justify="center"
         h="34px"
-        borderRadius="7px"
-        bg="#6366F1"
-        color="white"
+        borderRadius="l2"
+        bg="studio.raised"
+        borderWidth="1px"
+        borderColor={applyState === "missing" ? "danger.solid" : "studio.borderStrong"}
+        color={applyState === "missing" ? "danger.400" : "studio.fg"}
         fontSize="12px"
         fontWeight="600"
         cursor="pointer"
         gap="6px"
-        _hover={{ bg: "#4F46E5" }}
-        transition="background 150ms"
+        _hover={{ borderColor: applyState === "missing" ? "danger.solid" : "studio.fgSubtle" }}
+        transition="border-color 120ms ease, color 120ms ease"
+        onClick={applyTemplate}
       >
-        <LayoutGrid size={14} />
-        Apply brand template
+        {applyState === "applied" ? (
+          <Check size={14} />
+        ) : applyState === "missing" ? (
+          <AlertTriangle size={14} />
+        ) : (
+          <LayoutGrid size={14} />
+        )}
+        {applyState === "applied"
+          ? "Template applied"
+          : applyState === "missing"
+            ? "Choose a template"
+            : "Apply to captions"}
       </Flex>
     </Stack>
   );

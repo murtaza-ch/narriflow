@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
+import { CAPTION_CHUNK_SIZE } from "@narriflow/validators";
 import type { TranscriptUtterance } from "@narriflow/validators";
 
 export interface CaptionWord {
@@ -14,7 +15,7 @@ export interface CaptionState {
   activeWordIndex: number;
 }
 
-const CHUNK_SIZE = 3;
+const CHUNK_SIZE = CAPTION_CHUNK_SIZE;
 const END_CLAMP_EPSILON_SEC = 0.001;
 
 /**

@@ -2,8 +2,31 @@
 
 import { useMemo, useState } from "react";
 import type { ClipPlatformTarget, ClipSnapshot } from "@narriflow/validators";
-import { Stack, Box, Flex, Text } from "@chakra-ui/react";
+import { Box, Flex, Grid, Text } from "@chakra-ui/react";
+import { Button } from "@narriflow/ui/components/button";
+import { GhostFrame } from "@narriflow/ui/components/ghost-frame";
+import { Select } from "@narriflow/ui/components/select";
 import { ClipCard } from "./clip-card";
+
+const durationItems = [
+  { value: "all", label: "All durations" },
+  { value: "preferred", label: "30–60s" },
+  { value: "short", label: "Under 30s" },
+  { value: "long", label: "Over 60s" },
+];
+
+const scoreItems = [
+  { value: "all", label: "All scores" },
+  { value: "high", label: "85+" },
+  { value: "review", label: "Below 85" },
+];
+
+const platformItems = [
+  { value: "all", label: "All platforms" },
+  { value: "tiktok", label: "TikTok" },
+  { value: "youtube_shorts", label: "YouTube Shorts" },
+  { value: "instagram_reels", label: "Instagram Reels" },
+];
 
 export function ClipsPanel({
   clips,
@@ -12,7 +35,7 @@ export function ClipsPanel({
 }: {
   clips: ClipSnapshot[];
   sourceVideoUrl: string | null;
-  sourceType: "upload" | "youtube" | "rss";
+  sourceType: "upload" | "youtube" | "rss" | "link";
 }) {
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [durationFilter, setDurationFilter] = useState("all");
@@ -21,6 +44,13 @@ export function ClipsPanel({
   const categories = useMemo(
     () => [...new Set(clips.map((clip) => clip.category))].sort(),
     [clips],
+  );
+  const categoryItems = useMemo(
+    () => [
+      { value: "all", label: "All categories" },
+      ...categories.map((category) => ({ value: category, label: category })),
+    ],
+    [categories],
   );
   const filteredClips = useMemo(
     () =>
@@ -68,145 +98,127 @@ export function ClipsPanel({
     clips.length > 0
       ? clips.reduce((sum, clip) => sum + clip.durationSec, 0) / clips.length
       : 0;
+  const hasActiveFilters =
+    categoryFilter !== "all" ||
+    durationFilter !== "all" ||
+    platformFilter !== "all" ||
+    scoreFilter !== "all";
 
   if (clips.length === 0) {
     return null;
   }
 
+  function clearFilters() {
+    setCategoryFilter("all");
+    setDurationFilter("all");
+    setPlatformFilter("all");
+    setScoreFilter("all");
+  }
+
   return (
-    <Box borderRadius="12px" borderWidth="1px" borderColor="border" bg="bg.panel" p="20px">
-      <Stack gap="16px">
-        <Flex align="center" justify="space-between" gap="8px">
-          <Box>
-            <Flex align="center" gap="8px">
-              <Text fontSize="14px" fontWeight="500" color="fg">
-                AI Clips
-              </Text>
-              <Text fontSize="12px" color="fg.muted">
-                {clips.length} generated
-                {acceptedCount > 0 && ` · ${acceptedCount} accepted`}
-                {renderedCount > 0 &&
-                  ` · ${renderedCount}/${clips.length} with renders`}
-                {` · avg ${averageDuration.toFixed(1)}s`}
-              </Text>
-            </Flex>
-            <Text mt="2px" fontSize="12px" color="fg.subtle">
-              Ranked by virality score. Accept, reject, or adjust boundaries.
-            </Text>
-          </Box>
-        </Flex>
+    <Box>
+      {/* Band rhythm: eyebrow → 1.5px rule → content */}
+      <Text textStyle="eyebrow" color="fg.subtle" mb="2">
+        AI Clips
+      </Text>
+      <Box layerStyle="band">
+      {/* Caption directly under the rule; run stats mono on the same baseline */}
+      <Flex align="baseline" justify="space-between" gap="3" wrap="wrap" mb="4">
+        <Text fontSize="12.5px" color="fg.subtle">
+          Ranked by virality score. Accept, reject, or adjust boundaries.
+        </Text>
+        <Text textStyle="data" fontSize="11px" color="fg.subtle">
+          {clips.length} generated
+          {acceptedCount > 0 && ` · ${acceptedCount} accepted`}
+          {renderedCount > 0 && ` · ${renderedCount}/${clips.length} with renders`}
+          {` · avg ${averageDuration.toFixed(1)}s`}
+        </Text>
+      </Flex>
 
-        <Flex gap="8px" flexWrap="wrap">
-          <select
+      {/* Filter row — compact selects, mono counter right-aligned on the same line */}
+      <Flex
+        gap="2"
+        wrap="wrap"
+        align="center"
+        pb="3"
+        mb="5"
+        borderBottomWidth="1px"
+        borderColor="border.subtle"
+      >
+        <Box w="132px">
+          <Select
+            items={categoryItems}
             value={categoryFilter}
-            onChange={(event) => setCategoryFilter(event.target.value)}
-            style={{
-              padding: "6px 8px",
-              borderRadius: "6px",
-              border: "1px solid var(--chakra-colors-border)",
-              background: "transparent",
-              color: "inherit",
-              fontSize: "12px",
-            }}
-          >
-            <option value="all">All categories</option>
-            {categories.map((category) => (
-              <option key={category} value={category}>
-                {category}
-              </option>
-            ))}
-          </select>
-          <select
-            value={durationFilter}
-            onChange={(event) => setDurationFilter(event.target.value)}
-            style={{
-              padding: "6px 8px",
-              borderRadius: "6px",
-              border: "1px solid var(--chakra-colors-border)",
-              background: "transparent",
-              color: "inherit",
-              fontSize: "12px",
-            }}
-          >
-            <option value="all">All durations</option>
-            <option value="preferred">30-60s</option>
-            <option value="short">Under 30s</option>
-            <option value="long">Over 60s</option>
-          </select>
-          <select
-            value={scoreFilter}
-            onChange={(event) => setScoreFilter(event.target.value)}
-            style={{
-              padding: "6px 8px",
-              borderRadius: "6px",
-              border: "1px solid var(--chakra-colors-border)",
-              background: "transparent",
-              color: "inherit",
-              fontSize: "12px",
-            }}
-          >
-            <option value="all">All scores</option>
-            <option value="high">85+</option>
-            <option value="review">Below 85</option>
-          </select>
-          <select
-            value={platformFilter}
-            onChange={(event) => setPlatformFilter(event.target.value)}
-            style={{
-              padding: "6px 8px",
-              borderRadius: "6px",
-              border: "1px solid var(--chakra-colors-border)",
-              background: "transparent",
-              color: "inherit",
-              fontSize: "12px",
-            }}
-          >
-            <option value="all">All platforms</option>
-            <option value="tiktok">TikTok</option>
-            <option value="youtube_shorts">YouTube Shorts</option>
-            <option value="instagram_reels">Instagram Reels</option>
-          </select>
-          <Text alignSelf="center" fontSize="12px" color="fg.muted">
-            {filteredClips.length}/{clips.length} shown
-          </Text>
-        </Flex>
-
-        <Box borderRadius="8px" borderWidth="1px" borderColor="border" overflowX="auto">
-          <Box as="table" w="full" fontSize="12px">
-            <Box as="thead" bg="bg.muted">
-              <Box as="tr">
-                {["#", "Time", "Dur", "Score", "Hook", "Payoff"].map((header) => (
-                  <Box key={header} as="th" textAlign="left" px="10px" py="8px" color="fg.muted">
-                    {header}
-                  </Box>
-                ))}
-              </Box>
-            </Box>
-            <Box as="tbody">
-              {filteredClips.map((clip, index) => (
-                <Box key={clip.id} as="tr" borderTopWidth={index > 0 ? "1px" : "0"} borderColor="border">
-                  <Box as="td" px="10px" py="8px" color="fg.subtle">{clip.index + 1}</Box>
-                  <Box as="td" px="10px" py="8px" fontFamily="mono" color="fg.subtle">
-                    {clip.startSec.toFixed(1)}-{clip.endSec.toFixed(1)}
-                  </Box>
-                  <Box as="td" px="10px" py="8px" color="fg">{clip.durationSec.toFixed(1)}s</Box>
-                  <Box as="td" px="10px" py="8px" color="fg">{clip.viralityScore}</Box>
-                  <Box as="td" px="10px" py="8px" minW="18rem" color="fg">{clip.hookText}</Box>
-                  <Box as="td" px="10px" py="8px" minW="14rem" color="fg.muted">
-                    {clip.payoffText ?? clip.reasoning}
-                  </Box>
-                </Box>
-              ))}
-            </Box>
-          </Box>
+            onValueChange={setCategoryFilter}
+            size="sm"
+            aria-label="Filter by category"
+          />
         </Box>
+        <Box w="118px">
+          <Select
+            items={durationItems}
+            value={durationFilter}
+            onValueChange={setDurationFilter}
+            size="sm"
+            aria-label="Filter by duration"
+          />
+        </Box>
+        <Box w="106px">
+          <Select
+            items={scoreItems}
+            value={scoreFilter}
+            onValueChange={setScoreFilter}
+            size="sm"
+            aria-label="Filter by score"
+          />
+        </Box>
+        <Box w="136px">
+          <Select
+            items={platformItems}
+            value={platformFilter}
+            onValueChange={setPlatformFilter}
+            size="sm"
+            aria-label="Filter by platform"
+          />
+        </Box>
+        <Text ms="auto" textStyle="data" fontSize="11px" color="fg.subtle">
+          {filteredClips.length}/{clips.length} shown
+        </Text>
+      </Flex>
 
-        <Stack gap="12px">
+      {filteredClips.length === 0 ? (
+        <Flex direction="column" align="center" gap="4" py="10">
+          <GhostFrame ratio={9 / 16} size="72px" />
+          <Text fontSize="sm" color="fg.muted">
+            No clips match these filters.
+          </Text>
+          {hasActiveFilters && (
+            <Button variant="outline" size="xs" onClick={clearFilters}>
+              Clear filters
+            </Button>
+          )}
+        </Flex>
+      ) : (
+        <Grid
+          templateColumns={{
+            base: "1fr",
+            sm: "repeat(2, minmax(0, 1fr))",
+            lg: "repeat(3, minmax(0, 1fr))",
+          }}
+          gap="4"
+          alignItems="start"
+        >
           {filteredClips.map((clip) => (
-            <ClipCard key={clip.id} clip={clip} sourceVideoUrl={sourceVideoUrl} sourceType={sourceType} />
+            <ClipCard
+              key={clip.id}
+              clip={clip}
+              sourceVideoUrl={sourceVideoUrl}
+              sourceType={sourceType}
+            />
           ))}
-        </Stack>
-      </Stack>
+        </Grid>
+      )}
+      </Box>
     </Box>
   );
 }

@@ -1,9 +1,14 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Flex, Text, Stack, Slider, ColorPicker, HStack, Portal, parseColor, Grid } from "@chakra-ui/react";
-import { Bold, Droplet, Type, AlignCenter, MoveUp, MoveDown, Zap } from "lucide-react";
+import { Bold, Droplet, Type, AlignCenter, MoveUp, MoveDown, Zap, Smile } from "lucide-react";
+import { useReducedMotion } from "framer-motion";
+import { toaster } from "@narriflow/ui";
+import { clipAspectRatioOptions } from "@narriflow/validators";
 import { useStudio } from "../studio-shell";
+import { CaptionCue, resolveCaptionFontFamily, useLiveCaption } from "../caption-style-engine";
+import type { CaptionWord } from "../use-current-caption";
 import { CAPTION_PRESETS } from "./caption-presets";
 import { PresetCard } from "./preset-card";
 
@@ -29,7 +34,7 @@ type Position = "top" | "center" | "bottom";
 
 function SectionLabel({ children }: { children: string }) {
   return (
-    <Text fontSize="10px" fontWeight="600" color="#555" textTransform="uppercase" letterSpacing="0.07em" mb="8px">
+    <Text textStyle="eyebrow" color="studio.fgMuted" mb="8px">
       {children}
     </Text>
   );
@@ -49,23 +54,24 @@ function ToggleBtn({
   return (
     <Flex
       as="button"
+      aria-pressed={active}
       direction="column"
       align="center"
       justify="center"
       gap="4px"
       w="52px"
       h="44px"
-      borderRadius="8px"
-      bg={active ? "rgba(99,102,241,0.15)" : "#1e1e1e"}
+      borderRadius="l2"
+      bg={active ? "studio.raised" : "studio.subtle"}
       border="1px solid"
-      borderColor={active ? "#6366F1" : "#2a2a2a"}
-      color={active ? "#a5b4fc" : "#666"}
+      borderColor={active ? "studio.accent" : "studio.border"}
+      color={active ? "studio.accentFg" : "studio.fgMuted"}
       cursor="pointer"
-      fontSize="9px"
+      fontSize="10px"
       fontWeight="600"
       onClick={onClick}
-      transition="all 150ms"
-      _hover={{ borderColor: "#3a3a3a", color: "#aaa" }}
+      transition="background 120ms ease, border-color 120ms ease, color 120ms ease"
+      _hover={{ borderColor: active ? "studio.accent" : "studio.borderStrong", color: active ? "studio.accentFg" : "studio.fg" }}
     >
       {icon}
       {label}
@@ -84,7 +90,7 @@ function ColorField({
 }) {
   return (
     <Box>
-      <Text fontSize="10px" color="#555" mb="5px">{label}</Text>
+      <Text fontSize="11px" color="studio.fgMuted" mb="5px">{label}</Text>
       <ColorPicker.Root
         value={parseColor(value)}
         onValueChange={(e) => onChange(e.value.toString("hex"))}
@@ -92,16 +98,32 @@ function ColorField({
       >
         <ColorPicker.HiddenInput />
         <ColorPicker.Control>
-          <ColorPicker.Trigger w="32px" h="32px" borderRadius="6px" border="1px solid #2a2a2a" cursor="pointer" p="2px">
-            <ColorPicker.ValueSwatch w="100%" h="100%" borderRadius="4px" />
+          <ColorPicker.Trigger
+            w="32px"
+            h="32px"
+            borderRadius="l2"
+            borderWidth="1px"
+            borderColor="studio.borderStrong"
+            cursor="pointer"
+            p="2px"
+            aria-label={`${label} color`}
+          >
+            <ColorPicker.ValueSwatch w="100%" h="100%" borderRadius="l1" />
           </ColorPicker.Trigger>
         </ColorPicker.Control>
         <Portal>
           <ColorPicker.Positioner>
-            <ColorPicker.Content>
+            {/* Portaled — style with mode-invariant studio tokens only */}
+            <ColorPicker.Content
+              bg="studio.surface"
+              borderWidth="1px"
+              borderColor="studio.borderStrong"
+              borderRadius="l3"
+              boxShadow="0 12px 32px rgba(0,0,0,0.6)"
+            >
               <ColorPicker.Area />
               <HStack>
-                <ColorPicker.EyeDropper size="xs" variant="outline" />
+                <ColorPicker.EyeDropper size="xs" variant="outline" color="studio.fg" borderColor="studio.borderStrong" />
                 <ColorPicker.Sliders />
               </HStack>
             </ColorPicker.Content>
@@ -109,6 +131,81 @@ function ColorField({
         </Portal>
       </ColorPicker.Root>
     </Box>
+  );
+}
+
+// ─── Live cue preview ────────────────────────────────────────────────────────
+//
+// Renders the ACTUAL current caption cue with full preset styling (outline,
+// glow, backdrop, highlight box, animation) via the shared caption engine —
+// the same renderer the on-video overlay uses.
+
+function LiveCuePreview() {
+  const { captionPreset, playbackClock, utterances, clipStartSec, aspectRatio } = useStudio();
+  const caption = useLiveCaption(playbackClock, utterances, clipStartSec);
+  const reducedMotion = useReducedMotion() ?? false;
+
+  const stageRef = useRef<HTMLDivElement>(null);
+  const [stageWidth, setStageWidth] = useState(0);
+
+  useEffect(() => {
+    const el = stageRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver((entries) => {
+      const entry = entries[0];
+      if (entry) setStageWidth(entry.contentRect.width);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  const renderWidth =
+    clipAspectRatioOptions.find((o) => o.value === aspectRatio)?.width ?? 1080;
+
+  // When playback sits between utterances, fall back to the opening words so
+  // the preview always demonstrates the current styling.
+  const fallbackWords = useMemo<CaptionWord[]>(() => {
+    const text = utterances[0]?.text ?? "Your caption style";
+    return text
+      .split(/\s+/)
+      .filter(Boolean)
+      .slice(0, 3)
+      .map((word, i) => ({ word, isActive: i === 1 }));
+  }, [utterances]);
+
+  const words = caption?.visibleWords?.length ? caption.visibleWords : fallbackWords;
+  // The preview stage is much narrower than the render surface — scale the
+  // cue down proportionally, with a floor so text stays legible.
+  const scale = stageWidth > 0 ? stageWidth / renderWidth : 0.24;
+  const fontSize = Math.max(10, captionPreset.fontSize * scale * 1.6);
+
+  return (
+    <Flex
+      ref={stageRef}
+      mx="12px"
+      mb="12px"
+      h="88px"
+      borderRadius="l2"
+      bg="black"
+      overflow="hidden"
+      position="relative"
+      borderWidth="1px"
+      borderColor="studio.border"
+      align="center"
+      justify="center"
+      aria-hidden="true"
+    >
+      <CaptionCue
+        preset={captionPreset}
+        words={words}
+        fontSize={fontSize}
+        scale={Math.max(0.3, scale * 1.6)}
+        mode="live"
+        cueKey={caption?.utteranceIndex ?? "sample"}
+        showEmojis={captionPreset.emojis === true}
+        reducedMotion={reducedMotion}
+      />
+    </Flex>
   );
 }
 
@@ -180,35 +277,42 @@ function CustomizeControls() {
           pb="4px"
           css={{
             "&::-webkit-scrollbar": { height: "3px" },
-            "&::-webkit-scrollbar-thumb": { background: "#2a2a2a", borderRadius: "4px" },
+            "&::-webkit-scrollbar-thumb": {
+              background: "var(--chakra-colors-studio-raised)",
+              borderRadius: "4px",
+            },
           }}
         >
           <Flex gap="6px" w="max-content">
-            {FONTS.map((f) => (
-              <Box
-                key={f}
-                as="button"
-                px="10px"
-                py="6px"
-                borderRadius="6px"
-                bg={captionPreset.fontName === f ? "rgba(99,102,241,0.15)" : "#1a1a1a"}
-                border="1px solid"
-                borderColor={captionPreset.fontName === f ? "#6366F1" : "#2a2a2a"}
-                cursor="pointer"
-                onClick={() => update({ fontName: f })}
-                whiteSpace="nowrap"
-                transition="all 150ms"
-                _hover={{ borderColor: "#3a3a3a" }}
-              >
-                <Text
-                  fontSize="12px"
-                  color={captionPreset.fontName === f ? "#a5b4fc" : "#888"}
-                  style={{ fontFamily: `"${f}", sans-serif` }}
+            {FONTS.map((f) => {
+              const isActive = captionPreset.fontName === f;
+              return (
+                <Box
+                  key={f}
+                  as="button"
+                  aria-pressed={isActive}
+                  px="10px"
+                  py="6px"
+                  borderRadius="l2"
+                  bg={isActive ? "studio.raised" : "studio.subtle"}
+                  border="1px solid"
+                  borderColor={isActive ? "studio.accent" : "studio.border"}
+                  cursor="pointer"
+                  onClick={() => update({ fontName: f })}
+                  whiteSpace="nowrap"
+                  transition="background 120ms ease, border-color 120ms ease"
+                  _hover={{ borderColor: isActive ? "studio.accent" : "studio.borderStrong" }}
                 >
-                  {f}
-                </Text>
-              </Box>
-            ))}
+                  <Text
+                    fontSize="12px"
+                    color={isActive ? "studio.accentFg" : "studio.fgMuted"}
+                    style={{ fontFamily: resolveCaptionFontFamily(f) }}
+                  >
+                    {f}
+                  </Text>
+                </Box>
+              );
+            })}
           </Flex>
         </Box>
       </Box>
@@ -235,10 +339,16 @@ function CustomizeControls() {
             active={captionPreset.outlineWidth > 0}
             onClick={() => update({ outlineWidth: captionPreset.outlineWidth > 0 ? 0 : 2 })}
           />
+          <ToggleBtn
+            icon={<Smile size={14} />}
+            label="Emoji"
+            active={captionPreset.emojis === true}
+            onClick={() => update({ emojis: !captionPreset.emojis })}
+          />
         </Flex>
       </Box>
 
-      {/* Colors */}
+      {/* Colors — user caption color values, literal by design */}
       <Box>
         <SectionLabel>Colors</SectionLabel>
         <Flex gap="12px">
@@ -265,13 +375,14 @@ function CustomizeControls() {
         <SectionLabel>Outline width</SectionLabel>
         <Flex align="center" gap="10px">
           <Slider.Root
+            aria-label={["Outline width"]}
             value={[captionPreset.outlineWidth]}
             min={0}
             max={4}
             step={1}
             onValueChange={(e) => update({ outlineWidth: e.value[0]! })}
             size="sm"
-            colorPalette="purple"
+            colorPalette="accent"
             flex="1"
           >
             <Slider.Control>
@@ -281,7 +392,7 @@ function CustomizeControls() {
               <Slider.Thumbs />
             </Slider.Control>
           </Slider.Root>
-          <Text fontSize="12px" color="#888" fontFamily="mono" w="16px">
+          <Text textStyle="data" fontSize="12px" color="studio.fgMuted" w="16px">
             {captionPreset.outlineWidth}
           </Text>
         </Flex>
@@ -292,13 +403,14 @@ function CustomizeControls() {
         <SectionLabel>Font size</SectionLabel>
         <Flex align="center" gap="10px">
           <Slider.Root
+            aria-label={["Font size"]}
             value={[captionPreset.fontSize]}
             min={8}
             max={120}
             step={1}
             onValueChange={(e) => update({ fontSize: e.value[0]! })}
             size="sm"
-            colorPalette="purple"
+            colorPalette="accent"
             flex="1"
           >
             <Slider.Control>
@@ -308,7 +420,7 @@ function CustomizeControls() {
               <Slider.Thumbs />
             </Slider.Control>
           </Slider.Root>
-          <Text fontSize="12px" color="#888" fontFamily="mono" w="28px">
+          <Text textStyle="data" fontSize="12px" color="studio.fgMuted" w="28px">
             {captionPreset.fontSize}
           </Text>
         </Flex>
@@ -318,30 +430,34 @@ function CustomizeControls() {
       <Box>
         <SectionLabel>Text transform</SectionLabel>
         <Flex gap="6px">
-          {(["uppercase", "lowercase", "capitalize", "none"] as const).map((t) => (
-            <Box
-              key={t}
-              as="button"
-              px="8px"
-              py="5px"
-              borderRadius="6px"
-              bg={(captionPreset.textTransform ?? "uppercase") === t ? "rgba(99,102,241,0.15)" : "#1e1e1e"}
-              border="1px solid"
-              borderColor={(captionPreset.textTransform ?? "uppercase") === t ? "#6366F1" : "#2a2a2a"}
-              cursor="pointer"
-              onClick={() => update({ textTransform: t })}
-              transition="all 150ms"
-              _hover={{ borderColor: "#3a3a3a" }}
-            >
-              <Text
-                fontSize="10px"
-                color={(captionPreset.textTransform ?? "uppercase") === t ? "#a5b4fc" : "#888"}
-                textTransform="capitalize"
+          {(["uppercase", "lowercase", "capitalize", "none"] as const).map((t) => {
+            const isActive = (captionPreset.textTransform ?? "uppercase") === t;
+            return (
+              <Box
+                key={t}
+                as="button"
+                aria-pressed={isActive}
+                px="8px"
+                py="5px"
+                borderRadius="l2"
+                bg={isActive ? "studio.raised" : "studio.subtle"}
+                border="1px solid"
+                borderColor={isActive ? "studio.accent" : "studio.border"}
+                cursor="pointer"
+                onClick={() => update({ textTransform: t })}
+                transition="background 120ms ease, border-color 120ms ease"
+                _hover={{ borderColor: isActive ? "studio.accent" : "studio.borderStrong" }}
               >
-                {t === "none" ? "None" : t.slice(0, 5)}
-              </Text>
-            </Box>
-          ))}
+                <Text
+                  fontSize="11px"
+                  color={isActive ? "studio.accentFg" : "studio.fgMuted"}
+                  textTransform="capitalize"
+                >
+                  {t === "none" ? "None" : t.slice(0, 5)}
+                </Text>
+              </Box>
+            );
+          })}
         </Flex>
       </Box>
 
@@ -376,18 +492,19 @@ function CustomizeControls() {
         </Flex>
         {captionPreset.positionX !== undefined && (
           <Flex gap="8px" mt="6px" align="center">
-            <Text fontSize="10px" color="#555">
+            <Text textStyle="data" fontSize="11px" color="studio.fgMuted">
               X: {captionPreset.positionX.toFixed(1)}%
             </Text>
-            <Text fontSize="10px" color="#555">
+            <Text textStyle="data" fontSize="11px" color="studio.fgMuted">
               Y: {captionPreset.positionY?.toFixed(1)}%
             </Text>
             <Box
               as="button"
-              fontSize="10px"
-              color="#6366F1"
+              fontSize="11px"
+              color="studio.accentFg"
               cursor="pointer"
-              _hover={{ textDecoration: "underline" }}
+              textDecoration="underline"
+              textUnderlineOffset="2px"
               onClick={() => update({ positionX: undefined, positionY: undefined })}
             >
               Reset
@@ -400,32 +517,38 @@ function CustomizeControls() {
       <Box>
         <SectionLabel>Animation</SectionLabel>
         <Stack gap="4px">
-          {ANIMATIONS.map((anim) => (
-            <Flex
-              key={anim.id}
-              as="button"
-              align="center"
-              gap="8px"
-              px="10px"
-              py="8px"
-              borderRadius="6px"
-              bg={localAnimation === anim.id ? "rgba(99,102,241,0.1)" : "transparent"}
-              border="1px solid"
-              borderColor={localAnimation === anim.id ? "#6366F1" : "transparent"}
-              cursor="pointer"
-              onClick={() => {
-                setLocalAnimation(anim.id as typeof localAnimation);
-                update({ animation: anim.id as typeof localAnimation });
-              }}
-              transition="all 150ms"
-              _hover={{ bg: "#1a1a1a" }}
-            >
-              <Zap size={12} color={localAnimation === anim.id ? "#a5b4fc" : "#555"} />
-              <Text fontSize="12px" color={localAnimation === anim.id ? "#a5b4fc" : "#888"}>
-                {anim.label}
-              </Text>
-            </Flex>
-          ))}
+          {ANIMATIONS.map((anim) => {
+            const isActive = localAnimation === anim.id;
+            return (
+              <Flex
+                key={anim.id}
+                as="button"
+                aria-pressed={isActive}
+                align="center"
+                gap="8px"
+                px="10px"
+                py="8px"
+                borderRadius="l2"
+                bg={isActive ? "studio.raised" : "transparent"}
+                border="1px solid"
+                borderColor={isActive ? "studio.accent" : "transparent"}
+                cursor="pointer"
+                onClick={() => {
+                  setLocalAnimation(anim.id as typeof localAnimation);
+                  update({ animation: anim.id as typeof localAnimation });
+                }}
+                transition="background 120ms ease, border-color 120ms ease"
+                _hover={{ bg: "studio.subtle" }}
+              >
+                <Box color={isActive ? "studio.accentFg" : "studio.fgSubtle"}>
+                  <Zap size={12} />
+                </Box>
+                <Text fontSize="12px" color={isActive ? "studio.accentFg" : "studio.fgMuted"}>
+                  {anim.label}
+                </Text>
+              </Flex>
+            );
+          })}
         </Stack>
       </Box>
 
@@ -436,7 +559,7 @@ function CustomizeControls() {
         <SectionLabel>Backdrop</SectionLabel>
         <Flex gap="6px" align="center" mb="8px">
           <ToggleBtn
-            icon={<Box w="14px" h="14px" bg="#555" borderRadius="2px" />}
+            icon={<Box w="14px" h="14px" bg="studio.fgSubtle" borderRadius="2px" />}
             label={captionPreset.backgroundColor ? "On" : "Off"}
             active={!!captionPreset.backgroundColor}
             onClick={() =>
@@ -457,15 +580,16 @@ function CustomizeControls() {
         </Flex>
         {captionPreset.backgroundColor && (
           <Flex align="center" gap="10px">
-            <Text fontSize="10px" color="#555" w="50px">Opacity</Text>
+            <Text fontSize="11px" color="studio.fgMuted" w="50px">Opacity</Text>
             <Slider.Root
+              aria-label={["Backdrop opacity"]}
               value={[captionPreset.backgroundOpacity ?? 0.6]}
               min={0}
               max={1}
               step={0.05}
               onValueChange={(e) => update({ backgroundOpacity: e.value[0]! })}
               size="sm"
-              colorPalette="purple"
+              colorPalette="accent"
               flex="1"
             >
               <Slider.Control>
@@ -475,7 +599,7 @@ function CustomizeControls() {
                 <Slider.Thumbs />
               </Slider.Control>
             </Slider.Root>
-            <Text fontSize="10px" color="#888" fontFamily="mono" w="28px">
+            <Text textStyle="data" fontSize="11px" color="studio.fgMuted" w="28px">
               {(captionPreset.backgroundOpacity ?? 0.6).toFixed(2)}
             </Text>
           </Flex>
@@ -508,15 +632,16 @@ function CustomizeControls() {
         </Flex>
         {captionPreset.highlightBoxColor && (
           <Flex align="center" gap="10px">
-            <Text fontSize="10px" color="#555" w="50px">Opacity</Text>
+            <Text fontSize="11px" color="studio.fgMuted" w="50px">Opacity</Text>
             <Slider.Root
+              aria-label={["Highlight box opacity"]}
               value={[captionPreset.highlightBoxOpacity ?? 1.0]}
               min={0}
               max={1}
               step={0.05}
               onValueChange={(e) => update({ highlightBoxOpacity: e.value[0]! })}
               size="sm"
-              colorPalette="purple"
+              colorPalette="accent"
               flex="1"
             >
               <Slider.Control>
@@ -526,7 +651,7 @@ function CustomizeControls() {
                 <Slider.Thumbs />
               </Slider.Control>
             </Slider.Root>
-            <Text fontSize="10px" color="#888" fontFamily="mono" w="28px">
+            <Text textStyle="data" fontSize="11px" color="studio.fgMuted" w="28px">
               {(captionPreset.highlightBoxOpacity ?? 1.0).toFixed(2)}
             </Text>
           </Flex>
@@ -559,15 +684,16 @@ function CustomizeControls() {
         </Flex>
         {captionPreset.glowColor && (
           <Flex align="center" gap="10px">
-            <Text fontSize="10px" color="#555" w="50px">Intensity</Text>
+            <Text fontSize="11px" color="studio.fgMuted" w="50px">Intensity</Text>
             <Slider.Root
+              aria-label={["Glow intensity"]}
               value={[captionPreset.glowIntensity ?? 8]}
               min={0}
               max={20}
               step={1}
               onValueChange={(e) => update({ glowIntensity: e.value[0]! })}
               size="sm"
-              colorPalette="purple"
+              colorPalette="accent"
               flex="1"
             >
               <Slider.Control>
@@ -577,7 +703,7 @@ function CustomizeControls() {
                 <Slider.Thumbs />
               </Slider.Control>
             </Slider.Root>
-            <Text fontSize="10px" color="#888" fontFamily="mono" w="20px">
+            <Text textStyle="data" fontSize="11px" color="studio.fgMuted" w="20px">
               {captionPreset.glowIntensity ?? 8}
             </Text>
           </Flex>
@@ -591,95 +717,104 @@ function CustomizeControls() {
 
 export function CaptionsPanel() {
   const [activeTab, setActiveTab] = useState<"presets" | "customize">("presets");
-  const { captionPreset } = useStudio();
+  const { captionPreset, clipInfo } = useStudio();
+  const [applyState, setApplyState] = useState<
+    "idle" | "applying" | "applied" | "error"
+  >("idle");
+
+  async function handleApplyToAll() {
+    if (applyState === "applying") return;
+    setApplyState("applying");
+    try {
+      const res = await fetch(
+        `/api/projects/${clipInfo.projectId}/clips/apply-caption-preset`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ captionPreset }),
+        },
+      );
+      if (!res.ok) throw new Error("apply failed");
+      setApplyState("applied");
+      setTimeout(() => setApplyState("idle"), 2000);
+    } catch {
+      setApplyState("error");
+      toaster.create({
+        type: "error",
+        title: "Couldn't apply to all clips",
+        description: "The caption style wasn't applied. Try again.",
+      });
+      setTimeout(() => setApplyState("idle"), 3000);
+    }
+  }
 
   return (
     <Stack gap="0">
       {/* Tabs */}
-      <Flex px="12px" pt="12px" gap="4px" mb="12px">
-        {(["presets", "customize"] as const).map((tab) => (
-          <Flex
-            key={tab}
-            as="button"
-            align="center"
-            px="12px"
-            py="6px"
-            borderRadius="6px"
-            bg={activeTab === tab ? "#1e1e1e" : "transparent"}
-            border="1px solid"
-            borderColor={activeTab === tab ? "#2a2a2a" : "transparent"}
-            color={activeTab === tab ? "#ccc" : "#555"}
-            cursor="pointer"
-            fontSize="12px"
-            fontWeight="500"
-            onClick={() => setActiveTab(tab)}
-            transition="all 150ms"
-            textTransform="capitalize"
-          >
-            {tab}
-          </Flex>
-        ))}
+      <Flex px="12px" pt="12px" gap="4px" mb="12px" role="tablist" aria-label="Caption editing">
+        {(["presets", "customize"] as const).map((tab) => {
+          const isActive = activeTab === tab;
+          return (
+            <Flex
+              key={tab}
+              as="button"
+              role="tab"
+              aria-selected={isActive}
+              align="center"
+              px="12px"
+              py="6px"
+              borderRadius="l2"
+              bg={isActive ? "studio.raised" : "transparent"}
+              border="1px solid"
+              borderColor={isActive ? "studio.borderStrong" : "transparent"}
+              color={isActive ? "studio.fg" : "studio.fgMuted"}
+              cursor="pointer"
+              fontSize="12px"
+              fontWeight="500"
+              onClick={() => setActiveTab(tab)}
+              transition="background 120ms ease, border-color 120ms ease, color 120ms ease"
+              textTransform="capitalize"
+            >
+              {tab}
+            </Flex>
+          );
+        })}
       </Flex>
 
-      {/* Caption preview */}
-      <Box
-        mx="12px"
-        mb="12px"
-        h="80px"
-        borderRadius="8px"
-        bg="#000"
-        overflow="hidden"
-        position="relative"
-        border="1px solid #2a2a2a"
-      >
-        <Box
-          position="absolute"
-          bottom="16px"
-          left="0"
-          right="0"
-          textAlign="center"
-        >
-          <Text
-            fontSize="22px"
-            fontWeight="900"
-            textTransform={(captionPreset.textTransform ?? "uppercase") as any}
-            style={{
-              fontFamily: `"${captionPreset.fontName}", Impact, sans-serif`,
-              color: captionPreset.primaryColor,
-              textShadow: captionPreset.shadow
-                ? "0 2px 6px rgba(0,0,0,0.9), -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000"
-                : "none",
-              letterSpacing: `${captionPreset.letterSpacing ?? 0.04}em`,
-            }}
-          >
-            PREVIEW{" "}
-            <Box as="span" style={{ color: captionPreset.highlightColor ?? "#00ff88" }}>
-              TEXT
-            </Box>
-          </Text>
-        </Box>
-      </Box>
+      {/* Live caption preview — the actual current cue, fully styled */}
+      <LiveCuePreview />
 
       {activeTab === "presets" && <PresetsGrid />}
       {activeTab === "customize" && <CustomizeControls />}
 
-      {/* Apply button */}
+      {/* Apply to all — secondary action (Export owns the solid button) */}
       <Box px="12px" pb="12px" pt="4px">
         <Flex
           as="button"
+          w="100%"
           align="center"
           justify="center"
           h="36px"
-          borderRadius="8px"
-          bg="#6366F1"
-          color="white"
+          borderRadius="l2"
+          bg="studio.raised"
+          borderWidth="1px"
+          borderColor={applyState === "error" ? "danger.solid" : "studio.borderStrong"}
+          color={applyState === "error" ? "danger.fg" : "studio.fg"}
           fontSize="13px"
           fontWeight="600"
-          cursor="pointer"
-          transition="background 150ms"
-          _hover={{ bg: "#4F46E5" }}
+          cursor={applyState === "applying" ? "default" : "pointer"}
+          opacity={applyState === "applying" ? 0.8 : 1}
+          transition="background 120ms ease, border-color 120ms ease"
+          _hover={applyState === "applying" ? {} : { borderColor: applyState === "error" ? "danger.solid" : "studio.fgSubtle" }}
+          onClick={handleApplyToAll}
         >
-          Apply to all clips
+          {applyState === "applying"
+            ? "Applying…"
+            : applyState === "applied"
+              ? "Applied to all clips ✓"
+              : applyState === "error"
+                ? "Failed — try again"
+                : "Apply to all clips"}
         </Flex>
       </Box>
     </Stack>

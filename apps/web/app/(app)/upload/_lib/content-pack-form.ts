@@ -1,6 +1,10 @@
 import {
+  BRAND_DEFAULT_CAPTION_PRESET_ID,
+  captionPresetIdSchema,
   clipLengthPresetRanges,
   contentPackSchema,
+  sourceLanguageCodeFromFormValue,
+  type CaptionPresetId,
   type ClipLengthPreset,
   type ClipPlatformTarget,
   type ContentPack,
@@ -19,7 +23,7 @@ const defaultContentPack: ContentPack = {
   platformTargets: ["tiktok", "youtube_shorts", "instagram_reels"],
   autoRenderClips: false,
   toneConstraints: ["concise", "conversational"],
-  captionPreset: "default",
+  captionPreset: BRAND_DEFAULT_CAPTION_PRESET_ID,
   platformPlaybookVersion: "2026.2",
   mode: "clip",
   autoHook: true,
@@ -65,6 +69,12 @@ function readBoolean(formData: FormData, key: string, fallback: boolean) {
   const raw = formData.get(key);
   if (raw === null) return fallback;
   return raw === "on" || raw === "true";
+}
+
+function readCaptionPreset(formData: FormData): CaptionPresetId {
+  const raw = String(formData.get("captionPreset") ?? BRAND_DEFAULT_CAPTION_PRESET_ID);
+  const parsed = captionPresetIdSchema.safeParse(raw);
+  return parsed.success ? parsed.data : BRAND_DEFAULT_CAPTION_PRESET_ID;
 }
 
 export function readContentPackFromForm(formData: FormData): ContentPack {
@@ -121,6 +131,7 @@ export function readContentPackFromForm(formData: FormData): ContentPack {
       toneConstraints.length > 0
         ? toneConstraints
         : defaultContentPack.toneConstraints,
+    captionPreset: readCaptionPreset(formData),
     mode: readMode(formData),
     autoHook: readBoolean(formData, "autoHook", true),
     specificMoments: String(formData.get("specificMoments") ?? "").slice(0, 500),
@@ -132,8 +143,56 @@ export function readContentPackFromForm(formData: FormData): ContentPack {
 
 export function readLanguageCodeFromForm(
   formData: FormData,
-): string | null {
-  const raw = String(formData.get("languageCode") ?? "").trim();
-  if (!raw || raw === "auto") return null;
-  return raw;
+): ReturnType<typeof sourceLanguageCodeFromFormValue> {
+  return sourceLanguageCodeFromFormValue(formData.get("languageCode"));
+}
+
+export type UploadSettingsFormInput = {
+  languageCode: string;
+  mode: GenerationMode;
+  clipLengthPreset: ClipLengthPreset;
+  autoHook: boolean;
+  specificMoments: string;
+  processingStartSec: number | null;
+  processingEndSec: number | null;
+  captionPreset: CaptionPresetId;
+  brandTemplateId: string | null;
+  clipCountTarget: number;
+  platformTargets: ClipPlatformTarget[];
+  autoRenderClips: boolean;
+  toneConstraints: string;
+};
+
+export function buildUploadSettingsFormData(input: UploadSettingsFormInput) {
+  const formData = new FormData();
+  formData.set("languageCode", input.languageCode);
+  formData.set("mode", input.mode);
+  formData.set("clipLengthPreset", input.clipLengthPreset);
+  formData.set("captionPreset", input.captionPreset);
+  if (input.autoHook) formData.set("autoHook", "on");
+  formData.set("specificMoments", input.specificMoments);
+  if (input.processingStartSec !== null) {
+    formData.set("processingStartSec", String(input.processingStartSec));
+  }
+  if (input.processingEndSec !== null) {
+    formData.set("processingEndSec", String(input.processingEndSec));
+  }
+  if (input.brandTemplateId) {
+    formData.set("brandTemplateId", input.brandTemplateId);
+  }
+  formData.set("clipCountTarget", String(input.clipCountTarget));
+  for (const target of input.platformTargets) {
+    formData.append("platformTargets", target);
+  }
+  if (input.autoRenderClips) formData.set("autoRenderClips", "on");
+  formData.set("toneConstraints", input.toneConstraints);
+  return formData;
+}
+
+export function buildUploadGenerationContext(input: UploadSettingsFormInput) {
+  const formData = buildUploadSettingsFormData(input);
+  return {
+    contentPack: readContentPackFromForm(formData),
+    languageCode: readLanguageCodeFromForm(formData),
+  };
 }

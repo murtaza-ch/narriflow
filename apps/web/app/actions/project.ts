@@ -1,6 +1,6 @@
 import { revalidatePath } from "next/cache";
 import { actionClient } from "./safe-action";
-import { createProjectSchema, generateProjectRequestSchema } from "@narriflow/validators";
+import { createProjectSchema } from "@narriflow/validators";
 import { projectService } from "@narriflow/services";
 import { requireCurrentAppUser } from "@narriflow/auth";
 
@@ -15,24 +15,6 @@ export const createProjectAction = (
   revalidatePath("/");
   return project;
 });
-
-export const generateProjectAction = (
-  safeActionClient.inputSchema?.(generateProjectRequestSchema) ??
-  safeActionClient.schema(generateProjectRequestSchema)
-).action(
-  async ({ parsedInput }: { parsedInput: unknown }) => {
-    const appUser = await requireCurrentAppUser();
-    const validatedInput = generateProjectRequestSchema.parse(parsedInput);
-    const placeholderProjectId = crypto.randomUUID();
-    const generated = await projectService.triggerGeneration(
-      appUser.id,
-      placeholderProjectId,
-      validatedInput,
-      crypto.randomUUID(),
-    );
-    return generated;
-  },
-);
 
 export async function createProjectFormAction(formData: FormData) {
   "use server";

@@ -1,10 +1,13 @@
+// Graphite duotones (Blueline): placeholder art drawn from the graphite ramp
+// (#0E1013 → #3E4756 family) with a single ultramarine variant as the one
+// signal color. Values are the sanctioned mode-invariant media-ground hexes.
 const PALETTE = [
-  { from: "#1E1B4B", to: "#7C3AED", name: "indigo-violet" },
-  { from: "#0F172A", to: "#0D9488", name: "slate-teal" },
-  { from: "#1C1917", to: "#D97706", name: "charcoal-amber" },
-  { from: "#18181B", to: "#DB2777", name: "ink-magenta" },
-  { from: "#0C1F1A", to: "#10B981", name: "forest-emerald" },
-  { from: "#1E293B", to: "#3B82F6", name: "midnight-azure" },
+  { from: "#0E1013", to: "#242A33", name: "graphite-carbon" },
+  { from: "#14171C", to: "#303845", name: "graphite-slate" },
+  { from: "#0E1013", to: "#3E4756", name: "graphite-steel" },
+  { from: "#171B21", to: "#303845", name: "graphite-iron" },
+  { from: "#14171C", to: "#242A33", name: "graphite-smoke" },
+  { from: "#101347", to: "#1C2CC4", name: "ultramarine" },
 ] as const;
 
 export type Gradient = (typeof PALETTE)[number];

@@ -4,6 +4,10 @@ import { Box, Flex, Text } from "@chakra-ui/react";
 import Link from "next/link";
 import type { BrandTemplateSummary } from "@narriflow/validators";
 import { ExternalLink } from "lucide-react";
+import { Select } from "@narriflow/ui/components/select";
+
+/** Sentinel for the "no template" option — the kit Select needs a non-empty value. */
+const SYSTEM_DEFAULT_VALUE = "__system_default__";
 
 interface BrandTemplatePickerProps {
   builtIns: BrandTemplateSummary[];
@@ -19,67 +23,49 @@ export function BrandTemplatePicker({
   onChange,
 }: BrandTemplatePickerProps) {
   const allOptions = [...mine, ...builtIns];
+  const items = [
+    { label: "System default", value: SYSTEM_DEFAULT_VALUE },
+    ...mine.map((template) => ({ label: template.name, value: template.id })),
+    ...builtIns.map((template) => ({
+      label: `${template.name} · built-in`,
+      value: template.id,
+    })),
+  ];
 
   return (
     <Box>
-      <Flex align="center" justify="space-between" mb="8px">
-        <Text fontSize="13px" fontWeight="500" color="fg">
+      <Flex align="center" justify="space-between" mb="2">
+        <Text textStyle="eyebrow" color="fg.subtle">
           Brand template
         </Text>
-        <Link
-          href="/settings/brand-templates"
-          style={{ display: "inline-flex", alignItems: "center", gap: "4px" }}
-        >
+        <Link href="/settings/brand-templates">
           <Text
             as="span"
+            display="inline-flex"
+            alignItems="center"
+            gap="1"
             fontSize="11px"
-            color="fg.muted"
-            _hover={{ color: "fg" }}
+            color="fg"
+            textDecoration="underline"
+            textUnderlineOffset="2px"
+            transition="color 120ms ease"
+            _hover={{ color: "fg.muted" }}
           >
             Manage
+            <ExternalLink size={11} />
           </Text>
-          <ExternalLink size={11} />
         </Link>
       </Flex>
 
-      <Box position="relative">
-        <select
-          value={value ?? ""}
-          onChange={(event) => {
-            const next = event.target.value;
-            onChange(next || null);
-          }}
-          style={{
-            width: "100%",
-            padding: "8px 10px",
-            borderRadius: 8,
-            border: "1px solid var(--chakra-colors-border)",
-            background: "var(--chakra-colors-bg)",
-            color: "var(--chakra-colors-fg)",
-            fontSize: 13,
-            appearance: "none",
-            cursor: "pointer",
-          }}
-        >
-          <option value="">System default</option>
-          {mine.length > 0 && (
-            <optgroup label="Your templates">
-              {mine.map((template) => (
-                <option key={template.id} value={template.id}>
-                  {template.name}
-                </option>
-              ))}
-            </optgroup>
-          )}
-          <optgroup label="Built-in">
-            {builtIns.map((template) => (
-              <option key={template.id} value={template.id}>
-                {template.name}
-              </option>
-            ))}
-          </optgroup>
-        </select>
-      </Box>
+      <Select
+        items={items}
+        value={value ?? SYSTEM_DEFAULT_VALUE}
+        onValueChange={(next) =>
+          onChange(next && next !== SYSTEM_DEFAULT_VALUE ? next : null)
+        }
+        placeholder="Select brand template"
+        size="sm"
+      />
 
       {value && (
         <BrandTemplatePreview
@@ -98,40 +84,36 @@ function BrandTemplatePreview({
   if (!template) return null;
   const { captionPreset } = template;
   return (
-    <Box
-      mt="8px"
-      p="10px"
-      borderRadius="8px"
-      borderWidth="1px"
-      borderColor="border"
-      bg="bg.subtle"
+    <Flex
+      align="center"
+      gap="2"
+      mt="2"
+      pt="2"
+      borderTopWidth="1px"
+      borderTopColor="border.subtle"
+      animation="fade-up"
     >
-      <Flex align="center" gap="8px">
-        <Box
-          w="14px"
-          h="14px"
-          borderRadius="3px"
-          bg={template.primaryColor}
-          borderWidth="1px"
-          borderColor="border"
-        />
-        <Box
-          w="14px"
-          h="14px"
-          borderRadius="3px"
-          bg={template.secondaryColor}
-          borderWidth="1px"
-          borderColor="border"
-        />
-        <Text
-          fontSize="11px"
-          color="fg.muted"
-          fontFamily={captionPreset.fontName ? "inherit" : undefined}
-        >
-          {captionPreset.fontName} · {captionPreset.animation}
-          {template.logoStorageKey ? " · with logo" : ""}
-        </Text>
-      </Flex>
-    </Box>
+      {/* User-chosen brand color values stay literal by design. */}
+      <Box
+        w="14px"
+        h="14px"
+        borderRadius="l1"
+        bg={template.primaryColor}
+        borderWidth="1px"
+        borderColor="border"
+      />
+      <Box
+        w="14px"
+        h="14px"
+        borderRadius="l1"
+        bg={template.secondaryColor}
+        borderWidth="1px"
+        borderColor="border"
+      />
+      <Text textStyle="data" fontSize="11px" color="fg.muted">
+        {captionPreset.fontName} · {captionPreset.animation}
+        {template.logoStorageKey ? " · with logo" : ""}
+      </Text>
+    </Flex>
   );
 }

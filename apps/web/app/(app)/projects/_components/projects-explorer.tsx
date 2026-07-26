@@ -1,12 +1,15 @@
 "use client";
 
-import { Box, Center, SimpleGrid, Stack, Text } from "@chakra-ui/react";
-import { useMemo, useState } from "react";
-import { Inbox } from "lucide-react";
+import { Box, Center, HStack, SimpleGrid, Stack, Text } from "@chakra-ui/react";
+import { useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+import { Inbox, TriangleAlert } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
-import type { ProjectListItem } from "@narriflow/services";
+import { EmptyState } from "@narriflow/ui/components/empty-state";
+import type { ProjectListItem, ProjectListPage } from "@narriflow/services";
 import { FilterToolbar } from "./filter-toolbar";
 import { ProjectCard } from "./project-card";
+import { ProjectRow } from "./project-row";
 
 export type StatusFilter =
   | "all"
@@ -15,12 +18,16 @@ export type StatusFilter =
   | "queued"
   | "failed";
 
-export type SourceFilter = "all" | "youtube" | "upload" | "rss";
+export type SourceFilter = "all" | "youtube" | "link" | "upload" | "rss";
 
 export type SortOption = "newest" | "oldest" | "title" | "clips";
 
+export type ViewMode = "grid" | "list";
+
 interface ProjectsExplorerProps {
   initialProjects: ProjectListItem[];
+  initialNextCursor: string | null;
+  totalCount: number;
 }
 
 const PROCESSING_STATUSES = new Set([
@@ -31,31 +38,77 @@ const PROCESSING_STATUSES = new Set([
   "pending",
 ]);
 
-export function ProjectsExplorer({ initialProjects }: ProjectsExplorerProps) {
+const ACTIVE_INGEST_STATUSES = new Set([
+  "pending",
+  "uploading",
+  "queued",
+  "downloading",
+  "normalizing",
+]);
+
+function isProjectActive(project: ProjectListItem): boolean {
+  if (ACTIVE_INGEST_STATUSES.has(project.ingestStatus)) return true;
+  const transcriptStatus = project.transcript?.status;
+  return transcriptStatus === "queued" || transcriptStatus === "processing";
+}
+
+function matchesStatus(
+  project: ProjectListItem,
+  status: StatusFilter,
+): boolean {
+  if (status === "all") return true;
+  const ingest = project.ingestStatus;
+  if (status === "processing") return PROCESSING_STATUSES.has(ingest);
+  return ingest === status;
+}
+
+export function ProjectsExplorer({
+  initialProjects,
+  initialNextCursor,
+  totalCount: initialTotalCount,
+}: ProjectsExplorerProps) {
+  const router = useRouter();
+  const [projects, setProjects] = useState(initialProjects);
+  const [nextCursor, setNextCursor] = useState(initialNextCursor);
+  const [totalCount, setTotalCount] = useState(initialTotalCount);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<StatusFilter>("all");
   const [source, setSource] = useState<SourceFilter>("all");
   const [sort, setSort] = useState<SortOption>("newest");
+  const [view, setView] = useState<ViewMode>("grid");
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
-  const filtered = useMemo(() => {
+  useEffect(() => {
+    setProjects(initialProjects);
+    setNextCursor(initialNextCursor);
+    setTotalCount(initialTotalCount);
+  }, [initialProjects, initialNextCursor, initialTotalCount]);
+
+  // Live-refresh while any project is still ingesting/transcribing so cards
+  // flip to "ready" (and clips appear) without a manual reload.
+  const hasActiveProjects = useMemo(
+    () => projects.some(isProjectActive),
+    [projects],
+  );
+
+  useEffect(() => {
+    if (!hasActiveProjects) return;
+    const interval = setInterval(() => router.refresh(), 6000);
+    return () => clearInterval(interval);
+  }, [hasActiveProjects, router]);
+
+  // NOTE: filtering/search/sort run client-side over the LOADED pages only
+  // (the server paginates at 50). For users with >50 projects, matches beyond
+  // the loaded pages are invisible — moving filters to URL searchParams with
+  // server-side filtering is backlogged. All counters below therefore use the
+  // loaded count as their denominator and say so.
+  const baseFiltered = useMemo(() => {
     const trimmed = query.trim().toLowerCase();
 
-    const filteredList = initialProjects.filter((project) => {
+    return projects.filter((project) => {
       if (source !== "all" && project.sourceType !== source) {
         return false;
-      }
-
-      if (status !== "all") {
-        const ingest = project.ingestStatus;
-        if (status === "processing") {
-          if (!PROCESSING_STATUSES.has(ingest)) return false;
-        } else if (status === "queued") {
-          if (ingest !== "queued") return false;
-        } else if (status === "ready") {
-          if (ingest !== "ready") return false;
-        } else if (status === "failed") {
-          if (ingest !== "failed") return false;
-        }
       }
 
       if (trimmed) {
@@ -71,8 +124,28 @@ export function ProjectsExplorer({ initialProjects }: ProjectsExplorerProps) {
 
       return true;
     });
+  }, [projects, query, source]);
 
-    return [...filteredList].sort((a, b) => {
+  // Live counts for the status chips — computed on the source/search subset
+  // so each chip's number is exactly what clicking it would show.
+  const statusCounts = useMemo<Record<StatusFilter, number>>(
+    () => ({
+      all: baseFiltered.length,
+      ready: baseFiltered.filter((p) => matchesStatus(p, "ready")).length,
+      processing: baseFiltered.filter((p) => matchesStatus(p, "processing"))
+        .length,
+      queued: baseFiltered.filter((p) => matchesStatus(p, "queued")).length,
+      failed: baseFiltered.filter((p) => matchesStatus(p, "failed")).length,
+    }),
+    [baseFiltered],
+  );
+
+  const filtered = useMemo(() => {
+    const list = baseFiltered.filter((project) =>
+      matchesStatus(project, status),
+    );
+
+    return [...list].sort((a, b) => {
       if (sort === "newest") {
         return b.createdAt.localeCompare(a.createdAt);
       }
@@ -89,7 +162,7 @@ export function ProjectsExplorer({ initialProjects }: ProjectsExplorerProps) {
       }
       return 0;
     });
-  }, [initialProjects, query, status, source, sort]);
+  }, [baseFiltered, status, sort]);
 
   const hasActiveFilters =
     query.trim() !== "" || status !== "all" || source !== "all";
@@ -100,8 +173,37 @@ export function ProjectsExplorer({ initialProjects }: ProjectsExplorerProps) {
     setSource("all");
   }
 
+  async function loadMoreProjects() {
+    if (!nextCursor || isLoadingMore) return;
+
+    setIsLoadingMore(true);
+    setLoadError(null);
+
+    try {
+      const params = new URLSearchParams({
+        cursor: nextCursor,
+        limit: "50",
+      });
+      const response = await fetch(`/api/projects?${params.toString()}`);
+      if (!response.ok) throw new Error("Failed to load more projects");
+      const page = (await response.json()) as ProjectListPage;
+
+      setProjects((current) => {
+        const seen = new Set(current.map((project) => project.id));
+        const nextItems = page.items.filter((project) => !seen.has(project.id));
+        return [...current, ...nextItems];
+      });
+      setNextCursor(page.nextCursor);
+      setTotalCount(page.totalCount);
+    } catch {
+      setLoadError("Could not load more projects. Try again.");
+    } finally {
+      setIsLoadingMore(false);
+    }
+  }
+
   return (
-    <Stack gap="20px">
+    <Stack gap="5">
       <FilterToolbar
         query={query}
         onQueryChange={setQuery}
@@ -111,64 +213,86 @@ export function ProjectsExplorer({ initialProjects }: ProjectsExplorerProps) {
         onSourceChange={setSource}
         sort={sort}
         onSortChange={setSort}
+        view={view}
+        onViewChange={setView}
+        statusCounts={statusCounts}
         resultCount={filtered.length}
-        totalCount={initialProjects.length}
+        loadedCount={projects.length}
       />
 
       {filtered.length === 0 ? (
-        <FilteredEmpty
-          hasActiveFilters={hasActiveFilters}
-          onClear={clearFilters}
+        <EmptyState
+          icon={<Inbox size={22} strokeWidth={1.5} />}
+          title="No projects match your filters"
+          description="Try a broader search or remove a filter to see more results."
+          action={
+            hasActiveFilters ? (
+              <Button size="sm" variant="outline" onClick={clearFilters}>
+                Clear filters
+              </Button>
+            ) : undefined
+          }
         />
-      ) : (
-        <SimpleGrid
-          columns={{ base: 1, sm: 2, lg: 3, "2xl": 4 }}
-          gap="20px"
-        >
-          {filtered.map((project) => (
-            <ProjectCard key={project.id} project={project} />
+      ) : view === "grid" ? (
+        <SimpleGrid columns={{ base: 1, sm: 2, lg: 3, "2xl": 4 }} gap="5">
+          {filtered.map((project, index) => (
+            <Box
+              key={project.id}
+              animation="fade-up"
+              animationFillMode="backwards"
+              style={{ animationDelay: `${Math.min(index, 11) * 60}ms` }}
+            >
+              <ProjectCard project={project} />
+            </Box>
           ))}
         </SimpleGrid>
-      )}
-    </Stack>
-  );
-}
-
-function FilteredEmpty({
-  hasActiveFilters,
-  onClear,
-}: {
-  hasActiveFilters: boolean;
-  onClear: () => void;
-}) {
-  return (
-    <Center
-      py="64px"
-      px="24px"
-      borderRadius="14px"
-      borderWidth="1px"
-      borderColor="border"
-      borderStyle="dashed"
-      bg="bg.subtle"
-    >
-      <Stack align="center" gap="14px" textAlign="center" maxW="320px">
-        <Box color="fg.subtle">
-          <Inbox size={28} strokeWidth={1.5} />
+      ) : (
+        <Box borderTopWidth="1px" borderTopColor="border.subtle">
+          {filtered.map((project, index) => (
+            <Box
+              key={project.id}
+              animation="fade-up"
+              animationFillMode="backwards"
+              style={{ animationDelay: `${Math.min(index, 11) * 40}ms` }}
+            >
+              <ProjectRow project={project} />
+            </Box>
+          ))}
         </Box>
-        <Stack gap="4px" align="center">
-          <Text fontSize="14px" fontWeight="600" color="fg">
-            No projects match your filters
-          </Text>
-          <Text fontSize="13px" color="fg.muted" lineHeight="1.5">
-            Try a broader search or remove a filter to see more results.
-          </Text>
-        </Stack>
-        {hasActiveFilters ? (
-          <Button size="sm" variant="outline" onClick={onClear}>
-            Clear filters
-          </Button>
-        ) : null}
-      </Stack>
-    </Center>
+      )}
+
+      {nextCursor ? (
+        <Center>
+          <Stack align="center" gap="2">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={loadMoreProjects}
+              loading={isLoadingMore}
+            >
+              Load more projects
+            </Button>
+            <Text textStyle="data" fontSize="11px" color="fg.subtle">
+              Loaded {projects.length} of {totalCount}
+            </Text>
+            {loadError ? (
+              <HStack gap="1.5" color="danger.fg">
+                <TriangleAlert size={13} aria-hidden="true" />
+                <Text fontSize="13px">{loadError}</Text>
+              </HStack>
+            ) : null}
+          </Stack>
+        </Center>
+      ) : totalCount > projects.length ? (
+        <Text
+          textStyle="data"
+          fontSize="11px"
+          color="fg.subtle"
+          textAlign="center"
+        >
+          Loaded {projects.length} of {totalCount}
+        </Text>
+      ) : null}
+    </Stack>
   );
 }

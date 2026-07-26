@@ -1,10 +1,11 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { Button } from "@narriflow/ui/components/button";
 import { requireCurrentAppUser } from "@narriflow/auth";
 import { clipService } from "@narriflow/services";
-import { Stack, Box, Heading, Text, Flex } from "@chakra-ui/react";
+import { Box, Flex, Stack, Text } from "@chakra-ui/react";
 import { ChevronRight } from "lucide-react";
+import { PageHeader } from "@narriflow/ui/components/page-header";
+import { formatDuration, formatTimecode } from "@/lib/format";
 import { CaptionPresetForm } from "./caption-preset-form";
 
 export default async function ClipEditPage({
@@ -20,57 +21,103 @@ export default async function ClipEditPage({
   if (!clip) notFound();
 
   return (
-    <Stack gap="32px">
+    <Stack gap="8" maxW="1120px" mx="auto" w="full">
       {/* Breadcrumb */}
-      <Flex align="center" gap="6px" fontSize="13px" color="fg.muted">
+      <Flex
+        as="nav"
+        aria-label="Breadcrumb"
+        align="center"
+        gap="1.5"
+        fontSize="13px"
+        color="fg.muted"
+        animation="fade-up"
+        animationFillMode="backwards"
+      >
         <Link href="/projects">
-          <Text _hover={{ color: "fg" }} transition="color 150ms ease">Projects</Text>
+          <Text
+            as="span"
+            textDecoration="underline"
+            textUnderlineOffset="3px"
+            textDecorationColor="border.emphasized"
+            transition="color 120ms ease"
+            _hover={{ color: "fg" }}
+          >
+            Projects
+          </Text>
         </Link>
-        <ChevronRight size={14} />
+        <ChevronRight size={14} aria-hidden />
         <Link href={`/projects/${projectId}`}>
-          <Text _hover={{ color: "fg" }} transition="color 150ms ease">Project</Text>
+          <Text
+            as="span"
+            textDecoration="underline"
+            textUnderlineOffset="3px"
+            textDecorationColor="border.emphasized"
+            transition="color 120ms ease"
+            _hover={{ color: "fg" }}
+          >
+            Project
+          </Text>
         </Link>
-        <ChevronRight size={14} />
-        <Text color="fg" fontWeight="500">Edit Clip</Text>
+        <ChevronRight size={14} aria-hidden />
+        <Text as="span" color="fg" fontWeight="500" aria-current="page">
+          Edit clip
+        </Text>
       </Flex>
 
       {/* Header */}
-      <Stack gap="4px">
-        <Heading size="xl" fontWeight="600" letterSpacing="-0.02em">Edit Clip</Heading>
-        <Text fontSize="13px" color="fg.muted">{clip.hookText}</Text>
-        <Text fontSize="12px" fontFamily="mono" color="fg.subtle">
-          {clip.startSec.toFixed(1)}s – {clip.endSec.toFixed(1)}s · {clip.durationSec.toFixed(1)}s
-        </Text>
-      </Stack>
-
-      {/* Caption preset */}
       <Box
-        borderRadius="12px"
-        borderWidth="1px"
-        borderColor="border"
-        bg="bg.panel"
-        p="20px"
+        animation="fade-up"
+        animationFillMode="backwards"
+        style={{ animationDelay: "60ms" }}
       >
-        <Stack gap="16px">
-          <Box>
-            <Text fontSize="14px" fontWeight="500" color="fg">Caption style</Text>
-            <Text fontSize="12px" color="fg.muted" mt="2px">
-              Customize the look of burnt-in captions for this clip. Applies to all new renders.
-            </Text>
-          </Box>
-          <CaptionPresetForm
-            projectId={projectId}
-            clipId={clipId}
-            initialPreset={clip.captionPreset}
-          />
-        </Stack>
+        <PageHeader
+          eyebrow="Clip"
+          title="Edit clip"
+          description={clip.hookText}
+          meta={
+            <>
+              <Text textStyle="data" fontSize="12px" color="fg.timecode">
+                {formatTimecode(clip.startSec)} – {formatTimecode(clip.endSec)}
+              </Text>
+              <Text textStyle="data" fontSize="12px" color="fg.muted">
+                {formatDuration(clip.durationSec)}
+              </Text>
+              <Text fontSize="12px" color="fg.subtle">
+                Caption style · applies to all new renders
+              </Text>
+            </>
+          }
+          actions={
+            <Link href={`/projects/${projectId}`}>
+              <Text
+                as="span"
+                fontSize="13px"
+                color="fg"
+                textDecoration="underline"
+                textUnderlineOffset="3px"
+                textDecorationColor="border.emphasized"
+                transition="color 120ms ease"
+                _hover={{ textDecorationColor: "fg" }}
+              >
+                Back to project
+              </Text>
+            </Link>
+          }
+        />
       </Box>
 
-      <Flex>
-        <Button asChild size="sm" variant="outline">
-          <Link href={`/projects/${projectId}`}>Back to project</Link>
-        </Button>
-      </Flex>
+      {/* Two-pane caption editor */}
+      <Box
+        animation="fade-up"
+        animationFillMode="backwards"
+        style={{ animationDelay: "120ms" }}
+      >
+        <CaptionPresetForm
+          projectId={projectId}
+          clipId={clipId}
+          initialPreset={clip.captionPreset}
+        />
+      </Box>
     </Stack>
   );
 }

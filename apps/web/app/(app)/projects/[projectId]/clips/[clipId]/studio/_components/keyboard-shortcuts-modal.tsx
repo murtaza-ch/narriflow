@@ -1,9 +1,10 @@
 "use client";
 
-import { Box, Flex, Text } from "@chakra-ui/react";
+import { Box, Dialog, Flex, Portal, Text } from "@chakra-ui/react";
 import { X } from "lucide-react";
 import { useStudio } from "./studio-shell";
 
+// Only shortcuts the shell actually implements are listed.
 const SHORTCUTS = [
   { command: "Play / Pause",                 win: "Space",             mac: "Space" },
   { command: "Zoom in",                      win: "+",                 mac: "+" },
@@ -17,13 +18,11 @@ const SHORTCUTS = [
   { command: "Delete clips",                 win: "Backspace (⌫)",     mac: "Backspace (⌫)" },
   { command: "Back to start",                win: "1 or Home",         mac: "1 or Home or Fn+←" },
   { command: "Go to end",                    win: "End",               mac: "Fn + Right Arrow (→)" },
-  { command: "Crop",                         win: "X",                 mac: "X" },
   { command: "Undo",                         win: "Ctrl+Z",            mac: "⌘Z" },
   { command: "Redo",                         win: "Ctrl+Shift+Z",      mac: "⌘⇧Z" },
   { command: "Toggle timeline",              win: "H",                 mac: "H" },
-  { command: "Toggle transcript panel",      win: "T",                 mac: "T" },
   { command: "Open shortcuts",               win: "?",                 mac: "?" },
-  { command: "Close / Cancel",              win: "Esc",               mac: "Esc" },
+  { command: "Close / Cancel",               win: "Esc",               mac: "Esc" },
 ];
 
 function KbdTag({ children }: { children: string }) {
@@ -33,12 +32,13 @@ function KbdTag({ children }: { children: string }) {
       display="inline-block"
       px="6px"
       py="2px"
-      bg="#1e1e1e"
-      border="1px solid #333"
-      borderRadius="4px"
+      bg="studio.raised"
+      borderWidth="1px"
+      borderColor="studio.borderStrong"
+      borderRadius="l1"
       fontSize="11px"
       fontFamily="mono"
-      color="#ccc"
+      color="studio.fg"
       letterSpacing="0.03em"
     >
       {children}
@@ -46,124 +46,138 @@ function KbdTag({ children }: { children: string }) {
   );
 }
 
+/**
+ * Keyboard shortcuts reference — a Chakra Dialog. Rendered in a portal, so it
+ * styles exclusively with mode-invariant studio.* tokens.
+ */
 export function KeyboardShortcutsModal() {
   const { showShortcuts, setShowShortcuts } = useStudio();
 
-  if (!showShortcuts) return null;
-
   return (
-    <>
-      {/* Backdrop */}
-      <Box
-        position="fixed"
-        inset="0"
-        bg="rgba(0,0,0,0.7)"
-        zIndex={300}
-        onClick={() => setShowShortcuts(false)}
-      />
-
-      {/* Modal */}
-      <Box
-        position="fixed"
-        top="50%"
-        left="50%"
-        transform="translate(-50%, -50%)"
-        zIndex={310}
-        bg="#141414"
-        borderWidth="1px"
-        borderColor="#2a2a2a"
-        borderRadius="12px"
-        w="min(860px, 90vw)"
-        maxH="80vh"
-        overflow="hidden"
-        display="flex"
-        flexDirection="column"
-        boxShadow="0 24px 60px rgba(0,0,0,0.7)"
-      >
-        {/* Header */}
-        <Flex
-          px="24px"
-          py="16px"
-          align="center"
-          justify="space-between"
-          borderBottomWidth="1px"
-          borderColor="#1e1e1e"
-          flexShrink={0}
-        >
-          <Text fontSize="15px" fontWeight="600" color="#e5e5e5">
-            Keyboard Shortcuts
-          </Text>
-          <Box
-            as="button"
-            onClick={() => setShowShortcuts(false)}
-            p="6px"
-            borderRadius="6px"
-            bg="transparent"
-            border="none"
-            color="#555"
-            cursor="pointer"
-            _hover={{ color: "#aaa", bg: "#1e1e1e" }}
-            transition="all 150ms"
+    <Dialog.Root
+      open={showShortcuts}
+      onOpenChange={(e) => setShowShortcuts(e.open)}
+      placement="center"
+    >
+      <Portal>
+        <Dialog.Backdrop bg="rgba(0,0,0,0.7)" zIndex={300} />
+        <Dialog.Positioner zIndex={310}>
+          <Dialog.Content
+            bg="studio.surface"
+            borderWidth="1px"
+            borderColor="studio.borderStrong"
+            borderRadius="l3"
+            w="min(860px, 90vw)"
+            maxW="min(860px, 90vw)"
+            maxH="80vh"
+            overflow="hidden"
+            display="flex"
+            flexDirection="column"
+            boxShadow="0 24px 60px rgba(0,0,0,0.7)"
+            color="studio.fg"
           >
-            <X size={16} />
-          </Box>
-        </Flex>
-
-        {/* Table */}
-        <Box
-          overflowY="auto"
-          css={{
-            "&::-webkit-scrollbar": { width: "4px" },
-            "&::-webkit-scrollbar-thumb": { background: "#2a2a2a", borderRadius: "4px" },
-          }}
-        >
-          {/* Column headers */}
-          <Flex
-            px="24px"
-            py="10px"
-            bg="#0f0f0f"
-            borderBottomWidth="1px"
-            borderColor="#1e1e1e"
-            position="sticky"
-            top="0"
-          >
-            <Text flex="2" fontSize="11px" fontWeight="600" color="#555" textTransform="uppercase" letterSpacing="0.06em">
-              Command
-            </Text>
-            <Text flex="1" fontSize="11px" fontWeight="600" color="#555" textTransform="uppercase" letterSpacing="0.06em">
-              Windows
-            </Text>
-            <Text flex="1" fontSize="11px" fontWeight="600" color="#555" textTransform="uppercase" letterSpacing="0.06em">
-              macOS
-            </Text>
-          </Flex>
-
-          {SHORTCUTS.map((row, i) => (
+            {/* Header */}
             <Flex
-              key={i}
-              px="24px"
-              py="12px"
+              px="6"
+              py="4"
               align="center"
+              justify="space-between"
               borderBottomWidth="1px"
-              borderColor="#1a1a1a"
-              _hover={{ bg: "#111" }}
-              transition="background 100ms"
+              borderColor="studio.border"
+              flexShrink={0}
             >
-              <Text flex="2" fontSize="13px" color="#c4c4c4">
-                {row.command}
-              </Text>
-              <Box flex="1">
-                <KbdTag>{row.win}</KbdTag>
-              </Box>
-              <Box flex="1">
-                <KbdTag>{row.mac}</KbdTag>
-              </Box>
+              <Dialog.Title asChild>
+                <Text
+                  fontFamily="display"
+                  fontSize="15px"
+                  fontWeight="600"
+                  color="studio.fg"
+                >
+                  Keyboard shortcuts
+                </Text>
+              </Dialog.Title>
+              <Dialog.CloseTrigger asChild>
+                <Flex
+                  as="button"
+                  aria-label="Close keyboard shortcuts"
+                  align="center"
+                  justify="center"
+                  w="28px"
+                  h="28px"
+                  borderRadius="l1"
+                  bg="transparent"
+                  border="none"
+                  color="studio.fgMuted"
+                  cursor="pointer"
+                  _hover={{ color: "studio.fg", bg: "studio.raised" }}
+                  transition="background 120ms ease, color 120ms ease"
+                >
+                  <X size={16} />
+                </Flex>
+              </Dialog.CloseTrigger>
             </Flex>
-          ))}
 
-          <Box h="16px" />
-        </Box>
-      </Box>
-    </>
+            {/* Table */}
+            <Box
+              overflowY="auto"
+              css={{
+                "&::-webkit-scrollbar": { width: "4px" },
+                "&::-webkit-scrollbar-thumb": {
+                  background: "var(--chakra-colors-studio-raised)",
+                  borderRadius: "4px",
+                },
+              }}
+            >
+              {/* Column headers */}
+              <Flex
+                px="6"
+                py="2.5"
+                bg="studio.subtle"
+                borderBottomWidth="1px"
+                borderColor="studio.border"
+                position="sticky"
+                top="0"
+                zIndex={1}
+              >
+                <Text flex="2" textStyle="eyebrow" color="studio.fgMuted">
+                  Command
+                </Text>
+                <Text flex="1" textStyle="eyebrow" color="studio.fgMuted">
+                  Windows
+                </Text>
+                <Text flex="1" textStyle="eyebrow" color="studio.fgMuted">
+                  macOS
+                </Text>
+              </Flex>
+
+              {SHORTCUTS.map((row) => (
+                <Flex
+                  key={row.command}
+                  px="6"
+                  py="3"
+                  align="center"
+                  borderBottomWidth="1px"
+                  borderColor="studio.border"
+                  _hover={{ bg: "studio.subtle" }}
+                  transition="background 120ms ease"
+                >
+                  <Text flex="2" fontSize="13px" color="studio.fg">
+                    {row.command}
+                  </Text>
+                  <Box flex="1">
+                    <KbdTag>{row.win}</KbdTag>
+                  </Box>
+                  <Box flex="1">
+                    <KbdTag>{row.mac}</KbdTag>
+                  </Box>
+                </Flex>
+              ))}
+
+              <Box h="4" />
+            </Box>
+          </Dialog.Content>
+        </Dialog.Positioner>
+      </Portal>
+    </Dialog.Root>
   );
 }

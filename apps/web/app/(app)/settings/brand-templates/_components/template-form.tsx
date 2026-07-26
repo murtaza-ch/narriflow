@@ -2,10 +2,18 @@
 
 import { useEffect, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Box, Flex, Grid, Stack, Text } from "@chakra-ui/react";
-import { Upload as UploadIcon } from "lucide-react";
+import { Box, Flex, Grid, Stack, Text, chakra } from "@chakra-ui/react";
+import { AlertCircle, Upload as UploadIcon } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { Input } from "@narriflow/ui/components/input";
+import { Select } from "@narriflow/ui/components/select";
+import { Slider } from "@narriflow/ui/components/slider";
+import { Switch } from "@narriflow/ui/components/switch";
+import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
+import { ColorSwatchField } from "@narriflow/ui/components/color-swatch-field";
+import { PhoneFrame } from "@narriflow/ui/components/phone-frame";
+import { Spinner } from "@narriflow/ui/components/spinner";
+import { toaster } from "@narriflow/ui/components/toaster";
 import {
   brandTemplateInputSchema,
   captionPresetSchema,
@@ -48,7 +56,37 @@ const FONT_OPTIONS = [
   "Impact",
 ];
 
-const POSITION_OPTIONS: ("top" | "center" | "bottom")[] = ["top", "center", "bottom"];
+// Quick-pick swatches for brand colors — user color VALUES stay literal.
+const BRAND_SWATCHES = [
+  "#ffffff",
+  "#000000",
+  "#00ff88",
+  "#ffd400",
+  "#ff3355",
+  "#4a5af0",
+  "#00c2ff",
+  "#ff8a00",
+  "#b46bff",
+  "#1db954",
+  "#e5e5e5",
+  "#101318",
+];
+
+/** 3x3 logo placement → flex alignment inside the phone frame. */
+const LOGO_PLACEMENT: Record<
+  LogoPosition,
+  { align: "flex-start" | "center" | "flex-end"; justify: "flex-start" | "center" | "flex-end" }
+> = {
+  "top-left": { align: "flex-start", justify: "flex-start" },
+  "top-center": { align: "flex-start", justify: "center" },
+  "top-right": { align: "flex-start", justify: "flex-end" },
+  "mid-left": { align: "center", justify: "flex-start" },
+  center: { align: "center", justify: "center" },
+  "mid-right": { align: "center", justify: "flex-end" },
+  "bot-left": { align: "flex-end", justify: "flex-start" },
+  "bot-center": { align: "flex-end", justify: "center" },
+  "bot-right": { align: "flex-end", justify: "flex-end" },
+};
 
 interface TemplateFormProps {
   mode: "create" | "edit";
@@ -78,6 +116,7 @@ export function TemplateForm({ mode, initialTemplate }: TemplateFormProps) {
   const [pending, startTransition] = useTransition();
   const [error, setError] = useState<string | null>(null);
   const [logoUploading, setLogoUploading] = useState(false);
+  const [logoPreviewUrl, setLogoPreviewUrl] = useState<string | null>(null);
 
   const [state, setState] = useState<BrandTemplateInput>(() => {
     if (initialTemplate) {
@@ -108,6 +147,25 @@ export function TemplateForm({ mode, initialTemplate }: TemplateFormProps) {
     }));
   }, [state.primaryColor, state.secondaryColor]);
 
+  // Edit mode: resolve the stored logo into a signed URL so the preview can
+  // composite it. A freshly-uploaded blob URL always wins over this fetch.
+  useEffect(() => {
+    if (mode !== "edit" || !initialTemplate?.logoStorageKey) return;
+    let cancelled = false;
+    void fetch(`/api/brand-templates/${initialTemplate.id}/logo-url`)
+      .then((res) => (res.ok ? (res.json() as Promise<{ url?: string }>) : null))
+      .then((body) => {
+        if (cancelled || !body?.url) return;
+        setLogoPreviewUrl((prev) => prev ?? body.url ?? null);
+      })
+      .catch(() => {
+        // Preview falls back to the ghost placeholder.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [mode, initialTemplate]);
+
   function update<K extends keyof BrandTemplateInput>(
     key: K,
     value: BrandTemplateInput[K],
@@ -123,6 +181,13 @@ export function TemplateForm({ mode, initialTemplate }: TemplateFormProps) {
       ...prev,
       captionPreset: { ...prev.captionPreset, [key]: value },
     }));
+  }
+
+  function setLogoPreview(url: string | null) {
+    setLogoPreviewUrl((prev) => {
+      if (prev?.startsWith("blob:")) URL.revokeObjectURL(prev);
+      return url;
+    });
   }
 
   async function handleLogoUpload(file: File) {
@@ -155,8 +220,14 @@ export function TemplateForm({ mode, initialTemplate }: TemplateFormProps) {
         throw new Error(`Upload failed (${putRes.status})`);
       }
       update("logoStorageKey", key);
+      setLogoPreview(URL.createObjectURL(file));
     } catch (uploadError) {
-      setError(uploadError instanceof Error ? uploadError.message : "Upload failed");
+      toaster.create({
+        type: "error",
+        title: "Logo upload failed",
+        description:
+          uploadError instanceof Error ? uploadError.message : "Please try again.",
+      });
     } finally {
       setLogoUploading(false);
     }
@@ -173,205 +244,90 @@ export function TemplateForm({ mode, initialTemplate }: TemplateFormProps) {
       try {
         if (mode === "create") {
           const created = await createBrandTemplateAction(parsed.data);
+          toaster.create({ type: "success", title: "Template created" });
           router.push(`/settings/brand-templates/${created.id}`);
         } else if (initialTemplate) {
           await updateBrandTemplateAction(initialTemplate.id, parsed.data);
+          toaster.create({ type: "success", title: "Template saved" });
           router.refresh();
         }
       } catch (submitError) {
-        setError(submitError instanceof Error ? submitError.message : "Save failed");
+        toaster.create({
+          type: "error",
+          title: "Save failed",
+          description:
+            submitError instanceof Error ? submitError.message : "Please try again.",
+        });
       }
     });
   }
 
-  return (
-    <Grid templateColumns={{ base: "1fr", lg: "1.4fr 1fr" }} gap="24px">
-      {/* LEFT: form */}
-      <Stack
-        gap="24px"
-        p="20px"
-        borderRadius="14px"
-        borderWidth="1px"
-        borderColor="border"
-        bg="bg"
-      >
-        <FieldGroup label="Name">
-          <Input
-            value={state.name}
-            onChange={(event) => update("name", event.target.value)}
-            placeholder="My brand"
-          />
-        </FieldGroup>
+  const preset = state.captionPreset;
 
-        <Section title="Brand colors">
-          <Flex gap="14px" wrap="wrap">
-            <ColorField
+  return (
+    <Grid
+      templateColumns={{ base: "1fr", lg: "minmax(0, 1fr) 320px" }}
+      gap={{ base: "8", lg: "12" }}
+      alignItems="start"
+    >
+      {/* LEFT: rule-band sections — structure drawn, not boxed */}
+      <Stack gap="8" minW="0">
+        <FormSection title="Identity">
+          <FieldGroup label="Name">
+            <Input
+              value={state.name}
+              onChange={(event) => update("name", event.target.value)}
+              placeholder="My brand"
+              maxW="360px"
+            />
+          </FieldGroup>
+        </FormSection>
+
+        <FormSection title="Colors">
+          <Flex gap="5" wrap="wrap">
+            <ColorSwatchField
               label="Primary"
               value={state.primaryColor}
-              onChange={(value) => update("primaryColor", value)}
+              swatches={BRAND_SWATCHES}
+              onChange={(value) => update("primaryColor", value.toUpperCase())}
             />
-            <ColorField
+            <ColorSwatchField
               label="Secondary"
               value={state.secondaryColor}
-              onChange={(value) => update("secondaryColor", value)}
+              swatches={BRAND_SWATCHES}
+              onChange={(value) => update("secondaryColor", value.toUpperCase())}
             />
-            <ColorField
+            <ColorSwatchField
               label="Accent"
               value={state.accentColor ?? "#000000"}
-              onChange={(value) => update("accentColor", value)}
+              swatches={BRAND_SWATCHES}
+              onChange={(value) => update("accentColor", value.toUpperCase())}
             />
           </Flex>
-          <Text fontSize="11px" color="fg.subtle" mt="8px">
+          <Text fontSize="12px" color="fg.muted" mt="3">
             Primary fills caption text. Secondary fills caption highlights.
           </Text>
-        </Section>
+        </FormSection>
 
-        <Section title="Captions">
-          <Stack gap="14px">
-            <FieldGroup label="Font">
-              <select
-                value={state.captionPreset.fontName}
-                onChange={(event) =>
-                  updateCaption("fontName", event.target.value)
-                }
-                style={selectStyle}
-              >
-                {FONT_OPTIONS.map((font) => (
-                  <option key={font} value={font}>
-                    {font}
-                  </option>
-                ))}
-              </select>
-            </FieldGroup>
-
-            <Grid templateColumns="1fr 1fr" gap="14px">
-              <FieldGroup label="Animation">
-                <select
-                  value={state.captionPreset.animation}
-                  onChange={(event) =>
-                    updateCaption("animation", event.target.value as CaptionAnimation)
-                  }
-                  style={selectStyle}
-                >
-                  {ANIMATION_OPTIONS.map((animation) => (
-                    <option key={animation} value={animation}>
-                      {animation}
-                    </option>
-                  ))}
-                </select>
-              </FieldGroup>
-              <FieldGroup label="Position">
-                <select
-                  value={state.captionPreset.position}
-                  onChange={(event) =>
-                    updateCaption(
-                      "position",
-                      event.target.value as "top" | "center" | "bottom",
-                    )
-                  }
-                  style={selectStyle}
-                >
-                  {POSITION_OPTIONS.map((position) => (
-                    <option key={position} value={position}>
-                      {position}
-                    </option>
-                  ))}
-                </select>
-              </FieldGroup>
-            </Grid>
-
-            <Grid templateColumns="1fr 1fr" gap="14px">
-              <FieldGroup label={`Font size · ${state.captionPreset.fontSize}px`}>
-                <input
-                  type="range"
-                  min={16}
-                  max={80}
-                  value={state.captionPreset.fontSize}
-                  onChange={(event) =>
-                    updateCaption("fontSize", Number(event.target.value))
-                  }
-                  style={{ width: "100%" }}
-                />
-              </FieldGroup>
-              <FieldGroup
-                label={`Outline · ${state.captionPreset.outlineWidth}`}
-              >
-                <input
-                  type="range"
-                  min={0}
-                  max={4}
-                  value={state.captionPreset.outlineWidth}
-                  onChange={(event) =>
-                    updateCaption("outlineWidth", Number(event.target.value))
-                  }
-                  style={{ width: "100%" }}
-                />
-              </FieldGroup>
-            </Grid>
-
-            <FieldGroup label="Text transform">
-              <select
-                value={state.captionPreset.textTransform ?? "none"}
-                onChange={(event) =>
-                  updateCaption(
-                    "textTransform",
-                    event.target.value as
-                      | "none"
-                      | "uppercase"
-                      | "lowercase"
-                      | "capitalize",
-                  )
-                }
-                style={selectStyle}
-              >
-                <option value="none">none</option>
-                <option value="uppercase">uppercase</option>
-                <option value="lowercase">lowercase</option>
-                <option value="capitalize">capitalize</option>
-              </select>
-            </FieldGroup>
-
-            <Flex gap="14px" align="center">
-              <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <input
-                  type="checkbox"
-                  checked={state.captionPreset.bold}
-                  onChange={(event) =>
-                    updateCaption("bold", event.target.checked)
-                  }
-                />
-                <Text fontSize="12px">Bold</Text>
-              </label>
-              <label style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <input
-                  type="checkbox"
-                  checked={state.captionPreset.shadow === 1}
-                  onChange={(event) =>
-                    updateCaption("shadow", event.target.checked ? 1 : 0)
-                  }
-                />
-                <Text fontSize="12px">Shadow</Text>
-              </label>
-            </Flex>
-          </Stack>
-        </Section>
-
-        <Section title="Logo / watermark">
-          <Stack gap="14px">
+        <FormSection title="Logo / watermark">
+          <Stack gap="4">
             <Box
               as="label"
               display="block"
-              borderRadius="10px"
-              borderWidth="2px"
+              layerStyle="well"
               borderStyle="dashed"
-              borderColor="border"
-              bg="bg.subtle"
-              p="20px"
+              borderColor="border.control"
+              p="5"
               textAlign="center"
               cursor={logoUploading ? "not-allowed" : "pointer"}
-              opacity={logoUploading ? 0.6 : 1}
+              transition="border-color 120ms ease, background 120ms ease"
+              _hover={
+                logoUploading
+                  ? undefined
+                  : { borderColor: "border.emphasized", bg: "bg.muted" }
+              }
             >
-              <input
+              <chakra.input
                 type="file"
                 accept="image/png,image/svg+xml,image/jpeg,image/webp"
                 disabled={logoUploading}
@@ -379,19 +335,19 @@ export function TemplateForm({ mode, initialTemplate }: TemplateFormProps) {
                   const file = event.target.files?.[0];
                   if (file) void handleLogoUpload(file);
                 }}
-                style={{ display: "none" }}
+                srOnly
               />
-              <Flex direction="column" align="center" gap="6px">
-                <UploadIcon size={18} />
-                <Text fontSize="12px" color="fg.muted">
-                  {state.logoStorageKey
-                    ? "Replace logo"
-                    : logoUploading
-                      ? "Uploading..."
+              <Flex direction="column" align="center" gap="1.5">
+                {logoUploading ? <Spinner size="sm" /> : <UploadIcon size={18} />}
+                <Text fontSize="12.5px" color={logoUploading ? "fg.disabled" : "fg.muted"}>
+                  {logoUploading
+                    ? "Uploading…"
+                    : state.logoStorageKey
+                      ? "Replace logo"
                       : "Upload PNG or SVG"}
                 </Text>
                 {state.logoStorageKey && (
-                  <Text fontSize="10px" color="fg.subtle">
+                  <Text textStyle="data" fontSize="10px" color="fg.subtle">
                     {state.logoStorageKey.split("/").pop()}
                   </Text>
                 )}
@@ -399,116 +355,219 @@ export function TemplateForm({ mode, initialTemplate }: TemplateFormProps) {
             </Box>
 
             {state.logoStorageKey && (
-              <button
-                type="button"
-                onClick={() => update("logoStorageKey", null)}
-                style={{
-                  alignSelf: "flex-start",
-                  fontSize: 11,
-                  color: "#ef4444",
-                  background: "transparent",
-                  border: "none",
-                  cursor: "pointer",
+              <Button
+                size="xs"
+                variant="ghost"
+                colorPalette="danger"
+                alignSelf="flex-start"
+                onClick={() => {
+                  update("logoStorageKey", null);
+                  setLogoPreview(null);
                 }}
               >
                 Remove logo
-              </button>
+              </Button>
             )}
 
             <FieldGroup label="Position">
-              <Box display="inline-grid" style={{ gridTemplateColumns: "repeat(3, 32px)", gap: 4 }}>
+              <Grid
+                role="radiogroup"
+                aria-label="Logo position"
+                display="inline-grid"
+                templateColumns="repeat(3, 32px)"
+                gap="1"
+              >
                 {POSITION_GRID.flat().map((position) => {
                   const selected = state.logoPosition === position;
                   return (
-                    <button
+                    <chakra.button
                       key={position}
                       type="button"
-                      onClick={() => update("logoPosition", position)}
+                      role="radio"
+                      aria-checked={selected}
                       aria-label={position}
-                      style={{
-                        width: 32,
-                        height: 32,
-                        borderRadius: 5,
-                        background: selected
-                          ? "var(--chakra-colors-bg-accent)"
-                          : "var(--chakra-colors-bg-subtle)",
-                        border: selected
-                          ? "1px solid var(--chakra-colors-border-accent)"
-                          : "1px solid var(--chakra-colors-border)",
-                        cursor: "pointer",
-                      }}
-                    />
+                      onClick={() => update("logoPosition", position)}
+                      w="8"
+                      h="8"
+                      borderRadius="l2"
+                      borderWidth="1px"
+                      borderColor={selected ? "border.accent" : "border.control"}
+                      bg={selected ? "bg.accent" : "bg.subtle"}
+                      display="inline-flex"
+                      alignItems="center"
+                      justifyContent="center"
+                      cursor="pointer"
+                      transition="background 120ms ease, border-color 120ms ease"
+                      _hover={{ borderColor: "border.emphasized" }}
+                    >
+                      <Box
+                        boxSize="1.5"
+                        borderRadius="full"
+                        bg={selected ? "accent.solid" : "border.emphasized"}
+                      />
+                    </chakra.button>
                   );
                 })}
-              </Box>
+              </Grid>
             </FieldGroup>
 
-            <Grid templateColumns="1fr 1fr" gap="14px">
-              <FieldGroup label={`Opacity · ${state.logoOpacity}%`}>
-                <input
-                  type="range"
-                  min={10}
-                  max={100}
-                  value={state.logoOpacity}
-                  onChange={(event) =>
-                    update("logoOpacity", Number(event.target.value))
-                  }
-                  style={{ width: "100%" }}
-                />
-              </FieldGroup>
-              <FieldGroup label={`Size · ${state.logoScalePct}%`}>
-                <input
-                  type="range"
-                  min={5}
-                  max={40}
-                  value={state.logoScalePct}
-                  onChange={(event) =>
-                    update("logoScalePct", Number(event.target.value))
-                  }
-                  style={{ width: "100%" }}
-                />
-              </FieldGroup>
+            <Grid templateColumns={{ base: "1fr", sm: "1fr 1fr" }} gap="5" maxW="480px">
+              <Slider
+                label="Opacity"
+                showValueText
+                min={10}
+                max={100}
+                value={state.logoOpacity}
+                onValueChange={(value) =>
+                  update("logoOpacity", Array.isArray(value) ? (value[0] ?? 10) : value)
+                }
+              />
+              <Slider
+                label="Size"
+                showValueText
+                min={5}
+                max={40}
+                value={state.logoScalePct}
+                onValueChange={(value) =>
+                  update("logoScalePct", Array.isArray(value) ? (value[0] ?? 5) : value)
+                }
+              />
             </Grid>
           </Stack>
-        </Section>
+        </FormSection>
+
+        <FormSection title="Captions">
+          <Stack gap="5">
+            <Grid templateColumns={{ base: "1fr", sm: "1fr 1fr" }} gap="5">
+              <Select
+                label="Font"
+                items={FONT_OPTIONS.map((font) => ({ label: font, value: font }))}
+                value={preset.fontName}
+                onValueChange={(value) => {
+                  if (value) updateCaption("fontName", value);
+                }}
+              />
+              <Select
+                label="Animation"
+                items={ANIMATION_OPTIONS.map((animation) => ({
+                  label: animation,
+                  value: animation,
+                }))}
+                value={preset.animation}
+                onValueChange={(value) => {
+                  if (value) updateCaption("animation", value as CaptionAnimation);
+                }}
+              />
+            </Grid>
+
+            <FieldGroup label="Position">
+              <SegmentedControl
+                size="sm"
+                aria-label="Caption position"
+                items={["top", "center", "bottom"]}
+                value={preset.position}
+                onValueChange={(value) =>
+                  updateCaption("position", value as "top" | "center" | "bottom")
+                }
+              />
+            </FieldGroup>
+
+            <FieldGroup label="Text transform">
+              <SegmentedControl
+                size="sm"
+                aria-label="Text transform"
+                items={["none", "uppercase", "lowercase", "capitalize"]}
+                value={preset.textTransform ?? "none"}
+                onValueChange={(value) =>
+                  updateCaption(
+                    "textTransform",
+                    value as "none" | "uppercase" | "lowercase" | "capitalize",
+                  )
+                }
+              />
+            </FieldGroup>
+
+            <Grid templateColumns={{ base: "1fr", sm: "1fr 1fr" }} gap="5" maxW="480px">
+              <Slider
+                label="Font size"
+                showValueText
+                min={16}
+                max={80}
+                value={preset.fontSize}
+                onValueChange={(value) =>
+                  updateCaption(
+                    "fontSize",
+                    Array.isArray(value) ? (value[0] ?? 16) : value,
+                  )
+                }
+              />
+              <Slider
+                label="Outline"
+                showValueText
+                min={0}
+                max={4}
+                value={preset.outlineWidth}
+                onValueChange={(value) =>
+                  updateCaption(
+                    "outlineWidth",
+                    Array.isArray(value) ? (value[0] ?? 0) : value,
+                  )
+                }
+              />
+            </Grid>
+
+            <Flex gap="6" align="center">
+              <Switch
+                checked={preset.bold}
+                onCheckedChange={(checked) => updateCaption("bold", checked)}
+              >
+                Bold
+              </Switch>
+              <Switch
+                checked={preset.shadow === 1}
+                onCheckedChange={(checked) =>
+                  updateCaption("shadow", checked ? 1 : 0)
+                }
+              >
+                Shadow
+              </Switch>
+            </Flex>
+          </Stack>
+        </FormSection>
 
         {error && (
-          <Text fontSize="12px" color="#ef4444">
-            {error}
-          </Text>
+          <Flex align="center" gap="2" color="danger.fg" role="alert">
+            <AlertCircle size={15} />
+            <Text fontSize="13px" fontWeight="500">
+              {error}
+            </Text>
+          </Flex>
         )}
 
-        <Flex gap="10px" justify="flex-end">
-          <Button
-            disabled={pending}
-            onClick={handleSubmit}
-          >
-            {pending ? "Saving..." : mode === "create" ? "Create template" : "Save changes"}
+        <Flex
+          gap="2.5"
+          justify="flex-end"
+          borderTopWidth="1px"
+          borderColor="border"
+          pt="5"
+        >
+          <Button loading={pending} onClick={handleSubmit}>
+            {mode === "create" ? "Create template" : "Save changes"}
           </Button>
         </Flex>
       </Stack>
 
-      {/* RIGHT: live preview */}
+      {/* RIGHT: the hero — live phone preview, sticky and centered */}
       <Box
         position={{ base: "static", lg: "sticky" }}
-        top={{ lg: "24px" }}
-        alignSelf="start"
+        top={{ lg: "20" }}
+        justifySelf="center"
       >
-        <PreviewCard input={state} />
+        <TemplatePreview input={state} logoUrl={logoPreviewUrl} />
       </Box>
     </Grid>
   );
 }
-
-const selectStyle: React.CSSProperties = {
-  width: "100%",
-  padding: "8px 10px",
-  borderRadius: 8,
-  border: "1px solid var(--chakra-colors-border)",
-  background: "var(--chakra-colors-bg)",
-  color: "var(--chakra-colors-fg)",
-  fontSize: 13,
-};
 
 function FieldGroup({
   label,
@@ -518,8 +577,8 @@ function FieldGroup({
   children: React.ReactNode;
 }) {
   return (
-    <Stack gap="6px">
-      <Text fontSize="11px" color="fg.muted">
+    <Stack gap="1.5" align="flex-start">
+      <Text fontSize="13px" fontWeight="500" color="fg">
         {label}
       </Text>
       {children}
@@ -527,7 +586,7 @@ function FieldGroup({
   );
 }
 
-function Section({
+function FormSection({
   title,
   children,
 }: {
@@ -535,108 +594,73 @@ function Section({
   children: React.ReactNode;
 }) {
   return (
-    <Box>
-      <Text
-        fontSize="11px"
-        fontWeight="600"
-        textTransform="uppercase"
-        letterSpacing="0.07em"
-        color="fg.muted"
-        mb="12px"
-      >
+    <Box as="section">
+      <Text textStyle="eyebrow" color="fg.subtle" mb="2">
         {title}
       </Text>
-      {children}
+      <Box layerStyle="band">{children}</Box>
     </Box>
   );
 }
 
-function ColorField({
-  label,
-  value,
-  onChange,
+function TemplatePreview({
+  input,
+  logoUrl,
 }: {
-  label: string;
-  value: string;
-  onChange: (value: string) => void;
+  input: BrandTemplateInput;
+  logoUrl: string | null;
 }) {
+  const { captionPreset, primaryColor, secondaryColor } = input;
+  const placement = LOGO_PLACEMENT[input.logoPosition];
+  // Scale the burn-in font size down to phone-frame proportions.
+  const previewFontSize = Math.max(10, Math.round(captionPreset.fontSize * 0.45));
+
   return (
-    <Stack gap="4px">
-      <Text fontSize="10px" color="fg.subtle">
-        {label}
-      </Text>
-      <Flex align="center" gap="6px">
-        <input
-          type="color"
-          value={value}
-          onChange={(event) => onChange(event.target.value.toUpperCase())}
+    <Stack gap="3" align={{ base: "center", lg: "flex-start" }}>
+      <PhoneFrame width={{ base: "240px", lg: "280px" }}>
+        {/* Brand-color tint over the frame's graphite — user colors literal */}
+        <Box
+          position="absolute"
+          inset="0"
           style={{
-            width: 32,
-            height: 32,
-            border: "1px solid var(--chakra-colors-border)",
-            borderRadius: 6,
-            background: "transparent",
-            padding: 0,
-            cursor: "pointer",
+            background: `linear-gradient(135deg, ${primaryColor}33 0%, ${secondaryColor}33 100%)`,
           }}
         />
-        <Text fontSize="11px" color="fg.muted" fontFamily="mono">
-          {value.toUpperCase()}
-        </Text>
-      </Flex>
-    </Stack>
-  );
-}
 
-function PreviewCard({ input }: { input: BrandTemplateInput }) {
-  const { captionPreset, primaryColor, secondaryColor } = input;
-  return (
-    <Box
-      borderRadius="14px"
-      borderWidth="1px"
-      borderColor="border"
-      overflow="hidden"
-      bg="bg"
-    >
-      <Box
-        position="relative"
-        h="320px"
-        style={{
-          background: `linear-gradient(135deg, ${primaryColor}33 0%, ${secondaryColor}33 100%), #0a0a0a`,
-        }}
-      >
+        {/* Caption cue at its configured position */}
         <Flex
           position="absolute"
           inset="0"
-          align="center"
+          px="4"
+          py="10"
+          align={
+            captionPreset.position === "top"
+              ? "flex-start"
+              : captionPreset.position === "center"
+                ? "center"
+                : "flex-end"
+          }
           justify="center"
-          px="24px"
         >
           <Text
-            fontSize={`${captionPreset.fontSize}px`}
+            fontSize={`${previewFontSize}px`}
             fontWeight={captionPreset.bold ? 800 : 500}
-            color={captionPreset.primaryColor}
             textAlign="center"
-            lineHeight="1.1"
+            lineHeight="1.15"
             style={{
+              // User caption styling — values intentionally literal.
               fontFamily: captionPreset.fontName,
+              color: captionPreset.primaryColor,
+              letterSpacing: `${captionPreset.letterSpacing ?? 0}em`,
+              textTransform: captionPreset.textTransform ?? "none",
               textShadow:
                 captionPreset.shadow === 1
-                  ? "0 4px 14px rgba(0,0,0,0.65)"
+                  ? "0 3px 10px rgba(14, 16, 19, 0.65)"
                   : "none",
               WebkitTextStroke:
                 captionPreset.outlineWidth > 0
-                  ? `${captionPreset.outlineWidth}px ${captionPreset.outlineColor}`
-                  : "none",
-              letterSpacing: `${captionPreset.letterSpacing ?? 0}em`,
-              textTransform:
-                captionPreset.textTransform === "uppercase"
-                  ? "uppercase"
-                  : captionPreset.textTransform === "lowercase"
-                    ? "lowercase"
-                    : captionPreset.textTransform === "capitalize"
-                      ? "capitalize"
-                      : "none",
+                  ? `${Math.min(1.5, captionPreset.outlineWidth * 0.5)}px ${captionPreset.outlineColor}`
+                  : undefined,
             }}
           >
             This is{" "}
@@ -644,16 +668,64 @@ function PreviewCard({ input }: { input: BrandTemplateInput }) {
             brand
           </Text>
         </Flex>
-      </Box>
-      <Stack p="14px" gap="6px">
-        <Text fontSize="13px" fontWeight="600">
+
+        {/* Logo composited at its chosen position / opacity / scale */}
+        {input.logoStorageKey ? (
+          <Flex
+            position="absolute"
+            inset="0"
+            p="3"
+            align={placement.align}
+            justify={placement.justify}
+            pointerEvents="none"
+          >
+            <Box
+              w={`${input.logoScalePct}%`}
+              opacity={input.logoOpacity / 100}
+              flexShrink={0}
+            >
+              {logoUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <chakra.img
+                  src={logoUrl}
+                  alt="Logo preview"
+                  w="full"
+                  h="auto"
+                  objectFit="contain"
+                />
+              ) : (
+                <Flex
+                  aspectRatio={1}
+                  w="full"
+                  align="center"
+                  justify="center"
+                  borderWidth="1px"
+                  borderStyle="dashed"
+                  borderColor="studio.borderStrong"
+                  borderRadius="l1"
+                >
+                  <Text textStyle="eyebrow" color="studio.fgMuted" fontSize="8px">
+                    Logo
+                  </Text>
+                </Flex>
+              )}
+            </Box>
+          </Flex>
+        ) : null}
+      </PhoneFrame>
+
+      <Stack gap="0.5" px="1" maxW="280px" w="full">
+        <Text textStyle="eyebrow" color="fg.subtle">
+          Live preview
+        </Text>
+        <Text fontSize="13px" fontWeight="600" color="fg" truncate>
           {input.name}
         </Text>
-        <Text fontSize="11px" color="fg.muted">
+        <Text textStyle="data" fontSize="11px" color="fg.muted">
           {captionPreset.animation} · {captionPreset.position} · {captionPreset.fontName}
           {input.logoStorageKey ? " · with logo" : ""}
         </Text>
       </Stack>
-    </Box>
+    </Stack>
   );
 }

@@ -1,32 +1,26 @@
 "use client";
 
 import { useState } from "react";
-import {
-  Box,
-  createListCollection,
-  Flex,
-  Grid,
-  Portal,
-  Select,
-  Stack,
-  Switch,
-  Text,
-} from "@chakra-ui/react";
+import { Box, chakra, Flex, Grid, Stack, Text } from "@chakra-ui/react";
 import { ChevronDown, Sparkles } from "lucide-react";
 import { Textarea } from "@narriflow/ui/components/textarea";
-import type { ClipLengthPreset } from "@narriflow/validators";
+import { Input } from "@narriflow/ui/components/input";
+import { Select } from "@narriflow/ui/components/select";
+import { Switch } from "@narriflow/ui/components/switch";
+import { Checkbox } from "@narriflow/ui/components/checkbox";
+import { NumberInput } from "@narriflow/ui/components/number-input";
+import type {
+  ClipLengthPreset,
+  ClipPlatformTarget,
+} from "@narriflow/validators";
 
-const clipLengthOptions: { value: ClipLengthPreset; label: string }[] = [
+const clipLengthItems: { value: ClipLengthPreset; label: string }[] = [
   { value: "auto", label: "Auto (0–3 min)" },
   { value: "under_30s", label: "Under 30s" },
   { value: "30_to_60s", label: "30s – 60s" },
   { value: "60_to_120s", label: "1 – 2 min" },
   { value: "120_to_180s", label: "2 – 3 min" },
 ];
-
-const clipLengthCollection = createListCollection({
-  items: clipLengthOptions,
-});
 
 const platformOptions = [
   { value: "tiktok", label: "TikTok" },
@@ -41,6 +35,14 @@ interface ClipSettingsFormProps {
   onAutoHookChange: (value: boolean) => void;
   specificMoments: string;
   onSpecificMomentsChange: (value: string) => void;
+  platformTargets: ClipPlatformTarget[];
+  onPlatformTargetsChange: (value: ClipPlatformTarget[]) => void;
+  clipCountTarget: number;
+  onClipCountTargetChange: (value: number) => void;
+  autoRenderClips: boolean;
+  onAutoRenderClipsChange: (value: boolean) => void;
+  toneConstraints: string;
+  onToneConstraintsChange: (value: string) => void;
 }
 
 export function ClipSettingsForm({
@@ -50,66 +52,53 @@ export function ClipSettingsForm({
   onAutoHookChange,
   specificMoments,
   onSpecificMomentsChange,
+  platformTargets,
+  onPlatformTargetsChange,
+  clipCountTarget,
+  onClipCountTargetChange,
+  autoRenderClips,
+  onAutoRenderClipsChange,
+  toneConstraints,
+  onToneConstraintsChange,
 }: ClipSettingsFormProps) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
 
+  const togglePlatform = (value: ClipPlatformTarget) => {
+    onPlatformTargetsChange(
+      platformTargets.includes(value)
+        ? platformTargets.filter((target) => target !== value)
+        : [...platformTargets, value],
+    );
+  };
+
   return (
-    <Stack gap="18px">
-      <Grid templateColumns={{ base: "1fr", md: "1fr 1fr" }} gap="14px">
+    <Stack gap="4.5">
+      <Grid templateColumns={{ base: "1fr", md: "1fr 1fr" }} gap="3.5">
         <Box>
-          <Text fontSize="13px" fontWeight="500" color="fg" mb="6px">
+          <Text textStyle="eyebrow" color="fg.subtle" mb="2">
             Clip length
           </Text>
-          <Select.Root
-            collection={clipLengthCollection}
-            value={[clipLength]}
-            onValueChange={(details) => {
-              const next = details.value[0];
+          <Select
+            items={clipLengthItems}
+            value={clipLength}
+            onValueChange={(next) => {
               if (next) onClipLengthChange(next as ClipLengthPreset);
             }}
+            placeholder="Select clip length"
             size="sm"
-            name="clipLengthPreset"
-          >
-            <Select.HiddenSelect />
-            <Select.Control>
-              <Select.Trigger>
-                <Select.ValueText placeholder="Select clip length" />
-              </Select.Trigger>
-              <Select.IndicatorGroup>
-                <Select.Indicator />
-              </Select.IndicatorGroup>
-            </Select.Control>
-            <Portal>
-              <Select.Positioner>
-                <Select.Content>
-                  {clipLengthCollection.items.map((item) => (
-                    <Select.Item item={item} key={item.value}>
-                      {item.label}
-                      <Select.ItemIndicator />
-                    </Select.Item>
-                  ))}
-                </Select.Content>
-              </Select.Positioner>
-            </Portal>
-          </Select.Root>
+          />
         </Box>
 
         <Box>
-          <Flex justify="space-between" align="center" mb="6px">
-            <Text fontSize="13px" fontWeight="500" color="fg">
+          <Flex justify="space-between" align="center" mb="2">
+            <Text textStyle="eyebrow" color="fg.subtle">
               Auto-hook
             </Text>
-            <Switch.Root
-              name="autoHook"
+            <Switch
               checked={autoHook}
-              onCheckedChange={(details) => onAutoHookChange(details.checked)}
-              size="md"
-            >
-              <Switch.HiddenInput />
-              <Switch.Control>
-                <Switch.Thumb />
-              </Switch.Control>
-            </Switch.Root>
+              onCheckedChange={onAutoHookChange}
+              inputProps={{ name: "autoHook" }}
+            />
           </Flex>
           <Text fontSize="11px" color="fg.muted">
             Prefer clips that open with a strong hook.
@@ -118,14 +107,16 @@ export function ClipSettingsForm({
       </Grid>
 
       <Box>
-        <Flex justify="space-between" align="center" mb="6px">
-          <Flex align="center" gap="6px">
-            <Sparkles size={13} color="var(--chakra-colors-accent-solid)" />
-            <Text fontSize="13px" fontWeight="500" color="fg">
+        <Flex justify="space-between" align="center" mb="2">
+          <Flex align="center" gap="1.5">
+            <Box color="accent.fg" display="inline-flex">
+              <Sparkles size={12} strokeWidth={1.75} />
+            </Box>
+            <Text textStyle="eyebrow" color="fg.subtle">
               Include specific moments
             </Text>
           </Flex>
-          <Text fontSize="11px" color="fg.subtle">
+          <Text textStyle="data" fontSize="11px" color="fg.subtle">
             Optional
           </Text>
         </Flex>
@@ -137,132 +128,111 @@ export function ClipSettingsForm({
           rows={3}
           maxLength={500}
           fontSize="13px"
-          bg="bg.subtle"
-          borderRadius="8px"
-          borderColor="border"
-          _focus={{ borderColor: "accent.solid", boxShadow: "none" }}
         />
-        <Text fontSize="11px" color="fg.subtle" mt="4px">
+        <Text textStyle="data" fontSize="11px" color="fg.subtle" mt="1">
           {specificMoments.length}/500
         </Text>
       </Box>
 
       <Box>
-        <Flex
-          as="button"
+        <chakra.button
+          type="button"
+          aria-expanded={advancedOpen}
           onClick={() => setAdvancedOpen((value) => !value)}
-          align="center"
-          gap="6px"
-          fontSize="12px"
-          fontWeight="500"
-          color="fg.muted"
+          display="inline-flex"
+          alignItems="center"
+          gap="1.5"
+          textStyle="eyebrow"
+          color="fg.subtle"
           cursor="pointer"
+          transition="color 120ms ease"
           _hover={{ color: "fg" }}
         >
           <Box
             transform={advancedOpen ? "rotate(0deg)" : "rotate(-90deg)"}
-            transition="transform 150ms ease"
+            transition="transform 200ms cubic-bezier(0.22, 1, 0.36, 1)"
           >
             <ChevronDown size={13} />
           </Box>
           Advanced controls
-        </Flex>
+        </chakra.button>
 
         {advancedOpen && (
           <Stack
-            gap="14px"
-            mt="12px"
-            p="14px"
-            borderRadius="10px"
-            borderWidth="1px"
-            borderColor="border"
-            bg="bg.subtle"
+            gap="3.5"
+            mt="3"
+            pl="3"
+            borderLeftWidth="1px"
+            borderLeftColor="border"
+            animation="fade-up"
           >
             <Box>
-              <Text fontSize="11px" color="fg.muted" mb="6px">
+              <Text textStyle="eyebrow" color="fg.subtle" mb="2">
                 Platform targets
               </Text>
-              <Flex gap="6px" flexWrap="wrap">
+              <Flex gap="4" rowGap="2" flexWrap="wrap">
                 {platformOptions.map((option) => (
-                  <Box
+                  <Checkbox
                     key={option.value}
-                    as="label"
-                    px="10px"
-                    py="6px"
-                    borderRadius="999px"
-                    borderWidth="1px"
-                    borderColor="border"
-                    bg="bg"
-                    cursor="pointer"
+                    checked={platformTargets.includes(option.value)}
+                    onCheckedChange={() => togglePlatform(option.value)}
+                    inputProps={{
+                      name: "platformTargets",
+                      value: option.value,
+                    }}
                   >
-                    <Flex align="center" gap="6px">
-                      <input
-                        type="checkbox"
-                        name="platformTargets"
-                        value={option.value}
-                        defaultChecked
-                      />
-                      <Text fontSize="12px" color="fg">
-                        {option.label}
-                      </Text>
-                    </Flex>
-                  </Box>
+                    {option.label}
+                  </Checkbox>
                 ))}
               </Flex>
             </Box>
 
-            <Grid templateColumns="1fr 1fr" gap="10px">
+            <Grid templateColumns="1fr 1fr" gap="3">
               <Box>
-                <Text fontSize="11px" color="fg.muted" mb="4px">
+                <Text textStyle="eyebrow" color="fg.subtle" mb="1.5">
                   Clip count
                 </Text>
-                <input
-                  type="number"
-                  name="clipCountTarget"
-                  defaultValue={10}
+                <NumberInput
+                  value={String(clipCountTarget)}
                   min={3}
                   max={30}
-                  step="1"
-                  style={{
-                    width: "100%",
-                    padding: "7px 9px",
-                    fontSize: "13px",
-                    borderRadius: "6px",
-                    border: "1px solid var(--chakra-colors-border)",
-                    background: "var(--chakra-colors-bg)",
-                    color: "inherit",
+                  step={1}
+                  size="sm"
+                  onValueChange={(_, valueAsNumber) => {
+                    if (!Number.isFinite(valueAsNumber)) return;
+                    onClipCountTargetChange(
+                      Math.min(30, Math.max(3, Math.round(valueAsNumber))),
+                    );
                   }}
+                  inputProps={{ name: "clipCountTarget" }}
                 />
               </Box>
               <Box>
-                <Text fontSize="11px" color="fg.muted" mb="4px">
-                  Auto-render after detection
+                <Text textStyle="eyebrow" color="fg.subtle" mb="1.5">
+                  Auto-render
                 </Text>
-                <Box as="label" cursor="pointer" display="inline-flex" alignItems="center" gap="6px">
-                  <input type="checkbox" name="autoRenderClips" />
-                  <Text fontSize="12px" color="fg.muted">
-                    Render TikTok / Reels variants automatically
+                <Checkbox
+                  checked={autoRenderClips}
+                  onCheckedChange={onAutoRenderClipsChange}
+                  inputProps={{ name: "autoRenderClips" }}
+                >
+                  <Text as="span" fontSize="12px" color="fg.muted">
+                    Render variants after detection
                   </Text>
-                </Box>
+                </Checkbox>
               </Box>
             </Grid>
 
             <Box>
-              <Text fontSize="11px" color="fg.muted" mb="4px">
+              <Text textStyle="eyebrow" color="fg.subtle" mb="1.5">
                 Tone preferences
               </Text>
-              <input
+              <Input
                 name="toneConstraints"
-                defaultValue="concise, conversational"
-                style={{
-                  width: "100%",
-                  padding: "7px 9px",
-                  fontSize: "13px",
-                  borderRadius: "6px",
-                  border: "1px solid var(--chakra-colors-border)",
-                  background: "var(--chakra-colors-bg)",
-                  color: "inherit",
-                }}
+                value={toneConstraints}
+                onChange={(event) => onToneConstraintsChange(event.target.value)}
+                size="sm"
+                fontSize="13px"
               />
             </Box>
           </Stack>

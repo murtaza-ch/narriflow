@@ -6,30 +6,69 @@ import {
   brandTemplateUpdateSchema,
   completeMultipartUploadSchema,
   clipDownloadQuerySchema,
+  checkoutRequestSchema,
   contentPackSchema,
+  autopilotRuleInputSchema,
+  autopilotRuleUpdateSchema,
   duplicateBrandTemplateSchema,
+  dubDownloadQuerySchema,
+  generateContentSuiteRequestSchema,
   generateProjectRequestSchema,
+  linkIngestSchema,
   presignBrandLogoSchema,
+  requestClipDubSchema,
   rssImportSchema,
   rssPreviewSchema,
+  scheduleSocialPostSchema,
+  socialPlatformSchema,
+  socialPostMetricsSchema,
   presignUploadSchema,
   transcriptExportFormatSchema,
   triggerClipRenderSchema,
+  brollSearchQuerySchema,
   updateClipBoundariesSchema,
+  updateClipBrollSchema,
   updateClipCaptionPresetSchema,
+  updateClipStudioEditsSchema,
   updateClipStatusSchema,
   updateClipTranscriptSliceSchema,
-  youtubeIngestSchema,
+  userErrorMessage,
 } from "@narriflow/validators";
 import {
+  billingService,
+  BillingError,
+  checkRateLimit,
+  analyticsService,
+  autopilotService,
+  searchBrollVideos,
+  isPexelsConfigured,
   brandTemplateService,
   BrandTemplateForbiddenError,
   BrandTemplateNotFoundError,
   clipService,
+  contentSuiteService,
+  ContentSuiteError,
+  dubbingService,
+  DubbingTierError,
   projectService,
+  QuotaExceededError,
+  RemoteFetchError,
+  socialOAuthService,
+  SocialOAuthError,
+  socialService,
+  UnsafeUrlError,
+  UploadCompletionReconciliationRequiredError,
+  UploadSessionUnavailableError,
+  UploadTooLongError,
 } from "@narriflow/services";
+import {
+  resolveCanonicalAppOrigin,
+  safeSocialRedirectPath,
+} from "@/lib/safe-redirect";
 
 export const runtime = "nodejs";
+// Content-suite generation makes a synchronous LLM call that can take ~30s.
+export const maxDuration = 60;
 
 const app = new Hono().basePath("/api");
 
@@ -37,13 +76,156 @@ function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Unexpected server error";
 }
 
+function getOAuthOrigin(requestUrl: string) {
+  return resolveCanonicalAppOrigin({
+    configuredOrigin: process.env.NEXT_PUBLIC_APP_URL,
+    environment: process.env.NODE_ENV,
+    requestUrl,
+  });
+}
+
 app.get("/health", (c) => c.json({ ok: true, service: "narriflow-web-api" }));
+
+// --- Autopilot rules ---
+
+app.get("/autopilot/rules", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+
+  try {
+    const rules = await autopilotService.listRules(appUser.id);
+    return c.json({ rules }, 200);
+  } catch (error) {
+    return c.json(
+      { error: "autopilot_rules_failed", message: errorMessage(error) },
+      400,
+    );
+  }
+});
+
+app.post("/autopilot/rules", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+
+  const payload = await c.req.json().catch(() => ({}));
+  const parsed = autopilotRuleInputSchema.safeParse(payload);
+  if (!parsed.success) {
+    return c.json(
+      { error: "Invalid payload", issues: parsed.error.issues },
+      400,
+    );
+  }
+
+  try {
+    const rule = await autopilotService.createRule(appUser.id, parsed.data);
+    return c.json(rule, 201);
+  } catch (error) {
+    return c.json(
+      { error: "autopilot_rule_create_failed", message: errorMessage(error) },
+      400,
+    );
+  }
+});
+
+app.patch("/autopilot/rules/:ruleId", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+
+  const payload = await c.req.json().catch(() => ({}));
+  const parsed = autopilotRuleUpdateSchema.safeParse(payload);
+  if (!parsed.success) {
+    return c.json(
+      { error: "Invalid payload", issues: parsed.error.issues },
+      400,
+    );
+  }
+
+  try {
+    const rule = await autopilotService.updateRule(
+      appUser.id,
+      c.req.param("ruleId"),
+      parsed.data,
+    );
+    return c.json(rule, 200);
+  } catch (error) {
+    return c.json(
+      { error: "autopilot_rule_update_failed", message: errorMessage(error) },
+      400,
+    );
+  }
+});
+
+app.delete("/autopilot/rules/:ruleId", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+
+  try {
+    await autopilotService.deleteRule(appUser.id, c.req.param("ruleId"));
+    return c.json({ ok: true }, 200);
+  } catch (error) {
+    return c.json(
+      { error: "autopilot_rule_delete_failed", message: errorMessage(error) },
+      400,
+    );
+  }
+});
+
+app.post("/autopilot/rules/:ruleId/run-now", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+
+  try {
+    const rule = await autopilotService.triggerRuleNow(
+      appUser.id,
+      c.req.param("ruleId"),
+    );
+    return c.json(rule, 200);
+  } catch (error) {
+    return c.json(
+      { error: "autopilot_rule_run_failed", message: errorMessage(error) },
+      400,
+    );
+  }
+});
+
+app.get("/projects", async (c) => {
+  const appUser = await getCurrentAppUser();
+
+  if (!appUser) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const limitRaw = c.req.query("limit");
+  const limit = limitRaw ? Number(limitRaw) : undefined;
+  const cursor = c.req.query("cursor") ?? null;
+
+  try {
+    const page = await projectService.listProjectsWithStatsPage(appUser.id, {
+      limit,
+      cursor,
+    });
+    return c.json(page, 200);
+  } catch (error) {
+    return c.json(
+      { error: "project_list_failed", message: errorMessage(error) },
+      400,
+    );
+  }
+});
 
 app.post("/projects/:id/generate", async (c) => {
   const appUser = await getCurrentAppUser();
 
   if (!appUser) {
     return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const rl = await checkRateLimit(`gen:${appUser.id}`, 20, 60);
+  if (!rl.allowed) {
+    return c.json(
+      { error: "rate_limited", message: userErrorMessage("rate_limited") },
+      429,
+    );
   }
 
   const projectId = c.req.param("id");
@@ -73,13 +255,29 @@ app.post("/projects/:id/generate", async (c) => {
     );
   }
 
-  const result = await projectService.triggerGeneration(
-    appUser.id,
-    projectId,
-    parsed.data,
-    idempotencyKey,
-  );
-  return c.json(result, 202);
+  try {
+    const result = await projectService.triggerGeneration(
+      appUser.id,
+      projectId,
+      parsed.data,
+      idempotencyKey,
+    );
+    return c.json(result, 202);
+  } catch (error) {
+    if (
+      error instanceof QuotaExceededError ||
+      error instanceof UploadTooLongError
+    ) {
+      return c.json(
+        { error: error.code, message: error.message, details: error.details },
+        402,
+      );
+    }
+    return c.json(
+      { error: "generation_failed", message: errorMessage(error) },
+      400,
+    );
+  }
 });
 
 app.get("/projects/:id", async (c) => {
@@ -229,6 +427,14 @@ app.post("/uploads/presign", async (c) => {
     return c.json({ error: "Unauthorized" }, 401);
   }
 
+  const rl = await checkRateLimit(`presign:${appUser.id}`, 60, 60);
+  if (!rl.allowed) {
+    return c.json(
+      { error: "rate_limited", message: userErrorMessage("rate_limited") },
+      429,
+    );
+  }
+
   const payload = await c.req.json().catch(() => null);
   const parsed = presignUploadSchema.safeParse(payload);
 
@@ -246,10 +452,31 @@ app.post("/uploads/presign", async (c) => {
     );
     return c.json(response, 200);
   } catch (error) {
+    if (
+      error instanceof UploadSessionUnavailableError ||
+      error instanceof UploadCompletionReconciliationRequiredError
+    ) {
+      return c.json(
+        {
+          error: error.code,
+          message: userErrorMessage(error.code) ?? error.message,
+        },
+        409,
+      );
+    }
+    if (
+      error instanceof QuotaExceededError ||
+      error instanceof UploadTooLongError
+    ) {
+      return c.json(
+        { error: error.code, message: error.message, details: error.details },
+        402,
+      );
+    }
     return c.json(
       {
         error: "upload_presign_failed",
-        message: errorMessage(error),
+        message: userErrorMessage("upload_presign_failed"),
       },
       400,
     );
@@ -279,18 +506,18 @@ app.post("/uploads/complete", async (c) => {
       parsed.data,
     );
     return c.json(response, 200);
-  } catch (error) {
+  } catch {
     return c.json(
       {
         error: "upload_complete_failed",
-        message: errorMessage(error),
+        message: userErrorMessage("upload_complete_failed"),
       },
       400,
     );
   }
 });
 
-app.post("/ingest/youtube", async (c) => {
+app.post("/ingest/link", async (c) => {
   const appUser = await getCurrentAppUser();
 
   if (!appUser) {
@@ -298,7 +525,7 @@ app.post("/ingest/youtube", async (c) => {
   }
 
   const payload = await c.req.json().catch(() => null);
-  const parsed = youtubeIngestSchema.safeParse(payload);
+  const parsed = linkIngestSchema.safeParse(payload);
 
   if (!parsed.success) {
     return c.json(
@@ -308,15 +535,24 @@ app.post("/ingest/youtube", async (c) => {
   }
 
   try {
-    const response = await projectService.queueYoutubeIngest(
+    const response = await projectService.queueLinkIngest(
       appUser.id,
       parsed.data,
     );
     return c.json(response, 202);
   } catch (error) {
+    if (
+      error instanceof QuotaExceededError ||
+      error instanceof UploadTooLongError
+    ) {
+      return c.json(
+        { error: error.code, message: error.message, details: error.details },
+        402,
+      );
+    }
     return c.json(
       {
-        error: "youtube_ingest_failed",
+        error: "link_ingest_failed",
         message: errorMessage(error),
       },
       400,
@@ -345,10 +581,20 @@ app.post("/ingest/rss/preview", async (c) => {
     const response = await projectService.previewRssFeed(parsed.data.rssUrl);
     return c.json(response, 200);
   } catch (error) {
+    const errorCode =
+      error instanceof UnsafeUrlError
+        ? "remote_url_unsafe"
+        : error instanceof RemoteFetchError
+          ? error.code === "remote_fetch_timeout"
+            ? "remote_fetch_timeout"
+            : error.code === "remote_response_too_large"
+              ? "rss_feed_too_large"
+              : "rss_download_failed"
+          : "rss_download_failed";
     return c.json(
       {
         error: "rss_preview_failed",
-        message: errorMessage(error),
+        message: userErrorMessage(errorCode),
       },
       400,
     );
@@ -379,6 +625,15 @@ app.post("/ingest/rss/import", async (c) => {
     );
     return c.json(response, 202);
   } catch (error) {
+    if (
+      error instanceof QuotaExceededError ||
+      error instanceof UploadTooLongError
+    ) {
+      return c.json(
+        { error: error.code, message: error.message, details: error.details },
+        402,
+      );
+    }
     return c.json(
       {
         error: "rss_import_failed",
@@ -514,10 +769,42 @@ app.patch("/projects/:id/clips/:clipId", async (c) => {
       return c.json(clip, 200);
     }
 
+    const brollParsed = updateClipBrollSchema.safeParse(payload);
+    if (brollParsed.success) {
+      const clip = await clipService.updateClipBroll(
+        appUser.id,
+        projectId,
+        clipId,
+        brollParsed.data.brollUrl,
+      );
+      return c.json(clip, 200);
+    }
+
+    // studioEditsSchema carries its own top-level `.default()` (so a bare
+    // `{studioEdits: {...}}` update can omit unset sub-fields), which means
+    // safeParse(payload) would happily succeed — and silently wipe
+    // textLayers/transition/music back to defaults — for ANY object that
+    // simply lacks a `studioEdits` key. Only attempt this branch when the
+    // body actually claims to be a studio-edits update.
+    const studioEditsParsed =
+      "studioEdits" in payload
+        ? updateClipStudioEditsSchema.safeParse(payload)
+        : null;
+    if (studioEditsParsed?.success) {
+      const clip = await clipService.updateClipStudioEdits(
+        appUser.id,
+        projectId,
+        clipId,
+        studioEditsParsed.data.studioEdits,
+      );
+      return c.json(clip, 200);
+    }
+
     return c.json(
       {
-        error: "Invalid payload",
-        issues: boundariesParsed.error.issues,
+        error: "unrecognized_clip_update",
+        message:
+          "Body didn't match any supported clip update (status, boundaries, captionPreset, transcriptSlice, brollUrl, or studioEdits).",
       },
       400,
     );
@@ -534,6 +821,14 @@ app.post("/projects/:id/clips/regenerate", async (c) => {
 
   if (!appUser) {
     return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const rl = await checkRateLimit(`regenerate:${appUser.id}`, 20, 60);
+  if (!rl.allowed) {
+    return c.json(
+      { error: "rate_limited", message: userErrorMessage("rate_limited") },
+      429,
+    );
   }
 
   const projectId = c.req.param("id");
@@ -585,6 +880,14 @@ app.post("/projects/:id/clips/render", async (c) => {
     return c.json({ error: "Unauthorized" }, 401);
   }
 
+  const rl = await checkRateLimit(`render:${appUser.id}`, 20, 60);
+  if (!rl.allowed) {
+    return c.json(
+      { error: "rate_limited", message: userErrorMessage("rate_limited") },
+      429,
+    );
+  }
+
   const projectId = c.req.param("id");
   const access = await projectService.getProjectAccess(appUser.id, projectId);
 
@@ -624,6 +927,599 @@ app.post("/projects/:id/clips/render", async (c) => {
   } catch (error) {
     return c.json(
       { error: "clip_render_failed", message: errorMessage(error) },
+      400,
+    );
+  }
+});
+
+app.post("/projects/:id/clips/apply-caption-preset", async (c) => {
+  const appUser = await getCurrentAppUser();
+
+  if (!appUser) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const projectId = c.req.param("id");
+  const access = await projectService.getProjectAccess(appUser.id, projectId);
+
+  if (access === "missing") {
+    return c.json({ error: "Project not found" }, 404);
+  }
+
+  if (access === "forbidden") {
+    return c.json({ error: "Forbidden" }, 403);
+  }
+
+  const payload = await c.req.json().catch(() => ({}));
+  const parsed = updateClipCaptionPresetSchema.safeParse(payload);
+
+  if (!parsed.success || parsed.data.captionPreset === null) {
+    return c.json(
+      {
+        error: "Invalid payload",
+        issues: parsed.success ? [] : parsed.error.issues,
+      },
+      400,
+    );
+  }
+
+  try {
+    const result = await clipService.applyCaptionPresetToAllClips(
+      appUser.id,
+      projectId,
+      parsed.data.captionPreset,
+    );
+    return c.json(result, 200);
+  } catch (error) {
+    return c.json(
+      { error: "apply_caption_preset_failed", message: errorMessage(error) },
+      400,
+    );
+  }
+});
+
+// --- Billing (Stripe) ---
+
+app.post("/billing/checkout", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+
+  const payload = await c.req.json().catch(() => ({}));
+  const parsed = checkoutRequestSchema.safeParse(payload);
+  if (!parsed.success) {
+    return c.json({ error: "Invalid payload", issues: parsed.error.issues }, 400);
+  }
+
+  const origin = new URL(c.req.url).origin;
+  try {
+    const result = await billingService.createCheckoutSession(
+      appUser.id,
+      parsed.data.tier,
+      parsed.data.interval,
+      {
+        successUrl: `${origin}/dashboard?upgraded=1`,
+        cancelUrl: `${origin}/settings/billing`,
+      },
+    );
+    return c.json(result, 200);
+  } catch (error) {
+    if (error instanceof BillingError) {
+      return c.json({ error: error.code, message: error.message }, 400);
+    }
+    return c.json(
+      { error: "checkout_failed", message: errorMessage(error) },
+      400,
+    );
+  }
+});
+
+app.post("/billing/portal", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+
+  const origin = new URL(c.req.url).origin;
+  try {
+    const result = await billingService.createBillingPortalSession(
+      appUser.id,
+      `${origin}/settings/billing`,
+    );
+    return c.json(result, 200);
+  } catch (error) {
+    if (error instanceof BillingError) {
+      return c.json({ error: error.code, message: error.message }, 400);
+    }
+    return c.json({ error: "portal_failed", message: errorMessage(error) }, 400);
+  }
+});
+
+// --- Stock B-roll search (Pexels) ---
+
+app.get("/broll/search", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+
+  const rl = await checkRateLimit(`broll-search:${appUser.id}`, 60, 60);
+  if (!rl.allowed) {
+    return c.json(
+      { error: "rate_limited", message: userErrorMessage("rate_limited") },
+      429,
+    );
+  }
+
+  if (!isPexelsConfigured()) {
+    return c.json({ configured: false, results: [] }, 200);
+  }
+
+  const parsed = brollSearchQuerySchema.safeParse({
+    query: c.req.query("query") ?? "",
+    orientation: c.req.query("orientation") ?? "portrait",
+  });
+  if (!parsed.success) {
+    return c.json({ error: "Invalid query", issues: parsed.error.issues }, 400);
+  }
+
+  const results = await searchBrollVideos(
+    parsed.data.query,
+    parsed.data.orientation,
+  );
+  return c.json({ configured: true, results }, 200);
+});
+
+// --- Content suite (repurposed text outputs) ---
+
+app.get("/projects/:id/content-suite", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+
+  const projectId = c.req.param("id");
+  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  if (access === "missing") return c.json({ error: "Project not found" }, 404);
+  if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
+
+  try {
+    const assets = await contentSuiteService.list(appUser.id, projectId);
+    return c.json({ assets }, 200);
+  } catch (error) {
+    if (error instanceof ContentSuiteError) {
+      return c.json({ error: error.code, message: error.message }, 400);
+    }
+    return c.json(
+      { error: "content_suite_failed", message: errorMessage(error) },
+      400,
+    );
+  }
+});
+
+app.post("/projects/:id/content-suite", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+
+  const rl = await checkRateLimit(`content-suite:${appUser.id}`, 30, 60);
+  if (!rl.allowed) {
+    return c.json(
+      { error: "rate_limited", message: userErrorMessage("rate_limited") },
+      429,
+    );
+  }
+
+  const projectId = c.req.param("id");
+  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  if (access === "missing") return c.json({ error: "Project not found" }, 404);
+  if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
+
+  const payload = await c.req.json().catch(() => ({}));
+  const parsed = generateContentSuiteRequestSchema.safeParse(payload);
+  if (!parsed.success) {
+    return c.json(
+      { error: "Invalid payload", issues: parsed.error.issues },
+      400,
+    );
+  }
+
+  try {
+    const assets = await contentSuiteService.generate(
+      appUser.id,
+      projectId,
+      parsed.data.types,
+    );
+    return c.json({ assets }, 200);
+  } catch (error) {
+    if (error instanceof ContentSuiteError) {
+      if (error.code === "requires_creator_plan") {
+        return c.json(
+          { error: error.code, message: userErrorMessage(error.code) },
+          402,
+        );
+      }
+      const status = error.code === "transcript_not_ready" ? 409 : 400;
+      return c.json({ error: error.code, message: error.message }, status);
+    }
+    return c.json(
+      { error: "content_suite_failed", message: errorMessage(error) },
+      400,
+    );
+  }
+});
+
+// --- First-party analytics ---
+
+app.get("/projects/:id/analytics", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+
+  const projectId = c.req.param("id");
+  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  if (access === "missing") return c.json({ error: "Project not found" }, 404);
+  if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
+
+  try {
+    const analytics = await analyticsService.getProjectAnalytics(
+      appUser.id,
+      projectId,
+    );
+    return c.json(analytics, 200);
+  } catch (error) {
+    return c.json(
+      { error: "analytics_failed", message: errorMessage(error) },
+      400,
+    );
+  }
+});
+
+// --- Native social accounts ---
+
+app.get("/social/accounts", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+
+  try {
+    const accounts = await socialOAuthService.listAccounts(appUser.id);
+    return c.json({ accounts }, 200);
+  } catch (error) {
+    return c.json(
+      { error: "social_accounts_failed", message: errorMessage(error) },
+      400,
+    );
+  }
+});
+
+app.get("/social/oauth/start/:platform", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+
+  const parsedPlatform = socialPlatformSchema.safeParse(c.req.param("platform"));
+  if (!parsedPlatform.success) {
+    return c.json({ error: "Unsupported social platform" }, 400);
+  }
+
+  let origin: string;
+  try {
+    origin = getOAuthOrigin(c.req.url);
+  } catch {
+    return c.json(
+      {
+        error: "social_oauth_origin_invalid",
+        message: userErrorMessage("social_oauth_origin_invalid"),
+      },
+      503,
+    );
+  }
+
+  try {
+    const url = await socialOAuthService.createAuthorizationUrl({
+      userId: appUser.id,
+      platform: parsedPlatform.data,
+      origin,
+      redirectPath: safeSocialRedirectPath(c.req.query("redirect")),
+    });
+    return c.redirect(url, 302);
+  } catch (error) {
+    const code =
+      error instanceof SocialOAuthError
+        ? error.code
+        : "social_oauth_start_failed";
+    const redirect = new URL(
+      safeSocialRedirectPath(c.req.query("redirect")),
+      origin,
+    );
+    redirect.searchParams.set("error", code);
+    return c.redirect(redirect.toString(), 302);
+  }
+});
+
+app.get("/social/oauth/callback", async (c) => {
+  let origin: string;
+  try {
+    origin = getOAuthOrigin(c.req.url);
+  } catch {
+    return c.json(
+      {
+        error: "social_oauth_origin_invalid",
+        message: userErrorMessage("social_oauth_origin_invalid"),
+      },
+      503,
+    );
+  }
+  const redirect = new URL("/settings/social", origin);
+  const code = c.req.query("code");
+  const state = c.req.query("state");
+  const providerError = c.req.query("error");
+
+  if (providerError) {
+    redirect.searchParams.set("error", providerError);
+    return c.redirect(redirect.toString(), 302);
+  }
+
+  if (!code || !state) {
+    redirect.searchParams.set("error", "social_oauth_callback_missing");
+    return c.redirect(redirect.toString(), 302);
+  }
+
+  try {
+    const result = await socialOAuthService.handleCallback({
+      state,
+      code,
+      origin,
+    });
+    const successRedirect = new URL(
+      safeSocialRedirectPath(result.redirectPath),
+      origin,
+    );
+    successRedirect.searchParams.set("connected", String(result.accounts.length));
+    return c.redirect(successRedirect.toString(), 302);
+  } catch (error) {
+    redirect.searchParams.set(
+      "error",
+      error instanceof SocialOAuthError ? error.code : "social_oauth_callback_failed",
+    );
+    return c.redirect(redirect.toString(), 302);
+  }
+});
+
+app.delete("/social/accounts/:accountId", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+
+  try {
+    await socialOAuthService.disconnectAccount(
+      appUser.id,
+      c.req.param("accountId"),
+    );
+    return c.json({ ok: true }, 200);
+  } catch (error) {
+    return c.json(
+      { error: "social_account_disconnect_failed", message: errorMessage(error) },
+      400,
+    );
+  }
+});
+
+// --- Social scheduling metadata ---
+
+app.get("/projects/:id/social-posts", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+
+  const projectId = c.req.param("id");
+  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  if (access === "missing") return c.json({ error: "Project not found" }, 404);
+  if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
+
+  try {
+    const posts = await socialService.listProjectPosts(appUser.id, projectId);
+    return c.json({ posts }, 200);
+  } catch (error) {
+    return c.json(
+      { error: "social_posts_failed", message: errorMessage(error) },
+      400,
+    );
+  }
+});
+
+app.post("/projects/:id/social-posts", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+
+  const rl = await checkRateLimit(`social-posts:${appUser.id}`, 30, 60);
+  if (!rl.allowed) {
+    return c.json(
+      { error: "rate_limited", message: userErrorMessage("rate_limited") },
+      429,
+    );
+  }
+
+  const projectId = c.req.param("id");
+  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  if (access === "missing") return c.json({ error: "Project not found" }, 404);
+  if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
+
+  const payload = await c.req.json().catch(() => ({}));
+  const parsed = scheduleSocialPostSchema.safeParse(payload);
+  if (!parsed.success) {
+    return c.json(
+      { error: "Invalid payload", issues: parsed.error.issues },
+      400,
+    );
+  }
+
+  try {
+    const post = await socialService.schedulePost(
+      appUser.id,
+      projectId,
+      parsed.data,
+    );
+    return c.json(post, 201);
+  } catch (error) {
+    return c.json(
+      { error: "social_post_schedule_failed", message: errorMessage(error) },
+      400,
+    );
+  }
+});
+
+app.delete("/projects/:id/social-posts/:postId", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+
+  const projectId = c.req.param("id");
+  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  if (access === "missing") return c.json({ error: "Project not found" }, 404);
+  if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
+
+  try {
+    const post = await socialService.cancelPost(
+      appUser.id,
+      projectId,
+      c.req.param("postId"),
+    );
+    return c.json(post, 200);
+  } catch (error) {
+    return c.json(
+      { error: "social_post_cancel_failed", message: errorMessage(error) },
+      400,
+    );
+  }
+});
+
+app.post("/projects/:id/social-posts/:postId/metrics", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+
+  const projectId = c.req.param("id");
+  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  if (access === "missing") return c.json({ error: "Project not found" }, 404);
+  if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
+
+  const payload = await c.req.json().catch(() => ({}));
+  const parsed = socialPostMetricsSchema.safeParse(payload);
+  if (!parsed.success) {
+    return c.json(
+      { error: "Invalid payload", issues: parsed.error.issues },
+      400,
+    );
+  }
+
+  try {
+    const post = await socialService.recordPostMetrics(
+      appUser.id,
+      projectId,
+      c.req.param("postId"),
+      parsed.data,
+    );
+    return c.json(post, 201);
+  } catch (error) {
+    return c.json(
+      { error: "social_post_metrics_failed", message: errorMessage(error) },
+      400,
+    );
+  }
+});
+
+// --- Voiceover dubbing ---
+
+app.get("/projects/:id/dubs", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+
+  const projectId = c.req.param("id");
+  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  if (access === "missing") return c.json({ error: "Project not found" }, 404);
+  if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
+
+  try {
+    const dubs = await dubbingService.listProjectDubs(appUser.id, projectId);
+    return c.json({ dubs }, 200);
+  } catch (error) {
+    return c.json(
+      { error: "dubs_failed", message: errorMessage(error) },
+      400,
+    );
+  }
+});
+
+app.post("/projects/:id/dubs", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+
+  const rl = await checkRateLimit(`dubs:${appUser.id}`, 20, 60);
+  if (!rl.allowed) {
+    return c.json(
+      { error: "rate_limited", message: userErrorMessage("rate_limited") },
+      429,
+    );
+  }
+
+  const projectId = c.req.param("id");
+  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  if (access === "missing") return c.json({ error: "Project not found" }, 404);
+  if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
+
+  const idempotencyKey = c.req.header("idempotency-key") ?? "";
+  if (!idempotencyKey) {
+    return c.json({ error: "Missing idempotency-key header" }, 400);
+  }
+
+  const payload = await c.req.json().catch(() => ({}));
+  const parsed = requestClipDubSchema.safeParse(payload);
+  if (!parsed.success) {
+    return c.json(
+      { error: "Invalid payload", issues: parsed.error.issues },
+      400,
+    );
+  }
+
+  try {
+    const result = await dubbingService.requestClipDub(
+      appUser.id,
+      projectId,
+      idempotencyKey,
+      parsed.data,
+    );
+    return c.json(result, 202);
+  } catch (error) {
+    if (error instanceof DubbingTierError) {
+      return c.json(
+        { error: "requires_pro_plan", message: userErrorMessage("requires_pro_plan") },
+        402,
+      );
+    }
+    return c.json(
+      { error: "dub_request_failed", message: errorMessage(error) },
+      400,
+    );
+  }
+});
+
+app.get("/projects/:id/dubs/:dubId/download", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+
+  const projectId = c.req.param("id");
+  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  if (access === "missing") return c.json({ error: "Project not found" }, 404);
+  if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
+
+  const parsed = dubDownloadQuerySchema.safeParse({
+    asset: c.req.query("asset") ?? undefined,
+  });
+  if (!parsed.success) {
+    return c.json(
+      { error: "Invalid query", issues: parsed.error.issues },
+      400,
+    );
+  }
+
+  try {
+    const result = await dubbingService.getDubDownloadUrl(
+      appUser.id,
+      projectId,
+      c.req.param("dubId"),
+      parsed.data.asset,
+    );
+    return c.json(result, 200);
+  } catch (error) {
+    return c.json(
+      { error: "dub_download_failed", message: errorMessage(error) },
       400,
     );
   }
@@ -794,6 +1690,15 @@ app.post("/brand-templates/:id/duplicate", async (c) => {
 app.post("/brand-templates/logo/presign", async (c) => {
   const appUser = await getCurrentAppUser();
   if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+
+  const rl = await checkRateLimit(`logo-presign:${appUser.id}`, 30, 60);
+  if (!rl.allowed) {
+    return c.json(
+      { error: "rate_limited", message: userErrorMessage("rate_limited") },
+      429,
+    );
+  }
+
   const payload = await c.req.json().catch(() => null);
   const parsed = presignBrandLogoSchema.safeParse(payload);
   if (!parsed.success) {

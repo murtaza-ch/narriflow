@@ -2,169 +2,110 @@
 
 import { useState } from "react";
 import { Box, Flex, Text, Stack, Input, Slider } from "@chakra-ui/react";
-import { Search, Play, Pause, Music, Volume2 } from "lucide-react";
-
-const GENRES = ["Upbeat", "Cinematic", "Chill", "Dramatic", "Electronic", "Acoustic"];
-
-const TRACKS = [
-  { id: "1", title: "Summer Vibes",    duration: "2:34", bpm: 128, genre: "Upbeat" },
-  { id: "2", title: "Epic Moment",     duration: "3:12", bpm: 96,  genre: "Cinematic" },
-  { id: "3", title: "Lo-fi Afternoon", duration: "4:01", bpm: 85,  genre: "Chill" },
-  { id: "4", title: "Rising Action",   duration: "2:48", bpm: 110, genre: "Dramatic" },
-  { id: "5", title: "Synthwave Night", duration: "3:22", bpm: 120, genre: "Electronic" },
-  { id: "6", title: "Acoustic Dream",  duration: "3:45", bpm: 75,  genre: "Acoustic" },
-];
+import { Link2, Music, Volume2, X } from "lucide-react";
+import { useStudio } from "../studio-shell";
 
 export function MusicPanel() {
-  const [query, setQuery] = useState("");
-  const [activeGenre, setActiveGenre] = useState<string | null>(null);
-  const [playingId, setPlayingId] = useState<string | null>(null);
-  const [volume, setVolume] = useState(70);
+  const { studioEdits, setStudioEdits } = useStudio();
+  const [url, setUrl] = useState(studioEdits.music.url ?? "");
+  const [title, setTitle] = useState(studioEdits.music.title ?? "");
+  const [volume, setVolume] = useState(studioEdits.music.volume);
 
-  const filtered = TRACKS.filter((t) => {
-    const matchQ = t.title.toLowerCase().includes(query.toLowerCase());
-    const matchG = activeGenre ? t.genre === activeGenre : true;
-    return matchQ && matchG;
-  });
+  const applyMusic = () => {
+    const trimmedUrl = url.trim();
+    setStudioEdits((prev) => ({
+      ...prev,
+      music: {
+        url: trimmedUrl ? trimmedUrl : null,
+        title: title.trim() || null,
+        volume,
+        startOffsetSec: 0,
+      },
+    }));
+  };
+
+  const clearMusic = () => {
+    setUrl("");
+    setTitle("");
+    setStudioEdits((prev) => ({
+      ...prev,
+      music: { url: null, title: null, volume: 35, startOffsetSec: 0 },
+    }));
+  };
 
   return (
-    <Stack gap="0">
-      {/* Search */}
-      <Box p="12px" pb="8px">
+    <Stack gap="14px" p="12px">
+      <Box>
+        <Text textStyle="eyebrow" color="studio.fgMuted" mb="6px">
+          Music URL
+        </Text>
         <Flex
           align="center"
           gap="8px"
           px="10px"
           h="34px"
-          borderRadius="7px"
-          bg="#1a1a1a"
-          border="1px solid #2a2a2a"
+          borderRadius="l2"
+          bg="studio.subtle"
+          borderWidth="1px"
+          borderColor="studio.borderControl"
+          _focusWithin={{ borderColor: "studio.ring" }}
+          transition="border-color 120ms ease"
         >
-          <Search size={13} color="#555" />
+          <Box color="studio.fgSubtle" flexShrink={0}>
+            <Link2 size={13} />
+          </Box>
           <Input
-            placeholder="Search music..."
-            value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            aria-label="Music URL"
+            placeholder="https://example.com/background.mp3"
+            value={url}
+            onChange={(event) => setUrl(event.target.value)}
             size="xs"
             flex="1"
             fontSize="12px"
-            color="#ccc"
+            color="studio.fg"
             css={{ border: "none", outline: "none", background: "transparent", boxShadow: "none" }}
-            _placeholder={{ color: "#555" }}
+            _placeholder={{ color: "studio.fgSubtle" }}
           />
         </Flex>
       </Box>
 
-      {/* Genre chips */}
-      <Box
-        overflowX="auto"
-        px="12px"
-        pb="8px"
-        css={{
-          "&::-webkit-scrollbar": { display: "none" },
-        }}
-      >
-        <Flex gap="5px" w="max-content">
-          {GENRES.map((g) => (
-            <Box
-              key={g}
-              as="button"
-              px="10px"
-              py="4px"
-              borderRadius="99px"
-              bg={activeGenre === g ? "rgba(99,102,241,0.15)" : "#1a1a1a"}
-              border="1px solid"
-              borderColor={activeGenre === g ? "#6366F1" : "#2a2a2a"}
-              color={activeGenre === g ? "#a5b4fc" : "#666"}
-              fontSize="11px"
-              fontWeight="500"
-              cursor="pointer"
-              onClick={() => setActiveGenre(activeGenre === g ? null : g)}
-              whiteSpace="nowrap"
-              transition="all 150ms"
-            >
-              {g}
-            </Box>
-          ))}
-        </Flex>
+      <Box>
+        <Text textStyle="eyebrow" color="studio.fgMuted" mb="6px">
+          Track label
+        </Text>
+        <Input
+          value={title}
+          onChange={(event) => setTitle(event.target.value)}
+          placeholder="Background bed"
+          size="sm"
+          bg="studio.subtle"
+          borderColor="studio.borderControl"
+          color="studio.fg"
+          fontSize="12px"
+          _placeholder={{ color: "studio.fgSubtle" }}
+          _focusVisible={{ borderColor: "studio.ring", boxShadow: "none" }}
+        />
       </Box>
 
-      {/* Track list */}
-      <Stack gap="2px" px="12px" pb="12px">
-        {filtered.map((track) => {
-          const isPlaying = playingId === track.id;
-          return (
-            <Flex
-              key={track.id}
-              align="center"
-              gap="10px"
-              px="10px"
-              py="9px"
-              borderRadius="7px"
-              bg={isPlaying ? "rgba(99,102,241,0.08)" : "transparent"}
-              border="1px solid"
-              borderColor={isPlaying ? "#6366F1" : "transparent"}
-              cursor="pointer"
-              transition="all 150ms"
-              _hover={{ bg: "#1a1a1a" }}
-              onClick={() => setPlayingId(isPlaying ? null : track.id)}
-            >
-              <Flex
-                w="28px"
-                h="28px"
-                align="center"
-                justify="center"
-                borderRadius="full"
-                bg={isPlaying ? "#6366F1" : "#1e1e1e"}
-                flexShrink={0}
-                transition="all 150ms"
-              >
-                {isPlaying
-                  ? <Pause size={12} color="white" />
-                  : <Play size={12} color="#888" />
-                }
-              </Flex>
-              <Box flex="1" minW="0">
-                <Text fontSize="12px" fontWeight="500" color={isPlaying ? "#a5b4fc" : "#ccc"} overflow="hidden" whiteSpace="nowrap" textOverflow="ellipsis">
-                  {track.title}
-                </Text>
-                <Text fontSize="10px" color="#555">
-                  {track.bpm} BPM · {track.genre}
-                </Text>
-              </Box>
-              <Text fontSize="11px" color="#555" fontFamily="mono">
-                {track.duration}
-              </Text>
-            </Flex>
-          );
-        })}
-
-        {filtered.length === 0 && (
-          <Flex direction="column" align="center" py="24px" gap="8px">
-            <Music size={24} color="#333" />
-            <Text fontSize="12px" color="#444">No tracks found</Text>
-          </Flex>
-        )}
-      </Stack>
-
-      {/* Volume control */}
       <Box
-        mx="12px"
-        mb="12px"
         p="12px"
-        bg="#1a1a1a"
-        borderRadius="8px"
-        border="1px solid #252525"
+        bg="studio.subtle"
+        borderRadius="l2"
+        borderWidth="1px"
+        borderColor="studio.border"
       >
         <Flex align="center" gap="8px">
-          <Volume2 size={14} color="#555" />
+          <Box color="studio.fgMuted" flexShrink={0}>
+            <Volume2 size={14} />
+          </Box>
           <Slider.Root
+            aria-label={["Music volume"]}
             value={[volume]}
             min={0}
             max={100}
-            onValueChange={(e) => setVolume(e.value[0]!)}
+            onValueChange={(event) => setVolume(event.value[0] ?? 35)}
             size="sm"
-            colorPalette="purple"
+            colorPalette="accent"
             flex="1"
           >
             <Slider.Control>
@@ -174,11 +115,68 @@ export function MusicPanel() {
               <Slider.Thumbs />
             </Slider.Control>
           </Slider.Root>
-          <Text fontSize="11px" color="#666" fontFamily="mono" w="28px" textAlign="right">
+          <Text textStyle="data" fontSize="11px" color="studio.fgMuted" w="34px" textAlign="right">
             {volume}%
           </Text>
         </Flex>
       </Box>
+
+      {studioEdits.music.url ? (
+        <Flex
+          pl="10px"
+          pr="10px"
+          py="8px"
+          borderRadius="l2"
+          bg="success.950"
+          borderWidth="1px"
+          borderColor="success.800"
+          borderLeftWidth="3px"
+          borderLeftColor="success.400"
+          align="center"
+          justify="space-between"
+        >
+          <Flex align="center" gap="6px" minW="0" color="success.400">
+            <Music size={13} />
+            <Text fontSize="11px" color="success.400" fontWeight="600" overflow="hidden" whiteSpace="nowrap" textOverflow="ellipsis">
+              {studioEdits.music.title ?? "Music applied"}
+            </Text>
+          </Flex>
+          <Box
+            as="button"
+            aria-label="Remove music"
+            color="studio.fgMuted"
+            cursor="pointer"
+            _hover={{ color: "studio.fg" }}
+            transition="color 120ms ease"
+            onClick={clearMusic}
+          >
+            <X size={13} />
+          </Box>
+        </Flex>
+      ) : null}
+
+      {/* Secondary action — Export owns the view's solid button */}
+      <Flex
+        as="button"
+        align="center"
+        justify="center"
+        h="34px"
+        borderRadius="l2"
+        bg="studio.raised"
+        borderWidth="1px"
+        borderColor="studio.borderStrong"
+        color="studio.fg"
+        fontSize="12px"
+        fontWeight="600"
+        cursor="pointer"
+        gap="6px"
+        _hover={{ borderColor: "studio.fgSubtle" }}
+        transition="border-color 120ms ease"
+        onClick={applyMusic}
+      >
+        <Music size={13} />
+        Apply music
+      </Flex>
     </Stack>
   );
 }

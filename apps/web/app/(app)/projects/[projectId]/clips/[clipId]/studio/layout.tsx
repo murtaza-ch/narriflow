@@ -1,21 +1,25 @@
 "use client";
 
-import { ColorModeProvider } from "@narriflow/ui/components/color-mode";
 import { Box } from "@chakra-ui/react";
 
+/**
+ * Studio chrome is permanently graphite (mode-invariant): the `dark` class
+ * pins Chakra's semantic tokens to their dark values, and studio.* static
+ * tokens carry the chrome mapping.
+ */
 export default function StudioLayout({ children }: { children: React.ReactNode }) {
   return (
-    <ColorModeProvider forcedTheme="dark">
-      <Box
-        position="fixed"
-        inset="0"
-        zIndex={200}
-        bg="#0c0c0c"
-        color="#EDEDED"
-        overflow="hidden"
-      >
-        {children}
-      </Box>
-    </ColorModeProvider>
+    <Box
+      className="dark"
+      data-theme="dark"
+      position="fixed"
+      inset="0"
+      zIndex={200}
+      bg="studio.canvas"
+      color="studio.fg"
+      overflow="hidden"
+    >
+      {children}
+    </Box>
   );
 }

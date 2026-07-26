@@ -1,11 +1,28 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Button } from "@narriflow/ui/components/button";
-import type { CaptionPreset } from "@narriflow/validators";
-import { Box, Flex, Stack, Text, HStack } from "@chakra-ui/react";
-import { Check, Loader, RotateCcw } from "lucide-react";
+import { motion, useReducedMotion } from "framer-motion";
+import { Box, Flex, Grid, Stack, Text } from "@chakra-ui/react";
+import { Check, Info, RotateCcw } from "lucide-react";
+import {
+  Button,
+  ColorSwatchField,
+  PhoneFrame,
+  SegmentedControl,
+  Select,
+  Slider,
+  Spinner,
+  Switch,
+  toaster,
+} from "@narriflow/ui";
+import {
+  CAPTION_CHUNK_SIZE,
+  CAPTION_POSITION_Y_DEFAULTS,
+  DEFAULT_CAPTION_PRESET,
+  emojiForWord,
+  type CaptionPreset,
+} from "@narriflow/validators";
 
 const FONT_OPTIONS = [
   "Arial",
@@ -17,30 +34,106 @@ const FONT_OPTIONS = [
   "Bebas Neue",
 ];
 
-const DEFAULT_PRESET: CaptionPreset = {
-  fontName: "Arial",
-  primaryColor: "#FFFFFF",
-  outlineColor: "#000000",
-  outlineWidth: 2,
-  shadow: 1,
-  bold: true,
-  position: "bottom",
-  highlightColor: "#00FF88",
-  animation: "word-by-word",
-  fontSize: 36,
-};
+const ANIMATION_OPTIONS: Array<{
+  label: string;
+  value: CaptionPreset["animation"];
+}> = [
+  { label: "None", value: "none" },
+  { label: "Word by word", value: "word-by-word" },
+  { label: "Karaoke", value: "karaoke" },
+  { label: "Bounce", value: "bounce" },
+  { label: "Blur in", value: "blur-in" },
+  { label: "Grow", value: "grow" },
+  { label: "Breathe", value: "breathe" },
+  { label: "Soft landing", value: "soft-landing" },
+  { label: "Glitch", value: "glitch" },
+  { label: "Seamless bounce", value: "seamless-bounce" },
+];
 
-function ColorSwatch({ color }: { color: string }) {
+const TEXT_TRANSFORM_OPTIONS: Array<{
+  label: string;
+  value: CaptionPreset["textTransform"];
+}> = [
+  { label: "None", value: "none" },
+  { label: "UPPER", value: "uppercase" },
+  { label: "lower", value: "lowercase" },
+  { label: "Title", value: "capitalize" },
+];
+
+const POSITION_OPTIONS: Array<{
+  label: string;
+  value: CaptionPreset["position"];
+}> = [
+  { label: "Bottom", value: "bottom" },
+  { label: "Center", value: "center" },
+  { label: "Top", value: "top" },
+];
+
+// User caption color values are intentionally literal hex (design-language exception).
+const TEXT_SWATCHES = ["#FFFFFF", "#000000", "#FFE100", "#00F5FF", "#FF6B6B", "#AAFF00"];
+const HIGHLIGHT_SWATCHES = ["#00FF88", "#FFFFFF", "#FFD93D", "#FF00FF", "#7FFF00", "#FF1744"];
+const OUTLINE_SWATCHES = ["#000000", "#FFFFFF", "#1A1A2E", "#003300", "#2D1B14", "#4A2040"];
+
+/** The subset of the preset this form edits directly. */
+type EditableFields = Pick<
+  CaptionPreset,
+  | "fontName"
+  | "fontSize"
+  | "textTransform"
+  | "letterSpacing"
+  | "bold"
+  | "primaryColor"
+  | "outlineColor"
+  | "outlineWidth"
+  | "shadow"
+  | "highlightColor"
+  | "position"
+  | "animation"
+>;
+
+function fieldsFrom(preset: CaptionPreset | null | undefined): EditableFields {
+  const base = preset ?? DEFAULT_CAPTION_PRESET;
+  return {
+    fontName: base.fontName ?? DEFAULT_CAPTION_PRESET.fontName,
+    fontSize: base.fontSize ?? DEFAULT_CAPTION_PRESET.fontSize,
+    textTransform: base.textTransform ?? DEFAULT_CAPTION_PRESET.textTransform,
+    letterSpacing: base.letterSpacing ?? DEFAULT_CAPTION_PRESET.letterSpacing,
+    bold: base.bold ?? DEFAULT_CAPTION_PRESET.bold,
+    primaryColor: base.primaryColor ?? DEFAULT_CAPTION_PRESET.primaryColor,
+    outlineColor: base.outlineColor ?? DEFAULT_CAPTION_PRESET.outlineColor,
+    outlineWidth: base.outlineWidth ?? DEFAULT_CAPTION_PRESET.outlineWidth,
+    shadow: base.shadow ?? DEFAULT_CAPTION_PRESET.shadow,
+    highlightColor: base.highlightColor ?? DEFAULT_CAPTION_PRESET.highlightColor,
+    position: base.position ?? DEFAULT_CAPTION_PRESET.position,
+    animation: base.animation ?? DEFAULT_CAPTION_PRESET.animation,
+  };
+}
+
+/** PageHeader-style control band: eyebrow above a 1.5px ink rule. */
+function ControlBand({
+  title,
+  children,
+}: {
+  title: string;
+  children: React.ReactNode;
+}) {
   return (
-    <Box
-      w="20px"
-      h="20px"
-      borderRadius="4px"
-      borderWidth="1px"
-      borderColor="border"
-      bg={color}
-      flexShrink={0}
-    />
+    <Box as="section">
+      <Text textStyle="eyebrow" color="fg.subtle" mb="2">
+        {title}
+      </Text>
+      <Box layerStyle="band">
+        <Stack gap="5">{children}</Stack>
+      </Box>
+    </Box>
+  );
+}
+
+function FieldLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <Text fontSize="13px" fontWeight="500" color="fg" mb="1.5">
+      {children}
+    </Text>
   );
 }
 
@@ -56,54 +149,32 @@ export function CaptionPresetForm({
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
 
-  const [fontName, setFontName] = useState(
-    initialPreset?.fontName ?? DEFAULT_PRESET.fontName,
+  const [fields, setFields] = useState<EditableFields>(() =>
+    fieldsFrom(initialPreset),
   );
-  const [primaryColor, setPrimaryColor] = useState(
-    initialPreset?.primaryColor ?? DEFAULT_PRESET.primaryColor,
+  const [savedFields, setSavedFields] = useState<EditableFields>(fields);
+
+  const dirty = useMemo(
+    () => JSON.stringify(fields) !== JSON.stringify(savedFields),
+    [fields, savedFields],
   );
-  const [outlineColor, setOutlineColor] = useState(
-    initialPreset?.outlineColor ?? DEFAULT_PRESET.outlineColor,
-  );
-  const [outlineWidth, setOutlineWidth] = useState(
-    initialPreset?.outlineWidth ?? DEFAULT_PRESET.outlineWidth,
-  );
-  const [shadow, setShadow] = useState(
-    initialPreset?.shadow ?? DEFAULT_PRESET.shadow,
-  );
-  const [bold, setBold] = useState(
-    initialPreset?.bold ?? DEFAULT_PRESET.bold,
-  );
-  const [position, setPosition] = useState<"bottom" | "top" | "center">(
-    initialPreset?.position ?? DEFAULT_PRESET.position,
-  );
-  const [highlightColor, setHighlightColor] = useState(
-    initialPreset?.highlightColor ?? DEFAULT_PRESET.highlightColor,
-  );
-  const [animation, setAnimation] = useState(
-    initialPreset?.animation ?? DEFAULT_PRESET.animation,
+
+  function set(patch: Partial<EditableFields>) {
+    setFields((current) => ({ ...current, ...patch }));
+  }
+
+  // Preserve optional passthrough fields (emojis, positionX/Y, backdrop, glow…)
+  // the studio may have written; this form only overrides what it edits.
+  const previewPreset = useMemo<CaptionPreset>(
+    () => ({ ...(initialPreset ?? {}), ...fields }),
+    [initialPreset, fields],
   );
 
   async function handleSave() {
     setSaving(true);
-    setSaveError(null);
-    setSaved(false);
-
-    const preset: CaptionPreset = {
-      fontName,
-      primaryColor,
-      outlineColor,
-      outlineWidth,
-      shadow,
-      bold,
-      position,
-      highlightColor,
-      animation,
-      fontSize: initialPreset?.fontSize ?? DEFAULT_PRESET.fontSize,
-    };
+    const snapshot = fields;
 
     try {
       const response = await fetch(
@@ -111,268 +182,456 @@ export function CaptionPresetForm({
         {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ captionPreset: preset }),
+          body: JSON.stringify({ captionPreset: previewPreset }),
         },
       );
 
       if (!response.ok) {
         const data = (await response.json()) as { error?: string };
-        setSaveError(data.error ?? "Failed to save");
+        toaster.create({
+          type: "error",
+          title: "Couldn't save preset",
+          description: data.error ?? "Something went wrong. Try again.",
+        });
         return;
       }
 
+      setSavedFields(snapshot);
       setSaved(true);
+      toaster.create({
+        type: "success",
+        title: "Caption preset saved",
+        description: "Applies to new renders of this clip.",
+      });
       startTransition(() => {
         router.refresh();
       });
     } catch {
-      setSaveError("Network error");
+      toaster.create({
+        type: "error",
+        title: "Couldn't save preset",
+        description: "Network error. Check your connection and try again.",
+      });
     } finally {
       setSaving(false);
     }
   }
 
   function handleReset() {
-    setFontName(DEFAULT_PRESET.fontName);
-    setPrimaryColor(DEFAULT_PRESET.primaryColor);
-    setOutlineColor(DEFAULT_PRESET.outlineColor);
-    setOutlineWidth(DEFAULT_PRESET.outlineWidth);
-    setShadow(DEFAULT_PRESET.shadow);
-    setBold(DEFAULT_PRESET.bold);
-    setPosition(DEFAULT_PRESET.position);
-    setHighlightColor(DEFAULT_PRESET.highlightColor);
-    setAnimation(DEFAULT_PRESET.animation);
-    setSaved(false);
+    setFields(fieldsFrom(DEFAULT_CAPTION_PRESET));
   }
 
-  const inputStyle = {
-    padding: "6px 10px",
-    fontSize: "13px",
-    borderRadius: "6px",
-    border: "1px solid var(--chakra-colors-border)",
-    background: "transparent",
-    color: "inherit",
-    width: "100%",
-  } as const;
+  const showSavedState = saved && !dirty;
 
   return (
-    <Stack gap="20px">
-      {/* Font */}
-      <Box>
-        <Text fontSize="12px" fontWeight="500" color="fg.muted" mb="6px">
-          Font
-        </Text>
-        <select
-          value={fontName}
-          onChange={(e) => setFontName(e.target.value)}
-          style={{ ...inputStyle, maxWidth: "240px" }}
-        >
-          {FONT_OPTIONS.map((font) => (
-            <option key={font} value={font}>
-              {font}
-            </option>
-          ))}
-        </select>
-      </Box>
-
-      {/* Text color */}
-      <Box>
-        <Text fontSize="12px" fontWeight="500" color="fg.muted" mb="6px">
-          Text color
-        </Text>
-        <HStack gap="8px">
-          <ColorSwatch color={primaryColor} />
-          <input
-            type="color"
-            value={primaryColor}
-            onChange={(e) => setPrimaryColor(e.target.value)}
-            style={{ width: "40px", height: "28px", cursor: "pointer", borderRadius: "4px" }}
-          />
-          <input
-            type="text"
-            value={primaryColor}
-            onChange={(e) => {
-              const v = e.target.value;
-              if (/^#[0-9A-Fa-f]{0,6}$/.test(v)) setPrimaryColor(v);
-            }}
-            style={{ ...inputStyle, maxWidth: "100px", fontFamily: "monospace" }}
-          />
-        </HStack>
-      </Box>
-
-      {/* Outline color */}
-      <Box>
-        <Text fontSize="12px" fontWeight="500" color="fg.muted" mb="6px">
-          Outline color
-        </Text>
-        <HStack gap="8px">
-          <ColorSwatch color={outlineColor} />
-          <input
-            type="color"
-            value={outlineColor}
-            onChange={(e) => setOutlineColor(e.target.value)}
-            style={{ width: "40px", height: "28px", cursor: "pointer", borderRadius: "4px" }}
-          />
-          <input
-            type="text"
-            value={outlineColor}
-            onChange={(e) => {
-              const v = e.target.value;
-              if (/^#[0-9A-Fa-f]{0,6}$/.test(v)) setOutlineColor(v);
-            }}
-            style={{ ...inputStyle, maxWidth: "100px", fontFamily: "monospace" }}
-          />
-        </HStack>
-      </Box>
-
-      {/* Outline width */}
-      <Box>
-        <Text fontSize="12px" fontWeight="500" color="fg.muted" mb="6px">
-          Outline width (0–4)
-        </Text>
-        <input
-          type="number"
-          min={0}
-          max={4}
-          step={1}
-          value={outlineWidth}
-          onChange={(e) => setOutlineWidth(Number(e.target.value))}
-          style={{ ...inputStyle, maxWidth: "80px" }}
-        />
-      </Box>
-
-      {/* Bold + Shadow + Position */}
-      <Flex gap="24px" flexWrap="wrap">
-        <Box>
-          <Text fontSize="12px" fontWeight="500" color="fg.muted" mb="6px">
-            Bold
-          </Text>
-          <Flex as="label" align="center" gap="8px" cursor="pointer">
-            <input
-              type="checkbox"
-              checked={bold}
-              onChange={(e) => setBold(e.target.checked)}
-            />
-            <Text fontSize="13px" color="fg">
-              Bold text
-            </Text>
-          </Flex>
-        </Box>
-
-        <Box>
-          <Text fontSize="12px" fontWeight="500" color="fg.muted" mb="6px">
-            Drop shadow
-          </Text>
-          <Flex as="label" align="center" gap="8px" cursor="pointer">
-            <input
-              type="checkbox"
-              checked={shadow === 1}
-              onChange={(e) => setShadow(e.target.checked ? 1 : 0)}
-            />
-            <Text fontSize="13px" color="fg">
-              Enable shadow
-            </Text>
-          </Flex>
-        </Box>
-
-        <Box>
-          <Text fontSize="12px" fontWeight="500" color="fg.muted" mb="6px">
-            Position
-          </Text>
-          <select
-            value={position}
-            onChange={(e) => setPosition(e.target.value as "bottom" | "top" | "center")}
-            style={{ ...inputStyle, maxWidth: "160px" }}
-          >
-            <option value="bottom">Bottom</option>
-            <option value="center">Center</option>
-            <option value="top">Top</option>
-          </select>
-        </Box>
-      </Flex>
-
-      {/* Highlight color */}
-      <Box>
-        <Text fontSize="12px" fontWeight="500" color="fg.muted" mb="6px">
-          Highlight color
-        </Text>
-        <HStack gap="8px">
-          <ColorSwatch color={highlightColor} />
-          <input
-            type="color"
-            value={highlightColor}
-            onChange={(e) => setHighlightColor(e.target.value)}
-            style={{ width: "40px", height: "28px", cursor: "pointer", borderRadius: "4px" }}
-          />
-          <input
-            type="text"
-            value={highlightColor}
-            onChange={(e) => {
-              const v = e.target.value;
-              if (/^#[0-9A-Fa-f]{0,6}$/.test(v)) setHighlightColor(v);
-            }}
-            style={{ ...inputStyle, maxWidth: "100px", fontFamily: "monospace" }}
-          />
-        </HStack>
-      </Box>
-
-      {/* Animation */}
-      <Box>
-        <Text fontSize="12px" fontWeight="500" color="fg.muted" mb="6px">
-          Caption animation
-        </Text>
-        <select
-          value={animation}
-          onChange={(e) => setAnimation(e.target.value as CaptionPreset["animation"])}
-          style={{ ...inputStyle, maxWidth: "200px" }}
-        >
-          <option value="none">None</option>
-          <option value="word-by-word">Word by word</option>
-          <option value="karaoke">Karaoke</option>
-          <option value="bounce">Bounce</option>
-        </select>
-      </Box>
-
-      {/* Preview hint */}
+    <Grid
+      templateColumns={{ base: "1fr", lg: "minmax(0, 1fr) 320px" }}
+      gap={{ base: "8", lg: "12" }}
+      alignItems="start"
+    >
+      {/* ── Preview (first on mobile, sticky right on desktop) ── */}
       <Box
-        px="12px"
-        py="10px"
-        borderRadius="8px"
-        bg="bg.muted"
-        borderWidth="1px"
-        borderColor="border"
+        order={{ base: 1, lg: 2 }}
+        position={{ base: "static", lg: "sticky" }}
+        top={{ lg: "8" }}
+        justifySelf={{ base: "center", lg: "end" }}
       >
-        <Text fontSize="12px" color="fg.muted">
-          Changes apply to new renders. Re-render the clip after saving to see the updated captions.
-        </Text>
+        <Stack gap="3" align="center">
+          <PhoneFrame width={{ base: "240px", lg: "300px" }}>
+            <CuePreview preset={previewPreset} />
+          </PhoneFrame>
+          <Text textStyle="data" fontSize="11px" color="fg.subtle">
+            9:16 · 1080×1920
+          </Text>
+          <Flex gap="2" align="flex-start" maxW="300px">
+            <Box color="fg.muted" flexShrink={0} mt="1px">
+              <Info size={13} aria-hidden />
+            </Box>
+            <Text fontSize="12px" color="fg.muted">
+              Preview uses the shared cue model, so burned-in captions match
+              exactly. Changes apply to new renders of this clip.
+            </Text>
+          </Flex>
+        </Stack>
       </Box>
 
-      {saveError && (
-        <Text fontSize="12px" color="danger.fg">
-          {saveError}
-        </Text>
-      )}
+      {/* ── Controls ── */}
+      <Stack gap="8" order={{ base: 2, lg: 1 }} minW="0">
+        <ControlBand title="Typography">
+          <Box w={{ base: "full", sm: "280px" }}>
+            <Select
+              label="Font"
+              size="sm"
+              items={FONT_OPTIONS.map((font) => ({ label: font, value: font }))}
+              value={fields.fontName}
+              onValueChange={(value) => {
+                if (value) set({ fontName: value });
+              }}
+            />
+          </Box>
+          <Box maxW="320px">
+            <Slider
+              label="Font size"
+              showValueText
+              min={8}
+              max={120}
+              step={1}
+              value={fields.fontSize}
+              onValueChange={(value) => {
+                if (typeof value === "number") set({ fontSize: value });
+              }}
+            />
+          </Box>
+          <Box>
+            <FieldLabel>Case</FieldLabel>
+            <SegmentedControl
+              size="sm"
+              items={TEXT_TRANSFORM_OPTIONS}
+              value={fields.textTransform}
+              onValueChange={(value) =>
+                set({ textTransform: value as CaptionPreset["textTransform"] })
+              }
+            />
+          </Box>
+          <Box maxW="320px">
+            <Slider
+              label="Letter spacing (em)"
+              showValueText
+              min={-0.1}
+              max={0.5}
+              step={0.01}
+              value={fields.letterSpacing}
+              onValueChange={(value) => {
+                if (typeof value === "number") set({ letterSpacing: value });
+              }}
+            />
+          </Box>
+          <Switch
+            checked={fields.bold}
+            onCheckedChange={(checked) => set({ bold: checked })}
+          >
+            Bold text
+          </Switch>
+        </ControlBand>
 
-      <Flex gap="8px">
-        <Button
-          size="sm"
-          onClick={handleSave}
-          disabled={saving || isPending}
-        >
-          {saving ? (
-            <Loader size={14} className="animate-spin" />
-          ) : saved ? (
-            <Check size={14} />
-          ) : null}
-          <Text ml={saving || saved ? "4px" : "0"}>
-            {saving ? "Saving..." : saved ? "Saved" : "Save preset"}
-          </Text>
-        </Button>
-        <Button size="sm" variant="outline" onClick={handleReset} disabled={saving}>
-          <RotateCcw size={14} />
-          <Text ml="4px">Reset to defaults</Text>
-        </Button>
-      </Flex>
-    </Stack>
+        <ControlBand title="Colors">
+          <Flex gap="6" wrap="wrap">
+            <ColorSwatchField
+              label="Text"
+              value={fields.primaryColor}
+              onChange={(hex) => set({ primaryColor: hex })}
+              swatches={TEXT_SWATCHES}
+            />
+            <ColorSwatchField
+              label="Highlight"
+              value={fields.highlightColor}
+              onChange={(hex) => set({ highlightColor: hex })}
+              swatches={HIGHLIGHT_SWATCHES}
+            />
+            <ColorSwatchField
+              label="Outline"
+              value={fields.outlineColor}
+              onChange={(hex) => set({ outlineColor: hex })}
+              swatches={OUTLINE_SWATCHES}
+            />
+          </Flex>
+          <Box maxW="320px">
+            <Slider
+              label="Outline width"
+              showValueText
+              min={0}
+              max={4}
+              step={1}
+              value={fields.outlineWidth}
+              onValueChange={(value) => {
+                if (typeof value === "number") set({ outlineWidth: value });
+              }}
+            />
+          </Box>
+          <Switch
+            checked={fields.shadow === 1}
+            onCheckedChange={(checked) => set({ shadow: checked ? 1 : 0 })}
+          >
+            Drop shadow
+          </Switch>
+        </ControlBand>
+
+        <ControlBand title="Placement">
+          <Box>
+            <FieldLabel>Position</FieldLabel>
+            <SegmentedControl
+              size="sm"
+              items={POSITION_OPTIONS}
+              value={fields.position}
+              onValueChange={(value) =>
+                set({ position: value as CaptionPreset["position"] })
+              }
+            />
+          </Box>
+        </ControlBand>
+
+        <ControlBand title="Animation">
+          <Box w={{ base: "full", sm: "280px" }}>
+            <Select
+              label="Style"
+              size="sm"
+              items={ANIMATION_OPTIONS}
+              value={fields.animation}
+              onValueChange={(value) => {
+                if (value) set({ animation: value as CaptionPreset["animation"] });
+              }}
+            />
+          </Box>
+        </ControlBand>
+
+        <Flex gap="2" align="center" pt="1">
+          <Button
+            size="sm"
+            onClick={handleSave}
+            disabled={saving || isPending || !dirty}
+          >
+            {saving ? (
+              <Spinner size="xs" borderColor="transparent" borderTopColor="currentColor" />
+            ) : showSavedState ? (
+              <Check size={14} aria-hidden />
+            ) : null}
+            {saving ? "Saving…" : showSavedState ? "Saved" : "Save preset"}
+          </Button>
+          <Button size="sm" variant="ghost" onClick={handleReset} disabled={saving}>
+            <RotateCcw size={14} aria-hidden />
+            Reset to defaults
+          </Button>
+        </Flex>
+      </Stack>
+    </Grid>
+  );
+}
+
+// ─── WYSIWYG cue preview ─────────────────────────────────────────────────────
+
+/** Burn-in render width for 9:16 output; preview scales font size against it. */
+const RENDER_WIDTH = 1080;
+
+/** One cue's worth of sample words — sized by the shared cue model. */
+const SAMPLE_CUE = ["Make", "every", "word", "count"].slice(
+  0,
+  CAPTION_CHUNK_SIZE,
+);
+
+const WORD_CYCLE_MS = 700;
+
+function hexToRgba(hex: string, opacity: number): string {
+  const clean = hex.replace("#", "");
+  const r = parseInt(clean.slice(0, 2), 16);
+  const g = parseInt(clean.slice(2, 4), 16);
+  const b = parseInt(clean.slice(4, 6), 16);
+  return `rgba(${r}, ${g}, ${b}, ${opacity})`;
+}
+
+/**
+ * Entrance-animation props per caption animation style. Mirrors the studio
+ * overlay's factory so the sample cue previews the same motion the burn-in
+ * (and studio) produce.
+ */
+function getWordMotionProps(
+  animation: string,
+  isActive: boolean,
+  index: number,
+): Record<string, unknown> {
+  const stagger = index * 0.08;
+
+  switch (animation) {
+    case "blur-in":
+      return {
+        initial: { filter: "blur(10px)", opacity: 0 },
+        animate: { filter: "blur(0px)", opacity: 1 },
+        transition: { duration: 0.4, ease: "easeOut", delay: stagger },
+      };
+    case "grow":
+      return {
+        initial: { scale: 0.2, opacity: 0 },
+        animate: { scale: 1, opacity: 1 },
+        transition: { type: "spring", stiffness: 260, damping: 20, delay: stagger },
+      };
+    case "breathe":
+      return isActive
+        ? {
+            animate: { scale: [1, 1.08, 1] },
+            transition: { repeat: Infinity, duration: 1.2, ease: "easeInOut" },
+          }
+        : {};
+    case "soft-landing":
+      return {
+        initial: { y: -20, opacity: 0 },
+        animate: { y: 0, opacity: 1 },
+        transition: { duration: 0.5, ease: [0.22, 1, 0.36, 1], delay: stagger },
+      };
+    case "glitch":
+      return {
+        initial: { opacity: 0 },
+        animate: { opacity: 1, x: [0, -3, 4, -2, 0], skewX: [0, -5, 3, -1, 0] },
+        transition: { duration: 0.35, delay: stagger },
+      };
+    case "seamless-bounce":
+      return {
+        initial: { y: 12, opacity: 0, scale: 0.95 },
+        animate: { y: 0, opacity: 1, scale: 1 },
+        transition: { type: "spring", stiffness: 300, damping: 15, delay: stagger },
+      };
+    case "bounce":
+      return {
+        initial: { y: 10, opacity: 0 },
+        animate: { y: 0, opacity: 1 },
+        transition: { type: "spring", stiffness: 400, damping: 10, delay: stagger },
+      };
+    default:
+      return {};
+  }
+}
+
+function CuePreview({ preset }: { preset: CaptionPreset }) {
+  const reducedMotion = useReducedMotion();
+  const frameRef = useRef<HTMLDivElement | null>(null);
+  const [frameWidth, setFrameWidth] = useState(0);
+  const [tick, setTick] = useState(0);
+
+  useEffect(() => {
+    const el = frameRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver((entries) => {
+      setFrameWidth(entries[0]?.contentRect.width ?? 0);
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (reducedMotion) return;
+    const id = setInterval(() => setTick((t) => t + 1), WORD_CYCLE_MS);
+    return () => clearInterval(id);
+  }, [reducedMotion]);
+
+  const activeIndex = tick % SAMPLE_CUE.length;
+  const cueKey = Math.floor(tick / SAMPLE_CUE.length);
+
+  // Same display scaling the studio overlay uses: raw preset px × frame/1080.
+  const displayFontSize =
+    frameWidth > 0
+      ? preset.fontSize * (frameWidth / RENDER_WIDTH)
+      : preset.fontSize * 0.26;
+
+  // Build text-shadow exactly like the studio overlay (outline + shadow + glow).
+  const shadowParts: string[] = [];
+  if (preset.outlineWidth > 0) {
+    for (let x = -preset.outlineWidth; x <= preset.outlineWidth; x++) {
+      for (let y = -preset.outlineWidth; y <= preset.outlineWidth; y++) {
+        if (x === 0 && y === 0) continue;
+        shadowParts.push(`${x}px ${y}px 0 ${preset.outlineColor}`);
+      }
+    }
+  }
+  if (preset.shadow) {
+    shadowParts.push("0 2px 8px rgba(0,0,0,0.9)");
+  }
+  if (preset.glowColor) {
+    const intensity = preset.glowIntensity ?? 8;
+    shadowParts.push(`0 0 ${intensity}px ${preset.glowColor}`);
+    shadowParts.push(`0 0 ${intensity * 2}px ${preset.glowColor}40`);
+  }
+  const textShadow = shadowParts.length > 0 ? shadowParts.join(", ") : undefined;
+
+  const posY = preset.positionY ?? CAPTION_POSITION_Y_DEFAULTS[preset.position];
+  const posX = preset.positionX ?? 50;
+
+  const accumulateWords = preset.animation === "word-by-word" && !reducedMotion;
+  const visibleCount = accumulateWords ? activeIndex + 1 : SAMPLE_CUE.length;
+  const hasBackdrop = Boolean(preset.backgroundColor);
+  const hasHighlightBox = Boolean(preset.highlightBoxColor);
+
+  return (
+    <Box ref={frameRef} position="absolute" inset="0" aria-hidden>
+      <Box
+        position="absolute"
+        maxW="94%"
+        style={{
+          top: `${posY}%`,
+          left: `${posX}%`,
+          transform: "translate(-50%, -50%)",
+        }}
+      >
+        <Box position="relative">
+          {hasBackdrop && (
+            <Box
+              position="absolute"
+              inset="-6px -10px"
+              borderRadius="6px"
+              pointerEvents="none"
+              style={{
+                backgroundColor: hexToRgba(
+                  preset.backgroundColor!,
+                  preset.backgroundOpacity ?? 0.6,
+                ),
+              }}
+            />
+          )}
+          <Flex gap="4px" align="center" justify="center" position="relative" zIndex={1}>
+            {SAMPLE_CUE.slice(0, visibleCount).map((word, i) => {
+              const isActive = i === activeIndex;
+              const motionProps = reducedMotion
+                ? {}
+                : getWordMotionProps(preset.animation, isActive, i);
+              const showBox = hasHighlightBox && isActive;
+
+              return (
+                <Box
+                  key={`${cueKey}-${preset.animation}-${i}`}
+                  position="relative"
+                  display="inline-flex"
+                >
+                  {showBox && (
+                    <Box
+                      position="absolute"
+                      inset="-2px -4px"
+                      borderRadius="4px"
+                      pointerEvents="none"
+                      style={{
+                        backgroundColor: hexToRgba(
+                          preset.highlightBoxColor!,
+                          preset.highlightBoxOpacity ?? 1,
+                        ),
+                      }}
+                    />
+                  )}
+                  <motion.span
+                    {...motionProps}
+                    style={{
+                      position: "relative",
+                      zIndex: 1,
+                      fontSize: `${displayFontSize}px`,
+                      fontWeight: preset.bold ? 900 : 600,
+                      letterSpacing: `${preset.letterSpacing ?? 0.04}em`,
+                      color: isActive ? preset.highlightColor : preset.primaryColor,
+                      fontFamily: `"${preset.fontName}", Impact, sans-serif`,
+                      textShadow,
+                      textTransform: (preset.textTransform ??
+                        "uppercase") as React.CSSProperties["textTransform"],
+                      transition: "color 80ms ease-out",
+                      whiteSpace: "nowrap",
+                      userSelect: "none",
+                      display: "inline-block",
+                    }}
+                  >
+                    {word}
+                    {preset.emojis && emojiForWord(word)
+                      ? ` ${emojiForWord(word)}`
+                      : ""}
+                  </motion.span>
+                </Box>
+              );
+            })}
+          </Flex>
+        </Box>
+      </Box>
+    </Box>
   );
 }

@@ -1,46 +1,80 @@
 "use client";
 
-import { AspectRatio, Box, Center, Flex, Text } from "@chakra-ui/react";
+import { Box, Center, Flex, Text } from "@chakra-ui/react";
 import Image from "next/image";
-import { Rss, Upload, Youtube } from "lucide-react";
+import { Link2, Rss, Upload, Youtube } from "lucide-react";
 import { useState } from "react";
+import { MediaWell } from "@narriflow/ui/components/media-well";
 import type { ProjectListItem } from "@narriflow/services";
+import { LINK_PROVIDERS } from "@narriflow/validators";
+import { formatDuration } from "@/lib/format";
 import { extractYoutubeId, youtubeThumbnailUrl } from "../_lib/youtube";
 import { gradientForId } from "../_lib/gradient";
-import { formatDuration } from "../_lib/format";
+
+function linkProviderLabel(sourceProvider: string | null | undefined): string {
+  return (
+    LINK_PROVIDERS.find((p) => p.id === sourceProvider)?.label ?? "Link"
+  );
+}
 
 interface ProjectThumbnailProps {
   project: ProjectListItem;
+  /**
+   * "card" — full treatment: source chip + timecode chip.
+   * "sliver" — bare footage for compact list rows.
+   */
+  variant?: "card" | "sliver";
 }
 
 const NOISE_SVG =
   "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='160' height='160'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/></filter><rect width='100%' height='100%' filter='url(%23n)' opacity='0.55'/></svg>\")";
 
-export function ProjectThumbnail({ project }: ProjectThumbnailProps) {
+/**
+ * ProjectThumbnail — footage always sits in a MediaWell (graphite in both
+ * modes), never raw on the page ground.
+ */
+export function ProjectThumbnail({
+  project,
+  variant = "card",
+}: ProjectThumbnailProps) {
   const youtubeId =
     project.sourceType === "youtube"
       ? extractYoutubeId(project.sourceInput, project.sourceMediaUrl)
       : null;
 
-  return (
-    <AspectRatio ratio={16 / 9} bg="bg.muted">
-      <Box position="relative" overflow="hidden">
-        {youtubeId ? (
-          <YoutubeThumb
-            youtubeId={youtubeId}
-            alt={project.title}
-            fallbackId={project.id}
-          />
-        ) : (
-          <GradientThumb
-            projectId={project.id}
-            sourceType={project.sourceType}
-          />
-        )}
+  const durationSeconds =
+    project.sourceDurationSeconds ?? project.transcript?.durationSeconds ?? null;
+  const duration =
+    durationSeconds !== null && durationSeconds >= 0
+      ? formatDuration(durationSeconds)
+      : null;
 
-        <Overlays project={project} />
-      </Box>
-    </AspectRatio>
+  return (
+    <MediaWell
+      ratio={16 / 9}
+      timecode={variant === "card" && duration ? duration : undefined}
+    >
+      {youtubeId ? (
+        <YoutubeThumb
+          youtubeId={youtubeId}
+          alt={project.title}
+          fallbackId={project.id}
+        />
+      ) : (
+        <GradientThumb
+          projectId={project.id}
+          sourceType={project.sourceType}
+          iconSize={variant === "sliver" ? 16 : 32}
+        />
+      )}
+
+      {variant === "card" ? (
+        <SourceChip
+          sourceType={project.sourceType}
+          sourceProvider={project.sourceProvider}
+        />
+      ) : null}
+    </MediaWell>
   );
 }
 
@@ -58,7 +92,9 @@ function YoutubeThumb({
   const [failedAll, setFailedAll] = useState(false);
 
   if (failedAll) {
-    return <GradientThumb projectId={fallbackId} sourceType="youtube" />;
+    return (
+      <GradientThumb projectId={fallbackId} sourceType="youtube" iconSize={32} />
+    );
   }
 
   return (
@@ -67,11 +103,7 @@ function YoutubeThumb({
       alt={alt}
       fill
       sizes="(min-width: 1280px) 25vw, (min-width: 1024px) 33vw, (min-width: 640px) 50vw, 100vw"
-      style={{
-        objectFit: "cover",
-        transition: "transform 400ms cubic-bezier(0.4, 0, 0.2, 1)",
-      }}
-      className="project-thumb-img"
+      style={{ objectFit: "cover" }}
       unoptimized
       onError={() => {
         if (!usedFallback) {
@@ -88,13 +120,21 @@ function YoutubeThumb({
 function GradientThumb({
   projectId,
   sourceType,
+  iconSize,
 }: {
   projectId: string;
   sourceType: ProjectListItem["sourceType"];
+  iconSize: number;
 }) {
   const gradient = gradientForId(projectId);
   const Icon =
-    sourceType === "rss" ? Rss : sourceType === "youtube" ? Youtube : Upload;
+    sourceType === "rss"
+      ? Rss
+      : sourceType === "youtube"
+        ? Youtube
+        : sourceType === "link"
+          ? Link2
+          : Upload;
 
   return (
     <Box
@@ -112,89 +152,56 @@ function GradientThumb({
         backgroundRepeat="repeat"
       />
       <Center position="absolute" inset={0}>
-        <Box
-          color="whiteAlpha.800"
-          opacity={0.85}
-          style={{ filter: "drop-shadow(0 2px 8px rgba(0,0,0,0.35))" }}
-        >
-          <Icon size={36} strokeWidth={1.4} />
+        <Box color="studio.fgMuted">
+          <Icon size={iconSize} strokeWidth={1.4} />
         </Box>
       </Center>
     </Box>
   );
 }
 
-function Overlays({ project }: { project: ProjectListItem }) {
-  const duration = formatDuration(
-    project.sourceDurationSeconds ?? project.transcript?.durationSeconds ?? null,
-  );
-
-  return (
-    <>
-      {duration ? (
-        <Flex
-          position="absolute"
-          bottom="10px"
-          right="10px"
-          align="center"
-          px="8px"
-          py="3px"
-          borderRadius="6px"
-          bg="rgba(0, 0, 0, 0.7)"
-          style={{ backdropFilter: "blur(8px)" }}
-        >
-          <Text
-            fontFamily="mono"
-            fontSize="11px"
-            fontWeight="500"
-            color="white"
-            letterSpacing="0.02em"
-          >
-            {duration}
-          </Text>
-        </Flex>
-      ) : null}
-
-      <SourceChip sourceType={project.sourceType} />
-    </>
-  );
-}
-
 function SourceChip({
   sourceType,
+  sourceProvider,
 }: {
   sourceType: ProjectListItem["sourceType"];
+  sourceProvider?: string | null;
 }) {
-  const config = {
-    youtube: { Icon: Youtube, label: "YouTube" },
-    upload: { Icon: Upload, label: "Upload" },
-    rss: { Icon: Rss, label: "RSS" },
-  } as const;
-  const { Icon, label } = config[sourceType];
+  const Icon = sourceType === "rss" ? Rss : sourceType === "youtube" ? Youtube : sourceType === "link" ? Link2 : Upload;
+  const label =
+    sourceType === "rss"
+      ? "RSS"
+      : sourceType === "youtube"
+        ? "YouTube"
+        : sourceType === "link"
+          ? linkProviderLabel(sourceProvider)
+          : "Upload";
 
   return (
     <Flex
       position="absolute"
-      top="10px"
-      left="10px"
+      top="1.5"
+      left="1.5"
       align="center"
-      gap="5px"
-      px="8px"
-      py="3px"
-      borderRadius="6px"
-      bg="rgba(0, 0, 0, 0.55)"
-      style={{ backdropFilter: "blur(8px)" }}
+      gap="1"
+      px="1.5"
+      py="0.5"
+      borderRadius="l1"
+      // rgba of studio.canvas (#0E1013) — matches MediaWell's sanctioned
+      // mode-invariant chip ground for overlays on footage.
+      bg="rgba(14, 16, 19, 0.72)"
+      pointerEvents="none"
     >
-      <Box color="white" opacity={0.95}>
-        <Icon size={11} strokeWidth={2.2} />
+      <Box color="studio.fg">
+        <Icon size={10} strokeWidth={2.2} />
       </Box>
       <Text
-        fontFamily="mono"
+        textStyle="data"
         fontSize="10px"
-        fontWeight="500"
-        color="white"
-        letterSpacing="0.06em"
+        color="studio.fg"
+        letterSpacing="0.08em"
         textTransform="uppercase"
+        lineHeight="1.4"
       >
         {label}
       </Text>

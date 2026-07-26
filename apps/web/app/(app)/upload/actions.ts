@@ -13,36 +13,19 @@ function readBrandTemplateIdFromForm(formData: FormData): string | null {
   return value && value !== "default" ? value : null;
 }
 
-export async function generateFromUploadAction(formData: FormData) {
+export async function generateFromLinkAction(formData: FormData) {
   const appUser = await requireCurrentAppUser();
-  const projectId = String(formData.get("projectId") ?? "");
-
-  if (!projectId) {
-    throw new Error("projectId is required");
-  }
-
-  await projectService.prepareGenerationContext(
-    appUser.id,
-    projectId,
-    readContentPackFromForm(formData),
-    readLanguageCodeFromForm(formData),
-  );
-
-  revalidatePath(`/projects/${projectId}`);
-  return { projectId };
-}
-
-export async function generateFromYoutubeAction(formData: FormData) {
-  const appUser = await requireCurrentAppUser();
-  const youtubeUrl = String(formData.get("youtubeUrl") ?? "").trim();
+  const url = String(formData.get("url") ?? "").trim();
   const titleRaw = String(formData.get("title") ?? "").trim();
 
-  if (!youtubeUrl) {
-    throw new Error("youtubeUrl is required");
+  if (!url) {
+    throw new Error("url is required");
   }
 
-  const ingest = await projectService.queueYoutubeIngest(appUser.id, {
-    youtubeUrl,
+  await projectService.assertWithinQuota(appUser.id);
+
+  const ingest = await projectService.queueLinkIngest(appUser.id, {
+    url,
     title: titleRaw || undefined,
     brandTemplateId: readBrandTemplateIdFromForm(formData),
   });
@@ -67,6 +50,8 @@ export async function generateFromRssAction(formData: FormData) {
   if (!rssUrl) {
     throw new Error("rssUrl is required");
   }
+
+  await projectService.assertWithinQuota(appUser.id);
 
   let episodes: Array<{
     id: string;

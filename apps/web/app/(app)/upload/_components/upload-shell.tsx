@@ -1,35 +1,117 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useRouter } from "next/navigation";
-import { Box, Flex, Grid, HStack, Stack, Tabs, Text } from "@chakra-ui/react";
-import { Upload, Video, Rss } from "lucide-react";
+import { Box, chakra, Flex, Grid, HStack, Stack, Text } from "@chakra-ui/react";
+import { AlertTriangle, Check, Info, Link2, Upload } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { Input } from "@narriflow/ui/components/input";
-import { Progress } from "@narriflow/ui/components/progress";
+import { Meter } from "@narriflow/ui/components/meter";
+import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
+import { Spinner } from "@narriflow/ui/components/spinner";
+import { Radio, RadioGroup } from "@narriflow/ui/components/radio";
+import { toaster } from "@narriflow/ui/components/toaster";
 import type {
+  CaptionPresetId,
   BrandTemplateSummary,
   ClipLengthPreset,
+  ClipPlatformTarget,
   GenerationMode,
+  LinkProviderId,
 } from "@narriflow/validators";
+import {
+  BRAND_DEFAULT_CAPTION_PRESET_ID,
+  detectLinkProvider,
+  LINK_PROVIDERS,
+} from "@narriflow/validators";
+import { formatDate, formatDuration } from "@/lib/format";
 import { LanguageSelect } from "./language-select";
 import { ModeTabs } from "./mode-tabs";
-import { ProcessingTimeline } from "./processing-timeline";
+import { ProcessingTimeline } from "../../_shared/processing-timeline";
 import { ClipSettingsForm } from "./clip-settings-form";
+import { CaptionPresetSelect } from "../../_shared/caption-preset-select";
 import { VideoPreview } from "./video-preview";
 import { RecommendationCard } from "./recommendation-card";
 import { BrandTemplatePicker } from "./brand-template-picker";
 import {
-  generateFromUploadAction,
-  generateFromYoutubeAction,
+  buildUploadGenerationContext,
+  buildUploadSettingsFormData,
+} from "../_lib/content-pack-form";
+import {
+  createUploadFileFingerprint,
+  decideUploadInitialization,
+  loadUploadResume,
+  safelyGetUploadResumeStorage,
+  saveUploadResume,
+  UPLOAD_RESUME_VERSION,
+  validateMultipartEtags,
+  type UploadInitializationDecision,
+  type UploadResumeSession,
+} from "../_lib/upload-resume";
+import {
+  generateFromLinkAction,
   generateFromRssAction,
 } from "../actions";
 
-type TabId = "file" | "youtube" | "rss";
+type TabId = "file" | "link" | "rss";
+type PasteOverride = "auto" | "link" | "rss";
+type UploadStage = "prepare" | "upload" | "finalize";
 
 const CHUNK_SIZE = 8 * 1024 * 1024;
-const SESSION_STORAGE_KEY = "narriflow.upload.session.v1";
+const MAX_UPLOAD_BYTES = 5 * 1024 * 1024 * 1024; // 5 GB
+const PART_CONCURRENCY = 4;
+const MAX_PART_RETRIES = 3;
 
+const FILE_ACCEPT =
+  "video/mp4,video/quicktime,video/webm,video/x-matroska,audio/mpeg,audio/wav,audio/x-wav,audio/mp4,audio/aac";
+
+/** Human-readable labels for the supported providers, joined for hints. */
+const LINK_PROVIDER_LABELS_JOINED = LINK_PROVIDERS.map((p) => p.label).join(" · ");
+
+function linkProviderLabel(provider: LinkProviderId): string {
+  return LINK_PROVIDERS.find((p) => p.id === provider)?.label ?? "Link";
+}
+
+function looksLikeUrl(value: string): boolean {
+  return /^https?:\/\/\S+\.\S+/i.test(value.trim());
+}
+
+/** Uploads one multipart part with bounded retries + backoff. Returns its ETag. */
+async function uploadPartWithRetry(
+  partNumber: number,
+  url: string,
+  blob: Blob,
+  signal: AbortSignal,
+): Promise<string> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= MAX_PART_RETRIES; attempt += 1) {
+    try {
+      const putRes = await fetch(url, { method: "PUT", body: blob, signal });
+      if (!putRes.ok) {
+        throw new Error(`Part ${partNumber} failed (HTTP ${putRes.status})`);
+      }
+      const etag = putRes.headers.get("ETag") ?? putRes.headers.get("etag");
+      if (!etag) throw new Error(`Missing ETag for part ${partNumber}`);
+      return etag.replaceAll('"', "");
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") throw error;
+      lastError = error;
+      if (attempt < MAX_PART_RETRIES) {
+        await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+      }
+    }
+  }
+  throw lastError instanceof Error
+    ? lastError
+    : new Error(`Part ${partNumber} upload failed after ${MAX_PART_RETRIES} attempts`);
+}
 type RssEpisode = {
   id: string;
   title: string;
@@ -39,69 +121,120 @@ type RssEpisode = {
   mimeType?: string | null;
 };
 
-type UploadSession = {
-  fingerprint: string;
-  projectId: string;
-  uploadId: string;
-  key: string;
-  fileName: string;
-  title: string;
-};
+/** Section band: eyebrow above a 1.5px ink top-rule, content below. */
+function SettingsBand({
+  eyebrow,
+  children,
+}: {
+  eyebrow?: string;
+  children: ReactNode;
+}) {
+  return (
+    <Box>
+      {eyebrow && (
+        <Text textStyle="eyebrow" color="fg.subtle" mb="2">
+          {eyebrow}
+        </Text>
+      )}
+      <Box layerStyle="band">{children}</Box>
+    </Box>
+  );
+}
 
-const tabs: { id: TabId; label: string; icon: React.ReactNode }[] = [
-  { id: "file", label: "File", icon: <Upload size={14} /> },
-  { id: "youtube", label: "YouTube URL", icon: <Video size={14} /> },
-  { id: "rss", label: "RSS feed", icon: <Rss size={14} /> },
+/** Failure notice: 3px danger stripe + icon + danger text — never muted small text. */
+function ErrorNotice({ message }: { message: string }) {
+  return (
+    <Flex
+      role="alert"
+      align="center"
+      gap="2.5"
+      px="3"
+      py="2.5"
+      bg="danger.subtle"
+      borderRadius="l2"
+      position="relative"
+      overflow="hidden"
+    >
+      <Box
+        position="absolute"
+        insetInlineStart="0"
+        top="0"
+        bottom="0"
+        w="3px"
+        bg="danger.solid"
+      />
+      <Box color="danger.fg" flexShrink={0}>
+        <AlertTriangle size={14} strokeWidth={2} />
+      </Box>
+      <Text fontSize="12.5px" fontWeight="500" color="danger.fg">
+        {message}
+      </Text>
+    </Flex>
+  );
+}
+
+const UPLOAD_STAGES: { id: UploadStage; label: string }[] = [
+  { id: "prepare", label: "Prepare" },
+  { id: "upload", label: "Upload" },
+  { id: "finalize", label: "Finalize" },
 ];
 
-function getFileFingerprint(file: File) {
-  return `${file.name}:${file.size}:${file.lastModified}`;
-}
-
-function loadUploadSession(fingerprint: string): UploadSession | null {
-  try {
-    const raw = localStorage.getItem(SESSION_STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as UploadSession;
-    return parsed.fingerprint === fingerprint ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-function saveUploadSession(session: UploadSession | null) {
-  if (!session) {
-    localStorage.removeItem(SESSION_STORAGE_KEY);
-    return;
-  }
-  localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(session));
-}
-
-function buildFormData(input: {
-  languageCode: string;
-  mode: GenerationMode;
-  clipLengthPreset: ClipLengthPreset;
-  autoHook: boolean;
-  specificMoments: string;
-  processingStartSec: number;
-  processingEndSec: number;
-  brandTemplateId: string | null;
+/** The upload as a designed moment: Prepare → Upload → Finalize staged meter. */
+function UploadStages({
+  stage,
+  progress,
+  throughput,
+}: {
+  stage: UploadStage;
+  progress: number;
+  throughput: { mbps: number; etaSec: number | null } | null;
 }) {
-  const formData = new FormData();
-  formData.set("languageCode", input.languageCode);
-  formData.set("mode", input.mode);
-  formData.set("clipLengthPreset", input.clipLengthPreset);
-  if (input.autoHook) formData.set("autoHook", "on");
-  formData.set("specificMoments", input.specificMoments);
-  formData.set("processingStartSec", String(input.processingStartSec));
-  formData.set("processingEndSec", String(input.processingEndSec));
-  if (input.brandTemplateId) {
-    formData.set("brandTemplateId", input.brandTemplateId);
-  }
-  // Defaults so the contentPack schema is happy:
-  formData.set("clipCountTarget", "10");
-  formData.set("toneConstraints", "concise, conversational");
-  return formData;
+  const activeIndex = UPLOAD_STAGES.findIndex((s) => s.id === stage);
+  return (
+    <Stack gap="2.5" aria-live="polite">
+      <Flex gap="5" wrap="wrap">
+        {UPLOAD_STAGES.map((s, index) => {
+          const state =
+            index < activeIndex
+              ? "done"
+              : index === activeIndex
+                ? "active"
+                : "pending";
+          return (
+            <Flex key={s.id} align="center" gap="1.5">
+              {state === "done" ? (
+                <Box color="success.fg" display="inline-flex">
+                  <Check size={12} strokeWidth={2.5} />
+                </Box>
+              ) : state === "active" ? (
+                <Spinner size="xs" />
+              ) : (
+                <Box w="6px" h="6px" borderRadius="1px" bg="border.emphasized" />
+              )}
+              <Text
+                textStyle="eyebrow"
+                color={state === "pending" ? "fg.subtle" : "fg"}
+              >
+                {s.label}
+              </Text>
+            </Flex>
+          );
+        })}
+      </Flex>
+      {stage === "upload" && (
+        <>
+          <Meter value={progress} />
+          <Text textStyle="data" fontSize="11px" color="fg.muted">
+            {progress}%
+            {throughput ? ` · ${throughput.mbps.toFixed(1)} MB/s` : ""}
+            {throughput?.etaSec != null
+              ? ` · ETA ${formatDuration(throughput.etaSec)}`
+              : ""}
+          </Text>
+        </>
+      )}
+    </Stack>
+  );
 }
 
 interface UploadShellProps {
@@ -110,21 +243,38 @@ interface UploadShellProps {
     mine: BrandTemplateSummary[];
     defaultId: string | null;
   };
+  /** Pre-fills the smart paste field (dashboard links to /upload?url=…). */
+  initialUrl?: string | null;
 }
 
-export function UploadShell({ brandTemplates }: UploadShellProps) {
+export function UploadShell({ brandTemplates, initialUrl }: UploadShellProps) {
   const router = useRouter();
 
+  // A recognized ?url= commits straight to a chosen source; anything else pre-fills the paste field.
+  const initialLinkProvider = initialUrl ? detectLinkProvider(initialUrl.trim()) : null;
+  const initialLinkUrl = initialLinkProvider ? initialUrl!.trim() : "";
+
   // Source state
-  const [activeTab, setActiveTab] = useState<TabId>("file");
+  const [activeTab, setActiveTab] = useState<TabId>(
+    initialLinkUrl ? "link" : "file",
+  );
   const [title, setTitle] = useState("");
   const [file, setFile] = useState<File | null>(null);
-  const [youtubeUrl, setYoutubeUrl] = useState("");
+  const [linkUrl, setLinkUrl] = useState(initialLinkUrl);
+  const [linkProvider, setLinkProvider] = useState<LinkProviderId | null>(
+    initialLinkProvider,
+  );
   const [rssUrl, setRssUrl] = useState("");
+  const [rssCommitted, setRssCommitted] = useState(false);
   const [rssEpisodes, setRssEpisodes] = useState<RssEpisode[]>([]);
   const [selectedEpisodeIds, setSelectedEpisodeIds] = useState<string[]>([]);
   const [rssPreviewLoading, setRssPreviewLoading] = useState(false);
-  const [rssMessage, setRssMessage] = useState<string | null>(null);
+  const [rssNotice, setRssNotice] = useState<string | null>(null);
+  const [rssError, setRssError] = useState<string | null>(null);
+
+  // Smart paste field
+  const [pasteValue, setPasteValue] = useState(initialUrl?.trim() ?? "");
+  const [pasteOverride, setPasteOverride] = useState<PasteOverride>("auto");
 
   // Settings state
   const [languageCode, setLanguageCode] = useState("auto");
@@ -132,20 +282,44 @@ export function UploadShell({ brandTemplates }: UploadShellProps) {
   const [clipLength, setClipLength] = useState<ClipLengthPreset>("auto");
   const [autoHook, setAutoHook] = useState(true);
   const [specificMoments, setSpecificMoments] = useState("");
+  const [captionPreset, setCaptionPreset] = useState<CaptionPresetId>(
+    BRAND_DEFAULT_CAPTION_PRESET_ID,
+  );
   const [durationSec, setDurationSec] = useState<number | null>(null);
   const [startSec, setStartSec] = useState(0);
   const [endSec, setEndSec] = useState(0);
   const [brandTemplateId, setBrandTemplateId] = useState<string | null>(
     brandTemplates.defaultId,
   );
+  const [platformTargets, setPlatformTargets] = useState<ClipPlatformTarget[]>([
+    "tiktok",
+    "youtube_shorts",
+    "instagram_reels",
+  ]);
+  const [clipCountTarget, setClipCountTarget] = useState(10);
+  const [autoRenderClips, setAutoRenderClips] = useState(false);
+  const [toneConstraints, setToneConstraints] = useState(
+    "concise, conversational",
+  );
 
   // Submit / progress
   const [submitting, setSubmitting] = useState(false);
   const [progress, setProgress] = useState(0);
+  const [uploadStage, setUploadStage] = useState<UploadStage | null>(null);
+  const [throughput, setThroughput] = useState<{
+    mbps: number;
+    etaSec: number | null;
+  } | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
-  // Auto-fill title from filename / YouTube URL
+  // Drag & drop state
+  const [dropzoneDragOver, setDropzoneDragOver] = useState(false);
+  const [pageDragActive, setPageDragActive] = useState(false);
+  const dragDepthRef = useRef(0);
+
+  // Auto-fill title from filename
   useEffect(() => {
     if (title.trim()) return;
     if (activeTab === "file" && file) {
@@ -162,8 +336,8 @@ export function UploadShell({ brandTemplates }: UploadShellProps) {
     if (activeTab === "file" && file) {
       return { kind: "file" as const, file };
     }
-    if (activeTab === "youtube" && youtubeUrl.trim()) {
-      return { kind: "youtube" as const, url: youtubeUrl.trim() };
+    if (activeTab === "link" && linkUrl.trim() && linkProvider) {
+      return { kind: "link" as const, url: linkUrl.trim(), provider: linkProvider };
     }
     if (activeTab === "rss" && selectedEpisodes.length > 0) {
       return {
@@ -174,16 +348,16 @@ export function UploadShell({ brandTemplates }: UploadShellProps) {
       };
     }
     return null;
-  }, [activeTab, file, youtubeUrl, selectedEpisodes]);
+  }, [activeTab, file, linkUrl, linkProvider, selectedEpisodes]);
 
   // Reset detected duration whenever the source identity changes so a new file
-  // / YouTube URL / RSS episode triggers fresh detection.
+  // / link URL / RSS episode triggers fresh detection.
   const sourceIdentity = useMemo(() => {
     if (!previewSource) return "";
     if (previewSource.kind === "file") {
       return `file:${previewSource.file.name}:${previewSource.file.size}:${previewSource.file.lastModified}`;
     }
-    if (previewSource.kind === "youtube") return `yt:${previewSource.url}`;
+    if (previewSource.kind === "link") return `link:${previewSource.url}`;
     return `rss:${selectedEpisodes[0]?.id ?? ""}`;
   }, [previewSource, selectedEpisodes]);
 
@@ -202,136 +376,378 @@ export function UploadShell({ brandTemplates }: UploadShellProps) {
     });
   }
 
+  const acceptFile = useCallback((next: File) => {
+    setFile(next);
+    setActiveTab("file");
+    setErrorMessage(null);
+    setDurationSec(null);
+    setStartSec(0);
+    setEndSec(0);
+  }, []);
+
+  // Full-page drop target: dropping anywhere on /upload accepts the file
+  // (and stops the browser from navigating away).
+  useEffect(() => {
+    function hasFiles(event: DragEvent) {
+      return Array.from(event.dataTransfer?.types ?? []).includes("Files");
+    }
+    function onDragEnter(event: DragEvent) {
+      if (!hasFiles(event)) return;
+      event.preventDefault();
+      dragDepthRef.current += 1;
+      setPageDragActive(true);
+    }
+    function onDragOver(event: DragEvent) {
+      if (!hasFiles(event)) return;
+      event.preventDefault();
+    }
+    function onDragLeave(event: DragEvent) {
+      if (!hasFiles(event)) return;
+      dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+      if (dragDepthRef.current === 0) setPageDragActive(false);
+    }
+    function onDrop(event: DragEvent) {
+      if (!hasFiles(event)) return;
+      event.preventDefault();
+      dragDepthRef.current = 0;
+      setPageDragActive(false);
+      if (submitting) return;
+      const dropped = event.dataTransfer?.files?.[0];
+      if (dropped) acceptFile(dropped);
+    }
+    window.addEventListener("dragenter", onDragEnter);
+    window.addEventListener("dragover", onDragOver);
+    window.addEventListener("dragleave", onDragLeave);
+    window.addEventListener("drop", onDrop);
+    return () => {
+      window.removeEventListener("dragenter", onDragEnter);
+      window.removeEventListener("dragover", onDragOver);
+      window.removeEventListener("dragleave", onDragLeave);
+      window.removeEventListener("drop", onDrop);
+    };
+  }, [submitting, acceptFile]);
+
   const hasSource =
     (activeTab === "file" && file) ||
-    (activeTab === "youtube" && youtubeUrl.trim().length > 0) ||
+    (activeTab === "link" && linkUrl.trim().length > 0) ||
     (activeTab === "rss" && selectedEpisodes.length > 0);
 
-  const submitDisabled =
-    submitting || !hasSource || !title.trim();
+  const sourceChosen =
+    (activeTab === "file" && Boolean(file)) ||
+    (activeTab === "link" && linkUrl.trim().length > 0) ||
+    (activeTab === "rss" && rssCommitted);
+
+  const submitDisabled = submitting || !hasSource || !title.trim();
+
+  // Smart paste detection — provider detection lives in @narriflow/validators (frozen contract).
+  const trimmedPaste = pasteValue.trim();
+  const pasteDetectedProvider = useMemo(
+    () => detectLinkProvider(trimmedPaste),
+    [trimmedPaste],
+  );
+  const detectedKind: "link" | "rss" | null =
+    pasteOverride === "link"
+      ? trimmedPaste
+        ? "link"
+        : null
+      : pasteOverride === "rss"
+        ? trimmedPaste
+          ? "rss"
+          : null
+        : pasteDetectedProvider
+          ? "link"
+          : looksLikeUrl(trimmedPaste)
+            ? "rss"
+            : null;
+
+  function commitPastedLink() {
+    if (!detectedKind || submitting) return;
+    setErrorMessage(null);
+    if (detectedKind === "link") {
+      setActiveTab("link");
+      setLinkUrl(trimmedPaste);
+      setLinkProvider(pasteDetectedProvider ?? detectLinkProvider(trimmedPaste));
+      return;
+    }
+    setActiveTab("rss");
+    setRssUrl(trimmedPaste);
+    setRssCommitted(true);
+    void handleRssPreview(trimmedPaste);
+  }
+
+  function handleChangeSource() {
+    if (submitting) return;
+    setFile(null);
+    setLinkUrl("");
+    setLinkProvider(null);
+    setRssCommitted(false);
+    setRssEpisodes([]);
+    setSelectedEpisodeIds([]);
+    setRssNotice(null);
+    setRssError(null);
+    setErrorMessage(null);
+    setActiveTab("file");
+  }
 
   function getFormValues() {
+    const hasKnownDuration = typeof durationSec === "number" && durationSec > 0;
+    const nextStartSec = Math.max(0, Math.floor(startSec));
+    const nextEndSec = hasKnownDuration
+      ? Math.min(durationSec, Math.max(nextStartSec + 1, Math.floor(endSec)))
+      : null;
+    const hasCustomWindow =
+      hasKnownDuration &&
+      nextEndSec !== null &&
+      (nextStartSec > 0 || nextEndSec < durationSec);
+
     return {
       languageCode,
       mode,
       clipLengthPreset: clipLength,
       autoHook,
       specificMoments,
-      processingStartSec: Math.max(0, Math.floor(startSec)),
-      processingEndSec: Math.max(
-        Math.floor(startSec) + 1,
-        Math.floor(endSec || durationSec || startSec + 1),
-      ),
+      processingStartSec: hasCustomWindow ? nextStartSec : null,
+      processingEndSec: hasCustomWindow ? nextEndSec : null,
+      captionPreset,
       brandTemplateId,
+      clipCountTarget,
+      platformTargets,
+      autoRenderClips,
+      toneConstraints,
     };
   }
 
   async function handleFileUploadAndGenerate() {
     if (!file || !title.trim()) {
-      setStatusMessage("Add a title and choose a file.");
+      setErrorMessage("Add a title and choose a file.");
+      return;
+    }
+    if (file.size > MAX_UPLOAD_BYTES) {
+      setErrorMessage(
+        "That file is over the 5 GB limit. Trim it, or import via a video link/RSS instead.",
+      );
+      return;
+    }
+    if (
+      file.type &&
+      !file.type.startsWith("video/") &&
+      !file.type.startsWith("audio/")
+    ) {
+      setErrorMessage("Unsupported file type — upload a video or audio file.");
       return;
     }
 
     setSubmitting(true);
-    setStatusMessage(null);
+    setErrorMessage(null);
+    setThroughput(null);
+    setProgress(0);
+    setUploadStage("prepare");
     const abortController = new AbortController();
     abortRef.current = abortController;
 
     try {
-      const fingerprint = getFileFingerprint(file);
-      const existingSession = loadUploadSession(fingerprint);
+      const fingerprint = createUploadFileFingerprint(file);
+      const resumeStorage = safelyGetUploadResumeStorage(
+        () => window.localStorage,
+      );
+      const existingSession = resumeStorage
+        ? loadUploadResume(resumeStorage, fingerprint)
+        : null;
       const partCount = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
 
-      setStatusMessage("Preparing upload...");
-      const presignRes = await fetch("/api/uploads/presign", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: abortController.signal,
-        body: JSON.stringify({
-          title: title.trim(),
-          fileName: file.name,
-          fileSizeBytes: file.size,
-          mimeType: file.type || "video/mp4",
-          partCount,
-          projectId: existingSession?.projectId,
-          uploadId: existingSession?.uploadId,
-          brandTemplateId,
-        }),
-      });
+      const requestInitialization = async (
+        resumeSession: UploadResumeSession | null,
+      ): Promise<UploadInitializationDecision> => {
+        const response = await fetch("/api/uploads/presign", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          signal: abortController.signal,
+          body: JSON.stringify({
+            title: title.trim(),
+            fileName: file.name,
+            fileSizeBytes: file.size,
+            mimeType: file.type || "video/mp4",
+            partCount,
+            projectId: resumeSession?.projectId,
+            uploadId: resumeSession?.uploadId,
+            brandTemplateId,
+          }),
+        });
+        const payload: unknown = await response.json().catch(() => null);
+        const decision = decideUploadInitialization({
+          responseOk: response.ok,
+          hadResumeSession: resumeSession !== null,
+          payload,
+          expectedPartCount: partCount,
+        });
 
-      const presignJson = (await presignRes.json()) as {
-        error?: string;
-        projectId: string;
-        uploadId: string;
-        key: string;
-        partCount: number;
-        uploadUrls: Array<{ partNumber: number; url: string }>;
-        alreadyUploadedPartNumbers: number[];
-        alreadyUploadedParts: Array<{ partNumber: number; etag: string }>;
+        if (
+          resumeSession &&
+          decision.kind === "active" &&
+          (decision.initialization.projectId !== resumeSession.projectId ||
+            decision.initialization.uploadId !== resumeSession.uploadId)
+        ) {
+          return {
+            kind: "error",
+            message: "The upload service returned mismatched resume metadata.",
+          };
+        }
+        if (
+          resumeSession &&
+          decision.kind === "completed" &&
+          decision.projectId !== resumeSession.projectId
+        ) {
+          return {
+            kind: "error",
+            message: "The upload service returned a mismatched project.",
+          };
+        }
+
+        return decision;
       };
 
-      if (!presignRes.ok) {
-        throw new Error(presignJson.error ?? "Failed to initialize upload.");
+      let initializationDecision = await requestInitialization(existingSession);
+      if (initializationDecision.kind === "fresh") {
+        if (resumeStorage) saveUploadResume(resumeStorage, null);
+        toaster.create({
+          type: "info",
+          title: "Starting a fresh upload",
+          description:
+            "The saved upload was no longer available, so we cleared it safely.",
+        });
+        initializationDecision = await requestInitialization(null);
       }
 
-      saveUploadSession({
-        fingerprint,
-        projectId: presignJson.projectId,
-        uploadId: presignJson.uploadId,
-        key: presignJson.key,
-        fileName: file.name,
-        title: title.trim(),
-      });
+      if (initializationDecision.kind === "error") {
+        throw new Error(initializationDecision.message);
+      }
+      if (initializationDecision.kind === "fresh") {
+        throw new Error("Failed to initialize a fresh upload.");
+      }
+      if (initializationDecision.kind === "completed") {
+        if (resumeStorage) saveUploadResume(resumeStorage, null);
+        router.push(`/projects/${initializationDecision.projectId}`);
+        router.refresh();
+        return;
+      }
+
+      const presignJson = initializationDecision.initialization;
+      if (resumeStorage) {
+        saveUploadResume(resumeStorage, {
+          version: UPLOAD_RESUME_VERSION,
+          fingerprint,
+          projectId: presignJson.projectId,
+          uploadId: presignJson.uploadId,
+          key: presignJson.key,
+          fileName: file.name,
+          title: title.trim(),
+          partCount: presignJson.partCount,
+          expiresAt: presignJson.expiresAt,
+        });
+      }
 
       const etagMap = new Map<number, string>(
-        presignJson.alreadyUploadedParts.map((p) => [p.partNumber, p.etag]),
+        presignJson.alreadyUploadedParts.map((part) => [
+          part.partNumber,
+          part.etag,
+        ]),
       );
-      const uploadedSet = new Set(presignJson.alreadyUploadedPartNumbers);
+      const uploadedSet = new Set(
+        presignJson.alreadyUploadedPartNumbers,
+      );
       const urlMap = new Map<number, string>(
-        presignJson.uploadUrls.map((p) => [p.partNumber, p.url]),
+        presignJson.uploadUrls.map((part) => [part.partNumber, part.url]),
       );
 
-      setStatusMessage("Uploading...");
-      for (let partNumber = 1; partNumber <= presignJson.partCount; partNumber += 1) {
-        if (uploadedSet.has(partNumber)) {
-          setProgress(Math.round((partNumber / presignJson.partCount) * 100));
-          continue;
-        }
-        const url = urlMap.get(partNumber);
-        if (!url) throw new Error(`Missing upload URL for part ${partNumber}`);
-
-        const start = (partNumber - 1) * CHUNK_SIZE;
-        const end = Math.min(start + CHUNK_SIZE, file.size);
-        const blob = file.slice(start, end);
-
-        const putRes = await fetch(url, {
-          method: "PUT",
-          body: blob,
-          signal: abortController.signal,
+      if (uploadedSet.size > 0) {
+        toaster.create({
+          type: "info",
+          title: "Resuming upload",
+          description: `${uploadedSet.size} of ${presignJson.partCount} parts already uploaded.`,
         });
-        if (!putRes.ok) throw new Error(`Part ${partNumber} upload failed (${putRes.status})`);
-
-        const etag = putRes.headers.get("ETag") ?? putRes.headers.get("etag");
-        if (!etag) throw new Error(`Missing ETag for part ${partNumber}`);
-
-        etagMap.set(partNumber, etag.replaceAll('"', ""));
-        setProgress(Math.round((partNumber / presignJson.partCount) * 100));
       }
 
-      const etags = Array.from(etagMap.entries())
-        .sort((a, b) => a[0] - b[0])
-        .map(([partNumber, etag]) => ({ partNumber, etag }));
+      setUploadStage("upload");
 
-      // Persist the desired generation settings BEFORE finalizing the upload.
-      // Once /uploads/complete returns, the worker can pick up the ingest job
-      // immediately and auto-fire triggerGenerationIfPending — it must find the
-      // draft ContentPack at that moment.
-      setStatusMessage("Saving generation settings...");
-      const formData = buildFormData(getFormValues());
-      formData.set("projectId", presignJson.projectId);
-      await generateFromUploadAction(formData);
+      // Build the list of parts still needing upload, then run them through a
+      // bounded-concurrency pool with per-part retries. A single transient blip
+      // no longer aborts a multi-GB upload, and parts upload in parallel.
+      const pendingParts: Array<{ partNumber: number; url: string }> = [];
+      let pendingBytesTotal = 0;
+      for (
+        let partNumber = 1;
+        partNumber <= presignJson.partCount;
+        partNumber += 1
+      ) {
+        if (uploadedSet.has(partNumber)) continue;
+        const url = urlMap.get(partNumber);
+        if (!url) {
+          throw new Error(`Missing upload URL for part ${partNumber}`);
+        }
+        pendingParts.push({ partNumber, url });
+        const start = (partNumber - 1) * CHUNK_SIZE;
+        pendingBytesTotal += Math.min(start + CHUNK_SIZE, file.size) - start;
+      }
 
-      setStatusMessage("Finalizing upload...");
+      let completedParts = uploadedSet.size;
+      setProgress(
+        Math.round((completedParts / presignJson.partCount) * 100),
+      );
+
+      // Live MB/s + ETA from the part-completion counters.
+      const uploadStartedAt = performance.now();
+      let uploadedBytesThisSession = 0;
+
+      let cursor = 0;
+      const runWorker = async () => {
+        while (cursor < pendingParts.length) {
+          const { partNumber, url } = pendingParts[cursor++]!;
+          const start = (partNumber - 1) * CHUNK_SIZE;
+          const end = Math.min(start + CHUNK_SIZE, file.size);
+          const blob = file.slice(start, end);
+          const etag = await uploadPartWithRetry(
+            partNumber,
+            url,
+            blob,
+            abortController.signal,
+          );
+          etagMap.set(partNumber, etag);
+          completedParts += 1;
+          setProgress(
+            Math.round((completedParts / presignJson.partCount) * 100),
+          );
+
+          uploadedBytesThisSession += blob.size;
+          const elapsedSec = (performance.now() - uploadStartedAt) / 1000;
+          const bytesPerSec =
+            elapsedSec > 0 ? uploadedBytesThisSession / elapsedSec : 0;
+          const remainingBytes = pendingBytesTotal - uploadedBytesThisSession;
+          setThroughput({
+            mbps: bytesPerSec / (1024 * 1024),
+            etaSec:
+              bytesPerSec > 0
+                ? Math.round(remainingBytes / bytesPerSec)
+                : null,
+          });
+        }
+      };
+
+      await Promise.all(
+        Array.from(
+          { length: Math.min(PART_CONCURRENCY, pendingParts.length) },
+          () => runWorker(),
+        ),
+      );
+
+      const etags = validateMultipartEtags(
+        etagMap.entries(),
+        presignJson.partCount,
+      );
+      if (!etags) {
+        throw new Error("The completed upload parts could not be verified.");
+      }
+
+      setUploadStage("finalize");
       const completeRes = await fetch("/api/uploads/complete", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -341,69 +757,103 @@ export function UploadShell({ brandTemplates }: UploadShellProps) {
           uploadId: presignJson.uploadId,
           key: presignJson.key,
           etags,
+          generationContext: buildUploadGenerationContext(getFormValues()),
         }),
       });
-      const completeJson = (await completeRes.json()) as {
-        error?: string;
-        projectId?: string;
-      };
-      if (!completeRes.ok || !completeJson.projectId) {
-        throw new Error(completeJson.error ?? "Failed to finalize upload.");
+      const completePayload: unknown = await completeRes
+        .json()
+        .catch(() => null);
+      const completeJson =
+        typeof completePayload === "object" && completePayload !== null
+          ? (completePayload as Record<string, unknown>)
+          : null;
+      if (
+        !completeRes.ok ||
+        completeJson?.projectId !== presignJson.projectId
+      ) {
+        const message =
+          typeof completeJson?.message === "string"
+            ? completeJson.message
+            : typeof completeJson?.error === "string"
+              ? completeJson.error
+              : "Failed to finalize upload.";
+        throw new Error(message);
       }
 
-      saveUploadSession(null);
+      if (resumeStorage) saveUploadResume(resumeStorage, null);
 
-      router.push(`/projects/${completeJson.projectId}`);
+      router.push(`/projects/${presignJson.projectId}`);
       router.refresh();
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
-        setStatusMessage("Upload canceled.");
+        toaster.create({
+          type: "info",
+          title: "Upload canceled",
+          description: "Re-select the same file to resume where it left off.",
+        });
       } else {
-        setStatusMessage(error instanceof Error ? error.message : "Upload failed.");
+        const message =
+          error instanceof Error ? error.message : "Upload failed.";
+        setErrorMessage(message);
+        toaster.error({ title: "Upload failed", description: message });
       }
     } finally {
       setSubmitting(false);
+      setUploadStage(null);
+      setThroughput(null);
       abortRef.current = null;
     }
   }
 
-  async function handleYoutubeImportAndGenerate() {
-    if (!youtubeUrl.trim()) {
-      setStatusMessage("Paste a YouTube URL first.");
+  async function handleLinkImportAndGenerate() {
+    if (!linkUrl.trim()) {
+      setErrorMessage("Paste a video link first.");
+      return;
+    }
+    if (!detectLinkProvider(linkUrl.trim())) {
+      setErrorMessage(
+        `That link isn't recognized. Supported: ${LINK_PROVIDER_LABELS_JOINED}.`,
+      );
       return;
     }
 
     setSubmitting(true);
-    setStatusMessage("Importing video and queueing generation...");
+    setErrorMessage(null);
+    setStatusMessage("Importing video and queueing generation…");
 
     try {
-      const formData = buildFormData(getFormValues());
+      const formData = buildUploadSettingsFormData(getFormValues());
       formData.set("title", title.trim());
-      formData.set("youtubeUrl", youtubeUrl.trim());
-      const result = await generateFromYoutubeAction(formData);
+      formData.set("url", linkUrl.trim());
+      const result = await generateFromLinkAction(formData);
       if (result?.projectId) {
         router.push(`/projects/${result.projectId}`);
         router.refresh();
       }
     } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : "YouTube import failed.");
+      const message =
+        error instanceof Error ? error.message : "Video import failed.";
+      setErrorMessage(message);
+      toaster.error({ title: "Video import failed", description: message });
     } finally {
       setSubmitting(false);
+      setStatusMessage(null);
     }
   }
 
-  async function handleRssPreview() {
-    if (!rssUrl.trim()) {
-      setRssMessage("Paste an RSS feed URL first.");
+  async function handleRssPreview(url: string = rssUrl) {
+    if (!url.trim()) {
+      setRssError("Paste an RSS feed URL first.");
       return;
     }
     setRssPreviewLoading(true);
-    setRssMessage(null);
+    setRssNotice(null);
+    setRssError(null);
     try {
       const response = await fetch("/api/ingest/rss/preview", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ rssUrl: rssUrl.trim() }),
+        body: JSON.stringify({ rssUrl: url.trim() }),
       });
       const payload = (await response.json()) as {
         error?: string;
@@ -414,9 +864,12 @@ export function UploadShell({ brandTemplates }: UploadShellProps) {
       }
       setRssEpisodes(payload.episodes);
       setSelectedEpisodeIds(payload.episodes.slice(0, 1).map((e) => e.id));
-      setRssMessage(`Found ${payload.episodes.length} episodes.`);
+      setRssNotice(`Found ${payload.episodes.length} episodes.`);
     } catch (error) {
-      setRssMessage(error instanceof Error ? error.message : "Could not preview RSS feed.");
+      const message =
+        error instanceof Error ? error.message : "Could not preview RSS feed.";
+      setRssError(message);
+      toaster.error({ title: "RSS preview failed", description: message });
     } finally {
       setRssPreviewLoading(false);
     }
@@ -424,14 +877,15 @@ export function UploadShell({ brandTemplates }: UploadShellProps) {
 
   async function handleRssImportAndGenerate() {
     if (!rssUrl.trim() || selectedEpisodes.length === 0) {
-      setStatusMessage("Select at least one episode to import.");
+      setErrorMessage("Select at least one episode to import.");
       return;
     }
     setSubmitting(true);
-    setStatusMessage("Importing episode and queueing generation...");
+    setErrorMessage(null);
+    setStatusMessage("Importing episode and queueing generation…");
 
     try {
-      const formData = buildFormData(getFormValues());
+      const formData = buildUploadSettingsFormData(getFormValues());
       formData.set("rssUrl", rssUrl.trim());
       formData.set("titlePrefix", title.trim());
       formData.set("episodes", JSON.stringify(selectedEpisodes));
@@ -444,9 +898,13 @@ export function UploadShell({ brandTemplates }: UploadShellProps) {
         router.refresh();
       }
     } catch (error) {
-      setStatusMessage(error instanceof Error ? error.message : "RSS import failed.");
+      const message =
+        error instanceof Error ? error.message : "RSS import failed.";
+      setErrorMessage(message);
+      toaster.error({ title: "RSS import failed", description: message });
     } finally {
       setSubmitting(false);
+      setStatusMessage(null);
     }
   }
 
@@ -459,7 +917,7 @@ export function UploadShell({ brandTemplates }: UploadShellProps) {
 
   function handleSubmit() {
     if (activeTab === "file") return handleFileUploadAndGenerate();
-    if (activeTab === "youtube") return handleYoutubeImportAndGenerate();
+    if (activeTab === "link") return handleLinkImportAndGenerate();
     if (activeTab === "rss") return handleRssImportAndGenerate();
   }
 
@@ -468,271 +926,524 @@ export function UploadShell({ brandTemplates }: UploadShellProps) {
       ? "Get captioned video in 1 click"
       : "Get clips in 1 click";
 
+  const sourceKindLabel =
+    activeTab === "file"
+      ? "Local file"
+      : activeTab === "link"
+        ? linkProvider
+          ? linkProviderLabel(linkProvider)
+          : "Video link"
+        : "RSS feed";
+
+  // Non-YouTube link providers have no client-side duration probe — duration
+  // is only known once the worker fetches the video during import. Trim UI
+  // stays disabled for these the same way it does for a YouTube video whose
+  // iframe hasn't reported a duration yet (hasSource but durationSec null).
+  const linkDurationUnknowable =
+    activeTab === "link" && linkProvider !== null && linkProvider !== "youtube";
+
   return (
-    <Grid templateColumns={{ base: "1fr", lg: "1.1fr 1fr" }} gap="24px">
-      {/* LEFT — source picker + preview */}
-      <Stack gap="20px">
-        <Tabs.Root
-          value={activeTab}
-          onValueChange={(details) => setActiveTab(details.value as TabId)}
-          variant="line"
-          size="sm"
+    <Box position="relative">
+      {/* Full-page drop overlay — dropping anywhere on /upload works. */}
+      {pageDragActive && (
+        <Flex
+          position="fixed"
+          inset="0"
+          zIndex="overlay"
+          align="center"
+          justify="center"
+          bg="bg/85"
+          backdropFilter="blur(2px)"
+          pointerEvents="none"
         >
-          <Tabs.List>
-            {tabs.map((tab) => (
-              <Tabs.Trigger key={tab.id} value={tab.id}>
-                <Flex align="center" gap="6px">
-                  {tab.icon}
-                  <Text>{tab.label}</Text>
-                </Flex>
-              </Tabs.Trigger>
-            ))}
-          </Tabs.List>
-
-          <Tabs.Content value="file" pt="16px">
-            <Box
-              as="label"
-              display="block"
-              borderRadius="14px"
-              borderWidth="2px"
-              borderStyle="dashed"
-              borderColor={file ? "border.accent" : "border"}
-              bg={file ? "accent.subtle" : "bg.subtle"}
-              p="36px"
-              textAlign="center"
-              cursor="pointer"
-              transition="all 150ms ease"
-              _hover={{ borderColor: "border.accent" }}
-            >
-              <input
-                type="file"
-                accept="video/mp4,video/quicktime,video/webm,video/x-matroska,audio/mpeg,audio/wav,audio/x-wav,audio/mp4,audio/aac"
-                onChange={(event) => {
-                  const next = event.target.files?.[0] ?? null;
-                  setFile(next);
-                  setDurationSec(null);
-                  setStartSec(0);
-                  setEndSec(0);
-                }}
-                style={{ display: "none" }}
-              />
-              <Flex direction="column" align="center" gap="6px">
-                <Upload size={22} color="var(--chakra-colors-fg-muted)" />
-                <Text fontSize="13px" fontWeight="500" color="fg">
-                  {file ? file.name : "Drop video or click to browse"}
-                </Text>
-                <Text fontSize="11px" color="fg.subtle">
-                  {file
-                    ? `${(file.size / (1024 * 1024)).toFixed(1)} MB`
-                    : "MP4, MOV, WebM, MKV, MP3, WAV — up to 5 GB"}
-                </Text>
-              </Flex>
+          <Flex
+            direction="column"
+            align="center"
+            gap="3"
+            px="12"
+            py="10"
+            borderWidth="1.5px"
+            borderStyle="dashed"
+            borderColor="accent.solid"
+            borderRadius="l3"
+            bg="bg.panel"
+            boxShadow="cardHover"
+          >
+            <Box color="accent.fg">
+              <Upload size={24} strokeWidth={1.75} />
             </Box>
-          </Tabs.Content>
+            <Text textStyle="title" fontSize="18px" color="fg">
+              Drop to upload
+            </Text>
+            <Text textStyle="eyebrow" color="fg.subtle">
+              Anywhere on this page
+            </Text>
+          </Flex>
+        </Flex>
+      )}
 
-          <Tabs.Content value="youtube" pt="16px">
-            <Stack gap="10px">
-              <Input
-                onChange={(event) => setYoutubeUrl(event.target.value)}
-                placeholder="https://www.youtube.com/watch?v=..."
-                type="url"
-                value={youtubeUrl}
-              />
-              <Text fontSize="11px" color="fg.subtle">
-                Public videos only. Make sure you have rights to clip the content.
-              </Text>
-            </Stack>
-          </Tabs.Content>
-
-          <Tabs.Content value="rss" pt="16px">
-            <Stack gap="12px">
-              <Flex gap="8px">
-                <Input
-                  onChange={(event) => setRssUrl(event.target.value)}
-                  placeholder="https://example.com/feed.xml"
-                  type="url"
-                  value={rssUrl}
-                />
-                <Button
-                  disabled={rssPreviewLoading}
-                  onClick={handleRssPreview}
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                >
-                  {rssPreviewLoading ? "Loading..." : "Preview"}
-                </Button>
+      {!sourceChosen ? (
+        /* STEP 1 — cinematic source picker */
+        <Stack gap="8" maxW="780px" mx="auto" animation="fade-up">
+          {/* Single dashed well — one container, no double framing. */}
+          <Box
+            position="relative"
+            borderWidth="1.5px"
+            borderStyle="dashed"
+            borderColor={dropzoneDragOver ? "accent.solid" : "border.control"}
+            borderRadius="l3"
+            bg={dropzoneDragOver ? "accent.subtle" : "bg.subtle"}
+            transition="border-color 120ms ease, background 120ms ease"
+            css={{
+              "&:has(input:focus-visible)": {
+                outline: "2px solid var(--chakra-colors-accent-solid)",
+                outlineOffset: "2px",
+              },
+            }}
+            onDragEnter={(event) => {
+              event.preventDefault();
+              setDropzoneDragOver(true);
+            }}
+            onDragOver={(event) => {
+              event.preventDefault();
+              setDropzoneDragOver(true);
+            }}
+            onDragLeave={(event) => {
+              if (
+                event.relatedTarget instanceof Node &&
+                event.currentTarget.contains(event.relatedTarget)
+              ) {
+                return;
+              }
+              setDropzoneDragOver(false);
+            }}
+            onDrop={(event) => {
+              event.preventDefault();
+              setDropzoneDragOver(false);
+              if (submitting) return;
+              const dropped = event.dataTransfer?.files?.[0];
+              if (dropped) acceptFile(dropped);
+            }}
+          >
+            <Flex
+              direction="column"
+              align="center"
+              justify="center"
+              gap="3"
+              px="6"
+              py="24"
+              textAlign="center"
+              pointerEvents="none"
+            >
+              <Flex
+                w="44px"
+                h="44px"
+                align="center"
+                justify="center"
+                borderRadius="l2"
+                bg="bg.panel"
+                borderWidth="1px"
+                borderColor="border"
+                color={dropzoneDragOver ? "accent.fg" : "fg.muted"}
+                transition="color 120ms ease"
+              >
+                <Upload size={18} strokeWidth={1.75} />
               </Flex>
-              {rssMessage && (
-                <Text fontSize="12px" color="fg.muted">
-                  {rssMessage}
+              <Text textStyle="title" fontSize="16px" color="fg">
+                Drop your video here
+              </Text>
+              <Text fontSize="12.5px" color="fg.muted">
+                or click to browse
+              </Text>
+              <Text textStyle="data" fontSize="11px" color="fg.subtle">
+                MP4 · MOV · WebM · MKV · MP3 · WAV — up to 5 GB
+              </Text>
+            </Flex>
+            <input
+              type="file"
+              accept={FILE_ACCEPT}
+              aria-label="Choose a video or audio file"
+              onChange={(event) => {
+                const next = event.target.files?.[0] ?? null;
+                if (next) acceptFile(next);
+              }}
+              style={{
+                position: "absolute",
+                inset: 0,
+                width: "100%",
+                height: "100%",
+                opacity: 0,
+                cursor: "pointer",
+              }}
+            />
+          </Box>
+
+          {/* Smart paste — one field, auto-detects a provider link vs RSS */}
+          <Stack gap="3">
+            <Flex align="center" gap="4">
+              <Box flex="1" h="1px" bg="border" />
+              <Text
+                textStyle="eyebrow"
+                fontWeight="500"
+                letterSpacing="0.14em"
+                color="fg.subtle"
+              >
+                or paste a link
+              </Text>
+              <Box flex="1" h="1px" bg="border" />
+            </Flex>
+            {/* The paste field is the primary path — attached solid Continue
+                is this view's one solid button. */}
+            <Flex>
+              <Input
+                value={pasteValue}
+                onChange={(event) => setPasteValue(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    commitPastedLink();
+                  }
+                }}
+                placeholder="Paste a video link or RSS feed"
+                type="url"
+                aria-label="Video link or RSS URL"
+                flex="1"
+                borderEndRadius="0"
+              />
+              <Button
+                onClick={commitPastedLink}
+                disabled={!detectedKind || submitting}
+                type="button"
+                borderStartRadius="0"
+                ms="-1px"
+              >
+                Continue
+              </Button>
+            </Flex>
+            <Flex justify="space-between" align="center" gap="3" wrap="wrap">
+              <Flex align="center" gap="2">
+                <Text fontSize="11px" color="fg.subtle">
+                  Treat link as
                 </Text>
-              )}
-              {rssEpisodes.length > 0 && (
-                <Stack
-                  gap="0"
-                  borderRadius="10px"
-                  borderWidth="1px"
-                  borderColor="border"
-                  overflow="hidden"
-                  maxH="240px"
-                  overflowY="auto"
-                >
-                  {rssEpisodes.map((episode, index) => (
-                    <Flex
-                      key={episode.id}
-                      as="label"
-                      align="center"
-                      gap="10px"
-                      px="14px"
-                      py="10px"
-                      fontSize="13px"
-                      cursor="pointer"
-                      borderBottomWidth={index < rssEpisodes.length - 1 ? "1px" : "0"}
-                      borderColor="border"
-                      bg={selectedEpisodeIds.includes(episode.id) ? "accent.subtle" : "transparent"}
-                      transition="background 120ms ease"
-                      _hover={{ bg: "bg.muted" }}
-                    >
-                      <input
-                        type="radio"
-                        name="rss-episode"
-                        checked={selectedEpisodeIds.includes(episode.id)}
-                        onChange={(event) => toggleEpisode(episode.id, event.target.checked)}
-                      />
-                      <Box overflow="hidden" flex="1">
-                        <Text fontWeight="500" color="fg" truncate>
-                          {episode.title}
-                        </Text>
-                        <Text fontSize="11px" color="fg.subtle" mt="1px">
-                          {episode.publishedAt ?? "Unknown publish date"}
-                        </Text>
+                <SegmentedControl
+                  size="sm"
+                  items={[
+                    { label: "Auto", value: "auto" },
+                    { label: "Video link", value: "link" },
+                    { label: "RSS feed", value: "rss" },
+                  ]}
+                  value={pasteOverride}
+                  onValueChange={(next) =>
+                    setPasteOverride(next as PasteOverride)
+                  }
+                />
+              </Flex>
+              <Box minH="4">
+                {trimmedPaste && detectedKind === "link" && (
+                  <Flex align="center" gap="1.5">
+                    <Box w="6px" h="6px" borderRadius="1px" bg="accent.solid" />
+                    <Text textStyle="eyebrow" color="fg.muted">
+                      {pasteDetectedProvider
+                        ? `Detected: ${linkProviderLabel(pasteDetectedProvider)}`
+                        : "Video link detected"}
+                    </Text>
+                  </Flex>
+                )}
+                {trimmedPaste && detectedKind === "rss" && (
+                  <Flex align="center" gap="1.5">
+                    <Box w="6px" h="6px" borderRadius="1px" bg="accent.solid" />
+                    <Text textStyle="eyebrow" color="fg.muted">
+                      RSS feed detected
+                    </Text>
+                  </Flex>
+                )}
+                {trimmedPaste && !detectedKind && (
+                  <Flex align="center" gap="1.5" color="danger.fg">
+                    <AlertTriangle size={12} strokeWidth={2} />
+                    <Text fontSize="11px" fontWeight="500">
+                      Paste a full URL, like https://…
+                    </Text>
+                  </Flex>
+                )}
+              </Box>
+            </Flex>
+            <Text textStyle="data" fontSize="11px" color="fg.subtle">
+              Supported: {LINK_PROVIDER_LABELS_JOINED} — or a podcast RSS feed
+            </Text>
+            {errorMessage && <ErrorNotice message={errorMessage} />}
+          </Stack>
+
+          <RecommendationCard />
+        </Stack>
+      ) : (
+        /* STEP 2 — preview + settings bands */
+        <Grid
+          templateColumns={{ base: "1fr", lg: "1.1fr 1fr" }}
+          gap="8"
+          animation="fade-up"
+        >
+          {/* LEFT — source */}
+          <Box
+            alignSelf="start"
+            position={{ base: "static", lg: "sticky" }}
+            top={{ lg: "6" }}
+          >
+            <Flex align="center" justify="space-between" mb="2">
+              <Flex align="center" gap="1.5">
+                {activeTab === "link" && (
+                  <Box color="fg.subtle">
+                    <Link2 size={11} strokeWidth={2} />
+                  </Box>
+                )}
+                <Text textStyle="eyebrow" color="fg.subtle">
+                  Source · {sourceKindLabel}
+                </Text>
+              </Flex>
+              <chakra.button
+                type="button"
+                onClick={handleChangeSource}
+                disabled={submitting}
+                fontSize="12px"
+                color="fg"
+                textDecoration="underline"
+                textUnderlineOffset="2px"
+                cursor="pointer"
+                transition="color 120ms ease"
+                _hover={{ color: "fg.muted" }}
+                _disabled={{ color: "fg.disabled", cursor: "not-allowed" }}
+              >
+                Change source
+              </chakra.button>
+            </Flex>
+            <Stack layerStyle="band" gap="4">
+              <VideoPreview
+                source={previewSource}
+                onDurationKnown={handleDurationKnown}
+                durationSec={durationSec}
+              />
+
+              {activeTab === "link" && (
+                <Stack gap="1.5">
+                  <Text textStyle="data" fontSize="11px" color="fg.subtle">
+                    Public videos only. Make sure you have rights to clip the
+                    content.
+                  </Text>
+                  {linkDurationUnknowable && (
+                    <Flex gap="2" align="flex-start">
+                      <Box color="fg.subtle" mt="0.5" flexShrink={0}>
+                        <Info size={12} strokeWidth={2} />
                       </Box>
+                      <Text fontSize="11px" color="fg.muted" lineHeight="1.5">
+                        Full video is processed — duration is detected during
+                        import, so trimming isn&apos;t available here.
+                      </Text>
                     </Flex>
-                  ))}
+                  )}
+                </Stack>
+              )}
+
+              {activeTab === "rss" && (
+                <Stack gap="2">
+                  {rssPreviewLoading && (
+                    <Flex align="center" gap="2">
+                      <Spinner size="xs" />
+                      <Text fontSize="12.5px" color="fg.muted">
+                        Loading episodes…
+                      </Text>
+                    </Flex>
+                  )}
+                  {rssError && <ErrorNotice message={rssError} />}
+                  {!rssPreviewLoading && rssNotice && (
+                    <Text textStyle="data" fontSize="11px" color="fg.muted">
+                      {rssNotice}
+                    </Text>
+                  )}
+                  {rssEpisodes.length > 0 && (
+                    <RadioGroup
+                      value={selectedEpisodeIds[0] ?? ""}
+                      onValueChange={(next) => toggleEpisode(next, true)}
+                    >
+                      <Stack
+                        gap="0"
+                        maxH="60"
+                        overflowY="auto"
+                        borderTopWidth="1px"
+                        borderTopColor="border"
+                      >
+                        {rssEpisodes.map((episode) => (
+                          <Box
+                            key={episode.id}
+                            py="2.5"
+                            px="1"
+                            borderBottomWidth="1px"
+                            borderBottomColor="border.subtle"
+                            transition="background 120ms ease"
+                            _hover={{ bg: "bg.subtle" }}
+                          >
+                            <Radio value={episode.id} w="full">
+                              <Box overflow="hidden" minW="0">
+                                <Text
+                                  fontSize="13px"
+                                  fontWeight="500"
+                                  color="fg"
+                                  truncate
+                                >
+                                  {episode.title}
+                                </Text>
+                                <Text
+                                  textStyle="data"
+                                  fontSize="11px"
+                                  color="fg.subtle"
+                                  mt="0.5"
+                                >
+                                  {episode.publishedAt
+                                    ? formatDate(episode.publishedAt) ||
+                                      episode.publishedAt
+                                    : "Unknown publish date"}
+                                </Text>
+                              </Box>
+                            </Radio>
+                          </Box>
+                        ))}
+                      </Stack>
+                    </RadioGroup>
+                  )}
                 </Stack>
               )}
             </Stack>
-          </Tabs.Content>
-        </Tabs.Root>
-
-        {hasSource ? (
-          <VideoPreview source={previewSource} onDurationKnown={handleDurationKnown} />
-        ) : (
-          <RecommendationCard />
-        )}
-      </Stack>
-
-      {/* RIGHT — settings panel */}
-      <Stack
-        gap="18px"
-        p="20px"
-        borderRadius="14px"
-        borderWidth="1px"
-        borderColor="border"
-        bg="bg"
-        position={{ base: "static", lg: "sticky" }}
-        top={{ lg: "24px" }}
-        alignSelf="start"
-      >
-        <Box>
-          <Text fontSize="13px" fontWeight="500" color="fg" mb="6px">
-            Project title
-          </Text>
-          <Input
-            onChange={(event) => setTitle(event.target.value)}
-            placeholder="Episode 45 — Founder interview"
-            value={title}
-          />
-        </Box>
-
-        <LanguageSelect value={languageCode} onChange={setLanguageCode} />
-
-        <Box>
-          <Text fontSize="13px" fontWeight="500" color="fg" mb="8px">
-            Mode
-          </Text>
-          <ModeTabs value={mode} onChange={setMode} />
-        </Box>
-
-        <BrandTemplatePicker
-          builtIns={brandTemplates.builtIns}
-          mine={brandTemplates.mine}
-          value={brandTemplateId}
-          onChange={setBrandTemplateId}
-        />
-
-        {mode === "clip" && (
-          <ClipSettingsForm
-            clipLength={clipLength}
-            onClipLengthChange={setClipLength}
-            autoHook={autoHook}
-            onAutoHookChange={setAutoHook}
-            specificMoments={specificMoments}
-            onSpecificMomentsChange={setSpecificMoments}
-          />
-        )}
-
-        {mode === "caption_only" && (
-          <Box
-            p="12px"
-            borderRadius="10px"
-            bg="bg.subtle"
-            borderWidth="1px"
-            borderColor="border"
-          >
-            <Text fontSize="12px" color="fg.muted" lineHeight="1.5">
-              We transcribe your full video, then render it at original length
-              with burned-in captions. No clipping.
-            </Text>
           </Box>
-        )}
 
-        <ProcessingTimeline
-          durationSec={durationSec}
-          startSec={startSec}
-          endSec={endSec}
-          disabled={!hasSource || !durationSec}
-          hasSource={Boolean(hasSource)}
-          onChange={(s, e) => {
-            setStartSec(s);
-            setEndSec(e);
-          }}
-        />
+          {/* RIGHT — settings as rule-band sections */}
+          <Stack gap="8">
+            <SettingsBand eyebrow="Project">
+              <Input
+                onChange={(event) => setTitle(event.target.value)}
+                placeholder="Episode 45 — Founder interview"
+                value={title}
+                aria-label="Project title"
+              />
+            </SettingsBand>
 
-        {submitting && progress > 0 && <Progress value={progress} />}
-        {statusMessage && (
-          <Text fontSize="12px" color="fg.muted">
-            {statusMessage}
-          </Text>
-        )}
+            <SettingsBand eyebrow="Mode">
+              <ModeTabs value={mode} onChange={setMode} />
+            </SettingsBand>
 
-        <HStack gap="8px">
-          <Button
-            disabled={submitDisabled}
-            onClick={handleSubmit}
-            type="button"
-            size="md"
-            flex="1"
-          >
-            {submitting ? "Working..." : submitLabel}
-          </Button>
-          {submitting && abortRef.current && (
-            <Button
-              type="button"
-              variant="outline"
-              size="md"
-              onClick={() => abortRef.current?.abort()}
-            >
-              Cancel
-            </Button>
-          )}
-        </HStack>
+            <SettingsBand eyebrow="Speech language">
+              <LanguageSelect value={languageCode} onChange={setLanguageCode} />
+            </SettingsBand>
 
-        <Text fontSize="11px" color="fg.subtle" textAlign="center">
-          Using video you don&apos;t own may violate copyright laws.
-        </Text>
-      </Stack>
-    </Grid>
+            {/* ProcessingTimeline draws its own label under the section rule. */}
+            <Box layerStyle="band">
+              <ProcessingTimeline
+                durationSec={durationSec}
+                startSec={startSec}
+                endSec={endSec}
+                disabled={!hasSource || !durationSec}
+                hasSource={Boolean(hasSource)}
+                onChange={(s, e) => {
+                  setStartSec(s);
+                  setEndSec(e);
+                }}
+              />
+            </Box>
+
+            {/* BrandTemplatePicker draws its own label + Manage link. */}
+            <Box layerStyle="band">
+              <BrandTemplatePicker
+                builtIns={brandTemplates.builtIns}
+                mine={brandTemplates.mine}
+                value={brandTemplateId}
+                onChange={setBrandTemplateId}
+              />
+            </Box>
+
+            {mode === "clip" && (
+              <SettingsBand eyebrow="Clip settings">
+                <ClipSettingsForm
+                  clipLength={clipLength}
+                  onClipLengthChange={setClipLength}
+                  autoHook={autoHook}
+                  onAutoHookChange={setAutoHook}
+                  specificMoments={specificMoments}
+                  onSpecificMomentsChange={setSpecificMoments}
+                  platformTargets={platformTargets}
+                  onPlatformTargetsChange={setPlatformTargets}
+                  clipCountTarget={clipCountTarget}
+                  onClipCountTargetChange={setClipCountTarget}
+                  autoRenderClips={autoRenderClips}
+                  onAutoRenderClipsChange={setAutoRenderClips}
+                  toneConstraints={toneConstraints}
+                  onToneConstraintsChange={setToneConstraints}
+                />
+              </SettingsBand>
+            )}
+
+            {mode === "caption_only" && (
+              <Box layerStyle="band">
+                <Stack gap="3">
+                  <CaptionPresetSelect
+                    value={captionPreset}
+                    onChange={setCaptionPreset}
+                  />
+                  <Flex gap="2" align="flex-start">
+                    <Box color="fg.subtle" mt="0.5" flexShrink={0}>
+                      <Info size={13} strokeWidth={2} />
+                    </Box>
+                    <Text fontSize="12px" color="fg.muted" lineHeight="1.5">
+                      We transcribe your full video, then render it at original
+                      length with burned-in captions. No clipping.
+                    </Text>
+                  </Flex>
+                </Stack>
+              </Box>
+            )}
+
+            {/* Submit zone */}
+            <Stack gap="3" pt="1">
+              {uploadStage && (
+                <UploadStages
+                  stage={uploadStage}
+                  progress={progress}
+                  throughput={throughput}
+                />
+              )}
+              {submitting && !uploadStage && statusMessage && (
+                <Flex align="center" gap="2">
+                  <Spinner size="xs" />
+                  <Text fontSize="12.5px" color="fg.muted">
+                    {statusMessage}
+                  </Text>
+                </Flex>
+              )}
+              {errorMessage && <ErrorNotice message={errorMessage} />}
+              <HStack gap="2">
+                <Button
+                  disabled={submitDisabled}
+                  onClick={handleSubmit}
+                  type="button"
+                  size="md"
+                  flex="1"
+                >
+                  {submitting ? "Working…" : submitLabel}
+                </Button>
+                {submitting && abortRef.current && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="md"
+                    onClick={() => abortRef.current?.abort()}
+                  >
+                    Cancel
+                  </Button>
+                )}
+              </HStack>
+              <Text fontSize="11px" color="fg.subtle" textAlign="center">
+                Using video you don&apos;t own may violate copyright laws.
+              </Text>
+            </Stack>
+          </Stack>
+        </Grid>
+      )}
+    </Box>
   );
 }

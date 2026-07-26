@@ -1,6 +1,6 @@
 "use client";
 
-import { Box, Flex, Stack, Text } from "@chakra-ui/react";
+import { Box, Flex, Grid, Stack, Text } from "@chakra-ui/react";
 import { Check, X } from "lucide-react";
 
 const recommended = [
@@ -19,28 +19,32 @@ const notRecommended = [
   "Live streams",
 ];
 
+/**
+ * Source guidance — de-carded to a Blueline band: eyebrow + 1.5px ink rule,
+ * two hairline columns. No wrapper box.
+ */
 export function RecommendationCard() {
   return (
-    <Box
-      borderRadius="14px"
-      borderWidth="1px"
-      borderColor="border"
-      bg="bg.subtle"
-      p="18px"
-      width="100%"
-    >
-      <Stack gap="14px">
+    <Box w="full">
+      <Text textStyle="eyebrow" color="fg.subtle" mb="2">
+        Source guidance
+      </Text>
+      <Grid
+        layerStyle="band"
+        templateColumns={{ base: "1fr", sm: "1fr 1fr" }}
+        gap="6"
+      >
         <Box>
-          <Text fontSize="13px" fontWeight="600" color="fg" mb="8px">
-            Recommended videos
+          <Text fontSize="13px" fontWeight="600" color="fg" mb="2.5">
+            Works best with
           </Text>
-          <Stack gap="6px">
+          <Stack gap="1.5">
             {recommended.map((item) => (
-              <Flex key={item} align="center" gap="8px">
-                <Box color="success.fg">
-                  <Check size={13} strokeWidth={2.5} />
+              <Flex key={item} align="center" gap="2">
+                <Box color="success.fg" flexShrink={0}>
+                  <Check size={13} strokeWidth={2} />
                 </Box>
-                <Text fontSize="12px" color="fg.muted">
+                <Text fontSize="13px" color="fg.muted">
                   {item}
                 </Text>
               </Flex>
@@ -48,26 +52,24 @@ export function RecommendationCard() {
           </Stack>
         </Box>
 
-        <Box height="1px" bg="border" />
-
         <Box>
-          <Text fontSize="13px" fontWeight="600" color="fg" mb="8px">
+          <Text fontSize="13px" fontWeight="600" color="fg" mb="2.5">
             Not recommended
           </Text>
-          <Stack gap="6px">
+          <Stack gap="1.5">
             {notRecommended.map((item) => (
-              <Flex key={item} align="center" gap="8px">
-                <Box color="fg.subtle">
-                  <X size={13} strokeWidth={2.5} />
+              <Flex key={item} align="center" gap="2">
+                <Box color="danger.fg" flexShrink={0}>
+                  <X size={13} strokeWidth={2} />
                 </Box>
-                <Text fontSize="12px" color="fg.muted">
+                <Text fontSize="13px" color="fg.muted">
                   {item}
                 </Text>
               </Flex>
             ))}
           </Stack>
         </Box>
-      </Stack>
+      </Grid>
     </Box>
   );
 }

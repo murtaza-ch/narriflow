@@ -1,9 +1,9 @@
 import { Suspense } from "react";
 import Link from "next/link";
-import { Stack } from "@chakra-ui/react";
+import { Box, Stack } from "@chakra-ui/react";
 import { FolderOpen } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
-import { SectionHeader } from "@narriflow/ui/components/section-header";
+import { PageHeader } from "@narriflow/ui/components/page-header";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { requireCurrentAppUser } from "@narriflow/auth";
 import { projectService } from "@narriflow/services";
@@ -14,41 +14,55 @@ export default async function ProjectsPage() {
   const appUser = await requireCurrentAppUser();
 
   return (
-    <Stack gap="32px">
-      <SectionHeader
+    <Stack gap="8">
+      <PageHeader
+        eyebrow="Library"
         title="Projects"
         description="Manage imports, queue transcription, and review project progress."
-        action={
+        actions={
           <Button asChild>
-            <Link href="/upload">New Upload</Link>
+            <Link href="/upload">New upload</Link>
           </Button>
         }
       />
 
-      <Suspense fallback={<ProjectsGridSkeleton />}>
-        <ProjectsData userId={appUser.id} />
-      </Suspense>
+      <Box
+        animation="fade-up"
+        animationFillMode="backwards"
+        style={{ animationDelay: "60ms" }}
+      >
+        <Suspense fallback={<ProjectsGridSkeleton />}>
+          <ProjectsData userId={appUser.id} />
+        </Suspense>
+      </Box>
     </Stack>
   );
 }
 
 async function ProjectsData({ userId }: { userId: string }) {
-  const items = await projectService.listProjectsWithStats(userId);
+  const page = await projectService.listProjectsWithStatsPage(userId);
+  const items = page.items;
 
   if (items.length === 0) {
     return (
       <EmptyState
-        icon={<FolderOpen size={22} />}
+        icon={<FolderOpen size={22} strokeWidth={1.5} />}
         title="No projects yet"
         description="Import your first piece of content to get started."
         action={
-          <Button size="sm" asChild>
-            <Link href="/upload">Start Upload</Link>
+          <Button size="sm" variant="outline" asChild>
+            <Link href="/upload">Start upload</Link>
           </Button>
         }
       />
     );
   }
 
-  return <ProjectsExplorer initialProjects={items} />;
+  return (
+    <ProjectsExplorer
+      initialProjects={items}
+      initialNextCursor={page.nextCursor}
+      totalCount={page.totalCount}
+    />
+  );
 }

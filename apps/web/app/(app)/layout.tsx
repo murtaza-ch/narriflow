@@ -4,6 +4,8 @@ import { Box, Flex } from "@chakra-ui/react";
 import { Sidebar } from "./_components/sidebar";
 import { MobileNav } from "./_components/mobile-nav";
 import { AccountMenu } from "./_components/account-menu";
+import { ThemeToggle } from "./_components/theme-toggle";
+import { getCachedDashboardStats } from "./_components/usage";
 
 export default async function AppLayout({ children }: { children: React.ReactNode }) {
   const appUser = await getCurrentAppUser();
@@ -16,35 +18,50 @@ export default async function AppLayout({ children }: { children: React.ReactNod
     redirect("/onboarding");
   }
 
+  const stats = await getCachedDashboardStats(appUser.id);
+
   return (
-    <Box minH="100vh" bg="bg" color="fg">
-      {/* Desktop sidebar */}
+    <Box minH="100dvh" bg="bg" color="fg">
+      {/* Desktop sidebar — separated from content by a single hairline */}
       <Sidebar
         email={appUser.primaryEmail}
         firstName={appUser.firstName}
         imageUrl={appUser.imageUrl}
         lastName={appUser.lastName}
+        usedMinutes={stats.usedMinutes}
+        limitMinutes={stats.limitMinutes}
       />
 
       {/* Mobile nav */}
-      <MobileNav />
+      <MobileNav
+        email={appUser.primaryEmail}
+        firstName={appUser.firstName}
+        imageUrl={appUser.imageUrl}
+        lastName={appUser.lastName}
+        usedMinutes={stats.usedMinutes}
+        limitMinutes={stats.limitMinutes}
+      />
 
-      {/* Main content area */}
-      <Box
+      {/* Content region — flat porcelain ground */}
+      <Flex
+        direction="column"
         ml={{ base: "0", lg: "240px" }}
-        pt={{ base: "52px", lg: "0" }}
-        minH="100vh"
+        pt={{ base: "48px", lg: "0" }}
+        minH="100dvh"
       >
-        {/* Top bar (desktop only) */}
+        {/* Slim top bar (desktop) — the page below owns its PageHeader */}
         <Flex
-          h="52px"
+          h="48px"
           align="center"
           justify="flex-end"
-          px="24px"
+          gap="2"
+          px="6"
           borderBottomWidth="1px"
-          borderColor="border"
+          borderColor="border.subtle"
           display={{ base: "none", lg: "flex" }}
+          flexShrink={0}
         >
+          <ThemeToggle />
           <AccountMenu
             email={appUser.primaryEmail}
             firstName={appUser.firstName}
@@ -54,10 +71,10 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         </Flex>
 
         {/* Page content */}
-        <Box as="main" w="full" px={{ base: "16px", md: "32px" }} py="32px">
+        <Box as="main" flex="1" w="full" px={{ base: "4", md: "8" }} py={{ base: "6", md: "8" }}>
           {children}
         </Box>
-      </Box>
+      </Flex>
     </Box>
   );
 }

@@ -6,25 +6,22 @@ import {
   presignDownloadUrl,
 } from "@narriflow/services";
 import type { TranscriptUtterance, CaptionPreset } from "@narriflow/validators";
-import { getEffectiveClipTiming } from "@narriflow/validators";
+import {
+  DEFAULT_CAPTION_PRESET,
+  getEffectiveClipTiming,
+  studioEditsSchema,
+} from "@narriflow/validators";
 import { StudioShell } from "./_components/studio-shell";
 import type { ClipInfo, TimelineSegment } from "./_components/studio-shell";
 
-const DEFAULT_CAPTION_PRESET: CaptionPreset = {
-  fontName: "Bebas Neue",
-  primaryColor: "#FFFFFF",
-  outlineColor: "#000000",
-  outlineWidth: 2,
-  shadow: 1,
-  bold: true,
-  position: "bottom",
-  highlightColor: "#00FF88",
-  animation: "word-by-word",
-  fontSize: 36,
-};
-
 function clampTimelineTime(timeSec: number, clipDurationSec: number) {
   return Math.max(0, Math.min(clipDurationSec, timeSec));
+}
+
+/** First words of the utterance — the segment's on-timeline label. */
+function segmentLabel(text: string): string {
+  const words = text.trim().split(/\s+/).filter(Boolean).slice(0, 3).join(" ");
+  return words || "Segment";
 }
 
 function buildSegmentsFromUtterances(
@@ -33,13 +30,14 @@ function buildSegmentsFromUtterances(
   clipDurationSec: number,
 ): TimelineSegment[] {
   if (utterances.length === 0) {
-    return [{ id: "seg-0", label: "Fill", startSec: 0, endSec: clipDurationSec }];
+    return [{ id: "seg-0", label: "Clip", startSec: 0, endSec: clipDurationSec }];
   }
 
   const segments: TimelineSegment[] = [];
   let cursorSec = 0;
 
   for (let i = 0; i < utterances.length; i++) {
+    const utterance = utterances[i]!;
     const nextUtterance = utterances[i + 1];
     const nextBoundarySec = nextUtterance
       ? clampTimelineTime(nextUtterance.startSec - clipStartSec, clipDurationSec)
@@ -48,7 +46,7 @@ function buildSegmentsFromUtterances(
 
     segments.push({
       id: `seg-${i}`,
-      label: "Fill",
+      label: segmentLabel(utterance.text),
       startSec: cursorSec,
       endSec,
     });
@@ -67,9 +65,10 @@ export default async function StudioPage({
   const appUser = await requireCurrentAppUser();
   const { projectId, clipId } = await params;
 
-  const [snapshot, clips] = await Promise.all([
+  const [snapshot, clips, previewSource] = await Promise.all([
     projectService.getProjectSnapshot(appUser.id, projectId),
     clipService.listClips(appUser.id, projectId),
+    clipService.getClipPreviewSource(appUser.id, projectId, clipId),
   ]);
 
   if (!snapshot.project) notFound();
@@ -101,6 +100,7 @@ export default async function StudioPage({
   const captionPreset: CaptionPreset = clip.captionPreset
     ? { ...DEFAULT_CAPTION_PRESET, ...clip.captionPreset }
     : DEFAULT_CAPTION_PRESET;
+  const initialStudioEdits = studioEditsSchema.parse(clip.studioEdits ?? {});
 
   const clipInfo: ClipInfo = {
     id: clip.id,
@@ -112,7 +112,7 @@ export default async function StudioPage({
     aspectRatio: clip.renderVariants[0]?.aspectRatio ?? "9:16",
     viralityScore: clip.viralityScore,
     category: clip.category,
-    credits: 10,
+    brollUrl: clip.brollUrl ?? null,
   };
 
   return (
@@ -125,10 +125,13 @@ export default async function StudioPage({
         effective.durationSec,
       )}
       initialCaptionPreset={captionPreset}
+      initialStudioEdits={initialStudioEdits}
       sourceVideoUrl={sourceVideoUrl}
       sourcePreviewId={snapshot.project.sourceStorageKey ?? snapshot.project.id}
       clipStartSec={effective.startSec}
       clipEndSec={effective.endSec}
+      previewVideoUrl={previewSource.previewUrl}
+      previewStartSec={previewSource.previewStartSec}
     />
   );
 }

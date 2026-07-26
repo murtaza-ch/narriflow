@@ -7,13 +7,10 @@ import {
   EyeOff,
   Scissors,
   Trash2,
-  Volume2,
-  LayoutTemplate,
   SkipBack,
   Play,
   Pause,
   SkipForward,
-  Plus,
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
@@ -28,6 +25,8 @@ import {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
+// Frame-accurate MM:SS.ff readout — sub-second precision that the shared
+// integer-second formatTimecode helper intentionally doesn't cover.
 function formatTimecode(secs: number) {
   const m = Math.floor(secs / 60);
   const s = Math.floor(secs % 60);
@@ -122,7 +121,8 @@ const SegmentThumbnails = memo(function SegmentThumbnails({
       if (!ctx) return;
 
       ctx.clearRect(0, 0, renderWidth, renderHeight);
-      ctx.fillStyle = "#141414";
+      // Canvas can't consume theme tokens — literal matches studio.subtle.
+      ctx.fillStyle = "#14171C";
       ctx.fillRect(0, 0, renderWidth, renderHeight);
       ctx.fillStyle = "rgba(255,255,255,0.04)";
       for (let x = 0; x < renderWidth; x += 42) {
@@ -197,10 +197,11 @@ const SegmentThumbnails = memo(function SegmentThumbnails({
         position: "absolute",
         inset: 0,
         overflow: "hidden",
+        // Literals match studio.surface / studio.subtle (canvas strip chrome).
         background:
           status === "ready"
-            ? "#111"
-            : "linear-gradient(90deg, #111 0%, #181818 45%, #101010 100%)",
+            ? "#171B21"
+            : "linear-gradient(90deg, #171B21 0%, #1B2027 45%, #14171C 100%)",
       }}
     >
       <canvas
@@ -344,17 +345,18 @@ function CtrlBtn({
       gap="5px"
       px={label ? "8px" : "6px"}
       h="28px"
-      borderRadius="5px"
-      bg={active ? "#1e1e1e" : "transparent"}
+      borderRadius="l1"
+      bg={active ? "studio.raised" : "transparent"}
       border="none"
-      color={active ? "#e5e5e5" : "#555"}
+      color={active ? "studio.fg" : "studio.fgMuted"}
       cursor="pointer"
       fontSize="12px"
       fontWeight="500"
       title={title ?? label}
+      aria-label={title ?? label}
       onClick={onClick}
-      transition="all 150ms"
-      _hover={{ bg: "#1e1e1e", color: "#ccc" }}
+      transition="background 120ms ease, color 120ms ease"
+      _hover={{ bg: "studio.raised", color: "studio.fg" }}
     >
       {icon}
       {label && <Text fontSize="11px">{label}</Text>}
@@ -446,23 +448,39 @@ const TimelineSegmentBlock = memo(function TimelineSegmentBlock({
     [id, isSelected, setSelectedSegmentId],
   );
 
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key !== "Enter" && e.key !== " ") return;
+      e.preventDefault();
+      e.stopPropagation();
+      setSelectedSegmentId(isSelected ? null : id);
+    },
+    [id, isSelected, setSelectedSegmentId],
+  );
+
   return (
     <Box
       position="absolute"
       style={{ left: `${x}px`, width: `${Math.max(w - 1, 4)}px` }}
       top="0"
       bottom="0"
-      borderRadius="4px"
+      borderRadius="l1"
       overflow="hidden"
       border="1.5px solid"
-      borderColor={isSelected ? "#6366F1" : "#252525"}
-      bg="#111"
+      borderColor={isSelected ? "studio.accent" : "studio.border"}
+      bg="studio.surface"
       cursor="pointer"
       transition="border-color 120ms"
       _hover={{
-        borderColor: isSelected ? "#818cf8" : "#3a3a3a",
+        borderColor: isSelected ? "studio.accentFg" : "studio.borderStrong",
       }}
+      _focusVisible={{ outline: "2px solid", outlineColor: "studio.ring", outlineOffset: "1px" }}
       onClick={handleClick}
+      onKeyDown={handleKeyDown}
+      role="button"
+      tabIndex={0}
+      aria-pressed={isSelected}
+      aria-label={`Segment "${label}", ${formatTimecode(startSec)} to ${formatTimecode(endSec)}`}
       contain="layout paint"
     >
       <SegmentThumbnails
@@ -475,10 +493,12 @@ const TimelineSegmentBlock = memo(function TimelineSegmentBlock({
         height={TRACK_HEIGHT - 3}
       />
 
+      {/* Utterance label — first words of the segment's speech */}
       <Flex
         position="absolute"
         top="3px"
         left="4px"
+        maxW="calc(100% - 8px)"
         px="5px"
         h="16px"
         align="center"
@@ -487,42 +507,17 @@ const TimelineSegmentBlock = memo(function TimelineSegmentBlock({
         backdropFilter="blur(4px)"
       >
         <Text
-          fontSize="9px"
-          fontWeight="700"
-          color={isSelected ? "#a5b4fc" : "#aaa"}
-          letterSpacing="0.04em"
-          textTransform="capitalize"
+          fontSize="10px"
+          fontWeight="600"
+          color={isSelected ? "studio.accentFg" : "studio.fgMuted"}
+          letterSpacing="0.02em"
+          whiteSpace="nowrap"
+          overflow="hidden"
+          textOverflow="ellipsis"
         >
           {label}
         </Text>
       </Flex>
-
-      <Box
-        position="absolute"
-        left="0"
-        top="0"
-        bottom="0"
-        w="5px"
-        bg="rgba(99,102,241,0.6)"
-        cursor="ew-resize"
-        opacity={isSelected ? 1 : 0}
-        transition="opacity 120ms"
-        _hover={{ opacity: 1, bg: "#6366F1" }}
-        borderLeftRadius="4px"
-      />
-      <Box
-        position="absolute"
-        right="0"
-        top="0"
-        bottom="0"
-        w="5px"
-        bg="rgba(99,102,241,0.6)"
-        cursor="ew-resize"
-        opacity={isSelected ? 1 : 0}
-        transition="opacity 120ms"
-        _hover={{ opacity: 1, bg: "#6366F1" }}
-        borderRightRadius="4px"
-      />
     </Box>
   );
 });
@@ -538,17 +533,19 @@ const TimelineTimecode = memo(function TimelineTimecode({
 
   return (
     <Text
-      fontFamily="mono"
+      textStyle="data"
       fontSize="12px"
-      color="#888"
-      ml="8px"
+      color="studio.timecode"
+      ml="2"
       whiteSpace="nowrap"
     >
       {formatTimecode(safeCurrentTime)}
-      <Box as="span" color="#444" mx="6px">
+      <Box as="span" color="studio.fgSubtle" mx="6px">
         /
       </Box>
-      {formatTimecode(duration)}
+      <Box as="span" color="studio.fgMuted">
+        {formatTimecode(duration)}
+      </Box>
     </Text>
   );
 });
@@ -605,7 +602,7 @@ const TimelinePlayhead = memo(function TimelinePlayhead({
       top="0"
       bottom="0"
       w="1.5px"
-      bg="white"
+      bg="studio.fg"
       style={{
         left: 0,
         transform: `translate3d(${timeToX(Math.min(duration, Math.max(0, playbackClock.getSnapshot())))}px, 0, 0)`,
@@ -624,7 +621,7 @@ const TimelinePlayhead = memo(function TimelinePlayhead({
         style={{
           borderLeft: "5px solid transparent",
           borderRight: "5px solid transparent",
-          borderTop: "7px solid white",
+          borderTop: "7px solid var(--chakra-colors-studio-fg)",
         }}
       />
       <Box
@@ -635,7 +632,7 @@ const TimelinePlayhead = memo(function TimelinePlayhead({
         w="5px"
         h="5px"
         borderRadius="full"
-        bg="white"
+        bg="studio.fg"
       />
     </Box>
   );
@@ -660,6 +657,7 @@ export function Timeline() {
     sourcePreviewId,
     clipStartSec,
     utterances,
+    exportState,
   } = useStudio();
 
   const stripRef = useRef<HTMLDivElement>(null);
@@ -793,20 +791,43 @@ export function Timeline() {
   return (
     <Box
       flexShrink={0}
-      bg="#0a0a0a"
+      bg="studio.canvas"
       borderTopWidth="1px"
-      borderColor="#1a1a1a"
+      borderColor="studio.border"
       style={{ height: showTimeline ? `${40 + trackAreaHeight}px` : "40px" }}
       transition="height 200ms ease"
       overflow="hidden"
+      position="relative"
     >
+      {/* Render-in-flight — 3px indeterminate meter along the top edge */}
+      {exportState !== "idle" && (
+        <Box
+          position="absolute"
+          top="0"
+          left="0"
+          right="0"
+          h="3px"
+          overflow="hidden"
+          zIndex={20}
+          role="progressbar"
+          aria-label="Queueing render"
+        >
+          <Box
+            h="full"
+            backgroundImage="linear-gradient(90deg, transparent 20%, {colors.studio.accent} 50%, transparent 80%)"
+            backgroundSize="200% 100%"
+            animation="shimmer"
+          />
+        </Box>
+      )}
+
       {/* ── Control bar ───────────────────────────────────────────────── */}
       <Flex
         h="40px"
         align="center"
-        px="12px"
+        px="3"
         borderBottomWidth="1px"
-        borderColor="#1a1a1a"
+        borderColor="studio.border"
         flexShrink={0}
         gap="2px"
       >
@@ -817,7 +838,7 @@ export function Timeline() {
             onClick={() => setShowTimeline(!showTimeline)}
             label="Hide timeline"
           />
-          <Box w="1px" h="16px" bg="#2a2a2a" mx="4px" />
+          <Box w="1px" h="16px" bg="studio.border" mx="1" />
           <CtrlBtn
             icon={<Scissors size={14} />}
             onClick={splitAtPlayhead}
@@ -829,8 +850,6 @@ export function Timeline() {
             active={!!selectedSegmentId}
             title="Delete selected clip (Backspace)"
           />
-          <CtrlBtn icon={<Volume2 size={14} />} title="Audio" />
-          <CtrlBtn icon={<LayoutTemplate size={14} />} title="Layout" />
         </Flex>
 
         {/* Center: Playback controls */}
@@ -847,13 +866,15 @@ export function Timeline() {
             w="32px"
             h="32px"
             borderRadius="full"
-            bg="#1e1e1e"
-            border="1px solid #2a2a2a"
+            bg="studio.raised"
+            borderWidth="1px"
+            borderColor="studio.borderStrong"
             cursor="pointer"
-            color="#e5e5e5"
+            color="studio.fg"
+            aria-label={isPlaying ? "Pause" : "Play"}
             onClick={togglePlay}
-            transition="all 150ms"
-            _hover={{ bg: "#2a2a2a" }}
+            transition="background 120ms ease, border-color 120ms ease"
+            _hover={{ borderColor: "studio.fgSubtle" }}
           >
             {isPlaying ? <Pause size={15} /> : <Play size={15} />}
           </Flex>
@@ -881,7 +902,7 @@ export function Timeline() {
             step={0.05}
             onValueChange={(e) => setTimelineZoom(e.value[0]!)}
             size="sm"
-            colorPalette="purple"
+            colorPalette="accent"
             w="80px"
           >
             <Slider.Control>
@@ -916,7 +937,7 @@ export function Timeline() {
             "&::-webkit-scrollbar": { height: "6px" },
             "&::-webkit-scrollbar-track": { background: "transparent" },
             "&::-webkit-scrollbar-thumb": {
-              background: "#2a2a2a",
+              background: "var(--chakra-colors-studio-raised)",
               borderRadius: "4px",
             },
           }}
@@ -950,8 +971,8 @@ export function Timeline() {
                         position="absolute"
                         top="2px"
                         fontSize="10px"
-                        fontFamily="mono"
-                        color="#555"
+                        textStyle="data"
+                        color="studio.timecode"
                         style={{ transform: "translateX(-50%)" }}
                         whiteSpace="nowrap"
                         userSelect="none"
@@ -961,20 +982,19 @@ export function Timeline() {
                       <Box
                         w="1px"
                         h="6px"
-                        bg="#444"
+                        bg="studio.borderStrong"
                         position="absolute"
                         bottom="0"
                       />
                     </>
                   ) : (
                     <Box
-                      w="3px"
+                      w="1px"
                       h="3px"
-                      borderRadius="full"
-                      bg="#333"
+                      bg="studio.border"
                       position="absolute"
-                      bottom="2px"
-                      style={{ transform: "translateX(-1px)" }}
+                      bottom="0"
+                      style={{ transform: "translateX(-0.5px)" }}
                     />
                   )}
                 </Box>
@@ -993,28 +1013,6 @@ export function Timeline() {
               onClick={handleStripClick}
               cursor="pointer"
             >
-              {/* Add button left */}
-              <Flex
-                position="absolute"
-                left="-34px"
-                top="50%"
-                transform="translateY(-50%)"
-                w="24px"
-                h="24px"
-                align="center"
-                justify="center"
-                borderRadius="full"
-                bg="#161616"
-                border="1px dashed #333"
-                color="#444"
-                cursor="pointer"
-                _hover={{ bg: "#1e1e1e", borderColor: "#555", color: "#888" }}
-                transition="all 150ms"
-                title="Add clip"
-                zIndex={5}
-              >
-                <Plus size={12} />
-              </Flex>
 
               {visibleSegments.map((seg) => (
                 <TimelineSegmentBlock
@@ -1056,27 +1054,6 @@ export function Timeline() {
                 );
               })}
 
-              {/* Add button right */}
-              <Flex
-                position="absolute"
-                style={{ left: `${totalWidth + 8}px` }}
-                top="50%"
-                transform="translateY(-50%)"
-                w="24px"
-                h="24px"
-                align="center"
-                justify="center"
-                borderRadius="full"
-                bg="#161616"
-                border="1px dashed #333"
-                color="#444"
-                cursor="pointer"
-                _hover={{ bg: "#1e1e1e", borderColor: "#555", color: "#888" }}
-                transition="all 150ms"
-                title="Add clip"
-              >
-                <Plus size={12} />
-              </Flex>
             </Box>
 
             {/* ── Waveform track ───────────────────────────────── */}
@@ -1088,10 +1065,11 @@ export function Timeline() {
                 width: `${totalWidth}px`,
                 height: `${WAVEFORM_HEIGHT}px`,
               }}
-              bg="#0d0d0d"
-              borderRadius="4px"
+              bg="studio.subtle"
+              borderRadius="l1"
               overflow="hidden"
-              border="1px solid #1a1a1a"
+              borderWidth="1px"
+              borderColor="studio.border"
               onClick={handleStripClick}
               cursor="pointer"
             >

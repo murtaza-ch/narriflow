@@ -2,7 +2,6 @@
 
 import { memo, useRef, useEffect, useCallback, useState, useMemo } from "react";
 import { Box, Flex, Text, Checkbox } from "@chakra-ui/react";
-import { Plus } from "lucide-react";
 import type { TranscriptUtterance, TranscriptWord } from "@narriflow/validators";
 import { useStudio } from "./studio-shell";
 import type { PlaybackClock } from "./playback-clock";
@@ -107,7 +106,7 @@ function PauseIndicator({ duration }: { duration: number }) {
             w="4px"
             h="4px"
             borderRadius="full"
-            bg="#555"
+            bg="studio.fgSubtle"
           />
         ))}
       </Box>
@@ -165,8 +164,8 @@ const EditableUtterance = memo(function EditableUtterance({
         py="8px"
         lineHeight="1.75"
         fontSize="13.5px"
-        borderRadius="4px"
-        bg={isActive ? "rgba(99,102,241,0.08)" : "transparent"}
+        borderRadius="l1"
+        bg={isActive ? "studio.accent/10" : "transparent"}
         _hover={{ bg: "rgba(255,255,255,0.04)" }}
         transition="background 150ms"
         contentEditable
@@ -194,7 +193,7 @@ const EditableUtterance = memo(function EditableUtterance({
               <Box
                 as="span"
                 display="inline"
-                color={isActiveWord ? highlightColor : "#d4d4d4"}
+                color={isActiveWord ? highlightColor : "studio.fg"}
                 fontWeight="inherit"
                 cursor="pointer"
                 borderRadius="2px"
@@ -233,10 +232,10 @@ const EditableUtterance = memo(function EditableUtterance({
       py="8px"
       lineHeight="1.75"
       fontSize="13.5px"
-      borderRadius="4px"
-      bg="rgba(99,102,241,0.12)"
-      boxShadow="0 0 0 1px rgba(99,102,241,0.3)"
-      color="#e0e0e0"
+      borderRadius="l1"
+      bg="studio.accent/15"
+      boxShadow="0 0 0 1.5px var(--chakra-colors-studio-ring)"
+      color="studio.fg"
       transition="background 150ms"
     >
       {utterance.text}
@@ -322,14 +321,14 @@ export function TranscriptPanel() {
 
   return (
     <Box
-      w="300px"
-      minW="300px"
-      maxW="300px"
+      w={{ base: "240px", md: "280px", xl: "300px" }}
+      minW={{ base: "240px", md: "280px", xl: "300px" }}
+      maxW={{ base: "240px", md: "280px", xl: "300px" }}
       h="100%"
-      bg="#111111"
+      bg="studio.surface"
       borderRightWidth="1px"
-      borderColor="#222222"
-      display="flex"
+      borderColor="studio.border"
+      display={{ base: "none", lg: "flex" }}
       flexDirection="column"
       overflow="hidden"
     >
@@ -341,45 +340,27 @@ export function TranscriptPanel() {
         align="center"
         justify="space-between"
         borderBottomWidth="1px"
-        borderColor="#1e1e1e"
+        borderColor="studio.border"
         flexShrink={0}
-        gap="8px"
-        flexWrap="wrap"
+        gap="2"
       >
+        <Text textStyle="eyebrow" color="studio.fgMuted">
+          Transcript
+        </Text>
         <Checkbox.Root
           checked={transcriptOnly}
           onCheckedChange={(e) => setTranscriptOnly(!!e.checked)}
           size="sm"
-          colorPalette="purple"
+          colorPalette="accent"
           gap="8px"
           cursor="pointer"
         >
           <Checkbox.HiddenInput />
           <Checkbox.Control />
           <Checkbox.Label>
-            <Text fontSize="12px" color="#888">Transcript only</Text>
+            <Text fontSize="12px" color="studio.fgMuted">Transcript only</Text>
           </Checkbox.Label>
         </Checkbox.Root>
-
-        <Flex
-          as="button"
-          align="center"
-          gap="4px"
-          bg="transparent"
-          border="none"
-          cursor="pointer"
-          color="#6366F1"
-          fontSize="12px"
-          fontWeight="500"
-          px="8px"
-          py="4px"
-          borderRadius="6px"
-          _hover={{ bg: "rgba(99,102,241,0.1)" }}
-          transition="background 150ms"
-        >
-          <Plus size={13} />
-          Add a section
-        </Flex>
       </Flex>
 
       {/* Scrollable transcript body */}
@@ -392,7 +373,10 @@ export function TranscriptPanel() {
         css={{
           "&::-webkit-scrollbar": { width: "4px" },
           "&::-webkit-scrollbar-track": { background: "transparent" },
-          "&::-webkit-scrollbar-thumb": { background: "#2a2a2a", borderRadius: "4px" },
+          "&::-webkit-scrollbar-thumb": {
+            background: "var(--chakra-colors-studio-raised)",
+            borderRadius: "4px",
+          },
         }}
       >
         {utterances.map((utterance, i) => {
@@ -410,7 +394,7 @@ export function TranscriptPanel() {
               <Text
                 fontSize="11px"
                 fontWeight="600"
-                color="#6366F1"
+                color="studio.accentFg"
                 px="16px"
                 pt={i === 0 ? "4px" : "12px"}
                 pb="2px"
@@ -434,16 +418,16 @@ export function TranscriptPanel() {
                   align="center"
                   gap="6px"
                 >
-                  <Box flex="1" h="1px" bg="#1e1e1e" />
-                  <Flex align="center" gap="3px" px="6px" py="2px" borderRadius="4px" bg="rgba(255,255,255,0.03)">
+                  <Box flex="1" h="1px" bg="studio.border" />
+                  <Flex align="center" gap="3px" px="6px" py="2px" borderRadius="l1" bg="rgba(255,255,255,0.03)">
                     {[0, 1, 2].map((d) => (
-                      <Box key={d} w="4px" h="4px" borderRadius="full" bg="#444" />
+                      <Box key={d} w="4px" h="4px" borderRadius="full" bg="studio.fgSubtle" />
                     ))}
-                    <Text fontSize="10px" color="#444" ml="2px">
+                    <Text textStyle="data" fontSize="10.5px" color="studio.fgMuted" ml="2px">
                       {pauseAfter.toFixed(1)}s
                     </Text>
                   </Flex>
-                  <Box flex="1" h="1px" bg="#1e1e1e" />
+                  <Box flex="1" h="1px" bg="studio.border" />
                 </Flex>
               )}
             </Box>

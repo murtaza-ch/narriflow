@@ -202,7 +202,7 @@ async function runJob(job: ThumbnailJob) {
     const ctx = strip.getContext("2d");
     if (!ctx) return;
 
-    ctx.fillStyle = "#111";
+    ctx.fillStyle = "#171B21"; // studio.surface (canvas literal)
     ctx.fillRect(0, 0, renderWidth, renderHeight);
 
     for (let i = 0; i < frameCount; i++) {
