@@ -1,0 +1,14 @@
+{
+  "extends": "../../packages/config/tsconfig.base.json",
+  "compilerOptions": {
+    "baseUrl": ".",
+    "types": ["node"],
+    "paths": {
+      "@narriflow/services": ["../../packages/services/src/index.ts"],
+      "@narriflow/services/*": ["../../packages/services/src/*"],
+      "@narriflow/validators": ["../../packages/validators/src/index.ts"],
+      "@narriflow/validators/*": ["../../packages/validators/src/*"]
+    }
+  },
+  "include": ["src"]
+}

@@ -1,20 +1,22 @@
 {
-  "name": "@narriflow/worker",
+  "name": "@narriflow/mcp",
   "version": "0.0.0",
   "private": true,
   "type": "module",
   "scripts": {
     "dev": "bun run src/index.ts",
-    "build": "tsc -p tsconfig.json --noEmit",
     "start": "bun run src/index.ts",
-    "lint": "echo 'worker lint: no-op'",
+    "build": "tsc -p tsconfig.json --noEmit",
+    "lint": "echo 'mcp lint: no-op'",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "bun test src/",
+    "test": "echo 'mcp test: no-op'",
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "@narriflow/services": "workspace:*",
-    "@narriflow/validators": "workspace:*"
+    "@narriflow/validators": "workspace:*",
+    "zod": "^4.3.6"
   },
   "devDependencies": {
     "@types/node": "latest"

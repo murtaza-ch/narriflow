@@ -1,3 +1,4 @@
+import { setTimeout as sleep } from "node:timers/promises";
 import {
   clipService,
   computeDurationOptimality,
@@ -8,8 +9,10 @@ import {
 } from "@narriflow/services";
 import {
   clipDetectionLlmResponseSchema,
-  contentPackSchema,
+  parseStoredContentPack,
   getEffectiveClipTiming,
+  normalizeTranscriptSliceForClip,
+  type BrollCue,
   type ClipCategory,
   type ClipPlatformTarget,
   type ContentPack,
@@ -24,6 +27,14 @@ interface WorkflowRunJob {
     sourceStorageKey: string | null;
     sourceDurationSeconds: number | null;
   };
+}
+
+export function buildCaptionOnlyTranscriptSlice(
+  utterances: TranscriptUtterance[],
+  startSec: number,
+  endSec: number,
+): TranscriptUtterance[] {
+  return normalizeTranscriptSliceForClip(utterances, startSec, endSec);
 }
 
 class WorkflowWorkerError extends Error {
@@ -69,6 +80,16 @@ export const CLIP_DURATION_POLICY = {
   preferredMaxDurationSec: 60,
   maxDurationSec: 90,
 } as const;
+
+// Absolute floor a clip's duration can never fall below, regardless of what a
+// content pack's duration policy requests — production has emitted 1.43s and
+// 2.79s clips (from a 24-minute source) when the effective policy allowed it.
+// Matches the content-pack schema's own minDurationSec floor
+// (packages/validators/src/content-pack.ts, z.number().min(5)), so this only
+// changes behavior for a policy that somehow gets below that floor (a bug
+// elsewhere, stale data, or a future schema relaxation) rather than
+// second-guessing the schema's normal 5-120s range.
+const ABSOLUTE_MIN_CLIP_DURATION_SEC = 5;
 
 const MIN_CANDIDATE_MULTIPLIER = 3;
 const MAX_CANDIDATE_COUNT_TARGET = 90;
@@ -150,6 +171,7 @@ For each clip, provide:
 - Hook strength score (1-100): how compelling the opening is
 - Emotional intensity score (1-100): how emotionally resonant the content is
 - Story completeness score (1-100): whether the clip has a full setup/escalation/payoff arc
+- B-roll cue moments: 2-4 moments within the clip where a brief stock-footage cutaway would strengthen it, each with a timestamp, a visual search query, and a one-line reason (return an empty list only when the clip is a pure talking-head with no good insertion point)
 
 Respond with a JSON object containing a "clips" array. Each clip object must have these exact fields:
 - title: string
@@ -163,6 +185,12 @@ Respond with a JSON object containing a "clips" array. Each clip object must hav
 - hook_strength: integer 1-100
 - emotional_intensity: integer 1-100
 - story_completeness_score: integer 1-100
+- broll_cues: array of { at_sec, query, reason } — 2-4 B-roll cue moments, or [] for a pure talking-head clip
+
+B-roll cue guidance:
+- at_sec is seconds from the START of this clip (0 = the clip's own start), NOT the video's absolute timeline — unlike start_time/end_time, which are absolute.
+- query must be a short (2-5 word), visually concrete stock-footage search term describing something a camera could literally film — e.g. "city skyline at night", "hands typing on laptop", "stock market chart screen". Never restate the clip's title, hook, or wording verbatim, and never use abstract, idiomatic, or hyperbolic phrasing (for example, a clip about "mistakes killing your ad budget" must NOT produce a query like "killing" or "mistakes" — describe the visual scene instead, such as "marketing dashboard declining" or "frustrated person at desk"). A literal reading of the query is what gets searched, so avoid any wording that could match violent, graphic, or otherwise unsafe footage when taken literally.
+- reason is a one-line explanation of why a cutaway helps at that moment.
 
 Important constraints:
 - Each returned clip must be between 15 and 90 seconds long.
@@ -171,6 +199,29 @@ Important constraints:
 - Clips should have natural start and end points (complete thoughts).
 - Avoid starting mid-sentence.
 - Prioritize quality over quantity, but return the requested number of candidates when the transcript contains enough distinct moments.`;
+
+// Byte-identical across every call regardless of video/content-pack, and
+// ordered so the one 2-way-variable line (hookGuidance) sits at the very end
+// of it. OpenAI's prompt caching only credits the longest unbroken prefix
+// match against a prior request, so keeping this block first (right after
+// the system prompt, which is already fully static) — and keeping all
+// per-request specifics (title, duration, transcript, ...) after it — lets
+// caching cover this block on every call instead of none of it.
+const CLIP_DETECTION_SELECTION_GUIDANCE = `Identify candidate clip-worthy moments in the transcript below. The system keeps the best subset after scoring.
+
+Selection guidance:
+- Return distinct moments from different story beats or phases of the video.
+- Prefer a complete mini-story: setup, escalation, payoff, and clean ending.
+- Avoid near-duplicates and avoid clips that only make sense after watching earlier clips.
+- For each clip, platform_fit must include every target platform this moment fits naturally.
+- No target language is supplied. Keep title, hook_text, payoff_text, and reasoning in the transcript's source language.
+- Preserve the source script, proper and product names, numbers, quotations, and intentional code-switching exactly where meaning requires it.
+- When the source language is unknown, infer it from the transcript and use it consistently across every user-facing field.`;
+
+const HOOK_GUIDANCE_AUTO =
+  "- The first 3 seconds must work as a hook without extra context.";
+const HOOK_GUIDANCE_MANUAL =
+  "- A strong opening hook is preferred but NOT required. Favor clips with high story_completeness_score (full setup/escalation/payoff arc) over clips with the strongest hook.";
 
 function buildUserPrompt(
   title: string,
@@ -188,6 +239,7 @@ function buildUserPrompt(
     specificMoments: string;
     processingStartSec: number | null;
     processingEndSec: number | null;
+    sourceLanguageCode: string | null;
   },
 ): string {
   const toneNote =
@@ -200,30 +252,29 @@ function buildUserPrompt(
       ? `\nProcessing window: ${options.processingStartSec ?? 0}s to ${options.processingEndSec ?? "end"}s. Only return clips inside this window.`
       : "";
 
-  const hookGuidance = options.autoHook
-    ? "- The first 3 seconds must work as a hook without extra context."
-    : "- A strong opening hook is preferred but NOT required. Favor clips with high story_completeness_score (full setup/escalation/payoff arc) over clips with the strongest hook.";
+  const hookGuidance = options.autoHook ? HOOK_GUIDANCE_AUTO : HOOK_GUIDANCE_MANUAL;
 
   const userPriorities = options.specificMoments.trim()
     ? `\n\nUSER-SPECIFIED PRIORITIES (boost moments matching this guidance):\n${options.specificMoments.trim()}`
     : "";
 
-  return `Analyze the following transcript and identify ${candidateCountTarget} candidate clip-worthy moments. The system will keep the best ${finalClipCountTarget}.
+  const sourceLanguage = options.sourceLanguageCode
+    ? `provider language code ${options.sourceLanguageCode}`
+    : "unknown; infer the source language from the transcript";
+
+  return `${CLIP_DETECTION_SELECTION_GUIDANCE}
+${hookGuidance}
+
+Return ${candidateCountTarget} candidates; the system keeps the best ${finalClipCountTarget}.
 
 Content title: "${title}"
+Source language: ${sourceLanguage}
 Duration: ~${durationMinutes} minutes
 Speakers: ${speakerCount}
 Target clip duration: ~${clipDurationSecTarget} seconds
 Required duration window: ${durationPolicy.minDurationSec}-${durationPolicy.maxDurationSec} seconds
 Preferred duration window: ${durationPolicy.preferredMinDurationSec}-${durationPolicy.preferredMaxDurationSec} seconds
-Platform targets: ${platformTargets.join(", ")}${toneNote}${windowNote}
-
-Selection guidance:
-- Return distinct moments from different story beats or phases of the video.
-- Prefer a complete mini-story: setup, escalation, payoff, and clean ending.
-${hookGuidance}
-- Avoid near-duplicates and avoid clips that only make sense after watching earlier clips.
-- For each clip, platform_fit must include every target platform this moment fits naturally.${userPriorities}
+Platform targets: ${platformTargets.join(", ")}${toneNote}${windowNote}${userPriorities}
 
 TRANSCRIPT:
 ${formattedTranscript}
@@ -239,20 +290,24 @@ const OVERLAP_SECONDS = 120; // 2 minutes
 
 function chunkUtterances(
   utterances: TranscriptUtterance[],
-  totalDurationSec: number,
 ): TranscriptUtterance[][] {
   const formatted = formatTranscriptForLlm(utterances);
 
-  if (formatted.length <= MAX_CHARS_PER_CHUNK) {
+  if (formatted.length <= MAX_CHARS_PER_CHUNK || utterances.length === 0) {
     return [utterances];
   }
 
-  // Split into ~30 minute chunks with 2 minute overlap
+  // Split into ~30 minute chunks with 2 minute overlap. Iterate in ABSOLUTE
+  // time over the utterance range so a processing window that starts deep into
+  // the source (utterance times are absolute) is chunked correctly instead of
+  // collapsing/dropping content past the first chunk.
   const chunkDuration = 30 * 60;
   const chunks: TranscriptUtterance[][] = [];
-  let chunkStart = 0;
+  const firstStart = utterances[0]!.startSec;
+  const lastEnd = utterances[utterances.length - 1]!.endSec;
+  let chunkStart = firstStart;
 
-  while (chunkStart < totalDurationSec) {
+  while (chunkStart < lastEnd) {
     const chunkEnd = chunkStart + chunkDuration + OVERLAP_SECONDS;
     const chunk = utterances.filter(
       (u) => u.startSec >= chunkStart && u.startSec < chunkEnd,
@@ -280,6 +335,7 @@ interface RawDetectedClip {
   hookStrength: number;
   emotionalIntensity: number;
   storyCompleteness: number;
+  brollCues?: BrollCue[];
 }
 
 interface FinalDetectedClip {
@@ -301,6 +357,7 @@ interface FinalDetectedClip {
   youtubeScore: number;
   instagramScore: number;
   transcriptSlice: TranscriptUtterance[];
+  brollCues?: BrollCue[];
 }
 
 interface ClipCandidate extends FinalDetectedClip {
@@ -455,7 +512,7 @@ function getRankingScore(clip: {
   );
 }
 
-function normalizeLlmClip(clip: {
+export function normalizeLlmClip(clip: {
   title: string;
   start_time: number;
   end_time: number;
@@ -467,6 +524,7 @@ function normalizeLlmClip(clip: {
   hook_strength: number;
   emotional_intensity: number;
   story_completeness_score: number;
+  broll_cues: Array<{ at_sec: number; query: string; reason: string }>;
 }): RawDetectedClip | null {
   if (!Number.isFinite(clip.start_time) || !Number.isFinite(clip.end_time)) {
     return null;
@@ -488,6 +546,11 @@ function normalizeLlmClip(clip: {
     hookStrength: clip.hook_strength,
     emotionalIntensity: clip.emotional_intensity,
     storyCompleteness: clip.story_completeness_score,
+    brollCues: (clip.broll_cues ?? []).map((c) => ({
+      atSec: c.at_sec,
+      query: c.query,
+      reason: c.reason,
+    })),
   };
 }
 
@@ -499,7 +562,21 @@ export function buildMarketCompliantClipCandidates(input: {
 }) {
   const candidates: ClipCandidate[] = [];
   const dropped: DroppedClipCandidate[] = [];
-  const durationPolicy = input.durationPolicy ?? CLIP_DURATION_POLICY;
+  const requestedDurationPolicy = input.durationPolicy ?? CLIP_DURATION_POLICY;
+  // Clamp up to the absolute floor — never down, so a stricter caller-supplied
+  // policy is always respected as-is.
+  const durationPolicy: ClipDurationPolicy = {
+    ...requestedDurationPolicy,
+    minDurationSec: Math.max(
+      ABSOLUTE_MIN_CLIP_DURATION_SEC,
+      requestedDurationPolicy.minDurationSec,
+    ),
+    preferredMinDurationSec: Math.max(
+      ABSOLUTE_MIN_CLIP_DURATION_SEC,
+      requestedDurationPolicy.minDurationSec,
+      requestedDurationPolicy.preferredMinDurationSec,
+    ),
+  };
 
   for (const raw of input.rawClips) {
     const rawDurationSec = roundSeconds(raw.endSec - raw.startSec);
@@ -621,6 +698,7 @@ export function buildMarketCompliantClipCandidates(input: {
       youtubeScore,
       instagramScore,
       transcriptSlice: clipUtterances,
+      brollCues: raw.brollCues,
       rawStartSec: raw.startSec,
       rawEndSec: raw.endSec,
       rawDurationSec,
@@ -678,6 +756,7 @@ const CLIP_DETECTION_JSON_SCHEMA = {
           "hook_strength",
           "emotional_intensity",
           "story_completeness_score",
+          "broll_cues",
         ],
         properties: {
           title: { type: "string", minLength: 1 },
@@ -716,6 +795,19 @@ const CLIP_DETECTION_JSON_SCHEMA = {
             minimum: 1,
             maximum: 100,
           },
+          broll_cues: {
+            type: "array",
+            items: {
+              type: "object",
+              additionalProperties: false,
+              required: ["at_sec", "query", "reason"],
+              properties: {
+                at_sec: { type: "number", minimum: 0 },
+                query: { type: "string", minLength: 1 },
+                reason: { type: "string", minLength: 1 },
+              },
+            },
+          },
         },
       },
     },
@@ -746,40 +838,143 @@ function extractResponseText(payload: unknown): string | null {
   return textParts.length > 0 ? textParts.join("") : null;
 }
 
+// callOpenAI used to be the only external call anywhere in the worker with no
+// timeout at all — a hung socket would block the entire single-threaded
+// worker indefinitely. Bounded retry + jittered backoff for transient
+// failures (network errors, 429, 5xx); a genuinely bad request (4xx other
+// than 429) still fails fast instead of being retried.
+const OPENAI_REQUEST_TIMEOUT_MS = 5 * 60 * 1000;
+const OPENAI_FETCH_MAX_RETRIES = 3;
+const OPENAI_FETCH_RETRY_BASE_DELAY_MS = 1000;
+const RETRYABLE_NETWORK_ERROR_PATTERN =
+  /ECONNRESET|ETIMEDOUT|ECONNREFUSED|EPIPE|EAI_AGAIN|ENOTFOUND|ENETUNREACH|EHOSTUNREACH|socket connection was closed|network|fetch failed/i;
+
+function isAbortOrTimeoutError(error: unknown) {
+  return (
+    error instanceof Error &&
+    (error.name === "AbortError" || error.name === "TimeoutError")
+  );
+}
+
+function isRetryableFetchError(error: unknown): boolean {
+  if (isAbortOrTimeoutError(error)) return true;
+  if (!(error instanceof Error)) return false;
+  const code = (error as NodeJS.ErrnoException).code;
+  if (code && RETRYABLE_NETWORK_ERROR_PATTERN.test(code)) return true;
+  return RETRYABLE_NETWORK_ERROR_PATTERN.test(error.message);
+}
+
+function isRetryableStatus(status: number): boolean {
+  return status === 429 || status >= 500;
+}
+
+/** ±20% jitter so concurrent chunks/workers don't retry in lockstep. */
+function jitter(ms: number): number {
+  return Math.round(ms * (0.9 + Math.random() * 0.2));
+}
+
+/** Fetch wrapper with bounded retry + jittered exponential backoff for
+ *  transient network errors and 429/5xx responses. A fresh
+ *  `AbortSignal.timeout()` is created for every attempt (rather than reusing
+ *  one across retries, which would let an earlier attempt's elapsed time eat
+ *  into, or already exhaust, a later attempt's budget). */
+async function fetchWithRetry(
+  url: string,
+  init: RequestInit,
+  options: { timeoutMs: number; maxRetries?: number; baseDelayMs?: number },
+): Promise<Response> {
+  const maxRetries = options.maxRetries ?? OPENAI_FETCH_MAX_RETRIES;
+  const baseDelayMs = options.baseDelayMs ?? OPENAI_FETCH_RETRY_BASE_DELAY_MS;
+
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const response = await fetch(url, {
+        ...init,
+        signal: AbortSignal.timeout(options.timeoutMs),
+      });
+      if (attempt >= maxRetries || !isRetryableStatus(response.status)) {
+        return response;
+      }
+      log("info", "openai_fetch_retry", {
+        attempt: attempt + 1,
+        maxRetries,
+        status: response.status,
+      });
+    } catch (error) {
+      if (attempt >= maxRetries || !isRetryableFetchError(error)) {
+        throw error;
+      }
+      log("info", "openai_fetch_retry", {
+        attempt: attempt + 1,
+        maxRetries,
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
+    await sleep(jitter(baseDelayMs * 2 ** attempt));
+  }
+}
+
 async function callOpenAI(
   apiKey: string,
   systemPrompt: string,
   userPrompt: string,
   model: string,
 ): Promise<{ content: string; tokensUsed: number }> {
-  const response = await fetch(
-    "https://api.openai.com/v1/responses",
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        model,
-        input: [
-          { role: "system", content: systemPrompt },
-          { role: "user", content: userPrompt },
-        ],
-        reasoning: {
-          effort: process.env.OPENAI_CLIP_REASONING_EFFORT ?? "medium",
+  let response: Response;
+  try {
+    response = await fetchWithRetry(
+      "https://api.openai.com/v1/responses",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
         },
-        text: {
-          format: {
-            type: "json_schema",
-            name: "clip_detection",
-            strict: true,
-            schema: CLIP_DETECTION_JSON_SCHEMA,
+        body: JSON.stringify({
+          model,
+          input: [
+            { role: "system", content: systemPrompt },
+            { role: "user", content: userPrompt },
+          ],
+          reasoning: {
+            // Measured directly against the live API (gpt-5.4-mini, 2 runs,
+            // ~20-min representative transcript): medium averaged ~18.3s and
+            // 9,486 tokens/call, low averaged ~9.8s and 8,265 tokens/call —
+            // ~46% less latency, ~12% fewer tokens. There are no clip-quality
+            // fixtures in this repo to validate against (detect-clips.test.ts
+            // only unit-tests formatting/candidate-selection math, never
+            // Kept at "medium" deliberately. Benchmarking showed "low" is ~46%
+            // faster (~18.3s -> ~9.8s) and 12% cheaper, but story_completeness
+            // scores trended lower under "low" in one of two runs. That trade
+            // is bad here: the saving is ~8.5s against a ~800s end-to-end run
+            // (~1% of wall clock) on a per-hour LLM spend already under $0.02,
+            // while clip *selection* is the core product value and "bad AI clip
+            // selection" is one of the most common complaints about
+            // competitors. Spend the second, keep the quality. Override per
+            // deployment if you have quality data of your own.
+            effort: process.env.OPENAI_CLIP_REASONING_EFFORT ?? "medium",
           },
-        },
-      }),
-    },
-  );
+          text: {
+            format: {
+              type: "json_schema",
+              name: "clip_detection",
+              strict: true,
+              schema: CLIP_DETECTION_JSON_SCHEMA,
+            },
+          },
+        }),
+      },
+      { timeoutMs: OPENAI_REQUEST_TIMEOUT_MS },
+    );
+  } catch (error) {
+    if (isAbortOrTimeoutError(error)) {
+      throw new WorkflowWorkerError(
+        "openai_request_failed",
+        "OpenAI request timed out",
+      );
+    }
+    throw error;
+  }
 
   const payload = (await response.json().catch(() => null)) as {
     usage?: {
@@ -839,6 +1034,7 @@ export async function processClipDetectionRun(run: WorkflowRunJob) {
     const fullText = transcriptRow.text ?? "";
     const speakerCount = transcriptRow.speakerCount ?? 1;
     const fullDurationSec = transcriptRow.durationSeconds ?? 0;
+    const sourceLanguageCode = transcriptRow.languageCode ?? null;
 
     if (allUtterances.length === 0 && fullText.length === 0) {
       throw new WorkflowWorkerError(
@@ -852,7 +1048,7 @@ export async function processClipDetectionRun(run: WorkflowRunJob) {
       run.projectId,
     );
     const contentPack = contentPackRow
-      ? contentPackSchema.parse(contentPackRow)
+      ? parseStoredContentPack(contentPackRow)
       : null;
 
     const sourceDurationSec =
@@ -871,26 +1067,41 @@ export async function processClipDetectionRun(run: WorkflowRunJob) {
         windowEnd,
       });
 
+      // Fall back to the last utterance's end when no duration metadata exists
+      // (e.g. an RSS import with no declared duration), so caption-only never
+      // produces a zero/0.01s render of the whole video.
+      const transcriptEndSec = allUtterances.reduce(
+        (max, utterance) => Math.max(max, utterance.endSec),
+        0,
+      );
+      const captionEndSec = Math.max(
+        windowStart + 1,
+        windowEnd > windowStart
+          ? windowEnd
+          : (sourceDurationSec ?? fullDurationSec) || transcriptEndSec,
+      );
       const captionClip: FinalDetectedClip = {
         startSec: windowStart,
-        endSec: windowEnd > windowStart ? windowEnd : (sourceDurationSec ?? fullDurationSec),
+        endSec: captionEndSec,
         title: run.project.title,
         hookText: run.project.title,
         payoffText: null,
         reasoning: "Caption-only mode: full-length captioned render",
         category: "story",
         platformFit: contentPack.platformTargets ?? [],
-        hookStrengthScore: 0,
-        emotionalIntensityScore: 0,
+        hookStrengthScore: 1,
+        emotionalIntensityScore: 1,
         storyCompletenessScore: 100,
-        pacingScore: 0,
-        durationOptimalityScore: 0,
-        viralityScore: 0,
-        tiktokScore: 0,
-        youtubeScore: 0,
-        instagramScore: 0,
-        transcriptSlice: allUtterances.filter(
-          (u) => u.startSec >= windowStart && u.endSec <= (windowEnd || u.endSec + 1),
+        pacingScore: 1,
+        durationOptimalityScore: 1,
+        viralityScore: 1,
+        tiktokScore: 1,
+        youtubeScore: 1,
+        instagramScore: 1,
+        transcriptSlice: buildCaptionOnlyTranscriptSlice(
+          allUtterances,
+          windowStart,
+          captionEndSec,
         ),
       };
 
@@ -899,6 +1110,7 @@ export async function processClipDetectionRun(run: WorkflowRunJob) {
         run.id,
         [captionClip],
         { provider: "openai", model: "caption-only", totalTokensUsed: 0 },
+        contentPack,
       );
 
       try {
@@ -956,7 +1168,7 @@ export async function processClipDetectionRun(run: WorkflowRunJob) {
     const specificMoments = contentPack?.specificMoments ?? "";
 
     // Chunk transcript if needed
-    const chunks = chunkUtterances(utterances, totalDurationSec);
+    const chunks = chunkUtterances(utterances);
 
     log("info", "clip_detection_processing", {
       workflowRunId: run.id,
@@ -1010,6 +1222,7 @@ export async function processClipDetectionRun(run: WorkflowRunJob) {
           specificMoments,
           processingStartSec,
           processingEndSec,
+          sourceLanguageCode,
         },
       );
 
@@ -1139,11 +1352,17 @@ export async function processClipDetectionRun(run: WorkflowRunJob) {
     });
 
     // Persist clips
-    await clipService.persistDetectedClips(run.projectId, run.id, finalClips, {
-      provider: "openai",
-      model,
-      totalTokensUsed,
-    });
+    await clipService.persistDetectedClips(
+      run.projectId,
+      run.id,
+      finalClips,
+      {
+        provider: "openai",
+        model,
+        totalTokensUsed,
+      },
+      contentPack,
+    );
 
     if (contentPack?.autoRenderClips) {
       try {

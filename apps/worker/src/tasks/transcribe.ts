@@ -7,9 +7,15 @@ import { setTimeout as sleep } from "node:timers/promises";
 import {
   downloadObjectToFile,
   normalizeAssemblyAiTranscript,
+  presignDownloadUrl,
   putJson,
   projectService,
 } from "@narriflow/services";
+import { isR2Configured } from "@narriflow/services/r2-storage";
+import {
+  ASSEMBLYAI_SPEECH_MODEL_CHAIN,
+  sourceLanguageCodeSchema,
+} from "@narriflow/validators";
 
 interface WorkflowRunJob {
   id: string;
@@ -30,17 +36,95 @@ class WorkflowWorkerError extends Error {
 }
 
 const ASSEMBLYAI_BASE_URL = "https://api.assemblyai.com";
-const ASSEMBLYAI_MODEL_PREFERENCE = ["universal-3-pro", "universal-2"];
-const DEFAULT_KEYTERMS_PROMPT = [
-  "MrBeast",
-  "Xavien",
-  "Juan",
-  "Fort Freezy",
-  "Square",
-  "Coca-Cola",
-];
+// Per-request timeouts so a hung connection doesn't stall a workflow run until
+// the overall polling deadline (assemblyai_transcription_timeout) fires.
+const ASSEMBLYAI_UPLOAD_TIMEOUT_MS = 10 * 60 * 1000;
+const ASSEMBLYAI_SUBMIT_TIMEOUT_MS = 30 * 1000;
+const ASSEMBLYAI_POLL_TIMEOUT_MS = 30 * 1000;
+
+function isAbortOrTimeoutError(error: unknown) {
+  return (
+    error instanceof Error &&
+    (error.name === "AbortError" || error.name === "TimeoutError")
+  );
+}
+const ASSEMBLYAI_KEYTERM_LIMIT = 200;
+const ASSEMBLYAI_KEYTERM_MAX_WORDS = 6;
 const DEFAULT_ASSEMBLYAI_POLL_INTERVAL_MS = 5000;
 const DEFAULT_ASSEMBLYAI_POLL_TIMEOUT_MS = 2 * 60 * 60 * 1000;
+
+// A hung socket or a 5xx/429 from AssemblyAI used to fail the whole workflow
+// run outright (attemptCount is tracked at the job level, but nothing here
+// ever retried within a single attempt). Bounded retry with backoff for
+// transient failures only — a genuinely bad request (4xx other than 429)
+// still fails fast.
+const ASSEMBLYAI_FETCH_MAX_RETRIES = 3;
+const ASSEMBLYAI_FETCH_RETRY_BASE_DELAY_MS = 1000;
+const RETRYABLE_NETWORK_ERROR_PATTERN =
+  /ECONNRESET|ETIMEDOUT|ECONNREFUSED|EPIPE|EAI_AGAIN|ENOTFOUND|ENETUNREACH|EHOSTUNREACH|socket connection was closed|network|fetch failed/i;
+
+function isRetryableFetchError(error: unknown): boolean {
+  if (isAbortOrTimeoutError(error)) return true;
+  if (!(error instanceof Error)) return false;
+  const code = (error as NodeJS.ErrnoException).code;
+  if (code && RETRYABLE_NETWORK_ERROR_PATTERN.test(code)) return true;
+  return RETRYABLE_NETWORK_ERROR_PATTERN.test(error.message);
+}
+
+function isRetryableStatus(status: number): boolean {
+  return status === 429 || status >= 500;
+}
+
+/** Fetch wrapper with bounded retry + exponential backoff (jittered) for
+ *  transient network errors and 429/5xx responses. Permanent failures (4xx
+ *  other than 429) are returned immediately so callers still fail fast.
+ *
+ *  `timeoutMs` is used to build a *fresh* `AbortSignal.timeout()` for every
+ *  attempt (rather than the caller passing one `signal` that would otherwise
+ *  be shared/stale across retries — an earlier attempt's elapsed time would
+ *  eat into, or already exhaust, a later attempt's budget). */
+async function fetchWithRetry(
+  url: string,
+  init: RequestInit,
+  options: {
+    label: string;
+    timeoutMs: number;
+    maxRetries?: number;
+    baseDelayMs?: number;
+  },
+): Promise<Response> {
+  const maxRetries = options.maxRetries ?? ASSEMBLYAI_FETCH_MAX_RETRIES;
+  const baseDelayMs = options.baseDelayMs ?? ASSEMBLYAI_FETCH_RETRY_BASE_DELAY_MS;
+
+  for (let attempt = 0; ; attempt++) {
+    try {
+      const response = await fetch(url, {
+        ...init,
+        signal: AbortSignal.timeout(options.timeoutMs),
+      });
+      if (attempt >= maxRetries || !isRetryableStatus(response.status)) {
+        return response;
+      }
+      log("info", "assemblyai_fetch_retry", {
+        label: options.label,
+        attempt: attempt + 1,
+        maxRetries,
+        status: response.status,
+      });
+    } catch (error) {
+      if (attempt >= maxRetries || !isRetryableFetchError(error)) {
+        throw error;
+      }
+      log("info", "assemblyai_fetch_retry", {
+        label: options.label,
+        attempt: attempt + 1,
+        maxRetries,
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
+    await sleep(jitter(baseDelayMs * 2 ** attempt));
+  }
+}
 
 function sanitizeFileName(name: string) {
   return name
@@ -134,20 +218,41 @@ function getAssemblyAiPollTimeoutMs() {
     : DEFAULT_ASSEMBLYAI_POLL_TIMEOUT_MS;
 }
 
-function getAssemblyAiKeytermsPrompt(extra: string[] = []) {
-  const envTerms =
+const ASSEMBLYAI_PRESIGN_BUFFER_MS = 30 * 60 * 1000;
+const MAX_PRESIGN_EXPIRES_IN_SECONDS = 7 * 24 * 60 * 60; // S3/R2 SigV4 ceiling
+
+/** The presigned source URL must stay valid for as long as AssemblyAI might
+ *  take to fetch + transcribe it. We bound our own wait by the poll timeout,
+ *  so give the URL that plus a comfortable buffer (clamped to the presign
+ *  scheme's own 7-day ceiling). */
+function getAssemblyAiPresignExpiresInSeconds() {
+  const seconds = Math.ceil(
+    (getAssemblyAiPollTimeoutMs() + ASSEMBLYAI_PRESIGN_BUFFER_MS) / 1000,
+  );
+  return Math.min(seconds, MAX_PRESIGN_EXPIRES_IN_SECONDS);
+}
+
+/** Applies ±20% jitter (90%–110%) so concurrent workers don't poll the
+ *  provider in lockstep. Runtime code, so Math.random() is fine here. */
+function jitter(ms: number): number {
+  return Math.round(ms * (0.9 + Math.random() * 0.2));
+}
+
+function getAssemblyAiKeytermsPrompt() {
+  const terms =
     process.env.ASSEMBLYAI_KEYTERMS_PROMPT?.split(",")
       .map((term) => term.trim())
-      .filter(Boolean) ?? [];
-
-  const userTerms = extra
-    .flatMap((entry) => entry.split(/[,\n]/))
-    .map((term) => term.trim())
-    .filter(Boolean);
-
-  return [
-    ...new Set([...DEFAULT_KEYTERMS_PROMPT, ...envTerms, ...userTerms]),
-  ];
+      .filter(
+        (term) =>
+          term.length > 0 &&
+          term.split(/\s+/).length <= ASSEMBLYAI_KEYTERM_MAX_WORDS,
+      ) ?? [];
+  const uniqueTerms = new Map<string, string>();
+  for (const term of terms) {
+    const key = term.toLowerCase();
+    if (!uniqueTerms.has(key)) uniqueTerms.set(key, term);
+  }
+  return [...uniqueTerms.values()].slice(0, ASSEMBLYAI_KEYTERM_LIMIT);
 }
 
 function getErrorCode(error: unknown) {
@@ -184,15 +289,33 @@ function getResponseMessage(
 }
 
 async function uploadAssemblyAiAudio(audioPath: string, apiKey: string) {
-  const response = await fetch(`${ASSEMBLYAI_BASE_URL}/v2/upload`, {
-    method: "POST",
-    headers: {
-      Authorization: apiKey,
-      "Content-Type": "application/octet-stream",
-    },
-    body: readFileSync(audioPath),
-    duplex: "half",
-  } as RequestInit & { duplex: "half" });
+  let response: Response;
+  try {
+    response = await fetchWithRetry(
+      `${ASSEMBLYAI_BASE_URL}/v2/upload`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: apiKey,
+          "Content-Type": "application/octet-stream",
+        },
+        body: readFileSync(audioPath),
+        duplex: "half",
+      } as RequestInit & { duplex: "half" },
+      // `body` is a Buffer (read once above), not a stream, so it's safe to
+      // resend unchanged across retry attempts. Fewer retries than the other
+      // calls since a large upload retry is more expensive to repeat.
+      { label: "upload", timeoutMs: ASSEMBLYAI_UPLOAD_TIMEOUT_MS, maxRetries: 2 },
+    );
+  } catch (error) {
+    if (isAbortOrTimeoutError(error)) {
+      throw new WorkflowWorkerError(
+        "assemblyai_upload_failed",
+        "AssemblyAI upload timed out",
+      );
+    }
+    throw error;
+  }
 
   const payload = await parseJsonResponse(response);
 
@@ -223,31 +346,47 @@ async function submitAssemblyAiTranscript(
   apiKey: string,
   options: {
     languageCode: string | null;
-    specificMoments: string;
   },
 ) {
   const languageBranch = options.languageCode
-    ? { language_code: options.languageCode }
+    ? { language_code: sourceLanguageCodeSchema.parse(options.languageCode) }
     : { language_detection: true };
 
-  const userKeyterms = options.specificMoments
-    ? [options.specificMoments]
-    : [];
+  // Keyterms are opt-in deployment vocabulary only. Use the Universal-2-safe
+  // 200-term ceiling because this request can fall back from U3.5 Pro to U2.
+  const keyterms = getAssemblyAiKeytermsPrompt();
+  const keytermsBranch =
+    keyterms.length > 0 ? { keyterms_prompt: keyterms } : {};
 
-  const response = await fetch(`${ASSEMBLYAI_BASE_URL}/v2/transcript`, {
-    method: "POST",
-    headers: {
-      Authorization: apiKey,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      audio_url: uploadUrl,
-      speech_models: ASSEMBLYAI_MODEL_PREFERENCE,
-      keyterms_prompt: getAssemblyAiKeytermsPrompt(userKeyterms),
-      speaker_labels: true,
-      ...languageBranch,
-    }),
-  });
+  let response: Response;
+  try {
+    response = await fetchWithRetry(
+      `${ASSEMBLYAI_BASE_URL}/v2/transcript`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: apiKey,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          audio_url: uploadUrl,
+          speech_models: ASSEMBLYAI_SPEECH_MODEL_CHAIN,
+          speaker_labels: true,
+          ...keytermsBranch,
+          ...languageBranch,
+        }),
+      },
+      { label: "submit", timeoutMs: ASSEMBLYAI_SUBMIT_TIMEOUT_MS },
+    );
+  } catch (error) {
+    if (isAbortOrTimeoutError(error)) {
+      throw new WorkflowWorkerError(
+        "assemblyai_transcription_submit_failed",
+        "AssemblyAI transcription submit timed out",
+      );
+    }
+    throw error;
+  }
 
   const payload = await parseJsonResponse(response);
 
@@ -274,14 +413,29 @@ async function submitAssemblyAiTranscript(
 }
 
 async function getAssemblyAiTranscript(transcriptId: string, apiKey: string) {
-  const response = await fetch(
-    `${ASSEMBLYAI_BASE_URL}/v2/transcript/${transcriptId}`,
-    {
-      headers: {
-        Authorization: apiKey,
+  let response: Response;
+  try {
+    response = await fetchWithRetry(
+      `${ASSEMBLYAI_BASE_URL}/v2/transcript/${transcriptId}`,
+      {
+        headers: {
+          Authorization: apiKey,
+        },
       },
-    },
-  );
+      // The outer poll loop already re-calls this every pollIntervalMs, but
+      // without this a single transient blip would throw out of the poll
+      // loop and fail an otherwise-healthy, possibly near-complete run.
+      { label: "poll", timeoutMs: ASSEMBLYAI_POLL_TIMEOUT_MS },
+    );
+  } catch (error) {
+    if (isAbortOrTimeoutError(error)) {
+      throw new WorkflowWorkerError(
+        "assemblyai_transcription_poll_failed",
+        "AssemblyAI transcription poll timed out",
+      );
+    }
+    throw error;
+  }
 
   const payload = await parseJsonResponse(response);
 
@@ -298,31 +452,116 @@ async function getAssemblyAiTranscript(transcriptId: string, apiKey: string) {
   return payload as Record<string, unknown>;
 }
 
+/**
+ * Submits the transcription job to AssemblyAI. Fast path: presign a download
+ * URL for the source object already sitting in R2 and hand that straight to
+ * AssemblyAI as `audio_url` — AssemblyAI accepts a plain HTTPS URL (audio or
+ * video) directly, so this skips downloading the whole source, transcoding
+ * it locally, and re-uploading the extracted audio (a ~2.5GB GET + ffmpeg +
+ * ~28MB PUT round trip for a 60-min 4K source). Falls back to the previous
+ * download -> extract -> upload path if presigning isn't available (R2 not
+ * configured) or AssemblyAI rejects/can't fetch the presigned URL.
+ */
+async function submitAssemblyAiJob(
+  run: WorkflowRunJob,
+  apiKey: string,
+  options: { languageCode: string | null },
+): Promise<{ transcriptId: string; submissionPath: "presigned_source" | "uploaded_audio" }> {
+  const sourceStorageKey = run.project.sourceStorageKey;
+  if (!sourceStorageKey) {
+    throw new WorkflowWorkerError(
+      "workflow_source_missing",
+      "sourceStorageKey is required for transcription",
+    );
+  }
+
+  if (isR2Configured()) {
+    try {
+      const presignedUrl = await presignDownloadUrl({
+        key: sourceStorageKey,
+        expiresIn: getAssemblyAiPresignExpiresInSeconds(),
+      });
+      const transcriptId = await submitAssemblyAiTranscript(
+        presignedUrl,
+        apiKey,
+        options,
+      );
+      log("info", "assemblyai_submission_path", {
+        workflowRunId: run.id,
+        projectId: run.projectId,
+        path: "presigned_source",
+      });
+      return { transcriptId, submissionPath: "presigned_source" };
+    } catch (error) {
+      log("info", "assemblyai_presigned_submit_fallback", {
+        workflowRunId: run.id,
+        projectId: run.projectId,
+        reason: "presign_or_submit_failed",
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
+  } else {
+    log("info", "assemblyai_presigned_submit_fallback", {
+      workflowRunId: run.id,
+      projectId: run.projectId,
+      reason: "r2_not_configured",
+    });
+  }
+
+  // Fallback: download the source, extract a small audio track locally, and
+  // upload just that to AssemblyAI.
+  const tempDir = await mkdtemp(join(tmpdir(), "narriflow-stt-"));
+  try {
+    const sourceExt = extname(sourceStorageKey) || ".bin";
+    const sourcePath = join(tempDir, `source${sourceExt}`);
+    const audioPath = join(tempDir, "transcription-input.mp3");
+
+    await downloadObjectToFile({ key: sourceStorageKey, filePath: sourcePath });
+    await extractTranscriptionAudio(sourcePath, audioPath);
+    await projectService.publishWorkflowProgress({
+      projectId: run.projectId,
+      workflowRunId: run.id,
+      stage: "stt",
+      status: "running",
+      progress: 20,
+      errorCode: null,
+    });
+
+    const uploadUrl = await uploadAssemblyAiAudio(audioPath, apiKey);
+    await projectService.publishWorkflowProgress({
+      projectId: run.projectId,
+      workflowRunId: run.id,
+      stage: "stt",
+      status: "running",
+      progress: 30,
+      errorCode: null,
+    });
+
+    const transcriptId = await submitAssemblyAiTranscript(
+      uploadUrl,
+      apiKey,
+      options,
+    );
+    log("info", "assemblyai_submission_path", {
+      workflowRunId: run.id,
+      projectId: run.projectId,
+      path: "uploaded_audio",
+    });
+    return { transcriptId, submissionPath: "uploaded_audio" };
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}
+
 async function transcribeWithAssemblyAi(
-  audioPath: string,
   run: WorkflowRunJob,
   options: {
     languageCode: string | null;
-    specificMoments: string;
   },
 ) {
   const apiKey = getRequiredAssemblyAiApiKey();
 
-  const uploadUrl = await uploadAssemblyAiAudio(audioPath, apiKey);
-  await projectService.publishWorkflowProgress({
-    projectId: run.projectId,
-    workflowRunId: run.id,
-    stage: "stt",
-    status: "running",
-    progress: 30,
-    errorCode: null,
-  });
-
-  const transcriptId = await submitAssemblyAiTranscript(
-    uploadUrl,
-    apiKey,
-    options,
-  );
+  const { transcriptId } = await submitAssemblyAiJob(run, apiKey, options);
   await projectService.publishWorkflowProgress({
     projectId: run.projectId,
     workflowRunId: run.id,
@@ -364,7 +603,7 @@ async function transcribeWithAssemblyAi(
       errorCode: null,
     });
 
-    await sleep(pollIntervalMs);
+    await sleep(jitter(pollIntervalMs));
   }
 
   throw new WorkflowWorkerError(
@@ -405,41 +644,18 @@ export async function processTranscriptRun(run: WorkflowRunJob) {
     projectId: run.projectId,
   });
 
-  const tempDir = await mkdtemp(join(tmpdir(), "narriflow-stt-"));
-
   try {
-    const sourceExt = extname(run.project.sourceStorageKey) || ".bin";
-    const sourcePath = join(tempDir, `source${sourceExt}`);
-    const audioPath = join(tempDir, "transcription-input.mp3");
+    const languageCode = await projectService.getProjectLanguageCode(
+      run.projectId,
+    );
 
-    await downloadObjectToFile({
-      key: run.project.sourceStorageKey,
-      filePath: sourcePath,
-    });
-
-    await extractTranscriptionAudio(sourcePath, audioPath);
-    await projectService.publishWorkflowProgress({
-      projectId: run.projectId,
-      workflowRunId: run.id,
-      stage: "stt",
-      status: "running",
-      progress: 20,
-      errorCode: null,
-    });
-
-    const [languageCode, contentPack] = await Promise.all([
-      projectService.getProjectLanguageCode(run.projectId),
-      projectService.getLatestContentPack(run.projectId),
-    ]);
-
-    const assemblyAiPayload = await transcribeWithAssemblyAi(audioPath, run, {
+    const assemblyAiPayload = await transcribeWithAssemblyAi(run, {
       languageCode,
-      specificMoments: contentPack?.specificMoments ?? "",
     });
     const normalized = normalizeAssemblyAiTranscript(assemblyAiPayload);
     const rawStorageKey = `projects/${run.projectId}/transcripts/${run.id}-assemblyai-${sanitizeFileName(
-      normalized.providerModel,
-    ) || "universal-3-pro-universal-2"}.json`;
+      normalized.providerModel ?? "unknown-model",
+    )}.json`;
 
     await putJson({
       key: rawStorageKey,
@@ -448,7 +664,9 @@ export async function processTranscriptRun(run: WorkflowRunJob) {
         project_id: run.projectId,
         workflow_run_id: run.id,
         provider: "assemblyai",
-        model: normalized.providerModel,
+        ...(normalized.providerModel
+          ? { model: normalized.providerModel }
+          : {}),
         ...(normalized.providerJobId
           ? { provider_job_id: normalized.providerJobId }
           : {}),
@@ -481,7 +699,5 @@ export async function processTranscriptRun(run: WorkflowRunJob) {
       code,
       message: error instanceof Error ? error.message : "Unknown worker error",
     });
-  } finally {
-    await rm(tempDir, { recursive: true, force: true });
   }
 }
