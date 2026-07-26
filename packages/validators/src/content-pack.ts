@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { BRAND_DEFAULT_CAPTION_PRESET_ID, captionPresetIdSchema } from "./caption-preset";
 import { outputTypeSchema } from "./output-type";
 
 export const clipGenerationModeSchema = z.enum(["best"]);
@@ -23,7 +24,7 @@ export const contentPackSchema = z.object({
   outputTypes: z.array(outputTypeSchema).min(1),
   clipGenerationMode: clipGenerationModeSchema.default("best"),
   clipCountTarget: z.number().int().min(3).max(30),
-  clipDurationSecTarget: z.number().int().min(15).max(120),
+  clipDurationSecTarget: z.number().int().min(15).max(180),
   minDurationSec: z.number().int().min(5).max(120).default(15),
   preferredMinDurationSec: z.number().int().min(5).max(120).default(30),
   preferredMaxDurationSec: z.number().int().min(5).max(180).default(60),
@@ -34,7 +35,7 @@ export const contentPackSchema = z.object({
     .default(["tiktok", "youtube_shorts", "instagram_reels"]),
   autoRenderClips: z.boolean().default(false),
   toneConstraints: z.array(z.string()).default([]),
-  captionPreset: z.string().min(1),
+  captionPreset: captionPresetIdSchema.default(BRAND_DEFAULT_CAPTION_PRESET_ID),
   platformPlaybookVersion: z.string().min(1),
   mode: generationModeSchema.default("clip"),
   autoHook: z.boolean().default(true),
@@ -89,6 +90,25 @@ export const contentPackSchema = z.object({
 });
 
 export type ContentPack = z.infer<typeof contentPackSchema>;
+
+/**
+ * Parses a ContentPack row read from the database. Tolerant of legacy
+ * `captionPreset` values written before preset IDs became a fixed enum — an
+ * unrecognized value falls back to the brand default instead of throwing, so
+ * older projects can still (re)generate. Always use this for DB reads; use
+ * `contentPackSchema` directly only for validating fresh client input.
+ */
+export function parseStoredContentPack(row: unknown): ContentPack {
+  const record = (
+    row && typeof row === "object" ? row : {}
+  ) as Record<string, unknown>;
+  const captionPreset = captionPresetIdSchema.safeParse(record.captionPreset)
+    .success
+    ? record.captionPreset
+    : BRAND_DEFAULT_CAPTION_PRESET_ID;
+  return contentPackSchema.parse({ ...record, captionPreset });
+}
+
 export type ClipGenerationMode = z.infer<typeof clipGenerationModeSchema>;
 export type ClipPlatformTarget = z.infer<typeof clipPlatformTargetSchema>;
 export type GenerationMode = z.infer<typeof generationModeSchema>;

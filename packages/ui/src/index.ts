@@ -12,11 +12,31 @@ export { Card } from "./components/card"
 export { Dialog, Portal, CloseButton } from "./components/dialog"
 export { Progress, ProgressParts } from "./components/progress"
 
+// Form controls (Blueline kit)
+export { Select } from "./components/select"
+export { Checkbox } from "./components/checkbox"
+export { RadioGroup, Radio } from "./components/radio"
+export { Switch } from "./components/switch"
+export { Slider } from "./components/slider"
+export { NumberInput } from "./components/number-input"
+export { SegmentedControl } from "./components/segmented-control"
+export { ColorSwatchField } from "./components/color-swatch-field"
+export { OTPInput } from "./components/otp-input"
+export { ConfirmDialog, useConfirm } from "./components/confirm-dialog"
+export { Spinner } from "./components/spinner"
+
+// Structure & display (Blueline kit)
+export { PageHeader } from "./components/page-header"
+export { StatBand, StatBandItem } from "./components/stat-band"
+export { Meter, ScoreMeter } from "./components/meter"
+export { MediaWell } from "./components/media-well"
+export { PhoneFrame } from "./components/phone-frame"
+export { Toolbar } from "./components/toolbar"
+export { GhostFrame } from "./components/ghost-frame"
+
 // Design system components
 export { Logo } from "./components/logo"
 export { NavLink } from "./components/nav-link"
-export { SectionHeader } from "./components/section-header"
-export { ScoreBadge } from "./components/score-badge"
 export { StatusBadge } from "./components/status-badge"
 export { EmptyState } from "./components/empty-state"
 export { LabeledDivider } from "./components/divider"

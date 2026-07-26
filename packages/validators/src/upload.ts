@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { contentPackSchema } from "./content-pack";
+import { sourceLanguageCodeSchema } from "./language";
 
 export const MAX_UPLOAD_SIZE_BYTES = 5 * 1024 * 1024 * 1024;
 export const MAX_MEDIA_DURATION_SECONDS = 4 * 60 * 60;
@@ -37,6 +39,12 @@ export const completeMultipartUploadSchema = z.object({
       etag: z.string().min(1),
     }),
   ),
+  generationContext: z
+    .object({
+      contentPack: contentPackSchema,
+      languageCode: sourceLanguageCodeSchema,
+    })
+    .optional(),
 });
 
 export type PresignUploadInput = z.infer<typeof presignUploadSchema>;

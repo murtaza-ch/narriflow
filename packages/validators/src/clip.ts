@@ -1,5 +1,14 @@
 import { z } from "zod";
+export {
+  captionAnimationSchema,
+  captionPresetSchema,
+  type CaptionAnimation,
+  type CaptionPreset,
+} from "./caption-preset";
+import { brollCuesArraySchema } from "./broll";
+import { captionPresetSchema } from "./caption-preset";
 import { clipPlatformTargetSchema } from "./content-pack";
+import { studioEditsSchema } from "./studio-edits";
 import { transcriptUtteranceSchema } from "./transcript";
 
 export const clipCategorySchema = z.enum([
@@ -115,46 +124,18 @@ export const clipAspectRatioFromDb = {
   z.infer<typeof clipAspectRatioSchema>
 >;
 
-export const captionAnimationSchema = z.enum([
-  "none", "word-by-word", "karaoke", "bounce",
-  "blur-in", "grow", "breathe", "soft-landing", "glitch", "seamless-bounce",
-]);
-
-export type CaptionAnimation = z.infer<typeof captionAnimationSchema>;
-
-export const captionPresetSchema = z.object({
-  fontName: z.string().max(100).default("Bebas Neue"),
-  primaryColor: z.string().regex(/^#[0-9A-Fa-f]{6}$/).default("#FFFFFF"),
-  outlineColor: z.string().regex(/^#[0-9A-Fa-f]{6}$/).default("#000000"),
-  outlineWidth: z.number().int().min(0).max(4).default(2),
-  shadow: z.number().int().min(0).max(1).default(1),
-  bold: z.boolean().default(true),
-  position: z.enum(["bottom", "top", "center"]).default("bottom"),
-  highlightColor: z.string().regex(/^#[0-9A-Fa-f]{6}$/).default("#00FF88"),
-  animation: captionAnimationSchema.default("word-by-word"),
-  fontSize: z.number().min(8).max(120).default(36),
-  positionX: z.number().min(0).max(100).optional(),
-  positionY: z.number().min(0).max(100).optional(),
-
-  // Backdrop behind all caption text
-  backgroundColor: z.string().regex(/^#[0-9A-Fa-f]{6}$/).optional(),
-  backgroundOpacity: z.number().min(0).max(1).optional(),
-
-  // Colored box behind the active word
-  highlightBoxColor: z.string().regex(/^#[0-9A-Fa-f]{6}$/).optional(),
-  highlightBoxOpacity: z.number().min(0).max(1).optional(),
-
-  // Glow effect
-  glowColor: z.string().regex(/^#[0-9A-Fa-f]{6}$/).optional(),
-  glowIntensity: z.number().min(0).max(20).optional(),
-
-  // Text styling
-  textTransform: z.enum(["uppercase", "lowercase", "capitalize", "none"]).optional(),
-  letterSpacing: z.number().min(-0.1).max(0.5).optional(),
-});
-
 export const updateClipCaptionPresetSchema = z.object({
   captionPreset: captionPresetSchema.nullable(),
+});
+
+export const updateClipBrollSchema = z.object({
+  // A chosen Pexels download URL, or null to clear and fall back to auto B-roll.
+  brollUrl: z.string().url().nullable(),
+});
+
+export const brollSearchQuerySchema = z.object({
+  query: z.string().min(1).max(120),
+  orientation: z.enum(["portrait", "landscape", "square"]).default("portrait"),
 });
 
 export const clipRenderVariantSchema = z.object({
@@ -193,6 +174,9 @@ export const clipSnapshotSchema = z.object({
   transcriptSlice: z.array(transcriptUtteranceSchema),
   renderVariants: z.array(clipRenderVariantSchema),
   captionPreset: captionPresetSchema.nullable().optional(),
+  brollUrl: z.string().nullable().optional(),
+  brollCues: brollCuesArraySchema.optional(),
+  studioEdits: studioEditsSchema.optional(),
   createdAt: z.string().datetime(),
 });
 
@@ -228,6 +212,22 @@ export const clipDownloadQuerySchema = z.object({
   aspectRatio: clipAspectRatioSchema.optional(),
 });
 
+// Snake_case shape matching the raw LLM/JSON-schema layer (CLIP_DETECTION_JSON_SCHEMA
+// in apps/worker/src/tasks/detect-clips.ts uses at_sec/query/reason), which is
+// NOT the same shape as brollCuesArraySchema (camelCase atSec) below —
+// normalizeLlmClip maps at_sec -> atSec once parsed, producing the canonical
+// camelCase BrollCue shape used everywhere past this LLM response boundary.
+// Deliberately lenient (no upper bound on string length or array size) beyond
+// what OpenAI's strict-mode JSON schema requires: brollCuesArraySchema already
+// re-validates the normalized cues downstream (apps/worker/src/tasks/render-clips.ts)
+// and degrades gracefully to the keyword-derived query on failure, so this layer
+// should never be the reason a whole clip gets dropped over an oversized B-roll field.
+const clipDetectionBrollCueSchema = z.object({
+  at_sec: z.number().min(0),
+  query: z.string().trim().min(1),
+  reason: z.string().trim().min(1),
+});
+
 export const clipDetectionLlmResponseSchema = z.object({
   clips: z.array(
     z.object({
@@ -242,6 +242,10 @@ export const clipDetectionLlmResponseSchema = z.object({
       hook_strength: z.number().int().min(1).max(100),
       emotional_intensity: z.number().int().min(1).max(100),
       story_completeness_score: z.number().int().min(1).max(100),
+      // Required (not .optional()) because OpenAI `strict: true` requires every
+      // property to be listed in the JSON schema's `required` array — but the
+      // array itself is allowed to be empty for a pure talking-head clip.
+      broll_cues: z.array(clipDetectionBrollCueSchema),
     }),
   ),
 });
@@ -251,7 +255,6 @@ export type ClipStatus = z.infer<typeof clipStatusSchema>;
 export type ClipRenderStatus = z.infer<typeof clipRenderStatusSchema>;
 export type ClipAspectRatio = z.infer<typeof clipAspectRatioSchema>;
 export type ClipAspectRatioDb = z.infer<typeof clipAspectRatioDbSchema>;
-export type CaptionPreset = z.infer<typeof captionPresetSchema>;
 export type ClipRenderVariant = z.infer<typeof clipRenderVariantSchema>;
 export type ClipSnapshot = z.infer<typeof clipSnapshotSchema>;
 export type UpdateClipBoundaries = z.infer<typeof updateClipBoundariesSchema>;
@@ -263,3 +266,5 @@ export type ClipDetectionLlmResponse = z.infer<
 >;
 export type UpdateClipCaptionPreset = z.infer<typeof updateClipCaptionPresetSchema>;
 export type UpdateClipTranscriptSlice = z.infer<typeof updateClipTranscriptSliceSchema>;
+export type UpdateClipBroll = z.infer<typeof updateClipBrollSchema>;
+export type BrollSearchQuery = z.infer<typeof brollSearchQuerySchema>;

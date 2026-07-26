@@ -15,7 +15,7 @@
     "build": "tsc -p tsconfig.build.json",
     "lint": "echo 'validators lint: no-op'",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "echo 'validators test: no-op'",
+    "test": "bun test",
     "clean": "rm -rf dist"
   },
   "dependencies": {

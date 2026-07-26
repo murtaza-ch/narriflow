@@ -19,7 +19,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@clerk/nextjs": "^6.38.2",
+    "@clerk/nextjs": "^6.39.5",
     "@narriflow/db": "workspace:*",
     "@prisma/client": "^7.4.2"
   },

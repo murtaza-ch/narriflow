@@ -9,6 +9,7 @@ export const workflowStageSchema = z.enum([
   "stt",
   "moment_detection",
   "clip_rendering",
+  "dubbing",
   "output_pack_generation",
   "export_bundle",
 ]);

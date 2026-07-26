@@ -1,27 +1,5 @@
 import { z } from "zod";
 
-function isYoutubeUrl(value: string) {
-  try {
-    const url = new URL(value);
-    const host = url.hostname.toLowerCase();
-    return (
-      host === "youtu.be" ||
-      host.endsWith("youtube.com") ||
-      host.endsWith("youtube-nocookie.com")
-    );
-  } catch {
-    return false;
-  }
-}
-
-export const youtubeIngestSchema = z.object({
-  title: z.string().min(1).max(200).optional(),
-  youtubeUrl: z.string().url().refine(isYoutubeUrl, {
-    message: "youtubeUrl must be a valid YouTube URL",
-  }),
-  brandTemplateId: z.string().uuid().nullable().optional(),
-});
-
 export const rssPreviewSchema = z.object({
   rssUrl: z.string().url(),
 });
@@ -52,7 +30,6 @@ export const ingestStatusSchema = z.enum([
   "failed",
 ]);
 
-export type YoutubeIngestInput = z.infer<typeof youtubeIngestSchema>;
 export type RssPreviewInput = z.infer<typeof rssPreviewSchema>;
 export type RssEpisodeInput = z.infer<typeof rssEpisodeSchema>;
 export type RssImportInput = z.infer<typeof rssImportSchema>;

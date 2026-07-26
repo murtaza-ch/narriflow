@@ -1,45 +1,44 @@
-"use client"
-
 import { HStack, Text, Box } from "@chakra-ui/react"
 
-type StatusType = "queued" | "pending" | "processing" | "ready" | "completed" | "failed" | "error"
+type StatusType =
+  | "queued"
+  | "pending"
+  | "processing"
+  | "running"
+  | "ready"
+  | "completed"
+  | "failed"
+  | "error"
 
 interface StatusBadgeProps {
   status: StatusType
   label?: string
 }
 
-const statusConfig: Record<StatusType, { color: string; dotColor: string; label: string; pulse?: boolean }> = {
-  queued: { color: "fg.muted", dotColor: "fg.subtle", label: "Queued" },
-  pending: { color: "fg.muted", dotColor: "fg.subtle", label: "Pending" },
-  processing: { color: "fg.accent", dotColor: "accent.solid", label: "Processing", pulse: true },
-  ready: { color: "success.fg", dotColor: "success.solid", label: "Ready" },
-  completed: { color: "success.fg", dotColor: "success.solid", label: "Completed" },
-  failed: { color: "danger.fg", dotColor: "danger.solid", label: "Failed" },
-  error: { color: "danger.fg", dotColor: "danger.solid", label: "Error" },
+const statusConfig: Record<StatusType, { square: string; color: string; label: string }> = {
+  queued: { square: "fg.subtle", color: "fg.muted", label: "Queued" },
+  pending: { square: "fg.subtle", color: "fg.muted", label: "Pending" },
+  processing: { square: "accent.solid", color: "accent.fg", label: "Processing" },
+  running: { square: "accent.solid", color: "accent.fg", label: "Running" },
+  ready: { square: "success.solid", color: "success.fg", label: "Ready" },
+  completed: { square: "success.solid", color: "success.fg", label: "Completed" },
+  failed: { square: "danger.solid", color: "danger.fg", label: "Failed" },
+  error: { square: "danger.solid", color: "danger.fg", label: "Error" },
 }
 
+/**
+ * StatusBadge — Blueline status voice: no pill, no pulse. A small square
+ * swatch in the stripe-grade status color plus an eyebrow label; processing
+ * is distinguished by the ultramarine accent, not motion. State is never
+ * hue alone — the label always accompanies the color. Server-friendly.
+ */
 export function StatusBadge({ status, label }: StatusBadgeProps) {
   const config = statusConfig[status] ?? statusConfig.pending
 
   return (
-    <HStack
-      gap="6px"
-      px="8px"
-      py="2px"
-      borderRadius="6px"
-      bg="bg.muted"
-      display="inline-flex"
-    >
-      <Box
-        w="6px"
-        h="6px"
-        borderRadius="full"
-        bg={config.dotColor}
-        flexShrink={0}
-        animation={config.pulse ? "pulse 2s ease-in-out infinite" : undefined}
-      />
-      <Text fontSize="11px" fontWeight="500" letterSpacing="0.02em" color={config.color}>
+    <HStack display="inline-flex" gap="1.5" align="center">
+      <Box w="8px" h="8px" borderRadius="2px" bg={config.square} flexShrink={0} />
+      <Text textStyle="eyebrow" color={config.color}>
         {label ?? config.label}
       </Text>
     </HStack>
