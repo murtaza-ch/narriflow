@@ -6,6 +6,18 @@
  * padding on each side, cut directly from the source with a fast input
  * seek.
  *
+ * Audio-only sources (podcast MP3/WAV/M4A — a first-class Narriflow source
+ * type, not an edge case) get an "audiogram" proxy instead of no proxy at
+ * all: an animated ffmpeg `showwaves` waveform over a solid background,
+ * mirroring the treatment render-clips.ts's `buildAudiogramArgs` gives the
+ * real render, but capped at 540p with no burned-in captions (the studio
+ * overlays captions in HTML at preview time). These clips must never be
+ * left with nothing to preview — that's worse than the pre-proxy
+ * full-source-streaming behaviour this feature exists to replace. Telling
+ * "real video" apart from a podcast MP3's embedded cover-art image (which
+ * ffprobe reports as its own video stream) is the load-bearing bit — see
+ * `classifyMediaStreams`.
+ *
  * This deliberately *polls for clips missing a proxy* rather than being
  * triggered from detect-clips.ts, so it also backfills every pre-existing
  * clip and stays fully decoupled from the moment_detection/clip_rendering
@@ -21,13 +33,15 @@
 import { spawn } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { extname, join } from "node:path";
+import { join } from "node:path";
 import {
   clipService,
   deleteObject,
-  downloadObjectToFile,
+  presignDownloadUrl,
   putFileFromPath,
 } from "@narriflow/services";
+import { DEFAULT_CAPTION_PRESET } from "@narriflow/validators";
+import type { CaptionPreset } from "@narriflow/validators";
 
 type ClipPendingPreview = Awaited<
   ReturnType<typeof clipService.getClipsNeedingPreview>
@@ -72,6 +86,24 @@ const DEFAULT_PREVIEW_X264_PRESET = "veryfast";
 // (see the worker's clip-preview report) — tune via env without a deploy.
 const DEFAULT_PREVIEW_X264_CRF = "30";
 const DEFAULT_PREVIEW_AUDIO_BITRATE = "64k";
+
+/** Presign lifetime for the streamed source. Generous enough to cover a whole
+ *  batch of cuts off one URL, short enough that a leaked log line is stale fast. */
+const SOURCE_STREAM_URL_TTL_SEC = 3600;
+
+/** ffmpeg reads the source over HTTPS rather than from disk, so a transient
+ *  network blip mid-cut would otherwise abort the encode. These make it
+ *  reconnect instead. Harmless when the input happens to be a local path. */
+const HTTP_SOURCE_ARGS = [
+  "-reconnect",
+  "1",
+  "-reconnect_streamed",
+  "1",
+  "-reconnect_on_network_error",
+  "1",
+  "-reconnect_delay_max",
+  "10",
+] as const;
 
 function previewBatchSize(): number {
   const raw = Number(process.env.WORKER_CLIP_PREVIEW_BATCH_SIZE?.trim());
@@ -270,9 +302,58 @@ async function execCommandOutput(
   });
 }
 
+/** Result of classifying a source's streams — see {@link classifyMediaStreams}.
+ *  `hasVideo` is true only for a *real* (non-cover-art) video stream. */
 interface SourceProbeLite {
   hasVideo: boolean;
   hasAudio: boolean;
+}
+
+/** The handful of ffprobe `-show_streams` fields this file needs to tell a
+ *  real video stream apart from a podcast's embedded cover-art image and
+ *  from audio. Deliberately narrower than ffprobe's full stream schema. */
+export interface ProbeStreamLite {
+  codec_type?: string;
+  nb_frames?: string;
+  disposition?: { attached_pic?: number };
+}
+
+/**
+ * A podcast MP3/M4A/FLAC's embedded cover art (ID3 `APIC`, FLAC/M4A cover
+ * picture blocks, ...) shows up to ffprobe as its own *video* stream —
+ * almost always flagged `disposition.attached_pic = 1` and/or reporting
+ * exactly one total frame. Naively treating that stream as "this source has
+ * video" routes a podcast through the video cut-and-scale path, which
+ * produces a proxy that's a single frozen JPEG for the whole clip duration
+ * (there's nothing moving to encode). This tells the two apart.
+ */
+export function isAttachedPictureStream(stream: ProbeStreamLite): boolean {
+  if (stream.codec_type !== "video") return false;
+  if (stream.disposition?.attached_pic === 1) return true;
+  // Fallback for muxers/tagging tools that embed cover art without setting
+  // the disposition flag: a "video" stream reporting 0 or 1 total frames is
+  // never a moving picture, only ever a single embedded still.
+  const frameCount = Number(stream.nb_frames);
+  return Number.isFinite(frameCount) && frameCount <= 1;
+}
+
+/**
+ * Classifies a probed source's streams into "has real playable video" (at
+ * least one video stream that isn't just embedded cover art) and "has
+ * audio". A source with both a genuine video stream and a separate
+ * attached-picture stream (e.g. a video file carrying an embedded
+ * thumbnail) still counts as having video — only sources whose *only*
+ * video stream(s) are cover art fall through to the audio-only path. Pure
+ * and exported so this classification is unit-testable against synthetic
+ * ffprobe stream lists without spawning ffprobe (see clip-preview.test.ts).
+ */
+export function classifyMediaStreams(streams: ProbeStreamLite[]): SourceProbeLite {
+  return {
+    hasVideo: streams.some(
+      (stream) => stream.codec_type === "video" && !isAttachedPictureStream(stream),
+    ),
+    hasAudio: streams.some((stream) => stream.codec_type === "audio"),
+  };
 }
 
 async function probeSourceLite(sourcePath: string): Promise<SourceProbeLite> {
@@ -284,14 +365,8 @@ async function probeSourceLite(sourcePath: string): Promise<SourceProbeLite> {
     "-show_streams",
     sourcePath,
   ]);
-  const data = JSON.parse(output) as {
-    streams?: Array<{ codec_type?: string }>;
-  };
-  const streams = data.streams ?? [];
-  return {
-    hasVideo: streams.some((stream) => stream.codec_type === "video"),
-    hasAudio: streams.some((stream) => stream.codec_type === "audio"),
-  };
+  const data = JSON.parse(output) as { streams?: ProbeStreamLite[] };
+  return classifyMediaStreams(data.streams ?? []);
 }
 
 /**
@@ -315,6 +390,7 @@ export function buildClipPreviewArgs(params: {
 
   const args = [
     "-y",
+    ...HTTP_SOURCE_ARGS,
     "-ss",
     String(params.windowStartSec),
     "-t",
@@ -366,6 +442,127 @@ export function buildClipPreviewArgs(params: {
   return args;
 }
 
+// ─── Audio-only ("audiogram") preview path ─────────────────────────────────
+// Podcast/audio sources have no video frame to cut+scale, so instead of
+// leaving them with no preview at all (the pre-existing behaviour), this
+// mirrors render-clips.ts's `buildAudiogramArgs` treatment for the real
+// render: an animated waveform over a solid background. Kept deliberately
+// cheaper than the render — this file's own 540p-equivalent encode knobs,
+// and no burned-in captions/text-layers/transitions/music (all real-render-
+// only concerns; the studio overlays captions in HTML at preview time).
+
+/** #RRGGBB -> 0xRRGGBB for the ffmpeg `color`/`showwaves` filters. Mirrors
+ *  render-clips.ts's private helper of the same name (not exported there,
+ *  so duplicated here — see this file's header). */
+function hexToFfmpegRgb(hex: string): string {
+  return `0x${hex.replace("#", "").slice(0, 6)}`;
+}
+
+export interface AudiogramPreviewDimensions {
+  width: number;
+  height: number;
+}
+
+/**
+ * The audiogram preview's synthetic canvas size. Unlike the video path
+ * (which scales *from* the source's own frame, preserving whatever aspect
+ * ratio it already has), there's no source frame here to preserve an aspect
+ * from — and `ClipPendingPreview` carries no per-clip render aspect ratio to
+ * key off (a single clip can have several render aspect ratios; this proxy
+ * is always exactly one file). So this always builds a 16:9 canvas, the
+ * same way `maxHeight` already behaves for this file's video sources (which
+ * are typically landscape pre-reframe source footage): 960x540 at the
+ * default 540 — literally half of 1080p in each dimension. Both dimensions
+ * are rounded to even numbers since libx264's yuv420p output requires it.
+ */
+export function audiogramPreviewDimensions(
+  maxHeight: number = previewMaxHeight(),
+): AudiogramPreviewDimensions {
+  const height = Math.max(2, Math.floor(maxHeight / 2) * 2);
+  const width = Math.max(2, Math.round((height * 16) / 9 / 2) * 2);
+  return { width, height };
+}
+
+/**
+ * Builds the ffmpeg args for one audio-only clip's preview: an animated
+ * `showwaves` waveform, colored from the caption preset's highlight color
+ * exactly like render-clips.ts's `buildAudiogramArgs` (falling back to the
+ * same schema-derived default when no preset is available), composited
+ * over a solid background at a fixed 16:9 canvas. Same fast `-ss`-before-
+ * `-i` seek and padded-window semantics as {@link buildClipPreviewArgs} —
+ * callers pass the identical `computeClipPreviewWindow` output.
+ */
+export function buildAudiogramPreviewArgs(params: {
+  sourcePath: string;
+  outputPath: string;
+  windowStartSec: number;
+  windowDurationSec: number;
+  maxHeight?: number;
+  x264Preset?: string;
+  x264Crf?: string;
+  audioBitrate?: string;
+  captionPreset?: CaptionPreset | null;
+}): string[] {
+  const { width: W, height: H } = audiogramPreviewDimensions(params.maxHeight);
+  // Matches render-clips.ts's buildAudiogramArgs background color exactly,
+  // to keep the preview in visual lockstep with the real render. Not
+  // exported there (a local literal inside that function), so duplicated
+  // rather than imported.
+  const bgColor = "0x0F172A";
+  const waveColor = hexToFfmpegRgb(
+    params.captionPreset?.highlightColor ?? DEFAULT_CAPTION_PRESET.highlightColor,
+  );
+  const waveHeight = Math.round(H * 0.42);
+
+  const chain = [
+    `color=c=${bgColor}:s=${W}x${H}:d=${params.windowDurationSec}[bg]`,
+    `[0:a]showwaves=s=${W}x${waveHeight}:mode=cline:colors=${waveColor}:rate=25[wave]`,
+    `[bg][wave]overlay=0:(H-h)/2[comp]`,
+    `[comp]format=yuv420p[outv]`,
+  ];
+
+  return [
+    "-y",
+    ...HTTP_SOURCE_ARGS,
+    "-ss",
+    String(params.windowStartSec),
+    "-t",
+    String(params.windowDurationSec),
+    "-i",
+    params.sourcePath,
+    "-filter_complex",
+    chain.join(";"),
+    "-map",
+    "[outv]",
+    "-map",
+    "0:a:0",
+    "-c:v",
+    "libx264",
+    "-preset",
+    params.x264Preset ?? previewX264Preset(),
+    "-crf",
+    params.x264Crf ?? previewX264Crf(),
+    "-c:a",
+    "aac",
+    "-ac",
+    "1",
+    "-b:a",
+    params.audioBitrate ?? previewAudioBitrate(),
+    // -shortest bounds this to the shorter of video/audio (the background's
+    // own `d=` runs for the full requested window regardless of how much
+    // audio actually decoded); the trailing -t is a belt-and-suspenders
+    // explicit bound, matching buildClipPreviewArgs's own convention.
+    "-shortest",
+    "-t",
+    params.windowDurationSec.toFixed(3),
+    "-movflags",
+    "+faststart",
+    "-max_muxing_queue_size",
+    "1024",
+    params.outputPath,
+  ];
+}
+
 // ─── Orchestration ──────────────────────────────────────────────────────────
 
 async function cutAndUploadClipPreview(params: {
@@ -392,12 +589,12 @@ async function cutAndUploadClipPreview(params: {
   }
 
   const probe = await probeSourceLite(sourcePath);
-  if (!probe.hasVideo) {
-    // Audio-only sources (podcasts) get an "audiogram" treatment at render
-    // time (see render-clips.ts's buildAudiogramArgs); replicating that
-    // waveform-on-solid-background pipeline for a throwaway proxy is out of
-    // scope here, so these are deliberately skipped rather than half-done.
-    log("warn", "clip_preview_skipped_no_video_stream", {
+  if (!probe.hasVideo && !probe.hasAudio) {
+    // Neither a real video stream nor audio — e.g. a corrupt file, or one
+    // that's *only* an attached-picture stream with no audio alongside it.
+    // Nothing playable to build a proxy from; skip rather than crash the
+    // batch (mirrors the invalid-window guard above).
+    log("error", "clip_preview_no_playable_stream", {
       clipId: clip.id,
       projectId: clip.projectId,
     });
@@ -405,13 +602,21 @@ async function cutAndUploadClipPreview(params: {
   }
 
   const outputPath = join(tempDir, `${clip.id}-preview.mp4`);
-  const args = buildClipPreviewArgs({
-    sourcePath,
-    outputPath,
-    windowStartSec: window.startSec,
-    windowDurationSec: window.durationSec,
-    hasAudio: probe.hasAudio,
-  });
+  const previewKind: "video" | "audiogram" = probe.hasVideo ? "video" : "audiogram";
+  const args = probe.hasVideo
+    ? buildClipPreviewArgs({
+        sourcePath,
+        outputPath,
+        windowStartSec: window.startSec,
+        windowDurationSec: window.durationSec,
+        hasAudio: probe.hasAudio,
+      })
+    : buildAudiogramPreviewArgs({
+        sourcePath,
+        outputPath,
+        windowStartSec: window.startSec,
+        windowDurationSec: window.durationSec,
+      });
 
   await execCommand("ffmpeg", args);
 
@@ -448,6 +653,7 @@ async function cutAndUploadClipPreview(params: {
   log("info", "clip_preview_generated", {
     clipId: clip.id,
     projectId: clip.projectId,
+    previewKind,
     previewStartSec: window.startSec,
     previewDurationSec: window.durationSec,
   });
@@ -492,15 +698,22 @@ export async function processPendingClipPreviews(
 
     try {
       const sourceStorageKey = clips[0]!.sourceStorageKey;
-      const sourcePath = join(
-        tempDir,
-        `source${extname(sourceStorageKey) || ".mp4"}`,
-      );
 
+      // Stream the source over HTTP rather than downloading it. Sources here
+      // are 531 MB - 1.1 GB; pulling one down to cut a ~30s window took over
+      // five minutes and, because this task runs on the I/O poll loop, blocked
+      // ingest and STT for the whole download. Handing ffmpeg a presigned URL
+      // with `-ss` before `-i` makes it range-request only the bytes it needs:
+      // measured 11.72s wall for a 38s cut off a 531 MB 4K source, producing
+      // the same 1.4 MB output. Each clip in the batch re-uses this one URL.
+      let sourcePath: string;
       try {
-        await downloadObjectToFile({ key: sourceStorageKey, filePath: sourcePath });
+        sourcePath = await presignDownloadUrl({
+          key: sourceStorageKey,
+          expiresIn: SOURCE_STREAM_URL_TTL_SEC,
+        });
       } catch (error) {
-        log("error", "clip_preview_source_download_failed", {
+        log("error", "clip_preview_source_presign_failed", {
           projectId,
           clipCount: clips.length,
           message: error instanceof Error ? error.message : "Unknown error",

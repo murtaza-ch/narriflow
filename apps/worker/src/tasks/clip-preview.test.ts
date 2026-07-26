@@ -1,8 +1,14 @@
 import { describe, expect, test } from "bun:test";
+import { DEFAULT_CAPTION_PRESET } from "@narriflow/validators";
 import {
+  audiogramPreviewDimensions,
+  buildAudiogramPreviewArgs,
   buildClipPreviewArgs,
+  classifyMediaStreams,
   clipPreviewStorageKey,
   computeClipPreviewWindow,
+  isAttachedPictureStream,
+  type ProbeStreamLite,
   previewTimeToSourceTime,
   sourceTimeToPreviewTime,
 } from "./clip-preview";
@@ -161,5 +167,246 @@ describe("buildClipPreviewArgs", () => {
     const crfIndex = args.indexOf("-crf");
     expect(args[presetIndex + 1]).toBe("ultrafast");
     expect(args[crfIndex + 1]).toBe("32");
+  });
+});
+
+describe("isAttachedPictureStream (podcast cover-art detection)", () => {
+  test("is false for a non-video stream regardless of disposition", () => {
+    const stream: ProbeStreamLite = {
+      codec_type: "audio",
+      disposition: { attached_pic: 1 },
+    };
+    expect(isAttachedPictureStream(stream)).toBe(false);
+  });
+
+  test("is true when ffprobe sets disposition.attached_pic (the standard signal)", () => {
+    const stream: ProbeStreamLite = {
+      codec_type: "video",
+      nb_frames: "1",
+      disposition: { attached_pic: 1 },
+    };
+    expect(isAttachedPictureStream(stream)).toBe(true);
+  });
+
+  test("falls back to a tiny frame count when disposition is absent", () => {
+    // Some muxers/tagging tools embed cover art without ever setting the
+    // attached_pic flag -- the tiny-frame-count fallback must still catch it.
+    const stream: ProbeStreamLite = { codec_type: "video", nb_frames: "1" };
+    expect(isAttachedPictureStream(stream)).toBe(true);
+  });
+
+  test("is true for a zero-frame video stream too", () => {
+    const stream: ProbeStreamLite = { codec_type: "video", nb_frames: "0" };
+    expect(isAttachedPictureStream(stream)).toBe(true);
+  });
+
+  test("is false for a real video stream with a large frame count", () => {
+    const stream: ProbeStreamLite = { codec_type: "video", nb_frames: "900" };
+    expect(isAttachedPictureStream(stream)).toBe(false);
+  });
+
+  test("is false when nb_frames is missing/unparseable and disposition is absent", () => {
+    // A real video stream can legitimately lack nb_frames metadata (e.g.
+    // some streamed/piped sources) -- absence of the signal must never
+    // itself imply cover art.
+    const withoutFrames: ProbeStreamLite = { codec_type: "video" };
+    const withNA: ProbeStreamLite = { codec_type: "video", nb_frames: "N/A" };
+    expect(isAttachedPictureStream(withoutFrames)).toBe(false);
+    expect(isAttachedPictureStream(withNA)).toBe(false);
+  });
+
+  test("is false when disposition.attached_pic is explicitly 0", () => {
+    const stream: ProbeStreamLite = {
+      codec_type: "video",
+      nb_frames: "900",
+      disposition: { attached_pic: 0 },
+    };
+    expect(isAttachedPictureStream(stream)).toBe(false);
+  });
+});
+
+describe("classifyMediaStreams (video vs audio-only vs cover-art source)", () => {
+  test("a true audio-only file (no video stream at all) is audio-only", () => {
+    const result = classifyMediaStreams([{ codec_type: "audio" }]);
+    expect(result).toEqual({ hasVideo: false, hasAudio: true });
+  });
+
+  test("a normal video-with-audio source has both", () => {
+    const result = classifyMediaStreams([
+      { codec_type: "video", nb_frames: "1800" },
+      { codec_type: "audio" },
+    ]);
+    expect(result).toEqual({ hasVideo: true, hasAudio: true });
+  });
+
+  test("a silent video (no audio stream) still counts as video", () => {
+    const result = classifyMediaStreams([{ codec_type: "video", nb_frames: "1800" }]);
+    expect(result).toEqual({ hasVideo: true, hasAudio: false });
+  });
+
+  test("a podcast MP3 with embedded cover art is classified as audio-only, not video", () => {
+    // The exact shape ffprobe reports for an MP3's ID3 APIC cover image: its
+    // own video stream, disposition.attached_pic = 1, nb_frames = "1".
+    const result = classifyMediaStreams([
+      { codec_type: "audio" },
+      { codec_type: "video", nb_frames: "1", disposition: { attached_pic: 1 } },
+    ]);
+    expect(result).toEqual({ hasVideo: false, hasAudio: true });
+  });
+
+  test("cover art without an explicit disposition flag still falls back to audio-only", () => {
+    const result = classifyMediaStreams([
+      { codec_type: "audio" },
+      { codec_type: "video", nb_frames: "1" },
+    ]);
+    expect(result).toEqual({ hasVideo: false, hasAudio: true });
+  });
+
+  test("a real video stream alongside a separate attached-picture stream still counts as video", () => {
+    // e.g. a video file that also carries an embedded thumbnail -- the real
+    // video stream must win, not get masked by the cover-art stream.
+    const result = classifyMediaStreams([
+      { codec_type: "video", nb_frames: "1800" },
+      { codec_type: "video", nb_frames: "1", disposition: { attached_pic: 1 } },
+      { codec_type: "audio" },
+    ]);
+    expect(result).toEqual({ hasVideo: true, hasAudio: true });
+  });
+
+  test("no streams at all classifies as neither video nor audio", () => {
+    expect(classifyMediaStreams([])).toEqual({ hasVideo: false, hasAudio: false });
+  });
+});
+
+describe("audiogramPreviewDimensions", () => {
+  test("960x540 at a 540 max height -- exactly half of 1080p, genuine 16:9 '540p'", () => {
+    expect(audiogramPreviewDimensions(540)).toEqual({ width: 960, height: 540 });
+  });
+
+  test("scales proportionally for a smaller configured max height", () => {
+    expect(audiogramPreviewDimensions(360)).toEqual({ width: 640, height: 360 });
+  });
+
+  test("rounds an odd max height down to the nearest even number", () => {
+    const dims = audiogramPreviewDimensions(541);
+    expect(dims.height).toBe(540);
+    expect(dims.height % 2).toBe(0);
+    expect(dims.width % 2).toBe(0);
+  });
+
+  test("defaults from the module's own previewMaxHeight() when omitted", () => {
+    expect(audiogramPreviewDimensions()).toEqual(audiogramPreviewDimensions(540));
+  });
+});
+
+describe("buildAudiogramPreviewArgs", () => {
+  const base = {
+    sourcePath: "/tmp/podcast.mp3",
+    outputPath: "/tmp/out.mp4",
+    windowStartSec: 96,
+    windowDurationSec: 38,
+  };
+
+  test("seeks with -ss before -i (fast input seek, same convention as the video path)", () => {
+    const args = buildAudiogramPreviewArgs(base);
+    const ssIndex = args.indexOf("-ss");
+    const iIndex = args.indexOf("-i");
+    expect(ssIndex).toBeGreaterThanOrEqual(0);
+    expect(iIndex).toBeGreaterThan(ssIndex);
+    expect(args[ssIndex + 1]).toBe("96");
+    expect(args[iIndex + 1]).toBe(base.sourcePath);
+  });
+
+  test("builds a solid-color background sized to the computed canvas", () => {
+    const args = buildAudiogramPreviewArgs({ ...base, maxHeight: 540 });
+    const filterIndex = args.indexOf("-filter_complex");
+    const chain = args[filterIndex + 1];
+    expect(chain).toContain("color=c=0x0F172A:s=960x540");
+  });
+
+  test("draws an animated showwaves waveform off the source's audio (never a frozen frame)", () => {
+    const args = buildAudiogramPreviewArgs(base);
+    const chain = args[args.indexOf("-filter_complex") + 1];
+    expect(chain).toContain("[0:a]showwaves=");
+    expect(chain).toContain("mode=cline");
+    expect(chain).toContain("rate=25");
+  });
+
+  test("colors the waveform from the caption preset's highlight color when provided", () => {
+    const args = buildAudiogramPreviewArgs({
+      ...base,
+      captionPreset: { ...DEFAULT_CAPTION_PRESET, highlightColor: "#FF00FF" },
+    });
+    const chain = args[args.indexOf("-filter_complex") + 1];
+    expect(chain).toContain("colors=0xFF00FF");
+  });
+
+  test("falls back to the schema-derived default highlight color when no preset is given", () => {
+    const args = buildAudiogramPreviewArgs(base);
+    const chain = args[args.indexOf("-filter_complex") + 1];
+    expect(chain).toContain(
+      `colors=0x${DEFAULT_CAPTION_PRESET.highlightColor.slice(1)}`,
+    );
+  });
+
+  test("never burns in captions/subtitles/text -- the studio overlays those in HTML", () => {
+    const args = buildAudiogramPreviewArgs(base);
+    const chain = args[args.indexOf("-filter_complex") + 1];
+    expect(chain).not.toContain("subtitles=");
+    expect(chain).not.toContain("ass=");
+    expect(chain).not.toContain("drawtext=");
+  });
+
+  test("maps the synthesized video and the source's first audio stream, nothing else", () => {
+    const args = buildAudiogramPreviewArgs(base);
+    expect(args).toContain("[outv]");
+    const mapIndices = args.reduce<number[]>((acc, value, index) => {
+      if (value === "-map") acc.push(index);
+      return acc;
+    }, []);
+    const mappedValues = mapIndices.map((index) => args[index + 1]);
+    expect(mappedValues).toEqual(["[outv]", "0:a:0"]);
+  });
+
+  test("encodes H.264 with faststart for immediate playback", () => {
+    const args = buildAudiogramPreviewArgs(base);
+    expect(args).toContain("libx264");
+    expect(args).toContain("+faststart");
+  });
+
+  test("encodes mono AAC audio at the configured bitrate", () => {
+    const args = buildAudiogramPreviewArgs({ ...base, audioBitrate: "64k" });
+    expect(args).toContain("aac");
+    const acIndex = args.indexOf("-ac");
+    expect(args[acIndex + 1]).toBe("1");
+    const bitrateIndex = args.indexOf("-b:a");
+    expect(args[bitrateIndex + 1]).toBe("64k");
+  });
+
+  test("bounds the output duration explicitly, belt-and-suspenders alongside -shortest", () => {
+    const args = buildAudiogramPreviewArgs(base);
+    expect(args).toContain("-shortest");
+    const outputPathIndex = args.indexOf(base.outputPath);
+    const lastTIndex = args.lastIndexOf("-t");
+    expect(args[lastTIndex + 1]).toBe("38.000");
+    expect(outputPathIndex).toBe(args.length - 1);
+  });
+
+  test("honors explicit preset/CRF overrides over the env-driven defaults", () => {
+    const args = buildAudiogramPreviewArgs({
+      ...base,
+      x264Preset: "ultrafast",
+      x264Crf: "32",
+    });
+    const presetIndex = args.indexOf("-preset");
+    const crfIndex = args.indexOf("-crf");
+    expect(args[presetIndex + 1]).toBe("ultrafast");
+    expect(args[crfIndex + 1]).toBe("32");
+  });
+
+  test("honors an explicit maxHeight override for the synthesized canvas", () => {
+    const args = buildAudiogramPreviewArgs({ ...base, maxHeight: 360 });
+    const chain = args[args.indexOf("-filter_complex") + 1];
+    expect(chain).toContain("s=640x360");
   });
 });
