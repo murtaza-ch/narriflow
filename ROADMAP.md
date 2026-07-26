@@ -181,11 +181,47 @@ placement with caching, attribution, retry/backoff, and a fixed 1:1 orientation
 mapping. Cues are persisted (`Clip.brollCues`) and degrade to keyword queries
 when absent or malformed.
 
-Known follow-ups: `attemptCount` is incremented but never read, so a stalled job
-is failed rather than requeued (and `WorkflowRun` has no `attemptCount` column);
-`AutopilotEpisode.projectId` has no FK, so deleting a project leaves dangling
-rows; timeline scrub-thumbnails still stream the full source; audio-only sources
-get no preview proxy.
+**Follow-up pass — also landed.** Everything listed as a known follow-up above is
+now done, and running the worker for real surfaced a much larger bug underneath.
+
+- **R2 uploads were broken for most file sizes.** Both the single-PUT and the
+  multipart paths streamed a Node `ReadStream`, which the AWS SDK wraps in
+  aws-chunked framing for its default integrity checksum — R2 rejects that, and a
+  consumed stream can't be replayed, so the SDK's retry masked the cause. Single
+  PUT failed with _"You did not provide the number of bytes specified by the
+  Content-Length HTTP header"_; multipart failed with _"The socket connection was
+  closed unexpectedly"_ — **the exact error that was killing link imports**, and
+  the original symptom that started this audit. Both now send buffers, verified
+  byte-exact at 1.5 MB and 50 MB. A 15-byte file slipped through the old path,
+  which is why it stayed hidden.
+- **Preview proxies no longer download the source.** They pulled the whole
+  531 MB - 1.1 GB object before cutting a ~30s window, on the I/O poll loop, so
+  they blocked ingest and STT for the whole download (>5 min, unfinished).
+  ffmpeg now range-reads a presigned URL: **11.7s** for a 38s cut, and a real
+  3-clip batch end to end in **62.7s**.
+- **Audio-only sources get previews.** Podcast sources were skipped entirely.
+  Cover-art detection is explicit — an MP3 with embedded artwork presents a video
+  stream, and the naive check made ffmpeg fail outright (exit 234), so those
+  clips would have retried forever.
+- **Retry policy**: `WorkflowRun.attemptCount` added; transient failures requeue
+  under a cap with exponential backoff derived from `attemptCount` + `updatedAt`
+  (no `nextAttemptAt` column needed); both reapers requeue rather than fail.
+- **`AutopilotEpisode.projectId`** gained a `SET NULL` foreign key.
+- **Timeline thumbnails** read the proxy instead of opening a second full-source
+  reader; zoom no longer invalidates the strip cache, a missed `seeked` no longer
+  deadlocks the queue, and the canvas cache is released on unmount.
+- **Purge guard**: preview proxies are cut lazily from the source, so purging
+  first stranded clips on "Preview generating…" forever. Observed for real —
+  three projects were purged on a first worker boot before any proxy existed. A
+  source is no longer eligible while any clip still needs one.
+
+Suite: **433 tests**, typecheck 10/10, `biome check` clean across 332 files.
+
+Still open: the free-tier `buildFreeTierPostProcessArgs` helper is retained but
+unused in production; audiogram previews always use the default waveform colour
+rather than the clip's caption colour (`getClipsNeedingPreview` doesn't select
+`captionPreset`); and the 20 competitor recommendations in
+`plans/2026-07-audit/` remain unimplemented.
 
 ### Phase 1 — Table-stakes parity gaps (do first)
 1. **Auto-reframe / active-speaker tracking** — **[TS] medium.** ✅ v1 shipped: YuNet face detection (CPU, MIT) → smoothed FFmpeg `sendcmd` crop following the dominant speaker, landscape→vertical. **Remaining:** multi-speaker active-speaker selection (LR-ASD, MIT, gated to ≥2 faces) + scene-cut reset; 3+ speaker layouts are a Phase-3 moat.
