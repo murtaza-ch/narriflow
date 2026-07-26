@@ -205,6 +205,7 @@ model Project {
   socialPostMetrics SocialPostMetric[]
   analyticsEvents ProjectAnalyticsEvent[]
   clipDubs        ClipDub[]
+  autopilotEpisodes AutopilotEpisode[]
 
   @@index([userId, createdAt])
   @@index([userId, ingestStatus, createdAt])
@@ -263,6 +264,11 @@ model WorkflowRun {
   status         String
   progress       Int      @default(0)
   errorCode      String?
+  // Incremented on each claim. IngestJob has had this field all along but
+  // nothing ever read it, so one transient socket error killed a job
+  // permanently; WorkflowRun had no equivalent at all, so stt /
+  // moment_detection / clip_rendering / dubbing could not be retried either.
+  attemptCount   Int      @default(0)
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
@@ -409,6 +415,11 @@ model AutopilotEpisode {
   importedAt DateTime @default(now())
 
   rule AutopilotRule @relation(fields: [ruleId], references: [id], onDelete: Cascade)
+  // projectId was a bare indexed UUID with no FK, so deleting a project left
+  // dangling references. SetNull (not Cascade) on purpose: the dedup key is
+  // [ruleId, episodeId], so the row must survive project deletion or the rule
+  // would re-import the same episode.
+  project Project? @relation(fields: [projectId], references: [id], onDelete: SetNull)
 
   @@unique([ruleId, episodeId])
   @@index([projectId])
