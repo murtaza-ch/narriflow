@@ -463,7 +463,7 @@ export default async function ProjectDetailPage({
                 <RetryIngestButton
                   projectId={projectId}
                   disabled={ingestAttemptsExhausted}
-                  limitReachedMessage={`Retry limit reached (${snapshot.ingestAttemptCount}/${MAX_INGEST_RETRY_ATTEMPTS}). Start a new upload, or contact support.`}
+                  limitReachedMessage={`Retry limit reached (${snapshot.ingestAttemptCount}/${MAX_INGEST_RETRY_ATTEMPTS}). This source keeps failing to import.`}
                 />
               )}
             </Stack>
@@ -659,6 +659,7 @@ export default async function ProjectDetailPage({
                 {hasRenderableClips && (
                   <RenderClipsButton
                     projectId={projectId}
+                    isFreeTier={pricingTier === "free"}
                     disabled={isRendering}
                     buttonLabel={
                       isRendering

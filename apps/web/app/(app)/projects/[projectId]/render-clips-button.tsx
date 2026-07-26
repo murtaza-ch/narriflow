@@ -2,6 +2,7 @@
 
 import { useActionState, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { Button } from "@narriflow/ui/components/button";
 import { Checkbox } from "@narriflow/ui/components/checkbox";
 import { Spinner } from "@narriflow/ui/components/spinner";
@@ -10,7 +11,15 @@ import {
   userErrorMessage,
   type ClipAspectRatio,
 } from "@narriflow/validators";
-import { Box, Flex, Popover, Portal, Stack, Text } from "@chakra-ui/react";
+import {
+  Box,
+  Flex,
+  Link as ChakraLink,
+  Popover,
+  Portal,
+  Stack,
+  Text,
+} from "@chakra-ui/react";
 import { AlertTriangle, Check, ChevronDown } from "lucide-react";
 import { retryIngestFormAction } from "../actions";
 
@@ -25,10 +34,14 @@ export function RenderClipsButton({
   projectId,
   disabled,
   buttonLabel,
+  isFreeTier = false,
 }: {
   projectId: string;
   disabled: boolean;
   buttonLabel: string;
+  /** Free renders are 720p and watermarked. The project page says so up top,
+   *  but a user confirming *this* render should not have to remember that. */
+  isFreeTier?: boolean;
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -108,6 +121,9 @@ export function RenderClipsButton({
                 <Text fontSize="11px" color="fg.muted" mt="0.5">
                   Choose which variants to queue across all clips. Rendering
                   uses capacity on your plan.
+                  {isFreeTier
+                    ? " On the free plan these render at 720p with a watermark."
+                    : ""}
                 </Text>
               </Box>
 
@@ -225,9 +241,15 @@ export function RetryIngestButton({
   }, initialRetryIngestState);
 
   if (disabled && limitReachedMessage) {
+    // A dead end with no way forward is the thing this whole retry flow was
+    // meant to remove, so the exhausted state still offers an exit.
     return (
       <Text fontSize="xs" color="fg.muted">
-        {limitReachedMessage}
+        {limitReachedMessage}{" "}
+        <ChakraLink asChild color="accent.fg" textUnderlineOffset="3px">
+          <Link href="/upload">Start a new import</Link>
+        </ChakraLink>
+        .
       </Text>
     );
   }

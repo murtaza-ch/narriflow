@@ -86,7 +86,10 @@ export function DeleteProjectButton({
     const confirmed = await confirm({
       title: `Delete "${projectTitle}"?`,
       description:
-        "This permanently deletes the original source, transcript, and every clip, render, and dub for this project. This can't be undone.",
+        // Scheduled social posts cascade-delete with the project too. Leaving
+        // them out of this list is how you get a support ticket from someone
+        // whose queued posts silently vanished.
+        "This permanently deletes the original source, transcript, and every clip, render, and dub for this project, and cancels any scheduled social posts. This can't be undone.",
       confirmLabel: "Delete project",
       destructive: true,
     });

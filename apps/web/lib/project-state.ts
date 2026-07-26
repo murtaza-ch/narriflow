@@ -6,6 +6,35 @@ import {
 export const PROJECT_EVENT_ROW_LIMIT = 20;
 export const PROJECT_EVENT_IDENTITY_LIMIT = 100;
 
+/**
+ * Machine stage id -> the label the pipeline stepper already shows. The
+ * Activity list used to print raw ids (`stt`, `moment_detection`), so one page
+ * spoke two vocabularies for the same pipeline. Keep this in sync with the
+ * stepper in `projects/[projectId]/page.tsx`.
+ */
+const WORKFLOW_STAGE_LABELS: Record<string, string> = {
+  ingest: "Ingest",
+  ingest_queued: "Ingest",
+  ingest_downloading: "Ingest",
+  ingest_normalizing: "Ingest",
+  stt: "Transcribe",
+  moment_detection: "Detect",
+  clip_rendering: "Render",
+  dubbing: "Dub",
+  publish: "Publish",
+};
+
+/** Falls back to a humanised form of the raw id so a new stage is still
+ *  readable rather than disappearing. */
+export function workflowStageLabel(stage: string): string {
+  const known = WORKFLOW_STAGE_LABELS[stage];
+  if (known) return known;
+  return stage
+    .split("_")
+    .map((part) => (part ? part[0]!.toUpperCase() + part.slice(1) : part))
+    .join(" ");
+}
+
 export type PipelineStepState = "done" | "active" | "failed" | "todo";
 
 type WorkflowRunLike = {

@@ -12,6 +12,7 @@ import {
   parseWorkflowEventMessage,
   rememberBoundedIdentity,
   workflowEventRowIdentity,
+  workflowStageLabel,
   workflowTerminalEventIdentity,
 } from "@/lib/project-state";
 
@@ -155,7 +156,10 @@ export function ProjectEvents({
     };
   }, [projectId, initialSeq, router, scheduleIncrementalRefresh]);
 
-  const latest = useMemo(() => events.at(-1) ?? null, [events]);
+  // State stays ascending (cheap append + dedup by seq); the list renders
+  // newest-first so the user lands on the freshest event instead of having to
+  // scroll past stale rows to find what just happened.
+  const rows = useMemo(() => [...events].reverse(), [events]);
 
   return (
     <Box layerStyle="band">
@@ -166,14 +170,11 @@ export function ProjectEvents({
               Activity
             </Text>
             <Text mt="0.5" fontSize="xs" color="fg.muted">
-              Full workflow history for this project, updating live.
+              {events.length >= PROJECT_EVENT_ROW_LIMIT
+                ? `Most recent ${PROJECT_EVENT_ROW_LIMIT} workflow events, newest first, updating live.`
+                : "Workflow history for this project, updating live."}
             </Text>
           </Box>
-          {latest && (
-            <Text textStyle="data" fontSize="11px" color="fg.subtle">
-              seq {latest.seq}
-            </Text>
-          )}
         </Flex>
 
         {events.length === 0 ? (
@@ -186,7 +187,7 @@ export function ProjectEvents({
           </Flex>
         ) : (
           <Stack gap="0" borderTopWidth="1px" borderColor="border.subtle">
-            {events.map((event) => (
+            {rows.map((event) => (
               <Flex
                 key={event.seq}
                 position="relative"
@@ -213,7 +214,7 @@ export function ProjectEvents({
                 <Stack gap="1" minW="0" flex="1">
                   <Flex align="center" gap="2.5" minW="0" wrap="wrap">
                     <Text textStyle="data" fontSize="13px" color="fg" truncate>
-                      {event.stage}
+                      {workflowStageLabel(event.stage)}
                     </Text>
                     <StatusBadge
                       status={
