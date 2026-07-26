@@ -36,6 +36,20 @@ export {
   type ProjectListItem,
   type ProjectListPage,
   type ProjectSourcePurgeCandidate,
+  // Automatic job-level retry policy (requeue-with-backoff for IngestJob /
+  // WorkflowRun) — see the "Automatic job-level retry policy" comment block
+  // in project.service.ts for the full design.
+  INGEST_AUTO_RETRY_MAX_ATTEMPTS,
+  WORKFLOW_AUTO_RETRY_MAX_ATTEMPTS,
+  INGEST_RETRIES_EXHAUSTED_CODE,
+  WORKFLOW_RETRIES_EXHAUSTED_CODE,
+  PERMANENT_FAILURE_CODES,
+  TRANSIENT_FAILURE_CODES,
+  isAutoRetryableFailureCode,
+  decideAutoRetry,
+  autoRetryBackoffMs,
+  claimBackoffWhereClauses,
+  type AutoRetryDecision,
 } from "./project.service";
 export {
   contentSuiteService,

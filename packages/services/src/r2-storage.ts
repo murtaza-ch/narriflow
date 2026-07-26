@@ -1,5 +1,4 @@
-import { createReadStream } from "node:fs";
-import { stat } from "node:fs/promises";
+import { open, readFile, stat } from "node:fs/promises";
 import { basename } from "node:path";
 import {
   AbortMultipartUploadCommand,
@@ -16,8 +15,38 @@ import {
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 const SIGNED_URL_TTL_SECONDS = 60 * 60;
-const MULTIPART_UPLOAD_THRESHOLD_BYTES = 100 * 1024 * 1024;
-const MULTIPART_PART_SIZE_BYTES = 64 * 1024 * 1024;
+/** Ceiling for the single-PUT path, whose body is held in memory. Anything
+ *  larger goes multipart — see the comment in putFileFromPath for why a
+ *  streamed single PUT is not an option against R2. 16 MB comfortably covers
+ *  preview proxies (~1-3 MB) and dub audio without risking the worker's heap. */
+const BUFFERED_PUT_MAX_BYTES = 16 * 1024 * 1024;
+
+/** Reads `[start, end)` of a file into a Buffer. Used for multipart parts,
+ *  which must be buffered rather than streamed (see putFileFromPath). */
+async function readFilePart(filePath: string, start: number, end: number) {
+  const handle = await open(filePath, "r");
+  try {
+    const buffer = Buffer.allocUnsafe(end - start);
+    let offset = 0;
+    while (offset < buffer.length) {
+      const { bytesRead } = await handle.read(
+        buffer,
+        offset,
+        buffer.length - offset,
+        start + offset,
+      );
+      if (bytesRead === 0) break;
+      offset += bytesRead;
+    }
+    return offset === buffer.length ? buffer : buffer.subarray(0, offset);
+  } finally {
+    await handle.close();
+  }
+}
+/** Parts are buffered in memory (see readFilePart), so this is deliberately
+ *  smaller than it was when parts were streamed. 16 MB still allows a ~160 GB
+ *  object within S3's 10,000-part limit, far above the 5 GB upload cap. */
+const MULTIPART_PART_SIZE_BYTES = 16 * 1024 * 1024;
 
 function getRequiredEnv(name: string) {
   const value = process.env[name]?.trim();
@@ -216,22 +245,26 @@ export async function putFileFromPath(params: {
   const { bucket } = getR2Config();
   const fileInfo = await stat(params.filePath);
 
-  if (fileInfo.size <= MULTIPART_UPLOAD_THRESHOLD_BYTES) {
-    const body = createReadStream(params.filePath);
-    try {
-      await client.send(
-        new PutObjectCommand({
-          Bucket: bucket,
-          Key: params.key,
-          Body: body,
-          ContentLength: fileInfo.size,
-          ContentType: params.contentType,
-          Metadata: params.metadata,
-        }),
-      );
-    } finally {
-      body.destroy();
-    }
+  // Small files go up as a single PUT with the body fully in memory. Streaming
+  // a Node ReadStream here fails against R2 with "You did not provide the
+  // number of bytes specified by the Content-Length HTTP header" — the SDK
+  // wraps streamed payloads in aws-chunked framing for its default integrity
+  // checksum, which R2 does not accept, and because a consumed stream cannot be
+  // replayed the SDK's retry masks the real error ("non-retryable streaming
+  // request"). Reproduced with a 1.5 MB file; a 15-byte file happens to slip
+  // through, which is why this stayed hidden. Anything above the buffer ceiling
+  // uses the multipart path below, which sends per-part buffers and works.
+  if (fileInfo.size <= BUFFERED_PUT_MAX_BYTES) {
+    await client.send(
+      new PutObjectCommand({
+        Bucket: bucket,
+        Key: params.key,
+        Body: await readFile(params.filePath),
+        ContentLength: fileInfo.size,
+        ContentType: params.contentType,
+        Metadata: params.metadata,
+      }),
+    );
   } else {
     const created = await client.send(
       new CreateMultipartUploadCommand({
@@ -258,29 +291,29 @@ export async function putFileFromPath(params: {
           start + MULTIPART_PART_SIZE_BYTES,
           fileInfo.size,
         );
-        const body = createReadStream(params.filePath, {
-          start,
-          end: end - 1,
-        });
+        // Read the part fully into memory rather than streaming it, for the
+        // same reason as the single-PUT path above: a streamed body makes the
+        // SDK use aws-chunked framing that R2 rejects, and the failure surfaces
+        // as "The socket connection was closed unexpectedly" — which is exactly
+        // how link imports were dying in production. Reproduced with a 20 MB
+        // upload and fixed by buffering. Part size is kept small enough that
+        // one part in memory is cheap.
+        const body = await readFilePart(params.filePath, start, end);
 
-        try {
-          const uploaded = await client.send(
-            new UploadPartCommand({
-              Bucket: bucket,
-              Key: params.key,
-              UploadId: uploadId,
-              PartNumber: partNumber,
-              Body: body,
-              ContentLength: end - start,
-            }),
-          );
-          if (!uploaded.ETag) {
-            throw new Error("R2 multipart part did not return an etag");
-          }
-          parts.push({ ETag: uploaded.ETag, PartNumber: partNumber });
-        } finally {
-          body.destroy();
+        const uploaded = await client.send(
+          new UploadPartCommand({
+            Bucket: bucket,
+            Key: params.key,
+            UploadId: uploadId,
+            PartNumber: partNumber,
+            Body: body,
+            ContentLength: end - start,
+          }),
+        );
+        if (!uploaded.ETag) {
+          throw new Error("R2 multipart part did not return an etag");
         }
+        parts.push({ ETag: uploaded.ETag, PartNumber: partNumber });
       }
 
       await client.send(

@@ -110,6 +110,12 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
     "This project has a run in progress. Wait for it to finish, then try deleting again.",
   project_deletion_incomplete:
     "We couldn't fully remove this project's files. Please try deleting again.",
+  ingest_retries_exhausted:
+    "We retried this upload automatically a few times and it kept failing. Try again, or contact support if it keeps happening.",
+  workflow_retries_exhausted:
+    "We retried this step automatically a few times and it kept failing. Please try again, or contact support if it keeps happening.",
+  worker_stalled:
+    "Processing was interrupted unexpectedly. Please try again, or contact support if it keeps happening.",
   // Extend as new codes appear.
 };
 

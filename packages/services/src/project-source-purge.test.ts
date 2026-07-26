@@ -19,6 +19,7 @@ function candidate(
     ingestCompletedAt: new Date(NOW_MS - 100 * DAY_MS),
     hasActiveWorkflowRun: false,
     hasCompletedRender: true,
+    hasClipAwaitingPreview: false,
     ...overrides,
   };
 }
@@ -91,6 +92,28 @@ describe("isProjectSourcePurgeEligible", () => {
         options,
       ),
     ).toBe(false);
+  });
+
+  // Preview proxies are cut lazily from the source, so purging while a clip
+  // is still waiting for one strands it on "Preview generating…" forever.
+  // This regressed for real: three projects were purged on a first worker
+  // boot, before any proxy had been generated.
+  test("is not eligible while a clip still needs a preview proxy", () => {
+    expect(
+      isProjectSourcePurgeEligible(
+        candidate({ hasClipAwaitingPreview: true }),
+        options,
+      ),
+    ).toBe(false);
+  });
+
+  test("is eligible once every clip has a preview proxy", () => {
+    expect(
+      isProjectSourcePurgeEligible(
+        candidate({ hasClipAwaitingPreview: false }),
+        options,
+      ),
+    ).toBe(true);
   });
 
   test("is not eligible when ingestCompletedAt is missing", () => {

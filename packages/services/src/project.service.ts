@@ -565,6 +565,218 @@ export class IngestNotFailedError extends Error {
 }
 
 // ---------------------------------------------------------------------------
+// Automatic job-level retry policy: requeue-with-backoff for IngestJob and
+// WorkflowRun (stt/moment_detection/clip_rendering/dubbing), bounded by
+// IngestJob.attemptCount / WorkflowRun.attemptCount (each incremented once
+// per claim — see claimNextIngestJob / claimNextWorkflowRun below).
+//
+// This is the OUTER layer. apps/worker/src/tasks/{ingest,transcribe,
+// detect-clips,render-clips,dubbing}.ts already retry a handful of their own
+// sub-operations IN-PROCESS (a few seconds of jittered backoff, all within
+// the SAME claimed attempt) before giving up and calling one of the
+// fail*/reap* methods below with a terminal-looking error code. Before this
+// policy existed, that call always meant permanent failure — verified in
+// production: a Google Drive import died on "The socket connection was
+// closed unexpectedly" with attemptCount: 1, and nothing ever retried it.
+// This policy decides what happens instead: give the job/run a fresh, later
+// attempt (a new claim, a new in-process retry budget, quite possibly a
+// different worker process), or accept the failure as permanent.
+//
+// Distinct from the user-facing manual retry (retryFailedIngest /
+// triggerGeneration / regenerateClips / triggerClipRendering): those always
+// create a BRAND NEW IngestJob/WorkflowRun row with attemptCount back at 0,
+// so they keep working unmodified once the caps below are exhausted on the
+// old row. retryFailedIngest's own cap (MAX_INGEST_RETRY_ATTEMPTS, counted as
+// IngestJob *rows* for the project) never even observes this layer's
+// requeues, since a requeue reuses the same row instead of creating a new
+// one — the two caps can't fight each other by construction.
+// ---------------------------------------------------------------------------
+
+/** How many times an ingest job / workflow run may be automatically requeued
+ *  after a retryable failure (including a stalled-worker reap) before it is
+ *  given up on for good. Deliberately smaller than, and independent of,
+ *  MAX_INGEST_RETRY_ATTEMPTS above: these are "free", system-initiated
+ *  attempts, while MAX_INGEST_RETRY_ATTEMPTS governs the separate,
+ *  user-initiated "Retry ingest" budget. */
+export const INGEST_AUTO_RETRY_MAX_ATTEMPTS = 3;
+export const WORKFLOW_AUTO_RETRY_MAX_ATTEMPTS = 3;
+
+/** Base delay for the exponential requeue backoff (doubles per attempt: 30s,
+ *  60s, ...). See claimBackoffWhereClauses for how this is enforced without
+ *  a `nextAttemptAt` column. */
+const AUTO_RETRY_BASE_DELAY_MS = 30_000;
+
+/** Terminal codes recorded once the caps above are reached on an
+ *  otherwise-retryable failure — kept distinct from the original error code
+ *  so the UI (userErrorMessage, packages/validators/src/error-messages.ts)
+ *  can tell the user this was retried automatically rather than rejected
+ *  outright. A permanent failure (PERMANENT_FAILURE_CODES) keeps its own
+ *  specific code instead of either of these. */
+export const INGEST_RETRIES_EXHAUSTED_CODE = "ingest_retries_exhausted";
+export const WORKFLOW_RETRIES_EXHAUSTED_CODE = "workflow_retries_exhausted";
+
+/**
+ * Error codes that must never be auto-retried: the input, credentials, or
+ * plan are the actual problem, so retrying changes nothing and only delays
+ * the (identical) terminal failure the user needs to act on. Sourced by
+ * reading every `throw new IngestWorkerError(...)` / `throw new
+ * WorkflowWorkerError(...)` in apps/worker/src/tasks/{ingest,transcribe,
+ * detect-clips,render-clips,dubbing}.ts (those files can't import this
+ * policy, so keep this list in sync by hand if their codes change).
+ *
+ * Everything NOT listed here (including codes this list doesn't yet know
+ * about) defaults to retryable in isAutoRetryableFailureCode below — bounded
+ * by the attempt caps above, so the worst case for a permanent failure we
+ * failed to enumerate is a couple of wasted, backed-off attempts before it
+ * fails the same way anyway. That default is deliberate: it's what would
+ * have caught the production incident this policy exists to fix.
+ */
+export const PERMANENT_FAILURE_CODES: ReadonlySet<string> = new Set([
+  // SSRF-guard rejection / unsupported or invalid input URL
+  // (packages/services/src/url-guard.ts, apps/worker/src/tasks/ingest.ts)
+  "remote_url_unsafe",
+  "link_unsupported_source",
+  "link_missing_url",
+  "link_download_missing_file",
+  "rss_missing_enclosure",
+  "youtube_missing_url", // legacy pre-unification codes, kept for old data
+  "youtube_unsupported_source",
+  // Unsupported / invalid / oversized media — the same file fails the same
+  // way every time
+  "remote_media_invalid_content_type",
+  "remote_media_too_large",
+  "media_duration_unavailable",
+  "invalid_source_dimensions",
+  "unsupported_aspect_ratio",
+  // Plan / quota limits (won't change mid-retry)
+  "ingest_max_duration_exceeded",
+  "quota_exceeded",
+  "requires_pro_plan",
+  "requires_creator_plan",
+  // Auth / environment configuration — retrying the job can't fix a missing
+  // key or binary
+  "assemblyai_api_key_missing",
+  "openai_api_key_missing",
+  "worker_command_missing",
+  // Malformed job/payload: a bug, not a blip
+  "worker_invalid_payload",
+  "worker_unknown_job_type",
+  "upload_finalize_missing_key",
+  // Missing prerequisite data that this same job/run cannot itself create
+  "workflow_source_missing",
+  "source_storage_key_missing",
+  "base_render_missing",
+  "no_renderable_clips",
+  "no_clips_detected",
+  "transcript_not_ready",
+  "transcript_processing_window_empty",
+  "dub_transcript_empty",
+  "broll_cutaways_empty",
+]);
+
+/**
+ * Error codes explicitly confirmed retryable, called out even though they'd
+ * hit the same default as any other unlisted code — worth being explicit
+ * because each one looks like it should be permanent at first glance:
+ *
+ *  - remote_fetch_timeout / worker_command_timeout: apps/worker/src/tasks/
+ *    ingest.ts deliberately excludes these from ITS OWN in-process retry
+ *    (PERMANENT_INGEST_ERROR_CODES there) — but only because those calls
+ *    already run with multi-minute-to-hour timeouts, so retrying
+ *    immediately in-process would double an already-long single attempt.
+ *    That's a cost decision, not a "this will never work" one; a fresh
+ *    attempt later (this layer) is exactly the right place to retry them.
+ *  - source_download_failed: render-clips.ts downloading our OWN R2 object,
+ *    not a remote user URL — a failure here is an internal storage blip,
+ *    not a bad input.
+ *  - worker_stalled: assigned by the reapers below when a worker crashed
+ *    mid-run. The job/run itself never got a chance to fail on its own
+ *    merits, which makes this the single most retryable failure mode there
+ *    is.
+ */
+export const TRANSIENT_FAILURE_CODES: ReadonlySet<string> = new Set([
+  "remote_fetch_timeout",
+  "worker_command_timeout",
+  "source_download_failed",
+  "worker_stalled",
+]);
+
+export function isAutoRetryableFailureCode(errorCode: string): boolean {
+  return !PERMANENT_FAILURE_CODES.has(errorCode);
+}
+
+export type AutoRetryDecision =
+  | { outcome: "requeue" }
+  | { outcome: "permanent"; terminalErrorCode: string };
+
+/**
+ * The single decision this whole policy boils down to, applied identically
+ * to ingest jobs and workflow runs, and to both an explicit failure and a
+ * reaped stall (reapStuckIngestJobs/reapStuckWorkflowRuns below call this
+ * with errorCode "worker_stalled"): retry if the error looks transient AND
+ * there's still budget, otherwise stop for good. `attemptCount` is the count
+ * *as of this failure* (already incremented at claim time), so
+ * `attemptCount < maxAttempts` reads as "this was attempt N of maxAttempts,
+ * try again."
+ */
+export function decideAutoRetry(
+  attemptCount: number,
+  errorCode: string,
+  maxAttempts: number,
+  exhaustedErrorCode: string,
+): AutoRetryDecision {
+  if (isAutoRetryableFailureCode(errorCode) && attemptCount < maxAttempts) {
+    return { outcome: "requeue" };
+  }
+  return {
+    outcome: "permanent",
+    terminalErrorCode: isAutoRetryableFailureCode(errorCode)
+      ? exhaustedErrorCode
+      : errorCode,
+  };
+}
+
+/** Exponential backoff, doubling per attempt (attempt 1 -> base, attempt 2
+ *  -> 2x base, ...). Only ever consulted for attemptCount >= 1 — see
+ *  claimBackoffWhereClauses. */
+export function autoRetryBackoffMs(
+  attemptCount: number,
+  baseDelayMs: number = AUTO_RETRY_BASE_DELAY_MS,
+): number {
+  return baseDelayMs * 2 ** Math.max(0, attemptCount - 1);
+}
+
+/**
+ * Backoff without a schema migration. IngestJob/WorkflowRun have no
+ * `nextAttemptAt` column, and this task is scoped to not add one, so
+ * eligibility is expressed against the attemptCount + updatedAt columns that
+ * already exist — Prisma bumps `updatedAt` on every write, including the
+ * requeue writes in failIngestJob / fail*WorkflowRun / the reapers below. A
+ * never-claimed row (attemptCount 0) is always eligible, exactly as today; a
+ * requeued one becomes eligible again only once its own exponential-backoff
+ * window has elapsed since the write that requeued it.
+ *
+ * Spread into the `OR` of claimNextIngestJob / claimNextWorkflowRun's
+ * `where` alongside their other (AND-ed) conditions, e.g.
+ * `{ status: "queued", OR: claimBackoffWhereClauses(CAP) }`.
+ */
+export function claimBackoffWhereClauses(
+  maxAutoRetryAttempts: number,
+  nowMs: number = Date.now(),
+): Array<{ attemptCount: number; updatedAt?: { lt: Date } }> {
+  const clauses: Array<{ attemptCount: number; updatedAt?: { lt: Date } }> = [
+    { attemptCount: 0 },
+  ];
+  for (let attempt = 1; attempt < maxAutoRetryAttempts; attempt++) {
+    clauses.push({
+      attemptCount: attempt,
+      updatedAt: { lt: new Date(nowMs - autoRetryBackoffMs(attempt)) },
+    });
+  }
+  return clauses;
+}
+
+// ---------------------------------------------------------------------------
 // Self-serve project deletion. Errors mirror the getProjectAccess three-way
 // discriminator ("missing" -> 404, "forbidden" -> 403) plus two deletion-
 // specific refusals. The orchestration itself (runProjectDeletion below) is a
@@ -2182,6 +2394,10 @@ export class ProjectService {
         where: {
           stage,
           status: "queued",
+          // Backoff gate for a requeued run (see claimBackoffWhereClauses):
+          // a never-claimed run (attemptCount 0) is always eligible; a
+          // previously-failed/stalled one waits out its exponential window.
+          OR: claimBackoffWhereClauses(WORKFLOW_AUTO_RETRY_MAX_ATTEMPTS),
         },
         orderBy: { createdAt: "asc" },
         include: {
@@ -2213,6 +2429,12 @@ export class ProjectService {
         data: {
           status: "running",
           progress: 10,
+          // Incremented on every claim (fresh or requeued) so failure
+          // handling below and the reapers can tell how many attempts a run
+          // has already had — mirrors IngestJob.attemptCount, which this
+          // column now finally matches (see the migration comment on the
+          // WorkflowRun model).
+          attemptCount: { increment: 1 },
         },
       });
 
@@ -2269,7 +2491,13 @@ export class ProjectService {
     // return null so the poller retries next tick instead of recursing.
     for (let attempt = 0; attempt < 5; attempt++) {
       const queued = await prisma.ingestJob.findFirst({
-        where: { status: "queued" },
+        where: {
+          status: "queued",
+          // Backoff gate for a requeued job (see claimBackoffWhereClauses):
+          // a never-claimed job (attemptCount 0) is always eligible; a
+          // previously-failed/stalled one waits out its exponential window.
+          OR: claimBackoffWhereClauses(INGEST_AUTO_RETRY_MAX_ATTEMPTS),
+        },
         orderBy: { createdAt: "asc" },
       });
 
@@ -2454,6 +2682,87 @@ export class ProjectService {
     });
   }
 
+  /**
+   * Shared failure handling for the 4 non-ingest workflow stages: decides
+   * (via decideAutoRetry) whether to requeue the SAME run for a fresh, later
+   * attempt or fail it permanently, performs the corresponding write, and
+   * publishes the resulting event. Returns the decision so
+   * failTranscriptWorkflowRun can apply the same outcome to the Transcript
+   * row it additionally owns.
+   *
+   * The requeue write is a plain `update` (not a conditional `updateMany`):
+   * only the worker that currently holds this "running" row ever calls a
+   * fail* method for it, so there's no concurrent-claim race here — the
+   * atomic step that needs to stay conditional is the CLAIM
+   * (claimNextWorkflowRun's updateMany), which this doesn't touch.
+   */
+  private async settleFailedWorkflowRun(
+    run: PrismaWorkflowRun,
+    stage: "stt" | "moment_detection" | "clip_rendering" | "dubbing",
+    errorCode: string,
+  ): Promise<AutoRetryDecision> {
+    const prisma = this.requirePrisma();
+    const decision = decideAutoRetry(
+      run.attemptCount,
+      errorCode,
+      WORKFLOW_AUTO_RETRY_MAX_ATTEMPTS,
+      WORKFLOW_RETRIES_EXHAUSTED_CODE,
+    );
+
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        message: "workflow_run_failure_decision",
+        workflowRunId: run.id,
+        projectId: run.projectId,
+        stage,
+        errorCode,
+        attemptCount: run.attemptCount,
+        maxAttempts: WORKFLOW_AUTO_RETRY_MAX_ATTEMPTS,
+        outcome: decision.outcome,
+      }),
+    );
+
+    if (decision.outcome === "requeue") {
+      await prisma.workflowRun.update({
+        where: { id: run.id },
+        data: { stage, status: "queued", progress: 0, errorCode: null },
+      });
+
+      await this.publishWorkflowRunEvent({
+        projectId: run.projectId,
+        workflowRunId: run.id,
+        stage,
+        status: "queued",
+        progress: 0,
+        errorCode: null,
+      });
+
+      return decision;
+    }
+
+    await prisma.workflowRun.update({
+      where: { id: run.id },
+      data: {
+        stage,
+        status: "failed",
+        progress: 100,
+        errorCode: decision.terminalErrorCode,
+      },
+    });
+
+    await this.publishWorkflowRunEvent({
+      projectId: run.projectId,
+      workflowRunId: run.id,
+      stage,
+      status: "failed",
+      progress: 100,
+      errorCode: decision.terminalErrorCode,
+    });
+
+    return decision;
+  }
+
   async failClipDetectionWorkflowRun(
     workflowRunId: string,
     errorCode: string,
@@ -2467,24 +2776,7 @@ export class ProjectService {
       throw new Error("workflow run not found");
     }
 
-    await prisma.workflowRun.update({
-      where: { id: run.id },
-      data: {
-        stage: "moment_detection",
-        status: "failed",
-        progress: 100,
-        errorCode,
-      },
-    });
-
-    await this.publishWorkflowRunEvent({
-      projectId: run.projectId,
-      workflowRunId: run.id,
-      stage: "moment_detection",
-      status: "failed",
-      progress: 100,
-      errorCode,
-    });
+    await this.settleFailedWorkflowRun(run, "moment_detection", errorCode);
   }
 
   async completeClipRenderingWorkflowRun(workflowRunId: string) {
@@ -2530,24 +2822,7 @@ export class ProjectService {
       throw new Error("workflow run not found");
     }
 
-    await prisma.workflowRun.update({
-      where: { id: run.id },
-      data: {
-        stage: "clip_rendering",
-        status: "failed",
-        progress: 100,
-        errorCode,
-      },
-    });
-
-    await this.publishWorkflowRunEvent({
-      projectId: run.projectId,
-      workflowRunId: run.id,
-      stage: "clip_rendering",
-      status: "failed",
-      progress: 100,
-      errorCode,
-    });
+    await this.settleFailedWorkflowRun(run, "clip_rendering", errorCode);
   }
 
   async completeDubbingWorkflowRun(workflowRunId: string) {
@@ -2590,24 +2865,7 @@ export class ProjectService {
       throw new Error("workflow run not found");
     }
 
-    await prisma.workflowRun.update({
-      where: { id: run.id },
-      data: {
-        stage: "dubbing",
-        status: "failed",
-        progress: 100,
-        errorCode,
-      },
-    });
-
-    await this.publishWorkflowRunEvent({
-      projectId: run.projectId,
-      workflowRunId: run.id,
-      stage: "dubbing",
-      status: "failed",
-      progress: 100,
-      errorCode,
-    });
+    await this.settleFailedWorkflowRun(run, "dubbing", errorCode);
   }
 
   async failTranscriptWorkflowRun(workflowRunId: string, errorCode: string) {
@@ -2620,44 +2878,34 @@ export class ProjectService {
       throw new Error("workflow run not found");
     }
 
-    await prisma.$transaction(async (tx) => {
-      await tx.transcript.upsert({
+    const decision = await this.settleFailedWorkflowRun(run, "stt", errorCode);
+
+    // Only touch the Transcript row once this is a genuinely terminal
+    // failure. On a requeue, claimNextWorkflowRun's stt branch already
+    // upserts Transcript back to status "processing" (clearing errorCode)
+    // the moment the run is re-claimed, so leaving it alone here is not an
+    // oversight — it just stays "processing" for the (short, backed-off)
+    // time the run sits requeued, which is accurate: it is still being
+    // processed, just not at this exact instant.
+    if (decision.outcome === "permanent") {
+      await prisma.transcript.upsert({
         where: { projectId: run.projectId },
         create: {
           projectId: run.projectId,
           status: "failed",
           provider: STT_PROVIDER,
           providerModel: STT_PROVIDER_MODEL,
-          errorCode,
+          errorCode: decision.terminalErrorCode,
         },
         update: {
           status: "failed",
           provider: STT_PROVIDER,
           providerModel: STT_PROVIDER_MODEL,
-          errorCode,
+          errorCode: decision.terminalErrorCode,
           completedAt: null,
         },
       });
-
-      await tx.workflowRun.update({
-        where: { id: run.id },
-        data: {
-          stage: "stt",
-          status: "failed",
-          progress: 100,
-          errorCode,
-        },
-      });
-    });
-
-    await this.publishWorkflowRunEvent({
-      projectId: run.projectId,
-      workflowRunId: run.id,
-      stage: "stt",
-      status: "failed",
-      progress: 100,
-      errorCode,
-    });
+    }
   }
 
   async markIngestJobDownloading(jobId: string) {
@@ -2753,12 +3001,66 @@ export class ProjectService {
       throw new Error("ingest job not found");
     }
 
+    const decision = decideAutoRetry(
+      job.attemptCount,
+      errorCode,
+      INGEST_AUTO_RETRY_MAX_ATTEMPTS,
+      INGEST_RETRIES_EXHAUSTED_CODE,
+    );
+
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        message: "ingest_job_failure_decision",
+        jobId: job.id,
+        projectId: job.projectId,
+        errorCode,
+        attemptCount: job.attemptCount,
+        maxAttempts: INGEST_AUTO_RETRY_MAX_ATTEMPTS,
+        outcome: decision.outcome,
+      }),
+    );
+
+    if (decision.outcome === "requeue") {
+      await prisma.$transaction(async (tx) => {
+        await tx.project.update({
+          where: { id: job.projectId },
+          data: {
+            ingestStatus: "queued",
+            ingestErrorCode: null,
+          },
+        });
+
+        await tx.ingestJob.update({
+          where: { id: job.id },
+          data: {
+            status: "queued",
+            // Breadcrumb for ops (not user-facing — the project's
+            // ingestErrorCode is cleared above so the UI doesn't show a
+            // stale failure banner while this is quietly retrying).
+            lastError: `${errorCode}: ${errorMessage} (auto-retry, attempt ${job.attemptCount} of ${INGEST_AUTO_RETRY_MAX_ATTEMPTS})`,
+          },
+        });
+      });
+
+      await this.publishIngestLifecycleEvent({
+        projectId: job.projectId,
+        workflowRunId: job.id,
+        ingestStatus: "queued",
+        eventStatus: "queued",
+        errorCode: null,
+      });
+      return;
+    }
+
+    const terminalErrorCode = decision.terminalErrorCode;
+
     await prisma.$transaction(async (tx) => {
       await tx.project.update({
         where: { id: job.projectId },
         data: {
           ingestStatus: "failed",
-          ingestErrorCode: errorCode,
+          ingestErrorCode: terminalErrorCode,
         },
       });
 
@@ -2777,7 +3079,7 @@ export class ProjectService {
       workflowRunId: job.id,
       ingestStatus: "failed",
       eventStatus: "failed",
-      errorCode,
+      errorCode: terminalErrorCode,
     });
   }
 
@@ -3099,17 +3401,45 @@ export class ProjectService {
 
     const stalled = await prisma.workflowRun.findMany({
       where: { status: "running", updatedAt: { lt: cutoff } },
-      select: { id: true, projectId: true, stage: true },
+      select: { id: true, projectId: true, stage: true, attemptCount: true },
     });
 
     let reaped = 0;
     for (const run of stalled) {
+      // A worker crashing mid-run is the most retryable failure mode there
+      // is — the run never got a chance to fail on its own merits — so this
+      // goes through the exact same decideAutoRetry cap as an explicit
+      // failure rather than always killing the run outright.
+      const decision = decideAutoRetry(
+        run.attemptCount,
+        "worker_stalled",
+        WORKFLOW_AUTO_RETRY_MAX_ATTEMPTS,
+        WORKFLOW_RETRIES_EXHAUSTED_CODE,
+      );
+
       const updated = await prisma.workflowRun.updateMany({
         where: { id: run.id, status: "running" },
-        data: { status: "failed", errorCode: "worker_stalled" },
+        data:
+          decision.outcome === "requeue"
+            ? { status: "queued", progress: 0, errorCode: null }
+            : { status: "failed", errorCode: decision.terminalErrorCode },
       });
       if (updated.count === 0) continue;
       reaped += 1;
+
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          message: "workflow_run_stall_decision",
+          workflowRunId: run.id,
+          projectId: run.projectId,
+          stage: run.stage,
+          attemptCount: run.attemptCount,
+          maxAttempts: WORKFLOW_AUTO_RETRY_MAX_ATTEMPTS,
+          outcome: decision.outcome,
+        }),
+      );
+
       await this.publishWorkflowRunEvent({
         projectId: run.projectId,
         workflowRunId: run.id,
@@ -3120,9 +3450,10 @@ export class ProjectService {
           | "dubbing"
           | "output_pack_generation"
           | "export_bundle",
-        status: "failed",
-        progress: 0,
-        errorCode: "worker_stalled",
+        status: decision.outcome === "requeue" ? "queued" : "failed",
+        progress: decision.outcome === "requeue" ? 0 : 100,
+        errorCode:
+          decision.outcome === "requeue" ? null : decision.terminalErrorCode,
       }).catch(() => {});
     }
     return reaped;
@@ -3148,36 +3479,68 @@ export class ProjectService {
           { startedAt: null, updatedAt: { lt: cutoff } },
         ],
       },
-      select: { id: true, projectId: true },
+      select: { id: true, projectId: true, attemptCount: true },
     });
 
     let reaped = 0;
     for (const job of stalled) {
+      // A worker crashing mid-run is the most retryable failure mode there
+      // is — the job never got a chance to fail on its own merits — so this
+      // goes through the exact same decideAutoRetry cap as an explicit
+      // failure rather than always killing the job outright.
+      const decision = decideAutoRetry(
+        job.attemptCount,
+        "worker_stalled",
+        INGEST_AUTO_RETRY_MAX_ATTEMPTS,
+        INGEST_RETRIES_EXHAUSTED_CODE,
+      );
+
       const updated = await prisma.ingestJob.updateMany({
         where: { id: job.id, status: "running" },
-        data: {
-          status: "failed",
-          lastError: "worker_stalled: ingest job heartbeat expired",
-          completedAt: new Date(),
-        },
+        data:
+          decision.outcome === "requeue"
+            ? {
+                status: "queued",
+                lastError: `worker_stalled: requeued (attempt ${job.attemptCount} of ${INGEST_AUTO_RETRY_MAX_ATTEMPTS})`,
+              }
+            : {
+                status: "failed",
+                lastError: "worker_stalled: ingest job heartbeat expired",
+                completedAt: new Date(),
+              },
       });
       if (updated.count === 0) continue;
 
       await prisma.project.updateMany({
         where: { id: job.projectId },
-        data: {
-          ingestStatus: "failed",
-          ingestErrorCode: "worker_stalled",
-        },
+        data:
+          decision.outcome === "requeue"
+            ? { ingestStatus: "queued", ingestErrorCode: null }
+            : {
+                ingestStatus: "failed",
+                ingestErrorCode: decision.terminalErrorCode,
+              },
       });
 
       reaped += 1;
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          message: "ingest_job_stall_decision",
+          jobId: job.id,
+          projectId: job.projectId,
+          attemptCount: job.attemptCount,
+          maxAttempts: INGEST_AUTO_RETRY_MAX_ATTEMPTS,
+          outcome: decision.outcome,
+        }),
+      );
       await this.publishIngestLifecycleEvent({
         projectId: job.projectId,
         workflowRunId: job.id,
-        ingestStatus: "failed",
-        eventStatus: "failed",
-        errorCode: "worker_stalled",
+        ingestStatus: decision.outcome === "requeue" ? "queued" : "failed",
+        eventStatus: decision.outcome === "requeue" ? "queued" : "failed",
+        errorCode:
+          decision.outcome === "requeue" ? null : decision.terminalErrorCode,
       }).catch(() => {});
     }
 
@@ -3260,6 +3623,10 @@ export interface ProjectSourcePurgeCandidate {
   hasActiveWorkflowRun: boolean;
   /** Whether at least one ClipRender has already completed with an asset. */
   hasCompletedRender: boolean;
+  /** Whether any clip still needs a preview proxy cut from this source.
+   *  Proxies are generated lazily from the source, so purging first strands
+   *  those clips on "Preview generating…" forever. */
+  hasClipAwaitingPreview: boolean;
 }
 
 /**
@@ -3280,6 +3647,11 @@ export function isProjectSourcePurgeEligible(
   if (project.ingestStatus !== "ready") return false;
   if (project.hasActiveWorkflowRun) return false;
   if (!project.hasCompletedRender) return false;
+  // Preview proxies are cut lazily from the source. Purging while a clip is
+  // still waiting for one strands it on "Preview generating…" permanently,
+  // because there is nothing left to cut from. Observed for real: three
+  // projects were purged on a first worker boot before any proxy existed.
+  if (project.hasClipAwaitingPreview) return false;
   if (!project.ingestCompletedAt) return false;
 
   const completedAtMs = new Date(project.ingestCompletedAt).getTime();
@@ -3338,6 +3710,21 @@ export async function purgeExpiredProjectSources(
     take: SOURCE_PURGE_BATCH_SIZE,
   });
 
+  // One extra query for the whole batch rather than per candidate: which of
+  // these projects still has a clip with no preview proxy cut yet.
+  const projectIdsAwaitingPreview = new Set(
+    (
+      await prisma.clip.findMany({
+        where: {
+          projectId: { in: candidates.map((project) => project.id) },
+          previewStorageKey: null,
+        },
+        select: { projectId: true },
+        distinct: ["projectId"],
+      })
+    ).map((clip) => clip.projectId),
+  );
+
   const nowMs = Date.now();
   let purged = 0;
 
@@ -3352,6 +3739,7 @@ export async function purgeExpiredProjectSources(
           ingestCompletedAt: project.ingestCompletedAt,
           hasActiveWorkflowRun: project.workflowRuns.length > 0,
           hasCompletedRender: project.clips.length > 0,
+          hasClipAwaitingPreview: projectIdsAwaitingPreview.has(project.id),
         },
         { retentionDays, nowMs },
       );
