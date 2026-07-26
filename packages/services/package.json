@@ -32,9 +32,10 @@
     "@narriflow/db": "workspace:*",
     "@narriflow/validators": "workspace:*",
     "@prisma/client": "^7.4.2",
-    "fast-xml-parser": "^5.2.5",
+    "fast-xml-parser": "^5.9.3",
     "ioredis": "^5.9.3",
-    "resend": "latest"
+    "resend": "latest",
+    "stripe": "^22.3.0"
   },
   "devDependencies": {
     "@types/node": "latest"

@@ -2,17 +2,25 @@ import { randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import type { Clip, ClipRender } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
+import { projectService } from "./project.service";
 import {
+  BRAND_DEFAULT_CAPTION_PRESET_ID,
+  LEGACY_DEFAULT_CAPTION_PRESET_ID,
+  brollCuesArraySchema,
   captionPresetSchema,
   clipAspectRatioDbSchema,
   clipAspectRatioFromDb,
   clipAspectRatioOptions,
   clipAspectRatioToDb,
   contentPackSchema,
+  getCaptionPresetById,
   getEffectiveClipTiming,
+  isBrandDefaultCaptionPresetId,
   normalizeTranscriptSliceForClip,
+  studioEditsSchema,
 } from "@narriflow/validators";
 import type {
+  BrollCue,
   CaptionPreset,
   ClipAspectRatio,
   ClipCategory,
@@ -20,13 +28,17 @@ import type {
   ClipRenderVariant,
   ClipSnapshot,
   ContentPack,
+  StudioEdits,
   TranscriptUtterance,
+  WorkflowStageUpdatedEvent,
 } from "@narriflow/validators";
 import {
   getLastWorkflowSeq,
   publishWorkflowStageUpdated,
 } from "./workflow.service";
 import { deleteObject, presignDownloadUrl } from "./r2-storage";
+import { analyticsService } from "./analytics.service";
+import { assertPublicHttpUrl } from "./url-guard";
 
 interface DetectedClip {
   startSec: number;
@@ -47,12 +59,48 @@ interface DetectedClip {
   youtubeScore: number;
   instagramScore: number;
   transcriptSlice: TranscriptUtterance[];
+  /** LLM-suggested B-roll cutaway moments, `atSec` relative to the clip's own
+   *  start. Optional: the caption-only detection path emits no cues, and older
+   *  rows predate the column. When absent the render falls back to the
+   *  keyword-derived Pexels query. */
+  brollCues?: BrollCue[];
 }
 
 interface LlmMeta {
   provider: string;
   model: string;
   totalTokensUsed: number | null;
+}
+
+/** A clip still missing a preview proxy, with enough of its project's
+ *  source info for the worker to cut one. Returned by
+ *  {@link ClipService.getClipsNeedingPreview}. */
+export interface ClipPendingPreview {
+  id: string;
+  projectId: string;
+  startSec: number;
+  endSec: number;
+  sourceStorageKey: string;
+  sourceDurationSec: number | null;
+}
+
+export function resolveClipCaptionPresetForContentPack(
+  captionPresetId: string | null | undefined,
+  templateCaptionPreset: CaptionPreset | null,
+): CaptionPreset | null {
+  const id =
+    captionPresetId && captionPresetId.trim()
+      ? captionPresetId
+      : BRAND_DEFAULT_CAPTION_PRESET_ID;
+
+  if (
+    isBrandDefaultCaptionPresetId(id) ||
+    id === LEGACY_DEFAULT_CAPTION_PRESET_ID
+  ) {
+    return templateCaptionPreset;
+  }
+
+  return getCaptionPresetById(id)?.preset ?? templateCaptionPreset;
 }
 
 type ClipWithRenders = Clip & {
@@ -148,6 +196,13 @@ function toClipSnapshot(clip: ClipWithRenders): ClipSnapshot {
     captionPreset: clip.captionPreset
       ? captionPresetSchema.parse(clip.captionPreset)
       : null,
+    brollUrl: clip.brollUrl ?? null,
+    // Tolerant parse: cues are LLM-authored and purely advisory, so a malformed
+    // payload should degrade to keyword-derived B-roll, never fail the clip.
+    brollCues: brollCuesArraySchema.safeParse(clip.brollCues).data ?? [],
+    studioEdits: clip.studioEdits
+      ? studioEditsSchema.parse(clip.studioEdits)
+      : studioEditsSchema.parse({}),
     createdAt: clip.createdAt.toISOString(),
   };
 }
@@ -180,6 +235,7 @@ export class ClipService {
     workflowRunId: string,
     clips: DetectedClip[],
     llmMeta: LlmMeta,
+    contentPack?: ContentPack | null,
   ) {
     const prisma = requirePrisma();
     const [staleRenderKeys, project] = await Promise.all([
@@ -196,14 +252,18 @@ export class ClipService {
       }),
     ]);
 
-    let templateCaptionPreset: Prisma.InputJsonValue | null = null;
+    let templateCaptionPreset: CaptionPreset | null = null;
     const snapshotRaw = project?.brandSnapshot;
     if (snapshotRaw && typeof snapshotRaw === "object" && !Array.isArray(snapshotRaw)) {
       const snap = snapshotRaw as Record<string, unknown>;
       if (snap.captionPreset && typeof snap.captionPreset === "object") {
-        templateCaptionPreset = snap.captionPreset as Prisma.InputJsonValue;
+        templateCaptionPreset = captionPresetSchema.parse(snap.captionPreset);
       }
     }
+    const resolvedCaptionPreset = resolveClipCaptionPresetForContentPack(
+      contentPack?.captionPreset,
+      templateCaptionPreset,
+    );
 
     await prisma.$transaction(async (tx) => {
       await tx.clip.deleteMany({ where: { projectId } });
@@ -224,7 +284,13 @@ export class ClipService {
             platformFit: clip.platformFit,
             transcriptSlice:
               clip.transcriptSlice as unknown as Prisma.InputJsonValue,
-            captionPreset: templateCaptionPreset ?? Prisma.JsonNull,
+            brollCues:
+              clip.brollCues && clip.brollCues.length > 0
+                ? (clip.brollCues as unknown as Prisma.InputJsonValue)
+                : Prisma.JsonNull,
+            captionPreset: resolvedCaptionPreset
+              ? (resolvedCaptionPreset as unknown as Prisma.InputJsonValue)
+              : Prisma.JsonNull,
             viralityScore: clip.viralityScore,
             hookStrengthScore: clip.hookStrengthScore,
             emotionalIntensityScore: clip.emotionalIntensityScore,
@@ -412,6 +478,10 @@ export class ClipService {
     if (project.transcript?.status !== "completed") {
       throw new Error("transcript is not ready");
     }
+
+    // Enforce plan-tier quota + per-upload length cap on this path too (the
+    // project-page "Detect / Regenerate Clips" buttons route through here).
+    await projectService.assertProjectGenerationAllowed(userId, projectId);
 
     const existing = await prisma.workflowRun.findFirst({
       where: {
@@ -693,7 +763,7 @@ export class ClipService {
   ) {
     const prisma = requirePrisma();
 
-    await prisma.clipRender.update({
+    const render = await prisma.clipRender.update({
       where: { id: clipRenderId },
       data: {
         status: "completed",
@@ -703,7 +773,21 @@ export class ClipService {
         errorCode: null,
         completedAt: new Date(),
       },
+      include: { clip: { select: { projectId: true } } },
     });
+
+    await analyticsService.recordProjectEvent({
+      projectId: render.clip.projectId,
+      clipId: render.clipId,
+      type: "render_completed",
+      metadata: { aspectRatio: render.aspectRatio },
+    });
+
+    // Incremental delivery: nudge the project's live stream as soon as this
+    // individual clip's render lands, instead of only on the run's overall
+    // completed/failed transition — see project-events.tsx's throttled
+    // refresh-on-progress handling.
+    await this.pingActiveWorkflowRun(render.clip.projectId);
   }
 
   async failClipRenderVariant(clipRenderId: string, errorCode: string) {
@@ -723,7 +807,18 @@ export class ClipService {
     projectId: string,
     clipId: string,
     aspectRatio: ClipAspectRatio = "9:16",
-  ): Promise<{ downloadUrl: string; expiresInSeconds: number; fileName: string }> {
+  ): Promise<{
+    downloadUrl: string;
+    expiresInSeconds: number;
+    fileName: string;
+    /** True when `downloadUrl` points at the lightweight preview proxy
+     *  rather than a finished render — see the fallback below. */
+    isPreviewProxy?: boolean;
+    /** The proxy's t=0 expressed in source time; only present alongside
+     *  `isPreviewProxy`. Callers must subtract this from source-time
+     *  boundaries before seeking/trimming against the proxy. */
+    previewStartSec?: number;
+  }> {
     const prisma = requirePrisma();
     const aspectRatioDb = clipAspectRatioToDb[aspectRatio];
 
@@ -741,26 +836,250 @@ export class ClipService {
       },
     });
 
+    if (render && render.status === "completed" && render.storageKey) {
+      const slug = aspectRatioSlug.get(aspectRatio) ?? "9x16";
+      const fileName = `clip-${render.clip.index + 1}-${render.clip.category}-${slug}.mp4`;
+      const downloadUrl = await presignDownloadUrl({
+        key: render.storageKey,
+        fileName,
+      });
+
+      await analyticsService.recordProjectEvent({
+        projectId,
+        clipId,
+        type: "download_opened",
+        metadata: { aspectRatio },
+      });
+
+      return {
+        downloadUrl,
+        expiresInSeconds: 3600,
+        fileName,
+      };
+    }
+
+    // No completed render for this aspect ratio yet (or none was ever
+    // queued) — fall back to the lightweight, aspect-ratio-agnostic preview
+    // proxy so callers still get something playable instead of a hard
+    // error. This path is never reached by an explicit "Download" click
+    // (the UI only offers that button once `hasAsset` is true), so it's
+    // exclusively the inline-preview path — no `download_opened` analytics.
+    const clip =
+      render?.clip ??
+      (await prisma.clip.findFirst({
+        where: { id: clipId, projectId, project: { userId } },
+      }));
+
+    if (clip?.previewStorageKey) {
+      const fileName = `clip-${clip.index + 1}-preview.mp4`;
+      const downloadUrl = await presignDownloadUrl({
+        key: clip.previewStorageKey,
+        fileName,
+      });
+
+      return {
+        downloadUrl,
+        expiresInSeconds: 3600,
+        fileName,
+        isPreviewProxy: true,
+        previewStartSec: clip.previewStartSec ?? 0,
+      };
+    }
+
     if (!render) {
       throw new Error("clip render not found");
     }
 
-    if (render.status !== "completed" || !render.storageKey) {
-      throw new Error("clip has not been rendered for this aspect ratio");
-    }
+    throw new Error("clip has not been rendered for this aspect ratio");
+  }
 
-    const slug = aspectRatioSlug.get(aspectRatio) ?? "9x16";
-    const fileName = `clip-${render.clip.index + 1}-${render.clip.category}-${slug}.mp4`;
-    const downloadUrl = await presignDownloadUrl({
-      key: render.storageKey,
-      fileName,
+  /**
+   * Resolves a presigned URL for a clip's preview proxy (if one has been
+   * generated yet) for the studio editor. Returns nulls when no proxy
+   * exists so the caller can fall back to the full source. Kept separate
+   * from {@link getClipDownloadUrl} because the studio has no aspect-ratio
+   * selector to key a render lookup off of — it always wants "whatever
+   * preview exists for this clip," full stop.
+   */
+  async getClipPreviewSource(
+    userId: string,
+    projectId: string,
+    clipId: string,
+  ): Promise<{
+    previewUrl: string | null;
+    previewStartSec: number;
+    previewDurationSec: number | null;
+  }> {
+    const prisma = requirePrisma();
+
+    const clip = await prisma.clip.findFirst({
+      where: { id: clipId, projectId, project: { userId } },
+      select: {
+        previewStorageKey: true,
+        previewStartSec: true,
+        previewDurationSec: true,
+      },
     });
 
-    return {
-      downloadUrl,
-      expiresInSeconds: 3600,
-      fileName,
-    };
+    if (!clip?.previewStorageKey) {
+      return { previewUrl: null, previewStartSec: 0, previewDurationSec: null };
+    }
+
+    try {
+      const previewUrl = await presignDownloadUrl({
+        key: clip.previewStorageKey,
+        expiresIn: 3600,
+      });
+      return {
+        previewUrl,
+        previewStartSec: clip.previewStartSec ?? 0,
+        previewDurationSec: clip.previewDurationSec ?? null,
+      };
+    } catch {
+      return { previewUrl: null, previewStartSec: 0, previewDurationSec: null };
+    }
+  }
+
+  /**
+   * Finds clips still missing a preview proxy, highest `viralityScore`
+   * first (users look at the top clips first) — scoped to projects whose
+   * source is still available and fully ingested. Backs the worker's
+   * decoupled `processPendingClipPreviews` poll (apps/worker/src/tasks/
+   * clip-preview.ts), which also backfills every pre-existing clip.
+   *
+   * Returns the *effective* (transcript-boundary-expanded) timing — the
+   * exact same `getEffectiveClipTiming` computation `toClipSnapshot` uses
+   * for what the studio/clip-card actually display — not the raw DB
+   * columns. A freshly-detected clip's raw `startSec`/`endSec` can differ
+   * from its displayed timing (boundary edits persist the effective values
+   * back, but detection doesn't); padding around the raw columns could
+   * leave the proxy not actually covering what's shown, silently reproducing
+   * the exact off-by-`previewStartSec` desync this feature exists to avoid.
+   */
+  async getClipsNeedingPreview(limit: number): Promise<ClipPendingPreview[]> {
+    const prisma = requirePrisma();
+    const take = Math.max(1, Math.min(25, limit));
+
+    const clips = await prisma.clip.findMany({
+      where: {
+        previewStorageKey: null,
+        project: {
+          sourceStorageKey: { not: null },
+          ingestStatus: "ready",
+        },
+      },
+      orderBy: [{ viralityScore: "desc" }, { createdAt: "asc" }],
+      take,
+      select: {
+        id: true,
+        projectId: true,
+        startSec: true,
+        endSec: true,
+        transcriptSlice: true,
+        project: {
+          select: { sourceStorageKey: true, sourceDurationSeconds: true },
+        },
+      },
+    });
+
+    const pending: ClipPendingPreview[] = [];
+    for (const clip of clips) {
+      if (!clip.project.sourceStorageKey) continue;
+
+      const effective = getEffectiveClipTiming({
+        utterances: clip.transcriptSlice as unknown as TranscriptUtterance[],
+        startSec: clip.startSec,
+        endSec: clip.endSec,
+        sourceDurationSec: clip.project.sourceDurationSeconds ?? null,
+      });
+
+      pending.push({
+        id: clip.id,
+        projectId: clip.projectId,
+        startSec: effective.startSec,
+        endSec: effective.endSec,
+        sourceStorageKey: clip.project.sourceStorageKey,
+        sourceDurationSec: clip.project.sourceDurationSeconds ?? null,
+      });
+    }
+    return pending;
+  }
+
+  /**
+   * Persists a clip's generated preview-proxy metadata — but only if no
+   * proxy has been recorded yet. `previewStorageKey IS NULL` is the atomic
+   * claim condition (mirroring the codebase's claim-via-conditional-update
+   * idiom used by e.g. `claimNextWorkflowRun`), since the Clip model has no
+   * separate "generating" status column to transition: two workers racing
+   * to cut the same clip's proxy will both upload, but only one write wins
+   * here — the loser (persisted: false) must delete its own upload.
+   */
+  async completeClipPreview(
+    clipId: string,
+    input: { storageKey: string; startSec: number; durationSec: number },
+  ): Promise<{ persisted: boolean; projectId: string | null }> {
+    const prisma = requirePrisma();
+
+    const clip = await prisma.clip.findUnique({
+      where: { id: clipId },
+      select: { projectId: true },
+    });
+    if (!clip) {
+      return { persisted: false, projectId: null };
+    }
+
+    const claim = await prisma.clip.updateMany({
+      where: { id: clipId, previewStorageKey: null },
+      data: {
+        previewStorageKey: input.storageKey,
+        previewStartSec: input.startSec,
+        previewDurationSec: input.durationSec,
+      },
+    });
+
+    if (claim.count === 0) {
+      return { persisted: false, projectId: clip.projectId };
+    }
+
+    // Incremental delivery: nudge the project's live stream — see
+    // project-events.tsx's throttled refresh-on-progress handling.
+    await this.pingActiveWorkflowRun(clip.projectId);
+
+    return { persisted: true, projectId: clip.projectId };
+  }
+
+  /**
+   * Best-effort "something changed" ping for a project's live SSE stream —
+   * reuses whatever WorkflowRun is currently queued/running for the
+   * project rather than inventing a new event shape or stage (the shape is
+   * the shared `workflow.stage.updated` event consumed by
+   * apps/web/app/api/stream/[projectId]/route.ts). A no-op when nothing is
+   * actively in flight for the project, so a backfill run touching an
+   * already-finished project doesn't inject stale-looking "activity".
+   * Never throws — a missed nudge just means the client catches up on its
+   * next poll/navigation instead of getting an instant push.
+   */
+  private async pingActiveWorkflowRun(projectId: string): Promise<void> {
+    try {
+      const prisma = requirePrisma();
+      const run = await prisma.workflowRun.findFirst({
+        where: { projectId, status: { in: ["queued", "running"] } },
+        orderBy: { updatedAt: "desc" },
+      });
+      if (!run) return;
+
+      await publishWorkflowStageUpdated({
+        event: "workflow.stage.updated",
+        projectId,
+        workflowRunId: run.id,
+        stage: run.stage as WorkflowStageUpdatedEvent["stage"],
+        status: run.status as WorkflowStageUpdatedEvent["status"],
+        progress: run.progress,
+        errorCode: run.errorCode,
+      });
+    } catch {
+      // Best-effort only — the SSE route also polls the DB as a fallback.
+    }
   }
 
   async updateClipCaptionPreset(
@@ -792,6 +1111,158 @@ export class ClipService {
     });
 
     return toClipSnapshot(updated);
+  }
+
+  /**
+   * Sets (or clears, with null) the chosen stock B-roll URL for a clip, and
+   * invalidates existing renders — but only when the value actually
+   * changed. Mirrors `updateClipStudioEdits`'s no-op guard exactly (see
+   * below): the studio can re-PATCH the same B-roll selection (e.g. an
+   * autosave tick) without deleting a perfectly-valid completed render.
+   */
+  async updateClipBroll(
+    userId: string,
+    projectId: string,
+    clipId: string,
+    brollUrl: string | null,
+  ): Promise<ClipSnapshot> {
+    if (brollUrl !== null) {
+      assertPublicHttpUrl(brollUrl);
+    }
+
+    const prisma = requirePrisma();
+
+    const clip = await prisma.clip.findFirst({
+      where: { id: clipId, projectId, project: { userId } },
+      include: { renders: true },
+    });
+    if (!clip) {
+      throw new Error("clip not found");
+    }
+
+    if (!brollUrlChanged(clip.brollUrl, brollUrl)) {
+      return toClipSnapshot(clip);
+    }
+
+    const staleRenderKeys = clip.renders
+      .map((render) => render.storageKey)
+      .filter((key): key is string => Boolean(key));
+
+    let deletedRenderCount = 0;
+    const updated = await prisma.$transaction(async (tx) => {
+      const deleted = await tx.clipRender.deleteMany({ where: { clipId } });
+      deletedRenderCount = deleted.count;
+      return tx.clip.update({
+        where: { id: clipId },
+        data: { brollUrl },
+        include: { renders: true },
+      });
+    });
+
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        message: "clip_broll_changed_invalidated_renders",
+        clipId,
+        deletedRenderCount,
+      }),
+    );
+
+    await deleteRenderAssets(staleRenderKeys);
+
+    return toClipSnapshot(updated);
+  }
+
+  /**
+   * Persists export-affecting studio edits and clears stale renders — but
+   * only when the value actually changed. The client autosaves this field on
+   * every edit tick regardless of which field changed (see studio-shell.tsx's
+   * persistEdits), so without this guard an unrelated change (e.g. picking a
+   * different caption preset) would invalidate every completed render and
+   * delete its R2 asset.
+   */
+  async updateClipStudioEdits(
+    userId: string,
+    projectId: string,
+    clipId: string,
+    studioEdits: StudioEdits,
+  ): Promise<ClipSnapshot> {
+    const prisma = requirePrisma();
+    const parsed = studioEditsSchema.parse(studioEdits);
+
+    const clip = await prisma.clip.findFirst({
+      where: { id: clipId, projectId, project: { userId } },
+      include: { renders: true },
+    });
+    if (!clip) {
+      throw new Error("clip not found");
+    }
+
+    const existing = clip.studioEdits
+      ? studioEditsSchema.parse(clip.studioEdits)
+      : studioEditsSchema.parse({});
+
+    // No-op write: both sides are the output of the same schema parse, so
+    // comparing the serialized form is a valid deep-equality check (stable
+    // key order, no undefined-vs-missing ambiguity).
+    if (JSON.stringify(parsed) === JSON.stringify(existing)) {
+      return toClipSnapshot(clip);
+    }
+
+    const staleRenderKeys = clip.renders
+      .map((render) => render.storageKey)
+      .filter((key): key is string => Boolean(key));
+
+    let deletedRenderCount = 0;
+    const updated = await prisma.$transaction(async (tx) => {
+      const deleted = await tx.clipRender.deleteMany({ where: { clipId } });
+      deletedRenderCount = deleted.count;
+      return tx.clip.update({
+        where: { id: clipId },
+        data: {
+          studioEdits: parsed as unknown as Prisma.InputJsonValue,
+          status: "edited",
+        },
+        include: { renders: true },
+      });
+    });
+
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        message: "studio_edits_changed_invalidated_renders",
+        clipId,
+        deletedRenderCount,
+      }),
+    );
+
+    await deleteRenderAssets(staleRenderKeys);
+
+    return toClipSnapshot(updated);
+  }
+
+  /** Applies a caption preset to every clip in an owned project ("apply to all"). */
+  async applyCaptionPresetToAllClips(
+    userId: string,
+    projectId: string,
+    preset: CaptionPreset,
+  ): Promise<{ updated: number }> {
+    const prisma = requirePrisma();
+
+    const project = await prisma.project.findFirst({
+      where: { id: projectId, userId },
+      select: { id: true },
+    });
+    if (!project) {
+      throw new Error("project not found");
+    }
+
+    const result = await prisma.clip.updateMany({
+      where: { projectId },
+      data: { captionPreset: preset as Prisma.InputJsonValue },
+    });
+
+    return { updated: result.count };
   }
 
   async updateClipTranscriptSlice(
@@ -911,6 +1382,18 @@ export class ClipService {
       errorCode: null,
     });
   }
+}
+
+/**
+ * Whether a clip's chosen B-roll URL actually changed. Used by
+ * `updateClipBroll` to decide whether completed renders need invalidating —
+ * exported so the no-op guard is unit-testable without a database.
+ */
+export function brollUrlChanged(
+  current: string | null,
+  next: string | null,
+): boolean {
+  return current !== next;
 }
 
 // --- Scoring utilities ---

@@ -1,10 +1,19 @@
 import { createHash } from "node:crypto";
 import { XMLParser } from "fast-xml-parser";
 import type { RssEpisodeInput } from "@narriflow/validators";
+import {
+  guardedFetch,
+  readResponseTextBounded,
+  RemoteFetchError,
+} from "./url-guard";
+
+const MAX_RSS_FEED_BYTES = 5 * 1024 * 1024;
+const RSS_FETCH_TIMEOUT_MS = 15_000;
 
 const parser = new XMLParser({
   ignoreAttributes: false,
   attributeNamePrefix: "@_",
+  processEntities: false,
   trimValues: true,
 });
 
@@ -46,18 +55,20 @@ function makeEpisodeId(seed: string) {
 }
 
 export async function fetchRssEpisodes(rssUrl: string): Promise<RssEpisodeInput[]> {
-  const response = await fetch(rssUrl, {
+  const response = await guardedFetch(rssUrl, {
     headers: {
       "user-agent": "NarriflowBot/1.0 (+https://narriflow.app)",
       accept: "application/rss+xml, application/xml, text/xml;q=0.9, */*;q=0.1",
     },
+    timeoutMs: RSS_FETCH_TIMEOUT_MS,
   });
 
   if (!response.ok) {
-    throw new Error(`Failed to fetch RSS feed: ${response.status}`);
+    await response.body?.cancel().catch(() => undefined);
+    throw new RemoteFetchError("remote_download_failed");
   }
 
-  const xml = await response.text();
+  const xml = await readResponseTextBounded(response, MAX_RSS_FEED_BYTES);
   const parsed = parser.parse(xml) as {
     rss?: { channel?: { item?: unknown } };
     feed?: { entry?: unknown };
@@ -89,14 +100,19 @@ export async function fetchRssEpisodes(rssUrl: string): Promise<RssEpisodeInput[
         : typeof item.duration === "string"
           ? item.duration
           : null;
-    const publishedRaw = String(item.pubDate ?? item.published ?? item.updated ?? "").trim();
-    const publishedAt = publishedRaw ? new Date(publishedRaw).toISOString() : null;
+    const publishedRaw = String(
+      item.pubDate ?? item.published ?? item.updated ?? "",
+    ).trim();
+    const publishedTimestamp = Date.parse(publishedRaw);
+    const publishedAt = Number.isNaN(publishedTimestamp)
+      ? null
+      : new Date(publishedTimestamp).toISOString();
 
     episodes.push({
       id: makeEpisodeId(guidSeed),
       title,
       enclosureUrl,
-      publishedAt: Number.isNaN(Date.parse(publishedAt ?? "")) ? null : publishedAt,
+      publishedAt,
       durationSeconds: parseItunesDuration(durationRaw),
       mimeType:
         typeof enclosure === "object"

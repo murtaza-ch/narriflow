@@ -35,7 +35,7 @@ interface AssemblyAiPayload {
 
 export interface NormalizedTranscript {
   provider: "assemblyai";
-  providerModel: string;
+  providerModel: string | null;
   providerJobId: string | null;
   languageCode: string | null;
   text: string;
@@ -91,12 +91,7 @@ function millisecondsToSeconds(value: number) {
 }
 
 function getAssemblyAiProviderModel(payload: AssemblyAiPayload) {
-  return (
-    payload.speech_model_used ??
-    payload.speech_model ??
-    payload.speech_models?.join(",") ??
-    "universal-3-pro,universal-2"
-  );
+  return payload.speech_model_used ?? payload.speech_model ?? null;
 }
 
 function getSpeakerIndex(

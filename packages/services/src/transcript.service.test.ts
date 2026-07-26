@@ -10,8 +10,8 @@ const assemblyAiFixture = {
   status: "completed",
   text: "Welcome back to Narriflow.\n\nToday we are talking about transcription quality.",
   language_code: "en",
-  speech_model_used: "universal-3-pro",
-  speech_models: ["universal-3-pro", "universal-2"],
+  speech_model_used: "universal-3-5-pro",
+  speech_models: ["universal-3-5-pro", "universal-2"],
   audio_duration: 31.8,
   utterances: [
     {
@@ -63,7 +63,7 @@ describe("normalizeAssemblyAiTranscript", () => {
     const normalized = normalizeAssemblyAiTranscript(assemblyAiFixture);
 
     expect(normalized.provider).toBe("assemblyai");
-    expect(normalized.providerModel).toBe("universal-3-pro");
+    expect(normalized.providerModel).toBe("universal-3-5-pro");
     expect(normalized.providerJobId).toBe("aai-transcript-123");
     expect(normalized.languageCode).toBe("en");
     expect(normalized.durationSeconds).toBe(32);
@@ -112,6 +112,7 @@ describe("normalizeAssemblyAiTranscript", () => {
 
   test("falls back for optional metadata without crashing", () => {
     const normalized = normalizeAssemblyAiTranscript({
+      speech_models: ["universal-3-5-pro", "universal-2"],
       utterances: [
         {
           start: 0,
@@ -123,7 +124,7 @@ describe("normalizeAssemblyAiTranscript", () => {
       ],
     });
 
-    expect(normalized.providerModel).toBe("universal-3-pro,universal-2");
+    expect(normalized.providerModel).toBeNull();
     expect(normalized.providerJobId).toBeNull();
     expect(normalized.languageCode).toBeNull();
     expect(normalized.utterances[0]!.confidence).toBeNull();
@@ -173,7 +174,7 @@ describe("exportTranscript", () => {
     projectId: "72e62077-cfc8-446b-9dd1-29bd72020858",
     status: "completed",
     provider: "assemblyai",
-    providerModel: "universal-3-pro",
+    providerModel: "universal-3-5-pro",
     providerJobId: "aai-transcript-123",
     languageCode: "en",
     text: "Welcome back to Narriflow.\n\nToday we are talking about transcription quality.",

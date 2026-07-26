@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs";
+import { createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
 import { basename } from "node:path";
 import {
   AbortMultipartUploadCommand,
@@ -15,6 +16,8 @@ import {
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 const SIGNED_URL_TTL_SECONDS = 60 * 60;
+const MULTIPART_UPLOAD_THRESHOLD_BYTES = 100 * 1024 * 1024;
+const MULTIPART_PART_SIZE_BYTES = 64 * 1024 * 1024;
 
 function getRequiredEnv(name: string) {
   const value = process.env[name]?.trim();
@@ -211,16 +214,96 @@ export async function putFileFromPath(params: {
 }) {
   const client = getClient();
   const { bucket } = getR2Config();
+  const fileInfo = await stat(params.filePath);
 
-  await client.send(
-    new PutObjectCommand({
-      Bucket: bucket,
-      Key: params.key,
-      Body: readFileSync(params.filePath),
-      ContentType: params.contentType,
-      Metadata: params.metadata,
-    }),
-  );
+  if (fileInfo.size <= MULTIPART_UPLOAD_THRESHOLD_BYTES) {
+    const body = createReadStream(params.filePath);
+    try {
+      await client.send(
+        new PutObjectCommand({
+          Bucket: bucket,
+          Key: params.key,
+          Body: body,
+          ContentLength: fileInfo.size,
+          ContentType: params.contentType,
+          Metadata: params.metadata,
+        }),
+      );
+    } finally {
+      body.destroy();
+    }
+  } else {
+    const created = await client.send(
+      new CreateMultipartUploadCommand({
+        Bucket: bucket,
+        Key: params.key,
+        ContentType: params.contentType,
+        Metadata: params.metadata,
+      }),
+    );
+    const uploadId = created.UploadId;
+    if (!uploadId) {
+      throw new Error("R2 multipart upload did not return upload id");
+    }
+
+    try {
+      const parts: Array<{ ETag: string; PartNumber: number }> = [];
+      const partCount = Math.ceil(
+        fileInfo.size / MULTIPART_PART_SIZE_BYTES,
+      );
+
+      for (let partNumber = 1; partNumber <= partCount; partNumber += 1) {
+        const start = (partNumber - 1) * MULTIPART_PART_SIZE_BYTES;
+        const end = Math.min(
+          start + MULTIPART_PART_SIZE_BYTES,
+          fileInfo.size,
+        );
+        const body = createReadStream(params.filePath, {
+          start,
+          end: end - 1,
+        });
+
+        try {
+          const uploaded = await client.send(
+            new UploadPartCommand({
+              Bucket: bucket,
+              Key: params.key,
+              UploadId: uploadId,
+              PartNumber: partNumber,
+              Body: body,
+              ContentLength: end - start,
+            }),
+          );
+          if (!uploaded.ETag) {
+            throw new Error("R2 multipart part did not return an etag");
+          }
+          parts.push({ ETag: uploaded.ETag, PartNumber: partNumber });
+        } finally {
+          body.destroy();
+        }
+      }
+
+      await client.send(
+        new CompleteMultipartUploadCommand({
+          Bucket: bucket,
+          Key: params.key,
+          UploadId: uploadId,
+          MultipartUpload: { Parts: parts },
+        }),
+      );
+    } catch (error) {
+      await client
+        .send(
+          new AbortMultipartUploadCommand({
+            Bucket: bucket,
+            Key: params.key,
+            UploadId: uploadId,
+          }),
+        )
+        .catch(() => undefined);
+      throw error;
+    }
+  }
 
   return {
     key: params.key,

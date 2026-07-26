@@ -1,24 +1,63 @@
 import Redis from "ioredis";
 import { getPrismaClient } from "@narriflow/db/client";
 import { workflowStageUpdatedEventSchema, type WorkflowStageUpdatedEvent } from "@narriflow/validators";
+import {
+  boundedRedisRetryDelay,
+  installOptionalRedisErrorHandler,
+  OPTIONAL_REDIS_COMMAND_TIMEOUT_MS,
+  OPTIONAL_REDIS_CONNECT_TIMEOUT_MS,
+  OPTIONAL_REDIS_RECOVERY_COOLDOWN_MS,
+  optionalRedisFailureCode,
+  optionalRedisUrl,
+} from "./optional-redis";
 
-const redisUrl = process.env.UPSTASH_REDIS_URL;
+const redisUrl = optionalRedisUrl(process.env.UPSTASH_REDIS_URL);
 
 let publisher: Redis | null = null;
 let publisherReady: Promise<void> | null = null;
+let publisherRetryAfter = 0;
+
+function resetPublisher(client: Redis): boolean {
+  const wasCurrentPublisher = publisher === client;
+  if (wasCurrentPublisher) {
+    publisher = null;
+    publisherReady = null;
+    publisherRetryAfter = Date.now() + OPTIONAL_REDIS_RECOVERY_COOLDOWN_MS;
+  }
+  client.disconnect();
+  return wasCurrentPublisher;
+}
 
 function getPublisher() {
-  if (!redisUrl) {
+  if (!redisUrl || Date.now() < publisherRetryAfter) {
     return null;
   }
 
   if (!publisher) {
-    publisher = new Redis(redisUrl, {
-      maxRetriesPerRequest: 3,
-      enableOfflineQueue: false,
-      lazyConnect: true,
+    let nextPublisher: Redis;
+    try {
+      nextPublisher = new Redis(redisUrl, {
+        maxRetriesPerRequest: 1,
+        enableOfflineQueue: false,
+        lazyConnect: true,
+        connectTimeout: OPTIONAL_REDIS_CONNECT_TIMEOUT_MS,
+        commandTimeout: OPTIONAL_REDIS_COMMAND_TIMEOUT_MS,
+        retryStrategy: (attempt) => boundedRedisRetryDelay(attempt, 2),
+      });
+    } catch {
+      publisherRetryAfter = Date.now() + OPTIONAL_REDIS_RECOVERY_COOLDOWN_MS;
+      return null;
+    }
+    installOptionalRedisErrorHandler(nextPublisher);
+    nextPublisher.on("end", () => {
+      if (publisher === nextPublisher) {
+        publisher = null;
+        publisherReady = null;
+        publisherRetryAfter = Date.now() + OPTIONAL_REDIS_RECOVERY_COOLDOWN_MS;
+      }
     });
-    publisherReady = publisher.connect();
+    publisher = nextPublisher;
+    publisherReady = nextPublisher.connect();
   }
 
   return { client: publisher, ready: publisherReady! };
@@ -107,8 +146,19 @@ export async function publishWorkflowStageUpdated(
     try {
       await pub.ready;
       await pub.client.publish(getWorkflowChannel(parsed.projectId), JSON.stringify(parsed));
-    } catch {
+    } catch (error) {
       // Redis unavailable — event is persisted in DB, just no real-time push.
+      // Log so a flapping Redis is debuggable instead of silently degrading.
+      if (resetPublisher(pub.client)) {
+        console.warn(
+          JSON.stringify({
+            level: "warn",
+            message: "workflow_event_publish_failed",
+            projectId: parsed.projectId,
+            errorCode: optionalRedisFailureCode(error),
+          }),
+        );
+      }
     }
   }
 

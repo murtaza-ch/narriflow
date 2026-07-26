@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { Prisma } from "@prisma/client";
 import type { BrandTemplate, Prisma as PrismaTypes } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
@@ -13,11 +12,9 @@ import {
   type BrandTemplateSummary,
   type BrandTemplateUpdate,
   type CaptionPreset,
-  type LogoPosition,
   type PresignBrandLogoInput,
 } from "@narriflow/validators";
 import {
-  deleteObject,
   isR2Configured,
   presignDownloadUrl,
   presignSingleUploadUrl,
@@ -80,6 +77,26 @@ function applyBrandColorsToCaption(
   };
 }
 
+/**
+ * A client-supplied logo key must live under the caller's own presign prefix
+ * (`brand-templates/{userId}/`). Without this, a user could point a template at
+ * another tenant's R2 object and exfiltrate it via the logo download URL.
+ */
+function assertOwnedLogoKey(userId: string, key: string | null | undefined) {
+  if (!key) return;
+  if (!key.startsWith(`brand-templates/${userId}/`)) {
+    throw new BrandTemplateForbiddenError();
+  }
+}
+
+/**
+ * Brand-logo objects are immutable shared media references. A duplicate or a
+ * persisted project brand snapshot may keep using an old key after its source
+ * template is updated or soft-deleted, so those operations retain the object.
+ * A future storage GC must inventory active/deleted templates and every project
+ * snapshot, then apply a grace period before deleting an unreferenced logo.
+ */
+
 export class BrandTemplateService {
   private requirePrisma = requirePrisma;
 
@@ -139,13 +156,15 @@ export class BrandTemplateService {
     return toSummary(template);
   }
 
-  async getRaw(id: string, userId?: string): Promise<BrandTemplate | null> {
+  // userId is REQUIRED so tenancy is always enforced — a non-built-in template
+  // owned by another user is never returned.
+  async getRaw(id: string, userId: string): Promise<BrandTemplate | null> {
     const prisma = this.requirePrisma();
     const template = await prisma.brandTemplate.findFirst({
       where: { id, deletedAt: null },
     });
     if (!template) return null;
-    if (!template.isBuiltIn && userId && template.userId !== userId) return null;
+    if (!template.isBuiltIn && template.userId !== userId) return null;
     return template;
   }
 
@@ -154,6 +173,7 @@ export class BrandTemplateService {
     input: BrandTemplateInput,
   ): Promise<BrandTemplateSummary> {
     const parsed = brandTemplateInputSchema.parse(input);
+    assertOwnedLogoKey(userId, parsed.logoStorageKey);
     const captionPreset = applyBrandColorsToCaption(
       parsed.captionPreset,
       parsed.primaryColor,
@@ -198,6 +218,7 @@ export class BrandTemplateService {
     const data: PrismaTypes.BrandTemplateUpdateInput = {};
     if (parsed.name !== undefined) data.name = parsed.name;
     if (parsed.logoStorageKey !== undefined) {
+      assertOwnedLogoKey(userId, parsed.logoStorageKey);
       data.logoStorageKey = parsed.logoStorageKey;
     }
     if (parsed.logoPosition !== undefined) data.logoPosition = parsed.logoPosition;
@@ -226,16 +247,6 @@ export class BrandTemplateService {
       data,
     });
 
-    // If the logo key was replaced or cleared, delete the old object so we
-    // don't leak orphan files in R2.
-    if (
-      parsed.logoStorageKey !== undefined &&
-      existing.logoStorageKey &&
-      existing.logoStorageKey !== parsed.logoStorageKey
-    ) {
-      void deleteObject(existing.logoStorageKey).catch(() => {});
-    }
-
     return toSummary(updated);
   }
 
@@ -259,10 +270,6 @@ export class BrandTemplateService {
         data: { defaultBrandTemplateId: null },
       });
     });
-
-    if (existing.logoStorageKey) {
-      void deleteObject(existing.logoStorageKey).catch(() => {});
-    }
   }
 
   async setDefault(userId: string, id: string): Promise<void> {
