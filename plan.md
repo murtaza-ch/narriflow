@@ -1,5 +1,18 @@
 # Interactive Caption Editor — Implementation Plan
 
+> **⚠️ HISTORICAL (delivered June 2026).** This plan has been implemented and is
+> kept for reference only. Two things are now **out of date**:
+> 1. **Stack:** it references Deepgram Nova-3 / `normalizeDeepgramTranscript` /
+>    `DeepgramWord`. The product uses **AssemblyAI** Universal-3 Pro → Universal-2
+>    (with word-level timing) and detection runs on **OpenAI `gpt-5.4-mini`**.
+> 2. **Render parity:** Phase 6 deferred word-level highlight to "preview-only"
+>    with a uniform-color burn-in. That gap is **closed** — the worker now emits
+>    styled ASS so the burned export matches the studio preview (per-word
+>    highlight, box, glow, position, animation).
+>
+> For current status and the forward-looking, market-aligned roadmap, see
+> [`ROADMAP.md`](./ROADMAP.md).
+
 ## Context & Motivation
 
 **Problem**: The studio editor at `apps/web/app/(app)/projects/[projectId]/clips/[clipId]/studio/` currently runs entirely on mock/hardcoded data. There is no real video playback, no real transcript data, and no caption editing capability. Captions are burned into the video only during FFmpeg rendering in the worker — the user cannot preview or edit them before rendering.

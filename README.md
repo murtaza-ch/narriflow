@@ -2,6 +2,10 @@
 
 Bun-first monorepo for Narriflow.
 
+> **Status & roadmap:** see [`ROADMAP.md`](./ROADMAP.md) for the code-accurate
+> implementation status, the 2026 market-aligned feature roadmap, and the
+> pricing/quota model. `plan.md` is the delivered (historical) caption-editor plan.
+
 ## Stack
 
 - Package manager + task runner: Bun
@@ -13,9 +17,29 @@ Bun-first monorepo for Narriflow.
 - Media storage: Cloudflare R2
 - Live workflow events: Upstash Redis pub/sub
 - Auth: Clerk
-- Speech-to-text: AssemblyAI Universal-3 Pro with Universal-2 fallback
+- Speech-to-text: AssemblyAI Universal-3.5 Pro with Universal-2 fallback
 - Clip detection: OpenAI Responses API, default `gpt-5.4-mini`
+- Voiceover dubbing: OpenAI audio speech + FFmpeg audio replacement
 - Rendering: FFmpeg/ffprobe
+- Social delivery: durable scheduling queue + native OAuth publishing clients with a legacy webhook fallback
+- MCP: stdio server in `apps/mcp`
+
+## Landing-Page Lab
+
+Six scroll-driven marketing landing variants live under `apps/web/app/(landing)/lp/*`
+(GSAP + ScrollTrigger + Lenis, shared product facts in `_components/landing-data.ts`,
+including Notion-sourced PAIN_POINTS and COMPARISON data):
+
+- `/lp/blueprint` — porcelain Swiss-editorial (drawn rules, pinned pipeline, caption playground)
+- `/lp/studio` — graphite editor-session (scroll = scrubbing, horizontal timeline, render-queue pricing)
+- `/lp/signal` — kinetic poster maximalism (ultramarine blocks, odometer score, angled marquees)
+- `/lp/atelier` — luxury minimal (huge whitespace, blur-in reveals, scroll-inked statement, hairline pricing)
+- `/lp/system` — bento product-first (nine live tiles: video, score cycler, caption presets, ratio morph, publish statuses, autopilot feed)
+- `/lp/pop` — neo-brutalist lime/ink (Positivus-style: highlighter pills, hard offset shadows, animated hero collage, interactive 01–06 accordion)
+
+A floating dial on each page switches variants. The looping product videos in
+`apps/web/public/videos/` are rendered with Remotion from `tools/videos`
+(`cd tools/videos && npm i && npx remotion studio` to edit, `npx remotion render <comp-id> out/<name>.mp4` to re-render).
 
 ## Before Testing
 
@@ -30,18 +54,23 @@ You need these accounts and credentials before the ingest, transcription, clip d
 | Upstash Redis | Recommended for real testing | Required for live workflow updates between the separate web and worker processes |
 | Resend | Optional for this workflow | Only needed for email/webhook flows |
 | Stripe | Optional for this workflow | Billing is not part of the current clips workflow |
-| OpenAI | Yes for clip generation | Required for AI moment/clip detection after transcription |
+| OpenAI | Yes for AI generation | Required for clip detection, content-suite generation, translation, and voiceover dubbing |
+| Pexels | Optional | Enables stock B-roll search and automatic B-roll cutaways |
+| Native social developer apps | Optional for publishing | Required to connect TikTok, YouTube, Instagram, LinkedIn, and X accounts for native scheduled posting |
+| Social publisher webhook | Optional fallback | Delivers old scheduled posts without a connected account to an external publisher integration |
 
 ## End-to-End Clips Workflow
 
-Narriflow turns a source media input into rendered short clips through four background stages:
+Narriflow turns a source media input into rendered short clips through the background stages below:
 
 1. Ingest: accepts an uploaded file, YouTube URL, or RSS episode and stores the normalized source media in Cloudflare R2.
-2. Transcription: extracts audio with FFmpeg, uploads it to AssemblyAI, and requests Universal-3 Pro with Universal-2 fallback for speech-to-text, speaker labels, utterance timing, and word timing.
+2. Transcription: extracts audio with FFmpeg, uploads it to AssemblyAI, and requests Universal-3.5 Pro with Universal-2 fallback for speech-to-text, speaker labels, utterance timing, and word timing. The source-language picker uses AssemblyAI's complete current API enum: 102 codes representing 99 languages, including four English variants. U3.5 Pro directly covers 18 core languages and Universal-2 handles the extended set.
 3. Moment detection: sends the completed transcript to OpenAI through the Responses API. The default model is `gpt-5.4-mini`, and the worker requests strict JSON output for clip candidates.
 4. Clip rendering: creates subtitle files, crops/scales video for the requested aspect ratios, burns captions with FFmpeg, uploads MP4 renders to R2, and exposes downloads through presigned URLs.
+5. Optional voiceover dubbing: translates the clip transcript when needed, synthesizes narration with OpenAI audio speech, swaps the rendered clip audio track with FFmpeg, and uploads MP3/MP4 dub assets to R2.
+6. Optional publishing automation: RSS autopilot rules queue new episode imports, and due social posts publish through the selected native OAuth account. Posts without a connected account can still fall back to `SOCIAL_PUBLISH_WEBHOOK_URL`.
 
-The worker polls work in this order: ingest jobs, `stt`, `moment_detection`, then `clip_rendering`.
+The worker polls work in this order: ingest jobs, `stt`, `moment_detection`, `clip_rendering`, `dubbing`, due RSS autopilot rules, then due social posts.
 
 ```mermaid
 flowchart TD
@@ -98,11 +127,14 @@ flowchart TD
 | Cloudflare R2 | Stores source media, raw transcription JSON, and rendered MP4 clips. |
 | PostgreSQL + Prisma | Stores projects, ingest jobs, workflow runs, transcripts, clips, render variants, and workflow events. |
 | Upstash Redis | Broadcasts workflow events to the web app for live progress updates. Events are also persisted in Postgres. |
-| AssemblyAI Universal-3 Pro + Universal-2 | Converts extracted audio into transcript text, speaker-separated utterances, punctuation, and word timings. |
+| AssemblyAI Universal-3.5 Pro + Universal-2 | Converts extracted audio into transcript text, speaker-separated utterances, punctuation, and word timings across 18 U3.5 core languages with 99-language Universal-2 fallback coverage. |
 | OpenAI `gpt-5.4-mini` | Analyzes transcripts and returns structured clip candidates with timestamps, hook text, category, reasoning, and scores. |
+| OpenAI audio speech | Generates voiceover audio for dubbed clips. |
 | FFmpeg | Extracts audio for transcription and renders final MP4 clips with cropped video and burned captions. |
 | ffprobe | Reads source media stream metadata such as width, height, audio presence, and video presence. |
 | yt-dlp | Downloads YouTube sources before they are stored in R2. |
+| Pexels | Optional stock video source for B-roll cutaways. |
+| Publisher webhook | Optional integration point that receives due social posts and returns posted URLs/metrics. |
 
 ## Technical Terms
 
@@ -121,6 +153,8 @@ flowchart TD
 - Presigned URL: a temporary URL for uploading or downloading R2 objects without exposing storage credentials.
 - SSE: Server-Sent Events, a browser stream used for one-way live updates from the server.
 - Pub/sub: publish/subscribe messaging; here, Redis broadcasts workflow events to connected clients.
+- Autopilot rule: a saved RSS feed watcher that imports unseen episodes and persists generation settings before ingest finishes.
+- MCP server: a stdio Model Context Protocol server in `apps/mcp` exposing Narriflow project and autopilot tools.
 
 ## Local Environment Files
 
@@ -128,7 +162,7 @@ Use app-local env files instead of inventing a root `.env`.
 
 ### Web
 
-Copy [`apps/web/.env.example`](/Users/murtaza/Documents/dev/narriflow/apps/web/.env.example) to `apps/web/.env.local`.
+Copy [`apps/web/.env.example`](apps/web/.env.example) to `apps/web/.env.local`.
 
 Minimum values for the current clips workflow:
 
@@ -148,10 +182,11 @@ Notes:
 - `CLERK_WEBHOOK_SECRET`, `RESEND_API_KEY`, and `NARRIFLOW_EMAIL_FROM` are only required if you are exercising the Clerk webhook and email path locally.
 - `ASSEMBLYAI_API_KEY` and `OPENAI_API_KEY` are listed in the web example because many deployments share one secret set, but the web app does not use them directly in the current worker-driven generation flow.
 - `TRIGGER_SECRET_KEY` is not used by the current custom worker polling flow.
+- Native social OAuth requires `SOCIAL_TOKEN_ENCRYPTION_KEY` plus the provider client IDs/secrets listed in the env example. Register `${NEXT_PUBLIC_APP_URL}/api/social/oauth/callback` as the redirect URI in each provider app.
 
 ### Worker
 
-Copy [`apps/worker/.env.example`](/Users/murtaza/Documents/dev/narriflow/apps/worker/.env.example) to `apps/worker/.env`.
+Copy [`apps/worker/.env.example`](apps/worker/.env.example) to `apps/worker/.env`.
 
 Minimum values for the current clips workflow:
 
@@ -173,7 +208,52 @@ Useful runtime settings:
 - `ASSEMBLYAI_POLL_TIMEOUT_MS=7200000`
 - `OPENAI_CLIP_MODEL=gpt-5.4-mini`
 - `OPENAI_CLIP_REASONING_EFFORT=medium`
-- `ASSEMBLYAI_KEYTERMS_PROMPT=comma,separated,terms` to add project-specific names or brands to the default keyterms prompt.
+- `OPENAI_TTS_MODEL=gpt-4o-mini-tts` and `OPENAI_DUB_TRANSLATION_MODEL=gpt-5.4-mini` for voiceover dubbing.
+- `ASSEMBLYAI_KEYTERMS_PROMPT=comma,separated,terms` to opt into deployment-specific names or brands. Terms are trimmed, deduplicated, limited to six words each, and capped at the Universal-2-safe 200-term limit; Narriflow sends no built-in demo vocabulary.
+- `WORKER_REAP_INTERVAL_MS=300000` and `WORKER_REAP_STALL_TIMEOUT_MS=1800000` to fail workflow/ingest jobs abandoned by a crashed worker.
+- `PEXELS_API_KEY=...` to enable stock B-roll search and automatic B-roll cutaways.
+- `SOCIAL_TOKEN_ENCRYPTION_KEY` and the social provider client IDs/secrets to refresh tokens and publish scheduled posts natively.
+- `LINKEDIN_API_VERSION=202606`, `INSTAGRAM_CONTAINER_POLL_ATTEMPTS`, `TIKTOK_STATUS_POLL_ATTEMPTS`, and `X_MEDIA_POLL_ATTEMPTS` can be tuned for provider processing windows.
+- `SOCIAL_PUBLISH_WEBHOOK_URL` and `SOCIAL_PUBLISH_WEBHOOK_SECRET` are now only a legacy fallback for posts scheduled without a connected social account. The worker signs the JSON body as `X-Narriflow-Signature: sha256=...`.
+- `AUTOPILOT_BATCH_SIZE=3` to control how many due RSS rules are checked per worker poll.
+
+### Native Social Publishing
+
+Use one callback URL for every provider app:
+
+```text
+${NEXT_PUBLIC_APP_URL}/api/social/oauth/callback
+```
+
+Required provider products/scopes:
+
+- TikTok: Login Kit and Content Posting API with `user.info.basic`, `video.upload`, and `video.publish`.
+- YouTube: YouTube Data API with `https://www.googleapis.com/auth/youtube.upload` and `https://www.googleapis.com/auth/youtube.readonly`.
+- Instagram: Meta app with Instagram Graph API/Facebook Login permissions for `instagram_basic`, `instagram_content_publish`, `pages_show_list`, `pages_read_engagement`, and `business_management`; the account must be an Instagram Business or Creator account connected to a Facebook Page.
+- LinkedIn: Sign In with LinkedIn/OpenID plus member posting permission `w_member_social`.
+- X: OAuth 2.0 with `tweet.read`, `tweet.write`, `users.read`, `offline.access`, and `media.write`.
+
+### MCP
+
+Copy [`apps/mcp/.env.example`](apps/mcp/.env.example) to `apps/mcp/.env`.
+
+Minimum values:
+
+- `DATABASE_URL`
+- `NARRIFLOW_MCP_USER_ID` set to the `User.id` the local MCP server should act as.
+
+Run the stdio server with:
+
+```bash
+bun --filter @narriflow/mcp start
+```
+
+Available tools:
+
+- `narriflow_list_projects`
+- `narriflow_get_project`
+- `narriflow_create_rss_autopilot_rule`
+- `narriflow_run_autopilot_rule_now`
 
 ## AI Clip Generation Controls
 
@@ -208,13 +288,15 @@ The worker asks OpenAI for a larger candidate pool than the final clip count, re
 1. Create an AssemblyAI account.
 2. Generate an API key.
 3. Set `ASSEMBLYAI_API_KEY` in the worker env.
-4. The worker uses `speech_models: ["universal-3-pro", "universal-2"]`, `speaker_labels: true`, and `language_detection: true`.
+4. The worker uses `speech_models: ["universal-3-5-pro", "universal-2"]`, `speaker_labels: true`, and `language_detection: true` for Auto mode. Manual mode sends one exact provider `language_code` from the documented enum.
+
+Current multilingual limits are explicit: language-detection confidence is not yet persisted or shown for review, there is no reusable project glossary/language profile, dubbing does not yet perform segment-level duration alignment, and RTL/CJK/Indic caption cue behavior still needs a rendered evaluation matrix. The worker image includes broad Noto core, extra, CJK, and emoji glyph coverage, but fonts alone do not guarantee script-aware cue segmentation.
 
 ### OpenAI
 
 1. Create an OpenAI API key.
 2. Set `OPENAI_API_KEY` in the worker env.
-3. Optionally override the clip detection model with `OPENAI_CLIP_MODEL`.
+3. Optionally override clip/content/dub models with `OPENAI_CLIP_MODEL`, `OPENAI_CONTENT_MODEL`, `OPENAI_DUB_TRANSLATION_MODEL`, and `OPENAI_TTS_MODEL`.
 
 ### Upstash Redis
 
@@ -239,7 +321,7 @@ Why:
 - `ffmpeg` is required to extract transcription-ready audio before uploading it to AssemblyAI.
 - `yt-dlp` is required for the YouTube import path.
 
-If you use the worker container, [`apps/worker/Dockerfile`](/Users/murtaza/Documents/dev/narriflow/apps/worker/Dockerfile) now installs both tools.
+If you use the worker container, [`apps/worker/Dockerfile`](apps/worker/Dockerfile) now installs both tools.
 
 ## Database Setup
 
@@ -257,8 +339,9 @@ Important:
 
 - `packages/db/prisma.config.ts` prefers `DIRECT_URL` and falls back to `DATABASE_URL`.
 - For Neon, use a pooled connection for `DATABASE_URL` and a direct connection for `DIRECT_URL`.
+- Use `bunx prisma migrate deploy --schema packages/db/prisma/schema.prisma` against an existing shared/staging/production database instead of `migrate dev`.
 - `apps/web/.env.local` is not automatically loaded when you run Prisma commands from `packages/db`.
-- If you do not want to export it every time, copy [`packages/db/.env.example`](/Users/murtaza/Documents/dev/narriflow/packages/db/.env.example) to `packages/db/.env`.
+- If you do not want to export it every time, copy [`packages/db/.env.example`](packages/db/.env.example) to `packages/db/.env`.
 
 ## Local Pipeline
 

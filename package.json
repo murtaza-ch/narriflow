@@ -8,15 +8,27 @@
   ],
   "scripts": {
     "postinstall": "bun --filter @narriflow/db prisma:generate",
+    "prepare": "git config core.hooksPath .githooks || true",
     "dev": "turbo run dev --parallel",
     "build": "turbo run build",
     "lint": "turbo run lint",
+    "lint:biome": "biome check .",
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
+    "audit:production": "bun audit --production --audit-level=high",
     "clean": "turbo run clean && rm -rf .turbo node_modules"
   },
   "devDependencies": {
+    "@biomejs/biome": "2.5.2",
     "turbo": "2.8.14",
     "typescript": "5.9.3"
+  },
+  "dependencies": {
+    "stripe": "^22.3.0"
+  },
+  "overrides": {
+    "fast-uri": "3.1.2",
+    "fast-xml-builder": "1.2.1",
+    "hono": "4.12.28"
   }
 }
