@@ -59,6 +59,7 @@ export function VideoPreview() {
     playbackClock,
     sourceVideoUrl,
     previewVideoUrl,
+    sourcePurged,
     useOriginalSourceFallback,
     setUseOriginalSourceFallback,
     activeVideoUrl,
@@ -188,23 +189,27 @@ export function VideoPreview() {
   const videoW = arConfig.w;
   const videoH = arConfig.h;
 
-  // Distinguish "no source at all" from "loading" from "errored" so the
-  // empty state isn't indistinguishable from a broken editor on large
-  // sources that sit below HAVE_METADATA for tens of seconds. "generating"
-  // is distinct from all of these: it means we deliberately haven't started
-  // loading anything yet because the proxy isn't ready and the user hasn't
-  // opted into the full-source fallback — surfacing this honestly is the
-  // whole point of Problem A (silently falling back used to cost ~44s).
-  const previewPhase: "generating" | "empty" | "loading" | "error" | "ready" =
+  // Distinguish "generating" (no proxy yet, but one can still arrive) from
+  // "unavailable" (no proxy, and none ever can — the source was purged)
+  // from "loading"/"errored"/"ready" once something is actually playing.
+  // "generating" is the honest default: it means we deliberately haven't
+  // started loading anything yet because the proxy isn't ready and the user
+  // hasn't opted into the full-source fallback — surfacing this honestly is
+  // the whole point of Problem A (silently falling back used to cost ~44s).
+  // Once past that gate, activeVideoUrl is always set — it's either the
+  // proxy, or the source the fallback button already required to be
+  // present before it could be clicked — so there's no reachable "nothing
+  // loaded" state left to model here (there used to be one; it was dead).
+  const previewPhase: "generating" | "unavailable" | "loading" | "error" | "ready" =
     !previewVideoUrl && !useOriginalSourceFallback
-      ? "generating"
-      : !activeVideoUrl
-        ? "empty"
-        : loadError
-          ? "error"
-          : videoLoaded
-            ? "ready"
-            : "loading";
+      ? sourcePurged
+        ? "unavailable"
+        : "generating"
+      : loadError
+        ? "error"
+        : videoLoaded
+          ? "ready"
+          : "loading";
 
   return (
     <Flex
@@ -345,7 +350,7 @@ export function VideoPreview() {
                 aspectRatio={videoW / videoH}
                 borderWidth="1px"
                 borderStyle="dashed"
-                borderColor={previewPhase === "error" ? "danger.solid" : "studio.borderStrong"}
+                borderColor={previewPhase === "error" ? "studio.dangerBorder" : "studio.borderStrong"}
                 borderRadius="l2"
                 color="studio.fgSubtle"
                 p="4"
@@ -361,37 +366,43 @@ export function VideoPreview() {
                       usually takes a minute or two.
                     </Text>
                     {sourceVideoUrl && (
-                      <Flex
-                        as="button"
-                        onClick={() => setUseOriginalSourceFallback(true)}
-                        align="center"
-                        gap="1.5"
-                        px="10px"
-                        h="28px"
-                        borderRadius="l2"
-                        borderWidth="1px"
-                        borderColor="studio.borderStrong"
-                        color="studio.fg"
-                        fontSize="12px"
-                        fontWeight="500"
-                        cursor="pointer"
-                        transition="background 120ms ease, border-color 120ms ease"
-                        _hover={{ bg: "studio.raised", borderColor: "studio.fgSubtle" }}
-                      >
-                        Use original source instead
-                      </Flex>
+                      <>
+                        <Flex
+                          as="button"
+                          onClick={() => setUseOriginalSourceFallback(true)}
+                          align="center"
+                          gap="1.5"
+                          px="10px"
+                          h="28px"
+                          borderRadius="l2"
+                          borderWidth="1px"
+                          borderColor="studio.borderStrong"
+                          color="studio.fg"
+                          fontSize="12px"
+                          fontWeight="500"
+                          cursor="pointer"
+                          transition="background 120ms ease, border-color 120ms ease"
+                          _hover={{ bg: "studio.raised", borderColor: "studio.fgSubtle" }}
+                        >
+                          Use original source instead
+                        </Flex>
+                        <Text fontSize="10px" color="studio.fgSubtle" textAlign="center">
+                          Can be slow to load for long sources.
+                        </Text>
+                      </>
                     )}
                   </>
                 )}
 
-                {previewPhase === "empty" && (
+                {previewPhase === "unavailable" && (
                   <>
                     <Monitor size={28} strokeWidth={1.5} />
                     <Text fontSize="12px" color="studio.fgMuted">
-                      Video preview
+                      Preview unavailable
                     </Text>
-                    <Text fontSize="11px" color="studio.fgSubtle">
-                      No source loaded
+                    <Text fontSize="11px" color="studio.fgSubtle" textAlign="center">
+                      This project&rsquo;s source video has been removed, so a
+                      preview can no longer be generated for this clip.
                     </Text>
                   </>
                 )}
@@ -426,10 +437,10 @@ export function VideoPreview() {
 
                 {previewPhase === "error" && (
                   <>
-                    <Flex color="danger.fg" align="center" justify="center">
+                    <Flex color="studio.danger" align="center" justify="center">
                       <AlertTriangle size={24} strokeWidth={1.5} aria-hidden />
                     </Flex>
-                    <Text fontSize="12px" color="danger.fg" textAlign="center">
+                    <Text fontSize="12px" color="studio.danger" textAlign="center">
                       Couldn&rsquo;t load the video preview
                     </Text>
                     <Flex

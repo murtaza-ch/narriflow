@@ -297,6 +297,14 @@ export function ClipCard({
   // neither exists yet do we show the honest "preview generating…" state —
   // never the old behaviour of streaming the full multi-hundred-MB source
   // client-side just to preview a few seconds of footage.
+  //
+  // clip.hasPreview is in the deps below *because* it's otherwise the only
+  // thing that changes when the worker's preview proxy lands: the project
+  // page's SSE stream triggers a router.refresh() on every workflow event,
+  // which re-renders this card with a fresh ClipSnapshot, but renderVariants
+  // (the rest of this effect's deps) are untouched by a proxy landing — so
+  // without hasPreview in the array, a card stuck on "Preview generating…"
+  // would never refetch and would sit there until a manual reload.
   useEffect(() => {
     let cancelled = false;
 
@@ -384,6 +392,7 @@ export function ClipCard({
   }, [
     clip.id,
     clip.projectId,
+    clip.hasPreview,
     selectedAspectRatio,
     selectedVariantHasAsset,
     selectedVariant?.status,
@@ -636,7 +645,7 @@ export function ClipCard({
             px="1.5"
             py="0.5"
             borderRadius="l1"
-            bg="rgba(14, 16, 19, 0.72)"
+            bg="studio.scrim"
             color="studio.timecode"
             textStyle="data"
             fontSize="11px"

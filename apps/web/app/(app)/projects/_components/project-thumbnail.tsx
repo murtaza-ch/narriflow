@@ -189,7 +189,7 @@ function SourceChip({
       borderRadius="l1"
       // rgba of studio.canvas (#0E1013) — matches MediaWell's sanctioned
       // mode-invariant chip ground for overlays on footage.
-      bg="rgba(14, 16, 19, 0.72)"
+      bg="studio.scrim"
       pointerEvents="none"
     >
       <Box color="studio.fg">

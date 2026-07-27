@@ -115,6 +115,27 @@ export default async function StudioPage({
     brollUrl: clip.brollUrl ?? null,
   };
 
+  /**
+   * Server Action — re-checks whether this clip's preview proxy has landed
+   * yet. A thin wrapper around the exact same `getClipPreviewSource` call
+   * this page makes above for its own first render, so studio-shell.tsx's
+   * poll effect and the initial SSR paint always agree on what "ready"
+   * means. Bound to the authenticated user/project/clip via closure (not a
+   * client-supplied id), so polling can't be used to probe another user's
+   * clip.
+   *
+   * Passed down as a prop rather than imported by name into the (client)
+   * studio-shell.tsx: a Server Action importable-by-name from a Client
+   * Component has to live in a module with a top-of-file "use server"
+   * directive, and this page is a regular Server Component, not that — the
+   * documented mechanism for a Server-Component-local action is to hand it
+   * down as a prop instead.
+   */
+  async function fetchPreviewStatus() {
+    "use server";
+    return clipService.getClipPreviewSource(appUser.id, projectId, clipId);
+  }
+
   return (
     <StudioShell
       clipInfo={clipInfo}
@@ -132,6 +153,11 @@ export default async function StudioPage({
       clipEndSec={effective.endSec}
       previewVideoUrl={previewSource.previewUrl}
       previewStartSec={previewSource.previewStartSec}
+      // Once the source is purged, a still-missing proxy can never arrive —
+      // the worker that cuts it reads straight from source storage — so the
+      // studio shows a terminal message instead of polling/spinning forever.
+      sourcePurged={!snapshot.project.sourceStorageKey}
+      fetchPreviewStatus={fetchPreviewStatus}
     />
   );
 }

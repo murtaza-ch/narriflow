@@ -40,9 +40,26 @@ import {
  */
 const STUDIO_MIN_VIEWPORT_WIDTH = 900;
 
+/** How often to re-check preview-proxy readiness while it's still
+ *  generating (see the poll effect in `StudioShell`). */
+const PREVIEW_POLL_INTERVAL_MS = 8_000;
+/** Give up after this many ticks (~6 minutes at the interval above) — the
+ *  worker's proxy cut "usually takes a minute or two", so this leaves
+ *  comfortable margin without polling a stuck job forever. */
+const PREVIEW_POLL_MAX_ATTEMPTS = 45;
+
 /** Tracks whether the viewport is narrower than `px` via matchMedia. */
 function useIsViewportBelow(px: number): boolean {
-  const [isBelow, setIsBelow] = useState(false);
+  // Lazily seeded from matchMedia (not hardcoded `false`) so a phone's very
+  // first render already shows the small-viewport gate instead of flashing
+  // the full three-pane studio for one frame before the effect below
+  // corrects it. Guarded for SSR, where `window` doesn't exist — the server
+  // has no viewport to check, so it renders the same `false` it always did.
+  const [isBelow, setIsBelow] = useState(() =>
+    typeof window === "undefined"
+      ? false
+      : window.matchMedia(`(max-width: ${px - 1}px)`).matches,
+  );
 
   useEffect(() => {
     const mql = window.matchMedia(`(max-width: ${px - 1}px)`);
@@ -136,6 +153,13 @@ interface StudioContextValue extends StudioState {
    *  proxy's `currentTime` directly. */
   previewVideoUrl: string | null;
   previewStartSec: number;
+  /** True when the project's source has been purged (`Project.sourceStorageKey`
+   *  is null). Once true, a still-missing `previewVideoUrl` can never arrive
+   *  — the worker that cuts proxies reads straight from source storage — so
+   *  video-preview.tsx shows a terminal message instead of polling or
+   *  spinning forever, and hides the "Use original source" escape hatch
+   *  (which needs that same now-gone source). */
+  sourcePurged: boolean;
   /** True once the user has explicitly opted into loading the full source
    *  (see video-preview.tsx's "Use original source" affordance) because no
    *  proxy exists yet — never set automatically, so a missing proxy never
@@ -224,6 +248,19 @@ interface StudioShellProps {
   /** The proxy's t=0 expressed in source time (`Clip.previewStartSec`).
    *  Meaningless when `previewVideoUrl` is null. */
   previewStartSec?: number;
+  /** True when the project's source has been purged — see the doc comment
+   *  on `StudioContextValue.sourcePurged`. */
+  sourcePurged?: boolean;
+  /** Server Action that re-checks this clip's preview-proxy readiness,
+   *  defined in studio/page.tsx (see its doc comment for why it's threaded
+   *  through as a prop rather than imported by name). Polled by the effect
+   *  below while `previewVideoUrl` is still null; omitted entirely (e.g. in
+   *  tests) simply disables polling rather than throwing. */
+  fetchPreviewStatus?: () => Promise<{
+    previewUrl: string | null;
+    previewStartSec: number;
+    previewDurationSec: number | null;
+  }>;
 }
 
 export function StudioShell({
@@ -236,8 +273,10 @@ export function StudioShell({
   sourcePreviewId = "source",
   clipStartSec = 0,
   clipEndSec = 0,
-  previewVideoUrl = null,
-  previewStartSec = 0,
+  previewVideoUrl: initialPreviewVideoUrl = null,
+  previewStartSec: initialPreviewStartSec = 0,
+  sourcePurged = false,
+  fetchPreviewStatus,
 }: StudioShellProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const playbackClock = useMemo(() => createPlaybackClock(), []);
@@ -246,6 +285,56 @@ export function StudioShell({
   // — a missing proxy must never silently fall back to the ~44s full-source
   // load that motivated this whole feature.
   const [useOriginalSourceFallback, setUseOriginalSourceFallback] = useState(false);
+
+  // Seeded from the server-rendered snapshot; swapped in live by the poll
+  // effect below once the worker's proxy actually lands. Kept as state
+  // (rather than reading the props directly) because nothing else about
+  // this page ever refreshes on its own — see that effect for why.
+  const [previewVideoUrl, setPreviewVideoUrl] = useState(initialPreviewVideoUrl);
+  const [previewStartSec, setPreviewStartSec] = useState(initialPreviewStartSec);
+
+  // While no proxy exists yet, periodically re-check readiness so "Preview
+  // generating…" resolves on its own instead of only ever updating on a
+  // manual reload (see the module doc comment on studio/page.tsx's
+  // `fetchPreviewStatus` for why this is a Server Action passed as a prop).
+  // Stops when: the proxy lands (previewVideoUrl flips non-null, which also
+  // makes the guard below skip scheduling a next tick), the source is
+  // purged (sourcePurged — nothing will ever land), the component unmounts
+  // (cleanup clears the pending timeout), or after PREVIEW_POLL_MAX_ATTEMPTS
+  // ticks so a genuinely stuck worker job doesn't poll forever.
+  useEffect(() => {
+    if (previewVideoUrl || sourcePurged || !fetchPreviewStatus) return;
+
+    let cancelled = false;
+    let attempts = 0;
+    let timeoutId: ReturnType<typeof setTimeout>;
+
+    const poll = async () => {
+      attempts += 1;
+      try {
+        const status = await fetchPreviewStatus();
+        if (cancelled) return;
+        if (status.previewUrl) {
+          setPreviewVideoUrl(status.previewUrl);
+          setPreviewStartSec(status.previewStartSec);
+          return; // Ready — don't schedule another tick.
+        }
+      } catch {
+        // Transient failure (network blip, presign hiccup) — just retry on
+        // the next tick instead of surfacing an error for a background poll.
+      }
+      if (!cancelled && attempts < PREVIEW_POLL_MAX_ATTEMPTS) {
+        timeoutId = setTimeout(poll, PREVIEW_POLL_INTERVAL_MS);
+      }
+    };
+
+    timeoutId = setTimeout(poll, PREVIEW_POLL_INTERVAL_MS);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timeoutId);
+    };
+  }, [previewVideoUrl, sourcePurged, fetchPreviewStatus]);
 
   const activeVideoUrl = previewVideoUrl ?? (useOriginalSourceFallback ? sourceVideoUrl : null);
   // Source time -> "whichever file is actually playing" time. Zero when
@@ -823,7 +912,7 @@ export function StudioShell({
     layoutMode, showShortcuts, timelineZoom, selectedSegmentId,
     captionPreset, captionSelected, transcriptOnly, segments, studioEdits, saveState, exportState, undoStack, redoStack,
     transcript: derivedTranscript, clipInfo, videoRef, playbackClock,
-    sourceVideoUrl, sourcePreviewId, clipStartSec, clipEndSec,
+    sourceVideoUrl, sourcePreviewId, clipStartSec, clipEndSec, sourcePurged,
     previewVideoUrl, previewStartSec, useOriginalSourceFallback, setUseOriginalSourceFallback,
     activeVideoUrl, activeOffsetSec, activeVideoKind, playerClipStartSec, playerClipEndSec,
     utterances, updateUtteranceText,

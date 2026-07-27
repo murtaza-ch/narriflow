@@ -103,17 +103,17 @@ export function DeleteProjectButton({
           type="button"
           size="xs"
           variant="ghost"
-          colorPalette="gray"
+          colorPalette="brand"
           position="absolute"
           top="2"
           right="2"
           zIndex={1}
           borderRadius="l1"
-          // rgba of studio.canvas — matches MediaWell/SourceChip's
-          // mode-invariant chip ground for overlays on footage.
-          bg="rgba(14, 16, 19, 0.72)"
+          // Mode-invariant scrim — this sits on footage, which never flips
+          // with the colour mode. Same ground as MediaWell/SourceChip.
+          bg="studio.scrim"
           color="studio.fg"
-          _hover={{ bg: "rgba(14, 16, 19, 0.85)", color: "danger.fg" }}
+          _hover={{ bg: "studio.scrimStrong", color: "studio.danger" }}
           aria-label={`Delete "${projectTitle}"`}
           disabled={pending}
           onClick={handleTriggerClick}

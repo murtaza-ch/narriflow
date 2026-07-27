@@ -66,6 +66,107 @@ export function resolveCaptionFontFamily(fontName: string): string {
     : `"${fontName}", sans-serif`;
 }
 
+/**
+ * Resolves a preset's `bold` flag to the CSS font-weight that will actually
+ * render. Must agree with BOTH sides of the preview/export contract:
+ *  - the browser: layout.tsx only loads weights 400 and 700 for every
+ *    caption family, so anything else (previously "900"/"600") silently
+ *    collapses to the nearest loaded weight — 700 either way, erasing the
+ *    non-bold presets' distinction in preview.
+ *  - the worker: render-clips.ts's libass force_style sets `Bold=1` or
+ *    `Bold=0`, which libass's built-in fonts render as 700/400.
+ * The ONE place every caption-text renderer should go through for weight,
+ * mirroring resolveCaptionFontFamily above.
+ */
+export function resolveCaptionFontWeight(bold: boolean): "700" | "400" {
+  return bold ? "700" : "400";
+}
+
+// ─── Font warming ─────────────────────────────────────────────────────────────
+//
+// Every caption face loads with `preload: false` in apps/web/app/layout.tsx —
+// deliberately, so none of the six caption woff2s ship as preload hints on
+// marketing/landing routes that never render a caption. The tradeoff: with no
+// preload hint, the browser only starts fetching a given caption face the
+// first time text actually needs to paint in it — so the first caption cue,
+// and the first open of the captions panel (which renders a preset-card
+// thumbnail in all six families near-simultaneously), visibly FOUT as each
+// family swaps in one by one. `warmCaptionFonts` front-runs that by asking
+// the Font Loading API to fetch+parse every registered caption face as soon
+// as the studio mounts, well before any specific cue needs to paint it.
+
+/**
+ * Weights actually registered per family in layout.tsx. Bebas Neue and Anton
+ * are single-weight (400-only) display faces; the rest load 400 + 700.
+ * Requesting a weight with no matching @font-face rejects the load (caught
+ * and ignored below), so keep this in sync with layout.tsx's `weight` arrays.
+ */
+const CAPTION_FONT_WARM_WEIGHTS: Record<string, readonly string[]> = {
+  Montserrat: ["400", "700"],
+  "Bebas Neue": ["400"],
+  Roboto: ["400", "700"],
+  Oswald: ["400", "700"],
+  "Open Sans": ["400", "700"],
+  Impact: ["400"], // resolves to Anton via CAPTION_FONT_VARIABLES, 400-only
+};
+
+/** Module-scoped so a remount (e.g. switching clips) doesn't re-warm. */
+let captionFontsWarmed = false;
+
+/**
+ * Extracts the `--custom-property` name out of a `"var(--x)"` expression, as
+ * stored in CAPTION_FONT_VARIABLES — so warming can resolve each family's
+ * *actual* (next/font-generated) font-family string via getComputedStyle
+ * instead of duplicating a second hardcoded variable-name list here.
+ */
+function cssVariableNameOf(expression: string): string | null {
+  return expression.match(/^var\((--[\w-]+)\)$/)?.[1] ?? null;
+}
+
+/**
+ * Fire-and-forget prefetch of every caption font family via the browser's
+ * Font Loading API, so the first caption paint — and the first captions-panel
+ * open, which renders all six at once for preset thumbnails — doesn't
+ * visibly FOUT. Call once from a studio mount effect.
+ *
+ * - SSR-safe: bails out immediately when `document`/`document.fonts` don't
+ *   exist (also covers older browsers lacking the Font Loading API).
+ * - Never throws: every failure path (unresolved CSS variable, a rejected
+ *   FontFace load, a missing API) is swallowed. This is a best-effort perf
+ *   nudge, never a correctness dependency, so it must never be able to break
+ *   the studio around it.
+ * - Never blocks render: `document.fonts.load()` promises are left to settle
+ *   in the background and are never awaited.
+ * - Idempotent per page session: only does real work on the first call.
+ */
+export function warmCaptionFonts(): void {
+  if (captionFontsWarmed) return;
+  if (typeof document === "undefined" || !document.fonts) return;
+  captionFontsWarmed = true;
+
+  try {
+    const rootStyle = getComputedStyle(document.documentElement);
+
+    for (const [fontName, cssVarExpression] of Object.entries(CAPTION_FONT_VARIABLES)) {
+      const cssVariableName = cssVariableNameOf(cssVarExpression);
+      const resolvedFamily = cssVariableName
+        ? rootStyle.getPropertyValue(cssVariableName).trim()
+        : "";
+      if (!resolvedFamily) continue;
+
+      const weights = CAPTION_FONT_WARM_WEIGHTS[fontName] ?? ["400"];
+      for (const weight of weights) {
+        document.fonts.load(`${weight} 16px ${resolvedFamily}`).catch(() => {
+          // Best-effort only — a face failing to warm just means it falls
+          // back to loading on first paint, same as before this existed.
+        });
+      }
+    }
+  } catch {
+    // Best-effort only — warming must never throw into the caller.
+  }
+}
+
 // ─── Word animation factory ───────────────────────────────────────────────────
 
 export type CaptionMotionMode = "live" | "preview";
@@ -329,7 +430,7 @@ export function CaptionCue({
                   position: "relative",
                   zIndex: 1,
                   fontSize: `${fontSize}px`,
-                  fontWeight: preset.bold ? "900" : "600",
+                  fontWeight: resolveCaptionFontWeight(preset.bold),
                   letterSpacing,
                   color: item.isActive ? highlight : preset.primaryColor,
                   fontFamily: resolveCaptionFontFamily(preset.fontName),
