@@ -217,11 +217,51 @@ now done, and running the worker for real surfaced a much larger bug underneath.
 
 Suite: **433 tests**, typecheck 10/10, `biome check` clean across 332 files.
 
-Still open: the free-tier `buildFreeTierPostProcessArgs` helper is retained but
-unused in production; audiogram previews always use the default waveform colour
-rather than the clip's caption colour (`getClipsNeedingPreview` doesn't select
-`captionPreset`); and the 20 competitor recommendations in
-`plans/2026-07-audit/` remain unimplemented.
+**External review pass — also landed.** The work above was then reviewed
+independently by **codex (`gpt-5.6-sol`, high reasoning)** for correctness and
+optimization, and by **Fable** for UI/UX. Full write-up in
+`plans/2026-07-audit/07-external-review.md`.
+
+codex confirmed the ffmpeg duration fix, the `previewStartSec` mapping, the
+`JSON.stringify` invalidation comparison, `Buffer.allocUnsafe`, and the 16 MB
+part size are all correct — then found real production-grade races. Fixed:
+
+- **The losing worker deleted the winning worker's preview object.** All workers
+  uploaded to one deterministic key and claimed afterwards, so the loser's
+  cleanup deleted the object the winning row pointed at. Keys are now
+  per-attempt; verified end to end against R2.
+- **Previews blocked ingest and starved publishing** — a batch of sequential
+  ffmpeg cuts ran inside the I/O mutex, reintroducing the head-of-line blocking
+  the poller split had removed. Previews now have their own loop.
+- **Permanently broken clips poisoned the preview queue forever**; now backed
+  off over a wider candidate pool.
+- **The R2 fix was treating a symptom** — `requestChecksumCalculation:
+  "WHEN_REQUIRED"` is the actual root cause, and a short read no longer returns
+  a truncated buffer under a declared `ContentLength`.
+
+Fable found the flagship "Preview generating…" state was a static promise with
+no reactive path — the UI told the truth once, then stopped listening. Clip
+cards now carry a `hasPreview` signal and the studio polls and swaps the proxy
+in live. It also caught that the caption-font fix was only half-made: the engine
+asked for weights 900/600 while only 400/700 were loaded, so the two
+`bold: false` presets previewed bold and burned at regular — the same
+preview-vs-export gap that fix was meant to close. Plus a light-mode studio
+contrast failure (~3.2:1, now 6.14:1 via a mode-invariant `studio.danger`).
+
+Suite: **447 tests** (`packages/ui`'s test script was a no-op echo and is now
+wired, so its contrast tests actually run).
+
+Still open — see `07-external-review.md` for the full design of each. Six need a
+schema change and were deliberately **not** half-implemented: claim lease/attempt
+ownership (a reaped worker can complete a newer attempt); a `deleting` project
+state to close the deletion TOCTOU; immutable generation-scoped render keys;
+clearing a preview when boundaries move beyond its padding; a cutoff filter and
+ordering on the source-purge query; and explicit retryability at the error
+boundary. Smaller items: orphaned preview objects need a sweeper, preview
+backoff is in-process only, audiogram previews use the default waveform colour,
+`buildFreeTierPostProcessArgs` is retained but unused, the Chakra/Emotion SSR
+hydration mismatch is still live, and the 20 competitor recommendations in
+`plans/2026-07-audit/02-competitor-teardown.md` remain unimplemented.
 
 ### Phase 1 — Table-stakes parity gaps (do first)
 1. **Auto-reframe / active-speaker tracking** — **[TS] medium.** ✅ v1 shipped: YuNet face detection (CPU, MIT) → smoothed FFmpeg `sendcmd` crop following the dominant speaker, landscape→vertical. **Remaining:** multi-speaker active-speaker selection (LR-ASD, MIT, gated to ≥2 faces) + scene-cut reset; 3+ speaker layouts are a Phase-3 moat.
