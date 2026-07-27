@@ -31,6 +31,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -86,14 +87,38 @@ const DEFAULT_PREVIEW_X264_PRESET = "veryfast";
 // (see the worker's clip-preview report) — tune via env without a deploy.
 const DEFAULT_PREVIEW_X264_CRF = "30";
 const DEFAULT_PREVIEW_AUDIO_BITRATE = "64k";
+// A preview cut now runs on its own poll loop rather than inside the shared
+// I/O mutex (see index.ts), but it can still race a full clip render for
+// CPU on the same box — render-clips.ts's own comment measured that ffmpeg
+// already saturates all cores per job, so an uncapped preview encode would
+// contend with an in-progress render. Two threads keeps a ~4-45s preview cut
+// fast without meaningfully starving a render.
+const DEFAULT_PREVIEW_X264_THREADS = "2";
 
-/** Presign lifetime for the streamed source. Generous enough to cover a whole
- *  batch of cuts off one URL, short enough that a leaked log line is stale fast. */
+/** Presign lifetime for the streamed source. Kept generous even though each
+ *  clip now gets its own fresh presign (see the "Refresh per clip" comment
+ *  on processPendingClipPreviews) — this is just the per-URL TTL, not a
+ *  batch-wide budget anymore. */
 const SOURCE_STREAM_URL_TTL_SEC = 3600;
 
 /** ffmpeg reads the source over HTTPS rather than from disk, so a transient
  *  network blip mid-cut would otherwise abort the encode. These make it
- *  reconnect instead. Harmless when the input happens to be a local path. */
+ *  reconnect instead. Harmless when the input happens to be a local path.
+ *
+ *  `-reconnect_on_http_error` only covers status codes actually worth
+ *  retrying: 429 (rate limited) and the transient 5xx family. Deliberately
+ *  excludes e.g. 403/404 (never recoverable by retrying the same URL) and
+ *  501/505 (protocol-level, retrying changes nothing).
+ *
+ *  `-rw_timeout` (microseconds) bounds a single stalled read/write — without
+ *  it, a connection that goes quiet mid-transfer (rather than erroring or
+ *  closing) hangs the ffmpeg child forever; the reconnect flags above never
+ *  even trigger because nothing has "failed" yet. This is a per-I/O-op
+ *  timeout, not a whole-process one — execCommand's own timeoutMs (below) is
+ *  the wall-clock backstop for the process as a whole. */
+const HTTP_SOURCE_RECONNECT_HTTP_ERROR_CODES = "429,500,502,503,504";
+const HTTP_SOURCE_RW_TIMEOUT_US = 30_000_000; // 30s
+
 const HTTP_SOURCE_ARGS = [
   "-reconnect",
   "1",
@@ -101,9 +126,41 @@ const HTTP_SOURCE_ARGS = [
   "1",
   "-reconnect_on_network_error",
   "1",
+  "-reconnect_on_http_error",
+  HTTP_SOURCE_RECONNECT_HTTP_ERROR_CODES,
   "-reconnect_delay_max",
   "10",
+  "-rw_timeout",
+  String(HTTP_SOURCE_RW_TIMEOUT_US),
 ] as const;
+
+// A whole-process wall-clock bound on ffmpeg/ffprobe children. Without this,
+// a stalled read (or a pathological input) blocks this task's own poll
+// loop's mutex indefinitely — see index.ts's pollClipPreviewQueue, which
+// depends on this task always eventually returning. ffprobe only reads a
+// small header's worth of the stream, so it gets a much tighter budget than
+// a full cut. Measured a real cut at 11.72s wall for a 38s window off a
+// 531 MB 4K source (see processPendingClipPreviews); 120s leaves generous
+// headroom for a slower network or a longer padded window before killing it.
+const DEFAULT_PREVIEW_FFMPEG_TIMEOUT_MS = 120_000;
+const DEFAULT_PREVIEW_FFPROBE_TIMEOUT_MS = 30_000;
+/** Grace period between SIGTERM and SIGKILL when a child ignores the
+ *  timeout's first signal. */
+const FORCE_KILL_GRACE_MS = 5_000;
+
+// A permanently-broken clip (corrupt source slice, unsupported codec, ...)
+// must not monopolize every tick's batch forever — see the
+// ClipPreviewFailureBackoff class below. Base delay doubles per consecutive
+// failure, capped at maxDelayMs.
+const DEFAULT_PREVIEW_FAILURE_BACKOFF_BASE_MS = 30_000; // 30s
+const DEFAULT_PREVIEW_FAILURE_BACKOFF_MAX_MS = 30 * 60_000; // 30 min
+const DEFAULT_PREVIEW_FAILURE_BACKOFF_MAX_ENTRIES = 500;
+
+// getClipsNeedingPreview's own `take` clamps to 25 regardless of what's
+// requested (see clip.service.ts) — this just says "ask for that much" so a
+// backoff-skipped top-N doesn't starve the rest of the queue (Fix 3). Safe
+// to request more than the service will ever return.
+const DEFAULT_PREVIEW_CANDIDATE_POOL_SIZE = 25;
 
 function previewBatchSize(): number {
   const raw = Number(process.env.WORKER_CLIP_PREVIEW_BATCH_SIZE?.trim());
@@ -143,6 +200,111 @@ function previewAudioBitrate(): string {
     process.env.WORKER_CLIP_PREVIEW_AUDIO_BITRATE?.trim() ||
     DEFAULT_PREVIEW_AUDIO_BITRATE
   );
+}
+
+function previewX264Threads(): string {
+  return (
+    process.env.WORKER_CLIP_PREVIEW_X264_THREADS?.trim() ||
+    DEFAULT_PREVIEW_X264_THREADS
+  );
+}
+
+function previewFfmpegTimeoutMs(): number {
+  const raw = Number(process.env.WORKER_CLIP_PREVIEW_FFMPEG_TIMEOUT_MS?.trim());
+  return Number.isFinite(raw) && raw > 0
+    ? raw
+    : DEFAULT_PREVIEW_FFMPEG_TIMEOUT_MS;
+}
+
+function previewFfprobeTimeoutMs(): number {
+  const raw = Number(
+    process.env.WORKER_CLIP_PREVIEW_FFPROBE_TIMEOUT_MS?.trim(),
+  );
+  return Number.isFinite(raw) && raw > 0
+    ? raw
+    : DEFAULT_PREVIEW_FFPROBE_TIMEOUT_MS;
+}
+
+function previewFailureBackoffBaseMs(): number {
+  const raw = Number(
+    process.env.WORKER_CLIP_PREVIEW_FAILURE_BACKOFF_BASE_MS?.trim(),
+  );
+  return Number.isFinite(raw) && raw > 0
+    ? raw
+    : DEFAULT_PREVIEW_FAILURE_BACKOFF_BASE_MS;
+}
+
+function previewFailureBackoffMaxMs(): number {
+  const raw = Number(
+    process.env.WORKER_CLIP_PREVIEW_FAILURE_BACKOFF_MAX_MS?.trim(),
+  );
+  return Number.isFinite(raw) && raw > 0
+    ? raw
+    : DEFAULT_PREVIEW_FAILURE_BACKOFF_MAX_MS;
+}
+
+/**
+ * In-process exponential backoff for clips whose preview keeps failing.
+ *
+ * `getClipsNeedingPreview` returns the highest-virality clips still missing a
+ * proxy, in the same order, every tick. Without this, a handful of clips that
+ * can never succeed (corrupt source range, unsupported codec) would refill the
+ * batch forever and no lower-ranked clip would ever be attempted — burning
+ * ffprobe/ffmpeg work on each pass. Backing them off lets the queue drain past
+ * them while still retrying periodically in case the cause was transient.
+ *
+ * Deliberately in-process: a durable version needs `attempts` / `nextAttemptAt`
+ * / terminal-error columns on `Clip`, which is a migration. Losing this state on
+ * restart is acceptable — the worst case is one extra attempt per clip per boot.
+ * Bounded so a long-lived worker can't grow it without limit.
+ */
+export class ClipPreviewFailureBackoff {
+  private readonly entries = new Map<
+    string,
+    { failures: number; nextAttemptAtMs: number }
+  >();
+
+  constructor(
+    private readonly baseMs: number = previewFailureBackoffBaseMs(),
+    private readonly maxMs: number = previewFailureBackoffMaxMs(),
+    private readonly maxEntries: number = DEFAULT_PREVIEW_FAILURE_BACKOFF_MAX_ENTRIES,
+  ) {}
+
+  /** True when this clip is still inside its backoff window. */
+  shouldSkip(clipId: string, nowMs: number): boolean {
+    const entry = this.entries.get(clipId);
+    return entry !== undefined && nowMs < entry.nextAttemptAtMs;
+  }
+
+  recordFailure(clipId: string, nowMs: number): void {
+    const failures = (this.entries.get(clipId)?.failures ?? 0) + 1;
+    // 2^(n-1) * base, capped. Math.min guards against overflow at high n.
+    const delayMs = Math.min(this.maxMs, this.baseMs * 2 ** (failures - 1));
+    this.entries.set(clipId, { failures, nextAttemptAtMs: nowMs + delayMs });
+
+    if (this.entries.size > this.maxEntries) {
+      // Map preserves insertion order, so the oldest key is the first one.
+      const oldest = this.entries.keys().next().value;
+      if (oldest !== undefined) this.entries.delete(oldest);
+    }
+  }
+
+  /** A clip that finally succeeded should not carry its history forward. */
+  recordSuccess(clipId: string): void {
+    this.entries.delete(clipId);
+  }
+}
+
+/** Module-level so backoff survives across poll ticks within one process. */
+const previewFailureBackoff = new ClipPreviewFailureBackoff();
+
+function previewCandidatePoolSize(): number {
+  const raw = Number(
+    process.env.WORKER_CLIP_PREVIEW_CANDIDATE_POOL_SIZE?.trim(),
+  );
+  return Number.isFinite(raw) && raw > 0
+    ? Math.floor(raw)
+    : DEFAULT_PREVIEW_CANDIDATE_POOL_SIZE;
 }
 
 // ─── Pure window / time-mapping maths (unit-tested in clip-preview.test.ts) ─
@@ -211,26 +373,109 @@ export function previewTimeToSourceTime(
   return previewTimeSec + previewStartSec;
 }
 
-/** Mirrors how render outputs are keyed (`projects/<id>/renders/<clipId>/...`
- *  in render-clips.ts) under a clearly-separate `previews` namespace. */
-export function clipPreviewStorageKey(projectId: string, clipId: string): string {
-  return `projects/${projectId}/previews/${clipId}/preview.mp4`;
+/**
+ * Mirrors how render outputs are keyed (`projects/<id>/renders/<clipId>/...`
+ * in render-clips.ts) under a clearly-separate `previews` namespace —
+ * deliberately **attempt-unique**, never derivable from just `(projectId,
+ * clipId)`.
+ *
+ * This used to be a pure function of `(projectId, clipId)`, so every worker
+ * racing to cut the same clip's proxy uploaded to the *same* object. The DB
+ * claim (`completeClipPreview`'s conditional `previewStorageKey IS NULL`
+ * update) happens strictly after the upload, so the race's loser — having
+ * already uploaded to that shared key — would call `deleteObject` on it as
+ * "cleanup," deleting the *winner's* object out from under it the instant
+ * the winner's row was live. The clip was left pointing at a
+ * `previewStorageKey` for an object that no longer existed: a permanently
+ * broken preview with no error anywhere to explain it. Concurrent PUTs to
+ * one key also risk R2's documented ~1 write/second/key limit.
+ *
+ * Each upload *attempt* now gets its own key instead. The claim in
+ * `cutAndUploadClipPreview` still decides who "wins" the clip, but winning
+ * or losing no longer touches the other attempt's bytes at all — the loser
+ * deletes exactly the object it just uploaded (see the call site), which by
+ * construction can never be the key the winner's row points to. No
+ * "promotion" step is needed: the winner simply persists this attempt's own
+ * key as-is (`completeClipPreview`'s `storageKey` input), since nothing else
+ * in the codebase re-derives a clip's preview key from `(projectId, clipId)`
+ * — every reader (`getClipPreviewSource`, `getClipDownloadUrl`, the project
+ * deletion planner) reads the persisted `previewStorageKey` column verbatim.
+ *
+ * Orphan case: if this process dies between the upload and the
+ * `completeClipPreview` claim (or dies before the loser's cleanup delete
+ * runs), that attempt's object is never referenced by any row and is never
+ * revisited — a real, if rare, leak. Not handled here: the follow-up is a
+ * sweeper that lists the per-clip previews prefix in R2, diffs it against
+ * `Clip.previewStorageKey`, and deletes unreferenced keys past a grace
+ * period. (Do not write that prefix as a glob in a block comment — the
+ * star-slash sequence closes the comment early.)
+ */
+export function clipPreviewAttemptStorageKey(
+  projectId: string,
+  clipId: string,
+  attemptId: string,
+): string {
+  return `projects/${projectId}/previews/${clipId}/${attemptId}.mp4`;
 }
 
 // ─── ffmpeg/ffprobe process helpers ────────────────────────────────────────
 // Duplicated in shape from render-clips.ts's private execCommand/
 // execCommandOutput (not exported there) — see the file header.
 
-async function execCommand(command: string, args: string[]): Promise<void> {
+/**
+ * Starts a wall-clock timer that SIGTERMs `child` on expiry and escalates to
+ * SIGKILL if it hasn't exited within {@link FORCE_KILL_GRACE_MS}. Returns a
+ * `{ timedOut, cancel }` handle: callers check `timedOut.current` from their
+ * `close` handler to tell a real timeout apart from an ordinary non-zero
+ * exit, and must call `cancel()` once the child settles so the timer doesn't
+ * keep the process alive. Shared by execCommand/execCommandOutput so a
+ * stalled ffmpeg/ffprobe child (e.g. a source read that goes quiet without
+ * erroring — see HTTP_SOURCE_ARGS's `-rw_timeout` comment for why that can
+ * still happen) can never block this task's poll loop indefinitely.
+ */
+function armProcessTimeout(
+  child: ReturnType<typeof spawn>,
+  timeoutMs: number | undefined,
+): { timedOut: { current: boolean }; cancel: () => void } {
+  const timedOut = { current: false };
+  if (!timeoutMs) {
+    return { timedOut, cancel: () => {} };
+  }
+
+  let killTimer: ReturnType<typeof setTimeout> | null = null;
+  const termTimer = setTimeout(() => {
+    timedOut.current = true;
+    child.kill("SIGTERM");
+    killTimer = setTimeout(() => {
+      child.kill("SIGKILL");
+    }, FORCE_KILL_GRACE_MS);
+  }, timeoutMs);
+
+  return {
+    timedOut,
+    cancel: () => {
+      clearTimeout(termTimer);
+      if (killTimer) clearTimeout(killTimer);
+    },
+  };
+}
+
+async function execCommand(
+  command: string,
+  args: string[],
+  options?: { timeoutMs?: number },
+): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
     let stderr = "";
+    const { timedOut, cancel } = armProcessTimeout(child, options?.timeoutMs);
 
     child.stderr.on("data", (chunk: Buffer) => {
       stderr += chunk.toString();
     });
 
     child.on("error", (error: NodeJS.ErrnoException) => {
+      cancel();
       if (error.code === "ENOENT") {
         reject(
           new ClipPreviewWorkerError(
@@ -244,6 +489,16 @@ async function execCommand(command: string, args: string[]): Promise<void> {
     });
 
     child.on("close", (code) => {
+      cancel();
+      if (timedOut.current) {
+        reject(
+          new ClipPreviewWorkerError(
+            "worker_command_timeout",
+            `${command} timed out after ${options?.timeoutMs}ms and was killed`,
+          ),
+        );
+        return;
+      }
       if (code === 0) {
         resolve();
         return;
@@ -261,11 +516,13 @@ async function execCommand(command: string, args: string[]): Promise<void> {
 async function execCommandOutput(
   command: string,
   args: string[],
+  options?: { timeoutMs?: number },
 ): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
+    const { timedOut, cancel } = armProcessTimeout(child, options?.timeoutMs);
 
     child.stdout.on("data", (chunk: Buffer) => {
       stdout += chunk.toString();
@@ -275,6 +532,7 @@ async function execCommandOutput(
     });
 
     child.on("error", (error: NodeJS.ErrnoException) => {
+      cancel();
       if (error.code === "ENOENT") {
         reject(
           new ClipPreviewWorkerError(
@@ -288,6 +546,16 @@ async function execCommandOutput(
     });
 
     child.on("close", (code) => {
+      cancel();
+      if (timedOut.current) {
+        reject(
+          new ClipPreviewWorkerError(
+            "worker_command_timeout",
+            `${command} timed out after ${options?.timeoutMs}ms and was killed`,
+          ),
+        );
+        return;
+      }
       if (code === 0) {
         resolve(stdout);
         return;
@@ -315,26 +583,85 @@ interface SourceProbeLite {
 export interface ProbeStreamLite {
   codec_type?: string;
   nb_frames?: string;
+  /** Stream duration in seconds, as ffprobe reports it (a numeric string).
+   *  Corroborating signal for the nb_frames<=1 fallback below — see
+   *  isAttachedPictureStream. */
+  duration?: string;
+  /** ffprobe's codec name for this stream (e.g. "h264", "mjpeg", "png").
+   *  Corroborating signal for the nb_frames<=1 fallback below. */
+  codec_name?: string;
   disposition?: { attached_pic?: number };
 }
+
+/** Attached pictures are always encoded with a still-image codec — never a
+ *  real motion-video codec. A single h264/vp9/hevc/... frame is exactly the
+ *  legitimate-still-image-video case that must NOT be caught here. */
+const STILL_IMAGE_CODEC_NAMES: ReadonlySet<string> = new Set([
+  "mjpeg",
+  "png",
+  "bmp",
+  "gif",
+  "tiff",
+  "webp",
+  "jpeg2000",
+  "jpegls",
+]);
+
+/** Below this, a video stream's reported duration is treated as "no
+ *  meaningful duration" — i.e. a static image rather than a timed track. A
+ *  true embedded cover-art stream typically reports no duration at all
+ *  (ffprobe can't compute one for a single untimed picture); a legitimate
+ *  still-image video stretched across the clip's audio reports a duration
+ *  close to the clip's own length, comfortably above this. */
+const NEGLIGIBLE_STREAM_DURATION_SEC = 1;
 
 /**
  * A podcast MP3/M4A/FLAC's embedded cover art (ID3 `APIC`, FLAC/M4A cover
  * picture blocks, ...) shows up to ffprobe as its own *video* stream —
- * almost always flagged `disposition.attached_pic = 1` and/or reporting
- * exactly one total frame. Naively treating that stream as "this source has
- * video" routes a podcast through the video cut-and-scale path, which
- * produces a proxy that's a single frozen JPEG for the whole clip duration
- * (there's nothing moving to encode). This tells the two apart.
+ * almost always flagged `disposition.attached_pic = 1`. Naively treating
+ * that stream as "this source has video" routes a podcast through the video
+ * cut-and-scale path, which produces a proxy that's a single frozen JPEG for
+ * the whole clip duration (there's nothing moving to encode). This tells the
+ * two apart.
+ *
+ * `disposition.attached_pic` is the primary, authoritative signal in either
+ * direction: ffprobe (and the muxers/taggers that produce this metadata) set
+ * it deliberately, so it's trusted outright when present — including an
+ * explicit `0`, which must never be second-guessed by the frame-count
+ * fallback below.
+ *
+ * When the flag is absent (some muxers/tagging tools embed cover art without
+ * ever setting it), this falls back to a frame-count heuristic — but
+ * `nb_frames <= 1` alone is not enough: a legitimate single-frame video with
+ * audio (e.g. a static-background lyric video, or any real footage that
+ * happens to encode as one long-duration keyframe) would misclassify as
+ * cover art and wrongly render as an audiogram instead of showing its real
+ * frame. The fallback only fires when a *second*, independent signal also
+ * points at "static image, not a timed video track": either the stream's
+ * codec is a still-image format (never used for real motion video), or the
+ * stream reports no meaningful duration.
  */
 export function isAttachedPictureStream(stream: ProbeStreamLite): boolean {
   if (stream.codec_type !== "video") return false;
+
+  // Primary signal — authoritative in both directions when present.
   if (stream.disposition?.attached_pic === 1) return true;
-  // Fallback for muxers/tagging tools that embed cover art without setting
-  // the disposition flag: a "video" stream reporting 0 or 1 total frames is
-  // never a moving picture, only ever a single embedded still.
+  if (stream.disposition?.attached_pic === 0) return false;
+
+  // No explicit disposition flag: fall back to nb_frames <= 1, corroborated
+  // by a second signal (see the doc comment above).
   const frameCount = Number(stream.nb_frames);
-  return Number.isFinite(frameCount) && frameCount <= 1;
+  const looksLikeSingleFrame = Number.isFinite(frameCount) && frameCount <= 1;
+  if (!looksLikeSingleFrame) return false;
+
+  if (stream.codec_name && STILL_IMAGE_CODEC_NAMES.has(stream.codec_name)) {
+    return true;
+  }
+
+  const duration = Number(stream.duration);
+  const hasNoMeaningfulDuration =
+    !Number.isFinite(duration) || duration < NEGLIGIBLE_STREAM_DURATION_SEC;
+  return hasNoMeaningfulDuration;
 }
 
 /**
@@ -357,14 +684,11 @@ export function classifyMediaStreams(streams: ProbeStreamLite[]): SourceProbeLit
 }
 
 async function probeSourceLite(sourcePath: string): Promise<SourceProbeLite> {
-  const output = await execCommandOutput("ffprobe", [
-    "-v",
-    "quiet",
-    "-print_format",
-    "json",
-    "-show_streams",
-    sourcePath,
-  ]);
+  const output = await execCommandOutput(
+    "ffprobe",
+    ["-v", "quiet", "-print_format", "json", "-show_streams", sourcePath],
+    { timeoutMs: previewFfprobeTimeoutMs() },
+  );
   const data = JSON.parse(output) as { streams?: ProbeStreamLite[] };
   return classifyMediaStreams(data.streams ?? []);
 }
@@ -385,6 +709,7 @@ export function buildClipPreviewArgs(params: {
   x264Preset?: string;
   x264Crf?: string;
   audioBitrate?: string;
+  x264Threads?: string;
 }): string[] {
   const maxHeight = params.maxHeight ?? previewMaxHeight();
 
@@ -407,6 +732,10 @@ export function buildClipPreviewArgs(params: {
     params.x264Preset ?? previewX264Preset(),
     "-crf",
     params.x264Crf ?? previewX264Crf(),
+    // Capped so a preview cut can't saturate the box while a full render
+    // (which already uses every core — see render-clips.ts) is in progress.
+    "-threads",
+    params.x264Threads ?? previewX264Threads(),
     "-pix_fmt",
     "yuv420p",
   ];
@@ -502,6 +831,7 @@ export function buildAudiogramPreviewArgs(params: {
   x264Crf?: string;
   audioBitrate?: string;
   captionPreset?: CaptionPreset | null;
+  x264Threads?: string;
 }): string[] {
   const { width: W, height: H } = audiogramPreviewDimensions(params.maxHeight);
   // Matches render-clips.ts's buildAudiogramArgs background color exactly,
@@ -542,6 +872,8 @@ export function buildAudiogramPreviewArgs(params: {
     params.x264Preset ?? previewX264Preset(),
     "-crf",
     params.x264Crf ?? previewX264Crf(),
+    "-threads",
+    params.x264Threads ?? previewX264Threads(),
     "-c:a",
     "aac",
     "-ac",
@@ -618,9 +950,16 @@ async function cutAndUploadClipPreview(params: {
         windowDurationSec: window.durationSec,
       });
 
-  await execCommand("ffmpeg", args);
+  // Bounded: without this a stalled ffmpeg (dead R2 socket that never errors,
+  // pathological input) would hold the preview loop's mutex indefinitely.
+  await execCommand("ffmpeg", args, { timeoutMs: previewFfmpegTimeoutMs() });
 
-  const key = clipPreviewStorageKey(clip.projectId, clip.id);
+  // Attempt-unique key. Two workers racing the same clip used to upload to
+  // one shared key and claim afterwards, so the loser's cleanup deleted the
+  // very object the winner's row now pointed at (and concurrent writes to a
+  // single key also breach R2's ~1 write/sec/key limit). With a per-attempt
+  // key the loser can only ever delete its own bytes.
+  const key = clipPreviewAttemptStorageKey(clip.projectId, clip.id, randomUUID());
   await putFileFromPath({
     key,
     filePath: outputPath,
@@ -639,9 +978,9 @@ async function cutAndUploadClipPreview(params: {
   });
 
   if (!result.persisted) {
-    // Lost the race to another worker cutting the same clip concurrently —
-    // our upload is redundant, not wrong (deterministic key, same bytes
-    // modulo encode nondeterminism), so just clean it up.
+    // Lost the race to another worker cutting the same clip concurrently.
+    // `key` is this attempt's own unique object, so deleting it can never
+    // touch the bytes the winning row points at.
     await deleteObject(key).catch(() => {});
     log("info", "clip_preview_lost_claim_race", {
       clipId: clip.id,
@@ -676,7 +1015,23 @@ async function cutAndUploadClipPreview(params: {
 export async function processPendingClipPreviews(
   batchSize: number = previewBatchSize(),
 ): Promise<number> {
-  const candidates = await clipService.getClipsNeedingPreview(batchSize);
+  // Ask for a wider pool than we intend to cut, then drop the clips currently
+  // inside a failure backoff window. Without the wider pool, N permanently
+  // broken top-ranked clips would fill the batch every tick and nothing below
+  // them would ever be attempted.
+  const nowMs = Date.now();
+  const pool = await clipService.getClipsNeedingPreview(
+    previewCandidatePoolSize(),
+  );
+  const eligible = pool.filter(
+    (clip) => !previewFailureBackoff.shouldSkip(clip.id, nowMs),
+  );
+  const skipped = pool.length - eligible.length;
+  if (skipped > 0) {
+    log("info", "clip_preview_backoff_skipped", { skipped });
+  }
+
+  const candidates = eligible.slice(0, batchSize);
   if (candidates.length === 0) {
     return 0;
   }
@@ -729,7 +1084,11 @@ export async function processPendingClipPreviews(
             tempDir,
           });
           if (didPersist) processed += 1;
+          // Losing the claim race isn't a failure of *this* clip, but the
+          // proxy does now exist, so clearing any history is still correct.
+          previewFailureBackoff.recordSuccess(clip.id);
         } catch (error) {
+          previewFailureBackoff.recordFailure(clip.id, Date.now());
           log("error", "clip_preview_failed", {
             clipId: clip.id,
             projectId,

@@ -5,7 +5,7 @@ import {
   buildAudiogramPreviewArgs,
   buildClipPreviewArgs,
   classifyMediaStreams,
-  clipPreviewStorageKey,
+  clipPreviewAttemptStorageKey,
   computeClipPreviewWindow,
   isAttachedPictureStream,
   type ProbeStreamLite,
@@ -95,10 +95,18 @@ describe("source-time <-> preview-time mapping", () => {
   });
 });
 
-describe("clipPreviewStorageKey", () => {
+describe("clipPreviewAttemptStorageKey", () => {
   test("mirrors the projects/<id>/<namespace>/<clipId>/... convention", () => {
-    expect(clipPreviewStorageKey("proj-1", "clip-1")).toBe(
-      "projects/proj-1/previews/clip-1/preview.mp4",
+    expect(clipPreviewAttemptStorageKey("proj-1", "clip-1", "attempt-1")).toBe(
+      "projects/proj-1/previews/clip-1/attempt-1.mp4",
+    );
+  });
+
+  // The whole point of the per-attempt key: two workers racing the same clip
+  // must never write to, or delete, each other's object.
+  test("gives concurrent attempts on one clip distinct keys", () => {
+    expect(clipPreviewAttemptStorageKey("p", "c", "a1")).not.toBe(
+      clipPreviewAttemptStorageKey("p", "c", "a2"),
     );
   });
 });

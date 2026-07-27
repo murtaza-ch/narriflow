@@ -40,14 +40,26 @@ const maxConsecutivePollFailures = Number(
   process.env.WORKER_MAX_CONSECUTIVE_POLL_FAILURES ?? "20",
 );
 
+// Preview proxies are short ffmpeg cuts, but "short" is ~12s each and a batch
+// runs them in sequence — roughly a minute of CPU+network per tick. Running
+// that on the I/O loop blocked ingest/STT for the duration and, because the
+// loop returns early once previews do work, a sustained backlog also starved
+// deadline-sensitive social publishing. Own loop, own mutex.
+const previewPollIntervalMs = Number(
+  process.env.PREVIEW_POLL_INTERVAL_MS ?? String(pollIntervalMs),
+);
+
 let ioPolling = false;
 let renderPolling = false;
+let previewPolling = false;
 let processedCount = 0;
 let lastPollAt: string | null = null;
 let lastRenderPollAt: string | null = null;
+let lastPreviewPollAt: string | null = null;
 let lastReapAt = 0;
 let consecutiveIoPollFailures = 0;
 let consecutiveRenderPollFailures = 0;
+let consecutivePreviewPollFailures = 0;
 
 /** Periodically fails workflow runs orphaned by a crashed/evicted worker.
  *  Called only from the I/O loop (rate-limited internally via lastReapAt),
@@ -157,7 +169,7 @@ async function reapStalledRunsIfDue() {
  *  loop tracks its own count against the same configured threshold, since
  *  they now fail independently of one another. */
 function reportPollFailureAndMaybeExit(
-  loop: "io" | "render",
+  loop: "io" | "render" | "preview",
   message: string,
   consecutiveFailures: number,
   error: unknown,
@@ -233,19 +245,6 @@ async function pollIoQueue() {
       return;
     }
 
-    // Preview proxies: short (~4s) ffmpeg cuts that let the studio and the
-    // clip cards play a ~1 MB asset instead of streaming the full source
-    // (measured 531 MB - 1.1 GB, 4K). Deliberately on the I/O loop rather than
-    // the render loop: at the moment clips are detected the render loop may be
-    // busy for minutes, while this loop has just finished its ingest/STT work
-    // and is idle — which is exactly when we want previews to appear. Bounded
-    // per tick, so a large backlog can't starve autopilot or social publishing.
-    const previewsProcessed = await processPendingClipPreviews();
-    if (previewsProcessed > 0) {
-      processedCount += previewsProcessed;
-      return;
-    }
-
     const autopilotRulesProcessed = await processDueAutopilotRules();
     if (autopilotRulesProcessed > 0) {
       processedCount += autopilotRulesProcessed;
@@ -305,6 +304,37 @@ async function pollRenderQueue() {
   }
 }
 
+/** Preview proxies: bounded ffmpeg cuts on their own loop so they can neither
+ *  block ingest/STT nor delay due social posts. Each tick processes at most
+ *  one bounded batch; per-clip failures back off inside the task itself. */
+async function pollPreviewQueue() {
+  if (previewPolling) {
+    return;
+  }
+
+  previewPolling = true;
+
+  try {
+    const previewsProcessed = await processPendingClipPreviews();
+    lastPreviewPollAt = new Date().toISOString();
+    consecutivePreviewPollFailures = 0;
+
+    if (previewsProcessed > 0) {
+      processedCount += previewsProcessed;
+    }
+  } catch (error) {
+    consecutivePreviewPollFailures += 1;
+    reportPollFailureAndMaybeExit(
+      "preview",
+      "preview_queue_poll_failed",
+      consecutivePreviewPollFailures,
+      error,
+    );
+  } finally {
+    previewPolling = false;
+  }
+}
+
 const server = createServer(async (req, res) => {
   if (req.url === "/health") {
     res.writeHead(200, { "content-type": "application/json" });
@@ -315,9 +345,11 @@ const server = createServer(async (req, res) => {
         queue: {
           ioPolling,
           renderPolling,
+          previewPolling,
           processedCount,
           lastPollAt,
           lastRenderPollAt,
+          lastPreviewPollAt,
         },
       }),
     );
@@ -325,7 +357,7 @@ const server = createServer(async (req, res) => {
   }
 
   if (req.url === "/poll-once" && req.method === "POST") {
-    await Promise.all([pollIoQueue(), pollRenderQueue()]);
+    await Promise.all([pollIoQueue(), pollRenderQueue(), pollPreviewQueue()]);
     res.writeHead(200, { "content-type": "application/json" });
     res.end(JSON.stringify({ ok: true }));
     return;
@@ -345,6 +377,10 @@ server.listen(port, () => {
 setInterval(() => {
   void pollIoQueue();
 }, pollIntervalMs);
+
+setInterval(() => {
+  void pollPreviewQueue();
+}, previewPollIntervalMs);
 
 setInterval(() => {
   void pollRenderQueue();
