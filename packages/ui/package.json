@@ -19,7 +19,7 @@
     "build": "tsc -p tsconfig.build.json",
     "lint": "echo 'ui lint: no-op'",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "echo 'ui test: no-op'",
+    "test": "bun test",
     "clean": "rm -rf dist"
   },
   "peerDependencies": {

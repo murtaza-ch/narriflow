@@ -177,6 +177,14 @@ export const clipSnapshotSchema = z.object({
   brollUrl: z.string().nullable().optional(),
   brollCues: brollCuesArraySchema.optional(),
   studioEdits: studioEditsSchema.optional(),
+  // Whether the worker has cut this clip's lightweight 540p preview proxy
+  // yet (Clip.previewStorageKey is set). The raw storage key never reaches
+  // the client — this boolean is the only proxy-readiness signal exposed,
+  // so the clip card's preview-fetch effect and the studio's poll effect
+  // both have something that actually changes when the proxy lands (an SSE-
+  // driven ClipSnapshot refresh otherwise touches no field either of them
+  // depended on).
+  hasPreview: z.boolean(),
   createdAt: z.string().datetime(),
 });
 

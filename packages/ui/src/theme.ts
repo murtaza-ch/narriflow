@@ -469,6 +469,15 @@ const config = defineConfig({
         // Chrome hexes map here; user caption/brand color values stay literal.
         studio: {
           canvas: { value: "#0E1013" },
+          // Translucent studio.canvas — the chip/badge ground for overlays
+          // sitting on footage (duration chips, delete affordances). rgba()
+          // because a semantic token can't derive alpha from another token;
+          // the (14,16,19) triplet is studio.canvas (#0E1013) and must be
+          // kept in sync with it by hand.
+          scrim: { value: "rgba(14, 16, 19, 0.72)" },
+          // Hover/pressed step of studio.scrim, for overlay affordances that
+          // sit on footage (e.g. delete-project-button.tsx's card variant).
+          scrimStrong: { value: "rgba(14, 16, 19, 0.85)" },
           subtle: { value: "#14171C" },
           surface: { value: "#171B21" },
           raised: { value: "#242A33" },
@@ -484,6 +493,17 @@ const config = defineConfig({
           fgSubtle: { value: "#828D9C" },
           accent: { value: "#5B6CFF" },
           accentFg: { value: "#8B97FF" },
+          // Danger, mode-invariant — studio chrome never leaves graphite, so
+          // the app-wide danger.fg/danger.solid (which flip _light/_dark) are
+          // wrong here: light mode's danger.600 #C42B1C is only ~3.2:1 on
+          // studio.subtle, below the 4.5:1 AA floor for text. Mirrors what
+          // dark surfaces already use — danger.400 for text/icons (6.14:1 on
+          // studio.subtle, 5.91:1 on studio.surface; also clears 4.94:1 on
+          // studio.raised) — plus danger.500 for borders/fills, which only
+          // need the 3:1 non-text floor (WCAG 1.4.11) and clears every studio
+          // tier (3.69–4.87:1).
+          danger: { value: "#F26D6D" },
+          dangerBorder: { value: "#E5484D" },
           timecode: { value: "#7FD4E4" },
           ring: { value: "#5B6CFF" },
         },

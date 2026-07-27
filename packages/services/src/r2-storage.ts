@@ -21,12 +21,42 @@ const SIGNED_URL_TTL_SECONDS = 60 * 60;
  *  preview proxies (~1-3 MB) and dub audio without risking the worker's heap. */
 const BUFFERED_PUT_MAX_BYTES = 16 * 1024 * 1024;
 
+/** Thrown by {@link readFilePart} when the file has fewer bytes available
+ *  than the requested `[start, end)` range (e.g. it was truncated by a
+ *  concurrent writer between the caller's `stat()` and this read). The
+ *  caller already declared the *original* `ContentLength` to S3/R2 for this
+ *  part — silently uploading a shorter body than that would either hang the
+ *  request or land a truncated, corrupted part, so this must be a hard
+ *  failure rather than a silently-truncated buffer. */
+export class ShortReadError extends Error {
+  readonly filePath: string;
+  readonly expectedBytes: number;
+  readonly actualBytes: number;
+
+  constructor(filePath: string, expectedBytes: number, actualBytes: number) {
+    super(
+      `Short read on ${filePath}: expected ${expectedBytes} bytes but only ` +
+        `${actualBytes} were available (premature EOF)`,
+    );
+    this.name = "ShortReadError";
+    this.filePath = filePath;
+    this.expectedBytes = expectedBytes;
+    this.actualBytes = actualBytes;
+  }
+}
+
 /** Reads `[start, end)` of a file into a Buffer. Used for multipart parts,
- *  which must be buffered rather than streamed (see putFileFromPath). */
-async function readFilePart(filePath: string, start: number, end: number) {
+ *  which must be buffered rather than streamed (see putFileFromPath).
+ *  Exported for testing; not part of this package's public surface. */
+export async function readFilePart(
+  filePath: string,
+  start: number,
+  end: number,
+): Promise<Buffer> {
   const handle = await open(filePath, "r");
   try {
-    const buffer = Buffer.allocUnsafe(end - start);
+    const expectedBytes = end - start;
+    const buffer = Buffer.allocUnsafe(expectedBytes);
     let offset = 0;
     while (offset < buffer.length) {
       const { bytesRead } = await handle.read(
@@ -38,7 +68,10 @@ async function readFilePart(filePath: string, start: number, end: number) {
       if (bytesRead === 0) break;
       offset += bytesRead;
     }
-    return offset === buffer.length ? buffer : buffer.subarray(0, offset);
+    if (offset !== expectedBytes) {
+      throw new ShortReadError(filePath, expectedBytes, offset);
+    }
+    return buffer;
   } finally {
     await handle.close();
   }
@@ -81,6 +114,20 @@ function getClient() {
       accessKeyId,
       secretAccessKey,
     },
+    // The SDK's default ("WHEN_SUPPORTED") attaches a request checksum to
+    // every request whose operation supports one — including PutObject/
+    // UploadPart — by wrapping the body in `aws-chunked` trailer framing.
+    // R2 rejects that framing outright, which is the actual root cause behind
+    // both errors this file used to hit when streaming a body ("You did not
+    // provide the number of bytes specified by the Content-Length HTTP
+    // header" on single PUT; "The socket connection was closed unexpectedly"
+    // on multipart). "WHEN_REQUIRED" only computes a checksum when the
+    // operation mandates one (S3/R2's PutObject and UploadPart do not), so
+    // the body goes out exactly as given — no forced chunked framing.
+    // Verified against the real bucket at 1.5 MB and 50 MB with this set:
+    // see the streaming-vs-buffering decision below and the worker's
+    // clip-preview verification report for the measurements.
+    requestChecksumCalculation: "WHEN_REQUIRED",
   });
 
   return r2Client;

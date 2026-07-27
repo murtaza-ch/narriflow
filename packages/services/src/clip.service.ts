@@ -203,6 +203,9 @@ function toClipSnapshot(clip: ClipWithRenders): ClipSnapshot {
     studioEdits: clip.studioEdits
       ? studioEditsSchema.parse(clip.studioEdits)
       : studioEditsSchema.parse({}),
+    // Presence-only signal — never the storage key itself. See the schema
+    // doc comment in packages/validators/src/clip.ts for why this exists.
+    hasPreview: Boolean(clip.previewStorageKey),
     createdAt: clip.createdAt.toISOString(),
   };
 }
