@@ -1,4 +1,4 @@
-# CLAUDE.md
+# AGENTS.md
 
 Narriflow turns long videos into short, captioned, virality-scored clips
 (OpusClip-class), plus content repurposing, dubbing, and social publishing.
