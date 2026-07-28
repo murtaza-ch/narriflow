@@ -31,6 +31,17 @@ function isPlanLimitError(error: unknown): boolean {
     error instanceof QuotaExceededError || error instanceof UploadTooLongError
   );
 }
+
+/**
+ * Plan-limit failures bounce the user back to the project they were acting on,
+ * never to /dashboard: the project page renders the exact limit that blocked
+ * the action (over the per-upload length cap, or out of monthly minutes) plus
+ * the upgrade link. Redirecting away instead dropped the user on an unrelated
+ * screen with no explanation of why nothing happened.
+ */
+function redirectForPlanLimit(projectId: string): never {
+  redirect(`/projects/${projectId}`);
+}
 import {
   readContentPackFromForm,
   readLanguageCodeFromForm,
@@ -71,7 +82,10 @@ export async function queueTranscriptionFormAction(formData: FormData) {
       idempotencyKey,
     );
   } catch (error) {
-    if (isPlanLimitError(error)) redirect("/dashboard");
+    if (isPlanLimitError(error)) {
+      revalidatePath(`/projects/${projectId}`);
+      redirectForPlanLimit(projectId);
+    }
     throw error;
   }
 
@@ -99,7 +113,10 @@ export async function regenerateClipsFormAction(formData: FormData) {
       readContentPackFromForm(formData),
     );
   } catch (error) {
-    if (isPlanLimitError(error)) redirect("/dashboard");
+    if (isPlanLimitError(error)) {
+      revalidatePath(`/projects/${projectId}`);
+      redirectForPlanLimit(projectId);
+    }
     throw error;
   }
 

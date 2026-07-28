@@ -22,7 +22,10 @@ import {
   BRAND_DEFAULT_CAPTION_PRESET_ID,
   LEGACY_DEFAULT_CAPTION_PRESET_ID,
   LINK_PROVIDERS,
+  MAX_UPLOAD_LENGTH_SECONDS,
+  MONTHLY_PROCESSING_MINUTE_LIMITS,
   captionPresetIdSchema,
+  processingMinutesFromSeconds,
   userErrorMessage,
 } from "@narriflow/validators";
 import { ProjectEvents } from "./project-events";
@@ -217,6 +220,39 @@ function SourceThumb({
   );
 }
 
+/**
+ * Inline reason a plan gate is blocking generation, shown beside the action it
+ * disables. Without this the server action's QuotaExceededError /
+ * UploadTooLongError could only be expressed as a redirect, which read as the
+ * button doing nothing.
+ */
+function PlanLimitNotice({ message }: { message: string | null }) {
+  if (!message) return null;
+  return (
+    <Flex align="flex-start" gap="1.5" mt="1.5" color="warning.fg">
+      <Box mt="0.5" flexShrink={0}>
+        <AlertTriangle size={13} aria-hidden />
+      </Box>
+      <Text fontSize="xs">
+        {message}{" "}
+        <Link href="/settings/billing">
+          <Text
+            as="span"
+            color="fg"
+            textDecoration="underline"
+            textDecorationColor="border.emphasized"
+            textUnderlineOffset="3px"
+            transition="text-decoration-color 120ms ease"
+            _hover={{ textDecorationColor: "fg" }}
+          >
+            Upgrade to keep generating.
+          </Text>
+        </Link>
+      </Text>
+    </Flex>
+  );
+}
+
 export default async function ProjectDetailPage({
   params,
 }: {
@@ -240,6 +276,7 @@ export default async function ProjectDetailPage({
     dubs,
     workflowHistory,
     pricingTier,
+    usedMinutes,
   ] = await Promise.all([
     projectService.getTranscriptSnapshot(appUser.id, projectId),
     clipService.listClips(appUser.id, projectId),
@@ -250,6 +287,7 @@ export default async function ProjectDetailPage({
     dubbingService.listProjectDubs(appUser.id, projectId),
     projectService.getWorkflowHistory(appUser.id, projectId),
     projectService.getUserPricingTier(appUser.id),
+    projectService.getMonthlyUsageMinutes(appUser.id),
   ]);
 
   let sourceVideoUrl: string | null = null;
@@ -275,6 +313,20 @@ export default async function ProjectDetailPage({
   // key here means the source was reclaimed after retention (see
   // purgeExpiredProjectSources), not a broken upload.
   const isSourceExpired = isIngestReady && !snapshot.project.sourceStorageKey;
+  // Same two gates projectService.assertProjectGenerationAllowed enforces, read
+  // here so the blocked state is visible before the click instead of only as a
+  // thrown QuotaExceededError/UploadTooLongError afterwards.
+  const monthlyLimitMinutes = MONTHLY_PROCESSING_MINUTE_LIMITS[pricingTier];
+  const maxUploadSeconds = MAX_UPLOAD_LENGTH_SECONDS[pricingTier];
+  const sourceSeconds = snapshot.project.sourceDurationSeconds ?? 0;
+  const planLimitMessage =
+    sourceSeconds > maxUploadSeconds
+      ? `This source is ${processingMinutesFromSeconds(sourceSeconds)} min, over the ${Math.round(
+          maxUploadSeconds / 60,
+        )}-min per-upload limit on the ${pricingTier} plan.`
+      : usedMinutes > monthlyLimitMinutes
+        ? `Monthly processing limit reached on the ${pricingTier} plan (${monthlyLimitMinutes} min/mo; ${usedMinutes} min used).`
+        : null;
   const transcriptReady = transcript?.status === "completed";
   const transcriptInFlight =
     transcript?.status === "queued" || transcript?.status === "processing";
@@ -608,9 +660,14 @@ export default async function ProjectDetailPage({
                         </Text>
                       </Flex>
                     )}
+                    <PlanLimitNotice message={planLimitMessage} />
                   </Box>
                   <Button
-                    disabled={!isIngestReady || transcriptInFlight}
+                    disabled={
+                      !isIngestReady ||
+                      transcriptInFlight ||
+                      planLimitMessage !== null
+                    }
                     type="submit"
                     size="sm"
                     flexShrink={0}
@@ -641,8 +698,14 @@ export default async function ProjectDetailPage({
                     <Text fontSize="sm" color="fg.muted" mt="0.5">
                       Detect clip-worthy moments and score them for virality.
                     </Text>
+                    <PlanLimitNotice message={planLimitMessage} />
                   </Box>
-                  <Button type="submit" size="sm" flexShrink={0} disabled={detectionInFlight}>
+                  <Button
+                    type="submit"
+                    size="sm"
+                    flexShrink={0}
+                    disabled={detectionInFlight || planLimitMessage !== null}
+                  >
                     {detectionInFlight ? "Detecting…" : "Detect clips"}
                   </Button>
                 </Flex>
@@ -674,7 +737,12 @@ export default async function ProjectDetailPage({
                   <input type="hidden" name="projectId" value={projectId} />
                   <input type="hidden" name="idempotencyKey" value={randomUUID()} />
                   <Flex align="center" gap="2" wrap="wrap">
-                    <Button type="submit" size="sm" variant="outline">
+                    <Button
+                      type="submit"
+                      size="sm"
+                      variant="outline"
+                      disabled={planLimitMessage !== null}
+                    >
                       Regenerate clips
                     </Button>
                     <AdvancedClipSettings
