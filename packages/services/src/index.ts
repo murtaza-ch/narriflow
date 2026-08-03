@@ -12,6 +12,7 @@ export {
   clipService,
   ClipService,
   ClipActionError,
+  ClipEditorRevisionConflictError,
   CLIP_TITLE_SYSTEM_PROMPT,
   buildClipTitleUserPrompt,
   brollUrlChanged,

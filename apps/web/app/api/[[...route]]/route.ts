@@ -26,6 +26,7 @@ import {
   transcriptExportFormatSchema,
   triggerClipRenderSchema,
   brollSearchQuerySchema,
+  saveEditorDocumentSchema,
   updateClipBoundariesSchema,
   updateClipBrollSchema,
   updateClipCaptionPresetSchema,
@@ -47,6 +48,7 @@ import {
   BrandTemplateNotFoundError,
   clipService,
   ClipActionError,
+  ClipEditorRevisionConflictError,
   contentSuiteService,
   ContentSuiteError,
   dubbingService,
@@ -995,6 +997,99 @@ app.post("/projects/:id/clips/:clipId/duplicate", async (c) => {
       { error: "clip_duplicate_failed", message: errorMessage(error) },
       400,
     );
+  }
+});
+
+/**
+ * Studio editor document (docs/plans/vizard-parity.md Phase A): GET returns
+ * {revision, document, original}; PUT is the atomic revision-guarded save
+ * replacing the legacy per-field PATCHes. 409 carries the current revision so
+ * the client can refetch and rebase; 422 rejects boundary changes until
+ * in-studio trim lands.
+ */
+app.get("/projects/:id/clips/:clipId/editor", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const projectId = c.req.param("id");
+  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  if (access === "missing") {
+    return c.json({ error: "Project not found" }, 404);
+  }
+  if (access === "forbidden") {
+    return c.json({ error: "Forbidden" }, 403);
+  }
+
+  try {
+    const result = await clipService.getClipEditorDocument(
+      appUser.id,
+      projectId,
+      c.req.param("clipId"),
+    );
+    return c.json(result, 200);
+  } catch (error) {
+    if (error instanceof Error && error.message === "clip not found") {
+      return c.json({ error: "Clip not found" }, 404);
+    }
+    throw error;
+  }
+});
+
+app.put("/projects/:id/clips/:clipId/editor", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const projectId = c.req.param("id");
+  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  if (access === "missing") {
+    return c.json({ error: "Project not found" }, 404);
+  }
+  if (access === "forbidden") {
+    return c.json({ error: "Forbidden" }, 403);
+  }
+
+  const payload = await c.req.json().catch(() => null);
+  if (!payload || typeof payload !== "object") {
+    return c.json({ error: "Invalid payload" }, 400);
+  }
+
+  const parsed = saveEditorDocumentSchema.safeParse(payload);
+  if (!parsed.success) {
+    return c.json({ error: "Invalid payload" }, 400);
+  }
+
+  try {
+    const result = await clipService.saveClipEditorDocument(
+      appUser.id,
+      projectId,
+      c.req.param("clipId"),
+      parsed.data,
+    );
+    return c.json(result, 200);
+  } catch (error) {
+    if (error instanceof ClipEditorRevisionConflictError) {
+      return c.json(
+        {
+          error: "editor_revision_conflict",
+          currentRevision: error.currentRevision,
+        },
+        409,
+      );
+    }
+    if (
+      error instanceof ClipActionError &&
+      error.code === "editor_boundaries_immutable"
+    ) {
+      return c.json({ error: error.code }, 422);
+    }
+    if (error instanceof Error && error.message === "clip not found") {
+      return c.json({ error: "Clip not found" }, 404);
+    }
+    throw error;
   }
 });
 

@@ -16,12 +16,18 @@ import {
   clipAspectRatioToDb,
   clipTitleSuggestionsLlmResponseSchema,
   contentPackSchema,
+  DEFAULT_CAPTION_PRESET,
+  deletedRangesSchema,
+  editorDocumentSchema,
   getCaptionPresetById,
   getEffectiveClipTiming,
   isBrandDefaultCaptionPresetId,
+  normalizeDeletedRanges,
   normalizeTranscriptSliceForClip,
+  saveEditorDocumentSchema,
   splitUtterancesIntoSentences,
   studioEditsSchema,
+  updateClipTranscriptSliceSchema,
 } from "@narriflow/validators";
 import type {
   BrollCue,
@@ -32,6 +38,8 @@ import type {
   ClipRenderVariant,
   ClipSnapshot,
   ContentPack,
+  EditorDocument,
+  SaveEditorDocument,
   StudioEdits,
   TranscriptUtterance,
   WorkflowStageUpdatedEvent,
@@ -248,6 +256,57 @@ export class ClipActionError extends Error {
     super(message);
     this.name = "ClipActionError";
   }
+}
+
+/**
+ * Thrown when an editor-document save carries a stale baseRevision (another
+ * tab or an earlier in-flight save already bumped it). Carries the current
+ * revision so the client can refetch, rebase its history, and retry.
+ */
+export class ClipEditorRevisionConflictError extends Error {
+  constructor(readonly currentRevision: number) {
+    super("editor document revision conflict");
+    this.name = "ClipEditorRevisionConflictError";
+  }
+}
+
+function parseTranscriptSlice(value: unknown): TranscriptUtterance[] {
+  return updateClipTranscriptSliceSchema.parse({ transcriptSlice: value })
+    .transcriptSlice;
+}
+
+/**
+ * Materialize the editor document from a stored clip row. A null stored
+ * captionPreset maps to the default preset — the document model always has a
+ * concrete preset, which is also what the preview falls back to.
+ */
+function buildEditorDocumentFromClip(
+  clip: Pick<
+    Clip,
+    | "startSec"
+    | "endSec"
+    | "captionPreset"
+    | "transcriptSlice"
+    | "studioEdits"
+    | "brollUrl"
+    | "deletedRanges"
+  >,
+): EditorDocument {
+  return editorDocumentSchema.parse({
+    clipStartSec: clip.startSec,
+    clipEndSec: clip.endSec,
+    captionPreset: clip.captionPreset
+      ? captionPresetSchema.parse(clip.captionPreset)
+      : DEFAULT_CAPTION_PRESET,
+    transcriptSlice: parseTranscriptSlice(clip.transcriptSlice),
+    studioEdits: clip.studioEdits
+      ? studioEditsSchema.parse(clip.studioEdits)
+      : studioEditsSchema.parse({}),
+    brollUrl: clip.brollUrl ?? null,
+    deletedRanges: clip.deletedRanges
+      ? deletedRangesSchema.parse(clip.deletedRanges)
+      : [],
+  });
 }
 
 /**
@@ -1961,6 +2020,204 @@ export class ClipService {
     await deleteRenderAssets(staleRenderKeys);
 
     return toClipSnapshot(updated);
+  }
+
+  /**
+   * Loads the editor document + revision for the studio, plus the immutable
+   * revision-zero original used by Reset-to-original. Before the first save
+   * no snapshot exists yet, so the current state IS the original.
+   */
+  async getClipEditorDocument(
+    userId: string,
+    projectId: string,
+    clipId: string,
+  ): Promise<{
+    revision: number;
+    document: EditorDocument;
+    original: EditorDocument;
+  }> {
+    const prisma = requirePrisma();
+
+    const clip = await prisma.clip.findFirst({
+      where: { id: clipId, projectId, project: { userId } },
+    });
+    if (!clip) {
+      throw new Error("clip not found");
+    }
+
+    const document = buildEditorDocumentFromClip(clip);
+    const original = clip.editorOriginal
+      ? editorDocumentSchema.parse(clip.editorOriginal)
+      : document;
+
+    return { revision: clip.editorRevision, document, original };
+  }
+
+  /**
+   * Atomic, revision-guarded save of the whole editor document — the
+   * replacement for the studio's previous three independent PATCHes
+   * (captionPreset / transcriptSlice / studioEdits+brollUrl), which had no
+   * concurrency control and inconsistent render invalidation (studio edits
+   * deleted renders; caption/transcript changes silently did not, leaving
+   * stale burned output downloadable).
+   *
+   * Policy here: ANY export-affecting change (the whole document is
+   * export-affecting) invalidates renders in the same transaction as the
+   * guarded write. No-op saves are detected by deep-equality and issue zero
+   * writes. The first real save captures the revision-zero snapshot.
+   *
+   * Boundaries are validated, not writable: in-studio trim is Phase B step 13
+   * (docs/plans/vizard-parity.md) and needs proxy-lifecycle handling first.
+   * A transcript change still recomputes effective timing exactly like
+   * `updateClipTranscriptSlice` — but the result is returned to the caller so
+   * the client rebases explicitly instead of drifting.
+   */
+  async saveClipEditorDocument(
+    userId: string,
+    projectId: string,
+    clipId: string,
+    payload: SaveEditorDocument,
+  ): Promise<{ revision: number; document: EditorDocument; clip: ClipSnapshot }> {
+    const prisma = requirePrisma();
+    const { baseRevision, document } = saveEditorDocumentSchema.parse(payload);
+    if (document.brollUrl !== null) {
+      assertPublicHttpUrl(document.brollUrl);
+    }
+
+    const clip = await prisma.clip.findFirst({
+      where: { id: clipId, projectId, project: { userId } },
+      include: { renders: true },
+    });
+    if (!clip) {
+      throw new Error("clip not found");
+    }
+    if (clip.editorRevision !== baseRevision) {
+      throw new ClipEditorRevisionConflictError(clip.editorRevision);
+    }
+
+    const BOUNDARY_EPSILON_SEC = 0.001;
+    if (
+      Math.abs(document.clipStartSec - clip.startSec) > BOUNDARY_EPSILON_SEC ||
+      Math.abs(document.clipEndSec - clip.endSec) > BOUNDARY_EPSILON_SEC
+    ) {
+      throw new ClipActionError(
+        "editor_boundaries_immutable",
+        "clip boundaries cannot be changed through the editor document yet",
+      );
+    }
+
+    const current = buildEditorDocumentFromClip(clip);
+
+    let next: EditorDocument = {
+      ...document,
+      clipStartSec: clip.startSec,
+      clipEndSec: clip.endSec,
+      deletedRanges: normalizeDeletedRanges(document.deletedRanges, {
+        startSec: clip.startSec,
+        endSec: clip.endSec,
+      }),
+    };
+
+    const transcriptChanged =
+      JSON.stringify(next.transcriptSlice) !==
+      JSON.stringify(current.transcriptSlice);
+    if (transcriptChanged) {
+      // tailPadSec 0 — slice-only input; stored bounds are final (matches
+      // updateClipTranscriptSlice). The adjusted bounds come back to the
+      // client in the response document.
+      const effective = getEffectiveClipTiming({
+        utterances: next.transcriptSlice,
+        startSec: clip.startSec,
+        endSec: clip.endSec,
+        tailPadSec: 0,
+      });
+      next = {
+        ...next,
+        clipStartSec: effective.startSec,
+        clipEndSec: effective.endSec,
+        transcriptSlice: effective.transcriptSlice,
+        deletedRanges: normalizeDeletedRanges(next.deletedRanges, {
+          startSec: effective.startSec,
+          endSec: effective.endSec,
+        }),
+      };
+    }
+
+    // Both sides are schema-parse output, so serialized comparison is a valid
+    // deep-equality check (stable key order, no undefined-vs-missing holes).
+    if (JSON.stringify(next) === JSON.stringify(current)) {
+      return {
+        revision: clip.editorRevision,
+        document: current,
+        clip: toClipSnapshot(clip),
+      };
+    }
+
+    const staleRenderKeys = clip.renders
+      .map((render) => render.storageKey)
+      .filter((key): key is string => Boolean(key));
+
+    let deletedRenderCount = 0;
+    const updated = await prisma.$transaction(async (tx) => {
+      const guarded = await tx.clip.updateMany({
+        where: { id: clipId, editorRevision: baseRevision },
+        data: {
+          startSec: next.clipStartSec,
+          endSec: next.clipEndSec,
+          captionPreset: next.captionPreset as unknown as Prisma.InputJsonValue,
+          transcriptSlice:
+            next.transcriptSlice as unknown as Prisma.InputJsonValue,
+          studioEdits: next.studioEdits as unknown as Prisma.InputJsonValue,
+          brollUrl: next.brollUrl,
+          deletedRanges: next.deletedRanges as unknown as Prisma.InputJsonValue,
+          editorRevision: { increment: 1 },
+          status: "edited",
+          // First real save captures the pre-edit state as the immutable
+          // revision-zero snapshot; never overwritten afterwards.
+          ...(clip.editorOriginal
+            ? {}
+            : { editorOriginal: current as unknown as Prisma.InputJsonValue }),
+        },
+      });
+      if (guarded.count === 0) {
+        return null;
+      }
+      const deleted = await tx.clipRender.deleteMany({ where: { clipId } });
+      deletedRenderCount = deleted.count;
+      return tx.clip.findUniqueOrThrow({
+        where: { id: clipId },
+        include: { renders: true },
+      });
+    });
+
+    if (!updated) {
+      const latest = await prisma.clip.findUnique({
+        where: { id: clipId },
+        select: { editorRevision: true },
+      });
+      throw new ClipEditorRevisionConflictError(
+        latest?.editorRevision ?? baseRevision + 1,
+      );
+    }
+
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        message: "editor_document_saved_invalidated_renders",
+        clipId,
+        revision: updated.editorRevision,
+        deletedRenderCount,
+        transcriptChanged,
+      }),
+    );
+
+    await deleteRenderAssets(staleRenderKeys);
+
+    return {
+      revision: updated.editorRevision,
+      document: buildEditorDocumentFromClip(updated),
+      clip: toClipSnapshot(updated),
+    };
   }
 
   /** Applies a caption preset to every clip in an owned project ("apply to all"). */

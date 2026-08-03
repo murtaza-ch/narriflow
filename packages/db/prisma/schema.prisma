@@ -622,6 +622,16 @@ model Clip {
   brollUrl        String?
   studioEdits     Json?
 
+  // Studio editor document (docs/plans/vizard-parity.md Phase A): optimistic-
+  // concurrency revision bumped by every real editor-document save,
+  // ripple-delete ranges in absolute source seconds, and the immutable
+  // revision-zero snapshot captured on first save — Reset-to-original
+  // restores from it, so later boundary/transcript writes can never destroy
+  // the starting point.
+  editorRevision Int   @default(0)
+  deletedRanges  Json?
+  editorOriginal Json?
+
   // LLM-suggested B-roll cutaway moments produced by the clip-detection call:
   // [{ atSec, query, reason }], atSec relative to the clip's own start. Without
   // this the detector's cues are computed and then thrown away, and the render
