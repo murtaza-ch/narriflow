@@ -8,6 +8,7 @@ export * from "./content-asset";
 export * from "./clip-timing";
 export * from "./content-pack";
 export * from "./dubbing";
+export * from "./edit-ranges";
 export * from "./error-messages";
 export * from "./ingest";
 export * from "./language";
