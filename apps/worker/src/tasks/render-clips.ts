@@ -14,6 +14,7 @@ import {
   createByteLimitTransform,
   downloadObjectToFile,
   guardedFetch,
+  presignDownloadUrl,
   projectService,
   putFileFromPath,
   RemoteFetchError,
@@ -59,6 +60,10 @@ import {
   saveBrollAssetToCache,
   type BrollCueInput,
 } from "./broll";
+import {
+  notifyAutoRenderCompleted,
+  notifyWorkflowFailureAfterSettlement,
+} from "../notifications";
 
 interface BrollCutaway {
   path: string;
@@ -131,10 +136,16 @@ export function resolveRenderTimingForClip(input: {
     };
   }
 
+  // tailPadSec 0: the clip's stored bounds were already pad- and collision-
+  // normalized against the full transcript at detection/edit time, and the
+  // slice passed here can't see the word that follows the clip — re-padding
+  // from slice-only data used to push the rendered end ~0.25s past the
+  // stored end, straight into the next sentence.
   return getEffectiveClipTiming({
     utterances: input.utterances,
     startSec: input.startSec,
     endSec: input.endSec,
+    tailPadSec: 0,
   });
 }
 
@@ -217,51 +228,32 @@ function x264Crf(): string {
 const REMOTE_MEDIA_DOWNLOAD_TIMEOUT_MS = 45_000;
 const REMOTE_MEDIA_MAX_BYTES = 250 * 1024 * 1024;
 
-async function execCommand(command: string, args: string[]) {
-  return new Promise<void>((resolve, reject) => {
-    const child = spawn(command, args, {
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-
-    let stderr = "";
-
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString();
-    });
-
-    child.on("error", (error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOENT") {
-        reject(
-          new WorkflowWorkerError(
-            "worker_command_missing",
-            `${command} is not installed`,
-          ),
-        );
-        return;
-      }
-
-      reject(error);
-    });
-
-    child.on("close", (code) => {
-      if (code === 0) {
-        resolve();
-        return;
-      }
-
-      reject(
-        new WorkflowWorkerError(
-          "worker_command_failed",
-          `${command} failed with code ${code}: ${stderr.slice(-500)}`,
-        ),
-      );
-    });
-  });
+// Whole-process wall-clock bounds. With ranged reads, ffmpeg holds an HTTP
+// connection for the entire encode; -rw_timeout bounds a single stalled read
+// but (as clip-preview.ts's armProcessTimeout comment documents) a quiet
+// stall can still evade it — and a child that never exits would hold the
+// render loop's mutex forever with nothing detecting it. SIGTERM first,
+// SIGKILL after a grace period.
+const COMMAND_KILL_GRACE_MS = 5000;
+const RENDER_COMMAND_TIMEOUT_MS = Number(
+  process.env.WORKER_RENDER_FFMPEG_TIMEOUT_MS ?? String(30 * 60 * 1000),
+);
+const PROBE_COMMAND_TIMEOUT_MS = 2 * 60 * 1000;
+// Presigned source URLs carry their auth in the query string and ffmpeg
+// echoes the full URL into stderr on HTTP errors; strip query strings before
+// any of it can reach an error message (and from there structured logs).
+function redactUrlQueries(text: string): string {
+  return text.replace(/\?[^\s"']+/g, "?[redacted]");
 }
+// Only the error-message tail is ever consumed; cap accumulation so a flaky
+// HTTP source chattering -reconnect retries can't grow stderr unboundedly
+// over a multi-minute encode.
+const MAX_STDERR_CHARS = 8192;
 
-async function execCommandOutput(
+function runCommand(
   command: string,
   args: string[],
+  options: { timeoutMs: number; captureStdout: boolean },
 ): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const child = spawn(command, args, {
@@ -270,16 +262,34 @@ async function execCommandOutput(
 
     let stdout = "";
     let stderr = "";
+    let timedOut = false;
+    let killTimer: ReturnType<typeof setTimeout> | undefined;
 
-    child.stdout.on("data", (chunk: Buffer) => {
-      stdout += chunk.toString();
-    });
+    const timeoutTimer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGTERM");
+      killTimer = setTimeout(() => {
+        child.kill("SIGKILL");
+      }, COMMAND_KILL_GRACE_MS);
+    }, options.timeoutMs);
+
+    const clearTimers = () => {
+      clearTimeout(timeoutTimer);
+      if (killTimer) clearTimeout(killTimer);
+    };
+
+    if (options.captureStdout) {
+      child.stdout.on("data", (chunk: Buffer) => {
+        stdout += chunk.toString();
+      });
+    }
 
     child.stderr.on("data", (chunk: Buffer) => {
-      stderr += chunk.toString();
+      stderr = (stderr + chunk.toString()).slice(-MAX_STDERR_CHARS);
     });
 
     child.on("error", (error: NodeJS.ErrnoException) => {
+      clearTimers();
       if (error.code === "ENOENT") {
         reject(
           new WorkflowWorkerError(
@@ -294,6 +304,18 @@ async function execCommandOutput(
     });
 
     child.on("close", (code) => {
+      clearTimers();
+
+      if (timedOut) {
+        reject(
+          new WorkflowWorkerError(
+            "worker_command_timeout",
+            `${command} timed out after ${options.timeoutMs}ms`,
+          ),
+        );
+        return;
+      }
+
       if (code === 0) {
         resolve(stdout);
         return;
@@ -302,22 +324,89 @@ async function execCommandOutput(
       reject(
         new WorkflowWorkerError(
           "worker_command_failed",
-          `${command} failed with code ${code}: ${stderr.slice(-500)}`,
+          `${command} failed with code ${code}: ${redactUrlQueries(stderr.slice(-500))}`,
         ),
       );
     });
   });
 }
 
+async function execCommand(
+  command: string,
+  args: string[],
+  options?: { timeoutMs?: number },
+) {
+  await runCommand(command, args, {
+    timeoutMs: options?.timeoutMs ?? RENDER_COMMAND_TIMEOUT_MS,
+    captureStdout: false,
+  });
+}
+
+async function execCommandOutput(
+  command: string,
+  args: string[],
+  options?: { timeoutMs?: number },
+): Promise<string> {
+  return runCommand(command, args, {
+    timeoutMs: options?.timeoutMs ?? RENDER_COMMAND_TIMEOUT_MS,
+    captureStdout: true,
+  });
+}
+
+/** Ranged source reads (default): every builder already puts `-ss` before
+ *  `-i`, so handing ffmpeg a presigned HTTPS URL makes it range-request only
+ *  the clip windows instead of the whole object — clip-preview.ts measured
+ *  11.72s wall for a 38s cut off a 531MB 4K source with this exact pattern.
+ *  For a 2h podcast, 6-10 clips read ~5-8% of the source bytes vs 100% for
+ *  the old full-file download. `WORKER_RENDER_SOURCE_MODE=download` restores
+ *  the old behavior; any presign/probe failure falls back to it per run. */
+const RENDER_SOURCE_URL_TTL_SEC = 12 * 60 * 60;
+
+// Mirrors clip-preview.ts's HTTP_SOURCE_ARGS: reconnect only on genuinely
+// transient statuses, and bound a single stalled read so a quiet connection
+// can't hang the ffmpeg child forever (execCommand has no per-render timeout
+// here; the run-level reaper is the outer backstop).
+const HTTP_SOURCE_RECONNECT_HTTP_ERROR_CODES = "429,500,502,503,504";
+const HTTP_SOURCE_RW_TIMEOUT_US = 30_000_000; // 30s
+
+function isHttpSource(input: string): boolean {
+  return /^https?:\/\//i.test(input);
+}
+
+function httpSourceInputArgs(input: string): string[] {
+  if (!isHttpSource(input)) return [];
+  return [
+    "-reconnect",
+    "1",
+    "-reconnect_streamed",
+    "1",
+    "-reconnect_on_network_error",
+    "1",
+    "-reconnect_on_http_error",
+    HTTP_SOURCE_RECONNECT_HTTP_ERROR_CODES,
+    "-reconnect_delay_max",
+    "10",
+    "-rw_timeout",
+    String(HTTP_SOURCE_RW_TIMEOUT_US),
+  ];
+}
+
 async function probeSource(sourcePath: string): Promise<SourceProbe> {
-  const output = await execCommandOutput("ffprobe", [
-    "-v",
-    "quiet",
-    "-print_format",
-    "json",
-    "-show_streams",
-    sourcePath,
-  ]);
+  const output = await execCommandOutput(
+    "ffprobe",
+    [
+      "-v",
+      "quiet",
+      "-print_format",
+      "json",
+      "-show_streams",
+      ...(isHttpSource(sourcePath)
+        ? ["-rw_timeout", String(HTTP_SOURCE_RW_TIMEOUT_US)]
+        : []),
+      sourcePath,
+    ],
+    { timeoutMs: PROBE_COMMAND_TIMEOUT_MS },
+  );
 
   const data = JSON.parse(output) as {
     streams?: Array<{
@@ -348,15 +437,19 @@ async function probeSource(sourcePath: string): Promise<SourceProbe> {
  */
 async function probeMediaDurationSec(filePath: string): Promise<number | null> {
   try {
-    const output = await execCommandOutput("ffprobe", [
-      "-v",
-      "quiet",
-      "-print_format",
-      "json",
-      "-show_entries",
-      "format=duration",
-      filePath,
-    ]);
+    const output = await execCommandOutput(
+      "ffprobe",
+      [
+        "-v",
+        "quiet",
+        "-print_format",
+        "json",
+        "-show_entries",
+        "format=duration",
+        filePath,
+      ],
+      { timeoutMs: PROBE_COMMAND_TIMEOUT_MS },
+    );
     const data = JSON.parse(output) as { format?: { duration?: string } };
     const parsed = data.format?.duration ? Number(data.format.duration) : NaN;
     return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
@@ -748,6 +841,18 @@ function appendTransitionFilter(
   return outputLabel;
 }
 
+// Every render gets a short audio fade at each boundary: clip ends land at
+// most ~0.25s after the last spoken word (and, when speech continues in the
+// source, just a few ms before the next word), so a hard cut audibly clicks
+// or clips a phoneme. The fade is short enough to be inaudible as an effect.
+const AUDIO_FADE_IN_SEC = 0.04;
+const AUDIO_FADE_OUT_SEC = 0.12;
+
+export function buildAudioFadeChain(clipDurationSec: number) {
+  const fadeOutStart = Math.max(0, clipDurationSec - AUDIO_FADE_OUT_SEC);
+  return `afade=t=in:st=0:d=${AUDIO_FADE_IN_SEC.toFixed(3)},afade=t=out:st=${fadeOutStart.toFixed(3)}:d=${AUDIO_FADE_OUT_SEC.toFixed(3)}`;
+}
+
 function buildMusicAudioFilter(params: {
   sourceHasAudio: boolean;
   musicInputIndex: number;
@@ -758,6 +863,7 @@ function buildMusicAudioFilter(params: {
   const duration = Math.max(0.1, params.clipDurationSec);
   const startOffset = Math.max(0, params.music.startOffsetSec || 0);
   const musicLabel = "[musica]";
+  const fadeChain = buildAudioFadeChain(duration);
   // start=<offset> seeks into the (infinitely -stream_loop'd) music input so
   // the user's chosen point in the track plays first, instead of always the
   // first `duration` seconds of the file.
@@ -765,7 +871,7 @@ function buildMusicAudioFilter(params: {
     `[${params.musicInputIndex}:a]atrim=start=${startOffset.toFixed(3)}:duration=${duration.toFixed(3)},asetpts=PTS-STARTPTS,volume=${volume.toFixed(3)}${musicLabel}`;
 
   if (!params.sourceHasAudio) {
-    return `${musicFilter};${musicLabel}anull[outa]`;
+    return `${musicFilter};${musicLabel}${fadeChain}[outa]`;
   }
 
   // normalize=0: amix's default normalization divides every input by the
@@ -776,7 +882,7 @@ function buildMusicAudioFilter(params: {
   return [
     `[0:a]atrim=duration=${duration.toFixed(3)},asetpts=PTS-STARTPTS[maina]`,
     musicFilter,
-    `[maina]${musicLabel}amix=inputs=2:duration=first:dropout_transition=0:normalize=0[outa]`,
+    `[maina]${musicLabel}amix=inputs=2:duration=first:dropout_transition=0:normalize=0,${fadeChain}[outa]`,
   ].join(";");
 }
 
@@ -1029,6 +1135,7 @@ export function buildSingleVideoArgs(params: {
 
   const args = [
     "-y",
+    ...httpSourceInputArgs(params.sourcePath),
     "-ss",
     String(params.startSec),
     "-t",
@@ -1052,6 +1159,10 @@ export function buildSingleVideoArgs(params: {
         clipDurationSec,
       }),
     );
+  } else if (params.probe.hasAudio) {
+    filterParts.push(
+      `[0:a:0]${buildAudioFadeChain(clipDurationSec)}[outa]`,
+    );
   }
 
   args.push(
@@ -1070,7 +1181,7 @@ export function buildSingleVideoArgs(params: {
   if (params.music) {
     args.push("-map", "[outa]", "-c:a", "aac", "-b:a", "128k", "-shortest");
   } else if (params.probe.hasAudio) {
-    args.push("-map", "0:a:0?", "-c:a", "aac", "-b:a", "128k");
+    args.push("-map", "[outa]", "-c:a", "aac", "-b:a", "128k");
   } else {
     args.push("-an");
   }
@@ -1203,6 +1314,7 @@ export function buildBrollVideoArgs(params: {
 
   const args = [
     "-y",
+    ...httpSourceInputArgs(params.sourcePath),
     "-ss",
     String(params.startSec),
     "-t",
@@ -1239,6 +1351,8 @@ export function buildBrollVideoArgs(params: {
         clipDurationSec,
       }),
     );
+  } else if (params.probe.hasAudio) {
+    parts.push(`[0:a:0]${buildAudioFadeChain(clipDurationSec)}[outa]`);
   }
 
   args.push("-filter_complex", parts.join(";"), "-map", finalLabel);
@@ -1246,7 +1360,7 @@ export function buildBrollVideoArgs(params: {
   if (params.music) {
     args.push("-map", "[outa]", "-c:a", "aac", "-b:a", "128k", "-shortest");
   } else if (params.probe.hasAudio) {
-    args.push("-map", "0:a:0?", "-c:a", "aac", "-b:a", "128k");
+    args.push("-map", "[outa]", "-c:a", "aac", "-b:a", "128k");
   } else {
     args.push("-an");
   }
@@ -1445,6 +1559,7 @@ export function buildMultiVideoArgs(params: {
 
   const args = [
     "-y",
+    ...httpSourceInputArgs(params.sourcePath),
     "-ss",
     String(params.startSec),
     "-t",
@@ -1457,13 +1572,23 @@ export function buildMultiVideoArgs(params: {
     args.push("-i", params.logo.filePath);
   }
 
+  if (params.probe.hasAudio) {
+    const audioSplits = params.outputs.map((_, i) => `[aud${i}]`).join("");
+    filterSections.push(
+      `[0:a:0]asplit=${params.outputs.length}${audioSplits}`,
+      ...params.outputs.map(
+        (_, i) => `[aud${i}]${buildAudioFadeChain(clipDurationSec)}[outa${i}]`,
+      ),
+    );
+  }
+
   args.push("-filter_complex", filterSections.join(";"));
 
   for (const [index, output] of params.outputs.entries()) {
     args.push("-map", finalLabels[index]!);
 
     if (params.probe.hasAudio) {
-      args.push("-map", "0:a:0?", "-c:a", "aac", "-b:a", "128k");
+      args.push("-map", `[outa${index}]`, "-c:a", "aac", "-b:a", "128k");
     } else {
       args.push("-an");
     }
@@ -1528,11 +1653,21 @@ export function buildAudiogramArgs(params: {
     params.captionPreset,
   );
 
-  const chain: string[] = [
-    `color=c=${bgColor}:s=${W}x${H}:d=${params.clipDurationSec}[bg]`,
-    `[0:a]showwaves=s=${W}x${waveHeight}:mode=cline:colors=${waveColor}:rate=25[wave]`,
-    `[bg][wave]overlay=0:(H-h)/2[comp]`,
-  ];
+  const chain: string[] = params.music
+    ? [
+        `color=c=${bgColor}:s=${W}x${H}:d=${params.clipDurationSec}[bg]`,
+        `[0:a]showwaves=s=${W}x${waveHeight}:mode=cline:colors=${waveColor}:rate=25[wave]`,
+        `[bg][wave]overlay=0:(H-h)/2[comp]`,
+      ]
+    : [
+        `color=c=${bgColor}:s=${W}x${H}:d=${params.clipDurationSec}[bg]`,
+        // Split the audio so one branch drives the waveform and the other is
+        // faded and mapped as the output track.
+        `[0:a]asplit=2[wavesrc][fadesrc]`,
+        `[wavesrc]showwaves=s=${W}x${waveHeight}:mode=cline:colors=${waveColor}:rate=25[wave]`,
+        `[fadesrc]${buildAudioFadeChain(params.clipDurationSec)}[outa]`,
+        `[bg][wave]overlay=0:(H-h)/2[comp]`,
+      ];
 
   let finalLabel = "[comp]";
   if (params.studioEdits?.textLayers.length) {
@@ -1566,6 +1701,7 @@ export function buildAudiogramArgs(params: {
 
   const args = [
     "-y",
+    ...httpSourceInputArgs(params.sourcePath),
     "-ss",
     String(params.startSec),
     "-t",
@@ -1593,11 +1729,7 @@ export function buildAudiogramArgs(params: {
     videoOutputLabel,
   );
 
-  if (params.music) {
-    args.push("-map", "[outa]");
-  } else {
-    args.push("-map", "0:a:0");
-  }
+  args.push("-map", "[outa]");
 
   // -shortest (existing) already bounds this to the shorter of video/audio;
   // -t is a belt-and-suspenders explicit bound (see buildSingleVideoArgs).
@@ -1725,6 +1857,10 @@ async function uploadRenderedOutput(params: {
    *  `Clip.brollAttribution Json?` follow-up if durable, per-clip-queryable
    *  attribution is wanted later. */
   brollCredits?: string | null;
+  /** Wall-clock of the ffmpeg encode that produced this output. For the
+   *  shared multi-output encode the same value is reported for every output
+   *  it covered. */
+  encodeMs?: number;
 }) {
   if (params.applyFreeTierTreatment) {
     // The watermark + 720p-class downscale are folded directly into the main
@@ -1746,6 +1882,7 @@ async function uploadRenderedOutput(params: {
 
   const outputStat = await stat(params.output.outputPath);
 
+  const uploadStartedAtMs = Date.now();
   await putFileFromPath({
     key: params.output.storageKey,
     filePath: params.output.outputPath,
@@ -1758,6 +1895,7 @@ async function uploadRenderedOutput(params: {
       ...(params.brollCredits ? { broll_credits: params.brollCredits } : {}),
     },
   });
+  const uploadMs = Date.now() - uploadStartedAtMs;
 
   await clipService.completeClipRenderVariant(params.output.clipRenderId, {
     storageKey: params.output.storageKey,
@@ -1772,6 +1910,8 @@ async function uploadRenderedOutput(params: {
     clipIndex: params.output.clipIndex,
     aspectRatio: params.output.aspectRatio,
     sizeBytes: Number(outputStat.size),
+    uploadMs,
+    ...(params.encodeMs !== undefined ? { encodeMs: params.encodeMs } : {}),
   });
 }
 
@@ -1786,6 +1926,13 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
       projectId: run.projectId,
       code: "source_storage_key_missing",
     });
+    await notifyWorkflowFailureAfterSettlement({
+      workflowRunId: run.id,
+      projectId: run.projectId,
+      errorCode: "source_storage_key_missing",
+      reason: "The project source file is unavailable.",
+      autoRenderOnly: true,
+    });
     return;
   }
 
@@ -1796,6 +1943,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
   );
   const applyFreeTierTreatment = ownerTier === "free";
 
+  const runStartedAtMs = Date.now();
   log("info", "clip_rendering_run_started", {
     workflowRunId: run.id,
     projectId: run.projectId,
@@ -1803,24 +1951,74 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
   });
 
   const tempDir = await mkdtemp(join(tmpdir(), "narriflow-render-"));
+  // Captured outside the try so the failure path can hand exactly this
+  // attempt's variant ids to failClipRenderingWorkflowRun (see
+  // all_clip_renders_failed below).
+  let attemptVariantIds: string[] = [];
 
   try {
     const sourceExt = extname(run.project.sourceStorageKey) || ".bin";
-    const sourcePath = join(tempDir, `source${sourceExt}`);
+    const localSourcePath = join(tempDir, `source${sourceExt}`);
 
-    try {
-      await downloadObjectToFile({
-        key: run.project.sourceStorageKey,
-        filePath: sourcePath,
+    // `sourcePath` is what every ffmpeg builder receives as input: a presigned
+    // URL in ranged mode (see RENDER_SOURCE_URL_TTL_SEC above), or the local
+    // download in fallback/download mode. All builders seek with -ss before
+    // -i, so both forms behave identically apart from what gets transferred.
+    let sourcePath: string | null = null;
+    let probe: SourceProbe | null = null;
+
+    const configuredSourceMode = process.env.WORKER_RENDER_SOURCE_MODE;
+    if (
+      configuredSourceMode &&
+      configuredSourceMode !== "ranged" &&
+      configuredSourceMode !== "download"
+    ) {
+      log("error", "clip_rendering_unknown_source_mode", {
+        workflowRunId: run.id,
+        configuredSourceMode,
+        effectiveMode: "ranged",
       });
-    } catch (error) {
-      throw new WorkflowWorkerError(
-        "source_download_failed",
-        `Failed to download source: ${error instanceof Error ? error.message : "unknown"}`,
-      );
     }
 
-    const probe = await probeSource(sourcePath);
+    if (configuredSourceMode !== "download") {
+      try {
+        const presignedUrl = await presignDownloadUrl({
+          key: run.project.sourceStorageKey,
+          expiresIn: RENDER_SOURCE_URL_TTL_SEC,
+        });
+        probe = await probeSource(presignedUrl);
+        sourcePath = presignedUrl;
+        log("info", "clip_rendering_source_mode", {
+          workflowRunId: run.id,
+          projectId: run.projectId,
+          mode: "ranged",
+        });
+      } catch (error) {
+        log("error", "clip_rendering_ranged_source_fallback", {
+          workflowRunId: run.id,
+          projectId: run.projectId,
+          message: error instanceof Error ? error.message : "unknown",
+        });
+        sourcePath = null;
+        probe = null;
+      }
+    }
+
+    if (sourcePath === null || probe === null) {
+      try {
+        await downloadObjectToFile({
+          key: run.project.sourceStorageKey,
+          filePath: localSourcePath,
+        });
+      } catch (error) {
+        throw new WorkflowWorkerError(
+          "source_download_failed",
+          `Failed to download source: ${error instanceof Error ? error.message : "unknown"}`,
+        );
+      }
+      sourcePath = localSourcePath;
+      probe = await probeSource(sourcePath);
+    }
 
     log("info", "clip_rendering_source_probed", {
       workflowRunId: run.id,
@@ -1879,6 +2077,8 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
         "No clip render variants with status=pending found",
       );
     }
+
+    attemptVariantIds = pendingRenders.map((render) => render.id);
 
     const rendersByClipId = new Map<string, typeof pendingRenders>();
 
@@ -2019,11 +2219,61 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
       });
 
       if (reframeEnabled && srcRatio > 1.05 && reframeOutputs.length > 0) {
-        const detection = await detectFacePath({
-          sourcePath,
-          startSec: clipStartSec,
-          durationSec: clipDurationSec,
-        });
+        // The YuNet detector (python3 + OpenCV) needs a frame-accurate local
+        // file. In ranged mode, cut a low-res re-encoded segment of just this
+        // clip's window (re-encode, not -c copy: a stream copy snaps to the
+        // previous keyframe and would shift every face sample by up to a GOP).
+        // Face centers are returned normalized, so 360p detection maps to the
+        // full-res crop math unchanged. On any extraction failure just skip
+        // detection — callers already fall back to a static center crop.
+        let detectInput: string | null = sourcePath;
+        let detectStartSec = clipStartSec;
+        if (isHttpSource(sourcePath)) {
+          const segmentPath = join(tempDir, `face-seg-${clip.id}.mp4`);
+          try {
+            await execCommand("ffmpeg", [
+              "-y",
+              ...httpSourceInputArgs(sourcePath),
+              "-ss",
+              String(clipStartSec),
+              "-t",
+              String(clipDurationSec),
+              "-i",
+              sourcePath,
+              "-map",
+              "0:v:0",
+              "-vf",
+              "scale=-2:360",
+              "-c:v",
+              "libx264",
+              "-preset",
+              "ultrafast",
+              "-crf",
+              "30",
+              "-an",
+              segmentPath,
+            ]);
+            detectInput = segmentPath;
+            detectStartSec = 0;
+          } catch (segmentError) {
+            log("error", "clip_reframe_segment_extract_failed", {
+              workflowRunId: run.id,
+              clipId: clip.id,
+              message:
+                segmentError instanceof Error
+                  ? segmentError.message
+                  : "unknown",
+            });
+            detectInput = null;
+          }
+        }
+        const detection = detectInput
+          ? await detectFacePath({
+              sourcePath: detectInput,
+              startSec: detectStartSec,
+              durationSec: clipDurationSec,
+            })
+          : null;
         const smoothed = detection ? smoothFacePath(detection.samples) : [];
         if (smoothed.length > 0) {
           const single = outputs.length === 1;
@@ -2307,6 +2557,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
               applyFreeTierTreatment,
             });
 
+            const encodeStartedAtMs = Date.now();
             await execCommand("ffmpeg", ffmpegArgs);
             await uploadRenderedOutput({
               workflowRunId: run.id,
@@ -2314,6 +2565,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
               output,
               clipDurationSec,
               applyFreeTierTreatment,
+              encodeMs: Date.now() - encodeStartedAtMs,
             });
             renderedVariantCount += 1;
           } catch (error) {
@@ -2376,6 +2628,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
                   music: musicPlan,
                   applyFreeTierTreatment,
                 });
+            const encodeStartedAtMs = Date.now();
             await execCommand("ffmpeg", ffmpegArgs);
             await uploadRenderedOutput({
               workflowRunId: run.id,
@@ -2384,6 +2637,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
               clipDurationSec,
               applyFreeTierTreatment,
               brollCredits,
+              encodeMs: Date.now() - encodeStartedAtMs,
             });
             renderedVariantCount += 1;
           } catch (error) {
@@ -2433,7 +2687,9 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
                   applyFreeTierTreatment,
                 });
 
+          const encodeStartedAtMs = Date.now();
           await execCommand("ffmpeg", ffmpegArgs);
+          const sharedEncodeMs = Date.now() - encodeStartedAtMs;
 
           for (const output of outputs) {
             try {
@@ -2443,6 +2699,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
                 output,
                 clipDurationSec,
                 applyFreeTierTreatment,
+                encodeMs: sharedEncodeMs,
               });
               renderedVariantCount += 1;
             } catch (error) {
@@ -2503,7 +2760,38 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
       });
     }
 
-    await projectService.completeClipRenderingWorkflowRun(run.id);
+    if (renderedVariantCount === 0 && pendingRenders.length > 0) {
+      // Every variant this attempt touched failed. Completing the run here
+      // would report success over an empty result. The variants are NOT reset
+      // here — failClipRenderingWorkflowRun (via the catch below, passed
+      // retryVariantIds) resets them to pending only when the run actually
+      // requeues; on the final attempt they stay `failed` with their real
+      // per-variant error codes so the UI settles.
+      throw new WorkflowWorkerError(
+        "all_clip_renders_failed",
+        `All ${pendingRenders.length} clip render variants failed`,
+      );
+    }
+
+    await projectService.completeClipRenderingWorkflowRun(run.id, {
+      failedVariantCount: pendingRenders.length - renderedVariantCount,
+    });
+
+    // A trigger that fired while this run was rendering had its variants
+    // absorbed by the one-live-run guard but missed this run's snapshot.
+    // Hand any such leftovers a fresh run (fresh attempt budget) so they
+    // don't sit pending forever with nothing claiming them.
+    const leftover = await clipService.getPendingClipRendersForProject(
+      run.projectId,
+    );
+    if (leftover.length > 0) {
+      await clipService.queueFollowUpRenderRun(run.projectId, run.id);
+      log("info", "clip_rendering_follow_up_queued", {
+        workflowRunId: run.id,
+        projectId: run.projectId,
+        leftoverVariantCount: leftover.length,
+      });
+    }
 
     log("info", "clip_rendering_run_completed", {
       workflowRunId: run.id,
@@ -2512,6 +2800,15 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
       totalVariantCount: pendingRenders.length,
       renderedVariantCount,
       failedVariantCount: pendingRenders.length - renderedVariantCount,
+      totalMs: Date.now() - runStartedAtMs,
+      sourceMode: isHttpSource(sourcePath) ? "ranged" : "download",
+      encoder: "libx264",
+      preset: x264Preset(),
+    });
+    await notifyAutoRenderCompleted({
+      workflowRunId: run.id,
+      projectId: run.projectId,
+      clipCount: clipGroups.length,
     });
   } catch (error) {
     const code =
@@ -2519,13 +2816,28 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
         ? error.code
         : "workflow_unhandled_error";
 
-    await projectService.failClipRenderingWorkflowRun(run.id, code);
+    const message =
+      error instanceof Error ? error.message : "Unknown worker error";
+    await projectService.failClipRenderingWorkflowRun(
+      run.id,
+      code,
+      code === "all_clip_renders_failed"
+        ? { retryVariantIds: attemptVariantIds }
+        : undefined,
+    );
 
     log("error", "clip_rendering_run_failed", {
       workflowRunId: run.id,
       projectId: run.projectId,
       code,
-      message: error instanceof Error ? error.message : "Unknown worker error",
+      message,
+    });
+    await notifyWorkflowFailureAfterSettlement({
+      workflowRunId: run.id,
+      projectId: run.projectId,
+      errorCode: code,
+      reason: message,
+      autoRenderOnly: true,
     });
   } finally {
     await rm(tempDir, { recursive: true, force: true });

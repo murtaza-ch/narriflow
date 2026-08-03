@@ -1,4 +1,5 @@
 import type { TranscriptUtterance, TranscriptWord } from "./transcript";
+import { isTerminalWordText } from "./utterance-split";
 
 export interface ClipTimingInput {
   utterances: TranscriptUtterance[];
@@ -21,7 +22,15 @@ export interface EffectiveClipTiming {
 const DEFAULT_TAIL_PAD_SEC = 0.25;
 const DEFAULT_MAX_DURATION_SEC = 120;
 const MIN_WORD_DURATION_SEC = 0.01;
-const TERMINAL_PUNCTUATION_RE = /[.!?]["')\]]?$/;
+// The tail pad must never swallow the start of the next word: when speech
+// continues immediately after the chosen sentence end, the clip has to end
+// just before the next word rather than a fixed pad past the last one —
+// production clips were hard-cutting 0.1-0.3s INTO the next sentence.
+const SPEECH_COLLISION_GAP_SEC = 0.04;
+// Small pre-roll before the first word so its opening phoneme is never
+// clipped, bounded so it can never reach back into the previous word.
+const START_PRE_ROLL_SEC = 0.15;
+const PRE_ROLL_MIN_GAP_SEC = 0.02;
 
 interface SpeechToken {
   startSec: number;
@@ -46,7 +55,7 @@ function rebuildText(words: TranscriptWord[]) {
 }
 
 function isTerminalWord(word: TranscriptWord) {
-  return TERMINAL_PUNCTUATION_RE.test(wordText(word));
+  return isTerminalWordText(wordText(word));
 }
 
 function getTimedWords(utterance: TranscriptUtterance[]) {
@@ -105,20 +114,56 @@ function findTokenIndexForRange(
   return tokens.length - 1;
 }
 
+// How far back the sentence-start walk may reach from its anchor token. On a
+// transcript with sparse/no terminal punctuation an unbounded walk collapses
+// every clip start to token 0, which (combined with the containment guard)
+// used to fail entire detection runs. Sentence-split utterances are capped at
+// ~30s, so a healthy transcript never hits this bound.
+const MAX_SENTENCE_LOOKBACK_SEC = 30;
+
 function findSentenceStartTokenIndex(tokens: SpeechToken[], tokenIndex: number) {
   let index = clamp(tokenIndex, 0, tokens.length - 1);
+  const floorSec = tokens[index]!.startSec - MAX_SENTENCE_LOOKBACK_SEC;
 
-  while (index > 0 && !tokens[index - 1]!.terminal) {
+  while (
+    index > 0 &&
+    !tokens[index - 1]!.terminal &&
+    tokens[index - 1]!.startSec >= floorSec
+  ) {
     index -= 1;
   }
 
   return index;
 }
 
+/** Pads a token's end without ever crossing into the next token: when the
+ *  speaker keeps talking, the clip ends just before the next word starts
+ *  instead of a fixed pad past the last one. */
+function collisionSafePaddedEnd(
+  tokens: SpeechToken[],
+  index: number,
+  sourceDurationSec: number,
+  tailPadSec: number,
+) {
+  const token = tokens[index]!;
+  const next = tokens[index + 1];
+  let paddedEnd = Math.min(sourceDurationSec, token.endSec + tailPadSec);
+
+  if (next) {
+    paddedEnd = Math.min(
+      paddedEnd,
+      Math.max(token.endSec, next.startSec - SPEECH_COLLISION_GAP_SEC),
+    );
+  }
+
+  return paddedEnd;
+}
+
 function chooseMarketWindowEnd(input: {
   tokens: SpeechToken[];
   startIndex: number;
   startSec: number;
+  rawEndSec: number;
   sourceDurationSec: number;
   minDurationSec: number;
   preferredMinDurationSec: number;
@@ -130,19 +175,15 @@ function chooseMarketWindowEnd(input: {
     input.sourceDurationSec,
     input.startSec + input.minDurationSec,
   );
-  const preferredMinEnd = Math.min(
-    input.sourceDurationSec,
-    input.startSec + input.preferredMinDurationSec,
-  );
-  const preferredMaxEnd = Math.min(
-    input.sourceDurationSec,
-    input.startSec + input.preferredMaxDurationSec,
-  );
+  // The preferred 30-60s band is deliberately NOT enforced here: the LLM is
+  // already prompted toward it and durationOptimality penalizes departures at
+  // ranking time. Hard-gating the end to the band is what used to drag every
+  // clip back to ~preferredMin and cut payoffs.
   const maxEnd = Math.min(
     input.sourceDurationSec,
     input.startSec + input.maxDurationSec,
   );
-  const terminalEnds: number[] = [];
+  const terminalEnds: Array<{ endSec: number; paddedEnd: number }> = [];
   let lastTokenEnd: number | null = null;
 
   for (let index = input.startIndex; index < input.tokens.length; index++) {
@@ -152,9 +193,17 @@ function chooseMarketWindowEnd(input: {
       break;
     }
 
-    const paddedEnd = Math.min(
+    // A token whose own end crosses the hard maximum can't be a candidate —
+    // the final clamp to maxEnd would slice it mid-word.
+    if (token.endSec > maxEnd) {
+      continue;
+    }
+
+    const paddedEnd = collisionSafePaddedEnd(
+      input.tokens,
+      index,
       input.sourceDurationSec,
-      token.endSec + input.tailPadSec,
+      input.tailPadSec,
     );
 
     if (paddedEnd <= input.startSec) {
@@ -164,32 +213,86 @@ function chooseMarketWindowEnd(input: {
     lastTokenEnd = paddedEnd;
 
     if (token.terminal) {
-      terminalEnds.push(paddedEnd);
+      terminalEnds.push({ endSec: token.endSec, paddedEnd });
     }
   }
 
-  const preferredTerminal = terminalEnds.find(
-    (endSec) => endSec >= preferredMinEnd && endSec <= preferredMaxEnd,
+  // The LLM chose its end for a reason — the payoff sits just before it — so
+  // complete the sentence CONTAINING the requested end instead of taking the
+  // first sentence end past the preferred minimum (the old first-fit rule
+  // collapsed every clip to ~preferredMin seconds and amputated payoffs).
+  // The raw target is clamped into the allowed window first so an
+  // out-of-policy request still lands on the nearest compliant sentence end.
+  // Proximity is judged on UNPADDED word ends so the tail pad can't skew it.
+  // A raw span shorter than the policy minimum is a degenerate request (the
+  // repair will inflate it regardless), so its end carries no payoff signal —
+  // target the market-preferred window instead of the raw end.
+  const degenerateRawSpan =
+    input.rawEndSec - input.startSec < input.minDurationSec;
+  const rawTarget = clamp(
+    degenerateRawSpan
+      ? input.startSec + input.preferredMinDurationSec
+      : input.rawEndSec,
+    minEnd,
+    maxEnd,
+  );
+  // A raw end that lands shortly after a sentence's final word (the LLM's
+  // ends usually include the pause after it) still counts as "inside" that
+  // sentence rather than forcing a jump to the next one.
+  const completionToleranceSec = 1.0;
+
+  const validCandidates = terminalEnds.filter(
+    (candidate) =>
+      candidate.paddedEnd >= minEnd && candidate.paddedEnd <= maxEnd,
   );
 
-  if (preferredTerminal !== undefined) {
-    return preferredTerminal;
+  if (degenerateRawSpan) {
+    const preferredMinEnd = Math.min(
+      input.sourceDurationSec,
+      input.startSec + input.preferredMinDurationSec,
+    );
+    const preferredMaxEnd = Math.min(
+      input.sourceDurationSec,
+      input.startSec + input.preferredMaxDurationSec,
+    );
+    const preferred = validCandidates.find(
+      (candidate) =>
+        candidate.paddedEnd >= preferredMinEnd &&
+        candidate.paddedEnd <= preferredMaxEnd,
+    );
+
+    if (preferred !== undefined) {
+      return preferred.paddedEnd;
+    }
   }
 
-  const validTerminal = terminalEnds.find(
-    (endSec) => endSec >= minEnd && endSec <= maxEnd,
+  const completing = validCandidates.find(
+    (candidate) => candidate.endSec >= rawTarget - completionToleranceSec,
   );
 
-  if (validTerminal !== undefined) {
-    return validTerminal;
+  if (completing !== undefined) {
+    return completing.paddedEnd;
   }
 
-  const lastTerminalWithinMax = terminalEnds
-    .filter((endSec) => endSec <= maxEnd)
-    .at(-1);
+  // No sentence end at/after the target fits the window — fall back to the
+  // valid sentence end nearest the target (ties go to the later one: a
+  // slightly longer clip beats a truncated one).
+  if (validCandidates.length > 0) {
+    return validCandidates.reduce((best, candidate) => {
+      const bestDelta = Math.abs(best.endSec - rawTarget);
+      const delta = Math.abs(candidate.endSec - rawTarget);
+      if (delta < bestDelta) return candidate;
+      if (delta === bestDelta && candidate.endSec > best.endSec) {
+        return candidate;
+      }
+      return best;
+    }).paddedEnd;
+  }
 
-  if (lastTerminalWithinMax !== undefined) {
-    return lastTerminalWithinMax;
+  const lastTerminal = terminalEnds.at(-1);
+
+  if (lastTerminal !== undefined) {
+    return lastTerminal.paddedEnd;
   }
 
   return lastTokenEnd ?? maxEnd;
@@ -235,6 +338,7 @@ export function expandClipToMarketWindow(
     tokens,
     startIndex,
     startSec: effectiveStart,
+    rawEndSec: rawEnd,
     sourceDurationSec,
     minDurationSec,
     preferredMinDurationSec,
@@ -251,13 +355,27 @@ export function expandClipToMarketWindow(
     effectiveStart = tokens[startIndex]!.startSec;
   }
 
+  // Fix the max-duration ceiling to the FIRST WORD's start before applying
+  // pre-roll: the pre-roll adds up to 0.15s of leading silence, and letting
+  // it lower the ceiling could shave the chosen (word-aligned) end mid-word.
+  const endCeilingSec = Math.min(
+    sourceDurationSec,
+    effectiveStart + maxDurationSec,
+  );
+
+  // Pre-roll: back the start off the first word slightly so its opening
+  // phoneme isn't clipped, but never into the previous word (contiguous
+  // speech keeps the exact word start).
+  const prevToken = startIndex > 0 ? tokens[startIndex - 1] : null;
+  const preRollStart = Math.max(
+    prevToken ? prevToken.endSec + PRE_ROLL_MIN_GAP_SEC : 0,
+    effectiveStart - START_PRE_ROLL_SEC,
+  );
+  effectiveStart = Math.min(effectiveStart, preRollStart);
+
   effectiveStart = normalizeTime(clamp(effectiveStart, 0, sourceDurationSec));
   effectiveEnd = normalizeTime(
-    clamp(
-      effectiveEnd,
-      effectiveStart,
-      Math.min(sourceDurationSec, effectiveStart + maxDurationSec),
-    ),
+    clamp(effectiveEnd, effectiveStart, endCeilingSec),
   );
 
   if (effectiveEnd <= effectiveStart) {
@@ -344,16 +462,39 @@ export function expandClipToCompleteSpeech(
     }
 
     let sentenceEnd = last.word.endSec;
+    let sentenceEndIndex = last.index;
     const remainingWords = words.slice(last.index);
-    const terminal = remainingWords.find((entry) => isTerminalWord(entry.word));
+    const terminalOffset = remainingWords.findIndex((entry) =>
+      isTerminalWord(entry.word),
+    );
 
-    if (terminal) {
-      sentenceEnd = terminal.word.endSec;
+    if (terminalOffset >= 0) {
+      sentenceEnd = remainingWords[terminalOffset]!.word.endSec;
+      sentenceEndIndex = last.index + terminalOffset;
     } else {
       sentenceEnd = last.utterance.endSec;
     }
 
-    effectiveEnd = Math.max(effectiveEnd, sentenceEnd + tailPadSec);
+    // Same collision rule as the market-window path: the pad must not cross
+    // into the word that follows the sentence end. In the no-terminal branch
+    // sentenceEnd is the UTTERANCE end, so the relevant neighbor is the first
+    // word starting after it — not the word adjacent to `last`.
+    const nextEntry =
+      terminalOffset >= 0
+        ? words[sentenceEndIndex + 1]
+        : words.find((entry) => entry.word.startSec >= sentenceEnd);
+    let paddedSentenceEnd = sentenceEnd + tailPadSec;
+    if (nextEntry) {
+      paddedSentenceEnd = Math.min(
+        paddedSentenceEnd,
+        Math.max(
+          sentenceEnd,
+          nextEntry.word.startSec - SPEECH_COLLISION_GAP_SEC,
+        ),
+      );
+    }
+
+    effectiveEnd = Math.max(effectiveEnd, paddedSentenceEnd);
   } else {
     const lastUtterance = findLastOverlappingUtterance(
       input.utterances,

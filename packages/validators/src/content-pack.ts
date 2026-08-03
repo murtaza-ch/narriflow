@@ -20,6 +20,16 @@ export const clipLengthPresetSchema = z.enum([
   "120_to_180s",
 ]);
 
+/**
+ * Default render aspect ratio chosen at import time. Values mirror
+ * `clipAspectRatioSchema` in clip.ts — duplicated here because clip.ts
+ * imports from this module and the enum must not create a cycle.
+ */
+export const defaultAspectRatioSchema = z.enum(["9:16", "1:1", "16:9", "4:5"]);
+
+/** Single source of truth for the playbook version stamped on new packs. */
+export const PLATFORM_PLAYBOOK_VERSION = "2026.2";
+
 export const contentPackSchema = z.object({
   outputTypes: z.array(outputTypeSchema).min(1),
   clipGenerationMode: clipGenerationModeSchema.default("best"),
@@ -43,6 +53,7 @@ export const contentPackSchema = z.object({
   processingStartSec: z.number().int().min(0).nullable().default(null),
   processingEndSec: z.number().int().min(0).nullable().default(null),
   clipLengthPreset: clipLengthPresetSchema.default("auto"),
+  defaultAspectRatio: defaultAspectRatioSchema.default("9:16"),
 }).superRefine((data, ctx) => {
   if (data.minDurationSec > data.preferredMinDurationSec) {
     ctx.addIssue({

@@ -60,6 +60,16 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
   social_publish_failed: "We couldn't publish to that platform. Please try again.",
   social_post_publish_failed: "We couldn't publish that post. Please try again.",
   social_platform_unsupported: "That social platform isn't supported yet.",
+  social_provider_failed:
+    "The platform rejected the upload. Please try again shortly.",
+  social_account_missing:
+    "That account is no longer connected. Reconnect it in Settings → Social, then schedule the post again.",
+  social_asset_missing:
+    "The rendered clip for this post is no longer available. Re-render the clip, then schedule it again.",
+  social_post_schedule_failed:
+    "We couldn't schedule that post. Check the account connection and try again.",
+  social_post_cancel_failed:
+    "We couldn't cancel that post — it may have already started publishing. Check its current status above.",
   youtube_unsupported_source:
     "That link isn't a supported YouTube URL. Paste a youtube.com or youtu.be link.",
   youtube_missing_url:
@@ -116,6 +126,24 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
     "We retried this step automatically a few times and it kept failing. Please try again, or contact support if it keeps happening.",
   worker_stalled:
     "Processing was interrupted unexpectedly. Please try again, or contact support if it keeps happening.",
+  clip_not_found:
+    "That clip is no longer available. Refresh the page to see this project's current clips.",
+  clip_title_update_failed: "We couldn't rename this clip. Please try again.",
+  clip_title_suggestion_failed:
+    "We couldn't come up with title ideas just now. Please try again.",
+  // Configuration, not a transient fault — telling someone to "try again" sends
+  // them in a loop until an operator sets the key. Also thrown by the content
+  // suite, which previously fell through to the generic message.
+  openai_not_configured:
+    "AI features aren't configured on this server yet. Add an OpenAI API key and try again.",
+  openai_request_failed:
+    "Our AI provider didn't respond. Please try again in a moment.",
+  openai_bad_output:
+    "The AI returned something we couldn't use. Please try again.",
+  clip_duplicate_failed: "We couldn't duplicate this clip. Please try again.",
+  clip_delete_failed: "We couldn't delete this clip. Please try again.",
+  clip_has_scheduled_posts:
+    "This clip has scheduled or publishing social posts. Cancel them in Publish, then delete the clip.",
   // Extend as new codes appear.
 };
 

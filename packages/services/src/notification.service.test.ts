@@ -1,0 +1,376 @@
+import { describe, expect, test } from "bun:test";
+import {
+  NotificationService,
+  type NotificationLedgerRow,
+  type NotificationMailInput,
+  type NotificationProject,
+  type NotificationStore,
+  type WorkflowRunNotificationContext,
+} from "./notification.service";
+
+const NOW = new Date("2026-07-28T12:00:00.000Z");
+
+class MemoryNotificationStore implements NotificationStore {
+  readonly ledgers = new Map<string, NotificationLedgerRow>();
+  project: NotificationProject | null = {
+    id: "project-1",
+    title: "Founder interview",
+    notifyOnComplete: true,
+    primaryEmail: "owner@example.com",
+    clipCount: 4,
+  };
+  workflowContext: WorkflowRunNotificationContext | null = null;
+  private nextId = 1;
+
+  async getProject(projectId: string) {
+    return this.project?.id === projectId ? this.project : null;
+  }
+
+  async listRetryable(input: { now: Date; limit: number }) {
+    return [...this.ledgers.values()]
+      .filter(
+        (row) =>
+          row.attemptCount < 3 &&
+          (row.status === "pending" ||
+            (row.status === "claimed" &&
+              row.leaseExpiresAt !== null &&
+              row.leaseExpiresAt.getTime() <= input.now.getTime())),
+      )
+      .slice(0, input.limit);
+  }
+
+  async insertOrFind(input: {
+    projectId: string;
+    sourceId: string;
+    outcome: "clips_ready" | "no_clips" | "generation_failed" | "import_failed";
+  }) {
+    const key = `${input.projectId}:${input.sourceId}:${input.outcome}`;
+    const existing = this.ledgers.get(key);
+    if (existing) return existing;
+
+    const row: NotificationLedgerRow = {
+      id: `ledger-${this.nextId++}`,
+      ...input,
+      status: "pending",
+      leaseExpiresAt: null,
+      attemptCount: 0,
+      providerMessageId: null,
+      sentAt: null,
+    };
+    this.ledgers.set(key, row);
+    return row;
+  }
+
+  async claim(input: { id: string; now: Date; leaseExpiresAt: Date }) {
+    const row = this.findById(input.id);
+    const claimable =
+      row.attemptCount < 3 &&
+      (row.status === "pending" ||
+        (row.status === "claimed" &&
+          row.leaseExpiresAt !== null &&
+          row.leaseExpiresAt.getTime() <= input.now.getTime()));
+    if (!claimable) return false;
+    row.status = "claimed";
+    row.leaseExpiresAt = input.leaseExpiresAt;
+    return true;
+  }
+
+  async markSent(input: {
+    id: string;
+    leaseExpiresAt: Date;
+    providerMessageId: string | null;
+    sentAt: Date;
+  }) {
+    const row = this.findById(input.id);
+    if (!this.ownsLease(row, input.leaseExpiresAt)) return false;
+    row.status = "sent";
+    row.leaseExpiresAt = null;
+    row.providerMessageId = input.providerMessageId;
+    row.sentAt = input.sentAt;
+    return true;
+  }
+
+  async markSkipped(input: { id: string; leaseExpiresAt: Date }) {
+    const row = this.findById(input.id);
+    if (!this.ownsLease(row, input.leaseExpiresAt)) return false;
+    row.status = "skipped";
+    row.leaseExpiresAt = null;
+    return true;
+  }
+
+  async markDeliveryFailure(input: {
+    id: string;
+    leaseExpiresAt: Date;
+    attemptCount: number;
+    terminal: boolean;
+  }) {
+    const row = this.findById(input.id);
+    if (!this.ownsLease(row, input.leaseExpiresAt)) return false;
+    row.status = input.terminal ? "failed" : "pending";
+    row.leaseExpiresAt = null;
+    row.attemptCount = input.attemptCount;
+    return true;
+  }
+
+  async getWorkflowRunContext() {
+    return this.workflowContext;
+  }
+
+  seed(row: NotificationLedgerRow) {
+    const key = `${row.projectId}:${row.sourceId}:${row.outcome}`;
+    this.ledgers.set(key, row);
+  }
+
+  onlyLedger() {
+    const rows = [...this.ledgers.values()];
+    if (rows.length !== 1) throw new Error(`expected one ledger, got ${rows.length}`);
+    return rows[0]!;
+  }
+
+  private findById(id: string) {
+    const row = [...this.ledgers.values()].find((candidate) => candidate.id === id);
+    if (!row) throw new Error(`ledger ${id} not found`);
+    return row;
+  }
+
+  private ownsLease(row: NotificationLedgerRow, leaseExpiresAt: Date) {
+    return (
+      row.status === "claimed" &&
+      row.leaseExpiresAt?.getTime() === leaseExpiresAt.getTime()
+    );
+  }
+}
+
+function serviceWith(
+  store: MemoryNotificationStore,
+  mailer: (input: NotificationMailInput) => Promise<{
+    sent: boolean;
+    id?: string;
+    error?: string;
+  }>,
+  hasResendApiKey = true,
+) {
+  return new NotificationService({
+    store,
+    mailer,
+    now: () => new Date(NOW),
+    hasResendApiKey: () => hasResendApiKey,
+  });
+}
+
+const input = {
+  projectId: "project-1",
+  sourceId: "run-1",
+  outcome: "clips_ready" as const,
+  deepLink: "https://app.narriflow.test/projects/project-1",
+  clipCount: 4,
+};
+
+describe("NotificationService", () => {
+  test("send-once under concurrent enqueueAndSend", async () => {
+    const store = new MemoryNotificationStore();
+    let sends = 0;
+    const service = serviceWith(store, async () => {
+      sends += 1;
+      await Promise.resolve();
+      return { sent: true, id: "email-1" };
+    });
+
+    await Promise.all([
+      service.enqueueAndSend(input),
+      service.enqueueAndSend(input),
+      service.enqueueAndSend(input),
+    ]);
+
+    expect(sends).toBe(1);
+    expect(store.onlyLedger().status).toBe("sent");
+    expect(store.onlyLedger().providerMessageId).toBe("email-1");
+  });
+
+  test("does not double-send after a transient failure then success", async () => {
+    const store = new MemoryNotificationStore();
+    let sends = 0;
+    const service = serviceWith(store, async () => {
+      sends += 1;
+      return sends === 1
+        ? { sent: false, error: "temporary provider outage" }
+        : { sent: true, id: "email-2" };
+    });
+
+    expect((await service.enqueueAndSend(input)).status).toBe("pending");
+    expect((await service.enqueueAndSend(input)).status).toBe("sent");
+    expect((await service.enqueueAndSend(input)).status).toBe("sent");
+    expect(sends).toBe(2);
+    expect(store.onlyLedger().attemptCount).toBe(1);
+  });
+
+  test("re-sends a transient-failure pending row exactly once through retry polling", async () => {
+    const store = new MemoryNotificationStore();
+    let sends = 0;
+    const service = serviceWith(store, async () => {
+      sends += 1;
+      return sends === 1
+        ? { sent: false, error: "temporary provider outage" }
+        : { sent: true, id: "email-retried" };
+    });
+
+    expect((await service.enqueueAndSend(input)).status).toBe("pending");
+    const firstPoll = await service.resendPendingNotifications(10, () => ({
+      deepLink: input.deepLink,
+    }));
+    const secondPoll = await service.resendPendingNotifications(10, () => ({
+      deepLink: input.deepLink,
+    }));
+
+    expect(firstPoll).toEqual({
+      scanned: 1,
+      claimed: 1,
+      sent: 1,
+      pending: 0,
+      failed: 0,
+      skipped: 0,
+    });
+    expect(secondPoll.scanned).toBe(0);
+    expect(sends).toBe(2);
+    expect(store.onlyLedger().status).toBe("sent");
+  });
+
+  test("does not retry sent notification rows", async () => {
+    const store = new MemoryNotificationStore();
+    store.seed({
+      id: "ledger-sent",
+      projectId: input.projectId,
+      sourceId: input.sourceId,
+      outcome: input.outcome,
+      status: "sent",
+      leaseExpiresAt: null,
+      attemptCount: 1,
+      providerMessageId: "email-existing",
+      sentAt: NOW,
+    });
+    let sends = 0;
+    const service = serviceWith(store, async () => {
+      sends += 1;
+      return { sent: true };
+    });
+
+    const result = await service.resendPendingNotifications(10, () => ({
+      deepLink: input.deepLink,
+    }));
+
+    expect(result.scanned).toBe(0);
+    expect(sends).toBe(0);
+  });
+
+  test("does not retry skipped notification rows", async () => {
+    const store = new MemoryNotificationStore();
+    store.seed({
+      id: "ledger-skipped",
+      projectId: input.projectId,
+      sourceId: input.sourceId,
+      outcome: input.outcome,
+      status: "skipped",
+      leaseExpiresAt: null,
+      attemptCount: 0,
+      providerMessageId: null,
+      sentAt: null,
+    });
+    let sends = 0;
+    const service = serviceWith(store, async () => {
+      sends += 1;
+      return { sent: true };
+    });
+
+    const result = await service.resendPendingNotifications(10, () => ({
+      deepLink: input.deepLink,
+    }));
+
+    expect(result.scanned).toBe(0);
+    expect(sends).toBe(0);
+  });
+
+  test("retry polling reclaims an expired lease", async () => {
+    const store = new MemoryNotificationStore();
+    store.seed({
+      id: "ledger-expired",
+      projectId: input.projectId,
+      sourceId: input.sourceId,
+      outcome: input.outcome,
+      status: "claimed",
+      leaseExpiresAt: new Date(NOW.getTime() - 1),
+      attemptCount: 0,
+      providerMessageId: null,
+      sentAt: null,
+    });
+    let sends = 0;
+    const service = serviceWith(store, async ({ idempotencyKey }) => {
+      sends += 1;
+      expect(idempotencyKey).toBe("notification-ledger-ledger-expired");
+      return { sent: true, id: "email-reclaimed" };
+    });
+
+    const result = await service.resendPendingNotifications(10, () => ({
+      deepLink: input.deepLink,
+    }));
+
+    expect(result.sent).toBe(1);
+    expect(sends).toBe(1);
+    expect(store.onlyLedger().status).toBe("sent");
+  });
+
+  test("stops retrying after three delivery failures", async () => {
+    const store = new MemoryNotificationStore();
+    let sends = 0;
+    const service = serviceWith(store, async () => {
+      sends += 1;
+      return { sent: false, error: "provider unavailable" };
+    });
+
+    expect((await service.enqueueAndSend(input)).status).toBe("pending");
+    expect((await service.enqueueAndSend(input)).status).toBe("pending");
+    expect((await service.enqueueAndSend(input)).status).toBe("failed");
+    expect((await service.enqueueAndSend(input)).status).toBe("failed");
+    expect(sends).toBe(3);
+    expect(store.onlyLedger().attemptCount).toBe(3);
+  });
+
+  test("marks a notification skipped when the user has no primary email", async () => {
+    const store = new MemoryNotificationStore();
+    store.project = { ...store.project!, primaryEmail: null };
+    let sends = 0;
+    const service = serviceWith(store, async () => {
+      sends += 1;
+      return { sent: true };
+    });
+
+    expect((await service.enqueueAndSend(input)).status).toBe("skipped");
+    expect(store.onlyLedger().status).toBe("skipped");
+    expect(sends).toBe(0);
+  });
+
+  test("marks a notification skipped when RESEND_API_KEY is unset", async () => {
+    const store = new MemoryNotificationStore();
+    let sends = 0;
+    const service = serviceWith(
+      store,
+      async () => {
+        sends += 1;
+        return { sent: true };
+      },
+      false,
+    );
+
+    expect((await service.enqueueAndSend(input)).status).toBe("skipped");
+    expect(store.onlyLedger().status).toBe("skipped");
+    expect(sends).toBe(0);
+  });
+
+  test("does not create a ledger when project notifications are disabled", async () => {
+    const store = new MemoryNotificationStore();
+    store.project = { ...store.project!, notifyOnComplete: false };
+    const service = serviceWith(store, async () => ({ sent: true }));
+
+    expect((await service.enqueueAndSend(input)).status).toBe("disabled");
+    expect(store.ledgers.size).toBe(0);
+  });
+});

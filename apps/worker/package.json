@@ -13,6 +13,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@narriflow/email": "workspace:*",
     "@narriflow/services": "workspace:*",
     "@narriflow/validators": "workspace:*"
   },

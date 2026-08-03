@@ -741,6 +741,10 @@ export function buildClipPreviewArgs(params: {
   ];
 
   if (params.hasAudio) {
+    // Deliberately NO boundary fade here (unlike the full renders): the
+    // preview window is the clip padded by ±4s so studio boundary editing
+    // can audition past the clip edges — a fade at the window (or clip)
+    // boundary would silence exactly the audio that flow needs to hear.
     args.push(
       "-map",
       "0:a:0",

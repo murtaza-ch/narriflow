@@ -5,7 +5,7 @@ import {
   normalizeTranscriptSliceForClip,
   type TranscriptUtterance,
 } from "@narriflow/validators";
-import { sliceTranscriptForClip } from "./clip.service";
+import { computePacingScore, sliceTranscriptForClip } from "./clip.service";
 
 const warningUtterance: TranscriptUtterance = {
   index: 0,
@@ -133,5 +133,30 @@ describe("clip timing normalization", () => {
     expect(slice[0]!.text).toBe("warning if");
     expect(slice[0]!.startSec).toBe(25.2);
     expect(slice[0]!.endSec).toBe(25.78);
+  });
+});
+
+describe("computePacingScore speaker turns", () => {
+  const makeSentence = (index: number, speaker: number): TranscriptUtterance => ({
+    index,
+    speaker,
+    speakerLabel: `Speaker ${speaker + 1}`,
+    startSec: index * 4,
+    endSec: index * 4 + 3,
+    text: "seven words are spoken in this sentence",
+    confidence: 0.9,
+    words: [],
+  });
+
+  test("monologue: many sentence rows count as ONE turn and get the neutral midpoint", () => {
+    const utterances = Array.from({ length: 10 }, (_, i) => makeSentence(i, 0));
+    // 70 words / 40s = 1.75wps -> +10; monologue midpoint -> +15
+    expect(computePacingScore(utterances, 40)).toBe(75);
+  });
+
+  test("conversation: turns come from adjacent speaker changes, not row count", () => {
+    const utterances = Array.from({ length: 10 }, (_, i) => makeSentence(i, i % 2));
+    // 10 speaker changes over 40s = 15/min -> +10; wps 1.75 -> +10
+    expect(computePacingScore(utterances, 40)).toBe(70);
   });
 });

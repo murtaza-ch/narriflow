@@ -53,18 +53,11 @@ export function ProcessingTimeline({
             </Flex>
           )}
         </Flex>
-        <Box
-          px="8px"
-          py="2px"
-          textStyle="eyebrow"
-          fontSize="10px"
-          color="success.fg"
-          bg="success.subtle"
-          borderRadius="l1"
-        >
-          Credit saver
-        </Box>
       </Flex>
+      <Text fontSize="11px" color="fg.muted" mb="10px" lineHeight="1.5">
+        Narrows what we analyze for clips. Your plan is charged for the full
+        source length.
+      </Text>
 
       <Box pt="8px" pb="4px" px="2px">
         <Slider.Root

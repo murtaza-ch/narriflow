@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { generationModeSchema } from "./content-pack";
 
 export type LinkProviderId =
   | "youtube"
@@ -127,6 +128,14 @@ export const linkIngestSchema = z.object({
       "We couldn't recognize that link. Supported: YouTube, Google Drive, StreamYard, Loom, Twitch, X, TikTok, LinkedIn, Facebook, Vimeo, Dropbox.",
   }),
   brandTemplateId: z.string().uuid().nullable().optional(),
+  // Link-first split (Step 1 · Commit). commitToken makes repeated submits
+  // collapse on the Project.commitToken unique; the draft fields seed the
+  // draft ContentPack so a refresh of Step 2 can rehydrate them.
+  commitToken: z.string().uuid().optional(),
+  languageCode: z.string().min(2).max(16).nullable().optional(),
+  mode: generationModeSchema.optional(),
+  processingStartSec: z.number().int().min(0).nullable().optional(),
+  processingEndSec: z.number().int().min(0).nullable().optional(),
 });
 
 export type LinkIngestInput = z.infer<typeof linkIngestSchema>;

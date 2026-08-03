@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { planBrollCutaways, type TranscriptUtterance } from "@narriflow/validators";
+import {
+  planBrollCutaways,
+  type ClipPlatformTarget,
+  type TranscriptUtterance,
+} from "@narriflow/validators";
 import {
   buildMarketCompliantClipCandidates,
   buildCaptionOnlyTranscriptSlice,
@@ -310,5 +314,96 @@ describe("clip detection helpers", () => {
     expect(candidates[0]!.brollCues).toEqual([
       { atSec: 12, query: "city skyline at night", reason: "Sets the scene" },
     ]);
+  });
+});
+
+function makeUnpunctuatedUtterances(durationSec: number): TranscriptUtterance[] {
+  const words = [];
+  for (let second = 0; second < durationSec; second += 1) {
+    words.push({
+      word: `word${second}`,
+      startSec: second,
+      endSec: second + 0.5,
+      confidence: 0.9,
+    });
+  }
+  return [
+    {
+      index: 0,
+      speaker: 0,
+      speakerLabel: "Speaker 1",
+      startSec: 0,
+      endSec: durationSec,
+      text: words.map((w) => w.word).join(" "),
+      confidence: 0.9,
+      words,
+    },
+  ];
+}
+
+function makeRawClip(startSec: number, endSec: number) {
+  return {
+    startSec,
+    endSec,
+    title: "t",
+    hookText: "h",
+    payoffText: "p",
+    reasoning: "r",
+    category: "insight" as const,
+    platformFit: ["tiktok"] as ClipPlatformTarget[],
+    hookStrength: 70,
+    emotionalIntensity: 70,
+    storyCompleteness: 70,
+  };
+}
+
+describe("containment guard (timing_repair_divergent)", () => {
+  test("keeps raw spans longer than 2x maxDurationSec — trimming to max is not divergence", () => {
+    const { candidates, dropped } = buildMarketCompliantClipCandidates({
+      rawClips: [makeRawClip(10.2, 300)],
+      utterances: makeUtterances(400),
+      sourceDurationSec: 400,
+    });
+
+    expect(dropped).toHaveLength(0);
+    expect(candidates).toHaveLength(1);
+  });
+
+  test("drops a divergent candidate only while better-anchored ones survive", () => {
+    const { candidates, dropped } = buildMarketCompliantClipCandidates({
+      rawClips: [makeRawClip(10.2, 50), makeRawClip(500, 560)],
+      utterances: makeUtterances(100),
+      sourceDurationSec: 600,
+    });
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]!.rawStartSec).toBe(10.2);
+    expect(dropped.map((d) => d.reason)).toEqual(["timing_repair_divergent"]);
+  });
+
+  test("fails open when every candidate is divergent — a run must never empty itself", () => {
+    const { candidates, dropped } = buildMarketCompliantClipCandidates({
+      rawClips: [makeRawClip(500, 560)],
+      utterances: makeUtterances(100),
+      sourceDurationSec: 600,
+    });
+
+    expect(candidates).toHaveLength(1);
+    expect(dropped.map((d) => d.reason)).toEqual(["timing_repair_divergent_kept"]);
+  });
+
+  test("an unpunctuated transcript still yields clips (bounded sentence walk-back)", () => {
+    const { candidates } = buildMarketCompliantClipCandidates({
+      rawClips: [
+        makeRawClip(120, 155),
+        makeRawClip(300, 340),
+        makeRawClip(500, 545),
+        makeRawClip(700, 738),
+      ],
+      utterances: makeUnpunctuatedUtterances(900),
+      sourceDurationSec: 900,
+    });
+
+    expect(candidates.length).toBeGreaterThanOrEqual(1);
   });
 });

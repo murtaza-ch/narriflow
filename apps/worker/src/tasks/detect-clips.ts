@@ -12,16 +12,22 @@ import {
   parseStoredContentPack,
   getEffectiveClipTiming,
   normalizeTranscriptSliceForClip,
+  splitUtterancesIntoSentences,
   type BrollCue,
   type ClipCategory,
   type ClipPlatformTarget,
   type ContentPack,
   type TranscriptUtterance,
 } from "@narriflow/validators";
+import {
+  notifyTerminalOutcome,
+  notifyWorkflowFailureAfterSettlement,
+} from "../notifications";
 
 interface WorkflowRunJob {
   id: string;
   projectId: string;
+  contentPackId?: string | null;
   project: {
     title: string;
     sourceStorageKey: string | null;
@@ -561,6 +567,10 @@ export function buildMarketCompliantClipCandidates(input: {
   durationPolicy?: ClipDurationPolicy;
 }) {
   const candidates: ClipCandidate[] = [];
+  const divergentCandidates: Array<{
+    candidate: ClipCandidate;
+    droppedEntry: DroppedClipCandidate;
+  }> = [];
   const dropped: DroppedClipCandidate[] = [];
   const requestedDurationPolicy = input.durationPolicy ?? CLIP_DURATION_POLICY;
   // Clamp up to the absolute floor — never down, so a stricter caller-supplied
@@ -623,6 +633,26 @@ export function buildMarketCompliantClipCandidates(input: {
       });
       continue;
     }
+
+    // Containment guard: the title/hook/payoff describe the RAW window the
+    // LLM picked. If timing repair kept less than half of that window, the
+    // clip would carry metadata about content it no longer contains (e.g. a
+    // title quoting a payoff that now sits outside the clip) — prefer better-
+    // anchored candidates for the slots. Measured against the smaller of the
+    // raw span and the policy max: a raw span longer than the max is always
+    // trimmed to at most maxDurationSec, and that trim alone must never read
+    // as divergence. Guarded candidates are only dropped when SOME candidate
+    // survives — an all-divergent set (e.g. an unpunctuated transcript that
+    // degrades every repair) still produces clips instead of failing the run.
+    const overlapSec =
+      Math.min(raw.endSec, effective.endSec) -
+      Math.max(raw.startSec, effective.startSec);
+    const containmentBaseSec = Math.min(
+      rawDurationSec,
+      durationPolicy.maxDurationSec,
+    );
+    const isDivergent =
+      containmentBaseSec > 0 && overlapSec / containmentBaseSec < 0.5;
 
     if (
       durationSec < durationPolicy.minDurationSec ||
@@ -706,13 +736,51 @@ export function buildMarketCompliantClipCandidates(input: {
       rankingScore: 0,
     } satisfies ClipCandidate;
 
-    candidates.push({
+    const scored = {
       ...candidate,
       rankingScore: getRankingScore(candidate),
-    });
+    };
+
+    if (isDivergent) {
+      divergentCandidates.push({
+        candidate: scored,
+        droppedEntry: {
+          rawStartSec: raw.startSec,
+          rawEndSec: raw.endSec,
+          rawDurationSec,
+          reason: "timing_repair_divergent",
+          repairedStartSec: effective.startSec,
+          repairedEndSec: effective.endSec,
+          repairedDurationSec: durationSec,
+        },
+      });
+      continue;
+    }
+
+    candidates.push(scored);
   }
 
-  return { candidates, dropped };
+  if (candidates.length === 0 && divergentCandidates.length > 0) {
+    // Fail-open: divergent metadata beats a failed run with zero clips.
+    return {
+      candidates: divergentCandidates.map((entry) => entry.candidate),
+      dropped: [
+        ...dropped,
+        ...divergentCandidates.map((entry) => ({
+          ...entry.droppedEntry,
+          reason: "timing_repair_divergent_kept",
+        })),
+      ],
+    };
+  }
+
+  return {
+    candidates,
+    dropped: [
+      ...dropped,
+      ...divergentCandidates.map((entry) => entry.droppedEntry),
+    ],
+  };
 }
 
 function summarizeDurations(clips: Array<{ durationSec: number }>) {
@@ -846,6 +914,19 @@ function extractResponseText(payload: unknown): string | null {
 const OPENAI_REQUEST_TIMEOUT_MS = 5 * 60 * 1000;
 const OPENAI_FETCH_MAX_RETRIES = 3;
 const OPENAI_FETCH_RETRY_BASE_DELAY_MS = 1000;
+const DEFAULT_OPENAI_MAX_OUTPUT_TOKENS = 32000;
+// Progress publishes double as the reaper's heartbeat (they bump the run's
+// updatedAt), and a single-chunk source publishes nothing between the 20% and
+// 80% marks while a call that may legitimately run 5 minutes (× 3 retries) is
+// in flight. Well under the reap stall timeout.
+const OPENAI_CALL_HEARTBEAT_INTERVAL_MS = 60 * 1000;
+
+function getOpenAiMaxOutputTokens(): number {
+  const value = Number(process.env.OPENAI_CLIP_MAX_OUTPUT_TOKENS);
+  return Number.isFinite(value) && value > 0
+    ? Math.round(value)
+    : DEFAULT_OPENAI_MAX_OUTPUT_TOKENS;
+}
 const RETRYABLE_NETWORK_ERROR_PATTERN =
   /ECONNRESET|ETIMEDOUT|ECONNREFUSED|EPIPE|EAI_AGAIN|ENOTFOUND|ENETUNREACH|EHOSTUNREACH|socket connection was closed|network|fetch failed/i;
 
@@ -962,6 +1043,12 @@ async function callOpenAI(
               schema: CLIP_DETECTION_JSON_SCHEMA,
             },
           },
+          // Includes reasoning tokens on this model family. Long podcasts ask
+          // for up to 90 candidates, so the ceiling is generous — its job is
+          // to stop a pathological runaway generation, not to trim normal
+          // responses. A response cut off by this cap surfaces as
+          // status=incomplete below, not as a JSON parse error.
+          max_output_tokens: getOpenAiMaxOutputTokens(),
         }),
       },
       { timeoutMs: OPENAI_REQUEST_TIMEOUT_MS },
@@ -977,6 +1064,8 @@ async function callOpenAI(
   }
 
   const payload = (await response.json().catch(() => null)) as {
+    status?: string;
+    incomplete_details?: { reason?: string };
     usage?: {
       total_tokens?: number;
       input_tokens?: number;
@@ -990,6 +1079,16 @@ async function callOpenAI(
       payload?.error?.message ??
       `OpenAI request failed with status ${response.status}`;
     throw new WorkflowWorkerError("openai_request_failed", message);
+  }
+
+  if (payload.status === "incomplete") {
+    // Distinct from a parse error: the model stopped early (max_output_tokens
+    // or content filter), so the JSON is structurally truncated rather than
+    // malformed. Fail with the real cause instead of clip_detection_parse_error.
+    throw new WorkflowWorkerError(
+      "clip_detection_truncated",
+      `OpenAI response incomplete: ${payload.incomplete_details?.reason ?? "unknown reason"}`,
+    );
   }
 
   const content = extractResponseText(payload);
@@ -1030,7 +1129,12 @@ export async function processClipDetectionRun(run: WorkflowRunJob) {
       );
     }
 
-    const allUtterances = (transcriptRow.utterancesJson ?? []) as unknown as TranscriptUtterance[];
+    // Defensive re-split for transcripts stored before sentence-level
+    // normalization existed (turn-sized utterances give the LLM no usable
+    // timestamps); already sentence-sized utterances pass through unchanged.
+    const allUtterances = splitUtterancesIntoSentences(
+      (transcriptRow.utterancesJson ?? []) as unknown as TranscriptUtterance[],
+    );
     const fullText = transcriptRow.text ?? "";
     const speakerCount = transcriptRow.speakerCount ?? 1;
     const fullDurationSec = transcriptRow.durationSeconds ?? 0;
@@ -1043,10 +1147,9 @@ export async function processClipDetectionRun(run: WorkflowRunJob) {
       );
     }
 
-    // Load ContentPack for targets
-    const contentPackRow = await projectService.getLatestContentPack(
-      run.projectId,
-    );
+    // Load the run's bound ContentPack — never "latest for project", so a
+    // draft written mid-run (user reopening Step 2) can't swap settings.
+    const contentPackRow = await projectService.getContentPackForRun(run);
     const contentPack = contentPackRow
       ? parseStoredContentPack(contentPackRow)
       : null;
@@ -1125,6 +1228,12 @@ export async function processClipDetectionRun(run: WorkflowRunJob) {
           projectId: run.projectId,
           message: error instanceof Error ? error.message : String(error),
         });
+        throw new WorkflowWorkerError(
+          "auto_render_queue_failed",
+          `Failed to queue the mandatory caption render: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
       }
 
       await projectService.completeClipDetectionWorkflowRun(run.id);
@@ -1226,8 +1335,35 @@ export async function processClipDetectionRun(run: WorkflowRunJob) {
         },
       );
 
-      const result = await callOpenAI(apiKey, SYSTEM_PROMPT, userPrompt, model);
+      const inFlightProgress = 20 + Math.round((i / chunks.length) * 60);
+      const heartbeat = setInterval(() => {
+        void projectService
+          .publishWorkflowProgress({
+            projectId: run.projectId,
+            workflowRunId: run.id,
+            stage: "moment_detection",
+            status: "running",
+            progress: inFlightProgress,
+            errorCode: null,
+          })
+          .catch(() => {});
+      }, OPENAI_CALL_HEARTBEAT_INTERVAL_MS);
+
+      const llmCallStartedAtMs = Date.now();
+      let result: Awaited<ReturnType<typeof callOpenAI>>;
+      try {
+        result = await callOpenAI(apiKey, SYSTEM_PROMPT, userPrompt, model);
+      } finally {
+        clearInterval(heartbeat);
+      }
       totalTokensUsed += result.tokensUsed;
+      log("info", "clip_detection_llm_call", {
+        workflowRunId: run.id,
+        chunkIndex: i,
+        chunkCount: chunks.length,
+        durationMs: Date.now() - llmCallStartedAtMs,
+        tokensUsed: result.tokensUsed,
+      });
 
       // Parse LLM response
       let parsed: { clips: Array<Record<string, unknown>> };
@@ -1366,13 +1502,23 @@ export async function processClipDetectionRun(run: WorkflowRunJob) {
 
     if (contentPack?.autoRenderClips) {
       try {
-        await clipService.autoQueueDefaultRenders(run.projectId, run.id);
+        await clipService.autoQueueDefaultRenders(
+          run.projectId,
+          run.id,
+          contentPack.defaultAspectRatio,
+        );
       } catch (error) {
         log("error", "auto_render_queue_failed", {
           workflowRunId: run.id,
           projectId: run.projectId,
           message: error instanceof Error ? error.message : String(error),
         });
+        throw new WorkflowWorkerError(
+          "auto_render_queue_failed",
+          `Failed to queue automatic renders: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
       }
     }
 
@@ -1385,18 +1531,34 @@ export async function processClipDetectionRun(run: WorkflowRunJob) {
       clipCount: finalClips.length,
       tokensUsed: totalTokensUsed,
     });
+
+    if (!contentPack?.autoRenderClips) {
+      await notifyTerminalOutcome({
+        projectId: run.projectId,
+        sourceId: run.id,
+        outcome: "clips_ready",
+        clipCount: finalClips.length,
+      });
+    }
   } catch (error) {
     const code =
       error instanceof WorkflowWorkerError
         ? error.code
         : "workflow_unhandled_error";
+    const message =
+      error instanceof Error ? error.message : "Unknown worker error";
     await projectService.failClipDetectionWorkflowRun(run.id, code);
     log("error", "clip_detection_run_failed", {
       workflowRunId: run.id,
       projectId: run.projectId,
       code,
-      message:
-        error instanceof Error ? error.message : "Unknown worker error",
+      message,
+    });
+    await notifyWorkflowFailureAfterSettlement({
+      workflowRunId: run.id,
+      projectId: run.projectId,
+      errorCode: code,
+      reason: message,
     });
   }
 }

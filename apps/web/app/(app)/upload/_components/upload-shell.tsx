@@ -10,7 +10,7 @@ import {
 } from "react";
 import { useRouter } from "next/navigation";
 import { Box, chakra, Flex, Grid, HStack, Stack, Text } from "@chakra-ui/react";
-import { AlertTriangle, Check, Info, Link2, Upload } from "lucide-react";
+import { AlertTriangle, Check, Info, Upload } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { Input } from "@narriflow/ui/components/input";
 import { Meter } from "@narriflow/ui/components/meter";
@@ -55,10 +55,12 @@ import {
   type UploadInitializationDecision,
   type UploadResumeSession,
 } from "../_lib/upload-resume";
+import { generateFromRssAction } from "../actions";
 import {
-  generateFromLinkAction,
-  generateFromRssAction,
-} from "../actions";
+  LinkImportFlow,
+  type LinkResumeData,
+  type UploadUsageSummary,
+} from "./link-import-flow";
 
 type TabId = "file" | "link" | "rss";
 type PasteOverride = "auto" | "link" | "rss";
@@ -245,9 +247,18 @@ interface UploadShellProps {
   };
   /** Pre-fills the smart paste field (dashboard links to /upload?url=…). */
   initialUrl?: string | null;
+  /** Present when the page mounted with `?project=<id>` — the link flow's
+   *  Step 2 (Configure) resume, loaded and validated server-side. */
+  resumeData: LinkResumeData | null;
+  usageSummary: UploadUsageSummary;
 }
 
-export function UploadShell({ brandTemplates, initialUrl }: UploadShellProps) {
+export function UploadShell({
+  brandTemplates,
+  initialUrl,
+  resumeData,
+  usageSummary,
+}: UploadShellProps) {
   const router = useRouter();
 
   // A recognized ?url= commits straight to a chosen source; anything else pre-fills the paste field.
@@ -256,7 +267,7 @@ export function UploadShell({ brandTemplates, initialUrl }: UploadShellProps) {
 
   // Source state
   const [activeTab, setActiveTab] = useState<TabId>(
-    initialLinkUrl ? "link" : "file",
+    resumeData || initialLinkUrl ? "link" : "file",
   );
   const [title, setTitle] = useState("");
   const [file, setFile] = useState<File | null>(null);
@@ -433,6 +444,7 @@ export function UploadShell({ brandTemplates, initialUrl }: UploadShellProps) {
     (activeTab === "rss" && selectedEpisodes.length > 0);
 
   const sourceChosen =
+    Boolean(resumeData) ||
     (activeTab === "file" && Boolean(file)) ||
     (activeTab === "link" && linkUrl.trim().length > 0) ||
     (activeTab === "rss" && rssCommitted);
@@ -805,42 +817,6 @@ export function UploadShell({ brandTemplates, initialUrl }: UploadShellProps) {
     }
   }
 
-  async function handleLinkImportAndGenerate() {
-    if (!linkUrl.trim()) {
-      setErrorMessage("Paste a video link first.");
-      return;
-    }
-    if (!detectLinkProvider(linkUrl.trim())) {
-      setErrorMessage(
-        `That link isn't recognized. Supported: ${LINK_PROVIDER_LABELS_JOINED}.`,
-      );
-      return;
-    }
-
-    setSubmitting(true);
-    setErrorMessage(null);
-    setStatusMessage("Importing video and queueing generation…");
-
-    try {
-      const formData = buildUploadSettingsFormData(getFormValues());
-      formData.set("title", title.trim());
-      formData.set("url", linkUrl.trim());
-      const result = await generateFromLinkAction(formData);
-      if (result?.projectId) {
-        router.push(`/projects/${result.projectId}`);
-        router.refresh();
-      }
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Video import failed.";
-      setErrorMessage(message);
-      toaster.error({ title: "Video import failed", description: message });
-    } finally {
-      setSubmitting(false);
-      setStatusMessage(null);
-    }
-  }
-
   async function handleRssPreview(url: string = rssUrl) {
     if (!url.trim()) {
       setRssError("Paste an RSS feed URL first.");
@@ -915,9 +891,10 @@ export function UploadShell({ brandTemplates, initialUrl }: UploadShellProps) {
     });
   }
 
+  // Link path has its own Commit → Configure CTAs inside LinkImportFlow —
+  // this shared submit zone now only serves the unchanged file/RSS flows.
   function handleSubmit() {
     if (activeTab === "file") return handleFileUploadAndGenerate();
-    if (activeTab === "link") return handleLinkImportAndGenerate();
     if (activeTab === "rss") return handleRssImportAndGenerate();
   }
 
@@ -934,13 +911,6 @@ export function UploadShell({ brandTemplates, initialUrl }: UploadShellProps) {
           ? linkProviderLabel(linkProvider)
           : "Video link"
         : "RSS feed";
-
-  // Non-YouTube link providers have no client-side duration probe — duration
-  // is only known once the worker fetches the video during import. Trim UI
-  // stays disabled for these the same way it does for a YouTube video whose
-  // iframe hasn't reported a duration yet (hasSource but durationSec null).
-  const linkDurationUnknowable =
-    activeTab === "link" && linkProvider !== null && linkProvider !== "youtube";
 
   return (
     <Box position="relative">
@@ -1175,6 +1145,20 @@ export function UploadShell({ brandTemplates, initialUrl }: UploadShellProps) {
 
           <RecommendationCard />
         </Stack>
+      ) : activeTab === "link" ? (
+        /* Link path: its own Commit → Configure state machine — see
+           link-import-flow.tsx. File/RSS keep the unchanged single-step
+           grid below. */
+        <LinkImportFlow
+          linkUrl={resumeData?.sourceMediaUrl ?? linkUrl}
+          linkProvider={
+            (resumeData?.sourceProvider as LinkProviderId | null) ?? linkProvider ?? "youtube"
+          }
+          brandTemplates={brandTemplates}
+          usageSummary={usageSummary}
+          resumeData={resumeData}
+          onChangeSource={handleChangeSource}
+        />
       ) : (
         /* STEP 2 — preview + settings bands */
         <Grid
@@ -1190,11 +1174,6 @@ export function UploadShell({ brandTemplates, initialUrl }: UploadShellProps) {
           >
             <Flex align="center" justify="space-between" mb="2">
               <Flex align="center" gap="1.5">
-                {activeTab === "link" && (
-                  <Box color="fg.subtle">
-                    <Link2 size={11} strokeWidth={2} />
-                  </Box>
-                )}
                 <Text textStyle="eyebrow" color="fg.subtle">
                   Source · {sourceKindLabel}
                 </Text>
@@ -1221,26 +1200,6 @@ export function UploadShell({ brandTemplates, initialUrl }: UploadShellProps) {
                 onDurationKnown={handleDurationKnown}
                 durationSec={durationSec}
               />
-
-              {activeTab === "link" && (
-                <Stack gap="1.5">
-                  <Text textStyle="data" fontSize="11px" color="fg.subtle">
-                    Public videos only. Make sure you have rights to clip the
-                    content.
-                  </Text>
-                  {linkDurationUnknowable && (
-                    <Flex gap="2" align="flex-start">
-                      <Box color="fg.subtle" mt="0.5" flexShrink={0}>
-                        <Info size={12} strokeWidth={2} />
-                      </Box>
-                      <Text fontSize="11px" color="fg.muted" lineHeight="1.5">
-                        Full video is processed — duration is detected during
-                        import, so trimming isn&apos;t available here.
-                      </Text>
-                    </Flex>
-                  )}
-                </Stack>
-              )}
 
               {activeTab === "rss" && (
                 <Stack gap="2">

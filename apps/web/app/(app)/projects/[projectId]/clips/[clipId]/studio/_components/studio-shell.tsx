@@ -104,7 +104,14 @@ export interface TimelineSegment {
 export interface ClipInfo {
   id: string;
   projectId: string;
+  /** The clip's hook text — what it actually says. Deliberately NOT the
+   *  user-facing title: the B-roll panel derives its stock-footage query from
+   *  this, and that query should follow the spoken content, not a title someone
+   *  renamed for the clip list. */
   title: string;
+  /** The user- or AI-authored display title (`Clip.title`), or null when the
+   *  clip has never been titled. Falls back to `title` where shown. */
+  clipTitle: string | null;
   duration: number;
   startSec: number;
   endSec: number;

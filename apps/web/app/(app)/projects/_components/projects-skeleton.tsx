@@ -6,6 +6,12 @@ import { Toolbar } from "@narriflow/ui/components/toolbar";
  * chrome (same minH/py/gaps) holding placeholder controls at their real
  * rendered sizes, above the de-carded grid of 16:9 wells with the exact
  * title / score / meta text block underneath.
+ *
+ * The cards carry no entrance animation on purpose. A skeleton is a
+ * placeholder held in reserved space, not an arrival — giving it the same
+ * staggered fade-up as the real cards made the grid animate in twice per
+ * navigation (once for the placeholder, once on resolve). The pulse is the
+ * only motion it needs; the fade-up belongs to the content that replaces it.
  */
 export function ProjectsGridSkeleton() {
   return (
@@ -13,14 +19,7 @@ export function ProjectsGridSkeleton() {
       <ToolbarSkeleton />
       <SimpleGrid columns={{ base: 1, sm: 2, lg: 3, "2xl": 4 }} gap="5">
         {Array.from({ length: 8 }).map((_, index) => (
-          <Box
-            key={index}
-            animation="fade-up"
-            animationFillMode="backwards"
-            style={{ animationDelay: `${index * 60}ms` }}
-          >
-            <SkeletonCard />
-          </Box>
+          <SkeletonCard key={index} />
         ))}
       </SimpleGrid>
     </Stack>

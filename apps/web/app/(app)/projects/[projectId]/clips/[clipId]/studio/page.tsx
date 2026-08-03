@@ -89,11 +89,15 @@ export default async function StudioPage({
     }
   }
 
+  // tailPadSec 0 — slice-only input: stored bounds are final (must stay in
+  // lockstep with toClipSnapshot/preview/render or the studio timeline shows
+  // a different duration than the rendered clip).
   const effective = getEffectiveClipTiming({
     utterances: clip.transcriptSlice,
     startSec: clip.startSec,
     endSec: clip.endSec,
     sourceDurationSec: snapshot.project.sourceDurationSeconds,
+    tailPadSec: 0,
   });
   const utterances = effective.transcriptSlice;
 
@@ -106,6 +110,7 @@ export default async function StudioPage({
     id: clip.id,
     projectId: clip.projectId,
     title: clip.hookText,
+    clipTitle: clip.title,
     duration: effective.durationSec,
     startSec: effective.startSec,
     endSec: effective.endSec,

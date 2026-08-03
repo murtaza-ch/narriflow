@@ -1,7 +1,7 @@
 "use client";
 
 import { Box, Center, HStack, SimpleGrid, Stack, Text } from "@chakra-ui/react";
-import { useEffect, useMemo, useState } from "react";
+import { startTransition, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Inbox, TriangleAlert } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
@@ -62,15 +62,31 @@ function matchesStatus(
   return ingest === status;
 }
 
+/** How often the list re-asks the server while something is still processing. */
+const LIVE_REFRESH_INTERVAL_MS = 6000;
+
+/** A page fetched by "Load more" — kept alongside its own cursor/total so the
+ *  derived values below need no effect to stay in sync. */
+interface LoadedPage {
+  items: ProjectListItem[];
+  nextCursor: string | null;
+  totalCount: number;
+}
+
 export function ProjectsExplorer({
   initialProjects,
   initialNextCursor,
   totalCount: initialTotalCount,
 }: ProjectsExplorerProps) {
   const router = useRouter();
-  const [projects, setProjects] = useState(initialProjects);
-  const [nextCursor, setNextCursor] = useState(initialNextCursor);
-  const [totalCount, setTotalCount] = useState(initialTotalCount);
+  // Page 1 always comes from the server props; only the extra pages that
+  // "Load more" fetched live in state. Deriving the merged list (instead of
+  // mirroring `initialProjects` into state via an effect) is what keeps a
+  // `router.refresh()` to a single render pass — the old effect re-ran on
+  // every refresh because the RSC payload hands over fresh array identities,
+  // so each poll cost a setState + a second render of the whole grid, and
+  // silently threw away every page the user had loaded.
+  const [extraPages, setExtraPages] = useState<LoadedPage[]>([]);
   const [query, setQuery] = useState("");
   const [status, setStatus] = useState<StatusFilter>("all");
   const [source, setSource] = useState<SourceFilter>("all");
@@ -79,11 +95,41 @@ export function ProjectsExplorer({
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  useEffect(() => {
-    setProjects(initialProjects);
-    setNextCursor(initialNextCursor);
-    setTotalCount(initialTotalCount);
-  }, [initialProjects, initialNextCursor, initialTotalCount]);
+  // A delete anywhere in the library decrements the server's total, and page 1
+  // alone can't tell us which cached row below it disappeared — so drop the
+  // cached pages and let the user re-load them. This is React's sanctioned
+  // "adjust state when a prop changes" shape (a render-phase setState, which
+  // re-runs this component only, and only on the rare shrink) rather than an
+  // effect that would fire on every poll.
+  const [lastServerTotal, setLastServerTotal] = useState(initialTotalCount);
+  if (initialTotalCount !== lastServerTotal) {
+    setLastServerTotal(initialTotalCount);
+    if (initialTotalCount < lastServerTotal && extraPages.length > 0) {
+      setExtraPages([]);
+    }
+  }
+
+  // Refreshed page 1 wins on id collisions (a project created since the last
+  // "Load more" can push older rows across the page boundary).
+  const projects = useMemo(() => {
+    if (extraPages.length === 0) return initialProjects;
+    const merged = [...initialProjects];
+    const seen = new Set(merged.map((project) => project.id));
+    for (const page of extraPages) {
+      for (const project of page.items) {
+        if (seen.has(project.id)) continue;
+        seen.add(project.id);
+        merged.push(project);
+      }
+    }
+    return merged;
+  }, [initialProjects, extraPages]);
+
+  const lastPage = extraPages.at(-1);
+  const nextCursor = lastPage ? lastPage.nextCursor : initialNextCursor;
+  const totalCount = lastPage
+    ? Math.max(lastPage.totalCount, initialTotalCount)
+    : initialTotalCount;
 
   // Live-refresh while any project is still ingesting/transcribing so cards
   // flip to "ready" (and clips appear) without a manual reload.
@@ -94,8 +140,29 @@ export function ProjectsExplorer({
 
   useEffect(() => {
     if (!hasActiveProjects) return;
-    const interval = setInterval(() => router.refresh(), 6000);
-    return () => clearInterval(interval);
+
+    // `router.refresh()` inside a transition: React keeps the current grid on
+    // screen while the new RSC payload streams in, instead of tearing down to
+    // the page's Suspense skeleton and remounting every card — the visible
+    // "renders over and over" symptom.
+    const refresh = () => startTransition(() => router.refresh());
+
+    // A background tab has nothing to repaint, and each refresh re-runs the
+    // layout (auth + usage stats) plus the paginated project query. Poll only
+    // while visible, and catch up once on the way back.
+    const interval = setInterval(() => {
+      if (document.visibilityState === "visible") refresh();
+    }, LIVE_REFRESH_INTERVAL_MS);
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") refresh();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    return () => {
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
   }, [hasActiveProjects, router]);
 
   // NOTE: filtering/search/sort run client-side over the LOADED pages only
@@ -188,13 +255,14 @@ export function ProjectsExplorer({
       if (!response.ok) throw new Error("Failed to load more projects");
       const page = (await response.json()) as ProjectListPage;
 
-      setProjects((current) => {
-        const seen = new Set(current.map((project) => project.id));
-        const nextItems = page.items.filter((project) => !seen.has(project.id));
-        return [...current, ...nextItems];
-      });
-      setNextCursor(page.nextCursor);
-      setTotalCount(page.totalCount);
+      setExtraPages((current) => [
+        ...current,
+        {
+          items: page.items,
+          nextCursor: page.nextCursor,
+          totalCount: page.totalCount,
+        },
+      ]);
     } catch {
       setLoadError("Could not load more projects. Try again.");
     } finally {

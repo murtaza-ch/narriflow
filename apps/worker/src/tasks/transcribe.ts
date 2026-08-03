@@ -16,6 +16,7 @@ import {
   ASSEMBLYAI_SPEECH_MODEL_CHAIN,
   sourceLanguageCodeSchema,
 } from "@narriflow/validators";
+import { notifyWorkflowFailureAfterSettlement } from "../notifications";
 
 interface WorkflowRunJob {
   id: string;
@@ -553,63 +554,13 @@ async function submitAssemblyAiJob(
   }
 }
 
-async function transcribeWithAssemblyAi(
-  run: WorkflowRunJob,
-  options: {
-    languageCode: string | null;
-  },
-) {
-  const apiKey = getRequiredAssemblyAiApiKey();
+const DEFAULT_STT_RESULT_POLL_BATCH_SIZE = 10;
 
-  const { transcriptId } = await submitAssemblyAiJob(run, apiKey, options);
-  await projectService.publishWorkflowProgress({
-    projectId: run.projectId,
-    workflowRunId: run.id,
-    stage: "stt",
-    status: "running",
-    progress: 40,
-    errorCode: null,
-  });
-
-  const pollIntervalMs = getAssemblyAiPollIntervalMs();
-  const pollTimeoutMs = getAssemblyAiPollTimeoutMs();
-  const deadline = Date.now() + pollTimeoutMs;
-
-  while (Date.now() < deadline) {
-    const payload = await getAssemblyAiTranscript(transcriptId, apiKey);
-    const status = payload.status;
-
-    if (status === "completed") {
-      return payload;
-    }
-
-    if (status === "error") {
-      throw new WorkflowWorkerError(
-        "assemblyai_transcription_failed",
-        getResponseMessage(payload, "AssemblyAI transcription failed"),
-      );
-    }
-
-    const elapsedRatio = Math.min(
-      1,
-      (Date.now() - (deadline - pollTimeoutMs)) / pollTimeoutMs,
-    );
-    await projectService.publishWorkflowProgress({
-      projectId: run.projectId,
-      workflowRunId: run.id,
-      stage: "stt",
-      status: "running",
-      progress: Math.min(90, 40 + Math.round(elapsedRatio * 45)),
-      errorCode: null,
-    });
-
-    await sleep(jitter(pollIntervalMs));
-  }
-
-  throw new WorkflowWorkerError(
-    "assemblyai_transcription_timeout",
-    "AssemblyAI transcription did not complete before the polling timeout",
-  );
+function getSttResultPollBatchSize(): number {
+  const value = Number(process.env.STT_RESULT_POLL_BATCH_SIZE);
+  return Number.isFinite(value) && value > 0
+    ? Math.round(value)
+    : DEFAULT_STT_RESULT_POLL_BATCH_SIZE;
 }
 
 async function extractTranscriptionAudio(
@@ -631,49 +582,106 @@ async function extractTranscriptionAudio(
   ]);
 }
 
+/**
+ * Submit-and-release phase: submits the AssemblyAI job and returns as soon as
+ * the provider job id is persisted. The transcription itself — 10-40 minutes
+ * of provider wall-clock for a podcast — is awaited by
+ * processSubmittedTranscriptResults on its own poll loop, so this claim never
+ * holds its poll slot for longer than the submission round trip.
+ */
 export async function processTranscriptRun(run: WorkflowRunJob) {
-  if (!run.project.sourceStorageKey) {
-    throw new WorkflowWorkerError(
-      "workflow_source_missing",
-      "sourceStorageKey is required for transcription",
-    );
-  }
-
   log("info", "transcription_run_started", {
     workflowRunId: run.id,
     projectId: run.projectId,
   });
 
   try {
+    if (!run.project.sourceStorageKey) {
+      throw new WorkflowWorkerError(
+        "workflow_source_missing",
+        "sourceStorageKey is required for transcription",
+      );
+    }
+
+    const apiKey = getRequiredAssemblyAiApiKey();
     const languageCode = await projectService.getProjectLanguageCode(
       run.projectId,
     );
 
-    const assemblyAiPayload = await transcribeWithAssemblyAi(run, {
+    const submitStartedAtMs = Date.now();
+    const { transcriptId } = await submitAssemblyAiJob(run, apiKey, {
       languageCode,
     });
-    const normalized = normalizeAssemblyAiTranscript(assemblyAiPayload);
-    const rawStorageKey = `projects/${run.projectId}/transcripts/${run.id}-assemblyai-${sanitizeFileName(
-      normalized.providerModel ?? "unknown-model",
-    )}.json`;
-
-    await putJson({
-      key: rawStorageKey,
-      value: assemblyAiPayload,
-      metadata: {
-        project_id: run.projectId,
-        workflow_run_id: run.id,
-        provider: "assemblyai",
-        ...(normalized.providerModel
-          ? { model: normalized.providerModel }
-          : {}),
-        ...(normalized.providerJobId
-          ? { provider_job_id: normalized.providerJobId }
-          : {}),
-      },
+    const submitMs = Date.now() - submitStartedAtMs;
+    await projectService.markTranscriptSubmitted(run.projectId, transcriptId);
+    await projectService.publishWorkflowProgress({
+      projectId: run.projectId,
+      workflowRunId: run.id,
+      stage: "stt",
+      status: "running",
+      progress: 40,
+      errorCode: null,
     });
 
-    await projectService.completeTranscriptWorkflowRun(run.id, {
+    log("info", "transcription_run_submitted", {
+      workflowRunId: run.id,
+      projectId: run.projectId,
+      transcriptId,
+      submitMs,
+    });
+  } catch (error) {
+    await settleTranscriptRunFailure(run, error);
+  }
+}
+
+async function settleTranscriptRunFailure(
+  run: { id: string; projectId: string },
+  error: unknown,
+) {
+  const code = getErrorCode(error);
+  const message =
+    error instanceof Error ? error.message : "Unknown worker error";
+  await projectService.failTranscriptWorkflowRun(run.id, code);
+  log("error", "transcription_run_failed", {
+    workflowRunId: run.id,
+    projectId: run.projectId,
+    code,
+    message,
+  });
+  await notifyWorkflowFailureAfterSettlement({
+    workflowRunId: run.id,
+    projectId: run.projectId,
+    errorCode: code,
+    reason: message,
+  });
+}
+
+async function finalizeCompletedTranscript(
+  run: { id: string; projectId: string; providerJobId: string },
+  assemblyAiPayload: Record<string, unknown>,
+) {
+  const normalized = normalizeAssemblyAiTranscript(assemblyAiPayload);
+  const rawStorageKey = `projects/${run.projectId}/transcripts/${run.id}-assemblyai-${sanitizeFileName(
+    normalized.providerModel ?? "unknown-model",
+  )}.json`;
+
+  await putJson({
+    key: rawStorageKey,
+    value: assemblyAiPayload,
+    metadata: {
+      project_id: run.projectId,
+      workflow_run_id: run.id,
+      provider: "assemblyai",
+      ...(normalized.providerModel ? { model: normalized.providerModel } : {}),
+      ...(normalized.providerJobId
+        ? { provider_job_id: normalized.providerJobId }
+        : {}),
+    },
+  });
+
+  await projectService.completeTranscriptWorkflowRun(
+    run.id,
+    {
       provider: normalized.provider,
       providerModel: normalized.providerModel,
       providerJobId: normalized.providerJobId,
@@ -683,21 +691,109 @@ export async function processTranscriptRun(run: WorkflowRunJob) {
       speakerCount: normalized.speakerCount,
       durationSeconds: normalized.durationSeconds,
       rawStorageKey,
-    });
+    },
+    // Stale-attempt fence: if the run was requeued and resubmitted while this
+    // poll was in flight, the Transcript row carries a different job id and
+    // the finalize is skipped.
+    { expectedProviderJobId: run.providerJobId },
+  );
 
-    log("info", "transcription_run_completed", {
-      workflowRunId: run.id,
-      projectId: run.projectId,
-      utteranceCount: normalized.utterances.length,
-    });
-  } catch (error) {
-    const code = getErrorCode(error);
-    await projectService.failTranscriptWorkflowRun(run.id, code);
-    log("error", "transcription_run_failed", {
-      workflowRunId: run.id,
-      projectId: run.projectId,
-      code,
-      message: error instanceof Error ? error.message : "Unknown worker error",
-    });
+  log("info", "transcription_run_completed", {
+    workflowRunId: run.id,
+    projectId: run.projectId,
+    utteranceCount: normalized.utterances.length,
+  });
+}
+
+/**
+ * Result-poll phase, driven by its own loop in index.ts. Claims submitted
+ * transcripts via a per-tick lease (see claimSubmittedTranscriptRunsForPolling)
+ * so replicas never double-poll, checks AssemblyAI once per claim, and settles
+ * only on a definitive outcome:
+ *  - completed  -> store raw payload + finalize the run (idempotent downstream)
+ *  - error      -> fail the run (auto-retry policy applies)
+ *  - overall timeout since submission -> fail the run
+ * A transient GET failure just skips the run until the next tick — the overall
+ * timeout is the backstop, so a permanently broken job id cannot poll forever.
+ * Returns the number of runs settled (completed or failed) this tick.
+ */
+export async function processSubmittedTranscriptResults(): Promise<number> {
+  const apiKey = process.env.ASSEMBLYAI_API_KEY?.trim();
+  if (!apiKey) {
+    return 0;
   }
+
+  const pollIntervalMs = getAssemblyAiPollIntervalMs();
+  const pollTimeoutMs = getAssemblyAiPollTimeoutMs();
+  const runs = await projectService.claimSubmittedTranscriptRunsForPolling(
+    getSttResultPollBatchSize(),
+    pollIntervalMs,
+  );
+
+  let settled = 0;
+
+  for (const run of runs) {
+    try {
+      // Timeout is checked BEFORE the provider GET so that persistently
+      // failing polls (a revoked key, a 404'd job id, a broken finalize) are
+      // still bounded by it — every claim refreshes the run's heartbeat, so
+      // the reaper alone would never fire for this failure mode.
+      const elapsedMs = Date.now() - run.submittedAt.getTime();
+      if (elapsedMs > pollTimeoutMs) {
+        await settleTranscriptRunFailure(
+          run,
+          new WorkflowWorkerError(
+            "assemblyai_transcription_timeout",
+            "AssemblyAI transcription did not complete before the polling timeout",
+          ),
+        );
+        settled += 1;
+        continue;
+      }
+
+      const payload = await getAssemblyAiTranscript(run.providerJobId, apiKey);
+      const status = payload.status;
+
+      if (status === "completed") {
+        await finalizeCompletedTranscript(run, payload);
+        log("info", "transcription_provider_timing", {
+          workflowRunId: run.id,
+          projectId: run.projectId,
+          providerMs: Date.now() - run.submittedAt.getTime(),
+        });
+        settled += 1;
+        continue;
+      }
+
+      if (status === "error") {
+        await settleTranscriptRunFailure(
+          run,
+          new WorkflowWorkerError(
+            "assemblyai_transcription_failed",
+            getResponseMessage(payload, "AssemblyAI transcription failed"),
+          ),
+        );
+        settled += 1;
+        continue;
+      }
+
+      const elapsedRatio = Math.min(1, elapsedMs / pollTimeoutMs);
+      await projectService.publishWorkflowProgress({
+        projectId: run.projectId,
+        workflowRunId: run.id,
+        stage: "stt",
+        status: "running",
+        progress: Math.min(90, 40 + Math.round(elapsedRatio * 45)),
+        errorCode: null,
+      });
+    } catch (error) {
+      log("info", "assemblyai_result_poll_transient", {
+        workflowRunId: run.id,
+        projectId: run.projectId,
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
+  }
+
+  return settled;
 }

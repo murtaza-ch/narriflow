@@ -22,3 +22,9 @@ Local setup for the Claude Code + Codex workflow. Not agent instructions.
 ## Hygiene
 
 - Do not commit personal plugin state, secrets, local paths, or machine-specific settings.
+
+## Worker email notifications
+
+- Set `WORKER_APP_BASE_URL` in `apps/worker/.env` to the public web-app origin used in project links (for example, `https://app.narriflow.com`). Production workers skip notification sends when this value is missing, invalid, or points to localhost.
+- Set `RESEND_API_KEY` in `apps/worker/.env` to enable delivery through Resend. When unset, notifications are recorded as skipped.
+- Set `NARRIFLOW_EMAIL_FROM` in `apps/worker/.env` to the verified sender identity (for example, `Narriflow <notifications@narriflow.com>`).

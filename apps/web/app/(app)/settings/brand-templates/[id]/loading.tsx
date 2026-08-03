@@ -1,4 +1,4 @@
-import { AspectRatio, Box, Flex, Grid, Skeleton, Stack } from "@chakra-ui/react";
+import { Box, Flex, Grid, Skeleton, Stack } from "@chakra-ui/react";
 
 export default function EditBrandTemplateLoading() {
   return (
@@ -43,9 +43,7 @@ export default function EditBrandTemplateLoading() {
         {/* Phone frame + live-preview meta lines */}
         <Stack gap="3" justifySelf="center" align={{ base: "center", lg: "flex-start" }}>
           <Box w={{ base: "240px", lg: "280px" }}>
-            <AspectRatio ratio={9 / 16}>
-              <Skeleton variant="shine" borderRadius="18px" />
-            </AspectRatio>
+            <Skeleton variant="shine" borderRadius="18px" css={{ aspectRatio: "9 / 16" }} />
           </Box>
           <Stack gap="1.5" px="1" w={{ base: "240px", lg: "280px" }}>
             <Skeleton variant="shine" height="11px" width="70px" />

@@ -124,6 +124,19 @@ describe("project pipeline state", () => {
     ["active post", [{ status: "scheduled" }], "active"],
     ["failed post", [{ status: "failed" }], "failed"],
     ["unrequested", [], "todo"],
+    // Posts orphaned by clip deletion (clipId SetNull — e.g. after
+    // "Regenerate clips") are history, not current pipeline state: a fresh
+    // clip set with zero renders must not show Publish as done.
+    [
+      "orphaned posted post ignored",
+      [{ status: "posted", clipId: null }],
+      "todo",
+    ],
+    [
+      "orphaned failed post ignored",
+      [{ status: "failed", clipId: null }, { status: "scheduled", clipId: "c1" }],
+      "active",
+    ],
   ])("derives publishing: %s", (_label, socialPosts, expected) => {
     expect(
       deriveProjectPipelineStates({ ...EMPTY_PIPELINE, socialPosts }).publish,

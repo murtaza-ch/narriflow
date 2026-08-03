@@ -140,7 +140,6 @@ export class DubbingService {
         id: parsed.clipId,
         projectId,
         project: { userId },
-        status: { not: "rejected" },
       },
       include: { renders: true },
     });

@@ -3,7 +3,10 @@ import type {
   TranscriptSnapshot,
   TranscriptUtterance,
 } from "@narriflow/validators";
-import { transcriptSnapshotSchema } from "@narriflow/validators";
+import {
+  splitUtterancesIntoSentences,
+  transcriptSnapshotSchema,
+} from "@narriflow/validators";
 
 interface AssemblyAiWord {
   start?: number;
@@ -154,7 +157,7 @@ export function normalizeAssemblyAiTranscript(
   }
 
   const speakerMap = new Map<string, number>();
-  const normalizedUtterances = utterances
+  const turnUtterances = utterances
     .map((utterance, index): TranscriptUtterance | null => {
       const text = coerceUtteranceText(utterance);
       const startSec = millisecondsToSeconds(
@@ -232,6 +235,12 @@ export function normalizeAssemblyAiTranscript(
     .filter(
       (utterance): utterance is TranscriptUtterance => utterance !== null,
     );
+
+  // AssemblyAI utterances are speaker TURNS — a single-speaker monologue
+  // arrives as one utterance spanning the whole video. Split to sentence-level
+  // so downstream consumers (the clip-detection LLM prompt's per-line
+  // timestamps, SRT/VTT cues, transcript views) get usable timing anchors.
+  const normalizedUtterances = splitUtterancesIntoSentences(turnUtterances);
 
   if (normalizedUtterances.length === 0) {
     throw new TranscriptNormalizationError(

@@ -1,16 +1,18 @@
 "use client";
 
-import { useEffect, useMemo, useState, useTransition } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Box, Flex, Grid, Stack, Text } from "@chakra-ui/react";
-import { AlertTriangle, CalendarClock, Send, X } from "lucide-react";
+import { AlertTriangle, CalendarClock, Check, Send, X } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { Input } from "@narriflow/ui/components/input";
 import { Select } from "@narriflow/ui/components/select";
+import { Spinner } from "@narriflow/ui/components/spinner";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
 import {
-  userErrorMessage,
+  socialPostSnapshotSchema,
+  USER_ERROR_MESSAGES,
   type ClipAspectRatio,
   type ClipSnapshot,
   type SocialAccountSnapshot,
@@ -18,16 +20,54 @@ import {
   type SocialPostSnapshot,
 } from "@narriflow/validators";
 import { formatDateTime } from "@/lib/format";
-
-const platformLabels: Record<SocialPlatform, string> = {
-  tiktok: "TikTok",
-  youtube_shorts: "YouTube Shorts",
-  instagram_reels: "Instagram Reels",
-  linkedin: "LinkedIn",
-  x: "X",
-};
+import {
+  describeSocialPost,
+  isLiveSocialPost,
+  socialPollDelayMs,
+  SOCIAL_PLATFORM_LABELS as platformLabels,
+  type SocialPostTone,
+} from "@/lib/social-post-status";
 
 const platforms = Object.keys(platformLabels) as SocialPlatform[];
+
+const socialPostListSchema = socialPostSnapshotSchema.array();
+
+/** Re-check the list this soon after a backgrounded tab comes back, and after
+ *  a failed poll — both cases want a prompt retry without a tight loop. */
+const RECOVERY_POLL_DELAY_MS = 5_000;
+/** Consecutive poll failures before the panel admits its status may be stale.
+ *  One transient failure is invisible; a broken connection is not. */
+const STALE_AFTER_FAILURES = 2;
+/** Countdown copy is minute-grained, so a coarse tick is plenty. */
+const CLOCK_TICK_MS = 15_000;
+
+const toneStripe: Record<SocialPostTone, string> = {
+  neutral: "border.emphasized",
+  accent: "accent.solid",
+  success: "success.solid",
+  warning: "warning.solid",
+  danger: "danger.solid",
+};
+
+const toneFg: Record<SocialPostTone, string> = {
+  neutral: "fg.muted",
+  accent: "accent.fg",
+  success: "success.fg",
+  warning: "warning.fg",
+  danger: "danger.fg",
+};
+
+type Notice = { tone: "success" | "danger"; text: string };
+
+/** Prefers mapped copy for a known error code, falls back to the API's own
+ *  message, then to a caller-supplied default. */
+function actionErrorText(
+  payload: { error?: string; message?: string } | null,
+  fallback: string,
+): string {
+  const mapped = payload?.error ? USER_ERROR_MESSAGES[payload.error] : undefined;
+  return mapped ?? payload?.message ?? fallback;
+}
 
 const platformItems = platforms.map((value) => ({
   value,
@@ -36,20 +76,6 @@ const platformItems = platforms.map((value) => ({
 
 function firstRenderedAspectRatio(clip: ClipSnapshot): ClipAspectRatio | null {
   return clip.renderVariants.find((render) => render.hasAsset)?.aspectRatio ?? null;
-}
-
-function postStripe(status: SocialPostSnapshot["status"]): string {
-  if (status === "posted") return "success.solid";
-  if (status === "failed") return "danger.solid";
-  if (status === "scheduled" || status === "publishing") return "accent.solid";
-  return "border.emphasized";
-}
-
-function postLabelColor(status: SocialPostSnapshot["status"]): string {
-  if (status === "posted") return "success.fg";
-  if (status === "failed") return "danger.fg";
-  if (status === "scheduled" || status === "publishing") return "accent.fg";
-  return "fg.muted";
 }
 
 export function SocialSchedulingPanel({
@@ -82,10 +108,152 @@ export function SocialSchedulingPanel({
   const [accountId, setAccountId] = useState("");
   const [caption, setCaption] = useState(selectedClip?.hookText ?? "");
   const [scheduledFor, setScheduledFor] = useState("");
-  const [message, setMessage] = useState<string | null>(null);
+  const [notice, setNotice] = useState<Notice | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const selectedAccount =
     platformAccounts.find((account) => account.id === accountId) ?? null;
+
+  // --- Live post state -----------------------------------------------------
+  // Publishing happens in the worker, which has no SSE channel of its own (the
+  // project stream only carries pipeline `workflow.stage.updated` events). So
+  // the panel polls its own list while the worker owns a post, and refreshes
+  // the server tree once a post reaches a terminal status so the rest of the
+  // workspace (analytics, activity) catches up too.
+  const [livePosts, setLivePosts] = useState(posts);
+  const [statusStale, setStatusStale] = useState(false);
+  const [nowMs, setNowMs] = useState<number | null>(null);
+  const livePostsRef = useRef(livePosts);
+  const statusesRef = useRef(
+    new Map(posts.map((post) => [post.id, post.status])),
+  );
+  /** Posts this client already saw reach a terminal status. A `router.refresh()`
+   *  can land before the server render reflects the same write, and letting a
+   *  stale "scheduled" overwrite a settled "posted" would both regress the row
+   *  and restart polling on an already-finished post. */
+  const settledRef = useRef(new Map<string, SocialPostSnapshot>());
+
+  /** Server snapshot, with any post the server still reports as live replaced
+   *  by the terminal snapshot this client already confirmed. */
+  const reconcileWithSettled = useCallback(
+    (incoming: SocialPostSnapshot[]): SocialPostSnapshot[] =>
+      incoming.map((post) => {
+        const settled = settledRef.current.get(post.id);
+        if (!settled) return post;
+        if (!isLiveSocialPost(post.status)) {
+          settledRef.current.delete(post.id);
+          return post;
+        }
+        return settled;
+      }),
+    [],
+  );
+
+  useEffect(() => {
+    const reconciled = reconcileWithSettled(posts);
+    setLivePosts(reconciled);
+    statusesRef.current = new Map(
+      reconciled.map((post) => [post.id, post.status]),
+    );
+  }, [posts, reconcileWithSettled]);
+
+  useEffect(() => {
+    livePostsRef.current = livePosts;
+  }, [livePosts]);
+
+  const hasLivePosts = livePosts.some((post) => isLiveSocialPost(post.status));
+
+  // Relative phrasing ("in 12 min") is client-only: `nowMs` stays null through
+  // SSR and the first render, so the markup can't mismatch on hydration.
+  useEffect(() => {
+    setNowMs(Date.now());
+    if (!hasLivePosts) return;
+    const id = setInterval(() => setNowMs(Date.now()), CLOCK_TICK_MS);
+    return () => clearInterval(id);
+  }, [hasLivePosts]);
+
+  const applyPosts = useCallback(
+    (next: SocialPostSnapshot[]) => {
+      let anySettled = false;
+      for (const post of next) {
+        const previous = statusesRef.current.get(post.id);
+        if (isLiveSocialPost(post.status)) continue;
+        settledRef.current.set(post.id, post);
+        if (previous !== undefined && isLiveSocialPost(previous)) {
+          anySettled = true;
+        }
+      }
+      statusesRef.current = new Map(next.map((post) => [post.id, post.status]));
+      setLivePosts(next);
+      // A post reaching its terminal status is also new analytics + activity
+      // data, so pull the rest of the workspace forward once.
+      if (anySettled) router.refresh();
+    },
+    [router],
+  );
+
+  useEffect(() => {
+    if (!hasLivePosts) return;
+
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let failures = 0;
+
+    const queueNext = (from: SocialPostSnapshot[]) => {
+      if (stopped) return;
+      const delay = socialPollDelayMs(from, Date.now());
+      if (delay === null) return;
+      timer = setTimeout(
+        poll,
+        failures > 0 ? Math.max(delay, RECOVERY_POLL_DELAY_MS) : delay,
+      );
+    };
+
+    const poll = async () => {
+      if (stopped) return;
+      // Nothing to show a hidden tab — resume on visibilitychange below.
+      if (document.visibilityState === "hidden") {
+        timer = setTimeout(poll, RECOVERY_POLL_DELAY_MS);
+        return;
+      }
+      try {
+        const response = await fetch(
+          `/api/projects/${projectId}/social-posts`,
+          { cache: "no-store" },
+        );
+        if (!response.ok) throw new Error(`http_${response.status}`);
+        const payload = (await response.json()) as { posts?: unknown };
+        const parsed = socialPostListSchema.safeParse(payload.posts);
+        if (!parsed.success) throw new Error("invalid_payload");
+        if (stopped) return;
+        failures = 0;
+        setStatusStale(false);
+        setNowMs(Date.now());
+        applyPosts(parsed.data);
+        queueNext(parsed.data);
+      } catch (error) {
+        if (stopped) return;
+        failures += 1;
+        console.error("social_posts_poll_failed", error);
+        if (failures >= STALE_AFTER_FAILURES) setStatusStale(true);
+        queueNext(livePostsRef.current);
+      }
+    };
+
+    const onVisibilityChange = () => {
+      if (stopped || document.visibilityState !== "visible") return;
+      if (timer) clearTimeout(timer);
+      void poll();
+    };
+
+    queueNext(livePostsRef.current);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    return () => {
+      stopped = true;
+      if (timer) clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, [projectId, hasLivePosts, applyPosts]);
 
   const clipItems = useMemo(
     () =>
@@ -121,19 +289,25 @@ export function SocialSchedulingPanel({
       return;
     }
     if (!selectedClip) {
-      setMessage("Render a clip before scheduling it.");
+      setNotice({ tone: "danger", text: "Render a clip before scheduling it." });
       return;
     }
     if (!selectedAccount) {
-      setMessage(`Connect a ${platformLabels[platform]} account before scheduling.`);
+      setNotice({
+        tone: "danger",
+        text: `Connect a ${platformLabels[platform]} account before scheduling.`,
+      });
       return;
     }
     const aspectRatio = firstRenderedAspectRatio(selectedClip);
     if (!aspectRatio) {
-      setMessage("Selected clip has no rendered asset.");
+      setNotice({
+        tone: "danger",
+        text: "Selected clip has no rendered asset.",
+      });
       return;
     }
-    setMessage(null);
+    setNotice(null);
     setSubmitting(true);
     try {
       const response = await fetch(`/api/projects/${projectId}/social-posts`, {
@@ -154,17 +328,31 @@ export function SocialSchedulingPanel({
           error?: string;
         } | null;
         console.error("schedule_post_failed", response.status, payload);
-        setMessage(
-          payload?.message ??
-            userErrorMessage(payload?.error) ??
-            "Could not schedule post.",
-        );
+        setNotice({
+          tone: "danger",
+          text: actionErrorText(payload, "Could not schedule post."),
+        });
         return;
+      }
+      const created = socialPostSnapshotSchema.safeParse(await response.json());
+      setNotice({
+        tone: "success",
+        text: scheduledFor
+          ? `Scheduled to ${platformLabels[platform]} for ${formatDateTime(scheduledFor)}.`
+          : `Queued to ${platformLabels[platform]} — publishing now.`,
+      });
+      // Show the new row immediately; the refresh below reconciles the rest of
+      // the server tree (and the poll loop takes over from here).
+      if (created.success) {
+        applyPosts([...livePostsRef.current, created.data]);
       }
       startTransition(() => router.refresh());
     } catch (err) {
       console.error("schedule_post_failed", err);
-      setMessage("Could not schedule post. Please try again.");
+      setNotice({
+        tone: "danger",
+        text: "Could not schedule post. Please try again.",
+      });
     } finally {
       setSubmitting(false);
     }
@@ -174,7 +362,7 @@ export function SocialSchedulingPanel({
     if (submitting) {
       return;
     }
-    setMessage(null);
+    setNotice(null);
     setSubmitting(true);
     try {
       const response = await fetch(
@@ -189,17 +377,34 @@ export function SocialSchedulingPanel({
           error?: string;
         } | null;
         console.error("cancel_post_failed", response.status, payload);
-        setMessage(
-          payload?.message ??
-            userErrorMessage(payload?.error) ??
+        setNotice({
+          tone: "danger",
+          text: actionErrorText(
+            payload,
             "Could not cancel this post. Please try again.",
-        );
+          ),
+        });
+        // The usual cause is the worker claiming the post mid-click — pull the
+        // real status back so the row stops offering a cancel that can't work.
+        startTransition(() => router.refresh());
         return;
       }
+      const cancelled = socialPostSnapshotSchema.safeParse(await response.json());
+      if (cancelled.success) {
+        applyPosts(
+          livePostsRef.current.map((post) =>
+            post.id === cancelled.data.id ? cancelled.data : post,
+          ),
+        );
+      }
+      setNotice({ tone: "success", text: "Post canceled." });
       startTransition(() => router.refresh());
     } catch (err) {
       console.error("cancel_post_failed", err);
-      setMessage("Could not cancel this post. Please try again.");
+      setNotice({
+        tone: "danger",
+        text: "Could not cancel this post. Please try again.",
+      });
     } finally {
       setSubmitting(false);
     }
@@ -309,16 +514,36 @@ export function SocialSchedulingPanel({
               }
               onClick={schedulePost}
             >
-              <CalendarClock size={14} />
-              <Text ms="1.5">Schedule</Text>
+              {submitting ? <Spinner size="xs" /> : <CalendarClock size={14} />}
+              <Text ms="1.5">{submitting ? "Scheduling…" : "Schedule"}</Text>
             </Button>
           </Box>
         </Grid>
 
-        {message ? (
-          <Flex align="center" gap="1.5" color="danger.fg">
+        {notice ? (
+          <Flex
+            align="center"
+            gap="1.5"
+            color={notice.tone === "success" ? "success.fg" : "danger.fg"}
+            role="status"
+            aria-live="polite"
+          >
+            {notice.tone === "success" ? (
+              <Check size={13} aria-hidden />
+            ) : (
+              <AlertTriangle size={13} aria-hidden />
+            )}
+            <Text fontSize="xs">{notice.text}</Text>
+          </Flex>
+        ) : null}
+
+        {statusStale ? (
+          <Flex align="center" gap="1.5" color="warning.fg">
             <AlertTriangle size={13} aria-hidden />
-            <Text fontSize="xs">{message}</Text>
+            <Text fontSize="xs">
+              Live publish status isn&apos;t updating right now — reload the page
+              to see where these posts stand.
+            </Text>
           </Flex>
         ) : null}
 
@@ -341,9 +566,16 @@ export function SocialSchedulingPanel({
           </Text>
         ) : null}
 
-        {posts.length > 0 ? (
-          <Stack gap="0" borderTopWidth="1px" borderColor="border.subtle">
-            {posts.map((post) => (
+        {livePosts.length > 0 ? (
+          <Stack
+            gap="0"
+            borderTopWidth="1px"
+            borderColor="border.subtle"
+            aria-live="polite"
+          >
+            {livePosts.map((post) => {
+              const feedback = describeSocialPost(post, nowMs);
+              return (
               <Flex
                 key={post.id}
                 position="relative"
@@ -365,7 +597,7 @@ export function SocialSchedulingPanel({
                   top="0"
                   bottom="0"
                   w="3px"
-                  bg={postStripe(post.status)}
+                  bg={toneStripe[feedback.tone]}
                 />
                 <Box minW="0">
                   <Flex align="center" gap="2" wrap="wrap">
@@ -373,20 +605,25 @@ export function SocialSchedulingPanel({
                       {platformLabels[post.platform]}
                       {post.accountDisplayName ? ` · ${post.accountDisplayName}` : ""}
                     </Text>
-                    <Text textStyle="eyebrow" color={postLabelColor(post.status)}>
-                      {post.status}
-                    </Text>
+                    <Flex align="center" gap="1.5">
+                      {feedback.isBusy ? <Spinner size="xs" /> : null}
+                      <Text textStyle="eyebrow" color={toneFg[feedback.tone]}>
+                        {feedback.label}
+                      </Text>
+                    </Flex>
                   </Flex>
                   <Text fontSize="xs" color="fg.muted" truncate>
-                    {post.scheduledFor ? (
-                      <Text as="span" textStyle="data" fontSize="11px">
-                        {formatDateTime(post.scheduledFor)}
-                      </Text>
-                    ) : (
-                      "No scheduled time"
-                    )}{" "}
-                    · {post.caption}
+                    {feedback.detail}
                   </Text>
+                  <Text fontSize="xs" color="fg.subtle" truncate>
+                    {post.caption}
+                  </Text>
+                  {feedback.error ? (
+                    <Flex align="center" gap="1.5" color="danger.fg" mt="0.5">
+                      <AlertTriangle size={12} aria-hidden />
+                      <Text fontSize="xs">{feedback.error}</Text>
+                    </Flex>
+                  ) : null}
                   {post.latestMetrics ? (
                     <Text textStyle="data" fontSize="11px" color="fg.subtle" truncate>
                       {post.latestMetrics.views} views ·{" "}
@@ -407,12 +644,12 @@ export function SocialSchedulingPanel({
                         _hover={{ textDecorationColor: "fg" }}
                         truncate
                       >
-                        {post.externalUrl}
+                        View on {platformLabels[post.platform]}
                       </Text>
                     </a>
                   ) : null}
                 </Box>
-                {post.status === "scheduled" ? (
+                {post.status === "scheduled" || post.status === "draft" ? (
                   <Button
                     size="xs"
                     variant="ghost"
@@ -425,7 +662,8 @@ export function SocialSchedulingPanel({
                   </Button>
                 ) : null}
               </Flex>
-            ))}
+              );
+            })}
           </Stack>
         ) : (
           <EmptyState

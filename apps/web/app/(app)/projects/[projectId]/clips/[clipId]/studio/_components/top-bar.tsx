@@ -5,6 +5,7 @@ import { ArrowLeft, Undo2, Redo2, Keyboard, Check } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { Button, ScoreMeter, Spinner } from "@narriflow/ui";
 import { formatDuration } from "@/lib/format";
+import { ClipActionsMenu } from "../../../../clip-actions-menu";
 import { useStudio } from "./studio-shell";
 
 function IconBtn({
@@ -128,8 +129,24 @@ export function TopBar() {
           textOverflow="ellipsis"
           maxW="300px"
         >
-          {clipInfo.title}
+          {clipInfo.clipTitle ?? clipInfo.title}
         </Text>
+
+        {/* Same overflow menu as the clip rows, so a rename is reachable from
+            wherever the title is showing. Duplicate/delete both navigate:
+            editing a copy is the point of duplicating from in here, and the
+            studio can't stay open on a clip that no longer exists. */}
+        <ClipActionsMenu
+          projectId={clipInfo.projectId}
+          clipId={clipInfo.id}
+          title={clipInfo.clipTitle}
+          fallbackTitle={clipInfo.title}
+          surface="studio"
+          onDuplicated={(clip) =>
+            router.push(`/projects/${clip.projectId}/clips/${clip.id}/studio`)
+          }
+          onDeleted={() => router.push(`/projects/${clipInfo.projectId}`)}
+        />
 
         <Box w="1px" h="20px" bg="studio.border" mx="1" flexShrink={0} />
 

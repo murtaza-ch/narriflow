@@ -27,6 +27,7 @@ import {
   MAX_UPLOAD_SIZE_BYTES,
   type LinkProviderId,
 } from "@narriflow/validators";
+import { notifyIngestFailureAfterSettlement } from "../notifications";
 
 const MEDIA_DOWNLOAD_TIMEOUT_MS = 60 * 60 * 1000;
 const METADATA_PROBE_TIMEOUT_MS = 120 * 1000;
@@ -45,11 +46,22 @@ const LINK_DOWNLOAD_TIMEOUT_MS = 45 * 60 * 1000;
 const YTDLP_FORMAT_SELECTOR =
   "bestvideo[height<=1080][ext=mp4]+bestaudio[ext=m4a]/bestvideo[height<=1080]+bestaudio/best[height<=1080]/best";
 
+// DASH/HLS sources (YouTube in particular) download fragment-by-fragment;
+// yt-dlp fetches them sequentially unless told otherwise, which routinely
+// leaves most of the available bandwidth idle. Parallel fragments only affect
+// fragmented formats — plain single-file downloads ignore the flag.
+function getYtdlpConcurrentFragments(): number {
+  const value = Number(process.env.YTDLP_CONCURRENT_FRAGMENTS);
+  if (!Number.isFinite(value) || value < 1) return 4;
+  return Math.min(Math.round(value), 16);
+}
+
 interface IngestJob {
   id: string;
   projectId: string;
   jobType: "upload_finalize" | "youtube_import" | "rss_import" | "link_import";
   payload: unknown;
+  attemptCount: number;
 }
 
 class IngestWorkerError extends Error {
@@ -398,6 +410,7 @@ async function runYtdlpLinkDownload(
   const tempDir = await mkdtemp(join(tmpdir(), "narriflow-link-"));
 
   try {
+    const probeStartedAtMs = Date.now();
     const metadataOutput = await withTransientRetry("yt_dlp_metadata_probe", () =>
       execCommand(
         "yt-dlp",
@@ -420,6 +433,8 @@ async function runYtdlpLinkDownload(
       );
     }
 
+    const probeMs = Date.now() - probeStartedAtMs;
+    const downloadStartedAtMs = Date.now();
     const outputTemplate = join(tempDir, "%(id)s.%(ext)s");
     // --max-downloads 1 makes yt-dlp exit 101 once the limit stops any extra
     // downloads it would otherwise attempt; that's success as long as the
@@ -436,6 +451,8 @@ async function runYtdlpLinkDownload(
           "1",
           "--max-filesize",
           String(MAX_UPLOAD_SIZE_BYTES),
+          "--concurrent-fragments",
+          String(getYtdlpConcurrentFragments()),
           "--format",
           YTDLP_FORMAT_SELECTOR,
           "--merge-output-format",
@@ -480,11 +497,14 @@ async function runYtdlpLinkDownload(
       );
     }
 
+    const downloadMs = Date.now() - downloadStartedAtMs;
+
     const extension = extname(downloadedPath) || ".mp4";
     const baseName =
       sanitizeFileName(metadata.title ?? basename(downloadedPath, extension)) || "source";
     const key = `projects/${job.projectId}/link/${Date.now()}-${baseName}${extension}`;
 
+    const uploadStartedAtMs = Date.now();
     await putFileFromPath({
       key,
       filePath: downloadedPath,
@@ -494,6 +514,19 @@ async function runYtdlpLinkDownload(
         source_url: url,
         source_id: metadata.id ?? "unknown",
       },
+    });
+
+    // The three network legs of a link import, separated so telemetry can say
+    // which one actually dominates (source download vs the R2 upload leg).
+    log("info", "ingest_link_import_timing", {
+      jobId: job.id,
+      projectId: job.projectId,
+      provider,
+      probeMs,
+      downloadMs,
+      uploadMs: Date.now() - uploadStartedAtMs,
+      sizeBytes: fileInfo.size,
+      durationSeconds,
     });
 
     await projectService.completeIngestJob(job.id, {
@@ -767,6 +800,7 @@ async function runRssImport(job: IngestJob) {
 }
 
 export async function processIngestJob(job: IngestJob) {
+  const jobStartedAtMs = Date.now();
   log("info", "ingest_job_started", {
     jobId: job.id,
     projectId: job.projectId,
@@ -790,6 +824,7 @@ export async function processIngestJob(job: IngestJob) {
       jobId: job.id,
       projectId: job.projectId,
       jobType: job.jobType,
+      totalMs: Date.now() - jobStartedAtMs,
     });
   } catch (error) {
     const code = error instanceof IngestWorkerError ? error.code : "worker_unhandled_error";
@@ -802,6 +837,13 @@ export async function processIngestJob(job: IngestJob) {
       jobType: job.jobType,
       code,
       message,
+    });
+    await notifyIngestFailureAfterSettlement({
+      jobId: job.id,
+      projectId: job.projectId,
+      attemptCount: job.attemptCount,
+      errorCode: code,
+      reason: message,
     });
   }
 }

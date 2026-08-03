@@ -11,6 +11,9 @@ export {
 export {
   clipService,
   ClipService,
+  ClipActionError,
+  CLIP_TITLE_SYSTEM_PROMPT,
+  buildClipTitleUserPrompt,
   brollUrlChanged,
   computeDurationOptimality,
   computePacingScore,
@@ -51,6 +54,13 @@ export {
   claimBackoffWhereClauses,
   type AutoRetryDecision,
 } from "./project.service";
+export {
+  autoTriggerIdempotencyKey,
+  isQuotaBlockedMidFlight,
+  isUniqueConstraintError,
+  selectActionablePack,
+  type FinalizeSetupResult,
+} from "./generation-sequencing";
 export {
   contentSuiteService,
   ContentSuiteService,
@@ -117,3 +127,23 @@ export { purgeOldWebhookDeliveryLogs } from "./webhook-log.service";
 export * from "./url-guard";
 export * from "./rate-limit";
 export * from "./optional-redis";
+export {
+  notificationService,
+  NotificationService,
+  NOTIFICATION_LEASE_MS,
+  NOTIFICATION_MAX_ATTEMPTS,
+  type EnqueueNotificationInput,
+  type EnqueueNotificationResult,
+  type NotificationLedgerRow,
+  type NotificationMailInput,
+  type NotificationMailer,
+  type NotificationMailResult,
+  type NotificationOutcome,
+  type NotificationProject,
+  type ResendPendingNotificationsResult,
+  type RetryNotificationInput,
+  type RetryNotificationInputBuilder,
+  type NotificationServiceDependencies,
+  type NotificationStore,
+  type WorkflowRunNotificationContext,
+} from "./notification.service";

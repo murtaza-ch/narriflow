@@ -1,7 +1,7 @@
 "use client";
 
 import { Box, Flex, Grid, Stack, Text } from "@chakra-ui/react";
-import { Check, X } from "lucide-react";
+import { Check, ChevronRight, X } from "lucide-react";
 
 const recommended = [
   "Video podcasts",
@@ -21,14 +21,29 @@ const notRecommended = [
 
 /**
  * Source guidance — de-carded to a Blueline band: eyebrow + 1.5px ink rule,
- * two hairline columns. No wrapper box.
+ * two hairline columns. Collapsed behind a native disclosure so the commit
+ * step stays a single focused column (plan Phase 4).
  */
 export function RecommendationCard() {
   return (
-    <Box w="full">
-      <Text textStyle="eyebrow" color="fg.subtle" mb="2">
-        Source guidance
-      </Text>
+    <Box w="full" as="details" css={{ "&[open] .disclosure-chevron": { transform: "rotate(90deg)" } }}>
+      <Box
+        as="summary"
+        cursor="pointer"
+        listStyleType="none"
+        css={{ "&::-webkit-details-marker": { display: "none" } }}
+      >
+        <Flex align="center" gap="1" mb="2" color="fg.subtle" _hover={{ color: "fg.muted" }}>
+          <Box
+            className="disclosure-chevron"
+            transition="transform 120ms ease"
+            display="inline-flex"
+          >
+            <ChevronRight size={12} aria-hidden />
+          </Box>
+          <Text textStyle="eyebrow">Source guidance</Text>
+        </Flex>
+      </Box>
       <Grid
         layerStyle="band"
         templateColumns={{ base: "1fr", sm: "1fr 1fr" }}

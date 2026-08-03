@@ -189,6 +189,10 @@ model Project {
   userId         String        @db.Uuid
   brandTemplateId String?      @db.Uuid
   brandSnapshot  Json?
+  // Client-minted commit token: concurrent Step-1 double-submits collapse in
+  // the database, not the UI.
+  commitToken    String?       @unique @db.Uuid
+  notifyOnComplete Boolean     @default(true)
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
   contentPacks   ContentPack[]
@@ -206,6 +210,7 @@ model Project {
   analyticsEvents ProjectAnalyticsEvent[]
   clipDubs        ClipDub[]
   autopilotEpisodes AutopilotEpisode[]
+  notificationLedgers NotificationLedger[]
 
   @@index([userId, createdAt])
   @@index([userId, ingestStatus, createdAt])
@@ -250,10 +255,20 @@ model ContentPack {
   specificMoments         String       @default("")
   processingStartSec      Int?
   processingEndSec        Int?
+  // Link-first split: Step 1 (Commit) writes a draft; Step 2 (Configure)
+  // flips it to committed. A draft must never start generation — every
+  // reader takes the latest pack overall and STOPS if it is a draft
+  // (filtering drafts out first could silently run an older committed pack).
+  // At most one draft per project (partial unique index in the migration —
+  // Prisma cannot express it here).
+  draft                   Boolean      @default(false)
+  clipLengthPreset        String       @default("auto")
+  defaultAspectRatio      String       @default("9:16")
   createdAt               DateTime     @default(now())
   updatedAt               DateTime     @updatedAt
 
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project      Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workflowRuns WorkflowRun[]
 }
 
 model WorkflowRun {
@@ -269,14 +284,51 @@ model WorkflowRun {
   // permanently; WorkflowRun had no equivalent at all, so stt /
   // moment_detection / clip_rendering / dubbing could not be retried either.
   attemptCount   Int      @default(0)
+  // The immutable configuration this run was claimed with. Workers read the
+  // bound pack, never "latest for project", so a draft written mid-run can
+  // never swap an active run's settings. Null only on pre-split legacy runs.
+  contentPackId  String?  @db.Uuid
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
-  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project     Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  contentPack ContentPack? @relation(fields: [contentPackId], references: [id], onDelete: SetNull)
 
+  // Raw partial unique index (not expressible in Prisma schema — see the
+  // 20260729000000_one_live_clip_rendering_run migration): at most one
+  // clip_rendering run per project may be queued/running at a time. Creation
+  // paths must catch the unique violation and reuse the existing live run.
   @@unique([projectId, idempotencyKey])
 }
 
+/// Send-once ledger for terminal-outcome notifications (Phase 2b of the
+/// link-first plan). `sourceId` is the WorkflowRun id for generation
+/// outcomes and the IngestJob id for import failures. Claim/lease keeps a
+/// crashed sender from double-delivering alongside the provider idempotency
+/// key.
+model NotificationLedger {
+  id                String    @id @default(uuid()) @db.Uuid
+  projectId         String    @db.Uuid
+  sourceId          String    @db.Uuid
+  outcome           String
+  status            String    @default("pending")
+  leaseExpiresAt    DateTime?
+  attemptCount      Int       @default(0)
+  providerMessageId String?
+  sentAt            DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  @@unique([projectId, sourceId, outcome])
+  @@index([status, leaseExpiresAt])
+}
+
+/// NOTE: updatedAt doubles as the submit-and-release STT timeout anchor —
+/// between markTranscriptSubmitted and completion, NOTHING may write this row
+/// (a backfill or new mid-flight write would silently disable the overall
+/// transcription timeout in processSubmittedTranscriptResults).
 model Transcript {
   id             String           @id @default(uuid()) @db.Uuid
   projectId      String           @unique @db.Uuid

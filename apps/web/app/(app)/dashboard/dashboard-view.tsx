@@ -2,7 +2,7 @@ import Link from "next/link";
 import { Box, Flex, Heading, SimpleGrid, Stack, Text } from "@chakra-ui/react";
 import { Button } from "@narriflow/ui/components/button";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
-import { FolderOpen, Upload } from "lucide-react";
+import { FolderOpen, Rss, Upload } from "lucide-react";
 import type { ProjectListItem } from "@narriflow/services";
 import { HeroPasteLinkField } from "./dashboard-client";
 import { ProjectCard } from "../projects/_components/project-card";
@@ -79,15 +79,20 @@ export function DashboardView({
           </Box>
 
           <Stack gap="2" align="center" pt="3">
-            <Text fontSize="12px" color="fg.subtle">
-              or
-            </Text>
-            <Button variant="outline" asChild>
-              <Link href="/upload">
-                <Upload size={15} strokeWidth={1.75} aria-hidden />
-                Upload local file
-              </Link>
-            </Button>
+            <Flex gap="2" wrap="wrap" justify="center">
+              <Button variant="ghost" size="sm" asChild>
+                <Link href="/upload">
+                  <Upload size={14} strokeWidth={1.75} aria-hidden />
+                  Upload local file
+                </Link>
+              </Button>
+              <Button variant="ghost" size="sm" asChild>
+                <Link href="/upload">
+                  <Rss size={14} strokeWidth={1.75} aria-hidden />
+                  Import RSS feed
+                </Link>
+              </Button>
+            </Flex>
             <Text textStyle="data" fontSize="11.5px" color="fg.subtle">
               MP4 · MOV · WebM · MKV · MP3 · WAV — up to 5 GB
             </Text>

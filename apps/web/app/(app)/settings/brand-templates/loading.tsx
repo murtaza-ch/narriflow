@@ -1,4 +1,4 @@
-import { AspectRatio, Box, Flex, Grid, Skeleton, Stack } from "@chakra-ui/react";
+import { Box, Flex, Grid, Skeleton, Stack } from "@chakra-ui/react";
 
 export default function BrandTemplatesLoading() {
   return (
@@ -31,9 +31,7 @@ export default function BrandTemplatesLoading() {
             >
               {Array.from({ length: 4 }).map((_, index) => (
                 <Stack key={index} gap="2">
-                  <AspectRatio ratio={9 / 16}>
-                    <Skeleton variant="shine" borderRadius="l2" />
-                  </AspectRatio>
+                  <Skeleton variant="shine" borderRadius="l2" css={{ aspectRatio: "9 / 16" }} />
                   <Flex align="center" justify="space-between" gap="1">
                     <Flex align="center" gap="1.5" minW="0" flex="1">
                       <Skeleton

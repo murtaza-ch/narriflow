@@ -3,6 +3,7 @@ import {
   captionPresetIdSchema,
   clipLengthPresetRanges,
   contentPackSchema,
+  PLATFORM_PLAYBOOK_VERSION,
   sourceLanguageCodeFromFormValue,
   type CaptionPresetId,
   type ClipLengthPreset,
@@ -24,13 +25,14 @@ const defaultContentPack: ContentPack = {
   autoRenderClips: false,
   toneConstraints: ["concise", "conversational"],
   captionPreset: BRAND_DEFAULT_CAPTION_PRESET_ID,
-  platformPlaybookVersion: "2026.2",
+  platformPlaybookVersion: PLATFORM_PLAYBOOK_VERSION,
   mode: "clip",
   autoHook: true,
   specificMoments: "",
   processingStartSec: null,
   processingEndSec: null,
   clipLengthPreset: "auto",
+  defaultAspectRatio: "9:16",
 };
 
 function readNumber(formData: FormData, key: string, fallback: number) {

@@ -30,7 +30,7 @@ import {
   updateClipBrollSchema,
   updateClipCaptionPresetSchema,
   updateClipStudioEditsSchema,
-  updateClipStatusSchema,
+  updateClipTitleSchema,
   updateClipTranscriptSliceSchema,
   userErrorMessage,
 } from "@narriflow/validators";
@@ -46,6 +46,7 @@ import {
   BrandTemplateForbiddenError,
   BrandTemplateNotFoundError,
   clipService,
+  ClipActionError,
   contentSuiteService,
   ContentSuiteError,
   dubbingService,
@@ -369,6 +370,40 @@ app.get("/projects/:id/transcript", async (c) => {
   }
 
   return c.json(transcript, 200);
+});
+
+// Lean word-level transcript for the Trim/Extend editor: raw utterances
+// only, no snapshot re-validation (see getTranscriptUtterancesRaw). Browser-
+// cacheable briefly — the client also keeps a session-level parsed cache.
+app.get("/projects/:id/transcript/utterances", async (c) => {
+  const appUser = await getCurrentAppUser();
+
+  if (!appUser) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const projectId = c.req.param("id");
+  const access = await projectService.getProjectAccess(appUser.id, projectId);
+
+  if (access === "missing") {
+    return c.json({ error: "Project not found" }, 404);
+  }
+
+  if (access === "forbidden") {
+    return c.json({ error: "Forbidden" }, 403);
+  }
+
+  const utterances = await projectService.getTranscriptUtterancesRaw(
+    appUser.id,
+    projectId,
+  );
+
+  if (utterances === null) {
+    return c.json({ error: "Transcript not found" }, 404);
+  }
+
+  c.header("Cache-Control", "private, max-age=120");
+  return c.json({ utterances }, 200);
 });
 
 app.get("/projects/:id/transcript/export", async (c) => {
@@ -724,14 +759,13 @@ app.patch("/projects/:id/clips/:clipId", async (c) => {
   }
 
   try {
-    // Check if this is a status update or boundary update
-    const statusParsed = updateClipStatusSchema.safeParse(payload);
-    if (statusParsed.success) {
-      const clip = await clipService.updateClipStatus(
+    const titleParsed = updateClipTitleSchema.safeParse(payload);
+    if (titleParsed.success) {
+      const clip = await clipService.updateClipTitle(
         appUser.id,
         projectId,
         clipId,
-        statusParsed.data.status,
+        titleParsed.data.title,
       );
       return c.json(clip, 200);
     }
@@ -804,13 +838,210 @@ app.patch("/projects/:id/clips/:clipId", async (c) => {
       {
         error: "unrecognized_clip_update",
         message:
-          "Body didn't match any supported clip update (status, boundaries, captionPreset, transcriptSlice, brollUrl, or studioEdits).",
+          "Body didn't match any supported clip update (status, title, boundaries, captionPreset, transcriptSlice, brollUrl, or studioEdits).",
       },
       400,
     );
   } catch (error) {
+    if (error instanceof ClipActionError) {
+      return c.json(
+        { error: error.code, message: error.message },
+        error.code === "clip_not_found" ? 404 : 400,
+      );
+    }
     return c.json(
       { error: "clip_update_failed", message: errorMessage(error) },
+      400,
+    );
+  }
+});
+
+/**
+ * Structured server-side log for a failed clip action. These routes previously
+ * put the only explanation in the response body, which meant a config problem
+ * and a genuine provider fault were indistinguishable in the server log.
+ * `code` is included so the mapped user-facing copy can be traced back.
+ */
+function logClipActionFailure(
+  message: string,
+  error: unknown,
+  context: Record<string, string>,
+) {
+  console.warn(
+    JSON.stringify({
+      level: "warn",
+      message,
+      ...context,
+      code: error instanceof ClipActionError ? error.code : "unhandled",
+      error: errorMessage(error),
+    }),
+  );
+}
+
+/**
+ * Alternative AI-written titles for one clip. Read-only — the caller picks one
+ * and PATCHes it back as an ordinary `{ title }` rename, so nothing is
+ * overwritten without an explicit choice.
+ *
+ * Rate limited per user because each call is a real LLM completion and the
+ * trigger is a single menu click that's cheap to hammer.
+ */
+app.post("/projects/:id/clips/:clipId/title-suggestions", async (c) => {
+  const appUser = await getCurrentAppUser();
+
+  if (!appUser) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const rl = await checkRateLimit(`clip-title-suggest:${appUser.id}`, 30, 60);
+  if (!rl.allowed) {
+    return c.json(
+      { error: "rate_limited", message: userErrorMessage("rate_limited") },
+      429,
+    );
+  }
+
+  const projectId = c.req.param("id");
+  const access = await projectService.getProjectAccess(appUser.id, projectId);
+
+  if (access === "missing") {
+    return c.json({ error: "Project not found" }, 404);
+  }
+
+  if (access === "forbidden") {
+    return c.json({ error: "Forbidden" }, 403);
+  }
+
+  try {
+    const titles = await clipService.suggestClipTitles(
+      appUser.id,
+      projectId,
+      c.req.param("clipId"),
+    );
+    return c.json({ titles }, 200);
+  } catch (error) {
+    // Log server-side too. Without this the only trace of *why* a 400 happened
+    // was the response body, so a misconfigured key looked identical in the
+    // server log to a model that returned junk.
+    logClipActionFailure("clip_title_suggestions_failed", error, {
+      projectId,
+      clipId: c.req.param("clipId"),
+    });
+    if (error instanceof ClipActionError) {
+      return c.json(
+        { error: error.code, message: error.message },
+        error.code === "clip_not_found" ? 404 : 400,
+      );
+    }
+    return c.json(
+      { error: "clip_title_suggestion_failed", message: errorMessage(error) },
+      400,
+    );
+  }
+});
+
+/**
+ * Duplicates a clip, copying its finished renders and preview proxy inside R2
+ * so the copy is immediately playable without a re-render. Returns the new
+ * clip's snapshot.
+ */
+app.post("/projects/:id/clips/:clipId/duplicate", async (c) => {
+  const appUser = await getCurrentAppUser();
+
+  if (!appUser) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  // Each duplicate copies real objects in R2; a rate limit keeps a stuck click
+  // from fanning out into dozens of copies.
+  const rl = await checkRateLimit(`clip-duplicate:${appUser.id}`, 30, 60);
+  if (!rl.allowed) {
+    return c.json(
+      { error: "rate_limited", message: userErrorMessage("rate_limited") },
+      429,
+    );
+  }
+
+  const projectId = c.req.param("id");
+  const access = await projectService.getProjectAccess(appUser.id, projectId);
+
+  if (access === "missing") {
+    return c.json({ error: "Project not found" }, 404);
+  }
+
+  if (access === "forbidden") {
+    return c.json({ error: "Forbidden" }, 403);
+  }
+
+  try {
+    const clip = await clipService.duplicateClip(
+      appUser.id,
+      projectId,
+      c.req.param("clipId"),
+    );
+    return c.json(clip, 201);
+  } catch (error) {
+    logClipActionFailure("clip_duplicate_failed", error, {
+      projectId,
+      clipId: c.req.param("clipId"),
+    });
+    if (error instanceof ClipActionError) {
+      return c.json(
+        { error: error.code, message: error.message },
+        error.code === "clip_not_found" ? 404 : 400,
+      );
+    }
+    return c.json(
+      { error: "clip_duplicate_failed", message: errorMessage(error) },
+      400,
+    );
+  }
+});
+
+/**
+ * Permanently deletes one clip and its stored assets. Refused with
+ * `clip_has_scheduled_posts` while the clip has scheduled or publishing social
+ * posts — see ClipService.deleteClip for why cancelling those first is the only
+ * safe order.
+ */
+app.delete("/projects/:id/clips/:clipId", async (c) => {
+  const appUser = await getCurrentAppUser();
+
+  if (!appUser) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const projectId = c.req.param("id");
+  const access = await projectService.getProjectAccess(appUser.id, projectId);
+
+  if (access === "missing") {
+    return c.json({ error: "Project not found" }, 404);
+  }
+
+  if (access === "forbidden") {
+    return c.json({ error: "Forbidden" }, 403);
+  }
+
+  try {
+    await clipService.deleteClip(appUser.id, projectId, c.req.param("clipId"));
+    return c.json({ ok: true }, 200);
+  } catch (error) {
+    logClipActionFailure("clip_delete_failed", error, {
+      projectId,
+      clipId: c.req.param("clipId"),
+    });
+    if (error instanceof ClipActionError) {
+      return c.json(
+        { error: error.code, message: error.message },
+        error.code === "clip_not_found"
+          ? 404
+          : error.code === "clip_has_scheduled_posts"
+            ? 409
+            : 400,
+      );
+    }
+    return c.json(
+      { error: "clip_delete_failed", message: errorMessage(error) },
       400,
     );
   }

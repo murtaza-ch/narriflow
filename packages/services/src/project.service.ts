@@ -27,6 +27,8 @@ import {
   rssPreviewSchema,
   sourceLanguageCodeSchema,
   workflowStageUpdatedEventSchema,
+  contentPackSchema,
+  PLATFORM_PLAYBOOK_VERSION,
   type ContentPack,
   type CreateProjectInput,
   type GenerateProjectInput,
@@ -50,6 +52,12 @@ import {
   presignMultipartPartUrls,
 } from "./r2-storage";
 import { brandTemplateService } from "./brand-template.service";
+import {
+  autoTriggerIdempotencyKey,
+  isUniqueConstraintError,
+  selectActionablePack,
+  type FinalizeSetupResult,
+} from "./generation-sequencing";
 import { fetchRssEpisodes } from "./rss";
 import {
   buildTranscriptSnapshot,
@@ -77,6 +85,7 @@ interface ProjectSnapshot {
   ingestStatus: PrismaIngestStatus;
   ingestErrorCode: string | null;
   ingestCompletedAt: string | null;
+  notifyOnComplete: boolean;
   persisted: boolean;
   createdAt: string;
 }
@@ -121,6 +130,7 @@ interface ClaimedWorkflowRun {
   stage: string;
   status: string;
   progress: number;
+  contentPackId: string | null;
   project: Pick<
     Project,
     | "id"
@@ -422,6 +432,7 @@ function toProjectSnapshot(row: Project): ProjectSnapshot {
     ingestCompletedAt: row.ingestCompletedAt
       ? row.ingestCompletedAt.toISOString()
       : null,
+    notifyOnComplete: row.notifyOnComplete,
     persisted: true,
     createdAt: row.createdAt.toISOString(),
   };
@@ -1439,6 +1450,7 @@ export class ProjectService {
         ingestStatus: "ready",
         ingestErrorCode: null,
         ingestCompletedAt: new Date().toISOString(),
+        notifyOnComplete: true,
         persisted: false,
         createdAt: new Date().toISOString(),
       };
@@ -1595,6 +1607,26 @@ export class ProjectService {
     return row ? toTranscriptSnapshot(row) : null;
   }
 
+  /**
+   * Raw utterances for timeline/trim UIs. Deliberately skips the snapshot
+   * zod-parse: utterances were schema-validated when persisted, and
+   * re-validating ~8k word objects on every request added seconds of
+   * latency to an endpoint whose consumer re-normalizes anyway.
+   */
+  async getTranscriptUtterancesRaw(userId: string, projectId: string) {
+    const prisma = this.requirePrisma();
+    const row = await prisma.transcript.findFirst({
+      where: {
+        projectId,
+        project: { userId },
+        status: "completed",
+      },
+      select: { utterancesJson: true },
+    });
+
+    return row ? (row.utterancesJson ?? []) : null;
+  }
+
   async getTranscriptExport(
     userId: string,
     projectId: string,
@@ -1727,6 +1759,14 @@ export class ProjectService {
     projectId: string,
     input: GenerateProjectInput,
     idempotencyKey: string,
+    options?: {
+      /**
+       * Reuse this committed ContentPack instead of creating a new row, and
+       * bind the run to it. Set by the link-first setup paths; the legacy
+       * form/API paths still create their own pack.
+       */
+      existingContentPackId?: string;
+    },
   ) {
     const parsed = generateProjectRequestSchema.parse(input);
 
@@ -1835,69 +1875,105 @@ export class ProjectService {
     if (hasDatabase()) {
       const prisma = this.requirePrisma();
 
-      await prisma.$transaction(async (tx) => {
-        await tx.workflowRun.create({
-          data: {
-            id: workflowRunId,
-            projectId,
-            idempotencyKey,
-            stage: "stt",
-            status: "queued",
-            progress: 0,
-          },
-        });
+      try {
+        await prisma.$transaction(async (tx) => {
+          let contentPackId = options?.existingContentPackId ?? null;
 
-        await tx.contentPack.create({
-          data: {
-            projectId,
-            outputTypes: parsed.contentPack.outputTypes,
-            clipGenerationMode: parsed.contentPack.clipGenerationMode,
-            clipCountTarget: parsed.contentPack.clipCountTarget,
-            clipDurationSecTarget: parsed.contentPack.clipDurationSecTarget,
-            minDurationSec: parsed.contentPack.minDurationSec,
-            preferredMinDurationSec: parsed.contentPack.preferredMinDurationSec,
-            preferredMaxDurationSec: parsed.contentPack.preferredMaxDurationSec,
-            maxDurationSec: parsed.contentPack.maxDurationSec,
-            platformTargets: parsed.contentPack.platformTargets,
-            autoRenderClips: parsed.contentPack.autoRenderClips,
-            toneConstraints: parsed.contentPack.toneConstraints,
-            captionPreset: parsed.contentPack.captionPreset,
-            platformPlaybookVersion: parsed.contentPack.platformPlaybookVersion,
-            mode: parsed.contentPack.mode,
-            autoHook: parsed.contentPack.autoHook,
-            specificMoments: parsed.contentPack.specificMoments,
-            processingStartSec: parsed.contentPack.processingStartSec,
-            processingEndSec: parsed.contentPack.processingEndSec,
-          },
-        });
+          if (!contentPackId) {
+            const createdPack = await tx.contentPack.create({
+              data: {
+                projectId,
+                outputTypes: parsed.contentPack.outputTypes,
+                clipGenerationMode: parsed.contentPack.clipGenerationMode,
+                clipCountTarget: parsed.contentPack.clipCountTarget,
+                clipDurationSecTarget: parsed.contentPack.clipDurationSecTarget,
+                minDurationSec: parsed.contentPack.minDurationSec,
+                preferredMinDurationSec:
+                  parsed.contentPack.preferredMinDurationSec,
+                preferredMaxDurationSec:
+                  parsed.contentPack.preferredMaxDurationSec,
+                maxDurationSec: parsed.contentPack.maxDurationSec,
+                platformTargets: parsed.contentPack.platformTargets,
+                autoRenderClips: parsed.contentPack.autoRenderClips,
+                toneConstraints: parsed.contentPack.toneConstraints,
+                captionPreset: parsed.contentPack.captionPreset,
+                platformPlaybookVersion:
+                  parsed.contentPack.platformPlaybookVersion,
+                mode: parsed.contentPack.mode,
+                autoHook: parsed.contentPack.autoHook,
+                specificMoments: parsed.contentPack.specificMoments,
+                processingStartSec: parsed.contentPack.processingStartSec,
+                processingEndSec: parsed.contentPack.processingEndSec,
+                clipLengthPreset: parsed.contentPack.clipLengthPreset,
+                defaultAspectRatio: parsed.contentPack.defaultAspectRatio,
+              },
+            });
+            contentPackId = createdPack.id;
+          }
 
-        if (parsed.languageCode !== undefined) {
-          await tx.project.update({
-            where: { id: projectId },
-            data: { languageCode: parsed.languageCode },
+          await tx.workflowRun.create({
+            data: {
+              id: workflowRunId,
+              projectId,
+              idempotencyKey,
+              stage: "stt",
+              status: "queued",
+              progress: 0,
+              contentPackId,
+            },
           });
-        }
 
-        await tx.transcript.upsert({
-          where: { projectId },
-          create: {
-            projectId,
-            status: "queued",
-            provider: STT_PROVIDER,
-            providerModel: STT_PROVIDER_MODEL,
-            providerJobId: null,
-            errorCode: null,
-          },
-          update: {
-            status: "queued",
-            provider: STT_PROVIDER,
-            providerModel: STT_PROVIDER_MODEL,
-            providerJobId: null,
-            errorCode: null,
-            completedAt: null,
-          },
+          if (parsed.languageCode !== undefined) {
+            await tx.project.update({
+              where: { id: projectId },
+              data: { languageCode: parsed.languageCode },
+            });
+          }
+
+          await tx.transcript.upsert({
+            where: { projectId },
+            create: {
+              projectId,
+              status: "queued",
+              provider: STT_PROVIDER,
+              providerModel: STT_PROVIDER_MODEL,
+              providerJobId: null,
+              errorCode: null,
+            },
+            update: {
+              status: "queued",
+              provider: STT_PROVIDER,
+              providerModel: STT_PROVIDER_MODEL,
+              providerJobId: null,
+              errorCode: null,
+              completedAt: null,
+            },
+          });
         });
-      });
+      } catch (error) {
+        // Concurrent claim with the same (projectId, idempotencyKey): the
+        // loser recovers the winner's run and reports success — the web path
+        // must not 500 and the worker path must not swallow-and-stall.
+        if (isUniqueConstraintError(error)) {
+          const winner = await prisma.workflowRun.findUnique({
+            where: {
+              projectId_idempotencyKey: { projectId, idempotencyKey },
+            },
+          });
+          if (winner) {
+            idempotencyRuns.set(
+              getIdempotencyKey(projectId, idempotencyKey),
+              winner.id,
+            );
+            return {
+              workflowRunId: winner.id,
+              acceptedAt: winner.updatedAt.toISOString(),
+              initialSeq: await getLastWorkflowSeq(projectId),
+            };
+          }
+        }
+        throw error;
+      }
     }
 
     const event = await this.publishWorkflowRunEvent({
@@ -2239,6 +2315,24 @@ export class ProjectService {
     const parsed = linkIngestSchema.parse(input);
     const prisma = this.requirePrisma();
 
+    // Idempotent replay: the same commit token returns the already-created
+    // project instead of importing twice (double-click, retried request).
+    if (parsed.commitToken) {
+      const existing = await prisma.project.findUnique({
+        where: { commitToken: parsed.commitToken },
+        include: { ingestJobs: { orderBy: { createdAt: "desc" }, take: 1 } },
+      });
+      if (existing) {
+        if (existing.userId !== userId) {
+          throw new Error("project not found");
+        }
+        return {
+          project: toProjectSnapshot(existing),
+          queuedJobId: existing.ingestJobs[0]?.id ?? null,
+        };
+      }
+    }
+
     await this.assertWithinQuota(userId);
 
     const provider = detectLinkProvider(parsed.url);
@@ -2252,37 +2346,104 @@ export class ProjectService {
       parsed.brandTemplateId ?? null,
     );
 
-    const project = await prisma.project.create({
-      data: {
-        userId,
-        title: parsed.title ?? "Link Import",
-        sourceMediaUrl: parsed.url,
-        sourceType,
-        sourceProvider: provider,
-        sourceInput: parsed.url,
-        ingestStatus: "queued",
-        brandTemplateId: brandResolved?.templateId ?? null,
-        brandSnapshot: brandResolved
-          ? (brandResolved.snapshot as unknown as Prisma.InputJsonValue)
-          : Prisma.JsonNull,
-      },
+    // Step-1 draft pack: seeds language/mode/trim so a Step-2 refresh can
+    // rehydrate. Never runnable — every claim path stops on draft rows.
+    const draftPack = contentPackSchema.parse({
+      outputTypes: ["short_clip"],
+      clipCountTarget: 10,
+      clipDurationSecTarget: 45,
+      toneConstraints: [],
+      platformPlaybookVersion: PLATFORM_PLAYBOOK_VERSION,
+      mode: parsed.mode ?? "clip",
+      processingStartSec: parsed.processingStartSec ?? null,
+      processingEndSec: parsed.processingEndSec ?? null,
     });
 
-    const job = await prisma.ingestJob.create({
-      data: {
-        projectId: project.id,
-        jobType: "link_import",
-        payload: {
-          url: parsed.url,
-          provider,
-          requestedTitle: parsed.title ?? null,
-        },
-      },
-    });
+    let project: Project;
+    let jobId: string;
+    try {
+      const created = await prisma.$transaction(async (tx) => {
+        const createdProject = await tx.project.create({
+          data: {
+            userId,
+            title: parsed.title ?? "Link Import",
+            sourceMediaUrl: parsed.url,
+            sourceType,
+            sourceProvider: provider,
+            sourceInput: parsed.url,
+            ingestStatus: "queued",
+            languageCode: parsed.languageCode ?? null,
+            commitToken: parsed.commitToken ?? null,
+            brandTemplateId: brandResolved?.templateId ?? null,
+            brandSnapshot: brandResolved
+              ? (brandResolved.snapshot as unknown as Prisma.InputJsonValue)
+              : Prisma.JsonNull,
+          },
+        });
+
+        const createdJob = await tx.ingestJob.create({
+          data: {
+            projectId: createdProject.id,
+            jobType: "link_import",
+            payload: {
+              url: parsed.url,
+              provider,
+              requestedTitle: parsed.title ?? null,
+            },
+          },
+        });
+
+        await tx.contentPack.create({
+          data: {
+            projectId: createdProject.id,
+            outputTypes: draftPack.outputTypes,
+            clipGenerationMode: draftPack.clipGenerationMode,
+            clipCountTarget: draftPack.clipCountTarget,
+            clipDurationSecTarget: draftPack.clipDurationSecTarget,
+            minDurationSec: draftPack.minDurationSec,
+            preferredMinDurationSec: draftPack.preferredMinDurationSec,
+            preferredMaxDurationSec: draftPack.preferredMaxDurationSec,
+            maxDurationSec: draftPack.maxDurationSec,
+            platformTargets: draftPack.platformTargets,
+            autoRenderClips: draftPack.autoRenderClips,
+            toneConstraints: draftPack.toneConstraints,
+            captionPreset: draftPack.captionPreset,
+            platformPlaybookVersion: draftPack.platformPlaybookVersion,
+            mode: draftPack.mode,
+            autoHook: draftPack.autoHook,
+            specificMoments: draftPack.specificMoments,
+            processingStartSec: draftPack.processingStartSec,
+            processingEndSec: draftPack.processingEndSec,
+            clipLengthPreset: draftPack.clipLengthPreset,
+            defaultAspectRatio: draftPack.defaultAspectRatio,
+            draft: true,
+          },
+        });
+
+        return { project: createdProject, jobId: createdJob.id };
+      });
+      project = created.project;
+      jobId = created.jobId;
+    } catch (error) {
+      // Concurrent commit with the same token: return the winner's project.
+      if (isUniqueConstraintError(error) && parsed.commitToken) {
+        const winner = await prisma.project.findUnique({
+          where: { commitToken: parsed.commitToken },
+          include: { ingestJobs: { orderBy: { createdAt: "desc" }, take: 1 } },
+        });
+        if (winner && winner.userId === userId) {
+          return {
+            project: toProjectSnapshot(winner),
+            queuedJobId: winner.ingestJobs[0]?.id ?? null,
+          };
+        }
+      }
+      throw error;
+    }
 
     await this.publishIngestLifecycleEvent({
       projectId: project.id,
-      workflowRunId: job.id,
+      workflowRunId: jobId,
       ingestStatus: "queued",
       eventStatus: "queued",
       errorCode: null,
@@ -2290,7 +2451,7 @@ export class ProjectService {
 
     return {
       project: toProjectSnapshot(project),
-      queuedJobId: job.id,
+      queuedJobId: jobId,
     };
   }
 
@@ -2442,6 +2603,35 @@ export class ProjectService {
         continue; // lost the race; try the next queued row
       }
 
+      if (stage === "clip_rendering") {
+        // Crash recovery: a ClipRender left in `rendering` is treated as the
+        // orphan of a crashed/reaped earlier attempt. Without this reset the
+        // variant is skipped forever: retries only ever select status=pending.
+        // Caveat (accepted): a reaped-but-still-alive worker holds no fencing
+        // token, so if its heartbeat gap exceeded the reap stall timeout it
+        // may still be encoding these variants while the new claimant
+        // re-renders them — bounded by the stale completion guards in
+        // completeClipRenderingWorkflowRun/completeTranscriptWorkflowRun and
+        // by per-attempt-unique output uploads elsewhere; a true per-run
+        // lease is the clip-group-claiming follow-up in
+        // docs/plans/pipeline-performance.md.
+        const orphaned = await prisma.clipRender.updateMany({
+          where: { status: "rendering", clip: { projectId: queued.projectId } },
+          data: { status: "pending", startedAt: null, errorCode: null },
+        });
+        if (orphaned.count > 0) {
+          console.warn(
+            JSON.stringify({
+              level: "warn",
+              message: "orphaned_rendering_variants_reset",
+              projectId: queued.projectId,
+              workflowRunId: queued.id,
+              count: orphaned.count,
+            }),
+          );
+        }
+      }
+
       if (stage === "stt") {
         await prisma.transcript.upsert({
           where: { projectId: queued.projectId },
@@ -2477,6 +2667,7 @@ export class ProjectService {
         stage,
         status: "running",
         progress: 10,
+        contentPackId: queued.contentPackId ?? null,
         project: queued.project,
       };
     }
@@ -2543,6 +2734,103 @@ export class ProjectService {
     return null;
   }
 
+  /** Submit-and-release STT: records the provider job id so the dedicated
+   *  result-poll loop can take over and the IO loop's claim slot is freed the
+   *  moment submission succeeds. claimNextWorkflowRun's stt branch resets
+   *  providerJobId to null on every (re)claim, so a requeued run always
+   *  resubmits instead of adopting a stale job. */
+  async markTranscriptSubmitted(projectId: string, providerJobId: string) {
+    const prisma = this.requirePrisma();
+    await prisma.transcript.updateMany({
+      where: { projectId },
+      data: { providerJobId, status: "processing" },
+    });
+  }
+
+  /**
+   * STT result polling (submit-and-release): returns up to `batchSize` stt
+   * runs whose provider job was submitted (Transcript.providerJobId set) and
+   * whose last heartbeat is older than `minPollIntervalMs`. The conditional
+   * update doubles as a per-tick lease — the write bumps updatedAt, so a
+   * replica racing on the same run loses the updateMany and skips it. The
+   * transcript's own updatedAt is returned as `submittedAt`: nothing touches
+   * the Transcript row between submission and completion, so it anchors the
+   * overall transcription timeout without a schema change.
+   */
+  async claimSubmittedTranscriptRunsForPolling(
+    batchSize: number,
+    minPollIntervalMs: number,
+  ): Promise<
+    Array<{
+      id: string;
+      projectId: string;
+      progress: number;
+      providerJobId: string;
+      submittedAt: Date;
+    }>
+  > {
+    const prisma = this.requirePrisma();
+    const cutoff = new Date(Date.now() - minPollIntervalMs);
+
+    const candidates = await prisma.workflowRun.findMany({
+      where: {
+        stage: "stt",
+        status: "running",
+        updatedAt: { lt: cutoff },
+        project: {
+          transcript: {
+            providerJobId: { not: null },
+            status: "processing",
+          },
+        },
+      },
+      orderBy: { updatedAt: "asc" },
+      take: batchSize,
+      select: {
+        id: true,
+        projectId: true,
+        progress: true,
+        project: {
+          select: {
+            transcript: {
+              select: { providerJobId: true, updatedAt: true },
+            },
+          },
+        },
+      },
+    });
+
+    const claimed: Array<{
+      id: string;
+      projectId: string;
+      progress: number;
+      providerJobId: string;
+      submittedAt: Date;
+    }> = [];
+
+    for (const run of candidates) {
+      const providerJobId = run.project.transcript?.providerJobId;
+      const submittedAt = run.project.transcript?.updatedAt;
+      if (!providerJobId || !submittedAt) continue;
+
+      const won = await prisma.workflowRun.updateMany({
+        where: { id: run.id, status: "running", updatedAt: { lt: cutoff } },
+        data: { progress: run.progress },
+      });
+      if (won.count === 0) continue;
+
+      claimed.push({
+        id: run.id,
+        projectId: run.projectId,
+        progress: run.progress,
+        providerJobId,
+        submittedAt,
+      });
+    }
+
+    return claimed;
+  }
+
   async completeTranscriptWorkflowRun(
     workflowRunId: string,
     input: {
@@ -2556,6 +2844,14 @@ export class ProjectService {
       durationSeconds: number | null;
       rawStorageKey: string | null;
     },
+    options?: {
+      /** Stale-attempt fence for the submit-and-release result loop: the
+       *  provider job id this finalizer polled. If the Transcript row now
+       *  carries a different job id (the run was requeued and resubmitted),
+       *  this result belongs to a dead attempt and must not overwrite the
+       *  live one. */
+      expectedProviderJobId?: string;
+    },
   ) {
     const prisma = this.requirePrisma();
     const run = await prisma.workflowRun.findUnique({
@@ -2564,6 +2860,31 @@ export class ProjectService {
 
     if (!run) {
       throw new Error("workflow run not found");
+    }
+
+    if (run.status === "completed" || run.status === "failed") {
+      return;
+    }
+
+    if (options?.expectedProviderJobId) {
+      const currentTranscript = await prisma.transcript.findUnique({
+        where: { projectId: run.projectId },
+        select: { providerJobId: true },
+      });
+      if (
+        currentTranscript?.providerJobId !== options.expectedProviderJobId
+      ) {
+        console.warn(
+          JSON.stringify({
+            level: "warn",
+            message: "transcript_stale_finalize_skipped",
+            workflowRunId: run.id,
+            projectId: run.projectId,
+            expectedProviderJobId: options.expectedProviderJobId,
+          }),
+        );
+        return;
+      }
     }
 
     const completedAt = new Date();
@@ -2611,8 +2932,38 @@ export class ProjectService {
       });
     }
 
-    await prisma.workflowRun.update({
-      where: { id: run.id },
+    // Auto-advance BEFORE marking the stt run completed: if this process dies
+    // between the two writes, the stt run is still `running`, so the result
+    // loop simply re-finalizes on its next tick (the transcript upsert above
+    // is an idempotent rewrite and the create below collapses via the unique
+    // (projectId, idempotencyKey)). The old order — complete first, then
+    // create — left the pipeline permanently parked before moment detection
+    // if the create failed, because a completed run is neither claimable nor
+    // reapable.
+    const mdIdempotencyKey = `${run.idempotencyKey}__moment_detection`;
+    let mdRun: { id: string } | null = null;
+    try {
+      mdRun = await prisma.workflowRun.create({
+        data: {
+          projectId: run.projectId,
+          idempotencyKey: mdIdempotencyKey,
+          stage: "moment_detection",
+          status: "queued",
+          progress: 0,
+        },
+      });
+    } catch (error) {
+      if (!isUniqueConstraintError(error)) {
+        throw error;
+      }
+      // Already created by an earlier (crashed or racing) finalize — its
+      // queued event was published then; don't re-publish.
+    }
+
+    // Conditional on still-running: a requeued/settled run must not be
+    // completed by a stale finalizer that lost the race.
+    const won = await prisma.workflowRun.updateMany({
+      where: { id: run.id, status: "running" },
       data: {
         stage: "stt",
         status: "completed",
@@ -2620,6 +2971,18 @@ export class ProjectService {
         errorCode: null,
       },
     });
+
+    if (won.count === 0) {
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          message: "transcript_stale_completion_skipped",
+          workflowRunId: run.id,
+          projectId: run.projectId,
+        }),
+      );
+      return;
+    }
 
     await this.publishWorkflowRunEvent({
       projectId: run.projectId,
@@ -2630,26 +2993,16 @@ export class ProjectService {
       errorCode: null,
     });
 
-    // Auto-advance: queue moment_detection stage
-    const mdIdempotencyKey = `${run.idempotencyKey}__moment_detection`;
-    const mdRun = await prisma.workflowRun.create({
-      data: {
+    if (mdRun) {
+      await this.publishWorkflowRunEvent({
         projectId: run.projectId,
-        idempotencyKey: mdIdempotencyKey,
+        workflowRunId: mdRun.id,
         stage: "moment_detection",
         status: "queued",
         progress: 0,
-      },
-    });
-
-    await this.publishWorkflowRunEvent({
-      projectId: run.projectId,
-      workflowRunId: mdRun.id,
-      stage: "moment_detection",
-      status: "queued",
-      progress: 0,
-      errorCode: null,
-    });
+        errorCode: null,
+      });
+    }
   }
 
   async completeClipDetectionWorkflowRun(workflowRunId: string) {
@@ -2724,10 +3077,45 @@ export class ProjectService {
     );
 
     if (decision.outcome === "requeue") {
-      await prisma.workflowRun.update({
-        where: { id: run.id },
-        data: { stage, status: "queued", progress: 0, errorCode: null },
-      });
+      try {
+        await prisma.workflowRun.update({
+          where: { id: run.id },
+          data: { stage, status: "queued", progress: 0, errorCode: null },
+        });
+      } catch (error) {
+        // The one-live-clip_rendering-run partial index can reject a requeue:
+        // if this run was reaped out from under a still-alive worker and a
+        // newer live run was then legitimately created, flipping this one back
+        // to queued would violate the index. The newer run owns the project's
+        // pending work, so settle this one permanently instead of letting the
+        // P2002 escape (it would otherwise wedge the caller — including the
+        // reaper — on every subsequent cycle).
+        if (!isUniqueConstraintError(error)) {
+          throw error;
+        }
+        const superseded: AutoRetryDecision = {
+          outcome: "permanent",
+          terminalErrorCode: "superseded_duplicate_run",
+        };
+        await prisma.workflowRun.update({
+          where: { id: run.id },
+          data: {
+            stage,
+            status: "failed",
+            progress: 100,
+            errorCode: superseded.terminalErrorCode,
+          },
+        });
+        await this.publishWorkflowRunEvent({
+          projectId: run.projectId,
+          workflowRunId: run.id,
+          stage,
+          status: "failed",
+          progress: 100,
+          errorCode: superseded.terminalErrorCode,
+        });
+        return superseded;
+      }
 
       await this.publishWorkflowRunEvent({
         projectId: run.projectId,
@@ -2779,39 +3167,9 @@ export class ProjectService {
     await this.settleFailedWorkflowRun(run, "moment_detection", errorCode);
   }
 
-  async completeClipRenderingWorkflowRun(workflowRunId: string) {
-    const prisma = this.requirePrisma();
-    const run = await prisma.workflowRun.findUnique({
-      where: { id: workflowRunId },
-    });
-
-    if (!run) {
-      throw new Error("workflow run not found");
-    }
-
-    await prisma.workflowRun.update({
-      where: { id: run.id },
-      data: {
-        stage: "clip_rendering",
-        status: "completed",
-        progress: 100,
-        errorCode: null,
-      },
-    });
-
-    await this.publishWorkflowRunEvent({
-      projectId: run.projectId,
-      workflowRunId: run.id,
-      stage: "clip_rendering",
-      status: "completed",
-      progress: 100,
-      errorCode: null,
-    });
-  }
-
-  async failClipRenderingWorkflowRun(
+  async completeClipRenderingWorkflowRun(
     workflowRunId: string,
-    errorCode: string,
+    options?: { failedVariantCount?: number },
   ) {
     const prisma = this.requirePrisma();
     const run = await prisma.workflowRun.findUnique({
@@ -2822,7 +3180,127 @@ export class ProjectService {
       throw new Error("workflow run not found");
     }
 
-    await this.settleFailedWorkflowRun(run, "clip_rendering", errorCode);
+    // Partial failures still complete the run (per-variant status carries the
+    // detail), but the run records that it wasn't a clean sweep instead of
+    // reporting unqualified success.
+    const errorCode =
+      options?.failedVariantCount && options.failedVariantCount > 0
+        ? "partial_render_failure"
+        : null;
+
+    // Conditional on still-running: a run this worker lost (reaped and
+    // requeued/superseded while a stale attempt kept encoding) must not be
+    // flipped to completed by that stale attempt.
+    const won = await prisma.workflowRun.updateMany({
+      where: { id: run.id, status: "running" },
+      data: {
+        stage: "clip_rendering",
+        status: "completed",
+        progress: 100,
+        errorCode,
+      },
+    });
+
+    if (won.count === 0) {
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          message: "clip_rendering_stale_completion_skipped",
+          workflowRunId: run.id,
+          projectId: run.projectId,
+          status: run.status,
+        }),
+      );
+      return;
+    }
+
+    await this.publishWorkflowRunEvent({
+      projectId: run.projectId,
+      workflowRunId: run.id,
+      stage: "clip_rendering",
+      status: "completed",
+      progress: 100,
+      errorCode,
+    });
+  }
+
+  async failClipRenderingWorkflowRun(
+    workflowRunId: string,
+    errorCode: string,
+    options?: {
+      /** The variants the failed attempt touched (all individually `failed`
+       *  when every encode in the run failed). Passing them here lets the
+       *  requeue-vs-permanent decision and the variant write happen together:
+       *  on requeue they flip back to pending so the retry has work to pick
+       *  up; on permanent they stay `failed` with their real per-variant
+       *  error codes, so the UI settles instead of showing an active render
+       *  forever. */
+      retryVariantIds?: string[];
+    },
+  ) {
+    const prisma = this.requirePrisma();
+    const run = await prisma.workflowRun.findUnique({
+      where: { id: workflowRunId },
+    });
+
+    if (!run) {
+      throw new Error("workflow run not found");
+    }
+
+    const decision = await this.settleFailedWorkflowRun(
+      run,
+      "clip_rendering",
+      errorCode,
+    );
+
+    if (decision.outcome === "requeue") {
+      if (options?.retryVariantIds?.length) {
+        await prisma.clipRender.updateMany({
+          where: { id: { in: options.retryVariantIds }, status: "failed" },
+          data: {
+            status: "pending",
+            storageKey: null,
+            sizeBytes: null,
+            durationSec: null,
+            errorCode: null,
+            startedAt: null,
+            completedAt: null,
+          },
+        });
+      }
+      return;
+    }
+
+    await this.failOrphanedRenderingVariants(
+      run.projectId,
+      decision.terminalErrorCode,
+    );
+  }
+
+  /** Terminal-failure cleanup: once no future clip_rendering claim will ever
+   *  reset them (claim-time recovery only runs on a claim), variants still in
+   *  `rendering` must settle to `failed` or the UI reports an active render
+   *  forever. Requeue paths never call this — the next claim resets those. */
+  private async failOrphanedRenderingVariants(
+    projectId: string,
+    errorCode: string,
+  ) {
+    const prisma = this.requirePrisma();
+    const orphaned = await prisma.clipRender.updateMany({
+      where: { status: "rendering", clip: { projectId } },
+      data: { status: "failed", errorCode },
+    });
+    if (orphaned.count > 0) {
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          message: "orphaned_rendering_variants_failed",
+          projectId,
+          count: orphaned.count,
+          errorCode,
+        }),
+      );
+    }
   }
 
   async completeDubbingWorkflowRun(workflowRunId: string) {
@@ -3312,21 +3790,26 @@ export class ProjectService {
       return false;
     }
 
-    const [latestRun, contentPackRow] = await Promise.all([
+    const [latestRun, recentPacks] = await Promise.all([
       prisma.workflowRun.findFirst({
         where: { projectId },
         orderBy: { updatedAt: "desc" },
       }),
-      prisma.contentPack.findFirst({
+      prisma.contentPack.findMany({
         where: { projectId },
         orderBy: { createdAt: "desc" },
+        take: 5,
       }),
     ]);
 
     if (latestRun) return false;
-    if (!contentPackRow) return false;
 
-    const contentPack = parseStoredContentPack(contentPackRow);
+    // Latest pack overall; STOP if it is a draft (Step 2 not finished) —
+    // never fall back to an older committed pack with stale settings.
+    const actionablePack = selectActionablePack(recentPacks);
+    if (!actionablePack) return false;
+
+    const contentPack = parseStoredContentPack(actionablePack);
     const storedLanguageCode = sourceLanguageCodeSchema.safeParse(
       project.languageCode,
     );
@@ -3341,10 +3824,275 @@ export class ProjectService {
           ? storedLanguageCode.data
           : null,
       },
-      randomUUID(),
+      autoTriggerIdempotencyKey(projectId, actionablePack.id),
+      { existingContentPackId: actionablePack.id },
     );
 
     return true;
+  }
+
+  /**
+   * Step 2 (Configure) commit for the link-first split. Persists the final
+   * ContentPack — upserting the project's single draft row to committed —
+   * then attempts the same idempotent run-claim the ingest worker uses.
+   *
+   * ORDERING INVARIANT: the pack commit lands BEFORE ingestStatus is read;
+   * the ingest worker commits ingestStatus = ready BEFORE reading the pack.
+   * At least one side therefore sees both facts, and the deterministic
+   * idempotency key collapses a double-claim to one run.
+   */
+  async finalizeGenerationSetup(
+    userId: string,
+    projectId: string,
+    contentPack: ContentPack,
+    languageCode: string | null,
+  ): Promise<FinalizeSetupResult> {
+    const prisma = this.requirePrisma();
+
+    const project = await prisma.project.findFirst({
+      where: { id: projectId, userId },
+      select: { id: true, ingestStatus: true },
+    });
+    if (!project) {
+      throw new Error("project not found");
+    }
+
+    const existingRun = await prisma.workflowRun.findFirst({
+      where: { projectId },
+      orderBy: { updatedAt: "desc" },
+      select: { id: true },
+    });
+    if (existingRun) {
+      // Re-invoked after a successful start (refresh, double-click, SSE
+      // re-fire): idempotent success.
+      return {
+        started: true,
+        ingestStatus: project.ingestStatus,
+        workflowRunId: existingRun.id,
+      };
+    }
+
+    const packData = {
+      outputTypes: contentPack.outputTypes,
+      clipGenerationMode: contentPack.clipGenerationMode,
+      clipCountTarget: contentPack.clipCountTarget,
+      clipDurationSecTarget: contentPack.clipDurationSecTarget,
+      minDurationSec: contentPack.minDurationSec,
+      preferredMinDurationSec: contentPack.preferredMinDurationSec,
+      preferredMaxDurationSec: contentPack.preferredMaxDurationSec,
+      maxDurationSec: contentPack.maxDurationSec,
+      platformTargets: contentPack.platformTargets,
+      autoRenderClips: contentPack.autoRenderClips,
+      toneConstraints: contentPack.toneConstraints,
+      captionPreset: contentPack.captionPreset,
+      platformPlaybookVersion: contentPack.platformPlaybookVersion,
+      mode: contentPack.mode,
+      autoHook: contentPack.autoHook,
+      specificMoments: contentPack.specificMoments,
+      processingStartSec: contentPack.processingStartSec,
+      processingEndSec: contentPack.processingEndSec,
+      clipLengthPreset: contentPack.clipLengthPreset,
+      defaultAspectRatio: contentPack.defaultAspectRatio,
+      draft: false,
+    };
+
+    // Upsert-in-place: repeated Configure updates the same row, never
+    // inserts. A pack already bound to a WorkflowRun is immutable — a
+    // concurrent finalize that lost the claim race must not rewrite the
+    // settings the running claim was made with.
+    const committedPack = await prisma.$transaction(async (tx) => {
+      const latest = await tx.contentPack.findFirst({
+        where: { projectId },
+        orderBy: { createdAt: "desc" },
+        select: { id: true },
+      });
+      if (latest) {
+        const guarded = await tx.contentPack.updateMany({
+          where: { id: latest.id, workflowRuns: { none: {} } },
+          data: packData,
+        });
+        return guarded.count === 0 ? null : { id: latest.id };
+      }
+      return tx.contentPack.create({
+        data: { projectId, ...packData },
+        select: { id: true },
+      });
+    });
+
+    if (!committedPack) {
+      // The latest pack is already bound to a run (concurrent finalize won).
+      const boundRun = await prisma.workflowRun.findFirst({
+        where: { projectId },
+        orderBy: { updatedAt: "desc" },
+        select: { id: true },
+      });
+      return {
+        started: true,
+        ingestStatus: project.ingestStatus,
+        workflowRunId: boundRun?.id,
+      };
+    }
+
+    await prisma.project.update({
+      where: { id: projectId },
+      data: { languageCode },
+    });
+
+    // Pack committed — NOW read ingest state (the ordering invariant).
+    const fresh = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { ingestStatus: true },
+    });
+    const ingestStatus = fresh?.ingestStatus ?? project.ingestStatus;
+
+    if (ingestStatus !== "ready") {
+      return { started: false, ingestStatus };
+    }
+
+    const parsedLanguage = sourceLanguageCodeSchema.safeParse(languageCode);
+    const result = await this.triggerGeneration(
+      userId,
+      projectId,
+      {
+        contentPack,
+        forceRegenerate: false,
+        languageCode: parsedLanguage.success ? parsedLanguage.data : null,
+      },
+      autoTriggerIdempotencyKey(projectId, committedPack.id),
+      { existingContentPackId: committedPack.id },
+    );
+
+    return {
+      started: true,
+      ingestStatus,
+      workflowRunId: result.workflowRunId,
+    };
+  }
+
+  /**
+   * "Save settings and finish later": persist the user's Step-2 choices as
+   * the project's draft pack without starting anything. No-op (returns
+   * false) once a run exists — the settings already fed a claim.
+   */
+  async saveGenerationDraft(
+    userId: string,
+    projectId: string,
+    contentPack: ContentPack,
+    languageCode: string | null,
+  ): Promise<boolean> {
+    const prisma = this.requirePrisma();
+    const project = await prisma.project.findFirst({
+      where: { id: projectId, userId },
+      select: { id: true },
+    });
+    if (!project) throw new Error("project not found");
+
+    const existingRun = await prisma.workflowRun.findFirst({
+      where: { projectId },
+      select: { id: true },
+    });
+    if (existingRun) return false;
+
+    const draftData = {
+      outputTypes: contentPack.outputTypes,
+      clipGenerationMode: contentPack.clipGenerationMode,
+      clipCountTarget: contentPack.clipCountTarget,
+      clipDurationSecTarget: contentPack.clipDurationSecTarget,
+      minDurationSec: contentPack.minDurationSec,
+      preferredMinDurationSec: contentPack.preferredMinDurationSec,
+      preferredMaxDurationSec: contentPack.preferredMaxDurationSec,
+      maxDurationSec: contentPack.maxDurationSec,
+      platformTargets: contentPack.platformTargets,
+      autoRenderClips: contentPack.autoRenderClips,
+      toneConstraints: contentPack.toneConstraints,
+      captionPreset: contentPack.captionPreset,
+      platformPlaybookVersion: contentPack.platformPlaybookVersion,
+      mode: contentPack.mode,
+      autoHook: contentPack.autoHook,
+      specificMoments: contentPack.specificMoments,
+      processingStartSec: contentPack.processingStartSec,
+      processingEndSec: contentPack.processingEndSec,
+      clipLengthPreset: contentPack.clipLengthPreset,
+      defaultAspectRatio: contentPack.defaultAspectRatio,
+      draft: true,
+    };
+
+    await prisma.$transaction(async (tx) => {
+      const latest = await tx.contentPack.findFirst({
+        where: { projectId },
+        orderBy: { createdAt: "desc" },
+        select: { id: true },
+      });
+      if (latest) {
+        await tx.contentPack.updateMany({
+          where: { id: latest.id, workflowRuns: { none: {} } },
+          data: draftData,
+        });
+      } else {
+        await tx.contentPack.create({ data: { projectId, ...draftData } });
+      }
+      await tx.project.update({
+        where: { id: projectId },
+        data: { languageCode },
+      });
+    });
+    return true;
+  }
+
+  /**
+   * The pack a worker task must use for a claimed run: the run's bound pack.
+   * Falls back to the latest committed pack only for pre-split legacy runs
+   * that carry no binding.
+   */
+  async getContentPackForRun(run: {
+    id: string;
+    projectId: string;
+    contentPackId?: string | null;
+  }) {
+    const prisma = this.requirePrisma();
+    if (run.contentPackId) {
+      const bound = await prisma.contentPack.findUnique({
+        where: { id: run.contentPackId },
+      });
+      if (bound) return bound;
+    }
+    return prisma.contentPack.findFirst({
+      where: { projectId: run.projectId, draft: false },
+      orderBy: { createdAt: "desc" },
+    });
+  }
+
+  /** Per-project "email me when clips are ready" preference. */
+  async setProjectNotifyPreference(
+    userId: string,
+    projectId: string,
+    notifyOnComplete: boolean,
+  ): Promise<void> {
+    const prisma = this.requirePrisma();
+    const updated = await prisma.project.updateMany({
+      where: { id: projectId, userId },
+      data: { notifyOnComplete },
+    });
+    if (updated.count === 0) {
+      throw new Error("project not found");
+    }
+  }
+
+  /** Read-only usage summary for the import pre-flight UI. */
+  async getUsageSummary(userId: string): Promise<{
+    tier: PricingTier;
+    usedMinutes: number;
+    limitMinutes: number;
+    maxUploadSeconds: number;
+  }> {
+    const tier = await this.getUserPricingTier(userId);
+    const usedMinutes = await this.getMonthlyUsageMinutes(userId);
+    return {
+      tier,
+      usedMinutes,
+      limitMinutes: MONTHLY_PROCESSING_MINUTE_LIMITS[tier],
+      maxUploadSeconds: MAX_UPLOAD_LENGTH_SECONDS[tier],
+    };
   }
 
   async publishWorkflowProgress(input: {
@@ -3426,6 +4174,13 @@ export class ProjectService {
       });
       if (updated.count === 0) continue;
       reaped += 1;
+
+      if (run.stage === "clip_rendering" && decision.outcome === "permanent") {
+        await this.failOrphanedRenderingVariants(
+          run.projectId,
+          decision.terminalErrorCode,
+        );
+      }
 
       console.warn(
         JSON.stringify({

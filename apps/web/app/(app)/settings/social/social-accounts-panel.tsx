@@ -100,24 +100,32 @@ export function SocialAccountsPanel({
   // OAuth callback outcome: toast once, then strip the query params so a
   // refresh doesn't re-announce.
   useEffect(() => {
-    if (callbackFired.current) return;
     if (!connectedCount && !errorCode) return;
-    callbackFired.current = true;
-    if (connectedCount) {
-      toaster.create({
-        type: "success",
-        title: `Connected ${connectedCount} account${connectedCount === 1 ? "" : "s"}`,
-      });
-    } else if (errorCode) {
-      toaster.create({
-        type: "error",
-        title: "Connection failed",
-        description:
-          userErrorMessage(errorCode) ??
-          "Social connection failed. Please try connecting again.",
-      });
-    }
-    router.replace("/settings/social", { scroll: false });
+
+    // Chakra's toaster flushes its external store synchronously. Schedule it
+    // after React finishes flushing effects to avoid a nested flushSync.
+    const timeoutId = window.setTimeout(() => {
+      if (callbackFired.current) return;
+      callbackFired.current = true;
+
+      if (connectedCount) {
+        toaster.create({
+          type: "success",
+          title: `Connected ${connectedCount} account${connectedCount === 1 ? "" : "s"}`,
+        });
+      } else if (errorCode) {
+        toaster.create({
+          type: "error",
+          title: "Connection failed",
+          description:
+            userErrorMessage(errorCode) ??
+            "Social connection failed. Please try connecting again.",
+        });
+      }
+      router.replace("/settings/social", { scroll: false });
+    }, 0);
+
+    return () => window.clearTimeout(timeoutId);
   }, [connectedCount, errorCode, router]);
 
   async function disconnect(account: SocialAccountSnapshot) {

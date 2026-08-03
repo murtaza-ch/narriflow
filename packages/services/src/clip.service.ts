@@ -5,6 +5,8 @@ import { getPrismaClient } from "@narriflow/db/client";
 import { projectService } from "./project.service";
 import {
   BRAND_DEFAULT_CAPTION_PRESET_ID,
+  CLIP_TITLE_MAX_LENGTH,
+  CLIP_TITLE_SUGGESTION_COUNT,
   LEGACY_DEFAULT_CAPTION_PRESET_ID,
   brollCuesArraySchema,
   captionPresetSchema,
@@ -12,11 +14,13 @@ import {
   clipAspectRatioFromDb,
   clipAspectRatioOptions,
   clipAspectRatioToDb,
+  clipTitleSuggestionsLlmResponseSchema,
   contentPackSchema,
   getCaptionPresetById,
   getEffectiveClipTiming,
   isBrandDefaultCaptionPresetId,
   normalizeTranscriptSliceForClip,
+  splitUtterancesIntoSentences,
   studioEditsSchema,
 } from "@narriflow/validators";
 import type {
@@ -36,7 +40,8 @@ import {
   getLastWorkflowSeq,
   publishWorkflowStageUpdated,
 } from "./workflow.service";
-import { deleteObject, presignDownloadUrl } from "./r2-storage";
+import { isUniqueConstraintError } from "./generation-sequencing";
+import { copyObject, deleteObject, presignDownloadUrl } from "./r2-storage";
 import { analyticsService } from "./analytics.service";
 import { assertPublicHttpUrl } from "./url-guard";
 
@@ -155,11 +160,18 @@ function toClipRenderVariantSnapshot(render: ClipRender): ClipRenderVariant {
 }
 
 function toClipSnapshot(clip: ClipWithRenders): ClipSnapshot {
+  // tailPadSec 0: the stored bounds were already pad- and collision-
+  // normalized against the FULL transcript when the clip was detected or
+  // edited. The clip's own slice can't see the next word beyond its end, so
+  // re-padding here would walk the end back INTO the next sentence —
+  // exactly the mid-speech cut this pipeline just eliminated. Slice-only
+  // re-derivations must treat stored timing as final.
   const effective = getEffectiveClipTiming({
     utterances: clip.transcriptSlice as unknown as TranscriptUtterance[],
     startSec: clip.startSec,
     endSec: clip.endSec,
     sourceDurationSec: clip.project?.sourceDurationSeconds ?? null,
+    tailPadSec: 0,
   });
 
   return {
@@ -220,6 +232,150 @@ function getClipRenderResetData(): Prisma.ClipRenderUpdateInput {
     startedAt: null,
     completedAt: null,
   };
+}
+
+/**
+ * A clip action that failed for a reason the user can act on, carrying the
+ * `code` the API surfaces so `userErrorMessage` can render real copy instead of
+ * the generic fallback. Thrown by rename/duplicate/delete/title-suggestion;
+ * the older clip mutations predate this and throw plain Errors.
+ */
+export class ClipActionError extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ClipActionError";
+  }
+}
+
+/**
+ * System prompt for AI title suggestions.
+ *
+ * The language rule is stated here AND with the concrete language code in the
+ * user prompt, on purpose. "Write in the same language as the clip's spoken
+ * text" alone was not enough: given a ~400-character slice of an English
+ * interview the model returned Spanish titles, one of them splicing in a
+ * Devanagari word. Naming the language and forbidding translation outright is
+ * what holds it.
+ */
+export const CLIP_TITLE_SYSTEM_PROMPT = [
+  `You write short, scroll-stopping titles for vertical short-form video clips.`,
+  `Return exactly ${CLIP_TITLE_SUGGESTION_COUNT} distinct options.`,
+  `Each title: at most ${CLIP_TITLE_MAX_LENGTH} characters, no surrounding quotes, no emoji, no hashtags, no trailing period.`,
+  `Never translate. Write every option in the source language named below, in that language's own script, and use exactly one language across all options.`,
+  `Base every title on what is actually said — never invent claims, numbers, or names that do not appear in the text.`,
+  `Keep names, products, numbers, and quoted phrases exactly as they appear in the text.`,
+  `Vary the angle across the options (e.g. one curiosity-led, one direct//informative, one specific-detail-led). Do not restate the existing title.`,
+].join(" ");
+
+/**
+ * Builds the per-clip user prompt. Exported so the language line can be asserted
+ * directly — the drift bug above was precisely a missing input, not bad wording,
+ * and a test that the code reaches the prompt is what catches that class of
+ * regression.
+ */
+export function buildClipTitleUserPrompt(input: {
+  languageCode: string | null;
+  category: string;
+  title: string | null;
+  hookText: string;
+  payoffText: string | null;
+  spokenText: string;
+}): string {
+  return [
+    `Source language: ${
+      input.languageCode
+        ? `provider language code ${input.languageCode} — write all ${CLIP_TITLE_SUGGESTION_COUNT} titles in this language`
+        : "unknown; infer it from the spoken text below and use that one language for every option"
+    }`,
+    `Clip category: ${input.category}`,
+    input.title ? `Current title: ${input.title}` : null,
+    `Hook: ${input.hookText}`,
+    input.payoffText ? `Payoff: ${input.payoffText}` : null,
+    `Spoken text: ${input.spokenText || input.hookText}`,
+  ]
+    .filter((line): line is string => line !== null)
+    .join("\n");
+}
+
+/** Pulls the text out of an OpenAI Responses API payload, which returns either
+ *  a flattened `output_text` or the structured `output[].content[].text` form.
+ *  Mirrors the same helper in content-suite.service.ts. */
+function extractOpenAiResponseText(payload: unknown): string | null {
+  const response = payload as {
+    output_text?: unknown;
+    output?: Array<{ content?: Array<{ text?: unknown }> }>;
+  };
+  if (typeof response.output_text === "string") return response.output_text;
+  const parts =
+    response.output
+      ?.flatMap((item) => item.content ?? [])
+      .map((content) => content.text)
+      .filter((text): text is string => typeof text === "string") ?? [];
+  return parts.length > 0 ? parts.join("") : null;
+}
+
+/** Every storage-key-bearing field hanging off one clip. Mirrors
+ *  ProjectStorageSnapshot's role for whole-project deletion. */
+export interface ClipStorageSnapshot {
+  previewStorageKey: string | null;
+  renderStorageKeys: Array<string | null>;
+  dubStorageKeys: Array<string | null>;
+}
+
+/**
+ * Collects every object a clip owns into one deduped delete list.
+ *
+ * Split out and exported so the set can be asserted directly: missing a field
+ * here leaks paid storage forever, and duplicating one turns an ordinary delete
+ * into a redundant round trip. Nulls are expected throughout — an unrendered
+ * clip has no render key, an un-dubbed one no dub keys.
+ */
+export function planClipStorageDeletion(
+  snapshot: ClipStorageSnapshot,
+): string[] {
+  return [
+    ...new Set(
+      [
+        ...snapshot.renderStorageKeys,
+        ...snapshot.dubStorageKeys,
+        snapshot.previewStorageKey,
+      ].filter((key): key is string => Boolean(key)),
+    ),
+  ];
+}
+
+/**
+ * Destination key for a duplicated clip's render — the same
+ * `projects/{projectId}/renders/{clipId}/{slug}.mp4` shape the worker writes,
+ * with the NEW clip's id. Deterministic per (clip, aspect ratio), which is safe
+ * precisely because the clip id differs from the source's.
+ */
+export function clipDuplicateRenderStorageKey(
+  projectId: string,
+  newClipId: string,
+  aspectRatio: ClipAspectRatio,
+): string {
+  const slug =
+    clipAspectRatioOptions.find((option) => option.value === aspectRatio)
+      ?.slug ?? "9x16";
+  return `projects/${projectId}/renders/${newClipId}/${slug}.mp4`;
+}
+
+/**
+ * Destination key for a duplicated clip's preview proxy. Attempt-scoped like
+ * the worker's own preview uploads (`clipPreviewAttemptStorageKey`): nothing
+ * re-derives a preview key from (projectId, clipId), every reader uses the
+ * persisted `previewStorageKey` column.
+ */
+export function clipDuplicatePreviewStorageKey(
+  projectId: string,
+  newClipId: string,
+  attemptId: string,
+): string {
+  return `projects/${projectId}/previews/${newClipId}/${attemptId}.mp4`;
 }
 
 async function deleteRenderAssets(storageKeys: string[]) {
@@ -362,16 +518,20 @@ export class ClipService {
       throw new Error("clip not found");
     }
 
-    const utterances = clip.project.transcript?.utterancesJson as
+    const storedUtterances = clip.project.transcript?.utterancesJson as
       | TranscriptUtterance[]
       | null;
+    // Re-split defensively: transcripts stored before sentence-level
+    // normalization hold whole speaker turns, whose utterance-end fallback
+    // would let boundary expansion overshoot by minutes.
+    const utterances = splitUtterancesIntoSentences(storedUtterances ?? []);
     const effective = getEffectiveClipTiming({
-      utterances: utterances ?? [],
+      utterances,
       startSec: input.startSec,
       endSec: input.endSec,
       sourceDurationSec: clip.project.sourceDurationSeconds,
     });
-    const newSlice = utterances ? effective.transcriptSlice : [];
+    const newSlice = storedUtterances ? effective.transcriptSlice : [];
 
     const durationSec = effective.durationSec;
     const durationOptimalityScore = computeDurationOptimality(durationSec);
@@ -392,9 +552,11 @@ export class ClipService {
       "instagram",
     );
 
-    const staleRenderKeys = clip.renders
-      .map((render) => render.storageKey)
-      .filter((key): key is string => Boolean(key));
+    const staleRenderKeys = [
+      ...clip.renders.map((render) => render.storageKey),
+      // The old-window preview proxy is orphaned once boundaries move.
+      clip.previewStorageKey,
+    ].filter((key): key is string => Boolean(key));
 
     const updated = await prisma.$transaction(async (tx) => {
       await tx.clipRender.deleteMany({
@@ -412,6 +574,12 @@ export class ClipService {
           tiktokScore,
           youtubeScore,
           instagramScore,
+          // The preview proxy covers the OLD window (±4s); new boundaries can
+          // fall outside it entirely. Null it so the preview backfill worker
+          // cuts a fresh proxy for the new window.
+          previewStorageKey: null,
+          previewStartSec: null,
+          previewDurationSec: null,
         },
         include: {
           renders: true,
@@ -424,35 +592,522 @@ export class ClipService {
     return toClipSnapshot(updated);
   }
 
-  async updateClipStatus(
+  /**
+   * Renames a clip. Purely cosmetic: the title is display chrome (row header,
+   * studio top bar, social caption seed) and is never burned into a render, so
+   * unlike boundaries/studio-edits/transcript changes this does NOT invalidate
+   * completed renders or move the clip to `edited`.
+   */
+  async updateClipTitle(
     userId: string,
     projectId: string,
     clipId: string,
-    status: "accepted" | "rejected",
+    title: string,
   ): Promise<ClipSnapshot> {
     const prisma = requirePrisma();
 
     const clip = await prisma.clip.findFirst({
-      where: {
-        id: clipId,
-        projectId,
-        project: { userId },
-      },
+      where: { id: clipId, projectId, project: { userId } },
+      select: { id: true },
     });
 
     if (!clip) {
-      throw new Error("clip not found");
+      throw new ClipActionError("clip_not_found", "clip not found");
     }
 
     const updated = await prisma.clip.update({
       where: { id: clipId },
-      data: { status },
+      data: { title },
       include: {
+        project: { select: { sourceDurationSeconds: true } },
         renders: true,
       },
     });
 
     return toClipSnapshot(updated);
+  }
+
+  /**
+   * Asks the LLM for alternative titles for one clip, and returns them without
+   * writing anything — the caller picks one and PATCHes it back as an ordinary
+   * rename. Kept read-only on purpose: a one-click "rewrite my title" that
+   * silently replaces the current one has no undo, and the picker is what the
+   * product actually wants.
+   *
+   * Prompted from the clip's own transcript slice (not the whole transcript),
+   * which is what makes this cheap enough to run per-clip on demand.
+   */
+  async suggestClipTitles(
+    userId: string,
+    projectId: string,
+    clipId: string,
+  ): Promise<string[]> {
+    const prisma = requirePrisma();
+
+    const clip = await prisma.clip.findFirst({
+      where: { id: clipId, projectId, project: { userId } },
+      select: {
+        title: true,
+        hookText: true,
+        payoffText: true,
+        category: true,
+        transcriptSlice: true,
+        // The transcript's detected language, stated verbatim in the prompt.
+        // Without it the model infers a language from a ~400-character slice and
+        // drifts: an English NVIDIA interview came back with Spanish titles, one
+        // of them splicing in a Devanagari word. Same source of truth the
+        // content suite already uses for exactly this reason.
+        project: {
+          select: { transcript: { select: { languageCode: true } } },
+        },
+      },
+    });
+
+    if (!clip) {
+      throw new ClipActionError("clip_not_found", "clip not found");
+    }
+
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      // Distinct from clip_title_suggestion_failed: nothing the user does will
+      // fix a missing key, so the copy must not invite a retry.
+      throw new ClipActionError(
+        "openai_not_configured",
+        "OPENAI_API_KEY is not configured",
+      );
+    }
+
+    const utterances =
+      (clip.transcriptSlice as unknown as TranscriptUtterance[] | null) ?? [];
+    // Bounded so a long clip can't blow up the prompt — the opening lines carry
+    // the hook, which is what a title has to land.
+    const spokenText = utterances
+      .map((utterance) => utterance.text)
+      .join(" ")
+      .slice(0, 4000);
+
+    const languageCode = clip.project?.transcript?.languageCode ?? null;
+
+    const model =
+      process.env.OPENAI_CONTENT_MODEL ??
+      process.env.OPENAI_CLIP_MODEL ??
+      "gpt-5.4-mini";
+
+    let response: Response;
+    try {
+      response = await fetch("https://api.openai.com/v1/responses", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model,
+          input: [
+            {
+              role: "system",
+              content: CLIP_TITLE_SYSTEM_PROMPT,
+            },
+            {
+              role: "user",
+              content: buildClipTitleUserPrompt({
+                languageCode,
+                category: clip.category,
+                title: clip.title,
+                hookText: clip.hookText,
+                payoffText: clip.payoffText,
+                spokenText,
+              }),
+            },
+          ],
+          text: {
+            format: {
+              type: "json_schema",
+              name: "clip_titles",
+              strict: true,
+              schema: {
+                type: "object",
+                additionalProperties: false,
+                properties: {
+                  titles: {
+                    type: "array",
+                    minItems: CLIP_TITLE_SUGGESTION_COUNT,
+                    maxItems: CLIP_TITLE_SUGGESTION_COUNT,
+                    items: { type: "string", minLength: 1 },
+                  },
+                },
+                required: ["titles"],
+              },
+            },
+          },
+        }),
+      });
+    } catch (error) {
+      throw new ClipActionError(
+        "clip_title_suggestion_failed",
+        error instanceof Error ? error.message : "OpenAI request failed",
+      );
+    }
+
+    const payload = (await response.json().catch(() => null)) as
+      | { error?: { message?: string } }
+      | null;
+
+    if (!response.ok || !payload) {
+      throw new ClipActionError(
+        "clip_title_suggestion_failed",
+        payload?.error?.message ??
+          `OpenAI request failed with status ${response.status}`,
+      );
+    }
+
+    const content = extractOpenAiResponseText(payload);
+    if (!content) {
+      throw new ClipActionError(
+        "clip_title_suggestion_failed",
+        "Empty response from OpenAI",
+      );
+    }
+
+    let parsedJson: unknown;
+    try {
+      parsedJson = JSON.parse(content);
+    } catch {
+      throw new ClipActionError(
+        "clip_title_suggestion_failed",
+        "Model returned invalid JSON",
+      );
+    }
+
+    const parsed = clipTitleSuggestionsLlmResponseSchema.safeParse(parsedJson);
+    if (!parsed.success) {
+      throw new ClipActionError(
+        "clip_title_suggestion_failed",
+        "Model output did not match the expected shape",
+      );
+    }
+
+    // De-duplicate case-insensitively: three options are only useful if they're
+    // three actual choices, and the current title reappearing is noise.
+    const seen = new Set<string>(
+      clip.title ? [clip.title.trim().toLowerCase()] : [],
+    );
+    const titles: string[] = [];
+    for (const title of parsed.data.titles) {
+      const key = title.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      titles.push(title);
+    }
+
+    if (titles.length === 0) {
+      throw new ClipActionError(
+        "clip_title_suggestion_failed",
+        "Model returned no usable titles",
+      );
+    }
+
+    return titles;
+  }
+
+  /**
+   * Duplicates one clip, including its finished video, without re-rendering.
+   *
+   * Every completed render and the preview proxy are copied server-side inside
+   * R2 (`copyObject`) to keys derived from the NEW clip id, so the copy is
+   * playable and downloadable as soon as this returns — no worker job, no render
+   * capacity consumed. Two rows must never share a storage key: delete (below)
+   * and the project deletion planner both delete objects by key, so a shared key
+   * would leave the surviving clip pointing at nothing.
+   *
+   * Measured end-to-end at ~3s for a 7.7 MB render plus its proxy (~1.5s of that
+   * is R2, the rest Postgres round trips) — fast enough to hold a spinner on the
+   * menu item, not fast enough to feel instantaneous. Copying is concurrent, so
+   * more aspect ratios cost roughly the largest one rather than their sum.
+   *
+   * `index` is taken as max+1 within the source clip's workflow run to satisfy
+   * `@@unique([projectId, workflowRunId, index])`. Everything user-authored
+   * comes across (title, boundaries, transcript slice, caption preset, studio
+   * edits, B-roll); dubs and social posts do not — those are per-destination
+   * artefacts, not part of the clip.
+   *
+   * A copy whose objects fail to copy is still returned, minus the affected
+   * variants: the row is the thing being duplicated, and a missing render is a
+   * state the UI already renders (the format pill falls back to "Render").
+   */
+  async duplicateClip(
+    userId: string,
+    projectId: string,
+    clipId: string,
+  ): Promise<ClipSnapshot> {
+    const prisma = requirePrisma();
+
+    const source = await prisma.clip.findFirst({
+      where: { id: clipId, projectId, project: { userId } },
+      include: { renders: true },
+    });
+
+    if (!source) {
+      throw new ClipActionError("clip_not_found", "clip not found");
+    }
+
+    const newClipId = randomUUID();
+
+    // Copy the bytes BEFORE inserting the row, so a copy failure can't leave a
+    // row pointing at a key that was never written. Renders that fail to copy
+    // are simply left out of the new clip.
+    const completedRenders = source.renders.filter(
+      (render) => render.status === "completed" && render.storageKey,
+    );
+
+    // All copies run concurrently. They target distinct keys, so R2's ~1
+    // write/second/key limit doesn't apply across them, and copy latency is
+    // dominated by object size rather than by this process — measured on a
+    // 7.7 MB render plus a 1.0 MB proxy, serialising them cost 2.5s against
+    // 1.5s in parallel, and a clip rendered in all four aspect ratios would
+    // have serialised five copies deep.
+    const previewDestinationKey = source.previewStorageKey
+      ? clipDuplicatePreviewStorageKey(projectId, newClipId, randomUUID())
+      : null;
+
+    const [renderResults, previewCopied] = await Promise.all([
+      Promise.all(
+        completedRenders.map(async (render) => {
+          const aspectRatio = clipAspectRatioFromDb[
+            clipAspectRatioDbSchema.parse(render.aspectRatio)
+          ];
+          const destinationKey = clipDuplicateRenderStorageKey(
+            projectId,
+            newClipId,
+            aspectRatio,
+          );
+
+          try {
+            await copyObject({
+              sourceKey: render.storageKey as string,
+              destinationKey,
+            });
+            return { render, destinationKey };
+          } catch (error) {
+            // One unusable variant must not sink the duplicate — the row is the
+            // thing being copied. Logged, then dropped from the new clip.
+            console.warn(
+              JSON.stringify({
+                level: "warn",
+                message: "clip_duplicate_render_copy_failed",
+                clipId,
+                newClipId,
+                aspectRatio,
+                error: error instanceof Error ? error.message : String(error),
+              }),
+            );
+            return null;
+          }
+        }),
+      ),
+      (async () => {
+        if (!source.previewStorageKey || !previewDestinationKey) return false;
+        try {
+          await copyObject({
+            sourceKey: source.previewStorageKey,
+            destinationKey: previewDestinationKey,
+          });
+          return true;
+        } catch (error) {
+          console.warn(
+            JSON.stringify({
+              level: "warn",
+              message: "clip_duplicate_preview_copy_failed",
+              clipId,
+              newClipId,
+              error: error instanceof Error ? error.message : String(error),
+            }),
+          );
+          return false;
+        }
+      })(),
+    ]);
+
+    const copiedRenders: Array<{
+      render: ClipRender;
+      destinationKey: string;
+    }> = renderResults.filter(
+      (result): result is { render: ClipRender; destinationKey: string } =>
+        result !== null,
+    );
+    const previewStorageKey = previewCopied ? previewDestinationKey : null;
+    const copiedKeys = [
+      ...copiedRenders.map((copied) => copied.destinationKey),
+      ...(previewStorageKey ? [previewStorageKey] : []),
+    ];
+
+    try {
+      const created = await prisma.$transaction(async (tx) => {
+        const highest = await tx.clip.aggregate({
+          where: { projectId, workflowRunId: source.workflowRunId },
+          _max: { index: true },
+        });
+
+        const clip = await tx.clip.create({
+          data: {
+            id: newClipId,
+            projectId,
+            workflowRunId: source.workflowRunId,
+            index: (highest._max.index ?? source.index) + 1,
+            // A duplicate is a fresh starting point for edits.
+            status: "detected",
+            startSec: source.startSec,
+            endSec: source.endSec,
+            title: source.title,
+            hookText: source.hookText,
+            payoffText: source.payoffText,
+            reasoning: source.reasoning,
+            category: source.category,
+            platformFit: source.platformFit,
+            transcriptSlice: source.transcriptSlice as Prisma.InputJsonValue,
+            captionPreset:
+              source.captionPreset === null
+                ? Prisma.JsonNull
+                : (source.captionPreset as Prisma.InputJsonValue),
+            brollUrl: source.brollUrl,
+            studioEdits:
+              source.studioEdits === null
+                ? Prisma.JsonNull
+                : (source.studioEdits as Prisma.InputJsonValue),
+            brollCues:
+              source.brollCues === null
+                ? Prisma.JsonNull
+                : (source.brollCues as Prisma.InputJsonValue),
+            previewStorageKey,
+            previewStartSec: previewStorageKey ? source.previewStartSec : null,
+            previewDurationSec: previewStorageKey
+              ? source.previewDurationSec
+              : null,
+            viralityScore: source.viralityScore,
+            hookStrengthScore: source.hookStrengthScore,
+            emotionalIntensityScore: source.emotionalIntensityScore,
+            storyCompletenessScore: source.storyCompletenessScore,
+            pacingScore: source.pacingScore,
+            durationOptimalityScore: source.durationOptimalityScore,
+            tiktokScore: source.tiktokScore,
+            youtubeScore: source.youtubeScore,
+            instagramScore: source.instagramScore,
+            llmProvider: source.llmProvider,
+            llmModel: source.llmModel,
+            llmTokensUsed: source.llmTokensUsed,
+          },
+        });
+
+        if (copiedRenders.length > 0) {
+          await tx.clipRender.createMany({
+            data: copiedRenders.map(({ render, destinationKey }) => ({
+              clipId: clip.id,
+              aspectRatio: render.aspectRatio,
+              status: render.status,
+              storageKey: destinationKey,
+              sizeBytes: render.sizeBytes,
+              durationSec: render.durationSec,
+              startedAt: render.startedAt,
+              completedAt: render.completedAt,
+            })),
+          });
+        }
+
+        return clip;
+      });
+
+      // Read the snapshot back OUTSIDE the transaction. The row is committed by
+      // now, and against a remote Postgres this read costs a full round trip —
+      // holding a transaction (and its pooled connection) open across it buys
+      // nothing.
+      const snapshot = await prisma.clip.findUniqueOrThrow({
+        where: { id: created.id },
+        include: {
+          project: { select: { sourceDurationSeconds: true } },
+          renders: true,
+        },
+      });
+
+      return toClipSnapshot(snapshot);
+    } catch (error) {
+      // The row never landed, so nothing references the objects just copied —
+      // clean them up rather than leaking them.
+      await deleteRenderAssets(copiedKeys);
+      throw new ClipActionError(
+        "clip_duplicate_failed",
+        error instanceof Error ? error.message : "clip duplicate failed",
+      );
+    }
+  }
+
+  /**
+   * Permanently deletes one clip: its renders, preview proxy, and dub assets
+   * come out of R2 first, then the row (ClipRender/ClipDub cascade with it).
+   *
+   * Refuses while the clip has social posts that are scheduled or mid-publish.
+   * `SocialPost.clipId` is `onDelete: SetNull`, so deleting anyway wouldn't
+   * cascade — it would leave a queued post whose clip and rendered asset are
+   * gone, which the publisher can only fail on. Cancel the posts first.
+   *
+   * Analytics events also SetNull, deliberately: past performance for a clip
+   * that used to exist is still true, and shouldn't vanish from project totals.
+   */
+  async deleteClip(
+    userId: string,
+    projectId: string,
+    clipId: string,
+  ): Promise<void> {
+    const prisma = requirePrisma();
+
+    const clip = await prisma.clip.findFirst({
+      where: { id: clipId, projectId, project: { userId } },
+      select: {
+        id: true,
+        previewStorageKey: true,
+        renders: { select: { storageKey: true } },
+        dubs: {
+          select: { audioStorageKey: true, renderStorageKey: true },
+        },
+        socialPosts: {
+          where: { status: { in: ["scheduled", "publishing"] } },
+          select: { id: true },
+        },
+      },
+    });
+
+    if (!clip) {
+      throw new ClipActionError("clip_not_found", "clip not found");
+    }
+
+    if (clip.socialPosts.length > 0) {
+      throw new ClipActionError(
+        "clip_has_scheduled_posts",
+        `clip has ${clip.socialPosts.length} scheduled or publishing social post(s)`,
+      );
+    }
+
+    const storageKeys = planClipStorageDeletion({
+      previewStorageKey: clip.previewStorageKey,
+      renderStorageKeys: clip.renders.map((render) => render.storageKey),
+      dubStorageKeys: clip.dubs.flatMap((dub) => [
+        dub.audioStorageKey,
+        dub.renderStorageKey,
+      ]),
+    });
+
+    // Objects first: a failed row delete leaves keys already gone (the row is
+    // then re-deletable), whereas a failed object delete after the row is gone
+    // leaks bytes nothing references. Same ordering as project deletion.
+    await deleteRenderAssets(storageKeys);
+
+    try {
+      await prisma.clip.delete({ where: { id: clipId } });
+    } catch (error) {
+      throw new ClipActionError(
+        "clip_delete_failed",
+        error instanceof Error ? error.message : "clip delete failed",
+      );
+    }
   }
 
   async regenerateClips(
@@ -583,12 +1238,8 @@ export class ClipService {
     }
 
     const whereClause: Prisma.ClipWhereInput = clipIds
-      ? {
-          projectId,
-          id: { in: clipIds },
-          status: { not: "rejected" },
-        }
-      : { projectId, status: { not: "rejected" } };
+      ? { projectId, id: { in: clipIds } }
+      : { projectId };
 
     const clipsToRender = await prisma.clip.findMany({
       where: whereClause,
@@ -682,16 +1333,42 @@ export class ClipService {
 
     const workflowRunId = randomUUID();
 
-    await prisma.workflowRun.create({
-      data: {
-        id: workflowRunId,
-        projectId,
-        idempotencyKey,
-        stage: "clip_rendering",
-        status: "queued",
-        progress: 0,
-      },
-    });
+    try {
+      await prisma.workflowRun.create({
+        data: {
+          id: workflowRunId,
+          projectId,
+          idempotencyKey,
+          stage: "clip_rendering",
+          status: "queued",
+          progress: 0,
+        },
+      });
+    } catch (error) {
+      // Partial unique index: one live clip_rendering run per project. Losing
+      // this race means another caller just created the run — reuse it; the
+      // pending variants written above are picked up by whichever run runs.
+      if (!isUniqueConstraintError(error)) {
+        throw error;
+      }
+      const liveRun = await prisma.workflowRun.findFirst({
+        where: {
+          projectId,
+          stage: "clip_rendering",
+          status: { in: ["queued", "running"] },
+        },
+      });
+      if (!liveRun) {
+        throw error;
+      }
+      return {
+        workflowRunId: liveRun.id,
+        acceptedAt: liveRun.updatedAt.toISOString(),
+        initialSeq: await getLastWorkflowSeq(projectId),
+        clipCount: clipsToRender.length,
+        variantCount: clipsToRender.length * requestedAspectRatios.length,
+      };
+    }
 
     const event = await publishWorkflowStageUpdated({
       event: "workflow.stage.updated",
@@ -802,6 +1479,45 @@ export class ClipService {
         status: "failed",
         errorCode,
       },
+    });
+  }
+
+  /** Queues a fresh clip_rendering run for variants that were added while a
+   *  now-completed run was already rendering (the one-live-run guard absorbed
+   *  their trigger, but that run had already snapshotted its work). Keyed to
+   *  the completed run so a crashed retry of the same completion can't queue
+   *  twice; a P2002 from the one-live-run index means another live run
+   *  already exists and will pick the variants up. */
+  async queueFollowUpRenderRun(projectId: string, completedRunId: string) {
+    const prisma = requirePrisma();
+    const workflowRunId = randomUUID();
+
+    try {
+      await prisma.workflowRun.create({
+        data: {
+          id: workflowRunId,
+          projectId,
+          idempotencyKey: `drain-${completedRunId}`,
+          stage: "clip_rendering",
+          status: "queued",
+          progress: 0,
+        },
+      });
+    } catch (error) {
+      if (isUniqueConstraintError(error)) {
+        return;
+      }
+      throw error;
+    }
+
+    await publishWorkflowStageUpdated({
+      event: "workflow.stage.updated",
+      projectId,
+      workflowRunId,
+      stage: "clip_rendering",
+      status: "queued",
+      progress: 0,
+      errorCode: null,
     });
   }
 
@@ -989,11 +1705,14 @@ export class ClipService {
     for (const clip of clips) {
       if (!clip.project.sourceStorageKey) continue;
 
+      // tailPadSec 0 — must stay in lockstep with toClipSnapshot (see its
+      // comment): slice-only timing treats stored bounds as final.
       const effective = getEffectiveClipTiming({
         utterances: clip.transcriptSlice as unknown as TranscriptUtterance[],
         startSec: clip.startSec,
         endSec: clip.endSec,
         sourceDurationSec: clip.project.sourceDurationSeconds ?? null,
+        tailPadSec: 0,
       });
 
       pending.push({
@@ -1288,10 +2007,13 @@ export class ClipService {
       throw new Error("clip not found");
     }
 
+    // tailPadSec 0 — slice-only input; stored bounds are final (see
+    // toClipSnapshot).
     const effective = getEffectiveClipTiming({
       utterances: transcriptSlice,
       startSec: clip.startSec,
       endSec: clip.endSec,
+      tailPadSec: 0,
     });
 
     const updated = await prisma.clip.update({
@@ -1316,7 +2038,7 @@ export class ClipService {
     const prisma = requirePrisma();
 
     const clips = await prisma.clip.findMany({
-      where: { projectId, status: { not: "rejected" } },
+      where: { projectId },
       select: { id: true },
     });
 
@@ -1364,16 +2086,40 @@ export class ClipService {
 
     const workflowRunId = randomUUID();
 
-    await prisma.workflowRun.create({
-      data: {
-        id: workflowRunId,
-        projectId,
-        idempotencyKey: `auto-render-${detectionWorkflowRunId}`,
-        stage: "clip_rendering",
-        status: "queued",
-        progress: 0,
-      },
-    });
+    try {
+      await prisma.workflowRun.create({
+        data: {
+          id: workflowRunId,
+          projectId,
+          idempotencyKey: `auto-render-${detectionWorkflowRunId}`,
+          stage: "clip_rendering",
+          status: "queued",
+          progress: 0,
+        },
+      });
+    } catch (error) {
+      if (!isUniqueConstraintError(error)) {
+        throw error;
+      }
+      // Two distinct uniques can fire here: the one-live-run partial index (a
+      // concurrent trigger created the live run first — fine, it picks up the
+      // variants written above) or the (projectId, idempotencyKey) unique (a
+      // re-run for the same detection whose earlier auto-render run already
+      // completed — in that case there is NO live run, so swallowing the
+      // error would strand the pending variants).
+      const liveRun = await prisma.workflowRun.findFirst({
+        where: {
+          projectId,
+          stage: "clip_rendering",
+          status: { in: ["queued", "running"] },
+        },
+        select: { id: true },
+      });
+      if (liveRun) {
+        return;
+      }
+      throw error;
+    }
 
     await publishWorkflowStageUpdated({
       event: "workflow.stage.updated",
@@ -1458,7 +2204,16 @@ export function computePacingScore(
     0,
   );
   const wps = totalWords / durationSec;
-  const speakerTurns = utterances.length;
+  // Count actual speaker CHANGES, not utterance rows: utterances are now
+  // sentence-sized (a monologue is many rows), so `utterances.length` would
+  // inflate "turns" and with it pacing/virality for single-speaker content.
+  const speakerTurns = utterances.reduce(
+    (turns, utterance, index) =>
+      index === 0 || utterance.speaker !== utterances[index - 1]!.speaker
+        ? turns + 1
+        : turns,
+    0,
+  );
   const turnsPerMinute = (speakerTurns / durationSec) * 60;
 
   let score = 50;
@@ -1466,7 +2221,12 @@ export function computePacingScore(
   else if (wps >= 1.5 && wps < 2) score += 10;
   else if (wps > 3.5 && wps <= 4.5) score += 10;
 
-  if (turnsPerMinute >= 4 && turnsPerMinute <= 12) score += 25;
+  if (speakerTurns <= 1) {
+    // Monologue: turn cadence carries no signal either way, so award the
+    // midpoint rather than structurally penalizing single-speaker content
+    // against multi-speaker conversations.
+    score += 15;
+  } else if (turnsPerMinute >= 4 && turnsPerMinute <= 12) score += 25;
   else if (turnsPerMinute >= 2 && turnsPerMinute < 4) score += 10;
   else if (turnsPerMinute > 12 && turnsPerMinute <= 20) score += 10;
 

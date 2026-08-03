@@ -4,7 +4,6 @@ import Link from "next/link";
 import Image from "next/image";
 import { Button } from "@narriflow/ui/components/button";
 import { StatusBadge } from "@narriflow/ui/components/status-badge";
-import { PageHeader } from "@narriflow/ui/components/page-header";
 import { MediaWell } from "@narriflow/ui/components/media-well";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { requireCurrentAppUser } from "@narriflow/auth";
@@ -12,9 +11,10 @@ import {
   analyticsService,
   clipService,
   dubbingService,
+  isQuotaBlockedMidFlight,
   MAX_INGEST_RETRY_ATTEMPTS,
-  projectService,
   presignDownloadUrl,
+  projectService,
   socialOAuthService,
   socialService,
 } from "@narriflow/services";
@@ -22,25 +22,28 @@ import {
   BRAND_DEFAULT_CAPTION_PRESET_ID,
   LEGACY_DEFAULT_CAPTION_PRESET_ID,
   LINK_PROVIDERS,
-  MAX_UPLOAD_LENGTH_SECONDS,
-  MONTHLY_PROCESSING_MINUTE_LIMITS,
   captionPresetIdSchema,
+  defaultAspectRatioSchema,
   processingMinutesFromSeconds,
   userErrorMessage,
 } from "@narriflow/validators";
 import { ProjectEvents } from "./project-events";
+import { ProjectEventsProvider } from "./project-events-provider";
+import { ProjectTabs, TabCountBadge } from "./project-tabs";
+import { ProcessingPanel } from "./processing-panel";
 import {
   queueTranscriptionFormAction,
   regenerateClipsFormAction,
 } from "../actions";
 import { DeleteProjectButton } from "../_components/delete-project-button";
+import { PlanLimitNotice } from "../../_components/plan-limit-notice";
 import { TranscriptPanel } from "./transcript-panel";
 import { ClipsPanel } from "./clips-panel";
 import { ContentSuitePanel } from "./content-suite-panel";
 import { AnalyticsPanel } from "./analytics-panel";
 import { DubbingPanel } from "./dubbing-panel";
 import { SocialSchedulingPanel } from "./social-scheduling-panel";
-import { RenderClipsButton, RetryIngestButton } from "./render-clips-button";
+import { RetryIngestButton } from "./render-clips-button";
 import { AdvancedClipSettings } from "./advanced-clip-settings";
 import { STATUS_CONFIG } from "../_lib/status";
 import { extractYoutubeId, youtubeThumbnailUrl } from "../_lib/youtube";
@@ -49,9 +52,10 @@ import { formatDate, formatDuration } from "@/lib/format";
 import {
   deriveProjectPipelineStates,
   type PipelineStepState,
+  type ProcessingStageInput,
 } from "@/lib/project-state";
 import { Stack, Box, Text, Flex, Tabs } from "@chakra-ui/react";
-import { AlertTriangle, Check, ChevronRight, Film, Info, Link2 } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Check, Film, Info, Link2 } from "lucide-react";
 
 type StepState = PipelineStepState;
 
@@ -226,32 +230,8 @@ function SourceThumb({
  * UploadTooLongError could only be expressed as a redirect, which read as the
  * button doing nothing.
  */
-function PlanLimitNotice({ message }: { message: string | null }) {
-  if (!message) return null;
-  return (
-    <Flex align="flex-start" gap="1.5" mt="1.5" color="warning.fg">
-      <Box mt="0.5" flexShrink={0}>
-        <AlertTriangle size={13} aria-hidden />
-      </Box>
-      <Text fontSize="xs">
-        {message}{" "}
-        <Link href="/settings/billing">
-          <Text
-            as="span"
-            color="fg"
-            textDecoration="underline"
-            textDecorationColor="border.emphasized"
-            textUnderlineOffset="3px"
-            transition="text-decoration-color 120ms ease"
-            _hover={{ textDecorationColor: "fg" }}
-          >
-            Upgrade to keep generating.
-          </Text>
-        </Link>
-      </Text>
-    </Flex>
-  );
-}
+// PlanLimitNotice moved to app/(app)/_components/plan-limit-notice.tsx so the
+// upload pre-flight can reuse it.
 
 export default async function ProjectDetailPage({
   params,
@@ -275,8 +255,7 @@ export default async function ProjectDetailPage({
     socialAccounts,
     dubs,
     workflowHistory,
-    pricingTier,
-    usedMinutes,
+    usage,
   ] = await Promise.all([
     projectService.getTranscriptSnapshot(appUser.id, projectId),
     clipService.listClips(appUser.id, projectId),
@@ -286,46 +265,44 @@ export default async function ProjectDetailPage({
     socialOAuthService.listAccounts(appUser.id),
     dubbingService.listProjectDubs(appUser.id, projectId),
     projectService.getWorkflowHistory(appUser.id, projectId),
-    projectService.getUserPricingTier(appUser.id),
-    projectService.getMonthlyUsageMinutes(appUser.id),
+    projectService.getUsageSummary(appUser.id),
   ]);
+  const pricingTier = usage.tier;
 
+  const isIngestReady = snapshot.project.ingestStatus === "ready";
+  const isIngestFailed = snapshot.project.ingestStatus === "failed";
+  const ingestAttemptsExhausted =
+    snapshot.ingestAttemptCount >= MAX_INGEST_RETRY_ATTEMPTS;
+  const ingestRetryLimitMessage = `Retry limit reached (${snapshot.ingestAttemptCount}/${MAX_INGEST_RETRY_ATTEMPTS}). This source keeps failing to import.`;
+  // Ingest only ever reaches "ready" once sourceStorageKey is set, so a null
+  // key here means the source was reclaimed after retention (see
+  // purgeExpiredProjectSources), not a broken upload.
+  const isSourceExpired = isIngestReady && !snapshot.project.sourceStorageKey;
+  // Playable source URL for the Trim/Extend dialog's preview pane (same
+  // presign the studio uses). Null once the source is purged — the dialog
+  // hides the player pane rather than breaking.
   let sourceVideoUrl: string | null = null;
-  if (
-    snapshot.project.sourceType !== "youtube" &&
-    snapshot.project.sourceStorageKey
-  ) {
+  if (snapshot.project.sourceStorageKey) {
     try {
       sourceVideoUrl = await presignDownloadUrl({
         key: snapshot.project.sourceStorageKey,
         expiresIn: 3600,
       });
     } catch {
-      // Non-fatal — clip cards will show "not available" state
+      // Non-fatal — the dialog degrades to transcript-only.
     }
   }
-
-  const isIngestReady = snapshot.project.ingestStatus === "ready";
-  const isIngestFailed = snapshot.project.ingestStatus === "failed";
-  const ingestAttemptsExhausted =
-    snapshot.ingestAttemptCount >= MAX_INGEST_RETRY_ATTEMPTS;
-  // Ingest only ever reaches "ready" once sourceStorageKey is set, so a null
-  // key here means the source was reclaimed after retention (see
-  // purgeExpiredProjectSources), not a broken upload.
-  const isSourceExpired = isIngestReady && !snapshot.project.sourceStorageKey;
   // Same two gates projectService.assertProjectGenerationAllowed enforces, read
   // here so the blocked state is visible before the click instead of only as a
   // thrown QuotaExceededError/UploadTooLongError afterwards.
-  const monthlyLimitMinutes = MONTHLY_PROCESSING_MINUTE_LIMITS[pricingTier];
-  const maxUploadSeconds = MAX_UPLOAD_LENGTH_SECONDS[pricingTier];
   const sourceSeconds = snapshot.project.sourceDurationSeconds ?? 0;
   const planLimitMessage =
-    sourceSeconds > maxUploadSeconds
+    sourceSeconds > usage.maxUploadSeconds
       ? `This source is ${processingMinutesFromSeconds(sourceSeconds)} min, over the ${Math.round(
-          maxUploadSeconds / 60,
+          usage.maxUploadSeconds / 60,
         )}-min per-upload limit on the ${pricingTier} plan.`
-      : usedMinutes > monthlyLimitMinutes
-        ? `Monthly processing limit reached on the ${pricingTier} plan (${monthlyLimitMinutes} min/mo; ${usedMinutes} min used).`
+      : usage.usedMinutes > usage.limitMinutes
+        ? `Monthly processing limit reached on the ${pricingTier} plan (${usage.limitMinutes} min/mo; ${usage.usedMinutes} min used).`
         : null;
   const transcriptReady = transcript?.status === "completed";
   const transcriptInFlight =
@@ -338,6 +315,14 @@ export default async function ProjectDetailPage({
     captionPresetParsed.data !== LEGACY_DEFAULT_CAPTION_PRESET_ID
       ? captionPresetParsed.data
       : BRAND_DEFAULT_CAPTION_PRESET_ID;
+  // Raw Prisma column, not the zod-narrowed union — parse it the same way
+  // defaultCaptionPreset does above, rather than casting.
+  const defaultAspectRatioParsed = defaultAspectRatioSchema.safeParse(
+    latestContentPack?.defaultAspectRatio,
+  );
+  const clipsDefaultAspectRatio = defaultAspectRatioParsed.success
+    ? defaultAspectRatioParsed.data
+    : "9:16";
   const advancedSettingsProps = {
     sourceDurationSec: snapshot.project.sourceDurationSeconds,
     defaultProcessingStartSec: latestContentPack?.processingStartSec ?? null,
@@ -355,11 +340,93 @@ export default async function ProjectDetailPage({
     socialPosts,
   });
   const detectionInFlight = pipelineStates.detect === "active";
-  const isRendering = renderVariants.some(
-    (render) => render.status === "pending" || render.status === "rendering",
-  );
   const hasAnyRendered = renderVariants.some((render) => render.hasAsset);
-  const hasRenderableClips = clips.some((clip) => clip.status !== "rejected");
+  const hasRenderableClips = clips.length > 0;
+
+  // Link-first split (Phase 0/1): the latest pack may still be a draft — a
+  // draft must never be treated as an active configuration (never read its
+  // mode/autoRenderClips as if generation could be running against it).
+  const isDraftPack = latestContentPack?.draft === true;
+  const hasCommittedPack = latestContentPack !== null && !isDraftPack;
+  const generationMode: "clip" | "caption_only" =
+    latestContentPack?.mode === "caption_only" ? "caption_only" : "clip";
+  const autoRenderClips = latestContentPack?.autoRenderClips ?? false;
+
+  const ingestInProgress = !isIngestReady && !isIngestFailed;
+  const runInFlight =
+    activeRun !== null && (activeRun.status === "queued" || activeRun.status === "running");
+  const runFailed = activeRun !== null && activeRun.status === "failed";
+  const quotaBlockedMidFlight = isQuotaBlockedMidFlight({
+    ingestReady: isIngestReady,
+    hasCommittedPack,
+    hasAnyRun: activeRun !== null,
+    tier: usage.tier,
+    usedMinutes: usage.usedMinutes,
+  });
+  const quotaBlockedMessage = quotaBlockedMidFlight
+    ? `Monthly limit reached during processing (${usage.limitMinutes} min/mo; ${usage.usedMinutes} min used) on the ${usage.tier} plan.`
+    : null;
+
+  const transcribeStage: ProcessingStageInput =
+    activeRun?.stage === "stt"
+      ? {
+          status: activeRun.status as ProcessingStageInput["status"],
+          progress: activeRun.progress,
+          errorCode: activeRun.errorCode,
+        }
+      : transcriptReady
+        ? { status: "completed", progress: 100, errorCode: null }
+        : transcript?.status === "failed"
+          ? { status: "failed", progress: 0, errorCode: transcript.errorCode ?? null }
+          : { status: null, progress: 0, errorCode: null };
+
+  const detectStage: ProcessingStageInput =
+    activeRun?.stage === "moment_detection"
+      ? {
+          status: activeRun.status as ProcessingStageInput["status"],
+          progress: activeRun.progress,
+          errorCode: activeRun.errorCode,
+        }
+      : clips.length > 0
+        ? { status: "completed", progress: 100, errorCode: null }
+        : { status: null, progress: 0, errorCode: null };
+
+  // Renders queued by auto-render (or caption-only's mandatory 16:9 render)
+  // continue within the SAME WorkflowRun row, so its stage moves on to
+  // "clip_rendering" once detection hands off — this is the latest
+  // render-stage run's status, not a guess from asset counts.
+  const renderStage: ProcessingStageInput =
+    activeRun?.stage === "clip_rendering"
+      ? {
+          status: activeRun.status as ProcessingStageInput["status"],
+          progress: activeRun.progress,
+          errorCode: activeRun.errorCode,
+        }
+      : hasAnyRendered
+        ? { status: "completed", progress: 100, errorCode: null }
+        : { status: null, progress: 0, errorCode: null };
+
+  // Phase 2a — the Clips tab shows the processing panel instead of the
+  // Step 01/02 form cards whenever a run is in flight, or ingest is still
+  // running/failed with a committed pack, or quota was crossed mid-flight.
+  //
+  // Mode-aware cutover to the ranked-rows results view (Phase 3):
+  // - Plain clip mode (no auto-render): resolves as soon as clips are found
+  //   — render is a later, per-clip, user-triggered action that never blocks
+  //   results.
+  // - Clip mode WITH auto-render, and caption-only (its render is
+  //   mandatory): fold a render into the same run, so the panel stays up
+  //   until that render *succeeds* — a mid-render or failed render must not
+  //   silently flip to results. A render failure keeps the panel showing
+  //   its in-panel danger band (the checklist's render node already renders
+  //   one) rather than dropping the user into an empty/incomplete results view.
+  const renderGatesProcessingPanel = generationMode === "caption_only" || autoRenderClips;
+  const renderStageSucceeded = renderStage.status === "completed";
+  const showProcessingPanel =
+    hasCommittedPack &&
+    (clips.length === 0
+      ? ingestInProgress || isIngestFailed || runInFlight || runFailed || quotaBlockedMidFlight
+      : renderGatesProcessingPanel && !renderStageSucceeded);
 
   const steps: Array<{ label: string; state: StepState }> = [
     {
@@ -402,69 +469,78 @@ export default async function ProjectDetailPage({
   const ingestBadge =
     STATUS_CONFIG[snapshot.project.ingestStatus] ?? STATUS_CONFIG.queued!;
 
+  // 1240px stays. Widening this to 1600px on large screens was tried and
+  // reverted: once the prose blocks in ClipRow are capped to a readable
+  // measure, a clip row's natural content is only ~900px wide, so the extra
+  // width did not let anything breathe — it stretched the row and opened an
+  // 800px dead band between the transcript and the right-hand score. The page
+  // felt empty because prose was running to 1000px per line, not because the
+  // container was too narrow.
   return (
-    <Stack gap="8" maxW="1080px" mx="auto" w="full">
-      {/* Breadcrumb + header — one unit, tight internal rhythm */}
-      <Stack gap="3">
-        <Flex
-          align="center"
-          gap="1.5"
-          fontSize="xs"
-          color="fg.muted"
-          animation="fade-up"
-          animationFillMode="backwards"
+    <Stack gap="8" maxW="1240px" mx="auto" w="full">
+      {/* Vizard-style workspace bar: the sidebar is suppressed on open
+          projects (see AppChrome), so this row is the navigation — back
+          arrow + title + status meta left, destructive action right. */}
+      <Flex
+        align="center"
+        gap="3"
+        wrap="wrap"
+        animation="fade-up"
+        animationFillMode="backwards"
+      >
+        <Link href="/projects" aria-label="Back to projects">
+          <Flex
+            align="center"
+            justify="center"
+            w="30px"
+            h="30px"
+            borderRadius="l1"
+            color="fg.muted"
+            transition="color 120ms ease, background 120ms ease"
+            _hover={{ color: "fg", bg: "bg.subtle" }}
+          >
+            <ArrowLeft size={16} aria-hidden />
+          </Flex>
+        </Link>
+        <Text
+          as="h1"
+          textStyle="title"
+          fontSize="lg"
+          color="fg"
+          truncate
+          minW="0"
+          flexShrink={1}
         >
-          <Link href="/projects">
-            <Text
-              as="span"
-              color="fg"
-              textDecoration="underline"
-              textDecorationColor="border.emphasized"
-              textUnderlineOffset="3px"
-              transition="text-decoration-color 120ms ease"
-              _hover={{ textDecorationColor: "fg" }}
-            >
-              Projects
+          {snapshot.project.title}
+        </Text>
+        <Flex align="center" gap="3" flexShrink={0}>
+          <StatusBadge status={ingestBadge.status} label={ingestBadge.label} />
+          {typeof durationSec === "number" && durationSec > 0 && (
+            <Text textStyle="data" fontSize="xs" color="fg.timecode">
+              {formatDuration(durationSec)}
             </Text>
-          </Link>
-          <ChevronRight size={13} aria-hidden />
-          <Text color="fg.muted" fontWeight="500" truncate>
-            {snapshot.project.title}
+          )}
+          <Text textStyle="eyebrow" color="fg.subtle">
+            {snapshot.project.sourceType === "link"
+              ? linkProviderLabel(snapshot.project.sourceProvider)
+              : snapshot.project.sourceType}
+          </Text>
+          <Text
+            textStyle="data"
+            fontSize="xs"
+            color="fg.muted"
+            display={{ base: "none", md: "block" }}
+          >
+            {formatDate(snapshot.project.createdAt)}
           </Text>
         </Flex>
-
-        <Box animation="fade-up" animationFillMode="backwards" style={{ animationDelay: "60ms" }}>
-          <PageHeader
-            eyebrow="Project"
-            title={snapshot.project.title}
-            meta={
-              <>
-                <StatusBadge status={ingestBadge.status} label={ingestBadge.label} />
-                {typeof durationSec === "number" && durationSec > 0 && (
-                  <Text textStyle="data" fontSize="xs" color="fg.timecode">
-                    {formatDuration(durationSec)}
-                  </Text>
-                )}
-                <Text textStyle="eyebrow" color="fg.subtle">
-                  {snapshot.project.sourceType === "link"
-                    ? linkProviderLabel(snapshot.project.sourceProvider)
-                    : snapshot.project.sourceType}
-                </Text>
-                <Text textStyle="data" fontSize="xs" color="fg.muted">
-                  {formatDate(snapshot.project.createdAt)}
-                </Text>
-              </>
-            }
-            actions={
-              <DeleteProjectButton
-                projectId={projectId}
-                projectTitle={snapshot.project.title}
-                variant="button"
-              />
-            }
-          />
-        </Box>
-      </Stack>
+        <Box flex="1" />
+        <DeleteProjectButton
+          projectId={projectId}
+          projectTitle={snapshot.project.title}
+          variant="button"
+        />
+      </Flex>
 
       <Flex
         gap="5"
@@ -523,120 +599,79 @@ export default async function ProjectDetailPage({
         </Stack>
       </Flex>
 
-      {/* Workspace tabs */}
-      <Tabs.Root
-        defaultValue="clips"
-        variant="line"
-        size="sm"
-        colorPalette="accent"
-        w="full"
-        minW="0"
-        maxW="full"
-        animation="fade-up"
-        animationFillMode="backwards"
-        style={{ animationDelay: "180ms" }}
+      {/* Workspace tabs — URL-driven (?tab=); SSE stream shared via
+          ProjectEventsProvider so the Clips-tab processing checklist and the
+          Activity tab consume the same EventSource (no second connection). */}
+      <ProjectEventsProvider
+        projectId={projectId}
+        initialSeq={snapshot.lastSeq}
+        initialEvents={workflowHistory}
       >
-        <Tabs.List
-          w="full"
-          minW="0"
-          maxW="full"
-          overflowX="auto"
-          overflowY="hidden"
-          css={{
-            scrollbarWidth: "thin",
-            scrollbarColor: "var(--chakra-colors-border-emphasized) transparent",
-            "&::-webkit-scrollbar": { height: "4px" },
-            "&::-webkit-scrollbar-thumb": {
-              background: "var(--chakra-colors-border-emphasized)",
-              borderRadius: "full",
-            },
-            "--indicator-thickness": "2px",
-          }}
-        >
-          <Tabs.Trigger
-            value="clips"
-            color="fg.muted"
-            flexShrink={0}
-            whiteSpace="nowrap"
-            _selected={{ color: "fg" }}
-          >
-            Clips
-            {clips.length > 0 && (
-              <Box
-                as="span"
-                ms="1.5"
-                px="1"
-                borderWidth="1px"
-                borderColor="border"
-                borderRadius="l1"
-                textStyle="data"
-                fontSize="10px"
-                lineHeight="1.5"
-                color="fg.muted"
-              >
-                {clips.length}
-              </Box>
-            )}
-          </Tabs.Trigger>
-          <Tabs.Trigger
-            value="transcript"
-            color="fg.muted"
-            flexShrink={0}
-            whiteSpace="nowrap"
-            _selected={{ color: "fg" }}
-          >
-            Transcript
-          </Tabs.Trigger>
-          <Tabs.Trigger
-            value="repurpose"
-            color="fg.muted"
-            flexShrink={0}
-            whiteSpace="nowrap"
-            _selected={{ color: "fg" }}
-          >
-            Repurpose
-          </Tabs.Trigger>
-          <Tabs.Trigger
-            value="dubbing"
-            color="fg.muted"
-            flexShrink={0}
-            whiteSpace="nowrap"
-            _selected={{ color: "fg" }}
-          >
-            Dubbing
-          </Tabs.Trigger>
-          <Tabs.Trigger
-            value="publish"
-            color="fg.muted"
-            flexShrink={0}
-            whiteSpace="nowrap"
-            _selected={{ color: "fg" }}
-          >
-            Publish
-          </Tabs.Trigger>
-          <Tabs.Trigger
-            value="analytics"
-            color="fg.muted"
-            flexShrink={0}
-            whiteSpace="nowrap"
-            _selected={{ color: "fg" }}
-          >
-            Analytics
-          </Tabs.Trigger>
-          <Tabs.Trigger
-            value="activity"
-            color="fg.muted"
-            flexShrink={0}
-            whiteSpace="nowrap"
-            _selected={{ color: "fg" }}
-          >
-            Activity
-          </Tabs.Trigger>
-        </Tabs.List>
-
-        {/* CLIPS — pipeline actions + clip grid */}
+        <ProjectTabs clipsCountBadge={<TabCountBadge count={clips.length} />}>
+        {/* CLIPS — processing panel while a run/ingest is in flight, ranked
+            results once clips exist, legacy step cards otherwise. */}
         <Tabs.Content value="clips" pt="6">
-          {!transcriptReady ? (
+          {isDraftPack ? (
+            <Flex
+              align="center"
+              justify="space-between"
+              gap="3"
+              wrap="wrap"
+              p="4"
+              borderWidth="1px"
+              borderColor="border"
+              borderRadius="l2"
+            >
+              <Flex align="center" gap="2">
+                <Info size={14} aria-hidden />
+                <Text fontSize="sm" color="fg.muted">
+                  This project's setup isn't finished yet.
+                </Text>
+              </Flex>
+              <Button size="sm" variant="outline" asChild>
+                <Link href={`/upload?project=${projectId}`}>Finish setup</Link>
+              </Button>
+            </Flex>
+          ) : showProcessingPanel ? (
+            <ProcessingPanel
+              projectId={projectId}
+              mediaWell={
+                <MediaWell
+                  ratio={16 / 9}
+                  timecode={
+                    typeof durationSec === "number" && durationSec > 0
+                      ? formatDuration(durationSec)
+                      : undefined
+                  }
+                >
+                  <SourceThumb
+                    projectId={projectId}
+                    title={snapshot.project.title}
+                    sourceType={snapshot.project.sourceType}
+                    sourceInput={snapshot.project.sourceInput}
+                    sourceMediaUrl={snapshot.project.sourceMediaUrl}
+                  />
+                </MediaWell>
+              }
+              projectTitle={snapshot.project.title}
+              durationSec={durationSec}
+              notifyOnComplete={snapshot.project.notifyOnComplete}
+              ingestStatus={snapshot.project.ingestStatus}
+              ingestErrorCode={snapshot.project.ingestErrorCode}
+              ingestAttemptsExhausted={ingestAttemptsExhausted}
+              ingestRetryLimitMessage={ingestRetryLimitMessage}
+              transcribe={transcribeStage}
+              detect={detectStage}
+              render={renderStage}
+              mode={generationMode}
+              autoRenderClips={autoRenderClips}
+              clipCount={clips.length}
+              hasAnyRendered={hasAnyRendered}
+              quotaBlockedMessage={quotaBlockedMessage}
+              advancedSettingsProps={advancedSettingsProps}
+              defaultSourceLanguageCode={snapshot.project.languageCode}
+            />
+          ) : !transcriptReady ? (
             <form action={queueTranscriptionFormAction}>
               <input type="hidden" name="projectId" value={projectId} />
               <input type="hidden" name="idempotencyKey" value={randomUUID()} />
@@ -718,42 +753,10 @@ export default async function ProjectDetailPage({
             </form>
           ) : (
             <Stack gap="5">
-              <Flex align="center" gap="2" wrap="wrap">
-                {hasRenderableClips && (
-                  <RenderClipsButton
-                    projectId={projectId}
-                    isFreeTier={pricingTier === "free"}
-                    disabled={isRendering}
-                    buttonLabel={
-                      isRendering
-                        ? "Rendering…"
-                        : hasAnyRendered
-                          ? "Re-render clips"
-                          : "Render clips"
-                    }
-                  />
-                )}
-                <form action={regenerateClipsFormAction}>
-                  <input type="hidden" name="projectId" value={projectId} />
-                  <input type="hidden" name="idempotencyKey" value={randomUUID()} />
-                  <Flex align="center" gap="2" wrap="wrap">
-                    <Button
-                      type="submit"
-                      size="sm"
-                      variant="outline"
-                      disabled={planLimitMessage !== null}
-                    >
-                      Regenerate clips
-                    </Button>
-                    <AdvancedClipSettings
-                      {...advancedSettingsProps}
-                      sourceLanguageEditable={false}
-                      defaultSourceLanguageCode={snapshot.project.languageCode}
-                      compact
-                    />
-                  </Flex>
-                </form>
-              </Flex>
+              {/* No "Regenerate clips" affordance once a clip set exists —
+                  market-aligned with Vizard's one-shot clipping model. Failed
+                  and zero-clip runs still expose Retry/Re-run detection in
+                  the processing panel, and the first detection is Step 02. */}
               {pricingTier === "free" && hasRenderableClips && (
                 <Text fontSize="xs" color="fg.muted">
                   Free plan renders are 720p and watermarked.{" "}
@@ -773,10 +776,17 @@ export default async function ProjectDetailPage({
                   for 1080p, no watermark.
                 </Text>
               )}
+              {/* Ranked-row results (Phase 3). The view's single solid
+                  ultramarine button — "Render selected" — lives in this
+                  panel's toolbar; there is no standalone render-all button
+                  here anymore. */}
               <ClipsPanel
                 clips={clips}
+                projectId={projectId}
+                mode={generationMode}
+                isFreeTier={pricingTier === "free"}
+                defaultAspectRatio={clipsDefaultAspectRatio}
                 sourceVideoUrl={sourceVideoUrl}
-                sourceType={snapshot.project.sourceType}
               />
             </Stack>
           )}
@@ -823,15 +833,13 @@ export default async function ProjectDetailPage({
         </Tabs.Content>
 
         {/* ACTIVITY — keep mounted regardless of active tab: the SSE stream
-            in ProjectEvents drives router.refresh() for the whole workspace. */}
+            (owned by ProjectEventsProvider above) drives router.refresh()
+            for the whole workspace. */}
         <Tabs.Content value="activity" pt="6">
-          <ProjectEvents
-            projectId={projectId}
-            initialSeq={snapshot.lastSeq}
-            initialEvents={workflowHistory}
-          />
+          <ProjectEvents />
         </Tabs.Content>
-      </Tabs.Root>
+        </ProjectTabs>
+      </ProjectEventsProvider>
     </Stack>
   );
 }

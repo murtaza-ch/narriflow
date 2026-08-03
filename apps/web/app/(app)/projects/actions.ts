@@ -190,6 +190,38 @@ export async function retryIngestFormAction(
 }
 
 /**
+ * "Email me when clips are ready" toggle on the Phase 2a processing panel.
+ * Returns a typed result instead of throwing — a stray click on a stale page
+ * (project deleted from another tab) should read as "couldn't save that",
+ * not a redacted production error.
+ */
+export async function setNotifyPreferenceAction(
+  projectId: string,
+  notifyOnComplete: boolean,
+): Promise<{ ok: boolean; error?: string }> {
+  const appUser = await requireCurrentAppUser();
+
+  if (!projectId) {
+    return { ok: false, error: "projectId is required" };
+  }
+
+  try {
+    await projectService.setProjectNotifyPreference(
+      appUser.id,
+      projectId,
+      notifyOnComplete,
+    );
+  } catch {
+    return {
+      ok: false,
+      error: "Could not save this preference. Please try again.",
+    };
+  }
+
+  return { ok: true };
+}
+
+/**
  * Permanently deletes a project: its R2 source, transcript, every clip,
  * render, and dub, then the DB row (see ProjectService.deleteProject for the
  * storage-then-DB ordering guarantee). Returns {ok, error} instead of

@@ -1,36 +1,23 @@
-import { AspectRatio, Box, Flex, Grid, Skeleton, Stack } from "@chakra-ui/react";
+import { Box, Flex, Grid, Skeleton, Stack } from "@chakra-ui/react";
 
 /**
- * Mirrors the project workspace layout 1:1: breadcrumb + header band
- * (eyebrow, 1.5px rule, 30px title, meta chips) → 232px source well +
- * 18px-node pipeline stepper → tab rail → toolbar row → AI Clips band
- * (eyebrow, rule, caption row, filter row) → 3-col clip grid.
+ * Mirrors the project workspace layout 1:1: slim workspace bar (back
+ * arrow, title, meta chips, action) → 232px source well + 18px-node
+ * pipeline stepper → tab rail → toolbar row → AI Clips band → clip rows.
  */
 export default function ProjectDetailLoading() {
   return (
-    <Stack gap="8" maxW="1080px" mx="auto" w="full">
-      {/* Breadcrumb + header — one unit, matching the page's gap="3" */}
-      <Stack gap="3">
-        <Flex align="center" gap="1.5">
-          <Skeleton variant="pulse" bg="bg.muted" height="12px" width="60px" borderRadius="l1" />
-          <Skeleton variant="pulse" bg="bg.muted" height="12px" width="140px" borderRadius="l1" />
-        </Flex>
-
-        <Box>
-          <Skeleton variant="pulse" bg="bg.muted" height="11px" width="52px" borderRadius="l1" mb="2" />
-          <Box h="1.5px" bg="border.strong" animation="rule-in" />
-          <Stack gap="1.5" pt="4">
-            <Skeleton variant="pulse" bg="bg.muted" height="30px" width="320px" maxW="70%" borderRadius="l1" />
-            {/* Meta row: status badge, duration, source type, date */}
-            <Flex align="center" gap="3" pt="1">
-              <Skeleton variant="pulse" bg="bg.muted" height="16px" width="72px" borderRadius="l1" />
-              <Skeleton variant="pulse" bg="bg.muted" height="12px" width="48px" borderRadius="l1" />
-              <Skeleton variant="pulse" bg="bg.muted" height="11px" width="52px" borderRadius="l1" />
-              <Skeleton variant="pulse" bg="bg.muted" height="12px" width="72px" borderRadius="l1" />
-            </Flex>
-          </Stack>
-        </Box>
-      </Stack>
+    <Stack gap="8" maxW="1240px" mx="auto" w="full">
+      {/* Workspace bar: back arrow + title + status meta left, action right */}
+      <Flex align="center" gap="3">
+        <Skeleton variant="pulse" bg="bg.muted" height="30px" width="30px" borderRadius="l1" />
+        <Skeleton variant="pulse" bg="bg.muted" height="20px" width="280px" maxW="40%" borderRadius="l1" />
+        <Skeleton variant="pulse" bg="bg.muted" height="16px" width="72px" borderRadius="l1" />
+        <Skeleton variant="pulse" bg="bg.muted" height="12px" width="48px" borderRadius="l1" />
+        <Skeleton variant="pulse" bg="bg.muted" height="11px" width="52px" borderRadius="l1" />
+        <Box flex="1" />
+        <Skeleton variant="pulse" bg="bg.muted" height="30px" width="110px" borderRadius="l1" />
+      </Flex>
 
       {/* Source thumb well (232px, 16:9) + pipeline stepper (18px nodes) */}
       <Flex gap="5" align={{ base: "stretch", md: "center" }} direction={{ base: "column", md: "row" }}>
@@ -40,9 +27,7 @@ export default function ProjectDetailLoading() {
           layerStyle="well"
           bg="studio.subtle"
         >
-          <AspectRatio ratio={16 / 9}>
-            <Box />
-          </AspectRatio>
+          <Box css={{ aspectRatio: "16 / 9" }} />
         </Box>
         <Flex flex="1" align="center" wrap="wrap" rowGap="2.5">
           {Array.from({ length: 5 }).map((_, index) => (
@@ -74,106 +59,74 @@ export default function ProjectDetailLoading() {
         </Flex>
 
         <Stack gap="5">
-          {/* Toolbar row — render/regenerate buttons + settings chips */}
-          <Flex align="center" gap="2" wrap="wrap">
-            <Skeleton variant="pulse" bg="bg.muted" height="36px" width="128px" borderRadius="l2" />
-            <Skeleton variant="pulse" bg="bg.muted" height="36px" width="136px" borderRadius="l2" />
-            {[92, 76, 58, 84].map((width, index) => (
-              <Skeleton
-                key={index}
-                variant="pulse"
-                bg="bg.muted"
-                height="22px"
-                width={`${width}px`}
-                borderRadius="l1"
-              />
-            ))}
-          </Flex>
-
-          {/* AI Clips band — eyebrow, 1.5px rule, caption row, filter row */}
+          {/* AI Clips band — eyebrow, 1.5px rule, toolbar (sort/density/filter), ranked rows */}
           <Box>
             <Skeleton variant="pulse" bg="bg.muted" height="11px" width="56px" borderRadius="l1" mb="2" />
             <Box layerStyle="band">
-              <Flex align="baseline" justify="space-between" gap="3" wrap="wrap" mb="4">
-                <Skeleton variant="pulse" bg="bg.muted" height="12px" width="280px" maxW="60%" borderRadius="l1" />
-                <Skeleton variant="pulse" bg="bg.muted" height="11px" width="140px" borderRadius="l1" />
-              </Flex>
               <Flex
-                gap="2"
-                wrap="wrap"
                 align="center"
+                justify="space-between"
+                gap="3"
+                wrap="wrap"
                 pb="3"
-                mb="5"
+                mb="1"
                 borderBottomWidth="1px"
                 borderColor="border.subtle"
               >
-                {[132, 118, 106, 136].map((width, index) => (
-                  <Skeleton
-                    key={index}
-                    variant="pulse"
-                    bg="bg.muted"
-                    height="32px"
-                    width={`${width}px`}
-                    borderRadius="l2"
-                  />
-                ))}
-                <Skeleton variant="pulse" bg="bg.muted" height="11px" width="72px" borderRadius="l1" ms="auto" />
+                <Flex align="center" gap="3" wrap="wrap">
+                  <Skeleton variant="pulse" bg="bg.muted" height="12px" width="48px" borderRadius="l1" />
+                  <Skeleton variant="pulse" bg="bg.muted" height="32px" width="152px" borderRadius="l2" />
+                  <Skeleton variant="pulse" bg="bg.muted" height="28px" width="140px" borderRadius="l2" />
+                  <Skeleton variant="pulse" bg="bg.muted" height="32px" width="88px" borderRadius="l2" />
+                </Flex>
+                <Skeleton variant="pulse" bg="bg.muted" height="32px" width="168px" borderRadius="l2" />
               </Flex>
 
-              {/* Clip grid — 9:16 wells + card body matching ClipCard */}
-              <Grid
-                templateColumns={{
-                  base: "1fr",
-                  sm: "repeat(2, minmax(0, 1fr))",
-                  lg: "repeat(3, minmax(0, 1fr))",
-                }}
-                gap="4"
-              >
-                {Array.from({ length: 6 }).map((_, index) => (
-                  <Box
-                    key={index}
-                    borderWidth="1px"
-                    borderColor="border"
-                    borderRadius="l2"
-                    overflow="hidden"
-                    animation="fade-up"
-                    animationFillMode="backwards"
-                    style={{ animationDelay: `${index * 60}ms` }}
-                  >
-                    <Box
-                      bg="studio.subtle"
+              {/* Ranked rows — hairline separators, media well + content */}
+              <Grid templateColumns={{ base: "1fr", xl: "56px 1fr" }} gap="4" pt="3">
+                <Box display={{ base: "none", xl: "block" }} />
+                <Stack gap="0" borderTopWidth="1px" borderColor="border.subtle">
+                  {Array.from({ length: 4 }).map((_, index) => (
+                    <Flex
+                      key={index}
+                      gap="3"
+                      py="4"
                       borderBottomWidth="1px"
-                      borderColor="border"
-                      css={{ aspectRatio: "9 / 16", maxHeight: "420px" }}
-                    />
-                    <Stack gap="2.5" p="3">
-                      <Skeleton variant="pulse" bg="bg.muted" height="10px" width="56px" borderRadius="l1" />
-                      <Skeleton variant="pulse" bg="bg.muted" height="14px" width="85%" borderRadius="l1" />
-                      <Skeleton variant="pulse" bg="bg.muted" height="11px" width="120px" borderRadius="l1" />
-                      <Flex gap="1.5">
-                        {[44, 38, 44, 40].map((width, pillIndex) => (
-                          <Skeleton
-                            key={pillIndex}
-                            variant="pulse"
-                            bg="bg.muted"
-                            height="26px"
-                            width={`${width}px`}
-                            borderRadius="l1"
-                          />
-                        ))}
-                      </Flex>
-                      <Flex gap="1.5">
-                        <Skeleton variant="pulse" bg="bg.muted" height="32px" flex="1" borderRadius="l2" />
-                        <Skeleton variant="pulse" bg="bg.muted" height="32px" flex="1" borderRadius="l2" />
-                      </Flex>
-                      <Flex gap="1" align="center">
-                        <Skeleton variant="pulse" bg="bg.muted" height="12px" width="56px" borderRadius="l1" />
-                        <Skeleton variant="pulse" bg="bg.muted" height="12px" width="52px" borderRadius="l1" />
-                        <Skeleton variant="pulse" bg="bg.muted" height="12px" width="56px" borderRadius="l1" ms="auto" />
-                      </Flex>
-                    </Stack>
-                  </Box>
-                ))}
+                      borderColor="border.subtle"
+                      animation="fade-up"
+                      animationFillMode="backwards"
+                      style={{ animationDelay: `${index * 60}ms` }}
+                    >
+                      <Box
+                        flexShrink={0}
+                        w="108px"
+                        bg="studio.subtle"
+                        borderWidth="1px"
+                        borderColor="border"
+                        borderRadius="l2"
+                        css={{ aspectRatio: "9 / 16" }}
+                      />
+                      <Stack flex="1" gap="2" pt="1">
+                        <Skeleton variant="pulse" bg="bg.muted" height="10px" width="80px" borderRadius="l1" />
+                        <Skeleton variant="pulse" bg="bg.muted" height="14px" width="70%" borderRadius="l1" />
+                        <Skeleton variant="pulse" bg="bg.muted" height="11px" width="120px" borderRadius="l1" />
+                        <Skeleton variant="pulse" bg="bg.muted" height="24px" width="90%" borderRadius="l1" />
+                        <Flex gap="1.5" pt="1">
+                          {[64, 76, 60, 60].map((width, pillIndex) => (
+                            <Skeleton
+                              key={pillIndex}
+                              variant="pulse"
+                              bg="bg.muted"
+                              height="26px"
+                              width={`${width}px`}
+                              borderRadius="l2"
+                            />
+                          ))}
+                        </Flex>
+                      </Stack>
+                    </Flex>
+                  ))}
+                </Stack>
               </Grid>
             </Box>
           </Box>

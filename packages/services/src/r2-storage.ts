@@ -3,6 +3,7 @@ import { basename } from "node:path";
 import {
   AbortMultipartUploadCommand,
   CompleteMultipartUploadCommand,
+  CopyObjectCommand,
   CreateMultipartUploadCommand,
   DeleteObjectCommand,
   GetObjectCommand,
@@ -80,6 +81,18 @@ export async function readFilePart(
  *  smaller than it was when parts were streamed. 16 MB still allows a ~160 GB
  *  object within S3's 10,000-part limit, far above the 5 GB upload cap. */
 const MULTIPART_PART_SIZE_BYTES = 16 * 1024 * 1024;
+
+/** How many parts putFileFromPath uploads at once. Bounds memory at
+ *  concurrency × MULTIPART_PART_SIZE_BYTES, since only in-flight parts are
+ *  read into memory (see the pool loop below). Clamped to [1, 16] so a bad
+ *  env value can't accidentally serialize uploads or blow the heap. */
+function getMultipartConcurrency() {
+  const raw = Number(process.env.R2_MULTIPART_CONCURRENCY);
+  if (!Number.isFinite(raw)) {
+    return 4;
+  }
+  return Math.min(16, Math.max(1, Math.floor(raw)));
+}
 
 function getRequiredEnv(name: string) {
   const value = process.env[name]?.trim();
@@ -332,36 +345,86 @@ export async function putFileFromPath(params: {
         fileInfo.size / MULTIPART_PART_SIZE_BYTES,
       );
 
-      for (let partNumber = 1; partNumber <= partCount; partNumber += 1) {
-        const start = (partNumber - 1) * MULTIPART_PART_SIZE_BYTES;
-        const end = Math.min(
-          start + MULTIPART_PART_SIZE_BYTES,
-          fileInfo.size,
-        );
-        // Read the part fully into memory rather than streaming it, for the
-        // same reason as the single-PUT path above: a streamed body makes the
-        // SDK use aws-chunked framing that R2 rejects, and the failure surfaces
-        // as "The socket connection was closed unexpectedly" — which is exactly
-        // how link imports were dying in production. Reproduced with a 20 MB
-        // upload and fixed by buffering. Part size is kept small enough that
-        // one part in memory is cheap.
-        const body = await readFilePart(params.filePath, start, end);
+      // Upload parts with bounded concurrency instead of one at a time: a
+      // sequential loop turns a 2GB source (128 parts) into 128 serial round
+      // trips. `nextPartNumber` is shared across the pool's workers so each
+      // worker pulls the next unclaimed part instead of a static slice, which
+      // keeps all slots busy even if individual parts take different times.
+      // Memory stays bounded at concurrency × part size because a worker only
+      // reads its part's bytes (readFilePart) once its slot is free, never all
+      // parts up front.
+      let nextPartNumber = 1;
+      let firstError: unknown = null;
+      let aborted = false;
 
-        const uploaded = await client.send(
-          new UploadPartCommand({
-            Bucket: bucket,
-            Key: params.key,
-            UploadId: uploadId,
-            PartNumber: partNumber,
-            Body: body,
-            ContentLength: end - start,
-          }),
-        );
-        if (!uploaded.ETag) {
-          throw new Error("R2 multipart part did not return an etag");
+      const worker = async () => {
+        for (;;) {
+          if (aborted) {
+            return;
+          }
+          const partNumber = nextPartNumber;
+          if (partNumber > partCount) {
+            return;
+          }
+          nextPartNumber += 1;
+
+          const start = (partNumber - 1) * MULTIPART_PART_SIZE_BYTES;
+          const end = Math.min(
+            start + MULTIPART_PART_SIZE_BYTES,
+            fileInfo.size,
+          );
+
+          try {
+            // Read the part fully into memory rather than streaming it, for the
+            // same reason as the single-PUT path above: a streamed body makes the
+            // SDK use aws-chunked framing that R2 rejects, and the failure surfaces
+            // as "The socket connection was closed unexpectedly" — which is exactly
+            // how link imports were dying in production. Reproduced with a 20 MB
+            // upload and fixed by buffering. Part size is kept small enough that
+            // one part in memory is cheap.
+            const body = await readFilePart(params.filePath, start, end);
+
+            const uploaded = await client.send(
+              new UploadPartCommand({
+                Bucket: bucket,
+                Key: params.key,
+                UploadId: uploadId,
+                PartNumber: partNumber,
+                Body: body,
+                ContentLength: end - start,
+              }),
+            );
+            if (!uploaded.ETag) {
+              throw new Error("R2 multipart part did not return an etag");
+            }
+            parts.push({ ETag: uploaded.ETag, PartNumber: partNumber });
+          } catch (error) {
+            // Stop this worker and every other one from claiming new parts;
+            // in-flight parts on other workers are left to finish (awaited via
+            // Promise.allSettled below) rather than abandoned, so their
+            // promises never reject unhandled.
+            aborted = true;
+            if (!firstError) {
+              firstError = error;
+            }
+            return;
+          }
         }
-        parts.push({ ETag: uploaded.ETag, PartNumber: partNumber });
+      };
+
+      const concurrency = Math.min(getMultipartConcurrency(), partCount || 1);
+      await Promise.allSettled(
+        Array.from({ length: concurrency }, () => worker()),
+      );
+
+      if (firstError) {
+        throw firstError;
       }
+
+      // Workers complete out of order, so the parts array reflects completion
+      // order, not part order — CompleteMultipartUpload requires ascending
+      // PartNumber.
+      parts.sort((left, right) => left.PartNumber - right.PartNumber);
 
       await client.send(
         new CompleteMultipartUploadCommand({
@@ -472,6 +535,48 @@ export async function presignSingleUploadUrl(params: {
     }),
     { expiresIn: params.expiresIn ?? SIGNED_URL_TTL_SECONDS },
   );
+}
+
+/**
+ * Builds the `CopySource` value for {@link copyObject}: a bucket-qualified,
+ * URL-encoded path. Keys contain slashes (and may contain characters that must
+ * be escaped), so each segment is encoded individually and the separators are
+ * left alone. Exported for tests — an over-encoded separator silently copies
+ * from a key that doesn't exist.
+ */
+export function buildCopySource(bucket: string, key: string): string {
+  return `${bucket}/${key.split("/").map(encodeURIComponent).join("/")}`;
+}
+
+/**
+ * Server-side copy of one object to a new key, entirely inside the bucket —
+ * no download/upload round trip through this process.
+ *
+ * This is what makes "Duplicate clip" instant: a duplicated clip needs its own
+ * copy of the rendered MP4 and the preview proxy, and re-rendering would cost
+ * a worker job and plan capacity for a byte-identical file. Two rows must never
+ * share one key, because deleting either clip (or purging its project) deletes
+ * the object by key and would leave the other pointing at nothing.
+ *
+ * Single-part CopyObject caps at 5 GB, which no clip render or 540p proxy comes
+ * near — the source is what gets large, and the source is never copied here.
+ */
+export async function copyObject(params: {
+  sourceKey: string;
+  destinationKey: string;
+}) {
+  const client = getClient();
+  const { bucket } = getR2Config();
+
+  await client.send(
+    new CopyObjectCommand({
+      Bucket: bucket,
+      CopySource: buildCopySource(bucket, params.sourceKey),
+      Key: params.destinationKey,
+    }),
+  );
+
+  return { key: params.destinationKey };
 }
 
 export async function deleteObject(key: string) {

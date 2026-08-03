@@ -227,8 +227,9 @@ describe("buildBrollVideoArgs (B-roll cutaway)", () => {
     expect(args.filter((a) => a === "-i")).toHaveLength(2);
     expect(graph).toContain("force_original_aspect_ratio=increase");
     expect(graph).toContain("overlay=0:0:enable='between(t,8,11.5)'");
-    // source audio is mapped, not the b-roll's
-    expect(args).toContain("0:a:0?");
+    // source audio is routed through the boundary fade, not the b-roll's
+    expect(graph).toContain("[0:a:0]afade=t=in");
+    expect(args).toContain("[outa]");
   });
 
   test("throws when called with zero cutaways", () => {
@@ -402,9 +403,10 @@ describe("buildAudiogramArgs (audio-only renders)", () => {
     expect(graph).toContain("overlay");
     // karaoke highlight #00FF88 -> 0x00FF88
     expect(graph).toContain("colors=0x00FF88");
-    // maps the composited video + the source audio
+    // maps the composited video + the fade-wrapped source audio
     expect(args).toContain("[outv]");
-    expect(args).toContain("0:a:0");
+    expect(args).toContain("[outa]");
+    expect(graph).toContain("afade=t=out");
   });
 });
 
@@ -734,5 +736,122 @@ describe("downloadUrlToFile (bounded, timed remote B-roll/music download)", () =
         },
       ),
     ).rejects.toMatchObject({ code: "broll_download_failed" });
+  });
+});
+
+describe("ranged https source input (presigned URL reads)", () => {
+  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true };
+  const httpsSource =
+    "https://r2.example.com/projects/p1/source.mp4?X-Amz-Signature=abc";
+
+  test("buildSingleVideoArgs injects reconnect/rw_timeout input options before -ss, which stays before -i", () => {
+    const args = buildSingleVideoArgs({
+      sourcePath: httpsSource,
+      outputPath: "/tmp/out.mp4",
+      startSec: 5,
+      endSec: 25,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+    });
+
+    const reconnectIdx = args.indexOf("-reconnect");
+    const rwTimeoutIdx = args.indexOf("-rw_timeout");
+    const ssIdx = args.indexOf("-ss");
+    const iIdx = args.indexOf("-i");
+
+    expect(reconnectIdx).toBeGreaterThan(-1);
+    expect(rwTimeoutIdx).toBeGreaterThan(-1);
+    // Input options must precede the seek, and the seek must precede -i so
+    // ffmpeg range-requests only the clip window instead of the whole object.
+    expect(reconnectIdx).toBeLessThan(ssIdx);
+    expect(rwTimeoutIdx).toBeLessThan(ssIdx);
+    expect(ssIdx).toBeLessThan(iIdx);
+    expect(args[iIdx + 1]).toBe(httpsSource);
+
+    // Reconnect only on genuinely transient statuses.
+    const onHttpErrorIdx = args.indexOf("-reconnect_on_http_error");
+    expect(args[onHttpErrorIdx + 1]).toBe("429,500,502,503,504");
+  });
+
+  test("local source paths get no http input options", () => {
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 5,
+      endSec: 25,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+    });
+
+    expect(args).not.toContain("-reconnect");
+    expect(args).not.toContain("-rw_timeout");
+  });
+
+  test("buildBrollVideoArgs binds http input options to input 0 only", () => {
+    const args = buildBrollVideoArgs({
+      sourcePath: httpsSource,
+      cutaways: [
+        { path: "/tmp/broll.mp4", window: { startSec: 5.6, endSec: 9.1 } },
+      ],
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 20,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+    });
+
+    const iIndexes = indexesOf(args, "-i");
+    const reconnectIdx = args.indexOf("-reconnect");
+
+    expect(reconnectIdx).toBeGreaterThan(-1);
+    expect(reconnectIdx).toBeLessThan(iIndexes[0]!);
+    // The local b-roll input must not inherit the http-only options.
+    expect(indexesOf(args, "-reconnect")).toHaveLength(1);
+  });
+});
+
+describe("boundary audio fade coverage", () => {
+  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true };
+
+  test("buildSingleVideoArgs routes non-music audio through the fade chain", () => {
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 10,
+      endSec: 40,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+
+    expect(graph).toContain("[0:a:0]afade=t=in:st=0:d=0.040");
+    expect(graph).toContain("afade=t=out:st=29.880:d=0.120");
+    expect(args).toContain("[outa]");
+    expect(args).not.toContain("0:a:0?");
+  });
+
+  test("buildMultiVideoArgs splits audio per output and fades each branch", () => {
+    const args = buildMultiVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputs: [
+        { aspectRatio: "9:16", outputPath: "/tmp/a.mp4", subtitlePath: null, reframe: null },
+        { aspectRatio: "1:1", outputPath: "/tmp/b.mp4", subtitlePath: null, reframe: null },
+      ] as never,
+      startSec: 0,
+      endSec: 20,
+      probe,
+      srtPath: null,
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+
+    expect(graph).toContain("[0:a:0]asplit=2[aud0][aud1]");
+    expect(graph).toContain("[aud0]afade=t=in");
+    expect(graph).toContain("[aud1]afade=t=in");
+    expect(args).toContain("[outa0]");
+    expect(args).toContain("[outa1]");
   });
 });

@@ -26,6 +26,10 @@ export const clipCategorySchema = z.enum([
 
 export const clipStatusSchema = z.enum([
   "detected",
+  // "accepted"/"rejected" are legacy-only: the accept/reject feature was
+  // removed (market parity — Vizard has no curation gate), but rows written
+  // before the removal may still carry these values, so parsing must
+  // tolerate them. Nothing sets them anymore.
   "accepted",
   "rejected",
   "edited",
@@ -207,8 +211,31 @@ export const updateClipTranscriptSliceSchema = z.object({
   transcriptSlice: z.array(transcriptUtteranceSchema),
 });
 
-export const updateClipStatusSchema = z.object({
-  status: z.enum(["accepted", "rejected"]),
+/** Max length of a user- or AI-authored clip title. Titles are display-only
+ *  (row header, studio top bar, social caption seed) — this is a sanity bound
+ *  on a single line of text, not a platform limit. */
+export const CLIP_TITLE_MAX_LENGTH = 120;
+
+export const updateClipTitleSchema = z.object({
+  // Trimmed before length checks so " " isn't a valid title. Never nullable:
+  // clearing a title back to null would drop the row header to the raw hook
+  // text with no way to tell "no title" from "titled the same as the hook".
+  title: z.string().trim().min(1).max(CLIP_TITLE_MAX_LENGTH),
+});
+
+/** How many alternative titles the AI rename offers. Three fits the popover
+ *  without scrolling and is cheap enough for a single-shot completion. */
+export const CLIP_TITLE_SUGGESTION_COUNT = 3;
+
+export const clipTitleSuggestionsLlmResponseSchema = z.object({
+  titles: z
+    .array(z.string().trim().min(1).max(CLIP_TITLE_MAX_LENGTH))
+    .min(1)
+    .max(CLIP_TITLE_SUGGESTION_COUNT),
+});
+
+export const clipTitleSuggestionsResponseSchema = z.object({
+  titles: z.array(z.string().min(1)),
 });
 
 export const triggerClipRenderSchema = z.object({
@@ -266,11 +293,14 @@ export type ClipAspectRatioDb = z.infer<typeof clipAspectRatioDbSchema>;
 export type ClipRenderVariant = z.infer<typeof clipRenderVariantSchema>;
 export type ClipSnapshot = z.infer<typeof clipSnapshotSchema>;
 export type UpdateClipBoundaries = z.infer<typeof updateClipBoundariesSchema>;
-export type UpdateClipStatus = z.infer<typeof updateClipStatusSchema>;
 export type TriggerClipRender = z.infer<typeof triggerClipRenderSchema>;
 export type ClipDownloadQuery = z.infer<typeof clipDownloadQuerySchema>;
 export type ClipDetectionLlmResponse = z.infer<
   typeof clipDetectionLlmResponseSchema
+>;
+export type UpdateClipTitle = z.infer<typeof updateClipTitleSchema>;
+export type ClipTitleSuggestionsResponse = z.infer<
+  typeof clipTitleSuggestionsResponseSchema
 >;
 export type UpdateClipCaptionPreset = z.infer<typeof updateClipCaptionPresetSchema>;
 export type UpdateClipTranscriptSlice = z.infer<typeof updateClipTranscriptSliceSchema>;

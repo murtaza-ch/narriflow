@@ -23,18 +23,29 @@ import {
 import { AlertTriangle, Check, ChevronDown } from "lucide-react";
 import { retryIngestFormAction } from "../actions";
 
-const defaultSelection: Record<ClipAspectRatio, boolean> = {
-  "9:16": true,
-  "1:1": false,
-  "16:9": false,
-  "4:5": false,
-};
+/** Preselects exactly the given aspect ratio (falling back to 9:16 when
+ *  none is provided) — never a hardcoded 9:16 regardless of what the
+ *  committed pack's `defaultAspectRatio` says. */
+function buildDefaultSelection(
+  aspectRatio: ClipAspectRatio | undefined,
+): Record<ClipAspectRatio, boolean> {
+  return {
+    "9:16": false,
+    "1:1": false,
+    "16:9": false,
+    "4:5": false,
+    [aspectRatio ?? "9:16"]: true,
+  };
+}
 
 export function RenderClipsButton({
   projectId,
   disabled,
   buttonLabel,
   isFreeTier = false,
+  clipIds,
+  size = "sm",
+  defaultAspectRatio,
 }: {
   projectId: string;
   disabled: boolean;
@@ -42,12 +53,25 @@ export function RenderClipsButton({
   /** Free renders are 720p and watermarked. The project page says so up top,
    *  but a user confirming *this* render should not have to remember that. */
   isFreeTier?: boolean;
+  /** When provided (non-empty), scopes the render to exactly these clips —
+   *  the ranked-rows toolbar's bulk "Render selected" (Phase 3). Omitted
+   *  entirely, the request renders across all of the project's clips (the
+   *  original "Render clips" / "Re-render clips" behavior). */
+  clipIds?: string[];
+  size?: "xs" | "sm";
+  /** The committed content pack's `defaultAspectRatio` — preselects this
+   *  format instead of always defaulting to 9:16. Callers pass "16:9" for
+   *  caption-only projects (that mode's render is always 16:9, independent
+   *  of whatever the pack's own default says). Falls back to "9:16" when
+   *  omitted. */
+  defaultAspectRatio?: ClipAspectRatio;
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [isOpen, setIsOpen] = useState(false);
-  const [selection, setSelection] =
-    useState<Record<ClipAspectRatio, boolean>>(defaultSelection);
+  const [selection, setSelection] = useState<Record<ClipAspectRatio, boolean>>(
+    () => buildDefaultSelection(defaultAspectRatio),
+  );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -72,6 +96,7 @@ export function RenderClipsButton({
         },
         body: JSON.stringify({
           aspectRatios: selectedAspectRatios,
+          ...(clipIds && clipIds.length > 0 ? { clipIds } : {}),
         }),
       });
 
@@ -104,7 +129,7 @@ export function RenderClipsButton({
       positioning={{ placement: "bottom-start" }}
     >
       <Popover.Trigger asChild>
-        <Button size="sm" disabled={disabled || isPending}>
+        <Button size={size} disabled={disabled || isPending}>
           {isPending ? <Spinner size="xs" borderTopColor="accent.contrast" /> : null}
           <Text ms={isPending ? "1" : "0"}>{buttonLabel}</Text>
           <ChevronDown size={12} aria-hidden />
@@ -119,8 +144,11 @@ export function RenderClipsButton({
                   Render formats
                 </Text>
                 <Text fontSize="11px" color="fg.muted" mt="0.5">
-                  Choose which variants to queue across all clips. Rendering
-                  uses capacity on your plan.
+                  Choose which variants to queue{" "}
+                  {clipIds && clipIds.length > 0
+                    ? `across the ${clipIds.length} selected clip${clipIds.length === 1 ? "" : "s"}`
+                    : "across all clips"}
+                  . Rendering uses capacity on your plan.
                   {isFreeTier
                     ? " On the free plan these render at 720p with a watermark."
                     : ""}
