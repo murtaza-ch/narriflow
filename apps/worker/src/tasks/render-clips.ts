@@ -87,6 +87,10 @@ interface MusicPlan {
   path: string;
   volume: number;
   startOffsetSec: number;
+  /** User-configured music fade in/out, seconds (0-5). Optional so existing
+   *  test fixtures/call sites that predate this field keep compiling. */
+  fadeInSec?: number;
+  fadeOutSec?: number;
 }
 
 /** A resolved reframe crop for one output: the sendcmd script + its crop name. */
@@ -853,22 +857,80 @@ export function buildAudioFadeChain(clipDurationSec: number) {
   return `afade=t=in:st=0:d=${AUDIO_FADE_IN_SEC.toFixed(3)},afade=t=out:st=${fadeOutStart.toFixed(3)}:d=${AUDIO_FADE_OUT_SEC.toFixed(3)}`;
 }
 
+/**
+ * Builds a `volume=` filter fragment for the source/dialogue track from
+ * `studioEdits.sourceAudio`, or `null` when it's a no-op (unity gain, not
+ * muted) — callers must skip appending it entirely in that case (the "unity
+ * fast path") so untouched clips keep producing the exact same filter graph
+ * they always have.
+ */
+function buildSourceGainFilter(
+  sourceAudio: StudioEdits["sourceAudio"] | null | undefined,
+): string | null {
+  if (!sourceAudio) return null;
+  if (sourceAudio.muted) return "volume=0.000";
+  if (sourceAudio.volume === 100) return null;
+  const gain = Math.max(0, Math.min(1, sourceAudio.volume / 100));
+  return `volume=${gain.toFixed(3)}`;
+}
+
+/**
+ * The dialogue-only (no music) audio chain: optional source gain/mute, then
+ * the fixed boundary click-guard fade. Used by every build*Args call site
+ * that has source audio and no music track to mix in.
+ */
+function buildDialogueAudioFilter(
+  sourceAudio: StudioEdits["sourceAudio"] | null | undefined,
+  clipDurationSec: number,
+): string {
+  const gainFilter = buildSourceGainFilter(sourceAudio);
+  const fadeChain = buildAudioFadeChain(clipDurationSec);
+  return gainFilter ? `${gainFilter},${fadeChain}` : fadeChain;
+}
+
+/**
+ * User-configured music fade in/out (`studioEdits.music.fadeInSec/fadeOutSec`,
+ * 0-5s each), as an `afade` filter suffix applied to the music branch only —
+ * additive to (not a replacement for) the fixed click-guard chain on the
+ * final mixed track.
+ */
+function buildMusicUserFadeSuffix(
+  music: MusicPlan,
+  clipDurationSec: number,
+): string {
+  const parts: string[] = [];
+  const fadeInSec = music.fadeInSec ?? 0;
+  const fadeOutSec = music.fadeOutSec ?? 0;
+  if (fadeInSec > 0) {
+    const d = Math.min(fadeInSec, clipDurationSec);
+    parts.push(`afade=t=in:st=0:d=${d.toFixed(3)}`);
+  }
+  if (fadeOutSec > 0) {
+    const d = Math.min(fadeOutSec, clipDurationSec);
+    const st = Math.max(0, clipDurationSec - d);
+    parts.push(`afade=t=out:st=${st.toFixed(3)}:d=${d.toFixed(3)}`);
+  }
+  return parts.length ? `,${parts.join(",")}` : "";
+}
+
 function buildMusicAudioFilter(params: {
   sourceHasAudio: boolean;
   musicInputIndex: number;
   music: MusicPlan;
   clipDurationSec: number;
+  sourceAudio?: StudioEdits["sourceAudio"] | null;
 }) {
   const volume = Math.max(0, Math.min(1, params.music.volume / 100));
   const duration = Math.max(0.1, params.clipDurationSec);
   const startOffset = Math.max(0, params.music.startOffsetSec || 0);
   const musicLabel = "[musica]";
   const fadeChain = buildAudioFadeChain(duration);
+  const userFadeSuffix = buildMusicUserFadeSuffix(params.music, duration);
   // start=<offset> seeks into the (infinitely -stream_loop'd) music input so
   // the user's chosen point in the track plays first, instead of always the
   // first `duration` seconds of the file.
   const musicFilter =
-    `[${params.musicInputIndex}:a]atrim=start=${startOffset.toFixed(3)}:duration=${duration.toFixed(3)},asetpts=PTS-STARTPTS,volume=${volume.toFixed(3)}${musicLabel}`;
+    `[${params.musicInputIndex}:a]atrim=start=${startOffset.toFixed(3)}:duration=${duration.toFixed(3)},asetpts=PTS-STARTPTS,volume=${volume.toFixed(3)}${userFadeSuffix}${musicLabel}`;
 
   if (!params.sourceHasAudio) {
     return `${musicFilter};${musicLabel}${fadeChain}[outa]`;
@@ -878,9 +940,15 @@ function buildMusicAudioFilter(params: {
   // input count (i.e. -6dB per input for a 2-input mix), quietly ducking the
   // dialogue whenever music is added. The music's own level is already under
   // explicit user control via `volume=` above, so the dialogue must be mixed
-  // at unity gain.
+  // at unity gain — modulo the user's own source-audio gain/mute, applied
+  // here on the dialogue branch (before amix) same as the no-music path.
+  const dialogueGainFilter = buildSourceGainFilter(params.sourceAudio);
+  const dialogueFilter = dialogueGainFilter
+    ? `[0:a]atrim=duration=${duration.toFixed(3)},asetpts=PTS-STARTPTS,${dialogueGainFilter}[maina]`
+    : `[0:a]atrim=duration=${duration.toFixed(3)},asetpts=PTS-STARTPTS[maina]`;
+
   return [
-    `[0:a]atrim=duration=${duration.toFixed(3)},asetpts=PTS-STARTPTS[maina]`,
+    dialogueFilter,
     musicFilter,
     `[maina]${musicLabel}amix=inputs=2:duration=first:dropout_transition=0:normalize=0,${fadeChain}[outa]`,
   ].join(";");
@@ -1157,11 +1225,12 @@ export function buildSingleVideoArgs(params: {
         musicInputIndex,
         music: params.music,
         clipDurationSec,
+        sourceAudio: params.studioEdits?.sourceAudio,
       }),
     );
   } else if (params.probe.hasAudio) {
     filterParts.push(
-      `[0:a:0]${buildAudioFadeChain(clipDurationSec)}[outa]`,
+      `[0:a:0]${buildDialogueAudioFilter(params.studioEdits?.sourceAudio, clipDurationSec)}[outa]`,
     );
   }
 
@@ -1349,10 +1418,13 @@ export function buildBrollVideoArgs(params: {
         musicInputIndex,
         music: params.music,
         clipDurationSec,
+        sourceAudio: params.studioEdits?.sourceAudio,
       }),
     );
   } else if (params.probe.hasAudio) {
-    parts.push(`[0:a:0]${buildAudioFadeChain(clipDurationSec)}[outa]`);
+    parts.push(
+      `[0:a:0]${buildDialogueAudioFilter(params.studioEdits?.sourceAudio, clipDurationSec)}[outa]`,
+    );
   }
 
   args.push("-filter_complex", parts.join(";"), "-map", finalLabel);
@@ -1665,7 +1737,7 @@ export function buildAudiogramArgs(params: {
         // faded and mapped as the output track.
         `[0:a]asplit=2[wavesrc][fadesrc]`,
         `[wavesrc]showwaves=s=${W}x${waveHeight}:mode=cline:colors=${waveColor}:rate=25[wave]`,
-        `[fadesrc]${buildAudioFadeChain(params.clipDurationSec)}[outa]`,
+        `[fadesrc]${buildDialogueAudioFilter(params.studioEdits?.sourceAudio, params.clipDurationSec)}[outa]`,
         `[bg][wave]overlay=0:(H-h)/2[comp]`,
       ];
 
@@ -1718,6 +1790,7 @@ export function buildAudiogramArgs(params: {
         musicInputIndex: 1,
         music: params.music,
         clipDurationSec: params.clipDurationSec,
+        sourceAudio: params.studioEdits?.sourceAudio,
       }),
     );
   }
@@ -2517,6 +2590,8 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
               path: musicPath,
               volume: studioEdits.music.volume,
               startOffsetSec: studioEdits.music.startOffsetSec,
+              fadeInSec: studioEdits.music.fadeInSec,
+              fadeOutSec: studioEdits.music.fadeOutSec,
             };
           } catch (musicError) {
             log("error", "clip_music_download_failed", {
@@ -2529,10 +2604,18 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
         }
       }
 
+      // sourceAudio (volume/mute) is only applied by the per-output builders
+      // (buildSingleVideoArgs/buildBrollVideoArgs/buildAudiogramArgs), same
+      // as music — buildMultiVideoArgs (the shared multi-output batch path)
+      // never learned to thread either through its filter graph, so any
+      // non-default sourceAudio setting must route through this same gate to
+      // actually take effect for multi-output renders.
       const hasStudioVideoEdits =
         studioEdits.textLayers.length > 0 ||
         studioEdits.transition.type !== "none" ||
-        Boolean(musicPlan);
+        Boolean(musicPlan) ||
+        studioEdits.sourceAudio.muted ||
+        studioEdits.sourceAudio.volume !== 100;
 
       await Promise.all(
         outputs.map((output) =>

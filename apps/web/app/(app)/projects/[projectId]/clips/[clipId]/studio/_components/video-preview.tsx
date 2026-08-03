@@ -65,6 +65,8 @@ export function VideoPreview() {
     activeVideoUrl,
     playerClipStartSec,
     deselectCaption,
+    isPlaying,
+    duration,
   } = useStudio();
 
   const [videoLoaded, setVideoLoaded] = useState(false);
@@ -77,6 +79,11 @@ export function VideoPreview() {
   const [previewWidth, setPreviewWidth] = useState(0);
   const containerRef = useRef<HTMLDivElement>(null);
   const videoContainerRef = useRef<HTMLDivElement>(null);
+  const musicAudioRef = useRef<HTMLAudioElement>(null);
+  // Music track's own duration (unknown until its metadata loads) — used to
+  // wrap the preview's offset+clock time the same way the renderer's
+  // `-stream_loop -1` + atrim loops the track.
+  const musicDurationRef = useRef(0);
   // Read by the (rarely re-created) load effect below so a trim change never
   // needs to be in that effect's deps just to seek to the right start point.
   const playerClipStartSecRef = useRef(playerClipStartSec);
@@ -172,6 +179,81 @@ export function VideoPreview() {
   useEffect(() => playbackClock.subscribe(() => {
     setCurrentTime(playbackClock.getSnapshot());
   }), [playbackClock]);
+
+  // ─── Source audio (volume/mute) — mirrors the render's dialogue-branch
+  // gain (see buildDialogueAudioFilter in the worker). Live and cheap: no
+  // reload, just the two element properties.
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.muted = studioEdits.sourceAudio.muted;
+    video.volume = Math.max(0, Math.min(1, studioEdits.sourceAudio.volume / 100));
+  }, [studioEdits.sourceAudio.muted, studioEdits.sourceAudio.volume, videoRef]);
+
+  // ─── Music preview playback — a hidden looping <audio> element driven off
+  // the same clock the video uses, so scrubbing/trimming the clip keeps the
+  // music in sync without needing its own play head. Sample-accurate fades
+  // are NOT the goal here (the render is the source of truth) — this is a
+  // best-effort approximation good enough to preview against.
+  useEffect(() => {
+    const audio = musicAudioRef.current;
+    if (!audio) return;
+    const handleLoadedMetadata = () => {
+      musicDurationRef.current = Number.isFinite(audio.duration) ? audio.duration : 0;
+    };
+    audio.addEventListener("loadedmetadata", handleLoadedMetadata);
+    return () => audio.removeEventListener("loadedmetadata", handleLoadedMetadata);
+  }, []);
+
+  // Reset the cached track duration whenever the music URL changes so a
+  // previous track's duration never leaks into the new one's loop math
+  // before its own metadata has loaded.
+  useEffect(() => {
+    musicDurationRef.current = 0;
+  }, [studioEdits.music.url]);
+
+  useEffect(() => {
+    const audio = musicAudioRef.current;
+    if (!audio || !studioEdits.music.url) return;
+    if (isPlaying) {
+      audio.play().catch(() => {
+        // Autoplay can be rejected outside a user gesture (e.g. a stray
+        // effect re-run) — the next togglePlay() retries it; nothing to
+        // surface to the user for a background music bed.
+      });
+    } else {
+      audio.pause();
+    }
+  }, [isPlaying, studioEdits.music.url]);
+
+  useEffect(() => {
+    const audio = musicAudioRef.current;
+    const music = studioEdits.music;
+    if (!audio || !music.url) return;
+
+    const trackDuration = musicDurationRef.current;
+    let targetTime = music.startOffsetSec + currentTime;
+    if (trackDuration > 0) {
+      targetTime = targetTime % trackDuration;
+    }
+    // Only correct drift beyond a small threshold — natural playback already
+    // advances audio.currentTime on its own; forcing it every tick would
+    // stutter the track.
+    if (Number.isFinite(targetTime) && Math.abs(audio.currentTime - targetTime) > 0.25) {
+      audio.currentTime = Math.max(0, targetTime);
+    }
+
+    const baseVolume = Math.max(0, Math.min(1, music.volume / 100));
+    let gain = baseVolume;
+    if (music.fadeInSec > 0 && currentTime < music.fadeInSec) {
+      gain = baseVolume * (currentTime / music.fadeInSec);
+    }
+    if (music.fadeOutSec > 0 && duration > 0 && currentTime > duration - music.fadeOutSec) {
+      const remainingSec = Math.max(0, duration - currentTime);
+      gain = Math.min(gain, baseVolume * (remainingSec / music.fadeOutSec));
+    }
+    audio.volume = Math.max(0, Math.min(1, gain));
+  }, [currentTime, studioEdits.music, duration]);
 
   useEffect(() => {
     const el = videoContainerRef.current;
@@ -484,6 +566,21 @@ export function VideoPreview() {
             playsInline
             preload="metadata"
           />
+
+          {/* Hidden background-music preview track — decorative render-parity
+              bed, no user-facing controls; play/pause, looped offset
+              seeking, and volume/fade ramps are all driven by the effects
+              above off the shared playback clock. */}
+          {studioEdits.music.url ? (
+            // biome-ignore lint/a11y/useMediaCaption: decorative background music preview with no dialogue/captions of its own — the clip's own captions already cover spoken content via the interactive caption overlay.
+            <audio
+              ref={musicAudioRef}
+              src={studioEdits.music.url}
+              loop
+              preload="auto"
+              style={{ display: "none" }}
+            />
+          ) : null}
 
           {/* Layout blur layer */}
           {layoutMode === "blur" && (

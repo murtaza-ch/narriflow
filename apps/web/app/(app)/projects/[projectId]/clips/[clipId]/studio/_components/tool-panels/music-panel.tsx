@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { Box, Flex, Text, Stack, Input, Slider } from "@chakra-ui/react";
-import { Link2, Music, Volume2, X } from "lucide-react";
+import { Link2, Music, Volume2, VolumeX, X } from "lucide-react";
 import { useStudio } from "../studio-shell";
 
 export function MusicPanel() {
@@ -10,16 +10,23 @@ export function MusicPanel() {
   const [url, setUrl] = useState(studioEdits.music.url ?? "");
   const [title, setTitle] = useState(studioEdits.music.title ?? "");
   const [volume, setVolume] = useState(studioEdits.music.volume);
+  const [fadeInSec, setFadeInSec] = useState(studioEdits.music.fadeInSec);
+  const [fadeOutSec, setFadeOutSec] = useState(studioEdits.music.fadeOutSec);
 
   const applyMusic = () => {
     const trimmedUrl = url.trim();
     setStudioEdits((prev) => ({
       ...prev,
       music: {
+        ...prev.music,
         url: trimmedUrl ? trimmedUrl : null,
         title: title.trim() || null,
         volume,
-        startOffsetSec: 0,
+        fadeInSec,
+        fadeOutSec,
+        // startOffsetSec deliberately not touched here — applying (or
+        // re-applying) a track must preserve the user's chosen in-track
+        // start point rather than resetting it back to 0.
       },
     }));
   };
@@ -27,14 +34,110 @@ export function MusicPanel() {
   const clearMusic = () => {
     setUrl("");
     setTitle("");
+    setFadeInSec(0);
+    setFadeOutSec(0);
     setStudioEdits((prev) => ({
       ...prev,
-      music: { url: null, title: null, volume: 35, startOffsetSec: 0 },
+      music: {
+        url: null,
+        title: null,
+        volume: 35,
+        startOffsetSec: 0,
+        fadeInSec: 0,
+        fadeOutSec: 0,
+      },
     }));
   };
 
+  const sourceAudio = studioEdits.sourceAudio;
+
+  const updateSourceAudio = (
+    patch: Partial<typeof sourceAudio>,
+    coalesceKey?: string,
+  ) =>
+    setStudioEdits(
+      (prev) => ({
+        ...prev,
+        sourceAudio: { ...prev.sourceAudio, ...patch },
+      }),
+      coalesceKey,
+    );
+
   return (
     <Stack gap="14px" p="12px">
+      {/* Source audio — the original clip's dialogue track */}
+      <Box>
+        <Text textStyle="eyebrow" color="studio.fgMuted" mb="6px">
+          Source audio
+        </Text>
+        <Box
+          p="12px"
+          bg="studio.subtle"
+          borderRadius="l2"
+          borderWidth="1px"
+          borderColor="studio.border"
+        >
+          <Flex align="center" justify="space-between" mb="10px">
+            <Flex align="center" gap="6px" color="studio.fgMuted">
+              {sourceAudio.muted ? <VolumeX size={14} /> : <Volume2 size={14} />}
+              <Text fontSize="12px" color="studio.fg" fontWeight="500">
+                Original audio
+              </Text>
+            </Flex>
+            <Flex
+              as="button"
+              aria-pressed={sourceAudio.muted}
+              aria-label={sourceAudio.muted ? "Unmute source audio" : "Mute source audio"}
+              align="center"
+              justify="center"
+              gap="5px"
+              h="24px"
+              px="9px"
+              borderRadius="l2"
+              borderWidth="1px"
+              borderColor={sourceAudio.muted ? "studio.dangerBorder" : "studio.borderControl"}
+              bg={sourceAudio.muted ? "studio.raised" : "studio.subtle"}
+              color={sourceAudio.muted ? "studio.danger" : "studio.fgMuted"}
+              fontSize="10.5px"
+              fontWeight="600"
+              cursor="pointer"
+              transition="background 120ms ease, border-color 120ms ease, color 120ms ease"
+              _hover={{ borderColor: sourceAudio.muted ? "studio.dangerBorder" : "studio.fgSubtle" }}
+              onClick={() => updateSourceAudio({ muted: !sourceAudio.muted })}
+            >
+              {sourceAudio.muted ? "Muted" : "Mute"}
+            </Flex>
+          </Flex>
+          <Flex align="center" gap="8px" opacity={sourceAudio.muted ? 0.5 : 1}>
+            <Box color="studio.fgMuted" flexShrink={0}>
+              <Volume2 size={14} />
+            </Box>
+            <Slider.Root
+              aria-label={["Source audio volume"]}
+              value={[sourceAudio.volume]}
+              min={0}
+              max={100}
+              onValueChange={(event) =>
+                updateSourceAudio({ volume: event.value[0] ?? 100 }, "source-volume")
+              }
+              size="sm"
+              colorPalette="accent"
+              flex="1"
+            >
+              <Slider.Control>
+                <Slider.Track>
+                  <Slider.Range />
+                </Slider.Track>
+                <Slider.Thumbs />
+              </Slider.Control>
+            </Slider.Root>
+            <Text textStyle="data" fontSize="11px" color="studio.fgMuted" w="34px" textAlign="right">
+              {sourceAudio.volume}%
+            </Text>
+          </Flex>
+        </Box>
+      </Box>
+
       <Box>
         <Text textStyle="eyebrow" color="studio.fgMuted" mb="6px">
           Music URL
@@ -119,6 +222,73 @@ export function MusicPanel() {
             {volume}%
           </Text>
         </Flex>
+      </Box>
+
+      <Box>
+        <Text textStyle="eyebrow" color="studio.fgMuted" mb="6px">
+          Fades
+        </Text>
+        <Stack
+          gap="10px"
+          p="12px"
+          bg="studio.subtle"
+          borderRadius="l2"
+          borderWidth="1px"
+          borderColor="studio.border"
+        >
+          <Flex align="center" gap="8px">
+            <Text fontSize="11px" color="studio.fgMuted" w="52px" flexShrink={0}>
+              Fade in
+            </Text>
+            <Slider.Root
+              aria-label={["Music fade in"]}
+              value={[fadeInSec]}
+              min={0}
+              max={5}
+              step={0.1}
+              onValueChange={(event) => setFadeInSec(event.value[0] ?? 0)}
+              size="sm"
+              colorPalette="accent"
+              flex="1"
+            >
+              <Slider.Control>
+                <Slider.Track>
+                  <Slider.Range />
+                </Slider.Track>
+                <Slider.Thumbs />
+              </Slider.Control>
+            </Slider.Root>
+            <Text textStyle="data" fontSize="11px" color="studio.fgMuted" w="34px" textAlign="right">
+              {fadeInSec.toFixed(1)}s
+            </Text>
+          </Flex>
+          <Flex align="center" gap="8px">
+            <Text fontSize="11px" color="studio.fgMuted" w="52px" flexShrink={0}>
+              Fade out
+            </Text>
+            <Slider.Root
+              aria-label={["Music fade out"]}
+              value={[fadeOutSec]}
+              min={0}
+              max={5}
+              step={0.1}
+              onValueChange={(event) => setFadeOutSec(event.value[0] ?? 0)}
+              size="sm"
+              colorPalette="accent"
+              flex="1"
+            >
+              <Slider.Control>
+                <Slider.Track>
+                  <Slider.Range />
+                </Slider.Track>
+                <Slider.Thumbs />
+              </Slider.Control>
+            </Slider.Root>
+            <Text textStyle="data" fontSize="11px" color="studio.fgMuted" w="34px" textAlign="right">
+              {fadeOutSec.toFixed(1)}s
+            </Text>
+          </Flex>
+        </Stack>
       </Box>
 
       {studioEdits.music.url ? (

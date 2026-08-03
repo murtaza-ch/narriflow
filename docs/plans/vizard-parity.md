@@ -158,6 +158,7 @@ before the foundation steps it depends on.
    fields to the schema; apply source gain before `amix` (today unity gain,
    `render-clips.ts:882`); music panel stops resetting `startOffsetSec`
    (`music-panel.tsx:14`); preview audio parity so controls aren't export-only.
+   *(landed 2026-08-04)*
 6. **Logo/watermark** — decide ownership first (worker reads the project brand
    snapshot, `render-clips.ts:2031`; the studio brand panel copies caption styling
    only). Then persistence + preview overlay.

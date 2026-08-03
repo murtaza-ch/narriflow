@@ -34,6 +34,13 @@ export const studioMusicSchema = z.object({
   title: z.string().trim().max(120).nullable().default(null),
   volume: z.number().min(0).max(100).default(35),
   startOffsetSec: z.number().min(0).default(0),
+  fadeInSec: z.number().min(0).max(5).default(0),
+  fadeOutSec: z.number().min(0).max(5).default(0),
+});
+
+export const studioSourceAudioSchema = z.object({
+  volume: z.number().int().min(0).max(100).default(100),
+  muted: z.boolean().default(false),
 });
 
 export const studioEditsSchema = z
@@ -48,12 +55,23 @@ export const studioEditsSchema = z
       title: null,
       volume: 35,
       startOffsetSec: 0,
+      fadeInSec: 0,
+      fadeOutSec: 0,
     }),
+    sourceAudio: studioSourceAudioSchema.default({ volume: 100, muted: false }),
   })
   .default({
     textLayers: [],
     transition: { type: "none", durationSec: 0.4 },
-    music: { url: null, title: null, volume: 35, startOffsetSec: 0 },
+    music: {
+      url: null,
+      title: null,
+      volume: 35,
+      startOffsetSec: 0,
+      fadeInSec: 0,
+      fadeOutSec: 0,
+    },
+    sourceAudio: { volume: 100, muted: false },
   });
 
 export const updateClipStudioEditsSchema = z.object({
@@ -63,5 +81,6 @@ export const updateClipStudioEditsSchema = z.object({
 export type StudioTextLayer = z.infer<typeof studioTextLayerSchema>;
 export type StudioTransition = z.infer<typeof studioTransitionSchema>;
 export type StudioMusic = z.infer<typeof studioMusicSchema>;
+export type StudioSourceAudio = z.infer<typeof studioSourceAudioSchema>;
 export type StudioEdits = z.infer<typeof studioEditsSchema>;
 export type UpdateClipStudioEdits = z.infer<typeof updateClipStudioEditsSchema>;

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getCaptionPresetById } from "@narriflow/validators";
+import { getCaptionPresetById, studioEditsSchema } from "@narriflow/validators";
 import type { CaptionPreset, TranscriptUtterance } from "@narriflow/validators";
 import {
   buildAudiogramArgs,
@@ -853,5 +853,167 @@ describe("boundary audio fade coverage", () => {
     expect(graph).toContain("[aud1]afade=t=in");
     expect(args).toContain("[outa0]");
     expect(args).toContain("[outa1]");
+  });
+});
+
+describe("source audio gain/mute + music fades (vizard-parity Phase A step 5)", () => {
+  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true };
+
+  test("unity source volume (100, unmuted) skips the gain filter entirely — unchanged filter graph", () => {
+    const studioEdits = studioEditsSchema.parse({});
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 30,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+      studioEdits,
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    expect(graph).toContain("[0:a:0]afade=t=in:st=0:d=0.040");
+    expect(graph).not.toContain("volume=");
+  });
+
+  test("sub-100 source volume applies a volume= gain before the fade chain (buildSingleVideoArgs, no music)", () => {
+    const studioEdits = studioEditsSchema.parse({
+      sourceAudio: { volume: 60, muted: false },
+    });
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 30,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+      studioEdits,
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    expect(graph).toContain("[0:a:0]volume=0.600,afade=t=in:st=0:d=0.040");
+  });
+
+  test("muted source audio produces volume=0.000 (silent track, graph shape unchanged) — buildBrollVideoArgs, no music", () => {
+    const studioEdits = studioEditsSchema.parse({
+      sourceAudio: { volume: 100, muted: true },
+    });
+    const args = buildBrollVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      cutaways: [{ path: "/tmp/broll.mp4", window: { startSec: 2, endSec: 5 } }],
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 20,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+      studioEdits,
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    expect(graph).toContain("[0:a:0]volume=0.000,afade=t=in:st=0:d=0.040");
+    expect(args).toContain("[outa]");
+    expect(args).not.toContain("-an");
+  });
+
+  test("muted source audio applies volume=0 on the dialogue branch before amix when music is also present", () => {
+    const studioEdits = studioEditsSchema.parse({
+      sourceAudio: { volume: 100, muted: true },
+    });
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 20,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+      studioEdits,
+      music: { path: "/tmp/music.mp3", volume: 40, startOffsetSec: 0 },
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    expect(graph).toContain(
+      "[0:a]atrim=duration=20.000,asetpts=PTS-STARTPTS,volume=0.000[maina]",
+    );
+    // music branch is unaffected by the dialogue mute — still at its own volume
+    expect(graph).toContain("volume=0.400");
+    expect(graph).toContain(
+      "amix=inputs=2:duration=first:dropout_transition=0:normalize=0",
+    );
+  });
+
+  test("music fadeInSec/fadeOutSec apply afade on the music branch at the right times, additive to the fixed click-guard on the final mix", () => {
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 20,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+      music: {
+        path: "/tmp/music.mp3",
+        volume: 40,
+        startOffsetSec: 0,
+        fadeInSec: 2,
+        fadeOutSec: 3,
+      },
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+
+    // user fade-in/out land on the music branch itself, before [musica]...
+    expect(graph).toContain(
+      "volume=0.400,afade=t=in:st=0:d=2.000,afade=t=out:st=17.000:d=3.000[musica]",
+    );
+    // ...and the fixed 40ms/120ms click-guard still runs on the final mixed
+    // track, unchanged and in addition to the user's own fades.
+    expect(graph).toContain(
+      "amix=inputs=2:duration=first:dropout_transition=0:normalize=0,afade=t=in:st=0:d=0.040,afade=t=out:st=19.880:d=0.120[outa]",
+    );
+  });
+
+  test("music fadeInSec/fadeOutSec clamp to the clip duration when longer than the clip", () => {
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 3,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+      music: {
+        path: "/tmp/music.mp3",
+        volume: 35,
+        startOffsetSec: 0,
+        fadeInSec: 5,
+        fadeOutSec: 5,
+      },
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    expect(graph).toContain("afade=t=in:st=0:d=3.000");
+    expect(graph).toContain("afade=t=out:st=0.000:d=3.000");
+  });
+
+  test("no-source-audio + music fades: music-only clip still gets the user fades plus the fixed click-guard, no amix", () => {
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/silent-source.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 10,
+      aspectRatio: "9:16",
+      probe: { width: 1920, height: 1080, hasVideo: true, hasAudio: false },
+      srtPath: null,
+      music: {
+        path: "/tmp/music.mp3",
+        volume: 50,
+        startOffsetSec: 0,
+        fadeInSec: 1,
+        fadeOutSec: 1,
+      },
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    expect(graph).toContain("afade=t=in:st=0:d=1.000,afade=t=out:st=9.000:d=1.000[musica]");
+    expect(graph).toContain("[musica]afade=t=in:st=0:d=0.040,afade=t=out:st=9.880:d=0.120[outa]");
+    expect(graph).not.toContain("amix");
+    expect(args).toContain("[outa]");
   });
 });
