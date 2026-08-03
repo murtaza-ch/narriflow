@@ -1,12 +1,14 @@
 "use client";
 
+import { useState } from "react";
 import { Box, Flex, Text, HStack } from "@chakra-ui/react";
-import { ArrowLeft, Undo2, Redo2, Keyboard, Check } from "lucide-react";
+import { ArrowLeft, Undo2, Redo2, Keyboard, Check, RotateCcw } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { Button, ScoreMeter, Spinner } from "@narriflow/ui";
 import { formatDuration } from "@/lib/format";
 import { ClipActionsMenu } from "../../../../clip-actions-menu";
 import { useStudio } from "./studio-shell";
+import { ResetConfirmDialog } from "./reset-confirm-dialog";
 
 function IconBtn({
   icon,
@@ -89,17 +91,21 @@ export function TopBar() {
   const router = useRouter();
   const {
     clipInfo,
-    undoStack,
-    redoStack,
+    canUndo,
+    canRedo,
     showShortcuts,
     setShowShortcuts,
     handleExport,
     handleUndo,
     handleRedo,
+    handleReset,
+    resetState,
+    canReset,
     saveState,
     exportState,
     aspectRatio,
   } = useStudio();
+  const [showResetConfirm, setShowResetConfirm] = useState(false);
 
   return (
     <Flex
@@ -170,14 +176,20 @@ export function TopBar() {
         <IconBtn
           icon={<Undo2 size={16} />}
           onClick={handleUndo}
-          disabled={undoStack.length === 0}
+          disabled={!canUndo}
           label="Undo (Ctrl+Z)"
         />
         <IconBtn
           icon={<Redo2 size={16} />}
           onClick={handleRedo}
-          disabled={redoStack.length === 0}
+          disabled={!canRedo}
           label="Redo (Ctrl+Shift+Z)"
+        />
+        <IconBtn
+          icon={<RotateCcw size={16} />}
+          onClick={() => setShowResetConfirm(true)}
+          disabled={!canReset || resetState === "resetting"}
+          label="Reset to original"
         />
         <IconBtn
           icon={<Keyboard size={16} />}
@@ -207,6 +219,15 @@ export function TopBar() {
           )}
         </Button>
       </HStack>
+
+      <ResetConfirmDialog
+        open={showResetConfirm}
+        onOpenChange={setShowResetConfirm}
+        confirming={resetState === "resetting"}
+        onConfirm={() => {
+          void handleReset();
+        }}
+      />
     </Flex>
   );
 }

@@ -29,7 +29,7 @@ const INPUT_RESET = {
 } as const;
 
 export function BRollPanel() {
-  const { clipInfo, aspectRatio } = useStudio();
+  const { clipInfo, aspectRatio, brollUrl, setBrollUrl } = useStudio();
   const orientation =
     aspectRatio === "16:9"
       ? "landscape"
@@ -51,15 +51,14 @@ export function BRollPanel() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [configured, setConfigured] = useState(true);
-  const [selectedUrl, setSelectedUrl] = useState<string | null>(
-    clipInfo.brollUrl ?? null,
-  );
+  // Applied B-roll now lives in the editor document (undoable, autosaved) —
+  // reading it from context instead of a locally-PATCHed clipInfo snapshot
+  // is what keeps this in sync across undo/redo and panel remounts.
   const [selectedAttribution, setSelectedAttribution] = useState<{
     authorName: string;
     pageUrl: string | null;
   } | null>(null);
-  const [customUrl, setCustomUrl] = useState(clipInfo.brollUrl ?? "");
-  const [applyingId, setApplyingId] = useState<number | null>(null);
+  const [customUrl, setCustomUrl] = useState(brollUrl ?? "");
   const [previewId, setPreviewId] = useState<number | null>(null);
   const didInit = useRef(false);
 
@@ -107,58 +106,33 @@ export function BRollPanel() {
     if (query.trim()) void runSearch(query);
   }, [query, runSearch]);
 
+  // Dispatches through the editor document reducer (undoable, autosaved in
+  // the background) instead of PATCHing directly — the applied URL is
+  // validated server-side (assertPublicHttpUrl) when the autosave PUT lands;
+  // a rejection surfaces via the shell's general autosave error toast.
   const apply = useCallback(
-    async (result: BrollResult | null) => {
-      setApplyingId(result ? result.id : -1);
+    (result: BrollResult | null) => {
       setError(null);
-      try {
-        const res = await fetch(
-          `/api/projects/${clipInfo.projectId}/clips/${clipInfo.id}`,
-          {
-            method: "PATCH",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ brollUrl: result?.downloadUrl ?? null }),
-          },
-        );
-        if (!res.ok) throw new Error("Could not update B-roll");
-        setSelectedUrl(result?.downloadUrl ?? null);
-        setSelectedAttribution(
-          result?.authorName
-            ? { authorName: result.authorName, pageUrl: result.pageUrl ?? null }
-            : null,
-        );
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "Could not update B-roll");
-      } finally {
-        setApplyingId(null);
-      }
+      setBrollUrl(result?.downloadUrl ?? null);
+      setSelectedAttribution(
+        result?.authorName
+          ? { authorName: result.authorName, pageUrl: result.pageUrl ?? null }
+          : null,
+      );
     },
-    [clipInfo.projectId, clipInfo.id],
+    [setBrollUrl],
   );
 
-  const applyCustomUrl = useCallback(async () => {
+  const applyCustomUrl = useCallback(() => {
     const trimmed = customUrl.trim();
-    if (!trimmed) return apply(null);
-    setApplyingId(-2);
-    setError(null);
-    try {
-      const res = await fetch(
-        `/api/projects/${clipInfo.projectId}/clips/${clipInfo.id}`,
-        {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ brollUrl: trimmed }),
-        },
-      );
-      if (!res.ok) throw new Error("Could not update B-roll");
-      setSelectedUrl(trimmed);
-      setSelectedAttribution(null);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not update B-roll");
-    } finally {
-      setApplyingId(null);
+    if (!trimmed) {
+      apply(null);
+      return;
     }
-  }, [apply, clipInfo.projectId, clipInfo.id, customUrl]);
+    setError(null);
+    setBrollUrl(trimmed);
+    setSelectedAttribution(null);
+  }, [apply, customUrl, setBrollUrl]);
 
   return (
     <Stack gap="0" h="100%">
@@ -223,7 +197,7 @@ export function BRollPanel() {
             value={customUrl}
             onChange={(event) => setCustomUrl(event.target.value)}
             onKeyDown={(event) => {
-              if (event.key === "Enter") void applyCustomUrl();
+              if (event.key === "Enter") applyCustomUrl();
             }}
             size="xs"
             flex="1"
@@ -232,26 +206,22 @@ export function BRollPanel() {
             css={INPUT_RESET}
             _placeholder={{ color: "studio.fgSubtle" }}
           />
-          {applyingId === -2 ? (
-            <Spinner size="xs" />
-          ) : (
-            <Box
-              as="button"
-              aria-label="Apply custom B-roll URL"
-              color="studio.fgMuted"
-              cursor="pointer"
-              _hover={{ color: "studio.fg" }}
-              transition="color 120ms ease"
-              onClick={applyCustomUrl}
-            >
-              <Check size={13} />
-            </Box>
-          )}
+          <Box
+            as="button"
+            aria-label="Apply custom B-roll URL"
+            color="studio.fgMuted"
+            cursor="pointer"
+            _hover={{ color: "studio.fg" }}
+            transition="color 120ms ease"
+            onClick={applyCustomUrl}
+          >
+            <Check size={13} />
+          </Box>
         </Flex>
       </Box>
 
       {/* Selected indicator — success stripe + label, never hue alone */}
-      {selectedUrl ? (
+      {brollUrl ? (
         <Flex
           mx="12px"
           mb="8px"
@@ -290,7 +260,7 @@ export function BRollPanel() {
             flexShrink={0}
             onClick={() => apply(null)}
           >
-            {applyingId === -1 ? <Spinner size="xs" /> : <X size={13} />}
+            <X size={13} />
           </Box>
         </Flex>
       ) : plannedCutaways.length > 0 ? (
@@ -339,7 +309,7 @@ export function BRollPanel() {
         ) : (
           <SimpleGrid columns={2} gap="8px">
             {results.map((result) => {
-              const isSelected = selectedUrl === result.downloadUrl;
+              const isSelected = brollUrl === result.downloadUrl;
               const isPreviewing = previewId === result.id;
               return (
                 <Box
@@ -439,9 +409,7 @@ export function BRollPanel() {
                         </Text>
                       ) : null}
                     </Stack>
-                    {applyingId === result.id ? (
-                      <Spinner size="xs" />
-                    ) : isSelected ? (
+                    {isSelected ? (
                       <Box color="success.400" flexShrink={0}>
                         <Check size={11} />
                       </Box>

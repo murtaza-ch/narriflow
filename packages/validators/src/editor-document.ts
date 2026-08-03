@@ -45,6 +45,13 @@ export const saveEditorDocumentSchema = z.object({
 
 export type SaveEditorDocument = z.infer<typeof saveEditorDocumentSchema>;
 
+/** Body for POST .../editor/reset (Reset-to-original, Phase A step 4). */
+export const resetEditorDocumentSchema = z.object({
+  baseRevision: z.number().int().nonnegative(),
+});
+
+export type ResetEditorDocument = z.infer<typeof resetEditorDocumentSchema>;
+
 export const editorActionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("setCaptionPreset"), captionPreset: captionPresetSchema }),
   z.object({

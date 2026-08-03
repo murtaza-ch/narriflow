@@ -5,12 +5,8 @@ import {
   projectService,
   presignDownloadUrl,
 } from "@narriflow/services";
-import type { TranscriptUtterance, CaptionPreset } from "@narriflow/validators";
-import {
-  DEFAULT_CAPTION_PRESET,
-  getEffectiveClipTiming,
-  studioEditsSchema,
-} from "@narriflow/validators";
+import type { TranscriptUtterance } from "@narriflow/validators";
+import { getEffectiveClipTiming } from "@narriflow/validators";
 import { StudioShell } from "./_components/studio-shell";
 import type { ClipInfo, TimelineSegment } from "./_components/studio-shell";
 
@@ -76,18 +72,22 @@ export default async function StudioPage({
   const clip = clips.find((c) => c.id === clipId);
   if (!clip) notFound();
 
-  // Presign source video URL (works for both uploads and YouTube — both stored in R2)
-  let sourceVideoUrl: string | null = null;
-  if (snapshot.project.sourceStorageKey) {
-    try {
-      sourceVideoUrl = await presignDownloadUrl({
-        key: snapshot.project.sourceStorageKey,
-        expiresIn: 3600,
-      });
-    } catch {
-      // Non-fatal
-    }
-  }
+  // Only fetched once clip existence is confirmed above — getClipEditorDocument
+  // throws on a missing clip (unlike getClipPreviewSource's soft-empty
+  // return), so running it before the notFound() check would surface an
+  // unhandled error instead of a clean 404.
+  const [sourceVideoUrl, editorDoc] = await Promise.all([
+    // Presign source video URL (works for both uploads and YouTube — both
+    // stored in R2). Non-fatal: a presign failure just means no source
+    // playback, not a broken page.
+    snapshot.project.sourceStorageKey
+      ? presignDownloadUrl({
+          key: snapshot.project.sourceStorageKey,
+          expiresIn: 3600,
+        }).catch(() => null)
+      : Promise.resolve(null),
+    clipService.getClipEditorDocument(appUser.id, projectId, clipId),
+  ]);
 
   // tailPadSec 0 — slice-only input: stored bounds are final (must stay in
   // lockstep with toClipSnapshot/preview/render or the studio timeline shows
@@ -101,11 +101,6 @@ export default async function StudioPage({
   });
   const utterances = effective.transcriptSlice;
 
-  const captionPreset: CaptionPreset = clip.captionPreset
-    ? { ...DEFAULT_CAPTION_PRESET, ...clip.captionPreset }
-    : DEFAULT_CAPTION_PRESET;
-  const initialStudioEdits = studioEditsSchema.parse(clip.studioEdits ?? {});
-
   const clipInfo: ClipInfo = {
     id: clip.id,
     projectId: clip.projectId,
@@ -117,7 +112,6 @@ export default async function StudioPage({
     aspectRatio: clip.renderVariants[0]?.aspectRatio ?? "9:16",
     viralityScore: clip.viralityScore,
     category: clip.category,
-    brollUrl: clip.brollUrl ?? null,
   };
 
   /**
@@ -144,14 +138,14 @@ export default async function StudioPage({
   return (
     <StudioShell
       clipInfo={clipInfo}
-      transcript={utterances}
       timelineSegments={buildSegmentsFromUtterances(
         utterances,
         effective.startSec,
         effective.durationSec,
       )}
-      initialCaptionPreset={captionPreset}
-      initialStudioEdits={initialStudioEdits}
+      initialEditorDocument={editorDoc.document}
+      initialEditorRevision={editorDoc.revision}
+      initialEditorOriginal={editorDoc.original}
       sourceVideoUrl={sourceVideoUrl}
       sourcePreviewId={snapshot.project.sourceStorageKey ?? snapshot.project.id}
       clipStartSec={effective.startSec}

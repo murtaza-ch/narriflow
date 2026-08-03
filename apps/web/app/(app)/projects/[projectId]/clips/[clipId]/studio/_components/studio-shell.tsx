@@ -13,11 +13,13 @@ import { useRouter } from "next/navigation";
 import { Box, Button, Flex, Heading, Stack, Text } from "@chakra-ui/react";
 import { Monitor } from "lucide-react";
 import { toaster } from "@narriflow/ui";
-import type {
-  TranscriptUtterance,
-  CaptionPreset,
-  CaptionAnimation,
-  StudioEdits,
+import {
+  getEffectiveClipTiming,
+  type TranscriptUtterance,
+  type CaptionPreset,
+  type CaptionAnimation,
+  type StudioEdits,
+  type EditorDocument,
 } from "@narriflow/validators";
 import { TopBar } from "./top-bar";
 import { TranscriptPanel } from "./transcript-panel";
@@ -30,6 +32,14 @@ import {
   releaseTimelineThumbnailResources,
   type ThumbnailVideoKind,
 } from "./timeline-preview-manager";
+import {
+  applyUnifiedEditorAction,
+  canRedoUnified,
+  canUndoUnified,
+  createUnifiedEditorHistory,
+  type UnifiedEditorHistory,
+} from "./unified-editor-history";
+import { completeSave, requestSave, type SaveQueueState } from "./save-queue";
 
 /**
  * Below this width the transcript panel has already hidden (it collapses
@@ -47,6 +57,9 @@ const PREVIEW_POLL_INTERVAL_MS = 8_000;
  *  worker's proxy cut "usually takes a minute or two", so this leaves
  *  comfortable margin without polling a stuck job forever. */
 const PREVIEW_POLL_MAX_ATTEMPTS = 45;
+
+/** How long to wait after the last edit before autosaving. */
+const AUTOSAVE_DEBOUNCE_MS = 1500;
 
 /** Tracks whether the viewport is narrower than `px` via matchMedia. */
 function useIsViewportBelow(px: number): boolean {
@@ -118,7 +131,6 @@ export interface ClipInfo {
   aspectRatio: AspectRatio;
   viralityScore: number;
   category: string;
-  brollUrl?: string | null;
 }
 
 interface StudioState {
@@ -136,11 +148,16 @@ interface StudioState {
   transcriptOnly: boolean;
   segments: TimelineSegment[];
   studioEdits: StudioEdits;
+  /** Current B-roll cutaway URL — lives in the editor document (undoable,
+   *  autosaved), not a locally-PATCHed side channel. */
+  brollUrl: string | null;
   saveState: "idle" | "saving" | "saved" | "error";
   exportState: "idle" | "exporting" | "queued";
-  // undo/redo
-  undoStack: string[];
-  redoStack: string[];
+  resetState: "idle" | "resetting";
+  canUndo: boolean;
+  canRedo: boolean;
+  /** False once resetting to original — revision 0 and nothing dirty. */
+  canReset: boolean;
 }
 
 interface StudioContextValue extends StudioState {
@@ -213,12 +230,19 @@ interface StudioContextValue extends StudioState {
   setShowShortcuts: (v: boolean) => void;
   setTimelineZoom: React.Dispatch<React.SetStateAction<number>>;
   setSelectedSegmentId: (id: string | null) => void;
-  setCaptionPreset: (p: CaptionPreset | ((prev: CaptionPreset) => CaptionPreset)) => void;
+  setCaptionPreset: (
+    p: CaptionPreset | ((prev: CaptionPreset) => CaptionPreset),
+    coalesceKey?: string,
+  ) => void;
   selectCaption: () => void;
   deselectCaption: () => void;
   setTranscriptOnly: (v: boolean) => void;
   setSegments: (s: TimelineSegment[]) => void;
-  setStudioEdits: (p: StudioEdits | ((prev: StudioEdits) => StudioEdits)) => void;
+  setStudioEdits: (
+    p: StudioEdits | ((prev: StudioEdits) => StudioEdits),
+    coalesceKey?: string,
+  ) => void;
+  setBrollUrl: (url: string | null, coalesceKey?: string) => void;
   togglePlay: () => void;
   seekTo: (t: number) => void;
   splitAtPlayhead: () => void;
@@ -227,6 +251,7 @@ interface StudioContextValue extends StudioState {
   handleExport: () => void;
   handleUndo: () => void;
   handleRedo: () => void;
+  handleReset: () => void;
 }
 
 const StudioContext = createContext<StudioContextValue | null>(null);
@@ -241,10 +266,22 @@ export function useStudio() {
 
 interface StudioShellProps {
   clipInfo: ClipInfo;
-  transcript: TranscriptUtterance[];
   timelineSegments: TimelineSegment[];
-  initialCaptionPreset: CaptionPreset;
-  initialStudioEdits?: StudioEdits;
+  /** The revisioned editor document (docs/plans/vizard-parity.md Phase A) —
+   *  the single source of truth for captionPreset/transcriptSlice/
+   *  studioEdits/brollUrl/deletedRanges. Everything the studio can mutate
+   *  flows through this one value's undo/redo history instead of four
+   *  independently-PATCHed fragments. */
+  initialEditorDocument: EditorDocument;
+  initialEditorRevision: number;
+  /** The immutable revision-zero snapshot Reset-to-original restores.
+   *  Reset itself is a server round-trip + full reload (see handleReset
+   *  below — boundaries/preview proxy may change, so re-seeding from a
+   *  fresh server render is simpler and safer than patching client state in
+   *  place), so this is accepted for API completeness / future client-side
+   *  use (e.g. a "preview what reset would change" affordance) rather than
+   *  read anywhere today. */
+  initialEditorOriginal?: EditorDocument;
   sourceVideoUrl?: string | null;
   sourcePreviewId?: string;
   clipStartSec?: number;
@@ -272,10 +309,9 @@ interface StudioShellProps {
 
 export function StudioShell({
   clipInfo,
-  transcript: initialUtterances,
   timelineSegments,
-  initialCaptionPreset,
-  initialStudioEdits,
+  initialEditorDocument,
+  initialEditorRevision,
   sourceVideoUrl = null,
   sourcePreviewId = "source",
   clipStartSec = 0,
@@ -355,10 +391,42 @@ export function StudioShell({
   const playerClipStartSec = clipStartSec - activeOffsetSec;
   const playerClipEndSec = clipEndSec - activeOffsetSec;
 
-  // Mutable utterances state (for editable transcript)
-  const [utterances, setUtterances] = useState<TranscriptUtterance[]>(
-    Array.isArray(initialUtterances) ? initialUtterances : [],
+  // ─── Unified editor document + segment history (vizard-parity.md Phase A
+  // step 3) ────────────────────────────────────────────────────────────────
+  // Everything the studio can mutate (captionPreset, transcriptSlice,
+  // studioEdits, brollUrl, deletedRanges) lives in ONE EditorHistory, plus
+  // the client-only timeline segments, interleaved into one undo/redo order
+  // — see unified-editor-history.ts for why these stay as two underlying
+  // stacks instead of one merged array.
+  const [unified, setUnified] = useState<UnifiedEditorHistory>(() =>
+    createUnifiedEditorHistory(initialEditorDocument, timelineSegments),
   );
+
+  // Named `doc` (not `document`) to avoid shadowing the global DOM object.
+  const doc = unified.doc.present;
+  const captionPreset = doc.captionPreset;
+  const studioEdits = doc.studioEdits;
+  const brollUrl = doc.brollUrl;
+  const segments = unified.segments;
+  const canUndo = canUndoUnified(unified);
+  const canRedo = canRedoUnified(unified);
+
+  // Derived from `doc.transcriptSlice` via the exact same pure
+  // effective-timing computation studio/page.tsx runs server-side (tailPadSec
+  // 0 — slice-only, matching the stored bounds). Idempotent on the document's
+  // own (already-effective) bounds, so first paint is visually identical to
+  // before; only diverges once a transcript edit actually changes the slice.
+  const utterances = useMemo(
+    () =>
+      getEffectiveClipTiming({
+        utterances: doc.transcriptSlice,
+        startSec: doc.clipStartSec,
+        endSec: doc.clipEndSec,
+        tailPadSec: 0,
+      }).transcriptSlice,
+    [doc.transcriptSlice, doc.clipStartSec, doc.clipEndSec],
+  );
+
   const duration = useMemo(
     () => Math.max(0, clipEndSec - clipStartSec || clipInfo.duration),
     [clipEndSec, clipStartSec, clipInfo.duration],
@@ -385,36 +453,91 @@ export function StudioShell({
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [timelineZoom, setTimelineZoom] = useState(1);
   const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(null);
-  const [captionPreset, setCaptionPreset] = useState<CaptionPreset>(initialCaptionPreset);
-  const [studioEdits, setStudioEdits] = useState<StudioEdits>(
-    initialStudioEdits ?? { textLayers: [], transition: { type: "none", durationSec: 0.4 }, music: { url: null, title: null, volume: 35, startOffsetSec: 0 } },
-  );
   const [captionSelected, setCaptionSelected] = useState(false);
   const [transcriptOnly, setTranscriptOnly] = useState(false);
-  const [segments, setSegments] = useState<TimelineSegment[]>(timelineSegments);
   const [saveState, setSaveState] = useState<
     "idle" | "saving" | "saved" | "error"
   >("idle");
   const [exportState, setExportState] = useState<
     "idle" | "exporting" | "queued"
   >("idle");
-  const [undoStack, setUndoStack] = useState<string[]>([]);
-  const [redoStack, setRedoStack] = useState<string[]>([]);
+  const [resetState, setResetState] = useState<"idle" | "resetting">("idle");
+  const [revision, setRevisionState] = useState(initialEditorRevision);
+  const [isDocDirty, setIsDocDirty] = useState(false);
+  const canReset = revision > 0 || isDocDirty;
 
-  // Update utterance text with proportional timing redistribution
+  // Dispatch helpers — thin wrappers that turn context setter calls into
+  // reducer actions through the unified history. Signatures match the old
+  // per-field useState setters (functional-update form supported) so no
+  // consuming panel needs to change shape, plus an OPTIONAL trailing
+  // coalesceKey for continuous gestures (slider drags etc.) so one gesture
+  // collapses into one undo step instead of one per tick.
+  const setCaptionPreset = useCallback(
+    (
+      updater: CaptionPreset | ((prev: CaptionPreset) => CaptionPreset),
+      coalesceKey?: string,
+    ) => {
+      setUnified((s) => {
+        const next =
+          typeof updater === "function" ? updater(s.doc.present.captionPreset) : updater;
+        return applyUnifiedEditorAction(s, {
+          kind: "document",
+          action: { type: "setCaptionPreset", captionPreset: next },
+          coalesceKey,
+        });
+      });
+    },
+    [],
+  );
+
+  const setStudioEdits = useCallback(
+    (
+      updater: StudioEdits | ((prev: StudioEdits) => StudioEdits),
+      coalesceKey?: string,
+    ) => {
+      setUnified((s) => {
+        const next =
+          typeof updater === "function" ? updater(s.doc.present.studioEdits) : updater;
+        return applyUnifiedEditorAction(s, {
+          kind: "document",
+          action: { type: "setStudioEdits", studioEdits: next },
+          coalesceKey,
+        });
+      });
+    },
+    [],
+  );
+
+  const setBrollUrl = useCallback((url: string | null, coalesceKey?: string) => {
+    setUnified((s) =>
+      applyUnifiedEditorAction(s, {
+        kind: "document",
+        action: { type: "setBrollUrl", brollUrl: url },
+        coalesceKey,
+      }),
+    );
+  }, []);
+
+  const setSegments = useCallback((next: TimelineSegment[]) => {
+    setUnified((s) => applyUnifiedEditorAction(s, { kind: "segments", segments: next }));
+  }, []);
+
+  // Update utterance text — whole-utterance rewrite with proportional timing
+  // redistribution across the new word count (distinct from the reducer's
+  // word-level `updateWordText`, which deliberately never redistributes).
   const updateUtteranceText = useCallback((utteranceIndex: number, newText: string) => {
-    setUtterances((prev) => {
-      const updated = [...prev];
-      const utterance = updated[utteranceIndex];
-      if (!utterance) return prev;
+    setUnified((s) => {
+      const prev = s.doc.present.transcriptSlice;
+      const utterance = prev[utteranceIndex];
+      if (!utterance) return s;
 
       const newWordTexts = newText.trim().split(/\s+/).filter(Boolean);
-      if (newWordTexts.length === 0) return prev;
+      if (newWordTexts.length === 0) return s;
 
       const utteranceDuration = utterance.endSec - utterance.startSec;
       const wordDuration = utteranceDuration / newWordTexts.length;
 
-      updated[utteranceIndex] = {
+      const updatedUtterance = {
         ...utterance,
         text: newText.trim(),
         words: newWordTexts.map((word, i) => ({
@@ -425,7 +548,11 @@ export function StudioShell({
         })),
       };
 
-      return updated;
+      const nextSlice = prev.map((u, i) => (i === utteranceIndex ? updatedUtterance : u));
+      return applyUnifiedEditorAction(s, {
+        kind: "document",
+        action: { type: "setTranscriptSlice", transcriptSlice: nextSlice },
+      });
     });
   }, []);
 
@@ -480,117 +607,182 @@ export function StudioShell({
       ];
     });
     setSegments(newSegments);
-    setUndoStack((prev) => [...prev, JSON.stringify(segments)]);
-    setRedoStack([]);
-  }, [segments, playbackClock]);
+  }, [segments, playbackClock, setSegments]);
 
   const deleteSelectedSegment = useCallback(() => {
     if (!selectedSegmentId) return;
-    setUndoStack((prev) => [...prev, JSON.stringify(segments)]);
-    setRedoStack([]);
-    setSegments((prev) => prev.filter((s) => s.id !== selectedSegmentId));
+    setSegments(segments.filter((s) => s.id !== selectedSegmentId));
     setSelectedSegmentId(null);
-  }, [selectedSegmentId, segments]);
+  }, [selectedSegmentId, segments, setSegments]);
 
-  // True whenever there are unsaved edits queued for autosave. A ref (not state)
-  // avoids re-render churn and is readable from the beforeunload/unmount handlers.
-  const hasPendingSaveRef = useRef(false);
+  const handleUndo = useCallback(() => {
+    setUnified((s) => applyUnifiedEditorAction(s, { kind: "undo" }));
+  }, []);
 
-  // Last successfully-persisted (serialized) value for each autosaved field,
-  // seeded lazily from the initial props/state so a save before any edit is a
-  // true no-op. `persistEdits`' identity changes whenever ANY of captionPreset
-  // / utterances / studioEdits changes (they're all in its deps below), so
-  // without this guard a save triggered by one field would blindly re-PATCH
-  // the other two as well — and for studioEdits, the server invalidates every
-  // completed render + deletes its R2 asset on each write (see
-  // updateClipStudioEdits), so a spurious PATCH there is destructive, not
-  // just wasteful.
-  const lastPersistedCaptionPresetRef = useRef<string | null>(null);
-  if (lastPersistedCaptionPresetRef.current === null) {
-    lastPersistedCaptionPresetRef.current = JSON.stringify(captionPreset);
-  }
-  const lastPersistedUtterancesRef = useRef<string | null>(null);
-  if (lastPersistedUtterancesRef.current === null) {
-    lastPersistedUtterancesRef.current = JSON.stringify(utterances);
-  }
-  const lastPersistedStudioEditsRef = useRef<string | null>(null);
-  if (lastPersistedStudioEditsRef.current === null) {
-    lastPersistedStudioEditsRef.current = JSON.stringify(studioEdits);
-  }
+  const handleRedo = useCallback(() => {
+    setUnified((s) => applyUnifiedEditorAction(s, { kind: "redo" }));
+  }, []);
 
-  // Persists caption preset + transcript edits. Throws on any non-2xx so callers
-  // never report "Saved" on a failed write (which would silently lose edits).
-  // `keepalive` lets the browser complete the request even if the page is
-  // being dismissed (tab close/navigation) — pass it only for the dismissal
-  // flush; note the ~64KB keepalive body limit still applies, so this is
-  // best-effort for larger payloads rather than a restructured save. Each
-  // field is only PATCHed when it actually differs from the last persisted
-  // value, so a no-op save issues zero requests.
-  const persistEdits = useCallback(async (opts?: { keepalive?: boolean }) => {
-    const base = `/api/projects/${clipInfo.projectId}/clips/${clipInfo.id}`;
-    const keepalive = opts?.keepalive;
+  // ─── Single-endpoint revision-aware autosave (vizard-parity.md Phase A
+  // step 4) ────────────────────────────────────────────────────────────────
+  // Replaces the old three-PATCH persistEdits with one revision-guarded PUT
+  // of the whole document. Refs (not state) hold the values the async save
+  // loop needs to read without re-subscribing on every edit:
+  //  - docPresentRef: latest document, kept in sync via effect below.
+  //  - lastSavedDocumentJsonRef: what the server last confirmed — the dirty
+  //    check compares against this, so a true no-op issues zero requests.
+  //  - baseRevisionRef: the revision to send with the next save.
+  //  - saveQueueStateRef: the single-flight state machine (save-queue.ts) —
+  //    never two overlapping PUTs; an edit that lands mid-flight triggers
+  //    exactly one more save once the current one finishes.
+  //  - autosaveStoppedRef: set once a 409/422 tells us further autosaving
+  //    would just fail again until the user reloads or the conflict clears.
+  const docPresentRef = useRef(doc);
+  const lastSavedDocumentJsonRef = useRef(JSON.stringify(initialEditorDocument));
+  const baseRevisionRef = useRef(initialEditorRevision);
+  const saveQueueStateRef = useRef<SaveQueueState>("idle");
+  const autosaveStoppedRef = useRef(false);
+  const currentSavePromiseRef = useRef<Promise<void>>(Promise.resolve());
 
-    const captionPresetJson = JSON.stringify(captionPreset);
-    if (captionPresetJson !== lastPersistedCaptionPresetRef.current) {
-      const presetRes = await fetch(base, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ captionPreset }),
-        ...(keepalive ? { keepalive: true } : {}),
-      });
-      if (!presetRes.ok) throw new Error("Failed to save caption styling");
-      lastPersistedCaptionPresetRef.current = captionPresetJson;
+  const setBaseRevision = useCallback((next: number) => {
+    baseRevisionRef.current = next;
+    setRevisionState(next);
+  }, []);
+
+  useEffect(() => {
+    docPresentRef.current = doc;
+    setIsDocDirty(JSON.stringify(doc) !== lastSavedDocumentJsonRef.current);
+  }, [doc]);
+
+  const performSave = useCallback(async (): Promise<void> => {
+    const documentToSave = docPresentRef.current;
+    const documentJson = JSON.stringify(documentToSave);
+
+    if (documentJson === lastSavedDocumentJsonRef.current) {
+      // Reached via a queued request that turned out to be a no-op (e.g. an
+      // edit landed and was then undone before this turn ran) — nothing to
+      // send, but still drain the queue below.
+    } else {
+      setSaveState("saving");
+      try {
+        const res = await fetch(
+          `/api/projects/${clipInfo.projectId}/clips/${clipInfo.id}/editor`,
+          {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              baseRevision: baseRevisionRef.current,
+              document: documentToSave,
+            }),
+          },
+        );
+
+        if (res.status === 409) {
+          autosaveStoppedRef.current = true;
+          setSaveState("error");
+          toaster.create({
+            type: "error",
+            title: "This clip was changed somewhere else",
+            description: "Reload to keep editing with the latest version.",
+            action: { label: "Reload", onClick: () => window.location.reload() },
+          });
+          saveQueueStateRef.current = "idle";
+          return;
+        }
+        if (res.status === 422) {
+          autosaveStoppedRef.current = true;
+          console.warn(
+            JSON.stringify({
+              level: "error",
+              message: "editor_boundaries_immutable_client_bug",
+              clipId: clipInfo.id,
+              projectId: clipInfo.projectId,
+            }),
+          );
+          setSaveState("error");
+          toaster.create({
+            type: "error",
+            title: "Save failed",
+            description: "This clip's boundaries changed unexpectedly. Reload to continue.",
+          });
+          saveQueueStateRef.current = "idle";
+          return;
+        }
+        if (!res.ok) throw new Error("editor document save failed");
+
+        const json = (await res.json()) as { revision: number; document: EditorDocument };
+        setBaseRevision(json.revision);
+
+        if (docPresentRef.current === documentToSave) {
+          // No local edits landed mid-flight — safe to adopt the server's
+          // (possibly rebased) document without recording a new undo step.
+          setUnified((s) =>
+            s.doc.present === documentToSave
+              ? { ...s, doc: { ...s.doc, present: json.document } }
+              : s,
+          );
+          lastSavedDocumentJsonRef.current = JSON.stringify(json.document);
+        } else {
+          // Local edits arrived while the request was in flight — leave
+          // `present` alone; the next autosave cycle will converge.
+          lastSavedDocumentJsonRef.current = documentJson;
+        }
+
+        setSaveState("saved");
+        setTimeout(() => setSaveState("idle"), 2000);
+      } catch {
+        setSaveState("error");
+        toaster.create({
+          type: "error",
+          title: "Autosave failed",
+          description: "Your latest edits haven't been saved.",
+        });
+        setTimeout(() => setSaveState("idle"), 4000);
+      }
     }
 
-    const utterancesJson = JSON.stringify(utterances);
-    if (utterancesJson !== lastPersistedUtterancesRef.current) {
-      const transcriptRes = await fetch(base, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ transcriptSlice: utterances }),
-        ...(keepalive ? { keepalive: true } : {}),
-      });
-      if (!transcriptRes.ok) throw new Error("Failed to save transcript");
-      lastPersistedUtterancesRef.current = utterancesJson;
+    if (autosaveStoppedRef.current) {
+      saveQueueStateRef.current = "idle";
+      return;
     }
-
-    const studioEditsJson = JSON.stringify(studioEdits);
-    if (studioEditsJson !== lastPersistedStudioEditsRef.current) {
-      const editsRes = await fetch(base, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ studioEdits }),
-        ...(keepalive ? { keepalive: true } : {}),
-      });
-      if (!editsRes.ok) throw new Error("Failed to save studio edits");
-      lastPersistedStudioEditsRef.current = studioEditsJson;
+    const transition = completeSave(saveQueueStateRef.current);
+    saveQueueStateRef.current = transition.state;
+    if (transition.shouldStartSave) {
+      currentSavePromiseRef.current = performSave();
+      await currentSavePromiseRef.current;
     }
+  }, [clipInfo.projectId, clipInfo.id, setBaseRevision]);
 
-    // All writes succeeded — no more unsaved work pending.
-    hasPendingSaveRef.current = false;
-  }, [clipInfo.projectId, clipInfo.id, captionPreset, utterances, studioEdits]);
+  // Enqueues a save (single-flight — see save-queue.ts) and returns a promise
+  // that resolves once the WHOLE chain (including any save(s) triggered by
+  // edits that landed mid-flight) has drained. Also doubles as the flush
+  // primitive for handleSave/handleExport: calling it when nothing is dirty
+  // and nothing is in flight resolves immediately.
+  const requestAutosave = useCallback((): Promise<void> => {
+    if (autosaveStoppedRef.current) return Promise.resolve();
+    if (JSON.stringify(docPresentRef.current) === lastSavedDocumentJsonRef.current) {
+      return saveQueueStateRef.current === "idle"
+        ? Promise.resolve()
+        : currentSavePromiseRef.current;
+    }
+    const transition = requestSave(saveQueueStateRef.current);
+    saveQueueStateRef.current = transition.state;
+    if (transition.shouldStartSave) {
+      currentSavePromiseRef.current = performSave();
+    }
+    return currentSavePromiseRef.current;
+  }, [performSave]);
+
+  const flushSave = useCallback(() => requestAutosave(), [requestAutosave]);
 
   const handleSave = useCallback(async () => {
-    setSaveState("saving");
-    try {
-      await persistEdits();
-      setSaveState("saved");
-      setTimeout(() => setSaveState("idle"), 2000);
-    } catch {
-      setSaveState("error");
-      toaster.create({
-        type: "error",
-        title: "Save failed",
-        description: "Your latest edits haven't been saved. Retrying shortly.",
-      });
-      setTimeout(() => setSaveState("idle"), 4000);
-    }
-  }, [persistEdits]);
+    await flushSave();
+  }, [flushSave]);
 
   const handleExport = useCallback(async () => {
     setExportState("exporting");
     try {
-      await persistEdits();
+      await flushSave();
       const response = await fetch(
         `/api/projects/${clipInfo.projectId}/clips/render`,
         {
@@ -619,23 +811,104 @@ export function StudioShell({
       });
       setTimeout(() => setSaveState("idle"), 4000);
     }
-  }, [persistEdits, clipInfo.projectId, clipInfo.id, aspectRatio, router]);
+  }, [flushSave, clipInfo.projectId, clipInfo.id, aspectRatio, router]);
 
-  const handleUndo = useCallback(() => {
-    if (undoStack.length === 0) return;
-    const prev = undoStack[undoStack.length - 1]!;
-    setRedoStack((r) => [...r, JSON.stringify(segments)]);
-    setUndoStack((u) => u.slice(0, -1));
-    setSegments(JSON.parse(prev) as TimelineSegment[]);
-  }, [undoStack, segments]);
+  // Debounced autosave — triggers AUTOSAVE_DEBOUNCE_MS after the document
+  // actually changes (reference change on `unified.doc.present`).
+  const isInitialRender = useRef(true);
+  useEffect(() => {
+    if (isInitialRender.current) {
+      isInitialRender.current = false;
+      return;
+    }
+    if (autosaveStoppedRef.current) return;
 
-  const handleRedo = useCallback(() => {
-    if (redoStack.length === 0) return;
-    const next = redoStack[redoStack.length - 1]!;
-    setUndoStack((u) => [...u, JSON.stringify(segments)]);
-    setRedoStack((r) => r.slice(0, -1));
-    setSegments(JSON.parse(next) as TimelineSegment[]);
-  }, [redoStack, segments]);
+    const timeoutId = setTimeout(() => {
+      void requestAutosave();
+    }, AUTOSAVE_DEBOUNCE_MS);
+
+    return () => clearTimeout(timeoutId);
+  }, [doc, requestAutosave]);
+
+  // Warn on tab close/refresh while a save is pending or in flight.
+  useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (isDocDirty || saveState === "saving") {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [isDocDirty, saveState]);
+
+  // Fire-and-forget keepalive flush for pagehide/unmount: the page is
+  // dismissing, so there's no meaningful way to await the single-flight
+  // queue — just get the latest full document envelope out the door once,
+  // bypassing the queue machinery entirely (matches the previous keepalive
+  // fetch's semantics: best-effort, ~64KB body limit still applies).
+  const flushKeepalive = useCallback(() => {
+    if (autosaveStoppedRef.current) return;
+    const documentToSave = docPresentRef.current;
+    if (JSON.stringify(documentToSave) === lastSavedDocumentJsonRef.current) return;
+    void fetch(`/api/projects/${clipInfo.projectId}/clips/${clipInfo.id}/editor`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        baseRevision: baseRevisionRef.current,
+        document: documentToSave,
+      }),
+      keepalive: true,
+    });
+  }, [clipInfo.projectId, clipInfo.id]);
+
+  useEffect(() => {
+    const onPageHide = () => flushKeepalive();
+    window.addEventListener("pagehide", onPageHide);
+    return () => window.removeEventListener("pagehide", onPageHide);
+  }, [flushKeepalive]);
+
+  useEffect(() => () => flushKeepalive(), [flushKeepalive]);
+
+  // ─── Reset to original (vizard-parity.md Phase A step 4) ────────────────
+  const handleReset = useCallback(async () => {
+    if (resetState === "resetting") return;
+    setResetState("resetting");
+    autosaveStoppedRef.current = true;
+    try {
+      const res = await fetch(
+        `/api/projects/${clipInfo.projectId}/clips/${clipInfo.id}/editor/reset`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ baseRevision: baseRevisionRef.current }),
+        },
+      );
+      if (res.status === 409) {
+        toaster.create({
+          type: "error",
+          title: "This clip was changed somewhere else",
+          description: "Reload to see the latest version before resetting.",
+          action: { label: "Reload", onClick: () => window.location.reload() },
+        });
+        setResetState("idle");
+        return;
+      }
+      if (!res.ok) throw new Error("reset failed");
+      // Boundaries and the preview proxy may have changed — a full reload
+      // re-seeds everything (timing, segments, history) safely from the
+      // server rather than trying to patch client state in place.
+      window.location.reload();
+    } catch {
+      autosaveStoppedRef.current = false;
+      setResetState("idle");
+      toaster.create({
+        type: "error",
+        title: "Reset failed",
+        description: "This clip couldn't be reset to its original version. Try again.",
+      });
+    }
+  }, [clipInfo.projectId, clipInfo.id, resetState]);
 
   const selectCaption = useCallback(() => {
     setCaptionSelected(true);
@@ -780,82 +1053,6 @@ export function StudioShell({
     return playbackClock.startSynthetic(duration, () => setIsPlaying(false));
   }, [isPlaying, duration, activeVideoUrl, playbackClock]);
 
-  // Debounced auto-save for transcript and caption preset changes
-  const isInitialRender = useRef(true);
-  useEffect(() => {
-    if (isInitialRender.current) {
-      isInitialRender.current = false;
-      return;
-    }
-
-    // An edit changed persistEdits' identity — work is now pending until the
-    // debounce fires and persistEdits clears the flag on success.
-    hasPendingSaveRef.current = true;
-
-    const timeoutId = setTimeout(async () => {
-      setSaveState("saving");
-      try {
-        await persistEdits();
-        setSaveState("saved");
-        setTimeout(() => setSaveState("idle"), 2000);
-      } catch {
-        // Surface failures instead of falsely showing "Saved".
-        setSaveState("error");
-        toaster.create({
-          type: "error",
-          title: "Autosave failed",
-          description: "Your latest edits haven't been saved.",
-        });
-        setTimeout(() => setSaveState("idle"), 4000);
-      }
-    }, 1500);
-
-    return () => clearTimeout(timeoutId);
-  }, [persistEdits]);
-
-  // Warn on tab close/refresh while a save is pending or in flight.
-  useEffect(() => {
-    const onBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (hasPendingSaveRef.current || saveState === "saving") {
-        e.preventDefault();
-        e.returnValue = "";
-      }
-    };
-    window.addEventListener("beforeunload", onBeforeUnload);
-    return () => window.removeEventListener("beforeunload", onBeforeUnload);
-  }, [saveState]);
-
-  // Flush a pending debounced save on unmount (covers in-app navigation, where
-  // the debounce timeout would otherwise be cleared without flushing). Keep a
-  // ref to the latest persistEdits so this fires the current version without
-  // re-subscribing on every edit.
-  const persistRef = useRef(persistEdits);
-  useEffect(() => {
-    persistRef.current = persistEdits;
-  }, [persistEdits]);
-
-  // Flush a pending save on pagehide (fires on tab close/navigation away,
-  // including mobile cases where beforeunload may not fire). `keepalive` lets
-  // the browser finish the request after the page starts dismissing.
-  useEffect(() => {
-    const onPageHide = () => {
-      if (hasPendingSaveRef.current) {
-        void persistRef.current({ keepalive: true });
-      }
-    };
-    window.addEventListener("pagehide", onPageHide);
-    return () => window.removeEventListener("pagehide", onPageHide);
-  }, []);
-
-  useEffect(
-    () => () => {
-      if (hasPendingSaveRef.current) {
-        void persistRef.current({ keepalive: true });
-      }
-    },
-    [],
-  );
-
   // The timeline's thumbnail cache and hidden scrub <video> elements
   // (timeline-preview-manager.ts) live in module scope, not React state, so
   // they survive across re-renders on purpose (that's the whole point of the
@@ -917,7 +1114,8 @@ export function StudioShell({
   const ctx: StudioContextValue = {
     isPlaying, duration, activeTool, showTimeline, aspectRatio,
     layoutMode, showShortcuts, timelineZoom, selectedSegmentId,
-    captionPreset, captionSelected, transcriptOnly, segments, studioEdits, saveState, exportState, undoStack, redoStack,
+    captionPreset, captionSelected, transcriptOnly, segments, studioEdits, brollUrl,
+    saveState, exportState, resetState, canUndo, canRedo, canReset,
     transcript: derivedTranscript, clipInfo, videoRef, playbackClock,
     sourceVideoUrl, sourcePreviewId, clipStartSec, clipEndSec, sourcePurged,
     previewVideoUrl, previewStartSec, useOriginalSourceFallback, setUseOriginalSourceFallback,
@@ -926,9 +1124,9 @@ export function StudioShell({
     setIsPlaying, setActiveTool, setShowTimeline, setAspectRatio,
     setLayoutMode, setShowShortcuts, setTimelineZoom,
     setSelectedSegmentId, setCaptionPreset, selectCaption, deselectCaption,
-    setTranscriptOnly, setSegments, setStudioEdits,
+    setTranscriptOnly, setSegments, setStudioEdits, setBrollUrl,
     togglePlay, seekTo, splitAtPlayhead, deleteSelectedSegment, handleSave, handleExport,
-    handleUndo, handleRedo,
+    handleUndo, handleRedo, handleReset,
   };
 
   return (

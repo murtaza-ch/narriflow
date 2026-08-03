@@ -260,8 +260,8 @@ function PresetsGrid() {
 function CustomizeControls() {
   const { captionPreset, setCaptionPreset } = useStudio();
 
-  const update = (patch: Partial<typeof captionPreset>) =>
-    setCaptionPreset((p) => ({ ...p, ...patch }));
+  const update = (patch: Partial<typeof captionPreset>, coalesceKey?: string) =>
+    setCaptionPreset((p) => ({ ...p, ...patch }), coalesceKey);
 
   const [localAnimation, setLocalAnimation] = useState(
     captionPreset.animation ?? "word-by-word",
@@ -380,7 +380,7 @@ function CustomizeControls() {
             min={0}
             max={4}
             step={1}
-            onValueChange={(e) => update({ outlineWidth: e.value[0]! })}
+            onValueChange={(e) => update({ outlineWidth: e.value[0]! }, "caption-outlineWidth")}
             size="sm"
             colorPalette="accent"
             flex="1"
@@ -408,7 +408,7 @@ function CustomizeControls() {
             min={8}
             max={120}
             step={1}
-            onValueChange={(e) => update({ fontSize: e.value[0]! })}
+            onValueChange={(e) => update({ fontSize: e.value[0]! }, "caption-fontSize")}
             size="sm"
             colorPalette="accent"
             flex="1"
@@ -587,7 +587,7 @@ function CustomizeControls() {
               min={0}
               max={1}
               step={0.05}
-              onValueChange={(e) => update({ backgroundOpacity: e.value[0]! })}
+              onValueChange={(e) => update({ backgroundOpacity: e.value[0]! }, "caption-backgroundOpacity")}
               size="sm"
               colorPalette="accent"
               flex="1"
@@ -639,7 +639,7 @@ function CustomizeControls() {
               min={0}
               max={1}
               step={0.05}
-              onValueChange={(e) => update({ highlightBoxOpacity: e.value[0]! })}
+              onValueChange={(e) => update({ highlightBoxOpacity: e.value[0]! }, "caption-highlightBoxOpacity")}
               size="sm"
               colorPalette="accent"
               flex="1"
@@ -691,7 +691,7 @@ function CustomizeControls() {
               min={0}
               max={20}
               step={1}
-              onValueChange={(e) => update({ glowIntensity: e.value[0]! })}
+              onValueChange={(e) => update({ glowIntensity: e.value[0]! }, "caption-glowIntensity")}
               size="sm"
               colorPalette="accent"
               flex="1"

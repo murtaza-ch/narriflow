@@ -26,6 +26,7 @@ import {
   transcriptExportFormatSchema,
   triggerClipRenderSchema,
   brollSearchQuerySchema,
+  resetEditorDocumentSchema,
   saveEditorDocumentSchema,
   updateClipBoundariesSchema,
   updateClipBrollSchema,
@@ -1085,6 +1086,61 @@ app.put("/projects/:id/clips/:clipId/editor", async (c) => {
       error.code === "editor_boundaries_immutable"
     ) {
       return c.json({ error: error.code }, 422);
+    }
+    if (error instanceof Error && error.message === "clip not found") {
+      return c.json({ error: "Clip not found" }, 404);
+    }
+    throw error;
+  }
+});
+
+/**
+ * Reset-to-original (docs/plans/vizard-parity.md Phase A step 4): restores
+ * the editor document — including clip boundaries — from the immutable
+ * revision-zero snapshot. Same revision-guard/error mapping as the PUT above.
+ */
+app.post("/projects/:id/clips/:clipId/editor/reset", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const projectId = c.req.param("id");
+  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  if (access === "missing") {
+    return c.json({ error: "Project not found" }, 404);
+  }
+  if (access === "forbidden") {
+    return c.json({ error: "Forbidden" }, 403);
+  }
+
+  const payload = await c.req.json().catch(() => null);
+  if (!payload || typeof payload !== "object") {
+    return c.json({ error: "Invalid payload" }, 400);
+  }
+
+  const parsed = resetEditorDocumentSchema.safeParse(payload);
+  if (!parsed.success) {
+    return c.json({ error: "Invalid payload" }, 400);
+  }
+
+  try {
+    const result = await clipService.resetClipEditorToOriginal(
+      appUser.id,
+      projectId,
+      c.req.param("clipId"),
+      parsed.data.baseRevision,
+    );
+    return c.json(result, 200);
+  } catch (error) {
+    if (error instanceof ClipEditorRevisionConflictError) {
+      return c.json(
+        {
+          error: "editor_revision_conflict",
+          currentRevision: error.currentRevision,
+        },
+        409,
+      );
     }
     if (error instanceof Error && error.message === "clip not found") {
       return c.json({ error: "Clip not found" }, 404);

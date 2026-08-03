@@ -255,7 +255,9 @@ export function InteractiveCaptionOverlay({
       const newSize = Math.round(
         Math.max(8, Math.min(120, initialFontSizeRef.current * scale)),
       );
-      setCaptionPreset((p) => ({ ...p, fontSize: newSize }));
+      // coalesceKey collapses every tick of one resize gesture into a single
+      // undo step (vizard-parity.md Phase A step 3).
+      setCaptionPreset((p) => ({ ...p, fontSize: newSize }), "caption-resize");
     },
     [setCaptionPreset],
   );

@@ -310,6 +310,93 @@ function buildEditorDocumentFromClip(
 }
 
 /**
+ * Throws when `currentRevision` doesn't match the client's `baseRevision` —
+ * shared guard for both saveClipEditorDocument and resetClipEditorToOriginal.
+ */
+export function assertEditorRevisionMatches(
+  currentRevision: number,
+  baseRevision: number,
+): void {
+  if (currentRevision !== baseRevision) {
+    throw new ClipEditorRevisionConflictError(currentRevision);
+  }
+}
+
+const RESET_BOUNDARY_EPSILON_SEC = 0.001;
+
+export interface EditorResetPlanInput {
+  /** Raw `Clip.editorOriginal` column value — null when never saved. */
+  editorOriginal: unknown;
+  currentStartSec: number;
+  currentEndSec: number;
+  viralityScore: number;
+  sourceDurationSec: number | null;
+}
+
+export type EditorResetPlan =
+  | { noop: true }
+  | {
+      noop: false;
+      original: EditorDocument;
+      effective: ReturnType<typeof getEffectiveClipTiming>;
+      boundariesChanged: boolean;
+      durationOptimalityScore: number;
+      tiktokScore: number;
+      youtubeScore: number;
+      instagramScore: number;
+    };
+
+/**
+ * Pure planning step for Reset-to-original (docs/plans/vizard-parity.md Phase
+ * A step 4): decides whether resetting is a no-op (no revision-zero snapshot
+ * was ever captured — the clip's current state already IS the original) and,
+ * when not, recomputes effective timing for the ORIGINAL window exactly like
+ * updateClipBoundaries so the restored bounds stay consistent with the
+ * transcript. Kept side-effect-free (no Prisma) so it's unit-testable on its
+ * own — resetClipEditorToOriginal below only adds the guarded transaction and
+ * asset cleanup around this decision.
+ */
+export function planEditorReset(input: EditorResetPlanInput): EditorResetPlan {
+  if (!input.editorOriginal) {
+    return { noop: true };
+  }
+
+  const original = editorDocumentSchema.parse(input.editorOriginal);
+  const effective = getEffectiveClipTiming({
+    utterances: original.transcriptSlice,
+    startSec: original.clipStartSec,
+    endSec: original.clipEndSec,
+    sourceDurationSec: input.sourceDurationSec,
+    tailPadSec: 0,
+  });
+  const boundariesChanged =
+    Math.abs(effective.startSec - input.currentStartSec) >
+      RESET_BOUNDARY_EPSILON_SEC ||
+    Math.abs(effective.endSec - input.currentEndSec) >
+      RESET_BOUNDARY_EPSILON_SEC;
+  const durationSec = effective.durationSec;
+
+  return {
+    noop: false,
+    original,
+    effective,
+    boundariesChanged,
+    durationOptimalityScore: computeDurationOptimality(durationSec),
+    tiktokScore: computePlatformScore(input.viralityScore, durationSec, "tiktok"),
+    youtubeScore: computePlatformScore(
+      input.viralityScore,
+      durationSec,
+      "youtube",
+    ),
+    instagramScore: computePlatformScore(
+      input.viralityScore,
+      durationSec,
+      "instagram",
+    ),
+  };
+}
+
+/**
  * System prompt for AI title suggestions.
  *
  * The language rule is stated here AND with the concrete language code in the
@@ -2208,6 +2295,136 @@ export class ClipService {
         revision: updated.editorRevision,
         deletedRenderCount,
         transcriptChanged,
+      }),
+    );
+
+    await deleteRenderAssets(staleRenderKeys);
+
+    return {
+      revision: updated.editorRevision,
+      document: buildEditorDocumentFromClip(updated),
+      clip: toClipSnapshot(updated),
+    };
+  }
+
+  /**
+   * Reset-to-original (docs/plans/vizard-parity.md Phase A step 4): restores
+   * the whole editor document — INCLUDING clip boundaries and the transcript
+   * slice — from the immutable revision-zero snapshot captured on first save
+   * (`Clip.editorOriginal`, see saveClipEditorDocument above). Unlike that
+   * method, a boundary change here is the whole point, so this follows
+   * updateClipBoundaries' side-effect pattern instead: recompute effective
+   * timing for the restored window, null the preview proxy + drop its asset
+   * when the window actually moves, and invalidate every render.
+   *
+   * No-op (zero writes) when no snapshot exists yet — the clip was never
+   * saved through the editor document, so its current state already IS the
+   * original.
+   */
+  async resetClipEditorToOriginal(
+    userId: string,
+    projectId: string,
+    clipId: string,
+    baseRevision: number,
+  ): Promise<{ revision: number; document: EditorDocument; clip: ClipSnapshot }> {
+    const prisma = requirePrisma();
+
+    const clip = await prisma.clip.findFirst({
+      where: { id: clipId, projectId, project: { userId } },
+      include: {
+        project: { select: { sourceDurationSeconds: true } },
+        renders: true,
+      },
+    });
+    if (!clip) {
+      throw new Error("clip not found");
+    }
+    assertEditorRevisionMatches(clip.editorRevision, baseRevision);
+
+    const plan = planEditorReset({
+      editorOriginal: clip.editorOriginal,
+      currentStartSec: clip.startSec,
+      currentEndSec: clip.endSec,
+      viralityScore: clip.viralityScore,
+      sourceDurationSec: clip.project.sourceDurationSeconds,
+    });
+
+    if (plan.noop) {
+      return {
+        revision: clip.editorRevision,
+        document: buildEditorDocumentFromClip(clip),
+        clip: toClipSnapshot(clip),
+      };
+    }
+
+    const { original, effective, boundariesChanged } = plan;
+    const staleRenderKeys = [
+      ...clip.renders.map((render) => render.storageKey),
+      // The old-window preview proxy is orphaned once boundaries move —
+      // same rule as updateClipBoundaries.
+      ...(boundariesChanged ? [clip.previewStorageKey] : []),
+    ].filter((key): key is string => Boolean(key));
+
+    let deletedRenderCount = 0;
+    const updated = await prisma.$transaction(async (tx) => {
+      const guarded = await tx.clip.updateMany({
+        where: { id: clipId, editorRevision: baseRevision },
+        data: {
+          startSec: effective.startSec,
+          endSec: effective.endSec,
+          captionPreset: original.captionPreset as unknown as Prisma.InputJsonValue,
+          transcriptSlice:
+            effective.transcriptSlice as unknown as Prisma.InputJsonValue,
+          studioEdits: original.studioEdits as unknown as Prisma.InputJsonValue,
+          brollUrl: original.brollUrl,
+          deletedRanges: normalizeDeletedRanges(original.deletedRanges, {
+            startSec: effective.startSec,
+            endSec: effective.endSec,
+          }) as unknown as Prisma.InputJsonValue,
+          durationOptimalityScore: plan.durationOptimalityScore,
+          tiktokScore: plan.tiktokScore,
+          youtubeScore: plan.youtubeScore,
+          instagramScore: plan.instagramScore,
+          status: "edited",
+          editorRevision: { increment: 1 },
+          ...(boundariesChanged
+            ? {
+                previewStorageKey: null,
+                previewStartSec: null,
+                previewDurationSec: null,
+              }
+            : {}),
+        },
+      });
+      if (guarded.count === 0) {
+        return null;
+      }
+      const deleted = await tx.clipRender.deleteMany({ where: { clipId } });
+      deletedRenderCount = deleted.count;
+      return tx.clip.findUniqueOrThrow({
+        where: { id: clipId },
+        include: { renders: true },
+      });
+    });
+
+    if (!updated) {
+      const latest = await prisma.clip.findUnique({
+        where: { id: clipId },
+        select: { editorRevision: true },
+      });
+      throw new ClipEditorRevisionConflictError(
+        latest?.editorRevision ?? baseRevision + 1,
+      );
+    }
+
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        message: "editor_document_reset_to_original",
+        clipId,
+        revision: updated.editorRevision,
+        deletedRenderCount,
+        boundariesChanged,
       }),
     );
 
