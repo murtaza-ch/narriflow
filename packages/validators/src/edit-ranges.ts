@@ -164,6 +164,32 @@ export function editedToSource(map: EditedTimeMap, editedSec: number): number {
 }
 
 /**
+ * Remove `restored` from a deleted-range set (the Revert action): overlapping
+ * deletions shrink or split; everything else passes through. Output is
+ * normalized against the same window.
+ */
+export function subtractDeletedRange(
+  ranges: SourceRange[],
+  restored: SourceRange,
+  window: ClipWindow,
+): SourceRange[] {
+  const pieces: SourceRange[] = [];
+  for (const range of normalizeDeletedRanges(ranges, window)) {
+    if (restored.endSec <= range.startSec || restored.startSec >= range.endSec) {
+      pieces.push(range);
+      continue;
+    }
+    if (restored.startSec > range.startSec) {
+      pieces.push({ startSec: range.startSec, endSec: restored.startSec });
+    }
+    if (restored.endSec < range.endSec) {
+      pieces.push({ startSec: restored.endSec, endSec: range.endSec });
+    }
+  }
+  return normalizeDeletedRanges(pieces, window);
+}
+
+/**
  * Map a source range onto the edited timeline. Returns null when the range is
  * entirely inside cuts (the overlay/cue should not render at all).
  */
