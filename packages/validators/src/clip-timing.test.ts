@@ -1,9 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import {
+  buildTranscriptSliceForWindow,
   expandClipToCompleteSpeech,
   getEffectiveClipTiming,
 } from "./clip-timing";
 import type { TranscriptUtterance, TranscriptWord } from "./transcript";
+import { splitUtterancesIntoSentences } from "./utterance-split";
 
 const POLICY = {
   minDurationSec: 15,
@@ -245,5 +247,73 @@ describe("start pre-roll", () => {
 
     expect(effective.startSec).toBeGreaterThanOrEqual(prevWordEnd);
     expect(effective.startSec).toBeLessThanOrEqual(sentence3Start);
+  });
+});
+
+describe("buildTranscriptSliceForWindow (vizard-parity.md Phase B step 13, in-studio trim)", () => {
+  test("matches the server boundary path (getEffectiveClipTiming) when the window already sits on sentence edges", () => {
+    // A window that's already sentence-aligned makes expandClipToMarketWindow
+    // a no-op, so getEffectiveClipTiming's own transcriptSlice reduces to
+    // exactly the same normalizeTranscriptSliceForClip pass this helper
+    // runs — the two client/server paths must agree byte-for-byte here.
+    const raw = makeSpeech({ sentenceCount: 6, startSec: 5 });
+    const window = {
+      startSec: raw[1]!.words[0]!.startSec,
+      endSec: raw[4]!.words.at(-1)!.endSec,
+    };
+
+    const clientSlice = buildTranscriptSliceForWindow(raw, window);
+    const serverSlice = getEffectiveClipTiming({
+      utterances: splitUtterancesIntoSentences(raw),
+      startSec: window.startSec,
+      endSec: window.endSec,
+      tailPadSec: 0,
+    }).transcriptSlice;
+
+    expect(clientSlice).toEqual(serverSlice);
+  });
+
+  test("intersects the window and snaps/clamps words at its edges", () => {
+    const raw = makeSpeech({ sentenceCount: 4, startSec: 0 });
+    const midWord = raw[1]!.words[2]!;
+    // A window ending mid-word clamps that word's endSec to the window
+    // instead of dropping it — matches normalizeTranscriptSliceForClip.
+    const window = { startSec: raw[0]!.words[0]!.startSec, endSec: midWord.startSec + 0.05 };
+
+    const slice = buildTranscriptSliceForWindow(raw, window);
+    const lastUtterance = slice.at(-1)!;
+    const lastWord = lastUtterance.words.at(-1)!;
+    expect(lastWord.word).toBe(midWord.word);
+    expect(lastWord.endSec).toBeCloseTo(window.endSec, 2);
+    // Nothing past the window survives (small epsilon for the same
+    // millisecond rounding normalizeTranscriptSliceForClip applies).
+    expect(slice.every((u) => u.endSec <= window.endSec + 0.001)).toBe(true);
+  });
+
+  test("extending the window pulls in words that were previously outside it", () => {
+    const raw = makeSpeech({ sentenceCount: 5, startSec: 0 });
+    const narrowSlice = buildTranscriptSliceForWindow(raw, {
+      startSec: raw[2]!.words[0]!.startSec,
+      endSec: raw[2]!.words.at(-1)!.endSec,
+    });
+    expect(narrowSlice).toHaveLength(1);
+
+    const extendedSlice = buildTranscriptSliceForWindow(raw, {
+      startSec: raw[0]!.words[0]!.startSec,
+      endSec: raw[4]!.words.at(-1)!.endSec,
+    });
+    expect(extendedSlice).toHaveLength(5);
+    expect(extendedSlice[0]!.text).toBe(raw[0]!.text);
+    expect(extendedSlice.at(-1)!.text).toBe(raw[4]!.text);
+  });
+
+  test("an empty window (no overlapping speech) returns an empty slice", () => {
+    const raw = makeSpeech({ sentenceCount: 2, startSec: 0 });
+    const lastWordEnd = raw.at(-1)!.words.at(-1)!.endSec;
+    const slice = buildTranscriptSliceForWindow(raw, {
+      startSec: lastWordEnd + 5,
+      endSec: lastWordEnd + 10,
+    });
+    expect(slice).toEqual([]);
   });
 });

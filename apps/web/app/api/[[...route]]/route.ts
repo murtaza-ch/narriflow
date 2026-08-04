@@ -1002,11 +1002,13 @@ app.post("/projects/:id/clips/:clipId/duplicate", async (c) => {
 });
 
 /**
- * Studio editor document (docs/plans/vizard-parity.md Phase A): GET returns
+ * Studio editor document (docs/plans/vizard-parity.md Phase A/B): GET returns
  * {revision, document, original}; PUT is the atomic revision-guarded save
- * replacing the legacy per-field PATCHes. 409 carries the current revision so
- * the client can refetch and rebase; 422 rejects boundary changes until
- * in-studio trim lands.
+ * replacing the legacy per-field PATCHes — including boundary changes since
+ * Phase B step 13 (in-studio trim). 409 carries the current revision so the
+ * client can refetch and rebase; 422 rejects an invalid boundary change
+ * (min-duration/out-of-source-range) or a delete that would leave nothing
+ * renderable.
  */
 app.get("/projects/:id/clips/:clipId/editor", async (c) => {
   const appUser = await getCurrentAppUser();
@@ -1083,7 +1085,7 @@ app.put("/projects/:id/clips/:clipId/editor", async (c) => {
     }
     if (
       error instanceof ClipActionError &&
-      (error.code === "editor_boundaries_immutable" ||
+      (error.code === "editor_boundaries_invalid" ||
         // Phase B hardening: the client's own isEmpty guard
         // (deleteSelectedSegment/buildStudioCutPlan in studio-shell.tsx)
         // should make this unreachable in practice — this is the
@@ -1091,6 +1093,10 @@ app.put("/projects/:id/clips/:clipId/editor", async (c) => {
         // nothing renderable (e.g. two tabs racing each other's edits).
         error.code === "editor_document_empty_timeline")
     ) {
+      // Phase B step 13 (in-studio trim): editor_boundaries_invalid is the
+      // server-side backstop for min-duration/out-of-source-range trims —
+      // the trim handles' own drag guard should make this unreachable in
+      // practice too, same rule as the empty-timeline case above.
       return c.json({ error: error.code }, 422);
     }
     // Fix 14: a non-public brollUrl (localhost, a private IP, etc.) used to

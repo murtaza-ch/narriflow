@@ -23,6 +23,7 @@ import {
   detectSilenceRanges,
   SILENCE_DEFAULT_MIN_SILENCE_SEC,
   SILENCE_DEFAULT_PAD_SEC,
+  CLIP_MIN_DURATION_SEC,
 } from "@narriflow/validators";
 import type { EditedTimeMap, SourceRange, TranscriptUtterance } from "@narriflow/validators";
 import { useStudio } from "./studio-shell";
@@ -34,6 +35,12 @@ import {
   setTimelineThumbnailPlaybackActive,
   type ThumbnailVideoKind,
 } from "./timeline-preview-manager";
+import {
+  loadTrimTranscript,
+  prefetchTrimTranscript,
+  nearestWordBoundary,
+  type TrimTranscript,
+} from "./trim-transcript-cache";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -957,6 +964,245 @@ const TimelinePlayhead = memo(function TimelinePlayhead({
   );
 });
 
+// ─── Trim handles (vizard-parity.md Phase B step 13, in-studio trim) ─────────
+//
+// Draggable edge grips at the far left/right of the track area. Dragging
+// moves the clip's own [clipStartSec, clipEndSec) window in absolute SOURCE
+// seconds — NOT a position on the edited-timeline ruler, which always starts
+// at edited-time 0 by definition (the window's own start), so there's no
+// pixel space "before" it to drag into. Instead this reads raw POINTER pixel
+// delta (independent of where edited-time-0 happens to be drawn) and applies
+// it directly to the grabbed boundary: dragging the start handle left
+// (negative delta) decreases clipStartSec (extends earlier); dragging the
+// end handle right (positive delta) increases clipEndSec (extends later).
+//
+// PERFORMANCE CONTRACT (matches the legacy trim dialog's own drag): the
+// candidate boundary and its floating delta label are painted IMPERATIVELY
+// via direct DOM mutation on every pointermove — no React state, no segment
+// rebuild — because a full re-render (let alone a segment rebuild) per
+// mousemove is exactly what this file's constraints forbid. React state
+// updates only once, on commit (pointerup), via `commitTrim`.
+const TRIM_COMMIT_EPSILON_SEC = 0.05;
+
+function formatTrimDelta(deltaSec: number): string {
+  if (Math.abs(deltaSec) < 0.05) return "0.0s";
+  const sign = deltaSec > 0 ? "+" : "−";
+  return `${sign}${Math.abs(deltaSec).toFixed(1)}s`;
+}
+
+interface TrimDragState {
+  startClientX: number;
+  grabStartSec: number;
+  grabEndSec: number;
+  /** Live candidate for the side being dragged — the OTHER bound stays at
+   *  its grab value. Updated on every pointermove, read once on pointerup. */
+  candidateSec: number;
+}
+
+const TrimHandle = memo(function TrimHandle({
+  side,
+  anchorPx,
+  pxPerSec,
+  trackHeight,
+}: {
+  side: "start" | "end";
+  /** The handle's fixed anchor in track-area-local pixels — `LEFT_GUTTER`
+   *  for the start handle (edited-time 0), `LEFT_GUTTER + totalWidth` for
+   *  the end handle (edited-time `duration`). The grip itself is centered
+   *  on this via `translateX(-50%)` and never moves during a drag (see the
+   *  module doc comment above) — only the floating delta label slides. */
+  anchorPx: number;
+  pxPerSec: number;
+  trackHeight: number;
+}) {
+  const { clipInfo, clipStartSec, clipEndSec, commitTrim, trimHandlesDisabled } = useStudio();
+
+  const dragRef = useRef<TrimDragState | null>(null);
+  const transcriptRef = useRef<TrimTranscript | null>(null);
+  const gripRef = useRef<HTMLDivElement>(null);
+  const labelRef = useRef<HTMLDivElement>(null);
+
+  // Warm the full-project transcript on grab (not on hover/mount) — a trim
+  // handle is grabbed far less often than the legacy dialog is opened, and
+  // fetching ~1-2MB of transcript for every studio session regardless of
+  // whether trim is ever used would be wasteful. Session-cached (see
+  // trim-transcript-cache.ts), so a second grab in the same tab is instant.
+  const handlePointerDown = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (trimHandlesDisabled) return;
+      e.preventDefault();
+      e.stopPropagation();
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId);
+      } catch {
+        // non-capturable pointer; bubbling still delivers move/up
+      }
+
+      prefetchTrimTranscript(clipInfo.projectId);
+      loadTrimTranscript(clipInfo.projectId)
+        .then((t) => {
+          transcriptRef.current = t;
+        })
+        .catch(() => {
+          // No transcript available — dragging still works, just unsnapped;
+          // the min-duration/zero clamps below still apply regardless.
+        });
+
+      dragRef.current = {
+        startClientX: e.clientX,
+        grabStartSec: clipStartSec,
+        grabEndSec: clipEndSec,
+        candidateSec: side === "start" ? clipStartSec : clipEndSec,
+      };
+      gripRef.current?.classList.add("trimming");
+      if (labelRef.current) labelRef.current.style.opacity = "1";
+    },
+    [trimHandlesDisabled, clipInfo.projectId, clipStartSec, clipEndSec, side],
+  );
+
+  const paintDrag = useCallback((dxPx: number, drag: TrimDragState) => {
+    if (labelRef.current) {
+      const deltaSec = drag.candidateSec - (side === "start" ? drag.grabStartSec : drag.grabEndSec);
+      labelRef.current.textContent = formatTrimDelta(deltaSec);
+      labelRef.current.style.transform = `translate3d(${dxPx}px, 0, 0)`;
+    }
+  }, [side]);
+
+  const handlePointerMove = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      const drag = dragRef.current;
+      if (!drag) return;
+      const dxPx = e.clientX - drag.startClientX;
+      const deltaSec = dxPx / pxPerSec;
+      const transcript = transcriptRef.current;
+      const sourceCeilingSec = transcript ? transcript.sourceDurationSec : Number.POSITIVE_INFINITY;
+
+      if (side === "start") {
+        let candidate = drag.grabStartSec + deltaSec;
+        candidate = Math.max(0, Math.min(candidate, drag.grabEndSec - CLIP_MIN_DURATION_SEC));
+        if (transcript) {
+          candidate = nearestWordBoundary(transcript.words, candidate, "start");
+          candidate = Math.max(0, Math.min(candidate, drag.grabEndSec - CLIP_MIN_DURATION_SEC));
+        }
+        drag.candidateSec = candidate;
+      } else {
+        let candidate = drag.grabEndSec + deltaSec;
+        candidate = Math.min(
+          sourceCeilingSec,
+          Math.max(candidate, drag.grabStartSec + CLIP_MIN_DURATION_SEC),
+        );
+        if (transcript) {
+          candidate = nearestWordBoundary(transcript.words, candidate, "end");
+          candidate = Math.min(
+            sourceCeilingSec,
+            Math.max(candidate, drag.grabStartSec + CLIP_MIN_DURATION_SEC),
+          );
+        }
+        drag.candidateSec = candidate;
+      }
+
+      paintDrag(dxPx, drag);
+    },
+    [pxPerSec, side, paintDrag],
+  );
+
+  const endDrag = useCallback(() => {
+    const drag = dragRef.current;
+    dragRef.current = null;
+    gripRef.current?.classList.remove("trimming");
+    if (labelRef.current) {
+      labelRef.current.style.opacity = "0";
+      labelRef.current.style.transform = "translate3d(0, 0, 0)";
+    }
+    if (!drag) return;
+
+    const newStartSec = side === "start" ? drag.candidateSec : drag.grabStartSec;
+    const newEndSec = side === "end" ? drag.candidateSec : drag.grabEndSec;
+    const changed =
+      Math.abs(newStartSec - drag.grabStartSec) > TRIM_COMMIT_EPSILON_SEC / 2 ||
+      Math.abs(newEndSec - drag.grabEndSec) > TRIM_COMMIT_EPSILON_SEC / 2;
+    if (!changed) return;
+    void commitTrim(newStartSec, newEndSec);
+  }, [side, commitTrim]);
+
+  const handlePointerUp = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      try {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      } catch {
+        // already released
+      }
+      endDrag();
+    },
+    [endDrag],
+  );
+
+  const handlePointerCancel = useCallback(() => {
+    endDrag();
+  }, [endDrag]);
+
+  return (
+    <Box
+      ref={gripRef}
+      position="absolute"
+      top="0"
+      style={{
+        left: `${anchorPx}px`,
+        transform: "translateX(-50%)",
+        height: `${trackHeight}px`,
+        width: "10px",
+        cursor: trimHandlesDisabled ? "default" : "col-resize",
+        opacity: trimHandlesDisabled ? 0.4 : 1,
+        touchAction: "none",
+      }}
+      zIndex={15}
+      onPointerDown={handlePointerDown}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerCancel}
+      css={{
+        "&.trimming": { "& > .trim-grip-stripe": { background: "var(--chakra-colors-accent-solid)" } },
+      }}
+    >
+      <Box
+        className="trim-grip-stripe"
+        position="absolute"
+        top="0"
+        bottom="0"
+        left="50%"
+        transform="translateX(-50%)"
+        w="3px"
+        borderRadius="full"
+        bg="studio.borderStrong"
+        transition="background 100ms ease"
+      />
+      <Box
+        ref={labelRef}
+        position="absolute"
+        top="-22px"
+        left="50%"
+        style={{ transform: "translate3d(0, 0, 0)", opacity: 0 }}
+        transformOrigin="center"
+        whiteSpace="nowrap"
+        px="6px"
+        py="2px"
+        borderRadius="l1"
+        bg="studio.raised"
+        borderWidth="1px"
+        borderColor="studio.borderStrong"
+        textStyle="data"
+        fontSize="10px"
+        color="fg.timecode"
+        pointerEvents="none"
+        willChange="transform"
+        css={{ marginLeft: "-16px" }}
+      >
+        0.0s
+      </Box>
+    </Box>
+  );
+});
+
 export function Timeline() {
   const {
     isPlaying,
@@ -1488,6 +1734,20 @@ export function Timeline() {
               isPlaying={isPlaying}
               timeToX={timeToX}
               scrollRootRef={stripRef}
+            />
+
+            {/* ── Trim handles (vizard-parity.md Phase B step 13) ─ */}
+            <TrimHandle
+              side="start"
+              anchorPx={LEFT_GUTTER}
+              pxPerSec={TIMELINE_PX_PER_SEC}
+              trackHeight={trackAreaHeight}
+            />
+            <TrimHandle
+              side="end"
+              anchorPx={LEFT_GUTTER + totalWidth}
+              pxPerSec={TIMELINE_PX_PER_SEC}
+              trackHeight={trackAreaHeight}
             />
           </Box>
         </Box>

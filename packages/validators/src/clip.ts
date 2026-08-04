@@ -192,6 +192,21 @@ export const clipSnapshotSchema = z.object({
   createdAt: z.string().datetime(),
 });
 
+/** Shortest a clip's [startSec, endSec) window may ever be — enforced by the
+ *  legacy boundaries endpoint (`updateClipBoundariesSchema` below) and reused
+ *  by the in-studio trim path (vizard-parity.md Phase B step 13:
+ *  `saveClipEditorDocument`'s boundary-change validation, plus the client's
+ *  drag-guard on the trim handles) so the two paths can never disagree about
+ *  how short a clip is allowed to get. */
+export const CLIP_MIN_DURATION_SEC = 10;
+/** Longest a clip's [startSec, endSec) window may ever be through the legacy
+ *  boundaries endpoint. NOT reused by in-studio trim — trim only enforces the
+ *  min-duration floor plus the source video's own length (vizard-parity.md
+ *  Phase B step 13 design note 1), since a user dragging a handle out to a
+ *  longer clip is a deliberate, bounded-by-the-footage-itself choice, unlike
+ *  this endpoint's blanket policy cap. */
+export const CLIP_MAX_DURATION_SEC = 120;
+
 export const updateClipBoundariesSchema = z
   .object({
     startSec: z.number().nonnegative(),
@@ -200,11 +215,11 @@ export const updateClipBoundariesSchema = z
   .refine((data) => data.endSec > data.startSec, {
     message: "endSec must be greater than startSec",
   })
-  .refine((data) => data.endSec - data.startSec >= 10, {
-    message: "Clip must be at least 10 seconds",
+  .refine((data) => data.endSec - data.startSec >= CLIP_MIN_DURATION_SEC, {
+    message: `Clip must be at least ${CLIP_MIN_DURATION_SEC} seconds`,
   })
-  .refine((data) => data.endSec - data.startSec <= 120, {
-    message: "Clip must be at most 120 seconds",
+  .refine((data) => data.endSec - data.startSec <= CLIP_MAX_DURATION_SEC, {
+    message: `Clip must be at most ${CLIP_MAX_DURATION_SEC} seconds`,
   });
 
 export const updateClipTranscriptSliceSchema = z.object({

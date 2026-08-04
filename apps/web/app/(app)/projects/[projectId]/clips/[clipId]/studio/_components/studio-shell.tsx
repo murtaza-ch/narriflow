@@ -18,6 +18,7 @@ import {
   editedToSource,
   isSourceTimeDeleted,
   normalizeDeletedRanges,
+  buildTranscriptSliceForWindow,
   type TranscriptUtterance,
   type CaptionPreset,
   type CaptionAnimation,
@@ -35,8 +36,9 @@ import { ToolSidebar } from "./tool-sidebar";
 import { Timeline } from "./timeline";
 import { KeyboardShortcutsModal } from "./keyboard-shortcuts-modal";
 import { createPlaybackClock, type PlaybackClock } from "./playback-clock";
-import { buildStudioCutPlan } from "./edited-timeline";
+import { buildStudioCutPlan, buildSegmentsFromUtterances } from "./edited-timeline";
 import { rippleSeekSourceSec, stepRipple } from "./ripple-playback";
+import { loadTrimTranscript } from "./trim-transcript-cache";
 import {
   releaseTimelineThumbnailResources,
   type ThumbnailVideoKind,
@@ -359,6 +361,22 @@ interface StudioContextValue extends StudioState {
   handleUndo: () => void;
   handleRedo: () => void;
   handleReset: () => void;
+  /** In-studio trim (vizard-parity.md Phase B step 13): commits a drag on
+   *  either timeline trim handle. `newStartSec`/`newEndSec` are absolute
+   *  SOURCE seconds, already word-snapped and guard-clamped by the caller
+   *  (min duration, source-duration ceiling — see timeline.tsx's trim
+   *  handles). Builds the new transcriptSlice from the full project
+   *  transcript and dispatches ONE composite `trimClip` action (bounds +
+   *  slice, one undo step) plus a silent `resegment` so the timeline's
+   *  utterance-grouped blocks rebuild against the new window in the SAME
+   *  update — see unified-editor-history.ts's `resegment` doc comment for
+   *  why that second part doesn't cost its own ⌘Z press. */
+  commitTrim: (newStartSec: number, newEndSec: number) => Promise<void>;
+  /** True while a save (or reset) is in flight — the trim handles disable
+   *  themselves rather than let a second trim stack on an unsaved one
+   *  (Phase B step 13 guard item 8; the single-flight save queue already
+   *  serializes the actual requests, this just reflects that in the UI). */
+  trimHandlesDisabled: boolean;
 }
 
 const StudioContext = createContext<StudioContextValue | null>(null);
@@ -394,6 +412,16 @@ interface StudioShellProps {
   initialEditorOriginal?: EditorDocument;
   sourceVideoUrl?: string | null;
   sourcePreviewId?: string;
+  /** Vizard-parity Phase B step 13 (in-studio trim): these are seeds ONLY —
+   *  the server's page-load-time effective timing, used for the very first
+   *  render before any trim has happened. Every internal computation
+   *  (playerClipStartSec/EndSec, the derived transcript, split/delete range
+   *  math, and everything exposed on context as `clipStartSec`/`clipEndSec`)
+   *  derives LIVE from `doc.transcriptSlice`/`doc.clipStartSec`/
+   *  `doc.clipEndSec` instead (see the `effectiveTiming` memo below) — by
+   *  the "finalize-once" boundary invariant these two already agree with
+   *  the document's own bounds on first paint, so this is a no-op seed, not
+   *  a second source of truth. */
   clipStartSec?: number;
   clipEndSec?: number;
   /** Presigned preview-proxy URL from studio/page.tsx, or null when no
@@ -428,8 +456,9 @@ export function StudioShell({
   initialEditorOriginal,
   sourceVideoUrl = null,
   sourcePreviewId = "source",
-  clipStartSec = 0,
-  clipEndSec = 0,
+  // clipStartSec/clipEndSec are accepted (see the prop's doc comment above)
+  // but deliberately not read here — every internal use now derives from
+  // `doc` via the `effectiveTiming` memo below.
   previewVideoUrl: initialPreviewVideoUrl = null,
   previewStartSec: initialPreviewStartSec = 0,
   sourcePurged = false,
@@ -494,18 +523,6 @@ export function StudioShell({
     };
   }, [previewVideoUrl, sourcePurged, fetchPreviewStatus]);
 
-  const activeVideoUrl = previewVideoUrl ?? (useOriginalSourceFallback ? sourceVideoUrl : null);
-  // Source time -> "whichever file is actually playing" time. Zero when
-  // there's no proxy (i.e. we're playing the source as-is, or nothing).
-  const activeOffsetSec = previewVideoUrl ? previewStartSec : 0;
-  // Mirrors activeOffsetSec's own condition: the proxy wins whenever it
-  // exists, regardless of useOriginalSourceFallback (that flag only decides
-  // what happens in ITS absence). Consumers only need to branch on this when
-  // activeVideoUrl is non-null.
-  const activeVideoKind: ThumbnailVideoKind = previewVideoUrl ? "proxy" : "source";
-  const playerClipStartSec = clipStartSec - activeOffsetSec;
-  const playerClipEndSec = clipEndSec - activeOffsetSec;
-
   // ─── Unified editor document + segment history (vizard-parity.md Phase A
   // step 3) ────────────────────────────────────────────────────────────────
   // Everything the studio can mutate (captionPreset, transcriptSlice,
@@ -526,21 +543,53 @@ export function StudioShell({
   const canUndo = canUndoUnified(unified);
   const canRedo = canRedoUnified(unified);
 
-  // Derived from `doc.transcriptSlice` via the exact same pure
-  // effective-timing computation studio/page.tsx runs server-side (tailPadSec
-  // 0 — slice-only, matching the stored bounds). Idempotent on the document's
-  // own (already-effective) bounds, so first paint is visually identical to
-  // before; only diverges once a transcript edit actually changes the slice.
-  const utterances = useMemo(
+  // Derived from `doc.transcriptSlice`/`doc.clipStartSec`/`doc.clipEndSec`
+  // via the exact same pure effective-timing computation studio/page.tsx
+  // runs server-side (tailPadSec 0 — slice-only, matching the stored
+  // bounds). Idempotent on the document's own (already-effective) bounds, so
+  // first paint is visually identical to before; only diverges once a
+  // transcript edit or an in-studio trim (vizard-parity.md Phase B step 13)
+  // actually changes the slice/window.
+  //
+  // Phase B step 13 reverses an earlier assumption: `clipStartSec`/
+  // `clipEndSec` used to be frozen server-seeded PROPS (the page's
+  // page-load-time effective timing) because boundaries were immutable.
+  // Now that a trim can move `doc.clipStartSec`/`doc.clipEndSec` live, this
+  // memo — not the props — is the single source of truth for "effective"
+  // clip timing; `effectiveClipStartSec`/`effectiveClipEndSec` below feed
+  // every consumer that used to read the props directly (playerClipStartSec/
+  // EndSec, the derived transcript, split/delete range math, and the
+  // `clipStartSec`/`clipEndSec` values exposed on context to transcript-
+  // panel.tsx/interactive-caption-overlay.tsx/caption-style-engine.tsx/
+  // timeline.tsx — all of which only ever read them THROUGH context, so
+  // swapping what this produces is enough to make them doc-derived with no
+  // changes of their own). The prop seeds remain only as the initial values
+  // (see the `clipStartSec`/`clipEndSec` prop doc comments above).
+  const effectiveTiming = useMemo(
     () =>
       getEffectiveClipTiming({
         utterances: doc.transcriptSlice,
         startSec: doc.clipStartSec,
         endSec: doc.clipEndSec,
         tailPadSec: 0,
-      }).transcriptSlice,
+      }),
     [doc.transcriptSlice, doc.clipStartSec, doc.clipEndSec],
   );
+  const utterances = effectiveTiming.transcriptSlice;
+  const effectiveClipStartSec = effectiveTiming.startSec;
+  const effectiveClipEndSec = effectiveTiming.endSec;
+
+  const activeVideoUrl = previewVideoUrl ?? (useOriginalSourceFallback ? sourceVideoUrl : null);
+  // Source time -> "whichever file is actually playing" time. Zero when
+  // there's no proxy (i.e. we're playing the source as-is, or nothing).
+  const activeOffsetSec = previewVideoUrl ? previewStartSec : 0;
+  // Mirrors activeOffsetSec's own condition: the proxy wins whenever it
+  // exists, regardless of useOriginalSourceFallback (that flag only decides
+  // what happens in ITS absence). Consumers only need to branch on this when
+  // activeVideoUrl is non-null.
+  const activeVideoKind: ThumbnailVideoKind = previewVideoUrl ? "proxy" : "source";
+  const playerClipStartSec = effectiveClipStartSec - activeOffsetSec;
+  const playerClipEndSec = effectiveClipEndSec - activeOffsetSec;
 
   // ─── Edited-timeline model (vizard-parity.md Phase B step 8) ────────────
   // The SINGLE map every time-based consumer (playback, captions, transcript
@@ -603,9 +652,9 @@ export function StudioShell({
         id: `u-${u.index ?? i}`,
         type: "speech" as const,
         text: u.text,
-        timestamp: u.startSec - clipStartSec,
+        timestamp: u.startSec - effectiveClipStartSec,
       })),
-    [utterances, clipStartSec],
+    [utterances, effectiveClipStartSec],
   );
 
   const [isPlaying, setIsPlaying] = useState(false);
@@ -794,9 +843,11 @@ export function StudioShell({
   const splitAtPlayhead = useCallback(() => {
     const editedTime = playbackClock.getSnapshot();
     // Same base rule as deleteSelectedSegment's fix 8 below: `segments` are
-    // authored against the page's EFFECTIVE clip start (`clipStartSec`), not
-    // `doc.clipStartSec` — the two can disagree on legacy rows.
-    const sourceRelativeTime = editedToSource(editedTimeMap, editedTime) - clipStartSec;
+    // authored against the EFFECTIVE clip start (`effectiveClipStartSec`),
+    // not `doc.clipStartSec` — the two can disagree on legacy rows (and,
+    // post Phase B step 13, momentarily right after a trim if this ever ran
+    // before the resegment dispatch settled).
+    const sourceRelativeTime = editedToSource(editedTimeMap, editedTime) - effectiveClipStartSec;
     const active = segments.find(
       (s) => sourceRelativeTime >= s.startSec && sourceRelativeTime <= s.endSec,
     );
@@ -814,7 +865,7 @@ export function StudioShell({
       ];
     });
     setSegments(newSegments);
-  }, [segments, playbackClock, setSegments, editedTimeMap, clipStartSec]);
+  }, [segments, playbackClock, setSegments, editedTimeMap, effectiveClipStartSec]);
 
   // Vizard-parity Phase B step 9: Backspace/Delete on a selected segment
   // persists the cut through `doc.deletedRanges` (undoable, autosaved,
@@ -836,19 +887,19 @@ export function StudioShell({
       return;
     }
 
-    // Fix 8: `segments` (the `timelineSegments` prop) are built server-side
-    // against the page's EFFECTIVE clip start — `clipStartSec` below, see
-    // page.tsx's `buildSegmentsFromUtterances(utterances, effective.startSec, ...)`
-    // — which is NOT always `doc.clipStartSec` (the persisted, raw
-    // `clip.startSec`): they can disagree on legacy rows whose stored
-    // boundary didn't land exactly on a word/sentence edge before the
-    // finalize-once boundary overhaul. Rebase against the SAME base the
-    // segments were actually built from, not the document's, so the
-    // absolute range handed to `deleteRange` can't silently shift by
-    // however far the two happen to disagree.
+    // Fix 8: `segments` (built server-side at load, or client-side by the
+    // `resegment` dispatch after a trim — see edited-timeline.ts's
+    // `buildSegmentsFromUtterances`) are built against the EFFECTIVE clip
+    // start (`effectiveClipStartSec` below), which is NOT always
+    // `doc.clipStartSec` (the persisted, raw `clip.startSec`): they can
+    // disagree on legacy rows whose stored boundary didn't land exactly on a
+    // word/sentence edge before the finalize-once boundary overhaul. Rebase
+    // against the SAME base the segments were actually built from, not the
+    // document's, so the absolute range handed to `deleteRange` can't
+    // silently shift by however far the two happen to disagree.
     const range: SourceRange = {
-      startSec: clipStartSec + seg.startSec,
-      endSec: clipStartSec + seg.endSec,
+      startSec: effectiveClipStartSec + seg.startSec,
+      endSec: effectiveClipStartSec + seg.endSec,
     };
     const window = { startSec: doc.clipStartSec, endSec: doc.clipEndSec };
     const { blocked } = computeDeleteCandidate(doc.deletedRanges, window, range);
@@ -869,7 +920,14 @@ export function StudioShell({
     setUnified((s) =>
       applyUnifiedEditorAction(s, { kind: "document", action: { type: "deleteRange", range } }),
     );
-  }, [selectedSegmentId, segments, clipStartSec, doc.clipStartSec, doc.clipEndSec, doc.deletedRanges]);
+  }, [
+    selectedSegmentId,
+    segments,
+    effectiveClipStartSec,
+    doc.clipStartSec,
+    doc.clipEndSec,
+    doc.deletedRanges,
+  ]);
 
   const revertDeletedRange = useCallback((range: SourceRange) => {
     setUnified((s) =>
@@ -978,6 +1036,69 @@ export function StudioShell({
     );
   }, []);
 
+  // Vizard-parity Phase B step 13 (in-studio trim): commits a drag on either
+  // timeline trim handle. `newStartSec`/`newEndSec` arrive already
+  // word-snapped and guard-clamped (min duration, source-duration ceiling —
+  // see timeline.tsx's handles), so this only needs to turn them into a
+  // document mutation: rebuild transcriptSlice from the FULL project
+  // transcript for the new window (the same primitives the server's own
+  // boundary paths use — see buildTranscriptSliceForWindow's doc comment),
+  // then dispatch ONE composite `trimClip` action (bounds + slice, one undo
+  // step covering deletedRanges/textLayers rebase too) plus a silent
+  // `resegment` so the timeline's utterance blocks rebuild against the new
+  // window in the SAME state update — see unified-editor-history.ts's
+  // `resegment` doc comment for why that doesn't cost a second ⌘Z press.
+  //
+  // `loadTrimTranscript` is normally already resolved from cache by the
+  // time a drag ends (the handle prefetches on pointerdown) — awaiting it
+  // here is a safety net for a commit that somehow races ahead of that
+  // fetch, not the common path.
+  const commitTrim = useCallback(
+    async (newStartSec: number, newEndSec: number) => {
+      const { rawUtterances } = await loadTrimTranscript(clipInfo.projectId);
+      const newSlice = buildTranscriptSliceForWindow(rawUtterances, {
+        startSec: newStartSec,
+        endSec: newEndSec,
+      });
+      // Same effective-timing pass the `effectiveTiming` memo above runs —
+      // computed explicitly here (not read from that memo) because segments
+      // need to be built against the window this dispatch is ABOUT to
+      // produce, in the SAME synchronous state update, not next render.
+      const newEffective = getEffectiveClipTiming({
+        utterances: newSlice,
+        startSec: newStartSec,
+        endSec: newEndSec,
+        tailPadSec: 0,
+      });
+      const newSegments = buildSegmentsFromUtterances(
+        newEffective.transcriptSlice,
+        newEffective.startSec,
+        newEffective.durationSec,
+      );
+      setUnified((s) => {
+        const withTrim = applyUnifiedEditorAction(s, {
+          kind: "document",
+          action: {
+            type: "trimClip",
+            startSec: newStartSec,
+            endSec: newEndSec,
+            transcriptSlice: newSlice,
+          },
+        });
+        return applyUnifiedEditorAction(withTrim, { kind: "resegment", segments: newSegments });
+      });
+    },
+    [clipInfo.projectId],
+  );
+
+  // Guard item 8 (vizard-parity.md Phase B step 13): the single-flight save
+  // queue already serializes the actual PUTs — this just reflects "a save
+  // is in flight" in the UI so the handles can't stack a second trim on an
+  // unsaved one. Also disabled mid-reset for the same reason handleReset
+  // itself blocks autosave (resetInFlightRef) — a trim during a reset
+  // negotiation would race it for the same baseRevision.
+  const trimHandlesDisabled = saveState === "saving" || resetState === "resetting";
+
   const handleUndo = useCallback(() => {
     setUnified((s) => applyUnifiedEditorAction(s, { kind: "undo" }));
   }, []);
@@ -1012,6 +1133,16 @@ export function StudioShell({
   //    (bfcache restores) so a later real teardown can still flush.
   const docPresentRef = useRef(doc);
   const lastSavedDocumentJsonRef = useRef(JSON.stringify(initialEditorDocument));
+  // Vizard-parity Phase B step 13 (in-studio trim): the bounds the server
+  // last confirmed — compared against each save's own bounds to detect a
+  // boundary-changing save (the server nulls the preview proxy for those;
+  // see the success branch below). Deliberately a SEPARATE ref from
+  // `lastSavedDocumentJsonRef` rather than parsing bounds back out of it —
+  // this only ever needs two numbers, not a full document round-trip.
+  const lastSavedBoundsRef = useRef({
+    startSec: initialEditorDocument.clipStartSec,
+    endSec: initialEditorDocument.clipEndSec,
+  });
   const baseRevisionRef = useRef(initialEditorRevision);
   const saveQueueStateRef = useRef<SaveQueueState>("idle");
   const autosaveStoppedRef = useRef(false);
@@ -1076,14 +1207,22 @@ export function StudioShell({
           autosaveStoppedRef.current = true;
           const body = (await res.json().catch(() => null)) as { error?: string } | null;
           const isUnsafeBrollUrl = body?.error === "unsafe_broll_url";
+          // Phase B step 13: editor_boundaries_invalid is the server-side
+          // backstop for min-duration/out-of-source-range trims — the trim
+          // handles' own drag guard should make this unreachable in
+          // practice, same as editor_document_empty_timeline already was.
+          const isInvalidBoundaries = body?.error === "editor_boundaries_invalid";
           console.warn(
             JSON.stringify({
               level: "error",
               message: isUnsafeBrollUrl
                 ? "editor_unsafe_broll_url"
-                : "editor_boundaries_immutable_client_bug",
+                : isInvalidBoundaries
+                  ? "editor_boundaries_invalid_client_guard_bypassed"
+                  : "editor_document_save_rejected",
               clipId: clipInfo.id,
               projectId: clipInfo.projectId,
+              error: body?.error,
             }),
           );
           setSaveState("blocked");
@@ -1092,7 +1231,9 @@ export function StudioShell({
             title: "Save failed",
             description: isUnsafeBrollUrl
               ? "This clip's B-roll URL isn't allowed. Remove it and try again."
-              : "This clip's boundaries changed unexpectedly. Reload to continue.",
+              : isInvalidBoundaries
+                ? "That trim isn't valid anymore. Reload to continue."
+                : "This clip's boundaries changed unexpectedly. Reload to continue.",
           });
           saveQueueStateRef.current = "idle";
           return "failure";
@@ -1101,6 +1242,30 @@ export function StudioShell({
 
         const json = (await res.json()) as { revision: number; document: EditorDocument };
         setBaseRevision(json.revision);
+
+        // Phase B step 13: a boundary-changing save just had the server
+        // null the preview proxy (clip.service.ts's saveClipEditorDocument)
+        // — the old proxy's window no longer matches the new clip bounds.
+        // Drop the local proxy state immediately (video-preview.tsx falls
+        // back to the source so playback keeps working across the trim)
+        // and let the poll effect — keyed off `previewVideoUrl` — restart
+        // on its own now that it's null again. Compared against
+        // `documentToSave`'s OWN bounds regardless of whether local edits
+        // landed mid-flight below: the server accepted exactly this
+        // document's bounds, so that's the authoritative "did this save
+        // move the window" answer either way.
+        const priorBounds = lastSavedBoundsRef.current;
+        const boundariesChangedByThisSave =
+          Math.abs(documentToSave.clipStartSec - priorBounds.startSec) > 0.001 ||
+          Math.abs(documentToSave.clipEndSec - priorBounds.endSec) > 0.001;
+        lastSavedBoundsRef.current = {
+          startSec: documentToSave.clipStartSec,
+          endSec: documentToSave.clipEndSec,
+        };
+        if (boundariesChangedByThisSave) {
+          setPreviewVideoUrl(null);
+          setPreviewStartSec(0);
+        }
 
         if (docPresentRef.current === documentToSave) {
           // No local edits landed mid-flight — safe to adopt the server's
@@ -1631,7 +1796,8 @@ export function StudioShell({
     captionPreset, captionSelected, transcriptOnly, segments, studioEdits, brollUrl,
     saveState, exportState, resetState, canUndo, canRedo, canReset,
     transcript: derivedTranscript, clipInfo, videoRef, playbackClock,
-    sourceVideoUrl, sourcePreviewId, clipStartSec, clipEndSec, sourcePurged,
+    sourceVideoUrl, sourcePreviewId,
+    clipStartSec: effectiveClipStartSec, clipEndSec: effectiveClipEndSec, sourcePurged,
     previewVideoUrl, previewStartSec, useOriginalSourceFallback, setUseOriginalSourceFallback,
     activeVideoUrl, activeOffsetSec, activeVideoKind, playerClipStartSec, playerClipEndSec,
     editedTimeMap, deletedRanges: doc.deletedRanges, clipWindow,
@@ -1642,7 +1808,7 @@ export function StudioShell({
     setTranscriptOnly, setSegments, setStudioEdits, setBrollUrl, endCoalesce,
     revertDeletedRange,
     togglePlay, seekTo, splitAtPlayhead, deleteSelectedSegment, handleSave, handleExport,
-    handleUndo, handleRedo, handleReset,
+    handleUndo, handleRedo, handleReset, commitTrim, trimHandlesDisabled,
   };
 
   return (

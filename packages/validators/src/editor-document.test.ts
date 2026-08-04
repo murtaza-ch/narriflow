@@ -316,6 +316,87 @@ describe("text-layer ripple", () => {
     expect(next).toBe(doc);
     expect(next.studioEdits.textLayers).toBe(doc.studioEdits.textLayers);
   });
+
+  describe("trimClip (vizard-parity.md Phase B step 13)", () => {
+    test("shrinking the window applies bounds + slice atomically and rebases deletions", () => {
+      const doc = applyEditorAction(makeDocument(), {
+        type: "deleteRange",
+        range: { startSec: 12, endSec: 35 },
+      });
+      const newSlice = [makeUtterance(0, 15, ["this", "smaller"])];
+      const next = applyEditorAction(doc, {
+        type: "trimClip",
+        startSec: 15,
+        endSec: 30,
+        transcriptSlice: newSlice,
+      });
+      expect(next.clipStartSec).toBe(15);
+      expect(next.clipEndSec).toBe(30);
+      expect(next.transcriptSlice).toBe(newSlice);
+      // Same rebase `setClipBoundaries` already covers a unit test for above.
+      expect(next.deletedRanges).toEqual([{ startSec: 15, endSec: 30 }]);
+    });
+
+    test("extending the window into new words applies bounds + slice atomically", () => {
+      const doc = makeDocument();
+      const extendedSlice = [
+        makeUtterance(0, 5, ["earlier", "words"]),
+        ...doc.transcriptSlice,
+      ];
+      const next = applyEditorAction(doc, {
+        type: "trimClip",
+        startSec: 5,
+        endSec: doc.clipEndSec,
+        transcriptSlice: extendedSlice,
+      });
+      expect(next.clipStartSec).toBe(5);
+      expect(next.transcriptSlice).toBe(extendedSlice);
+    });
+
+    test("rebases text layers against the new window exactly like setClipBoundaries", () => {
+      const doc = makeDocumentWithTextLayer(5, 8);
+      const next = applyEditorAction(doc, {
+        type: "trimClip",
+        startSec: 12,
+        endSec: 40,
+        transcriptSlice: doc.transcriptSlice,
+      });
+      const layer = next.studioEdits.textLayers[0]!;
+      expect(layer.startSec).toBe(3);
+      expect(layer.endSec).toBe(6);
+    });
+
+    test("unchanged bounds AND unchanged slice is a no-op returning the same reference", () => {
+      const doc = makeDocument();
+      const next = applyEditorAction(doc, {
+        type: "trimClip",
+        startSec: doc.clipStartSec,
+        endSec: doc.clipEndSec,
+        transcriptSlice: JSON.parse(JSON.stringify(doc.transcriptSlice)),
+      });
+      expect(next).toBe(doc);
+    });
+
+    test("undo restores slice + bounds + ranges + layers exactly", () => {
+      let history = createEditorHistory(makeDocumentWithTextLayer(20, 25));
+      const before = history.present;
+      history = applyWithHistory(history, {
+        type: "trimClip",
+        startSec: 15,
+        endSec: 30,
+        transcriptSlice: [makeUtterance(0, 15, ["this", "smaller"])],
+      });
+      expect(history.present).not.toBe(before);
+
+      history = undoEditor(history);
+      expect(history.present).toBe(before);
+      expect(history.present.clipStartSec).toBe(before.clipStartSec);
+      expect(history.present.clipEndSec).toBe(before.clipEndSec);
+      expect(history.present.transcriptSlice).toBe(before.transcriptSlice);
+      expect(history.present.deletedRanges).toBe(before.deletedRanges);
+      expect(history.present.studioEdits.textLayers).toBe(before.studioEdits.textLayers);
+    });
+  });
 });
 
 describe("history", () => {

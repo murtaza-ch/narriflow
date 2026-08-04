@@ -76,6 +76,12 @@ export const editorActionSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("revertRange"), range: sourceRangeSchema }),
   z.object({ type: z.literal("setDeletedRanges"), ranges: deletedRangesSchema }),
   z.object({ type: z.literal("setClipBoundaries"), startSec: z.number().nonnegative(), endSec: z.number().nonnegative() }),
+  z.object({
+    type: z.literal("trimClip"),
+    startSec: z.number().nonnegative(),
+    endSec: z.number().nonnegative(),
+    transcriptSlice: z.array(transcriptUtteranceSchema),
+  }),
   z.object({ type: z.literal("reset"), original: editorDocumentSchema }),
 ]);
 
@@ -277,6 +283,40 @@ export function applyEditorAction(
         ...doc,
         clipStartSec: action.startSec,
         clipEndSec: action.endSec,
+        deletedRanges,
+        studioEdits,
+      };
+    }
+    case "trimClip": {
+      // Vizard-parity Phase B step 13 (in-studio trim): the composite action
+      // a boundary-changing trim commit dispatches — ONE history frame for
+      // what is really two related mutations (the window AND the
+      // transcriptSlice that has to describe it), so undo restores both
+      // together instead of leaving a half-trimmed document reachable
+      // mid-stack. Internally this is exactly `setClipBoundaries` plus
+      // `setTranscriptSlice`'s own logic (deletedRanges renormalized into
+      // the new window, text layers rebased through it) — no new rebase
+      // rules, just applied atomically.
+      const boundariesChanged =
+        action.startSec !== doc.clipStartSec || action.endSec !== doc.clipEndSec;
+      const transcriptChanged = !jsonEqual(action.transcriptSlice, doc.transcriptSlice);
+      if (!boundariesChanged && !transcriptChanged) return doc;
+
+      const oldWindow = documentWindow(doc);
+      const newWindow = { startSec: action.startSec, endSec: action.endSec };
+      const deletedRanges = normalizeDeletedRanges(doc.deletedRanges, newWindow);
+      const studioEdits = rebaseStudioEdits(
+        doc,
+        oldWindow,
+        doc.deletedRanges,
+        newWindow,
+        deletedRanges,
+      );
+      return {
+        ...doc,
+        clipStartSec: action.startSec,
+        clipEndSec: action.endSec,
+        transcriptSlice: action.transcriptSlice,
         deletedRanges,
         studioEdits,
       };

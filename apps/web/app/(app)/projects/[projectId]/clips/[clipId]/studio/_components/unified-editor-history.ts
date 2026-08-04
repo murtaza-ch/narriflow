@@ -43,6 +43,22 @@ export type UnifiedEditorAction =
    *  dispatched on gesture end (slider pointer-up, drag end) so the NEXT
    *  gesture never accidentally merges into a step that already finished. */
   | { kind: "endCoalesce" }
+  /**
+   * Silently replaces `segments` with a freshly-rebuilt array and clears
+   * their own undo history — vizard-parity.md Phase B step 13 (in-studio
+   * trim): a trim's document-level undo step already covers bounds/slice/
+   * ranges/textLayers (see the `trimClip` composite action in
+   * @narriflow/validators); `segments` are re-derived alongside it as part
+   * of the SAME user gesture, not a separate edit, so this does NOT push a
+   * `metaUndo` entry — pressing ⌘Z once after a trim undoes the trim, not
+   * "undo the resegment, then undo the trim". Manual splits from BEFORE the
+   * trim are discarded (their old offsets no longer describe anything
+   * meaningful once the window itself moved) along with their own
+   * split/delete undo history, which is why `segmentsPast`/`segmentsFuture`
+   * are cleared here too — an old "undo the split" now has nothing
+   * consistent to restore to.
+   */
+  | { kind: "resegment"; segments: TimelineSegment[] }
   | { kind: "undo" }
   | { kind: "redo" };
 
@@ -112,6 +128,14 @@ export function applyUnifiedEditorAction(
     case "endCoalesce": {
       const nextDoc = clearDocCoalesce(state.doc);
       return nextDoc === state.doc ? state : { ...state, doc: nextDoc };
+    }
+    case "resegment": {
+      return {
+        ...state,
+        segments: action.segments,
+        segmentsPast: [],
+        segmentsFuture: [],
+      };
     }
     case "undo": {
       const tag = state.metaUndo[state.metaUndo.length - 1];

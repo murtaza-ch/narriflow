@@ -9,6 +9,7 @@ import {
   type EditedSegment,
   type EditedTimeMap,
   type SourceRange,
+  type TranscriptUtterance,
 } from "@narriflow/validators";
 
 // Vizard-parity Phase B steps 8-9 (docs/plans/vizard-parity.md §4): the
@@ -166,4 +167,59 @@ export function deletedRangesToCutMarkers(
     range,
     durationSec: roundMs(range.endSec - range.startSec),
   }));
+}
+
+function clampTimelineTime(timeSec: number, clipDurationSec: number) {
+  return Math.max(0, Math.min(clipDurationSec, timeSec));
+}
+
+/** First words of the utterance — the segment's on-timeline label. */
+function segmentLabel(text: string): string {
+  const words = text.trim().split(/\s+/).filter(Boolean).slice(0, 3).join(" ");
+  return words || "Segment";
+}
+
+/**
+ * Groups utterances into one client-only `TimelineSegment` per utterance,
+ * each `startSec`/`endSec` expressed as an offset from `clipStartSec` (the
+ * convention every `segments` consumer — `projectSegmentToEdited` above,
+ * `studio-shell.tsx`'s split/delete handlers — already assumes). Lifted out
+ * of `studio/page.tsx` (vizard-parity.md Phase B step 13) so BOTH the
+ * server's initial-load seed AND the client's post-trim resegment (
+ * `studio-shell.tsx`'s trim commit handler) build segments the exact same
+ * way against whatever `[clipStartSec, clipStartSec + clipDurationSec)`
+ * window is current — see that file's doc comment for why a trim discards
+ * prior manual splits rather than trying to rebase them.
+ */
+export function buildSegmentsFromUtterances(
+  utterances: TranscriptUtterance[],
+  clipStartSec: number,
+  clipDurationSec: number,
+): { id: string; label: string; startSec: number; endSec: number }[] {
+  if (utterances.length === 0) {
+    return [{ id: "seg-0", label: "Clip", startSec: 0, endSec: clipDurationSec }];
+  }
+
+  const segments: { id: string; label: string; startSec: number; endSec: number }[] = [];
+  let cursorSec = 0;
+
+  for (let i = 0; i < utterances.length; i++) {
+    const utterance = utterances[i]!;
+    const nextUtterance = utterances[i + 1];
+    const nextBoundarySec = nextUtterance
+      ? clampTimelineTime(nextUtterance.startSec - clipStartSec, clipDurationSec)
+      : clipDurationSec;
+    const endSec = Math.max(cursorSec, nextBoundarySec);
+
+    segments.push({
+      id: `seg-${i}`,
+      label: segmentLabel(utterance.text),
+      startSec: cursorSec,
+      endSec,
+    });
+
+    cursorSec = endSec;
+  }
+
+  return segments.filter((segment) => segment.endSec > segment.startSec);
 }

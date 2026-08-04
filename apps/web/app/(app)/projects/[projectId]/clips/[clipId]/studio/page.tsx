@@ -5,53 +5,10 @@ import {
   projectService,
   presignDownloadUrl,
 } from "@narriflow/services";
-import type { TranscriptUtterance } from "@narriflow/validators";
 import { brandTemplateSnapshotSchema, getEffectiveClipTiming } from "@narriflow/validators";
 import { StudioShell } from "./_components/studio-shell";
-import type { ClipInfo, StudioBrandLogo, TimelineSegment } from "./_components/studio-shell";
-
-function clampTimelineTime(timeSec: number, clipDurationSec: number) {
-  return Math.max(0, Math.min(clipDurationSec, timeSec));
-}
-
-/** First words of the utterance — the segment's on-timeline label. */
-function segmentLabel(text: string): string {
-  const words = text.trim().split(/\s+/).filter(Boolean).slice(0, 3).join(" ");
-  return words || "Segment";
-}
-
-function buildSegmentsFromUtterances(
-  utterances: TranscriptUtterance[],
-  clipStartSec: number,
-  clipDurationSec: number,
-): TimelineSegment[] {
-  if (utterances.length === 0) {
-    return [{ id: "seg-0", label: "Clip", startSec: 0, endSec: clipDurationSec }];
-  }
-
-  const segments: TimelineSegment[] = [];
-  let cursorSec = 0;
-
-  for (let i = 0; i < utterances.length; i++) {
-    const utterance = utterances[i]!;
-    const nextUtterance = utterances[i + 1];
-    const nextBoundarySec = nextUtterance
-      ? clampTimelineTime(nextUtterance.startSec - clipStartSec, clipDurationSec)
-      : clipDurationSec;
-    const endSec = Math.max(cursorSec, nextBoundarySec);
-
-    segments.push({
-      id: `seg-${i}`,
-      label: segmentLabel(utterance.text),
-      startSec: cursorSec,
-      endSec,
-    });
-
-    cursorSec = endSec;
-  }
-
-  return segments.filter((segment) => segment.endSec > segment.startSec);
-}
+import type { ClipInfo, StudioBrandLogo } from "./_components/studio-shell";
+import { buildSegmentsFromUtterances } from "./_components/edited-timeline";
 
 export default async function StudioPage({
   params,

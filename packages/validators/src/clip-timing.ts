@@ -1,5 +1,5 @@
 import type { TranscriptUtterance, TranscriptWord } from "./transcript";
-import { isTerminalWordText } from "./utterance-split";
+import { isTerminalWordText, splitUtterancesIntoSentences } from "./utterance-split";
 
 export interface ClipTimingInput {
   utterances: TranscriptUtterance[];
@@ -596,4 +596,35 @@ export function getEffectiveClipTiming(input: ClipTimingInput) {
     ...timing,
     transcriptSlice,
   };
+}
+
+/**
+ * In-studio trim (vizard-parity.md Phase B step 13): builds the exact
+ * `transcriptSlice` a trim commit should save for an arbitrary [startSec,
+ * endSec) window the user chose by dragging a word-snapped handle —
+ * deliberately NOT `getEffectiveClipTiming`, which would re-expand the
+ * window to the nearest sentence boundary via `expandClipToMarketWindow`
+ * and silently override the user's precise drag. This reuses the exact two
+ * primitives the server's own boundary paths use for the parts that DO
+ * still apply — `splitUtterancesIntoSentences` (the same defensive re-split
+ * `updateClipBoundaries` runs over a stored transcript before doing anything
+ * else with it) and `normalizeTranscriptSliceForClip` (the same word-
+ * boundary clamp/split `getEffectiveClipTiming` itself finishes with) — so a
+ * client-built slice and the server's own boundary-changing paths can never
+ * disagree about how a given window is sliced.
+ *
+ * `rawUtterances` should be the FULL project transcript (e.g. from
+ * `GET /projects/:id/transcript/utterances`), not just the clip's current
+ * slice — extending a trim needs words currently outside the clip.
+ */
+export function buildTranscriptSliceForWindow(
+  rawUtterances: TranscriptUtterance[],
+  window: { startSec: number; endSec: number },
+): TranscriptUtterance[] {
+  const sentenceUtterances = splitUtterancesIntoSentences(rawUtterances);
+  return normalizeTranscriptSliceForClip(
+    sentenceUtterances,
+    window.startSec,
+    window.endSec,
+  );
 }

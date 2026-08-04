@@ -7,8 +7,10 @@ import {
   type TranscriptUtterance,
 } from "@narriflow/validators";
 import {
+  ClipActionError,
   assertEditorDocumentHasRenderableContent,
   clampEditorDocumentToStoredWindow,
+  planEditorDocumentSave,
 } from "./clip.service";
 
 function makeDocument(
@@ -25,6 +27,25 @@ function makeDocument(
     deletedRanges: [],
     ...overrides,
   });
+}
+
+function makeUtterance(startSec: number, words: string[]): TranscriptUtterance {
+  const wordDur = 0.5;
+  return {
+    index: 0,
+    speaker: 0,
+    speakerLabel: "Speaker A",
+    startSec,
+    endSec: startSec + words.length * wordDur,
+    text: words.join(" "),
+    confidence: null,
+    words: words.map((word, i) => ({
+      word,
+      startSec: startSec + i * wordDur,
+      endSec: startSec + (i + 1) * wordDur,
+      confidence: null,
+    })),
+  };
 }
 
 describe("clampEditorDocumentToStoredWindow", () => {
@@ -190,5 +211,192 @@ describe("assertEditorDocumentHasRenderableContent (fix #5: server-side isEmpty 
         window,
       ),
     ).toThrow();
+  });
+});
+
+describe("planEditorDocumentSave (vizard-parity.md Phase B step 13, in-studio trim)", () => {
+  const storedWindow = { startSec: 10, endSec: 20 };
+
+  test("unchanged bounds: a transcript-only edit does NOT invalidate the preview proxy or touch scores", () => {
+    const current = makeDocument([makeUtterance(10, ["so", "as", "you"])]);
+    const document = makeDocument([makeUtterance(10, ["so", "as", "you", "can"])]);
+
+    const plan = planEditorDocumentSave({
+      document,
+      current,
+      storedWindow,
+      sourceDurationSec: 600,
+      viralityScore: 70,
+    });
+
+    expect(plan.noop).toBe(false);
+    if (plan.noop) return;
+    expect(plan.boundariesChanged).toBe(false);
+    expect(plan.transcriptChanged).toBe(true);
+    expect(plan.next.clipStartSec).toBe(storedWindow.startSec);
+    expect(plan.next.clipEndSec).toBe(storedWindow.endSec);
+    // No score recompute and no proxy invalidation signal on an
+    // unchanged-bounds save — the caller only spreads these fields when set.
+    expect(plan.durationDependentScores).toEqual({});
+  });
+
+  test("unchanged bounds AND unchanged document is a true no-op", () => {
+    const doc = makeDocument([makeUtterance(10, ["so", "as"])]);
+    const plan = planEditorDocumentSave({
+      document: doc,
+      current: doc,
+      storedWindow,
+      sourceDurationSec: 600,
+      viralityScore: 70,
+    });
+    expect(plan.noop).toBe(true);
+  });
+
+  test("boundary-change save plans proxy invalidation and recomputed duration-dependent scores", () => {
+    const current = makeDocument([makeUtterance(10, ["so", "as"])]);
+    const document = makeDocument([makeUtterance(12, ["this", "smaller"])], {
+      clipStartSec: 12,
+      clipEndSec: 22,
+    });
+
+    const plan = planEditorDocumentSave({
+      document,
+      current,
+      storedWindow,
+      sourceDurationSec: 600,
+      viralityScore: 70,
+    });
+
+    expect(plan.noop).toBe(false);
+    if (plan.noop) return;
+    expect(plan.boundariesChanged).toBe(true);
+    expect(plan.next.clipStartSec).toBe(12);
+    expect(plan.next.clipEndSec).toBe(22);
+    // The caller (saveClipEditorDocument) reads this to decide whether to
+    // null previewStorageKey/previewStartSec/previewDurationSec — a real
+    // boundary change must always plan for that.
+    expect(plan.durationDependentScores).toHaveProperty("durationOptimalityScore");
+    expect(plan.durationDependentScores).toHaveProperty("tiktokScore");
+    expect(plan.durationDependentScores).toHaveProperty("youtubeScore");
+    expect(plan.durationDependentScores).toHaveProperty("instagramScore");
+  });
+
+  test("rejects a boundary change shorter than CLIP_MIN_DURATION_SEC with editor_boundaries_invalid", () => {
+    const current = makeDocument([makeUtterance(10, ["so"])]);
+    const document = makeDocument([makeUtterance(10, ["so"])], {
+      clipStartSec: 10,
+      clipEndSec: 15, // 5s — under the 10s floor
+    });
+
+    expect(() =>
+      planEditorDocumentSave({
+        document,
+        current,
+        storedWindow,
+        sourceDurationSec: 600,
+        viralityScore: 70,
+      }),
+    ).toThrow(ClipActionError);
+
+    try {
+      planEditorDocumentSave({
+        document,
+        current,
+        storedWindow,
+        sourceDurationSec: 600,
+        viralityScore: 70,
+      });
+      throw new Error("expected planEditorDocumentSave to throw");
+    } catch (error) {
+      expect((error as ClipActionError).code).toBe("editor_boundaries_invalid");
+    }
+  });
+
+  test("rejects a boundary change whose end lands past a known source duration", () => {
+    const current = makeDocument([makeUtterance(10, ["so"])]);
+    const document = makeDocument([makeUtterance(590, ["so"])], {
+      clipStartSec: 590,
+      clipEndSec: 610, // source is only 600s long
+    });
+
+    try {
+      planEditorDocumentSave({
+        document,
+        current,
+        storedWindow,
+        sourceDurationSec: 600,
+        viralityScore: 70,
+      });
+      throw new Error("expected planEditorDocumentSave to throw");
+    } catch (error) {
+      expect(error).toBeInstanceOf(ClipActionError);
+      expect((error as ClipActionError).code).toBe("editor_boundaries_invalid");
+    }
+  });
+
+  test("a null sourceDurationSec never blocks an otherwise-valid boundary change", () => {
+    const current = makeDocument([makeUtterance(10, ["so"])]);
+    const document = makeDocument([makeUtterance(1000, ["so", "as"])], {
+      clipStartSec: 1000,
+      clipEndSec: 1015,
+    });
+
+    const plan = planEditorDocumentSave({
+      document,
+      current,
+      storedWindow,
+      sourceDurationSec: null,
+      viralityScore: 70,
+    });
+    expect(plan.noop).toBe(false);
+  });
+
+  test("clamps deletedRanges and transcriptSlice to the new window on a boundary change", () => {
+    const current = makeDocument([makeUtterance(10, ["so"])]);
+    const document = makeDocument(
+      [makeUtterance(12, ["this", "clip", "extends", "past"])],
+      {
+        clipStartSec: 12,
+        clipEndSec: 22,
+        deletedRanges: [{ startSec: 8, endSec: 13 }],
+      },
+    );
+
+    const plan = planEditorDocumentSave({
+      document,
+      current,
+      storedWindow,
+      sourceDurationSec: 600,
+      viralityScore: 70,
+    });
+    expect(plan.noop).toBe(false);
+    if (plan.noop) return;
+    expect(plan.next.deletedRanges).toEqual([{ startSec: 12, endSec: 13 }]);
+    for (const utterance of plan.next.transcriptSlice) {
+      expect(utterance.startSec).toBeGreaterThanOrEqual(12);
+      expect(utterance.endSec).toBeLessThanOrEqual(22);
+    }
+  });
+
+  test("a boundary change that leaves nothing renderable throws editor_document_empty_timeline", () => {
+    const current = makeDocument([makeUtterance(10, ["so"])]);
+    const document = makeDocument([makeUtterance(12, ["so"])], {
+      clipStartSec: 12,
+      clipEndSec: 22,
+      deletedRanges: [{ startSec: 12, endSec: 22 }],
+    });
+
+    try {
+      planEditorDocumentSave({
+        document,
+        current,
+        storedWindow,
+        sourceDurationSec: 600,
+        viralityScore: 70,
+      });
+      throw new Error("expected planEditorDocumentSave to throw");
+    } catch (error) {
+      expect((error as ClipActionError).code).toBe("editor_document_empty_timeline");
+    }
   });
 });

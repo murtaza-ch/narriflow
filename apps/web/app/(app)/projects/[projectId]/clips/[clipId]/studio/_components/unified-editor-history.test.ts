@@ -234,4 +234,42 @@ describe("applyUnifiedEditorAction", () => {
     expect(state.metaUndo).toHaveLength(totalEdits);
     expect(state.metaUndo.every((kind) => kind === "document")).toBe(true);
   });
+
+  // vizard-parity.md Phase B step 13 (in-studio trim): the trim commit
+  // handler dispatches a document-level `trimClip` action (its own undo
+  // step) plus a "resegment" to rebuild `segments` against the new window —
+  // the latter must NOT cost a second ⌘Z press.
+  describe("resegment", () => {
+    test("replaces segments and clears their undo history WITHOUT pushing a metaUndo entry", () => {
+      let state = initial();
+      state = applyUnifiedEditorAction(state, { kind: "segments", segments: segmentsB });
+      expect(state.segmentsPast).toEqual([segmentsA]);
+      expect(state.metaUndo).toEqual(["segments"]);
+
+      state = applyUnifiedEditorAction(state, { kind: "resegment", segments: segmentsC });
+      expect(state.segments).toBe(segmentsC);
+      expect(state.segmentsPast).toEqual([]);
+      expect(state.segmentsFuture).toEqual([]);
+      // The prior "segments" meta entry from the split above is untouched —
+      // resegment doesn't add or remove meta entries of its own.
+      expect(state.metaUndo).toEqual(["segments"]);
+    });
+
+    test("undo right after a trim (document + resegment) restores the pre-trim document in ONE step, leaving the resegmented segments in place", () => {
+      let state = initial();
+      state = applyUnifiedEditorAction(state, {
+        kind: "document",
+        action: { type: "setBrollUrl", brollUrl: "https://example.com/a.mp4" },
+      });
+      state = applyUnifiedEditorAction(state, { kind: "resegment", segments: segmentsC });
+
+      state = applyUnifiedEditorAction(state, { kind: "undo" });
+      expect(state.doc.present.brollUrl).toBeNull();
+      // Resegment left no undo trace of its own — the post-trim segments
+      // stay exactly as they were, matching the plan's "client derived
+      // state follows the doc automatically" rule rather than trying to
+      // restore stale pre-trim segments.
+      expect(state.segments).toBe(segmentsC);
+    });
+  });
 });

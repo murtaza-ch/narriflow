@@ -5,6 +5,7 @@ import { getPrismaClient } from "@narriflow/db/client";
 import { projectService } from "./project.service";
 import {
   BRAND_DEFAULT_CAPTION_PRESET_ID,
+  CLIP_MIN_DURATION_SEC,
   CLIP_TITLE_MAX_LENGTH,
   CLIP_TITLE_SUGGESTION_COUNT,
   LEGACY_DEFAULT_CAPTION_PRESET_ID,
@@ -493,6 +494,16 @@ export interface EditorDocumentBoundaryClampResult {
  * this endpoint. Kept side-effect-free and exported so the 5-12-word
  * scenario is directly unit-testable (mirrors `planEditorReset`'s role for
  * reset).
+ *
+ * In-studio trim (vizard-parity.md Phase B step 13) reuses this SAME
+ * function for the opposite situation: when `saveClipEditorDocument`
+ * detects a DELIBERATE boundary change, it calls this with the document's
+ * OWN new bounds (not the stored `clip.startSec/endSec`) as the `clip`
+ * argument — "clamp to the stored window" becomes "clamp to the window the
+ * client just committed to", the exact same normalize-transcript-and-
+ * deletedRanges behavior, just pointed at a different target window. The
+ * `boundaryDriftDetected` diagnostic is meaningless in that case (the
+ * window IS the new window by construction) and the caller ignores it.
  */
 export function clampEditorDocumentToStoredWindow(
   document: EditorDocument,
@@ -527,6 +538,169 @@ export function clampEditorDocumentToStoredWindow(
     },
     boundaryDriftDetected,
     recomputedEffective,
+  };
+}
+
+export interface EditorDocumentSavePlanInput {
+  /** The incoming payload's `document`, already schema-parsed. */
+  document: EditorDocument;
+  /** `buildEditorDocumentFromClip(clip)` — the document as currently stored. */
+  current: EditorDocument;
+  /** `{ startSec: clip.startSec, endSec: clip.endSec }` — the clip's
+   *  STORED window before this save. */
+  storedWindow: ClipWindow;
+  /** `project.sourceDurationSeconds`, or null when unknown (never blocks a
+   *  trim on its own — only an END past a KNOWN source length is rejected). */
+  sourceDurationSec: number | null;
+  /** `clip.viralityScore` — only read when boundaries actually change (the
+   *  duration-dependent scores need it). */
+  viralityScore: number;
+}
+
+export type EditorDocumentSavePlan =
+  | { noop: true }
+  | {
+      noop: false;
+      /** The fully reconciled document to persist. */
+      next: EditorDocument;
+      boundariesChanged: boolean;
+      transcriptChanged: boolean;
+      /** Diagnostic only, and only meaningful when `!boundariesChanged` —
+       *  see `clampEditorDocumentToStoredWindow`'s doc comment. */
+      boundaryDriftDetected: boolean;
+      recomputedEffective: EffectiveClipTiming | null;
+      /** Set only when `boundariesChanged` — the caller spreads this
+       *  directly into the `clip.update` write. Empty otherwise, so an
+       *  unchanged-bounds save can never accidentally touch these columns. */
+      durationDependentScores:
+        | {
+            durationOptimalityScore: number;
+            tiktokScore: number;
+            youtubeScore: number;
+            instagramScore: number;
+          }
+        | Record<string, never>;
+    };
+
+/**
+ * Pure planning step for `saveClipEditorDocument` (vizard-parity.md Phase B
+ * step 13, in-studio trim) — same role `planEditorReset` plays for Reset:
+ * every validation, boundary-clamp, and duration-dependent-score decision
+ * lives here, side-effect-free and Prisma-free, so it's directly
+ * unit-testable without a database. The wrapper method below only adds the
+ * guarded transaction, render-asset cleanup, and revision-conflict handling
+ * around whatever this returns.
+ *
+ * Throws `ClipActionError('editor_boundaries_invalid', …)` for a boundary
+ * change that fails validation (too short, negative start, or past a known
+ * source length) and `ClipActionError('editor_document_empty_timeline', …)`
+ * (via `assertEditorDocumentHasRenderableContent`) for deletions that would
+ * leave nothing renderable — both map to 422 in route.ts.
+ */
+export function planEditorDocumentSave(
+  input: EditorDocumentSavePlanInput,
+): EditorDocumentSavePlan {
+  const { document, current, storedWindow, sourceDurationSec, viralityScore } = input;
+
+  const boundariesChanged =
+    Math.abs(document.clipStartSec - storedWindow.startSec) >
+      SAVE_BOUNDARY_EPSILON_SEC ||
+    Math.abs(document.clipEndSec - storedWindow.endSec) > SAVE_BOUNDARY_EPSILON_SEC;
+
+  if (boundariesChanged) {
+    // Note: a negative clipStartSec never reaches here — editorDocumentSchema
+    // already enforces `.nonnegative()` on both bounds at the payload-parsing
+    // boundary (saveEditorDocumentSchema.parse in saveClipEditorDocument), so
+    // that's not re-checked; only the two conditions the schema CAN'T express
+    // (a relationship between the two bounds, and a comparison against data
+    // loaded from the DB) are validated here.
+    const requestedDurationSec = document.clipEndSec - document.clipStartSec;
+    if (requestedDurationSec < CLIP_MIN_DURATION_SEC - SAVE_BOUNDARY_EPSILON_SEC) {
+      throw new ClipActionError(
+        "editor_boundaries_invalid",
+        `clip must be at least ${CLIP_MIN_DURATION_SEC} seconds`,
+      );
+    }
+    if (
+      typeof sourceDurationSec === "number" &&
+      document.clipEndSec > sourceDurationSec + SAVE_BOUNDARY_EPSILON_SEC
+    ) {
+      throw new ClipActionError(
+        "editor_boundaries_invalid",
+        "clip end is past the end of the source video",
+      );
+    }
+  }
+
+  // The target window this save reconciles the document to: the clip's
+  // STORED bounds when boundaries didn't change (unchanged behavior), or the
+  // document's own newly-validated bounds when they did — trim deliberately
+  // adopts the client's window rather than recomputing one server-side,
+  // since the client already built its transcriptSlice against exactly this
+  // window (buildTranscriptSliceForWindow).
+  const window: ClipWindow = boundariesChanged
+    ? { startSec: document.clipStartSec, endSec: document.clipEndSec }
+    : storedWindow;
+
+  let next: EditorDocument = {
+    ...document,
+    clipStartSec: window.startSec,
+    clipEndSec: window.endSec,
+    deletedRanges: normalizeDeletedRanges(document.deletedRanges, window),
+  };
+
+  // Fix #5: reject a save whose normalized deletions leave nothing
+  // renderable — the worker would only discover this at render time
+  // (buildClipCutPlan's isEmpty guard), after every render variant for this
+  // clip has already been failed.
+  assertEditorDocumentHasRenderableContent(next.deletedRanges, window);
+
+  const transcriptChanged =
+    JSON.stringify(next.transcriptSlice) !== JSON.stringify(current.transcriptSlice);
+  let boundaryDriftDetected = false;
+  let recomputedEffective: EffectiveClipTiming | null = null;
+
+  if (boundariesChanged) {
+    // Clamp-to-DOCUMENT-window: the client already built transcriptSlice for
+    // `window`, but this still normalizes it (and deletedRanges) the same
+    // way rather than trusting the client blindly — a stale/buggy client
+    // sending words past the validated window gets silently trimmed to it,
+    // exactly like the unchanged-bounds branch below does against the
+    // stored window.
+    next = clampEditorDocumentToStoredWindow(next, window).document;
+  } else if (transcriptChanged) {
+    const clamp = clampEditorDocumentToStoredWindow(next, storedWindow);
+    next = clamp.document;
+    boundaryDriftDetected = clamp.boundaryDriftDetected;
+    recomputedEffective = clamp.recomputedEffective;
+  }
+
+  // Both sides are schema-parse output, so serialized comparison is a valid
+  // deep-equality check (stable key order, no undefined-vs-missing holes).
+  if (JSON.stringify(next) === JSON.stringify(current)) {
+    return { noop: true };
+  }
+
+  const durationDependentScores = boundariesChanged
+    ? (() => {
+        const durationSec = next.clipEndSec - next.clipStartSec;
+        return {
+          durationOptimalityScore: computeDurationOptimality(durationSec),
+          tiktokScore: computePlatformScore(viralityScore, durationSec, "tiktok"),
+          youtubeScore: computePlatformScore(viralityScore, durationSec, "youtube"),
+          instagramScore: computePlatformScore(viralityScore, durationSec, "instagram"),
+        };
+      })()
+    : {};
+
+  return {
+    noop: false,
+    next,
+    boundariesChanged,
+    transcriptChanged,
+    boundaryDriftDetected,
+    recomputedEffective,
+    durationDependentScores,
   };
 }
 
@@ -2371,13 +2545,25 @@ export class ClipService {
    * guarded write. No-op saves are detected by deep-equality and issue zero
    * writes. The first real save captures the revision-zero snapshot.
    *
-   * Boundaries are validated, not writable: in-studio trim is Phase B step 13
-   * (docs/plans/vizard-parity.md) and needs proxy-lifecycle handling first.
-   * A transcript change is clamped to the clip's STORED window via
-   * `clampEditorDocumentToStoredWindow` — NOT recomputed/expanded the way
-   * `updateClipTranscriptSlice` does — because this endpoint's own
-   * boundary-immutability check above would otherwise be bypassable by
-   * submitting a transcriptSlice whose words overlap past the stored edge.
+   * Boundaries (vizard-parity.md Phase B step 13, in-studio trim): a real
+   * change is VALIDATED, not rejected — `endSec - startSec` must clear
+   * `CLIP_MIN_DURATION_SEC` (the same floor `updateClipBoundariesSchema`
+   * enforces for the legacy endpoint, reused here so the two paths can never
+   * disagree about how short a clip may get) and the window must lie inside
+   * `[0, project.sourceDurationSeconds]` when that's known. A real change
+   * follows `updateClipBoundaries`'/`resetClipEditorToOriginal`'s own
+   * side-effect pattern: null the preview proxy (its window covered the OLD
+   * bounds) and recompute the duration-dependent scores, inside the same
+   * guarded transaction that invalidates renders below (every real save
+   * already does that regardless of whether bounds moved). When bounds are
+   * UNCHANGED, a transcript change is still clamped to the clip's STORED
+   * window via `clampEditorDocumentToStoredWindow` exactly as before — NOT
+   * recomputed/expanded the way `updateClipTranscriptSlice` does, because a
+   * transcriptSlice whose words overlap past the stored edge must never move
+   * boundaries through the back door. When bounds DID move, the same
+   * function clamps to the DOCUMENT's own new window instead (see its
+   * updated doc comment) so a client-sent transcriptSlice/deletedRanges pair
+   * can never imply a wider span than what was actually validated above.
    */
   async saveClipEditorDocument(
     userId: string,
@@ -2393,7 +2579,10 @@ export class ClipService {
 
     const clip = await prisma.clip.findFirst({
       where: { id: clipId, projectId, project: { userId } },
-      include: { renders: true },
+      include: {
+        renders: true,
+        project: { select: { sourceDurationSeconds: true } },
+      },
     });
     if (!clip) {
       throw new Error("clip not found");
@@ -2402,66 +2591,17 @@ export class ClipService {
       throw new ClipEditorRevisionConflictError(clip.editorRevision);
     }
 
-    const BOUNDARY_EPSILON_SEC = 0.001;
-    if (
-      Math.abs(document.clipStartSec - clip.startSec) > BOUNDARY_EPSILON_SEC ||
-      Math.abs(document.clipEndSec - clip.endSec) > BOUNDARY_EPSILON_SEC
-    ) {
-      throw new ClipActionError(
-        "editor_boundaries_immutable",
-        "clip boundaries cannot be changed through the editor document yet",
-      );
-    }
-
     const current = buildEditorDocumentFromClip(clip);
 
-    const window: ClipWindow = { startSec: clip.startSec, endSec: clip.endSec };
-    let next: EditorDocument = {
-      ...document,
-      clipStartSec: clip.startSec,
-      clipEndSec: clip.endSec,
-      deletedRanges: normalizeDeletedRanges(document.deletedRanges, window),
-    };
+    const plan = planEditorDocumentSave({
+      document,
+      current,
+      storedWindow: { startSec: clip.startSec, endSec: clip.endSec },
+      sourceDurationSec: clip.project.sourceDurationSeconds,
+      viralityScore: clip.viralityScore,
+    });
 
-    // Fix #5: reject a save whose normalized deletions leave nothing
-    // renderable — the worker would only discover this at render time
-    // (buildClipCutPlan's isEmpty guard), after every render variant for
-    // this clip has already been failed.
-    assertEditorDocumentHasRenderableContent(next.deletedRanges, window);
-
-    const transcriptChanged =
-      JSON.stringify(next.transcriptSlice) !==
-      JSON.stringify(current.transcriptSlice);
-    let boundaryDriftDetected = false;
-    if (transcriptChanged) {
-      const clamp = clampEditorDocumentToStoredWindow(next, {
-        startSec: clip.startSec,
-        endSec: clip.endSec,
-      });
-      next = clamp.document;
-      boundaryDriftDetected = clamp.boundaryDriftDetected;
-      if (boundaryDriftDetected) {
-        // Diagnostic only — the transcript is already clamped to the stored
-        // window above regardless. Surfaces the cases where a client sent a
-        // transcriptSlice implying a wider window than the clip actually
-        // has, so it's visible without being able to move boundaries.
-        console.warn(
-          JSON.stringify({
-            level: "warn",
-            message: "editor_document_transcript_boundary_drift_clamped",
-            clipId,
-            storedStartSec: clip.startSec,
-            storedEndSec: clip.endSec,
-            recomputedStartSec: clamp.recomputedEffective.startSec,
-            recomputedEndSec: clamp.recomputedEffective.endSec,
-          }),
-        );
-      }
-    }
-
-    // Both sides are schema-parse output, so serialized comparison is a valid
-    // deep-equality check (stable key order, no undefined-vs-missing holes).
-    if (JSON.stringify(next) === JSON.stringify(current)) {
+    if (plan.noop) {
       return {
         revision: clip.editorRevision,
         document: current,
@@ -2469,9 +2609,31 @@ export class ClipService {
       };
     }
 
-    const staleRenderKeys = clip.renders
-      .map((render) => render.storageKey)
-      .filter((key): key is string => Boolean(key));
+    const { next, boundariesChanged, transcriptChanged, boundaryDriftDetected } = plan;
+    if (boundaryDriftDetected && plan.recomputedEffective) {
+      // Diagnostic only — the transcript is already clamped to the stored
+      // window regardless. Surfaces the cases where a client sent a
+      // transcriptSlice implying a wider window than the clip actually has,
+      // so it's visible without being able to move boundaries.
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          message: "editor_document_transcript_boundary_drift_clamped",
+          clipId,
+          storedStartSec: clip.startSec,
+          storedEndSec: clip.endSec,
+          recomputedStartSec: plan.recomputedEffective.startSec,
+          recomputedEndSec: plan.recomputedEffective.endSec,
+        }),
+      );
+    }
+
+    const staleRenderKeys = [
+      ...clip.renders.map((render) => render.storageKey),
+      // The old-window preview proxy is orphaned once boundaries actually
+      // move — same rule as updateClipBoundaries/resetClipEditorToOriginal.
+      ...(boundariesChanged ? [clip.previewStorageKey] : []),
+    ].filter((key): key is string => Boolean(key));
 
     let deletedRenderCount = 0;
     const updated = await prisma.$transaction(async (tx) => {
@@ -2488,6 +2650,15 @@ export class ClipService {
           deletedRanges: next.deletedRanges as unknown as Prisma.InputJsonValue,
           editorRevision: { increment: 1 },
           status: "edited",
+          ...plan.durationDependentScores,
+          // The proxy covers the OLD window; new boundaries can fall
+          // outside it entirely. Null it so the preview backfill worker
+          // cuts a fresh proxy for the new window (the client also drops
+          // its own previewVideoUrl state immediately on a successful save
+          // — see studio-shell.tsx's trim commit handler).
+          ...(boundariesChanged
+            ? { previewStorageKey: null, previewStartSec: null, previewDurationSec: null }
+            : {}),
           // First real save captures the pre-edit state as the immutable
           // revision-zero snapshot; never overwritten afterwards.
           ...(clip.editorOriginal
@@ -2524,6 +2695,7 @@ export class ClipService {
         revision: updated.editorRevision,
         deletedRenderCount,
         transcriptChanged,
+        boundariesChanged,
       }),
     );
 
