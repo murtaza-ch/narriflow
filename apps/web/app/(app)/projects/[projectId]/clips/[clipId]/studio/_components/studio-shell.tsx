@@ -26,6 +26,7 @@ import {
   type EditorDocument,
   type EditedTimeMap,
   type SourceRange,
+  type ClipWindow,
 } from "@narriflow/validators";
 import { TopBar } from "./top-bar";
 import { TranscriptPanel } from "./transcript-panel";
@@ -83,19 +84,21 @@ const AUTOSAVE_DEBOUNCE_MS = 1500;
  *  park on). See `lastKeptPlayerTimeSec` below. */
 const LAST_KEPT_FRAME_EPSILON_SEC = 0.001;
 
-/** Shared guard for both `deleteSelectedSegment` (timeline) and
- *  `deleteSourceRange` (transcript selection, Phase B step 11): mirrors the
- *  worker's render-time `isEmpty` check (`cut-plan.ts`) so a delete that
- *  would leave nothing renderable is rejected client-side before it's ever
- *  dispatched, instead of discovered later as a failed render. Pure/
- *  module-level so both callers share one implementation rather than
- *  duplicating the normalize-then-check sequence. */
+/** Shared guard for `deleteSelectedSegment` (timeline), `deleteSourceRange`
+ *  (transcript selection, Phase B step 11), and `applyRemoveSilence` (Phase
+ *  B step 12, which passes the whole batch of detected ranges at once):
+ *  mirrors the worker's render-time `isEmpty` check (`cut-plan.ts`) so a
+ *  delete that would leave nothing renderable is rejected client-side
+ *  before it's ever dispatched, instead of discovered later as a failed
+ *  render. Pure/module-level so every caller shares one implementation
+ *  rather than duplicating the normalize-then-check sequence. */
 function computeDeleteCandidate(
   currentDeletedRanges: SourceRange[],
   window: { startSec: number; endSec: number },
-  range: SourceRange,
+  ranges: SourceRange | SourceRange[],
 ): { candidateRanges: SourceRange[]; blocked: boolean } {
-  const candidateRanges = normalizeDeletedRanges([...currentDeletedRanges, range], window);
+  const additions = Array.isArray(ranges) ? ranges : [ranges];
+  const candidateRanges = normalizeDeletedRanges([...currentDeletedRanges, ...additions], window);
   return { candidateRanges, blocked: buildStudioCutPlan(candidateRanges, window).isEmpty };
 }
 
@@ -290,6 +293,11 @@ interface StudioContextValue extends StudioState {
    *  timeline can render one Revert-able cut marker per range; see
    *  `deletedRangesToCutMarkers` in edited-timeline.ts. */
   deletedRanges: SourceRange[];
+  /** The same (window, deletedRanges) window `editedTimeMap` was built
+   *  from — pass this to `detectSilenceRanges` (Phase B step 12) so the
+   *  timeline's live preview can never disagree with what `applyRemoveSilence`
+   *  actually dispatches. */
+  clipWindow: ClipWindow;
   /** Server-seeded brand logo (URL + snapshot defaults), or null when the
    *  project has none. See `StudioBrandLogo`'s doc comment. */
   brandLogo: StudioBrandLogo | null;
@@ -306,6 +314,12 @@ interface StudioContextValue extends StudioState {
    *  source-second range instead of a timeline segment. Returns false (and
    *  toasts) when the delete was rejected, true once it was dispatched. */
   deleteSourceRange: (range: SourceRange) => boolean;
+  /** Vizard-parity Phase B step 12 (Remove silence): unions `detected` with
+   *  the existing manual `deletedRanges` and dispatches ONE undoable
+   *  `setDeletedRanges` action. Same isEmpty guard/toast as every other
+   *  delete path; returns false (no dispatch) when blocked, empty, or a
+   *  no-op. */
+  applyRemoveSilence: (detected: SourceRange[]) => boolean;
   setIsPlaying: (v: boolean) => void;
   setActiveTool: (t: ToolId | null) => void;
   setShowTimeline: (v: boolean) => void;
@@ -534,13 +548,21 @@ export function StudioShell({
   // for the same degenerate case the old `duration` computation guarded
   // (clipStartSec/clipEndSec both unset, e.g. a test harness) — building the
   // map from an empty window would otherwise yield a bogus zero duration.
-  const editedTimeMap: EditedTimeMap = useMemo(() => {
+  // Same (window, deletedRanges) window every delete-candidate check
+  // (computeDeleteCandidate, Remove-silence detection/apply) must use, kept
+  // as one memo so they can never disagree with editedTimeMap about where
+  // the clip's bounds actually are.
+  const clipWindow: ClipWindow = useMemo(() => {
     const hasRealBounds = doc.clipEndSec > doc.clipStartSec;
-    const window = hasRealBounds
+    return hasRealBounds
       ? { startSec: doc.clipStartSec, endSec: doc.clipEndSec }
       : { startSec: doc.clipStartSec, endSec: doc.clipStartSec + Math.max(0, clipInfo.duration) };
-    return buildStudioCutPlan(doc.deletedRanges, window).map;
-  }, [doc.deletedRanges, doc.clipStartSec, doc.clipEndSec, clipInfo.duration]);
+  }, [doc.clipStartSec, doc.clipEndSec, clipInfo.duration]);
+
+  const editedTimeMap: EditedTimeMap = useMemo(
+    () => buildStudioCutPlan(doc.deletedRanges, clipWindow).map,
+    [doc.deletedRanges, clipWindow],
+  );
 
   // `duration` IS the edited duration — identical to the old
   // `clipEndSec - clipStartSec` computation whenever `deletedRanges` is
@@ -895,6 +917,50 @@ export function StudioShell({
       return true;
     },
     [doc.clipStartSec, doc.clipEndSec, doc.deletedRanges],
+  );
+
+  // Vizard-parity Phase B step 12: Remove silence. `detected` is a batch of
+  // ranges the caller (timeline.tsx's popover) already computed with the
+  // pure `detectSilenceRanges` (packages/validators) for its own live
+  // preview line — what's shown before Apply is exactly what gets unioned
+  // and dispatched here, never recomputed. Unions with the existing manual
+  // `deletedRanges` (never replaces them — a manual cut always survives)
+  // and reuses the same isEmpty guard/toast every other delete path uses,
+  // via `computeDeleteCandidate`'s multi-range form. One `setDeletedRanges`
+  // dispatch = one undo step, so ⌘Z restores exactly the pre-Apply
+  // deletedRanges (manual cuts included) in a single action.
+  const applyRemoveSilence = useCallback(
+    (detected: SourceRange[]): boolean => {
+      if (detected.length === 0) return false;
+      const { candidateRanges, blocked } = computeDeleteCandidate(
+        doc.deletedRanges,
+        clipWindow,
+        detected,
+      );
+      if (blocked) {
+        toaster.create({
+          type: "error",
+          title: "Can't delete the only remaining content",
+          description: "Keep at least one segment in the clip.",
+        });
+        return false;
+      }
+      // Every detected range already sits outside `doc.deletedRanges`
+      // (silence-detection.ts subtracts existingDeleted before returning),
+      // but guard defensively against a stale preview re-detecting nothing
+      // new rather than relying on that alone.
+      if (JSON.stringify(candidateRanges) === JSON.stringify(doc.deletedRanges)) {
+        return false;
+      }
+      setUnified((s) =>
+        applyUnifiedEditorAction(s, {
+          kind: "document",
+          action: { type: "setDeletedRanges", ranges: candidateRanges },
+        }),
+      );
+      return true;
+    },
+    [doc.deletedRanges, clipWindow],
   );
 
   // Vizard-parity Phase B step 10: word-level Correct — changes only ONE
@@ -1568,8 +1634,8 @@ export function StudioShell({
     sourceVideoUrl, sourcePreviewId, clipStartSec, clipEndSec, sourcePurged,
     previewVideoUrl, previewStartSec, useOriginalSourceFallback, setUseOriginalSourceFallback,
     activeVideoUrl, activeOffsetSec, activeVideoKind, playerClipStartSec, playerClipEndSec,
-    editedTimeMap, deletedRanges: doc.deletedRanges,
-    brandLogo, utterances, updateUtteranceText, updateWord, deleteSourceRange,
+    editedTimeMap, deletedRanges: doc.deletedRanges, clipWindow,
+    brandLogo, utterances, updateUtteranceText, updateWord, deleteSourceRange, applyRemoveSilence,
     setIsPlaying, setActiveTool, setShowTimeline, setAspectRatio,
     setLayoutMode, setShowShortcuts, setTimelineZoom,
     setSelectedSegmentId, setCaptionPreset, selectCaption, deselectCaption,

@@ -1,7 +1,8 @@
 "use client";
 
 import { memo, useRef, useCallback, useEffect, useMemo, useState, type RefObject } from "react";
-import { Box, Flex, Text, Slider } from "@chakra-ui/react";
+import { Box, Flex, Text, Slider, Popover, Portal, Stack } from "@chakra-ui/react";
+import { Button } from "@narriflow/ui";
 import {
   Eye,
   EyeOff,
@@ -14,8 +15,15 @@ import {
   ZoomIn,
   ZoomOut,
   Undo2,
+  AudioLines,
 } from "lucide-react";
-import { editedToSource, sourceRangeToEdited } from "@narriflow/validators";
+import {
+  editedToSource,
+  sourceRangeToEdited,
+  detectSilenceRanges,
+  SILENCE_DEFAULT_MIN_SILENCE_SEC,
+  SILENCE_DEFAULT_PAD_SEC,
+} from "@narriflow/validators";
 import type { EditedTimeMap, SourceRange, TranscriptUtterance } from "@narriflow/validators";
 import { useStudio } from "./studio-shell";
 import { usePlaybackTime } from "./playback-clock";
@@ -426,6 +434,152 @@ function CtrlBtn({
       {icon}
       {label && <Text fontSize="11px">{label}</Text>}
     </Flex>
+  );
+}
+
+// ─── Remove silence (vizard-parity.md Phase B step 12) ────────────────────────
+//
+// Seeded from the pause-marker UX above (same underlying signal — gaps
+// between words — surfaced as an on-demand batch action instead of just an
+// inline chip): a small popover recomputes `detectSilenceRanges` (pure, from
+// packages/validators) on every slider move for a live "N silences · −X.Xs"
+// line, with no dispatch until Apply. Apply hands the CURRENT preview's
+// exact ranges to `applyRemoveSilence`, which unions them with the existing
+// manual `deletedRanges` and dispatches one undoable `setDeletedRanges`.
+
+const SILENCE_MIN_SEC_RANGE = { min: 0.3, max: 3.0, step: 0.1 };
+const SILENCE_PAD_SEC_RANGE = { min: 0, max: 0.5, step: 0.05 };
+
+function RemoveSilencePopover() {
+  const { utterances, clipWindow, deletedRanges, applyRemoveSilence } = useStudio();
+  const [open, setOpen] = useState(false);
+  const [minSilenceSec, setMinSilenceSec] = useState(SILENCE_DEFAULT_MIN_SILENCE_SEC);
+  const [padSec, setPadSec] = useState(SILENCE_DEFAULT_PAD_SEC);
+
+  // Defaults reset per open — no persistence across sessions of the popover,
+  // keeping the scope tight (design doc §2).
+  const handleOpenChange = useCallback((next: boolean) => {
+    setOpen(next);
+    if (next) {
+      setMinSilenceSec(SILENCE_DEFAULT_MIN_SILENCE_SEC);
+      setPadSec(SILENCE_DEFAULT_PAD_SEC);
+    }
+  }, []);
+
+  const detected = useMemo(
+    () =>
+      open
+        ? detectSilenceRanges(utterances, clipWindow, {
+            minSilenceSec,
+            padSec,
+            existingDeleted: deletedRanges,
+          })
+        : [],
+    [open, utterances, clipWindow, minSilenceSec, padSec, deletedRanges],
+  );
+
+  const totalRemovedSec = useMemo(
+    () => detected.reduce((sum, r) => sum + (r.endSec - r.startSec), 0),
+    [detected],
+  );
+
+  const handleApply = useCallback(() => {
+    if (applyRemoveSilence(detected)) setOpen(false);
+  }, [applyRemoveSilence, detected]);
+
+  return (
+    <Popover.Root
+      open={open}
+      onOpenChange={(e) => handleOpenChange(e.open)}
+      positioning={{ placement: "top-start" }}
+    >
+      <Popover.Trigger asChild>
+        <Box>
+          <CtrlBtn icon={<AudioLines size={14} />} title="Remove silence" active={open} />
+        </Box>
+      </Popover.Trigger>
+      <Portal>
+        <Popover.Positioner>
+          <Popover.Content layerStyle="panel" boxShadow="cardHover" minW="260px" p="3">
+            <Stack gap="3">
+              <Text textStyle="eyebrow" color="fg.subtle">
+                Remove silence
+              </Text>
+
+              <Stack gap="1.5">
+                <Flex justify="space-between" align="baseline">
+                  <Text fontSize="12px" color="fg.muted">
+                    Min silence
+                  </Text>
+                  <Text fontSize="12px" fontFamily="mono" color="fg.timecode">
+                    {minSilenceSec.toFixed(1)}s
+                  </Text>
+                </Flex>
+                <Slider.Root
+                  value={[minSilenceSec]}
+                  min={SILENCE_MIN_SEC_RANGE.min}
+                  max={SILENCE_MIN_SEC_RANGE.max}
+                  step={SILENCE_MIN_SEC_RANGE.step}
+                  onValueChange={(e) => setMinSilenceSec(e.value[0]!)}
+                  size="sm"
+                  colorPalette="accent"
+                >
+                  <Slider.Control>
+                    <Slider.Track>
+                      <Slider.Range />
+                    </Slider.Track>
+                    <Slider.Thumbs />
+                  </Slider.Control>
+                </Slider.Root>
+              </Stack>
+
+              <Stack gap="1.5">
+                <Flex justify="space-between" align="baseline">
+                  <Text fontSize="12px" color="fg.muted">
+                    Keep padding
+                  </Text>
+                  <Text fontSize="12px" fontFamily="mono" color="fg.timecode">
+                    {padSec.toFixed(2)}s
+                  </Text>
+                </Flex>
+                <Slider.Root
+                  value={[padSec]}
+                  min={SILENCE_PAD_SEC_RANGE.min}
+                  max={SILENCE_PAD_SEC_RANGE.max}
+                  step={SILENCE_PAD_SEC_RANGE.step}
+                  onValueChange={(e) => setPadSec(e.value[0]!)}
+                  size="sm"
+                  colorPalette="accent"
+                >
+                  <Slider.Control>
+                    <Slider.Track>
+                      <Slider.Range />
+                    </Slider.Track>
+                    <Slider.Thumbs />
+                  </Slider.Control>
+                </Slider.Root>
+              </Stack>
+
+              <Text fontSize="12px" color="fg.muted">
+                {detected.length === 0
+                  ? `No silences ≥ ${minSilenceSec.toFixed(1)}s`
+                  : `${detected.length} silence${detected.length === 1 ? "" : "s"} · −${totalRemovedSec.toFixed(1)}s`}
+              </Text>
+
+              <Button
+                size="sm"
+                variant="outline"
+                colorPalette="accent"
+                disabled={detected.length === 0}
+                onClick={handleApply}
+              >
+                Apply
+              </Button>
+            </Stack>
+          </Popover.Content>
+        </Popover.Positioner>
+      </Portal>
+    </Popover.Root>
   );
 }
 
@@ -1081,6 +1235,8 @@ export function Timeline() {
             active={!!selectedSegmentId}
             title="Delete selected clip (Backspace)"
           />
+          <Box w="1px" h="16px" bg="studio.border" mx="1" />
+          <RemoveSilencePopover />
         </Flex>
 
         {/* Center: Playback controls */}
