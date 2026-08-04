@@ -1,11 +1,27 @@
 "use client";
 
 import { memo, useRef, useEffect, useCallback, useState, useMemo } from "react";
-import { Box, Flex, Text, Checkbox } from "@chakra-ui/react";
+import { Box, Flex, Input, Text, Checkbox } from "@chakra-ui/react";
+import { Copy, Trash2, Undo2 } from "lucide-react";
+import { toaster } from "@narriflow/ui";
 import { editedToSource, sourceToEdited } from "@narriflow/validators";
-import type { EditedTimeMap, TranscriptUtterance, TranscriptWord } from "@narriflow/validators";
+import type {
+  EditedTimeMap,
+  SourceRange,
+  TranscriptUtterance,
+  TranscriptWord,
+} from "@narriflow/validators";
 import { useStudio } from "./studio-shell";
 import type { PlaybackClock } from "./playback-clock";
+import {
+  collectSelectedWords,
+  computeRevertCoveringRange,
+  isWordDeleted,
+  selectedWordsToSourceRange,
+  type SelectableWord,
+  type SelectionEndpoint,
+  type UtteranceWordSource,
+} from "./transcript-selection";
 
 // ─── Pause threshold (seconds) ──────────────────────────────────────────────
 
@@ -79,6 +95,41 @@ function getActiveTranscriptState(
   return { utteranceIndex, wordIndex };
 }
 
+// ─── Selection → word mapping (DOM glue around transcript-selection.ts) ────
+//
+// Each per-utterance word container carries `data-word-container` (see
+// EditableUtterance below), scoping a `Range`-based char-offset lookup to
+// exactly that utterance's own rendered word text — which is kept
+// byte-for-byte equal to `words.map(w => w.word).join(" ")` by always
+// emitting a joining space after every word token (pause indicators render
+// no text of their own), so the char offsets computed here line up exactly
+// with `wordCharRanges` in transcript-selection.ts.
+
+function resolveSelectionEndpoint(node: Node | null, offset: number): SelectionEndpoint | null {
+  if (!node) return null;
+  const el = node.nodeType === Node.ELEMENT_NODE ? (node as Element) : node.parentElement;
+  const container = el?.closest<HTMLElement>("[data-word-container]");
+  if (!container) return null;
+  const utteranceIndex = Number(container.getAttribute("data-word-container"));
+  if (Number.isNaN(utteranceIndex)) return null;
+  const preRange = document.createRange();
+  preRange.selectNodeContents(container);
+  preRange.setEnd(node, offset);
+  return { utteranceIndex, charOffset: preRange.toString().length };
+}
+
+interface TranscriptSelectionState {
+  words: SelectableWord[];
+  /** Non-null iff every selected word is already inside a deleted range —
+   *  the toolbar collapses to a single Revert in that case (see
+   *  transcript-selection.ts's `computeRevertCoveringRange`). */
+  revertRange: SourceRange | null;
+  /** Position within the scroll container's own content box (accounts for
+   *  scrollTop, so the toolbar naturally scrolls with the selection). */
+  top: number;
+  left: number;
+}
+
 // ─── Pause indicator ────────────────────────────────────────────────────────
 
 function PauseIndicator({ duration }: { duration: number }) {
@@ -118,6 +169,104 @@ function PauseIndicator({ duration }: { duration: number }) {
   );
 }
 
+// ─── Word-level Correct (Vizard-parity Phase B step 10) ────────────────────
+//
+// Inline single-word input — double-click a word to open it. Multi-word
+// input is rejected client-side (the reducer's `updateWordText` action only
+// ever touches one word and never redistributes timing; there's no batch
+// text-edit path yet, so the toast below points at the caption text editor
+// instead of silently truncating or erroring on the reducer side).
+
+function WordCorrectInput({
+  initialValue,
+  onCommit,
+  onCancel,
+}: {
+  initialValue: string;
+  onCommit: (text: string) => void;
+  onCancel: () => void;
+}) {
+  const [value, setValue] = useState(initialValue);
+  const inputRef = useRef<HTMLInputElement>(null);
+  // Enter/Escape and blur can all race to "finish" this input — this makes
+  // finishing idempotent so only the FIRST one takes effect (e.g. Enter's
+  // commit followed by the blur it triggers must not double-dispatch).
+  const doneRef = useRef(false);
+
+  useEffect(() => {
+    inputRef.current?.focus();
+    inputRef.current?.select();
+  }, []);
+
+  const commit = useCallback(() => {
+    if (doneRef.current) return;
+    const trimmed = value.trim();
+    if (trimmed.length === 0) {
+      doneRef.current = true;
+      onCancel();
+      return;
+    }
+    if (/\s/.test(trimmed)) {
+      toaster.create({
+        type: "error",
+        title: "One word at a time",
+        description: "One word at a time here — edit the caption text for bigger changes.",
+      });
+      return; // Leave the input open so the user can fix it in place.
+    }
+    doneRef.current = true;
+    if (trimmed === initialValue) {
+      onCancel();
+      return;
+    }
+    onCommit(trimmed);
+  }, [value, initialValue, onCommit, onCancel]);
+
+  const cancel = useCallback(() => {
+    if (doneRef.current) return;
+    doneRef.current = true;
+    onCancel();
+  }, [onCancel]);
+
+  return (
+    <Input
+      ref={inputRef}
+      value={value}
+      onChange={(e: React.ChangeEvent<HTMLInputElement>) => setValue(e.target.value)}
+      onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
+        // Keep studio-shell's global shortcut handler (Backspace/Delete,
+        // undo, etc.) from firing while typing a correction.
+        e.stopPropagation();
+        if (e.key === "Enter") {
+          e.preventDefault();
+          commit();
+        } else if (e.key === "Escape") {
+          e.preventDefault();
+          cancel();
+        }
+      }}
+      onBlur={commit}
+      htmlSize={Math.max(2, value.length)}
+      w="auto"
+      minW="24px"
+      h="auto"
+      display="inline-block"
+      verticalAlign="baseline"
+      bg="studio.raised"
+      color="studio.fg"
+      fontSize="13.5px"
+      fontFamily="inherit"
+      lineHeight="inherit"
+      borderRadius="3px"
+      borderWidth="1px"
+      borderColor="border.control"
+      px="3px"
+      py="0"
+      outline="none"
+    />
+  );
+}
+
 // ─── Editable Utterance ─────────────────────────────────────────────────────
 
 const EditableUtterance = memo(function EditableUtterance({
@@ -133,71 +282,94 @@ const EditableUtterance = memo(function EditableUtterance({
   activeWordIndex: number;
   onSeek: (editedTime: number) => void;
 }) {
-  const { updateUtteranceText, editedTimeMap, captionPreset } = useStudio();
-  const blockRef = useRef<HTMLDivElement>(null);
-  const [isEditing, setIsEditing] = useState(false);
-
-  const handleBlur = useCallback(() => {
-    setIsEditing(false);
-    const text = blockRef.current?.innerText?.trim();
-    if (text && text !== utterance.text) {
-      updateUtteranceText(utteranceIndex, text);
-    }
-  }, [utteranceIndex, utterance.text, updateUtteranceText]);
-
-  const handleFocus = useCallback(() => {
-    setIsEditing(true);
-  }, []);
+  const { editedTimeMap, captionPreset, updateWord, deletedRanges } = useStudio();
+  const [editingWordIndex, setEditingWordIndex] = useState<number | null>(null);
 
   // Build words (with fallback for utterances without word-level timing)
   const words: TranscriptWord[] = useMemo(() => {
     return getWordsForUtterance(utterance);
   }, [utterance]);
 
+  // Real per-word STT timing is required for a correction to actually land
+  // anywhere (the reducer indexes into `utterance.words`, which is empty for
+  // the synthesized-fallback case) — so double-click is a no-op without it.
+  const hasRealWordTiming = utterance.words.length > 0;
+
   // Build display tokens with pause indicators
   const tokens = useMemo(() => buildDisplayTokens(words), [words]);
 
   const highlightColor = captionPreset.highlightColor;
 
-  // When not editing, render clickable word spans with highlights
-  if (!isEditing) {
-    return (
-      <Box
-        ref={blockRef}
-        px="16px"
-        py="8px"
-        lineHeight="1.75"
-        fontSize="13.5px"
-        borderRadius="l1"
-        bg={isActive ? "studio.accent/10" : "transparent"}
-        _hover={{ bg: "rgba(255,255,255,0.04)" }}
-        transition="background 150ms"
-        contentEditable
-        suppressContentEditableWarning
-        onFocus={handleFocus}
-        onBlur={handleBlur}
-        outline="none"
-        cursor="text"
-      >
-        {tokens.map((token, i) => {
-          if (token.type === "pause") {
-            return (
-              <PauseIndicator
-                key={`pause-${i}`}
-                duration={token.pauseDuration!}
-              />
-            );
-          }
+  const startEdit = useCallback(
+    (wordIndex: number) => {
+      if (!hasRealWordTiming) return;
+      // Double-click's native "select the word" behavior would otherwise
+      // leave a stale selection (and its floating toolbar) behind the
+      // now-open correction input.
+      window.getSelection()?.removeAllRanges();
+      setEditingWordIndex(wordIndex);
+    },
+    [hasRealWordTiming],
+  );
 
-          const wordIdx = words.indexOf(token.word);
-          const isActiveWord = wordIdx === activeWordIndex;
+  const cancelEdit = useCallback(() => setEditingWordIndex(null), []);
 
+  const commitEdit = useCallback(
+    (wordIndex: number, text: string) => {
+      setEditingWordIndex(null);
+      updateWord(utteranceIndex, wordIndex, text);
+    },
+    [utteranceIndex, updateWord],
+  );
+
+  return (
+    <Box
+      data-word-container={utteranceIndex}
+      px="16px"
+      py="8px"
+      lineHeight="1.75"
+      fontSize="13.5px"
+      borderRadius="l1"
+      bg={isActive ? "studio.accent/10" : "transparent"}
+      _hover={{ bg: "rgba(255,255,255,0.04)" }}
+      transition="background 150ms"
+    >
+      {tokens.map((token, i) => {
+        if (token.type === "pause") {
           return (
-            <Box as="span" key={i} display="inline">
+            <PauseIndicator
+              key={`pause-${i}`}
+              duration={token.pauseDuration!}
+            />
+          );
+        }
+
+        const wordIdx = words.indexOf(token.word);
+        const isActiveWord = wordIdx === activeWordIndex;
+        const isDeleted = isWordDeleted(token.word, deletedRanges);
+        const isEditingThisWord = editingWordIndex === wordIdx;
+
+        return (
+          <Box as="span" key={i} display="inline">
+            {isEditingThisWord ? (
+              <WordCorrectInput
+                initialValue={token.word.word}
+                onCommit={(text) => commitEdit(wordIdx, text)}
+                onCancel={cancelEdit}
+              />
+            ) : (
               <Box
                 as="span"
                 display="inline"
-                color={isActiveWord ? highlightColor : "studio.fg"}
+                color={
+                  isDeleted
+                    ? "studio.fgSubtle"
+                    : isActiveWord
+                      ? highlightColor
+                      : "studio.fg"
+                }
+                textDecoration={isDeleted ? "line-through" : "none"}
+                opacity={isDeleted ? 0.65 : 1}
                 fontWeight="inherit"
                 cursor="pointer"
                 borderRadius="2px"
@@ -205,47 +377,125 @@ const EditableUtterance = memo(function EditableUtterance({
                 _hover={{ bg: "rgba(255,255,255,0.06)" }}
                 onClick={(e: React.MouseEvent) => {
                   e.preventDefault();
+                  // `sourceToEdited` already collapses an instant inside a
+                  // cut forward onto the edited time of the cut point (see
+                  // edit-ranges.ts) — a struck word seeks to the nearest
+                  // kept time for free, no special-casing needed here.
                   onSeek(sourceToEdited(editedTimeMap, token.word.startSec));
+                }}
+                onDoubleClick={(e: React.MouseEvent) => {
+                  e.preventDefault();
+                  // Correcting text on already-deleted (struck) footage is
+                  // inert and confusing — Revert first, then correct.
+                  if (isDeleted) return;
+                  startEdit(wordIdx);
                 }}
               >
                 {token.word.word}
               </Box>
-              {i < tokens.length - 1 && tokens[i + 1]?.type !== "pause"
-                ? " "
-                : tokens[i + 1]?.type === "pause"
-                  ? ""
-                  : ""}
-            </Box>
-          );
-        })}
-      </Box>
-    );
-  }
-
-  // Editing mode — plain contentEditable text
-  return (
-    <Box
-      ref={blockRef}
-      contentEditable
-      suppressContentEditableWarning
-      onBlur={handleBlur}
-      onFocus={handleFocus}
-      outline="none"
-      cursor="text"
-      px="16px"
-      py="8px"
-      lineHeight="1.75"
-      fontSize="13.5px"
-      borderRadius="l1"
-      bg="studio.accent/15"
-      boxShadow="0 0 0 1.5px var(--chakra-colors-studio-ring)"
-      color="studio.fg"
-      transition="background 150ms"
-    >
-      {utterance.text}
+            )}
+            {/* Always a single joining space after every word (never
+                suppressed around a pause indicator, which renders no text
+                of its own) — keeps this block's rendered text identical to
+                `words.map(w => w.word).join(" ")`, which the selection char-
+                offset math in transcript-selection.ts assumes. */}
+            {i < tokens.length - 1 ? " " : ""}
+          </Box>
+        );
+      })}
     </Box>
   );
 });
+
+// ─── Selection toolbar (Vizard-parity Phase B step 11) ─────────────────────
+
+function ToolbarBtn({
+  icon,
+  label,
+  onClick,
+}: {
+  icon: React.ReactNode;
+  label: string;
+  onClick: () => void;
+}) {
+  return (
+    <Flex
+      as="button"
+      align="center"
+      gap="5px"
+      px="8px"
+      h="26px"
+      borderRadius="l1"
+      bg="transparent"
+      border="none"
+      color="studio.fgMuted"
+      cursor="pointer"
+      fontSize="11.5px"
+      fontWeight="500"
+      // Pressing a toolbar button would otherwise collapse the text
+      // selection (the browser's default mousedown-outside-selection
+      // behavior) BEFORE the click handler ever runs, wiping the very
+      // selection the button is meant to act on.
+      onMouseDown={(e: React.MouseEvent) => e.preventDefault()}
+      onClick={onClick}
+      _hover={{ bg: "studio.raised", color: "studio.fg" }}
+      transition="background 120ms ease, color 120ms ease"
+    >
+      {icon}
+      <Text fontSize="11px">{label}</Text>
+    </Flex>
+  );
+}
+
+function SelectionToolbar({
+  top,
+  left,
+  isDeletedSelection,
+  onDelete,
+  onRevert,
+  onCopy,
+}: {
+  top: number;
+  left: number;
+  isDeletedSelection: boolean;
+  onDelete: () => void;
+  onRevert: () => void;
+  onCopy: () => void;
+}) {
+  return (
+    <Flex
+      // True elevation (floating, above transcript content) — but the
+      // studio's own chrome is permanently graphite regardless of app
+      // light/dark mode (keyboard-shortcuts-modal.tsx's same rule), so the
+      // layerStyle's shadow/radius/border-width are kept but its
+      // light/dark-flipping bg/border are overridden with studio.* tokens.
+      layerStyle="panel"
+      bg="studio.surface"
+      borderColor="studio.borderStrong"
+      position="absolute"
+      style={{
+        top: `${top}px`,
+        left: `${left}px`,
+        transform: "translate(-50%, calc(-100% - 8px))",
+      }}
+      align="center"
+      gap="2px"
+      p="4px"
+      zIndex={20}
+      onMouseDown={(e: React.MouseEvent) => e.preventDefault()}
+    >
+      {isDeletedSelection ? (
+        <ToolbarBtn icon={<Undo2 size={13} />} label="Revert" onClick={onRevert} />
+      ) : (
+        <>
+          <ToolbarBtn icon={<Trash2 size={13} />} label="Delete" onClick={onDelete} />
+          <Box w="1px" h="16px" bg="studio.border" mx="2px" />
+          <ToolbarBtn icon={<Copy size={13} />} label="Copy" onClick={onCopy} />
+        </>
+      )}
+    </Flex>
+  );
+}
 
 // ─── Main Panel ─────────────────────────────────────────────────────────────
 
@@ -258,6 +508,9 @@ export function TranscriptPanel() {
     clipStartSec,
     editedTimeMap,
     playbackClock,
+    deletedRanges,
+    deleteSourceRange,
+    revertDeletedRange,
   } = useStudio();
 
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -266,6 +519,14 @@ export function TranscriptPanel() {
   const [activeState, setActiveState] = useState(() =>
     getActiveTranscriptState(playbackClock, utterances, editedTimeMap),
   );
+  const [selection, setSelection] = useState<TranscriptSelectionState | null>(null);
+  // Mirrors `selection` for the capture-phase keydown handler and the
+  // delete/revert/copy callbacks below, so they always read the latest
+  // value without re-subscribing their effects on every selection change.
+  const selectionRef = useRef<TranscriptSelectionState | null>(null);
+  useEffect(() => {
+    selectionRef.current = selection;
+  }, [selection]);
 
   useEffect(() => {
     const update = () => {
@@ -324,6 +585,124 @@ export function TranscriptPanel() {
     return pauses;
   }, [utterances]);
 
+  // ─── Selection tracking (Vizard-parity Phase B step 11) ─────────────────
+
+  const utteranceWordSources: UtteranceWordSource[] = useMemo(
+    () => utterances.map((u, i) => ({ utteranceIndex: i, words: getWordsForUtterance(u) })),
+    [utterances],
+  );
+
+  const handleSelectionChange = useCallback(() => {
+    const sel = window.getSelection();
+    const container = scrollRef.current;
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0 || !container) {
+      setSelection(null);
+      return;
+    }
+    const range = sel.getRangeAt(0);
+    if (!container.contains(range.commonAncestorContainer)) {
+      setSelection(null);
+      return;
+    }
+    const anchor = resolveSelectionEndpoint(sel.anchorNode, sel.anchorOffset);
+    const focus = resolveSelectionEndpoint(sel.focusNode, sel.focusOffset);
+    if (!anchor || !focus) {
+      setSelection(null);
+      return;
+    }
+    const words = collectSelectedWords(utteranceWordSources, anchor, focus);
+    if (words.length === 0) {
+      setSelection(null);
+      return;
+    }
+    const rect = range.getBoundingClientRect();
+    const containerRect = container.getBoundingClientRect();
+    setSelection({
+      words,
+      revertRange: computeRevertCoveringRange(words, deletedRanges),
+      top: rect.top - containerRect.top + container.scrollTop,
+      left: rect.left - containerRect.left + rect.width / 2,
+    });
+  }, [utteranceWordSources, deletedRanges]);
+
+  useEffect(() => {
+    document.addEventListener("selectionchange", handleSelectionChange);
+    return () => document.removeEventListener("selectionchange", handleSelectionChange);
+  }, [handleSelectionChange]);
+
+  // Click-away dismissal for cases a plain `selectionchange` doesn't cover
+  // (e.g. clicking a non-text, non-focusable element elsewhere in the
+  // studio that doesn't itself collapse the DOM selection).
+  useEffect(() => {
+    const onMouseDown = (e: MouseEvent) => {
+      const container = scrollRef.current;
+      if (!container || container.contains(e.target as Node)) return;
+      setSelection(null);
+    };
+    document.addEventListener("mousedown", onMouseDown);
+    return () => document.removeEventListener("mousedown", onMouseDown);
+  }, []);
+
+  const dismissSelection = useCallback(() => {
+    window.getSelection()?.removeAllRanges();
+    setSelection(null);
+  }, []);
+
+  const handleDeleteSelection = useCallback(() => {
+    const current = selectionRef.current;
+    if (!current) return;
+    const range = selectedWordsToSourceRange(current.words);
+    if (!range) return;
+    if (deleteSourceRange(range)) {
+      dismissSelection();
+    }
+  }, [deleteSourceRange, dismissSelection]);
+
+  const handleRevertSelection = useCallback(() => {
+    const current = selectionRef.current;
+    if (!current?.revertRange) return;
+    revertDeletedRange(current.revertRange);
+    dismissSelection();
+  }, [revertDeletedRange, dismissSelection]);
+
+  const handleCopySelection = useCallback(() => {
+    const current = selectionRef.current;
+    if (!current) return;
+    const text = current.words
+      .map(
+        (w) =>
+          utteranceWordSources.find((u) => u.utteranceIndex === w.utteranceIndex)?.words[
+            w.wordIndex
+          ]?.word,
+      )
+      .filter((w): w is string => Boolean(w))
+      .join(" ");
+    if (text && navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).catch(() => {});
+    }
+  }, [utteranceWordSources]);
+
+  // ⌫ deletes the transcript selection ONLY when one is active — otherwise
+  // studio-shell's own global handler (timeline segment delete) must keep
+  // running unobstructed. Registered on `window` in the CAPTURE phase so it
+  // runs before that bubble-phase listener (a text selection's target is
+  // typically document.body, not any node inside this panel, so a listener
+  // attached to a descendant DOM node here would never see the event at
+  // all — this has to live at the window level).
+  useEffect(() => {
+    const onKeyDownCapture = (e: KeyboardEvent) => {
+      if (e.key !== "Backspace" && e.key !== "Delete") return;
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === "INPUT" || tag === "TEXTAREA") return; // word-correct input etc.
+      if (!selectionRef.current || selectionRef.current.words.length === 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      handleDeleteSelection();
+    };
+    window.addEventListener("keydown", onKeyDownCapture, true);
+    return () => window.removeEventListener("keydown", onKeyDownCapture, true);
+  }, [handleDeleteSelection]);
+
   return (
     <Box
       w={{ base: "240px", md: "280px", xl: "300px" }}
@@ -373,6 +752,7 @@ export function TranscriptPanel() {
         ref={scrollRef}
         flex="1"
         overflowY="auto"
+        position="relative"
         py="8px"
         onScroll={handleScroll}
         css={{
@@ -441,6 +821,17 @@ export function TranscriptPanel() {
 
         {/* Bottom padding */}
         <Box h="32px" />
+
+        {selection && (
+          <SelectionToolbar
+            top={selection.top}
+            left={selection.left}
+            isDeletedSelection={selection.revertRange !== null}
+            onDelete={handleDeleteSelection}
+            onRevert={handleRevertSelection}
+            onCopy={handleCopySelection}
+          />
+        )}
       </Box>
     </Box>
   );

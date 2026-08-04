@@ -83,6 +83,22 @@ const AUTOSAVE_DEBOUNCE_MS = 1500;
  *  park on). See `lastKeptPlayerTimeSec` below. */
 const LAST_KEPT_FRAME_EPSILON_SEC = 0.001;
 
+/** Shared guard for both `deleteSelectedSegment` (timeline) and
+ *  `deleteSourceRange` (transcript selection, Phase B step 11): mirrors the
+ *  worker's render-time `isEmpty` check (`cut-plan.ts`) so a delete that
+ *  would leave nothing renderable is rejected client-side before it's ever
+ *  dispatched, instead of discovered later as a failed render. Pure/
+ *  module-level so both callers share one implementation rather than
+ *  duplicating the normalize-then-check sequence. */
+function computeDeleteCandidate(
+  currentDeletedRanges: SourceRange[],
+  window: { startSec: number; endSec: number },
+  range: SourceRange,
+): { candidateRanges: SourceRange[]; blocked: boolean } {
+  const candidateRanges = normalizeDeletedRanges([...currentDeletedRanges, range], window);
+  return { candidateRanges, blocked: buildStudioCutPlan(candidateRanges, window).isEmpty };
+}
+
 /** Tracks whether the viewport is narrower than `px` via matchMedia. */
 function useIsViewportBelow(px: number): boolean {
   // Lazily seeded from matchMedia (not hardcoded `false`) so a phone's very
@@ -279,6 +295,17 @@ interface StudioContextValue extends StudioState {
   brandLogo: StudioBrandLogo | null;
   utterances: TranscriptUtterance[];
   updateUtteranceText: (index: number, newText: string) => void;
+  /** Word-level Correct (vizard-parity.md Phase B step 10) — changes only
+   *  this one word's text, no proportional retiming. `utteranceIndex`/
+   *  `wordIndex` are indices into the displayed `utterances` array, which
+   *  transcript-panel.tsx's callers already assume line up 1:1 with
+   *  `doc.transcriptSlice` (the same contract `updateUtteranceText` uses). */
+  updateWord: (utteranceIndex: number, wordIndex: number, text: string) => void;
+  /** Transcript selection Delete (vizard-parity.md Phase B step 11) — same
+   *  isEmpty guard as `deleteSelectedSegment`, over an arbitrary absolute-
+   *  source-second range instead of a timeline segment. Returns false (and
+   *  toasts) when the delete was rejected, true once it was dispatched. */
+  deleteSourceRange: (range: SourceRange) => boolean;
   setIsPlaying: (v: boolean) => void;
   setActiveTool: (t: ToolId | null) => void;
   setShowTimeline: (v: boolean) => void;
@@ -802,11 +829,8 @@ export function StudioShell({
       endSec: clipStartSec + seg.endSec,
     };
     const window = { startSec: doc.clipStartSec, endSec: doc.clipEndSec };
-    const candidateRanges = normalizeDeletedRanges([...doc.deletedRanges, range], window);
-    // Mirrors the worker's render-time guard (cut-plan.ts's `isEmpty`) so a
-    // delete that would leave nothing renderable is blocked before it's
-    // ever dispatched, not discovered later as a failed render.
-    if (buildStudioCutPlan(candidateRanges, window).isEmpty) {
+    const { blocked } = computeDeleteCandidate(doc.deletedRanges, window, range);
+    if (blocked) {
       toaster.create({
         type: "error",
         title: "Can't delete the only remaining content",
@@ -828,6 +852,63 @@ export function StudioShell({
   const revertDeletedRange = useCallback((range: SourceRange) => {
     setUnified((s) =>
       applyUnifiedEditorAction(s, { kind: "document", action: { type: "revertRange", range } }),
+    );
+  }, []);
+
+  // Vizard-parity Phase B step 11: deletes an arbitrary absolute-source-
+  // second range selected in the transcript panel (as opposed to
+  // `deleteSelectedSegment`'s timeline-segment range) — same isEmpty guard
+  // (shared via `computeDeleteCandidate`), same undoable `deleteRange`
+  // dispatch. Returns whether the delete actually went through so the
+  // caller (transcript-panel.tsx) knows whether to clear its own selection
+  // state — mirroring fix 9's "a rejected delete must not clear the
+  // selection" rule above.
+  const deleteSourceRange = useCallback(
+    (range: SourceRange): boolean => {
+      const window = { startSec: doc.clipStartSec, endSec: doc.clipEndSec };
+      const { candidateRanges, blocked } = computeDeleteCandidate(
+        doc.deletedRanges,
+        window,
+        range,
+      );
+      if (blocked) {
+        toaster.create({
+          type: "error",
+          title: "Can't delete the only remaining content",
+          description: "Keep at least one segment in the clip.",
+        });
+        return false;
+      }
+      // Guard 4 (vizard-parity.md §4 step 11): the selection is already
+      // fully covered by existing deletedRanges — dispatching would be a
+      // guaranteed no-op the reducer would just bounce back (jsonEqual
+      // check in `applyEditorAction`'s "deleteRange" branch). The panel
+      // itself should never reach this path (an all-deleted selection shows
+      // Revert, not Delete), but skip the dispatch defensively rather than
+      // relying on that alone.
+      if (JSON.stringify(candidateRanges) === JSON.stringify(doc.deletedRanges)) {
+        return false;
+      }
+      setUnified((s) =>
+        applyUnifiedEditorAction(s, { kind: "document", action: { type: "deleteRange", range } }),
+      );
+      return true;
+    },
+    [doc.clipStartSec, doc.clipEndSec, doc.deletedRanges],
+  );
+
+  // Vizard-parity Phase B step 10: word-level Correct — changes only ONE
+  // word's text via the reducer's non-retiming `updateWordText` action
+  // (distinct from `updateUtteranceText` above, which rewrites the whole
+  // utterance with proportional timing redistribution). This is what the
+  // transcript panel's double-click-to-correct UI dispatches; no
+  // coalesceKey is passed, so every correction is its own undo step.
+  const updateWord = useCallback((utteranceIndex: number, wordIndex: number, text: string) => {
+    setUnified((s) =>
+      applyUnifiedEditorAction(s, {
+        kind: "document",
+        action: { type: "updateWordText", utteranceIndex, wordIndex, text },
+      }),
     );
   }, []);
 
@@ -1488,7 +1569,7 @@ export function StudioShell({
     previewVideoUrl, previewStartSec, useOriginalSourceFallback, setUseOriginalSourceFallback,
     activeVideoUrl, activeOffsetSec, activeVideoKind, playerClipStartSec, playerClipEndSec,
     editedTimeMap, deletedRanges: doc.deletedRanges,
-    brandLogo, utterances, updateUtteranceText,
+    brandLogo, utterances, updateUtteranceText, updateWord, deleteSourceRange,
     setIsPlaying, setActiveTool, setShowTimeline, setAspectRatio,
     setLayoutMode, setShowShortcuts, setTimelineZoom,
     setSelectedSegmentId, setCaptionPreset, selectCaption, deselectCaption,
