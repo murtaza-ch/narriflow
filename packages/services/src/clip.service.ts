@@ -5,11 +5,13 @@ import { getPrismaClient } from "@narriflow/db/client";
 import { projectService } from "./project.service";
 import {
   BRAND_DEFAULT_CAPTION_PRESET_ID,
+  CLIP_MAX_DURATION_SEC,
   CLIP_MIN_DURATION_SEC,
   CLIP_TITLE_MAX_LENGTH,
   CLIP_TITLE_SUGGESTION_COUNT,
   LEGACY_DEFAULT_CAPTION_PRESET_ID,
   brollCuesArraySchema,
+  buildTranscriptSliceForWindow,
   captionPresetSchema,
   clipAspectRatioDbSchema,
   clipAspectRatioFromDb,
@@ -701,6 +703,264 @@ export function planEditorDocumentSave(
     boundaryDriftDetected,
     recomputedEffective,
     durationDependentScores,
+  };
+}
+
+// ─── Create clip from selection (vizard-parity.md Phase B step 14) ─────────
+
+/** Selection range handed to {@link planCreateClipFromSelection}. */
+export interface CreateClipFromSelectionPlanInput {
+  /** Full RAW project transcript utterances — the same
+   *  `project.transcript.utterancesJson` `updateClipBoundaries` reads, NOT
+   *  just the source clip's own slice (expanding to the minimum duration can
+   *  reach words outside the source clip's current window). */
+  rawUtterances: TranscriptUtterance[];
+  sourceDurationSec: number | null;
+  startSec: number;
+  endSec: number;
+}
+
+export interface CreateClipFromSelectionPlan {
+  startSec: number;
+  endSec: number;
+  durationSec: number;
+  transcriptSlice: TranscriptUtterance[];
+  title: string;
+  hookText: string;
+  hookStrengthScore: number;
+  emotionalIntensityScore: number;
+  storyCompletenessScore: number;
+  pacingScore: number;
+  durationOptimalityScore: number;
+  viralityScore: number;
+  tiktokScore: number;
+  youtubeScore: number;
+  instagramScore: number;
+}
+
+function roundSec(value: number): number {
+  return Math.round(value * 1000) / 1000;
+}
+
+/** Every word (or, for a word-timing-less utterance, the utterance itself)
+ *  across the transcript, flattened and time-sorted — the unit
+ *  `planCreateClipFromSelection` snaps/expands against. Mirrors
+ *  `getSpeechTokens`'s utterance-level fallback in clip-timing.ts (not
+ *  exported there), scoped per-utterance instead of all-or-nothing so a
+ *  transcript mixing word-timed and un-timed utterances still snaps
+ *  correctly. */
+function collectSelectionTokens(
+  utterances: TranscriptUtterance[],
+): Array<{ startSec: number; endSec: number }> {
+  return utterances
+    .flatMap((u) =>
+      u.words.length > 0
+        ? u.words.map((w) => ({ startSec: w.startSec, endSec: w.endSec }))
+        : [{ startSec: u.startSec, endSec: u.endSec }],
+    )
+    .filter((token) => token.endSec >= token.startSec)
+    .sort((a, b) => a.startSec - b.startSec || a.endSec - b.endSec);
+}
+
+const CREATE_FROM_SELECTION_TITLE_WORD_COUNT = 8;
+
+/** Title/hook for a manually-created clip: no LLM call for this atomic op
+ *  (plan constraint #7 — the whole point is avoiding the duplicate+retrim
+ *  chain's asset-orphaning risk, not adding a new external call), so both
+ *  are derived straight from the selected text itself. */
+function deriveTitleAndHookFromSlice(
+  transcriptSlice: TranscriptUtterance[],
+): { title: string; hookText: string } {
+  const fullText = transcriptSlice
+    .map((u) => u.text.trim())
+    .filter(Boolean)
+    .join(" ")
+    .trim();
+
+  if (!fullText) {
+    return {
+      title: "New clip",
+      hookText: "Clip created from a transcript selection.",
+    };
+  }
+
+  const words = fullText.split(/\s+/).filter(Boolean);
+  let title = words.slice(0, CREATE_FROM_SELECTION_TITLE_WORD_COUNT).join(" ");
+  if (words.length > CREATE_FROM_SELECTION_TITLE_WORD_COUNT) {
+    title += "…";
+  }
+  if (title.length > CLIP_TITLE_MAX_LENGTH) {
+    title = `${title.slice(0, CLIP_TITLE_MAX_LENGTH - 1).trimEnd()}…`;
+  }
+
+  return { title, hookText: fullText };
+}
+
+/**
+ * Pure planning step for "Create clip" from a transcript selection
+ * (vizard-parity.md Phase B step 14): the selection toolbar's alternative to
+ * a duplicate+retrim chain, which this deliberately is NOT — chaining
+ * `duplicateClip` (which copies render/proxy assets for the OLD window) with
+ * a boundary update (which then deletes those assets once bounds move to the
+ * selection's window) is a plan-forbidden pattern that can orphan copied
+ * objects on partial failure (plan constraint #7). This computes a brand-new
+ * clip's window and all of its duration-dependent state in one side-effect-
+ * free step, so `createClipFromSelection` below only adds the guarded DB
+ * write around a decision that's independently unit-testable — same shape as
+ * `planEditorReset`/`planEditorDocumentSave` above.
+ *
+ * Snap/expand/clamp policy:
+ * - The incoming [startSec, endSec) is snapped to the transcript words/
+ *   tokens it overlaps (defensive: the client already sends word-exact
+ *   bounds via transcript-selection.ts's `selectedWordsToSourceRange`, but
+ *   this never trusts that blindly).
+ * - Shorter than `CLIP_MIN_DURATION_SEC`: expanded a whole word at a time,
+ *   alternating start/end, until it clears the floor — Vizard creates a clip
+ *   from even a short selection instead of rejecting it outright.
+ * - Longer than `CLIP_MAX_DURATION_SEC`: trimmed back from the end, one
+ *   whole word at a time, down to the ceiling.
+ * - Only rejected (`ClipActionError('clip_selection_invalid', …)`) when the
+ *   transcript has no words/tokens at all, or the selection sits so close to
+ *   the edge of the transcript that consuming every remaining word on both
+ *   sides still can't reach the minimum duration.
+ */
+export function planCreateClipFromSelection(
+  input: CreateClipFromSelectionPlanInput,
+): CreateClipFromSelectionPlan {
+  const sentenceUtterances = splitUtterancesIntoSentences(input.rawUtterances ?? []);
+  const tokens = collectSelectionTokens(sentenceUtterances);
+
+  if (tokens.length === 0) {
+    throw new ClipActionError(
+      "clip_selection_invalid",
+      "This project's transcript has no words to create a clip from.",
+    );
+  }
+
+  const sourceDurationSec =
+    typeof input.sourceDurationSec === "number" && input.sourceDurationSec > 0
+      ? input.sourceDurationSec
+      : Number.POSITIVE_INFINITY;
+
+  const rawStart = Math.min(
+    sourceDurationSec,
+    Math.max(0, Math.min(input.startSec, input.endSec)),
+  );
+  const rawEnd = Math.min(
+    sourceDurationSec,
+    Math.max(rawStart, Math.max(input.startSec, input.endSec)),
+  );
+
+  const overlapping = tokens.filter(
+    (token) => token.endSec > rawStart && token.startSec < rawEnd,
+  );
+
+  let startIndex: number;
+  let endIndex: number;
+  if (overlapping.length > 0) {
+    startIndex = tokens.indexOf(overlapping[0]!);
+    endIndex = tokens.indexOf(overlapping[overlapping.length - 1]!);
+  } else {
+    // The selection falls entirely inside a gap (no token overlaps it) —
+    // anchor on the nearest token so the expansion below still has
+    // something to grow from.
+    let nearest = tokens.findIndex((token) => token.startSec >= rawStart);
+    if (nearest === -1) nearest = tokens.length - 1;
+    startIndex = nearest;
+    endIndex = nearest;
+  }
+
+  let startSec = tokens[startIndex]!.startSec;
+  let endSec = tokens[endIndex]!.endSec;
+
+  // Expand symmetrically to the minimum duration, alternating sides so a
+  // short selection grows evenly outward rather than eating only one edge.
+  let growStart = true;
+  while (
+    endSec - startSec < CLIP_MIN_DURATION_SEC &&
+    (startIndex > 0 || endIndex < tokens.length - 1)
+  ) {
+    if (growStart && startIndex > 0) {
+      startIndex -= 1;
+      startSec = tokens[startIndex]!.startSec;
+    } else if (!growStart && endIndex < tokens.length - 1) {
+      endIndex += 1;
+      endSec = tokens[endIndex]!.endSec;
+    } else if (startIndex > 0) {
+      startIndex -= 1;
+      startSec = tokens[startIndex]!.startSec;
+    } else if (endIndex < tokens.length - 1) {
+      endIndex += 1;
+      endSec = tokens[endIndex]!.endSec;
+    } else {
+      break;
+    }
+    growStart = !growStart;
+  }
+
+  if (endSec - startSec < CLIP_MIN_DURATION_SEC) {
+    throw new ClipActionError(
+      "clip_selection_invalid",
+      `This selection is too close to the edge of the transcript to reach the ${CLIP_MIN_DURATION_SEC}s minimum clip length.`,
+    );
+  }
+
+  // Trim back from the end, one whole word at a time, if expansion (or an
+  // already-long selection) overshot the ceiling.
+  if (endSec - startSec > CLIP_MAX_DURATION_SEC) {
+    const maxEnd = startSec + CLIP_MAX_DURATION_SEC;
+    while (endIndex > startIndex && tokens[endIndex]!.endSec > maxEnd) {
+      endIndex -= 1;
+    }
+    endSec = Math.max(tokens[endIndex]!.endSec, startSec + CLIP_MIN_DURATION_SEC);
+  }
+
+  startSec = roundSec(Math.max(0, Math.min(startSec, sourceDurationSec)));
+  endSec = roundSec(Math.max(startSec, Math.min(endSec, sourceDurationSec)));
+
+  const transcriptSlice = buildTranscriptSliceForWindow(input.rawUtterances ?? [], {
+    startSec,
+    endSec,
+  });
+
+  const durationSec = roundSec(endSec - startSec);
+  const { title, hookText } = deriveTitleAndHookFromSlice(transcriptSlice);
+
+  // No LLM call for this atomic op (see this function's doc comment) — hook
+  // strength and emotional intensity have no signal to derive without one,
+  // so both start at the schema's own neutral midpoint (matches
+  // `storyCompletenessScore`'s Prisma column default). Pacing is the one
+  // sub-score with real signal available for free: it's a pure function of
+  // the actual selected words.
+  const hookStrengthScore = 50;
+  const emotionalIntensityScore = 50;
+  const storyCompletenessScore = 50;
+  const pacingScore = computePacingScore(transcriptSlice, durationSec);
+  const durationOptimalityScore = computeDurationOptimality(durationSec);
+  const viralityScore = computeViralityScore({
+    hookStrength: hookStrengthScore,
+    emotionalIntensity: emotionalIntensityScore,
+    storyCompleteness: storyCompletenessScore,
+    pacing: pacingScore,
+    durationOptimality: durationOptimalityScore,
+  });
+
+  return {
+    startSec,
+    endSec,
+    durationSec,
+    transcriptSlice,
+    title,
+    hookText,
+    hookStrengthScore,
+    emotionalIntensityScore,
+    storyCompletenessScore,
+    pacingScore,
+    durationOptimalityScore,
+    viralityScore,
+    tiktokScore: computePlatformScore(viralityScore, durationSec, "tiktok"),
+    youtubeScore: computePlatformScore(viralityScore, durationSec, "youtube"),
+    instagramScore: computePlatformScore(viralityScore, durationSec, "instagram"),
   };
 }
 
@@ -1498,6 +1758,151 @@ export class ClipService {
       throw new ClipActionError(
         "clip_duplicate_failed",
         error instanceof Error ? error.message : "clip duplicate failed",
+      );
+    }
+  }
+
+  /**
+   * Create clip from selection (vizard-parity.md Phase B step 14): a NEW,
+   * from-scratch clip carved out of an arbitrary transcript-panel.tsx
+   * selection — the selection toolbar's "Create clip" action. Deliberately
+   * NOT `duplicateClip` (above) followed by a boundary update: that chain
+   * copies render/proxy assets for the OLD window and then deletes them once
+   * the boundaries move to the selection's window, which can orphan copied
+   * objects if the process dies between the two steps (plan constraint #7).
+   * This never copies renders or the preview proxy at all — the new clip
+   * gets neither, and the worker's preview-backfill poll
+   * (`getClipsNeedingPreview` / `processPendingClipPreviews` in
+   * apps/worker/src/tasks/clip-preview.ts) picks it up for a proxy on its
+   * own the same way every other proxy-less clip does; there is no separate
+   * trigger to fire from here.
+   *
+   * `captionPreset`/`studioEdits`/`brollUrl` ARE copied from the source clip
+   * (Vizard: the new clip inherits the source's "look"); everything else —
+   * boundaries, transcript slice, title/hook, duration-dependent scores —
+   * comes straight from `planCreateClipFromSelection`, which also owns the
+   * snap/expand/clamp/reject policy (see its own doc comment).
+   */
+  async createClipFromSelection(
+    userId: string,
+    projectId: string,
+    sourceClipId: string,
+    input: { startSec: number; endSec: number },
+  ): Promise<ClipSnapshot> {
+    const prisma = requirePrisma();
+
+    const [source, project] = await Promise.all([
+      prisma.clip.findFirst({
+        where: { id: sourceClipId, projectId, project: { userId } },
+        select: {
+          index: true,
+          workflowRunId: true,
+          captionPreset: true,
+          studioEdits: true,
+          brollUrl: true,
+        },
+      }),
+      prisma.project.findFirst({
+        where: { id: projectId, userId },
+        select: {
+          sourceDurationSeconds: true,
+          transcript: { select: { utterancesJson: true } },
+        },
+      }),
+    ]);
+
+    if (!source) {
+      throw new ClipActionError("clip_not_found", "clip not found");
+    }
+    if (!project) {
+      throw new ClipActionError("clip_not_found", "project not found");
+    }
+
+    const rawUtterances =
+      (project.transcript?.utterancesJson as TranscriptUtterance[] | null) ?? [];
+
+    const plan = planCreateClipFromSelection({
+      rawUtterances,
+      sourceDurationSec: project.sourceDurationSeconds,
+      startSec: input.startSec,
+      endSec: input.endSec,
+    });
+
+    const newClipId = randomUUID();
+
+    try {
+      const created = await prisma.$transaction(async (tx) => {
+        const highest = await tx.clip.aggregate({
+          where: { projectId, workflowRunId: source.workflowRunId },
+          _max: { index: true },
+        });
+
+        return tx.clip.create({
+          data: {
+            id: newClipId,
+            projectId,
+            workflowRunId: source.workflowRunId,
+            index: (highest._max.index ?? source.index) + 1,
+            status: "edited",
+            startSec: plan.startSec,
+            endSec: plan.endSec,
+            title: plan.title,
+            hookText: plan.hookText,
+            payoffText: null,
+            reasoning: "Created from a transcript selection in the studio.",
+            category: "quote",
+            transcriptSlice:
+              plan.transcriptSlice as unknown as Prisma.InputJsonValue,
+            captionPreset:
+              source.captionPreset === null
+                ? Prisma.JsonNull
+                : (source.captionPreset as Prisma.InputJsonValue),
+            brollUrl: source.brollUrl,
+            studioEdits:
+              source.studioEdits === null
+                ? Prisma.JsonNull
+                : (source.studioEdits as Prisma.InputJsonValue),
+            // Fresh clip: no renders, no preview proxy, no B-roll cues, no
+            // editor history — see this method's doc comment for why nothing
+            // is copied from the source's rendered assets. deletedRanges /
+            // editorRevision / editorOriginal are left unset, taking their
+            // Prisma column defaults (null / 0 / null) — exactly the "empty
+            // history" state the plan calls for.
+            viralityScore: plan.viralityScore,
+            hookStrengthScore: plan.hookStrengthScore,
+            emotionalIntensityScore: plan.emotionalIntensityScore,
+            storyCompletenessScore: plan.storyCompletenessScore,
+            pacingScore: plan.pacingScore,
+            durationOptimalityScore: plan.durationOptimalityScore,
+            tiktokScore: plan.tiktokScore,
+            youtubeScore: plan.youtubeScore,
+            instagramScore: plan.instagramScore,
+            llmProvider: "manual",
+            llmModel: "transcript-selection",
+            llmTokensUsed: null,
+          },
+        });
+      });
+
+      // Read the snapshot back OUTSIDE the transaction — same rationale as
+      // duplicateClip above (a remote-Postgres round trip that doesn't need
+      // to hold the transaction's pooled connection open).
+      const snapshot = await prisma.clip.findUniqueOrThrow({
+        where: { id: created.id },
+        include: {
+          project: { select: { sourceDurationSeconds: true } },
+          renders: true,
+        },
+      });
+
+      return toClipSnapshot(snapshot);
+    } catch (error) {
+      if (error instanceof ClipActionError) throw error;
+      throw new ClipActionError(
+        "clip_create_from_selection_failed",
+        error instanceof Error
+          ? error.message
+          : "clip create from selection failed",
       );
     }
   }

@@ -26,6 +26,7 @@ import {
   transcriptExportFormatSchema,
   triggerClipRenderSchema,
   brollSearchQuerySchema,
+  createClipFromSelectionSchema,
   resetEditorDocumentSchema,
   saveEditorDocumentSchema,
   updateClipBoundariesSchema,
@@ -996,6 +997,77 @@ app.post("/projects/:id/clips/:clipId/duplicate", async (c) => {
     }
     return c.json(
       { error: "clip_duplicate_failed", message: errorMessage(error) },
+      400,
+    );
+  }
+});
+
+/**
+ * Create clip from selection (docs/plans/vizard-parity.md Phase B step 14):
+ * a NEW, from-scratch clip carved out of an arbitrary [startSec, endSec)
+ * transcript-panel.tsx selection — the selection toolbar's "Create clip"
+ * action. Deliberately not a duplicate+retrim chain (see
+ * ClipService.createClipFromSelection's doc comment for why that chain can
+ * orphan copied render/proxy assets on partial failure); this clip starts
+ * with no renders and no preview proxy, and the worker's preview-backfill
+ * poll picks it up for a proxy the same way every other proxy-less clip
+ * does. `clip_selection_invalid` (the selection sits too close to the edge
+ * of the transcript to reach the minimum clip duration) maps to 422; every
+ * other failure mode mirrors the duplicate route above.
+ */
+app.post("/projects/:id/clips/:clipId/create-from-selection", async (c) => {
+  const appUser = await getCurrentAppUser();
+
+  if (!appUser) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const projectId = c.req.param("id");
+  const access = await projectService.getProjectAccess(appUser.id, projectId);
+
+  if (access === "missing") {
+    return c.json({ error: "Project not found" }, 404);
+  }
+
+  if (access === "forbidden") {
+    return c.json({ error: "Forbidden" }, 403);
+  }
+
+  const payload = await c.req.json().catch(() => null);
+  if (!payload || typeof payload !== "object") {
+    return c.json({ error: "Invalid payload" }, 400);
+  }
+
+  const parsed = createClipFromSelectionSchema.safeParse(payload);
+  if (!parsed.success) {
+    return c.json({ error: "Invalid payload" }, 400);
+  }
+
+  try {
+    const clip = await clipService.createClipFromSelection(
+      appUser.id,
+      projectId,
+      c.req.param("clipId"),
+      parsed.data,
+    );
+    return c.json(clip, 201);
+  } catch (error) {
+    logClipActionFailure("clip_create_from_selection_failed", error, {
+      projectId,
+      clipId: c.req.param("clipId"),
+    });
+    if (error instanceof ClipActionError) {
+      return c.json(
+        { error: error.code, message: error.message },
+        error.code === "clip_selection_invalid"
+          ? 422
+          : error.code === "clip_not_found"
+            ? 404
+            : 400,
+      );
+    }
+    return c.json(
+      { error: "clip_create_from_selection_failed", message: errorMessage(error) },
       400,
     );
   }

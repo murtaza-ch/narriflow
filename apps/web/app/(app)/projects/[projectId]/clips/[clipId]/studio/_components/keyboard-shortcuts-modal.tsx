@@ -16,6 +16,7 @@ const SHORTCUTS = [
   { command: "Jump back 5 seconds",          win: "Shift + ←",         mac: "Shift + ←" },
   { command: "Split clips",                  win: "D or Ctrl+B",       mac: "D or Ctrl+B" },
   { command: "Delete clips",                 win: "Backspace (⌫)",     mac: "Backspace (⌫)" },
+  { command: "Create clip from selection",   win: "Ctrl+Shift+C",      mac: "⇧⌘C" },
   { command: "Back to start",                win: "1 or Home",         mac: "1 or Home or Fn+←" },
   { command: "Go to end",                    win: "End",               mac: "Fn + Right Arrow (→)" },
   { command: "Undo",                         win: "Ctrl+Z",            mac: "⌘Z" },

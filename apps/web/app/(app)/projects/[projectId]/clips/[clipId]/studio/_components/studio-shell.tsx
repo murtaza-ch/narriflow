@@ -1075,6 +1075,7 @@ export function StudioShell({
         newEffective.startSec,
         newEffective.durationSec,
       );
+      boundaryEditIntentRef.current = true;
       setUnified((s) => {
         const withTrim = applyUnifiedEditorAction(s, {
           kind: "document",
@@ -1100,11 +1101,29 @@ export function StudioShell({
   const trimHandlesDisabled = saveState === "saving" || resetState === "resetting";
 
   const handleUndo = useCallback(() => {
-    setUnified((s) => applyUnifiedEditorAction(s, { kind: "undo" }));
+    setUnified((s) => {
+      const next = applyUnifiedEditorAction(s, { kind: "undo" });
+      if (
+        next.doc.present.clipStartSec !== s.doc.present.clipStartSec ||
+        next.doc.present.clipEndSec !== s.doc.present.clipEndSec
+      ) {
+        boundaryEditIntentRef.current = true;
+      }
+      return next;
+    });
   }, []);
 
   const handleRedo = useCallback(() => {
-    setUnified((s) => applyUnifiedEditorAction(s, { kind: "redo" }));
+    setUnified((s) => {
+      const next = applyUnifiedEditorAction(s, { kind: "redo" });
+      if (
+        next.doc.present.clipStartSec !== s.doc.present.clipStartSec ||
+        next.doc.present.clipEndSec !== s.doc.present.clipEndSec
+      ) {
+        boundaryEditIntentRef.current = true;
+      }
+      return next;
+    });
   }, []);
 
   // ─── Single-endpoint revision-aware autosave (vizard-parity.md Phase A
@@ -1143,6 +1162,13 @@ export function StudioShell({
     startSec: initialEditorDocument.clipStartSec,
     endSec: initialEditorDocument.clipEndSec,
   });
+  // Boundary changes are only ever legitimate as the direct result of an
+  // explicit trim (commitTrim) or an undo/redo that crosses a trim step.
+  // Anything else producing boundary-differing state (a hot-reload replay
+  // in dev, or any future state-corruption bug) must NOT silently persist
+  // a trim now that the server accepts boundary changes — performSave
+  // refuses to send those and demands a reload instead.
+  const boundaryEditIntentRef = useRef(false);
   const baseRevisionRef = useRef(initialEditorRevision);
   const saveQueueStateRef = useRef<SaveQueueState>("idle");
   const autosaveStoppedRef = useRef(false);
@@ -1165,6 +1191,33 @@ export function StudioShell({
     const documentToSave = docPresentRef.current;
     const documentJson = JSON.stringify(documentToSave);
     let outcome: SaveOutcome = "success";
+
+    const boundsChanged =
+      Math.abs(documentToSave.clipStartSec - lastSavedBoundsRef.current.startSec) > 0.001 ||
+      Math.abs(documentToSave.clipEndSec - lastSavedBoundsRef.current.endSec) > 0.001;
+    if (boundsChanged && !boundaryEditIntentRef.current) {
+      console.warn(
+        JSON.stringify({
+          level: "error",
+          message: "editor_boundary_save_without_intent_blocked",
+          clipId: clipInfo.id,
+          attemptedStartSec: documentToSave.clipStartSec,
+          attemptedEndSec: documentToSave.clipEndSec,
+          lastSavedStartSec: lastSavedBoundsRef.current.startSec,
+          lastSavedEndSec: lastSavedBoundsRef.current.endSec,
+        }),
+      );
+      autosaveStoppedRef.current = true;
+      setSaveState("blocked");
+      toaster.create({
+        type: "error",
+        title: "Editor state got out of sync",
+        description: "Reload to keep editing — nothing was saved.",
+        action: { label: "Reload", onClick: () => window.location.reload() },
+      });
+      saveQueueStateRef.current = "idle";
+      return "failure";
+    }
 
     if (documentJson === lastSavedDocumentJsonRef.current) {
       // Reached via a queued request that turned out to be a no-op (e.g. an
@@ -1266,6 +1319,10 @@ export function StudioShell({
           setPreviewVideoUrl(null);
           setPreviewStartSec(0);
         }
+        // The confirmed bounds are now the baseline — a fresh trim (or a
+        // trim-crossing undo/redo) must re-arm the intent flag before the
+        // next boundary-changing save is allowed through.
+        boundaryEditIntentRef.current = false;
 
         if (docPresentRef.current === documentToSave) {
           // No local edits landed mid-flight — safe to adopt the server's

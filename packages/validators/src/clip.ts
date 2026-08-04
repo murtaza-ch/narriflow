@@ -226,6 +226,23 @@ export const updateClipTranscriptSliceSchema = z.object({
   transcriptSlice: z.array(transcriptUtteranceSchema),
 });
 
+/**
+ * "Create clip" from a transcript-panel.tsx selection (vizard-parity.md
+ * Phase B step 14). Deliberately does NOT enforce `CLIP_MIN_DURATION_SEC`/
+ * `CLIP_MAX_DURATION_SEC` the way `updateClipBoundariesSchema` does — a
+ * selection shorter than the minimum is a valid request here (the service's
+ * `planCreateClipFromSelection` expands it, word-snapped, rather than
+ * rejecting it; Vizard creates a clip from even a short selection).
+ */
+export const createClipFromSelectionSchema = z
+  .object({
+    startSec: z.number().nonnegative(),
+    endSec: z.number().nonnegative(),
+  })
+  .refine((data) => data.endSec > data.startSec, {
+    message: "endSec must be greater than startSec",
+  });
+
 /** Max length of a user- or AI-authored clip title. Titles are display-only
  *  (row header, studio top bar, social caption seed) — this is a sanity bound
  *  on a single line of text, not a platform limit. */
@@ -320,4 +337,5 @@ export type ClipTitleSuggestionsResponse = z.infer<
 export type UpdateClipCaptionPreset = z.infer<typeof updateClipCaptionPresetSchema>;
 export type UpdateClipTranscriptSlice = z.infer<typeof updateClipTranscriptSliceSchema>;
 export type UpdateClipBroll = z.infer<typeof updateClipBrollSchema>;
+export type CreateClipFromSelection = z.infer<typeof createClipFromSelectionSchema>;
 export type BrollSearchQuery = z.infer<typeof brollSearchQuerySchema>;

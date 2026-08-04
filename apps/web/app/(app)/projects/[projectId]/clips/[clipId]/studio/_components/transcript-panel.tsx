@@ -1,11 +1,13 @@
 "use client";
 
 import { memo, useRef, useEffect, useCallback, useState, useMemo } from "react";
+import { useRouter } from "next/navigation";
 import { Box, Flex, Input, Text, Checkbox } from "@chakra-ui/react";
-import { Copy, Trash2, Undo2 } from "lucide-react";
+import { Copy, Scissors, Trash2, Undo2 } from "lucide-react";
 import { toaster } from "@narriflow/ui";
-import { editedToSource, sourceToEdited } from "@narriflow/validators";
+import { editedToSource, sourceToEdited, userErrorMessage } from "@narriflow/validators";
 import type {
+  ClipSnapshot,
   EditedTimeMap,
   SourceRange,
   TranscriptUtterance,
@@ -26,6 +28,25 @@ import {
 // ─── Pause threshold (seconds) ──────────────────────────────────────────────
 
 const PAUSE_THRESHOLD = 0.4;
+
+// ─── API error copy (Create clip, Phase B step 14) ─────────────────────────
+
+function readPayloadString(payload: unknown, key: string): string | null {
+  if (!payload || typeof payload !== "object") return null;
+  const value = (payload as Record<string, unknown>)[key];
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+/** Prefers our own mapped copy for a known error code, then the API's
+ *  message, then the caller's fallback — same precedence as
+ *  clip-actions-menu.tsx's `apiErrorCopy`. */
+function apiErrorCopy(payload: unknown, fallback: string): string {
+  return (
+    userErrorMessage(readPayloadString(payload, "error")) ??
+    readPayloadString(payload, "message") ??
+    fallback
+  );
+}
 
 // ─── Build words with pause indicators ──────────────────────────────────────
 
@@ -451,16 +472,20 @@ function SelectionToolbar({
   top,
   left,
   isDeletedSelection,
+  creatingClip,
   onDelete,
   onRevert,
   onCopy,
+  onCreateClip,
 }: {
   top: number;
   left: number;
   isDeletedSelection: boolean;
+  creatingClip: boolean;
   onDelete: () => void;
   onRevert: () => void;
   onCopy: () => void;
+  onCreateClip: () => void;
 }) {
   return (
     <Flex
@@ -491,6 +516,12 @@ function SelectionToolbar({
           <ToolbarBtn icon={<Trash2 size={13} />} label="Delete" onClick={onDelete} />
           <Box w="1px" h="16px" bg="studio.border" mx="2px" />
           <ToolbarBtn icon={<Copy size={13} />} label="Copy" onClick={onCopy} />
+          <Box w="1px" h="16px" bg="studio.border" mx="2px" />
+          <ToolbarBtn
+            icon={<Scissors size={13} />}
+            label={creatingClip ? "Creating…" : "Create clip"}
+            onClick={onCreateClip}
+          />
         </>
       )}
     </Flex>
@@ -511,7 +542,9 @@ export function TranscriptPanel() {
     deletedRanges,
     deleteSourceRange,
     revertDeletedRange,
+    clipInfo,
   } = useStudio();
+  const router = useRouter();
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const manualScrollRef = useRef(false);
@@ -520,6 +553,11 @@ export function TranscriptPanel() {
     getActiveTranscriptState(playbackClock, utterances, editedTimeMap),
   );
   const [selection, setSelection] = useState<TranscriptSelectionState | null>(null);
+  const [creatingClip, setCreatingClip] = useState(false);
+  // Synchronous re-entrancy guard for handleCreateClip: both the toolbar
+  // button and the ⇧⌘C shortcut call it, and `creatingClip` state alone
+  // can't prevent a second dispatch landing before the first re-render.
+  const creatingClipRef = useRef(false);
   // Mirrors `selection` for the capture-phase keydown handler and the
   // delete/revert/copy callbacks below, so they always read the latest
   // value without re-subscribing their effects on every selection change.
@@ -682,26 +720,108 @@ export function TranscriptPanel() {
     }
   }, [utteranceWordSources]);
 
-  // ⌫ deletes the transcript selection ONLY when one is active — otherwise
-  // studio-shell's own global handler (timeline segment delete) must keep
-  // running unobstructed. Registered on `window` in the CAPTURE phase so it
-  // runs before that bubble-phase listener (a text selection's target is
-  // typically document.body, not any node inside this panel, so a listener
-  // attached to a descendant DOM node here would never see the event at
-  // all — this has to live at the window level).
+  // ─── Create clip from selection (Vizard-parity Phase B step 14) ─────────
+  //
+  // A NEW, from-scratch clip carved out of the current selection's absolute
+  // source range — the atomic server op in clip.service.ts, deliberately NOT
+  // duplicate-then-retrim (see ClipService.createClipFromSelection's doc
+  // comment). No optimistic UI: the clip list isn't refetched or patched
+  // locally here — the success toast's "Open" action is the only way to see
+  // it immediately, exactly like the studio's own render/export flows.
+
+  const handleCreateClip = useCallback(async () => {
+    const current = selectionRef.current;
+    // Same guard as the toolbar's own branching: a selection sitting
+    // entirely inside deleted ranges only offers Revert, never Create clip.
+    if (!current || current.revertRange !== null) return;
+    const range = selectedWordsToSourceRange(current.words);
+    if (!range) return;
+    if (creatingClipRef.current) return;
+
+    creatingClipRef.current = true;
+    setCreatingClip(true);
+    try {
+      const response = await fetch(
+        `/api/projects/${clipInfo.projectId}/clips/${clipInfo.id}/create-from-selection`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ startSec: range.startSec, endSec: range.endSec }),
+        },
+      );
+      const payload: unknown = await response.json().catch(() => null);
+
+      if (!response.ok) {
+        toaster.create({
+          type: "error",
+          title: "Could not create clip",
+          description: apiErrorCopy(payload, "Please try again."),
+        });
+        return;
+      }
+
+      const newClip = payload as ClipSnapshot;
+      dismissSelection();
+      toaster.create({
+        type: "success",
+        title: "Clip created",
+        description: "A new clip was carved out of your selection.",
+        action: {
+          label: "Open",
+          onClick: () => {
+            router.push(`/projects/${clipInfo.projectId}/clips/${newClip.id}/studio`);
+          },
+        },
+      });
+    } catch {
+      toaster.create({
+        type: "error",
+        title: "Could not create clip",
+        description: "Please try again.",
+      });
+    } finally {
+      creatingClipRef.current = false;
+      setCreatingClip(false);
+    }
+  }, [clipInfo.projectId, clipInfo.id, dismissSelection, router]);
+
+  // ⌫ deletes the transcript selection, and ⇧⌘C (⇧Ctrl+C on Windows/Linux)
+  // creates a clip from it, ONLY when a selection is active — otherwise
+  // studio-shell's own global handler (timeline segment delete; no 'c'/'C'
+  // case exists there) must keep running unobstructed. Registered on
+  // `window` in the CAPTURE phase so it runs before that bubble-phase
+  // listener (a text selection's target is typically document.body, not any
+  // node inside this panel, so a listener attached to a descendant DOM node
+  // here would never see the event at all — this has to live at the window
+  // level).
   useEffect(() => {
     const onKeyDownCapture = (e: KeyboardEvent) => {
-      if (e.key !== "Backspace" && e.key !== "Delete") return;
       const tag = (e.target as HTMLElement | null)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA") return; // word-correct input etc.
-      if (!selectionRef.current || selectionRef.current.words.length === 0) return;
-      e.preventDefault();
-      e.stopPropagation();
-      handleDeleteSelection();
+      const current = selectionRef.current;
+      if (!current || current.words.length === 0) return;
+
+      if (e.key === "Backspace" || e.key === "Delete") {
+        e.preventDefault();
+        e.stopPropagation();
+        handleDeleteSelection();
+        return;
+      }
+
+      if (
+        (e.key === "c" || e.key === "C") &&
+        e.shiftKey &&
+        (e.metaKey || e.ctrlKey) &&
+        current.revertRange === null
+      ) {
+        e.preventDefault();
+        e.stopPropagation();
+        void handleCreateClip();
+      }
     };
     window.addEventListener("keydown", onKeyDownCapture, true);
     return () => window.removeEventListener("keydown", onKeyDownCapture, true);
-  }, [handleDeleteSelection]);
+  }, [handleDeleteSelection, handleCreateClip]);
 
   return (
     <Box
@@ -827,9 +947,11 @@ export function TranscriptPanel() {
             top={selection.top}
             left={selection.left}
             isDeletedSelection={selection.revertRange !== null}
+            creatingClip={creatingClip}
             onDelete={handleDeleteSelection}
             onRevert={handleRevertSelection}
             onCopy={handleCopySelection}
+            onCreateClip={handleCreateClip}
           />
         )}
       </Box>

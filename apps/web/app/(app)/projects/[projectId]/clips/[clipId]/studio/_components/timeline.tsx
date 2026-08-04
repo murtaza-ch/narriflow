@@ -41,6 +41,17 @@ import {
   nearestWordBoundary,
   type TrimTranscript,
 } from "./trim-transcript-cache";
+import {
+  averageWordDurationSec,
+  findActiveWordId,
+  projectWordsToEdited,
+  pxPerWordForZoom,
+  selectVisibleWordChips,
+  shouldRenderWordChips,
+  zoomForFitToSentence,
+  zoomForFitToWord,
+  type WordChipDatum,
+} from "./word-chips";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -403,6 +414,114 @@ const WaveformCanvas = memo(function WaveformCanvas({
   );
 });
 
+// ─── Word chips (Vizard-parity Phase B step 15) ───────────────────────────────
+//
+// One chip per timed word, drawn on a thin row of its own. Words already
+// come fully timed off `useStudio().utterances` (the transcript panel's own
+// data source) — nothing new to fetch, so this stays cheap by construction.
+// `words` here is the FULL projected list (word-chips.ts's
+// `projectWordsToEdited`, computed once per utterances/editedTimeMap
+// change); this component only ever renders the caller-windowed subset
+// (`selectVisibleWordChips`), and paints the active word by direct DOM
+// mutation (mirrors TrimHandle/TimelinePlayhead's imperative-paint contract
+// above) so a 60fps playback-clock tick never forces a React re-render of
+// every mounted chip.
+const WordChipsRow = memo(function WordChipsRow({
+  words,
+  pxPerSec,
+  height,
+  editedTimeMap,
+  onSeek,
+}: {
+  words: WordChipDatum[];
+  pxPerSec: number;
+  height: number;
+  editedTimeMap: EditedTimeMap;
+  onSeek: (t: number) => void;
+}) {
+  const { playbackClock } = useStudio();
+  const elementsRef = useRef<Map<string, HTMLDivElement>>(new Map());
+  const activeIdRef = useRef<string | null>(null);
+
+  const paintActive = useCallback((id: string | null, active: boolean) => {
+    if (!id) return;
+    const el = elementsRef.current.get(id);
+    if (!el) return;
+    el.style.borderColor = active
+      ? "var(--chakra-colors-studio-accent)"
+      : "var(--chakra-colors-studio-border)";
+    el.style.color = active
+      ? "var(--chakra-colors-studio-fg)"
+      : "var(--chakra-colors-studio-fgMuted)";
+  }, []);
+
+  const updateActive = useCallback(() => {
+    const editedTime = playbackClock.getSnapshot();
+    const sourceTime = editedToSource(editedTimeMap, editedTime);
+    const nextId = findActiveWordId(words, sourceTime);
+    if (nextId === activeIdRef.current) return;
+    paintActive(activeIdRef.current, false);
+    paintActive(nextId, true);
+    activeIdRef.current = nextId;
+  }, [words, editedTimeMap, playbackClock, paintActive]);
+
+  useEffect(() => {
+    return playbackClock.subscribe(updateActive);
+  }, [playbackClock, updateActive]);
+
+  // The mounted chip set just changed (scroll/zoom swapped which words are
+  // in the window) — re-run once so a freshly-mounted active chip gets its
+  // paint without waiting for the next clock tick.
+  useEffect(() => {
+    activeIdRef.current = null;
+    updateActive();
+  }, [words, updateActive]);
+
+  return (
+    <>
+      {words.map((chip) => {
+        const left = chip.editedStartSec * pxPerSec;
+        const width = Math.max(chip.editedEndSec * pxPerSec - left - 2, 6);
+        return (
+          <Box
+            key={chip.id}
+            ref={(el: HTMLDivElement | null) => {
+              if (el) elementsRef.current.set(chip.id, el);
+              else elementsRef.current.delete(chip.id);
+            }}
+            as="button"
+            position="absolute"
+            top="1px"
+            style={{ left: `${left}px`, width: `${width}px`, height: `${height - 2}px` }}
+            display="flex"
+            alignItems="center"
+            justifyContent="center"
+            overflow="hidden"
+            px="4px"
+            borderRadius="l1"
+            borderWidth="1px"
+            borderColor="studio.border"
+            bg="studio.raised"
+            color="studio.fgMuted"
+            fontSize="10px"
+            whiteSpace="nowrap"
+            textOverflow="ellipsis"
+            cursor="pointer"
+            title={chip.text}
+            aria-label={`Word "${chip.text}" at ${formatTimecode(chip.editedStartSec)}`}
+            onClick={(e: React.MouseEvent) => {
+              e.stopPropagation();
+              onSeek(chip.editedStartSec);
+            }}
+          >
+            {chip.text}
+          </Box>
+        );
+      })}
+    </>
+  );
+});
+
 // ─── Control button ───────────────────────────────────────────────────────────
 
 function CtrlBtn({
@@ -412,7 +531,7 @@ function CtrlBtn({
   active,
   title,
 }: {
-  icon: React.ReactNode;
+  icon?: React.ReactNode;
   onClick?: () => void;
   label?: string;
   active?: boolean;
@@ -593,6 +712,7 @@ function RemoveSilencePopover() {
 // ─── Timeline ─────────────────────────────────────────────────────────────────
 
 const TRACK_HEIGHT = 64;
+const WORD_CHIPS_HEIGHT = 20;
 const WAVEFORM_HEIGHT = 36;
 const RULER_HEIGHT = 24;
 const LEFT_GUTTER = 40;
@@ -1386,6 +1506,35 @@ export function Timeline() {
     return markers;
   }, [editedTimeMap, safeDuration, utterances, visibleRange.endSec, visibleRange.startSec]);
 
+  // Vizard-parity Phase B step 15: word chips. `allWordChips` projects every
+  // timed word once per utterances/editedTimeMap change (cheap — the words
+  // are already loaded); `showWordChips` is the legibility gate (avg
+  // px-per-word >= WORD_CHIP_MIN_PX_PER_WORD); `visibleWordChips` re-windows
+  // on every scroll/zoom tick via a binary search, not a full re-derive.
+  const allWordChips = useMemo(
+    () => projectWordsToEdited(utterances, editedTimeMap),
+    [utterances, editedTimeMap],
+  );
+
+  const avgWordDurationSec = useMemo(() => averageWordDurationSec(utterances), [utterances]);
+
+  const showWordChips = shouldRenderWordChips(
+    pxPerWordForZoom(timelineZoom, avgWordDurationSec),
+  );
+
+  const visibleWordChips = useMemo(
+    () => (showWordChips ? selectVisibleWordChips(allWordChips, visibleRange) : []),
+    [showWordChips, allWordChips, visibleRange],
+  );
+
+  const handleFitToWord = useCallback(() => {
+    setTimelineZoom(zoomForFitToWord(utterances));
+  }, [setTimelineZoom, utterances]);
+
+  const handleFitToSentence = useCallback(() => {
+    setTimelineZoom(zoomForFitToSentence(utterances));
+  }, [setTimelineZoom, utterances]);
+
   const timeToX = useCallback(
     (t: number) => LEFT_GUTTER + t * TIMELINE_PX_PER_SEC,
     [TIMELINE_PX_PER_SEC],
@@ -1417,7 +1566,8 @@ export function Timeline() {
     [setTimelineZoom],
   );
 
-  const trackAreaHeight = RULER_HEIGHT + TRACK_HEIGHT + WAVEFORM_HEIGHT + 8;
+  const trackAreaHeight =
+    RULER_HEIGHT + TRACK_HEIGHT + 4 + WORD_CHIPS_HEIGHT + 4 + WAVEFORM_HEIGHT + 8;
 
   return (
     <Box
@@ -1521,6 +1671,9 @@ export function Timeline() {
 
         {/* Right: Zoom */}
         <Flex align="center" gap="4px" flex="1" justify="flex-end">
+          <CtrlBtn label="Word" onClick={handleFitToWord} title="Fit to word" />
+          <CtrlBtn label="Sentence" onClick={handleFitToSentence} title="Fit to sentence" />
+          <Box w="1px" h="16px" bg="studio.border" mx="1" />
           <CtrlBtn
             icon={<ZoomOut size={13} />}
             onClick={() =>
@@ -1702,10 +1855,31 @@ export function Timeline() {
 
             </Box>
 
+            {/* ── Word chips (Vizard-parity Phase B step 15) ────── */}
+            <Box
+              position="absolute"
+              top={`${RULER_HEIGHT + TRACK_HEIGHT + 4}px`}
+              left={`${LEFT_GUTTER}px`}
+              style={{
+                width: `${totalWidth}px`,
+                height: `${WORD_CHIPS_HEIGHT}px`,
+              }}
+            >
+              {showWordChips && (
+                <WordChipsRow
+                  words={visibleWordChips}
+                  pxPerSec={TIMELINE_PX_PER_SEC}
+                  height={WORD_CHIPS_HEIGHT}
+                  editedTimeMap={editedTimeMap}
+                  onSeek={seekTo}
+                />
+              )}
+            </Box>
+
             {/* ── Waveform track ───────────────────────────────── */}
             <Box
               position="absolute"
-              top={`${RULER_HEIGHT + TRACK_HEIGHT + 2}px`}
+              top={`${RULER_HEIGHT + TRACK_HEIGHT + 4 + WORD_CHIPS_HEIGHT + 4}px`}
               left={`${LEFT_GUTTER}px`}
               style={{
                 width: `${totalWidth}px`,
