@@ -214,8 +214,9 @@ function LiveCuePreview() {
 function PresetsGrid() {
   const { captionPreset, setCaptionPreset } = useStudio();
 
-  const [selectedPresetId, setSelectedPresetId] = useState<string | null>(() => {
-    // Try to match current preset to a named one
+  // Derived, not stored: undo/redo/reset change captionPreset without going
+  // through handleSelect, so a useState selection silently goes stale.
+  const selectedPresetId = useMemo(() => {
     const match = CAPTION_PRESETS.find(
       (p) =>
         p.preset.fontName === captionPreset.fontName &&
@@ -224,13 +225,12 @@ function PresetsGrid() {
         p.preset.highlightColor === captionPreset.highlightColor,
     );
     return match?.id ?? null;
-  });
+  }, [captionPreset]);
 
   const handleSelect = (presetId: string) => {
     const named = CAPTION_PRESETS.find((p) => p.id === presetId);
     if (!named) return;
 
-    setSelectedPresetId(presetId);
     // Apply preset but preserve user's position and font size
     setCaptionPreset((prev) => ({
       ...named.preset,
