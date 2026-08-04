@@ -141,8 +141,9 @@ function ColorField({
 // the same renderer the on-video overlay uses.
 
 function LiveCuePreview() {
-  const { captionPreset, playbackClock, utterances, clipStartSec, aspectRatio } = useStudio();
-  const caption = useLiveCaption(playbackClock, utterances, clipStartSec);
+  const { captionPreset, playbackClock, utterances, clipStartSec, editedTimeMap, aspectRatio } =
+    useStudio();
+  const caption = useLiveCaption(playbackClock, utterances, clipStartSec, editedTimeMap);
   const reducedMotion = useReducedMotion() ?? false;
 
   const stageRef = useRef<HTMLDivElement>(null);

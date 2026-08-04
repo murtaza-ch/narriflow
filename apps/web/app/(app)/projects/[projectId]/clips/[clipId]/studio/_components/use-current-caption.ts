@@ -1,8 +1,8 @@
 "use client";
 
 import { useMemo } from "react";
-import { CAPTION_CHUNK_SIZE } from "@narriflow/validators";
-import type { TranscriptUtterance } from "@narriflow/validators";
+import { CAPTION_CHUNK_SIZE, editedToSource } from "@narriflow/validators";
+import type { EditedTimeMap, TranscriptUtterance } from "@narriflow/validators";
 
 export interface CaptionWord {
   word: string;
@@ -20,15 +20,30 @@ const END_CLAMP_EPSILON_SEC = 0.001;
 
 /**
  * Pure caption resolver so timing edge cases can be tested without React.
+ *
+ * `currentTime` is EDITED-timeline seconds (the playback clock's own unit
+ * post Vizard-parity Phase B step 8). When `editedTimeMap` is supplied,
+ * `currentTime` is converted through it to absolute SOURCE seconds — the
+ * space `utterances`' own `startSec`/`endSec` live in — before matching
+ * cues, so a cut can never desync captions from what's actually on screen
+ * (words inside a deleted range simply never become active, since edited
+ * time skips over them by construction). Omitting `editedTimeMap` falls
+ * back to the pre-ripple `currentTime + clipStartSec` identity, which is
+ * mathematically the same thing for a clip with no deletions — kept as an
+ * explicit fallback (rather than always requiring a map) so callers that
+ * genuinely have no notion of one (e.g. isolated previews) still work.
  */
 export function getCurrentCaptionState(
   currentTime: number,
   utterances: TranscriptUtterance[],
   clipStartSec: number,
+  editedTimeMap?: EditedTimeMap,
 ): CaptionState | null {
   if (utterances.length === 0) return null;
 
-  const absoluteTime = currentTime + clipStartSec;
+  const absoluteTime = editedTimeMap
+    ? editedToSource(editedTimeMap, currentTime)
+    : currentTime + clipStartSec;
 
   let utteranceIdx = utterances.findIndex(
     (u) => absoluteTime >= u.startSec && absoluteTime < u.endSec,
@@ -105,9 +120,10 @@ export function useCurrentCaption(
   currentTime: number,
   utterances: TranscriptUtterance[],
   clipStartSec: number,
+  editedTimeMap?: EditedTimeMap,
 ): CaptionState | null {
   return useMemo(
-    () => getCurrentCaptionState(currentTime, utterances, clipStartSec),
-    [currentTime, utterances, clipStartSec],
+    () => getCurrentCaptionState(currentTime, utterances, clipStartSec, editedTimeMap),
+    [currentTime, utterances, clipStartSec, editedTimeMap],
   );
 }

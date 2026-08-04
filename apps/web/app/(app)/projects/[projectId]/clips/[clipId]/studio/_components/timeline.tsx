@@ -13,10 +13,13 @@ import {
   SkipForward,
   ZoomIn,
   ZoomOut,
+  Undo2,
 } from "lucide-react";
-import type { TranscriptUtterance } from "@narriflow/validators";
+import { editedToSource, sourceRangeToEdited } from "@narriflow/validators";
+import type { EditedTimeMap, SourceRange, TranscriptUtterance } from "@narriflow/validators";
 import { useStudio } from "./studio-shell";
 import { usePlaybackTime } from "./playback-clock";
+import { deletedRangesToCutMarkers, projectSegmentToEdited, type CutMarker } from "./edited-timeline";
 import {
   getCachedTimelineThumbnail,
   requestTimelineThumbnail,
@@ -242,13 +245,19 @@ const MAX_WAVEFORM_CANVAS_WIDTH = 2400;
 
 const WaveformCanvas = memo(function WaveformCanvas({
   utterances,
-  clipStartSec,
+  editedTimeMap,
   duration,
   width,
   height,
 }: {
   utterances: TranscriptUtterance[];
-  clipStartSec: number;
+  /** Vizard-parity Phase B step 8: pixel positions on this canvas are
+   *  EDITED-timeline seconds (the ruler's own unit) — converted through the
+   *  map to absolute source seconds before matching speech/word ranges, so
+   *  the waveform's "loud" regions line up with the transcript even once
+   *  cuts exist. Identity map (no deletions) makes this pixel-for-pixel the
+   *  same computation as before ripple existed. */
+  editedTimeMap: EditedTimeMap;
   duration: number;
   width: number;
   height: number;
@@ -304,7 +313,11 @@ const WaveformCanvas = memo(function WaveformCanvas({
     ctx.fillStyle = gradient;
 
     for (let px = 0; px < canvas.width; px++) {
-      const absoluteTime = clipStartSec + px * secPerPx;
+      // px is an EDITED-timeline position; editedToSource is monotonic
+      // non-decreasing (segments stay in source order), so the speechIndex/
+      // wordIndex cursors below can keep advancing left-to-right exactly as
+      // they did before ripple existed.
+      const absoluteTime = editedToSource(editedTimeMap, px * secPerPx);
 
       let amplitude = 0.03;
       while (speechRanges[speechIndex] && speechRanges[speechIndex]!.endSec < absoluteTime) {
@@ -327,7 +340,7 @@ const WaveformCanvas = memo(function WaveformCanvas({
       const barH = amplitude * midY;
       ctx.fillRect(px, midY - barH, 1, barH * 2);
     }
-  }, [timingIndex, clipStartSec, duration, canvasWidth, height]);
+  }, [timingIndex, editedTimeMap, duration, canvasWidth, height]);
 
   return (
     <canvas
@@ -435,8 +448,10 @@ function useTimelineViewport(ref: RefObject<HTMLDivElement | null>) {
 const TimelineSegmentBlock = memo(function TimelineSegmentBlock({
   id,
   label,
-  startSec,
-  endSec,
+  editedStartSec,
+  editedEndSec,
+  sourceStartSec,
+  sourceEndSec,
   isSelected,
   pxPerSec,
   thumbnailVideoUrl,
@@ -448,8 +463,17 @@ const TimelineSegmentBlock = memo(function TimelineSegmentBlock({
 }: {
   id: string;
   label: string;
-  startSec: number;
-  endSec: number;
+  /** Where the block is DRAWN — edited-timeline seconds (post Vizard-parity
+   *  Phase B step 8's "collapsed" convention: a deleted span never occupies
+   *  ruler width, so this is always continuous with neighboring segments). */
+  editedStartSec: number;
+  editedEndSec: number;
+  /** Where the thumbnail strip actually SEEKS the video — source-relative-
+   *  to-`clipStartSec`, i.e. this segment's real position in the file that's
+   *  actually playing. Deliberately kept separate from the edited pair
+   *  above: thumbnails must sample real footage, not edited-timeline math. */
+  sourceStartSec: number;
+  sourceEndSec: number;
   isSelected: boolean;
   pxPerSec: number;
   thumbnailVideoUrl: string | null;
@@ -459,8 +483,8 @@ const TimelineSegmentBlock = memo(function TimelineSegmentBlock({
   clipStartSec: number;
   setSelectedSegmentId: (id: string | null) => void;
 }) {
-  const x = startSec * pxPerSec;
-  const w = (endSec - startSec) * pxPerSec;
+  const x = editedStartSec * pxPerSec;
+  const w = (editedEndSec - editedStartSec) * pxPerSec;
 
   const handleClick = useCallback(
     (e: React.MouseEvent) => {
@@ -502,7 +526,7 @@ const TimelineSegmentBlock = memo(function TimelineSegmentBlock({
       role="button"
       tabIndex={0}
       aria-pressed={isSelected}
-      aria-label={`Segment "${label}", ${formatTimecode(startSec)} to ${formatTimecode(endSec)}`}
+      aria-label={`Segment "${label}", ${formatTimecode(editedStartSec)} to ${formatTimecode(editedEndSec)}`}
       contain="layout paint"
     >
       <SegmentThumbnails
@@ -511,8 +535,8 @@ const TimelineSegmentBlock = memo(function TimelineSegmentBlock({
         offsetSec={offsetSec}
         sourcePreviewId={sourcePreviewId}
         clipStartSec={clipStartSec}
-        segStartSec={startSec}
-        segEndSec={endSec}
+        segStartSec={sourceStartSec}
+        segEndSec={sourceEndSec}
         width={Math.max(w - 3, 4)}
         height={TRACK_HEIGHT - 3}
       />
@@ -543,6 +567,81 @@ const TimelineSegmentBlock = memo(function TimelineSegmentBlock({
         </Text>
       </Flex>
     </Box>
+  );
+});
+
+// ─── Cut marker (Vizard-parity Phase B step 9) ────────────────────────────────
+//
+// The "collapsed + cut markers" decision (see report): a deleted span never
+// occupies width on the edited-timeline ruler — it collapses to a single
+// point where the kept content before and after it now meet. This is the
+// ONLY on-timeline trace of a deletion, and it doubles as the Revert
+// affordance Vizard's recoverable-delete model relies on. A click reverts
+// immediately (single, obviously-reversible action; the delete itself is
+// already one click behind Backspace and lives on the undo stack too, so
+// there's no destructive-action asymmetry to guard against here).
+const CutMarkerBlock = memo(function CutMarkerBlock({
+  marker,
+  x,
+  onRevert,
+}: {
+  marker: CutMarker;
+  x: number;
+  onRevert: (range: SourceRange) => void;
+}) {
+  const handleClick = useCallback(
+    (e: React.MouseEvent) => {
+      e.stopPropagation();
+      onRevert(marker.range);
+    },
+    [marker.range, onRevert],
+  );
+
+  return (
+    <Flex
+      as="button"
+      position="absolute"
+      top="0"
+      bottom="0"
+      style={{ left: `${x}px`, transform: "translateX(-50%)" }}
+      w="16px"
+      align="center"
+      justify="center"
+      border="none"
+      bg="transparent"
+      cursor="pointer"
+      zIndex={8}
+      title={`${marker.durationSec.toFixed(1)}s cut — click to revert`}
+      aria-label={`${marker.durationSec.toFixed(1)} second cut — click to revert`}
+      onClick={handleClick}
+      role="group"
+    >
+      <Box
+        w="2px"
+        h="100%"
+        bg="studio.dangerBorder"
+        borderRadius="full"
+        transition="width 120ms ease, background 120ms ease"
+        _groupHover={{ w: "3px", bg: "studio.danger" }}
+      />
+      <Flex
+        position="absolute"
+        top="2px"
+        align="center"
+        justify="center"
+        w="16px"
+        h="16px"
+        borderRadius="full"
+        bg="studio.danger"
+        color="white"
+        opacity={0}
+        transition="opacity 120ms ease"
+        _groupHover={{ opacity: 1 }}
+        pointerEvents="none"
+      >
+        <Undo2 size={9} strokeWidth={2.5} />
+      </Flex>
+    </Flex>
   );
 });
 
@@ -682,6 +781,9 @@ export function Timeline() {
     activeVideoKind,
     sourcePreviewId,
     clipStartSec,
+    editedTimeMap,
+    deletedRanges,
+    revertDeletedRange,
     utterances,
     exportState,
   } = useStudio();
@@ -743,14 +845,56 @@ export function Timeline() {
     [ticks, visibleRange.endSec, visibleRange.startSec, tickInterval],
   );
 
+  // Vizard-parity Phase B step 9: `segments` is still stored source-
+  // relative-to-`clipStartSec` (split stays client-only — see
+  // studio-shell.tsx's `splitAtPlayhead`/`deleteSelectedSegment`); this
+  // projects each one onto the edited timeline for DRAWING. A segment
+  // that's been fully deleted (`deleteSelectedSegment` dispatches
+  // `deleteRange` but never removes it from `segments` — see that
+  // function's doc comment) projects to null here and simply stops being
+  // drawn, with no separate "segments" undo step needed to make it
+  // reappear on Revert.
+  const projectedSegments = useMemo(() => {
+    return segments.flatMap((seg) => {
+      const edited = projectSegmentToEdited(seg, clipStartSec, editedTimeMap);
+      if (!edited) return [];
+      return [{
+        id: seg.id,
+        label: seg.label,
+        sourceStartSec: seg.startSec,
+        sourceEndSec: seg.endSec,
+        editedStartSec: edited.startSec,
+        editedEndSec: edited.endSec,
+      }];
+    });
+  }, [segments, clipStartSec, editedTimeMap]);
+
   const visibleSegments = useMemo(
     () =>
-      segments.filter(
+      projectedSegments.filter(
         (seg) =>
-          seg.endSec >= visibleRange.startSec &&
-          seg.startSec <= visibleRange.endSec,
+          seg.editedEndSec >= visibleRange.startSec &&
+          seg.editedStartSec <= visibleRange.endSec,
       ),
-    [segments, visibleRange.endSec, visibleRange.startSec],
+    [projectedSegments, visibleRange.endSec, visibleRange.startSec],
+  );
+
+  // One collapsed marker per deleted range (the "collapsed + cut markers"
+  // timeline convention — see the Phase B step 9 report for why deleted
+  // spans never occupy ruler width). Each marker's own click reverts it.
+  const cutMarkers = useMemo(
+    () => deletedRangesToCutMarkers(deletedRanges, editedTimeMap),
+    [deletedRanges, editedTimeMap],
+  );
+
+  const visibleCutMarkers = useMemo(
+    () =>
+      cutMarkers.filter(
+        (marker) =>
+          marker.editedSec >= visibleRange.startSec - 0.5 &&
+          marker.editedSec <= visibleRange.endSec + 0.5,
+      ),
+    [cutMarkers, visibleRange.endSec, visibleRange.startSec],
   );
 
   const visiblePauseMarkers = useMemo(() => {
@@ -763,8 +907,17 @@ export function Timeline() {
 
       if (gap < PAUSE_MARKER_THRESHOLD_SEC) continue;
 
-      const startSec = Math.max(0, current.endSec - clipStartSec);
-      const endSec = Math.min(safeDuration, next.startSec - clipStartSec);
+      // A pause that now sits (partly or wholly) inside a cut collapses or
+      // shrinks with it — sourceRangeToEdited returns null when the whole
+      // gap was deleted, in which case there's nothing left to mark.
+      const edited = sourceRangeToEdited(editedTimeMap, {
+        startSec: current.endSec,
+        endSec: next.startSec,
+      });
+      if (!edited) continue;
+
+      const startSec = Math.max(0, edited.startSec);
+      const endSec = Math.min(safeDuration, edited.endSec);
 
       if (endSec <= visibleRange.startSec || startSec >= visibleRange.endSec) {
         continue;
@@ -779,7 +932,7 @@ export function Timeline() {
     }
 
     return markers;
-  }, [clipStartSec, safeDuration, utterances, visibleRange.endSec, visibleRange.startSec]);
+  }, [editedTimeMap, safeDuration, utterances, visibleRange.endSec, visibleRange.startSec]);
 
   const timeToX = useCallback(
     (t: number) => LEFT_GUTTER + t * TIMELINE_PX_PER_SEC,
@@ -1045,8 +1198,10 @@ export function Timeline() {
                   key={seg.id}
                   id={seg.id}
                   label={seg.label}
-                  startSec={seg.startSec}
-                  endSec={seg.endSec}
+                  editedStartSec={seg.editedStartSec}
+                  editedEndSec={seg.editedEndSec}
+                  sourceStartSec={seg.sourceStartSec}
+                  sourceEndSec={seg.sourceEndSec}
                   isSelected={selectedSegmentId === seg.id}
                   pxPerSec={TIMELINE_PX_PER_SEC}
                   thumbnailVideoUrl={activeVideoUrl}
@@ -1055,6 +1210,15 @@ export function Timeline() {
                   sourcePreviewId={sourcePreviewId}
                   clipStartSec={clipStartSec}
                   setSelectedSegmentId={setSelectedSegmentId}
+                />
+              ))}
+
+              {visibleCutMarkers.map((marker) => (
+                <CutMarkerBlock
+                  key={marker.id}
+                  marker={marker}
+                  x={marker.editedSec * TIMELINE_PX_PER_SEC}
+                  onRevert={revertDeletedRange}
                 />
               ))}
 
@@ -1103,7 +1267,7 @@ export function Timeline() {
             >
               <WaveformCanvas
                 utterances={utterances}
-                clipStartSec={clipStartSec}
+                editedTimeMap={editedTimeMap}
                 duration={safeDuration}
                 width={totalWidth}
                 height={WAVEFORM_HEIGHT}

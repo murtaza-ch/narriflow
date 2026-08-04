@@ -17,7 +17,7 @@ import { useEffect, useRef, useState } from "react";
 import { Box, Flex } from "@chakra-ui/react";
 import { motion } from "framer-motion";
 import { emojiForWord } from "@narriflow/validators";
-import type { CaptionPreset, TranscriptUtterance } from "@narriflow/validators";
+import type { CaptionPreset, EditedTimeMap, TranscriptUtterance } from "@narriflow/validators";
 import {
   getCurrentCaptionState,
   type CaptionState,
@@ -295,14 +295,18 @@ function captionSignature(caption: CaptionState | null) {
     .join("|")}`;
 }
 
-/** Subscribes to the playback clock and returns the current caption cue. */
+/** Subscribes to the playback clock and returns the current caption cue.
+ *  `editedTimeMap` converts the clock's edited-timeline seconds to absolute
+ *  source seconds before matching cues (see getCurrentCaptionState's doc
+ *  comment) — omit it only where there's genuinely no notion of one. */
 export function useLiveCaption(
   playbackClock: PlaybackClock,
   utterances: TranscriptUtterance[],
   clipStartSec: number,
+  editedTimeMap?: EditedTimeMap,
 ): CaptionState | null {
   const [caption, setCaption] = useState<CaptionState | null>(() =>
-    getCurrentCaptionState(playbackClock.getSnapshot(), utterances, clipStartSec),
+    getCurrentCaptionState(playbackClock.getSnapshot(), utterances, clipStartSec, editedTimeMap),
   );
   const signatureRef = useRef(captionSignature(caption));
 
@@ -312,6 +316,7 @@ export function useLiveCaption(
         playbackClock.getSnapshot(),
         utterances,
         clipStartSec,
+        editedTimeMap,
       );
       const signature = captionSignature(next);
       if (signature === signatureRef.current) return;
@@ -321,7 +326,7 @@ export function useLiveCaption(
 
     update();
     return playbackClock.subscribe(update);
-  }, [clipStartSec, playbackClock, utterances]);
+  }, [clipStartSec, playbackClock, utterances, editedTimeMap]);
 
   return caption;
 }

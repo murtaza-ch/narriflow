@@ -14,6 +14,7 @@ import {
   RotateCcw,
 } from "lucide-react";
 import {
+  editedToSource,
   resolveEffectiveLogoSettings,
   resolveMusicFadeWindows,
   type LogoPosition,
@@ -110,12 +111,20 @@ export function VideoPreview() {
     useOriginalSourceFallback,
     setUseOriginalSourceFallback,
     activeVideoUrl,
+    activeOffsetSec,
+    editedTimeMap,
     playerClipStartSec,
     deselectCaption,
     isPlaying,
     duration,
     brandLogo,
   } = useStudio();
+
+  // File-local position of edited time 0 — equals `playerClipStartSec`
+  // unless the clip's own opening seconds are themselves a deleted range,
+  // in which case playback should start at the first KEPT frame instead.
+  // See studio-shell.tsx's `playerRippleStartSec` for the same computation.
+  const playerRippleStartSec = editedToSource(editedTimeMap, 0) - activeOffsetSec;
 
   // Effective logo settings for THIS clip — studioEdits.logo overrides
   // merged over the project brand snapshot's defaults, via the exact same
@@ -149,7 +158,7 @@ export function VideoPreview() {
   const musicDurationRef = useRef(0);
   // Read by the (rarely re-created) load effect below so a trim change never
   // needs to be in that effect's deps just to seek to the right start point.
-  const playerClipStartSecRef = useRef(playerClipStartSec);
+  const playerRippleStartSecRef = useRef(playerRippleStartSec);
 
   const arConfig = ASPECT_RATIO_CONFIG[aspectRatio];
 
@@ -163,8 +172,8 @@ export function VideoPreview() {
   }, []);
 
   useEffect(() => {
-    playerClipStartSecRef.current = playerClipStartSec;
-  }, [playerClipStartSec]);
+    playerRippleStartSecRef.current = playerRippleStartSec;
+  }, [playerRippleStartSec]);
 
   // Assign the active source (proxy when ready, else the source once the
   // user opts in) and wire loading/error/stall state. Keyed only on
@@ -184,7 +193,7 @@ export function VideoPreview() {
     video.load();
 
     const handleLoaded = () => {
-      video.currentTime = playerClipStartSecRef.current;
+      video.currentTime = playerRippleStartSecRef.current;
       playbackClock.setTime(0);
       setVideoLoaded(true);
       setLoadError(false);
@@ -215,14 +224,23 @@ export function VideoPreview() {
     };
   }, [activeVideoUrl, videoRef, playbackClock, retryNonce]);
 
-  // Seek (rather than re-download) when the trim boundary moves on a file
-  // that's already loaded.
+  // Seek (rather than re-download) when the trim boundary moves — or the
+  // active file switches (proxy <-> full source, which also shifts
+  // `playerClipStartSec` via `activeOffsetSec`) — on a file that's already
+  // loaded. Deliberately keyed on `playerClipStartSec` (unaffected by
+  // content deletes — only trim/file-switch move it), NOT
+  // `playerRippleStartSec` directly: keying on the latter would re-run this
+  // on every delete/revert that happens to touch the clip's opening range,
+  // yanking mid-playback back to the start for an edit that has nothing to
+  // do with trim. The CORRECTION target still goes through the ripple-aware
+  // ref, so a clip that opens with a deleted range doesn't get seeked back
+  // into the cut on a genuine file switch.
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !activeVideoUrl || !videoLoaded) return;
     if (video.readyState < 1) return; // HAVE_METADATA not reached yet
     if (Math.abs(video.currentTime - playerClipStartSec) > 0.05) {
-      video.currentTime = playerClipStartSec;
+      video.currentTime = playerRippleStartSecRef.current;
     }
   }, [playerClipStartSec, activeVideoUrl, videoLoaded, videoRef]);
 

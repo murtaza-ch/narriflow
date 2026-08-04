@@ -15,12 +15,16 @@ import { Monitor } from "lucide-react";
 import { toaster } from "@narriflow/ui";
 import {
   getEffectiveClipTiming,
+  editedToSource,
+  normalizeDeletedRanges,
   type TranscriptUtterance,
   type CaptionPreset,
   type CaptionAnimation,
   type LogoPosition,
   type StudioEdits,
   type EditorDocument,
+  type EditedTimeMap,
+  type SourceRange,
 } from "@narriflow/validators";
 import { TopBar } from "./top-bar";
 import { TranscriptPanel } from "./transcript-panel";
@@ -29,6 +33,8 @@ import { ToolSidebar } from "./tool-sidebar";
 import { Timeline } from "./timeline";
 import { KeyboardShortcutsModal } from "./keyboard-shortcuts-modal";
 import { createPlaybackClock, type PlaybackClock } from "./playback-clock";
+import { buildStudioCutPlan } from "./edited-timeline";
+import { stepRipple } from "./ripple-playback";
 import {
   releaseTimelineThumbnailResources,
   type ThumbnailVideoKind,
@@ -245,6 +251,20 @@ interface StudioContextValue extends StudioState {
    *  caption/transcript/timeline consumers that key off them). */
   playerClipStartSec: number;
   playerClipEndSec: number;
+  /** Vizard-parity Phase B step 8 (docs/plans/vizard-parity.md §4): the
+   *  edited-time map derived from `doc.deletedRanges` — the SINGLE source of
+   *  truth every consumer of clip time (captions, transcript sync, the
+   *  timeline ruler/segments, playback) converts through so cuts can never
+   *  drift between what plays and what's displayed. Identity (one segment,
+   *  no cuts) when `deletedRanges` is empty — the fast path that keeps
+   *  pre-ripple behavior byte-for-byte unchanged. `duration` above IS
+   *  `editedTimeMap.editedDurationSec` — never compute it separately. */
+  editedTimeMap: EditedTimeMap;
+  /** `doc.deletedRanges` — absolute source seconds, already normalized by
+   *  the reducer. Exposed directly (not just via `editedTimeMap`) so the
+   *  timeline can render one Revert-able cut marker per range; see
+   *  `deletedRangesToCutMarkers` in edited-timeline.ts. */
+  deletedRanges: SourceRange[];
   /** Server-seeded brand logo (URL + snapshot defaults), or null when the
    *  project has none. See `StudioBrandLogo`'s doc comment. */
   brandLogo: StudioBrandLogo | null;
@@ -276,6 +296,10 @@ interface StudioContextValue extends StudioState {
    *  (and pointer-up of the caption-resize drag) so the NEXT gesture never
    *  accidentally merges into one that already finished. */
   endCoalesce: () => void;
+  /** Restores a previously deleted source range (the Vizard-parity "Revert"
+   *  affordance on a timeline cut marker) — dispatches `revertRange` through
+   *  the same undo/redo history as every other document mutation. */
+  revertDeletedRange: (range: SourceRange) => void;
   togglePlay: () => void;
   seekTo: (t: number) => void;
   splitAtPlayhead: () => void;
@@ -468,10 +492,33 @@ export function StudioShell({
     [doc.transcriptSlice, doc.clipStartSec, doc.clipEndSec],
   );
 
-  const duration = useMemo(
-    () => Math.max(0, clipEndSec - clipStartSec || clipInfo.duration),
-    [clipEndSec, clipStartSec, clipInfo.duration],
-  );
+  // ─── Edited-timeline model (vizard-parity.md Phase B step 8) ────────────
+  // The SINGLE map every time-based consumer (playback, captions, transcript
+  // sync, the timeline) converts through. Falls back to `clipInfo.duration`
+  // for the same degenerate case the old `duration` computation guarded
+  // (clipStartSec/clipEndSec both unset, e.g. a test harness) — building the
+  // map from an empty window would otherwise yield a bogus zero duration.
+  const editedTimeMap: EditedTimeMap = useMemo(() => {
+    const hasRealBounds = doc.clipEndSec > doc.clipStartSec;
+    const window = hasRealBounds
+      ? { startSec: doc.clipStartSec, endSec: doc.clipEndSec }
+      : { startSec: doc.clipStartSec, endSec: doc.clipStartSec + Math.max(0, clipInfo.duration) };
+    return buildStudioCutPlan(doc.deletedRanges, window).map;
+  }, [doc.deletedRanges, doc.clipStartSec, doc.clipEndSec, clipInfo.duration]);
+
+  // `duration` IS the edited duration — identical to the old
+  // `clipEndSec - clipStartSec` computation whenever `deletedRanges` is
+  // empty (the fast path), strictly shorter once cuts exist.
+  const duration = editedTimeMap.editedDurationSec;
+
+  // File-local position of edited time 0 — usually `playerClipStartSec`,
+  // EXCEPT when the clip's own opening seconds are themselves deleted, in
+  // which case the first kept frame starts later than the raw clip
+  // boundary. Anywhere code seeks/resets "to the start" of playback (as
+  // opposed to a trim boundary, which `playerClipStartSec` still owns) goes
+  // through this instead. Identical to `playerClipStartSec` whenever
+  // `deletedRanges` is empty.
+  const playerRippleStartSec = editedToSource(editedTimeMap, 0) - activeOffsetSec;
 
   // Derive TranscriptItem[] from utterances for existing TranscriptPanel
   const derivedTranscript: TranscriptItem[] = useMemo(
@@ -635,10 +682,10 @@ export function StudioShell({
 
     if (
       video.currentTime >= playerClipEndSec - 0.02 ||
-      video.currentTime < playerClipStartSec ||
+      video.currentTime < playerRippleStartSec ||
       currentTime >= duration - 0.02
     ) {
-      video.currentTime = playerClipStartSec;
+      video.currentTime = playerRippleStartSec;
       playbackClock.setTime(0);
     }
     if (video.paused) {
@@ -648,38 +695,91 @@ export function StudioShell({
       video.pause();
       setIsPlaying(false);
     }
-  }, [activeVideoUrl, playerClipStartSec, playerClipEndSec, duration, playbackClock]);
+  }, [activeVideoUrl, playerRippleStartSec, playerClipEndSec, duration, playbackClock]);
 
+  // `t` is EDITED-timeline seconds (the clock's own unit) — converted to an
+  // absolute source second via the map, then to the active file's own
+  // local time, so a seek can never land inside a cut (editedToSource only
+  // ever returns kept-segment seconds; see edit-ranges.ts).
   const seekTo = useCallback((t: number) => {
     const clamped = Math.max(0, Math.min(duration, t));
     playbackClock.setTime(clamped);
     if (videoRef.current && activeVideoUrl) {
-      videoRef.current.currentTime = playerClipStartSec + clamped;
+      videoRef.current.currentTime = editedToSource(editedTimeMap, clamped) - activeOffsetSec;
     }
-  }, [duration, playerClipStartSec, activeVideoUrl, playbackClock]);
+  }, [duration, editedTimeMap, activeOffsetSec, activeVideoUrl, playbackClock]);
 
+  // Split stays client-only (vizard-parity.md Phase B step 9) — it only
+  // ever defines selection boundaries within the `segments` array, which is
+  // still stored clip-relative-to-source (see edited-timeline.ts's doc
+  // comment on `projectSegmentToEdited`). The playhead itself is EDITED
+  // time, so it's converted back to that same source-relative convention
+  // before searching for the segment it falls in.
   const splitAtPlayhead = useCallback(() => {
-    const currentTime = playbackClock.getSnapshot();
+    const editedTime = playbackClock.getSnapshot();
+    const sourceRelativeTime = editedToSource(editedTimeMap, editedTime) - doc.clipStartSec;
     const active = segments.find(
-      (s) => currentTime >= s.startSec && currentTime <= s.endSec,
+      (s) => sourceRelativeTime >= s.startSec && sourceRelativeTime <= s.endSec,
     );
-    if (!active || currentTime <= active.startSec + 0.1 || currentTime >= active.endSec - 0.1) return;
+    if (
+      !active ||
+      sourceRelativeTime <= active.startSec + 0.1 ||
+      sourceRelativeTime >= active.endSec - 0.1
+    ) return;
 
     const newSegments = segments.flatMap((s) => {
       if (s.id !== active.id) return [s];
       return [
-        { ...s, endSec: currentTime },
-        { id: `${s.id}-b`, label: s.label, startSec: currentTime, endSec: s.endSec },
+        { ...s, endSec: sourceRelativeTime },
+        { id: `${s.id}-b`, label: s.label, startSec: sourceRelativeTime, endSec: s.endSec },
       ];
     });
     setSegments(newSegments);
-  }, [segments, playbackClock, setSegments]);
+  }, [segments, playbackClock, setSegments, editedTimeMap, doc.clipStartSec]);
 
+  // Vizard-parity Phase B step 9: Backspace/Delete on a selected segment
+  // persists the cut through `doc.deletedRanges` (undoable, autosaved,
+  // renders invalidated — see clip.service.ts) instead of the old
+  // cosmetic-only array splice. The `segments` array itself is left
+  // untouched: once `deletedRanges` covers a segment's whole source range,
+  // it simply stops being drawn (edited-timeline.ts's
+  // `projectSegmentToEdited` returns null for it) — reverting the range
+  // (see `revertDeletedRange`) makes it reappear for free, with no separate
+  // "segments" undo step needed.
   const deleteSelectedSegment = useCallback(() => {
     if (!selectedSegmentId) return;
-    setSegments(segments.filter((s) => s.id !== selectedSegmentId));
+    const seg = segments.find((s) => s.id === selectedSegmentId);
     setSelectedSegmentId(null);
-  }, [selectedSegmentId, segments, setSegments]);
+    if (!seg) return;
+
+    const range: SourceRange = {
+      startSec: doc.clipStartSec + seg.startSec,
+      endSec: doc.clipStartSec + seg.endSec,
+    };
+    const window = { startSec: doc.clipStartSec, endSec: doc.clipEndSec };
+    const candidateRanges = normalizeDeletedRanges([...doc.deletedRanges, range], window);
+    // Mirrors the worker's render-time guard (cut-plan.ts's `isEmpty`) so a
+    // delete that would leave nothing renderable is blocked before it's
+    // ever dispatched, not discovered later as a failed render.
+    if (buildStudioCutPlan(candidateRanges, window).isEmpty) {
+      toaster.create({
+        type: "error",
+        title: "Can't delete the only remaining content",
+        description: "Keep at least one segment in the clip.",
+      });
+      return;
+    }
+
+    setUnified((s) =>
+      applyUnifiedEditorAction(s, { kind: "document", action: { type: "deleteRange", range } }),
+    );
+  }, [selectedSegmentId, segments, doc.clipStartSec, doc.clipEndSec, doc.deletedRanges]);
+
+  const revertDeletedRange = useCallback((range: SourceRange) => {
+    setUnified((s) =>
+      applyUnifiedEditorAction(s, { kind: "document", action: { type: "revertRange", range } }),
+    );
+  }, []);
 
   const handleUndo = useCallback(() => {
     setUnified((s) => applyUnifiedEditorAction(s, { kind: "undo" }));
@@ -1175,42 +1275,47 @@ export function StudioShell({
   }, [togglePlay, seekTo, playbackClock, duration, splitAtPlayhead, deleteSelectedSegment, handleUndo, handleRedo, captionSelected, deselectCaption]);
 
   // Keep the clock aligned with explicit media updates without routing every
-  // playback frame through the top-level React context. Bounds are in
-  // "whichever file is active" time (playerClipStartSec/playerClipEndSec),
-  // not raw source time — see their definitions above.
+  // playback frame through the top-level React context. Same ripple engine
+  // as playback-clock.ts's `startVideo` (stepRipple — see ripple-playback.ts)
+  // so this coarse native-`timeupdate` safety net can't disagree with the
+  // rVFC-driven loop about where edited time or end-of-clip actually falls
+  // once cuts exist.
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !activeVideoUrl) return;
 
     const handleTimeUpdate = () => {
-      const clipRelativeTime = Math.max(0, video.currentTime - playerClipStartSec);
-      const clampedTime = Math.min(duration, clipRelativeTime);
+      const sourceTimeSec = video.currentTime + activeOffsetSec;
+      const step = stepRipple(editedTimeMap, sourceTimeSec);
 
-      if (video.currentTime >= playerClipEndSec - 0.02 || clampedTime >= duration) {
+      if (step.atEnd) {
         video.pause();
         video.currentTime = playerClipEndSec;
-        playbackClock.setTime(duration);
+        playbackClock.setTime(editedTimeMap.editedDurationSec);
         setIsPlaying(false);
         return;
       }
 
+      if (step.skipToSourceSec !== undefined) {
+        video.currentTime = step.skipToSourceSec - activeOffsetSec;
+      }
+
       if (video.paused) {
-        playbackClock.setTime(clampedTime);
+        playbackClock.setTime(step.editedTime);
       }
     };
 
     video.addEventListener("timeupdate", handleTimeUpdate);
     return () => video.removeEventListener("timeupdate", handleTimeUpdate);
-  }, [activeVideoUrl, playerClipStartSec, playerClipEndSec, duration, playbackClock]);
+  }, [activeVideoUrl, activeOffsetSec, editedTimeMap, playerClipEndSec, playbackClock]);
 
   useEffect(() => {
     if (!isPlaying || !activeVideoUrl) return;
 
     return playbackClock.startVideo({
       video: videoRef.current,
-      clipStartSec: playerClipStartSec,
-      clipEndSec: playerClipEndSec,
-      duration,
+      editedTimeMap,
+      sourceOffsetSec: activeOffsetSec,
       onEnded: () => {
         const video = videoRef.current;
         if (video) {
@@ -1220,7 +1325,7 @@ export function StudioShell({
         setIsPlaying(false);
       },
     });
-  }, [isPlaying, activeVideoUrl, playerClipStartSec, playerClipEndSec, duration, playbackClock]);
+  }, [isPlaying, activeVideoUrl, editedTimeMap, activeOffsetSec, playerClipEndSec, playbackClock]);
 
   // Simulated time advancing when playing (fallback: no active video source
   // — proxy not ready and the user hasn't opted into the full-source
@@ -1297,11 +1402,13 @@ export function StudioShell({
     sourceVideoUrl, sourcePreviewId, clipStartSec, clipEndSec, sourcePurged,
     previewVideoUrl, previewStartSec, useOriginalSourceFallback, setUseOriginalSourceFallback,
     activeVideoUrl, activeOffsetSec, activeVideoKind, playerClipStartSec, playerClipEndSec,
+    editedTimeMap, deletedRanges: doc.deletedRanges,
     brandLogo, utterances, updateUtteranceText,
     setIsPlaying, setActiveTool, setShowTimeline, setAspectRatio,
     setLayoutMode, setShowShortcuts, setTimelineZoom,
     setSelectedSegmentId, setCaptionPreset, selectCaption, deselectCaption,
     setTranscriptOnly, setSegments, setStudioEdits, setBrollUrl, endCoalesce,
+    revertDeletedRange,
     togglePlay, seekTo, splitAtPlayhead, deleteSelectedSegment, handleSave, handleExport,
     handleUndo, handleRedo, handleReset,
   };

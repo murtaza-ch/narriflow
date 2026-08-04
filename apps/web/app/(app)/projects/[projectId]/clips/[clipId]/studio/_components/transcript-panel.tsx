@@ -2,7 +2,8 @@
 
 import { memo, useRef, useEffect, useCallback, useState, useMemo } from "react";
 import { Box, Flex, Text, Checkbox } from "@chakra-ui/react";
-import type { TranscriptUtterance, TranscriptWord } from "@narriflow/validators";
+import { editedToSource, sourceToEdited } from "@narriflow/validators";
+import type { EditedTimeMap, TranscriptUtterance, TranscriptWord } from "@narriflow/validators";
 import { useStudio } from "./studio-shell";
 import type { PlaybackClock } from "./playback-clock";
 
@@ -56,9 +57,12 @@ function getWordsForUtterance(utterance: TranscriptUtterance): TranscriptWord[] 
 function getActiveTranscriptState(
   playbackClock: PlaybackClock,
   utterances: TranscriptUtterance[],
-  clipStartSec: number,
+  editedTimeMap: EditedTimeMap,
 ) {
-  const absoluteTime = playbackClock.getSnapshot() + clipStartSec;
+  // The clock reports EDITED time (vizard-parity.md Phase B step 8) —
+  // convert through the map to the absolute SOURCE seconds `utterances`'
+  // own startSec/endSec live in, same as captions (use-current-caption.ts).
+  const absoluteTime = editedToSource(editedTimeMap, playbackClock.getSnapshot());
   const utteranceIndex = utterances.findIndex(
     (u) => absoluteTime >= u.startSec && absoluteTime < u.endSec,
   );
@@ -127,9 +131,9 @@ const EditableUtterance = memo(function EditableUtterance({
   utteranceIndex: number;
   isActive: boolean;
   activeWordIndex: number;
-  onSeek: (clipRelativeTime: number) => void;
+  onSeek: (editedTime: number) => void;
 }) {
-  const { updateUtteranceText, clipStartSec, captionPreset } = useStudio();
+  const { updateUtteranceText, editedTimeMap, captionPreset } = useStudio();
   const blockRef = useRef<HTMLDivElement>(null);
   const [isEditing, setIsEditing] = useState(false);
 
@@ -201,7 +205,7 @@ const EditableUtterance = memo(function EditableUtterance({
                 _hover={{ bg: "rgba(255,255,255,0.06)" }}
                 onClick={(e: React.MouseEvent) => {
                   e.preventDefault();
-                  onSeek(token.word.startSec - clipStartSec);
+                  onSeek(sourceToEdited(editedTimeMap, token.word.startSec));
                 }}
               >
                 {token.word.word}
@@ -252,6 +256,7 @@ export function TranscriptPanel() {
     setTranscriptOnly,
     seekTo,
     clipStartSec,
+    editedTimeMap,
     playbackClock,
   } = useStudio();
 
@@ -259,12 +264,12 @@ export function TranscriptPanel() {
   const manualScrollRef = useRef(false);
   const manualScrollTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [activeState, setActiveState] = useState(() =>
-    getActiveTranscriptState(playbackClock, utterances, clipStartSec),
+    getActiveTranscriptState(playbackClock, utterances, editedTimeMap),
   );
 
   useEffect(() => {
     const update = () => {
-      const next = getActiveTranscriptState(playbackClock, utterances, clipStartSec);
+      const next = getActiveTranscriptState(playbackClock, utterances, editedTimeMap);
       setActiveState((prev) =>
         prev.utteranceIndex === next.utteranceIndex && prev.wordIndex === next.wordIndex
           ? prev
@@ -274,7 +279,7 @@ export function TranscriptPanel() {
 
     update();
     return playbackClock.subscribe(update);
-  }, [clipStartSec, playbackClock, utterances]);
+  }, [editedTimeMap, playbackClock, utterances]);
 
   // Auto-scroll when the active utterance changes, not on every playback tick.
   useEffect(() => {

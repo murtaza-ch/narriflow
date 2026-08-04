@@ -1,14 +1,24 @@
 "use client";
 
 import { useSyncExternalStore } from "react";
+import type { EditedTimeMap } from "@narriflow/validators";
+import { stepRipple } from "./ripple-playback";
 
 type Listener = () => void;
 
 interface PlaybackRunOptions {
   video: HTMLVideoElement | null;
-  clipStartSec: number;
-  clipEndSec: number;
-  duration: number;
+  /** Vizard-parity Phase B step 8: the edited-time map for this clip. The
+   *  video element always decodes SOURCE time continuously — it has no
+   *  concept of `deletedRanges` — so every playback tick is routed through
+   *  `stepRipple` (ripple-playback.ts) to detect drift into a cut and force
+   *  the video forward. Pass the identity map (no deletions) to get
+   *  byte-for-byte the same behavior this clock always had. */
+  editedTimeMap: EditedTimeMap;
+  /** File-local (whatever `video.src` currently is — proxy or full source)
+   *  -> absolute SOURCE seconds offset: sourceTimeSec = mediaTime +
+   *  sourceOffsetSec. Studio-shell's `activeOffsetSec`. */
+  sourceOffsetSec: number;
   onEnded: () => void;
 }
 
@@ -64,7 +74,7 @@ export function createPlaybackClock(initialTime = 0): PlaybackClock {
       return () => listeners.delete(listener);
     },
     setTime,
-    startVideo: ({ video, clipStartSec, clipEndSec, duration, onEnded }) => {
+    startVideo: ({ video, editedTimeMap, sourceOffsetSec, onEnded }) => {
       if (!video) return () => {};
 
       let cancelled = false;
@@ -73,14 +83,25 @@ export function createPlaybackClock(initialTime = 0): PlaybackClock {
       const videoWithFrameCallback = video as VideoWithFrameCallback;
 
       const updateFromMediaTime = (mediaTime: number) => {
-        const relativeTime = clampTime(mediaTime - clipStartSec, duration);
-        if (mediaTime >= clipEndSec - 0.02 || relativeTime >= duration) {
-          setTime(duration);
+        const sourceTimeSec = mediaTime + sourceOffsetSec;
+        const step = stepRipple(editedTimeMap, sourceTimeSec);
+
+        if (step.atEnd) {
+          setTime(editedTimeMap.editedDurationSec);
           onEnded();
           return false;
         }
 
-        setTime(relativeTime);
+        if (step.skipToSourceSec !== undefined) {
+          // Force the video forward past the cut — it has no concept of
+          // `deletedRanges` and would otherwise keep decoding/showing the
+          // deleted footage. The clock's own edited time (set below) is
+          // already continuous across this jump; only the video element
+          // needs correcting.
+          video.currentTime = step.skipToSourceSec - sourceOffsetSec;
+        }
+
+        setTime(step.editedTime);
         return true;
       };
 

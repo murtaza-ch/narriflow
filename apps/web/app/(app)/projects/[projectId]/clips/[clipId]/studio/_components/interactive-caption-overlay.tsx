@@ -143,11 +143,12 @@ export function InteractiveCaptionOverlay({
     aspectRatio,
     utterances,
     clipStartSec,
+    editedTimeMap,
     playbackClock,
     endCoalesce,
   } = useStudio();
 
-  const caption = useLiveCaption(playbackClock, utterances, clipStartSec);
+  const caption = useLiveCaption(playbackClock, utterances, clipStartSec, editedTimeMap);
   const reducedMotion = useReducedMotion() ?? false;
 
   const [hovered, setHovered] = useState(false);
