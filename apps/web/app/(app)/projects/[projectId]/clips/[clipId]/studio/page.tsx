@@ -6,9 +6,9 @@ import {
   presignDownloadUrl,
 } from "@narriflow/services";
 import type { TranscriptUtterance } from "@narriflow/validators";
-import { getEffectiveClipTiming } from "@narriflow/validators";
+import { brandTemplateSnapshotSchema, getEffectiveClipTiming } from "@narriflow/validators";
 import { StudioShell } from "./_components/studio-shell";
-import type { ClipInfo, TimelineSegment } from "./_components/studio-shell";
+import type { ClipInfo, StudioBrandLogo, TimelineSegment } from "./_components/studio-shell";
 
 function clampTimelineTime(timeSec: number, clipDurationSec: number) {
   return Math.max(0, Math.min(clipDurationSec, timeSec));
@@ -61,10 +61,14 @@ export default async function StudioPage({
   const appUser = await requireCurrentAppUser();
   const { projectId, clipId } = await params;
 
-  const [snapshot, clips, previewSource] = await Promise.all([
+  const [snapshot, clips, previewSource, rawBrandSnapshot] = await Promise.all([
     projectService.getProjectSnapshot(appUser.id, projectId),
     clipService.listClips(appUser.id, projectId),
     clipService.getClipPreviewSource(appUser.id, projectId, clipId),
+    // The project's frozen brand snapshot (captured once at ingest) —
+    // the source of truth for the logo ASSET. The studio only overrides
+    // how it's *shown* per clip (studioEdits.logo); see brand-template-panel.tsx.
+    projectService.getProjectBrandSnapshot(projectId),
   ]);
 
   if (!snapshot.project) notFound();
@@ -72,11 +76,16 @@ export default async function StudioPage({
   const clip = clips.find((c) => c.id === clipId);
   if (!clip) notFound();
 
+  const parsedBrandSnapshot = rawBrandSnapshot
+    ? brandTemplateSnapshotSchema.safeParse(rawBrandSnapshot)
+    : null;
+  const brandSnapshot = parsedBrandSnapshot?.success ? parsedBrandSnapshot.data : null;
+
   // Only fetched once clip existence is confirmed above — getClipEditorDocument
   // throws on a missing clip (unlike getClipPreviewSource's soft-empty
   // return), so running it before the notFound() check would surface an
   // unhandled error instead of a clean 404.
-  const [sourceVideoUrl, editorDoc] = await Promise.all([
+  const [sourceVideoUrl, editorDoc, brandLogoUrl] = await Promise.all([
     // Presign source video URL (works for both uploads and YouTube — both
     // stored in R2). Non-fatal: a presign failure just means no source
     // playback, not a broken page.
@@ -87,7 +96,29 @@ export default async function StudioPage({
         }).catch(() => null)
       : Promise.resolve(null),
     clipService.getClipEditorDocument(appUser.id, projectId, clipId),
+    // Presign the brand logo (if any) for the preview overlay. Non-fatal —
+    // a presign failure just means no logo overlay in preview, not a broken
+    // studio. NOTE: this URL expires with the presign TTL below (1h); a
+    // studio session left open longer than that will see the preview logo
+    // silently stop loading (broken <img>) until the page is reloaded. The
+    // render pipeline is unaffected — it downloads the logo fresh per render.
+    brandSnapshot?.logoStorageKey
+      ? presignDownloadUrl({
+          key: brandSnapshot.logoStorageKey,
+          expiresIn: 3600,
+        }).catch(() => null)
+      : Promise.resolve(null),
   ]);
+
+  const brandLogo: StudioBrandLogo | null =
+    brandSnapshot && brandLogoUrl
+      ? {
+          url: brandLogoUrl,
+          position: brandSnapshot.logoPosition,
+          opacity: brandSnapshot.logoOpacity,
+          scalePct: brandSnapshot.logoScalePct,
+        }
+      : null;
 
   // tailPadSec 0 — slice-only input: stored bounds are final (must stay in
   // lockstep with toClipSnapshot/preview/render or the studio timeline shows
@@ -157,6 +188,7 @@ export default async function StudioPage({
       // studio shows a terminal message instead of polling/spinning forever.
       sourcePurged={!snapshot.project.sourceStorageKey}
       fetchPreviewStatus={fetchPreviewStatus}
+      brandLogo={brandLogo}
     />
   );
 }

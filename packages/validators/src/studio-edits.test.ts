@@ -8,6 +8,12 @@ describe("studioEditsSchema (source audio + music fades)", () => {
     expect(parsed.sourceAudio).toEqual({ volume: 100, muted: false });
     expect(parsed.music.fadeInSec).toBe(0);
     expect(parsed.music.fadeOutSec).toBe(0);
+    expect(parsed.logo).toEqual({
+      enabled: true,
+      position: null,
+      opacity: null,
+      scalePct: null,
+    });
   });
 
   test("parse(undefined) applies the same defaults as parse({})", () => {
@@ -15,11 +21,17 @@ describe("studioEditsSchema (source audio + music fades)", () => {
     expect(parsed.sourceAudio).toEqual({ volume: 100, muted: false });
     expect(parsed.music.fadeInSec).toBe(0);
     expect(parsed.music.fadeOutSec).toBe(0);
+    expect(parsed.logo).toEqual({
+      enabled: true,
+      position: null,
+      opacity: null,
+      scalePct: null,
+    });
   });
 
-  test("legacy persisted JSON (no sourceAudio, no music fades) parses to full defaults", () => {
+  test("legacy persisted JSON (no sourceAudio, no music fades, no logo) parses to full defaults", () => {
     // Shape stored before this change landed — no `sourceAudio` key at all,
-    // and `music` missing `fadeInSec`/`fadeOutSec`.
+    // and `music` missing `fadeInSec`/`fadeOutSec`, no `logo` key at all.
     const legacy = {
       textLayers: [],
       transition: { type: "fade", durationSec: 0.5 },
@@ -40,6 +52,34 @@ describe("studioEditsSchema (source audio + music fades)", () => {
     expect(parsed.music.fadeInSec).toBe(0);
     expect(parsed.music.fadeOutSec).toBe(0);
     expect(parsed.transition).toEqual({ type: "fade", durationSec: 0.5 });
+    expect(parsed.logo).toEqual({
+      enabled: true,
+      position: null,
+      opacity: null,
+      scalePct: null,
+    });
+  });
+
+  test("accepts explicit logo overrides within range and rejects out-of-range ones", () => {
+    const parsed = studioEditsSchema.parse({
+      logo: { enabled: false, position: "top-left", opacity: 50, scalePct: 25 },
+    });
+    expect(parsed.logo).toEqual({
+      enabled: false,
+      position: "top-left",
+      opacity: 50,
+      scalePct: 25,
+    });
+
+    expect(() =>
+      studioEditsSchema.parse({ logo: { opacity: 9 } }),
+    ).toThrow();
+    expect(() =>
+      studioEditsSchema.parse({ logo: { scalePct: 41 } }),
+    ).toThrow();
+    expect(() =>
+      studioEditsSchema.parse({ logo: { position: "not-a-position" } }),
+    ).toThrow();
   });
 
   test("accepts explicit sourceAudio and music fade values within range", () => {

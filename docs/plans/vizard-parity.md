@@ -149,11 +149,15 @@ before the foundation steps it depends on.
    `editorRevision`, atomic single-endpoint save with optimistic concurrency,
    explicit render-invalidation policy replacing delete-on-autosave, immutable
    revision-zero snapshot persisted at first studio open.
+   *(landed 2026-08-04 — fa2f6d2 EditorDocument type, 095c0d3 atomic
+   revision-guarded save endpoint)*
 3. **Reducer + full undo/redo history** — all mutations (including B-roll, which
    currently PATCHes immediately from `broll-panel.tsx:110`) flow through one
    reducer with past/present/future history; autosave becomes revision-aware.
+   *(landed 2026-08-04 — fa2f6d2 reducer + history in `packages/validators`,
+   a38a97d studio wired to the unified document with revision-aware autosave)*
 4. **Reset to original** from the revision-zero snapshot (boundaries, transcript,
-   preset, studio edits, B-roll).
+   preset, studio edits, B-roll). *(landed 2026-08-04 — a38a97d)*
 5. **Audio controls** — add `sourceAudio.volume/muted` + explicit music fade
    fields to the schema; apply source gain before `amix` (today unity gain,
    `render-clips.ts:882`); music panel stops resetting `startOffsetSec`
@@ -161,7 +165,12 @@ before the foundation steps it depends on.
    *(landed 2026-08-04)*
 6. **Logo/watermark** — decide ownership first (worker reads the project brand
    snapshot, `render-clips.ts:2031`; the studio brand panel copies caption styling
-   only). Then persistence + preview overlay.
+   only). Then persistence + preview overlay. *(landed 2026-08-04 — project brand
+   snapshot stays the source of truth for the logo asset; `studioEdits.logo`
+   adds per-clip enabled/position/opacity/scale overrides (null = inherit
+   snapshot) via a shared `resolveEffectiveLogoSettings` helper in
+   `packages/validators` used by both `render-clips.ts` burn-in and the studio
+   preview overlay; brand-template-panel.tsx gained a Logo section)*
 
 ### Phase B — Text-based editing loop (was "P1")
 7. **Worker cut-concat** — video/audio trim+concat from `deletedRanges`; retime

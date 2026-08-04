@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { logoPositionSchema } from "./logo-position";
 
 const hexColorSchema = z.string().regex(/^#[0-9A-Fa-f]{6}$/);
 
@@ -43,6 +44,28 @@ export const studioSourceAudioSchema = z.object({
   muted: z.boolean().default(false),
 });
 
+// Per-clip logo overrides (vizard-parity.md Phase A step 6). The PROJECT
+// brand snapshot (`brandTemplateSnapshotSchema`) stays the source of truth
+// for the logo ASSET (`logoStorageKey`) — this only overrides how it's
+// shown on THIS clip. `null` on position/opacity/scalePct means "inherit
+// the snapshot value"; `enabled: false` turns the logo off for this clip
+// regardless of what the snapshot says. See
+// `resolveEffectiveLogoSettings` in logo-overlay.ts for the merge, shared
+// by the worker (burn-in) and the studio preview overlay so they can't fork.
+export const studioLogoSchema = z.object({
+  enabled: z.boolean().default(true),
+  position: logoPositionSchema.nullable().default(null),
+  opacity: z.number().int().min(10).max(100).nullable().default(null),
+  scalePct: z.number().int().min(5).max(40).nullable().default(null),
+});
+
+const STUDIO_LOGO_DEFAULT = {
+  enabled: true,
+  position: null,
+  opacity: null,
+  scalePct: null,
+} as const;
+
 export const studioEditsSchema = z
   .object({
     textLayers: z.array(studioTextLayerSchema).max(12).default([]),
@@ -59,6 +82,7 @@ export const studioEditsSchema = z
       fadeOutSec: 0,
     }),
     sourceAudio: studioSourceAudioSchema.default({ volume: 100, muted: false }),
+    logo: studioLogoSchema.default(STUDIO_LOGO_DEFAULT),
   })
   .default({
     textLayers: [],
@@ -72,6 +96,7 @@ export const studioEditsSchema = z
       fadeOutSec: 0,
     },
     sourceAudio: { volume: 100, muted: false },
+    logo: STUDIO_LOGO_DEFAULT,
   });
 
 export const updateClipStudioEditsSchema = z.object({
@@ -82,5 +107,6 @@ export type StudioTextLayer = z.infer<typeof studioTextLayerSchema>;
 export type StudioTransition = z.infer<typeof studioTransitionSchema>;
 export type StudioMusic = z.infer<typeof studioMusicSchema>;
 export type StudioSourceAudio = z.infer<typeof studioSourceAudioSchema>;
+export type StudioLogo = z.infer<typeof studioLogoSchema>;
 export type StudioEdits = z.infer<typeof studioEditsSchema>;
 export type UpdateClipStudioEdits = z.infer<typeof updateClipStudioEditsSchema>;

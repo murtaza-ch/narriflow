@@ -13,12 +13,55 @@ import {
   AlertTriangle,
   RotateCcw,
 } from "lucide-react";
+import { resolveEffectiveLogoSettings, type LogoPosition } from "@narriflow/validators";
 import { useStudio } from "./studio-shell";
 import type { AspectRatio, LayoutMode } from "./studio-shell";
 import { InteractiveCaptionOverlay } from "./interactive-caption-overlay";
 
 /** After this long with no metadata yet, hint that the source is just large. */
 const SLOW_LOAD_HINT_MS = 10_000;
+
+/** Approximates the worker's fixed 24px margin (render-clips.ts's
+ *  LOGO_MARGIN_PX) as a fraction of canvas width, assuming a ~1080px-wide
+ *  reference frame — matches the plan's "margin ≈ 24/1080 ≈ 2.2% of canvas
+ *  width" approximation. Not pixel-exact (the worker's margin is a fixed px
+ *  offset independent of aspect ratio; this scales with the preview's own
+ *  rendered width), but close enough for a live preview. */
+const LOGO_MARGIN_FRACTION = 24 / 1080;
+
+/** Absolute-position styles for the 3x3 `LogoPosition` grid, mirroring
+ *  `buildLogoOverlayPosition` in render-clips.ts (left/right/center-x,
+ *  top/bottom/center-y) so preview placement matches burn-in. `marginPx` is
+ *  in canvas-local pixels (see `LOGO_MARGIN_FRACTION`). */
+function logoPositionStyle(
+  position: LogoPosition,
+  marginPx: number,
+): React.CSSProperties {
+  // Mirrors buildLogoOverlayPosition's split("-") parsing: "center" alone
+  // has no second segment, so it falls through both branches below to the
+  // centered default — matching the worker exactly.
+  const [vertical, horizontal] = position.split("-");
+  const style: React.CSSProperties = { position: "absolute" };
+  let translateX = "0";
+  let translateY = "0";
+
+  if (horizontal === "left") style.left = `${marginPx}px`;
+  else if (horizontal === "right") style.right = `${marginPx}px`;
+  else {
+    style.left = "50%";
+    translateX = "-50%";
+  }
+
+  if (vertical === "top") style.top = `${marginPx}px`;
+  else if (vertical === "bot") style.bottom = `${marginPx}px`;
+  else {
+    style.top = "50%";
+    translateY = "-50%";
+  }
+
+  style.transform = `translate(${translateX}, ${translateY})`;
+  return style;
+}
 
 // ─── Aspect ratio helpers ─────────────────────────────────────────────────────
 
@@ -67,7 +110,23 @@ export function VideoPreview() {
     deselectCaption,
     isPlaying,
     duration,
+    brandLogo,
   } = useStudio();
+
+  // Effective logo settings for THIS clip — studioEdits.logo overrides
+  // merged over the project brand snapshot's defaults, via the exact same
+  // helper the worker uses for burn-in (resolveEffectiveLogoSettings), so
+  // preview and render can't fork. `null` when the project has no logo.
+  const effectiveLogo = brandLogo
+    ? resolveEffectiveLogoSettings(
+        {
+          position: brandLogo.position,
+          opacity: brandLogo.opacity,
+          scalePct: brandLogo.scalePct,
+        },
+        studioEdits.logo,
+      )
+    : null;
 
   const [videoLoaded, setVideoLoaded] = useState(false);
   const [loadError, setLoadError] = useState(false);
@@ -640,6 +699,27 @@ export function VideoPreview() {
 
           {/* Interactive caption overlay */}
           <InteractiveCaptionOverlay videoContainerRef={videoContainerRef} />
+
+          {/* Brand logo overlay — burns in on top of everything else
+              (captions, text layers) at render time (buildLogoFilter
+              overlays [outvbase] last in render-clips.ts), so it renders
+              last here too. Waits for a real measured previewWidth so
+              first paint never flashes a 0-sized/mispositioned logo. */}
+          {brandLogo && effectiveLogo?.enabled && previewWidth > 0 ? (
+            <img
+              src={brandLogo.url}
+              alt=""
+              aria-hidden="true"
+              style={{
+                ...logoPositionStyle(effectiveLogo.position, previewWidth * LOGO_MARGIN_FRACTION),
+                width: `${previewWidth * (effectiveLogo.scalePct / 100)}px`,
+                height: "auto",
+                opacity: effectiveLogo.opacity / 100,
+                zIndex: 25,
+                pointerEvents: "none",
+              }}
+            />
+          ) : null}
         </Box>
       </Box>
     </Flex>

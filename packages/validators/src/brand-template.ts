@@ -1,21 +1,13 @@
 import { z } from "zod";
 import { captionPresetSchema } from "./clip";
+import { logoPositionSchema, type LogoPosition } from "./logo-position";
 
 const hexColorSchema = z.string().regex(/^#[0-9A-Fa-f]{6}$/);
 
-export const logoPositionSchema = z.enum([
-  "top-left",
-  "top-center",
-  "top-right",
-  "mid-left",
-  "center",
-  "mid-right",
-  "bot-left",
-  "bot-center",
-  "bot-right",
-]);
-
-export type LogoPosition = z.infer<typeof logoPositionSchema>;
+// Re-exported from logo-position.ts (not defined here) — see that module's
+// doc comment for why it was split out (avoids a clip.ts <-> studio-edits.ts
+// <-> brand-template.ts import cycle).
+export { logoPositionSchema, type LogoPosition };
 
 export const brandTemplateInputSchema = z.object({
   name: z.string().min(1).max(60),

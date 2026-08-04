@@ -15,6 +15,7 @@ import {
   escapeDrawtextText,
   generateAssFromSlice,
   generateSrtFromSlice,
+  resolveClipLogoOverlay,
   resolveRenderTimingForClip,
 } from "./render-clips";
 
@@ -321,6 +322,130 @@ describe("buildBrollVideoArgs (B-roll cutaway)", () => {
     // logo is input [3] (0=source, 1-2=broll, 3=logo), music is input [4]
     expect(graph).toContain("[3:v]");
     expect(graph).toContain("[4:a]");
+  });
+});
+
+describe("resolveClipLogoOverlay (per-clip logo override merge — vizard-parity Phase A step 6)", () => {
+  const baseLogo = {
+    filePath: "/tmp/logo.png",
+    position: "bot-right" as const,
+    opacity: 80,
+    scalePct: 15,
+  };
+
+  test("null base (no logo asset at all) always yields null, regardless of overrides", () => {
+    expect(
+      resolveClipLogoOverlay(null, {
+        enabled: true,
+        position: "top-left",
+        opacity: 50,
+        scalePct: 25,
+      }),
+    ).toBeNull();
+  });
+
+  test("no override object (legacy studioEdits) inherits the base/snapshot fully", () => {
+    expect(resolveClipLogoOverlay(baseLogo, undefined)).toEqual(baseLogo);
+  });
+
+  test("all-null override fields (the schema default) inherit the base/snapshot values", () => {
+    const overrides = studioEditsSchema.parse({}).logo;
+    expect(resolveClipLogoOverlay(baseLogo, overrides)).toEqual(baseLogo);
+  });
+
+  test("non-null override fields (position/opacity/scale) win over the base", () => {
+    const overrides = studioEditsSchema.parse({
+      logo: { enabled: true, position: "top-left", opacity: 50, scalePct: 25 },
+    }).logo;
+    expect(resolveClipLogoOverlay(baseLogo, overrides)).toEqual({
+      filePath: "/tmp/logo.png",
+      position: "top-left",
+      opacity: 50,
+      scalePct: 25,
+    });
+  });
+
+  test("enabled: false yields null (no overlay at all) even with other overrides set", () => {
+    const overrides = studioEditsSchema.parse({
+      logo: { enabled: false, position: "top-left", opacity: 50, scalePct: 25 },
+    }).logo;
+    expect(resolveClipLogoOverlay(baseLogo, overrides)).toBeNull();
+  });
+});
+
+describe("buildSingleVideoArgs logo filter graph (override parity with the studio preview)", () => {
+  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true };
+  // 9:16 target width is 1080 (see buildCropAndScaleFilter's "scale=1080:1920").
+  const baseLogo = {
+    filePath: "/tmp/logo.png",
+    position: "bot-right" as const,
+    opacity: 80,
+    scalePct: 15,
+  };
+
+  test("burns in the overridden position/opacity/scale", () => {
+    const overrides = studioEditsSchema.parse({
+      logo: { enabled: true, position: "top-left", opacity: 50, scalePct: 25 },
+    }).logo;
+    const logo = resolveClipLogoOverlay(baseLogo, overrides);
+
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 10,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+      logo,
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    expect(graph).toContain("scale=270:-1"); // 25% of 1080
+    expect(graph).toContain("colorchannelmixer=aa=0.500");
+    expect(graph).toContain("overlay=24:24"); // top-left: x=y=LOGO_MARGIN_PX
+    expect(args.filter((a) => a === "-i")).toHaveLength(2); // source + logo
+  });
+
+  test("null override fields inherit the snapshot's bot-right/80%/15% defaults", () => {
+    const overrides = studioEditsSchema.parse({}).logo; // all-null override
+    const logo = resolveClipLogoOverlay(baseLogo, overrides);
+
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 10,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+      logo,
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    expect(graph).toContain("scale=162:-1"); // 15% of 1080
+    expect(graph).toContain("colorchannelmixer=aa=0.800");
+    expect(graph).toContain("overlay=W-w-24:H-h-24"); // bot-right
+  });
+
+  test("enabled: false skips the logo filter entirely (no colorchannelmixer, no extra -i)", () => {
+    const overrides = studioEditsSchema.parse({
+      logo: { enabled: false, position: null, opacity: null, scalePct: null },
+    }).logo;
+    const logo = resolveClipLogoOverlay(baseLogo, overrides);
+    expect(logo).toBeNull();
+
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 10,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+      logo,
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    expect(graph).not.toContain("colorchannelmixer");
+    expect(args.filter((a) => a === "-i")).toHaveLength(1); // source only
   });
 });
 

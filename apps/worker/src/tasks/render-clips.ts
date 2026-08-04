@@ -34,6 +34,7 @@ import {
   clipAspectRatioOptions,
   getEffectiveClipTiming,
   normalizeTranscriptSliceForClip,
+  resolveEffectiveLogoSettings,
   studioEditsSchema,
 } from "@narriflow/validators";
 import type {
@@ -107,6 +108,34 @@ interface LogoOverlay {
 }
 
 const LOGO_MARGIN_PX = 24;
+
+/**
+ * Merge a clip's `studioEdits.logo` override over the base logo overlay
+ * (built once per project from the frozen brand snapshot + downloaded logo
+ * file, see `brandLogo` below) via the shared `resolveEffectiveLogoSettings`
+ * helper — the same one the studio preview overlay uses, so burn-in and
+ * preview can't fork (vizard-parity.md Phase A step 6). `base: null` (no
+ * logo asset at all, e.g. no snapshot/no logoStorageKey/audio-only source)
+ * always yields `null` — there's nothing to override. `enabled: false`
+ * yields `null` too, skipping the overlay filter entirely for this clip.
+ */
+export function resolveClipLogoOverlay(
+  base: LogoOverlay | null,
+  overrides: StudioEdits["logo"] | null | undefined,
+): LogoOverlay | null {
+  if (!base) return null;
+  const effective = resolveEffectiveLogoSettings(
+    { position: base.position, opacity: base.opacity, scalePct: base.scalePct },
+    overrides,
+  );
+  if (!effective.enabled) return null;
+  return {
+    filePath: base.filePath,
+    position: effective.position,
+    opacity: effective.opacity,
+    scalePct: effective.scalePct,
+  };
+}
 
 interface WorkflowRunJob {
   id: string;
@@ -2222,6 +2251,12 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
         }
       }
 
+      // Per-clip effective logo: this clip's studioEdits.logo override
+      // merged over the project-wide brandLogo (frozen snapshot + already
+      // -downloaded file). `null` whenever there's no logo asset at all, or
+      // this clip's override disables it.
+      const logo = resolveClipLogoOverlay(brandLogo, studioEdits.logo);
+
       // ASS is the authoritative path and is used whenever a preset is present
       // (it carries per-word highlight, box, glow, position and animation so the
       // export matches the studio preview). SRT is only a no-preset fallback.
@@ -2690,7 +2725,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
                   probe,
                   srtPath: output.subtitlePath ?? srtPath,
                   captionPreset,
-                  logo: brandLogo,
+                  logo,
                   reframe: output.reframe,
                   studioEdits,
                   music: musicPlan,
@@ -2705,7 +2740,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
                   probe,
                   srtPath: output.subtitlePath ?? srtPath,
                   captionPreset,
-                  logo: brandLogo,
+                  logo,
                   reframe: output.reframe,
                   studioEdits,
                   music: musicPlan,
@@ -2754,7 +2789,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
                   probe,
                   srtPath: outputs[0]!.subtitlePath ?? srtPath,
                   captionPreset,
-                  logo: brandLogo,
+                  logo,
                   reframe: outputs[0]!.reframe,
                   applyFreeTierTreatment,
                 })
@@ -2766,7 +2801,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
                   probe,
                   srtPath,
                   captionPreset,
-                  logo: brandLogo,
+                  logo,
                   applyFreeTierTreatment,
                 });
 

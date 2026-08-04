@@ -18,6 +18,7 @@ import {
   type TranscriptUtterance,
   type CaptionPreset,
   type CaptionAnimation,
+  type LogoPosition,
   type StudioEdits,
   type EditorDocument,
 } from "@narriflow/validators";
@@ -112,6 +113,20 @@ export interface TimelineSegment {
   label: string;
   startSec: number;
   endSec: number;
+}
+
+/** The project's brand logo, pre-resolved server-side (studio/page.tsx) from
+ *  the frozen project brand snapshot: a presigned download URL plus the
+ *  snapshot's own position/opacity/scalePct (the per-clip defaults before
+ *  any `studioEdits.logo` override — see `resolveEffectiveLogoSettings` in
+ *  @narriflow/validators for how the two combine). `null` when the project
+ *  has no logo. Immutable for the life of the studio session — swapping
+ *  logos happens in Brand kit settings, not here. */
+export interface StudioBrandLogo {
+  url: string;
+  position: LogoPosition;
+  opacity: number;
+  scalePct: number;
 }
 
 export interface ClipInfo {
@@ -220,6 +235,9 @@ interface StudioContextValue extends StudioState {
    *  caption/transcript/timeline consumers that key off them). */
   playerClipStartSec: number;
   playerClipEndSec: number;
+  /** Server-seeded brand logo (URL + snapshot defaults), or null when the
+   *  project has none. See `StudioBrandLogo`'s doc comment. */
+  brandLogo: StudioBrandLogo | null;
   utterances: TranscriptUtterance[];
   updateUtteranceText: (index: number, newText: string) => void;
   setIsPlaying: (v: boolean) => void;
@@ -305,6 +323,9 @@ interface StudioShellProps {
     previewStartSec: number;
     previewDurationSec: number | null;
   }>;
+  /** Server-seeded brand logo (see studio/page.tsx and `StudioBrandLogo`'s
+   *  doc comment), or null/omitted when the project has none. */
+  brandLogo?: StudioBrandLogo | null;
 }
 
 export function StudioShell({
@@ -320,6 +341,7 @@ export function StudioShell({
   previewStartSec: initialPreviewStartSec = 0,
   sourcePurged = false,
   fetchPreviewStatus,
+  brandLogo = null,
 }: StudioShellProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const playbackClock = useMemo(() => createPlaybackClock(), []);
@@ -1120,7 +1142,7 @@ export function StudioShell({
     sourceVideoUrl, sourcePreviewId, clipStartSec, clipEndSec, sourcePurged,
     previewVideoUrl, previewStartSec, useOriginalSourceFallback, setUseOriginalSourceFallback,
     activeVideoUrl, activeOffsetSec, activeVideoKind, playerClipStartSec, playerClipEndSec,
-    utterances, updateUtteranceText,
+    brandLogo, utterances, updateUtteranceText,
     setIsPlaying, setActiveTool, setShowTimeline, setAspectRatio,
     setLayoutMode, setShowShortcuts, setTimelineZoom,
     setSelectedSegmentId, setCaptionPreset, selectCaption, deselectCaption,
