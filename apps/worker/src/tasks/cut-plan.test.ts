@@ -88,7 +88,13 @@ describe("buildClipCutPlan (everything deleted -> guard)", () => {
   });
 });
 
-describe("buildClipCutPlan (sub-50ms sliver dropping)", () => {
+describe("buildClipCutPlan (sub-100ms sliver dropping)", () => {
+  test("MIN_KEPT_SEGMENT_SEC is the frame-safe 100ms floor (2 frames at 20fps)", () => {
+    // Pinned so a future accidental change to the shared constant surfaces
+    // here, not just as a silent shift in which slivers get dropped.
+    expect(MIN_KEPT_SEGMENT_SEC).toBe(0.1);
+  });
+
   test("a kept segment shorter than MIN_KEPT_SEGMENT_SEC is dropped and folded into the surrounding gap", () => {
     // Two deletions leave a 30ms sliver between them (20.00 - 20.03).
     const plan = buildClipCutPlan(
@@ -123,9 +129,24 @@ describe("buildClipCutPlan (sub-50ms sliver dropping)", () => {
       [{ startSec: 10 + MIN_KEPT_SEGMENT_SEC, endSec: 40 }],
       window,
     );
-    // kept segment is exactly [10, 10+0.05) = 0.05s long
+    // kept segment is exactly [10, 10+0.1) = 0.1s long
     expect(plan.segments).toHaveLength(1);
     expect(plan.droppedSliverCount).toBe(0);
+  });
+
+  test("threshold delta vs the old 50ms floor: a 70ms sliver used to survive, now gets dropped", () => {
+    // Two deletions leave a 70ms sliver (20.00 - 20.07) — kept under the old
+    // 0.05s floor, dropped under the new 0.1s frame-safe floor.
+    const plan = buildClipCutPlan(
+      [
+        { startSec: 10, endSec: 20 },
+        { startSec: 20.07, endSec: 40 },
+      ],
+      window,
+    );
+    expect(plan.droppedSliverCount).toBe(1);
+    expect(plan.segments).toHaveLength(0);
+    expect(plan.isEmpty).toBe(true);
   });
 });
 

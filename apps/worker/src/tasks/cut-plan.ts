@@ -1,11 +1,19 @@
 import {
   buildEditedTimeMap,
+  FLOAT_SLACK,
+  MIN_KEPT_SEGMENT_SEC,
   normalizeDeletedRanges,
   type ClipWindow,
   type EditedSegment,
   type EditedTimeMap,
   type SourceRange,
 } from "@narriflow/validators";
+
+// Re-exported for existing consumers (this module used to define the
+// constant itself) — the canonical definition now lives in
+// packages/validators/src/edit-ranges.ts, shared with the studio's
+// live-preview timeline so the two can never disagree about the threshold.
+export { MIN_KEPT_SEGMENT_SEC };
 
 // Vizard-parity Phase B step 7 (docs/plans/vizard-parity.md §4): the worker's
 // cut-plan sits directly on top of the shared `buildEditedTimeMap` helper
@@ -15,15 +23,10 @@ import {
 // classifying the plan so callers can pick the right ffmpeg strategy (today's
 // untouched single-segment path / cut-concat / a hard "cannot render" guard).
 
-/**
- * Below this, a "kept" segment between two cuts (or at a clip edge) isn't
- * worth its own trim+concat stage: ffmpeg's `concat` filter needs every
- * segment to actually decode at least one full frame, and a few-millisecond
- * sliver is inaudible/invisible but can make `concat` stall or error on
- * some codecs. Dropped slivers are logged and folded out of the edited
- * timeline (the surrounding gap simply gets larger).
- */
-export const MIN_KEPT_SEGMENT_SEC = 0.05;
+// MIN_KEPT_SEGMENT_SEC (imported above) is the frame-safe floor below which a
+// kept segment isn't worth its own trim+concat stage — see its JSDoc in
+// edit-ranges.ts. Dropped slivers are logged and folded out of the edited
+// timeline (the surrounding gap simply gets larger).
 
 export interface ClipCutPlan {
   /** Kept source segments, source-order, each >= MIN_KEPT_SEGMENT_SEC, with
@@ -85,7 +88,9 @@ export function buildClipCutPlan(
 
   const rawMap = buildEditedTimeMap(deletedRanges, window);
   const kept = rawMap.segments.filter(
-    (segment) => segment.sourceEndSec - segment.sourceStartSec >= MIN_KEPT_SEGMENT_SEC,
+    (segment) =>
+      segment.sourceEndSec - segment.sourceStartSec >=
+      MIN_KEPT_SEGMENT_SEC - FLOAT_SLACK,
   );
   const droppedSliverCount = rawMap.segments.length - kept.length;
 

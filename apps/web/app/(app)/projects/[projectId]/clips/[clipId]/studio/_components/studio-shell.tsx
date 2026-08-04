@@ -16,6 +16,7 @@ import { toaster } from "@narriflow/ui";
 import {
   getEffectiveClipTiming,
   editedToSource,
+  isSourceTimeDeleted,
   normalizeDeletedRanges,
   type TranscriptUtterance,
   type CaptionPreset,
@@ -34,7 +35,7 @@ import { Timeline } from "./timeline";
 import { KeyboardShortcutsModal } from "./keyboard-shortcuts-modal";
 import { createPlaybackClock, type PlaybackClock } from "./playback-clock";
 import { buildStudioCutPlan } from "./edited-timeline";
-import { stepRipple } from "./ripple-playback";
+import { rippleSeekSourceSec, stepRipple } from "./ripple-playback";
 import {
   releaseTimelineThumbnailResources,
   type ThumbnailVideoKind,
@@ -73,6 +74,14 @@ const PREVIEW_POLL_MAX_ATTEMPTS = 45;
 
 /** How long to wait after the last edit before autosaving. */
 const AUTOSAVE_DEBOUNCE_MS = 1500;
+
+/** Fix 4: a barely-there nudge back from the exact edited duration when
+ *  resolving where end-of-playback should park — just enough that
+ *  `editedToSource` lands inside the final kept segment instead of exactly
+ *  on its far boundary (which, per edit-ranges.ts's half-open convention,
+ *  is really the first INSTANT of the next cut, not a frame that's safe to
+ *  park on). See `lastKeptPlayerTimeSec` below. */
+const LAST_KEPT_FRAME_EPSILON_SEC = 0.001;
 
 /** Tracks whether the viewport is narrower than `px` via matchMedia. */
 function useIsViewportBelow(px: number): boolean {
@@ -520,6 +529,24 @@ export function StudioShell({
   // `deletedRanges` is empty.
   const playerRippleStartSec = editedToSource(editedTimeMap, 0) - activeOffsetSec;
 
+  // Fix 4 (Phase B hardening): mirror of `playerRippleStartSec` for the
+  // OTHER end of playback. End-of-playback used to park at
+  // `playerClipEndSec` unconditionally — the RAW clip boundary — which is
+  // deleted footage whenever the clip's own tail is cut. This resolves the
+  // last KEPT source frame instead: a hair before `editedDurationSec` (so
+  // `editedToSource` lands strictly inside the final kept segment rather
+  // than exactly on its far boundary — see edit-ranges.ts's half-open
+  // convention) mapped back through the map, then re-expressed in the
+  // active file's own local time. Identical to `playerClipEndSec` whenever
+  // `deletedRanges` is empty.
+  const lastKeptPlayerTimeSec = useCallback(() => {
+    const lastKeptSourceSec = editedToSource(
+      editedTimeMap,
+      Math.max(0, editedTimeMap.editedDurationSec - LAST_KEPT_FRAME_EPSILON_SEC),
+    );
+    return lastKeptSourceSec - activeOffsetSec;
+  }, [editedTimeMap, activeOffsetSec]);
+
   // Derive TranscriptItem[] from utterances for existing TranscriptPanel
   const derivedTranscript: TranscriptItem[] = useMemo(
     () =>
@@ -717,7 +744,10 @@ export function StudioShell({
   // before searching for the segment it falls in.
   const splitAtPlayhead = useCallback(() => {
     const editedTime = playbackClock.getSnapshot();
-    const sourceRelativeTime = editedToSource(editedTimeMap, editedTime) - doc.clipStartSec;
+    // Same base rule as deleteSelectedSegment's fix 8 below: `segments` are
+    // authored against the page's EFFECTIVE clip start (`clipStartSec`), not
+    // `doc.clipStartSec` — the two can disagree on legacy rows.
+    const sourceRelativeTime = editedToSource(editedTimeMap, editedTime) - clipStartSec;
     const active = segments.find(
       (s) => sourceRelativeTime >= s.startSec && sourceRelativeTime <= s.endSec,
     );
@@ -735,7 +765,7 @@ export function StudioShell({
       ];
     });
     setSegments(newSegments);
-  }, [segments, playbackClock, setSegments, editedTimeMap, doc.clipStartSec]);
+  }, [segments, playbackClock, setSegments, editedTimeMap, clipStartSec]);
 
   // Vizard-parity Phase B step 9: Backspace/Delete on a selected segment
   // persists the cut through `doc.deletedRanges` (undoable, autosaved,
@@ -749,12 +779,27 @@ export function StudioShell({
   const deleteSelectedSegment = useCallback(() => {
     if (!selectedSegmentId) return;
     const seg = segments.find((s) => s.id === selectedSegmentId);
-    setSelectedSegmentId(null);
-    if (!seg) return;
+    if (!seg) {
+      // Stale selection (segment no longer exists) — nothing to reject, so
+      // clearing it here is just cleanup, not the "blocked delete" case
+      // fix 9 cares about below.
+      setSelectedSegmentId(null);
+      return;
+    }
 
+    // Fix 8: `segments` (the `timelineSegments` prop) are built server-side
+    // against the page's EFFECTIVE clip start — `clipStartSec` below, see
+    // page.tsx's `buildSegmentsFromUtterances(utterances, effective.startSec, ...)`
+    // — which is NOT always `doc.clipStartSec` (the persisted, raw
+    // `clip.startSec`): they can disagree on legacy rows whose stored
+    // boundary didn't land exactly on a word/sentence edge before the
+    // finalize-once boundary overhaul. Rebase against the SAME base the
+    // segments were actually built from, not the document's, so the
+    // absolute range handed to `deleteRange` can't silently shift by
+    // however far the two happen to disagree.
     const range: SourceRange = {
-      startSec: doc.clipStartSec + seg.startSec,
-      endSec: doc.clipStartSec + seg.endSec,
+      startSec: clipStartSec + seg.startSec,
+      endSec: clipStartSec + seg.endSec,
     };
     const window = { startSec: doc.clipStartSec, endSec: doc.clipEndSec };
     const candidateRanges = normalizeDeletedRanges([...doc.deletedRanges, range], window);
@@ -767,13 +812,18 @@ export function StudioShell({
         title: "Can't delete the only remaining content",
         description: "Keep at least one segment in the clip.",
       });
+      // Fix 9: a REJECTED delete must not clear the user's selection —
+      // only a delete that actually goes through does (below). Otherwise
+      // the error toast is followed by the selected block silently
+      // deselecting, which reads as "the delete happened" when it didn't.
       return;
     }
 
+    setSelectedSegmentId(null);
     setUnified((s) =>
       applyUnifiedEditorAction(s, { kind: "document", action: { type: "deleteRange", range } }),
     );
-  }, [selectedSegmentId, segments, doc.clipStartSec, doc.clipEndSec, doc.deletedRanges]);
+  }, [selectedSegmentId, segments, clipStartSec, doc.clipStartSec, doc.clipEndSec, doc.deletedRanges]);
 
   const revertDeletedRange = useCallback((range: SourceRange) => {
     setUnified((s) =>
@@ -1274,6 +1324,38 @@ export function StudioShell({
     return () => window.removeEventListener("keydown", onKey);
   }, [togglePlay, seekTo, playbackClock, duration, splitAtPlayhead, deleteSelectedSegment, handleUndo, handleRedo, captionSelected, deselectCaption]);
 
+  // Fix 3 (Phase B hardening): nothing else reconciles the <video> element
+  // or the clock against a delete/revert that just happened — a paused
+  // player keeps showing whatever frame it already had loaded even once
+  // that frame's SOURCE second is now deleted (or the clock's edited time
+  // now points past the new, shorter duration). Runs off `editedTimeMap`'s
+  // own identity (it's only rebuilt when deletedRanges/clipStartSec/
+  // clipEndSec actually change — see its useMemo above), so this is a
+  // total no-op on every other re-render, and it applies equally whether
+  // paused or mid-playback (a same-tick safety net ahead of the next rVFC
+  // tick in the latter case). Deliberately independent of the
+  // `playerClipStartSec`-keyed seek effect in video-preview.tsx — that one
+  // only reacts to trim/file-switch, this one only to cuts, so the two
+  // can't fight over the same tick.
+  const editedTimeMapRef = useRef(editedTimeMap);
+  useEffect(() => {
+    if (editedTimeMapRef.current === editedTimeMap) return;
+    editedTimeMapRef.current = editedTimeMap;
+
+    const clampedTime = Math.min(playbackClock.getSnapshot(), editedTimeMap.editedDurationSec);
+    if (clampedTime !== playbackClock.getSnapshot()) {
+      playbackClock.setTime(clampedTime);
+    }
+
+    const video = videoRef.current;
+    if (!video || !activeVideoUrl) return;
+
+    const currentSourceSec = video.currentTime + activeOffsetSec;
+    if (isSourceTimeDeleted(editedTimeMap, currentSourceSec)) {
+      video.currentTime = rippleSeekSourceSec(editedTimeMap, clampedTime) - activeOffsetSec;
+    }
+  }, [editedTimeMap, playbackClock, activeVideoUrl, activeOffsetSec, videoRef]);
+
   // Keep the clock aligned with explicit media updates without routing every
   // playback frame through the top-level React context. Same ripple engine
   // as playback-clock.ts's `startVideo` (stepRipple — see ripple-playback.ts)
@@ -1290,7 +1372,9 @@ export function StudioShell({
 
       if (step.atEnd) {
         video.pause();
-        video.currentTime = playerClipEndSec;
+        // Fix 4: park at the last KEPT frame, not the raw clip boundary
+        // (which is deleted footage whenever the clip's own tail is cut).
+        video.currentTime = lastKeptPlayerTimeSec();
         playbackClock.setTime(editedTimeMap.editedDurationSec);
         setIsPlaying(false);
         return;
@@ -1307,7 +1391,7 @@ export function StudioShell({
 
     video.addEventListener("timeupdate", handleTimeUpdate);
     return () => video.removeEventListener("timeupdate", handleTimeUpdate);
-  }, [activeVideoUrl, activeOffsetSec, editedTimeMap, playerClipEndSec, playbackClock]);
+  }, [activeVideoUrl, activeOffsetSec, editedTimeMap, lastKeptPlayerTimeSec, playbackClock]);
 
   useEffect(() => {
     if (!isPlaying || !activeVideoUrl) return;
@@ -1320,12 +1404,13 @@ export function StudioShell({
         const video = videoRef.current;
         if (video) {
           video.pause();
-          video.currentTime = playerClipEndSec;
+          // Fix 4: same last-kept-frame park as the timeupdate path above.
+          video.currentTime = lastKeptPlayerTimeSec();
         }
         setIsPlaying(false);
       },
     });
-  }, [isPlaying, activeVideoUrl, editedTimeMap, activeOffsetSec, playerClipEndSec, playbackClock]);
+  }, [isPlaying, activeVideoUrl, editedTimeMap, activeOffsetSec, lastKeptPlayerTimeSec, playbackClock]);
 
   // Simulated time advancing when playing (fallback: no active video source
   // — proxy not ready and the user hasn't opted into the full-source

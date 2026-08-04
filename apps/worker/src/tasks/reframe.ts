@@ -4,6 +4,8 @@
  * the speaker without jitter. Unit-tested in isolation; the detector (Python)
  * and the FFmpeg crop application live in the render task.
  */
+import { sourceToEdited } from "@narriflow/validators";
+import type { ClipCutPlan } from "./cut-plan";
 
 /** One detector sample. `cx` is the face center X normalized 0..1, or null if no face was found in that frame. */
 export interface FaceSample {
@@ -66,6 +68,55 @@ export function smoothFacePath(
 
 function clamp01(value: number): number {
   return Math.max(0, Math.min(1, value));
+}
+
+/**
+ * Splits raw detector samples into one `FaceSample[]` group per kept
+ * cut-plan segment: drops samples whose source instant falls inside a
+ * deleted range, and remaps the retained samples' `t` from
+ * elapsed-uncut-source seconds (what the detector emits — see
+ * `reframe_detect.py`, always 0-based from wherever detection started) onto
+ * the edited (post-concat) timeline the crop filter's `sendcmd` actually
+ * runs against (multi-model review fix #3). Without this, samples captured
+ * after a cut are timed against the pre-cut source, so the crop follows the
+ * speaker's PRE-cut position at each post-cut instant — increasingly wrong
+ * the more total footage has been cut before that point.
+ *
+ * Returns one group per segment (in source/edited order) rather than a
+ * single flat list so the caller can run `smoothFacePath` independently per
+ * group: `smoothFacePath`'s EMA + dead-zone carries state sample-to-sample
+ * with no notion of elapsed time, so feeding it a list with a cut-induced
+ * gap would smoothly (and wrongly) drift the crop across the cut instead of
+ * snapping immediately to the next kept segment's own face position. Calling
+ * it once per group resets that state at each kept-segment boundary without
+ * needing to change `smoothFacePath` itself.
+ *
+ * `clipStartSec` converts a sample's clip-relative elapsed `t` into the
+ * source-absolute seconds `cutPlan.map` expects. A no-op single-group
+ * passthrough (`[samples]`) when the clip is uncut.
+ */
+export function remapFaceSamplesForCutPlan(
+  samples: FaceSample[],
+  cutPlan: ClipCutPlan,
+  clipStartSec: number,
+): FaceSample[][] {
+  if (cutPlan.isUncut) return [samples];
+
+  const groups: FaceSample[][] = cutPlan.segments.map(() => []);
+  for (const sample of samples) {
+    const sourceSec = clipStartSec + sample.t;
+    const segmentIndex = cutPlan.segments.findIndex(
+      (segment) =>
+        sourceSec >= segment.sourceStartSec &&
+        sourceSec <= segment.sourceEndSec,
+    );
+    if (segmentIndex === -1) continue; // inside a cut (or outside the window)
+    groups[segmentIndex]!.push({
+      t: sourceToEdited(cutPlan.map, sourceSec),
+      cx: sample.cx,
+    });
+  }
+  return groups;
 }
 
 /**

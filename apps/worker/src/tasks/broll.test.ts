@@ -5,9 +5,11 @@ import { join } from "node:path";
 import type { PexelsVideo } from "@narriflow/services";
 import {
   getCachedBrollAssetPath,
+  remapBrollCuesForCutPlan,
   resolveBrollCutaways,
   saveBrollAssetToCache,
 } from "./broll";
+import { buildClipCutPlan } from "./cut-plan";
 
 // Pure query/orientation/placement logic (brollQueryForClip, planBrollWindow,
 // planBrollCutaways, orientation mapping) is unit-tested at its source of
@@ -201,6 +203,66 @@ describe("resolveBrollCutaways", () => {
       });
       expect(resolved).toEqual([]);
     }));
+});
+
+describe("remapBrollCuesForCutPlan (fix #2: cues are uncut clip-relative, planning runs on the edited timeline)", () => {
+  // 30s clip window [0,30), one mid-clip deletion [10,15) -> kept segments
+  // [0,10) and [15,30), 25s edited duration (10s in, cut point, then +5).
+  const window = { startSec: 0, endSec: 30 };
+  const cutPlan = buildClipCutPlan([{ startSec: 10, endSec: 15 }], window);
+  const clipStartSec = 0;
+
+  test("is a no-op when the clip is uncut (byte-identical to the pre-remap common case)", () => {
+    const uncutPlan = buildClipCutPlan([], window);
+    const cues = [{ atSec: 5, query: "q" }];
+    expect(remapBrollCuesForCutPlan(cues, uncutPlan, clipStartSec)).toBe(cues);
+  });
+
+  test("passes through null/undefined unchanged", () => {
+    expect(remapBrollCuesForCutPlan(null, cutPlan, clipStartSec)).toBeNull();
+    expect(remapBrollCuesForCutPlan(undefined, cutPlan, clipStartSec)).toBeUndefined();
+  });
+
+  test("a cue after a cut shifts left onto the edited timeline", () => {
+    // atSec=20 (uncut clip-relative) -> source 20 -> in the second kept
+    // segment (source [15,30) -> edited [10,25)) -> edited 10 + (20-15) = 15.
+    const cues = [{ atSec: 20, query: "office" }];
+    const remapped = remapBrollCuesForCutPlan(cues, cutPlan, clipStartSec);
+    expect(remapped).toEqual([{ atSec: 15, query: "office" }]);
+  });
+
+  test("a cue before any cut is unchanged (no shift needed)", () => {
+    const cues = [{ atSec: 5, query: "intro" }];
+    const remapped = remapBrollCuesForCutPlan(cues, cutPlan, clipStartSec);
+    expect(remapped).toEqual([{ atSec: 5, query: "intro" }]);
+  });
+
+  test("a cue inside a cut is dropped", () => {
+    const cues = [
+      { atSec: 5, query: "kept" },
+      { atSec: 12, query: "deleted (inside [10,15))" },
+      { atSec: 20, query: "kept, shifted" },
+    ];
+    const remapped = remapBrollCuesForCutPlan(cues, cutPlan, clipStartSec);
+    expect(remapped).toEqual([
+      { atSec: 5, query: "kept" },
+      { atSec: 15, query: "kept, shifted" },
+    ]);
+  });
+
+  test("respects a non-zero clipStartSec (cue atSec is clip-relative, cutPlan.map is source-absolute)", () => {
+    const offsetWindow = { startSec: 100, endSec: 130 };
+    const offsetPlan = buildClipCutPlan(
+      [{ startSec: 110, endSec: 115 }],
+      offsetWindow,
+    );
+    // atSec=20 relative to a clip starting at source 100 -> source 120 ->
+    // second kept segment (source [115,130) -> edited [10,25)) -> edited
+    // 10 + (120-115) = 15.
+    const cues = [{ atSec: 20, query: "office" }];
+    const remapped = remapBrollCuesForCutPlan(cues, offsetPlan, 100);
+    expect(remapped).toEqual([{ atSec: 15, query: "office" }]);
+  });
 });
 
 describe("downloaded-asset disk cache", () => {

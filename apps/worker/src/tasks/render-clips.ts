@@ -58,14 +58,17 @@ import { buildClipCutPlan, type ClipCutPlan } from "./cut-plan";
 import {
   buildReframeSendcmdScript,
   REFRAME_CROP_NAME,
+  remapFaceSamplesForCutPlan,
   smoothFacePath,
   type FaceSample,
+  type SmoothedSample,
 } from "./reframe";
 import {
   brollQueryForClip,
   dominantPexelsOrientation,
   getCachedBrollAssetPath,
   planBrollWindow,
+  remapBrollCuesForCutPlan,
   resolveBrollCutaways,
   saveBrollAssetToCache,
   type BrollCueInput,
@@ -2040,11 +2043,25 @@ export function buildAudiogramArgs(params: {
   const audioInputLabel = cutConcat ? cutConcat.audioLabel! : "[0:a]";
 
   const chain: string[] = cutConcat ? [...cutConcat.filterParts] : [];
+  // With music AND a real cut, `audioInputLabel` is `[acat]` — a named
+  // filter pad produced by the cut-concat `concat`/`acopy` stage above, not
+  // a raw demuxed stream. Unlike `[0:a]` (which ffmpeg happily fans out to
+  // multiple consumers), a named pad is a single link: feeding it into both
+  // showwaves below AND buildMusicAudioFilter's dialogueInputRef without an
+  // explicit split silently rebinds the second consumer to the raw uncut
+  // `[0:a]`, leaking deleted audio into the export (ffmpeg 8.0.1-reproduced).
+  // Split explicitly, same as the no-music branch already does below.
+  const dialogueAudioLabel = cutConcat ? "[dlgsrc]" : audioInputLabel;
+  if (params.music && cutConcat) {
+    chain.push(`${audioInputLabel}asplit=2[wavesrc][dlgsrc]`);
+  }
+  const waveSourceLabel =
+    params.music && cutConcat ? "[wavesrc]" : audioInputLabel;
   chain.push(
     ...(params.music
       ? [
           `color=c=${bgColor}:s=${W}x${H}:d=${params.clipDurationSec}[bg]`,
-          `${audioInputLabel}showwaves=s=${W}x${waveHeight}:mode=cline:colors=${waveColor}:rate=25[wave]`,
+          `${waveSourceLabel}showwaves=s=${W}x${waveHeight}:mode=cline:colors=${waveColor}:rate=25[wave]`,
           `[bg][wave]overlay=0:(H-h)/2[comp]`,
         ]
       : [
@@ -2108,7 +2125,7 @@ export function buildAudiogramArgs(params: {
         music: params.music,
         clipDurationSec: params.clipDurationSec,
         sourceAudio: params.studioEdits?.sourceAudio,
-        dialogueInputRef: audioInputLabel,
+        dialogueInputRef: dialogueAudioLabel,
       }),
     );
   }
@@ -2735,12 +2752,13 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
         // (`effective.durationSec`, not the post-cut `clipDurationSec`) even
         // when `deletedRanges` is non-empty: the face path needs samples
         // from every kept segment, wherever they land in source time, not
-        // just whatever fits in the (shorter) edited duration. The resulting
-        // sendcmd crop script is still keyed to elapsed time from this
-        // detection window and is NOT remapped through the cut-concat edited
-        // timeline — a known Phase B gap (see the cut-concat report), left
-        // for a follow-up since it only affects framing precision, never
-        // correctness/crash risk.
+        // just whatever fits in the (shorter) edited duration. Fix #3: raw
+        // samples are elapsed-uncut-source time (see reframe_detect.py), but
+        // the crop runs post-concat where t = edited time — samples inside a
+        // cut are dropped and retained ones remapped through
+        // remapFaceSamplesForCutPlan below before the sendcmd script is
+        // built, same source<->edited contract every other cut-concat
+        // consumer (captions, B-roll cues) uses.
         let detectInput: string | null = sourcePath;
         let detectStartSec = clipStartSec;
         if (isHttpSource(sourcePath)) {
@@ -2789,7 +2807,20 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
               durationSec: effective.durationSec,
             })
           : null;
-        const smoothed = detection ? smoothFacePath(detection.samples) : [];
+        // Fix #3: smoothFacePath's EMA/dead-zone carries state sample-to-
+        // sample with no notion of elapsed time, so smoothing straight
+        // through a cut-induced gap would slowly (and wrongly) drift the
+        // crop across the cut. Grouping by kept segment and smoothing each
+        // group independently resets that state at every cut boundary.
+        let smoothed: SmoothedSample[] = [];
+        if (detection) {
+          const segmentGroups = remapFaceSamplesForCutPlan(
+            detection.samples,
+            cutPlan,
+            clipStartSec,
+          );
+          smoothed = segmentGroups.flatMap((group) => smoothFacePath(group));
+        }
         if (smoothed.length > 0) {
           const single = outputs.length === 1;
           for (let i = 0; i < outputs.length; i++) {
@@ -2903,10 +2934,22 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
           const brollCuesParsed = rawBrollCues
             ? brollCuesArraySchema.safeParse(rawBrollCues)
             : null;
-          const cues: BrollCueInput[] | null =
+          const rawCues: BrollCueInput[] | null =
             brollCuesParsed?.success && brollCuesParsed.data.length > 0
               ? brollCuesParsed.data
               : null;
+          // Fix #2: brollCues[].atSec are uncut clip-relative seconds, but
+          // clipDurationSec/planBrollCutaways below operate on the edited
+          // (post-cut) timeline once deletedRanges are in play — remap
+          // through the same cutPlan.map every other cut-concat consumer
+          // (captions, reframe) uses, dropping cues whose moment was cut.
+          const remappedCues = remapBrollCuesForCutPlan(
+            rawCues,
+            cutPlan,
+            clipStartSec,
+          );
+          const cues: BrollCueInput[] | null =
+            remappedCues && remappedCues.length > 0 ? remappedCues : null;
 
           const category = clip.category as ClipCategory;
           const fallbackQuery = brollQueryForClip(

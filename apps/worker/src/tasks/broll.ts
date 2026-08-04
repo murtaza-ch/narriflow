@@ -27,15 +27,18 @@ import {
 import {
   brollQueryForClip,
   dominantPexelsOrientation,
+  isSourceTimeDeleted,
   pexelsOrientationForAspectRatio,
   planBrollCutaways,
   planBrollWindow,
+  sourceToEdited,
 } from "@narriflow/validators";
 import type {
   BrollCueInput,
   PexelsOrientation,
   PlannedBrollCutaway,
 } from "@narriflow/validators";
+import type { ClipCutPlan } from "./cut-plan";
 
 // Re-exported so existing imports (`from "./broll"`) keep resolving — the
 // actual implementations live in @narriflow/validators (pure placement/query
@@ -178,6 +181,39 @@ async function resolveSlotAsset(
     params.targetHeight,
     MIN_CUTAWAY_SEC_AFTER_ASSET_CLAMP,
   );
+}
+
+/**
+ * Remaps LLM-provided B-roll cue timestamps (`clip.brollCues[].atSec`, which
+ * are clip-relative seconds on the UNCUT source timeline — see
+ * `packages/validators/src/broll.ts` `BrollCueInput`) onto the edited
+ * (post-cut) timeline that `planBrollCutaways` actually places cutaways
+ * against once `deletedRanges` are in play (multi-model review fix #2).
+ * Without this, `resolveBrollCutaways` receives cue timestamps in the wrong
+ * time base and cutaways land on the wrong moment in the rendered output —
+ * or, when a cue's original moment was itself deleted, on content that no
+ * longer exists at all.
+ *
+ * `clipStartSec` converts the clip-relative `atSec` into the source-absolute
+ * seconds `cutPlan.map` expects. Cues whose source instant falls inside a
+ * deleted range are dropped rather than remapped onto the cut point (a
+ * deleted moment has no "intended" content to cut away to). A no-op
+ * (returns `cues` unchanged) when the clip is uncut, matching every other
+ * cut-concat consumer's byte-identical-common-case contract.
+ */
+export function remapBrollCuesForCutPlan(
+  cues: BrollCueInput[] | null | undefined,
+  cutPlan: ClipCutPlan,
+  clipStartSec: number,
+): BrollCueInput[] | null | undefined {
+  if (!cues || cutPlan.isUncut) return cues;
+  const remapped: BrollCueInput[] = [];
+  for (const cue of cues) {
+    const sourceSec = clipStartSec + cue.atSec;
+    if (isSourceTimeDeleted(cutPlan.map, sourceSec)) continue;
+    remapped.push({ ...cue, atSec: sourceToEdited(cutPlan.map, sourceSec) });
+  }
+  return remapped;
 }
 
 /**

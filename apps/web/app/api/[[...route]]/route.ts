@@ -1083,7 +1083,13 @@ app.put("/projects/:id/clips/:clipId/editor", async (c) => {
     }
     if (
       error instanceof ClipActionError &&
-      error.code === "editor_boundaries_immutable"
+      (error.code === "editor_boundaries_immutable" ||
+        // Phase B hardening: the client's own isEmpty guard
+        // (deleteSelectedSegment/buildStudioCutPlan in studio-shell.tsx)
+        // should make this unreachable in practice — this is the
+        // server-side backstop for a save whose deletedRanges leave
+        // nothing renderable (e.g. two tabs racing each other's edits).
+        error.code === "editor_document_empty_timeline")
     ) {
       return c.json({ error: error.code }, 422);
     }

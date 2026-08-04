@@ -13,7 +13,7 @@ import {
   undoEditor,
   type EditorDocument,
 } from "./editor-document";
-import { studioEditsSchema } from "./studio-edits";
+import { studioEditsSchema, studioTextLayerSchema } from "./studio-edits";
 import type { TranscriptUtterance } from "./transcript";
 
 function makeUtterance(
@@ -52,6 +52,22 @@ function makeDocument(): EditorDocument {
     brollUrl: null,
     deletedRanges: [],
   });
+}
+
+function makeDocumentWithTextLayer(
+  startSec: number,
+  endSec: number | null,
+): EditorDocument {
+  const doc = makeDocument();
+  return {
+    ...doc,
+    studioEdits: {
+      ...doc.studioEdits,
+      textLayers: [
+        studioTextLayerSchema.parse({ id: "layer-1", text: "Hello", startSec, endSec }),
+      ],
+    },
+  };
 }
 
 describe("applyEditorAction", () => {
@@ -194,6 +210,111 @@ describe("applyEditorAction", () => {
       ranges: [{ startSec: 14, endSec: 15 }],
     });
     expect(next).toBe(doc);
+  });
+});
+
+// Fix 2 (Phase B hardening): text layers store EDITED-timeline
+// startSec/endSec at creation; deleting/reverting EARLIER footage must
+// rebase them at the reducer level (not a component effect) so undo/redo
+// each land on an internally-consistent document.
+describe("text-layer ripple", () => {
+  test("deleteRange shifts a layer after the cut left by exactly the cut duration", () => {
+    // window [10,40) uncut -> edited 0 === source 10. Layer at edited
+    // [20,25) sits at source [30,35). Deleting source [12,17) (5s, entirely
+    // before the layer) shifts everything after it left by 5s.
+    const doc = makeDocumentWithTextLayer(20, 25);
+    const next = applyEditorAction(doc, {
+      type: "deleteRange",
+      range: { startSec: 12, endSec: 17 },
+    });
+    const layer = next.studioEdits.textLayers[0]!;
+    expect(layer.startSec).toBe(15);
+    expect(layer.endSec).toBe(20);
+  });
+
+  test("revertRange shifts the layer back to its exact original position", () => {
+    const doc = makeDocumentWithTextLayer(20, 25);
+    const deleted = applyEditorAction(doc, {
+      type: "deleteRange",
+      range: { startSec: 12, endSec: 17 },
+    });
+    const reverted = applyEditorAction(deleted, {
+      type: "revertRange",
+      range: { startSec: 12, endSec: 17 },
+    });
+    const layer = reverted.studioEdits.textLayers[0]!;
+    expect(layer.startSec).toBe(20);
+    expect(layer.endSec).toBe(25);
+  });
+
+  test("a layer whose whole window falls inside a new cut clamps to a 0.5s floor at the collapse point", () => {
+    // Layer at edited [5,8) === source [15,18) -- entirely inside the
+    // about-to-be-deleted source range [14,20).
+    const doc = makeDocumentWithTextLayer(5, 8);
+    const next = applyEditorAction(doc, {
+      type: "deleteRange",
+      range: { startSec: 14, endSec: 20 },
+    });
+    const layer = next.studioEdits.textLayers[0]!;
+    // Both endpoints collapse forward onto the cut point (edited 4 — where
+    // the surviving source[20,40) segment now starts) -- clamped to a 0.5s
+    // minimum duration there rather than disappearing or going inverted.
+    expect(layer.startSec).toBe(4);
+    expect(layer.endSec).toBe(4.5);
+    expect(layer.endSec! - layer.startSec).toBeCloseTo(0.5, 5);
+  });
+
+  test("a layer with no endSec (plays to clip end) only rebases its start", () => {
+    const doc = makeDocumentWithTextLayer(20, null);
+    const next = applyEditorAction(doc, {
+      type: "deleteRange",
+      range: { startSec: 12, endSec: 17 },
+    });
+    const layer = next.studioEdits.textLayers[0]!;
+    expect(layer.startSec).toBe(15);
+    expect(layer.endSec).toBeNull();
+  });
+
+  test("setClipBoundaries rebases layers against the new window, not just deletedRanges", () => {
+    // Layer at edited [5,8) === source [15,18). Trimming the clip's start
+    // forward to 12 shifts edited-time zero itself, moving the layer left
+    // by the same 2s even with no deletedRanges involved.
+    const doc = makeDocumentWithTextLayer(5, 8);
+    const next = applyEditorAction(doc, {
+      type: "setClipBoundaries",
+      startSec: 12,
+      endSec: 40,
+    });
+    const layer = next.studioEdits.textLayers[0]!;
+    expect(layer.startSec).toBe(3);
+    expect(layer.endSec).toBe(6);
+  });
+
+  test("undo restores the layer's pre-delete position exactly", () => {
+    let history = createEditorHistory(makeDocumentWithTextLayer(20, 25));
+    history = applyWithHistory(history, {
+      type: "deleteRange",
+      range: { startSec: 12, endSec: 17 },
+    });
+    expect(history.present.studioEdits.textLayers[0]!.startSec).toBe(15);
+
+    history = undoEditor(history);
+    const layer = history.present.studioEdits.textLayers[0]!;
+    expect(layer.startSec).toBe(20);
+    expect(layer.endSec).toBe(25);
+  });
+
+  test("a delete that doesn't actually change deletedRanges (fully-covered no-op) leaves textLayers referentially identical", () => {
+    const doc = applyEditorAction(makeDocumentWithTextLayer(20, 25), {
+      type: "deleteRange",
+      range: { startSec: 12, endSec: 17 },
+    });
+    const next = applyEditorAction(doc, {
+      type: "deleteRange",
+      range: { startSec: 12, endSec: 17 },
+    });
+    expect(next).toBe(doc);
+    expect(next.studioEdits.textLayers).toBe(doc.studioEdits.textLayers);
   });
 });
 

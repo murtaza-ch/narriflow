@@ -3,7 +3,9 @@ import { describe, expect, test } from "bun:test";
 import {
   buildEditedTimeMap,
   editedToSource,
+  hasRenderableContent,
   isSourceTimeDeleted,
+  MIN_KEPT_SEGMENT_SEC,
   normalizeDeletedRanges,
   sourceRangeToEdited,
   sourceToEdited,
@@ -168,6 +170,43 @@ describe("isSourceTimeDeleted", () => {
     expect(isSourceTimeDeleted(map, 20)).toBe(false);
     expect(isSourceTimeDeleted(map, 25)).toBe(false);
     expect(isSourceTimeDeleted(map, 10)).toBe(false);
+  });
+});
+
+describe("hasRenderableContent", () => {
+  test("no deletions always has renderable content", () => {
+    expect(hasRenderableContent(WINDOW, [])).toBe(true);
+  });
+
+  test("deleting everything leaves nothing renderable", () => {
+    expect(
+      hasRenderableContent(WINDOW, [{ startSec: 0, endSec: 100 }]),
+    ).toBe(false);
+  });
+
+  test("a real kept segment is renderable", () => {
+    expect(
+      hasRenderableContent(WINDOW, [{ startSec: 20, endSec: 25 }]),
+    ).toBe(true);
+  });
+
+  test("only a sub-MIN_KEPT_SEGMENT_SEC sliver survives -> not renderable", () => {
+    // Two deletions leave a 30ms sliver between them, well under the 0.1s
+    // frame-safe floor.
+    expect(
+      hasRenderableContent(WINDOW, [
+        { startSec: 10, endSec: 20 },
+        { startSec: 20.03, endSec: 40 },
+      ]),
+    ).toBe(false);
+  });
+
+  test("a segment exactly at MIN_KEPT_SEGMENT_SEC counts as renderable", () => {
+    expect(
+      hasRenderableContent(WINDOW, [
+        { startSec: 10 + MIN_KEPT_SEGMENT_SEC, endSec: 40 },
+      ]),
+    ).toBe(true);
   });
 });
 

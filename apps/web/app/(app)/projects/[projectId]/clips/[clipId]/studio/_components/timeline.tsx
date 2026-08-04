@@ -72,8 +72,10 @@ const SegmentThumbnails = memo(function SegmentThumbnails({
   offsetSec,
   sourcePreviewId,
   clipStartSec,
-  segStartSec,
-  segEndSec,
+  editedStartSec,
+  editedEndSec,
+  editedTimeMap,
+  cutsSignature,
   width,
   height,
 }: {
@@ -89,8 +91,20 @@ const SegmentThumbnails = memo(function SegmentThumbnails({
   offsetSec: number;
   sourcePreviewId: string;
   clipStartSec: number;
-  segStartSec: number;
-  segEndSec: number;
+  /** Fix 6 (Phase B hardening): this block's own EDITED-timeline span —
+   *  exactly what it's drawn at (see TimelineSegmentBlock's `x`/`w`), not
+   *  the segment's raw uncut source span. A segment straddling a cut is
+   *  drawn narrower than its full source range; sampling must walk THIS
+   *  span through `editedTimeMap` so every thumbnail frame comes from kept
+   *  footage, matching what the block's own width already implies. */
+  editedStartSec: number;
+  editedEndSec: number;
+  editedTimeMap: EditedTimeMap;
+  /** Short signature of the clip's current `deletedRanges` — part of the
+   *  thumbnail cache key (see timeline-preview-manager.ts's `cacheKeyFor`)
+   *  so a strip captured under one cut layout can't be handed back once
+   *  the cuts change. */
+  cutsSignature: string;
   width: number;
   height: number;
 }) {
@@ -111,8 +125,9 @@ const SegmentThumbnails = memo(function SegmentThumbnails({
       sourcePreviewId,
       videoKind,
       clipStartSec,
-      segStartSec,
-      segEndSec,
+      editedStartSec,
+      editedEndSec,
+      cutsSignature,
       width: renderWidth,
       height: renderHeight,
       quality: "refined",
@@ -121,8 +136,9 @@ const SegmentThumbnails = memo(function SegmentThumbnails({
       sourcePreviewId,
       videoKind,
       clipStartSec,
-      segStartSec,
-      segEndSec,
+      editedStartSec,
+      editedEndSec,
+      cutsSignature,
       width: renderWidth,
       height: renderHeight,
       quality: "coarse",
@@ -151,8 +167,8 @@ const SegmentThumbnails = memo(function SegmentThumbnails({
 
     if (!thumbnailVideoUrl) return;
 
-    const segDuration = segEndSec - segStartSec;
-    if (segDuration <= 0) return;
+    const editedDuration = editedEndSec - editedStartSec;
+    if (editedDuration <= 0) return;
 
     let cancelled = false;
     const drawStrip = (strip: HTMLCanvasElement, isComplete: boolean) => {
@@ -172,8 +188,10 @@ const SegmentThumbnails = memo(function SegmentThumbnails({
             videoKind,
             offsetSec,
             clipStartSec,
-            segStartSec,
-            segEndSec,
+            editedStartSec,
+            editedEndSec,
+            editedTimeMap,
+            cutsSignature,
             width: renderWidth,
             height: renderHeight,
             quality: "coarse",
@@ -192,8 +210,10 @@ const SegmentThumbnails = memo(function SegmentThumbnails({
         videoKind,
         offsetSec,
         clipStartSec,
-        segStartSec,
-        segEndSec,
+        editedStartSec,
+        editedEndSec,
+        editedTimeMap,
+        cutsSignature,
         width: renderWidth,
         height: renderHeight,
         quality: "refined",
@@ -210,7 +230,21 @@ const SegmentThumbnails = memo(function SegmentThumbnails({
       cancelCoarse();
       cancelRefined();
     };
-  }, [clipStartSec, height, offsetSec, renderHeight, renderWidth, segEndSec, segStartSec, sourcePreviewId, thumbnailVideoUrl, videoKind, width]);
+  }, [
+    clipStartSec,
+    cutsSignature,
+    editedEndSec,
+    editedStartSec,
+    editedTimeMap,
+    height,
+    offsetSec,
+    renderHeight,
+    renderWidth,
+    sourcePreviewId,
+    thumbnailVideoUrl,
+    videoKind,
+    width,
+  ]);
 
   return (
     <div
@@ -450,8 +484,6 @@ const TimelineSegmentBlock = memo(function TimelineSegmentBlock({
   label,
   editedStartSec,
   editedEndSec,
-  sourceStartSec,
-  sourceEndSec,
   isSelected,
   pxPerSec,
   thumbnailVideoUrl,
@@ -459,21 +491,21 @@ const TimelineSegmentBlock = memo(function TimelineSegmentBlock({
   offsetSec,
   sourcePreviewId,
   clipStartSec,
+  editedTimeMap,
+  cutsSignature,
   setSelectedSegmentId,
 }: {
   id: string;
   label: string;
   /** Where the block is DRAWN — edited-timeline seconds (post Vizard-parity
    *  Phase B step 8's "collapsed" convention: a deleted span never occupies
-   *  ruler width, so this is always continuous with neighboring segments). */
+   *  ruler width, so this is always continuous with neighboring segments).
+   *  Fix 6 (Phase B hardening): also now where the thumbnail strip SAMPLES
+   *  from — walked through `editedTimeMap` to real source seconds — instead
+   *  of the segment's raw uncut source span, which a straddling cut could
+   *  make wider than what's actually drawn/kept. */
   editedStartSec: number;
   editedEndSec: number;
-  /** Where the thumbnail strip actually SEEKS the video — source-relative-
-   *  to-`clipStartSec`, i.e. this segment's real position in the file that's
-   *  actually playing. Deliberately kept separate from the edited pair
-   *  above: thumbnails must sample real footage, not edited-timeline math. */
-  sourceStartSec: number;
-  sourceEndSec: number;
   isSelected: boolean;
   pxPerSec: number;
   thumbnailVideoUrl: string | null;
@@ -481,6 +513,8 @@ const TimelineSegmentBlock = memo(function TimelineSegmentBlock({
   offsetSec: number;
   sourcePreviewId: string;
   clipStartSec: number;
+  editedTimeMap: EditedTimeMap;
+  cutsSignature: string;
   setSelectedSegmentId: (id: string | null) => void;
 }) {
   const x = editedStartSec * pxPerSec;
@@ -535,8 +569,10 @@ const TimelineSegmentBlock = memo(function TimelineSegmentBlock({
         offsetSec={offsetSec}
         sourcePreviewId={sourcePreviewId}
         clipStartSec={clipStartSec}
-        segStartSec={sourceStartSec}
-        segEndSec={sourceEndSec}
+        editedStartSec={editedStartSec}
+        editedEndSec={editedEndSec}
+        editedTimeMap={editedTimeMap}
+        cutsSignature={cutsSignature}
         width={Math.max(w - 3, 4)}
         height={TRACK_HEIGHT - 3}
       />
@@ -633,7 +669,13 @@ const CutMarkerBlock = memo(function CutMarkerBlock({
         h="16px"
         borderRadius="full"
         bg="studio.danger"
-        color="white"
+        // Fix 11: white-on-studio.danger (#F26D6D) is only ~2.9:1 — below
+        // the WCAG 1.4.11 3:1 floor for a graphical glyph, and off-token
+        // besides (studio chrome never leaves graphite; see the theme's
+        // own doc comment on studio.danger). studio.canvas is dark enough
+        // against this coral to clear the floor comfortably while staying
+        // inside the studio.* palette.
+        color="studio.canvas"
         opacity={0}
         transition="opacity 120ms ease"
         _groupHover={{ opacity: 1 }}
@@ -861,8 +903,6 @@ export function Timeline() {
       return [{
         id: seg.id,
         label: seg.label,
-        sourceStartSec: seg.startSec,
-        sourceEndSec: seg.endSec,
         editedStartSec: edited.startSec,
         editedEndSec: edited.endSec,
       }];
@@ -878,6 +918,13 @@ export function Timeline() {
       ),
     [projectedSegments, visibleRange.endSec, visibleRange.startSec],
   );
+
+  // Fix 6 (Phase B hardening): a compact signature of the current cut
+  // layout, folded into the thumbnail cache key (timeline-preview-manager.ts)
+  // so a strip captured under one set of deletedRanges is never handed back
+  // once the cuts change — even in the (rare) case where a block's own
+  // editedStartSec/editedEndSec happen not to move.
+  const cutsSignature = useMemo(() => JSON.stringify(deletedRanges), [deletedRanges]);
 
   // One collapsed marker per deleted range (the "collapsed + cut markers"
   // timeline convention — see the Phase B step 9 report for why deleted
@@ -927,7 +974,12 @@ export function Timeline() {
         id: `pause-${i}`,
         startSec,
         endSec,
-        duration: gap,
+        // Fix 10: the LABEL must match what's actually drawn (the edited/
+        // projected width, `endSec - startSec`) rather than the raw source
+        // `gap` — if a cut has eaten part of this pause, the marker's own
+        // width already shrank to reflect that, but the label used to keep
+        // quoting the pre-cut duration.
+        duration: endSec - startSec,
       });
     }
 
@@ -1200,8 +1252,6 @@ export function Timeline() {
                   label={seg.label}
                   editedStartSec={seg.editedStartSec}
                   editedEndSec={seg.editedEndSec}
-                  sourceStartSec={seg.sourceStartSec}
-                  sourceEndSec={seg.sourceEndSec}
                   isSelected={selectedSegmentId === seg.id}
                   pxPerSec={TIMELINE_PX_PER_SEC}
                   thumbnailVideoUrl={activeVideoUrl}
@@ -1209,6 +1259,8 @@ export function Timeline() {
                   offsetSec={activeOffsetSec}
                   sourcePreviewId={sourcePreviewId}
                   clipStartSec={clipStartSec}
+                  editedTimeMap={editedTimeMap}
+                  cutsSignature={cutsSignature}
                   setSelectedSegmentId={setSelectedSegmentId}
                 />
               ))}

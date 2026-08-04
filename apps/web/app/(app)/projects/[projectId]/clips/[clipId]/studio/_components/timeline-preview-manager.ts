@@ -1,5 +1,7 @@
 "use client";
 
+import { editedToSource, type EditedTimeMap } from "@narriflow/validators";
+
 type ThumbnailQuality = "coarse" | "refined";
 
 /**
@@ -23,8 +25,26 @@ interface ThumbnailRequest {
    *  0 when reading the source directly. See `sourceTimeToVideoTime`. */
   offsetSec: number;
   clipStartSec: number;
-  segStartSec: number;
-  segEndSec: number;
+  /** Fix 6 (Phase B hardening): the block's own EDITED-timeline span (what
+   *  timeline.tsx actually draws it at), not the raw uncut source span. A
+   *  segment can straddle a cut — its drawn width already only spans the
+   *  KEPT portion — so sampling must walk this edited span through
+   *  `editedTimeMap` (below), not interpolate linearly across the segment's
+   *  full uncut source range the way this used to (which could sample and
+   *  display deleted footage inside the strip). */
+  editedStartSec: number;
+  editedEndSec: number;
+  /** The clip's current edited-time map — sampling below maps each
+   *  in-between edited x-position back to its real (never-deleted) source
+   *  second via `editedToSource`, mirroring how the ruler/waveform/playhead
+   *  already do this. */
+  editedTimeMap: EditedTimeMap;
+  /** Short signature of the clip's current `deletedRanges` (e.g.
+   *  `JSON.stringify`), folded into the cache key so a strip captured under
+   *  one cut layout is never handed back after the cuts change — even in
+   *  the (rare) case where two different cut layouts happen to produce the
+   *  same `editedStartSec`/`editedEndSec` for this block. */
+  cutsSignature: string;
   width: number;
   height: number;
   quality: ThumbnailQuality;
@@ -87,14 +107,23 @@ export function sourceTimeToVideoTime(sourceTimeSec: number, offsetSec: number):
 }
 
 export function cacheKeyFor(
-  request: Omit<ThumbnailRequest, "sourceVideoUrl" | "offsetSec" | "onFrame" | "onError">,
+  request: Omit<
+    ThumbnailRequest,
+    "sourceVideoUrl" | "offsetSec" | "onFrame" | "onError" | "editedTimeMap"
+  >,
 ) {
   return [
     request.sourcePreviewId,
     request.videoKind,
     request.clipStartSec.toFixed(3),
-    request.segStartSec.toFixed(3),
-    request.segEndSec.toFixed(3),
+    request.editedStartSec.toFixed(3),
+    request.editedEndSec.toFixed(3),
+    // Fix 6: a cut layout can move where THIS strip samples from without
+    // necessarily moving editedStartSec/editedEndSec by the same amount
+    // (e.g. two different-shaped cuts inside the same block that happen to
+    // leave the same total kept duration) — the signature is what actually
+    // guarantees a stale strip gets invalidated when cuts change.
+    request.cutsSignature,
     bucketWidth(request.width),
     Math.round(request.height),
     request.quality,
@@ -246,8 +275,10 @@ async function runJob(job: ThumbnailJob) {
     const maxWidth = job.quality === "coarse" ? MAX_COARSE_WIDTH : MAX_REFINED_WIDTH;
     const renderWidth = Math.max(1, Math.min(maxWidth, Math.round(job.width)));
     const renderHeight = Math.max(1, Math.round(job.height));
-    const duration = job.segEndSec - job.segStartSec;
-    if (duration <= 0) return;
+    // Fix 6: EDITED-timeline duration of this block, not the raw uncut
+    // source span — see `editedStartSec`/`editedEndSec`'s doc comment.
+    const editedDuration = job.editedEndSec - job.editedStartSec;
+    if (editedDuration <= 0) return;
 
     const frameCount =
       job.quality === "coarse"
@@ -270,7 +301,13 @@ async function runJob(job: ThumbnailJob) {
       if (job.cancelled) return;
 
       const progress = frameCount === 1 ? 0.5 : i / frameCount;
-      const sourceSeekTime = job.clipStartSec + job.segStartSec + duration * progress;
+      // Fix 6: walk the EDITED x-position through `editedTimeMap` to land
+      // on the real (never-deleted) source second — a block that straddles
+      // a cut used to interpolate linearly across its full uncut source
+      // span here, which could seek into and display deleted footage even
+      // though the block's drawn width already excluded it.
+      const editedSeekTime = job.editedStartSec + editedDuration * progress;
+      const sourceSeekTime = editedToSource(job.editedTimeMap, editedSeekTime);
       const seekTime = sourceTimeToVideoTime(sourceSeekTime, job.offsetSec);
       await seekVideo(slot.video, seekTime);
       if (job.cancelled) return;
@@ -299,7 +336,10 @@ export function setTimelineThumbnailPlaybackActive(isActive: boolean) {
 }
 
 export function getCachedTimelineThumbnail(
-  request: Omit<ThumbnailRequest, "sourceVideoUrl" | "offsetSec" | "onFrame" | "onError">,
+  request: Omit<
+    ThumbnailRequest,
+    "sourceVideoUrl" | "offsetSec" | "onFrame" | "onError" | "editedTimeMap"
+  >,
 ) {
   return thumbnailCache.get(cacheKeyFor(request));
 }

@@ -21,6 +21,7 @@ import {
   editorDocumentSchema,
   getCaptionPresetById,
   getEffectiveClipTiming,
+  hasRenderableContent,
   isBrandDefaultCaptionPresetId,
   normalizeDeletedRanges,
   normalizeTranscriptSliceForClip,
@@ -37,10 +38,12 @@ import type {
   ClipPlatformTarget,
   ClipRenderVariant,
   ClipSnapshot,
+  ClipWindow,
   ContentPack,
   EditorDocument,
   EffectiveClipTiming,
   SaveEditorDocument,
+  SourceRange,
   StudioEdits,
   TranscriptUtterance,
   WorkflowStageUpdatedEvent,
@@ -329,6 +332,36 @@ export function assertEditorRevisionMatches(
 ): void {
   if (currentRevision !== baseRevision) {
     throw new ClipEditorRevisionConflictError(currentRevision);
+  }
+}
+
+/**
+ * Multi-model review fix #5: `deletedRanges` normalizes cleanly even when it
+ * deletes the clip's entire renderable content — normalization alone can't
+ * catch that, only `buildClipCutPlan`'s MIN_KEPT_SEGMENT_SEC-aware guard
+ * can, and until now that guard only ran at render time (worker-side),
+ * failing every render variant well after the save already succeeded.
+ * `hasRenderableContent` (packages/validators/src/edit-ranges.ts) is the
+ * exact same policy the worker's `buildClipCutPlan` enforces, so a document
+ * this rejects is guaranteed to be one the worker would also reject —
+ * checked here so the save itself fails fast instead.
+ *
+ * NOTE: the PUT `/projects/:id/clips/:clipId/editor` route (apps/web) only
+ * maps the `editor_boundaries_immutable` ClipActionError code to a 422 today
+ * — every other code, including this one, falls through to an unhandled
+ * 500. That route is out of this change's scope; the caller (or whoever
+ * owns route.ts) still needs to add a `editor_document_empty_timeline` ->
+ * 422 mapping there.
+ */
+export function assertEditorDocumentHasRenderableContent(
+  deletedRanges: SourceRange[],
+  window: ClipWindow,
+): void {
+  if (!hasRenderableContent(window, deletedRanges)) {
+    throw new ClipActionError(
+      "editor_document_empty_timeline",
+      "deleting these ranges would leave nothing in the clip to render",
+    );
   }
 }
 
@@ -2382,15 +2415,19 @@ export class ClipService {
 
     const current = buildEditorDocumentFromClip(clip);
 
+    const window: ClipWindow = { startSec: clip.startSec, endSec: clip.endSec };
     let next: EditorDocument = {
       ...document,
       clipStartSec: clip.startSec,
       clipEndSec: clip.endSec,
-      deletedRanges: normalizeDeletedRanges(document.deletedRanges, {
-        startSec: clip.startSec,
-        endSec: clip.endSec,
-      }),
+      deletedRanges: normalizeDeletedRanges(document.deletedRanges, window),
     };
+
+    // Fix #5: reject a save whose normalized deletions leave nothing
+    // renderable — the worker would only discover this at render time
+    // (buildClipCutPlan's isEmpty guard), after every render variant for
+    // this clip has already been failed.
+    assertEditorDocumentHasRenderableContent(next.deletedRanges, window);
 
     const transcriptChanged =
       JSON.stringify(next.transcriptSlice) !==

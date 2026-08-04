@@ -2,12 +2,18 @@ import { z } from "zod";
 
 import { captionPresetSchema } from "./caption-preset";
 import {
+  buildEditedTimeMap,
   deletedRangesSchema,
+  editedToSource,
   normalizeDeletedRanges,
   sourceRangeSchema,
+  sourceToEdited,
   subtractDeletedRange,
+  type ClipWindow,
+  type EditedTimeMap,
+  type SourceRange,
 } from "./edit-ranges";
-import { studioEditsSchema } from "./studio-edits";
+import { studioEditsSchema, type StudioTextLayer } from "./studio-edits";
 import { transcriptUtteranceSchema } from "./transcript";
 
 // The single editor document (vizard-parity.md Phase A step 2): everything the
@@ -89,6 +95,94 @@ function jsonEqual(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b);
 }
 
+// ─── Text-layer ripple (Phase B hardening, fix 2) ──────────────────────────
+//
+// `studioEdits.textLayers[i].startSec`/`endSec` are captured in EDITED-
+// timeline seconds at creation time (see video-preview.tsx, which compares
+// them directly against the playback clock's own edited time). A delete or
+// revert BEFORE a layer shifts every kept frame after it — the layer's
+// underlying footage moves, but nothing previously rebased the layer's own
+// timing to follow, so the preview compared stale edited seconds against a
+// timeline that had already shifted under it (and the worker's own burn-in
+// clamp masked the symptom at render time instead of fixing it at the
+// source). Doing this in the REDUCER — not a component effect — is what
+// makes it undoable: every `EditorDocument` in history already carries its
+// own consistent (window, deletedRanges, textLayers) triple, so undo/redo
+// simply swap back to a snapshot where the rebase was already correct for
+// that state, no separate replay needed.
+//
+// A layer whose entire window collapses inside a brand-new cut has nowhere
+// non-destructive to go: dropping it would silently delete user content as
+// a side effect of an unrelated edit, so instead it CLAMPS to a minimum
+// visible duration at the nearest kept instant (Vizard's own editor keeps a
+// repositioned overlay on screen rather than deleting it out from under the
+// user). 0.5s is long enough to read as an intentional cue, short enough
+// that a clamped sliver can't meaningfully crowd out a neighboring one.
+const REBASED_TEXT_LAYER_MIN_DURATION_SEC = 0.5;
+
+/**
+ * Rebases every text layer's `startSec`/`endSec` from `oldMap`'s edited
+ * timeline to `newMap`'s, via the one legitimate path (edited → absolute
+ * source → edited): each timestamp is resolved to the absolute source
+ * second it always meant, then re-projected onto the NEW edited timeline —
+ * so a layer keeps pointing at the same underlying footage regardless of
+ * what shifted around it. Returns the input array unchanged (same
+ * reference) when nothing actually moves, so the no-op guards in
+ * `applyEditorAction`'s callers keep working.
+ */
+function rebaseTextLayers(
+  layers: StudioTextLayer[],
+  oldMap: EditedTimeMap,
+  newMap: EditedTimeMap,
+): StudioTextLayer[] {
+  if (layers.length === 0) return layers;
+  const newDurationSec = newMap.editedDurationSec;
+
+  let changed = false;
+  const rebased = layers.map((layer) => {
+    const sourceStartSec = editedToSource(oldMap, layer.startSec);
+    let nextStart = Math.min(newDurationSec, sourceToEdited(newMap, sourceStartSec));
+
+    let nextEnd = layer.endSec;
+    if (layer.endSec != null) {
+      const sourceEndSec = editedToSource(oldMap, layer.endSec);
+      nextEnd = Math.min(newDurationSec, sourceToEdited(newMap, sourceEndSec));
+
+      // Collapsed entirely inside a new cut (or just squeezed too thin by
+      // one) — clamp to the minimum floor, pulling the start back first if
+      // there isn't enough room ahead of it.
+      if (nextEnd - nextStart < REBASED_TEXT_LAYER_MIN_DURATION_SEC) {
+        nextEnd = Math.min(newDurationSec, nextStart + REBASED_TEXT_LAYER_MIN_DURATION_SEC);
+        nextStart = Math.max(0, nextEnd - REBASED_TEXT_LAYER_MIN_DURATION_SEC);
+      }
+    }
+
+    if (nextStart === layer.startSec && nextEnd === layer.endSec) return layer;
+    changed = true;
+    return { ...layer, startSec: nextStart, endSec: nextEnd };
+  });
+
+  return changed ? rebased : layers;
+}
+
+/** Applies `rebaseTextLayers` to `doc.studioEdits.textLayers` and folds the
+ *  result back into a (possibly-unchanged-reference) `studioEdits`, so
+ *  callers can spread it into the next document without an extra branch. */
+function rebaseStudioEdits(
+  doc: EditorDocument,
+  oldWindow: ClipWindow,
+  oldDeletedRanges: SourceRange[],
+  newWindow: ClipWindow,
+  newDeletedRanges: SourceRange[],
+) {
+  const oldMap = buildEditedTimeMap(oldDeletedRanges, oldWindow);
+  const newMap = buildEditedTimeMap(newDeletedRanges, newWindow);
+  const textLayers = rebaseTextLayers(doc.studioEdits.textLayers, oldMap, newMap);
+  return textLayers === doc.studioEdits.textLayers
+    ? doc.studioEdits
+    : { ...doc.studioEdits, textLayers };
+}
+
 /** Pure reducer: every studio mutation flows through here. */
 export function applyEditorAction(
   doc: EditorDocument,
@@ -133,46 +227,59 @@ export function applyEditorAction(
         ? doc
         : { ...doc, brollUrl: action.brollUrl };
     case "deleteRange": {
+      const window = documentWindow(doc);
       const deletedRanges = normalizeDeletedRanges(
         [...doc.deletedRanges, action.range],
-        documentWindow(doc),
+        window,
       );
-      return jsonEqual(deletedRanges, doc.deletedRanges)
-        ? doc
-        : { ...doc, deletedRanges };
+      if (jsonEqual(deletedRanges, doc.deletedRanges)) return doc;
+      // Fix 2: a delete can shift every kept frame after it — rebase any
+      // text layers so their edited-timeline timing keeps pointing at the
+      // same underlying footage (see rebaseTextLayers's doc comment).
+      const studioEdits = rebaseStudioEdits(doc, window, doc.deletedRanges, window, deletedRanges);
+      return { ...doc, deletedRanges, studioEdits };
     }
     case "revertRange": {
-      const deletedRanges = subtractDeletedRange(
-        doc.deletedRanges,
-        action.range,
-        documentWindow(doc),
-      );
-      return jsonEqual(deletedRanges, doc.deletedRanges)
-        ? doc
-        : { ...doc, deletedRanges };
+      const window = documentWindow(doc);
+      const deletedRanges = subtractDeletedRange(doc.deletedRanges, action.range, window);
+      if (jsonEqual(deletedRanges, doc.deletedRanges)) return doc;
+      const studioEdits = rebaseStudioEdits(doc, window, doc.deletedRanges, window, deletedRanges);
+      return { ...doc, deletedRanges, studioEdits };
     }
     case "setDeletedRanges": {
-      const deletedRanges = normalizeDeletedRanges(action.ranges, documentWindow(doc));
-      return jsonEqual(deletedRanges, doc.deletedRanges)
-        ? doc
-        : { ...doc, deletedRanges };
+      const window = documentWindow(doc);
+      const deletedRanges = normalizeDeletedRanges(action.ranges, window);
+      if (jsonEqual(deletedRanges, doc.deletedRanges)) return doc;
+      const studioEdits = rebaseStudioEdits(doc, window, doc.deletedRanges, window, deletedRanges);
+      return { ...doc, deletedRanges, studioEdits };
     }
     case "setClipBoundaries": {
       if (action.startSec === doc.clipStartSec && action.endSec === doc.clipEndSec) {
         return doc;
       }
-      const next = {
+      const oldWindow = documentWindow(doc);
+      const newWindow = { startSec: action.startSec, endSec: action.endSec };
+      // Rebase deletions into the new window so trim can never leave cuts
+      // dangling outside the clip.
+      const deletedRanges = normalizeDeletedRanges(doc.deletedRanges, newWindow);
+      // Fix 2: the window itself moving (not just deletedRanges) can shift
+      // every text layer's rebased edited position too — same rebase used
+      // by the delete/revert branches, just against the new window as well
+      // as any deletedRanges renormalization it forced.
+      const studioEdits = rebaseStudioEdits(
+        doc,
+        oldWindow,
+        doc.deletedRanges,
+        newWindow,
+        deletedRanges,
+      );
+      return {
         ...doc,
         clipStartSec: action.startSec,
         clipEndSec: action.endSec,
+        deletedRanges,
+        studioEdits,
       };
-      // Rebase deletions into the new window so trim can never leave cuts
-      // dangling outside the clip.
-      next.deletedRanges = normalizeDeletedRanges(next.deletedRanges, {
-        startSec: action.startSec,
-        endSec: action.endSec,
-      });
-      return next;
     }
     case "reset":
       return action.original;

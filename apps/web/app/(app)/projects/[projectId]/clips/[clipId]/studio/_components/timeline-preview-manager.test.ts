@@ -4,14 +4,16 @@ import { bucketWidth, cacheKeyFor, sourceTimeToVideoTime } from "./timeline-prev
 // ─── sourceTimeToVideoTime ──────────────────────────────────────────────────
 //
 // The timeline's thumbnail grabber always computes its seek target in
-// absolute source time (clipStartSec + segStartSec + a fraction of the
-// segment's duration — see runJob in timeline-preview-manager.ts), then this
-// function translates that into the local `currentTime` of whichever file is
-// actually loaded. `offsetSec` is that file's own t=0 expressed in source
-// time: 0 for the full source, `previewStartSec` for the preview proxy —
-// exactly mirroring how studio-shell.tsx derives
-// `playerClipStartSec`/`playerClipEndSec` for the main player from the same
-// `previewStartSec` value.
+// absolute source time (Fix 6, Phase B hardening: `editedToSource(map,
+// editedStartSec + a fraction of the block's EDITED-timeline duration)` —
+// see runJob in timeline-preview-manager.ts, walking the block's drawn span
+// through the cut map instead of interpolating linearly across its raw
+// uncut source range), then this function translates that into the local
+// `currentTime` of whichever file is actually loaded. `offsetSec` is that
+// file's own t=0 expressed in source time: 0 for the full source,
+// `previewStartSec` for the preview proxy — exactly mirroring how
+// studio-shell.tsx derives `playerClipStartSec`/`playerClipEndSec` for the
+// main player from the same `previewStartSec` value.
 
 describe("sourceTimeToVideoTime", () => {
   test("passes the source time through unchanged when reading the source directly (offset 0)", () => {
@@ -96,8 +98,9 @@ function baseRequest(
     sourcePreviewId: "project-abc",
     videoKind: "proxy",
     clipStartSec: 12,
-    segStartSec: 0,
-    segEndSec: 2,
+    editedStartSec: 0,
+    editedEndSec: 2,
+    cutsSignature: "[]",
     width: 100,
     height: 61,
     quality: "coarse",
@@ -131,9 +134,9 @@ describe("cacheKeyFor", () => {
     expect(cacheKeyFor(proxyRequest)).not.toBe(cacheKeyFor(sourceRequest));
   });
 
-  test("changes key when the segment window moves", () => {
-    const a = baseRequest({ segStartSec: 0, segEndSec: 2 });
-    const b = baseRequest({ segStartSec: 2, segEndSec: 4 });
+  test("changes key when the block's edited-timeline window moves", () => {
+    const a = baseRequest({ editedStartSec: 0, editedEndSec: 2 });
+    const b = baseRequest({ editedStartSec: 2, editedEndSec: 4 });
     expect(cacheKeyFor(a)).not.toBe(cacheKeyFor(b));
   });
 
@@ -150,5 +153,17 @@ describe("cacheKeyFor", () => {
     const coarse = baseRequest({ quality: "coarse" });
     const refined = baseRequest({ quality: "refined" });
     expect(cacheKeyFor(coarse)).not.toBe(cacheKeyFor(refined));
+  });
+
+  // Fix 6 (Phase B hardening): a cut layout can change WHERE a block
+  // samples from without necessarily moving its own editedStartSec/
+  // editedEndSec by an amount that shows up elsewhere in the key (e.g. two
+  // different-shaped cuts that happen to leave the same total kept
+  // duration for this block) — the signature is the one thing that
+  // guarantees invalidation in that case.
+  test("changes key when the cuts signature differs, even with identical edited window/width/quality", () => {
+    const a = baseRequest({ cutsSignature: "[]" });
+    const b = baseRequest({ cutsSignature: JSON.stringify([{ startSec: 5, endSec: 6 }]) });
+    expect(cacheKeyFor(a)).not.toBe(cacheKeyFor(b));
   });
 });

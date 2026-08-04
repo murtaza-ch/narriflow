@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { buildEditedTimeMap } from "@narriflow/validators";
-import { RIPPLE_END_EPSILON_SEC, rippleSeekSourceSec, stepRipple } from "./ripple-playback";
+import {
+  RIPPLE_END_EPSILON_SEC,
+  RIPPLE_SKIP_EPSILON_SEC,
+  rippleSeekSourceSec,
+  shouldIssueRippleSkip,
+  stepRipple,
+} from "./ripple-playback";
 
 describe("stepRipple", () => {
   test("identity map (no deletions) mirrors pre-ripple source-relative time", () => {
@@ -69,6 +75,58 @@ describe("stepRipple", () => {
     const step = stepRipple(map, 5);
     expect(step.atEnd).toBe(true);
     expect(step.editedTime).toBe(0);
+  });
+
+  // Fix 7 (Phase B hardening): a kept segment's own `sourceEndSec` used to be
+  // treated as still-kept (closed interval), so continuous playback could
+  // decode and briefly show the exact first DELETED frame before the skip
+  // fired. Ownership must be half-open here — landing exactly on a cut's
+  // start hands off to the next kept segment immediately.
+  test("exact cut-start boundary hands off to the next kept segment instead of flashing the deleted frame", () => {
+    const map = buildEditedTimeMap([{ startSec: 8, endSec: 12 }], { startSec: 0, endSec: 20 });
+
+    const atCutStart = stepRipple(map, 8);
+    expect(atCutStart.atEnd).toBe(false);
+    expect(atCutStart.skipToSourceSec).toBe(12);
+    // Continuous with "just before" (7.99 -> ~8) — only the SOURCE seek
+    // target differs, not the edited time reported to the clock.
+    expect(atCutStart.editedTime).toBe(8);
+  });
+
+  test("exact cut-start hand-off also holds for a later (non-first) segment boundary", () => {
+    // Two cuts: [5,7) and [12,15) inside window [0,20).
+    const map = buildEditedTimeMap(
+      [
+        { startSec: 5, endSec: 7 },
+        { startSec: 12, endSec: 15 },
+      ],
+      { startSec: 0, endSec: 20 },
+    );
+
+    const atSecondCutStart = stepRipple(map, 12);
+    expect(atSecondCutStart.atEnd).toBe(false);
+    expect(atSecondCutStart.skipToSourceSec).toBe(15);
+  });
+});
+
+describe("shouldIssueRippleSkip", () => {
+  test("issues the first skip toward a target with no pending skip yet", () => {
+    expect(shouldIssueRippleSkip(12, null, false)).toBe(true);
+  });
+
+  test("suppresses a repeat of the same in-flight target", () => {
+    expect(shouldIssueRippleSkip(12, 12, false)).toBe(false);
+    expect(shouldIssueRippleSkip(12.02, 12, false)).toBe(false); // within epsilon
+  });
+
+  test("issues again once the target has genuinely moved (new cut) beyond epsilon", () => {
+    const farTarget = 12 + RIPPLE_SKIP_EPSILON_SEC + 0.01;
+    expect(shouldIssueRippleSkip(farTarget, 12, false)).toBe(true);
+  });
+
+  test("never issues while the video element is already mid-seek", () => {
+    expect(shouldIssueRippleSkip(12, null, true)).toBe(false);
+    expect(shouldIssueRippleSkip(30, 12, true)).toBe(false);
   });
 });
 

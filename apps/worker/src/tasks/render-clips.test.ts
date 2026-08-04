@@ -545,6 +545,36 @@ function indexesOf(args: string[], value: string): number[] {
   return result;
 }
 
+// General assertion helper (multi-model review fix #1): ffmpeg does NOT fan
+// a named filter pad out to multiple consumers implicitly — only `[0:a]`/
+// `[0:v]` style raw input-stream refs get that behavior. Feeding a pad like
+// `[acat]` into two filters without an explicit `asplit`/`split` silently
+// rebinds the second consumer to the raw uncut input, which is exactly how
+// the audiogram double-consumption bug leaked deleted audio into exports.
+// This counts how many times `label` appears as a LEADING (input) pad
+// reference across every filter spec in a `-filter_complex` graph — output
+// pad references (which always trail the filter's own text) are excluded by
+// construction, since the leading-bracket-run regex stops at the first
+// non-bracket character.
+function countLabelConsumptions(graph: string, label: string): number {
+  const specs = graph.split(";");
+  let count = 0;
+  for (const spec of specs) {
+    const leadingRun = spec.match(/^(\[[^\]]+\])+/);
+    if (!leadingRun) continue;
+    const leadingLabels = leadingRun[0].match(/\[[^\]]+\]/g) ?? [];
+    count += leadingLabels.filter((candidate) => candidate === label).length;
+  }
+  return count;
+}
+
+/** Asserts `label` (e.g. `"[acat]"`) is consumed as a filter input EXACTLY
+ *  once across the whole graph — the general form of the fix #1 regression
+ *  check, reusable for any builder's cut-concat output labels. */
+function expectLabelConsumedOnce(graph: string, label: string) {
+  expect(countLabelConsumptions(graph, label)).toBe(1);
+}
+
 describe("output duration bound (FIX: over-long B-roll/inputs can no longer stretch the output)", () => {
   const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true };
 
@@ -1260,6 +1290,10 @@ describe("cut-concat rendering (vizard-parity Phase B step 7 — deletedRanges)"
       expect(graph).toContain("[acat]afade=t=in:st=0:d=0.040");
       // Concat filters land before the crop stage in the graph.
       expect(graph.indexOf("concat=n=2")).toBeLessThan(graph.indexOf("[vcat]crop="));
+      // Fix #1 regression check: every cut-concat output label is consumed
+      // as a filter input exactly once (no implicit fan-out).
+      expectLabelConsumedOnce(graph, "[vcat]");
+      expectLabelConsumedOnce(graph, "[acat]");
 
       // Output duration bound uses the edited (25s) duration, not the raw
       // 30s clip window.
@@ -1287,6 +1321,11 @@ describe("cut-concat rendering (vizard-parity Phase B step 7 — deletedRanges)"
       expect(graph).toContain("atrim=start=0.000:duration=25.000");
       // dialogue branch reads the concatenated audio, not [0:a]
       expect(graph).toContain("[acat]atrim=duration=25.000,asetpts=PTS-STARTPTS[maina]");
+      // buildSingleVideoArgs' [acat] feeds ONLY the dialogue branch here (the
+      // video path reads [vcat] separately) — still worth pinning as a
+      // regression check alongside the audiogram fix.
+      expectLabelConsumedOnce(graph, "[acat]");
+      expectLabelConsumedOnce(graph, "[vcat]");
     });
 
     test("single kept segment (deletion at the very start) skips concat and uses acopy for audio, copy for video", () => {
@@ -1351,6 +1390,8 @@ describe("cut-concat rendering (vizard-parity Phase B step 7 — deletedRanges)"
       );
       expect(graph).toContain("[vcat]crop=");
       expect(graph).toContain("[acat]afade=t=in:st=0:d=0.040");
+      expectLabelConsumedOnce(graph, "[vcat]");
+      expectLabelConsumedOnce(graph, "[acat]");
 
       const tIndexes = indexesOf(args, "-t");
       // last -t is the output bound (belt-and-suspenders) -> edited duration
@@ -1398,9 +1439,78 @@ describe("cut-concat rendering (vizard-parity Phase B step 7 — deletedRanges)"
       expect(graph).toContain("[aseg0][aseg1]concat=n=2:v=0:a=1[acat]");
       expect(graph).not.toContain("vseg");
       expect(graph).toContain("[acat]asplit=2[wavesrc][fadesrc]");
+      expectLabelConsumedOnce(graph, "[acat]");
 
       const shortestIdx = args.indexOf("-shortest");
       expect(args[shortestIdx + 2]).toBe("25.000");
+    });
+
+    test("FIX #1 regression: with music AND a cut, [acat] is split (not double-consumed) so the exported dialogue never silently rebinds to raw uncut [0:a]", () => {
+      const args = buildAudiogramArgs({
+        sourcePath: "/tmp/a.mp3",
+        outputPath: "/tmp/out.mp4",
+        startSec: 0,
+        endSec: 30,
+        aspectRatio: "9:16",
+        clipDurationSec: cutPlan.editedDurationSec,
+        srtPath: null,
+        cutPlan,
+        music: { path: "/tmp/music.mp3", volume: 50, startOffsetSec: 0 },
+      });
+      const graph = args[args.indexOf("-filter_complex") + 1]!;
+
+      // The cut-concat stage still produces [acat] from the two kept segments.
+      expect(graph).toContain("[aseg0][aseg1]concat=n=2:v=0:a=1[acat]");
+      // [acat] is explicitly split before being fanned to showwaves + the
+      // dialogue/music mix — this is the actual fix.
+      expect(graph).toContain("[acat]asplit=2[wavesrc][dlgsrc]");
+      expect(graph).toContain(
+        "[wavesrc]showwaves=s=1080x806:mode=cline:colors=0x00FF88:rate=25[wave]",
+      );
+      // The music mix's dialogue branch reads the SPLIT pad, not [acat]
+      // directly and not raw [0:a] — this is what stops deleted audio from
+      // leaking back in.
+      expect(graph).toContain(
+        "[dlgsrc]atrim=duration=25.000,asetpts=PTS-STARTPTS[maina]",
+      );
+      expect(graph).not.toContain("[0:a]atrim=duration=25.000");
+
+      // General regression check: every emitted pad this graph produces is
+      // consumed as a filter input exactly once (nothing is dropped or
+      // double-fed).
+      expectLabelConsumedOnce(graph, "[acat]");
+      expectLabelConsumedOnce(graph, "[wavesrc]");
+      expectLabelConsumedOnce(graph, "[dlgsrc]");
+    });
+
+    test("no cut, music present: [0:a] is read directly by both showwaves and the dialogue mix (raw input streams DO fan out implicitly) — byte-identical to before the fix", () => {
+      const uncutPlan = buildClipCutPlan([], window);
+      const args = buildAudiogramArgs({
+        sourcePath: "/tmp/a.mp3",
+        outputPath: "/tmp/out.mp4",
+        startSec: 0,
+        endSec: 30,
+        aspectRatio: "9:16",
+        clipDurationSec: 30,
+        srtPath: null,
+        cutPlan: uncutPlan,
+        music: { path: "/tmp/music.mp3", volume: 50, startOffsetSec: 0 },
+      });
+      const withoutPlanArgs = buildAudiogramArgs({
+        sourcePath: "/tmp/a.mp3",
+        outputPath: "/tmp/out.mp4",
+        startSec: 0,
+        endSec: 30,
+        aspectRatio: "9:16",
+        clipDurationSec: 30,
+        srtPath: null,
+        music: { path: "/tmp/music.mp3", volume: 50, startOffsetSec: 0 },
+      });
+      expect(args).toEqual(withoutPlanArgs);
+      const graph = args[args.indexOf("-filter_complex") + 1]!;
+      expect(graph).not.toContain("asplit");
+      expect(graph).toContain("[0:a]showwaves=");
+      expect(graph).toContain("[0:a]atrim=duration=30.000");
     });
 
     test("all-deleted guard: throws for an empty cut plan", () => {

@@ -1,6 +1,5 @@
 import {
   editedToSource,
-  isSourceTimeDeleted,
   sourceToEdited,
   type EditedTimeMap,
 } from "@narriflow/validators";
@@ -18,6 +17,10 @@ import {
  *  (`mediaTime >= clipEndSec - 0.02`), so the identity (no-deletions) case
  *  behaves byte-for-byte like before ripple existed. */
 export const RIPPLE_END_EPSILON_SEC = 0.02;
+
+/** Fix 5 (Phase B hardening): tolerance for treating a pending forced-skip
+ *  target as "the same skip already in flight" — see `shouldIssueRippleSkip`. */
+export const RIPPLE_SKIP_EPSILON_SEC = 0.05;
 
 export interface RippleStep {
   /** Edited-timeline seconds the clock should report right now. Continuous
@@ -38,6 +41,33 @@ export interface RippleStep {
 }
 
 /**
+ * Fix 7 (Phase B hardening): whether `sourceSec` is inside a kept segment
+ * for CONTINUOUS PLAYBACK specifically — distinct from the shared
+ * `isSourceTimeDeleted`, which treats a kept segment's `sourceEndSec` as
+ * still kept (a closed interval). That's the right call for instantaneous
+ * lookups (captions, overlays, the fix-3 reconciliation effect — landing
+ * exactly on a cut boundary should still resolve to "the frame right
+ * there"), but wrong for a video element DECODING forward through time:
+ * ffmpeg's own trim/concat is half-open on the end, so the source frame at
+ * exactly `sourceEndSec` is really the first DELETED frame, not the last
+ * kept one. Treating it as kept let one deleted frame flash before the
+ * skip fired. Ownership is half-open on every segment's trailing edge
+ * EXCEPT the clip's own final segment — but by the time this runs,
+ * `sourceTimeSec` is already guaranteed `< map.clipEndSec -
+ * RIPPLE_END_EPSILON_SEC` (the caller's end-of-clip check above already
+ * returned), so `sourceSec` can never actually land exactly on the final
+ * segment's own end here — the "except" is structural, not a branch this
+ * function needs to encode.
+ */
+function isKeptForContinuousPlayback(map: EditedTimeMap, sourceSec: number): boolean {
+  return map.segments.some((segment, i) => {
+    if (sourceSec < segment.sourceStartSec) return false;
+    const isLastSegment = i === map.segments.length - 1;
+    return isLastSegment ? sourceSec <= segment.sourceEndSec : sourceSec < segment.sourceEndSec;
+  });
+}
+
+/**
  * Given the clip's edited-time map and the CURRENT absolute source second
  * the video element has decoded, decides what the clock should report next
  * and whether the video needs to be forced forward past a cut.
@@ -51,13 +81,14 @@ export function stepRipple(map: EditedTimeMap, sourceTimeSec: number): RippleSte
     return { editedTime: map.editedDurationSec, atEnd: true };
   }
 
-  if (!isSourceTimeDeleted(map, sourceTimeSec)) {
+  if (isKeptForContinuousPlayback(map, sourceTimeSec)) {
     return { editedTime: sourceToEdited(map, sourceTimeSec), atEnd: false };
   }
 
-  // Inside a cut (or in the dead zone before the clip's own start, which
-  // isSourceTimeDeleted also treats as "deleted") — jump forward to the
-  // next kept segment's start.
+  // Inside a cut (or in the dead zone before the clip's own start, or
+  // exactly on a kept segment's half-open trailing edge — see
+  // `isKeptForContinuousPlayback`) — jump forward to the next kept
+  // segment's start.
   const next = map.segments.find((segment) => segment.sourceStartSec >= sourceTimeSec);
   if (!next) {
     // Tail cut: nothing kept remains after this point.
@@ -68,6 +99,28 @@ export function stepRipple(map: EditedTimeMap, sourceTimeSec: number): RippleSte
     skipToSourceSec: next.sourceStartSec,
     atEnd: false,
   };
+}
+
+/**
+ * Fix 5 (Phase B hardening): whether playback-clock.ts should (re)issue a
+ * `video.currentTime = target` assignment for a forced ripple skip.
+ * `updateFromMediaTime` runs every rVFC/timeupdate tick, and while a seek is
+ * still resolving the video's own `currentTime`/`mediaTime` hasn't caught up
+ * yet — without this guard, `stepRipple` keeps returning the SAME
+ * `skipToSourceSec` every tick, and the caller kept reissuing the identical
+ * assignment, which can restart/stutter an in-flight seek on some browsers
+ * instead of letting it complete once. Pure so the de-dupe decision is
+ * unit-testable without a real `<video>` element; playback-clock.ts is the
+ * only caller.
+ */
+export function shouldIssueRippleSkip(
+  targetSourceSec: number,
+  pendingTargetSourceSec: number | null,
+  isSeeking: boolean,
+): boolean {
+  if (isSeeking) return false;
+  if (pendingTargetSourceSec === null) return true;
+  return Math.abs(pendingTargetSourceSec - targetSourceSec) >= RIPPLE_SKIP_EPSILON_SEC;
 }
 
 /**

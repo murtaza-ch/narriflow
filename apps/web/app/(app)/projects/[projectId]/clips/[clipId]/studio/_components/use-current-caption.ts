@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
-import { CAPTION_CHUNK_SIZE, editedToSource } from "@narriflow/validators";
+import { CAPTION_CHUNK_SIZE, editedToSource, sourceRangeToEdited } from "@narriflow/validators";
 import type { EditedTimeMap, TranscriptUtterance } from "@narriflow/validators";
 
 export interface CaptionWord {
@@ -32,6 +32,18 @@ const END_CLAMP_EPSILON_SEC = 0.001;
  * mathematically the same thing for a clip with no deletions — kept as an
  * explicit fallback (rather than always requiring a map) so callers that
  * genuinely have no notion of one (e.g. isolated previews) still work.
+ *
+ * A deleted word never becoming ACTIVE isn't the whole story, though: the
+ * worker's `generateSrtFromSlice`/`generateAssFromSlice` (render-clips.ts)
+ * DROP fully-deleted words before grouping the survivors into fixed-size
+ * chunks, so the export's chunk boundaries are computed over the FILTERED
+ * word list. This resolver used to chunk the RAW `utterance.words` — same
+ * active word, but a neighboring chunk could still contain a deleted word
+ * (or, once the deletion sits earlier in the utterance, every later chunk
+ * boundary drifts out of alignment with the export entirely). `words`
+ * below applies the exact same predicate the worker uses
+ * (`sourceRangeToEdited(...) !== null`) before any chunk math runs, so the
+ * preview's visible chunk text always matches what actually gets burned in.
  */
 export function getCurrentCaptionState(
   currentTime: number,
@@ -59,7 +71,14 @@ export function getCurrentCaptionState(
   }
 
   const utterance = utterances[utteranceIdx]!;
-  const words = utterance.words;
+  // Same predicate as the worker's `isVisible` (render-clips.ts's
+  // generateSrtFromSlice/generateAssFromSlice) — drop words that fall
+  // entirely inside a cut BEFORE computing activeWordIdx/chunk boundaries,
+  // so the preview can never show a deleted word or a chunk split that
+  // disagrees with the export.
+  const words = editedTimeMap
+    ? utterance.words.filter((w) => sourceRangeToEdited(editedTimeMap, w) !== null)
+    : utterance.words;
 
   if (words.length > 0) {
     let activeWordIdx = words.findIndex(

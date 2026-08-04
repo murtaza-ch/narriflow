@@ -2,7 +2,7 @@
 
 import { useSyncExternalStore } from "react";
 import type { EditedTimeMap } from "@narriflow/validators";
-import { stepRipple } from "./ripple-playback";
+import { shouldIssueRippleSkip, stepRipple } from "./ripple-playback";
 
 type Listener = () => void;
 
@@ -82,6 +82,21 @@ export function createPlaybackClock(initialTime = 0): PlaybackClock {
       let frameCallbackId = 0;
       const videoWithFrameCallback = video as VideoWithFrameCallback;
 
+      // Fix 5 (Phase B hardening): `updateFromMediaTime` fires every
+      // rVFC/timeupdate tick, and while a forced skip's seek is still
+      // resolving the video's own currentTime/mediaTime hasn't caught up
+      // yet — without tracking the pending target, `step.skipToSourceSec`
+      // keeps coming back the same on every tick and this reissued the
+      // IDENTICAL `video.currentTime = X` assignment each time, which can
+      // restart/stutter an in-flight seek on some browsers instead of
+      // letting it complete once. Cleared once the video actually reports
+      // `seeked` for that target.
+      let pendingSkipTargetSec: number | null = null;
+      const onSeeked = () => {
+        pendingSkipTargetSec = null;
+      };
+      video.addEventListener("seeked", onSeeked);
+
       const updateFromMediaTime = (mediaTime: number) => {
         const sourceTimeSec = mediaTime + sourceOffsetSec;
         const step = stepRipple(editedTimeMap, sourceTimeSec);
@@ -97,8 +112,14 @@ export function createPlaybackClock(initialTime = 0): PlaybackClock {
           // `deletedRanges` and would otherwise keep decoding/showing the
           // deleted footage. The clock's own edited time (set below) is
           // already continuous across this jump; only the video element
-          // needs correcting.
-          video.currentTime = step.skipToSourceSec - sourceOffsetSec;
+          // needs correcting — and only ONCE per skip (see the pending-skip
+          // guard above).
+          if (shouldIssueRippleSkip(step.skipToSourceSec, pendingSkipTargetSec, video.seeking)) {
+            pendingSkipTargetSec = step.skipToSourceSec;
+            video.currentTime = step.skipToSourceSec - sourceOffsetSec;
+          }
+        } else {
+          pendingSkipTargetSec = null;
         }
 
         setTime(step.editedTime);
@@ -116,6 +137,7 @@ export function createPlaybackClock(initialTime = 0): PlaybackClock {
 
         return () => {
           cancelled = true;
+          video.removeEventListener("seeked", onSeeked);
           if (frameCallbackId && videoWithFrameCallback.cancelVideoFrameCallback) {
             videoWithFrameCallback.cancelVideoFrameCallback(frameCallbackId);
           }
@@ -132,6 +154,7 @@ export function createPlaybackClock(initialTime = 0): PlaybackClock {
 
       return () => {
         cancelled = true;
+        video.removeEventListener("seeked", onSeeked);
         if (rafId) window.cancelAnimationFrame(rafId);
       };
     },

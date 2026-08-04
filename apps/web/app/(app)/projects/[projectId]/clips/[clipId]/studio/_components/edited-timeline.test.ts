@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { MIN_KEPT_SEGMENT_SEC } from "@narriflow/validators";
 import {
-  STUDIO_MIN_KEPT_SEGMENT_SEC,
   buildStudioCutPlan,
   deletedRangesToCutMarkers,
   projectSegmentToEdited,
@@ -37,9 +37,9 @@ describe("buildStudioCutPlan", () => {
   });
 
   test("drops sub-threshold slivers and folds them into the surrounding gap", () => {
-    // Window 0-20 with cuts leaving a 20ms kept sliver at [10, 10.02) between
-    // two much larger deletions — below STUDIO_MIN_KEPT_SEGMENT_SEC (50ms).
-    const sliverSec = STUDIO_MIN_KEPT_SEGMENT_SEC / 2.5;
+    // Window 0-20 with cuts leaving a 40ms kept sliver at [10, 10.04) between
+    // two much larger deletions — below MIN_KEPT_SEGMENT_SEC (100ms).
+    const sliverSec = MIN_KEPT_SEGMENT_SEC / 2.5;
     const plan = buildStudioCutPlan(
       [
         { startSec: 5, endSec: 10 },

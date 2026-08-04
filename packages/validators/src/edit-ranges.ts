@@ -39,8 +39,12 @@ export interface EditedTimeMap {
 export const EDIT_RANGE_EPSILON_SEC = 0.001;
 
 // Slack for float comparisons at exactly the epsilon boundary (0.001 is not
-// representable in binary, so 20.001 - 20 > 0.001 without it).
-const FLOAT_SLACK = 1e-9;
+// representable in binary, so 20.001 - 20 > 0.001 without it). Exported so
+// every other exact-threshold comparison against a rounded-to-ms seconds
+// value (MIN_KEPT_SEGMENT_SEC below, the worker's cut-plan sliver check)
+// can use the same slack instead of re-deriving it — 0.1 has the identical
+// representability problem (10.1 - 10 < 0.1 in IEEE 754 double).
+export const FLOAT_SLACK = 1e-9;
 
 function roundMs(value: number) {
   return Math.round(value * 1000) / 1000;
@@ -113,6 +117,38 @@ export function buildEditedTimeMap(
     segments,
     editedDurationSec: roundMs(editedCursor),
   };
+}
+
+// Below this, a "kept" segment between two cuts (or at a clip edge) isn't
+// worth its own trim+concat stage: ffmpeg's `concat` filter needs every
+// segment to actually decode at least one full frame, and a segment this
+// short can contain ZERO video frames at low frame rates (a 50ms segment can
+// fall entirely between frame boundaries below 20fps). 0.1s guarantees at
+// least 2 frames at 20fps (1 frame at 10fps) — a safe floor across realistic
+// source frame rates. Shared by the worker's render-time cut plan
+// (apps/worker/src/tasks/cut-plan.ts) and the studio's live-preview timeline
+// so preview and export can never disagree about what counts as "nothing
+// kept."
+export const MIN_KEPT_SEGMENT_SEC = 0.1;
+
+/**
+ * True when at least one kept segment left after normalizing `ranges`
+ * against `window` clears `MIN_KEPT_SEGMENT_SEC` — the same render-time
+ * policy `buildClipCutPlan` enforces, exposed here as a pure check so a
+ * document can be rejected at save time instead of only failing at render
+ * time. A window with no ranges (nothing deleted) always has renderable
+ * content as long as it has non-zero duration.
+ */
+export function hasRenderableContent(
+  window: ClipWindow,
+  ranges: SourceRange[],
+): boolean {
+  const map = buildEditedTimeMap(ranges, window);
+  return map.segments.some(
+    (segment) =>
+      segment.sourceEndSec - segment.sourceStartSec >=
+      MIN_KEPT_SEGMENT_SEC - FLOAT_SLACK,
+  );
 }
 
 export function isSourceTimeDeleted(map: EditedTimeMap, sourceSec: number): boolean {

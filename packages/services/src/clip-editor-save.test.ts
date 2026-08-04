@@ -6,7 +6,10 @@ import {
   type EditorDocument,
   type TranscriptUtterance,
 } from "@narriflow/validators";
-import { clampEditorDocumentToStoredWindow } from "./clip.service";
+import {
+  assertEditorDocumentHasRenderableContent,
+  clampEditorDocumentToStoredWindow,
+} from "./clip.service";
 
 function makeDocument(
   transcriptSlice: TranscriptUtterance[],
@@ -122,5 +125,70 @@ describe("clampEditorDocumentToStoredWindow", () => {
     });
 
     expect(result.document.deletedRanges).toEqual([{ startSec: 10, endSec: 11 }]);
+  });
+});
+
+describe("assertEditorDocumentHasRenderableContent (fix #5: server-side isEmpty guard)", () => {
+  const window = { startSec: 10, endSec: 20 };
+
+  test("does not throw when nothing is deleted", () => {
+    expect(() =>
+      assertEditorDocumentHasRenderableContent([], window),
+    ).not.toThrow();
+  });
+
+  test("does not throw when a real kept segment remains", () => {
+    expect(() =>
+      assertEditorDocumentHasRenderableContent(
+        [{ startSec: 12, endSec: 14 }],
+        window,
+      ),
+    ).not.toThrow();
+  });
+
+  test("throws editor_document_empty_timeline when deletions cover the whole window", () => {
+    expect(() =>
+      assertEditorDocumentHasRenderableContent(
+        [{ startSec: 10, endSec: 20 }],
+        window,
+      ),
+    ).toThrow("nothing in the clip to render");
+    try {
+      assertEditorDocumentHasRenderableContent(
+        [{ startSec: 10, endSec: 20 }],
+        window,
+      );
+      throw new Error("expected assertEditorDocumentHasRenderableContent to throw");
+    } catch (error) {
+      expect((error as { code?: string }).code).toBe(
+        "editor_document_empty_timeline",
+      );
+    }
+  });
+
+  test("throws when only a sub-MIN_KEPT_SEGMENT_SEC sliver would survive (same policy buildClipCutPlan enforces at render time)", () => {
+    // Two deletions leave a 30ms sliver — under the shared 0.1s frame-safe
+    // floor, so the worker's render-time guard would also reject this.
+    expect(() =>
+      assertEditorDocumentHasRenderableContent(
+        [
+          { startSec: 10, endSec: 15 },
+          { startSec: 15.03, endSec: 20 },
+        ],
+        window,
+      ),
+    ).toThrow();
+  });
+
+  test("multiple deletions that jointly (not individually) cover the whole window still throw", () => {
+    expect(() =>
+      assertEditorDocumentHasRenderableContent(
+        [
+          { startSec: 10, endSec: 15 },
+          { startSec: 15, endSec: 20 },
+        ],
+        window,
+      ),
+    ).toThrow();
   });
 });

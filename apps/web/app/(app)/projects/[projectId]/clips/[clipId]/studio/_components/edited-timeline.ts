@@ -1,5 +1,7 @@
 import {
   buildEditedTimeMap,
+  FLOAT_SLACK,
+  MIN_KEPT_SEGMENT_SEC,
   normalizeDeletedRanges,
   sourceRangeToEdited,
   sourceToEdited,
@@ -12,22 +14,16 @@ import {
 // Vizard-parity Phase B steps 8-9 (docs/plans/vizard-parity.md §4): the
 // studio's edited-timeline model sits directly on top of the shared
 // `buildEditedTimeMap` helper (packages/validators/src/edit-ranges.ts)
-// rather than reimplementing range math, and mirrors the RENDER-specific
-// sliver policy from apps/worker/src/tasks/cut-plan.ts's
-// `buildClipCutPlan` — worker code isn't importable from web, so that
-// policy is duplicated here (not re-exported) rather than shared. Keeping
-// the two in lockstep matters: if the studio's displayed/played duration
-// disagreed with what the worker actually renders (e.g. by counting a
-// sub-50ms sliver the worker would drop), the preview and the export would
-// silently diverge — see cut-plan.ts's own doc comment for why the
-// threshold exists.
-
-/** Mirrors `MIN_KEPT_SEGMENT_SEC` in apps/worker/src/tasks/cut-plan.ts. Keep
- *  these two values equal by hand — worker code can't be imported here. */
-export const STUDIO_MIN_KEPT_SEGMENT_SEC = 0.05;
+// rather than reimplementing range math. The sliver-drop policy now comes
+// from the SAME shared `MIN_KEPT_SEGMENT_SEC` export the worker's
+// `buildClipCutPlan` (apps/worker/src/tasks/cut-plan.ts) uses, instead of a
+// hand-duplicated local constant — the two could drift out of lockstep
+// before (e.g. counting a sub-100ms sliver the worker would drop), which
+// would silently desync the preview's displayed/played duration from what
+// actually gets rendered.
 
 export interface StudioCutPlan {
-  /** Kept source segments, source-order, each >= STUDIO_MIN_KEPT_SEGMENT_SEC,
+  /** Kept source segments, source-order, each >= MIN_KEPT_SEGMENT_SEC,
    *  with edited-timeline offsets recomputed after any sliver was dropped. */
   segments: EditedSegment[];
   editedDurationSec: number;
@@ -44,9 +40,9 @@ export interface StudioCutPlan {
    *  `editedDurationSec` equals `window.endSec - window.startSec` exactly,
    *  so existing (pre-ripple) behavior is byte-for-byte unchanged. */
   isUncut: boolean;
-  /** Count of kept segments dropped for being under
-   *  STUDIO_MIN_KEPT_SEGMENT_SEC — surfaced for parity with the worker's
-   *  structured logging; the studio itself doesn't currently log this. */
+  /** Count of kept segments dropped for being under MIN_KEPT_SEGMENT_SEC —
+   *  surfaced for parity with the worker's structured logging; the studio
+   *  itself doesn't currently log this. */
   droppedSliverCount: number;
 }
 
@@ -80,9 +76,14 @@ export function buildStudioCutPlan(
   }
 
   const rawMap = buildEditedTimeMap(deletedRanges, window);
+  // Slack-tolerant comparison — mirrors apps/worker/src/tasks/cut-plan.ts's
+  // own `MIN_KEPT_SEGMENT_SEC - FLOAT_SLACK` expression exactly. A plain
+  // `>= MIN_KEPT_SEGMENT_SEC` fails at the exact threshold (10.1 - 10 ===
+  // 0.09999999999999964 in IEEE-754, not 0.1), which would silently drop a
+  // segment the worker keeps — the two must agree bit-for-bit here.
   const kept = rawMap.segments.filter(
     (segment) =>
-      segment.sourceEndSec - segment.sourceStartSec >= STUDIO_MIN_KEPT_SEGMENT_SEC,
+      segment.sourceEndSec - segment.sourceStartSec >= MIN_KEPT_SEGMENT_SEC - FLOAT_SLACK,
   );
   const droppedSliverCount = rawMap.segments.length - kept.length;
 
