@@ -45,3 +45,27 @@ export function completeSave(current: SaveQueueState): SaveQueueTransition {
       return { state: "idle", shouldStartSave: false };
   }
 }
+
+/**
+ * Fix: "Export flush swallows failures" — performSave used to catch every
+ * failure mode and resolve anyway, so handleExport/handleSave had no way to
+ * know a save actually failed. Callers now thread a per-attempt outcome
+ * through the single-flight chain; when a save that went dirty mid-flight
+ * triggers an immediate follow-up (see `completeSave` above), the chain's
+ * overall result is the combination of every attempt in it. Deliberately
+ * conservative: any failure anywhere in the chain marks the whole flush as
+ * untrustworthy, even if a later attempt in the same chain went on to
+ * succeed — telling those two cases apart would mean plumbing "which attempt
+ * corresponds to the document that's live right now" through the queue,
+ * which it doesn't track. Callers that need to know "is the CURRENT document
+ * actually persisted" (handleExport) pair this with a direct dirty check
+ * rather than relying on the outcome alone.
+ */
+export type SaveOutcome = "success" | "failure";
+
+export function combineSaveOutcomes(
+  first: SaveOutcome,
+  second: SaveOutcome,
+): SaveOutcome {
+  return first === "failure" || second === "failure" ? "failure" : "success";
+}

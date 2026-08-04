@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { createWriteStream } from "node:fs";
 import { stat, writeFile } from "node:fs/promises";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -12,6 +13,7 @@ import {
   assertResponseContentLength,
   clipService,
   createByteLimitTransform,
+  deleteObject,
   downloadObjectToFile,
   guardedFetch,
   presignDownloadUrl,
@@ -35,6 +37,7 @@ import {
   getEffectiveClipTiming,
   normalizeTranscriptSliceForClip,
   resolveEffectiveLogoSettings,
+  resolveMusicFadeWindows,
   studioEditsSchema,
 } from "@narriflow/validators";
 import type {
@@ -198,6 +201,36 @@ interface PendingRenderOutput {
   storageKey: string;
   subtitlePath?: string | null;
   reframe?: ReframeSpec | null;
+}
+
+/**
+ * Attempt-unique render storage key — mirrors `clipPreviewAttemptStorageKey`
+ * from clip-preview.ts (see its comment for the full race it closes; the
+ * short version below is render-specific).
+ *
+ * The key used to be a pure function of `(projectId, clipId, aspectRatio)`,
+ * so two overlapping encodes for the same clip+aspect (e.g. an in-flight
+ * render R1, an editor save that deletes R1's ClipRender row, then a
+ * freshly-queued R2 that completes first) uploaded to the *same* object.
+ * `completeClipRenderVariant`'s DB claim happens strictly after the upload,
+ * so R1 — arriving late, its own row already gone — would still overwrite
+ * R2's just-uploaded bytes at that shared key before its own row-update
+ * failed, leaving downloads serving stale video with no error anywhere to
+ * explain it.
+ *
+ * Each encode attempt now gets its own key. `completeClipRenderVariant`
+ * persists this attempt's key as-is; nothing else re-derives a render's
+ * storage key from `(projectId, clipId, aspectRatio)` — every reader (the
+ * download endpoint, the project/clip storage deletion planner) reads the
+ * persisted `ClipRender.storageKey` column verbatim.
+ */
+export function clipRenderAttemptStorageKey(
+  projectId: string,
+  clipId: string,
+  aspectRatioSlug: string,
+  attemptId: string,
+): string {
+  return `projects/${projectId}/renders/${clipId}/${aspectRatioSlug}-${attemptId}.mp4`;
 }
 
 class WorkflowWorkerError extends Error {
@@ -922,22 +955,33 @@ function buildDialogueAudioFilter(
  * 0-5s each), as an `afade` filter suffix applied to the music branch only —
  * additive to (not a replacement for) the fixed click-guard chain on the
  * final mixed track.
+ *
+ * Clamping/overlap resolution comes from the shared
+ * `resolveMusicFadeWindows` policy (packages/validators/src/studio-edits.ts)
+ * rather than clamping each fade independently here — this used to clamp
+ * fadeIn and fadeOut to the clip duration separately, which let a long
+ * fade-in + long fade-out on a short clip overlap (e.g. both landing at full
+ * length, fading in and out over the SAME seconds) instead of scaling both
+ * down proportionally so fade-in ends before fade-out begins. The studio
+ * preview already uses the shared helper; this keeps the render in lockstep.
  */
 function buildMusicUserFadeSuffix(
   music: MusicPlan,
   clipDurationSec: number,
 ): string {
   const parts: string[] = [];
-  const fadeInSec = music.fadeInSec ?? 0;
-  const fadeOutSec = music.fadeOutSec ?? 0;
+  const { fadeInSec, fadeOutSec, fadeOutStartSec } = resolveMusicFadeWindows(
+    music.fadeInSec ?? 0,
+    music.fadeOutSec ?? 0,
+    clipDurationSec,
+  );
   if (fadeInSec > 0) {
-    const d = Math.min(fadeInSec, clipDurationSec);
-    parts.push(`afade=t=in:st=0:d=${d.toFixed(3)}`);
+    parts.push(`afade=t=in:st=0:d=${fadeInSec.toFixed(3)}`);
   }
   if (fadeOutSec > 0) {
-    const d = Math.min(fadeOutSec, clipDurationSec);
-    const st = Math.max(0, clipDurationSec - d);
-    parts.push(`afade=t=out:st=${st.toFixed(3)}:d=${d.toFixed(3)}`);
+    parts.push(
+      `afade=t=out:st=${fadeOutStartSec.toFixed(3)}:d=${fadeOutSec.toFixed(3)}`,
+    );
   }
   return parts.length ? `,${parts.join(",")}` : "";
 }
@@ -1963,7 +2007,7 @@ async function uploadRenderedOutput(params: {
    *  shared multi-output encode the same value is reported for every output
    *  it covered. */
   encodeMs?: number;
-}) {
+}): Promise<boolean> {
   if (params.applyFreeTierTreatment) {
     // The watermark + 720p-class downscale are folded directly into the main
     // render's filtergraph now (see `applyFreeTierTreatment` on each
@@ -1999,11 +2043,30 @@ async function uploadRenderedOutput(params: {
   });
   const uploadMs = Date.now() - uploadStartedAtMs;
 
-  await clipService.completeClipRenderVariant(params.output.clipRenderId, {
-    storageKey: params.output.storageKey,
-    sizeBytes: Number(outputStat.size),
-    durationSec: params.clipDurationSec,
-  });
+  const { persisted } = await clipService.completeClipRenderVariant(
+    params.output.clipRenderId,
+    {
+      storageKey: params.output.storageKey,
+      sizeBytes: Number(outputStat.size),
+      durationSec: params.clipDurationSec,
+    },
+  );
+
+  if (!persisted) {
+    // The ClipRender row this attempt was rendering for is gone — an editor
+    // save/reset invalidated it (deleted the row) while this encode was in
+    // flight. The storage key is attempt-unique (clipRenderAttemptStorageKey),
+    // so this object can never be the one any other row points at; deleting
+    // it is always safe and never touches another attempt's bytes.
+    await deleteObject(params.output.storageKey).catch(() => {});
+    log("info", "clip_render_variant_completion_stale_discarded", {
+      workflowRunId: params.workflowRunId,
+      clipId: params.output.clipId,
+      clipRenderId: params.output.clipRenderId,
+      aspectRatio: params.output.aspectRatio,
+    });
+    return false;
+  }
 
   log("info", "clip_render_variant_completed", {
     workflowRunId: params.workflowRunId,
@@ -2015,6 +2078,7 @@ async function uploadRenderedOutput(params: {
     uploadMs,
     ...(params.encodeMs !== undefined ? { encodeMs: params.encodeMs } : {}),
   });
+  return true;
 }
 
 export async function processClipRenderingRun(run: WorkflowRunJob) {
@@ -2283,7 +2347,12 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
           clipIndex: clip.index,
           aspectRatio,
           outputPath: join(tempDir, `clip-${clip.id}-${slug}.mp4`),
-          storageKey: `projects/${run.projectId}/renders/${clip.id}/${slug}.mp4`,
+          storageKey: clipRenderAttemptStorageKey(
+            run.projectId,
+            clip.id,
+            slug,
+            randomUUID(),
+          ),
         };
       });
 
@@ -2677,7 +2746,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
 
             const encodeStartedAtMs = Date.now();
             await execCommand("ffmpeg", ffmpegArgs);
-            await uploadRenderedOutput({
+            const persisted = await uploadRenderedOutput({
               workflowRunId: run.id,
               projectId: run.projectId,
               output,
@@ -2685,7 +2754,12 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
               applyFreeTierTreatment,
               encodeMs: Date.now() - encodeStartedAtMs,
             });
-            renderedVariantCount += 1;
+            // Only count it if the ClipRender row actually claimed this
+            // attempt's completion — a stale-discarded upload (the row was
+            // deleted by a concurrent editor save/reset mid-encode) produced
+            // real bytes but persisted nothing, so it must not count toward
+            // "this run rendered something" (see the all-failed check below).
+            if (persisted) renderedVariantCount += 1;
           } catch (error) {
             const errorCode =
               error instanceof WorkflowWorkerError
@@ -2748,7 +2822,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
                 });
             const encodeStartedAtMs = Date.now();
             await execCommand("ffmpeg", ffmpegArgs);
-            await uploadRenderedOutput({
+            const persisted = await uploadRenderedOutput({
               workflowRunId: run.id,
               projectId: run.projectId,
               output,
@@ -2757,7 +2831,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
               brollCredits,
               encodeMs: Date.now() - encodeStartedAtMs,
             });
-            renderedVariantCount += 1;
+            if (persisted) renderedVariantCount += 1;
           } catch (error) {
             const errorCode =
               error instanceof WorkflowWorkerError
@@ -2811,7 +2885,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
 
           for (const output of outputs) {
             try {
-              await uploadRenderedOutput({
+              const persisted = await uploadRenderedOutput({
                 workflowRunId: run.id,
                 projectId: run.projectId,
                 output,
@@ -2819,7 +2893,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
                 applyFreeTierTreatment,
                 encodeMs: sharedEncodeMs,
               });
-              renderedVariantCount += 1;
+              if (persisted) renderedVariantCount += 1;
             } catch (error) {
               const errorCode =
                 error instanceof WorkflowWorkerError

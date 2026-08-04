@@ -145,4 +145,64 @@ describe("planEditorReset", () => {
     expect(plan.original.brollUrl).toBe("https://example.com/broll.mp4");
     expect(plan.original.deletedRanges).toEqual([{ startSec: 12, endSec: 14 }]);
   });
+
+  test("plannedDocument matches the restored original document when the window is unchanged — the true-no-op signal for a repeated Reset press", () => {
+    const original = makeOriginal({
+      brollUrl: "https://example.com/broll.mp4",
+      deletedRanges: [],
+    });
+    const plan = planEditorReset({
+      editorOriginal: original,
+      currentStartSec: original.clipStartSec,
+      currentEndSec: original.clipEndSec,
+      viralityScore: 70,
+      sourceDurationSec: 600,
+    });
+    expect(plan.noop).toBe(false);
+    if (plan.noop) return;
+
+    // resetClipEditorToOriginal compares plannedDocument (schema-parsed)
+    // against buildEditorDocumentFromClip(clip) (also schema-parsed) via
+    // JSON.stringify — a document built straight from the ORIGINAL snapshot
+    // must serialize identically to plannedDocument for that comparison to
+    // correctly detect "this clip is already at its original state".
+    const documentBuiltFromOriginal = editorDocumentSchema.parse({
+      clipStartSec: original.clipStartSec,
+      clipEndSec: original.clipEndSec,
+      captionPreset: original.captionPreset,
+      transcriptSlice: original.transcriptSlice,
+      studioEdits: original.studioEdits,
+      brollUrl: original.brollUrl,
+      deletedRanges: original.deletedRanges,
+    });
+    expect(JSON.stringify(plan.plannedDocument)).toBe(
+      JSON.stringify(documentBuiltFromOriginal),
+    );
+  });
+
+  test("plannedDocument differs from the current document when boundaries have since moved — a real reset is needed", () => {
+    const original = makeOriginal({ clipStartSec: 10, clipEndSec: 20 });
+    const plan = planEditorReset({
+      editorOriginal: original,
+      currentStartSec: 15,
+      currentEndSec: 45,
+      viralityScore: 70,
+      sourceDurationSec: 600,
+    });
+    expect(plan.noop).toBe(false);
+    if (plan.noop) return;
+
+    const currentDocument = editorDocumentSchema.parse({
+      clipStartSec: 15,
+      clipEndSec: 45,
+      captionPreset: original.captionPreset,
+      transcriptSlice: original.transcriptSlice,
+      studioEdits: original.studioEdits,
+      brollUrl: original.brollUrl,
+      deletedRanges: original.deletedRanges,
+    });
+    expect(JSON.stringify(plan.plannedDocument)).not.toBe(
+      JSON.stringify(currentDocument),
+    );
+  });
 });

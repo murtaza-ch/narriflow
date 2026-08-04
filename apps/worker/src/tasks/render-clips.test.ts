@@ -11,6 +11,7 @@ import {
   buildFreeTierPostProcessArgs,
   buildMultiVideoArgs,
   buildSingleVideoArgs,
+  clipRenderAttemptStorageKey,
   downloadUrlToFile,
   escapeDrawtextText,
   generateAssFromSlice,
@@ -1114,8 +1115,35 @@ describe("source audio gain/mute + music fades (vizard-parity Phase A step 5)", 
       },
     });
     const graph = args[args.indexOf("-filter_complex") + 1]!;
-    expect(graph).toContain("afade=t=in:st=0:d=3.000");
-    expect(graph).toContain("afade=t=out:st=0.000:d=3.000");
+    // Both fades clamp to the 3s clip duration (5s each requested), and
+    // since clamped fadeIn + clamped fadeOut (3+3=6s) still exceeds the 3s
+    // duration, resolveMusicFadeWindows scales both down proportionally
+    // (0.5x) so fade-in ends before fade-out begins, rather than the two
+    // fully overlapping over the same seconds.
+    expect(graph).toContain("afade=t=in:st=0:d=1.500");
+    expect(graph).toContain("afade=t=out:st=1.500:d=1.500");
+  });
+
+  test("music fadeInSec/fadeOutSec overlap case: 4s fade-in + 4s fade-out on a 4s clip scale down to 2s+2s windows", () => {
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 4,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+      music: {
+        path: "/tmp/music.mp3",
+        volume: 35,
+        startOffsetSec: 0,
+        fadeInSec: 4,
+        fadeOutSec: 4,
+      },
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    expect(graph).toContain("afade=t=in:st=0:d=2.000");
+    expect(graph).toContain("afade=t=out:st=2.000:d=2.000");
   });
 
   test("no-source-audio + music fades: music-only clip still gets the user fades plus the fixed click-guard, no amix", () => {
@@ -1140,5 +1168,25 @@ describe("source audio gain/mute + music fades (vizard-parity Phase A step 5)", 
     expect(graph).toContain("[musica]afade=t=in:st=0:d=0.040,afade=t=out:st=9.880:d=0.120[outa]");
     expect(graph).not.toContain("amix");
     expect(args).toContain("[outa]");
+  });
+});
+
+describe("clipRenderAttemptStorageKey", () => {
+  test("is attempt-unique: two encode attempts for the same clip+aspect never collide", () => {
+    const first = clipRenderAttemptStorageKey("proj-1", "clip-1", "9x16", "attempt-a");
+    const second = clipRenderAttemptStorageKey("proj-1", "clip-1", "9x16", "attempt-b");
+    expect(first).not.toBe(second);
+  });
+
+  test("stays scoped under the clip's own renders prefix", () => {
+    const key = clipRenderAttemptStorageKey("proj-1", "clip-1", "9x16", "attempt-a");
+    expect(key.startsWith("projects/proj-1/renders/clip-1/")).toBe(true);
+    expect(key.endsWith(".mp4")).toBe(true);
+  });
+
+  test("is deterministic for the same inputs (pure function, no hidden randomness)", () => {
+    const a = clipRenderAttemptStorageKey("proj-1", "clip-1", "9x16", "attempt-a");
+    const b = clipRenderAttemptStorageKey("proj-1", "clip-1", "9x16", "attempt-a");
+    expect(a).toBe(b);
   });
 });

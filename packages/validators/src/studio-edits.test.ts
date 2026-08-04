@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { studioEditsSchema } from "./studio-edits";
+import { resolveMusicFadeWindows, studioEditsSchema } from "./studio-edits";
 
 describe("studioEditsSchema (source audio + music fades)", () => {
   test("parse({}) defaults sourceAudio to unmuted 100 and music fades to 0", () => {
@@ -115,5 +115,38 @@ describe("studioEditsSchema (source audio + music fades)", () => {
         },
       }),
     ).toThrow();
+  });
+});
+
+describe("resolveMusicFadeWindows", () => {
+  test("passes through when fades fit the clip", () => {
+    expect(resolveMusicFadeWindows(1, 2, 30)).toEqual({
+      fadeInSec: 1,
+      fadeOutSec: 2,
+      fadeOutStartSec: 28,
+    });
+  });
+
+  test("clamps a single oversized fade to the clip duration", () => {
+    const windows = resolveMusicFadeWindows(5, 0, 3);
+    expect(windows.fadeInSec).toBe(3);
+    expect(windows.fadeOutSec).toBe(0);
+    expect(windows.fadeOutStartSec).toBe(3);
+  });
+
+  test("scales overlapping fades proportionally so windows never overlap", () => {
+    const windows = resolveMusicFadeWindows(4, 4, 4);
+    expect(windows.fadeInSec).toBe(2);
+    expect(windows.fadeOutSec).toBe(2);
+    expect(windows.fadeOutStartSec).toBe(2);
+    expect(windows.fadeInSec + windows.fadeOutSec).toBeLessThanOrEqual(4);
+  });
+
+  test("handles zero-duration clips without dividing by zero", () => {
+    expect(resolveMusicFadeWindows(2, 2, 0)).toEqual({
+      fadeInSec: 0,
+      fadeOutSec: 0,
+      fadeOutStartSec: 0,
+    });
   });
 });

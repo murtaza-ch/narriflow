@@ -88,7 +88,7 @@ function LogoPositionPicker({
  *  snapshot, via the same `resolveEffectiveLogoSettings` helper the worker
  *  uses for burn-in and the preview canvas uses to draw the overlay. */
 function LogoSection() {
-  const { brandLogo, studioEdits, setStudioEdits } = useStudio();
+  const { brandLogo, studioEdits, setStudioEdits, endCoalesce } = useStudio();
 
   const updateLogo = (patch: Partial<StudioLogo>, coalesceKey?: string) =>
     setStudioEdits(
@@ -189,6 +189,7 @@ function LogoSection() {
             onValueChange={(event) =>
               updateLogo({ opacity: event.value[0] ?? effective.opacity }, "logo-opacity")
             }
+            onValueChangeEnd={endCoalesce}
             size="sm"
             colorPalette="accent"
             flex="1"
@@ -217,6 +218,7 @@ function LogoSection() {
             onValueChange={(event) =>
               updateLogo({ scalePct: event.value[0] ?? effective.scalePct }, "logo-scale")
             }
+            onValueChangeEnd={endCoalesce}
             size="sm"
             colorPalette="accent"
             flex="1"

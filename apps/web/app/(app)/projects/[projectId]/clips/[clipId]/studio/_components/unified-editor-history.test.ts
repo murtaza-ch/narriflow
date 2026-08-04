@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { DEFAULT_CAPTION_PRESET, editorDocumentSchema, studioEditsSchema } from "@narriflow/validators";
+import {
+  DEFAULT_CAPTION_PRESET,
+  EDITOR_HISTORY_LIMIT,
+  editorDocumentSchema,
+  studioEditsSchema,
+} from "@narriflow/validators";
 import type { EditorDocument } from "@narriflow/validators";
 import {
   applyUnifiedEditorAction,
@@ -133,5 +138,100 @@ describe("applyUnifiedEditorAction", () => {
     const state = initial();
     expect(applyUnifiedEditorAction(state, { kind: "undo" })).toBe(state);
     expect(applyUnifiedEditorAction(state, { kind: "redo" })).toBe(state);
+  });
+
+  // Fix 8a: a segments action must break the document's coalesce chain so a
+  // gesture that was mid-coalesce before a segment split (or one that starts
+  // right after it, reusing the same key) never silently merges across it.
+  test("a segments action breaks the document coalesce chain (Codex repro: 36->37 [key], split, 37->38 [same key])", () => {
+    let state = initial();
+    expect(state.doc.present.captionPreset.fontSize).toBe(36);
+
+    state = applyUnifiedEditorAction(state, {
+      kind: "document",
+      action: {
+        type: "setCaptionPreset",
+        captionPreset: { ...state.doc.present.captionPreset, fontSize: 37 },
+      },
+      coalesceKey: "caption.fontSize",
+    });
+    state = applyUnifiedEditorAction(state, { kind: "segments", segments: segmentsB });
+    state = applyUnifiedEditorAction(state, {
+      kind: "document",
+      action: {
+        type: "setCaptionPreset",
+        captionPreset: { ...state.doc.present.captionPreset, fontSize: 38 },
+      },
+      coalesceKey: "caption.fontSize",
+    });
+
+    // Two distinct document undo steps (36->37, then 37->38), not one — the
+    // segment split in between must have broken the coalesce chain despite
+    // both document edits sharing the same coalesceKey.
+    expect(state.doc.past).toHaveLength(2);
+    expect(state.doc.present.captionPreset.fontSize).toBe(38);
+    expect(state.metaUndo).toEqual(["document", "segments", "document"]);
+
+    state = applyUnifiedEditorAction(state, { kind: "undo" });
+    expect(state.doc.present.captionPreset.fontSize).toBe(37);
+    state = applyUnifiedEditorAction(state, { kind: "undo" });
+    expect(state.segments).toEqual(segmentsA);
+    state = applyUnifiedEditorAction(state, { kind: "undo" });
+    expect(state.doc.present.captionPreset.fontSize).toBe(36);
+    expect(canUndoUnified(state)).toBe(false);
+  });
+
+  // Fix 8b: gesture end (slider pointer-up, drag end) dispatches endCoalesce
+  // so the NEXT gesture — even one reusing the same coalesceKey — starts a
+  // fresh undo step instead of merging into the one that already finished.
+  test("endCoalesce breaks the chain without recording its own undo step", () => {
+    let state = initial();
+    state = applyUnifiedEditorAction(state, {
+      kind: "document",
+      action: {
+        type: "setCaptionPreset",
+        captionPreset: { ...state.doc.present.captionPreset, fontSize: 40 },
+      },
+      coalesceKey: "caption.fontSize",
+    });
+    const metaUndoBefore = state.metaUndo;
+    const pastBefore = state.doc.past;
+
+    state = applyUnifiedEditorAction(state, { kind: "endCoalesce" });
+    expect(state.metaUndo).toBe(metaUndoBefore); // no new meta entry
+    expect(state.doc.past).toBe(pastBefore); // no new doc frame
+    expect(state.doc.lastCoalesceKey).toBeNull();
+
+    // endCoalesce on an already-clear key is a true no-op (same reference).
+    expect(applyUnifiedEditorAction(state, { kind: "endCoalesce" })).toBe(state);
+
+    state = applyUnifiedEditorAction(state, {
+      kind: "document",
+      action: {
+        type: "setCaptionPreset",
+        captionPreset: { ...state.doc.present.captionPreset, fontSize: 41 },
+      },
+      coalesceKey: "caption.fontSize",
+    });
+    // Did NOT coalesce with the pre-endCoalesce step, despite the same key.
+    expect(state.doc.past).toHaveLength(2);
+    expect(state.metaUndo).toEqual(["document", "document"]);
+  });
+
+  // Fix 9: meta-undo tagging must keep working past EDITOR_HISTORY_LIMIT,
+  // where the document history's `past` length stops growing but a fresh
+  // reference is still allocated per pushed frame (see editor-document.ts).
+  test("meta undo tagging survives the document history cap", () => {
+    let state = initial();
+    const totalEdits = EDITOR_HISTORY_LIMIT + 10;
+    for (let i = 0; i < totalEdits; i += 1) {
+      state = applyUnifiedEditorAction(state, {
+        kind: "document",
+        action: { type: "setBrollUrl", brollUrl: `https://example.com/${i}.mp4` },
+      });
+    }
+    expect(state.doc.past).toHaveLength(EDITOR_HISTORY_LIMIT);
+    expect(state.metaUndo).toHaveLength(totalEdits);
+    expect(state.metaUndo.every((kind) => kind === "document")).toBe(true);
   });
 });

@@ -28,6 +28,62 @@ const INPUT_RESET = {
   caretColor: "var(--chakra-colors-studio-accent)",
 } as const;
 
+/**
+ * Fix 14: a custom B-roll URL used to go straight into the document
+ * unvalidated — a non-public URL (localhost, a private IP, etc.) would only
+ * get caught server-side by `assertPublicHttpUrl` when the autosave PUT
+ * landed, and that rejection previously surfaced as a bare 500 that wedged
+ * autosave entirely (see route.ts's new UnsafeUrlError -> 422 mapping).
+ * Catching it here, before dispatch, avoids the round-trip entirely for the
+ * common case. This mirrors the STRUCTURAL half of the server's check
+ * (packages/services/src/url-guard.ts's `assertPublicHttpUrl`) — scheme,
+ * credentials, and literal private/reserved IPs/hostnames — since a DNS
+ * lookup (catching a hostname that RESOLVES to a private address) can only
+ * happen server-side. This is a UX pre-check, not a security boundary; the
+ * server remains the source of truth.
+ */
+function validatePublicHttpUrl(raw: string): string | null {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return "Enter a valid URL.";
+  }
+  if (url.protocol !== "http:" && url.protocol !== "https:") {
+    return "URL must start with http:// or https://.";
+  }
+  if (url.username || url.password) {
+    return "URL can't include credentials.";
+  }
+  const hostname = url.hostname.replace(/^\[|\]$/g, "").replace(/\.+$/, "").toLowerCase();
+  if (hostname === "localhost" || hostname.endsWith(".localhost") || hostname.endsWith(".local")) {
+    return "That host isn't reachable — use a public URL.";
+  }
+  const ipv4 = hostname.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (ipv4) {
+    const a = Number(ipv4[1]);
+    const b = Number(ipv4[2]);
+    const isPrivateIpv4 =
+      a === 0 ||
+      a === 10 ||
+      a === 127 ||
+      (a === 100 && b >= 64 && b <= 127) ||
+      (a === 169 && b === 254) ||
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 0) ||
+      (a === 192 && b === 168) ||
+      (a === 198 && (b === 18 || b === 19)) ||
+      a >= 224;
+    if (isPrivateIpv4) {
+      return "That host isn't reachable — use a public URL.";
+    }
+  }
+  if (hostname === "::1" || hostname === "::") {
+    return "That host isn't reachable — use a public URL.";
+  }
+  return null;
+}
+
 export function BRollPanel() {
   const { clipInfo, aspectRatio, brollUrl, setBrollUrl } = useStudio();
   const orientation =
@@ -127,6 +183,11 @@ export function BRollPanel() {
     const trimmed = customUrl.trim();
     if (!trimmed) {
       apply(null);
+      return;
+    }
+    const validationError = validatePublicHttpUrl(trimmed);
+    if (validationError) {
+      setError(validationError);
       return;
     }
     setError(null);

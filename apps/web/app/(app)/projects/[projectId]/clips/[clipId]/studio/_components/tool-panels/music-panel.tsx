@@ -1,17 +1,33 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Box, Flex, Text, Stack, Input, Slider } from "@chakra-ui/react";
 import { Link2, Music, Volume2, VolumeX, X } from "lucide-react";
 import { useStudio } from "../studio-shell";
 
 export function MusicPanel() {
-  const { studioEdits, setStudioEdits } = useStudio();
+  const { studioEdits, setStudioEdits, endCoalesce } = useStudio();
   const [url, setUrl] = useState(studioEdits.music.url ?? "");
   const [title, setTitle] = useState(studioEdits.music.title ?? "");
   const [volume, setVolume] = useState(studioEdits.music.volume);
   const [fadeInSec, setFadeInSec] = useState(studioEdits.music.fadeInSec);
   const [fadeOutSec, setFadeOutSec] = useState(studioEdits.music.fadeOutSec);
+
+  // Fix 11: these drafts used to be seeded once from the initial studioEdits
+  // and never revisited, so undo/reset/redo could leave them stale — e.g.
+  // undo a music change and this panel still shows (and can re-Apply) the
+  // undone draft. Resync whenever the document's music object actually
+  // changes identity (applyMusic/clearMusic/undo/redo/reset all produce a
+  // NEW music object; unrelated studioEdits changes — sourceAudio, logo —
+  // preserve the same reference, so an in-progress edit here isn't
+  // interrupted by those).
+  useEffect(() => {
+    setUrl(studioEdits.music.url ?? "");
+    setTitle(studioEdits.music.title ?? "");
+    setVolume(studioEdits.music.volume);
+    setFadeInSec(studioEdits.music.fadeInSec);
+    setFadeOutSec(studioEdits.music.fadeOutSec);
+  }, [studioEdits.music]);
 
   const applyMusic = () => {
     const trimmedUrl = url.trim();
@@ -120,6 +136,7 @@ export function MusicPanel() {
               onValueChange={(event) =>
                 updateSourceAudio({ volume: event.value[0] ?? 100 }, "source-volume")
               }
+              onValueChangeEnd={endCoalesce}
               size="sm"
               colorPalette="accent"
               flex="1"

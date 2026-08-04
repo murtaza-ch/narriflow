@@ -258,7 +258,7 @@ function PresetsGrid() {
 // ─── Customize Controls ──────────────────────────────────────────────────────
 
 function CustomizeControls() {
-  const { captionPreset, setCaptionPreset } = useStudio();
+  const { captionPreset, setCaptionPreset, endCoalesce } = useStudio();
 
   const update = (patch: Partial<typeof captionPreset>, coalesceKey?: string) =>
     setCaptionPreset((p) => ({ ...p, ...patch }), coalesceKey);
@@ -381,6 +381,7 @@ function CustomizeControls() {
             max={4}
             step={1}
             onValueChange={(e) => update({ outlineWidth: e.value[0]! }, "caption-outlineWidth")}
+            onValueChangeEnd={endCoalesce}
             size="sm"
             colorPalette="accent"
             flex="1"
@@ -409,6 +410,7 @@ function CustomizeControls() {
             max={120}
             step={1}
             onValueChange={(e) => update({ fontSize: e.value[0]! }, "caption-fontSize")}
+            onValueChangeEnd={endCoalesce}
             size="sm"
             colorPalette="accent"
             flex="1"
@@ -588,6 +590,7 @@ function CustomizeControls() {
               max={1}
               step={0.05}
               onValueChange={(e) => update({ backgroundOpacity: e.value[0]! }, "caption-backgroundOpacity")}
+              onValueChangeEnd={endCoalesce}
               size="sm"
               colorPalette="accent"
               flex="1"
@@ -640,6 +643,7 @@ function CustomizeControls() {
               max={1}
               step={0.05}
               onValueChange={(e) => update({ highlightBoxOpacity: e.value[0]! }, "caption-highlightBoxOpacity")}
+              onValueChangeEnd={endCoalesce}
               size="sm"
               colorPalette="accent"
               flex="1"
@@ -692,6 +696,7 @@ function CustomizeControls() {
               max={20}
               step={1}
               onValueChange={(e) => update({ glowIntensity: e.value[0]! }, "caption-glowIntensity")}
+              onValueChangeEnd={endCoalesce}
               size="sm"
               colorPalette="accent"
               flex="1"

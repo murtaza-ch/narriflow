@@ -39,8 +39,19 @@ export interface UnifiedEditorHistory {
 export type UnifiedEditorAction =
   | { kind: "document"; action: EditorAction; coalesceKey?: string }
   | { kind: "segments"; segments: TimelineSegment[] }
+  /** Breaks the document's coalesce chain without recording an undo step —
+   *  dispatched on gesture end (slider pointer-up, drag end) so the NEXT
+   *  gesture never accidentally merges into a step that already finished. */
+  | { kind: "endCoalesce" }
   | { kind: "undo" }
   | { kind: "redo" };
+
+/** Clears the document history's coalesce key if it's set, otherwise returns
+ *  the same reference (keeps callers that don't need to break the chain
+ *  cheap/no-op). Shared by the "segments" and "endCoalesce" cases below. */
+function clearDocCoalesce(doc: EditorHistory): EditorHistory {
+  return doc.lastCoalesceKey === null ? doc : { ...doc, lastCoalesceKey: null };
+}
 
 export function createUnifiedEditorHistory(
   document: EditorDocument,
@@ -67,25 +78,40 @@ export function applyUnifiedEditorAction(
       });
       // applyWithHistory returns the same reference for a no-op (including a
       // coalesced continuation of the current step) — mirror that here so a
-      // slider drag doesn't spuriously grow the meta stack either.
+      // slider drag doesn't spuriously grow the meta stack either. Detect
+      // "did this push a new past frame" via reference INEQUALITY, not
+      // length growth — length stops growing once EDITOR_HISTORY_LIMIT is
+      // hit, but applyWithHistory's push path always allocates a fresh
+      // `past` array (even at the cap, via `.slice()`), while its coalesce
+      // path reuses the same array — see editor-document.test.ts's
+      // "reference, even at the cap" tests for the pinned-down contract.
       if (nextDoc === state.doc) return state;
-      const grewPast = nextDoc.past.length > state.doc.past.length;
+      const pushedFrame = nextDoc.past !== state.doc.past;
       return {
         ...state,
         doc: nextDoc,
-        metaUndo: grewPast ? [...state.metaUndo, "document"] : state.metaUndo,
+        metaUndo: pushedFrame ? [...state.metaUndo, "document"] : state.metaUndo,
         metaRedo: [],
       };
     }
     case "segments": {
       return {
         ...state,
+        // A segment split/delete is its own undo step — it must not let a
+        // caption/slider gesture that was mid-coalesce before it (or after
+        // it, if the same coalesceKey happens to repeat) silently merge
+        // across the segment mutation.
+        doc: clearDocCoalesce(state.doc),
         segmentsPast: [...state.segmentsPast, state.segments],
         segments: action.segments,
         segmentsFuture: [],
         metaUndo: [...state.metaUndo, "segments"],
         metaRedo: [],
       };
+    }
+    case "endCoalesce": {
+      const nextDoc = clearDocCoalesce(state.doc);
+      return nextDoc === state.doc ? state : { ...state, doc: nextDoc };
     }
     case "undo": {
       const tag = state.metaUndo[state.metaUndo.length - 1];

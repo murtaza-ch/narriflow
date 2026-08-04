@@ -13,7 +13,11 @@ import {
   AlertTriangle,
   RotateCcw,
 } from "lucide-react";
-import { resolveEffectiveLogoSettings, type LogoPosition } from "@narriflow/validators";
+import {
+  resolveEffectiveLogoSettings,
+  resolveMusicFadeWindows,
+  type LogoPosition,
+} from "@narriflow/validators";
 import { useStudio } from "./studio-shell";
 import type { AspectRatio, LayoutMode } from "./studio-shell";
 import { InteractiveCaptionOverlay } from "./interactive-caption-overlay";
@@ -254,15 +258,28 @@ export function VideoPreview() {
   // music in sync without needing its own play head. Sample-accurate fades
   // are NOT the goal here (the render is the source of truth) — this is a
   // best-effort approximation good enough to preview against.
+  // Fix 12: this used to run once on mount ([] deps), but the <audio>
+  // element only exists once `studioEdits.music.url` is set (see the
+  // conditional render below) — a clip that starts without music never had
+  // anything to attach the listener to, and once music was later applied
+  // this effect never re-ran to attach it, leaving musicDurationRef stuck at
+  // 0 (dead loop-wrap modulo) for the rest of the session. Re-keying on the
+  // URL re-runs it every time the <audio> element (re)mounts, and reading
+  // `audio.duration` synchronously covers the case where the browser
+  // already has cached metadata by the time this runs (no loadedmetadata
+  // event will fire again in that case).
   useEffect(() => {
     const audio = musicAudioRef.current;
     if (!audio) return;
     const handleLoadedMetadata = () => {
       musicDurationRef.current = Number.isFinite(audio.duration) ? audio.duration : 0;
     };
+    if (Number.isFinite(audio.duration) && audio.duration > 0) {
+      musicDurationRef.current = audio.duration;
+    }
     audio.addEventListener("loadedmetadata", handleLoadedMetadata);
     return () => audio.removeEventListener("loadedmetadata", handleLoadedMetadata);
-  }, []);
+  }, [studioEdits.music.url]);
 
   // Reset the cached track duration whenever the music URL changes so a
   // previous track's duration never leaks into the new one's loop math
@@ -290,7 +307,16 @@ export function VideoPreview() {
     const music = studioEdits.music;
     if (!audio || !music.url) return;
 
-    const trackDuration = musicDurationRef.current;
+    // Fix 12 fallback: prefer the cached duration, but fall back to reading
+    // the element directly — covers a render where metadata was already
+    // available by the time the capture effect above ran but this sync
+    // effect fires first within the same tick.
+    const trackDuration =
+      musicDurationRef.current > 0
+        ? musicDurationRef.current
+        : Number.isFinite(audio.duration) && audio.duration > 0
+          ? audio.duration
+          : 0;
     let targetTime = music.startOffsetSec + currentTime;
     if (trackDuration > 0) {
       targetTime = targetTime % trackDuration;
@@ -302,14 +328,24 @@ export function VideoPreview() {
       audio.currentTime = Math.max(0, targetTime);
     }
 
+    // Fix 13: use the same clamped fade-window policy the render pipeline
+    // applies (resolveMusicFadeWindows) instead of dividing by the raw
+    // configured fadeInSec/fadeOutSec directly — keeps the preview's gain
+    // ramp thresholds/divisors from drifting out of parity with the burn-in
+    // when the two fades would otherwise overlap or exceed the clip.
     const baseVolume = Math.max(0, Math.min(1, music.volume / 100));
+    const { fadeInSec, fadeOutSec, fadeOutStartSec } = resolveMusicFadeWindows(
+      music.fadeInSec,
+      music.fadeOutSec,
+      duration,
+    );
     let gain = baseVolume;
-    if (music.fadeInSec > 0 && currentTime < music.fadeInSec) {
-      gain = baseVolume * (currentTime / music.fadeInSec);
+    if (fadeInSec > 0 && currentTime < fadeInSec) {
+      gain = baseVolume * (currentTime / fadeInSec);
     }
-    if (music.fadeOutSec > 0 && duration > 0 && currentTime > duration - music.fadeOutSec) {
+    if (fadeOutSec > 0 && currentTime > fadeOutStartSec) {
       const remainingSec = Math.max(0, duration - currentTime);
-      gain = Math.min(gain, baseVolume * (remainingSec / music.fadeOutSec));
+      gain = Math.min(gain, baseVolume * (remainingSec / fadeOutSec));
     }
     audio.volume = Math.max(0, Math.min(1, gain));
   }, [currentTime, studioEdits.music, duration]);

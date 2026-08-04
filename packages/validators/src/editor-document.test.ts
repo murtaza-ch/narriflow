@@ -135,6 +135,66 @@ describe("applyEditorAction", () => {
     });
     expect(applyEditorAction(mutated, { type: "reset", original })).toBe(original);
   });
+
+  test("setBrollUrl with the same URL is a semantic no-op (same reference)", () => {
+    const doc = applyEditorAction(makeDocument(), {
+      type: "setBrollUrl",
+      brollUrl: "https://example.com/a.mp4",
+    });
+    expect(
+      applyEditorAction(doc, { type: "setBrollUrl", brollUrl: "https://example.com/a.mp4" }),
+    ).toBe(doc);
+  });
+
+  test("setCaptionPreset with a deep-equal (but new) object is a no-op", () => {
+    const doc = makeDocument();
+    const next = applyEditorAction(doc, {
+      type: "setCaptionPreset",
+      // Structurally identical to doc.captionPreset but a fresh object.
+      captionPreset: { ...doc.captionPreset },
+    });
+    expect(next).toBe(doc);
+  });
+
+  test("setStudioEdits with a deep-equal (but new) object is a no-op", () => {
+    const doc = makeDocument();
+    const next = applyEditorAction(doc, {
+      type: "setStudioEdits",
+      studioEdits: JSON.parse(JSON.stringify(doc.studioEdits)),
+    });
+    expect(next).toBe(doc);
+  });
+
+  test("setTranscriptSlice with a deep-equal (but new) array is a no-op", () => {
+    const doc = makeDocument();
+    const next = applyEditorAction(doc, {
+      type: "setTranscriptSlice",
+      transcriptSlice: JSON.parse(JSON.stringify(doc.transcriptSlice)),
+    });
+    expect(next).toBe(doc);
+  });
+
+  test("setClipBoundaries with unchanged bounds is a no-op", () => {
+    const doc = makeDocument();
+    const next = applyEditorAction(doc, {
+      type: "setClipBoundaries",
+      startSec: doc.clipStartSec,
+      endSec: doc.clipEndSec,
+    });
+    expect(next).toBe(doc);
+  });
+
+  test("setDeletedRanges with an equivalent (differently-ordered) set is a no-op", () => {
+    const doc = applyEditorAction(makeDocument(), {
+      type: "setDeletedRanges",
+      ranges: [{ startSec: 14, endSec: 15 }],
+    });
+    const next = applyEditorAction(doc, {
+      type: "setDeletedRanges",
+      ranges: [{ startSec: 14, endSec: 15 }],
+    });
+    expect(next).toBe(doc);
+  });
 });
 
 describe("history", () => {
@@ -238,5 +298,50 @@ describe("history", () => {
       text: "x",
     });
     expect(history.past).toHaveLength(0);
+  });
+
+  // Fix 9 (unified-editor-history.ts's meta-undo stack): callers detect "did
+  // this apply push a new past frame" via `past` reference INEQUALITY rather
+  // than length growth, because length stops growing once the cap is hit.
+  // These two tests pin down the two halves of that contract so a future
+  // change to applyWithHistory can't silently break it.
+  test("every non-coalesced apply produces a new `past` array reference, even at the cap", () => {
+    let history = createEditorHistory(makeDocument());
+    for (let i = 0; i < EDITOR_HISTORY_LIMIT + 5; i += 1) {
+      const prevPast = history.past;
+      history = applyWithHistory(history, {
+        type: "setBrollUrl",
+        brollUrl: `https://example.com/${i}.mp4`,
+      });
+      expect(history.past).not.toBe(prevPast);
+    }
+    expect(history.past).toHaveLength(EDITOR_HISTORY_LIMIT);
+  });
+
+  test("a coalesced apply at the cap keeps the exact same `past` reference", () => {
+    let history = createEditorHistory(makeDocument());
+    for (let i = 0; i < EDITOR_HISTORY_LIMIT + 5; i += 1) {
+      history = applyWithHistory(history, {
+        type: "setBrollUrl",
+        brollUrl: `https://example.com/${i}.mp4`,
+      });
+    }
+    // First apply of a NEW coalesceKey still pushes a frame (its predecessor
+    // had no/a different key) — past length stays capped, but the reference
+    // changes (asserted by the previous test). Only the SECOND apply with
+    // the SAME key actually coalesces, which is what this test pins down.
+    history = applyWithHistory(
+      history,
+      { type: "setCaptionPreset", captionPreset: { ...history.present.captionPreset, fontSize: 50 } },
+      { coalesceKey: "caption.fontSize" },
+    );
+    const pastAfterFirstGestureTick = history.past;
+    history = applyWithHistory(
+      history,
+      { type: "setCaptionPreset", captionPreset: { ...history.present.captionPreset, fontSize: 51 } },
+      { coalesceKey: "caption.fontSize" },
+    );
+    expect(history.past).toBe(pastAfterFirstGestureTick);
+    expect(history.past).toHaveLength(EDITOR_HISTORY_LIMIT);
   });
 });

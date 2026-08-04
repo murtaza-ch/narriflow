@@ -39,6 +39,29 @@ export const studioMusicSchema = z.object({
   fadeOutSec: z.number().min(0).max(5).default(0),
 });
 
+/**
+ * Shared fade-window policy for music fades so the browser preview and the
+ * worker's afade filters cannot drift: each fade is clamped to the clip
+ * duration, and when the two windows would overlap they are scaled down
+ * proportionally so fade-in ends before fade-out begins.
+ */
+export function resolveMusicFadeWindows(
+  fadeInSec: number,
+  fadeOutSec: number,
+  clipDurationSec: number,
+): { fadeInSec: number; fadeOutSec: number; fadeOutStartSec: number } {
+  const duration = Math.max(0, clipDurationSec);
+  let fadeIn = Math.min(Math.max(0, fadeInSec), duration);
+  let fadeOut = Math.min(Math.max(0, fadeOutSec), duration);
+  const total = fadeIn + fadeOut;
+  if (total > duration && total > 0) {
+    const scale = duration / total;
+    fadeIn *= scale;
+    fadeOut *= scale;
+  }
+  return { fadeInSec: fadeIn, fadeOutSec: fadeOut, fadeOutStartSec: duration - fadeOut };
+}
+
 export const studioSourceAudioSchema = z.object({
   volume: z.number().int().min(0).max(100).default(100),
   muted: z.boolean().default(false),

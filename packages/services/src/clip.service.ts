@@ -39,6 +39,7 @@ import type {
   ClipSnapshot,
   ContentPack,
   EditorDocument,
+  EffectiveClipTiming,
   SaveEditorDocument,
   StudioEdits,
   TranscriptUtterance,
@@ -87,7 +88,16 @@ interface LlmMeta {
 
 /** A clip still missing a preview proxy, with enough of its project's
  *  source info for the worker to cut one. Returned by
- *  {@link ClipService.getClipsNeedingPreview}. */
+ *  {@link ClipService.getClipsNeedingPreview}.
+ *
+ *  `startSec`/`endSec` double as the EXPECTED window for
+ *  {@link ClipService.completeClipPreview}'s claim: the worker echoes them
+ *  back on completion, and the claim only succeeds if the clip's stored
+ *  boundaries still match. Without this, an in-flight cut for an OLD window
+ *  can land after a boundary edit/reset already nulled `previewStorageKey`
+ *  for a NEW window — the stale attempt would otherwise win the
+ *  `previewStorageKey IS NULL` race and persist a proxy for the wrong
+ *  window. */
 export interface ClipPendingPreview {
   id: string;
   projectId: string;
@@ -344,6 +354,12 @@ export type EditorResetPlan =
       tiktokScore: number;
       youtubeScore: number;
       instagramScore: number;
+      /** The full document a real reset would write, schema-parsed so a
+       *  JSON.stringify comparison against another schema-parsed document is
+       *  a valid deep-equality check (stable key order). Lets callers detect
+       *  "this reset would be a true no-op" (e.g. pressing Reset again right
+       *  after a reset already landed) without duplicating the shape here. */
+      plannedDocument: EditorDocument;
     };
 
 /**
@@ -376,6 +392,19 @@ export function planEditorReset(input: EditorResetPlanInput): EditorResetPlan {
       RESET_BOUNDARY_EPSILON_SEC;
   const durationSec = effective.durationSec;
 
+  const plannedDocument = editorDocumentSchema.parse({
+    clipStartSec: effective.startSec,
+    clipEndSec: effective.endSec,
+    captionPreset: original.captionPreset,
+    transcriptSlice: effective.transcriptSlice,
+    studioEdits: original.studioEdits,
+    brollUrl: original.brollUrl,
+    deletedRanges: normalizeDeletedRanges(original.deletedRanges, {
+      startSec: effective.startSec,
+      endSec: effective.endSec,
+    }),
+  });
+
   return {
     noop: false,
     original,
@@ -393,6 +422,78 @@ export function planEditorReset(input: EditorResetPlanInput): EditorResetPlan {
       durationSec,
       "instagram",
     ),
+    plannedDocument,
+  };
+}
+
+const SAVE_BOUNDARY_EPSILON_SEC = 0.001;
+
+export interface EditorDocumentBoundaryClampResult {
+  /** `document` with transcriptSlice/clipStartSec/clipEndSec/deletedRanges
+   *  reconciled to the STORED clip window — never the recomputed one. */
+  document: EditorDocument;
+  /** True when `getEffectiveClipTiming` would have moved the boundaries had
+   *  its result been adopted verbatim — purely diagnostic (logged by the
+   *  caller), since the returned document is clamped either way. */
+  boundaryDriftDetected: boolean;
+  /** The window `getEffectiveClipTiming` computed from the incoming
+   *  transcriptSlice, kept only for logging. */
+  recomputedEffective: EffectiveClipTiming;
+}
+
+/**
+ * Phase A `saveClipEditorDocument` PUT boundary-immutability guard for
+ * transcript edits. `getEffectiveClipTiming` (the same primitive
+ * `updateClipTranscriptSlice`/`updateClipBoundaries` use to autofit
+ * boundaries around a transcript) can WIDEN the window past the clip's own
+ * stored bounds when an incoming word overlaps the edge — e.g. a word timed
+ * 5-12s submitted against a stored 10-20s clip recomputes `startSec` to 5.
+ * Adopting that recomputed window from inside the endpoint that otherwise
+ * 422s on any boundary change would silently move boundaries through a side
+ * door, with no proxy invalidation to match.
+ *
+ * This clamps instead: the transcript is normalized to
+ * `[clip.startSec, clip.endSec]` with `normalizeTranscriptSliceForClip` —
+ * the exact primitive `getEffectiveClipTiming` uses internally for the
+ * clamp step — so a straddling word is trimmed/dropped exactly as it would
+ * be anywhere else, but the persisted clip boundaries never move through
+ * this endpoint. Kept side-effect-free and exported so the 5-12-word
+ * scenario is directly unit-testable (mirrors `planEditorReset`'s role for
+ * reset).
+ */
+export function clampEditorDocumentToStoredWindow(
+  document: EditorDocument,
+  clip: { startSec: number; endSec: number },
+): EditorDocumentBoundaryClampResult {
+  const recomputedEffective = getEffectiveClipTiming({
+    utterances: document.transcriptSlice,
+    startSec: clip.startSec,
+    endSec: clip.endSec,
+    tailPadSec: 0,
+  });
+  const boundaryDriftDetected =
+    Math.abs(recomputedEffective.startSec - clip.startSec) >
+      SAVE_BOUNDARY_EPSILON_SEC ||
+    Math.abs(recomputedEffective.endSec - clip.endSec) >
+      SAVE_BOUNDARY_EPSILON_SEC;
+
+  return {
+    document: {
+      ...document,
+      clipStartSec: clip.startSec,
+      clipEndSec: clip.endSec,
+      transcriptSlice: normalizeTranscriptSliceForClip(
+        document.transcriptSlice,
+        clip.startSec,
+        clip.endSec,
+      ),
+      deletedRanges: normalizeDeletedRanges(document.deletedRanges, {
+        startSec: clip.startSec,
+        endSec: clip.endSec,
+      }),
+    },
+    boundaryDriftDetected,
+    recomputedEffective,
   };
 }
 
@@ -726,6 +827,14 @@ export class ClipService {
           previewStorageKey: null,
           previewStartSec: null,
           previewDurationSec: null,
+          // Document-owned columns (startSec/transcriptSlice) are also
+          // writable through the revisioned editor document
+          // (saveClipEditorDocument) — every mutator that touches them must
+          // bump editorRevision so a concurrent studio PUT conflicts (409)
+          // instead of silently clobbering this write, and so it doesn't get
+          // captured as the eventual editorOriginal snapshot on the next
+          // first-save.
+          editorRevision: { increment: 1 },
         },
         include: {
           renders: true,
@@ -1569,7 +1678,9 @@ export class ClipService {
   async markClipRenderVariantRendering(clipRenderId: string) {
     const prisma = requirePrisma();
 
-    await prisma.clipRender.update({
+    // updateMany: an editor save/reset can deleteMany this row while the
+    // encode is queued — a vanished row is a no-op, not a P2025 crash.
+    await prisma.clipRender.updateMany({
       where: { id: clipRenderId },
       data: {
         status: "rendering",
@@ -1579,6 +1690,20 @@ export class ClipService {
     });
   }
 
+  /**
+   * Claims a ClipRender row for a just-uploaded render output. Render
+   * storage keys are attempt-unique (the caller mints a fresh key per
+   * encode, mirroring `clipPreviewAttemptStorageKey`'s pattern from
+   * 5c3b985) — this only has to detect whether the row this attempt was
+   * rendering for is STILL the live one, since an editor save or reset can
+   * `clipRender.deleteMany` the row out from under an in-flight encode.
+   * Uses `updateMany` rather than `update` so a deleted row makes this a
+   * clean `persisted: false` instead of throwing P2025 — the caller (the
+   * worker's `uploadRenderedOutput`) must then delete its own just-uploaded
+   * object, since with attempt-unique keys that object can never collide
+   * with (and therefore never needs to protect) anything another attempt
+   * uploaded.
+   */
   async completeClipRenderVariant(
     clipRenderId: string,
     input: {
@@ -1586,10 +1711,10 @@ export class ClipService {
       sizeBytes: number;
       durationSec: number;
     },
-  ) {
+  ): Promise<{ persisted: boolean }> {
     const prisma = requirePrisma();
 
-    const render = await prisma.clipRender.update({
+    const claim = await prisma.clipRender.updateMany({
       where: { id: clipRenderId },
       data: {
         status: "completed",
@@ -1599,6 +1724,14 @@ export class ClipService {
         errorCode: null,
         completedAt: new Date(),
       },
+    });
+
+    if (claim.count === 0) {
+      return { persisted: false };
+    }
+
+    const render = await prisma.clipRender.findUniqueOrThrow({
+      where: { id: clipRenderId },
       include: { clip: { select: { projectId: true } } },
     });
 
@@ -1614,12 +1747,16 @@ export class ClipService {
     // completed/failed transition — see project-events.tsx's throttled
     // refresh-on-progress handling.
     await this.pingActiveWorkflowRun(render.clip.projectId);
+
+    return { persisted: true };
   }
 
   async failClipRenderVariant(clipRenderId: string, errorCode: string) {
     const prisma = requirePrisma();
 
-    await prisma.clipRender.update({
+    // updateMany for the same deleted-mid-render reason as
+    // markClipRenderVariantRendering above.
+    await prisma.clipRender.updateMany({
       where: { id: clipRenderId },
       data: {
         status: "failed",
@@ -1875,18 +2012,43 @@ export class ClipService {
 
   /**
    * Persists a clip's generated preview-proxy metadata — but only if no
-   * proxy has been recorded yet. `previewStorageKey IS NULL` is the atomic
-   * claim condition (mirroring the codebase's claim-via-conditional-update
-   * idiom used by e.g. `claimNextWorkflowRun`), since the Clip model has no
-   * separate "generating" status column to transition: two workers racing
-   * to cut the same clip's proxy will both upload, but only one write wins
-   * here — the loser (persisted: false) must delete its own upload.
+   * proxy has been recorded yet AND the clip's boundary window still
+   * matches what this attempt cut its proxy for. `previewStorageKey IS
+   * NULL` is the atomic claim condition (mirroring the codebase's
+   * claim-via-conditional-update idiom used by e.g. `claimNextWorkflowRun`),
+   * since the Clip model has no separate "generating" status column to
+   * transition: two workers racing to cut the same clip's proxy will both
+   * upload, but only one write wins here — the loser (persisted: false)
+   * must delete its own upload.
+   *
+   * The `startSec`/`endSec IS NULL`-adjacent window check closes a second,
+   * narrower race than that one: an editor save/reset can null
+   * `previewStorageKey` for a NEW window while an OLD-window cut is still
+   * in flight from BEFORE that change. `previewStorageKey IS NULL` alone
+   * would still be true after the reset, so the stale attempt would win the
+   * claim and persist a proxy for a window the clip no longer has. Matching
+   * the clip's CURRENT `startSec`/`endSec` against the caller-supplied
+   * `expectedClipStartSec`/`expectedClipEndSec` (the window this attempt
+   * was actually cutting for) makes that impossible — a boundary change
+   * always fails this attempt's claim, exactly like `editorRevision`
+   * mismatches fail the editor document's guarded writes.
    */
   async completeClipPreview(
     clipId: string,
-    input: { storageKey: string; startSec: number; durationSec: number },
+    input: {
+      storageKey: string;
+      startSec: number;
+      durationSec: number;
+      /** The clip's own boundary window this attempt cut its proxy for
+       *  (`ClipPendingPreview.startSec/endSec` at dispatch time) — distinct
+       *  from `startSec` above, which is the PADDED preview window persisted
+       *  as `previewStartSec`. */
+      expectedClipStartSec: number;
+      expectedClipEndSec: number;
+    },
   ): Promise<{ persisted: boolean; projectId: string | null }> {
     const prisma = requirePrisma();
+    const PREVIEW_WINDOW_EPSILON_SEC = 0.001;
 
     const clip = await prisma.clip.findUnique({
       where: { id: clipId },
@@ -1897,7 +2059,18 @@ export class ClipService {
     }
 
     const claim = await prisma.clip.updateMany({
-      where: { id: clipId, previewStorageKey: null },
+      where: {
+        id: clipId,
+        previewStorageKey: null,
+        startSec: {
+          gte: input.expectedClipStartSec - PREVIEW_WINDOW_EPSILON_SEC,
+          lte: input.expectedClipStartSec + PREVIEW_WINDOW_EPSILON_SEC,
+        },
+        endSec: {
+          gte: input.expectedClipEndSec - PREVIEW_WINDOW_EPSILON_SEC,
+          lte: input.expectedClipEndSec + PREVIEW_WINDOW_EPSILON_SEC,
+        },
+      },
       data: {
         previewStorageKey: input.storageKey,
         previewStartSec: input.startSec,
@@ -1974,6 +2147,10 @@ export class ClipService {
       where: { id: clipId },
       data: {
         captionPreset: preset !== null ? (preset as Prisma.InputJsonValue) : Prisma.JsonNull,
+        // See updateClipBoundaries' comment: captionPreset is document-owned
+        // and also writable via saveClipEditorDocument, so this must bump
+        // editorRevision too.
+        editorRevision: { increment: 1 },
       },
       include: { renders: true },
     });
@@ -2022,7 +2199,12 @@ export class ClipService {
       deletedRenderCount = deleted.count;
       return tx.clip.update({
         where: { id: clipId },
-        data: { brollUrl },
+        data: {
+          brollUrl,
+          // See updateClipBoundaries' comment: brollUrl is document-owned
+          // and also writable via saveClipEditorDocument.
+          editorRevision: { increment: 1 },
+        },
         include: { renders: true },
       });
     });
@@ -2090,6 +2272,9 @@ export class ClipService {
         data: {
           studioEdits: parsed as unknown as Prisma.InputJsonValue,
           status: "edited",
+          // See updateClipBoundaries' comment: studioEdits is document-owned
+          // and also writable via saveClipEditorDocument.
+          editorRevision: { increment: 1 },
         },
         include: { renders: true },
       });
@@ -2155,9 +2340,11 @@ export class ClipService {
    *
    * Boundaries are validated, not writable: in-studio trim is Phase B step 13
    * (docs/plans/vizard-parity.md) and needs proxy-lifecycle handling first.
-   * A transcript change still recomputes effective timing exactly like
-   * `updateClipTranscriptSlice` — but the result is returned to the caller so
-   * the client rebases explicitly instead of drifting.
+   * A transcript change is clamped to the clip's STORED window via
+   * `clampEditorDocumentToStoredWindow` — NOT recomputed/expanded the way
+   * `updateClipTranscriptSlice` does — because this endpoint's own
+   * boundary-immutability check above would otherwise be bypassable by
+   * submitting a transcriptSlice whose words overlap past the stored edge.
    */
   async saveClipEditorDocument(
     userId: string,
@@ -2208,26 +2395,31 @@ export class ClipService {
     const transcriptChanged =
       JSON.stringify(next.transcriptSlice) !==
       JSON.stringify(current.transcriptSlice);
+    let boundaryDriftDetected = false;
     if (transcriptChanged) {
-      // tailPadSec 0 — slice-only input; stored bounds are final (matches
-      // updateClipTranscriptSlice). The adjusted bounds come back to the
-      // client in the response document.
-      const effective = getEffectiveClipTiming({
-        utterances: next.transcriptSlice,
+      const clamp = clampEditorDocumentToStoredWindow(next, {
         startSec: clip.startSec,
         endSec: clip.endSec,
-        tailPadSec: 0,
       });
-      next = {
-        ...next,
-        clipStartSec: effective.startSec,
-        clipEndSec: effective.endSec,
-        transcriptSlice: effective.transcriptSlice,
-        deletedRanges: normalizeDeletedRanges(next.deletedRanges, {
-          startSec: effective.startSec,
-          endSec: effective.endSec,
-        }),
-      };
+      next = clamp.document;
+      boundaryDriftDetected = clamp.boundaryDriftDetected;
+      if (boundaryDriftDetected) {
+        // Diagnostic only — the transcript is already clamped to the stored
+        // window above regardless. Surfaces the cases where a client sent a
+        // transcriptSlice implying a wider window than the clip actually
+        // has, so it's visible without being able to move boundaries.
+        console.warn(
+          JSON.stringify({
+            level: "warn",
+            message: "editor_document_transcript_boundary_drift_clamped",
+            clipId,
+            storedStartSec: clip.startSec,
+            storedEndSec: clip.endSec,
+            recomputedStartSec: clamp.recomputedEffective.startSec,
+            recomputedEndSec: clamp.recomputedEffective.endSec,
+          }),
+        );
+      }
     }
 
     // Both sides are schema-parse output, so serialized comparison is a valid
@@ -2319,7 +2511,14 @@ export class ClipService {
    *
    * No-op (zero writes) when no snapshot exists yet — the clip was never
    * saved through the editor document, so its current state already IS the
-   * original.
+   * original. That decision is revision-guarded atomically (see the
+   * `noOpGuard` below): a first-save committing between the initial read and
+   * this check — which is exactly the transition from "no snapshot" to
+   * "snapshot exists" — must surface as a 409 conflict, not a stale success
+   * that silently skipped a now-possible real reset. Likewise, a second
+   * Reset press right after the first one landed (planned document already
+   * equals the current one) is also a true zero-write no-op — it must not
+   * re-bump editorRevision or delete still-valid renders.
    */
   async resetClipEditorToOriginal(
     userId: string,
@@ -2350,9 +2549,48 @@ export class ClipService {
     });
 
     if (plan.noop) {
+      // Every mutator that can populate `editorOriginal` (only
+      // saveClipEditorDocument's first real save) increments editorRevision
+      // in the SAME write — that invariant is what makes this guarded
+      // no-op update a valid atomic re-check: if it still matches
+      // editorRevision: baseRevision, editorOriginal is PROVABLY still null
+      // at that instant, even though our own read of it happened earlier
+      // and unguarded. The write itself is value-preserving (sets
+      // editorRevision back to itself) — no real column changes, so this
+      // does not bump the visible revision or invalidate renders.
+      const noOpGuard = await prisma.clip.updateMany({
+        where: { id: clipId, editorRevision: baseRevision },
+        data: { editorRevision: baseRevision },
+      });
+      if (noOpGuard.count === 0) {
+        const latest = await prisma.clip.findUnique({
+          where: { id: clipId },
+          select: { editorRevision: true },
+        });
+        throw new ClipEditorRevisionConflictError(
+          latest?.editorRevision ?? baseRevision + 1,
+        );
+      }
       return {
         revision: clip.editorRevision,
         document: buildEditorDocumentFromClip(clip),
+        clip: toClipSnapshot(clip),
+      };
+    }
+
+    // Fix (MEDIUM, no-op reset): pressing Reset again after the first reset
+    // already landed must be a true zero-write no-op — no revision bump, no
+    // render invalidation — not just a shortcut for the "never saved" case
+    // above. Same deep-equality pattern saveClipEditorDocument uses (both
+    // sides are schema-parse output, so serialized comparison is a valid
+    // check).
+    const currentDocument = buildEditorDocumentFromClip(clip);
+    if (
+      JSON.stringify(plan.plannedDocument) === JSON.stringify(currentDocument)
+    ) {
+      return {
+        revision: clip.editorRevision,
+        document: currentDocument,
         clip: toClipSnapshot(clip),
       };
     }
@@ -2455,7 +2693,13 @@ export class ClipService {
 
     const result = await prisma.clip.updateMany({
       where: { projectId },
-      data: { captionPreset: preset as Prisma.InputJsonValue },
+      data: {
+        captionPreset: preset as Prisma.InputJsonValue,
+        // See updateClipBoundaries' comment: captionPreset is document-owned
+        // and also writable via saveClipEditorDocument, on every affected
+        // row.
+        editorRevision: { increment: 1 },
+      },
     });
 
     return { updated: result.count };
@@ -2497,6 +2741,9 @@ export class ClipService {
         endSec: effective.endSec,
         transcriptSlice: effective.transcriptSlice as unknown as Prisma.InputJsonValue,
         status: "edited",
+        // See updateClipBoundaries' comment: startSec/transcriptSlice are
+        // document-owned and also writable via saveClipEditorDocument.
+        editorRevision: { increment: 1 },
       },
       include: { renders: true },
     });

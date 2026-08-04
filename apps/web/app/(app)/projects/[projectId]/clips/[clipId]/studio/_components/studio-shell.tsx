@@ -40,7 +40,13 @@ import {
   createUnifiedEditorHistory,
   type UnifiedEditorHistory,
 } from "./unified-editor-history";
-import { completeSave, requestSave, type SaveQueueState } from "./save-queue";
+import {
+  combineSaveOutcomes,
+  completeSave,
+  requestSave,
+  type SaveOutcome,
+  type SaveQueueState,
+} from "./save-queue";
 
 /**
  * Below this width the transcript panel has already hidden (it collapses
@@ -166,12 +172,16 @@ interface StudioState {
   /** Current B-roll cutaway URL — lives in the editor document (undoable,
    *  autosaved), not a locally-PATCHed side channel. */
   brollUrl: string | null;
-  saveState: "idle" | "saving" | "saved" | "error";
+  /** 'blocked' is a distinct terminal state from 'error': it means autosave
+   *  has permanently stopped (a 409/422 that a reload is needed to clear),
+   *  as opposed to 'error''s transient/retryable failure. */
+  saveState: "idle" | "saving" | "saved" | "error" | "blocked";
   exportState: "idle" | "exporting" | "queued";
   resetState: "idle" | "resetting";
   canUndo: boolean;
   canRedo: boolean;
-  /** False once resetting to original — revision 0 and nothing dirty. */
+  /** False once resetting would be a no-op — see the canReset computation
+   *  below for exactly what "nothing to reset" means. */
   canReset: boolean;
 }
 
@@ -261,6 +271,11 @@ interface StudioContextValue extends StudioState {
     coalesceKey?: string,
   ) => void;
   setBrollUrl: (url: string | null, coalesceKey?: string) => void;
+  /** Breaks the document's coalesce chain without recording an undo step —
+   *  wire to `onValueChangeEnd` of every slider that passes a coalesceKey
+   *  (and pointer-up of the caption-resize drag) so the NEXT gesture never
+   *  accidentally merges into one that already finished. */
+  endCoalesce: () => void;
   togglePlay: () => void;
   seekTo: (t: number) => void;
   splitAtPlayhead: () => void;
@@ -292,13 +307,16 @@ interface StudioShellProps {
    *  independently-PATCHed fragments. */
   initialEditorDocument: EditorDocument;
   initialEditorRevision: number;
-  /** The immutable revision-zero snapshot Reset-to-original restores.
-   *  Reset itself is a server round-trip + full reload (see handleReset
+  /** The immutable revision-zero snapshot Reset-to-original restores. Reset
+   *  itself is still a server round-trip + full reload (see handleReset
    *  below — boundaries/preview proxy may change, so re-seeding from a
    *  fresh server render is simpler and safer than patching client state in
-   *  place), so this is accepted for API completeness / future client-side
-   *  use (e.g. a "preview what reset would change" affordance) rather than
-   *  read anywhere today. */
+   *  place) — but this is read client-side to derive `canReset`: reset is
+   *  only offered when the live document (or what the server already held
+   *  at load) actually differs from this snapshot, not just because
+   *  `revision > 0`. Optional so a caller without a real original (e.g. a
+   *  test harness) still gets a sane fallback — see the canReset
+   *  computation below. */
   initialEditorOriginal?: EditorDocument;
   sourceVideoUrl?: string | null;
   sourcePreviewId?: string;
@@ -333,6 +351,7 @@ export function StudioShell({
   timelineSegments,
   initialEditorDocument,
   initialEditorRevision,
+  initialEditorOriginal,
   sourceVideoUrl = null,
   sourcePreviewId = "source",
   clipStartSec = 0,
@@ -478,7 +497,7 @@ export function StudioShell({
   const [captionSelected, setCaptionSelected] = useState(false);
   const [transcriptOnly, setTranscriptOnly] = useState(false);
   const [saveState, setSaveState] = useState<
-    "idle" | "saving" | "saved" | "error"
+    "idle" | "saving" | "saved" | "error" | "blocked"
   >("idle");
   const [exportState, setExportState] = useState<
     "idle" | "exporting" | "queued"
@@ -486,7 +505,25 @@ export function StudioShell({
   const [resetState, setResetState] = useState<"idle" | "resetting">("idle");
   const [revision, setRevisionState] = useState(initialEditorRevision);
   const [isDocDirty, setIsDocDirty] = useState(false);
-  const canReset = revision > 0 || isDocDirty;
+
+  // Fix 4: canReset used to be `revision > 0 || isDocDirty`, which offered
+  // Reset even when nothing would actually change (e.g. right after a fresh
+  // autosave with the document still equal to the original). Derive it
+  // instead from an actual difference against the immutable revision-zero
+  // snapshot: either the LIVE local document already differs from it, or the
+  // document the server was already holding differed from it AT LOAD time
+  // (edits from a previous session that this session hasn't touched yet).
+  // Falls back to the old load-time document when no explicit original was
+  // provided (e.g. a test harness that omits the prop) rather than silently
+  // disabling reset.
+  const originalDoc = initialEditorOriginal ?? initialEditorDocument;
+  const canReset = useMemo(() => {
+    const originalJson = JSON.stringify(originalDoc);
+    const localDiffersFromOriginal = JSON.stringify(doc) !== originalJson;
+    const serverDifferedFromOriginalAtLoad =
+      JSON.stringify(initialEditorDocument) !== originalJson;
+    return localDiffersFromOriginal || (revision > 0 && serverDifferedFromOriginalAtLoad);
+  }, [doc, originalDoc, initialEditorDocument, revision]);
 
   // Dispatch helpers — thin wrappers that turn context setter calls into
   // reducer actions through the unified history. Signatures match the old
@@ -529,6 +566,13 @@ export function StudioShell({
     },
     [],
   );
+
+  // Fix 8b: gesture end (slider pointer-up, resize-drag pointer-up) breaks
+  // the coalesce chain so the NEXT gesture never merges into one that
+  // already finished, even if it happens to reuse the same coalesceKey.
+  const endCoalesce = useCallback(() => {
+    setUnified((s) => applyUnifiedEditorAction(s, { kind: "endCoalesce" }));
+  }, []);
 
   const setBrollUrl = useCallback((url: string | null, coalesceKey?: string) => {
     setUnified((s) =>
@@ -659,12 +703,25 @@ export function StudioShell({
   //    exactly one more save once the current one finishes.
   //  - autosaveStoppedRef: set once a 409/422 tells us further autosaving
   //    would just fail again until the user reloads or the conflict clears.
+  //  - resetInFlightRef: set for the duration of handleReset's drain+POST so
+  //    nothing else (debounce, an explicit save) starts a competing autosave
+  //    while a reset is being negotiated with the server (fix 2). Distinct
+  //    from autosaveStoppedRef, which is permanent-until-reload — this one
+  //    always clears itself when handleReset finishes, success or not.
+  //  - suppressUnloadGuardRef: set right before a successful reset's reload
+  //    so the beforeunload prompt can't block it (fix 3).
+  //  - keepaliveFiredRef: dedupes pagehide + unmount both firing the
+  //    keepalive flush for the same teardown (fix 6); reset on `pageshow`
+  //    (bfcache restores) so a later real teardown can still flush.
   const docPresentRef = useRef(doc);
   const lastSavedDocumentJsonRef = useRef(JSON.stringify(initialEditorDocument));
   const baseRevisionRef = useRef(initialEditorRevision);
   const saveQueueStateRef = useRef<SaveQueueState>("idle");
   const autosaveStoppedRef = useRef(false);
-  const currentSavePromiseRef = useRef<Promise<void>>(Promise.resolve());
+  const resetInFlightRef = useRef(false);
+  const suppressUnloadGuardRef = useRef(false);
+  const keepaliveFiredRef = useRef(false);
+  const currentSavePromiseRef = useRef<Promise<SaveOutcome>>(Promise.resolve("success"));
 
   const setBaseRevision = useCallback((next: number) => {
     baseRevisionRef.current = next;
@@ -676,9 +733,10 @@ export function StudioShell({
     setIsDocDirty(JSON.stringify(doc) !== lastSavedDocumentJsonRef.current);
   }, [doc]);
 
-  const performSave = useCallback(async (): Promise<void> => {
+  const performSave = useCallback(async (): Promise<SaveOutcome> => {
     const documentToSave = docPresentRef.current;
     const documentJson = JSON.stringify(documentToSave);
+    let outcome: SaveOutcome = "success";
 
     if (documentJson === lastSavedDocumentJsonRef.current) {
       // Reached via a queued request that turned out to be a no-op (e.g. an
@@ -700,8 +758,14 @@ export function StudioShell({
         );
 
         if (res.status === 409) {
+          // Fix 1: this used to be set unconditionally BEFORE the fetch,
+          // with no path back to false on this branch — every later edit
+          // was silently dropped while the indicator kept showing "Saved".
+          // It's now only ever set on a path that also surfaces a distinct
+          // 'blocked' state (fix 7), and only for outcomes that really are
+          // permanent-until-reload.
           autosaveStoppedRef.current = true;
-          setSaveState("error");
+          setSaveState("blocked");
           toaster.create({
             type: "error",
             title: "This clip was changed somewhere else",
@@ -709,26 +773,32 @@ export function StudioShell({
             action: { label: "Reload", onClick: () => window.location.reload() },
           });
           saveQueueStateRef.current = "idle";
-          return;
+          return "failure";
         }
         if (res.status === 422) {
           autosaveStoppedRef.current = true;
+          const body = (await res.json().catch(() => null)) as { error?: string } | null;
+          const isUnsafeBrollUrl = body?.error === "unsafe_broll_url";
           console.warn(
             JSON.stringify({
               level: "error",
-              message: "editor_boundaries_immutable_client_bug",
+              message: isUnsafeBrollUrl
+                ? "editor_unsafe_broll_url"
+                : "editor_boundaries_immutable_client_bug",
               clipId: clipInfo.id,
               projectId: clipInfo.projectId,
             }),
           );
-          setSaveState("error");
+          setSaveState("blocked");
           toaster.create({
             type: "error",
             title: "Save failed",
-            description: "This clip's boundaries changed unexpectedly. Reload to continue.",
+            description: isUnsafeBrollUrl
+              ? "This clip's B-roll URL isn't allowed. Remove it and try again."
+              : "This clip's boundaries changed unexpectedly. Reload to continue.",
           });
           saveQueueStateRef.current = "idle";
-          return;
+          return "failure";
         }
         if (!res.ok) throw new Error("editor document save failed");
 
@@ -753,6 +823,7 @@ export function StudioShell({
         setSaveState("saved");
         setTimeout(() => setSaveState("idle"), 2000);
       } catch {
+        outcome = "failure";
         setSaveState("error");
         toaster.create({
           type: "error",
@@ -765,14 +836,16 @@ export function StudioShell({
 
     if (autosaveStoppedRef.current) {
       saveQueueStateRef.current = "idle";
-      return;
+      return outcome;
     }
     const transition = completeSave(saveQueueStateRef.current);
     saveQueueStateRef.current = transition.state;
     if (transition.shouldStartSave) {
       currentSavePromiseRef.current = performSave();
-      await currentSavePromiseRef.current;
+      const chainedOutcome = await currentSavePromiseRef.current;
+      return combineSaveOutcomes(outcome, chainedOutcome);
     }
+    return outcome;
   }, [clipInfo.projectId, clipInfo.id, setBaseRevision]);
 
   // Enqueues a save (single-flight — see save-queue.ts) and returns a promise
@@ -780,11 +853,17 @@ export function StudioShell({
   // edits that landed mid-flight) has drained. Also doubles as the flush
   // primitive for handleSave/handleExport: calling it when nothing is dirty
   // and nothing is in flight resolves immediately.
-  const requestAutosave = useCallback((): Promise<void> => {
-    if (autosaveStoppedRef.current) return Promise.resolve();
+  const requestAutosave = useCallback((): Promise<SaveOutcome> => {
+    // fix 1/2: a stopped autosave or an in-flight reset (draining/POSTing)
+    // both mean "don't start a new PUT right now" — surface that as a
+    // failure so callers like handleExport don't proceed as if the document
+    // were safely persisted.
+    if (autosaveStoppedRef.current || resetInFlightRef.current) {
+      return Promise.resolve("failure");
+    }
     if (JSON.stringify(docPresentRef.current) === lastSavedDocumentJsonRef.current) {
       return saveQueueStateRef.current === "idle"
-        ? Promise.resolve()
+        ? Promise.resolve("success")
         : currentSavePromiseRef.current;
     }
     const transition = requestSave(saveQueueStateRef.current);
@@ -797,14 +876,29 @@ export function StudioShell({
 
   const flushSave = useCallback(() => requestAutosave(), [requestAutosave]);
 
+  const isDirtyNow = useCallback(
+    () => JSON.stringify(docPresentRef.current) !== lastSavedDocumentJsonRef.current,
+    [],
+  );
+
   const handleSave = useCallback(async () => {
+    // Failure is already surfaced by performSave itself (toast + saveState);
+    // nothing further to show here (fix 5 — handleSave now reflects
+    // failure by simply not pretending the save succeeded).
     await flushSave();
   }, [flushSave]);
 
   const handleExport = useCallback(async () => {
     setExportState("exporting");
     try {
-      await flushSave();
+      const outcome = await flushSave();
+      // Fix 5: abort with the existing export-error toast whenever the
+      // flush failed, autosave is (still) blocked, or the document is
+      // somehow still dirty after the flush resolved — exporting a stale
+      // document would silently render the wrong thing.
+      if (outcome === "failure" || autosaveStoppedRef.current || isDirtyNow()) {
+        throw new Error("save failed before export");
+      }
       const response = await fetch(
         `/api/projects/${clipInfo.projectId}/clips/render`,
         {
@@ -825,15 +919,20 @@ export function StudioShell({
       router.push(`/projects/${clipInfo.projectId}`);
     } catch {
       setExportState("idle");
-      setSaveState("error");
       toaster.create({
         type: "error",
         title: "Export failed",
         description: "The render couldn't be queued. Try again.",
       });
-      setTimeout(() => setSaveState("idle"), 4000);
+      // Don't clobber a 'blocked' indicator (fix 7) — that one is meant to
+      // persist until reload, not get reset to idle by an unrelated export
+      // failure toast's timeout.
+      if (!autosaveStoppedRef.current) {
+        setSaveState("error");
+        setTimeout(() => setSaveState("idle"), 4000);
+      }
     }
-  }, [flushSave, clipInfo.projectId, clipInfo.id, aspectRatio, router]);
+  }, [flushSave, isDirtyNow, clipInfo.projectId, clipInfo.id, aspectRatio, router]);
 
   // Debounced autosave — triggers AUTOSAVE_DEBOUNCE_MS after the document
   // actually changes (reference change on `unified.doc.present`).
@@ -843,7 +942,9 @@ export function StudioShell({
       isInitialRender.current = false;
       return;
     }
-    if (autosaveStoppedRef.current) return;
+    // Fix 2: a reset in flight is already draining/negotiating its own
+    // save — don't let a fresh debounce tick race it with a competing PUT.
+    if (autosaveStoppedRef.current || resetInFlightRef.current) return;
 
     const timeoutId = setTimeout(() => {
       void requestAutosave();
@@ -855,6 +956,9 @@ export function StudioShell({
   // Warn on tab close/refresh while a save is pending or in flight.
   useEffect(() => {
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      // Fix 3: suppressed right before a successful reset's own reload, so
+      // that reload can't get stuck behind this prompt.
+      if (suppressUnloadGuardRef.current) return;
       if (isDocDirty || saveState === "saving") {
         e.preventDefault();
         e.returnValue = "";
@@ -866,13 +970,27 @@ export function StudioShell({
 
   // Fire-and-forget keepalive flush for pagehide/unmount: the page is
   // dismissing, so there's no meaningful way to await the single-flight
-  // queue — just get the latest full document envelope out the door once,
-  // bypassing the queue machinery entirely (matches the previous keepalive
-  // fetch's semantics: best-effort, ~64KB body limit still applies).
+  // queue — just get the latest full document envelope out the door once.
+  // Fix 6: this used to bypass the queue unconditionally, so a keepalive
+  // fired while a regular autosave PUT was still in flight raced it at the
+  // SAME baseRevision — the server accepts whichever lands first and 409s
+  // the other, and nothing listens to that 409, so whichever request lost
+  // silently failed to persist. Skip the keepalive entirely whenever a save
+  // is already in flight/queued: that save's own body already carries real
+  // state, and once it completes the (still-scheduled, or about-to-fire)
+  // debounce naturally carries any further edits — this trades a small
+  // window of "the very last edits before an instant close might not be
+  // flushed" for eliminating a guaranteed-conflict, guaranteed-silent-loss
+  // race. Also dedupes pagehide + unmount (which can both fire for the same
+  // teardown) via a fired-once ref that resets on `pageshow` (bfcache
+  // restores), so a later real teardown can still flush.
   const flushKeepalive = useCallback(() => {
-    if (autosaveStoppedRef.current) return;
+    if (keepaliveFiredRef.current) return;
+    if (autosaveStoppedRef.current || resetInFlightRef.current) return;
+    if (saveQueueStateRef.current !== "idle") return;
     const documentToSave = docPresentRef.current;
     if (JSON.stringify(documentToSave) === lastSavedDocumentJsonRef.current) return;
+    keepaliveFiredRef.current = true;
     void fetch(`/api/projects/${clipInfo.projectId}/clips/${clipInfo.id}/editor`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -886,8 +1004,15 @@ export function StudioShell({
 
   useEffect(() => {
     const onPageHide = () => flushKeepalive();
+    const onPageShow = () => {
+      keepaliveFiredRef.current = false;
+    };
     window.addEventListener("pagehide", onPageHide);
-    return () => window.removeEventListener("pagehide", onPageHide);
+    window.addEventListener("pageshow", onPageShow);
+    return () => {
+      window.removeEventListener("pagehide", onPageHide);
+      window.removeEventListener("pageshow", onPageShow);
+    };
   }, [flushKeepalive]);
 
   useEffect(() => () => flushKeepalive(), [flushKeepalive]);
@@ -896,8 +1021,25 @@ export function StudioShell({
   const handleReset = useCallback(async () => {
     if (resetState === "resetting") return;
     setResetState("resetting");
-    autosaveStoppedRef.current = true;
     try {
+      // Fix 2: drain any in-flight/pending save chain BEFORE posting the
+      // reset, so the reset's baseRevision reflects whatever the server was
+      // just brought up to date with instead of racing an autosave that's
+      // about to bump the revision out from under it — this removes most
+      // 409s at the source rather than just reacting to them. Uses the
+      // normal flushSave path (resetInFlightRef is still false here), so an
+      // already-in-flight save drains exactly like any other flush.
+      await flushSave();
+
+      // From here until the reset POST settles, block any FURTHER
+      // debounce-triggered or explicit autosave from starting — the two
+      // would otherwise race for the same baseRevision on different
+      // endpoints. Set synchronously right after the drain resolves (no
+      // `await` in between), so nothing else can slip in before this takes
+      // effect. Always cleared in `finally` below, success or not — this is
+      // intentionally NOT autosaveStoppedRef, which is permanent-until-reload.
+      resetInFlightRef.current = true;
+
       const res = await fetch(
         `/api/projects/${clipInfo.projectId}/clips/${clipInfo.id}/editor/reset`,
         {
@@ -913,24 +1055,37 @@ export function StudioShell({
           description: "Reload to see the latest version before resetting.",
           action: { label: "Reload", onClick: () => window.location.reload() },
         });
-        setResetState("idle");
         return;
       }
       if (!res.ok) throw new Error("reset failed");
+
+      // Fix 1: autosaveStoppedRef is now only ever set on this success path
+      // (previously it was set unconditionally before the POST, with the
+      // 409 branch never clearing it back — every later edit was silently
+      // dropped while the indicator kept showing "Saved"). Fix 3: suppress
+      // the unload guard and clear dirty state BEFORE reloading, so a stray
+      // beforeunload prompt can't leave the dialog wedged mid-reset.
+      autosaveStoppedRef.current = true;
+      suppressUnloadGuardRef.current = true;
+      setIsDocDirty(false);
       // Boundaries and the preview proxy may have changed — a full reload
       // re-seeds everything (timing, segments, history) safely from the
       // server rather than trying to patch client state in place.
       window.location.reload();
     } catch {
-      autosaveStoppedRef.current = false;
-      setResetState("idle");
       toaster.create({
         type: "error",
         title: "Reset failed",
         description: "This clip couldn't be reset to its original version. Try again.",
       });
+    } finally {
+      resetInFlightRef.current = false;
+      // Fix 3: unconditionally return to idle (not just on the error
+      // paths) so the dialog can never stay stuck on "Resetting…" if the
+      // reload above is somehow prevented or delayed.
+      setResetState((s) => (s === "resetting" ? "idle" : s));
     }
-  }, [clipInfo.projectId, clipInfo.id, resetState]);
+  }, [clipInfo.projectId, clipInfo.id, resetState, flushSave]);
 
   const selectCaption = useCallback(() => {
     setCaptionSelected(true);
@@ -1146,7 +1301,7 @@ export function StudioShell({
     setIsPlaying, setActiveTool, setShowTimeline, setAspectRatio,
     setLayoutMode, setShowShortcuts, setTimelineZoom,
     setSelectedSegmentId, setCaptionPreset, selectCaption, deselectCaption,
-    setTranscriptOnly, setSegments, setStudioEdits, setBrollUrl,
+    setTranscriptOnly, setSegments, setStudioEdits, setBrollUrl, endCoalesce,
     togglePlay, seekTo, splitAtPlayhead, deleteSelectedSegment, handleSave, handleExport,
     handleUndo, handleRedo, handleReset,
   };

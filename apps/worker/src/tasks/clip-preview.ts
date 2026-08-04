@@ -979,6 +979,14 @@ async function cutAndUploadClipPreview(params: {
     storageKey: key,
     startSec: window.startSec,
     durationSec: window.durationSec,
+    // The clip boundary window this cut was made for (see
+    // ClipPendingPreview's comment) — NOT `window`, which is the padded
+    // preview window derived from it. A boundary edit/reset that lands
+    // while this cut was in flight moves the clip's stored startSec/endSec
+    // away from these values, so the service's claim correctly rejects a
+    // stale attempt instead of persisting a proxy for the wrong window.
+    expectedClipStartSec: clip.startSec,
+    expectedClipEndSec: clip.endSec,
   });
 
   if (!result.persisted) {

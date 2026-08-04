@@ -144,6 +144,7 @@ export function InteractiveCaptionOverlay({
     utterances,
     clipStartSec,
     playbackClock,
+    endCoalesce,
   } = useStudio();
 
   const caption = useLiveCaption(playbackClock, utterances, clipStartSec);
@@ -264,7 +265,10 @@ export function InteractiveCaptionOverlay({
 
   const handleResizeEnd = useCallback(() => {
     setIsResizing(false);
-  }, []);
+    // Fix 8b: break the coalesce chain on gesture end so a later resize
+    // that happens to reuse "caption-resize" doesn't merge into this one.
+    endCoalesce();
+  }, [endCoalesce]);
 
   // Don't render if no caption to show
   if (!caption || caption.visibleWords.length === 0) return null;

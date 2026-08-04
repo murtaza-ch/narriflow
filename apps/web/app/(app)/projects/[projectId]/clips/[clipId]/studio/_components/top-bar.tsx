@@ -47,12 +47,15 @@ function IconBtn({
 
 /**
  * Ambient autosave indicator — a small status dot plus micro-copy. Failures
- * additionally surface as an error toast from the shell.
+ * additionally surface as an error toast from the shell. 'blocked' is a
+ * distinct, non-retryable state (a 409/422 that only clears on reload) — it
+ * gets its own copy rather than falling back to the generic "Save failed" so
+ * the user knows retrying won't help.
  */
 function AutosaveIndicator({
   saveState,
 }: {
-  saveState: "idle" | "saving" | "saved" | "error";
+  saveState: "idle" | "saving" | "saved" | "error" | "blocked";
 }) {
   if (saveState === "saving") {
     return (
@@ -65,7 +68,8 @@ function AutosaveIndicator({
     );
   }
 
-  const isError = saveState === "error";
+  const isBlocked = saveState === "blocked";
+  const isError = saveState === "error" || isBlocked;
   return (
     <HStack gap="6px" aria-live="polite">
       <Box
@@ -81,7 +85,7 @@ function AutosaveIndicator({
         }
       />
       <Text fontSize="12px" color={isError ? "danger.fg" : "studio.fgMuted"}>
-        {isError ? "Save failed" : "Saved"}
+        {isBlocked ? "Save paused — reload" : isError ? "Save failed" : "Saved"}
       </Text>
     </HStack>
   );

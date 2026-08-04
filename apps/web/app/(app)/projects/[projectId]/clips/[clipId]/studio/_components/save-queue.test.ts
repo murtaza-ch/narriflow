@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { completeSave, requestSave, type SaveQueueState } from "./save-queue";
+import {
+  combineSaveOutcomes,
+  completeSave,
+  requestSave,
+  type SaveOutcome,
+  type SaveQueueState,
+} from "./save-queue";
 
 describe("save-queue", () => {
   test("idle -> requestSave starts a save immediately", () => {
@@ -57,4 +63,19 @@ describe("save-queue", () => {
     expect(t.shouldStartSave).toBe(false);
     expect(state).toBe("idle");
   });
+});
+
+describe("combineSaveOutcomes", () => {
+  const cases: [SaveOutcome, SaveOutcome, SaveOutcome][] = [
+    ["success", "success", "success"],
+    ["success", "failure", "failure"],
+    ["failure", "success", "failure"],
+    ["failure", "failure", "failure"],
+  ];
+
+  for (const [first, second, expected] of cases) {
+    test(`${first} + ${second} -> ${expected}`, () => {
+      expect(combineSaveOutcomes(first, second)).toBe(expected);
+    });
+  }
 });

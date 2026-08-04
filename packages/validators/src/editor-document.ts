@@ -79,6 +79,16 @@ function documentWindow(doc: EditorDocument) {
   return { startSec: doc.clipStartSec, endSec: doc.clipEndSec };
 }
 
+/** Cheap-at-these-sizes deep-equality check used by the setter branches below
+ *  so re-applying a semantically identical value (e.g. undo/redo replaying a
+ *  step, or a panel re-dispatching its current value) returns the ORIGINAL
+ *  document reference instead of a fresh clone. `applyWithHistory`'s no-op
+ *  detection is reference-based (`next === history.present`), so without
+ *  this a semantic no-op still pushed a fake undo step. */
+function jsonEqual(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
 /** Pure reducer: every studio mutation flows through here. */
 export function applyEditorAction(
   doc: EditorDocument,
@@ -86,9 +96,13 @@ export function applyEditorAction(
 ): EditorDocument {
   switch (action.type) {
     case "setCaptionPreset":
-      return { ...doc, captionPreset: action.captionPreset };
+      return jsonEqual(action.captionPreset, doc.captionPreset)
+        ? doc
+        : { ...doc, captionPreset: action.captionPreset };
     case "setTranscriptSlice":
-      return { ...doc, transcriptSlice: action.transcriptSlice };
+      return jsonEqual(action.transcriptSlice, doc.transcriptSlice)
+        ? doc
+        : { ...doc, transcriptSlice: action.transcriptSlice };
     case "updateWordText": {
       const utterance = doc.transcriptSlice[action.utteranceIndex];
       const word = utterance?.words[action.wordIndex];
@@ -111,32 +125,42 @@ export function applyEditorAction(
       };
     }
     case "setStudioEdits":
-      return { ...doc, studioEdits: action.studioEdits };
+      return jsonEqual(action.studioEdits, doc.studioEdits)
+        ? doc
+        : { ...doc, studioEdits: action.studioEdits };
     case "setBrollUrl":
-      return { ...doc, brollUrl: action.brollUrl };
-    case "deleteRange":
-      return {
-        ...doc,
-        deletedRanges: normalizeDeletedRanges(
-          [...doc.deletedRanges, action.range],
-          documentWindow(doc),
-        ),
-      };
-    case "revertRange":
-      return {
-        ...doc,
-        deletedRanges: subtractDeletedRange(
-          doc.deletedRanges,
-          action.range,
-          documentWindow(doc),
-        ),
-      };
-    case "setDeletedRanges":
-      return {
-        ...doc,
-        deletedRanges: normalizeDeletedRanges(action.ranges, documentWindow(doc)),
-      };
+      return action.brollUrl === doc.brollUrl
+        ? doc
+        : { ...doc, brollUrl: action.brollUrl };
+    case "deleteRange": {
+      const deletedRanges = normalizeDeletedRanges(
+        [...doc.deletedRanges, action.range],
+        documentWindow(doc),
+      );
+      return jsonEqual(deletedRanges, doc.deletedRanges)
+        ? doc
+        : { ...doc, deletedRanges };
+    }
+    case "revertRange": {
+      const deletedRanges = subtractDeletedRange(
+        doc.deletedRanges,
+        action.range,
+        documentWindow(doc),
+      );
+      return jsonEqual(deletedRanges, doc.deletedRanges)
+        ? doc
+        : { ...doc, deletedRanges };
+    }
+    case "setDeletedRanges": {
+      const deletedRanges = normalizeDeletedRanges(action.ranges, documentWindow(doc));
+      return jsonEqual(deletedRanges, doc.deletedRanges)
+        ? doc
+        : { ...doc, deletedRanges };
+    }
     case "setClipBoundaries": {
+      if (action.startSec === doc.clipStartSec && action.endSec === doc.clipEndSec) {
+        return doc;
+      }
       const next = {
         ...doc,
         clipStartSec: action.startSec,

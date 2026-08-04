@@ -1087,6 +1087,14 @@ app.put("/projects/:id/clips/:clipId/editor", async (c) => {
     ) {
       return c.json({ error: error.code }, 422);
     }
+    // Fix 14: a non-public brollUrl (localhost, a private IP, etc.) used to
+    // rethrow as an unhandled 500 here and wedge autosave — the client
+    // pre-validates now (broll-panel.tsx), but this stays as the
+    // server-side backstop (e.g. a URL that resolves to a private address,
+    // which only the DNS-aware half of assertPublicHttpUrl can catch).
+    if (error instanceof UnsafeUrlError) {
+      return c.json({ error: "unsafe_broll_url" }, 422);
+    }
     if (error instanceof Error && error.message === "clip not found") {
       return c.json({ error: "Clip not found" }, 404);
     }
@@ -1141,6 +1149,12 @@ app.post("/projects/:id/clips/:clipId/editor/reset", async (c) => {
         },
         409,
       );
+    }
+    // Fix 14: same UnsafeUrlError -> 422 mapping as the PUT above, in case
+    // the restored original document's brollUrl is no longer considered
+    // public (e.g. it now resolves to a private address).
+    if (error instanceof UnsafeUrlError) {
+      return c.json({ error: "unsafe_broll_url" }, 422);
     }
     if (error instanceof Error && error.message === "clip not found") {
       return c.json({ error: "Clip not found" }, 404);
