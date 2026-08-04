@@ -19,6 +19,7 @@ import {
   resolveClipLogoOverlay,
   resolveRenderTimingForClip,
 } from "./render-clips";
+import { buildClipCutPlan } from "./cut-plan";
 
 function makeUtterance(
   words: Array<[string, number, number]>,
@@ -1188,5 +1189,274 @@ describe("clipRenderAttemptStorageKey", () => {
     const a = clipRenderAttemptStorageKey("proj-1", "clip-1", "9x16", "attempt-a");
     const b = clipRenderAttemptStorageKey("proj-1", "clip-1", "9x16", "attempt-a");
     expect(a).toBe(b);
+  });
+});
+
+describe("cut-concat rendering (vizard-parity Phase B step 7 — deletedRanges)", () => {
+  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true };
+  // 30s clip window, one mid-clip deletion [10,15) -> two kept segments
+  // [0,10) and [15,30), 25s edited duration.
+  const window = { startSec: 0, endSec: 30 };
+  const cutPlan = buildClipCutPlan([{ startSec: 10, endSec: 15 }], window);
+
+  test("buildClipCutPlan sanity for the fixture used below", () => {
+    expect(cutPlan.isUncut).toBe(false);
+    expect(cutPlan.isEmpty).toBe(false);
+    expect(cutPlan.editedDurationSec).toBe(25);
+    expect(cutPlan.segments).toEqual([
+      { sourceStartSec: 0, sourceEndSec: 10, editedStartSec: 0 },
+      { sourceStartSec: 15, sourceEndSec: 30, editedStartSec: 10 },
+    ]);
+  });
+
+  describe("buildSingleVideoArgs", () => {
+    test("no deletions: passing an explicit uncut cutPlan is byte-identical to omitting cutPlan entirely", () => {
+      const uncutPlan = buildClipCutPlan([], window);
+      const base = {
+        sourcePath: "/tmp/src.mp4",
+        outputPath: "/tmp/out.mp4",
+        startSec: 0,
+        endSec: 30,
+        aspectRatio: "9:16" as const,
+        probe,
+        srtPath: null,
+      };
+      const withPlan = buildSingleVideoArgs({ ...base, cutPlan: uncutPlan });
+      const withoutPlan = buildSingleVideoArgs(base);
+      expect(withPlan).toEqual(withoutPlan);
+    });
+
+    test("two kept segments: emits per-segment trim/atrim + setpts/asetpts, then concat, before crop/scale", () => {
+      const args = buildSingleVideoArgs({
+        sourcePath: "/tmp/src.mp4",
+        outputPath: "/tmp/out.mp4",
+        startSec: 0,
+        endSec: 30,
+        aspectRatio: "9:16",
+        probe,
+        srtPath: null,
+        cutPlan,
+      });
+      const graph = args[args.indexOf("-filter_complex") + 1]!;
+
+      expect(graph).toContain(
+        "[0:v]trim=start=0.000:end=10.000,setpts=PTS-STARTPTS[vseg0]",
+      );
+      expect(graph).toContain(
+        "[0:a:0]atrim=start=0.000:end=10.000,asetpts=PTS-STARTPTS[aseg0]",
+      );
+      expect(graph).toContain(
+        "[0:v]trim=start=15.000:end=30.000,setpts=PTS-STARTPTS[vseg1]",
+      );
+      expect(graph).toContain(
+        "[0:a:0]atrim=start=15.000:end=30.000,asetpts=PTS-STARTPTS[aseg1]",
+      );
+      expect(graph).toContain(
+        "[vseg0][aseg0][vseg1][aseg1]concat=n=2:v=1:a=1[vcat][acat]",
+      );
+      // Downstream crop/scale reads the concatenated video, not the raw input.
+      expect(graph).toContain("[vcat]crop=");
+      // Dialogue fade reads the concatenated audio.
+      expect(graph).toContain("[acat]afade=t=in:st=0:d=0.040");
+      // Concat filters land before the crop stage in the graph.
+      expect(graph.indexOf("concat=n=2")).toBeLessThan(graph.indexOf("[vcat]crop="));
+
+      // Output duration bound uses the edited (25s) duration, not the raw
+      // 30s clip window.
+      const tIndexes = indexesOf(args, "-t");
+      const outputTIndex = tIndexes[tIndexes.length - 1]!;
+      expect(args[outputTIndex + 1]).toBe("25.000");
+      // The input-level -t is unchanged: still reads the whole [0,30) window
+      // as one input (cut-concat trims it downstream, not at the demuxer).
+      expect(args[tIndexes[0]! + 1]).toBe("30");
+    });
+
+    test("music duration uses the edited (post-cut) duration, not the raw clip window", () => {
+      const args = buildSingleVideoArgs({
+        sourcePath: "/tmp/src.mp4",
+        outputPath: "/tmp/out.mp4",
+        startSec: 0,
+        endSec: 30,
+        aspectRatio: "9:16",
+        probe,
+        srtPath: null,
+        music: { path: "/tmp/music.mp3", volume: 50, startOffsetSec: 0 },
+        cutPlan,
+      });
+      const graph = args[args.indexOf("-filter_complex") + 1]!;
+      expect(graph).toContain("atrim=start=0.000:duration=25.000");
+      // dialogue branch reads the concatenated audio, not [0:a]
+      expect(graph).toContain("[acat]atrim=duration=25.000,asetpts=PTS-STARTPTS[maina]");
+    });
+
+    test("single kept segment (deletion at the very start) skips concat and uses acopy for audio, copy for video", () => {
+      const startOnlyPlan = buildClipCutPlan([{ startSec: 0, endSec: 5 }], window);
+      expect(startOnlyPlan.segments).toHaveLength(1);
+      const args = buildSingleVideoArgs({
+        sourcePath: "/tmp/src.mp4",
+        outputPath: "/tmp/out.mp4",
+        startSec: 0,
+        endSec: 30,
+        aspectRatio: "9:16",
+        probe,
+        srtPath: null,
+        cutPlan: startOnlyPlan,
+      });
+      const graph = args[args.indexOf("-filter_complex") + 1]!;
+      expect(graph).toContain(
+        "[0:v]trim=start=5.000:end=30.000,setpts=PTS-STARTPTS[vseg0]",
+      );
+      expect(graph).toContain("[vseg0]copy[vcat]");
+      expect(graph).toContain(
+        "[0:a:0]atrim=start=5.000:end=30.000,asetpts=PTS-STARTPTS[aseg0]",
+      );
+      expect(graph).toContain("[aseg0]acopy[acat]");
+      expect(graph).not.toContain("concat=");
+    });
+
+    test("all-deleted guard: throws instead of building args for an empty cut plan", () => {
+      const emptyPlan = buildClipCutPlan([{ startSec: 0, endSec: 30 }], window);
+      expect(emptyPlan.isEmpty).toBe(true);
+      expect(() =>
+        buildSingleVideoArgs({
+          sourcePath: "/tmp/src.mp4",
+          outputPath: "/tmp/out.mp4",
+          startSec: 0,
+          endSec: 30,
+          aspectRatio: "9:16",
+          probe,
+          srtPath: null,
+          cutPlan: emptyPlan,
+        }),
+      ).toThrow();
+    });
+  });
+
+  describe("buildBrollVideoArgs", () => {
+    test("cut-concat runs before the b-roll overlay chain", () => {
+      const args = buildBrollVideoArgs({
+        sourcePath: "/tmp/src.mp4",
+        cutaways: [{ path: "/tmp/broll.mp4", window: { startSec: 2, endSec: 5 } }],
+        outputPath: "/tmp/out.mp4",
+        startSec: 0,
+        endSec: 30,
+        aspectRatio: "9:16",
+        probe,
+        srtPath: null,
+        cutPlan,
+      });
+      const graph = args[args.indexOf("-filter_complex") + 1]!;
+      expect(graph).toContain(
+        "[vseg0][aseg0][vseg1][aseg1]concat=n=2:v=1:a=1[vcat][acat]",
+      );
+      expect(graph).toContain("[vcat]crop=");
+      expect(graph).toContain("[acat]afade=t=in:st=0:d=0.040");
+
+      const tIndexes = indexesOf(args, "-t");
+      // last -t is the output bound (belt-and-suspenders) -> edited duration
+      const outputTIndex = tIndexes[tIndexes.length - 1]!;
+      expect(args[outputTIndex + 1]).toBe("25.000");
+    });
+
+    test("all-deleted guard: throws for an empty cut plan even with a valid cutaway", () => {
+      const emptyPlan = buildClipCutPlan([{ startSec: 0, endSec: 30 }], window);
+      expect(() =>
+        buildBrollVideoArgs({
+          sourcePath: "/tmp/src.mp4",
+          cutaways: [{ path: "/tmp/broll.mp4", window: { startSec: 2, endSec: 5 } }],
+          outputPath: "/tmp/out.mp4",
+          startSec: 0,
+          endSec: 30,
+          aspectRatio: "9:16",
+          probe,
+          srtPath: null,
+          cutPlan: emptyPlan,
+        }),
+      ).toThrow();
+    });
+  });
+
+  describe("buildAudiogramArgs", () => {
+    test("cut-concat is audio-only (no video stream to trim/concat)", () => {
+      const args = buildAudiogramArgs({
+        sourcePath: "/tmp/a.mp3",
+        outputPath: "/tmp/out.mp4",
+        startSec: 0,
+        endSec: 30,
+        aspectRatio: "9:16",
+        clipDurationSec: cutPlan.editedDurationSec,
+        srtPath: null,
+        cutPlan,
+      });
+      const graph = args[args.indexOf("-filter_complex") + 1]!;
+      expect(graph).toContain(
+        "[0:a]atrim=start=0.000:end=10.000,asetpts=PTS-STARTPTS[aseg0]",
+      );
+      expect(graph).toContain(
+        "[0:a]atrim=start=15.000:end=30.000,asetpts=PTS-STARTPTS[aseg1]",
+      );
+      expect(graph).toContain("[aseg0][aseg1]concat=n=2:v=0:a=1[acat]");
+      expect(graph).not.toContain("vseg");
+      expect(graph).toContain("[acat]asplit=2[wavesrc][fadesrc]");
+
+      const shortestIdx = args.indexOf("-shortest");
+      expect(args[shortestIdx + 2]).toBe("25.000");
+    });
+
+    test("all-deleted guard: throws for an empty cut plan", () => {
+      const emptyPlan = buildClipCutPlan([{ startSec: 0, endSec: 30 }], window);
+      expect(() =>
+        buildAudiogramArgs({
+          sourcePath: "/tmp/a.mp3",
+          outputPath: "/tmp/out.mp4",
+          startSec: 0,
+          endSec: 30,
+          aspectRatio: "9:16",
+          clipDurationSec: 0,
+          srtPath: null,
+          cutPlan: emptyPlan,
+        }),
+      ).toThrow();
+    });
+  });
+
+  describe("caption cue retiming across a cut", () => {
+    const utterance = makeUtterance([
+      ["before", 4, 5],
+      ["gone", 11, 12], // fully inside the deleted [10,15) range
+      ["after", 20, 21],
+    ]);
+
+    test("generateSrtFromSlice drops the fully-deleted word and shifts the later word left onto the edited timeline", () => {
+      const srt = generateSrtFromSlice([utterance], 0, undefined, cutPlan.map);
+      expect(srt).toContain("before after");
+      expect(srt).not.toContain("gone");
+      // toEdited(4) = 4 (first kept segment, untouched); toEdited(21) =
+      // editedStart(10) + (21 - 15) = 16.
+      expect(srt).toContain("00:00:04,000 --> 00:00:16,000");
+    });
+
+    test("generateAssFromSlice drops the fully-deleted word and retimes the survivors", () => {
+      const ass = generateAssFromSlice(
+        [utterance],
+        0,
+        "9:16",
+        preset("karaoke"),
+        cutPlan.map,
+      );
+      // 2 surviving words -> 2 word-active events (the deleted word emits none).
+      expect(countDialogues(ass)).toBe(2);
+      expect(ass).not.toContain("gone");
+      // "before" active window starts at toEdited(4)=4.00s -> centiseconds 4:00.
+      expect(ass).toContain("0:00:04.00");
+      // "after" active window starts at toEdited(20) = 10 + (20-15) = 15.00s.
+      expect(ass).toContain("0:00:15.00");
+    });
+
+    test("without a timeMap, behavior is unchanged (byte-identical to pre-cut-concat output)", () => {
+      const withoutMap = generateSrtFromSlice([utterance], 0);
+      expect(withoutMap).toContain("gone");
+      expect(withoutMap).toContain("before gone after");
+    });
   });
 });

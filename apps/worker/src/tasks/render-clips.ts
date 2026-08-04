@@ -34,10 +34,13 @@ import {
   clipAspectRatioDbSchema,
   clipAspectRatioFromDb,
   clipAspectRatioOptions,
+  deletedRangesSchema,
   getEffectiveClipTiming,
   normalizeTranscriptSliceForClip,
   resolveEffectiveLogoSettings,
   resolveMusicFadeWindows,
+  sourceRangeToEdited,
+  sourceToEdited,
   studioEditsSchema,
 } from "@narriflow/validators";
 import type {
@@ -45,10 +48,13 @@ import type {
   CaptionPreset,
   ClipAspectRatio,
   ClipCategory,
+  EditedTimeMap,
+  SourceRange,
   StudioEdits,
   StudioTextLayer,
   TranscriptUtterance,
 } from "@narriflow/validators";
+import { buildClipCutPlan, type ClipCutPlan } from "./cut-plan";
 import {
   buildReframeSendcmdScript,
   REFRAME_CROP_NAME,
@@ -571,35 +577,52 @@ function formatSrtTimestamp(seconds: number): string {
   return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")},${String(ms).padStart(3, "0")}`;
 }
 
+/**
+ * Vizard-parity Phase B step 7: when `timeMap` is provided (a clip with
+ * non-empty `deletedRanges`), every timestamp is remapped source→edited via
+ * the shared `sourceToEdited` helper instead of the plain `clipStartSec`
+ * subtraction, and words/utterances that fall entirely inside a deleted
+ * range are dropped rather than emitted. `timeMap` omitted (the overwhelming
+ * common case — no cuts) keeps the exact original arithmetic, byte-identical
+ * to pre-cut-concat output.
+ */
 export function generateSrtFromSlice(
   utterances: TranscriptUtterance[],
   clipStartSec: number,
   textTransform?: string,
+  timeMap?: EditedTimeMap | null,
 ): string {
   if (utterances.length === 0) {
     return "";
   }
 
+  const toEdited = (sourceSec: number): number =>
+    timeMap ? sourceToEdited(timeMap, sourceSec) : sourceSec - clipStartSec;
+  const isVisible = (range: { startSec: number; endSec: number }): boolean =>
+    !timeMap || sourceRangeToEdited(timeMap, range) !== null;
+
   const cues: string[] = [];
   let cueIndex = 1;
 
   for (const utterance of utterances) {
-    const words = utterance.words;
+    const rawWords = utterance.words;
+    const words = timeMap ? rawWords.filter(isVisible) : rawWords;
 
-    if (words.length > 0) {
+    if (rawWords.length > 0) {
       // Word-level mode: group into fixed cues (matches the ASS/preview model)
       for (let i = 0; i < words.length; i += CAPTION_CHUNK_SIZE) {
         const group = words.slice(i, i + CAPTION_CHUNK_SIZE);
-        const start = Math.max(0, group[0]!.startSec - clipStartSec);
-        const end = Math.max(start + 0.1, group[group.length - 1]!.endSec - clipStartSec);
+        const start = Math.max(0, toEdited(group[0]!.startSec));
+        const end = Math.max(start + 0.1, toEdited(group[group.length - 1]!.endSec));
         const text = applyTextTransform(group.map((w) => w.word).join(" "), textTransform);
         cues.push(`${cueIndex}\n${formatSrtTimestamp(start)} --> ${formatSrtTimestamp(end)}\n${text}\n`);
         cueIndex++;
       }
     } else {
       // Fallback: utterance-level cue
-      const start = Math.max(0, utterance.startSec - clipStartSec);
-      const end = Math.max(start + 0.1, utterance.endSec - clipStartSec);
+      if (!isVisible(utterance)) continue;
+      const start = Math.max(0, toEdited(utterance.startSec));
+      const end = Math.max(start + 0.1, toEdited(utterance.endSec));
       const text = applyTextTransform(utterance.text, textTransform);
       cues.push(`${cueIndex}\n${formatSrtTimestamp(start)} --> ${formatSrtTimestamp(end)}\n${text}\n`);
       cueIndex++;
@@ -663,11 +686,17 @@ function applyTextTransform(text: string, transform?: string): string {
  * entrance animation. This is the authoritative export path — the SRT path is
  * only a fallback for clips that have no caption preset.
  */
+/**
+ * Vizard-parity Phase B step 7: see `generateSrtFromSlice`'s doc comment —
+ * same `timeMap` contract (source→edited remap + drop-fully-deleted-words,
+ * byte-identical output when `timeMap` is omitted).
+ */
 export function generateAssFromSlice(
   utterances: TranscriptUtterance[],
   clipStartSec: number,
   aspectRatio: ClipAspectRatio,
   captionPreset: CaptionPreset,
+  timeMap?: EditedTimeMap | null,
 ): string {
   const config = aspectRatioConfig.get(aspectRatio);
   if (!config) return "";
@@ -744,6 +773,10 @@ export function generateAssFromSlice(
 
   const events: string[] = [];
   const txtTransform = captionPreset.textTransform;
+  const toEdited = (sourceSec: number): number =>
+    timeMap ? sourceToEdited(timeMap, sourceSec) : sourceSec - clipStartSec;
+  const isVisible = (range: { startSec: number; endSec: number }): boolean =>
+    !timeMap || sourceRangeToEdited(timeMap, range) !== null;
 
   const renderWord = (word: string, isActive: boolean): string => {
     if (!isActive) return word;
@@ -774,21 +807,22 @@ export function generateAssFromSlice(
   };
 
   for (const utterance of utterances) {
-    const words = utterance.words;
+    const rawWords = utterance.words;
+    const words = timeMap ? rawWords.filter(isVisible) : rawWords;
 
-    if (words.length > 0) {
+    if (rawWords.length > 0) {
       for (let i = 0; i < words.length; i += CAPTION_CHUNK_SIZE) {
         const group = words.slice(i, i + CAPTION_CHUNK_SIZE);
-        const groupEnd = Math.max(0, group[group.length - 1]!.endSec - clipStartSec);
+        const groupEnd = Math.max(0, toEdited(group[group.length - 1]!.endSec));
         const transformedWords = group.map((w) =>
           applyTextTransform(w.word, txtTransform),
         );
 
         for (let j = 0; j < group.length; j++) {
-          const activeStart = Math.max(0, group[j]!.startSec - clipStartSec);
+          const activeStart = Math.max(0, toEdited(group[j]!.startSec));
           const activeEnd =
             j + 1 < group.length
-              ? Math.max(activeStart + 0.05, group[j + 1]!.startSec - clipStartSec)
+              ? Math.max(activeStart + 0.05, toEdited(group[j + 1]!.startSec))
               : Math.max(activeStart + 0.1, groupEnd);
 
           const text = group
@@ -806,8 +840,9 @@ export function generateAssFromSlice(
         }
       }
     } else {
-      const start = Math.max(0, utterance.startSec - clipStartSec);
-      const end = Math.max(start + 0.1, utterance.endSec - clipStartSec);
+      if (!isVisible(utterance)) continue;
+      const start = Math.max(0, toEdited(utterance.startSec));
+      const end = Math.max(start + 0.1, toEdited(utterance.endSec));
       const text = applyTextTransform(utterance.text, txtTransform);
       const override = `\\an5\\pos(${posXPx},${posYPx})${glowOverride}\\fad(60,0)`;
       events.push(
@@ -907,6 +942,128 @@ function appendTransitionFilter(
   return outputLabel;
 }
 
+export interface CutConcatResult {
+  filterParts: string[];
+  /** Label (with brackets, e.g. "[vcat]") every downstream video filter must
+   *  read from instead of the raw source input. */
+  videoLabel: string | null;
+  /** Label (with brackets) every downstream audio filter must read from
+   *  instead of the raw source input, or null when `includeAudio` was false. */
+  audioLabel: string | null;
+}
+
+/**
+ * Builds the cut/concat prefix of the filter graph for a clip's kept source
+ * segments (vizard-parity.md Phase B step 7): each kept segment is trimmed
+ * out of the SAME single source input (`-ss clipStartSec -t clipDurationSec
+ * -i sourcePath`, unchanged from today) via `trim`/`atrim` + `setpts`/
+ * `asetpts`, then concatenated into one continuous edited-timeline stream —
+ * BEFORE crop/scale, captions, text layers, logo, transitions, music, gain,
+ * or fades, so every one of those sees one continuous video/audio pair and
+ * needs no cut-awareness of its own.
+ *
+ * Returns `null` when `cutPlan.isUncut` — callers MUST fall back to
+ * referencing the raw input labels directly (`[0:v]` / `[0:a:0]`) in that
+ * case, which is what keeps the single-segment path byte-identical to
+ * pre-cut-concat renders (no filter-graph changes at all for the common
+ * no-deletions case).
+ *
+ * `trim`/`atrim` operate on the SAME input-relative time base that every
+ * other filter in this file already assumes for a `-ss X -i ...`-seeked
+ * input (e.g. `buildTextLayerFilters`'/`buildBrollVideoArgs`' `between(t,...)`
+ * windows) — i.e. 0 at `clipStartSec`, not absolute source time — so segment
+ * bounds are expressed as `segment.sourceStartSec/EndSec - clipStartSec`.
+ */
+function buildCutConcatFilter(params: {
+  cutPlan: ClipCutPlan;
+  clipStartSec: number;
+  /** Default true — set false for the audio-only audiogram path, which has
+   *  no `[0:v]` stream to trim. */
+  includeVideo?: boolean;
+  includeAudio: boolean;
+  videoInputRef?: string;
+  audioInputRef?: string;
+  videoOutLabel?: string;
+  audioOutLabel?: string;
+}): CutConcatResult | null {
+  if (params.cutPlan.isUncut) return null;
+
+  const includeVideo = params.includeVideo ?? true;
+  const segments = params.cutPlan.segments;
+  const videoInputRef = params.videoInputRef ?? "[0:v]";
+  const audioInputRef = params.audioInputRef ?? "[0:a:0]";
+  const videoOutLabel = params.videoOutLabel ?? "[vcat]";
+  const audioOutLabel = params.audioOutLabel ?? "[acat]";
+
+  const filterParts: string[] = [];
+  const vLabels: string[] = [];
+  const aLabels: string[] = [];
+
+  segments.forEach((segment, index) => {
+    const start = (segment.sourceStartSec - params.clipStartSec).toFixed(3);
+    const end = (segment.sourceEndSec - params.clipStartSec).toFixed(3);
+
+    if (includeVideo) {
+      const vLabel = `vseg${index}`;
+      filterParts.push(
+        `${videoInputRef}trim=start=${start}:end=${end},setpts=PTS-STARTPTS[${vLabel}]`,
+      );
+      vLabels.push(`[${vLabel}]`);
+    }
+
+    if (params.includeAudio) {
+      const aLabel = `aseg${index}`;
+      filterParts.push(
+        `${audioInputRef}atrim=start=${start}:end=${end},asetpts=PTS-STARTPTS[${aLabel}]`,
+      );
+      aLabels.push(`[${aLabel}]`);
+    }
+  });
+
+  if (segments.length === 1) {
+    // A single kept segment needs no `concat` — the trim/setpts stage above
+    // already produced the final continuous stream (still a real cut when
+    // the segment doesn't span the whole clip window, e.g. a deletion at the
+    // very start/end — `concat` filter with n=1 would be a no-op anyway, but
+    // skipping it keeps the graph simpler and matches ffmpeg's own guidance
+    // against degenerate single-input concats).
+    // `copy` (video) and `acopy` (audio) are distinct ffmpeg filters — using
+    // the video-only `copy` on an audio pad label would fail at encode time.
+    const rename = (label: string, out: string, filterName: "copy" | "acopy") =>
+      filterParts.push(`${label}${filterName}${out}`);
+    if (includeVideo) rename(vLabels[0]!, videoOutLabel, "copy");
+    if (params.includeAudio) rename(aLabels[0]!, audioOutLabel, "acopy");
+    return {
+      filterParts,
+      videoLabel: includeVideo ? videoOutLabel : null,
+      audioLabel: params.includeAudio ? audioOutLabel : null,
+    };
+  }
+
+  if (includeVideo && params.includeAudio) {
+    const interleaved = segments.map((_, i) => `${vLabels[i]}${aLabels[i]}`).join("");
+    filterParts.push(
+      `${interleaved}concat=n=${segments.length}:v=1:a=1${videoOutLabel}${audioOutLabel}`,
+    );
+    return { filterParts, videoLabel: videoOutLabel, audioLabel: audioOutLabel };
+  }
+
+  if (includeVideo) {
+    const interleaved = vLabels.join("");
+    filterParts.push(
+      `${interleaved}concat=n=${segments.length}:v=1:a=0${videoOutLabel}`,
+    );
+    return { filterParts, videoLabel: videoOutLabel, audioLabel: null };
+  }
+
+  // Audio-only (audiogram path): no video stream to concat at all.
+  const interleaved = aLabels.join("");
+  filterParts.push(
+    `${interleaved}concat=n=${segments.length}:v=0:a=1${audioOutLabel}`,
+  );
+  return { filterParts, videoLabel: null, audioLabel: audioOutLabel };
+}
+
 // Every render gets a short audio fade at each boundary: clip ends land at
 // most ~0.25s after the last spoken word (and, when speech continues in the
 // source, just a few ms before the next word), so a hard cut audibly clicks
@@ -992,6 +1149,11 @@ function buildMusicAudioFilter(params: {
   music: MusicPlan;
   clipDurationSec: number;
   sourceAudio?: StudioEdits["sourceAudio"] | null;
+  /** Label to read the dialogue/source audio from — defaults to `[0:a]`
+   *  (the raw source input). Cut-concat renders pass `[acat]` instead so the
+   *  dialogue mix reads the concatenated edited-timeline audio, same as
+   *  every other downstream audio consumer (vizard-parity Phase B step 7). */
+  dialogueInputRef?: string;
 }) {
   const volume = Math.max(0, Math.min(1, params.music.volume / 100));
   const duration = Math.max(0.1, params.clipDurationSec);
@@ -999,6 +1161,7 @@ function buildMusicAudioFilter(params: {
   const musicLabel = "[musica]";
   const fadeChain = buildAudioFadeChain(duration);
   const userFadeSuffix = buildMusicUserFadeSuffix(params.music, duration);
+  const dialogueInputRef = params.dialogueInputRef ?? "[0:a]";
   // start=<offset> seeks into the (infinitely -stream_loop'd) music input so
   // the user's chosen point in the track plays first, instead of always the
   // first `duration` seconds of the file.
@@ -1017,8 +1180,8 @@ function buildMusicAudioFilter(params: {
   // here on the dialogue branch (before amix) same as the no-music path.
   const dialogueGainFilter = buildSourceGainFilter(params.sourceAudio);
   const dialogueFilter = dialogueGainFilter
-    ? `[0:a]atrim=duration=${duration.toFixed(3)},asetpts=PTS-STARTPTS,${dialogueGainFilter}[maina]`
-    : `[0:a]atrim=duration=${duration.toFixed(3)},asetpts=PTS-STARTPTS[maina]`;
+    ? `${dialogueInputRef}atrim=duration=${duration.toFixed(3)},asetpts=PTS-STARTPTS,${dialogueGainFilter}[maina]`
+    : `${dialogueInputRef}atrim=duration=${duration.toFixed(3)},asetpts=PTS-STARTPTS[maina]`;
 
   return [
     dialogueFilter,
@@ -1220,8 +1383,35 @@ export function buildSingleVideoArgs(params: {
   studioEdits?: StudioEdits | null;
   music?: MusicPlan | null;
   applyFreeTierTreatment?: boolean;
+  /** Non-empty `deletedRanges` cut plan (vizard-parity Phase B step 7).
+   *  Omitted/uncut: byte-identical to the pre-cut-concat filter graph. */
+  cutPlan?: ClipCutPlan | null;
 }) {
-  const clipDurationSec = params.endSec - params.startSec;
+  if (params.cutPlan?.isEmpty) {
+    throw new WorkflowWorkerError(
+      "clip_cut_plan_empty",
+      "cutPlan has no renderable segments — caller must guard before building ffmpeg args",
+    );
+  }
+  const isCut = Boolean(params.cutPlan && !params.cutPlan.isUncut);
+  const clipDurationSec = isCut
+    ? params.cutPlan!.editedDurationSec
+    : params.endSec - params.startSec;
+
+  const cutConcat = isCut
+    ? buildCutConcatFilter({
+        cutPlan: params.cutPlan!,
+        clipStartSec: params.startSec,
+        includeAudio: params.probe.hasAudio,
+      })
+    : null;
+  const videoInputLabel = cutConcat ? cutConcat.videoLabel! : "[0:v]";
+  const audioInputLabel = cutConcat
+    ? cutConcat.audioLabel
+    : params.probe.hasAudio
+      ? "[0:a:0]"
+      : null;
+
   const videoFilter = buildSingleVideoFilter(
     params.probe,
     params.aspectRatio,
@@ -1233,7 +1423,7 @@ export function buildSingleVideoArgs(params: {
   );
 
   let finalLabel: string;
-  const filterParts: string[] = [];
+  const filterParts: string[] = cutConcat ? [...cutConcat.filterParts] : [];
   if (params.logo) {
     const aspectConfig = aspectRatioConfig.get(params.aspectRatio);
     if (!aspectConfig) {
@@ -1242,7 +1432,7 @@ export function buildSingleVideoArgs(params: {
         `Unsupported aspect ratio: ${params.aspectRatio}`,
       );
     }
-    filterParts.push(`[0:v]${videoFilter}[outvbase]`);
+    filterParts.push(`${videoInputLabel}${videoFilter}[outvbase]`);
     filterParts.push(
       buildLogoFilter(
         params.logo,
@@ -1255,7 +1445,7 @@ export function buildSingleVideoArgs(params: {
     );
     finalLabel = "[outv]";
   } else {
-    filterParts.push(`[0:v]${videoFilter}[outv]`);
+    filterParts.push(`${videoInputLabel}${videoFilter}[outv]`);
     finalLabel = "[outv]";
   }
 
@@ -1299,11 +1489,12 @@ export function buildSingleVideoArgs(params: {
         music: params.music,
         clipDurationSec,
         sourceAudio: params.studioEdits?.sourceAudio,
+        dialogueInputRef: cutConcat ? cutConcat.audioLabel! : undefined,
       }),
     );
-  } else if (params.probe.hasAudio) {
+  } else if (audioInputLabel) {
     filterParts.push(
-      `[0:a:0]${buildDialogueAudioFilter(params.studioEdits?.sourceAudio, clipDurationSec)}[outa]`,
+      `${audioInputLabel}${buildDialogueAudioFilter(params.studioEdits?.sourceAudio, clipDurationSec)}[outa]`,
     );
   }
 
@@ -1370,11 +1561,19 @@ export function buildBrollVideoArgs(params: {
   studioEdits?: StudioEdits | null;
   music?: MusicPlan | null;
   applyFreeTierTreatment?: boolean;
+  /** See `buildSingleVideoArgs` — same cut-concat contract. */
+  cutPlan?: ClipCutPlan | null;
 }) {
   if (params.cutaways.length === 0) {
     throw new WorkflowWorkerError(
       "broll_cutaways_empty",
       "buildBrollVideoArgs requires at least one cutaway",
+    );
+  }
+  if (params.cutPlan?.isEmpty) {
+    throw new WorkflowWorkerError(
+      "clip_cut_plan_empty",
+      "cutPlan has no renderable segments — caller must guard before building ffmpeg args",
     );
   }
 
@@ -1398,9 +1597,27 @@ export function buildBrollVideoArgs(params: {
 
   const cutawayCount = params.cutaways.length;
   const logoInputIndex = 1 + cutawayCount;
-  const clipDurationSec = params.endSec - params.startSec;
+  const isCut = Boolean(params.cutPlan && !params.cutPlan.isUncut);
+  const clipDurationSec = isCut
+    ? params.cutPlan!.editedDurationSec
+    : params.endSec - params.startSec;
 
-  const parts: string[] = [`[0:v]${cropScale}[stage0]`];
+  const cutConcat = isCut
+    ? buildCutConcatFilter({
+        cutPlan: params.cutPlan!,
+        clipStartSec: params.startSec,
+        includeAudio: params.probe.hasAudio,
+      })
+    : null;
+  const videoInputLabel = cutConcat ? cutConcat.videoLabel! : "[0:v]";
+  const audioInputLabel = cutConcat
+    ? cutConcat.audioLabel
+    : params.probe.hasAudio
+      ? "[0:a:0]"
+      : null;
+
+  const parts: string[] = cutConcat ? [...cutConcat.filterParts] : [];
+  parts.push(`${videoInputLabel}${cropScale}[stage0]`);
   let finalLabel = "[stage0]";
 
   params.cutaways.forEach((cutaway, index) => {
@@ -1492,11 +1709,12 @@ export function buildBrollVideoArgs(params: {
         music: params.music,
         clipDurationSec,
         sourceAudio: params.studioEdits?.sourceAudio,
+        dialogueInputRef: cutConcat ? cutConcat.audioLabel! : undefined,
       }),
     );
-  } else if (params.probe.hasAudio) {
+  } else if (audioInputLabel) {
     parts.push(
-      `[0:a:0]${buildDialogueAudioFilter(params.studioEdits?.sourceAudio, clipDurationSec)}[outa]`,
+      `${audioInputLabel}${buildDialogueAudioFilter(params.studioEdits?.sourceAudio, clipDurationSec)}[outa]`,
     );
   }
 
@@ -1776,6 +1994,11 @@ export function buildAudiogramArgs(params: {
   studioEdits?: StudioEdits | null;
   music?: MusicPlan | null;
   applyFreeTierTreatment?: boolean;
+  /** See `buildSingleVideoArgs` — same cut-concat contract, applied to the
+   *  audio stream only (audiogram sources have no video track). Callers must
+   *  pass `clipDurationSec` already set to the plan's edited duration when
+   *  cut — this builder does not derive it itself. */
+  cutPlan?: ClipCutPlan | null;
 }) {
   const config = aspectRatioConfig.get(params.aspectRatio);
 
@@ -1783,6 +2006,12 @@ export function buildAudiogramArgs(params: {
     throw new WorkflowWorkerError(
       "unsupported_aspect_ratio",
       `Unsupported aspect ratio: ${params.aspectRatio}`,
+    );
+  }
+  if (params.cutPlan?.isEmpty) {
+    throw new WorkflowWorkerError(
+      "clip_cut_plan_empty",
+      "cutPlan has no renderable segments — caller must guard before building ffmpeg args",
     );
   }
 
@@ -1798,21 +2027,36 @@ export function buildAudiogramArgs(params: {
     params.captionPreset,
   );
 
-  const chain: string[] = params.music
-    ? [
-        `color=c=${bgColor}:s=${W}x${H}:d=${params.clipDurationSec}[bg]`,
-        `[0:a]showwaves=s=${W}x${waveHeight}:mode=cline:colors=${waveColor}:rate=25[wave]`,
-        `[bg][wave]overlay=0:(H-h)/2[comp]`,
-      ]
-    : [
-        `color=c=${bgColor}:s=${W}x${H}:d=${params.clipDurationSec}[bg]`,
-        // Split the audio so one branch drives the waveform and the other is
-        // faded and mapped as the output track.
-        `[0:a]asplit=2[wavesrc][fadesrc]`,
-        `[wavesrc]showwaves=s=${W}x${waveHeight}:mode=cline:colors=${waveColor}:rate=25[wave]`,
-        `[fadesrc]${buildDialogueAudioFilter(params.studioEdits?.sourceAudio, params.clipDurationSec)}[outa]`,
-        `[bg][wave]overlay=0:(H-h)/2[comp]`,
-      ];
+  const isCut = Boolean(params.cutPlan && !params.cutPlan.isUncut);
+  const cutConcat = isCut
+    ? buildCutConcatFilter({
+        cutPlan: params.cutPlan!,
+        clipStartSec: params.startSec,
+        includeVideo: false,
+        includeAudio: true,
+        audioInputRef: "[0:a]",
+      })
+    : null;
+  const audioInputLabel = cutConcat ? cutConcat.audioLabel! : "[0:a]";
+
+  const chain: string[] = cutConcat ? [...cutConcat.filterParts] : [];
+  chain.push(
+    ...(params.music
+      ? [
+          `color=c=${bgColor}:s=${W}x${H}:d=${params.clipDurationSec}[bg]`,
+          `${audioInputLabel}showwaves=s=${W}x${waveHeight}:mode=cline:colors=${waveColor}:rate=25[wave]`,
+          `[bg][wave]overlay=0:(H-h)/2[comp]`,
+        ]
+      : [
+          `color=c=${bgColor}:s=${W}x${H}:d=${params.clipDurationSec}[bg]`,
+          // Split the audio so one branch drives the waveform and the other is
+          // faded and mapped as the output track.
+          `${audioInputLabel}asplit=2[wavesrc][fadesrc]`,
+          `[wavesrc]showwaves=s=${W}x${waveHeight}:mode=cline:colors=${waveColor}:rate=25[wave]`,
+          `[fadesrc]${buildDialogueAudioFilter(params.studioEdits?.sourceAudio, params.clipDurationSec)}[outa]`,
+          `[bg][wave]overlay=0:(H-h)/2[comp]`,
+        ]),
+  );
 
   let finalLabel = "[comp]";
   if (params.studioEdits?.textLayers.length) {
@@ -1864,6 +2108,7 @@ export function buildAudiogramArgs(params: {
         music: params.music,
         clipDurationSec: params.clipDurationSec,
         sourceAudio: params.studioEdits?.sourceAudio,
+        dialogueInputRef: audioInputLabel,
       }),
     );
   }
@@ -2281,8 +2526,52 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
       });
       const clipStartSec = effective.startSec;
       const clipEndSec = effective.endSec;
-      const clipDurationSec = effective.durationSec;
       const utterances = effective.transcriptSlice;
+
+      // Vizard-parity Phase B step 7: resilient parse, same pattern as
+      // captionPreset/studioEdits below — a single malformed stored
+      // deletedRanges JSON must not crash the whole render group.
+      let deletedRanges: SourceRange[] = [];
+      if (clip.deletedRanges) {
+        const parsedRanges = deletedRangesSchema.safeParse(clip.deletedRanges);
+        if (parsedRanges.success) {
+          deletedRanges = parsedRanges.data;
+        } else {
+          log("error", "clip_deleted_ranges_parse_failed", {
+            workflowRunId: run.id,
+            clipId: clip.id,
+            message: parsedRanges.error.issues[0]?.message ?? "invalid deletedRanges",
+          });
+        }
+      }
+      const cutPlan = buildClipCutPlan(deletedRanges, {
+        startSec: clipStartSec,
+        endSec: clipEndSec,
+      });
+      if (cutPlan.droppedSliverCount > 0) {
+        log("info", "clip_cut_plan_slivers_dropped", {
+          workflowRunId: run.id,
+          clipId: clip.id,
+          droppedSliverCount: cutPlan.droppedSliverCount,
+        });
+      }
+      // Every downstream duration-dependent consumer (captions, text layers,
+      // transitions, music, B-roll cutaway planning, the audiogram
+      // waveform/background, and the final `-t` output bound) reads THIS
+      // value — the edited (post-cut) duration when the clip has real cuts,
+      // otherwise the exact original `effective.durationSec` (not
+      // `cutPlan.editedDurationSec`, which is ms-rounded — keeping the raw
+      // value for the untouched common case is what makes the no-deletions
+      // render byte-identical to before this change).
+      const clipDurationSec = cutPlan.isUncut
+        ? effective.durationSec
+        : cutPlan.editedDurationSec;
+      // Time map used to retime caption cues (source-absolute word/utterance
+      // times -> edited timeline). Null for the uncut common case so
+      // generateSrtFromSlice/generateAssFromSlice take their original,
+      // unmodified codepath.
+      const captionTimeMap = cutPlan.isUncut ? null : cutPlan.map;
+
       // Resilient parse: a single malformed stored caption JSON must not crash
       // the whole render group — fall back to no preset (plain SRT) instead.
       let captionPreset: CaptionPreset | null = null;
@@ -2326,7 +2615,12 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
       // export matches the studio preview). SRT is only a no-preset fallback.
       let srtPath: string | null = null;
       if (!captionPreset && utterances.length > 0) {
-        const srtContent = generateSrtFromSlice(utterances, clipStartSec);
+        const srtContent = generateSrtFromSlice(
+          utterances,
+          clipStartSec,
+          undefined,
+          captionTimeMap,
+        );
         if (srtContent.length > 0) {
           srtPath = join(tempDir, `clip-${clip.id}.srt`);
           await writeFile(srtPath, srtContent, "utf-8");
@@ -2356,6 +2650,39 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
         };
       });
 
+      // Guard (vizard-parity Phase B step 7): deletedRanges covering the
+      // whole clip window (or leaving only sub-50ms slivers) leaves nothing
+      // renderable. Fail every variant in this group with a structured error
+      // instead of ever attempting a zero/near-zero-duration encode, and
+      // skip straight to the next clip group.
+      if (cutPlan.isEmpty) {
+        log("error", "clip_cut_plan_empty", {
+          workflowRunId: run.id,
+          clipId: clip.id,
+          clipIndex: clip.index,
+          deletedRangeCount: deletedRanges.length,
+        });
+        await Promise.all(
+          outputs.map((output) =>
+            clipService.failClipRenderVariant(
+              output.clipRenderId,
+              "clip_cut_plan_empty",
+            ),
+          ),
+        );
+        const progress =
+          10 + Math.round(((clipGroupIndex + 1) / clipGroups.length) * 80);
+        await projectService.publishWorkflowProgress({
+          projectId: run.projectId,
+          workflowRunId: run.id,
+          stage: "clip_rendering",
+          status: "running",
+          progress,
+          errorCode: null,
+        });
+        continue;
+      }
+
       // Per-aspect-ratio ASS files carry the full styled, word-synced captions.
       // Generated whenever a caption preset is present (positions are resolution
       // dependent, so one file per output).
@@ -2366,6 +2693,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
             clipStartSec,
             output.aspectRatio,
             captionPreset,
+            captionTimeMap,
           );
           if (assContent.length > 0) {
             const assPath = join(
@@ -2403,6 +2731,16 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
         // Face centers are returned normalized, so 360p detection maps to the
         // full-res crop math unchanged. On any extraction failure just skip
         // detection — callers already fall back to a static center crop.
+        // Detection deliberately scans the FULL uncut clip window
+        // (`effective.durationSec`, not the post-cut `clipDurationSec`) even
+        // when `deletedRanges` is non-empty: the face path needs samples
+        // from every kept segment, wherever they land in source time, not
+        // just whatever fits in the (shorter) edited duration. The resulting
+        // sendcmd crop script is still keyed to elapsed time from this
+        // detection window and is NOT remapped through the cut-concat edited
+        // timeline — a known Phase B gap (see the cut-concat report), left
+        // for a follow-up since it only affects framing precision, never
+        // correctness/crash risk.
         let detectInput: string | null = sourcePath;
         let detectStartSec = clipStartSec;
         if (isHttpSource(sourcePath)) {
@@ -2414,7 +2752,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
               "-ss",
               String(clipStartSec),
               "-t",
-              String(clipDurationSec),
+              String(effective.durationSec),
               "-i",
               sourcePath,
               "-map",
@@ -2448,7 +2786,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
           ? await detectFacePath({
               sourcePath: detectInput,
               startSec: detectStartSec,
-              durationSec: clipDurationSec,
+              durationSec: effective.durationSec,
             })
           : null;
         const smoothed = detection ? smoothFacePath(detection.samples) : [];
@@ -2714,12 +3052,21 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
       // never learned to thread either through its filter graph, so any
       // non-default sourceAudio setting must route through this same gate to
       // actually take effect for multi-output renders.
+      //
+      // Cut-concat (vizard-parity Phase B step 7) is threaded through the
+      // same gate rather than taught to buildMultiVideoArgs directly: that
+      // path only ever handles multiple *plain* outputs (no B-roll, no other
+      // studio edits), and inserting cut/concat there would mean
+      // implementing the same trim+concat-before-split logic a third time
+      // for a case that's cheap to route through the already-cut-aware
+      // per-output builders instead.
       const hasStudioVideoEdits =
         studioEdits.textLayers.length > 0 ||
         studioEdits.transition.type !== "none" ||
         Boolean(musicPlan) ||
         studioEdits.sourceAudio.muted ||
-        studioEdits.sourceAudio.volume !== 100;
+        studioEdits.sourceAudio.volume !== 100 ||
+        !cutPlan.isUncut;
 
       await Promise.all(
         outputs.map((output) =>
@@ -2742,6 +3089,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
               studioEdits,
               music: musicPlan,
               applyFreeTierTreatment,
+              cutPlan,
             });
 
             const encodeStartedAtMs = Date.now();
@@ -2804,6 +3152,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
                   studioEdits,
                   music: musicPlan,
                   applyFreeTierTreatment,
+                  cutPlan,
                 })
               : buildSingleVideoArgs({
                   sourcePath,
@@ -2819,6 +3168,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
                   studioEdits,
                   music: musicPlan,
                   applyFreeTierTreatment,
+                  cutPlan,
                 });
             const encodeStartedAtMs = Date.now();
             await execCommand("ffmpeg", ffmpegArgs);
