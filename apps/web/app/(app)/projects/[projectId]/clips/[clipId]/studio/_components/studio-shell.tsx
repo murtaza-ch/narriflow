@@ -238,6 +238,9 @@ interface StudioContextValue extends StudioState {
    *  proxy's `currentTime` directly. */
   previewVideoUrl: string | null;
   previewStartSec: number;
+  /** Presigned URL of the proxy's amplitude-peaks JSON, or null — see the
+   *  matching prop's doc comment on `StudioShellProps.waveformPeaksUrl`. */
+  waveformPeaksUrl: string | null;
   /** True when the project's source has been purged (`Project.sourceStorageKey`
    *  is null). Once true, a still-missing `previewVideoUrl` can never arrive
    *  — the worker that cuts proxies reads straight from source storage — so
@@ -430,6 +433,14 @@ interface StudioShellProps {
   /** The proxy's t=0 expressed in source time (`Clip.previewStartSec`).
    *  Meaningless when `previewVideoUrl` is null. */
   previewStartSec?: number;
+  /** Presigned URL of the proxy's amplitude-peaks JSON (derived from the
+   *  proxy's own storage key — see `derivePeaksStorageKey` in
+   *  packages/services), or null when no proxy exists yet, the derived
+   *  object doesn't exist (silent-video preview, legacy pre-feature
+   *  preview), or presigning it failed. The timeline's WaveformCanvas
+   *  fetches this itself and falls back to its synthetic waveform when
+   *  null or when the fetch fails — see `waveform-peaks.ts`. */
+  waveformPeaksUrl?: string | null;
   /** True when the project's source has been purged — see the doc comment
    *  on `StudioContextValue.sourcePurged`. */
   sourcePurged?: boolean;
@@ -442,6 +453,7 @@ interface StudioShellProps {
     previewUrl: string | null;
     previewStartSec: number;
     previewDurationSec: number | null;
+    waveformPeaksUrl: string | null;
   }>;
   /** Server-seeded brand logo (see studio/page.tsx and `StudioBrandLogo`'s
    *  doc comment), or null/omitted when the project has none. */
@@ -461,6 +473,7 @@ export function StudioShell({
   // `doc` via the `effectiveTiming` memo below.
   previewVideoUrl: initialPreviewVideoUrl = null,
   previewStartSec: initialPreviewStartSec = 0,
+  waveformPeaksUrl: initialWaveformPeaksUrl = null,
   sourcePurged = false,
   fetchPreviewStatus,
   brandLogo = null,
@@ -479,6 +492,7 @@ export function StudioShell({
   // this page ever refreshes on its own — see that effect for why.
   const [previewVideoUrl, setPreviewVideoUrl] = useState(initialPreviewVideoUrl);
   const [previewStartSec, setPreviewStartSec] = useState(initialPreviewStartSec);
+  const [waveformPeaksUrl, setWaveformPeaksUrl] = useState(initialWaveformPeaksUrl);
 
   // While no proxy exists yet, periodically re-check readiness so "Preview
   // generating…" resolves on its own instead of only ever updating on a
@@ -504,6 +518,7 @@ export function StudioShell({
         if (status.previewUrl) {
           setPreviewVideoUrl(status.previewUrl);
           setPreviewStartSec(status.previewStartSec);
+          setWaveformPeaksUrl(status.waveformPeaksUrl);
           return; // Ready — don't schedule another tick.
         }
       } catch {
@@ -1855,7 +1870,7 @@ export function StudioShell({
     transcript: derivedTranscript, clipInfo, videoRef, playbackClock,
     sourceVideoUrl, sourcePreviewId,
     clipStartSec: effectiveClipStartSec, clipEndSec: effectiveClipEndSec, sourcePurged,
-    previewVideoUrl, previewStartSec, useOriginalSourceFallback, setUseOriginalSourceFallback,
+    previewVideoUrl, previewStartSec, waveformPeaksUrl, useOriginalSourceFallback, setUseOriginalSourceFallback,
     activeVideoUrl, activeOffsetSec, activeVideoKind, playerClipStartSec, playerClipEndSec,
     editedTimeMap, deletedRanges: doc.deletedRanges, clipWindow,
     brandLogo, utterances, updateUtteranceText, updateWord, deleteSourceRange, applyRemoveSilence,

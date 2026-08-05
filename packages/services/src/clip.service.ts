@@ -57,6 +57,7 @@ import {
 } from "./workflow.service";
 import { isUniqueConstraintError } from "./generation-sequencing";
 import { copyObject, deleteObject, presignDownloadUrl } from "./r2-storage";
+import { derivePeaksStorageKey } from "./clip-preview-storage";
 import { analyticsService } from "./analytics.service";
 import { assertPublicHttpUrl } from "./url-guard";
 
@@ -2514,6 +2515,16 @@ export class ClipService {
    * from {@link getClipDownloadUrl} because the studio has no aspect-ratio
    * selector to key a render lookup off of — it always wants "whatever
    * preview exists for this clip," full stop.
+   *
+   * `waveformPeaksUrl` is presigned OPTIMISTICALLY off the derived peaks key
+   * (see `derivePeaksStorageKey`'s doc comment for the storage convention)
+   * — there is no existence check (a HEAD call) before signing, since a
+   * presigned S3/R2 GET URL is just a signed request and costs nothing to
+   * hand out even if the object never existed (silent-video previews,
+   * previews cut before this feature shipped). The caller — the studio's
+   * WaveformCanvas — is expected to fetch it and fall back to its synthetic
+   * waveform on a failed response, exactly like it already falls back when
+   * this field is null.
    */
   async getClipPreviewSource(
     userId: string,
@@ -2523,6 +2534,7 @@ export class ClipService {
     previewUrl: string | null;
     previewStartSec: number;
     previewDurationSec: number | null;
+    waveformPeaksUrl: string | null;
   }> {
     const prisma = requirePrisma();
 
@@ -2536,7 +2548,12 @@ export class ClipService {
     });
 
     if (!clip?.previewStorageKey) {
-      return { previewUrl: null, previewStartSec: 0, previewDurationSec: null };
+      return {
+        previewUrl: null,
+        previewStartSec: 0,
+        previewDurationSec: null,
+        waveformPeaksUrl: null,
+      };
     }
 
     try {
@@ -2544,13 +2561,33 @@ export class ClipService {
         key: clip.previewStorageKey,
         expiresIn: 3600,
       });
+
+      // Best-effort: a peaks URL failing to presign (or the key being
+      // malformed for some pre-convention legacy row) must never take down
+      // proxy playback itself — the waveform alone falls back to synthetic.
+      let waveformPeaksUrl: string | null = null;
+      try {
+        waveformPeaksUrl = await presignDownloadUrl({
+          key: derivePeaksStorageKey(clip.previewStorageKey),
+          expiresIn: 3600,
+        });
+      } catch {
+        waveformPeaksUrl = null;
+      }
+
       return {
         previewUrl,
         previewStartSec: clip.previewStartSec ?? 0,
         previewDurationSec: clip.previewDurationSec ?? null,
+        waveformPeaksUrl,
       };
     } catch {
-      return { previewUrl: null, previewStartSec: 0, previewDurationSec: null };
+      return {
+        previewUrl: null,
+        previewStartSec: 0,
+        previewDurationSec: null,
+        waveformPeaksUrl: null,
+      };
     }
   }
 

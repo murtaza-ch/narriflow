@@ -26,9 +26,11 @@ import {
   CLIP_MIN_DURATION_SEC,
 } from "@narriflow/validators";
 import type { EditedTimeMap, SourceRange, TranscriptUtterance } from "@narriflow/validators";
+import type { ClipPreviewPeaks } from "@narriflow/services";
 import { useStudio } from "./studio-shell";
 import { usePlaybackTime } from "./playback-clock";
 import { deletedRangesToCutMarkers, projectSegmentToEdited, type CutMarker } from "./edited-timeline";
+import { loadClipPreviewPeaks, sampleAmplitudeAtSourceTime } from "./waveform-peaks";
 import {
   getCachedTimelineThumbnail,
   requestTimelineThumbnail,
@@ -309,6 +311,7 @@ const WaveformCanvas = memo(function WaveformCanvas({
   duration,
   width,
   height,
+  waveformPeaksUrl,
 }: {
   utterances: TranscriptUtterance[];
   /** Vizard-parity Phase B step 8: pixel positions on this canvas are
@@ -321,6 +324,16 @@ const WaveformCanvas = memo(function WaveformCanvas({
   duration: number;
   width: number;
   height: number;
+  /** Presigned URL of the clip preview proxy's real amplitude-peaks JSON
+   *  (see waveform-peaks.ts / packages/services's ClipPreviewPeaks), or
+   *  null. When set, this component fetches it once (cached by URL) and
+   *  paints REAL amplitude instead of the synthetic per-pixel randomness
+   *  below — the fetch/parse is best-effort, so a pending fetch, a missing
+   *  object (proxy still generating, silent-video preview, legacy preview
+   *  cut before this feature shipped), or a malformed payload all fall
+   *  back to the exact same synthetic waveform this canvas has always
+   *  painted, with no visual regression. */
+  waveformPeaksUrl: string | null;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const canvasWidth = Math.max(
@@ -348,6 +361,26 @@ const WaveformCanvas = memo(function WaveformCanvas({
     );
   }
 
+  // Real peaks, fetched once per URL (module-level cache — see
+  // loadClipPreviewPeaks) and re-used by the paint effect below whenever
+  // it's available. Seeded null so a still-loading/missing/malformed
+  // response paints identically to the pre-existing synthetic-only
+  // behavior.
+  const [peaksData, setPeaksData] = useState<ClipPreviewPeaks | null>(null);
+  useEffect(() => {
+    if (!waveformPeaksUrl) {
+      setPeaksData(null);
+      return;
+    }
+    let cancelled = false;
+    loadClipPreviewPeaks(waveformPeaksUrl).then((data) => {
+      if (!cancelled) setPeaksData(data);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [waveformPeaksUrl]);
+
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || canvasWidth <= 0 || duration <= 0) return;
@@ -372,6 +405,8 @@ const WaveformCanvas = memo(function WaveformCanvas({
     gradient.addColorStop(1, "rgba(160,170,190,0.7)");
     ctx.fillStyle = gradient;
 
+    const hasRealPeaks = peaksData !== null && peaksData.peaks.length > 0;
+
     for (let px = 0; px < canvas.width; px++) {
       // px is an EDITED-timeline position; editedToSource is monotonic
       // non-decreasing (segments stay in source order), so the speechIndex/
@@ -379,28 +414,39 @@ const WaveformCanvas = memo(function WaveformCanvas({
       // they did before ripple existed.
       const absoluteTime = editedToSource(editedTimeMap, px * secPerPx);
 
-      let amplitude = 0.03;
-      while (speechRanges[speechIndex] && speechRanges[speechIndex]!.endSec < absoluteTime) {
-        speechIndex += 1;
-      }
-      while (wordRanges[wordIndex] && wordRanges[wordIndex]!.endSec < absoluteTime) {
-        wordIndex += 1;
-      }
+      let amplitude: number;
+      if (hasRealPeaks) {
+        // Real waveform: same floor as the synthetic silence baseline below
+        // so a genuinely-silent stretch of real audio still reads as a
+        // visible flatline rather than vanishing entirely.
+        amplitude = Math.max(
+          0.03,
+          sampleAmplitudeAtSourceTime(peaksData!, absoluteTime),
+        );
+      } else {
+        amplitude = 0.03;
+        while (speechRanges[speechIndex] && speechRanges[speechIndex]!.endSec < absoluteTime) {
+          speechIndex += 1;
+        }
+        while (wordRanges[wordIndex] && wordRanges[wordIndex]!.endSec < absoluteTime) {
+          wordIndex += 1;
+        }
 
-      const speech = speechRanges[speechIndex];
-      if (speech && absoluteTime >= speech.startSec && absoluteTime <= speech.endSec) {
-        const word = wordRanges[wordIndex];
-        const inWord =
-          word && absoluteTime >= word.startSec && absoluteTime <= word.endSec;
-        amplitude = inWord
-          ? 0.35 + (seeds[px] ?? 0.5) * 0.55
-          : 0.08 + (seeds[px] ?? 0.5) * 0.12;
+        const speech = speechRanges[speechIndex];
+        if (speech && absoluteTime >= speech.startSec && absoluteTime <= speech.endSec) {
+          const word = wordRanges[wordIndex];
+          const inWord =
+            word && absoluteTime >= word.startSec && absoluteTime <= word.endSec;
+          amplitude = inWord
+            ? 0.35 + (seeds[px] ?? 0.5) * 0.55
+            : 0.08 + (seeds[px] ?? 0.5) * 0.12;
+        }
       }
 
       const barH = amplitude * midY;
       ctx.fillRect(px, midY - barH, 1, barH * 2);
     }
-  }, [timingIndex, editedTimeMap, duration, canvasWidth, height]);
+  }, [timingIndex, editedTimeMap, duration, canvasWidth, height, peaksData]);
 
   return (
     <canvas
@@ -1348,6 +1394,7 @@ export function Timeline() {
     revertDeletedRange,
     utterances,
     exportState,
+    waveformPeaksUrl,
   } = useStudio();
 
   const stripRef = useRef<HTMLDivElement>(null);
@@ -1899,6 +1946,7 @@ export function Timeline() {
                 duration={safeDuration}
                 width={totalWidth}
                 height={WAVEFORM_HEIGHT}
+                waveformPeaksUrl={waveformPeaksUrl}
               />
             </Box>
 

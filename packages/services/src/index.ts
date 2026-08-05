@@ -119,6 +119,10 @@ export {
   putJson,
 } from "./r2-storage";
 export {
+  derivePeaksStorageKey,
+  type ClipPreviewPeaks,
+} from "./clip-preview-storage";
+export {
   getLastWorkflowSeq,
   getWorkflowChannel,
   getWorkflowEventsSince,

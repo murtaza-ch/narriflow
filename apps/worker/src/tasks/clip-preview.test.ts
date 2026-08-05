@@ -4,12 +4,15 @@ import {
   audiogramPreviewDimensions,
   buildAudiogramPreviewArgs,
   buildClipPreviewArgs,
+  buildPeaksExtractionArgs,
   classifyMediaStreams,
   clipPreviewAttemptStorageKey,
+  computeAmplitudePeaks,
   computeClipPreviewWindow,
   isAttachedPictureStream,
   type ProbeStreamLite,
   previewTimeToSourceTime,
+  quantizePeaks,
   sourceTimeToPreviewTime,
 } from "./clip-preview";
 
@@ -416,5 +419,94 @@ describe("buildAudiogramPreviewArgs", () => {
     const args = buildAudiogramPreviewArgs({ ...base, maxHeight: 360 });
     const chain = args[args.indexOf("-filter_complex") + 1];
     expect(chain).toContain("s=640x360");
+  });
+});
+
+describe("buildPeaksExtractionArgs", () => {
+  test("decodes to headerless mono PCM at the requested sample rate, no -y and no HTTP reconnect flags", () => {
+    const args = buildPeaksExtractionArgs({
+      inputPath: "/tmp/clip-preview-xyz/clip1-preview.mp4",
+      sampleRateHz: 8000,
+    });
+    expect(args).toEqual([
+      "-i",
+      "/tmp/clip-preview-xyz/clip1-preview.mp4",
+      "-vn",
+      "-ac",
+      "1",
+      "-ar",
+      "8000",
+      "-f",
+      "s16le",
+      "-",
+    ]);
+    expect(args).not.toContain("-y");
+    expect(args).not.toContain("-reconnect");
+  });
+});
+
+describe("computeAmplitudePeaks (pure PCM binning)", () => {
+  test("returns one peak per second at 1 bin/sec, using max-abs amplitude", () => {
+    // 1 second of audio at 4Hz (silly-low rate, just for arithmetic clarity):
+    // samples [0, 100, -200, 50] -> max abs = 200 -> 200/32768.
+    const samples = Int16Array.from([0, 100, -200, 50]);
+    const peaks = computeAmplitudePeaks(samples, 4, 1);
+    expect(peaks).toHaveLength(1);
+    expect(peaks[0]).toBeCloseTo(200 / 32768, 6);
+  });
+
+  test("bins two seconds of audio into two peaks", () => {
+    const samples = Int16Array.from([10, 20, 30, 40, 1000, -2000, 500, 100]);
+    const peaks = computeAmplitudePeaks(samples, 4, 1);
+    expect(peaks).toHaveLength(2);
+    expect(peaks[0]).toBeCloseTo(40 / 32768, 6);
+    expect(peaks[1]).toBeCloseTo(2000 / 32768, 6);
+  });
+
+  test("emits a shorter final bin instead of dropping leftover samples", () => {
+    // 5 samples at 4Hz/1 bin-per-sec -> bin 0 has 4 samples, bin 1 has 1.
+    const samples = Int16Array.from([1, 2, 3, 4, 5000]);
+    const peaks = computeAmplitudePeaks(samples, 4, 1);
+    expect(peaks).toHaveLength(2);
+    expect(peaks[1]).toBeCloseTo(5000 / 32768, 6);
+  });
+
+  test("normalizes the max-magnitude negative sample to exactly 1.0", () => {
+    const samples = Int16Array.from([-32768, 0, 100]);
+    const peaks = computeAmplitudePeaks(samples, 3, 1);
+    expect(peaks[0]).toBe(1);
+  });
+
+  test("returns an empty array for empty input", () => {
+    expect(computeAmplitudePeaks(new Int16Array(0), 8000, 20)).toEqual([]);
+  });
+
+  test("returns an empty array for a non-positive sample rate or peaksPerSec", () => {
+    const samples = Int16Array.from([100, 200]);
+    expect(computeAmplitudePeaks(samples, 0, 20)).toEqual([]);
+    expect(computeAmplitudePeaks(samples, 8000, 0)).toEqual([]);
+  });
+
+  test("produces roughly peaksPerSec * durationSec bins for a realistic window", () => {
+    const sampleRateHz = 8000;
+    const peaksPerSec = 20;
+    const durationSec = 5;
+    const samples = new Int16Array(sampleRateHz * durationSec);
+    const peaks = computeAmplitudePeaks(samples, sampleRateHz, peaksPerSec);
+    expect(peaks).toHaveLength(peaksPerSec * durationSec);
+  });
+});
+
+describe("quantizePeaks", () => {
+  test("rounds 0..1 floats to integers in [0, 100]", () => {
+    expect(quantizePeaks([0, 0.5, 1, 0.004, 0.996])).toEqual([0, 50, 100, 0, 100]);
+  });
+
+  test("clamps defensively outside [0, 1]", () => {
+    expect(quantizePeaks([-0.5, 1.5])).toEqual([0, 100]);
+  });
+
+  test("returns an empty array for empty input", () => {
+    expect(quantizePeaks([])).toEqual([]);
   });
 });

@@ -38,9 +38,12 @@ import { join } from "node:path";
 import {
   clipService,
   deleteObject,
+  derivePeaksStorageKey,
   presignDownloadUrl,
   putFileFromPath,
+  putJson,
 } from "@narriflow/services";
+import type { ClipPreviewPeaks } from "@narriflow/services";
 import { DEFAULT_CAPTION_PRESET } from "@narriflow/validators";
 import type { CaptionPreset } from "@narriflow/validators";
 
@@ -207,6 +210,34 @@ function previewX264Threads(): string {
     process.env.WORKER_CLIP_PREVIEW_X264_THREADS?.trim() ||
     DEFAULT_PREVIEW_X264_THREADS
   );
+}
+
+// ─── Waveform peaks knobs ───────────────────────────────────────────────────
+// A cheap second ffmpeg pass over the already-cut proxy (not the remote
+// source — see generateClipPreviewPeaks) decodes raw PCM, which this file
+// bins in JS into a small peaks-per-second artifact for the studio's
+// timeline waveform (packages/services/src/clip-preview-storage.ts owns the
+// artifact's shape and its storage-key convention).
+
+/** Chosen so it divides evenly by every sane DEFAULT_PREVIEW_PEAKS_PER_SEC
+ *  value (8000 / 20 = 400 samples/bin) — plenty for max-abs amplitude
+ *  binning, which only cares about peak magnitude, not frequency content. */
+const DEFAULT_PEAKS_PCM_SAMPLE_RATE_HZ = 8000;
+const DEFAULT_PREVIEW_PEAKS_PER_SEC = 20;
+const PREVIEW_PEAKS_FORMAT_VERSION = 1 as const;
+
+function previewPeaksPcmSampleRateHz(): number {
+  const raw = Number(process.env.WORKER_CLIP_PREVIEW_PEAKS_PCM_HZ?.trim());
+  return Number.isFinite(raw) && raw > 0
+    ? Math.floor(raw)
+    : DEFAULT_PEAKS_PCM_SAMPLE_RATE_HZ;
+}
+
+function previewPeaksPerSec(): number {
+  const raw = Number(process.env.WORKER_CLIP_PREVIEW_PEAKS_PER_SEC?.trim());
+  return Number.isFinite(raw) && raw > 0
+    ? Math.floor(raw)
+    : DEFAULT_PREVIEW_PEAKS_PER_SEC;
 }
 
 function previewFfmpegTimeoutMs(): number {
@@ -570,6 +601,71 @@ async function execCommandOutput(
   });
 }
 
+/**
+ * Same shape as {@link execCommandOutput} but collects stdout as a Buffer
+ * instead of coercing every chunk through `.toString()` — required for the
+ * raw `s16le` PCM {@link generateClipPreviewPeaks} reads off ffmpeg's
+ * stdout, since decoding binary audio samples as UTF-8 text would corrupt
+ * them (this file's other `execCommandOutput` uses are all textual: JSON
+ * from ffprobe).
+ */
+async function execCommandBuffer(
+  command: string,
+  args: string[],
+  options?: { timeoutMs?: number },
+): Promise<Buffer> {
+  return new Promise<Buffer>((resolve, reject) => {
+    const child = spawn(command, args, { stdio: ["ignore", "pipe", "pipe"] });
+    const stdoutChunks: Buffer[] = [];
+    let stderr = "";
+    const { timedOut, cancel } = armProcessTimeout(child, options?.timeoutMs);
+
+    child.stdout.on("data", (chunk: Buffer) => {
+      stdoutChunks.push(chunk);
+    });
+    child.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+
+    child.on("error", (error: NodeJS.ErrnoException) => {
+      cancel();
+      if (error.code === "ENOENT") {
+        reject(
+          new ClipPreviewWorkerError(
+            "worker_command_missing",
+            `${command} is not installed`,
+          ),
+        );
+        return;
+      }
+      reject(error);
+    });
+
+    child.on("close", (code) => {
+      cancel();
+      if (timedOut.current) {
+        reject(
+          new ClipPreviewWorkerError(
+            "worker_command_timeout",
+            `${command} timed out after ${options?.timeoutMs}ms and was killed`,
+          ),
+        );
+        return;
+      }
+      if (code === 0) {
+        resolve(Buffer.concat(stdoutChunks));
+        return;
+      }
+      reject(
+        new ClipPreviewWorkerError(
+          "worker_command_failed",
+          `${command} failed with code ${code}: ${stderr.slice(-500)}`,
+        ),
+      );
+    });
+  });
+}
+
 /** Result of classifying a source's streams — see {@link classifyMediaStreams}.
  *  `hasVideo` is true only for a *real* (non-cover-art) video stream. */
 interface SourceProbeLite {
@@ -899,6 +995,150 @@ export function buildAudiogramPreviewArgs(params: {
   ];
 }
 
+// ─── Waveform peaks ─────────────────────────────────────────────────────────
+// Phase B step 16 (vizard-parity): a real amplitude waveform for the studio
+// timeline, computed from the SAME proxy this file already cuts — a cheap
+// second ffmpeg pass over the small local proxy file (never the remote
+// source), decoding to raw PCM and binning in JS. Deliberately not
+// astats/ebur128 (built for loudness metering, not per-bin peak extraction)
+// and deliberately not folded into the primary cut's own ffmpeg invocation
+// (a second `-map`'d output on that command would complicate its already
+// carefully-tuned args for video vs. audiogram vs. no-audio inputs, for a
+// pass that's cheap enough on its own — proxies are ~1-3MB).
+
+/**
+ * Builds the ffmpeg args to decode `inputPath`'s audio to raw, headerless
+ * mono PCM (`s16le`) at `sampleRateHz`, written to stdout. No `-y` (nothing
+ * is written to a file) and no HTTP_SOURCE_ARGS (the input here is always
+ * the already-downloaded local proxy file, never a remote URL).
+ */
+export function buildPeaksExtractionArgs(params: {
+  inputPath: string;
+  sampleRateHz: number;
+}): string[] {
+  return [
+    "-i",
+    params.inputPath,
+    "-vn",
+    "-ac",
+    "1",
+    "-ar",
+    String(params.sampleRateHz),
+    "-f",
+    "s16le",
+    "-",
+  ];
+}
+
+/**
+ * Bins a mono PCM signal into `peaksPerSec` amplitude samples per second of
+ * audio, using max-abs amplitude within each bin (not RMS/average) so brief
+ * transients — a word's onset, a laugh — are never smoothed away, which
+ * matters for a waveform whose whole purpose is showing WHERE speech is
+ * loud. The final bin may be shorter than the rest when `samples.length`
+ * isn't an exact multiple of the bin width; it's still emitted (never
+ * dropped), so `peaks.length` is always `Math.ceil(samples.length /
+ * samplesPerBin)` and the artifact covers the full decoded duration.
+ *
+ * Pure and side-effect-free — no ffmpeg involved — so it's unit-testable
+ * against synthetic Int16Array input.
+ */
+export function computeAmplitudePeaks(
+  samples: Int16Array,
+  pcmSampleRateHz: number,
+  peaksPerSec: number,
+): number[] {
+  if (pcmSampleRateHz <= 0 || peaksPerSec <= 0 || samples.length === 0) {
+    return [];
+  }
+
+  const samplesPerBin = pcmSampleRateHz / peaksPerSec;
+  const totalBins = Math.ceil(samples.length / samplesPerBin);
+  const peaks: number[] = new Array(totalBins);
+
+  for (let bin = 0; bin < totalBins; bin++) {
+    const start = Math.floor(bin * samplesPerBin);
+    const end = Math.min(samples.length, Math.floor((bin + 1) * samplesPerBin));
+    let maxAbs = 0;
+    for (let i = start; i < end; i++) {
+      const abs = Math.abs(samples[i]!);
+      if (abs > maxAbs) maxAbs = abs;
+    }
+    // Int16 range is [-32768, 32767]; 32768 normalizes the max-magnitude
+    // negative sample to exactly 1.0 rather than 0.99997-ish.
+    peaks[bin] = maxAbs / 32768;
+  }
+
+  return peaks;
+}
+
+/**
+ * Quantizes 0..1 amplitude floats to integers in [0, 100] for a compact JSON
+ * payload (~20/s * 120s = 2400 small ints, a few KB — see
+ * ClipPreviewPeaks's doc comment in packages/services). Clamped
+ * defensively: {@link computeAmplitudePeaks} never produces a value outside
+ * [0, 1], but this keeps the artifact's own contract (integers in [0, 100])
+ * true regardless of caller.
+ */
+export function quantizePeaks(peaks: number[]): number[] {
+  return peaks.map((p) => Math.max(0, Math.min(100, Math.round(p * 100))));
+}
+
+/**
+ * Decodes `proxyFilePath`'s audio and bins it into the full
+ * {@link ClipPreviewPeaks} artifact for `cutAndUploadClipPreview` to upload
+ * alongside the proxy. `windowStartSec`/`windowDurationSec` are the SAME
+ * padded preview-window values persisted as the clip's `previewStartSec`/
+ * `previewDurationSec` — the artifact's own `startSec`/`durationSec` must
+ * always agree with those so a bin's source time
+ * (`startSec + i/peaksPerSec`) means the same thing to every reader.
+ *
+ * Throws (rather than returning a partial/empty result) on any ffmpeg
+ * failure — callers decide how to degrade (see the try/catch around this
+ * call in `cutAndUploadClipPreview`, which treats a failure here as
+ * non-fatal to the proxy itself).
+ */
+async function generateClipPreviewPeaks(params: {
+  proxyFilePath: string;
+  windowStartSec: number;
+  windowDurationSec: number;
+}): Promise<ClipPreviewPeaks> {
+  const pcmSampleRateHz = previewPeaksPcmSampleRateHz();
+  const peaksPerSec = previewPeaksPerSec();
+
+  const pcmBuffer = await execCommandBuffer(
+    "ffmpeg",
+    buildPeaksExtractionArgs({
+      inputPath: params.proxyFilePath,
+      sampleRateHz: pcmSampleRateHz,
+    }),
+    { timeoutMs: previewFfmpegTimeoutMs() },
+  );
+
+  // Manual sample-by-sample copy rather than aliasing an Int16Array over
+  // pcmBuffer's own backing ArrayBuffer: Int16Array's constructor requires
+  // its byteOffset to be a multiple of 2, which Buffer.concat's output
+  // isn't guaranteed to satisfy. A plain readInt16LE loop sidesteps that
+  // entirely and is still fast — a two-minute proxy at 8kHz is under 1M
+  // samples.
+  const sampleCount = Math.floor(pcmBuffer.length / 2);
+  const samples = new Int16Array(sampleCount);
+  for (let i = 0; i < sampleCount; i++) {
+    samples[i] = pcmBuffer.readInt16LE(i * 2);
+  }
+
+  const rawPeaks = computeAmplitudePeaks(samples, pcmSampleRateHz, peaksPerSec);
+
+  return {
+    version: PREVIEW_PEAKS_FORMAT_VERSION,
+    sampleRateHz: null,
+    peaksPerSec,
+    startSec: params.windowStartSec,
+    durationSec: params.windowDurationSec,
+    peaks: quantizePeaks(rawPeaks),
+  };
+}
+
 // ─── Orchestration ──────────────────────────────────────────────────────────
 
 async function cutAndUploadClipPreview(params: {
@@ -975,6 +1215,47 @@ async function cutAndUploadClipPreview(params: {
     },
   });
 
+  // Waveform peaks: uploaded BEFORE the DB claim below, exactly like the mp4
+  // itself — completeClipPreview's existing conditional claim (previewStorageKey
+  // IS NULL + boundary-window match) already guards staleness for the whole
+  // attempt, so nothing extra is needed to keep the peaks key "attached" to
+  // the same completion; it's simply present (or not) by the time the claim
+  // runs. Silent-video previews (no audio track — see buildClipPreviewArgs's
+  // `hasAudio` branch) never get a peaks artifact, since there's nothing to
+  // extract; the studio's WaveformCanvas falls back to its synthetic
+  // waveform for those exactly as it does for a still-pending proxy. A
+  // peaks-generation failure is logged and swallowed rather than failing the
+  // whole preview attempt — a proxy with no waveform is still a working
+  // proxy, and this pass runs on the small local proxy file, not the remote
+  // source, so it can never be the expensive part of this attempt.
+  let peaksKey: string | null = null;
+  if (probe.hasAudio) {
+    try {
+      const peaksPayload = await generateClipPreviewPeaks({
+        proxyFilePath: outputPath,
+        windowStartSec: window.startSec,
+        windowDurationSec: window.durationSec,
+      });
+      peaksKey = derivePeaksStorageKey(key);
+      await putJson({
+        key: peaksKey,
+        value: peaksPayload,
+        metadata: {
+          project_id: clip.projectId,
+          clip_id: clip.id,
+          kind: "preview_peaks",
+        },
+      });
+    } catch (error) {
+      peaksKey = null;
+      log("warn", "clip_preview_peaks_failed", {
+        clipId: clip.id,
+        projectId: clip.projectId,
+        message: error instanceof Error ? error.message : "Unknown error",
+      });
+    }
+  }
+
   const result = await clipService.completeClipPreview(clip.id, {
     storageKey: key,
     startSec: window.startSec,
@@ -991,9 +1272,11 @@ async function cutAndUploadClipPreview(params: {
 
   if (!result.persisted) {
     // Lost the race to another worker cutting the same clip concurrently.
-    // `key` is this attempt's own unique object, so deleting it can never
-    // touch the bytes the winning row points at.
+    // `key` (and `peaksKey`, if this attempt generated one) are this
+    // attempt's own unique objects, so deleting them can never touch the
+    // bytes the winning row points at.
     await deleteObject(key).catch(() => {});
+    if (peaksKey) await deleteObject(peaksKey).catch(() => {});
     log("info", "clip_preview_lost_claim_race", {
       clipId: clip.id,
       projectId: clip.projectId,
@@ -1007,6 +1290,7 @@ async function cutAndUploadClipPreview(params: {
     previewKind,
     previewStartSec: window.startSec,
     previewDurationSec: window.durationSec,
+    peaksGenerated: peaksKey !== null,
   });
   return true;
 }

@@ -140,6 +140,7 @@ export default async function StudioPage({
       clipEndSec={effective.endSec}
       previewVideoUrl={previewSource.previewUrl}
       previewStartSec={previewSource.previewStartSec}
+      waveformPeaksUrl={previewSource.waveformPeaksUrl}
       // Once the source is purged, a still-missing proxy can never arrive —
       // the worker that cuts it reads straight from source storage — so the
       // studio shows a terminal message instead of polling/spinning forever.
