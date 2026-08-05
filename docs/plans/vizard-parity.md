@@ -219,9 +219,62 @@ before the foundation steps it depends on.
   color/image behind a letterboxed video; new Background tool panel.
   Apply-to-all landed 2026-08-05 — see the transition bullet below, same
   `applyStudioEditsPatchToAllClips` bulk service backs both.)*
-- Layout presets — **bigger than it looks**: `layoutMode` is local preview state
-  and the worker auto-reframes independently; needs schema + worker contract.
-- Music/SFX library (curated CDN + R2 upload; keep URL escape hatch).
+- Layout presets — **design converged 2026-08-05** (recon: reframe recon
+  report, this session). Two-stage delivery:
+  1. **Framing modes (build first, cheap)** — persist
+     `studioEdits.framing = { mode: "auto" | "center" | "fit" }`;
+     `auto` = today's auto-reframe crop, `center` = static center crop
+     (skip `detectFacePath` entirely; the no-sendcmd `crop=` branch of
+     `buildCropAndScaleFilter` already exists), `fit` = the landed
+     background/fit path. Consolidate the currently scattered mode checks
+     (`background.mode` gates at three call sites in `render-clips.ts`)
+     into ONE framing-mode dispatch so a fourth mode can't silently
+     double-apply. Framing and background are the same radio group in the
+     UI (crop-auto / crop-center / fit+background), not independent flags.
+  2. **Split-screen 2-up (own sub-plan — genuinely large)**. Constraints
+     found: `reframe_detect.py` deliberately emits only the largest face
+     per frame (multi-face output is a trivial change; tracking/clustering
+     is real new work); no face-track identity exists; AssemblyAI
+     diarization (`TranscriptUtterance.speaker`/`speakerLabel`) is unwired
+     into the render path but is the cheapest region-assignment signal
+     (correlate speaker turns with face-cluster positions instead of pure
+     visual tracking). Worker filtergraph is a natural
+     `buildFitAndBackgroundFilter`-style extension (split → 2× crop/scale →
+     vstack → same `[outvbase]` contract). The dominant cost is PREVIEW:
+     one `<video>` element can't show two different crops of one frame —
+     needs dual clock-synced `<video>` elements (moderate rewrite) or a
+     canvas compositor (large rewrite). Sequence: worker spike
+     (multi-face emit + diarization-assisted assignment + vstack graph on a
+     real 2-speaker video) BEFORE any preview work; single-face stretches
+     fall back to single-speaker framing; B-roll cutaway replaces the whole
+     2-up frame (simplest defensible policy).
+- Music/SFX library — **design converged 2026-08-05** from competitor
+  research (OpusClip/Vizard/Submagic/Captions.app/Klap/Veed/Descript).
+  Market pattern to match: curated self-hosted library filterable by mood
+  with preview play; SFX as a separate small one-shot library (click to
+  place at playhead), not a looping bed; upload is table stakes;
+  auto-ducking under speech is becoming standard (OpusClip, Captions,
+  Descript). v1 scope:
+  - New `AudioAsset` Prisma model (kind: music|sfx; scope: curated|user;
+    R2 key, title, mood tags, durationSec). Curated rows seeded from a
+    manifest + admin script; content sourced ONLY from YouTube Audio
+    Library no-attribution tracks + Pixabay (skip NCS-style packs — the
+    documented Content-ID false-positive risk case). ~120-200 tracks,
+    6-10 mood tags; 30-60 SFX. Actual curation is a content/ops task,
+    not a code task.
+  - Presigned R2 upload (mirror `presignLogoUpload`), MP3/WAV/M4A,
+    ~50MB cap. Keep the URL-paste escape hatch.
+  - Panel: Music/SFX/Upload tabs, mood filter, preview play, volume +
+    startOffset (existing music schema fields); SFX placements are a new
+    `studioEdits.sfx[]` (assetRef + startSec in edited seconds, one-shot).
+  - Auto-ducking v1: derive speech windows from the transcript word
+    timings we already have; duck music via timed volume automation in
+    the worker (not sidechain), with the same window math applied to the
+    preview gain node so preview and burn-in can't fork.
+  - Licensing copy: "royalty-free for use in your videos" — do NOT claim
+    "monetization-safe"/"no Content ID claims" (even OpusClip's docs admit
+    false positives). Base library free-tier (Submagic pattern); any
+    future AI-generated audio goes behind paid credits.
 - Subtitle visibility / punctuation / per-cue emoji overrides (global emoji
   toggle already exists, `captions-panel.tsx:339`) — distinct schema changes.
   *(Visibility + punctuation landed 2026-08-05 —
