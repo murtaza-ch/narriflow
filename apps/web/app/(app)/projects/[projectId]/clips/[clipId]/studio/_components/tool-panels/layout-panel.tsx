@@ -12,10 +12,10 @@ import {
 } from "@narriflow/validators";
 import { FramingPresetGrid } from "./framing-preset-thumbnails";
 
-// Vizard-parity Phase C-2 stage 1: per-clip framing mode. Three effective
-// modes, resolved by the shared `resolveEffectiveFramingMode` helper so this
-// panel, the worker's render pipeline, and the preview can never fork on the
-// answer:
+// Vizard-parity Phase C-2 stage 1 (+ split packet A): per-clip framing mode.
+// Four effective modes, resolved by the shared `resolveEffectiveFramingMode`
+// helper so this panel, the worker's render pipeline, and the preview can
+// never fork on the answer:
 //  - "auto"   — crop to fill, following the speaker's face when detected
 //               (`studioEdits.framing.mode === "auto"`, the default).
 //  - "center" — crop to fill, always centered, no face detection
@@ -26,10 +26,26 @@ import { FramingPresetGrid } from "./framing-preset-thumbnails";
 //               `background` so the two fields can't disagree; see
 //               `studioFramingSchema`'s doc comment in
 //               packages/validators/src/studio-edits.ts).
+//  - "split"  — stacked 2-up split-screen: two detected face clusters seated
+//               into vertically stacked tiles (`studioEdits.framing.mode ===
+//               "split"`). Packets A (schema/panel), B (worker: segment-aware
+//               2-up render — `apps/worker/src/tasks/two-up.ts`,
+//               `render-clips.ts`'s `decideSplitFallback`/
+//               `framingForcesPerOutputRender`), and C (this dual-video
+//               preview — see video-preview.tsx/split-secondary-tile.tsx)
+//               have all landed. Real detection runs per clip; when the
+//               footage can't support a genuine 2-up (fewer than two stable
+//               face clusters, no clusters ever on screen together, one of
+//               this clip's output aspect ratios can't crop two laterally
+//               distinct tiles, B-roll is active, or the whole feature is
+//               disabled via `WORKER_SPLIT=0`), both the worker and this
+//               live preview fall back to single-speaker framing (auto-
+//               reframe, or a static center crop) exactly like "auto"/
+//               "center" — never a failed render.
 // See buildFitAndBackgroundFilter / shouldRunAutoReframeDetection
 // (apps/worker/src/tasks/render-clips.ts) for the burn-in side of this
 // parity contract, and video-preview.tsx for how the stage renders it live.
-// The three presets are rendered as drawn thumbnail tiles (Vizard-style) by
+// The four presets are rendered as drawn thumbnail tiles (Vizard-style) by
 // FramingPresetGrid (./framing-preset-thumbnails.tsx) rather than an icon
 // radio — see that file for the tile art.
 
@@ -298,6 +314,16 @@ export function LayoutPanel() {
         <Text fontSize="11px" color="studio.fgSubtle" lineHeight="1.6">
           The source video crops to fill the canvas, always centered — no
           face detection runs for this clip.
+        </Text>
+      )}
+
+      {effectiveMode === "split" && (
+        <Text fontSize="11px" color="studio.fgSubtle" lineHeight="1.6">
+          Stacks two detected speakers into vertically split tiles. Falls
+          back to auto-reframe (following the speaker&apos;s face, or a
+          centered crop if none is detected) when the footage doesn&apos;t
+          support a 2-up split — e.g. only one speaker is ever on screen at
+          once.
         </Text>
       )}
 

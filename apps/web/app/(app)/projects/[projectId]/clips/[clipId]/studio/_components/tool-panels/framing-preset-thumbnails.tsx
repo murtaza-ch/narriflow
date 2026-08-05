@@ -6,12 +6,21 @@ import type { EffectiveFramingMode } from "@narriflow/validators";
 // Vizard-style layout picker: a grid of drawn 9:16 mini-mockups (no icon +
 // label rows). Each tile is a small hand-drawn scene built from Box/Flex
 // primitives on studio.* tokens — see layout-panel.tsx's top-of-file comment
-// for the framing/background truth model these three presets encode.
+// for the framing/background truth model these four presets encode.
 
-const FRAMING_PRESETS: { id: EffectiveFramingMode; label: string }[] = [
-  { id: "auto", label: "Auto reframe" },
-  { id: "center", label: "Center crop" },
-  { id: "fit", label: "Fit" },
+// M6 (adversarial review): `label` is the full name — used for the
+// button's `title`/`aria-label` so screen readers and hover tooltips still
+// get the unambiguous full name. `shortLabel` is what's actually painted
+// under the tile: at the fluid tile widths below (~51px at the panel's
+// 228px base-breakpoint width, ~61px at the 268px `md` width), "Auto
+// reframe"/"Center crop" wrap onto an awkward 3rd line at 11px; the shorter
+// forms fit on one line at both widths without shrinking the font past
+// legibility.
+const FRAMING_PRESETS: { id: EffectiveFramingMode; label: string; shortLabel: string }[] = [
+  { id: "auto", label: "Auto reframe", shortLabel: "Auto" },
+  { id: "center", label: "Center crop", shortLabel: "Center" },
+  { id: "fit", label: "Fit", shortLabel: "Fit" },
+  { id: "split", label: "Split", shortLabel: "Split" },
 ];
 
 function CornerBrackets({
@@ -57,6 +66,40 @@ function Silhouette({ color }: { color: string }) {
   );
 }
 
+// Split-preset silhouette pair — a smaller head+shoulders shape seated in
+// each half of the tile (one per stacked speaker tile), mirroring
+// `Silhouette` above but scaled down to leave room for the hairline divider.
+function StackedSilhouettes({ color }: { color: string }) {
+  return (
+    <>
+      {/* Top seat */}
+      <Box position="absolute" top="8px" left="50%" transform="translateX(-50%)" w="14px" h="14px" borderRadius="full" bg={color} />
+      <Box
+        position="absolute"
+        top="24px"
+        left="50%"
+        transform="translateX(-50%)"
+        w="26px"
+        h="16px"
+        bg={color}
+        css={{ borderTopLeftRadius: "8px", borderTopRightRadius: "8px" }}
+      />
+      {/* Bottom seat */}
+      <Box position="absolute" bottom="24px" left="50%" transform="translateX(-50%)" w="14px" h="14px" borderRadius="full" bg={color} />
+      <Box
+        position="absolute"
+        bottom="8px"
+        left="50%"
+        transform="translateX(-50%)"
+        w="26px"
+        h="16px"
+        bg={color}
+        css={{ borderTopLeftRadius: "8px", borderTopRightRadius: "8px" }}
+      />
+    </>
+  );
+}
+
 function FramingPresetArt({
   mode,
   shapeColor,
@@ -84,6 +127,18 @@ function FramingPresetArt({
         {/* Center-guide cue — a static crosshair through the tile midpoint. */}
         <Box position="absolute" top="0" left="50%" w="1px" h="100%" bg={cueColor} opacity={0.5} />
         <Box position="absolute" left="0" top="50%" w="100%" h="1px" bg={cueColor} opacity={0.5} />
+      </>
+    );
+  }
+
+  if (mode === "split") {
+    return (
+      <>
+        <StackedSilhouettes color={shapeColor} />
+        {/* Stacked 2-up divider — a fixed hairline, not a state-colored cue,
+            since it represents the fixed split boundary itself rather than
+            an interactive framing cue. */}
+        <Box position="absolute" top="50%" left="0" w="100%" h="1px" bg="studio.border" />
       </>
     );
   }
@@ -122,24 +177,36 @@ function FramingPresetArt({
 function FramingPresetTile({
   id,
   label,
+  shortLabel,
   isActive,
   onClick,
 }: {
   id: EffectiveFramingMode;
   label: string;
+  shortLabel: string;
   isActive: boolean;
   onClick: () => void;
 }) {
   return (
-    <Flex direction="column" align="center" gap="6px">
+    <Flex direction="column" align="center" gap="6px" minW="0">
       <Box
         as="button"
         aria-label={label}
         aria-pressed={isActive}
         title={label}
         onClick={onClick}
-        w="56px"
-        h="84px"
+        // M6 (adversarial review): fluid width (fills its `1fr` grid
+        // column) instead of a fixed 56px — 4 * 56px + 3 * 8px gaps = 248px
+        // overflows the panel's 228px base-breakpoint content width (the
+        // fixed width + `flexShrink={0}` this replaces couldn't shrink to
+        // fit at all). `aspectRatio` keeps the original 56:84 (2:3) tile
+        // shape at whatever width the grid column actually resolves to —
+        // ~51px wide (~76px tall) at 228px, ~61px wide (~91px tall) at the
+        // 268px `md` breakpoint — rather than baking in one fixed size that
+        // only fit one breakpoint.
+        w="100%"
+        aspectRatio="2 / 3"
+        minW="0"
         position="relative"
         overflow="hidden"
         borderRadius="l2"
@@ -147,7 +214,6 @@ function FramingPresetTile({
         borderColor={isActive ? "studio.ring" : "studio.border"}
         bg={isActive ? "studio.raised" : "studio.subtle"}
         cursor="pointer"
-        flexShrink={0}
         transition="background 120ms ease, border-color 120ms ease"
         _hover={{ borderColor: isActive ? "studio.ring" : "studio.borderStrong" }}
       >
@@ -162,8 +228,9 @@ function FramingPresetTile({
         color={isActive ? "studio.accentFg" : "studio.fgMuted"}
         fontWeight={isActive ? "600" : "500"}
         textAlign="center"
+        whiteSpace="nowrap"
       >
-        {label}
+        {shortLabel}
       </Text>
     </Flex>
   );
@@ -176,13 +243,18 @@ export function FramingPresetGrid({
   selected: EffectiveFramingMode;
   onSelect: (mode: EffectiveFramingMode) => void;
 }) {
+  // Four presets, one row, fluid tile widths (see FramingPresetTile) so the
+  // grid fits the panel's content width at both the 228px base breakpoint
+  // and the 268px `md` breakpoint, instead of a fixed-56px tile that only
+  // fit one of them (M6, adversarial review).
   return (
-    <Box display="grid" style={{ gridTemplateColumns: "repeat(3, 1fr)", gap: "8px" }}>
+    <Box display="grid" style={{ gridTemplateColumns: "repeat(4, 1fr)", gap: "8px" }}>
       {FRAMING_PRESETS.map((preset) => (
         <FramingPresetTile
           key={preset.id}
           id={preset.id}
           label={preset.label}
+          shortLabel={preset.shortLabel}
           isActive={selected === preset.id}
           onClick={() => onSelect(preset.id)}
         />

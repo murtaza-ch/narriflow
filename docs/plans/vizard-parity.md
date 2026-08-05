@@ -349,10 +349,39 @@ before the foundation steps it depends on.
      per-segment means, and single-shot fallback segments must route
      through the EXISTING auto-reframe path (the spike's global-mean
      fallback visibly off-centers subjects whose close-up composition
-     differs from the wide shot). Remaining for production: per-segment
-     crop centers, active-speaker assignment, segment-machinery in
-     render-clips, crossfade on mode switches, and the live dual-`<video>`
-     preview — still the dominant cost, unchanged by this spike.)*
+     differs from the wide shot).
+     **Packets A/B/C landed (2026-08-05, this diff):** per-segment crop
+     centers (`buildSplitLayoutPlan`'s per-window cluster means, not the
+     spike's global mean), the segment-aware render-clips.ts machinery
+     (multi-face detection → `decideSplitFallback` → per-output
+     `buildSplitFilterChain`, with its own `SplitFallbackReason` set:
+     `broll_conflict` / `detection_unavailable` / `insufficient_clusters` /
+     `empty_plan` / `no_two_up_segments` / `tiles_not_distinct` / `disabled`
+     / `null`), and the live dual-`<video>` preview (video-preview.tsx's top
+     tile + a second muted `SplitSecondaryTile` for the bottom seat, static
+     0%/100% seat positions client-side since no face detection runs in the
+     browser). Adversarial review on this landing also fixed a `concat`
+     SAR/pixel-format mismatch that hard-failed any mixed two-up+single
+     render plan (verified against real ffmpeg 8.0.1) and added the
+     per-output `tiles_not_distinct` fallback for aspect ratios (1:1, 16:9,
+     or any portrait source) whose tile crop can't seat two laterally
+     distinct centers.
+     **Remaining for production:** active-speaker assignment (still
+     diarization-majority per this function's own doc comment — the
+     baseline-correction/visual-active-speaker work above is unbuilt, so
+     tile top/bottom assignment stays "whichever cluster's mean cx is
+     smaller," not "whoever is credited as speaking"), crossfades on
+     segment/mode switches (v1 is hard cuts only, by design), per-segment
+     sendcmd smoothing (today's segments are static per-segment crops, not
+     sendcmd-driven within a segment), b-roll composition with split (v1
+     policy: b-roll always wins the whole frame, `broll_conflict` fallback),
+     and VFR source validation (the segment `trim`+`concat` timing assumes
+     a constant frame rate; an unusually-VFR source is unverified). Memory:
+     a 60s/24-segment 1080p mixed-plan render measured ~683MB peak worker
+     RSS vs a ~267MB non-split baseline of the same clip — each segment's
+     own `split`+crop+scale branch in the filtergraph adds real memory, not
+     just graph-build complexity; worth a headroom check before raising
+     `maxSegments` much past today's default of 24.)*
 - Music/SFX library — **design converged 2026-08-05** from competitor
   research (OpusClip/Vizard/Submagic/Captions.app/Klap/Veed/Descript).
   Market pattern to match: curated self-hosted library filterable by mood

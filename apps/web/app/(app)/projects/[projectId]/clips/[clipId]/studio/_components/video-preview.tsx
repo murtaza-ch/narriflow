@@ -30,6 +30,7 @@ import type { AspectRatio, LayoutMode } from "./studio-shell";
 import { InteractiveCaptionOverlay } from "./interactive-caption-overlay";
 import { InteractiveTextLayer } from "./interactive-text-layer";
 import { SfxPreviewTrack } from "./sfx-preview-track";
+import { SplitSecondaryTile } from "./split-secondary-tile";
 
 /** After this long with no metadata yet, hint that the source is just large. */
 const SLOW_LOAD_HINT_MS = 10_000;
@@ -86,6 +87,47 @@ const ASPECT_RATIO_CONFIG: Record<AspectRatio, { w: number; h: number; icon: Rea
 };
 
 const LAYOUT_OPTIONS: LayoutMode[] = ["fill", "fit", "blur"];
+
+// Split preview (split packet C): heuristic horizontal seat positions for
+// the stacked 2-up tiles, fed straight into CSS `object-position`'s X
+// component. These are fixed, hand-picked positions, NOT per-segment: the
+// render pipeline instead detects real face clusters per shot segment and
+// re-centers each tile individually (see the worker's split framing task,
+// packet B), and switches which framing (2-up vs single speaker) applies
+// per segment. No face detection is available client-side, so the live
+// preview always shows this same static 2-up regardless of playhead
+// position — same "render is the source of truth" stance as the music
+// preview comment further down in this file: good enough to block out
+// where the two speakers will sit, without claiming frame-accurate parity
+// with the actual export.
+//
+// H2 (adversarial review): these are NOT "a fraction of the source video's
+// width" the way a plain centered crop's `cx` is (that's what the render
+// pipeline's `TwoUpRegionSpec.cx` means, and what an earlier version of this
+// comment wrongly implied these matched). Under `object-fit: cover`,
+// `object-position`'s X component `p` does NOT pick a point on the
+// UNSCALED source — `cover` first scales the source up until it fills the
+// tile in both dimensions, THEN `p` anchors the overflow: the resulting
+// VISIBLE center lands at `p*(1-r) + r/2` of the way across the source,
+// where `r = tileAspect / videoAspect` is the fraction of source width the
+// tile's viewport actually shows. For a 1920x1080 source stacked into 9:16
+// tiles, r ~= 0.775, so the previous `0.33`/`0.67` values rendered as visible
+// centers ~0.438/0.562 — far from the intended left/right seats, and close
+// enough to each other to read as near-duplicate tiles.
+//
+// The fix (cheapest option that's still EXACT, not just closer): `0%` and
+// `100%`. Those two values are defined as "anchor the overflow's start/end
+// edge to the container's start/end edge" — they bypass the `p*(1-r)+r/2`
+// formula entirely (there's no scaling-dependent midpoint to get wrong at
+// the edges). That's also exactly what the render's own `cropXForCenter`
+// produces at ITS clamped extremes (`x=0`, `x=srcWidth-cropW`) for sources
+// too narrow to give the two seats real lateral separation — preview and
+// render agree at the boundary case, and for the common two-shot framing
+// (seats genuinely near the left/right edges of frame) `0%`/`100%` is a
+// reasonable stand-in for a per-shot detected center, same "good enough"
+// preview stance as before.
+const SPLIT_TOP_TILE_CX = 0;
+const SPLIT_BOTTOM_TILE_CX = 1;
 
 const PILL_STYLES = {
   alignItems: "center",
@@ -205,9 +247,24 @@ export function VideoPreview() {
   // centered). "auto" vs "center" have no client-side preview distinction
   // today — the proxy shows uncropped either way — so `layoutMode`'s own
   // fill/fit/blur cycling stays fully in charge whenever background is
-  // "off", unchanged from before this feature.
+  // "off". "split" is also an "off"-branch mode (`backgroundActive` below
+  // is a plain `=== "fit"` check, not an exhaustive switch, so it's `false`
+  // for split exactly like it is for center) but does NOT fall through to
+  // `layoutMode`'s single-video crop-to-fill below — split packet C
+  // replaces that with a real stacked 2-up dual-video preview (see
+  // `isSplit` and the tile markup further down). `layoutMode`'s fill/fit/
+  // blur cosmetic only ever applies to the remaining single-video modes
+  // (auto/center) — each split tile already fully determines its own
+  // framing via a fixed crop, so there's no fill/fit/blur state left to
+  // cycle through for it.
   const background = studioEdits.background;
-  const backgroundActive = resolveEffectiveFramingMode(studioEdits) === "fit";
+  const effectiveFramingMode = resolveEffectiveFramingMode(studioEdits);
+  const backgroundActive = effectiveFramingMode === "fit";
+  // resolveEffectiveFramingMode makes background and split mutually
+  // exclusive (background always wins as "fit"), so `isSplit` only ever
+  // reads true here while `backgroundActive` is false — never read
+  // `studioEdits.framing.mode` directly, per the panel/schema doc comments.
+  const isSplit = effectiveFramingMode === "split";
   const videoObjectFit: "contain" | "cover" = backgroundActive
     ? "contain"
     : layoutMode === "fit"
@@ -553,6 +610,17 @@ export function VideoPreview() {
   // proxy, or the source the fallback button already required to be
   // present before it could be clicked — so there's no reachable "nothing
   // loaded" state left to model here (there used to be one; it was dead).
+  // Split packet C: file-local seconds (the same unit `video.currentTime`
+  // reads on the main video) the secondary bottom tile should be showing
+  // right now — runs the clock's edited time back through `editedToSource`
+  // + `activeOffsetSec`, the exact reverse of what `playerRippleStartSec`
+  // above does for the clip's opening instant. Only meaningful (and only
+  // computed) while split is active; the tile that consumes it doesn't
+  // otherwise exist.
+  const splitSecondaryTargetTimeSec = isSplit
+    ? editedToSource(editedTimeMap, currentTime) - activeOffsetSec
+    : 0;
+
   const previewPhase: "generating" | "unavailable" | "loading" | "error" | "ready" =
     !previewVideoUrl && !useOriginalSourceFallback
       ? sourcePurged
@@ -833,21 +901,69 @@ export function VideoPreview() {
             </Flex>
           )}
 
-          {/* Actual video element */}
-          {/* biome-ignore lint/a11y/useMediaCaption: captions render via the separate interactive caption overlay; the raw video has no VTT track source to attach. */}
-          <video
-            ref={videoRef}
-            style={{
-              position: "absolute",
-              inset: 0,
-              width: "100%",
-              height: "100%",
-              objectFit: videoObjectFit,
-              display: previewPhase === "ready" ? "block" : "none",
-            }}
-            playsInline
-            preload="metadata"
-          />
+          {/* Actual video element(s) — split packet C: while split framing
+              is active, the stage becomes a stacked 2-up instead of one
+              crop-to-fill video. The TOP tile deliberately reuses the SAME
+              `<video ref={videoRef}>` DOM node the single-video path below
+              renders (just restyled/clipped into the top half) rather than
+              introducing a second element for it — that keeps every
+              existing contract that targets `videoRef` untouched: it's
+              still the sole playback-clock driver (`playbackClock.
+              startVideo` in studio-shell.tsx reads `requestVideoFrameCallback`
+              off this exact element), the sole audio source, and the same
+              node the load/seek/source-audio effects above already
+              manage by `.current` — none of them care how the element is
+              positioned. The wrapper Box below is unconditionally present
+              at this same JSX position in both branches (only its
+              inline style differs) specifically so React never unmounts
+              the video element when split toggles on/off — a real,
+              considered risk here: if the wrapper only existed in the
+              split branch, switching branches would swap in a structurally
+              different subtree, forcing React to tear down and recreate
+              the `<video>` node, which would silently drop its loaded
+              `src`/buffered state until some unrelated effect happened to
+              re-run. Only the BOTTOM tile is a genuinely new secondary
+              element (SplitSecondaryTile) — see its own file for why it's
+              muted and merely drift-corrected rather than clock-driving. */}
+          <Box
+            position="absolute"
+            top={0}
+            left={0}
+            right={0}
+            bottom={isSplit ? "50%" : 0}
+            overflow="hidden"
+            borderBottomWidth={isSplit ? "1px" : "0"}
+            borderColor="studio.border"
+          >
+            {/* biome-ignore lint/a11y/useMediaCaption: captions render via the separate interactive caption overlay; the raw video has no VTT track source to attach. */}
+            <video
+              ref={videoRef}
+              style={{
+                position: "absolute",
+                inset: 0,
+                width: "100%",
+                height: "100%",
+                objectFit: isSplit ? "cover" : videoObjectFit,
+                objectPosition: isSplit ? `${SPLIT_TOP_TILE_CX * 100}% 50%` : undefined,
+                display: previewPhase === "ready" ? "block" : "none",
+              }}
+              playsInline
+              preload="metadata"
+            />
+          </Box>
+
+          {isSplit && activeVideoUrl && (
+            <Box position="absolute" top="50%" left={0} right={0} bottom={0} overflow="hidden">
+              <SplitSecondaryTile
+                src={activeVideoUrl}
+                isPlaying={isPlaying}
+                targetTimeSec={splitSecondaryTargetTimeSec}
+                cx={SPLIT_BOTTOM_TILE_CX}
+                visible={previewPhase === "ready"}
+                mainVideoRef={videoRef}
+              />
+            </Box>
+          )}
 
           {/* Hidden background-music preview track — decorative render-parity
               bed, no user-facing controls; play/pause, looped offset
@@ -884,8 +1000,11 @@ export function VideoPreview() {
           ))}
 
           {/* Layout blur layer — a persisted background overrides this
-              cosmetic entirely (see backgroundActive above). */}
-          {!backgroundActive && layoutMode === "blur" && (
+              cosmetic entirely (see backgroundActive above), and so does
+              split: each tile's crop already fully determines its framing,
+              so there's no single-video fill/fit/blur state left to
+              cosmetically blur behind. */}
+          {!backgroundActive && !isSplit && layoutMode === "blur" && (
             <Box
               position="absolute"
               inset="0"
