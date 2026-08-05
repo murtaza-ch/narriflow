@@ -183,10 +183,16 @@ export function selectVisibleWordChips(
     if (words[mid]!.editedStartSec < range.startSec) lo = mid + 1;
     else hi = mid;
   }
-  // Word spans don't overlap (carved from the same monotonic timeline), so
-  // at most the single preceding chip can still straddle the left edge.
+  // Word spans don't overlap and are sorted by editedStartSec, but a chip
+  // can have zero width (a fully-collapsed word — see projectWordsToEdited's
+  // `sourceRangeToEdited` skip — never reaches this list, though a word
+  // clamped to near-zero width by `sourceRangeToEdited` can still share its
+  // neighbor's editedStartSec), so more than one preceding chip can share
+  // (or sit within FLOAT_SLACK of) the same boundary. Scan back past every
+  // chip whose span still straddles the window's left edge, not just the
+  // immediately preceding one.
   let start = lo;
-  if (start > 0 && words[start - 1]!.editedEndSec >= range.startSec) start -= 1;
+  while (start > 0 && words[start - 1]!.editedEndSec >= range.startSec) start -= 1;
 
   const result: WordChipDatum[] = [];
   for (let i = start; i < words.length; i++) {

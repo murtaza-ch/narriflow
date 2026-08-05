@@ -29,6 +29,21 @@ import {
 
 const PAUSE_THRESHOLD = 0.4;
 
+// ─── Selection toolbar layout (Phase B closing review finding 9a) ──────────
+//
+// SelectionToolbar floats ABOVE the selection via `transform: translate(-50%,
+// calc(-100% - 8px))` — its own height plus an 8px gap. A selection on (or
+// near) the scrollable transcript's first line puts `top` close to 0, and
+// the toolbar's rendered top then lands ABOVE the scroll container's own
+// content start, where `overflowY: auto` clips it — the toolbar is either
+// invisible or cut off. `SELECTION_TOOLBAR_CLEARANCE_PX` is the toolbar's own
+// ~34px content height (26px button row + 4px padding top/bottom + ~2px
+// border) plus its 8px floating gap, rounded up — `top` is floored at the
+// container's current scroll position plus this clearance so the toolbar
+// always has room to render above its anchor without leaving the visible
+// scrolled area.
+const SELECTION_TOOLBAR_CLEARANCE_PX = 44;
+
 // ─── API error copy (Create clip, Phase B step 14) ─────────────────────────
 
 function readPayloadString(payload: unknown, key: string): string | null {
@@ -655,10 +670,14 @@ export function TranscriptPanel() {
     }
     const rect = range.getBoundingClientRect();
     const containerRect = container.getBoundingClientRect();
+    const rawTop = rect.top - containerRect.top + container.scrollTop;
     setSelection({
       words,
       revertRange: computeRevertCoveringRange(words, deletedRanges),
-      top: rect.top - containerRect.top + container.scrollTop,
+      // Finding 9a: clamp so a first-line (or near-top) selection's toolbar
+      // still has room to float above it without clipping against the
+      // scroll container's own top edge — see the constant's doc comment.
+      top: Math.max(rawTop, container.scrollTop + SELECTION_TOOLBAR_CLEARANCE_PX),
       left: rect.left - containerRect.left + rect.width / 2,
     });
   }, [utteranceWordSources, deletedRanges]);
@@ -667,6 +686,30 @@ export function TranscriptPanel() {
     document.addEventListener("selectionchange", handleSelectionChange);
     return () => document.removeEventListener("selectionchange", handleSelectionChange);
   }, [handleSelectionChange]);
+
+  // Finding 9b (Phase B closing review): the toolbar's Delete-vs-Revert mode
+  // (`selection.revertRange !== null`) was only ever computed inside
+  // `handleSelectionChange`, i.e. on the next DOM `selectionchange` event —
+  // but `deletedRanges` can change with the DOM selection staying exactly
+  // where it was (⌘Z restoring a delete, or Remove-silence/Revert dispatched
+  // from elsewhere while this same range stays selected), leaving the
+  // toolbar showing the stale mode for a selection that's already flipped
+  // deleted/kept underneath it. Recompute against the CURRENT selection's
+  // words whenever `deletedRanges` itself changes, independent of any new
+  // selection event.
+  useEffect(() => {
+    setSelection((prev) => {
+      if (!prev) return prev;
+      const revertRange = computeRevertCoveringRange(prev.words, deletedRanges);
+      const sameRange =
+        revertRange === prev.revertRange ||
+        (revertRange !== null &&
+          prev.revertRange !== null &&
+          revertRange.startSec === prev.revertRange.startSec &&
+          revertRange.endSec === prev.revertRange.endSec);
+      return sameRange ? prev : { ...prev, revertRange };
+    });
+  }, [deletedRanges]);
 
   // Click-away dismissal for cases a plain `selectionchange` doesn't cover
   // (e.g. clicking a non-text, non-focusable element elsewhere in the

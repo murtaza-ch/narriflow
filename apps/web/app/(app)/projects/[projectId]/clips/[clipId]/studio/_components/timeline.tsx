@@ -2,7 +2,7 @@
 
 import { memo, useRef, useCallback, useEffect, useMemo, useState, type RefObject } from "react";
 import { Box, Flex, Text, Slider, Popover, Portal, Stack } from "@chakra-ui/react";
-import { Button } from "@narriflow/ui";
+import { Button, toaster } from "@narriflow/ui";
 import {
   Eye,
   EyeOff,
@@ -24,6 +24,7 @@ import {
   SILENCE_DEFAULT_MIN_SILENCE_SEC,
   SILENCE_DEFAULT_PAD_SEC,
   CLIP_MIN_DURATION_SEC,
+  CLIP_MAX_DURATION_SEC,
 } from "@narriflow/validators";
 import type { EditedTimeMap, SourceRange, TranscriptUtterance } from "@narriflow/validators";
 import type { ClipPreviewPeaks } from "@narriflow/services";
@@ -1244,23 +1245,41 @@ const TrimHandle = memo(function TrimHandle({
       const sourceCeilingSec = transcript ? transcript.sourceDurationSec : Number.POSITIVE_INFINITY;
 
       if (side === "start") {
+        // Finding 3 (Phase B closing review): the server now rejects a
+        // boundary save whose duration exceeds CLIP_MAX_DURATION_SEC
+        // (packages/validators/src/clip.ts) the same way it already rejects
+        // one under CLIP_MIN_DURATION_SEC — the handle must refuse to drag
+        // past it too, mirroring CLIP_MIN_DURATION_SEC's existing clamp
+        // right below.
+        const minStartForMaxDurationSec = drag.grabEndSec - CLIP_MAX_DURATION_SEC;
         let candidate = drag.grabStartSec + deltaSec;
-        candidate = Math.max(0, Math.min(candidate, drag.grabEndSec - CLIP_MIN_DURATION_SEC));
+        candidate = Math.max(
+          0,
+          minStartForMaxDurationSec,
+          Math.min(candidate, drag.grabEndSec - CLIP_MIN_DURATION_SEC),
+        );
         if (transcript) {
           candidate = nearestWordBoundary(transcript.words, candidate, "start");
-          candidate = Math.max(0, Math.min(candidate, drag.grabEndSec - CLIP_MIN_DURATION_SEC));
+          candidate = Math.max(
+            0,
+            minStartForMaxDurationSec,
+            Math.min(candidate, drag.grabEndSec - CLIP_MIN_DURATION_SEC),
+          );
         }
         drag.candidateSec = candidate;
       } else {
+        const maxEndForMaxDurationSec = drag.grabStartSec + CLIP_MAX_DURATION_SEC;
         let candidate = drag.grabEndSec + deltaSec;
         candidate = Math.min(
           sourceCeilingSec,
+          maxEndForMaxDurationSec,
           Math.max(candidate, drag.grabStartSec + CLIP_MIN_DURATION_SEC),
         );
         if (transcript) {
           candidate = nearestWordBoundary(transcript.words, candidate, "end");
           candidate = Math.min(
             sourceCeilingSec,
+            maxEndForMaxDurationSec,
             Math.max(candidate, drag.grabStartSec + CLIP_MIN_DURATION_SEC),
           );
         }
@@ -1288,7 +1307,19 @@ const TrimHandle = memo(function TrimHandle({
       Math.abs(newStartSec - drag.grabStartSec) > TRIM_COMMIT_EPSILON_SEC / 2 ||
       Math.abs(newEndSec - drag.grabEndSec) > TRIM_COMMIT_EPSILON_SEC / 2;
     if (!changed) return;
-    void commitTrim(newStartSec, newEndSec);
+    // Finding 6 (Phase B closing review): commitTrim awaits the full-project
+    // transcript fetch before dispatching — a rejection there (offline, a
+    // transient network error) used to be an unhandled promise rejection
+    // that silently dropped the trim with no feedback and no re-enabled
+    // handles. `trimHandlesDisabled` only reflects an in-flight AUTOSAVE, not
+    // this fetch, so nothing else surfaces the failure either.
+    commitTrim(newStartSec, newEndSec).catch(() => {
+      toaster.create({
+        type: "error",
+        title: "Trim failed",
+        description: "Couldn't load the transcript for this trim. Try again.",
+      });
+    });
   }, [side, commitTrim]);
 
   const handlePointerUp = useCallback(

@@ -43,6 +43,29 @@ export function derivePeaksStorageKey(previewStorageKey: string): string {
 }
 
 /**
+ * Deletion-path variant of `derivePeaksStorageKey`: every deletion planner
+ * (planClipStorageDeletion, saveClipEditorDocument's staleRenderKeys,
+ * resetClipEditorToOriginal, updateClipBoundaries) works off whatever
+ * `previewStorageKey` happens to be persisted, including legacy/malformed
+ * keys written before this convention existed or by code paths that don't
+ * conform to it. Those deletion call sites must never throw — a delete is a
+ * best-effort cleanup, not a place to validate the key shape — so this
+ * returns `null` instead of throwing when derivation isn't possible, and
+ * `null` filters out of the eventual delete list exactly like the "no
+ * preview yet" case already does everywhere else.
+ */
+export function tryDerivePeaksStorageKey(
+  previewStorageKey: string | null,
+): string | null {
+  if (!previewStorageKey) return null;
+  try {
+    return derivePeaksStorageKey(previewStorageKey);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * A clip preview proxy's amplitude-peaks artifact — mono max-abs amplitude
  * per bin, quantized to an integer 0-100 to keep the payload small (roughly
  * a few KB for a two-minute proxy at the default 20 bins/sec: 20 * 120 =

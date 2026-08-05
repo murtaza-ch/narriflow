@@ -43,8 +43,27 @@ describe("planClipStorageDeletion", () => {
         "projects/p1/dubs/c1/d1.mp3",
         "projects/p1/dubs/c1/d1.mp4",
         "projects/p1/previews/c1/attempt-1.mp4",
+        // The peaks sidecar (derived key, no own column) must be swept too.
+        "projects/p1/previews/c1/attempt-1.peaks.json",
       ].sort(),
     );
+  });
+
+  test("includes the derived peaks sidecar key alongside the preview proxy", () => {
+    const keys = planClipStorageDeletion(storageSnapshot());
+
+    expect(keys).toContain("projects/p1/previews/c1/attempt-1.peaks.json");
+  });
+
+  test("never throws for a legacy/malformed previewStorageKey that doesn't end in .mp4", () => {
+    const keys = planClipStorageDeletion(
+      storageSnapshot({
+        previewStorageKey: "projects/p1/previews/c1/legacy.mov",
+      }),
+    );
+
+    expect(keys).toContain("projects/p1/previews/c1/legacy.mov");
+    expect(keys).not.toContain(null);
   });
 
   test("drops nulls — an unrendered, un-dubbed clip yields nothing to delete", () => {
@@ -68,7 +87,8 @@ describe("planClipStorageDeletion", () => {
       }),
     );
 
-    expect(keys).toHaveLength(2);
+    // 9x16.mp4, attempt-1.mp4 (deduped preview/dub), attempt-1.peaks.json.
+    expect(keys).toHaveLength(3);
     expect(new Set(keys).size).toBe(keys.length);
   });
 });

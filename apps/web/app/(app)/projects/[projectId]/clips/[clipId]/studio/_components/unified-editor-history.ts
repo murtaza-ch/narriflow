@@ -56,7 +56,16 @@ export type UnifiedEditorAction =
    * meaningful once the window itself moved) along with their own
    * split/delete undo history, which is why `segmentsPast`/`segmentsFuture`
    * are cleared here too — an old "undo the split" now has nothing
-   * consistent to restore to.
+   * consistent to restore to. For the same reason `metaUndo`/`metaRedo`
+   * (Phase B closing review finding 4) must have every `"segments"` tag
+   * purged from BOTH stacks here too — those tags point at exactly the
+   * `segmentsPast`/`segmentsFuture` frames just cleared, so left in place a
+   * later ⌘Z that reaches one hits a tag with an empty stack behind it,
+   * no-ops (via the `if (!previousSegments) return state;` guard below), and
+   * permanently wedges undo at that point instead of falling through to the
+   * next real step. `"document"` tags (and their relative order) are left
+   * untouched — the trim's own document-level undo step must still pop
+   * normally.
    */
   | { kind: "resegment"; segments: TimelineSegment[] }
   | { kind: "undo" }
@@ -135,6 +144,8 @@ export function applyUnifiedEditorAction(
         segments: action.segments,
         segmentsPast: [],
         segmentsFuture: [],
+        metaUndo: state.metaUndo.filter((tag) => tag !== "segments"),
+        metaRedo: state.metaRedo.filter((tag) => tag !== "segments"),
       };
     }
     case "undo": {

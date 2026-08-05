@@ -19,6 +19,7 @@ import {
   isSourceTimeDeleted,
   normalizeDeletedRanges,
   buildTranscriptSliceForWindow,
+  mergeCorrectedWordsIntoWindow,
   type TranscriptUtterance,
   type CaptionPreset,
   type CaptionAnimation,
@@ -102,6 +103,28 @@ function computeDeleteCandidate(
   const additions = Array.isArray(ranges) ? ranges : [ranges];
   const candidateRanges = normalizeDeletedRanges([...currentDeletedRanges, ...additions], window);
   return { candidateRanges, blocked: buildStudioCutPlan(candidateRanges, window).isEmpty };
+}
+
+/** Finding 2 (Phase B closing review): `performSave` must only clear
+ *  `boundaryEditIntentRef` once there is no PENDING boundary change left to
+ *  cover — i.e. the LATEST document's bounds (which may have moved again
+ *  while a save was in flight, or already matched going in on a true no-op
+ *  save) still agree with `savedBounds`. Clearing it unconditionally on
+ *  every save's success used to wipe the flag out from under a trim that
+ *  committed mid-flight during an unrelated (non-boundary) save: the trim's
+ *  own `boundaryEditIntentRef.current = true` landed before that in-flight
+ *  save's fetch resolved, got clobbered by the unconditional clear, and the
+ *  trim's own follow-up save then hit the `boundsChanged &&
+ *  !boundaryEditIntentRef.current` guard and was falsely blocked as "editor
+ *  state got out of sync" — even though both saves individually succeeded. */
+function boundsConverged(
+  current: { clipStartSec: number; clipEndSec: number },
+  savedBounds: { startSec: number; endSec: number },
+): boolean {
+  return (
+    Math.abs(current.clipStartSec - savedBounds.startSec) <= 0.001 &&
+    Math.abs(current.clipEndSec - savedBounds.endSec) <= 0.001
+  );
 }
 
 /** Tracks whether the viewport is narrower than `px` via matchMedia. */
@@ -225,6 +248,14 @@ interface StudioContextValue extends StudioState {
   transcript: TranscriptItem[];
   clipInfo: ClipInfo;
   videoRef: React.RefObject<HTMLVideoElement | null>;
+  /** Phase B closing review finding 5: true for the duration of one commit
+   *  whenever a boundary-changing dispatch (trim, or an undo/redo crossing
+   *  one) is about to move `playerClipStartSec` — video-preview.tsx's own
+   *  `playerClipStartSec`-keyed seek effect checks this and stands down,
+   *  ceding the reposition to studio-shell.tsx's `editedTimeMap` reconcile
+   *  effect, which clears it once done. See that effect's doc comment for
+   *  the full race it resolves. */
+  boundaryReconcileOwnsSeekRef: React.RefObject<boolean>;
   playbackClock: PlaybackClock;
   sourceVideoUrl: string | null;
   sourcePreviewId: string;
@@ -1053,9 +1084,9 @@ export function StudioShell({
 
   // Vizard-parity Phase B step 13 (in-studio trim): commits a drag on either
   // timeline trim handle. `newStartSec`/`newEndSec` arrive already
-  // word-snapped and guard-clamped (min duration, source-duration ceiling —
-  // see timeline.tsx's handles), so this only needs to turn them into a
-  // document mutation: rebuild transcriptSlice from the FULL project
+  // word-snapped and guard-clamped (min/max duration, source-duration
+  // ceiling — see timeline.tsx's handles), so this only needs to turn them
+  // into a document mutation: rebuild transcriptSlice from the FULL project
   // transcript for the new window (the same primitives the server's own
   // boundary paths use — see buildTranscriptSliceForWindow's doc comment),
   // then dispatch ONE composite `trimClip` action (bounds + slice, one undo
@@ -1071,10 +1102,17 @@ export function StudioShell({
   const commitTrim = useCallback(
     async (newStartSec: number, newEndSec: number) => {
       const { rawUtterances } = await loadTrimTranscript(clipInfo.projectId);
-      const newSlice = buildTranscriptSliceForWindow(rawUtterances, {
+      const rawSlice = buildTranscriptSliceForWindow(rawUtterances, {
         startSec: newStartSec,
         endSec: newEndSec,
       });
+      // Phase B closing review finding 1: `rawSlice` is built purely from
+      // the RAW project transcript, which carries none of this session's
+      // word-level corrections (updateWordText) — merging the CURRENT doc's
+      // corrected words back in is what stops a trim from silently
+      // discarding them (see mergeCorrectedWordsIntoWindow's own doc
+      // comment for the exact matching rule).
+      const newSlice = mergeCorrectedWordsIntoWindow(rawSlice, doc.transcriptSlice);
       // Same effective-timing pass the `effectiveTiming` memo above runs —
       // computed explicitly here (not read from that memo) because segments
       // need to be built against the window this dispatch is ABOUT to
@@ -1091,6 +1129,21 @@ export function StudioShell({
         newEffective.durationSec,
       );
       boundaryEditIntentRef.current = true;
+      // Finding 5 (Phase B closing review): a start-handle trim moves
+      // `playerClipStartSec`, which video-preview.tsx's own seek effect
+      // reacts to by unconditionally snapping playback back to the new
+      // clip start — wrong whenever the playhead wasn't already there. The
+      // shell's `editedTimeMap` reconcile effect below is the one that
+      // actually knows whether the CURRENT playhead position is still valid
+      // after this trim (it reseeks only when it isn't, preserving the
+      // user's position otherwise), so it must be the one to act. Setting
+      // this ref here — synchronously, before the state update that will
+      // change both `playerClipStartSec` and `editedTimeMap` in the SAME
+      // commit — lets video-preview.tsx's seek effect (which runs first,
+      // since it's the child) check it and stand down for this commit; the
+      // reconcile effect (which runs after, as the parent) clears it once
+      // it's done owning the reposition.
+      boundaryReconcileOwnsSeekRef.current = true;
       setUnified((s) => {
         const withTrim = applyUnifiedEditorAction(s, {
           kind: "document",
@@ -1104,7 +1157,7 @@ export function StudioShell({
         return applyUnifiedEditorAction(withTrim, { kind: "resegment", segments: newSegments });
       });
     },
-    [clipInfo.projectId],
+    [clipInfo.projectId, doc.transcriptSlice],
   );
 
   // Guard item 8 (vizard-parity.md Phase B step 13): the single-flight save
@@ -1123,6 +1176,10 @@ export function StudioShell({
         next.doc.present.clipEndSec !== s.doc.present.clipEndSec
       ) {
         boundaryEditIntentRef.current = true;
+        // Finding 5: an undo/redo that crosses a trim step changes
+        // `playerClipStartSec` + `editedTimeMap` in this same commit exactly
+        // like commitTrim does — same coordination applies.
+        boundaryReconcileOwnsSeekRef.current = true;
       }
       return next;
     });
@@ -1136,6 +1193,7 @@ export function StudioShell({
         next.doc.present.clipEndSec !== s.doc.present.clipEndSec
       ) {
         boundaryEditIntentRef.current = true;
+        boundaryReconcileOwnsSeekRef.current = true;
       }
       return next;
     });
@@ -1184,6 +1242,16 @@ export function StudioShell({
   // a trim now that the server accepts boundary changes — performSave
   // refuses to send those and demands a reload instead.
   const boundaryEditIntentRef = useRef(false);
+  // Finding 5 (Phase B closing review): set (alongside boundaryEditIntentRef)
+  // whenever a dispatch is ABOUT to change both `playerClipStartSec` and
+  // `editedTimeMap` in the same commit — a trim (commitTrim) or an undo/redo
+  // that crosses one. video-preview.tsx's own `playerClipStartSec`-keyed
+  // seek effect checks this and stands down for that commit; the
+  // `editedTimeMap` reconcile effect further below — which actually knows
+  // whether the current playhead position survived the change — owns the
+  // reposition instead, and clears this ref once it has run. See both
+  // effects' own doc comments for the full walkthrough.
+  const boundaryReconcileOwnsSeekRef = useRef(false);
   const baseRevisionRef = useRef(initialEditorRevision);
   const saveQueueStateRef = useRef<SaveQueueState>("idle");
   const autosaveStoppedRef = useRef(false);
@@ -1206,6 +1274,17 @@ export function StudioShell({
     const documentToSave = docPresentRef.current;
     const documentJson = JSON.stringify(documentToSave);
     let outcome: SaveOutcome = "success";
+
+    // Finding 2: clears `boundaryEditIntentRef` iff the LATEST document
+    // (which may differ from `documentToSave` — an edit can land while this
+    // turn's fetch is in flight) has converged on the bounds already
+    // confirmed as saved — see `boundsConverged`'s own doc comment for why
+    // this can't just be unconditional.
+    const clearBoundaryIntentIfConverged = () => {
+      if (boundsConverged(docPresentRef.current, lastSavedBoundsRef.current)) {
+        boundaryEditIntentRef.current = false;
+      }
+    };
 
     const boundsChanged =
       Math.abs(documentToSave.clipStartSec - lastSavedBoundsRef.current.startSec) > 0.001 ||
@@ -1238,6 +1317,13 @@ export function StudioShell({
       // Reached via a queued request that turned out to be a no-op (e.g. an
       // edit landed and was then undone before this turn ran) — nothing to
       // send, but still drain the queue below.
+      //
+      // Finding 2 (Phase B closing review, LOW): this branch used to leave
+      // `boundaryEditIntentRef` completely untouched — a trim that lands and
+      // then gets undone back to exactly the last-saved bounds before its
+      // own save turn runs left the flag stuck `true` with nothing left to
+      // cover. Same conditional clear as the success branch below.
+      clearBoundaryIntentIfConverged();
     } else {
       setSaveState("saving");
       try {
@@ -1333,11 +1419,34 @@ export function StudioShell({
         if (boundariesChangedByThisSave) {
           setPreviewVideoUrl(null);
           setPreviewStartSec(0);
+          // Finding 7 (Phase B closing review): dropping the proxy makes
+          // `activeVideoUrl` (`previewVideoUrl ?? (useOriginalSourceFallback
+          // ? sourceVideoUrl : null)`) go straight to null unless the user
+          // had ALREADY opted into the source fallback — playback would
+          // otherwise just die the moment a trim saves, until the new proxy
+          // finishes cutting. Opt in on the trim's behalf so it keeps
+          // playing from source immediately; the poll effect below still
+          // swaps back to the (now-regenerating) proxy once it lands.
+          setUseOriginalSourceFallback(true);
+          // Finding 8 (Phase B closing review): the OLD proxy's amplitude
+          // peaks describe the OLD window — left in place, the waveform
+          // keeps painting the stale window's shape against the new bounds
+          // until the poll effect's `fetchPreviewStatus` call happens to
+          // repopulate it. Clear it in the same branch that drops the proxy
+          // itself so the two can never disagree about which window is
+          // current; the same poll effect (keyed off `previewVideoUrl`,
+          // already restarting because of the `setPreviewVideoUrl(null)`
+          // above) repopulates `waveformPeaksUrl` from the new proxy's
+          // status the same way it does today.
+          setWaveformPeaksUrl(null);
         }
         // The confirmed bounds are now the baseline — a fresh trim (or a
         // trim-crossing undo/redo) must re-arm the intent flag before the
-        // next boundary-changing save is allowed through.
-        boundaryEditIntentRef.current = false;
+        // next boundary-changing save is allowed through. Only cleared when
+        // the LATEST document has converged on these bounds (finding 2) — if
+        // a further trim landed while this save was in flight, its own
+        // `boundaryEditIntentRef.current = true` must survive for ITS save.
+        clearBoundaryIntentIfConverged();
 
         if (docPresentRef.current === documentToSave) {
           // No local edits landed mid-flight — safe to adopt the server's
@@ -1717,10 +1826,22 @@ export function StudioShell({
   // clipEndSec actually change — see its useMemo above), so this is a
   // total no-op on every other re-render, and it applies equally whether
   // paused or mid-playback (a same-tick safety net ahead of the next rVFC
-  // tick in the latter case). Deliberately independent of the
-  // `playerClipStartSec`-keyed seek effect in video-preview.tsx — that one
-  // only reacts to trim/file-switch, this one only to cuts, so the two
-  // can't fight over the same tick.
+  // tick in the latter case).
+  //
+  // Finding 5 (Phase B closing review): a start-handle trim changes
+  // `editedTimeMap` AND video-preview.tsx's `playerClipStartSec`-keyed seek
+  // effect in the SAME commit. That child effect runs first (child effects
+  // fire before parent effects within one commit) and used to unconditionally
+  // snap playback back to the new clip start regardless of where the
+  // playhead actually was — wrong for a trim mid-playback, and this effect's
+  // own `isSourceTimeDeleted` check then saw a now-valid position and left it
+  // there. This effect is the one that actually knows whether the CURRENT
+  // position survived the change, so it's now authoritative: commitTrim (and
+  // the undo/redo cases that cross a trim step) set
+  // `boundaryReconcileOwnsSeekRef` synchronously before dispatching, the
+  // child effect checks it and stands down for that commit, and this effect
+  // clears it below once it's run its own (correct) reposition — a plain
+  // cut/revert that never touched the ref is an unaffected no-op here.
   const editedTimeMapRef = useRef(editedTimeMap);
   useEffect(() => {
     if (editedTimeMapRef.current === editedTimeMap) return;
@@ -1732,12 +1853,16 @@ export function StudioShell({
     }
 
     const video = videoRef.current;
-    if (!video || !activeVideoUrl) return;
-
-    const currentSourceSec = video.currentTime + activeOffsetSec;
-    if (isSourceTimeDeleted(editedTimeMap, currentSourceSec)) {
-      video.currentTime = rippleSeekSourceSec(editedTimeMap, clampedTime) - activeOffsetSec;
+    if (video && activeVideoUrl) {
+      const currentSourceSec = video.currentTime + activeOffsetSec;
+      if (isSourceTimeDeleted(editedTimeMap, currentSourceSec)) {
+        video.currentTime = rippleSeekSourceSec(editedTimeMap, clampedTime) - activeOffsetSec;
+      }
     }
+
+    // Ownership of this commit's reposition ends here, whether or not a
+    // trim actually caused it — a no-op reset when it was already false.
+    boundaryReconcileOwnsSeekRef.current = false;
   }, [editedTimeMap, playbackClock, activeVideoUrl, activeOffsetSec, videoRef]);
 
   // Keep the clock aligned with explicit media updates without routing every
@@ -1867,7 +1992,7 @@ export function StudioShell({
     layoutMode, showShortcuts, timelineZoom, selectedSegmentId,
     captionPreset, captionSelected, transcriptOnly, segments, studioEdits, brollUrl,
     saveState, exportState, resetState, canUndo, canRedo, canReset,
-    transcript: derivedTranscript, clipInfo, videoRef, playbackClock,
+    transcript: derivedTranscript, clipInfo, videoRef, boundaryReconcileOwnsSeekRef, playbackClock,
     sourceVideoUrl, sourcePreviewId,
     clipStartSec: effectiveClipStartSec, clipEndSec: effectiveClipEndSec, sourcePurged,
     previewVideoUrl, previewStartSec, waveformPeaksUrl, useOriginalSourceFallback, setUseOriginalSourceFallback,

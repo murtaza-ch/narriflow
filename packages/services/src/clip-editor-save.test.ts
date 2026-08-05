@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  CLIP_MAX_DURATION_SEC,
   DEFAULT_CAPTION_PRESET,
   editorDocumentSchema,
   studioEditsSchema,
@@ -8,6 +9,7 @@ import {
 } from "@narriflow/validators";
 import {
   ClipActionError,
+  assertBoundaryChangeHasAvailableSource,
   assertEditorDocumentHasRenderableContent,
   clampEditorDocumentToStoredWindow,
   planEditorDocumentSave,
@@ -214,6 +216,24 @@ describe("assertEditorDocumentHasRenderableContent (fix #5: server-side isEmpty 
   });
 });
 
+describe("assertBoundaryChangeHasAvailableSource (fix: boundary change with a purged source bricks the preview)", () => {
+  test("throws editor_boundaries_invalid when the project's source has been purged", () => {
+    try {
+      assertBoundaryChangeHasAvailableSource(null);
+      throw new Error("expected assertBoundaryChangeHasAvailableSource to throw");
+    } catch (error) {
+      expect(error).toBeInstanceOf(ClipActionError);
+      expect((error as ClipActionError).code).toBe("editor_boundaries_invalid");
+    }
+  });
+
+  test("does not throw when the project's source is still available", () => {
+    expect(() =>
+      assertBoundaryChangeHasAvailableSource("projects/p1/source.mp4"),
+    ).not.toThrow();
+  });
+});
+
 describe("planEditorDocumentSave (vizard-parity.md Phase B step 13, in-studio trim)", () => {
   const storedWindow = { startSec: 10, endSec: 20 };
 
@@ -310,6 +330,54 @@ describe("planEditorDocumentSave (vizard-parity.md Phase B step 13, in-studio tr
     } catch (error) {
       expect((error as ClipActionError).code).toBe("editor_boundaries_invalid");
     }
+  });
+
+  test("rejects a boundary change longer than CLIP_MAX_DURATION_SEC (fix: trim exceeding the 120s ceiling)", () => {
+    // Every getEffectiveClipTiming consumer (toClipSnapshot, render timing,
+    // getClipsNeedingPreview) silently re-clamps to CLIP_MAX_DURATION_SEC —
+    // a stored window past it would permanently disagree with the effective
+    // one everywhere else, so this must be rejected up front, not clamped.
+    const current = makeDocument([makeUtterance(10, ["so"])]);
+    const document = makeDocument([makeUtterance(0, ["so"])], {
+      clipStartSec: 0,
+      clipEndSec: CLIP_MAX_DURATION_SEC + 1, // 121s — one second over
+    });
+
+    try {
+      planEditorDocumentSave({
+        document,
+        current,
+        storedWindow,
+        sourceDurationSec: 600,
+        viralityScore: 70,
+      });
+      throw new Error("expected planEditorDocumentSave to throw");
+    } catch (error) {
+      expect(error).toBeInstanceOf(ClipActionError);
+      expect((error as ClipActionError).code).toBe("editor_boundaries_invalid");
+    }
+  });
+
+  test("accepts a boundary change exactly at CLIP_MAX_DURATION_SEC (mind FLOAT_SLACK)", () => {
+    const current = makeDocument([makeUtterance(10, ["so"])]);
+    const document = makeDocument([makeUtterance(0, ["so"])], {
+      clipStartSec: 0,
+      clipEndSec: CLIP_MAX_DURATION_SEC, // exactly 120s — must not be rejected
+    });
+
+    const plan = planEditorDocumentSave({
+      document,
+      current,
+      storedWindow,
+      sourceDurationSec: 600,
+      viralityScore: 70,
+    });
+
+    expect(plan.noop).toBe(false);
+    if (plan.noop) return;
+    expect(plan.next.clipEndSec - plan.next.clipStartSec).toBe(
+      CLIP_MAX_DURATION_SEC,
+    );
   });
 
   test("rejects a boundary change whose end lands past a known source duration", () => {

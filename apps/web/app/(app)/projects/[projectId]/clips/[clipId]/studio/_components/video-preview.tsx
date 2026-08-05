@@ -104,6 +104,7 @@ export function VideoPreview() {
     layoutMode, setLayoutMode,
     studioEdits,
     videoRef,
+    boundaryReconcileOwnsSeekRef,
     playbackClock,
     sourceVideoUrl,
     previewVideoUrl,
@@ -224,25 +225,39 @@ export function VideoPreview() {
     };
   }, [activeVideoUrl, videoRef, playbackClock, retryNonce]);
 
-  // Seek (rather than re-download) when the trim boundary moves — or the
-  // active file switches (proxy <-> full source, which also shifts
-  // `playerClipStartSec` via `activeOffsetSec`) — on a file that's already
-  // loaded. Deliberately keyed on `playerClipStartSec` (unaffected by
-  // content deletes — only trim/file-switch move it), NOT
+  // Seek (rather than re-download) when the active file switches (proxy <->
+  // full source, which shifts `playerClipStartSec` via `activeOffsetSec`) on
+  // a file that's already loaded. Deliberately keyed on `playerClipStartSec`
+  // (unaffected by content deletes — only trim/file-switch move it), NOT
   // `playerRippleStartSec` directly: keying on the latter would re-run this
   // on every delete/revert that happens to touch the clip's opening range,
   // yanking mid-playback back to the start for an edit that has nothing to
   // do with trim. The CORRECTION target still goes through the ripple-aware
   // ref, so a clip that opens with a deleted range doesn't get seeked back
   // into the cut on a genuine file switch.
+  //
+  // Finding 5 (Phase B closing review): a TRIM also moves
+  // `playerClipStartSec`, but unconditionally resetting to the clip's own
+  // start (as this effect otherwise does) is wrong for a trim mid-playback —
+  // only studio-shell.tsx's `editedTimeMap` reconcile effect actually knows
+  // whether the current position is still valid after the window moved, so
+  // it — not this effect — owns the reposition for that case. commitTrim
+  // (and the undo/redo paths that cross a trim step) set
+  // `boundaryReconcileOwnsSeekRef` synchronously before dispatching; this
+  // effect runs first (child effects fire before the parent's within one
+  // commit) and simply stands down when it sees the flag set, leaving
+  // `video.currentTime` for the reconcile effect to correct (or not) a
+  // moment later in the same commit. A genuine file switch never sets this
+  // ref, so it's unaffected.
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !activeVideoUrl || !videoLoaded) return;
     if (video.readyState < 1) return; // HAVE_METADATA not reached yet
+    if (boundaryReconcileOwnsSeekRef.current) return;
     if (Math.abs(video.currentTime - playerClipStartSec) > 0.05) {
       video.currentTime = playerRippleStartSecRef.current;
     }
-  }, [playerClipStartSec, activeVideoUrl, videoLoaded, videoRef]);
+  }, [playerClipStartSec, activeVideoUrl, videoLoaded, videoRef, boundaryReconcileOwnsSeekRef]);
 
   // Large sources can sit well below HAVE_METADATA for a long time with no
   // error and no stall event — surface a hint rather than looking frozen.

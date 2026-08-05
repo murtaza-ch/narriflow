@@ -628,3 +628,93 @@ export function buildTranscriptSliceForWindow(
     window.endSec,
   );
 }
+
+/** Two words match iff both endpoints agree within this tolerance — generous
+ *  enough to absorb the millisecond rounding `normalizeTime`/`roundMs`-style
+ *  helpers already apply throughout this file, tight enough that two
+ *  genuinely distinct words (even adjacent ones) can never collide. */
+const WORD_MATCH_EPSILON_SEC = 0.001;
+
+/**
+ * In-studio trim (Phase B closing review finding 1): `buildTranscriptSliceForWindow`
+ * rebuilds a trim's transcriptSlice from the RAW project transcript, which
+ * carries none of the corrections a user made through the editor's
+ * word-level Correct action (`updateWordText` — see unified-editor-history.ts
+ * / the reducer's `updateWordText` case). Left alone, every correction is
+ * silently discarded the moment the user drags a trim handle. This merges
+ * them back in: for every word in `rawSliceForWindow` (the freshly-built
+ * window slice) whose (startSec, endSec) matches — within
+ * `WORD_MATCH_EPSILON_SEC` — a word in `currentCorrectedSlice` (the editor's
+ * OWN current, possibly-corrected transcriptSlice), the CURRENT word's text
+ * wins over the raw one. Words newly entering the window (the trim extended
+ * past the old bounds, so they have no counterpart in the current slice)
+ * keep their raw text — there is no correction to preserve for text the user
+ * has never seen. Each utterance's `text` is rebuilt from the final words the
+ * same way `normalizeTranscriptSliceForClip` does, so the two never disagree
+ * about the utterance/word text invariant.
+ *
+ * Matching is by TIME, not by utterance/word index — a trim can shift/merge/
+ * split utterance boundaries relative to the current slice (sentence
+ * re-segmentation, a shrink-then-extend round trip), so index correspondence
+ * isn't reliable, but a word's own timing is stable regardless of which
+ * utterance it currently belongs to.
+ */
+export function mergeCorrectedWordsIntoWindow(
+  rawSliceForWindow: TranscriptUtterance[],
+  currentCorrectedSlice: TranscriptUtterance[],
+): TranscriptUtterance[] {
+  const correctedTextByStartSec = new Map<number, { endSec: number; text: string }[]>();
+  for (const utterance of currentCorrectedSlice) {
+    for (const word of utterance.words) {
+      const bucket = Math.round(word.startSec / WORD_MATCH_EPSILON_SEC);
+      const entries = correctedTextByStartSec.get(bucket);
+      const entry = { endSec: word.endSec, text: word.word };
+      if (entries) {
+        entries.push(entry);
+      } else {
+        correctedTextByStartSec.set(bucket, [entry]);
+      }
+    }
+  }
+
+  function findCorrectedText(word: TranscriptWord): string | null {
+    const bucket = Math.round(word.startSec / WORD_MATCH_EPSILON_SEC);
+    // The current word's own bucket, plus its immediate neighbors — a
+    // startSec sitting exactly on a bucket boundary can round either way.
+    for (const candidateBucket of [bucket - 1, bucket, bucket + 1]) {
+      const entries = correctedTextByStartSec.get(candidateBucket);
+      if (!entries) continue;
+      for (const entry of entries) {
+        if (
+          Math.abs(entry.endSec - word.endSec) <= WORD_MATCH_EPSILON_SEC
+        ) {
+          return entry.text;
+        }
+      }
+    }
+    return null;
+  }
+
+  return rawSliceForWindow.map((utterance, index) => {
+    let changed = false;
+    const words = utterance.words.map((word) => {
+      const correctedText = findCorrectedText(word);
+      if (correctedText === null || correctedText === word.word) {
+        return word;
+      }
+      changed = true;
+      return { ...word, word: correctedText };
+    });
+
+    if (!changed) {
+      return utterance.index === index ? utterance : { ...utterance, index };
+    }
+
+    return {
+      ...utterance,
+      index,
+      words,
+      text: rebuildText(words),
+    };
+  });
+}

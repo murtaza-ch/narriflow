@@ -3,6 +3,7 @@ import {
   buildTranscriptSliceForWindow,
   expandClipToCompleteSpeech,
   getEffectiveClipTiming,
+  mergeCorrectedWordsIntoWindow,
 } from "./clip-timing";
 import type { TranscriptUtterance, TranscriptWord } from "./transcript";
 import { splitUtterancesIntoSentences } from "./utterance-split";
@@ -315,5 +316,96 @@ describe("buildTranscriptSliceForWindow (vizard-parity.md Phase B step 13, in-st
       endSec: lastWordEnd + 10,
     });
     expect(slice).toEqual([]);
+  });
+});
+
+describe("mergeCorrectedWordsIntoWindow (Phase B closing review finding 1: commitTrim discards word corrections)", () => {
+  test("a correction inside the kept window survives a shrink then an extend", () => {
+    const raw = makeSpeech({ sentenceCount: 5, startSec: 0 });
+    const fullWindow = {
+      startSec: raw[0]!.words[0]!.startSec,
+      endSec: raw[4]!.words.at(-1)!.endSec,
+    };
+    const initialSlice = buildTranscriptSliceForWindow(raw, fullWindow);
+    const correctedWord = initialSlice[2]!.words[1]!;
+
+    // Correct one word inside sentence 2.
+    const correctedSlice = initialSlice.map((u, i) => {
+      if (i !== 2) return u;
+      const words = u.words.map((w, wi) => (wi === 1 ? { ...w, word: "CORRECTED" } : w));
+      return { ...u, words, text: words.map((w) => w.word).join(" ") };
+    });
+
+    // Shrink: new window drops sentences 0 and 4 but keeps the corrected word.
+    const shrinkWindow = {
+      startSec: raw[1]!.words[0]!.startSec,
+      endSec: raw[3]!.words.at(-1)!.endSec,
+    };
+    const shrinkRaw = buildTranscriptSliceForWindow(raw, shrinkWindow);
+    const shrinkMerged = mergeCorrectedWordsIntoWindow(shrinkRaw, correctedSlice);
+    const shrinkWord = shrinkMerged
+      .flatMap((u) => u.words)
+      .find((w) => Math.abs(w.startSec - correctedWord.startSec) < 0.001);
+    expect(shrinkWord?.word).toBe("CORRECTED");
+
+    // Extend back out to the full window — the correction now lives in
+    // `shrinkMerged` (the current doc slice at this point) and must still
+    // survive being merged into a freshly rebuilt, wider raw slice.
+    const extendRaw = buildTranscriptSliceForWindow(raw, fullWindow);
+    const extendMerged = mergeCorrectedWordsIntoWindow(extendRaw, shrinkMerged);
+    const extendWord = extendMerged
+      .flatMap((u) => u.words)
+      .find((w) => Math.abs(w.startSec - correctedWord.startSec) < 0.001);
+    expect(extendWord?.word).toBe("CORRECTED");
+    const owningUtterance = extendMerged.find((u) => u.words.some((w) => w.word === "CORRECTED"));
+    expect(owningUtterance?.text).toContain("CORRECTED");
+    // Sentences that re-entered the window on the extend (0 and 4) never
+    // appeared in `shrinkMerged` — they must come back with raw text.
+    expect(extendMerged[0]!.text).toBe(raw[0]!.text);
+    expect(extendMerged.at(-1)!.text).toBe(raw[4]!.text);
+  });
+
+  test("words newly entering the window on an extend keep their raw text", () => {
+    const raw = makeSpeech({ sentenceCount: 5, startSec: 0 });
+    const narrowWindow = {
+      startSec: raw[2]!.words[0]!.startSec,
+      endSec: raw[2]!.words.at(-1)!.endSec,
+    };
+    const currentSlice = buildTranscriptSliceForWindow(raw, narrowWindow);
+    expect(currentSlice).toHaveLength(1);
+
+    const widerWindow = {
+      startSec: raw[0]!.words[0]!.startSec,
+      endSec: raw[4]!.words.at(-1)!.endSec,
+    };
+    const widerRaw = buildTranscriptSliceForWindow(raw, widerWindow);
+    const merged = mergeCorrectedWordsIntoWindow(widerRaw, currentSlice);
+
+    // Sentence 0 never appeared in `currentSlice` (the pre-extend doc slice)
+    // — it must come through byte-for-byte from the raw transcript.
+    expect(merged[0]!.text).toBe(raw[0]!.text);
+    expect(merged[0]!.words.map((w) => w.word)).toEqual(raw[0]!.words.map((w) => w.word));
+  });
+
+  test("preserves corrections spread across multiple utterances", () => {
+    const raw = makeSpeech({ sentenceCount: 4, startSec: 0 });
+    const window = {
+      startSec: raw[0]!.words[0]!.startSec,
+      endSec: raw[3]!.words.at(-1)!.endSec,
+    };
+    const rawSlice = buildTranscriptSliceForWindow(raw, window);
+
+    const corrected = rawSlice.map((u, i) => {
+      if (i !== 0 && i !== 3) return u;
+      const words = u.words.map((w, wi) => (wi === 0 ? { ...w, word: `FIXED${i}` } : w));
+      return { ...u, words, text: words.map((w) => w.word).join(" ") };
+    });
+
+    const merged = mergeCorrectedWordsIntoWindow(rawSlice, corrected);
+    expect(merged[0]!.words[0]!.word).toBe("FIXED0");
+    expect(merged[3]!.words[0]!.word).toBe("FIXED3");
+    // Untouched utterances keep their original raw text.
+    expect(merged[1]!.text).toBe(rawSlice[1]!.text);
+    expect(merged[2]!.text).toBe(rawSlice[2]!.text);
   });
 });

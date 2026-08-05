@@ -177,6 +177,19 @@ describe("selectVisibleWordChips", () => {
   test("range fully outside the word list returns empty", () => {
     expect(selectVisibleWordChips(words, { startSec: 100, endSec: 200 })).toEqual([]);
   });
+
+  // Phase B closing review finding 9c: the back-check used to look only one
+  // chip behind the binary-search cursor, so a SECOND (or later) preceding
+  // chip that also straddles the window's left edge was silently dropped.
+  test("scans back past every preceding chip that straddles the left edge, not just one", () => {
+    const overlapping: WordChipDatum[] = [
+      { id: "w-0", text: "w0", sourceStartSec: 0, sourceEndSec: 6, editedStartSec: 0, editedEndSec: 6 },
+      { id: "w-1", text: "w1", sourceStartSec: 0, sourceEndSec: 6, editedStartSec: 0, editedEndSec: 6 },
+      { id: "w-2", text: "w2", sourceStartSec: 6, sourceEndSec: 7, editedStartSec: 6, editedEndSec: 7 },
+    ];
+    const visible = selectVisibleWordChips(overlapping, { startSec: 5, endSec: 5.5 });
+    expect(visible.map((c) => c.id)).toEqual(["w-0", "w-1"]);
+  });
 });
 
 describe("findActiveWordId", () => {

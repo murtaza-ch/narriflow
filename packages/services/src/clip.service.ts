@@ -57,7 +57,10 @@ import {
 } from "./workflow.service";
 import { isUniqueConstraintError } from "./generation-sequencing";
 import { copyObject, deleteObject, presignDownloadUrl } from "./r2-storage";
-import { derivePeaksStorageKey } from "./clip-preview-storage";
+import {
+  derivePeaksStorageKey,
+  tryDerivePeaksStorageKey,
+} from "./clip-preview-storage";
 import { analyticsService } from "./analytics.service";
 import { assertPublicHttpUrl } from "./url-guard";
 
@@ -369,6 +372,34 @@ export function assertEditorDocumentHasRenderableContent(
   }
 }
 
+/**
+ * Fix (boundary change with a purged source bricks the preview): a real
+ * boundary change nulls `Clip.previewStorageKey` because the old proxy no
+ * longer covers the new window — but `getClipsNeedingPreview` (the worker's
+ * only path to ever cut a fresh one) requires `project.sourceStorageKey` to
+ * be set. If the project's source was already purged (retention cleanup —
+ * see project.service.ts's `purgeExpiredProjectSources`), nulling the proxy
+ * here would leave studio playback broken with NO way to ever recover it.
+ * Rejecting the boundary change outright (rather than, say, silently keeping
+ * the stale proxy) matches this repo's existing policy of failing fast on an
+ * operation the worker could never actually satisfy — the same reasoning
+ * `assertEditorDocumentHasRenderableContent` above applies to an unrenderable
+ * deletion.
+ *
+ * Only called when `boundariesChanged` — a transcript-only or styling-only
+ * save never touches the proxy, so it's unaffected by a purged source.
+ */
+export function assertBoundaryChangeHasAvailableSource(
+  sourceStorageKey: string | null,
+): void {
+  if (!sourceStorageKey) {
+    throw new ClipActionError(
+      "editor_boundaries_invalid",
+      "clip boundaries cannot be changed after the source video has been removed",
+    );
+  }
+}
+
 const RESET_BOUNDARY_EPSILON_SEC = 0.001;
 
 export interface EditorResetPlanInput {
@@ -624,6 +655,19 @@ export function planEditorDocumentSave(
         `clip must be at least ${CLIP_MIN_DURATION_SEC} seconds`,
       );
     }
+    // Every getEffectiveClipTiming consumer (toClipSnapshot, render timing,
+    // getClipsNeedingPreview) silently re-clamps to CLIP_MAX_DURATION_SEC, so
+    // a stored window past this ceiling would permanently disagree with the
+    // "effective" window everything else computes — e.g. the preview worker's
+    // expected-window check in completeClipPreview would never match, causing
+    // it to treat every poll as a lost claim and re-cut forever. Reject here
+    // instead of silently drifting.
+    if (requestedDurationSec > CLIP_MAX_DURATION_SEC + SAVE_BOUNDARY_EPSILON_SEC) {
+      throw new ClipActionError(
+        "editor_boundaries_invalid",
+        `clip must be at most ${CLIP_MAX_DURATION_SEC} seconds`,
+      );
+    }
     if (
       typeof sourceDurationSec === "number" &&
       document.clipEndSec > sourceDurationSec + SAVE_BOUNDARY_EPSILON_SEC
@@ -795,6 +839,30 @@ function deriveTitleAndHookFromSlice(
   }
 
   return { title, hookText: fullText };
+}
+
+/**
+ * Fix (createClipFromSelection copies timeline-relative textLayers): a
+ * `studioEdits.textLayers` overlay carries EDITED-TIMELINE seconds relative
+ * to the SOURCE clip's own window (its startSec/endSec, minus its
+ * deletedRanges) — meaningless once re-anchored to a brand-new clip's
+ * independently-computed window (`planCreateClipFromSelection`'s startSec/
+ * endSec have no relationship to the source's). Overlays anchored to the
+ * wrong footage are worse than no overlays, so this drops them; every other
+ * studioEdits field (transition/music/sourceAudio/logo) is window-
+ * independent styling and still copies over untouched.
+ *
+ * Pulled out as its own pure step (mirrors `deriveTitleAndHookFromSlice`
+ * above) so it's unit-testable without a database — `createClipFromSelection`
+ * below just calls it with the raw `Clip.studioEdits` JSON column value.
+ */
+export function planStudioEditsForClipFromSelection(
+  sourceStudioEdits: unknown,
+): StudioEdits | null {
+  if (sourceStudioEdits === null || sourceStudioEdits === undefined) {
+    return null;
+  }
+  return { ...studioEditsSchema.parse(sourceStudioEdits), textLayers: [] };
 }
 
 /**
@@ -1057,6 +1125,11 @@ export function planClipStorageDeletion(
         ...snapshot.renderStorageKeys,
         ...snapshot.dubStorageKeys,
         snapshot.previewStorageKey,
+        // The peaks sidecar (see clip-preview-storage.ts) lives at a derived
+        // key alongside the preview mp4 and isn't tracked by its own column —
+        // without this it would leak forever whenever a clip/project is
+        // deleted.
+        tryDerivePeaksStorageKey(snapshot.previewStorageKey),
       ].filter((key): key is string => Boolean(key)),
     ),
   ];
@@ -1271,6 +1344,8 @@ export class ClipService {
       ...clip.renders.map((render) => render.storageKey),
       // The old-window preview proxy is orphaned once boundaries move.
       clip.previewStorageKey,
+      // ...and so is its peaks sidecar (derived key, no own column).
+      tryDerivePeaksStorageKey(clip.previewStorageKey),
     ].filter((key): key is string => Boolean(key));
 
     const updated = await prisma.$transaction(async (tx) => {
@@ -1778,11 +1853,22 @@ export class ClipService {
    * own the same way every other proxy-less clip does; there is no separate
    * trigger to fire from here.
    *
-   * `captionPreset`/`studioEdits`/`brollUrl` ARE copied from the source clip
-   * (Vizard: the new clip inherits the source's "look"); everything else —
-   * boundaries, transcript slice, title/hook, duration-dependent scores —
-   * comes straight from `planCreateClipFromSelection`, which also owns the
-   * snap/expand/clamp/reject policy (see its own doc comment).
+   * `captionPreset`/`studioEdits`/`brollUrl`/`platformFit` ARE copied from the
+   * source clip (Vizard: the new clip inherits the source's "look"), EXCEPT
+   * `studioEdits.textLayers` — those carry edited-timeline seconds relative
+   * to the SOURCE clip's own window, meaningless once re-anchored to this
+   * clip's independently-computed window, so they're dropped rather than
+   * copied wrong. Everything else — boundaries, transcript slice, title/hook,
+   * duration-dependent scores — comes straight from
+   * `planCreateClipFromSelection`, which also owns the snap/expand/clamp/
+   * reject policy (see its own doc comment).
+   *
+   * Known limitation: `planCreateClipFromSelection` builds the new slice from
+   * the RAW project transcript (`rawUtterances` below), so any word-level
+   * corrections made on the SOURCE clip are lost in the new one. The studio
+   * client is gaining a `mergeCorrectedWordsIntoWindow` helper (packages/
+   * validators) for commitTrim's equivalent problem — a follow-up should
+   * reuse it here once available.
    */
   async createClipFromSelection(
     userId: string,
@@ -1801,6 +1887,7 @@ export class ClipService {
           captionPreset: true,
           studioEdits: true,
           brollUrl: true,
+          platformFit: true,
         },
       }),
       prisma.project.findFirst({
@@ -1829,6 +1916,10 @@ export class ClipService {
       endSec: input.endSec,
     });
 
+    const studioEditsForNewClip = planStudioEditsForClipFromSelection(
+      source.studioEdits,
+    );
+
     const newClipId = randomUUID();
 
     try {
@@ -1852,6 +1943,9 @@ export class ClipService {
             payoffText: null,
             reasoning: "Created from a transcript selection in the studio.",
             category: "quote",
+            // Vizard-parity: a duplicate/derived clip keeps the source's
+            // platform targeting (duplicateClip does the same).
+            platformFit: source.platformFit,
             transcriptSlice:
               plan.transcriptSlice as unknown as Prisma.InputJsonValue,
             captionPreset:
@@ -1860,9 +1954,9 @@ export class ClipService {
                 : (source.captionPreset as Prisma.InputJsonValue),
             brollUrl: source.brollUrl,
             studioEdits:
-              source.studioEdits === null
+              studioEditsForNewClip === null
                 ? Prisma.JsonNull
-                : (source.studioEdits as Prisma.InputJsonValue),
+                : (studioEditsForNewClip as unknown as Prisma.InputJsonValue),
             // Fresh clip: no renders, no preview proxy, no B-roll cues, no
             // editor history — see this method's doc comment for why nothing
             // is copied from the source's rendered assets. deletedRanges /
@@ -3023,7 +3117,7 @@ export class ClipService {
       where: { id: clipId, projectId, project: { userId } },
       include: {
         renders: true,
-        project: { select: { sourceDurationSeconds: true } },
+        project: { select: { sourceDurationSeconds: true, sourceStorageKey: true } },
       },
     });
     if (!clip) {
@@ -3042,6 +3136,22 @@ export class ClipService {
       sourceDurationSec: clip.project.sourceDurationSeconds,
       viralityScore: clip.viralityScore,
     });
+
+    if (!plan.noop && plan.boundariesChanged) {
+      try {
+        assertBoundaryChangeHasAvailableSource(clip.project.sourceStorageKey);
+      } catch (error) {
+        console.warn(
+          JSON.stringify({
+            level: "warn",
+            message: "editor_boundaries_rejected_source_purged",
+            clipId,
+            projectId,
+          }),
+        );
+        throw error;
+      }
+    }
 
     if (plan.noop) {
       return {
@@ -3074,7 +3184,9 @@ export class ClipService {
       ...clip.renders.map((render) => render.storageKey),
       // The old-window preview proxy is orphaned once boundaries actually
       // move — same rule as updateClipBoundaries/resetClipEditorToOriginal.
-      ...(boundariesChanged ? [clip.previewStorageKey] : []),
+      ...(boundariesChanged
+        ? [clip.previewStorageKey, tryDerivePeaksStorageKey(clip.previewStorageKey)]
+        : []),
     ].filter((key): key is string => Boolean(key));
 
     let deletedRenderCount = 0;
@@ -3251,7 +3363,9 @@ export class ClipService {
       ...clip.renders.map((render) => render.storageKey),
       // The old-window preview proxy is orphaned once boundaries move —
       // same rule as updateClipBoundaries.
-      ...(boundariesChanged ? [clip.previewStorageKey] : []),
+      ...(boundariesChanged
+        ? [clip.previewStorageKey, tryDerivePeaksStorageKey(clip.previewStorageKey)]
+        : []),
     ].filter((key): key is string => Boolean(key));
 
     let deletedRenderCount = 0;

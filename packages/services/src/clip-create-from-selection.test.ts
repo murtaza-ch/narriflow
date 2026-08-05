@@ -4,7 +4,11 @@ import {
   CLIP_MIN_DURATION_SEC,
   type TranscriptUtterance,
 } from "@narriflow/validators";
-import { ClipActionError, planCreateClipFromSelection } from "./clip.service";
+import {
+  ClipActionError,
+  planCreateClipFromSelection,
+  planStudioEditsForClipFromSelection,
+} from "./clip.service";
 
 /** A single-utterance transcript of `wordCount` words, each exactly
  *  `wordDurationSec` long and back-to-back (no gaps) starting at `startAt` —
@@ -287,5 +291,53 @@ describe("planCreateClipFromSelection", () => {
         endSec: 0.45,
       }),
     ).toThrow(ClipActionError);
+  });
+});
+
+describe("planStudioEditsForClipFromSelection (fix: createClipFromSelection copies timeline-relative textLayers)", () => {
+  test("returns null when the source clip has no studioEdits", () => {
+    expect(planStudioEditsForClipFromSelection(null)).toBeNull();
+    expect(planStudioEditsForClipFromSelection(undefined)).toBeNull();
+  });
+
+  test("drops textLayers (source-clip-window-relative seconds) but keeps every other field", () => {
+    const sourceStudioEdits = {
+      textLayers: [
+        {
+          id: "t1",
+          text: "hello",
+          startSec: 2,
+          endSec: 4,
+          positionX: 50,
+          positionY: 50,
+        },
+      ],
+      transition: { type: "fade", durationSec: 0.6 },
+      music: {
+        url: "https://example.com/song.mp3",
+        title: "Song",
+        volume: 40,
+        startOffsetSec: 1,
+        fadeInSec: 0.5,
+        fadeOutSec: 0.5,
+      },
+      sourceAudio: { volume: 80, muted: false },
+      logo: { enabled: true, position: null, opacity: null, scalePct: null },
+    };
+
+    const result = planStudioEditsForClipFromSelection(sourceStudioEdits);
+
+    expect(result).not.toBeNull();
+    expect(result!.textLayers).toEqual([]);
+    expect(result!.transition).toEqual(sourceStudioEdits.transition);
+    expect(result!.music).toEqual(sourceStudioEdits.music);
+    expect(result!.sourceAudio).toEqual(sourceStudioEdits.sourceAudio);
+    expect(result!.logo).toEqual(sourceStudioEdits.logo);
+  });
+
+  test("still returns non-null (schema defaults) for a source clip with no textLayers to begin with", () => {
+    const result = planStudioEditsForClipFromSelection({});
+    expect(result).not.toBeNull();
+    expect(result!.textLayers).toEqual([]);
   });
 });

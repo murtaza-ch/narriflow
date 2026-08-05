@@ -250,9 +250,41 @@ describe("applyUnifiedEditorAction", () => {
       expect(state.segments).toBe(segmentsC);
       expect(state.segmentsPast).toEqual([]);
       expect(state.segmentsFuture).toEqual([]);
-      // The prior "segments" meta entry from the split above is untouched —
-      // resegment doesn't add or remove meta entries of its own.
+      // Finding 4 (Phase B closing review): the prior "segments" meta entry
+      // from the split above now points at segmentsPast/segmentsFuture
+      // frames that were just cleared — left in place, a later undo would
+      // hit a dead tag and no-op forever instead of falling through to the
+      // next real step. resegment purges it from both meta stacks.
+      expect(state.metaUndo).toEqual([]);
+      expect(canUndoUnified(state)).toBe(false);
+    });
+
+    test("undo after split -> trim undoes the trim, not a stale split tag (Phase B closing review finding 4)", () => {
+      let state = initial();
+      // A manual segment split BEFORE the trim.
+      state = applyUnifiedEditorAction(state, { kind: "segments", segments: segmentsB });
       expect(state.metaUndo).toEqual(["segments"]);
+
+      // A trim: its own document-level undo step (trimClip in the real
+      // reducer; any document mutation exercises the same resegment-purge
+      // path here) plus the silent resegment that rebuilds segments against
+      // the new window in the same gesture.
+      state = applyUnifiedEditorAction(state, {
+        kind: "document",
+        action: { type: "setBrollUrl", brollUrl: "https://example.com/trim.mp4" },
+      });
+      state = applyUnifiedEditorAction(state, { kind: "resegment", segments: segmentsC });
+
+      // The pre-trim split's "segments" tag is gone — only the trim's own
+      // "document" tag remains.
+      expect(state.metaUndo).toEqual(["document"]);
+
+      // Undo pops the trim itself, not a dead "segments" tag underneath it.
+      state = applyUnifiedEditorAction(state, { kind: "undo" });
+      expect(state.doc.present.brollUrl).toBeNull();
+      expect(state.segments).toBe(segmentsC); // resegment's own effect, no undo trace
+      // No stale split tag left to wedge undo at this point.
+      expect(canUndoUnified(state)).toBe(false);
     });
 
     test("undo right after a trim (document + resegment) restores the pre-trim document in ONE step, leaving the resegmented segments in place", () => {
