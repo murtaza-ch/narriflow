@@ -4,6 +4,7 @@ import type { Clip, ClipRender } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import { projectService } from "./project.service";
 import {
+  applyStudioEditsPatchSchema,
   BRAND_DEFAULT_CAPTION_PRESET_ID,
   CLIP_MAX_DURATION_SEC,
   CLIP_MIN_DURATION_SEC,
@@ -34,6 +35,7 @@ import {
   updateClipTranscriptSliceSchema,
 } from "@narriflow/validators";
 import type {
+  ApplyStudioEditsPatch,
   BrollCue,
   CaptionPreset,
   ClipAspectRatio,
@@ -3440,11 +3442,32 @@ export class ClipService {
     };
   }
 
-  /** Applies a caption preset to every clip in an owned project ("apply to all"). */
+  /**
+   * Applies a caption preset to every clip in an owned project ("apply to
+   * all"). `captionPreset` is a plain column (unlike `studioEdits`), so the
+   * write itself can stay a single `updateMany` — but every other single-clip
+   * mutation path in this file invalidates stale renders + their R2 assets
+   * when it changes an export-affecting field, and this one used to be the
+   * lone exception: it bumped `editorRevision` on every row without ever
+   * deleting the now-stale `ClipRender` rows or their R2 objects, leaving
+   * completed renders downloadable with a caption style they no longer
+   * reflect. Fixed here to match `updateClipStudioEdits`'s pattern exactly:
+   * delete the affected `ClipRender` rows inside the same transaction as the
+   * `updateMany`, then clean up their R2 assets afterward.
+   *
+   * Also carries the same no-op guard `applyStudioEditsPatchToAllClips` uses
+   * below: rows whose serialized `captionPreset` already equals the
+   * incoming one are skipped entirely, so re-applying an unchanged preset
+   * can't delete every completed/queued render for nothing.
+   *
+   * `excludeClipId` skips the calling studio session's own open clip — see
+   * `applyCaptionPresetToAllSchema`'s doc comment for why.
+   */
   async applyCaptionPresetToAllClips(
     userId: string,
     projectId: string,
     preset: CaptionPreset,
+    opts?: { excludeClipId?: string },
   ): Promise<{ updated: number }> {
     const prisma = requirePrisma();
 
@@ -3456,18 +3479,214 @@ export class ClipService {
       throw new Error("project not found");
     }
 
-    const result = await prisma.clip.updateMany({
-      where: { projectId },
-      data: {
-        captionPreset: preset as Prisma.InputJsonValue,
-        // See updateClipBoundaries' comment: captionPreset is document-owned
-        // and also writable via saveClipEditorDocument, on every affected
-        // row.
-        editorRevision: { increment: 1 },
+    const clips = await prisma.clip.findMany({
+      where: {
+        projectId,
+        ...(opts?.excludeClipId ? { id: { not: opts.excludeClipId } } : {}),
+      },
+      select: {
+        id: true,
+        captionPreset: true,
+        renders: { select: { storageKey: true } },
       },
     });
 
-    return { updated: result.count };
+    if (clips.length === 0) {
+      return { updated: 0 };
+    }
+
+    const rowsToUpdate = clips.filter((clip) => {
+      const existing = clip.captionPreset
+        ? captionPresetSchema.parse(clip.captionPreset)
+        : DEFAULT_CAPTION_PRESET;
+      return !captionPresetBulkApplyIsNoop(existing, preset);
+    });
+
+    if (rowsToUpdate.length === 0) {
+      return { updated: 0 };
+    }
+
+    const clipIds = rowsToUpdate.map((clip) => clip.id);
+    const staleRenderKeys = rowsToUpdate.flatMap((clip) =>
+      clip.renders
+        .map((render) => render.storageKey)
+        .filter((key): key is string => Boolean(key)),
+    );
+
+    let deletedRenderCount = 0;
+    await prisma.$transaction(async (tx) => {
+      const deleted = await tx.clipRender.deleteMany({
+        where: { clipId: { in: clipIds } },
+      });
+      deletedRenderCount = deleted.count;
+      await tx.clip.updateMany({
+        where: { id: { in: clipIds } },
+        data: {
+          captionPreset: preset as Prisma.InputJsonValue,
+          // See updateClipBoundaries' comment: captionPreset is
+          // document-owned and also writable via saveClipEditorDocument, on
+          // every affected row.
+          editorRevision: { increment: 1 },
+        },
+      });
+    });
+
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        message: "caption_preset_bulk_applied_invalidated_renders",
+        projectId,
+        clipCount: clipIds.length,
+        deletedRenderCount,
+      }),
+    );
+
+    await deleteRenderAssets(staleRenderKeys);
+
+    return { updated: clipIds.length };
+  }
+
+  /**
+   * Applies a `studioEdits` sub-field patch (transition or background) to
+   * every clip in an owned project ("apply to all"). Unlike
+   * `applyCaptionPresetToAllClips`, `studioEdits` is a JSON blob per row, so
+   * this can't be a single `updateMany` — each row's document must be
+   * fetched, parsed with `studioEditsSchema.parse(... ?? {})` (same fallback
+   * `updateClipStudioEdits` uses for legacy/missing values; the parse itself
+   * is strict, not lenient — a row whose stored JSON no longer validates is
+   * skipped and structured-logged rather than aborting the whole bulk
+   * apply), merged with the patch, and written back. Rows where the merge is
+   * a no-op (the patched field already matches) are skipped entirely — same
+   * guard `updateClipStudioEdits` uses so a redundant apply can't delete a
+   * perfectly-valid render.
+   *
+   * Writes are batched by the resulting merged `studioEdits` JSON rather
+   * than issued one `deleteMany`+`update` pair per row inside the
+   * transaction: with up to ~30 clips in a project, 2N sequential
+   * statements in one interactive `$transaction` risked blowing Prisma's 5s
+   * default timeout (P2028) against the Neon pooler and aborting the whole
+   * apply. Since every affected row gets the same patched sub-field, rows
+   * that share an identical merged document (the common case — most clips
+   * haven't been touched yet) collapse into a single `updateMany`; the
+   * `ClipRender` invalidation is one `deleteMany` across every affected
+   * clip id, mirroring `applyCaptionPresetToAllClips`'s single-`updateMany`
+   * shape.
+   *
+   * `excludeClipId` skips the calling studio session's own open clip — see
+   * `applyStudioEditsToAllSchema`'s doc comment for why.
+   */
+  async applyStudioEditsPatchToAllClips(
+    userId: string,
+    projectId: string,
+    patch: ApplyStudioEditsPatch,
+    opts?: { excludeClipId?: string },
+  ): Promise<{ updated: number; field: "transition" | "background" }> {
+    const prisma = requirePrisma();
+    const parsedPatch = applyStudioEditsPatchSchema.parse(patch);
+    const field: "transition" | "background" =
+      parsedPatch.transition !== undefined ? "transition" : "background";
+
+    const project = await prisma.project.findFirst({
+      where: { id: projectId, userId },
+      select: { id: true },
+    });
+    if (!project) {
+      throw new Error("project not found");
+    }
+
+    const clips = await prisma.clip.findMany({
+      where: {
+        projectId,
+        ...(opts?.excludeClipId ? { id: { not: opts.excludeClipId } } : {}),
+      },
+      select: {
+        id: true,
+        studioEdits: true,
+        renders: { select: { storageKey: true } },
+      },
+    });
+
+    const rowsToUpdate: {
+      id: string;
+      merged: StudioEdits;
+      staleRenderKeys: string[];
+    }[] = [];
+    for (const clip of clips) {
+      let existing: StudioEdits;
+      try {
+        existing = clip.studioEdits
+          ? studioEditsSchema.parse(clip.studioEdits)
+          : studioEditsSchema.parse({});
+      } catch (error) {
+        console.warn(
+          JSON.stringify({
+            level: "warn",
+            message: "studio_edits_bulk_apply_row_unparseable",
+            projectId,
+            clipId: clip.id,
+            error: error instanceof Error ? error.message : "unknown",
+          }),
+        );
+        continue;
+      }
+      const merged: StudioEdits = { ...existing, [field]: parsedPatch[field] };
+      // Same serialized-form no-op check updateClipStudioEdits uses: both
+      // sides are the output of the same schema parse, so this is a valid
+      // deep-equality comparison.
+      if (JSON.stringify(merged) === JSON.stringify(existing)) {
+        continue;
+      }
+      rowsToUpdate.push({
+        id: clip.id,
+        merged,
+        staleRenderKeys: clip.renders
+          .map((render) => render.storageKey)
+          .filter((key): key is string => Boolean(key)),
+      });
+    }
+
+    if (rowsToUpdate.length === 0) {
+      return { updated: 0, field };
+    }
+
+    const groups = groupClipsByMergedStudioEdits(rowsToUpdate);
+
+    const allIds = rowsToUpdate.map((row) => row.id);
+    let deletedRenderCount = 0;
+    await prisma.$transaction(async (tx) => {
+      const deleted = await tx.clipRender.deleteMany({
+        where: { clipId: { in: allIds } },
+      });
+      deletedRenderCount = deleted.count;
+      for (const group of groups) {
+        await tx.clip.updateMany({
+          where: { id: { in: group.ids } },
+          data: {
+            studioEdits: group.merged as unknown as Prisma.InputJsonValue,
+            status: "edited",
+            // See updateClipBoundaries' comment: studioEdits is
+            // document-owned and also writable via saveClipEditorDocument.
+            editorRevision: { increment: 1 },
+          },
+        });
+      }
+    });
+
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        message: "studio_edits_bulk_applied",
+        projectId,
+        field,
+        clipCount: rowsToUpdate.length,
+        groupCount: groups.length,
+        deletedRenderCount,
+      }),
+    );
+
+    await deleteRenderAssets(rowsToUpdate.flatMap((row) => row.staleRenderKeys));
+
+    return { updated: rowsToUpdate.length, field };
   }
 
   async updateClipTranscriptSlice(
@@ -3629,6 +3848,49 @@ export function brollUrlChanged(
   next: string | null,
 ): boolean {
   return current !== next;
+}
+
+/**
+ * Whether a clip's stored caption preset already matches the preset a bulk
+ * "apply to all" is about to write. Used by `applyCaptionPresetToAllClips`
+ * to skip rows that would be a no-op — re-applying an unchanged preset must
+ * not delete every completed/queued render for nothing. Exported so the
+ * no-op guard is unit-testable without a database: both arguments are
+ * expected to already be the output of `captionPresetSchema.parse` (or
+ * `DEFAULT_CAPTION_PRESET`), so this is a valid deep-equality comparison.
+ */
+export function captionPresetBulkApplyIsNoop(
+  existing: CaptionPreset,
+  incoming: CaptionPreset,
+): boolean {
+  return JSON.stringify(existing) === JSON.stringify(incoming);
+}
+
+/**
+ * Groups rows headed into a `studioEdits` bulk "apply to all" write by the
+ * serialized form of their merged document. Used by
+ * `applyStudioEditsPatchToAllClips` to collapse rows that end up identical
+ * (the common case — most clips in a project haven't customized the
+ * patched field yet) into a single `updateMany` instead of one statement
+ * per row, keeping the total number of sequential statements in the
+ * surrounding `$transaction` well under Prisma's default timeout even for
+ * a full-size (~30 clip) project. Exported so the grouping itself is
+ * unit-testable without a database.
+ */
+export function groupClipsByMergedStudioEdits(
+  rows: Array<{ id: string; merged: StudioEdits }>,
+): Array<{ merged: StudioEdits; ids: string[] }> {
+  const groups = new Map<string, { merged: StudioEdits; ids: string[] }>();
+  for (const row of rows) {
+    const key = JSON.stringify(row.merged);
+    const group = groups.get(key);
+    if (group) {
+      group.ids.push(row.id);
+    } else {
+      groups.set(key, { merged: row.merged, ids: [row.id] });
+    }
+  }
+  return [...groups.values()];
 }
 
 // --- Scoring utilities ---

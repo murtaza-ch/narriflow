@@ -2,6 +2,8 @@ import { Hono } from "hono";
 import { handle } from "hono/vercel";
 import { getCurrentAppUser } from "@narriflow/auth";
 import {
+  applyCaptionPresetToAllSchema,
+  applyStudioEditsToAllSchema,
   brandTemplateInputSchema,
   brandTemplateUpdateSchema,
   completeMultipartUploadSchema,
@@ -1431,14 +1433,11 @@ app.post("/projects/:id/clips/apply-caption-preset", async (c) => {
   }
 
   const payload = await c.req.json().catch(() => ({}));
-  const parsed = updateClipCaptionPresetSchema.safeParse(payload);
+  const parsed = applyCaptionPresetToAllSchema.safeParse(payload);
 
-  if (!parsed.success || parsed.data.captionPreset === null) {
+  if (!parsed.success) {
     return c.json(
-      {
-        error: "Invalid payload",
-        issues: parsed.success ? [] : parsed.error.issues,
-      },
+      { error: "Invalid payload", issues: parsed.error.issues },
       400,
     );
   }
@@ -1448,11 +1447,56 @@ app.post("/projects/:id/clips/apply-caption-preset", async (c) => {
       appUser.id,
       projectId,
       parsed.data.captionPreset,
+      { excludeClipId: parsed.data.excludeClipId },
     );
     return c.json(result, 200);
   } catch (error) {
     return c.json(
       { error: "apply_caption_preset_failed", message: errorMessage(error) },
+      400,
+    );
+  }
+});
+
+app.post("/projects/:id/clips/apply-studio-edits", async (c) => {
+  const appUser = await getCurrentAppUser();
+
+  if (!appUser) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const projectId = c.req.param("id");
+  const access = await projectService.getProjectAccess(appUser.id, projectId);
+
+  if (access === "missing") {
+    return c.json({ error: "Project not found" }, 404);
+  }
+
+  if (access === "forbidden") {
+    return c.json({ error: "Forbidden" }, 403);
+  }
+
+  const payload = await c.req.json().catch(() => ({}));
+  const parsed = applyStudioEditsToAllSchema.safeParse(payload);
+
+  if (!parsed.success) {
+    return c.json(
+      { error: "Invalid payload", issues: parsed.error.issues },
+      400,
+    );
+  }
+
+  try {
+    const result = await clipService.applyStudioEditsPatchToAllClips(
+      appUser.id,
+      projectId,
+      parsed.data.patch,
+      { excludeClipId: parsed.data.excludeClipId },
+    );
+    return c.json(result, 200);
+  } catch (error) {
+    return c.json(
+      { error: "apply_studio_edits_failed", message: errorMessage(error) },
       400,
     );
   }
