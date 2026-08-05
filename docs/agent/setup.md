@@ -23,6 +23,12 @@ Local setup for the Claude Code + Codex workflow. Not agent instructions.
 
 - Do not commit personal plugin state, secrets, local paths, or machine-specific settings.
 
+## Worker env flags
+
+- `WORKER_SPLIT=0` disables the "split" (2-up) framing mode's per-output render path; clips using it fall back to whole-clip single-speaker framing (auto-reframe or a static center crop).
+- `WORKER_SCREEN_LAYOUT=0` disables the "screen" (screen-share + facecam) framing mode's per-output render path the same way, falling back to whole-clip single-speaker framing.
+- Both default to enabled (unset, or any value other than `"0"`).
+
 ## Worker email notifications
 
 - Set `WORKER_APP_BASE_URL` in `apps/worker/.env` to the public web-app origin used in project links (for example, `https://app.narriflow.com`). Production workers skip notification sends when this value is missing, invalid, or points to localhost.

@@ -375,14 +375,15 @@ const STUDIO_BACKGROUND_DEFAULT = {
   imageUrl: null,
 } as const;
 
-// Per-clip framing mode (vizard-parity.md Phase C-2 stage 1, split packet A).
-// "auto", "center", and "split" are the ways a clip can be CROPPED/composed
-// to fill the frame; "fit" (letterbox + background) is deliberately NOT a
-// value here — it's already fully expressed by `background.mode !== "off"`
-// (landed in Phase C item 2), so representing it again here would let the
-// two fields disagree. The EFFECTIVE framing mode (which folds `background`
-// in) is always resolved through `resolveEffectiveFramingMode` below — never
-// read `framing.mode` directly when deciding crop vs fit vs split.
+// Per-clip framing mode (vizard-parity.md Phase C-2 stage 1, split packet A,
+// screen packet A). "auto", "center", "split", and "screen" are the ways a
+// clip can be CROPPED/composed to fill the frame; "fit" (letterbox +
+// background) is deliberately NOT a value here — it's already fully
+// expressed by `background.mode !== "off"` (landed in Phase C item 2), so
+// representing it again here would let the two fields disagree. The
+// EFFECTIVE framing mode (which folds `background` in) is always resolved
+// through `resolveEffectiveFramingMode` below — never read `framing.mode`
+// directly when deciding crop vs fit vs split vs screen.
 //
 // "split" — stacked 2-up split-screen: the worker seats detected face
 // clusters into two vertically-stacked tiles (top/bottom), one per speaker
@@ -405,8 +406,38 @@ const STUDIO_BACKGROUND_DEFAULT = {
 // via the `WORKER_SPLIT` env kill switch. Every one of those routes through
 // the exact same fallback path — never a failed render — and is logged with
 // its own `clip_split_fallback` reason (see `SplitFallbackReason`).
+//
+// "screen" — screen-share layout (Vizard's screencast-with-facecam preset):
+// the full source frame (the "screen" element — a shared window/slide/app)
+// fits UNCROPPED into the top tile (letterboxed, like "fit", but confined to
+// a top tile rather than the whole canvas), while the bottom tile carries a
+// face-CENTERED horizontal crop of the WHOLE source frame — the same
+// single-face tracking `reframe.ts`'s auto-reframe uses, just aimed at a
+// half-height tile, NOT a facecam/webcam sub-region detector (there is no
+// PiP-region localization anywhere in this pipeline). Packets A (this
+// schema/the panel), B (the worker's dedicated render path —
+// `apps/worker/src/tasks/screen-layout.ts`'s
+// `buildScreenSpeakerFilterChain`/`screenTileGeometry`, `render-clips.ts`'s
+// `applyScreenSpeakerLayout`/`decideScreenFallback`), and C (a live two-tile
+// studio preview mirroring split's dual-video approach, contain-fit top +
+// centered-cover bottom — see video-preview.tsx's `isScreen` block) have all
+// landed. The worker letterboxes the full frame into the top tile and seats
+// a face-tracked (horizontal-only) crop of the whole frame into the bottom
+// tile, driven per output by its own sendcmd script; when no face is
+// detected, detection is unavailable, or an output's aspect ratio has no
+// lateral room to track a face in at all (e.g. 1:1/16:9 against a landscape
+// source — see `screenBottomIsTrackable`), the bottom tile falls back to a
+// static CENTER crop instead, with the layout itself preserved either way —
+// never a failed render. B-roll cutaways are the one condition that DOES
+// fall back to whole-clip single-speaker auto-reframe framing (same v1
+// policy split uses: b-roll always wins the whole frame). The whole feature
+// can be disabled via the `WORKER_SCREEN_LAYOUT` env kill switch, which also
+// routes to whole-clip single-speaker framing. The studio preview
+// approximates this (contain-fit top tile + centered-cover bottom tile,
+// no client-side face detection) — the worker's render is the source of
+// truth for exact framing.
 export const studioFramingSchema = z.object({
-  mode: z.enum(["auto", "center", "split"]).default("auto"),
+  mode: z.enum(["auto", "center", "split", "screen"]).default("auto"),
 });
 
 const STUDIO_FRAMING_DEFAULT = { mode: "auto" } as const;
@@ -477,21 +508,22 @@ export type StudioSfxPlacement = z.infer<typeof studioSfxPlacementSchema>;
 export type StudioEdits = z.infer<typeof studioEditsSchema>;
 export type UpdateClipStudioEdits = z.infer<typeof updateClipStudioEditsSchema>;
 
-export type EffectiveFramingMode = "auto" | "center" | "fit" | "split";
+export type EffectiveFramingMode = "auto" | "center" | "fit" | "split" | "screen";
 
 /**
  * The single source of truth for "how is this clip actually framed" —
- * folds `background` and `framing` into one of four effective modes so the
+ * folds `background` and `framing` into one of five effective modes so the
  * worker's render pipeline and the studio's Layout panel/preview can never
  * fork on the answer. `background.mode !== "off"` always wins as "fit"
- * regardless of `framing.mode` — including when `framing.mode === "split"`:
- * a user picking Split in the panel also turns background off via the same
- * choice handler that Auto/Center use (see layout-panel.tsx's
- * `setFramingChoice`), so in practice "fit" and "split" never coexist, but
- * the precedence rule here is unconditional either way. Fit isn't a
- * `framing` enum value (see `studioFramingSchema`'s doc comment), it's
- * derived entirely from `background`. Only when background is off does
- * `framing.mode` (auto vs center vs split) take effect.
+ * regardless of `framing.mode` — including when `framing.mode === "split"`
+ * or `"screen"`: a user picking Split/Screen in the panel also turns
+ * background off via the same choice handler that Auto/Center use (see
+ * layout-panel.tsx's `setFramingChoice`), so in practice "fit" never
+ * coexists with either, but the precedence rule here is unconditional
+ * either way. Fit isn't a `framing` enum value (see `studioFramingSchema`'s
+ * doc comment), it's derived entirely from `background`. Only when
+ * background is off does `framing.mode` (auto vs center vs split vs screen)
+ * take effect.
  */
 export function resolveEffectiveFramingMode(
   studioEdits: Pick<StudioEdits, "background" | "framing">,

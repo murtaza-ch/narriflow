@@ -285,6 +285,21 @@ describe("studioEditsSchema (source audio + music fades)", () => {
     expect(parsed.framing).toEqual({ mode: "auto" });
   });
 
+  test("accepts an explicit screen framing mode", () => {
+    const parsed = studioEditsSchema.parse({ framing: { mode: "screen" } });
+    expect(parsed.framing).toEqual({ mode: "screen" });
+  });
+
+  test("legacy persisted JSON (no framing key at all) still parses to auto, unaffected by screen's addition", () => {
+    const legacy = {
+      textLayers: [],
+      transition: { type: "none", durationSec: 0.4 },
+      background: { mode: "off", color: null, imageUrl: null },
+    };
+    const parsed = studioEditsSchema.parse(legacy);
+    expect(parsed.framing).toEqual({ mode: "auto" });
+  });
+
   test("rejects an invalid framing mode (fit is not a framing value)", () => {
     expect(() =>
       studioEditsSchema.parse({ framing: { mode: "fit" } }),
@@ -311,6 +326,11 @@ describe("resolveEffectiveFramingMode (Phase C-2 stage 1 — background/framing 
     expect(resolveEffectiveFramingMode(parsed)).toBe("split");
   });
 
+  test("resolves to screen when background is off and framing.mode is screen", () => {
+    const parsed = studioEditsSchema.parse({ framing: { mode: "screen" } });
+    expect(resolveEffectiveFramingMode(parsed)).toBe("screen");
+  });
+
   test("background active always resolves to fit, regardless of framing.mode", () => {
     const withAuto = studioEditsSchema.parse({
       background: { mode: "color", color: "#112233", imageUrl: null },
@@ -335,6 +355,12 @@ describe("resolveEffectiveFramingMode (Phase C-2 stage 1 — background/framing 
       framing: { mode: "split" },
     });
     expect(resolveEffectiveFramingMode(withSplit)).toBe("fit");
+
+    const withScreen = studioEditsSchema.parse({
+      background: { mode: "color", color: "#112233", imageUrl: null },
+      framing: { mode: "screen" },
+    });
+    expect(resolveEffectiveFramingMode(withScreen)).toBe("fit");
   });
 });
 
@@ -407,6 +433,15 @@ describe("applyStudioEditsPatchSchema (vizard-parity Phase C — apply-to-all)",
       framing: { mode: "split" },
     });
     expect(parsed.framing).toEqual({ mode: "split" });
+    expect(parsed.transition).toBeUndefined();
+    expect(parsed.background).toBeUndefined();
+  });
+
+  test("accepts a screen framing patch", () => {
+    const parsed = applyStudioEditsPatchSchema.parse({
+      framing: { mode: "screen" },
+    });
+    expect(parsed.framing).toEqual({ mode: "screen" });
     expect(parsed.transition).toBeUndefined();
     expect(parsed.background).toBeUndefined();
   });
