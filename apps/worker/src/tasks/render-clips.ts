@@ -75,6 +75,16 @@ import {
   type SmoothedSample,
 } from "./reframe";
 import {
+  buildSplitFilterChain,
+  buildSplitLayoutPlan,
+  deriveSingleFaceSamplesFromMulti,
+  remapMultiFaceSamplesForCutPlan,
+  splitTilesAreDistinct,
+  type BuildSplitLayoutPlanResult,
+  type MultiFaceSample,
+  type SplitLayoutSegment,
+} from "./two-up";
+import {
   brollQueryForClip,
   dominantPexelsOrientation,
   getCachedBrollAssetPath,
@@ -703,6 +713,266 @@ async function detectFacePath(params: {
   } catch {
     return null;
   }
+}
+
+/**
+ * Multi-face sibling of `detectFacePath` (split packet B, vizard-parity.md
+ * "Split-screen 2-up") — runs the same YuNet detector script in `--multi`
+ * mode (see `reframe_detect.py`'s doc comment) so every sample carries ALL
+ * detected faces (not just the dominant one), the raw input
+ * `buildSplitLayoutPlan`'s clustering/shot-classification pipeline needs.
+ * Same env/model/fps handling, same null-on-failure/no-model/no-python
+ * contract as `detectFacePath` — callers fall back to single-speaker framing.
+ */
+async function detectMultiFacePath(params: {
+  sourcePath: string;
+  startSec: number;
+  durationSec: number;
+}): Promise<{ samples: MultiFaceSample[] } | null> {
+  const scriptPath = fileURLToPath(
+    new URL("../../scripts/reframe_detect.py", import.meta.url),
+  );
+  const modelPath =
+    process.env.REFRAME_MODEL_PATH ??
+    "/usr/local/share/narriflow/face_yunet.onnx";
+  const fps = process.env.REFRAME_SAMPLE_FPS ?? "4";
+
+  try {
+    const out = await execCommandOutput("python3", [
+      scriptPath,
+      params.sourcePath,
+      String(params.startSec),
+      String(params.durationSec),
+      fps,
+      modelPath,
+      "--multi",
+    ]);
+    const parsed = JSON.parse(out) as {
+      samples?: Array<{
+        t: number;
+        faces?: Array<{ cx: number; cy: number; w: number; h: number; score: number }>;
+      }>;
+      error?: string;
+    };
+    if (parsed.error || !Array.isArray(parsed.samples)) return null;
+    return {
+      samples: parsed.samples.map((s) => ({ t: s.t, faces: s.faces ?? [] })),
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Extracts a low-res local segment for face detection when the source is an
+ * HTTP(S) presigned URL (the YuNet detector needs a frame-accurate local
+ * file) — shared by both the single-face auto-reframe path and the
+ * multi-face split-detection path (split packet B), which previously
+ * duplicated this exact extraction. Re-encodes (never `-c copy`: a stream
+ * copy snaps to the previous keyframe and would shift every face sample by
+ * up to a GOP). Returns the ORIGINAL `sourcePath`/`clipStartSec` unchanged
+ * for a local/non-HTTP source (no extraction needed), or null on any
+ * extraction failure — callers already fall back to a static/center crop.
+ * `suffix` keeps the two call sites' temp files from colliding when both run
+ * for the same clip (split falling back to auto-reframe within one render).
+ */
+async function extractFaceDetectionSegment(params: {
+  sourcePath: string;
+  tempDir: string;
+  clipId: string;
+  workflowRunId: string;
+  clipStartSec: number;
+  durationSec: number;
+  suffix?: string;
+}): Promise<{ path: string; startSec: number } | null> {
+  if (!isHttpSource(params.sourcePath)) {
+    return { path: params.sourcePath, startSec: params.clipStartSec };
+  }
+  const segmentPath = join(
+    params.tempDir,
+    `face-seg-${params.clipId}${params.suffix ?? ""}.mp4`,
+  );
+  try {
+    await execCommand("ffmpeg", [
+      "-y",
+      ...httpSourceInputArgs(params.sourcePath),
+      "-ss",
+      String(params.clipStartSec),
+      "-t",
+      String(params.durationSec),
+      "-i",
+      params.sourcePath,
+      "-map",
+      "0:v:0",
+      "-vf",
+      "scale=-2:360",
+      "-c:v",
+      "libx264",
+      "-preset",
+      "ultrafast",
+      "-crf",
+      "30",
+      "-an",
+      segmentPath,
+    ]);
+    return { path: segmentPath, startSec: 0 };
+  } catch (segmentError) {
+    log("error", "clip_reframe_segment_extract_failed", {
+      workflowRunId: params.workflowRunId,
+      clipId: params.clipId,
+      message:
+        segmentError instanceof Error ? segmentError.message : "unknown",
+    });
+    return null;
+  }
+}
+
+/**
+ * Drives every `reframeOutputs` output's crop via sendcmd from an already-
+ * detected single-face sample list — the exact logic
+ * `processClipRenderingRun`'s "auto" framing branch used to inline,
+ * extracted (split packet B) so the split-mode fallback path below (footage
+ * that can't support a real 2-up) can reuse it verbatim instead of
+ * re-implementing the same remap -> smooth -> sendcmd-script pipeline a
+ * second time. Returns whether a reframe was actually applied (false: no
+ * samples, or they produced zero usable smoothed points) purely for the
+ * caller's own logging/bookkeeping.
+ *
+ * Takes ALREADY-DETECTED `samples` rather than running `detectFacePath`
+ * itself (M2, adversarial review): a split-mode clip that falls back after
+ * multi-face detection already ran and succeeded can derive these from that
+ * multi-face result (`deriveSingleFaceSamplesFromMulti`) instead of paying
+ * for a second full YuNet pass — see this function's call sites for which
+ * path each one takes.
+ */
+async function applyAutoReframe(params: {
+  samples: FaceSample[] | null;
+  cutPlan: ClipCutPlan;
+  clipStartSec: number;
+  probe: SourceProbe;
+  outputs: PendingRenderOutput[];
+  reframeOutputs: PendingRenderOutput[];
+  tempDir: string;
+  clipId: string;
+  workflowRunId: string;
+}): Promise<boolean> {
+  let smoothed: SmoothedSample[] = [];
+  if (params.samples) {
+    const segmentGroups = remapFaceSamplesForCutPlan(
+      params.samples,
+      params.cutPlan,
+      params.clipStartSec,
+    );
+    smoothed = segmentGroups.flatMap((group) => smoothFacePath(group));
+  }
+  if (smoothed.length === 0) return false;
+
+  const single = params.outputs.length === 1;
+  for (let i = 0; i < params.outputs.length; i++) {
+    const output = params.outputs[i]!;
+    if (!params.reframeOutputs.includes(output)) continue;
+    const cfg = aspectRatioConfig.get(output.aspectRatio)!;
+    const cropW = Math.round(params.probe.height * (cfg.width / cfg.height));
+    const cropName = single ? REFRAME_CROP_NAME : `${REFRAME_CROP_NAME}${i}`;
+    const script = buildReframeSendcmdScript(
+      smoothed,
+      params.probe.width,
+      cropW,
+      cropName,
+    );
+    if (!script) continue;
+    const scriptPath = join(
+      params.tempDir,
+      `reframe-${params.clipId}-${output.aspectRatio.replace(":", "x")}.txt`,
+    );
+    await writeFile(scriptPath, script, "utf-8");
+    output.reframe = { scriptPath, cropName };
+  }
+  log("info", "clip_reframe_applied", {
+    workflowRunId: params.workflowRunId,
+    clipId: params.clipId,
+    outputs: params.outputs.filter((o) => o.reframe).map((o) => o.aspectRatio),
+  });
+  return true;
+}
+
+/** Why split packet B's segment-aware 2-up couldn't render for this clip —
+ *  `null` means it's rendering as a real 2-up. Every non-null reason routes
+ *  through the SAME fallback as today's pre-packet-B behavior: single-speaker
+ *  framing (auto-reframe if it can run, else a static center crop) — never a
+ *  failed render.
+ *
+ *  `disabled` (L1) and `tiles_not_distinct` (H1) are never returned BY
+ *  `decideSplitFallback` itself — `disabled` short-circuits before it's even
+ *  called (the `WORKER_SPLIT=0` kill switch), and `tiles_not_distinct` is
+ *  decided PER OUTPUT aspect ratio, not per clip (see `splitTilesAreDistinct`
+ *  and its call site) — both are still part of this union because they're
+ *  logged through the same `clip_split_fallback` reason field. */
+export type SplitFallbackReason =
+  | "disabled"
+  | "broll_conflict"
+  | "detection_unavailable"
+  | "insufficient_clusters"
+  | "empty_plan"
+  | "no_two_up_segments"
+  | "tiles_not_distinct"
+  | null;
+
+/**
+ * Pure fallback-decision logic for split packet B (vizard-parity.md
+ * "Split-screen 2-up", scope item 4/5): given what happened upstream, should
+ * this clip fall back to single-speaker framing instead of a real 2-up, and
+ * why (for the `clip_split_fallback` structured log)? Order matters —
+ * `hasBrollPlan` is checked FIRST because it's a policy choice (v1: "b-roll
+ * replaces the whole 2-up frame" is future work, so B-roll always wins),
+ * independent of whether detection would otherwise have succeeded.
+ */
+export function decideSplitFallback(params: {
+  hasBrollPlan: boolean;
+  detectionAvailable: boolean;
+  plan: BuildSplitLayoutPlanResult | null;
+}): SplitFallbackReason {
+  if (params.hasBrollPlan) return "broll_conflict";
+  if (!params.detectionAvailable) return "detection_unavailable";
+  if (!params.plan || params.plan.segments.length === 0) {
+    return (params.plan?.clusterCount ?? 0) < 2 ? "insufficient_clusters" : "empty_plan";
+  }
+  // M4 (adversarial review): a plan with zero "two-up" segments (every
+  // segment collapsed to "single" — e.g. a clip that never actually shows
+  // two clustered faces at once, only ever solo close-ups/b-roll) has
+  // nothing for a 2-up render to actually show; the spike's conclusion was
+  // that such a plan should route through the existing single-shot
+  // auto-reframe path exactly like any other non-split clip, not stretch a
+  // single-face crop into a pointless top/bottom-identical stack.
+  if (params.plan.segments.every((segment) => segment.layout === "single")) {
+    return "no_two_up_segments";
+  }
+  return null;
+}
+
+/**
+ * Whether this clip's framing choice ALONE forces the per-output render
+ * path (`hasStudioVideoEdits` in `processClipRenderingRun`) rather than the
+ * shared `buildMultiVideoArgs` batch path — true only for the effective
+ * "split" mode (split packet B): a 2-up composition needs its own
+ * `buildSplitFilterChain` filter graph per output, which
+ * `buildMultiVideoArgs`'s shared crop-to-fill path has no concept of, same
+ * reason a canvas background/cut-concat/music force it above. Note this is
+ * necessary but not sufficient for a clip to actually render as 2-up — it
+ * only decides which ffmpeg-arg builder family runs; `decideSplitFallback`
+ * (evaluated once detection/broll are known) decides whether that per-output
+ * call ends up passing a real split plan or falls back to single-speaker
+ * framing.
+ *
+ * L1 (adversarial review): also false whenever the `WORKER_SPLIT=0` kill
+ * switch is set, even if `studioEdits.framing.mode` is still "split" — with
+ * the switch off, split must route through EXACTLY the same batch path
+ * "auto"/"center" use, not force the per-output path just to immediately
+ * fall back inside it every time.
+ */
+export function framingForcesPerOutputRender(studioEdits: StudioEdits): boolean {
+  if (process.env.WORKER_SPLIT === "0") return false;
+  return resolveEffectiveFramingMode(studioEdits) === "split";
 }
 
 function formatSrtTimestamp(seconds: number): string {
@@ -1695,6 +1965,17 @@ export function buildCropAndScaleFilter(
  *    crops at all, so a detected face path would never be consumed. (In
  *    practice this never gets called for "fit" either, since the caller's
  *    own gate gets there first, but the mode check agrees regardless.)
+ *  - "split" (split packet B): also `false` here — this is `=== "auto"`, not
+ *    an exhaustive switch — but split is NOT actually undetected: it runs
+ *    its own multi-face detection (`detectMultiFacePath` ->
+ *    `buildSplitLayoutPlan`) through a separate gate in
+ *    `processClipRenderingRun`, guarded directly on
+ *    `resolveEffectiveFramingMode(studioEdits) === "split"` rather than this
+ *    function. This function staying `false` for split just means split
+ *    clips skip the SINGLE-face auto-reframe path — which they still fall
+ *    back to (via `applyAutoReframe`, called directly rather than through
+ *    this gate) whenever the multi-face plan isn't usable, see
+ *    `decideSplitFallback`.
  */
 export function shouldRunAutoReframeDetection(studioEdits: StudioEdits): boolean {
   return resolveEffectiveFramingMode(studioEdits) === "auto";
@@ -1847,6 +2128,15 @@ export function buildSingleVideoArgs(params: {
    *  implies "on" (mode is always "color" or "image"); omit/null preserves
    *  today's crop-to-fill behavior. See `BackgroundPlan`. */
   background?: BackgroundPlan | null;
+  /** Segment-aware stacked 2-up plan (split packet B, vizard-parity.md
+   *  "Split-screen 2-up") — presence means the effective framing mode is
+   *  "split" AND a real plan was built (never coexists with `background`;
+   *  see `resolveEffectiveFramingMode`'s doc comment). Checked AFTER
+   *  `background` and BEFORE the plain crop-and-scale fallback, so a split
+   *  clip that couldn't build a plan this render (see
+   *  `decideSplitFallback`) transparently falls through to the same
+   *  `params.reframe`-driven crop the "auto"/"center" modes use. */
+  split?: { segments: SplitLayoutSegment[] } | null;
   /** Target resolution (vizard-parity Phase C export options) — "720p"
    *  applies the 2/3 downscale, "1080p"/omitted renders at base resolution. */
   resolution?: ClipRenderResolution;
@@ -1924,6 +2214,24 @@ export function buildSingleVideoArgs(params: {
         imageInputIndex: bgImageInputIndex,
         trailingChain: textAndCaptionChain,
         fps: params.probe.fps,
+      }),
+    );
+  } else if (params.split && params.split.segments.length > 0) {
+    // Split packet B: segment-aware stacked 2-up. Reads from `videoInputLabel`
+    // (the same post-cut-concat-aware label the crop-and-scale fallback below
+    // uses) because plan segments are already expressed on the EDITED
+    // timeline — see `buildSplitFilterChain`'s doc comment. `params.reframe`
+    // is irrelevant here (it's mutually exclusive with a real split plan:
+    // either this clip built a plan, or it fell back to the `else` branch
+    // below with `params.reframe` set instead — never both).
+    filterParts.push(
+      ...buildSplitFilterChain({
+        aspectRatio: params.aspectRatio,
+        probe: { width: params.probe.width, height: params.probe.height },
+        segments: params.split.segments,
+        videoInputLabel,
+        outputLabel: composedOutputLabel,
+        trailingChain: textAndCaptionChain,
       }),
     );
   } else {
@@ -2069,6 +2377,13 @@ export function buildSingleVideoArgs(params: {
  * plays throughout (B-roll is silent). Each cutaway gets its own input,
  * chained through successive `overlay` stages so multiple recurring inserts
  * compose correctly (a single cutaway is just the N=1 case of this).
+ *
+ * Deliberately has no `split` param (unlike `buildSingleVideoArgs`): split
+ * packet B's v1 B-roll policy is "b-roll replaces the whole 2-up frame" is
+ * future work — a clip with both B-roll cutaways AND effective framing mode
+ * "split" always falls back to single-speaker framing before reaching here
+ * (see render-clips.ts's `decideSplitFallback`, "broll_conflict"), so this
+ * builder only ever needs the existing `reframe`-driven crop.
  */
 export function buildBrollVideoArgs(params: {
   sourcePath: string;
@@ -2448,6 +2763,17 @@ function describeRemoteFetchError(error: unknown): string {
   return "unknown";
 }
 
+/**
+ * Shared multi-output batch render (no B-roll, no other studio edits, no
+ * split). Has no `split` param at all — split packet B forces every "split"
+ * clip through the per-output `buildSingleVideoArgs`/`buildBrollVideoArgs`
+ * path instead (see `framingForcesPerOutputRender` and its use in
+ * `processClipRenderingRun`'s `hasStudioVideoEdits` gate), because
+ * `buildSplitFilterChain`'s segment-concat graph replaces the base
+ * composition entirely — something this function's shared crop-to-fill
+ * `[0:v]split=N` fan-out has no concept of. Plain reframe (`output.reframe`,
+ * "auto" mode) DOES still flow through here unchanged.
+ */
 export function buildMultiVideoArgs(params: {
   sourcePath: string;
   outputs: PendingRenderOutput[];
@@ -2595,6 +2921,14 @@ export function buildMultiVideoArgs(params: {
  * Renders an "audiogram" for audio-only sources (podcasts): an animated
  * waveform over a solid background with burned captions — instead of a black
  * screen. The waveform color follows the caption preset's highlight color.
+ *
+ * Ignores `studioEdits.framing` entirely (no `split` param, no face
+ * detection) — there is no video stream, so "split-screen 2-up" has nothing
+ * to seat two faces into. Split packet B doesn't change this: an audio-only
+ * clip never reaches the split-detection block in `processClipRenderingRun`
+ * (`probe.hasVideo` gates it), so `studioEdits.framing.mode === "split"` on
+ * an audio-only clip silently renders the same waveform panel as any other
+ * mode, exactly like it already did before this feature existed.
  */
 export function buildAudiogramArgs(params: {
   sourcePath: string;
@@ -3455,16 +3789,12 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
         // center mode wants a static center crop, so both skip the
         // (expensive: ffmpeg segment extraction + python/opencv detection)
         // work entirely rather than computing it for nothing — see
-        // `shouldRunAutoReframeDetection`.
+        // `shouldRunAutoReframeDetection`. Split (packet B) also skips this
+        // block — it runs its OWN multi-face detection below and only falls
+        // back to this single-face path (via `applyAutoReframe` directly,
+        // not through this gate) when a real 2-up isn't possible.
         shouldRunAutoReframeDetection(studioEdits)
       ) {
-        // The YuNet detector (python3 + OpenCV) needs a frame-accurate local
-        // file. In ranged mode, cut a low-res re-encoded segment of just this
-        // clip's window (re-encode, not -c copy: a stream copy snaps to the
-        // previous keyframe and would shift every face sample by up to a GOP).
-        // Face centers are returned normalized, so 360p detection maps to the
-        // full-res crop math unchanged. On any extraction failure just skip
-        // detection — callers already fall back to a static center crop.
         // Detection deliberately scans the FULL uncut clip window
         // (`effective.durationSec`, not the post-cut `clipDurationSec`) even
         // when `deletedRanges` is non-empty: the face path needs samples
@@ -3473,103 +3803,35 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
         // samples are elapsed-uncut-source time (see reframe_detect.py), but
         // the crop runs post-concat where t = edited time — samples inside a
         // cut are dropped and retained ones remapped through
-        // remapFaceSamplesForCutPlan below before the sendcmd script is
-        // built, same source<->edited contract every other cut-concat
-        // consumer (captions, B-roll cues) uses.
-        let detectInput: string | null = sourcePath;
-        let detectStartSec = clipStartSec;
-        if (isHttpSource(sourcePath)) {
-          const segmentPath = join(tempDir, `face-seg-${clip.id}.mp4`);
-          try {
-            await execCommand("ffmpeg", [
-              "-y",
-              ...httpSourceInputArgs(sourcePath),
-              "-ss",
-              String(clipStartSec),
-              "-t",
-              String(effective.durationSec),
-              "-i",
-              sourcePath,
-              "-map",
-              "0:v:0",
-              "-vf",
-              "scale=-2:360",
-              "-c:v",
-              "libx264",
-              "-preset",
-              "ultrafast",
-              "-crf",
-              "30",
-              "-an",
-              segmentPath,
-            ]);
-            detectInput = segmentPath;
-            detectStartSec = 0;
-          } catch (segmentError) {
-            log("error", "clip_reframe_segment_extract_failed", {
-              workflowRunId: run.id,
-              clipId: clip.id,
-              message:
-                segmentError instanceof Error
-                  ? segmentError.message
-                  : "unknown",
-            });
-            detectInput = null;
-          }
-        }
+        // remapFaceSamplesForCutPlan (inside `applyAutoReframe`) before the
+        // sendcmd script is built, same source<->edited contract every other
+        // cut-concat consumer (captions, B-roll cues) uses.
+        const detectInput = await extractFaceDetectionSegment({
+          sourcePath,
+          tempDir,
+          clipId: clip.id,
+          workflowRunId: run.id,
+          clipStartSec,
+          durationSec: effective.durationSec,
+        });
         const detection = detectInput
           ? await detectFacePath({
-              sourcePath: detectInput,
-              startSec: detectStartSec,
+              sourcePath: detectInput.path,
+              startSec: detectInput.startSec,
               durationSec: effective.durationSec,
             })
           : null;
-        // Fix #3: smoothFacePath's EMA/dead-zone carries state sample-to-
-        // sample with no notion of elapsed time, so smoothing straight
-        // through a cut-induced gap would slowly (and wrongly) drift the
-        // crop across the cut. Grouping by kept segment and smoothing each
-        // group independently resets that state at every cut boundary.
-        let smoothed: SmoothedSample[] = [];
-        if (detection) {
-          const segmentGroups = remapFaceSamplesForCutPlan(
-            detection.samples,
-            cutPlan,
-            clipStartSec,
-          );
-          smoothed = segmentGroups.flatMap((group) => smoothFacePath(group));
-        }
-        if (smoothed.length > 0) {
-          const single = outputs.length === 1;
-          for (let i = 0; i < outputs.length; i++) {
-            const output = outputs[i]!;
-            if (!reframeOutputs.includes(output)) continue;
-            const cfg = aspectRatioConfig.get(output.aspectRatio)!;
-            const cropW = Math.round(probe.height * (cfg.width / cfg.height));
-            const cropName = single
-              ? REFRAME_CROP_NAME
-              : `${REFRAME_CROP_NAME}${i}`;
-            const script = buildReframeSendcmdScript(
-              smoothed,
-              probe.width,
-              cropW,
-              cropName,
-            );
-            if (!script) continue;
-            const scriptPath = join(
-              tempDir,
-              `reframe-${clip.id}-${output.aspectRatio.replace(":", "x")}.txt`,
-            );
-            await writeFile(scriptPath, script, "utf-8");
-            output.reframe = { scriptPath, cropName };
-          }
-          log("info", "clip_reframe_applied", {
-            workflowRunId: run.id,
-            clipId: clip.id,
-            outputs: outputs
-              .filter((o) => o.reframe)
-              .map((o) => o.aspectRatio),
-          });
-        }
+        await applyAutoReframe({
+          samples: detection?.samples ?? null,
+          cutPlan,
+          clipStartSec,
+          probe,
+          outputs,
+          reframeOutputs,
+          tempDir,
+          clipId: clip.id,
+          workflowRunId: run.id,
+        });
       }
 
       // Stock B-roll: when a Pexels key is set, plan 2-4 recurring cutaways
@@ -3762,6 +4024,232 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
                 source: "auto",
                 message: error instanceof Error ? error.message : "unknown",
               });
+            }
+          }
+        }
+      }
+
+      // Split packet B (vizard-parity.md "Split-screen 2-up"): when the
+      // clip's effective framing mode is "split", detect multi-face segments
+      // and build the per-segment 2-up layout plan. Evaluated AFTER the
+      // B-roll plan above (not alongside the single-face auto-reframe block)
+      // because the v1 B-roll/split conflict policy needs to know whether
+      // this clip already has cutaways: "b-roll replaces the whole 2-up
+      // frame" composition is future work, so a clip with both simply falls
+      // back to single-speaker framing (`decideSplitFallback`'s
+      // "broll_conflict" reason) rather than attempting to combine them.
+      let splitPlan: BuildSplitLayoutPlanResult | null = null;
+      // H1 (adversarial review): the subset of `outputs` whose ASPECT RATIO
+      // can't produce laterally distinct 2-up tiles even when `splitPlan` is
+      // non-null (e.g. this clip's 9:16 output gets a real split, but its
+      // 1:1/16:9 outputs of the SAME clip can't — see `splitTilesAreDistinct`).
+      // Populated below, consumed by the per-output render loop, which routes
+      // exactly these outputs through `params.reframe`/center-crop instead of
+      // `params.split`.
+      let splitIneligibleOutputs: PendingRenderOutput[] = [];
+      const splitEnabled = process.env.WORKER_SPLIT !== "0";
+      const isSplitMode =
+        resolveEffectiveFramingMode(studioEdits) === "split" && probe.hasVideo;
+      if (isSplitMode) {
+        // L1 (adversarial review): the WORKER_SPLIT=0 kill switch gets its
+        // own fallback reason ("disabled") instead of masquerading as
+        // "detection_unavailable" — it never even attempts detection, which
+        // is a materially different situation to log/debug from "detection
+        // ran and failed." Short-circuits before `decideSplitFallback` is
+        // even called (that function has no way to distinguish "disabled"
+        // from "detection never ran for another reason" from its params
+        // alone).
+        if (!splitEnabled) {
+          log("info", "clip_split_fallback", {
+            workflowRunId: run.id,
+            clipId: clip.id,
+            reason: "disabled",
+          });
+          if (reframeEnabled && srcRatio > 1.05 && reframeOutputs.length > 0) {
+            const detectInput = await extractFaceDetectionSegment({
+              sourcePath,
+              tempDir,
+              clipId: clip.id,
+              workflowRunId: run.id,
+              clipStartSec,
+              durationSec: effective.durationSec,
+              suffix: "-splitfallback",
+            });
+            const detection = detectInput
+              ? await detectFacePath({
+                  sourcePath: detectInput.path,
+                  startSec: detectInput.startSec,
+                  durationSec: effective.durationSec,
+                })
+              : null;
+            await applyAutoReframe({
+              samples: detection?.samples ?? null,
+              cutPlan,
+              clipStartSec,
+              probe,
+              outputs,
+              reframeOutputs,
+              tempDir,
+              clipId: clip.id,
+              workflowRunId: run.id,
+            });
+          }
+        } else {
+          let detectionAvailable = false;
+          let plan: BuildSplitLayoutPlanResult | null = null;
+          // Hoisted so the fallback branch below (M2, adversarial review)
+          // can derive single-face samples from this multi-face result
+          // instead of re-running the python detector from scratch.
+          let multiDetection: { samples: MultiFaceSample[] } | null = null;
+
+          if (!brollPlan) {
+            const detectInput = await extractFaceDetectionSegment({
+              sourcePath,
+              tempDir,
+              clipId: clip.id,
+              workflowRunId: run.id,
+              clipStartSec,
+              durationSec: effective.durationSec,
+              suffix: "-split",
+            });
+            // Same source<->edited timeline contract as the single-face path
+            // above: detection scans the full uncut clip window in
+            // elapsed-uncut-source seconds; `remapMultiFaceSamplesForCutPlan`
+            // drops samples inside a cut and remaps the rest onto the edited
+            // timeline `buildSplitLayoutPlan`'s segments (and therefore
+            // `buildSplitFilterChain`'s `trim` windows) are expressed in.
+            multiDetection = detectInput
+              ? await detectMultiFacePath({
+                  sourcePath: detectInput.path,
+                  startSec: detectInput.startSec,
+                  durationSec: effective.durationSec,
+                })
+              : null;
+            detectionAvailable = Boolean(multiDetection);
+            if (multiDetection) {
+              const remapped = remapMultiFaceSamplesForCutPlan(
+                multiDetection.samples,
+                cutPlan,
+                clipStartSec,
+              );
+              plan = buildSplitLayoutPlan(remapped, clipDurationSec);
+            }
+          }
+
+          const fallbackReason = decideSplitFallback({
+            hasBrollPlan: Boolean(brollPlan),
+            detectionAvailable,
+            plan,
+          });
+
+          if (fallbackReason) {
+            log("info", "clip_split_fallback", {
+              workflowRunId: run.id,
+              clipId: clip.id,
+              reason: fallbackReason,
+            });
+            // Fall back to single-speaker framing exactly like "auto" mode —
+            // forced here since `shouldRunAutoReframeDetection` (and the
+            // block above gated on it) deliberately excludes "split".
+            if (reframeEnabled && srcRatio > 1.05 && reframeOutputs.length > 0) {
+              // M2 (adversarial review): only re-run the single-face python
+              // detector when multi-face detection never actually ran
+              // (kill switch is handled above; here that's the
+              // `broll_conflict` path, which is decided BEFORE detection
+              // runs at all — see the `!brollPlan` guard above). When multi
+              // detection did run (and either found <2 clusters or produced
+              // an empty/all-single plan), reuse ITS samples instead of a
+              // second extraction + a second full YuNet pass.
+              const samples = multiDetection
+                ? deriveSingleFaceSamplesFromMulti(multiDetection.samples)
+                : (
+                    await (async () => {
+                      const detectInput = await extractFaceDetectionSegment({
+                        sourcePath,
+                        tempDir,
+                        clipId: clip.id,
+                        workflowRunId: run.id,
+                        clipStartSec,
+                        durationSec: effective.durationSec,
+                        suffix: "-splitfallback",
+                      });
+                      return detectInput
+                        ? await detectFacePath({
+                            sourcePath: detectInput.path,
+                            startSec: detectInput.startSec,
+                            durationSec: effective.durationSec,
+                          })
+                        : null;
+                    })()
+                  )?.samples ?? null;
+              await applyAutoReframe({
+                samples,
+                cutPlan,
+                clipStartSec,
+                probe,
+                outputs,
+                reframeOutputs,
+                tempDir,
+                clipId: clip.id,
+                workflowRunId: run.id,
+              });
+            }
+          } else if (plan) {
+            splitPlan = plan;
+            if (plan.cappedFromSegmentCount) {
+              log("info", "clip_split_segments_capped", {
+                workflowRunId: run.id,
+                clipId: clip.id,
+                originalSegmentCount: plan.cappedFromSegmentCount,
+                cappedTo: plan.segments.length,
+              });
+            }
+            log("info", "clip_split_applied", {
+              workflowRunId: run.id,
+              clipId: clip.id,
+              segmentCount: plan.segments.length,
+              clusterCount: plan.clusterCount,
+            });
+
+            // H1 (adversarial review): a real plan exists, but not every
+            // OUTPUT's aspect ratio can render it distinctly — a 9:16 output
+            // might have plenty of lateral crop room while this SAME clip's
+            // 1:1/16:9 output can't (the tile crop consumes the full source
+            // width, forcing both tiles' x to 0 regardless of cx). Those
+            // outputs fall back to single-speaker framing individually
+            // rather than the whole clip giving up on split.
+            splitIneligibleOutputs = outputs.filter(
+              (output) => !splitTilesAreDistinct(output.aspectRatio, probe),
+            );
+            if (splitIneligibleOutputs.length > 0) {
+              for (const output of splitIneligibleOutputs) {
+                log("info", "clip_split_fallback", {
+                  workflowRunId: run.id,
+                  clipId: clip.id,
+                  reason: "tiles_not_distinct",
+                  aspectRatio: output.aspectRatio,
+                });
+              }
+              if (reframeEnabled && srcRatio > 1.05) {
+                // Reuse the multi-face samples this clip already detected
+                // (M2's same reasoning) — no second extraction/detection
+                // pass needed since `multiDetection` is guaranteed non-null
+                // here (a `plan` only exists when it succeeded).
+                const samples = multiDetection
+                  ? deriveSingleFaceSamplesFromMulti(multiDetection.samples)
+                  : null;
+                await applyAutoReframe({
+                  samples,
+                  cutPlan,
+                  clipStartSec,
+                  probe,
+                  outputs,
+                  reframeOutputs: splitIneligibleOutputs,
+                  tempDir,
+                  clipId: clip.id,
+                  workflowRunId: run.id,
+                });
+              }
             }
           }
         }
@@ -3974,7 +4462,14 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
       // gate above or the builder branch below — they're all
       // `resolveEffectiveFramingMode(studioEdits) === "fit"` by definition
       // (`background.mode !== "off"` always wins as "fit"), so this reads
-      // identically to before for every existing clip.
+      // identically to before for every existing clip. This stays a plain
+      // `=== "fit"` check, not an exhaustive switch — a split clip
+      // (background off) leaves `backgroundPlan` null exactly like center
+      // does today, and instead of falling through to the plain
+      // crop-to-fill builder path, `buildSingleVideoArgs`/`buildBrollVideoArgs`
+      // check `params.split` (built from `splitPlan` above, split packet B)
+      // BEFORE the crop-to-fill fallback — see those builders' `else if`
+      // branch order.
       let backgroundPlan: BackgroundPlan | null = null;
       if (resolveEffectiveFramingMode(studioEdits) === "fit") {
         const fallbackColor = studioEdits.background.color ?? "#000000";
@@ -4051,6 +4546,19 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
       // builders. Ducking doesn't need its own clause: it only ever
       // modifies the music branch, which is already gated by
       // `Boolean(musicPlan)`.
+      //
+      // Split (packet B) forces it for the same reason a canvas background
+      // does: `buildSplitFilterChain`'s segment-concat graph replaces the
+      // base composition entirely, which `buildMultiVideoArgs`'s shared
+      // crop-to-fill path has no concept of (unlike plain reframe, which
+      // `buildMultiVideoArgs` DOES thread through per output via
+      // `output.reframe`). Gated on the effective mode
+      // (`framingForcesPerOutputRender`), not `Boolean(splitPlan)`, so a
+      // split clip always takes the per-output path even on a render where
+      // it fell back to single-speaker framing (`splitPlan` null) — keeps
+      // the routing decision simple/stable across renders rather than
+      // flapping between the batch and per-output path from one run to the
+      // next as detection succeeds or fails.
       const hasStudioVideoEdits =
         studioEdits.textLayers.length > 0 ||
         studioEdits.transition.type !== "none" ||
@@ -4059,7 +4567,8 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
         studioEdits.sourceAudio.muted ||
         studioEdits.sourceAudio.volume !== 100 ||
         !cutPlan.isUncut ||
-        Boolean(backgroundPlan);
+        Boolean(backgroundPlan) ||
+        framingForcesPerOutputRender(studioEdits);
 
       await Promise.all(
         outputs.map((output) =>
@@ -4173,6 +4682,23 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
                   music: musicPlan,
                   sfx: sfxPlans,
                   background: backgroundPlan,
+                  // Split packet B: `splitPlan` is only ever non-null when
+                  // `backgroundPlan` is null and `brollPlan` is null (fit
+                  // wins as "fit" before `framing.mode` is read at all;
+                  // b-roll always wins the fallback per `decideSplitFallback`
+                  // above), so there's no ordering conflict with the
+                  // `background` param above.
+                  //
+                  // H1 (adversarial review): gated PER OUTPUT, not just per
+                  // clip — `splitIneligibleOutputs` (populated above) already
+                  // got a `params.reframe`/center-crop fallback applied, so
+                  // this output must NOT also receive `split` (which would
+                  // render laterally-identical duplicate tiles for its
+                  // aspect ratio).
+                  split:
+                    splitPlan && !splitIneligibleOutputs.includes(output)
+                      ? { segments: splitPlan.segments }
+                      : null,
                   resolution: output.resolution,
                   watermark: applyWatermark,
                   cutPlan,

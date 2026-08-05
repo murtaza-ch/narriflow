@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,8 +19,10 @@ import {
   buildSingleVideoArgs,
   buildTransitionFilter,
   clipRenderAttemptStorageKey,
+  decideSplitFallback,
   downloadUrlToFile,
   escapeDrawtextText,
+  framingForcesPerOutputRender,
   generateAssFromSlice,
   generateSrtFromSlice,
   resolveBackgroundPlanForDownloadedImage,
@@ -28,6 +31,7 @@ import {
   shouldRunAutoReframeDetection,
 } from "./render-clips";
 import { buildClipCutPlan } from "./cut-plan";
+import type { SplitLayoutSegment } from "./two-up";
 
 function makeUtterance(
   words: Array<[string, number, number]>,
@@ -323,6 +327,14 @@ describe("shouldRunAutoReframeDetection (vizard-parity Phase C-2 stage 1 — fra
     ).toBe(false);
   });
 
+  test("split mode (split packet B) skips the SINGLE-face gate — it runs its own multi-face detection separately", () => {
+    expect(
+      shouldRunAutoReframeDetection(
+        studioEditsSchema.parse({ framing: { mode: "split" } }),
+      ),
+    ).toBe(false);
+  });
+
   test("fit (background active) skips detection regardless of framing.mode", () => {
     const withAuto = studioEditsSchema.parse({
       background: { mode: "color", color: "#112233", imageUrl: null },
@@ -335,6 +347,128 @@ describe("shouldRunAutoReframeDetection (vizard-parity Phase C-2 stage 1 — fra
       framing: { mode: "center" },
     });
     expect(shouldRunAutoReframeDetection(withCenter)).toBe(false);
+  });
+});
+
+describe("framingForcesPerOutputRender (split packet B — batch-encoder gate)", () => {
+  test("true for split mode", () => {
+    expect(
+      framingForcesPerOutputRender(studioEditsSchema.parse({ framing: { mode: "split" } })),
+    ).toBe(true);
+  });
+
+  test("false for auto/center — those already route through buildMultiVideoArgs fine", () => {
+    expect(
+      framingForcesPerOutputRender(studioEditsSchema.parse({ framing: { mode: "auto" } })),
+    ).toBe(false);
+    expect(
+      framingForcesPerOutputRender(studioEditsSchema.parse({ framing: { mode: "center" } })),
+    ).toBe(false);
+  });
+
+  test("false when background wins as 'fit' even though framing.mode is 'split'", () => {
+    // resolveEffectiveFramingMode: background !== "off" always wins as "fit",
+    // so the effective mode here is "fit", not "split" — backgroundPlan
+    // (not this function) is what forces the per-output path in that case.
+    const withBackground = studioEditsSchema.parse({
+      background: { mode: "color", color: "#112233", imageUrl: null },
+      framing: { mode: "split" },
+    });
+    expect(framingForcesPerOutputRender(withBackground)).toBe(false);
+  });
+
+  // L1 (adversarial review): the WORKER_SPLIT=0 kill switch must route split
+  // through the SAME batch path "auto"/"center" use, not force the
+  // per-output path just to immediately fall back inside it on every render.
+  test("false for split mode when WORKER_SPLIT=0, even though the effective mode is still 'split'", () => {
+    const previous = process.env.WORKER_SPLIT;
+    process.env.WORKER_SPLIT = "0";
+    try {
+      expect(
+        framingForcesPerOutputRender(studioEditsSchema.parse({ framing: { mode: "split" } })),
+      ).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env.WORKER_SPLIT;
+      else process.env.WORKER_SPLIT = previous;
+    }
+  });
+});
+
+describe("decideSplitFallback (split packet B — fallback-decision matrix)", () => {
+  test("B-roll always wins the fallback, regardless of detection/plan state", () => {
+    expect(
+      decideSplitFallback({
+        hasBrollPlan: true,
+        detectionAvailable: true,
+        plan: { segments: [{ startSec: 0, endSec: 1, layout: "single", cxNorm: 0.5 }], clusterCount: 2, cappedFromSegmentCount: null },
+      }),
+    ).toBe("broll_conflict");
+  });
+
+  test("detection unavailable (no python/opencv/model, or extraction failed)", () => {
+    expect(
+      decideSplitFallback({ hasBrollPlan: false, detectionAvailable: false, plan: null }),
+    ).toBe("detection_unavailable");
+  });
+
+  test("detection ran but fewer than 2 clusters were found", () => {
+    expect(
+      decideSplitFallback({
+        hasBrollPlan: false,
+        detectionAvailable: true,
+        plan: { segments: [], clusterCount: 1, cappedFromSegmentCount: null },
+      }),
+    ).toBe("insufficient_clusters");
+  });
+
+  test("2+ clusters but the plan still produced zero renderable segments", () => {
+    expect(
+      decideSplitFallback({
+        hasBrollPlan: false,
+        detectionAvailable: true,
+        plan: { segments: [], clusterCount: 2, cappedFromSegmentCount: null },
+      }),
+    ).toBe("empty_plan");
+  });
+
+  test("a real plan with at least one two-up segment needs no fallback", () => {
+    expect(
+      decideSplitFallback({
+        hasBrollPlan: false,
+        detectionAvailable: true,
+        plan: {
+          segments: [
+            { startSec: 0, endSec: 1, layout: "two-up", topCxNorm: 0.3, bottomCxNorm: 0.7 },
+          ],
+          clusterCount: 2,
+          cappedFromSegmentCount: null,
+        },
+      }),
+    ).toBeNull();
+  });
+
+  // M4 (adversarial review): a plan can have 2+ clusters and non-empty
+  // segments yet STILL have nothing to render as a real 2-up if every
+  // segment collapsed to "single" (e.g. the two clusters were never on
+  // screen at the same time) — the spike's conclusion was that this should
+  // route through the existing single-shot auto-reframe path instead of
+  // stretching a single-face crop into a pointless top/bottom-identical
+  // stack.
+  test("a plan with zero two-up segments (all 'single') falls back — no_two_up_segments", () => {
+    expect(
+      decideSplitFallback({
+        hasBrollPlan: false,
+        detectionAvailable: true,
+        plan: {
+          segments: [
+            { startSec: 0, endSec: 1, layout: "single", cxNorm: 0.5 },
+            { startSec: 1, endSec: 2, layout: "single", cxNorm: 0.4 },
+          ],
+          clusterCount: 2,
+          cappedFromSegmentCount: null,
+        },
+      }),
+    ).toBe("no_two_up_segments");
   });
 });
 
@@ -688,6 +822,242 @@ describe("buildSingleVideoArgs with a canvas background active", () => {
     expect(graph).not.toContain("pad=");
     expect(args.filter((a) => a === "-i")).toHaveLength(1);
   });
+});
+
+describe("buildSingleVideoArgs with a split plan active (split packet B)", () => {
+  const probe = { width: 640, height: 360, hasVideo: true, hasAudio: true, fps: 30 };
+
+  test("replaces crop+scale with the segment-concat split filtergraph, reading [0:v] (uncut)", () => {
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 10,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+      split: {
+        segments: [
+          { startSec: 0, endSec: 5, layout: "two-up", topCxNorm: 0.4, bottomCxNorm: 0.7 },
+          { startSec: 5, endSec: 10, layout: "single", cxNorm: 0.5 },
+        ],
+      },
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    expect(graph).toContain("[0:v]split=2[split_seg0_src][split_seg1_src]");
+    expect(graph).toContain(
+      "trim=start=0.000:end=5.000,setpts=PTS-STARTPTS[split_seg0_t]",
+    );
+    expect(graph).toContain("vstack=inputs=2,format=yuv420p,setsar=1[split_seg0_out]");
+    expect(graph).toContain(
+      "trim=start=5.000:end=10.000,setpts=PTS-STARTPTS[split_seg1_t]",
+    );
+    expect(graph).toContain("[split_seg1_t]crop=");
+    expect(graph).toContain("[split_seg0_out][split_seg1_out]concat=n=2:v=1:a=0");
+    expect(graph).not.toMatch(/\[0:v\]crop=/); // the plain crop-and-scale fallback never runs
+  });
+
+  test("folds captions in as the concat's trailing chain, same [outv] contract", () => {
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 10,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: "/tmp/x.srt",
+      split: { segments: [{ startSec: 0, endSec: 10, layout: "single", cxNorm: 0.5 }] },
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    expect(graph).toContain("concat=n=1:v=1:a=0,format=yuv420p,subtitles=");
+    expect(args).toContain("-map");
+    expect(args[args.indexOf("-map") + 1]).toBe("[outv]");
+  });
+
+  test("applies AFTER cut-concat: reads [vcat], not [0:v], when the clip has real cuts", () => {
+    const cutPlan = buildClipCutPlan([{ startSec: 3, endSec: 4 }], { startSec: 0, endSec: 10 });
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 10,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+      cutPlan,
+      split: { segments: [{ startSec: 0, endSec: 9, layout: "single", cxNorm: 0.5 }] },
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    expect(graph).toContain("[vcat]split=1[split_seg0_src]");
+  });
+
+  test("an empty split.segments array falls through to the plain crop-and-scale path", () => {
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 10,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+      split: { segments: [] },
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    expect(graph).toContain("[0:v]crop=");
+    expect(graph).not.toContain("split_seg");
+  });
+
+  test("background (fit mode) wins over split when both are somehow present", () => {
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 10,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+      background: { mode: "color", color: "#112233", imagePath: null },
+      split: { segments: [{ startSec: 0, endSec: 10, layout: "single", cxNorm: 0.5 }] },
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    expect(graph).toContain("pad=1080:1920");
+    expect(graph).not.toContain("split_seg");
+  });
+
+  test("byte-identical to before this feature: omitting `split` (or passing it as null/undefined) never changes the graph", () => {
+    const baseParams = {
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 10,
+      aspectRatio: "9:16" as const,
+      probe,
+      srtPath: null,
+    };
+    const omitted = buildSingleVideoArgs(baseParams);
+    const withNull = buildSingleVideoArgs({ ...baseParams, split: null });
+    const withUndefined = buildSingleVideoArgs({ ...baseParams, split: undefined });
+    expect(withNull).toEqual(omitted);
+    expect(withUndefined).toEqual(omitted);
+  });
+});
+
+// C1 (adversarial review) — SAR/pixel-format mismatch, real ffmpeg execution.
+//
+// Every other test in this file (and in two-up.test.ts) asserts on the
+// GENERATED FILTER STRING, never runs it. That's exactly why C1 slipped
+// through: a mixed two-up+single plan produces a `concat` whose inputs
+// disagree on SAR (each branch type rounds its own crop rect differently
+// before `scale`) — ffmpeg hard-rejects that with error -22 at RUN time, a
+// failure mode no string-matching assertion can ever observe. This is the
+// one test in the split-render suite that actually shells out to a real
+// ffmpeg binary and checks the process's own exit code/output, specifically
+// to catch this class of bug (and any regression that reintroduces it).
+//
+// Skipped cleanly (not failed) when ffmpeg isn't on PATH — probed once at
+// module load via `ffmpeg -version` so every test in the block shares one
+// probe instead of shelling out per test.
+const FFMPEG_AVAILABLE = spawnSync("ffmpeg", ["-version"], { stdio: "ignore" }).status === 0;
+const FFPROBE_AVAILABLE = spawnSync("ffprobe", ["-version"], { stdio: "ignore" }).status === 0;
+
+describe("C1 ffmpeg smoke test — mixed two-up + single split plan actually renders", () => {
+  let tempDir: string;
+
+  beforeEach(async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "render-clips-c1-smoke-"));
+  });
+
+  afterEach(async () => {
+    await rm(tempDir, { recursive: true, force: true });
+  });
+
+  test.skipIf(!FFMPEG_AVAILABLE || !FFPROBE_AVAILABLE)(
+    "1920x1080 source, mixed two-up+single 9:16 plan: concat succeeds (exit 0), duration and resolution match",
+    async () => {
+      const sourcePath = join(tempDir, "source.mp4");
+      const outputPath = join(tempDir, "output.mp4");
+
+      // Synthetic 1920x1080 4s source — reviewer matrix's first failing case
+      // (1920x1080 -> 9:16). `testsrc` (not a flat color) so a broken crop
+      // geometry would also be visually obvious under manual inspection,
+      // though this test only checks exit code + probed duration/resolution.
+      const generate = spawnSync("ffmpeg", [
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        "testsrc=size=1920x1080:rate=25:duration=4",
+        "-pix_fmt",
+        "yuv420p",
+        sourcePath,
+      ]);
+      expect(generate.status).toBe(0);
+
+      // A MIXED plan — a "two-up" segment (0-2s) followed by a "single"
+      // segment (2-4s) — is exactly the shape that hits the C1 mismatch:
+      // buildTwoUpFilterChain's vstack output and buildSingleSegmentFilter's
+      // scale output round their crop rects differently for the same 9:16
+      // target, so without `setsar=1` on both, ffmpeg's `concat` between
+      // segment 0's output and segment 1's output fails at run time.
+      const segments: SplitLayoutSegment[] = [
+        { startSec: 0, endSec: 2, layout: "two-up", topCxNorm: 0.35, bottomCxNorm: 0.7 },
+        { startSec: 2, endSec: 4, layout: "single", cxNorm: 0.5 },
+      ];
+
+      const args = buildSingleVideoArgs({
+        sourcePath,
+        outputPath,
+        startSec: 0,
+        endSec: 4,
+        aspectRatio: "9:16",
+        probe: { width: 1920, height: 1080, hasVideo: true, hasAudio: false, fps: 25 },
+        srtPath: null,
+        split: { segments },
+      });
+
+      const render = spawnSync("ffmpeg", args, { encoding: "utf-8" });
+      // The actual assertion this test exists for: before the C1 fix, this
+      // fails with ffmpeg's SAR-mismatch error (concat: "Input link ...
+      // parameters ... do not match"), exit code != 0. After the fix, the
+      // mixed plan concatenates and encodes cleanly.
+      expect(render.status).toBe(0);
+      if (render.status !== 0) {
+        // Surface ffmpeg's own stderr in the failure message — invaluable
+        // when this regresses, since the default assertion above only shows
+        // "1 !== null".
+        throw new Error(`ffmpeg failed (status ${render.status}):\n${render.stderr}`);
+      }
+
+      const probe = spawnSync("ffprobe", [
+        "-v",
+        "quiet",
+        "-print_format",
+        "json",
+        "-show_format",
+        "-show_streams",
+        "-select_streams",
+        "v:0",
+        outputPath,
+      ]);
+      expect(probe.status).toBe(0);
+      const probed = JSON.parse(probe.stdout.toString()) as {
+        format?: { duration?: string };
+        streams?: Array<{ width?: number; height?: number }>;
+      };
+
+      const duration = Number(probed.format?.duration);
+      const stream = probed.streams?.[0];
+      // Real, measured output values (recorded for the report — not just
+      // "truthy"): the `-t 4.000` bound on `buildSingleVideoArgs`'s own
+      // output caps duration at/just under 4s; resolution is the 9:16
+      // target (1080x1920) regardless of which segment type produced it.
+      expect(duration).toBeGreaterThan(3.5);
+      expect(duration).toBeLessThanOrEqual(4.05);
+      expect(stream?.width).toBe(1080);
+      expect(stream?.height).toBe(1920);
+    },
+    30_000,
+  );
 });
 
 describe("export treatment: resolution + watermark (vizard-parity Phase C export options)", () => {

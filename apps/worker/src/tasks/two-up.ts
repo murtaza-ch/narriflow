@@ -1,11 +1,16 @@
 /**
- * Split-screen 2-up worker spike (vizard-parity.md item "2. Split-screen
+ * Split-screen 2-up rendering (vizard-parity.md item "2. Split-screen
  * 2-up"). Pure helpers only — no FFmpeg execution, no Prisma, no render
- * pipeline wiring. Mirrors reframe.ts's style: detector output (Python, see
- * reframe_detect.py's `--multi` mode) in, ffmpeg filtergraph strings out,
- * everything in between unit-tested in isolation.
+ * pipeline wiring (that lives in render-clips.ts, split packet B). Mirrors
+ * reframe.ts's style: detector output (Python, see reframe_detect.py's
+ * `--multi` mode) in, ffmpeg filtergraph strings out, everything in between
+ * unit-tested in isolation.
  *
  * Pipeline this module implements:
+ *   0. `remapMultiFaceSamplesForCutPlan` — multi-face sibling of reframe.ts's
+ *      `remapFaceSamplesForCutPlan`: detector samples (elapsed-uncut-source
+ *      seconds) -> one flat, time-sorted list on the edited (post-cut-concat)
+ *      timeline.
  *   1. `clusterFaceTracks` — turn raw per-sample multi-face detections into
  *      up to 2 stable lateral (cx) clusters ("the two interview seats").
  *   2. `classifyShotSamples` — per sample, is this a two-shot (both seats
@@ -14,14 +19,23 @@
  *   3. `assignSpeakersToClusters` — correlate AssemblyAI diarization
  *      (speakerLabel + turn timing) against which cluster shows up in
  *      SINGLE-shot samples during each speaker's turns, to label "cluster 0
- *      is Speaker 2" etc.
+ *      is Speaker 2" etc. NOT wired into the render path (see its own doc
+ *      comment) — kept exported for future active-speaker work.
  *   4. `buildTwoUpFilterChain` — the actual split -> 2x crop/scale -> vstack
- *      FFmpeg filtergraph for a two-shot segment.
+ *      FFmpeg filtergraph for a single two-shot segment.
+ *   5. `buildSplitLayoutPlan` — the full per-clip plan: shot segments ->
+ *      per-segment crop spec (two-up centers, or a single static crop),
+ *      capped to a sane segment count.
+ *   6. `buildSplitFilterChain` — stitches every plan segment (trim + its own
+ *      two-up-or-single crop chain) into one `concat`-based filtergraph
+ *      producing the SAME single-output-label contract
+ *      `buildFitAndBackgroundFilter`/`buildCropAndScaleFilter` satisfy.
  */
 import type { ClipAspectRatio } from "@narriflow/validators";
-import { clipAspectRatioOptions } from "@narriflow/validators";
+import { clipAspectRatioOptions, sourceToEdited } from "@narriflow/validators";
 import type { TranscriptUtterance } from "@narriflow/validators";
-import { cropXForCenter } from "./reframe";
+import type { ClipCutPlan } from "./cut-plan";
+import { cropXForCenter, type FaceSample } from "./reframe";
 
 // ---------------------------------------------------------------------------
 // Detector types (mirrors reframe_detect.py's --multi JSON output)
@@ -41,6 +55,89 @@ export interface DetectedFace {
 export interface MultiFaceSample {
   t: number;
   faces: DetectedFace[];
+}
+
+// ---------------------------------------------------------------------------
+// 0. remapMultiFaceSamplesForCutPlan
+// ---------------------------------------------------------------------------
+
+/**
+ * Multi-face sibling of reframe.ts's `remapFaceSamplesForCutPlan`: drops
+ * detector samples that fall inside a deleted range and remaps the retained
+ * ones' `t` from elapsed-uncut-source seconds (what `reframe_detect.py`
+ * emits) onto the edited (post-cut-concat) timeline the split filtergraph's
+ * per-segment `trim=start:end` windows run against — same source<->edited
+ * contract every other cut-concat consumer (captions, B-roll cues, the
+ * single-face auto-reframe path) uses.
+ *
+ * Unlike `remapFaceSamplesForCutPlan`, this returns ONE flat, time-sorted
+ * list rather than one group per kept segment. `remapFaceSamplesForCutPlan`
+ * splits into groups because `smoothFacePath`'s EMA carries state
+ * sample-to-sample and would wrongly drift across a cut-induced gap;
+ * `clusterFaceTracks` has no such per-sample carry state (clustering
+ * considers each sample independently), so a flat list works fine there.
+ * `classifyShotSamples`' `majoritySmooth`, however, DOES blend across a cut
+ * boundary: its centered window (default 5 samples at ~4fps, ~1.25s) mixes
+ * samples from both sides of a boundary that lands mid-window, so a shot
+ * change at the exact cut point can lag by up to roughly half the window
+ * (~0.5s) before the smoothed classification catches up. In practice this is
+ * swallowed by `mergeMicroSegments`'/`capSegmentCount`'s ~1.5s minimum
+ * segment duration — a boundary blend that short rarely survives as its own
+ * segment — but it is real smoothing-across-a-cut, not "nothing to reset."
+ * A flat list in edited-time order is still what `classifyShotSamples`'
+ * segment collapse expects, and lets a two-shot/single run that happens to
+ * span a (short, sub-threshold) cut boundary classify and merge normally
+ * instead of being artificially split.
+ */
+export function remapMultiFaceSamplesForCutPlan(
+  samples: MultiFaceSample[],
+  cutPlan: ClipCutPlan,
+  clipStartSec: number,
+): MultiFaceSample[] {
+  if (cutPlan.isUncut) return samples;
+
+  const out: MultiFaceSample[] = [];
+  for (const sample of samples) {
+    const sourceSec = clipStartSec + sample.t;
+    const segment = cutPlan.segments.find(
+      (s) => sourceSec >= s.sourceStartSec && sourceSec <= s.sourceEndSec,
+    );
+    if (!segment) continue; // inside a cut (or outside the window)
+    out.push({ t: sourceToEdited(cutPlan.map, sourceSec), faces: sample.faces });
+  }
+  out.sort((a, b) => a.t - b.t);
+  return out;
+}
+
+/**
+ * M2 (adversarial review): derives single-face `FaceSample[]` (the shape
+ * `reframe.ts`'s `smoothFacePath`/`buildReframeSendcmdScript` consume) FROM
+ * an already-completed multi-face detection pass, instead of re-running the
+ * YuNet python detector a second time over the same footage. Used when a
+ * split-mode clip's real 2-up plan doesn't pan out (fell back per-clip via
+ * `decideSplitFallback`, or per-output via `splitTilesAreDistinct`) but
+ * multi-face detection DID already run and succeed — re-detecting from
+ * scratch would mean a second segment extraction AND a second full YuNet
+ * pass over footage already scanned once.
+ *
+ * Picks the LARGEST face per sample (by normalized area `w * h`) as the
+ * single "dominant" face — a reasonable proxy for "the person the shot is
+ * framed on" absent any other signal, and consistent with `detectFacePath`'s
+ * own single-face detector script picking its best/most-confident face.
+ * Samples with zero faces map to `cx: null` (`smoothFacePath` already
+ * handles gap-filling for those, same as `detectFacePath`'s native output).
+ */
+export function deriveSingleFaceSamplesFromMulti(
+  samples: MultiFaceSample[],
+): FaceSample[] {
+  return samples.map((sample) => {
+    if (sample.faces.length === 0) return { t: sample.t, cx: null };
+    let largest = sample.faces[0]!;
+    for (const face of sample.faces) {
+      if (face.w * face.h > largest.w * largest.h) largest = face;
+    }
+    return { t: sample.t, cx: largest.cx };
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -574,6 +671,37 @@ function computeTileCrop(
   return { cropW: srcWidth, cropH: Math.round(srcWidth / tileRatio) };
 }
 
+/**
+ * H1 (adversarial review, split packet B): whether a two-up split for this
+ * OUTPUT aspect ratio can produce laterally distinct top/bottom crops at
+ * all, given the source dimensions. `cropXForCenter` (reframe.ts) clamps its
+ * `x` to `[0, srcWidth - cropWidth]` — when the tile crop's width equals (or
+ * somehow exceeds) the source width, that range collapses to exactly `[0,
+ * 0]`, so EVERY region's x is forced to 0 regardless of its `cx`: both tiles
+ * crop the identical source region and render as visually duplicate tiles
+ * (squashed identically, since the crop is also identical). This happens for
+ * squarer/wider targets (1:1, 16:9) and/or portrait sources, where the tile
+ * ratio (`W / (H/2)`, DOUBLE the output's own aspect since the tile is only
+ * half height) demands a crop at least as wide as the source has.
+ *
+ * Callers (render-clips.ts) evaluate this PER OUTPUT aspect ratio, not once
+ * per clip — a wide source can support 9:16 tiles (a full split render)
+ * while its 1:1/16:9 outputs of the SAME clip fall back to single-speaker
+ * framing instead (see the `tiles_not_distinct` fallback reason).
+ */
+export function splitTilesAreDistinct(
+  aspectRatio: ClipAspectRatio,
+  probe: { width: number; height: number },
+): boolean {
+  const dims = aspectRatioDimensions.get(aspectRatio);
+  if (!dims) return false;
+  const tileWidth = dims.width;
+  const tileHeight = Math.round(dims.height / 2);
+  const tileRatio = tileWidth / tileHeight;
+  const { cropW } = computeTileCrop(probe.width, probe.height, tileRatio);
+  return cropW < probe.width;
+}
+
 function buildRegionFilter(
   region: TwoUpRegionSpec,
   srcWidth: number,
@@ -668,6 +796,391 @@ export function buildTwoUpFilterChain(params: BuildTwoUpFilterChainParams): stri
       botSrcLabel,
       botOutLabel,
     ),
-    `${topOutLabel}${botOutLabel}vstack=inputs=2,format=yuv420p${trailing}${outputLabel}`,
+    // setsar=1 (adversarial review C1): each tile's `scale` above derives its
+    // output SAR from a crop rectangle rounded independently of the OTHER
+    // branch type's own crop math (`buildSingleSegmentFilter` below uses a
+    // different target ratio — the full output aspect, not this tile's
+    // double-height-halved aspect — so its crop dims round differently).
+    // ffmpeg's `concat` filter (in `buildSplitFilterChain`, below) hard-
+    // rejects a SAR mismatch between segment outputs (error -22), which a
+    // plan mixing "two-up" and "single" segments hits deterministically
+    // without this. Pinning SAR to 1:1 here (mirrored in
+    // `buildSingleSegmentFilter`) makes every segment's output label carry
+    // the same SAR no matter which branch produced it.
+    `${topOutLabel}${botOutLabel}vstack=inputs=2,format=yuv420p,setsar=1${trailing}${outputLabel}`,
   ];
+}
+
+// ---------------------------------------------------------------------------
+// 5. buildSplitLayoutPlan
+// ---------------------------------------------------------------------------
+
+/**
+ * One segment of the per-clip split render plan, on the EDITED (post-cut)
+ * timeline. "two-up" segments carry independent top/bottom crop centers;
+ * "single" segments (a genuine solo close-up, OR a "none"/b-roll-ish segment
+ * with no usable face evidence, which collapses to a plain 0.5 center crop —
+ * see `buildSegmentCropSpec`) carry one.
+ */
+export type SplitLayoutSegment =
+  | { startSec: number; endSec: number; layout: "two-up"; topCxNorm: number; bottomCxNorm: number }
+  | { startSec: number; endSec: number; layout: "single"; cxNorm: number };
+
+export interface BuildSplitLayoutPlanOptions {
+  /** Caps the total segment count (default 24) by repeatedly merging the
+   *  globally shortest segment into its longer neighbor — an unbounded
+   *  segment count would blow up the filtergraph (each segment costs a
+   *  `trim` + its own crop/scale chain) for footage with lots of rapid shot
+   *  changes. */
+  maxSegments?: number;
+  clusterOptions?: ClusterFaceTracksOptions;
+  classifyOptions?: ClassifyShotSamplesOptions;
+}
+
+export interface BuildSplitLayoutPlanResult {
+  /** Empty when there isn't enough multi-face evidence for a real 2-up
+   *  (fewer than 2 clusters) or the clip has no in-range multi-face samples
+   *  at all — callers must fall back to single-speaker framing in either
+   *  case (see render-clips.ts's `decideSplitFallback`). */
+  segments: SplitLayoutSegment[];
+  /** 0, 1, or 2 — see `ClusterFaceTracksResult.clusters`. */
+  clusterCount: number;
+  /** Non-null (the PRE-cap segment count) only when capping actually merged
+   *  segments down to `maxSegments` — callers log this, not the plan builder
+   *  itself (this module stays pure/IO-free). */
+  cappedFromSegmentCount: number | null;
+}
+
+const DEFAULT_MAX_SPLIT_SEGMENTS = 24;
+
+/** Mean `cx` of whichever cluster's faces fall within `[startSec, endSec)`
+ *  of the edited timeline — per-segment, NOT the clip-global cluster mean
+ *  (spike finding: cluster means are not laterally stable across shots, so a
+ *  global mean would put the crop in the wrong place on footage where the
+ *  camera pans/reframes between cuts). Returns null when this cluster has no
+ *  evidence in this exact window (can happen after `capSegmentCount` widens
+ *  a segment's boundaries past its original shot) so the caller can fall
+ *  back to the clip-global cluster mean, then to a plain center crop. */
+function meanCxForClusterInWindow(
+  clusterIndex: number,
+  startSec: number,
+  endSec: number,
+  samples: MultiFaceSample[],
+  clustering: ClusterFaceTracksResult,
+): number | null {
+  const cxs: number[] = [];
+  for (let i = 0; i < samples.length; i++) {
+    const t = samples[i]!.t;
+    if (t < startSec || t >= endSec) continue;
+    for (const a of clustering.samples[i]!.assignments) {
+      if (a.clusterIndex === clusterIndex) {
+        cxs.push(samples[i]!.faces[a.faceIndex]!.cx);
+      }
+    }
+  }
+  return cxs.length > 0 ? mean(cxs) : null;
+}
+
+/** Turns one classified shot segment into its render-time crop spec.
+ *  Finding-2 policy: within a two-shot segment, whichever cluster's
+ *  PER-SEGMENT mean cx is smaller (the left seat) always renders in the TOP
+ *  tile — deliberately not driven by `assignSpeakersToClusters` (naive
+ *  diarization-majority speaker assignment was found to fail on real
+ *  footage from shot-selection bias; see that function's own doc comment).
+ *  Active-speaker-aware tile assignment is future work. */
+function buildSegmentCropSpec(
+  segment: ShotSegment,
+  samples: MultiFaceSample[],
+  clustering: ClusterFaceTracksResult,
+): SplitLayoutSegment {
+  const { startSec, endSec, kind } = segment;
+
+  if (kind === "two-shot") {
+    const cx0 =
+      meanCxForClusterInWindow(0, startSec, endSec, samples, clustering) ??
+      clustering.clusters[0]?.meanCx ??
+      0.5;
+    const cx1 =
+      meanCxForClusterInWindow(1, startSec, endSec, samples, clustering) ??
+      clustering.clusters[1]?.meanCx ??
+      0.5;
+    return {
+      startSec,
+      endSec,
+      layout: "two-up",
+      topCxNorm: Math.min(cx0, cx1),
+      bottomCxNorm: Math.max(cx0, cx1),
+    };
+  }
+
+  if (kind.startsWith("single:")) {
+    const clusterIndex = Number(kind.slice("single:".length));
+    const cxNorm =
+      meanCxForClusterInWindow(clusterIndex, startSec, endSec, samples, clustering) ??
+      clustering.clusters[clusterIndex]?.meanCx ??
+      0.5;
+    return { startSec, endSec, layout: "single", cxNorm };
+  }
+
+  // "none": no usable face evidence this segment (b-roll/title/off-camera) —
+  // a plain center crop, not a guess at either seat.
+  return { startSec, endSec, layout: "single", cxNorm: 0.5 };
+}
+
+/** One merge step shared by `capSegmentCount`: folds the segment at `index`
+ *  into whichever neighbor is longer (ties -> the following neighbor, same
+ *  policy as `mergeMicroSegments`), adopting that neighbor's `kind`. */
+function mergeSegmentIntoLongerNeighbor(segments: ShotSegment[], index: number): ShotSegment[] {
+  const hasPrev = index > 0;
+  const hasNext = index < segments.length - 1;
+  const duration = (s: ShotSegment) => s.endSec - s.startSec;
+
+  let mergeWithNext: boolean;
+  if (!hasPrev) mergeWithNext = true;
+  else if (!hasNext) mergeWithNext = false;
+  else mergeWithNext = duration(segments[index + 1]!) >= duration(segments[index - 1]!);
+
+  const out = [...segments];
+  if (mergeWithNext) {
+    out.splice(index, 2, {
+      startSec: segments[index]!.startSec,
+      endSec: segments[index + 1]!.endSec,
+      kind: segments[index + 1]!.kind,
+    });
+  } else {
+    out.splice(index - 1, 2, {
+      startSec: segments[index - 1]!.startSec,
+      endSec: segments[index]!.endSec,
+      kind: segments[index - 1]!.kind,
+    });
+  }
+  return coalesceAdjacentSameKind(out);
+}
+
+/** Repeatedly merges the globally shortest segment (regardless of any
+ *  duration threshold — unlike `mergeMicroSegments`, which only merges
+ *  segments under `minSegmentDurationSec`) until the count is at or below
+ *  `maxSegments`. Returns the original segments unchanged (same array
+ *  identity avoided, but same content) when already within budget. */
+function capSegmentCount(
+  segments: ShotSegment[],
+  maxSegments: number,
+): ShotSegment[] {
+  let out = segments.map((s) => ({ ...s }));
+  while (out.length > maxSegments && out.length > 1) {
+    let shortestIndex = 0;
+    let shortestDuration = Infinity;
+    for (let i = 0; i < out.length; i++) {
+      const d = out[i]!.endSec - out[i]!.startSec;
+      if (d < shortestDuration) {
+        shortestDuration = d;
+        shortestIndex = i;
+      }
+    }
+    out = mergeSegmentIntoLongerNeighbor(out, shortestIndex);
+  }
+  return out;
+}
+
+/**
+ * Full split-render plan builder: multi-face detector samples (already
+ * remapped onto the edited timeline via `remapMultiFaceSamplesForCutPlan`)
+ * -> clusters -> shot segments -> per-segment crop spec, capped to a sane
+ * segment count and clamped/snapped to the clip's edited duration.
+ *
+ * An empty `segments` result (see `BuildSplitLayoutPlanResult`'s doc comment)
+ * means "no usable 2-up here" — callers (render-clips.ts) fall back to
+ * single-speaker framing rather than ever rendering a 0-segment concat.
+ */
+export function buildSplitLayoutPlan(
+  samples: MultiFaceSample[],
+  clipDurationSec: number,
+  options: BuildSplitLayoutPlanOptions = {},
+): BuildSplitLayoutPlanResult {
+  const maxSegments = options.maxSegments ?? DEFAULT_MAX_SPLIT_SEGMENTS;
+  const clustering = clusterFaceTracks(samples, options.clusterOptions);
+
+  if (clustering.clusters.length < 2 || clipDurationSec <= 0) {
+    return { segments: [], clusterCount: clustering.clusters.length, cappedFromSegmentCount: null };
+  }
+
+  const classified = classifyShotSamples(clustering, options.classifyOptions);
+
+  // Clamp/snap every segment boundary into [0, clipDurationSec] — the
+  // detector's last sample (and therefore `collapseToSegments`' final
+  // `endSec`) can land slightly past (or short of) the actual clip duration.
+  const clamped = classified.segments
+    .map((seg) => ({
+      ...seg,
+      startSec: Math.max(0, Math.min(seg.startSec, clipDurationSec)),
+      endSec: Math.max(0, Math.min(seg.endSec, clipDurationSec)),
+    }))
+    .filter((seg) => seg.endSec > seg.startSec);
+
+  if (clamped.length === 0) {
+    return { segments: [], clusterCount: clustering.clusters.length, cappedFromSegmentCount: null };
+  }
+  clamped[0]!.startSec = 0;
+  clamped[clamped.length - 1]!.endSec = clipDurationSec;
+
+  const preCapCount = clamped.length;
+  const finalShotSegments =
+    preCapCount > maxSegments ? capSegmentCount(clamped, maxSegments) : clamped;
+
+  const segments = finalShotSegments.map((seg) => buildSegmentCropSpec(seg, samples, clustering));
+
+  return {
+    segments,
+    clusterCount: clustering.clusters.length,
+    cappedFromSegmentCount: finalShotSegments.length < preCapCount ? preCapCount : null,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// 6. buildSplitFilterChain
+// ---------------------------------------------------------------------------
+
+export interface BuildSplitFilterChainParams {
+  aspectRatio: ClipAspectRatio;
+  /** Source video dimensions — same contract as `buildTwoUpFilterChain`'s
+   *  `probe`. */
+  probe: { width: number; height: number };
+  /** At least 1 segment — see `buildSplitLayoutPlan`. */
+  segments: SplitLayoutSegment[];
+  /** Base video label this chain reads from — works identically whether
+   *  that's the raw `[0:v]`-derived input (uncut clip) or the post-cut-concat
+   *  `[vcat]` label, because plan segments are already expressed on the
+   *  EDITED timeline (apply this chain AFTER cut-concat, never before). */
+  videoInputLabel?: string;
+  outputLabel?: string;
+  /** Appended after the final `concat`, before the output label — same
+   *  `[outvbase]`-style contract `buildFitAndBackgroundFilter`/
+   *  `buildTwoUpFilterChain` satisfy, so captions/text/logo/transition/
+   *  watermark chains downstream never need to know split rendering exists. */
+  trailingChain?: string;
+}
+
+/** Same static-crop math `buildCropAndScaleFilter` uses for a plain center
+ *  crop, but parameterized on an arbitrary normalized `cxNorm` (this spike's
+ *  "single" segments use a per-segment detected face position, or 0.5 for a
+ *  "none" segment — see `buildSegmentCropSpec`) instead of always 0.5, and
+ *  always vertically centered (v1: no vertical tracking, same as
+ *  `buildTwoUpFilterChain`'s tiles). */
+function buildSingleSegmentFilter(
+  cxNorm: number,
+  aspectRatio: ClipAspectRatio,
+  srcWidth: number,
+  srcHeight: number,
+  inputLabel: string,
+  outputLabel: string,
+): string {
+  const dims = aspectRatioDimensions.get(aspectRatio)!;
+  const { width: W, height: H } = dims;
+  const targetRatio = W / H;
+  const srcRatio = srcWidth / srcHeight;
+
+  let cropW: number;
+  let cropH: number;
+  if (srcRatio >= targetRatio) {
+    cropH = srcHeight;
+    cropW = Math.round(srcHeight * targetRatio);
+  } else {
+    cropW = srcWidth;
+    cropH = Math.round(srcWidth / targetRatio);
+  }
+  const x = cropXForCenter(cxNorm, srcWidth, cropW);
+  const y = cropH >= srcHeight ? 0 : cropXForCenter(0.5, srcHeight, cropH);
+
+  // setsar=1: see the matching comment on buildTwoUpFilterChain's vstack
+  // line (C1) — this branch's crop rect rounds differently than a two-up
+  // tile's (this uses the full output aspect ratio, not the tile's
+  // double-height-halved one), so without pinning SAR here a mixed plan's
+  // `concat` (buildSplitFilterChain, below) can reject this segment against
+  // a "two-up" neighbor's differently-rounded SAR.
+  return `${inputLabel}crop=${cropW}:${cropH}:${x}:${y},scale=${W}:${H},setsar=1${outputLabel}`;
+}
+
+/**
+ * Stitches a `buildSplitLayoutPlan` result into one filtergraph: each
+ * segment is `split` off the base video, `trim`+`setpts`-reset to its own
+ * window, run through its own crop chain (the `buildTwoUpFilterChain`
+ * geometry for a "two-up" segment; a plain static crop for a "single"
+ * segment), scaled to the full target W x H, then every segment's output is
+ * `concat`-ed back into one continuous stream — the same `[outv]`/
+ * `[outvbase]`-style single-output-label contract `buildFitAndBackgroundFilter`/
+ * `buildCropAndScaleFilter` satisfy, so this is a drop-in third alternative
+ * to either of those in the caller's filter graph (see render-clips.ts's
+ * `buildSingleVideoArgs`).
+ *
+ * v1 policy (per the originating spike report): hard cuts between segments,
+ * no crossfades — footage that switches between two-up/single/none shots
+ * rapidly will look like exactly that, a hard cut, same as any other shot
+ * change. Deferred as future polish, not a bug.
+ */
+export function buildSplitFilterChain(params: BuildSplitFilterChainParams): string[] {
+  if (params.segments.length === 0) {
+    throw new Error("buildSplitFilterChain: at least one segment is required");
+  }
+  if (!aspectRatioDimensions.has(params.aspectRatio)) {
+    throw new Error(`buildSplitFilterChain: unsupported aspect ratio ${params.aspectRatio}`);
+  }
+
+  const videoInputLabel = params.videoInputLabel ?? "[0:v]";
+  const outputLabel = params.outputLabel ?? "[outv]";
+  const n = params.segments.length;
+
+  const srcLabels = params.segments.map((_, i) => `[split_seg${i}_src]`);
+  const trimLabels = params.segments.map((_, i) => `[split_seg${i}_t]`);
+  const segOutLabels = params.segments.map((_, i) => `[split_seg${i}_out]`);
+
+  const parts: string[] = [];
+  parts.push(`${videoInputLabel}split=${n}${srcLabels.join("")}`);
+
+  params.segments.forEach((segment, i) => {
+    parts.push(
+      `${srcLabels[i]}trim=start=${segment.startSec.toFixed(3)}:end=${segment.endSec.toFixed(3)},setpts=PTS-STARTPTS${trimLabels[i]}`,
+    );
+    if (segment.layout === "two-up") {
+      parts.push(
+        ...buildTwoUpFilterChain({
+          aspectRatio: params.aspectRatio,
+          probe: params.probe,
+          top: { cx: segment.topCxNorm },
+          bottom: { cx: segment.bottomCxNorm },
+          videoInputLabel: trimLabels[i],
+          outputLabel: segOutLabels[i],
+          labelSuffix: `_split${i}`,
+        }),
+      );
+    } else {
+      parts.push(
+        buildSingleSegmentFilter(
+          segment.cxNorm,
+          params.aspectRatio,
+          params.probe.width,
+          params.probe.height,
+          trimLabels[i]!,
+          segOutLabels[i]!,
+        ),
+      );
+    }
+  });
+
+  // format=yuv420p once after concat (M1, adversarial review): a "single"
+  // segment's `buildSingleSegmentFilter` chain never pinned pixel format
+  // (unlike a "two-up" segment's vstack, which always has), so a 4:2:2/
+  // 10-bit source's "single" segments would carry that format straight
+  // through concat while its "two-up" segments were already yuv420p —
+  // ffmpeg's `concat` requires every input to share the same format, not
+  // just SAR (see the `setsar=1` comments above for the SAR half of this).
+  // One pin here, after concat, covers every segment regardless of which
+  // branch produced it (the two-up branch's own `format=yuv420p` becomes
+  // redundant but harmless — ffmpeg's `format` filter is a no-op when the
+  // input already matches).
+  const trailing = params.trailingChain ? `,${params.trailingChain}` : "";
+  parts.push(
+    `${segOutLabels.join("")}concat=n=${n}:v=1:a=0,format=yuv420p${trailing}${outputLabel}`,
+  );
+
+  return parts;
 }
