@@ -4,6 +4,7 @@ import { getCurrentAppUser } from "@narriflow/auth";
 import {
   applyCaptionPresetToAllSchema,
   applyStudioEditsToAllSchema,
+  audioAssetIdParamSchema,
   brandTemplateInputSchema,
   brandTemplateUpdateSchema,
   completeMultipartUploadSchema,
@@ -14,9 +15,12 @@ import {
   autopilotRuleUpdateSchema,
   duplicateBrandTemplateSchema,
   dubDownloadQuerySchema,
+  finalizeAudioUploadSchema,
   generateContentSuiteRequestSchema,
   generateProjectRequestSchema,
   linkIngestSchema,
+  listAudioAssetsQuerySchema,
+  presignAudioUploadSchema,
   presignBrandLogoSchema,
   requestClipDubSchema,
   rssImportSchema,
@@ -40,6 +44,8 @@ import {
   userErrorMessage,
 } from "@narriflow/validators";
 import {
+  audioAssetService,
+  AudioAssetNotFoundError,
   billingService,
   BillingError,
   checkRateLimit,
@@ -57,6 +63,7 @@ import {
   ContentSuiteError,
   dubbingService,
   DubbingTierError,
+  isUniqueConstraintError,
   projectService,
   QuotaExceededError,
   RemoteFetchError,
@@ -2253,6 +2260,138 @@ app.get("/brand-templates/:id/logo-url", async (c) => {
   } catch (error) {
     const { status, body } = brandTemplateErrorResponse(error);
     return c.json(body, status);
+  }
+});
+
+// Music/SFX library (docs/plans/vizard-parity.md "Music/SFX library").
+// Mirrors the brand-templates logo presign/finalize shape immediately above:
+// presign against R2, verify ownership on finalize, serve playback through a
+// short-lived presigned download URL.
+app.get("/audio-assets", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+
+  const parsed = listAudioAssetsQuerySchema.safeParse({
+    kind: c.req.query("kind"),
+    mood: c.req.query("mood") ?? undefined,
+  });
+  if (!parsed.success) {
+    return c.json({ error: "Invalid payload", issues: parsed.error.issues }, 400);
+  }
+  try {
+    const result = await audioAssetService.listAssets(appUser.id, parsed.data);
+    return c.json(result, 200);
+  } catch (error) {
+    return c.json(
+      { error: "audio_assets_list_failed", message: errorMessage(error) },
+      400,
+    );
+  }
+});
+
+app.post("/audio-assets/presign-upload", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+
+  const rl = await checkRateLimit(`audio-asset-presign:${appUser.id}`, 30, 60);
+  if (!rl.allowed) {
+    return c.json(
+      { error: "rate_limited", message: userErrorMessage("rate_limited") },
+      429,
+    );
+  }
+
+  const payload = await c.req.json().catch(() => null);
+  const parsed = presignAudioUploadSchema.safeParse(payload);
+  if (!parsed.success) {
+    return c.json({ error: "Invalid payload", issues: parsed.error.issues }, 400);
+  }
+  try {
+    const result = await audioAssetService.presignUpload(appUser.id, parsed.data);
+    return c.json(result, 200);
+  } catch (error) {
+    return c.json(
+      { error: "audio_asset_presign_failed", message: errorMessage(error) },
+      400,
+    );
+  }
+});
+
+app.post("/audio-assets", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+
+  const payload = await c.req.json().catch(() => null);
+  const parsed = finalizeAudioUploadSchema.safeParse(payload);
+  if (!parsed.success) {
+    return c.json({ error: "Invalid payload", issues: parsed.error.issues }, 400);
+  }
+  try {
+    const asset = await audioAssetService.finalizeUpload(appUser.id, parsed.data);
+    return c.json(asset, 201);
+  } catch (error) {
+    // L3: a double-click (or a retried finalize) racing the same presigned
+    // key finalizes twice — the second hits the `storageKey` unique
+    // constraint (P2002). That's a conflict with an existing row, not a
+    // generic 400 — surface it as such with a friendly message instead of
+    // the raw Prisma error.
+    if (isUniqueConstraintError(error)) {
+      return c.json(
+        {
+          error: "audio_asset_duplicate",
+          message: "This upload has already been added to your library.",
+        },
+        409,
+      );
+    }
+    return c.json(
+      { error: "audio_asset_finalize_failed", message: errorMessage(error) },
+      400,
+    );
+  }
+});
+
+app.get("/audio-assets/:id/playback-url", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  // L3: validate the path param is a UUID before it ever reaches Prisma — a
+  // malformed id would otherwise throw a raw PrismaClientValidationError,
+  // surfaced through the generic 400 branch below with an ugly internal
+  // message instead of a clean, expected one.
+  const idParsed = audioAssetIdParamSchema.safeParse(c.req.param("id"));
+  if (!idParsed.success) {
+    return c.json({ error: "Invalid audio asset id" }, 400);
+  }
+  try {
+    const url = await audioAssetService.getPlaybackUrl(appUser.id, idParsed.data);
+    if (!url) return c.json({ error: "audio_asset_not_found" }, 404);
+    return c.json({ url }, 200);
+  } catch (error) {
+    return c.json(
+      { error: "audio_asset_playback_url_failed", message: errorMessage(error) },
+      400,
+    );
+  }
+});
+
+app.delete("/audio-assets/:id", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  const idParsed = audioAssetIdParamSchema.safeParse(c.req.param("id"));
+  if (!idParsed.success) {
+    return c.json({ error: "Invalid audio asset id" }, 400);
+  }
+  try {
+    await audioAssetService.deleteUserAsset(appUser.id, idParsed.data);
+    return c.json({ ok: true }, 200);
+  } catch (error) {
+    if (error instanceof AudioAssetNotFoundError) {
+      return c.json({ error: "audio_asset_not_found" }, 404);
+    }
+    return c.json(
+      { error: "audio_asset_delete_failed", message: errorMessage(error) },
+      400,
+    );
   }
 });
 

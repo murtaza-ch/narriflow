@@ -1,98 +1,52 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { Box, Flex, Text, Stack, Input, Slider } from "@chakra-ui/react";
-import { Link2, Music, Volume2, VolumeX, X } from "lucide-react";
+import { useState } from "react";
+import { Box, Flex, Stack, Slider, Text } from "@chakra-ui/react";
+import { Volume2, VolumeX } from "lucide-react";
 import { useStudio } from "../studio-shell";
+import { usePreviewPlayer } from "./audio-library";
+import { MusicTab } from "./music-tab";
+import { SfxTab } from "./sfx-tab";
+import { UploadsTab } from "./uploads-tab";
 
+type MusicPanelTab = "music" | "sfx" | "uploads";
+
+const TABS: { id: MusicPanelTab; label: string }[] = [
+  { id: "music", label: "Music" },
+  { id: "sfx", label: "SFX" },
+  { id: "uploads", label: "Uploads" },
+];
+
+/**
+ * Music/SFX library panel (docs/plans/vizard-parity.md "Music/SFX library").
+ * Three tabs share one hidden `<audio>` preview element (`usePreviewPlayer`)
+ * so clicking Play on any row — in the Music tab's track list or the SFX
+ * tab's effect list — pauses whatever the panel was already previewing.
+ * `libraryVersion` is bumped by the Uploads tab after a finalize/delete so
+ * the Music and SFX tabs' lists refetch without a shared cache layer.
+ */
 export function MusicPanel() {
   const { studioEdits, setStudioEdits, endCoalesce } = useStudio();
-  const [url, setUrl] = useState(studioEdits.music.url ?? "");
-  const [title, setTitle] = useState(studioEdits.music.title ?? "");
-  const [volume, setVolume] = useState(studioEdits.music.volume);
-  const [fadeInSec, setFadeInSec] = useState(studioEdits.music.fadeInSec);
-  const [fadeOutSec, setFadeOutSec] = useState(studioEdits.music.fadeOutSec);
-
-  // Fix 11: these drafts used to be seeded once from the initial studioEdits
-  // and never revisited, so undo/reset/redo could leave them stale — e.g.
-  // undo a music change and this panel still shows (and can re-Apply) the
-  // undone draft. Resync whenever the document's music object actually
-  // changes identity (applyMusic/clearMusic/undo/redo/reset all produce a
-  // NEW music object; unrelated studioEdits changes — sourceAudio, logo —
-  // preserve the same reference, so an in-progress edit here isn't
-  // interrupted by those).
-  useEffect(() => {
-    setUrl(studioEdits.music.url ?? "");
-    setTitle(studioEdits.music.title ?? "");
-    setVolume(studioEdits.music.volume);
-    setFadeInSec(studioEdits.music.fadeInSec);
-    setFadeOutSec(studioEdits.music.fadeOutSec);
-  }, [studioEdits.music]);
-
-  const applyMusic = () => {
-    const trimmedUrl = url.trim();
-    setStudioEdits((prev) => ({
-      ...prev,
-      music: {
-        ...prev.music,
-        url: trimmedUrl ? trimmedUrl : null,
-        title: title.trim() || null,
-        volume,
-        fadeInSec,
-        fadeOutSec,
-        // startOffsetSec deliberately not touched here — applying (or
-        // re-applying) a track must preserve the user's chosen in-track
-        // start point rather than resetting it back to 0.
-      },
-    }));
-  };
-
-  const clearMusic = () => {
-    setUrl("");
-    setTitle("");
-    setFadeInSec(0);
-    setFadeOutSec(0);
-    setStudioEdits((prev) => ({
-      ...prev,
-      music: {
-        url: null,
-        title: null,
-        volume: 35,
-        startOffsetSec: 0,
-        fadeInSec: 0,
-        fadeOutSec: 0,
-      },
-    }));
-  };
+  const [activeTab, setActiveTab] = useState<MusicPanelTab>("music");
+  const [libraryVersion, setLibraryVersion] = useState(0);
+  const player = usePreviewPlayer();
 
   const sourceAudio = studioEdits.sourceAudio;
-
-  const updateSourceAudio = (
-    patch: Partial<typeof sourceAudio>,
-    coalesceKey?: string,
-  ) =>
-    setStudioEdits(
-      (prev) => ({
-        ...prev,
-        sourceAudio: { ...prev.sourceAudio, ...patch },
-      }),
-      coalesceKey,
-    );
+  const updateSourceAudio = (patch: Partial<typeof sourceAudio>, coalesceKey?: string) =>
+    setStudioEdits((prev) => ({ ...prev, sourceAudio: { ...prev.sourceAudio, ...patch } }), coalesceKey);
 
   return (
-    <Stack gap="14px" p="12px">
-      {/* Source audio — the original clip's dialogue track */}
-      <Box>
+    <Stack gap="0">
+      {/* biome-ignore lint/a11y/useMediaCaption: shared hidden preview element for browsing the library — no dialogue/captions of its own. */}
+      <audio ref={player.audioRef} preload="none" style={{ display: "none" }} />
+
+      {/* Source audio — the original clip's dialogue track. Lives above the
+          tabs since it applies regardless of which library tab is open. */}
+      <Box px="12px" pt="12px">
         <Text textStyle="eyebrow" color="studio.fgMuted" mb="6px">
           Source audio
         </Text>
-        <Box
-          p="12px"
-          bg="studio.subtle"
-          borderRadius="l2"
-          borderWidth="1px"
-          borderColor="studio.border"
-        >
+        <Box p="12px" bg="studio.subtle" borderRadius="l2" borderWidth="1px" borderColor="studio.border">
           <Flex align="center" justify="space-between" mb="10px">
             <Flex align="center" gap="6px" color="studio.fgMuted">
               {sourceAudio.muted ? <VolumeX size={14} /> : <Volume2 size={14} />}
@@ -133,9 +87,7 @@ export function MusicPanel() {
               value={[sourceAudio.volume]}
               min={0}
               max={100}
-              onValueChange={(event) =>
-                updateSourceAudio({ volume: event.value[0] ?? 100 }, "source-volume")
-              }
+              onValueChange={(event) => updateSourceAudio({ volume: event.value[0] ?? 100 }, "source-volume")}
               onValueChangeEnd={endCoalesce}
               size="sm"
               colorPalette="accent"
@@ -155,215 +107,41 @@ export function MusicPanel() {
         </Box>
       </Box>
 
-      <Box>
-        <Text textStyle="eyebrow" color="studio.fgMuted" mb="6px">
-          Music URL
-        </Text>
-        <Flex
-          align="center"
-          gap="8px"
-          px="10px"
-          h="34px"
-          borderRadius="l2"
-          bg="studio.subtle"
-          borderWidth="1px"
-          borderColor="studio.borderControl"
-          _focusWithin={{ borderColor: "studio.ring" }}
-          transition="border-color 120ms ease"
-        >
-          <Box color="studio.fgSubtle" flexShrink={0}>
-            <Link2 size={13} />
-          </Box>
-          <Input
-            aria-label="Music URL"
-            placeholder="https://example.com/background.mp3"
-            value={url}
-            onChange={(event) => setUrl(event.target.value)}
-            size="xs"
-            flex="1"
-            fontSize="12px"
-            color="studio.fg"
-            css={{ border: "none", outline: "none", background: "transparent", boxShadow: "none" }}
-            _placeholder={{ color: "studio.fgSubtle" }}
-          />
-        </Flex>
-      </Box>
-
-      <Box>
-        <Text textStyle="eyebrow" color="studio.fgMuted" mb="6px">
-          Track label
-        </Text>
-        <Input
-          value={title}
-          onChange={(event) => setTitle(event.target.value)}
-          placeholder="Background bed"
-          size="sm"
-          bg="studio.subtle"
-          borderColor="studio.borderControl"
-          color="studio.fg"
-          fontSize="12px"
-          _placeholder={{ color: "studio.fgSubtle" }}
-          _focusVisible={{ borderColor: "studio.ring", boxShadow: "none" }}
-        />
-      </Box>
-
-      <Box
-        p="12px"
-        bg="studio.subtle"
-        borderRadius="l2"
-        borderWidth="1px"
-        borderColor="studio.border"
-      >
-        <Flex align="center" gap="8px">
-          <Box color="studio.fgMuted" flexShrink={0}>
-            <Volume2 size={14} />
-          </Box>
-          <Slider.Root
-            aria-label={["Music volume"]}
-            value={[volume]}
-            min={0}
-            max={100}
-            onValueChange={(event) => setVolume(event.value[0] ?? 35)}
-            size="sm"
-            colorPalette="accent"
-            flex="1"
-          >
-            <Slider.Control>
-              <Slider.Track>
-                <Slider.Range />
-              </Slider.Track>
-              <Slider.Thumbs />
-            </Slider.Control>
-          </Slider.Root>
-          <Text textStyle="data" fontSize="11px" color="studio.fgMuted" w="34px" textAlign="right">
-            {volume}%
-          </Text>
-        </Flex>
-      </Box>
-
-      <Box>
-        <Text textStyle="eyebrow" color="studio.fgMuted" mb="6px">
-          Fades
-        </Text>
-        <Stack
-          gap="10px"
-          p="12px"
-          bg="studio.subtle"
-          borderRadius="l2"
-          borderWidth="1px"
-          borderColor="studio.border"
-        >
-          <Flex align="center" gap="8px">
-            <Text fontSize="11px" color="studio.fgMuted" w="52px" flexShrink={0}>
-              Fade in
-            </Text>
-            <Slider.Root
-              aria-label={["Music fade in"]}
-              value={[fadeInSec]}
-              min={0}
-              max={5}
-              step={0.1}
-              onValueChange={(event) => setFadeInSec(event.value[0] ?? 0)}
-              size="sm"
-              colorPalette="accent"
-              flex="1"
+      {/* Tabs */}
+      <Flex px="12px" pt="14px" gap="4px" mb="4px" role="tablist" aria-label="Music library">
+        {TABS.map((tab) => {
+          const isActive = activeTab === tab.id;
+          return (
+            <Flex
+              key={tab.id}
+              as="button"
+              role="tab"
+              aria-selected={isActive}
+              align="center"
+              px="12px"
+              py="6px"
+              borderRadius="l2"
+              bg={isActive ? "studio.raised" : "transparent"}
+              border="1px solid"
+              borderColor={isActive ? "studio.borderStrong" : "transparent"}
+              color={isActive ? "studio.fg" : "studio.fgMuted"}
+              cursor="pointer"
+              fontSize="12px"
+              fontWeight="500"
+              onClick={() => setActiveTab(tab.id)}
+              transition="background 120ms ease, border-color 120ms ease, color 120ms ease"
             >
-              <Slider.Control>
-                <Slider.Track>
-                  <Slider.Range />
-                </Slider.Track>
-                <Slider.Thumbs />
-              </Slider.Control>
-            </Slider.Root>
-            <Text textStyle="data" fontSize="11px" color="studio.fgMuted" w="34px" textAlign="right">
-              {fadeInSec.toFixed(1)}s
-            </Text>
-          </Flex>
-          <Flex align="center" gap="8px">
-            <Text fontSize="11px" color="studio.fgMuted" w="52px" flexShrink={0}>
-              Fade out
-            </Text>
-            <Slider.Root
-              aria-label={["Music fade out"]}
-              value={[fadeOutSec]}
-              min={0}
-              max={5}
-              step={0.1}
-              onValueChange={(event) => setFadeOutSec(event.value[0] ?? 0)}
-              size="sm"
-              colorPalette="accent"
-              flex="1"
-            >
-              <Slider.Control>
-                <Slider.Track>
-                  <Slider.Range />
-                </Slider.Track>
-                <Slider.Thumbs />
-              </Slider.Control>
-            </Slider.Root>
-            <Text textStyle="data" fontSize="11px" color="studio.fgMuted" w="34px" textAlign="right">
-              {fadeOutSec.toFixed(1)}s
-            </Text>
-          </Flex>
-        </Stack>
-      </Box>
-
-      {studioEdits.music.url ? (
-        <Flex
-          pl="10px"
-          pr="10px"
-          py="8px"
-          borderRadius="l2"
-          bg="success.950"
-          borderWidth="1px"
-          borderColor="success.800"
-          borderLeftWidth="3px"
-          borderLeftColor="success.400"
-          align="center"
-          justify="space-between"
-        >
-          <Flex align="center" gap="6px" minW="0" color="success.400">
-            <Music size={13} />
-            <Text fontSize="11px" color="success.400" fontWeight="600" overflow="hidden" whiteSpace="nowrap" textOverflow="ellipsis">
-              {studioEdits.music.title ?? "Music applied"}
-            </Text>
-          </Flex>
-          <Box
-            as="button"
-            aria-label="Remove music"
-            color="studio.fgMuted"
-            cursor="pointer"
-            _hover={{ color: "studio.fg" }}
-            transition="color 120ms ease"
-            onClick={clearMusic}
-          >
-            <X size={13} />
-          </Box>
-        </Flex>
-      ) : null}
-
-      {/* Secondary action — Export owns the view's solid button */}
-      <Flex
-        as="button"
-        align="center"
-        justify="center"
-        h="34px"
-        borderRadius="l2"
-        bg="studio.raised"
-        borderWidth="1px"
-        borderColor="studio.borderStrong"
-        color="studio.fg"
-        fontSize="12px"
-        fontWeight="600"
-        cursor="pointer"
-        gap="6px"
-        _hover={{ borderColor: "studio.fgSubtle" }}
-        transition="border-color 120ms ease"
-        onClick={applyMusic}
-      >
-        <Music size={13} />
-        Apply music
+              {tab.label}
+            </Flex>
+          );
+        })}
       </Flex>
+
+      {activeTab === "music" ? <MusicTab reloadKey={libraryVersion} player={player} /> : null}
+      {activeTab === "sfx" ? <SfxTab reloadKey={libraryVersion} player={player} /> : null}
+      {activeTab === "uploads" ? (
+        <UploadsTab reloadKey={libraryVersion} onLibraryChange={() => setLibraryVersion((v) => v + 1)} />
+      ) : null}
     </Stack>
   );
 }

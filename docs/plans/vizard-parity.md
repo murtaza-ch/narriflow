@@ -307,6 +307,36 @@ before the foundation steps it depends on.
     "monetization-safe"/"no Content ID claims" (even OpusClip's docs admit
     false positives). Base library free-tier (Submagic pattern); any
     future AI-generated audio goes behind paid credits.
+  *(v1 landed 2026-08-05. `AudioAsset` model (one table, `userId NULL` =
+  curated; migration 20260805120000 applied), manifest seed script
+  (refuses PLACEHOLDER titles without `--allow-placeholders`),
+  `audio-asset.service.ts` (list/presign/finalize/playback-url/delete +
+  owner-scoped `resolveRenderSource` that filters soft-deleted rows since
+  delete also removes the R2 object). Schema: `music.assetId` (wins over
+  `url` at render; `url` doubles as preview playback URL and stays the
+  paste-a-link escape hatch) + `music.ducking`; `studioEdits.sfx[]`
+  one-shots (edited-timeline `startSec`, max 20) — rebased in
+  `rebaseStudioEdits` alongside text layers and cleared by
+  clip-from-selection, both window-anchored. Ducking math is SHARED from
+  validators (`extractSpeechWordIntervals` with utterance fallback →
+  `computeSpeechWindows` → `capDuckingWindows` at 40 →
+  `duckingGainMultiplierAt`; ramps sit outside the padded window): worker
+  builds an ffmpeg `volume=` expression from the same segment list
+  (parity-tested via evaluator, verified −10.4 dB plateau against real
+  ffmpeg), preview multiplies its per-tick gain by the same function.
+  Worker: `buildAudioMixFilter` generalizes dialogue+music+N SFX;
+  SFX branches `adelay…apad…atrim` (apad is load-bearing — without it a
+  silent-source SFX-only render truncates to the SFX length via
+  `-shortest`/`duration=first`); asset downloads bounded to 50MB;
+  failures stay log-and-skip. Web: 5 `/audio-assets` routes (uuid-param
+  validation, P2002→409, 404s), Music/SFX/Uploads tabs (mood chips filter
+  curated rows only, shared preview `<audio>`, place-at-playhead SFX,
+  ducking toggle, start-offset slider, 50MB client check + 15s duration
+  probe timeout), preview re-resolves stale presigns into local state
+  without dirtying the document. Deferred: storage quotas on uploads,
+  presign batching/caching in `listAssets`, long-session presign refresh,
+  actual track curation (content/ops — manifest is placeholders only, DB
+  unseeded).)*
 - Subtitle visibility / punctuation / per-cue emoji overrides (global emoji
   toggle already exists, `captions-panel.tsx:339`) — distinct schema changes.
   *(Visibility + punctuation landed 2026-08-05 —

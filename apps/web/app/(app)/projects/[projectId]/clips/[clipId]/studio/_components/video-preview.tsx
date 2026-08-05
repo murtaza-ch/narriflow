@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, useCallback, useEffect } from "react";
+import { useRef, useState, useCallback, useEffect, useMemo } from "react";
 import { Box, Flex, Menu, Portal, Text } from "@chakra-ui/react";
 import { Spinner } from "@narriflow/ui";
 import {
@@ -14,16 +14,22 @@ import {
   RotateCcw,
 } from "lucide-react";
 import {
+  capDuckingWindows,
+  computeSpeechWindows,
+  duckingGainMultiplierAt,
   editedToSource,
+  extractSpeechWordIntervals,
   resolveEffectiveFramingMode,
   resolveEffectiveLogoSettings,
   resolveMusicFadeWindows,
+  type DuckingWindow,
   type LogoPosition,
 } from "@narriflow/validators";
 import { useStudio } from "./studio-shell";
 import type { AspectRatio, LayoutMode } from "./studio-shell";
 import { InteractiveCaptionOverlay } from "./interactive-caption-overlay";
 import { InteractiveTextLayer } from "./interactive-text-layer";
+import { SfxPreviewTrack } from "./sfx-preview-track";
 
 /** After this long with no metadata yet, hint that the source is just large. */
 const SLOW_LOAD_HINT_MS = 10_000;
@@ -122,6 +128,7 @@ export function VideoPreview() {
     isPlaying,
     duration,
     brandLogo,
+    utterances,
   } = useStudio();
 
   // File-local position of edited time 0 — equals `playerClipStartSec`
@@ -156,6 +163,28 @@ export function VideoPreview() {
   const containerRef = useRef<HTMLDivElement>(null);
   const videoContainerRef = useRef<HTMLDivElement>(null);
   const musicAudioRef = useRef<HTMLAudioElement>(null);
+  // Music/SFX library (vizard-parity.md): `studioEdits.music.url` for an
+  // asset picked in a past session may be an expired R2 presign — the
+  // presign TTL is much shorter than a document's lifetime. When
+  // `music.assetId` is set, this holds a freshly-fetched playback URL that
+  // wins over the (possibly stale) `music.url`; never written back into
+  // studioEdits, so resolving it can't dirty the document. Null while
+  // unresolved or when there's no assetId (a pasted-link track's `url` is
+  // never stale, since there's no presign to expire).
+  const [resolvedMusicUrl, setResolvedMusicUrl] = useState<string | null>(null);
+  // Same id -> playback-url resolution for SFX placements, batched per
+  // unique assetId and cached in a ref (not state) so resolving one more id
+  // doesn't need to be an effect dependency — a version counter bumps a
+  // render once new entries land instead.
+  const sfxUrlCacheRef = useRef<Record<string, string>>({});
+  // Calling the setter is what forces the re-render that re-reads
+  // `sfxUrlCacheRef` below — the value itself doesn't need to be read
+  // anywhere (React re-renders on any state update regardless), so it's
+  // discarded here rather than kept around just to silence an unused-var
+  // lint (L7: this used to also be baked into `SfxPreviewTrack`'s `key`
+  // below as a remount hack; that's gone now that the track's own volume
+  // effect correctly reacts to `src` changing on its own).
+  const [, setSfxUrlVersion] = useState(0);
   // Music track's own duration (unknown until its metadata loads) — used to
   // wrap the preview's offset+clock time the same way the renderer's
   // `-stream_loop -1` + atrim loops the track.
@@ -304,6 +333,81 @@ export function VideoPreview() {
     return () => clearTimeout(timeoutId);
   }, [activeVideoUrl, videoLoaded, loadError, retryNonce]);
 
+  // Music/SFX library — stale presigned URL resolution (vizard-parity.md).
+  // Runs on mount and whenever `music.assetId` changes; deliberately does
+  // NOT write the result into `studioEdits` (see `resolvedMusicUrl`'s doc
+  // comment) — this is purely a preview-side lookup.
+  useEffect(() => {
+    const assetId = studioEdits.music.assetId;
+    if (!assetId) {
+      setResolvedMusicUrl(null);
+      return;
+    }
+    let canceled = false;
+    fetch(`/api/audio-assets/${assetId}/playback-url`)
+      .then((res) => (res.ok ? (res.json() as Promise<{ url?: string }>) : null))
+      .then((data) => {
+        if (!canceled && data?.url) setResolvedMusicUrl(data.url);
+      })
+      .catch(() => {
+        // Best-effort — falls back to the (possibly stale) music.url below.
+      });
+    return () => {
+      canceled = true;
+    };
+  }, [studioEdits.music.assetId]);
+
+  const musicSrc = resolvedMusicUrl ?? studioEdits.music.url;
+
+  // Same stale-presign resolution for SFX placements, batched by unique
+  // assetId so N placements sharing one asset cost one request each, not N.
+  useEffect(() => {
+    const missingIds = Array.from(new Set(studioEdits.sfx.map((p) => p.assetId))).filter(
+      (id) => !(id in sfxUrlCacheRef.current),
+    );
+    if (missingIds.length === 0) return;
+    let canceled = false;
+    void Promise.all(
+      missingIds.map(async (id) => {
+        try {
+          const res = await fetch(`/api/audio-assets/${id}/playback-url`);
+          if (!res.ok) return;
+          const data = (await res.json()) as { url?: string };
+          if (data.url) sfxUrlCacheRef.current[id] = data.url;
+        } catch {
+          // Best-effort — this placement just won't play until it resolves.
+        }
+      }),
+    ).then(() => {
+      if (!canceled) setSfxUrlVersion((v) => v + 1);
+    });
+    return () => {
+      canceled = true;
+    };
+  }, [studioEdits.sfx]);
+
+  // Auto-ducking v1 (vizard-parity.md): speech windows derived from the same
+  // transcript word timings the caption overlay reads, run through the
+  // EXACT SAME three-function pipeline the worker's render-time volume
+  // automation composes (M1+M2: `extractSpeechWordIntervals` ->
+  // `computeSpeechWindows` -> `capDuckingWindows`, all shared from
+  // `@narriflow/validators`) — never forked. Before this, this component
+  // hand-rolled its own word extraction with no word-less-utterance
+  // fallback and no window-count cap, so a word-less transcript (or one
+  // with a pathological number of short utterances) ducked differently in
+  // the export than in the preview the user was actually watching.
+  // Cheap to compute even when ducking is off (returns `[]` fast via
+  // `computeSpeechWindows`'s own early-out), so this doesn't need to be
+  // gated on `studioEdits.music.ducking` itself.
+  const speechWindows: DuckingWindow[] = useMemo(() => {
+    const wordIntervals = extractSpeechWordIntervals(
+      utterances,
+      playerClipStartSec,
+      editedTimeMap,
+    );
+    return capDuckingWindows(computeSpeechWindows(wordIntervals, duration));
+  }, [utterances, editedTimeMap, duration, playerClipStartSec]);
+
   useEffect(() => playbackClock.subscribe(() => {
     setCurrentTime(playbackClock.getSnapshot());
   }), [playbackClock]);
@@ -344,18 +448,18 @@ export function VideoPreview() {
     }
     audio.addEventListener("loadedmetadata", handleLoadedMetadata);
     return () => audio.removeEventListener("loadedmetadata", handleLoadedMetadata);
-  }, [studioEdits.music.url]);
+  }, [musicSrc]);
 
-  // Reset the cached track duration whenever the music URL changes so a
+  // Reset the cached track duration whenever the music source changes so a
   // previous track's duration never leaks into the new one's loop math
   // before its own metadata has loaded.
   useEffect(() => {
     musicDurationRef.current = 0;
-  }, [studioEdits.music.url]);
+  }, [musicSrc]);
 
   useEffect(() => {
     const audio = musicAudioRef.current;
-    if (!audio || !studioEdits.music.url) return;
+    if (!audio || !musicSrc) return;
     if (isPlaying) {
       audio.play().catch(() => {
         // Autoplay can be rejected outside a user gesture (e.g. a stray
@@ -365,12 +469,12 @@ export function VideoPreview() {
     } else {
       audio.pause();
     }
-  }, [isPlaying, studioEdits.music.url]);
+  }, [isPlaying, musicSrc]);
 
   useEffect(() => {
     const audio = musicAudioRef.current;
     const music = studioEdits.music;
-    if (!audio || !music.url) return;
+    if (!audio || !musicSrc) return;
 
     // Fix 12 fallback: prefer the cached duration, but fall back to reading
     // the element directly — covers a render where metadata was already
@@ -412,8 +516,15 @@ export function VideoPreview() {
       const remainingSec = Math.max(0, duration - currentTime);
       gain = Math.min(gain, baseVolume * (remainingSec / fadeOutSec));
     }
+    // Auto-ducking v1 (vizard-parity.md): the SAME `duckingGainMultiplierAt`
+    // the worker's timed volume automation calls, over the SAME
+    // `speechWindows` — multiplied on top of the fade envelope rather than
+    // replacing it, so a ducked moment inside a fade-in/out still fades.
+    if (music.ducking) {
+      gain *= duckingGainMultiplierAt(currentTime, speechWindows);
+    }
     audio.volume = Math.max(0, Math.min(1, gain));
-  }, [currentTime, studioEdits.music, duration]);
+  }, [currentTime, studioEdits.music, duration, musicSrc, speechWindows]);
 
   useEffect(() => {
     const el = videoContainerRef.current;
@@ -742,16 +853,35 @@ export function VideoPreview() {
               bed, no user-facing controls; play/pause, looped offset
               seeking, and volume/fade ramps are all driven by the effects
               above off the shared playback clock. */}
-          {studioEdits.music.url ? (
+          {musicSrc ? (
             // biome-ignore lint/a11y/useMediaCaption: decorative background music preview with no dialogue/captions of its own — the clip's own captions already cover spoken content via the interactive caption overlay.
             <audio
               ref={musicAudioRef}
-              src={studioEdits.music.url}
+              src={musicSrc}
               loop
               preload="auto"
               style={{ display: "none" }}
             />
           ) : null}
+
+          {/* One-shot SFX placements (vizard-parity.md "Music/SFX library") —
+              best-effort preview, see sfx-preview-track.tsx. Keyed on the
+              placement's own stable id (not a resolution-version suffix,
+              L7): SfxPreviewTrack's volume effect now depends on `src`
+              directly, so a newly-resolved (or re-picked) URL updates the
+              SAME mounted instance instead of needing a full remount to
+              pick up the new value. The re-render itself still comes from
+              `setSfxUrlVersion` bumping above; only the forced remount was
+              redundant. */}
+          {studioEdits.sfx.map((placement) => (
+            <SfxPreviewTrack
+              key={placement.id}
+              placement={placement}
+              src={sfxUrlCacheRef.current[placement.assetId] ?? null}
+              isPlaying={isPlaying}
+              currentTime={currentTime}
+            />
+          ))}
 
           {/* Layout blur layer — a persisted background overrides this
               cosmetic entirely (see backgroundActive above). */}
