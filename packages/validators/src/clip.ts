@@ -42,6 +42,12 @@ export const clipRenderStatusSchema = z.enum([
   "failed",
 ]);
 
+/** Export resolution choice (vizard-parity Phase C). 1080p access and the
+ *  free-tier watermark are entitlement-driven (billing.service's
+ *  hasFeature), never a raw tier check — see triggerClipRendering, which
+ *  clamps an unentitled 1080p request down to 720p rather than erroring. */
+export const clipRenderResolutionSchema = z.enum(["720p", "1080p"]);
+
 export const clipAspectRatioSchema = z.enum([
   "9:16",
   "1:1",
@@ -166,6 +172,7 @@ export const clipRenderVariantSchema = z.object({
   errorCode: z.string().nullable(),
   completedAt: z.string().datetime().nullable(),
   hasAsset: z.boolean(),
+  resolution: clipRenderResolutionSchema,
 });
 
 export const clipSnapshotSchema = z.object({
@@ -289,6 +296,11 @@ export const clipTitleSuggestionsResponseSchema = z.object({
 export const triggerClipRenderSchema = z.object({
   clipIds: z.array(z.string().uuid()).min(1).max(50).optional(),
   aspectRatios: z.array(clipAspectRatioSchema).min(1).max(4).optional(),
+  /** Requested export resolution. Defaults to "1080p" — the service clamps
+   *  this down to "720p" when the owner's tier lacks the "export.1080p"
+   *  entitlement rather than rejecting the request (freemium UX: ask for the
+   *  best available, get the best you're entitled to). */
+  resolution: clipRenderResolutionSchema.default("1080p"),
 });
 
 export const clipDownloadQuerySchema = z.object({
@@ -339,6 +351,7 @@ export type ClipRenderStatus = z.infer<typeof clipRenderStatusSchema>;
 export type ClipAspectRatio = z.infer<typeof clipAspectRatioSchema>;
 export type ClipAspectRatioDb = z.infer<typeof clipAspectRatioDbSchema>;
 export type ClipRenderVariant = z.infer<typeof clipRenderVariantSchema>;
+export type ClipRenderResolution = z.infer<typeof clipRenderResolutionSchema>;
 export type ClipSnapshot = z.infer<typeof clipSnapshotSchema>;
 export type UpdateClipBoundaries = z.infer<typeof updateClipBoundariesSchema>;
 export type TriggerClipRender = z.infer<typeof triggerClipRenderSchema>;

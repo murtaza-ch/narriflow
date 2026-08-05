@@ -652,6 +652,323 @@ describe("buildSingleVideoArgs with a canvas background active", () => {
   });
 });
 
+describe("export treatment: resolution + watermark (vizard-parity Phase C export options)", () => {
+  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true, fps: 30 };
+  const SCALE_FRAGMENT = "scale=trunc(iw*2/3/2)*2:trunc(ih*2/3/2)*2";
+  const WATERMARK_FRAGMENT = "drawtext=text=Made with Narriflow";
+
+  /** The `;`-delimited filter-graph section whose output pad is `label`
+   *  (e.g. "[outvfree]") — lets assertions check what feeds a given stage
+   *  without depending on the drawtext option list's exact contents. */
+  function stageEndingIn(graph: string, label: string): string {
+    const stage = graph.split(";").find((section) => section.endsWith(label));
+    if (!stage) throw new Error(`no filter-graph stage ends in ${label}`);
+    return stage;
+  }
+
+  /** Every `-map` target that isn't an audio pad (`[outaN]`/`[outa]`) —
+   *  robust to `-map` calls interleaving video and audio per output. */
+  function videoMapTargets(args: string[]): string[] {
+    return indexesOf(args, "-map")
+      .map((i) => args[i + 1]!)
+      .filter((label) => !label.startsWith("[outa"));
+  }
+
+  describe("buildSingleVideoArgs", () => {
+    test("720p row adds the 2/3 downscale, 1080p row doesn't", () => {
+      const at720p = buildSingleVideoArgs({
+        sourcePath: "/tmp/src.mp4",
+        outputPath: "/tmp/out.mp4",
+        startSec: 0,
+        endSec: 10,
+        aspectRatio: "9:16",
+        probe,
+        srtPath: null,
+        resolution: "720p",
+      });
+      const at1080p = buildSingleVideoArgs({
+        sourcePath: "/tmp/src.mp4",
+        outputPath: "/tmp/out.mp4",
+        startSec: 0,
+        endSec: 10,
+        aspectRatio: "9:16",
+        probe,
+        srtPath: null,
+        resolution: "1080p",
+      });
+      const graph720 = at720p[at720p.indexOf("-filter_complex") + 1]!;
+      const graph1080 = at1080p[at1080p.indexOf("-filter_complex") + 1]!;
+      expect(graph720).toContain(SCALE_FRAGMENT);
+      expect(graph720).toContain("[outvfree]");
+      expect(at720p).toContain("[outvfree]"); // mapped as the final output
+      expect(graph1080).not.toContain(SCALE_FRAGMENT);
+      expect(graph1080).not.toContain("[outvfree]");
+    });
+
+    test("omitting resolution behaves like 1080p (no downscale)", () => {
+      const args = buildSingleVideoArgs({
+        sourcePath: "/tmp/src.mp4",
+        outputPath: "/tmp/out.mp4",
+        startSec: 0,
+        endSec: 10,
+        aspectRatio: "9:16",
+        probe,
+        srtPath: null,
+      });
+      const graph = args[args.indexOf("-filter_complex") + 1]!;
+      expect(graph).not.toContain(SCALE_FRAGMENT);
+      expect(graph).not.toContain("drawtext=");
+    });
+
+    test("watermark is present iff entitlement is absent, independent of resolution", () => {
+      const noWatermark1080 = buildSingleVideoArgs({
+        sourcePath: "/tmp/src.mp4",
+        outputPath: "/tmp/out.mp4",
+        startSec: 0,
+        endSec: 10,
+        aspectRatio: "9:16",
+        probe,
+        srtPath: null,
+        resolution: "1080p",
+        watermark: false,
+      });
+      const watermarked1080 = buildSingleVideoArgs({
+        sourcePath: "/tmp/src.mp4",
+        outputPath: "/tmp/out.mp4",
+        startSec: 0,
+        endSec: 10,
+        aspectRatio: "9:16",
+        probe,
+        srtPath: null,
+        resolution: "1080p",
+        watermark: true,
+      });
+      const graphNoWatermark = noWatermark1080[
+        noWatermark1080.indexOf("-filter_complex") + 1
+      ]!;
+      const graphWatermarked = watermarked1080[
+        watermarked1080.indexOf("-filter_complex") + 1
+      ]!;
+      expect(graphNoWatermark).not.toContain("drawtext=");
+      // A paid user on 1080p still gets no watermark and no downscale.
+      expect(graphNoWatermark).not.toContain(SCALE_FRAGMENT);
+      expect(graphWatermarked).toContain(WATERMARK_FRAGMENT);
+      // Watermark alone (1080p) never triggers the 720p downscale.
+      expect(graphWatermarked).not.toContain(SCALE_FRAGMENT);
+    });
+
+    test("720p + watermark combine into a single trailing filter stage", () => {
+      const args = buildSingleVideoArgs({
+        sourcePath: "/tmp/src.mp4",
+        outputPath: "/tmp/out.mp4",
+        startSec: 0,
+        endSec: 10,
+        aspectRatio: "9:16",
+        probe,
+        srtPath: null,
+        resolution: "720p",
+        watermark: true,
+      });
+      const graph = args[args.indexOf("-filter_complex") + 1]!;
+      // Exactly one [outvfree] stage carries both fragments, comma-joined —
+      // scale before drawtext (a filter chain is order-dependent: drawtext
+      // computing font size off `h` must see the already-downscaled frame).
+      const stage = graph
+        .split(";")
+        .find((section) => section.endsWith("[outvfree]"))!;
+      expect(stage).toContain(`${SCALE_FRAGMENT},${WATERMARK_FRAGMENT}`);
+      expect(args).toContain("[outvfree]");
+    });
+
+    test("combined with a canvas background and a fade transition, the map target is still [outvfree]", () => {
+      const studioEdits = studioEditsSchema.parse({
+        transition: { type: "fade", durationSec: 0.4 },
+      });
+      const args = buildSingleVideoArgs({
+        sourcePath: "/tmp/src.mp4",
+        outputPath: "/tmp/out.mp4",
+        startSec: 0,
+        endSec: 10,
+        aspectRatio: "9:16",
+        probe,
+        srtPath: null,
+        background: { mode: "color", color: "#112233", imagePath: null },
+        studioEdits,
+        resolution: "720p",
+        watermark: true,
+      });
+      const graph = args[args.indexOf("-filter_complex") + 1]!;
+      expect(graph).toContain("pad=1080:1920"); // background still applied
+      expect(graph).toContain("fade=t=in"); // transition still applied
+      const stage = stageEndingIn(graph, "[outvfree]");
+      expect(stage).toContain(SCALE_FRAGMENT);
+      expect(stage).toContain(WATERMARK_FRAGMENT);
+      expect(args[args.indexOf("-map") + 1]).toBe("[outvfree]");
+    });
+  });
+
+  describe("buildBrollVideoArgs", () => {
+    test("720p + watermark fold in after the b-roll overlay chain", () => {
+      const args = buildBrollVideoArgs({
+        sourcePath: "/tmp/src.mp4",
+        cutaways: [{ path: "/tmp/broll.mp4", window: { startSec: 2, endSec: 5 } }],
+        outputPath: "/tmp/out.mp4",
+        startSec: 0,
+        endSec: 20,
+        aspectRatio: "9:16",
+        probe,
+        srtPath: null,
+        resolution: "720p",
+        watermark: true,
+      });
+      const graph = args[args.indexOf("-filter_complex") + 1]!;
+      expect(graph).toContain("overlay=0:0:enable='between(t,2,5)'");
+      const stage = stageEndingIn(graph, "[outvfree]");
+      expect(stage).toContain(SCALE_FRAGMENT);
+      expect(stage).toContain(WATERMARK_FRAGMENT);
+      expect(args[args.indexOf("-map") + 1]).toBe("[outvfree]");
+    });
+
+    test("neither flag set: no [outvfree] stage, maps the plain composited output", () => {
+      const args = buildBrollVideoArgs({
+        sourcePath: "/tmp/src.mp4",
+        cutaways: [{ path: "/tmp/broll.mp4", window: { startSec: 2, endSec: 5 } }],
+        outputPath: "/tmp/out.mp4",
+        startSec: 0,
+        endSec: 20,
+        aspectRatio: "9:16",
+        probe,
+        srtPath: null,
+      });
+      const graph = args[args.indexOf("-filter_complex") + 1]!;
+      expect(graph).not.toContain("[outvfree]");
+      // No logo/watermark stage renames the label, so the map target is
+      // whatever the single overlay stage produced ("[stage1]" here — b-roll
+      // has no logo in this fixture, so the composed frame is never renamed
+      // to "[outv]" the way buildSingleVideoArgs's plain path is).
+      const mapTarget = args[args.indexOf("-map") + 1]!;
+      expect(mapTarget).toBe("[stage1]");
+      expect(graph).toContain(`overlay=0:0:enable='between(t,2,5)'${mapTarget}`);
+    });
+  });
+
+  describe("buildMultiVideoArgs", () => {
+    test("per-output resolution is independent; watermark is uniform across outputs", () => {
+      const args = buildMultiVideoArgs({
+        sourcePath: "/tmp/src.mp4",
+        outputs: [
+          {
+            clipRenderId: "r0",
+            clipId: "c0",
+            clipIndex: 0,
+            aspectRatio: "9:16",
+            outputPath: "/tmp/out0.mp4",
+            storageKey: "k0",
+            resolution: "720p",
+          },
+          {
+            clipRenderId: "r1",
+            clipId: "c0",
+            clipIndex: 0,
+            aspectRatio: "1:1",
+            outputPath: "/tmp/out1.mp4",
+            storageKey: "k1",
+            resolution: "1080p",
+          },
+        ],
+        startSec: 0,
+        endSec: 10,
+        probe,
+        srtPath: null,
+        watermark: true,
+      });
+      const graph = args[args.indexOf("-filter_complex") + 1]!;
+      const stage0 = graph
+        .split(";")
+        .find((section) => section.endsWith("[outvfree0]"))!;
+      const stage1 = graph
+        .split(";")
+        .find((section) => section.endsWith("[outvfree1]"))!;
+      expect(stage0).toContain(`${SCALE_FRAGMENT},${WATERMARK_FRAGMENT}`);
+      // output 1 is 1080p: watermark only, no downscale.
+      expect(stage1).not.toContain(SCALE_FRAGMENT);
+      expect(stage1).toContain(WATERMARK_FRAGMENT);
+
+      expect(videoMapTargets(args)).toEqual(["[outvfree0]", "[outvfree1]"]);
+    });
+
+    test("no watermark and both outputs at 1080p: no [outvfree] stages at all", () => {
+      const args = buildMultiVideoArgs({
+        sourcePath: "/tmp/src.mp4",
+        outputs: [
+          {
+            clipRenderId: "r0",
+            clipId: "c0",
+            clipIndex: 0,
+            aspectRatio: "9:16",
+            outputPath: "/tmp/out0.mp4",
+            storageKey: "k0",
+            resolution: "1080p",
+          },
+          {
+            clipRenderId: "r1",
+            clipId: "c0",
+            clipIndex: 0,
+            aspectRatio: "1:1",
+            outputPath: "/tmp/out1.mp4",
+            storageKey: "k1",
+            resolution: "1080p",
+          },
+        ],
+        startSec: 0,
+        endSec: 10,
+        probe,
+        srtPath: null,
+      });
+      const graph = args[args.indexOf("-filter_complex") + 1]!;
+      expect(graph).not.toContain("[outvfree");
+      expect(videoMapTargets(args)).toEqual(["[outv0]", "[outv1]"]);
+    });
+  });
+
+  describe("buildAudiogramArgs", () => {
+    test("720p + watermark fold in after the waveform/caption chain", () => {
+      const args = buildAudiogramArgs({
+        sourcePath: "/tmp/a.mp3",
+        outputPath: "/tmp/out.mp4",
+        startSec: 0,
+        endSec: 10,
+        aspectRatio: "9:16",
+        clipDurationSec: 10,
+        srtPath: null,
+        resolution: "720p",
+        watermark: true,
+      });
+      const graph = args[args.indexOf("-filter_complex") + 1]!;
+      expect(graph).toContain("showwaves=");
+      const stage = stageEndingIn(graph, "[outvfree]");
+      expect(stage).toContain(SCALE_FRAGMENT);
+      expect(stage).toContain(WATERMARK_FRAGMENT);
+      expect(args[args.indexOf("-map") + 1]).toBe("[outvfree]");
+    });
+
+    test("neither flag set: no [outvfree] stage, maps the plain output", () => {
+      const args = buildAudiogramArgs({
+        sourcePath: "/tmp/a.mp3",
+        outputPath: "/tmp/out.mp4",
+        startSec: 0,
+        endSec: 10,
+        aspectRatio: "9:16",
+        clipDurationSec: 10,
+        srtPath: null,
+      });
+      const graph = args[args.indexOf("-filter_complex") + 1]!;
+      expect(graph).not.toContain("[outvfree]");
+      expect(args[args.indexOf("-map") + 1]).toBe("[outv]");
+    });
+  });
+});
+
 describe("buildBrollVideoArgs with a canvas background active", () => {
   const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true, fps: 30 };
 

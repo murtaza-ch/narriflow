@@ -11,6 +11,7 @@ import {
   analyticsService,
   clipService,
   dubbingService,
+  hasFeature,
   isQuotaBlockedMidFlight,
   MAX_INGEST_RETRY_ATTEMPTS,
   presignDownloadUrl,
@@ -268,6 +269,11 @@ export default async function ProjectDetailPage({
     projectService.getUsageSummary(appUser.id),
   ]);
   const pricingTier = usage.tier;
+  // vizard-parity Phase C export options: whether this owner's plan can
+  // render at 1080p, via the shared entitlement helper — never a raw
+  // `pricingTier === "free"` check — so the render popover's resolution
+  // picker degrades exactly the way the worker's render-time gate does.
+  const can1080pExport = hasFeature(pricingTier, "export.1080p");
 
   const isIngestReady = snapshot.project.ingestStatus === "ready";
   const isIngestFailed = snapshot.project.ingestStatus === "failed";
@@ -785,6 +791,7 @@ export default async function ProjectDetailPage({
                 projectId={projectId}
                 mode={generationMode}
                 isFreeTier={pricingTier === "free"}
+                can1080pExport={can1080pExport}
                 defaultAspectRatio={clipsDefaultAspectRatio}
                 sourceVideoUrl={sourceVideoUrl}
               />

@@ -16,6 +16,7 @@ import {
   deleteObject,
   downloadObjectToFile,
   guardedFetch,
+  hasFeature,
   presignDownloadUrl,
   projectService,
   putFileFromPath,
@@ -34,6 +35,7 @@ import {
   clipAspectRatioDbSchema,
   clipAspectRatioFromDb,
   clipAspectRatioOptions,
+  clipRenderResolutionSchema,
   deletedRangesSchema,
   formatCaptionWord,
   getEffectiveClipTiming,
@@ -49,6 +51,7 @@ import type {
   CaptionPreset,
   ClipAspectRatio,
   ClipCategory,
+  ClipRenderResolution,
   EditedTimeMap,
   SourceRange,
   StudioEdits,
@@ -236,6 +239,12 @@ interface PendingRenderOutput {
   storageKey: string;
   subtitlePath?: string | null;
   reframe?: ReframeSpec | null;
+  /** Target resolution for this specific render row (vizard-parity Phase C
+   *  export options) — read off the ClipRender row, already entitlement-
+   *  clamped by clip.service's triggerClipRendering/autoQueueDefaultRenders.
+   *  Drives the per-output 2/3 downscale; independent of the watermark,
+   *  which is a run-level entitlement (see `applyWatermark` below). */
+  resolution: ClipRenderResolution;
 }
 
 /**
@@ -1659,7 +1668,12 @@ export function buildSingleVideoArgs(params: {
    *  implies "on" (mode is always "color" or "image"); omit/null preserves
    *  today's crop-to-fill behavior. See `BackgroundPlan`. */
   background?: BackgroundPlan | null;
-  applyFreeTierTreatment?: boolean;
+  /** Target resolution (vizard-parity Phase C export options) — "720p"
+   *  applies the 2/3 downscale, "1080p"/omitted renders at base resolution. */
+  resolution?: ClipRenderResolution;
+  /** Corner watermark, gated by hasFeature(ownerTier, "export.noWatermark")
+   *  — independent of `resolution` (see `buildExportTreatmentFilter`). */
+  watermark?: boolean;
   /** Non-empty `deletedRanges` cut plan (vizard-parity Phase B step 7).
    *  Omitted/uncut: byte-identical to the pre-cut-concat filter graph. */
   cutPlan?: ClipCutPlan | null;
@@ -1770,10 +1784,12 @@ export function buildSingleVideoArgs(params: {
     clipDurationSec,
   );
 
-  if (params.applyFreeTierTreatment) {
-    filterParts.push(
-      `${finalLabel}${buildFreeTierWatermarkFilter(FREE_TIER_WATERMARK_TEXT)}[outvfree]`,
-    );
+  const singleExportTreatment = buildExportTreatmentFilter(
+    params.resolution,
+    params.watermark,
+  );
+  if (singleExportTreatment) {
+    filterParts.push(`${finalLabel}${singleExportTreatment}[outvfree]`);
     finalLabel = "[outvfree]";
   }
 
@@ -1879,7 +1895,9 @@ export function buildBrollVideoArgs(params: {
   /** Resolved canvas background (vizard-parity Phase C item 2) — see
    *  `buildSingleVideoArgs`'s param doc; same contract here. */
   background?: BackgroundPlan | null;
-  applyFreeTierTreatment?: boolean;
+  /** See `buildSingleVideoArgs`'s param docs — same contract here. */
+  resolution?: ClipRenderResolution;
+  watermark?: boolean;
   /** See `buildSingleVideoArgs` — same cut-concat contract. */
   cutPlan?: ClipCutPlan | null;
 }) {
@@ -2011,10 +2029,12 @@ export function buildBrollVideoArgs(params: {
     clipDurationSec,
   );
 
-  if (params.applyFreeTierTreatment) {
-    parts.push(
-      `${finalLabel}${buildFreeTierWatermarkFilter(FREE_TIER_WATERMARK_TEXT)}[outvfree]`,
-    );
+  const brollExportTreatment = buildExportTreatmentFilter(
+    params.resolution,
+    params.watermark,
+  );
+  if (brollExportTreatment) {
+    parts.push(`${finalLabel}${brollExportTreatment}[outvfree]`);
     finalLabel = "[outvfree]";
   }
 
@@ -2203,7 +2223,12 @@ export function buildMultiVideoArgs(params: {
   srtPath: string | null;
   captionPreset?: CaptionPreset | null;
   logo?: LogoOverlay | null;
-  applyFreeTierTreatment?: boolean;
+  /** Run-level watermark entitlement (see `buildSingleVideoArgs`'s param
+   *  doc) — uniform across every output in this shared-encode batch, unlike
+   *  `resolution`, which each `PendingRenderOutput` carries individually
+   *  (`outputs[i].resolution`) since different rows in the same batch can
+   *  target different resolutions. */
+  watermark?: boolean;
 }) {
   const clipDurationSec = params.endSec - params.startSec;
   const splitOutputs = params.outputs
@@ -2258,14 +2283,18 @@ export function buildMultiVideoArgs(params: {
     }
   }
 
-  // Per-output final label, overridden below when the free-tier watermark
-  // needs to be folded in for that output.
+  // Per-output final label, overridden below when that output's export
+  // treatment (resolution downscale and/or watermark) needs to be folded in.
   const finalLabels = params.outputs.map((_, index) => `[outv${index}]`);
 
-  if (params.applyFreeTierTreatment) {
-    for (const index of params.outputs.keys()) {
+  for (const [index, output] of params.outputs.entries()) {
+    const exportTreatment = buildExportTreatmentFilter(
+      output.resolution,
+      params.watermark,
+    );
+    if (exportTreatment) {
       filterSections.push(
-        `${finalLabels[index]}${buildFreeTierWatermarkFilter(FREE_TIER_WATERMARK_TEXT)}[outvfree${index}]`,
+        `${finalLabels[index]}${exportTreatment}[outvfree${index}]`,
       );
       finalLabels[index] = `[outvfree${index}]`;
     }
@@ -2344,7 +2373,9 @@ export function buildAudiogramArgs(params: {
   captionPreset?: CaptionPreset | null;
   studioEdits?: StudioEdits | null;
   music?: MusicPlan | null;
-  applyFreeTierTreatment?: boolean;
+  /** See `buildSingleVideoArgs`'s param docs — same contract here. */
+  resolution?: ClipRenderResolution;
+  watermark?: boolean;
   /** See `buildSingleVideoArgs` — same cut-concat contract, applied to the
    *  audio stream only (audiogram sources have no video track). Callers must
    *  pass `clipDurationSec` already set to the plan's edited duration when
@@ -2446,10 +2477,12 @@ export function buildAudiogramArgs(params: {
     params.clipDurationSec,
   );
 
-  if (params.applyFreeTierTreatment) {
-    chain.push(
-      `${videoOutputLabel}${buildFreeTierWatermarkFilter(FREE_TIER_WATERMARK_TEXT)}[outvfree]`,
-    );
+  const audiogramExportTreatment = buildExportTreatmentFilter(
+    params.resolution,
+    params.watermark,
+  );
+  if (audiogramExportTreatment) {
+    chain.push(`${videoOutputLabel}${audiogramExportTreatment}[outvfree]`);
     videoOutputLabel = "[outvfree]";
   }
 
@@ -2529,13 +2562,23 @@ export function escapeDrawtextText(text: string): string {
 }
 
 /**
- * Builds the free-tier export treatment as a filter-chain fragment (2/3
- * downscale, 1080p-class → 720p-class, plus a corner watermark) — meant to be
- * appended to the *end* of an already-built video filter chain (after
- * crop/scale/captions/logo/transition) so the whole render is a single
- * encode. Folded into each `build*Args` builder via `applyFreeTierTreatment`.
+ * The 2/3 downscale fragment for a "720p" export (1080p-class output ->
+ * 720p-class), keyed off the row's `resolution` (vizard-parity Phase C
+ * export options) rather than a hardcoded free-tier assumption. "1080p"
+ * renders at the base resolution for the aspect ratio — no scale filter.
  */
-function buildFreeTierWatermarkFilter(
+function buildResolutionScaleFilter(resolution: ClipRenderResolution): string {
+  return resolution === "720p" ? "scale=trunc(iw*2/3/2)*2:trunc(ih*2/3/2)*2" : "";
+}
+
+/**
+ * The corner "Made with Narriflow" drawtext fragment, independent of any
+ * resolution scale. Gated by `hasFeature(ownerTier, "export.noWatermark")`
+ * — never a resolution or raw tier check — so a paid user who picks 720p
+ * still gets no watermark, and (in principle) a future tier could ship one
+ * resolution behavior independent of the other.
+ */
+function buildWatermarkDrawtextFilter(
   watermarkText: string,
   fontFilePath?: string | null,
 ): string {
@@ -2553,18 +2596,55 @@ function buildFreeTierWatermarkFilter(
     drawtextOptions.push(`fontfile=${fontFilePath}`);
   }
 
+  return `drawtext=${drawtextOptions.join(":")}`;
+}
+
+/**
+ * Combines the 720p downscale + watermark into one filter-chain fragment —
+ * meant to be appended to the *end* of an already-built video filter chain
+ * (after crop/scale/captions/logo/transition) so the whole render is a
+ * single encode. This exact combination (both always on together) is what
+ * `buildFreeTierPostProcessArgs` below still tests; the main render pipeline
+ * no longer applies them as a fused pair (see `buildExportTreatmentFilter`),
+ * since resolution and watermark are now independent, entitlement-driven
+ * knobs (vizard-parity Phase C export options).
+ */
+function buildFreeTierWatermarkFilter(
+  watermarkText: string,
+  fontFilePath?: string | null,
+): string {
   return [
-    "scale=trunc(iw*2/3/2)*2:trunc(ih*2/3/2)*2",
-    `drawtext=${drawtextOptions.join(":")}`,
+    buildResolutionScaleFilter("720p"),
+    buildWatermarkDrawtextFilter(watermarkText, fontFilePath),
   ].join(",");
 }
 
 /**
+ * Per-output export treatment fragment: an optional 720p downscale (driven
+ * by that row's resolution) followed by an optional watermark (driven by
+ * the run's ownerTier entitlement) — the two Phase C knobs a render can
+ * combine. Returns "" when neither applies, so callers can skip appending a
+ * filter stage entirely (byte-identical to pre-Phase-C output for a paid,
+ * 1080p, no-watermark render).
+ */
+function buildExportTreatmentFilter(
+  resolution: ClipRenderResolution | undefined,
+  watermark: boolean | undefined,
+): string {
+  const parts = [
+    resolution ? buildResolutionScaleFilter(resolution) : "",
+    watermark ? buildWatermarkDrawtextFilter(FREE_TIER_WATERMARK_TEXT) : "",
+  ].filter(Boolean);
+  return parts.join(",");
+}
+
+/**
  * Free-tier export treatment as a standalone single-input ffmpeg pass. No
- * longer used by the render pipeline itself (see `applyFreeTierTreatment` on
- * each `build*Args` builder, which folds this same filter into the main
- * encode instead of re-encoding a second time) — kept as a tested, reusable
- * utility for the same transformation applied to an already-rendered file.
+ * longer used by the render pipeline itself (see `buildExportTreatmentFilter`
+ * on each `build*Args` builder, which folds the same downscale/watermark
+ * fragments into the main encode instead of re-encoding a second time) —
+ * kept as a tested, reusable utility for the same transformation applied to
+ * an already-rendered file.
  */
 export function buildFreeTierPostProcessArgs(params: {
   inputPath: string;
@@ -2604,7 +2684,6 @@ async function uploadRenderedOutput(params: {
   projectId: string;
   output: PendingRenderOutput;
   clipDurationSec: number;
-  applyFreeTierTreatment: boolean;
   /** Compact JSON-encoded Pexels attribution for any B-roll used in this
    *  render, so crediting is possible after the fact. There's no dedicated
    *  DB column reachable without a migration or editing clip.service.ts (out
@@ -2618,9 +2697,9 @@ async function uploadRenderedOutput(params: {
    *  it covered. */
   encodeMs?: number;
 }): Promise<boolean> {
-  if (params.applyFreeTierTreatment) {
-    // The watermark + 720p-class downscale are folded directly into the main
-    // render's filtergraph now (see `applyFreeTierTreatment` on each
+  if (params.output.resolution === "720p") {
+    // The downscale (and any watermark) is folded directly into the main
+    // render's filtergraph now (see `buildExportTreatmentFilter` on each
     // build*Args builder) — the single required encode already produced the
     // treated output, so a failure to apply it already failed the whole clip
     // render upstream (no separate pass to fail here). This just verifies the
@@ -2628,9 +2707,10 @@ async function uploadRenderedOutput(params: {
     // it propagates like any other failure in this function and fails the
     // variant (caught by the caller).
     const treatedProbe = await probeSource(params.output.outputPath);
-    log("info", "free_tier_export_treatment", {
+    log("info", "resolution_export_treatment", {
       workflowRunId: params.workflowRunId,
       clipId: params.output.clipId,
+      resolution: params.output.resolution,
       width: treatedProbe.width,
       height: treatedProbe.height,
     });
@@ -2712,12 +2792,19 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
     return;
   }
 
-  // Free-tier exports get a watermark + 720p cap; every paid tier (starter,
-  // creator, pro) ships untouched 1080p renders. Looked up once per run.
+  // Watermark presence is a run-level entitlement (vizard-parity Phase C
+  // export options) — looked up once per run, same as before, but now
+  // through the shared hasFeature helper instead of a bare tier check so
+  // this is the only place billing.service's PLAN_FEATURES matrix needs to
+  // be consulted for it. Resolution, by contrast, is per-row (see
+  // `PendingRenderOutput.resolution`, already entitlement-clamped when the
+  // row was created by clip.service's triggerClipRendering/
+  // autoQueueDefaultRenders) — a single run can, in principle, cover rows at
+  // different resolutions.
   const ownerTier = await projectService.getUserPricingTier(
     run.project.userId,
   );
-  const applyFreeTierTreatment = ownerTier === "free";
+  const applyWatermark = !hasFeature(ownerTier, "export.noWatermark");
 
   const runStartedAtMs = Date.now();
   log("info", "clip_rendering_run_started", {
@@ -2999,6 +3086,13 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
         const slug =
           clipAspectRatioOptions.find((option) => option.value === aspectRatio)
             ?.slug ?? "9x16";
+        // Tolerant parse, same fallback as clip.service's
+        // toClipRenderVariantSnapshot — a row written before this column
+        // existed (or an unexpected value) degrades to the column's own DB
+        // default rather than failing the whole clip.
+        const resolution =
+          clipRenderResolutionSchema.safeParse(render.resolution).data ??
+          "1080p";
 
         return {
           clipRenderId: render.id,
@@ -3012,6 +3106,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
             slug,
             randomUUID(),
           ),
+          resolution,
         };
       });
 
@@ -3560,7 +3655,8 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
               captionPreset,
               studioEdits,
               music: musicPlan,
-              applyFreeTierTreatment,
+              resolution: output.resolution,
+              watermark: applyWatermark,
               cutPlan,
             });
 
@@ -3571,7 +3667,6 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
               projectId: run.projectId,
               output,
               clipDurationSec,
-              applyFreeTierTreatment,
               encodeMs: Date.now() - encodeStartedAtMs,
             });
             // Only count it if the ClipRender row actually claimed this
@@ -3624,7 +3719,8 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
                   studioEdits,
                   music: musicPlan,
                   background: backgroundPlan,
-                  applyFreeTierTreatment,
+                  resolution: output.resolution,
+                  watermark: applyWatermark,
                   cutPlan,
                 })
               : buildSingleVideoArgs({
@@ -3641,7 +3737,8 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
                   studioEdits,
                   music: musicPlan,
                   background: backgroundPlan,
-                  applyFreeTierTreatment,
+                  resolution: output.resolution,
+                  watermark: applyWatermark,
                   cutPlan,
                 });
             const encodeStartedAtMs = Date.now();
@@ -3651,7 +3748,6 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
               projectId: run.projectId,
               output,
               clipDurationSec,
-              applyFreeTierTreatment,
               brollCredits,
               encodeMs: Date.now() - encodeStartedAtMs,
             });
@@ -3689,7 +3785,8 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
                   captionPreset,
                   logo,
                   reframe: outputs[0]!.reframe,
-                  applyFreeTierTreatment,
+                  resolution: outputs[0]!.resolution,
+                  watermark: applyWatermark,
                 })
               : buildMultiVideoArgs({
                   sourcePath,
@@ -3700,7 +3797,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
                   srtPath,
                   captionPreset,
                   logo,
-                  applyFreeTierTreatment,
+                  watermark: applyWatermark,
                 });
 
           const encodeStartedAtMs = Date.now();
@@ -3714,7 +3811,6 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
                 projectId: run.projectId,
                 output,
                 clipDurationSec,
-                applyFreeTierTreatment,
                 encodeMs: sharedEncodeMs,
               });
               if (persisted) renderedVariantCount += 1;

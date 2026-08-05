@@ -76,6 +76,8 @@ export {
   billingService,
   BillingService,
   BillingError,
+  hasFeature,
+  type PlanFeature,
 } from "./billing.service";
 export {
   analyticsService,

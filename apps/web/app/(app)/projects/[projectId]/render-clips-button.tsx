@@ -5,11 +5,13 @@ import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Button } from "@narriflow/ui/components/button";
 import { Checkbox } from "@narriflow/ui/components/checkbox";
+import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import {
   clipAspectRatioOptions,
   userErrorMessage,
   type ClipAspectRatio,
+  type ClipRenderResolution,
 } from "@narriflow/validators";
 import {
   Box,
@@ -43,6 +45,7 @@ export function RenderClipsButton({
   disabled,
   buttonLabel,
   isFreeTier = false,
+  can1080pExport = !isFreeTier,
   clipIds,
   size = "sm",
   defaultAspectRatio,
@@ -53,6 +56,13 @@ export function RenderClipsButton({
   /** Free renders are 720p and watermarked. The project page says so up top,
    *  but a user confirming *this* render should not have to remember that. */
   isFreeTier?: boolean;
+  /** vizard-parity Phase C export options — whether the owner's plan can
+   *  render at 1080p (billing.service's hasFeature(tier, "export.1080p")),
+   *  computed server-side by the page and threaded down through ClipsPanel.
+   *  Defaults to the inverse of `isFreeTier` for any caller that hasn't been
+   *  updated to pass it explicitly (today every free/paid split is the
+   *  same line for both features — see PLAN_FEATURES). */
+  can1080pExport?: boolean;
   /** When provided (non-empty), scopes the render to exactly these clips —
    *  the ranked-rows toolbar's bulk "Render selected" (Phase 3). Omitted
    *  entirely, the request renders across all of the project's clips (the
@@ -71,6 +81,11 @@ export function RenderClipsButton({
   const [isOpen, setIsOpen] = useState(false);
   const [selection, setSelection] = useState<Record<ClipAspectRatio, boolean>>(
     () => buildDefaultSelection(defaultAspectRatio),
+  );
+  // Defaults to the best resolution this plan allows — 1080p for paid,
+  // 720p for free — rather than always defaulting to one value.
+  const [resolution, setResolution] = useState<ClipRenderResolution>(() =>
+    can1080pExport ? "1080p" : "720p",
   );
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -96,6 +111,7 @@ export function RenderClipsButton({
         },
         body: JSON.stringify({
           aspectRatios: selectedAspectRatios,
+          resolution,
           ...(clipIds && clipIds.length > 0 ? { clipIds } : {}),
         }),
       });
@@ -149,9 +165,7 @@ export function RenderClipsButton({
                     ? `across the ${clipIds.length} selected clip${clipIds.length === 1 ? "" : "s"}`
                     : "across all clips"}
                   . Rendering uses capacity on your plan.
-                  {isFreeTier
-                    ? " On the free plan these render at 720p with a watermark."
-                    : ""}
+                  {isFreeTier ? " Free-plan renders carry a watermark." : ""}
                 </Text>
               </Box>
 
@@ -195,6 +209,36 @@ export function RenderClipsButton({
                   );
                 })}
               </Stack>
+
+              <Box>
+                <Text textStyle="eyebrow" color="fg.subtle" mb="1.5">
+                  Resolution
+                </Text>
+                <SegmentedControl
+                  size="sm"
+                  items={[
+                    { label: "720p", value: "720p" },
+                    {
+                      label: "1080p",
+                      value: "1080p",
+                      disabled: !can1080pExport,
+                    },
+                  ]}
+                  value={resolution}
+                  onValueChange={(value) =>
+                    setResolution(value as ClipRenderResolution)
+                  }
+                />
+                {!can1080pExport ? (
+                  <Text fontSize="11px" color="fg.muted" mt="1">
+                    1080p exports and watermark-free renders need a paid plan.{" "}
+                    <ChakraLink asChild color="accent.fg" textUnderlineOffset="3px">
+                      <Link href="/settings/billing">Upgrade</Link>
+                    </ChakraLink>
+                    .
+                  </Text>
+                ) : null}
+              </Box>
 
               <Flex justify="space-between" align="center" gap="2">
                 <Text textStyle="data" fontSize="11px" color="fg.muted">

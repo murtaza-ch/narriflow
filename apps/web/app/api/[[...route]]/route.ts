@@ -1404,6 +1404,7 @@ app.post("/projects/:id/clips/render", async (c) => {
       idempotencyKey,
       parsed.data.clipIds,
       parsed.data.aspectRatios,
+      parsed.data.resolution,
     );
     return c.json(result, 202);
   } catch (error) {

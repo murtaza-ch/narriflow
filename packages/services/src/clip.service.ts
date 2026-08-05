@@ -18,6 +18,7 @@ import {
   clipAspectRatioFromDb,
   clipAspectRatioOptions,
   clipAspectRatioToDb,
+  clipRenderResolutionSchema,
   clipTitleSuggestionsLlmResponseSchema,
   contentPackSchema,
   DEFAULT_CAPTION_PRESET,
@@ -41,6 +42,7 @@ import type {
   ClipAspectRatio,
   ClipCategory,
   ClipPlatformTarget,
+  ClipRenderResolution,
   ClipRenderVariant,
   ClipSnapshot,
   ClipWindow,
@@ -65,6 +67,7 @@ import {
 } from "./clip-preview-storage";
 import { analyticsService } from "./analytics.service";
 import { assertPublicHttpUrl } from "./url-guard";
+import { hasFeature } from "./billing.service";
 
 interface DetectedClip {
   startSec: number;
@@ -174,9 +177,33 @@ function normalizeAspectRatios(
   );
 }
 
+/**
+ * Resolves what resolution a newly-queued render should actually be created
+ * at: a "720p" request is always honored as-is (never "upgraded"), but a
+ * "1080p" request is clamped down to "720p" when the owner's tier lacks the
+ * `export.1080p` entitlement — freemium UX, so the request never fails, it
+ * just gets the best the plan allows. This is the single choke point every
+ * ClipRender-creating path (user-triggered renders and the post-detection
+ * auto-render) must go through so a free-tier row is never created at
+ * "1080p" by omission.
+ */
+async function resolveRequestedResolution(
+  userId: string,
+  requested: ClipRenderResolution,
+): Promise<ClipRenderResolution> {
+  if (requested === "720p") return "720p";
+  const tier = await projectService.getUserPricingTier(userId);
+  return hasFeature(tier, "export.1080p") ? "1080p" : "720p";
+}
+
 function toClipRenderVariantSnapshot(render: ClipRender): ClipRenderVariant {
   const aspectRatioDb = clipAspectRatioDbSchema.parse(render.aspectRatio);
   const aspectRatio = clipAspectRatioFromDb[aspectRatioDb];
+  // Tolerant parse: rows written before this column existed (or by a future
+  // rollback) still need a valid variant snapshot — fall back to the
+  // column's own DB default rather than throwing.
+  const resolution =
+    clipRenderResolutionSchema.safeParse(render.resolution).data ?? "1080p";
 
   return {
     aspectRatio,
@@ -186,6 +213,7 @@ function toClipRenderVariantSnapshot(render: ClipRender): ClipRenderVariant {
     errorCode: render.errorCode ?? null,
     completedAt: render.completedAt?.toISOString() ?? null,
     hasAsset: render.status === "completed" && Boolean(render.storageKey),
+    resolution,
   };
 }
 
@@ -252,7 +280,9 @@ function toClipSnapshot(clip: ClipWithRenders): ClipSnapshot {
   };
 }
 
-function getClipRenderResetData(): Prisma.ClipRenderUpdateInput {
+function getClipRenderResetData(
+  resolution: ClipRenderResolution,
+): Prisma.ClipRenderUpdateInput {
   return {
     status: "pending",
     storageKey: null,
@@ -261,6 +291,7 @@ function getClipRenderResetData(): Prisma.ClipRenderUpdateInput {
     errorCode: null,
     startedAt: null,
     completedAt: null,
+    resolution,
   };
 }
 
@@ -1809,6 +1840,9 @@ export class ClipService {
               durationSec: render.durationSec,
               startedAt: render.startedAt,
               completedAt: render.completedAt,
+              // Duplicating an already-rendered object verbatim — copy the
+              // resolution it actually rendered at, not the default.
+              resolution: render.resolution,
             })),
           });
         }
@@ -2185,11 +2219,19 @@ export class ClipService {
     idempotencyKey: string,
     clipIds?: string[],
     aspectRatios?: ClipAspectRatio[],
+    resolution: ClipRenderResolution = "1080p",
   ) {
     const prisma = requirePrisma();
     const requestedAspectRatios = normalizeAspectRatios(aspectRatios);
     const requestedAspectRatioDbValues = requestedAspectRatios.map(
       (aspectRatio) => clipAspectRatioToDb[aspectRatio],
+    );
+    // Entitlement clamp (vizard-parity Phase C export options) — every row
+    // this call creates or resets is stamped with the resolution the owner
+    // is actually allowed, not the raw request.
+    const resolvedResolution = await resolveRequestedResolution(
+      userId,
+      resolution,
     );
 
     const project = await prisma.project.findFirst({
@@ -2251,6 +2293,7 @@ export class ClipService {
                 clipId: clip.id,
                 aspectRatio: aspectRatioDb,
                 status: "pending",
+                resolution: resolvedResolution,
               },
             }),
           );
@@ -2267,7 +2310,7 @@ export class ClipService {
         updateOperations.push(
           prisma.clipRender.update({
             where: { id: existingRender.id },
-            data: getClipRenderResetData(),
+            data: getClipRenderResetData(resolvedResolution),
           }),
         );
       }
@@ -2292,6 +2335,7 @@ export class ClipService {
         initialSeq: await getLastWorkflowSeq(projectId),
         clipCount: clipsToRender.length,
         variantCount: clipsToRender.length * requestedAspectRatios.length,
+        resolution: resolvedResolution,
       };
     }
 
@@ -2331,6 +2375,7 @@ export class ClipService {
         initialSeq: await getLastWorkflowSeq(projectId),
         clipCount: clipsToRender.length,
         variantCount: clipsToRender.length * requestedAspectRatios.length,
+        resolution: resolvedResolution,
       };
     }
 
@@ -2350,6 +2395,7 @@ export class ClipService {
       initialSeq: event?.seq ?? 0,
       clipCount: clipsToRender.length,
       variantCount: clipsToRender.length * requestedAspectRatios.length,
+      resolution: resolvedResolution,
     };
   }
 
@@ -3751,6 +3797,18 @@ export class ClipService {
       return;
     }
 
+    // Same entitlement clamp as triggerClipRendering — this is the
+    // post-detection auto-render, so a free-tier project's first render must
+    // land at "720p" on the row, not the "1080p" column default, or the
+    // worker's per-row resolution scale never kicks in for it.
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { userId: true },
+    });
+    const resolvedResolution = project
+      ? await resolveRequestedResolution(project.userId, "1080p")
+      : "1080p";
+
     const aspectRatioDb = clipAspectRatioToDb[aspectRatio];
     const clipIds = clips.map((c) => c.id);
 
@@ -3772,6 +3830,7 @@ export class ClipService {
           clipId,
           aspectRatio: aspectRatioDb,
           status: "pending" as const,
+          resolution: resolvedResolution,
         })),
         skipDuplicates: true,
       });

@@ -39,6 +39,43 @@ function getStripe(): Stripe {
 const PAID_TIERS: PaidPricingTier[] = ["starter", "creator", "pro"];
 const INTERVALS: BillingInterval[] = ["monthly", "annual"];
 
+/**
+ * Plan-gated capabilities (vizard-parity Phase C export options). Both
+ * features currently draw the same free/paid line, but they're modeled as
+ * two distinct flags — not one "isPaid" bit — because they're independently
+ * meaningful product decisions (a future tier could ship 1080p without
+ * dropping the watermark, or vice versa) and because call sites should say
+ * what they're checking, not why. All new plan-gating must go through
+ * `hasFeature` — no bare `tier === "free"` checks.
+ */
+export type PlanFeature = "export.1080p" | "export.noWatermark";
+
+/** Single source of truth for which tiers unlock which features. `free` gets
+ *  neither; every paid tier (starter, creator, pro) gets both. */
+const PLAN_FEATURES: Record<PricingTier, Record<PlanFeature, boolean>> = {
+  free: {
+    "export.1080p": false,
+    "export.noWatermark": false,
+  },
+  starter: {
+    "export.1080p": true,
+    "export.noWatermark": true,
+  },
+  creator: {
+    "export.1080p": true,
+    "export.noWatermark": true,
+  },
+  pro: {
+    "export.1080p": true,
+    "export.noWatermark": true,
+  },
+};
+
+/** Pure entitlement check — the one place plan gating decisions are made. */
+export function hasFeature(tier: PricingTier, feature: PlanFeature): boolean {
+  return PLAN_FEATURES[tier][feature];
+}
+
 /** Resolves the configured Stripe price id for a tier + interval (env-driven). */
 function priceIdFor(
   tier: PaidPricingTier,

@@ -1,0 +1,15 @@
+-- Resolution the ClipRender was produced at ("720p" | "1080p", validated at
+-- the application layer by clipRenderResolutionSchema) — vizard-parity
+-- Phase C export options: a user-facing 720p/1080p export choice gated by
+-- billing.service's hasFeature(tier, "export.1080p") entitlement helper.
+--
+-- Additive, non-null, defaults to '1080p' for every existing row (the base
+-- resolution renders were produced at). NOTE: this default is forward-
+-- looking only — it does not retroactively describe what old rows actually
+-- rendered at. Free-tier rows created before this column existed were in
+-- fact downscaled to 720p-class output by the worker's old hardcoded
+-- applyFreeTierTreatment flag; no backfill query is run here because that
+-- flag's watermark/downscale treatment already stopped applying to a given
+-- clip's render the moment it gets re-queued (replace-in-place), at which
+-- point the new resolution-aware path takes over anyway.
+ALTER TABLE "ClipRender" ADD COLUMN "resolution" TEXT NOT NULL DEFAULT '1080p';

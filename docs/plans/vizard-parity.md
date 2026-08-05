@@ -271,9 +271,39 @@ before the foundation steps it depends on.
   `apps/worker/src/tasks/render-clips.ts`) alongside `dip-white`'s
   `:color=white` — both used to rely on ffmpeg's `fade` filter defaulting
   to black.
-- Export options — resolution needs render-identity change (clip+aspect only
-  today, `clip.service.ts:1267`); watermark/720p gate must move from hardcoded
-  worker behavior (`render-clips.ts:1939`) into a real billing feature gate.
+- Export options — **landed 2026-08-05.** Render identity stays
+  `[clipId, aspectRatio]` (replace-in-place, not versioned) — a new
+  `ClipRender.resolution` string column ("720p" | "1080p", default "1080p")
+  records what a render actually targeted, so re-exporting at a different
+  resolution goes through the existing delete/recreate flow instead of adding
+  a new identity axis. Watermark/1080p gating moved off the hardcoded
+  `ownerTier === "free"` check into a real entitlement helper:
+  `hasFeature(tier, feature)` in `billing.service.ts`, backed by a single
+  `PLAN_FEATURES` matrix (`PlanFeature = "export.1080p" | "export.noWatermark"`;
+  free gets neither, every paid tier gets both) — pure, unit-tested,
+  re-exported from `@narriflow/services`. `triggerClipRendering` and
+  `autoQueueDefaultRenders` both resolve a requested resolution through the
+  same `resolveRequestedResolution` clamp (1080p request without the
+  entitlement silently clamps to 720p — freemium UX, never an error) and
+  persist the resolved value on the created/reset `ClipRender` rows. The
+  worker reads `resolution` off each row instead of computing one
+  run-level `applyFreeTierTreatment` flag: the old fused
+  `buildFreeTierWatermarkFilter` (downscale + drawtext, always paired) split
+  into an independent `buildResolutionScaleFilter` (per-row resolution) and
+  `buildWatermarkDrawtextFilter` (run-level `hasFeature(ownerTier,
+  "export.noWatermark")`), recombined per output via
+  `buildExportTreatmentFilter` — so a paid user can pick 720p with no
+  watermark, matching the entitlement model instead of a single free/paid
+  toggle. `buildMultiVideoArgs` (the shared multi-output batch encode) now
+  reads resolution per output while watermark stays uniform for the run.
+  UI: the "Render formats" popover (`render-clips-button.tsx`, used by both
+  the project page's render button and the ranked-rows "Render selected"
+  bulk action) gained a 720p/1080p `SegmentedControl`, defaulting to the
+  best the plan allows and disabling 1080p with an upgrade link for tiers
+  without the entitlement (`can1080pExport`, computed server-side in
+  `page.tsx` via `hasFeature`). A per-clip watermark toggle was intentionally
+  **not built** — watermark presence is entitlement-derived, never a user
+  choice, per the settled architecture.
 
 ### Phase D — AI surface (was "P3")
 - Auto-censor (word list → mask via caption pipeline + beep audio filter).

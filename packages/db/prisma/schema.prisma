@@ -688,6 +688,14 @@ model ClipRender {
   completedAt DateTime?
   createdAt   DateTime         @default(now())
   updatedAt   DateTime         @updatedAt
+  /// Resolution this render was produced at ("720p" | "1080p", validated at
+  /// the application layer by clipRenderResolutionSchema — vizard-parity
+  /// Phase C export options). Non-null, defaults to "1080p". Forward-looking
+  /// only: existing free-tier rows predating this column were actually
+  /// downscaled to 720p-class output by the worker's old hardcoded
+  /// applyFreeTierTreatment flag, but this default does not retroactively
+  /// describe what those historical rows were rendered at.
+  resolution  String           @default("1080p")
 
   clip Clip @relation(fields: [clipId], references: [id], onDelete: Cascade)
 

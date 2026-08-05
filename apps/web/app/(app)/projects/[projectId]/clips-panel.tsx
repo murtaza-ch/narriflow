@@ -70,6 +70,7 @@ export function ClipsPanel({
   projectId,
   mode,
   isFreeTier,
+  can1080pExport,
   defaultAspectRatio,
   sourceVideoUrl,
 }: {
@@ -82,6 +83,11 @@ export function ClipsPanel({
    *  or "why this clip" framing — a fundamentally different, simpler view. */
   mode: "clip" | "caption_only";
   isFreeTier: boolean;
+  /** vizard-parity Phase C export options — whether the owner's plan can
+   *  render at 1080p (billing.service's hasFeature(tier, "export.1080p")),
+   *  computed server-side. Gates the "Render selected" popover's resolution
+   *  picker. */
+  can1080pExport: boolean;
   /** The committed content pack's `defaultAspectRatio` — preselects the
    *  bulk "Render selected" popover with this format instead of always
    *  defaulting to 9:16. Caption-only always renders 16:9 regardless of
@@ -352,6 +358,7 @@ export function ClipsPanel({
               disabled={selectedIds.size === 0}
               buttonLabel={`Render selected${selectedIds.size > 0 ? ` (${selectedIds.size})` : ""}`}
               isFreeTier={isFreeTier}
+              can1080pExport={can1080pExport}
               clipIds={[...selectedIds]}
               size="sm"
               defaultAspectRatio={defaultAspectRatio}
