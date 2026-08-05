@@ -22,6 +22,7 @@
     "lint": "echo 'db lint: no-op'",
     "typecheck": "bun run prisma:generate && tsc -p tsconfig.json --noEmit",
     "test": "echo 'db test: no-op'",
+    "seed:audio": "bun run scripts/seed-audio-assets.ts",
     "clean": "rm -rf dist"
   },
   "dependencies": {

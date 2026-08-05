@@ -5,6 +5,7 @@ import {
   buildEditedTimeMap,
   deletedRangesSchema,
   editedToSource,
+  isSourceTimeDeleted,
   normalizeDeletedRanges,
   sourceRangeSchema,
   sourceToEdited,
@@ -13,7 +14,11 @@ import {
   type EditedTimeMap,
   type SourceRange,
 } from "./edit-ranges";
-import { studioEditsSchema, type StudioTextLayer } from "./studio-edits";
+import {
+  studioEditsSchema,
+  type StudioSfxPlacement,
+  type StudioTextLayer,
+} from "./studio-edits";
 import { transcriptUtteranceSchema } from "./transcript";
 
 // The single editor document (vizard-parity.md Phase A step 2): everything the
@@ -171,9 +176,58 @@ function rebaseTextLayers(
   return changed ? rebased : layers;
 }
 
-/** Applies `rebaseTextLayers` to `doc.studioEdits.textLayers` and folds the
- *  result back into a (possibly-unchanged-reference) `studioEdits`, so
- *  callers can spread it into the next document without an extra branch. */
+/**
+ * Rebases every SFX placement's `startSec` (vizard-parity.md "Music/SFX
+ * library" — H2 fix: `studioEdits.sfx[]` is edited-timeline seconds exactly
+ * like `textLayers[].startSec`, but `rebaseStudioEdits` used to only rebase
+ * text layers, leaving every SFX placement pointing at the wrong instant
+ * after a delete/revert/boundary change shifted the edited timeline under
+ * it). Same edited -> absolute source -> edited path as `rebaseTextLayers`
+ * (via the same `oldMap`/`newMap`), but a one-shot SFX placement has no
+ * `[startSec, endSec]` window to clamp into like a text layer does — it's a
+ * single instant — so a placement whose source instant now falls inside a
+ * deleted range (or otherwise outside the clip window) is DROPPED rather
+ * than pulled forward onto the nearest kept frame: relocating a sound
+ * effect to play at some other point in the clip is more surprising to the
+ * user than the placement simply disappearing, matching what deleting the
+ * underlying footage does to any other timed overlay. Returns the input
+ * array unchanged (same reference) when nothing moves and nothing drops, so
+ * the no-op guards in `applyEditorAction`'s callers keep working.
+ */
+function rebaseSfxPlacements(
+  placements: StudioSfxPlacement[],
+  oldMap: EditedTimeMap,
+  newMap: EditedTimeMap,
+): StudioSfxPlacement[] {
+  if (placements.length === 0) return placements;
+  const newDurationSec = newMap.editedDurationSec;
+
+  let changed = false;
+  const rebased: StudioSfxPlacement[] = [];
+  for (const placement of placements) {
+    const sourceStartSec = editedToSource(oldMap, placement.startSec);
+
+    if (isSourceTimeDeleted(newMap, sourceStartSec)) {
+      changed = true;
+      continue;
+    }
+
+    const nextStart = Math.min(newDurationSec, sourceToEdited(newMap, sourceStartSec));
+    if (nextStart === placement.startSec) {
+      rebased.push(placement);
+      continue;
+    }
+    changed = true;
+    rebased.push({ ...placement, startSec: nextStart });
+  }
+
+  return changed ? rebased : placements;
+}
+
+/** Applies `rebaseTextLayers`/`rebaseSfxPlacements` to `doc.studioEdits` and
+ *  folds the result back into a (possibly-unchanged-reference)
+ *  `studioEdits`, so callers can spread it into the next document without an
+ *  extra branch. */
 function rebaseStudioEdits(
   doc: EditorDocument,
   oldWindow: ClipWindow,
@@ -184,9 +238,11 @@ function rebaseStudioEdits(
   const oldMap = buildEditedTimeMap(oldDeletedRanges, oldWindow);
   const newMap = buildEditedTimeMap(newDeletedRanges, newWindow);
   const textLayers = rebaseTextLayers(doc.studioEdits.textLayers, oldMap, newMap);
-  return textLayers === doc.studioEdits.textLayers
-    ? doc.studioEdits
-    : { ...doc.studioEdits, textLayers };
+  const sfx = rebaseSfxPlacements(doc.studioEdits.sfx, oldMap, newMap);
+  if (textLayers === doc.studioEdits.textLayers && sfx === doc.studioEdits.sfx) {
+    return doc.studioEdits;
+  }
+  return { ...doc.studioEdits, textLayers, sfx };
 }
 
 /** Pure reducer: every studio mutation flows through here. */

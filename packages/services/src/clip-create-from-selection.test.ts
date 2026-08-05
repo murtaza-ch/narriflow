@@ -300,7 +300,7 @@ describe("planStudioEditsForClipFromSelection (fix: createClipFromSelection copi
     expect(planStudioEditsForClipFromSelection(undefined)).toBeNull();
   });
 
-  test("drops textLayers (source-clip-window-relative seconds) but keeps every other field", () => {
+  test("drops textLayers and sfx (source-clip-window-relative seconds) but keeps every other field", () => {
     const sourceStudioEdits = {
       textLayers: [
         {
@@ -310,6 +310,14 @@ describe("planStudioEditsForClipFromSelection (fix: createClipFromSelection copi
           endSec: 4,
           positionX: 50,
           positionY: 50,
+        },
+      ],
+      sfx: [
+        {
+          id: "sfx-1",
+          assetId: "11111111-1111-4111-8111-111111111111",
+          startSec: 3,
+          volume: 80,
         },
       ],
       transition: { type: "fade", durationSec: 0.6 },
@@ -329,15 +337,28 @@ describe("planStudioEditsForClipFromSelection (fix: createClipFromSelection copi
 
     expect(result).not.toBeNull();
     expect(result!.textLayers).toEqual([]);
+    // H3: sfx[] carries edited-timeline seconds relative to the SOURCE
+    // clip's window, exactly like textLayers — meaningless once re-anchored
+    // to the new clip's independently-computed window, so it must be
+    // cleared the same way.
+    expect(result!.sfx).toEqual([]);
     expect(result!.transition).toEqual(sourceStudioEdits.transition);
-    expect(result!.music).toEqual(sourceStudioEdits.music);
+    // Packet A (AudioAsset foundation) added assetId/ducking to the music
+    // schema — schema defaults fill both in even though the source fixture
+    // predates those fields, same as any other legacy-shaped studioEdits.
+    expect(result!.music).toEqual({
+      ...sourceStudioEdits.music,
+      assetId: null,
+      ducking: false,
+    });
     expect(result!.sourceAudio).toEqual(sourceStudioEdits.sourceAudio);
     expect(result!.logo).toEqual(sourceStudioEdits.logo);
   });
 
-  test("still returns non-null (schema defaults) for a source clip with no textLayers to begin with", () => {
+  test("still returns non-null (schema defaults) for a source clip with no textLayers/sfx to begin with", () => {
     const result = planStudioEditsForClipFromSelection({});
     expect(result).not.toBeNull();
     expect(result!.textLayers).toEqual([]);
+    expect(result!.sfx).toEqual([]);
   });
 });

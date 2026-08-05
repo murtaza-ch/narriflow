@@ -875,14 +875,15 @@ function deriveTitleAndHookFromSlice(
 }
 
 /**
- * Fix (createClipFromSelection copies timeline-relative textLayers): a
- * `studioEdits.textLayers` overlay carries EDITED-TIMELINE seconds relative
- * to the SOURCE clip's own window (its startSec/endSec, minus its
- * deletedRanges) — meaningless once re-anchored to a brand-new clip's
- * independently-computed window (`planCreateClipFromSelection`'s startSec/
- * endSec have no relationship to the source's). Overlays anchored to the
- * wrong footage are worse than no overlays, so this drops them; every other
- * studioEdits field (transition/music/sourceAudio/logo) is window-
+ * Fix (createClipFromSelection copies timeline-relative textLayers/sfx): a
+ * `studioEdits.textLayers` overlay AND a `studioEdits.sfx[]` placement both
+ * carry EDITED-TIMELINE seconds relative to the SOURCE clip's own window
+ * (its startSec/endSec, minus its deletedRanges) — meaningless once
+ * re-anchored to a brand-new clip's independently-computed window
+ * (`planCreateClipFromSelection`'s startSec/endSec have no relationship to
+ * the source's). Overlays/placements anchored to the wrong footage are
+ * worse than none at all, so both are dropped (H3); every other studioEdits
+ * field (transition/music/sourceAudio/logo/background/framing) is window-
  * independent styling and still copies over untouched.
  *
  * Pulled out as its own pure step (mirrors `deriveTitleAndHookFromSlice`
@@ -895,7 +896,11 @@ export function planStudioEditsForClipFromSelection(
   if (sourceStudioEdits === null || sourceStudioEdits === undefined) {
     return null;
   }
-  return { ...studioEditsSchema.parse(sourceStudioEdits), textLayers: [] };
+  return {
+    ...studioEditsSchema.parse(sourceStudioEdits),
+    textLayers: [],
+    sfx: [],
+  };
 }
 
 /**
@@ -1891,10 +1896,11 @@ export class ClipService {
    *
    * `captionPreset`/`studioEdits`/`brollUrl`/`platformFit` ARE copied from the
    * source clip (Vizard: the new clip inherits the source's "look"), EXCEPT
-   * `studioEdits.textLayers` — those carry edited-timeline seconds relative
-   * to the SOURCE clip's own window, meaningless once re-anchored to this
-   * clip's independently-computed window, so they're dropped rather than
-   * copied wrong. Everything else — boundaries, transcript slice, title/hook,
+   * `studioEdits.textLayers` and `studioEdits.sfx` (H3) — both carry
+   * edited-timeline seconds relative to the SOURCE clip's own window,
+   * meaningless once re-anchored to this clip's independently-computed
+   * window, so they're dropped rather than copied wrong. Everything else —
+   * boundaries, transcript slice, title/hook,
    * duration-dependent scores — comes straight from
    * `planCreateClipFromSelection`, which also owns the snap/expand/clamp/
    * reject policy (see its own doc comment).

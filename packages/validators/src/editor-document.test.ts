@@ -13,7 +13,11 @@ import {
   undoEditor,
   type EditorDocument,
 } from "./editor-document";
-import { studioEditsSchema, studioTextLayerSchema } from "./studio-edits";
+import {
+  studioEditsSchema,
+  studioSfxPlacementSchema,
+  studioTextLayerSchema,
+} from "./studio-edits";
 import type { TranscriptUtterance } from "./transcript";
 
 function makeUtterance(
@@ -65,6 +69,23 @@ function makeDocumentWithTextLayer(
       ...doc.studioEdits,
       textLayers: [
         studioTextLayerSchema.parse({ id: "layer-1", text: "Hello", startSec, endSec }),
+      ],
+    },
+  };
+}
+
+function makeDocumentWithSfx(startSec: number): EditorDocument {
+  const doc = makeDocument();
+  return {
+    ...doc,
+    studioEdits: {
+      ...doc.studioEdits,
+      sfx: [
+        studioSfxPlacementSchema.parse({
+          id: "sfx-1",
+          assetId: "11111111-1111-4111-8111-111111111111",
+          startSec,
+        }),
       ],
     },
   };
@@ -395,6 +416,131 @@ describe("text-layer ripple", () => {
       expect(history.present.transcriptSlice).toBe(before.transcriptSlice);
       expect(history.present.deletedRanges).toBe(before.deletedRanges);
       expect(history.present.studioEdits.textLayers).toBe(before.studioEdits.textLayers);
+    });
+  });
+});
+
+// H2 fix (vizard-parity.md "Music/SFX library"): `studioEdits.sfx[].startSec`
+// is edited-timeline seconds exactly like a text layer's `startSec` — it
+// needs the same ripple rebase on delete/revert/boundary-change, but
+// `rebaseStudioEdits` used to only touch `textLayers`, leaving every SFX
+// placement pointing at the wrong instant. Mirrors "text-layer ripple"
+// above; the one behavioral difference is that a placement whose source
+// instant collapses into a new cut is DROPPED (a single instant has no
+// window to clamp into), not clamped to a floor duration.
+describe("sfx ripple", () => {
+  test("deleteRange shifts a placement after the cut left by exactly the cut duration", () => {
+    // window [10,40) uncut -> edited 0 === source 10. Placement at edited 20
+    // sits at source 30. Deleting source [12,17) (5s, entirely before the
+    // placement) shifts everything after it left by 5s.
+    const doc = makeDocumentWithSfx(20);
+    const next = applyEditorAction(doc, {
+      type: "deleteRange",
+      range: { startSec: 12, endSec: 17 },
+    });
+    expect(next.studioEdits.sfx).toHaveLength(1);
+    expect(next.studioEdits.sfx[0]!.startSec).toBe(15);
+  });
+
+  test("revertRange shifts the placement back to its exact original position", () => {
+    const doc = makeDocumentWithSfx(20);
+    const deleted = applyEditorAction(doc, {
+      type: "deleteRange",
+      range: { startSec: 12, endSec: 17 },
+    });
+    const reverted = applyEditorAction(deleted, {
+      type: "revertRange",
+      range: { startSec: 12, endSec: 17 },
+    });
+    expect(reverted.studioEdits.sfx[0]!.startSec).toBe(20);
+  });
+
+  test("a placement whose source instant falls inside a new cut is dropped, not clamped", () => {
+    // Placement at edited 5 === source 15 -- entirely inside the
+    // about-to-be-deleted source range [14,20).
+    const doc = makeDocumentWithSfx(5);
+    const next = applyEditorAction(doc, {
+      type: "deleteRange",
+      range: { startSec: 14, endSec: 20 },
+    });
+    expect(next.studioEdits.sfx).toEqual([]);
+  });
+
+  test("a placement after the cut is unaffected in position when the cut is entirely after it", () => {
+    // Placement at edited 2 === source 12. Deleting source [20,25) (well
+    // after the placement) must not move it at all.
+    const doc = makeDocumentWithSfx(2);
+    const next = applyEditorAction(doc, {
+      type: "deleteRange",
+      range: { startSec: 20, endSec: 25 },
+    });
+    expect(next.studioEdits.sfx[0]!.startSec).toBe(2);
+  });
+
+  test("setClipBoundaries rebases placements against the new window, not just deletedRanges", () => {
+    // Placement at edited 5 === source 15. Trimming the clip's start forward
+    // to 12 shifts edited-time zero itself, moving the placement left by the
+    // same 2s even with no deletedRanges involved.
+    const doc = makeDocumentWithSfx(5);
+    const next = applyEditorAction(doc, {
+      type: "setClipBoundaries",
+      startSec: 12,
+      endSec: 40,
+    });
+    expect(next.studioEdits.sfx[0]!.startSec).toBe(3);
+  });
+
+  test("undo restores the placement's pre-delete position exactly", () => {
+    let history = createEditorHistory(makeDocumentWithSfx(20));
+    history = applyWithHistory(history, {
+      type: "deleteRange",
+      range: { startSec: 12, endSec: 17 },
+    });
+    expect(history.present.studioEdits.sfx[0]!.startSec).toBe(15);
+
+    history = undoEditor(history);
+    expect(history.present.studioEdits.sfx[0]!.startSec).toBe(20);
+  });
+
+  test("a delete that doesn't actually change deletedRanges (fully-covered no-op) leaves sfx referentially identical", () => {
+    const doc = applyEditorAction(makeDocumentWithSfx(20), {
+      type: "deleteRange",
+      range: { startSec: 12, endSec: 17 },
+    });
+    const next = applyEditorAction(doc, {
+      type: "deleteRange",
+      range: { startSec: 12, endSec: 17 },
+    });
+    expect(next).toBe(doc);
+    expect(next.studioEdits.sfx).toBe(doc.studioEdits.sfx);
+  });
+
+  describe("trimClip", () => {
+    test("rebases sfx placements against the new window exactly like setClipBoundaries", () => {
+      const doc = makeDocumentWithSfx(5);
+      const next = applyEditorAction(doc, {
+        type: "trimClip",
+        startSec: 12,
+        endSec: 40,
+        transcriptSlice: doc.transcriptSlice,
+      });
+      expect(next.studioEdits.sfx[0]!.startSec).toBe(3);
+    });
+
+    test("undo restores sfx placements exactly", () => {
+      let history = createEditorHistory(makeDocumentWithSfx(20));
+      const before = history.present;
+      history = applyWithHistory(history, {
+        type: "trimClip",
+        startSec: 15,
+        endSec: 30,
+        transcriptSlice: [makeUtterance(0, 15, ["this", "smaller"])],
+      });
+      expect(history.present).not.toBe(before);
+
+      history = undoEditor(history);
+      expect(history.present).toBe(before);
+      expect(history.present.studioEdits.sfx).toBe(before.studioEdits.sfx);
     });
   });
 });

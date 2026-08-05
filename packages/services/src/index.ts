@@ -1,4 +1,13 @@
 export {
+  audioAssetService,
+  AudioAssetService,
+  AudioAssetNotFoundError,
+  audioAssetUploadPrefix,
+  isOwnedAudioUploadKey,
+  extensionForAudioContentType,
+  type AudioAssetListRow,
+} from "./audio-asset.service";
+export {
   autopilotService,
   AutopilotService,
 } from "./autopilot.service";

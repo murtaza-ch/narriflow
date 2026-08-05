@@ -1,4 +1,5 @@
 export * from "./analytics";
+export * from "./audio-asset";
 export * from "./autopilot";
 export * from "./brand-template";
 export * from "./broll";

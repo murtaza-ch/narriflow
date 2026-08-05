@@ -171,6 +171,11 @@ enum AnalyticsEventType {
   dub_download_opened
 }
 
+enum AudioAssetKind {
+  music
+  sfx
+}
+
 model Project {
   id             String        @id @default(uuid()) @db.Uuid
   title          String
@@ -430,6 +435,7 @@ model User {
   teamMemberships        TeamMember[]
   brandTemplates         BrandTemplate[]  @relation("UserBrandTemplates")
   defaultBrandTemplate   BrandTemplate?   @relation("UserDefaultBrandTemplate", fields: [defaultBrandTemplateId], references: [id], onDelete: SetNull)
+  audioAssets            AudioAsset[]
 
   @@index([clerkId])
 }
@@ -762,6 +768,31 @@ model BrandTemplate {
 
   @@index([userId, deletedAt, createdAt])
   @@index([isBuiltIn])
+}
+
+/// Music/SFX library (docs/plans/vizard-parity.md "Music/SFX library").
+/// `userId` null = a curated row seeded from `packages/db/audio-manifest.json`
+/// via `scripts/seed-audio-assets.ts` (never soft-deleted through the app —
+/// curation removals are a manual ops step); non-null = a user's own upload,
+/// soft-deletable via `deletedAt`. `moodTags` doubles as mood labels for
+/// music and category tags for SFX — same column, interpretation depends on
+/// `kind`. `storageKey` is unique because it is also the R2 object identity;
+/// two rows must never point at the same object.
+model AudioAsset {
+  id          String         @id @default(uuid()) @db.Uuid
+  kind        AudioAssetKind
+  userId      String?        @db.Uuid
+  storageKey  String         @unique
+  title       String
+  moodTags    String[]       @default([])
+  durationSec Float          @default(0)
+  createdAt   DateTime       @default(now())
+  deletedAt   DateTime?
+
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([kind, userId])
+  @@index([userId, deletedAt, createdAt])
 }
 
 model SocialPost {

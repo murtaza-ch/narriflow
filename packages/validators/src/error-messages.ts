@@ -54,7 +54,16 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
   dubbing_failed: "Voiceover dubbing didn't complete. Please try again.",
   dub_failed: "Voiceover dubbing didn't complete. Please try again.",
   dubbing_run_failed: "Voiceover dubbing didn't complete. Please try again.",
+  // L10: `music_download_failed`/`sfx_download_failed` are RESERVED — render-
+  // clips.ts's music/SFX download failures are log-and-skip (the track is
+  // silently dropped from the render, never fails the clip; see the
+  // `clip_music_download_failed`/`clip_sfx_download_failed` structured logs
+  // there), so these codes never actually reach a user-facing error surface
+  // today. Kept mapped here anyway in case a future caller starts
+  // surfacing them (e.g. a synchronous "add to my clip now" flow that
+  // fails fast instead of skipping).
   music_download_failed: "We couldn't add that music track. Please try again.",
+  sfx_download_failed: "We couldn't add that sound effect. Please try again.",
   broll_download_failed: "We couldn't add that b-roll clip. Please try again.",
   checkout_failed: "We couldn't start checkout. Please try again.",
   social_publish_failed: "We couldn't publish to that platform. Please try again.",

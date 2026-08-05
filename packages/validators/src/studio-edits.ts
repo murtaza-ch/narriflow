@@ -1,5 +1,11 @@
 import { z } from "zod";
 import { logoPositionSchema } from "./logo-position";
+import {
+  sourceRangeToEdited,
+  sourceToEdited,
+  type EditedTimeMap,
+} from "./edit-ranges";
+import type { TranscriptUtterance } from "./transcript";
 
 const hexColorSchema = z.string().regex(/^#[0-9A-Fa-f]{6}$/);
 
@@ -52,6 +58,21 @@ export const studioMusicSchema = z.object({
   startOffsetSec: z.number().min(0).default(0),
   fadeInSec: z.number().min(0).max(5).default(0),
   fadeOutSec: z.number().min(0).max(5).default(0),
+  // Music/SFX library (vizard-parity.md "Music/SFX library"): when set,
+  // identifies an AudioAsset row and WINS over `url` at render time — the
+  // worker resolves the actual audio through
+  // `audioAssetService.resolveRenderSource(ownerUserId, assetId)`, never
+  // `url`, once this is non-null. `url` doubles as the preview playback URL
+  // (populated from the asset's presigned download URL when the user picks
+  // one from the library) and stays the escape hatch for pasted links when
+  // `assetId` is null.
+  assetId: z.string().uuid().nullable().default(null),
+  // Auto-ducking v1 (vizard-parity.md): lowers music under detected speech
+  // when true. The window/gain math lives in `computeSpeechWindows` /
+  // `duckingGainMultiplierAt` below — the SAME functions the worker's timed
+  // volume automation and the studio preview's gain node both call, so
+  // preview and burn-in can't fork on the ducking curve.
+  ducking: z.boolean().default(false),
 });
 
 /**
@@ -75,6 +96,233 @@ export function resolveMusicFadeWindows(
     fadeOut *= scale;
   }
   return { fadeInSec: fadeIn, fadeOutSec: fadeOut, fadeOutStartSec: duration - fadeOut };
+}
+
+/**
+ * Auto-ducking v1 tuning (vizard-parity.md "Music/SFX library"). Tuned to
+ * read as natural mixing rather than a hard on/off gate:
+ *  - `duckedGainFraction`: how far music drops under speech (0.3 ≈ -10.5dB,
+ *    audibly quieter without disappearing).
+ *  - `attackSec` / `releaseSec`: ramp durations INTO / OUT OF a duck — see
+ *    `duckingGainMultiplierAt` for exactly where these ramps sit relative to
+ *    a speech window.
+ *  - `mergeGapSec`: speech windows closer together than this merge into one
+ *    continuous window, so rapid back-and-forth speech doesn't pump the
+ *    music up and down between individual words.
+ *  - `padSec`: each word's `[startSec, endSec]` is padded by this much
+ *    (both sides) before merging, so ducking doesn't visibly clip the
+ *    leading/trailing edge of speech.
+ */
+export const DUCKING_DEFAULTS = {
+  duckedGainFraction: 0.3,
+  attackSec: 0.25,
+  releaseSec: 0.4,
+  mergeGapSec: 0.45,
+  padSec: 0.12,
+} as const;
+
+export type DuckingOptions = Partial<typeof DUCKING_DEFAULTS>;
+
+export interface DuckingWindow {
+  startSec: number;
+  endSec: number;
+}
+
+/**
+ * Derives merged, padded, clamped speech windows from transcript word
+ * timings. This is the shared input to `duckingGainMultiplierAt` for both
+ * the worker's timed volume automation and the studio preview's gain node,
+ * so they can never fork on "when is someone talking". Pure — sorts a copy,
+ * never mutates `words`; returns `[]` for no words or a non-positive
+ * duration.
+ */
+export function computeSpeechWindows(
+  words: Array<{ startSec: number; endSec: number }>,
+  clipDurationSec: number,
+  opts?: DuckingOptions,
+): DuckingWindow[] {
+  const { mergeGapSec, padSec } = { ...DUCKING_DEFAULTS, ...opts };
+  const duration = Math.max(0, clipDurationSec);
+  if (words.length === 0 || duration <= 0) return [];
+
+  const padded = words
+    .map((word) => ({
+      startSec: Math.max(0, word.startSec - padSec),
+      endSec: Math.min(duration, word.endSec + padSec),
+    }))
+    .filter((window) => window.endSec > window.startSec)
+    .sort((left, right) => left.startSec - right.startSec);
+
+  const merged: DuckingWindow[] = [];
+  for (const window of padded) {
+    const last = merged[merged.length - 1];
+    if (last && window.startSec - last.endSec <= mergeGapSec) {
+      last.endSec = Math.max(last.endSec, window.endSec);
+    } else {
+      merged.push({ ...window });
+    }
+  }
+  return merged;
+}
+
+/**
+ * Gain multiplier at time `tSec` given merged speech windows: `1` outside
+ * every window, `duckedGainFraction` fully inside one, ramping in between.
+ *
+ * Each window is already padded by `computeSpeechWindows`, so the ramp sits
+ * OUTSIDE the window rather than eating into it: gain ramps DOWN across
+ * `[startSec - attackSec, startSec]` (before speech starts) and ramps UP
+ * across `[endSec, endSec + releaseSec]` (after speech ends). Ramping
+ * inward instead — down across the first `attackSec` of the window — would
+ * duck the first syllables of every utterance, the opposite of what
+ * auto-ducking is for. Overlapping ramp regions from adjacent windows take
+ * the MINIMUM multiplier (whichever window wants it quieter wins), so
+ * back-to-back speech never audibly "un-ducks" in the gap between them.
+ * Pure; returns `1` for empty `windows`.
+ */
+export function duckingGainMultiplierAt(
+  tSec: number,
+  windows: DuckingWindow[],
+  opts?: DuckingOptions,
+): number {
+  if (windows.length === 0) return 1;
+  const { duckedGainFraction, attackSec, releaseSec } = {
+    ...DUCKING_DEFAULTS,
+    ...opts,
+  };
+
+  let multiplier = 1;
+  for (const window of windows) {
+    let windowMultiplier: number;
+    if (tSec >= window.startSec && tSec <= window.endSec) {
+      windowMultiplier = duckedGainFraction;
+    } else if (
+      attackSec > 0 &&
+      tSec >= window.startSec - attackSec &&
+      tSec < window.startSec
+    ) {
+      const progress = (tSec - (window.startSec - attackSec)) / attackSec;
+      windowMultiplier = 1 - progress * (1 - duckedGainFraction);
+    } else if (
+      releaseSec > 0 &&
+      tSec > window.endSec &&
+      tSec <= window.endSec + releaseSec
+    ) {
+      const progress = (tSec - window.endSec) / releaseSec;
+      windowMultiplier =
+        duckedGainFraction + progress * (1 - duckedGainFraction);
+    } else {
+      windowMultiplier = 1;
+    }
+    multiplier = Math.min(multiplier, windowMultiplier);
+  }
+  return multiplier;
+}
+
+/**
+ * Word-level speech intervals on the EDITED timeline — the shared input to
+ * `computeSpeechWindows` for auto-ducking (M1+M2, vizard-parity.md
+ * "Music/SFX library"). Lives here (not just in the worker) so the studio
+ * PREVIEW's gain node and the worker's timed volume automation derive
+ * ducking windows through the exact same pipeline
+ * (`extractSpeechWordIntervals` -> `computeSpeechWindows` -> `capDuckingWindows`)
+ * instead of each hand-rolling its own version of this extraction — before
+ * this move, the preview's own inline `utterances.flatMap(u => u.words)` had
+ * no fallback for word-less utterances, so a transcript with no per-word
+ * timings ducked at render time but never in the live preview.
+ *
+ * Deliberately mirrors `generateSrtFromSlice`/`generateAssFromSlice`'s own
+ * `timeMap` contract instead of forking a second remap implementation: same
+ * `sourceToEdited`/`sourceRangeToEdited` calls, `timeMap` omitted falls back
+ * to the plain `clipStartSec` subtraction, and words/utterances that fall
+ * entirely inside a deleted range are dropped rather than emitted.
+ * Word-level granularity when a transcript has per-word timings (the common
+ * case); falls back to one interval per utterance otherwise, same fallback
+ * the caption builders use.
+ */
+export function extractSpeechWordIntervals(
+  utterances: TranscriptUtterance[],
+  clipStartSec: number,
+  timeMap?: EditedTimeMap | null,
+): Array<{ startSec: number; endSec: number }> {
+  const toEdited = (sourceSec: number): number =>
+    timeMap ? sourceToEdited(timeMap, sourceSec) : sourceSec - clipStartSec;
+  const isVisible = (range: { startSec: number; endSec: number }): boolean =>
+    !timeMap || sourceRangeToEdited(timeMap, range) !== null;
+
+  const intervals: Array<{ startSec: number; endSec: number }> = [];
+  for (const utterance of utterances) {
+    const rawWords = utterance.words;
+    if (rawWords.length > 0) {
+      const words = timeMap ? rawWords.filter(isVisible) : rawWords;
+      for (const word of words) {
+        intervals.push({
+          startSec: Math.max(0, toEdited(word.startSec)),
+          endSec: Math.max(0, toEdited(word.endSec)),
+        });
+      }
+    } else if (isVisible(utterance)) {
+      intervals.push({
+        startSec: Math.max(0, toEdited(utterance.startSec)),
+        endSec: Math.max(0, toEdited(utterance.endSec)),
+      });
+    }
+  }
+  return intervals;
+}
+
+/**
+ * An ffmpeg `volume` expression (built by the worker's
+ * `buildDuckingVolumeExpression`) grows one `min(...)` nesting level per
+ * speech window. `computeSpeechWindows` already merges windows within
+ * `mergeGapSec` of each other, so this only kicks in for pathologically
+ * choppy transcripts (many short utterances separated by silences just over
+ * `mergeGapSec`) — capped here rather than left unbounded so the filtergraph
+ * string ffmpeg has to parse (and the preview's own gain curve, once it
+ * uses the same cap) stay bounded regardless of transcript shape.
+ */
+export const MAX_DUCKING_WINDOWS = 40;
+
+/**
+ * Merges the closest-gap adjacent pair of windows repeatedly until at most
+ * `maxWindows` remain. Windows are assumed sorted and disjoint (as
+ * `computeSpeechWindows` returns them). Merging by smallest gap first —
+ * rather than e.g. truncating the tail of the list — keeps every original
+ * speech moment covered by SOME window; the cost is that ducking stays "on"
+ * through a few extra silent gaps that would otherwise have briefly
+ * un-ducked. Pure; a no-op (returns `windows` as-is) when already at or
+ * under the cap.
+ *
+ * M1+M2 (vizard-parity.md "Music/SFX library"): moved here from the
+ * worker-only `ducking.ts` so BOTH the worker's render-time volume
+ * automation and the studio preview's live gain node apply the identical
+ * cap — the worker used to cap alone, so a transcript with more than
+ * `MAX_DUCKING_WINDOWS` speech windows ducked differently in the export
+ * than in the preview the user actually watched while editing.
+ */
+export function capDuckingWindows(
+  windows: DuckingWindow[],
+  maxWindows: number = MAX_DUCKING_WINDOWS,
+): DuckingWindow[] {
+  if (windows.length <= maxWindows) return windows;
+  const merged = windows.map((window) => ({ ...window }));
+  while (merged.length > maxWindows) {
+    let bestIndex = 0;
+    let bestGap = Infinity;
+    for (let i = 0; i < merged.length - 1; i++) {
+      const gap = merged[i + 1]!.startSec - merged[i]!.endSec;
+      if (gap < bestGap) {
+        bestGap = gap;
+        bestIndex = i;
+      }
+    }
+    merged[bestIndex] = {
+      startSec: merged[bestIndex]!.startSec,
+      endSec: Math.max(merged[bestIndex]!.endSec, merged[bestIndex + 1]!.endSec),
+    };
+    merged.splice(bestIndex + 1, 1);
+  }
+  return merged;
 }
 
 export const studioSourceAudioSchema = z.object({
@@ -141,6 +389,32 @@ export const studioFramingSchema = z.object({
 
 const STUDIO_FRAMING_DEFAULT = { mode: "auto" } as const;
 
+const STUDIO_MUSIC_DEFAULT = {
+  url: null,
+  title: null,
+  volume: 35,
+  startOffsetSec: 0,
+  fadeInSec: 0,
+  fadeOutSec: 0,
+  assetId: null,
+  ducking: false,
+} as const;
+
+// One-shot SFX placement (vizard-parity.md "Music/SFX library"): plays once
+// from `startSec` — EDITED-timeline seconds, the same convention as
+// `studioTextLayerSchema.startSec` — never loops, and is truncated at clip
+// end by the render pipeline. `assetId` references an AudioAsset row of
+// kind "sfx"; `title` is a display-only cache of the asset's title at
+// placement time (nullable — the panel falls back to a lookup if absent)
+// so the timeline doesn't need a join just to render a label.
+export const studioSfxPlacementSchema = z.object({
+  id: z.string().min(1).max(80),
+  assetId: z.string().uuid(),
+  title: z.string().trim().max(120).nullable().default(null),
+  startSec: z.number().min(0),
+  volume: z.number().min(0).max(100).default(80),
+});
+
 export const studioEditsSchema = z
   .object({
     textLayers: z.array(studioTextLayerSchema).max(12).default([]),
@@ -148,34 +422,22 @@ export const studioEditsSchema = z
       type: "none",
       durationSec: 0.4,
     }),
-    music: studioMusicSchema.default({
-      url: null,
-      title: null,
-      volume: 35,
-      startOffsetSec: 0,
-      fadeInSec: 0,
-      fadeOutSec: 0,
-    }),
+    music: studioMusicSchema.default(STUDIO_MUSIC_DEFAULT),
     sourceAudio: studioSourceAudioSchema.default({ volume: 100, muted: false }),
     logo: studioLogoSchema.default(STUDIO_LOGO_DEFAULT),
     background: studioBackgroundSchema.default(STUDIO_BACKGROUND_DEFAULT),
     framing: studioFramingSchema.default(STUDIO_FRAMING_DEFAULT),
+    sfx: z.array(studioSfxPlacementSchema).max(20).default([]),
   })
   .default({
     textLayers: [],
     transition: { type: "none", durationSec: 0.4 },
-    music: {
-      url: null,
-      title: null,
-      volume: 35,
-      startOffsetSec: 0,
-      fadeInSec: 0,
-      fadeOutSec: 0,
-    },
+    music: STUDIO_MUSIC_DEFAULT,
     sourceAudio: { volume: 100, muted: false },
     logo: STUDIO_LOGO_DEFAULT,
     background: STUDIO_BACKGROUND_DEFAULT,
     framing: STUDIO_FRAMING_DEFAULT,
+    sfx: [],
   });
 
 export const updateClipStudioEditsSchema = z.object({
@@ -189,6 +451,7 @@ export type StudioSourceAudio = z.infer<typeof studioSourceAudioSchema>;
 export type StudioLogo = z.infer<typeof studioLogoSchema>;
 export type StudioBackground = z.infer<typeof studioBackgroundSchema>;
 export type StudioFraming = z.infer<typeof studioFramingSchema>;
+export type StudioSfxPlacement = z.infer<typeof studioSfxPlacementSchema>;
 export type StudioEdits = z.infer<typeof studioEditsSchema>;
 export type UpdateClipStudioEdits = z.infer<typeof updateClipStudioEditsSchema>;
 

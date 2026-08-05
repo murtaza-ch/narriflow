@@ -3,10 +3,39 @@ import { describe, expect, test } from "bun:test";
 import {
   applyStudioEditsPatchSchema,
   applyStudioEditsToAllSchema,
+  capDuckingWindows,
+  computeSpeechWindows,
+  DUCKING_DEFAULTS,
+  duckingGainMultiplierAt,
+  extractSpeechWordIntervals,
+  MAX_DUCKING_WINDOWS,
   resolveEffectiveFramingMode,
   resolveMusicFadeWindows,
   studioEditsSchema,
+  studioSfxPlacementSchema,
+  type DuckingWindow,
 } from "./studio-edits";
+import type { TranscriptUtterance } from "./transcript";
+
+function makeUtterance(
+  words: Array<[string, number, number]>,
+): TranscriptUtterance {
+  return {
+    index: 0,
+    speaker: 0,
+    speakerLabel: "Speaker 1",
+    startSec: words[0]![1],
+    endSec: words[words.length - 1]![2],
+    text: words.map(([w]) => w).join(" "),
+    confidence: 0.95,
+    words: words.map(([word, startSec, endSec]) => ({
+      word,
+      startSec,
+      endSec,
+      confidence: 0.95,
+    })),
+  };
+}
 
 describe("studioEditsSchema (source audio + music fades)", () => {
   test("parse({}) defaults sourceAudio to unmuted 100 and music fades to 0", () => {
@@ -382,6 +411,355 @@ describe("applyStudioEditsPatchSchema (vizard-parity Phase C — apply-to-all)",
         music: { url: null, title: null, volume: 35, startOffsetSec: 0, fadeInSec: 0, fadeOutSec: 0 },
       }),
     ).toThrow();
+  });
+});
+
+describe("studioMusicSchema assetId/ducking + studioSfxPlacementSchema (Music/SFX library)", () => {
+  test("parse({}) defaults music.assetId to null, ducking to false, and sfx to []", () => {
+    const parsed = studioEditsSchema.parse({});
+    expect(parsed.music.assetId).toBeNull();
+    expect(parsed.music.ducking).toBe(false);
+    expect(parsed.sfx).toEqual([]);
+  });
+
+  test("legacy persisted JSON (no assetId/ducking/sfx keys at all) parses to full defaults", () => {
+    const legacy = {
+      textLayers: [],
+      transition: { type: "none", durationSec: 0.4 },
+      music: {
+        url: "https://cdn.example/track.mp3",
+        title: "Background bed",
+        volume: 42,
+        startOffsetSec: 8,
+        fadeInSec: 0,
+        fadeOutSec: 0,
+      },
+    };
+    const parsed = studioEditsSchema.parse(legacy);
+    expect(parsed.music.assetId).toBeNull();
+    expect(parsed.music.ducking).toBe(false);
+    expect(parsed.music.url).toBe("https://cdn.example/track.mp3");
+    expect(parsed.sfx).toEqual([]);
+  });
+
+  test("accepts an explicit assetId + ducking on music", () => {
+    const parsed = studioEditsSchema.parse({
+      music: {
+        url: null,
+        title: null,
+        volume: 35,
+        startOffsetSec: 0,
+        fadeInSec: 0,
+        fadeOutSec: 0,
+        assetId: "3f3e3d3c-3b3a-4939-8837-363534333231",
+        ducking: true,
+      },
+    });
+    expect(parsed.music.assetId).toBe("3f3e3d3c-3b3a-4939-8837-363534333231");
+    expect(parsed.music.ducking).toBe(true);
+  });
+
+  test("rejects a malformed music.assetId", () => {
+    expect(() =>
+      studioEditsSchema.parse({ music: { assetId: "not-a-uuid" } }),
+    ).toThrow();
+  });
+
+  test("accepts a well-formed sfx placement with default volume/title", () => {
+    const parsed = studioSfxPlacementSchema.parse({
+      id: "sfx-1",
+      assetId: "3f3e3d3c-3b3a-4939-8837-363534333231",
+      startSec: 4.5,
+    });
+    expect(parsed).toEqual({
+      id: "sfx-1",
+      assetId: "3f3e3d3c-3b3a-4939-8837-363534333231",
+      title: null,
+      startSec: 4.5,
+      volume: 80,
+    });
+  });
+
+  test("rejects an sfx placement with a non-uuid assetId, negative startSec, or out-of-range volume", () => {
+    expect(() =>
+      studioSfxPlacementSchema.parse({
+        id: "sfx-1",
+        assetId: "not-a-uuid",
+        startSec: 0,
+      }),
+    ).toThrow();
+    expect(() =>
+      studioSfxPlacementSchema.parse({
+        id: "sfx-1",
+        assetId: "3f3e3d3c-3b3a-4939-8837-363534333231",
+        startSec: -1,
+      }),
+    ).toThrow();
+    expect(() =>
+      studioSfxPlacementSchema.parse({
+        id: "sfx-1",
+        assetId: "3f3e3d3c-3b3a-4939-8837-363534333231",
+        startSec: 0,
+        volume: 101,
+      }),
+    ).toThrow();
+  });
+
+  test("studioEditsSchema.sfx caps at 20 placements", () => {
+    const sfx = Array.from({ length: 21 }, (_, index) => ({
+      id: `sfx-${index}`,
+      assetId: "3f3e3d3c-3b3a-4939-8837-363534333231",
+      startSec: index,
+    }));
+    expect(() => studioEditsSchema.parse({ sfx })).toThrow();
+    expect(() =>
+      studioEditsSchema.parse({ sfx: sfx.slice(0, 20) }),
+    ).not.toThrow();
+  });
+});
+
+describe("computeSpeechWindows (auto-ducking v1)", () => {
+  test("returns [] for no words", () => {
+    expect(computeSpeechWindows([], 30)).toEqual([]);
+  });
+
+  test("returns [] for a non-positive clip duration", () => {
+    expect(computeSpeechWindows([{ startSec: 1, endSec: 2 }], 0)).toEqual([]);
+  });
+
+  test("pads a single word by padSec on both sides", () => {
+    const windows = computeSpeechWindows([{ startSec: 5, endSec: 6 }], 30);
+    expect(windows).toEqual([
+      { startSec: 5 - DUCKING_DEFAULTS.padSec, endSec: 6 + DUCKING_DEFAULTS.padSec },
+    ]);
+  });
+
+  test("merges words closer together than mergeGapSec into one window", () => {
+    // Gap between word 1's end (2) and word 2's start (2.2) is 0.2s, well
+    // under the default 0.45s mergeGapSec once padding is applied.
+    const windows = computeSpeechWindows(
+      [
+        { startSec: 1, endSec: 2 },
+        { startSec: 2.2, endSec: 3 },
+      ],
+      30,
+    );
+    expect(windows.length).toBe(1);
+    expect(windows[0].startSec).toBeCloseTo(1 - DUCKING_DEFAULTS.padSec, 5);
+    expect(windows[0].endSec).toBeCloseTo(3 + DUCKING_DEFAULTS.padSec, 5);
+  });
+
+  test("keeps far-apart words as separate windows", () => {
+    const windows = computeSpeechWindows(
+      [
+        { startSec: 1, endSec: 2 },
+        { startSec: 10, endSec: 11 },
+      ],
+      30,
+    );
+    expect(windows.length).toBe(2);
+  });
+
+  test("clamps padding at 0 and at the clip duration", () => {
+    const windows = computeSpeechWindows(
+      [{ startSec: 0.05, endSec: 29.95 }],
+      30,
+    );
+    expect(windows).toEqual([{ startSec: 0, endSec: 30 }]);
+  });
+});
+
+describe("duckingGainMultiplierAt (auto-ducking v1)", () => {
+  const window = { startSec: 10, endSec: 12 };
+
+  test("returns 1 for empty windows", () => {
+    expect(duckingGainMultiplierAt(10, [])).toBe(1);
+  });
+
+  test("returns 1 well outside any window", () => {
+    expect(duckingGainMultiplierAt(0, [window])).toBe(1);
+  });
+
+  test("returns duckedGainFraction fully inside a window", () => {
+    expect(duckingGainMultiplierAt(11, [window])).toBe(
+      DUCKING_DEFAULTS.duckedGainFraction,
+    );
+    expect(duckingGainMultiplierAt(10, [window])).toBe(
+      DUCKING_DEFAULTS.duckedGainFraction,
+    );
+    expect(duckingGainMultiplierAt(12, [window])).toBe(
+      DUCKING_DEFAULTS.duckedGainFraction,
+    );
+  });
+
+  test("ramps down across the attack window before the window starts", () => {
+    const attackStart = window.startSec - DUCKING_DEFAULTS.attackSec;
+    expect(duckingGainMultiplierAt(attackStart, [window])).toBeCloseTo(1, 5);
+    const mid = attackStart + DUCKING_DEFAULTS.attackSec / 2;
+    const midValue = duckingGainMultiplierAt(mid, [window]);
+    expect(midValue).toBeGreaterThan(DUCKING_DEFAULTS.duckedGainFraction);
+    expect(midValue).toBeLessThan(1);
+  });
+
+  test("ramps up across the release window after the window ends", () => {
+    const releaseEnd = window.endSec + DUCKING_DEFAULTS.releaseSec;
+    expect(duckingGainMultiplierAt(releaseEnd, [window])).toBeCloseTo(1, 5);
+    const mid = window.endSec + DUCKING_DEFAULTS.releaseSec / 2;
+    const midValue = duckingGainMultiplierAt(mid, [window]);
+    expect(midValue).toBeGreaterThan(DUCKING_DEFAULTS.duckedGainFraction);
+    expect(midValue).toBeLessThan(1);
+  });
+
+  test("adjacent windows take the minimum multiplier in overlapping ramp regions", () => {
+    // Second window starts before the first window's release ramp finishes,
+    // so at a point in the overlap the correct answer is the quieter
+    // (lower) of the two candidate multipliers, not either one alone.
+    const first = { startSec: 0, endSec: 2 };
+    const second = { startSec: 2.2, endSec: 4 };
+    const t = 2.1; // inside first's release ramp AND second's attack ramp
+    const expected = Math.min(
+      duckingGainMultiplierAt(t, [first]),
+      duckingGainMultiplierAt(t, [second]),
+    );
+    expect(duckingGainMultiplierAt(t, [first, second])).toBeCloseTo(
+      expected,
+      10,
+    );
+    expect(duckingGainMultiplierAt(t, [first, second])).toBeLessThanOrEqual(
+      expected + 1e-9,
+    );
+  });
+});
+
+// M1+M2 (vizard-parity.md "Music/SFX library"): moved from the worker-only
+// ducking.test.ts — capDuckingWindows and extractSpeechWordIntervals are now
+// shared by the worker's render-time volume automation AND the studio
+// preview's live gain node, so their tests live where the shared code does.
+describe("capDuckingWindows", () => {
+  test("is a no-op at or under the cap", () => {
+    const windows: DuckingWindow[] = [
+      { startSec: 0, endSec: 1 },
+      { startSec: 2, endSec: 3 },
+    ];
+    expect(capDuckingWindows(windows)).toEqual(windows);
+    expect(capDuckingWindows(windows, 2)).toEqual(windows);
+  });
+
+  test("merges the smallest-gap pair repeatedly until at most maxWindows remain", () => {
+    // 10 windows, each 0.5s long, spaced with a mix of gaps — smallest gaps
+    // (0.1s) sit between windows 2-3 and 5-6.
+    const windows: DuckingWindow[] = [
+      { startSec: 0, endSec: 0.5 },
+      { startSec: 1, endSec: 1.5 }, // gap to next: 0.1 (smallest)
+      { startSec: 1.6, endSec: 2.1 },
+      { startSec: 3, endSec: 3.5 },
+      { startSec: 4.5, endSec: 5 }, // gap to next: 0.1 (smallest, tied)
+      { startSec: 5.1, endSec: 5.6 },
+      { startSec: 7, endSec: 7.5 },
+      { startSec: 9, endSec: 9.5 },
+    ];
+    const capped = capDuckingWindows(windows, 6);
+    expect(capped.length).toBe(6);
+    // Every original window's span must still be covered by SOME merged
+    // window — merging must never drop a speech moment.
+    for (const original of windows) {
+      const covered = capped.some(
+        (merged) =>
+          merged.startSec <= original.startSec &&
+          merged.endSec >= original.endSec,
+      );
+      expect(covered).toBe(true);
+    }
+  });
+
+  test("caps a large window count down to MAX_DUCKING_WINDOWS by default", () => {
+    const windows: DuckingWindow[] = Array.from({ length: 60 }, (_, i) => ({
+      startSec: i * 2,
+      endSec: i * 2 + 0.3,
+    }));
+    const capped = capDuckingWindows(windows);
+    expect(capped.length).toBe(MAX_DUCKING_WINDOWS);
+  });
+});
+
+describe("extractSpeechWordIntervals", () => {
+  test("no timeMap: subtracts clipStartSec directly (byte-identical to caption remap's uncut path)", () => {
+    const utterances = [makeUtterance([["hello", 100, 100.5], ["world", 100.5, 101]])];
+    const intervals = extractSpeechWordIntervals(utterances, 100, null);
+    expect(intervals).toEqual([
+      { startSec: 0, endSec: 0.5 },
+      { startSec: 0.5, endSec: 1 },
+    ]);
+  });
+
+  test("falls back to utterance-level interval when a transcript has no per-word timings", () => {
+    const utterance: TranscriptUtterance = {
+      index: 0,
+      speaker: 0,
+      speakerLabel: "Speaker 1",
+      startSec: 100,
+      endSec: 102,
+      text: "hello world",
+      confidence: 0.9,
+      words: [],
+    };
+    const intervals = extractSpeechWordIntervals([utterance], 100, null);
+    expect(intervals).toEqual([{ startSec: 0, endSec: 2 }]);
+  });
+});
+
+// M1+M2 parity: both consumers (the worker's render-time volume automation
+// and the studio preview's live gain node) are required to compose the SAME
+// three functions in the SAME order — extract -> compute -> cap — with no
+// consumer-specific fallback logic of its own. This fixture (word-less
+// utterances) is the exact case that used to fork: the preview's old inline
+// `utterances.flatMap(u => u.words)` produced zero intervals (and thus no
+// ducking) for a word-less transcript, while the worker's copy of
+// `extractSpeechWordIntervals` already had the utterance-level fallback and
+// ducked normally. Composing the shared pipeline the same way from any call
+// site must always produce identical windows.
+describe("ducking pipeline parity (M1+M2 — extract -> compute -> cap shared by worker and preview)", () => {
+  test("word-less utterances produce identical windows via the shared pipeline regardless of call site", () => {
+    const utterances: TranscriptUtterance[] = [
+      {
+        index: 0,
+        speaker: 0,
+        speakerLabel: "Speaker 1",
+        startSec: 2,
+        endSec: 4,
+        text: "hello world",
+        confidence: 0.9,
+        words: [],
+      },
+      {
+        index: 1,
+        speaker: 0,
+        speakerLabel: "Speaker 1",
+        startSec: 5,
+        endSec: 7,
+        text: "goodbye now",
+        confidence: 0.9,
+        words: [],
+      },
+    ];
+    const clipStartSec = 0;
+    const clipDurationSec = 10;
+
+    const runPipeline = () =>
+      capDuckingWindows(
+        computeSpeechWindows(
+          extractSpeechWordIntervals(utterances, clipStartSec, null),
+          clipDurationSec,
+        ),
+      );
+
+    const fromWorkerCallSite = runPipeline();
+    const fromPreviewCallSite = runPipeline();
+
+    expect(fromWorkerCallSite).toEqual(fromPreviewCallSite);
+    // Sanity: word-less utterances actually produced non-empty ducking
+    // windows (the bug this guards against: zero windows == no ducking).
+    expect(fromWorkerCallSite.length).toBeGreaterThan(0);
   });
 });
 
