@@ -765,6 +765,11 @@ const RULER_HEIGHT = 24;
 const LEFT_GUTTER = 40;
 const TIMELINE_OVERSCAN_PX = 900;
 const PAUSE_MARKER_THRESHOLD_SEC = 0.4;
+const TEXT_TRACK_HEIGHT = 26;
+// Not schema-enforced — a UI-level floor (matches text-panel.tsx's own
+// TextLayerDetail timing fields) so a chip drag/edge-retime can't collapse a
+// layer to an unusably thin sliver.
+const MIN_TEXT_LAYER_DURATION_SEC = 0.5;
 
 function useTimelineViewport(ref: RefObject<HTMLDivElement | null>) {
   const [viewport, setViewport] = useState({ scrollLeft: 0, clientWidth: 0 });
@@ -1400,6 +1405,219 @@ const TrimHandle = memo(function TrimHandle({
   );
 });
 
+// ─── Text overlay track (Vizard-parity Phase C step 1) ────────────────────
+//
+// One chip per `studioEdits.textLayers` entry, positioned/sized by
+// startSec/endSec on the EDITED timeline (same convention the video/
+// waveform tracks already draw in — see the module doc comment on
+// StudioContextValue.editedTimeMap — so no source<->edited mapping is
+// needed here). A plain React-state drag (not TrimHandle's imperative paint)
+// is fine here: a handful of small chips, not a filmstrip.
+interface TextLayerDragState {
+  startClientX: number;
+  grabStartSec: number;
+  grabEndSec: number | null;
+  mode: "move" | "resize-start" | "resize-end";
+  moved: boolean;
+}
+
+const TextLayerChip = memo(function TextLayerChip({
+  id,
+  text,
+  startSec,
+  endSec,
+  isSelected,
+  pxPerSec,
+  duration,
+}: {
+  id: string;
+  text: string;
+  startSec: number;
+  endSec: number | null;
+  isSelected: boolean;
+  pxPerSec: number;
+  duration: number;
+}) {
+  const { setStudioEdits, endCoalesce, selectTextLayer, seekTo } = useStudio();
+  const dragRef = useRef<TextLayerDragState | null>(null);
+
+  const x = startSec * pxPerSec;
+  const w = Math.max(((endSec ?? duration) - startSec) * pxPerSec, 10);
+
+  const patch = useCallback(
+    (fields: { startSec?: number; endSec?: number | null }) => {
+      setStudioEdits((prev) => ({
+        ...prev,
+        textLayers: prev.textLayers.map((l) => (l.id === id ? { ...l, ...fields } : l)),
+      }), `text-layer-retime-${id}`);
+    },
+    [id, setStudioEdits],
+  );
+
+  const handlePointerDown = useCallback(
+    (mode: TextLayerDragState["mode"]) => (e: React.PointerEvent<HTMLDivElement>) => {
+      e.stopPropagation();
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId);
+      } catch {
+        // non-capturable pointer; bubbling still delivers move/up
+      }
+      dragRef.current = {
+        startClientX: e.clientX,
+        grabStartSec: startSec,
+        grabEndSec: endSec,
+        mode,
+        moved: false,
+      };
+      selectTextLayer(id);
+    },
+    [id, startSec, endSec, selectTextLayer],
+  );
+
+  const handlePointerMove = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      const drag = dragRef.current;
+      if (!drag) return;
+      if (e.buttons === 0) {
+        // Belt-and-braces: a pointerup/pointercancel we somehow missed
+        // shouldn't leave the drag stuck open — bail and close the
+        // coalesce chain the same way a cancel would.
+        dragRef.current = null;
+        endCoalesce();
+        return;
+      }
+      const dxPx = e.clientX - drag.startClientX;
+      if (Math.abs(dxPx) > 3) drag.moved = true;
+      const deltaSec = dxPx / pxPerSec;
+      const grabEndOrDuration = drag.grabEndSec ?? duration;
+
+      if (drag.mode === "move") {
+        if (drag.grabEndSec == null) {
+          const newStart = Math.max(0, Math.min(drag.grabStartSec + deltaSec, duration));
+          patch({ startSec: newStart });
+        } else {
+          const layerDur = drag.grabEndSec - drag.grabStartSec;
+          const newStart = Math.max(0, Math.min(drag.grabStartSec + deltaSec, duration - layerDur));
+          patch({ startSec: newStart, endSec: newStart + layerDur });
+        }
+      } else if (drag.mode === "resize-start") {
+        const newStart = Math.max(
+          0,
+          Math.min(drag.grabStartSec + deltaSec, grabEndOrDuration - MIN_TEXT_LAYER_DURATION_SEC),
+        );
+        patch({ startSec: newStart });
+      } else {
+        const newEnd = Math.max(
+          drag.grabStartSec + MIN_TEXT_LAYER_DURATION_SEC,
+          Math.min(grabEndOrDuration + deltaSec, duration),
+        );
+        patch({ endSec: newEnd });
+      }
+    },
+    [pxPerSec, duration, patch],
+  );
+
+  const handlePointerUp = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      try {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      } catch {
+        // already released
+      }
+      const drag = dragRef.current;
+      dragRef.current = null;
+      if (drag && !drag.moved) {
+        selectTextLayer(id);
+        seekTo(startSec);
+      }
+      if (drag) endCoalesce();
+    },
+    [id, startSec, selectTextLayer, seekTo, endCoalesce],
+  );
+
+  // Mirrors TrimHandle's onPointerCancel: without it, a canceled pointer
+  // (e.g. the OS interrupts the gesture) leaves dragRef set and the
+  // per-layer coalesce chain open — the next drag would merge into the
+  // stale undo frame, and a stray hover/move could resume a "dead" drag.
+  const handlePointerCancel = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      try {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      } catch {
+        // already released
+      }
+      const drag = dragRef.current;
+      dragRef.current = null;
+      if (drag) endCoalesce();
+    },
+    [endCoalesce],
+  );
+
+  return (
+    <Box
+      position="absolute"
+      top="0"
+      style={{ left: `${x}px`, width: `${w}px`, touchAction: "none" }}
+      h={`${TEXT_TRACK_HEIGHT}px`}
+      borderRadius="l1"
+      border="1.5px solid"
+      borderColor={isSelected ? "studio.accent" : "studio.border"}
+      bg="studio.surface"
+      cursor="grab"
+      overflow="hidden"
+      onPointerDown={handlePointerDown("move")}
+      onPointerMove={handlePointerMove}
+      onPointerUp={handlePointerUp}
+      onPointerCancel={handlePointerCancel}
+      transition="border-color 120ms"
+      _hover={{ borderColor: isSelected ? "studio.accentFg" : "studio.borderStrong" }}
+    >
+      <Text
+        fontSize="10px"
+        fontWeight="600"
+        color={isSelected ? "studio.accentFg" : "studio.fgMuted"}
+        px="6px"
+        lineHeight={`${TEXT_TRACK_HEIGHT}px`}
+        whiteSpace="nowrap"
+        overflow="hidden"
+        textOverflow="ellipsis"
+        userSelect="none"
+      >
+        {text}
+      </Text>
+
+      {/* Edge grips — retime start/end independently, same pattern as the
+          clip-level TrimHandle above (pointer capture + delta drag). */}
+      <Box
+        position="absolute"
+        top="0"
+        bottom="0"
+        left="0"
+        w="6px"
+        cursor="ew-resize"
+        style={{ touchAction: "none" }}
+        onPointerDown={handlePointerDown("resize-start")}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerCancel}
+      />
+      <Box
+        position="absolute"
+        top="0"
+        bottom="0"
+        right="0"
+        w="6px"
+        cursor="ew-resize"
+        style={{ touchAction: "none" }}
+        onPointerDown={handlePointerDown("resize-end")}
+        onPointerMove={handlePointerMove}
+        onPointerUp={handlePointerUp}
+        onPointerCancel={handlePointerCancel}
+      />
+    </Box>
+  );
+});
+
 export function Timeline() {
   const {
     isPlaying,
@@ -1426,6 +1644,8 @@ export function Timeline() {
     utterances,
     exportState,
     waveformPeaksUrl,
+    studioEdits,
+    selectedTextLayerId,
   } = useStudio();
 
   const stripRef = useRef<HTMLDivElement>(null);
@@ -1644,8 +1864,12 @@ export function Timeline() {
     [setTimelineZoom],
   );
 
+  const hasTextLayers = studioEdits.textLayers.length > 0;
+  const textTrackTop =
+    RULER_HEIGHT + TRACK_HEIGHT + 4 + WORD_CHIPS_HEIGHT + 4 + WAVEFORM_HEIGHT + 6;
   const trackAreaHeight =
-    RULER_HEIGHT + TRACK_HEIGHT + 4 + WORD_CHIPS_HEIGHT + 4 + WAVEFORM_HEIGHT + 8;
+    RULER_HEIGHT + TRACK_HEIGHT + 4 + WORD_CHIPS_HEIGHT + 4 + WAVEFORM_HEIGHT + 8 +
+    (hasTextLayers ? TEXT_TRACK_HEIGHT + 6 : 0);
 
   return (
     <Box
@@ -1980,6 +2204,32 @@ export function Timeline() {
                 waveformPeaksUrl={waveformPeaksUrl}
               />
             </Box>
+
+            {/* ── Text overlay track (Vizard-parity Phase C step 1) ── */}
+            {hasTextLayers && (
+              <Box
+                position="absolute"
+                top={`${textTrackTop}px`}
+                left={`${LEFT_GUTTER}px`}
+                style={{
+                  width: `${totalWidth}px`,
+                  height: `${TEXT_TRACK_HEIGHT}px`,
+                }}
+              >
+                {studioEdits.textLayers.map((layer) => (
+                  <TextLayerChip
+                    key={layer.id}
+                    id={layer.id}
+                    text={layer.text}
+                    startSec={layer.startSec}
+                    endSec={layer.endSec ?? null}
+                    isSelected={selectedTextLayerId === layer.id}
+                    pxPerSec={TIMELINE_PX_PER_SEC}
+                    duration={safeDuration}
+                  />
+                ))}
+              </Box>
+            )}
 
             {/* ── Playhead ─────────────────────────────────────── */}
             <TimelinePlayhead

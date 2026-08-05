@@ -22,6 +22,7 @@ import {
 import { useStudio } from "./studio-shell";
 import type { AspectRatio, LayoutMode } from "./studio-shell";
 import { InteractiveCaptionOverlay } from "./interactive-caption-overlay";
+import { InteractiveTextLayer } from "./interactive-text-layer";
 
 /** After this long with no metadata yet, hint that the source is just large. */
 const SLOW_LOAD_HINT_MS = 10_000;
@@ -116,6 +117,7 @@ export function VideoPreview() {
     editedTimeMap,
     playerClipStartSec,
     deselectCaption,
+    deselectTextLayer,
     isPlaying,
     duration,
     brandLogo,
@@ -162,6 +164,31 @@ export function VideoPreview() {
   const playerRippleStartSecRef = useRef(playerRippleStartSec);
 
   const arConfig = ASPECT_RATIO_CONFIG[aspectRatio];
+
+  // Vizard-parity Phase C item 2 (canvas background): a persisted
+  // studioEdits.background always wins over the cosmetic, session-local
+  // `layoutMode` — when it's set the video letterboxes ("fit") and a solid
+  // color or image fills the empty frame behind it, mirroring the worker's
+  // buildFitAndBackgroundFilter exactly (scale-to-contain, centered).
+  // `layoutMode`'s own fill/fit/blur cycling stays fully in charge whenever
+  // background is "off", unchanged from before this feature.
+  const background = studioEdits.background;
+  const backgroundActive = background.mode !== "off";
+  const videoObjectFit: "contain" | "cover" = backgroundActive
+    ? "contain"
+    : layoutMode === "fit"
+      ? "contain"
+      : "cover";
+  const backgroundStageStyle: React.CSSProperties = backgroundActive
+    ? background.mode === "image" && background.imageUrl
+      ? {
+          backgroundImage: `url(${background.imageUrl})`,
+          backgroundSize: "cover",
+          backgroundPosition: "center",
+          backgroundColor: background.color ?? "#000000",
+        }
+      : { backgroundColor: background.color ?? "#000000" }
+    : {};
 
   const cycleLayout = useCallback(() => {
     const idx = LAYOUT_OPTIONS.indexOf(layoutMode);
@@ -523,7 +550,10 @@ export function VideoPreview() {
         bg="black"
         position="relative"
         onClick={(e) => {
-          if (e.target === e.currentTarget) deselectCaption();
+          if (e.target === e.currentTarget) {
+            deselectCaption();
+            deselectTextLayer();
+          }
         }}
       >
         {/* Video container with aspect ratio */}
@@ -541,6 +571,14 @@ export function VideoPreview() {
           overflow="hidden"
           borderRadius="2px"
         >
+          {/* Canvas background (vizard-parity Phase C item 2) — sits behind
+              the (now letterboxed) video, filling the frame the crop would
+              otherwise have covered. Persisted, so it wins over the
+              session-local `layoutMode` blur/fill cosmetic below. */}
+          {backgroundActive && (
+            <Box position="absolute" inset="0" style={backgroundStageStyle} />
+          )}
+
           {/* Graphite ghost stage while no video is ready to show */}
           {previewPhase !== "ready" && (
             <Flex
@@ -688,7 +726,7 @@ export function VideoPreview() {
               inset: 0,
               width: "100%",
               height: "100%",
-              objectFit: layoutMode === "fit" ? "contain" : "cover",
+              objectFit: videoObjectFit,
               display: previewPhase === "ready" ? "block" : "none",
             }}
             playsInline
@@ -710,8 +748,9 @@ export function VideoPreview() {
             />
           ) : null}
 
-          {/* Layout blur layer */}
-          {layoutMode === "blur" && (
+          {/* Layout blur layer — a persisted background overrides this
+              cosmetic entirely (see backgroundActive above). */}
+          {!backgroundActive && layoutMode === "blur" && (
             <Box
               position="absolute"
               inset="0"
@@ -723,46 +762,14 @@ export function VideoPreview() {
           {studioEdits.textLayers.map((layer) => {
             const endSec = layer.endSec ?? Number.POSITIVE_INFINITY;
             if (currentTime < layer.startSec || currentTime > endSec) return null;
-            const displayFontSize = Math.max(
-              9,
-              Math.round(layer.fontSize * ((previewWidth || 380) / 1080)),
-            );
-            const outline =
-              layer.outlineWidth > 0
-                ? `${layer.outlineWidth}px ${layer.outlineColor}`
-                : undefined;
 
             return (
-              <Box
+              <InteractiveTextLayer
                 key={layer.id}
-                position="absolute"
-                left={`${layer.positionX}%`}
-                top={`${layer.positionY}%`}
-                transform="translate(-50%, -50%)"
-                zIndex={4}
-                maxW="88%"
-                px={layer.backgroundColor ? "10px" : "0"}
-                py={layer.backgroundColor ? "5px" : "0"}
-                borderRadius="6px"
-                textAlign="center"
-                pointerEvents="none"
-                style={{
-                  color: layer.color,
-                  fontFamily: `"${layer.fontName}", Arial, sans-serif`,
-                  fontSize: `${displayFontSize}px`,
-                  fontWeight: layer.bold ? 800 : 500,
-                  lineHeight: 1.08,
-                  backgroundColor: layer.backgroundColor
-                    ? `${layer.backgroundColor}${Math.round(layer.backgroundOpacity * 255)
-                        .toString(16)
-                        .padStart(2, "0")}`
-                    : undefined,
-                  WebkitTextStroke: outline,
-                  textShadow: layer.outlineWidth > 0 ? "0 2px 10px rgba(0,0,0,0.45)" : undefined,
-                }}
-              >
-                {layer.text}
-              </Box>
+                layer={layer}
+                previewWidth={previewWidth}
+                videoContainerRef={videoContainerRef}
+              />
             );
           })}
 

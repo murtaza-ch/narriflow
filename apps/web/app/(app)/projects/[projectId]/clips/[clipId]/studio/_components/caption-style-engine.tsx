@@ -16,7 +16,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Box, Flex } from "@chakra-ui/react";
 import { motion } from "framer-motion";
-import { emojiForWord } from "@narriflow/validators";
+import { emojiForWord, formatCaptionWord } from "@narriflow/validators";
 import type { CaptionPreset, EditedTimeMap, TranscriptUtterance } from "@narriflow/validators";
 import {
   getCurrentCaptionState,
@@ -374,6 +374,22 @@ export function CaptionCue({
     "uppercase") as React.CSSProperties["textTransform"];
   const letterSpacing = `${preset.letterSpacing ?? 0.04}em`;
   const full = scale >= 1;
+  // Vizard-parity Phase C punctuation toggle — absent/true keeps punctuation
+  // as transcribed. Routed through the SAME `formatCaptionWord` helper the
+  // worker's SRT/ASS builders use so preview text can never fork from
+  // burn-in text.
+  const keepPunctuation = preset.punctuation !== false;
+
+  // When punctuation is off and every word in this cue is pure punctuation
+  // (e.g. an isolated "…" token), each word already formats to "" and is
+  // skipped below — but without this check the cue would still render an
+  // empty box (backdrop included). The worker's ASS builder already skips
+  // emitting a Dialogue event entirely for this case; match it here so the
+  // preview doesn't show a hollow box the burn-in render never produces.
+  const allWordsEmpty = words.every(
+    (item) => formatCaptionWord(item.word, { punctuation: keepPunctuation }).length === 0,
+  );
+  if (allWordsEmpty) return null;
 
   return (
     <Box position="relative" display="inline-flex" alignItems="center" justifyContent="center">
@@ -402,6 +418,15 @@ export function CaptionCue({
         zIndex={1}
       >
         {words.map((item, i) => {
+          // Punctuation stripped for DISPLAY only — a token that is pure
+          // punctuation (e.g. "...") formats to "" and is skipped entirely
+          // rather than rendering an empty span, mirroring the worker's
+          // per-word skip in generateAssFromSlice.
+          const displayWord = formatCaptionWord(item.word, {
+            punctuation: keepPunctuation,
+          });
+          if (displayWord.length === 0) return null;
+
           const motionProps = getWordMotionProps(
             preset.animation,
             item.isActive,
@@ -448,7 +473,12 @@ export function CaptionCue({
                   lineHeight: mode === "preview" ? 1.3 : 1.08,
                 }}
               >
-                {item.word}
+                {displayWord}
+                {/* Emoji lookup always reads the RAW word, never the
+                    punctuation-formatted one — emojiForWord already strips
+                    every non-a-z character via its own key normalization, so
+                    this can never disagree with the worker's identical
+                    choice in generateAssFromSlice. */}
                 {showEmojis && emojiForWord(item.word)
                   ? ` ${emojiForWord(item.word)}`
                   : ""}

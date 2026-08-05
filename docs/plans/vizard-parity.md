@@ -202,14 +202,75 @@ before the foundation steps it depends on.
 
 ### Phase C — Canvas + tracks polish (was "P2", corrected)
 - Editable/draggable text layers on canvas; timeline retiming of layers.
-- Background color/image (+ apply-to-all) with render parity.
+  *(Landed 2026-08-05 — canvas drag/resize/select via `InteractiveTextLayer`
+  (`interactive-text-layer.tsx`, new), a per-layer editing surface in the new
+  Text tool panel (`tool-panels/text-panel.tsx`) covering font/size/color/
+  outline/background/timing, and timeline retiming through the new
+  `TextLayerChip` track (`timeline.tsx`) — move + independent start/end
+  resize grips, same pointer-capture delta-drag pattern the clip-level
+  `TrimHandle` uses.)*
+- Background color/image (+ apply-to-all) with render parity. *(per-clip
+  color/image landed 2026-08-05 — `studioEdits.background` schema
+  (`packages/validators/src/studio-edits.ts`); worker
+  `buildFitAndBackgroundFilter` fit+pad (color) / cover-fit-image+overlay
+  (image) compose path used instead of `buildCropAndScaleFilter` whenever a
+  background is active, in both the single-video and B-roll cutaway
+  builders, with auto-reframe bypassed; studio preview stage renders the same
+  color/image behind a letterboxed video; new Background tool panel.
+  Apply-to-all landed 2026-08-05 — see the transition bullet below, same
+  `applyStudioEditsPatchToAllClips` bulk service backs both.)*
 - Layout presets — **bigger than it looks**: `layoutMode` is local preview state
   and the worker auto-reframes independently; needs schema + worker contract.
 - Music/SFX library (curated CDN + R2 upload; keep URL escape hatch).
 - Subtitle visibility / punctuation / per-cue emoji overrides (global emoji
   toggle already exists, `captions-panel.tsx:339`) — distinct schema changes.
-- Transition apply-to-all + more styles — requires bulk invalidation/versioning
-  first (the caption endpoint is a bare `updateMany`, `clip.service.ts:1982`).
+  *(Visibility + punctuation landed 2026-08-05 —
+  `packages/validators/src/caption-preset.ts` adds `visible`/`punctuation`
+  (both optional booleans, absent = shown/kept — same convention as
+  `emojis`) plus the shared `formatCaptionWord` helper (strips edge
+  punctuation, preserves intra-word apostrophes/hyphens, collapses a
+  pure-punctuation token to `""`). Worker: `buildSubtitleFilter`
+  (`render-clips.ts`) is the single choke point every render path
+  (single-video, fit+background, multi-video, B-roll cutaway, audiogram)
+  routes subtitle burn-in through, so gating `visible === false` there turns
+  off subtitles everywhere at once; `generateSrtFromSlice` and
+  `generateAssFromSlice` route every cue token through `formatCaptionWord`
+  when `punctuation === false`, dropping empty tokens/cues instead of
+  emitting blank text. Studio preview: `CaptionCue`
+  (`caption-style-engine.tsx`) reads `punctuation` off the same preset object
+  and calls the identical helper, so preview and burn-in can't fork;
+  `InteractiveCaptionOverlay` hides on `visible === false` and deselects the
+  caption if it was selected when the toggle flips off. Emoji lookup
+  (`emojiForWord`) intentionally still reads the RAW word in both preview and
+  worker — its own key normalization already strips every non-a-z character,
+  so punctuation stripping can never change which keyword matches. Two new
+  toggles in `captions-panel.tsx` ("Subtitles", "Punct.") next to the
+  existing emoji toggle, committed through the same `setCaptionPreset` path
+  (undoable) and riding `applyCaptionPresetToAllClips` bulk apply for free
+  since it carries the whole preset. Per-cue emoji overrides remain
+  DEFERRED — not built.)*
+- Transition apply-to-all + more styles — **landed 2026-08-05.** Bulk
+  invalidation/versioning now exists: `applyCaptionPresetToAllClips`
+  (`clip.service.ts`) deletes stale `ClipRender` rows + their R2 assets in
+  the same transaction as its `updateMany` (it used to bump
+  `editorRevision` without invalidating renders at all — completed renders
+  stayed downloadable with a stale caption style); the new
+  `applyStudioEditsPatchToAllClips` does the JSON-blob equivalent for
+  `studioEdits.transition`/`studioEdits.background` (per-row
+  read-parse-merge-write, since a bulk `updateMany` can't touch one field of
+  a JSON column). Both accept `excludeClipId` so the studio session that
+  originated the change skips itself server-side — that clip already has it
+  applied locally via the open editor document and persists it through the
+  normal revision-guarded autosave; writing it server-side too would bump
+  its `editorRevision` out from under that autosave's `baseRevision` and
+  409 it (this was a live bug in the caption flow, fixed the same way here).
+  Route: `POST /projects/:id/clips/apply-studio-edits`. Also added the
+  previously dead `fade-black` transition style to the Transitions panel,
+  with an explicit `:color=black` mapping in the worker's
+  `buildTransitionFilter` (exported + unit-tested,
+  `apps/worker/src/tasks/render-clips.ts`) alongside `dip-white`'s
+  `:color=white` — both used to rely on ffmpeg's `fade` filter defaulting
+  to black.
 - Export options — resolution needs render-identity change (clip+aspect only
   today, `clip.service.ts:1267`); watermark/720p gate must move from hardcoded
   worker behavior (`render-clips.ts:1939`) into a real billing feature gate.

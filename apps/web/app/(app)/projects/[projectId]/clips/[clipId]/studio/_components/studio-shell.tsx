@@ -162,7 +162,8 @@ export type ToolId =
   | "broll"
   | "transitions"
   | "text"
-  | "music";
+  | "music"
+  | "background";
 
 export interface TranscriptItem {
   id: string;
@@ -225,6 +226,11 @@ interface StudioState {
   selectedSegmentId: string | null;
   captionPreset: CaptionPreset;
   captionSelected: boolean;
+  /** Vizard-parity Phase C step 1: the one text overlay currently selected on
+   *  the canvas/panel/timeline, or null. Mutually exclusive with
+   *  `captionSelected` — selecting one deselects the other, matching the
+   *  "single selected canvas object" rule. */
+  selectedTextLayerId: string | null;
   transcriptOnly: boolean;
   segments: TimelineSegment[];
   studioEdits: StudioEdits;
@@ -370,6 +376,11 @@ interface StudioContextValue extends StudioState {
   ) => void;
   selectCaption: () => void;
   deselectCaption: () => void;
+  /** Selects one text overlay by id — deselects the caption (single-selection
+   *  rule) and switches the tool sidebar to the Text panel, mirroring
+   *  `selectCaption`. */
+  selectTextLayer: (id: string) => void;
+  deselectTextLayer: () => void;
   setTranscriptOnly: (v: boolean) => void;
   setSegments: (s: TimelineSegment[]) => void;
   setStudioEdits: (
@@ -713,6 +724,7 @@ export function StudioShell({
   const [timelineZoom, setTimelineZoom] = useState(1);
   const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(null);
   const [captionSelected, setCaptionSelected] = useState(false);
+  const [selectedTextLayerId, setSelectedTextLayerId] = useState<string | null>(null);
   const [transcriptOnly, setTranscriptOnly] = useState(false);
   const [saveState, setSaveState] = useState<
     "idle" | "saving" | "saved" | "error" | "blocked"
@@ -1732,6 +1744,13 @@ export function StudioShell({
 
   const selectCaption = useCallback(() => {
     setCaptionSelected(true);
+    setSelectedTextLayerId(null);
+    // `selectedSegmentId` sits outside the caption<->text-layer
+    // single-selection invariant these two setters otherwise enforce — left
+    // set here, a stale segment selection survives selecting the caption
+    // and a subsequent Delete/Backspace would delete THAT segment instead
+    // of doing anything caption-related.
+    setSelectedSegmentId(null);
     setActiveTool("captions");
   }, []);
 
@@ -1739,6 +1758,33 @@ export function StudioShell({
     setCaptionSelected(false);
     setActiveTool((prev) => (prev === "captions" ? null : prev));
   }, []);
+
+  const selectTextLayer = useCallback((id: string) => {
+    setSelectedTextLayerId(id);
+    setCaptionSelected(false);
+    // See selectCaption's comment above — same gap, same fix.
+    setSelectedSegmentId(null);
+    setActiveTool("text");
+  }, []);
+
+  const deselectTextLayer = useCallback(() => {
+    setSelectedTextLayerId(null);
+    setActiveTool((prev) => (prev === "text" ? null : prev));
+  }, []);
+
+  // Delete/Backspace with a text layer selected deletes THAT layer, not a
+  // timeline segment — mirrors text-panel.tsx's `removeLayer` but lives
+  // here so the keyboard handler (which has no direct handle on the panel)
+  // can call it.
+  const deleteSelectedTextLayer = useCallback(() => {
+    if (!selectedTextLayerId) return;
+    const id = selectedTextLayerId;
+    setStudioEdits((prev) => ({
+      ...prev,
+      textLayers: prev.textLayers.filter((layer) => layer.id !== id),
+    }));
+    deselectTextLayer();
+  }, [selectedTextLayerId, setStudioEdits, deselectTextLayer]);
 
   // Keyboard shortcuts
   useEffect(() => {
@@ -1774,7 +1820,17 @@ export function StudioShell({
           break;
         case "Backspace":
         case "Delete":
-          deleteSelectedSegment();
+          // A selected text layer takes priority: `selectedSegmentId` and
+          // `selectedTextLayerId` can both be stale-set at once (segment
+          // selection is a raw setter the timeline calls directly, outside
+          // the caption<->text-layer invariant) — without this check,
+          // Delete could destroy a real document mutation (the segment)
+          // while the user's visible selection is the text layer.
+          if (selectedTextLayerId) {
+            deleteSelectedTextLayer();
+          } else {
+            deleteSelectedSegment();
+          }
           break;
         case "1":
         case "Home":
@@ -1809,13 +1865,14 @@ export function StudioShell({
           break;
         case "Escape":
           if (captionSelected) { deselectCaption(); break; }
+          if (selectedTextLayerId) { deselectTextLayer(); break; }
           setShowShortcuts(false);
           break;
       }
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [togglePlay, seekTo, playbackClock, duration, splitAtPlayhead, deleteSelectedSegment, handleUndo, handleRedo, captionSelected, deselectCaption]);
+  }, [togglePlay, seekTo, playbackClock, duration, splitAtPlayhead, deleteSelectedSegment, deleteSelectedTextLayer, handleUndo, handleRedo, captionSelected, deselectCaption, selectedTextLayerId, deselectTextLayer]);
 
   // Fix 3 (Phase B hardening): nothing else reconciles the <video> element
   // or the clock against a delete/revert that just happened — a paused
@@ -1990,7 +2047,7 @@ export function StudioShell({
   const ctx: StudioContextValue = {
     isPlaying, duration, activeTool, showTimeline, aspectRatio,
     layoutMode, showShortcuts, timelineZoom, selectedSegmentId,
-    captionPreset, captionSelected, transcriptOnly, segments, studioEdits, brollUrl,
+    captionPreset, captionSelected, selectedTextLayerId, transcriptOnly, segments, studioEdits, brollUrl,
     saveState, exportState, resetState, canUndo, canRedo, canReset,
     transcript: derivedTranscript, clipInfo, videoRef, boundaryReconcileOwnsSeekRef, playbackClock,
     sourceVideoUrl, sourcePreviewId,
@@ -2002,6 +2059,7 @@ export function StudioShell({
     setIsPlaying, setActiveTool, setShowTimeline, setAspectRatio,
     setLayoutMode, setShowShortcuts, setTimelineZoom,
     setSelectedSegmentId, setCaptionPreset, selectCaption, deselectCaption,
+    selectTextLayer, deselectTextLayer,
     setTranscriptOnly, setSegments, setStudioEdits, setBrollUrl, endCoalesce,
     revertDeletedRange,
     togglePlay, seekTo, splitAtPlayhead, deleteSelectedSegment, handleSave, handleExport,

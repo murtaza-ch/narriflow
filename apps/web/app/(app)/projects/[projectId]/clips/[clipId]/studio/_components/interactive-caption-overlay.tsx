@@ -26,7 +26,7 @@ const HANDLE_POSITIONS = [
 
 // ─── Snap Guide Lines ────────────────────────────────────────────────────────
 
-function SnapGuideLines({ guides }: { guides: SnapGuide[] }) {
+export function SnapGuideLines({ guides }: { guides: SnapGuide[] }) {
   if (guides.length === 0) return null;
 
   return (
@@ -54,7 +54,7 @@ function SnapGuideLines({ guides }: { guides: SnapGuide[] }) {
 
 // ─── Resize Handles ──────────────────────────────────────────────────────────
 
-function CaptionResizeHandles({
+export function DragResizeHandles({
   onResizeStart,
   onResize,
   onResizeEnd,
@@ -140,6 +140,7 @@ export function InteractiveCaptionOverlay({
     setCaptionPreset,
     captionSelected,
     selectCaption,
+    deselectCaption,
     aspectRatio,
     utterances,
     clipStartSec,
@@ -147,6 +148,18 @@ export function InteractiveCaptionOverlay({
     playbackClock,
     endCoalesce,
   } = useStudio();
+
+  // Vizard-parity Phase C subtitle visibility toggle — hidden captions must
+  // also be unselectable: if the caption was selected when the toggle flips
+  // off (from this panel or bulk apply-to-all), drop the selection so the
+  // resize/drag handles and selection frame can't linger on an invisible
+  // overlay.
+  const isVisible = captionPreset.visible !== false;
+  useEffect(() => {
+    if (!isVisible && captionSelected) {
+      deselectCaption();
+    }
+  }, [isVisible, captionSelected, deselectCaption]);
 
   const caption = useLiveCaption(playbackClock, utterances, clipStartSec, editedTimeMap);
   const reducedMotion = useReducedMotion() ?? false;
@@ -271,6 +284,11 @@ export function InteractiveCaptionOverlay({
     endCoalesce();
   }, [endCoalesce]);
 
+  // Subtitle display off (vizard-parity Phase C) — hide the overlay AND make
+  // it unselectable; style controls in the panel stay live regardless (they
+  // just have nothing on-video to preview until this flips back on).
+  if (!isVisible) return null;
+
   // Don't render if no caption to show
   if (!caption || caption.visibleWords.length === 0) return null;
 
@@ -345,7 +363,7 @@ export function InteractiveCaptionOverlay({
 
           {/* Resize handles */}
           {showSelection && (
-            <CaptionResizeHandles
+            <DragResizeHandles
               onResizeStart={handleResizeStart}
               onResize={handleResize}
               onResizeEnd={handleResizeEnd}

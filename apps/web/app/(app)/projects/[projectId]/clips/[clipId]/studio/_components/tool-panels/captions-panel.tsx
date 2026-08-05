@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Box, Flex, Text, Stack, Slider, ColorPicker, HStack, Portal, parseColor, Grid } from "@chakra-ui/react";
-import { Bold, Droplet, Type, AlignCenter, MoveUp, MoveDown, Zap, Smile } from "lucide-react";
+import { Bold, Droplet, Type, AlignCenter, MoveUp, MoveDown, Zap, Smile, Captions, Quote } from "lucide-react";
 import { useReducedMotion } from "framer-motion";
 import { toaster } from "@narriflow/ui";
 import { clipAspectRatioOptions } from "@narriflow/validators";
@@ -321,7 +321,7 @@ function CustomizeControls() {
       {/* Style toggles */}
       <Box>
         <SectionLabel>Style</SectionLabel>
-        <Flex gap="6px">
+        <Flex gap="6px" wrap="wrap">
           <ToggleBtn
             icon={<Bold size={14} />}
             label="Bold"
@@ -345,6 +345,20 @@ function CustomizeControls() {
             label="Emoji"
             active={captionPreset.emojis === true}
             onClick={() => update({ emojis: !captionPreset.emojis })}
+          />
+          <ToggleBtn
+            icon={<Captions size={14} />}
+            label="Subtitles"
+            active={captionPreset.visible !== false}
+            onClick={() => update({ visible: captionPreset.visible === false })}
+          />
+          <ToggleBtn
+            icon={<Quote size={14} />}
+            label="Punct."
+            active={captionPreset.punctuation !== false}
+            onClick={() =>
+              update({ punctuation: captionPreset.punctuation === false })
+            }
           />
         </Flex>
       </Box>
@@ -737,7 +751,12 @@ export function CaptionsPanel() {
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ captionPreset }),
+          // excludeClipId: this session's own clip already has the preset
+          // applied locally (it's already `captionPreset` in the open
+          // document) and will persist it through the normal
+          // revision-guarded autosave — including it here would bump its
+          // editorRevision server-side and 409 that autosave.
+          body: JSON.stringify({ captionPreset, excludeClipId: clipInfo.id }),
         },
       );
       if (!res.ok) throw new Error("apply failed");
