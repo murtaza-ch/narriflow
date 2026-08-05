@@ -12,10 +12,10 @@ import {
 } from "@narriflow/validators";
 import { FramingPresetGrid } from "./framing-preset-thumbnails";
 
-// Vizard-parity Phase C-2 stage 1 (+ split packet A): per-clip framing mode.
-// Four effective modes, resolved by the shared `resolveEffectiveFramingMode`
-// helper so this panel, the worker's render pipeline, and the preview can
-// never fork on the answer:
+// Vizard-parity Phase C-2 stage 1 (+ split packet A, + screen packet A):
+// per-clip framing mode. Five effective modes, resolved by the shared
+// `resolveEffectiveFramingMode` helper so this panel, the worker's render
+// pipeline, and the preview can never fork on the answer:
 //  - "auto"   — crop to fill, following the speaker's face when detected
 //               (`studioEdits.framing.mode === "auto"`, the default).
 //  - "center" — crop to fill, always centered, no face detection
@@ -42,10 +42,34 @@ import { FramingPresetGrid } from "./framing-preset-thumbnails";
 //               live preview fall back to single-speaker framing (auto-
 //               reframe, or a static center crop) exactly like "auto"/
 //               "center" — never a failed render.
+//  - "screen"  — screen-share layout (Vizard's screencast-with-facecam
+//               preset): the full source frame fits uncropped into the top
+//               tile while a face-centered horizontal crop of the whole
+//               frame fills the bottom tile (`studioEdits.framing.mode ===
+//               "screen"`). Packets A (this schema/panel), B (worker render
+//               — `apps/worker/src/tasks/screen-layout.ts`'s
+//               `buildScreenSpeakerFilterChain`/`screenTileGeometry`,
+//               `render-clips.ts`'s `applyScreenSpeakerLayout`/
+//               `decideScreenFallback`), and C (the live two-tile preview —
+//               see video-preview.tsx) have all landed. The bottom tile is
+//               NOT facecam/webcam-region detection — there is no PiP
+//               sub-region localization, only the same single-face
+//               horizontal tracking auto-reframe already does, aimed at a
+//               half-height tile. When no face is detected (or this clip's
+//               output aspect ratio has no lateral room to track a face in
+//               at all, e.g. 1:1/16:9 against a landscape source — see
+//               `screenBottomIsTrackable`), the bottom tile stays a static
+//               CENTER crop; the layout itself is preserved either way,
+//               never a whole-clip fallback. B-roll cutaways are the one
+//               case that DOES fall back to whole-clip single-speaker
+//               (auto) framing, same as split's own B-roll policy. The
+//               whole feature can be disabled via the `WORKER_SCREEN_LAYOUT`
+//               env kill switch, in which case it also falls back to
+//               whole-clip single-speaker framing.
 // See buildFitAndBackgroundFilter / shouldRunAutoReframeDetection
 // (apps/worker/src/tasks/render-clips.ts) for the burn-in side of this
 // parity contract, and video-preview.tsx for how the stage renders it live.
-// The four presets are rendered as drawn thumbnail tiles (Vizard-style) by
+// The five presets are rendered as drawn thumbnail tiles (Vizard-style) by
 // FramingPresetGrid (./framing-preset-thumbnails.tsx) rather than an icon
 // radio — see that file for the tile art.
 
@@ -324,6 +348,16 @@ export function LayoutPanel() {
           centered crop if none is detected) when the footage doesn&apos;t
           support a 2-up split — e.g. only one speaker is ever on screen at
           once.
+        </Text>
+      )}
+
+      {effectiveMode === "screen" && (
+        <Text fontSize="11px" color="studio.fgSubtle" lineHeight="1.6">
+          Fits the full screen-share into the top tile and seats a
+          face-tracked crop of the speaker below. Keeps the layout with a
+          centered, untracked crop below when no face is detected — falls
+          back to auto-reframe (following the speaker&apos;s face, or a
+          centered crop if none is detected) for b-roll cutaways instead.
         </Text>
       )}
 

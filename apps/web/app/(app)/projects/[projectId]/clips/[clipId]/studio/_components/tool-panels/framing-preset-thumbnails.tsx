@@ -6,21 +6,20 @@ import type { EffectiveFramingMode } from "@narriflow/validators";
 // Vizard-style layout picker: a grid of drawn 9:16 mini-mockups (no icon +
 // label rows). Each tile is a small hand-drawn scene built from Box/Flex
 // primitives on studio.* tokens — see layout-panel.tsx's top-of-file comment
-// for the framing/background truth model these four presets encode.
+// for the framing/background truth model these five presets encode.
 
 // M6 (adversarial review): `label` is the full name — used for the
 // button's `title`/`aria-label` so screen readers and hover tooltips still
 // get the unambiguous full name. `shortLabel` is what's actually painted
-// under the tile: at the fluid tile widths below (~51px at the panel's
-// 228px base-breakpoint width, ~61px at the 268px `md` width), "Auto
-// reframe"/"Center crop" wrap onto an awkward 3rd line at 11px; the shorter
-// forms fit on one line at both widths without shrinking the font past
-// legibility.
+// under the tile: at the fluid tile widths below, "Auto reframe"/"Center
+// crop" wrap onto an awkward 3rd line at 11px; the shorter forms fit on one
+// line at both breakpoints without shrinking the font past legibility.
 const FRAMING_PRESETS: { id: EffectiveFramingMode; label: string; shortLabel: string }[] = [
   { id: "auto", label: "Auto reframe", shortLabel: "Auto" },
   { id: "center", label: "Center crop", shortLabel: "Center" },
   { id: "fit", label: "Fit", shortLabel: "Fit" },
   { id: "split", label: "Split", shortLabel: "Split" },
+  { id: "screen", label: "Screen", shortLabel: "Screen" },
 ];
 
 function CornerBrackets({
@@ -100,6 +99,52 @@ function StackedSilhouettes({ color }: { color: string }) {
   );
 }
 
+// Screen-preset art (screen packet A) — screen-share layout: the full frame
+// (the "screen" element) sits UNCROPPED in the top half, drawn like the Fit
+// tile's inner rect (studio.surface + border) but anchored to the top
+// instead of centered, with a couple of thin "content lines" inside reading
+// as a shared slide/window rather than a face. The bottom half carries a
+// face-tracked speaker crop — the same seated silhouette shape
+// StackedSilhouettes' bottom seat uses, just scaled up since it owns the
+// whole bottom half here (no top seat sharing the space).
+function ScreenShareArt({ color }: { color: string }) {
+  return (
+    <>
+      <Box
+        position="absolute"
+        top="6px"
+        left="50%"
+        transform="translateX(-50%)"
+        w="42px"
+        h="24px"
+        borderRadius="l1"
+        bg="studio.surface"
+        borderWidth="1px"
+        borderColor="studio.borderStrong"
+        overflow="hidden"
+      >
+        <Box position="absolute" top="7px" left="6px" w="30px" h="2px" bg={color} opacity={0.7} />
+        <Box position="absolute" top="13px" left="6px" w="20px" h="2px" bg={color} opacity={0.7} />
+      </Box>
+      <Box position="absolute" bottom="24px" left="50%" transform="translateX(-50%)" w="16px" h="16px" borderRadius="full" bg={color} />
+      <Box
+        position="absolute"
+        bottom="8px"
+        left="50%"
+        transform="translateX(-50%)"
+        w="30px"
+        h="17px"
+        bg={color}
+        css={{ borderTopLeftRadius: "9px", borderTopRightRadius: "9px" }}
+      />
+      {/* Screen/speaker boundary — a fixed hairline, not a state-colored
+          cue, mirroring the split divider's rationale (fixed layout
+          boundary rather than an interactive framing cue). */}
+      <Box position="absolute" top="50%" left="0" w="100%" h="1px" bg="studio.border" />
+    </>
+  );
+}
+
 function FramingPresetArt({
   mode,
   shapeColor,
@@ -141,6 +186,10 @@ function FramingPresetArt({
         <Box position="absolute" top="50%" left="0" w="100%" h="1px" bg="studio.border" />
       </>
     );
+  }
+
+  if (mode === "screen") {
+    return <ScreenShareArt color={shapeColor} />;
   }
 
   // "fit": the letterboxed video sits inside the tile with visible bands
@@ -196,14 +245,15 @@ function FramingPresetTile({
         title={label}
         onClick={onClick}
         // M6 (adversarial review): fluid width (fills its `1fr` grid
-        // column) instead of a fixed 56px — 4 * 56px + 3 * 8px gaps = 248px
-        // overflows the panel's 228px base-breakpoint content width (the
-        // fixed width + `flexShrink={0}` this replaces couldn't shrink to
-        // fit at all). `aspectRatio` keeps the original 56:84 (2:3) tile
-        // shape at whatever width the grid column actually resolves to —
-        // ~51px wide (~76px tall) at 228px, ~61px wide (~91px tall) at the
-        // 268px `md` breakpoint — rather than baking in one fixed size that
-        // only fit one breakpoint.
+        // column) instead of a fixed 56px — a fixed width + `flexShrink={0}`
+        // couldn't shrink to fit either breakpoint. `aspectRatio` keeps the
+        // original 56:84 (2:3) tile shape at whatever width the grid column
+        // actually resolves to. Screen packet A moved the grid from 4 to 3
+        // columns (see FramingPresetGrid) so the tiles got BIGGER, not
+        // smaller: ~70.7px wide (~106px tall) at the panel's 228px
+        // base-breakpoint content width, ~84px wide (~126px tall) at the
+        // 268px `md` width — comfortably above the old 4-column ~51px/~61px
+        // tiles, since a 3-per-row layout has fewer gap deductions per row.
         w="100%"
         aspectRatio="2 / 3"
         minW="0"
@@ -243,12 +293,16 @@ export function FramingPresetGrid({
   selected: EffectiveFramingMode;
   onSelect: (mode: EffectiveFramingMode) => void;
 }) {
-  // Four presets, one row, fluid tile widths (see FramingPresetTile) so the
-  // grid fits the panel's content width at both the 228px base breakpoint
-  // and the 268px `md` breakpoint, instead of a fixed-56px tile that only
-  // fit one of them (M6, adversarial review).
+  // Five presets (screen packet A added "Screen" to the prior four): 3
+  // columns, auto-wrapping to a 3-over-2 layout (row 1: Auto/Center/Fit,
+  // row 2: Split/Screen, left-aligned with one empty trailing cell) rather
+  // than 4-across-plus-1-orphan, which reads as far more lopsided than a
+  // short second row. Plain CSS grid auto-placement gives every tile —
+  // whichever row it lands in — the exact same fluid 1fr width (see
+  // FramingPresetTile for the resulting px math at both breakpoints),
+  // instead of hand-sizing a 4-and-1 or 3-and-2 split.
   return (
-    <Box display="grid" style={{ gridTemplateColumns: "repeat(4, 1fr)", gap: "8px" }}>
+    <Box display="grid" style={{ gridTemplateColumns: "repeat(3, 1fr)", gap: "8px" }}>
       {FRAMING_PRESETS.map((preset) => (
         <FramingPresetTile
           key={preset.id}

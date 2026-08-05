@@ -18,10 +18,19 @@ interface SplitSecondaryTileProps {
    *  ripple skip over a deleted range self-heals within a fraction of a
    *  second here instead of needing its own `stepRipple` wiring. */
   targetTimeSec: number;
-  /** Normalized horizontal crop center (0-1), fed straight into
-   *  `object-position`'s X component — see the `SPLIT_*_TILE_CX` comment in
-   *  video-preview.tsx for what this represents and why it's static. */
-  cx: number;
+  /** CSS `object-fit` for this tile. Split's bottom seat and screen's
+   *  face-crop seat both want `"cover"` (crop to fill); left generalized
+   *  (rather than hardcoded) so a future caller with different needs
+   *  doesn't have to fork this component. */
+  objectFit: "cover" | "contain";
+  /** Full CSS `object-position` value (e.g. `"0% 50%"`, `"50% 50%"`) fed
+   *  straight through to the element's style. Split passes a static
+   *  left/right seat position (see the `SPLIT_*_TILE_CX` comment in
+   *  video-preview.tsx for what those values represent and why they're
+   *  static); screen packet C passes a static `"50% 50%"` center — same
+   *  "render is the source of truth" stance: the worker face-tracks this
+   *  seat per shot segment, the preview approximates with a fixed center. */
+  objectPosition: string;
   /** Mirrors the main video's own `previewPhase === "ready"` gate so both
    *  tiles fade in together instead of the bottom one flashing blank while
    *  its own (separate) network load catches up. */
@@ -35,18 +44,23 @@ interface SplitSecondaryTileProps {
 }
 
 /**
- * Split preview (split packet C) — the bottom tile of the stacked 2-up.
- * The top tile reuses the studio's single existing `<video ref={videoRef}>`
- * element directly (see video-preview.tsx); this component is the ONE extra
- * secondary element split mode needs, muted and silent so `videoRef` stays
- * the sole audio source and the sole playback-clock driver. Mounted only
- * while split framing is active — zero cost otherwise.
+ * Split/screen preview (split packet C, reused by screen packet C) — the
+ * bottom tile of a stacked 2-up. The top tile reuses the studio's single
+ * existing `<video ref={videoRef}>` element directly (see video-preview.tsx);
+ * this component is the ONE extra secondary element either mode needs, muted
+ * and silent so `videoRef` stays the sole audio source and the sole
+ * playback-clock driver. Mounted only while split or screen framing is
+ * active — zero cost otherwise. `objectFit`/`objectPosition` are the only
+ * bits that differ between the two callers (split's left/right seat vs.
+ * screen's static center facecam crop) — everything else (drift sync, error
+ * handling, cleanup) is shared, unforked logic.
  */
 export function SplitSecondaryTile({
   src,
   isPlaying,
   targetTimeSec,
-  cx,
+  objectFit,
+  objectPosition,
   visible,
   mainVideoRef,
 }: SplitSecondaryTileProps) {
@@ -184,8 +198,8 @@ export function SplitSecondaryTile({
         inset: 0,
         width: "100%",
         height: "100%",
-        objectFit: "cover",
-        objectPosition: `${cx * 100}% 50%`,
+        objectFit,
+        objectPosition,
         display: visible && !hasError ? "block" : "none",
       }}
     />

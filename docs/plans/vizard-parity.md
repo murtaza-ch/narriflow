@@ -382,6 +382,47 @@ before the foundation steps it depends on.
      own `split`+crop+scale branch in the filtergraph adds real memory, not
      just graph-build complexity; worth a headroom check before raising
      `maxSegments` much past today's default of 24.)*
+  3. **Screen+speaker layout (screen packet B, own sub-item)** — v1 LANDED
+     (2026-08-05, this diff). Honest scope: this is NOT the "element
+     segmentation (speaker/screen detection)" work item named above — there
+     is no PiP-facecam region detection and no vertical tracking. The bottom
+     tile is a face-CENTERED HORIZONTAL crop of the WHOLE source frame, the
+     exact same single-face tracking `reframe.ts`'s auto-reframe path
+     already uses, just aimed at a half-height tile instead of the full
+     output; true speaker/screen element segmentation (locating an actual
+     facecam/webcam sub-region within the frame) remains that separate,
+     unstarted epic. Landed:
+     `apps/worker/src/tasks/screen-layout.ts`
+     (`buildScreenSpeakerFilterChain`/`screenTileGeometry`/
+     `screenBottomIsTrackable`), `render-clips.ts`'s
+     `applyScreenSpeakerLayout`/`decideScreenFallback`/
+     `framingForcesPerOutputRender`, the live two-tile preview
+     (video-preview.tsx's `isScreen` block, contain-fit top + centered-cover
+     bottom), and a `WORKER_SCREEN_LAYOUT` kill switch (see
+     `docs/agent/setup.md`). B-roll always wins the whole frame (v1 policy,
+     same as split); no vertical tracking (same policy as split's own
+     tiles).
+     Adversarial review on this landing (verified against real ffmpeg 8.0.1)
+     found and fixed two load-bearing bugs: (1) the naive `Math.round(H / 2)`
+     tile-height split produces an ODD height for 4:5 (1080x1350 → 675) —
+     `pad`'s yuv420p output floors an odd dimension to even, so the top tile
+     silently became 1080x674 while the bottom tile (via `crop`+`scale`,
+     which has no such floor) stayed 675, and `vstack`ing 674+675 yields
+     1080x1349, which `libx264` refuses to encode outright at 1080p (and
+     silently mis-scales at 720p) — every 4:5 screen-layout render failed.
+     Fixed by forcing `bottomHeight = 2 * Math.floor(H / 4)` (always even by
+     construction) and `topHeight = H - bottomHeight` (also always even,
+     since target `H` is itself always even for all four output aspect
+     ratios) instead of splitting evenly and hoping. (2) wide/square targets
+     (1:1, 16:9 against a landscape source) have no lateral room for the
+     bottom tile's crop to move — the tile-aspect crop already consumes the
+     full source width, so the sendcmd track driving it is a mathematical
+     no-op (every face position clamps to the same `x`), yet a sendcmd
+     script was still being built and the log still claimed
+     `bottomTracking: "face"`; added `screenBottomIsTrackable` as the gate
+     (mirrors split's own `splitTilesAreDistinct`) so those outputs render
+     an honest static-center bottom tile with no dead script and an accurate
+     log reason (`no_lateral_room`).
 - Music/SFX library — **design converged 2026-08-05** from competitor
   research (OpusClip/Vizard/Submagic/Captions.app/Klap/Veed/Descript).
   Market pattern to match: curated self-hosted library filterable by mood
