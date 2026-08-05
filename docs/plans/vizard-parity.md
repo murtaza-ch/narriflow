@@ -280,6 +280,42 @@ before the foundation steps it depends on.
      real 2-speaker video) BEFORE any preview work; single-face stretches
      fall back to single-speaker framing; B-roll cutaway replaces the whole
      2-up frame (simplest defensible policy).
+     *(Worker spike DONE 2026-08-05, on real footage — 90s of the dev DB's
+     Jensen Huang interview (2 diarized speakers, source pulled from R2;
+     note: several older dev projects' R2 sources are gone, 404 — only the
+     Jensen + quantum-computing sources still exist). Landed:
+     `reframe_detect.py --multi` (additive; default output verified
+     byte-identical), pure `apps/worker/src/tasks/two-up.ts`
+     (`clusterFaceTracks`, `classifyShotSamples` + segment collapse,
+     `assignSpeakersToClusters`, `buildTwoUpFilterChain`) + 21 tests.
+     VALIDATED: largest-gap 1-D clustering nails the two seats (host
+     cx≈0.34, guest cx≈0.63) and survives 3-face false positives via
+     nearest-distance matching; 5-sample majority smoothing + micro-segment
+     merge yields sane shot segments (12 over 90s — real interviews cut
+     constantly: only ~1/3 of samples are two-shots, so segment-switching
+     is the common case, not the edge case); split→2×crop→scale→vstack
+     satisfies the `[outvbase]` contract; frames verified — both faces
+     correctly seated top/bottom, no half-face crops. GOTCHA: ffmpeg
+     `sendcmd` dispatches by filter NAME graph-wide, so the two tile crops
+     need distinct names (`TWO_UP_TOP_CROP_NAME`/`TWO_UP_BOTTOM_CROP_NAME`)
+     — reusing reframe's single crop name would steer both tiles at once.
+     OVERTURNED ASSUMPTION: diarization-assisted assignment via "which
+     cluster is solo on screen during this speaker's turns" FAILS as a
+     naive majority vote — shot selection is biased toward the star guest
+     (Jensen solo in 73% of ALL single-shots regardless of who is
+     talking), so both speakers voted for the same cluster. Production
+     must baseline-correct (PMI/log-odds vs each cluster's overall solo
+     share) and should treat visual active-speaker detection (mouth
+     motion × audio energy) as the primary signal with diarization as a
+     prior only. ALSO LEARNED: cluster means are NOT laterally stable
+     across shots (left seat ranged cx 0.16-0.43) — production needs
+     per-segment means, and single-shot fallback segments must route
+     through the EXISTING auto-reframe path (the spike's global-mean
+     fallback visibly off-centers subjects whose close-up composition
+     differs from the wide shot). Remaining for production: per-segment
+     crop centers, active-speaker assignment, segment-machinery in
+     render-clips, crossfade on mode switches, and the live dual-`<video>`
+     preview — still the dominant cost, unchanged by this spike.)*
 - Music/SFX library — **design converged 2026-08-05** from competitor
   research (OpusClip/Vizard/Submagic/Captions.app/Klap/Veed/Descript).
   Market pattern to match: curated self-hosted library filterable by mood

@@ -8,9 +8,16 @@ the worker smooths into a crop path. Dominant (largest) face per frame — good
 for the 1-speaker case; multi-speaker active-speaker selection is a later step.
 
 Usage:
-  python3 reframe_detect.py <video> <start_sec> <duration_sec> <fps> <model.onnx>
+  python3 reframe_detect.py <video> <start_sec> <duration_sec> <fps> <model.onnx> [--multi]
 
-Output (stdout): {"width": W, "height": H, "samples": [{"t": s, "cx": 0..1|null}]}
+Output (stdout), default mode (byte-identical to before --multi existed):
+  {"width": W, "height": H, "samples": [{"t": s, "cx": 0..1|null}]}
+
+Output (stdout), --multi mode (vizard-parity.md "Split-screen 2-up" spike):
+  every sample becomes {"t": s, "faces": [{"cx","cy","w","h","score"}, ...]},
+  all normalized 0..1 and source-pixel-corrected the same way the default
+  mode's "cx" is, sorted by ascending cx. Empty list (not null) when no faces
+  were detected in that sample.
 """
 import json
 import sys
@@ -45,6 +52,7 @@ def main() -> int:
     duration = float(sys.argv[3])
     fps = float(sys.argv[4]) or 4.0
     model_path = sys.argv[5]
+    multi = len(sys.argv) > 6 and sys.argv[6] == "--multi"
 
     try:
         import cv2  # opencv-python-headless
@@ -123,21 +131,46 @@ def main() -> int:
                 else frame
             )
 
-            cx = None
             try:
                 _, faces = detector.detect(detect_frame)
             except Exception:
                 faces = None
-            if faces is not None and len(faces) > 0:
-                best = max(faces, key=lambda f: float(f[2]) * float(f[3]))
-                # Scale the detected box back up to source pixels (per-axis,
-                # so rounding in the downscaled size can't skew it) before
-                # normalizing, so cx matches full-resolution detection.
-                x_src = float(best[0]) / scale_x
-                w_src = float(best[2]) / scale_x
-                center = (x_src + w_src / 2.0) / max(1, width)
-                cx = max(0.0, min(1.0, center))
-            samples.append({"t": round(t, 3), "cx": cx})
+
+            if multi:
+                out_faces = []
+                if faces is not None:
+                    for f in faces:
+                        # Scale the detected box back up to source pixels
+                        # (per-axis, so rounding in the downscaled size can't
+                        # skew it) before normalizing — same correction as
+                        # the default-mode cx below.
+                        x_src = float(f[0]) / scale_x
+                        y_src = float(f[1]) / scale_y
+                        w_src = float(f[2]) / scale_x
+                        h_src = float(f[3]) / scale_y
+                        fcx = max(0.0, min(1.0, (x_src + w_src / 2.0) / max(1, width)))
+                        fcy = max(0.0, min(1.0, (y_src + h_src / 2.0) / max(1, height)))
+                        out_faces.append({
+                            "cx": fcx,
+                            "cy": fcy,
+                            "w": float(w_src) / max(1, width),
+                            "h": float(h_src) / max(1, height),
+                            "score": float(f[14]),
+                        })
+                out_faces.sort(key=lambda ff: ff["cx"])
+                samples.append({"t": round(t, 3), "faces": out_faces})
+            else:
+                cx = None
+                if faces is not None and len(faces) > 0:
+                    best = max(faces, key=lambda f: float(f[2]) * float(f[3]))
+                    # Scale the detected box back up to source pixels (per-axis,
+                    # so rounding in the downscaled size can't skew it) before
+                    # normalizing, so cx matches full-resolution detection.
+                    x_src = float(best[0]) / scale_x
+                    w_src = float(best[2]) / scale_x
+                    center = (x_src + w_src / 2.0) / max(1, width)
+                    cx = max(0.0, min(1.0, center))
+                samples.append({"t": round(t, 3), "cx": cx})
 
         idx += 1
 
