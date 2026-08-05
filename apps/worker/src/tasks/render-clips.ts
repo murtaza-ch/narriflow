@@ -85,6 +85,13 @@ import {
   type SplitLayoutSegment,
 } from "./two-up";
 import {
+  buildScreenSpeakerFilterChain,
+  screenBottomIsTrackable,
+  screenTileGeometry,
+  SCREEN_BOTTOM_CROP_NAME,
+  type ScreenSpeakerBottomSpec,
+} from "./screen-layout";
+import {
   brollQueryForClip,
   dominantPexelsOrientation,
   getCachedBrollAssetPath,
@@ -278,6 +285,13 @@ interface PendingRenderOutput {
   storageKey: string;
   subtitlePath?: string | null;
   reframe?: ReframeSpec | null;
+  /** Screen packet B ("screen" framing mode): this output's resolved bottom
+   *  (speaker) tile spec — a sendcmd-driven face crop when detection
+   *  succeeded, else a static center crop. Set by `applyScreenSpeakerLayout`,
+   *  consumed by `buildSingleVideoArgs`'s `screen` param (mirrors how
+   *  `reframe` above is set by `applyAutoReframe` and consumed via
+   *  `params.reframe`). Never set for a non-"screen" clip. */
+  screenBottom?: ScreenSpeakerBottomSpec | null;
   /** Target resolution for this specific render row (vizard-parity Phase C
    *  export options) — read off the ClipRender row, already entitlement-
    *  clamped by clip.service's triggerClipRendering/autoQueueDefaultRenders.
@@ -896,6 +910,145 @@ async function applyAutoReframe(params: {
   return true;
 }
 
+/**
+ * Screen packet B ("screen" framing mode, the worker render path): drives
+ * every `outputs[]` entry's screen-layout BOTTOM (speaker) tile via sendcmd
+ * from an already-detected single-face sample list — the sibling of
+ * `applyAutoReframe` above, same remap -> smooth -> sendcmd-script pipeline,
+ * but setting a `ScreenSpeakerBottomSpec` (consumed by
+ * `buildScreenSpeakerFilterChain`'s `bottom` param, threaded through
+ * `buildSingleVideoArgs`'s `screen` param) on EVERY output rather than only
+ * the subset `applyAutoReframe`'s `reframeOutputs` filter would select — a
+ * screen-mode bottom tile always crops the source to a tile-aspect region,
+ * there's no "source already narrow enough to skip cropping" escape hatch
+ * the way a full-frame reframe has.
+ *
+ * Deliberately does NOT fall back to the whole-clip auto-reframe path when
+ * no face is detected (unlike split, which gives up on the whole 2-up and
+ * re-frames the entire output around the single face instead): the
+ * static-center crop this sets per output when `smoothed` is empty, a given
+ * output's sendcmd script comes back empty (e.g. every sample landed on the
+ * same x), or the output has no lateral room to track in at all
+ * (`screenBottomIsTrackable` — H3, adversarial review: 1:1/16:9 against a
+ * landscape source) IS the fallback. A screen layout with a centered bottom
+ * tile is still a real, useful render — the whole point of this framing mode
+ * is the TOP tile (the full source frame, always rendered, never cropped),
+ * so losing speaker tracking on the bottom tile is a minor degradation, not
+ * a reason to throw away the layout entirely. Returns whether a face-tracked
+ * (not static-center) crop was actually applied to at least one output,
+ * purely for the caller's `clip_screen_bottom_center_fallback` logging.
+ */
+async function applyScreenSpeakerLayout(params: {
+  samples: FaceSample[] | null;
+  cutPlan: ClipCutPlan;
+  clipStartSec: number;
+  probe: SourceProbe;
+  outputs: PendingRenderOutput[];
+  tempDir: string;
+  clipId: string;
+  workflowRunId: string;
+}): Promise<boolean> {
+  let smoothed: SmoothedSample[] = [];
+  if (params.samples) {
+    const segmentGroups = remapFaceSamplesForCutPlan(
+      params.samples,
+      params.cutPlan,
+      params.clipStartSec,
+    );
+    smoothed = segmentGroups.flatMap((group) => smoothFacePath(group));
+  }
+
+  const single = params.outputs.length === 1;
+  let appliedFaceTracking = false;
+
+  for (let i = 0; i < params.outputs.length; i++) {
+    const output = params.outputs[i]!;
+
+    // H3 (adversarial review): wide/square targets (1:1, 16:9 against a
+    // landscape source) have no lateral room for the bottom tile's crop to
+    // move — `computeTileCrop`'s width already equals the full source
+    // width, so `cropXForCenter`'s clamp forces every possible face
+    // position to the identical `x`. Driving that with a sendcmd script
+    // would be a pure no-op that still costs a script file and an extra
+    // filter stage, and used to still log `bottomTracking: "face"` even
+    // though nothing was actually tracked. Skip it outright and render an
+    // honest static-center bottom tile instead.
+    if (!screenBottomIsTrackable(output.aspectRatio, params.probe)) {
+      output.screenBottom = { cx: 0.5, reframe: null };
+      log("info", "clip_screen_bottom_center_fallback", {
+        workflowRunId: params.workflowRunId,
+        clipId: params.clipId,
+        reason: "no_lateral_room",
+        aspectRatio: output.aspectRatio,
+      });
+      continue;
+    }
+
+    // H1 (adversarial review): geometry comes from the SAME
+    // `screenTileGeometry` `buildScreenSpeakerFilterChain` uses — this used
+    // to re-derive tileHeight/tileRatio/cropW independently, which is
+    // exactly how C1's odd-tile-height fix could have landed here and not
+    // there with no error (ffmpeg clamps a mismatched `x`, it doesn't
+    // reject it).
+    const { cropW } = screenTileGeometry(output.aspectRatio, params.probe);
+    const cropName = single ? SCREEN_BOTTOM_CROP_NAME : `${SCREEN_BOTTOM_CROP_NAME}${i}`;
+
+    const script =
+      smoothed.length > 0
+        ? buildReframeSendcmdScript(smoothed, params.probe.width, cropW, cropName)
+        : "";
+
+    if (script) {
+      const scriptPath = join(
+        params.tempDir,
+        `screen-bottom-${params.clipId}-${output.aspectRatio.replace(":", "x")}.txt`,
+      );
+      await writeFile(scriptPath, script, "utf-8");
+      output.screenBottom = { cx: 0.5, reframe: { scriptPath, cropName } };
+      appliedFaceTracking = true;
+    } else {
+      output.screenBottom = { cx: 0.5, reframe: null };
+    }
+  }
+
+  log("info", "clip_screen_layout_applied", {
+    workflowRunId: params.workflowRunId,
+    clipId: params.clipId,
+    bottomTracking: appliedFaceTracking ? "face" : "center",
+  });
+  return appliedFaceTracking;
+}
+
+/** Why screen packet B's screen-share layout couldn't render for this clip —
+ *  `null` means it's rendering as the real top-fit/bottom-speaker layout
+ *  (with either a face-tracked or static-center bottom tile — see
+ *  `applyScreenSpeakerLayout`'s doc comment for why "no face detected" is
+ *  NOT one of these reasons, unlike split's `detection_unavailable`/
+ *  `insufficient_clusters`/etc.). `disabled` is never returned BY
+ *  `decideScreenFallback` itself — it short-circuits before the function is
+ *  even called (the `WORKER_SCREEN_LAYOUT=0` kill switch), same pattern as
+ *  split's own `disabled` reason. */
+export type ScreenFallbackReason = "disabled" | "broll_conflict" | null;
+
+/**
+ * Pure fallback-decision logic for screen packet B: given what's known about
+ * this clip so far, should it fall back to single-speaker framing instead of
+ * the real screen-share layout? v1 policy mirrors split's own
+ * `decideSplitFallback` exactly for the one condition both share: B-roll
+ * always wins ("b-roll replaces the whole 2-up/screen frame" composition is
+ * future work for either layout), independent of whether a face would
+ * otherwise be found for the bottom tile — unlike split, screen has no
+ * detection-availability or cluster-count reasons to fall back on, since an
+ * undetected face just means a static-center bottom tile (still a real
+ * screen layout), not a reason to abandon the layout altogether.
+ */
+export function decideScreenFallback(params: {
+  hasBrollPlan: boolean;
+}): ScreenFallbackReason {
+  if (params.hasBrollPlan) return "broll_conflict";
+  return null;
+}
+
 /** Why split packet B's segment-aware 2-up couldn't render for this clip —
  *  `null` means it's rendering as a real 2-up. Every non-null reason routes
  *  through the SAME fallback as today's pre-packet-B behavior: single-speaker
@@ -969,10 +1122,30 @@ export function decideSplitFallback(params: {
  * the switch off, split must route through EXACTLY the same batch path
  * "auto"/"center" use, not force the per-output path just to immediately
  * fall back inside it every time.
+ *
+ * Screen packet B: "screen" gets the exact same treatment via its own
+ * `WORKER_SCREEN_LAYOUT=0` kill switch — a screen-share clip forces the
+ * per-output path (`buildScreenSpeakerFilterChain`'s top-fit/bottom-speaker
+ * composition, threaded through `buildSingleVideoArgs`'s `screen` param)
+ * unless that switch is set, in which case it fully reverts routing to the
+ * shared batch path exactly like split's own kill switch does. Only one of
+ * "split"/"screen" is ever true for a given clip (`resolveEffectiveFramingMode`
+ * returns a single value), so there's no ordering concern between the two
+ * branches below.
+ *
+ * M4 (adversarial review): this predicate's return value never even gets
+ * consulted for an audio-only clip — `probe.hasVideo` gates the split/screen
+ * detection blocks in `processClipRenderingRun` BEFORE either mode's plan
+ * exists, and `buildAudiogramArgs` (the audio-only render path) ignores
+ * `studioEdits.framing` entirely — so a `true` here for "split"/"screen" on
+ * an audio-only clip is a value nothing downstream reads, not a live
+ * routing decision.
  */
 export function framingForcesPerOutputRender(studioEdits: StudioEdits): boolean {
-  if (process.env.WORKER_SPLIT === "0") return false;
-  return resolveEffectiveFramingMode(studioEdits) === "split";
+  const mode = resolveEffectiveFramingMode(studioEdits);
+  if (mode === "split") return process.env.WORKER_SPLIT !== "0";
+  if (mode === "screen") return process.env.WORKER_SCREEN_LAYOUT !== "0";
+  return false;
 }
 
 function formatSrtTimestamp(seconds: number): string {
@@ -1976,6 +2149,21 @@ export function buildCropAndScaleFilter(
  *    back to (via `applyAutoReframe`, called directly rather than through
  *    this gate) whenever the multi-face plan isn't usable, see
  *    `decideSplitFallback`.
+ *  - "screen" (screen packet B): also `false` here, same `!== "auto"`
+ *    reasoning as "split" — screen is NOT actually undetected either: it runs
+ *    its own single-face detection (`detectFacePath`, same detector as
+ *    "auto" but through its own gate) via `applyScreenSpeakerLayout`, through
+ *    a separate gate in `processClipRenderingRun` guarded directly on
+ *    `resolveEffectiveFramingMode(studioEdits) === "screen"` rather than this
+ *    function. This function staying `false` for screen just means screen
+ *    clips skip the whole-frame SINGLE-face auto-reframe path — which they
+ *    only fall back to (via `applyAutoReframe`, called directly rather than
+ *    through this gate) when the screen layout itself is disabled or
+ *    conflicts with B-roll, see `decideScreenFallback`. An undetected face
+ *    within an otherwise-active screen layout does NOT fall back to this
+ *    path — it degrades to a static-center BOTTOM TILE while the screen
+ *    layout itself keeps rendering (see `applyScreenSpeakerLayout`'s doc
+ *    comment).
  */
 export function shouldRunAutoReframeDetection(studioEdits: StudioEdits): boolean {
   return resolveEffectiveFramingMode(studioEdits) === "auto";
@@ -2137,6 +2325,18 @@ export function buildSingleVideoArgs(params: {
    *  `decideSplitFallback`) transparently falls through to the same
    *  `params.reframe`-driven crop the "auto"/"center" modes use. */
   split?: { segments: SplitLayoutSegment[] } | null;
+  /** Screen-share layout plan (screen packet B, "screen" framing mode) —
+   *  presence means the effective framing mode is "screen" (never coexists
+   *  with `background` or `split`; see `resolveEffectiveFramingMode`'s doc
+   *  comment). Checked AFTER `split` and BEFORE the plain crop-and-scale
+   *  fallback — mutually exclusive with `split` in practice (only one
+   *  effective mode is ever active), so the check order between the two
+   *  doesn't matter functionally, but mirrors `split`'s own placement
+   *  relative to `background`/the fallback. Unlike `split`, there's no
+   *  "empty plan" case: `applyScreenSpeakerLayout` always sets a bottom-tile
+   *  spec (face-tracked or static-center) whenever screen mode is active and
+   *  not disabled/B-roll-conflicted — see `output.screenBottom`. */
+  screen?: { bottom: ScreenSpeakerBottomSpec } | null;
   /** Target resolution (vizard-parity Phase C export options) — "720p"
    *  applies the 2/3 downscale, "1080p"/omitted renders at base resolution. */
   resolution?: ClipRenderResolution;
@@ -2229,6 +2429,24 @@ export function buildSingleVideoArgs(params: {
         aspectRatio: params.aspectRatio,
         probe: { width: params.probe.width, height: params.probe.height },
         segments: params.split.segments,
+        videoInputLabel,
+        outputLabel: composedOutputLabel,
+        trailingChain: textAndCaptionChain,
+      }),
+    );
+  } else if (params.screen) {
+    // Screen packet B: static two-tile top-fit/bottom-speaker layout. Reads
+    // from `videoInputLabel` for the same reason `split` does (plan/spec is
+    // already expressed against the post-cut-concat-aware label). `params.
+    // reframe` is irrelevant here (it's mutually exclusive with a real
+    // screen plan: either screen mode is active and this branch runs, or it
+    // fell back to the plain `else` branch below with `params.reframe` set
+    // instead — never both, same contract `split` already established).
+    filterParts.push(
+      ...buildScreenSpeakerFilterChain({
+        aspectRatio: params.aspectRatio,
+        probe: { width: params.probe.width, height: params.probe.height },
+        bottom: params.screen.bottom,
         videoInputLabel,
         outputLabel: composedOutputLabel,
         trailingChain: textAndCaptionChain,
@@ -2922,13 +3140,15 @@ export function buildMultiVideoArgs(params: {
  * waveform over a solid background with burned captions — instead of a black
  * screen. The waveform color follows the caption preset's highlight color.
  *
- * Ignores `studioEdits.framing` entirely (no `split` param, no face
- * detection) — there is no video stream, so "split-screen 2-up" has nothing
- * to seat two faces into. Split packet B doesn't change this: an audio-only
- * clip never reaches the split-detection block in `processClipRenderingRun`
- * (`probe.hasVideo` gates it), so `studioEdits.framing.mode === "split"` on
- * an audio-only clip silently renders the same waveform panel as any other
- * mode, exactly like it already did before this feature existed.
+ * Ignores `studioEdits.framing` entirely (no `split`/`screen` param, no face
+ * detection) — there is no video stream, so neither "split-screen 2-up" nor
+ * "screen"'s top-fit/bottom-speaker layout has anything to seat a face or a
+ * screen-share frame into. Split packet B and screen packet B don't change
+ * this: an audio-only clip never reaches the split/screen detection blocks
+ * in `processClipRenderingRun` (`probe.hasVideo` gates both), so
+ * `studioEdits.framing.mode === "split"` or `"screen"` on an audio-only clip
+ * silently renders the same waveform panel as any other mode, exactly like
+ * it already did before either feature existed.
  */
 export function buildAudiogramArgs(params: {
   sourcePath: string;
@@ -3792,7 +4012,14 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
         // `shouldRunAutoReframeDetection`. Split (packet B) also skips this
         // block — it runs its OWN multi-face detection below and only falls
         // back to this single-face path (via `applyAutoReframe` directly,
-        // not through this gate) when a real 2-up isn't possible.
+        // not through this gate) when a real 2-up isn't possible. Screen
+        // (packet B) skips it for the same reason — it runs its OWN
+        // single-face detection below (`applyScreenSpeakerLayout`) for the
+        // bottom tile, and only falls back to this whole-frame path when the
+        // screen layout is disabled or conflicts with B-roll (see
+        // `decideScreenFallback`) — an undetected face within an otherwise-
+        // active screen layout degrades to a static-center bottom tile
+        // instead, never reaching this gate at all.
         shouldRunAutoReframeDetection(studioEdits)
       ) {
         // Detection deliberately scans the FULL uncut clip window
@@ -4023,6 +4250,148 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
                 clipId: clip.id,
                 source: "auto",
                 message: error instanceof Error ? error.message : "unknown",
+              });
+            }
+          }
+        }
+      }
+
+      // Screen packet B ("screen" framing mode, the worker render path): when
+      // the clip's effective framing mode is "screen", run single-face
+      // detection (NOT `detectMultiFacePath` — screen mode only ever needs
+      // the dominant/single face for the bottom tile, unlike split's
+      // cluster-seat detection) and set every output's `screenBottom` spec
+      // (`applyScreenSpeakerLayout`, mirroring `applyAutoReframe`).
+      // Evaluated AFTER the B-roll plan above for the same reason split is:
+      // the v1 B-roll conflict policy needs to know whether this clip
+      // already has cutaways before deciding whether to build a screen
+      // layout at all (`decideScreenFallback`'s "broll_conflict" reason).
+      const screenLayoutEnabled = process.env.WORKER_SCREEN_LAYOUT !== "0";
+      const isScreenMode =
+        resolveEffectiveFramingMode(studioEdits) === "screen" && probe.hasVideo;
+      if (isScreenMode) {
+        if (!screenLayoutEnabled) {
+          // Kill switch (mirrors split's `disabled` reason): fully reverts
+          // routing — `framingForcesPerOutputRender` also returns false for
+          // "screen" when this is set, so the clip renders through the exact
+          // same shared/batch path "auto"/"center" use, falling back to
+          // plain whole-frame single-face auto-reframe (never a static
+          // screen layout, never a failed render) exactly like split's own
+          // `disabled` branch does below.
+          log("info", "clip_screen_fallback", {
+            workflowRunId: run.id,
+            clipId: clip.id,
+            reason: "disabled",
+          });
+          if (reframeEnabled && srcRatio > 1.05 && reframeOutputs.length > 0) {
+            const detectInput = await extractFaceDetectionSegment({
+              sourcePath,
+              tempDir,
+              clipId: clip.id,
+              workflowRunId: run.id,
+              clipStartSec,
+              durationSec: effective.durationSec,
+              suffix: "-screenfallback",
+            });
+            const detection = detectInput
+              ? await detectFacePath({
+                  sourcePath: detectInput.path,
+                  startSec: detectInput.startSec,
+                  durationSec: effective.durationSec,
+                })
+              : null;
+            await applyAutoReframe({
+              samples: detection?.samples ?? null,
+              cutPlan,
+              clipStartSec,
+              probe,
+              outputs,
+              reframeOutputs,
+              tempDir,
+              clipId: clip.id,
+              workflowRunId: run.id,
+            });
+          }
+        } else {
+          const screenFallbackReason = decideScreenFallback({
+            hasBrollPlan: Boolean(brollPlan),
+          });
+
+          if (screenFallbackReason) {
+            log("info", "clip_screen_fallback", {
+              workflowRunId: run.id,
+              clipId: clip.id,
+              reason: screenFallbackReason,
+            });
+            // B-roll conflict: fall back to whole-frame single-speaker
+            // auto-reframe framing exactly like split's own broll_conflict
+            // branch — forced here since `shouldRunAutoReframeDetection`
+            // deliberately excludes "screen".
+            if (reframeEnabled && srcRatio > 1.05 && reframeOutputs.length > 0) {
+              const detectInput = await extractFaceDetectionSegment({
+                sourcePath,
+                tempDir,
+                clipId: clip.id,
+                workflowRunId: run.id,
+                clipStartSec,
+                durationSec: effective.durationSec,
+                suffix: "-screenfallback",
+              });
+              const detection = detectInput
+                ? await detectFacePath({
+                    sourcePath: detectInput.path,
+                    startSec: detectInput.startSec,
+                    durationSec: effective.durationSec,
+                  })
+                : null;
+              await applyAutoReframe({
+                samples: detection?.samples ?? null,
+                cutPlan,
+                clipStartSec,
+                probe,
+                outputs,
+                reframeOutputs,
+                tempDir,
+                clipId: clip.id,
+                workflowRunId: run.id,
+              });
+            }
+          } else {
+            // Real screen layout: single-face detection for the bottom
+            // (speaker) tile. Same source<->edited timeline contract as
+            // every other detection path — `applyScreenSpeakerLayout`
+            // remaps through `remapFaceSamplesForCutPlan` internally.
+            const detectInput = await extractFaceDetectionSegment({
+              sourcePath,
+              tempDir,
+              clipId: clip.id,
+              workflowRunId: run.id,
+              clipStartSec,
+              durationSec: effective.durationSec,
+              suffix: "-screen",
+            });
+            const detection = detectInput
+              ? await detectFacePath({
+                  sourcePath: detectInput.path,
+                  startSec: detectInput.startSec,
+                  durationSec: effective.durationSec,
+                })
+              : null;
+            const appliedFaceTracking = await applyScreenSpeakerLayout({
+              samples: detection?.samples ?? null,
+              cutPlan,
+              clipStartSec,
+              probe,
+              outputs,
+              tempDir,
+              clipId: clip.id,
+              workflowRunId: run.id,
+            });
+            if (!appliedFaceTracking) {
+              log("info", "clip_screen_bottom_center_fallback", {
+                workflowRunId: run.id,
+                clipId: clip.id,
+                reason: detection ? "no_face_detected" : "detection_unavailable",
               });
             }
           }
@@ -4699,6 +5068,21 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
                     splitPlan && !splitIneligibleOutputs.includes(output)
                       ? { segments: splitPlan.segments }
                       : null,
+                  // Screen packet B: `output.screenBottom` is only ever set
+                  // by `applyScreenSpeakerLayout`, which only ever runs when
+                  // `backgroundPlan`/`splitPlan` are both null (fit wins as
+                  // "fit" before `framing.mode` is read; only one of split/
+                  // screen's gates is ever active per clip) — no ordering
+                  // conflict with `background`/`split` above. Unlike split,
+                  // no per-output ineligibility filter is needed: a screen
+                  // layout's two tiles are always distinct content (see
+                  // screen-layout.ts's doc comment), and
+                  // `applyScreenSpeakerLayout` sets every output's
+                  // `screenBottom` (face-tracked or static-center) whenever
+                  // it runs at all.
+                  screen: output.screenBottom
+                    ? { bottom: output.screenBottom }
+                    : null,
                   resolution: output.resolution,
                   watermark: applyWatermark,
                   cutPlan,

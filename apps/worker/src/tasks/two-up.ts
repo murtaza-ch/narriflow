@@ -659,7 +659,15 @@ export interface BuildTwoUpFilterChainParams {
   trailingChain?: string;
 }
 
-function computeTileCrop(
+/**
+ * Tile-aspect crop rectangle for a `W x H/2` stacked tile (top/bottom split
+ * tile, or — screen packet B — the screen-layout bottom speaker tile, which
+ * is geometrically the SAME tile shape: half the target output's height,
+ * full its width). Exported so `screen-layout.ts` can reuse this exact math
+ * instead of re-deriving it (both callers want "the biggest tile-aspect
+ * rectangle this source can offer, centered").
+ */
+export function computeTileCrop(
   srcWidth: number,
   srcHeight: number,
   tileRatio: number,

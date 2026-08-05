@@ -19,6 +19,7 @@ import {
   buildSingleVideoArgs,
   buildTransitionFilter,
   clipRenderAttemptStorageKey,
+  decideScreenFallback,
   decideSplitFallback,
   downloadUrlToFile,
   escapeDrawtextText,
@@ -31,6 +32,7 @@ import {
   shouldRunAutoReframeDetection,
 } from "./render-clips";
 import { buildClipCutPlan } from "./cut-plan";
+import { SCREEN_BOTTOM_CROP_NAME } from "./screen-layout";
 import type { SplitLayoutSegment } from "./two-up";
 
 function makeUtterance(
@@ -391,6 +393,69 @@ describe("framingForcesPerOutputRender (split packet B — batch-encoder gate)",
       if (previous === undefined) delete process.env.WORKER_SPLIT;
       else process.env.WORKER_SPLIT = previous;
     }
+  });
+
+  // Screen packet B: "screen" gets the exact same per-output-forcing
+  // treatment as "split", gated by its own WORKER_SCREEN_LAYOUT kill switch.
+  test("true for screen mode", () => {
+    expect(
+      framingForcesPerOutputRender(studioEditsSchema.parse({ framing: { mode: "screen" } })),
+    ).toBe(true);
+  });
+
+  test("false when background wins as 'fit' even though framing.mode is 'screen'", () => {
+    const withBackground = studioEditsSchema.parse({
+      background: { mode: "color", color: "#112233", imageUrl: null },
+      framing: { mode: "screen" },
+    });
+    expect(framingForcesPerOutputRender(withBackground)).toBe(false);
+  });
+
+  test("false for screen mode when WORKER_SCREEN_LAYOUT=0 (fully reverts routing, mirrors split's kill switch)", () => {
+    const previous = process.env.WORKER_SCREEN_LAYOUT;
+    process.env.WORKER_SCREEN_LAYOUT = "0";
+    try {
+      expect(
+        framingForcesPerOutputRender(studioEditsSchema.parse({ framing: { mode: "screen" } })),
+      ).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env.WORKER_SCREEN_LAYOUT;
+      else process.env.WORKER_SCREEN_LAYOUT = previous;
+    }
+  });
+
+  // Cross-check: each kill switch only ever affects its own mode.
+  test("WORKER_SCREEN_LAYOUT=0 does not affect split, and WORKER_SPLIT=0 does not affect screen", () => {
+    const previousScreen = process.env.WORKER_SCREEN_LAYOUT;
+    const previousSplit = process.env.WORKER_SPLIT;
+    process.env.WORKER_SCREEN_LAYOUT = "0";
+    try {
+      expect(
+        framingForcesPerOutputRender(studioEditsSchema.parse({ framing: { mode: "split" } })),
+      ).toBe(true);
+    } finally {
+      if (previousScreen === undefined) delete process.env.WORKER_SCREEN_LAYOUT;
+      else process.env.WORKER_SCREEN_LAYOUT = previousScreen;
+    }
+    process.env.WORKER_SPLIT = "0";
+    try {
+      expect(
+        framingForcesPerOutputRender(studioEditsSchema.parse({ framing: { mode: "screen" } })),
+      ).toBe(true);
+    } finally {
+      if (previousSplit === undefined) delete process.env.WORKER_SPLIT;
+      else process.env.WORKER_SPLIT = previousSplit;
+    }
+  });
+});
+
+describe("decideScreenFallback (screen packet B — fallback-decision matrix)", () => {
+  test("B-roll wins the fallback, same v1 policy as split", () => {
+    expect(decideScreenFallback({ hasBrollPlan: true })).toBe("broll_conflict");
+  });
+
+  test("no B-roll: no fallback (an undetected face is NOT a fallback reason — it degrades to a static-center bottom tile instead)", () => {
+    expect(decideScreenFallback({ hasBrollPlan: false })).toBeNull();
   });
 });
 
@@ -937,6 +1002,150 @@ describe("buildSingleVideoArgs with a split plan active (split packet B)", () =>
     const omitted = buildSingleVideoArgs(baseParams);
     const withNull = buildSingleVideoArgs({ ...baseParams, split: null });
     const withUndefined = buildSingleVideoArgs({ ...baseParams, split: undefined });
+    expect(withNull).toEqual(omitted);
+    expect(withUndefined).toEqual(omitted);
+  });
+});
+
+describe("buildSingleVideoArgs with a screen layout active (screen packet B)", () => {
+  const probe = { width: 640, height: 360, hasVideo: true, hasAudio: true, fps: 30 };
+
+  test("replaces crop+scale with the top-fit/bottom-speaker screen filtergraph, reading [0:v] (uncut)", () => {
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 10,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+      screen: { bottom: { cx: 0.5 } },
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    expect(graph).toContain("[0:v]split=2[screen_top_src][screen_bot_src]");
+    expect(graph).toContain("pad=1080:960:(ow-iw)/2:(oh-ih)/2:color=black");
+    expect(graph).toContain("[screen_bot_src]crop=");
+    expect(graph).toContain("vstack=inputs=2,format=yuv420p,setsar=1[outv]");
+    expect(graph).not.toMatch(/\[0:v\]crop=/); // the plain crop-and-scale fallback never runs
+  });
+
+  test("sendcmd-driven bottom tile (face detected) targets SCREEN_BOTTOM_CROP_NAME", () => {
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 10,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+      screen: {
+        bottom: {
+          cx: 0.5,
+          reframe: { scriptPath: "/tmp/screen-bottom.txt", cropName: SCREEN_BOTTOM_CROP_NAME },
+        },
+      },
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    expect(graph).toContain("sendcmd=f='/tmp/screen-bottom.txt'");
+    expect(graph).toContain(`${SCREEN_BOTTOM_CROP_NAME}=w=`);
+  });
+
+  test("static-center bottom tile (no face detected) has no sendcmd stage", () => {
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 10,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+      screen: { bottom: { cx: 0.5 } },
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    expect(graph).not.toContain("sendcmd");
+  });
+
+  test("folds captions in as the vstack's trailing chain, same [outv] contract", () => {
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 10,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: "/tmp/x.srt",
+      screen: { bottom: { cx: 0.5 } },
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    expect(graph).toContain("vstack=inputs=2,format=yuv420p,setsar=1,subtitles=");
+    expect(args).toContain("-map");
+    expect(args[args.indexOf("-map") + 1]).toBe("[outv]");
+  });
+
+  test("applies AFTER cut-concat: reads [vcat], not [0:v], when the clip has real cuts", () => {
+    const cutPlan = buildClipCutPlan([{ startSec: 3, endSec: 4 }], { startSec: 0, endSec: 10 });
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 10,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+      cutPlan,
+      screen: { bottom: { cx: 0.5 } },
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    expect(graph).toContain("[vcat]split=2[screen_top_src][screen_bot_src]");
+  });
+
+  test("background (fit mode) wins over screen when both are somehow present", () => {
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 10,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+      background: { mode: "color", color: "#112233", imagePath: null },
+      screen: { bottom: { cx: 0.5 } },
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    expect(graph).toContain("pad=1080:1920"); // full-canvas fit pad, not the tile pad
+    expect(graph).not.toContain("screen_top_src");
+  });
+
+  test("split wins over screen when both are somehow present (mutually exclusive in practice, but split is checked first)", () => {
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 10,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+      split: { segments: [{ startSec: 0, endSec: 10, layout: "single", cxNorm: 0.5 }] },
+      screen: { bottom: { cx: 0.5 } },
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    expect(graph).toContain("split_seg");
+    expect(graph).not.toContain("screen_top_src");
+  });
+
+  test("byte-identical to before this feature: omitting `screen` (or passing it as null/undefined) never changes the graph", () => {
+    const baseParams = {
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 10,
+      aspectRatio: "9:16" as const,
+      probe,
+      srtPath: null,
+    };
+    const omitted = buildSingleVideoArgs(baseParams);
+    const withNull = buildSingleVideoArgs({ ...baseParams, screen: null });
+    const withUndefined = buildSingleVideoArgs({ ...baseParams, screen: undefined });
     expect(withNull).toEqual(omitted);
     expect(withUndefined).toEqual(omitted);
   });
