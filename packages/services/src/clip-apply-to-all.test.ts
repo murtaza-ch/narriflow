@@ -78,4 +78,18 @@ describe("groupClipsByMergedStudioEdits (MEDIUM: batched apply-to-all writes)", 
     const allIds = groups.flatMap((g) => g.ids).sort();
     expect(allIds).toEqual(["a", "b", "c", "d", "e"]);
   });
+
+  test("a framing-only patch (vizard-parity Phase C-2 stage 1) also groups correctly", () => {
+    const withCenterFraming = studioEditsSchema.parse({
+      framing: { mode: "center" },
+    });
+    const groups = groupClipsByMergedStudioEdits([
+      { id: "clip-1", merged: defaults },
+      { id: "clip-2", merged: withCenterFraming },
+      { id: "clip-3", merged: withCenterFraming },
+    ]);
+    expect(groups).toHaveLength(2);
+    const centerGroup = groups.find((g) => g.merged === withCenterFraming);
+    expect(centerGroup?.ids.sort()).toEqual(["clip-2", "clip-3"]);
+  });
 });

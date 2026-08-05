@@ -8,7 +8,7 @@ import {
   Shuffle,
   Type,
   Music,
-  Image as ImageIcon,
+  Crop,
   X,
 } from "lucide-react";
 import { ScoreMeter } from "@narriflow/ui";
@@ -23,7 +23,7 @@ import { TextPanel } from "./tool-panels/text-panel";
 import { MusicPanel } from "./tool-panels/music-panel";
 import { BrandTemplatePanel } from "./tool-panels/brand-template-panel";
 import { TransitionsPanel } from "./tool-panels/transitions-panel";
-import { BackgroundPanel } from "./tool-panels/background-panel";
+import { LayoutPanel } from "./tool-panels/layout-panel";
 
 const TOOLS: { id: ToolId; label: string; icon: React.ReactNode }[] = [
   { id: "captions",    label: "Captions",       icon: <Subtitles size={17} /> },
@@ -32,7 +32,7 @@ const TOOLS: { id: ToolId; label: string; icon: React.ReactNode }[] = [
   { id: "transitions", label: "Transitions",    icon: <Shuffle size={17} /> },
   { id: "text",        label: "Text",           icon: <Type size={17} /> },
   { id: "music",       label: "Music",          icon: <Music size={17} /> },
-  { id: "background",  label: "Background",     icon: <ImageIcon size={17} /> },
+  { id: "layout",      label: "Layout",         icon: <Crop size={17} /> },
 ];
 
 const PANEL_MAP: Record<ToolId, React.ReactNode> = {
@@ -42,7 +42,7 @@ const PANEL_MAP: Record<ToolId, React.ReactNode> = {
   "transitions": <TransitionsPanel />,
   "text":        <TextPanel />,
   "music":       <MusicPanel />,
-  "background":  <BackgroundPanel />,
+  "layout":      <LayoutPanel />,
 };
 
 /** Hairline definition row for the no-selection Inspector view. */

@@ -231,6 +231,38 @@ before the foundation steps it depends on.
      into ONE framing-mode dispatch so a fourth mode can't silently
      double-apply. Framing and background are the same radio group in the
      UI (crop-auto / crop-center / fit+background), not independent flags.
+     *(Landed 2026-08-05 — `studioEdits.framing = { mode: "auto" | "center" }`
+     (`packages/validators/src/studio-edits.ts`); `fit` is deliberately NOT a
+     `framing` enum value — it's derived entirely from
+     `background.mode !== "off"` so the two fields can't disagree. The single
+     dispatch point is the new exported `resolveEffectiveFramingMode(studioEdits)
+     → "auto" | "center" | "fit"`, used by both the worker and the studio (no
+     forked logic). Worker: `shouldRunAutoReframeDetection` gates the
+     `detectFacePath` call in `render-clips.ts` (only "auto" runs detection —
+     "center" skips it for a static crop, "fit" skips it because the fit
+     branch never crops); the background/fit-plan gate now reads
+     `resolveEffectiveFramingMode(studioEdits) === "fit"` instead of the raw
+     `background.mode` check (same truth table, one source). The
+     `buildFitAndBackgroundFilter` vs `buildCropAndScaleFilter` builder branch
+     in both `buildSingleVideoArgs` and `buildBrollVideoArgs` needed no change
+     — it already keys off the resolved `BackgroundPlan | null`, which is only
+     ever constructed when the effective mode is "fit". Apply-to-all:
+     `applyStudioEditsPatchSchema` extended to a 3-way XOR
+     (transition|background|framing); the Background tool panel was
+     repurposed into a Layout panel (`tool-panels/layout-panel.tsx`, sidebar
+     `ToolId` renamed `background`→`layout`) with the framing radio group on
+     top and the existing color/image controls revealed only under Fit ("None"
+     isn't offered inside Fit — picking Fit with no color set defaults to
+     black). Apply-to-all from that panel sends `background` alone for Fit
+     (it always wins over `framing` on the receiving clip), or `framing` plus
+     a second sequential `background: {mode:"off"}` call for Auto/Center (so a
+     receiving clip whose own background is active actually clears it instead
+     of silently keeping "fit"). `framing`'s `.default({mode:"auto"})` follows
+     the same convention as `background`/`logo`, so old documents don't appear
+     dirty on load — `document` and `original` both parse through the same
+     updated `studioEditsSchema` at request time in
+     `clipService.getClipEditorDocument`, so a stored blob with no `framing`
+     key fills in the identical default on both sides.)*
   2. **Split-screen 2-up (own sub-plan — genuinely large)**. Constraints
      found: `reframe_detect.py` deliberately emits only the largest face
      per frame (multi-face output is a trivial change; tracking/clustering

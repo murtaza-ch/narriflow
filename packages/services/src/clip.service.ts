@@ -3593,8 +3593,8 @@ export class ClipService {
   }
 
   /**
-   * Applies a `studioEdits` sub-field patch (transition or background) to
-   * every clip in an owned project ("apply to all"). Unlike
+   * Applies a `studioEdits` sub-field patch (transition, background, or
+   * framing) to every clip in an owned project ("apply to all"). Unlike
    * `applyCaptionPresetToAllClips`, `studioEdits` is a JSON blob per row, so
    * this can't be a single `updateMany` — each row's document must be
    * fetched, parsed with `studioEditsSchema.parse(... ?? {})` (same fallback
@@ -3626,11 +3626,15 @@ export class ClipService {
     projectId: string,
     patch: ApplyStudioEditsPatch,
     opts?: { excludeClipId?: string },
-  ): Promise<{ updated: number; field: "transition" | "background" }> {
+  ): Promise<{ updated: number; field: "transition" | "background" | "framing" }> {
     const prisma = requirePrisma();
     const parsedPatch = applyStudioEditsPatchSchema.parse(patch);
-    const field: "transition" | "background" =
-      parsedPatch.transition !== undefined ? "transition" : "background";
+    const field: "transition" | "background" | "framing" =
+      parsedPatch.transition !== undefined
+        ? "transition"
+        : parsedPatch.background !== undefined
+          ? "background"
+          : "framing";
 
     const project = await prisma.project.findFirst({
       where: { id: projectId, userId },

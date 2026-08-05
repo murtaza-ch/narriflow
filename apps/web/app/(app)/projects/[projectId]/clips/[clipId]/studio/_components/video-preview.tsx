@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import {
   editedToSource,
+  resolveEffectiveFramingMode,
   resolveEffectiveLogoSettings,
   resolveMusicFadeWindows,
   type LogoPosition,
@@ -165,15 +166,19 @@ export function VideoPreview() {
 
   const arConfig = ASPECT_RATIO_CONFIG[aspectRatio];
 
-  // Vizard-parity Phase C item 2 (canvas background): a persisted
-  // studioEdits.background always wins over the cosmetic, session-local
-  // `layoutMode` — when it's set the video letterboxes ("fit") and a solid
-  // color or image fills the empty frame behind it, mirroring the worker's
-  // buildFitAndBackgroundFilter exactly (scale-to-contain, centered).
-  // `layoutMode`'s own fill/fit/blur cycling stays fully in charge whenever
-  // background is "off", unchanged from before this feature.
+  // Vizard-parity Phase C item 2 (canvas background) / Phase C-2 stage 1
+  // (framing modes): a persisted studioEdits.background always wins over
+  // the cosmetic, session-local `layoutMode` — when the EFFECTIVE framing
+  // mode (resolveEffectiveFramingMode, shared with the Layout panel and the
+  // worker's render pipeline) resolves to "fit", the video letterboxes and
+  // a solid color or image fills the empty frame behind it, mirroring the
+  // worker's buildFitAndBackgroundFilter exactly (scale-to-contain,
+  // centered). "auto" vs "center" have no client-side preview distinction
+  // today — the proxy shows uncropped either way — so `layoutMode`'s own
+  // fill/fit/blur cycling stays fully in charge whenever background is
+  // "off", unchanged from before this feature.
   const background = studioEdits.background;
-  const backgroundActive = background.mode !== "off";
+  const backgroundActive = resolveEffectiveFramingMode(studioEdits) === "fit";
   const videoObjectFit: "contain" | "cover" = backgroundActive
     ? "contain"
     : layoutMode === "fit"

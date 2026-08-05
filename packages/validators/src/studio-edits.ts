@@ -127,6 +127,20 @@ const STUDIO_BACKGROUND_DEFAULT = {
   imageUrl: null,
 } as const;
 
+// Per-clip framing mode (vizard-parity.md Phase C-2 stage 1). "auto" and
+// "center" are the two ways a clip can be CROPPED to fill the frame; "fit"
+// (letterbox + background) is deliberately NOT a value here — it's already
+// fully expressed by `background.mode !== "off"` (landed in Phase C item 2),
+// so representing it again here would let the two fields disagree. The
+// EFFECTIVE framing mode (which folds `background` in) is always resolved
+// through `resolveEffectiveFramingMode` below — never read `framing.mode`
+// directly when deciding crop vs fit.
+export const studioFramingSchema = z.object({
+  mode: z.enum(["auto", "center"]).default("auto"),
+});
+
+const STUDIO_FRAMING_DEFAULT = { mode: "auto" } as const;
+
 export const studioEditsSchema = z
   .object({
     textLayers: z.array(studioTextLayerSchema).max(12).default([]),
@@ -145,6 +159,7 @@ export const studioEditsSchema = z
     sourceAudio: studioSourceAudioSchema.default({ volume: 100, muted: false }),
     logo: studioLogoSchema.default(STUDIO_LOGO_DEFAULT),
     background: studioBackgroundSchema.default(STUDIO_BACKGROUND_DEFAULT),
+    framing: studioFramingSchema.default(STUDIO_FRAMING_DEFAULT),
   })
   .default({
     textLayers: [],
@@ -160,6 +175,7 @@ export const studioEditsSchema = z
     sourceAudio: { volume: 100, muted: false },
     logo: STUDIO_LOGO_DEFAULT,
     background: STUDIO_BACKGROUND_DEFAULT,
+    framing: STUDIO_FRAMING_DEFAULT,
   });
 
 export const updateClipStudioEditsSchema = z.object({
@@ -172,28 +188,53 @@ export type StudioMusic = z.infer<typeof studioMusicSchema>;
 export type StudioSourceAudio = z.infer<typeof studioSourceAudioSchema>;
 export type StudioLogo = z.infer<typeof studioLogoSchema>;
 export type StudioBackground = z.infer<typeof studioBackgroundSchema>;
+export type StudioFraming = z.infer<typeof studioFramingSchema>;
 export type StudioEdits = z.infer<typeof studioEditsSchema>;
 export type UpdateClipStudioEdits = z.infer<typeof updateClipStudioEditsSchema>;
 
+export type EffectiveFramingMode = "auto" | "center" | "fit";
+
+/**
+ * The single source of truth for "how is this clip actually framed" —
+ * folds `background` and `framing` into one of three effective modes so the
+ * worker's render pipeline and the studio's Layout panel/preview can never
+ * fork on the answer. `background.mode !== "off"` always wins as "fit"
+ * regardless of `framing.mode`: fit isn't a `framing` enum value (see
+ * `studioFramingSchema`'s doc comment), it's derived entirely from
+ * `background`. Only when background is off does `framing.mode` (auto vs
+ * center) take effect.
+ */
+export function resolveEffectiveFramingMode(
+  studioEdits: Pick<StudioEdits, "background" | "framing">,
+): EffectiveFramingMode {
+  if (studioEdits.background.mode !== "off") return "fit";
+  return studioEdits.framing.mode;
+}
+
 /**
  * "Apply to all clips" for a single `studioEdits` sub-field (vizard-parity.md
- * Phase C — transitions/background apply-to-all). Unlike `captionPreset`,
- * `studioEdits` is a JSON blob, so a bulk apply can't overwrite the whole
- * column — it must patch exactly one named sub-object per call, merged
- * per-row on top of that clip's existing `studioEdits` by the service. The
- * `.strict()` + refine keeps the payload to precisely one of the two known
- * fields; add a new branch here (and in `applyStudioEditsPatchToAllClips`)
- * when another sub-field earns an apply-to-all action.
+ * Phase C — transitions/background/framing apply-to-all). Unlike
+ * `captionPreset`, `studioEdits` is a JSON blob, so a bulk apply can't
+ * overwrite the whole column — it must patch exactly one named sub-object
+ * per call, merged per-row on top of that clip's existing `studioEdits` by
+ * the service. The `.strict()` + refine keeps the payload to precisely one
+ * of the known fields; add a new branch here (and in
+ * `applyStudioEditsPatchToAllClips`) when another sub-field earns an
+ * apply-to-all action.
  */
 export const applyStudioEditsPatchSchema = z
   .object({
     transition: studioTransitionSchema.optional(),
     background: studioBackgroundSchema.optional(),
+    framing: studioFramingSchema.optional(),
   })
   .strict()
   .refine(
-    (patch) => (patch.transition !== undefined) !== (patch.background !== undefined),
-    { message: "patch must contain exactly one of: transition, background" },
+    (patch) =>
+      [patch.transition, patch.background, patch.framing].filter(
+        (value) => value !== undefined,
+      ).length === 1,
+    { message: "patch must contain exactly one of: transition, background, framing" },
   );
 
 export type ApplyStudioEditsPatch = z.infer<typeof applyStudioEditsPatchSchema>;

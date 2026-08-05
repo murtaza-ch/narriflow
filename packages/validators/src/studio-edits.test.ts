@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   applyStudioEditsPatchSchema,
   applyStudioEditsToAllSchema,
+  resolveEffectiveFramingMode,
   resolveMusicFadeWindows,
   studioEditsSchema,
 } from "./studio-edits";
@@ -216,6 +217,70 @@ describe("studioEditsSchema (source audio + music fades)", () => {
       }),
     ).toThrow();
   });
+
+  test("parse({}) defaults framing to auto", () => {
+    const parsed = studioEditsSchema.parse({});
+    expect(parsed.framing).toEqual({ mode: "auto" });
+  });
+
+  test("legacy persisted JSON (no framing key at all) parses to the auto default — spurious-dirty guard", () => {
+    // Same shape a document saved before this feature landed would have —
+    // this must parse identically to a freshly-defaulted document so an
+    // old clip doesn't appear dirty on load just because `framing` is new.
+    const legacy = {
+      textLayers: [],
+      transition: { type: "none", durationSec: 0.4 },
+      background: { mode: "off", color: null, imageUrl: null },
+    };
+    const parsed = studioEditsSchema.parse(legacy);
+    expect(parsed.framing).toEqual({ mode: "auto" });
+  });
+
+  test("accepts an explicit center framing mode", () => {
+    const parsed = studioEditsSchema.parse({ framing: { mode: "center" } });
+    expect(parsed.framing).toEqual({ mode: "center" });
+  });
+
+  test("rejects an invalid framing mode (fit is not a framing value)", () => {
+    expect(() =>
+      studioEditsSchema.parse({ framing: { mode: "fit" } }),
+    ).toThrow();
+    expect(() =>
+      studioEditsSchema.parse({ framing: { mode: "off" } }),
+    ).toThrow();
+  });
+});
+
+describe("resolveEffectiveFramingMode (Phase C-2 stage 1 — background/framing fold)", () => {
+  test("defaults to auto when background is off and framing is unset", () => {
+    const parsed = studioEditsSchema.parse({});
+    expect(resolveEffectiveFramingMode(parsed)).toBe("auto");
+  });
+
+  test("resolves to center when background is off and framing.mode is center", () => {
+    const parsed = studioEditsSchema.parse({ framing: { mode: "center" } });
+    expect(resolveEffectiveFramingMode(parsed)).toBe("center");
+  });
+
+  test("background active always resolves to fit, regardless of framing.mode", () => {
+    const withAuto = studioEditsSchema.parse({
+      background: { mode: "color", color: "#112233", imageUrl: null },
+      framing: { mode: "auto" },
+    });
+    expect(resolveEffectiveFramingMode(withAuto)).toBe("fit");
+
+    const withCenter = studioEditsSchema.parse({
+      background: { mode: "color", color: "#112233", imageUrl: null },
+      framing: { mode: "center" },
+    });
+    expect(resolveEffectiveFramingMode(withCenter)).toBe("fit");
+
+    const withImage = studioEditsSchema.parse({
+      background: { mode: "image", color: null, imageUrl: "https://cdn.example/bg.png" },
+      framing: { mode: "center" },
+    });
+    expect(resolveEffectiveFramingMode(withImage)).toBe("fit");
+  });
 });
 
 describe("resolveMusicFadeWindows", () => {
@@ -270,13 +335,39 @@ describe("applyStudioEditsPatchSchema (vizard-parity Phase C — apply-to-all)",
       imageUrl: null,
     });
     expect(parsed.transition).toBeUndefined();
+    expect(parsed.framing).toBeUndefined();
   });
 
-  test("rejects a patch with both fields", () => {
+  test("accepts a framing-only patch", () => {
+    const parsed = applyStudioEditsPatchSchema.parse({
+      framing: { mode: "center" },
+    });
+    expect(parsed.framing).toEqual({ mode: "center" });
+    expect(parsed.transition).toBeUndefined();
+    expect(parsed.background).toBeUndefined();
+  });
+
+  test("rejects a patch with two fields", () => {
     expect(() =>
       applyStudioEditsPatchSchema.parse({
         transition: { type: "fade", durationSec: 0.4 },
         background: { mode: "off", color: null, imageUrl: null },
+      }),
+    ).toThrow();
+    expect(() =>
+      applyStudioEditsPatchSchema.parse({
+        background: { mode: "off", color: null, imageUrl: null },
+        framing: { mode: "center" },
+      }),
+    ).toThrow();
+  });
+
+  test("rejects a patch with all three fields", () => {
+    expect(() =>
+      applyStudioEditsPatchSchema.parse({
+        transition: { type: "fade", durationSec: 0.4 },
+        background: { mode: "off", color: null, imageUrl: null },
+        framing: { mode: "center" },
       }),
     ).toThrow();
   });

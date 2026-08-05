@@ -163,7 +163,7 @@ export type ToolId =
   | "transitions"
   | "text"
   | "music"
-  | "background";
+  | "layout";
 
 export interface TranscriptItem {
   id: string;

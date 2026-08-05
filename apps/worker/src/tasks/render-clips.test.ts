@@ -21,6 +21,7 @@ import {
   resolveBackgroundPlanForDownloadedImage,
   resolveClipLogoOverlay,
   resolveRenderTimingForClip,
+  shouldRunAutoReframeDetection,
 } from "./render-clips";
 import { buildClipCutPlan } from "./cut-plan";
 
@@ -297,6 +298,39 @@ describe("buildCropAndScaleFilter (auto-reframe)", () => {
       cropName: "crop@reframe",
     });
     expect(f).not.toContain("sendcmd");
+  });
+});
+
+describe("shouldRunAutoReframeDetection (vizard-parity Phase C-2 stage 1 — framing modes)", () => {
+  test("auto mode (the default) runs detection", () => {
+    expect(shouldRunAutoReframeDetection(studioEditsSchema.parse({}))).toBe(true);
+    expect(
+      shouldRunAutoReframeDetection(
+        studioEditsSchema.parse({ framing: { mode: "auto" } }),
+      ),
+    ).toBe(true);
+  });
+
+  test("center mode skips detection entirely", () => {
+    expect(
+      shouldRunAutoReframeDetection(
+        studioEditsSchema.parse({ framing: { mode: "center" } }),
+      ),
+    ).toBe(false);
+  });
+
+  test("fit (background active) skips detection regardless of framing.mode", () => {
+    const withAuto = studioEditsSchema.parse({
+      background: { mode: "color", color: "#112233", imageUrl: null },
+      framing: { mode: "auto" },
+    });
+    expect(shouldRunAutoReframeDetection(withAuto)).toBe(false);
+
+    const withCenter = studioEditsSchema.parse({
+      background: { mode: "color", color: "#112233", imageUrl: null },
+      framing: { mode: "center" },
+    });
+    expect(shouldRunAutoReframeDetection(withCenter)).toBe(false);
   });
 });
 

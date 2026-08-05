@@ -40,6 +40,7 @@ import {
   formatCaptionWord,
   getEffectiveClipTiming,
   normalizeTranscriptSliceForClip,
+  resolveEffectiveFramingMode,
   resolveEffectiveLogoSettings,
   resolveMusicFadeWindows,
   sourceRangeToEdited,
@@ -1523,6 +1524,24 @@ export function buildCropAndScaleFilter(
   }
 
   return `crop=${cropW}:${cropH},scale=${config.width}:${config.height},format=yuv420p`;
+}
+
+/**
+ * Whether the (relatively expensive: ffmpeg segment extraction + python/
+ * opencv face detection) auto-reframe face-path detection should run for
+ * this clip — vizard-parity.md Phase C-2 stage 1 (framing modes). Routes
+ * through the single shared `resolveEffectiveFramingMode` so this can never
+ * disagree with the fit/crop builder branch below:
+ *  - "auto": run detection (today's only behavior, unchanged).
+ *  - "center": skip detection entirely — cheaper, and `buildCropAndScaleFilter`
+ *    already falls back to a static center crop whenever `reframe` is absent.
+ *  - "fit": also skipped, but for a different reason — the fit branch never
+ *    crops at all, so a detected face path would never be consumed. (In
+ *    practice this never gets called for "fit" either, since the caller's
+ *    own gate gets there first, but the mode check agrees regardless.)
+ */
+export function shouldRunAutoReframeDetection(studioEdits: StudioEdits): boolean {
+  return resolveEffectiveFramingMode(studioEdits) === "auto";
 }
 
 /** Text-layer drawtext filters + caption burn-in, comma-joined (or `""` when
@@ -3187,11 +3206,13 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
         reframeEnabled &&
         srcRatio > 1.05 &&
         reframeOutputs.length > 0 &&
-        // Fit mode (vizard-parity Phase C item 2) never crops, so a detected
-        // face path would never be consumed by the filtergraph — skip the
+        // Framing modes (vizard-parity Phase C-2 stage 1): only "auto" ever
+        // consumes a detected face path. Fit mode never crops at all, and
+        // center mode wants a static center crop, so both skip the
         // (expensive: ffmpeg segment extraction + python/opencv detection)
-        // work entirely rather than computing it for nothing.
-        studioEdits.background.mode === "off"
+        // work entirely rather than computing it for nothing — see
+        // `shouldRunAutoReframeDetection`.
+        shouldRunAutoReframeDetection(studioEdits)
       ) {
         // The YuNet detector (python3 + OpenCV) needs a frame-accurate local
         // file. In ranged mode, cut a low-res re-encoded segment of just this
@@ -3550,8 +3571,15 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
       // degrades to the solid-color fallback (black if no color was chosen
       // either) rather than failing the render — same "best effort, never
       // fail the clip" policy the music/B-roll downloads follow.
+      //
+      // Gated on the resolved effective mode (Phase C-2 stage 1), not the
+      // raw `background.mode`, so this can't drift from the reframe-skip
+      // gate above or the builder branch below — they're all
+      // `resolveEffectiveFramingMode(studioEdits) === "fit"` by definition
+      // (`background.mode !== "off"` always wins as "fit"), so this reads
+      // identically to before for every existing clip.
       let backgroundPlan: BackgroundPlan | null = null;
-      if (studioEdits.background.mode !== "off") {
+      if (resolveEffectiveFramingMode(studioEdits) === "fit") {
         const fallbackColor = studioEdits.background.color ?? "#000000";
         backgroundPlan = { mode: "color", color: fallbackColor, imagePath: null };
 
