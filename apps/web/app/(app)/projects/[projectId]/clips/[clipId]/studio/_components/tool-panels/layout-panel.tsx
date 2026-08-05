@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Box, Flex, Text, Stack, Input } from "@chakra-ui/react";
-import { Palette, ImageIcon, Link2, AlertTriangle, Layers, ScanFace, Crop, Frame } from "lucide-react";
+import { Box, Flex, Text, Stack, Input, Checkbox } from "@chakra-ui/react";
+import { Palette, ImageIcon, Link2, AlertTriangle } from "lucide-react";
 import { toaster } from "@narriflow/ui";
 import { useStudio } from "../studio-shell";
 import {
@@ -10,6 +10,7 @@ import {
   type ApplyStudioEditsPatch,
   type EffectiveFramingMode,
 } from "@narriflow/validators";
+import { FramingPresetGrid } from "./framing-preset-thumbnails";
 
 // Vizard-parity Phase C-2 stage 1: per-clip framing mode. Three effective
 // modes, resolved by the shared `resolveEffectiveFramingMode` helper so this
@@ -28,16 +29,9 @@ import {
 // See buildFitAndBackgroundFilter / shouldRunAutoReframeDetection
 // (apps/worker/src/tasks/render-clips.ts) for the burn-in side of this
 // parity contract, and video-preview.tsx for how the stage renders it live.
-
-const FRAMING_MODES: {
-  id: EffectiveFramingMode;
-  label: string;
-  icon: React.ReactNode;
-}[] = [
-  { id: "auto",   label: "Auto reframe",       icon: <ScanFace size={15} /> },
-  { id: "center", label: "Center crop",        icon: <Crop size={15} /> },
-  { id: "fit",    label: "Fit + background",   icon: <Frame size={15} /> },
-];
+// The three presets are rendered as drawn thumbnail tiles (Vizard-style) by
+// FramingPresetGrid (./framing-preset-thumbnails.tsx) rather than an icon
+// radio — see that file for the tile art.
 
 // "None" isn't offered here — inside Fit the only choices are Color/Image
 // (Fit itself already replaces "off"/crop-to-fill at the top level above).
@@ -78,32 +72,35 @@ export function LayoutPanel() {
     "idle" | "applying" | "applied" | "error"
   >("idle");
 
-  // "Apply to all clips": everything above is already committed locally
-  // (live, not staged), so this bulk-patches every OTHER clip in the
-  // project to match. `applyStudioEditsPatchSchema` is a strict XOR — one
-  // call can only carry ONE of transition/background/framing — so which
-  // field(s) we send depends on the effective mode:
-  //  - Fit: `background` alone is enough. It always wins over `framing` on
-  //    the receiving clip (see resolveEffectiveFramingMode), so there's
+  // "Apply to all" — Vizard-style checkbox in the header row, session-local
+  // only (never persisted, always starts unchecked). Checking it does NOT
+  // itself apply anything; while checked, each subsequent discrete edit
+  // below (preset tile, background submode, a color commit, an image-URL
+  // apply) ALSO bulk-patches every OTHER clip in the project, in addition
+  // to its instant local effect on the open clip.
+  const [applyToAll, setApplyToAll] = useState(false);
+
+  // Bulk-apply worker shared by every control below. `applyStudioEditsPatchSchema`
+  // is a strict XOR — one call can only carry ONE of transition/background/
+  // framing — so callers build a `patches` array with exactly the field(s)
+  // the change requires:
+  //  - Fit-only changes (submode switch, color commit, image apply): a
+  //    single `background` patch is enough. It always wins over `framing`
+  //    on the receiving clip (see resolveEffectiveFramingMode), so there's
   //    nothing else to send.
-  //  - Auto/Center: send `framing` for the mode itself, PLUS a second
-  //    `background: { mode: "off" }` call — without it, a receiving clip
-  //    that currently has its own background active would keep showing
-  //    "fit" (background always wins), silently ignoring the framing patch
-  //    that was just applied. Two sequential calls, not a combined payload,
-  //    because the patch schema only ever carries one field.
-  async function handleApplyToAll() {
+  //  - Switching to Auto/Center: send `framing` for the mode itself, PLUS a
+  //    second `background: { mode: "off" }` call — without it, a receiving
+  //    clip that currently has its own background active would keep
+  //    showing "fit" (background always wins), silently ignoring the
+  //    framing patch that was just applied. Two sequential calls, not a
+  //    combined payload, because the patch schema only ever carries one
+  //    field.
+  // A failure here never rolls back the already-committed local change on
+  // the open clip — the open clip keeps its new value either way.
+  async function applyPatchesToAll(patches: ApplyStudioEditsPatch[]) {
     if (applyState === "applying") return;
     setApplyState("applying");
     try {
-      const patches: ApplyStudioEditsPatch[] =
-        effectiveMode === "fit"
-          ? [{ background }]
-          : [
-              { framing: studioEdits.framing },
-              { background: { ...background, mode: "off" } },
-            ];
-
       let updated = 0;
       for (const patch of patches) {
         const res = await fetch(
@@ -153,7 +150,7 @@ export function LayoutPanel() {
     setImageUrlError(false);
   }, [background]);
 
-  // Top-level radio: one coherent group, no contradictory states. Auto/
+  // Preset tile select: one coherent group, no contradictory states. Auto/
   // Center always force `background.mode` back to "off" (framing only takes
   // effect when background is off — see resolveEffectiveFramingMode); Fit
   // switches `background.mode` to "color" (defaulting color to black if
@@ -176,6 +173,23 @@ export function LayoutPanel() {
         background: { ...prev.background, mode: "off" },
       };
     });
+
+    if (!applyToAll) return;
+    const patches: ApplyStudioEditsPatch[] =
+      choice === "fit"
+        ? [
+            {
+              background:
+                background.mode !== "off"
+                  ? background
+                  : { ...background, mode: "color", color: background.color ?? "#000000" },
+            },
+          ]
+        : [
+            { framing: { mode: choice } },
+            { background: { ...background, mode: "off" } },
+          ];
+    void applyPatchesToAll(patches);
   };
 
   const setBackgroundSubmode = (mode: "color" | "image") => {
@@ -183,6 +197,9 @@ export function LayoutPanel() {
       ...prev,
       background: { ...prev.background, mode },
     }));
+    if (applyToAll) {
+      void applyPatchesToAll([{ background: { ...background, mode } }]);
+    }
   };
 
   const setColor = (hex: string, coalesceKey?: string) => {
@@ -195,6 +212,13 @@ export function LayoutPanel() {
     );
   };
 
+  // Fires the bulk apply for a color COMMIT only (swatch click, or the hex
+  // input settling on blur) — never per keystroke/coalesced tick.
+  const commitColorToAll = (hex: string) => {
+    if (!applyToAll) return;
+    void applyPatchesToAll([{ background: { ...background, mode: "color", color: hex } }]);
+  };
+
   const applyImageUrl = () => {
     const trimmed = imageUrlDraft.trim();
     if (!trimmed) {
@@ -203,6 +227,9 @@ export function LayoutPanel() {
         ...prev,
         background: { ...prev.background, mode: "image", imageUrl: null },
       }));
+      if (applyToAll) {
+        void applyPatchesToAll([{ background: { ...background, mode: "image", imageUrl: null } }]);
+      }
       return;
     }
     if (!isValidHttpUrl(trimmed)) {
@@ -214,45 +241,50 @@ export function LayoutPanel() {
       ...prev,
       background: { ...prev.background, mode: "image", imageUrl: trimmed },
     }));
+    if (applyToAll) {
+      void applyPatchesToAll([{ background: { ...background, mode: "image", imageUrl: trimmed } }]);
+    }
   };
 
   return (
     <Stack gap="16px" p="12px">
       <Box>
-        <Text textStyle="eyebrow" color="studio.fgMuted" mb="10px">
-          Framing
-        </Text>
-        <Box display="grid" style={{ gridTemplateColumns: "repeat(3, 1fr)", gap: "6px" }}>
-          {FRAMING_MODES.map((m) => {
-            const isActive = effectiveMode === m.id;
-            return (
-              <Flex
-                key={m.id}
-                as="button"
-                aria-pressed={isActive}
-                direction="column"
-                align="center"
-                justify="center"
-                gap="6px"
-                py="14px"
-                borderRadius="l2"
-                bg={isActive ? "studio.raised" : "studio.subtle"}
-                border="1px solid"
-                borderColor={isActive ? "studio.accent" : "studio.border"}
-                cursor="pointer"
-                onClick={() => setFramingChoice(m.id)}
-                transition="background 120ms ease, border-color 120ms ease"
-                _hover={{ borderColor: isActive ? "studio.accent" : "studio.borderStrong" }}
-                color={isActive ? "studio.accentFg" : "studio.fgMuted"}
+        <Flex align="center" justify="space-between" mb="10px">
+          <Text textStyle="eyebrow" color="studio.fgMuted">
+            Layout
+          </Text>
+          <Flex align="center" gap="8px">
+            {applyState !== "idle" && (
+              <Text
+                fontSize="10.5px"
+                color={applyState === "error" ? "studio.danger" : "studio.fgSubtle"}
               >
-                {m.icon}
-                <Text fontSize="11px" fontWeight="500" textAlign="center">
-                  {m.label}
+                {applyState === "applying"
+                  ? "Applying…"
+                  : applyState === "applied"
+                    ? "Applied ✓"
+                    : "Failed — try again"}
+              </Text>
+            )}
+            <Checkbox.Root
+              checked={applyToAll}
+              onCheckedChange={(e) => setApplyToAll(!!e.checked)}
+              size="sm"
+              colorPalette="accent"
+              gap="6px"
+              cursor="pointer"
+            >
+              <Checkbox.HiddenInput />
+              <Checkbox.Control />
+              <Checkbox.Label>
+                <Text fontSize="11px" color="studio.fgMuted">
+                  Apply to all
                 </Text>
-              </Flex>
-            );
-          })}
-        </Box>
+              </Checkbox.Label>
+            </Checkbox.Root>
+          </Flex>
+        </Flex>
+        <FramingPresetGrid selected={effectiveMode} onSelect={setFramingChoice} />
       </Box>
 
       {effectiveMode === "auto" && (
@@ -323,7 +355,10 @@ export function LayoutPanel() {
                         as="button"
                         aria-label={`Use ${hex}`}
                         aria-pressed={isActive}
-                        onClick={() => setColor(hex)}
+                        onClick={() => {
+                          setColor(hex);
+                          commitColorToAll(hex);
+                        }}
                         w="100%"
                         aspectRatio={1}
                         borderRadius="l2"
@@ -363,7 +398,12 @@ export function LayoutPanel() {
                         setColor(next, "bg-color-hex");
                       }
                     }}
-                    onBlur={endCoalesce}
+                    onBlur={() => {
+                      endCoalesce();
+                      if (HEX_PATTERN.test(colorDraft)) {
+                        commitColorToAll(colorDraft);
+                      }
+                    }}
                     placeholder="#000000"
                     size="sm"
                     bg="studio.subtle"
@@ -465,36 +505,6 @@ export function LayoutPanel() {
           )}
         </>
       )}
-
-      {/* Apply to all — secondary action (Export owns the solid button) */}
-      <Flex
-        as="button"
-        align="center"
-        justify="center"
-        h="34px"
-        borderRadius="l2"
-        bg="studio.raised"
-        borderWidth="1px"
-        borderColor={applyState === "error" ? "danger.solid" : "studio.borderStrong"}
-        color={applyState === "error" ? "danger.fg" : "studio.fg"}
-        fontSize="12px"
-        fontWeight="600"
-        cursor={applyState === "applying" ? "default" : "pointer"}
-        opacity={applyState === "applying" ? 0.8 : 1}
-        gap="6px"
-        transition="background 120ms ease, border-color 120ms ease"
-        _hover={applyState === "applying" ? {} : { borderColor: applyState === "error" ? "danger.solid" : "studio.fgSubtle" }}
-        onClick={handleApplyToAll}
-      >
-        <Layers size={13} />
-        {applyState === "applying"
-          ? "Applying…"
-          : applyState === "applied"
-            ? "Applied to all clips ✓"
-            : applyState === "error"
-              ? "Failed — try again"
-              : "Apply to all clips"}
-      </Flex>
     </Stack>
   );
 }

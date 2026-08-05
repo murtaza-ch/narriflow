@@ -220,7 +220,30 @@ before the foundation steps it depends on.
   Apply-to-all landed 2026-08-05 — see the transition bullet below, same
   `applyStudioEditsPatchToAllClips` bulk service backs both.)*
 - Layout presets — **design converged 2026-08-05** (recon: reframe recon
-  report, this session). Two-stage delivery:
+  report, this session). **Live-editor recon 2026-08-05 (driven Vizard's
+  actual editor on a real clip):** layout controls live in an under-canvas
+  toolbar `Ratio | Background | Layout | Element`, not a side panel.
+  Layout popover = a grid of 11 VISUAL preset thumbnails (drawn
+  mini-mockups: solo fill, solo fit w/ bands, 2-up full-bleed, 2-up
+  cards, 1+2, 2×2 full-bleed, 2×2 cards, floating 2+1 cards,
+  screen+2-speakers, screen card centered, screen fit) + an
+  "Apply to all" checkbox (default UNCHECKED; checking applies each
+  SUBSEQUENT preset click project-wide — no immediate effect).
+  Background popover = Color | Image (stock gallery incl. video-blur) |
+  Upload tabs, its Apply-to-all default CHECKED. Ratio = 9:16/1:1/4:5/16:9
+  behind an explicit Apply button (deliberate re-layout, not live).
+  Element picker = detected source ELEMENTS (Original video / Speaker /
+  Screen) that feed the layouts; on a one-face video the 2-up preset
+  renders an EMPTY second tile, and unchecking Speaker falls back to the
+  full frame letterboxed. Canvas model: every tile is a free-position
+  layer — click selects (resize handles + floating toolbar: mask-ratio
+  9:16/1:1/4:5/16:9/Circle/Original, flip-H, corner radius, Duplicate,
+  z-order, delete), drag moves it freely over the background. Full
+  parity therefore decomposes into: preset-grid presentation (landed —
+  below), multi-tile presets (rides the 2-up spike + segment machinery),
+  element segmentation (speaker/screen detection), and a free-layer
+  canvas compositor (largest; overlaps the dual-video preview cost).
+  Two-stage delivery:
   1. **Framing modes (build first, cheap)** — persist
      `studioEdits.framing = { mode: "auto" | "center" | "fit" }`;
      `auto` = today's auto-reframe crop, `center` = static center crop
@@ -263,6 +286,20 @@ before the foundation steps it depends on.
      updated `studioEditsSchema` at request time in
      `clipService.getClipEditorDocument`, so a stored blob with no `framing`
      key fills in the identical default on both sides.)*
+     *(Stage 1.5 landed 2026-08-05 — Vizard-style PRESENTATION on the same
+     model: the icon radio became a grid of drawn 9:16 preset thumbnails
+     (`tool-panels/framing-preset-thumbnails.tsx` — silhouette + corner
+     brackets for Auto, crosshair for Center, mini 16:9 rect w/ bands for
+     Fit; 2px `studio.ring` border marks selection, the repo's only
+     selection idiom), and the "Apply to all clips" button became a
+     header "Apply to all" CHECKBOX with Vizard semantics: session-local,
+     default unchecked, no immediate effect — while checked, preset
+     clicks / submode switches / color commits / image-URL applies also
+     fire the existing bulk endpoint with the unchanged Fit→background
+     vs Auto/Center→framing+background-off two-call sequence and
+     `excludeClipId`. Color keystrokes/coalesced ticks never fire bulk.
+     Verified interactively via the temporary /dev-preview harness,
+     since deleted.)*
   2. **Split-screen 2-up (own sub-plan — genuinely large)**. Constraints
      found: `reframe_detect.py` deliberately emits only the largest face
      per frame (multi-face output is a trivial change; tracking/clustering
