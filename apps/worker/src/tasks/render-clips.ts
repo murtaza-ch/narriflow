@@ -35,6 +35,7 @@ import {
   clipAspectRatioFromDb,
   clipAspectRatioOptions,
   deletedRangesSchema,
+  formatCaptionWord,
   getEffectiveClipTiming,
   normalizeTranscriptSliceForClip,
   resolveEffectiveLogoSettings,
@@ -104,6 +105,24 @@ interface MusicPlan {
    *  test fixtures/call sites that predate this field keep compiling. */
   fadeInSec?: number;
   fadeOutSec?: number;
+}
+
+/**
+ * Resolved per-clip canvas background (vizard-parity.md Phase C item 2) —
+ * built once per clip render (see the main flow below, mirroring how
+ * `MusicPlan` is resolved from `studioEdits.music`) and threaded into
+ * whichever per-output builder actually runs. `color` is always populated
+ * (falls back to black) so it doubles as the mode="image" fallback when the
+ * image URL was invalid or its download failed upstream. `imagePath` is the
+ * local downloaded file, set only when mode="image" AND the download
+ * actually succeeded — `buildFitAndBackgroundFilter` falls back to the solid
+ * color whenever it's null, so a bad image URL degrades gracefully instead
+ * of failing the render.
+ */
+interface BackgroundPlan {
+  mode: "color" | "image";
+  color: string;
+  imagePath: string | null;
 }
 
 /** A resolved reframe crop for one output: the sendcmd script + its crop name. */
@@ -199,6 +218,13 @@ interface SourceProbe {
   height: number;
   hasVideo: boolean;
   hasAudio: boolean;
+  /** Source frame rate (from ffprobe's `r_frame_rate`), always a positive
+   *  finite number — `probeSource` falls back to `DEFAULT_BACKGROUND_FPS`
+   *  when the stream reports none/an unparseable value. Currently consumed
+   *  only by `buildFitAndBackgroundFilter`'s image-mode chain (see its doc
+   *  comment for why: `overlay`'s output otherwise inherits the still
+   *  image's demuxer-default 25 fps instead of the source's real rate). */
+  fps: number;
 }
 
 interface PendingRenderOutput {
@@ -466,6 +492,29 @@ function httpSourceInputArgs(input: string): string[] {
   ];
 }
 
+/** Fallback frame rate when the source reports none, or reports something
+ *  unparseable/zero — matches the aspirational default most consumer footage
+ *  actually ships at, and (more importantly) is just *a* real, positive fps
+ *  rather than the image2 demuxer's silent 25 fps default that motivated
+ *  plumbing this value through in the first place. */
+const DEFAULT_BACKGROUND_FPS = 30;
+
+/** Parses ffprobe's `r_frame_rate` (a "num/den" string, e.g. "30000/1001" or
+ *  "25/1") into a plain fps number. Falls back to `DEFAULT_BACKGROUND_FPS`
+ *  for anything missing, malformed, non-finite, or non-positive (e.g. a
+ *  degenerate "0/0" some containers report for stillimage-like streams). */
+function parseFrameRate(rFrameRate: string | undefined): number {
+  if (!rFrameRate) return DEFAULT_BACKGROUND_FPS;
+  const [numPart, denPart] = rFrameRate.split("/");
+  const num = Number(numPart);
+  const den = denPart === undefined ? 1 : Number(denPart);
+  if (!Number.isFinite(num) || !Number.isFinite(den) || den === 0) {
+    return DEFAULT_BACKGROUND_FPS;
+  }
+  const fps = num / den;
+  return Number.isFinite(fps) && fps > 0 ? fps : DEFAULT_BACKGROUND_FPS;
+}
+
 async function probeSource(sourcePath: string): Promise<SourceProbe> {
   const output = await execCommandOutput(
     "ffprobe",
@@ -488,6 +537,7 @@ async function probeSource(sourcePath: string): Promise<SourceProbe> {
       codec_type?: string;
       width?: number;
       height?: number;
+      r_frame_rate?: string;
     }>;
   };
 
@@ -500,7 +550,53 @@ async function probeSource(sourcePath: string): Promise<SourceProbe> {
     height: videoStream?.height ?? 0,
     hasVideo: Boolean(videoStream),
     hasAudio: Boolean(audioStream),
+    fps: parseFrameRate(videoStream?.r_frame_rate),
   };
+}
+
+/**
+ * Decides whether a downloaded canvas-background image should be used as-is
+ * or degraded to the solid-color fallback, given whether ffprobe found a
+ * decodable video/image stream in it. Kept as a pure function, separate from
+ * the ffprobe I/O in `probeBackgroundImageDecodable` below, specifically so
+ * the degrade decision is unit-testable without shelling out to ffprobe —
+ * tests can stub `decodable` directly.
+ */
+export function resolveBackgroundPlanForDownloadedImage(params: {
+  decodable: boolean;
+  color: string;
+  imagePath: string;
+}): BackgroundPlan {
+  if (!params.decodable) {
+    return { mode: "color", color: params.color, imagePath: null };
+  }
+  return { mode: "image", color: params.color, imagePath: params.imagePath };
+}
+
+/**
+ * Probes a downloaded canvas-background file for a decodable video/image
+ * stream. `downloadUrlToFile` only validates HTTP status/size/SSRF — a URL
+ * that 200s with an HTML page (e.g. the user pasted a page URL instead of a
+ * direct image URL) downloads "successfully" but isn't actually decodable,
+ * and feeding it to ffmpeg as `-i` fails every render variant. Mirrors
+ * `probeSource`'s ffprobe invocation; returns false (never throws) on any
+ * probe failure or parse error so the caller can degrade to the color
+ * fallback exactly like a download failure.
+ */
+async function probeBackgroundImageDecodable(filePath: string): Promise<boolean> {
+  try {
+    const output = await execCommandOutput(
+      "ffprobe",
+      ["-v", "quiet", "-print_format", "json", "-show_streams", filePath],
+      { timeoutMs: PROBE_COMMAND_TIMEOUT_MS },
+    );
+    const data = JSON.parse(output) as {
+      streams?: Array<{ codec_type?: string }>;
+    };
+    return (data.streams ?? []).some((stream) => stream.codec_type === "video");
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -594,6 +690,13 @@ export function generateSrtFromSlice(
   clipStartSec: number,
   textTransform?: string,
   timeMap?: EditedTimeMap | null,
+  /** Vizard-parity Phase C punctuation toggle — absent/true keeps punctuation
+   *  as transcribed (byte-identical to before this field existed); false
+   *  routes every word token through the shared `formatCaptionWord` helper
+   *  (same one the ASS builder and the studio preview use) before joining a
+   *  cue's text, and empty tokens (pure punctuation, e.g. "...") are dropped
+   *  rather than emitted as a stray space. */
+  punctuation = true,
 ): string {
   if (utterances.length === 0) {
     return "";
@@ -603,6 +706,8 @@ export function generateSrtFromSlice(
     timeMap ? sourceToEdited(timeMap, sourceSec) : sourceSec - clipStartSec;
   const isVisible = (range: { startSec: number; endSec: number }): boolean =>
     !timeMap || sourceRangeToEdited(timeMap, range) !== null;
+  const formatWord = (word: string): string =>
+    formatCaptionWord(word, { punctuation });
 
   const cues: string[] = [];
   let cueIndex = 1;
@@ -617,7 +722,12 @@ export function generateSrtFromSlice(
         const group = words.slice(i, i + CAPTION_CHUNK_SIZE);
         const start = Math.max(0, toEdited(group[0]!.startSec));
         const end = Math.max(start + 0.1, toEdited(group[group.length - 1]!.endSec));
-        const text = applyTextTransform(group.map((w) => w.word).join(" "), textTransform);
+        const groupText = group
+          .map((w) => formatWord(w.word))
+          .filter((w) => w.length > 0)
+          .join(" ");
+        if (groupText.length === 0) continue;
+        const text = applyTextTransform(groupText, textTransform);
         cues.push(`${cueIndex}\n${formatSrtTimestamp(start)} --> ${formatSrtTimestamp(end)}\n${text}\n`);
         cueIndex++;
       }
@@ -626,7 +736,14 @@ export function generateSrtFromSlice(
       if (!isVisible(utterance)) continue;
       const start = Math.max(0, toEdited(utterance.startSec));
       const end = Math.max(start + 0.1, toEdited(utterance.endSec));
-      const text = applyTextTransform(utterance.text, textTransform);
+      const utteranceText = utterance.text
+        .split(/\s+/)
+        .filter(Boolean)
+        .map(formatWord)
+        .filter((w) => w.length > 0)
+        .join(" ");
+      if (utteranceText.length === 0) continue;
+      const text = applyTextTransform(utteranceText, textTransform);
       cues.push(`${cueIndex}\n${formatSrtTimestamp(start)} --> ${formatSrtTimestamp(end)}\n${text}\n`);
       cueIndex++;
     }
@@ -817,8 +934,14 @@ export function generateAssFromSlice(
       for (let i = 0; i < words.length; i += CAPTION_CHUNK_SIZE) {
         const group = words.slice(i, i + CAPTION_CHUNK_SIZE);
         const groupEnd = Math.max(0, toEdited(group[group.length - 1]!.endSec));
+        // Punctuation stripping happens BEFORE textTransform (formatCaptionWord
+        // operates on the raw transcript token) — a word that strips to "" is
+        // skipped from the rendered line below, never emitted as a bare space.
         const transformedWords = group.map((w) =>
-          applyTextTransform(w.word, txtTransform),
+          applyTextTransform(
+            formatCaptionWord(w.word, { punctuation: captionPreset.punctuation !== false }),
+            txtTransform,
+          ),
         );
 
         for (let j = 0; j < group.length; j++) {
@@ -830,11 +953,24 @@ export function generateAssFromSlice(
 
           const text = group
             .map((w, k) => {
-              const rendered = renderWord(transformedWords[k]!, k === j);
+              const formatted = transformedWords[k]!;
+              if (formatted.length === 0) return null;
+              const rendered = renderWord(formatted, k === j);
+              // Emoji lookup always reads the RAW word (not the
+              // punctuation-formatted one): emojiForWord already strips every
+              // non-a-z character via its own key normalization, so stripping
+              // edge punctuation first can never change which keyword matches
+              // — this keeps emoji behavior identical whether punctuation
+              // display is on or off, as required.
               const emoji = captionPreset.emojis ? emojiForWord(w.word) : null;
               return emoji ? `${rendered} ${emoji}` : rendered;
             })
+            .filter((t): t is string => t !== null)
             .join(" ");
+          // Whole window has nothing to show (every word in the group was
+          // pure punctuation) — skip the event instead of emitting a blank
+          // Dialogue line.
+          if (text.length === 0) continue;
 
           const override = `\\an5\\pos(${posXPx},${posYPx})${glowOverride}${entranceFor(j === 0)}`;
           events.push(
@@ -846,7 +982,16 @@ export function generateAssFromSlice(
       if (!isVisible(utterance)) continue;
       const start = Math.max(0, toEdited(utterance.startSec));
       const end = Math.max(start + 0.1, toEdited(utterance.endSec));
-      const text = applyTextTransform(utterance.text, txtTransform);
+      const utteranceText = utterance.text
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((w) =>
+          formatCaptionWord(w, { punctuation: captionPreset.punctuation !== false }),
+        )
+        .filter((w) => w.length > 0)
+        .join(" ");
+      if (utteranceText.length === 0) continue;
+      const text = applyTextTransform(utteranceText, txtTransform);
       const override = `\\an5\\pos(${posXPx},${posYPx})${glowOverride}\\fad(60,0)`;
       events.push(
         `Dialogue: 0,${formatAssTimestamp(start)},${formatAssTimestamp(end)},Default,,0,0,0,,{${override}}${text}`,
@@ -917,7 +1062,15 @@ function buildTextLayerFilters(
   });
 }
 
-function buildTransitionFilter(
+/**
+ * `fade`/`fade-black` both dip through black — ffmpeg's `fade` filter
+ * defaults to black when `color` is omitted, which is what made
+ * `fade-black` work today even before this explicit mapping existed.
+ * `fade-black` is kept as its own transition type (vs. relying on that
+ * default) so the mapping stays correct if `fade`'s meaning ever changes,
+ * and so the two are named for what they visibly do.
+ */
+export function buildTransitionFilter(
   transition: StudioEdits["transition"] | undefined,
   clipDurationSec: number,
 ): string | null {
@@ -925,7 +1078,12 @@ function buildTransitionFilter(
   const duration = Math.min(transition.durationSec, clipDurationSec / 2);
   if (duration <= 0) return null;
   const outStart = Math.max(0, clipDurationSec - duration);
-  const color = transition.type === "dip-white" ? ":color=white" : "";
+  const color =
+    transition.type === "dip-white"
+      ? ":color=white"
+      : transition.type === "fade-black"
+        ? ":color=black"
+        : "";
   return `fade=t=in:st=0:d=${duration.toFixed(3)}${color},fade=t=out:st=${outStart.toFixed(3)}:d=${duration.toFixed(3)}${color}`;
 }
 
@@ -1193,12 +1351,20 @@ function buildMusicAudioFilter(params: {
   ].join(";");
 }
 
+/**
+ * The ONE choke point every render path (single-video, fit+background,
+ * multi-video, B-roll cutaway, audiogram — see call sites) routes subtitle
+ * burn-in through, so gating `captionPreset.visible === false` here turns
+ * subtitles off everywhere at once instead of needing a check duplicated at
+ * every call site. Text layers, logo, background, and transitions are all
+ * composed independently and are unaffected by this gate.
+ */
 function buildSubtitleFilter(
   aspectRatio: ClipAspectRatio,
   subtitlePath: string | null,
   captionPreset?: CaptionPreset | null,
 ) {
-  if (!subtitlePath) {
+  if (!subtitlePath || captionPreset?.visible === false) {
     return null;
   }
 
@@ -1350,6 +1516,26 @@ export function buildCropAndScaleFilter(
   return `crop=${cropW}:${cropH},scale=${config.width}:${config.height},format=yuv420p`;
 }
 
+/** Text-layer drawtext filters + caption burn-in, comma-joined (or `""` when
+ *  neither is present) — the part of `buildSingleVideoFilter`'s chain that
+ *  has nothing to do with crop/fit, extracted so the fit+background path
+ *  (`buildFitAndBackgroundFilter`) can fold the exact same chain onto ITS
+ *  composed frame instead of duplicating this logic. */
+function buildTextAndCaptionChain(
+  studioEdits: StudioEdits | null | undefined,
+  clipDurationSec: number,
+  aspectRatio: ClipAspectRatio,
+  srtPath: string | null,
+  captionPreset?: CaptionPreset | null,
+): string {
+  const chain: (string | null)[] = [];
+  if (studioEdits?.textLayers.length) {
+    chain.push(...buildTextLayerFilters(studioEdits.textLayers, clipDurationSec));
+  }
+  chain.push(buildSubtitleFilter(aspectRatio, srtPath, captionPreset));
+  return chain.filter(Boolean).join(",");
+}
+
 function buildSingleVideoFilter(
   probe: SourceProbe,
   aspectRatio: ClipAspectRatio,
@@ -1359,17 +1545,101 @@ function buildSingleVideoFilter(
   studioEdits?: StudioEdits | null,
   clipDurationSec = 0,
 ) {
-  const chain = [buildCropAndScaleFilter(probe, aspectRatio, reframe)];
-  if (studioEdits?.textLayers.length) {
-    chain.push(...buildTextLayerFilters(studioEdits.textLayers, clipDurationSec));
-  }
-  const subtitleFilter = buildSubtitleFilter(aspectRatio, srtPath, captionPreset);
+  const cropScale = buildCropAndScaleFilter(probe, aspectRatio, reframe);
+  const textAndCaptionChain = buildTextAndCaptionChain(
+    studioEdits,
+    clipDurationSec,
+    aspectRatio,
+    srtPath,
+    captionPreset,
+  );
+  return [cropScale, textAndCaptionChain].filter(Boolean).join(",");
+}
 
-  if (subtitleFilter) {
-    chain.push(subtitleFilter);
+/**
+ * Builds the "fit" pad/background composition filter_complex PARTS
+ * (vizard-parity.md Phase C item 2), used INSTEAD of
+ * `buildCropAndScaleFilter` whenever `studioEdits.background.mode !== "off"`:
+ * the source letterboxes ("fit" — scale to contain, never crop) and the
+ * empty frame is filled with a solid color or an image.
+ *
+ * Returns filter_complex PARTS (not a single comma-chain the way
+ * `buildCropAndScaleFilter` does) because image mode needs a SECOND ffmpeg
+ * input (the downloaded background image) composited via `overlay`, which
+ * cannot be expressed as a chain hanging off one input label. Color mode
+ * (and the fallback used when an image URL/download failed upstream) is
+ * expressed the same way — a single-part pad chain — so callers have one
+ * code path regardless of mode.
+ *
+ * Unlike `buildCropAndScaleFilter` this never needs the source probe: the
+ * target frame is always the aspect ratio's fixed W×H, and ffmpeg's `scale`
+ * filter reads the actual input dimensions at run time. There is
+ * deliberately no `reframe` parameter either — auto-reframe never applies
+ * here (nothing is cropped), so callers simply don't thread `output.reframe`
+ * through when background is active.
+ *
+ * `trailingChain` (an already-comma-joined fragment, e.g. text layers +
+ * caption burn-in from `buildTextAndCaptionChain`) is folded into the LAST
+ * part so the composed frame and any per-clip overlays land in one filter
+ * statement — mirrors how `buildCropAndScaleFilter`'s callers append the
+ * same chain after crop+scale today. Pass `""` to leave the composed frame
+ * as the final output (`buildBrollVideoArgs` does this and applies its own
+ * text/caption steps afterward, once cutaways are overlaid on top).
+ *
+ * Image mode's `[bgimg]` chain also pins its frame rate to `fps` (defaults
+ * to `DEFAULT_BACKGROUND_FPS` when omitted). This matters because the still
+ * image is `overlay`'s MAIN (first) framesync input, so without an explicit
+ * `fps=` the composed output's rate silently inherits the image2 demuxer's
+ * default of 25 fps regardless of the actual source rate — verified with
+ * real ffmpeg: a 30fps or 60fps source both collapsed to 25fps output in
+ * every image-background combination. Color mode never hits `overlay` at
+ * all, so it's unaffected and doesn't take an `fps` param.
+ */
+export function buildFitAndBackgroundFilter(params: {
+  aspectRatio: ClipAspectRatio;
+  background: { mode: "color" | "image"; color: string | null; imagePath: string | null };
+  videoInputLabel: string;
+  outputLabel: string;
+  /** ffmpeg input index of the downloaded background image — only consumed
+   *  when `background.mode === "image"` AND `background.imagePath` is set;
+   *  omit/null falls back to the solid-color pad even when mode is "image"
+   *  (e.g. the URL was invalid or the download failed upstream). */
+  imageInputIndex?: number | null;
+  trailingChain?: string;
+  /** Source frame rate to pin the image-mode `[bgimg]` chain to (see doc
+   *  comment above) — callers pass `probe.fps`. Ignored in color mode.
+   *  Defaults to `DEFAULT_BACKGROUND_FPS` if omitted or non-positive. */
+  fps?: number;
+}): string[] {
+  const config = aspectRatioConfig.get(params.aspectRatio);
+  if (!config) {
+    throw new WorkflowWorkerError(
+      "unsupported_aspect_ratio",
+      `Unsupported aspect ratio: ${params.aspectRatio}`,
+    );
+  }
+  const { width: W, height: H } = config;
+  const suffix = params.trailingChain ? `,${params.trailingChain}` : "";
+
+  if (
+    params.background.mode === "image" &&
+    params.background.imagePath &&
+    params.imageInputIndex != null
+  ) {
+    const fps =
+      params.fps && params.fps > 0 ? params.fps : DEFAULT_BACKGROUND_FPS;
+    return [
+      `[${params.imageInputIndex}:v]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},fps=${fps}[bgimg]`,
+      `${params.videoInputLabel}scale=${W}:${H}:force_original_aspect_ratio=decrease:force_divisible_by=2[bgfitv]`,
+      `[bgimg][bgfitv]overlay=(W-w)/2:(H-h)/2,format=yuv420p${suffix}${params.outputLabel}`,
+    ];
   }
 
-  return chain.filter(Boolean).join(",");
+  const ffColor = hexToFfmpegRgb(params.background.color ?? "#000000");
+  return [
+    `${params.videoInputLabel}scale=${W}:${H}:force_original_aspect_ratio=decrease:force_divisible_by=2,` +
+      `pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=${ffColor},format=yuv420p${suffix}${params.outputLabel}`,
+  ];
 }
 
 export function buildSingleVideoArgs(params: {
@@ -1385,6 +1655,10 @@ export function buildSingleVideoArgs(params: {
   reframe?: ReframeSpec | null;
   studioEdits?: StudioEdits | null;
   music?: MusicPlan | null;
+  /** Resolved canvas background (vizard-parity Phase C item 2) — presence
+   *  implies "on" (mode is always "color" or "image"); omit/null preserves
+   *  today's crop-to-fill behavior. See `BackgroundPlan`. */
+  background?: BackgroundPlan | null;
   applyFreeTierTreatment?: boolean;
   /** Non-empty `deletedRanges` cut plan (vizard-parity Phase B step 7).
    *  Omitted/uncut: byte-identical to the pre-cut-concat filter graph. */
@@ -1415,18 +1689,58 @@ export function buildSingleVideoArgs(params: {
       ? "[0:a:0]"
       : null;
 
-  const videoFilter = buildSingleVideoFilter(
-    params.probe,
+  // Input index bookkeeping: source is always 0; background image (fit mode
+  // only, when a local downloaded path is available), logo, then music each
+  // consume the next slot IF present — same order the args are pushed in
+  // below. Byte-identical to before this feature when `background` is
+  // absent/off (bgImageInputIndex stays null, logoInputIndex/musicInputIndex
+  // fall back to the same 1/2 values the old hardcoded literals used).
+  const usesBackgroundImage = Boolean(
+    params.background?.mode === "image" && params.background.imagePath,
+  );
+  let nextInputIndex = 1;
+  const bgImageInputIndex = usesBackgroundImage ? nextInputIndex++ : null;
+  const logoInputIndex = params.logo ? nextInputIndex++ : null;
+  const musicInputIndex = params.music ? nextInputIndex++ : null;
+
+  const textAndCaptionChain = buildTextAndCaptionChain(
+    params.studioEdits,
+    clipDurationSec,
     params.aspectRatio,
     params.srtPath,
     params.captionPreset,
-    params.reframe,
-    params.studioEdits,
-    clipDurationSec,
   );
 
   let finalLabel: string;
   const filterParts: string[] = cutConcat ? [...cutConcat.filterParts] : [];
+  const composedOutputLabel = params.logo ? "[outvbase]" : "[outv]";
+
+  if (params.background) {
+    // Fit mode (vizard-parity Phase C item 2): letterbox instead of
+    // crop-to-fill, background color/image fills the empty frame.
+    // Auto-reframe never applies here — `params.reframe` is deliberately not
+    // threaded through (see buildFitAndBackgroundFilter's doc comment).
+    filterParts.push(
+      ...buildFitAndBackgroundFilter({
+        aspectRatio: params.aspectRatio,
+        background: params.background,
+        videoInputLabel,
+        outputLabel: composedOutputLabel,
+        imageInputIndex: bgImageInputIndex,
+        trailingChain: textAndCaptionChain,
+        fps: params.probe.fps,
+      }),
+    );
+  } else {
+    const cropScale = buildCropAndScaleFilter(
+      params.probe,
+      params.aspectRatio,
+      params.reframe,
+    );
+    const chain = [cropScale, textAndCaptionChain].filter(Boolean).join(",");
+    filterParts.push(`${videoInputLabel}${chain}${composedOutputLabel}`);
+  }
+
   if (params.logo) {
     const aspectConfig = aspectRatioConfig.get(params.aspectRatio);
     if (!aspectConfig) {
@@ -1435,22 +1749,18 @@ export function buildSingleVideoArgs(params: {
         `Unsupported aspect ratio: ${params.aspectRatio}`,
       );
     }
-    filterParts.push(`${videoInputLabel}${videoFilter}[outvbase]`);
     filterParts.push(
       buildLogoFilter(
         params.logo,
         aspectConfig.width,
         "[outvbase]",
         "[outv]",
-        1,
+        logoInputIndex!,
         "",
       ),
     );
-    finalLabel = "[outv]";
-  } else {
-    filterParts.push(`${videoInputLabel}${videoFilter}[outv]`);
-    finalLabel = "[outv]";
   }
+  finalLabel = "[outv]";
 
   finalLabel = appendTransitionFilter(
     filterParts,
@@ -1478,17 +1788,20 @@ export function buildSingleVideoArgs(params: {
     params.sourcePath,
   ];
 
+  if (bgImageInputIndex != null) {
+    args.push("-i", params.background!.imagePath!);
+  }
+
   if (params.logo) {
     args.push("-i", params.logo.filePath);
   }
 
   if (params.music) {
-    const musicInputIndex = params.logo ? 2 : 1;
     args.push("-stream_loop", "-1", "-i", params.music.path);
     filterParts.push(
       buildMusicAudioFilter({
         sourceHasAudio: params.probe.hasAudio,
-        musicInputIndex,
+        musicInputIndex: musicInputIndex!,
         music: params.music,
         clipDurationSec,
         sourceAudio: params.studioEdits?.sourceAudio,
@@ -1563,6 +1876,9 @@ export function buildBrollVideoArgs(params: {
   reframe?: ReframeSpec | null;
   studioEdits?: StudioEdits | null;
   music?: MusicPlan | null;
+  /** Resolved canvas background (vizard-parity Phase C item 2) — see
+   *  `buildSingleVideoArgs`'s param doc; same contract here. */
+  background?: BackgroundPlan | null;
   applyFreeTierTreatment?: boolean;
   /** See `buildSingleVideoArgs` — same cut-concat contract. */
   cutPlan?: ClipCutPlan | null;
@@ -1589,9 +1905,6 @@ export function buildBrollVideoArgs(params: {
   }
   const { width: W, height: H } = config;
 
-  const cropScale =
-    buildCropAndScaleFilter(params.probe, params.aspectRatio, params.reframe) ??
-    `scale=${W}:${H},format=yuv420p`;
   const subtitleFilter = buildSubtitleFilter(
     params.aspectRatio,
     params.srtPath,
@@ -1599,7 +1912,17 @@ export function buildBrollVideoArgs(params: {
   );
 
   const cutawayCount = params.cutaways.length;
-  const logoInputIndex = 1 + cutawayCount;
+  // Input index bookkeeping: source(0), background image (fit mode only,
+  // when a local downloaded path is available), then the cutaways, then
+  // logo, then music — same order the args are pushed in below. `bgOffset`
+  // is 0 when background is absent/off, so every index below is
+  // byte-identical to before this feature in that case.
+  const usesBackgroundImage = Boolean(
+    params.background?.mode === "image" && params.background.imagePath,
+  );
+  const bgImageInputIndex = usesBackgroundImage ? 1 : null;
+  const bgOffset = usesBackgroundImage ? 1 : 0;
+  const logoInputIndex = 1 + bgOffset + cutawayCount;
   const isCut = Boolean(params.cutPlan && !params.cutPlan.isUncut);
   const clipDurationSec = isCut
     ? params.cutPlan!.editedDurationSec
@@ -1620,11 +1943,32 @@ export function buildBrollVideoArgs(params: {
       : null;
 
   const parts: string[] = cutConcat ? [...cutConcat.filterParts] : [];
-  parts.push(`${videoInputLabel}${cropScale}[stage0]`);
+  if (params.background) {
+    // Fit mode (vizard-parity Phase C item 2): letterbox the base frame
+    // instead of cropping to fill; cutaways/text/captions/logo still overlay
+    // on top of it exactly as they do today, unaware of how [stage0] was
+    // composed. Auto-reframe never applies here (nothing is cropped) —
+    // `params.reframe` is deliberately not threaded through.
+    parts.push(
+      ...buildFitAndBackgroundFilter({
+        aspectRatio: params.aspectRatio,
+        background: params.background,
+        videoInputLabel,
+        outputLabel: "[stage0]",
+        imageInputIndex: bgImageInputIndex,
+        fps: params.probe.fps,
+      }),
+    );
+  } else {
+    const cropScale =
+      buildCropAndScaleFilter(params.probe, params.aspectRatio, params.reframe) ??
+      `scale=${W}:${H},format=yuv420p`;
+    parts.push(`${videoInputLabel}${cropScale}[stage0]`);
+  }
   let finalLabel = "[stage0]";
 
   params.cutaways.forEach((cutaway, index) => {
-    const brollInputIndex = 1 + index; // input 0 is the source
+    const brollInputIndex = 1 + bgOffset + index; // input 0 is the source
     const start = cutaway.window.startSec;
     const end = cutaway.window.endSec;
     const brollLabel = `[broll${index}]`;
@@ -1685,6 +2029,10 @@ export function buildBrollVideoArgs(params: {
     params.sourcePath,
   ];
 
+  if (bgImageInputIndex != null) {
+    args.push("-i", params.background!.imagePath!);
+  }
+
   for (const cutaway of params.cutaways) {
     // Each B-roll input gets its own `-t`, scoped to just this input (ffmpeg
     // resets per-input options at each `-i`), sized to exactly its own
@@ -1703,7 +2051,7 @@ export function buildBrollVideoArgs(params: {
   if (params.logo) args.push("-i", params.logo.filePath);
 
   if (params.music) {
-    const musicInputIndex = 1 + cutawayCount + (params.logo ? 1 : 0);
+    const musicInputIndex = 1 + bgOffset + cutawayCount + (params.logo ? 1 : 0);
     args.push("-stream_loop", "-1", "-i", params.music.path);
     parts.push(
       buildMusicAudioFilter({
@@ -2740,7 +3088,16 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
         );
       });
 
-      if (reframeEnabled && srcRatio > 1.05 && reframeOutputs.length > 0) {
+      if (
+        reframeEnabled &&
+        srcRatio > 1.05 &&
+        reframeOutputs.length > 0 &&
+        // Fit mode (vizard-parity Phase C item 2) never crops, so a detected
+        // face path would never be consumed by the filtergraph — skip the
+        // (expensive: ffmpeg segment extraction + python/opencv detection)
+        // work entirely rather than computing it for nothing.
+        studioEdits.background.mode === "off"
+      ) {
         // The YuNet detector (python3 + OpenCV) needs a frame-accurate local
         // file. In ranged mode, cut a low-res re-encoded segment of just this
         // clip's window (re-encode, not -c copy: a stream copy snaps to the
@@ -3089,6 +3446,66 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
         }
       }
 
+      // Canvas background (vizard-parity Phase C item 2): mirrors the music
+      // plan above — resolve once per clip, downloading the background image
+      // (if any) to a local file so the per-output builders never touch the
+      // network themselves. A bad/unsafe image URL, a failed download, or a
+      // downloaded file that ffprobe can't find a decodable video/image
+      // stream in (e.g. the URL 200s with an HTML page instead of an image)
+      // degrades to the solid-color fallback (black if no color was chosen
+      // either) rather than failing the render — same "best effort, never
+      // fail the clip" policy the music/B-roll downloads follow.
+      let backgroundPlan: BackgroundPlan | null = null;
+      if (studioEdits.background.mode !== "off") {
+        const fallbackColor = studioEdits.background.color ?? "#000000";
+        backgroundPlan = { mode: "color", color: fallbackColor, imagePath: null };
+
+        if (studioEdits.background.mode === "image" && studioEdits.background.imageUrl) {
+          let imageUrlSafe = false;
+          try {
+            assertPublicHttpUrl(studioEdits.background.imageUrl);
+            imageUrlSafe = true;
+          } catch (error) {
+            log("error", "clip_background_image_url_rejected", {
+              workflowRunId: run.id,
+              clipId: clip.id,
+              reason: error instanceof UnsafeUrlError ? error.reason : "unknown",
+            });
+          }
+          if (imageUrlSafe) {
+            const backgroundImagePath = join(tempDir, `background-${clip.id}.bin`);
+            try {
+              await downloadUrlToFile(
+                studioEdits.background.imageUrl,
+                backgroundImagePath,
+                "background_image_download_failed",
+              );
+              const decodable = await probeBackgroundImageDecodable(backgroundImagePath);
+              if (!decodable) {
+                log("error", "clip_background_image_invalid", {
+                  workflowRunId: run.id,
+                  clipId: clip.id,
+                  message: "downloaded background is not a decodable image/video",
+                });
+              }
+              backgroundPlan = resolveBackgroundPlanForDownloadedImage({
+                decodable,
+                color: fallbackColor,
+                imagePath: backgroundImagePath,
+              });
+            } catch (imageError) {
+              log("error", "clip_background_image_download_failed", {
+                workflowRunId: run.id,
+                clipId: clip.id,
+                message:
+                  imageError instanceof Error ? imageError.message : "unknown",
+              });
+              // backgroundPlan stays the color fallback set above.
+            }
+          }
+        }
+      }
+
       // sourceAudio (volume/mute) is only applied by the per-output builders
       // (buildSingleVideoArgs/buildBrollVideoArgs/buildAudiogramArgs), same
       // as music — buildMultiVideoArgs (the shared multi-output batch path)
@@ -3103,13 +3520,18 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
       // implementing the same trim+concat-before-split logic a third time
       // for a case that's cheap to route through the already-cut-aware
       // per-output builders instead.
+      //
+      // A canvas background also forces this gate: it changes the base
+      // composition itself (fit+pad instead of crop-to-fill), which
+      // buildMultiVideoArgs's shared crop-to-fill path has no concept of.
       const hasStudioVideoEdits =
         studioEdits.textLayers.length > 0 ||
         studioEdits.transition.type !== "none" ||
         Boolean(musicPlan) ||
         studioEdits.sourceAudio.muted ||
         studioEdits.sourceAudio.volume !== 100 ||
-        !cutPlan.isUncut;
+        !cutPlan.isUncut ||
+        Boolean(backgroundPlan);
 
       await Promise.all(
         outputs.map((output) =>
@@ -3118,6 +3540,13 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
       );
 
       if (!probe.hasVideo) {
+        // Known divergence: audio-only sources render via buildAudiogramArgs,
+        // which has no `background` param and always uses its own fixed
+        // waveform-panel color (see its `bgColor` constant) — a canvas
+        // background configured in studioEdits is silently ignored here even
+        // though the studio preview still shows it for these sources. Not
+        // fixed as part of vizard-parity.md Phase C item 2; revisit if
+        // audiogram background support becomes a real ask.
         for (const output of outputs) {
           try {
             const ffmpegArgs = buildAudiogramArgs({
@@ -3194,6 +3623,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
                   reframe: output.reframe,
                   studioEdits,
                   music: musicPlan,
+                  background: backgroundPlan,
                   applyFreeTierTreatment,
                   cutPlan,
                 })
@@ -3210,6 +3640,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
                   reframe: output.reframe,
                   studioEdits,
                   music: musicPlan,
+                  background: backgroundPlan,
                   applyFreeTierTreatment,
                   cutPlan,
                 });

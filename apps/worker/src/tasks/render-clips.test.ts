@@ -8,14 +8,17 @@ import {
   buildAudiogramArgs,
   buildBrollVideoArgs,
   buildCropAndScaleFilter,
+  buildFitAndBackgroundFilter,
   buildFreeTierPostProcessArgs,
   buildMultiVideoArgs,
   buildSingleVideoArgs,
+  buildTransitionFilter,
   clipRenderAttemptStorageKey,
   downloadUrlToFile,
   escapeDrawtextText,
   generateAssFromSlice,
   generateSrtFromSlice,
+  resolveBackgroundPlanForDownloadedImage,
   resolveClipLogoOverlay,
   resolveRenderTimingForClip,
 } from "./render-clips";
@@ -161,6 +164,70 @@ describe("generateAssFromSlice (caption fidelity)", () => {
     });
     expect(on).toContain("🔥");
   });
+
+  test("punctuation off strips trailing punctuation from cue text", () => {
+    const u = makeUtterance([
+      ["Hello,", 0, 0.5],
+      ["world.", 0.5, 1.0],
+    ]);
+    // karaoke's textTransform is "uppercase", so the punctuation-on baseline
+    // also uppercases the raw token — assert against that, not the raw case.
+    const withPunct = generateAssFromSlice([u], 0, "9:16", preset("karaoke"));
+    expect(withPunct).toContain("HELLO,");
+    expect(withPunct).toContain("WORLD.");
+
+    const noPunct = generateAssFromSlice([u], 0, "9:16", {
+      ...preset("karaoke"),
+      punctuation: false,
+    });
+    expect(noPunct).not.toContain("HELLO,");
+    expect(noPunct).not.toContain("WORLD.");
+    expect(noPunct).toContain("HELLO");
+    expect(noPunct).toContain("WORLD");
+  });
+
+  test("punctuation off drops a pure-punctuation token's dialogue event instead of emitting blank text", () => {
+    const u = makeUtterance([
+      ["Wait", 0, 0.3],
+      ["...", 0.3, 0.5],
+      ["really", 0.5, 1.0],
+    ]);
+    const ass = generateAssFromSlice([u], 0, "9:16", {
+      ...preset("karaoke"),
+      punctuation: false,
+    });
+    // Strip the leading `{\an5...}` position override, then any inline
+    // per-word highlight-color override codes, leaving just the plain
+    // visible cue text — no dialogue line should collapse to nothing.
+    const bodies = ass
+      .split("\n")
+      .filter((l) => l.startsWith("Dialogue:"))
+      .map((l) => l.replace(/^[^{]*\{[^}]*\}/, ""))
+      .map((l) => l.replace(/\{[^}]*\}/g, ""))
+      .map((l) => l.trim());
+    expect(bodies).toHaveLength(3);
+    expect(bodies.every((b) => b.length > 0)).toBe(true);
+    expect(bodies.every((b) => b === "WAIT REALLY")).toBe(true);
+  });
+
+  test("emoji lookup is unaffected by the punctuation setting (emojiForWord already normalizes)", () => {
+    const u = makeUtterance([
+      ["This", 0, 0.3],
+      ["is", 0.3, 0.5],
+      ["fire!", 0.5, 1.0],
+    ]);
+    const withPunct = generateAssFromSlice([u], 0, "9:16", {
+      ...preset("karaoke"),
+      emojis: true,
+    });
+    const withoutPunct = generateAssFromSlice([u], 0, "9:16", {
+      ...preset("karaoke"),
+      emojis: true,
+      punctuation: false,
+    });
+    expect(withPunct).toContain("🔥");
+    expect(withoutPunct).toContain("🔥");
+  });
 });
 
 describe("generateSrtFromSlice (no-preset fallback)", () => {
@@ -178,10 +245,34 @@ describe("generateSrtFromSlice (no-preset fallback)", () => {
     expect(srt).toContain("one two three");
     expect(srt).toContain("four");
   });
+
+  test("punctuation off (5th param) strips trailing punctuation from cue text", () => {
+    const utterance = makeUtterance([
+      ["Hello,", 0, 0.4],
+      ["world.", 0.4, 0.8],
+    ]);
+    const withPunct = generateSrtFromSlice([utterance], 0, undefined, null, true);
+    expect(withPunct).toContain("Hello, world.");
+
+    const noPunct = generateSrtFromSlice([utterance], 0, undefined, null, false);
+    // The SRT timestamp line itself uses "," (e.g. "00:00:00,000") — only the
+    // cue TEXT line (the last of the 3-line cue block) should be punctuation-free.
+    const textLine = noPunct.trim().split("\n")[2]!;
+    expect(textLine).toBe("Hello world");
+  });
+
+  test("punctuation off drops a cue whose every word is pure punctuation", () => {
+    const utterance = makeUtterance([
+      ["...", 0, 0.4],
+      ["!!", 0.4, 0.8],
+    ]);
+    const srt = generateSrtFromSlice([utterance], 0, undefined, null, false);
+    expect(srt).toBe("");
+  });
 });
 
 describe("buildCropAndScaleFilter (auto-reframe)", () => {
-  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true };
+  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true, fps: 30 };
 
   test("uses a static center crop without a reframe spec", () => {
     const f = buildCropAndScaleFilter(probe, "9:16");
@@ -209,8 +300,448 @@ describe("buildCropAndScaleFilter (auto-reframe)", () => {
   });
 });
 
+describe("buildTransitionFilter (vizard-parity Phase C — apply-to-all + fade-black)", () => {
+  function transition(type: "none" | "fade" | "fade-black" | "dip-white", durationSec = 0.4) {
+    return studioEditsSchema.parse({ transition: { type, durationSec } }).transition;
+  }
+
+  test("none produces no filter", () => {
+    expect(buildTransitionFilter(transition("none"), 10)).toBeNull();
+  });
+
+  test("undefined transition produces no filter", () => {
+    expect(buildTransitionFilter(undefined, 10)).toBeNull();
+  });
+
+  test("fade omits an explicit color (ffmpeg's fade default is black)", () => {
+    const f = buildTransitionFilter(transition("fade"), 10)!;
+    expect(f).not.toContain(":color=");
+    expect(f).toContain("fade=t=in:st=0:d=0.400");
+    expect(f).toContain("fade=t=out:st=9.600:d=0.400");
+  });
+
+  test("fade-black explicitly dips to black", () => {
+    const f = buildTransitionFilter(transition("fade-black"), 10)!;
+    expect(f).toContain("fade=t=in:st=0:d=0.400:color=black");
+    expect(f).toContain("fade=t=out:st=9.600:d=0.400:color=black");
+  });
+
+  test("dip-white explicitly dips to white", () => {
+    const f = buildTransitionFilter(transition("dip-white"), 10)!;
+    expect(f).toContain("fade=t=in:st=0:d=0.400:color=white");
+    expect(f).toContain("fade=t=out:st=9.600:d=0.400:color=white");
+  });
+
+  test("clamps duration to half the clip length", () => {
+    const f = buildTransitionFilter(transition("fade-black", 2), 1)!;
+    expect(f).toContain("fade=t=in:st=0:d=0.500:color=black");
+    expect(f).toContain("fade=t=out:st=0.500:d=0.500:color=black");
+  });
+});
+
+describe("buildFitAndBackgroundFilter (canvas background, vizard-parity Phase C item 2)", () => {
+  test("color mode: scale-to-fit then pad with the hex color, no crop", () => {
+    const parts = buildFitAndBackgroundFilter({
+      aspectRatio: "9:16",
+      background: { mode: "color", color: "#112233", imagePath: null },
+      videoInputLabel: "[0:v]",
+      outputLabel: "[outv]",
+    });
+    expect(parts).toHaveLength(1);
+    expect(parts[0]).toBe(
+      "[0:v]scale=1080:1920:force_original_aspect_ratio=decrease:force_divisible_by=2," +
+        "pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=0x112233,format=yuv420p[outv]",
+    );
+    expect(parts[0]).not.toContain("crop=");
+  });
+
+  test("color mode with no color set falls back to black", () => {
+    const parts = buildFitAndBackgroundFilter({
+      aspectRatio: "9:16",
+      background: { mode: "color", color: null, imagePath: null },
+      videoInputLabel: "[0:v]",
+      outputLabel: "[outv]",
+    });
+    expect(parts[0]).toContain("color=0x000000");
+  });
+
+  test("image mode: cover-fit the background image, scale-to-fit the video, overlay centered", () => {
+    const parts = buildFitAndBackgroundFilter({
+      aspectRatio: "9:16",
+      background: { mode: "image", color: "#112233", imagePath: "/tmp/bg.png" },
+      videoInputLabel: "[0:v]",
+      outputLabel: "[outv]",
+      imageInputIndex: 1,
+      fps: 60,
+    });
+    expect(parts).toEqual([
+      "[1:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=60[bgimg]",
+      "[0:v]scale=1080:1920:force_original_aspect_ratio=decrease:force_divisible_by=2[bgfitv]",
+      "[bgimg][bgfitv]overlay=(W-w)/2:(H-h)/2,format=yuv420p[outv]",
+    ]);
+  });
+
+  // Regression test for the HIGH finding: overlay's output inherits the MAIN
+  // (first) framesync input's rate, and the still image is that main input —
+  // without an explicit `fps=` on the [bgimg] chain the image2 demuxer's
+  // default of 25fps silently overrides the real source rate. This asserts
+  // the fps token is present regardless of the exact numeric value, so it
+  // fails loudly if the filter is ever refactored to drop it again.
+  test("image mode always pins the [bgimg] chain's fps, regardless of source rate", () => {
+    for (const fps of [23.976, 24, 25, 29.97, 30, 50, 60]) {
+      const parts = buildFitAndBackgroundFilter({
+        aspectRatio: "9:16",
+        background: { mode: "image", color: "#112233", imagePath: "/tmp/bg.png" },
+        videoInputLabel: "[0:v]",
+        outputLabel: "[outv]",
+        imageInputIndex: 1,
+        fps,
+      });
+      expect(parts[0]).toContain(`,fps=${fps}[bgimg]`);
+    }
+  });
+
+  test("image mode falls back to DEFAULT_BACKGROUND_FPS (30) when fps is omitted or non-positive", () => {
+    const omitted = buildFitAndBackgroundFilter({
+      aspectRatio: "9:16",
+      background: { mode: "image", color: "#112233", imagePath: "/tmp/bg.png" },
+      videoInputLabel: "[0:v]",
+      outputLabel: "[outv]",
+      imageInputIndex: 1,
+    });
+    expect(omitted[0]).toContain(",fps=30[bgimg]");
+
+    const zero = buildFitAndBackgroundFilter({
+      aspectRatio: "9:16",
+      background: { mode: "image", color: "#112233", imagePath: "/tmp/bg.png" },
+      videoInputLabel: "[0:v]",
+      outputLabel: "[outv]",
+      imageInputIndex: 1,
+      fps: 0,
+    });
+    expect(zero[0]).toContain(",fps=30[bgimg]");
+  });
+
+  test("color mode never emits an fps token (overlay is never invoked)", () => {
+    const parts = buildFitAndBackgroundFilter({
+      aspectRatio: "9:16",
+      background: { mode: "color", color: "#112233", imagePath: null },
+      videoInputLabel: "[0:v]",
+      outputLabel: "[outv]",
+      fps: 60,
+    });
+    expect(parts[0]).not.toContain("fps=");
+  });
+
+  test("image mode without a downloaded image (null imagePath) falls back to the color pad", () => {
+    const parts = buildFitAndBackgroundFilter({
+      aspectRatio: "9:16",
+      background: { mode: "image", color: "#112233", imagePath: null },
+      videoInputLabel: "[0:v]",
+      outputLabel: "[outv]",
+      imageInputIndex: null,
+    });
+    expect(parts).toHaveLength(1);
+    expect(parts[0]).toContain("pad=1080:1920");
+    expect(parts[0]).toContain("color=0x112233");
+  });
+
+  test("trailingChain (text layers + captions) folds into the final part for both modes", () => {
+    const color = buildFitAndBackgroundFilter({
+      aspectRatio: "9:16",
+      background: { mode: "color", color: "#112233", imagePath: null },
+      videoInputLabel: "[0:v]",
+      outputLabel: "[outv]",
+      trailingChain: "drawtext=text='hi',ass='/tmp/c.ass'",
+    });
+    expect(color[0]).toBe(
+      "[0:v]scale=1080:1920:force_original_aspect_ratio=decrease:force_divisible_by=2," +
+        "pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=0x112233,format=yuv420p," +
+        "drawtext=text='hi',ass='/tmp/c.ass'[outv]",
+    );
+
+    const image = buildFitAndBackgroundFilter({
+      aspectRatio: "9:16",
+      background: { mode: "image", color: "#112233", imagePath: "/tmp/bg.png" },
+      videoInputLabel: "[0:v]",
+      outputLabel: "[outv]",
+      imageInputIndex: 1,
+      trailingChain: "drawtext=text='hi'",
+    });
+    expect(image[2]).toBe(
+      "[bgimg][bgfitv]overlay=(W-w)/2:(H-h)/2,format=yuv420p,drawtext=text='hi'[outv]",
+    );
+  });
+});
+
+describe("resolveBackgroundPlanForDownloadedImage (HIGH: non-decodable background image degrades to color)", () => {
+  test("decodable: true keeps image mode and the downloaded path", () => {
+    const plan = resolveBackgroundPlanForDownloadedImage({
+      decodable: true,
+      color: "#112233",
+      imagePath: "/tmp/background-clip1.bin",
+    });
+    expect(plan).toEqual({
+      mode: "image",
+      color: "#112233",
+      imagePath: "/tmp/background-clip1.bin",
+    });
+  });
+
+  test("decodable: false (e.g. a 200-OK HTML page instead of an image) degrades to the color fallback", () => {
+    const plan = resolveBackgroundPlanForDownloadedImage({
+      decodable: false,
+      color: "#112233",
+      imagePath: "/tmp/background-clip1.bin",
+    });
+    expect(plan).toEqual({
+      mode: "color",
+      color: "#112233",
+      imagePath: null,
+    });
+  });
+
+  test("decodable: false still preserves the color (including the black default) rather than dropping it", () => {
+    const plan = resolveBackgroundPlanForDownloadedImage({
+      decodable: false,
+      color: "#000000",
+      imagePath: "/tmp/background-clip1.bin",
+    });
+    expect(plan.color).toBe("#000000");
+    expect(plan.imagePath).toBeNull();
+  });
+});
+
+describe("buildSingleVideoArgs with a canvas background active", () => {
+  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true, fps: 30 };
+
+  test("color mode replaces crop+scale with fit+pad and adds no extra input", () => {
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 10,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+      background: { mode: "color", color: "#112233", imagePath: null },
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    expect(graph).toContain("pad=1080:1920");
+    expect(graph).toContain("color=0x112233");
+    expect(graph).not.toContain("crop=");
+    expect(args.filter((a) => a === "-i")).toHaveLength(1); // source only
+  });
+
+  test("image mode adds the background image as its own -i before the logo input", () => {
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 10,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+      logo: {
+        filePath: "/tmp/logo.png",
+        position: "bot-right",
+        opacity: 80,
+        scalePct: 15,
+      },
+      background: { mode: "image", color: "#112233", imagePath: "/tmp/bg.png" },
+    });
+    const iIndexes = args
+      .map((a, i) => (a === "-i" ? i : -1))
+      .filter((i) => i >= 0);
+    expect(iIndexes).toHaveLength(3); // source, background image, logo
+    expect(args[iIndexes[0]! + 1]).toBe("/tmp/src.mp4");
+    expect(args[iIndexes[1]! + 1]).toBe("/tmp/bg.png");
+    expect(args[iIndexes[2]! + 1]).toBe("/tmp/logo.png");
+
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    // fps=30 pinned from probe.fps (Opus review Finding 1 — overlay's output
+    // otherwise inherits the still image's demuxer-default 25fps).
+    expect(graph).toContain(
+      "[1:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=30[bgimg]",
+    );
+    // logo overlays [outvbase] (the composed fit+background frame) exactly
+    // as it does for the crop-to-fill path — input index shifted to 2 since
+    // the background image now occupies input 1.
+    expect(graph).toContain("[outvbase][brandlogo]overlay=");
+    expect(graph).toContain("[2:v]scale=");
+  });
+
+  test("pins the [bgimg] chain's fps to the probed source rate (not the default)", () => {
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 10,
+      aspectRatio: "9:16",
+      probe: { ...probe, fps: 59.94 },
+      srtPath: null,
+      background: { mode: "image", color: "#112233", imagePath: "/tmp/bg.png" },
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    expect(graph).toContain(",fps=59.94[bgimg]");
+  });
+
+  test("music input index shifts correctly when a background image input is present", () => {
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 10,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+      logo: {
+        filePath: "/tmp/logo.png",
+        position: "bot-right",
+        opacity: 80,
+        scalePct: 15,
+      },
+      music: { path: "/tmp/music.mp3", volume: 50, startOffsetSec: 0 },
+      background: { mode: "image", color: "#112233", imagePath: "/tmp/bg.png" },
+    });
+    const iIndexes = args
+      .map((a, i) => (a === "-i" ? i : -1))
+      .filter((i) => i >= 0);
+    // 0=source, 1=background image, 2=logo, 3=music
+    expect(iIndexes).toHaveLength(4);
+    expect(args[iIndexes[1]! + 1]).toBe("/tmp/bg.png");
+    expect(args[iIndexes[2]! + 1]).toBe("/tmp/logo.png");
+    expect(args[iIndexes[3]! + 1]).toBe("/tmp/music.mp3");
+
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    expect(graph).toContain("[3:a]atrim=");
+  });
+
+  test("reframe is ignored (no crop@reframe) when a background is active", () => {
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 10,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+      background: { mode: "color", color: "#112233", imagePath: null },
+      reframe: { scriptPath: "/tmp/r.txt", cropName: "crop@reframe" },
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    expect(graph).not.toContain("crop@reframe");
+    expect(graph).not.toContain("sendcmd");
+    expect(graph).toContain("pad=1080:1920");
+  });
+
+  test("without a background, the graph is unchanged (crop+scale, no extra input)", () => {
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 10,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    expect(graph).toContain("crop=");
+    expect(graph).not.toContain("pad=");
+    expect(args.filter((a) => a === "-i")).toHaveLength(1);
+  });
+});
+
+describe("buildBrollVideoArgs with a canvas background active", () => {
+  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true, fps: 30 };
+
+  test("cutaway input indices shift by 1 when a background image occupies input 1", () => {
+    const args = buildBrollVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      cutaways: [{ path: "/tmp/broll.mp4", window: { startSec: 2, endSec: 5 } }],
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 20,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+      background: { mode: "image", color: "#112233", imagePath: "/tmp/bg.png" },
+    });
+    const iIndexes = args
+      .map((a, i) => (a === "-i" ? i : -1))
+      .filter((i) => i >= 0);
+    expect(iIndexes).toHaveLength(3); // source, background image, b-roll
+    expect(args[iIndexes[1]! + 1]).toBe("/tmp/bg.png");
+    expect(args[iIndexes[2]! + 1]).toBe("/tmp/broll.mp4");
+
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    // [stage0] is the composed fit+background frame; the cutaway (now input
+    // [2]) overlays on top of it exactly as it would over a crop-to-fill base.
+    expect(graph).toContain("[bgimg][bgfitv]overlay=(W-w)/2:(H-h)/2,format=yuv420p[stage0]");
+    expect(graph).toContain("[2:v]scale=1080:1920:force_original_aspect_ratio=increase");
+    // fps pinned from probe.fps on the [bgimg] chain specifically.
+    expect(graph).toContain(",fps=30[bgimg]");
+  });
+
+  test("music input index [N:a] shifts correctly with a background image AND cutaways present", () => {
+    const args = buildBrollVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      cutaways: [
+        { path: "/tmp/broll-0.mp4", window: { startSec: 2, endSec: 5 } },
+        { path: "/tmp/broll-1.mp4", window: { startSec: 8, endSec: 11 } },
+      ],
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 20,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+      background: { mode: "image", color: "#112233", imagePath: "/tmp/bg.png" },
+      logo: {
+        filePath: "/tmp/logo.png",
+        position: "top-right",
+        opacity: 100,
+        scalePct: 12,
+      },
+      music: { path: "/tmp/music.mp3", volume: 50, startOffsetSec: 0 },
+    });
+    const iIndexes = args
+      .map((a, i) => (a === "-i" ? i : -1))
+      .filter((i) => i >= 0);
+    // 0=source, 1=background image, 2-3=b-roll, 4=logo, 5=music
+    expect(iIndexes).toHaveLength(6);
+    expect(args[iIndexes[1]! + 1]).toBe("/tmp/bg.png");
+    expect(args[iIndexes[2]! + 1]).toBe("/tmp/broll-0.mp4");
+    expect(args[iIndexes[3]! + 1]).toBe("/tmp/broll-1.mp4");
+    expect(args[iIndexes[4]! + 1]).toBe("/tmp/logo.png");
+    expect(args[iIndexes[5]! + 1]).toBe("/tmp/music.mp3");
+
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    expect(graph).toContain("[5:a]atrim=");
+  });
+
+  test("reframe is ignored (no crop@reframe) when a background is active", () => {
+    const args = buildBrollVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      cutaways: [{ path: "/tmp/broll.mp4", window: { startSec: 2, endSec: 5 } }],
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 20,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+      background: { mode: "color", color: "#112233", imagePath: null },
+      reframe: { scriptPath: "/tmp/r.txt", cropName: "crop@reframe" },
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    expect(graph).not.toContain("crop@reframe");
+    expect(graph).not.toContain("sendcmd");
+    expect(graph).toContain("pad=1080:1920");
+  });
+});
+
 describe("buildBrollVideoArgs (B-roll cutaway)", () => {
-  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true };
+  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true, fps: 30 };
 
   test("overlays a single b-roll cutaway only during its window, keeps source audio", () => {
     const args = buildBrollVideoArgs({
@@ -376,7 +907,7 @@ describe("resolveClipLogoOverlay (per-clip logo override merge — vizard-parity
 });
 
 describe("buildSingleVideoArgs logo filter graph (override parity with the studio preview)", () => {
-  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true };
+  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true, fps: 30 };
   // 9:16 target width is 1080 (see buildCropAndScaleFilter's "scale=1080:1920").
   const baseLogo = {
     filePath: "/tmp/logo.png",
@@ -537,6 +1068,88 @@ describe("buildAudiogramArgs (audio-only renders)", () => {
   });
 });
 
+describe("subtitle visibility toggle (vizard-parity Phase C) — captionPreset.visible === false gates every render path", () => {
+  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true, fps: 30 };
+  const captionPresetVisible = getCaptionPresetById("karaoke")!.preset;
+  const captionPresetHidden = { ...captionPresetVisible, visible: false };
+
+  test("buildSingleVideoArgs: visible=true burns the ASS filter, visible=false omits it entirely", () => {
+    const shown = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 10,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: "/tmp/clip.ass",
+      captionPreset: captionPresetVisible,
+    });
+    expect(shown[shown.indexOf("-filter_complex") + 1]).toContain("ass=");
+
+    const hidden = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 10,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: "/tmp/clip.ass",
+      captionPreset: captionPresetHidden,
+    });
+    expect(hidden[hidden.indexOf("-filter_complex") + 1]).not.toContain("ass=");
+  });
+
+  test("buildBrollVideoArgs: visible=false omits the ASS filter but keeps the cutaway overlay", () => {
+    const hidden = buildBrollVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      cutaways: [{ path: "/tmp/broll.mp4", window: { startSec: 1, endSec: 3 } }],
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 10,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: "/tmp/clip.ass",
+      captionPreset: captionPresetHidden,
+    });
+    const graph = hidden[hidden.indexOf("-filter_complex") + 1]!;
+    expect(graph).not.toContain("ass=");
+    expect(graph).toContain("overlay=0:0:enable=");
+  });
+
+  test("buildAudiogramArgs: visible=false omits the ASS filter but keeps the waveform", () => {
+    const hidden = buildAudiogramArgs({
+      sourcePath: "/tmp/a.mp3",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 30,
+      aspectRatio: "9:16",
+      clipDurationSec: 30,
+      srtPath: "/tmp/clip.ass",
+      captionPreset: captionPresetHidden,
+    });
+    const graph = hidden[hidden.indexOf("-filter_complex") + 1]!;
+    expect(graph).not.toContain("ass=");
+    expect(graph).toContain("showwaves");
+  });
+
+  test("buildMultiVideoArgs: visible=false omits the ASS filter for every output", () => {
+    const hidden = buildMultiVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputs: [
+        { clipRenderId: "r1", clipId: "c1", clipIndex: 0, aspectRatio: "9:16", outputPath: "/tmp/out-916.mp4", storageKey: "k1", subtitlePath: "/tmp/clip-916.ass" },
+        { clipRenderId: "r2", clipId: "c1", clipIndex: 0, aspectRatio: "16:9", outputPath: "/tmp/out-169.mp4", storageKey: "k2", subtitlePath: "/tmp/clip-169.ass" },
+      ],
+      startSec: 0,
+      endSec: 10,
+      probe,
+      srtPath: null,
+      captionPreset: captionPresetHidden,
+    });
+    const graph = hidden[hidden.indexOf("-filter_complex") + 1]!;
+    expect(graph).not.toContain("ass=");
+  });
+});
+
 function indexesOf(args: string[], value: string): number[] {
   const result: number[] = [];
   args.forEach((arg, index) => {
@@ -576,7 +1189,7 @@ function expectLabelConsumedOnce(graph: string, label: string) {
 }
 
 describe("output duration bound (FIX: over-long B-roll/inputs can no longer stretch the output)", () => {
-  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true };
+  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true, fps: 30 };
 
   test("buildSingleVideoArgs adds an explicit output -t in addition to the input -t", () => {
     const args = buildSingleVideoArgs({
@@ -686,7 +1299,7 @@ describe("output duration bound (FIX: over-long B-roll/inputs can no longer stre
 });
 
 describe("music mixing (FIX: no more quiet 6dB dialogue duck + startOffsetSec)", () => {
-  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true };
+  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true, fps: 30 };
 
   test("mixes at unity gain (normalize=0) and applies volume only to the music branch", () => {
     const args = buildSingleVideoArgs({
@@ -897,7 +1510,7 @@ describe("downloadUrlToFile (bounded, timed remote B-roll/music download)", () =
 });
 
 describe("ranged https source input (presigned URL reads)", () => {
-  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true };
+  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true, fps: 30 };
   const httpsSource =
     "https://r2.example.com/projects/p1/source.mp4?X-Amz-Signature=abc";
 
@@ -971,7 +1584,7 @@ describe("ranged https source input (presigned URL reads)", () => {
 });
 
 describe("boundary audio fade coverage", () => {
-  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true };
+  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true, fps: 30 };
 
   test("buildSingleVideoArgs routes non-music audio through the fade chain", () => {
     const args = buildSingleVideoArgs({
@@ -1014,7 +1627,7 @@ describe("boundary audio fade coverage", () => {
 });
 
 describe("source audio gain/mute + music fades (vizard-parity Phase A step 5)", () => {
-  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true };
+  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true, fps: 30 };
 
   test("unity source volume (100, unmuted) skips the gain filter entirely — unchanged filter graph", () => {
     const studioEdits = studioEditsSchema.parse({});
@@ -1184,7 +1797,7 @@ describe("source audio gain/mute + music fades (vizard-parity Phase A step 5)", 
       startSec: 0,
       endSec: 10,
       aspectRatio: "9:16",
-      probe: { width: 1920, height: 1080, hasVideo: true, hasAudio: false },
+      probe: { width: 1920, height: 1080, hasVideo: true, hasAudio: false, fps: 30 },
       srtPath: null,
       music: {
         path: "/tmp/music.mp3",
@@ -1223,7 +1836,7 @@ describe("clipRenderAttemptStorageKey", () => {
 });
 
 describe("cut-concat rendering (vizard-parity Phase B step 7 — deletedRanges)", () => {
-  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true };
+  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true, fps: 30 };
   // 30s clip window, one mid-clip deletion [10,15) -> two kept segments
   // [0,10) and [15,30), 25s edited duration.
   const window = { startSec: 0, endSec: 30 };
