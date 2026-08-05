@@ -73,9 +73,55 @@ export function emojiForWord(word: string): string | null {
   return CAPTION_EMOJI_MAP[key] ?? null;
 }
 
+// Punctuation/quote/bracket/dash characters stripped from a caption word's
+// EDGES only (never the middle) when punctuation display is off — so
+// "don't," -> "don't" (trailing comma stripped, intra-word apostrophe kept)
+// and "state-of-the-art." -> "state-of-the-art" (trailing period stripped,
+// intra-word hyphens kept). Includes ASCII + common Unicode quote/dash forms
+// (curly quotes, em/en dash, ellipsis) since AssemblyAI tokens carry real
+// punctuation, not just ASCII.
+const CAPTION_EDGE_PUNCT_CHARS = ".,!?;:…\"'“”‘’()[\\]{}<>—–_~`*-";
+const LEADING_CAPTION_PUNCT_RE = new RegExp(
+  `^[${CAPTION_EDGE_PUNCT_CHARS}]+`,
+  "u",
+);
+const TRAILING_CAPTION_PUNCT_RE = new RegExp(
+  `[${CAPTION_EDGE_PUNCT_CHARS}]+$`,
+  "u",
+);
+
+/**
+ * Shared pure helper — the ONE place caption cue text is formatted for
+ * punctuation display, consumed by BOTH the worker's SRT/ASS builders
+ * (`render-clips.ts`) and the studio preview (`caption-style-engine.tsx`'s
+ * `CaptionCue`) so preview and burn-in can never fork. When `punctuation` is
+ * false, strips leading/trailing punctuation from the token while preserving
+ * intra-word apostrophes/hyphens; a token that is pure punctuation (e.g.
+ * "...") collapses to `""` — callers (cue builders) must skip empty tokens
+ * rather than render/emit a blank word. When `punctuation` is true the word
+ * passes through unchanged.
+ */
+export function formatCaptionWord(
+  word: string,
+  opts: { punctuation: boolean },
+): string {
+  if (opts.punctuation) return word;
+  return word
+    .replace(LEADING_CAPTION_PUNCT_RE, "")
+    .replace(TRAILING_CAPTION_PUNCT_RE, "");
+}
+
 export const captionPresetSchema = z.object({
   fontName: z.string().max(100).default("Bebas Neue"),
   emojis: z.boolean().optional(),
+  /** Subtitle display on/off (vizard-parity Phase C). Absent/true = shown;
+   *  false hides subtitle burn-in AND the studio's on-video caption overlay
+   *  (style controls stay live either way — only display is gated). */
+  visible: z.boolean().optional(),
+  /** Punctuation on/off (vizard-parity Phase C). Absent/true = keep
+   *  punctuation as transcribed; false routes cue text through
+   *  `formatCaptionWord` in both the worker builders and the preview. */
+  punctuation: z.boolean().optional(),
   primaryColor: z.string().regex(/^#[0-9A-Fa-f]{6}$/).default("#FFFFFF"),
   outlineColor: z.string().regex(/^#[0-9A-Fa-f]{6}$/).default("#000000"),
   outlineWidth: z.number().int().min(0).max(4).default(2),

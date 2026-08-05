@@ -3,6 +3,21 @@ import { logoPositionSchema } from "./logo-position";
 
 const hexColorSchema = z.string().regex(/^#[0-9A-Fa-f]{6}$/);
 
+/** `.url()` alone accepts any scheme (file://, ftp://, javascript:, ...) — this
+ *  refines to http/https only, matching `assertPublicHttpUrl`'s expectations
+ *  at render time (packages/services) and the panel's own client-side gate. */
+const httpUrlSchema = z.string().url().refine(
+  (value) => {
+    try {
+      const protocol = new URL(value).protocol;
+      return protocol === "http:" || protocol === "https:";
+    } catch {
+      return false;
+    }
+  },
+  { message: "must be an http(s) URL" },
+);
+
 export const studioTextLayerSchema = z
   .object({
     id: z.string().min(1).max(80),
@@ -89,6 +104,29 @@ const STUDIO_LOGO_DEFAULT = {
   scalePct: null,
 } as const;
 
+// Per-clip canvas background (vizard-parity.md Phase C item 2): when enabled,
+// the source video letterboxes ("fit" — scale + pad) instead of cropping to
+// fill, and the empty frame area shows a solid color or an image behind it.
+// "off" (the default) preserves today's crop-to-fill behavior everywhere —
+// the studio preview's cosmetic `layoutMode` local state (fill/fit/blur,
+// video-preview.tsx) is left untouched when this is off, and only overridden
+// once a mode is actually chosen here. `color`/`imageUrl` are independent of
+// `mode` so switching modes back and forth doesn't lose the user's last pick;
+// `color: null` is treated as black (both by the worker's pad filter and the
+// preview's stage background) and `imageUrl: null`/invalid falls back to
+// color/black the same way on both sides.
+export const studioBackgroundSchema = z.object({
+  mode: z.enum(["off", "color", "image"]).default("off"),
+  color: hexColorSchema.nullable().default(null),
+  imageUrl: httpUrlSchema.nullable().default(null),
+});
+
+const STUDIO_BACKGROUND_DEFAULT = {
+  mode: "off",
+  color: null,
+  imageUrl: null,
+} as const;
+
 export const studioEditsSchema = z
   .object({
     textLayers: z.array(studioTextLayerSchema).max(12).default([]),
@@ -106,6 +144,7 @@ export const studioEditsSchema = z
     }),
     sourceAudio: studioSourceAudioSchema.default({ volume: 100, muted: false }),
     logo: studioLogoSchema.default(STUDIO_LOGO_DEFAULT),
+    background: studioBackgroundSchema.default(STUDIO_BACKGROUND_DEFAULT),
   })
   .default({
     textLayers: [],
@@ -120,6 +159,7 @@ export const studioEditsSchema = z
     },
     sourceAudio: { volume: 100, muted: false },
     logo: STUDIO_LOGO_DEFAULT,
+    background: STUDIO_BACKGROUND_DEFAULT,
   });
 
 export const updateClipStudioEditsSchema = z.object({
@@ -131,5 +171,45 @@ export type StudioTransition = z.infer<typeof studioTransitionSchema>;
 export type StudioMusic = z.infer<typeof studioMusicSchema>;
 export type StudioSourceAudio = z.infer<typeof studioSourceAudioSchema>;
 export type StudioLogo = z.infer<typeof studioLogoSchema>;
+export type StudioBackground = z.infer<typeof studioBackgroundSchema>;
 export type StudioEdits = z.infer<typeof studioEditsSchema>;
 export type UpdateClipStudioEdits = z.infer<typeof updateClipStudioEditsSchema>;
+
+/**
+ * "Apply to all clips" for a single `studioEdits` sub-field (vizard-parity.md
+ * Phase C — transitions/background apply-to-all). Unlike `captionPreset`,
+ * `studioEdits` is a JSON blob, so a bulk apply can't overwrite the whole
+ * column — it must patch exactly one named sub-object per call, merged
+ * per-row on top of that clip's existing `studioEdits` by the service. The
+ * `.strict()` + refine keeps the payload to precisely one of the two known
+ * fields; add a new branch here (and in `applyStudioEditsPatchToAllClips`)
+ * when another sub-field earns an apply-to-all action.
+ */
+export const applyStudioEditsPatchSchema = z
+  .object({
+    transition: studioTransitionSchema.optional(),
+    background: studioBackgroundSchema.optional(),
+  })
+  .strict()
+  .refine(
+    (patch) => (patch.transition !== undefined) !== (patch.background !== undefined),
+    { message: "patch must contain exactly one of: transition, background" },
+  );
+
+export type ApplyStudioEditsPatch = z.infer<typeof applyStudioEditsPatchSchema>;
+
+/**
+ * Request body for `POST /projects/:id/clips/apply-studio-edits`.
+ * `excludeClipId` lets the studio session that originated the patch skip
+ * itself server-side — that clip already has the change applied locally
+ * (undoable, via the open editor document) and will persist it through the
+ * normal revision-guarded autosave; including it in the bulk write would
+ * bump its `editorRevision` out from under the client's in-flight
+ * `baseRevision` and 409 the next autosave.
+ */
+export const applyStudioEditsToAllSchema = z.object({
+  patch: applyStudioEditsPatchSchema,
+  excludeClipId: z.string().uuid().optional(),
+});
+
+export type ApplyStudioEditsToAll = z.infer<typeof applyStudioEditsToAllSchema>;

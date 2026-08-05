@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 
-import { resolveMusicFadeWindows, studioEditsSchema } from "./studio-edits";
+import {
+  applyStudioEditsPatchSchema,
+  applyStudioEditsToAllSchema,
+  resolveMusicFadeWindows,
+  studioEditsSchema,
+} from "./studio-edits";
 
 describe("studioEditsSchema (source audio + music fades)", () => {
   test("parse({}) defaults sourceAudio to unmuted 100 and music fades to 0", () => {
@@ -58,6 +63,101 @@ describe("studioEditsSchema (source audio + music fades)", () => {
       opacity: null,
       scalePct: null,
     });
+  });
+
+  test("parse({}) defaults background to off/null/null", () => {
+    const parsed = studioEditsSchema.parse({});
+    expect(parsed.background).toEqual({
+      mode: "off",
+      color: null,
+      imageUrl: null,
+    });
+  });
+
+  test("legacy persisted JSON (no background key at all) parses to the off default", () => {
+    const legacy = {
+      textLayers: [],
+      transition: { type: "none", durationSec: 0.4 },
+    };
+    const parsed = studioEditsSchema.parse(legacy);
+    expect(parsed.background).toEqual({
+      mode: "off",
+      color: null,
+      imageUrl: null,
+    });
+  });
+
+  test("accepts explicit color/image background values", () => {
+    const color = studioEditsSchema.parse({
+      background: { mode: "color", color: "#112233", imageUrl: null },
+    });
+    expect(color.background).toEqual({
+      mode: "color",
+      color: "#112233",
+      imageUrl: null,
+    });
+
+    const image = studioEditsSchema.parse({
+      background: {
+        mode: "image",
+        color: null,
+        imageUrl: "https://cdn.example/bg.png",
+      },
+    });
+    expect(image.background).toEqual({
+      mode: "image",
+      color: null,
+      imageUrl: "https://cdn.example/bg.png",
+    });
+  });
+
+  test("rejects an invalid mode, malformed hex color, and malformed image URL", () => {
+    expect(() =>
+      studioEditsSchema.parse({ background: { mode: "solid" } }),
+    ).toThrow();
+    expect(() =>
+      studioEditsSchema.parse({
+        background: { mode: "color", color: "112233" },
+      }),
+    ).toThrow();
+    expect(() =>
+      studioEditsSchema.parse({
+        background: { mode: "color", color: "#12345" },
+      }),
+    ).toThrow();
+    expect(() =>
+      studioEditsSchema.parse({
+        background: { mode: "image", imageUrl: "not-a-url" },
+      }),
+    ).toThrow();
+  });
+
+  test("rejects non-http(s) image URL schemes", () => {
+    expect(() =>
+      studioEditsSchema.parse({
+        background: { mode: "image", imageUrl: "file:///etc/passwd" },
+      }),
+    ).toThrow();
+    expect(() =>
+      studioEditsSchema.parse({
+        background: { mode: "image", imageUrl: "ftp://cdn.example/bg.png" },
+      }),
+    ).toThrow();
+    expect(() =>
+      studioEditsSchema.parse({
+        background: { mode: "image", imageUrl: "javascript:alert(1)" },
+      }),
+    ).toThrow();
+
+    const https = studioEditsSchema.parse({
+      background: { mode: "image", imageUrl: "https://cdn.example/bg.png" },
+    });
+    expect(https.background.imageUrl).toBe("https://cdn.example/bg.png");
+
+    const http = studioEditsSchema.parse({
+      background: { mode: "image", imageUrl: "http://cdn.example/bg.png" },
+    });
+    expect(http.background.imageUrl).toBe("http://cdn.example/bg.png");
   });
 
   test("accepts explicit logo overrides within range and rejects out-of-range ones", () => {
@@ -148,5 +248,74 @@ describe("resolveMusicFadeWindows", () => {
       fadeOutSec: 0,
       fadeOutStartSec: 0,
     });
+  });
+});
+
+describe("applyStudioEditsPatchSchema (vizard-parity Phase C — apply-to-all)", () => {
+  test("accepts a transition-only patch", () => {
+    const parsed = applyStudioEditsPatchSchema.parse({
+      transition: { type: "fade-black", durationSec: 0.5 },
+    });
+    expect(parsed.transition).toEqual({ type: "fade-black", durationSec: 0.5 });
+    expect(parsed.background).toBeUndefined();
+  });
+
+  test("accepts a background-only patch", () => {
+    const parsed = applyStudioEditsPatchSchema.parse({
+      background: { mode: "color", color: "#112233", imageUrl: null },
+    });
+    expect(parsed.background).toEqual({
+      mode: "color",
+      color: "#112233",
+      imageUrl: null,
+    });
+    expect(parsed.transition).toBeUndefined();
+  });
+
+  test("rejects a patch with both fields", () => {
+    expect(() =>
+      applyStudioEditsPatchSchema.parse({
+        transition: { type: "fade", durationSec: 0.4 },
+        background: { mode: "off", color: null, imageUrl: null },
+      }),
+    ).toThrow();
+  });
+
+  test("rejects an empty patch", () => {
+    expect(() => applyStudioEditsPatchSchema.parse({})).toThrow();
+  });
+
+  test("rejects an unknown field (strict)", () => {
+    expect(() =>
+      applyStudioEditsPatchSchema.parse({
+        music: { url: null, title: null, volume: 35, startOffsetSec: 0, fadeInSec: 0, fadeOutSec: 0 },
+      }),
+    ).toThrow();
+  });
+});
+
+describe("applyStudioEditsToAllSchema (bulk apply request body)", () => {
+  test("excludeClipId is optional", () => {
+    const parsed = applyStudioEditsToAllSchema.parse({
+      patch: { transition: { type: "dip-white", durationSec: 0.4 } },
+    });
+    expect(parsed.excludeClipId).toBeUndefined();
+  });
+
+  test("accepts a well-formed excludeClipId", () => {
+    const parsed = applyStudioEditsToAllSchema.parse({
+      patch: { background: { mode: "off", color: null, imageUrl: null } },
+      excludeClipId: "3f3e3d3c-3b3a-4939-8837-363534333231",
+    });
+    expect(parsed.excludeClipId).toBe("3f3e3d3c-3b3a-4939-8837-363534333231");
+  });
+
+  test("rejects a non-uuid excludeClipId", () => {
+    expect(() =>
+      applyStudioEditsToAllSchema.parse({
+        patch: { transition: { type: "none", durationSec: 0.4 } },
+        excludeClipId: "not-a-uuid",
+      }),
+    ).toThrow();
   });
 });

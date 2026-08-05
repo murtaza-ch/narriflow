@@ -132,6 +132,22 @@ export const updateClipCaptionPresetSchema = z.object({
   captionPreset: captionPresetSchema.nullable(),
 });
 
+/**
+ * Request body for `POST /projects/:id/clips/apply-caption-preset`
+ * ("apply to all"). Unlike the single-clip PATCH, a bulk apply always
+ * supplies an actual preset (never null — there's no "clear every clip's
+ * captions" action), so this schema doesn't reuse the nullable one.
+ * `excludeClipId` mirrors `applyStudioEditsToAllSchema`: the calling studio
+ * session already has the preset applied locally in its open document and
+ * will persist it via the normal revision-guarded autosave, so it's skipped
+ * server-side to avoid bumping its `editorRevision` out from under that
+ * autosave's `baseRevision`.
+ */
+export const applyCaptionPresetToAllSchema = z.object({
+  captionPreset: captionPresetSchema,
+  excludeClipId: z.string().uuid().optional(),
+});
+
 export const updateClipBrollSchema = z.object({
   // A chosen Pexels download URL, or null to clear and fall back to auto B-roll.
   brollUrl: z.string().url().nullable(),
@@ -335,6 +351,7 @@ export type ClipTitleSuggestionsResponse = z.infer<
   typeof clipTitleSuggestionsResponseSchema
 >;
 export type UpdateClipCaptionPreset = z.infer<typeof updateClipCaptionPresetSchema>;
+export type ApplyCaptionPresetToAll = z.infer<typeof applyCaptionPresetToAllSchema>;
 export type UpdateClipTranscriptSlice = z.infer<typeof updateClipTranscriptSliceSchema>;
 export type UpdateClipBroll = z.infer<typeof updateClipBrollSchema>;
 export type CreateClipFromSelection = z.infer<typeof createClipFromSelectionSchema>;
