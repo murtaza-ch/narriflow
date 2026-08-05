@@ -86,9 +86,16 @@ import {
 } from "./two-up";
 import {
   buildScreenSpeakerFilterChain,
+  classifyScreencast,
+  confirmsFaceInRect,
+  fitPipCropToTile,
+  pipCropTooSmall,
   screenBottomIsTrackable,
   screenTileGeometry,
+  selectPipRect,
   SCREEN_BOTTOM_CROP_NAME,
+  type PipCandidate,
+  type PipRect,
   type ScreenSpeakerBottomSpec,
 } from "./screen-layout";
 import {
@@ -729,6 +736,69 @@ async function detectFacePath(params: {
   }
 }
 
+/** `detectPipPath`'s success result — `movingPxFrac: null` iff
+ *  `insufficientSamples` is true (M4/L4, adversarial review: `pip_detect.py`
+ *  emits this when too few samples were taken, or the samples taken covered
+ *  too little of the requested window, rather than a misleadingly-precise
+ *  `0.0` that would read as "definitely screencast-like"). */
+interface PipDetectResult {
+  movingPxFrac: number | null;
+  insufficientSamples: boolean;
+  candidates: PipCandidate[];
+}
+
+/**
+ * Element segmentation v1 ("screen" framing mode, vizard-parity.md's
+ * element-segmentation spike): runs `pip_detect.py` over a clip's range and
+ * returns the raw motion signal (`movingPxFrac`) + candidate facecam PiP
+ * regions, or null if detection is unavailable (no python/opencv/numpy, or
+ * the script itself errored) — same null-on-failure contract as
+ * `detectFacePath`, callers fall back to the existing whole-frame face-
+ * tracked/static-center bottom tile. Classification (`classifyScreencast`)
+ * and selection (`selectPipRect`) are deliberately NOT done here — this
+ * function is pure IO, screen-layout.ts owns the policy.
+ */
+async function detectPipPath(params: {
+  sourcePath: string;
+  startSec: number;
+  durationSec: number;
+}): Promise<PipDetectResult | null> {
+  const scriptPath = fileURLToPath(
+    new URL("../../scripts/pip_detect.py", import.meta.url),
+  );
+
+  try {
+    const out = await execCommandOutput("python3", [
+      scriptPath,
+      params.sourcePath,
+      String(params.startSec),
+      String(params.durationSec),
+    ]);
+    const parsed = JSON.parse(out) as {
+      movingPxFrac?: number | null;
+      insufficientSamples?: boolean;
+      candidates?: PipCandidate[];
+      error?: string;
+    };
+    if (
+      parsed.error ||
+      !Array.isArray(parsed.candidates) ||
+      (parsed.movingPxFrac !== null &&
+        parsed.movingPxFrac !== undefined &&
+        typeof parsed.movingPxFrac !== "number")
+    ) {
+      return null;
+    }
+    return {
+      movingPxFrac: parsed.movingPxFrac ?? null,
+      insufficientSamples: Boolean(parsed.insufficientSamples),
+      candidates: parsed.candidates,
+    };
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Multi-face sibling of `detectFacePath` (split packet B, vizard-parity.md
  * "Split-screen 2-up") — runs the same YuNet detector script in `--multi`
@@ -910,6 +980,104 @@ async function applyAutoReframe(params: {
   return true;
 }
 
+/** M6 (adversarial review): every reason `decidePipUsage` can return —
+ *  `"ok"` means every gate passed and the caller should prefer the PiP
+ *  crop; anything else means fall through to the existing band (face-
+ *  tracked sendcmd or static-center) behavior. Ordered top-to-bottom the
+ *  same way `decidePipUsage` itself checks them (first blocking reason
+ *  wins) — see that function's own doc comment for what each one means. */
+export type PipUsageReason =
+  | "disabled"
+  | "segment_extract_failed"
+  | "detection_unavailable"
+  | "insufficient_samples"
+  | "not_screencast_like"
+  | "no_candidate"
+  | "face_not_in_rect"
+  | "pip_too_small"
+  | "ok";
+
+export interface DecidePipUsageParams {
+  /** `WORKER_PIP_DETECT` kill switch state. */
+  pipDetectEnabled: boolean;
+  /** Whether `extractFaceDetectionSegment` produced a usable local segment
+   *  (both `pip_detect.py` and `detectFacePath` run against the SAME
+   *  segment — see this module's doc comment on the "real screen layout"
+   *  wiring). */
+  segmentExtracted: boolean;
+  /** `detectPipPath`'s result, or `null` when the script itself failed/was
+   *  unavailable (no python/opencv/numpy). */
+  detection: { movingPxFrac: number | null; insufficientSamples: boolean } | null;
+  /** `classifyScreencast`'s threshold override — defaults to
+   *  `pipMotionThreshold()` inside `classifyScreencast` itself when
+   *  omitted, same as every other caller. */
+  screencastThreshold?: number;
+  /** `selectPipRect`'s result over `detection`'s candidates. */
+  selectedRect: PipRect | null;
+  /** `confirmsFaceInRect`'s result for `selectedRect` — H2, adversarial
+   *  review: only meaningful when `selectedRect` is non-null; irrelevant
+   *  otherwise since an earlier gate (`no_candidate`) already blocks first. */
+  faceConfirmed: boolean;
+  /** M3 (adversarial review): the PER-OUTPUT `fitPipCropToTile` result
+   *  compared against that output's own tile width
+   *  (`pipCropTooSmall`, screen-layout.ts) — omit (or pass `null`) to skip
+   *  this gate entirely, e.g. for a clip-level "would we even attempt the
+   *  rect at all" check made before any output-specific fitting has run. */
+  fit?: { fittedCropWidth: number; tileWidth: number } | null;
+}
+
+/**
+ * M6 (adversarial review): the PiP decision matrix, pulled out of what used
+ * to be a chain of inline if/else branches spread across the "real screen
+ * layout" wiring below AND (for `pip_too_small`) `applyScreenSpeakerLayout`'s
+ * per-output loop — a single pure, exported, ordered gate so the whole
+ * matrix (not just individual branches) is unit-testable, and so the SAME
+ * ordering can't drift between a clip-level check (`fit: null`, run once
+ * before any per-output geometry exists) and a per-output check (`fit` set,
+ * run inside `applyScreenSpeakerLayout`'s loop) — both call sites share this
+ * one function rather than reimplementing the ladder twice.
+ *
+ * Ordered top-to-bottom, first blocking reason wins:
+ *  1. `disabled` — `WORKER_PIP_DETECT=0` kill switch.
+ *  2. `segment_extract_failed` — `extractFaceDetectionSegment` failed (HTTP
+ *     source, extraction itself errored).
+ *  3. `detection_unavailable` — `pip_detect.py` failed/unavailable (no
+ *     python/opencv/numpy, or it errored).
+ *  4. `insufficient_samples` — M4/L4: `pip_detect.py` couldn't sample enough
+ *     of the requested window to trust `movingPxFrac` either direction
+ *     (fails safe: NEVER treated as "definitely screencast-like").
+ *  5. `not_screencast_like` — `classifyScreencast` rejected the clip's
+ *     overall motion profile.
+ *  6. `no_candidate` — `selectPipRect` found no qualifying region.
+ *  7. `face_not_in_rect` — H2: `confirmsFaceInRect` couldn't confirm a face
+ *     actually sits inside the selected rect — the guard against motion
+ *     segmentation's measured false positive (a hand gesture near the frame
+ *     edge on real talking-head footage reads as a corner-adjacent, dense,
+ *     compact motion blob just like a genuine facecam overlay).
+ *  8. `pip_too_small` — M3: the per-output fitted crop is too narrow
+ *     relative to its tile to be worth preferring over the band fallback.
+ *  9. `ok` — every gate passed; the caller should use the PiP crop.
+ */
+export function decidePipUsage(
+  params: DecidePipUsageParams,
+): { useRect: boolean; reason: PipUsageReason } {
+  if (!params.pipDetectEnabled) return { useRect: false, reason: "disabled" };
+  if (!params.segmentExtracted) return { useRect: false, reason: "segment_extract_failed" };
+  if (!params.detection) return { useRect: false, reason: "detection_unavailable" };
+  if (params.detection.insufficientSamples || params.detection.movingPxFrac === null) {
+    return { useRect: false, reason: "insufficient_samples" };
+  }
+  if (!classifyScreencast(params.detection.movingPxFrac, params.screencastThreshold)) {
+    return { useRect: false, reason: "not_screencast_like" };
+  }
+  if (!params.selectedRect) return { useRect: false, reason: "no_candidate" };
+  if (!params.faceConfirmed) return { useRect: false, reason: "face_not_in_rect" };
+  if (params.fit && pipCropTooSmall(params.fit.fittedCropWidth, params.fit.tileWidth)) {
+    return { useRect: false, reason: "pip_too_small" };
+  }
+  return { useRect: true, reason: "ok" };
+}
+
 /**
  * Screen packet B ("screen" framing mode, the worker render path): drives
  * every `outputs[]` entry's screen-layout BOTTOM (speaker) tile via sendcmd
@@ -935,11 +1103,36 @@ async function applyAutoReframe(params: {
  * is the TOP tile (the full source frame, always rendered, never cropped),
  * so losing speaker tracking on the bottom tile is a minor degradation, not
  * a reason to throw away the layout entirely. Returns whether a face-tracked
- * (not static-center) crop was actually applied to at least one output,
- * purely for the caller's `clip_screen_bottom_center_fallback` logging.
+ * OR PiP-tracked (not static-center) crop was actually applied to at least
+ * one output, purely for the caller's `clip_screen_bottom_center_fallback`
+ * logging.
+ *
+ * Element segmentation v1 (this packet): `params.pipRect`, when set, means
+ * the CLIP-LEVEL gates in `decidePipUsage` (everything except `pip_too_small`,
+ * which needs per-output geometry) already passed — see
+ * `ScreenSpeakerBottomSpec.pipRect`'s doc comment for why a confirmed
+ * facecam PiP crop is preferred over face-tracking/static-center (it's a
+ * real sub-region of the frame, not an approximation of one) and why
+ * `screenBottomIsTrackable` doesn't gate it (that gate is specifically about
+ * a *sendcmd-driven* crop having lateral room to move; a static PiP crop
+ * doesn't move). H2/M3 (adversarial review): `params.pipRect` being set is
+ * NOT the final word per output — this function still runs `decidePipUsage`
+ * again PER OUTPUT with that output's own `fitPipCropToTile` result, since
+ * `pip_too_small` can differ by output aspect ratio (a rect that fits a 9:16
+ * tile comfortably might be too small relative to a 16:9 tile's width). Any
+ * output `decidePipUsage` rejects at that point falls through to the SAME
+ * face-tracked/static-center logic as when `pipRect` was never set — it
+ * does not get a "no fallback" carve-out just because a candidate rect
+ * existed at the clip level.
  */
 async function applyScreenSpeakerLayout(params: {
   samples: FaceSample[] | null;
+  pipRect: PipRect | null;
+  /** The SAME base inputs `decidePipUsage` was already called with (minus
+   *  `fit`) to decide whether `pipRect` should even be non-null — reused
+   *  here, per output, WITH `fit` filled in, to catch `pip_too_small`. Only
+   *  consulted when `pipRect` is non-null. */
+  pipUsageBase: Omit<DecidePipUsageParams, "fit">;
   cutPlan: ClipCutPlan;
   clipStartSec: number;
   probe: SourceProbe;
@@ -959,10 +1152,47 @@ async function applyScreenSpeakerLayout(params: {
   }
 
   const single = params.outputs.length === 1;
+  let appliedPip = false;
   let appliedFaceTracking = false;
 
   for (let i = 0; i < params.outputs.length; i++) {
     const output = params.outputs[i]!;
+    const { tileRatio, tileWidth } = screenTileGeometry(output.aspectRatio, params.probe);
+
+    if (params.pipRect) {
+      const fitted = fitPipCropToTile(params.pipRect, tileRatio, params.probe);
+      const decision = decidePipUsage({
+        ...params.pipUsageBase,
+        fit: { fittedCropWidth: fitted.w, tileWidth },
+      });
+      if (decision.useRect) {
+        output.screenBottom = { cx: 0.5, pipRect: fitted };
+        appliedPip = true;
+        // L3 (adversarial review): logs BOTH the normalized rect
+        // (`selectPipRect`'s output, same for every output) and this
+        // OUTPUT's own fitted source-pixel rect — the normalized rect alone
+        // can't answer "what did ffmpeg actually crop for the 16:9 output,"
+        // since that's `fitPipCropToTile`'s per-output result, not a value
+        // that exists until this loop runs.
+        log("info", "clip_screen_pip_detected", {
+          workflowRunId: params.workflowRunId,
+          clipId: params.clipId,
+          aspectRatio: output.aspectRatio,
+          normalizedRect: params.pipRect,
+          sourcePxRect: fitted,
+        });
+        continue;
+      }
+      log("info", "clip_screen_pip_fallback", {
+        workflowRunId: params.workflowRunId,
+        clipId: params.clipId,
+        aspectRatio: output.aspectRatio,
+        reason: decision.reason,
+      });
+      // Falls through to the face-tracked/static-center logic below for
+      // THIS output only — other outputs in the same loop may still use
+      // the rect just fine.
+    }
 
     // H3 (adversarial review): wide/square targets (1:1, 16:9 against a
     // landscape source) have no lateral room for the bottom tile's crop to
@@ -1014,9 +1244,9 @@ async function applyScreenSpeakerLayout(params: {
   log("info", "clip_screen_layout_applied", {
     workflowRunId: params.workflowRunId,
     clipId: params.clipId,
-    bottomTracking: appliedFaceTracking ? "face" : "center",
+    bottomTracking: appliedPip ? "pip" : appliedFaceTracking ? "face" : "center",
   });
-  return appliedFaceTracking;
+  return appliedPip || appliedFaceTracking;
 }
 
 /** Why screen packet B's screen-share layout couldn't render for this clip —
@@ -4357,10 +4587,21 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
               });
             }
           } else {
-            // Real screen layout: single-face detection for the bottom
-            // (speaker) tile. Same source<->edited timeline contract as
-            // every other detection path — `applyScreenSpeakerLayout`
-            // remaps through `remapFaceSamplesForCutPlan` internally.
+            // Real screen layout: element segmentation v1 (vizard-parity.md's
+            // element-segmentation spike) tries the actual facecam PiP
+            // rectangle FIRST — only when the source is screencast-like
+            // (`classifyScreencast`), a corner-adjacent, compact motion blob
+            // was actually found (`selectPipRect`), AND H2 (adversarial
+            // review) a face is confirmed to actually sit inside it
+            // (`confirmsFaceInRect`) does this win; every other case (a
+            // genuine talking-head source — motion segmentation's own
+            // measured false positive is a hand gesture near the frame edge
+            // reading as a corner-adjacent compact blob — a frozen/still
+            // facecam that motion segmentation can't see, no python/opencv/
+            // numpy) falls straight through to the pre-existing whole-frame
+            // single-face detection below, byte-identical to before this
+            // packet. Both detectors share the SAME extracted segment
+            // (`detectInput`) — no reason to extract it twice.
             const detectInput = await extractFaceDetectionSegment({
               sourcePath,
               tempDir,
@@ -4370,6 +4611,26 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
               durationSec: effective.durationSec,
               suffix: "-screen",
             });
+
+            const pipDetectEnabled = process.env.WORKER_PIP_DETECT !== "0";
+            const pip =
+              pipDetectEnabled && detectInput
+                ? await detectPipPath({
+                    sourcePath: detectInput.path,
+                    startSec: detectInput.startSec,
+                    durationSec: effective.durationSec,
+                  })
+                : null;
+            const selectedRect = pip ? selectPipRect(pip.candidates) : null;
+
+            // H2 (adversarial review): face detection now runs
+            // UNCONDITIONALLY on the same segment (it did before this
+            // packet introduced the PiP path) — both to confirm a candidate
+            // `selectedRect` actually contains a face, and, when the PiP
+            // path doesn't win, as the existing whole-frame single-face
+            // fallback. Same source<->edited timeline contract as every
+            // other detection path — `applyScreenSpeakerLayout` remaps
+            // through `remapFaceSamplesForCutPlan` internally.
             const detection = detectInput
               ? await detectFacePath({
                   sourcePath: detectInput.path,
@@ -4377,8 +4638,44 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
                   durationSec: effective.durationSec,
                 })
               : null;
-            const appliedFaceTracking = await applyScreenSpeakerLayout({
+            const faceConfirmed = confirmsFaceInRect(detection?.samples ?? null, selectedRect);
+
+            const pipUsageBase: DecidePipUsageParams = {
+              pipDetectEnabled,
+              segmentExtracted: Boolean(detectInput),
+              detection: pip
+                ? { movingPxFrac: pip.movingPxFrac, insufficientSamples: pip.insufficientSamples }
+                : null,
+              selectedRect,
+              faceConfirmed,
+            };
+            // Clip-level check only (no `fit` — that's per-output, decided
+            // again inside `applyScreenSpeakerLayout`'s loop): every gate
+            // except M3's `pip_too_small` is decided once here, since none
+            // of them depend on a specific output's tile geometry.
+            const clipLevelPipDecision = decidePipUsage(pipUsageBase);
+            const pipRect = clipLevelPipDecision.useRect ? selectedRect : null;
+            if (pipRect) {
+              log("info", "clip_screen_pip_selected", {
+                workflowRunId: run.id,
+                clipId: clip.id,
+                movingPxFrac: pip?.movingPxFrac ?? null,
+                rect: pipRect,
+              });
+            } else {
+              log("info", "clip_screen_pip_fallback", {
+                workflowRunId: run.id,
+                clipId: clip.id,
+                reason: clipLevelPipDecision.reason,
+                movingPxFrac: pip?.movingPxFrac ?? null,
+                candidateCount: pip?.candidates.length ?? 0,
+              });
+            }
+
+            const appliedTracking = await applyScreenSpeakerLayout({
               samples: detection?.samples ?? null,
+              pipRect,
+              pipUsageBase,
               cutPlan,
               clipStartSec,
               probe,
@@ -4387,7 +4684,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
               clipId: clip.id,
               workflowRunId: run.id,
             });
-            if (!appliedFaceTracking) {
+            if (!appliedTracking) {
               log("info", "clip_screen_bottom_center_fallback", {
                 workflowRunId: run.id,
                 clipId: clip.id,

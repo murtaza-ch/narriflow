@@ -27,7 +27,9 @@ Local setup for the Claude Code + Codex workflow. Not agent instructions.
 
 - `WORKER_SPLIT=0` disables the "split" (2-up) framing mode's per-output render path; clips using it fall back to whole-clip single-speaker framing (auto-reframe or a static center crop).
 - `WORKER_SCREEN_LAYOUT=0` disables the "screen" (screen-share + facecam) framing mode's per-output render path the same way, falling back to whole-clip single-speaker framing.
-- Both default to enabled (unset, or any value other than `"0"`).
+- `WORKER_PIP_DETECT=0` disables element segmentation v1's facecam PiP detection within "screen" mode only (`pip_detect.py`); screen-mode clips fall back to the pre-existing whole-frame face-tracked/static-center bottom tile, same as before that packet landed.
+- `WORKER_PIP_MOTION_THRESHOLD` (default `0.12`, clamped to `[0, 1]`) tunes `classifyScreencast`'s screencast-vs-regular-footage gate — a clip's `movingPxFrac` (share of analyzed pixels continuously moving frame-to-frame) below this is treated as screencast-like and eligible for PiP detection. Recalibrated (H1, adversarial review) through the SAME 360p CRF-30 ultrafast proxy production actually analyzes (`extractFaceDetectionSegment`), not the raw source files the original 0.25 default was measured against — proxy `movingPxFrac` measured 0.0000-0.0509 across the 7 synthetic screencast fixtures and 0.2726-0.5514 for the real talking-head control (`jensen-0-90.mp4`), a clean >5x separation; new default is the geometric mean of the two boundary values. Run `apps/worker/scripts/pip_calibrate.sh` to reproduce/re-validate against other footage — see `docs/plans/vizard-parity.md`'s landed note for the full table.
+- All three default to enabled/the measured default (unset, or any value other than `"0"` for the two kill switches).
 
 ## Worker email notifications
 

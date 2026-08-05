@@ -19,6 +19,7 @@ import {
   buildSingleVideoArgs,
   buildTransitionFilter,
   clipRenderAttemptStorageKey,
+  decidePipUsage,
   decideScreenFallback,
   decideSplitFallback,
   downloadUrlToFile,
@@ -456,6 +457,124 @@ describe("decideScreenFallback (screen packet B — fallback-decision matrix)", 
 
   test("no B-roll: no fallback (an undetected face is NOT a fallback reason — it degrades to a static-center bottom tile instead)", () => {
     expect(decideScreenFallback({ hasBrollPlan: false })).toBeNull();
+  });
+});
+
+describe("decidePipUsage (M6 — the PiP decision matrix, ordered, full coverage)", () => {
+  const rect = { x: 0.8, y: 0.8, w: 0.15, h: 0.15 };
+  // A "fully passing" base — each test below flips exactly ONE field to
+  // isolate that gate, proving the ORDER (first blocking reason wins) as
+  // well as each individual gate.
+  const passingBase = {
+    pipDetectEnabled: true,
+    segmentExtracted: true,
+    detection: { movingPxFrac: 0.1, insufficientSamples: false },
+    selectedRect: rect,
+    faceConfirmed: true,
+  };
+
+  test("everything passes: ok, useRect true", () => {
+    expect(decidePipUsage(passingBase)).toEqual({ useRect: true, reason: "ok" });
+  });
+
+  test("1. disabled wins over every other failing gate", () => {
+    expect(
+      decidePipUsage({
+        ...passingBase,
+        pipDetectEnabled: false,
+        segmentExtracted: false,
+        detection: null,
+        selectedRect: null,
+        faceConfirmed: false,
+      }),
+    ).toEqual({ useRect: false, reason: "disabled" });
+  });
+
+  test("2. segment_extract_failed (when enabled but no segment)", () => {
+    expect(
+      decidePipUsage({ ...passingBase, segmentExtracted: false, detection: null }),
+    ).toEqual({ useRect: false, reason: "segment_extract_failed" });
+  });
+
+  test("3. detection_unavailable (segment extracted, but pip_detect.py failed/unavailable)", () => {
+    expect(decidePipUsage({ ...passingBase, detection: null })).toEqual({
+      useRect: false,
+      reason: "detection_unavailable",
+    });
+  });
+
+  test("4. insufficient_samples (M4/L4 — insufficientSamples flag)", () => {
+    expect(
+      decidePipUsage({
+        ...passingBase,
+        detection: { movingPxFrac: null, insufficientSamples: true },
+      }),
+    ).toEqual({ useRect: false, reason: "insufficient_samples" });
+  });
+
+  test("4b. insufficient_samples also fires on a null movingPxFrac even if the flag were somehow false", () => {
+    expect(
+      decidePipUsage({
+        ...passingBase,
+        detection: { movingPxFrac: null, insufficientSamples: false },
+      }),
+    ).toEqual({ useRect: false, reason: "insufficient_samples" });
+  });
+
+  test("5. not_screencast_like (classifyScreencast rejects the motion profile)", () => {
+    expect(
+      decidePipUsage({
+        ...passingBase,
+        detection: { movingPxFrac: 0.9, insufficientSamples: false },
+      }),
+    ).toEqual({ useRect: false, reason: "not_screencast_like" });
+  });
+
+  test("5b. screencastThreshold override is respected", () => {
+    expect(
+      decidePipUsage({
+        ...passingBase,
+        detection: { movingPxFrac: 0.4, insufficientSamples: false },
+        screencastThreshold: 0.3,
+      }),
+    ).toEqual({ useRect: false, reason: "not_screencast_like" });
+    expect(
+      decidePipUsage({
+        ...passingBase,
+        detection: { movingPxFrac: 0.4, insufficientSamples: false },
+        screencastThreshold: 0.5,
+      }),
+    ).toEqual({ useRect: true, reason: "ok" });
+  });
+
+  test("6. no_candidate (selectPipRect found nothing)", () => {
+    expect(decidePipUsage({ ...passingBase, selectedRect: null })).toEqual({
+      useRect: false,
+      reason: "no_candidate",
+    });
+  });
+
+  test("7. face_not_in_rect (H2 — the guard against motion-only false positives)", () => {
+    expect(decidePipUsage({ ...passingBase, faceConfirmed: false })).toEqual({
+      useRect: false,
+      reason: "face_not_in_rect",
+    });
+  });
+
+  test("8. pip_too_small (M3 — only checked when `fit` is provided)", () => {
+    expect(
+      decidePipUsage({ ...passingBase, fit: { fittedCropWidth: 100, tileWidth: 1000 } }),
+    ).toEqual({ useRect: false, reason: "pip_too_small" });
+    expect(
+      decidePipUsage({ ...passingBase, fit: { fittedCropWidth: 500, tileWidth: 1000 } }),
+    ).toEqual({ useRect: true, reason: "ok" });
+  });
+
+  test("omitting `fit` entirely skips the pip_too_small gate (clip-level check)", () => {
+    expect(decidePipUsage({ ...passingBase, fit: null })).toEqual({
+      useRect: true,
+      reason: "ok",
+    });
   });
 });
 
@@ -1097,6 +1216,31 @@ describe("buildSingleVideoArgs with a screen layout active (screen packet B)", (
     });
     const graph = args[args.indexOf("-filter_complex") + 1]!;
     expect(graph).toContain("[vcat]split=2[screen_top_src][screen_bot_src]");
+  });
+
+  // M8 (adversarial review): the cut-plan/[vcat] input-label variant above
+  // only ever exercised the `bottom.cx` (static-center) branch — this
+  // covers the SAME `[vcat]` input-label swap but for the `bottom.pipRect`
+  // branch specifically, since that branch reads its own crop straight off
+  // `screen_bot_src` rather than through `cropXForCenter`/sendcmd and could
+  // plausibly regress independently of the other two bottom-tile modes.
+  test("pipRect bottom tile also reads [vcat] (not [0:v]) after cut-concat", () => {
+    const cutPlan = buildClipCutPlan([{ startSec: 3, endSec: 4 }], { startSec: 0, endSec: 10 });
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 10,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+      cutPlan,
+      screen: { bottom: { cx: 0.5, pipRect: { x: 480, y: 40, w: 200, h: 180 } } },
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    expect(graph).toContain("[vcat]split=2[screen_top_src][screen_bot_src]");
+    expect(graph).toContain("[screen_bot_src]crop=200:180:480:40");
+    expect(graph).not.toContain("sendcmd");
   });
 
   test("background (fit mode) wins over screen when both are somehow present", () => {

@@ -385,13 +385,45 @@ before the foundation steps it depends on.
   3. **Screen+speaker layout (screen packet B, own sub-item)** — v1 LANDED
      (2026-08-05, this diff). Honest scope: this is NOT the "element
      segmentation (speaker/screen detection)" work item named above — there
-     is no PiP-facecam region detection and no vertical tracking. The bottom
+     is no PiP-facecam region detection and no vertical tracking.
+     *(Element-segmentation SPIKE done 2026-08-05, on 7 synthetic
+     screencast fixtures built from real face footage — full numbers in
+     the spike report; headline findings: (1) temporal-motion mapping via
+     per-pixel MEDIAN ABSOLUTE frame diff (std is the wrong statistic —
+     fooled by slide flips) at 2fps/320-wide recovers the facecam rect at
+     IoU 0.93-0.98 for ~0.65s per 40s clip, but ONLY with a
+     corner-adjacent + compact-size structural prior — naive
+     largest-motion-blob selection picks an embedded video-in-video over
+     the facecam (IoU 0.000), a measured failure not a hypothesis; (2)
+     face-box expansion alone is NON-functional for wide-framed facecams:
+     at production's DETECT_MAX_DIM=320 the PiP face is detected in 0% of
+     samples, and even at full resolution (4x runtime) expansion IoU is
+     0.09-0.12; it works passably (IoU ~0.5) only for tightly-framed
+     cams, and remains the right fallback for the one case motion can't
+     see — a frozen/still facecam; (3) classification gate:
+     `moving_px_frac` (share of pixels above a small median-diff noise
+     floor) separates screencast-like (0.00-0.11 across all fixtures)
+     from regular talking-head footage (0.67 on the one real control) —
+     threshold ~0.25 proposed but MUST be validated against real library
+     sources before hardcoding, and the corner-blob finder must be gated
+     BY this classifier (run alone on a talking-head video it still
+     "finds" a hand gesture near the frame edge). Recommended production
+     design: classify → locate rect via motion+prior → still-speaker
+     fallback to boosted-resolution face detection → degrade to today's
+     band; within-rect tracking reuses the existing reframe path scoped
+     to the sub-rect. Residual risks: short-window stability drops when a
+     second strong motion source is in frame (require full-clip
+     aggregation), multi-face PiPs untested, single negative control for
+     the threshold.)* The bottom
      tile is a face-CENTERED HORIZONTAL crop of the WHOLE source frame, the
      exact same single-face tracking `reframe.ts`'s auto-reframe path
      already uses, just aimed at a half-height tile instead of the full
      output; true speaker/screen element segmentation (locating an actual
-     facecam/webcam sub-region within the frame) remains that separate,
-     unstarted epic. Landed:
+     facecam/webcam sub-region within the frame) was, at the time this v1
+     landed, that separate, unstarted epic — see the "Element segmentation
+     v1" landed-note directly below for its own v1 landing (2026-08-06),
+     which upgrades exactly this BOTTOM tile from a face-centered band to
+     the actual facecam PiP rectangle when one can be found. Landed:
      `apps/worker/src/tasks/screen-layout.ts`
      (`buildScreenSpeakerFilterChain`/`screenTileGeometry`/
      `screenBottomIsTrackable`), `render-clips.ts`'s
@@ -423,6 +455,178 @@ before the foundation steps it depends on.
      (mirrors split's own `splitTilesAreDistinct`) so those outputs render
      an honest static-center bottom tile with no dead script and an accurate
      log reason (`no_lateral_room`).
+  4. **Element segmentation v1 (facecam PiP detection for "screen" mode)** —
+     v1 LANDED (2026-08-06), following the spike design above exactly. The
+     BOTTOM tile now crops the ACTUAL facecam picture-in-picture rectangle
+     (not a face-centered band) when the source is screencast-like AND a
+     PiP region was located; otherwise falls straight through to the
+     pre-existing whole-frame face-tracked/static-center band, byte-
+     identical to before this item. New:
+     `apps/worker/scripts/pip_detect.py` (samples ~2fps at a 320-wide
+     grayscale downscale, computes the per-pixel MEDIAN ABSOLUTE frame-to-
+     frame difference map, emits `movingPxFrac` + connected-component
+     candidates each flagged corner-adjacent/area-share/fill-share —
+     `reframe_detect.py` untouched); `screen-layout.ts`'s
+     `classifyScreencast`/`selectPipRect`/`fitPipCropToTile` (pure TS, the
+     corner-adjacent + compact + dense structural prior) and
+     `ScreenSpeakerBottomSpec.pipRect` (wins over `cx`/`reframe` — a facecam
+     overlay doesn't move, so its crop is always static, never
+     sendcmd-driven); `render-clips.ts`'s `detectPipPath` + the PiP-first
+     branch inside the "real screen layout" wiring (reuses the SAME
+     extracted detection segment `detectFacePath` already used, rather than
+     extracting twice); a `WORKER_PIP_DETECT` kill switch and
+     env-configurable `WORKER_PIP_MOTION_THRESHOLD` (default `0.12`, see
+     `docs/agent/setup.md`).
+
+     Adversarial review on this landing found and fixed several issues, the
+     three load-bearing ones first: **(H1) the default threshold was
+     calibrated on raw files, not the proxy production actually analyzes.**
+     `detectPipPath` never runs against a clip's raw source — it runs
+     against `extractFaceDetectionSegment`'s local proxy (`-vf scale=-2:360
+     -c:v libx264 -preset ultrafast -crf 30`), built whenever the source is
+     an HTTP(S) presigned URL (the common case in production; a local file
+     skips the proxy, but a real render's source essentially never is one).
+     The original 0.25 default, and the "threshold validation" table it was
+     based on, measured `movingPxFrac` on raw files only — never
+     re-validated through the actual analysis path. Recalibrated with a new
+     script, `apps/worker/scripts/pip_calibrate.sh`, which reproduces
+     `extractFaceDetectionSegment`'s exact ffmpeg invocation and runs
+     `pip_detect.py` on both the raw file and that proxy, side by side, for
+     a list of inputs. Run over the packet's own 7 synthetic screencast
+     fixtures + the real talking-head control (`jensen-0-90.mp4`), each over
+     its own FULL duration (40s for every fixture, 90s for jensen — a
+     uniform "whole file" window, not an arbitrarily chosen sub-clip):
+
+     | file | raw `movingPxFrac` | proxy `movingPxFrac` | proxy/raw ratio |
+     |---|---|---|---|
+     | screencast-fixture.mp4 | 0.02760 | 0.02759 | 1.00 |
+     | screencast-fixture2.mp4 | 0.01889 | 0.01877 | 0.99 |
+     | screencast-fixture3-motion.mp4 | 0.04120 | 0.03887 | 0.94 |
+     | screencast-fixture4-tightcam.mp4 | 0.03825 | 0.03823 | 1.00 |
+     | screencast-fixture5-hardmotion.mp4 | 0.04783 | 0.05087 | 1.06 |
+     | screencast-fixture6-stillspeaker.mp4 | 0.0 | 0.0 | n/a |
+     | screencast-fixture-portrait.mp4 | 0.02822 | 0.02761 | 0.98 |
+     | jensen-0-90.mp4 (full 90s) | 0.26818 | 0.27262 | 1.02 |
+     | jensen-0-90.mp4 (first 20s only, for comparison) | 0.57510 | 0.55144 | 0.96 |
+
+     Headline result: the proxy re-encode barely moves `movingPxFrac` for
+     this content (ratios 0.94-1.06, i.e. within ~6% of the raw value either
+     direction) — CRF-30/360p compression doesn't meaningfully wash out the
+     per-pixel motion signal this classifier reads. Worst-case screencast
+     fixture (proxy) is 0.0509 (fixture5-hardmotion); worst-case (lowest)
+     jensen measurement (proxy) is 0.2726 (the full-90s window — the 20s
+     window measures even higher, 0.5514, so the full window is the more
+     conservative bound). Ratio 0.2726 / 0.0509 ≈ 5.36 — comfortably over
+     this packet's 2x "clean separation" bar. Per the packet's decision
+     rule, the new default is the GEOMETRIC MEAN of those two boundary
+     values (sqrt(0.0509 × 0.2726) ≈ 0.1178, rounded to **0.12**) rather
+     than either boundary itself, and the feature stays **default-ON**
+     (`WORKER_PIP_DETECT` unset/anything other than `"0"` still enables it)
+     — the (H2) face-confirmation guard below is the second line of defense
+     against a misclassification, not the threshold alone.
+
+     *Why this table replaces (not just supplements) the original
+     raw-only one, and why the numbers don't match 1:1*: the original
+     "threshold validation" note's raw numbers (`movingPxFrac` 0.0000-0.0478
+     for the fixtures, 0.2682/0.5751 for jensen) were measured over
+     DIFFERENT windows than this table in at least one case (a "first 20s"
+     jensen slice existed there but isn't the packet's own full-duration
+     convention used here) and were never run through this diff's later
+     python-side fixes (H3's `CANDIDATE_MIN_THRESHOLD` floor, M2's
+     corner-adjacent compactness check, M5's uint8 memory change) — none of
+     which touch `movingPxFrac`'s own computation (`diff_map >
+     MOVING_NOISE_FLOOR`, unchanged), so the RAW-file numbers in this new
+     table land within noise of the old ones (e.g. fixture5-hardmotion raw
+     0.0478 old vs. 0.04783 here) — but they're re-measured here specifically
+     so the whole table (raw AND proxy, same script, same run, same
+     documented window) is reproducible from one command
+     (`apps/worker/scripts/pip_calibrate.sh <files...>`) instead of trusting
+     two different ad hoc measurements taken at two different times to
+     agree. The marketing-clip numbers in the ORIGINAL note (`broll.mp4`
+     0.1640, `caption-loop.mp4` 0.0378, `moment-detect.mp4` 0.0004,
+     `real-clip-9x16.mp4` 0.2310, `repurpose-burst.mp4` 0.0217, flagging
+     `real-clip-9x16.mp4` as a real talking-head clip sitting just under the
+     old 0.25 default) were RAW-only and were not part of this packet's
+     required re-validation scope (7 fixtures + jensen); they're kept here
+     as a data point but not re-run through the proxy, and — worth noting
+     given the new lower 0.12 default — `real-clip-9x16.mp4`'s 0.2310 now
+     sits comfortably ABOVE the new threshold (correctly NOT
+     screencast-like), where it was only borderline-below the old 0.25 one.
+
+     **(H2) face-confirmation guard against motion segmentation's measured
+     false positive.** Before this fix, a selected `pipRect` won
+     unconditionally — the packet's own measured false positive (a hand
+     gesture near the frame edge on real talking-head footage reads as a
+     corner-adjacent, compact, dense motion blob) would have rendered a
+     6x-upscaled hand as the "facecam." Fixed by `confirmsFaceInRect`
+     (`screen-layout.ts`, pure/unit-tested): `detectFacePath` now runs
+     UNCONDITIONALLY on the same extracted segment (restored to its
+     pre-PiP-feature behavior — it's also still the whole-frame fallback
+     detector), and a candidate rect is only trusted when faces were found
+     in ≥25% of ALL samples AND the dominant face's `cx` falls inside the
+     rect's `[x, x+w]` span in ≥60% of the face-bearing samples (single-face
+     `FaceSample` carries no `cy`, so only horizontal containment is
+     checked). `render-clips.ts`'s `decidePipUsage` (M6, pure/exported/
+     unit-tested for the full 9-reason ordering: `disabled` →
+     `segment_extract_failed` → `detection_unavailable` →
+     `insufficient_samples` → `not_screencast_like` → `no_candidate` →
+     `face_not_in_rect` → `pip_too_small` → `ok`) is the single decision
+     matrix both the clip-level gate and each output's `pip_too_small` check
+     (M3: `screen-layout.ts`'s `pipCropTooSmall`, rejecting a fitted crop
+     under 40% of its tile's width) run through — replacing what used to be
+     an inline if/else chain duplicated across two call sites.
+
+     **(H3) the candidate-mask floor was below the classifier's own noise
+     floor.** `CANDIDATE_MIN_THRESHOLD` (1.0) sat under `MOVING_NOISE_FLOOR`
+     (4.0, the level the classifier itself treats as sensor noise) — on
+     grainy footage where the 92nd-percentile diff is near zero, connected
+     components could form from pure noise. Fixed by setting
+     `CANDIDATE_MIN_THRESHOLD = MOVING_NOISE_FLOOR`.
+
+     Other fixes from the same review: **(M1)** `pip_detect.py` now emits
+     `fillFrac` (pixel area / bbox area) per candidate; `selectPipRect`
+     requires `fillFrac >= 0.35`, MERGES overlapping/adjacent
+     (IoU > 0 or gap < 2% of frame) corner-qualifying candidates into one
+     region before selecting (a real facecam commonly thresholds into 2+
+     disconnected components), and picks by highest pixel-area-weighted
+     `medianDiffMean` with size as the tiebreak — replacing the old
+     raw-smallest-wins rule, whose doc comment incorrectly claimed
+     spike validation (the spike validated corner-adjacent + compact, not
+     "prefer smallest"). **(M2)** `cornerAdjacent` now also requires the
+     component's extent to stay under 50% of the frame on BOTH axes,
+     closing a gap where a full-width/full-height motion strip (a ticker, a
+     wipe) could pass the edge-margin check alone. **(M4/L4)**
+     `pip_detect.py` requires ≥8 samples AND ≥60% coverage of the requested
+     duration, emitting `{movingPxFrac: null, insufficientSamples: true}`
+     otherwise instead of a misleading `0.0` (which read as "definitely
+     screencast-like"); the TS side treats both as "not screencast-like"
+     (fails safe). **(M5)** frames are now kept as uint8 (not upcast to
+     float32) and diffed via `cv2.absdiff` — smaller peak memory, same
+     result; noted in-line that this script and `reframe_detect.py` already
+     pay a double-decode cost over the same segment, not restructured here.
+     **(L1)** the module doc comment's claim about `reframe_detect.py`'s CLI
+     shape was wrong (fps is the 4th positional arg, the model path is 5th,
+     not the other way around) — fixed. **(L2)** `fitPipCropToTile` now
+     rounds `w`/`h` BEFORE clamping `x`/`y` against them, so `x + w` can
+     never exceed the source frame by a rounding pixel. **(L3)** the
+     `clip_screen_pip_detected` log now includes the per-OUTPUT fitted
+     source-pixel rect (not just the one normalized rect shared across
+     outputs), since `fitPipCropToTile`'s result differs by output aspect
+     ratio.
+
+     Honest-scope note (M7): the live two-tile PREVIEW (video-preview.tsx's
+     `isScreen` block) still renders its bottom tile as a static 50%/50%
+     center-cover crop — it has no way to know a `pipRect` exists, since PiP
+     detection is a RENDER-time-only step (it needs `pip_detect.py` sampling
+     real frames, not something the browser preview can run). This gap
+     existed at the original v1 landing too, but now diverges FURTHER: a
+     screen-mode clip whose render actually lands a PiP crop shows a visibly
+     different bottom tile in the exported video than what the editor
+     previewed. Accepted divergence for this v1 (same policy as split's own
+     preview-vs-render gaps); candidate future fix, not built:
+     persist the selected `pipRect` on the render row (or run a cheap
+     preview-resolution PiP check) and expose it via the studio API so the
+     preview can draw the same crop the render will use.
 - Music/SFX library — **design converged 2026-08-05** from competitor
   research (OpusClip/Vizard/Submagic/Captions.app/Klap/Veed/Descript).
   Market pattern to match: curated self-hosted library filterable by mood
