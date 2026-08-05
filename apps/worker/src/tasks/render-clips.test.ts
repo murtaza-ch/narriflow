@@ -2,7 +2,11 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { getCaptionPresetById, studioEditsSchema } from "@narriflow/validators";
+import {
+  computeSpeechWindows,
+  getCaptionPresetById,
+  studioEditsSchema,
+} from "@narriflow/validators";
 import type { CaptionPreset, TranscriptUtterance } from "@narriflow/validators";
 import {
   buildAudiogramArgs,
@@ -1704,6 +1708,333 @@ describe("music mixing (FIX: no more quiet 6dB dialogue duck + startOffsetSec)",
     });
     const graph = args[args.indexOf("-filter_complex") + 1]!;
     expect(graph).toContain("atrim=start=0.000:duration=10.000");
+  });
+});
+
+describe("SFX one-shot mixing (vizard-parity.md Music/SFX library)", () => {
+  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true, fps: 30 };
+
+  test("adelay ms rounding: startSec=1.2345 rounds to 1235ms, all=1 delays every channel", () => {
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 20,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+      sfx: [{ path: "/tmp/sfx.mp3", startSec: 1.2345, volume: 80 }],
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    expect(graph).toContain("adelay=1235:all=1");
+  });
+
+  test("volume mapping: 0-100 scale maps to a 0-1 volume= fragment", () => {
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 20,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+      sfx: [{ path: "/tmp/sfx.mp3", startSec: 0, volume: 42 }],
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    expect(graph).toContain("adelay=0:all=1,volume=0.420");
+  });
+
+  test("truncates the SFX branch at the clip's own end via atrim=duration", () => {
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 15,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+      sfx: [{ path: "/tmp/sfx.mp3", startSec: 10, volume: 80 }],
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    expect(graph).toContain(
+      "adelay=10000:all=1,volume=0.800,apad,atrim=duration=15.000",
+    );
+  });
+
+  test("SFX with no music: dialogue + one SFX branch mix at inputs=2", () => {
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 10,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+      sfx: [{ path: "/tmp/sfx.mp3", startSec: 2, volume: 80 }],
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    expect(graph).toContain("[0:a]");
+    expect(graph).toContain("[1:a]adelay=2000");
+    expect(graph).toContain("[maina][sfx0a]amix=inputs=2:duration=first:dropout_transition=0:normalize=0");
+    // Mixed audio (music or sfx) always maps -shortest, same as the music path.
+    expect(args).toContain("-shortest");
+  });
+
+  test("SFX with music: dialogue + music + SFX mix at inputs=3, music branch still gets its own volume/fade", () => {
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 10,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+      music: { path: "/tmp/music.mp3", volume: 30, startOffsetSec: 0 },
+      sfx: [{ path: "/tmp/sfx.mp3", startSec: 2, volume: 80 }],
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    // music is input 1, sfx is input 2 (source=0, no bg/logo).
+    expect(graph).toContain("[1:a]atrim=start=0.000");
+    expect(graph).toContain("[2:a]adelay=2000");
+    expect(graph).toContain(
+      "[maina][musica][sfx0a]amix=inputs=3:duration=first:dropout_transition=0:normalize=0",
+    );
+  });
+
+  test("SFX with muted source audio: dialogue branch still participates in the mix at volume=0", () => {
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 10,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+      studioEdits: studioEditsSchema.parse({ sourceAudio: { volume: 100, muted: true } }),
+      sfx: [{ path: "/tmp/sfx.mp3", startSec: 1, volume: 80 }],
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    expect(graph).toContain("[0:a]atrim=duration=10.000,asetpts=PTS-STARTPTS,volume=0.000[maina]");
+    expect(graph).toContain("amix=inputs=2");
+  });
+
+  test("SFX with absent source audio: mix contains only the SFX branch(es), no dialogue, and the SFX branch still fills the full clip duration", () => {
+    const noAudioProbe = { ...probe, hasAudio: false };
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 10,
+      aspectRatio: "9:16",
+      probe: noAudioProbe,
+      srtPath: null,
+      sfx: [{ path: "/tmp/sfx.mp3", startSec: 1, volume: 80 }],
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    // Single branch (no dialogue, no music): no amix at all, just the SFX
+    // branch feeding straight into the fixed click-guard fade chain.
+    expect(graph).not.toContain("amix=");
+    expect(graph).toContain("[sfx0a]afade=t=in");
+    expect(args).toContain("-shortest");
+    // H1 fix: `apad` before `atrim=duration=10.000` guarantees the SOLE
+    // branch driving `-shortest` is exactly the clip's own duration, not
+    // whatever's left of a short SFX file after `adelay` — without `apad`,
+    // this branch (and the whole encode via `-shortest`) truncated to
+    // ~1s + the SFX file's own length instead of the full 10s clip.
+    expect(graph).toContain("volume=0.800,apad,atrim=duration=10.000");
+  });
+
+  test("every SFX branch pads with apad before its atrim=duration bound (H1: atrim alone is a max, not a pad)", () => {
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 10,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+      sfx: [
+        { path: "/tmp/sfx-a.mp3", startSec: 1, volume: 80 },
+        { path: "/tmp/sfx-b.mp3", startSec: 3, volume: 50 },
+      ],
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    const sfxBranches = graph
+      .split(";")
+      .filter((part) => /^\[\d+:a\]adelay=/.test(part));
+    expect(sfxBranches.length).toBe(2);
+    for (const branch of sfxBranches) {
+      expect(branch).toMatch(/,apad,atrim=duration=\d+\.\d{3}/);
+    }
+  });
+
+  test("skip-beyond-duration: a placement whose startSec >= clipDurationSec is dropped from the mix", () => {
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 10,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+      sfx: [
+        { path: "/tmp/sfx-early.mp3", startSec: 2, volume: 80 },
+        { path: "/tmp/sfx-late.mp3", startSec: 10, volume: 80 }, // >= clip duration
+      ],
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    // Both inputs still get pushed (harmless unused input for the dropped
+    // one — see buildAudioMixFilter's doc comment), but only the first is
+    // referenced in the mix.
+    expect(graph).toContain("[sfx0a]");
+    expect(graph).not.toContain("[sfx1a]");
+    expect(graph).toContain("amix=inputs=2"); // dialogue + the one surviving sfx branch
+  });
+
+  test("input index bookkeeping: background image + logo + music + 2 SFX placements all coexist", () => {
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 10,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+      logo: { filePath: "/tmp/logo.png", position: "top-right", opacity: 100, scalePct: 12 },
+      background: { mode: "image", color: "#000000", imagePath: "/tmp/bg.png" },
+      music: { path: "/tmp/music.mp3", volume: 30, startOffsetSec: 0 },
+      sfx: [
+        { path: "/tmp/sfx-a.mp3", startSec: 1, volume: 80 },
+        { path: "/tmp/sfx-b.mp3", startSec: 3, volume: 80 },
+      ],
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    // 0=source, 1=bg image, 2=logo, 3=music, 4-5=sfx.
+    expect(graph).toContain("[3:a]atrim=start=0.000");
+    expect(graph).toContain("[4:a]adelay=1000");
+    expect(graph).toContain("[5:a]adelay=3000");
+    expect(graph).toContain("amix=inputs=4");
+  });
+});
+
+describe("buildBrollVideoArgs SFX input index bookkeeping", () => {
+  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true, fps: 30 };
+
+  test("SFX input indexes continue after music, following the existing cutaway/logo/music order", () => {
+    const args = buildBrollVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      cutaways: [{ path: "/tmp/broll-0.mp4", window: { startSec: 3, endSec: 6 } }],
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 20,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+      logo: { filePath: "/tmp/logo.png", position: "top-right", opacity: 100, scalePct: 12 },
+      music: { path: "/tmp/music.mp3", volume: 50, startOffsetSec: 0 },
+      sfx: [{ path: "/tmp/sfx.mp3", startSec: 1, volume: 80 }],
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    // 0=source, 1=broll cutaway, 2=logo, 3=music, 4=sfx.
+    expect(graph).toContain("[3:a]atrim=start=0.000");
+    expect(graph).toContain("[4:a]adelay=1000");
+    expect(graph).toContain("amix=inputs=3"); // dialogue + music + sfx
+  });
+
+  test("SFX-only (no music) still uses the correct base index after cutaways/logo", () => {
+    const args = buildBrollVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      cutaways: [{ path: "/tmp/broll-0.mp4", window: { startSec: 3, endSec: 6 } }],
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 20,
+      aspectRatio: "9:16",
+      probe,
+      srtPath: null,
+      logo: { filePath: "/tmp/logo.png", position: "top-right", opacity: 100, scalePct: 12 },
+      sfx: [{ path: "/tmp/sfx.mp3", startSec: 1, volume: 80 }],
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    // 0=source, 1=broll cutaway, 2=logo, 3=sfx (no music consumes a slot).
+    expect(graph).toContain("[3:a]adelay=1000");
+    expect(graph).toContain("amix=inputs=2"); // dialogue + sfx
+  });
+});
+
+describe("buildAudiogramArgs music + SFX + ducking", () => {
+  test("SFX-only (no music): waveform still reads dialogue, output mixes dialogue+sfx", () => {
+    const args = buildAudiogramArgs({
+      sourcePath: "/tmp/src.mp3",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 10,
+      aspectRatio: "9:16",
+      clipDurationSec: 10,
+      srtPath: null,
+      sfx: [{ path: "/tmp/sfx.mp3", startSec: 2, volume: 80 }],
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    // Waveform reads straight off [0:a] (no music/no cut => no explicit split).
+    expect(graph).toContain("[0:a]showwaves");
+    // SFX is input 1 (music absent), mixed with dialogue into [outa].
+    expect(graph).toContain("[1:a]adelay=2000");
+    expect(graph).toContain("amix=inputs=2");
+  });
+
+  test("music + ducking: the music branch carries a volume=<expr>:eval=frame stage after its fade suffix", () => {
+    const utterances = [makeUtterance([["hello", 1, 1.5], ["world", 1.5, 2]])];
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 10,
+      aspectRatio: "9:16",
+      probe: { width: 1920, height: 1080, hasVideo: true, hasAudio: true, fps: 30 },
+      srtPath: null,
+      music: {
+        path: "/tmp/music.mp3",
+        volume: 40,
+        startOffsetSec: 0,
+        duckingWindows: computeSpeechWindows(
+          utterances[0]!.words.map((w) => ({ startSec: w.startSec, endSec: w.endSec })),
+          10,
+        ),
+      },
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    expect(graph).toContain("volume=0.400");
+    expect(graph).toMatch(/volume='if\(between\(t,/);
+    expect(graph).toContain("':eval=frame");
+  });
+
+  test("music without ducking (duckingWindows omitted): no volume=<expr> automation stage, byte-identical to before", () => {
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 10,
+      aspectRatio: "9:16",
+      probe: { width: 1920, height: 1080, hasVideo: true, hasAudio: true, fps: 30 },
+      srtPath: null,
+      music: { path: "/tmp/music.mp3", volume: 40, startOffsetSec: 0 },
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    expect(graph).not.toContain("eval=frame");
+  });
+
+  test("music with ducking but an empty transcript (duckingWindows: []): no-op, filter omitted", () => {
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/src.mp4",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 10,
+      aspectRatio: "9:16",
+      probe: { width: 1920, height: 1080, hasVideo: true, hasAudio: true, fps: 30 },
+      srtPath: null,
+      music: { path: "/tmp/music.mp3", volume: 40, startOffsetSec: 0, duckingWindows: [] },
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    expect(graph).not.toContain("eval=frame");
   });
 });
 

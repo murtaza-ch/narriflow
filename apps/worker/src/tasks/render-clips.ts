@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import {
   assertPublicHttpUrl,
   assertResponseContentLength,
+  audioAssetService,
   clipService,
   createByteLimitTransform,
   deleteObject,
@@ -25,6 +26,7 @@ import {
   type GuardedFetchOptions,
 } from "@narriflow/services";
 import {
+  AUDIO_UPLOAD_MAX_BYTES,
   brandTemplateSnapshotSchema,
   brollCuesArraySchema,
   captionPresetSchema,
@@ -36,9 +38,12 @@ import {
   clipAspectRatioFromDb,
   clipAspectRatioOptions,
   clipRenderResolutionSchema,
+  computeSpeechWindows,
   deletedRangesSchema,
+  extractSpeechWordIntervals,
   formatCaptionWord,
   getEffectiveClipTiming,
+  MAX_DUCKING_WINDOWS,
   normalizeTranscriptSliceForClip,
   resolveEffectiveFramingMode,
   resolveEffectiveLogoSettings,
@@ -53,6 +58,7 @@ import type {
   ClipAspectRatio,
   ClipCategory,
   ClipRenderResolution,
+  DuckingWindow,
   EditedTimeMap,
   SourceRange,
   StudioEdits,
@@ -82,6 +88,7 @@ import {
   notifyAutoRenderCompleted,
   notifyWorkflowFailureAfterSettlement,
 } from "../notifications";
+import { buildDuckingVolumeExpression } from "./ducking";
 
 interface BrollCutaway {
   path: string;
@@ -109,6 +116,27 @@ interface MusicPlan {
    *  test fixtures/call sites that predate this field keep compiling. */
   fadeInSec?: number;
   fadeOutSec?: number;
+  /**
+   * Auto-ducking v1 (vizard-parity.md "Music/SFX library"): merged/padded
+   * speech windows on the EDITED timeline (`computeSpeechWindows`'s
+   * output), set only when `studioEdits.music.ducking` is true. Absent or
+   * empty means "no-op" — `buildAudioMixFilter` omits the `volume=`
+   * automation stage entirely rather than emitting a no-op expression.
+   */
+  duckingWindows?: DuckingWindow[];
+}
+
+/**
+ * One resolved, downloaded one-shot SFX placement (vizard-parity.md
+ * "Music/SFX library" — see `studioSfxPlacementSchema`'s doc comment for
+ * the placement contract). `startSec` stays in EDITED-timeline seconds,
+ * same convention as the schema — the render pipeline never needs to remap
+ * it through a `timeMap`, unlike transcript-derived timings.
+ */
+interface SfxPlan {
+  path: string;
+  startSec: number;
+  volume: number;
 }
 
 /**
@@ -1314,10 +1342,94 @@ function buildMusicUserFadeSuffix(
   return parts.length ? `,${parts.join(",")}` : "";
 }
 
-function buildMusicAudioFilter(params: {
+/**
+ * One-shot SFX branch (vizard-parity.md "Music/SFX library" —
+ * `studioSfxPlacementSchema`): `adelay` pads the branch with silence so
+ * playback starts at `startSec` (EDITED-timeline seconds, same convention
+ * the schema uses), then `atrim=duration=D` bounds it to the clip's own end
+ * so a placement near the tail never rings past it. `all=1` delays every
+ * channel by the same amount regardless of the source's channel count —
+ * `adelay`'s default (`all=0`) requires one delay value per channel, so a
+ * mono SFX file would only delay its first channel and leave the rest
+ * unaffected. Never loops (one-shot, unlike music) — callers must not pass
+ * `-stream_loop` on this input.
+ *
+ * `apad` runs BEFORE `atrim`, not after: `atrim=duration=D` is a MAX bound,
+ * not a pad — a stream shorter than D (the common case: `adelay` + a
+ * short one-shot SFX file, no infinite loop backing it the way music has)
+ * simply ends early, and `atrim` does nothing to extend it. Without `apad`,
+ * this branch's real output duration is `startSec` + the SFX file's own
+ * length, which can be far shorter than the clip. Downstream, `amix
+ * duration=first`/`-shortest` anchor on whichever branch is SHORTEST when
+ * there's no dialogue branch to anchor on (e.g. a silent source, the SFX
+ * branch alone) — an unpadded short SFX branch silently truncated the WHOLE
+ * encode to its own length, dropping every later placement and however much
+ * of the clip followed. `apad` pads the branch with silence indefinitely so
+ * `atrim=duration=D` always has enough stream to cut down TO exactly D,
+ * restoring the invariant `buildAudioMixFilter`'s own doc comment already
+ * assumed every branch honored.
+ */
+function buildSfxAudioFilter(params: {
+  sfxInputIndex: number;
+  sfx: SfxPlan;
+  clipDurationSec: number;
+  label: string;
+}): string {
+  const duration = Math.max(0.1, params.clipDurationSec);
+  const delayMs = Math.max(0, Math.round(params.sfx.startSec * 1000));
+  const volume = Math.max(0, Math.min(1, params.sfx.volume / 100));
+  return `[${params.sfxInputIndex}:a]adelay=${delayMs}:all=1,volume=${volume.toFixed(3)},apad,atrim=duration=${duration.toFixed(3)},asetpts=PTS-STARTPTS${params.label}`;
+}
+
+/**
+ * Ducking automation suffix for the music branch (vizard-parity.md
+ * "Music/SFX library" — `studioMusicSchema.ducking`): a single-quoted
+ * ffmpeg `volume=` expression, same quoting technique as
+ * `enable='between(t,...)'` elsewhere in this file, so the commas inside
+ * `buildDuckingVolumeExpression`'s `if(...)`/`between(...)` calls don't get
+ * misread as filter-chain separators. Applied AFTER the music's base
+ * `volume=` and user fade suffix, composing rather than replacing them.
+ * `""` (no-op, byte-identical output) whenever `duckingWindows` is
+ * absent/empty — the common case for every clip that isn't using ducking.
+ */
+function buildMusicDuckingSuffix(music: MusicPlan): string {
+  if (!music.duckingWindows || music.duckingWindows.length === 0) return "";
+  const expr = buildDuckingVolumeExpression(music.duckingWindows);
+  return expr ? `,volume='${expr}':eval=frame` : "";
+}
+
+/**
+ * The single audio-mixing choke point for every render path that has music
+ * and/or one-shot SFX active (see call sites in `buildSingleVideoArgs`,
+ * `buildBrollVideoArgs`, `buildAudiogramArgs`) — generalizes what used to be
+ * a fixed dialogue+music 2-input `amix` into dialogue (0 or 1 branch) +
+ * music (0 or 1 branch) + SFX (0-20 branches), mixed in that order so
+ * `duration=first` stays anchored on the dialogue branch whenever dialogue
+ * is present. Every branch is built to be EXACTLY `clipDurationSec` long
+ * before the mix, so `duration=first` is a formality (all branches already
+ * share one duration) rather than a real anchor choice — dialogue and music
+ * get there via a plain `atrim=duration=D` because they're backed by a
+ * stream that's always at least D long (the source itself, or a
+ * `-stream_loop -1`'d music file); one-shot SFX branches are NOT backed by
+ * anything that long on their own (a short SFX file plus `adelay` can end
+ * far short of D), so `buildSfxAudioFilter` pads with `apad` BEFORE its own
+ * `atrim=duration=D` to actually guarantee this invariant instead of just
+ * assuming it (see that function's doc comment for the truncation bug this
+ * fixes).
+ *
+ * Byte-identical to the pre-SFX/pre-ducking dialogue+music filter whenever
+ * `sfx` is empty and `music.duckingWindows` is unset — both new suffixes
+ * collapse to `""` in that case, and a single dialogue+music branch pair
+ * takes the same 2-input `amix` path as before.
+ *
+ * SFX placements whose `startSec` has drifted at/past `clipDurationSec`
+ * (shouldn't happen — callers are expected to filter these out earlier so
+ * the download/input never happens — kept here too as a defensive second
+ * gate) are silently dropped rather than mixed in as an always-silent
+ * branch.
+ */
+function buildAudioMixFilter(params: {
   sourceHasAudio: boolean;
-  musicInputIndex: number;
-  music: MusicPlan;
   clipDurationSec: number;
   sourceAudio?: StudioEdits["sourceAudio"] | null;
   /** Label to read the dialogue/source audio from — defaults to `[0:a]`
@@ -1325,39 +1437,83 @@ function buildMusicAudioFilter(params: {
    *  dialogue mix reads the concatenated edited-timeline audio, same as
    *  every other downstream audio consumer (vizard-parity Phase B step 7). */
   dialogueInputRef?: string;
-}) {
-  const volume = Math.max(0, Math.min(1, params.music.volume / 100));
+  music?: { inputIndex: number; plan: MusicPlan } | null;
+  sfx?: Array<{ inputIndex: number; plan: SfxPlan }>;
+}): string {
   const duration = Math.max(0.1, params.clipDurationSec);
-  const startOffset = Math.max(0, params.music.startOffsetSec || 0);
-  const musicLabel = "[musica]";
   const fadeChain = buildAudioFadeChain(duration);
-  const userFadeSuffix = buildMusicUserFadeSuffix(params.music, duration);
   const dialogueInputRef = params.dialogueInputRef ?? "[0:a]";
-  // start=<offset> seeks into the (infinitely -stream_loop'd) music input so
-  // the user's chosen point in the track plays first, instead of always the
-  // first `duration` seconds of the file.
-  const musicFilter =
-    `[${params.musicInputIndex}:a]atrim=start=${startOffset.toFixed(3)}:duration=${duration.toFixed(3)},asetpts=PTS-STARTPTS,volume=${volume.toFixed(3)}${userFadeSuffix}${musicLabel}`;
+  const sfxEntries = (params.sfx ?? []).filter(
+    (entry) => entry.plan.startSec < duration,
+  );
 
-  if (!params.sourceHasAudio) {
-    return `${musicFilter};${musicLabel}${fadeChain}[outa]`;
+  const branchFilters: string[] = [];
+  const branchLabels: string[] = [];
+
+  if (params.sourceHasAudio) {
+    // normalize=0 below: amix's default normalization divides every input by
+    // the input count (i.e. -6dB per input for a 2-input mix), quietly
+    // ducking the dialogue whenever music/SFX is added. Each branch's own
+    // level is already under explicit control (music `volume=`, SFX
+    // `volume=`, dialogue gain), so every branch must mix at unity gain —
+    // applied here on the dialogue branch (before amix) same as the
+    // no-music path.
+    const dialogueGainFilter = buildSourceGainFilter(params.sourceAudio);
+    const label = "[maina]";
+    branchFilters.push(
+      dialogueGainFilter
+        ? `${dialogueInputRef}atrim=duration=${duration.toFixed(3)},asetpts=PTS-STARTPTS,${dialogueGainFilter}${label}`
+        : `${dialogueInputRef}atrim=duration=${duration.toFixed(3)},asetpts=PTS-STARTPTS${label}`,
+    );
+    branchLabels.push(label);
   }
 
-  // normalize=0: amix's default normalization divides every input by the
-  // input count (i.e. -6dB per input for a 2-input mix), quietly ducking the
-  // dialogue whenever music is added. The music's own level is already under
-  // explicit user control via `volume=` above, so the dialogue must be mixed
-  // at unity gain — modulo the user's own source-audio gain/mute, applied
-  // here on the dialogue branch (before amix) same as the no-music path.
-  const dialogueGainFilter = buildSourceGainFilter(params.sourceAudio);
-  const dialogueFilter = dialogueGainFilter
-    ? `${dialogueInputRef}atrim=duration=${duration.toFixed(3)},asetpts=PTS-STARTPTS,${dialogueGainFilter}[maina]`
-    : `${dialogueInputRef}atrim=duration=${duration.toFixed(3)},asetpts=PTS-STARTPTS[maina]`;
+  if (params.music) {
+    const { plan } = params.music;
+    const volume = Math.max(0, Math.min(1, plan.volume / 100));
+    const startOffset = Math.max(0, plan.startOffsetSec || 0);
+    const label = "[musica]";
+    const userFadeSuffix = buildMusicUserFadeSuffix(plan, duration);
+    const duckingSuffix = buildMusicDuckingSuffix(plan);
+    // start=<offset> seeks into the (infinitely -stream_loop'd) music input
+    // so the user's chosen point in the track plays first, instead of
+    // always the first `duration` seconds of the file.
+    branchFilters.push(
+      `[${params.music.inputIndex}:a]atrim=start=${startOffset.toFixed(3)}:duration=${duration.toFixed(3)},asetpts=PTS-STARTPTS,volume=${volume.toFixed(3)}${userFadeSuffix}${duckingSuffix}${label}`,
+    );
+    branchLabels.push(label);
+  }
+
+  sfxEntries.forEach(({ inputIndex, plan }, index) => {
+    const label = `[sfx${index}a]`;
+    branchFilters.push(
+      buildSfxAudioFilter({
+        sfxInputIndex: inputIndex,
+        sfx: plan,
+        clipDurationSec: duration,
+        label,
+      }),
+    );
+    branchLabels.push(label);
+  });
+
+  if (branchLabels.length === 0) {
+    // No dialogue, no music, no SFX. Callers only reach this function when
+    // at least music or SFX is present (see the `hasMixedAudio` gate at
+    // each call site), so this only fires when every SFX placement got
+    // dropped by the defensive duration filter above AND there's no source
+    // audio and no music — degrade to silence rather than emit an amix with
+    // zero inputs.
+    return `anullsrc=channel_layout=stereo:sample_rate=48000,atrim=duration=${duration.toFixed(3)}[outa]`;
+  }
+
+  if (branchLabels.length === 1) {
+    return `${branchFilters[0]};${branchLabels[0]}${fadeChain}[outa]`;
+  }
 
   return [
-    dialogueFilter,
-    musicFilter,
-    `[maina]${musicLabel}amix=inputs=2:duration=first:dropout_transition=0:normalize=0,${fadeChain}[outa]`,
+    ...branchFilters,
+    `${branchLabels.join("")}amix=inputs=${branchLabels.length}:duration=first:dropout_transition=0:normalize=0,${fadeChain}[outa]`,
   ].join(";");
 }
 
@@ -1683,6 +1839,10 @@ export function buildSingleVideoArgs(params: {
   reframe?: ReframeSpec | null;
   studioEdits?: StudioEdits | null;
   music?: MusicPlan | null;
+  /** One-shot SFX placements (vizard-parity.md "Music/SFX library") —
+   *  empty/omitted preserves today's behavior exactly (no new inputs, no
+   *  mix branch). See `SfxPlan`. */
+  sfx?: SfxPlan[] | null;
   /** Resolved canvas background (vizard-parity Phase C item 2) — presence
    *  implies "on" (mode is always "color" or "image"); omit/null preserves
    *  today's crop-to-fill behavior. See `BackgroundPlan`. */
@@ -1723,11 +1883,12 @@ export function buildSingleVideoArgs(params: {
       : null;
 
   // Input index bookkeeping: source is always 0; background image (fit mode
-  // only, when a local downloaded path is available), logo, then music each
-  // consume the next slot IF present — same order the args are pushed in
-  // below. Byte-identical to before this feature when `background` is
-  // absent/off (bgImageInputIndex stays null, logoInputIndex/musicInputIndex
-  // fall back to the same 1/2 values the old hardcoded literals used).
+  // only, when a local downloaded path is available), logo, music, then each
+  // SFX placement each consume the next slot IF present — same order the
+  // args are pushed in below. Byte-identical to before this feature when
+  // `background`/`sfx` are absent/off (bgImageInputIndex stays null,
+  // logoInputIndex/musicInputIndex fall back to the same 1/2 values the old
+  // hardcoded literals used, sfxInputIndexes stays an empty array).
   const usesBackgroundImage = Boolean(
     params.background?.mode === "image" && params.background.imagePath,
   );
@@ -1735,6 +1896,7 @@ export function buildSingleVideoArgs(params: {
   const bgImageInputIndex = usesBackgroundImage ? nextInputIndex++ : null;
   const logoInputIndex = params.logo ? nextInputIndex++ : null;
   const musicInputIndex = params.music ? nextInputIndex++ : null;
+  const sfxInputIndexes = (params.sfx ?? []).map(() => nextInputIndex++);
 
   const textAndCaptionChain = buildTextAndCaptionChain(
     params.studioEdits,
@@ -1833,14 +1995,28 @@ export function buildSingleVideoArgs(params: {
 
   if (params.music) {
     args.push("-stream_loop", "-1", "-i", params.music.path);
+  }
+
+  for (const sfx of params.sfx ?? []) {
+    // No -stream_loop: SFX is one-shot, never looped, unlike music above.
+    args.push("-i", sfx.path);
+  }
+
+  const hasMixedAudio = Boolean(params.music) || sfxInputIndexes.length > 0;
+  if (hasMixedAudio) {
     filterParts.push(
-      buildMusicAudioFilter({
+      buildAudioMixFilter({
         sourceHasAudio: params.probe.hasAudio,
-        musicInputIndex: musicInputIndex!,
-        music: params.music,
         clipDurationSec,
         sourceAudio: params.studioEdits?.sourceAudio,
         dialogueInputRef: cutConcat ? cutConcat.audioLabel! : undefined,
+        music: params.music
+          ? { inputIndex: musicInputIndex!, plan: params.music }
+          : null,
+        sfx: (params.sfx ?? []).map((plan, i) => ({
+          inputIndex: sfxInputIndexes[i]!,
+          plan,
+        })),
       }),
     );
   } else if (audioInputLabel) {
@@ -1862,7 +2038,7 @@ export function buildSingleVideoArgs(params: {
     x264Crf(),
   );
 
-  if (params.music) {
+  if (hasMixedAudio) {
     args.push("-map", "[outa]", "-c:a", "aac", "-b:a", "128k", "-shortest");
   } else if (params.probe.hasAudio) {
     args.push("-map", "[outa]", "-c:a", "aac", "-b:a", "128k");
@@ -1911,6 +2087,9 @@ export function buildBrollVideoArgs(params: {
   reframe?: ReframeSpec | null;
   studioEdits?: StudioEdits | null;
   music?: MusicPlan | null;
+  /** One-shot SFX placements — see `buildSingleVideoArgs`'s param doc; same
+   *  contract here. */
+  sfx?: SfxPlan[] | null;
   /** Resolved canvas background (vizard-parity Phase C item 2) — see
    *  `buildSingleVideoArgs`'s param doc; same contract here. */
   background?: BackgroundPlan | null;
@@ -2089,17 +2268,37 @@ export function buildBrollVideoArgs(params: {
 
   if (params.logo) args.push("-i", params.logo.filePath);
 
+  // Music, then SFX, each consume the next input slot — same order as
+  // buildSingleVideoArgs. musicInputIndex is computed unconditionally
+  // (even when music is absent) so sfxInputIndexes can be derived from it
+  // without duplicating the bgOffset/cutawayCount/logo arithmetic.
+  const musicInputIndex = 1 + bgOffset + cutawayCount + (params.logo ? 1 : 0);
+  const sfxInputIndexes = (params.sfx ?? []).map(
+    (_, i) => musicInputIndex + (params.music ? 1 : 0) + i,
+  );
+
   if (params.music) {
-    const musicInputIndex = 1 + bgOffset + cutawayCount + (params.logo ? 1 : 0);
     args.push("-stream_loop", "-1", "-i", params.music.path);
+  }
+  for (const sfx of params.sfx ?? []) {
+    args.push("-i", sfx.path);
+  }
+
+  const hasMixedAudio = Boolean(params.music) || sfxInputIndexes.length > 0;
+  if (hasMixedAudio) {
     parts.push(
-      buildMusicAudioFilter({
+      buildAudioMixFilter({
         sourceHasAudio: params.probe.hasAudio,
-        musicInputIndex,
-        music: params.music,
         clipDurationSec,
         sourceAudio: params.studioEdits?.sourceAudio,
         dialogueInputRef: cutConcat ? cutConcat.audioLabel! : undefined,
+        music: params.music
+          ? { inputIndex: musicInputIndex, plan: params.music }
+          : null,
+        sfx: (params.sfx ?? []).map((plan, i) => ({
+          inputIndex: sfxInputIndexes[i]!,
+          plan,
+        })),
       }),
     );
   } else if (audioInputLabel) {
@@ -2110,7 +2309,7 @@ export function buildBrollVideoArgs(params: {
 
   args.push("-filter_complex", parts.join(";"), "-map", finalLabel);
 
-  if (params.music) {
+  if (hasMixedAudio) {
     args.push("-map", "[outa]", "-c:a", "aac", "-b:a", "128k", "-shortest");
   } else if (params.probe.hasAudio) {
     args.push("-map", "[outa]", "-c:a", "aac", "-b:a", "128k");
@@ -2140,11 +2339,25 @@ export function buildBrollVideoArgs(params: {
   return args;
 }
 
-interface DownloadUrlToFileTestOverrides {
+interface DownloadUrlToFileOverrides {
+  /** Test-only: inject a fake fetch implementation. Production call sites
+   *  never pass it. */
   fetchImpl?: GuardedFetchOptions["fetchImpl"];
+  /** Test-only: inject a fake DNS resolver. Production call sites never
+   *  pass it. */
   resolver?: GuardedFetchOptions["resolver"];
-  /** Overrides REMOTE_MEDIA_MAX_BYTES so the size-cap path can be tested
-   *  without allocating hundreds of MB. Production call sites never pass it. */
+  /**
+   * Overrides REMOTE_MEDIA_MAX_BYTES for this call. Tests use it to exercise
+   * the size-cap path without allocating hundreds of MB — but (M6,
+   * vizard-parity.md "Music/SFX library") this is also real PRODUCTION
+   * usage now: AudioAsset-resolved SFX and music downloads pass
+   * `AUDIO_UPLOAD_MAX_BYTES` (the same 50MB ceiling enforced at upload time)
+   * here instead of silently inheriting the much larger 250MB B-roll/
+   * pasted-URL budget — an uploaded asset already went through that gate
+   * once, so a render pulling it back down should never be able to exceed
+   * it. Pasted-URL music (no `assetId`) deliberately keeps the 250MB
+   * default; it predates this change and isn't bounded by the upload gate.
+   */
   maxBytes?: number;
   /** Overrides REMOTE_MEDIA_DOWNLOAD_TIMEOUT_MS so the timeout path can be
    *  tested in milliseconds instead of 45s. Production call sites never pass it. */
@@ -2152,33 +2365,35 @@ interface DownloadUrlToFileTestOverrides {
 }
 
 /**
- * Downloads a remote B-roll/music asset to disk. Streams to disk (never
+ * Downloads a remote B-roll/music/SFX asset to disk. Streams to disk (never
  * buffers the whole body in memory), enforces a bounded timeout and max size,
  * and validates every redirect hop — a raw `fetch` + `arrayBuffer()` here
  * previously let a single hostile URL OOM the worker or pin a worker slot for
  * up to the full reaper window. Callers are expected to catch and treat any
- * failure as "no B-roll/music" — a bad remote asset must never fail the whole
- * clip render.
+ * failure as "no B-roll/music/SFX" — a bad remote asset must never fail the
+ * whole clip render.
  *
- * `testOverrides` is exposed (and this function exported) purely so tests can
- * inject a fake `fetchImpl`/`resolver`/`maxBytes` the same way
- * `packages/services`'s own `guardedFetch` tests do — production call sites
- * never pass it.
+ * `overrides` is exposed (and this function exported) so tests can inject a
+ * fake `fetchImpl`/`resolver` the same way `packages/services`'s own
+ * `guardedFetch` tests do — those two fields are test-only. `maxBytes` is
+ * NOT test-only (see `DownloadUrlToFileOverrides`'s doc comment) — production
+ * call sites pass it to tighten the default 250MB budget down to
+ * `AUDIO_UPLOAD_MAX_BYTES` for AudioAsset-resolved downloads.
  */
 export async function downloadUrlToFile(
   url: string,
   filePath: string,
   errorCode = "remote_media_download_failed",
-  testOverrides?: DownloadUrlToFileTestOverrides,
+  overrides?: DownloadUrlToFileOverrides,
 ): Promise<void> {
-  const maxBytes = testOverrides?.maxBytes ?? REMOTE_MEDIA_MAX_BYTES;
-  const timeoutMs = testOverrides?.timeoutMs ?? REMOTE_MEDIA_DOWNLOAD_TIMEOUT_MS;
+  const maxBytes = overrides?.maxBytes ?? REMOTE_MEDIA_MAX_BYTES;
+  const timeoutMs = overrides?.timeoutMs ?? REMOTE_MEDIA_DOWNLOAD_TIMEOUT_MS;
   let response: Response;
   try {
     response = await guardedFetch(url, {
       timeoutMs,
-      fetchImpl: testOverrides?.fetchImpl,
-      resolver: testOverrides?.resolver,
+      fetchImpl: overrides?.fetchImpl,
+      resolver: overrides?.resolver,
     });
   } catch (error) {
     throw new WorkflowWorkerError(
@@ -2392,6 +2607,11 @@ export function buildAudiogramArgs(params: {
   captionPreset?: CaptionPreset | null;
   studioEdits?: StudioEdits | null;
   music?: MusicPlan | null;
+  /** One-shot SFX placements — see `buildSingleVideoArgs`'s param doc. The
+   *  audiogram path supports SFX the same way it already supports music
+   *  (unlike `background`, which it deliberately ignores — see the
+   *  divergence comment on the audio-only branch in the main render flow). */
+  sfx?: SfxPlan[] | null;
   /** See `buildSingleVideoArgs`'s param docs — same contract here. */
   resolution?: ClipRenderResolution;
   watermark?: boolean;
@@ -2440,23 +2660,29 @@ export function buildAudiogramArgs(params: {
     : null;
   const audioInputLabel = cutConcat ? cutConcat.audioLabel! : "[0:a]";
 
+  // Music and/or SFX (vizard-parity.md "Music/SFX library" — the audiogram
+  // path follows whatever it already does for music, so SFX shares the same
+  // gate) both mix into the OUTPUT track only, never the waveform — the
+  // waveform always visualizes the raw dialogue signal.
+  const hasMusicOrSfx = Boolean(params.music) || (params.sfx?.length ?? 0) > 0;
+
   const chain: string[] = cutConcat ? [...cutConcat.filterParts] : [];
-  // With music AND a real cut, `audioInputLabel` is `[acat]` — a named
+  // With music/SFX AND a real cut, `audioInputLabel` is `[acat]` — a named
   // filter pad produced by the cut-concat `concat`/`acopy` stage above, not
   // a raw demuxed stream. Unlike `[0:a]` (which ffmpeg happily fans out to
   // multiple consumers), a named pad is a single link: feeding it into both
-  // showwaves below AND buildMusicAudioFilter's dialogueInputRef without an
+  // showwaves below AND buildAudioMixFilter's dialogueInputRef without an
   // explicit split silently rebinds the second consumer to the raw uncut
   // `[0:a]`, leaking deleted audio into the export (ffmpeg 8.0.1-reproduced).
-  // Split explicitly, same as the no-music branch already does below.
+  // Split explicitly, same as the no-music/no-sfx branch already does below.
   const dialogueAudioLabel = cutConcat ? "[dlgsrc]" : audioInputLabel;
-  if (params.music && cutConcat) {
+  if (hasMusicOrSfx && cutConcat) {
     chain.push(`${audioInputLabel}asplit=2[wavesrc][dlgsrc]`);
   }
   const waveSourceLabel =
-    params.music && cutConcat ? "[wavesrc]" : audioInputLabel;
+    hasMusicOrSfx && cutConcat ? "[wavesrc]" : audioInputLabel;
   chain.push(
-    ...(params.music
+    ...(hasMusicOrSfx
       ? [
           `color=c=${bgColor}:s=${W}x${H}:d=${params.clipDurationSec}[bg]`,
           `${waveSourceLabel}showwaves=s=${W}x${waveHeight}:mode=cline:colors=${waveColor}:rate=25[wave]`,
@@ -2516,16 +2742,34 @@ export function buildAudiogramArgs(params: {
     params.sourcePath,
   ];
 
+  // Music, then SFX — same order as buildSingleVideoArgs/buildBrollVideoArgs.
+  // Input 0 is the (audio-only) source, so music (if present) is always 1.
+  const musicInputIndex = 1;
+  const sfxInputIndexes = (params.sfx ?? []).map(
+    (_, i) => (params.music ? 2 : 1) + i,
+  );
+
   if (params.music) {
     args.push("-stream_loop", "-1", "-i", params.music.path);
+  }
+  for (const sfx of params.sfx ?? []) {
+    args.push("-i", sfx.path);
+  }
+
+  if (hasMusicOrSfx) {
     chain.push(
-      buildMusicAudioFilter({
+      buildAudioMixFilter({
         sourceHasAudio: true,
-        musicInputIndex: 1,
-        music: params.music,
         clipDurationSec: params.clipDurationSec,
         sourceAudio: params.studioEdits?.sourceAudio,
         dialogueInputRef: dialogueAudioLabel,
+        music: params.music
+          ? { inputIndex: musicInputIndex, plan: params.music }
+          : null,
+        sfx: (params.sfx ?? []).map((plan, i) => ({
+          inputIndex: sfxInputIndexes[i]!,
+          plan,
+        })),
       }),
     );
   }
@@ -3524,10 +3768,53 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
       }
 
       let musicPlan: MusicPlan | null = null;
-      if (studioEdits.music.url) {
+      // Library asset (vizard-parity.md "Music/SFX library" —
+      // `studioMusicSchema.assetId`) wins over the pasted `url` at render
+      // time — same precedence the schema's own doc comment documents.
+      // Resolution failure (deleted row, DB hiccup) is treated exactly like
+      // a failed download below: log and skip music entirely, never fail
+      // the whole clip (the existing `music_download_failed` policy this
+      // mirrors never actually fails the clip either — see the catch below,
+      // which only logs).
+      let musicUrl: string | null = null;
+      // M6 (vizard-parity.md "Music/SFX library"): an AudioAsset-resolved
+      // music track already passed the AUDIO_UPLOAD_MAX_BYTES gate once at
+      // upload time (or is a curated row seeded well under it) — downloading
+      // it back down for a render must not silently inherit the much larger
+      // 250MB pasted-URL/B-roll budget. A pasted `url` (no assetId) predates
+      // this change and keeps the original 250MB policy.
+      let musicUrlIsAssetResolved = false;
+      if (studioEdits.music.assetId) {
+        try {
+          const resolved = await audioAssetService.resolveRenderSource(
+            run.project.userId,
+            studioEdits.music.assetId,
+          );
+          musicUrl = resolved?.url ?? null;
+          musicUrlIsAssetResolved = Boolean(resolved);
+          if (!resolved) {
+            log("error", "clip_music_asset_resolve_failed", {
+              workflowRunId: run.id,
+              clipId: clip.id,
+              assetId: studioEdits.music.assetId,
+            });
+          }
+        } catch (error) {
+          log("error", "clip_music_asset_resolve_failed", {
+            workflowRunId: run.id,
+            clipId: clip.id,
+            assetId: studioEdits.music.assetId,
+            message: error instanceof Error ? error.message : "unknown",
+          });
+        }
+      } else {
+        musicUrl = studioEdits.music.url;
+      }
+
+      if (musicUrl) {
         let musicUrlSafe = false;
         try {
-          assertPublicHttpUrl(studioEdits.music.url);
+          assertPublicHttpUrl(musicUrl);
           musicUrlSafe = true;
         } catch (error) {
           log("error", "clip_music_url_rejected", {
@@ -3540,9 +3827,10 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
           const musicPath = join(tempDir, `music-${clip.id}.bin`);
           try {
             await downloadUrlToFile(
-              studioEdits.music.url,
+              musicUrl,
               musicPath,
               "music_download_failed",
+              musicUrlIsAssetResolved ? { maxBytes: AUDIO_UPLOAD_MAX_BYTES } : undefined,
             );
             musicPlan = {
               path: musicPath,
@@ -3559,6 +3847,115 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
                 musicError instanceof Error ? musicError.message : "unknown",
             });
           }
+        }
+      }
+
+      // Auto-ducking v1 (vizard-parity.md "Music/SFX library"): only
+      // computed when a music track actually resolved AND the user turned
+      // ducking on. Word intervals are derived from the SAME
+      // `captionTimeMap`/`utterances` the caption burn-in above already
+      // uses, so ducking can't drift from what the captions themselves
+      // consider "speech" on this clip's edited timeline. An empty
+      // transcript naturally yields `duckingWindows: []`, which
+      // `buildAudioMixFilter`/`buildMusicDuckingSuffix` treat as a no-op
+      // (filter omitted entirely, not a `volume='1'` stage).
+      if (musicPlan && studioEdits.music.ducking) {
+        const wordIntervals = extractSpeechWordIntervals(
+          utterances,
+          clipStartSec,
+          captionTimeMap,
+        );
+        const speechWindows = computeSpeechWindows(wordIntervals, clipDurationSec);
+        if (speechWindows.length > MAX_DUCKING_WINDOWS) {
+          log("info", "clip_ducking_windows_capped", {
+            workflowRunId: run.id,
+            clipId: clip.id,
+            windowCount: speechWindows.length,
+            cappedTo: MAX_DUCKING_WINDOWS,
+          });
+        }
+        musicPlan.duckingWindows = speechWindows;
+      }
+
+      // One-shot SFX placements (vizard-parity.md "Music/SFX library" —
+      // `studioEdits.sfx[]`). Each placement is resolved/downloaded
+      // independently and best-effort: a single bad placement is skipped
+      // (logged) rather than failing every other placement or the whole
+      // clip, mirroring the music download policy above.
+      const sfxPlans: SfxPlan[] = [];
+      for (const placement of studioEdits.sfx) {
+        if (placement.startSec >= clipDurationSec) {
+          log("info", "clip_sfx_skipped_beyond_duration", {
+            workflowRunId: run.id,
+            clipId: clip.id,
+            sfxId: placement.id,
+            startSec: placement.startSec,
+            clipDurationSec,
+          });
+          continue;
+        }
+
+        let sfxUrl: string | null = null;
+        try {
+          const resolved = await audioAssetService.resolveRenderSource(
+            run.project.userId,
+            placement.assetId,
+          );
+          sfxUrl = resolved?.url ?? null;
+          if (!resolved) {
+            log("error", "clip_sfx_asset_resolve_failed", {
+              workflowRunId: run.id,
+              clipId: clip.id,
+              sfxId: placement.id,
+              assetId: placement.assetId,
+            });
+          }
+        } catch (error) {
+          log("error", "clip_sfx_asset_resolve_failed", {
+            workflowRunId: run.id,
+            clipId: clip.id,
+            sfxId: placement.id,
+            assetId: placement.assetId,
+            message: error instanceof Error ? error.message : "unknown",
+          });
+        }
+        if (!sfxUrl) continue;
+
+        let sfxUrlSafe = false;
+        try {
+          assertPublicHttpUrl(sfxUrl);
+          sfxUrlSafe = true;
+        } catch (error) {
+          log("error", "clip_sfx_url_rejected", {
+            workflowRunId: run.id,
+            clipId: clip.id,
+            sfxId: placement.id,
+            reason: error instanceof UnsafeUrlError ? error.reason : "unknown",
+          });
+        }
+        if (!sfxUrlSafe) continue;
+
+        const sfxPath = join(tempDir, `sfx-${clip.id}-${placement.id}.bin`);
+        try {
+          // M6: SFX placements are always resolved through an AudioAsset
+          // (`assetId` is required by `studioSfxPlacementSchema`) — bounded
+          // by the same AUDIO_UPLOAD_MAX_BYTES the upload gate enforced,
+          // not the larger 250MB B-roll/pasted-URL budget.
+          await downloadUrlToFile(sfxUrl, sfxPath, "sfx_download_failed", {
+            maxBytes: AUDIO_UPLOAD_MAX_BYTES,
+          });
+          sfxPlans.push({
+            path: sfxPath,
+            startSec: placement.startSec,
+            volume: placement.volume,
+          });
+        } catch (sfxError) {
+          log("error", "clip_sfx_download_failed", {
+            workflowRunId: run.id,
+            clipId: clip.id,
+            sfxId: placement.id,
+            message: sfxError instanceof Error ? sfxError.message : "unknown",
+          });
         }
       }
 
@@ -3647,10 +4044,18 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
       // A canvas background also forces this gate: it changes the base
       // composition itself (fit+pad instead of crop-to-fill), which
       // buildMultiVideoArgs's shared crop-to-fill path has no concept of.
+      //
+      // SFX (vizard-parity.md "Music/SFX library") forces it for the same
+      // reason music does — buildMultiVideoArgs never learned a mix filter
+      // at all, so any SFX placement must route through the per-output
+      // builders. Ducking doesn't need its own clause: it only ever
+      // modifies the music branch, which is already gated by
+      // `Boolean(musicPlan)`.
       const hasStudioVideoEdits =
         studioEdits.textLayers.length > 0 ||
         studioEdits.transition.type !== "none" ||
         Boolean(musicPlan) ||
+        sfxPlans.length > 0 ||
         studioEdits.sourceAudio.muted ||
         studioEdits.sourceAudio.volume !== 100 ||
         !cutPlan.isUncut ||
@@ -3683,6 +4088,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
               captionPreset,
               studioEdits,
               music: musicPlan,
+              sfx: sfxPlans,
               resolution: output.resolution,
               watermark: applyWatermark,
               cutPlan,
@@ -3746,6 +4152,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
                   reframe: output.reframe,
                   studioEdits,
                   music: musicPlan,
+                  sfx: sfxPlans,
                   background: backgroundPlan,
                   resolution: output.resolution,
                   watermark: applyWatermark,
@@ -3764,6 +4171,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
                   reframe: output.reframe,
                   studioEdits,
                   music: musicPlan,
+                  sfx: sfxPlans,
                   background: backgroundPlan,
                   resolution: output.resolution,
                   watermark: applyWatermark,
