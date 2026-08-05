@@ -375,16 +375,38 @@ const STUDIO_BACKGROUND_DEFAULT = {
   imageUrl: null,
 } as const;
 
-// Per-clip framing mode (vizard-parity.md Phase C-2 stage 1). "auto" and
-// "center" are the two ways a clip can be CROPPED to fill the frame; "fit"
-// (letterbox + background) is deliberately NOT a value here — it's already
-// fully expressed by `background.mode !== "off"` (landed in Phase C item 2),
-// so representing it again here would let the two fields disagree. The
-// EFFECTIVE framing mode (which folds `background` in) is always resolved
-// through `resolveEffectiveFramingMode` below — never read `framing.mode`
-// directly when deciding crop vs fit.
+// Per-clip framing mode (vizard-parity.md Phase C-2 stage 1, split packet A).
+// "auto", "center", and "split" are the ways a clip can be CROPPED/composed
+// to fill the frame; "fit" (letterbox + background) is deliberately NOT a
+// value here — it's already fully expressed by `background.mode !== "off"`
+// (landed in Phase C item 2), so representing it again here would let the
+// two fields disagree. The EFFECTIVE framing mode (which folds `background`
+// in) is always resolved through `resolveEffectiveFramingMode` below — never
+// read `framing.mode` directly when deciding crop vs fit vs split.
+//
+// "split" — stacked 2-up split-screen: the worker seats detected face
+// clusters into two vertically-stacked tiles (top/bottom), one per speaker
+// cluster, each independently cropped/scaled per SHOT SEGMENT (see
+// `two-up.ts`'s `buildSplitLayoutPlan`/`buildTwoUpFilterChain`/
+// `buildSplitFilterChain` and `render-clips.ts`'s `decideSplitFallback`).
+// Packets A (this schema/the panel), B (the worker render pipeline just
+// described), and C (the studio's dual-video live preview —
+// video-preview.tsx's top `<video>` tile plus a second muted
+// `SplitSecondaryTile` for the bottom seat) have all landed.
+//
+// Falls back to single-speaker framing (auto-reframe following the
+// detected face, or a static center crop if none is detected — the same
+// fallback "auto"/"center" already use) whenever the footage can't support
+// a real 2-up: fewer than two stable face clusters, the two clusters are
+// never both on screen at once, one of this clip's OUTPUT aspect ratios
+// specifically can't crop two laterally distinct tiles even though another
+// aspect ratio of the same clip can, B-roll is active for this clip (v1
+// policy: B-roll always wins over split), or the whole feature is disabled
+// via the `WORKER_SPLIT` env kill switch. Every one of those routes through
+// the exact same fallback path — never a failed render — and is logged with
+// its own `clip_split_fallback` reason (see `SplitFallbackReason`).
 export const studioFramingSchema = z.object({
-  mode: z.enum(["auto", "center"]).default("auto"),
+  mode: z.enum(["auto", "center", "split"]).default("auto"),
 });
 
 const STUDIO_FRAMING_DEFAULT = { mode: "auto" } as const;
@@ -455,17 +477,21 @@ export type StudioSfxPlacement = z.infer<typeof studioSfxPlacementSchema>;
 export type StudioEdits = z.infer<typeof studioEditsSchema>;
 export type UpdateClipStudioEdits = z.infer<typeof updateClipStudioEditsSchema>;
 
-export type EffectiveFramingMode = "auto" | "center" | "fit";
+export type EffectiveFramingMode = "auto" | "center" | "fit" | "split";
 
 /**
  * The single source of truth for "how is this clip actually framed" —
- * folds `background` and `framing` into one of three effective modes so the
+ * folds `background` and `framing` into one of four effective modes so the
  * worker's render pipeline and the studio's Layout panel/preview can never
  * fork on the answer. `background.mode !== "off"` always wins as "fit"
- * regardless of `framing.mode`: fit isn't a `framing` enum value (see
- * `studioFramingSchema`'s doc comment), it's derived entirely from
- * `background`. Only when background is off does `framing.mode` (auto vs
- * center) take effect.
+ * regardless of `framing.mode` — including when `framing.mode === "split"`:
+ * a user picking Split in the panel also turns background off via the same
+ * choice handler that Auto/Center use (see layout-panel.tsx's
+ * `setFramingChoice`), so in practice "fit" and "split" never coexist, but
+ * the precedence rule here is unconditional either way. Fit isn't a
+ * `framing` enum value (see `studioFramingSchema`'s doc comment), it's
+ * derived entirely from `background`. Only when background is off does
+ * `framing.mode` (auto vs center vs split) take effect.
  */
 export function resolveEffectiveFramingMode(
   studioEdits: Pick<StudioEdits, "background" | "framing">,

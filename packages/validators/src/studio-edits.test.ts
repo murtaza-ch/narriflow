@@ -270,6 +270,21 @@ describe("studioEditsSchema (source audio + music fades)", () => {
     expect(parsed.framing).toEqual({ mode: "center" });
   });
 
+  test("accepts an explicit split framing mode", () => {
+    const parsed = studioEditsSchema.parse({ framing: { mode: "split" } });
+    expect(parsed.framing).toEqual({ mode: "split" });
+  });
+
+  test("legacy persisted JSON (no framing key at all) still parses to auto, unaffected by split's addition", () => {
+    const legacy = {
+      textLayers: [],
+      transition: { type: "none", durationSec: 0.4 },
+      background: { mode: "off", color: null, imageUrl: null },
+    };
+    const parsed = studioEditsSchema.parse(legacy);
+    expect(parsed.framing).toEqual({ mode: "auto" });
+  });
+
   test("rejects an invalid framing mode (fit is not a framing value)", () => {
     expect(() =>
       studioEditsSchema.parse({ framing: { mode: "fit" } }),
@@ -291,6 +306,11 @@ describe("resolveEffectiveFramingMode (Phase C-2 stage 1 — background/framing 
     expect(resolveEffectiveFramingMode(parsed)).toBe("center");
   });
 
+  test("resolves to split when background is off and framing.mode is split", () => {
+    const parsed = studioEditsSchema.parse({ framing: { mode: "split" } });
+    expect(resolveEffectiveFramingMode(parsed)).toBe("split");
+  });
+
   test("background active always resolves to fit, regardless of framing.mode", () => {
     const withAuto = studioEditsSchema.parse({
       background: { mode: "color", color: "#112233", imageUrl: null },
@@ -309,6 +329,12 @@ describe("resolveEffectiveFramingMode (Phase C-2 stage 1 — background/framing 
       framing: { mode: "center" },
     });
     expect(resolveEffectiveFramingMode(withImage)).toBe("fit");
+
+    const withSplit = studioEditsSchema.parse({
+      background: { mode: "color", color: "#112233", imageUrl: null },
+      framing: { mode: "split" },
+    });
+    expect(resolveEffectiveFramingMode(withSplit)).toBe("fit");
   });
 });
 
@@ -372,6 +398,15 @@ describe("applyStudioEditsPatchSchema (vizard-parity Phase C — apply-to-all)",
       framing: { mode: "center" },
     });
     expect(parsed.framing).toEqual({ mode: "center" });
+    expect(parsed.transition).toBeUndefined();
+    expect(parsed.background).toBeUndefined();
+  });
+
+  test("accepts a split framing patch", () => {
+    const parsed = applyStudioEditsPatchSchema.parse({
+      framing: { mode: "split" },
+    });
+    expect(parsed.framing).toEqual({ mode: "split" });
     expect(parsed.transition).toBeUndefined();
     expect(parsed.background).toBeUndefined();
   });
