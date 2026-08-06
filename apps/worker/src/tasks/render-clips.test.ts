@@ -8,7 +8,11 @@ import {
   getCaptionPresetById,
   studioEditsSchema,
 } from "@narriflow/validators";
-import type { CaptionPreset, TranscriptUtterance } from "@narriflow/validators";
+import type {
+  CaptionPreset,
+  ClipLayoutAnalysis,
+  TranscriptUtterance,
+} from "@narriflow/validators";
 import {
   buildAudiogramArgs,
   buildBrollVideoArgs,
@@ -27,11 +31,14 @@ import {
   framingForcesPerOutputRender,
   generateAssFromSlice,
   generateSrtFromSlice,
+  layoutAnalysisMatchesWindow,
   resolveBackgroundPlanForDownloadedImage,
   resolveClipLogoOverlay,
+  resolvePipAnalysis,
   resolveRenderTimingForClip,
   shouldRunAutoReframeDetection,
 } from "./render-clips";
+import type { PipDetectionResult } from "./render-clips";
 import { buildClipCutPlan } from "./cut-plan";
 import { SCREEN_BOTTOM_CROP_NAME } from "./screen-layout";
 import type { SplitLayoutSegment } from "./two-up";
@@ -575,6 +582,245 @@ describe("decidePipUsage (M6 — the PiP decision matrix, ordered, full coverage
       useRect: true,
       reason: "ok",
     });
+  });
+
+});
+
+// M2 (adversarial review): `resolvePipAnalysis` is the extracted read-
+// before-detect/write-after-detect wiring — `detect`/`persist` are fake
+// spies here so these tests never touch `pip_detect.py` or a database.
+// Replaces the old "persisted-vs-fresh equivalence" test above (deleted):
+// that test only proved `decidePipUsage` doesn't care about its caller's
+// shape, which was true by construction (it takes plain values) and never
+// exercised any of `resolvePipAnalysis`'s actual read/write branching.
+describe("resolvePipAnalysis (M2 — PiP persistence read/write wiring, DI'd detect/persist)", () => {
+  const rect = { x: 0.8, y: 0.8, w: 0.15, h: 0.15 };
+  const qualifyingCandidate = {
+    x: 0.79,
+    y: 0.78,
+    w: 0.2,
+    h: 0.2,
+    areaFrac: 0.04,
+    fillFrac: 0.9,
+    cornerAdjacent: true,
+    medianDiffMean: 4.6,
+  };
+
+  function makeSpies(overrides?: {
+    detectResult?: PipDetectionResult | null;
+    persistShouldThrow?: boolean;
+  }) {
+    const detectCalls: unknown[] = [];
+    const persistCalls: ClipLayoutAnalysis[] = [];
+    const detect = async (params: unknown) => {
+      detectCalls.push(params);
+      return overrides?.detectResult ?? null;
+    };
+    const persist = async (envelope: ClipLayoutAnalysis) => {
+      persistCalls.push(envelope);
+      if (overrides?.persistShouldThrow) throw new Error("persist failed");
+    };
+    return { detect, persist, detectCalls, persistCalls };
+  }
+
+  const persistedEnvelope: ClipLayoutAnalysis = {
+    version: 1,
+    analyzedAtISO: "2026-08-06T09:00:00.000Z",
+    sourceStartSec: 12.5,
+    sourceDurationSec: 30,
+    clipStartSec: 12.5,
+    clipEndSec: 42.5,
+    movingPxFrac: 0.04,
+    insufficientSamples: false,
+    pipRect: rect,
+    pipUsable: true,
+  };
+
+  test("persisted-hit skips detect() entirely", async () => {
+    const { detect, persist, detectCalls, persistCalls } = makeSpies();
+    const result = await resolvePipAnalysis({
+      persisted: persistedEnvelope,
+      pipDetectEnabled: true,
+      detectInput: { path: "/tmp/seg.mp4", startSec: 0 },
+      startSec: 12.5,
+      durationSec: 30,
+      rawClipStartSec: 12.5,
+      rawClipEndSec: 42.5,
+      detect,
+      persist,
+    });
+    expect(detectCalls.length).toBe(0);
+    expect(persistCalls.length).toBe(0);
+    expect(result).toEqual({
+      detectionResult: { movingPxFrac: 0.04, insufficientSamples: false },
+      selectedRect: rect,
+      candidateCount: null,
+      analysisSource: "persisted",
+    });
+  });
+
+  test("analyzed-negative (selectedRect null) still persists, with pipUsable: false", async () => {
+    const { detect, persist, detectCalls, persistCalls } = makeSpies({
+      detectResult: { movingPxFrac: 0.03, insufficientSamples: false, candidates: [] },
+    });
+    const result = await resolvePipAnalysis({
+      persisted: null,
+      pipDetectEnabled: true,
+      detectInput: { path: "/tmp/seg.mp4", startSec: 0 },
+      startSec: 12.5,
+      durationSec: 30,
+      rawClipStartSec: 12.5,
+      rawClipEndSec: 42.5,
+      detect,
+      persist,
+    });
+    expect(detectCalls.length).toBe(1);
+    expect(result.selectedRect).toBeNull();
+    expect(result.analysisSource).toBe("fresh");
+    expect(persistCalls.length).toBe(1);
+    expect(persistCalls[0]).toMatchObject({
+      pipRect: null,
+      pipUsable: false,
+      sourceStartSec: 12.5,
+      sourceDurationSec: 30,
+    });
+  });
+
+  test("fresh detection WITH a qualifying candidate does NOT persist (deferred to the caller, which alone knows this render's pipUsable via decidePipUsage)", async () => {
+    const { detect, persist, persistCalls } = makeSpies({
+      detectResult: {
+        movingPxFrac: 0.15,
+        insufficientSamples: false,
+        candidates: [qualifyingCandidate],
+      },
+    });
+    const result = await resolvePipAnalysis({
+      persisted: null,
+      pipDetectEnabled: true,
+      detectInput: { path: "/tmp/seg.mp4", startSec: 0 },
+      startSec: 12.5,
+      durationSec: 30,
+      rawClipStartSec: 12.5,
+      rawClipEndSec: 42.5,
+      detect,
+      persist,
+    });
+    expect(result.selectedRect).not.toBeNull();
+    expect(result.analysisSource).toBe("fresh");
+    expect(persistCalls.length).toBe(0);
+  });
+
+  test("WORKER_PIP_DETECT=0 (pipDetectEnabled: false) calls neither detect() nor persist()", async () => {
+    const { detect, persist, detectCalls, persistCalls } = makeSpies({
+      detectResult: { movingPxFrac: 0.15, insufficientSamples: false, candidates: [qualifyingCandidate] },
+    });
+    const result = await resolvePipAnalysis({
+      persisted: null,
+      pipDetectEnabled: false,
+      detectInput: { path: "/tmp/seg.mp4", startSec: 0 },
+      startSec: 12.5,
+      durationSec: 30,
+      rawClipStartSec: 12.5,
+      rawClipEndSec: 42.5,
+      detect,
+      persist,
+    });
+    expect(detectCalls.length).toBe(0);
+    expect(persistCalls.length).toBe(0);
+    expect(result).toEqual({
+      detectionResult: null,
+      selectedRect: null,
+      candidateCount: null,
+      analysisSource: null,
+    });
+  });
+
+  test("no detectInput (segment extraction failed) calls neither, even when detection is enabled", async () => {
+    const { detect, persist, detectCalls, persistCalls } = makeSpies();
+    const result = await resolvePipAnalysis({
+      persisted: null,
+      pipDetectEnabled: true,
+      detectInput: null,
+      startSec: 12.5,
+      durationSec: 30,
+      rawClipStartSec: 12.5,
+      rawClipEndSec: 42.5,
+      detect,
+      persist,
+    });
+    expect(detectCalls.length).toBe(0);
+    expect(persistCalls.length).toBe(0);
+    expect(result.analysisSource).toBeNull();
+  });
+
+  test("persist() throwing logs-and-continues — resolvePipAnalysis still returns normally", async () => {
+    const { detect, persist, persistCalls } = makeSpies({
+      detectResult: { movingPxFrac: 0.03, insufficientSamples: false, candidates: [] },
+      persistShouldThrow: true,
+    });
+    let result: Awaited<ReturnType<typeof resolvePipAnalysis>> | undefined;
+    let thrown: unknown;
+    try {
+      result = await resolvePipAnalysis({
+        persisted: null,
+        pipDetectEnabled: true,
+        detectInput: { path: "/tmp/seg.mp4", startSec: 0 },
+        startSec: 12.5,
+        durationSec: 30,
+        rawClipStartSec: 12.5,
+        rawClipEndSec: 42.5,
+        detect,
+        persist,
+      });
+    } catch (e) {
+      thrown = e;
+    }
+    expect(thrown).toBeUndefined();
+    expect(persistCalls.length).toBe(1);
+    expect(result).toEqual({
+      detectionResult: { movingPxFrac: 0.03, insufficientSamples: false },
+      selectedRect: null,
+      candidateCount: 0,
+      analysisSource: "fresh",
+    });
+  });
+});
+
+describe("layoutAnalysisMatchesWindow (PiP persistence packet B — window-match semantics)", () => {
+  const analysis: Pick<ClipLayoutAnalysis, "sourceStartSec" | "sourceDurationSec"> = {
+    sourceStartSec: 12.5,
+    sourceDurationSec: 30,
+  };
+
+  test("exact match", () => {
+    expect(layoutAnalysisMatchesWindow(analysis, 12.5, 30)).toBe(true);
+  });
+
+  test("within the default epsilon (0.05s) on both start and duration", () => {
+    expect(layoutAnalysisMatchesWindow(analysis, 12.53, 29.97)).toBe(true);
+  });
+
+  test("exactly at the epsilon boundary still matches (<=, not <) — integer diffs to avoid float rounding at the assertion", () => {
+    const wholeNumberWindow = { sourceStartSec: 100, sourceDurationSec: 200 };
+    expect(layoutAnalysisMatchesWindow(wholeNumberWindow, 101, 200, 1)).toBe(true);
+    expect(layoutAnalysisMatchesWindow(wholeNumberWindow, 100, 201, 1)).toBe(true);
+  });
+
+  test("just past the epsilon boundary on startSec does not match", () => {
+    expect(layoutAnalysisMatchesWindow(analysis, 12.56, 30)).toBe(false);
+  });
+
+  test("just past the epsilon boundary on durationSec does not match", () => {
+    expect(layoutAnalysisMatchesWindow(analysis, 12.5, 30.06)).toBe(false);
+  });
+
+  test("a real trim (startSec moved well beyond epsilon) invalidates the match", () => {
+    expect(layoutAnalysisMatchesWindow(analysis, 20, 22.5)).toBe(false);
+  });
+
+  test("a custom epsilon widens or narrows the tolerance", () => {
+    expect(layoutAnalysisMatchesWindow(analysis, 12.6, 30, 0.2)).toBe(true);
+    expect(layoutAnalysisMatchesWindow(analysis, 12.51, 30, 0)).toBe(false);
   });
 });
 

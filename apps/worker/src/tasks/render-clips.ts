@@ -45,6 +45,7 @@ import {
   getEffectiveClipTiming,
   MAX_DUCKING_WINDOWS,
   normalizeTranscriptSliceForClip,
+  parseClipLayoutAnalysis,
   resolveEffectiveFramingMode,
   resolveEffectiveLogoSettings,
   resolveMusicFadeWindows,
@@ -57,6 +58,7 @@ import type {
   CaptionPreset,
   ClipAspectRatio,
   ClipCategory,
+  ClipLayoutAnalysis,
   ClipRenderResolution,
   DuckingWindow,
   EditedTimeMap,
@@ -1076,6 +1078,235 @@ export function decidePipUsage(
     return { useRect: false, reason: "pip_too_small" };
   }
   return { useRect: true, reason: "ok" };
+}
+
+/**
+ * PiP persistence packet B: does a persisted `Clip.layoutAnalysis` envelope
+ * still describe THIS render's detection window? The screen-mode block below
+ * writes `sourceStartSec`/`sourceDurationSec` as `clipStartSec`/
+ * `effective.durationSec` — the clip's real source-time detection window —
+ * deliberately NOT `detectInput.startSec` (the coordinates actually passed
+ * to `detectPipPath`), because `extractFaceDetectionSegment` re-bases an
+ * HTTP source's extracted segment to start at 0 regardless of where in the
+ * source it was cut from; comparing against that would make every HTTP-
+ * sourced clip's window look identical no matter how it was trimmed. Reading
+ * `clipStartSec`/`effective.durationSec` on both the write and read side
+ * keeps the comparison meaningful for local AND HTTP sources alike.
+ *
+ * No separate invalidation hook exists for a trim (or any other edit that
+ * moves the clip's `startSec`/`endSec`) — a trim changes
+ * `clipStartSec`/`effective.durationSec` on the NEXT render, this match
+ * fails, the stale envelope is simply not read, and the fresh detection that
+ * runs instead overwrites it via `clipService.setClipLayoutAnalysis`. The
+ * mismatch itself IS the invalidation.
+ *
+ * `epsilonSec` absorbs float round-trip noise (JSON storage through
+ * `Prisma.InputJsonValue`, floating-point arithmetic in
+ * `resolveRenderTimingForClip`) without being loose enough to treat a real,
+ * perceptible trim as a match.
+ */
+export function layoutAnalysisMatchesWindow(
+  analysis: Pick<ClipLayoutAnalysis, "sourceStartSec" | "sourceDurationSec">,
+  startSec: number,
+  durationSec: number,
+  epsilonSec = 0.05,
+): boolean {
+  return (
+    Math.abs(analysis.sourceStartSec - startSec) <= epsilonSec &&
+    Math.abs(analysis.sourceDurationSec - durationSec) <= epsilonSec
+  );
+}
+
+/** Builds a `Clip.layoutAnalysis` v1 envelope from its constituent parts —
+ *  shared by `resolvePipAnalysis`'s own early (conclusive-negative) persist
+ *  and the screen-mode block's later (post-`decidePipUsage`) persist below,
+ *  so the two write sites can't drift on which fields land where. */
+function buildLayoutAnalysisEnvelope(params: {
+  startSec: number;
+  durationSec: number;
+  /** H2 (adversarial review): the RAW `Clip.startSec`/`Clip.endSec` row —
+   *  see the schema's own doc comment (`clip-layout-analysis.ts`) for why
+   *  this is a SEPARATE pair from `startSec`/`durationSec` above (the
+   *  snapped render window). */
+  rawClipStartSec: number;
+  rawClipEndSec: number;
+  movingPxFrac: number | null;
+  insufficientSamples: boolean;
+  pipRect: PipRect | null;
+  pipUsable: boolean;
+}): ClipLayoutAnalysis {
+  return {
+    version: 1,
+    analyzedAtISO: new Date().toISOString(),
+    sourceStartSec: params.startSec,
+    sourceDurationSec: params.durationSec,
+    clipStartSec: params.rawClipStartSec,
+    clipEndSec: params.rawClipEndSec,
+    movingPxFrac: params.movingPxFrac,
+    insufficientSamples: params.insufficientSamples,
+    pipRect: params.pipRect,
+    pipUsable: params.pipUsable,
+  };
+}
+
+/** `detectPipPath`'s success result shape, standalone so `resolvePipAnalysis`'s
+ *  injected `detect` param (and its test doubles) don't need to reference
+ *  `detectPipPath` itself. Identical shape to that function's private
+ *  `PipDetectResult` — kept as two names since one is this module's public,
+ *  DI-facing contract and the other is `detectPipPath`'s own internal return
+ *  type; they're structurally the same on purpose. */
+export interface PipDetectionResult {
+  movingPxFrac: number | null;
+  insufficientSamples: boolean;
+  candidates: PipCandidate[];
+}
+
+export interface ResolvePipAnalysisParams {
+  /** The persisted `Clip.layoutAnalysis` envelope, ALREADY checked by the
+   *  caller against this render's window (`layoutAnalysisMatchesWindow`) —
+   *  `null` means "nothing usable to reuse" (column was null, parse failed,
+   *  or the window no longer matches), not literally "column is null." */
+  persisted: ClipLayoutAnalysis | null;
+  /** `WORKER_PIP_DETECT` kill switch — mirrors `decidePipUsage`'s own
+   *  `pipDetectEnabled`. When false, neither `detect` nor `persist` is ever
+   *  called: the kill switch means "no persistence side effects at all,"
+   *  not just "no fresh detection." */
+  pipDetectEnabled: boolean;
+  detectInput: { path: string; startSec: number } | null;
+  /** The clip's real source-time detection window — written into a freshly
+   *  persisted envelope's `sourceStartSec`/`sourceDurationSec` (see
+   *  `layoutAnalysisMatchesWindow`'s doc comment for why this, not
+   *  `detectInput.startSec`). */
+  startSec: number;
+  durationSec: number;
+  /** H2 (adversarial review): the RAW `Clip.startSec`/`Clip.endSec` row —
+   *  written into a freshly persisted envelope's `clipStartSec`/`clipEndSec`.
+   *  See `buildLayoutAnalysisEnvelope`'s doc comment for why this is a
+   *  separate pair from `startSec`/`durationSec` above. */
+  rawClipStartSec: number;
+  rawClipEndSec: number;
+  detect: (params: {
+    sourcePath: string;
+    startSec: number;
+    durationSec: number;
+  }) => Promise<PipDetectionResult | null>;
+  /** Injected so tests can fake persistence without a database — see this
+   *  function's own doc comment for exactly when it's called. Errors are
+   *  caught and logged here (log-and-continue): a persistence miss must
+   *  never fail an otherwise-successful render. */
+  persist: (envelope: ClipLayoutAnalysis) => Promise<void>;
+  /** Merged into the `clip_screen_layout_analysis_persist_failed` log on a
+   *  `persist` failure — purely for observability, no behavioral effect. */
+  logContext?: Record<string, unknown>;
+}
+
+export interface ResolvePipAnalysisResult {
+  detectionResult: { movingPxFrac: number | null; insufficientSamples: boolean } | null;
+  selectedRect: PipRect | null;
+  /** `null` for a persisted-hit (no fresh candidate list exists to count —
+   *  L1, adversarial review: NOT `0`, which would misleadingly read as "ran
+   *  detection, found zero candidates") or when detection never ran at all
+   *  (disabled, no segment, or the script failed/was unavailable); the
+   *  fresh-detection candidate count otherwise. */
+  candidateCount: number | null;
+  analysisSource: "persisted" | "fresh" | null;
+}
+
+/**
+ * M2 (adversarial review): the PiP persistence read-before-detect /
+ * write-after-detect decision, pulled out of the screen-mode render block
+ * into one dependency-injected, unit-testable function — `detect`/`persist`
+ * are injected so tests can fake both without touching `pip_detect.py` or
+ * the database.
+ *
+ * Persistence split (C1, adversarial review): this function ONLY persists
+ * the CONCLUSIVE-NEGATIVE case — a fresh detection whose `selectPipRect`
+ * found no qualifying candidate at all (`selectedRect === null`). That
+ * case's `pipUsable` is unconditionally `false` (`decidePipUsage`'s
+ * `no_candidate` gate rejects a null `selectedRect` regardless of face
+ * confirmation), so there's nothing left to wait for. Every OTHER fresh-
+ * detection outcome (a non-null `selectedRect`) leaves persistence to the
+ * CALLER, which must write the envelope only AFTER running `decidePipUsage`
+ * with THAT render's own `faceConfirmed` — `pipUsable` genuinely can't be
+ * known here, since face confirmation runs after this function returns (see
+ * render-clips.ts's screen-mode block, and `ClipLayoutAnalysis.pipUsable`'s
+ * own doc comment for why the persisted `pipRect` is never nulled out just
+ * because a gate failed).
+ */
+export async function resolvePipAnalysis(
+  params: ResolvePipAnalysisParams,
+): Promise<ResolvePipAnalysisResult> {
+  if (params.persisted) {
+    return {
+      detectionResult: {
+        movingPxFrac: params.persisted.movingPxFrac,
+        insufficientSamples: params.persisted.insufficientSamples,
+      },
+      selectedRect: params.persisted.pipRect,
+      candidateCount: null,
+      analysisSource: "persisted",
+    };
+  }
+
+  if (!params.pipDetectEnabled || !params.detectInput) {
+    return {
+      detectionResult: null,
+      selectedRect: null,
+      candidateCount: null,
+      analysisSource: null,
+    };
+  }
+
+  const pip = await params.detect({
+    sourcePath: params.detectInput.path,
+    startSec: params.detectInput.startSec,
+    durationSec: params.durationSec,
+  });
+  if (!pip) {
+    return {
+      detectionResult: null,
+      selectedRect: null,
+      candidateCount: null,
+      analysisSource: null,
+    };
+  }
+
+  const detectionResult = {
+    movingPxFrac: pip.movingPxFrac,
+    insufficientSamples: pip.insufficientSamples,
+  };
+  const candidateCount = pip.candidates.length;
+  // Selected NOW (pre face-confirmation) — the envelope persists this
+  // SELECTED rect, not the raw candidate list. `decidePipUsage`'s
+  // `face_not_in_rect` gate (fed by `faceConfirmed`, computed by the caller
+  // further down from THIS render's own face samples) still runs on every
+  // render, fresh or persisted, since face confirmation isn't a geometry
+  // fact that's safe to cache — see `ClipLayoutAnalysis`'s doc comment.
+  const selectedRect = selectPipRect(pip.candidates);
+
+  if (!selectedRect) {
+    const envelope = buildLayoutAnalysisEnvelope({
+      startSec: params.startSec,
+      durationSec: params.durationSec,
+      rawClipStartSec: params.rawClipStartSec,
+      rawClipEndSec: params.rawClipEndSec,
+      movingPxFrac: pip.movingPxFrac,
+      insufficientSamples: pip.insufficientSamples,
+      pipRect: null,
+      pipUsable: false,
+    });
+    try {
+      await params.persist(envelope);
+    } catch (persistError) {
+      log("error", "clip_screen_layout_analysis_persist_failed", {
+        ...params.logContext,
+        message:
+          persistError instanceof Error ? persistError.message : "unknown",
+      });
+    }
+  }
+
+  return { detectionResult, selectedRect, candidateCount, analysisSource: "fresh" };
 }
 
 /**
@@ -4613,15 +4844,51 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
             });
 
             const pipDetectEnabled = process.env.WORKER_PIP_DETECT !== "0";
-            const pip =
-              pipDetectEnabled && detectInput
-                ? await detectPipPath({
-                    sourcePath: detectInput.path,
-                    startSec: detectInput.startSec,
-                    durationSec: effective.durationSec,
-                  })
+
+            // PiP persistence packet B (read-before-detect): a persisted
+            // `Clip.layoutAnalysis` envelope whose detection window still
+            // matches THIS render's `clipStartSec`/`effective.durationSec`
+            // (`layoutAnalysisMatchesWindow`) means `pip_detect.py` already
+            // ran for this exact source range — reuse its
+            // movingPxFrac/insufficientSamples/pipRect instead of paying for
+            // the script again. Gated on `pipDetectEnabled` too: the
+            // `WORKER_PIP_DETECT=0` kill switch must mean "no persistence
+            // side effects at all," not just "no fresh detection." A window
+            // mismatch (most commonly a trim moving `clipStartSec`/
+            // `endSec`) is the envelope's own invalidation — see that
+            // function's doc comment — so the stale value is simply never
+            // read here, not explicitly deleted.
+            const persistedAnalysisRaw = pipDetectEnabled
+              ? parseClipLayoutAnalysis(clip.layoutAnalysis)
+              : null;
+            const persistedAnalysis =
+              persistedAnalysisRaw !== null &&
+              layoutAnalysisMatchesWindow(persistedAnalysisRaw, clipStartSec, effective.durationSec)
+                ? persistedAnalysisRaw
                 : null;
-            const selectedRect = pip ? selectPipRect(pip.candidates) : null;
+
+            // M2 (adversarial review): the read-before-detect/write-after-
+            // detect decision itself lives in `resolvePipAnalysis` (a
+            // dependency-injected, unit-tested pure function) — this block
+            // just wires it to the real `detectPipPath`/
+            // `clipService.setClipLayoutAnalysis`. `resolvePipAnalysis` only
+            // persists the CONCLUSIVE-negative case (a fresh detection with
+            // no qualifying candidate); the non-null-`selectedRect` case is
+            // persisted below, AFTER `decidePipUsage` — see C1/that
+            // function's own doc comment for why.
+            const { detectionResult, selectedRect, candidateCount, analysisSource } =
+              await resolvePipAnalysis({
+                persisted: persistedAnalysis,
+                pipDetectEnabled,
+                detectInput,
+                startSec: clipStartSec,
+                durationSec: effective.durationSec,
+                rawClipStartSec: clip.startSec,
+                rawClipEndSec: clip.endSec,
+                detect: detectPipPath,
+                persist: (envelope) => clipService.setClipLayoutAnalysis(clip.id, envelope),
+                logContext: { workflowRunId: run.id, clipId: clip.id },
+              });
 
             // H2 (adversarial review): face detection now runs
             // UNCONDITIONALLY on the same segment (it did before this
@@ -4643,9 +4910,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
             const pipUsageBase: DecidePipUsageParams = {
               pipDetectEnabled,
               segmentExtracted: Boolean(detectInput),
-              detection: pip
-                ? { movingPxFrac: pip.movingPxFrac, insufficientSamples: pip.insufficientSamples }
-                : null,
+              detection: detectionResult,
               selectedRect,
               faceConfirmed,
             };
@@ -4655,20 +4920,57 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
             // of them depend on a specific output's tile geometry.
             const clipLevelPipDecision = decidePipUsage(pipUsageBase);
             const pipRect = clipLevelPipDecision.useRect ? selectedRect : null;
+
+            // C1 (adversarial review): the persistence half of a FRESH
+            // detection that found a candidate (`resolvePipAnalysis` already
+            // persisted the conclusive-negative, no-candidate case itself)
+            // happens HERE, after `decidePipUsage` — `pipUsable` is this
+            // render's own `clipLevelPipDecision.useRect`, never derived
+            // from `selectedRect`'s nullness alone. `pipRect` in the
+            // envelope is the RAW `selectedRect` (not gated by
+            // `clipLevelPipDecision`) even when `pipUsable` ends up false —
+            // see `ClipLayoutAnalysis.pipUsable`'s doc comment for why a
+            // one-off `face_not_in_rect` miss must not permanently freeze
+            // the persisted rect to null for every future render.
+            if (analysisSource === "fresh" && selectedRect) {
+              const envelope = buildLayoutAnalysisEnvelope({
+                startSec: clipStartSec,
+                durationSec: effective.durationSec,
+                rawClipStartSec: clip.startSec,
+                rawClipEndSec: clip.endSec,
+                movingPxFrac: detectionResult?.movingPxFrac ?? null,
+                insufficientSamples: detectionResult?.insufficientSamples ?? false,
+                pipRect: selectedRect,
+                pipUsable: clipLevelPipDecision.useRect,
+              });
+              try {
+                await clipService.setClipLayoutAnalysis(clip.id, envelope);
+              } catch (persistError) {
+                log("error", "clip_screen_layout_analysis_persist_failed", {
+                  workflowRunId: run.id,
+                  clipId: clip.id,
+                  message:
+                    persistError instanceof Error ? persistError.message : "unknown",
+                });
+              }
+            }
+
             if (pipRect) {
               log("info", "clip_screen_pip_selected", {
                 workflowRunId: run.id,
                 clipId: clip.id,
-                movingPxFrac: pip?.movingPxFrac ?? null,
+                movingPxFrac: detectionResult?.movingPxFrac ?? null,
                 rect: pipRect,
+                analysisSource,
               });
             } else {
               log("info", "clip_screen_pip_fallback", {
                 workflowRunId: run.id,
                 clipId: clip.id,
                 reason: clipLevelPipDecision.reason,
-                movingPxFrac: pip?.movingPxFrac ?? null,
-                candidateCount: pip?.candidates.length ?? 0,
+                movingPxFrac: detectionResult?.movingPxFrac ?? null,
+                candidateCount,
+                analysisSource,
               });
             }
 
