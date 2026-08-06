@@ -644,6 +644,22 @@ model Clip {
   // falls back to keyword-derived Pexels queries.
   brollCues       Json?
 
+  // Screen-mode layout analysis (vizard-parity.md element-segmentation spike,
+  // landed fc5acb1): the worker's `pip_detect.py`/`classifyScreencast`/
+  // `selectPipRect` pass over this clip's source range, persisted so the
+  // render path stops re-running detection on every render/output and the
+  // studio preview can show the true facecam PiP crop instead of a face-
+  // centered band guess. Parsed through `clipLayoutAnalysisSchema`
+  // (validators) — a versioned envelope, NOT the raw `pip_detect.py`/
+  // `PipCandidate[]` shape (those are analysis-time intermediates; only the
+  // SELECTED, post-gate `pipRect` is durable). NULL means "never analyzed"
+  // (worker hasn't run the pass, or the pass errored/was unavailable) —
+  // distinct from an analyzed-but-non-screencast clip, which stores a
+  // non-null envelope with `pipRect: null`. Derived data, not a user edit:
+  // written outside the editorRevision-guarded save path (see
+  // `setClipLayoutAnalysis`'s doc comment).
+  layoutAnalysis  Json?
+
   // Lightweight 540p faststart proxy covering this clip's range (plus padding
   // for boundary tweaks). The studio and the clip cards play this instead of
   // the multi-hundred-MB source, which is what made the editor take 44s to show

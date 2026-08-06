@@ -18,6 +18,7 @@ import {
   clipAspectRatioFromDb,
   clipAspectRatioOptions,
   clipAspectRatioToDb,
+  clipLayoutAnalysisSchema,
   clipRenderResolutionSchema,
   clipTitleSuggestionsLlmResponseSchema,
   contentPackSchema,
@@ -30,6 +31,7 @@ import {
   isBrandDefaultCaptionPresetId,
   normalizeDeletedRanges,
   normalizeTranscriptSliceForClip,
+  parseClipLayoutAnalysis,
   saveEditorDocumentSchema,
   splitUtterancesIntoSentences,
   studioEditsSchema,
@@ -41,6 +43,7 @@ import type {
   CaptionPreset,
   ClipAspectRatio,
   ClipCategory,
+  ClipLayoutAnalysis,
   ClipPlatformTarget,
   ClipRenderResolution,
   ClipRenderVariant,
@@ -3104,6 +3107,19 @@ export class ClipService {
     revision: number;
     document: EditorDocument;
     original: EditorDocument;
+    /** Screen-mode PiP layout analysis (packet A — db/services foundation),
+     *  parsed null-safely via `parseClipLayoutAnalysis`: `null` for both
+     *  "never analyzed" (column NULL) and "stored value didn't parse /
+     *  unknown version" — this route has no use for telling those apart,
+     *  only the worker-side write path
+     *  (`setClipLayoutAnalysis`) needs the column's own NULL-vs-envelope
+     *  distinction. Rides alongside `document`/`original` as a sibling
+     *  derived field, same as `revision` — NOT folded into `document`
+     *  itself, since it's worker-derived data the client never PUTs back
+     *  through `saveEditorDocumentSchema`. Consumed by the studio preview
+     *  (packet C) to render the true facecam crop instead of guessing from
+     *  a face-centered band. */
+    layoutAnalysis: ClipLayoutAnalysis | null;
   }> {
     const prisma = requirePrisma();
 
@@ -3118,8 +3134,51 @@ export class ClipService {
     const original = clip.editorOriginal
       ? editorDocumentSchema.parse(clip.editorOriginal)
       : document;
+    const layoutAnalysis = parseClipLayoutAnalysis(clip.layoutAnalysis);
 
-    return { revision: clip.editorRevision, document, original };
+    return { revision: clip.editorRevision, document, original, layoutAnalysis };
+  }
+
+  /**
+   * Persists the worker's screen-mode PiP layout analysis
+   * (`pip_detect.py`/`classifyScreencast`/`selectPipRect`, packet B) for a
+   * clip. Deliberately a PLAIN update, not routed through
+   * `editorRevision`/`saveClipEditorDocument`'s guarded-write path:
+   * `layoutAnalysis` is DERIVED data (a measurement the worker took of the
+   * clip's source footage), not a user edit — bumping `editorRevision` here
+   * would falsely look like a document change to `assertEditorRevisionMatches`
+   * (a client mid-edit would see its `baseRevision` go stale from a write it
+   * never made) and would incorrectly invalidate completed renders the way
+   * a real `studioEdits`/boundary change does, even though re-running
+   * analysis changes nothing about what was already rendered.
+   *
+   * No userId/projectId scoping — same "worker writes by clipId alone"
+   * contract as `completeClipPreview` above; the worker already resolved
+   * `clipId` from its own claimed job, not from a user-facing request.
+   *
+   * L2 (adversarial review): unlike `completeClipPreview`, this is a BARE
+   * `update`, not a conditional `updateMany` guarded against a stale/racing
+   * write — that's acceptable here because the envelope carries its own
+   * validity window (`clipStartSec`/`clipEndSec`/`sourceStartSec`/
+   * `sourceDurationSec`) and every reader (`layoutAnalysisMatchesWindow` on
+   * the render side, the studio preview's own window check) re-verifies
+   * that window before trusting the stored rect. A racing write here can at
+   * worst leave a slightly-stale-but-still-window-valid envelope in place
+   * (harmless — the next render or trim invalidates it the same way any
+   * other stale envelope would), never an envelope silently applied to the
+   * WRONG window the way an unguarded `completeClipPreview` write could.
+   */
+  async setClipLayoutAnalysis(
+    clipId: string,
+    analysis: ClipLayoutAnalysis,
+  ): Promise<void> {
+    const prisma = requirePrisma();
+    const parsed = clipLayoutAnalysisSchema.parse(analysis);
+
+    await prisma.clip.update({
+      where: { id: clipId },
+      data: { layoutAnalysis: parsed as unknown as Prisma.InputJsonValue },
+    });
   }
 
   /**
