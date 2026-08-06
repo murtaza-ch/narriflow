@@ -2425,6 +2425,29 @@ export class ClipService {
     };
   }
 
+  /**
+   * How much render work has ALREADY landed for a project — consulted by the
+   * worker when a claimed clip_rendering run finds zero pending variants.
+   * Live incident 2026-08-06: a run rendered every variant, then its
+   * completion bookkeeping threw (expired transaction), the run requeued,
+   * and the retry found nothing pending — `no_renderable_clips` is a listed
+   * PERMANENT failure code, so a fully-successful render surfaced to the
+   * user as "Something went wrong". A retry that finds completed variants
+   * must complete the run instead of failing it; this summary is how it
+   * tells that state apart from a genuinely-empty project.
+   */
+  async getCompletedClipRenderSummaryForProject(projectId: string) {
+    const prisma = requirePrisma();
+    const completed = await prisma.clipRender.findMany({
+      where: { status: "completed", clip: { projectId } },
+      select: { clipId: true },
+    });
+    return {
+      completedVariantCount: completed.length,
+      completedClipCount: new Set(completed.map((render) => render.clipId)).size,
+    };
+  }
+
   async getPendingClipRendersForProject(projectId: string) {
     const prisma = requirePrisma();
     const renders = await prisma.clipRender.findMany({

@@ -4213,6 +4213,36 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
     );
 
     if (pendingRenders.length === 0) {
+      // Zero pending is TWO very different states, and only one is an error.
+      // Live incident 2026-08-06: a run rendered every variant, then its
+      // completion bookkeeping threw (expired transaction) — the catch below
+      // requeued the run, and this retry found nothing pending. Throwing
+      // no_renderable_clips here (a PERMANENT failure code) reported a
+      // fully-successful render as "Something went wrong". If completed
+      // variants exist, the render work already landed — finish the
+      // bookkeeping this attempt instead: complete the run and send the
+      // clips-ready notification the failed attempt never reached.
+      const completed =
+        await clipService.getCompletedClipRenderSummaryForProject(
+          run.projectId,
+        );
+      if (completed.completedVariantCount > 0) {
+        await projectService.completeClipRenderingWorkflowRun(run.id, {
+          failedVariantCount: 0,
+        });
+        log("info", "clip_rendering_resumed_already_complete", {
+          workflowRunId: run.id,
+          projectId: run.projectId,
+          completedVariantCount: completed.completedVariantCount,
+          completedClipCount: completed.completedClipCount,
+        });
+        await notifyAutoRenderCompleted({
+          workflowRunId: run.id,
+          projectId: run.projectId,
+          clipCount: completed.completedClipCount,
+        });
+        return;
+      }
       throw new WorkflowWorkerError(
         "no_renderable_clips",
         "No clip render variants with status=pending found",
