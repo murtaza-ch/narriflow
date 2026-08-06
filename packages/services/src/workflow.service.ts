@@ -112,28 +112,66 @@ export async function publishWorkflowStageUpdated(
 
   const emittedAt = new Date();
 
-  const nextSeq = await prisma.$transaction(async (tx) => {
-    const result = await tx.workflowEvent.aggregate({
-      where: { projectId: event.projectId },
-      _max: { seq: true },
-    });
-    const seq = (result._max.seq ?? 0) + 1;
+  // `seq` is allocated read-then-insert (max+1), which races when two
+  // writers publish for the same project concurrently — live incident
+  // 2026-08-06: the render loop's claim event collided with the preview
+  // loop's events on the (projectId, seq) unique constraint, the P2002
+  // escaped through the claim path, and the freshly-claimed run was left
+  // `running` with no worker attached (stuck until the stale-run reaper).
+  // Two-layer fix: retry the allocation a few times on P2002 (the loser
+  // just recomputes max+1), and if it STILL fails, drop the event
+  // non-fatally — the event stream is a UI side channel over polling that
+  // re-reads full project state; workflow correctness never depends on an
+  // event row landing, and a dropped event must never kill the caller's
+  // claim/completion path (the Redis leg below already degrades the same
+  // way).
+  let nextSeq: number | null = null;
+  for (let attempt = 0; attempt < 5 && nextSeq === null; attempt++) {
+    try {
+      nextSeq = await prisma.$transaction(async (tx) => {
+        const result = await tx.workflowEvent.aggregate({
+          where: { projectId: event.projectId },
+          _max: { seq: true },
+        });
+        const seq = (result._max.seq ?? 0) + 1;
 
-    await tx.workflowEvent.create({
-      data: {
-        projectId: event.projectId,
-        workflowRunId: event.workflowRunId,
-        seq,
-        stage: event.stage,
-        status: event.status,
-        progress: event.progress,
-        errorCode: event.errorCode,
-        emittedAt,
-      },
-    });
+        await tx.workflowEvent.create({
+          data: {
+            projectId: event.projectId,
+            workflowRunId: event.workflowRunId,
+            seq,
+            stage: event.stage,
+            status: event.status,
+            progress: event.progress,
+            errorCode: event.errorCode,
+            emittedAt,
+          },
+        });
 
-    return seq;
-  });
+        return seq;
+      });
+    } catch (error) {
+      const isSeqCollision =
+        (error as { code?: string }).code === "P2002";
+      if (isSeqCollision && attempt < 4) {
+        continue;
+      }
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          message: "workflow_event_persist_failed",
+          projectId: event.projectId,
+          workflowRunId: event.workflowRunId,
+          stage: event.stage,
+          status: event.status,
+          attempts: attempt + 1,
+          errorCode: isSeqCollision ? "seq_conflict_exhausted" : "db_error",
+        }),
+      );
+      return null;
+    }
+  }
+  if (nextSeq === null) return null;
 
   const parsed = workflowStageUpdatedEventSchema.parse({
     ...event,
