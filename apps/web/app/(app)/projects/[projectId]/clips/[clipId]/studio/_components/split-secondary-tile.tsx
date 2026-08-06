@@ -2,6 +2,32 @@
 
 import { useEffect, useRef, useState } from "react";
 
+/**
+ * Screen packet C (PiP persistence — preview true facecam crop): a
+ * normalized source rect (see `pip-crop-math.ts`'s `NormalizedCropRect`)
+ * paired with the tile's own rendered CSS box dimensions, everything this
+ * component needs to switch from the `objectFit`/`objectPosition` static
+ * crop to an EXPLICIT-SIZE crop that reproduces an arbitrary sub-rect zoom —
+ * something `object-fit`/`object-position` alone cannot express. `x`/`y`/`w`/
+ * `h` are already fitted to THIS tile's own aspect ratio by the caller (via
+ * `fitPipCropToTileNormalized`, the client twin of the worker's
+ * `fitPipCropToTile`) — this component only turns them into concrete
+ * width/height/left/top, it does no aspect-fitting of its own.
+ */
+export interface SplitSecondaryTileCropRect {
+  /** Normalized (0..1, fraction of the SOURCE frame's width/height) crop
+   *  rect — NOT re-normalized to the tile box below. */
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** The tile's own rendered box, in CSS px, as measured by the caller's
+   *  ResizeObserver. Zero/negative (not yet measured) is treated as
+   *  degenerate — see the fallback logic below. */
+  tileWidthPx: number;
+  tileHeightPx: number;
+}
+
 interface SplitSecondaryTileProps {
   /** Same `activeVideoUrl` the main preview video uses — proxy when ready,
    *  else the opted-into full source. */
@@ -31,6 +57,15 @@ interface SplitSecondaryTileProps {
    *  "render is the source of truth" stance: the worker face-tracks this
    *  seat per shot segment, the preview approximates with a fixed center. */
   objectPosition: string;
+  /** Screen packet C: when set (and geometrically valid — see the
+   *  degeneracy checks in the render below), switches this tile from the
+   *  `objectFit`/`objectPosition` static crop to the explicit-size true
+   *  facecam crop, ignoring `objectFit`/`objectPosition` entirely. `null`/
+   *  `undefined` (split mode always; screen mode with no persisted
+   *  `pipRect` yet) falls back to exactly today's `objectFit`/
+   *  `objectPosition` behavior — split's fixed left/right seats are
+   *  untouched by this prop. */
+  cropRect?: SplitSecondaryTileCropRect | null;
   /** Mirrors the main video's own `previewPhase === "ready"` gate so both
    *  tiles fade in together instead of the bottom one flashing blank while
    *  its own (separate) network load catches up. */
@@ -50,10 +85,13 @@ interface SplitSecondaryTileProps {
  * this component is the ONE extra secondary element either mode needs, muted
  * and silent so `videoRef` stays the sole audio source and the sole
  * playback-clock driver. Mounted only while split or screen framing is
- * active — zero cost otherwise. `objectFit`/`objectPosition` are the only
- * bits that differ between the two callers (split's left/right seat vs.
- * screen's static center facecam crop) — everything else (drift sync, error
- * handling, cleanup) is shared, unforked logic.
+ * active — zero cost otherwise. `objectFit`/`objectPosition` (static crop)
+ * vs. `cropRect` (explicit-size true facecam crop, screen packet C) are the
+ * only bits that differ between the two callers (split always uses its
+ * fixed left/right seat via `objectFit`/`objectPosition`; screen uses
+ * `cropRect` once a persisted `pipRect` exists, else falls back to the same
+ * static-center `objectFit`/`objectPosition` split uses) — everything else
+ * (drift sync, error handling, cleanup) is shared, unforked logic.
  */
 export function SplitSecondaryTile({
   src,
@@ -61,6 +99,7 @@ export function SplitSecondaryTile({
   targetTimeSec,
   objectFit,
   objectPosition,
+  cropRect,
   visible,
   mainVideoRef,
 }: SplitSecondaryTileProps) {
@@ -165,6 +204,57 @@ export function SplitSecondaryTile({
     video.playbackRate = Math.max(0.1, nudged);
   }, [targetTimeSec, mainVideoRef, hasError]);
 
+  // Screen packet C: explicit-size crop math. `object-fit`/`object-position`
+  // can only express "scale to fill, anchor the overflow" — there is no CSS
+  // way to zoom into an arbitrary sub-rect of the source through them. The
+  // fix is to size+position the raw `<video>` element itself: scale the
+  // WHOLE source up until the crop rect's own w/h (both normalized 0..1
+  // fractions of the source) exactly fill the tile box, then shift it left/
+  // up by the crop rect's x/y (scaled the same way) so the rect's top-left
+  // corner lands at the tile's own top-left corner — everything outside the
+  // rect falls outside the tile's `overflow: hidden` wrapper (set by the
+  // caller) and is simply clipped.
+  //
+  //   videoDisplayW = tileWidthPx / cropRect.w   (scale factor applied to
+  //   videoDisplayH = tileHeightPx / cropRect.h   the video's rendered size)
+  //   left = -cropRect.x * videoDisplayW
+  //   top  = -cropRect.y * videoDisplayH
+  //
+  // Degenerate `cropRect` (not yet measured — zero/negative tile dims — or
+  // a zero/negative crop w/h, which `fitPipCropToTileNormalized` already
+  // guards against by returning `null`, but re-checked here defensively)
+  // falls through to the exact same `objectFit`/`objectPosition` static
+  // crop split mode has always used.
+  const hasValidCropRect =
+    !!cropRect &&
+    cropRect.w > 0 &&
+    cropRect.h > 0 &&
+    cropRect.tileWidthPx > 0 &&
+    cropRect.tileHeightPx > 0;
+  const videoStyle: React.CSSProperties = hasValidCropRect
+    ? (() => {
+        const videoDisplayW = cropRect!.tileWidthPx / cropRect!.w;
+        const videoDisplayH = cropRect!.tileHeightPx / cropRect!.h;
+        return {
+          position: "absolute",
+          left: `${-cropRect!.x * videoDisplayW}px`,
+          top: `${-cropRect!.y * videoDisplayH}px`,
+          width: `${videoDisplayW}px`,
+          height: `${videoDisplayH}px`,
+          maxWidth: "none",
+          display: visible && !hasError ? "block" : "none",
+        };
+      })()
+    : {
+        position: "absolute",
+        inset: 0,
+        width: "100%",
+        height: "100%",
+        objectFit,
+        objectPosition,
+        display: visible && !hasError ? "block" : "none",
+      };
+
   return (
     // Muted (a11y/useMediaCaption doesn't fire on muted media) silent
     // secondary crop of the same source the main video already plays with
@@ -193,15 +283,7 @@ export function SplitSecondaryTile({
         );
         setHasError(true);
       }}
-      style={{
-        position: "absolute",
-        inset: 0,
-        width: "100%",
-        height: "100%",
-        objectFit,
-        objectPosition,
-        display: visible && !hasError ? "block" : "none",
-      }}
+      style={videoStyle}
     />
   );
 }

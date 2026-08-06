@@ -614,19 +614,64 @@ before the foundation steps it depends on.
      outputs), since `fitPipCropToTile`'s result differs by output aspect
      ratio.
 
-     Honest-scope note (M7): the live two-tile PREVIEW (video-preview.tsx's
-     `isScreen` block) still renders its bottom tile as a static 50%/50%
-     center-cover crop — it has no way to know a `pipRect` exists, since PiP
-     detection is a RENDER-time-only step (it needs `pip_detect.py` sampling
-     real frames, not something the browser preview can run). This gap
-     existed at the original v1 landing too, but now diverges FURTHER: a
-     screen-mode clip whose render actually lands a PiP crop shows a visibly
-     different bottom tile in the exported video than what the editor
-     previewed. Accepted divergence for this v1 (same policy as split's own
-     preview-vs-render gaps); candidate future fix, not built:
-     persist the selected `pipRect` on the render row (or run a cheap
-     preview-resolution PiP check) and expose it via the studio API so the
-     preview can draw the same crop the render will use.
+     PiP persistence (M7 follow-up — NOW BUILT, previously an honest-scope
+     gap): the M7 note above originally accepted the live two-tile PREVIEW
+     (video-preview.tsx's `isScreen` block) showing a static 50%/50%
+     center-cover bottom tile forever, since PiP detection was a RENDER-time-
+     only step the browser preview couldn't run. That's closed:
+     - `Clip.layoutAnalysis` (new nullable JSONB column, additive migration)
+       persists a versioned envelope (`clipLayoutAnalysisSchema`, validators)
+       after the FIRST render of a screen-mode clip: the selected
+       `pipRect` (`selectPipRect`'s pre-gate output — kept even when a later
+       gate rejects it, see below), `movingPxFrac`/`insufficientSamples`,
+       the snapped detection window (`sourceStartSec`/`sourceDurationSec`)
+       AND the raw `Clip.startSec`/`endSec` window at write time
+       (`clipStartSec`/`clipEndSec` — the preview's own boundary check has
+       no way to recompute the render path's snapping), and `pipUsable`.
+     - `pipUsable` is the field that actually answers "was this rect
+       trustworthy," not `pipRect`'s nullness — `render-clips.ts`'s
+       `resolvePipAnalysis` (M2 follow-up) only persists a rect the SAME
+       render's own `decidePipUsage` clip-level gate chain (everything
+       through `face_not_in_rect`) confirmed. A gate-rejected rect is still
+       written with `pipUsable: false` and the raw `pipRect` intact
+       (deliberately not nulled: `faceConfirmed` is recomputed fresh every
+       render, so a one-off miss must not permanently poison future
+       renders' ability to retry the same measured rect).
+     - The render path reads-before-detecting: a persisted envelope whose
+       window still matches (`layoutAnalysisMatchesWindow`) skips
+       `pip_detect.py` entirely and reuses the stored measurement, still
+       running `decidePipUsage` fresh (face confirmation is never cached).
+     - The studio preview (video-preview.tsx's `screenBottomCropRect`) shows
+       the persisted crop ONLY when `pipUsable === true` AND the envelope's
+       `clipStartSec`/`clipEndSec` still match the studio's current
+       `clipWindow` (a trim since the analysis was written invalidates it,
+       same contract as the render side) AND the client-side twin of the
+       `pip_too_small` gate (`pipCropTooSmallNormalized`,
+       apps/web/.../pip-crop-math.ts, comparing against the RENDER OUTPUT
+       tile width, not the preview's own CSS pixel width) doesn't reject it.
+       Any other case falls back to the pre-existing static center-cover
+       crop.
+
+     Remaining accepted divergence (narrower than the original M7 gap, not
+     eliminated): (1) IN-SESSION STALENESS — a render that completes WHILE a
+     studio session is already open re-persists `layoutAnalysis` in the DB,
+     but the open session's context value was server-seeded once at initial
+     page load and doesn't refetch on its own; the preview keeps showing
+     whatever was true at load until a reload or a future explicit refetch.
+     (2) PER-RENDER FACE-GATE outcome — `faceConfirmed` is recomputed from
+     each render's own face samples, never cached, so a persisted
+     `pipUsable: true` is a snapshot of one past render's outcome; a
+     genuinely different (rare) face-detection result on a LATER render can
+     still diverge from what the preview shows without a new analysis pass
+     overwriting the envelope. Both are documented in full on
+     `StudioContextValue.layoutAnalysis`'s doc comment (studio-shell.tsx).
+
+     Deploy-order note (M1, adversarial review): the `layoutAnalysis`
+     migration must be APPLIED BEFORE deploying code that reads it — the
+     column is selected on every unscoped `Clip` read (not just the
+     screen-mode PiP path), so code-before-migration breaks ALL clip reads,
+     total blast radius, not feature-local. See the migration file's own
+     header comment.
 - Music/SFX library — **design converged 2026-08-05** from competitor
   research (OpusClip/Vizard/Submagic/Captions.app/Klap/Veed/Descript).
   Market pattern to match: curated self-hosted library filterable by mood

@@ -147,6 +147,12 @@ export default async function StudioPage({
       sourcePurged={!snapshot.project.sourceStorageKey}
       fetchPreviewStatus={fetchPreviewStatus}
       brandLogo={brandLogo}
+      // PiP persistence packet C: the worker's screen-mode facecam layout
+      // analysis (packet A/B), rides alongside `editorDoc.document`/
+      // `.original`/`.revision` as a sibling from `getClipEditorDocument`
+      // — see `StudioContextValue.layoutAnalysis`'s doc comment for why
+      // this is read-only and never folds into the editor document.
+      layoutAnalysis={editorDoc.layoutAnalysis}
     />
   );
 }

@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import {
   capDuckingWindows,
+  clipAspectRatioOptions,
   computeSpeechWindows,
   duckingGainMultiplierAt,
   editedToSource,
@@ -30,7 +31,18 @@ import type { AspectRatio, LayoutMode } from "./studio-shell";
 import { InteractiveCaptionOverlay } from "./interactive-caption-overlay";
 import { InteractiveTextLayer } from "./interactive-text-layer";
 import { SfxPreviewTrack } from "./sfx-preview-track";
-import { SplitSecondaryTile } from "./split-secondary-tile";
+import { SplitSecondaryTile, type SplitSecondaryTileCropRect } from "./split-secondary-tile";
+import { fitPipCropToTileNormalized, pipCropTooSmallNormalized } from "./pip-crop-math";
+
+/** `screenTileGeometry`'s `tileWidth` (apps/worker/src/tasks/screen-layout.ts)
+ *  is just the target aspect ratio's own output WIDTH — mirrored here from
+ *  `clipAspectRatioOptions` (validators) rather than re-deriving it, so H1's
+ *  `pipCropTooSmallNormalized` check compares against the exact same number
+ *  the render pipeline's `pip_too_small` gate does (e.g. 1080 for 9:16, 1920
+ *  for 16:9), not the preview container's own CSS pixel width. */
+const OUTPUT_TILE_WIDTH_PX: Record<AspectRatio, number> = Object.fromEntries(
+  clipAspectRatioOptions.map((option) => [option.value, option.width]),
+) as Record<AspectRatio, number>;
 
 /** After this long with no metadata yet, hint that the source is just large. */
 const SLOW_LOAD_HINT_MS = 10_000;
@@ -171,6 +183,8 @@ export function VideoPreview() {
     duration,
     brandLogo,
     utterances,
+    layoutAnalysis,
+    clipWindow,
   } = useStudio();
 
   // File-local position of edited time 0 — equals `playerClipStartSec`
@@ -202,6 +216,22 @@ export function VideoPreview() {
   const [retryNonce, setRetryNonce] = useState(0);
   const [currentTime, setCurrentTime] = useState(() => playbackClock.getSnapshot());
   const [previewWidth, setPreviewWidth] = useState(0);
+  // Screen packet C (PiP persistence — preview true facecam crop): the
+  // video container box's own rendered HEIGHT, tracked alongside
+  // `previewWidth` by the same ResizeObserver below. Needed (previewWidth
+  // alone wasn't) to derive the screen framing bottom tile's own CSS box
+  // (half that height, full that width) for `fitPipCropToTileNormalized`'s
+  // `tileRatio` and `SplitSecondaryTileCropRect`'s `tileHeightPx`.
+  const [previewHeight, setPreviewHeight] = useState(0);
+  // Screen packet C: the SOURCE video's own pixel dimensions, captured once
+  // from `videoRef`'s `loadedmetadata` event (see the load effect below) —
+  // `fitPipCropToTileNormalized`'s `probe` argument, matching the worker's
+  // `detectPipPath` probe (`ffprobe`'s own reported source dimensions).
+  // Null until the main video has loaded metadata at least once; a source
+  // switch (proxy <-> full source) reloads it from the SAME physical
+  // source file, so the value doesn't need to be invalidated on that
+  // transition, only ever (re)set forward.
+  const [sourceDims, setSourceDims] = useState<{ width: number; height: number } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const videoContainerRef = useRef<HTMLDivElement>(null);
   const musicAudioRef = useRef<HTMLAudioElement>(null);
@@ -268,11 +298,16 @@ export function VideoPreview() {
   // split's, but with different framing per tile — TOP is the full source
   // frame letterboxed uncropped (object-fit: contain, black backdrop, same
   // as a plain "fit" letterbox) rather than split's cropped-to-fill top
-  // tile, and BOTTOM is a face-tracked crop of the speaker's facecam that
-  // the live preview approximates with a static center crop (no face
-  // detection client-side, same "render is the source of truth" stance as
-  // split's fixed left/right seats) — see `SplitSecondaryTile`'s now-
-  // generalized `objectFit`/`objectPosition` props further down.
+  // tile, and BOTTOM is the facecam picture-in-picture crop. PiP persistence
+  // packet C: once the worker's analysis pass (packet B) has run and
+  // persisted a `pipRect` for this clip, the bottom tile shows that TRUE
+  // facecam crop (see `screenBottomCropRect` below) — matching the render's
+  // own framing exactly, not approximating it. Only falls back to a static
+  // center crop (no face detection client-side) when no analysis has landed
+  // yet or none qualified, same "render is the source of truth" stance split
+  // keeps for its fixed left/right seats — see `SplitSecondaryTile`'s
+  // `objectFit`/`objectPosition` (fallback) vs. `cropRect` (true crop) props
+  // further down.
   const isSplit = effectiveFramingMode === "split";
   const isScreen = effectiveFramingMode === "screen";
   const videoObjectFit: "contain" | "cover" = backgroundActive
@@ -327,6 +362,13 @@ export function VideoPreview() {
       setVideoLoaded(true);
       setLoadError(false);
       setIsStalled(false);
+      // Screen packet C: source pixel dims for fitPipCropToTileNormalized's
+      // `probe` — see `sourceDims`'s doc comment above. Proxy and full
+      // source are cuts of the same footage, so either file's reported
+      // dimensions are equally valid here.
+      if (video.videoWidth > 0 && video.videoHeight > 0) {
+        setSourceDims({ width: video.videoWidth, height: video.videoHeight });
+      }
     };
     const handleError = () => {
       setLoadError(true);
@@ -599,7 +641,10 @@ export function VideoPreview() {
 
     const observer = new ResizeObserver((entries) => {
       const entry = entries[0];
-      if (entry) setPreviewWidth(entry.contentRect.width);
+      if (entry) {
+        setPreviewWidth(entry.contentRect.width);
+        setPreviewHeight(entry.contentRect.height);
+      }
     });
     observer.observe(el);
     return () => observer.disconnect();
@@ -630,6 +675,82 @@ export function VideoPreview() {
   const secondaryTileTargetTimeSec = isSplit || isScreen
     ? editedToSource(editedTimeMap, currentTime) - activeOffsetSec
     : 0;
+
+  // Screen packet C (PiP persistence — preview true facecam crop): once the
+  // worker's analysis pass has run AND that render's own `decidePipUsage`
+  // gate chain actually confirmed the rect (`layoutAnalysis.pipUsable ===
+  // true` — C1, adversarial review), the screen bottom tile shows the TRUE
+  // facecam crop instead of guessing a face-centered band. A non-null
+  // `pipRect` alone is NOT sufficient: it's the PRE-GATE `selectPipRect`
+  // output and can be a measured false positive the render itself rejected
+  // (`face_not_in_rect`, `not_screencast_like`, etc.) — showing it
+  // unconditionally would confidently render exactly the false positive the
+  // render pipeline was built to catch. `null` (no analysis yet, analyzed-
+  // but-not-usable, the envelope's window no longer matches this clip's
+  // current boundaries — H2 below, not screen mode, the crop would be too
+  // narrow to be worth it — H1 below, or the source/tile dimensions aren't
+  // measured yet) means "nothing to show" — `SplitSecondaryTile` falls back
+  // to exactly today's static `"50% 50%"` center-cover crop for that case,
+  // so every one of those states degrades safely rather than rendering a
+  // broken/blank tile.
+  //
+  // Render-is-truth note (screen packet C): previously ANY screen clip's
+  // bottom tile was an approximation (static center, no face tracking
+  // client-side) — the render pipeline was always the source of truth for
+  // exact facecam framing. With a persisted, `pipUsable` PiP crop, the
+  // preview and the render now agree (both run `fitPipCropToTile`/
+  // `fitPipCropToTileNormalized` against the same rect and the same output
+  // tile ratio) — divergence from here on is narrower and is spelled out in
+  // full on `StudioContextValue.layoutAnalysis`'s own doc comment
+  // (studio-shell.tsx): in-session staleness (a render that runs WHILE this
+  // studio session is open updates the DB but not this already-fetched
+  // context value until a refetch), and a genuinely PER-RENDER face-gate
+  // outcome that can differ from what was true when this envelope was
+  // written (rare — `faceConfirmed` is recomputed fresh every render, not
+  // cached, so a persisted `pipUsable: true` is a snapshot of ONE past
+  // render's outcome, not a permanent guarantee).
+  const tileWidthPx = previewWidth;
+  const tileHeightPx = previewHeight / 2;
+  const screenBottomCropRect: SplitSecondaryTileCropRect | null = useMemo(() => {
+    if (!isScreen) return null;
+    // C1 (adversarial review): gate on `pipUsable`, never on `pipRect`'s
+    // nullness alone — see this memo's own doc comment above.
+    if (!layoutAnalysis || layoutAnalysis.pipUsable !== true) return null;
+    const pipRect = layoutAnalysis.pipRect;
+    if (!pipRect) return null;
+    // H2 (adversarial review): the envelope's raw `clipStartSec`/`clipEndSec`
+    // must still match this clip's CURRENT boundary window — same "the
+    // window mismatch IS the invalidation" contract render-clips.ts's
+    // `layoutAnalysisMatchesWindow` gives the render path, just checked
+    // against the studio's own `clipWindow` (the raw window this session
+    // knows about) since the client has no way to recompute
+    // `resolveRenderTimingForClip`'s snapping. A trim since this analysis
+    // was written must never show a crop measured against footage that's no
+    // longer this clip's boundaries.
+    const WINDOW_MATCH_EPSILON_SEC = 0.05;
+    if (
+      Math.abs(layoutAnalysis.clipStartSec - clipWindow.startSec) > WINDOW_MATCH_EPSILON_SEC ||
+      Math.abs(layoutAnalysis.clipEndSec - clipWindow.endSec) > WINDOW_MATCH_EPSILON_SEC
+    ) {
+      return null;
+    }
+    if (!sourceDims) return null;
+    if (tileWidthPx <= 0 || tileHeightPx <= 0) return null;
+    const tileRatio = tileWidthPx / tileHeightPx;
+    const fitted = fitPipCropToTileNormalized(pipRect, tileRatio, sourceDims);
+    if (!fitted) return null;
+    // H1 (adversarial review): client-side analogue of `decidePipUsage`'s
+    // per-output `pip_too_small` gate — compares the fitted crop's SOURCE-
+    // PIXEL width (not the tile's on-screen CSS width, which has no
+    // relationship to the render's actual output resolution) against the
+    // RENDER OUTPUT tile's own width for this clip's target aspect ratio.
+    if (
+      pipCropTooSmallNormalized(fitted.w, sourceDims.width, OUTPUT_TILE_WIDTH_PX[aspectRatio])
+    ) {
+      return null;
+    }
+    return { ...fitted, tileWidthPx, tileHeightPx };
+  }, [isScreen, layoutAnalysis, sourceDims, tileWidthPx, tileHeightPx, clipWindow, aspectRatio]);
 
   const previewPhase: "generating" | "unavailable" | "loading" | "error" | "ready" =
     !previewVideoUrl && !useOriginalSourceFallback
@@ -979,6 +1100,11 @@ export function VideoPreview() {
                 targetTimeSec={secondaryTileTargetTimeSec}
                 objectFit="cover"
                 objectPosition={isSplit ? `${SPLIT_BOTTOM_TILE_CX * 100}% 50%` : "50% 50%"}
+                // Screen packet C: `cropRect` is only ever computed for
+                // screen mode (see `screenBottomCropRect`'s own `isScreen`
+                // guard) — split always stays on the `objectFit`/
+                // `objectPosition` path above via this always-null value.
+                cropRect={isScreen ? screenBottomCropRect : null}
                 visible={previewPhase === "ready"}
                 mainVideoRef={videoRef}
               />

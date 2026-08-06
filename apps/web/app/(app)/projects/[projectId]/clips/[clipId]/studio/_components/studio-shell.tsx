@@ -29,6 +29,7 @@ import {
   type EditedTimeMap,
   type SourceRange,
   type ClipWindow,
+  type ClipLayoutAnalysis,
 } from "@narriflow/validators";
 import { TopBar } from "./top-bar";
 import { TranscriptPanel } from "./transcript-panel";
@@ -343,6 +344,41 @@ interface StudioContextValue extends StudioState {
   /** Server-seeded brand logo (URL + snapshot defaults), or null when the
    *  project has none. See `StudioBrandLogo`'s doc comment. */
   brandLogo: StudioBrandLogo | null;
+  /** PiP persistence packet C: the worker's screen-mode facecam layout
+   *  analysis (packet A/B — `getClipEditorDocument`'s sibling
+   *  `layoutAnalysis` field), or `null` when the clip hasn't been analyzed
+   *  yet / analysis found no qualifying rect / the stored envelope failed
+   *  to parse (see `parseClipLayoutAnalysis`'s doc comment — all three
+   *  collapse to `null` here, this context has no use for telling them
+   *  apart). Server-seeded ONCE from `studio/page.tsx`'s initial fetch,
+   *  same as `brandLogo` — deliberately NOT plumbed through `doc`/
+   *  `studioEdits`: it's worker-derived, read-only measurement data, not a
+   *  user edit, so it must never enter the undo/redo history or the
+   *  autosave PUT body. Consumed today only by video-preview.tsx's screen
+   *  framing bottom tile (the true facecam crop) — nothing else reads it.
+   *  That consumer gates on `layoutAnalysis.pipUsable === true` (never on
+   *  `pipRect`'s nullness alone — see `ClipLayoutAnalysis.pipUsable`'s own
+   *  doc comment) and additionally checks `layoutAnalysis.clipStartSec`/
+   *  `clipEndSec` against this context's own `clipWindow` before trusting
+   *  the rect — see that check's own comment in video-preview.tsx (H2,
+   *  adversarial review) for why a stale envelope from before a trim must
+   *  never be shown.
+   *
+   *  Residual staleness this "server-seeded once" contract does NOT close
+   *  (H2c, adversarial review): if a render for THIS clip completes and
+   *  re-persists `layoutAnalysis` WHILE this studio session is already
+   *  open, this context value keeps showing whatever was true at initial
+   *  page load until the session refetches (a reload, or a future explicit
+   *  poll — no such poll exists today). A newly-landed `pipUsable: true`
+   *  won't upgrade the preview from its static center-cover guess without
+   *  one; a newly-landed `pipUsable: false` (e.g. this same clip re-
+   *  rendered after a trim, and the fresh analysis's face-gate rejected the
+   *  new footage) similarly won't downgrade an already-shown crop until
+   *  then either. Same class of gap the render-vs-preview divergence note
+   *  above already accepts for a single render's face-gate outcome, just on
+   *  a longer timescale (across renders within one open session, not within
+   *  one render). */
+  layoutAnalysis: ClipLayoutAnalysis | null;
   utterances: TranscriptUtterance[];
   updateUtteranceText: (index: number, newText: string) => void;
   /** Word-level Correct (vizard-parity.md Phase B step 10) — changes only
@@ -500,6 +536,10 @@ interface StudioShellProps {
   /** Server-seeded brand logo (see studio/page.tsx and `StudioBrandLogo`'s
    *  doc comment), or null/omitted when the project has none. */
   brandLogo?: StudioBrandLogo | null;
+  /** Server-seeded screen-mode PiP layout analysis (see
+   *  `StudioContextValue.layoutAnalysis`'s doc comment), or null/omitted
+   *  when the clip has none yet. */
+  layoutAnalysis?: ClipLayoutAnalysis | null;
 }
 
 export function StudioShell({
@@ -519,6 +559,7 @@ export function StudioShell({
   sourcePurged = false,
   fetchPreviewStatus,
   brandLogo = null,
+  layoutAnalysis = null,
 }: StudioShellProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const playbackClock = useMemo(() => createPlaybackClock(), []);
@@ -2055,7 +2096,7 @@ export function StudioShell({
     previewVideoUrl, previewStartSec, waveformPeaksUrl, useOriginalSourceFallback, setUseOriginalSourceFallback,
     activeVideoUrl, activeOffsetSec, activeVideoKind, playerClipStartSec, playerClipEndSec,
     editedTimeMap, deletedRanges: doc.deletedRanges, clipWindow,
-    brandLogo, utterances, updateUtteranceText, updateWord, deleteSourceRange, applyRemoveSilence,
+    brandLogo, layoutAnalysis, utterances, updateUtteranceText, updateWord, deleteSourceRange, applyRemoveSilence,
     setIsPlaying, setActiveTool, setShowTimeline, setAspectRatio,
     setLayoutMode, setShowShortcuts, setTimelineZoom,
     setSelectedSegmentId, setCaptionPreset, selectCaption, deselectCaption,
