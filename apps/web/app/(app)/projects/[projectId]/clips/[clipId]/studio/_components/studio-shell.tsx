@@ -242,6 +242,12 @@ interface StudioState {
    *  has permanently stopped (a 409/422 that a reload is needed to clear),
    *  as opposed to 'error''s transient/retryable failure. */
   saveState: "idle" | "saving" | "saved" | "error" | "blocked";
+  /** True while the local document differs from what the server last
+   *  confirmed. Live-QA finding 2026-08-06: the top-bar indicator used to
+   *  show "Saved" whenever saveState was 'idle' — including the window
+   *  after a failed save timed back to idle with the retry still pending —
+   *  so it must consult this to say "Unsaved changes" instead. */
+  isDocDirty: boolean;
   exportState: "idle" | "exporting" | "queued";
   resetState: "idle" | "resetting";
   canUndo: boolean;
@@ -2089,7 +2095,7 @@ export function StudioShell({
     isPlaying, duration, activeTool, showTimeline, aspectRatio,
     layoutMode, showShortcuts, timelineZoom, selectedSegmentId,
     captionPreset, captionSelected, selectedTextLayerId, transcriptOnly, segments, studioEdits, brollUrl,
-    saveState, exportState, resetState, canUndo, canRedo, canReset,
+    saveState, isDocDirty, exportState, resetState, canUndo, canRedo, canReset,
     transcript: derivedTranscript, clipInfo, videoRef, boundaryReconcileOwnsSeekRef, playbackClock,
     sourceVideoUrl, sourcePreviewId,
     clipStartSec: effectiveClipStartSec, clipEndSec: effectiveClipEndSec, sourcePurged,

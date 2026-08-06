@@ -1217,6 +1217,23 @@ async function deleteRenderAssets(storageKeys: string[]) {
   await Promise.allSettled(uniqueKeys.map((key) => deleteObject(key)));
 }
 
+/**
+ * Transaction options for the user-facing editor write paths (autosave,
+ * trim, reset, B-roll/caption single-field updates). These transactions are
+ * only 2-3 statements, but each statement carries the clip's large JSON
+ * columns (transcriptSlice/studioEdits/captionPreset) across whatever
+ * latency separates the API from Postgres — live-QA'd 2026-08-06: a save
+ * from a high-RTT connection took 10.3s of statement time and expired
+ * Prisma's default 5s interactive-transaction timeout, 500ing the autosave
+ * (the client's retry landed on a warm connection). The guarded
+ * `editorRevision` updateMany keeps a longer window safe: a concurrent save
+ * still fails cleanly by revision, never by torn write.
+ */
+const EDITOR_WRITE_TRANSACTION_OPTIONS = {
+  timeout: 30_000,
+  maxWait: 10_000,
+} as const;
+
 export class ClipService {
   async persistDetectedClips(
     projectId: string,
@@ -1424,7 +1441,7 @@ export class ClipService {
           renders: true,
         },
       });
-    });
+    }, EDITOR_WRITE_TRANSACTION_OPTIONS);
 
     await deleteRenderAssets(staleRenderKeys);
 
@@ -3007,7 +3024,7 @@ export class ClipService {
         },
         include: { renders: true },
       });
-    });
+    }, EDITOR_WRITE_TRANSACTION_OPTIONS);
 
     console.warn(
       JSON.stringify({
@@ -3078,7 +3095,7 @@ export class ClipService {
         },
         include: { renders: true },
       });
-    });
+    }, EDITOR_WRITE_TRANSACTION_OPTIONS);
 
     console.warn(
       JSON.stringify({
@@ -3342,7 +3359,7 @@ export class ClipService {
         where: { id: clipId },
         include: { renders: true },
       });
-    });
+    }, EDITOR_WRITE_TRANSACTION_OPTIONS);
 
     if (!updated) {
       const latest = await prisma.clip.findUnique({
@@ -3521,7 +3538,7 @@ export class ClipService {
         where: { id: clipId },
         include: { renders: true },
       });
-    });
+    }, EDITOR_WRITE_TRANSACTION_OPTIONS);
 
     if (!updated) {
       const latest = await prisma.clip.findUnique({

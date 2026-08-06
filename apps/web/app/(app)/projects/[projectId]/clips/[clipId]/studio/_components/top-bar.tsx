@@ -54,8 +54,10 @@ function IconBtn({
  */
 function AutosaveIndicator({
   saveState,
+  isDocDirty,
 }: {
   saveState: "idle" | "saving" | "saved" | "error" | "blocked";
+  isDocDirty: boolean;
 }) {
   if (saveState === "saving") {
     return (
@@ -70,6 +72,12 @@ function AutosaveIndicator({
 
   const isBlocked = saveState === "blocked";
   const isError = saveState === "error" || isBlocked;
+  // Live-QA finding 2026-08-06: 'idle' alone is NOT proof the document is
+  // saved — a failed save times back to idle after 4s with the retry still
+  // pending, and the debounce window before the first PUT is also 'idle'.
+  // Claiming "Saved" while dirty is a silent-data-loss message; consult the
+  // dirty flag and say so honestly instead.
+  const idleButDirty = !isError && isDocDirty;
   return (
     <HStack gap="6px" aria-live="polite">
       <Box
@@ -79,13 +87,21 @@ function AutosaveIndicator({
         bg={
           isError
             ? "danger.solid"
-            : saveState === "saved"
-              ? "success.solid"
-              : "studio.fgSubtle"
+            : idleButDirty
+              ? "studio.fgSubtle"
+              : saveState === "saved"
+                ? "success.solid"
+                : "studio.fgSubtle"
         }
       />
       <Text fontSize="12px" color={isError ? "danger.fg" : "studio.fgMuted"}>
-        {isBlocked ? "Save paused — reload" : isError ? "Save failed" : "Saved"}
+        {isBlocked
+          ? "Save paused — reload"
+          : isError
+            ? "Save failed"
+            : idleButDirty
+              ? "Unsaved changes…"
+              : "Saved"}
       </Text>
     </HStack>
   );
@@ -106,6 +122,7 @@ export function TopBar() {
     resetState,
     canReset,
     saveState,
+    isDocDirty,
     exportState,
     aspectRatio,
   } = useStudio();
@@ -173,7 +190,7 @@ export function TopBar() {
 
       {/* Right: autosave + history + shortcuts + export */}
       <HStack gap="1" flexShrink={0}>
-        <AutosaveIndicator saveState={saveState} />
+        <AutosaveIndicator saveState={saveState} isDocDirty={isDocDirty} />
 
         <Box w="1px" h="20px" bg="studio.border" mx="1" />
 
