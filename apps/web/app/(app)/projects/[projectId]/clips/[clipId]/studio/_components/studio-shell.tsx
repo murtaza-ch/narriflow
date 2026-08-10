@@ -32,6 +32,7 @@ import {
   type ClipWindow,
   type ClipLayoutAnalysis,
   type ClipAutoLayoutAnalysis,
+  type BrollCue,
 } from "@narriflow/validators";
 import { TopBar } from "./top-bar";
 import { TranscriptPanel } from "./transcript-panel";
@@ -61,6 +62,14 @@ import {
   type SaveOutcome,
   type SaveQueueState,
 } from "./save-queue";
+import {
+  addSubtitleLineAfter as insertSubtitleLineAfter,
+  deleteSubtitleLine as removeSubtitleLine,
+  mergeSubtitleLineWithNext as mergeAdjacentSubtitleLines,
+  labelForTimelineSegment,
+  replaceSubtitleLineText,
+  replaceSubtitleParagraphText,
+} from "./subtitle-lines";
 
 /**
  * Below this width the transcript panel has already hidden (it collapses
@@ -95,6 +104,7 @@ const AUTOSAVE_DEBOUNCE_MS = 1500;
  *  is really the first INSTANT of the next cut, not a frame that's safe to
  *  park on). See `lastKeptPlayerTimeSec` below. */
 const LAST_KEPT_FRAME_EPSILON_SEC = 0.001;
+const TIMELINE_SNAP_THRESHOLD_SEC = 0.25;
 
 /** Shared guard for `deleteSelectedSegment` (timeline), `deleteSourceRange`
  *  (transcript selection, Phase B step 11), and `applyRemoveSilence` (Phase
@@ -112,6 +122,29 @@ function computeDeleteCandidate(
   const additions = Array.isArray(ranges) ? ranges : [ranges];
   const candidateRanges = normalizeDeletedRanges([...currentDeletedRanges, ...additions], window);
   return { candidateRanges, blocked: buildStudioCutPlan(candidateRanges, window).isEmpty };
+}
+
+function nearestTimedWordBoundary(
+  utterances: TranscriptUtterance[],
+  sourceSec: number,
+  minSec: number,
+  maxSec: number,
+): number {
+  let nearest = sourceSec;
+  let nearestDistance = Number.POSITIVE_INFINITY;
+  for (const utterance of utterances) {
+    for (const word of utterance.words) {
+      for (const boundary of [word.startSec, word.endSec]) {
+        if (boundary <= minSec || boundary >= maxSec) continue;
+        const distance = Math.abs(boundary - sourceSec);
+        if (distance < nearestDistance) {
+          nearest = boundary;
+          nearestDistance = distance;
+        }
+      }
+    }
+  }
+  return nearestDistance <= TIMELINE_SNAP_THRESHOLD_SEC ? nearest : sourceSec;
 }
 
 /** Finding 2 (Phase B closing review): `performSave` must only clear
@@ -221,18 +254,33 @@ export interface ClipInfo {
   aspectRatio: AspectRatio;
   viralityScore: number;
   category: string;
+  /** Detection-time visual cues, clip-relative. The studio uses the same
+   *  cues as the worker so its automatic-cutaway plan never falls back to
+   *  one repeated title query when richer timing data already exists. */
+  brollCues: BrollCue[];
+}
+
+export interface StudioBrollPreviewAsset {
+  url: string;
+  durationSec: number;
+  posterUrl: string | null;
+  authorName: string | null;
+  pageUrl: string | null;
 }
 
 interface StudioState {
   isPlaying: boolean;
+  playbackRate: number;
   duration: number;
   activeTool: ToolId | null;
   showTimeline: boolean;
+  timelineSnapping: boolean;
   aspectRatio: AspectRatio;
   layoutMode: LayoutMode;
   showShortcuts: boolean;
   timelineZoom: number;
   selectedSegmentId: string | null;
+  transcriptSelectionRange: SourceRange | null;
   captionPreset: CaptionPreset;
   captionSelected: boolean;
   /** Vizard-parity Phase C step 1: the one text overlay currently selected on
@@ -246,6 +294,10 @@ interface StudioState {
   /** Current B-roll cutaway URL — lives in the editor document (undoable,
    *  autosaved), not a locally-PATCHed side channel. */
   brollUrl: string | null;
+  /** Session metadata for the applied B-roll URL. The URL itself remains in
+   *  the editor document; this lightweight companion lets preview/timeline
+   *  match the renderer's duration-bounded placement immediately. */
+  brollPreviewAsset: StudioBrollPreviewAsset | null;
   /** 'blocked' is a distinct terminal state from 'error': it means autosave
    *  has permanently stopped (a 409/422 that a reload is needed to clear),
    *  as opposed to 'error''s transient/retryable failure. */
@@ -396,6 +448,10 @@ interface StudioContextValue extends StudioState {
   autoLayoutAnalysis: ClipAutoLayoutAnalysis | null;
   utterances: TranscriptUtterance[];
   updateUtteranceText: (index: number, newText: string) => void;
+  updateParagraphText: (indices: number[], newText: string) => void;
+  addSubtitleLineAfter: (index: number) => void;
+  deleteSubtitleLine: (index: number) => void;
+  mergeSubtitleLineWithNext: (index: number) => boolean;
   /** Word-level Correct (vizard-parity.md Phase B step 10) — changes only
    *  this one word's text, no proportional retiming. `utteranceIndex`/
    *  `wordIndex` are indices into the displayed `utterances` array, which
@@ -414,13 +470,16 @@ interface StudioContextValue extends StudioState {
    *  no-op. */
   applyRemoveSilence: (detected: SourceRange[]) => boolean;
   setIsPlaying: (v: boolean) => void;
+  setPlaybackRate: (v: number) => void;
   setActiveTool: (t: ToolId | null) => void;
   setShowTimeline: (v: boolean) => void;
+  setTimelineSnapping: (v: boolean) => void;
   setAspectRatio: (r: AspectRatio) => void;
   setLayoutMode: (m: LayoutMode) => void;
   setShowShortcuts: (v: boolean) => void;
   setTimelineZoom: React.Dispatch<React.SetStateAction<number>>;
   setSelectedSegmentId: (id: string | null) => void;
+  setTranscriptSelectionRange: (range: SourceRange | null) => void;
   setCaptionPreset: (
     p: CaptionPreset | ((prev: CaptionPreset) => CaptionPreset),
     coalesceKey?: string,
@@ -439,6 +498,7 @@ interface StudioContextValue extends StudioState {
     coalesceKey?: string,
   ) => void;
   setBrollUrl: (url: string | null, coalesceKey?: string) => void;
+  setBrollPreviewAsset: (asset: StudioBrollPreviewAsset | null) => void;
   /** Breaks the document's coalesce chain without recording an undo step —
    *  wire to `onValueChangeEnd` of every slider that passes a coalesceKey
    *  (and pointer-up of the caption-resize drag) so the NEXT gesture never
@@ -585,6 +645,8 @@ export function StudioShell({
   // — a missing proxy must never silently fall back to the ~44s full-source
   // load that motivated this whole feature.
   const [useOriginalSourceFallback, setUseOriginalSourceFallback] = useState(false);
+  const [brollPreviewAsset, setBrollPreviewAsset] =
+    useState<StudioBrollPreviewAsset | null>(null);
 
   // Seeded from the server-rendered snapshot; swapped in live by the poll
   // effect below once the worker's proxy actually lands. Kept as state
@@ -842,14 +904,18 @@ export function StudioShell({
   );
 
   const [isPlaying, setIsPlaying] = useState(false);
+  const [playbackRate, setPlaybackRateState] = useState(1);
   const [activeTool, setActiveTool] = useState<ToolId | null>(null);
   const [showTimeline, setShowTimeline] = useState(true);
+  const [timelineSnapping, setTimelineSnapping] = useState(true);
   const router = useRouter();
   const [aspectRatio, setAspectRatio] = useState<AspectRatio>(clipInfo.aspectRatio);
   const [layoutMode, setLayoutMode] = useState<LayoutMode>("fill");
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [timelineZoom, setTimelineZoom] = useState(1);
   const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(null);
+  const [transcriptSelectionRange, setTranscriptSelectionRange] =
+    useState<SourceRange | null>(null);
   const [captionSelected, setCaptionSelected] = useState(false);
   const [selectedTextLayerId, setSelectedTextLayerId] = useState<string | null>(null);
   const [transcriptOnly, setTranscriptOnly] = useState(false);
@@ -951,33 +1017,88 @@ export function StudioShell({
   const updateUtteranceText = useCallback((utteranceIndex: number, newText: string) => {
     setUnified((s) => {
       const prev = s.doc.present.transcriptSlice;
-      const utterance = prev[utteranceIndex];
-      if (!utterance) return s;
-
-      const newWordTexts = newText.trim().split(/\s+/).filter(Boolean);
-      if (newWordTexts.length === 0) return s;
-
-      const utteranceDuration = utterance.endSec - utterance.startSec;
-      const wordDuration = utteranceDuration / newWordTexts.length;
-
-      const updatedUtterance = {
-        ...utterance,
-        text: newText.trim(),
-        words: newWordTexts.map((word, i) => ({
-          word,
-          startSec: utterance.startSec + i * wordDuration,
-          endSec: utterance.startSec + (i + 1) * wordDuration,
-          confidence: null,
-        })),
-      };
-
-      const nextSlice = prev.map((u, i) => (i === utteranceIndex ? updatedUtterance : u));
+      const nextSlice = replaceSubtitleLineText(prev, utteranceIndex, newText);
       return applyUnifiedEditorAction(s, {
         kind: "document",
         action: { type: "setTranscriptSlice", transcriptSlice: nextSlice },
       });
     });
   }, []);
+
+  const updateParagraphText = useCallback((indices: number[], newText: string) => {
+    setUnified((s) => {
+      const nextSlice = replaceSubtitleParagraphText(
+        s.doc.present.transcriptSlice,
+        indices,
+        newText,
+      );
+      return applyUnifiedEditorAction(s, {
+        kind: "document",
+        action: { type: "setTranscriptSlice", transcriptSlice: nextSlice },
+      });
+    });
+  }, []);
+
+  const addSubtitleLineAfter = useCallback((index: number) => {
+    setUnified((s) => {
+      const nextSlice = insertSubtitleLineAfter(s.doc.present.transcriptSlice, index);
+      return applyUnifiedEditorAction(s, {
+        kind: "document",
+        action: { type: "setTranscriptSlice", transcriptSlice: nextSlice },
+      });
+    });
+  }, []);
+
+  const deleteSubtitleLine = useCallback((index: number) => {
+    setUnified((s) => {
+      const nextSlice = removeSubtitleLine(s.doc.present.transcriptSlice, index);
+      return applyUnifiedEditorAction(s, {
+        kind: "document",
+        action: { type: "setTranscriptSlice", transcriptSlice: nextSlice },
+      });
+    });
+  }, []);
+
+  const mergeSubtitleLineWithNext = useCallback(
+    (index: number) => {
+      const first = utterances[index];
+      const second = utterances[index + 1];
+      if (!first || !second) return false;
+      const boundaryRelative = second.startSec - effectiveClipStartSec;
+      const crossesManualSceneBoundary = segments.some(
+        (segment) =>
+          segment.id.includes("-b") &&
+          Math.abs(segment.startSec - boundaryRelative) <= 0.02,
+      );
+      if (crossesManualSceneBoundary) {
+        toaster.create({
+          type: "error",
+          title: "Subtitles cannot be merged across scenes",
+          description: "Remove the scene split first, then merge these subtitle lines.",
+        });
+        return false;
+      }
+      setUnified((s) => {
+        const nextSlice = mergeAdjacentSubtitleLines(s.doc.present.transcriptSlice, index);
+        return applyUnifiedEditorAction(s, {
+          kind: "document",
+          action: { type: "setTranscriptSlice", transcriptSlice: nextSlice },
+        });
+      });
+      return true;
+    },
+    [effectiveClipStartSec, segments, utterances],
+  );
+
+  const setPlaybackRate = useCallback((rate: number) => {
+    const normalized = Math.max(0.5, Math.min(2, rate));
+    setPlaybackRateState(normalized);
+    if (videoRef.current) videoRef.current.playbackRate = normalized;
+  }, []);
+
+  useEffect(() => {
+    if (videoRef.current) videoRef.current.playbackRate = playbackRate;
+  }, [activeVideoUrl, playbackRate]);
 
   const togglePlay = useCallback(() => {
     const video = videoRef.current;
@@ -1032,12 +1153,22 @@ export function StudioShell({
     // not `doc.clipStartSec` — the two can disagree on legacy rows (and,
     // post Phase B step 13, momentarily right after a trim if this ever ran
     // before the resegment dispatch settled).
-    const sourceRelativeTime = editedToSource(editedTimeMap, editedTime) - effectiveClipStartSec;
+    const unsnappedSourceSec = editedToSource(editedTimeMap, editedTime);
+    const unsnappedRelativeTime = unsnappedSourceSec - effectiveClipStartSec;
     const active = segments.find(
-      (s) => sourceRelativeTime >= s.startSec && sourceRelativeTime <= s.endSec,
+      (s) => unsnappedRelativeTime >= s.startSec && unsnappedRelativeTime <= s.endSec,
     );
+    if (!active) return;
+    const snappedSourceSec = timelineSnapping
+      ? nearestTimedWordBoundary(
+          utterances,
+          unsnappedSourceSec,
+          effectiveClipStartSec + active.startSec,
+          effectiveClipStartSec + active.endSec,
+        )
+      : unsnappedSourceSec;
+    const sourceRelativeTime = snappedSourceSec - effectiveClipStartSec;
     if (
-      !active ||
       sourceRelativeTime <= active.startSec + 0.1 ||
       sourceRelativeTime >= active.endSec - 0.1
     ) return;
@@ -1045,12 +1176,41 @@ export function StudioShell({
     const newSegments = segments.flatMap((s) => {
       if (s.id !== active.id) return [s];
       return [
-        { ...s, endSec: sourceRelativeTime },
-        { id: `${s.id}-b`, label: s.label, startSec: sourceRelativeTime, endSec: s.endSec },
+        {
+          ...s,
+          label: labelForTimelineSegment(
+            utterances,
+            effectiveClipStartSec,
+            s.startSec,
+            sourceRelativeTime,
+            s.label,
+          ),
+          endSec: sourceRelativeTime,
+        },
+        {
+          id: `${s.id}-b`,
+          label: labelForTimelineSegment(
+            utterances,
+            effectiveClipStartSec,
+            sourceRelativeTime,
+            s.endSec,
+            s.label,
+          ),
+          startSec: sourceRelativeTime,
+          endSec: s.endSec,
+        },
       ];
     });
     setSegments(newSegments);
-  }, [segments, playbackClock, setSegments, editedTimeMap, effectiveClipStartSec]);
+  }, [
+    segments,
+    playbackClock,
+    setSegments,
+    editedTimeMap,
+    effectiveClipStartSec,
+    timelineSnapping,
+    utterances,
+  ]);
 
   // Vizard-parity Phase B step 9: Backspace/Delete on a selected segment
   // persists the cut through `doc.deletedRanges` (undoable, autosaved,
@@ -1973,10 +2133,14 @@ export function StudioShell({
           break;
         case "+":
         case "=":
-          setTimelineZoom((z) => Math.min(4, z + 0.25));
+          setTimelineZoom((z) => Math.min(8, z + 0.25));
           break;
         case "-":
-          setTimelineZoom((z) => Math.max(0.5, z - 0.25));
+          setTimelineZoom((z) => Math.max(0.05, z - 0.25));
+          break;
+        case "n":
+        case "N":
+          if (!e.ctrlKey && !e.metaKey) setTimelineSnapping((value) => !value);
           break;
         case "h":
         case "H":
@@ -2172,9 +2336,10 @@ export function StudioShell({
   }
 
   const ctx: StudioContextValue = {
-    isPlaying, duration, activeTool, showTimeline, aspectRatio,
-    layoutMode, showShortcuts, timelineZoom, selectedSegmentId,
+    isPlaying, playbackRate, duration, activeTool, showTimeline, timelineSnapping, aspectRatio,
+    layoutMode, showShortcuts, timelineZoom, selectedSegmentId, transcriptSelectionRange,
     captionPreset, captionSelected, selectedTextLayerId, transcriptOnly, segments, studioEdits, brollUrl,
+    brollPreviewAsset,
     saveState, isDocDirty, exportState, resetState, canUndo, canRedo, canReset,
     transcript: derivedTranscript, clipInfo, videoRef, boundaryReconcileOwnsSeekRef, playbackClock,
     sourceVideoUrl, sourcePreviewId,
@@ -2182,12 +2347,14 @@ export function StudioShell({
     previewVideoUrl, previewStartSec, waveformPeaksUrl, useOriginalSourceFallback, setUseOriginalSourceFallback,
     activeVideoUrl, activeOffsetSec, activeVideoKind, playerClipStartSec, playerClipEndSec,
     editedTimeMap, deletedRanges: doc.deletedRanges, clipWindow,
-    brandLogo, layoutAnalysis, autoLayoutAnalysis, utterances, updateUtteranceText, updateWord, deleteSourceRange, applyRemoveSilence,
-    setIsPlaying, setActiveTool, setShowTimeline, setAspectRatio,
+    brandLogo, layoutAnalysis, autoLayoutAnalysis, utterances, updateUtteranceText,
+    updateParagraphText, addSubtitleLineAfter, deleteSubtitleLine, mergeSubtitleLineWithNext,
+    updateWord, deleteSourceRange, applyRemoveSilence,
+    setIsPlaying, setPlaybackRate, setActiveTool, setShowTimeline, setTimelineSnapping, setAspectRatio,
     setLayoutMode, setShowShortcuts, setTimelineZoom,
-    setSelectedSegmentId, setCaptionPreset, selectCaption, deselectCaption,
+    setSelectedSegmentId, setTranscriptSelectionRange, setCaptionPreset, selectCaption, deselectCaption,
     selectTextLayer, deselectTextLayer,
-    setTranscriptOnly, setSegments, setStudioEdits, setBrollUrl, endCoalesce,
+    setTranscriptOnly, setSegments, setStudioEdits, setBrollUrl, setBrollPreviewAsset, endCoalesce,
     revertDeletedRange,
     togglePlay, seekTo, splitAtPlayhead, deleteSelectedSegment, handleSave, handleExport,
     handleUndo, handleRedo, handleReset, commitTrim, trimHandlesDisabled,
@@ -2214,7 +2381,7 @@ export function StudioShell({
         </Flex>
 
         {/* Timeline */}
-        {showTimeline && <Timeline />}
+        <Timeline />
 
         {/* Keyboard shortcuts modal */}
         <KeyboardShortcutsModal />

@@ -7,6 +7,10 @@ import { Spinner } from "@narriflow/ui";
 import { brollQueryForClip, planBrollCutaways } from "@narriflow/validators";
 import { formatDuration } from "@/lib/format";
 import { useStudio } from "../studio-shell";
+import {
+  DEFAULT_BROLL_PREVIEW_DURATION_SEC,
+  manualBrollPreviewWindow,
+} from "../broll-preview";
 
 interface BrollResult {
   id: number;
@@ -85,7 +89,15 @@ function validatePublicHttpUrl(raw: string): string | null {
 }
 
 export function BRollPanel() {
-  const { clipInfo, aspectRatio, brollUrl, setBrollUrl } = useStudio();
+  const {
+    clipInfo,
+    aspectRatio,
+    brollUrl,
+    brollPreviewAsset,
+    setBrollUrl,
+    setBrollPreviewAsset,
+    seekTo,
+  } = useStudio();
   const orientation =
     aspectRatio === "16:9"
       ? "landscape"
@@ -98,40 +110,51 @@ export function BRollPanel() {
   // 2026" as a literal Pexels query). Derive a short visual query instead —
   // the same query-builder the render pipeline itself falls back to.
   const derivedQuery = useMemo(
-    () => brollQueryForClip(clipInfo.title, null),
-    [clipInfo.title],
+    () =>
+      clipInfo.brollCues[0]?.query.trim() ||
+      brollQueryForClip(clipInfo.title, null),
+    [clipInfo.brollCues, clipInfo.title],
   );
 
+  const [sourceMode, setSourceMode] = useState<"stock" | "url">("stock");
   const [query, setQuery] = useState(derivedQuery ?? "");
   const [results, setResults] = useState<BrollResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [configured, setConfigured] = useState(true);
-  // Applied B-roll now lives in the editor document (undoable, autosaved) —
-  // reading it from context instead of a locally-PATCHed clipInfo snapshot
-  // is what keeps this in sync across undo/redo and panel remounts.
-  const [selectedAttribution, setSelectedAttribution] = useState<{
-    authorName: string;
-    pageUrl: string | null;
-  } | null>(null);
   const [customUrl, setCustomUrl] = useState(brollUrl ?? "");
   const [previewId, setPreviewId] = useState<number | null>(null);
   const didInit = useRef(false);
 
-  // What the render pipeline will do automatically if the user applies no
-  // manual pick: the same planner (planBrollCutaways) the worker uses,
-  // computed here purely from the clip's own duration + derived query so the
-  // preview never drifts from render-time behavior. Cues from the detection
-  // LLM aren't available on ClipInfo yet — once they are, pass them here
-  // instead of null and this preview upgrades for free.
+  const selectedAsset =
+    brollPreviewAsset?.url === brollUrl ? brollPreviewAsset : null;
+  const selectedWindow = useMemo(
+    () =>
+      brollUrl
+        ? manualBrollPreviewWindow(
+            clipInfo.duration,
+            selectedAsset?.durationSec,
+          )
+        : null,
+    [brollUrl, clipInfo.duration, selectedAsset?.durationSec],
+  );
+
+  // Use the exact detection cues consumed by the worker. Existing clips with
+  // no cues retain the keyword fallback, but cue-rich clips no longer show
+  // the same irrelevant query in every planned row.
   const plannedCutaways = useMemo(
-    () => planBrollCutaways(clipInfo.duration, null, derivedQuery),
-    [clipInfo.duration, derivedQuery],
+    () => planBrollCutaways(clipInfo.duration, clipInfo.brollCues, derivedQuery),
+    [clipInfo.brollCues, clipInfo.duration, derivedQuery],
   );
 
   const runSearch = useCallback(
     async (q: string) => {
-      if (!q.trim()) return;
+      if (!q.trim()) {
+        setResults([]);
+        setError(null);
+        setLoading(false);
+        return;
+      }
       setLoading(true);
       setError(null);
       try {
@@ -162,6 +185,10 @@ export function BRollPanel() {
     if (query.trim()) void runSearch(query);
   }, [query, runSearch]);
 
+  useEffect(() => {
+    setCustomUrl(brollUrl ?? "");
+  }, [brollUrl]);
+
   // Dispatches through the editor document reducer (undoable, autosaved in
   // the background) instead of PATCHing directly — the applied URL is
   // validated server-side (assertPublicHttpUrl) when the autosave PUT lands;
@@ -170,13 +197,19 @@ export function BRollPanel() {
     (result: BrollResult | null) => {
       setError(null);
       setBrollUrl(result?.downloadUrl ?? null);
-      setSelectedAttribution(
-        result?.authorName
-          ? { authorName: result.authorName, pageUrl: result.pageUrl ?? null }
+      setBrollPreviewAsset(
+        result
+          ? {
+              url: result.downloadUrl,
+              durationSec: result.durationSec,
+              posterUrl: result.image,
+              authorName: result.authorName ?? null,
+              pageUrl: result.pageUrl ?? null,
+            }
           : null,
       );
     },
-    [setBrollUrl],
+    [setBrollPreviewAsset, setBrollUrl],
   );
 
   const applyCustomUrl = useCallback(() => {
@@ -192,13 +225,53 @@ export function BRollPanel() {
     }
     setError(null);
     setBrollUrl(trimmed);
-    setSelectedAttribution(null);
-  }, [apply, customUrl, setBrollUrl]);
+    setBrollPreviewAsset({
+      url: trimmed,
+      durationSec: DEFAULT_BROLL_PREVIEW_DURATION_SEC,
+      posterUrl: null,
+      authorName: null,
+      pageUrl: null,
+    });
+  }, [apply, customUrl, setBrollPreviewAsset, setBrollUrl]);
 
   return (
     <Stack gap="0" h="100%">
-      {/* Search */}
-      <Box p="12px" pb="8px">
+      <Flex gap="6px" p="12px" pb="8px">
+        {([
+          { id: "stock", label: "Stock library", icon: <Film size={12} /> },
+          { id: "url", label: "Paste URL", icon: <Link2 size={12} /> },
+        ] as const).map((source) => {
+          const active = sourceMode === source.id;
+          return (
+            <Flex
+              key={source.id}
+              as="button"
+              aria-pressed={active}
+              align="center"
+              justify="center"
+              gap="5px"
+              flex="1"
+              h="30px"
+              borderRadius="l2"
+              bg={active ? "studio.raised" : "studio.subtle"}
+              borderWidth="1px"
+              borderColor={active ? "studio.accent" : "studio.border"}
+              color={active ? "studio.accentFg" : "studio.fgMuted"}
+              fontSize="11px"
+              fontWeight="600"
+              cursor="pointer"
+              transition="background 120ms ease, border-color 120ms ease, color 120ms ease"
+              onClick={() => setSourceMode(source.id)}
+            >
+              {source.icon}
+              {source.label}
+            </Flex>
+          );
+        })}
+      </Flex>
+
+      {sourceMode === "stock" ? (
+      <Box px="12px" pb="8px">
         <Flex
           align="center"
           gap="8px"
@@ -216,7 +289,7 @@ export function BRollPanel() {
           </Box>
           <Input
             aria-label="Search stock B-roll"
-            placeholder="Search B-Roll (Pexels)…"
+            placeholder="Search Pexels videos…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={(e) => {
@@ -229,10 +302,16 @@ export function BRollPanel() {
             css={INPUT_RESET}
             _placeholder={{ color: "studio.fgSubtle" }}
           />
-          {loading ? <Spinner size="xs" /> : null}
+          {loading ? (
+            <Spinner size="xs" />
+          ) : (
+            <Text textStyle="eyebrow" fontSize="8px" color="studio.fgSubtle">
+              Pexels
+            </Text>
+          )}
         </Flex>
       </Box>
-
+      ) : (
       <Box px="12px" pb="8px">
         <Text textStyle="eyebrow" color="studio.fgMuted" mb="6px">
           Custom B-roll URL
@@ -279,7 +358,11 @@ export function BRollPanel() {
             <Check size={13} />
           </Box>
         </Flex>
+        <Text mt="5px" fontSize="10px" color="studio.fgSubtle">
+          Public MP4 links only. The URL is checked again when the clip saves.
+        </Text>
       </Box>
+      )}
 
       {/* Selected indicator — success stripe + label, never hue alone */}
       {brollUrl ? (
@@ -302,11 +385,16 @@ export function BRollPanel() {
             <Check size={13} />
             <Stack gap="0" minW="0">
               <Text fontSize="11px" color="success.400" fontWeight="600">
-                B-roll applied to this clip
+                B-roll applied
               </Text>
-              {selectedAttribution ? (
+              {selectedWindow ? (
+                <Text textStyle="data" fontSize="10px" color="studio.timecode">
+                  {formatDuration(selectedWindow.startSec)}–{formatDuration(selectedWindow.endSec)} · {(selectedWindow.endSec - selectedWindow.startSec).toFixed(1)}s
+                </Text>
+              ) : null}
+              {selectedAsset?.authorName ? (
                 <Text fontSize="10px" color="studio.fgMuted" truncate>
-                  Video by {selectedAttribution.authorName} · Pexels
+                  Video by {selectedAsset.authorName} · Pexels
                 </Text>
               ) : null}
             </Stack>
@@ -331,7 +419,20 @@ export function BRollPanel() {
           </Text>
           <Stack gap="4px">
             {plannedCutaways.map((cutaway, index) => (
-              <Flex key={`${cutaway.startSec}-${index}`} align="center" justify="space-between" gap="8px">
+              <Flex
+                key={`${cutaway.startSec}-${index}`}
+                as="button"
+                aria-label={`Preview automatic cutaway ${index + 1}, ${cutaway.query}, at ${formatDuration(cutaway.startSec)}`}
+                title={cutaway.query}
+                align="center"
+                justify="space-between"
+                gap="8px"
+                w="100%"
+                cursor="pointer"
+                borderRadius="l1"
+                _hover={{ bg: "studio.raised" }}
+                onClick={() => seekTo(cutaway.startSec)}
+              >
                 <Text fontSize="11px" color="studio.fgSubtle" flexShrink={0}>
                   Cutaway {index + 1}
                 </Text>
@@ -362,6 +463,7 @@ export function BRollPanel() {
       ) : null}
 
       {/* Results */}
+      {sourceMode === "stock" ? (
       <Box flex="1" overflowY="auto" px="12px" pb="12px">
         {!configured ? (
           <EmptyHint text="Stock B-roll search isn't available on your workspace yet." />
@@ -482,6 +584,11 @@ export function BRollPanel() {
           </SimpleGrid>
         )}
       </Box>
+      ) : (
+        <Box flex="1" overflowY="auto" px="12px" pb="12px">
+          <EmptyHint text="Paste a public video URL above, then press Enter or the checkmark to apply it." />
+        </Box>
+      )}
     </Stack>
   );
 }

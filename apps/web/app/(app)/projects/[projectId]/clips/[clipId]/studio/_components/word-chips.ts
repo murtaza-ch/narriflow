@@ -17,8 +17,8 @@ import {
  *  component file and stays trivially unit-testable. */
 export const TIMELINE_BASE_PX_PER_SEC = 80;
 
-export const TIMELINE_ZOOM_MIN = 0.5;
-export const TIMELINE_ZOOM_MAX = 4;
+export const TIMELINE_ZOOM_MIN = 0.05;
+export const TIMELINE_ZOOM_MAX = 8;
 
 /** Below this many px per word, individual chips would be illegible —
  *  nothing renders and the segment label (already drawn) carries the low-
@@ -26,11 +26,10 @@ export const TIMELINE_ZOOM_MAX = 4;
 export const WORD_CHIP_MIN_PX_PER_WORD = 28;
 
 /** Fit-to-word preset target: comfortably legible without wasting space. */
-export const FIT_WORD_TARGET_PX_PER_WORD = 40;
+export const FIT_WORD_TARGET_PX_PER_WORD = 100;
 
-/** Fit-to-sentence preset target: an average utterance block reads well at
- *  roughly this pixel width. */
-export const FIT_SENTENCE_TARGET_PX = 160;
+/** Vizard's word preset sits at roughly 500px/s in the audited clip. */
+export const FIT_WORD_TARGET_PX_PER_SEC = 500;
 
 function clampZoom(zoom: number): number {
   return Math.max(TIMELINE_ZOOM_MIN, Math.min(TIMELINE_ZOOM_MAX, zoom));
@@ -81,17 +80,17 @@ export function averageUtteranceDurationSec(utterances: TranscriptUtterance[]): 
  *  passes the result straight to `setTimelineZoom`; the slider stays free
  *  afterwards. */
 export function zoomForFitToWord(utterances: TranscriptUtterance[]): number {
-  const avg = averageWordDurationSec(utterances);
-  if (avg <= 0) return clampZoom(1);
-  return clampZoom(FIT_WORD_TARGET_PX_PER_WORD / (TIMELINE_BASE_PX_PER_SEC * avg));
+  // Keep the parameter for call-site/API stability and for the no-transcript
+  // fallback, but target a stable time scale rather than the clip's average
+  // speaking rate. A fast speaker should not make word blocks less readable.
+  if (utterances.length === 0) return clampZoom(1);
+  return clampZoom(FIT_WORD_TARGET_PX_PER_SEC / TIMELINE_BASE_PX_PER_SEC);
 }
 
-/** Zoom level whose average utterance width is closest to
- *  `FIT_SENTENCE_TARGET_PX`. */
-export function zoomForFitToSentence(utterances: TranscriptUtterance[]): number {
-  const avg = averageUtteranceDurationSec(utterances);
-  if (avg <= 0) return clampZoom(1);
-  return clampZoom(FIT_SENTENCE_TARGET_PX / (TIMELINE_BASE_PX_PER_SEC * avg));
+/** Zoom level that fits the complete edited clip inside the visible strip. */
+export function zoomForFitToSentence(durationSec: number, viewportPx: number): number {
+  if (durationSec <= 0 || viewportPx <= 0) return clampZoom(1);
+  return clampZoom(viewportPx / (TIMELINE_BASE_PX_PER_SEC * durationSec));
 }
 
 // ─── Word projection + windowing ───────────────────────────────────────────

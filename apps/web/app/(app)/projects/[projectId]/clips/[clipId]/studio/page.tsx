@@ -100,6 +100,7 @@ export default async function StudioPage({
     aspectRatio: clip.renderVariants[0]?.aspectRatio ?? "9:16",
     viralityScore: clip.viralityScore,
     category: clip.category,
+    brollCues: clip.brollCues ?? [],
   };
 
   /**

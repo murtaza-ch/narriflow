@@ -16,10 +16,13 @@ import {
   ZoomOut,
   Undo2,
   AudioLines,
+  Magnet,
 } from "lucide-react";
 import {
   editedToSource,
   sourceRangeToEdited,
+  brollQueryForClip,
+  planBrollCutaways,
   detectSilenceRanges,
   SILENCE_DEFAULT_MIN_SILENCE_SEC,
   SILENCE_DEFAULT_PAD_SEC,
@@ -51,10 +54,14 @@ import {
   pxPerWordForZoom,
   selectVisibleWordChips,
   shouldRenderWordChips,
+  TIMELINE_ZOOM_MAX,
+  TIMELINE_ZOOM_MIN,
   zoomForFitToSentence,
   zoomForFitToWord,
   type WordChipDatum,
 } from "./word-chips";
+import { labelForTimelineSegment } from "./subtitle-lines";
+import { manualBrollPreviewWindow } from "./broll-preview";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -304,7 +311,11 @@ const SegmentThumbnails = memo(function SegmentThumbnails({
 
 // ─── Waveform canvas ──────────────────────────────────────────────────────────
 
-const MAX_WAVEFORM_CANVAS_WIDTH = 2400;
+// Keep the waveform crisp at word-level zoom. The previous 2,400px cap was
+// stretched across 25k+ CSS pixels, turning individual peaks into a blurred
+// band. 16,384 stays within conservative canvas limits while keeping the
+// high-zoom waveform readable and the draw loop inexpensive.
+const MAX_WAVEFORM_CANVAS_WIDTH = 16_384;
 
 const WaveformCanvas = memo(function WaveformCanvas({
   utterances,
@@ -387,11 +398,7 @@ const WaveformCanvas = memo(function WaveformCanvas({
     const wordRanges = timingIndex.wordRanges;
     let speechIndex = 0;
     let wordIndex = 0;
-    const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
-    gradient.addColorStop(0, "rgba(160,170,190,0.7)");
-    gradient.addColorStop(0.5, "rgba(130,140,160,0.5)");
-    gradient.addColorStop(1, "rgba(160,170,190,0.7)");
-    ctx.fillStyle = gradient;
+    ctx.fillStyle = getComputedStyle(canvas).color;
 
     const hasRealPeaks = peaksData !== null && peaksData.peaks.length > 0;
 
@@ -443,6 +450,8 @@ const WaveformCanvas = memo(function WaveformCanvas({
         width: `${width}px`,
         height: `${height}px`,
         display: "block",
+        color: "var(--chakra-colors-studio-fgSubtle)",
+        opacity: 0.62,
       }}
     />
   );
@@ -483,10 +492,13 @@ const WordChipsRow = memo(function WordChipsRow({
     if (!el) return;
     el.style.borderColor = active
       ? "var(--chakra-colors-studio-accent)"
-      : "var(--chakra-colors-studio-border)";
+      : "var(--chakra-colors-studio-borderStrong)";
     el.style.color = active
-      ? "var(--chakra-colors-studio-fg)"
-      : "var(--chakra-colors-studio-fgMuted)";
+      ? "var(--chakra-colors-studio-canvas)"
+      : "var(--chakra-colors-studio-fg)";
+    el.style.background = active
+      ? "var(--chakra-colors-studio-accent)"
+      : "var(--chakra-colors-studio-raised)";
   }, []);
 
   const updateActive = useCallback(() => {
@@ -534,13 +546,17 @@ const WordChipsRow = memo(function WordChipsRow({
             px="4px"
             borderRadius="l1"
             borderWidth="1px"
-            borderColor="studio.border"
+            borderColor="studio.borderStrong"
             bg="studio.raised"
-            color="studio.fgMuted"
-            fontSize="10px"
+            color="studio.fg"
+            fontSize="10.5px"
+            fontWeight="600"
             whiteSpace="nowrap"
             textOverflow="ellipsis"
             cursor="pointer"
+            transition="background 100ms ease, border-color 100ms ease, color 100ms ease"
+            _hover={{ borderColor: "studio.accent", bg: "studio.surface" }}
+            _focusVisible={{ outline: "2px solid", outlineColor: "studio.ring", outlineOffset: "1px" }}
             title={chip.text}
             aria-label={`Word "${chip.text}" at ${formatTimecode(chip.editedStartSec)}`}
             onClick={(e: React.MouseEvent) => {
@@ -556,6 +572,104 @@ const WordChipsRow = memo(function WordChipsRow({
   );
 });
 
+type CaptionLaneChip = {
+  id: string;
+  text: string;
+  editedStartSec: number;
+  editedEndSec: number;
+};
+
+const CaptionChipsRow = memo(function CaptionChipsRow({
+  chips,
+  pxPerSec,
+  height,
+  onSeek,
+}: {
+  chips: CaptionLaneChip[];
+  pxPerSec: number;
+  height: number;
+  onSeek: (t: number) => void;
+}) {
+  return (
+    <>
+      {chips.map((chip) => {
+        const left = chip.editedStartSec * pxPerSec;
+        const width = Math.max((chip.editedEndSec - chip.editedStartSec) * pxPerSec - 2, 8);
+        return (
+          <Box
+            key={chip.id}
+            as="button"
+            position="absolute"
+            top="1px"
+            style={{ left: `${left}px`, width: `${width}px`, height: `${height - 2}px` }}
+            display="flex"
+            alignItems="center"
+            overflow="hidden"
+            px="6px"
+            borderRadius="l1"
+            borderWidth="1px"
+            borderColor="studio.accent/38"
+            bg="studio.accent/12"
+            color="studio.accentFg"
+            fontSize="10px"
+            fontWeight="600"
+            whiteSpace="nowrap"
+            textOverflow="ellipsis"
+            cursor="pointer"
+            title={chip.text}
+            aria-label={`Caption "${chip.text}" at ${formatTimecode(chip.editedStartSec)}`}
+            onClick={(event: React.MouseEvent) => {
+              event.stopPropagation();
+              onSeek(chip.editedStartSec);
+            }}
+            transition="background 100ms ease, border-color 100ms ease, color 100ms ease"
+            _hover={{ borderColor: "studio.accent", color: "studio.fg", bg: "studio.accent/18" }}
+            _focusVisible={{ outline: "2px solid", outlineColor: "studio.ring", outlineOffset: "1px" }}
+          >
+            {chip.text}
+          </Box>
+        );
+      })}
+    </>
+  );
+});
+
+function TimelineLaneLabel({
+  label,
+  top,
+  height,
+}: {
+  label: string;
+  top: number;
+  height: number;
+}) {
+  return (
+    <Flex
+      position="absolute"
+      top={`${CONTROL_BAR_HEIGHT + top}px`}
+      left="0"
+      w={`${LEFT_GUTTER}px`}
+      h={`${height}px`}
+      align="center"
+      justify="center"
+      bg="studio.canvas"
+      borderRightWidth="1px"
+      borderColor="studio.border"
+      zIndex={18}
+      pointerEvents="none"
+    >
+      <Text
+        textStyle="eyebrow"
+        fontSize="8px"
+        color="studio.fgSubtle"
+        style={{ writingMode: "vertical-rl", transform: "rotate(180deg)" }}
+      >
+        {label}
+      </Text>
+    </Flex>
+  );
+}
+
 // ─── Control button ───────────────────────────────────────────────────────────
 
 function CtrlBtn({
@@ -564,12 +678,14 @@ function CtrlBtn({
   label,
   active,
   title,
+  disabled = false,
 }: {
   icon?: React.ReactNode;
   onClick?: () => void;
   label?: string;
   active?: boolean;
   title?: string;
+  disabled?: boolean;
 }) {
   return (
     <Flex
@@ -577,19 +693,25 @@ function CtrlBtn({
       align="center"
       gap="5px"
       px={label ? "8px" : "6px"}
-      h="28px"
+      h="30px"
       borderRadius="l1"
-      bg={active ? "studio.raised" : "transparent"}
-      border="none"
+      bg={active ? "studio.surface" : "transparent"}
+      borderWidth="1px"
+      borderColor={active ? "studio.borderStrong" : "transparent"}
       color={active ? "studio.fg" : "studio.fgMuted"}
-      cursor="pointer"
+      cursor={disabled ? "not-allowed" : "pointer"}
       fontSize="12px"
       fontWeight="500"
       title={title ?? label}
       aria-label={title ?? label}
-      onClick={onClick}
-      transition="background 120ms ease, color 120ms ease"
-      _hover={{ bg: "studio.raised", color: "studio.fg" }}
+      aria-disabled={disabled}
+      aria-pressed={active}
+      tabIndex={disabled ? -1 : undefined}
+      onClick={disabled ? undefined : onClick}
+      transition="background 120ms ease, border-color 120ms ease, color 120ms ease"
+      opacity={disabled ? 0.38 : 1}
+      _hover={disabled ? undefined : { bg: "studio.raised", color: "studio.fg" }}
+      _focusVisible={{ outline: "2px solid", outlineColor: "studio.ring", outlineOffset: "1px" }}
     >
       {icon}
       {label && <Text fontSize="11px">{label}</Text>}
@@ -660,7 +782,19 @@ function RemoveSilencePopover() {
       </Popover.Trigger>
       <Portal>
         <Popover.Positioner>
-          <Popover.Content layerStyle="panel" boxShadow="cardHover" minW="260px" p="3">
+          <Popover.Content
+            layerStyle="panel"
+            boxShadow="cardHover"
+            minW="260px"
+            p="3"
+            aria-label="Remove silence settings"
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.stopPropagation();
+                handleOpenChange(false);
+              }
+            }}
+          >
             <Stack gap="3">
               <Text textStyle="eyebrow" color="fg.subtle">
                 Remove silence
@@ -683,6 +817,8 @@ function RemoveSilencePopover() {
                   onValueChange={(e) => setMinSilenceSec(e.value[0]!)}
                   size="sm"
                   colorPalette="accent"
+                  aria-label={["Minimum silence duration"]}
+                  getAriaValueText={({ value }) => `${value.toFixed(1)} seconds`}
                 >
                   <Slider.Control>
                     <Slider.Track>
@@ -710,6 +846,8 @@ function RemoveSilencePopover() {
                   onValueChange={(e) => setPadSec(e.value[0]!)}
                   size="sm"
                   colorPalette="accent"
+                  aria-label={["Silence padding"]}
+                  getAriaValueText={({ value }) => `${value.toFixed(2)} seconds`}
                 >
                   <Slider.Control>
                     <Slider.Track>
@@ -726,15 +864,20 @@ function RemoveSilencePopover() {
                   : `${detected.length} silence${detected.length === 1 ? "" : "s"} · −${totalRemovedSec.toFixed(1)}s`}
               </Text>
 
-              <Button
-                size="sm"
-                variant="outline"
-                colorPalette="accent"
-                disabled={detected.length === 0}
-                onClick={handleApply}
-              >
-                Apply
-              </Button>
+              <Flex justify="flex-end" gap="2">
+                <Button size="sm" variant="ghost" onClick={() => handleOpenChange(false)}>
+                  Cancel
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  colorPalette="accent"
+                  disabled={detected.length === 0}
+                  onClick={handleApply}
+                >
+                  Apply
+                </Button>
+              </Flex>
             </Stack>
           </Popover.Content>
         </Popover.Positioner>
@@ -746,10 +889,12 @@ function RemoveSilencePopover() {
 // ─── Timeline ─────────────────────────────────────────────────────────────────
 
 const TRACK_HEIGHT = 64;
-const WORD_CHIPS_HEIGHT = 20;
-const WAVEFORM_HEIGHT = 36;
+const BROLL_TRACK_HEIGHT = 28;
+const WORD_CHIPS_HEIGHT = 24;
+const WAVEFORM_HEIGHT = 40;
 const RULER_HEIGHT = 24;
 const LEFT_GUTTER = 40;
+const CONTROL_BAR_HEIGHT = 44;
 const TIMELINE_OVERSCAN_PX = 900;
 const PAUSE_MARKER_THRESHOLD_SEC = 0.4;
 const TEXT_TRACK_HEIGHT = 26;
@@ -866,11 +1011,12 @@ const TimelineSegmentBlock = memo(function TimelineSegmentBlock({
       bottom="0"
       borderRadius="l1"
       overflow="hidden"
-      border="1.5px solid"
+      border="2px solid"
       borderColor={isSelected ? "studio.accent" : "studio.border"}
       bg="studio.surface"
+      boxShadow={isSelected ? "inset 0 0 0 1px var(--chakra-colors-studio-accent)" : undefined}
       cursor="pointer"
-      transition="border-color 120ms"
+      transition="border-color 120ms ease, box-shadow 120ms ease"
       _hover={{
         borderColor: isSelected ? "studio.accentFg" : "studio.borderStrong",
       }}
@@ -883,37 +1029,42 @@ const TimelineSegmentBlock = memo(function TimelineSegmentBlock({
       aria-label={`Segment "${label}", ${formatTimecode(editedStartSec)} to ${formatTimecode(editedEndSec)}`}
       contain="layout paint"
     >
-      <SegmentThumbnails
-        thumbnailVideoUrl={thumbnailVideoUrl}
-        videoKind={videoKind}
-        offsetSec={offsetSec}
-        sourcePreviewId={sourcePreviewId}
-        clipStartSec={clipStartSec}
-        editedStartSec={editedStartSec}
-        editedEndSec={editedEndSec}
-        editedTimeMap={editedTimeMap}
-        cutsSignature={cutsSignature}
-        width={Math.max(w - 3, 4)}
-        height={TRACK_HEIGHT - 3}
-      />
+      <Box opacity={isSelected ? 1 : 0.82} transition="opacity 120ms ease">
+        <SegmentThumbnails
+          thumbnailVideoUrl={thumbnailVideoUrl}
+          videoKind={videoKind}
+          offsetSec={offsetSec}
+          sourcePreviewId={sourcePreviewId}
+          clipStartSec={clipStartSec}
+          editedStartSec={editedStartSec}
+          editedEndSec={editedEndSec}
+          editedTimeMap={editedTimeMap}
+          cutsSignature={cutsSignature}
+          width={Math.max(w - 4, 4)}
+          height={TRACK_HEIGHT - 4}
+        />
+      </Box>
 
       {/* Utterance label — first words of the segment's speech */}
       <Flex
         position="absolute"
-        top="3px"
-        left="4px"
-        maxW="calc(100% - 8px)"
-        px="5px"
-        h="16px"
+        top="0"
+        left="0"
+        right="0"
+        px="6px"
+        h="20px"
         align="center"
-        borderRadius="3px"
-        bg="rgba(0,0,0,0.6)"
+        justify="space-between"
+        gap="6px"
+        bg="studio.canvas/86"
+        borderBottomWidth="1px"
+        borderColor={isSelected ? "studio.accent" : "studio.border"}
         backdropFilter="blur(4px)"
       >
         <Text
           fontSize="10px"
           fontWeight="600"
-          color={isSelected ? "studio.accentFg" : "studio.fgMuted"}
+          color={isSelected ? "studio.fg" : "studio.fgMuted"}
           letterSpacing="0.02em"
           whiteSpace="nowrap"
           overflow="hidden"
@@ -921,6 +1072,11 @@ const TimelineSegmentBlock = memo(function TimelineSegmentBlock({
         >
           {label}
         </Text>
+        {w >= 110 && (
+          <Text textStyle="data" fontSize="9px" color="studio.timecode" flexShrink={0}>
+            {(editedEndSec - editedStartSec).toFixed(1)}s
+          </Text>
+        )}
       </Flex>
     </Box>
   );
@@ -1086,8 +1242,8 @@ const TimelinePlayhead = memo(function TimelinePlayhead({
       position="absolute"
       top="0"
       bottom="0"
-      w="1.5px"
-      bg="studio.fg"
+      w="2px"
+      bg="studio.accent"
       style={{
         left: 0,
         transform: `translate3d(${timeToX(Math.min(duration, Math.max(0, playbackClock.getSnapshot())))}px, 0, 0)`,
@@ -1106,7 +1262,7 @@ const TimelinePlayhead = memo(function TimelinePlayhead({
         style={{
           borderLeft: "5px solid transparent",
           borderRight: "5px solid transparent",
-          borderTop: "7px solid var(--chakra-colors-studio-fg)",
+          borderTop: "7px solid var(--chakra-colors-studio-accent)",
         }}
       />
       <Box
@@ -1117,7 +1273,7 @@ const TimelinePlayhead = memo(function TimelinePlayhead({
         w="5px"
         h="5px"
         borderRadius="full"
-        bg="studio.fg"
+        bg="studio.accent"
       />
     </Box>
   );
@@ -1608,11 +1764,15 @@ const TextLayerChip = memo(function TextLayerChip({
 export function Timeline() {
   const {
     isPlaying,
+    playbackRate,
+    setPlaybackRate,
     togglePlay,
     duration,
     seekTo,
     showTimeline,
     setShowTimeline,
+    timelineSnapping,
+    setTimelineSnapping,
     timelineZoom,
     setTimelineZoom,
     segments,
@@ -1629,10 +1789,14 @@ export function Timeline() {
     deletedRanges,
     revertDeletedRange,
     utterances,
+    transcriptSelectionRange,
     exportState,
     waveformPeaksUrl,
     studioEdits,
     selectedTextLayerId,
+    clipInfo,
+    brollUrl,
+    brollPreviewAsset,
   } = useStudio();
 
   const stripRef = useRef<HTMLDivElement>(null);
@@ -1641,6 +1805,30 @@ export function Timeline() {
   const safeDuration = Math.max(0, duration);
   const TIMELINE_PX_PER_SEC = 80 * timelineZoom;
   const totalWidth = safeDuration * TIMELINE_PX_PER_SEC;
+  const activeBrollAsset =
+    brollPreviewAsset?.url === brollUrl ? brollPreviewAsset : null;
+  const manualBrollWindow = useMemo(
+    () =>
+      brollUrl
+        ? manualBrollPreviewWindow(safeDuration, activeBrollAsset?.durationSec)
+        : null,
+    [activeBrollAsset?.durationSec, brollUrl, safeDuration],
+  );
+  const automaticBrollCutaways = useMemo(() => {
+    if (brollUrl) return [];
+    const fallbackQuery =
+      clipInfo.brollCues[0]?.query.trim() ||
+      brollQueryForClip(clipInfo.title, null);
+    return planBrollCutaways(
+      safeDuration,
+      clipInfo.brollCues,
+      fallbackQuery,
+    );
+  }, [brollUrl, clipInfo.brollCues, clipInfo.title, safeDuration]);
+  const brollTimelineCutaways = manualBrollWindow
+    ? [{ ...manualBrollWindow, query: "Selected stock clip", manual: true }]
+    : automaticBrollCutaways.map((cutaway) => ({ ...cutaway, manual: false }));
+  const hasBrollLane = brollTimelineCutaways.length > 0;
 
   useEffect(() => {
     setTimelineThumbnailPlaybackActive(isPlaying);
@@ -1707,12 +1895,26 @@ export function Timeline() {
       if (!edited) return [];
       return [{
         id: seg.id,
-        label: seg.label,
+        label: labelForTimelineSegment(
+          utterances,
+          clipStartSec,
+          seg.startSec,
+          seg.endSec,
+          seg.label,
+        ),
         editedStartSec: edited.startSec,
         editedEndSec: edited.endSec,
       }];
     });
-  }, [segments, clipStartSec, editedTimeMap]);
+  }, [segments, clipStartSec, editedTimeMap, utterances]);
+
+  const transcriptSelectionEdited = useMemo(
+    () =>
+      transcriptSelectionRange
+        ? sourceRangeToEdited(editedTimeMap, transcriptSelectionRange)
+        : null,
+    [editedTimeMap, transcriptSelectionRange],
+  );
 
   const visibleSegments = useMemo(
     () =>
@@ -1812,13 +2014,46 @@ export function Timeline() {
     [showWordChips, allWordChips, visibleRange],
   );
 
+  const captionLaneChips = useMemo(
+    () =>
+      utterances.flatMap((utterance, index) => {
+        const edited = sourceRangeToEdited(editedTimeMap, {
+          startSec: utterance.startSec,
+          endSec: utterance.endSec,
+        });
+        if (!edited) return [];
+        return [{
+          id: `caption-${index}-${utterance.startSec}`,
+          text: utterance.text,
+          editedStartSec: edited.startSec,
+          editedEndSec: edited.endSec,
+        } satisfies CaptionLaneChip];
+      }),
+    [editedTimeMap, utterances],
+  );
+
+  const visibleCaptionLaneChips = useMemo(
+    () =>
+      captionLaneChips.filter(
+        (chip) =>
+          chip.editedEndSec >= visibleRange.startSec &&
+          chip.editedStartSec <= visibleRange.endSec,
+      ),
+    [captionLaneChips, visibleRange.endSec, visibleRange.startSec],
+  );
+
   const handleFitToWord = useCallback(() => {
     setTimelineZoom(zoomForFitToWord(utterances));
   }, [setTimelineZoom, utterances]);
 
   const handleFitToSentence = useCallback(() => {
-    setTimelineZoom(zoomForFitToSentence(utterances));
-  }, [setTimelineZoom, utterances]);
+    const viewportPx = Math.max(
+      1,
+      (stripRef.current?.clientWidth ?? window.innerWidth) - LEFT_GUTTER - 60,
+    );
+    setTimelineZoom(zoomForFitToSentence(safeDuration, viewportPx));
+    stripRef.current?.scrollTo({ left: 0, behavior: "smooth" });
+  }, [safeDuration, setTimelineZoom]);
 
   const timeToX = useCallback(
     (t: number) => LEFT_GUTTER + t * TIMELINE_PX_PER_SEC,
@@ -1845,17 +2080,26 @@ export function Timeline() {
       e.preventDefault();
       const delta = e.deltaY > 0 ? -0.15 : 0.15;
       setTimelineZoom((prev: number) =>
-        Math.max(0.5, Math.min(4, prev + delta)),
+        Math.max(TIMELINE_ZOOM_MIN, Math.min(TIMELINE_ZOOM_MAX, prev + delta)),
       );
     },
     [setTimelineZoom],
   );
 
+  const cyclePlaybackRate = useCallback(() => {
+    const rates = [1, 1.25, 1.5, 2, 0.5, 0.75] as const;
+    const index = rates.findIndex((rate) => rate === playbackRate);
+    setPlaybackRate(rates[(index + 1 + rates.length) % rates.length]!);
+  }, [playbackRate, setPlaybackRate]);
+
   const hasTextLayers = studioEdits.textLayers.length > 0;
-  const textTrackTop =
-    RULER_HEIGHT + TRACK_HEIGHT + 4 + WORD_CHIPS_HEIGHT + 4 + WAVEFORM_HEIGHT + 6;
+  const brollTrackTop = RULER_HEIGHT + TRACK_HEIGHT + 4;
+  const wordTrackTop =
+    brollTrackTop + (hasBrollLane ? BROLL_TRACK_HEIGHT + 4 : 0);
+  const waveformTrackTop = wordTrackTop + WORD_CHIPS_HEIGHT + 4;
+  const textTrackTop = waveformTrackTop + WAVEFORM_HEIGHT + 6;
   const trackAreaHeight =
-    RULER_HEIGHT + TRACK_HEIGHT + 4 + WORD_CHIPS_HEIGHT + 4 + WAVEFORM_HEIGHT + 8 +
+    waveformTrackTop + WAVEFORM_HEIGHT + 8 +
     (hasTextLayers ? TEXT_TRACK_HEIGHT + 6 : 0);
 
   return (
@@ -1864,7 +2108,11 @@ export function Timeline() {
       bg="studio.canvas"
       borderTopWidth="1px"
       borderColor="studio.border"
-      style={{ height: showTimeline ? `${40 + trackAreaHeight}px` : "40px" }}
+      style={{
+        height: showTimeline
+          ? `${CONTROL_BAR_HEIGHT + trackAreaHeight}px`
+          : `${CONTROL_BAR_HEIGHT}px`,
+      }}
       transition="height 200ms ease"
       overflow="hidden"
       position="relative"
@@ -1893,35 +2141,39 @@ export function Timeline() {
 
       {/* ── Control bar ───────────────────────────────────────────────── */}
       <Flex
-        h="40px"
+        h={`${CONTROL_BAR_HEIGHT}px`}
         align="center"
         px="3"
+        bg="studio.surface"
         borderBottomWidth="1px"
         borderColor="studio.border"
         flexShrink={0}
         gap="2px"
       >
         {/* Left group */}
-        <Flex align="center" gap="2px" flex="1">
+        <Flex align="center" gap="2px" flex="1" pl="32px">
           <CtrlBtn
             icon={showTimeline ? <Eye size={14} /> : <EyeOff size={14} />}
             onClick={() => setShowTimeline(!showTimeline)}
-            label="Hide timeline"
+            label="Timeline"
+            title={showTimeline ? "Hide timeline" : "Show timeline"}
           />
           <Box w="1px" h="16px" bg="studio.border" mx="1" />
           <CtrlBtn
             icon={<Scissors size={14} />}
             onClick={splitAtPlayhead}
             title="Split clips (D)"
+            disabled={!showTimeline}
           />
           <CtrlBtn
             icon={<Trash2 size={14} />}
             onClick={deleteSelectedSegment}
             active={!!selectedSegmentId}
             title="Delete selected clip (Backspace)"
+            disabled={!showTimeline}
           />
           <Box w="1px" h="16px" bg="studio.border" mx="1" />
-          <RemoveSilencePopover />
+          {showTimeline && <RemoveSilencePopover />}
         </Flex>
 
         {/* Center: Playback controls */}
@@ -1960,25 +2212,41 @@ export function Timeline() {
 
         {/* Right: Zoom */}
         <Flex align="center" gap="4px" flex="1" justify="flex-end">
-          <CtrlBtn label="Word" onClick={handleFitToWord} title="Fit to word" />
-          <CtrlBtn label="Sentence" onClick={handleFitToSentence} title="Fit to sentence" />
+          <CtrlBtn
+            icon={<Magnet size={13} />}
+            onClick={() => setTimelineSnapping(!timelineSnapping)}
+            active={timelineSnapping}
+            label="Snap"
+            title={`${timelineSnapping ? "Turn off" : "Turn on"} snapping (N)`}
+          />
+          <CtrlBtn label={`${playbackRate}x`} onClick={cyclePlaybackRate} title="Playback speed" />
+          <Box w="1px" h="16px" bg="studio.border" mx="1" />
+          <Text textStyle="eyebrow" fontSize="8px" color="studio.fgSubtle" ml="1">
+            Fit
+          </Text>
+          <CtrlBtn label="Word" onClick={handleFitToWord} title="Fit to word" disabled={!showTimeline} />
+          <CtrlBtn label="Clip" onClick={handleFitToSentence} title="Fit to sentence" disabled={!showTimeline} />
           <Box w="1px" h="16px" bg="studio.border" mx="1" />
           <CtrlBtn
             icon={<ZoomOut size={13} />}
             onClick={() =>
-              setTimelineZoom(Math.max(0.5, timelineZoom - 0.25))
+              setTimelineZoom(Math.max(TIMELINE_ZOOM_MIN, timelineZoom - 0.25))
             }
             title="Zoom out (-)"
+            disabled={!showTimeline}
           />
           <Slider.Root
             value={[timelineZoom]}
-            min={0.5}
-            max={4}
+            min={TIMELINE_ZOOM_MIN}
+            max={TIMELINE_ZOOM_MAX}
             step={0.05}
             onValueChange={(e) => setTimelineZoom(e.value[0]!)}
             size="sm"
             colorPalette="accent"
-            w="80px"
+            w="72px"
+            disabled={!showTimeline}
+            aria-label={["Timeline zoom"]}
+            getAriaValueText={({ value }) => `${value.toFixed(2)} times`}
           >
             <Slider.Control>
               <Slider.Track>
@@ -1990,38 +2258,52 @@ export function Timeline() {
           <CtrlBtn
             icon={<ZoomIn size={13} />}
             onClick={() =>
-              setTimelineZoom(Math.min(4, timelineZoom + 0.25))
+              setTimelineZoom(Math.min(TIMELINE_ZOOM_MAX, timelineZoom + 0.25))
             }
             title="Zoom in (+)"
+            disabled={!showTimeline}
           />
+          <Text
+            textStyle="data"
+            fontSize="10px"
+            color="studio.timecode"
+            minW="34px"
+            textAlign="right"
+          >
+            {Math.round(timelineZoom * 100)}%
+          </Text>
         </Flex>
       </Flex>
 
       {/* ── Track area ────────────────────────────────────────────────── */}
       {showTimeline && (
-        <Box
-          ref={stripRef}
-          data-timeline-scroll-root
-          overflowX="auto"
-          overflowY="hidden"
-          style={{ height: `${trackAreaHeight}px` }}
-          position="relative"
-          onWheel={handleWheel}
-          onScroll={onScroll}
-          css={{
-            "&::-webkit-scrollbar": { height: "6px" },
-            "&::-webkit-scrollbar-track": { background: "transparent" },
-            "&::-webkit-scrollbar-thumb": {
-              background: "var(--chakra-colors-studio-raised)",
-              borderRadius: "4px",
-            },
-          }}
-        >
+        <>
           <Box
+            ref={stripRef}
+            data-timeline-scroll-root
+            overflowX="auto"
+            overflowY="hidden"
+            style={{ height: `${trackAreaHeight}px` }}
             position="relative"
-            style={{ width: `${totalWidth + LEFT_GUTTER + 60}px` }}
-            h="100%"
+            onWheel={handleWheel}
+            onScroll={onScroll}
+            css={{
+              "&::-webkit-scrollbar": { height: "7px" },
+              "&::-webkit-scrollbar-track": { background: "var(--chakra-colors-studio-canvas)" },
+              "&::-webkit-scrollbar-thumb": {
+                background: "var(--chakra-colors-studio-borderStrong)",
+                borderRadius: "4px",
+              },
+              "&::-webkit-scrollbar-thumb:hover": {
+                background: "var(--chakra-colors-studio-fgSubtle)",
+              },
+            }}
           >
+            <Box
+              position="relative"
+              style={{ width: `${totalWidth + LEFT_GUTTER + 60}px` }}
+              h="100%"
+            >
             {/* ── Ruler ───────────────────────────────────────────── */}
             <Box
               position="absolute"
@@ -2144,10 +2426,78 @@ export function Timeline() {
 
             </Box>
 
+            {hasBrollLane ? (
+              <Box
+                position="absolute"
+                top={`${brollTrackTop}px`}
+                left={`${LEFT_GUTTER}px`}
+                style={{
+                  width: `${totalWidth}px`,
+                  height: `${BROLL_TRACK_HEIGHT}px`,
+                }}
+                bg="studio.surface"
+                borderRadius="l1"
+                borderWidth="1px"
+                borderColor="studio.borderStrong"
+                overflow="hidden"
+                onClick={handleStripClick}
+                cursor="pointer"
+              >
+                {brollTimelineCutaways.map((cutaway, index) => {
+                  const left = cutaway.startSec * TIMELINE_PX_PER_SEC;
+                  const width = Math.max(
+                    2,
+                    (cutaway.endSec - cutaway.startSec) * TIMELINE_PX_PER_SEC,
+                  );
+                  const durationLabel = `${(cutaway.endSec - cutaway.startSec).toFixed(1)}s`;
+                  return (
+                    <Flex
+                      key={`${cutaway.manual ? "manual" : "auto"}-${cutaway.startSec}-${index}`}
+                      as="button"
+                      aria-label={`${cutaway.manual ? "B-roll" : `Automatic B-roll ${index + 1}`}, ${formatTimecode(cutaway.startSec)} to ${formatTimecode(cutaway.endSec)}`}
+                      title={cutaway.query}
+                      position="absolute"
+                      top="2px"
+                      bottom="2px"
+                      style={{ left: `${left}px`, width: `${width}px` }}
+                      align="center"
+                      gap="6px"
+                      px="7px"
+                      minW="0"
+                      overflow="hidden"
+                      borderRadius="l1"
+                      bg={cutaway.manual ? "studio.accent/18" : "studio.raised"}
+                      borderWidth="1px"
+                      borderStyle={cutaway.manual ? "solid" : "dashed"}
+                      borderColor={cutaway.manual ? "studio.accent" : "studio.borderStrong"}
+                      color={cutaway.manual ? "studio.accentFg" : "studio.fgMuted"}
+                      cursor="pointer"
+                      _hover={{ borderColor: "studio.accent", color: "studio.accentFg" }}
+                      transition="border-color 120ms ease, color 120ms ease"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        seekTo(cutaway.startSec);
+                      }}
+                    >
+                      <Text textStyle="eyebrow" fontSize="9px" flexShrink={0}>
+                        {cutaway.manual ? "B-roll" : `Auto ${index + 1}`}
+                      </Text>
+                      <Text fontSize="10px" truncate minW="0" flex="1">
+                        {cutaway.query}
+                      </Text>
+                      <Text textStyle="data" fontSize="9px" flexShrink={0}>
+                        {durationLabel}
+                      </Text>
+                    </Flex>
+                  );
+                })}
+              </Box>
+            ) : null}
+
             {/* ── Word chips (Vizard-parity Phase B step 15) ────── */}
             <Box
               position="absolute"
-              top={`${RULER_HEIGHT + TRACK_HEIGHT + 4}px`}
+              top={`${wordTrackTop}px`}
               left={`${LEFT_GUTTER}px`}
               style={{
                 width: `${totalWidth}px`,
@@ -2163,22 +2513,51 @@ export function Timeline() {
                   onSeek={seekTo}
                 />
               )}
+              {!showWordChips && (
+                <CaptionChipsRow
+                  chips={visibleCaptionLaneChips}
+                  pxPerSec={TIMELINE_PX_PER_SEC}
+                  height={WORD_CHIPS_HEIGHT}
+                  onSeek={seekTo}
+                />
+              )}
+              {transcriptSelectionEdited && (
+                <Box
+                  position="absolute"
+                  top="0"
+                  bottom="0"
+                  pointerEvents="none"
+                  zIndex={12}
+                  bg="studio.accent/18"
+                  borderWidth="1px"
+                  borderColor="studio.accent"
+                  style={{
+                    left: `${transcriptSelectionEdited.startSec * TIMELINE_PX_PER_SEC}px`,
+                    width: `${Math.max(
+                      2,
+                      (transcriptSelectionEdited.endSec - transcriptSelectionEdited.startSec) *
+                        TIMELINE_PX_PER_SEC,
+                    )}px`,
+                  }}
+                  aria-hidden="true"
+                />
+              )}
             </Box>
 
             {/* ── Waveform track ───────────────────────────────── */}
             <Box
               position="absolute"
-              top={`${RULER_HEIGHT + TRACK_HEIGHT + 4 + WORD_CHIPS_HEIGHT + 4}px`}
+              top={`${waveformTrackTop}px`}
               left={`${LEFT_GUTTER}px`}
               style={{
                 width: `${totalWidth}px`,
                 height: `${WAVEFORM_HEIGHT}px`,
               }}
-              bg="studio.subtle"
+              bg="studio.surface"
               borderRadius="l1"
               overflow="hidden"
               borderWidth="1px"
-              borderColor="studio.border"
+              borderColor="studio.borderStrong"
               onClick={handleStripClick}
               cursor="pointer"
             >
@@ -2190,6 +2569,39 @@ export function Timeline() {
                 height={WAVEFORM_HEIGHT}
                 waveformPeaksUrl={waveformPeaksUrl}
               />
+              <Box
+                position="absolute"
+                left="0"
+                right="0"
+                top="50%"
+                h="1px"
+                bg="studio.borderStrong"
+                opacity={0.7}
+                pointerEvents="none"
+                aria-hidden="true"
+              />
+              {transcriptSelectionEdited && (
+                <Box
+                  position="absolute"
+                  top="0"
+                  bottom="0"
+                  pointerEvents="none"
+                  zIndex={12}
+                  bg="studio.accent/12"
+                  borderLeftWidth="1px"
+                  borderRightWidth="1px"
+                  borderColor="studio.accent"
+                  style={{
+                    left: `${transcriptSelectionEdited.startSec * TIMELINE_PX_PER_SEC}px`,
+                    width: `${Math.max(
+                      2,
+                      (transcriptSelectionEdited.endSec - transcriptSelectionEdited.startSec) *
+                        TIMELINE_PX_PER_SEC,
+                    )}px`,
+                  }}
+                  aria-hidden="true"
+                />
+              )}
             </Box>
 
             {/* ── Text overlay track (Vizard-parity Phase C step 1) ── */}
@@ -2239,8 +2651,30 @@ export function Timeline() {
               pxPerSec={TIMELINE_PX_PER_SEC}
               trackHeight={trackAreaHeight}
             />
+            </Box>
           </Box>
-        </Box>
+          <TimelineLaneLabel label="VIDEO" top={RULER_HEIGHT} height={TRACK_HEIGHT} />
+          {hasBrollLane ? (
+            <TimelineLaneLabel
+              label={brollUrl ? "B-ROLL" : "AUTO"}
+              top={brollTrackTop}
+              height={BROLL_TRACK_HEIGHT}
+            />
+          ) : null}
+          <TimelineLaneLabel
+            label={showWordChips ? "WORDS" : "LINES"}
+            top={wordTrackTop}
+            height={WORD_CHIPS_HEIGHT}
+          />
+          <TimelineLaneLabel
+            label="AUDIO"
+            top={waveformTrackTop}
+            height={WAVEFORM_HEIGHT}
+          />
+          {hasTextLayers && (
+            <TimelineLaneLabel label="TEXT" top={textTrackTop} height={TEXT_TRACK_HEIGHT} />
+          )}
+        </>
       )}
     </Box>
   );

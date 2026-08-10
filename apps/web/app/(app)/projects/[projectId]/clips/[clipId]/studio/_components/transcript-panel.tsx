@@ -2,8 +2,8 @@
 
 import { memo, useRef, useEffect, useCallback, useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
-import { Box, Flex, Input, Text, Checkbox } from "@chakra-ui/react";
-import { Copy, Scissors, Trash2, Undo2 } from "lucide-react";
+import { Box, Flex, Input, Text, Textarea, Checkbox } from "@chakra-ui/react";
+import { Combine, Copy, Plus, Scissors, Trash2, Undo2 } from "lucide-react";
 import { toaster } from "@narriflow/ui";
 import { editedToSource, sourceToEdited, userErrorMessage } from "@narriflow/validators";
 import type {
@@ -24,6 +24,7 @@ import {
   type SelectionEndpoint,
   type UtteranceWordSource,
 } from "./transcript-selection";
+import { subtitleParagraphGroups } from "./subtitle-lines";
 
 // ─── Pause threshold (seconds) ──────────────────────────────────────────────
 
@@ -43,6 +44,9 @@ const PAUSE_THRESHOLD = 0.4;
 // always has room to render above its anchor without leaving the visible
 // scrolled area.
 const SELECTION_TOOLBAR_CLEARANCE_PX = 44;
+const SELECTION_TOOLBAR_HALF_WIDTH_PX = 142;
+
+type TranscriptViewMode = "word" | "sentence" | "paragraph";
 
 // ─── API error copy (Create clip, Phase B step 14) ─────────────────────────
 
@@ -267,6 +271,7 @@ function WordCorrectInput({
   return (
     <Input
       ref={inputRef}
+      aria-label={`Correct word ${initialValue}`}
       value={value}
       onChange={(e: React.ChangeEvent<HTMLInputElement>) => setValue(e.target.value)}
       onKeyDown={(e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -396,6 +401,8 @@ const EditableUtterance = memo(function EditableUtterance({
             ) : (
               <Box
                 as="span"
+                role="button"
+                tabIndex={isDeleted ? -1 : 0}
                 display="inline"
                 color={
                   isDeleted
@@ -426,6 +433,19 @@ const EditableUtterance = memo(function EditableUtterance({
                   if (isDeleted) return;
                   startEdit(wordIdx);
                 }}
+                onKeyDown={(e: React.KeyboardEvent) => {
+                  if (isDeleted) return;
+                  if (e.key === "Enter" || e.key === "F2") {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    startEdit(wordIdx);
+                  } else if (e.key === " ") {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onSeek(sourceToEdited(editedTimeMap, token.word.startSec));
+                  }
+                }}
+                aria-label={`${token.word.word}. Press Enter to correct; Space to seek.`}
               >
                 {token.word.word}
               </Box>
@@ -439,6 +459,218 @@ const EditableUtterance = memo(function EditableUtterance({
           </Box>
         );
       })}
+    </Box>
+  );
+});
+
+function ViewModeButton({
+  mode,
+  current,
+  onSelect,
+}: {
+  mode: TranscriptViewMode;
+  current: TranscriptViewMode;
+  onSelect: (mode: TranscriptViewMode) => void;
+}) {
+  const label = mode === "word" ? "Word" : mode === "sentence" ? "Sentence" : "Paragraph";
+  const selected = mode === current;
+  return (
+    <Box
+      as="button"
+      px="7px"
+      h="24px"
+      borderRadius="l1"
+      bg={selected ? "studio.raised" : "transparent"}
+      color={selected ? "studio.fg" : "studio.fgMuted"}
+      borderWidth="1px"
+      borderColor={selected ? "studio.borderStrong" : "transparent"}
+      fontSize="10.5px"
+      fontWeight="600"
+      aria-pressed={selected}
+      onClick={() => onSelect(mode)}
+      _hover={{ color: "studio.fg", bg: "studio.raised" }}
+    >
+      {label}
+    </Box>
+  );
+}
+
+function LineAction({
+  label,
+  children,
+  onClick,
+  disabled = false,
+}: {
+  label: string;
+  children: React.ReactNode;
+  onClick: () => void;
+  disabled?: boolean;
+}) {
+  return (
+    <Flex
+      as="button"
+      align="center"
+      justify="center"
+      w="24px"
+      h="24px"
+      borderRadius="l1"
+      color="studio.fgMuted"
+      bg="transparent"
+      aria-disabled={disabled}
+      tabIndex={disabled ? -1 : undefined}
+      opacity={disabled ? 0.3 : 1}
+      cursor={disabled ? "not-allowed" : "pointer"}
+      aria-label={label}
+      title={label}
+      onClick={disabled ? undefined : onClick}
+      _hover={disabled ? undefined : { bg: "studio.raised", color: "studio.fg" }}
+    >
+      {children}
+    </Flex>
+  );
+}
+
+const SubtitleLineEditor = memo(function SubtitleLineEditor({
+  utterance,
+  index,
+  isLast,
+}: {
+  utterance: TranscriptUtterance;
+  index: number;
+  isLast: boolean;
+}) {
+  const {
+    updateUtteranceText,
+    addSubtitleLineAfter,
+    deleteSubtitleLine,
+    mergeSubtitleLineWithNext,
+    seekTo,
+    editedTimeMap,
+  } = useStudio();
+  const [draft, setDraft] = useState(utterance.text);
+  useEffect(() => setDraft(utterance.text), [utterance.text]);
+  const editedStartSec = sourceToEdited(editedTimeMap, utterance.startSec);
+  const editedEndSec = sourceToEdited(editedTimeMap, utterance.endSec);
+
+  const commit = useCallback(() => {
+    const trimmed = draft.trim();
+    if (!trimmed) {
+      setDraft(utterance.text);
+      return;
+    }
+    updateUtteranceText(index, trimmed);
+  }, [draft, index, updateUtteranceText, utterance.text]);
+
+  return (
+    <Box px="12px" py="8px" borderBottomWidth="1px" borderColor="studio.border">
+      <Flex align="center" justify="space-between" mb="5px" gap="2">
+        <Flex align="center" gap="6px" minW="0">
+          <Text fontSize="10.5px" fontWeight="600" color="studio.accentFg">
+            {utterance.speakerLabel}
+          </Text>
+          <Text textStyle="data" fontSize="10px" color="studio.timecode">
+            {Math.max(0, editedStartSec).toFixed(2)}–{Math.max(0, editedEndSec).toFixed(2)}
+          </Text>
+        </Flex>
+        <Flex align="center" gap="1px">
+          <LineAction label="Add subtitle line after" onClick={() => addSubtitleLineAfter(index)}>
+            <Plus size={13} />
+          </LineAction>
+          <LineAction
+            label="Merge with next subtitle line"
+            onClick={() => mergeSubtitleLineWithNext(index)}
+            disabled={isLast}
+          >
+            <Combine size={13} />
+          </LineAction>
+          <LineAction label="Delete subtitle line only" onClick={() => deleteSubtitleLine(index)}>
+            <Trash2 size={13} />
+          </LineAction>
+        </Flex>
+      </Flex>
+      <Input
+        value={draft}
+        onChange={(event: React.ChangeEvent<HTMLInputElement>) => setDraft(event.target.value)}
+        onFocus={() => seekTo(sourceToEdited(editedTimeMap, utterance.startSec))}
+        onBlur={commit}
+        onKeyDown={(event: React.KeyboardEvent<HTMLInputElement>) => {
+          event.stopPropagation();
+          if (event.key === "Enter") {
+            event.preventDefault();
+            commit();
+            event.currentTarget.blur();
+          } else if (event.key === "Escape") {
+            setDraft(utterance.text);
+            event.currentTarget.blur();
+          }
+        }}
+        aria-label={`Subtitle line ${index + 1}`}
+        h="32px"
+        bg="studio.subtle"
+        borderColor="border.control"
+        color="studio.fg"
+        fontSize="12.5px"
+      />
+    </Box>
+  );
+});
+
+const SubtitleParagraphEditor = memo(function SubtitleParagraphEditor({
+  speakerLabel,
+  indices,
+  utterances,
+}: {
+  speakerLabel: string;
+  indices: number[];
+  utterances: TranscriptUtterance[];
+}) {
+  const { updateParagraphText } = useStudio();
+  const sourceText = indices.map((index) => utterances[index]?.text ?? "").join(" ").trim();
+  const [draft, setDraft] = useState(sourceText);
+  useEffect(() => setDraft(sourceText), [sourceText]);
+
+  const commit = useCallback(() => {
+    const trimmed = draft.trim();
+    if (!trimmed) {
+      setDraft(sourceText);
+      return;
+    }
+    updateParagraphText(indices, trimmed);
+  }, [draft, indices, sourceText, updateParagraphText]);
+
+  return (
+    <Box px="14px" py="10px" borderBottomWidth="1px" borderColor="studio.border">
+      <Text fontSize="10.5px" fontWeight="600" color="studio.accentFg" mb="5px">
+        {speakerLabel}
+      </Text>
+      <Textarea
+        value={draft}
+        onChange={(event: React.ChangeEvent<HTMLTextAreaElement>) => setDraft(event.target.value)}
+        onBlur={commit}
+        onKeyDown={(event: React.KeyboardEvent<HTMLTextAreaElement>) => {
+          event.stopPropagation();
+          if (event.key === "Escape") {
+            setDraft(sourceText);
+            event.currentTarget.blur();
+          }
+          if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+            event.preventDefault();
+            commit();
+            event.currentTarget.blur();
+          }
+        }}
+        aria-label={`${speakerLabel} paragraph subtitles`}
+        minH="92px"
+        resize="vertical"
+        bg="studio.subtle"
+        borderColor="border.control"
+        color="studio.fg"
+        fontSize="12.5px"
+        lineHeight="1.6"
+      />
+      <Text mt="4px" fontSize="10px" color="studio.fgSubtle">
+        ⌘ Enter saves · timing remains attached to the original lines
+      </Text>
     </Box>
   );
 });
@@ -558,6 +790,7 @@ export function TranscriptPanel() {
     deleteSourceRange,
     revertDeletedRange,
     clipInfo,
+    setTranscriptSelectionRange,
   } = useStudio();
   const router = useRouter();
 
@@ -568,6 +801,7 @@ export function TranscriptPanel() {
     getActiveTranscriptState(playbackClock, utterances, editedTimeMap),
   );
   const [selection, setSelection] = useState<TranscriptSelectionState | null>(null);
+  const [viewMode, setViewMode] = useState<TranscriptViewMode>("word");
   const [creatingClip, setCreatingClip] = useState(false);
   // Synchronous re-entrancy guard for handleCreateClip: both the toolbar
   // button and the ⇧⌘C shortcut call it, and `creatingClip` state alone
@@ -644,33 +878,40 @@ export function TranscriptPanel() {
     () => utterances.map((u, i) => ({ utteranceIndex: i, words: getWordsForUtterance(u) })),
     [utterances],
   );
+  const paragraphGroups = useMemo(() => subtitleParagraphGroups(utterances), [utterances]);
 
   const handleSelectionChange = useCallback(() => {
     const sel = window.getSelection();
     const container = scrollRef.current;
     if (!sel || sel.isCollapsed || sel.rangeCount === 0 || !container) {
       setSelection(null);
+      setTranscriptSelectionRange(null);
       return;
     }
     const range = sel.getRangeAt(0);
     if (!container.contains(range.commonAncestorContainer)) {
       setSelection(null);
+      setTranscriptSelectionRange(null);
       return;
     }
     const anchor = resolveSelectionEndpoint(sel.anchorNode, sel.anchorOffset);
     const focus = resolveSelectionEndpoint(sel.focusNode, sel.focusOffset);
     if (!anchor || !focus) {
       setSelection(null);
+      setTranscriptSelectionRange(null);
       return;
     }
     const words = collectSelectedWords(utteranceWordSources, anchor, focus);
     if (words.length === 0) {
       setSelection(null);
+      setTranscriptSelectionRange(null);
       return;
     }
     const rect = range.getBoundingClientRect();
     const containerRect = container.getBoundingClientRect();
     const rawTop = rect.top - containerRect.top + container.scrollTop;
+    const sourceRange = selectedWordsToSourceRange(words);
+    setTranscriptSelectionRange(sourceRange);
     setSelection({
       words,
       revertRange: computeRevertCoveringRange(words, deletedRanges),
@@ -678,9 +919,15 @@ export function TranscriptPanel() {
       // still has room to float above it without clipping against the
       // scroll container's own top edge — see the constant's doc comment.
       top: Math.max(rawTop, container.scrollTop + SELECTION_TOOLBAR_CLEARANCE_PX),
-      left: rect.left - containerRect.left + rect.width / 2,
+      left: Math.max(
+        SELECTION_TOOLBAR_HALF_WIDTH_PX,
+        Math.min(
+          container.clientWidth - SELECTION_TOOLBAR_HALF_WIDTH_PX,
+          rect.left - containerRect.left + rect.width / 2,
+        ),
+      ),
     });
-  }, [utteranceWordSources, deletedRanges]);
+  }, [utteranceWordSources, deletedRanges, setTranscriptSelectionRange]);
 
   useEffect(() => {
     document.addEventListener("selectionchange", handleSelectionChange);
@@ -719,15 +966,32 @@ export function TranscriptPanel() {
       const container = scrollRef.current;
       if (!container || container.contains(e.target as Node)) return;
       setSelection(null);
+      setTranscriptSelectionRange(null);
     };
     document.addEventListener("mousedown", onMouseDown);
     return () => document.removeEventListener("mousedown", onMouseDown);
-  }, []);
+  }, [setTranscriptSelectionRange]);
 
   const dismissSelection = useCallback(() => {
     window.getSelection()?.removeAllRanges();
     setSelection(null);
-  }, []);
+    setTranscriptSelectionRange(null);
+  }, [setTranscriptSelectionRange]);
+
+  useEffect(
+    () => () => {
+      setTranscriptSelectionRange(null);
+    },
+    [setTranscriptSelectionRange],
+  );
+
+  const handleViewModeChange = useCallback(
+    (mode: TranscriptViewMode) => {
+      dismissSelection();
+      setViewMode(mode);
+    },
+    [dismissSelection],
+  );
 
   const handleDeleteSelection = useCallback(() => {
     const current = selectionRef.current;
@@ -883,31 +1147,47 @@ export function TranscriptPanel() {
       <Flex
         px="16px"
         pt="12px"
-        pb="10px"
-        align="center"
-        justify="space-between"
+        pb="9px"
+        direction="column"
+        align="stretch"
         borderBottomWidth="1px"
         borderColor="studio.border"
         flexShrink={0}
-        gap="2"
+        gap="8px"
       >
-        <Text textStyle="eyebrow" color="studio.fgMuted">
-          Transcript
-        </Text>
-        <Checkbox.Root
-          checked={transcriptOnly}
-          onCheckedChange={(e) => setTranscriptOnly(!!e.checked)}
-          size="sm"
-          colorPalette="accent"
-          gap="8px"
-          cursor="pointer"
+        <Flex align="center" justify="space-between" gap="2">
+          <Text textStyle="eyebrow" color="studio.fgMuted">
+            Transcript
+          </Text>
+          <Checkbox.Root
+            checked={transcriptOnly}
+            onCheckedChange={(e) => setTranscriptOnly(!!e.checked)}
+            size="sm"
+            colorPalette="accent"
+            gap="6px"
+            cursor="pointer"
+          >
+            <Checkbox.HiddenInput />
+            <Checkbox.Control />
+            <Checkbox.Label>
+              <Text fontSize="11px" color="studio.fgMuted">Transcript only</Text>
+            </Checkbox.Label>
+          </Checkbox.Root>
+        </Flex>
+        <Flex
+          role="group"
+          aria-label="Transcript editing view"
+          p="2px"
+          borderWidth="1px"
+          borderColor="studio.border"
+          borderRadius="l1"
+          bg="studio.subtle"
+          justify="space-between"
         >
-          <Checkbox.HiddenInput />
-          <Checkbox.Control />
-          <Checkbox.Label>
-            <Text fontSize="12px" color="studio.fgMuted">Transcript only</Text>
-          </Checkbox.Label>
-        </Checkbox.Root>
+          <ViewModeButton mode="word" current={viewMode} onSelect={handleViewModeChange} />
+          <ViewModeButton mode="sentence" current={viewMode} onSelect={handleViewModeChange} />
+          <ViewModeButton mode="paragraph" current={viewMode} onSelect={handleViewModeChange} />
+        </Flex>
       </Flex>
 
       {/* Scrollable transcript body */}
@@ -927,7 +1207,27 @@ export function TranscriptPanel() {
           },
         }}
       >
-        {utterances.map((utterance, i) => {
+        {viewMode === "sentence" &&
+          utterances.map((utterance, index) => (
+            <SubtitleLineEditor
+              key={`line-${utterance.index}-${utterance.startSec}`}
+              utterance={utterance}
+              index={index}
+              isLast={index === utterances.length - 1}
+            />
+          ))}
+
+        {viewMode === "paragraph" &&
+          paragraphGroups.map((group, index) => (
+            <SubtitleParagraphEditor
+              key={`${group.speakerLabel}-${group.lineIndices[0] ?? index}`}
+              speakerLabel={group.speakerLabel}
+              indices={group.lineIndices}
+              utterances={utterances}
+            />
+          ))}
+
+        {viewMode === "word" && utterances.map((utterance, i) => {
           const isActive = activeState.utteranceIndex === i;
           const clipRelativeTimestamp = utterance.startSec - clipStartSec;
           const pauseAfter = utterancePauses.get(i);
@@ -985,7 +1285,7 @@ export function TranscriptPanel() {
         {/* Bottom padding */}
         <Box h="32px" />
 
-        {selection && (
+        {viewMode === "word" && selection && (
           <SelectionToolbar
             top={selection.top}
             left={selection.left}

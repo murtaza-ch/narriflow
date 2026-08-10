@@ -5,8 +5,7 @@ import {
   averageUtteranceDurationSec,
   averageWordDurationSec,
   findActiveWordId,
-  FIT_SENTENCE_TARGET_PX,
-  FIT_WORD_TARGET_PX_PER_WORD,
+  FIT_WORD_TARGET_PX_PER_SEC,
   projectWordsToEdited,
   pxPerWordForZoom,
   selectVisibleWordChips,
@@ -72,34 +71,19 @@ describe("averageWordDurationSec / averageUtteranceDurationSec", () => {
 
 describe("zoomForFitToWord / zoomForFitToSentence", () => {
   test("targets the fit constants and clamps to the timeline zoom range", () => {
-    // avg word duration 0.5s -> unclamped zoom = 40 / (80*0.5) = 1
     const utterances = [utterance(0, 0, [{ word: "hi", startSec: 0, endSec: 0.5 }])];
     const zoom = zoomForFitToWord(utterances);
-    expect(zoom).toBeCloseTo(FIT_WORD_TARGET_PX_PER_WORD / (TIMELINE_BASE_PX_PER_SEC * 0.5));
+    expect(zoom).toBeCloseTo(FIT_WORD_TARGET_PX_PER_SEC / TIMELINE_BASE_PX_PER_SEC);
     expect(zoom).toBeGreaterThanOrEqual(TIMELINE_ZOOM_MIN);
     expect(zoom).toBeLessThanOrEqual(TIMELINE_ZOOM_MAX);
-
-    // Extremely short words would need zoom >> 4 — must clamp to the max.
-    const tinyWordUtterances = [utterance(0, 0, [{ word: "a", startSec: 0, endSec: 0.01 }])];
-    expect(zoomForFitToWord(tinyWordUtterances)).toBe(TIMELINE_ZOOM_MAX);
-
-    // Extremely long words would need zoom << 0.5 — must clamp to the min.
-    const longWordUtterances = [utterance(0, 0, [{ word: "a", startSec: 0, endSec: 30 }])];
-    expect(zoomForFitToWord(longWordUtterances)).toBe(TIMELINE_ZOOM_MIN);
+    expect(zoomForFitToWord([])).toBe(1);
   });
 
-  test("fit-to-sentence targets FIT_SENTENCE_TARGET_PX and clamps", () => {
-    const utterances = [
-      utterance(0, 0, [
-        { word: "a", startSec: 0, endSec: 1 },
-        { word: "b", startSec: 1, endSec: 2 },
-      ]),
-    ];
-    const zoom = zoomForFitToSentence(utterances);
-    expect(zoom).toBeCloseTo(FIT_SENTENCE_TARGET_PX / (TIMELINE_BASE_PX_PER_SEC * 2));
-
-    const longSentence = [utterance(0, 0, [{ word: "a", startSec: 0, endSec: 60 }])];
-    expect(zoomForFitToSentence(longSentence)).toBe(TIMELINE_ZOOM_MIN);
+  test("fit-to-sentence fits the full edited duration to the viewport and clamps", () => {
+    expect(zoomForFitToSentence(10, 800)).toBe(1);
+    expect(zoomForFitToSentence(60, 800)).toBeCloseTo(800 / (80 * 60));
+    expect(zoomForFitToSentence(1, 10_000)).toBe(TIMELINE_ZOOM_MAX);
+    expect(zoomForFitToSentence(0, 800)).toBe(1);
   });
 });
 

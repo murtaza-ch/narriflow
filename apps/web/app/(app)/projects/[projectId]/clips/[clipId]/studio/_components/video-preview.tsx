@@ -46,6 +46,12 @@ import {
   speakerLayerCropRect,
 } from "./auto-layout-preview";
 import { InteractiveSpeakerLayer } from "./interactive-speaker-layer";
+import {
+  brollPreviewLocalTime,
+  isBrollPreviewActive,
+  manualBrollPreviewWindow,
+  type ManualBrollPreviewWindow,
+} from "./broll-preview";
 
 /** `screenTileGeometry`'s `tileWidth` (apps/worker/src/tasks/screen-layout.ts)
  *  is just the target aspect ratio's own output WIDTH — mirrored here from
@@ -211,6 +217,102 @@ const PILL_STYLES = {
   userSelect: "none",
 } as const;
 
+function BrollPreviewLayer({
+  src,
+  poster,
+  window,
+  currentTime,
+  isPlaying,
+  onDuration,
+}: {
+  src: string;
+  poster: string | null;
+  window: ManualBrollPreviewWindow;
+  currentTime: number;
+  isPlaying: boolean;
+  onDuration: (durationSec: number) => void;
+}) {
+  const ref = useRef<HTMLVideoElement>(null);
+  const localTime = brollPreviewLocalTime(currentTime, window);
+
+  useEffect(() => {
+    const video = ref.current;
+    if (!video) return;
+    if (video.readyState >= HTMLMediaElement.HAVE_METADATA) {
+      const bounded = Math.min(
+        Math.max(0, localTime),
+        Math.max(0, video.duration - 0.05),
+      );
+      if (Math.abs(video.currentTime - bounded) > 0.16) {
+        video.currentTime = bounded;
+      }
+    }
+    if (isPlaying) {
+      void video.play().catch(() => {
+        // The poster remains visible if the remote preview cannot autoplay.
+      });
+    } else {
+      video.pause();
+    }
+  }, [isPlaying, localTime]);
+
+  return (
+    <Box
+      position="absolute"
+      inset="0"
+      zIndex={3}
+      bg="black"
+      pointerEvents="none"
+      aria-label="B-roll preview"
+    >
+      {/* Decorative cutaway: spoken captions remain in the interactive
+          overlay above this layer, so this video intentionally has no track. */}
+      <video
+        ref={ref}
+        src={src}
+        poster={poster ?? undefined}
+        muted
+        playsInline
+        preload="metadata"
+        onLoadedMetadata={(event) => {
+          const durationSec = event.currentTarget.duration;
+          if (Number.isFinite(durationSec) && durationSec > 0) {
+            onDuration(durationSec);
+          }
+          event.currentTarget.currentTime = Math.min(
+            localTime,
+            Math.max(0, durationSec - 0.05),
+          );
+        }}
+        style={{
+          width: "100%",
+          height: "100%",
+          objectFit: "cover",
+          display: "block",
+        }}
+      />
+      <Flex
+        position="absolute"
+        top="8px"
+        left="8px"
+        align="center"
+        gap="5px"
+        px="7px"
+        h="20px"
+        borderRadius="l1"
+        bg="studio.surface/88"
+        borderWidth="1px"
+        borderColor="studio.borderStrong"
+        color="studio.accentFg"
+        textStyle="eyebrow"
+        fontSize="9px"
+      >
+        B-roll · {(window.endSec - window.startSec).toFixed(1)}s
+      </Flex>
+    </Box>
+  );
+}
+
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export function VideoPreview() {
@@ -228,6 +330,9 @@ export function VideoPreview() {
     setUseOriginalSourceFallback,
     activeVideoUrl,
     activeOffsetSec,
+    brollUrl,
+    brollPreviewAsset,
+    setBrollPreviewAsset,
     editedTimeMap,
     playerClipStartSec,
     deselectCaption,
@@ -327,6 +432,28 @@ export function VideoPreview() {
   const playerRippleStartSecRef = useRef(playerRippleStartSec);
 
   const arConfig = ASPECT_RATIO_CONFIG[aspectRatio];
+  const activeBrollAsset =
+    brollPreviewAsset?.url === brollUrl ? brollPreviewAsset : null;
+  const brollWindow = useMemo(
+    () =>
+      brollUrl
+        ? manualBrollPreviewWindow(duration, activeBrollAsset?.durationSec)
+        : null,
+    [activeBrollAsset?.durationSec, brollUrl, duration],
+  );
+  const brollActive = isBrollPreviewActive(currentTime, brollWindow);
+  const handleBrollDuration = useCallback(
+    (durationSec: number) => {
+      if (!brollUrl) return;
+      setBrollPreviewAsset({
+        url: brollUrl,
+        durationSec,
+        posterUrl: activeBrollAsset?.posterUrl ?? null,
+        authorName: activeBrollAsset?.authorName ?? null,
+        pageUrl: activeBrollAsset?.pageUrl ?? null,
+      });
+    }, [activeBrollAsset, brollUrl, setBrollPreviewAsset],
+  );
 
   // Vizard-parity Phase C item 2 (canvas background) / Phase C-2 stage 1
   // (framing modes): a persisted studioEdits.background always wins over
@@ -1405,6 +1532,17 @@ export function VideoPreview() {
               ) : null}
             </Box>
           )}
+
+          {brollUrl && brollWindow && brollActive ? (
+            <BrollPreviewLayer
+              src={brollUrl}
+              poster={activeBrollAsset?.posterUrl ?? null}
+              window={brollWindow}
+              currentTime={currentTime}
+              isPlaying={isPlaying}
+              onDuration={handleBrollDuration}
+            />
+          ) : null}
 
           {/* Hidden background-music preview track — decorative render-parity
               bed, no user-facing controls; play/pause, looped offset

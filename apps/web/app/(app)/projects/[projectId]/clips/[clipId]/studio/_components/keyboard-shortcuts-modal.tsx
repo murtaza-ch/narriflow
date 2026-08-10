@@ -22,6 +22,7 @@ const SHORTCUTS = [
   { command: "Undo",                         win: "Ctrl+Z",            mac: "⌘Z" },
   { command: "Redo",                         win: "Ctrl+Shift+Z",      mac: "⌘⇧Z" },
   { command: "Toggle timeline",              win: "H",                 mac: "H" },
+  { command: "Toggle timeline snapping",     win: "N",                 mac: "N" },
   { command: "Open shortcuts",               win: "?",                 mac: "?" },
   { command: "Close / Cancel",               win: "Esc",               mac: "Esc" },
 ];
