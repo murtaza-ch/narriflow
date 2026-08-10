@@ -102,4 +102,48 @@ describe("speaker layout overrides", () => {
       endSec: 8,
     });
   });
+
+  test("ripple delete before a scene shifts its timing without changing either speaker", () => {
+    const scene = resolveSpeakerLayoutScene(
+      { ...twoUp, startSec: 10, endSec: 16 },
+      [],
+      "9:16",
+    );
+    scene.layers[0] = {
+      ...scene.layers[0]!,
+      cropZoom: 1.6,
+      rotationDeg: -7,
+    };
+    scene.layers[1] = {
+      ...scene.layers[1]!,
+      cropZoom: 1.8,
+      frameX: 0.08,
+      frameWidth: 0.92,
+    };
+    const override = speakerLayoutOverrideFromScene(scene, "9:16", "shifted");
+    const doc = editorDocumentSchema.parse({
+      clipStartSec: 0,
+      clipEndSec: 20,
+      captionPreset: DEFAULT_CAPTION_PRESET,
+      transcriptSlice: [],
+      studioEdits: {
+        ...studioEditsSchema.parse(undefined),
+        speakerLayoutOverrides: [override],
+      },
+      brollUrl: null,
+      deletedRanges: [],
+    });
+
+    const next = applyEditorAction(doc, {
+      type: "deleteRange",
+      range: { startSec: 2, endSec: 4 },
+    });
+    expect(next.studioEdits.speakerLayoutOverrides).toHaveLength(1);
+    expect(next.studioEdits.speakerLayoutOverrides[0]).toMatchObject({
+      id: "shifted",
+      startSec: 8,
+      endSec: 14,
+      layers: override.layers,
+    });
+  });
 });

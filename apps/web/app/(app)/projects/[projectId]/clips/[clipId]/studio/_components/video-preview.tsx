@@ -42,6 +42,7 @@ import type { NormalizedCropRect } from "./pip-crop-math";
 import {
   activeAutoLayoutSegment,
   autoLayoutSegmentsForAspect,
+  resetSpeakerLayerTransform,
   speakerLayerCropRect,
 } from "./auto-layout-preview";
 import { InteractiveSpeakerLayer } from "./interactive-speaker-layer";
@@ -110,7 +111,6 @@ function speakerFrameStyle(layer: SpeakerLayerTransform): React.CSSProperties {
     height: `${layer.frameHeight * 100}%`,
     transform: `rotate(${layer.rotationDeg}deg)`,
     transformOrigin: "center",
-    overflow: "hidden",
   };
 }
 
@@ -474,7 +474,7 @@ export function VideoPreview() {
     [activeAutoSegment, activeSpeakerSceneKey, aspectRatio, setStudioEdits],
   );
 
-  const resetActiveSpeakerScene = useCallback(() => {
+  const resetActiveSpeakerLayer = useCallback((role: SpeakerLayerRole) => {
     if (!activeAutoSegment) return;
     setStudioEdits((previous) => {
       const scene = resolveSpeakerLayoutScene(
@@ -483,11 +483,32 @@ export function VideoPreview() {
         aspectRatio,
       );
       if (!scene.overrideId) return previous;
+
+      const defaults = resolveSpeakerLayoutScene(activeAutoSegment, [], aspectRatio);
+      const reset = resetSpeakerLayerTransform(
+        scene.layers,
+        defaults.layers,
+        role,
+      );
+      if (!reset.changed) return previous;
+
+      const nextScene = { ...scene, layers: reset.layers };
+      const withoutCurrent = previous.speakerLayoutOverrides.filter(
+        (candidate) => candidate.id !== scene.overrideId,
+      );
+
       return {
         ...previous,
-        speakerLayoutOverrides: previous.speakerLayoutOverrides.filter(
-          (candidate) => candidate.id !== scene.overrideId,
-        ),
+        speakerLayoutOverrides: reset.isFullyReset
+          ? withoutCurrent
+          : [
+              ...withoutCurrent.slice(-63),
+              speakerLayoutOverrideFromScene(
+                nextScene,
+                aspectRatio,
+                scene.overrideId,
+              ),
+            ],
       };
     });
     endCoalesce();
@@ -1290,6 +1311,9 @@ export function VideoPreview() {
                   }
             }
             overflow="visible"
+            zIndex={
+              autoMainLayer && selectedSpeakerRole === autoMainLayer.role ? 6 : 1
+            }
             borderBottomWidth={isStacked ? "1px" : "0"}
             borderColor="studio.border"
             bg={isScreen ? "black" : undefined}
@@ -1321,7 +1345,7 @@ export function VideoPreview() {
                 onSelect={() => selectSpeakerLayer(autoMainLayer.role)}
                 onChange={updateSpeakerLayer}
                 onGestureEnd={endCoalesce}
-                onReset={resetActiveSpeakerScene}
+                onReset={() => resetActiveSpeakerLayer(autoMainLayer.role)}
               />
             ) : null}
           </Box>
@@ -1340,6 +1364,11 @@ export function VideoPreview() {
                     }
               }
               overflow="visible"
+              zIndex={
+                autoBottomLayer && selectedSpeakerRole === autoBottomLayer.role
+                  ? 6
+                  : 1
+              }
             >
               <Box position="absolute" inset="0" overflow="hidden">
                 <SplitSecondaryTile
@@ -1371,7 +1400,7 @@ export function VideoPreview() {
                   onSelect={() => selectSpeakerLayer(autoBottomLayer.role)}
                   onChange={updateSpeakerLayer}
                   onGestureEnd={endCoalesce}
-                  onReset={resetActiveSpeakerScene}
+                  onReset={() => resetActiveSpeakerLayer(autoBottomLayer.role)}
                 />
               ) : null}
             </Box>

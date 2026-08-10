@@ -13,20 +13,54 @@ const HANDLES: Array<{
   cursor: string;
   style: React.CSSProperties;
 }> = [
-  { direction: "nw", cursor: "nwse-resize", style: { left: -5, top: -5 } },
-  { direction: "n", cursor: "ns-resize", style: { left: "50%", top: -5 } },
-  { direction: "ne", cursor: "nesw-resize", style: { right: -5, top: -5 } },
-  { direction: "e", cursor: "ew-resize", style: { right: -5, top: "50%" } },
-  { direction: "se", cursor: "nwse-resize", style: { right: -5, bottom: -5 } },
-  { direction: "s", cursor: "ns-resize", style: { left: "50%", bottom: -5 } },
-  { direction: "sw", cursor: "nesw-resize", style: { left: -5, bottom: -5 } },
-  { direction: "w", cursor: "ew-resize", style: { left: -5, top: "50%" } },
+  { direction: "nw", cursor: "nwse-resize", style: { left: 0, top: 0 } },
+  { direction: "n", cursor: "ns-resize", style: { left: "50%", top: 0 } },
+  { direction: "ne", cursor: "nesw-resize", style: { left: "100%", top: 0 } },
+  { direction: "e", cursor: "ew-resize", style: { left: "100%", top: "50%" } },
+  { direction: "se", cursor: "nwse-resize", style: { left: "100%", top: "100%" } },
+  { direction: "s", cursor: "ns-resize", style: { left: "50%", top: "100%" } },
+  { direction: "sw", cursor: "nesw-resize", style: { left: 0, top: "100%" } },
+  { direction: "w", cursor: "ew-resize", style: { left: 0, top: "50%" } },
 ];
+
+const RESIZE_LABELS: Record<ResizeDirection, string> = {
+  n: "top",
+  ne: "top right",
+  e: "right",
+  se: "bottom right",
+  s: "bottom",
+  sw: "bottom left",
+  w: "left",
+  nw: "top left",
+};
 
 const MIN_FRAME_SIZE = 0.08;
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
+}
+
+function resizeLayerFrame(
+  initial: SpeakerLayerTransform,
+  direction: ResizeDirection,
+  dx: number,
+  dy: number,
+): SpeakerLayerTransform {
+  let left = initial.frameX;
+  let top = initial.frameY;
+  let right = initial.frameX + initial.frameWidth;
+  let bottom = initial.frameY + initial.frameHeight;
+  if (direction.includes("w")) left = clamp(left + dx, 0, right - MIN_FRAME_SIZE);
+  if (direction.includes("e")) right = clamp(right + dx, left + MIN_FRAME_SIZE, 1);
+  if (direction.includes("n")) top = clamp(top + dy, 0, bottom - MIN_FRAME_SIZE);
+  if (direction.includes("s")) bottom = clamp(bottom + dy, top + MIN_FRAME_SIZE, 1);
+  return {
+    ...initial,
+    frameX: left,
+    frameY: top,
+    frameWidth: right - left,
+    frameHeight: bottom - top,
+  };
 }
 
 export function InteractiveSpeakerLayer({
@@ -95,21 +129,7 @@ export function InteractiveSpeakerLayer({
             180,
           );
         } else {
-          let left = initial.frameX;
-          let top = initial.frameY;
-          let right = initial.frameX + initial.frameWidth;
-          let bottom = initial.frameY + initial.frameHeight;
-          if (kind.includes("w")) left = clamp(left + dx, 0, right - MIN_FRAME_SIZE);
-          if (kind.includes("e")) right = clamp(right + dx, left + MIN_FRAME_SIZE, 1);
-          if (kind.includes("n")) top = clamp(top + dy, 0, bottom - MIN_FRAME_SIZE);
-          if (kind.includes("s")) bottom = clamp(bottom + dy, top + MIN_FRAME_SIZE, 1);
-          next = {
-            ...next,
-            frameX: left,
-            frameY: top,
-            frameWidth: right - left,
-            frameHeight: bottom - top,
-          };
+          next = resizeLayerFrame(initial, kind, dx, dy);
         }
         onChange(next, `speaker-${kind}-${layer.role}`);
       };
@@ -135,8 +155,58 @@ export function InteractiveSpeakerLayer({
     [layer, onChange, onGestureEnd],
   );
 
+  const handleKeyboard = useCallback(
+    (event: React.KeyboardEvent) => {
+      if (event.target !== event.currentTarget) return;
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        onSelect();
+        return;
+      }
+      if (!selected || !event.key.startsWith("Arrow")) return;
+
+      event.preventDefault();
+      event.stopPropagation();
+      const step = event.shiftKey ? 0.05 : 0.01;
+      const horizontal =
+        event.key === "ArrowLeft" ? -step : event.key === "ArrowRight" ? step : 0;
+      const vertical =
+        event.key === "ArrowUp" ? -step : event.key === "ArrowDown" ? step : 0;
+      const next = { ...layer };
+
+      if (mode === "crop") {
+        next.cropCxNorm = clamp(
+          layer.cropCxNorm - horizontal / layer.cropZoom,
+          0,
+          1,
+        );
+        next.cropCyNorm = clamp(
+          layer.cropCyNorm - vertical / layer.cropZoom,
+          0,
+          1,
+        );
+      } else {
+        next.frameX = clamp(
+          layer.frameX + horizontal,
+          0,
+          1 - layer.frameWidth,
+        );
+        next.frameY = clamp(
+          layer.frameY + vertical,
+          0,
+          1 - layer.frameHeight,
+        );
+      }
+      onChange(next, `speaker-keyboard-${mode}-${layer.role}`);
+      onGestureEnd();
+    }, [layer, mode, onChange, onGestureEnd, onSelect, selected],
+  );
+
   return (
     <Box
+      role="group"
+      aria-label={`${layer.role} speaker layer`}
+      tabIndex={0}
       position="absolute"
       inset="0"
       zIndex={3}
@@ -148,6 +218,8 @@ export function InteractiveSpeakerLayer({
       }}
       onMouseEnter={() => setHovered(true)}
       onMouseLeave={() => setHovered(false)}
+      onKeyDown={handleKeyboard}
+      _focusVisible={{ outline: "2px solid", outlineColor: "studio.accent", outlineOffset: "2px" }}
       borderWidth={selected ? "2px" : hovered ? "1px" : "0"}
       borderStyle={selected ? "solid" : "dashed"}
       borderColor="studio.accent"
@@ -216,20 +288,62 @@ export function InteractiveSpeakerLayer({
             <Box
               key={handle.direction}
               position="absolute"
-              w="10px"
-              h="10px"
-              bg="studio.surface"
-              borderWidth="1.5px"
-              borderColor="studio.accent"
-              borderRadius="full"
+              w="24px"
+              h="24px"
+              display="flex"
+              alignItems="center"
+              justifyContent="center"
               cursor={handle.cursor}
               style={{
                 ...handle.style,
                 transform: "translate(-50%, -50%)",
               }}
               onPointerDown={(event) => beginPointerGesture(event, handle.direction)}
+              role="button"
+              aria-label={`Resize ${layer.role} speaker layer from ${RESIZE_LABELS[handle.direction]}`}
+              title={`Resize from ${RESIZE_LABELS[handle.direction]}`}
+              tabIndex={0}
+              onKeyDown={(event) => {
+                if (!event.key.startsWith("Arrow")) return;
+                const horizontal = handle.direction.includes("e") || handle.direction.includes("w");
+                const vertical = handle.direction.includes("n") || handle.direction.includes("s");
+                const step = event.shiftKey ? 0.05 : 0.01;
+                const dx = horizontal
+                  ? event.key === "ArrowLeft"
+                    ? -step
+                    : event.key === "ArrowRight"
+                      ? step
+                      : 0
+                  : 0;
+                const dy = vertical
+                  ? event.key === "ArrowUp"
+                    ? -step
+                    : event.key === "ArrowDown"
+                      ? step
+                      : 0
+                  : 0;
+                if (dx === 0 && dy === 0) return;
+                event.preventDefault();
+                event.stopPropagation();
+                onChange(
+                  resizeLayerFrame(layer, handle.direction, dx, dy),
+                  `speaker-keyboard-${handle.direction}-${layer.role}`,
+                );
+                onGestureEnd();
+              }}
+              _focusVisible={{ outline: "2px solid", outlineColor: "studio.accent" }}
               zIndex={10}
-            />
+            >
+              <Box
+                w="10px"
+                h="10px"
+                bg="studio.surface"
+                borderWidth="1.5px"
+                borderColor="studio.accent"
+                borderRadius="full"
+                pointerEvents="none"
+              />
+            </Box>
           ))}
           <Box
             position="absolute"
@@ -245,6 +359,27 @@ export function InteractiveSpeakerLayer({
             cursor="grab"
             onPointerDown={(event) => beginPointerGesture(event, "rotate")}
             aria-label="Rotate speaker layer"
+            role="slider"
+            aria-valuemin={-180}
+            aria-valuemax={180}
+            aria-valuenow={Math.round(layer.rotationDeg)}
+            tabIndex={0}
+            onKeyDown={(event) => {
+              if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+              event.preventDefault();
+              event.stopPropagation();
+              const direction = event.key === "ArrowLeft" ? -1 : 1;
+              const step = event.shiftKey ? 15 : 1;
+              onChange(
+                {
+                  ...layer,
+                  rotationDeg: clamp(layer.rotationDeg + direction * step, -180, 180),
+                },
+                `speaker-keyboard-rotate-${layer.role}`,
+              );
+              onGestureEnd();
+            }}
+            _focusVisible={{ outline: "2px solid", outlineColor: "studio.accent", outlineOffset: "2px" }}
           >
             <Box position="absolute" left="50%" top="-9px" h="9px" borderLeftWidth="1px" borderColor="studio.accent" />
           </Box>
@@ -257,7 +392,7 @@ export function InteractiveSpeakerLayer({
 function ToolbarButton({
   children,
   label,
-  active = false,
+  active,
   onClick,
 }: {
   children: React.ReactNode;
@@ -269,6 +404,7 @@ function ToolbarButton({
     <Flex
       as="button"
       aria-label={label}
+      aria-pressed={active}
       title={label}
       align="center"
       justify="center"
