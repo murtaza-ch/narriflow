@@ -9,6 +9,7 @@ import {
 import { processDueAutopilotRules } from "./tasks/autopilot";
 import { processClipDetectionRun } from "./tasks/detect-clips";
 import { processPendingClipPreviews } from "./tasks/clip-preview";
+import { processPendingAutoLayoutAnalyses } from "./tasks/auto-layout-analysis";
 import { processDubbingRun } from "./tasks/dubbing";
 import { processIngestJob } from "./tasks/ingest";
 import { processClipRenderingRun } from "./tasks/render-clips";
@@ -44,6 +45,9 @@ const maxConsecutivePollFailures = Number(
 // runs them in sequence — roughly a minute of CPU+network per tick.
 const previewPollIntervalMs = Number(
   process.env.PREVIEW_POLL_INTERVAL_MS ?? String(pollIntervalMs),
+);
+const autoLayoutPollIntervalMs = Number(
+  process.env.AUTO_LAYOUT_POLL_INTERVAL_MS ?? String(10_000),
 );
 // Submit-and-release STT: the stt loop only submits; this loop polls
 // AssemblyAI for submitted transcripts. Its cadence can stay coarser than the
@@ -305,6 +309,13 @@ const previewLoop = createPollLoop("preview", async () => {
   return processPendingClipPreviews();
 });
 
+/** Face/shot analysis runs against the small preview proxies and publishes
+ * the shared plan consumed by both studio and render. Separate mutex keeps
+ * it from blocking proxy generation or workflow claims. */
+const autoLayoutLoop = createPollLoop("auto_layout", async () => {
+  return processPendingAutoLayoutAnalyses();
+});
+
 /** Durable terminal-email retries. The service performs an atomic
  *  pending/expired-lease claim, so this loop is safe across worker replicas. */
 const notificationRetryLoop = createPollLoop("notification_retry", async () => {
@@ -332,6 +343,7 @@ const allLoops: Array<{ loop: PollLoop; intervalMs: number }> = [
   { loop: publishLoop, intervalMs: pollIntervalMs },
   { loop: renderLoop, intervalMs: renderPollIntervalMs },
   { loop: previewLoop, intervalMs: previewPollIntervalMs },
+  { loop: autoLayoutLoop, intervalMs: autoLayoutPollIntervalMs },
   { loop: notificationRetryLoop, intervalMs: notificationRetryPollIntervalMs },
 ];
 

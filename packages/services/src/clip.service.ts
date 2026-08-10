@@ -18,6 +18,7 @@ import {
   clipAspectRatioFromDb,
   clipAspectRatioOptions,
   clipAspectRatioToDb,
+  clipAutoLayoutAnalysisSchema,
   clipLayoutAnalysisSchema,
   clipRenderResolutionSchema,
   clipTitleSuggestionsLlmResponseSchema,
@@ -31,6 +32,7 @@ import {
   isBrandDefaultCaptionPresetId,
   normalizeDeletedRanges,
   normalizeTranscriptSliceForClip,
+  parseClipAutoLayoutAnalysis,
   parseClipLayoutAnalysis,
   saveEditorDocumentSchema,
   splitUtterancesIntoSentences,
@@ -42,6 +44,7 @@ import type {
   BrollCue,
   CaptionPreset,
   ClipAspectRatio,
+  ClipAutoLayoutAnalysis,
   ClipCategory,
   ClipLayoutAnalysis,
   ClipPlatformTarget,
@@ -63,10 +66,17 @@ import {
   publishWorkflowStageUpdated,
 } from "./workflow.service";
 import { isUniqueConstraintError } from "./generation-sequencing";
-import { copyObject, deleteObject, presignDownloadUrl } from "./r2-storage";
+import {
+  copyObject,
+  deleteObject,
+  getJsonObject,
+  presignDownloadUrl,
+} from "./r2-storage";
 import {
   derivePeaksStorageKey,
+  isClipPreviewPeaks,
   tryDerivePeaksStorageKey,
+  type ClipPreviewPeaks,
 } from "./clip-preview-storage";
 import { analyticsService } from "./analytics.service";
 import { assertPublicHttpUrl } from "./url-guard";
@@ -123,6 +133,24 @@ export interface ClipPendingPreview {
   endSec: number;
   sourceStorageKey: string;
   sourceDurationSec: number | null;
+}
+
+/** A clip whose proxy exists but whose shared automatic speaker-layout plan
+ * has not been analyzed yet (or was explicitly invalidated by a range edit). */
+export interface ClipPendingAutoLayoutAnalysis {
+  id: string;
+  projectId: string;
+  startSec: number;
+  endSec: number;
+  transcriptSlice: TranscriptUtterance[];
+  deletedRanges: SourceRange[];
+  editorRevision: number;
+  previewStorageKey: string;
+  previewStartSec: number;
+  previewDurationSec: number;
+  /** Per-attempt fencing token. Only the worker holding this token may
+   * publish or defer the claimed analysis. */
+  autoLayoutClaimToken: string;
 }
 
 export function resolveClipCaptionPresetForContentPack(
@@ -1428,6 +1456,10 @@ export class ClipService {
           previewStorageKey: null,
           previewStartSec: null,
           previewDurationSec: null,
+          autoLayoutAnalysis: Prisma.DbNull,
+          autoLayoutStatus: "pending",
+          autoLayoutClaimToken: null,
+          autoLayoutLeaseExpiresAt: null,
           // Document-owned columns (startSec/transcriptSlice) are also
           // writable through the revisioned editor document
           // (saveClipEditorDocument) — every mutator that touches them must
@@ -2707,15 +2739,10 @@ export class ClipService {
    * selector to key a render lookup off of — it always wants "whatever
    * preview exists for this clip," full stop.
    *
-   * `waveformPeaksUrl` is presigned OPTIMISTICALLY off the derived peaks key
-   * (see `derivePeaksStorageKey`'s doc comment for the storage convention)
-   * — there is no existence check (a HEAD call) before signing, since a
-   * presigned S3/R2 GET URL is just a signed request and costs nothing to
-   * hand out even if the object never existed (silent-video previews,
-   * previews cut before this feature shipped). The caller — the studio's
-   * WaveformCanvas — is expected to fetch it and fall back to its synthetic
-   * waveform on a failed response, exactly like it already falls back when
-   * this field is null.
+   * `waveformPeaksUrl` is a same-origin authenticated API endpoint, not a
+   * private-R2 presign. Browser fetches of the latter require bucket CORS;
+   * the endpoint keeps the page's critical path free of an R2 GET and streams
+   * only this small validated metadata artifact after the editor paints.
    */
   async getClipPreviewSource(
     userId: string,
@@ -2753,24 +2780,13 @@ export class ClipService {
         expiresIn: 3600,
       });
 
-      // Best-effort: a peaks URL failing to presign (or the key being
-      // malformed for some pre-convention legacy row) must never take down
-      // proxy playback itself — the waveform alone falls back to synthetic.
-      let waveformPeaksUrl: string | null = null;
-      try {
-        waveformPeaksUrl = await presignDownloadUrl({
-          key: derivePeaksStorageKey(clip.previewStorageKey),
-          expiresIn: 3600,
-        });
-      } catch {
-        waveformPeaksUrl = null;
-      }
-
       return {
         previewUrl,
         previewStartSec: clip.previewStartSec ?? 0,
         previewDurationSec: clip.previewDurationSec ?? null,
-        waveformPeaksUrl,
+        waveformPeaksUrl:
+          `/api/projects/${encodeURIComponent(projectId)}/clips/${encodeURIComponent(clipId)}/preview-peaks` +
+          `?v=${encodeURIComponent(clip.previewStorageKey.split("/").at(-1) ?? "preview")}`,
       };
     } catch {
       return {
@@ -2779,6 +2795,30 @@ export class ClipService {
         previewDurationSec: null,
         waveformPeaksUrl: null,
       };
+    }
+  }
+
+  /** Reads the small peaks sibling for the authenticated same-origin API.
+   * Missing/silent/legacy/malformed artifacts are normal and return null. */
+  async getClipPreviewPeaks(
+    userId: string,
+    projectId: string,
+    clipId: string,
+  ): Promise<ClipPreviewPeaks | null> {
+    const prisma = requirePrisma();
+    const clip = await prisma.clip.findFirst({
+      where: { id: clipId, projectId, project: { userId } },
+      select: { previewStorageKey: true },
+    });
+    if (!clip?.previewStorageKey) return null;
+    try {
+      const value = await getJsonObject({
+        key: derivePeaksStorageKey(clip.previewStorageKey),
+        maxBytes: 256 * 1024,
+      });
+      return isClipPreviewPeaks(value) ? value : null;
+    } catch {
+      return null;
     }
   }
 
@@ -2927,6 +2967,197 @@ export class ClipService {
     await this.pingActiveWorkflowRun(clip.projectId);
 
     return { persisted: true, projectId: clip.projectId };
+  }
+
+  /**
+   * Atomically claims one clip for automatic layout analysis. A durable lease
+   * (rather than an in-process mutex) prevents duplicate proxy downloads and
+   * CPU detection when workers are horizontally scaled. Expired processing
+   * claims are recoverable after a crash; the UUID token fences a stale owner
+   * from completing or releasing a newer attempt.
+   */
+  async claimNextClipForAutoLayoutAnalysis(
+    leaseMs: number,
+  ): Promise<ClipPendingAutoLayoutAnalysis | null> {
+    const prisma = requirePrisma();
+    const now = new Date();
+    const boundedLeaseMs = Math.max(30_000, Math.min(15 * 60_000, leaseMs));
+    const leaseExpiresAt = new Date(now.getTime() + boundedLeaseMs);
+    const clips = await prisma.clip.findMany({
+      where: {
+        autoLayoutAnalysis: { equals: Prisma.DbNull },
+        previewStorageKey: { not: null },
+        previewStartSec: { not: null },
+        previewDurationSec: { not: null },
+        OR: [
+          {
+            autoLayoutStatus: "pending",
+            OR: [
+              { autoLayoutLeaseExpiresAt: null },
+              { autoLayoutLeaseExpiresAt: { lte: now } },
+            ],
+          },
+          {
+            autoLayoutStatus: "processing",
+            autoLayoutLeaseExpiresAt: { lte: now },
+          },
+        ],
+      },
+      orderBy: [{ viralityScore: "desc" }, { createdAt: "asc" }],
+      // Read a few candidates so a collision with another replica does not
+      // turn this tick into a false empty result.
+      take: 8,
+      select: {
+        id: true,
+        projectId: true,
+        startSec: true,
+        endSec: true,
+        transcriptSlice: true,
+        deletedRanges: true,
+        editorRevision: true,
+        previewStorageKey: true,
+        previewStartSec: true,
+        previewDurationSec: true,
+      },
+    });
+
+    for (const clip of clips) {
+      if (
+        !clip.previewStorageKey ||
+        clip.previewStartSec === null ||
+        clip.previewDurationSec === null
+      ) {
+        continue;
+      }
+      const claimToken = randomUUID();
+      const claim = await prisma.clip.updateMany({
+        where: {
+          id: clip.id,
+          autoLayoutAnalysis: { equals: Prisma.DbNull },
+          OR: [
+            {
+              autoLayoutStatus: "pending",
+              OR: [
+                { autoLayoutLeaseExpiresAt: null },
+                { autoLayoutLeaseExpiresAt: { lte: now } },
+              ],
+            },
+            {
+              autoLayoutStatus: "processing",
+              autoLayoutLeaseExpiresAt: { lte: now },
+            },
+          ],
+        },
+        data: {
+          autoLayoutStatus: "processing",
+          autoLayoutClaimToken: claimToken,
+          autoLayoutLeaseExpiresAt: leaseExpiresAt,
+          autoLayoutAttemptCount: { increment: 1 },
+        },
+      });
+      if (claim.count === 0) continue;
+
+      const parsedRanges = deletedRangesSchema.safeParse(clip.deletedRanges);
+      return {
+        id: clip.id,
+        projectId: clip.projectId,
+        startSec: clip.startSec,
+        endSec: clip.endSec,
+        transcriptSlice: clip.transcriptSlice as unknown as TranscriptUtterance[],
+        deletedRanges: parsedRanges.success ? parsedRanges.data : [],
+        editorRevision: clip.editorRevision,
+        previewStorageKey: clip.previewStorageKey,
+        previewStartSec: clip.previewStartSec,
+        previewDurationSec: clip.previewDurationSec,
+        autoLayoutClaimToken: claimToken,
+      };
+    }
+    return null;
+  }
+
+  /**
+   * Atomically publishes a derived automatic layout plan only while the clip
+   * still has the same editor revision and proxy that were analyzed. A lost
+   * race leaves the column null so the next poll recomputes from fresh input.
+   */
+  async completeClipAutoLayoutAnalysis(
+    clipId: string,
+    analysis: ClipAutoLayoutAnalysis,
+    expected: { editorRevision: number; previewStorageKey: string },
+  ): Promise<boolean> {
+    const prisma = requirePrisma();
+    const parsed = clipAutoLayoutAnalysisSchema.parse(analysis);
+    const result = await prisma.clip.updateMany({
+      where: {
+        id: clipId,
+        editorRevision: expected.editorRevision,
+        previewStorageKey: expected.previewStorageKey,
+        autoLayoutAnalysis: { equals: Prisma.DbNull },
+      },
+      data: {
+        autoLayoutAnalysis: parsed as unknown as Prisma.InputJsonValue,
+        autoLayoutStatus: "completed",
+        autoLayoutClaimToken: null,
+        autoLayoutLeaseExpiresAt: null,
+      },
+    });
+    return result.count === 1;
+  }
+
+  /** Complete a worker claim only if its fencing token and analyzed inputs
+   * are still current. */
+  async completeClaimedClipAutoLayoutAnalysis(
+    clipId: string,
+    analysis: ClipAutoLayoutAnalysis,
+    expected: {
+      editorRevision: number;
+      previewStorageKey: string;
+      claimToken: string;
+    },
+  ): Promise<boolean> {
+    const prisma = requirePrisma();
+    const parsed = clipAutoLayoutAnalysisSchema.parse(analysis);
+    const result = await prisma.clip.updateMany({
+      where: {
+        id: clipId,
+        editorRevision: expected.editorRevision,
+        previewStorageKey: expected.previewStorageKey,
+        autoLayoutAnalysis: { equals: Prisma.DbNull },
+        autoLayoutStatus: "processing",
+        autoLayoutClaimToken: expected.claimToken,
+      },
+      data: {
+        autoLayoutAnalysis: parsed as unknown as Prisma.InputJsonValue,
+        autoLayoutStatus: "completed",
+        autoLayoutClaimToken: null,
+        autoLayoutLeaseExpiresAt: null,
+      },
+    });
+    return result.count === 1;
+  }
+
+  /** Persist retry backoff for a failed claim so another replica or process
+   * restart cannot immediately repeat the same expensive failure. */
+  async deferClaimedClipAutoLayoutAnalysis(
+    clipId: string,
+    claimToken: string,
+    retryAt: Date,
+  ): Promise<boolean> {
+    const prisma = requirePrisma();
+    const result = await prisma.clip.updateMany({
+      where: {
+        id: clipId,
+        autoLayoutAnalysis: { equals: Prisma.DbNull },
+        autoLayoutStatus: "processing",
+        autoLayoutClaimToken: claimToken,
+      },
+      data: {
+        autoLayoutStatus: "pending",
+        autoLayoutClaimToken: null,
+        autoLayoutLeaseExpiresAt: retryAt,
+      },
+    });
+    return result.count === 1;
   }
 
   /**
@@ -3160,6 +3391,8 @@ export class ClipService {
      *  (packet C) to render the true facecam crop instead of guessing from
      *  a face-centered band. */
     layoutAnalysis: ClipLayoutAnalysis | null;
+    /** Automatic shot/speaker layout consumed by preview and render. */
+    autoLayoutAnalysis: ClipAutoLayoutAnalysis | null;
   }> {
     const prisma = requirePrisma();
 
@@ -3175,8 +3408,37 @@ export class ClipService {
       ? editorDocumentSchema.parse(clip.editorOriginal)
       : document;
     const layoutAnalysis = parseClipLayoutAnalysis(clip.layoutAnalysis);
+    const autoLayoutAnalysis = parseClipAutoLayoutAnalysis(
+      clip.autoLayoutAnalysis,
+    );
 
-    return { revision: clip.editorRevision, document, original, layoutAnalysis };
+    return {
+      revision: clip.editorRevision,
+      document,
+      original,
+      layoutAnalysis,
+      autoLayoutAnalysis,
+    };
+  }
+
+  /** Lightweight readiness read for the studio's short-lived background
+   * poll. Keep this separate from getClipEditorDocument: transcripts and
+   * editor JSON can be large, while the poll needs exactly one derived
+   * column. */
+  async getClipAutoLayoutAnalysis(
+    userId: string,
+    projectId: string,
+    clipId: string,
+  ): Promise<ClipAutoLayoutAnalysis | null> {
+    const prisma = requirePrisma();
+    const clip = await prisma.clip.findFirst({
+      where: { id: clipId, projectId, project: { userId } },
+      select: { autoLayoutAnalysis: true },
+    });
+    if (!clip) {
+      throw new Error("clip not found");
+    }
+    return parseClipAutoLayoutAnalysis(clip.autoLayoutAnalysis);
   }
 
   /**
@@ -3315,6 +3577,9 @@ export class ClipService {
     }
 
     const { next, boundariesChanged, transcriptChanged, boundaryDriftDetected } = plan;
+    const layoutInputsChanged =
+      boundariesChanged ||
+      JSON.stringify(next.deletedRanges) !== JSON.stringify(current.deletedRanges);
     if (boundaryDriftDetected && plan.recomputedEffective) {
       // Diagnostic only — the transcript is already clamped to the stored
       // window regardless. Surfaces the cases where a client sent a
@@ -3365,6 +3630,14 @@ export class ClipService {
           // — see studio-shell.tsx's trim commit handler).
           ...(boundariesChanged
             ? { previewStorageKey: null, previewStartSec: null, previewDurationSec: null }
+            : {}),
+          ...(layoutInputsChanged
+            ? {
+                autoLayoutAnalysis: Prisma.DbNull,
+                autoLayoutStatus: "pending" as const,
+                autoLayoutClaimToken: null,
+                autoLayoutLeaseExpiresAt: null,
+              }
             : {}),
           // First real save captures the pre-edit state as the immutable
           // revision-zero snapshot; never overwritten afterwards.
@@ -3512,6 +3785,14 @@ export class ClipService {
     }
 
     const { original, effective, boundariesChanged } = plan;
+    const normalizedOriginalRanges = normalizeDeletedRanges(original.deletedRanges, {
+      startSec: effective.startSec,
+      endSec: effective.endSec,
+    });
+    const layoutInputsChanged =
+      boundariesChanged ||
+      JSON.stringify(normalizedOriginalRanges) !==
+        JSON.stringify(currentDocument.deletedRanges);
     const staleRenderKeys = [
       ...clip.renders.map((render) => render.storageKey),
       // The old-window preview proxy is orphaned once boundaries move —
@@ -3533,10 +3814,7 @@ export class ClipService {
             effective.transcriptSlice as unknown as Prisma.InputJsonValue,
           studioEdits: original.studioEdits as unknown as Prisma.InputJsonValue,
           brollUrl: original.brollUrl,
-          deletedRanges: normalizeDeletedRanges(original.deletedRanges, {
-            startSec: effective.startSec,
-            endSec: effective.endSec,
-          }) as unknown as Prisma.InputJsonValue,
+          deletedRanges: normalizedOriginalRanges as unknown as Prisma.InputJsonValue,
           durationOptimalityScore: plan.durationOptimalityScore,
           tiktokScore: plan.tiktokScore,
           youtubeScore: plan.youtubeScore,
@@ -3548,6 +3826,14 @@ export class ClipService {
                 previewStorageKey: null,
                 previewStartSec: null,
                 previewDurationSec: null,
+              }
+            : {}),
+          ...(layoutInputsChanged
+            ? {
+                autoLayoutAnalysis: Prisma.DbNull,
+                autoLayoutStatus: "pending" as const,
+                autoLayoutClaimToken: null,
+                autoLayoutLeaseExpiresAt: null,
               }
             : {}),
         },

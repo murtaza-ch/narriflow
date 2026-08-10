@@ -8,6 +8,7 @@ import {
   isSourceTimeDeleted,
   normalizeDeletedRanges,
   sourceRangeSchema,
+  sourceRangeToEdited,
   sourceToEdited,
   subtractDeletedRange,
   type ClipWindow,
@@ -18,6 +19,7 @@ import {
   studioEditsSchema,
   type StudioSfxPlacement,
   type StudioTextLayer,
+  type StudioSpeakerLayoutOverride,
 } from "./studio-edits";
 import { transcriptUtteranceSchema } from "./transcript";
 
@@ -224,6 +226,49 @@ function rebaseSfxPlacements(
   return changed ? rebased : placements;
 }
 
+/** Keep manual speaker-scene edits attached to the same source footage when
+ * cuts or clip boundaries move the edited timeline. Overrides whose source
+ * scene is fully removed are dropped; partially retained scenes clamp to the
+ * remaining kept interval and will be matched back to the regenerated AI
+ * scene by overlap in resolveSpeakerLayoutScene. */
+function rebaseSpeakerLayoutOverrides(
+  overrides: StudioSpeakerLayoutOverride[],
+  oldMap: EditedTimeMap,
+  newMap: EditedTimeMap,
+): StudioSpeakerLayoutOverride[] {
+  if (overrides.length === 0) return overrides;
+  let changed = false;
+  const rebased: StudioSpeakerLayoutOverride[] = [];
+
+  for (const override of overrides) {
+    const sourceStartSec = editedToSource(oldMap, override.startSec);
+    const sourceEndSec = editedToSource(oldMap, override.endSec);
+    const clampedSource = {
+      startSec: Math.max(newMap.clipStartSec, sourceStartSec),
+      endSec: Math.min(newMap.clipEndSec, sourceEndSec),
+    };
+    const edited = sourceRangeToEdited(newMap, clampedSource);
+    if (!edited || edited.endSec - edited.startSec < 0.075) {
+      changed = true;
+      continue;
+    }
+    if (
+      edited.startSec === override.startSec &&
+      edited.endSec === override.endSec
+    ) {
+      rebased.push(override);
+      continue;
+    }
+    changed = true;
+    rebased.push({
+      ...override,
+      startSec: edited.startSec,
+      endSec: edited.endSec,
+    });
+  }
+  return changed ? rebased : overrides;
+}
+
 /** Applies `rebaseTextLayers`/`rebaseSfxPlacements` to `doc.studioEdits` and
  *  folds the result back into a (possibly-unchanged-reference)
  *  `studioEdits`, so callers can spread it into the next document without an
@@ -239,10 +284,19 @@ function rebaseStudioEdits(
   const newMap = buildEditedTimeMap(newDeletedRanges, newWindow);
   const textLayers = rebaseTextLayers(doc.studioEdits.textLayers, oldMap, newMap);
   const sfx = rebaseSfxPlacements(doc.studioEdits.sfx, oldMap, newMap);
-  if (textLayers === doc.studioEdits.textLayers && sfx === doc.studioEdits.sfx) {
+  const speakerLayoutOverrides = rebaseSpeakerLayoutOverrides(
+    doc.studioEdits.speakerLayoutOverrides,
+    oldMap,
+    newMap,
+  );
+  if (
+    textLayers === doc.studioEdits.textLayers &&
+    sfx === doc.studioEdits.sfx &&
+    speakerLayoutOverrides === doc.studioEdits.speakerLayoutOverrides
+  ) {
     return doc.studioEdits;
   }
-  return { ...doc.studioEdits, textLayers, sfx };
+  return { ...doc.studioEdits, textLayers, sfx, speakerLayoutOverrides };
 }
 
 /** Pure reducer: every studio mutation flows through here. */

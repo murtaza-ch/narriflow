@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { derivePeaksStorageKey } from "./clip-preview-storage";
+import {
+  derivePeaksStorageKey,
+  isClipPreviewPeaks,
+} from "./clip-preview-storage";
 
 describe("derivePeaksStorageKey", () => {
   test("swaps the trailing .mp4 for .peaks.json", () => {
@@ -26,5 +29,26 @@ describe("derivePeaksStorageKey", () => {
 
   test("throws on an empty string", () => {
     expect(() => derivePeaksStorageKey("")).toThrow();
+  });
+});
+
+describe("isClipPreviewPeaks", () => {
+  const valid = {
+    version: 1,
+    sampleRateHz: null,
+    peaksPerSec: 20,
+    startSec: 10,
+    durationSec: 5,
+    peaks: [0, 50, 100],
+  } as const;
+
+  test("accepts the worker's bounded v1 payload", () => {
+    expect(isClipPreviewPeaks(valid)).toBe(true);
+  });
+
+  test("rejects non-finite timing and out-of-contract peak values", () => {
+    expect(isClipPreviewPeaks({ ...valid, startSec: Number.NaN })).toBe(false);
+    expect(isClipPreviewPeaks({ ...valid, peaks: [101] })).toBe(false);
+    expect(isClipPreviewPeaks({ ...valid, peaks: [0.5] })).toBe(false);
   });
 });

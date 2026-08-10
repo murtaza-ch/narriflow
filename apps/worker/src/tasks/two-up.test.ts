@@ -667,3 +667,118 @@ describe("deriveSingleFaceSamplesFromMulti (M2 — reuse multi-face detection in
     expect(out[2]!.cx).toBe(0.6);
   });
 });
+
+describe("zoom + vertical framing (layout-engine extension)", () => {
+  // 1920x1080 source, 9:16 output: base single-segment crop is 608x1080.
+  const probe = { width: 1920, height: 1080 };
+
+  test("single segment without cy/zoom is byte-identical to the pre-engine crop", () => {
+    const parts = buildSplitFilterChain({
+      aspectRatio: "9:16",
+      probe,
+      segments: [{ startSec: 0, endSec: 5, layout: "single", cxNorm: 0.5 }],
+    });
+    const single = parts.find((p) => p.includes("crop="))!;
+    expect(single).toContain("crop=608:1080:656:0");
+  });
+
+  test("single segment with zoom shrinks the crop and honors cy headroom", () => {
+    const parts = buildSplitFilterChain({
+      aspectRatio: "9:16",
+      probe,
+      segments: [
+        { startSec: 0, endSec: 5, layout: "single", cxNorm: 0.5, cyNorm: 0.45, zoom: 1.25 },
+      ],
+    });
+    const single = parts.find((p) => p.includes("crop="))!;
+    // 608/1.25=486, 1080/1.25=864; x centers 0.5*1920-243=717; y=0.45*1080-432=54
+    expect(single).toContain("crop=486:864:717:54");
+    expect(single).toContain("scale=1080:1920");
+  });
+
+  test("zoomed crop y clamps into the frame and zCropH >= srcHeight keeps y=0", () => {
+    const parts = buildSplitFilterChain({
+      aspectRatio: "9:16",
+      probe,
+      segments: [
+        // cy far below frame bottom: y must clamp to srcH - zCropH.
+        { startSec: 0, endSec: 2, layout: "single", cxNorm: 0.5, cyNorm: 0.99, zoom: 1.25 },
+        // zoom 1: cropH == srcH -> y forced to 0 regardless of cy.
+        { startSec: 2, endSec: 4, layout: "single", cxNorm: 0.5, cyNorm: 0.2, zoom: 1 },
+      ],
+    });
+    const crops = parts.filter((p) => p.includes("crop="));
+    expect(crops[0]).toContain("crop=486:864:717:216"); // 1080-864
+    expect(crops[1]).toContain("crop=608:1080:656:0");
+  });
+
+  test("two-up tiles honor per-tile cy/zoom and stay independent", () => {
+    const parts = buildSplitFilterChain({
+      aspectRatio: "9:16",
+      probe,
+      segments: [
+        {
+          startSec: 0,
+          endSec: 5,
+          layout: "two-up",
+          topCxNorm: 0.25,
+          bottomCxNorm: 0.75,
+          topCyNorm: 0.4,
+          bottomCyNorm: 0.45,
+          topZoom: 1.2,
+          bottomZoom: 1,
+        },
+      ],
+    });
+    const joined = parts.join("\n");
+    // Tile base crop (computeTileCrop): tileRatio = 1080/960 = 1.125,
+    // srcRatio 1.778 >= 1.125 -> cropW = round(1080*1.125) = 1215, cropH = 1080.
+    // Top tile zoom 1.2 -> 1013x900; x = 0.25*1920 - 506 = -26 -> clamps 0;
+    // y = 0.4*1080 - 450 = -18 -> clamps 0.
+    expect(joined).toContain("crop=1013:900:0:0");
+    // Bottom tile zoom 1 -> full 1215x1080, x = 0.75*1920 - 607 = 833 ->
+    // clamped to 1920-1215 = 705, y forced 0 (cropH == srcHeight).
+    expect(joined).toContain("crop=1215:1080:705:0");
+  });
+});
+
+describe("manual speaker layer composition", () => {
+  test("builds independent framed overlays over a same-FPS black canvas", () => {
+    const parts = buildSplitFilterChain({
+      aspectRatio: "9:16",
+      probe: { width: 1920, height: 1080 },
+      segments: [
+        {
+          startSec: 0,
+          endSec: 5,
+          layout: "two-up",
+          topCxNorm: 0.3,
+          bottomCxNorm: 0.7,
+          topZoom: 1.3,
+          bottomZoom: 1.1,
+          topFrame: { x: 0.1, y: 0.05, width: 0.8, height: 0.4, rotationDeg: 0 },
+          bottomFrame: { x: 0.05, y: 0.55, width: 0.9, height: 0.4, rotationDeg: 3 },
+        },
+      ],
+    });
+    const graph = parts.join("\n");
+    expect(graph).toContain("split=3[manual_base_0_src]");
+    expect(graph).toContain("drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill");
+    expect(graph).toContain("scale=864:768");
+    expect(graph).toContain("scale=972:768");
+    expect(graph).toContain("rotate=3.000*PI/180");
+    expect(graph).toContain("overlay=x=108:y=96");
+    expect(graph).toContain("overlay=x=54:y=1056");
+    expect(graph).toContain("format=yuv420p,setsar=1[split_seg0_out]");
+    expect(graph).not.toContain("vstack=inputs=2");
+  });
+
+  test("keeps unedited segments on the existing direct crop path", () => {
+    const parts = buildSplitFilterChain({
+      aspectRatio: "9:16",
+      probe: { width: 1920, height: 1080 },
+      segments: [{ startSec: 0, endSec: 5, layout: "single", cxNorm: 0.5 }],
+    });
+    expect(parts.join("\n")).not.toContain("manual_base");
+  });
+});

@@ -325,15 +325,7 @@ const WaveformCanvas = memo(function WaveformCanvas({
   duration: number;
   width: number;
   height: number;
-  /** Presigned URL of the clip preview proxy's real amplitude-peaks JSON
-   *  (see waveform-peaks.ts / packages/services's ClipPreviewPeaks), or
-   *  null. When set, this component fetches it once (cached by URL) and
-   *  paints REAL amplitude instead of the synthetic per-pixel randomness
-   *  below — the fetch/parse is best-effort, so a pending fetch, a missing
-   *  object (proxy still generating, silent-video preview, legacy preview
-   *  cut before this feature shipped), or a malformed payload all fall
-   *  back to the exact same synthetic waveform this canvas has always
-   *  painted, with no visual regression. */
+  /** Same-origin authenticated endpoint for validated real amplitude data. */
   waveformPeaksUrl: string | null;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -362,11 +354,6 @@ const WaveformCanvas = memo(function WaveformCanvas({
     );
   }
 
-  // Real peaks, fetched once per URL (module-level cache — see
-  // loadClipPreviewPeaks) and re-used by the paint effect below whenever
-  // it's available. Seeded null so a still-loading/missing/malformed
-  // response paints identically to the pre-existing synthetic-only
-  // behavior.
   const [peaksData, setPeaksData] = useState<ClipPreviewPeaks | null>(null);
   useEffect(() => {
     if (!waveformPeaksUrl) {

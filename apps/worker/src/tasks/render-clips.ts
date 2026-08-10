@@ -37,6 +37,8 @@ import {
   clipAspectRatioDbSchema,
   clipAspectRatioFromDb,
   clipAspectRatioOptions,
+  clipAutoLayoutAnalysisSchema,
+  clipAutoLayoutMatchesInputs,
   clipRenderResolutionSchema,
   computeSpeechWindows,
   deletedRangesSchema,
@@ -45,10 +47,12 @@ import {
   getEffectiveClipTiming,
   MAX_DUCKING_WINDOWS,
   normalizeTranscriptSliceForClip,
+  parseClipAutoLayoutAnalysis,
   parseClipLayoutAnalysis,
   resolveEffectiveFramingMode,
   resolveEffectiveLogoSettings,
   resolveMusicFadeWindows,
+  resolveSpeakerLayoutScene,
   sourceRangeToEdited,
   sourceToEdited,
   studioEditsSchema,
@@ -57,6 +61,7 @@ import type {
   BrandTemplateSnapshot,
   CaptionPreset,
   ClipAspectRatio,
+  ClipAutoLayoutAnalysis,
   ClipCategory,
   ClipLayoutAnalysis,
   ClipRenderResolution,
@@ -65,9 +70,14 @@ import type {
   SourceRange,
   StudioEdits,
   StudioTextLayer,
+  StudioSpeakerLayoutOverride,
   TranscriptUtterance,
 } from "@narriflow/validators";
 import { buildClipCutPlan, type ClipCutPlan } from "./cut-plan";
+import {
+  buildAutoLayoutPlan,
+  speechWordsFromUtterances,
+} from "./layout-engine";
 import {
   buildReframeSendcmdScript,
   REFRAME_CROP_NAME,
@@ -700,6 +710,35 @@ async function probeMediaDurationSec(filePath: string): Promise<number | null> {
   }
 }
 
+/** Python interpreter the detector scripts run under. `REFRAME_PYTHON` lets
+ *  a deployment point at a venv that actually has opencv installed (the
+ *  system `python3` frequently doesn't — the exact silent-center-crop
+ *  failure the logging below exists to surface). */
+function reframePythonBin(): string {
+  return process.env.REFRAME_PYTHON ?? "python3";
+}
+
+/** Shared failure logging for the null-on-failure detector wrappers below.
+ *  These fallbacks used to be completely silent (bare `catch { return null }`),
+ *  which let a missing python/opencv/model degrade every render to a static
+ *  center crop with zero log evidence — never again. `context` carries the
+ *  run/clip correlation ids every other error log in this file has. */
+function logDetectionFailure(
+  detector: string,
+  message: string,
+  context?: Record<string, unknown>,
+): void {
+  log("error", "clip_face_detection_unavailable", {
+    detector,
+    message,
+    python: reframePythonBin(),
+    modelPath:
+      process.env.REFRAME_MODEL_PATH ??
+      "/usr/local/share/narriflow/face_yunet.onnx",
+    ...context,
+  });
+}
+
 /**
  * Runs the YuNet Python face detector over a clip's range and returns the
  * per-sample normalized face centers, or null if detection is unavailable
@@ -709,6 +748,7 @@ async function detectFacePath(params: {
   sourcePath: string;
   startSec: number;
   durationSec: number;
+  logContext?: Record<string, unknown>;
 }): Promise<{ samples: FaceSample[] } | null> {
   const scriptPath = fileURLToPath(
     new URL("../../scripts/reframe_detect.py", import.meta.url),
@@ -719,7 +759,7 @@ async function detectFacePath(params: {
   const fps = process.env.REFRAME_SAMPLE_FPS ?? "4";
 
   try {
-    const out = await execCommandOutput("python3", [
+    const out = await execCommandOutput(reframePythonBin(), [
       scriptPath,
       params.sourcePath,
       String(params.startSec),
@@ -731,9 +771,17 @@ async function detectFacePath(params: {
       samples?: Array<{ t: number; cx: number | null }>;
       error?: string;
     };
-    if (parsed.error || !Array.isArray(parsed.samples)) return null;
+    if (parsed.error || !Array.isArray(parsed.samples)) {
+      logDetectionFailure("face_single", parsed.error ?? "malformed detector output", params.logContext);
+      return null;
+    }
     return { samples: parsed.samples };
-  } catch {
+  } catch (error) {
+    logDetectionFailure(
+      "face_single",
+      error instanceof Error ? error.message : "unknown",
+      params.logContext,
+    );
     return null;
   }
 }
@@ -770,7 +818,7 @@ async function detectPipPath(params: {
   );
 
   try {
-    const out = await execCommandOutput("python3", [
+    const out = await execCommandOutput(reframePythonBin(), [
       scriptPath,
       params.sourcePath,
       String(params.startSec),
@@ -789,6 +837,7 @@ async function detectPipPath(params: {
         parsed.movingPxFrac !== undefined &&
         typeof parsed.movingPxFrac !== "number")
     ) {
+      logDetectionFailure("pip", parsed.error ?? "malformed detector output");
       return null;
     }
     return {
@@ -796,7 +845,8 @@ async function detectPipPath(params: {
       insufficientSamples: Boolean(parsed.insufficientSamples),
       candidates: parsed.candidates,
     };
-  } catch {
+  } catch (error) {
+    logDetectionFailure("pip", error instanceof Error ? error.message : "unknown");
     return null;
   }
 }
@@ -814,6 +864,7 @@ async function detectMultiFacePath(params: {
   sourcePath: string;
   startSec: number;
   durationSec: number;
+  logContext?: Record<string, unknown>;
 }): Promise<{ samples: MultiFaceSample[] } | null> {
   const scriptPath = fileURLToPath(
     new URL("../../scripts/reframe_detect.py", import.meta.url),
@@ -824,7 +875,7 @@ async function detectMultiFacePath(params: {
   const fps = process.env.REFRAME_SAMPLE_FPS ?? "4";
 
   try {
-    const out = await execCommandOutput("python3", [
+    const out = await execCommandOutput(reframePythonBin(), [
       scriptPath,
       params.sourcePath,
       String(params.startSec),
@@ -836,17 +887,118 @@ async function detectMultiFacePath(params: {
     const parsed = JSON.parse(out) as {
       samples?: Array<{
         t: number;
-        faces?: Array<{ cx: number; cy: number; w: number; h: number; score: number }>;
+        faces?: Array<{
+          cx: number;
+          cy: number;
+          w: number;
+          h: number;
+          score: number;
+          m?: number | null;
+          fm?: number | null;
+        }>;
       }>;
       error?: string;
     };
-    if (parsed.error || !Array.isArray(parsed.samples)) return null;
+    if (parsed.error || !Array.isArray(parsed.samples)) {
+      logDetectionFailure("face_multi", parsed.error ?? "malformed detector output", params.logContext);
+      return null;
+    }
     return {
       samples: parsed.samples.map((s) => ({ t: s.t, faces: s.faces ?? [] })),
     };
-  } catch {
+  } catch (error) {
+    logDetectionFailure(
+      "face_multi",
+      error instanceof Error ? error.message : "unknown",
+      params.logContext,
+    );
     return null;
   }
+}
+
+/**
+ * Scene-cut detection (layout-engine wiring): runs ffmpeg's scene-change
+ * `select` filter over the SAME low-res local segment face detection uses
+ * and returns clip-relative cut times in seconds. Best-effort: any failure
+ * returns [] (the layout engine then treats the clip as one shot) — never
+ * blocks a render. `-ss` before `-i` is frame-accurate here (default
+ * accurate_seek decodes from the prior keyframe and discards preroll) and
+ * resets output timestamps to ~0, which is exactly the clip-relative
+ * timebase the detector samples use.
+ */
+async function detectSceneCuts(params: {
+  sourcePath: string;
+  startSec: number;
+  durationSec: number;
+  workflowRunId: string;
+  clipId: string;
+}): Promise<number[]> {
+  const threshold = process.env.REFRAME_SCENE_THRESHOLD ?? "0.3";
+  try {
+    const out = await execCommandOutput("ffmpeg", [
+      "-hide_banner",
+      "-nostats",
+      ...(params.startSec > 0 ? ["-ss", String(params.startSec)] : []),
+      "-t",
+      String(params.durationSec),
+      "-i",
+      params.sourcePath,
+      "-vf",
+      `select='gt(scene,${threshold})',metadata=print:file=-`,
+      "-an",
+      "-f",
+      "null",
+      "-",
+    ]);
+    const cuts: number[] = [];
+    for (const match of out.matchAll(/pts_time:([0-9]+(?:\.[0-9]+)?)/g)) {
+      cuts.push(Number(match[1]));
+    }
+    return cuts;
+  } catch (error) {
+    log("error", "clip_scene_detect_failed", {
+      workflowRunId: params.workflowRunId,
+      clipId: params.clipId,
+      message: error instanceof Error ? error.message : "unknown",
+    });
+    return [];
+  }
+}
+
+/**
+ * Scene-cut sibling of `remapMultiFaceSamplesForCutPlan`: drops cuts inside
+ * a deleted range and remaps the rest from elapsed-uncut-source seconds onto
+ * the edited timeline. Every kept-segment boundary is ALSO a scene cut on
+ * the edited timeline (the concat joins footage that was never adjacent),
+ * so those are appended too.
+ */
+export function remapSceneCutsForCutPlan(
+  cuts: number[],
+  cutPlan: ClipCutPlan,
+  clipStartSec: number,
+): number[] {
+  if (cutPlan.isUncut) {
+    // Same normalization contract as the cut branch below (sorted, deduped
+    // at ms precision) so callers never see two shapes of output.
+    return [...new Set(cuts.map((t) => Math.round(t * 1000) / 1000))].sort(
+      (a, b) => a - b,
+    );
+  }
+  const out: number[] = [];
+  for (const cut of cuts) {
+    const sourceSec = clipStartSec + cut;
+    const segment = cutPlan.segments.find(
+      (s) => sourceSec >= s.sourceStartSec && sourceSec <= s.sourceEndSec,
+    );
+    if (!segment) continue;
+    out.push(sourceToEdited(cutPlan.map, sourceSec));
+  }
+  for (const segment of cutPlan.segments.slice(1)) {
+    out.push(segment.editedStartSec);
+  }
+  return [...new Set(out.map((t) => Math.round(t * 1000) / 1000))].sort(
+    (a, b) => a - b,
+  );
 }
 
 /**
@@ -951,7 +1103,18 @@ async function applyAutoReframe(params: {
     );
     smoothed = segmentGroups.flatMap((group) => smoothFacePath(group));
   }
-  if (smoothed.length === 0) return false;
+  if (smoothed.length === 0) {
+    // The static-center-crop fallback used to be silent — surface WHY the
+    // reframe didn't happen so a missing detector can't hide again.
+    log("info", "clip_reframe_skipped", {
+      workflowRunId: params.workflowRunId,
+      clipId: params.clipId,
+      reason: params.samples
+        ? "no_usable_face_samples"
+        : "detection_unavailable",
+    });
+    return false;
+  }
 
   const single = params.outputs.length === 1;
   for (let i = 0; i < params.outputs.length; i++) {
@@ -1607,6 +1770,65 @@ export function framingForcesPerOutputRender(studioEdits: StudioEdits): boolean 
   if (mode === "split") return process.env.WORKER_SPLIT !== "0";
   if (mode === "screen") return process.env.WORKER_SCREEN_LAYOUT !== "0";
   return false;
+}
+
+/** Applies aspect-specific Studio speaker-layer edits to the derived AI plan
+ * without mutating the persisted analysis. Unedited scenes retain their
+ * original references and stay on the established fast crop/vstack path. */
+export function applySpeakerLayoutOverridesToSegments(
+  segments: SplitLayoutSegment[],
+  overrides: StudioSpeakerLayoutOverride[],
+  aspectRatio: ClipAspectRatio,
+): SplitLayoutSegment[] {
+  if (overrides.length === 0) return segments;
+  let changed = false;
+  const resolved = segments.map((segment) => {
+    const scene = resolveSpeakerLayoutScene(segment, overrides, aspectRatio);
+    if (!scene.overrideId) return segment;
+    changed = true;
+    if (segment.layout === "single") {
+      const layer = scene.layers.find((candidate) => candidate.role === "single")!;
+      return {
+        ...segment,
+        cxNorm: layer.cropCxNorm,
+        cyNorm: layer.cropCyNorm,
+        zoom: layer.cropZoom,
+        frame: {
+          x: layer.frameX,
+          y: layer.frameY,
+          width: layer.frameWidth,
+          height: layer.frameHeight,
+          rotationDeg: layer.rotationDeg,
+        },
+      };
+    }
+    const top = scene.layers.find((candidate) => candidate.role === "top")!;
+    const bottom = scene.layers.find((candidate) => candidate.role === "bottom")!;
+    return {
+      ...segment,
+      topCxNorm: top.cropCxNorm,
+      topCyNorm: top.cropCyNorm,
+      topZoom: top.cropZoom,
+      bottomCxNorm: bottom.cropCxNorm,
+      bottomCyNorm: bottom.cropCyNorm,
+      bottomZoom: bottom.cropZoom,
+      topFrame: {
+        x: top.frameX,
+        y: top.frameY,
+        width: top.frameWidth,
+        height: top.frameHeight,
+        rotationDeg: top.rotationDeg,
+      },
+      bottomFrame: {
+        x: bottom.frameX,
+        y: bottom.frameY,
+        width: bottom.frameWidth,
+        height: bottom.frameHeight,
+        rotationDeg: bottom.rotationDeg,
+      },
+    };
+  });
+  return changed ? resolved : segments;
 }
 
 function formatSrtTimestamp(seconds: number): string {
@@ -3057,12 +3279,10 @@ export function buildSingleVideoArgs(params: {
  * chained through successive `overlay` stages so multiple recurring inserts
  * compose correctly (a single cutaway is just the N=1 case of this).
  *
- * Deliberately has no `split` param (unlike `buildSingleVideoArgs`): split
- * packet B's v1 B-roll policy is "b-roll replaces the whole 2-up frame" is
- * future work — a clip with both B-roll cutaways AND effective framing mode
- * "split" always falls back to single-speaker framing before reaching here
- * (see render-clips.ts's `decideSplitFallback`, "broll_conflict"), so this
- * builder only ever needs the existing `reframe`-driven crop.
+ * The source base can use the same segment layout plan as a normal render;
+ * B-roll then replaces that composed base only inside its cutaway windows.
+ * This preserves Vizard-style speaker framing before and after B-roll rather
+ * than downgrading the entire clip to a single-face/center crop.
  */
 export function buildBrollVideoArgs(params: {
   sourcePath: string;
@@ -3079,6 +3299,7 @@ export function buildBrollVideoArgs(params: {
   captionPreset?: CaptionPreset | null;
   logo?: LogoOverlay | null;
   reframe?: ReframeSpec | null;
+  split?: { segments: SplitLayoutSegment[] } | null;
   studioEdits?: StudioEdits | null;
   music?: MusicPlan | null;
   /** One-shot SFX placements — see `buildSingleVideoArgs`'s param doc; same
@@ -3167,6 +3388,16 @@ export function buildBrollVideoArgs(params: {
         outputLabel: "[stage0]",
         imageInputIndex: bgImageInputIndex,
         fps: params.probe.fps,
+      }),
+    );
+  } else if (params.split && params.split.segments.length > 0) {
+    parts.push(
+      ...buildSplitFilterChain({
+        aspectRatio: params.aspectRatio,
+        probe: { width: params.probe.width, height: params.probe.height },
+        segments: params.split.segments,
+        videoInputLabel,
+        outputLabel: "[stage0]",
       }),
     );
   } else {
@@ -3957,6 +4188,73 @@ export function buildFreeTierPostProcessArgs(params: {
   ];
 }
 
+/**
+ * Bounded background task queue for overlapping R2 uploads with the next
+ * clip's detection/encode (measured: upload is ~50-60% of per-clip wall time
+ * on a residential uplink and is pure network wait while ffmpeg sits idle).
+ *
+ * Semantics callers rely on:
+ *  - At most `limit` tasks run concurrently; excess tasks queue FIFO.
+ *  - `schedule` never throws and tasks never reject: the TASK owns its error
+ *    handling (upload failures mark their own variant failed) — a rejected
+ *    promise here would otherwise surface as an unhandled rejection or kill
+ *    an unrelated `drain`.
+ *  - `drain()` resolves only when every scheduled task (including ones
+ *    scheduled after a previous drain) has settled. Idempotent; safe to call
+ *    from both the success path and `finally`.
+ */
+export function createBoundedTaskQueue(limit: number): {
+  schedule: (task: () => Promise<void>) => void;
+  drain: () => Promise<void>;
+  /** Number of tasks scheduled over the queue's lifetime (for logging). */
+  scheduledCount: () => number;
+} {
+  const concurrency = Math.max(1, Math.floor(limit));
+  let active = 0;
+  let scheduled = 0;
+  const waiting: Array<() => Promise<void>> = [];
+  const inFlight = new Set<Promise<void>>();
+
+  const pump = () => {
+    while (active < concurrency && waiting.length > 0) {
+      const task = waiting.shift()!;
+      active += 1;
+      const p = task()
+        .catch(() => {})
+        .finally(() => {
+          active -= 1;
+          inFlight.delete(p);
+          pump();
+        });
+      inFlight.add(p);
+    }
+  };
+
+  return {
+    schedule: (task) => {
+      scheduled += 1;
+      waiting.push(task);
+      pump();
+    },
+    drain: async () => {
+      // New tasks can be scheduled while draining (not expected today, but
+      // cheap to be correct about): loop until truly quiet.
+      while (inFlight.size > 0 || waiting.length > 0) {
+        await Promise.all([...inFlight]);
+      }
+    },
+    scheduledCount: () => scheduled,
+  };
+}
+
+/** Upload concurrency for `processClipRenderingRun`'s bounded queue —
+ *  2 keeps one upload streaming while a burst finishes, without letting a
+ *  slow uplink stack every clip's file into concurrent connections. */
+function uploadConcurrency(): number {
+  const raw = Number(process.env.WORKER_UPLOAD_CONCURRENCY ?? "2");
+  return Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : 2;
+}
+
 async function uploadRenderedOutput(params: {
   workflowRunId: string;
   projectId: string;
@@ -4096,6 +4394,9 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
   // attempt's variant ids to failClipRenderingWorkflowRun (see
   // all_clip_renders_failed below).
   let attemptVariantIds: string[] = [];
+  // Captured outside the try so `finally` can settle in-flight background
+  // uploads before deleting tempDir (their source files live there).
+  let uploadQueueRef: { drain: () => Promise<void> } | null = null;
 
   try {
     const sourceExt = extname(run.project.sourceStorageKey) || ".bin";
@@ -4273,6 +4574,56 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
     });
 
     let renderedVariantCount = 0;
+
+    // Uploads run in a bounded background queue so the next clip's
+    // detection/encode overlaps the previous clip's R2 upload (the dominant
+    // per-clip wall-time cost on a slow uplink). Every task owns its own
+    // error handling — an upload failure marks ITS variant failed and never
+    // fails the run — and `renderedVariantCount` is only read after
+    // `uploadQueue.drain()` below, so the all-failed check and run
+    // completion always see the settled truth.
+    const uploadQueue = createBoundedTaskQueue(uploadConcurrency());
+    uploadQueueRef = uploadQueue;
+    const scheduleUpload = (
+      output: PendingRenderOutput,
+      params: {
+        clipDurationSec: number;
+        brollCredits?: string | null;
+        encodeMs: number;
+      },
+    ) => {
+      uploadQueue.schedule(async () => {
+        try {
+          const persisted = await uploadRenderedOutput({
+            workflowRunId: run.id,
+            projectId: run.projectId,
+            output,
+            clipDurationSec: params.clipDurationSec,
+            brollCredits: params.brollCredits,
+            encodeMs: params.encodeMs,
+          });
+          if (persisted) renderedVariantCount += 1;
+        } catch (error) {
+          const errorCode =
+            error instanceof WorkflowWorkerError
+              ? error.code
+              : "render_upload_failed";
+          await clipService
+            .failClipRenderVariant(output.clipRenderId, errorCode)
+            .catch(() => {});
+          log("error", "clip_render_variant_failed", {
+            workflowRunId: run.id,
+            clipId: output.clipId,
+            clipRenderId: output.clipRenderId,
+            clipIndex: output.clipIndex,
+            aspectRatio: output.aspectRatio,
+            code: errorCode,
+            message:
+              error instanceof Error ? error.message : "Unknown render error",
+          });
+        }
+      });
+    };
 
     for (let clipGroupIndex = 0; clipGroupIndex < clipGroups.length; clipGroupIndex++) {
       const renderGroup = clipGroups[clipGroupIndex]!;
@@ -4491,66 +4842,23 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
         );
       });
 
-      if (
+      // Framing modes (vizard-parity Phase C-2 stage 1): only "auto" ever
+      // consumes a detected face path — fit never crops, center wants a
+      // static crop, and split/screen run their own detection through their
+      // own gates below (see `shouldRunAutoReframeDetection`'s doc comment).
+      //
+      // The detection itself now runs BELOW the B-roll plan (layout-engine
+      // wiring), not here: the segment-based layout plan replaces the whole
+      // base composition (same reason split forces the per-output path), so
+      // it must know whether B-roll cutaways won first — the same "b-roll
+      // always wins the whole frame" v1 policy split and screen already
+      // follow. A b-roll clip keeps the legacy single-face EMA reframe,
+      // which `buildBrollVideoArgs` threads through per output.
+      const autoFramingActive =
         reframeEnabled &&
         srcRatio > 1.05 &&
         reframeOutputs.length > 0 &&
-        // Framing modes (vizard-parity Phase C-2 stage 1): only "auto" ever
-        // consumes a detected face path. Fit mode never crops at all, and
-        // center mode wants a static center crop, so both skip the
-        // (expensive: ffmpeg segment extraction + python/opencv detection)
-        // work entirely rather than computing it for nothing — see
-        // `shouldRunAutoReframeDetection`. Split (packet B) also skips this
-        // block — it runs its OWN multi-face detection below and only falls
-        // back to this single-face path (via `applyAutoReframe` directly,
-        // not through this gate) when a real 2-up isn't possible. Screen
-        // (packet B) skips it for the same reason — it runs its OWN
-        // single-face detection below (`applyScreenSpeakerLayout`) for the
-        // bottom tile, and only falls back to this whole-frame path when the
-        // screen layout is disabled or conflicts with B-roll (see
-        // `decideScreenFallback`) — an undetected face within an otherwise-
-        // active screen layout degrades to a static-center bottom tile
-        // instead, never reaching this gate at all.
-        shouldRunAutoReframeDetection(studioEdits)
-      ) {
-        // Detection deliberately scans the FULL uncut clip window
-        // (`effective.durationSec`, not the post-cut `clipDurationSec`) even
-        // when `deletedRanges` is non-empty: the face path needs samples
-        // from every kept segment, wherever they land in source time, not
-        // just whatever fits in the (shorter) edited duration. Fix #3: raw
-        // samples are elapsed-uncut-source time (see reframe_detect.py), but
-        // the crop runs post-concat where t = edited time — samples inside a
-        // cut are dropped and retained ones remapped through
-        // remapFaceSamplesForCutPlan (inside `applyAutoReframe`) before the
-        // sendcmd script is built, same source<->edited contract every other
-        // cut-concat consumer (captions, B-roll cues) uses.
-        const detectInput = await extractFaceDetectionSegment({
-          sourcePath,
-          tempDir,
-          clipId: clip.id,
-          workflowRunId: run.id,
-          clipStartSec,
-          durationSec: effective.durationSec,
-        });
-        const detection = detectInput
-          ? await detectFacePath({
-              sourcePath: detectInput.path,
-              startSec: detectInput.startSec,
-              durationSec: effective.durationSec,
-            })
-          : null;
-        await applyAutoReframe({
-          samples: detection?.samples ?? null,
-          cutPlan,
-          clipStartSec,
-          probe,
-          outputs,
-          reframeOutputs,
-          tempDir,
-          clipId: clip.id,
-          workflowRunId: run.id,
-        });
-      }
+        shouldRunAutoReframeDetection(studioEdits);
 
       // Stock B-roll: when a Pexels key is set, plan 2-4 recurring cutaways
       // (driven by the detection LLM's cues when present on the clip, else
@@ -4747,6 +5055,258 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
         }
       }
 
+      // Auto framing (layout-engine wiring, deferred from the gate above so
+      // the B-roll decision is known). Two tiers:
+      //   1. Layout engine (default, `WORKER_LAYOUT_ENGINE=0` reverts):
+      //      multi-face detection + scene cuts + diarized words -> a
+      //      segment-based plan (per-shot solo crops with vertical framing/
+      //      zoom, stable two-up splits for multi-face shots) rendered
+      //      through the same `split` machinery packet B landed. Falls back
+      //      to tier 2 whenever the footage has no dynamic structure (the
+      //      detection is unavailable. The exact plan is persisted and reused
+      //      by the studio, making preview and export one contract.
+      //   2. Legacy single-face EMA reframe (`applyAutoReframe`) only when
+      //      analysis is disabled/unavailable.
+      let autoLayoutSegmentsFull: SplitLayoutSegment[] | null = null;
+      let autoLayoutSegmentsNoSplit: SplitLayoutSegment[] | null = null;
+      if (autoFramingActive) {
+        const layoutEngineEnabled = process.env.WORKER_LAYOUT_ENGINE !== "0";
+        let engineHandled = false;
+        const persistedAutoLayout = parseClipAutoLayoutAnalysis(
+          clip.autoLayoutAnalysis,
+        );
+        if (
+          layoutEngineEnabled &&
+          persistedAutoLayout &&
+          clipAutoLayoutMatchesInputs(persistedAutoLayout, {
+            clipStartSec: clip.startSec,
+            clipEndSec: clip.endSec,
+            deletedRanges,
+          }) &&
+          Math.abs(persistedAutoLayout.editedDurationSec - clipDurationSec) <= 0.075
+        ) {
+          autoLayoutSegmentsFull =
+            persistedAutoLayout.segments.length > 0
+              ? persistedAutoLayout.segments
+              : null;
+          autoLayoutSegmentsNoSplit =
+            persistedAutoLayout.noSplitSegments.length > 0
+              ? persistedAutoLayout.noSplitSegments
+              : null;
+          engineHandled = true;
+          log("info", "clip_layout_plan_reused", {
+            workflowRunId: run.id,
+            clipId: clip.id,
+            segmentCount: persistedAutoLayout.segments.length,
+            twoUpSegmentCount: persistedAutoLayout.twoUpSegmentCount,
+            analyzedAtISO: persistedAutoLayout.analyzedAtISO,
+          });
+        }
+
+        // Detection deliberately scans the full uncut clip. It only runs on
+        // a persisted-plan miss; the normal render path is now a cheap read.
+        const detectInput = !engineHandled
+          ? await extractFaceDetectionSegment({
+              sourcePath,
+              tempDir,
+              clipId: clip.id,
+              workflowRunId: run.id,
+              clipStartSec,
+              durationSec: effective.durationSec,
+            })
+          : null;
+
+        if (!engineHandled && layoutEngineEnabled && detectInput) {
+          const [multiDetection, sceneCuts] = await Promise.all([
+            detectMultiFacePath({
+              sourcePath: detectInput.path,
+              startSec: detectInput.startSec,
+              durationSec: effective.durationSec,
+            }),
+            detectSceneCuts({
+              sourcePath: detectInput.path,
+              startSec: detectInput.startSec,
+              durationSec: effective.durationSec,
+              workflowRunId: run.id,
+              clipId: clip.id,
+            }),
+          ]);
+
+          if (multiDetection) {
+            const remappedSamples = remapMultiFaceSamplesForCutPlan(
+              multiDetection.samples,
+              cutPlan,
+              clipStartSec,
+            );
+            const remappedCuts = remapSceneCutsForCutPlan(
+              sceneCuts,
+              cutPlan,
+              clipStartSec,
+            );
+            const words = speechWordsFromUtterances(
+              utterances,
+              cutPlan,
+              clipStartSec,
+              clipEndSec,
+            );
+            const planBase = {
+              samples: remappedSamples,
+              sceneCuts: remappedCuts,
+              words,
+              durationSec: clipDurationSec,
+              // Resolution-aware zoom ceiling (adversarial review M4): the
+              // 9:16 base crop of a 16:9 source is already a ~1.78x
+              // upscale, so zoom multiplies it — a 1080p source at zoom
+              // 1.4 lands at ~2.5x and visibly softens. Spend zoom budget
+              // only where the pixels exist.
+              options: {
+                frameOptions: {
+                  maxZoom:
+                    probe.height >= 1440 ? 1.4 : probe.height >= 1080 ? 1.25 : 1.1,
+                },
+                activeSpeakerCuts: false,
+              },
+            };
+            const fullPlan = buildAutoLayoutPlan({ ...planBase, allowTwoUp: true });
+            const noSplitPlan = buildAutoLayoutPlan({
+              ...planBase,
+              allowTwoUp: false,
+            });
+
+            const envelope: ClipAutoLayoutAnalysis =
+              clipAutoLayoutAnalysisSchema.parse({
+                version: 1,
+                engine: "shot-layout-v1",
+                analyzedAtISO: new Date().toISOString(),
+                clipStartSec: clip.startSec,
+                clipEndSec: clip.endSec,
+                deletedRanges,
+                editedDurationSec: clipDurationSec,
+                sourceWidth: probe.width,
+                sourceHeight: probe.height,
+                segments: fullPlan.segments,
+                noSplitSegments: noSplitPlan.segments,
+                shotCount: fullPlan.shotCount,
+                soloShotCount: fullPlan.soloShotCount,
+                multiShotCount: fullPlan.multiShotCount,
+                twoUpSegmentCount: fullPlan.twoUpSegmentCount,
+                speakerCount: fullPlan.speakerCount,
+                mappedSpeakerCount: fullPlan.mappedSpeakerCount,
+              });
+            if (clip.previewStorageKey) {
+              await clipService
+                .completeClipAutoLayoutAnalysis(clip.id, envelope, {
+                  editorRevision: clip.editorRevision,
+                  previewStorageKey: clip.previewStorageKey,
+                })
+                .catch((error) => {
+                  log("error", "clip_auto_layout_analysis_persist_failed", {
+                    workflowRunId: run.id,
+                    clipId: clip.id,
+                    message: error instanceof Error ? error.message : "unknown",
+                  });
+                });
+            }
+
+            if (fullPlan.segments.length > 0) {
+              autoLayoutSegmentsFull = fullPlan.segments;
+              // Outputs whose aspect ratio can't seat two distinct tiles
+              // (H1's same geometry gate split uses) get a two-up-free
+              // variant of the SAME plan instead of a whole-clip fallback.
+              const anyIneligible = outputs.some(
+                (output) =>
+                  reframeOutputs.includes(output) &&
+                  !splitTilesAreDistinct(output.aspectRatio, probe),
+              );
+              if (anyIneligible) {
+                autoLayoutSegmentsNoSplit =
+                  noSplitPlan.segments.length > 0 ? noSplitPlan.segments : null;
+                if (!autoLayoutSegmentsNoSplit) {
+                  // Rare: the demoted plan collapsed to nothing — those
+                  // outputs fall back to the legacy EMA reframe instead.
+                  await applyAutoReframe({
+                    samples: deriveSingleFaceSamplesFromMulti(
+                      multiDetection.samples,
+                    ),
+                    cutPlan,
+                    clipStartSec,
+                    probe,
+                    outputs,
+                    reframeOutputs: outputs.filter(
+                      (output) =>
+                        reframeOutputs.includes(output) &&
+                        !splitTilesAreDistinct(output.aspectRatio, probe),
+                    ),
+                    tempDir,
+                    clipId: clip.id,
+                    workflowRunId: run.id,
+                  });
+                }
+              }
+              engineHandled = true;
+              log("info", "clip_layout_plan_applied", {
+                workflowRunId: run.id,
+                clipId: clip.id,
+                segmentCount: fullPlan.segments.length,
+                twoUpSegmentCount: fullPlan.twoUpSegmentCount,
+                shotCount: fullPlan.shotCount,
+                soloShotCount: fullPlan.soloShotCount,
+                multiShotCount: fullPlan.multiShotCount,
+                speakerCount: fullPlan.speakerCount,
+                mappedSpeakerCount: fullPlan.mappedSpeakerCount,
+                sceneCutCount: remappedCuts.length,
+              });
+            } else {
+              // Detection completed but found no trustworthy face structure.
+              // Treat that as a conclusive centered-layout analysis instead
+              // of paying for a second detector pass on every render.
+              log("info", "clip_layout_plan_fallback", {
+                workflowRunId: run.id,
+                clipId: clip.id,
+                reason: "no_trustworthy_faces",
+                shotCount: fullPlan.shotCount,
+                soloShotCount: fullPlan.soloShotCount,
+                multiShotCount: fullPlan.multiShotCount,
+                speakerCount: fullPlan.speakerCount,
+              });
+              engineHandled = true;
+            }
+          } else {
+            log("info", "clip_layout_plan_fallback", {
+              workflowRunId: run.id,
+              clipId: clip.id,
+              reason: "detection_unavailable",
+            });
+          }
+        }
+
+        if (!engineHandled) {
+          // Legacy tier: single-face EMA reframe (engine disabled,
+          // extraction failed, or detection unavailable — the last
+          // still calls applyAutoReframe so the skip reason is logged and
+          // the static-center fallback stays explicit).
+          const detection = detectInput
+            ? await detectFacePath({
+                sourcePath: detectInput.path,
+                startSec: detectInput.startSec,
+                durationSec: effective.durationSec,
+                logContext: { workflowRunId: run.id, clipId: clip.id },
+              })
+            : null;
+          await applyAutoReframe({
+            samples: detection?.samples ?? null,
+            cutPlan,
+            clipStartSec,
+            probe,
+            outputs,
+            reframeOutputs,
+            tempDir,
+            clipId: clip.id,
+            workflowRunId: run.id,
+          });
+        }
+      }
+
       // Screen packet B ("screen" framing mode, the worker render path): when
       // the clip's effective framing mode is "screen", run single-face
       // detection (NOT `detectMultiFacePath` — screen mode only ever needs
@@ -4789,6 +5349,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
                   sourcePath: detectInput.path,
                   startSec: detectInput.startSec,
                   durationSec: effective.durationSec,
+                  logContext: { workflowRunId: run.id, clipId: clip.id },
                 })
               : null;
             await applyAutoReframe({
@@ -4833,6 +5394,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
                     sourcePath: detectInput.path,
                     startSec: detectInput.startSec,
                     durationSec: effective.durationSec,
+                    logContext: { workflowRunId: run.id, clipId: clip.id },
                   })
                 : null;
               await applyAutoReframe({
@@ -4933,6 +5495,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
                   sourcePath: detectInput.path,
                   startSec: detectInput.startSec,
                   durationSec: effective.durationSec,
+                  logContext: { workflowRunId: run.id, clipId: clip.id },
                 })
               : null;
             const faceConfirmed = confirmsFaceInRect(detection?.samples ?? null, selectedRect);
@@ -5078,6 +5641,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
                   sourcePath: detectInput.path,
                   startSec: detectInput.startSec,
                   durationSec: effective.durationSec,
+                  logContext: { workflowRunId: run.id, clipId: clip.id },
                 })
               : null;
             await applyAutoReframe({
@@ -5121,6 +5685,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
                   sourcePath: detectInput.path,
                   startSec: detectInput.startSec,
                   durationSec: effective.durationSec,
+                  logContext: { workflowRunId: run.id, clipId: clip.id },
                 })
               : null;
             detectionAvailable = Boolean(multiDetection);
@@ -5176,6 +5741,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
                             sourcePath: detectInput.path,
                             startSec: detectInput.startSec,
                             durationSec: effective.durationSec,
+                            logContext: { workflowRunId: run.id, clipId: clip.id },
                           })
                         : null;
                     })()
@@ -5566,7 +6132,14 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
         studioEdits.sourceAudio.volume !== 100 ||
         !cutPlan.isUncut ||
         Boolean(backgroundPlan) ||
-        framingForcesPerOutputRender(studioEdits);
+        framingForcesPerOutputRender(studioEdits) ||
+        // Layout-engine plan (auto mode): the segment-concat graph replaces
+        // the base composition exactly like split's does, so it needs the
+        // per-output path for the same reason. Unlike split this IS gated on
+        // plan presence — auto mode has no user-visible mode toggle to keep
+        // routing stable against, and a plan-less render through the batch
+        // path is byte-identical to before the engine existed.
+        Boolean(autoLayoutSegmentsFull);
 
       await Promise.all(
         outputs.map((output) =>
@@ -5603,19 +6176,14 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
 
             const encodeStartedAtMs = Date.now();
             await execCommand("ffmpeg", ffmpegArgs);
-            const persisted = await uploadRenderedOutput({
-              workflowRunId: run.id,
-              projectId: run.projectId,
-              output,
+            // Upload runs in the bounded background queue (overlaps the next
+            // clip's work). The stale-discard/`persisted` counting and the
+            // upload-failure variant marking both live in `scheduleUpload`;
+            // this catch now only ever sees ENCODE failures.
+            scheduleUpload(output, {
               clipDurationSec,
               encodeMs: Date.now() - encodeStartedAtMs,
             });
-            // Only count it if the ClipRender row actually claimed this
-            // attempt's completion — a stale-discarded upload (the row was
-            // deleted by a concurrent editor save/reset mid-encode) produced
-            // real bytes but persisted nothing, so it must not count toward
-            // "this run rendered something" (see the all-failed check below).
-            if (persisted) renderedVariantCount += 1;
           } catch (error) {
             const errorCode =
               error instanceof WorkflowWorkerError
@@ -5643,6 +6211,20 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
         const brollCredits =
           plan && plan.credits.length > 0 ? JSON.stringify(plan.credits) : null;
         for (const output of outputs) {
+          const fullAutoSegmentsForOutput = autoLayoutSegmentsFull
+            ? applySpeakerLayoutOverridesToSegments(
+                autoLayoutSegmentsFull,
+                studioEdits.speakerLayoutOverrides,
+                output.aspectRatio,
+              )
+            : null;
+          const noSplitAutoSegmentsForOutput = autoLayoutSegmentsNoSplit
+            ? applySpeakerLayoutOverridesToSegments(
+                autoLayoutSegmentsNoSplit,
+                studioEdits.speakerLayoutOverrides,
+                output.aspectRatio,
+              )
+            : null;
           try {
             const ffmpegArgs = plan
               ? buildBrollVideoArgs({
@@ -5657,6 +6239,15 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
                   captionPreset,
                   logo,
                   reframe: output.reframe,
+                  split: fullAutoSegmentsForOutput
+                    ? reframeOutputs.includes(output)
+                      ? splitTilesAreDistinct(output.aspectRatio, probe)
+                        ? { segments: fullAutoSegmentsForOutput }
+                        : noSplitAutoSegmentsForOutput
+                          ? { segments: noSplitAutoSegmentsForOutput }
+                          : null
+                      : null
+                    : null,
                   studioEdits,
                   music: musicPlan,
                   sfx: sfxPlans,
@@ -5693,8 +6284,21 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
                   // this output must NOT also receive `split` (which would
                   // render laterally-identical duplicate tiles for its
                   // aspect ratio).
-                  split:
-                    splitPlan && !splitIneligibleOutputs.includes(output)
+                  //
+                  // Layout-engine plans (auto mode) ride the same param:
+                  // full plan for outputs that can seat two-up tiles, the
+                  // demoted no-split variant otherwise (or none at all when
+                  // that variant collapsed — those outputs already got the
+                  // legacy reframe applied above).
+                  split: fullAutoSegmentsForOutput
+                    ? reframeOutputs.includes(output)
+                      ? splitTilesAreDistinct(output.aspectRatio, probe)
+                        ? { segments: fullAutoSegmentsForOutput }
+                        : noSplitAutoSegmentsForOutput
+                          ? { segments: noSplitAutoSegmentsForOutput }
+                          : null
+                      : null
+                    : splitPlan && !splitIneligibleOutputs.includes(output)
                       ? { segments: splitPlan.segments }
                       : null,
                   // Screen packet B: `output.screenBottom` is only ever set
@@ -5718,15 +6322,13 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
                 });
             const encodeStartedAtMs = Date.now();
             await execCommand("ffmpeg", ffmpegArgs);
-            const persisted = await uploadRenderedOutput({
-              workflowRunId: run.id,
-              projectId: run.projectId,
-              output,
+            // Bounded background upload — see `scheduleUpload`. This catch
+            // now only ever sees encode/build failures.
+            scheduleUpload(output, {
               clipDurationSec,
               brollCredits,
               encodeMs: Date.now() - encodeStartedAtMs,
             });
-            if (persisted) renderedVariantCount += 1;
           } catch (error) {
             const errorCode =
               error instanceof WorkflowWorkerError
@@ -5779,38 +6381,13 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
           await execCommand("ffmpeg", ffmpegArgs);
           const sharedEncodeMs = Date.now() - encodeStartedAtMs;
 
+          // Bounded background uploads — per-output failure marking (the
+          // former inline try/catch here) lives in `scheduleUpload`.
           for (const output of outputs) {
-            try {
-              const persisted = await uploadRenderedOutput({
-                workflowRunId: run.id,
-                projectId: run.projectId,
-                output,
-                clipDurationSec,
-                encodeMs: sharedEncodeMs,
-              });
-              if (persisted) renderedVariantCount += 1;
-            } catch (error) {
-              const errorCode =
-                error instanceof WorkflowWorkerError
-                  ? error.code
-                  : "render_upload_failed";
-
-              await clipService.failClipRenderVariant(
-                output.clipRenderId,
-                errorCode,
-              );
-
-              log("error", "clip_render_variant_failed", {
-                workflowRunId: run.id,
-                clipId: output.clipId,
-                clipRenderId: output.clipRenderId,
-                clipIndex: output.clipIndex,
-                aspectRatio: output.aspectRatio,
-                code: errorCode,
-                message:
-                  error instanceof Error ? error.message : "Unknown render error",
-              });
-            }
+            scheduleUpload(output, {
+              clipDurationSec,
+              encodeMs: sharedEncodeMs,
+            });
           }
         } catch (error) {
           const errorCode =
@@ -5846,6 +6423,19 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
         errorCode: null,
       });
     }
+
+    // Settle every in-flight upload before reading `renderedVariantCount` —
+    // the all-failed check and run completion below must see the final
+    // truth, and completeClipRenderingWorkflowRun must never race a
+    // completeClipRenderVariant write.
+    const drainStartedAtMs = Date.now();
+    await uploadQueue.drain();
+    log("info", "clip_render_upload_drain", {
+      workflowRunId: run.id,
+      projectId: run.projectId,
+      scheduledUploads: uploadQueue.scheduledCount(),
+      drainMs: Date.now() - drainStartedAtMs,
+    });
 
     if (renderedVariantCount === 0 && pendingRenders.length > 0) {
       // Every variant this attempt touched failed. Completing the run here
@@ -5927,6 +6517,12 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
       autoRenderOnly: true,
     });
   } finally {
+    // A failure path can reach here with uploads still in flight (their
+    // output files live in tempDir) — settle them before deleting it, so a
+    // late-succeeding upload can't read a half-deleted file. Idempotent on
+    // the success path (already drained above). Never let a drain error
+    // block cleanup.
+    if (uploadQueueRef) await uploadQueueRef.drain().catch(() => {});
     await rm(tempDir, { recursive: true, force: true });
   }
 }

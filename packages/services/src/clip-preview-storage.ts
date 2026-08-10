@@ -2,8 +2,7 @@
  * Shared conventions for a clip preview proxy's amplitude-peaks artifact —
  * used by both the worker (apps/worker/src/tasks/clip-preview.ts, which cuts
  * the proxy and writes this JSON alongside it) and this package's own
- * clip.service.ts (which presigns a URL to it for the studio's timeline
- * waveform).
+ * clip.service.ts (which reads and validates it for the studio timeline).
  *
  * Storage convention: the peaks JSON always lives at the proxy mp4's OWN
  * key with the `.mp4` extension swapped for `.peaks.json` — a sibling
@@ -26,11 +25,9 @@
  * A peaks object may not exist for a given `previewStorageKey` even when
  * derivation succeeds: silent-video previews never generate one (see the
  * worker's `probe.hasAudio` guard), and previews cut before this feature
- * shipped never will either. Callers must treat "derived key doesn't
- * resolve" as a normal, expected case — see clip.service.ts's
- * `getClipPreviewSource` (presigns optimistically, no existence check) and
- * the studio's WaveformCanvas (falls back to its synthetic waveform on a
- * failed fetch).
+ * shipped never will either. Callers treat "derived key doesn't resolve" as
+ * a normal, expected case: `getClipPreviewSource` returns null peaks and the
+ * studio's WaveformCanvas falls back to its synthetic waveform.
  */
 export function derivePeaksStorageKey(previewStorageKey: string): string {
   const MP4_SUFFIX = ".mp4";
@@ -90,4 +87,30 @@ export interface ClipPreviewPeaks {
   durationSec: number;
   /** Mono max-abs amplitude per bin, quantized to integers in [0, 100]. */
   peaks: number[];
+}
+
+/** Runtime validation for the R2 artifact before it crosses the server/client
+ * boundary. Values are finite and quantized exactly as the worker contract
+ * specifies, so a malformed object cannot inflate the canvas or RSC payload.
+ */
+export function isClipPreviewPeaks(value: unknown): value is ClipPreviewPeaks {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const candidate = value as Record<string, unknown>;
+  return (
+    candidate.version === 1 &&
+    candidate.sampleRateHz === null &&
+    typeof candidate.peaksPerSec === "number" &&
+    Number.isFinite(candidate.peaksPerSec) &&
+    candidate.peaksPerSec > 0 &&
+    typeof candidate.startSec === "number" &&
+    Number.isFinite(candidate.startSec) &&
+    typeof candidate.durationSec === "number" &&
+    Number.isFinite(candidate.durationSec) &&
+    candidate.durationSec > 0 &&
+    Array.isArray(candidate.peaks) &&
+    candidate.peaks.length <= 20_000 &&
+    candidate.peaks.every(
+      (peak) => Number.isInteger(peak) && peak >= 0 && peak <= 100,
+    )
+  );
 }

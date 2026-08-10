@@ -31,6 +31,7 @@ export {
   computeViralityScore,
   sliceTranscriptForClip,
   type ClipPendingPreview,
+  type ClipPendingAutoLayoutAnalysis,
 } from "./clip.service";
 export {
   projectService,
@@ -124,6 +125,7 @@ export {
 export {
   deleteObject,
   downloadObjectToFile,
+  getJsonObject,
   presignDownloadUrl,
   presignSingleUploadUrl,
   putFileFromPath,
@@ -131,6 +133,7 @@ export {
 } from "./r2-storage";
 export {
   derivePeaksStorageKey,
+  isClipPreviewPeaks,
   type ClipPreviewPeaks,
 } from "./clip-preview-storage";
 export {

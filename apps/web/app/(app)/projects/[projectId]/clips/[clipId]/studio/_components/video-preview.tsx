@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 import {
   capDuckingWindows,
+  clipAutoLayoutMatchesInputs,
   clipAspectRatioOptions,
   computeSpeechWindows,
   duckingGainMultiplierAt,
@@ -23,8 +24,12 @@ import {
   resolveEffectiveFramingMode,
   resolveEffectiveLogoSettings,
   resolveMusicFadeWindows,
+  resolveSpeakerLayoutScene,
+  speakerLayoutOverrideFromScene,
   type DuckingWindow,
   type LogoPosition,
+  type SpeakerLayerRole,
+  type SpeakerLayerTransform,
 } from "@narriflow/validators";
 import { useStudio } from "./studio-shell";
 import type { AspectRatio, LayoutMode } from "./studio-shell";
@@ -33,6 +38,13 @@ import { InteractiveTextLayer } from "./interactive-text-layer";
 import { SfxPreviewTrack } from "./sfx-preview-track";
 import { SplitSecondaryTile, type SplitSecondaryTileCropRect } from "./split-secondary-tile";
 import { fitPipCropToTileNormalized, pipCropTooSmallNormalized } from "./pip-crop-math";
+import type { NormalizedCropRect } from "./pip-crop-math";
+import {
+  activeAutoLayoutSegment,
+  autoLayoutSegmentsForAspect,
+  speakerLayerCropRect,
+} from "./auto-layout-preview";
+import { InteractiveSpeakerLayer } from "./interactive-speaker-layer";
 
 /** `screenTileGeometry`'s `tileWidth` (apps/worker/src/tasks/screen-layout.ts)
  *  is just the target aspect ratio's own output WIDTH — mirrored here from
@@ -89,6 +101,19 @@ function logoPositionStyle(
   return style;
 }
 
+function speakerFrameStyle(layer: SpeakerLayerTransform): React.CSSProperties {
+  return {
+    position: "absolute",
+    left: `${layer.frameX * 100}%`,
+    top: `${layer.frameY * 100}%`,
+    width: `${layer.frameWidth * 100}%`,
+    height: `${layer.frameHeight * 100}%`,
+    transform: `rotate(${layer.rotationDeg}deg)`,
+    transformOrigin: "center",
+    overflow: "hidden",
+  };
+}
+
 // ─── Aspect ratio helpers ─────────────────────────────────────────────────────
 
 const ASPECT_RATIO_CONFIG: Record<AspectRatio, { w: number; h: number; icon: React.ReactNode; label: string }> = {
@@ -99,6 +124,34 @@ const ASPECT_RATIO_CONFIG: Record<AspectRatio, { w: number; h: number; icon: Rea
 };
 
 const LAYOUT_OPTIONS: LayoutMode[] = ["fill", "fit", "blur"];
+
+function explicitCropVideoStyle(
+  crop: NormalizedCropRect | null,
+  tileWidthPx: number,
+  tileHeightPx: number,
+  visible: boolean,
+): React.CSSProperties | null {
+  if (
+    !crop ||
+    crop.w <= 0 ||
+    crop.h <= 0 ||
+    tileWidthPx <= 0 ||
+    tileHeightPx <= 0
+  ) {
+    return null;
+  }
+  const width = tileWidthPx / crop.w;
+  const height = tileHeightPx / crop.h;
+  return {
+    position: "absolute",
+    left: `${-crop.x * width}px`,
+    top: `${-crop.y * height}px`,
+    width: `${width}px`,
+    height: `${height}px`,
+    maxWidth: "none",
+    display: visible ? "block" : "none",
+  };
+}
 
 // Split preview (split packet C): heuristic horizontal seat positions for
 // the stacked 2-up tiles, fed straight into CSS `object-position`'s X
@@ -179,12 +232,18 @@ export function VideoPreview() {
     playerClipStartSec,
     deselectCaption,
     deselectTextLayer,
+    captionSelected,
+    selectedTextLayerId,
+    setStudioEdits,
+    endCoalesce,
     isPlaying,
     duration,
     brandLogo,
     utterances,
     layoutAnalysis,
+    autoLayoutAnalysis,
     clipWindow,
+    deletedRanges,
   } = useStudio();
 
   // File-local position of edited time 0 — equals `playerClipStartSec`
@@ -223,6 +282,8 @@ export function VideoPreview() {
   // (half that height, full that width) for `fitPipCropToTileNormalized`'s
   // `tileRatio` and `SplitSecondaryTileCropRect`'s `tileHeightPx`.
   const [previewHeight, setPreviewHeight] = useState(0);
+  const [selectedSpeakerRole, setSelectedSpeakerRole] =
+    useState<SpeakerLayerRole | null>(null);
   // Screen packet C: the SOURCE video's own pixel dimensions, captured once
   // from `videoRef`'s `loadedmetadata` event (see the load effect below) —
   // `fitPipCropToTileNormalized`'s `probe` argument, matching the worker's
@@ -274,10 +335,11 @@ export function VideoPreview() {
   // worker's render pipeline) resolves to "fit", the video letterboxes and
   // a solid color or image fills the empty frame behind it, mirroring the
   // worker's buildFitAndBackgroundFilter exactly (scale-to-contain,
-  // centered). "auto" vs "center" have no client-side preview distinction
-  // today — the proxy shows uncropped either way — so `layoutMode`'s own
-  // fill/fit/blur cycling stays fully in charge whenever background is
-  // "off". "split" and "screen" are also "off"-branch modes (`backgroundActive`
+  // centered). When a persisted auto-layout plan is available, "auto" uses
+  // the exact analyzed crop below. Pending/failed analysis and explicit
+  // center mode fall back to the existing single-video behavior, so
+  // `layoutMode`'s own fill/fit/blur cycling stays fully in charge whenever
+  // background is "off". "split" and "screen" are also "off"-branch modes (`backgroundActive`
   // below is a plain `=== "fit"` check, not an exhaustive switch, so it's
   // `false` for both exactly like it is for center) but do NOT fall through
   // to `layoutMode`'s single-video crop-to-fill below — split packet C (and
@@ -310,6 +372,129 @@ export function VideoPreview() {
   // further down.
   const isSplit = effectiveFramingMode === "split";
   const isScreen = effectiveFramingMode === "screen";
+  const validAutoLayout = useMemo(() => {
+    if (effectiveFramingMode !== "auto" || !autoLayoutAnalysis || !sourceDims) {
+      return null;
+    }
+    return clipAutoLayoutMatchesInputs(autoLayoutAnalysis, {
+      clipStartSec: clipWindow.startSec,
+      clipEndSec: clipWindow.endSec,
+      deletedRanges,
+    })
+      ? autoLayoutAnalysis
+      : null;
+  }, [effectiveFramingMode, autoLayoutAnalysis, sourceDims, clipWindow, deletedRanges]);
+  const autoSegments = useMemo(
+    () =>
+      validAutoLayout && sourceDims
+        ? autoLayoutSegmentsForAspect(validAutoLayout, aspectRatio, sourceDims)
+        : [],
+    [validAutoLayout, sourceDims, aspectRatio],
+  );
+  const activeAutoSegment = useMemo(
+    () => activeAutoLayoutSegment(autoSegments, currentTime),
+    [autoSegments, currentTime],
+  );
+  const activeSpeakerScene = useMemo(
+    () =>
+      activeAutoSegment
+        ? resolveSpeakerLayoutScene(
+            activeAutoSegment,
+            studioEdits.speakerLayoutOverrides,
+            aspectRatio,
+          )
+        : null,
+    [activeAutoSegment, studioEdits.speakerLayoutOverrides, aspectRatio],
+  );
+  const activeSpeakerSceneKey = activeSpeakerScene
+    ? `${aspectRatio}:${activeSpeakerScene.startSec.toFixed(3)}:${activeSpeakerScene.endSec.toFixed(3)}:${activeSpeakerScene.layout}`
+    : null;
+
+  useEffect(() => {
+    if (captionSelected || selectedTextLayerId) {
+      setSelectedSpeakerRole(null);
+    }
+  }, [captionSelected, selectedTextLayerId]);
+
+  useEffect(() => {
+    if (
+      selectedSpeakerRole &&
+      !activeSpeakerScene?.layers.some((layer) => layer.role === selectedSpeakerRole)
+    ) {
+      setSelectedSpeakerRole(null);
+    }
+  }, [activeSpeakerSceneKey, activeSpeakerScene, selectedSpeakerRole]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setSelectedSpeakerRole(null);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
+  const selectSpeakerLayer = useCallback(
+    (role: SpeakerLayerRole) => {
+      deselectCaption();
+      deselectTextLayer();
+      setSelectedSpeakerRole(role);
+    },
+    [deselectCaption, deselectTextLayer],
+  );
+
+  const updateSpeakerLayer = useCallback(
+    (nextLayer: SpeakerLayerTransform, gesture: string) => {
+      if (!activeAutoSegment) return;
+      setStudioEdits(
+        (previous) => {
+          const scene = resolveSpeakerLayoutScene(
+            activeAutoSegment,
+            previous.speakerLayoutOverrides,
+            aspectRatio,
+          );
+          const nextScene = {
+            ...scene,
+            layers: scene.layers.map((layer) =>
+              layer.role === nextLayer.role ? nextLayer : layer,
+            ),
+          };
+          const id = scene.overrideId ?? `speaker-scene-${crypto.randomUUID()}`;
+          const override = speakerLayoutOverrideFromScene(nextScene, aspectRatio, id);
+          const withoutCurrent = previous.speakerLayoutOverrides.filter(
+            (candidate) => candidate.id !== scene.overrideId,
+          );
+          return {
+            ...previous,
+            speakerLayoutOverrides: [...withoutCurrent.slice(-63), override],
+          };
+        },
+        `${activeSpeakerSceneKey ?? "speaker-scene"}:${gesture}`,
+      );
+    },
+    [activeAutoSegment, activeSpeakerSceneKey, aspectRatio, setStudioEdits],
+  );
+
+  const resetActiveSpeakerScene = useCallback(() => {
+    if (!activeAutoSegment) return;
+    setStudioEdits((previous) => {
+      const scene = resolveSpeakerLayoutScene(
+        activeAutoSegment,
+        previous.speakerLayoutOverrides,
+        aspectRatio,
+      );
+      if (!scene.overrideId) return previous;
+      return {
+        ...previous,
+        speakerLayoutOverrides: previous.speakerLayoutOverrides.filter(
+          (candidate) => candidate.id !== scene.overrideId,
+        ),
+      };
+    });
+    endCoalesce();
+  }, [activeAutoSegment, aspectRatio, endCoalesce, setStudioEdits]);
+
+  const autoTwoUp = activeSpeakerScene?.layout === "two-up";
+  const isStacked = isSplit || isScreen || autoTwoUp;
   const videoObjectFit: "contain" | "cover" = backgroundActive
     ? "contain"
     : layoutMode === "fit"
@@ -672,9 +857,30 @@ export function VideoPreview() {
   // `playerRippleStartSec` above does for the clip's opening instant. Only
   // meaningful (and only computed) while split or screen is active; the tile
   // that consumes it doesn't otherwise exist.
-  const secondaryTileTargetTimeSec = isSplit || isScreen
+  const secondaryTileTargetTimeSec = isStacked
     ? editedToSource(editedTimeMap, currentTime) - activeOffsetSec
     : 0;
+
+  const autoMainLayer = activeSpeakerScene?.layers.find((layer) =>
+    activeSpeakerScene.layout === "two-up" ? layer.role === "top" : layer.role === "single",
+  );
+  const autoBottomLayer = activeSpeakerScene?.layers.find((layer) => layer.role === "bottom");
+  const autoMainCrop = useMemo(() => {
+    if (!autoMainLayer || !sourceDims) return null;
+    return speakerLayerCropRect(autoMainLayer, aspectRatio, sourceDims);
+  }, [autoMainLayer, sourceDims, aspectRatio]);
+  const autoBottomCrop = useMemo((): SplitSecondaryTileCropRect | null => {
+    if (!autoBottomLayer || !sourceDims) {
+      return null;
+    }
+    const crop = speakerLayerCropRect(autoBottomLayer, aspectRatio, sourceDims);
+    if (!crop || previewWidth <= 0 || previewHeight <= 0) return null;
+    return {
+      ...crop,
+      tileWidthPx: previewWidth * autoBottomLayer.frameWidth,
+      tileHeightPx: previewHeight * autoBottomLayer.frameHeight,
+    };
+  }, [autoBottomLayer, sourceDims, aspectRatio, previewWidth, previewHeight]);
 
   // Screen packet C (PiP persistence — preview true facecam crop): once the
   // worker's analysis pass has run AND that render's own `decidePipUsage`
@@ -762,6 +968,13 @@ export function VideoPreview() {
         : videoLoaded
           ? "ready"
           : "loading";
+
+  const autoMainVideoStyle = explicitCropVideoStyle(
+    autoMainCrop,
+    previewWidth * (autoMainLayer?.frameWidth ?? 1),
+    previewHeight * (autoMainLayer?.frameHeight ?? (autoTwoUp ? 0.5 : 1)),
+    previewPhase === "ready",
+  );
 
   return (
     <Flex
@@ -882,7 +1095,7 @@ export function VideoPreview() {
             height: videoH > videoW ? "100%" : "auto",
             width: videoH <= videoW ? "100%" : "auto",
           }}
-          bg="studio.subtle"
+          bg={activeSpeakerScene?.overrideId ? "black" : "studio.subtle"}
           overflow="hidden"
           borderRadius="2px"
         >
@@ -1065,49 +1278,102 @@ export function VideoPreview() {
               and screen) — see its own file for why it's muted and merely
               drift-corrected rather than clock-driving. */}
           <Box
-            position="absolute"
-            top={0}
-            left={0}
-            right={0}
-            bottom={isSplit || isScreen ? "50%" : 0}
-            overflow="hidden"
-            borderBottomWidth={isSplit || isScreen ? "1px" : "0"}
+            style={
+              autoMainLayer
+                ? speakerFrameStyle(autoMainLayer)
+                : {
+                    position: "absolute",
+                    top: 0,
+                    left: 0,
+                    right: 0,
+                    bottom: isStacked ? "50%" : 0,
+                  }
+            }
+            overflow="visible"
+            borderBottomWidth={isStacked ? "1px" : "0"}
             borderColor="studio.border"
             bg={isScreen ? "black" : undefined}
           >
-            {/* biome-ignore lint/a11y/useMediaCaption: captions render via the separate interactive caption overlay; the raw video has no VTT track source to attach. */}
-            <video
-              ref={videoRef}
-              style={{
-                position: "absolute",
-                inset: 0,
-                width: "100%",
-                height: "100%",
-                objectFit: isSplit ? "cover" : isScreen ? "contain" : videoObjectFit,
-                objectPosition: isSplit ? `${SPLIT_TOP_TILE_CX * 100}% 50%` : undefined,
-                display: previewPhase === "ready" ? "block" : "none",
-              }}
-              playsInline
-              preload="metadata"
-            />
+            <Box position="absolute" inset="0" overflow="hidden">
+              {/* biome-ignore lint/a11y/useMediaCaption: captions render via the separate interactive caption overlay; the raw video has no VTT track source to attach. */}
+              <video
+                ref={videoRef}
+                style={
+                  autoMainVideoStyle ?? {
+                    position: "absolute",
+                    inset: 0,
+                    width: "100%",
+                    height: "100%",
+                    objectFit: isSplit ? "cover" : isScreen ? "contain" : videoObjectFit,
+                    objectPosition: isSplit ? `${SPLIT_TOP_TILE_CX * 100}% 50%` : undefined,
+                    display: previewPhase === "ready" ? "block" : "none",
+                  }
+                }
+                playsInline
+                preload="metadata"
+              />
+            </Box>
+            {activeSpeakerScene && autoMainLayer ? (
+              <InteractiveSpeakerLayer
+                layer={autoMainLayer}
+                canvasRef={videoContainerRef}
+                selected={selectedSpeakerRole === autoMainLayer.role}
+                onSelect={() => selectSpeakerLayer(autoMainLayer.role)}
+                onChange={updateSpeakerLayer}
+                onGestureEnd={endCoalesce}
+                onReset={resetActiveSpeakerScene}
+              />
+            ) : null}
           </Box>
 
-          {(isSplit || isScreen) && activeVideoUrl && (
-            <Box position="absolute" top="50%" left={0} right={0} bottom={0} overflow="hidden">
-              <SplitSecondaryTile
-                src={activeVideoUrl}
-                isPlaying={isPlaying}
-                targetTimeSec={secondaryTileTargetTimeSec}
-                objectFit="cover"
-                objectPosition={isSplit ? `${SPLIT_BOTTOM_TILE_CX * 100}% 50%` : "50% 50%"}
-                // Screen packet C: `cropRect` is only ever computed for
-                // screen mode (see `screenBottomCropRect`'s own `isScreen`
-                // guard) — split always stays on the `objectFit`/
-                // `objectPosition` path above via this always-null value.
-                cropRect={isScreen ? screenBottomCropRect : null}
-                visible={previewPhase === "ready"}
-                mainVideoRef={videoRef}
-              />
+          {isStacked && activeVideoUrl && (
+            <Box
+              style={
+                autoBottomLayer
+                  ? speakerFrameStyle(autoBottomLayer)
+                  : {
+                      position: "absolute",
+                      top: "50%",
+                      left: 0,
+                      right: 0,
+                      bottom: 0,
+                    }
+              }
+              overflow="visible"
+            >
+              <Box position="absolute" inset="0" overflow="hidden">
+                <SplitSecondaryTile
+                  src={activeVideoUrl}
+                  isPlaying={isPlaying}
+                  targetTimeSec={secondaryTileTargetTimeSec}
+                  objectFit="cover"
+                  objectPosition={isSplit ? `${SPLIT_BOTTOM_TILE_CX * 100}% 50%` : "50% 50%"}
+                  // Screen packet C: `cropRect` is only ever computed for
+                  // screen mode (see `screenBottomCropRect`'s own `isScreen`
+                  // guard) — split always stays on the `objectFit`/
+                  // `objectPosition` path above via this always-null value.
+                  cropRect={
+                    autoTwoUp
+                      ? autoBottomCrop
+                      : isScreen
+                        ? screenBottomCropRect
+                        : null
+                  }
+                  visible={previewPhase === "ready"}
+                  mainVideoRef={videoRef}
+                />
+              </Box>
+              {activeSpeakerScene && autoBottomLayer ? (
+                <InteractiveSpeakerLayer
+                  layer={autoBottomLayer}
+                  canvasRef={videoContainerRef}
+                  selected={selectedSpeakerRole === autoBottomLayer.role}
+                  onSelect={() => selectSpeakerLayer(autoBottomLayer.role)}
+                  onChange={updateSpeakerLayer}
+                  onGestureEnd={endCoalesce}
+                  onReset={resetActiveSpeakerScene}
+                />
+              ) : null}
             </Box>
           )}
 

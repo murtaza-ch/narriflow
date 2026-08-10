@@ -6,6 +6,7 @@ import {
   type EditedTimeMap,
 } from "./edit-ranges";
 import type { TranscriptUtterance } from "./transcript";
+import { studioSpeakerLayoutOverrideSchema } from "./speaker-layout-overrides";
 
 const hexColorSchema = z.string().regex(/^#[0-9A-Fa-f]{6}$/);
 
@@ -480,6 +481,10 @@ export const studioEditsSchema = z
     logo: studioLogoSchema.default(STUDIO_LOGO_DEFAULT),
     background: studioBackgroundSchema.default(STUDIO_BACKGROUND_DEFAULT),
     framing: studioFramingSchema.default(STUDIO_FRAMING_DEFAULT),
+    speakerLayoutOverrides: z
+      .array(studioSpeakerLayoutOverrideSchema)
+      .max(64)
+      .default([]),
     sfx: z.array(studioSfxPlacementSchema).max(20).default([]),
   })
   .default({
@@ -490,6 +495,7 @@ export const studioEditsSchema = z
     logo: STUDIO_LOGO_DEFAULT,
     background: STUDIO_BACKGROUND_DEFAULT,
     framing: STUDIO_FRAMING_DEFAULT,
+    speakerLayoutOverrides: [],
     sfx: [],
   });
 
@@ -504,6 +510,7 @@ export type StudioSourceAudio = z.infer<typeof studioSourceAudioSchema>;
 export type StudioLogo = z.infer<typeof studioLogoSchema>;
 export type StudioBackground = z.infer<typeof studioBackgroundSchema>;
 export type StudioFraming = z.infer<typeof studioFramingSchema>;
+export type { StudioSpeakerLayoutOverride, SpeakerLayerTransform } from "./speaker-layout-overrides";
 export type StudioSfxPlacement = z.infer<typeof studioSfxPlacementSchema>;
 export type StudioEdits = z.infer<typeof studioEditsSchema>;
 export type UpdateClipStudioEdits = z.infer<typeof updateClipStudioEditsSchema>;

@@ -497,6 +497,38 @@ export async function downloadObjectToFile(params: {
   };
 }
 
+/** Reads a deliberately small JSON object directly from R2. This is used for
+ * metadata artifacts such as waveform peaks that browsers cannot reliably
+ * fetch from a private bucket without bucket-level CORS configuration. The
+ * hard byte ceiling protects the web process from a corrupt or replaced key.
+ */
+export async function getJsonObject(params: {
+  key: string;
+  maxBytes?: number;
+}): Promise<unknown> {
+  const client = getClient();
+  const { bucket } = getR2Config();
+  const maxBytes = Math.max(1, Math.min(1024 * 1024, params.maxBytes ?? 256 * 1024));
+  const response = await client.send(
+    new GetObjectCommand({ Bucket: bucket, Key: params.key }),
+  );
+  if (!response.Body) {
+    throw new Error(`R2 object body missing for key: ${params.key}`);
+  }
+  if (response.ContentLength !== undefined && response.ContentLength > maxBytes) {
+    throw new Error(`R2 JSON object exceeds ${maxBytes} bytes: ${params.key}`);
+  }
+  const body = response.Body as { transformToString?: () => Promise<string> };
+  if (!body.transformToString) {
+    throw new Error("R2 response body cannot be converted to text");
+  }
+  const text = await body.transformToString();
+  if (Buffer.byteLength(text, "utf8") > maxBytes) {
+    throw new Error(`R2 JSON object exceeds ${maxBytes} bytes: ${params.key}`);
+  }
+  return JSON.parse(text) as unknown;
+}
+
 export async function presignDownloadUrl(params: {
   key: string;
   expiresIn?: number;

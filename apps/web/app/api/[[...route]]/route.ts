@@ -746,6 +746,23 @@ app.get("/projects/:id/clips", async (c) => {
   return c.json({ clips }, 200);
 });
 
+/** Small same-origin bridge for private-R2 waveform metadata. Video elements
+ * can play presigned media without CORS, but browser `fetch()` of JSON cannot;
+ * proxying only this bounded, validated artifact avoids a bucket-wide CORS
+ * dependency without putting video bytes through the web service. */
+app.get("/projects/:id/clips/:clipId/preview-peaks", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  const peaks = await clipService.getClipPreviewPeaks(
+    appUser.id,
+    c.req.param("id"),
+    c.req.param("clipId"),
+  );
+  if (!peaks) return c.body(null, 204);
+  c.header("Cache-Control", "private, max-age=3600, immutable");
+  return c.json(peaks, 200);
+});
+
 app.patch("/projects/:id/clips/:clipId", async (c) => {
   const appUser = await getCurrentAppUser();
 

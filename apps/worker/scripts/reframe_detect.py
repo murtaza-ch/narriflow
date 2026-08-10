@@ -14,10 +14,19 @@ Output (stdout), default mode (byte-identical to before --multi existed):
   {"width": W, "height": H, "samples": [{"t": s, "cx": 0..1|null}]}
 
 Output (stdout), --multi mode (vizard-parity.md "Split-screen 2-up" spike):
-  every sample becomes {"t": s, "faces": [{"cx","cy","w","h","score"}, ...]},
+  every sample becomes {"t": s, "faces": [{"cx","cy","w","h","score","m"}, ...]},
   all normalized 0..1 and source-pixel-corrected the same way the default
   mode's "cx" is, sorted by ascending cx. Empty list (not null) when no faces
   were detected in that sample.
+
+  "m"/"fm" (active-speaker signal): mean absolute grayscale difference of
+  the face's MOUTH region ("m", lower-middle of the box) and UPPER-FACE
+  region ("fm", top half) between this sample and the previous sampled
+  frame, normalized 0..1. The consumer uses m/(fm+eps): a talker's mouth
+  churns MORE than their forehead, while a nodding listener moves uniformly
+  (raw mouth diff alone misattributes speech to head motion — verified on
+  real two-host footage). None on the first sample. Computed on the
+  already-decoded downscaled detection frame — two small ROI diffs per face.
 """
 import json
 import sys
@@ -85,6 +94,35 @@ def main() -> int:
 
     frame_interval = max(1, int(round(src_fps / fps)))
 
+    def region_motion(gray_now, gray_prev, x0, y0, x1, y1):
+        """Mean abs grayscale diff of a region between two detection frames,
+        normalized 0..1 (None for degenerate/clipped regions)."""
+        if gray_prev is None:
+            return None
+        fh, fw = gray_now.shape[:2]
+        x0, y0 = max(0, int(round(x0))), max(0, int(round(y0)))
+        x1, y1 = min(fw, int(round(x1))), min(fh, int(round(y1)))
+        if x1 - x0 < 2 or y1 - y0 < 2:
+            return None
+        roi_now = gray_now[y0:y1, x0:x1]
+        roi_prev = gray_prev[y0:y1, x0:x1]
+        if roi_now.shape != roi_prev.shape:
+            return None
+        import numpy as _np
+        return float(_np.mean(_np.abs(roi_now.astype(_np.int16) - roi_prev.astype(_np.int16)))) / 255.0
+
+    def face_motion_pair(gray_now, gray_prev, x, y, w, h):
+        """(mouth, upper_face) motion for one face box. The consumer divides
+        mouth by upper-face to cancel whole-head motion: a talker's mouth
+        churns MORE than their forehead/eyes; a nodding listener moves
+        uniformly. Verified on real two-host footage — raw mouth diff alone
+        misattributes speech to a nodding listener."""
+        mouth = region_motion(
+            gray_now, gray_prev, x + 0.22 * w, y + 0.55 * h, x + 0.78 * w, y + 1.02 * h
+        )
+        upper = region_motion(gray_now, gray_prev, x, y, x + w, y + 0.5 * h)
+        return mouth, upper
+
     # Seek once to the clip start (as before), then step through frames with
     # grab() — which decodes but skips the expensive color-convert + copy —
     # and only fully retrieve + run detection on the 1-in-`frame_interval`
@@ -102,6 +140,7 @@ def main() -> int:
 
     samples = []
     idx = 0
+    prev_gray = None  # previous SAMPLED frame, grayscale, detection scale
     while True:
         t = idx / src_fps
         if t >= duration:
@@ -137,6 +176,7 @@ def main() -> int:
                 faces = None
 
             if multi:
+                gray = cv2.cvtColor(detect_frame, cv2.COLOR_BGR2GRAY)
                 out_faces = []
                 if faces is not None:
                     for f in faces:
@@ -150,15 +190,21 @@ def main() -> int:
                         h_src = float(f[3]) / scale_y
                         fcx = max(0.0, min(1.0, (x_src + w_src / 2.0) / max(1, width)))
                         fcy = max(0.0, min(1.0, (y_src + h_src / 2.0) / max(1, height)))
+                        m, fm = face_motion_pair(
+                            gray, prev_gray, float(f[0]), float(f[1]), float(f[2]), float(f[3])
+                        )
                         out_faces.append({
                             "cx": fcx,
                             "cy": fcy,
                             "w": float(w_src) / max(1, width),
                             "h": float(h_src) / max(1, height),
                             "score": float(f[14]),
+                            "m": round(m, 4) if m is not None else None,
+                            "fm": round(fm, 4) if fm is not None else None,
                         })
                 out_faces.sort(key=lambda ff: ff["cx"])
                 samples.append({"t": round(t, 3), "faces": out_faces})
+                prev_gray = gray
             else:
                 cx = None
                 if faces is not None and len(faces) > 0:

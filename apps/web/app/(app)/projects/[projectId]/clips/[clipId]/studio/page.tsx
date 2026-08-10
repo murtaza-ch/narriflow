@@ -123,6 +123,17 @@ export default async function StudioPage({
     return clipService.getClipPreviewSource(appUser.id, projectId, clipId);
   }
 
+  /**
+   * Server Action for worker-derived automatic framing. Analysis normally
+   * lands shortly after the preview proxy, so an already-open studio needs
+   * a small authenticated refresh loop instead of requiring a page reload.
+   * Identity is closure-bound exactly like fetchPreviewStatus above.
+   */
+  async function fetchAutoLayoutAnalysis() {
+    "use server";
+    return clipService.getClipAutoLayoutAnalysis(appUser.id, projectId, clipId);
+  }
+
   return (
     <StudioShell
       clipInfo={clipInfo}
@@ -146,6 +157,7 @@ export default async function StudioPage({
       // studio shows a terminal message instead of polling/spinning forever.
       sourcePurged={!snapshot.project.sourceStorageKey}
       fetchPreviewStatus={fetchPreviewStatus}
+      fetchAutoLayoutAnalysis={fetchAutoLayoutAnalysis}
       brandLogo={brandLogo}
       // PiP persistence packet C: the worker's screen-mode facecam layout
       // analysis (packet A/B), rides alongside `editorDoc.document`/
@@ -153,6 +165,7 @@ export default async function StudioPage({
       // — see `StudioContextValue.layoutAnalysis`'s doc comment for why
       // this is read-only and never folds into the editor document.
       layoutAnalysis={editorDoc.layoutAnalysis}
+      autoLayoutAnalysis={editorDoc.autoLayoutAnalysis}
     />
   );
 }

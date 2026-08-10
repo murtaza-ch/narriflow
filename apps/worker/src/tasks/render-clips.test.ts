@@ -23,6 +23,8 @@ import {
   buildSingleVideoArgs,
   buildTransitionFilter,
   clipRenderAttemptStorageKey,
+  createBoundedTaskQueue,
+  applySpeakerLayoutOverridesToSegments,
   decidePipUsage,
   decideScreenFallback,
   decideSplitFallback,
@@ -34,6 +36,7 @@ import {
   layoutAnalysisMatchesWindow,
   resolveBackgroundPlanForDownloadedImage,
   resolveClipLogoOverlay,
+  remapSceneCutsForCutPlan,
   resolvePipAnalysis,
   resolveRenderTimingForClip,
   shouldRunAutoReframeDetection,
@@ -821,6 +824,110 @@ describe("layoutAnalysisMatchesWindow (PiP persistence packet B — window-match
   test("a custom epsilon widens or narrows the tolerance", () => {
     expect(layoutAnalysisMatchesWindow(analysis, 12.6, 30, 0.2)).toBe(true);
     expect(layoutAnalysisMatchesWindow(analysis, 12.51, 30, 0)).toBe(false);
+  });
+});
+
+describe("applySpeakerLayoutOverridesToSegments", () => {
+  const segments: SplitLayoutSegment[] = [
+    {
+      startSec: 0,
+      endSec: 5,
+      layout: "two-up",
+      topCxNorm: 0.25,
+      bottomCxNorm: 0.75,
+    },
+  ];
+
+  test("maps the matching aspect's independent layer frames and crops into the render plan", () => {
+    const result = applySpeakerLayoutOverridesToSegments(
+      segments,
+      [
+        {
+          id: "scene-1",
+          aspectRatio: "9:16",
+          startSec: 0,
+          endSec: 5,
+          layout: "two-up",
+          layers: [
+            {
+              role: "top",
+              frameX: 0.1,
+              frameY: 0.05,
+              frameWidth: 0.8,
+              frameHeight: 0.4,
+              rotationDeg: 3,
+              cropCxNorm: 0.3,
+              cropCyNorm: 0.45,
+              cropZoom: 1.4,
+            },
+            {
+              role: "bottom",
+              frameX: 0,
+              frameY: 0.5,
+              frameWidth: 1,
+              frameHeight: 0.5,
+              rotationDeg: 0,
+              cropCxNorm: 0.7,
+              cropCyNorm: 0.55,
+              cropZoom: 1.2,
+            },
+          ],
+        },
+      ],
+      "9:16",
+    );
+
+    expect(result).not.toBe(segments);
+    expect(result[0]).toMatchObject({
+      topCxNorm: 0.3,
+      topCyNorm: 0.45,
+      topZoom: 1.4,
+      topFrame: { x: 0.1, y: 0.05, width: 0.8, height: 0.4, rotationDeg: 3 },
+      bottomCxNorm: 0.7,
+      bottomCyNorm: 0.55,
+      bottomZoom: 1.2,
+    });
+  });
+
+  test("keeps the fast-path plan reference when no override matches the output aspect", () => {
+    const result = applySpeakerLayoutOverridesToSegments(
+      segments,
+      [
+        {
+          id: "scene-1",
+          aspectRatio: "9:16",
+          startSec: 0,
+          endSec: 5,
+          layout: "two-up",
+          layers: [
+            {
+              role: "top",
+              frameX: 0,
+              frameY: 0,
+              frameWidth: 1,
+              frameHeight: 0.5,
+              rotationDeg: 0,
+              cropCxNorm: 0.25,
+              cropCyNorm: 0.5,
+              cropZoom: 1,
+            },
+            {
+              role: "bottom",
+              frameX: 0,
+              frameY: 0.5,
+              frameWidth: 1,
+              frameHeight: 0.5,
+              rotationDeg: 0,
+              cropCxNorm: 0.75,
+              cropCyNorm: 0.5,
+              cropZoom: 1,
+            },
+          ],
+        },
+      ],
+      "1:1",
+    );
+    expect(result).toBe(segments);
   });
 });
 
@@ -1815,6 +1922,34 @@ describe("export treatment: resolution + watermark (vizard-parity Phase C export
   });
 
   describe("buildBrollVideoArgs", () => {
+    test("composes the automatic speaker layout before B-roll cutaways", () => {
+      const args = buildBrollVideoArgs({
+        sourcePath: "/tmp/src.mp4",
+        cutaways: [{ path: "/tmp/broll.mp4", window: { startSec: 2, endSec: 5 } }],
+        outputPath: "/tmp/out.mp4",
+        startSec: 0,
+        endSec: 10,
+        aspectRatio: "9:16",
+        probe,
+        srtPath: null,
+        split: {
+          segments: [
+            {
+              startSec: 0,
+              endSec: 10,
+              layout: "two-up",
+              topCxNorm: 0.3,
+              bottomCxNorm: 0.7,
+            },
+          ],
+        },
+      });
+      const graph = args[args.indexOf("-filter_complex") + 1]!;
+      expect(graph).toContain("vstack=inputs=2");
+      expect(graph).toContain("[stage0][broll0]overlay=0:0:enable='between(t,2,5)'[stage1]");
+      expect(graph.indexOf("vstack=inputs=2")).toBeLessThan(graph.indexOf("overlay=0:0"));
+    });
+
     test("720p + watermark fold in after the b-roll overlay chain", () => {
       const args = buildBrollVideoArgs({
         sourcePath: "/tmp/src.mp4",
@@ -3832,5 +3967,109 @@ describe("cut-concat rendering (vizard-parity Phase B step 7 — deletedRanges)"
       expect(withoutMap).toContain("gone");
       expect(withoutMap).toContain("before gone after");
     });
+  });
+});
+
+describe("remapSceneCutsForCutPlan (layout-engine wiring)", () => {
+  test("uncut plan: normalizes (sort + ms dedupe) but keeps values clip-relative", () => {
+    const plan = buildClipCutPlan([], { startSec: 100, endSec: 160 });
+    expect(remapSceneCutsForCutPlan([12.0004, 5, 12.0001], plan, 100)).toEqual([
+      5, 12,
+    ]);
+  });
+
+  test("cut plan: drops cuts inside deleted ranges, remaps the rest, and adds kept-segment joins", () => {
+    // Window 100..160, delete 120..130: edited timeline is 0..50 with a
+    // join at edited 20.
+    const plan = buildClipCutPlan([{ startSec: 120, endSec: 130 }], {
+      startSec: 100,
+      endSec: 160,
+    });
+    const out = remapSceneCutsForCutPlan([10, 25, 40], plan, 100);
+    // 10 -> edited 10; 25 (inside the cut) dropped; 40 -> edited 30; the
+    // concat join at edited 20 is itself a scene cut.
+    expect(out).toEqual([10, 20, 30]);
+  });
+});
+
+describe("createBoundedTaskQueue (background upload overlap)", () => {
+  const tick = () => new Promise<void>((r) => setTimeout(r, 0));
+
+  test("never runs more than `limit` tasks concurrently and preserves FIFO start order", async () => {
+    const queue = createBoundedTaskQueue(2);
+    let active = 0;
+    let peak = 0;
+    const started: number[] = [];
+    const resolvers: Array<() => void> = [];
+    for (let i = 0; i < 5; i++) {
+      queue.schedule(async () => {
+        started.push(i);
+        active += 1;
+        peak = Math.max(peak, active);
+        await new Promise<void>((resolve) => resolvers.push(resolve));
+        active -= 1;
+      });
+    }
+    await tick();
+    expect(started).toEqual([0, 1]);
+    expect(peak).toBe(2);
+    resolvers.shift()!();
+    await tick();
+    expect(started).toEqual([0, 1, 2]);
+    expect(peak).toBe(2);
+    while (resolvers.length > 0) {
+      resolvers.shift()!();
+      await tick();
+    }
+    await queue.drain();
+    expect(started).toEqual([0, 1, 2, 3, 4]);
+    expect(queue.scheduledCount()).toBe(5);
+  });
+
+  test("drain resolves only after every task settles, including failures", async () => {
+    const queue = createBoundedTaskQueue(1);
+    const done: string[] = [];
+    queue.schedule(async () => {
+      await tick();
+      done.push("a");
+    });
+    queue.schedule(async () => {
+      done.push("b");
+      throw new Error("task-owned failure");
+    });
+    queue.schedule(async () => {
+      done.push("c");
+    });
+    await queue.drain();
+    expect(done).toEqual(["a", "b", "c"]);
+  });
+
+  test("drain is idempotent and picks up tasks scheduled after a prior drain", async () => {
+    const queue = createBoundedTaskQueue(2);
+    await queue.drain(); // empty drain resolves immediately
+    let ran = false;
+    queue.schedule(async () => {
+      await tick();
+      ran = true;
+    });
+    await queue.drain();
+    expect(ran).toBe(true);
+    await queue.drain();
+  });
+
+  test("a limit below 1 clamps to serial execution", async () => {
+    const queue = createBoundedTaskQueue(0);
+    let active = 0;
+    let peak = 0;
+    for (let i = 0; i < 3; i++) {
+      queue.schedule(async () => {
+        active += 1;
+        peak = Math.max(peak, active);
+        await tick();
+        active -= 1;
+      });
+    }
+    await queue.drain();
+    expect(peak).toBe(1);
   });
 });

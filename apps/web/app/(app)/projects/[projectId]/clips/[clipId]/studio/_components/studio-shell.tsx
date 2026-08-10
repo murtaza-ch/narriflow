@@ -19,6 +19,7 @@ import {
   isSourceTimeDeleted,
   normalizeDeletedRanges,
   buildTranscriptSliceForWindow,
+  clipAutoLayoutMatchesInputs,
   mergeCorrectedWordsIntoWindow,
   type TranscriptUtterance,
   type CaptionPreset,
@@ -30,6 +31,7 @@ import {
   type SourceRange,
   type ClipWindow,
   type ClipLayoutAnalysis,
+  type ClipAutoLayoutAnalysis,
 } from "@narriflow/validators";
 import { TopBar } from "./top-bar";
 import { TranscriptPanel } from "./transcript-panel";
@@ -76,6 +78,12 @@ const PREVIEW_POLL_INTERVAL_MS = 8_000;
  *  worker's proxy cut "usually takes a minute or two", so this leaves
  *  comfortable margin without polling a stuck job forever. */
 const PREVIEW_POLL_MAX_ATTEMPTS = 45;
+// Auto-layout usually lands seconds after the proxy. Start quickly for a
+// responsive editor, then exponentially back off so a stuck analysis costs
+// about a dozen tiny indexed reads rather than 45 full editor-document reads.
+const AUTO_LAYOUT_POLL_INITIAL_MS = 2_000;
+const AUTO_LAYOUT_POLL_MAX_MS = 30_000;
+const AUTO_LAYOUT_POLL_DEADLINE_MS = 6 * 60_000;
 
 /** How long to wait after the last edit before autosaving. */
 const AUTOSAVE_DEBOUNCE_MS = 1500;
@@ -282,8 +290,7 @@ interface StudioContextValue extends StudioState {
    *  proxy's `currentTime` directly. */
   previewVideoUrl: string | null;
   previewStartSec: number;
-  /** Presigned URL of the proxy's amplitude-peaks JSON, or null — see the
-   *  matching prop's doc comment on `StudioShellProps.waveformPeaksUrl`. */
+  /** Same-origin authenticated endpoint for the proxy's amplitude peaks. */
   waveformPeaksUrl: string | null;
   /** True when the project's source has been purged (`Project.sourceStorageKey`
    *  is null). Once true, a still-missing `previewVideoUrl` can never arrive
@@ -385,6 +392,8 @@ interface StudioContextValue extends StudioState {
    *  a longer timescale (across renders within one open session, not within
    *  one render). */
   layoutAnalysis: ClipLayoutAnalysis | null;
+  /** Persisted automatic shot-layout plan; derived/read-only like PiP analysis. */
+  autoLayoutAnalysis: ClipAutoLayoutAnalysis | null;
   utterances: TranscriptUtterance[];
   updateUtteranceText: (index: number, newText: string) => void;
   /** Word-level Correct (vizard-parity.md Phase B step 10) — changes only
@@ -517,13 +526,8 @@ interface StudioShellProps {
   /** The proxy's t=0 expressed in source time (`Clip.previewStartSec`).
    *  Meaningless when `previewVideoUrl` is null. */
   previewStartSec?: number;
-  /** Presigned URL of the proxy's amplitude-peaks JSON (derived from the
-   *  proxy's own storage key — see `derivePeaksStorageKey` in
-   *  packages/services), or null when no proxy exists yet, the derived
-   *  object doesn't exist (silent-video preview, legacy pre-feature
-   *  preview), or presigning it failed. The timeline's WaveformCanvas
-   *  fetches this itself and falls back to its synthetic waveform when
-   *  null or when the fetch fails — see `waveform-peaks.ts`. */
+  /** Same-origin endpoint for validated real amplitude peaks, or null when
+   *  no preview exists yet. */
   waveformPeaksUrl?: string | null;
   /** True when the project's source has been purged — see the doc comment
    *  on `StudioContextValue.sourcePurged`. */
@@ -539,6 +543,10 @@ interface StudioShellProps {
     previewDurationSec: number | null;
     waveformPeaksUrl: string | null;
   }>;
+  /** Authenticated Server Action used while worker-derived shot analysis is
+   *  still pending. The client accepts only a plan matching its live clip
+   *  window and deleted ranges. */
+  fetchAutoLayoutAnalysis?: () => Promise<ClipAutoLayoutAnalysis | null>;
   /** Server-seeded brand logo (see studio/page.tsx and `StudioBrandLogo`'s
    *  doc comment), or null/omitted when the project has none. */
   brandLogo?: StudioBrandLogo | null;
@@ -546,6 +554,7 @@ interface StudioShellProps {
    *  `StudioContextValue.layoutAnalysis`'s doc comment), or null/omitted
    *  when the clip has none yet. */
   layoutAnalysis?: ClipLayoutAnalysis | null;
+  autoLayoutAnalysis?: ClipAutoLayoutAnalysis | null;
 }
 
 export function StudioShell({
@@ -564,8 +573,10 @@ export function StudioShell({
   waveformPeaksUrl: initialWaveformPeaksUrl = null,
   sourcePurged = false,
   fetchPreviewStatus,
+  fetchAutoLayoutAnalysis,
   brandLogo = null,
   layoutAnalysis = null,
+  autoLayoutAnalysis: initialAutoLayoutAnalysis = null,
 }: StudioShellProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const playbackClock = useMemo(() => createPlaybackClock(), []);
@@ -582,6 +593,7 @@ export function StudioShell({
   const [previewVideoUrl, setPreviewVideoUrl] = useState(initialPreviewVideoUrl);
   const [previewStartSec, setPreviewStartSec] = useState(initialPreviewStartSec);
   const [waveformPeaksUrl, setWaveformPeaksUrl] = useState(initialWaveformPeaksUrl);
+  const [autoLayoutAnalysis, setAutoLayoutAnalysis] = useState(initialAutoLayoutAnalysis);
 
   // While no proxy exists yet, periodically re-check readiness so "Preview
   // generating…" resolves on its own instead of only ever updating on a
@@ -711,6 +723,74 @@ export function StudioShell({
       ? { startSec: doc.clipStartSec, endSec: doc.clipEndSec }
       : { startSec: doc.clipStartSec, endSec: doc.clipStartSec + Math.max(0, clipInfo.duration) };
   }, [doc.clipStartSec, doc.clipEndSec, clipInfo.duration]);
+
+  const autoLayoutAnalysisIsCurrent = useMemo(
+    () =>
+      autoLayoutAnalysis !== null &&
+      clipAutoLayoutMatchesInputs(autoLayoutAnalysis, {
+        clipStartSec: clipWindow.startSec,
+        clipEndSec: clipWindow.endSec,
+        deletedRanges: doc.deletedRanges,
+      }),
+    [autoLayoutAnalysis, clipWindow, doc.deletedRanges],
+  );
+
+  // The proxy and its framing analysis are separate worker products. Once
+  // the proxy is available, refresh the latter until a plan for the exact
+  // live edit window lands. A stale response racing a trim/save is ignored
+  // by the same fingerprint check used by the preview and renderer.
+  useEffect(() => {
+    if (!previewVideoUrl || autoLayoutAnalysisIsCurrent || !fetchAutoLayoutAnalysis) return;
+
+    let cancelled = false;
+    const deadline = Date.now() + AUTO_LAYOUT_POLL_DEADLINE_MS;
+    let nextDelayMs = AUTO_LAYOUT_POLL_INITIAL_MS;
+    let timeoutId: ReturnType<typeof setTimeout>;
+
+    const poll = async () => {
+      try {
+        const analysis = await fetchAutoLayoutAnalysis();
+        if (cancelled) return;
+        if (
+          analysis &&
+          clipAutoLayoutMatchesInputs(analysis, {
+            clipStartSec: clipWindow.startSec,
+            clipEndSec: clipWindow.endSec,
+            deletedRanges: doc.deletedRanges,
+          })
+        ) {
+          setAutoLayoutAnalysis(analysis);
+          return;
+        }
+      } catch {
+        // Background analysis readiness is eventually consistent. Keep the
+        // existing safe center fallback and retry transient failures.
+      }
+      if (!cancelled && Date.now() < deadline) {
+        timeoutId = setTimeout(poll, nextDelayMs);
+        nextDelayMs = Math.min(
+          AUTO_LAYOUT_POLL_MAX_MS,
+          Math.round(nextDelayMs * 1.7),
+        );
+      }
+    };
+
+    timeoutId = setTimeout(poll, nextDelayMs);
+    nextDelayMs = Math.min(
+      AUTO_LAYOUT_POLL_MAX_MS,
+      Math.round(nextDelayMs * 1.7),
+    );
+    return () => {
+      cancelled = true;
+      clearTimeout(timeoutId);
+    };
+  }, [
+    previewVideoUrl,
+    autoLayoutAnalysisIsCurrent,
+    fetchAutoLayoutAnalysis,
+    clipWindow,
+    doc.deletedRanges,
+  ]);
 
   const editedTimeMap: EditedTimeMap = useMemo(
     () => buildStudioCutPlan(doc.deletedRanges, clipWindow).map,
@@ -2102,7 +2182,7 @@ export function StudioShell({
     previewVideoUrl, previewStartSec, waveformPeaksUrl, useOriginalSourceFallback, setUseOriginalSourceFallback,
     activeVideoUrl, activeOffsetSec, activeVideoKind, playerClipStartSec, playerClipEndSec,
     editedTimeMap, deletedRanges: doc.deletedRanges, clipWindow,
-    brandLogo, layoutAnalysis, utterances, updateUtteranceText, updateWord, deleteSourceRange, applyRemoveSilence,
+    brandLogo, layoutAnalysis, autoLayoutAnalysis, utterances, updateUtteranceText, updateWord, deleteSourceRange, applyRemoveSilence,
     setIsPlaying, setActiveTool, setShowTimeline, setAspectRatio,
     setLayoutMode, setShowShortcuts, setTimelineZoom,
     setSelectedSegmentId, setCaptionPreset, selectCaption, deselectCaption,

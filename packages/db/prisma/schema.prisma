@@ -78,6 +78,12 @@ enum ClipStatus {
   edited
 }
 
+enum ClipAutoLayoutStatus {
+  pending
+  processing
+  completed
+}
+
 enum ClipCategory {
   hook
   insight
@@ -660,6 +666,19 @@ model Clip {
   // `setClipLayoutAnalysis`'s doc comment).
   layoutAnalysis  Json?
 
+  // Versioned, worker-derived automatic speaker-layout plan shared by the
+  // studio preview and final renderer. Kept separate from layoutAnalysis,
+  // whose v1 envelope is screen-share/PiP specific. Parsed through
+  // clipAutoLayoutAnalysisSchema; source-boundary/deleted-range edits null it.
+  autoLayoutAnalysis      Json?
+  // Durable, indexed work state for auto-layout analysis. The token fences
+  // stale workers and the lease lets another replica recover abandoned work
+  // without two healthy replicas paying for the same download/detection.
+  autoLayoutStatus        ClipAutoLayoutStatus @default(pending)
+  autoLayoutClaimToken    String?              @db.Uuid
+  autoLayoutLeaseExpiresAt DateTime?
+  autoLayoutAttemptCount  Int                  @default(0)
+
   // Lightweight 540p faststart proxy covering this clip's range (plus padding
   // for boundary tweaks). The studio and the clip cards play this instead of
   // the multi-hundred-MB source, which is what made the editor take 44s to show
@@ -694,6 +713,7 @@ model Clip {
   dubs ClipDub[]
 
   @@index([projectId, viralityScore(sort: Desc)])
+  @@index([autoLayoutStatus, autoLayoutLeaseExpiresAt])
   @@unique([projectId, workflowRunId, index])
 }
 

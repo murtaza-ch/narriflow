@@ -49,6 +49,13 @@ export interface DetectedFace {
   w: number;
   h: number;
   score: number;
+  /** Mouth-region motion vs the previous sample (active-speaker signal) —
+   *  see reframe_detect.py's "m"/"fm" doc. Absent/null on the first sample
+   *  and on detector versions that predate the signal. */
+  m?: number | null;
+  /** Upper-face-region motion vs the previous sample — the head-motion
+   *  normalizer for `m` (consumers use m/(fm+eps)). */
+  fm?: number | null;
 }
 
 /** One detector sample in `--multi` mode: zero or more faces, sorted by cx. */
@@ -632,12 +639,27 @@ export interface TwoUpRegionSpec {
    *  common case: a landscape/near-square source cropped narrower for a
    *  portrait tile keeps full source height). */
   cy?: number;
+  /** Zoom factor >= 1 (layout-engine.ts face framing): the tile crop
+   *  window shrinks by this factor (both axes) before scaling up to the
+   *  tile size, punching in on the seat. Omit/1 preserves the original
+   *  tile crop exactly. Ignored when `reframe` is set (sendcmd tracking
+   *  predates zoom and its scripts are computed against the un-zoomed
+   *  crop width). */
+  zoom?: number;
   /** Sendcmd-driven horizontal crop track (reframe.ts style) — when set,
    *  overrides `cx` for x and ignores `cy` (vertical stays centered; the
    *  spike doesn't need vertical tracking). `cropName` MUST be unique per
    *  region within a single ffmpeg invocation (see TWO_UP_TOP_CROP_NAME /
    *  TWO_UP_BOTTOM_CROP_NAME) — see the collision gotcha below. */
   reframe?: { scriptPath: string; cropName: string } | null;
+}
+
+export interface NormalizedLayerFrame {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  rotationDeg?: number;
 }
 
 export interface BuildTwoUpFilterChainParams {
@@ -721,9 +743,8 @@ function buildRegionFilter(
   inputLabel: string,
   outputLabel: string,
 ): string {
-  const y = cropH >= srcHeight ? 0 : cropXForCenter(region.cy ?? 0.5, srcHeight, cropH);
-
   if (region.reframe) {
+    const y = cropH >= srcHeight ? 0 : cropXForCenter(region.cy ?? 0.5, srcHeight, cropH);
     const escaped = region.reframe.scriptPath.replace(/'/g, "'\\''");
     const x = Math.round((srcWidth - cropW) / 2); // sendcmd drives x at runtime; this is just the initial value
     return (
@@ -733,8 +754,17 @@ function buildRegionFilter(
     );
   }
 
-  const x = cropXForCenter(region.cx, srcWidth, cropW);
-  return `${inputLabel}crop=${cropW}:${cropH}:${x}:${y},scale=${tileWidth}:${tileHeight}${outputLabel}`;
+  // Zoom (layout-engine.ts): shrink the crop window by the zoom factor on
+  // both axes, keeping the seat centered per cx/cy — the scale below then
+  // magnifies it to the same tile size. Clamped to at least a quarter of
+  // the base crop so a wild zoom value can never produce a degenerate crop.
+  const zoom = Math.min(4, Math.max(1, region.zoom ?? 1));
+  const zCropW = Math.max(2, Math.round(cropW / zoom));
+  const zCropH = Math.max(2, Math.round(cropH / zoom));
+  const x = cropXForCenter(region.cx, srcWidth, zCropW);
+  const y =
+    zCropH >= srcHeight ? 0 : cropXForCenter(region.cy ?? 0.5, srcHeight, zCropH);
+  return `${inputLabel}crop=${zCropW}:${zCropH}:${x}:${y},scale=${tileWidth}:${tileHeight}${outputLabel}`;
 }
 
 /**
@@ -831,8 +861,36 @@ export function buildTwoUpFilterChain(params: BuildTwoUpFilterChainParams): stri
  * see `buildSegmentCropSpec`) carry one.
  */
 export type SplitLayoutSegment =
-  | { startSec: number; endSec: number; layout: "two-up"; topCxNorm: number; bottomCxNorm: number }
-  | { startSec: number; endSec: number; layout: "single"; cxNorm: number };
+  | {
+      startSec: number;
+      endSec: number;
+      layout: "two-up";
+      topCxNorm: number;
+      bottomCxNorm: number;
+      /** Optional vertical crop centers + per-tile zoom (layout-engine.ts's
+       *  face framing). Absent -> vertically centered, zoom 1 — the exact
+       *  behavior split mode shipped with, so existing plans/tests are
+       *  untouched. */
+      topCyNorm?: number;
+      bottomCyNorm?: number;
+      topZoom?: number;
+      bottomZoom?: number;
+      /** Present only for a manual Studio composition override. */
+      topFrame?: NormalizedLayerFrame;
+      bottomFrame?: NormalizedLayerFrame;
+    }
+  | {
+      startSec: number;
+      endSec: number;
+      layout: "single";
+      cxNorm: number;
+      /** Optional vertical crop center + zoom (layout-engine.ts). Absent ->
+       *  vertically centered, zoom 1 (pre-engine behavior). */
+      cyNorm?: number;
+      zoom?: number;
+      /** Present only for a manual Studio composition override. */
+      frame?: NormalizedLayerFrame;
+    };
 
 export interface BuildSplitLayoutPlanOptions {
   /** Caps the total segment count (default 24) by repeatedly merging the
@@ -1075,7 +1133,7 @@ export interface BuildSplitFilterChainParams {
  *  always vertically centered (v1: no vertical tracking, same as
  *  `buildTwoUpFilterChain`'s tiles). */
 function buildSingleSegmentFilter(
-  cxNorm: number,
+  segment: { cxNorm: number; cyNorm?: number; zoom?: number },
   aspectRatio: ClipAspectRatio,
   srcWidth: number,
   srcHeight: number,
@@ -1096,8 +1154,18 @@ function buildSingleSegmentFilter(
     cropW = srcWidth;
     cropH = Math.round(srcWidth / targetRatio);
   }
-  const x = cropXForCenter(cxNorm, srcWidth, cropW);
-  const y = cropH >= srcHeight ? 0 : cropXForCenter(0.5, srcHeight, cropH);
+  // Zoom + vertical framing (layout-engine.ts): same contract as
+  // `buildRegionFilter`'s zoom — shrink the crop, keep the face centered
+  // per cx/cy, let the scale below magnify. Absent fields reproduce the
+  // original static-crop math exactly (zoom 1, vertically centered).
+  const zoom = Math.min(4, Math.max(1, segment.zoom ?? 1));
+  cropW = Math.max(2, Math.round(cropW / zoom));
+  cropH = Math.max(2, Math.round(cropH / zoom));
+  const x = cropXForCenter(segment.cxNorm, srcWidth, cropW);
+  const y =
+    cropH >= srcHeight
+      ? 0
+      : cropXForCenter(segment.cyNorm ?? 0.5, srcHeight, cropH);
 
   // setsar=1: see the matching comment on buildTwoUpFilterChain's vstack
   // line (C1) — this branch's crop rect rounds differently than a two-up
@@ -1106,6 +1174,106 @@ function buildSingleSegmentFilter(
   // `concat` (buildSplitFilterChain, below) can reject this segment against
   // a "two-up" neighbor's differently-rounded SAR.
   return `${inputLabel}crop=${cropW}:${cropH}:${x}:${y},scale=${W}:${H},setsar=1${outputLabel}`;
+}
+
+function normalizedFramePixels(
+  frame: NormalizedLayerFrame,
+  width: number,
+  height: number,
+) {
+  const w = Math.max(2, Math.min(width, Math.round(frame.width * width)));
+  const h = Math.max(2, Math.min(height, Math.round(frame.height * height)));
+  const x = Math.max(0, Math.min(width - w, Math.round(frame.x * width)));
+  const y = Math.max(0, Math.min(height - h, Math.round(frame.y * height)));
+  return { x, y, width: w, height: h };
+}
+
+/** Renders a manually composed scene as independent video layers over a
+ * black canvas. The base is derived from the source stream and painted black
+ * (rather than using a fixed-rate color source), preserving the input FPS and
+ * timestamps for concat parity. */
+function buildLayeredSegmentFilter(
+  segment: SplitLayoutSegment,
+  aspectRatio: ClipAspectRatio,
+  srcWidth: number,
+  srcHeight: number,
+  inputLabel: string,
+  outputLabel: string,
+  suffix: string,
+): string[] {
+  const { width: W, height: H } = aspectRatioDimensions.get(aspectRatio)!;
+  const layers =
+    segment.layout === "single"
+      ? [
+          {
+            frame: segment.frame!,
+            cx: segment.cxNorm,
+            cy: segment.cyNorm ?? 0.5,
+            zoom: segment.zoom ?? 1,
+          },
+        ]
+      : [
+          {
+            frame: segment.topFrame!,
+            cx: segment.topCxNorm,
+            cy: segment.topCyNorm ?? 0.5,
+            zoom: segment.topZoom ?? 1,
+          },
+          {
+            frame: segment.bottomFrame!,
+            cx: segment.bottomCxNorm,
+            cy: segment.bottomCyNorm ?? 0.5,
+            zoom: segment.bottomZoom ?? 1,
+          },
+        ];
+  const sourceLabels = layers.map((_, index) => `[manual_layer_${suffix}_${index}_src]`);
+  const baseSource = `[manual_base_${suffix}_src]`;
+  const baseLabel = `[manual_base_${suffix}]`;
+  const parts = [
+    `${inputLabel}split=${layers.length + 1}${baseSource}${sourceLabels.join("")}`,
+    `${baseSource}scale=${W}:${H},drawbox=x=0:y=0:w=iw:h=ih:color=black:t=fill${baseLabel}`,
+  ];
+
+  const layerLabels: string[] = [];
+  const positions: Array<{ x: number; y: number }> = [];
+  layers.forEach((layer, index) => {
+    const frame = normalizedFramePixels(layer.frame, W, H);
+    const frameRatio = frame.width / frame.height;
+    const { cropW: baseCropW, cropH: baseCropH } = computeTileCrop(
+      srcWidth,
+      srcHeight,
+      frameRatio,
+    );
+    const zoom = Math.min(4, Math.max(1, layer.zoom));
+    const cropW = Math.max(2, Math.round(baseCropW / zoom));
+    const cropH = Math.max(2, Math.round(baseCropH / zoom));
+    const cropX = cropXForCenter(layer.cx, srcWidth, cropW);
+    const cropY = cropXForCenter(layer.cy, srcHeight, cropH);
+    const label = `[manual_layer_${suffix}_${index}]`;
+    const rotation = Math.max(-180, Math.min(180, layer.frame.rotationDeg ?? 0));
+    const rotateFilter =
+      Math.abs(rotation) < 0.01
+        ? ""
+        : `,format=rgba,rotate=${rotation.toFixed(3)}*PI/180:ow=iw:oh=ih:c=black@0`;
+    parts.push(
+      `${sourceLabels[index]}crop=${cropW}:${cropH}:${cropX}:${cropY},` +
+        `scale=${frame.width}:${frame.height}${rotateFilter}${label}`,
+    );
+    layerLabels.push(label);
+    positions.push({ x: frame.x, y: frame.y });
+  });
+
+  let composite = baseLabel;
+  layerLabels.forEach((label, index) => {
+    const next = index === layerLabels.length - 1 ? outputLabel : `[manual_comp_${suffix}_${index}]`;
+    const trailing = index === layerLabels.length - 1 ? ",format=yuv420p,setsar=1" : "";
+    parts.push(
+      `${composite}${label}overlay=x=${positions[index]!.x}:y=${positions[index]!.y}:` +
+        `shortest=1:format=auto${trailing}${next}`,
+    );
+    composite = next;
+  });
+  return parts;
 }
 
 /**
@@ -1149,21 +1317,57 @@ export function buildSplitFilterChain(params: BuildSplitFilterChainParams): stri
       `${srcLabels[i]}trim=start=${segment.startSec.toFixed(3)}:end=${segment.endSec.toFixed(3)},setpts=PTS-STARTPTS${trimLabels[i]}`,
     );
     if (segment.layout === "two-up") {
+      if (segment.topFrame && segment.bottomFrame) {
+        parts.push(
+          ...buildLayeredSegmentFilter(
+            segment,
+            params.aspectRatio,
+            params.probe.width,
+            params.probe.height,
+            trimLabels[i]!,
+            segOutLabels[i]!,
+            String(i),
+          ),
+        );
+        return;
+      }
       parts.push(
         ...buildTwoUpFilterChain({
           aspectRatio: params.aspectRatio,
           probe: params.probe,
-          top: { cx: segment.topCxNorm },
-          bottom: { cx: segment.bottomCxNorm },
+          top: {
+            cx: segment.topCxNorm,
+            cy: segment.topCyNorm,
+            zoom: segment.topZoom,
+          },
+          bottom: {
+            cx: segment.bottomCxNorm,
+            cy: segment.bottomCyNorm,
+            zoom: segment.bottomZoom,
+          },
           videoInputLabel: trimLabels[i],
           outputLabel: segOutLabels[i],
           labelSuffix: `_split${i}`,
         }),
       );
     } else {
+      if (segment.frame) {
+        parts.push(
+          ...buildLayeredSegmentFilter(
+            segment,
+            params.aspectRatio,
+            params.probe.width,
+            params.probe.height,
+            trimLabels[i]!,
+            segOutLabels[i]!,
+            String(i),
+          ),
+        );
+        return;
+      }
       parts.push(
         buildSingleSegmentFilter(
-          segment.cxNorm,
+          segment,
           params.aspectRatio,
           params.probe.width,
           params.probe.height,
