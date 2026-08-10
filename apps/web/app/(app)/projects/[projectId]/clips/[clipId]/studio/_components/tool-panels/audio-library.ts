@@ -12,6 +12,7 @@ interface UseAudioAssetListResult {
   moodTags: string[];
   loading: boolean;
   error: string | null;
+  setFavorite: (assetId: string, favorited: boolean) => Promise<void>;
 }
 
 /**
@@ -63,18 +64,48 @@ export function useAudioAssetList(
     };
   }, [kind, mood, reloadKey]);
 
-  return { assets, moodTags, loading, error };
+  const setFavorite = useCallback(async (assetId: string, favorited: boolean) => {
+    let previous = false;
+    setAssets((current) =>
+      current.map((asset) => {
+        if (asset.id !== assetId) return asset;
+        previous = asset.favorited;
+        return { ...asset, favorited };
+      }),
+    );
+
+    try {
+      const response = await fetch(`/api/audio-assets/${assetId}/favorite`, {
+        method: favorited ? "PUT" : "DELETE",
+      });
+      if (!response.ok) throw new Error("Couldn't update Saved tracks.");
+    } catch (error) {
+      setAssets((current) =>
+        current.map((asset) =>
+          asset.id === assetId ? { ...asset, favorited: previous } : asset,
+        ),
+      );
+      throw error;
+    }
+  }, []);
+
+  return { assets, moodTags, loading, error, setFavorite };
 }
 
-interface PreviewPlayer {
+export interface PreviewPlayer {
   /** Attach to the panel's single hidden `<audio>` element. */
   audioRef: RefObject<HTMLAudioElement | null>;
-  /** The row id currently playing (or paused mid-track), or null. */
-  playingId: string | null;
+  /** The row currently loaded in the shared player, even when paused. */
+  activeId: string | null;
+  isPlaying: boolean;
+  loadingId: string | null;
+  currentTime: number;
+  duration: number;
   /** Click handler for a row's play/pause button: starts this row (pausing
    *  whatever was previously playing since there's only one shared element),
    *  or pauses it if it's already the active row. */
   toggle: (id: string, url: string) => void;
+  seek: (seconds: number) => void;
 }
 
 /**
@@ -86,31 +117,90 @@ interface PreviewPlayer {
  */
 export function usePreviewPlayer(): PreviewPlayer {
   const audioRef = useRef<HTMLAudioElement>(null);
-  const [playingId, setPlayingId] = useState<string | null>(null);
+  const activeIdRef = useRef<string | null>(null);
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [loadingId, setLoadingId] = useState<string | null>(null);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
 
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
-    const handleEnded = () => setPlayingId(null);
+    const syncTime = () => setCurrentTime(Number.isFinite(audio.currentTime) ? audio.currentTime : 0);
+    const syncDuration = () => setDuration(Number.isFinite(audio.duration) ? audio.duration : 0);
+    const handleEnded = () => {
+      setIsPlaying(false);
+      setCurrentTime(0);
+    };
+    const handlePlaying = () => {
+      setIsPlaying(true);
+      setLoadingId(null);
+    };
+    const handlePause = () => setIsPlaying(false);
+    const handleWaiting = () => setLoadingId(activeIdRef.current);
+    const handleError = () => {
+      setIsPlaying(false);
+      setLoadingId(null);
+    };
+    audio.addEventListener("timeupdate", syncTime);
+    audio.addEventListener("loadedmetadata", syncDuration);
+    audio.addEventListener("durationchange", syncDuration);
     audio.addEventListener("ended", handleEnded);
-    return () => audio.removeEventListener("ended", handleEnded);
+    audio.addEventListener("playing", handlePlaying);
+    audio.addEventListener("pause", handlePause);
+    audio.addEventListener("waiting", handleWaiting);
+    audio.addEventListener("error", handleError);
+    return () => {
+      audio.removeEventListener("timeupdate", syncTime);
+      audio.removeEventListener("loadedmetadata", syncDuration);
+      audio.removeEventListener("durationchange", syncDuration);
+      audio.removeEventListener("ended", handleEnded);
+      audio.removeEventListener("playing", handlePlaying);
+      audio.removeEventListener("pause", handlePause);
+      audio.removeEventListener("waiting", handleWaiting);
+      audio.removeEventListener("error", handleError);
+    };
   }, []);
 
   const toggle = useCallback((id: string, url: string) => {
     const audio = audioRef.current;
     if (!audio) return;
-    if (playingId === id) {
-      audio.pause();
-      setPlayingId(null);
+    if (activeIdRef.current === id) {
+      if (audio.paused) {
+        setLoadingId(id);
+        void audio.play().catch(() => {
+          setIsPlaying(false);
+          setLoadingId(null);
+        });
+      } else {
+        audio.pause();
+      }
       return;
     }
-    if (audio.src !== url) audio.src = url;
+    activeIdRef.current = id;
+    setActiveId(id);
+    setCurrentTime(0);
+    setDuration(0);
+    setLoadingId(id);
+    if (audio.src !== url) {
+      audio.src = url;
+      audio.load();
+    }
     audio.currentTime = 0;
     void audio.play().catch(() => {
-      setPlayingId(null);
+      setIsPlaying(false);
+      setLoadingId(null);
     });
-    setPlayingId(id);
-  }, [playingId]);
+  }, []);
 
-  return { audioRef, playingId, toggle };
+  const seek = useCallback((seconds: number) => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const next = Math.max(0, Math.min(seconds, Number.isFinite(audio.duration) ? audio.duration : seconds));
+    audio.currentTime = next;
+    setCurrentTime(next);
+  }, []);
+
+  return { audioRef, activeId, isPlaying, loadingId, currentTime, duration, toggle, seek };
 }

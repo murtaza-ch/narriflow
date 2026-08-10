@@ -2391,6 +2391,48 @@ app.get("/audio-assets/:id/playback-url", async (c) => {
   }
 });
 
+app.put("/audio-assets/:id/favorite", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  const idParsed = audioAssetIdParamSchema.safeParse(c.req.param("id"));
+  if (!idParsed.success) return c.json({ error: "Invalid audio asset id" }, 400);
+  try {
+    return c.json(
+      await audioAssetService.setFavorite(appUser.id, idParsed.data, true),
+      200,
+    );
+  } catch (error) {
+    if (error instanceof AudioAssetNotFoundError) {
+      return c.json({ error: "audio_asset_not_found" }, 404);
+    }
+    return c.json(
+      { error: "audio_asset_favorite_failed", message: errorMessage(error) },
+      400,
+    );
+  }
+});
+
+app.delete("/audio-assets/:id/favorite", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  const idParsed = audioAssetIdParamSchema.safeParse(c.req.param("id"));
+  if (!idParsed.success) return c.json({ error: "Invalid audio asset id" }, 400);
+  try {
+    return c.json(
+      await audioAssetService.setFavorite(appUser.id, idParsed.data, false),
+      200,
+    );
+  } catch (error) {
+    if (error instanceof AudioAssetNotFoundError) {
+      return c.json({ error: "audio_asset_not_found" }, 404);
+    }
+    return c.json(
+      { error: "audio_asset_unfavorite_failed", message: errorMessage(error) },
+      400,
+    );
+  }
+});
+
 app.delete("/audio-assets/:id", async (c) => {
   const appUser = await getCurrentAppUser();
   if (!appUser) return c.json({ error: "Unauthorized" }, 401);

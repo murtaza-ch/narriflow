@@ -51,6 +51,7 @@ export interface AudioAssetListRow {
   moodTags: string[];
   durationSec: number;
   playbackUrl: string;
+  favorited: boolean;
 }
 
 /**
@@ -88,7 +89,7 @@ function requirePrisma() {
   return prisma;
 }
 
-async function toListRow(row: AudioAsset): Promise<AudioAssetListRow> {
+async function toListRow(row: AudioAsset, favorited = false): Promise<AudioAssetListRow> {
   return {
     id: row.id,
     kind: row.kind as AudioAssetKindInput,
@@ -97,6 +98,7 @@ async function toListRow(row: AudioAsset): Promise<AudioAssetListRow> {
     moodTags: row.moodTags,
     durationSec: row.durationSec,
     playbackUrl: await presignDownloadUrl({ key: row.storageKey }),
+    favorited,
   };
 }
 
@@ -124,7 +126,7 @@ export class AudioAssetService {
     query: { kind: AudioAssetKindInput; mood?: string },
   ): Promise<{ assets: AudioAssetListRow[]; moodTags: string[] }> {
     const prisma = this.requirePrisma();
-    const [curated, mine] = await Promise.all([
+    const [curated, mine, favorites] = await Promise.all([
       prisma.audioAsset.findMany({
         where: { kind: query.kind, userId: null },
         orderBy: { title: "asc" },
@@ -132,6 +134,10 @@ export class AudioAssetService {
       prisma.audioAsset.findMany({
         where: { kind: query.kind, userId, deletedAt: null },
         orderBy: { createdAt: "desc" },
+      }),
+      prisma.audioAssetFavorite.findMany({
+        where: { userId },
+        select: { assetId: true },
       }),
     ]);
 
@@ -145,7 +151,10 @@ export class AudioAssetService {
       row.moodTags.some((tag) => tag.toLowerCase().includes(needle));
 
     const filtered = [...curated.filter(matchesMood), ...mine];
-    const assets = await Promise.all(filtered.map(toListRow));
+    const favoriteIds = new Set(favorites.map((favorite) => favorite.assetId));
+    const assets = await Promise.all(
+      filtered.map((row) => toListRow(row, favoriteIds.has(row.id))),
+    );
 
     return { assets, moodTags };
   }
@@ -188,6 +197,36 @@ export class AudioAssetService {
       },
     });
     return toListRow(created);
+  }
+
+  /** Persist the Saved/star state for a curated or caller-owned live asset. */
+  async setFavorite(
+    userId: string,
+    assetId: string,
+    favorited: boolean,
+  ): Promise<{ favorited: boolean }> {
+    const prisma = this.requirePrisma();
+    const asset = await prisma.audioAsset.findFirst({
+      where: {
+        id: assetId,
+        deletedAt: null,
+        OR: [{ userId: null }, { userId }],
+      },
+      select: { id: true },
+    });
+    if (!asset) throw new AudioAssetNotFoundError();
+
+    if (favorited) {
+      await prisma.audioAssetFavorite.upsert({
+        where: { userId_assetId: { userId, assetId } },
+        update: {},
+        create: { userId, assetId },
+      });
+    } else {
+      await prisma.audioAssetFavorite.deleteMany({ where: { userId, assetId } });
+    }
+
+    return { favorited };
   }
 
   /**

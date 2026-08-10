@@ -1,135 +1,74 @@
 "use client";
 
 import { useState } from "react";
-import { Box, Flex, Stack, Slider, Text } from "@chakra-ui/react";
-import { Volume2, VolumeX } from "lucide-react";
+import { Box, Flex, Slider, Stack, Text } from "@chakra-ui/react";
+import { ArrowLeft, Upload, Volume2, VolumeX } from "lucide-react";
 import { useStudio } from "../studio-shell";
 import { usePreviewPlayer } from "./audio-library";
 import { MusicTab } from "./music-tab";
 import { SfxTab } from "./sfx-tab";
 import { UploadsTab } from "./uploads-tab";
 
-type MusicPanelTab = "music" | "sfx" | "uploads";
+type MusicPanelTab = "music" | "sfx";
 
 const TABS: { id: MusicPanelTab; label: string }[] = [
   { id: "music", label: "Music" },
-  { id: "sfx", label: "SFX" },
-  { id: "uploads", label: "Uploads" },
+  { id: "sfx", label: "Sound effects" },
 ];
 
-/**
- * Music/SFX library panel (docs/plans/vizard-parity.md "Music/SFX library").
- * Three tabs share one hidden `<audio>` preview element (`usePreviewPlayer`)
- * so clicking Play on any row — in the Music tab's track list or the SFX
- * tab's effect list — pauses whatever the panel was already previewing.
- * `libraryVersion` is bumped by the Uploads tab after a finalize/delete so
- * the Music and SFX tabs' lists refetch without a shared cache layer.
- */
 export function MusicPanel() {
   const { studioEdits, setStudioEdits, endCoalesce } = useStudio();
   const [activeTab, setActiveTab] = useState<MusicPanelTab>("music");
+  const [showUploads, setShowUploads] = useState(false);
   const [libraryVersion, setLibraryVersion] = useState(0);
   const player = usePreviewPlayer();
-
   const sourceAudio = studioEdits.sourceAudio;
+
   const updateSourceAudio = (patch: Partial<typeof sourceAudio>, coalesceKey?: string) =>
-    setStudioEdits((prev) => ({ ...prev, sourceAudio: { ...prev.sourceAudio, ...patch } }), coalesceKey);
+    setStudioEdits(
+      (prev) => ({ ...prev, sourceAudio: { ...prev.sourceAudio, ...patch } }),
+      coalesceKey,
+    );
+
+  const chooseTab = (tab: MusicPanelTab) => {
+    setActiveTab(tab);
+    setShowUploads(false);
+  };
 
   return (
     <Stack gap="0">
-      {/* biome-ignore lint/a11y/useMediaCaption: shared hidden preview element for browsing the library — no dialogue/captions of its own. */}
-      <audio ref={player.audioRef} preload="none" style={{ display: "none" }} />
+      {/* biome-ignore lint/a11y/useMediaCaption: private library previews contain no dialogue. */}
+      <audio ref={player.audioRef} preload="metadata" style={{ display: "none" }} />
 
-      {/* Source audio — the original clip's dialogue track. Lives above the
-          tabs since it applies regardless of which library tab is open. */}
-      <Box px="12px" pt="12px">
-        <Text textStyle="eyebrow" color="studio.fgMuted" mb="6px">
-          Source audio
-        </Text>
-        <Box p="12px" bg="studio.subtle" borderRadius="l2" borderWidth="1px" borderColor="studio.border">
-          <Flex align="center" justify="space-between" mb="10px">
-            <Flex align="center" gap="6px" color="studio.fgMuted">
-              {sourceAudio.muted ? <VolumeX size={14} /> : <Volume2 size={14} />}
-              <Text fontSize="12px" color="studio.fg" fontWeight="500">
-                Original audio
-              </Text>
-            </Flex>
-            <Flex
-              as="button"
-              aria-pressed={sourceAudio.muted}
-              aria-label={sourceAudio.muted ? "Unmute source audio" : "Mute source audio"}
-              align="center"
-              justify="center"
-              gap="5px"
-              h="24px"
-              px="9px"
-              borderRadius="l2"
-              borderWidth="1px"
-              borderColor={sourceAudio.muted ? "studio.dangerBorder" : "studio.borderControl"}
-              bg={sourceAudio.muted ? "studio.raised" : "studio.subtle"}
-              color={sourceAudio.muted ? "studio.danger" : "studio.fgMuted"}
-              fontSize="10.5px"
-              fontWeight="600"
-              cursor="pointer"
-              transition="background 120ms ease, border-color 120ms ease, color 120ms ease"
-              _hover={{ borderColor: sourceAudio.muted ? "studio.dangerBorder" : "studio.fgSubtle" }}
-              onClick={() => updateSourceAudio({ muted: !sourceAudio.muted })}
-            >
-              {sourceAudio.muted ? "Muted" : "Mute"}
-            </Flex>
-          </Flex>
-          <Flex align="center" gap="8px" opacity={sourceAudio.muted ? 0.5 : 1}>
-            <Box color="studio.fgMuted" flexShrink={0}>
-              <Volume2 size={14} />
-            </Box>
-            <Slider.Root
-              aria-label={["Source audio volume"]}
-              value={[sourceAudio.volume]}
-              min={0}
-              max={100}
-              onValueChange={(event) => updateSourceAudio({ volume: event.value[0] ?? 100 }, "source-volume")}
-              onValueChangeEnd={endCoalesce}
-              size="sm"
-              colorPalette="accent"
-              flex="1"
-            >
-              <Slider.Control>
-                <Slider.Track>
-                  <Slider.Range />
-                </Slider.Track>
-                <Slider.Thumbs />
-              </Slider.Control>
-            </Slider.Root>
-            <Text textStyle="data" fontSize="11px" color="studio.fgMuted" w="34px" textAlign="right">
-              {sourceAudio.volume}%
-            </Text>
-          </Flex>
-        </Box>
-      </Box>
-
-      {/* Tabs */}
-      <Flex px="12px" pt="14px" gap="4px" mb="4px" role="tablist" aria-label="Music library">
+      <Flex
+        px="12px"
+        h="43px"
+        align="end"
+        gap="20px"
+        borderBottomWidth="1px"
+        borderColor="studio.border"
+        role="tablist"
+        aria-label="Music library"
+      >
         {TABS.map((tab) => {
-          const isActive = activeTab === tab.id;
+          const selected = !showUploads && activeTab === tab.id;
           return (
             <Flex
               key={tab.id}
               as="button"
               role="tab"
-              aria-selected={isActive}
+              aria-selected={selected}
               align="center"
-              px="12px"
-              py="6px"
-              borderRadius="l2"
-              bg={isActive ? "studio.raised" : "transparent"}
-              border="1px solid"
-              borderColor={isActive ? "studio.borderStrong" : "transparent"}
-              color={isActive ? "studio.fg" : "studio.fgMuted"}
-              cursor="pointer"
+              h="43px"
+              pt="2px"
+              borderBottomWidth="2px"
+              borderColor={selected ? "studio.accent" : "transparent"}
+              color={selected ? "studio.fg" : "studio.fgMuted"}
               fontSize="12px"
-              fontWeight="500"
-              onClick={() => setActiveTab(tab.id)}
-              transition="background 120ms ease, border-color 120ms ease, color 120ms ease"
+              fontWeight={selected ? "600" : "500"}
+              cursor="pointer"
+              transition="border-color 120ms ease, color 120ms ease"
+              onClick={() => chooseTab(tab.id)}
             >
               {tab.label}
             </Flex>
@@ -137,11 +76,106 @@ export function MusicPanel() {
         })}
       </Flex>
 
-      {activeTab === "music" ? <MusicTab reloadKey={libraryVersion} player={player} /> : null}
-      {activeTab === "sfx" ? <SfxTab reloadKey={libraryVersion} player={player} /> : null}
-      {activeTab === "uploads" ? (
-        <UploadsTab reloadKey={libraryVersion} onLibraryChange={() => setLibraryVersion((v) => v + 1)} />
-      ) : null}
+      {showUploads ? (
+        <Box>
+          <Flex px="12px" pt="12px" align="center" justify="space-between">
+            <Flex
+              as="button"
+              align="center"
+              gap="6px"
+              color="studio.fgMuted"
+              fontSize="11px"
+              fontWeight="600"
+              cursor="pointer"
+              _hover={{ color: "studio.fg" }}
+              onClick={() => setShowUploads(false)}
+            >
+              <ArrowLeft size={13} /> Back to library
+            </Flex>
+            <Flex align="center" gap="6px" color="studio.fgMuted">
+              <Upload size={13} />
+              <Text textStyle="eyebrow">Uploads</Text>
+            </Flex>
+          </Flex>
+          <UploadsTab
+            reloadKey={libraryVersion}
+            onLibraryChange={() => setLibraryVersion((version) => version + 1)}
+          />
+        </Box>
+      ) : activeTab === "music" ? (
+        <MusicTab
+          reloadKey={libraryVersion}
+          player={player}
+          onOpenUploads={() => setShowUploads(true)}
+        />
+      ) : (
+        <SfxTab
+          reloadKey={libraryVersion}
+          player={player}
+          onOpenUploads={() => setShowUploads(true)}
+        />
+      )}
+
+      <Box px="12px" pb="12px" pt="4px">
+        <Flex align="center" justify="space-between" mb="7px">
+          <Text textStyle="eyebrow" color="studio.fgMuted">
+            Source audio
+          </Text>
+          <Flex
+            as="button"
+            aria-pressed={sourceAudio.muted}
+            aria-label={sourceAudio.muted ? "Unmute source audio" : "Mute source audio"}
+            align="center"
+            gap="5px"
+            color={sourceAudio.muted ? "studio.danger" : "studio.fgMuted"}
+            fontSize="10.5px"
+            fontWeight="600"
+            cursor="pointer"
+            _hover={{ color: sourceAudio.muted ? "studio.danger" : "studio.fg" }}
+            onClick={() => updateSourceAudio({ muted: !sourceAudio.muted })}
+          >
+            {sourceAudio.muted ? <VolumeX size={13} /> : <Volume2 size={13} />}
+            {sourceAudio.muted ? "Muted" : "Original"}
+          </Flex>
+        </Flex>
+        <Flex
+          align="center"
+          gap="9px"
+          p="10px"
+          bg="studio.subtle"
+          borderWidth="1px"
+          borderColor="studio.border"
+          borderRadius="l2"
+        >
+          <Slider.Root
+            aria-label={["Source audio volume"]}
+            value={[sourceAudio.volume]}
+            min={0}
+            max={100}
+            disabled={sourceAudio.muted}
+            onValueChange={(event) =>
+              updateSourceAudio(
+                { volume: event.value[0] ?? sourceAudio.volume },
+                "source-audio-volume",
+              )
+            }
+            onValueChangeEnd={endCoalesce}
+            size="sm"
+            colorPalette="accent"
+            flex="1"
+          >
+            <Slider.Control>
+              <Slider.Track>
+                <Slider.Range />
+              </Slider.Track>
+              <Slider.Thumbs />
+            </Slider.Control>
+          </Slider.Root>
+          <Text textStyle="data" fontSize="10.5px" color="studio.fgMuted" w="34px" textAlign="right">
+            {sourceAudio.volume}%
+          </Text>
+        </Flex>
+      </Box>
     </Stack>
   );
 }

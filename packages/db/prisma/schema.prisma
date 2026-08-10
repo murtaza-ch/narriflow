@@ -442,6 +442,7 @@ model User {
   brandTemplates         BrandTemplate[]  @relation("UserBrandTemplates")
   defaultBrandTemplate   BrandTemplate?   @relation("UserDefaultBrandTemplate", fields: [defaultBrandTemplateId], references: [id], onDelete: SetNull)
   audioAssets            AudioAsset[]
+  audioAssetFavorites    AudioAssetFavorite[]
 
   @@index([clerkId])
 }
@@ -825,10 +826,28 @@ model AudioAsset {
   createdAt   DateTime       @default(now())
   deletedAt   DateTime?
 
-  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user      User?                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  favorites AudioAssetFavorite[]
 
   @@index([kind, userId])
   @@index([userId, deletedAt, createdAt])
+}
+
+/// A user's saved/favorited library entries. Kept separate from AudioAsset so
+/// curated rows remain globally shared while every account gets its own Saved
+/// filter, matching the studio's Audio library interaction model.
+model AudioAssetFavorite {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @db.Uuid
+  assetId   String   @db.Uuid
+  createdAt DateTime @default(now())
+
+  user  User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  asset AudioAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, assetId])
+  @@index([userId, createdAt])
+  @@index([assetId])
 }
 
 model SocialPost {
