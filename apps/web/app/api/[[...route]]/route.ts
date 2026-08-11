@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { handle } from "hono/vercel";
+import { after } from "next/server";
 import { getCurrentAppUser } from "@narriflow/auth";
 import {
   applyCaptionPresetToAllSchema,
@@ -8,6 +9,8 @@ import {
   brandTemplateInputSchema,
   brandTemplateUpdateSchema,
   completeMultipartUploadSchema,
+  createClipExportSchema,
+  createClipShareLinkSchema,
   clipDownloadQuerySchema,
   checkoutRequestSchema,
   contentPackSchema,
@@ -57,6 +60,9 @@ import {
   BrandTemplateForbiddenError,
   BrandTemplateNotFoundError,
   clipService,
+  clipExportService,
+  ClipExportError,
+  ClipExportRevisionConflictError,
   ClipActionError,
   ClipEditorRevisionConflictError,
   contentSuiteService,
@@ -1169,6 +1175,9 @@ app.put("/projects/:id/clips/:clipId/editor", async (c) => {
       projectId,
       c.req.param("clipId"),
       parsed.data,
+      {
+        scheduleCleanup: (cleanup) => after(cleanup),
+      },
     );
     return c.json(result, 200);
   } catch (error) {
@@ -1436,6 +1445,137 @@ app.post("/projects/:id/clips/render", async (c) => {
       { error: "clip_render_failed", message: errorMessage(error) },
       400,
     );
+  }
+});
+
+// --- Versioned clip exports ---
+
+app.post("/projects/:id/clips/:clipId/exports", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+
+  const rl = await checkRateLimit(`clip-export:${appUser.id}`, 20, 60);
+  if (!rl.allowed) {
+    return c.json(
+      { error: "rate_limited", message: userErrorMessage("rate_limited") },
+      429,
+    );
+  }
+
+  const idempotencyKey = c.req.header("idempotency-key")?.trim() ?? "";
+  if (!idempotencyKey || idempotencyKey.length > 128) {
+    return c.json({ error: "Invalid idempotency-key header" }, 400);
+  }
+  const payload = await c.req.json().catch(() => ({}));
+  const parsed = createClipExportSchema.safeParse(payload);
+  if (!parsed.success) {
+    return c.json({ error: "Invalid payload", issues: parsed.error.issues }, 400);
+  }
+
+  try {
+    const result = await clipExportService.create(
+      appUser.id,
+      c.req.param("id"),
+      c.req.param("clipId"),
+      parsed.data,
+      idempotencyKey,
+    );
+    return c.json(result, result.reused && result.export.status === "ready" ? 200 : 202);
+  } catch (error) {
+    if (error instanceof ClipExportRevisionConflictError) {
+      return c.json(
+        { error: error.code, currentRevision: error.currentRevision },
+        409,
+      );
+    }
+    if (error instanceof ClipExportError) {
+      return c.json({ error: error.code, message: error.message }, 404);
+    }
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        message: "clip_export_create_failed",
+        projectId: c.req.param("id"),
+        clipId: c.req.param("clipId"),
+        error: errorMessage(error),
+      }),
+    );
+    return c.json({ error: "clip_export_failed", message: "Could not start export" }, 500);
+  }
+});
+
+app.get("/projects/:id/clips/:clipId/exports/:exportId", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  const result = await clipExportService.getOwned(
+    appUser.id,
+    c.req.param("id"),
+    c.req.param("clipId"),
+    c.req.param("exportId"),
+  );
+  if (!result) return c.json({ error: "Export not found" }, 404);
+  return c.json(result, 200, { "Cache-Control": "private, no-store" });
+});
+
+app.post("/projects/:id/clips/:clipId/exports/:exportId/retry", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  const rl = await checkRateLimit(`clip-export-retry:${appUser.id}`, 12, 60);
+  if (!rl.allowed) return c.json({ error: "rate_limited" }, 429);
+  try {
+    const result = await clipExportService.retryFailed(
+      appUser.id,
+      c.req.param("id"),
+      c.req.param("clipId"),
+      c.req.param("exportId"),
+    );
+    return c.json(result, 202);
+  } catch (error) {
+    const code = error instanceof ClipExportError ? error.code : "clip_export_retry_failed";
+    return c.json({ error: code, message: "Could not retry export" }, 400);
+  }
+});
+
+app.post("/projects/:id/clips/:clipId/exports/:exportId/share-links", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  const rl = await checkRateLimit(`clip-share:${appUser.id}`, 10, 60);
+  if (!rl.allowed) return c.json({ error: "rate_limited" }, 429);
+  const parsed = createClipShareLinkSchema.safeParse(
+    await c.req.json().catch(() => ({})),
+  );
+  if (!parsed.success) {
+    return c.json({ error: "Invalid payload", issues: parsed.error.issues }, 400);
+  }
+  try {
+    const result = await clipExportService.createShareLink(
+      appUser.id,
+      c.req.param("id"),
+      c.req.param("clipId"),
+      c.req.param("exportId"),
+      parsed.data.expiresInDays,
+    );
+    return c.json(result, 201, { "Cache-Control": "private, no-store" });
+  } catch (error) {
+    const code = error instanceof ClipExportError ? error.code : "clip_share_failed";
+    return c.json({ error: code, message: "Could not create share link" }, 400);
+  }
+});
+
+app.delete("/projects/:id/clips/:clipId/exports/:exportId/share-links", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  try {
+    const result = await clipExportService.revokeShareLinks(
+      appUser.id,
+      c.req.param("id"),
+      c.req.param("clipId"),
+      c.req.param("exportId"),
+    );
+    return c.json(result, 200);
+  } catch (error) {
+    const code = error instanceof ClipExportError ? error.code : "clip_share_revoke_failed";
+    return c.json({ error: code, message: "Could not revoke share links" }, 400);
   }
 });
 

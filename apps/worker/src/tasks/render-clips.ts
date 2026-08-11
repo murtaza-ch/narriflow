@@ -12,6 +12,7 @@ import {
   assertPublicHttpUrl,
   assertResponseContentLength,
   audioAssetService,
+  clipExportVariantStorageKey,
   clipService,
   createByteLimitTransform,
   deleteObject,
@@ -4552,12 +4553,19 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
 
     attemptVariantIds = pendingRenders.map((render) => render.id);
 
+    // A clip may now have several immutable export revisions queued at once.
+    // Group by export (or by clip for the ordinary mutable latest-render row)
+    // so aspect variants from different frozen snapshots can never be encoded
+    // together.
     const rendersByClipId = new Map<string, typeof pendingRenders>();
 
     for (const render of pendingRenders) {
-      const existing = rendersByClipId.get(render.clipId) ?? [];
+      const groupKey = render.exportVariant
+        ? `export:${render.exportVariant.exportId}`
+        : `latest:${render.clipId}`;
+      const existing = rendersByClipId.get(groupKey) ?? [];
       existing.push(render);
-      rendersByClipId.set(render.clipId, existing);
+      rendersByClipId.set(groupKey, existing);
     }
 
     const clipGroups = [...rendersByClipId.values()].sort(
@@ -4627,7 +4635,12 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
 
     for (let clipGroupIndex = 0; clipGroupIndex < clipGroups.length; clipGroupIndex++) {
       const renderGroup = clipGroups[clipGroupIndex]!;
-      const clip = renderGroup[0]!.clip;
+      // Export-bound rows carry a complete frozen rendering snapshot. The
+      // cast is deliberate: the snapshot stores the exact Clip fields used by
+      // this worker and omits unrelated DB metadata/relations.
+      const clip = renderGroup[0]!.clipSnapshot
+        ? (renderGroup[0]!.clipSnapshot as unknown as (typeof renderGroup)[number]["clip"])
+        : renderGroup[0]!.clip;
       const rawUtterances = clip.transcriptSlice as unknown as TranscriptUtterance[];
       const effective = resolveRenderTimingForClip({
         llmModel: clip.llmModel,
@@ -4758,13 +4771,20 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
           clipId: clip.id,
           clipIndex: clip.index,
           aspectRatio,
-          outputPath: join(tempDir, `clip-${clip.id}-${slug}.mp4`),
-          storageKey: clipRenderAttemptStorageKey(
-            run.projectId,
-            clip.id,
-            slug,
-            randomUUID(),
-          ),
+          outputPath: join(tempDir, `clip-${clip.id}-${render.id}-${slug}.mp4`),
+          storageKey: render.exportVariant
+            ? clipExportVariantStorageKey({
+                projectId: run.projectId,
+                exportId: render.exportVariant.exportId,
+                variantId: render.exportVariantId!,
+                aspectRatio,
+              })
+            : clipRenderAttemptStorageKey(
+                run.projectId,
+                clip.id,
+                slug,
+                randomUUID(),
+              ),
           resolution,
         };
       });

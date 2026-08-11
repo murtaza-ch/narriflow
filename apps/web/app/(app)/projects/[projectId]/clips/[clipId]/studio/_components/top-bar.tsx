@@ -2,13 +2,14 @@
 
 import { useState } from "react";
 import { Box, Flex, Text, HStack } from "@chakra-ui/react";
-import { ArrowLeft, Undo2, Redo2, Keyboard, Check, RotateCcw } from "lucide-react";
+import { ArrowLeft, Undo2, Redo2, Keyboard, RotateCcw } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { Button, ScoreMeter, Spinner } from "@narriflow/ui";
+import { ScoreMeter, Spinner } from "@narriflow/ui";
 import { formatDuration } from "@/lib/format";
 import { ClipActionsMenu } from "../../../../clip-actions-menu";
-import { useStudio } from "./studio-shell";
+import { useStudio, type StudioSaveState } from "./studio-shell";
 import { ResetConfirmDialog } from "./reset-confirm-dialog";
+import { StudioExportMenu } from "./studio-export-menu";
 
 function IconBtn({
   icon,
@@ -56,7 +57,7 @@ function AutosaveIndicator({
   saveState,
   isDocDirty,
 }: {
-  saveState: "idle" | "saving" | "saved" | "error" | "blocked";
+  saveState: StudioSaveState;
   isDocDirty: boolean;
 }) {
   if (saveState === "saving") {
@@ -72,6 +73,9 @@ function AutosaveIndicator({
 
   const isBlocked = saveState === "blocked";
   const isError = saveState === "error" || isBlocked;
+  const isLocal = saveState === "local";
+  const isOffline = saveState === "offline";
+  const isReadonly = saveState === "readonly";
   // Live-QA finding 2026-08-06: 'idle' alone is NOT proof the document is
   // saved — a failed save times back to idle after 4s with the retry still
   // pending, and the debounce window before the first PUT is also 'idle'.
@@ -87,6 +91,8 @@ function AutosaveIndicator({
         bg={
           isError
             ? "danger.solid"
+            : isOffline || isLocal
+              ? "accent.solid"
             : idleButDirty
               ? "studio.fgSubtle"
               : saveState === "saved"
@@ -96,7 +102,13 @@ function AutosaveIndicator({
       />
       <Text fontSize="12px" color={isError ? "danger.fg" : "studio.fgMuted"}>
         {isBlocked
-          ? "Save paused — reload"
+          ? "Save needs attention"
+          : isReadonly
+            ? "Read-only tab"
+          : isOffline
+            ? "Saved offline"
+          : isLocal
+            ? "Saved on this device"
           : isError
             ? "Save failed"
             : idleButDirty
@@ -115,7 +127,6 @@ export function TopBar() {
     canRedo,
     showShortcuts,
     setShowShortcuts,
-    handleExport,
     handleUndo,
     handleRedo,
     handleReset,
@@ -123,7 +134,6 @@ export function TopBar() {
     canReset,
     saveState,
     isDocDirty,
-    exportState,
     aspectRatio,
   } = useStudio();
   const [showResetConfirm, setShowResetConfirm] = useState(false);
@@ -143,8 +153,8 @@ export function TopBar() {
       <HStack gap="2" flex="1" minW="0">
         <IconBtn
           icon={<ArrowLeft size={16} />}
-          onClick={() => router.back()}
-          label="Back"
+          onClick={() => router.push(`/projects/${clipInfo.projectId}`)}
+          label="Back to project"
         />
         <Text
           fontFamily="display"
@@ -220,25 +230,7 @@ export function TopBar() {
 
         <Box w="1px" h="20px" bg="studio.border" mx="1" />
 
-        {/* Export — the one solid button in the studio view */}
-        <Button
-          size="sm"
-          colorPalette="accent"
-          variant="solid"
-          onClick={exportState === "idle" ? handleExport : undefined}
-          loading={exportState === "exporting"}
-          loadingText="Exporting…"
-          aria-label={`Export ${aspectRatio}`}
-        >
-          {exportState === "queued" ? (
-            <>
-              <Check size={13} />
-              Queued
-            </>
-          ) : (
-            <>Export {aspectRatio}</>
-          )}
-        </Button>
+        <StudioExportMenu />
       </HStack>
 
       <ResetConfirmDialog

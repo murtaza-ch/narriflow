@@ -79,6 +79,7 @@ import {
   type ClipPreviewPeaks,
 } from "./clip-preview-storage";
 import { analyticsService } from "./analytics.service";
+import { clipExportService } from "./clip-export.service";
 import { assertPublicHttpUrl } from "./url-guard";
 import { hasFeature } from "./billing.service";
 
@@ -208,6 +209,25 @@ function normalizeAspectRatios(
   );
 }
 
+/** Exact canonical comparison used to acknowledge a lost-response retry. */
+export function editorDocumentsEqual(
+  current: EditorDocument,
+  attempted: EditorDocument,
+): boolean {
+  return JSON.stringify(current) === JSON.stringify(attempted);
+}
+
+export async function runOrScheduleCleanup(
+  cleanup: () => Promise<void>,
+  schedule?: (cleanup: () => Promise<void>) => void,
+): Promise<void> {
+  if (schedule) {
+    schedule(cleanup);
+    return;
+  }
+  await cleanup();
+}
+
 /**
  * Resolves what resolution a newly-queued render should actually be created
  * at: a "720p" request is always honored as-is (never "upgraded"), but a
@@ -288,6 +308,7 @@ function toClipSnapshot(clip: ClipWithRenders): ClipSnapshot {
     instagramScore: clip.instagramScore,
     transcriptSlice: effective.transcriptSlice,
     renderVariants: clip.renders
+      .filter((render) => render.exportVariantId === null)
       .map(toClipRenderVariantSnapshot)
       .sort(
         (left, right) =>
@@ -1427,7 +1448,9 @@ export class ClipService {
     );
 
     const staleRenderKeys = [
-      ...clip.renders.map((render) => render.storageKey),
+      ...clip.renders
+        .filter((render) => render.exportVariantId === null)
+        .map((render) => render.storageKey),
       // The old-window preview proxy is orphaned once boundaries move.
       clip.previewStorageKey,
       // ...and so is its peaks sidecar (derived key, no own column).
@@ -1436,7 +1459,7 @@ export class ClipService {
 
     const updated = await prisma.$transaction(async (tx) => {
       await tx.clipRender.deleteMany({
-        where: { clipId },
+        where: { clipId, exportVariantId: null },
       });
 
       return tx.clip.update({
@@ -1732,7 +1755,7 @@ export class ClipService {
 
     const source = await prisma.clip.findFirst({
       where: { id: clipId, projectId, project: { userId } },
-      include: { renders: true },
+      include: { renders: { where: { exportVariantId: null } } },
     });
 
     if (!source) {
@@ -2319,6 +2342,7 @@ export class ClipService {
       where: {
         clipId: { in: clipIdsToRender },
         aspectRatio: { in: requestedAspectRatioDbValues },
+        exportVariantId: null,
       },
       select: {
         id: true,
@@ -2489,6 +2513,7 @@ export class ClipService {
       },
       include: {
         clip: true,
+        exportVariant: { select: { exportId: true } },
       },
     });
 
@@ -2514,16 +2539,35 @@ export class ClipService {
   async markClipRenderVariantRendering(clipRenderId: string) {
     const prisma = requirePrisma();
 
-    // updateMany: an editor save/reset can deleteMany this row while the
-    // encode is queued — a vanished row is a no-op, not a P2025 crash.
-    await prisma.clipRender.updateMany({
+    const render = await prisma.clipRender.findUnique({
       where: { id: clipRenderId },
-      data: {
-        status: "rendering",
-        startedAt: new Date(),
-        errorCode: null,
-      },
+      select: { exportVariantId: true },
     });
+
+    const startedAt = new Date();
+    const persisted = await prisma.$transaction(async (tx) => {
+      // updateMany: an editor save/reset can deleteMany this row while the
+      // encode is queued — a vanished row is a no-op, not a P2025 crash.
+      const claim = await tx.clipRender.updateMany({
+        where: { id: clipRenderId },
+        data: { status: "rendering", startedAt, errorCode: null },
+      });
+      if (claim.count === 0) return false;
+      if (render?.exportVariantId) {
+        await tx.clipExportVariant.update({
+          where: { id: render.exportVariantId },
+          data: { status: "rendering", startedAt, errorCode: null },
+        });
+      }
+      return true;
+    });
+    if (persisted && render?.exportVariantId) {
+      const variant = await prisma.clipExportVariant.findUniqueOrThrow({
+        where: { id: render.exportVariantId },
+        select: { exportId: true },
+      });
+      await clipExportService.syncAggregate(variant.exportId);
+    }
   }
 
   /**
@@ -2549,27 +2593,51 @@ export class ClipService {
     },
   ): Promise<{ persisted: boolean }> {
     const prisma = requirePrisma();
-
-    const claim = await prisma.clipRender.updateMany({
+    const render = await prisma.clipRender.findUnique({
       where: { id: clipRenderId },
-      data: {
-        status: "completed",
-        storageKey: input.storageKey,
-        sizeBytes: BigInt(input.sizeBytes),
-        durationSec: input.durationSec,
-        errorCode: null,
-        completedAt: new Date(),
+      include: {
+        clip: { select: { projectId: true } },
+        exportVariant: { select: { id: true, exportId: true } },
       },
     });
-
-    if (claim.count === 0) {
+    if (!render) {
       return { persisted: false };
     }
 
-    const render = await prisma.clipRender.findUniqueOrThrow({
-      where: { id: clipRenderId },
-      include: { clip: { select: { projectId: true } } },
+    const completedAt = new Date();
+    const persisted = await prisma.$transaction(async (tx) => {
+      const claim = await tx.clipRender.updateMany({
+        where: { id: clipRenderId },
+        data: {
+          status: "completed",
+          storageKey: input.storageKey,
+          sizeBytes: BigInt(input.sizeBytes),
+          durationSec: input.durationSec,
+          errorCode: null,
+          completedAt,
+        },
+      });
+      if (claim.count === 0) return false;
+      if (render.exportVariant) {
+        await tx.clipExportVariant.update({
+          where: { id: render.exportVariant.id },
+          data: {
+            status: "completed",
+            storageKey: input.storageKey,
+            sizeBytes: BigInt(input.sizeBytes),
+            durationSec: input.durationSec,
+            errorCode: null,
+            completedAt,
+          },
+        });
+      }
+      return true;
     });
+    if (!persisted) return { persisted: false };
+
+    if (render.exportVariant) {
+      await clipExportService.syncAggregate(render.exportVariant.exportId);
+    }
 
     await analyticsService.recordProjectEvent({
       projectId: render.clip.projectId,
@@ -2590,15 +2658,34 @@ export class ClipService {
   async failClipRenderVariant(clipRenderId: string, errorCode: string) {
     const prisma = requirePrisma();
 
-    // updateMany for the same deleted-mid-render reason as
-    // markClipRenderVariantRendering above.
-    await prisma.clipRender.updateMany({
+    const render = await prisma.clipRender.findUnique({
       where: { id: clipRenderId },
-      data: {
-        status: "failed",
-        errorCode,
-      },
+      select: { exportVariantId: true },
     });
+
+    const persisted = await prisma.$transaction(async (tx) => {
+      // updateMany for the same deleted-mid-render reason as
+      // markClipRenderVariantRendering above.
+      const claim = await tx.clipRender.updateMany({
+        where: { id: clipRenderId },
+        data: { status: "failed", errorCode },
+      });
+      if (claim.count === 0) return false;
+      if (render?.exportVariantId) {
+        await tx.clipExportVariant.update({
+          where: { id: render.exportVariantId },
+          data: { status: "failed", errorCode },
+        });
+      }
+      return true;
+    });
+    if (persisted && render?.exportVariantId) {
+      const variant = await prisma.clipExportVariant.findUniqueOrThrow({
+        where: { id: render.exportVariantId },
+        select: { exportId: true },
+      });
+      await clipExportService.syncAggregate(variant.exportId);
+    }
   }
 
   /** Queues a fresh clip_rendering run for variants that were added while a
@@ -2664,6 +2751,7 @@ export class ClipService {
       where: {
         clipId,
         aspectRatio: aspectRatioDb,
+        exportVariantId: null,
         clip: {
           projectId,
           project: { userId },
@@ -3261,12 +3349,15 @@ export class ClipService {
     }
 
     const staleRenderKeys = clip.renders
+      .filter((render) => render.exportVariantId === null)
       .map((render) => render.storageKey)
       .filter((key): key is string => Boolean(key));
 
     let deletedRenderCount = 0;
     const updated = await prisma.$transaction(async (tx) => {
-      const deleted = await tx.clipRender.deleteMany({ where: { clipId } });
+      const deleted = await tx.clipRender.deleteMany({
+        where: { clipId, exportVariantId: null },
+      });
       deletedRenderCount = deleted.count;
       return tx.clip.update({
         where: { id: clipId },
@@ -3331,12 +3422,15 @@ export class ClipService {
     }
 
     const staleRenderKeys = clip.renders
+      .filter((render) => render.exportVariantId === null)
       .map((render) => render.storageKey)
       .filter((key): key is string => Boolean(key));
 
     let deletedRenderCount = 0;
     const updated = await prisma.$transaction(async (tx) => {
-      const deleted = await tx.clipRender.deleteMany({ where: { clipId } });
+      const deleted = await tx.clipRender.deleteMany({
+        where: { clipId, exportVariantId: null },
+      });
       deletedRenderCount = deleted.count;
       return tx.clip.update({
         where: { id: clipId },
@@ -3521,6 +3615,9 @@ export class ClipService {
     projectId: string,
     clipId: string,
     payload: SaveEditorDocument,
+    options: {
+      scheduleCleanup?: (cleanup: () => Promise<void>) => void;
+    } = {},
   ): Promise<{ revision: number; document: EditorDocument; clip: ClipSnapshot }> {
     const prisma = requirePrisma();
     const { baseRevision, document } = saveEditorDocumentSchema.parse(payload);
@@ -3538,11 +3635,21 @@ export class ClipService {
     if (!clip) {
       throw new Error("clip not found");
     }
+    const current = buildEditorDocumentFromClip(clip);
     if (clip.editorRevision !== baseRevision) {
+      // Idempotent lost-response retry: the first PUT may have committed and
+      // its response disappeared with the connection. If the canonical
+      // document already equals this retry, acknowledge the current revision
+      // instead of manufacturing a conflict and another write.
+      if (editorDocumentsEqual(current, document)) {
+        return {
+          revision: clip.editorRevision,
+          document: current,
+          clip: toClipSnapshot(clip),
+        };
+      }
       throw new ClipEditorRevisionConflictError(clip.editorRevision);
     }
-
-    const current = buildEditorDocumentFromClip(clip);
 
     const plan = planEditorDocumentSave({
       document,
@@ -3599,7 +3706,9 @@ export class ClipService {
     }
 
     const staleRenderKeys = [
-      ...clip.renders.map((render) => render.storageKey),
+      ...clip.renders
+        .filter((render) => render.exportVariantId === null)
+        .map((render) => render.storageKey),
       // The old-window preview proxy is orphaned once boundaries actually
       // move — same rule as updateClipBoundaries/resetClipEditorToOriginal.
       ...(boundariesChanged
@@ -3649,7 +3758,9 @@ export class ClipService {
       if (guarded.count === 0) {
         return null;
       }
-      const deleted = await tx.clipRender.deleteMany({ where: { clipId } });
+      const deleted = await tx.clipRender.deleteMany({
+        where: { clipId, exportVariantId: null },
+      });
       deletedRenderCount = deleted.count;
       return tx.clip.findUniqueOrThrow({
         where: { id: clipId },
@@ -3679,7 +3790,10 @@ export class ClipService {
       }),
     );
 
-    await deleteRenderAssets(staleRenderKeys);
+    await runOrScheduleCleanup(
+      () => deleteRenderAssets(staleRenderKeys),
+      options.scheduleCleanup,
+    );
 
     return {
       revision: updated.editorRevision,
@@ -3794,7 +3908,9 @@ export class ClipService {
       JSON.stringify(normalizedOriginalRanges) !==
         JSON.stringify(currentDocument.deletedRanges);
     const staleRenderKeys = [
-      ...clip.renders.map((render) => render.storageKey),
+      ...clip.renders
+        .filter((render) => render.exportVariantId === null)
+        .map((render) => render.storageKey),
       // The old-window preview proxy is orphaned once boundaries move —
       // same rule as updateClipBoundaries.
       ...(boundariesChanged
@@ -3841,7 +3957,9 @@ export class ClipService {
       if (guarded.count === 0) {
         return null;
       }
-      const deleted = await tx.clipRender.deleteMany({ where: { clipId } });
+      const deleted = await tx.clipRender.deleteMany({
+        where: { clipId, exportVariantId: null },
+      });
       deletedRenderCount = deleted.count;
       return tx.clip.findUniqueOrThrow({
         where: { id: clipId },
@@ -3924,7 +4042,10 @@ export class ClipService {
       select: {
         id: true,
         captionPreset: true,
-        renders: { select: { storageKey: true } },
+        renders: {
+          where: { exportVariantId: null },
+          select: { storageKey: true },
+        },
       },
     });
 
@@ -3953,7 +4074,7 @@ export class ClipService {
     let deletedRenderCount = 0;
     await prisma.$transaction(async (tx) => {
       const deleted = await tx.clipRender.deleteMany({
-        where: { clipId: { in: clipIds } },
+        where: { clipId: { in: clipIds }, exportVariantId: null },
       });
       deletedRenderCount = deleted.count;
       await tx.clip.updateMany({
@@ -4043,7 +4164,10 @@ export class ClipService {
       select: {
         id: true,
         studioEdits: true,
-        renders: { select: { storageKey: true } },
+        renders: {
+          where: { exportVariantId: null },
+          select: { storageKey: true },
+        },
       },
     });
 
@@ -4096,7 +4220,7 @@ export class ClipService {
     let deletedRenderCount = 0;
     await prisma.$transaction(async (tx) => {
       const deleted = await tx.clipRender.deleteMany({
-        where: { clipId: { in: allIds } },
+        where: { clipId: { in: allIds }, exportVariantId: null },
       });
       deletedRenderCount = deleted.count;
       for (const group of groups) {
@@ -4211,6 +4335,7 @@ export class ClipService {
       where: {
         clipId: { in: clipIds },
         aspectRatio: aspectRatioDb,
+        exportVariantId: null,
         status: { in: ["pending", "rendering"] },
       },
       select: { clipId: true },

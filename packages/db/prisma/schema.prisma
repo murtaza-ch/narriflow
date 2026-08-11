@@ -104,6 +104,14 @@ enum ClipRenderStatus {
   failed
 }
 
+enum ClipExportStatus {
+  queued
+  rendering
+  partial_ready
+  ready
+  failed
+}
+
 enum DubStatus {
   queued
   processing
@@ -222,6 +230,7 @@ model Project {
   clipDubs        ClipDub[]
   autopilotEpisodes AutopilotEpisode[]
   notificationLedgers NotificationLedger[]
+  clipExports     ClipExport[]
 
   @@index([userId, createdAt])
   @@index([userId, ingestStatus, createdAt])
@@ -712,6 +721,7 @@ model Clip {
   socialPosts SocialPost[]
   analyticsEvents ProjectAnalyticsEvent[]
   dubs ClipDub[]
+  exports ClipExport[]
 
   @@index([projectId, viralityScore(sort: Desc)])
   @@index([autoLayoutStatus, autoLayoutLeaseExpiresAt])
@@ -740,10 +750,89 @@ model ClipRender {
   /// describe what those historical rows were rendered at.
   resolution  String           @default("1080p")
 
-  clip Clip @relation(fields: [clipId], references: [id], onDelete: Cascade)
+  // Export-bound rows are immutable render jobs. They carry a frozen clip
+  // snapshot and survive later editor saves; ordinary rows keep acting as the
+  // project's mutable latest-render cache. A partial unique index in the
+  // migration preserves one ordinary row per clip/aspect ratio while allowing
+  // any number of versioned export rows.
+  exportVariantId String? @unique @db.Uuid
+  editorRevision  Int?
+  clipSnapshot    Json?
 
-  @@unique([clipId, aspectRatio])
+  clip          Clip               @relation(fields: [clipId], references: [id], onDelete: Cascade)
+  exportVariant ClipExportVariant? @relation(fields: [exportVariantId], references: [id], onDelete: Cascade)
+
   @@index([clipId])
+  @@index([clipId, aspectRatio])
+}
+
+/// Immutable delivery record for one exact editor revision and normalized
+/// output configuration. It remains downloadable after later studio edits.
+model ClipExport {
+  id             String           @id @default(uuid()) @db.Uuid
+  projectId      String           @db.Uuid
+  clipId         String           @db.Uuid
+  editorRevision Int
+  fingerprint    String
+  resolution     String
+  watermark      Boolean
+  status         ClipExportStatus @default(queued)
+  progress       Int              @default(0)
+  errorCode      String?
+  workflowRunId  String?          @db.Uuid
+  createdAt      DateTime         @default(now())
+  updatedAt      DateTime         @updatedAt
+  completedAt    DateTime?
+
+  project    Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  clip       Clip                @relation(fields: [clipId], references: [id], onDelete: Cascade)
+  variants   ClipExportVariant[]
+  shareLinks ClipShareLink[]
+
+  @@unique([clipId, fingerprint])
+  @@index([projectId, createdAt(sort: Desc)])
+  @@index([clipId, createdAt(sort: Desc)])
+  @@index([status, updatedAt])
+}
+
+model ClipExportVariant {
+  id          String           @id @default(uuid()) @db.Uuid
+  exportId    String           @db.Uuid
+  aspectRatio ClipAspectRatio
+  resolution  String
+  watermark   Boolean
+  status      ClipRenderStatus @default(pending)
+  storageKey  String?
+  sizeBytes   BigInt?
+  durationSec Float?
+  errorCode   String?
+  startedAt   DateTime?
+  completedAt DateTime?
+  createdAt   DateTime         @default(now())
+  updatedAt   DateTime         @updatedAt
+
+  export ClipExport  @relation(fields: [exportId], references: [id], onDelete: Cascade)
+  render ClipRender?
+
+  @@unique([exportId, aspectRatio])
+  @@index([exportId, status])
+}
+
+/// Revocable public delivery link. Only a SHA-256 hash is stored; the raw
+/// 256-bit token is returned once and is never logged or persisted.
+model ClipShareLink {
+  id         String    @id @default(uuid()) @db.Uuid
+  exportId   String    @db.Uuid
+  tokenHash  String    @unique
+  expiresAt  DateTime?
+  revokedAt  DateTime?
+  lastUsedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  export ClipExport @relation(fields: [exportId], references: [id], onDelete: Cascade)
+
+  @@index([exportId, revokedAt])
+  @@index([expiresAt])
 }
 
 model ClipDub {

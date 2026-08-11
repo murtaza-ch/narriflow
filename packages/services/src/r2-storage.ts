@@ -543,11 +543,48 @@ export async function presignDownloadUrl(params: {
       Bucket: bucket,
       Key: params.key,
       ...(params.fileName && {
-        ResponseContentDisposition: `attachment; filename="${params.fileName}"`,
+        ResponseContentDisposition: buildAttachmentContentDisposition(
+          params.fileName,
+        ),
       }),
     }),
     { expiresIn: params.expiresIn ?? 3600 },
   );
+}
+
+/**
+ * Builds an injection-safe attachment header with both an ASCII fallback and
+ * an RFC 5987 UTF-8 filename. This value is signed into the GetObject query,
+ * so R2 controls downloads even when the object URL is cross-origin.
+ */
+export function buildAttachmentContentDisposition(fileName: string): string {
+  const leaf = fileName.split(/[\\/]/).at(-1) ?? "download";
+  const normalizedLeaf = Array.from(leaf.normalize("NFKC"), (character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return codePoint <= 0x1f || codePoint === 0x7f || '"\\;:*?<>|'.includes(character)
+      ? "-"
+      : character;
+  }).join("");
+  const unicodeName =
+    normalizedLeaf
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 180) || "download";
+  const asciiCandidate = unicodeName
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^\x20-\x7e]/g, "")
+    .trim();
+  const asciiName =
+    (asciiCandidate && asciiCandidate !== ".mp4"
+      ? asciiCandidate
+      : `download${unicodeName.toLowerCase().endsWith(".mp4") ? ".mp4" : ""}`
+    ).slice(0, 180);
+  const encodedName = encodeURIComponent(unicodeName).replace(
+    /[!'()*]/g,
+    (character) => `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+  return `attachment; filename="${asciiName}"; filename*=UTF-8''${encodedName}`;
 }
 
 export async function presignSingleUploadUrl(params: {

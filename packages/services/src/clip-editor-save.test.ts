@@ -12,7 +12,9 @@ import {
   assertBoundaryChangeHasAvailableSource,
   assertEditorDocumentHasRenderableContent,
   clampEditorDocumentToStoredWindow,
+  editorDocumentsEqual,
   planEditorDocumentSave,
+  runOrScheduleCleanup,
 } from "./clip.service";
 
 function makeDocument(
@@ -466,5 +468,45 @@ describe("planEditorDocumentSave (vizard-parity.md Phase B step 13, in-studio tr
     } catch (error) {
       expect((error as ClipActionError).code).toBe("editor_document_empty_timeline");
     }
+  });
+});
+
+describe("editorDocumentsEqual (lost autosave response retry)", () => {
+  test("acknowledges an exact document that already reached canonical storage", () => {
+    const document = makeDocument([makeUtterance(10, ["already", "saved"])]);
+    expect(editorDocumentsEqual(document, structuredClone(document))).toBe(true);
+  });
+
+  test("does not hide a real stale-revision edit", () => {
+    const current = makeDocument([makeUtterance(10, ["cloud"])]);
+    const attempted = { ...current, brollUrl: "https://cdn.example.com/local.mp4" };
+    expect(editorDocumentsEqual(current, attempted)).toBe(false);
+  });
+});
+
+describe("runOrScheduleCleanup", () => {
+  test("does not hold the response path open when a post-response scheduler exists", async () => {
+    let cleanupStarted = false;
+    let scheduled: (() => Promise<void>) | null = null;
+    await runOrScheduleCleanup(
+      async () => {
+        cleanupStarted = true;
+      },
+      (cleanup) => {
+        scheduled = cleanup;
+      },
+    );
+    expect(cleanupStarted).toBe(false);
+    expect(scheduled).not.toBeNull();
+    await scheduled!();
+    expect(cleanupStarted).toBe(true);
+  });
+
+  test("awaits cleanup when used outside a request lifecycle", async () => {
+    let cleaned = false;
+    await runOrScheduleCleanup(async () => {
+      cleaned = true;
+    });
+    expect(cleaned).toBe(true);
   });
 });

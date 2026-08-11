@@ -5,6 +5,7 @@ export * from "./brand-template";
 export * from "./broll";
 export * from "./caption-preset";
 export * from "./clip";
+export * from "./clip-export";
 export * from "./clip-layout-analysis";
 export * from "./clip-auto-layout-analysis";
 export * from "./content-asset";

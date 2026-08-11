@@ -34,6 +34,16 @@ export {
   type ClipPendingAutoLayoutAnalysis,
 } from "./clip.service";
 export {
+  clipExportService,
+  ClipExportService,
+  ClipExportError,
+  ClipExportRevisionConflictError,
+  buildClipExportFingerprint,
+  clipExportVariantStorageKey,
+  deriveClipExportAggregate,
+  hashClipShareToken,
+} from "./clip-export.service";
+export {
   projectService,
   ProjectService,
   QuotaExceededError,

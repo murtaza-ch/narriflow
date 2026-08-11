@@ -2547,6 +2547,10 @@ export class ProjectService {
   ): Promise<ClaimedWorkflowRun | null> {
     const prisma = this.requirePrisma();
 
+    if (stage === "clip_rendering") {
+      await this.ensurePendingClipRenderingRun();
+    }
+
     // Bounded retry: under multi-worker contention the conditional update below
     // can lose the race (update.count === 0). Cap the retries and return null so
     // the poller simply tries again next tick, rather than recursing unbounded.
@@ -2673,6 +2677,71 @@ export class ProjectService {
     }
 
     return null;
+  }
+
+  /**
+   * Repairs the narrow enqueue/completion race where a render is inserted
+   * after a running worker took its snapshot but after that worker checked
+   * for follow-up work. The pending ClipRender row is durable, so each render
+   * poll ensures it has a live WorkflowRun before attempting a claim.
+   * Multi-worker races collapse through the database's partial one-live-run
+   * index; this is intentionally not dependent on Redis delivery.
+   */
+  async ensurePendingClipRenderingRun(): Promise<string | null> {
+    const prisma = this.requirePrisma();
+    const orphan = await prisma.clipRender.findFirst({
+      where: {
+        status: "pending",
+        clip: {
+          project: {
+            workflowRuns: {
+              none: {
+                stage: "clip_rendering",
+                status: { in: ["queued", "running"] },
+              },
+            },
+          },
+        },
+      },
+      orderBy: { createdAt: "asc" },
+      select: { clip: { select: { projectId: true } } },
+    });
+    if (!orphan) return null;
+
+    let run: { id: string } | null = null;
+    try {
+      run = await prisma.workflowRun.create({
+        data: {
+          id: randomUUID(),
+          projectId: orphan.clip.projectId,
+          idempotencyKey: `render-rescue:${randomUUID()}`,
+          stage: "clip_rendering",
+          status: "queued",
+          progress: 0,
+        },
+        select: { id: true },
+      });
+    } catch (error) {
+      if (!isUniqueConstraintError(error)) throw error;
+      run = await prisma.workflowRun.findFirst({
+        where: {
+          projectId: orphan.clip.projectId,
+          stage: "clip_rendering",
+          status: { in: ["queued", "running"] },
+        },
+        select: { id: true },
+      });
+    }
+    if (!run) return null;
+
+    await prisma.clipExport.updateMany({
+      where: {
+        projectId: orphan.clip.projectId,
+        status: { in: ["queued", "rendering"] },
+      },
+      data: { workflowRunId: run.id },
+    });
+    return run.id;
   }
 
   async claimNextIngestJob(): Promise<ClaimedIngestJob | null> {
@@ -3255,6 +3324,14 @@ export class ProjectService {
 
     if (decision.outcome === "requeue") {
       if (options?.retryVariantIds?.length) {
+        const exportVariantIds = (
+          await prisma.clipRender.findMany({
+            where: { id: { in: options.retryVariantIds } },
+            select: { exportVariantId: true },
+          })
+        )
+          .map((render) => render.exportVariantId)
+          .filter((id): id is string => Boolean(id));
         await prisma.clipRender.updateMany({
           where: { id: { in: options.retryVariantIds }, status: "failed" },
           data: {
@@ -3267,6 +3344,17 @@ export class ProjectService {
             completedAt: null,
           },
         });
+        if (exportVariantIds.length > 0) {
+          await prisma.clipExportVariant.updateMany({
+            where: { id: { in: exportVariantIds } },
+            data: {
+              status: "pending",
+              errorCode: null,
+              startedAt: null,
+              completedAt: null,
+            },
+          });
+        }
       }
       return;
     }
@@ -3286,10 +3374,54 @@ export class ProjectService {
     errorCode: string,
   ) {
     const prisma = this.requirePrisma();
+    const exportVariants = await prisma.clipRender.findMany({
+      where: {
+        status: "rendering",
+        clip: { projectId },
+        exportVariantId: { not: null },
+      },
+      select: { exportVariantId: true },
+    });
     const orphaned = await prisma.clipRender.updateMany({
       where: { status: "rendering", clip: { projectId } },
       data: { status: "failed", errorCode },
     });
+    const exportVariantIds = exportVariants
+      .map((render) => render.exportVariantId)
+      .filter((id): id is string => Boolean(id));
+    if (exportVariantIds.length > 0) {
+      await prisma.clipExportVariant.updateMany({
+        where: { id: { in: exportVariantIds } },
+        data: { status: "failed", errorCode },
+      });
+      const affected = await prisma.clipExportVariant.findMany({
+        where: { id: { in: exportVariantIds } },
+        select: { exportId: true },
+      });
+      for (const exportId of new Set(affected.map((variant) => variant.exportId))) {
+        const variants = await prisma.clipExportVariant.findMany({
+          where: { exportId },
+          select: { status: true },
+        });
+        const completed = variants.filter((variant) => variant.status === "completed").length;
+        const terminal = variants.every(
+          (variant) => variant.status === "completed" || variant.status === "failed",
+        );
+        await prisma.clipExport.update({
+          where: { id: exportId },
+          data: {
+            status: terminal
+              ? completed > 0
+                ? "partial_ready"
+                : "failed"
+              : "rendering",
+            progress: terminal ? 100 : 95,
+            errorCode: terminal && completed === 0 ? errorCode : null,
+            completedAt: terminal ? new Date() : null,
+          },
+        });
+      }
+    }
     if (orphaned.count > 0) {
       console.warn(
         JSON.stringify({

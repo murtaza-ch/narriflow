@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 import { requireCurrentAppUser } from "@narriflow/auth";
 import {
   clipService,
+  hasFeature,
   projectService,
   presignDownloadUrl,
 } from "@narriflow/services";
@@ -18,7 +19,7 @@ export default async function StudioPage({
   const appUser = await requireCurrentAppUser();
   const { projectId, clipId } = await params;
 
-  const [snapshot, clips, previewSource, rawBrandSnapshot] = await Promise.all([
+  const [snapshot, clips, previewSource, rawBrandSnapshot, pricingTier] = await Promise.all([
     projectService.getProjectSnapshot(appUser.id, projectId),
     clipService.listClips(appUser.id, projectId),
     clipService.getClipPreviewSource(appUser.id, projectId, clipId),
@@ -26,6 +27,7 @@ export default async function StudioPage({
     // the source of truth for the logo ASSET. The studio only overrides
     // how it's *shown* per clip (studioEdits.logo); see brand-template-panel.tsx.
     projectService.getProjectBrandSnapshot(projectId),
+    projectService.getUserPricingTier(appUser.id),
   ]);
 
   if (!snapshot.project) notFound();
@@ -101,6 +103,8 @@ export default async function StudioPage({
     viralityScore: clip.viralityScore,
     category: clip.category,
     brollCues: clip.brollCues ?? [],
+    can1080pExport: hasFeature(pricingTier, "export.1080p"),
+    exportHasWatermark: !hasFeature(pricingTier, "export.noWatermark"),
   };
 
   /**
