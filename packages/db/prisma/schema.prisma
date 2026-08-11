@@ -356,8 +356,9 @@ model Transcript {
   provider       String?
   providerModel  String?
   providerJobId  String?
-  languageCode   String?
-  text           String?
+  languageCode       String?
+  languageConfidence Float?
+  text               String?
   utterancesJson Json?
   speakerCount   Int?
   durationSeconds Int?

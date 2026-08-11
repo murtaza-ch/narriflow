@@ -34,6 +34,7 @@ export const transcriptSnapshotSchema = z.object({
   providerModel: z.string().nullable(),
   providerJobId: z.string().nullable(),
   languageCode: z.string().nullable(),
+  languageConfidence: z.number().min(0).max(1).nullable(),
   text: z.string().nullable(),
   utterances: z.array(transcriptUtteranceSchema),
   speakerCount: z.number().int().nullable(),

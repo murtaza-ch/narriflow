@@ -686,6 +686,7 @@ async function finalizeCompletedTranscript(
       providerModel: normalized.providerModel,
       providerJobId: normalized.providerJobId,
       languageCode: normalized.languageCode,
+      languageConfidence: normalized.languageConfidence,
       text: normalized.text,
       utterances: normalized.utterances,
       speakerCount: normalized.speakerCount,
@@ -702,6 +703,9 @@ async function finalizeCompletedTranscript(
     workflowRunId: run.id,
     projectId: run.projectId,
     utteranceCount: normalized.utterances.length,
+    providerModel: normalized.providerModel,
+    languageCode: normalized.languageCode,
+    languageConfidence: normalized.languageConfidence,
   });
 }
 

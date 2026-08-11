@@ -460,6 +460,7 @@ function toTranscriptSnapshot(row: PrismaTranscript): TranscriptSnapshot {
     providerModel: row.providerModel,
     providerJobId: row.providerJobId,
     languageCode: row.languageCode,
+    languageConfidence: row.languageConfidence,
     text: row.text,
     utterancesJson: row.utterancesJson,
     speakerCount: row.speakerCount,
@@ -2907,6 +2908,7 @@ export class ProjectService {
       providerModel: string | null;
       providerJobId: string | null;
       languageCode: string | null;
+      languageConfidence: number | null;
       text: string;
       utterances: unknown;
       speakerCount: number;
@@ -2967,6 +2969,7 @@ export class ProjectService {
         providerModel: input.providerModel,
         providerJobId: input.providerJobId,
         languageCode: input.languageCode,
+        languageConfidence: input.languageConfidence,
         text: input.text,
         utterancesJson: input.utterances as Prisma.InputJsonValue,
         speakerCount: input.speakerCount,
@@ -2981,6 +2984,7 @@ export class ProjectService {
         providerModel: input.providerModel,
         providerJobId: input.providerJobId,
         languageCode: input.languageCode,
+        languageConfidence: input.languageConfidence,
         text: input.text,
         utterancesJson: input.utterances as Prisma.InputJsonValue,
         speakerCount: input.speakerCount,

@@ -22,9 +22,11 @@ _Last updated: 2026-07-09._
 | Rendering | **FFmpeg** crop/scale + **ASS** caption burn-in (word-level highlight, box, glow, animation, position) | "SRT-only / preview-only highlight" |
 | Web / API | Next.js 16 (App Router) + Hono route handlers; Clerk auth; Prisma/Postgres | "Next.js 15" |
 
-**Cost to serve (verified June 2026): ~$0.21–0.38 per source-hour** end-to-end
-(AssemblyAI $0.15–0.21/hr · gpt-5.4-mini <$0.02/hr · FFmpeg $0.05–0.20/hr · R2
-$0.015/GB-mo, zero egress). All-in cost is **~$0.004–0.006/source-minute**, so a
+**Cost to serve (verified August 2026): ~$0.22–0.45 per source-hour** end-to-end
+before optional AssemblyAI prompting/keyterms (+$0.05/hr)
+(AssemblyAI $0.17–0.23/hr including speaker diarization · gpt-5.4-mini <$0.02/hr ·
+FFmpeg $0.05–0.20/hr · R2 $0.015/GB-mo, zero egress). All-in cost is
+**~$0.004–0.008/source-minute**, so a
 processing-minutes quota can out-deliver incumbents and still hold 70–90% margin.
 
 ---
@@ -33,7 +35,7 @@ processing-minutes quota can out-deliver incumbents and still hold 70–90% marg
 
 ### ✅ Shipped & verified
 - **Ingest**: file upload (R2 multipart), YouTube (`yt-dlp`), RSS episode import.
-- **Transcription**: AssemblyAI Universal-3.5 Pro → Universal-2 with word-level timing, speaker labels, automatic detection, exact provider language codes, 18 core U3.5 languages and 99-language fallback coverage. Keyterms are explicit environment vocabulary only.
+- **Transcription**: AssemblyAI Universal-3.5 Pro → Universal-2 with word-level timing, speaker labels, automatic detection, persisted language confidence and actual-model provenance, exact provider language codes, 18 core U3.5 languages and 99-language fallback coverage. Keyterms are explicit environment vocabulary only.
 - **AI clip detection + virality scoring**: gpt-5.4-mini, composite score (hook / emotion / story / pacing / duration) + per-platform scores (TikTok / Shorts / Reels), diverse selection, long-transcript chunking, `caption_only` mode.
 - **Multi-format render**: 9:16, 1:1, 16:9, **4:5** (all 1080p) with FFmpeg crop/scale + brand-logo overlay.
 - **Captions — preview == export** _(fixed June 2026)_: studio HTML word-by-word preview and the burned ASS render now share one cue model (`CAPTION_CHUNK_SIZE`, `CAPTION_POSITION_Y_DEFAULTS`). The export reproduces per-word highlight, highlight box, glow, position and entrance animation; preset fonts are bundled in the worker image (Impact→Anton). Previously every default render fell back to flat SRT.
@@ -55,7 +57,7 @@ processing-minutes quota can out-deliver incumbents and still hold 70–90% marg
 - **Studio tool panels**: editor Export, caption "apply to all", brand-template caption application, automatic/manual B-roll, URL-backed music mix, fade/dip transitions, and arbitrary text layers are wired into persisted clip edits and FFmpeg export. Remaining editor gaps are richer timeline editing, uploaded asset libraries, and non-fade transition families.
 - **Dashboard / projects**: stat tiles are data-backed, active projects live-refresh, and the projects list now paginates past the first 50 records.
 - **Upload reliability**: R2 parts upload with bounded retries, bounded concurrency, resumable sessions, and generation context is committed atomically with upload completion. Remaining gap: resumable UI controls are still basic.
-- **Worker robustness**: workflow and ingest reapers exist, workflow idempotency uses the DB unique constraint, AssemblyAI language codes are centrally validated, and keyterms are bounded to provider limits. Remaining gaps: no retry policy beyond explicit user retry and no persisted language-confidence review state.
+- **Worker robustness**: workflow and ingest reapers exist, workflow idempotency uses the DB unique constraint, AssemblyAI language codes are centrally validated, and keyterms are bounded to provider limits. Remaining gap: language confidence is visible but does not yet have an eval-backed review/blocking policy.
 - **Social / analytics**: first-party analytics, durable scheduling, native OAuth publishing, webhook fallback delivery, posted/failed reconciliation, and platform metric ingestion are built. Remaining gap: automatic platform metric fetchers that refresh metrics from provider APIs without a webhook/manual ingest.
 
 ### ❌ Not built (UI may imply otherwise)

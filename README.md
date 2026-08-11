@@ -64,7 +64,7 @@ You need these accounts and credentials before the ingest, transcription, clip d
 Narriflow turns a source media input into rendered short clips through the background stages below:
 
 1. Ingest: accepts an uploaded file, YouTube URL, or RSS episode and stores the normalized source media in Cloudflare R2.
-2. Transcription: extracts audio with FFmpeg, uploads it to AssemblyAI, and requests Universal-3.5 Pro with Universal-2 fallback for speech-to-text, speaker labels, utterance timing, and word timing. The source-language picker uses AssemblyAI's complete current API enum: 102 codes representing 99 languages, including four English variants. U3.5 Pro directly covers 18 core languages and Universal-2 handles the extended set.
+2. Transcription: extracts audio with FFmpeg, uploads it to AssemblyAI, and requests Universal-3.5 Pro with Universal-2 fallback for speech-to-text, speaker labels, utterance timing, and word timing. The source-language picker uses AssemblyAI's complete current API enum: 102 codes representing 99 languages, including four English variants. U3.5 Pro directly covers 18 core languages and Universal-2 handles the extended set. Completed transcripts preserve the actual model selected after fallback plus automatic language-detection confidence for review and rollout monitoring.
 3. Moment detection: sends the completed transcript to OpenAI through the Responses API. The default model is `gpt-5.4-mini`, and the worker requests strict JSON output for clip candidates.
 4. Clip rendering: creates subtitle files, crops/scales video for the requested aspect ratios, burns captions with FFmpeg, uploads MP4 renders to R2, and exposes downloads through presigned URLs.
 5. Optional voiceover dubbing: translates the clip transcript when needed, synthesizes narration with OpenAI audio speech, swaps the rendered clip audio track with FFmpeg, and uploads MP3/MP4 dub assets to R2.
@@ -290,7 +290,7 @@ The worker asks OpenAI for a larger candidate pool than the final clip count, re
 3. Set `ASSEMBLYAI_API_KEY` in the worker env.
 4. The worker uses `speech_models: ["universal-3-5-pro", "universal-2"]`, `speaker_labels: true`, and `language_detection: true` for Auto mode. Manual mode sends one exact provider `language_code` from the documented enum.
 
-Current multilingual limits are explicit: language-detection confidence is not yet persisted or shown for review, there is no reusable project glossary/language profile, dubbing does not yet perform segment-level duration alignment, and RTL/CJK/Indic caption cue behavior still needs a rendered evaluation matrix. The worker image includes broad Noto core, extra, CJK, and emoji glyph coverage, but fonts alone do not guarantee script-aware cue segmentation.
+Current multilingual limits are explicit: language-detection confidence is preserved and shown, but no eval-backed threshold blocks downstream work yet; there is no reusable project glossary/language profile, dubbing does not yet perform segment-level duration alignment, and RTL/CJK/Indic caption cue behavior still needs a rendered evaluation matrix. The worker image includes broad Noto core, extra, CJK, and emoji glyph coverage, but fonts alone do not guarantee script-aware cue segmentation.
 
 ### OpenAI
 

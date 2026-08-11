@@ -41,6 +41,20 @@ export function TranscriptPanel({
     transcript.utterances.length > 0
       ? Math.round((utterancesWithWords / transcript.utterances.length) * 100)
       : null;
+  const transcriptMetadata = [
+    transcript.languageCode ? `Language: ${transcript.languageCode}` : null,
+    typeof transcript.languageConfidence === "number"
+      ? `Language confidence: ${Math.round(transcript.languageConfidence * 100)}%`
+      : null,
+    transcript.providerModel ? `Model: ${transcript.providerModel}` : null,
+    typeof transcript.speakerCount === "number"
+      ? `Speakers: ${transcript.speakerCount}`
+      : null,
+    averageConfidence !== null
+      ? `Speech confidence: ${Math.round(averageConfidence * 100)}%`
+      : null,
+    wordTimingHealth !== null ? `Word timing: ${wordTimingHealth}%` : null,
+  ].filter((value): value is string => value !== null);
 
   return (
     <Box layerStyle="band">
@@ -58,16 +72,7 @@ export function TranscriptPanel({
               />
             </Flex>
             <Text mt="1.5" textStyle="data" fontSize="11px" color="fg.subtle">
-              {transcript.languageCode ? `Language: ${transcript.languageCode}` : ""}
-              {typeof transcript.speakerCount === "number"
-                ? ` · Speakers: ${transcript.speakerCount}`
-                : ""}
-              {averageConfidence !== null
-                ? ` · Confidence: ${Math.round(averageConfidence * 100)}%`
-                : ""}
-              {wordTimingHealth !== null
-                ? ` · Word timing: ${wordTimingHealth}%`
-                : ""}
+              {transcriptMetadata.join(" · ")}
             </Text>
             {transcript.errorCode && (
               <Flex align="center" gap="1.5" mt="1.5" color="danger.fg">

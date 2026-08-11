@@ -24,9 +24,9 @@
 Narriflow's current AssemblyAI model chain and 102-code submit enum are correct,
 but language behavior is fragmented:
 
-- automatic detection is enabled, while `language_confidence` is omitted from
-  normalization and persistence (`packages/services/src/transcript.service.ts:25-45,263-273`;
-  `packages/db/prisma/schema.prisma:271-290`);
+- automatic detection confidence is now normalized, persisted, logged, and
+  shown in transcript review, but no eval-backed threshold or downstream review
+  gate exists yet;
 - key terms are one deployment-wide environment string
   (`apps/worker/src/tasks/transcribe.ts:152-166`), not user/project data;
 - project source language, target dub language, prompts, brand snapshots,

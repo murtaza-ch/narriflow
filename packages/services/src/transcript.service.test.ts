@@ -10,6 +10,7 @@ const assemblyAiFixture = {
   status: "completed",
   text: "Welcome back to Narriflow.\n\nToday we are talking about transcription quality.",
   language_code: "en",
+  language_confidence: 0.97,
   speech_model_used: "universal-3-5-pro",
   speech_models: ["universal-3-5-pro", "universal-2"],
   audio_duration: 31.8,
@@ -66,6 +67,7 @@ describe("normalizeAssemblyAiTranscript", () => {
     expect(normalized.providerModel).toBe("universal-3-5-pro");
     expect(normalized.providerJobId).toBe("aai-transcript-123");
     expect(normalized.languageCode).toBe("en");
+    expect(normalized.languageConfidence).toBe(0.97);
     expect(normalized.durationSeconds).toBe(32);
     expect(normalized.speakerCount).toBe(2);
     expect(normalized.rawPayload).toBe(assemblyAiFixture);
@@ -113,6 +115,7 @@ describe("normalizeAssemblyAiTranscript", () => {
   test("falls back for optional metadata without crashing", () => {
     const normalized = normalizeAssemblyAiTranscript({
       speech_models: ["universal-3-5-pro", "universal-2"],
+      language_confidence: 1.2,
       utterances: [
         {
           start: 0,
@@ -127,6 +130,7 @@ describe("normalizeAssemblyAiTranscript", () => {
     expect(normalized.providerModel).toBeNull();
     expect(normalized.providerJobId).toBeNull();
     expect(normalized.languageCode).toBeNull();
+    expect(normalized.languageConfidence).toBeNull();
     expect(normalized.utterances[0]!.confidence).toBeNull();
     expect(normalized.utterances[0]!.words[0]!.confidence).toBeNull();
   });
@@ -177,6 +181,7 @@ describe("exportTranscript", () => {
     providerModel: "universal-3-5-pro",
     providerJobId: "aai-transcript-123",
     languageCode: "en",
+    languageConfidence: 0.97,
     text: "Welcome back to Narriflow.\n\nToday we are talking about transcription quality.",
     utterancesJson: [
       {

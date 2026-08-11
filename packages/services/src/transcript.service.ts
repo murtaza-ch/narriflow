@@ -33,6 +33,7 @@ interface AssemblyAiPayload {
   speech_model_used?: string;
   speech_models?: string[];
   audio_duration?: number;
+  language_confidence?: number;
   utterances?: AssemblyAiUtterance[];
 }
 
@@ -41,6 +42,7 @@ export interface NormalizedTranscript {
   providerModel: string | null;
   providerJobId: string | null;
   languageCode: string | null;
+  languageConfidence: number | null;
   text: string;
   utterances: TranscriptUtterance[];
   speakerCount: number;
@@ -95,6 +97,16 @@ function millisecondsToSeconds(value: number) {
 
 function getAssemblyAiProviderModel(payload: AssemblyAiPayload) {
   return payload.speech_model_used ?? payload.speech_model ?? null;
+}
+
+function getAssemblyAiLanguageConfidence(payload: AssemblyAiPayload) {
+  const confidence = payload.language_confidence;
+  return typeof confidence === "number" &&
+    Number.isFinite(confidence) &&
+    confidence >= 0 &&
+    confidence <= 1
+    ? confidence
+    : null;
 }
 
 function getSpeakerIndex(
@@ -274,6 +286,7 @@ export function normalizeAssemblyAiTranscript(
     providerModel: getAssemblyAiProviderModel(payload),
     providerJobId: payload.id ?? null,
     languageCode: payload.language_code ?? null,
+    languageConfidence: getAssemblyAiLanguageConfidence(payload),
     text,
     utterances: normalizedUtterances,
     speakerCount: speakers.size,
@@ -289,6 +302,7 @@ export function buildTranscriptSnapshot(input: {
   providerModel: string | null;
   providerJobId: string | null;
   languageCode: string | null;
+  languageConfidence: number | null;
   text: string | null;
   utterancesJson: unknown;
   speakerCount: number | null;
@@ -308,6 +322,7 @@ export function buildTranscriptSnapshot(input: {
     providerModel: input.providerModel,
     providerJobId: input.providerJobId,
     languageCode: input.languageCode,
+    languageConfidence: input.languageConfidence,
     text: input.text,
     utterances: Array.isArray(utterances) ? utterances : [],
     speakerCount: input.speakerCount,
