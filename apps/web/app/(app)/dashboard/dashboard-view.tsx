@@ -6,6 +6,7 @@ import { FolderOpen, Rss, Upload } from "lucide-react";
 import type { ProjectListItem } from "@narriflow/services";
 import { HeroPasteLinkField } from "./dashboard-client";
 import { ProjectCard } from "../projects/_components/project-card";
+import { RetentionBanner } from "../projects/_components/retention-banner";
 
 function reveal(index: number) {
   return {
@@ -18,12 +19,15 @@ function reveal(index: number) {
 export function DashboardView({
   greeting,
   items,
+  showRetentionBanner,
 }: {
   greeting: string;
   items: ProjectListItem[];
+  showRetentionBanner: boolean;
 }) {
   return (
     <Stack gap="8" maxW="1080px" mx="auto">
+      {showRetentionBanner ? <RetentionBanner /> : null}
       {/* Hero */}
       <Box
         as="section"

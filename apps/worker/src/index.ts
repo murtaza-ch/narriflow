@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import {
   projectService,
+  projectRetentionService,
   purgeExpiredProjectSources,
   purgeOldWebhookDeliveryLogs,
   purgeOldWorkflowEvents,
@@ -18,7 +19,10 @@ import {
   processSubmittedTranscriptResults,
   processTranscriptRun,
 } from "./tasks/transcribe";
-import { retryPendingNotifications } from "./notifications";
+import {
+  notifyExpiringProject,
+  retryPendingNotifications,
+} from "./notifications";
 
 const port = Number(process.env.PORT || 0);
 const pollIntervalMs = Number(process.env.INGEST_POLL_INTERVAL_MS ?? "2500");
@@ -154,6 +158,52 @@ async function reapStalledRunsIfDue() {
           level: "info",
           message: "workflow_events_purged",
           count: purgedEvents,
+          ts: new Date().toISOString(),
+        }),
+      );
+    }
+
+    const observeMetrics = await projectRetentionService.getObserveMetrics();
+    if (observeMetrics) {
+      console.warn(
+        JSON.stringify({
+          level: "info",
+          message: "project_retention_observe_metrics",
+          ...observeMetrics,
+          ts: new Date().toISOString(),
+        }),
+      );
+    }
+
+    const warningCandidates =
+      await projectRetentionService.listProjectsNeedingExpiryWarning(
+        new Date(),
+        Number(process.env.PROJECT_RETENTION_WARNING_BATCH_SIZE ?? 100),
+      );
+    for (const project of warningCandidates) {
+      await notifyExpiringProject(project.id);
+    }
+
+    const retention = await projectRetentionService.purgeDueProjects(
+      Number(process.env.PROJECT_RETENTION_PURGE_BATCH_SIZE ?? 10),
+    );
+    const receiptsDeleted =
+      await projectRetentionService.deleteExpiredReceipts(
+        Number(process.env.PROJECT_RETENTION_RECEIPT_CLEANUP_BATCH_SIZE ?? 100),
+      );
+    if (
+      warningCandidates.length > 0 ||
+      retention.purged > 0 ||
+      retention.failed > 0 ||
+      receiptsDeleted > 0
+    ) {
+      console.warn(
+        JSON.stringify({
+          level: retention.failed > 0 ? "warn" : "info",
+          message: "project_retention_maintenance",
+          warningsDue: warningCandidates.length,
+          ...retention,
+          receiptsDeleted,
           ts: new Date().toISOString(),
         }),
       );

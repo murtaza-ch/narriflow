@@ -70,6 +70,7 @@ export async function GET(
   let heartbeat: ReturnType<typeof setInterval> | null = null;
   let fallbackPoller: ReturnType<typeof setInterval> | null = null;
   let fallbackPollInFlight = false;
+  let accessCheckInFlight = false;
   let lastSentSeq = sinceSeq;
   let subscriber: Redis | null = null;
   let streamActive = true;
@@ -297,11 +298,28 @@ export async function GET(
       if (!streamActive) return;
 
       heartbeat = setInterval(() => {
-        try {
-          controller.enqueue(encoder.encode(sseEvent("ping", { ts: Date.now() })));
-        } catch {
-          cleanup();
-        }
+        if (accessCheckInFlight) return;
+        accessCheckInFlight = true;
+        void projectService
+          .getProjectAccess(appUser.id, projectId)
+          .then((currentAccess) => {
+            if (currentAccess !== "owned") {
+              cleanup();
+              try {
+                controller.close();
+              } catch {
+                // Client and expiry check may close concurrently.
+              }
+              return;
+            }
+            controller.enqueue(
+              encoder.encode(sseEvent("ping", { ts: Date.now() })),
+            );
+          })
+          .catch(() => cleanup())
+          .finally(() => {
+            accessCheckInFlight = false;
+          });
       }, 15000);
 
     },

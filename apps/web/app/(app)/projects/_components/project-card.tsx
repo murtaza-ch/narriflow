@@ -8,6 +8,7 @@ import type { ProjectListItem } from "@narriflow/services";
 import { formatDate, formatDuration } from "@/lib/format";
 import { DeleteProjectButton } from "./delete-project-button";
 import { ProjectThumbnail } from "./project-thumbnail";
+import { ProjectExpiration } from "./project-expiration";
 import { STATUS_CONFIG, type BadgeStatus } from "../_lib/status";
 
 export { STATUS_CONFIG };
@@ -147,6 +148,9 @@ export function ProjectCard({ project }: ProjectCardProps) {
                 {meta}
               </Text>
             </HStack>
+            {project.expiresAt ? (
+              <ProjectExpiration expiresAt={project.expiresAt} />
+            ) : null}
           </Stack>
         </Stack>
       </Link>

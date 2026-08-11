@@ -62,6 +62,7 @@ enum IngestJobStatus {
   running
   completed
   failed
+  cancelled
 }
 
 enum TranscriptStatus {
@@ -212,6 +213,16 @@ model Project {
   // the database, not the UI.
   commitToken    String?       @unique @db.Uuid
   notifyOnComplete Boolean     @default(true)
+  retentionPolicyKey String?
+  expiresAt      DateTime?
+  purgeStartedAt DateTime?
+  purgeLeaseExpiresAt DateTime?
+  purgeRetryAt   DateTime?
+  purgeAttemptCount Int        @default(0)
+  purgeDeletedObjectCount Int  @default(0)
+  purgeDeletedBytes BigInt     @default(0)
+  purgeStorageVerifiedAt DateTime?
+  purgeLastError String?
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
   contentPacks   ContentPack[]
@@ -235,6 +246,25 @@ model Project {
   @@index([userId, createdAt])
   @@index([userId, ingestStatus, createdAt])
   @@index([brandTemplateId])
+  @@index([expiresAt, purgeRetryAt, purgeLeaseExpiresAt])
+}
+
+/// Content-free proof that an expired project was removed. This deliberately
+/// has no Project foreign key so the receipt survives the project's hard
+/// delete and can fence point-in-time restores for 90 days.
+model ProjectDeletionReceipt {
+  id                 String   @id @default(uuid()) @db.Uuid
+  projectIdHash      String   @unique
+  retentionPolicyKey String
+  expiresAt          DateTime
+  purgeCompletedAt   DateTime
+  objectCount        Int
+  totalBytes         BigInt
+  tombstoneStorageKey String
+  deleteAfter        DateTime
+  createdAt          DateTime @default(now())
+
+  @@index([deleteAfter])
 }
 
 /// Repurposed text outputs generated from the transcript (blog, thread,
@@ -434,6 +464,7 @@ model User {
   lastName               String?
   imageUrl               String?
   pricingTier            PricingTier      @default(free)
+  billingEventCreatedAt  DateTime?
   onboardingCompletedAt  DateTime?
   lastSignInAt           DateTime?
   stripeCustomerId       String?          @unique

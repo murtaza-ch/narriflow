@@ -9,6 +9,7 @@ import {
   type SocialPostSnapshot,
 } from "@narriflow/validators";
 import { analyticsService } from "./analytics.service";
+import { accessibleProjectWhere } from "./project-retention.service";
 
 function requirePrisma() {
   const prisma = getPrismaClient();
@@ -124,7 +125,7 @@ export class SocialService {
     const prisma = requirePrisma();
 
     const project = await prisma.project.findFirst({
-      where: { id: projectId, userId },
+      where: { id: projectId, userId, ...accessibleProjectWhere() },
       select: { id: true },
     });
     if (!project) {
@@ -254,6 +255,7 @@ export class SocialService {
     const due = await prisma.socialPost.findMany({
       where: {
         status: "scheduled",
+        project: accessibleProjectWhere(),
         OR: [{ scheduledFor: { lte: new Date() } }, { scheduledFor: null }],
       },
       orderBy: [{ scheduledFor: "asc" }, { createdAt: "asc" }],
@@ -264,7 +266,11 @@ export class SocialService {
 
     for (const post of due) {
       const updated = await prisma.socialPost.updateMany({
-        where: { id: post.id, status: "scheduled" },
+        where: {
+          id: post.id,
+          status: "scheduled",
+          project: accessibleProjectWhere(),
+        },
         data: { status: "publishing" },
       });
 

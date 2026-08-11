@@ -15,20 +15,48 @@ const HERO_PASTE_LINK_HINT = `${LINK_PROVIDERS.map((p) => p.label).join(" · ")}
  * from the URL so a refresh doesn't re-celebrate. Renders nothing —
  * the dashboard page stays a server component.
  */
-export function UpgradedToast() {
+export function UpgradedToast({ sessionId }: { sessionId: string | null }) {
   const router = useRouter();
   const fired = useRef(false);
 
   useEffect(() => {
     if (fired.current) return;
     fired.current = true;
-    toaster.create({
-      type: "success",
-      title: "You're upgraded",
-      description: "Your new plan limits are active.",
-    });
-    router.replace("/dashboard", { scroll: false });
-  }, [router]);
+    void (async () => {
+      try {
+        if (sessionId) {
+          const response = await fetch("/api/billing/confirm", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ sessionId }),
+          });
+          if (!response.ok) {
+            const body = (await response.json().catch(() => ({}))) as {
+              message?: string;
+            };
+            throw new Error(body.message ?? "Could not confirm the upgrade");
+          }
+        }
+        toaster.create({
+          type: "success",
+          title: "You're upgraded",
+          description: "Your plan is active and unexpired projects are saved.",
+        });
+      } catch (error) {
+        toaster.create({
+          type: "error",
+          title: "Upgrade confirmation is delayed",
+          description:
+            error instanceof Error
+              ? error.message
+              : "Stripe will retry the confirmation automatically.",
+        });
+      } finally {
+        router.replace("/dashboard", { scroll: false });
+        router.refresh();
+      }
+    })();
+  }, [router, sessionId]);
 
   return null;
 }

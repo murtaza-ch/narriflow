@@ -94,8 +94,11 @@ server.registerTool(
   },
   async ({ projectId }) => {
     const userId = requireUserId();
-    const [project, transcript, clips] = await Promise.all([
-      projectService.getProjectSnapshot(userId, projectId),
+    const project = await projectService.getProjectSnapshot(userId, projectId);
+    if (!project.project) {
+      return jsonContent({ project: null, transcript: null, clips: [] });
+    }
+    const [transcript, clips] = await Promise.all([
       projectService.getTranscriptSnapshot(userId, projectId),
       clipService.listClips(userId, projectId),
     ]);

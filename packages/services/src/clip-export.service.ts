@@ -14,6 +14,7 @@ import {
 } from "@narriflow/validators";
 import { hasFeature } from "./billing.service";
 import { projectService } from "./project.service";
+import { accessibleProjectWhere } from "./project-retention.service";
 import { presignDownloadUrl } from "./r2-storage";
 
 const EXPORT_DOWNLOAD_TTL_SECONDS = 15 * 60;
@@ -408,7 +409,13 @@ export class ClipExportService {
   ): Promise<{ path: string; expiresAt: string | null }> {
     const prisma = requirePrisma();
     const owned = await prisma.clipExport.findFirst({
-      where: { id: exportId, projectId, clipId, project: { userId }, variants: { some: { status: "completed" } } },
+      where: {
+        id: exportId,
+        projectId,
+        clipId,
+        project: { userId, ...accessibleProjectWhere() },
+        variants: { some: { status: "completed" } },
+      },
       select: { id: true },
     });
     if (!owned) throw new ClipExportError("export_not_ready", "Export is not ready to share");
@@ -425,7 +432,12 @@ export class ClipExportService {
   async revokeShareLinks(userId: string, projectId: string, clipId: string, exportId: string) {
     const prisma = requirePrisma();
     const owned = await prisma.clipExport.findFirst({
-      where: { id: exportId, projectId, clipId, project: { userId } },
+      where: {
+        id: exportId,
+        projectId,
+        clipId,
+        project: { userId, ...accessibleProjectWhere() },
+      },
       select: { id: true },
     });
     if (!owned) throw new ClipExportError("export_not_found", "Export not found");
@@ -444,6 +456,7 @@ export class ClipExportService {
       where: {
         tokenHash: hashClipShareToken(token),
         revokedAt: null,
+        export: { project: accessibleProjectWhere(now) },
         OR: [{ expiresAt: null }, { expiresAt: { gt: now } }],
       },
       include: { export: { include: exportInclude } },

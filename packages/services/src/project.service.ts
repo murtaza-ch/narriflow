@@ -68,6 +68,12 @@ import {
   getWorkflowEventsSince,
   publishWorkflowStageUpdated,
 } from "./workflow.service";
+import {
+  accessibleProjectWhere,
+  ProjectExpiredError,
+  projectRetentionService,
+  type RetentionPolicyKey,
+} from "./project-retention.service";
 
 interface ProjectSnapshot {
   id: string;
@@ -86,6 +92,8 @@ interface ProjectSnapshot {
   ingestErrorCode: string | null;
   ingestCompletedAt: string | null;
   notifyOnComplete: boolean;
+  retentionPolicyKey: RetentionPolicyKey | null;
+  expiresAt: string | null;
   persisted: boolean;
   createdAt: string;
 }
@@ -433,6 +441,8 @@ function toProjectSnapshot(row: Project): ProjectSnapshot {
       ? row.ingestCompletedAt.toISOString()
       : null,
     notifyOnComplete: row.notifyOnComplete,
+    retentionPolicyKey: row.retentionPolicyKey as RetentionPolicyKey | null,
+    expiresAt: row.expiresAt?.toISOString() ?? null,
     persisted: true,
     createdAt: row.createdAt.toISOString(),
   };
@@ -1073,18 +1083,27 @@ export class ProjectService {
         return "missing";
       }
 
+      if (project.expiresAt && new Date(project.expiresAt).getTime() <= Date.now()) {
+        return "missing";
+      }
       return project.userId === userId ? "owned" : "forbidden";
     }
 
     const project = await prisma.project.findUnique({
       where: { id: projectId },
-      select: { userId: true },
+      select: { userId: true, expiresAt: true, purgeStartedAt: true },
     });
 
     if (!project) {
       return "missing";
     }
 
+    if (
+      project.purgeStartedAt ||
+      (project.expiresAt && project.expiresAt.getTime() <= Date.now())
+    ) {
+      return "missing";
+    }
     return project.userId === userId ? "owned" : "forbidden";
   }
 
@@ -1228,12 +1247,17 @@ export class ProjectService {
 
     if (!prisma) {
       return Array.from(projects.values())
-        .filter((project) => project.userId === userId)
+        .filter(
+          (project) =>
+            project.userId === userId &&
+            (!project.expiresAt ||
+              new Date(project.expiresAt).getTime() > Date.now()),
+        )
         .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
     }
 
     const rows = await prisma.project.findMany({
-      where: { userId },
+      where: { userId, ...accessibleProjectWhere() },
       orderBy: { createdAt: "desc" },
       take: 50,
     });
@@ -1253,7 +1277,10 @@ export class ProjectService {
 
     if (!prisma) {
       const owned = Array.from(projects.values()).filter(
-        (project) => project.userId === userId,
+        (project) =>
+          project.userId === userId &&
+          (!project.expiresAt ||
+            new Date(project.expiresAt).getTime() > Date.now()),
       );
       return {
         total: owned.length,
@@ -1265,12 +1292,14 @@ export class ProjectService {
       };
     }
 
+    const accessible = accessibleProjectWhere();
     const [total, processing, completed, tier, usedMinutes] = await Promise.all([
-      prisma.project.count({ where: { userId } }),
+      prisma.project.count({ where: { userId, ...accessible } }),
       // Active pipeline: ingest still moving, or a workflow run queued/running.
       prisma.project.count({
         where: {
           userId,
+          ...accessible,
           OR: [
             {
               ingestStatus: {
@@ -1290,7 +1319,7 @@ export class ProjectService {
         },
       }),
       // Produced output: at least one detected clip.
-      prisma.project.count({ where: { userId, clips: { some: {} } } }),
+      prisma.project.count({ where: { userId, ...accessible, clips: { some: {} } } }),
       this.getUserPricingTier(userId),
       this.getMonthlyUsageMinutes(userId),
     ]);
@@ -1315,7 +1344,12 @@ export class ProjectService {
 
     if (!prisma) {
       const owned = Array.from(projects.values())
-        .filter((project) => project.userId === userId)
+        .filter(
+          (project) =>
+            project.userId === userId &&
+            (!project.expiresAt ||
+              new Date(project.expiresAt).getTime() > Date.now()),
+        )
         .sort((left, right) => {
           const byCreatedAt = right.createdAt.localeCompare(left.createdAt);
           return byCreatedAt !== 0 ? byCreatedAt : right.id.localeCompare(left.id);
@@ -1356,11 +1390,11 @@ export class ProjectService {
 
     const [rowsWithLookahead, totalCount] = await Promise.all([
       prisma.project.findMany({
-        where: { userId, ...cursorWhere },
+        where: { userId, ...accessibleProjectWhere(), ...cursorWhere },
         orderBy: [{ createdAt: "desc" }, { id: "desc" }],
         take: limit + 1,
       }),
-      prisma.project.count({ where: { userId } }),
+      prisma.project.count({ where: { userId, ...accessibleProjectWhere() } }),
     ]);
 
     const rows = rowsWithLookahead.slice(0, limit);
@@ -1433,6 +1467,11 @@ export class ProjectService {
 
   async createProject(userId: string, input: CreateProjectInput) {
     const parsed = createProjectSchema.parse(input);
+    const createdAt = new Date();
+    const retention = await projectRetentionService.assignmentForNewProject(
+      userId,
+      createdAt,
+    );
 
     if (!hasDatabase()) {
       const project: ProjectSnapshot = {
@@ -1452,8 +1491,10 @@ export class ProjectService {
         ingestErrorCode: null,
         ingestCompletedAt: new Date().toISOString(),
         notifyOnComplete: true,
+        retentionPolicyKey: retention?.retentionPolicyKey ?? null,
+        expiresAt: retention?.expiresAt.toISOString() ?? null,
         persisted: false,
-        createdAt: new Date().toISOString(),
+        createdAt: createdAt.toISOString(),
       };
 
       projects.set(project.id, project);
@@ -1471,6 +1512,9 @@ export class ProjectService {
         ingestStatus: "ready",
         ingestCompletedAt: new Date(),
         languageCode: parsed.languageCode ?? null,
+        createdAt,
+        retentionPolicyKey: retention?.retentionPolicyKey ?? null,
+        expiresAt: retention?.expiresAt ?? null,
       },
     });
 
@@ -1509,7 +1553,9 @@ export class ProjectService {
     }
 
     const [row, latestRun, lastSeq, ingestAttemptCount] = await Promise.all([
-      prisma.project.findFirst({ where: { id: projectId, userId } }),
+      prisma.project.findFirst({
+        where: { id: projectId, userId, ...accessibleProjectWhere() },
+      }),
       prisma.workflowRun.findFirst({
         where: { projectId },
         orderBy: { updatedAt: "desc" },
@@ -1560,7 +1606,9 @@ export class ProjectService {
   async getIngestSnapshot(userId: string, projectId: string) {
     const prisma = this.requirePrisma();
     const [row, latestRun, lastSeq] = await Promise.all([
-      prisma.project.findFirst({ where: { id: projectId, userId } }),
+      prisma.project.findFirst({
+        where: { id: projectId, userId, ...accessibleProjectWhere() },
+      }),
       prisma.workflowRun.findFirst({
         where: { projectId },
         orderBy: { updatedAt: "desc" },
@@ -1601,7 +1649,7 @@ export class ProjectService {
     const row = await prisma.transcript.findFirst({
       where: {
         projectId,
-        project: { userId },
+        project: { userId, ...accessibleProjectWhere() },
       },
     });
 
@@ -1619,7 +1667,7 @@ export class ProjectService {
     const row = await prisma.transcript.findFirst({
       where: {
         projectId,
-        project: { userId },
+        project: { userId, ...accessibleProjectWhere() },
         status: "completed",
       },
       select: { utterancesJson: true },
@@ -2006,7 +2054,7 @@ export class ProjectService {
         where: {
           projectId: parsed.projectId,
           providerUploadId: parsed.uploadId,
-          project: { userId },
+          project: { userId, ...accessibleProjectWhere() },
         },
         include: { project: true },
       });
@@ -2117,6 +2165,12 @@ export class ProjectService {
       parsed.brandTemplateId ?? null,
     );
 
+    const createdAt = new Date();
+    const retention = await projectRetentionService.assignmentForNewProject(
+      userId,
+      createdAt,
+    );
+
     const project = await prisma.project.create({
       data: {
         userId,
@@ -2129,6 +2183,9 @@ export class ProjectService {
         brandSnapshot: brandResolved
           ? (brandResolved.snapshot as unknown as Prisma.InputJsonValue)
           : Prisma.JsonNull,
+        createdAt,
+        retentionPolicyKey: retention?.retentionPolicyKey ?? null,
+        expiresAt: retention?.expiresAt ?? null,
       },
     });
 
@@ -2190,7 +2247,7 @@ export class ProjectService {
         projectId: parsed.projectId,
         providerUploadId: parsed.uploadId,
         storageKey: parsed.key,
-        project: { userId },
+        project: { userId, ...accessibleProjectWhere() },
       },
       include: {
         project: true,
@@ -2346,6 +2403,11 @@ export class ProjectService {
       userId,
       parsed.brandTemplateId ?? null,
     );
+    const createdAt = new Date();
+    const retention = await projectRetentionService.assignmentForNewProject(
+      userId,
+      createdAt,
+    );
 
     // Step-1 draft pack: seeds language/mode/trim so a Step-2 refresh can
     // rehydrate. Never runnable — every claim path stops on draft rows.
@@ -2379,6 +2441,9 @@ export class ProjectService {
             brandSnapshot: brandResolved
               ? (brandResolved.snapshot as unknown as Prisma.InputJsonValue)
               : Prisma.JsonNull,
+            createdAt,
+            retentionPolicyKey: retention?.retentionPolicyKey ?? null,
+            expiresAt: retention?.expiresAt ?? null,
           },
         });
 
@@ -2487,6 +2552,11 @@ export class ProjectService {
     }> = [];
 
     for (const episode of parsed.episodes) {
+      const createdAt = new Date();
+      const retention = await projectRetentionService.assignmentForNewProject(
+        userId,
+        createdAt,
+      );
       const project = await prisma.project.create({
         data: {
           userId,
@@ -2503,6 +2573,9 @@ export class ProjectService {
           brandSnapshot: brandResolved
             ? (brandResolved.snapshot as unknown as Prisma.InputJsonValue)
             : Prisma.JsonNull,
+          createdAt,
+          retentionPolicyKey: retention?.retentionPolicyKey ?? null,
+          expiresAt: retention?.expiresAt ?? null,
         },
       });
 
@@ -2560,6 +2633,7 @@ export class ProjectService {
         where: {
           stage,
           status: "queued",
+          project: accessibleProjectWhere(),
           // Backoff gate for a requeued run (see claimBackoffWhereClauses):
           // a never-claimed run (attemptCount 0) is always eligible; a
           // previously-failed/stalled one waits out its exponential window.
@@ -2591,6 +2665,7 @@ export class ProjectService {
         where: {
           id: queued.id,
           status: "queued",
+          project: accessibleProjectWhere(),
         },
         data: {
           status: "running",
@@ -2695,6 +2770,7 @@ export class ProjectService {
         status: "pending",
         clip: {
           project: {
+            ...accessibleProjectWhere(),
             workflowRuns: {
               none: {
                 stage: "clip_rendering",
@@ -2754,6 +2830,7 @@ export class ProjectService {
       const queued = await prisma.ingestJob.findFirst({
         where: {
           status: "queued",
+          project: accessibleProjectWhere(),
           // Backoff gate for a requeued job (see claimBackoffWhereClauses):
           // a never-claimed job (attemptCount 0) is always eligible; a
           // previously-failed/stalled one waits out its exponential window.
@@ -2770,6 +2847,7 @@ export class ProjectService {
         where: {
           id: queued.id,
           status: "queued",
+          project: accessibleProjectWhere(),
         },
         data: {
           status: "running",
@@ -2848,6 +2926,7 @@ export class ProjectService {
         status: "running",
         updatedAt: { lt: cutoff },
         project: {
+          ...accessibleProjectWhere(),
           transcript: {
             providerJobId: { not: null },
             status: "processing",
@@ -3786,13 +3865,14 @@ export class ProjectService {
       throw new Error("ingest job not found");
     }
 
-    await prisma.project.update({
-      where: { id: job.projectId },
+    const projectUpdate = await prisma.project.updateMany({
+      where: { id: job.projectId, ...accessibleProjectWhere() },
       data: {
         ingestStatus,
         ingestErrorCode: null,
       },
     });
+    if (projectUpdate.count === 0) throw new ProjectExpiredError();
 
     await prisma.ingestJob.updateMany({
       where: { id: job.id, status: "running" },
@@ -4248,24 +4328,30 @@ export class ProjectService {
     // Heartbeat: bump the run row (updatedAt) while it is running so the reaper
     // can distinguish a live, progressing run from a worker that died mid-run.
     if (hasDatabase()) {
-      await this.requirePrisma()
-        .workflowRun.updateMany({
-          where: { id: input.workflowRunId, status: "running" },
+      try {
+        const heartbeat = await this.requirePrisma().workflowRun.updateMany({
+          where: {
+            id: input.workflowRunId,
+            status: "running",
+            project: accessibleProjectWhere(),
+          },
           data: { progress: input.progress },
-        })
-        .catch((error) => {
-          // A failed heartbeat must not crash the worker, but it must be
-          // visible: without it the reaper cannot tell a live, progressing run
-          // from a worker that died mid-run.
-          console.warn(
-            JSON.stringify({
-              level: "warn",
-              message: "workflow_heartbeat_failed",
-              workflowRunId: input.workflowRunId,
-              error: error instanceof Error ? error.message : String(error),
-            }),
-          );
         });
+        if (heartbeat.count === 0) throw new ProjectExpiredError();
+      } catch (error) {
+        if (error instanceof ProjectExpiredError) throw error;
+        // A failed heartbeat must not crash the worker, but it must be
+        // visible: without it the reaper cannot tell a live, progressing run
+        // from a worker that died mid-run.
+        console.warn(
+          JSON.stringify({
+            level: "warn",
+            message: "workflow_heartbeat_failed",
+            workflowRunId: input.workflowRunId,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        );
+      }
     }
     return this.publishWorkflowRunEvent(input);
   }

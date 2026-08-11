@@ -92,6 +92,7 @@ function formatUploadLimit(tier: PricingTier): string {
 export const PRICING_FEATURES: Record<PricingTier, string[]> = {
   free: [
     `${MONTHLY_PROCESSING_MINUTE_LIMITS.free} processing minutes / month`,
+    "Projects retained for 3 days",
     "720p exports with watermark",
     formatUploadLimit("free"),
   ],

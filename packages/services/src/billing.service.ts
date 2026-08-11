@@ -6,6 +6,7 @@ import {
   type PaidPricingTier,
   type PricingTier,
 } from "@narriflow/validators";
+import { projectRetentionService } from "./project-retention.service";
 
 export class BillingError extends Error {
   constructor(
@@ -225,6 +226,7 @@ export class BillingService {
           userId: session.client_reference_id ?? null,
           customerId,
           tier,
+          effectiveAt: new Date(event.created * 1000),
         });
         break;
       }
@@ -235,14 +237,24 @@ export class BillingService {
           typeof sub.customer === "string" ? sub.customer : sub.customer.id;
         const active = sub.status === "active" || sub.status === "trialing";
         const tier = active ? (this.tierForSubscription(sub) ?? "free") : "free";
-        await this.applyTier({ userId: null, customerId, tier });
+        await this.applyTier({
+          userId: null,
+          customerId,
+          tier,
+          effectiveAt: new Date(event.created * 1000),
+        });
         break;
       }
       case "customer.subscription.deleted": {
         const sub = event.data.object as Stripe.Subscription;
         const customerId =
           typeof sub.customer === "string" ? sub.customer : sub.customer.id;
-        await this.applyTier({ userId: null, customerId, tier: "free" });
+        await this.applyTier({
+          userId: null,
+          customerId,
+          tier: "free",
+          effectiveAt: new Date(event.created * 1000),
+        });
         break;
       }
       default:
@@ -257,30 +269,91 @@ export class BillingService {
     return priceId ? tierForPriceId(priceId) : null;
   }
 
+  /** Reconciles a successful Checkout return immediately. The signed Stripe
+   * webhook remains authoritative and idempotent, but this closes the window
+   * where a user paid before project expiry and the webhook arrived later. */
+  async confirmCheckoutSession(
+    userId: string,
+    sessionId: string,
+  ): Promise<{ tier: PricingTier }> {
+    const stripe = getStripe();
+    const session = await stripe.checkout.sessions.retrieve(sessionId, {
+      expand: ["subscription"],
+    });
+    if (
+      session.status !== "complete" ||
+      session.client_reference_id !== userId
+    ) {
+      throw new BillingError(
+        "checkout_not_confirmed",
+        "Checkout session is not complete for this account",
+      );
+    }
+    const customerId =
+      typeof session.customer === "string"
+        ? session.customer
+        : (session.customer?.id ?? null);
+    const subscription =
+      typeof session.subscription === "object" && session.subscription
+        ? session.subscription
+        : session.subscription
+          ? await stripe.subscriptions.retrieve(session.subscription)
+          : null;
+    const tier = subscription
+      ? (this.tierForSubscription(subscription) ?? "free")
+      : "free";
+    const effectiveAt = subscription
+      ? new Date(subscription.created * 1000)
+      : new Date();
+    await this.applyTier({
+      userId,
+      customerId,
+      tier,
+      effectiveAt,
+    });
+    return { tier };
+  }
+
   private async applyTier(input: {
     userId: string | null;
     customerId: string | null;
     tier: PricingTier;
+    effectiveAt: Date;
   }) {
     const prisma = requirePrisma();
     const tier = resolvePricingTier(input.tier);
 
-    if (input.userId) {
-      await prisma.user.update({
-        where: { id: input.userId },
+    await prisma.$transaction(async (tx) => {
+      const user = input.userId
+        ? await tx.user.findUnique({ where: { id: input.userId } })
+        : input.customerId
+          ? await tx.user.findUnique({
+              where: { stripeCustomerId: input.customerId },
+            })
+          : null;
+      if (!user) return;
+      if (
+        user.billingEventCreatedAt &&
+        user.billingEventCreatedAt.getTime() > input.effectiveAt.getTime()
+      ) {
+        return;
+      }
+
+      await projectRetentionService.applyTierTransition(tx, {
+        userId: user.id,
+        previousTier: user.pricingTier,
+        nextTier: tier,
+        effectiveAt: input.effectiveAt,
+      });
+      await tx.user.update({
+        where: { id: user.id },
         data: {
           pricingTier: tier,
+          billingEventCreatedAt: input.effectiveAt,
           ...(input.customerId ? { stripeCustomerId: input.customerId } : {}),
         },
       });
-      return;
-    }
-    if (input.customerId) {
-      await prisma.user.updateMany({
-        where: { stripeCustomerId: input.customerId },
-        data: { pricingTier: tier },
-      });
-    }
+    });
   }
 }
 

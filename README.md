@@ -183,6 +183,7 @@ Notes:
 - `ASSEMBLYAI_API_KEY` and `OPENAI_API_KEY` are listed in the web example because many deployments share one secret set, but the web app does not use them directly in the current worker-driven generation flow.
 - `TRIGGER_SECRET_KEY` is not used by the current custom worker polling flow.
 - Native social OAuth requires `SOCIAL_TOKEN_ENCRYPTION_KEY` plus the provider client IDs/secrets listed in the env example. Register `${NEXT_PUBLIC_APP_URL}/api/social/oauth/callback` as the redirect URI in each provider app.
+- Free-project retention must use identical `PROJECT_RETENTION_MODE` and `PROJECT_RETENTION_ENFORCEMENT_STARTED_AT` values in web and worker. Leave the mode at `observe` for at least seven days; enforcement without a valid explicit UTC activation timestamp assigns no deadlines.
 
 ### Worker
 
@@ -216,6 +217,7 @@ Useful runtime settings:
 - `LINKEDIN_API_VERSION=202606`, `INSTAGRAM_CONTAINER_POLL_ATTEMPTS`, `TIKTOK_STATUS_POLL_ATTEMPTS`, and `X_MEDIA_POLL_ATTEMPTS` can be tuned for provider processing windows.
 - `SOCIAL_PUBLISH_WEBHOOK_URL` and `SOCIAL_PUBLISH_WEBHOOK_SECRET` are now only a legacy fallback for posts scheduled without a connected social account. The worker signs the JSON body as `X-Narriflow-Signature: sha256=...`.
 - `AUTOPILOT_BATCH_SIZE=3` to control how many due RSS rules are checked per worker poll.
+- `PROJECT_RETENTION_MODE=observe|enforce` and `PROJECT_RETENTION_ENFORCEMENT_STARTED_AT=<UTC ISO timestamp>` control the documentation-approved three-day Free-project policy. Set the same values in the web process, because project deadlines are assigned when projects are created. Batch sizes for warnings, purges, and receipt cleanup default to `100`, `10`, and `100`.
 
 ### Native Social Publishing
 

@@ -6,6 +6,7 @@ import { StatusBadge } from "@narriflow/ui/components/status-badge";
 import { ScoreMeter } from "@narriflow/ui/components/meter";
 import type { ProjectListItem } from "@narriflow/services";
 import { ProjectThumbnail } from "./project-thumbnail";
+import { ProjectExpiration } from "./project-expiration";
 import {
   buildProjectMeta,
   getProjectActivity,
@@ -88,6 +89,9 @@ export function ProjectRow({ project }: ProjectRowProps) {
           <Text textStyle="data" fontSize="11px" color="fg.subtle" truncate>
             {meta}
           </Text>
+          {project.expiresAt ? (
+            <ProjectExpiration expiresAt={project.expiresAt} />
+          ) : null}
         </Stack>
 
         {/* Fixed-width column so badges align down the list as one grid */}

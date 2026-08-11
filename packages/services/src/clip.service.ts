@@ -82,6 +82,7 @@ import { analyticsService } from "./analytics.service";
 import { clipExportService } from "./clip-export.service";
 import { assertPublicHttpUrl } from "./url-guard";
 import { hasFeature } from "./billing.service";
+import { accessibleProjectWhere } from "./project-retention.service";
 
 interface DetectedClip {
   startSec: number;
@@ -2495,7 +2496,10 @@ export class ClipService {
   async getCompletedClipRenderSummaryForProject(projectId: string) {
     const prisma = requirePrisma();
     const completed = await prisma.clipRender.findMany({
-      where: { status: "completed", clip: { projectId } },
+      where: {
+        status: "completed",
+        clip: { projectId, project: accessibleProjectWhere() },
+      },
       select: { clipId: true },
     });
     return {
@@ -2509,7 +2513,7 @@ export class ClipService {
     const renders = await prisma.clipRender.findMany({
       where: {
         status: "pending",
-        clip: { projectId },
+        clip: { projectId, project: accessibleProjectWhere() },
       },
       include: {
         clip: true,
@@ -2754,7 +2758,7 @@ export class ClipService {
         exportVariantId: null,
         clip: {
           projectId,
-          project: { userId },
+          project: { userId, ...accessibleProjectWhere() },
         },
       },
       include: {
@@ -2845,7 +2849,11 @@ export class ClipService {
     const prisma = requirePrisma();
 
     const clip = await prisma.clip.findFirst({
-      where: { id: clipId, projectId, project: { userId } },
+      where: {
+        id: clipId,
+        projectId,
+        project: { userId, ...accessibleProjectWhere() },
+      },
       select: {
         previewStorageKey: true,
         previewStartSec: true,
@@ -2934,6 +2942,7 @@ export class ClipService {
       where: {
         previewStorageKey: null,
         project: {
+          ...accessibleProjectWhere(),
           sourceStorageKey: { not: null },
           ingestStatus: "ready",
         },
@@ -3029,6 +3038,7 @@ export class ClipService {
     const claim = await prisma.clip.updateMany({
       where: {
         id: clipId,
+        project: accessibleProjectWhere(),
         previewStorageKey: null,
         startSec: {
           gte: input.expectedClipStartSec - PREVIEW_WINDOW_EPSILON_SEC,
@@ -3077,6 +3087,7 @@ export class ClipService {
         previewStorageKey: { not: null },
         previewStartSec: { not: null },
         previewDurationSec: { not: null },
+        project: accessibleProjectWhere(now),
         OR: [
           {
             autoLayoutStatus: "pending",
@@ -3121,6 +3132,7 @@ export class ClipService {
       const claim = await prisma.clip.updateMany({
         where: {
           id: clip.id,
+          project: accessibleProjectWhere(now),
           autoLayoutAnalysis: { equals: Prisma.DbNull },
           OR: [
             {

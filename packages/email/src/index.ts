@@ -5,5 +5,6 @@ export {
   clipsReady,
   generationFailed,
   noClipsFound,
+  projectExpiring,
   type NotificationEmailTemplate,
 } from "./templates";

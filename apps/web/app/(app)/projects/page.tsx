@@ -6,9 +6,13 @@ import { Button } from "@narriflow/ui/components/button";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { requireCurrentAppUser } from "@narriflow/auth";
-import { projectService } from "@narriflow/services";
+import {
+  isRetentionEnforcementActive,
+  projectService,
+} from "@narriflow/services";
 import { ProjectsExplorer } from "./_components/projects-explorer";
 import { ProjectsGridSkeleton } from "./_components/projects-skeleton";
+import { RetentionBanner } from "./_components/retention-banner";
 
 /**
  * Deliberately NOT async, and deliberately without a sibling `loading.tsx`.
@@ -56,27 +60,37 @@ async function ProjectsData() {
   const appUser = await requireCurrentAppUser();
   const page = await projectService.listProjectsWithStatsPage(appUser.id);
   const items = page.items;
+  const retentionBanner =
+    appUser.pricingTier === "free" && isRetentionEnforcementActive()
+      ? <RetentionBanner />
+      : null;
 
   if (items.length === 0) {
     return (
-      <EmptyState
-        icon={<FolderOpen size={22} strokeWidth={1.5} />}
-        title="No projects yet"
-        description="Import your first piece of content to get started."
-        action={
-          <Button size="sm" variant="outline" asChild>
-            <Link href="/upload">Start upload</Link>
-          </Button>
-        }
-      />
+      <Stack gap="5">
+        {retentionBanner}
+        <EmptyState
+          icon={<FolderOpen size={22} strokeWidth={1.5} />}
+          title="No projects yet"
+          description="Import your first piece of content to get started."
+          action={
+            <Button size="sm" variant="outline" asChild>
+              <Link href="/upload">Start upload</Link>
+            </Button>
+          }
+        />
+      </Stack>
     );
   }
 
   return (
-    <ProjectsExplorer
-      initialProjects={items}
-      initialNextCursor={page.nextCursor}
-      totalCount={page.totalCount}
-    />
+    <Stack gap="5">
+      {retentionBanner}
+      <ProjectsExplorer
+        initialProjects={items}
+        initialNextCursor={page.nextCursor}
+        totalCount={page.totalCount}
+      />
+    </Stack>
   );
 }

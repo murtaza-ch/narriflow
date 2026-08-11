@@ -5,15 +5,18 @@ import {
   CompleteMultipartUploadCommand,
   CopyObjectCommand,
   CreateMultipartUploadCommand,
+  DeleteObjectsCommand,
   DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
   ListPartsCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
   UploadPartCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
+import { getPrismaClient } from "@narriflow/db/client";
 
 const SIGNED_URL_TTL_SECONDS = 60 * 60;
 /** Ceiling for the single-PUT path, whose body is held in memory. Anything
@@ -21,6 +24,46 @@ const SIGNED_URL_TTL_SECONDS = 60 * 60;
  *  streamed single PUT is not an option against R2. 16 MB comfortably covers
  *  preview proxies (~1-3 MB) and dub audio without risking the worker's heap. */
 const BUFFERED_PUT_MAX_BYTES = 16 * 1024 * 1024;
+
+const PROJECT_KEY_PATTERN = /^projects\/([0-9a-f-]{36})\//i;
+
+export class ProjectStorageUnavailableError extends Error {
+  constructor() {
+    super("Project storage is no longer available");
+    this.name = "ProjectStorageUnavailableError";
+  }
+}
+
+function projectIdFromStorageKey(key: string): string | null {
+  return PROJECT_KEY_PATTERN.exec(key)?.[1] ?? null;
+}
+
+async function projectStorageDeadline(key: string): Promise<Date | null | undefined> {
+  const projectId = projectIdFromStorageKey(key);
+  const prisma = getPrismaClient();
+  if (!projectId || !prisma) return undefined;
+
+  const project = await prisma.project.findUnique({
+    where: { id: projectId },
+    select: { expiresAt: true, purgeStartedAt: true },
+  });
+  if (
+    !project ||
+    project.purgeStartedAt ||
+    (project.expiresAt && project.expiresAt.getTime() <= Date.now())
+  ) {
+    throw new ProjectStorageUnavailableError();
+  }
+  return project.expiresAt;
+}
+
+async function clampProjectTtl(key: string, requestedSeconds: number): Promise<number> {
+  const deadline = await projectStorageDeadline(key);
+  if (!deadline) return requestedSeconds;
+  const remainingSeconds = Math.floor((deadline.getTime() - Date.now()) / 1000);
+  if (remainingSeconds < 1) throw new ProjectStorageUnavailableError();
+  return Math.max(1, Math.min(requestedSeconds, remainingSeconds));
+}
 
 /** Thrown by {@link readFilePart} when the file has fewer bytes available
  *  than the requested `[start, end)` range (e.g. it was truncated by a
@@ -160,6 +203,7 @@ export async function createMultipartUpload(params: {
   contentType: string;
   metadata?: Record<string, string>;
 }) {
+  await projectStorageDeadline(params.key);
   const client = getClient();
   const { bucket } = getR2Config();
 
@@ -186,6 +230,10 @@ export async function presignMultipartPartUrls(params: {
 }) {
   const client = getClient();
   const { bucket } = getR2Config();
+  const expiresIn = await clampProjectTtl(
+    params.key,
+    SIGNED_URL_TTL_SECONDS,
+  );
 
   const uploadUrls = await Promise.all(
     params.partNumbers.map(async (partNumber) => {
@@ -198,7 +246,7 @@ export async function presignMultipartPartUrls(params: {
           UploadId: params.uploadId,
         }),
         {
-          expiresIn: SIGNED_URL_TTL_SECONDS,
+          expiresIn,
         },
       );
 
@@ -216,6 +264,7 @@ export async function listUploadedParts(params: {
   key: string;
   uploadId: string;
 }) {
+  await projectStorageDeadline(params.key);
   const client = getClient();
   const { bucket } = getR2Config();
 
@@ -240,6 +289,7 @@ export async function completeMultipartUpload(params: {
   uploadId: string;
   etags: Array<{ partNumber: number; etag: string }>;
 }) {
+  await projectStorageDeadline(params.key);
   const client = getClient();
   const { bucket } = getR2Config();
 
@@ -278,6 +328,7 @@ export async function abortMultipartUpload(params: {
 }
 
 export async function headObject(key: string) {
+  await projectStorageDeadline(key);
   const client = getClient();
   const { bucket } = getR2Config();
 
@@ -301,6 +352,7 @@ export async function putFileFromPath(params: {
   contentType?: string;
   metadata?: Record<string, string>;
 }) {
+  await projectStorageDeadline(params.key);
   const client = getClient();
   const { bucket } = getR2Config();
   const fileInfo = await stat(params.filePath);
@@ -458,6 +510,7 @@ export async function downloadObjectToFile(params: {
   key: string;
   filePath: string;
 }) {
+  await projectStorageDeadline(params.key);
   const client = getClient();
   const { bucket } = getR2Config();
 
@@ -506,6 +559,7 @@ export async function getJsonObject(params: {
   key: string;
   maxBytes?: number;
 }): Promise<unknown> {
+  await projectStorageDeadline(params.key);
   const client = getClient();
   const { bucket } = getR2Config();
   const maxBytes = Math.max(1, Math.min(1024 * 1024, params.maxBytes ?? 256 * 1024));
@@ -536,6 +590,10 @@ export async function presignDownloadUrl(params: {
 }): Promise<string> {
   const client = getClient();
   const { bucket } = getR2Config();
+  const expiresIn = await clampProjectTtl(
+    params.key,
+    params.expiresIn ?? SIGNED_URL_TTL_SECONDS,
+  );
 
   return getSignedUrl(
     client,
@@ -548,7 +606,7 @@ export async function presignDownloadUrl(params: {
         ),
       }),
     }),
-    { expiresIn: params.expiresIn ?? 3600 },
+    { expiresIn },
   );
 }
 
@@ -594,6 +652,10 @@ export async function presignSingleUploadUrl(params: {
 }): Promise<string> {
   const client = getClient();
   const { bucket } = getR2Config();
+  const expiresIn = await clampProjectTtl(
+    params.key,
+    params.expiresIn ?? SIGNED_URL_TTL_SECONDS,
+  );
 
   return getSignedUrl(
     client,
@@ -602,7 +664,7 @@ export async function presignSingleUploadUrl(params: {
       Key: params.key,
       ContentType: params.contentType,
     }),
-    { expiresIn: params.expiresIn ?? SIGNED_URL_TTL_SECONDS },
+    { expiresIn },
   );
 }
 
@@ -634,6 +696,8 @@ export async function copyObject(params: {
   sourceKey: string;
   destinationKey: string;
 }) {
+  await projectStorageDeadline(params.sourceKey);
+  await projectStorageDeadline(params.destinationKey);
   const client = getClient();
   const { bucket } = getR2Config();
 
@@ -662,11 +726,78 @@ export async function deleteObject(key: string) {
   return { key };
 }
 
+export interface R2ObjectSummary {
+  key: string;
+  sizeBytes: number;
+}
+
+/** Lists one bounded prefix page. Purge callers repeatedly request the first
+ * page after deleting it, which avoids continuation-token skips while the
+ * listing is being mutated. */
+export async function listObjectsByPrefix(
+  prefix: string,
+  limit = 1000,
+): Promise<R2ObjectSummary[]> {
+  return (await listObjectPageByPrefix(prefix, limit)).objects;
+}
+
+export async function listObjectPageByPrefix(
+  prefix: string,
+  limit = 1000,
+  continuationToken?: string,
+): Promise<{
+  objects: R2ObjectSummary[];
+  nextContinuationToken: string | null;
+}> {
+  const client = getClient();
+  const { bucket } = getR2Config();
+  const response = await client.send(
+    new ListObjectsV2Command({
+      Bucket: bucket,
+      Prefix: prefix,
+      MaxKeys: Math.max(1, Math.min(1000, Math.floor(limit))),
+      ContinuationToken: continuationToken,
+    }),
+  );
+  return {
+    objects: (response.Contents ?? []).flatMap((object) =>
+      object.Key
+        ? [{ key: object.Key, sizeBytes: Number(object.Size ?? 0) }]
+        : [],
+    ),
+    nextContinuationToken: response.NextContinuationToken ?? null,
+  };
+}
+
+export async function deleteObjects(keys: string[]): Promise<void> {
+  if (keys.length === 0) return;
+  if (keys.length > 1000) {
+    throw new Error("R2 batch deletion cannot exceed 1,000 keys");
+  }
+  const client = getClient();
+  const { bucket } = getR2Config();
+  const response = await client.send(
+    new DeleteObjectsCommand({
+      Bucket: bucket,
+      Delete: {
+        Quiet: true,
+        Objects: keys.map((Key) => ({ Key })),
+      },
+    }),
+  );
+  if ((response.Errors?.length ?? 0) > 0) {
+    throw new Error(
+      `R2 batch deletion failed for ${response.Errors!.length} object(s)`,
+    );
+  }
+}
+
 export async function putJson(params: {
   key: string;
   value: unknown;
   metadata?: Record<string, string>;
 }) {
+  await projectStorageDeadline(params.key);
   const client = getClient();
   const { bucket } = getR2Config();
 

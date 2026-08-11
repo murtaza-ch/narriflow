@@ -17,6 +17,8 @@ class MemoryNotificationStore implements NotificationStore {
     title: "Founder interview",
     notifyOnComplete: true,
     primaryEmail: "owner@example.com",
+    emailVerifiedAt: new Date("2026-01-01T00:00:00.000Z"),
+    expiresAt: new Date("2026-07-29T12:00:00.000Z"),
     clipCount: 4,
   };
   workflowContext: WorkflowRunNotificationContext | null = null;
@@ -42,7 +44,12 @@ class MemoryNotificationStore implements NotificationStore {
   async insertOrFind(input: {
     projectId: string;
     sourceId: string;
-    outcome: "clips_ready" | "no_clips" | "generation_failed" | "import_failed";
+    outcome:
+      | "clips_ready"
+      | "no_clips"
+      | "generation_failed"
+      | "import_failed"
+      | "project_expiring";
   }) {
     const key = `${input.projectId}:${input.sourceId}:${input.outcome}`;
     const existing = this.ledgers.get(key);
@@ -372,5 +379,46 @@ describe("NotificationService", () => {
 
     expect((await service.enqueueAndSend(input)).status).toBe("disabled");
     expect(store.ledgers.size).toBe(0);
+  });
+
+  test("expiry warning is required even when completion notifications are disabled", async () => {
+    const store = new MemoryNotificationStore();
+    store.project = { ...store.project!, notifyOnComplete: false };
+    let delivered: NotificationMailInput | null = null;
+    const service = serviceWith(store, async (mail) => {
+      delivered = mail;
+      return { sent: true, id: "expiry-email" };
+    });
+
+    const result = await service.enqueueAndSend({
+      projectId: "project-1",
+      sourceId: "project-1",
+      outcome: "project_expiring",
+      deepLink: "https://app.narriflow.test/settings/billing",
+    });
+
+    expect(result.status).toBe("sent");
+    expect(delivered?.outcome).toBe("project_expiring");
+    expect(delivered?.expiresAt).toBe("2026-07-29T12:00:00.000Z");
+  });
+
+  test("expiry warning skips an unverified primary email", async () => {
+    const store = new MemoryNotificationStore();
+    store.project = { ...store.project!, emailVerifiedAt: null };
+    let sends = 0;
+    const service = serviceWith(store, async () => {
+      sends += 1;
+      return { sent: true };
+    });
+
+    const result = await service.enqueueAndSend({
+      projectId: "project-1",
+      sourceId: "project-1",
+      outcome: "project_expiring",
+      deepLink: "https://app.narriflow.test/settings/billing",
+    });
+
+    expect(result.status).toBe("skipped");
+    expect(sends).toBe(0);
   });
 });

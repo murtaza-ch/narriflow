@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import type { Context, Next } from "hono";
 import { handle } from "hono/vercel";
 import { after } from "next/server";
 import { getCurrentAppUser } from "@narriflow/auth";
@@ -105,6 +106,29 @@ function getOAuthOrigin(requestUrl: string) {
 }
 
 app.get("/health", (c) => c.json({ ok: true, service: "narriflow-web-api" }));
+
+// One lifecycle gate for every project API surface. Individual handlers keep
+// their ownership checks for explicit errors, but this middleware guarantees
+// that a newly-added clip/export/social route cannot accidentally expose an
+// expired project by forgetting the retention predicate.
+const requireActiveProject = async (c: Context, next: Next) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  const projectId = c.req.param("id");
+  if (!projectId) return c.json({ error: "Project not found" }, 404);
+  const access = await projectService.getProjectAccess(
+    appUser.id,
+    projectId,
+  );
+  if (access === "missing") {
+    return c.json({ error: "Project not found" }, 404);
+  }
+  if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
+  await next();
+};
+
+app.use("/projects/:id", requireActiveProject);
+app.use("/projects/:id/*", requireActiveProject);
 
 // --- Autopilot rules ---
 
@@ -1686,7 +1710,7 @@ app.post("/billing/checkout", async (c) => {
       parsed.data.tier,
       parsed.data.interval,
       {
-        successUrl: `${origin}/dashboard?upgraded=1`,
+        successUrl: `${origin}/dashboard?upgraded=1&session_id={CHECKOUT_SESSION_ID}`,
         cancelUrl: `${origin}/settings/billing`,
       },
     );
@@ -1697,6 +1721,31 @@ app.post("/billing/checkout", async (c) => {
     }
     return c.json(
       { error: "checkout_failed", message: errorMessage(error) },
+      400,
+    );
+  }
+});
+
+app.post("/billing/confirm", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  const payload = await c.req.json().catch(() => ({}));
+  const sessionId =
+    typeof payload?.sessionId === "string" ? payload.sessionId.trim() : "";
+  if (!sessionId) {
+    return c.json({ error: "Missing checkout session" }, 400);
+  }
+  try {
+    return c.json(
+      await billingService.confirmCheckoutSession(appUser.id, sessionId),
+      200,
+    );
+  } catch (error) {
+    if (error instanceof BillingError) {
+      return c.json({ error: error.code, message: error.message }, 400);
+    }
+    return c.json(
+      { error: "checkout_confirmation_failed", message: errorMessage(error) },
       400,
     );
   }

@@ -1,4 +1,5 @@
 import { getPrismaClient } from "@narriflow/db/client";
+import { accessibleProjectWhere } from "./project-retention.service";
 
 export const NOTIFICATION_MAX_ATTEMPTS = 3;
 export const NOTIFICATION_LEASE_MS = 5 * 60 * 1000;
@@ -7,7 +8,8 @@ export type NotificationOutcome =
   | "clips_ready"
   | "no_clips"
   | "generation_failed"
-  | "import_failed";
+  | "import_failed"
+  | "project_expiring";
 
 export interface EnqueueNotificationInput {
   projectId: string;
@@ -35,6 +37,8 @@ export interface NotificationProject {
   title: string;
   notifyOnComplete: boolean;
   primaryEmail: string | null;
+  emailVerifiedAt: Date | null;
+  expiresAt: Date | null;
   clipCount: number;
 }
 
@@ -87,6 +91,7 @@ export interface NotificationMailInput {
   clipCount: number;
   reason: string;
   deepLink: string;
+  expiresAt: string | null;
   idempotencyKey: string;
 }
 
@@ -171,7 +176,8 @@ function isNotificationOutcome(value: string): value is NotificationOutcome {
     value === "clips_ready" ||
     value === "no_clips" ||
     value === "generation_failed" ||
-    value === "import_failed"
+    value === "import_failed" ||
+    value === "project_expiring"
   );
 }
 
@@ -186,13 +192,16 @@ function getDefaultStore(): NotificationStore {
 
   return {
     async getProject(projectId) {
-      const row = await requirePrisma().project.findUnique({
-        where: { id: projectId },
+      const row = await requirePrisma().project.findFirst({
+        where: { id: projectId, ...accessibleProjectWhere() },
         select: {
           id: true,
           title: true,
           notifyOnComplete: true,
-          user: { select: { primaryEmail: true } },
+          expiresAt: true,
+          user: {
+            select: { primaryEmail: true, emailVerifiedAt: true },
+          },
           _count: { select: { clips: true } },
         },
       });
@@ -203,6 +212,8 @@ function getDefaultStore(): NotificationStore {
             title: row.title,
             notifyOnComplete: row.notifyOnComplete,
             primaryEmail: row.user.primaryEmail,
+            emailVerifiedAt: row.user.emailVerifiedAt,
+            expiresAt: row.expiresAt,
             clipCount: row._count.clips,
           }
         : null;
@@ -352,6 +363,11 @@ const defaultMailer: NotificationMailer = async (input) => {
       retryLink: string;
       kind?: "generation" | "import";
     }) => { subject: string; html: string; text: string };
+    projectExpiring: (input: {
+      projectTitle: string;
+      expiresAt: string;
+      upgradeLink: string;
+    }) => { subject: string; html: string; text: string };
     sendEmail: (input: {
       to: string;
       subject: string;
@@ -362,7 +378,13 @@ const defaultMailer: NotificationMailer = async (input) => {
   };
 
   const template =
-    input.outcome === "clips_ready"
+    input.outcome === "project_expiring" && input.expiresAt
+      ? email.projectExpiring({
+          projectTitle: input.projectTitle,
+          expiresAt: input.expiresAt,
+          upgradeLink: input.deepLink,
+        })
+      : input.outcome === "clips_ready"
       ? email.clipsReady({
           clipCount: input.clipCount,
           projectTitle: input.projectTitle,
@@ -424,7 +446,7 @@ export class NotificationService {
       return { status: "project_not_found" };
     }
 
-    if (!project.notifyOnComplete) {
+    if (input.outcome !== "project_expiring" && !project.notifyOnComplete) {
       return { status: "disabled" };
     }
 
@@ -493,7 +515,10 @@ export class NotificationService {
       summary.claimed += 1;
 
       const project = await this.store.getProject(ledger.projectId);
-      if (!project || !project.notifyOnComplete) {
+      if (
+        !project ||
+        (ledger.outcome !== "project_expiring" && !project.notifyOnComplete)
+      ) {
         if (!project) {
           structuredWarn("notification_project_not_found", {
             ledgerId: ledger.id,
@@ -582,6 +607,17 @@ export class NotificationService {
       return { ledgerId: ledger.id, status: "skipped" };
     }
 
+    if (ledger.outcome === "project_expiring" && !project.emailVerifiedAt) {
+      structuredWarn("notification_recipient_unverified", {
+        ledgerId: ledger.id,
+        projectId: ledger.projectId,
+        sourceId: ledger.sourceId,
+        outcome: ledger.outcome,
+      });
+      await this.store.markSkipped({ id: ledger.id, leaseExpiresAt });
+      return { ledgerId: ledger.id, status: "skipped" };
+    }
+
     if (!this.hasResendApiKey()) {
       structuredWarn("notification_resend_api_key_missing", {
         ledgerId: ledger.id,
@@ -603,6 +639,7 @@ export class NotificationService {
         reason:
           input.reason?.trim() || "The operation could not be completed.",
         deepLink: input.deepLink,
+        expiresAt: project.expiresAt?.toISOString() ?? null,
         idempotencyKey: `notification-ledger-${ledger.id}`,
       });
     } catch (error) {

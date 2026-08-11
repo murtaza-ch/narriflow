@@ -1,5 +1,8 @@
 import { requireCurrentAppUser } from "@narriflow/auth";
-import { projectService } from "@narriflow/services";
+import {
+  isRetentionEnforcementActive,
+  projectService,
+} from "@narriflow/services";
 import { UpgradedToast } from "./dashboard-client";
 import { DashboardView } from "./dashboard-view";
 
@@ -15,7 +18,7 @@ function greetingForHour(hour: number): string {
 export default async function DashboardPage({
   searchParams,
 }: {
-  searchParams: Promise<{ upgraded?: string }>;
+  searchParams: Promise<{ upgraded?: string; session_id?: string }>;
 }) {
   const appUser = await requireCurrentAppUser();
   const [recentProjects, params] = await Promise.all([
@@ -32,8 +35,16 @@ export default async function DashboardPage({
 
   return (
     <>
-      {justUpgraded ? <UpgradedToast /> : null}
-      <DashboardView greeting={greeting} items={recentProjects.items} />
+      {justUpgraded ? (
+        <UpgradedToast sessionId={params.session_id ?? null} />
+      ) : null}
+      <DashboardView
+        greeting={greeting}
+        items={recentProjects.items}
+        showRetentionBanner={
+          appUser.pricingTier === "free" && isRetentionEnforcementActive()
+        }
+      />
     </>
   );
 }

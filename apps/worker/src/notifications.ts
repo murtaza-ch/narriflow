@@ -89,7 +89,11 @@ export function getProjectDeepLink(projectId: string): string | null {
 export function buildRetryNotificationInput(
   ledger: NotificationLedgerRow,
 ): RetryNotificationInput | null {
-  const deepLink = getProjectDeepLink(ledger.projectId);
+  const baseUrl = getWorkerAppBaseUrl();
+  const deepLink =
+    ledger.outcome === "project_expiring" && baseUrl
+      ? new URL("/settings/billing", baseUrl).toString()
+      : getProjectDeepLink(ledger.projectId);
   return deepLink ? { deepLink } : null;
 }
 
@@ -128,6 +132,25 @@ export async function notifyTerminalOutcome(input: {
       projectId: input.projectId,
       sourceId: input.sourceId,
       outcome: input.outcome,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+export async function notifyExpiringProject(projectId: string): Promise<void> {
+  try {
+    const baseUrl = getWorkerAppBaseUrl();
+    if (!baseUrl) return;
+    await notificationService.enqueueAndSend({
+      projectId,
+      sourceId: projectId,
+      outcome: "project_expiring",
+      deepLink: new URL("/settings/billing", baseUrl).toString(),
+      reason: "The Free-plan project retention deadline is approaching.",
+    });
+  } catch (error) {
+    warn("project_expiry_notification_enqueue_failed", {
+      projectId,
       error: error instanceof Error ? error.message : String(error),
     });
   }
