@@ -233,7 +233,7 @@ export function RenderClipsButton({
                   <Text fontSize="11px" color="fg.muted" mt="1">
                     1080p exports and watermark-free renders need a paid plan.{" "}
                     <ChakraLink asChild color="accent.fg" textUnderlineOffset="3px">
-                      <Link href="/settings/billing">Upgrade</Link>
+                      <Link href="/settings/subscription">Upgrade</Link>
                     </ChakraLink>
                     .
                   </Text>

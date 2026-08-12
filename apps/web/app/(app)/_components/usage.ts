@@ -7,6 +7,6 @@ import { projectService } from "@narriflow/services";
  * the same render pass (e.g. the dashboard) can call this too without a
  * second round of queries.
  */
-export const getCachedDashboardStats = cache((userId: string) =>
-  projectService.getDashboardStats(userId),
+export const getCachedDashboardStats = cache((userId: string, workspaceId: string) =>
+  projectService.getDashboardStats(userId, workspaceId),
 );

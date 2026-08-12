@@ -1,5 +1,5 @@
 const SAFE_REDIRECT_ORIGIN = "https://redirect.narriflow.invalid";
-const DEFAULT_SOCIAL_REDIRECT = "/settings/social";
+const DEFAULT_SOCIAL_REDIRECT = "/settings/social-accounts";
 const ENCODED_UNSAFE_DELIMITERS =
   /%(?:0[0-9a-f]|1[0-9a-f]|2f|5c|7f|8[0-9a-f]|9[0-9a-f])/i;
 

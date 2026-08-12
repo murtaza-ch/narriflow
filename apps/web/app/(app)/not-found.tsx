@@ -35,7 +35,7 @@ export default function NotFound() {
           </Text>
         </Stack>
         <Button asChild mt="1">
-          <Link href="/dashboard">Back to dashboard</Link>
+          <Link href="/home">Back to home</Link>
         </Button>
       </Stack>
     </Flex>

@@ -35,6 +35,6 @@ export async function completeOnboardingAction(formData: FormData) {
 
   await completeUserOnboarding(appUser.id);
 
-  revalidatePath("/dashboard");
-  redirect("/dashboard");
+  revalidatePath("/home");
+  redirect("/home");
 }

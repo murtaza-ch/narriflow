@@ -10,6 +10,7 @@ import {
 } from "@narriflow/validators";
 import { analyticsService } from "./analytics.service";
 import { accessibleProjectWhere } from "./project-retention.service";
+import { workspaceService } from "./workspace.service";
 
 function requirePrisma() {
   const prisma = getPrismaClient();
@@ -120,12 +121,32 @@ export class SocialService {
     userId: string,
     projectId: string,
     input: ScheduleSocialPostInput,
+    workspaceContext?: { workspaceId: string; actorUserId: string },
   ): Promise<SocialPostSnapshot> {
     const parsed = scheduleSocialPostSchema.parse(input);
     const prisma = requirePrisma();
+    const scheduledFor = parsed.scheduledFor
+      ? new Date(parsed.scheduledFor)
+      : new Date();
+    if (parsed.scheduledFor && scheduledFor <= new Date()) {
+      throw new Error("Choose a future publish time");
+    }
+    if (workspaceContext) {
+      await workspaceService.requireActor(
+        workspaceContext.actorUserId,
+        workspaceContext.workspaceId,
+        "publishing.manage",
+      );
+    }
 
     const project = await prisma.project.findFirst({
-      where: { id: projectId, userId, ...accessibleProjectWhere() },
+      where: {
+        id: projectId,
+        ...(workspaceContext
+          ? { workspaceId: workspaceContext.workspaceId }
+          : { userId }),
+        ...accessibleProjectWhere(),
+      },
       select: { id: true },
     });
     if (!project) {
@@ -146,7 +167,9 @@ export class SocialService {
       const account = await prisma.socialAccount.findFirst({
         where: {
           id: parsed.accountId,
-          userId,
+          ...(workspaceContext
+            ? { workspaceId: workspaceContext.workspaceId }
+            : { userId }),
           platform: parsed.platform,
           status: { not: "revoked" },
         },
@@ -158,10 +181,33 @@ export class SocialService {
       if (account.status === "expired") {
         throw new Error("social account token expired");
       }
+
+      const conflictWindowMs = 60 * 1000;
+      const conflict = await prisma.socialPost.findFirst({
+        where: {
+          socialAccountId: parsed.accountId,
+          ...(workspaceContext
+            ? { workspaceId: workspaceContext.workspaceId }
+            : { project: { userId } }),
+          status: { in: ["scheduled", "publishing"] },
+          scheduledFor: {
+            gte: new Date(scheduledFor.getTime() - conflictWindowMs),
+            lte: new Date(scheduledFor.getTime() + conflictWindowMs),
+          },
+        },
+        select: { id: true },
+      });
+      if (conflict) {
+        throw new Error(
+          "This social account already has a post scheduled at that time. Choose a time at least one minute away.",
+        );
+      }
     }
 
     const row = await prisma.socialPost.create({
       data: {
+        workspaceId: workspaceContext?.workspaceId ?? null,
+        createdByUserId: workspaceContext?.actorUserId ?? userId,
         projectId,
         clipId: parsed.clipId ?? null,
         socialAccountId: parsed.accountId ?? null,
@@ -171,9 +217,7 @@ export class SocialService {
         aspectRatio: parsed.aspectRatio
           ? clipAspectRatioToDb[parsed.aspectRatio]
           : null,
-        scheduledFor: parsed.scheduledFor
-          ? new Date(parsed.scheduledFor)
-          : new Date(),
+        scheduledFor,
         metadata: parsed.metadata
           ? (parsed.metadata as Prisma.InputJsonValue)
           : Prisma.JsonNull,
@@ -206,10 +250,24 @@ export class SocialService {
     userId: string,
     projectId: string,
     postId: string,
+    workspaceContext?: { workspaceId: string; actorUserId: string },
   ): Promise<SocialPostSnapshot> {
     const prisma = requirePrisma();
+    if (workspaceContext) {
+      await workspaceService.requireActor(
+        workspaceContext.actorUserId,
+        workspaceContext.workspaceId,
+        "content.edit",
+      );
+    }
     const existing = await prisma.socialPost.findFirst({
-      where: { id: postId, projectId, project: { userId } },
+      where: {
+        id: postId,
+        projectId,
+        ...(workspaceContext
+          ? { workspaceId: workspaceContext.workspaceId }
+          : { project: { userId } }),
+      },
     });
     if (!existing) {
       throw new Error("social post not found");
@@ -250,13 +308,64 @@ export class SocialService {
     return toSocialPostSnapshot(row);
   }
 
+  async retryFailedPost(
+    actorUserId: string,
+    workspaceId: string,
+    postId: string,
+  ): Promise<void> {
+    await workspaceService.requireActor(
+      actorUserId,
+      workspaceId,
+      "publishing.manage",
+    );
+    const prisma = requirePrisma();
+    const post = await prisma.socialPost.findFirst({
+      where: { id: postId, workspaceId, status: "failed" },
+      select: { id: true, socialAccountId: true },
+    });
+    if (!post) throw new Error("Failed social post not found");
+    const scheduledFor = new Date(Date.now() + 60 * 1000);
+    if (post.socialAccountId) {
+      const conflict = await prisma.socialPost.findFirst({
+        where: {
+          workspaceId,
+          socialAccountId: post.socialAccountId,
+          status: { in: ["scheduled", "publishing"] },
+          scheduledFor: {
+            gte: new Date(scheduledFor.getTime() - 60 * 1000),
+            lte: new Date(scheduledFor.getTime() + 60 * 1000),
+          },
+        },
+        select: { id: true },
+      });
+      if (conflict) {
+        throw new Error(
+          "This account already has a post due now. Retry after it finishes.",
+        );
+      }
+    }
+    const updated = await prisma.socialPost.updateMany({
+      where: { id: postId, workspaceId, status: "failed" },
+      data: {
+        status: "scheduled",
+        scheduledFor,
+        errorCode: null,
+        postedAt: null,
+      },
+    });
+    if (updated.count === 0) throw new Error("Social post is no longer failed");
+  }
+
   async claimDuePosts(limit = 5): Promise<ClaimedSocialPost[]> {
     const prisma = requirePrisma();
     const due = await prisma.socialPost.findMany({
       where: {
         status: "scheduled",
         project: accessibleProjectWhere(),
-        OR: [{ scheduledFor: { lte: new Date() } }, { scheduledFor: null }],
+        AND: [
+          { OR: [{ scheduledFor: { lte: new Date() } }, { scheduledFor: null }] },
+          { OR: [{ workspaceId: null }, { workspace: { status: "active" } }] },
+        ],
       },
       orderBy: [{ scheduledFor: "asc" }, { createdAt: "asc" }],
       take: Math.max(1, Math.min(25, limit)),
@@ -270,6 +379,7 @@ export class SocialService {
           id: post.id,
           status: "scheduled",
           project: accessibleProjectWhere(),
+          OR: [{ workspaceId: null }, { workspace: { status: "active" } }],
         },
         data: { status: "publishing" },
       });

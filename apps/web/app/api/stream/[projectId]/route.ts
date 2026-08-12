@@ -1,5 +1,5 @@
 import Redis from "ioredis";
-import { getCurrentAppUser } from "@narriflow/auth";
+import { getCurrentWorkspaceAppUser as getCurrentAppUser } from "@/lib/workspace";
 import {
   boundedRedisRetryDelay,
   getWorkflowChannel,
@@ -43,7 +43,11 @@ export async function GET(
   }
 
   const { projectId } = await context.params;
-  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  const access = await projectService.getProjectAccess(
+    appUser.actorUserId,
+    projectId,
+    appUser.workspaceId,
+  );
 
   if (access === "missing") {
     return new Response(JSON.stringify({ error: "Project not found" }), {
@@ -301,7 +305,7 @@ export async function GET(
         if (accessCheckInFlight) return;
         accessCheckInFlight = true;
         void projectService
-          .getProjectAccess(appUser.id, projectId)
+          .getProjectAccess(appUser.actorUserId, projectId, appUser.workspaceId)
           .then((currentAccess) => {
             if (currentAccess !== "owned") {
               cleanup();

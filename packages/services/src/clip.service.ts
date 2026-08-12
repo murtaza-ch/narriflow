@@ -34,6 +34,7 @@ import {
   normalizeTranscriptSliceForClip,
   parseClipAutoLayoutAnalysis,
   parseClipLayoutAnalysis,
+  resolvePricingTier,
   saveEditorDocumentSchema,
   splitUtterancesIntoSentences,
   studioEditsSchema,
@@ -83,6 +84,7 @@ import { clipExportService } from "./clip-export.service";
 import { assertPublicHttpUrl } from "./url-guard";
 import { hasFeature } from "./billing.service";
 import { accessibleProjectWhere } from "./project-retention.service";
+import { workspaceService } from "./workspace.service";
 
 interface DetectedClip {
   startSec: number;
@@ -242,9 +244,19 @@ export async function runOrScheduleCleanup(
 async function resolveRequestedResolution(
   userId: string,
   requested: ClipRenderResolution,
+  workspaceId?: string | null,
 ): Promise<ClipRenderResolution> {
   if (requested === "720p") return "720p";
-  const tier = await projectService.getUserPricingTier(userId);
+  const tier = workspaceId
+    ? resolvePricingTier(
+        (
+          await requirePrisma().workspace.findUnique({
+            where: { id: workspaceId },
+            select: { pricingTier: true },
+          })
+        )?.pricingTier,
+      )
+    : await projectService.getUserPricingTier(userId);
   return hasFeature(tier, "export.1080p") ? "1080p" : "720p";
 }
 
@@ -2195,14 +2207,27 @@ export class ClipService {
     projectId: string,
     idempotencyKey: string,
     contentPack?: ContentPack,
+    workspaceContext?: { workspaceId: string; actorUserId: string },
   ) {
     const prisma = requirePrisma();
+    if (workspaceContext) {
+      await workspaceService.requireActor(
+        workspaceContext.actorUserId,
+        workspaceContext.workspaceId,
+        "processing.consume",
+      );
+    }
     const parsedContentPack = contentPack
       ? contentPackSchema.parse(contentPack)
       : null;
 
     const project = await prisma.project.findFirst({
-      where: { id: projectId, userId },
+      where: {
+        id: projectId,
+        ...(workspaceContext
+          ? { workspaceId: workspaceContext.workspaceId }
+          : { userId }),
+      },
       select: {
         id: true,
         transcript: { select: { status: true } },
@@ -2219,7 +2244,11 @@ export class ClipService {
 
     // Enforce plan-tier quota + per-upload length cap on this path too (the
     // project-page "Detect / Regenerate Clips" buttons route through here).
-    await projectService.assertProjectGenerationAllowed(userId, projectId);
+    await projectService.assertProjectGenerationAllowed(
+      userId,
+      projectId,
+      workspaceContext?.workspaceId,
+    );
 
     const existing = await prisma.workflowRun.findFirst({
       where: {
@@ -2302,8 +2331,16 @@ export class ClipService {
     clipIds?: string[],
     aspectRatios?: ClipAspectRatio[],
     resolution: ClipRenderResolution = "1080p",
+    workspaceContext?: { workspaceId: string; actorUserId: string },
   ) {
     const prisma = requirePrisma();
+    if (workspaceContext) {
+      await workspaceService.requireActor(
+        workspaceContext.actorUserId,
+        workspaceContext.workspaceId,
+        "processing.consume",
+      );
+    }
     const requestedAspectRatios = normalizeAspectRatios(aspectRatios);
     const requestedAspectRatioDbValues = requestedAspectRatios.map(
       (aspectRatio) => clipAspectRatioToDb[aspectRatio],
@@ -2314,10 +2351,16 @@ export class ClipService {
     const resolvedResolution = await resolveRequestedResolution(
       userId,
       resolution,
+      workspaceContext?.workspaceId,
     );
 
     const project = await prisma.project.findFirst({
-      where: { id: projectId, userId },
+      where: {
+        id: projectId,
+        ...(workspaceContext
+          ? { workspaceId: workspaceContext.workspaceId }
+          : { userId }),
+      },
       select: { id: true },
     });
 
@@ -4334,10 +4377,14 @@ export class ClipService {
     // worker's per-row resolution scale never kicks in for it.
     const project = await prisma.project.findUnique({
       where: { id: projectId },
-      select: { userId: true },
+      select: { userId: true, workspaceId: true },
     });
     const resolvedResolution = project
-      ? await resolveRequestedResolution(project.userId, "1080p")
+      ? await resolveRequestedResolution(
+          project.userId,
+          "1080p",
+          project.workspaceId,
+        )
       : "1080p";
 
     const aspectRatioDb = clipAspectRatioToDb[aspectRatio];

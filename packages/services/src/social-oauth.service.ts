@@ -8,7 +8,7 @@ import {
 } from "@narriflow/validators";
 
 const CALLBACK_PATH = "/api/social/oauth/callback";
-const DEFAULT_REDIRECT_PATH = "/settings/social";
+const DEFAULT_REDIRECT_PATH = "/settings/social-accounts";
 const OAUTH_STATE_TTL_MS = 15 * 60 * 1000;
 const TOKEN_REFRESH_WINDOW_MS = 60 * 1000;
 const META_GRAPH_VERSION = process.env.META_GRAPH_VERSION?.trim() || "v20.0";
@@ -205,11 +205,11 @@ function toSnapshot(row: {
 }
 
 export class SocialOAuthService {
-  async listAccounts(userId: string): Promise<SocialAccountSnapshot[]> {
+  async listAccounts(userId: string, workspaceId?: string): Promise<SocialAccountSnapshot[]> {
     const prisma = requirePrisma();
     const rows = await prisma.socialAccount.findMany({
       where: {
-        userId,
+        ...(workspaceId ? { workspaceId } : { userId }),
         status: { not: "revoked" },
       },
       orderBy: [{ platform: "asc" }, { createdAt: "desc" }],
@@ -217,10 +217,10 @@ export class SocialOAuthService {
     return rows.map(toSnapshot);
   }
 
-  async disconnectAccount(userId: string, accountId: string) {
+  async disconnectAccount(userId: string, accountId: string, workspaceId?: string) {
     const prisma = requirePrisma();
     await prisma.socialAccount.updateMany({
-      where: { id: accountId, userId },
+      where: { id: accountId, ...(workspaceId ? { workspaceId } : { userId }) },
       data: {
         status: "revoked",
         refreshTokenEncrypted: null,
@@ -231,6 +231,8 @@ export class SocialOAuthService {
 
   async createAuthorizationUrl(params: {
     userId: string;
+    workspaceId?: string;
+    actorUserId?: string;
     platform: SocialPlatform;
     origin: string;
     redirectPath?: string | null;
@@ -246,6 +248,8 @@ export class SocialOAuthService {
     await prisma.socialOAuthState.create({
       data: {
         userId: params.userId,
+        workspaceId: params.workspaceId ?? null,
+        createdByUserId: params.actorUserId ?? params.userId,
         platform,
         state,
         codeVerifier: verifier,
@@ -291,14 +295,14 @@ export class SocialOAuthService {
     const platform = savedState.platform as SocialPlatform;
     const connected =
       platform === "tiktok"
-        ? await this.connectTikTok(savedState.userId, params.code, redirectUri)
+        ? await this.connectTikTok(savedState.userId, params.code, redirectUri, savedState.workspaceId)
         : platform === "youtube_shorts"
-          ? await this.connectYouTube(savedState.userId, params.code, redirectUri, savedState.codeVerifier)
+          ? await this.connectYouTube(savedState.userId, params.code, redirectUri, savedState.codeVerifier, savedState.workspaceId)
           : platform === "instagram_reels"
-            ? await this.connectInstagram(savedState.userId, params.code, redirectUri)
+            ? await this.connectInstagram(savedState.userId, params.code, redirectUri, savedState.workspaceId)
             : platform === "linkedin"
-              ? await this.connectLinkedIn(savedState.userId, params.code, redirectUri)
-              : await this.connectX(savedState.userId, params.code, redirectUri, savedState.codeVerifier);
+              ? await this.connectLinkedIn(savedState.userId, params.code, redirectUri, savedState.workspaceId)
+              : await this.connectX(savedState.userId, params.code, redirectUri, savedState.codeVerifier, savedState.workspaceId);
 
     return {
       accounts: connected,
@@ -351,17 +355,22 @@ export class SocialOAuthService {
     userId: string,
     platform: SocialPlatform,
     input: ConnectedAccountInput,
+    workspaceId?: string | null,
   ) {
     const prisma = requirePrisma();
-    const existing = await prisma.socialAccount.findUnique({
-      where: {
-        userId_platform_providerAccountId: {
-          userId,
-          platform,
-          providerAccountId: input.providerAccountId,
-        },
-      },
-    });
+    const existing = workspaceId
+      ? await prisma.socialAccount.findUnique({
+          where: {
+            workspaceId_platform_providerAccountId: {
+              workspaceId,
+              platform,
+              providerAccountId: input.providerAccountId,
+            },
+          },
+        })
+      : await prisma.socialAccount.findFirst({
+          where: { userId, platform, providerAccountId: input.providerAccountId },
+        });
 
     const encryptedAccessToken = encryptToken(input.accessToken);
     const encryptedRefreshToken =
@@ -391,6 +400,8 @@ export class SocialOAuthService {
       : await prisma.socialAccount.create({
           data: {
             userId,
+            workspaceId: workspaceId ?? null,
+            createdByUserId: userId,
             platform,
             providerAccountId: input.providerAccountId,
             ...data,
@@ -474,7 +485,7 @@ export class SocialOAuthService {
     return url.toString();
   }
 
-  private async connectTikTok(userId: string, code: string, redirectUri: string) {
+  private async connectTikTok(userId: string, code: string, redirectUri: string, workspaceId?: string | null) {
     const token = await postForm(
       "https://open.tiktokapis.com/v2/oauth/token/",
       new URLSearchParams({
@@ -518,7 +529,7 @@ export class SocialOAuthService {
           openId: providerAccountId,
           refreshExpiresAt: expiresAtFromSeconds(token.refresh_expires_in)?.toISOString() ?? null,
         },
-      }),
+      }, workspaceId),
     ];
   }
 
@@ -527,6 +538,7 @@ export class SocialOAuthService {
     code: string,
     redirectUri: string,
     verifier: string | null,
+    workspaceId?: string | null,
   ) {
     const body = new URLSearchParams({
       client_id: requireEnv("GOOGLE_CLIENT_ID"),
@@ -573,11 +585,11 @@ export class SocialOAuthService {
         scopes: scopesFrom(token.scope),
         expiresAt: expiresAtFromSeconds(token.expires_in),
         metadata: { channelId: channel.id },
-      }),
+      }, workspaceId),
     ];
   }
 
-  private async connectInstagram(userId: string, code: string, redirectUri: string) {
+  private async connectInstagram(userId: string, code: string, redirectUri: string, workspaceId?: string | null) {
     const shortToken = await readJson(
       await fetch(
         `https://graph.facebook.com/${META_GRAPH_VERSION}/oauth/access_token?` +
@@ -649,7 +661,7 @@ export class SocialOAuthService {
             pageName: page.name ?? null,
             igUserId: ig.id,
           },
-        }),
+        }, workspaceId),
       );
     }
 
@@ -662,7 +674,7 @@ export class SocialOAuthService {
     return connected;
   }
 
-  private async connectLinkedIn(userId: string, code: string, redirectUri: string) {
+  private async connectLinkedIn(userId: string, code: string, redirectUri: string, workspaceId?: string | null) {
     const token = await postForm(
       "https://www.linkedin.com/oauth/v2/accessToken",
       new URLSearchParams({
@@ -707,7 +719,7 @@ export class SocialOAuthService {
         scopes: scopesFrom(token.scope),
         expiresAt: expiresAtFromSeconds(token.expires_in),
         metadata: { ownerUrn: `urn:li:person:${profile.sub}` },
-      }),
+      }, workspaceId),
     ];
   }
 
@@ -716,6 +728,7 @@ export class SocialOAuthService {
     code: string,
     redirectUri: string,
     verifier: string | null,
+    workspaceId?: string | null,
   ) {
     if (!verifier) {
       throw new SocialOAuthError("social_oauth_pkce_missing", "X OAuth state did not include a verifier");
@@ -764,7 +777,7 @@ export class SocialOAuthService {
         scopes: scopesFrom(token.scope),
         expiresAt: expiresAtFromSeconds(token.expires_in),
         metadata: { userId: user.id, username: user.username ?? null },
-      }),
+      }, workspaceId),
     ];
   }
 

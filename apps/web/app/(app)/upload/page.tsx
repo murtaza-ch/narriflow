@@ -3,7 +3,7 @@ import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { Box, Flex, Stack, Text } from "@chakra-ui/react";
 import { PageHeader } from "@narriflow/ui/components/page-header";
-import { requireCurrentAppUser } from "@narriflow/auth";
+import { requireWorkspaceAppUser as requireCurrentAppUser } from "@/lib/workspace";
 import { brandTemplateService, projectService } from "@narriflow/services";
 import { parseStoredContentPack } from "@narriflow/validators";
 import { UploadShell } from "./_components/upload-shell";
@@ -34,8 +34,9 @@ function toIngestStageStatus(value: string): IngestStageStatus {
 async function loadLinkResumeData(
   userId: string,
   projectId: string,
+  workspaceId: string,
 ): Promise<LinkResumeData | null> {
-  const snapshot = await projectService.getProjectSnapshot(userId, projectId);
+  const snapshot = await projectService.getProjectSnapshot(userId, projectId, workspaceId);
 
   if (!snapshot.project) {
     redirect("/upload");
@@ -72,17 +73,17 @@ export default async function UploadPage({
 }: {
   searchParams: Promise<{ url?: string | string[]; project?: string | string[] }>;
 }) {
-  const appUser = await requireCurrentAppUser();
+  const appUser = await requireCurrentAppUser("processing.consume");
   const [brandTemplates, params, usageSummary] = await Promise.all([
-    brandTemplateService.list(appUser.id),
+    brandTemplateService.list(appUser.id, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId }),
     searchParams,
-    projectService.getUsageSummary(appUser.id),
+    projectService.getUsageSummary(appUser.id, appUser.workspaceId),
   ]);
   const rawUrl = Array.isArray(params.url) ? params.url[0] : params.url;
   const rawProjectId = Array.isArray(params.project) ? params.project[0] : params.project;
 
   const resumeData = rawProjectId
-    ? await loadLinkResumeData(appUser.id, rawProjectId)
+    ? await loadLinkResumeData(appUser.actorUserId, rawProjectId, appUser.workspaceId)
     : null;
 
   return (
@@ -91,7 +92,7 @@ export default async function UploadPage({
           bar is the only chrome — a way back plus the usage readout the
           sidebar meter normally provides. */}
       <Flex align="center" justify="space-between" gap="4">
-        <Link href="/dashboard">
+        <Link href="/home">
           <Flex
             align="center"
             gap="1.5"
@@ -101,7 +102,7 @@ export default async function UploadPage({
           >
             <ArrowLeft size={14} aria-hidden />
             <Text fontSize="13px" fontWeight="550">
-              Dashboard
+              Home
             </Text>
           </Flex>
         </Link>

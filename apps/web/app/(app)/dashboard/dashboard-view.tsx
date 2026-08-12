@@ -19,10 +19,12 @@ function reveal(index: number) {
 export function DashboardView({
   greeting,
   items,
+  canCreate,
   showRetentionBanner,
 }: {
   greeting: string;
   items: ProjectListItem[];
+  canCreate: boolean;
   showRetentionBanner: boolean;
 }) {
   return (
@@ -78,29 +80,37 @@ export function DashboardView({
             moments worth posting.
           </Text>
 
-          <Box w="full" maxW="480px" pt="2">
-            <HeroPasteLinkField />
-          </Box>
+          {canCreate ? (
+            <>
+              <Box w="full" maxW="480px" pt="2">
+                <HeroPasteLinkField />
+              </Box>
 
-          <Stack gap="2" align="center" pt="3">
-            <Flex gap="2" wrap="wrap" justify="center">
-              <Button variant="ghost" size="sm" asChild>
-                <Link href="/upload">
-                  <Upload size={14} strokeWidth={1.75} aria-hidden />
-                  Upload local file
-                </Link>
-              </Button>
-              <Button variant="ghost" size="sm" asChild>
-                <Link href="/upload">
-                  <Rss size={14} strokeWidth={1.75} aria-hidden />
-                  Import RSS feed
-                </Link>
-              </Button>
-            </Flex>
-            <Text textStyle="data" fontSize="11.5px" color="fg.subtle">
-              MP4 · MOV · WebM · MKV · MP3 · WAV — up to 5 GB
+              <Stack gap="2" align="center" pt="3">
+                <Flex gap="2" wrap="wrap" justify="center">
+                  <Button variant="ghost" size="sm" asChild>
+                    <Link href="/upload">
+                      <Upload size={14} strokeWidth={1.75} aria-hidden />
+                      Upload local file
+                    </Link>
+                  </Button>
+                  <Button variant="ghost" size="sm" asChild>
+                    <Link href="/upload">
+                      <Rss size={14} strokeWidth={1.75} aria-hidden />
+                      Import RSS feed
+                    </Link>
+                  </Button>
+                </Flex>
+                <Text textStyle="data" fontSize="11.5px" color="fg.subtle">
+                  MP4 · MOV · WebM · MKV · MP3 · WAV — up to 5 GB
+                </Text>
+              </Stack>
+            </>
+          ) : (
+            <Text fontSize="13px" color="fg.muted" maxW="440px">
+              This workspace is read-only for your current role or subscription state.
             </Text>
-          </Stack>
+          )}
         </Stack>
       </Box>
 
@@ -141,7 +151,7 @@ export function DashboardView({
                   animationFillMode="backwards"
                   style={{ animationDelay: `${Math.min(index, 11) * 60}ms` }}
                 >
-                  <ProjectCard project={project} />
+                  <ProjectCard project={project} priority={index < 4} />
                 </Box>
               ))}
             </SimpleGrid>

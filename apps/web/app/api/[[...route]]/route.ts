@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import type { Context, Next } from "hono";
 import { handle } from "hono/vercel";
 import { after } from "next/server";
-import { getCurrentAppUser } from "@narriflow/auth";
+import { getCurrentWorkspaceAppUser as getCurrentAppUser } from "@/lib/workspace";
 import {
   applyCaptionPresetToAllSchema,
   applyStudioEditsToAllSchema,
@@ -81,6 +81,8 @@ import {
   UploadCompletionReconciliationRequiredError,
   UploadSessionUnavailableError,
   UploadTooLongError,
+  workspaceLibraryService,
+  workspaceService,
 } from "@narriflow/services";
 import {
   resolveCanonicalAppOrigin,
@@ -117,13 +119,28 @@ const requireActiveProject = async (c: Context, next: Next) => {
   const projectId = c.req.param("id");
   if (!projectId) return c.json({ error: "Project not found" }, 404);
   const access = await projectService.getProjectAccess(
-    appUser.id,
+    appUser.actorUserId,
     projectId,
+    appUser.workspaceId,
   );
   if (access === "missing") {
     return c.json({ error: "Project not found" }, 404);
   }
   if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
+  if (!["GET", "HEAD", "OPTIONS"].includes(c.req.method)) {
+    try {
+      await workspaceService.requireActor(
+        appUser.actorUserId,
+        appUser.workspaceId,
+        "content.edit",
+      );
+    } catch (error) {
+      return c.json(
+        { error: "Forbidden", message: errorMessage(error) },
+        403,
+      );
+    }
+  }
   await next();
 };
 
@@ -137,7 +154,7 @@ app.get("/autopilot/rules", async (c) => {
   if (!appUser) return c.json({ error: "Unauthorized" }, 401);
 
   try {
-    const rules = await autopilotService.listRules(appUser.id);
+    const rules = await autopilotService.listRules(appUser.id, appUser.workspaceId);
     return c.json({ rules }, 200);
   } catch (error) {
     return c.json(
@@ -161,7 +178,8 @@ app.post("/autopilot/rules", async (c) => {
   }
 
   try {
-    const rule = await autopilotService.createRule(appUser.id, parsed.data);
+    await workspaceService.requireActor(appUser.actorUserId, appUser.workspaceId, "content.edit");
+    const rule = await autopilotService.createRule(appUser.id, parsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
     return c.json(rule, 201);
   } catch (error) {
     return c.json(
@@ -185,10 +203,12 @@ app.patch("/autopilot/rules/:ruleId", async (c) => {
   }
 
   try {
+    await workspaceService.requireActor(appUser.actorUserId, appUser.workspaceId, "content.edit");
     const rule = await autopilotService.updateRule(
       appUser.id,
       c.req.param("ruleId"),
       parsed.data,
+      { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
     );
     return c.json(rule, 200);
   } catch (error) {
@@ -204,7 +224,8 @@ app.delete("/autopilot/rules/:ruleId", async (c) => {
   if (!appUser) return c.json({ error: "Unauthorized" }, 401);
 
   try {
-    await autopilotService.deleteRule(appUser.id, c.req.param("ruleId"));
+    await workspaceService.requireActor(appUser.actorUserId, appUser.workspaceId, "content.edit");
+    await autopilotService.deleteRule(appUser.id, c.req.param("ruleId"), { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
     return c.json({ ok: true }, 200);
   } catch (error) {
     return c.json(
@@ -219,9 +240,11 @@ app.post("/autopilot/rules/:ruleId/run-now", async (c) => {
   if (!appUser) return c.json({ error: "Unauthorized" }, 401);
 
   try {
+    await workspaceService.requireActor(appUser.actorUserId, appUser.workspaceId, "content.edit");
     const rule = await autopilotService.triggerRuleNow(
       appUser.id,
       c.req.param("ruleId"),
+      { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
     );
     return c.json(rule, 200);
   } catch (error) {
@@ -242,16 +265,97 @@ app.get("/projects", async (c) => {
   const limitRaw = c.req.query("limit");
   const limit = limitRaw ? Number(limitRaw) : undefined;
   const cursor = c.req.query("cursor") ?? null;
+  const folderId = c.req.query("folder") || undefined;
 
   try {
-    const page = await projectService.listProjectsWithStatsPage(appUser.id, {
+    const page = await projectService.listProjectsWithStatsPage(appUser.actorUserId, {
       limit,
       cursor,
+      workspaceId: appUser.workspaceId,
+      folderId,
     });
     return c.json(page, 200);
   } catch (error) {
     return c.json(
       { error: "project_list_failed", message: errorMessage(error) },
+      400,
+    );
+  }
+});
+
+app.get("/workspace/search", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  try {
+    const results = await workspaceLibraryService.search(
+      appUser.actorUserId,
+      appUser.workspaceId,
+      c.req.query("q") ?? "",
+    );
+    return c.json({ results }, 200);
+  } catch (error) {
+    return c.json({ error: "workspace_search_failed", message: errorMessage(error) }, 400);
+  }
+});
+
+app.get("/workspace/exports/:exportId/download", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  const exported = await clipExportService.getWorkspaceOwned(
+    appUser.workspaceId,
+    c.req.param("exportId"),
+  );
+  if (!exported) return c.json({ error: "Export not found" }, 404);
+  const requestedVariantId = c.req.query("variant");
+  const variant = requestedVariantId
+    ? exported.variants.find(
+        (candidate) =>
+          candidate.id === requestedVariantId && candidate.downloadUrl,
+      )
+    : exported.variants.find((candidate) => candidate.downloadUrl);
+  if (!variant?.downloadUrl) {
+    return c.json({ error: "Export file is not ready" }, 409);
+  }
+  return c.redirect(variant.downloadUrl, 302);
+});
+
+app.post("/workspace/avatar/presign", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  const payload = await c.req.json().catch(() => ({}));
+  try {
+    const result = await workspaceService.presignAvatarUpload(
+      appUser.actorUserId,
+      appUser.workspaceId,
+      {
+        contentType: String(payload.contentType ?? ""),
+        sizeBytes: Number(payload.sizeBytes),
+      },
+    );
+    return c.json(result, 200);
+  } catch (error) {
+    return c.json(
+      { error: "workspace_avatar_presign_failed", message: errorMessage(error) },
+      400,
+    );
+  }
+});
+
+app.patch("/workspace/avatar", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  const payload = await c.req.json().catch(() => ({}));
+  const storageKey = payload.storageKey === null ? null : String(payload.storageKey ?? "");
+  try {
+    await workspaceService.setAvatar(
+      appUser.actorUserId,
+      appUser.workspaceId,
+      storageKey || null,
+    );
+    return c.json({ ok: true }, 200);
+  } catch (error) {
+    return c.json(
+      { error: "workspace_avatar_update_failed", message: errorMessage(error) },
       400,
     );
   }
@@ -264,6 +368,16 @@ app.post("/projects/:id/generate", async (c) => {
     return c.json({ error: "Unauthorized" }, 401);
   }
 
+  try {
+    await workspaceService.requireActor(
+      appUser.actorUserId,
+      appUser.workspaceId,
+      "processing.consume",
+    );
+  } catch (error) {
+    return c.json({ error: "Forbidden", message: errorMessage(error) }, 403);
+  }
+
   const rl = await checkRateLimit(`gen:${appUser.id}`, 20, 60);
   if (!rl.allowed) {
     return c.json(
@@ -273,7 +387,11 @@ app.post("/projects/:id/generate", async (c) => {
   }
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  const access = await projectService.getProjectAccess(
+    appUser.actorUserId,
+    projectId,
+    appUser.workspaceId,
+  );
 
   if (access === "missing") {
     return c.json({ error: "Project not found" }, 404);
@@ -305,6 +423,12 @@ app.post("/projects/:id/generate", async (c) => {
       projectId,
       parsed.data,
       idempotencyKey,
+      {
+        workspaceContext: {
+          workspaceId: appUser.workspaceId,
+          actorUserId: appUser.actorUserId,
+        },
+      },
     );
     return c.json(result, 202);
   } catch (error) {
@@ -332,7 +456,11 @@ app.get("/projects/:id", async (c) => {
   }
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  const access = await projectService.getProjectAccess(
+    appUser.actorUserId,
+    projectId,
+    appUser.workspaceId,
+  );
 
   if (access === "missing") {
     return c.json({ error: "Project not found" }, 404);
@@ -362,7 +490,11 @@ app.get("/projects/:id/runs/:workflowRunId", async (c) => {
   }
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  const access = await projectService.getProjectAccess(
+    appUser.actorUserId,
+    projectId,
+    appUser.workspaceId,
+  );
 
   if (access === "missing") {
     return c.json({ error: "Project not found" }, 404);
@@ -393,7 +525,11 @@ app.get("/projects/:id/transcript", async (c) => {
   }
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  const access = await projectService.getProjectAccess(
+    appUser.actorUserId,
+    projectId,
+    appUser.workspaceId,
+  );
 
   if (access === "missing") {
     return c.json({ error: "Project not found" }, 404);
@@ -426,7 +562,11 @@ app.get("/projects/:id/transcript/utterances", async (c) => {
   }
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  const access = await projectService.getProjectAccess(
+    appUser.actorUserId,
+    projectId,
+    appUser.workspaceId,
+  );
 
   if (access === "missing") {
     return c.json({ error: "Project not found" }, 404);
@@ -457,7 +597,11 @@ app.get("/projects/:id/transcript/export", async (c) => {
   }
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  const access = await projectService.getProjectAccess(
+    appUser.actorUserId,
+    projectId,
+    appUser.workspaceId,
+  );
 
   if (access === "missing") {
     return c.json({ error: "Project not found" }, 404);
@@ -525,8 +669,9 @@ app.post("/uploads/presign", async (c) => {
 
   try {
     const response = await projectService.presignMultipartUpload(
-      appUser.id,
+      appUser.actorUserId,
       parsed.data,
+      appUser.workspaceId,
     );
     return c.json(response, 200);
   } catch (error) {
@@ -580,8 +725,9 @@ app.post("/uploads/complete", async (c) => {
 
   try {
     const response = await projectService.completeMultipartUpload(
-      appUser.id,
+      appUser.actorUserId,
       parsed.data,
+      appUser.workspaceId,
     );
     return c.json(response, 200);
   } catch {
@@ -614,8 +760,9 @@ app.post("/ingest/link", async (c) => {
 
   try {
     const response = await projectService.queueLinkIngest(
-      appUser.id,
+      appUser.actorUserId,
       parsed.data,
+      appUser.workspaceId,
     );
     return c.json(response, 202);
   } catch (error) {
@@ -698,8 +845,9 @@ app.post("/ingest/rss/import", async (c) => {
 
   try {
     const response = await projectService.importFromRss(
-      appUser.id,
+      appUser.actorUserId,
       parsed.data,
+      appUser.workspaceId,
     );
     return c.json(response, 202);
   } catch (error) {
@@ -730,7 +878,11 @@ app.get("/ingest/:projectId", async (c) => {
   }
 
   const projectId = c.req.param("projectId");
-  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  const access = await projectService.getProjectAccess(
+    appUser.actorUserId,
+    projectId,
+    appUser.workspaceId,
+  );
 
   if (access === "missing") {
     return c.json({ error: "Project not found" }, 404);
@@ -762,7 +914,11 @@ app.get("/projects/:id/clips", async (c) => {
   }
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  const access = await projectService.getProjectAccess(
+    appUser.actorUserId,
+    projectId,
+    appUser.workspaceId,
+  );
 
   if (access === "missing") {
     return c.json({ error: "Project not found" }, 404);
@@ -801,7 +957,11 @@ app.patch("/projects/:id/clips/:clipId", async (c) => {
   }
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  const access = await projectService.getProjectAccess(
+    appUser.actorUserId,
+    projectId,
+    appUser.workspaceId,
+  );
 
   if (access === "missing") {
     return c.json({ error: "Project not found" }, 404);
@@ -962,7 +1122,11 @@ app.post("/projects/:id/clips/:clipId/title-suggestions", async (c) => {
   }
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  const access = await projectService.getProjectAccess(
+    appUser.actorUserId,
+    projectId,
+    appUser.workspaceId,
+  );
 
   if (access === "missing") {
     return c.json({ error: "Project not found" }, 404);
@@ -1023,7 +1187,11 @@ app.post("/projects/:id/clips/:clipId/duplicate", async (c) => {
   }
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  const access = await projectService.getProjectAccess(
+    appUser.actorUserId,
+    projectId,
+    appUser.workspaceId,
+  );
 
   if (access === "missing") {
     return c.json({ error: "Project not found" }, 404);
@@ -1079,7 +1247,11 @@ app.post("/projects/:id/clips/:clipId/create-from-selection", async (c) => {
   }
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  const access = await projectService.getProjectAccess(
+    appUser.actorUserId,
+    projectId,
+    appUser.workspaceId,
+  );
 
   if (access === "missing") {
     return c.json({ error: "Project not found" }, 404);
@@ -1145,7 +1317,11 @@ app.get("/projects/:id/clips/:clipId/editor", async (c) => {
   }
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  const access = await projectService.getProjectAccess(
+    appUser.actorUserId,
+    projectId,
+    appUser.workspaceId,
+  );
   if (access === "missing") {
     return c.json({ error: "Project not found" }, 404);
   }
@@ -1175,7 +1351,11 @@ app.put("/projects/:id/clips/:clipId/editor", async (c) => {
   }
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  const access = await projectService.getProjectAccess(
+    appUser.actorUserId,
+    projectId,
+    appUser.workspaceId,
+  );
   if (access === "missing") {
     return c.json({ error: "Project not found" }, 404);
   }
@@ -1257,7 +1437,11 @@ app.post("/projects/:id/clips/:clipId/editor/reset", async (c) => {
   }
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  const access = await projectService.getProjectAccess(
+    appUser.actorUserId,
+    projectId,
+    appUser.workspaceId,
+  );
   if (access === "missing") {
     return c.json({ error: "Project not found" }, 404);
   }
@@ -1320,7 +1504,11 @@ app.delete("/projects/:id/clips/:clipId", async (c) => {
   }
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  const access = await projectService.getProjectAccess(
+    appUser.actorUserId,
+    projectId,
+    appUser.workspaceId,
+  );
 
   if (access === "missing") {
     return c.json({ error: "Project not found" }, 404);
@@ -1371,7 +1559,11 @@ app.post("/projects/:id/clips/regenerate", async (c) => {
   }
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  const access = await projectService.getProjectAccess(
+    appUser.actorUserId,
+    projectId,
+    appUser.workspaceId,
+  );
 
   if (access === "missing") {
     return c.json({ error: "Project not found" }, 404);
@@ -1400,6 +1592,10 @@ app.post("/projects/:id/clips/regenerate", async (c) => {
       projectId,
       idempotencyKey,
       contentPack,
+      {
+        workspaceId: appUser.workspaceId,
+        actorUserId: appUser.actorUserId,
+      },
     );
     return c.json(result, 202);
   } catch (error) {
@@ -1428,7 +1624,11 @@ app.post("/projects/:id/clips/render", async (c) => {
   }
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  const access = await projectService.getProjectAccess(
+    appUser.actorUserId,
+    projectId,
+    appUser.workspaceId,
+  );
 
   if (access === "missing") {
     return c.json({ error: "Project not found" }, 404);
@@ -1462,6 +1662,10 @@ app.post("/projects/:id/clips/render", async (c) => {
       parsed.data.clipIds,
       parsed.data.aspectRatios,
       parsed.data.resolution,
+      {
+        workspaceId: appUser.workspaceId,
+        actorUserId: appUser.actorUserId,
+      },
     );
     return c.json(result, 202);
   } catch (error) {
@@ -1503,6 +1707,7 @@ app.post("/projects/:id/clips/:clipId/exports", async (c) => {
       c.req.param("clipId"),
       parsed.data,
       idempotencyKey,
+      { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
     );
     return c.json(result, result.reused && result.export.status === "ready" ? 200 : 202);
   } catch (error) {
@@ -1536,6 +1741,7 @@ app.get("/projects/:id/clips/:clipId/exports/:exportId", async (c) => {
     c.req.param("id"),
     c.req.param("clipId"),
     c.req.param("exportId"),
+    appUser.workspaceId,
   );
   if (!result) return c.json({ error: "Export not found" }, 404);
   return c.json(result, 200, { "Cache-Control": "private, no-store" });
@@ -1544,6 +1750,15 @@ app.get("/projects/:id/clips/:clipId/exports/:exportId", async (c) => {
 app.post("/projects/:id/clips/:clipId/exports/:exportId/retry", async (c) => {
   const appUser = await getCurrentAppUser();
   if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  try {
+    await workspaceService.requireActor(
+      appUser.actorUserId,
+      appUser.workspaceId,
+      "processing.consume",
+    );
+  } catch (error) {
+    return c.json({ error: "Forbidden", message: errorMessage(error) }, 403);
+  }
   const rl = await checkRateLimit(`clip-export-retry:${appUser.id}`, 12, 60);
   if (!rl.allowed) return c.json({ error: "rate_limited" }, 429);
   try {
@@ -1552,6 +1767,7 @@ app.post("/projects/:id/clips/:clipId/exports/:exportId/retry", async (c) => {
       c.req.param("id"),
       c.req.param("clipId"),
       c.req.param("exportId"),
+      appUser.workspaceId,
     );
     return c.json(result, 202);
   } catch (error) {
@@ -1578,6 +1794,7 @@ app.post("/projects/:id/clips/:clipId/exports/:exportId/share-links", async (c) 
       c.req.param("clipId"),
       c.req.param("exportId"),
       parsed.data.expiresInDays,
+      appUser.workspaceId,
     );
     return c.json(result, 201, { "Cache-Control": "private, no-store" });
   } catch (error) {
@@ -1595,6 +1812,7 @@ app.delete("/projects/:id/clips/:clipId/exports/:exportId/share-links", async (c
       c.req.param("id"),
       c.req.param("clipId"),
       c.req.param("exportId"),
+      appUser.workspaceId,
     );
     return c.json(result, 200);
   } catch (error) {
@@ -1611,7 +1829,11 @@ app.post("/projects/:id/clips/apply-caption-preset", async (c) => {
   }
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  const access = await projectService.getProjectAccess(
+    appUser.actorUserId,
+    projectId,
+    appUser.workspaceId,
+  );
 
   if (access === "missing") {
     return c.json({ error: "Project not found" }, 404);
@@ -1655,7 +1877,11 @@ app.post("/projects/:id/clips/apply-studio-edits", async (c) => {
   }
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  const access = await projectService.getProjectAccess(
+    appUser.actorUserId,
+    projectId,
+    appUser.workspaceId,
+  );
 
   if (access === "missing") {
     return c.json({ error: "Project not found" }, 404);
@@ -1706,12 +1932,13 @@ app.post("/billing/checkout", async (c) => {
   const origin = new URL(c.req.url).origin;
   try {
     const result = await billingService.createCheckoutSession(
-      appUser.id,
+      appUser.actorUserId,
+      appUser.workspaceId,
       parsed.data.tier,
       parsed.data.interval,
       {
-        successUrl: `${origin}/dashboard?upgraded=1&session_id={CHECKOUT_SESSION_ID}`,
-        cancelUrl: `${origin}/settings/billing`,
+        successUrl: `${origin}/home?upgraded=1&session_id={CHECKOUT_SESSION_ID}`,
+        cancelUrl: `${origin}/settings/subscription`,
       },
     );
     return c.json(result, 200);
@@ -1737,7 +1964,11 @@ app.post("/billing/confirm", async (c) => {
   }
   try {
     return c.json(
-      await billingService.confirmCheckoutSession(appUser.id, sessionId),
+      await billingService.confirmCheckoutSession(
+        appUser.actorUserId,
+        appUser.workspaceId,
+        sessionId,
+      ),
       200,
     );
   } catch (error) {
@@ -1758,8 +1989,9 @@ app.post("/billing/portal", async (c) => {
   const origin = new URL(c.req.url).origin;
   try {
     const result = await billingService.createBillingPortalSession(
-      appUser.id,
-      `${origin}/settings/billing`,
+      appUser.actorUserId,
+      appUser.workspaceId,
+      `${origin}/settings/subscription`,
     );
     return c.json(result, 200);
   } catch (error) {
@@ -1810,7 +2042,11 @@ app.get("/projects/:id/content-suite", async (c) => {
   if (!appUser) return c.json({ error: "Unauthorized" }, 401);
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  const access = await projectService.getProjectAccess(
+    appUser.actorUserId,
+    projectId,
+    appUser.workspaceId,
+  );
   if (access === "missing") return c.json({ error: "Project not found" }, 404);
   if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
 
@@ -1841,7 +2077,11 @@ app.post("/projects/:id/content-suite", async (c) => {
   }
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  const access = await projectService.getProjectAccess(
+    appUser.actorUserId,
+    projectId,
+    appUser.workspaceId,
+  );
   if (access === "missing") return c.json({ error: "Project not found" }, 404);
   if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
 
@@ -1886,7 +2126,11 @@ app.get("/projects/:id/analytics", async (c) => {
   if (!appUser) return c.json({ error: "Unauthorized" }, 401);
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  const access = await projectService.getProjectAccess(
+    appUser.actorUserId,
+    projectId,
+    appUser.workspaceId,
+  );
   if (access === "missing") return c.json({ error: "Project not found" }, 404);
   if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
 
@@ -1911,7 +2155,7 @@ app.get("/social/accounts", async (c) => {
   if (!appUser) return c.json({ error: "Unauthorized" }, 401);
 
   try {
-    const accounts = await socialOAuthService.listAccounts(appUser.id);
+    const accounts = await socialOAuthService.listAccounts(appUser.id, appUser.workspaceId);
     return c.json({ accounts }, 200);
   } catch (error) {
     return c.json(
@@ -1924,6 +2168,11 @@ app.get("/social/accounts", async (c) => {
 app.get("/social/oauth/start/:platform", async (c) => {
   const appUser = await getCurrentAppUser();
   if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  try {
+    await workspaceService.requireActor(appUser.actorUserId, appUser.workspaceId, "social.manage");
+  } catch {
+    return c.json({ error: "Forbidden" }, 403);
+  }
 
   const parsedPlatform = socialPlatformSchema.safeParse(c.req.param("platform"));
   if (!parsedPlatform.success) {
@@ -1946,6 +2195,8 @@ app.get("/social/oauth/start/:platform", async (c) => {
   try {
     const url = await socialOAuthService.createAuthorizationUrl({
       userId: appUser.id,
+      workspaceId: appUser.workspaceId,
+      actorUserId: appUser.actorUserId,
       platform: parsedPlatform.data,
       origin,
       redirectPath: safeSocialRedirectPath(c.req.query("redirect")),
@@ -1978,7 +2229,7 @@ app.get("/social/oauth/callback", async (c) => {
       503,
     );
   }
-  const redirect = new URL("/settings/social", origin);
+  const redirect = new URL("/settings/social-accounts", origin);
   const code = c.req.query("code");
   const state = c.req.query("state");
   const providerError = c.req.query("error");
@@ -2017,11 +2268,17 @@ app.get("/social/oauth/callback", async (c) => {
 app.delete("/social/accounts/:accountId", async (c) => {
   const appUser = await getCurrentAppUser();
   if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  try {
+    await workspaceService.requireActor(appUser.actorUserId, appUser.workspaceId, "social.manage");
+  } catch {
+    return c.json({ error: "Forbidden" }, 403);
+  }
 
   try {
     await socialOAuthService.disconnectAccount(
       appUser.id,
       c.req.param("accountId"),
+      appUser.workspaceId,
     );
     return c.json({ ok: true }, 200);
   } catch (error) {
@@ -2039,7 +2296,11 @@ app.get("/projects/:id/social-posts", async (c) => {
   if (!appUser) return c.json({ error: "Unauthorized" }, 401);
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  const access = await projectService.getProjectAccess(
+    appUser.actorUserId,
+    projectId,
+    appUser.workspaceId,
+  );
   if (access === "missing") return c.json({ error: "Project not found" }, 404);
   if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
 
@@ -2067,7 +2328,11 @@ app.post("/projects/:id/social-posts", async (c) => {
   }
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  const access = await projectService.getProjectAccess(
+    appUser.actorUserId,
+    projectId,
+    appUser.workspaceId,
+  );
   if (access === "missing") return c.json({ error: "Project not found" }, 404);
   if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
 
@@ -2085,6 +2350,10 @@ app.post("/projects/:id/social-posts", async (c) => {
       appUser.id,
       projectId,
       parsed.data,
+      {
+        workspaceId: appUser.workspaceId,
+        actorUserId: appUser.actorUserId,
+      },
     );
     return c.json(post, 201);
   } catch (error) {
@@ -2100,7 +2369,11 @@ app.delete("/projects/:id/social-posts/:postId", async (c) => {
   if (!appUser) return c.json({ error: "Unauthorized" }, 401);
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  const access = await projectService.getProjectAccess(
+    appUser.actorUserId,
+    projectId,
+    appUser.workspaceId,
+  );
   if (access === "missing") return c.json({ error: "Project not found" }, 404);
   if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
 
@@ -2109,6 +2382,10 @@ app.delete("/projects/:id/social-posts/:postId", async (c) => {
       appUser.id,
       projectId,
       c.req.param("postId"),
+      {
+        workspaceId: appUser.workspaceId,
+        actorUserId: appUser.actorUserId,
+      },
     );
     return c.json(post, 200);
   } catch (error) {
@@ -2124,7 +2401,11 @@ app.post("/projects/:id/social-posts/:postId/metrics", async (c) => {
   if (!appUser) return c.json({ error: "Unauthorized" }, 401);
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  const access = await projectService.getProjectAccess(
+    appUser.actorUserId,
+    projectId,
+    appUser.workspaceId,
+  );
   if (access === "missing") return c.json({ error: "Project not found" }, 404);
   if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
 
@@ -2160,7 +2441,11 @@ app.get("/projects/:id/dubs", async (c) => {
   if (!appUser) return c.json({ error: "Unauthorized" }, 401);
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  const access = await projectService.getProjectAccess(
+    appUser.actorUserId,
+    projectId,
+    appUser.workspaceId,
+  );
   if (access === "missing") return c.json({ error: "Project not found" }, 404);
   if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
 
@@ -2188,7 +2473,11 @@ app.post("/projects/:id/dubs", async (c) => {
   }
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  const access = await projectService.getProjectAccess(
+    appUser.actorUserId,
+    projectId,
+    appUser.workspaceId,
+  );
   if (access === "missing") return c.json({ error: "Project not found" }, 404);
   if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
 
@@ -2233,7 +2522,11 @@ app.get("/projects/:id/dubs/:dubId/download", async (c) => {
   if (!appUser) return c.json({ error: "Unauthorized" }, 401);
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  const access = await projectService.getProjectAccess(
+    appUser.actorUserId,
+    projectId,
+    appUser.workspaceId,
+  );
   if (access === "missing") return c.json({ error: "Project not found" }, 404);
   if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
 
@@ -2271,7 +2564,11 @@ app.get("/projects/:id/clips/:clipId/download", async (c) => {
   }
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(appUser.id, projectId);
+  const access = await projectService.getProjectAccess(
+    appUser.actorUserId,
+    projectId,
+    appUser.workspaceId,
+  );
 
   if (access === "missing") {
     return c.json({ error: "Project not found" }, 404);
@@ -2326,7 +2623,7 @@ function brandTemplateErrorResponse(error: unknown) {
 app.get("/brand-templates", async (c) => {
   const appUser = await getCurrentAppUser();
   if (!appUser) return c.json({ error: "Unauthorized" }, 401);
-  const result = await brandTemplateService.list(appUser.id);
+  const result = await brandTemplateService.list(appUser.id, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
   return c.json(result, 200);
 });
 
@@ -2334,7 +2631,7 @@ app.get("/brand-templates/:id", async (c) => {
   const appUser = await getCurrentAppUser();
   if (!appUser) return c.json({ error: "Unauthorized" }, 401);
   try {
-    const template = await brandTemplateService.get(appUser.id, c.req.param("id"));
+    const template = await brandTemplateService.get(appUser.id, c.req.param("id"), { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
     return c.json(template, 200);
   } catch (error) {
     const { status, body } = brandTemplateErrorResponse(error);
@@ -2351,7 +2648,8 @@ app.post("/brand-templates", async (c) => {
     return c.json({ error: "Invalid payload", issues: parsed.error.issues }, 400);
   }
   try {
-    const template = await brandTemplateService.create(appUser.id, parsed.data);
+    await workspaceService.requireActor(appUser.actorUserId, appUser.workspaceId, "brand.manage");
+    const template = await brandTemplateService.create(appUser.id, parsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
     return c.json(template, 201);
   } catch (error) {
     const { status, body } = brandTemplateErrorResponse(error);
@@ -2368,10 +2666,12 @@ app.patch("/brand-templates/:id", async (c) => {
     return c.json({ error: "Invalid payload", issues: parsed.error.issues }, 400);
   }
   try {
+    await workspaceService.requireActor(appUser.actorUserId, appUser.workspaceId, "brand.manage");
     const template = await brandTemplateService.update(
       appUser.id,
       c.req.param("id"),
       parsed.data,
+      { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
     );
     return c.json(template, 200);
   } catch (error) {
@@ -2384,7 +2684,8 @@ app.delete("/brand-templates/:id", async (c) => {
   const appUser = await getCurrentAppUser();
   if (!appUser) return c.json({ error: "Unauthorized" }, 401);
   try {
-    await brandTemplateService.softDelete(appUser.id, c.req.param("id"));
+    await workspaceService.requireActor(appUser.actorUserId, appUser.workspaceId, "brand.manage");
+    await brandTemplateService.softDelete(appUser.id, c.req.param("id"), { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
     return c.json({ ok: true }, 200);
   } catch (error) {
     const { status, body } = brandTemplateErrorResponse(error);
@@ -2396,7 +2697,8 @@ app.post("/brand-templates/:id/set-default", async (c) => {
   const appUser = await getCurrentAppUser();
   if (!appUser) return c.json({ error: "Unauthorized" }, 401);
   try {
-    await brandTemplateService.setDefault(appUser.id, c.req.param("id"));
+    await workspaceService.requireActor(appUser.actorUserId, appUser.workspaceId, "workspace.manage");
+    await brandTemplateService.setDefault(appUser.id, c.req.param("id"), { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
     return c.json({ ok: true }, 200);
   } catch (error) {
     const { status, body } = brandTemplateErrorResponse(error);
@@ -2413,10 +2715,12 @@ app.post("/brand-templates/:id/duplicate", async (c) => {
     return c.json({ error: "Invalid payload", issues: parsed.error.issues }, 400);
   }
   try {
+    await workspaceService.requireActor(appUser.actorUserId, appUser.workspaceId, "brand.manage");
     const template = await brandTemplateService.duplicate(
       appUser.id,
       c.req.param("id"),
       parsed.data.name,
+      { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
     );
     return c.json(template, 201);
   } catch (error) {
@@ -2443,7 +2747,8 @@ app.post("/brand-templates/logo/presign", async (c) => {
     return c.json({ error: "Invalid payload", issues: parsed.error.issues }, 400);
   }
   try {
-    const result = await brandTemplateService.presignLogoUpload(appUser.id, parsed.data);
+    await workspaceService.requireActor(appUser.actorUserId, appUser.workspaceId, "brand.manage");
+    const result = await brandTemplateService.presignLogoUpload(appUser.id, parsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
     return c.json(result, 200);
   } catch (error) {
     return c.json(
@@ -2460,6 +2765,7 @@ app.get("/brand-templates/:id/logo-url", async (c) => {
     const url = await brandTemplateService.getLogoDownloadUrl(
       appUser.id,
       c.req.param("id"),
+      { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
     );
     if (!url) return c.json({ error: "brand_template_logo_missing" }, 404);
     return c.json({ url }, 200);
@@ -2485,7 +2791,7 @@ app.get("/audio-assets", async (c) => {
     return c.json({ error: "Invalid payload", issues: parsed.error.issues }, 400);
   }
   try {
-    const result = await audioAssetService.listAssets(appUser.id, parsed.data);
+    const result = await audioAssetService.listAssets(appUser.id, parsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
     return c.json(result, 200);
   } catch (error) {
     return c.json(
@@ -2513,7 +2819,8 @@ app.post("/audio-assets/presign-upload", async (c) => {
     return c.json({ error: "Invalid payload", issues: parsed.error.issues }, 400);
   }
   try {
-    const result = await audioAssetService.presignUpload(appUser.id, parsed.data);
+    await workspaceService.requireActor(appUser.actorUserId, appUser.workspaceId, "brand.manage");
+    const result = await audioAssetService.presignUpload(appUser.id, parsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
     return c.json(result, 200);
   } catch (error) {
     return c.json(
@@ -2533,7 +2840,8 @@ app.post("/audio-assets", async (c) => {
     return c.json({ error: "Invalid payload", issues: parsed.error.issues }, 400);
   }
   try {
-    const asset = await audioAssetService.finalizeUpload(appUser.id, parsed.data);
+    await workspaceService.requireActor(appUser.actorUserId, appUser.workspaceId, "brand.manage");
+    const asset = await audioAssetService.finalizeUpload(appUser.id, parsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
     return c.json(asset, 201);
   } catch (error) {
     // L3: a double-click (or a retried finalize) racing the same presigned
@@ -2569,7 +2877,7 @@ app.get("/audio-assets/:id/playback-url", async (c) => {
     return c.json({ error: "Invalid audio asset id" }, 400);
   }
   try {
-    const url = await audioAssetService.getPlaybackUrl(appUser.id, idParsed.data);
+    const url = await audioAssetService.getPlaybackUrl(appUser.id, idParsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
     if (!url) return c.json({ error: "audio_asset_not_found" }, 404);
     return c.json({ url }, 200);
   } catch (error) {
@@ -2586,8 +2894,9 @@ app.put("/audio-assets/:id/favorite", async (c) => {
   const idParsed = audioAssetIdParamSchema.safeParse(c.req.param("id"));
   if (!idParsed.success) return c.json({ error: "Invalid audio asset id" }, 400);
   try {
+    await workspaceService.requireActor(appUser.actorUserId, appUser.workspaceId, "brand.manage");
     return c.json(
-      await audioAssetService.setFavorite(appUser.id, idParsed.data, true),
+      await audioAssetService.setFavorite(appUser.id, idParsed.data, true, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId }),
       200,
     );
   } catch (error) {
@@ -2607,8 +2916,9 @@ app.delete("/audio-assets/:id/favorite", async (c) => {
   const idParsed = audioAssetIdParamSchema.safeParse(c.req.param("id"));
   if (!idParsed.success) return c.json({ error: "Invalid audio asset id" }, 400);
   try {
+    await workspaceService.requireActor(appUser.actorUserId, appUser.workspaceId, "brand.manage");
     return c.json(
-      await audioAssetService.setFavorite(appUser.id, idParsed.data, false),
+      await audioAssetService.setFavorite(appUser.id, idParsed.data, false, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId }),
       200,
     );
   } catch (error) {
@@ -2630,7 +2940,8 @@ app.delete("/audio-assets/:id", async (c) => {
     return c.json({ error: "Invalid audio asset id" }, 400);
   }
   try {
-    await audioAssetService.deleteUserAsset(appUser.id, idParsed.data);
+    await workspaceService.requireActor(appUser.actorUserId, appUser.workspaceId, "brand.manage");
+    await audioAssetService.deleteUserAsset(appUser.id, idParsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
     return c.json({ ok: true }, 200);
   } catch (error) {
     if (error instanceof AudioAssetNotFoundError) {

@@ -52,7 +52,7 @@ export function UpgradedToast({ sessionId }: { sessionId: string | null }) {
               : "Stripe will retry the confirmation automatically.",
         });
       } finally {
-        router.replace("/dashboard", { scroll: false });
+        router.replace("/home", { scroll: false });
         router.refresh();
       }
     })();

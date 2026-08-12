@@ -19,6 +19,7 @@ function linkProviderLabel(sourceProvider: string | null | undefined): string {
 
 interface ProjectThumbnailProps {
   project: ProjectListItem;
+  priority?: boolean;
   /**
    * "card" — full treatment: source chip + timecode chip.
    * "sliver" — bare footage for compact list rows.
@@ -36,6 +37,7 @@ const NOISE_SVG =
 export function ProjectThumbnail({
   project,
   variant = "card",
+  priority = false,
 }: ProjectThumbnailProps) {
   const youtubeId =
     project.sourceType === "youtube"
@@ -59,6 +61,7 @@ export function ProjectThumbnail({
           youtubeId={youtubeId}
           alt={project.title}
           fallbackId={project.id}
+          priority={priority}
         />
       ) : (
         <GradientThumb
@@ -82,10 +85,12 @@ function YoutubeThumb({
   youtubeId,
   alt,
   fallbackId,
+  priority,
 }: {
   youtubeId: string;
   alt: string;
   fallbackId: string;
+  priority: boolean;
 }) {
   const [src, setSrc] = useState(youtubeThumbnailUrl(youtubeId, "max"));
   const [usedFallback, setUsedFallback] = useState(false);
@@ -105,6 +110,7 @@ function YoutubeThumb({
       sizes="(min-width: 1280px) 25vw, (min-width: 1024px) 33vw, (min-width: 640px) 50vw, 100vw"
       style={{ objectFit: "cover" }}
       unoptimized
+      loading={priority ? "eager" : "lazy"}
       onError={() => {
         if (!usedFallback) {
           setUsedFallback(true);

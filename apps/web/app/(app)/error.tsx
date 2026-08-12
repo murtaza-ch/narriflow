@@ -65,7 +65,7 @@ export default function AppError({
             transition="color 120ms ease"
             _hover={{ color: "fg.accent" }}
           >
-            <Link href="/dashboard">Go to dashboard</Link>
+            <Link href="/home">Go to home</Link>
           </Box>
         </Flex>
       </Stack>

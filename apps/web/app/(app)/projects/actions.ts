@@ -3,12 +3,16 @@
 import { randomUUID } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { requireCurrentAppUser } from "@narriflow/auth";
+import {
+  requireWorkspaceAppUser,
+  requireWorkspaceProject,
+} from "@/lib/workspace";
 import {
   clipService,
   IngestNotFailedError,
   IngestRetryLimitExceededError,
   projectService,
+  workspaceLibraryService,
   QuotaExceededError,
   UploadTooLongError,
 } from "@narriflow/services";
@@ -47,28 +51,76 @@ import {
   readLanguageCodeFromForm,
 } from "../upload/_lib/content-pack-form";
 
+export async function createFolderAction(name: string) {
+  try {
+    const appUser = await requireWorkspaceAppUser("content.edit");
+    const folder = await workspaceLibraryService.createFolder(
+      appUser.actorUserId,
+      appUser.workspaceId,
+      name,
+    );
+    revalidatePath("/projects");
+    return { ok: true as const, folder: { ...folder, createdAt: folder.createdAt.toISOString() } };
+  } catch (error) {
+    return { ok: false as const, error: error instanceof Error ? error.message : "Folder creation failed" };
+  }
+}
+
+export async function deleteFolderAction(folderId: string) {
+  const appUser = await requireWorkspaceAppUser("content.edit");
+  await workspaceLibraryService.deleteFolder(appUser.actorUserId, appUser.workspaceId, folderId);
+  revalidatePath("/projects");
+}
+
+export async function renameFolderAction(folderId: string, name: string) {
+  try {
+    const appUser = await requireWorkspaceAppUser("content.edit");
+    await workspaceLibraryService.renameFolder(
+      appUser.actorUserId,
+      appUser.workspaceId,
+      folderId,
+      name,
+    );
+    revalidatePath("/projects");
+    return { ok: true as const };
+  } catch (error) {
+    return { ok: false as const, error: error instanceof Error ? error.message : "Folder rename failed" };
+  }
+}
+
+export async function moveProjectToFolderAction(projectId: string, folderId: string | null) {
+  const appUser = await requireWorkspaceProject(projectId, "content.edit");
+  await workspaceLibraryService.moveProject(
+    appUser.actorUserId,
+    appUser.workspaceId,
+    projectId,
+    folderId,
+  );
+  revalidatePath("/projects");
+}
+
 export async function createProjectFormAction(formData: FormData) {
-  const appUser = await requireCurrentAppUser();
+  const appUser = await requireWorkspaceAppUser("content.edit");
   const title = String(formData.get("title") ?? "");
   const sourceMediaUrl = String(formData.get("sourceMediaUrl") ?? "");
 
-  const project = await projectService.createProject(appUser.id, {
+  const project = await projectService.createProject(appUser.actorUserId, {
     title,
     sourceMediaUrl,
-  });
+  }, appUser.workspaceId);
 
   revalidatePath("/projects");
   redirect(`/projects/${project.id}`);
 }
 
 export async function queueTranscriptionFormAction(formData: FormData) {
-  const appUser = await requireCurrentAppUser();
   const projectId = String(formData.get("projectId") ?? "");
   const idempotencyKey = String(formData.get("idempotencyKey") ?? randomUUID());
 
   if (!projectId) {
     throw new Error("projectId is required");
   }
+  const appUser = await requireWorkspaceProject(projectId, "processing.consume");
 
   try {
     await projectService.triggerGeneration(
@@ -80,6 +132,12 @@ export async function queueTranscriptionFormAction(formData: FormData) {
         languageCode: readLanguageCodeFromForm(formData),
       },
       idempotencyKey,
+      {
+        workspaceContext: {
+          workspaceId: appUser.workspaceId,
+          actorUserId: appUser.actorUserId,
+        },
+      },
     );
   } catch (error) {
     if (isPlanLimitError(error)) {
@@ -95,7 +153,6 @@ export async function queueTranscriptionFormAction(formData: FormData) {
 export const queueGenerationFormAction = queueTranscriptionFormAction;
 
 export async function regenerateClipsFormAction(formData: FormData) {
-  const appUser = await requireCurrentAppUser();
   const projectId = String(formData.get("projectId") ?? "");
   const idempotencyKey = String(
     formData.get("idempotencyKey") ?? randomUUID(),
@@ -104,6 +161,7 @@ export async function regenerateClipsFormAction(formData: FormData) {
   if (!projectId) {
     throw new Error("projectId is required");
   }
+  const appUser = await requireWorkspaceProject(projectId, "processing.consume");
 
   try {
     await clipService.regenerateClips(
@@ -124,7 +182,6 @@ export async function regenerateClipsFormAction(formData: FormData) {
 }
 
 export async function renderClipsFormAction(formData: FormData) {
-  const appUser = await requireCurrentAppUser();
   const projectId = String(formData.get("projectId") ?? "");
   const idempotencyKey = String(
     formData.get("idempotencyKey") ?? randomUUID(),
@@ -137,6 +194,7 @@ export async function renderClipsFormAction(formData: FormData) {
   if (!projectId) {
     throw new Error("projectId is required");
   }
+  const appUser = await requireWorkspaceProject(projectId, "processing.consume");
 
   await clipService.triggerClipRendering(
     appUser.id,
@@ -144,6 +202,11 @@ export async function renderClipsFormAction(formData: FormData) {
     idempotencyKey,
     undefined,
     aspectRatios.length > 0 ? aspectRatios : undefined,
+    "1080p",
+    {
+      workspaceId: appUser.workspaceId,
+      actorUserId: appUser.actorUserId,
+    },
   );
 
   revalidatePath(`/projects/${projectId}`);
@@ -160,15 +223,18 @@ export async function renderClipsFormAction(formData: FormData) {
 export async function retryIngestFormAction(
   formData: FormData,
 ): Promise<{ ok: boolean; error?: string }> {
-  const appUser = await requireCurrentAppUser();
   const projectId = String(formData.get("projectId") ?? "");
 
   if (!projectId) {
     return { ok: false, error: "projectId is required" };
   }
+  const appUser = await requireWorkspaceProject(projectId, "processing.consume");
 
   try {
-    await projectService.retryFailedIngest(appUser.id, projectId);
+    await projectService.retryFailedIngest(appUser.id, projectId, {
+      workspaceId: appUser.workspaceId,
+      actorUserId: appUser.actorUserId,
+    });
   } catch (error) {
     const code =
       error instanceof IngestRetryLimitExceededError
@@ -199,11 +265,10 @@ export async function setNotifyPreferenceAction(
   projectId: string,
   notifyOnComplete: boolean,
 ): Promise<{ ok: boolean; error?: string }> {
-  const appUser = await requireCurrentAppUser();
-
   if (!projectId) {
     return { ok: false, error: "projectId is required" };
   }
+  const appUser = await requireWorkspaceProject(projectId, "content.edit");
 
   try {
     await projectService.setProjectNotifyPreference(
@@ -236,12 +301,12 @@ export async function setNotifyPreferenceAction(
 export async function deleteProjectFormAction(
   formData: FormData,
 ): Promise<{ ok: boolean; error?: string }> {
-  const appUser = await requireCurrentAppUser();
   const projectId = String(formData.get("projectId") ?? "");
 
   if (!projectId) {
     return { ok: false, error: "projectId is required" };
   }
+  const appUser = await requireWorkspaceProject(projectId, "content.edit");
 
   try {
     await projectService.deleteProject(appUser.id, projectId);

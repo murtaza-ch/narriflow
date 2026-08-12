@@ -79,17 +79,19 @@ function PlatformTile({ platform }: { platform: SocialPlatform }) {
 const platforms = Object.keys(platformLabels) as SocialPlatform[];
 
 function connectHref(platform: SocialPlatform) {
-  return `/api/social/oauth/start/${platform}?redirect=/settings/social`;
+  return `/api/social/oauth/start/${platform}?redirect=/settings/social-accounts`;
 }
 
 export function SocialAccountsPanel({
   accounts,
   connectedCount,
   errorCode,
+  canManage,
 }: {
   accounts: SocialAccountSnapshot[];
   connectedCount: number | null;
   errorCode: string | null;
+  canManage: boolean;
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -122,7 +124,7 @@ export function SocialAccountsPanel({
             "Social connection failed. Please try connecting again.",
         });
       }
-      router.replace("/settings/social", { scroll: false });
+      router.replace("/settings/social-accounts", { scroll: false });
     }, 0);
 
     return () => window.clearTimeout(timeoutId);
@@ -233,12 +235,14 @@ export function SocialAccountsPanel({
                       </Text>
                     </Box>
 
-                    <Button asChild size="sm" variant="outline" colorPalette="gray" flexShrink={0}>
-                      <Link href={connectHref(platform)}>
-                        <Link2 size={14} />
-                        {isConnected ? "Add another" : "Connect"}
-                      </Link>
-                    </Button>
+                    {canManage ? (
+                      <Button asChild size="sm" variant="outline" colorPalette="gray" flexShrink={0}>
+                        <Link href={connectHref(platform)}>
+                          <Link2 size={14} />
+                          {isConnected ? "Add another" : "Connect"}
+                        </Link>
+                      </Button>
+                    ) : null}
                   </Flex>
 
                   {platformAccounts.length > 0 ? (
@@ -296,7 +300,7 @@ export function SocialAccountsPanel({
                         </Box>
                       </Flex>
 
-                      <Button
+                      {canManage ? <Button
                         size="xs"
                         variant="ghost"
                         colorPalette="danger"
@@ -306,7 +310,7 @@ export function SocialAccountsPanel({
                       >
                         <Trash2 size={12} />
                         Disconnect
-                      </Button>
+                      </Button> : null}
                     </Flex>
                   ))}
                     </Stack>

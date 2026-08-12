@@ -1,75 +1,83 @@
-import { Box, Flex, Text } from "@chakra-ui/react";
-import { CreditCard, Palette, Share2 } from "lucide-react";
+import { Box, Flex, Stack, Text } from "@chakra-ui/react";
+import {
+  Bell,
+  Braces,
+  Building2,
+  ChartNoAxesCombined,
+  CreditCard,
+  Share2,
+  UserRound,
+  Users,
+} from "lucide-react";
 import { NavLink } from "@narriflow/ui/components/nav-link";
+import { requireWorkspaceAppUser } from "@/lib/workspace";
 
-const SETTINGS_LINKS = [
-  { label: "Brand templates", href: "/settings/brand-templates", icon: Palette },
-  { label: "Social accounts", href: "/settings/social", icon: Share2 },
-  { label: "Billing & plans", href: "/settings/billing", icon: CreditCard },
+const ACCOUNT_LINKS = [
+  { label: "Profile", href: "/settings/profile", icon: UserRound },
+  { label: "Notifications", href: "/settings/notifications", icon: Bell },
 ] as const;
 
-/**
- * Settings shell — one surface for brand templates, social, and billing.
- * Desktop: a slim sticky side rail on the left, page content right. Mobile:
- * the rail collapses into a horizontally scrollable tab row above the page.
- * Each page owns its PageHeader; this layout only draws the rail.
- */
-export default function SettingsLayout({
-  children,
+const WORKSPACE_LINKS = [
+  { label: "Workspace settings", href: "/settings/workspace", icon: Building2 },
+  { label: "Members", href: "/settings/members", icon: Users },
+  { label: "Social accounts", href: "/settings/social-accounts", icon: Share2 },
+  { label: "Subscription", href: "/settings/subscription", icon: CreditCard },
+  { label: "Usage history", href: "/settings/usage", icon: ChartNoAxesCombined },
+  { label: "API", href: "/settings/api", icon: Braces },
+] as const;
+
+function SettingsGroup({
+  label,
+  links,
 }: {
-  children: React.ReactNode;
+  label: string;
+  links: ReadonlyArray<{ label: string; href: string; icon: typeof UserRound }>;
 }) {
+  return (
+    <Stack gap="1">
+      <Text textStyle="eyebrow" color="fg.subtle" px="3" pt="3" pb="1.5">{label}</Text>
+      {links.map(({ label: itemLabel, href, icon: Icon }) => (
+        <Box key={href} flexShrink={0}>
+          <NavLink href={href} icon={<Icon size={14} />}>{itemLabel}</NavLink>
+        </Box>
+      ))}
+    </Stack>
+  );
+}
+
+export default async function SettingsLayout({ children }: { children: React.ReactNode }) {
+  const appUser = await requireWorkspaceAppUser();
   return (
     <Flex
       direction={{ base: "column", lg: "row" }}
       align="flex-start"
       gap={{ base: "5", lg: "10" }}
-      maxW="1120px"
+      maxW="1180px"
       mx="auto"
       w="full"
     >
       <Box
         as="nav"
         aria-label="Settings sections"
-        w={{ base: "full", lg: "200px" }}
+        w={{ base: "full", lg: "220px" }}
         flexShrink={0}
         position={{ lg: "sticky" }}
         top={{ lg: "20" }}
       >
-        <Text
-          textStyle="eyebrow"
-          color="fg.subtle"
-          px="3"
-          mb="2"
-          display={{ base: "none", lg: "block" }}
-        >
-          Settings
-        </Text>
         <Flex
           direction={{ base: "row", lg: "column" }}
-          gap="1"
+          gap={{ base: "4", lg: "2" }}
           overflowX={{ base: "auto", lg: "visible" }}
           borderBottomWidth={{ base: "1px", lg: "0" }}
           borderColor="border"
-          pb={{ base: "2", lg: "0" }}
-          css={{
-            scrollbarWidth: "none",
-            "&::-webkit-scrollbar": { display: "none" },
-          }}
+          pb={{ base: "3", lg: "0" }}
+          css={{ scrollbarWidth: "none", "&::-webkit-scrollbar": { display: "none" } }}
         >
-          {SETTINGS_LINKS.map(({ label, href, icon: Icon }) => (
-            <Box key={href} flexShrink={0}>
-              <NavLink href={href} icon={<Icon size={14} />}>
-                {label}
-              </NavLink>
-            </Box>
-          ))}
+          <SettingsGroup label="Your account" links={ACCOUNT_LINKS} />
+          <SettingsGroup label={appUser.workspace.workspaceName} links={WORKSPACE_LINKS} />
         </Flex>
       </Box>
-
-      <Box flex="1" minW="0" w="full">
-        {children}
-      </Box>
+      <Box flex="1" minW="0" w="full">{children}</Box>
     </Flex>
   );
 }

@@ -20,7 +20,7 @@ const FOOTER_COLUMNS: {
       { label: "Features", href: "/#features" },
       { label: "How it works", href: "/#pipeline" },
       { label: "Pricing", href: "/pricing" },
-      { label: "Dashboard", href: "/dashboard" },
+      { label: "Home", href: "/home" },
     ],
   },
   {

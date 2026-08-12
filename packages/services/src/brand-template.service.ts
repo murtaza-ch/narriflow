@@ -22,6 +22,12 @@ import {
 
 const FALLBACK_BUILT_IN_KEY = "karaoke";
 
+type BrandWorkspaceContext = { workspaceId: string; actorUserId: string };
+
+function ownedTemplateWhere(userId: string, context?: BrandWorkspaceContext) {
+  return context ? { workspaceId: context.workspaceId } : { userId };
+}
+
 export class BrandTemplateNotFoundError extends Error {
   constructor() {
     super("brand template not found");
@@ -82,9 +88,12 @@ function applyBrandColorsToCaption(
  * (`brand-templates/{userId}/`). Without this, a user could point a template at
  * another tenant's R2 object and exfiltrate it via the logo download URL.
  */
-function assertOwnedLogoKey(userId: string, key: string | null | undefined) {
+function assertOwnedLogoKey(userId: string, key: string | null | undefined, context?: BrandWorkspaceContext) {
   if (!key) return;
-  if (!key.startsWith(`brand-templates/${userId}/`)) {
+  const prefix = context
+    ? `workspaces/${context.workspaceId}/brand-templates/`
+    : `brand-templates/${userId}/`;
+  if (!key.startsWith(prefix)) {
     throw new BrandTemplateForbiddenError();
   }
 }
@@ -115,7 +124,7 @@ export class BrandTemplateService {
     };
   }
 
-  async list(userId: string): Promise<{
+  async list(userId: string, context?: BrandWorkspaceContext): Promise<{
     builtIns: BrandTemplateSummary[];
     mine: BrandTemplateSummary[];
     defaultId: string | null;
@@ -127,13 +136,12 @@ export class BrandTemplateService {
         orderBy: { name: "asc" },
       }),
       prisma.brandTemplate.findMany({
-        where: { userId, deletedAt: null },
+        where: { ...ownedTemplateWhere(userId, context), deletedAt: null },
         orderBy: { createdAt: "desc" },
       }),
-      prisma.user.findUnique({
-        where: { id: userId },
-        select: { defaultBrandTemplateId: true },
-      }),
+      context
+        ? prisma.workspace.findUnique({ where: { id: context.workspaceId }, select: { defaultBrandTemplateId: true } })
+        : prisma.user.findUnique({ where: { id: userId }, select: { defaultBrandTemplateId: true } }),
     ]);
 
     return {
@@ -143,13 +151,13 @@ export class BrandTemplateService {
     };
   }
 
-  async get(userId: string, id: string): Promise<BrandTemplateSummary> {
+  async get(userId: string, id: string, context?: BrandWorkspaceContext): Promise<BrandTemplateSummary> {
     const prisma = this.requirePrisma();
     const template = await prisma.brandTemplate.findFirst({
       where: {
         id,
         deletedAt: null,
-        OR: [{ isBuiltIn: true }, { userId }],
+        OR: [{ isBuiltIn: true }, ownedTemplateWhere(userId, context)],
       },
     });
     if (!template) throw new BrandTemplateNotFoundError();
@@ -158,22 +166,25 @@ export class BrandTemplateService {
 
   // userId is REQUIRED so tenancy is always enforced — a non-built-in template
   // owned by another user is never returned.
-  async getRaw(id: string, userId: string): Promise<BrandTemplate | null> {
+  async getRaw(id: string, userId: string, context?: BrandWorkspaceContext): Promise<BrandTemplate | null> {
     const prisma = this.requirePrisma();
     const template = await prisma.brandTemplate.findFirst({
       where: { id, deletedAt: null },
     });
     if (!template) return null;
-    if (!template.isBuiltIn && template.userId !== userId) return null;
+    if (!template.isBuiltIn) {
+      if (context ? template.workspaceId !== context.workspaceId : template.userId !== userId) return null;
+    }
     return template;
   }
 
   async create(
     userId: string,
     input: BrandTemplateInput,
+    context?: BrandWorkspaceContext,
   ): Promise<BrandTemplateSummary> {
     const parsed = brandTemplateInputSchema.parse(input);
-    assertOwnedLogoKey(userId, parsed.logoStorageKey);
+    assertOwnedLogoKey(userId, parsed.logoStorageKey, context);
     const captionPreset = applyBrandColorsToCaption(
       parsed.captionPreset,
       parsed.primaryColor,
@@ -184,6 +195,9 @@ export class BrandTemplateService {
     const template = await prisma.brandTemplate.create({
       data: {
         userId,
+        workspaceId: context?.workspaceId ?? null,
+        createdByUserId: context?.actorUserId ?? userId,
+        updatedByUserId: context?.actorUserId ?? userId,
         name: parsed.name,
         isBuiltIn: false,
         captionPreset: captionPreset as unknown as PrismaTypes.InputJsonValue,
@@ -203,6 +217,7 @@ export class BrandTemplateService {
     userId: string,
     id: string,
     input: BrandTemplateUpdate,
+    context?: BrandWorkspaceContext,
   ): Promise<BrandTemplateSummary> {
     const parsed = brandTemplateUpdateSchema.parse(input);
     const prisma = this.requirePrisma();
@@ -211,14 +226,17 @@ export class BrandTemplateService {
       where: { id, deletedAt: null },
     });
     if (!existing) throw new BrandTemplateNotFoundError();
-    if (existing.isBuiltIn || existing.userId !== userId) {
+    if (
+      existing.isBuiltIn ||
+      (context ? existing.workspaceId !== context.workspaceId : existing.userId !== userId)
+    ) {
       throw new BrandTemplateForbiddenError();
     }
 
     const data: PrismaTypes.BrandTemplateUpdateInput = {};
     if (parsed.name !== undefined) data.name = parsed.name;
     if (parsed.logoStorageKey !== undefined) {
-      assertOwnedLogoKey(userId, parsed.logoStorageKey);
+      assertOwnedLogoKey(userId, parsed.logoStorageKey, context);
       data.logoStorageKey = parsed.logoStorageKey;
     }
     if (parsed.logoPosition !== undefined) data.logoPosition = parsed.logoPosition;
@@ -241,6 +259,7 @@ export class BrandTemplateService {
       nextSecondary,
     );
     data.captionPreset = nextCaption as unknown as PrismaTypes.InputJsonValue;
+    if (context) data.updatedByUserId = context.actorUserId;
 
     const updated = await prisma.brandTemplate.update({
       where: { id },
@@ -250,13 +269,16 @@ export class BrandTemplateService {
     return toSummary(updated);
   }
 
-  async softDelete(userId: string, id: string): Promise<void> {
+  async softDelete(userId: string, id: string, context?: BrandWorkspaceContext): Promise<void> {
     const prisma = this.requirePrisma();
     const existing = await prisma.brandTemplate.findFirst({
       where: { id, deletedAt: null },
     });
     if (!existing) throw new BrandTemplateNotFoundError();
-    if (existing.isBuiltIn || existing.userId !== userId) {
+    if (
+      existing.isBuiltIn ||
+      (context ? existing.workspaceId !== context.workspaceId : existing.userId !== userId)
+    ) {
       throw new BrandTemplateForbiddenError();
     }
 
@@ -265,41 +287,50 @@ export class BrandTemplateService {
         where: { id },
         data: { deletedAt: new Date() },
       });
-      await tx.user.updateMany({
-        where: { id: userId, defaultBrandTemplateId: id },
-        data: { defaultBrandTemplateId: null },
-      });
+      if (context) {
+        await tx.workspace.updateMany({
+          where: { id: context.workspaceId, defaultBrandTemplateId: id },
+          data: { defaultBrandTemplateId: null },
+        });
+      } else {
+        await tx.user.updateMany({
+          where: { id: userId, defaultBrandTemplateId: id },
+          data: { defaultBrandTemplateId: null },
+        });
+      }
     });
   }
 
-  async setDefault(userId: string, id: string): Promise<void> {
+  async setDefault(userId: string, id: string, context?: BrandWorkspaceContext): Promise<void> {
     const prisma = this.requirePrisma();
     const template = await prisma.brandTemplate.findFirst({
       where: {
         id,
         deletedAt: null,
-        OR: [{ isBuiltIn: true }, { userId }],
+        OR: [{ isBuiltIn: true }, ownedTemplateWhere(userId, context)],
       },
     });
     if (!template) throw new BrandTemplateNotFoundError();
 
-    await prisma.user.update({
-      where: { id: userId },
-      data: { defaultBrandTemplateId: id },
-    });
+    if (context) {
+      await prisma.workspace.update({ where: { id: context.workspaceId }, data: { defaultBrandTemplateId: id } });
+    } else {
+      await prisma.user.update({ where: { id: userId }, data: { defaultBrandTemplateId: id } });
+    }
   }
 
   async duplicate(
     userId: string,
     id: string,
     newName?: string,
+    context?: BrandWorkspaceContext,
   ): Promise<BrandTemplateSummary> {
     const prisma = this.requirePrisma();
     const source = await prisma.brandTemplate.findFirst({
       where: {
         id,
         deletedAt: null,
-        OR: [{ isBuiltIn: true }, { userId }],
+        OR: [{ isBuiltIn: true }, ownedTemplateWhere(userId, context)],
       },
     });
     if (!source) throw new BrandTemplateNotFoundError();
@@ -307,6 +338,9 @@ export class BrandTemplateService {
     const duplicated = await prisma.brandTemplate.create({
       data: {
         userId,
+        workspaceId: context?.workspaceId ?? null,
+        createdByUserId: context?.actorUserId ?? userId,
+        updatedByUserId: context?.actorUserId ?? userId,
         name: newName?.trim() || `${source.name} (Copy)`,
         isBuiltIn: false,
         captionPreset: source.captionPreset as PrismaTypes.InputJsonValue,
@@ -322,19 +356,18 @@ export class BrandTemplateService {
     return toSummary(duplicated);
   }
 
-  async ensureFirstUseDefault(userId: string): Promise<string | null> {
+  async ensureFirstUseDefault(userId: string, context?: BrandWorkspaceContext): Promise<string | null> {
     const prisma = this.requirePrisma();
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { defaultBrandTemplateId: true },
-    });
-    if (!user) return null;
-    if (user.defaultBrandTemplateId) {
+    const owner = context
+      ? await prisma.workspace.findUnique({ where: { id: context.workspaceId }, select: { defaultBrandTemplateId: true } })
+      : await prisma.user.findUnique({ where: { id: userId }, select: { defaultBrandTemplateId: true } });
+    if (!owner) return null;
+    if (owner.defaultBrandTemplateId) {
       const stillExists = await prisma.brandTemplate.findFirst({
-        where: { id: user.defaultBrandTemplateId, deletedAt: null },
+        where: { id: owner.defaultBrandTemplateId, deletedAt: null },
         select: { id: true },
       });
-      if (stillExists) return user.defaultBrandTemplateId;
+      if (stillExists) return owner.defaultBrandTemplateId;
     }
 
     const fallback = await prisma.brandTemplate.findFirst({
@@ -343,30 +376,31 @@ export class BrandTemplateService {
     });
     if (!fallback) return null;
 
-    await prisma.user.update({
-      where: { id: userId },
-      data: { defaultBrandTemplateId: fallback.id },
-    });
+    if (context) {
+      await prisma.workspace.update({ where: { id: context.workspaceId }, data: { defaultBrandTemplateId: fallback.id } });
+    } else {
+      await prisma.user.update({ where: { id: userId }, data: { defaultBrandTemplateId: fallback.id } });
+    }
     return fallback.id;
   }
 
   async resolveSnapshotForUser(
     userId: string,
     requestedTemplateId: string | null | undefined,
+    context?: BrandWorkspaceContext,
   ): Promise<{ snapshot: BrandTemplateSnapshot; templateId: string } | null> {
     const prisma = this.requirePrisma();
 
     let templateId: string | null = requestedTemplateId ?? null;
     if (!templateId) {
-      const user = await prisma.user.findUnique({
-        where: { id: userId },
-        select: { defaultBrandTemplateId: true },
-      });
-      templateId = user?.defaultBrandTemplateId ?? null;
+      const owner = context
+        ? await prisma.workspace.findUnique({ where: { id: context.workspaceId }, select: { defaultBrandTemplateId: true } })
+        : await prisma.user.findUnique({ where: { id: userId }, select: { defaultBrandTemplateId: true } });
+      templateId = owner?.defaultBrandTemplateId ?? null;
     }
 
     if (!templateId) {
-      templateId = await this.ensureFirstUseDefault(userId);
+      templateId = await this.ensureFirstUseDefault(userId, context);
     }
     if (!templateId) return null;
 
@@ -374,7 +408,7 @@ export class BrandTemplateService {
       where: {
         id: templateId,
         deletedAt: null,
-        OR: [{ isBuiltIn: true }, { userId }],
+        OR: [{ isBuiltIn: true }, ownedTemplateWhere(userId, context)],
       },
     });
     if (!template) return null;
@@ -382,7 +416,7 @@ export class BrandTemplateService {
     return { snapshot: this.buildSnapshot(template), templateId: template.id };
   }
 
-  async presignLogoUpload(userId: string, input: PresignBrandLogoInput) {
+  async presignLogoUpload(userId: string, input: PresignBrandLogoInput, context?: BrandWorkspaceContext) {
     const parsed = presignBrandLogoSchema.parse(input);
     if (!isR2Configured()) {
       throw new Error("R2 configuration is missing");
@@ -395,7 +429,9 @@ export class BrandTemplateService {
           ? "webp"
           : "jpg";
 
-    const key = `brand-templates/${userId}/${randomUUID()}.${ext}`;
+    const key = context
+      ? `workspaces/${context.workspaceId}/brand-templates/${randomUUID()}.${ext}`
+      : `brand-templates/${userId}/${randomUUID()}.${ext}`;
     const uploadUrl = await presignSingleUploadUrl({
       key,
       contentType: parsed.contentType,
@@ -406,8 +442,9 @@ export class BrandTemplateService {
   async getLogoDownloadUrl(
     userId: string,
     templateId: string,
+    context?: BrandWorkspaceContext,
   ): Promise<string | null> {
-    const template = await this.getRaw(templateId, userId);
+    const template = await this.getRaw(templateId, userId, context);
     if (!template?.logoStorageKey) return null;
     return presignDownloadUrl({ key: template.logoStorageKey });
   }

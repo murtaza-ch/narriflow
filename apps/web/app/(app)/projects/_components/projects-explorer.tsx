@@ -1,15 +1,17 @@
 "use client";
 
 import { Box, Center, HStack, SimpleGrid, Stack, Text } from "@chakra-ui/react";
-import { startTransition, useEffect, useMemo, useState } from "react";
+import { startTransition, useEffect, useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Inbox, TriangleAlert } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
+import { Select } from "@narriflow/ui/components/select";
 import type { ProjectListItem, ProjectListPage } from "@narriflow/services";
 import { FilterToolbar } from "./filter-toolbar";
 import { ProjectCard } from "./project-card";
 import { ProjectRow } from "./project-row";
+import { moveProjectToFolderAction } from "../actions";
 
 export type StatusFilter =
   | "all"
@@ -28,6 +30,40 @@ interface ProjectsExplorerProps {
   initialProjects: ProjectListItem[];
   initialNextCursor: string | null;
   totalCount: number;
+  folderId?: string;
+  folders: Array<{ id: string; name: string }>;
+  canEdit: boolean;
+}
+
+function FolderControl({
+  project,
+  folders,
+}: {
+  project: ProjectListItem;
+  folders: Array<{ id: string; name: string }>;
+}) {
+  const router = useRouter();
+  const [pending, startMove] = useTransition();
+  return (
+    <Select
+      ariaLabel={`Move ${project.title} to folder`}
+      value={project.folderId ?? ""}
+      onValueChange={(value) => {
+        const folderId = value || null;
+        startMove(async () => {
+          await moveProjectToFolderAction(project.id, folderId);
+          router.refresh();
+        });
+      }}
+      mt="2"
+      size="sm"
+      disabled={pending}
+      items={[
+        { value: "", label: "No folder" },
+        ...folders.map((folder) => ({ value: folder.id, label: folder.name })),
+      ]}
+    />
+  );
 }
 
 const PROCESSING_STATUSES = new Set([
@@ -77,6 +113,9 @@ export function ProjectsExplorer({
   initialProjects,
   initialNextCursor,
   totalCount: initialTotalCount,
+  folderId,
+  folders,
+  canEdit,
 }: ProjectsExplorerProps) {
   const router = useRouter();
   // Page 1 always comes from the server props; only the extra pages that
@@ -251,6 +290,7 @@ export function ProjectsExplorer({
         cursor: nextCursor,
         limit: "50",
       });
+      if (folderId) params.set("folder", folderId);
       const response = await fetch(`/api/projects?${params.toString()}`);
       if (!response.ok) throw new Error("Failed to load more projects");
       const page = (await response.json()) as ProjectListPage;
@@ -306,11 +346,14 @@ export function ProjectsExplorer({
           {filtered.map((project, index) => (
             <Box
               key={project.id}
+              draggable={canEdit}
+              onDragStart={(event) => event.dataTransfer.setData("application/x-narriflow-project", project.id)}
               animation="fade-up"
               animationFillMode="backwards"
               style={{ animationDelay: `${Math.min(index, 11) * 60}ms` }}
             >
-              <ProjectCard project={project} />
+              <ProjectCard project={project} priority={index < 4} />
+              {canEdit ? <FolderControl project={project} folders={folders} /> : null}
             </Box>
           ))}
         </SimpleGrid>
@@ -319,11 +362,14 @@ export function ProjectsExplorer({
           {filtered.map((project, index) => (
             <Box
               key={project.id}
+              draggable={canEdit}
+              onDragStart={(event) => event.dataTransfer.setData("application/x-narriflow-project", project.id)}
               animation="fade-up"
               animationFillMode="backwards"
               style={{ animationDelay: `${Math.min(index, 11) * 40}ms` }}
             >
               <ProjectRow project={project} />
+              {canEdit ? <FolderControl project={project} folders={folders} /> : null}
             </Box>
           ))}
         </Box>

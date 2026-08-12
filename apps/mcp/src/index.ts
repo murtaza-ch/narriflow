@@ -5,6 +5,7 @@ import {
   autopilotService,
   clipService,
   projectService,
+  workspaceService,
 } from "@narriflow/services";
 import {
   BRAND_DEFAULT_CAPTION_PRESET_ID,
@@ -17,6 +18,14 @@ function requireUserId() {
     throw new Error("NARRIFLOW_MCP_USER_ID is required");
   }
   return userId;
+}
+
+async function requireWorkspaceContext(capability: "content.view" | "content.edit" = "content.view") {
+  const userId = requireUserId();
+  const workspaceId = process.env.NARRIFLOW_MCP_WORKSPACE_ID?.trim()
+    || await workspaceService.getPersonalWorkspaceId(userId);
+  const actor = await workspaceService.requireActor(userId, workspaceId, capability);
+  return { userId, workspaceId, legacyOwnerUserId: actor.workspaceOwnerUserId };
 }
 
 function jsonContent(value: unknown) {
@@ -73,10 +82,11 @@ server.registerTool(
     },
   },
   async ({ limit, cursor }) => {
-    const userId = requireUserId();
+    const { userId, workspaceId } = await requireWorkspaceContext();
     const page = await projectService.listProjectsWithStatsPage(userId, {
       limit,
       cursor: cursor ?? null,
+      workspaceId,
     });
     return jsonContent(page);
   },
@@ -93,14 +103,14 @@ server.registerTool(
     },
   },
   async ({ projectId }) => {
-    const userId = requireUserId();
-    const project = await projectService.getProjectSnapshot(userId, projectId);
+    const { userId, workspaceId, legacyOwnerUserId } = await requireWorkspaceContext();
+    const project = await projectService.getProjectSnapshot(userId, projectId, workspaceId);
     if (!project.project) {
       return jsonContent({ project: null, transcript: null, clips: [] });
     }
     const [transcript, clips] = await Promise.all([
-      projectService.getTranscriptSnapshot(userId, projectId),
-      clipService.listClips(userId, projectId),
+      projectService.getTranscriptSnapshot(legacyOwnerUserId, projectId),
+      clipService.listClips(legacyOwnerUserId, projectId),
     ]);
     return jsonContent({ project, transcript, clips });
   },
@@ -123,8 +133,8 @@ server.registerTool(
     },
   },
   async (input) => {
-    const userId = requireUserId();
-    const rule = await autopilotService.createRule(userId, {
+    const { userId, workspaceId, legacyOwnerUserId } = await requireWorkspaceContext("content.edit");
+    const rule = await autopilotService.createRule(legacyOwnerUserId, {
       name: input.name,
       rssUrl: input.rssUrl,
       titlePrefix: input.titlePrefix ?? null,
@@ -134,7 +144,7 @@ server.registerTool(
         clipCountTarget: input.clipCountTarget,
         autoRenderClips: input.autoRenderClips,
       }),
-    });
+    }, { workspaceId, actorUserId: userId });
     return jsonContent(rule);
   },
 );
@@ -150,8 +160,12 @@ server.registerTool(
     },
   },
   async ({ ruleId }) => {
-    const userId = requireUserId();
-    const rule = await autopilotService.triggerRuleNow(userId, ruleId);
+    const { userId, workspaceId, legacyOwnerUserId } = await requireWorkspaceContext("content.edit");
+    const rule = await autopilotService.triggerRuleNow(
+      legacyOwnerUserId,
+      ruleId,
+      { workspaceId, actorUserId: userId },
+    );
     return jsonContent(rule);
   },
 );

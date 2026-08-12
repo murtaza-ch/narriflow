@@ -4,8 +4,9 @@ import { useMemo, useState } from "react";
 import { useClerk } from "@clerk/nextjs";
 import { Box, Flex, Image, Menu, Portal, Stack, Text } from "@chakra-ui/react";
 import Link from "next/link";
-import { ChevronsUpDown, CreditCard, LogOut, Palette, Share2 } from "lucide-react";
+import { BadgeDollarSign, ChevronsUpDown, CreditCard, LogOut, UserRound } from "lucide-react";
 import { Spinner } from "@narriflow/ui/components/spinner";
+import { getDisplayName, getInitials } from "@/lib/account-display";
 
 interface AccountMenuProps {
   firstName: string | null;
@@ -17,22 +18,6 @@ interface AccountMenuProps {
    * "row" — full-width identity row trigger for the sidebar account cluster.
    */
   variant?: "avatar" | "row";
-}
-
-export function getDisplayName(firstName: string | null, lastName: string | null) {
-  const name = [firstName, lastName].filter(Boolean).join(" ").trim();
-  return name.length > 0 ? name : "Account";
-}
-
-export function getInitials(firstName: string | null, lastName: string | null, email: string | null) {
-  const source = [firstName, lastName].filter(Boolean) as string[];
-  if (source.length > 0) {
-    return source.map((part) => part.charAt(0).toUpperCase()).join("").slice(0, 2);
-  }
-  if (email && email.length > 0) {
-    return email.charAt(0).toUpperCase();
-  }
-  return "U";
 }
 
 /** Clerk avatar (image when present, initials otherwise). Shared by the shell. */
@@ -73,9 +58,8 @@ export function AccountAvatar({
 }
 
 const MENU_LINKS = [
-  { label: "Brand templates", href: "/settings/brand-templates", icon: Palette },
-  { label: "Billing & plans", href: "/settings/billing", icon: CreditCard },
-  { label: "Social accounts", href: "/settings/social", icon: Share2 },
+  { label: "Account", href: "/settings/profile", icon: UserRound },
+  { label: "Subscription", href: "/settings/subscription", icon: BadgeDollarSign },
 ] as const;
 
 export function AccountMenu({
@@ -87,6 +71,7 @@ export function AccountMenu({
 }: AccountMenuProps) {
   const { signOut } = useClerk();
   const [isSigningOut, setIsSigningOut] = useState(false);
+  const [isOpeningPortal, setIsOpeningPortal] = useState(false);
 
   const displayName = useMemo(() => getDisplayName(firstName, lastName), [firstName, lastName]);
   const initials = useMemo(
@@ -101,6 +86,19 @@ export function AccountMenu({
       await signOut({ redirectUrl: "/" });
     } finally {
       setIsSigningOut(false);
+    }
+  }
+
+  async function openBillingPortal() {
+    if (isOpeningPortal) return;
+    setIsOpeningPortal(true);
+    try {
+      const response = await fetch("/api/billing/portal", { method: "POST" });
+      const body = (await response.json()) as { url?: string; message?: string };
+      if (!response.ok || !body.url) throw new Error(body.message ?? "Billing portal unavailable");
+      window.location.assign(body.url);
+    } finally {
+      setIsOpeningPortal(false);
     }
   }
 
@@ -171,6 +169,18 @@ export function AccountMenu({
                 </Link>
               </Menu.Item>
             ))}
+            <Menu.Item
+              value="payment-billing"
+              fontSize="13px"
+              gap="2"
+              borderRadius="l1"
+              closeOnSelect={false}
+              disabled={isOpeningPortal}
+              onClick={openBillingPortal}
+            >
+              {isOpeningPortal ? <Spinner size="xs" /> : <CreditCard size={14} />}
+              {isOpeningPortal ? "Opening billing…" : "Payment & billing"}
+            </Menu.Item>
             <Menu.Separator />
             <Menu.Item
               value="sign-out"

@@ -18,9 +18,9 @@ import {
 
 const TIER_RANK: Record<PricingTier, number> = {
   free: 0,
-  starter: 1,
-  creator: 2,
-  pro: 3,
+  creator: 1,
+  pro: 2,
+  business: 3,
 };
 
 export function BillingPlans({
@@ -28,11 +28,15 @@ export function BillingPlans({
   availableTiers,
   isConfigured,
   checkoutSucceeded = false,
+  workspaceStatus = "active",
+  canManageBilling = false,
 }: {
   currentTier: PricingTier;
   availableTiers: PaidPricingTier[];
   isConfigured: boolean;
   checkoutSucceeded?: boolean;
+  workspaceStatus?: "active" | "pending_payment" | "restricted";
+  canManageBilling?: boolean;
 }) {
   const router = useRouter();
   const [interval, setInterval] = useState<BillingInterval>("annual");
@@ -51,7 +55,7 @@ export function BillingPlans({
       title: "You're upgraded",
       description: "Your new plan limits are active.",
     });
-    router.replace("/settings/billing", { scroll: false });
+    router.replace("/settings/subscription", { scroll: false });
   }, [checkoutSucceeded, router]);
 
   async function post(url: string, body?: unknown): Promise<string> {
@@ -149,6 +153,7 @@ export function BillingPlans({
         {availableTiers.map((tier, index) => {
           const info = PRICING_TABLE[tier];
           const isCurrent = currentTier === tier;
+          const needsCheckout = isCurrent && workspaceStatus === "pending_payment";
           const isDowngrade = TIER_RANK[currentTier] > TIER_RANK[tier];
           const perMonth =
             interval === "annual"
@@ -174,7 +179,7 @@ export function BillingPlans({
                 <Box>
                   <Box h="3px" w="full" bg="accent.solid" mb="1.5" />
                   <Text textStyle="eyebrow" color="accent.fg">
-                    Current plan
+                    {needsCheckout ? "Payment pending" : "Current plan"}
                   </Text>
                 </Box>
               ) : recommended ? (
@@ -253,7 +258,7 @@ export function BillingPlans({
               </Stack>
 
               <Box mt="1">
-                {isCurrent ? (
+                {isCurrent && !needsCheckout ? (
                   <Button size="sm" variant="outline" disabled width="100%">
                     <Check size={14} />
                     Current plan
@@ -264,10 +269,14 @@ export function BillingPlans({
                     variant={recommended ? "solid" : "outline"}
                     width="100%"
                     loading={busy === tier}
-                    disabled={busy !== null || isDowngrade}
+                    disabled={busy !== null || isDowngrade || !canManageBilling}
                     onClick={() => checkout(tier)}
                   >
-                    {isDowngrade ? "Included" : `Upgrade to ${info.name}`}
+                    {needsCheckout
+                      ? "Complete checkout"
+                      : isDowngrade
+                        ? "Included"
+                        : `Upgrade to ${info.name}`}
                   </Button>
                 )}
               </Box>
@@ -276,7 +285,7 @@ export function BillingPlans({
         })}
       </Grid>
 
-      {isPaid ? (
+      {isPaid && workspaceStatus !== "pending_payment" && canManageBilling ? (
         <Box>
           <Button
             size="sm"
@@ -289,6 +298,11 @@ export function BillingPlans({
             Manage subscription &amp; invoices
           </Button>
         </Box>
+      ) : null}
+      {!canManageBilling ? (
+        <Text fontSize="12px" color="fg.subtle">
+          Only the workspace owner can change its subscription or payment method.
+        </Text>
       ) : null}
     </Stack>
   );

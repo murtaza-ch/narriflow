@@ -213,7 +213,7 @@ export class ContentSuiteService {
       select: { pricingTier: true },
     });
     const tier = resolvePricingTier(owner?.pricingTier);
-    if (tier === "free" || tier === "starter") {
+    if (tier === "free") {
       throw new ContentSuiteError(
         "requires_creator_plan",
         "Content-suite repurposing is available on Creator and Pro plans.",

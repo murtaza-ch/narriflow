@@ -1,7 +1,7 @@
 import { Box, Stack, Text } from "@chakra-ui/react";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { StatBand } from "@narriflow/ui/components/stat-band";
-import { requireCurrentAppUser } from "@narriflow/auth";
+import { requireWorkspaceAppUser as requireCurrentAppUser } from "@/lib/workspace";
 import { billingService, projectService } from "@narriflow/services";
 import { MONTHLY_PROCESSING_MINUTE_LIMITS } from "@narriflow/validators";
 import { BillingPlans } from "./billing-plans";
@@ -21,8 +21,8 @@ export default async function BillingPage({
 }) {
   const appUser = await requireCurrentAppUser();
   const [tier, usedMinutes, params] = await Promise.all([
-    projectService.getUserPricingTier(appUser.id),
-    projectService.getMonthlyUsageMinutes(appUser.id),
+    projectService.getWorkspacePricingTier(appUser.workspaceId),
+    projectService.getWorkspaceMonthlyUsageMinutes(appUser.workspaceId),
     searchParams,
   ]);
   const limitMinutes = MONTHLY_PROCESSING_MINUTE_LIMITS[tier];
@@ -83,6 +83,8 @@ export default async function BillingPage({
           availableTiers={billingService.configuredTiers()}
           isConfigured={billingService.isConfigured()}
           checkoutSucceeded={Boolean(params.success ?? params.upgraded)}
+          workspaceStatus={appUser.workspace.status}
+          canManageBilling={appUser.workspace.role === "owner"}
         />
       </Box>
     </Stack>

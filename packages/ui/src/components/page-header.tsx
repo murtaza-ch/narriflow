@@ -45,7 +45,7 @@ export function PageHeader({
         wrap="wrap"
         pt={rule ? "4" : "0"}
       >
-        <Stack gap="1.5" minW="0" flex="1">
+        <Stack gap="1.5" flex="1" minW="0">
           <Heading as="h1" textStyle="title" fontSize={{ base: "24px", md: "30px" }}>
             {title}
           </Heading>

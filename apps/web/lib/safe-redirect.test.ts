@@ -5,7 +5,7 @@ import {
   safeSocialRedirectPath,
 } from "./safe-redirect";
 
-const DEFAULT_REDIRECT = "/settings/social";
+const DEFAULT_REDIRECT = "/settings/social-accounts";
 
 describe("safeSocialRedirectPath", () => {
   test.each([
@@ -25,15 +25,15 @@ describe("safeSocialRedirectPath", () => {
   });
 
   test("accepts the allowlisted social settings path", () => {
-    expect(safeSocialRedirectPath("/settings/social")).toBe(
+    expect(safeSocialRedirectPath("/settings/social-accounts")).toBe(
       DEFAULT_REDIRECT,
     );
   });
 
   test("preserves a canonical query and hash", () => {
     expect(
-      safeSocialRedirectPath("/settings/social?source=project#accounts"),
-    ).toBe("/settings/social?source=project#accounts");
+      safeSocialRedirectPath("/settings/social-accounts?source=project#accounts"),
+    ).toBe("/settings/social-accounts?source=project#accounts");
   });
 });
 

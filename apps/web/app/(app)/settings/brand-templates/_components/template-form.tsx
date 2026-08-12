@@ -245,7 +245,7 @@ export function TemplateForm({ mode, initialTemplate }: TemplateFormProps) {
         if (mode === "create") {
           const created = await createBrandTemplateAction(parsed.data);
           toaster.create({ type: "success", title: "Template created" });
-          router.push(`/settings/brand-templates/${created.id}`);
+          router.push(`/brand-kit/${created.id}`);
         } else if (initialTemplate) {
           await updateBrandTemplateAction(initialTemplate.id, parsed.data);
           toaster.create({ type: "success", title: "Template saved" });

@@ -18,6 +18,15 @@ const nextConfig: NextConfig = {
       { protocol: "https", hostname: "img.youtube.com" },
     ],
   },
+  async redirects() {
+    return [
+      { source: "/dashboard", destination: "/home", permanent: true },
+      { source: "/settings", destination: "/settings/profile", permanent: true },
+      { source: "/settings/brand-templates", destination: "/brand-kit", permanent: true },
+      { source: "/settings/social", destination: "/settings/social-accounts", permanent: true },
+      { source: "/settings/billing", destination: "/settings/subscription", permanent: true },
+    ];
+  },
   async headers() {
     return [
       {

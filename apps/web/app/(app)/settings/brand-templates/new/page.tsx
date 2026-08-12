@@ -14,7 +14,7 @@ export default function NewBrandTemplatePage() {
           description="Configure your captions, logo, and colors. Templates are applied to clips at upload."
           actions={
             <Button variant="outline" colorPalette="gray" asChild>
-              <Link href="/settings/brand-templates">Cancel</Link>
+              <Link href="/brand-kit">Cancel</Link>
             </Button>
           }
         />

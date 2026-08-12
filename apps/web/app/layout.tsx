@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Script from "next/script";
 import { GeistSans } from "geist/font/sans";
 import { GeistMono } from "geist/font/mono";
 import {
@@ -140,7 +141,23 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       data-scroll-behavior="smooth"
       suppressHydrationWarning
     >
-      <body>
+      <head>
+        <Script id="narriflow-theme" strategy="beforeInteractive">
+          {`(() => {
+            try {
+              const stored = localStorage.getItem("theme");
+              const mode = stored === "light" || stored === "dark"
+                ? stored
+                : matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+              const root = document.documentElement;
+              root.classList.remove("light", "dark");
+              root.classList.add(mode);
+              root.style.colorScheme = mode;
+            } catch {}
+          })();`}
+        </Script>
+      </head>
+      <body suppressHydrationWarning>
         <Provider>
           <ClerkProvider>{children}</ClerkProvider>
           <Toaster />

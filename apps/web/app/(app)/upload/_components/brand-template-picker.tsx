@@ -38,7 +38,7 @@ export function BrandTemplatePicker({
         <Text textStyle="eyebrow" color="fg.subtle">
           Brand template
         </Text>
-        <Link href="/settings/brand-templates">
+        <Link href="/brand-kit">
           <Text
             as="span"
             display="inline-flex"

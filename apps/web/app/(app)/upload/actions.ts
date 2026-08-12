@@ -1,7 +1,10 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { requireCurrentAppUser } from "@narriflow/auth";
+import {
+  requireWorkspaceAppUser,
+  requireWorkspaceProject,
+} from "@/lib/workspace";
 import {
   projectService,
   QuotaExceededError,
@@ -57,10 +60,10 @@ export async function commitLinkImportAction(input: {
   processingStartSec: number | null;
   processingEndSec: number | null;
 }): Promise<CommitLinkImportResult> {
-  const appUser = await requireCurrentAppUser();
+  const appUser = await requireWorkspaceAppUser("processing.consume");
 
   try {
-    const ingest = await projectService.queueLinkIngest(appUser.id, {
+    const ingest = await projectService.queueLinkIngest(appUser.actorUserId, {
       url: input.url,
       title: input.title || undefined,
       brandTemplateId: input.brandTemplateId,
@@ -69,7 +72,7 @@ export async function commitLinkImportAction(input: {
       mode: input.mode,
       processingStartSec: input.processingStartSec,
       processingEndSec: input.processingEndSec,
-    });
+    }, appUser.workspaceId);
     revalidatePath(`/projects/${ingest.project.id}`);
     return { ok: true, projectId: ingest.project.id };
   } catch (error) {
@@ -109,7 +112,7 @@ export async function finalizeLinkConfigureAction(input: {
   contentPack: ContentPack;
   languageCode: string | null;
 }): Promise<FinalizeLinkConfigureResult> {
-  const appUser = await requireCurrentAppUser();
+  const appUser = await requireWorkspaceProject(input.projectId, "content.edit");
 
   try {
     // Re-validate server-side: a Server Action payload crosses the wire as
@@ -154,7 +157,7 @@ export async function saveGenerationDraftAction(input: {
   contentPack: ContentPack;
   languageCode: string | null;
 }): Promise<SaveGenerationDraftResult> {
-  const appUser = await requireCurrentAppUser();
+  const appUser = await requireWorkspaceProject(input.projectId, "content.edit");
 
   try {
     // Re-validate server-side, same reasoning as finalizeLinkConfigureAction:
@@ -186,7 +189,7 @@ export async function saveGenerationDraftAction(input: {
 export async function fetchYoutubeMetadataAction(
   url: string,
 ): Promise<{ title: string | null }> {
-  await requireCurrentAppUser();
+  await requireWorkspaceAppUser();
 
   if (detectLinkProvider(url) !== "youtube") {
     return { title: null };
@@ -205,7 +208,7 @@ export async function fetchYoutubeMetadataAction(
 }
 
 export async function generateFromRssAction(formData: FormData) {
-  const appUser = await requireCurrentAppUser();
+  const appUser = await requireWorkspaceAppUser("processing.consume");
   const rssUrl = String(formData.get("rssUrl") ?? "").trim();
   const titlePrefix = String(formData.get("titlePrefix") ?? "").trim();
   const episodesRaw = String(formData.get("episodes") ?? "[]");
@@ -214,7 +217,7 @@ export async function generateFromRssAction(formData: FormData) {
     throw new Error("rssUrl is required");
   }
 
-  await projectService.assertWithinQuota(appUser.id);
+  await projectService.assertWorkspaceWithinQuota(appUser.workspaceId);
 
   let episodes: Array<{
     id: string;
@@ -234,12 +237,12 @@ export async function generateFromRssAction(formData: FormData) {
     throw new Error("at least one episode is required");
   }
 
-  const ingest = await projectService.importFromRss(appUser.id, {
+  const ingest = await projectService.importFromRss(appUser.actorUserId, {
     rssUrl,
     titlePrefix: titlePrefix || undefined,
     episodes,
     brandTemplateId: readBrandTemplateIdFromForm(formData),
-  });
+  }, appUser.workspaceId);
 
   const created = ingest.projects?.[0];
   if (!created) {

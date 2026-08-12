@@ -2,12 +2,14 @@
 
 import Link from "next/link";
 import { Box, Flex, Stack, Text } from "@chakra-ui/react";
+import { CircleHelp, Plus, Sparkles } from "lucide-react";
 import { Logo } from "@narriflow/ui/components/logo";
 import { NavLink } from "@narriflow/ui/components/nav-link";
 import { Meter } from "@narriflow/ui/components/meter";
+import { Button } from "@narriflow/ui/components/button";
 import { NAV_ITEMS } from "./nav-items";
-import { AccountMenu } from "./account-menu";
 import { usagePalette } from "./usage-palette";
+import { WorkspaceSwitcher, type WorkspaceSwitcherItem } from "./workspace-switcher";
 
 interface SidebarProps {
   email: string | null;
@@ -16,37 +18,19 @@ interface SidebarProps {
   imageUrl: string | null;
   usedMinutes: number;
   limitMinutes: number;
-}
-
-function SectionLabel({ children }: { children: string }) {
-  return (
-    <Text textStyle="eyebrow" color="fg.subtle" px="3" pt="5" pb="1.5" userSelect="none">
-      {children}
-    </Text>
-  );
-}
-
-function NavSection({ section }: { section: "studio" | "workspace" }) {
-  return (
-    <>
-      {NAV_ITEMS.filter((item) => item.section === section).map(
-        ({ label, href, icon: Icon }) => (
-          <NavLink key={href} href={href} icon={<Icon size={16} />}>
-            {label}
-          </NavLink>
-        ),
-      )}
-    </>
-  );
+  activeWorkspaceId: string;
+  workspaces: WorkspaceSwitcherItem[];
+  canCreate: boolean;
+  canCreateWorkspace: boolean;
 }
 
 export function Sidebar({
-  email,
-  firstName,
-  lastName,
-  imageUrl,
   usedMinutes,
   limitMinutes,
+  activeWorkspaceId,
+  workspaces,
+  canCreate,
+  canCreateWorkspace,
 }: SidebarProps) {
   const usagePct = limitMinutes > 0 ? Math.min(100, (usedMinutes / limitMinutes) * 100) : 0;
   const palette = usagePalette(usagePct);
@@ -74,20 +58,31 @@ export function Sidebar({
         borderBottomWidth="1px"
         borderColor="border.subtle"
       >
-        <Link href="/dashboard" aria-label="Narriflow dashboard">
+        <Link href="/home" aria-label="Narriflow home">
           <Logo size="md" />
         </Link>
       </Flex>
 
+      <WorkspaceSwitcher activeWorkspaceId={activeWorkspaceId} items={workspaces} canCreateWorkspace={canCreateWorkspace} />
+
       {/* Navigation — single IA source */}
-      <Stack as="nav" flex="1" px="3" pb="3" gap="0.5" overflowY="auto">
-        <SectionLabel>Studio</SectionLabel>
-        <NavSection section="studio" />
-        <SectionLabel>Workspace</SectionLabel>
-        <NavSection section="workspace" />
+      <Stack as="nav" flex="1" px="3" py="4" gap="0.5" overflowY="auto">
+        {canCreate ? (
+          <Button asChild size="sm" mb="3" w="full">
+            <Link href="/upload"><Plus size={15} />New project</Link>
+          </Button>
+        ) : null}
+        {NAV_ITEMS.map(({ label, href, icon: Icon }) => (
+          <NavLink key={href} href={href} icon={<Icon size={16} />}>
+            {label}
+          </NavLink>
+        ))}
+        <Box flex="1" minH="6" />
+        <NavLink href="/whats-new" icon={<Sparkles size={16} />}>What&apos;s new</NavLink>
+        <NavLink href="/help" icon={<CircleHelp size={16} />}>Tutorials &amp; help</NavLink>
       </Stack>
 
-      {/* Usage mini-meter + account cluster */}
+      {/* Usage mini-meter */}
       <Box px="3" py="3" borderTopWidth="1px" borderColor="border.subtle" flexShrink={0}>
         <Box px="2.5" pt="1" pb="3">
           <Flex align="baseline" justify="space-between" gap="3" mb="1.5">
@@ -109,13 +104,6 @@ export function Sidebar({
             aria-label="Monthly processing minutes used"
           />
         </Box>
-        <AccountMenu
-          variant="row"
-          email={email}
-          firstName={firstName}
-          lastName={lastName}
-          imageUrl={imageUrl}
-        />
       </Box>
     </Flex>
   );

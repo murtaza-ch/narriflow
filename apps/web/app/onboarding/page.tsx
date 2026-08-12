@@ -31,7 +31,7 @@ export default async function OnboardingPage() {
   }
 
   if (appUser.onboardingCompletedAt) {
-    redirect("/dashboard");
+    redirect("/home");
   }
 
   return (

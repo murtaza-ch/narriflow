@@ -118,7 +118,7 @@ function LogoSection() {
             <Text fontSize="12px" color="studio.fgMuted">
               This project has no logo yet.
             </Text>
-            <NextLink href="/settings/brand-templates" style={{ width: "fit-content" }}>
+            <NextLink href="/brand-kit" style={{ width: "fit-content" }}>
               <Text fontSize="11px" color="studio.accentFg" fontWeight="600" _hover={{ textDecoration: "underline" }}>
                 Add one in Brand kit
               </Text>

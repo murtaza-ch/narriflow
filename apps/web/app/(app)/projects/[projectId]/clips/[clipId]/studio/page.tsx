@@ -1,5 +1,5 @@
 import { notFound } from "next/navigation";
-import { requireCurrentAppUser } from "@narriflow/auth";
+import { requireWorkspaceProject } from "@/lib/workspace";
 import {
   clipService,
   hasFeature,
@@ -16,11 +16,11 @@ export default async function StudioPage({
 }: {
   params: Promise<{ projectId: string; clipId: string }>;
 }) {
-  const appUser = await requireCurrentAppUser();
   const { projectId, clipId } = await params;
+  const appUser = await requireWorkspaceProject(projectId, "content.edit");
 
   const [snapshot, clips, previewSource, rawBrandSnapshot, pricingTier] = await Promise.all([
-    projectService.getProjectSnapshot(appUser.id, projectId),
+    projectService.getProjectSnapshot(appUser.actorUserId, projectId, appUser.workspaceId),
     clipService.listClips(appUser.id, projectId),
     clipService.getClipPreviewSource(appUser.id, projectId, clipId),
     // The project's frozen brand snapshot (captured once at ingest) —

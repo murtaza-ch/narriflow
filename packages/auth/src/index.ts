@@ -2,10 +2,85 @@ import "server-only";
 
 import { auth, currentUser, type UserJSON } from "@clerk/nextjs/server";
 import { getPrismaClient } from "@narriflow/db/client";
+import { cookies } from "next/headers";
 import { Prisma } from "@prisma/client";
-import type { AuthIdentity, AuthProvider, User, WebhookProvider } from "@prisma/client";
+import type {
+  AuthIdentity,
+  AuthProvider,
+  PricingTier,
+  User,
+  WebhookProvider,
+  WorkspaceRole,
+  WorkspaceStatus,
+} from "@prisma/client";
 
 export type AppUser = User;
+
+export const ACTIVE_WORKSPACE_COOKIE = "narriflow_active_workspace";
+
+export interface WorkspaceActorContext {
+  userId: string;
+  workspaceId: string;
+  workspaceName: string;
+  workspaceOwnerUserId: string;
+  role: WorkspaceRole;
+  status: WorkspaceStatus;
+  pricingTier: PricingTier;
+  isPersonal: boolean;
+}
+
+export type WorkspaceCapability =
+  | "content.view"
+  | "content.download"
+  | "content.edit"
+  | "processing.consume"
+  | "publishing.manage"
+  | "brand.manage"
+  | "social.manage"
+  | "workspace.manage"
+  | "api.manage"
+  | "members.invite"
+  | "members.promote_admin"
+  | "billing.manage";
+
+const ROLE_CAPABILITIES: Record<WorkspaceRole, ReadonlySet<WorkspaceCapability>> = {
+  owner: new Set([
+    "content.view",
+    "content.download",
+    "content.edit",
+    "processing.consume",
+    "publishing.manage",
+    "brand.manage",
+    "social.manage",
+    "workspace.manage",
+    "api.manage",
+    "members.invite",
+    "members.promote_admin",
+    "billing.manage",
+  ]),
+  admin: new Set([
+    "content.view",
+    "content.download",
+    "content.edit",
+    "processing.consume",
+    "publishing.manage",
+    "brand.manage",
+    "social.manage",
+    "workspace.manage",
+    "api.manage",
+    "members.invite",
+  ]),
+  editor: new Set([
+    "content.view",
+    "content.download",
+    "content.edit",
+    "processing.consume",
+    "publishing.manage",
+    "brand.manage",
+    "api.manage",
+  ]),
+  viewer: new Set(["content.view", "content.download"]),
+};
 
 interface WebhookDeliveryRecordInput {
   provider: WebhookProvider;
@@ -322,6 +397,7 @@ export async function syncClerkUserPayload(clerkUser: Partial<UserJSON> | Record
   await Promise.all(identities.map((identity) => upsertIdentity(appUser.id, identity)));
 
   await ensureFirstUseBrandTemplate(appUser.id);
+  await ensurePersonalWorkspace(appUser.id);
 
   return appUser;
 }
@@ -353,6 +429,245 @@ async function ensureFirstUseBrandTemplate(userId: string): Promise<void> {
   await prisma.user.update({
     where: { id: userId },
     data: { defaultBrandTemplateId: fallback.id },
+  });
+}
+
+function personalWorkspaceName(user: Pick<User, "firstName" | "lastName">): string {
+  const fullName = [user.firstName, user.lastName].filter(Boolean).join(" ").trim();
+  return fullName ? `${fullName}'s workspace` : "Personal workspace";
+}
+
+function workspacePricingTier(tier: PricingTier): PricingTier {
+  return tier === "starter" ? "creator" : tier;
+}
+
+export function workspacesV1EnabledForUser(userId: string) {
+  const globallyEnabled = ["1", "true", "on"].includes(
+    process.env.WORKSPACES_V1?.trim().toLowerCase() ?? "",
+  );
+  if (globallyEnabled) return true;
+  return new Set(
+    (process.env.WORKSPACES_V1_USER_IDS ?? "")
+      .split(",")
+      .map((value) => value.trim())
+      .filter(Boolean),
+  ).has(userId);
+}
+
+/**
+ * Guarantees the invariant used by workspace resolution: every application
+ * user has one and only one personal workspace plus an Owner membership.
+ * The unique personalOwnerUserId makes concurrent sign-in/webhook creation
+ * collapse safely at the database boundary.
+ */
+export async function ensurePersonalWorkspace(userId: string) {
+  const prisma = getRequiredPrisma();
+  const user = await prisma.user.findUnique({ where: { id: userId } });
+  if (!user) throw new Error("User not found");
+
+  const workspace = await prisma.workspace.upsert({
+    where: { personalOwnerUserId: user.id },
+    create: {
+      name: personalWorkspaceName(user),
+      ownerUserId: user.id,
+      personalOwnerUserId: user.id,
+      pricingTier: workspacePricingTier(user.pricingTier),
+      stripeCustomerId: user.stripeCustomerId,
+      billingEventCreatedAt: user.billingEventCreatedAt,
+      defaultBrandTemplateId: user.defaultBrandTemplateId,
+      members: {
+        create: { userId: user.id, role: "owner" },
+      },
+    },
+    update: {},
+  });
+
+  await prisma.workspaceMember.upsert({
+    where: {
+      workspaceId_userId: { workspaceId: workspace.id, userId: user.id },
+    },
+    create: { workspaceId: workspace.id, userId: user.id, role: "owner" },
+    update: { role: "owner" },
+  });
+
+  return workspace;
+}
+
+function toWorkspaceActorContext(input: {
+  userId: string;
+  role: WorkspaceRole;
+  workspace: {
+    id: string;
+    name: string;
+    ownerUserId: string;
+    personalOwnerUserId: string | null;
+    status: WorkspaceStatus;
+    pricingTier: PricingTier;
+  };
+}): WorkspaceActorContext {
+  return {
+    userId: input.userId,
+    workspaceId: input.workspace.id,
+    workspaceName: input.workspace.name,
+    workspaceOwnerUserId: input.workspace.ownerUserId,
+    role: input.role,
+    status: input.workspace.status,
+    pricingTier: input.workspace.pricingTier,
+    isPersonal: input.workspace.personalOwnerUserId !== null,
+  };
+}
+
+/** Resolve the active workspace from a validated membership, never from the cookie alone. */
+export async function getCurrentWorkspaceContext(): Promise<WorkspaceActorContext | null> {
+  const user = await getCurrentAppUser();
+  if (!user) return null;
+
+  const prisma = getRequiredPrisma();
+  const cookieStore = await cookies();
+  const requestedWorkspaceId = cookieStore.get(ACTIVE_WORKSPACE_COOKIE)?.value;
+
+  const includeWorkspace = {
+    workspace: {
+      select: {
+        id: true,
+        name: true,
+        ownerUserId: true,
+        personalOwnerUserId: true,
+        status: true,
+        pricingTier: true,
+      },
+    },
+  } as const;
+
+  const requestedMembership = requestedWorkspaceId
+    ? await prisma.workspaceMember.findUnique({
+        where: {
+          workspaceId_userId: { workspaceId: requestedWorkspaceId, userId: user.id },
+        },
+        include: includeWorkspace,
+      })
+    : null;
+
+  if (
+    requestedMembership &&
+    (requestedMembership.workspace.personalOwnerUserId === user.id ||
+      workspacesV1EnabledForUser(user.id))
+  ) {
+    return toWorkspaceActorContext(requestedMembership);
+  }
+
+  const personalWorkspace = await ensurePersonalWorkspace(user.id);
+  const fallbackMembership = await prisma.workspaceMember.findUnique({
+    where: {
+      workspaceId_userId: { workspaceId: personalWorkspace.id, userId: user.id },
+    },
+    include: includeWorkspace,
+  });
+
+  return fallbackMembership ? toWorkspaceActorContext(fallbackMembership) : null;
+}
+
+export async function requireWorkspaceContext(): Promise<WorkspaceActorContext> {
+  const context = await getCurrentWorkspaceContext();
+  if (!context) throw new Error("Unauthorized");
+  return context;
+}
+
+export function hasWorkspaceCapability(
+  role: WorkspaceRole,
+  capability: WorkspaceCapability,
+): boolean {
+  return ROLE_CAPABILITIES[role].has(capability);
+}
+
+export function assertWorkspaceCapability(
+  context: WorkspaceActorContext,
+  capability: WorkspaceCapability,
+): void {
+  if (!hasWorkspaceCapability(context.role, capability)) {
+    throw new Error("Forbidden");
+  }
+
+  if (
+    context.status === "pending_payment" &&
+    !(
+      context.role === "owner" &&
+      ["content.view", "content.download", "workspace.manage", "billing.manage"].includes(
+        capability,
+      )
+    )
+  ) {
+    throw new Error("Workspace payment is pending");
+  }
+
+  if (
+    context.status === "restricted" &&
+    (capability === "processing.consume" ||
+      capability === "publishing.manage" ||
+      capability === "members.invite" ||
+      (context.role !== "owner" &&
+        (capability === "content.edit" ||
+          capability === "brand.manage" ||
+          capability === "social.manage" ||
+          capability === "workspace.manage" ||
+          capability === "api.manage")))
+  ) {
+    throw new Error("Workspace is restricted");
+  }
+}
+
+export async function listCurrentUserWorkspaces() {
+  const user = await requireCurrentAppUser();
+  const prisma = getRequiredPrisma();
+  await ensurePersonalWorkspace(user.id);
+
+  return prisma.workspaceMember.findMany({
+    where: {
+      userId: user.id,
+      ...(workspacesV1EnabledForUser(user.id)
+        ? {}
+        : { workspace: { personalOwnerUserId: user.id } }),
+    },
+    orderBy: [{ workspace: { personalOwnerUserId: "desc" } }, { joinedAt: "asc" }],
+    select: {
+      role: true,
+      workspace: {
+        select: {
+          id: true,
+          name: true,
+          avatarStorageKey: true,
+          personalOwnerUserId: true,
+          status: true,
+          pricingTier: true,
+        },
+      },
+    },
+  });
+}
+
+/** Validate membership before persisting the clean-URL workspace selection. */
+export async function setActiveWorkspace(workspaceId: string): Promise<void> {
+  const user = await requireCurrentAppUser();
+  const prisma = getRequiredPrisma();
+  const membership = await prisma.workspaceMember.findUnique({
+    where: { workspaceId_userId: { workspaceId, userId: user.id } },
+    select: { id: true, workspace: { select: { personalOwnerUserId: true } } },
+  });
+  if (!membership) throw new Error("Forbidden");
+  if (
+    membership.workspace.personalOwnerUserId !== user.id &&
+    !workspacesV1EnabledForUser(user.id)
+  ) {
+    throw new Error("Workspace collaboration is not enabled for this account");
+  }
+
+  const cookieStore = await cookies();
+  cookieStore.set(ACTIVE_WORKSPACE_COOKIE, workspaceId, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: process.env.NODE_ENV === "production",
+    path: "/",
+    maxAge: 60 * 60 * 24 * 365,
   });
 }
 
@@ -401,6 +716,7 @@ export async function getCurrentAppUser(): Promise<AppUser | null> {
     if (!existing.defaultBrandTemplateId) {
       await ensureFirstUseBrandTemplate(existing.id);
     }
+    await ensurePersonalWorkspace(existing.id);
     if (needsUserRefresh(existing)) {
       const clerkUser = await currentUser();
       if (clerkUser) {

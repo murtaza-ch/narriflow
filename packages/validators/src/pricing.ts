@@ -2,9 +2,9 @@ import { z } from "zod";
 
 export const pricingTierSchema = z.enum([
   "free",
-  "starter",
   "creator",
   "pro",
+  "business",
 ]);
 export type PricingTier = z.infer<typeof pricingTierSchema>;
 
@@ -16,20 +16,21 @@ export type PricingTier = z.infer<typeof pricingTierSchema>;
  */
 export const MONTHLY_PROCESSING_MINUTE_LIMITS: Record<PricingTier, number> = {
   free: 60,
-  starter: 300,
   creator: 600,
   pro: 1800,
+  business: 1800,
 };
 
 /** Per-tier cap on a single upload's duration, to bound worst-case render cost. */
 export const MAX_UPLOAD_LENGTH_SECONDS: Record<PricingTier, number> = {
   free: 30 * 60,
-  starter: 60 * 60,
   creator: 90 * 60,
   pro: 3 * 60 * 60,
+  business: 3 * 60 * 60,
 };
 
 export function resolvePricingTier(value: string | null | undefined): PricingTier {
+  if (value === "starter") return "creator";
   const parsed = pricingTierSchema.safeParse(value);
   return parsed.success ? parsed.data : "free";
 }
@@ -55,7 +56,7 @@ export function isProcessingQuotaExceeded(input: {
 }
 
 /** The paid tiers that map to a Stripe product. `free` has no Stripe object. */
-export const paidPricingTierSchema = z.enum(["starter", "creator", "pro"]);
+export const paidPricingTierSchema = z.enum(["creator", "pro", "business"]);
 export type PaidPricingTier = z.infer<typeof paidPricingTierSchema>;
 
 export const billingIntervalSchema = z.enum(["monthly", "annual"]);
@@ -72,9 +73,9 @@ export const PRICING_TABLE: Record<
   PaidPricingTier,
   { name: string; monthlyUsd: number; annualUsd: number; minutes: number }
 > = {
-  starter: { name: "Starter", monthlyUsd: 7, annualUsd: 60, minutes: 300 },
   creator: { name: "Creator", monthlyUsd: 12, annualUsd: 96, minutes: 600 },
   pro: { name: "Pro", monthlyUsd: 24, annualUsd: 192, minutes: 1800 },
+  business: { name: "Business", monthlyUsd: 39, annualUsd: 312, minutes: 1800 },
 };
 
 function formatUploadLimit(tier: PricingTier): string {
@@ -96,15 +97,10 @@ export const PRICING_FEATURES: Record<PricingTier, string[]> = {
     "720p exports with watermark",
     formatUploadLimit("free"),
   ],
-  starter: [
-    `${MONTHLY_PROCESSING_MINUTE_LIMITS.starter} processing minutes / month`,
-    "1080p exports, no watermark",
-    "Caption presets and brand templates",
-    formatUploadLimit("starter"),
-  ],
   creator: [
     `${MONTHLY_PROCESSING_MINUTE_LIMITS.creator} processing minutes / month`,
-    "Everything in Starter",
+    "1080p exports, no watermark",
+    "Caption presets and brand templates",
     "Content-suite repurposing (blog, X, LinkedIn, show notes)",
     formatUploadLimit("creator"),
   ],
@@ -113,5 +109,12 @@ export const PRICING_FEATURES: Record<PricingTier, string[]> = {
     "Everything in Creator",
     "Voiceover dubbing",
     formatUploadLimit("pro"),
+  ],
+  business: [
+    `${MONTHLY_PROCESSING_MINUTE_LIMITS.business} shared processing minutes / month`,
+    "Everything in Pro",
+    "Workspace members and shared brand assets",
+    "Owner seat included; additional Editors/Admins billed separately",
+    formatUploadLimit("business"),
   ],
 };

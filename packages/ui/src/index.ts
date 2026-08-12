@@ -14,6 +14,8 @@ export { Progress, ProgressParts } from "./components/progress"
 
 // Form controls (Blueline kit)
 export { Select } from "./components/select"
+export { Combobox } from "./components/combobox"
+export { DatePicker, DateTimePicker } from "./components/date-picker"
 export { Checkbox } from "./components/checkbox"
 export { RadioGroup, Radio } from "./components/radio"
 export { Switch } from "./components/switch"

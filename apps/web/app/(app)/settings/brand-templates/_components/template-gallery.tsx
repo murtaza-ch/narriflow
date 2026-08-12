@@ -336,7 +336,7 @@ function TemplateCard({ template, isDefault, ownership }: TemplateCardProps) {
                 </Menu.Item>
                 {ownership === "mine" ? (
                   <Menu.Item value="edit" fontSize="13px" gap="2" borderRadius="l1" asChild>
-                    <Link href={`/settings/brand-templates/${template.id}`}>
+                    <Link href={`/brand-kit/${template.id}`}>
                       <Pencil size={13} />
                       Edit
                     </Link>

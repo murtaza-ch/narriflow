@@ -5,16 +5,19 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useClerk } from "@clerk/nextjs";
 import { Box, Drawer, Flex, Portal, Stack, Text } from "@chakra-ui/react";
-import { LogOut, Menu as MenuIcon, Moon, Sun, X } from "lucide-react";
+import { CircleHelp, LogOut, Menu as MenuIcon, Moon, Plus, Sparkles, Sun, X } from "lucide-react";
 import { Logo } from "@narriflow/ui/components/logo";
 import { NavLink } from "@narriflow/ui/components/nav-link";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { Meter } from "@narriflow/ui/components/meter";
+import { Button } from "@narriflow/ui/components/button";
 import { useColorMode } from "@narriflow/ui/components/color-mode";
 import { NAV_ITEMS } from "./nav-items";
-import { AccountAvatar, getDisplayName, getInitials } from "./account-menu";
+import { AccountAvatar } from "./account-menu";
+import { getDisplayName, getInitials } from "@/lib/account-display";
 import { isStudioRoute } from "./theme-toggle";
 import { usagePalette } from "./usage-palette";
+import { WorkspaceSwitcher, type WorkspaceSwitcherItem } from "./workspace-switcher";
 
 interface MobileNavProps {
   email: string | null;
@@ -23,14 +26,10 @@ interface MobileNavProps {
   imageUrl: string | null;
   usedMinutes: number;
   limitMinutes: number;
-}
-
-function SectionLabel({ children }: { children: string }) {
-  return (
-    <Text textStyle="eyebrow" color="fg.subtle" px="3" pt="4" pb="1.5" userSelect="none">
-      {children}
-    </Text>
-  );
+  activeWorkspaceId: string;
+  workspaces: WorkspaceSwitcherItem[];
+  canCreate: boolean;
+  canCreateWorkspace: boolean;
 }
 
 export function MobileNav({
@@ -40,6 +39,10 @@ export function MobileNav({
   imageUrl,
   usedMinutes,
   limitMinutes,
+  activeWorkspaceId,
+  workspaces,
+  canCreate,
+  canCreateWorkspace,
 }: MobileNavProps) {
   const [open, setOpen] = useState(false);
   const [isSigningOut, setIsSigningOut] = useState(false);
@@ -90,7 +93,7 @@ export function MobileNav({
           right="0"
           zIndex="40"
         >
-          <Link href="/dashboard" aria-label="Narriflow dashboard">
+          <Link href="/home" aria-label="Narriflow home">
             <Logo size="sm" />
           </Link>
           <Drawer.Trigger asChild>
@@ -146,24 +149,23 @@ export function MobileNav({
                 </Drawer.CloseTrigger>
               </Flex>
 
+              <WorkspaceSwitcher activeWorkspaceId={activeWorkspaceId} items={workspaces} canCreateWorkspace={canCreateWorkspace} />
+
               {/* Navigation — single IA source */}
-              <Stack as="nav" flex="1" px="3" pb="3" gap="0.5" overflowY="auto">
-                <SectionLabel>Studio</SectionLabel>
-                {NAV_ITEMS.filter((item) => item.section === "studio").map(
-                  ({ label, href, icon: Icon }) => (
-                    <NavLink key={href} href={href} icon={<Icon size={16} />}>
-                      {label}
-                    </NavLink>
-                  ),
-                )}
-                <SectionLabel>Workspace</SectionLabel>
-                {NAV_ITEMS.filter((item) => item.section === "workspace").map(
-                  ({ label, href, icon: Icon }) => (
-                    <NavLink key={href} href={href} icon={<Icon size={16} />}>
-                      {label}
-                    </NavLink>
-                  ),
-                )}
+              <Stack as="nav" flex="1" px="3" py="4" gap="0.5" overflowY="auto">
+                {canCreate ? (
+                  <Button asChild size="sm" mb="3" w="full">
+                    <Link href="/upload"><Plus size={15} />New project</Link>
+                  </Button>
+                ) : null}
+                {NAV_ITEMS.map(({ label, href, icon: Icon }) => (
+                  <NavLink key={href} href={href} icon={<Icon size={16} />}>
+                    {label}
+                  </NavLink>
+                ))}
+                <Box flex="1" minH="6" />
+                <NavLink href="/whats-new" icon={<Sparkles size={16} />}>What&apos;s new</NavLink>
+                <NavLink href="/help" icon={<CircleHelp size={16} />}>Tutorials &amp; help</NavLink>
                 {!isStudioRoute(pathname) && (
                   <>
                     <Box h="1px" bg="border.subtle" my="2" />

@@ -6,7 +6,7 @@ import { Button } from "@narriflow/ui/components/button";
 import { StatusBadge } from "@narriflow/ui/components/status-badge";
 import { MediaWell } from "@narriflow/ui/components/media-well";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
-import { requireCurrentAppUser } from "@narriflow/auth";
+import { requireWorkspaceProject } from "@/lib/workspace";
 import {
   analyticsService,
   clipService,
@@ -239,9 +239,13 @@ export default async function ProjectDetailPage({
 }: {
   params: Promise<{ projectId: string }>;
 }) {
-  const appUser = await requireCurrentAppUser();
   const { projectId } = await params;
-  const snapshot = await projectService.getProjectSnapshot(appUser.id, projectId);
+  const appUser = await requireWorkspaceProject(projectId);
+  const snapshot = await projectService.getProjectSnapshot(
+    appUser.actorUserId,
+    projectId,
+    appUser.workspaceId,
+  );
 
   if (!snapshot.project) {
     notFound();
@@ -263,7 +267,7 @@ export default async function ProjectDetailPage({
     projectService.getLatestContentPack(projectId),
     analyticsService.getProjectAnalytics(appUser.id, projectId),
     socialService.listProjectPosts(appUser.id, projectId),
-    socialOAuthService.listAccounts(appUser.id),
+    socialOAuthService.listAccounts(appUser.id, appUser.workspaceId),
     dubbingService.listProjectDubs(appUser.id, projectId),
     projectService.getWorkflowHistory(appUser.id, projectId),
     projectService.getUsageSummary(appUser.id),
@@ -766,7 +770,7 @@ export default async function ProjectDetailPage({
               {pricingTier === "free" && hasRenderableClips && (
                 <Text fontSize="xs" color="fg.muted">
                   Free plan renders are 720p and watermarked.{" "}
-                  <Link href="/settings/billing">
+                  <Link href="/settings/subscription">
                     <Text
                       as="span"
                       color="fg"

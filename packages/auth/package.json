@@ -21,7 +21,8 @@
   "dependencies": {
     "@clerk/nextjs": "^6.39.5",
     "@narriflow/db": "workspace:*",
-    "@prisma/client": "^7.4.2"
+    "@prisma/client": "^7.4.2",
+    "next": "^16.2.10"
   },
   "devDependencies": {
     "@types/node": "latest"

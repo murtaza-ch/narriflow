@@ -69,6 +69,12 @@ export function isOwnedAudioUploadKey(userId: string, key: string): boolean {
   return key.startsWith(audioAssetUploadPrefix(userId));
 }
 
+function workspaceAudioAssetUploadPrefix(workspaceId: string): string {
+  return `workspaces/${workspaceId}/audio-assets/`;
+}
+
+type AudioWorkspaceContext = { workspaceId: string; actorUserId: string };
+
 const CONTENT_TYPE_EXT: Record<string, string> = {
   "audio/mpeg": "mp3",
   "audio/wav": "wav",
@@ -124,6 +130,7 @@ export class AudioAssetService {
   async listAssets(
     userId: string,
     query: { kind: AudioAssetKindInput; mood?: string },
+    context?: AudioWorkspaceContext,
   ): Promise<{ assets: AudioAssetListRow[]; moodTags: string[] }> {
     const prisma = this.requirePrisma();
     const [curated, mine, favorites] = await Promise.all([
@@ -132,11 +139,11 @@ export class AudioAssetService {
         orderBy: { title: "asc" },
       }),
       prisma.audioAsset.findMany({
-        where: { kind: query.kind, userId, deletedAt: null },
+        where: { kind: query.kind, ...(context ? { workspaceId: context.workspaceId } : { userId }), deletedAt: null },
         orderBy: { createdAt: "desc" },
       }),
       prisma.audioAssetFavorite.findMany({
-        where: { userId },
+        where: context ? { workspaceId: context.workspaceId } : { userId },
         select: { assetId: true },
       }),
     ]);
@@ -162,6 +169,7 @@ export class AudioAssetService {
   async presignUpload(
     userId: string,
     input: PresignAudioUploadInput,
+    context?: AudioWorkspaceContext,
   ): Promise<{ key: string; uploadUrl: string; contentType: string }> {
     const parsed = presignAudioUploadSchema.parse(input);
     if (!isR2Configured()) {
@@ -169,7 +177,7 @@ export class AudioAssetService {
     }
 
     const ext = extensionForAudioContentType(parsed.contentType);
-    const key = `${audioAssetUploadPrefix(userId)}${randomUUID()}.${ext}`;
+    const key = `${context ? workspaceAudioAssetUploadPrefix(context.workspaceId) : audioAssetUploadPrefix(userId)}${randomUUID()}.${ext}`;
     const uploadUrl = await presignSingleUploadUrl({
       key,
       contentType: parsed.contentType,
@@ -180,9 +188,13 @@ export class AudioAssetService {
   async finalizeUpload(
     userId: string,
     input: FinalizeAudioUploadInput,
+    context?: AudioWorkspaceContext,
   ): Promise<AudioAssetListRow> {
     const parsed = finalizeAudioUploadSchema.parse(input);
-    if (!isOwnedAudioUploadKey(userId, parsed.key)) {
+    const owned = context
+      ? parsed.key.startsWith(workspaceAudioAssetUploadPrefix(context.workspaceId))
+      : isOwnedAudioUploadKey(userId, parsed.key);
+    if (!owned) {
       throw new Error("upload key is not owned by this user");
     }
 
@@ -191,6 +203,8 @@ export class AudioAssetService {
       data: {
         kind: parsed.kind,
         userId,
+        workspaceId: context?.workspaceId ?? null,
+        createdByUserId: context?.actorUserId ?? userId,
         storageKey: parsed.key,
         title: parsed.title,
         durationSec: parsed.durationSec,
@@ -204,26 +218,34 @@ export class AudioAssetService {
     userId: string,
     assetId: string,
     favorited: boolean,
+    context?: AudioWorkspaceContext,
   ): Promise<{ favorited: boolean }> {
     const prisma = this.requirePrisma();
     const asset = await prisma.audioAsset.findFirst({
       where: {
         id: assetId,
         deletedAt: null,
-        OR: [{ userId: null }, { userId }],
+        OR: [{ userId: null }, context ? { workspaceId: context.workspaceId } : { userId }],
       },
       select: { id: true },
     });
     if (!asset) throw new AudioAssetNotFoundError();
 
     if (favorited) {
-      await prisma.audioAssetFavorite.upsert({
-        where: { userId_assetId: { userId, assetId } },
-        update: {},
-        create: { userId, assetId },
-      });
+      if (context) {
+        await prisma.audioAssetFavorite.upsert({
+          where: { workspaceId_assetId: { workspaceId: context.workspaceId, assetId } },
+          update: {},
+          create: { userId, workspaceId: context.workspaceId, assetId },
+        });
+      } else {
+        const existing = await prisma.audioAssetFavorite.findFirst({ where: { userId, assetId } });
+        if (!existing) await prisma.audioAssetFavorite.create({ data: { userId, assetId } });
+      }
     } else {
-      await prisma.audioAssetFavorite.deleteMany({ where: { userId, assetId } });
+      await prisma.audioAssetFavorite.deleteMany({
+        where: { assetId, ...(context ? { workspaceId: context.workspaceId } : { userId }) },
+      });
     }
 
     return { favorited };
@@ -237,13 +259,14 @@ export class AudioAssetService {
   async getPlaybackUrl(
     userId: string,
     assetId: string,
+    context?: AudioWorkspaceContext,
   ): Promise<string | null> {
     const prisma = this.requirePrisma();
     const row = await prisma.audioAsset.findFirst({
       where: {
         id: assetId,
         deletedAt: null,
-        OR: [{ userId: null }, { userId }],
+        OR: [{ userId: null }, context ? { workspaceId: context.workspaceId } : { userId }],
       },
     });
     if (!row) return null;
@@ -258,10 +281,10 @@ export class AudioAssetService {
    * delete is best-effort and logged, not retried, since an orphaned R2
    * object costs storage but a stuck "deleting" DB row would block the user.
    */
-  async deleteUserAsset(userId: string, assetId: string): Promise<void> {
+  async deleteUserAsset(userId: string, assetId: string, context?: AudioWorkspaceContext): Promise<void> {
     const prisma = this.requirePrisma();
     const existing = await prisma.audioAsset.findFirst({
-      where: { id: assetId, userId, deletedAt: null },
+      where: { id: assetId, ...(context ? { workspaceId: context.workspaceId } : { userId }), deletedAt: null },
     });
     if (!existing) {
       throw new AudioAssetNotFoundError();
@@ -305,13 +328,14 @@ export class AudioAssetService {
   async resolveRenderSource(
     ownerUserId: string,
     assetId: string,
+    workspaceId?: string | null,
   ): Promise<{ url: string; title: string } | null> {
     const prisma = this.requirePrisma();
     const row = await prisma.audioAsset.findFirst({
       where: {
         id: assetId,
         deletedAt: null,
-        OR: [{ userId: null }, { userId: ownerUserId }],
+        OR: [{ userId: null }, workspaceId ? { workspaceId } : { userId: ownerUserId }],
       },
     });
     if (!row) return null;

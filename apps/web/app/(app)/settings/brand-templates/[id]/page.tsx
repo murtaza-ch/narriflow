@@ -3,7 +3,7 @@ import { Box, Stack } from "@chakra-ui/react";
 import Link from "next/link";
 import { Button } from "@narriflow/ui/components/button";
 import { PageHeader } from "@narriflow/ui/components/page-header";
-import { requireCurrentAppUser } from "@narriflow/auth";
+import { requireWorkspaceAppUser as requireCurrentAppUser } from "@/lib/workspace";
 import {
   brandTemplateService,
   BrandTemplateNotFoundError,
@@ -19,7 +19,7 @@ export default async function EditBrandTemplatePage({ params }: PageProps) {
   const appUser = await requireCurrentAppUser();
   let template;
   try {
-    template = await brandTemplateService.get(appUser.id, id);
+    template = await brandTemplateService.get(appUser.id, id, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
   } catch (error) {
     if (error instanceof BrandTemplateNotFoundError) {
       notFound();
@@ -37,7 +37,7 @@ export default async function EditBrandTemplatePage({ params }: PageProps) {
             description="Built-in templates are read-only. Duplicate to customize."
             actions={
               <Button variant="outline" colorPalette="gray" asChild>
-                <Link href="/settings/brand-templates">Back</Link>
+                <Link href="/brand-kit">Back</Link>
               </Button>
             }
           />
@@ -55,7 +55,7 @@ export default async function EditBrandTemplatePage({ params }: PageProps) {
           description="Saved changes apply to new projects only. Existing clips keep their current styling."
           actions={
             <Button variant="outline" colorPalette="gray" asChild>
-              <Link href="/settings/brand-templates">Cancel</Link>
+              <Link href="/brand-kit">Cancel</Link>
             </Button>
           }
         />

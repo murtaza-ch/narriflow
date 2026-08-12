@@ -62,10 +62,10 @@ function toSnapshot(row: {
 }
 
 export class AutopilotService {
-  async listRules(userId: string): Promise<AutopilotRuleSnapshot[]> {
+  async listRules(userId: string, workspaceId?: string): Promise<AutopilotRuleSnapshot[]> {
     const prisma = requirePrisma();
     const rows = await prisma.autopilotRule.findMany({
-      where: { userId },
+      where: workspaceId ? { workspaceId } : { userId },
       include: { _count: { select: { episodes: true } } },
       orderBy: { createdAt: "desc" },
     });
@@ -75,12 +75,16 @@ export class AutopilotService {
   async createRule(
     userId: string,
     input: AutopilotRuleInput,
+    context?: { workspaceId: string; actorUserId: string },
   ): Promise<AutopilotRuleSnapshot> {
     const parsed = autopilotRuleInputSchema.parse(input);
     const prisma = requirePrisma();
     const row = await prisma.autopilotRule.create({
       data: {
         userId,
+        workspaceId: context?.workspaceId ?? null,
+        createdByUserId: context?.actorUserId ?? userId,
+        updatedByUserId: context?.actorUserId ?? userId,
         name: parsed.name,
         rssUrl: parsed.rssUrl,
         titlePrefix: parsed.titlePrefix ?? null,
@@ -101,11 +105,12 @@ export class AutopilotService {
     userId: string,
     ruleId: string,
     input: AutopilotRuleUpdate,
+    context?: { workspaceId: string; actorUserId: string },
   ): Promise<AutopilotRuleSnapshot> {
     const parsed = autopilotRuleUpdateSchema.parse(input);
     const prisma = requirePrisma();
     const existing = await prisma.autopilotRule.findFirst({
-      where: { id: ruleId, userId },
+      where: { id: ruleId, ...(context ? { workspaceId: context.workspaceId } : { userId }) },
       select: { id: true },
     });
     if (!existing) {
@@ -142,21 +147,22 @@ export class AutopilotService {
           nextRunAt:
             parsed.status === "active" ? new Date() : nextRunFrom(24 * 60),
         }),
+        ...(context && { updatedByUserId: context.actorUserId }),
       },
       include: { _count: { select: { episodes: true } } },
     });
     return toSnapshot(row);
   }
 
-  async deleteRule(userId: string, ruleId: string): Promise<void> {
+  async deleteRule(userId: string, ruleId: string, context?: { workspaceId: string; actorUserId: string }): Promise<void> {
     const prisma = requirePrisma();
-    await prisma.autopilotRule.deleteMany({ where: { id: ruleId, userId } });
+    await prisma.autopilotRule.deleteMany({ where: { id: ruleId, ...(context ? { workspaceId: context.workspaceId } : { userId }) } });
   }
 
-  async triggerRuleNow(userId: string, ruleId: string): Promise<AutopilotRuleSnapshot> {
+  async triggerRuleNow(userId: string, ruleId: string, context?: { workspaceId: string; actorUserId: string }): Promise<AutopilotRuleSnapshot> {
     const prisma = requirePrisma();
     const existing = await prisma.autopilotRule.findFirst({
-      where: { id: ruleId, userId },
+      where: { id: ruleId, ...(context ? { workspaceId: context.workspaceId } : { userId }) },
       select: { id: true },
     });
     if (!existing) {
@@ -169,6 +175,7 @@ export class AutopilotService {
         status: "active",
         nextRunAt: new Date(),
         lastError: null,
+        ...(context && { updatedByUserId: context.actorUserId }),
       },
       include: { _count: { select: { episodes: true } } },
     });
@@ -179,7 +186,11 @@ export class AutopilotService {
     const prisma = requirePrisma();
     const now = new Date();
     const due = await prisma.autopilotRule.findMany({
-      where: { status: "active", nextRunAt: { lte: now } },
+      where: {
+        status: "active",
+        nextRunAt: { lte: now },
+        OR: [{ workspaceId: null }, { workspace: { status: "active" } }],
+      },
       orderBy: { nextRunAt: "asc" },
       take: Math.max(1, Math.min(10, limit)),
     });
@@ -245,7 +256,7 @@ export class AutopilotService {
         episodes: [episode],
         titlePrefix: rule.titlePrefix ?? undefined,
         brandTemplateId: rule.brandTemplateId ?? null,
-      });
+      }, rule.workspaceId ?? undefined);
       const projectId = result.projects[0]?.project.id;
       if (!projectId) continue;
 

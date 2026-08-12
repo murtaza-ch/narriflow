@@ -50,7 +50,7 @@ export default function PricingPage() {
         <Text fontSize="13px" color="fg.muted">
           One processing minute = one minute of source media, across every tier.
         </Text>
-        <Link href="/settings/billing">
+        <Link href="/settings/subscription">
           <Text
             as="span"
             fontSize="13px"

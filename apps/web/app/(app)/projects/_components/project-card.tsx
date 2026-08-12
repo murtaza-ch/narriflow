@@ -15,6 +15,7 @@ export { STATUS_CONFIG };
 
 interface ProjectCardProps {
   project: ProjectListItem;
+  priority?: boolean;
 }
 
 export interface ProjectActivity {
@@ -76,7 +77,7 @@ export function buildProjectMeta(project: ProjectListItem): string {
  * in a MediaWell, the text block sits directly on the page ground. The whole
  * card is one link (per-card actions are out of scope for this pass).
  */
-export function ProjectCard({ project }: ProjectCardProps) {
+export function ProjectCard({ project, priority = false }: ProjectCardProps) {
   const activity = getProjectActivity(project);
   const meta = buildProjectMeta(project);
 
@@ -94,7 +95,7 @@ export function ProjectCard({ project }: ProjectCardProps) {
           }}
         >
           <Box position="relative">
-            <ProjectThumbnail project={project} />
+            <ProjectThumbnail project={project} priority={priority} />
             {activity.active ? <ShimmerStrip /> : null}
             {activity.status === "failed" ? (
               <Box

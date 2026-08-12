@@ -5,7 +5,7 @@ import { FolderOpen } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
-import { requireCurrentAppUser } from "@narriflow/auth";
+import { requireWorkspaceAppUser as requireCurrentAppUser } from "@/lib/workspace";
 import {
   isRetentionEnforcementActive,
   projectService,
@@ -13,6 +13,8 @@ import {
 import { ProjectsExplorer } from "./_components/projects-explorer";
 import { ProjectsGridSkeleton } from "./_components/projects-skeleton";
 import { RetentionBanner } from "./_components/retention-banner";
+import { FoldersPanel } from "./_components/folders-panel";
+import { workspaceLibraryService } from "@narriflow/services";
 
 /**
  * Deliberately NOT async, and deliberately without a sibling `loading.tsx`.
@@ -31,7 +33,7 @@ import { RetentionBanner } from "./_components/retention-banner";
  * boundary — the header paints at once, and the grid slot resolves exactly
  * once, in place.
  */
-export default function ProjectsPage() {
+export default function ProjectsPage({ searchParams }: { searchParams: Promise<{ folder?: string }> }) {
   return (
     <Stack gap="8">
       <PageHeader
@@ -39,9 +41,9 @@ export default function ProjectsPage() {
         title="Projects"
         description="Manage imports, queue transcription, and review project progress."
         actions={
-          <Button asChild>
-            <Link href="/upload">New upload</Link>
-          </Button>
+          <Suspense fallback={null}>
+            <ProjectsHeaderAction />
+          </Suspense>
         }
       />
 
@@ -50,34 +52,64 @@ export default function ProjectsPage() {
           fade-up meant the region animated in with the skeleton and then the
           cards animated in again on resolve. */}
       <Suspense fallback={<ProjectsGridSkeleton />}>
-        <ProjectsData />
+        <ProjectsData searchParams={searchParams} />
       </Suspense>
     </Stack>
   );
 }
 
-async function ProjectsData() {
+async function ProjectsHeaderAction() {
   const appUser = await requireCurrentAppUser();
-  const page = await projectService.listProjectsWithStatsPage(appUser.id);
+  if (
+    appUser.workspace.role === "viewer" ||
+    appUser.workspace.status !== "active"
+  ) {
+    return null;
+  }
+  return (
+    <Button asChild>
+      <Link href="/upload">New upload</Link>
+    </Button>
+  );
+}
+
+async function ProjectsData({ searchParams }: { searchParams: Promise<{ folder?: string }> }) {
+  const appUser = await requireCurrentAppUser();
+  const params = await searchParams;
+  const [page, folders] = await Promise.all([
+    projectService.listProjectsWithStatsPage(appUser.actorUserId, {
+      workspaceId: appUser.workspaceId,
+      folderId: params.folder,
+    }),
+    workspaceLibraryService.listFolders(appUser.actorUserId, appUser.workspaceId),
+  ]);
   const items = page.items;
+  const canEdit =
+    appUser.workspace.role !== "viewer" &&
+    (appUser.workspace.status === "active" ||
+      appUser.workspace.role === "owner");
+  const canCreate =
+    appUser.workspace.role !== "viewer" &&
+    appUser.workspace.status === "active";
   const retentionBanner =
-    appUser.pricingTier === "free" && isRetentionEnforcementActive()
+    appUser.workspace.pricingTier === "free" && isRetentionEnforcementActive()
       ? <RetentionBanner />
       : null;
 
   if (items.length === 0) {
     return (
       <Stack gap="5">
+        <FoldersPanel folders={folders.map((folder) => ({ id: folder.id, name: folder.name, count: folder._count.projects }))} activeFolderId={params.folder ?? null} canEdit={canEdit} />
         {retentionBanner}
         <EmptyState
           icon={<FolderOpen size={22} strokeWidth={1.5} />}
           title="No projects yet"
           description="Import your first piece of content to get started."
-          action={
+          action={canCreate ? (
             <Button size="sm" variant="outline" asChild>
               <Link href="/upload">Start upload</Link>
             </Button>
-          }
+          ) : undefined}
         />
       </Stack>
     );
@@ -85,11 +117,15 @@ async function ProjectsData() {
 
   return (
     <Stack gap="5">
+      <FoldersPanel folders={folders.map((folder) => ({ id: folder.id, name: folder.name, count: folder._count.projects }))} activeFolderId={params.folder ?? null} canEdit={canEdit} />
       {retentionBanner}
       <ProjectsExplorer
         initialProjects={items}
         initialNextCursor={page.nextCursor}
         totalCount={page.totalCount}
+        folderId={params.folder}
+        folders={folders.map((folder) => ({ id: folder.id, name: folder.name }))}
+        canEdit={canEdit}
       />
     </Stack>
   );

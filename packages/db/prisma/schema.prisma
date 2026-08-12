@@ -12,6 +12,7 @@ enum PricingTier {
   starter
   creator
   pro
+  business
 }
 
 enum OutputType {
@@ -134,10 +135,17 @@ enum AuthProvider {
   email_password
 }
 
-enum TeamRole {
+enum WorkspaceRole {
+  owner
   admin
   editor
   viewer
+}
+
+enum WorkspaceStatus {
+  active
+  pending_payment
+  restricted
 }
 
 enum WebhookProvider {
@@ -207,6 +215,10 @@ model Project {
   ingestErrorCode String?
   ingestCompletedAt DateTime?
   userId         String        @db.Uuid
+  workspaceId    String?       @db.Uuid
+  createdByUserId String?      @db.Uuid
+  updatedByUserId String?      @db.Uuid
+  folderId       String?       @db.Uuid
   brandTemplateId String?      @db.Uuid
   brandSnapshot  Json?
   // Client-minted commit token: concurrent Step-1 double-submits collapse in
@@ -231,6 +243,8 @@ model Project {
   transcript     Transcript?
   clips          Clip[]
   user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace      Workspace?    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  folder         WorkspaceFolder? @relation(fields: [folderId], references: [id], onDelete: SetNull)
   brandTemplate  BrandTemplate? @relation(fields: [brandTemplateId], references: [id], onDelete: SetNull)
   workflowRuns   WorkflowRun[]
   workflowEvents WorkflowEvent[]
@@ -245,6 +259,9 @@ model Project {
 
   @@index([userId, createdAt])
   @@index([userId, ingestStatus, createdAt])
+  @@index([workspaceId, createdAt])
+  @@index([workspaceId, ingestStatus, createdAt])
+  @@index([workspaceId, folderId, createdAt])
   @@index([brandTemplateId])
   @@index([expiresAt, purgeRetryAt, purgeLeaseExpiresAt])
 }
@@ -474,12 +491,13 @@ model User {
   updatedAt              DateTime         @updatedAt
   authIdentities         AuthIdentity[]
   apiKeys                ApiKey[]
-  ownedTeams             Team[]           @relation("TeamOwner")
+  ownedWorkspaces        Workspace[]       @relation("WorkspaceOwner")
+  personalWorkspace      Workspace?        @relation("PersonalWorkspaceOwner")
   projects               Project[]
   autopilotRules         AutopilotRule[]
   socialAccounts         SocialAccount[]
   socialOAuthStates      SocialOAuthState[]
-  teamMemberships        TeamMember[]
+  workspaceMemberships   WorkspaceMember[]
   brandTemplates         BrandTemplate[]  @relation("UserBrandTemplates")
   defaultBrandTemplate   BrandTemplate?   @relation("UserDefaultBrandTemplate", fields: [defaultBrandTemplateId], references: [id], onDelete: SetNull)
   audioAssets            AudioAsset[]
@@ -488,9 +506,106 @@ model User {
   @@index([clerkId])
 }
 
+model Workspace {
+  id                     String          @id @default(uuid()) @db.Uuid
+  name                   String
+  avatarStorageKey       String?
+  ownerUserId            String          @db.Uuid
+  personalOwnerUserId    String?         @unique @db.Uuid
+  status                 WorkspaceStatus @default(active)
+  timezone               String          @default("UTC")
+  pricingTier            PricingTier     @default(free)
+  stripeCustomerId       String?         @unique
+  stripeSubscriptionId   String?         @unique
+  stripeSeatItemId       String?         @unique
+  billingInterval        String?
+  billingEventCreatedAt  DateTime?
+  subscriptionEndsAt     DateTime?
+  defaultBrandTemplateId String?         @db.Uuid
+  seatLimit              Int             @default(1)
+  createdAt              DateTime        @default(now())
+  updatedAt              DateTime        @updatedAt
+
+  owner                User                  @relation("WorkspaceOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  personalOwner        User?                 @relation("PersonalWorkspaceOwner", fields: [personalOwnerUserId], references: [id], onDelete: Cascade)
+  defaultBrandTemplate BrandTemplate?        @relation("WorkspaceDefaultBrandTemplate", fields: [defaultBrandTemplateId], references: [id], onDelete: SetNull)
+  members              WorkspaceMember[]
+  invites              WorkspaceInvite[]
+  projects             Project[]
+  folders              WorkspaceFolder[]
+  autopilotRules       AutopilotRule[]
+  apiKeys              ApiKey[]
+  socialAccounts       SocialAccount[]
+  socialOAuthStates    SocialOAuthState[]
+  brandTemplates       BrandTemplate[]
+  audioAssets          AudioAsset[]
+  audioAssetFavorites  AudioAssetFavorite[]
+  clipExports          ClipExport[]
+  socialPosts          SocialPost[]
+
+  @@index([ownerUserId])
+  @@index([status, pricingTier])
+}
+
+model WorkspaceMember {
+  id                      String        @id @default(uuid()) @db.Uuid
+  workspaceId             String        @db.Uuid
+  userId                  String        @db.Uuid
+  role                    WorkspaceRole @default(viewer)
+  pendingPaymentOperation String?
+  joinedAt                DateTime      @default(now())
+  updatedAt               DateTime      @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, userId])
+  @@index([userId, joinedAt])
+  @@index([workspaceId, role])
+}
+
+model WorkspaceInvite {
+  id                      String        @id @default(uuid()) @db.Uuid
+  workspaceId             String        @db.Uuid
+  email                   String
+  role                    WorkspaceRole @default(viewer)
+  tokenHash               String        @unique
+  invitedByUserId         String?       @db.Uuid
+  pendingPaymentOperation String?
+  expiresAt               DateTime
+  acceptedAt              DateTime?
+  revokedAt               DateTime?
+  createdAt               DateTime      @default(now())
+  updatedAt               DateTime      @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, email])
+  @@index([workspaceId, expiresAt])
+}
+
+model WorkspaceFolder {
+  id              String   @id @default(uuid()) @db.Uuid
+  workspaceId     String   @db.Uuid
+  name            String
+  normalizedName  String
+  createdByUserId String?  @db.Uuid
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  projects  Project[]
+
+  @@unique([workspaceId, normalizedName])
+  @@index([workspaceId, createdAt])
+}
+
 model AutopilotRule {
   id                String          @id @default(uuid()) @db.Uuid
   userId            String          @db.Uuid
+  workspaceId       String?         @db.Uuid
+  createdByUserId   String?         @db.Uuid
+  updatedByUserId   String?         @db.Uuid
   name              String
   rssUrl            String
   titlePrefix       String?
@@ -507,9 +622,11 @@ model AutopilotRule {
   updatedAt         DateTime        @updatedAt
 
   user     User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace?        @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   episodes AutopilotEpisode[]
 
   @@index([userId, status, createdAt])
+  @@index([workspaceId, status, createdAt])
   @@index([status, nextRunAt])
 }
 
@@ -545,50 +662,11 @@ model AuthIdentity {
   @@index([userId])
 }
 
-model Team {
-  id          String       @id @default(uuid()) @db.Uuid
-  name        String
-  ownerUserId String       @db.Uuid
-  seatLimit   Int          @default(1)
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
-  invites     TeamInvite[]
-  members     TeamMember[]
-  owner       User         @relation("TeamOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
-
-  @@index([ownerUserId])
-}
-
-model TeamMember {
-  id       String   @id @default(uuid()) @db.Uuid
-  teamId   String   @db.Uuid
-  userId   String   @db.Uuid
-  role     TeamRole @default(viewer)
-  joinedAt DateTime @default(now())
-  team     Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
-  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@unique([teamId, userId])
-  @@index([userId])
-}
-
-model TeamInvite {
-  id         String   @id @default(uuid()) @db.Uuid
-  teamId     String   @db.Uuid
-  email      String
-  role       TeamRole @default(viewer)
-  tokenHash  String   @unique
-  expiresAt  DateTime
-  acceptedAt DateTime?
-  createdAt  DateTime @default(now())
-  team       Team     @relation(fields: [teamId], references: [id], onDelete: Cascade)
-
-  @@index([teamId, email])
-}
-
 model ApiKey {
   id           String    @id @default(uuid()) @db.Uuid
   userId       String    @db.Uuid
+  workspaceId  String?   @db.Uuid
+  createdByUserId String? @db.Uuid
   name         String
   prefix       String    @unique
   hashedSecret String
@@ -598,13 +676,17 @@ model ApiKey {
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
   user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace    Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@index([userId, revokedAt])
+  @@index([workspaceId, revokedAt])
 }
 
 model SocialAccount {
   id                    String              @id @default(uuid()) @db.Uuid
   userId                String              @db.Uuid
+  workspaceId           String?             @db.Uuid
+  createdByUserId       String?             @db.Uuid
   platform              SocialPlatform
   providerAccountId     String
   displayName           String
@@ -620,16 +702,20 @@ model SocialAccount {
   updatedAt             DateTime            @updatedAt
 
   user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace   Workspace?    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   socialPosts SocialPost[]
 
-  @@unique([userId, platform, providerAccountId])
+  @@unique([workspaceId, platform, providerAccountId])
   @@index([userId, platform, status])
+  @@index([workspaceId, platform, status])
   @@index([status, expiresAt])
 }
 
 model SocialOAuthState {
   id           String         @id @default(uuid()) @db.Uuid
   userId       String         @db.Uuid
+  workspaceId  String?        @db.Uuid
+  createdByUserId String?      @db.Uuid
   platform     SocialPlatform
   state        String         @unique
   codeVerifier String?
@@ -638,8 +724,10 @@ model SocialOAuthState {
   createdAt    DateTime       @default(now())
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
 
   @@index([userId, platform, createdAt])
+  @@index([workspaceId, platform, createdAt])
   @@index([expiresAt])
 }
 
@@ -803,6 +891,8 @@ model ClipRender {
 model ClipExport {
   id             String           @id @default(uuid()) @db.Uuid
   projectId      String           @db.Uuid
+  workspaceId    String?          @db.Uuid
+  createdByUserId String?         @db.Uuid
   clipId         String           @db.Uuid
   editorRevision Int
   fingerprint    String
@@ -817,12 +907,14 @@ model ClipExport {
   completedAt    DateTime?
 
   project    Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workspace  Workspace?           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   clip       Clip                @relation(fields: [clipId], references: [id], onDelete: Cascade)
   variants   ClipExportVariant[]
   shareLinks ClipShareLink[]
 
   @@unique([clipId, fingerprint])
   @@index([projectId, createdAt(sort: Desc)])
+  @@index([workspaceId, createdAt(sort: Desc)])
   @@index([clipId, createdAt(sort: Desc)])
   @@index([status, updatedAt])
 }
@@ -901,6 +993,9 @@ model ClipDub {
 model BrandTemplate {
   id             String   @id @default(uuid()) @db.Uuid
   userId         String?  @db.Uuid
+  workspaceId    String?  @db.Uuid
+  createdByUserId String? @db.Uuid
+  updatedByUserId String? @db.Uuid
   name           String
   isBuiltIn      Boolean  @default(false)
   builtInKey     String?  @unique
@@ -921,10 +1016,13 @@ model BrandTemplate {
   deletedAt      DateTime?
 
   user           User?    @relation("UserBrandTemplates", fields: [userId], references: [id], onDelete: Cascade)
+  workspace      Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   defaultForUsers User[]  @relation("UserDefaultBrandTemplate")
+  defaultForWorkspaces Workspace[] @relation("WorkspaceDefaultBrandTemplate")
   projects       Project[]
 
   @@index([userId, deletedAt, createdAt])
+  @@index([workspaceId, deletedAt, createdAt])
   @@index([isBuiltIn])
 }
 
@@ -940,6 +1038,8 @@ model AudioAsset {
   id          String         @id @default(uuid()) @db.Uuid
   kind        AudioAssetKind
   userId      String?        @db.Uuid
+  workspaceId String?        @db.Uuid
+  createdByUserId String?    @db.Uuid
   storageKey  String         @unique
   title       String
   moodTags    String[]       @default([])
@@ -948,10 +1048,12 @@ model AudioAsset {
   deletedAt   DateTime?
 
   user      User?                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace?           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   favorites AudioAssetFavorite[]
 
   @@index([kind, userId])
   @@index([userId, deletedAt, createdAt])
+  @@index([workspaceId, deletedAt, createdAt])
 }
 
 /// A user's saved/favorited library entries. Kept separate from AudioAsset so
@@ -960,20 +1062,25 @@ model AudioAsset {
 model AudioAssetFavorite {
   id        String   @id @default(uuid()) @db.Uuid
   userId    String   @db.Uuid
+  workspaceId String? @db.Uuid
   assetId   String   @db.Uuid
   createdAt DateTime @default(now())
 
   user  User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   asset AudioAsset @relation(fields: [assetId], references: [id], onDelete: Cascade)
 
-  @@unique([userId, assetId])
+  @@unique([workspaceId, assetId])
   @@index([userId, createdAt])
+  @@index([workspaceId, createdAt])
   @@index([assetId])
 }
 
 model SocialPost {
   id           String           @id @default(uuid()) @db.Uuid
   projectId    String           @db.Uuid
+  workspaceId  String?          @db.Uuid
+  createdByUserId String?       @db.Uuid
   clipId       String?          @db.Uuid
   socialAccountId String?       @db.Uuid
   platform     SocialPlatform
@@ -989,11 +1096,13 @@ model SocialPost {
   updatedAt    DateTime         @updatedAt
 
   project Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   clip    Clip?   @relation(fields: [clipId], references: [id], onDelete: SetNull)
   socialAccount SocialAccount? @relation(fields: [socialAccountId], references: [id], onDelete: SetNull)
   metrics SocialPostMetric[]
 
   @@index([projectId, scheduledFor])
+  @@index([workspaceId, scheduledFor])
   @@index([status, scheduledFor])
   @@index([clipId])
   @@index([socialAccountId])

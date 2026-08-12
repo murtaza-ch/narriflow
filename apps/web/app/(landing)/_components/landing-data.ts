@@ -153,14 +153,6 @@ export const TIERS = [
     featured: false,
   },
   {
-    name: "Starter",
-    price: 7,
-    minutes: 300,
-    blurb: "No watermark, your brand",
-    points: ["300 processing min/mo", "1080p, no watermark", "Brand templates"],
-    featured: false,
-  },
-  {
     name: "Creator",
     price: 12,
     minutes: 600,
@@ -174,6 +166,14 @@ export const TIERS = [
     minutes: 1800,
     blurb: "Every language, every format",
     points: ["1,800 processing min/mo", "AI voiceover dubbing", "Uploads up to 3 hours"],
+    featured: false,
+  },
+  {
+    name: "Business",
+    price: 39,
+    minutes: 1800,
+    blurb: "One workspace for your team",
+    points: ["1,800 shared processing min/mo", "Owner seat included", "$5 additional Editor/Admin seats"],
     featured: false,
   },
 ] as const;

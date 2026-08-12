@@ -14,7 +14,7 @@ import {
   type PricingTier,
 } from "@narriflow/validators";
 
-const TIERS: PricingTier[] = ["free", "starter", "creator", "pro"];
+const TIERS: PricingTier[] = ["free", "creator", "pro", "business"];
 const RECOMMENDED_TIER: PricingTier = "creator";
 
 function isPaidTier(tier: PricingTier): tier is PaidPricingTier {
@@ -53,7 +53,7 @@ export function PricingTable() {
           onValueChange={(value) => setInterval(value as BillingInterval)}
         />
         <Text fontSize="12px" color="fg.muted">
-          Annual billing saves up to {Math.max(...(["starter", "creator", "pro"] as const).map(annualSavingsPercent))}%
+          Annual billing saves up to {Math.max(...(["creator", "pro", "business"] as const).map(annualSavingsPercent))}%
         </Text>
       </Flex>
 

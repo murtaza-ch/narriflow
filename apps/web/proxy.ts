@@ -3,13 +3,26 @@ import { NextResponse } from "next/server";
 
 const isProtectedRoute = createRouteMatcher([
   "/dashboard(.*)",
+  "/home(.*)",
   "/projects(.*)",
+  "/exports(.*)",
+  "/calendar(.*)",
+  "/autopilot(.*)",
+  "/brand-kit(.*)",
+  "/workspaces(.*)",
+  "/settings(.*)",
   "/upload(.*)",
   "/onboarding(.*)",
   "/api/projects(.*)",
   "/api/uploads(.*)",
   "/api/ingest(.*)",
   "/api/stream(.*)",
+  "/api/workspace(.*)",
+  "/api/billing(.*)",
+  "/api/autopilot(.*)",
+  "/api/social(.*)",
+  "/api/brand-templates(.*)",
+  "/api/audio-assets(.*)",
 ]);
 
 const isAuthRoute = createRouteMatcher(["/sign-in(.*)", "/sign-up(.*)", "/forgot-password(.*)"]);

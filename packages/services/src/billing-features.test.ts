@@ -6,7 +6,7 @@ import { hasFeature, type PlanFeature } from "./billing.service";
 // options): watermark presence and 1080p access derive from the owner's tier
 // through this single helper, never a raw `tier === "free"` check.
 
-const ALL_TIERS: PricingTier[] = ["free", "starter", "creator", "pro"];
+const ALL_TIERS: PricingTier[] = ["free", "creator", "pro", "business"];
 const ALL_FEATURES: PlanFeature[] = ["export.1080p", "export.noWatermark"];
 
 describe("hasFeature (PLAN_FEATURES matrix)", () => {
@@ -17,7 +17,7 @@ describe("hasFeature (PLAN_FEATURES matrix)", () => {
   });
 
   test("every paid tier has both export features", () => {
-    for (const tier of ["starter", "creator", "pro"] as const) {
+    for (const tier of ["creator", "pro", "business"] as const) {
       for (const feature of ALL_FEATURES) {
         expect(hasFeature(tier, feature)).toBe(true);
       }

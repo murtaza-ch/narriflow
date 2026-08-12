@@ -16,10 +16,11 @@ describe("pricing tiers", () => {
     expect(resolvePricingTier(undefined)).toBe("free");
     expect(resolvePricingTier("enterprise")).toBe("free");
     expect(resolvePricingTier("creator")).toBe("creator");
+    expect(resolvePricingTier("starter")).toBe("creator");
   });
 
   test("limits increase monotonically with tier", () => {
-    const order = ["free", "starter", "creator", "pro"] as const;
+    const order = ["free", "creator", "pro"] as const;
     for (let i = 1; i < order.length; i += 1) {
       expect(MONTHLY_PROCESSING_MINUTE_LIMITS[order[i]!]).toBeGreaterThan(
         MONTHLY_PROCESSING_MINUTE_LIMITS[order[i - 1]!],
@@ -28,6 +29,11 @@ describe("pricing tiers", () => {
         MAX_UPLOAD_LENGTH_SECONDS[order[i - 1]!],
       );
     }
+  });
+
+  test("business shares the Pro processing and upload limits", () => {
+    expect(MONTHLY_PROCESSING_MINUTE_LIMITS.business).toBe(MONTHLY_PROCESSING_MINUTE_LIMITS.pro);
+    expect(MAX_UPLOAD_LENGTH_SECONDS.business).toBe(MAX_UPLOAD_LENGTH_SECONDS.pro);
   });
 
   test("source seconds are rounded up to quota minutes", () => {

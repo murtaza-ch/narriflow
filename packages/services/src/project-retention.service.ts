@@ -312,6 +312,38 @@ export class ProjectRetentionService {
     return assignment;
   }
 
+  async assignmentForWorkspace(
+    workspaceId: string,
+    createdAt: Date,
+  ): Promise<RetentionAssignment | null> {
+    const prisma = getPrismaClient();
+    if (!prisma) {
+      return retentionAssignmentForNewProject({ tier: "free", createdAt });
+    }
+    const workspace = await prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      select: { pricingTier: true },
+    });
+    const config = getRetentionRuntimeConfig();
+    const assignment = retentionAssignmentForNewProject({
+      tier: workspace?.pricingTier ?? "free",
+      createdAt,
+      config,
+    });
+    if (workspace?.pricingTier === "free" && config.mode === "observe") {
+      console.warn(JSON.stringify({
+        level: "info",
+        message: "project_retention_observed",
+        workspaceId,
+        candidatePolicyKey: "free_project_v1",
+        candidateExpiresAt: new Date(
+          createdAt.getTime() + RETENTION_POLICIES.free_project_v1.durationMs,
+        ).toISOString(),
+      }));
+    }
+    return assignment;
+  }
+
   async applyTierTransition(
     tx: Prisma.TransactionClient,
     input: {
@@ -347,6 +379,51 @@ export class ProjectRetentionService {
       await tx.project.updateMany({
         where: {
           userId: input.userId,
+          purgeStartedAt: null,
+          expiresAt: null,
+        },
+        data: {
+          retentionPolicyKey: transition.assignment.retentionPolicyKey,
+          expiresAt: transition.assignment.expiresAt,
+        },
+      });
+    }
+  }
+
+  async applyWorkspaceTierTransition(
+    tx: Prisma.TransactionClient,
+    input: {
+      workspaceId: string;
+      previousTier: PricingTier;
+      nextTier: PricingTier;
+      effectiveAt: Date;
+    },
+  ): Promise<void> {
+    const transition = retentionTransitionForTierChange(input);
+    if (transition.kind === "clear_unexpired") {
+      await tx.project.updateMany({
+        where: {
+          workspaceId: input.workspaceId,
+          expiresAt: { gt: input.effectiveAt },
+          purgeDeletedObjectCount: 0,
+          purgeStorageVerifiedAt: null,
+        },
+        data: {
+          retentionPolicyKey: null,
+          expiresAt: null,
+          purgeStartedAt: null,
+          purgeLeaseExpiresAt: null,
+          purgeRetryAt: null,
+          purgeStorageVerifiedAt: null,
+          purgeLastError: null,
+        },
+      });
+      return;
+    }
+    if (transition.kind === "assign_downgrade") {
+      await tx.project.updateMany({
+        where: {
+          workspaceId: input.workspaceId,
           purgeStartedAt: null,
           expiresAt: null,
         },

@@ -36,7 +36,7 @@ export function RetentionBanner() {
         </Stack>
       </Flex>
       <Button size="sm" variant="outline" asChild flexShrink={0}>
-        <Link href="/settings/billing">Keep my projects</Link>
+        <Link href="/settings/subscription">Keep my projects</Link>
       </Button>
     </Flex>
   );

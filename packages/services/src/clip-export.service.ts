@@ -11,11 +11,13 @@ import {
   type ClipExportSnapshot,
   type ClipExportStatus,
   type ClipRenderResolution,
+  resolvePricingTier,
 } from "@narriflow/validators";
 import { hasFeature } from "./billing.service";
 import { projectService } from "./project.service";
 import { accessibleProjectWhere } from "./project-retention.service";
 import { presignDownloadUrl } from "./r2-storage";
+import { workspaceService } from "./workspace.service";
 
 const EXPORT_DOWNLOAD_TTL_SECONDS = 15 * 60;
 
@@ -279,15 +281,32 @@ export class ClipExportService {
       resolution: ClipRenderResolution;
     },
     _idempotencyKey: string,
+    workspaceContext?: { workspaceId: string; actorUserId: string },
   ): Promise<{ export: ClipExportSnapshot; reused: boolean }> {
+    if (workspaceContext) {
+      await workspaceService.requireActor(
+        workspaceContext.actorUserId,
+        workspaceContext.workspaceId,
+        "processing.consume",
+      );
+    }
     const prisma = requirePrisma();
-    const [clip, tier] = await Promise.all([
-      prisma.clip.findFirst({
-        where: { id: clipId, projectId, project: { userId } },
-      }),
-      projectService.getUserPricingTier(userId),
-    ]);
+    const clip = await prisma.clip.findFirst({
+      where: {
+        id: clipId,
+        projectId,
+        project: workspaceContext
+          ? { workspaceId: workspaceContext.workspaceId }
+          : { userId },
+      },
+      include: {
+        project: { select: { workspaceId: true, workspace: { select: { pricingTier: true } } } },
+      },
+    });
     if (!clip) throw new ClipExportError("clip_not_found", "Clip not found");
+    const tier = clip.project.workspace
+      ? resolvePricingTier(clip.project.workspace.pricingTier)
+      : await projectService.getUserPricingTier(userId);
     if (clip.editorRevision !== input.expectedRevision) {
       throw new ClipExportRevisionConflictError(clip.editorRevision);
     }
@@ -315,6 +334,8 @@ export class ClipExportService {
       where: { clipId_fingerprint: { clipId, fingerprint } },
       create: {
         id: exportId,
+        workspaceId: workspaceContext?.workspaceId ?? clip.project.workspaceId,
+        createdByUserId: workspaceContext?.actorUserId ?? userId,
         projectId,
         clipId,
         editorRevision: clip.editorRevision,
@@ -351,24 +372,58 @@ export class ClipExportService {
     projectId: string,
     clipId: string,
     exportId: string,
+    workspaceId?: string,
   ): Promise<ClipExportSnapshot | null> {
     const prisma = requirePrisma();
     const row = await prisma.clipExport.findFirst({
-      where: { id: exportId, projectId, clipId, project: { userId } },
+      where: {
+        id: exportId,
+        projectId,
+        clipId,
+        project: workspaceId ? { workspaceId } : { userId },
+      },
       include: exportInclude,
     });
     return row ? toExportSnapshot(row, true) : null;
   }
 
-  async retryFailed(userId: string, projectId: string, clipId: string, exportId: string) {
+  async getWorkspaceOwned(
+    workspaceId: string,
+    exportId: string,
+  ): Promise<ClipExportSnapshot | null> {
+    const row = await requirePrisma().clipExport.findFirst({
+      where: {
+        id: exportId,
+        workspaceId,
+        project: accessibleProjectWhere(),
+      },
+      include: exportInclude,
+    });
+    return row ? toExportSnapshot(row, true) : null;
+  }
+
+  async retryFailed(
+    userId: string,
+    projectId: string,
+    clipId: string,
+    exportId: string,
+    workspaceId?: string,
+  ) {
     const prisma = requirePrisma();
     const owned = await prisma.clipExport.findFirst({
-      where: { id: exportId, projectId, clipId, project: { userId } },
+      where: {
+        id: exportId,
+        projectId,
+        clipId,
+        project: workspaceId ? { workspaceId } : { userId },
+      },
       include: { variants: { include: { render: true } } },
     });
     if (!owned) throw new ClipExportError("export_not_found", "Export not found");
     const failed = owned.variants.filter((variant) => variant.status === "failed");
-    if (failed.length === 0) return this.getOwned(userId, projectId, clipId, exportId);
+    if (failed.length === 0) {
+      return this.getOwned(userId, projectId, clipId, exportId, workspaceId);
+    }
 
     await prisma.$transaction(async (tx) => {
       for (const variant of failed) {
@@ -397,7 +452,7 @@ export class ClipExportService {
       });
     });
 
-    return this.getOwned(userId, projectId, clipId, exportId);
+    return this.getOwned(userId, projectId, clipId, exportId, workspaceId);
   }
 
   async createShareLink(
@@ -406,6 +461,7 @@ export class ClipExportService {
     clipId: string,
     exportId: string,
     expiresInDays: 1 | 7 | 30 | null,
+    workspaceId?: string,
   ): Promise<{ path: string; expiresAt: string | null }> {
     const prisma = requirePrisma();
     const owned = await prisma.clipExport.findFirst({
@@ -413,7 +469,10 @@ export class ClipExportService {
         id: exportId,
         projectId,
         clipId,
-        project: { userId, ...accessibleProjectWhere() },
+        project: {
+          ...(workspaceId ? { workspaceId } : { userId }),
+          ...accessibleProjectWhere(),
+        },
         variants: { some: { status: "completed" } },
       },
       select: { id: true },
@@ -429,14 +488,23 @@ export class ClipExportService {
     return { path: `/share/${token}`, expiresAt: expiresAt?.toISOString() ?? null };
   }
 
-  async revokeShareLinks(userId: string, projectId: string, clipId: string, exportId: string) {
+  async revokeShareLinks(
+    userId: string,
+    projectId: string,
+    clipId: string,
+    exportId: string,
+    workspaceId?: string,
+  ) {
     const prisma = requirePrisma();
     const owned = await prisma.clipExport.findFirst({
       where: {
         id: exportId,
         projectId,
         clipId,
-        project: { userId, ...accessibleProjectWhere() },
+        project: {
+          ...(workspaceId ? { workspaceId } : { userId }),
+          ...accessibleProjectWhere(),
+        },
       },
       select: { id: true },
     });

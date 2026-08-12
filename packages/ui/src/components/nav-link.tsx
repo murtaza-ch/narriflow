@@ -23,7 +23,11 @@ export function NavLink({ href, icon, children }: NavLinkProps) {
     pathname === href || (href !== "/settings" && pathname.startsWith(href + "/"))
 
   return (
-    <Link href={href} style={{ textDecoration: "none" }}>
+    <Link
+      href={href}
+      aria-current={isActive ? "page" : undefined}
+      style={{ textDecoration: "none" }}
+    >
       <HStack
         gap="2.5"
         px="3"

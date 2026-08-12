@@ -245,6 +245,7 @@ interface WorkflowRunJob {
     sourceStorageKey: string | null;
     sourceDurationSeconds: number | null;
     userId: string;
+    workspaceId: string | null;
   };
 }
 
@@ -5861,6 +5862,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
           const resolved = await audioAssetService.resolveRenderSource(
             run.project.userId,
             studioEdits.music.assetId,
+            run.project.workspaceId,
           );
           musicUrl = resolved?.url ?? null;
           musicUrlIsAssetResolved = Boolean(resolved);
@@ -5972,6 +5974,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
           const resolved = await audioAssetService.resolveRenderSource(
             run.project.userId,
             placement.assetId,
+            run.project.workspaceId,
           );
           sfxUrl = resolved?.url ?? null;
           if (!resolved) {

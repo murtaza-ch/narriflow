@@ -36,6 +36,7 @@ export interface SelectProps
   onValueChange?: (value: string) => void
   placeholder?: string
   label?: string
+  ariaLabel?: string
   size?: SelectSize
 }
 
@@ -52,6 +53,7 @@ export const Select = React.forwardRef<HTMLDivElement, SelectProps>(
       onValueChange,
       placeholder = "Select…",
       label,
+      ariaLabel,
       size = "md",
       ...rest
     } = props
@@ -92,6 +94,7 @@ export const Select = React.forwardRef<HTMLDivElement, SelectProps>(
         ) : null}
         <ChakraSelect.Control>
           <ChakraSelect.Trigger
+            aria-label={ariaLabel}
             h={triggerHeights[size]}
             px="2.5"
             bg="bg.panel"

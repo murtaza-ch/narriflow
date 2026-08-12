@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import {
+  billingService,
   projectService,
   projectRetentionService,
   purgeExpiredProjectSources,
@@ -69,6 +70,7 @@ const notificationRetryBatchSize = Number(
 
 let processedCount = 0;
 let lastReapAt = 0;
+let lastSeatReconcileAt = 0;
 
 /** Periodically fails workflow runs orphaned by a crashed/evicted worker.
  *  Called only from the ingest loop (rate-limited internally via lastReapAt),
@@ -79,6 +81,17 @@ async function reapStalledRunsIfDue() {
   if (now - lastReapAt < reapIntervalMs) return;
   lastReapAt = now;
   try {
+    if (now - lastSeatReconcileAt >= 60 * 60 * 1000) {
+      lastSeatReconcileAt = now;
+      const seats = await billingService.reconcileAllWorkspaceSeats(
+        Number(process.env.WORKSPACE_SEAT_RECONCILIATION_BATCH_SIZE ?? 100),
+      );
+      console.warn(JSON.stringify({
+        level: seats.failed > 0 ? "warn" : "info",
+        message: "workspace_seat_reconciliation_complete",
+        ...seats,
+      }));
+    }
     const reaped = await projectService.reapStuckWorkflowRuns(
       reapStallTimeoutMs,
     );

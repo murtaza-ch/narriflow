@@ -8,6 +8,7 @@ import { AlertTriangle, CalendarClock, Check, Send, X } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { Input } from "@narriflow/ui/components/input";
 import { Select } from "@narriflow/ui/components/select";
+import { DateTimePicker } from "@narriflow/ui/components/date-picker";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
 import {
@@ -493,11 +494,10 @@ export function SocialSchedulingPanel({
             <Text textStyle="eyebrow" color="fg.subtle" mb="1">
               Scheduled time
             </Text>
-            <Input
-              size="sm"
-              type="datetime-local"
+            <DateTimePicker
+              ariaLabel="Scheduled date and time"
               value={scheduledFor}
-              onChange={(event) => setScheduledFor(event.target.value)}
+              onValueChange={setScheduledFor}
             />
           </Box>
 
@@ -549,7 +549,7 @@ export function SocialSchedulingPanel({
 
         {platformAccounts.length === 0 ? (
           <Text fontSize="xs" color="fg.muted">
-            <Link href="/settings/social">
+            <Link href="/settings/social-accounts">
               <Text
                 as="span"
                 color="fg"
