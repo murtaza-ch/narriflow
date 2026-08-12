@@ -1,9 +1,9 @@
 /**
  * Music/SFX library (docs/plans/vizard-parity.md "Music/SFX library").
  *
- * `AudioAsset` rows are either curated (userId null, seeded from
- * packages/db/audio-manifest.json via packages/db/scripts/seed-audio-assets.ts)
- * or user-owned uploads (userId set, soft-deletable). Mirrors the shape of
+ * `AudioAsset` rows are either curated (userId null, managed by content
+ * operations using packages/db/audio-manifest.json as the catalog) or
+ * user-owned uploads (userId set, soft-deletable). Mirrors the shape of
  * `brand-template.service.ts`'s logo upload flow: presign against R2, verify
  * the finalized key is owned by the caller, and serve playback through a
  * short-lived presigned download URL rather than a public bucket.
