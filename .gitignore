@@ -9,3 +9,8 @@ coverage
 .env.local
 .env.*.local
 .DS_Store
+
+# worker-local python runtime + detector models (see docs/agent/setup.md)
+apps/worker/.venv/
+apps/worker/models/
+.codex-audit
