@@ -73,6 +73,7 @@ import {
   isUniqueConstraintError,
   projectService,
   QuotaExceededError,
+  RssFeedError,
   RemoteFetchError,
   socialOAuthService,
   SocialOAuthError,
@@ -168,6 +169,14 @@ app.post("/autopilot/rules", async (c) => {
   const appUser = await getCurrentAppUser();
   if (!appUser) return c.json({ error: "Unauthorized" }, 401);
 
+  const rl = await checkRateLimit(`autopilot-create:${appUser.workspaceId}`, 5, 60 * 60);
+  if (!rl.allowed) {
+    return c.json(
+      { error: "rate_limited", message: userErrorMessage("rate_limited") },
+      429,
+    );
+  }
+
   const payload = await c.req.json().catch(() => ({}));
   const parsed = autopilotRuleInputSchema.safeParse(payload);
   if (!parsed.success) {
@@ -182,8 +191,12 @@ app.post("/autopilot/rules", async (c) => {
     const rule = await autopilotService.createRule(appUser.id, parsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
     return c.json(rule, 201);
   } catch (error) {
+    const code = errorMessage(error);
     return c.json(
-      { error: "autopilot_rule_create_failed", message: errorMessage(error) },
+      {
+        error: "autopilot_rule_create_failed",
+        message: userErrorMessage(code) ?? code,
+      },
       400,
     );
   }
@@ -238,6 +251,14 @@ app.delete("/autopilot/rules/:ruleId", async (c) => {
 app.post("/autopilot/rules/:ruleId/run-now", async (c) => {
   const appUser = await getCurrentAppUser();
   if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+
+  const rl = await checkRateLimit(`autopilot-run:${appUser.workspaceId}`, 10, 60 * 60);
+  if (!rl.allowed) {
+    return c.json(
+      { error: "rate_limited", message: userErrorMessage("rate_limited") },
+      429,
+    );
+  }
 
   try {
     await workspaceService.requireActor(appUser.actorUserId, appUser.workspaceId, "content.edit");
@@ -792,6 +813,14 @@ app.post("/ingest/rss/preview", async (c) => {
     return c.json({ error: "Unauthorized" }, 401);
   }
 
+  const rl = await checkRateLimit(`rss-preview:${appUser.workspaceId}`, 20, 60);
+  if (!rl.allowed) {
+    return c.json(
+      { error: "rate_limited", message: userErrorMessage("rate_limited") },
+      429,
+    );
+  }
+
   const payload = await c.req.json().catch(() => null);
   const parsed = rssPreviewSchema.safeParse(payload);
 
@@ -815,7 +844,9 @@ app.post("/ingest/rss/preview", async (c) => {
             : error.code === "remote_response_too_large"
               ? "rss_feed_too_large"
               : "rss_download_failed"
-          : "rss_download_failed";
+          : error instanceof RssFeedError
+            ? error.code
+            : "rss_download_failed";
     return c.json(
       {
         error: "rss_preview_failed",
@@ -831,6 +862,14 @@ app.post("/ingest/rss/import", async (c) => {
 
   if (!appUser) {
     return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const rl = await checkRateLimit(`rss-import:${appUser.workspaceId}`, 5, 60);
+  if (!rl.allowed) {
+    return c.json(
+      { error: "rate_limited", message: userErrorMessage("rate_limited") },
+      429,
+    );
   }
 
   const payload = await c.req.json().catch(() => null);
@@ -863,7 +902,8 @@ app.post("/ingest/rss/import", async (c) => {
     return c.json(
       {
         error: "rss_import_failed",
-        message: errorMessage(error),
+        message:
+          userErrorMessage(errorMessage(error)) ?? errorMessage(error),
       },
       400,
     );

@@ -58,7 +58,7 @@ import {
   selectActionablePack,
   type FinalizeSetupResult,
 } from "./generation-sequencing";
-import { fetchRssEpisodes } from "./rss";
+import { fetchRssFeed, redactUrlForDisplay } from "./rss";
 import {
   buildTranscriptSnapshot,
   exportTranscript,
@@ -103,6 +103,8 @@ interface ProjectSnapshot {
   persisted: boolean;
   createdAt: string;
 }
+
+const MAX_CONCURRENT_RSS_INGESTS_PER_WORKSPACE = 5;
 
 export interface ProjectListItem extends ProjectSnapshot {
   clipCount: number;
@@ -693,6 +695,7 @@ export const PERMANENT_FAILURE_CODES: ReadonlySet<string> = new Set([
   "worker_invalid_payload",
   "worker_unknown_job_type",
   "upload_finalize_missing_key",
+  "storage_metadata_invalid",
   // Missing prerequisite data that this same job/run cannot itself create
   "workflow_source_missing",
   "source_storage_key_missing",
@@ -2693,16 +2696,86 @@ export class ProjectService {
 
   async previewRssFeed(rssUrl: string) {
     const parsed = rssPreviewSchema.parse({ rssUrl });
-    const episodes = await fetchRssEpisodes(parsed.rssUrl);
+    const feed = await fetchRssFeed(parsed.rssUrl);
 
     return {
-      rssUrl: parsed.rssUrl,
-      episodes,
+      rssUrl: feed.finalUrl,
+      title: feed.title,
+      episodes: feed.episodes,
     };
   }
 
-  async importFromRss(userId: string, input: RssImportInput, workspaceId?: string) {
+  async importFromRss(
+    userId: string,
+    input: RssImportInput,
+    workspaceId?: string,
+    generationContext?: { contentPack: ContentPack; languageCode: string | null },
+  ) {
     const parsed = rssImportSchema.parse(input);
+    // Authorize before performing remote network I/O. importResolvedRssEpisodes
+    // repeats this check because it is also called directly by Autopilot.
+    await this.resolveWriteOwnership(userId, workspaceId, "processing.consume");
+    const feed = await fetchRssFeed(parsed.rssUrl);
+    const episodesById = new Map(
+      feed.episodes.map((episode) => [episode.id, episode]),
+    );
+    const episodes = parsed.episodeIds.map((episodeId) => {
+      const episode = episodesById.get(episodeId);
+      if (!episode) throw new Error("rss_episode_not_found");
+      return episode;
+    });
+
+    return this.importResolvedRssEpisodes(
+      userId,
+      {
+        rssUrl: feed.finalUrl,
+        episodes,
+        titlePrefix: parsed.titlePrefix,
+        brandTemplateId: parsed.brandTemplateId,
+        commitToken: parsed.commitToken,
+      },
+      workspaceId,
+      { generationContext },
+    );
+  }
+
+  /**
+   * Internal authoritative RSS admission path. The caller must supply episodes
+   * returned by fetchRssFeed; public/UI callers go through importFromRss,
+   * which re-fetches and resolves client-submitted IDs server-side.
+   */
+  async importResolvedRssEpisodes(
+    userId: string,
+    input: {
+      rssUrl: string;
+      episodes: Array<{
+        id: string;
+        title: string;
+        enclosureUrl: string;
+        publishedAt?: string | null;
+        durationSeconds?: number | null;
+        mimeType?: string | null;
+      }>;
+      titlePrefix?: string;
+      brandTemplateId?: string | null;
+      commitToken?: string;
+    },
+    workspaceId?: string,
+    options: {
+      generationContext?: {
+        contentPack: ContentPack;
+        languageCode: string | null;
+      };
+      autopilotRuleId?: string;
+    } = {},
+  ) {
+    if (input.episodes.length < 1 || input.episodes.length > 10) {
+      throw new Error("rss_episode_count_invalid");
+    }
+    if (input.commitToken && input.episodes.length !== 1) {
+      throw new Error("rss_commit_token_requires_single_episode");
+    }
+
     const prisma = this.requirePrisma();
     const ownership = await this.resolveWriteOwnership(
       userId,
@@ -2710,7 +2783,47 @@ export class ProjectService {
       "processing.consume",
     );
 
-    const requestedSeconds = parsed.episodes.reduce(
+    if (options.autopilotRuleId && input.episodes.length === 1) {
+      const existing = await prisma.autopilotEpisode.findUnique({
+        where: {
+          ruleId_episodeId: {
+            ruleId: options.autopilotRuleId,
+            episodeId: input.episodes[0]!.id,
+          },
+        },
+      });
+      if (existing?.projectId) return { count: 0, projects: [] };
+    }
+    if (input.commitToken) {
+      const existing = await prisma.project.findUnique({
+        where: { commitToken: input.commitToken },
+        include: { ingestJobs: { orderBy: { createdAt: "desc" }, take: 1 } },
+      });
+      if (existing) {
+        if (existing.workspaceId !== ownership.workspaceId) {
+          throw new Error("project not found");
+        }
+        const queuedJobId = existing.ingestJobs[0]?.id;
+        if (!queuedJobId) throw new Error("rss_ingest_job_missing");
+        return {
+          count: 1,
+          projects: [{ project: toProjectSnapshot(existing), queuedJobId }],
+        };
+      }
+    }
+
+    const activeRssIngests = await prisma.ingestJob.count({
+      where: {
+        jobType: "rss_import",
+        status: { in: ["queued", "running"] },
+        project: { workspaceId: ownership.workspaceId },
+      },
+    });
+    if (activeRssIngests >= MAX_CONCURRENT_RSS_INGESTS_PER_WORKSPACE) {
+      throw new Error("rss_concurrent_ingest_limit_reached");
+    }
+
+    const requestedSeconds = input.episodes.reduce(
       (total, episode) => total + (episode.durationSeconds ?? 0),
       0,
     );
@@ -2718,7 +2831,7 @@ export class ProjectService {
 
     const brandResolved = await brandTemplateService.resolveSnapshotForUser(
       ownership.legacyOwnerUserId,
-      parsed.brandTemplateId ?? null,
+      input.brandTemplateId ?? null,
       { workspaceId: ownership.workspaceId, actorUserId: ownership.actorUserId },
     );
 
@@ -2727,56 +2840,150 @@ export class ProjectService {
       queuedJobId: string;
     }> = [];
 
-    for (const episode of parsed.episodes) {
+    for (const episode of input.episodes) {
       const createdAt = new Date();
       const retention = await projectRetentionService.assignmentForWorkspace(
         ownership.workspaceId,
         createdAt,
       );
-      const project = await prisma.project.create({
-        data: {
-          userId: ownership.legacyOwnerUserId,
-          workspaceId: ownership.workspaceId,
-          createdByUserId: ownership.actorUserId,
-          updatedByUserId: ownership.actorUserId,
-          title: parsed.titlePrefix
-            ? `${parsed.titlePrefix} - ${episode.title}`
-            : episode.title,
-          sourceMediaUrl: episode.enclosureUrl,
-          sourceType: "rss",
-          sourceInput: parsed.rssUrl,
-          ingestStatus: "queued",
-          sourceMimeType: episode.mimeType ?? null,
-          sourceDurationSeconds: episode.durationSeconds ?? null,
-          brandTemplateId: brandResolved?.templateId ?? null,
-          brandSnapshot: brandResolved
-            ? (brandResolved.snapshot as unknown as Prisma.InputJsonValue)
-            : Prisma.JsonNull,
-          createdAt,
-          retentionPolicyKey: retention?.retentionPolicyKey ?? null,
-          expiresAt: retention?.expiresAt ?? null,
-        },
-      });
+      let project: Project;
+      let jobId: string;
+      try {
+        const created = await prisma.$transaction(async (tx) => {
+          if (options.autopilotRuleId) {
+            // This unique insert is the admission fence. Project, ingest job,
+            // generation context, and dedup row commit or roll back together.
+            await tx.autopilotEpisode.create({
+              data: {
+                ruleId: options.autopilotRuleId,
+                episodeId: episode.id,
+              },
+            });
+          }
 
-      const job = await prisma.ingestJob.create({
-        data: {
-          projectId: project.id,
-          jobType: "rss_import",
-          payload: {
-            rssUrl: parsed.rssUrl,
-            episode,
-          },
-        },
-      });
+          const createdProject = await tx.project.create({
+            data: {
+              userId: ownership.legacyOwnerUserId,
+              workspaceId: ownership.workspaceId,
+              createdByUserId: ownership.actorUserId,
+              updatedByUserId: ownership.actorUserId,
+              title: input.titlePrefix
+                ? `${input.titlePrefix} - ${episode.title}`
+                : episode.title,
+              sourceMediaUrl: episode.enclosureUrl,
+              sourceType: "rss",
+              sourceInput: redactUrlForDisplay(input.rssUrl),
+              ingestStatus: "queued",
+              sourceMimeType: episode.mimeType ?? null,
+              sourceDurationSeconds: episode.durationSeconds ?? null,
+              languageCode: options.generationContext?.languageCode ?? null,
+              commitToken: input.commitToken ?? null,
+              brandTemplateId: brandResolved?.templateId ?? null,
+              brandSnapshot: brandResolved
+                ? (brandResolved.snapshot as unknown as Prisma.InputJsonValue)
+                : Prisma.JsonNull,
+              createdAt,
+              retentionPolicyKey: retention?.retentionPolicyKey ?? null,
+              expiresAt: retention?.expiresAt ?? null,
+            },
+          });
+
+          const createdJob = await tx.ingestJob.create({
+            data: {
+              projectId: createdProject.id,
+              jobType: "rss_import",
+              payload: { rssUrl: input.rssUrl, episode },
+            },
+          });
+
+          if (options.generationContext) {
+            const contentPack = contentPackSchema.parse(
+              options.generationContext.contentPack,
+            );
+            await tx.contentPack.create({
+              data: {
+                projectId: createdProject.id,
+                outputTypes: contentPack.outputTypes,
+                clipGenerationMode: contentPack.clipGenerationMode,
+                clipCountTarget: contentPack.clipCountTarget,
+                clipDurationSecTarget: contentPack.clipDurationSecTarget,
+                minDurationSec: contentPack.minDurationSec,
+                preferredMinDurationSec: contentPack.preferredMinDurationSec,
+                preferredMaxDurationSec: contentPack.preferredMaxDurationSec,
+                maxDurationSec: contentPack.maxDurationSec,
+                platformTargets: contentPack.platformTargets,
+                autoRenderClips: contentPack.autoRenderClips,
+                toneConstraints: contentPack.toneConstraints,
+                captionPreset: contentPack.captionPreset,
+                platformPlaybookVersion: contentPack.platformPlaybookVersion,
+                mode: contentPack.mode,
+                autoHook: contentPack.autoHook,
+                specificMoments: contentPack.specificMoments,
+                processingStartSec: contentPack.processingStartSec,
+                processingEndSec: contentPack.processingEndSec,
+                clipLengthPreset: contentPack.clipLengthPreset,
+                defaultAspectRatio: contentPack.defaultAspectRatio,
+              },
+            });
+          }
+
+          if (options.autopilotRuleId) {
+            await tx.autopilotEpisode.update({
+              where: {
+                ruleId_episodeId: {
+                  ruleId: options.autopilotRuleId,
+                  episodeId: episode.id,
+                },
+              },
+              data: { projectId: createdProject.id },
+            });
+          }
+
+          return { project: createdProject, jobId: createdJob.id };
+        });
+        project = created.project;
+        jobId = created.jobId;
+      } catch (error) {
+        if (isUniqueConstraintError(error)) {
+          if (options.autopilotRuleId) {
+            const winner = await prisma.autopilotEpisode.findUnique({
+              where: {
+                ruleId_episodeId: {
+                  ruleId: options.autopilotRuleId,
+                  episodeId: episode.id,
+                },
+              },
+              include: { project: { include: { ingestJobs: { take: 1 } } } },
+            });
+            if (winner?.project) continue;
+          }
+          if (input.commitToken) {
+            const winner = await prisma.project.findUnique({
+              where: { commitToken: input.commitToken },
+              include: { ingestJobs: { orderBy: { createdAt: "desc" }, take: 1 } },
+            });
+            if (winner && winner.workspaceId === ownership.workspaceId) {
+              const queuedJobId = winner.ingestJobs[0]?.id;
+              if (!queuedJobId) throw new Error("rss_ingest_job_missing");
+              createdProjects.push({
+                project: toProjectSnapshot(winner),
+                queuedJobId,
+              });
+              continue;
+            }
+          }
+        }
+        throw error;
+      }
 
       createdProjects.push({
         project: toProjectSnapshot(project),
-        queuedJobId: job.id,
+        queuedJobId: jobId,
       });
 
       await this.publishIngestLifecycleEvent({
         projectId: project.id,
-        workflowRunId: job.id,
+        workflowRunId: jobId,
         ingestStatus: "queued",
         eventStatus: "queued",
         errorCode: null,

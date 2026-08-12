@@ -85,6 +85,13 @@ describe("userErrorMessage", () => {
     );
   });
 
+  test("does not tell users to retry deterministic storage metadata failures", () => {
+    const message = userErrorMessage("storage_metadata_invalid");
+    expect(message).toBe(USER_ERROR_MESSAGES.storage_metadata_invalid);
+    expect(message).toContain("contact support");
+    expect(message).toContain("won't resolve");
+  });
+
   test("returns null for null and undefined", () => {
     expect(userErrorMessage(null)).toBeNull();
     expect(userErrorMessage(undefined)).toBeNull();

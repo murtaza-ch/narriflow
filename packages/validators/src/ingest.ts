@@ -15,10 +15,13 @@ export const rssEpisodeSchema = z.object({
 
 export const rssImportSchema = z.object({
   rssUrl: z.string().url(),
-  episodes: z.array(rssEpisodeSchema).min(1).max(25),
+  // Feed data is authoritative on the server. Clients select stable IDs from
+  // preview rather than submitting enclosure URLs, titles, or durations.
+  episodeIds: z.array(z.string().min(1).max(128)).min(1).max(1),
+  commitToken: z.string().uuid().optional(),
   titlePrefix: z.string().min(1).max(100).optional(),
   brandTemplateId: z.string().uuid().nullable().optional(),
-});
+}).strict();
 
 export const ingestStatusSchema = z.enum([
   "pending",

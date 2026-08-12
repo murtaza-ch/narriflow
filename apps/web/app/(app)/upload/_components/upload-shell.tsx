@@ -70,6 +70,7 @@ const CHUNK_SIZE = 8 * 1024 * 1024;
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024 * 1024; // 5 GB
 const PART_CONCURRENCY = 4;
 const MAX_PART_RETRIES = 3;
+const RSS_EPISODE_PAGE_SIZE = 50;
 
 const FILE_ACCEPT =
   "video/mp4,video/quicktime,video/webm,video/x-matroska,audio/mpeg,audio/wav,audio/x-wav,audio/mp4,audio/aac";
@@ -279,6 +280,8 @@ export function UploadShell({
   const [rssCommitted, setRssCommitted] = useState(false);
   const [rssEpisodes, setRssEpisodes] = useState<RssEpisode[]>([]);
   const [selectedEpisodeIds, setSelectedEpisodeIds] = useState<string[]>([]);
+  const [rssEpisodeQuery, setRssEpisodeQuery] = useState("");
+  const [rssEpisodeLimit, setRssEpisodeLimit] = useState(RSS_EPISODE_PAGE_SIZE);
   const [rssPreviewLoading, setRssPreviewLoading] = useState(false);
   const [rssNotice, setRssNotice] = useState<string | null>(null);
   const [rssError, setRssError] = useState<string | null>(null);
@@ -324,6 +327,7 @@ export function UploadShell({
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const rssCommitTokenRef = useRef<string | null>(null);
 
   // Drag & drop state
   const [dropzoneDragOver, setDropzoneDragOver] = useState(false);
@@ -341,6 +345,17 @@ export function UploadShell({
   const selectedEpisodes = useMemo(
     () => rssEpisodes.filter((e) => selectedEpisodeIds.includes(e.id)),
     [rssEpisodes, selectedEpisodeIds],
+  );
+  const filteredRssEpisodes = useMemo(() => {
+    const query = rssEpisodeQuery.trim().toLocaleLowerCase();
+    if (!query) return rssEpisodes;
+    return rssEpisodes.filter((episode) =>
+      `${episode.title} ${episode.publishedAt ?? ""}`.toLocaleLowerCase().includes(query),
+    );
+  }, [rssEpisodeQuery, rssEpisodes]);
+  const visibleRssEpisodes = useMemo(
+    () => filteredRssEpisodes.slice(0, rssEpisodeLimit),
+    [filteredRssEpisodes, rssEpisodeLimit],
   );
 
   const previewSource = useMemo(() => {
@@ -495,6 +510,8 @@ export function UploadShell({
     setRssCommitted(false);
     setRssEpisodes([]);
     setSelectedEpisodeIds([]);
+    setRssEpisodeQuery("");
+    setRssEpisodeLimit(RSS_EPISODE_PAGE_SIZE);
     setRssNotice(null);
     setRssError(null);
     setErrorMessage(null);
@@ -833,13 +850,19 @@ export function UploadShell({
       });
       const payload = (await response.json()) as {
         error?: string;
+        message?: string;
         episodes?: RssEpisode[];
       };
       if (!response.ok || !payload.episodes) {
-        throw new Error(payload.error ?? "Could not load RSS episodes.");
+        throw new Error(
+          payload.message ?? payload.error ?? "Could not load RSS episodes.",
+        );
       }
       setRssEpisodes(payload.episodes);
       setSelectedEpisodeIds(payload.episodes.slice(0, 1).map((e) => e.id));
+      setRssEpisodeQuery("");
+      setRssEpisodeLimit(RSS_EPISODE_PAGE_SIZE);
+      rssCommitTokenRef.current = null;
       setRssNotice(`Found ${payload.episodes.length} episodes.`);
     } catch (error) {
       const message =
@@ -864,8 +887,13 @@ export function UploadShell({
       const formData = buildUploadSettingsFormData(getFormValues());
       formData.set("rssUrl", rssUrl.trim());
       formData.set("titlePrefix", title.trim());
-      formData.set("episodes", JSON.stringify(selectedEpisodes));
+      formData.set("episodeIds", JSON.stringify(selectedEpisodeIds.slice(0, 1)));
+      rssCommitTokenRef.current ??= crypto.randomUUID();
+      formData.set("commitToken", rssCommitTokenRef.current);
       const result = await generateFromRssAction(formData);
+      if (result?.error) {
+        throw new Error(result.error);
+      }
       if (result?.projectId) {
         router.push(`/projects/${result.projectId}`);
         router.refresh();
@@ -1218,54 +1246,111 @@ export function UploadShell({
                     </Text>
                   )}
                   {rssEpisodes.length > 0 && (
-                    <RadioGroup
-                      value={selectedEpisodeIds[0] ?? ""}
-                      onValueChange={(next) => toggleEpisode(next, true)}
-                    >
-                      <Stack
-                        gap="0"
-                        maxH="60"
-                        overflowY="auto"
-                        borderTopWidth="1px"
-                        borderTopColor="border"
-                      >
-                        {rssEpisodes.map((episode) => (
-                          <Box
-                            key={episode.id}
-                            py="2.5"
-                            px="1"
-                            borderBottomWidth="1px"
-                            borderBottomColor="border.subtle"
-                            transition="background 120ms ease"
-                            _hover={{ bg: "bg.subtle" }}
+                    <Stack gap="2.5">
+                      <Input
+                        aria-label="Search RSS episodes"
+                        placeholder="Search episodes"
+                        value={rssEpisodeQuery}
+                        onChange={(event) => {
+                          setRssEpisodeQuery(event.target.value);
+                          setRssEpisodeLimit(RSS_EPISODE_PAGE_SIZE);
+                        }}
+                        size="sm"
+                      />
+                      <Flex align="center" justify="space-between" gap="2">
+                        <Text textStyle="data" fontSize="10.5px" color="fg.subtle">
+                          Showing {visibleRssEpisodes.length} of {filteredRssEpisodes.length}
+                        </Text>
+                        {rssEpisodeQuery && filteredRssEpisodes.length !== rssEpisodes.length && (
+                          <chakra.button
+                            type="button"
+                            onClick={() => {
+                              setRssEpisodeQuery("");
+                              setRssEpisodeLimit(RSS_EPISODE_PAGE_SIZE);
+                            }}
+                            fontSize="11px"
+                            color="fg.muted"
+                            textDecoration="underline"
+                            textUnderlineOffset="2px"
                           >
-                            <Radio value={episode.id} w="full">
-                              <Box overflow="hidden" minW="0">
-                                <Text
-                                  fontSize="13px"
-                                  fontWeight="500"
-                                  color="fg"
-                                  truncate
-                                >
-                                  {episode.title}
-                                </Text>
-                                <Text
-                                  textStyle="data"
-                                  fontSize="11px"
-                                  color="fg.subtle"
-                                  mt="0.5"
-                                >
-                                  {episode.publishedAt
-                                    ? formatDate(episode.publishedAt) ||
-                                      episode.publishedAt
-                                    : "Unknown publish date"}
-                                </Text>
-                              </Box>
-                            </Radio>
-                          </Box>
-                        ))}
-                      </Stack>
-                    </RadioGroup>
+                            Clear search
+                          </chakra.button>
+                        )}
+                      </Flex>
+                      <RadioGroup
+                        value={selectedEpisodeIds[0] ?? ""}
+                        onValueChange={(next) => toggleEpisode(next, true)}
+                      >
+                        <Stack
+                          gap="0"
+                          maxH="60"
+                          overflowY="auto"
+                          borderTopWidth="1px"
+                          borderTopColor="border"
+                        >
+                          {visibleRssEpisodes.map((episode) => (
+                            <Box
+                              key={episode.id}
+                              py="2.5"
+                              px="1"
+                              borderBottomWidth="1px"
+                              borderBottomColor="border.subtle"
+                              transition="background 120ms ease"
+                              _hover={{ bg: "bg.subtle" }}
+                            >
+                              <Radio value={episode.id} w="full">
+                                <Box overflow="hidden" minW="0">
+                                  <Text
+                                    fontSize="13px"
+                                    fontWeight="500"
+                                    color="fg"
+                                    truncate
+                                  >
+                                    {episode.title}
+                                  </Text>
+                                  <Text
+                                    textStyle="data"
+                                    fontSize="11px"
+                                    color="fg.subtle"
+                                    mt="0.5"
+                                  >
+                                    {episode.publishedAt
+                                      ? formatDate(episode.publishedAt) ||
+                                        episode.publishedAt
+                                      : "Unknown publish date"}
+                                  </Text>
+                                </Box>
+                              </Radio>
+                            </Box>
+                          ))}
+                          {visibleRssEpisodes.length === 0 && (
+                            <Text py="4" px="1" fontSize="12px" color="fg.muted">
+                              No episodes match this search.
+                            </Text>
+                          )}
+                        </Stack>
+                      </RadioGroup>
+                      {visibleRssEpisodes.length < filteredRssEpisodes.length && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() =>
+                            setRssEpisodeLimit((current) =>
+                              Math.min(
+                                current + RSS_EPISODE_PAGE_SIZE,
+                                filteredRssEpisodes.length,
+                              ),
+                            )
+                          }
+                        >
+                          Show {Math.min(
+                            RSS_EPISODE_PAGE_SIZE,
+                            filteredRssEpisodes.length - visibleRssEpisodes.length,
+                          )} more
+                        </Button>
+                      )}
+                    </Stack>
                   )}
                 </Stack>
               )}

@@ -6,6 +6,7 @@ import {
   requireWorkspaceProject,
 } from "@/lib/workspace";
 import {
+  checkRateLimit,
   projectService,
   QuotaExceededError,
   UploadTooLongError,
@@ -209,56 +210,63 @@ export async function fetchYoutubeMetadataAction(
 
 export async function generateFromRssAction(formData: FormData) {
   const appUser = await requireWorkspaceAppUser("processing.consume");
+  const rateLimit = await checkRateLimit(
+    `rss-import:${appUser.workspaceId}`,
+    5,
+    60,
+  );
+  if (!rateLimit.allowed) {
+    throw new Error(userErrorMessage("rate_limited") ?? "Too many requests");
+  }
   const rssUrl = String(formData.get("rssUrl") ?? "").trim();
   const titlePrefix = String(formData.get("titlePrefix") ?? "").trim();
-  const episodesRaw = String(formData.get("episodes") ?? "[]");
+  const episodeIdsRaw = String(formData.get("episodeIds") ?? "[]");
+  const commitToken = String(formData.get("commitToken") ?? "").trim();
 
   if (!rssUrl) {
     throw new Error("rssUrl is required");
   }
 
-  await projectService.assertWorkspaceWithinQuota(appUser.workspaceId);
-
-  let episodes: Array<{
-    id: string;
-    title: string;
-    enclosureUrl: string;
-    publishedAt?: string | null;
-    durationSeconds?: number | null;
-    mimeType?: string | null;
-  }> = [];
+  let episodeIds: string[] = [];
   try {
-    episodes = JSON.parse(episodesRaw);
+    episodeIds = JSON.parse(episodeIdsRaw);
   } catch {
-    throw new Error("episodes must be valid JSON");
+    throw new Error("episodeIds must be valid JSON");
   }
 
-  if (!Array.isArray(episodes) || episodes.length === 0) {
+  if (!Array.isArray(episodeIds) || episodeIds.length !== 1) {
     throw new Error("at least one episode is required");
   }
 
-  const ingest = await projectService.importFromRss(appUser.actorUserId, {
-    rssUrl,
-    titlePrefix: titlePrefix || undefined,
-    episodes,
-    brandTemplateId: readBrandTemplateIdFromForm(formData),
-  }, appUser.workspaceId);
+  let ingest;
+  try {
+    ingest = await projectService.importFromRss(
+      appUser.actorUserId,
+      {
+        rssUrl,
+        titlePrefix: titlePrefix || undefined,
+        episodeIds,
+        commitToken: commitToken || undefined,
+        brandTemplateId: readBrandTemplateIdFromForm(formData),
+      },
+      appUser.workspaceId,
+      {
+        contentPack: readContentPackFromForm(formData),
+        languageCode: readLanguageCodeFromForm(formData),
+      },
+    );
+  } catch (error) {
+    const code = error instanceof Error ? error.message : "rss_import_failed";
+    return {
+      error:
+        userErrorMessage(code) ??
+        "We couldn't import that RSS episode. Check the feed and try again.",
+    };
+  }
 
   const created = ingest.projects?.[0];
   if (!created) {
     throw new Error("rss import did not produce a project");
-  }
-
-  const contentPack = readContentPackFromForm(formData);
-  const languageCode = readLanguageCodeFromForm(formData);
-
-  for (const entry of ingest.projects) {
-    await projectService.prepareGenerationContext(
-      appUser.id,
-      entry.project.id,
-      contentPack,
-      languageCode,
-    );
   }
 
   revalidatePath(`/projects/${created.project.id}`);

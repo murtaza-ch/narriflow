@@ -12,6 +12,16 @@ export {
   AutopilotService,
 } from "./autopilot.service";
 export {
+  fetchRssFeed,
+  fetchRssEpisodes,
+  parseRssFeed,
+  redactUrlForDisplay,
+  RssFeedError,
+  MAX_RSS_FEED_BYTES,
+  MAX_RSS_EPISODES,
+  type RssFeedSnapshot,
+} from "./rss";
+export {
   brandTemplateService,
   BrandTemplateService,
   BrandTemplateForbiddenError,

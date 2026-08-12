@@ -1,4 +1,5 @@
 import { open, readFile, stat } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { basename } from "node:path";
 import {
   AbortMultipartUploadCommand,
@@ -24,6 +25,9 @@ const SIGNED_URL_TTL_SECONDS = 60 * 60;
  *  streamed single PUT is not an option against R2. 16 MB comfortably covers
  *  preview proxies (~1-3 MB) and dub audio without risking the worker's heap. */
 const BUFFERED_PUT_MAX_BYTES = 16 * 1024 * 1024;
+const OBJECT_METADATA_TOTAL_MAX_BYTES = 2 * 1024;
+const OBJECT_METADATA_VALUE_MAX_BYTES = 384;
+const OBJECT_METADATA_KEY_PATTERN = /^[a-z0-9][a-z0-9_.-]{0,127}$/;
 
 const PROJECT_KEY_PATTERN = /^projects\/([0-9a-f-]{36})\//i;
 
@@ -32,6 +36,62 @@ export class ProjectStorageUnavailableError extends Error {
     super("Project storage is no longer available");
     this.name = "ProjectStorageUnavailableError";
   }
+}
+
+export class InvalidObjectMetadataError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidObjectMetadataError";
+  }
+}
+
+function metadataByteLength(value: string): number {
+  return Buffer.byteLength(value, "utf8");
+}
+
+/**
+ * S3-compatible object metadata is transported as `x-amz-meta-*` HTTP
+ * headers. Node rejects Unicode/control characters before the request is
+ * sent, and S3 limits the complete user-metadata section to 2 KiB. Keep
+ * already-safe ASCII readable, base64url-encode other short UTF-8 values,
+ * and reduce unusually long diagnostic values to a stable hash. Metadata is
+ * optional observability data, so it must never make a valid media upload
+ * impossible merely because a title, filename, or redacted URL is Unicode.
+ */
+export function sanitizeObjectMetadata(
+  metadata?: Record<string, string>,
+): Record<string, string> | undefined {
+  if (!metadata) return undefined;
+
+  const safe: Record<string, string> = {};
+  let totalBytes = 0;
+
+  for (const [rawKey, rawValue] of Object.entries(metadata)) {
+    const key = rawKey.toLowerCase();
+    if (!OBJECT_METADATA_KEY_PATTERN.test(key)) {
+      throw new InvalidObjectMetadataError(
+        `Object metadata key is not S3 header-safe: ${rawKey}`,
+      );
+    }
+
+    let value = rawValue;
+    if (!/^[\x20-\x7e]*$/.test(value)) {
+      value = `b64:${Buffer.from(value, "utf8").toString("base64url")}`;
+    }
+    if (metadataByteLength(value) > OBJECT_METADATA_VALUE_MAX_BYTES) {
+      value = `sha256:${createHash("sha256").update(rawValue).digest("hex")}`;
+    }
+
+    totalBytes += metadataByteLength(key) + metadataByteLength(value);
+    if (totalBytes > OBJECT_METADATA_TOTAL_MAX_BYTES) {
+      throw new InvalidObjectMetadataError(
+        "Object metadata exceeds the S3 2 KiB user-metadata limit",
+      );
+    }
+    safe[key] = value;
+  }
+
+  return safe;
 }
 
 function projectIdFromStorageKey(key: string): string | null {
@@ -212,7 +272,7 @@ export async function createMultipartUpload(params: {
       Bucket: bucket,
       Key: params.key,
       ContentType: params.contentType,
-      Metadata: params.metadata,
+      Metadata: sanitizeObjectMetadata(params.metadata),
     }),
   );
 
@@ -356,6 +416,7 @@ export async function putFileFromPath(params: {
   const client = getClient();
   const { bucket } = getR2Config();
   const fileInfo = await stat(params.filePath);
+  const metadata = sanitizeObjectMetadata(params.metadata);
 
   // Small files go up as a single PUT with the body fully in memory. Streaming
   // a Node ReadStream here fails against R2 with "You did not provide the
@@ -374,7 +435,7 @@ export async function putFileFromPath(params: {
         Body: await readFile(params.filePath),
         ContentLength: fileInfo.size,
         ContentType: params.contentType,
-        Metadata: params.metadata,
+        Metadata: metadata,
       }),
     );
   } else {
@@ -383,7 +444,7 @@ export async function putFileFromPath(params: {
         Bucket: bucket,
         Key: params.key,
         ContentType: params.contentType,
-        Metadata: params.metadata,
+        Metadata: metadata,
       }),
     );
     const uploadId = created.UploadId;
@@ -807,7 +868,7 @@ export async function putJson(params: {
       Key: params.key,
       Body: JSON.stringify(params.value, null, 2),
       ContentType: "application/json",
-      Metadata: params.metadata,
+      Metadata: sanitizeObjectMetadata(params.metadata),
     }),
   );
 

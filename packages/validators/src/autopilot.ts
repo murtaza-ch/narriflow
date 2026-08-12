@@ -8,6 +8,11 @@ export const autopilotStatusSchema = z.enum([
   "failed",
 ]);
 
+export const autopilotInitialImportModeSchema = z.enum([
+  "future_only",
+  "latest",
+]);
+
 export const autopilotRuleInputSchema = z.object({
   name: z.string().trim().min(1).max(120),
   rssUrl: z.string().url(),
@@ -17,6 +22,8 @@ export const autopilotRuleInputSchema = z.object({
   contentPack: contentPackSchema,
   intervalMinutes: z.number().int().min(60).max(10080).default(1440),
   maxEpisodesPerRun: z.number().int().min(1).max(10).default(3),
+  initialImportMode: autopilotInitialImportModeSchema.default("future_only"),
+  initialImportCount: z.number().int().min(1).max(10).default(3),
 });
 
 export const autopilotRuleUpdateSchema = autopilotRuleInputSchema
@@ -36,15 +43,23 @@ export const autopilotRuleSnapshotSchema = z.object({
   contentPack: contentPackSchema,
   intervalMinutes: z.number().int(),
   maxEpisodesPerRun: z.number().int(),
+  feedTitle: z.string().nullable(),
+  initialImportMode: autopilotInitialImportModeSchema,
+  initialImportCount: z.number().int(),
   status: autopilotStatusSchema,
   lastCheckedAt: z.string().datetime().nullable(),
+  lastSuccessAt: z.string().datetime().nullable(),
   nextRunAt: z.string().datetime(),
   lastError: z.string().nullable(),
+  consecutiveFailures: z.number().int().nonnegative(),
   importedEpisodeCount: z.number().int().nonnegative(),
   createdAt: z.string().datetime(),
 });
 
 export type AutopilotStatus = z.infer<typeof autopilotStatusSchema>;
-export type AutopilotRuleInput = z.infer<typeof autopilotRuleInputSchema>;
+export type AutopilotInitialImportMode = z.infer<
+  typeof autopilotInitialImportModeSchema
+>;
+export type AutopilotRuleInput = z.input<typeof autopilotRuleInputSchema>;
 export type AutopilotRuleUpdate = z.infer<typeof autopilotRuleUpdateSchema>;
 export type AutopilotRuleSnapshot = z.infer<typeof autopilotRuleSnapshotSchema>;

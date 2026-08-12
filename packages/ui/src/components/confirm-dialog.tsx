@@ -34,6 +34,7 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
     onConfirm,
     loading = false,
   } = props
+  const cancelButtonRef = React.useRef<HTMLButtonElement>(null)
 
   return (
     <Dialog.Root
@@ -44,6 +45,7 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
       }}
       role="alertdialog"
       placement="center"
+      initialFocusEl={() => cancelButtonRef.current}
     >
       <Portal>
         <Dialog.Backdrop />
@@ -78,6 +80,7 @@ export function ConfirmDialog(props: ConfirmDialogProps) {
             </Dialog.Body>
             <Dialog.Footer px="5" pb="4" pt="0" gap="2">
               <Button
+                ref={cancelButtonRef}
                 variant="outline"
                 size="sm"
                 colorPalette="brand"
@@ -132,10 +135,15 @@ interface PendingConfirm {
  */
 export function useConfirm(): UseConfirmReturn {
   const [pending, setPending] = React.useState<PendingConfirm | null>(null)
+  // Keep the dialog mounted after it closes. Focus-lock restores focus during
+  // its exit phase; immediately unmounting the tree can leave it with a stale
+  // initial-focus target when the confirmed action also removes its trigger.
+  const [lastOptions, setLastOptions] = React.useState<ConfirmOptions | null>(null)
 
   const confirm = React.useCallback(
     (options: ConfirmOptions) =>
       new Promise<boolean>((resolve) => {
+        setLastOptions(options)
         setPending((current) => {
           // A newer confirm supersedes an unresolved one.
           current?.resolve(false)
@@ -155,14 +163,14 @@ export function useConfirm(): UseConfirmReturn {
     [],
   )
 
-  const dialog = pending ? (
+  const dialog = lastOptions ? (
     <ConfirmDialog
-      open
+      open={pending !== null}
       onOpenChange={(open) => {
-        if (!open) settle(false)
+        if (!open && pending) settle(false)
       }}
       onConfirm={() => settle(true)}
-      {...pending.options}
+      {...lastOptions}
     />
   ) : null
 

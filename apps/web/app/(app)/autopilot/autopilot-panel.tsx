@@ -2,7 +2,7 @@
 
 import { useState, useTransition, type ReactNode } from "react";
 import { useRouter } from "next/navigation";
-import { Box, Flex, SimpleGrid, Stack, Text } from "@chakra-ui/react";
+import { Box, chakra, Flex, SimpleGrid, Stack, Text } from "@chakra-ui/react";
 import {
   AlertTriangle,
   ChevronDown,
@@ -35,6 +35,17 @@ const INTERVAL_OPTIONS = [
   { label: "Every 12 hours", value: "720" },
   { label: "Daily", value: "1440" },
   { label: "Weekly", value: "10080" },
+];
+
+const INITIAL_IMPORT_OPTIONS = [
+  {
+    label: "Future episodes only",
+    value: "future_only",
+  },
+  {
+    label: "Import latest episodes",
+    value: "latest",
+  },
 ];
 
 function intervalLabel(minutes: number): string {
@@ -115,12 +126,27 @@ function FieldGroup({ label, children }: { label: string; children: ReactNode })
   );
 }
 
-function Field({ label, children }: { label: string; children: ReactNode }) {
+function Field({
+  label,
+  htmlFor,
+  children,
+}: {
+  label: string;
+  htmlFor: string;
+  children: ReactNode;
+}) {
   return (
     <Box>
-      <Text fontSize="13px" fontWeight="500" color="fg" mb="1.5">
+      <chakra.label
+        htmlFor={htmlFor}
+        display="block"
+        fontSize="13px"
+        fontWeight="500"
+        color="fg"
+        mb="1.5"
+      >
         {label}
-      </Text>
+      </chakra.label>
       {children}
     </Box>
   );
@@ -144,6 +170,10 @@ export function AutopilotPanel({
   const [titlePrefix, setTitlePrefix] = useState("");
   const [intervalMinutes, setIntervalMinutes] = useState("1440");
   const [maxEpisodesPerRun, setMaxEpisodesPerRun] = useState("3");
+  const [initialImportMode, setInitialImportMode] = useState<
+    "future_only" | "latest"
+  >("future_only");
+  const [initialImportCount, setInitialImportCount] = useState("3");
   const [clipCountTarget, setClipCountTarget] = useState("10");
   const [autoRenderClips, setAutoRenderClips] = useState(true);
 
@@ -165,6 +195,8 @@ export function AutopilotPanel({
     setTitlePrefix("");
     setIntervalMinutes("1440");
     setMaxEpisodesPerRun("3");
+    setInitialImportMode("future_only");
+    setInitialImportCount("3");
     setClipCountTarget("10");
     setAutoRenderClips(true);
     setFormError(null);
@@ -181,12 +213,17 @@ export function AutopilotPanel({
     }
     const maxEpisodes = Number(maxEpisodesPerRun);
     const clipCount = Number(clipCountTarget);
+    const initialCount = Number(initialImportCount);
     if (!Number.isInteger(maxEpisodes) || maxEpisodes < 1 || maxEpisodes > 10) {
       setFormError("Max episodes must be between 1 and 10.");
       return;
     }
     if (!Number.isInteger(clipCount) || clipCount < 3 || clipCount > 30) {
       setFormError("Clips per episode must be between 3 and 30.");
+      return;
+    }
+    if (!Number.isInteger(initialCount) || initialCount < 1 || initialCount > 10) {
+      setFormError("Initial episode count must be between 1 and 10.");
       return;
     }
 
@@ -201,6 +238,8 @@ export function AutopilotPanel({
         titlePrefix: titlePrefix.trim() || null,
         intervalMinutes: Number(intervalMinutes),
         maxEpisodesPerRun: maxEpisodes,
+        initialImportMode,
+        initialImportCount: initialCount,
         contentPack: buildContentPack({
           clipCountTarget: clipCount,
           autoRenderClips,
@@ -218,7 +257,10 @@ export function AutopilotPanel({
     toaster.create({
       type: "success",
       title: "Rule created",
-      description: "New episodes from this feed will be clipped automatically.",
+      description:
+        initialImportMode === "future_only"
+          ? "The feed baseline is saved; only future episodes will be clipped."
+          : `The latest ${initialCount} episode${initialCount === 1 ? "" : "s"} will be queued first.`,
     });
     startTransition(() => router.refresh());
   }
@@ -421,6 +463,7 @@ export function AutopilotPanel({
                         truncate
                         mt="1"
                       >
+                        {rule.feedTitle ? `${rule.feedTitle} · ` : ""}
                         {rule.rssUrl}
                       </Text>
                       <Text
@@ -431,7 +474,9 @@ export function AutopilotPanel({
                       >
                         {intervalLabel(rule.intervalMinutes)} ·{" "}
                         {rule.importedEpisodeCount} imported · last{" "}
-                        {rule.lastCheckedAt
+                        {rule.lastSuccessAt
+                          ? `healthy ${formatDateTime(rule.lastSuccessAt)}`
+                          : rule.lastCheckedAt
                           ? formatDateTime(rule.lastCheckedAt)
                           : "never"}{" "}
                         · next {formatDateTime(rule.nextRunAt)}
@@ -465,6 +510,9 @@ export function AutopilotPanel({
                                 aria-hidden
                               />
                               Last run failed
+                              {rule.consecutiveFailures > 0
+                                ? ` · attempt ${rule.consecutiveFailures}`
+                                : ""}
                               <ChevronDown
                                 size={12}
                                 aria-hidden
@@ -595,16 +643,18 @@ export function AutopilotPanel({
               <Dialog.Body px="6" py="0">
                 <Stack gap="5">
                   <FieldGroup label="Feed">
-                    <Field label="Rule name">
+                    <Field label="Rule name" htmlFor="autopilot-rule-name">
                       <Input
+                        id="autopilot-rule-name"
                         value={name}
                         onChange={(event) => setName(event.target.value)}
                         fontSize="13px"
                         size="sm"
                       />
                     </Field>
-                    <Field label="RSS feed URL">
+                    <Field label="RSS feed URL" htmlFor="autopilot-rss-url">
                       <Input
+                        id="autopilot-rss-url"
                         value={rssUrl}
                         onChange={(event) => setRssUrl(event.target.value)}
                         placeholder="https://feeds.example.com/podcast.xml"
@@ -613,8 +663,12 @@ export function AutopilotPanel({
                         size="sm"
                       />
                     </Field>
-                    <Field label="Title prefix (optional)">
+                    <Field
+                      label="Title prefix (optional)"
+                      htmlFor="autopilot-title-prefix"
+                    >
                       <Input
+                        id="autopilot-title-prefix"
                         value={titlePrefix}
                         onChange={(event) => setTitlePrefix(event.target.value)}
                         placeholder="Weekly show —"
@@ -633,7 +687,10 @@ export function AutopilotPanel({
                         onValueChange={setIntervalMinutes}
                         size="sm"
                       />
-                      <Field label="Max episodes per run">
+                      <Field
+                        label="Max episodes per run"
+                        htmlFor="autopilot-max-episodes"
+                      >
                         <NumberInput
                           value={maxEpisodesPerRun}
                           onValueChange={(value) =>
@@ -642,20 +699,57 @@ export function AutopilotPanel({
                           min={1}
                           max={10}
                           size="sm"
+                          inputProps={{ id: "autopilot-max-episodes" }}
                         />
                       </Field>
+                    </SimpleGrid>
+                    <SimpleGrid columns={{ base: 1, sm: 2 }} gap="3">
+                      <Select
+                        label="Existing episodes"
+                        items={INITIAL_IMPORT_OPTIONS}
+                        value={initialImportMode}
+                        onValueChange={(value) =>
+                          setInitialImportMode(value as "future_only" | "latest")
+                        }
+                        size="sm"
+                      />
+                      {initialImportMode === "latest" ? (
+                        <Field
+                          label="Initial episodes"
+                          htmlFor="autopilot-initial-episodes"
+                        >
+                          <NumberInput
+                            value={initialImportCount}
+                            onValueChange={setInitialImportCount}
+                            min={1}
+                            max={10}
+                            size="sm"
+                            inputProps={{ id: "autopilot-initial-episodes" }}
+                          />
+                        </Field>
+                      ) : (
+                        <Flex align="end" pb="2">
+                          <Text fontSize="12px" color="fg.muted">
+                            Current episodes establish the baseline and are not imported.
+                          </Text>
+                        </Flex>
+                      )}
                     </SimpleGrid>
                   </FieldGroup>
 
                   <FieldGroup label="Output">
                     <SimpleGrid columns={{ base: 1, sm: 2 }} gap="3">
-                      <Field label="Clips per episode">
+                      <Field
+                        label="Clips per episode"
+                        htmlFor="autopilot-clips-per-episode"
+                      >
                         <NumberInput
                           value={clipCountTarget}
                           onValueChange={(value) => setClipCountTarget(value)}
                           min={3}
                           max={30}
                           size="sm"
+                          inputProps={{ id: "autopilot-clips-per-episode" }}
                         />
                       </Field>
                       <Flex align="end" pb="1">

@@ -183,6 +183,11 @@ enum AutopilotStatus {
   failed
 }
 
+enum AutopilotInitialImportMode {
+  future_only
+  latest
+}
+
 enum AnalyticsEventType {
   render_completed
   download_opened
@@ -614,8 +619,19 @@ model AutopilotRule {
   contentPack       Json
   intervalMinutes   Int             @default(1440)
   maxEpisodesPerRun Int             @default(3)
+  feedTitle         String?
+  initialImportMode AutopilotInitialImportMode @default(future_only)
+  initialImportCount Int            @default(3)
+  initializedAt     DateTime?
+  lastSeenEpisodeId String?
+  lastSeenPublishedAt DateTime?
+  etag              String?
+  lastModified      String?
+  leaseExpiresAt    DateTime?
+  consecutiveFailures Int           @default(0)
   status            AutopilotStatus @default(active)
   lastCheckedAt     DateTime?
+  lastSuccessAt     DateTime?
   nextRunAt         DateTime        @default(now())
   lastError         String?
   createdAt         DateTime        @default(now())
@@ -627,7 +643,7 @@ model AutopilotRule {
 
   @@index([userId, status, createdAt])
   @@index([workspaceId, status, createdAt])
-  @@index([status, nextRunAt])
+  @@index([status, nextRunAt, leaseExpiresAt])
 }
 
 model AutopilotEpisode {

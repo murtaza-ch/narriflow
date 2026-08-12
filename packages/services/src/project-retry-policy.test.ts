@@ -40,6 +40,7 @@ describe("isAutoRetryableFailureCode", () => {
     expect(isAutoRetryableFailureCode("link_download_missing_file")).toBe(false); // file not found
     expect(isAutoRetryableFailureCode("source_storage_key_missing")).toBe(false); // file not found
     expect(isAutoRetryableFailureCode("remote_url_unsafe")).toBe(false); // SSRF rejection
+    expect(isAutoRetryableFailureCode("storage_metadata_invalid")).toBe(false); // deterministic internal header validation
   });
 
   test("is true for the task's named transient categories: socket/connection, timeouts, 429/5xx-derived codes", () => {

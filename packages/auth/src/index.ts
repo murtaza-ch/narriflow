@@ -370,28 +370,53 @@ export async function syncClerkUserPayload(clerkUser: Partial<UserJSON> | Record
   const imageUrl = getString(payload, ["image_url", "imageUrl"]);
   const lastSignInAt = parseDate(getValue(payload, ["last_sign_in_at", "lastSignInAt"]));
 
-  const appUser = await prisma.user.upsert({
-    where: { clerkId },
-    create: {
-      clerkId,
-      primaryEmail,
-      emailVerifiedAt,
-      firstName,
-      lastName,
-      imageUrl,
-      lastSignInAt,
-      deletedAt: null,
-    },
-    update: {
-      primaryEmail,
-      emailVerifiedAt,
-      firstName,
-      lastName,
-      imageUrl,
-      lastSignInAt,
-      deletedAt: null,
-    },
-  });
+  const userData = {
+    primaryEmail,
+    emailVerifiedAt,
+    firstName,
+    lastName,
+    imageUrl,
+    lastSignInAt,
+    deletedAt: null,
+  };
+
+  let appUser: User;
+  try {
+    appUser = await prisma.user.upsert({
+      where: { clerkId },
+      create: { clerkId, ...userData },
+      update: userData,
+    });
+  } catch (error) {
+    // Two server components can try to provision the same first-login user at
+    // once. Prisma may surface the losing upsert as P2002 on primaryEmail even
+    // though the winning request has already created the same Clerk user.
+    // Recover only when that exact Clerk row now exists; a genuine email
+    // collision with a different identity must still fail closed.
+    if (
+      !error ||
+      typeof error !== "object" ||
+      !("code" in error) ||
+      error.code !== "P2002"
+    ) {
+      throw error;
+    }
+
+    const concurrentUser = await prisma.user.findUnique({ where: { clerkId } });
+    if (!concurrentUser) throw error;
+
+    appUser = await prisma.user.update({
+      where: { id: concurrentUser.id },
+      data: userData,
+    });
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        message: "auth_user_sync_race_recovered",
+        clerkId,
+      }),
+    );
+  }
 
   const identities = extractIdentities(payload);
   await Promise.all(identities.map((identity) => upsertIdentity(appUser.id, identity)));
@@ -465,22 +490,54 @@ export async function ensurePersonalWorkspace(userId: string) {
   const user = await prisma.user.findUnique({ where: { id: userId } });
   if (!user) throw new Error("User not found");
 
-  const workspace = await prisma.workspace.upsert({
-    where: { personalOwnerUserId: user.id },
-    create: {
-      name: personalWorkspaceName(user),
-      ownerUserId: user.id,
-      personalOwnerUserId: user.id,
-      pricingTier: workspacePricingTier(user.pricingTier),
-      stripeCustomerId: user.stripeCustomerId,
-      billingEventCreatedAt: user.billingEventCreatedAt,
-      defaultBrandTemplateId: user.defaultBrandTemplateId,
-      members: {
-        create: { userId: user.id, role: "owner" },
+  let workspace;
+  try {
+    workspace = await prisma.workspace.upsert({
+      where: { personalOwnerUserId: user.id },
+      create: {
+        name: personalWorkspaceName(user),
+        ownerUserId: user.id,
+        personalOwnerUserId: user.id,
+        pricingTier: workspacePricingTier(user.pricingTier),
+        stripeCustomerId: user.stripeCustomerId,
+        billingEventCreatedAt: user.billingEventCreatedAt,
+        defaultBrandTemplateId: user.defaultBrandTemplateId,
+        members: {
+          create: { userId: user.id, role: "owner" },
+        },
       },
-    },
-    update: {},
-  });
+      update: {},
+    });
+  } catch (error) {
+    // Prisma can implement an upsert as a read followed by a create. Concurrent
+    // first-login renders may both observe no personal workspace, leaving the
+    // losing request with P2002 even though the invariant is now satisfied.
+    // Recover only when the exact owner row exists; unrelated uniqueness
+    // failures still propagate.
+    if (
+      !error ||
+      typeof error !== "object" ||
+      !("code" in error) ||
+      error.code !== "P2002"
+    ) {
+      throw error;
+    }
+
+    const concurrentWorkspace = await prisma.workspace.findUnique({
+      where: { personalOwnerUserId: user.id },
+    });
+    if (!concurrentWorkspace) throw error;
+
+    workspace = concurrentWorkspace;
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        message: "auth_personal_workspace_race_recovered",
+        userId: user.id,
+        workspaceId: workspace.id,
+      }),
+    );
+  }
 
   await prisma.workspaceMember.upsert({
     where: {

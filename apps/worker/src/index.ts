@@ -64,6 +64,9 @@ const sttResultPollIntervalMs = Number(
 const notificationRetryPollIntervalMs = Number(
   process.env.NOTIFICATION_RETRY_POLL_INTERVAL_MS ?? String(60 * 1000),
 );
+const autopilotPollIntervalMs = Number(
+  process.env.AUTOPILOT_POLL_INTERVAL_MS ?? "30000",
+);
 const notificationRetryBatchSize = Number(
   process.env.NOTIFICATION_RETRY_BATCH_SIZE ?? "25",
 );
@@ -348,12 +351,14 @@ const dubbingLoop = createPollLoop("dubbing", async () => {
   return 1;
 });
 
-// Autopilot rules and deadline-sensitive social publishing share a loop: both
-// are short, batched, and deadline-driven rather than claim-driven.
+// Deadline-sensitive scheduled posts have a dedicated loop. Remote RSS feeds
+// can be slow or unavailable and must never delay a due social publish.
 const publishLoop = createPollLoop("publish", async () => {
-  const autopilotRulesProcessed = await processDueAutopilotRules();
-  const socialPostsProcessed = await processDueSocialPosts();
-  return autopilotRulesProcessed + socialPostsProcessed;
+  return processDueSocialPosts();
+});
+
+const autopilotLoop = createPollLoop("autopilot", async () => {
+  return processDueAutopilotRules();
 });
 
 /** CPU-bound stage: clip rendering only. Still safe under multiple worker
@@ -404,6 +409,7 @@ const allLoops: Array<{ loop: PollLoop; intervalMs: number }> = [
   { loop: detectionLoop, intervalMs: pollIntervalMs },
   { loop: dubbingLoop, intervalMs: pollIntervalMs },
   { loop: publishLoop, intervalMs: pollIntervalMs },
+  { loop: autopilotLoop, intervalMs: autopilotPollIntervalMs },
   { loop: renderLoop, intervalMs: renderPollIntervalMs },
   { loop: previewLoop, intervalMs: previewPollIntervalMs },
   { loop: autoLayoutLoop, intervalMs: autoLayoutPollIntervalMs },

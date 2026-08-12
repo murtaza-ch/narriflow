@@ -15,6 +15,8 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
     "An unexpected error interrupted processing — often a brief network hiccup. Retry ingest; if it keeps failing, contact support.",
   worker_unknown_job_type:
     "We hit an unexpected internal error preparing this project. Please contact support.",
+  storage_metadata_invalid:
+    "We hit an internal storage error preparing this project. Please contact support; retrying the same upload won't resolve it.",
   source_download_failed:
     "We couldn't download that source. Check the link and try again.",
   remote_media_download_failed:
@@ -33,6 +35,18 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
     "That RSS feed is too large to import. Choose a feed with fewer entries.",
   rss_download_failed:
     "We couldn't fetch that RSS feed. Check the link and try again.",
+  rss_invalid_xml:
+    "That URL did not return valid XML. Check the feed address and try again.",
+  rss_unsupported_document:
+    "That URL is not a supported RSS or Atom feed.",
+  rss_no_media_episodes:
+    "That feed does not contain downloadable audio or video episodes.",
+  rss_concurrent_ingest_limit_reached:
+    "Five RSS episodes are already importing in this workspace. Wait for one to finish and try again.",
+  rss_episode_not_found:
+    "That episode is no longer present in the feed. Refresh the feed and choose another episode.",
+  autopilot_rule_limit_reached:
+    "This workspace already has ten Autopilot rules. Remove an old rule before creating another.",
   rss_missing_enclosure:
     "That RSS episode doesn't have a downloadable audio file. Choose a different episode.",
   quota_exceeded:

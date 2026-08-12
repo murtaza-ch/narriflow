@@ -12,11 +12,13 @@ import {
   createByteLimitTransform,
   guardedFetch,
   projectService,
+  redactUrlForDisplay,
   RemoteFetchError,
   UnsafeUrlError,
 } from "@narriflow/services";
 import {
   headObject,
+  InvalidObjectMetadataError,
   presignDownloadUrl,
   putFileFromPath,
 } from "@narriflow/services/r2-storage";
@@ -782,14 +784,14 @@ async function runRssImport(job: IngestJob) {
       contentType: downloadMeta.contentType ?? "audio/mpeg",
       metadata: {
         source: "rss",
-        rss_url: rssUrl,
-        enclosure_url: enclosureUrl,
+        rss_url: redactUrlForDisplay(rssUrl),
+        enclosure_url: redactUrlForDisplay(enclosureUrl),
       },
     });
 
     await projectService.completeIngestJob(job.id, {
       sourceStorageKey: key,
-      sourceInput: rssUrl,
+      sourceInput: redactUrlForDisplay(rssUrl),
       sourceMimeType: downloadMeta.contentType,
       sourceSizeBytes: fileInfo.size,
       sourceDurationSeconds: durationSeconds,
@@ -827,8 +829,21 @@ export async function processIngestJob(job: IngestJob) {
       totalMs: Date.now() - jobStartedAtMs,
     });
   } catch (error) {
-    const code = error instanceof IngestWorkerError ? error.code : "worker_unhandled_error";
-    const message = error instanceof Error ? error.message : "Unknown worker error";
+    const normalizedError =
+      error instanceof InvalidObjectMetadataError
+        ? new IngestWorkerError(
+            "storage_metadata_invalid",
+            "Internal object metadata was invalid",
+          )
+        : error;
+    const code =
+      normalizedError instanceof IngestWorkerError
+        ? normalizedError.code
+        : "worker_unhandled_error";
+    const message =
+      normalizedError instanceof Error
+        ? normalizedError.message
+        : "Unknown worker error";
 
     await projectService.failIngestJob(job.id, code, message);
     log("error", "ingest_job_failed", {
