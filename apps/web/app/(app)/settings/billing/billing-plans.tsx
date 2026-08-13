@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Box, Flex, Grid, Stack, Text } from "@chakra-ui/react";
@@ -255,6 +256,21 @@ export function BillingPlans({
                     {uploadCapMin} min
                   </Text>
                 </Flex>
+                <Flex
+                  justify="space-between"
+                  align="baseline"
+                  gap="3"
+                  py="2"
+                  borderTopWidth="1px"
+                  borderColor="border.subtle"
+                >
+                  <Text fontSize="13px" color="fg.muted">
+                    Integrations
+                  </Text>
+                  <Text textStyle="data" fontSize="12px" color={tier === "business" ? "fg" : "fg.subtle"} textAlign="right">
+                    {tier === "business" ? "API & MCP" : "—"}
+                  </Text>
+                </Flex>
               </Stack>
 
               <Box mt="1">
@@ -284,6 +300,18 @@ export function BillingPlans({
           );
         })}
       </Grid>
+
+      {currentTier !== "business" ? (
+        <Text fontSize="13px" color="fg.muted">
+          Need AI assistants or unattended workspace automation? Business unlocks API &amp; MCP integrations. {" "}
+          <Link href="/integrations/mcp" style={{ textDecoration: "underline" }}>Review setup and access rules</Link>
+        </Text>
+      ) : (
+        <Text fontSize="13px" color="fg.muted">
+          Your plan includes API &amp; MCP integrations. {" "}
+          <Link href="/integrations" style={{ textDecoration: "underline" }}>Open integrations</Link>
+        </Text>
+      )}
 
       {isPaid && workspaceStatus !== "pending_payment" && canManageBilling ? (
         <Box>

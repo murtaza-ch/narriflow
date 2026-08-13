@@ -5,6 +5,10 @@ import { useRouter } from "next/navigation";
 import { Box, Dialog, Flex, Input, Portal, Stack, Text } from "@chakra-ui/react";
 import { Captions, Folder, Search, Video, X } from "lucide-react";
 import { Spinner } from "@narriflow/ui/components/spinner";
+import {
+  matchNavigationActions,
+  type NavigationAction,
+} from "@/lib/navigation-actions";
 
 type SearchResult = {
   id: string;
@@ -85,8 +89,16 @@ export function GlobalSearch({ workspaceId }: { workspaceId: string }) {
     })).filter((group) => group.items.length > 0),
     [results],
   );
+  const actionResults = useMemo(() => matchNavigationActions(query), [query]);
+  const selectableResults = useMemo(
+    () => [
+      ...actionResults.map((action) => ({ kind: "action" as const, action })),
+      ...results.map((result) => ({ kind: "workspace" as const, result })),
+    ],
+    [actionResults, results],
+  );
 
-  function choose(result: SearchResult) {
+  function navigate(href: string) {
     const normalized = query.trim();
     if (normalized.length >= 2) {
       const next = [normalized, ...recentSearches.filter((item) => item.toLocaleLowerCase() !== normalized.toLocaleLowerCase())].slice(0, 5);
@@ -95,19 +107,29 @@ export function GlobalSearch({ workspaceId }: { workspaceId: string }) {
     }
     setOpen(false);
     setQuery("");
-    router.push(result.href);
+    router.push(href);
+  }
+
+  function choose(result: SearchResult) {
+    navigate(result.href);
+  }
+
+  function chooseAction(action: NavigationAction) {
+    navigate(action.href);
   }
 
   function onInputKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
     if (event.key === "ArrowDown") {
       event.preventDefault();
-      setActiveIndex((index) => Math.min(results.length - 1, index + 1));
+      setActiveIndex((index) => Math.min(selectableResults.length - 1, index + 1));
     } else if (event.key === "ArrowUp") {
       event.preventDefault();
       setActiveIndex((index) => Math.max(0, index - 1));
-    } else if (event.key === "Enter" && results[activeIndex]) {
+    } else if (event.key === "Enter" && selectableResults[activeIndex]) {
       event.preventDefault();
-      choose(results[activeIndex]);
+      const selected = selectableResults[activeIndex];
+      if (selected.kind === "action") chooseAction(selected.action);
+      else choose(selected.result);
     }
   }
 
@@ -146,7 +168,7 @@ export function GlobalSearch({ workspaceId }: { workspaceId: string }) {
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
                   onKeyDown={onInputKeyDown}
-                  placeholder="Search projects, folders, and clips…"
+                  placeholder="Search projects, clips, integrations, and help…"
                   border="0"
                   boxShadow="none"
                   h="14"
@@ -160,9 +182,38 @@ export function GlobalSearch({ workspaceId }: { workspaceId: string }) {
             </Dialog.Header>
             <Dialog.Body p="2" maxH="420px" overflowY="auto" aria-live="polite">
               {query.trim().length < 2 ? (
-                recentSearches.length > 0 ? (
-                  <Stack gap="1">
-                    <Text textStyle="eyebrow" color="fg.subtle" px="3" py="2">Recent searches</Text>
+                <Stack gap="2">
+                  <Box>
+                    <Text textStyle="eyebrow" color="fg.subtle" px="3" py="2">Go to</Text>
+                    {actionResults.map((action, index) => {
+                      const Icon = action.icon;
+                      return (
+                        <Flex
+                          as="button"
+                          key={action.id}
+                          w="full"
+                          align="center"
+                          gap="3"
+                          px="3"
+                          py="2.5"
+                          borderRadius="l2"
+                          bg={index === activeIndex ? "bg.subtle" : "transparent"}
+                          textAlign="left"
+                          onMouseEnter={() => setActiveIndex(index)}
+                          onClick={() => chooseAction(action)}
+                        >
+                          <Icon size={15} />
+                          <Stack gap="0" minW="0">
+                            <Text fontSize="13px" fontWeight="550">{action.title}</Text>
+                            <Text fontSize="12px" color="fg.subtle" truncate>{action.subtitle}</Text>
+                          </Stack>
+                        </Flex>
+                      );
+                    })}
+                  </Box>
+                  {recentSearches.length > 0 ? (
+                    <Box>
+                      <Text textStyle="eyebrow" color="fg.subtle" px="3" py="2">Recent searches</Text>
                     {recentSearches.map((recent) => (
                       <Flex
                         as="button"
@@ -181,25 +232,52 @@ export function GlobalSearch({ workspaceId }: { workspaceId: string }) {
                         <Text fontSize="13px">{recent}</Text>
                       </Flex>
                     ))}
-                  </Stack>
-                ) : (
-                  <Text px="3" py="8" textAlign="center" color="fg.muted" fontSize="13px">
-                    Type at least two characters to search this workspace.
-                  </Text>
-                )
-              ) : !loading && results.length === 0 ? (
+                    </Box>
+                  ) : null}
+                </Stack>
+              ) : !loading && results.length === 0 && actionResults.length === 0 ? (
                 <Text px="3" py="8" textAlign="center" color="fg.muted" fontSize="13px">
-                  No matching projects, folders, or clips.
+                  No matching workspace content or destinations.
                 </Text>
               ) : (
                 <Stack gap="2">
+                  {actionResults.length > 0 ? (
+                    <Box>
+                      <Text textStyle="eyebrow" color="fg.subtle" px="3" py="2">Actions &amp; guides</Text>
+                      {actionResults.map((action, index) => {
+                        const Icon = action.icon;
+                        return (
+                          <Flex
+                            as="button"
+                            key={action.id}
+                            w="full"
+                            align="center"
+                            gap="3"
+                            px="3"
+                            py="2.5"
+                            borderRadius="l2"
+                            bg={index === activeIndex ? "bg.subtle" : "transparent"}
+                            textAlign="left"
+                            onMouseEnter={() => setActiveIndex(index)}
+                            onClick={() => chooseAction(action)}
+                          >
+                            <Icon size={15} />
+                            <Stack gap="0" minW="0">
+                              <Text fontSize="13px" fontWeight="550">{action.title}</Text>
+                              <Text fontSize="12px" color="fg.subtle" truncate>{action.subtitle}</Text>
+                            </Stack>
+                          </Flex>
+                        );
+                      })}
+                    </Box>
+                  ) : null}
                   {grouped.map((group) => (
                     <Box key={group.type}>
                       <Text textStyle="eyebrow" color="fg.subtle" px="3" py="2">
                         {TYPE_META[group.type].label}
                       </Text>
                       {group.items.map((result) => {
-                        const index = results.findIndex((item) => item.id === result.id && item.type === result.type);
+                        const index = actionResults.length + results.findIndex((item) => item.id === result.id && item.type === result.type);
                         const Icon = TYPE_META[result.type].icon;
                         return (
                           <Flex

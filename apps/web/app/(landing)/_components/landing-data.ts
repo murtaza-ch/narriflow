@@ -173,7 +173,7 @@ export const TIERS = [
     price: 39,
     minutes: 1800,
     blurb: "One workspace for your team",
-    points: ["1,800 shared processing min/mo", "Owner seat included", "$5 additional Editor/Admin seats"],
+    points: ["1,800 shared processing min/mo", "API + MCP integrations", "Owner seat included"],
     featured: false,
   },
 ] as const;

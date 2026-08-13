@@ -1,7 +1,8 @@
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
 import type { PricingTier, WorkspaceRole, WorkspaceStatus } from "@prisma/client";
 
 import { getPrismaClient } from "@narriflow/db/client";
+import { hasFeature } from "./plan-features";
 import {
   isR2Configured,
   presignDownloadUrl,
@@ -30,6 +31,24 @@ export interface WorkspaceActorContext {
   status: WorkspaceStatus;
   pricingTier: PricingTier;
 }
+
+export interface WorkspaceApiKeyPrincipal {
+  apiKeyId: string;
+  userId: string;
+  workspaceId: string;
+  name: string;
+  scopes: string[];
+}
+
+export const WORKSPACE_API_KEY_SCOPES = [
+  "projects:read",
+  "exports:read",
+  "usage:read",
+  "autopilot:read",
+  "autopilot:write",
+] as const;
+
+export type WorkspaceApiKeyScope = (typeof WORKSPACE_API_KEY_SCOPES)[number];
 
 const ROLE_CAPABILITIES: Record<WorkspaceRole, ReadonlySet<WorkspaceCapability>> = {
   owner: new Set([
@@ -113,6 +132,25 @@ export function workspacesV1EnabledForUser(userId: string) {
 }
 
 export class WorkspaceService {
+  async listAccessibleWorkspaces(userId: string) {
+    return requiredPrisma().workspaceMember.findMany({
+      where: { userId },
+      select: {
+        role: true,
+        workspace: {
+          select: {
+            id: true,
+            name: true,
+            status: true,
+            pricingTier: true,
+            personalOwnerUserId: true,
+          },
+        },
+      },
+      orderBy: { joinedAt: "asc" },
+    });
+  }
+
   async createPendingBusinessWorkspace(userId: string, input: { name: string }) {
     if (!workspacesV1EnabledForUser(userId)) {
       throw new Error("Workspace creation is not enabled for this account");
@@ -452,21 +490,30 @@ export class WorkspaceService {
     input: { name: string; scopes?: string[] },
   ) {
     const actor = await this.requireActor(userId, workspaceId, "api.manage");
-    if (actor.pricingTier !== "business") throw new Error("Workspace API keys require Business");
+    if (!hasFeature(actor.pricingTier, "integrations.api")) {
+      throw new Error("Workspace API keys require Business");
+    }
     const name = input.name.trim().slice(0, 80);
     if (!name) throw new Error("API key name is required");
+    const requestedScopes = input.scopes?.length ? [...new Set(input.scopes)] : ["projects:read"];
+    const invalidScopes = requestedScopes.filter(
+      (scope) => !WORKSPACE_API_KEY_SCOPES.includes(scope as WorkspaceApiKeyScope),
+    );
+    if (invalidScopes.length) {
+      throw new Error(`Unsupported API key scope: ${invalidScopes.join(", ")}`);
+    }
     const secret = `nf_${randomBytes(32).toString("base64url")}`;
     const prefix = secret.slice(0, 11);
     const hashedSecret = createHash("sha256").update(secret).digest("hex");
     const key = await requiredPrisma().apiKey.create({
       data: {
-        userId: actor.workspaceOwnerUserId,
+        userId,
         workspaceId,
         createdByUserId: userId,
         name,
         prefix,
         hashedSecret,
-        scopes: input.scopes?.length ? input.scopes : ["projects:read"],
+        scopes: requestedScopes,
       },
       select: { id: true, name: true, prefix: true, scopes: true, createdAt: true },
     });
@@ -479,6 +526,53 @@ export class WorkspaceService {
       where: { id: keyId, workspaceId, revokedAt: null },
       data: { revokedAt: new Date() },
     });
+  }
+
+  async authenticateApiKey(secret: string): Promise<WorkspaceApiKeyPrincipal | null> {
+    if (!secret.startsWith("nf_") || secret.length < 32) return null;
+
+    const prefix = secret.slice(0, 11);
+    const key = await requiredPrisma().apiKey.findUnique({
+      where: { prefix },
+      select: {
+        id: true,
+        userId: true,
+        createdByUserId: true,
+        workspaceId: true,
+        name: true,
+        scopes: true,
+        hashedSecret: true,
+        revokedAt: true,
+        lastUsedAt: true,
+      },
+    });
+    if (!key || key.revokedAt || !key.workspaceId) return null;
+
+    const suppliedHash = Buffer.from(createHash("sha256").update(secret).digest("hex"), "hex");
+    const storedHash = Buffer.from(key.hashedSecret, "hex");
+    if (suppliedHash.length !== storedHash.length || !timingSafeEqual(suppliedHash, storedHash)) {
+      return null;
+    }
+
+    const lastUsedCutoff = new Date(Date.now() - 5 * 60 * 1000);
+    if (!key.lastUsedAt || key.lastUsedAt < lastUsedCutoff) {
+      await requiredPrisma().apiKey.updateMany({
+        where: {
+          id: key.id,
+          revokedAt: null,
+          OR: [{ lastUsedAt: null }, { lastUsedAt: { lt: lastUsedCutoff } }],
+        },
+        data: { lastUsedAt: new Date() },
+      });
+    }
+
+    return {
+      apiKeyId: key.id,
+      userId: key.createdByUserId ?? key.userId,
+      workspaceId: key.workspaceId,
+      name: key.name,
+      scopes: key.scopes,
+    };
   }
 }
 
