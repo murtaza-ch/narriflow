@@ -7,20 +7,38 @@ import { hasFeature, type PlanFeature } from "./billing.service";
 // through this single helper, never a raw `tier === "free"` check.
 
 const ALL_TIERS: PricingTier[] = ["free", "creator", "pro", "business"];
-const ALL_FEATURES: PlanFeature[] = ["export.1080p", "export.noWatermark"];
+const EXPORT_FEATURES: PlanFeature[] = ["export.1080p", "export.noWatermark"];
+const INTEGRATION_FEATURES: PlanFeature[] = ["integrations.api", "integrations.mcp"];
+const ALL_FEATURES: PlanFeature[] = [...EXPORT_FEATURES, ...INTEGRATION_FEATURES];
 
 describe("hasFeature (PLAN_FEATURES matrix)", () => {
   test("free has neither export feature", () => {
-    for (const feature of ALL_FEATURES) {
+    for (const feature of EXPORT_FEATURES) {
       expect(hasFeature("free", feature)).toBe(false);
     }
   });
 
   test("every paid tier has both export features", () => {
     for (const tier of ["creator", "pro", "business"] as const) {
-      for (const feature of ALL_FEATURES) {
+      for (const feature of EXPORT_FEATURES) {
         expect(hasFeature(tier, feature)).toBe(true);
       }
+    }
+  });
+
+  test("normalizes the legacy starter tier before checking entitlements", () => {
+    expect(hasFeature("starter", "export.1080p")).toBe(true);
+    expect(hasFeature("starter", "integrations.mcp")).toBe(false);
+  });
+
+  test("API and MCP integrations are Business capabilities", () => {
+    for (const tier of ["free", "creator", "pro"] as const) {
+      for (const feature of INTEGRATION_FEATURES) {
+        expect(hasFeature(tier, feature)).toBe(false);
+      }
+    }
+    for (const feature of INTEGRATION_FEATURES) {
+      expect(hasFeature("business", feature)).toBe(true);
     }
   });
 

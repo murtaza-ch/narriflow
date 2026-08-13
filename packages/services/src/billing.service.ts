@@ -7,6 +7,7 @@ import {
   type PricingTier,
 } from "@narriflow/validators";
 import { projectRetentionService } from "./project-retention.service";
+export { hasFeature, type PlanFeature } from "./plan-features";
 import { workspaceService } from "./workspace.service";
 
 export class BillingError extends Error {
@@ -50,34 +51,6 @@ const INTERVALS: BillingInterval[] = ["monthly", "annual"];
  * what they're checking, not why. All new plan-gating must go through
  * `hasFeature` — no bare `tier === "free"` checks.
  */
-export type PlanFeature = "export.1080p" | "export.noWatermark";
-
-/** Single source of truth for which tiers unlock which features. `free` gets
- *  neither; every paid tier gets both. */
-const PLAN_FEATURES: Record<PricingTier, Record<PlanFeature, boolean>> = {
-  free: {
-    "export.1080p": false,
-    "export.noWatermark": false,
-  },
-  creator: {
-    "export.1080p": true,
-    "export.noWatermark": true,
-  },
-  pro: {
-    "export.1080p": true,
-    "export.noWatermark": true,
-  },
-  business: {
-    "export.1080p": true,
-    "export.noWatermark": true,
-  },
-};
-
-/** Pure entitlement check — the one place plan gating decisions are made. */
-export function hasFeature(tier: PricingTier, feature: PlanFeature): boolean {
-  return PLAN_FEATURES[tier][feature];
-}
-
 /** Resolves the configured Stripe price id for a tier + interval (env-driven). */
 function priceIdFor(
   tier: PaidPricingTier,

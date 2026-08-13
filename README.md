@@ -22,7 +22,7 @@ Bun-first monorepo for Narriflow.
 - Voiceover dubbing: OpenAI audio speech + FFmpeg audio replacement
 - Rendering: FFmpeg/ffprobe
 - Social delivery: durable scheduling queue + native OAuth publishing clients with a legacy webhook fallback
-- MCP: stdio server in `apps/mcp`
+- MCP: stateless `2026-07-28` Streamable HTTP endpoint at `/mcp`, plus a scoped API-key stdio fallback in `apps/mcp`
 
 ## Landing-Page Lab
 
@@ -154,7 +154,7 @@ flowchart TD
 - SSE: Server-Sent Events, a browser stream used for one-way live updates from the server.
 - Pub/sub: publish/subscribe messaging; here, Redis broadcasts workflow events to connected clients.
 - Autopilot rule: a saved RSS feed watcher that imports unseen episodes and persists generation settings before ingest finishes.
-- MCP server: a stdio Model Context Protocol server in `apps/mcp` exposing Narriflow project and autopilot tools.
+- MCP server: the stateless Model Context Protocol endpoint at `/mcp`, with OAuth or workspace API-key authentication and a local stdio fallback.
 
 ## Local Environment Files
 
@@ -170,6 +170,8 @@ Minimum values for the current clips workflow:
 - `CLERK_PUBLISHABLE_KEY`
 - `CLERK_SECRET_KEY`
 - `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY`
+- `NEXT_PUBLIC_APP_URL`
+- `CLERK_OAUTH_ISSUER` (required for remote MCP OAuth)
 - `UPSTASH_REDIS_URL`
 - `UPSTASH_REDIS_TOKEN`
 - `R2_ACCOUNT_ID`
@@ -242,20 +244,31 @@ Copy [`apps/mcp/.env.example`](apps/mcp/.env.example) to `apps/mcp/.env`.
 Minimum values:
 
 - `DATABASE_URL`
-- `NARRIFLOW_MCP_USER_ID` set to the `User.id` the local MCP server should act as.
+- `NARRIFLOW_API_KEY` set to a scoped Business-workspace key created in **Settings -> API**.
 
 Run the stdio server with:
 
 ```bash
-bun --filter @narriflow/mcp start
+bun run dev:mcp
 ```
+
+The stdio server is optional and is not started by the root `bun run dev`
+command. It requires `NARRIFLOW_API_KEY` because it acts as the workspace
+identified by that key. The remote HTTP endpoint at `/mcp` is served by the
+web app instead and authenticates each client through OAuth.
 
 Available tools:
 
 - `narriflow_list_projects`
 - `narriflow_get_project`
+- `narriflow_get_workspace_usage`
+- `narriflow_list_workspaces`
+- `narriflow_list_autopilot_rules`
 - `narriflow_create_rss_autopilot_rule`
 - `narriflow_run_autopilot_rule_now`
+
+For the remote endpoint, OAuth discovery, Codex/Claude setup, scopes, billing,
+and deployment guidance, see [`docs/integrations/mcp.md`](docs/integrations/mcp.md).
 
 ## AI Clip Generation Controls
 
@@ -357,7 +370,7 @@ bun --cwd apps/web run dev
 bun --cwd apps/worker run dev
 ```
 
-Or run both through Turbo:
+Or run both through Turbo (the optional stdio MCP server is excluded):
 
 ```bash
 bun run dev

@@ -30,6 +30,14 @@ export default function SignInPage() {
     [isLoaded, email, password, submitting],
   );
 
+  function postAuthRedirect() {
+    const redirectUrl = new URLSearchParams(window.location.search).get("redirect_url");
+    if (!redirectUrl) return "/onboarding";
+    const continueUrl = new URL("/auth/continue", window.location.origin);
+    continueUrl.searchParams.set("redirect_url", redirectUrl);
+    return `${continueUrl.pathname}${continueUrl.search}`;
+  }
+
   async function onSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!isLoaded || !signIn) return;
@@ -44,7 +52,7 @@ export default function SignInPage() {
         return;
       }
       await setActive({ session: result.createdSessionId });
-      router.push("/onboarding");
+      router.push(postAuthRedirect());
     } catch (authError) {
       setError(getClerkErrorMessage(authError, "Authentication failed. Please try again."));
     } finally {
@@ -62,7 +70,7 @@ export default function SignInPage() {
       await signIn.authenticateWithRedirect({
         strategy,
         redirectUrl: "/sso-callback",
-        redirectUrlComplete: "/onboarding",
+        redirectUrlComplete: postAuthRedirect(),
       });
     } catch (authError) {
       setError(getClerkErrorMessage(authError, "Authentication failed. Please try again."));

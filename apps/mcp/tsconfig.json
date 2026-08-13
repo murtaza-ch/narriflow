@@ -4,6 +4,7 @@
     "baseUrl": ".",
     "types": ["node"],
     "paths": {
+      "@narriflow/mcp-core": ["../../packages/mcp-core/src/index.ts"],
       "@narriflow/services": ["../../packages/services/src/index.ts"],
       "@narriflow/services/*": ["../../packages/services/src/*"],
       "@narriflow/validators": ["../../packages/validators/src/index.ts"],

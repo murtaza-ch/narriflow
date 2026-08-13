@@ -114,6 +114,7 @@ export const PRICING_FEATURES: Record<PricingTier, string[]> = {
     `${MONTHLY_PROCESSING_MINUTE_LIMITS.business} shared processing minutes / month`,
     "Everything in Pro",
     "Workspace members and shared brand assets",
+    "Scoped API keys and MCP integrations",
     "Owner seat included; additional Editors/Admins billed separately",
     formatUploadLimit("business"),
   ],
