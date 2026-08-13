@@ -244,7 +244,7 @@ Copy [`apps/mcp/.env.example`](apps/mcp/.env.example) to `apps/mcp/.env`.
 Minimum values:
 
 - `DATABASE_URL`
-- `NARRIFLOW_API_KEY` set to a scoped Business-workspace key created in **Settings -> API**.
+- `NARRIFLOW_API_KEY` set to a scoped Business-workspace key created in **Settings -> Developer access**.
 
 Run the stdio server with:
 

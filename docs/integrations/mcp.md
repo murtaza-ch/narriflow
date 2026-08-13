@@ -109,7 +109,7 @@ bearer_token_env_var = "NARRIFLOW_API_KEY"
 default_tools_approval_mode = "writes"
 ```
 
-Keys created in **Settings -> API** receive read scopes by default. Enable the
+Keys created in **Settings -> Developer access** receive read scopes by default. Enable the
 autopilot-write option only for clients that should be able to change rules.
 
 ## Claude
@@ -156,7 +156,7 @@ enforced exactly as they are on the remote endpoint.
 - The MCP endpoint has a distributed-when-Redis-is-available request limit of
   300 requests per credential/user per minute. It fails open if optional Redis
   is unavailable, matching the application's existing availability policy.
-- Rotate or revoke an API key from **Settings -> API**. OAuth grants are
+- Rotate or revoke an API key from **Settings -> Developer access**. OAuth grants are
   revoked from Clerk or by disconnecting the connector in the client.
 
 ## Verification

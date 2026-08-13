@@ -4,6 +4,7 @@ import {
   Download,
   FolderOpen,
   House,
+  PlugZap,
   Palette,
   type LucideIcon,
 } from "lucide-react";
@@ -26,4 +27,5 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "Calendar", href: "/calendar", icon: CalendarDays },
   { label: "Autopilot", href: "/autopilot", icon: Bot },
   { label: "Brand kit", href: "/brand-kit", icon: Palette },
+  { label: "Integrations", href: "/integrations", icon: PlugZap },
 ];

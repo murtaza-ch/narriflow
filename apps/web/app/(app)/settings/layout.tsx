@@ -10,6 +10,7 @@ import {
   Users,
 } from "lucide-react";
 import { NavLink } from "@narriflow/ui/components/nav-link";
+import { workspaceAllowsCapability } from "@narriflow/services";
 import { requireWorkspaceAppUser } from "@/lib/workspace";
 
 const ACCOUNT_LINKS = [
@@ -23,7 +24,7 @@ const WORKSPACE_LINKS = [
   { label: "Social accounts", href: "/settings/social-accounts", icon: Share2 },
   { label: "Subscription", href: "/settings/subscription", icon: CreditCard },
   { label: "Usage history", href: "/settings/usage", icon: ChartNoAxesCombined },
-  { label: "API", href: "/settings/api", icon: Braces },
+  { label: "Developer access", href: "/settings/api", icon: Braces },
 ] as const;
 
 function SettingsGroup({
@@ -47,6 +48,9 @@ function SettingsGroup({
 
 export default async function SettingsLayout({ children }: { children: React.ReactNode }) {
   const appUser = await requireWorkspaceAppUser();
+  const workspaceLinks = workspaceAllowsCapability(appUser.workspace, "api.manage")
+    ? WORKSPACE_LINKS
+    : WORKSPACE_LINKS.filter((link) => link.href !== "/settings/api");
   return (
     <Flex
       direction={{ base: "column", lg: "row" }}
@@ -74,7 +78,7 @@ export default async function SettingsLayout({ children }: { children: React.Rea
           css={{ scrollbarWidth: "none", "&::-webkit-scrollbar": { display: "none" } }}
         >
           <SettingsGroup label="Your account" links={ACCOUNT_LINKS} />
-          <SettingsGroup label={appUser.workspace.workspaceName} links={WORKSPACE_LINKS} />
+          <SettingsGroup label={appUser.workspace.workspaceName} links={workspaceLinks} />
         </Flex>
       </Box>
       <Box flex="1" minW="0" w="full">{children}</Box>
