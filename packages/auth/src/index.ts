@@ -574,11 +574,10 @@ function toWorkspaceActorContext(input: {
   };
 }
 
-/** Resolve the active workspace from a validated membership, never from the cookie alone. */
-export async function getCurrentWorkspaceContext(): Promise<WorkspaceActorContext | null> {
-  const user = await getCurrentAppUser();
-  if (!user) return null;
-
+/** Resolve the active workspace for an already-authenticated application user. */
+export async function getWorkspaceContextForUser(
+  user: AppUser,
+): Promise<WorkspaceActorContext | null> {
   const prisma = getRequiredPrisma();
   const cookieStore = await cookies();
   const requestedWorkspaceId = cookieStore.get(ACTIVE_WORKSPACE_COOKIE)?.value;
@@ -622,6 +621,12 @@ export async function getCurrentWorkspaceContext(): Promise<WorkspaceActorContex
   });
 
   return fallbackMembership ? toWorkspaceActorContext(fallbackMembership) : null;
+}
+
+/** Resolve the active workspace from a validated membership, never from the cookie alone. */
+export async function getCurrentWorkspaceContext(): Promise<WorkspaceActorContext | null> {
+  const user = await getCurrentAppUser();
+  return user ? getWorkspaceContextForUser(user) : null;
 }
 
 export async function requireWorkspaceContext(): Promise<WorkspaceActorContext> {
@@ -673,17 +678,15 @@ export function assertWorkspaceCapability(
   }
 }
 
-export async function listCurrentUserWorkspaces() {
-  const user = await requireCurrentAppUser();
+export async function listUserWorkspaces(userId: string) {
   const prisma = getRequiredPrisma();
-  await ensurePersonalWorkspace(user.id);
 
   return prisma.workspaceMember.findMany({
     where: {
-      userId: user.id,
-      ...(workspacesV1EnabledForUser(user.id)
+      userId,
+      ...(workspacesV1EnabledForUser(userId)
         ? {}
-        : { workspace: { personalOwnerUserId: user.id } }),
+        : { workspace: { personalOwnerUserId: userId } }),
     },
     orderBy: [{ workspace: { personalOwnerUserId: "desc" } }, { joinedAt: "asc" }],
     select: {
@@ -700,6 +703,12 @@ export async function listCurrentUserWorkspaces() {
       },
     },
   });
+}
+
+export async function listCurrentUserWorkspaces() {
+  const user = await requireCurrentAppUser();
+  await ensurePersonalWorkspace(user.id);
+  return listUserWorkspaces(user.id);
 }
 
 /** Validate membership before persisting the clean-URL workspace selection. */

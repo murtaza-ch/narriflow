@@ -1,28 +1,35 @@
 "use client";
 
 import { Box, Center, HStack, SimpleGrid, Stack, Text } from "@chakra-ui/react";
-import { startTransition, useEffect, useMemo, useState, useTransition } from "react";
+import {
+  startTransition,
+  useEffect,
+  useEffectEvent,
+  useMemo,
+  useOptimistic,
+  useState,
+  useTransition,
+} from "react";
 import { useRouter } from "next/navigation";
 import { Inbox, TriangleAlert } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { Select } from "@narriflow/ui/components/select";
-import type { ProjectListItem, ProjectListPage } from "@narriflow/services";
+import type {
+  ProjectListItem,
+  ProjectListPage,
+  ProjectListSort,
+  ProjectListSourceFilter,
+  ProjectListStatusFilter,
+} from "@narriflow/services";
 import { FilterToolbar } from "./filter-toolbar";
 import { ProjectCard } from "./project-card";
 import { ProjectRow } from "./project-row";
 import { moveProjectToFolderAction } from "../actions";
 
-export type StatusFilter =
-  | "all"
-  | "ready"
-  | "processing"
-  | "queued"
-  | "failed";
-
-export type SourceFilter = "all" | "youtube" | "link" | "upload" | "rss";
-
-export type SortOption = "newest" | "oldest" | "title" | "clips";
+export type StatusFilter = ProjectListStatusFilter;
+export type SourceFilter = ProjectListSourceFilter;
+export type SortOption = ProjectListSort;
 
 export type ViewMode = "grid" | "list";
 
@@ -30,6 +37,11 @@ interface ProjectsExplorerProps {
   initialProjects: ProjectListItem[];
   initialNextCursor: string | null;
   totalCount: number;
+  initialStatusCounts: Record<StatusFilter, number>;
+  initialQuery: string;
+  initialStatus: StatusFilter;
+  initialSource: SourceFilter;
+  initialSort: SortOption;
   folderId?: string;
   folders: Array<{ id: string; name: string }>;
   canEdit: boolean;
@@ -44,14 +56,23 @@ function FolderControl({
 }) {
   const router = useRouter();
   const [pending, startMove] = useTransition();
+  const [committedFolderId, setCommittedFolderId] = useState(project.folderId ?? "");
+  const [optimisticFolderId, setOptimisticFolderId] = useOptimistic(committedFolderId);
+
+  useEffect(() => {
+    setCommittedFolderId(project.folderId ?? "");
+  }, [project.folderId]);
+
   return (
     <Select
       ariaLabel={`Move ${project.title} to folder`}
-      value={project.folderId ?? ""}
+      value={optimisticFolderId}
       onValueChange={(value) => {
         const folderId = value || null;
         startMove(async () => {
+          setOptimisticFolderId(value);
           await moveProjectToFolderAction(project.id, folderId);
+          setCommittedFolderId(value);
           router.refresh();
         });
       }}
@@ -66,14 +87,6 @@ function FolderControl({
   );
 }
 
-const PROCESSING_STATUSES = new Set([
-  "processing",
-  "uploading",
-  "downloading",
-  "normalizing",
-  "pending",
-]);
-
 const ACTIVE_INGEST_STATUSES = new Set([
   "pending",
   "uploading",
@@ -86,16 +99,6 @@ function isProjectActive(project: ProjectListItem): boolean {
   if (ACTIVE_INGEST_STATUSES.has(project.ingestStatus)) return true;
   const transcriptStatus = project.transcript?.status;
   return transcriptStatus === "queued" || transcriptStatus === "processing";
-}
-
-function matchesStatus(
-  project: ProjectListItem,
-  status: StatusFilter,
-): boolean {
-  if (status === "all") return true;
-  const ingest = project.ingestStatus;
-  if (status === "processing") return PROCESSING_STATUSES.has(ingest);
-  return ingest === status;
 }
 
 /** How often the list re-asks the server while something is still processing. */
@@ -113,6 +116,11 @@ export function ProjectsExplorer({
   initialProjects,
   initialNextCursor,
   totalCount: initialTotalCount,
+  initialStatusCounts,
+  initialQuery,
+  initialStatus,
+  initialSource,
+  initialSort,
   folderId,
   folders,
   canEdit,
@@ -126,26 +134,23 @@ export function ProjectsExplorer({
   // so each poll cost a setState + a second render of the whole grid, and
   // silently threw away every page the user had loaded.
   const [extraPages, setExtraPages] = useState<LoadedPage[]>([]);
-  const [query, setQuery] = useState("");
-  const [status, setStatus] = useState<StatusFilter>("all");
-  const [source, setSource] = useState<SourceFilter>("all");
-  const [sort, setSort] = useState<SortOption>("newest");
+  const [query, setQuery] = useState(initialQuery);
+  const [status, setStatus] = useState<StatusFilter>(initialStatus);
+  const [source, setSource] = useState<SourceFilter>(initialSource);
+  const [sort, setSort] = useState<SortOption>(initialSort);
   const [view, setView] = useState<ViewMode>("grid");
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
 
-  // A delete anywhere in the library decrements the server's total, and page 1
-  // alone can't tell us which cached row below it disappeared — so drop the
-  // cached pages and let the user re-load them. This is React's sanctioned
-  // "adjust state when a prop changes" shape (a render-phase setState, which
-  // re-runs this component only, and only on the rare shrink) rather than an
-  // effect that would fire on every poll.
-  const [lastServerTotal, setLastServerTotal] = useState(initialTotalCount);
-  if (initialTotalCount !== lastServerTotal) {
-    setLastServerTotal(initialTotalCount);
-    if (initialTotalCount < lastServerTotal && extraPages.length > 0) {
-      setExtraPages([]);
-    }
+  const filterKey = `${initialQuery}\u0000${initialStatus}\u0000${initialSource}\u0000${initialSort}\u0000${folderId ?? ""}`;
+  const [lastFilterKey, setLastFilterKey] = useState(filterKey);
+  if (lastFilterKey !== filterKey) {
+    setLastFilterKey(filterKey);
+    setQuery(initialQuery);
+    setStatus(initialStatus);
+    setSource(initialSource);
+    setSort(initialSort);
+    setExtraPages([]);
   }
 
   // Refreshed page 1 wins on id collisions (a project created since the last
@@ -177,24 +182,44 @@ export function ProjectsExplorer({
     [projects],
   );
 
+  function apiParams(cursor: string) {
+    const params = new URLSearchParams({ cursor, limit: "50" });
+    if (folderId) params.set("folder", folderId);
+    if (initialQuery) params.set("q", initialQuery);
+    if (initialStatus !== "all") params.set("status", initialStatus);
+    if (initialSource !== "all") params.set("source", initialSource);
+    if (initialSort !== "newest") params.set("sort", initialSort);
+    return params;
+  }
+
+  const refresh = useEffectEvent(async () => {
+    startTransition(() => router.refresh());
+
+    if (extraPages.length === 0 || !initialNextCursor) return;
+    const refreshed: LoadedPage[] = [];
+    let cursor: string | null = initialNextCursor;
+    for (let index = 0; index < extraPages.length && cursor; index += 1) {
+      const response = await fetch(`/api/projects?${apiParams(cursor)}`);
+      if (!response.ok) return;
+      const page = (await response.json()) as ProjectListPage;
+      refreshed.push(page);
+      cursor = page.nextCursor;
+    }
+    setExtraPages(refreshed);
+  });
+
   useEffect(() => {
     if (!hasActiveProjects) return;
-
-    // `router.refresh()` inside a transition: React keeps the current grid on
-    // screen while the new RSC payload streams in, instead of tearing down to
-    // the page's Suspense skeleton and remounting every card — the visible
-    // "renders over and over" symptom.
-    const refresh = () => startTransition(() => router.refresh());
 
     // A background tab has nothing to repaint, and each refresh re-runs the
     // layout (auth + usage stats) plus the paginated project query. Poll only
     // while visible, and catch up once on the way back.
     const interval = setInterval(() => {
-      if (document.visibilityState === "visible") refresh();
+      if (document.visibilityState === "visible") void refresh();
     }, LIVE_REFRESH_INTERVAL_MS);
 
     const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") refresh();
+      if (document.visibilityState === "visible") void refresh();
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
 
@@ -202,73 +227,37 @@ export function ProjectsExplorer({
       clearInterval(interval);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [hasActiveProjects, router]);
+  }, [hasActiveProjects]);
 
-  // NOTE: filtering/search/sort run client-side over the LOADED pages only
-  // (the server paginates at 50). For users with >50 projects, matches beyond
-  // the loaded pages are invisible — moving filters to URL searchParams with
-  // server-side filtering is backlogged. All counters below therefore use the
-  // loaded count as their denominator and say so.
-  const baseFiltered = useMemo(() => {
-    const trimmed = query.trim().toLowerCase();
+  function navigate(next: {
+    query?: string;
+    status?: StatusFilter;
+    source?: SourceFilter;
+    sort?: SortOption;
+  }) {
+    const nextQuery = next.query ?? query;
+    const nextStatus = next.status ?? status;
+    const nextSource = next.source ?? source;
+    const nextSort = next.sort ?? sort;
+    const params = new URLSearchParams();
+    if (folderId) params.set("folder", folderId);
+    if (nextQuery.trim()) params.set("q", nextQuery.trim());
+    if (nextStatus !== "all") params.set("status", nextStatus);
+    if (nextSource !== "all") params.set("source", nextSource);
+    if (nextSort !== "newest") params.set("sort", nextSort);
+    const suffix = params.toString();
+    startTransition(() => router.replace(suffix ? `/projects?${suffix}` : "/projects"));
+  }
 
-    return projects.filter((project) => {
-      if (source !== "all" && project.sourceType !== source) {
-        return false;
-      }
+  const navigateToQuery = useEffectEvent((nextQuery: string) => {
+    navigate({ query: nextQuery });
+  });
 
-      if (trimmed) {
-        const haystack = [
-          project.title,
-          project.sourceMediaUrl,
-          project.sourceInput ?? "",
-        ]
-          .join(" ")
-          .toLowerCase();
-        if (!haystack.includes(trimmed)) return false;
-      }
-
-      return true;
-    });
-  }, [projects, query, source]);
-
-  // Live counts for the status chips — computed on the source/search subset
-  // so each chip's number is exactly what clicking it would show.
-  const statusCounts = useMemo<Record<StatusFilter, number>>(
-    () => ({
-      all: baseFiltered.length,
-      ready: baseFiltered.filter((p) => matchesStatus(p, "ready")).length,
-      processing: baseFiltered.filter((p) => matchesStatus(p, "processing"))
-        .length,
-      queued: baseFiltered.filter((p) => matchesStatus(p, "queued")).length,
-      failed: baseFiltered.filter((p) => matchesStatus(p, "failed")).length,
-    }),
-    [baseFiltered],
-  );
-
-  const filtered = useMemo(() => {
-    const list = baseFiltered.filter((project) =>
-      matchesStatus(project, status),
-    );
-
-    return [...list].sort((a, b) => {
-      if (sort === "newest") {
-        return b.createdAt.localeCompare(a.createdAt);
-      }
-      if (sort === "oldest") {
-        return a.createdAt.localeCompare(b.createdAt);
-      }
-      if (sort === "title") {
-        return a.title.localeCompare(b.title, undefined, {
-          sensitivity: "base",
-        });
-      }
-      if (sort === "clips") {
-        return b.clipCount - a.clipCount;
-      }
-      return 0;
-    });
-  }, [baseFiltered, status, sort]);
+  useEffect(() => {
+    if (query.trim() === initialQuery) return;
+    const timer = setTimeout(() => navigateToQuery(query), 250);
+    return () => clearTimeout(timer);
+  }, [query, initialQuery]);
 
   const hasActiveFilters =
     query.trim() !== "" || status !== "all" || source !== "all";
@@ -277,6 +266,7 @@ export function ProjectsExplorer({
     setQuery("");
     setStatus("all");
     setSource("all");
+    navigate({ query: "", status: "all", source: "all" });
   }
 
   async function loadMoreProjects() {
@@ -286,11 +276,7 @@ export function ProjectsExplorer({
     setLoadError(null);
 
     try {
-      const params = new URLSearchParams({
-        cursor: nextCursor,
-        limit: "50",
-      });
-      if (folderId) params.set("folder", folderId);
+      const params = apiParams(nextCursor);
       const response = await fetch(`/api/projects?${params.toString()}`);
       if (!response.ok) throw new Error("Failed to load more projects");
       const page = (await response.json()) as ProjectListPage;
@@ -316,19 +302,28 @@ export function ProjectsExplorer({
         query={query}
         onQueryChange={setQuery}
         status={status}
-        onStatusChange={setStatus}
+        onStatusChange={(value) => {
+          setStatus(value);
+          navigate({ status: value });
+        }}
         source={source}
-        onSourceChange={setSource}
+        onSourceChange={(value) => {
+          setSource(value);
+          navigate({ source: value });
+        }}
         sort={sort}
-        onSortChange={setSort}
+        onSortChange={(value) => {
+          setSort(value);
+          navigate({ sort: value });
+        }}
         view={view}
         onViewChange={setView}
-        statusCounts={statusCounts}
-        resultCount={filtered.length}
-        loadedCount={projects.length}
+        statusCounts={initialStatusCounts}
+        resultCount={projects.length}
+        loadedCount={initialTotalCount}
       />
 
-      {filtered.length === 0 ? (
+      {projects.length === 0 ? (
         <EmptyState
           icon={<Inbox size={22} strokeWidth={1.5} />}
           title="No projects match your filters"
@@ -343,7 +338,7 @@ export function ProjectsExplorer({
         />
       ) : view === "grid" ? (
         <SimpleGrid columns={{ base: 1, sm: 2, lg: 3, "2xl": 4 }} gap="5">
-          {filtered.map((project, index) => (
+          {projects.map((project, index) => (
             <Box
               key={project.id}
               draggable={canEdit}
@@ -359,7 +354,7 @@ export function ProjectsExplorer({
         </SimpleGrid>
       ) : (
         <Box borderTopWidth="1px" borderTopColor="border.subtle">
-          {filtered.map((project, index) => (
+          {projects.map((project, index) => (
             <Box
               key={project.id}
               draggable={canEdit}

@@ -23,9 +23,9 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "resend": "latest"
+    "resend": "6.19.0"
   },
   "devDependencies": {
-    "@types/node": "latest"
+    "@types/node": "26.2.0"
   }
 }

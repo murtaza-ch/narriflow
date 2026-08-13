@@ -518,6 +518,7 @@ const WordChipsRow = memo(function WordChipsRow({
   // The mounted chip set just changed (scroll/zoom swapped which words are
   // in the window) — re-run once so a freshly-mounted active chip gets its
   // paint without waiting for the next clock tick.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: words intentionally repaints newly mounted word chips.
   useEffect(() => {
     activeIdRef.current = null;
     updateActive();
@@ -1657,7 +1658,7 @@ const TextLayerChip = memo(function TextLayerChip({
         patch({ endSec: newEnd });
       }
     },
-    [pxPerSec, duration, patch],
+    [pxPerSec, duration, patch, endCoalesce],
   );
 
   const handlePointerUp = useCallback(
@@ -2087,8 +2088,8 @@ export function Timeline() {
   );
 
   const cyclePlaybackRate = useCallback(() => {
-    const rates = [1, 1.25, 1.5, 2, 0.5, 0.75] as const;
-    const index = rates.findIndex((rate) => rate === playbackRate);
+    const rates: readonly number[] = [1, 1.25, 1.5, 2, 0.5, 0.75];
+    const index = rates.indexOf(playbackRate);
     setPlaybackRate(rates[(index + 1 + rates.length) % rates.length]!);
   }, [playbackRate, setPlaybackRate]);
 

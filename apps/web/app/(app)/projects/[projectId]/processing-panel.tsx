@@ -1,8 +1,8 @@
 "use client";
 
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useOptimistic, useState, useTransition } from "react";
 import { Box, Flex, Stack, Text } from "@chakra-ui/react";
-import { Button } from "@narriflow/ui/components/button";
+import { ActionSubmitButton } from "@narriflow/ui/components/action-submit-button";
 import { Switch } from "@narriflow/ui/components/switch";
 import { GhostFrame } from "@narriflow/ui/components/ghost-frame";
 import { userErrorMessage, type CaptionPresetId } from "@narriflow/validators";
@@ -107,27 +107,24 @@ function NotifyToggle({
   initialNotifyOnComplete,
 }: {
   projectId: string;
-  /** Best-effort default (Project.notifyOnComplete defaults true in the
-   *  schema) — the current preference isn't exposed on ProjectSnapshot yet,
-   *  so this toggle can't rehydrate a prior "off" choice on page load. See
-   *  the task report for the one-line service-layer addition that closes
-   *  this gap. */
   initialNotifyOnComplete: boolean;
 }) {
-  const [checked, setChecked] = useState(initialNotifyOnComplete);
-  const [saving, setSaving] = useState(false);
+  const [committedChecked, setCommittedChecked] = useState(initialNotifyOnComplete);
+  const [checked, setOptimisticChecked] = useOptimistic(committedChecked);
+  const [saving, startSaving] = useTransition();
   const [error, setError] = useState<string | null>(null);
 
-  async function handleChange(next: boolean) {
-    setChecked(next);
-    setSaving(true);
+  function handleChange(next: boolean) {
     setError(null);
-    const result = await setNotifyPreferenceAction(projectId, next);
-    setSaving(false);
-    if (!result.ok) {
-      setChecked(!next);
-      setError(result.error ?? "Could not save this preference.");
-    }
+    startSaving(async () => {
+      setOptimisticChecked(next);
+      const result = await setNotifyPreferenceAction(projectId, next);
+      if (result.ok) {
+        setCommittedChecked(next);
+      } else {
+        setError(result.error ?? "Could not save this preference.");
+      }
+    });
   }
 
   return (
@@ -339,10 +336,10 @@ export function ProcessingPanel(props: ProcessingPanelProps) {
                 <input type="hidden" name="projectId" value={props.projectId} />
                 <input type="hidden" name="idempotencyKey" value={transcribeRetryKey} />
                 <Flex align="center" gap="2" wrap="wrap">
-                  <Button type="submit" size="sm">
+                  <ActionSubmitButton pendingLabel="Retrying…" size="sm">
                     <RotateCcw size={12} />
                     <Text ms="1">Retry transcription</Text>
-                  </Button>
+                  </ActionSubmitButton>
                   <AdvancedClipSettings
                     {...props.advancedSettingsProps}
                     sourceLanguageEditable={true}
@@ -356,10 +353,10 @@ export function ProcessingPanel(props: ProcessingPanelProps) {
                 <input type="hidden" name="projectId" value={props.projectId} />
                 <input type="hidden" name="idempotencyKey" value={regenerateIdempotencyKey} />
                 <Flex align="center" gap="2" wrap="wrap">
-                  <Button type="submit" size="sm">
+                  <ActionSubmitButton pendingLabel="Retrying…" size="sm">
                     <RotateCcw size={12} />
                     <Text ms="1">Retry detection</Text>
-                  </Button>
+                  </ActionSubmitButton>
                   <AdvancedClipSettings
                     {...props.advancedSettingsProps}
                     sourceLanguageEditable={false}
@@ -395,10 +392,10 @@ export function ProcessingPanel(props: ProcessingPanelProps) {
               value={regenerateIdempotencyKey}
             />
             <Flex align="center" gap="2" wrap="wrap" justify="center">
-              <Button type="submit" size="sm">
+              <ActionSubmitButton pendingLabel="Starting…" size="sm">
                 <RotateCcw size={12} />
                 <Text ms="1">Re-run detection</Text>
-              </Button>
+              </ActionSubmitButton>
               <AdvancedClipSettings
                 {...props.advancedSettingsProps}
                 sourceLanguageEditable={false}

@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import Link from "next/link";
 import Image from "next/image";
 import { Button } from "@narriflow/ui/components/button";
+import { ActionSubmitButton } from "@narriflow/ui/components/action-submit-button";
 import { StatusBadge } from "@narriflow/ui/components/status-badge";
 import { MediaWell } from "@narriflow/ui/components/media-well";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
@@ -707,7 +708,8 @@ export default async function ProjectDetailPage({
                     )}
                     <PlanLimitNotice message={planLimitMessage} />
                   </Box>
-                  <Button
+                  <ActionSubmitButton
+                    pendingLabel="Starting…"
                     disabled={
                       !isIngestReady ||
                       transcriptInFlight ||
@@ -718,7 +720,7 @@ export default async function ProjectDetailPage({
                     flexShrink={0}
                   >
                     {transcriptInFlight ? "Transcribing…" : "Start transcription"}
-                  </Button>
+                  </ActionSubmitButton>
                 </Flex>
                 <AdvancedClipSettings
                   {...advancedSettingsProps}
@@ -745,14 +747,14 @@ export default async function ProjectDetailPage({
                     </Text>
                     <PlanLimitNotice message={planLimitMessage} />
                   </Box>
-                  <Button
-                    type="submit"
+                  <ActionSubmitButton
+                    pendingLabel="Starting…"
                     size="sm"
                     flexShrink={0}
                     disabled={detectionInFlight || planLimitMessage !== null}
                   >
                     {detectionInFlight ? "Detecting…" : "Detect clips"}
-                  </Button>
+                  </ActionSubmitButton>
                 </Flex>
                 <AdvancedClipSettings
                   {...advancedSettingsProps}

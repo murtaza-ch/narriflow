@@ -56,6 +56,7 @@ export function MobileNav({
   const palette = usagePalette(usagePct);
 
   // Close the drawer whenever navigation lands on a new route.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: pathname is an intentional route-change trigger.
   useEffect(() => {
     setOpen(false);
   }, [pathname]);

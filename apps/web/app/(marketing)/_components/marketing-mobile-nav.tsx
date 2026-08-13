@@ -20,6 +20,7 @@ export function MarketingMobileNav({ links }: MarketingMobileNavProps) {
   const [open, setOpen] = useState(false);
   const pathname = usePathname();
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: pathname is an intentional route-change trigger.
   useEffect(() => {
     setOpen(false);
   }, [pathname]);

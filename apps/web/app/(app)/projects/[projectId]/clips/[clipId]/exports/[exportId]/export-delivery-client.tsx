@@ -81,6 +81,7 @@ export function ExportDeliveryClient({
     );
   }, [apiPath]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: initialSeq intentionally reconnects the stream from a new server cursor.
   useEffect(() => {
     if (!ACTIVE_STATUSES.has(data.status)) return;
     let fallback: ReturnType<typeof setInterval> | null = null;

@@ -84,6 +84,9 @@ import {
   UploadTooLongError,
   workspaceLibraryService,
   workspaceService,
+  type ProjectListSort,
+  type ProjectListSourceFilter,
+  type ProjectListStatusFilter,
 } from "@narriflow/services";
 import {
   resolveCanonicalAppOrigin,
@@ -287,6 +290,23 @@ app.get("/projects", async (c) => {
   const limit = limitRaw ? Number(limitRaw) : undefined;
   const cursor = c.req.query("cursor") ?? null;
   const folderId = c.req.query("folder") || undefined;
+  const query = c.req.query("q") ?? "";
+  const statusRaw = c.req.query("status");
+  const sourceRaw = c.req.query("source");
+  const sortRaw = c.req.query("sort");
+  const status = ["all", "ready", "processing", "queued", "failed"].includes(
+    statusRaw ?? "all",
+  )
+    ? (statusRaw as ProjectListStatusFilter | undefined)
+    : undefined;
+  const source = ["all", "youtube", "link", "upload", "rss"].includes(
+    sourceRaw ?? "all",
+  )
+    ? (sourceRaw as ProjectListSourceFilter | undefined)
+    : undefined;
+  const sort = ["newest", "oldest", "title", "clips"].includes(sortRaw ?? "newest")
+    ? (sortRaw as ProjectListSort | undefined)
+    : undefined;
 
   try {
     const page = await projectService.listProjectsWithStatsPage(appUser.actorUserId, {
@@ -294,6 +314,10 @@ app.get("/projects", async (c) => {
       cursor,
       workspaceId: appUser.workspaceId,
       folderId,
+      query,
+      status,
+      source,
+      sort,
     });
     return c.json(page, 200);
   } catch (error) {

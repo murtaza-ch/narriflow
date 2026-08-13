@@ -31,11 +31,11 @@ interface FilterToolbarProps {
   onSortChange: (value: SortOption) => void;
   view: ViewMode;
   onViewChange: (value: ViewMode) => void;
-  /** Per-status counts among the loaded projects (source + search applied). */
+  /** Per-status counts across every matching project (source + search applied). */
   statusCounts: Record<StatusFilter, number>;
-  /** Projects visible after all filters. */
+  /** Projects currently rendered after all filters. */
   resultCount: number;
-  /** Projects loaded from the server so far — the honest denominator. */
+  /** Total matching projects on the server. */
   loadedCount: number;
 }
 
@@ -125,7 +125,7 @@ export function FilterToolbar({
         flexShrink={0}
         aria-live="polite"
       >
-        {resultCount} of {loadedCount} shown
+        {resultCount} of {loadedCount} loaded
       </Text>
 
       <HStack gap="2" flexShrink={0}>

@@ -117,10 +117,25 @@ export interface ProjectListItem extends ProjectSnapshot {
   } | null;
 }
 
+export type ProjectListStatusFilter =
+  | "all"
+  | "ready"
+  | "processing"
+  | "queued"
+  | "failed";
+export type ProjectListSourceFilter =
+  | "all"
+  | "youtube"
+  | "link"
+  | "upload"
+  | "rss";
+export type ProjectListSort = "newest" | "oldest" | "title" | "clips";
+
 export interface ProjectListPage {
   items: ProjectListItem[];
   nextCursor: string | null;
   totalCount: number;
+  statusCounts: Record<ProjectListStatusFilter, number>;
 }
 
 type ProjectAccessResult = "owned" | "forbidden" | "missing";
@@ -186,33 +201,53 @@ function clampProjectPageSize(limit?: number) {
   );
 }
 
-function encodeProjectCursor(project: Pick<ProjectSnapshot, "id" | "createdAt">) {
-  return Buffer.from(
-    JSON.stringify({ id: project.id, createdAt: project.createdAt }),
-  ).toString("base64url");
+function encodeProjectCursor(offset: number) {
+  return Buffer.from(JSON.stringify({ offset })).toString("base64url");
 }
 
 function decodeProjectCursor(cursor: string | null | undefined) {
-  if (!cursor) return null;
+  if (!cursor) return 0;
 
   try {
     const parsed = JSON.parse(
       Buffer.from(cursor, "base64url").toString("utf8"),
-    ) as { id?: unknown; createdAt?: unknown };
+    ) as { offset?: unknown };
 
-    if (typeof parsed.id !== "string" || typeof parsed.createdAt !== "string") {
-      return null;
-    }
-
-    const createdAt = new Date(parsed.createdAt);
-    if (Number.isNaN(createdAt.getTime())) {
-      return null;
-    }
-
-    return { id: parsed.id, createdAt };
+    return typeof parsed.offset === "number" &&
+      Number.isSafeInteger(parsed.offset) &&
+      parsed.offset >= 0
+      ? parsed.offset
+      : 0;
   } catch {
-    return null;
+    return 0;
   }
+}
+
+function projectStatusWhere(
+  status: ProjectListStatusFilter,
+): Prisma.ProjectWhereInput {
+  if (status === "all") return {};
+  if (status === "processing") {
+    return {
+      ingestStatus: {
+        in: ["pending", "uploading", "downloading", "normalizing"],
+      },
+    };
+  }
+  return { ingestStatus: status };
+}
+
+function projectListOrderBy(sort: ProjectListSort): Prisma.ProjectOrderByWithRelationInput[] {
+  if (sort === "oldest") return [{ createdAt: "asc" }, { id: "asc" }];
+  if (sort === "title") return [{ title: "asc" }, { id: "asc" }];
+  if (sort === "clips") {
+    return [{ clips: { _count: "desc" } }, { createdAt: "desc" }, { id: "desc" }];
+  }
+  return [{ createdAt: "desc" }, { id: "desc" }];
+}
+
+function emptyProjectStatusCounts(): Record<ProjectListStatusFilter, number> {
+  return { all: 0, ready: 0, processing: 0, queued: 0, failed: 0 };
 }
 
 function getIdempotencyKey(projectId: string, idempotencyKey: string) {
@@ -1401,33 +1436,70 @@ export class ProjectService {
 
   async listProjectsWithStatsPage(
     userId: string,
-    options: { limit?: number; cursor?: string | null; workspaceId?: string; folderId?: string } = {},
+    options: {
+      limit?: number;
+      cursor?: string | null;
+      workspaceId?: string;
+      folderId?: string;
+      query?: string;
+      status?: ProjectListStatusFilter;
+      source?: ProjectListSourceFilter;
+      sort?: ProjectListSort;
+    } = {},
   ): Promise<ProjectListPage> {
     const limit = clampProjectPageSize(options.limit);
-    const cursor = decodeProjectCursor(options.cursor);
+    const offset = decodeProjectCursor(options.cursor);
+    const query = options.query?.trim().slice(0, 200) ?? "";
+    const status = options.status ?? "all";
+    const source = options.source ?? "all";
+    const sort = options.sort ?? "newest";
     const prisma = getPrismaClient();
 
     if (!prisma) {
-      const owned = Array.from(projects.values())
+      const baseFiltered = Array.from(projects.values())
         .filter(
           (project) =>
             project.userId === userId &&
+            (!options.workspaceId || project.workspaceId === options.workspaceId) &&
+            (!options.folderId || project.folderId === options.folderId) &&
+            (source === "all" || project.sourceType === source) &&
+            (!query ||
+              [project.title, project.sourceMediaUrl, project.sourceInput ?? ""]
+                .join(" ")
+                .toLocaleLowerCase()
+                .includes(query.toLocaleLowerCase())) &&
             (!project.expiresAt ||
               new Date(project.expiresAt).getTime() > Date.now()),
-        )
-        .sort((left, right) => {
-          const byCreatedAt = right.createdAt.localeCompare(left.createdAt);
-          return byCreatedAt !== 0 ? byCreatedAt : right.id.localeCompare(left.id);
-        });
-      const startIndex = cursor
-        ? owned.findIndex(
-            (project) =>
-              project.id === cursor.id &&
-              project.createdAt === cursor.createdAt.toISOString(),
-          ) + 1
-        : 0;
-      const safeStartIndex = Math.max(0, startIndex);
-      const page = owned.slice(safeStartIndex, safeStartIndex + limit);
+        );
+      const statusCounts = emptyProjectStatusCounts();
+      for (const project of baseFiltered) {
+        statusCounts.all += 1;
+        if (project.ingestStatus === "ready") statusCounts.ready += 1;
+        if (project.ingestStatus === "failed") statusCounts.failed += 1;
+        if (project.ingestStatus === "queued") statusCounts.queued += 1;
+        if (["pending", "uploading", "downloading", "normalizing"].includes(project.ingestStatus)) {
+          statusCounts.processing += 1;
+        }
+      }
+      const filtered = baseFiltered.filter((project) => {
+        if (status === "all") return true;
+        if (status === "processing") {
+          return ["pending", "uploading", "downloading", "normalizing"].includes(
+            project.ingestStatus,
+          );
+        }
+        return project.ingestStatus === status;
+      });
+      filtered.sort((left, right) => {
+        if (sort === "oldest") {
+          return left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id);
+        }
+        if (sort === "title") {
+          return left.title.localeCompare(right.title) || left.id.localeCompare(right.id);
+        }
+        return right.createdAt.localeCompare(left.createdAt) || right.id.localeCompare(left.id);
+      });
+      const page = filtered.slice(offset, offset + limit);
 
       return {
         items: page.map((project) => ({
@@ -1437,10 +1509,11 @@ export class ProjectService {
           transcript: null,
         })),
         nextCursor:
-          safeStartIndex + page.length < owned.length && page.length > 0
-            ? encodeProjectCursor(page[page.length - 1]!)
+          offset + page.length < filtered.length && page.length > 0
+            ? encodeProjectCursor(offset + page.length)
             : null,
-        totalCount: owned.length,
+        totalCount: filtered.length,
+        statusCounts,
       };
     }
 
@@ -1448,28 +1521,55 @@ export class ProjectService {
     const folderWhere: Prisma.ProjectWhereInput = options.folderId
       ? { folderId: options.folderId }
       : {};
-    const cursorWhere: Prisma.ProjectWhereInput = cursor
+    const sourceWhere: Prisma.ProjectWhereInput = source === "all"
+      ? {}
+      : { sourceType: source };
+    const queryWhere: Prisma.ProjectWhereInput = query
       ? {
           OR: [
-            { createdAt: { lt: cursor.createdAt } },
-            { createdAt: cursor.createdAt, id: { lt: cursor.id } },
+            { title: { contains: query, mode: "insensitive" } },
+            { sourceMediaUrl: { contains: query, mode: "insensitive" } },
+            { sourceInput: { contains: query, mode: "insensitive" } },
           ],
         }
       : {};
+    const baseWhere: Prisma.ProjectWhereInput = {
+      AND: [scope, accessibleProjectWhere(), folderWhere, sourceWhere, queryWhere],
+    };
+    const filteredWhere: Prisma.ProjectWhereInput = {
+      AND: [baseWhere, projectStatusWhere(status)],
+    };
 
-    const [rowsWithLookahead, totalCount] = await Promise.all([
+    const [rowsWithLookahead, totalCount, statusGroups] = await Promise.all([
       prisma.project.findMany({
-        where: { AND: [scope, accessibleProjectWhere(), folderWhere, cursorWhere] },
-        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        where: filteredWhere,
+        orderBy: projectListOrderBy(sort),
+        skip: offset,
         take: limit + 1,
       }),
-      prisma.project.count({ where: { AND: [scope, accessibleProjectWhere(), folderWhere] } }),
+      prisma.project.count({ where: filteredWhere }),
+      prisma.project.groupBy({
+        by: ["ingestStatus"],
+        where: baseWhere,
+        _count: { _all: true },
+      }),
     ]);
+    const statusCounts = emptyProjectStatusCounts();
+    for (const group of statusGroups) {
+      const count = group._count._all;
+      statusCounts.all += count;
+      if (group.ingestStatus === "ready") statusCounts.ready += count;
+      if (group.ingestStatus === "failed") statusCounts.failed += count;
+      if (group.ingestStatus === "queued") statusCounts.queued += count;
+      if (["pending", "uploading", "downloading", "normalizing"].includes(group.ingestStatus)) {
+        statusCounts.processing += count;
+      }
+    }
 
     const rows = rowsWithLookahead.slice(0, limit);
 
     if (rows.length === 0) {
-      return { items: [], nextCursor: null, totalCount };
+      return { items: [], nextCursor: null, totalCount, statusCounts };
     }
 
     const projectIds = rows.map((row) => row.id);
@@ -1523,9 +1623,10 @@ export class ProjectService {
       items,
       nextCursor:
         rowsWithLookahead.length > limit && items.length > 0
-          ? encodeProjectCursor(items[items.length - 1]!)
+          ? encodeProjectCursor(offset + items.length)
           : null,
       totalCount,
+      statusCounts,
     };
   }
 

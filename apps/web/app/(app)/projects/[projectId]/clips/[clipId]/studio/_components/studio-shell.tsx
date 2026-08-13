@@ -1144,6 +1144,7 @@ export function StudioShell({
     if (videoRef.current) videoRef.current.playbackRate = normalized;
   }, []);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: activeVideoUrl intentionally reapplies the rate after a source swap.
   useEffect(() => {
     if (videoRef.current) videoRef.current.playbackRate = playbackRate;
   }, [activeVideoUrl, playbackRate]);
@@ -1938,6 +1939,7 @@ export function StudioShell({
   // Persist the latest dirty document locally before the slower cloud
   // debounce. Writes are serialized so a delayed older transaction can
   // never commit after a newer draft or after draft removal on cloud ack.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: revision intentionally snapshots the matching editor revision with each draft.
   useEffect(() => {
     if (!draftRecoveryReady || !hasWriteLease) return;
     if (draftWriteTimerRef.current) clearTimeout(draftWriteTimerRef.current);
@@ -2432,6 +2434,7 @@ export function StudioShell({
   // Debounced autosave — triggers AUTOSAVE_DEBOUNCE_MS after the document
   // actually changes (reference change on `unified.doc.present`).
   const isInitialRender = useRef(true);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: doc is the explicit autosave debounce trigger while the callback reads refs.
   useEffect(() => {
     if (isInitialRender.current) {
       isInitialRender.current = false;
@@ -2868,6 +2871,7 @@ export function StudioShell({
   // clears it below once it's run its own (correct) reposition — a plain
   // cut/revert that never touched the ref is an unaffected no-op here.
   const editedTimeMapRef = useRef(editedTimeMap);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: videoRef intentionally retriggers reconciliation when the media element changes.
   useEffect(() => {
     if (editedTimeMapRef.current === editedTimeMap) return;
     editedTimeMapRef.current = editedTimeMap;

@@ -174,11 +174,13 @@ function TextLayerDetail({ layer }: { layer: StudioTextLayer }) {
   // empty draft reverts to the last stored value instead of committing "".
   const [textDraft, setTextDraft] = useState(layer.text);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: layer.id resets the local draft when selection changes even if times match.
   useEffect(() => {
     setStartInput(layer.startSec.toFixed(2));
     setEndInput(layer.endSec != null ? layer.endSec.toFixed(2) : "");
   }, [layer.id, layer.startSec, layer.endSec]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: layer.id resets the local draft when selection changes even if text matches.
   useEffect(() => {
     setTextDraft(layer.text);
   }, [layer.id, layer.text]);

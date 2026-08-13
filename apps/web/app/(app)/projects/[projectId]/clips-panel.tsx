@@ -205,6 +205,7 @@ export function ClipsPanel({
 
   // Scrollspy for the left jump rail — highlights the row nearest the top
   // of the viewport as the user scrolls.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: sortedClips intentionally rebuilds observation for the rendered row set.
   useEffect(() => {
     if (mode === "caption_only") return;
     const rows = [...rowRefs.current.entries()];

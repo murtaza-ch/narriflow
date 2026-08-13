@@ -299,6 +299,7 @@ export function ClipRow({ clip, projectId, rank, compact, selected, onToggleSele
   const [downloading, setDownloading] = useState(false);
   const [queuedAspectRatios, setQueuedAspectRatios] = useState<ClipAspectRatio[]>([]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reset only when the clip identity or render variants change.
   useEffect(() => {
     setSelectedAspectRatio(getInitialAspectRatio(clip));
     setQueuedAspectRatios([]);
@@ -319,6 +320,7 @@ export function ClipRow({ clip, projectId, rank, compact, selected, onToggleSele
   // Same "always show something playable" preview-fetch effect as the
   // original ClipCard — see there for the full rationale on hasPreview
   // being in the deps.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: asset readiness fields intentionally retrigger the preview fetch.
   useEffect(() => {
     let cancelled = false;
 

@@ -69,6 +69,9 @@ export {
   retentionCutoffDate,
   type ProjectListItem,
   type ProjectListPage,
+  type ProjectListSort,
+  type ProjectListSourceFilter,
+  type ProjectListStatusFilter,
   type ProjectSourcePurgeCandidate,
   // Automatic job-level retry policy (requeue-with-backoff for IngestJob /
   // WorkflowRun) — see the "Automatic job-level retry policy" comment block

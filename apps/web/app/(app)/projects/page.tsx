@@ -9,6 +9,9 @@ import { requireWorkspaceAppUser as requireCurrentAppUser } from "@/lib/workspac
 import {
   isRetentionEnforcementActive,
   projectService,
+  type ProjectListSort,
+  type ProjectListSourceFilter,
+  type ProjectListStatusFilter,
 } from "@narriflow/services";
 import { ProjectsExplorer } from "./_components/projects-explorer";
 import { ProjectsGridSkeleton } from "./_components/projects-skeleton";
@@ -33,7 +36,40 @@ import { workspaceLibraryService } from "@narriflow/services";
  * boundary — the header paints at once, and the grid slot resolves exactly
  * once, in place.
  */
-export default function ProjectsPage({ searchParams }: { searchParams: Promise<{ folder?: string }> }) {
+type ProjectsSearchParams = {
+  folder?: string;
+  q?: string;
+  status?: string;
+  source?: string;
+  sort?: string;
+};
+
+const PROJECT_STATUSES = new Set<ProjectListStatusFilter>([
+  "all",
+  "ready",
+  "processing",
+  "queued",
+  "failed",
+]);
+const PROJECT_SOURCES = new Set<ProjectListSourceFilter>([
+  "all",
+  "youtube",
+  "link",
+  "upload",
+  "rss",
+]);
+const PROJECT_SORTS = new Set<ProjectListSort>([
+  "newest",
+  "oldest",
+  "title",
+  "clips",
+]);
+
+export default function ProjectsPage({
+  searchParams,
+}: {
+  searchParams: Promise<ProjectsSearchParams>;
+}) {
   return (
     <Stack gap="8">
       <PageHeader
@@ -73,13 +109,31 @@ async function ProjectsHeaderAction() {
   );
 }
 
-async function ProjectsData({ searchParams }: { searchParams: Promise<{ folder?: string }> }) {
+async function ProjectsData({
+  searchParams,
+}: {
+  searchParams: Promise<ProjectsSearchParams>;
+}) {
   const appUser = await requireCurrentAppUser();
   const params = await searchParams;
+  const query = params.q?.trim().slice(0, 200) ?? "";
+  const status = PROJECT_STATUSES.has(params.status as ProjectListStatusFilter)
+    ? (params.status as ProjectListStatusFilter)
+    : "all";
+  const source = PROJECT_SOURCES.has(params.source as ProjectListSourceFilter)
+    ? (params.source as ProjectListSourceFilter)
+    : "all";
+  const sort = PROJECT_SORTS.has(params.sort as ProjectListSort)
+    ? (params.sort as ProjectListSort)
+    : "newest";
   const [page, folders] = await Promise.all([
     projectService.listProjectsWithStatsPage(appUser.actorUserId, {
       workspaceId: appUser.workspaceId,
       folderId: params.folder,
+      query,
+      status,
+      source,
+      sort,
     }),
     workspaceLibraryService.listFolders(appUser.actorUserId, appUser.workspaceId),
   ]);
@@ -95,8 +149,10 @@ async function ProjectsData({ searchParams }: { searchParams: Promise<{ folder?:
     appUser.workspace.pricingTier === "free" && isRetentionEnforcementActive()
       ? <RetentionBanner />
       : null;
+  const hasFilters =
+    query !== "" || status !== "all" || source !== "all" || Boolean(params.folder);
 
-  if (items.length === 0) {
+  if (items.length === 0 && !hasFilters) {
     return (
       <Stack gap="5">
         <FoldersPanel folders={folders.map((folder) => ({ id: folder.id, name: folder.name, count: folder._count.projects }))} activeFolderId={params.folder ?? null} canEdit={canEdit} />
@@ -123,6 +179,11 @@ async function ProjectsData({ searchParams }: { searchParams: Promise<{ folder?:
         initialProjects={items}
         initialNextCursor={page.nextCursor}
         totalCount={page.totalCount}
+        initialStatusCounts={page.statusCounts}
+        initialQuery={query}
+        initialStatus={status}
+        initialSource={source}
+        initialSort={sort}
         folderId={params.folder}
         folders={folders.map((folder) => ({ id: folder.id, name: folder.name }))}
         canEdit={canEdit}

@@ -112,6 +112,7 @@ export function ProjectEventsProvider({
     }, PROGRESS_REFRESH_THROTTLE_MS - elapsed);
   }, [router]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: projectId intentionally resets event state when the provider changes projects.
   useEffect(() => {
     setEvents(sortAndCapEvents(initialEvents));
     setLatestByStage(() => {

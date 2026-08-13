@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useEffectEvent, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Box, chakra, Flex, Stack, Text } from "@chakra-ui/react";
 import { Info } from "lucide-react";
@@ -169,15 +169,16 @@ export function ConfigureStep({
     setCtaPhase(result.ingestStatus === "failed" ? "idle" : "waiting");
   }
 
+  const submitFinalizeEvent = useEffectEvent(submitFinalize);
+
   // The CTA's guarantee to always resolve: once ingest hits "ready" while
   // we're waiting on it, re-invoke finalize automatically. The worker's own
   // trigger usually wins the race (Phase 0's ordering invariant); this is
   // the client-side backstop either way.
   useEffect(() => {
     if (ctaPhase === "waiting" && ingestStream.ingestStatus === "ready") {
-      void submitFinalize();
+      void submitFinalizeEvent();
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ingestStream.ingestStatus, ctaPhase]);
 
   const ingestFailed = ingestStream.ingestStatus === "failed";

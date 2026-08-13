@@ -4,6 +4,7 @@ import { CalendarDays, Plus, RefreshCw, X } from "lucide-react";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { Button } from "@narriflow/ui/components/button";
+import { ActionSubmitButton } from "@narriflow/ui/components/action-submit-button";
 import { Select } from "@narriflow/ui/components/select";
 import { workspaceLibraryService, workspaceService } from "@narriflow/services";
 import { requireWorkspaceAppUser } from "@/lib/workspace";
@@ -144,8 +145,8 @@ export default async function CalendarPage({ searchParams }: { searchParams: Pro
               <Box w="3px" alignSelf="stretch" bg={post.status === "failed" ? "danger.solid" : post.status === "posted" ? "accent.solid" : "border.emphasized"} />
               <Stack gap="0.5" flex="1" minW="0"><Text fontSize="13px" fontWeight="600" lineClamp={1}>{post.caption}</Text><Text fontSize="11px" color="fg.subtle">{post.project.title} · {post.socialAccount?.displayName ?? "No account selected"}</Text></Stack>
               <Stack gap="0" align={{ md: "flex-end" }}><Text textStyle="eyebrow" color="fg.muted">{post.platform.replace("_", " ")} · {post.status}</Text><Text textStyle="data" fontSize="11px" color="fg.subtle">{post.scheduledFor ? formatInTimezone(post.scheduledFor, timezone) : "Not scheduled"}</Text></Stack>
-              {canPublish && post.status === "failed" ? <form action={retryWorkspacePostAction.bind(null, post.id)}><Button type="submit" size="xs" variant="outline"><RefreshCw size={12} />Retry</Button></form> : null}
-              {canEdit && (post.status === "scheduled" || post.status === "draft") ? <form action={cancelWorkspacePostAction.bind(null, post.projectId, post.id)}><Button type="submit" size="xs" variant="ghost"><X size={12} />Cancel</Button></form> : null}
+              {canPublish && post.status === "failed" ? <form action={retryWorkspacePostAction.bind(null, post.id)}><ActionSubmitButton pendingLabel="Retrying…" size="xs" variant="outline"><RefreshCw size={12} />Retry</ActionSubmitButton></form> : null}
+              {canEdit && (post.status === "scheduled" || post.status === "draft") ? <form action={cancelWorkspacePostAction.bind(null, post.projectId, post.id)}><ActionSubmitButton pendingLabel="Canceling…" size="xs" variant="ghost"><X size={12} />Cancel</ActionSubmitButton></form> : null}
             </Flex>
           ))}
         </Stack>

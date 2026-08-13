@@ -331,22 +331,8 @@ function getDefaultStore(): NotificationStore {
   };
 }
 
-const EMAIL_WORKER_MODULE = "@narriflow/email/worker";
-const EMAIL_WORKER_FALLBACK_MODULE = "../../email/src/worker.ts";
-
 const defaultMailer: NotificationMailer = async (input) => {
-  // This non-literal import keeps packages/services independently typecheckable.
-  // The worker declares @narriflow/email and provides the runtime package.
-  const emailModule = await import(EMAIL_WORKER_MODULE).catch((error) => {
-    const code = (error as { code?: string })?.code;
-    if (code !== "MODULE_NOT_FOUND" && code !== "ERR_MODULE_NOT_FOUND") {
-      throw error;
-    }
-    // Local worktrees can have a stale workspace install immediately after
-    // package.json changes. The deployed workspace resolves the package
-    // subpath; this source fallback keeps the same shared implementation.
-    return import(EMAIL_WORKER_FALLBACK_MODULE);
-  });
+  const emailModule = await import("@narriflow/email/worker");
   const email = emailModule as {
     clipsReady: (input: {
       clipCount: number;

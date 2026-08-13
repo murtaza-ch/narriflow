@@ -136,6 +136,7 @@ export function TemplateForm({ mode, initialTemplate }: TemplateFormProps) {
   });
 
   // Keep caption colors in sync with brand colors
+  // biome-ignore lint/correctness/useExhaustiveDependencies: brand colors intentionally drive the functional state update.
   useEffect(() => {
     setState((prev) => ({
       ...prev,

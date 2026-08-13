@@ -1,5 +1,5 @@
 import { redirect } from "next/navigation";
-import { listCurrentUserWorkspaces } from "@narriflow/auth";
+import { listUserWorkspaces } from "@narriflow/auth";
 import { getCurrentWorkspaceAppUser as getCurrentAppUser } from "@/lib/workspace";
 import { Box } from "@chakra-ui/react";
 import { resolvePricingTier } from "@narriflow/validators";
@@ -20,7 +20,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
 
   const [stats, memberships] = await Promise.all([
     getCachedDashboardStats(appUser.actorUserId, appUser.workspaceId),
-    listCurrentUserWorkspaces(),
+    listUserWorkspaces(appUser.actorUserId),
   ]);
   const avatarUrls = await workspaceService.getAvatarUrls(
     appUser.actorUserId,

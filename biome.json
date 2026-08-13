@@ -43,7 +43,7 @@
         "noUnusedImports": "error",
         "noUnusedVariables": "error",
         "noUnusedFunctionParameters": "error",
-        "useExhaustiveDependencies": "off"
+        "useExhaustiveDependencies": "error"
       },
       "performance": {
         "noImgElement": "off"

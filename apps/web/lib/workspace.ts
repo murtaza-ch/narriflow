@@ -1,9 +1,10 @@
 import "server-only";
 
+import { cache } from "react";
 import {
   assertWorkspaceCapability,
   getCurrentAppUser,
-  getCurrentWorkspaceContext,
+  getWorkspaceContextForUser,
   type AppUser,
   type WorkspaceActorContext,
   type WorkspaceCapability,
@@ -24,11 +25,11 @@ export interface WorkspaceAppUser extends Omit<AppUser, "id"> {
  * based on the signed-in actor and active workspace; `id` remains the legacy
  * resource owner so older service methods continue working for team members.
  */
-export async function getCurrentWorkspaceAppUser(): Promise<WorkspaceAppUser | null> {
-  const [appUser, workspace] = await Promise.all([
-    getCurrentAppUser(),
-    getCurrentWorkspaceContext(),
-  ]);
+const resolveCurrentWorkspaceAppUser = cache(async (): Promise<WorkspaceAppUser | null> => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return null;
+
+  const workspace = await getWorkspaceContextForUser(appUser);
   if (!appUser || !workspace || appUser.id !== workspace.userId) return null;
 
   return {
@@ -38,6 +39,10 @@ export async function getCurrentWorkspaceAppUser(): Promise<WorkspaceAppUser | n
     workspaceId: workspace.workspaceId,
     workspace,
   };
+});
+
+export async function getCurrentWorkspaceAppUser(): Promise<WorkspaceAppUser | null> {
+  return resolveCurrentWorkspaceAppUser();
 }
 
 export async function requireWorkspaceAppUser(

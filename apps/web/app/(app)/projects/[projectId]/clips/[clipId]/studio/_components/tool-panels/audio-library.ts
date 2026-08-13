@@ -33,6 +33,7 @@ export function useAudioAssetList(
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: reloadKey is an explicit caller-controlled refetch trigger.
   useEffect(() => {
     let canceled = false;
     async function load() {

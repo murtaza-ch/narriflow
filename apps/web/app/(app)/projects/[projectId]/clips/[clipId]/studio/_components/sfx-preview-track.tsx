@@ -30,6 +30,7 @@ export function SfxPreviewTrack({ placement, src, isPlaying, currentTime }: SfxP
   const audioRef = useRef<HTMLAudioElement>(null);
   const durationRef = useRef(0);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: src intentionally resets metadata for the newly mounted media source.
   useEffect(() => {
     durationRef.current = 0;
     const audio = audioRef.current;
@@ -73,6 +74,7 @@ export function SfxPreviewTrack({ placement, src, isPlaying, currentTime }: SfxP
   // `src` is swapped for a new asset — without this, re-picking a different
   // SFX for the same placement at the SAME volume value never re-applied
   // it, silently reverting the cue back to full volume.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: src intentionally reapplies volume after a media source swap.
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;

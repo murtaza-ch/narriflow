@@ -45,15 +45,14 @@ export function useIngestStream(
   // (re)connect. This also covers the retry case where the new status is
   // itself non-terminal (e.g. "queued") but no live event has arrived yet.
   useEffect(() => {
-    setState(initial);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    setState({
+      ingestStatus: initial.ingestStatus,
+      errorCode: initial.errorCode,
+    });
   }, [initial.ingestStatus, initial.errorCode]);
 
-  const isCurrentInitialTerminal =
-    initial.ingestStatus === "ready" || initial.ingestStatus === "failed";
-
   useEffect(() => {
-    if (isCurrentInitialTerminal) return;
+    if (initial.ingestStatus === "ready" || initial.ingestStatus === "failed") return;
 
     let closed = false;
     const source = new EventSource(`/api/stream/${projectId}?sinceSeq=0`);
@@ -99,7 +98,6 @@ export function useIngestStream(
     // must reopen the connection when it changes, since it is the only signal
     // that the server has fresh, authoritative state (e.g. Retry) — the
     // effect otherwise closes itself the moment a terminal event lands.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, initial.ingestStatus]);
 
   return state;

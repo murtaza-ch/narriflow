@@ -3,6 +3,7 @@
 import {
   useCallback,
   useEffect,
+  useEffectEvent,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -314,6 +315,7 @@ export function EditClipLengthDialog(props: {
   const [startInput, setStartInput] = useState("");
   const [endInput, setEndInput] = useState("");
   const [editingField, setEditingField] = useState<null | "start" | "end">(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: primitive time values intentionally avoid selection object identity churn.
   useEffect(() => {
     if (!selection) return;
     if (editingField !== "start") setStartInput(formatClockCs(selection.startSec));
@@ -326,6 +328,7 @@ export function EditClipLengthDialog(props: {
   // state: a state dep would re-run this effect and fire the cleanup,
   // cancelling the very fetch it just started.
   const loadStartedRef = useRef(false);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the ref deliberately permits one transcript load per mounted dialog.
   useEffect(() => {
     if (!props.open || loadStartedRef.current) return;
     loadStartedRef.current = true;
@@ -469,6 +472,7 @@ export function EditClipLengthDialog(props: {
     appliedSel.current = next;
   }, []);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: scrollBox intentionally repaints when the callback ref attaches.
   useLayoutEffect(() => {
     if (!flat) return;
     // Mid-drag, throttled commits lag the imperatively-painted DOM — never
@@ -479,6 +483,7 @@ export function EditClipLengthDialog(props: {
   }, [sel, flat, scrollBox, paintSelection]);
 
   // Bring the selection into view when the dialog opens.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: opening or mounting the transcript is the deliberate scroll trigger.
   useEffect(() => {
     if (!props.open || !flat || !scrollBox) return;
     const frame = requestAnimationFrame(() => {
@@ -492,6 +497,7 @@ export function EditClipLengthDialog(props: {
   // changes audition the new ending, everything else cues the new start.
   // Gesture handlers finish with an identity poke (`setSel(cur => ({...cur}))`)
   // so this effect runs once after the drag settles.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: sel is the commit trigger; selection is derived from that same range.
   useEffect(() => {
     if (!flat || !selection) return;
     if (dragState.current || stripDrag.current) return;
@@ -516,6 +522,7 @@ export function EditClipLengthDialog(props: {
 
   // Search: imperative .hit / .hita class toggles over the word index —
   // same no-re-render rule as selection. Debounced a frame's worth.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: scrollBox intentionally reapplies search highlighting after remount.
   useEffect(() => {
     const handle = setTimeout(() => {
       const els = wordEls.current;
@@ -697,19 +704,20 @@ export function EditClipLengthDialog(props: {
     }
   }
 
+  const saveFromShortcut = useEffectEvent(handleSave);
+
   // ⌘S / Ctrl+S saves while the dialog is open (matches the button hint).
   useEffect(() => {
     if (!props.open) return;
     const onKeydown = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
         event.preventDefault();
-        void handleSave();
+        void saveFromShortcut();
       }
     };
     window.addEventListener("keydown", onKeydown);
     return () => window.removeEventListener("keydown", onKeydown);
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- re-bind for a fresh handleSave closure
-  }, [props.open, saving, durationValid, selection?.startSec, selection?.endSec]);
+  }, [props.open]);
 
   function commitTimecode(field: "start" | "end") {
     setEditingField(null);

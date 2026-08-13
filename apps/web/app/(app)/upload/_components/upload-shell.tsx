@@ -387,6 +387,7 @@ export function UploadShell({
     return `rss:${selectedEpisodes[0]?.id ?? ""}`;
   }, [previewSource, selectedEpisodes]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: sourceIdentity is an explicit reset trigger for derived duration state.
   useEffect(() => {
     setDurationSec(null);
     setStartSec(0);

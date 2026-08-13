@@ -4,6 +4,7 @@ import { Download, Film, Grid2X2, List, RefreshCw } from "lucide-react";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { Button } from "@narriflow/ui/components/button";
+import { ActionSubmitButton } from "@narriflow/ui/components/action-submit-button";
 import { DatePicker } from "@narriflow/ui/components/date-picker";
 import { Select } from "@narriflow/ui/components/select";
 import { workspaceLibraryService } from "@narriflow/services";
@@ -133,7 +134,7 @@ export default async function ExportsPage({
                 </Flex>
                 {canRetry && (item.status === "failed" || item.status === "partial_ready") ? (
                   <form action={retryWorkspaceExportAction.bind(null, item.id)}>
-                    <Button type="submit" size="xs" variant="ghost"><RefreshCw size={12} />Retry</Button>
+                    <ActionSubmitButton pendingLabel="Retrying…" size="xs" variant="ghost"><RefreshCw size={12} />Retry</ActionSubmitButton>
                   </form>
                 ) : null}
                 <Button size="xs" variant="outline" asChild>

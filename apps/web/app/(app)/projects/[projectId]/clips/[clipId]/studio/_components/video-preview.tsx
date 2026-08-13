@@ -543,6 +543,7 @@ export function VideoPreview() {
     }
   }, [captionSelected, selectedTextLayerId]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the scene key intentionally invalidates selection when scene boundaries change.
   useEffect(() => {
     if (
       selectedSpeakerRole &&
@@ -677,6 +678,7 @@ export function VideoPreview() {
   // activeVideoUrl (+ retryNonce) — NOT playerClipStartSec — so trimming the
   // clip seeks the already-buffered file instead of re-downloading it (see
   // the dedicated seek effect below).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: retryNonce explicitly rebuilds media listeners after a retry.
   useEffect(() => {
     const video = videoRef.current;
     setVideoLoaded(false);
@@ -766,6 +768,7 @@ export function VideoPreview() {
   // error and no stall event — surface a hint rather than looking frozen.
   // (In practice this only fires for the opted-into full-source fallback —
   // the proxy is small enough that this basically never trips for it.)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: retryNonce intentionally restarts the slow-load timer.
   useEffect(() => {
     if (!activeVideoUrl || videoLoaded || loadError) {
       setSlowLoadHint(false);
@@ -879,6 +882,7 @@ export function VideoPreview() {
   // `audio.duration` synchronously covers the case where the browser
   // already has cached metadata by the time this runs (no loadedmetadata
   // event will fire again in that case).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: musicSrc intentionally rebinds metadata listeners after source replacement.
   useEffect(() => {
     const audio = musicAudioRef.current;
     if (!audio) return;
@@ -895,6 +899,7 @@ export function VideoPreview() {
   // Reset the cached track duration whenever the music source changes so a
   // previous track's duration never leaks into the new one's loop math
   // before its own metadata has loaded.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: musicSrc is the explicit cache-reset trigger.
   useEffect(() => {
     musicDurationRef.current = 0;
   }, [musicSrc]);

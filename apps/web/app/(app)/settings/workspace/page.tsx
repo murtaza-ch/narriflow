@@ -1,6 +1,6 @@
 import { Box, Input, Stack, Text } from "@chakra-ui/react";
 import { PageHeader } from "@narriflow/ui/components/page-header";
-import { Button } from "@narriflow/ui/components/button";
+import { ActionSubmitButton } from "@narriflow/ui/components/action-submit-button";
 import { Combobox } from "@narriflow/ui/components/combobox";
 import { workspaceService } from "@narriflow/services";
 import { requireWorkspaceAppUser } from "@/lib/workspace";
@@ -36,7 +36,7 @@ export default async function WorkspaceSettingsPage() {
                   <label htmlFor="workspace-timezone"><Text as="span" fontSize="13px" fontWeight="600">Timezone</Text></label>
             <Combobox id="workspace-timezone" name="timezone" ariaLabel="Workspace timezone" defaultValue={workspace.timezone} items={TIMEZONE_ITEMS} placeholder="Search timezones" disabled={!canManage} />
             <Text fontSize="11px" color="fg.subtle">Used by Calendar labels and publishing defaults. Search and select an IANA timezone.</Text>
-            {canManage ? <Button type="submit" size="sm" alignSelf="flex-start">Save workspace</Button> : null}
+            {canManage ? <ActionSubmitButton pendingLabel="Saving…" size="sm" alignSelf="flex-start">Save workspace</ActionSubmitButton> : null}
           </Stack>
         </form>
       </Box>
