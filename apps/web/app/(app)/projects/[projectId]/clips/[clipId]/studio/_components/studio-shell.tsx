@@ -20,7 +20,6 @@ import {
   normalizeDeletedRanges,
   buildTranscriptSliceForWindow,
   clipAutoLayoutMatchesInputs,
-  editorDocumentSchema,
   mergeCorrectedWordsIntoWindow,
   type TranscriptUtterance,
   type CaptionPreset,
@@ -51,7 +50,6 @@ import {
 } from "./timeline-preview-manager";
 import { useStudioEditingSession } from "./studio-editing-session-react";
 import type { StudioSessionSnapshot } from "./studio-editing-session";
-import { mergeEditorDocuments } from "./local-editor-draft";
 import { DraftRecoveryDialog } from "./draft-recovery-dialog";
 import { StudioWriteLeaseOverlay } from "./studio-write-lease-overlay";
 import {
@@ -932,12 +930,6 @@ export function StudioShell({
   const sessionSafetyDegraded =
     sessionSnapshot.durability.device === "degraded" ||
     sessionSnapshot.ownership.kind === "degraded";
-  const [pendingDraftConflict, setPendingDraftConflict] = useState<{
-    document: EditorDocument;
-    cloudDocument: EditorDocument;
-    cloudRevision: number;
-    paths: string[];
-  } | null>(null);
   const recoveryNoticeRef = useRef<StudioSessionSnapshot["recovery"]["kind"]>("none");
 
   useEffect(() => {
@@ -1573,106 +1565,6 @@ export function StudioShell({
     studioSessionMigration,
   ]);
 
-  const cloudConflictHandlingRef = useRef(false);
-  useEffect(() => {
-    if (
-      sessionSnapshot.cloud.state !== "revision-conflict" ||
-      pendingDraftConflict ||
-      cloudConflictHandlingRef.current
-    ) {
-      return;
-    }
-    cloudConflictHandlingRef.current = true;
-    let cancelled = false;
-    void (async () => {
-      try {
-        const response = await fetch(
-          `/api/projects/${clipInfo.projectId}/clips/${clipInfo.id}/editor`,
-          { cache: "no-store" },
-        );
-        const body = response.ok
-          ? ((await response.json().catch(() => null)) as {
-              revision?: unknown;
-              document?: unknown;
-            } | null)
-          : null;
-        const latestDocument = editorDocumentSchema.safeParse(body?.document);
-        const latestRevision = body?.revision;
-        if (
-          !latestDocument.success ||
-          typeof latestRevision !== "number" ||
-          !Number.isSafeInteger(latestRevision) ||
-          latestRevision < 0
-        ) {
-          throw new Error("invalid cloud head");
-        }
-        const baseline = studioSessionMigration.getCloudBaseline();
-        const localDocument = studioSession.getSnapshot().document as EditorDocument;
-        const merged = mergeEditorDocuments(
-          baseline.document as EditorDocument,
-          localDocument,
-          latestDocument.data,
-        );
-        if (cancelled) return;
-        if (merged.conflicts.length === 0) {
-          if (
-            !boundsConverged(merged.document, {
-              startSec: latestDocument.data.clipStartSec,
-              endSec: latestDocument.data.clipEndSec,
-            })
-          ) {
-            boundaryEditIntentRef.current = true;
-            boundaryReconcileOwnsSeekRef.current = true;
-          }
-          studioSessionMigration.replaceRuntimeRoot({
-            document: merged.document,
-            segments: timelineSegments,
-            cloudBaseline: {
-              revision: latestRevision,
-              document: latestDocument.data,
-            },
-          });
-          toaster.create({
-            type: "info",
-            title: "Cloud changes merged",
-            description:
-              "Your device edits were combined safely and autosave is continuing.",
-          });
-          return;
-        }
-        setPendingDraftConflict({
-          document: localDocument,
-          cloudDocument: latestDocument.data,
-          cloudRevision: latestRevision,
-          paths: merged.conflicts,
-        });
-      } catch {
-        if (!cancelled) {
-          toaster.create({
-            type: "error",
-            title: "This clip changed somewhere else",
-            description:
-              "Your device draft is safe. Reload to compare it with the latest cloud version.",
-            action: { label: "Reload", onClick: () => window.location.reload() },
-          });
-        }
-      } finally {
-        cloudConflictHandlingRef.current = false;
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    clipInfo.id,
-    clipInfo.projectId,
-    pendingDraftConflict,
-    sessionSnapshot.cloud.state,
-    studioSession,
-    studioSessionMigration,
-    timelineSegments,
-  ]);
-
   const handleSave = useCallback(async () => {
     const result = await studioSession.perform({ type: "checkpoint-cloud" });
     if (result.kind === "cloud-current") return;
@@ -1785,71 +1677,41 @@ export function StudioShell({
   }, [studioSession]);
 
   const handleKeepCloudDraft = useCallback(() => {
-    if (sessionDraftConflict) {
-      void studioSession
-        .perform({ type: "resolve-conflict", choice: "cloud" })
-        .then(() => undefined);
-      return;
-    }
-    if (!pendingDraftConflict) return;
-    const cloudDocument = pendingDraftConflict.cloudDocument;
-    lastSavedBoundsRef.current = {
-      startSec: cloudDocument.clipStartSec,
-      endSec: cloudDocument.clipEndSec,
-    };
-    void studioSessionMigration.acknowledgeCloud({
-      expectedDocument: docPresentRef.current,
-      document: cloudDocument,
-      revision: pendingDraftConflict.cloudRevision,
-    });
-    setPendingDraftConflict(null);
-  }, [
-    pendingDraftConflict,
-    sessionDraftConflict,
-    studioSession,
-    studioSessionMigration.acknowledgeCloud,
-  ]);
+    if (!sessionDraftConflict) return;
+    void studioSession
+      .perform({ type: "resolve-conflict", choice: "cloud" })
+      .then((result) => {
+        if (result.kind === "conflict-resolved-degraded") {
+          toaster.create({
+            type: "warning",
+            title: "Cloud version kept with reduced recovery",
+            description:
+              "Cloud editing can continue, but this browser could not remove its obsolete device draft.",
+          });
+          return;
+        }
+        if (result.kind !== "conflict-resolution-blocked") return;
+        toaster.create({
+          type: "error",
+          title: "Cloud choice could not be completed",
+          description: "Another tab took ownership. Reload before choosing a version.",
+        });
+      });
+  }, [sessionDraftConflict, studioSession]);
 
   const handleRecoverConflictingDraft = useCallback(() => {
-    if (sessionDraftConflict) {
-      void studioSession
-        .perform({ type: "resolve-conflict", choice: "device" })
-        .then((result) => {
-          if (result.kind !== "conflict-resolved") return;
-          const recovered = studioSession.getSnapshot().document as EditorDocument;
-          if (!boundsConverged(recovered, lastSavedBoundsRef.current)) {
-            boundaryEditIntentRef.current = true;
-            boundaryReconcileOwnsSeekRef.current = true;
-          }
-        });
-      return;
-    }
-    if (!pendingDraftConflict) return;
-    const recovered = pendingDraftConflict.document;
-    lastSavedBoundsRef.current = {
-      startSec: pendingDraftConflict.cloudDocument.clipStartSec,
-      endSec: pendingDraftConflict.cloudDocument.clipEndSec,
-    };
-    if (!boundsConverged(recovered, lastSavedBoundsRef.current)) {
-      boundaryEditIntentRef.current = true;
-      boundaryReconcileOwnsSeekRef.current = true;
-    }
-    studioSessionMigration.replaceRuntimeRoot({
-      document: recovered,
-      segments: timelineSegments,
-      cloudBaseline: {
-        revision: pendingDraftConflict.cloudRevision,
-        document: pendingDraftConflict.cloudDocument,
-      },
-    });
-    setPendingDraftConflict(null);
-  }, [
-    pendingDraftConflict,
-    sessionDraftConflict,
-    studioSession,
-    studioSessionMigration.replaceRuntimeRoot,
-    timelineSegments,
-  ]);
+    if (!sessionDraftConflict) return;
+    void studioSession
+      .perform({ type: "resolve-conflict", choice: "device" })
+      .then((result) => {
+        if (result.kind !== "conflict-resolved") return;
+        const recovered = studioSession.getSnapshot().document as EditorDocument;
+        if (!boundsConverged(recovered, lastSavedBoundsRef.current)) {
+          boundaryEditIntentRef.current = true;
+          boundaryReconcileOwnsSeekRef.current = true;
+        }
+      });
+  }, [sessionDraftConflict, studioSession]);
 
 
   const selectCaption = useCallback(() => {
@@ -1899,7 +1761,7 @@ export function StudioShell({
   // Keyboard shortcuts
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (!hasWriteOwnership || pendingDraftConflict || sessionDraftConflict) return;
+      if (!hasWriteOwnership || sessionDraftConflict) return;
       const tag = (e.target as HTMLElement)?.tagName;
       if (
         tag === "INPUT" ||
@@ -1987,7 +1849,7 @@ export function StudioShell({
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [togglePlay, seekTo, playbackClock, duration, splitAtPlayhead, deleteSelectedSegment, deleteSelectedTextLayer, handleUndo, handleRedo, captionSelected, deselectCaption, selectedTextLayerId, deselectTextLayer, hasWriteOwnership, pendingDraftConflict, sessionDraftConflict]);
+  }, [togglePlay, seekTo, playbackClock, duration, splitAtPlayhead, deleteSelectedSegment, deleteSelectedTextLayer, handleUndo, handleRedo, captionSelected, deselectCaption, selectedTextLayerId, deselectTextLayer, hasWriteOwnership, sessionDraftConflict]);
 
   // Fix 3 (Phase B hardening): nothing else reconciles the <video> element
   // or the clock against a delete/revert that just happened — a paused
@@ -2229,12 +2091,8 @@ export function StudioShell({
         />
 
         <DraftRecoveryDialog
-          open={sessionDraftConflict || pendingDraftConflict !== null}
-          conflictPaths={
-            sessionDraftConflict
-              ? [...sessionSnapshot.recovery.conflictPaths]
-              : pendingDraftConflict?.paths ?? []
-          }
+          open={sessionDraftConflict}
+          conflictPaths={[...sessionSnapshot.recovery.conflictPaths]}
           onKeepCloud={handleKeepCloudDraft}
           onRecoverLocal={handleRecoverConflictingDraft}
         />

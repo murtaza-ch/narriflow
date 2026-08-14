@@ -7,7 +7,6 @@ import {
 } from "@narriflow/validators";
 import {
   createStudioEditingSession,
-  getStudioEditingSessionMigrationAdapter,
   type StudioCloudSaveOutcome,
   type StudioCloudResetOutcome,
   type StudioDraftRecord,
@@ -49,16 +48,26 @@ class ControlledCloud {
     baseRevision: number;
     document: EditorDocument;
   }> = [];
+  private nextHeadLoad: ReturnType<
+    typeof deferred<{ revision: number; document: EditorDocument }>
+  > | null = null;
 
   constructor(
     private revision: number,
     private document: EditorDocument,
   ) {}
 
-  loadHead = async () => ({
-    revision: this.revision,
-    document: structuredClone(this.document),
-  });
+  loadHead = async () => {
+    const pending = this.nextHeadLoad;
+    if (pending) {
+      this.nextHeadLoad = null;
+      return pending.promise;
+    }
+    return {
+      revision: this.revision,
+      document: structuredClone(this.document),
+    };
+  };
 
   save: StudioSessionDependencies["cloud"]["save"] = (input) => {
     const result = deferred<StudioCloudSaveOutcome>();
@@ -96,6 +105,17 @@ class ControlledCloud {
     const save = this.saves[index];
     if (!save) throw new Error(`Missing save ${index}`);
     save.result.resolve(outcome);
+  }
+
+  setHead(revision: number, document: EditorDocument): void {
+    this.revision = revision;
+    this.document = structuredClone(document);
+  }
+
+  deferHeadLoad() {
+    const result = deferred<{ revision: number; document: EditorDocument }>();
+    this.nextHeadLoad = result;
+    return result;
   }
 
   commitButLoseResponse(index: number, revision: number): void {
@@ -229,7 +249,7 @@ async function makeSession(
   return session;
 }
 
-test("serializes rapid edits into one latest-document follow-up checkpoint", async () => {
+test("ignores an older document-generation response and serializes one latest follow-up", async () => {
   const cloud = new ControlledCloud(3, makeDocument());
   const session = await makeSession(cloud);
 
@@ -253,6 +273,9 @@ test("serializes rapid edits into one latest-document follow-up checkpoint", asy
 
   cloud.acknowledge(0, 4);
   await waitUntil(() => cloud.saves.length === 2);
+  expect(session.getSnapshot().document.brollUrl).toBe(
+    "https://cdn.example.com/c.mp4",
+  );
   expect(cloud.saves[1]?.baseRevision).toBe(4);
   expect(cloud.saves[1]?.document.brollUrl).toBe(
     "https://cdn.example.com/c.mp4",
@@ -264,33 +287,6 @@ test("serializes rapid edits into one latest-document follow-up checkpoint", asy
     state: "current",
     revision: 5,
     dirty: false,
-  });
-});
-
-test("ignores a compatibility acknowledgement for an older live document", async () => {
-  const session = createStudioEditingSession({
-    cloudRevision: 3,
-    document: makeDocument(),
-    segments: [],
-  });
-  session.dispatch({
-    type: "document.edit",
-    action: { type: "setBrollUrl", brollUrl: "https://cdn.example.com/a.mp4" },
-  });
-  const olderDocument = session.getSnapshot().document as EditorDocument;
-  session.dispatch({
-    type: "document.edit",
-    action: { type: "setBrollUrl", brollUrl: "https://cdn.example.com/b.mp4" },
-  });
-
-  await getStudioEditingSessionMigrationAdapter(session).acknowledgeCloud({
-    expectedDocument: olderDocument,
-    document: olderDocument,
-    revision: 4,
-  });
-  expect(session.getSnapshot()).toMatchObject({
-    document: { brollUrl: "https://cdn.example.com/b.mp4" },
-    cloud: { revision: 3, dirty: true },
   });
 });
 
@@ -552,6 +548,280 @@ test("a semantic rejection preserves editing and a corrected version can checkpo
   expect(await corrected).toEqual({ kind: "cloud-prepared", revision: 4 });
 });
 
+test("merges disjoint cloud changes after a revision conflict and resets history", async () => {
+  const cloud = new ControlledCloud(3, makeDocument());
+  const session = await makeSession(cloud);
+  session.dispatch({
+    type: "document.edit",
+    action: { type: "setBrollUrl", brollUrl: "https://cdn.example.com/local.mp4" },
+  });
+  const remote = makeDocument();
+  remote.captionPreset = { ...remote.captionPreset, fontSize: 42 };
+  cloud.setHead(4, remote);
+
+  const checkpoint = session.perform({ type: "checkpoint-cloud" });
+  await waitUntil(() => cloud.saves.length === 1);
+  cloud.respond(0, { kind: "revision-conflict", currentRevision: 4 });
+
+  await waitUntil(() => cloud.saves.length === 2);
+  expect(cloud.saves[1]).toMatchObject({
+    baseRevision: 4,
+    document: {
+      brollUrl: "https://cdn.example.com/local.mp4",
+      captionPreset: { fontSize: 42 },
+    },
+  });
+  expect(session.getSnapshot().history).toEqual({ canUndo: false, canRedo: false });
+
+  cloud.acknowledge(1, 5);
+  expect(await checkpoint).toEqual({ kind: "cloud-current", revision: 5 });
+});
+
+test("blocks edits for ordered-array conflicts and keeping cloud starts fresh", async () => {
+  const removed: Array<{ key: string; generation: number }> = [];
+  const cloud = new ControlledCloud(3, makeDocument());
+  const session = await makeSession(cloud, new ManualRuntime(), "writer", {
+    load: async () => null,
+    write: async () => "written",
+    remove: async (key, generation) => {
+      removed.push({ key, generation });
+      return "removed";
+    },
+  });
+  session.dispatch({
+    type: "document.edit",
+    action: {
+      type: "setDeletedRanges",
+      ranges: [{ startSec: 12, endSec: 13 }],
+    },
+  });
+  const remote = makeDocument();
+  remote.deletedRanges = [{ startSec: 20, endSec: 21 }];
+  cloud.setHead(4, remote);
+
+  const checkpoint = session.perform({ type: "checkpoint-cloud" });
+  await waitUntil(() => cloud.saves.length === 1);
+  cloud.respond(0, { kind: "revision-conflict", currentRevision: 4 });
+
+  expect(await checkpoint).toEqual({
+    kind: "cloud-blocked",
+    reason: "unresolved-conflict",
+  });
+  expect(session.getSnapshot()).toMatchObject({
+    status: "conflict",
+    recovery: { kind: "conflict", conflictPaths: ["deletedRanges"] },
+    durability: { device: "durable" },
+    cloud: { revision: 4, dirty: true },
+    capabilities: { mutate: false },
+  });
+  expect(
+    session.dispatch({
+      type: "document.edit",
+      action: { type: "setBrollUrl", brollUrl: "https://cdn.example.com/nope.mp4" },
+    }),
+  ).toEqual({ accepted: false, reason: "conflict" });
+  expect(await session.perform({ type: "checkpoint-cloud" })).toEqual({
+    kind: "cloud-blocked",
+    reason: "unresolved-conflict",
+  });
+
+  expect(await session.perform({ type: "resolve-conflict", choice: "cloud" })).toEqual({
+    kind: "conflict-resolved",
+    choice: "cloud",
+  });
+  expect(session.getSnapshot()).toMatchObject({
+    document: { deletedRanges: [{ startSec: 20, endSec: 21 }] },
+    status: "ready",
+    history: { canUndo: false, canRedo: false },
+    cloud: { state: "current", revision: 4, dirty: false },
+  });
+  expect(removed).toContainEqual({ key: "project:clip", generation: 1 });
+});
+
+test("refreshes and converges a newer cloud head before bfcache editing resumes", async () => {
+  const cloud = new ControlledCloud(3, makeDocument());
+  const runtime = new ManualRuntime();
+  const session = await makeSession(cloud, runtime);
+  session.dispatch({
+    type: "document.edit",
+    action: { type: "setBrollUrl", brollUrl: "https://cdn.example.com/local.mp4" },
+  });
+  const remote = makeDocument();
+  remote.captionPreset = { ...remote.captionPreset, fontSize: 48 };
+  const head = cloud.deferHeadLoad();
+
+  const resume = session.perform({ type: "resume" });
+  expect(
+    session.dispatch({
+      type: "document.edit",
+      action: { type: "setBrollUrl", brollUrl: "https://cdn.example.com/late.mp4" },
+    }),
+  ).toEqual({ accepted: false, reason: "starting" });
+  head.resolve({ revision: 4, document: remote });
+
+  expect(await resume).toEqual({
+    kind: "cloud-refreshed",
+    revision: 4,
+    convergence: "merged",
+  });
+  expect(session.getSnapshot()).toMatchObject({
+    document: {
+      brollUrl: "https://cdn.example.com/local.mp4",
+      captionPreset: { fontSize: 48 },
+    },
+    status: "ready",
+    history: { canUndo: false, canRedo: false },
+    cloud: { revision: 4, dirty: true },
+  });
+  runtime.advance(1_500);
+  await waitUntil(() => cloud.saves.length === 1);
+  expect(cloud.saves[0]).toMatchObject({
+    baseRevision: 4,
+    document: {
+      brollUrl: "https://cdn.example.com/local.mp4",
+      captionPreset: { fontSize: 48 },
+    },
+  });
+});
+
+test("keeps resume blocked and retries a stale cloud head", async () => {
+  const runtime = new ManualRuntime();
+  const cloud = new ControlledCloud(
+    2,
+    makeDocument("https://cdn.example.com/stale.mp4"),
+  );
+  const session = await makeSession(cloud, runtime);
+  const resume = session.perform({ type: "resume" });
+  await waitForSnapshot(session, (snapshot) => snapshot.cloud.state === "retrying");
+  expect(session.getSnapshot()).toMatchObject({
+    status: "starting",
+    capabilities: { mutate: false },
+    document: { brollUrl: null },
+    cloud: { revision: 3 },
+  });
+
+  cloud.setHead(4, makeDocument("https://cdn.example.com/fresh.mp4"));
+  runtime.advance(999);
+  await Promise.resolve();
+  expect(session.getSnapshot().status).toBe("starting");
+  runtime.advance(1);
+
+  expect(await resume).toEqual({
+    kind: "cloud-refreshed",
+    revision: 4,
+    convergence: "current",
+  });
+  expect(session.getSnapshot()).toMatchObject({
+    status: "ready",
+    document: { brollUrl: "https://cdn.example.com/fresh.mp4" },
+    cloud: { revision: 4, state: "current", dirty: false },
+  });
+});
+
+test("keeping device rebases the whole document and resumes checkpointing", async () => {
+  const written: StudioDraftRecord[] = [];
+  const cloud = new ControlledCloud(3, makeDocument());
+  const session = await makeSession(cloud, new ManualRuntime(), "writer", {
+    load: async () => null,
+    write: async (record) => {
+      written.push(structuredClone(record));
+      return "written";
+    },
+    remove: async () => "removed",
+  });
+  session.dispatch({
+    type: "document.edit",
+    action: { type: "setBrollUrl", brollUrl: "https://cdn.example.com/device.mp4" },
+  });
+  const remote = makeDocument("https://cdn.example.com/cloud.mp4");
+  cloud.setHead(4, remote);
+  const conflictedCheckpoint = session.perform({ type: "checkpoint-cloud" });
+  await waitUntil(() => cloud.saves.length === 1);
+  cloud.respond(0, { kind: "revision-conflict", currentRevision: 4 });
+  expect(await conflictedCheckpoint).toEqual({
+    kind: "cloud-blocked",
+    reason: "unresolved-conflict",
+  });
+
+  expect(await session.perform({ type: "resolve-conflict", choice: "device" })).toEqual({
+    kind: "conflict-resolved",
+    choice: "device",
+  });
+  expect(session.getSnapshot()).toMatchObject({
+    document: { brollUrl: "https://cdn.example.com/device.mp4" },
+    status: "ready",
+    history: { canUndo: false, canRedo: false },
+    cloud: { revision: 4, dirty: true },
+  });
+
+  const rebasedCheckpoint = session.perform({ type: "checkpoint-cloud" });
+  await waitUntil(() => cloud.saves.length === 2);
+  expect(cloud.saves[1]).toMatchObject({
+    baseRevision: 4,
+    document: { brollUrl: "https://cdn.example.com/device.mp4" },
+  });
+  expect(written.at(-1)).toMatchObject({
+    baseRevision: 4,
+    baseDocument: { brollUrl: "https://cdn.example.com/cloud.mp4" },
+    document: { brollUrl: "https://cdn.example.com/device.mp4" },
+  });
+  cloud.acknowledge(1, 5);
+  expect(await rebasedCheckpoint).toEqual({ kind: "cloud-current", revision: 5 });
+});
+
+test("ignores a cloud refresh response from a closed session generation", async () => {
+  const cloud = new ControlledCloud(3, makeDocument());
+  const session = await makeSession(cloud);
+  const head = cloud.deferHeadLoad();
+  const resume = session.perform({ type: "resume" });
+  await session.perform({ type: "close", reason: "navigation" });
+
+  head.resolve({
+    revision: 4,
+    document: makeDocument("https://cdn.example.com/stale.mp4"),
+  });
+
+  expect(await resume).toEqual({ kind: "cloud-blocked", reason: "closed" });
+  expect(session.getSnapshot()).toMatchObject({
+    status: "closed",
+    document: { brollUrl: null },
+    cloud: { revision: 3 },
+  });
+});
+
+test("keeps cloud editing available when obsolete draft cleanup is degraded", async () => {
+  const cloud = new ControlledCloud(3, makeDocument());
+  const session = await makeSession(cloud, new ManualRuntime(), "writer", {
+    load: async () => null,
+    write: async () => "written",
+    remove: async () => {
+      throw new Error("IndexedDB unavailable");
+    },
+  });
+  session.dispatch({
+    type: "document.edit",
+    action: { type: "setBrollUrl", brollUrl: "https://cdn.example.com/device.mp4" },
+  });
+  cloud.setHead(4, makeDocument("https://cdn.example.com/cloud.mp4"));
+  const checkpoint = session.perform({ type: "checkpoint-cloud" });
+  await waitUntil(() => cloud.saves.length === 1);
+  cloud.respond(0, { kind: "revision-conflict", currentRevision: 4 });
+  await checkpoint;
+
+  expect(await session.perform({ type: "resolve-conflict", choice: "cloud" })).toEqual({
+    kind: "conflict-resolved-degraded",
+    choice: "cloud",
+    reason: "device-draft-unavailable",
+  });
+  expect(session.getSnapshot()).toMatchObject({
+    status: "ready",
+    document: { brollUrl: "https://cdn.example.com/cloud.mp4" },
+    durability: { device: "degraded", protectsNavigation: true },
+    cloud: { state: "current", revision: 4, dirty: false },
+    capabilities: { mutate: true },
+  });
+});
+
 for (const terminal of [
   {
     outcome: { kind: "authentication-lost" } as const,
@@ -562,11 +832,6 @@ for (const terminal of [
     outcome: { kind: "missing" } as const,
     state: "missing" as const,
     reason: "missing" as const,
-  },
-  {
-    outcome: { kind: "revision-conflict", currentRevision: 8 } as const,
-    state: "revision-conflict" as const,
-    reason: "revision-conflict" as const,
   },
 ]) {
   test(`exposes ${terminal.state} as a distinct terminal cloud state`, async () => {

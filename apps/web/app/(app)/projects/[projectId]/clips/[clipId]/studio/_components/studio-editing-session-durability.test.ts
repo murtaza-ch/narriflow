@@ -7,7 +7,6 @@ import {
 } from "@narriflow/validators";
 import {
   createStudioEditingSession,
-  getStudioEditingSessionMigrationAdapter,
   type StudioDraftRecord,
   type StudioSessionDependencies,
   type StudioSessionSnapshot,
@@ -576,7 +575,7 @@ test("marks an edit durable only after its fenced Device Draft write completes",
   expect(session.getSnapshot().durability.protectsNavigation).toBe(false);
 });
 
-test("keeps durability degraded when cloud acknowledgement cannot remove the Device Draft", async () => {
+test("keeps durability degraded when a cloud checkpoint cannot remove the Device Draft", async () => {
   const cloud = makeDocument();
   const session = createStudioEditingSession(
     {
@@ -597,7 +596,10 @@ test("keeps durability degraded when cloud acknowledgement cannot remove the Dev
         takeOver: async () => ({ kind: "failed" }),
         close: () => undefined,
       },
-      cloud: { loadHead: async () => ({ revision: 4, document: cloud }) },
+      cloud: {
+        loadHead: async () => ({ revision: 3, document: cloud }),
+        save: async ({ document }) => ({ kind: "saved", revision: 4, document }),
+      },
       runtime: {
         now: () => 275,
         createId: () => "writer-a",
@@ -607,10 +609,12 @@ test("keeps durability degraded when cloud acknowledgement cannot remove the Dev
     },
   );
   await waitForSnapshot(session, (value) => value.status === "ready");
-
-  await getStudioEditingSessionMigrationAdapter(session).acknowledgeCloud({
-    expectedDocument: session.getSnapshot().document as EditorDocument,
-    document: cloud,
+  session.dispatch({
+    type: "document.edit",
+    action: { type: "setBrollUrl", brollUrl: "https://cdn.example.com/new.mp4" },
+  });
+  expect(await session.perform({ type: "checkpoint-cloud" })).toEqual({
+    kind: "cloud-current",
     revision: 4,
   });
 
@@ -934,6 +938,55 @@ test("does not regain ownership when takeover reconciliation finishes late", asy
   expect(await takeover).toEqual({ kind: "unavailable", reason: "invalid-state" });
   expect(session.getSnapshot().ownership.kind).toBe("reader");
   expect(session.getSnapshot().capabilities.mutate).toBe(false);
+});
+
+test("does not become writable from a stale takeover cloud head", async () => {
+  const cloud = makeDocument();
+  const session = createStudioEditingSession(
+    {
+      projectId: "project",
+      clipId: "clip",
+      cloudRevision: 3,
+      document: cloud,
+      segments: [],
+    },
+    {
+      drafts: {
+        load: async () => null,
+        write: async () => "written",
+        remove: async () => "removed",
+      },
+      coordination: {
+        start: async () => ({ kind: "reader", generation: 4 }),
+        takeOver: async () => ({ kind: "acquired", generation: 5, forced: false }),
+        close: () => undefined,
+      },
+      cloud: {
+        loadHead: async () => ({
+          revision: 2,
+          document: makeDocument("https://cdn.example.com/stale.mp4"),
+        }),
+      },
+      runtime: {
+        now: () => 1_250,
+        createId: () => "incoming-writer",
+        setTimeout: () => 1,
+        clearTimeout: () => undefined,
+      },
+    },
+  );
+  await waitForSnapshot(session, (value) => value.ownership.kind === "reader");
+
+  expect(await session.perform({ type: "take-over" })).toEqual({
+    kind: "unavailable",
+    reason: "invalid-state",
+  });
+  expect(session.getSnapshot()).toMatchObject({
+    ownership: { kind: "reader" },
+    capabilities: { mutate: false },
+    document: { brollUrl: null },
+    cloud: { revision: 3 },
+  });
 });
 
 test("refuses cooperative handoff when the newest Device Draft checkpoint fails", async () => {

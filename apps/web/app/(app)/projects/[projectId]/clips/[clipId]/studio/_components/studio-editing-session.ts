@@ -10,6 +10,7 @@ import type { TimelineSegment } from "./studio-types";
 import {
   decideDraftRecovery,
   LOCAL_DRAFT_WRITE_DEBOUNCE_MS,
+  mergeEditorDocuments,
   type StoredEditorDraft,
 } from "./local-editor-draft";
 
@@ -88,6 +89,7 @@ export type IntentReceipt =
  * boundary; the owning behavior arrives with the corresponding ticket. */
 export type StudioSessionOperation =
   | { type: "start" }
+  | { type: "resume" }
   | { type: "trim"; startSec: number; endSec: number }
   | { type: "checkpoint-cloud" }
   | { type: "prepare-cloud-revision" }
@@ -101,7 +103,22 @@ export type StudioOperationResult =
   | { kind: "started" }
   | { kind: "closed" }
   | { kind: "conflict-resolved"; choice: "device" | "cloud" }
+  | {
+      kind: "conflict-resolved-degraded";
+      choice: "cloud";
+      reason: "device-draft-unavailable";
+    }
+  | {
+      kind: "conflict-resolution-blocked";
+      choice: "cloud";
+      reason: "ownership-lost";
+    }
   | { kind: "cloud-current"; revision: number }
+  | {
+      kind: "cloud-refreshed";
+      revision: number;
+      convergence: "current" | "merged" | "conflict";
+    }
   | { kind: "cloud-prepared"; revision: number }
   | {
       kind: "cloud-blocked";
@@ -238,16 +255,6 @@ export interface StudioEditingSessionMigrationAdapter {
     action: EditorAction;
     segments: TimelineSegment[];
   }): void;
-  replaceRuntimeRoot(
-    input: StudioSessionRoot & {
-      cloudBaseline?: { revision: number; document: EditorDocument };
-    },
-  ): void;
-  acknowledgeCloud(input: {
-    expectedDocument: EditorDocument;
-    document: EditorDocument;
-    revision?: number;
-  }): Promise<void>;
   getCloudBaseline(): {
     revision: number;
     document: DeepReadonly<EditorDocument>;
@@ -264,6 +271,7 @@ interface SessionProjection {
 
 type DeviceDraftCheckpointOutcome = "checkpointed" | "stale" | "unavailable";
 type DraftFenceOutcome = "fenced" | "stale" | "unavailable";
+type DraftRemovalOutcome = "removed" | "stale" | "unavailable";
 type DraftLoadResult =
   | { kind: "loaded"; draft: StudioDraftRecord | null }
   | { kind: "failed"; draft: null; error: string };
@@ -371,12 +379,15 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
   private cloudWakeRequested = false;
   private cloudAutosaveTimer: number | null = null;
   private cloudRetryTimer: number | null = null;
+  private cloudRefreshRetryTimer: number | null = null;
+  private cloudRefreshRetryWake: (() => void) | null = null;
   private resetRetryTimer: number | null = null;
   private resetRetryWake: (() => void) | null = null;
   private cloudDirtySince: number | null = null;
   private readonly cloudWaiters: CloudWaiter[] = [];
   private unsubscribeOnline: (() => void) | null = null;
   private resetInProgress = false;
+  private cloudRefreshGeneration = 0;
 
   constructor(
     seed: StudioSessionSeed,
@@ -540,6 +551,18 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     if (operation.type === "take-over") {
       return this.takeOver();
     }
+    if (operation.type === "resume") {
+      if (!this.dependencies || this.projection.status !== "ready") {
+        return { kind: "unavailable", reason: "invalid-state" };
+      }
+      const refreshed = await this.refreshCloudHeadAndConverge({ kind: "resume" });
+      if (!refreshed) {
+        return this.getSnapshot().status === "closed"
+          ? { kind: "cloud-blocked", reason: "closed" }
+          : { kind: "cloud-blocked", reason: "transient" };
+      }
+      return { kind: "cloud-refreshed", ...refreshed };
+    }
     if (operation.type === "checkpoint-cloud") {
       if (this.resetInProgress && !this.projection.cloud.dirty) {
         this.resetRetryWake?.();
@@ -559,39 +582,32 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     if (!this.pendingConflict || this.projection.status !== "conflict") {
       return { kind: "unavailable", reason: "invalid-state" };
     }
+    const conflict = this.pendingConflict;
+    let cloudResolutionDegraded = false;
+    if (operation.choice === "cloud") {
+      const removal = await this.removeObsoleteDeviceDraft();
+      if (removal === "stale") {
+        this.publish();
+        return {
+          kind: "conflict-resolution-blocked",
+          choice: "cloud",
+          reason: "ownership-lost",
+        };
+      }
+      cloudResolutionDegraded = removal === "unavailable";
+    }
     const document =
       operation.choice === "device"
-        ? this.pendingConflict.deviceDocument
-        : this.pendingConflict.cloudDocument;
+        ? conflict.deviceDocument
+        : conflict.cloudDocument;
     this.unified = createUnifiedEditorHistory(
       ownDocument(document),
-      ownSegments(this.seed.segments),
+      ownSegments(this.unified.segments),
     );
-    if (operation.choice === "cloud") {
-      const generation = this.projection.ownership.generation;
-      if (this.dependencies && generation !== null) {
-        const key = this.deviceDraftKey;
-        try {
-          const outcome = await this.dependencies.drafts.remove(key, generation);
-          if (outcome === "stale") {
-            this.diagnose("studio_conflict_draft_remove_rejected", "stale");
-            this.dependencies.coordination.relinquish?.();
-            this.loseOwnership();
-          }
-        } catch (error) {
-          this.deviceDraftAvailable = false;
-          this.projection = {
-            ...this.projection,
-            durability: { device: "degraded", protectsNavigation: true },
-          };
-          this.diagnose(
-            "studio_conflict_draft_remove_failed",
-            "degraded",
-            error,
-          );
-        }
-      }
-    }
+    this.documentVersion += 1;
+    this.cloudAttempt = null;
+    this.cloudDirtySince = null;
+    this.clearCloudTimers();
     this.pendingConflict = null;
     this.projection = {
       ...this.projection,
@@ -600,9 +616,37 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
         kind: operation.choice === "device" ? "recovered" : "none",
         conflictPaths: [],
       },
+      cloud:
+        operation.choice === "device"
+          ? {
+              state: this.dependencies?.runtime.isOnline?.() === false
+                ? "offline"
+                : "pending",
+              revision: this.cloudRevision,
+              dirty: true,
+              rejectionCode: null,
+            }
+          : {
+              state: "current",
+              revision: this.cloudRevision,
+              dirty: false,
+              rejectionCode: null,
+            },
     };
-    if (operation.choice === "device") this.markCloudDirty();
+    if (operation.choice === "device") {
+      this.cloudDirtySince = this.dependencies?.runtime.now() ?? Date.now();
+      this.scheduleDeviceDraftWrite();
+      this.scheduleCloudAutosave();
+    }
     this.publish();
+    this.settleCloudWaiters();
+    if (cloudResolutionDegraded) {
+      return {
+        kind: "conflict-resolved-degraded",
+        choice: "cloud",
+        reason: "device-draft-unavailable",
+      };
+    }
     return { kind: "conflict-resolved", choice: operation.choice };
   };
 
@@ -626,84 +670,6 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
       this.markCloudDirty();
     }
     this.publish();
-  }
-
-  replaceRuntimeRoot(
-    input: StudioSessionRoot & {
-      cloudBaseline?: { revision: number; document: EditorDocument };
-    },
-  ): void {
-    const documentBefore = this.unified.doc.present;
-    if (input.cloudBaseline) {
-      this.cloudRevision = input.cloudBaseline.revision;
-      this.cloudDocument = ownDocument(input.cloudBaseline.document);
-    }
-    this.unified = createUnifiedEditorHistory(
-      ownDocument(input.document),
-      ownSegments(input.segments),
-    );
-    if (this.unified.doc.present !== documentBefore) {
-      this.scheduleDeviceDraftWrite();
-      this.markCloudDirty();
-    }
-    this.publish();
-  }
-
-  async acknowledgeCloud(input: {
-    expectedDocument: EditorDocument;
-    document: EditorDocument;
-    revision?: number;
-  }): Promise<void> {
-    if (this.unified.doc.present !== input.expectedDocument) return;
-    this.cloudDocument = ownDocument(input.document);
-    if (input.revision !== undefined) this.cloudRevision = input.revision;
-    this.cloudAttempt = null;
-    this.projection = {
-      ...this.projection,
-      cloud: {
-        state: "current",
-        revision: this.cloudRevision,
-        dirty: false,
-        rejectionCode: null,
-      },
-    };
-    this.unified = {
-      ...this.unified,
-      doc: { ...this.unified.doc, present: ownDocument(input.document) },
-    };
-    const generation = this.projection.ownership.generation;
-    if (this.dependencies && generation !== null) {
-      try {
-        const outcome = await this.dependencies.drafts.remove(
-          this.deviceDraftKey,
-          generation,
-        );
-        if (outcome === "stale") {
-          this.diagnose("studio_cloud_ack_draft_remove_rejected", "stale");
-          this.dependencies.coordination.relinquish?.();
-          this.loseOwnership();
-          return;
-        }
-        this.projection = {
-          ...this.projection,
-          durability: { device: "durable", protectsNavigation: false },
-        };
-      } catch (error) {
-        this.deviceDraftAvailable = false;
-        this.projection = {
-          ...this.projection,
-          durability: { device: "degraded", protectsNavigation: true },
-        };
-        this.diagnose("studio_cloud_ack_draft_remove_failed", "degraded", error);
-      }
-    } else {
-      this.projection = {
-        ...this.projection,
-        durability: { device: "durable", protectsNavigation: false },
-      };
-    }
-    this.publish();
-    this.settleCloudWaiters();
   }
 
   getCloudBaseline(): {
@@ -785,6 +751,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     kind: CloudWaiter["kind"],
   ): Promise<StudioOperationResult> {
     if (this.projection.status === "starting" && !this.resetInProgress) {
+      this.cloudRefreshRetryWake?.();
       return new Promise((resolve) => {
         const unsubscribe = this.subscribe(() => {
           if (this.projection.status === "starting") return;
@@ -976,31 +943,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
             rejectionCode: null,
           },
         };
-        const generation = this.projection.ownership.generation;
-        if (this.dependencies && generation !== null) {
-          try {
-            const removed = await this.dependencies.drafts.remove(
-              this.deviceDraftKey,
-              generation,
-            );
-            if (removed === "stale") {
-              this.dependencies.coordination.relinquish?.();
-              this.loseOwnership();
-              return;
-            }
-            this.projection = {
-              ...this.projection,
-              durability: { device: "durable", protectsNavigation: false },
-            };
-          } catch (error) {
-            this.deviceDraftAvailable = false;
-            this.projection = {
-              ...this.projection,
-              durability: { device: "degraded", protectsNavigation: true },
-            };
-            this.diagnose("studio_cloud_ack_draft_remove_failed", "degraded", error);
-          }
-        }
+        if ((await this.removeObsoleteDeviceDraft()) === "stale") return;
       } else {
         this.projection = {
           ...this.projection,
@@ -1033,6 +976,18 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
       return;
     }
 
+    if (outcome.kind === "revision-conflict") {
+      this.cloudAttempt = null;
+      await this.refreshCloudHeadAndConverge({
+        kind: "revision-conflict",
+        minimumRevision:
+          outcome.currentRevision === undefined
+            ? this.cloudRevision + 1
+            : Math.max(this.cloudRevision + 1, outcome.currentRevision),
+      });
+      return;
+    }
+
     this.cloudAttempt = null;
     const newerDocumentExists = this.documentVersion !== attempt.documentVersion;
     if (outcome.kind === "rejected" && newerDocumentExists) {
@@ -1051,6 +1006,170 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     this.projectTerminalCloudOutcome(outcome);
     this.publish();
     this.settleCloudWaiters();
+  }
+
+  private async refreshCloudHeadAndConverge(
+    request:
+      | { kind: "resume" }
+      | { kind: "revision-conflict"; minimumRevision: number },
+  ): Promise<{
+    revision: number;
+    convergence: "current" | "merged" | "conflict";
+  } | null> {
+    const dependencies = this.dependencies;
+    if (!dependencies) return null;
+    const expectedSessionGeneration = this.sessionGeneration;
+    const expectedDocumentVersion = this.documentVersion;
+    const refreshGeneration = ++this.cloudRefreshGeneration;
+    const projectionBeforeRefresh = this.projection;
+    const baselineRevision = this.cloudRevision;
+    const refreshPolicy =
+      request.kind === "resume"
+        ? {
+            minimumRevision: baselineRevision,
+            enteringCloudState: this.projection.cloud.state,
+            autosaveMergedDocument: true,
+          }
+        : {
+            minimumRevision: request.minimumRevision,
+            enteringCloudState: "revision-conflict" as const,
+            autosaveMergedDocument: false,
+          };
+    this.projection = {
+      ...this.projection,
+      status: "starting",
+      cloud: {
+        ...this.projection.cloud,
+        state: refreshPolicy.enteringCloudState,
+        revision: this.cloudRevision,
+        rejectionCode: null,
+      },
+    };
+    this.publish();
+
+    const refreshIsCurrent = () =>
+      this.sessionGeneration === expectedSessionGeneration &&
+      this.documentVersion === expectedDocumentVersion &&
+      this.cloudRefreshGeneration === refreshGeneration;
+    let head: { revision: number; document: EditorDocument } | null = null;
+    let retryAttempt = 0;
+    while (refreshIsCurrent()) {
+      let error: unknown;
+      if (!(dependencies.runtime.isOnline?.() ?? true)) {
+        error = new Error("offline");
+      } else {
+        try {
+          const candidate = await dependencies.cloud.loadHead();
+          if (!refreshIsCurrent()) return null;
+          const currentBaseline =
+            candidate.revision === baselineRevision &&
+            this.documentsEqual(candidate.document, this.cloudDocument);
+          if (
+            candidate.revision >= refreshPolicy.minimumRevision &&
+            (candidate.revision > baselineRevision || currentBaseline)
+          ) {
+            head = candidate;
+            break;
+          }
+          error = new Error(`stale cloud revision ${candidate.revision}`);
+        } catch (loadError) {
+          error = loadError;
+        }
+      }
+      if (!refreshIsCurrent()) return null;
+      this.diagnose("studio_cloud_refresh_retrying", "transient", error);
+      this.projection = {
+        ...this.projection,
+        status: "starting",
+        cloud: {
+          ...this.projection.cloud,
+          state: (dependencies.runtime.isOnline?.() ?? true)
+            ? "retrying"
+            : "offline",
+          rejectionCode: null,
+        },
+      };
+      this.publish();
+      await this.waitForCloudRefreshRetry(retryAttempt);
+      retryAttempt += 1;
+    }
+    if (!head || !refreshIsCurrent()) return null;
+    if (
+      head.revision === baselineRevision &&
+      this.documentsEqual(head.document, this.cloudDocument)
+    ) {
+      this.projection = { ...projectionBeforeRefresh, status: "ready" };
+      this.publish();
+      return {
+        revision: this.cloudRevision,
+        convergence: "current",
+      };
+    }
+
+    const deviceDocument = ownDocument(this.unified.doc.present);
+    const merged = mergeEditorDocuments(
+      this.cloudDocument,
+      deviceDocument,
+      head.document,
+    );
+    this.cloudRevision = head.revision;
+    this.cloudDocument = ownDocument(head.document);
+    this.cloudDirtySince = null;
+    this.clearCloudTimers();
+
+    if (merged.conflicts.length > 0) {
+      this.pendingConflict = {
+        deviceDocument,
+        cloudDocument: this.cloudDocument,
+      };
+      this.projection = {
+        ...this.projection,
+        status: "conflict",
+        recovery: { kind: "conflict", conflictPaths: merged.conflicts },
+        cloud: {
+          state: "revision-conflict",
+          revision: this.cloudRevision,
+          dirty: true,
+          rejectionCode: null,
+        },
+      };
+      this.publish();
+      this.settleCloudWaiters();
+      return { revision: this.cloudRevision, convergence: "conflict" };
+    }
+
+    this.pendingConflict = null;
+    this.unified = createUnifiedEditorHistory(
+      ownDocument(merged.document),
+      ownSegments(this.unified.segments),
+    );
+    this.documentVersion += 1;
+    const dirty = !this.documentsEqual(merged.document, this.cloudDocument);
+    this.projection = {
+      ...this.projection,
+      status: "ready",
+      recovery: {
+        kind: dirty ? "merged" : "none",
+        conflictPaths: [],
+      },
+      cloud: {
+        state: dirty ? "pending" : "current",
+        revision: this.cloudRevision,
+        dirty,
+        rejectionCode: null,
+      },
+    };
+    if (dirty) {
+      this.cloudDirtySince = dependencies.runtime.now();
+      this.scheduleDeviceDraftWrite();
+      if (refreshPolicy.autosaveMergedDocument) this.scheduleCloudAutosave();
+    }
+    this.publish();
+    this.settleCloudWaiters();
+    return {
+      revision: this.cloudRevision,
+      convergence: dirty ? "merged" : "current",
+    };
   }
 
   private scheduleCloudRetry(attempt: number): void {
@@ -1075,6 +1194,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
       dependencies.runtime.clearTimeout(this.cloudRetryTimer);
       this.cloudRetryTimer = null;
     }
+    this.cloudRefreshRetryWake?.();
     this.resetRetryWake?.();
   }
 
@@ -1102,6 +1222,29 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     const base = Math.min(30_000, 1_000 * 2 ** Math.min(5, Math.max(0, attempt)));
     const jitter = 0.75 + (dependencies?.runtime.random?.() ?? Math.random()) * 0.5;
     return Math.min(30_000, Math.round(base * jitter));
+  }
+
+  private waitForCloudRefreshRetry(attempt: number): Promise<void> {
+    const dependencies = this.dependencies;
+    if (!dependencies) return Promise.resolve();
+    return new Promise((resolve) => {
+      let settled = false;
+      const wake = () => {
+        if (settled) return;
+        settled = true;
+        if (this.cloudRefreshRetryTimer !== null) {
+          dependencies.runtime.clearTimeout(this.cloudRefreshRetryTimer);
+          this.cloudRefreshRetryTimer = null;
+        }
+        this.cloudRefreshRetryWake = null;
+        resolve();
+      };
+      this.cloudRefreshRetryWake = wake;
+      this.cloudRefreshRetryTimer = dependencies.runtime.setTimeout(
+        wake,
+        this.retryDelayMs(attempt),
+      );
+    });
   }
 
   private waitForResetRetry(attempt: number): Promise<void> {
@@ -1313,6 +1456,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
         }
         return;
       }
+      this.cloudRefreshRetryWake?.();
       this.resetRetryWake?.();
       if (
         this.projection.cloud.dirty &&
@@ -1602,6 +1746,16 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
       this.loseOwnership();
       return { kind: "unavailable", reason: "invalid-state" };
     }
+    if (
+      cloudResult.head.revision < this.cloudRevision ||
+      (cloudResult.head.revision === this.cloudRevision &&
+        !this.documentsEqual(cloudResult.head.document, this.cloudDocument))
+    ) {
+      this.diagnose("studio_takeover_cloud_refresh_stale", "unavailable");
+      dependencies.coordination.relinquish?.();
+      this.loseOwnership();
+      return { kind: "unavailable", reason: "invalid-state" };
+    }
 
     this.cloudDocument = ownDocument(cloudResult.head.document);
     this.cloudRevision = cloudResult.head.revision;
@@ -1625,6 +1779,47 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
       cloudRevision: this.cloudRevision,
       cloudDocument: this.cloudDocument,
     };
+  }
+
+  private async removeObsoleteDeviceDraft(): Promise<DraftRemovalOutcome> {
+    const dependencies = this.dependencies;
+    const generation = this.projection.ownership.generation;
+    if (!dependencies || generation === null) {
+      this.projection = {
+        ...this.projection,
+        durability: { device: "durable", protectsNavigation: false },
+      };
+      return "removed";
+    }
+    try {
+      const outcome = await dependencies.drafts.remove(
+        this.deviceDraftKey,
+        generation,
+      );
+      if (outcome === "stale") {
+        this.diagnose("studio_cloud_current_draft_remove_rejected", "stale");
+        dependencies.coordination.relinquish?.();
+        this.loseOwnership();
+        return "stale";
+      }
+      this.projection = {
+        ...this.projection,
+        durability: { device: "durable", protectsNavigation: false },
+      };
+      return "removed";
+    } catch (error) {
+      this.deviceDraftAvailable = false;
+      this.projection = {
+        ...this.projection,
+        durability: { device: "degraded", protectsNavigation: true },
+      };
+      this.diagnose(
+        "studio_cloud_current_draft_remove_failed",
+        "degraded",
+        error,
+      );
+      return "unavailable";
+    }
   }
 
   private scheduleDeviceDraftWrite(): void {

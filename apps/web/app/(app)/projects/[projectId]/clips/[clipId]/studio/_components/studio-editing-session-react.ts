@@ -79,8 +79,17 @@ export function useStudioEditingSession(
         void session.perform({ type: "close", reason: "pagehide" });
       }
     };
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (event.persisted) {
+        void session.perform({ type: "resume" });
+      }
+    };
     window.addEventListener("pagehide", onPageHide);
-    return () => window.removeEventListener("pagehide", onPageHide);
+    window.addEventListener("pageshow", onPageShow);
+    return () => {
+      window.removeEventListener("pagehide", onPageHide);
+      window.removeEventListener("pageshow", onPageShow);
+    };
   }, [session]);
   const snapshot = useSyncExternalStore(
     session.subscribe,
