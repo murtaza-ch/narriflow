@@ -2,6 +2,24 @@
 
 Narriflow turns source media into publishable short-form content through distinct intake and post-ingest processing lifecycles. This glossary fixes the language used for those domain concepts.
 
+## Editing
+
+**Studio Editing Session**:
+One tab-local editing relationship with a clip, including its working document, history, durability, write ownership, preview eligibility, and playback position.
+_Avoid_: Studio shell, editor state, editing tab
+
+**Clip Editor Document**:
+The complete revisioned edit state for one clip that can be saved to Narriflow and used to produce exports.
+_Avoid_: Form state, Studio payload, edits blob
+
+**Device Draft**:
+The latest Clip Editor Document durably retained in the current browser but not necessarily confirmed by Narriflow.
+_Avoid_: Cache, local copy, backup
+
+**Studio Write Ownership**:
+The exclusive right of one Studio Editing Session in a browser profile to change and synchronize a clip. Cloud revision checks remain the final protection when exclusivity is degraded.
+_Avoid_: Workflow Attempt, worker lease, tab lock
+
 ## Processing
 
 **Workflow Run**:

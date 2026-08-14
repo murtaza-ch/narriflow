@@ -49,13 +49,7 @@ import {
   releaseTimelineThumbnailResources,
   type ThumbnailVideoKind,
 } from "./timeline-preview-manager";
-import {
-  applyUnifiedEditorAction,
-  canRedoUnified,
-  canUndoUnified,
-  createUnifiedEditorHistory,
-  type UnifiedEditorHistory,
-} from "./unified-editor-history";
+import { useStudioEditingSession } from "./studio-editing-session-react";
 import {
   combineSaveOutcomes,
   completeSave,
@@ -89,6 +83,7 @@ import {
   replaceSubtitleLineText,
   replaceSubtitleParagraphText,
 } from "./subtitle-lines";
+import type { TimelineSegment } from "./studio-types";
 
 /**
  * Below this width the transcript panel has already hidden (it collapses
@@ -246,12 +241,7 @@ export interface TranscriptItem {
   description?: string;
 }
 
-export interface TimelineSegment {
-  id: string;
-  label: string;
-  startSec: number;
-  endSec: number;
-}
+export type { TimelineSegment } from "./studio-types";
 
 /** The project's brand logo, pre-resolved server-side (studio/page.tsx) from
  *  the frozen project brand snapshot: a presigned download URL plus the
@@ -326,7 +316,7 @@ interface StudioState {
    *  "single selected canvas object" rule. */
   selectedTextLayerId: string | null;
   transcriptOnly: boolean;
-  segments: TimelineSegment[];
+  segments: readonly TimelineSegment[];
   studioEdits: StudioEdits;
   /** Current B-roll cutaway URL — lives in the editor document (undoable,
    *  autosaved), not a locally-PATCHed side channel. */
@@ -738,25 +728,28 @@ export function StudioShell({
     };
   }, [previewVideoUrl, sourcePurged, fetchPreviewStatus]);
 
-  // ─── Unified editor document + segment history (vizard-parity.md Phase A
-  // step 3) ────────────────────────────────────────────────────────────────
-  // Everything the studio can mutate (captionPreset, transcriptSlice,
-  // studioEdits, brollUrl, deletedRanges) lives in ONE EditorHistory, plus
-  // the client-only timeline segments, interleaved into one undo/redo order
-  // — see unified-editor-history.ts for why these stay as two underlying
-  // stacks instead of one merged array.
-  const [unified, setUnified] = useState<UnifiedEditorHistory>(() =>
-    createUnifiedEditorHistory(initialEditorDocument, timelineSegments),
-  );
+  // React subscribes to one clip-scoped session and adapts its stable
+  // snapshot into the existing presentation context. The migration adapter
+  // exists only while later tickets move recovery/cloud convergence out of
+  // this component; edits and history already have exactly one owner here.
+  const {
+    session: studioSession,
+    snapshot: sessionSnapshot,
+    migration: studioSessionMigration,
+    getCurrentDocument: getStudioDocument,
+  } = useStudioEditingSession({
+    document: initialEditorDocument,
+    segments: timelineSegments,
+  });
 
   // Named `doc` (not `document`) to avoid shadowing the global DOM object.
-  const doc = unified.doc.present;
+  const doc = sessionSnapshot.document;
   const captionPreset = doc.captionPreset;
   const studioEdits = doc.studioEdits;
   const brollUrl = doc.brollUrl;
-  const segments = unified.segments;
-  const canUndo = canUndoUnified(unified);
-  const canRedo = canRedoUnified(unified);
+  const segments = sessionSnapshot.segments;
+  const canUndo = sessionSnapshot.history.canUndo;
+  const canRedo = sessionSnapshot.history.canRedo;
 
   // Derived from `doc.transcriptSlice`/`doc.clipStartSec`/`doc.clipEndSec`
   // via the exact same pure effective-timing computation studio/page.tsx
@@ -1007,17 +1000,15 @@ export function StudioShell({
       updater: CaptionPreset | ((prev: CaptionPreset) => CaptionPreset),
       coalesceKey?: string,
     ) => {
-      setUnified((s) => {
-        const next =
-          typeof updater === "function" ? updater(s.doc.present.captionPreset) : updater;
-        return applyUnifiedEditorAction(s, {
-          kind: "document",
-          action: { type: "setCaptionPreset", captionPreset: next },
-          coalesceKey,
-        });
+      const current = getStudioDocument().captionPreset;
+      const next = typeof updater === "function" ? updater(current) : updater;
+      studioSession.dispatch({
+        type: "document.edit",
+        action: { type: "setCaptionPreset", captionPreset: next },
+        coalesceKey,
       });
     },
-    [],
+    [getStudioDocument, studioSession],
   );
 
   const setStudioEdits = useCallback(
@@ -1025,87 +1016,81 @@ export function StudioShell({
       updater: StudioEdits | ((prev: StudioEdits) => StudioEdits),
       coalesceKey?: string,
     ) => {
-      setUnified((s) => {
-        const next =
-          typeof updater === "function" ? updater(s.doc.present.studioEdits) : updater;
-        return applyUnifiedEditorAction(s, {
-          kind: "document",
-          action: { type: "setStudioEdits", studioEdits: next },
-          coalesceKey,
-        });
+      const current = getStudioDocument().studioEdits;
+      const next = typeof updater === "function" ? updater(current) : updater;
+      studioSession.dispatch({
+        type: "document.edit",
+        action: { type: "setStudioEdits", studioEdits: next },
+        coalesceKey,
       });
     },
-    [],
+    [getStudioDocument, studioSession],
   );
 
   // Fix 8b: gesture end (slider pointer-up, resize-drag pointer-up) breaks
   // the coalesce chain so the NEXT gesture never merges into one that
   // already finished, even if it happens to reuse the same coalesceKey.
   const endCoalesce = useCallback(() => {
-    setUnified((s) => applyUnifiedEditorAction(s, { kind: "endCoalesce" }));
-  }, []);
+    studioSession.dispatch({ type: "gesture.end" });
+  }, [studioSession]);
 
   const setBrollUrl = useCallback((url: string | null, coalesceKey?: string) => {
-    setUnified((s) =>
-      applyUnifiedEditorAction(s, {
-        kind: "document",
-        action: { type: "setBrollUrl", brollUrl: url },
-        coalesceKey,
-      }),
-    );
-  }, []);
+    studioSession.dispatch({
+      type: "document.edit",
+      action: { type: "setBrollUrl", brollUrl: url },
+      coalesceKey,
+    });
+  }, [studioSession]);
 
   const setSegments = useCallback((next: TimelineSegment[]) => {
-    setUnified((s) => applyUnifiedEditorAction(s, { kind: "segments", segments: next }));
-  }, []);
+    studioSession.dispatch({ type: "segments.replace", segments: next });
+  }, [studioSession]);
 
   // Update utterance text — whole-utterance rewrite with proportional timing
   // redistribution across the new word count (distinct from the reducer's
   // word-level `updateWordText`, which deliberately never redistributes).
   const updateUtteranceText = useCallback((utteranceIndex: number, newText: string) => {
-    setUnified((s) => {
-      const prev = s.doc.present.transcriptSlice;
-      const nextSlice = replaceSubtitleLineText(prev, utteranceIndex, newText);
-      return applyUnifiedEditorAction(s, {
-        kind: "document",
-        action: { type: "setTranscriptSlice", transcriptSlice: nextSlice },
-      });
+    const prev = getStudioDocument().transcriptSlice;
+    const nextSlice = replaceSubtitleLineText(prev, utteranceIndex, newText);
+    studioSession.dispatch({
+      type: "document.edit",
+      action: { type: "setTranscriptSlice", transcriptSlice: nextSlice },
     });
-  }, []);
+  }, [getStudioDocument, studioSession]);
 
   const updateParagraphText = useCallback((indices: number[], newText: string) => {
-    setUnified((s) => {
-      const nextSlice = replaceSubtitleParagraphText(
-        s.doc.present.transcriptSlice,
-        indices,
-        newText,
-      );
-      return applyUnifiedEditorAction(s, {
-        kind: "document",
-        action: { type: "setTranscriptSlice", transcriptSlice: nextSlice },
-      });
+    const nextSlice = replaceSubtitleParagraphText(
+      getStudioDocument().transcriptSlice,
+      indices,
+      newText,
+    );
+    studioSession.dispatch({
+      type: "document.edit",
+      action: { type: "setTranscriptSlice", transcriptSlice: nextSlice },
     });
-  }, []);
+  }, [getStudioDocument, studioSession]);
 
   const addSubtitleLineAfter = useCallback((index: number) => {
-    setUnified((s) => {
-      const nextSlice = insertSubtitleLineAfter(s.doc.present.transcriptSlice, index);
-      return applyUnifiedEditorAction(s, {
-        kind: "document",
-        action: { type: "setTranscriptSlice", transcriptSlice: nextSlice },
-      });
+    const nextSlice = insertSubtitleLineAfter(
+      getStudioDocument().transcriptSlice,
+      index,
+    );
+    studioSession.dispatch({
+      type: "document.edit",
+      action: { type: "setTranscriptSlice", transcriptSlice: nextSlice },
     });
-  }, []);
+  }, [getStudioDocument, studioSession]);
 
   const deleteSubtitleLine = useCallback((index: number) => {
-    setUnified((s) => {
-      const nextSlice = removeSubtitleLine(s.doc.present.transcriptSlice, index);
-      return applyUnifiedEditorAction(s, {
-        kind: "document",
-        action: { type: "setTranscriptSlice", transcriptSlice: nextSlice },
-      });
+    const nextSlice = removeSubtitleLine(
+      getStudioDocument().transcriptSlice,
+      index,
+    );
+    studioSession.dispatch({
+      type: "document.edit",
+      action: { type: "setTranscriptSlice", transcriptSlice: nextSlice },
     });
-  }, []);
+  }, [getStudioDocument, studioSession]);
 
   const mergeSubtitleLineWithNext = useCallback(
     (index: number) => {
@@ -1126,16 +1111,17 @@ export function StudioShell({
         });
         return false;
       }
-      setUnified((s) => {
-        const nextSlice = mergeAdjacentSubtitleLines(s.doc.present.transcriptSlice, index);
-        return applyUnifiedEditorAction(s, {
-          kind: "document",
-          action: { type: "setTranscriptSlice", transcriptSlice: nextSlice },
-        });
+      const nextSlice = mergeAdjacentSubtitleLines(
+        getStudioDocument().transcriptSlice,
+        index,
+      );
+      studioSession.dispatch({
+        type: "document.edit",
+        action: { type: "setTranscriptSlice", transcriptSlice: nextSlice },
       });
       return true;
     },
-    [effectiveClipStartSec, segments, utterances],
+    [effectiveClipStartSec, getStudioDocument, segments, studioSession, utterances],
   );
 
   const setPlaybackRate = useCallback((rate: number) => {
@@ -1311,9 +1297,10 @@ export function StudioShell({
     }
 
     setSelectedSegmentId(null);
-    setUnified((s) =>
-      applyUnifiedEditorAction(s, { kind: "document", action: { type: "deleteRange", range } }),
-    );
+    studioSession.dispatch({
+      type: "document.edit",
+      action: { type: "deleteRange", range },
+    });
   }, [
     selectedSegmentId,
     segments,
@@ -1321,13 +1308,15 @@ export function StudioShell({
     doc.clipStartSec,
     doc.clipEndSec,
     doc.deletedRanges,
+    studioSession,
   ]);
 
   const revertDeletedRange = useCallback((range: SourceRange) => {
-    setUnified((s) =>
-      applyUnifiedEditorAction(s, { kind: "document", action: { type: "revertRange", range } }),
-    );
-  }, []);
+    studioSession.dispatch({
+      type: "document.edit",
+      action: { type: "revertRange", range },
+    });
+  }, [studioSession]);
 
   // Vizard-parity Phase B step 11: deletes an arbitrary absolute-source-
   // second range selected in the transcript panel (as opposed to
@@ -1363,12 +1352,13 @@ export function StudioShell({
       if (JSON.stringify(candidateRanges) === JSON.stringify(doc.deletedRanges)) {
         return false;
       }
-      setUnified((s) =>
-        applyUnifiedEditorAction(s, { kind: "document", action: { type: "deleteRange", range } }),
-      );
+      studioSession.dispatch({
+        type: "document.edit",
+        action: { type: "deleteRange", range },
+      });
       return true;
     },
-    [doc.clipStartSec, doc.clipEndSec, doc.deletedRanges],
+    [doc.clipStartSec, doc.clipEndSec, doc.deletedRanges, studioSession],
   );
 
   // Vizard-parity Phase B step 12: Remove silence. `detected` is a batch of
@@ -1404,15 +1394,13 @@ export function StudioShell({
       if (JSON.stringify(candidateRanges) === JSON.stringify(doc.deletedRanges)) {
         return false;
       }
-      setUnified((s) =>
-        applyUnifiedEditorAction(s, {
-          kind: "document",
-          action: { type: "setDeletedRanges", ranges: candidateRanges },
-        }),
-      );
+      studioSession.dispatch({
+        type: "document.edit",
+        action: { type: "setDeletedRanges", ranges: candidateRanges },
+      });
       return true;
     },
-    [doc.deletedRanges, clipWindow],
+    [doc.deletedRanges, clipWindow, studioSession],
   );
 
   // Vizard-parity Phase B step 10: word-level Correct — changes only ONE
@@ -1422,13 +1410,11 @@ export function StudioShell({
   // transcript panel's double-click-to-correct UI dispatches; no
   // coalesceKey is passed, so every correction is its own undo step.
   const updateWord = useCallback((utteranceIndex: number, wordIndex: number, text: string) => {
-    setUnified((s) =>
-      applyUnifiedEditorAction(s, {
-        kind: "document",
-        action: { type: "updateWordText", utteranceIndex, wordIndex, text },
-      }),
-    );
-  }, []);
+    studioSession.dispatch({
+      type: "document.edit",
+      action: { type: "updateWordText", utteranceIndex, wordIndex, text },
+    });
+  }, [studioSession]);
 
   // Vizard-parity Phase B step 13 (in-studio trim): commits a drag on either
   // timeline trim handle. `newStartSec`/`newEndSec` arrive already
@@ -1492,20 +1478,17 @@ export function StudioShell({
       // reconcile effect (which runs after, as the parent) clears it once
       // it's done owning the reposition.
       boundaryReconcileOwnsSeekRef.current = true;
-      setUnified((s) => {
-        const withTrim = applyUnifiedEditorAction(s, {
-          kind: "document",
-          action: {
-            type: "trimClip",
-            startSec: newStartSec,
-            endSec: newEndSec,
-            transcriptSlice: newSlice,
-          },
-        });
-        return applyUnifiedEditorAction(withTrim, { kind: "resegment", segments: newSegments });
+      studioSessionMigration.editDocumentAndResegment({
+        action: {
+          type: "trimClip",
+          startSec: newStartSec,
+          endSec: newEndSec,
+          transcriptSlice: newSlice,
+        },
+        segments: newSegments,
       });
     },
-    [clipInfo.projectId, doc.transcriptSlice],
+    [clipInfo.projectId, doc.transcriptSlice, studioSessionMigration],
   );
 
   // Guard item 8 (vizard-parity.md Phase B step 13): the single-flight save
@@ -1516,36 +1499,26 @@ export function StudioShell({
   // negotiation would race it for the same baseRevision.
   const trimHandlesDisabled = saveState === "saving" || resetState === "resetting";
 
+  const applyHistoryIntent = useCallback((type: "history.undo" | "history.redo") => {
+    const before = getStudioDocument();
+    studioSession.dispatch({ type });
+    const after = getStudioDocument();
+    if (
+      after.clipStartSec !== before.clipStartSec ||
+      after.clipEndSec !== before.clipEndSec
+    ) {
+      boundaryEditIntentRef.current = true;
+      boundaryReconcileOwnsSeekRef.current = true;
+    }
+  }, [getStudioDocument, studioSession]);
+
   const handleUndo = useCallback(() => {
-    setUnified((s) => {
-      const next = applyUnifiedEditorAction(s, { kind: "undo" });
-      if (
-        next.doc.present.clipStartSec !== s.doc.present.clipStartSec ||
-        next.doc.present.clipEndSec !== s.doc.present.clipEndSec
-      ) {
-        boundaryEditIntentRef.current = true;
-        // Finding 5: an undo/redo that crosses a trim step changes
-        // `playerClipStartSec` + `editedTimeMap` in this same commit exactly
-        // like commitTrim does — same coordination applies.
-        boundaryReconcileOwnsSeekRef.current = true;
-      }
-      return next;
-    });
-  }, []);
+    applyHistoryIntent("history.undo");
+  }, [applyHistoryIntent]);
 
   const handleRedo = useCallback(() => {
-    setUnified((s) => {
-      const next = applyUnifiedEditorAction(s, { kind: "redo" });
-      if (
-        next.doc.present.clipStartSec !== s.doc.present.clipStartSec ||
-        next.doc.present.clipEndSec !== s.doc.present.clipEndSec
-      ) {
-        boundaryEditIntentRef.current = true;
-        boundaryReconcileOwnsSeekRef.current = true;
-      }
-      return next;
-    });
-  }, []);
+    applyHistoryIntent("history.redo");
+  }, [applyHistoryIntent]);
 
   // ─── Single-endpoint revision-aware autosave (vizard-parity.md Phase A
   // step 4) ────────────────────────────────────────────────────────────────
@@ -1854,7 +1827,10 @@ export function StudioShell({
             boundaryEditIntentRef.current = true;
             boundaryReconcileOwnsSeekRef.current = true;
           }
-          setUnified(createUnifiedEditorHistory(recovery.document, timelineSegments));
+          studioSessionMigration.replaceRuntimeRoot({
+            document: recovery.document,
+            segments: timelineSegments,
+          });
           setSaveState(
             writeLeaseReadyRef.current && !hasWriteLeaseRef.current
               ? "readonly"
@@ -1933,6 +1909,7 @@ export function StudioShell({
     initialEditorDocument,
     initialEditorRevision,
     queueDraftOperation,
+    studioSessionMigration.replaceRuntimeRoot,
     timelineSegments,
   ]);
 
@@ -2129,7 +2106,10 @@ export function StudioShell({
                 boundaryReconcileOwnsSeekRef.current = true;
               }
               docPresentRef.current = merged.document;
-              setUnified(createUnifiedEditorHistory(merged.document, timelineSegments));
+              studioSessionMigration.replaceRuntimeRoot({
+                document: merged.document,
+                segments: timelineSegments,
+              });
               setSaveState("local");
               toaster.create({
                 type: "info",
@@ -2258,11 +2238,10 @@ export function StudioShell({
         if (docPresentRef.current === documentToSave) {
           // No local edits landed mid-flight — safe to adopt the server's
           // (possibly rebased) document without recording a new undo step.
-          setUnified((s) =>
-            s.doc.present === documentToSave
-              ? { ...s, doc: { ...s.doc, present: json.document } }
-              : s,
-          );
+          studioSessionMigration.acknowledgeCloud({
+            expectedDocument: documentToSave,
+            document: json.document,
+          });
           lastSavedDocumentJsonRef.current = JSON.stringify(json.document);
           localDraftDocumentJsonRef.current = JSON.stringify(json.document);
           setIsLocalDraftDurable(true);
@@ -2315,6 +2294,8 @@ export function StudioShell({
     queueDraftOperation,
     scheduleRetry,
     setBaseRevision,
+    studioSessionMigration.acknowledgeCloud,
+    studioSessionMigration.replaceRuntimeRoot,
     timelineSegments,
   ]);
 
@@ -2670,7 +2651,10 @@ export function StudioShell({
     };
     localDraftDocumentJsonRef.current = cloudJson;
     setBaseRevision(pendingDraftConflict.cloudRevision);
-    setUnified(createUnifiedEditorHistory(pendingDraftConflict.cloudDocument, timelineSegments));
+    studioSessionMigration.replaceRuntimeRoot({
+      document: pendingDraftConflict.cloudDocument,
+      segments: timelineSegments,
+    });
     setPendingDraftConflict(null);
     autosaveStoppedRef.current = false;
     setIsLocalDraftDurable(true);
@@ -2682,6 +2666,7 @@ export function StudioShell({
     pendingDraftConflict,
     queueDraftOperation,
     setBaseRevision,
+    studioSessionMigration.replaceRuntimeRoot,
     timelineSegments,
   ]);
 
@@ -2701,12 +2686,20 @@ export function StudioShell({
       boundaryReconcileOwnsSeekRef.current = true;
     }
     localDraftDocumentJsonRef.current = JSON.stringify(recovered);
-    setUnified(createUnifiedEditorHistory(recovered, timelineSegments));
+    studioSessionMigration.replaceRuntimeRoot({
+      document: recovered,
+      segments: timelineSegments,
+    });
     setPendingDraftConflict(null);
     autosaveStoppedRef.current = false;
     setIsLocalDraftDurable(true);
     setSaveState(hasWriteLeaseRef.current ? (navigator.onLine ? "local" : "offline") : "readonly");
-  }, [pendingDraftConflict, setBaseRevision, timelineSegments]);
+  }, [
+    pendingDraftConflict,
+    setBaseRevision,
+    studioSessionMigration.replaceRuntimeRoot,
+    timelineSegments,
+  ]);
 
   const selectCaption = useCallback(() => {
     setCaptionSelected(true);

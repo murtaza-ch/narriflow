@@ -13,7 +13,7 @@ import {
   createUnifiedEditorHistory,
   type UnifiedEditorHistory,
 } from "./unified-editor-history";
-import type { TimelineSegment } from "./studio-shell";
+import type { TimelineSegment } from "./studio-types";
 
 function makeDocument(): EditorDocument {
   return editorDocumentSchema.parse({

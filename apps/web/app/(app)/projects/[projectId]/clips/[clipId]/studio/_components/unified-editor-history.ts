@@ -9,7 +9,7 @@ import {
   type EditorDocument,
   type EditorHistory,
 } from "@narriflow/validators";
-import type { TimelineSegment } from "./studio-shell";
+import type { TimelineSegment } from "./studio-types";
 
 /**
  * Unified undo/redo (vizard-parity.md Phase A step 3): the studio has two
