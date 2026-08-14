@@ -51,19 +51,14 @@ export interface RippleStep {
  * ffmpeg's own trim/concat is half-open on the end, so the source frame at
  * exactly `sourceEndSec` is really the first DELETED frame, not the last
  * kept one. Treating it as kept let one deleted frame flash before the
- * skip fired. Ownership is half-open on every segment's trailing edge
- * EXCEPT the clip's own final segment — but by the time this runs,
- * `sourceTimeSec` is already guaranteed `< map.clipEndSec -
- * RIPPLE_END_EPSILON_SEC` (the caller's end-of-clip check above already
- * returned), so `sourceSec` can never actually land exactly on the final
- * segment's own end here — the "except" is structural, not a branch this
- * function needs to encode.
+ * skip fired. Ownership is half-open on every segment's trailing edge,
+ * including the last kept segment when a tail cut follows it. The raw clip
+ * end is handled by `stepRipple`'s epsilon check before this predicate.
  */
 function isKeptForContinuousPlayback(map: EditedTimeMap, sourceSec: number): boolean {
-  return map.segments.some((segment, i) => {
+  return map.segments.some((segment) => {
     if (sourceSec < segment.sourceStartSec) return false;
-    const isLastSegment = i === map.segments.length - 1;
-    return isLastSegment ? sourceSec <= segment.sourceEndSec : sourceSec < segment.sourceEndSec;
+    return sourceSec < segment.sourceEndSec;
   });
 }
 

@@ -20,6 +20,11 @@ import {
 } from "./studio-editing-session";
 import type { TimelineSegment } from "./studio-types";
 import { createBrowserStudioSessionDependencies } from "./studio-editing-session-browser";
+import { createBrowserStudioMediaAdapter } from "./studio-editing-session-media-browser";
+import {
+  createSessionPlaybackClock,
+  type PlaybackClock,
+} from "./playback-clock";
 
 type LegacyReactSnapshot = Omit<
   StudioSessionSnapshot,
@@ -42,6 +47,8 @@ export interface StudioEditingSessionReactAdapter {
   session: StudioEditingSession;
   snapshot: LegacyReactSnapshot;
   migration: StudioEditingSessionMigrationAdapter;
+  mediaRef(element: HTMLVideoElement | null): void;
+  playbackClock: PlaybackClock;
   getCurrentDocument(): EditorDocument;
 }
 
@@ -49,22 +56,63 @@ export interface StudioEditingSessionReactAdapters {
   preview?: StudioSessionDependencies["preview"];
 }
 
+function snapshotsEqualForPresentation(
+  left: StudioSessionSnapshot,
+  right: StudioSessionSnapshot,
+): boolean {
+  return (
+    left.document === right.document &&
+    left.segments === right.segments &&
+    left.history.canUndo === right.history.canUndo &&
+    left.history.canRedo === right.history.canRedo &&
+    left.status === right.status &&
+    left.recovery.kind === right.recovery.kind &&
+    left.recovery.conflictPaths === right.recovery.conflictPaths &&
+    left.durability.device === right.durability.device &&
+    left.durability.protectsNavigation === right.durability.protectsNavigation &&
+    left.ownership.kind === right.ownership.kind &&
+    left.ownership.generation === right.ownership.generation &&
+    left.cloud.state === right.cloud.state &&
+    left.cloud.revision === right.cloud.revision &&
+    left.cloud.dirty === right.cloud.dirty &&
+    left.cloud.rejectionCode === right.cloud.rejectionCode &&
+    left.preview.windowFingerprint === right.preview.windowFingerprint &&
+    left.preview.proxy === right.preview.proxy &&
+    left.preview.waveformPeaksUrl === right.preview.waveformPeaksUrl &&
+    left.preview.automaticLayout === right.preview.automaticLayout &&
+    left.preview.activeAsset.kind === right.preview.activeAsset.kind &&
+    left.preview.activeAsset.url === right.preview.activeAsset.url &&
+    left.preview.activeAsset.offsetSec === right.preview.activeAsset.offsetSec &&
+    left.playback.durationSec === right.playback.durationSec &&
+    left.playback.state === right.playback.state &&
+    left.playback.rate === right.playback.rate &&
+    left.capabilities.mutate === right.capabilities.mutate &&
+    left.capabilities.play === right.capabilities.play &&
+    left.capabilities.takeOver === right.capabilities.takeOver
+  );
+}
+
 export function useStudioEditingSession(
   seed: StudioSessionSeed,
   adapters: StudioEditingSessionReactAdapters = {},
 ): StudioEditingSessionReactAdapter {
-  const [session] = useState(() =>
-    createStudioEditingSession(
+  const [{ session, media }] = useState(() => {
+    const media = createBrowserStudioMediaAdapter();
+    const session = createStudioEditingSession(
       seed,
       seed.projectId && seed.clipId
-          ? createBrowserStudioSessionDependencies({
+        ? {
+            ...createBrowserStudioSessionDependencies({
               projectId: seed.projectId,
               clipId: seed.clipId,
-            }, adapters.preview)
+            }, adapters.preview),
+            media,
+          }
         : undefined,
       { deferStart: Boolean(seed.projectId && seed.clipId) },
-    ),
-  );
+    );
+    return { session, media };
+  });
   const closeTimerRef = useRef<number | null>(null);
   useEffect(() => {
     if (closeTimerRef.current !== null) {
@@ -97,14 +145,30 @@ export function useStudioEditingSession(
       window.removeEventListener("pageshow", onPageShow);
     };
   }, [session]);
+  const getPresentationSnapshot = useMemo(() => {
+    let selected = session.getSnapshot();
+    return () => {
+      const next = session.getSnapshot();
+      if (!snapshotsEqualForPresentation(selected, next)) selected = next;
+      return selected;
+    };
+  }, [session]);
   const snapshot = useSyncExternalStore(
     session.subscribe,
-    session.getSnapshot,
-    session.getSnapshot,
+    getPresentationSnapshot,
+    getPresentationSnapshot,
   );
   const migration = useMemo(
     () => getStudioEditingSessionMigrationAdapter(session),
     [session],
+  );
+  const playbackClock = useMemo(
+    () => createSessionPlaybackClock(session),
+    [session],
+  );
+  const mediaRef = useCallback(
+    (element: HTMLVideoElement | null) => media.attach(element),
+    [media],
   );
   const getCurrentDocument = useCallback(
     () => session.getSnapshot().document as EditorDocument,
@@ -115,6 +179,8 @@ export function useStudioEditingSession(
     session,
     snapshot: snapshot as LegacyReactSnapshot,
     migration,
+    mediaRef,
+    playbackClock,
     getCurrentDocument,
   };
 }

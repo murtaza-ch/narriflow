@@ -1,6 +1,9 @@
 import {
   clipAutoLayoutMatchesInputs,
+  editedToSource,
+  sourceToEdited,
   type ClipAutoLayoutAnalysis,
+  type EditedTimeMap,
   type EditorAction,
   type EditorDocument,
   type TranscriptUtterance,
@@ -19,6 +22,8 @@ import {
   mergeEditorDocuments,
   type StoredEditorDraft,
 } from "./local-editor-draft";
+import { buildStudioCutPlan } from "./edited-timeline";
+import { stepRipple } from "./ripple-playback";
 
 type Listener = () => void;
 const PREVIEW_POLL_INTERVAL_MS = 8_000;
@@ -75,6 +80,7 @@ export interface StudioSessionSnapshot {
     rejectionCode: string | null;
   };
   preview: StudioPreviewSnapshot;
+  playback: StudioPlaybackSnapshot;
   capabilities: {
     mutate: boolean;
     play: boolean;
@@ -92,7 +98,13 @@ export type StudioSessionIntent =
   | { type: "gesture.end" }
   | { type: "history.undo" }
   | { type: "history.redo" }
-  | { type: "preview.set-source-fallback"; enabled: boolean };
+  | { type: "preview.set-source-fallback"; enabled: boolean }
+  | { type: "playback.seek"; editedTimeSec: number }
+  | { type: "playback.play" }
+  | { type: "playback.pause" }
+  | { type: "playback.toggle" }
+  | { type: "playback.set-rate"; rate: number }
+  | { type: "playback.reload" };
 
 export type IntentReceipt =
   | { accepted: true }
@@ -228,6 +240,54 @@ export interface StudioPreviewSnapshot {
     | { kind: "unavailable"; url: null; offsetSec: 0 };
 }
 
+export interface StudioMediaBinding {
+  sessionGeneration: number;
+  mediaGeneration: number;
+}
+
+export interface StudioPlaybackSnapshot {
+  editedTimeSec: number;
+  durationSec: number;
+  state: "paused" | "playing";
+  rate: number;
+  mediaBinding: StudioMediaBinding;
+}
+
+export type StudioMediaCommand =
+  | {
+      type: "load";
+      binding: StudioMediaBinding;
+      url: string;
+      mediaTimeSec: number;
+      rate: number;
+      playing: boolean;
+      muted: boolean;
+      volume: number;
+    }
+  | { type: "unload"; binding: StudioMediaBinding }
+  | { type: "seek"; binding: StudioMediaBinding; mediaTimeSec: number }
+  | { type: "play"; binding: StudioMediaBinding }
+  | { type: "pause"; binding: StudioMediaBinding }
+  | { type: "set-rate"; binding: StudioMediaBinding; rate: number }
+  | {
+      type: "set-audio";
+      binding: StudioMediaBinding;
+      muted: boolean;
+      volume: number;
+    };
+
+export type StudioMediaEvent =
+  | { type: "time"; binding: StudioMediaBinding; mediaTimeSec: number }
+  | { type: "played"; binding: StudioMediaBinding }
+  | { type: "paused"; binding: StudioMediaBinding }
+  | { type: "ended"; binding: StudioMediaBinding }
+  | { type: "seeked"; binding: StudioMediaBinding; mediaTimeSec: number };
+
+export interface StudioMediaAdapter {
+  subscribe(listener: (event: StudioMediaEvent) => void): () => void;
+  command(command: StudioMediaCommand): void;
+}
+
 export interface StudioSessionOptions {
   deferStart?: boolean;
 }
@@ -297,6 +357,7 @@ export interface StudioSessionDependencies {
     fetchProxyStatus?(): Promise<StudioProxyStatus>;
     fetchAutomaticLayout?(): Promise<ClipAutoLayoutAnalysis | null>;
   };
+  media?: StudioMediaAdapter;
   runtime: {
     now(): number;
     createId(): string;
@@ -343,6 +404,7 @@ function snapshotFor(
   unified: UnifiedEditorHistory,
   projection: SessionProjection,
   preview: StudioPreviewSnapshot,
+  playback: StudioPlaybackSnapshot,
 ): StudioSessionSnapshot {
   const mutate =
     projection.status === "ready" &&
@@ -356,6 +418,7 @@ function snapshotFor(
     },
     ...projection,
     preview,
+    playback,
     capabilities: {
       mutate,
       play: projection.status !== "closed",
@@ -407,7 +470,15 @@ function snapshotsObservablyEqual(
     left.preview.automaticLayout === right.preview.automaticLayout &&
     left.preview.activeAsset.kind === right.preview.activeAsset.kind &&
     left.preview.activeAsset.url === right.preview.activeAsset.url &&
-    left.preview.activeAsset.offsetSec === right.preview.activeAsset.offsetSec
+    left.preview.activeAsset.offsetSec === right.preview.activeAsset.offsetSec &&
+    left.playback.editedTimeSec === right.playback.editedTimeSec &&
+    left.playback.durationSec === right.playback.durationSec &&
+    left.playback.state === right.playback.state &&
+    left.playback.rate === right.playback.rate &&
+    left.playback.mediaBinding.sessionGeneration ===
+      right.playback.mediaBinding.sessionGeneration &&
+    left.playback.mediaBinding.mediaGeneration ===
+      right.playback.mediaBinding.mediaGeneration
   );
 }
 
@@ -429,6 +500,18 @@ function automaticLayoutInputFingerprint(
       range.startSec.toFixed(3),
       range.endSec.toFixed(3),
     ]),
+  });
+}
+
+function playbackInputFingerprint(
+  document: Pick<
+    EditorDocument,
+    "clipStartSec" | "clipEndSec" | "deletedRanges"
+  >,
+): string {
+  return JSON.stringify({
+    window: documentWindowFingerprint(document),
+    deletedRanges: document.deletedRanges,
   });
 }
 
@@ -498,6 +581,16 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
   private automaticLayoutPollDelayMs = AUTO_LAYOUT_POLL_INITIAL_MS;
   private automaticLayoutPollGeneration = 0;
   private automaticLayoutPollRunning = false;
+  private playbackMap: EditedTimeMap;
+  private playbackDocument: EditorDocument;
+  private playbackSourceTimeSec: number;
+  private playback: StudioPlaybackSnapshot;
+  private mediaGeneration = 0;
+  private mediaAssetKey: string | null = null;
+  private mediaOffsetSec = 0;
+  private mediaAudioFingerprint: string | null = null;
+  private unsubscribeMedia: (() => void) | null = null;
+  private pendingMediaSeekSourceSec: number | null = null;
 
   constructor(
     seed: StudioSessionSeed,
@@ -531,6 +624,19 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     this.retainedAutomaticLayout = seed.preview?.automaticLayout
       ? deepFreeze(structuredClone(seed.preview.automaticLayout))
       : null;
+    this.playbackMap = this.playbackMapFor(seed.document);
+    this.playbackDocument = this.unified.doc.present;
+    this.playbackSourceTimeSec = editedToSource(this.playbackMap, 0);
+    this.playback = deepFreeze({
+      editedTimeSec: 0,
+      durationSec: this.playbackMap.editedDurationSec,
+      state: "paused",
+      rate: 1,
+      mediaBinding: {
+        sessionGeneration: this.sessionGeneration,
+        mediaGeneration: this.mediaGeneration,
+      },
+    });
     this.projection = dependencies
       ? {
           status: "starting",
@@ -556,10 +662,12 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
             rejectionCode: null,
           },
         };
+    this.bindMediaToActiveAsset(this.previewSnapshot());
     this.snapshot = snapshotFor(
       this.unified,
       this.projection,
       this.previewSnapshot(),
+      this.playback,
     );
     this.started = !dependencies || !options.deferStart;
     if (dependencies && this.started) void this.initialize();
@@ -573,6 +681,45 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
   };
 
   dispatch = (intent: StudioSessionIntent): IntentReceipt => {
+    if (intent.type.startsWith("playback.")) {
+      if (this.projection.status === "closed") {
+        return { accepted: false, reason: "closed" };
+      }
+      switch (intent.type) {
+        case "playback.seek":
+          this.seekPlayback(intent.editedTimeSec);
+          break;
+        case "playback.play":
+          this.play();
+          break;
+        case "playback.pause":
+          this.pause();
+          break;
+        case "playback.toggle":
+          if (this.playback.state === "playing") this.pause();
+          else this.play();
+          break;
+        case "playback.set-rate": {
+          const rate = Number.isFinite(intent.rate)
+            ? Math.max(0.5, Math.min(2, intent.rate))
+            : 1;
+          this.replacePlayback({ rate });
+          if (this.mediaAssetKey) {
+            this.dependencies?.media?.command({
+              type: "set-rate",
+              binding: this.playback.mediaBinding,
+              rate,
+            });
+          }
+          break;
+        }
+        case "playback.reload":
+          this.mediaAssetKey = null;
+          break;
+      }
+      this.publish();
+      return { accepted: true };
+    }
     if (intent.type === "preview.set-source-fallback") {
       if (this.projection.status === "closed") {
         return { accepted: false, reason: "closed" };
@@ -620,6 +767,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     }
 
     if (this.unified.doc.present !== documentBefore) {
+      this.reconcilePlaybackAfterDocumentChange();
       this.scheduleDeviceDraftWrite();
       this.markCloudDirty();
     }
@@ -640,6 +788,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
       if (this.projection.status === "closed") {
         return { kind: "closed" };
       }
+      this.releaseMedia();
       this.sessionGeneration += 1;
       this.clearCloudTimers();
       this.clearDerivedPolling();
@@ -822,6 +971,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
       segments: ownSegments(input.segments),
     });
     if (this.unified.doc.present !== documentBefore) {
+      this.reconcilePlaybackAfterDocumentChange();
       this.scheduleDeviceDraftWrite();
       this.markCloudDirty();
     }
@@ -1547,10 +1697,17 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
   }
 
   private publish(): void {
+    if (this.playbackDocument !== this.unified.doc.present) {
+      this.reconcilePlaybackAfterDocumentChange();
+    }
+    const preview = this.previewSnapshot();
+    this.bindMediaToActiveAsset(preview);
+    this.reconcileMediaAudio();
     const next = snapshotFor(
       this.unified,
       this.projection,
-      this.previewSnapshot(),
+      preview,
+      this.playback,
     );
     if (!snapshotsObservablyEqual(next, this.snapshot)) {
       this.snapshot = next;
@@ -1590,6 +1747,300 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
           : null,
       activeAsset,
     });
+  }
+
+  private playbackMapFor(document: EditorDocument): EditedTimeMap {
+    const endSec =
+      document.clipEndSec > document.clipStartSec
+        ? document.clipEndSec
+        : document.clipStartSec;
+    return buildStudioCutPlan(document.deletedRanges, {
+      startSec: document.clipStartSec,
+      endSec,
+    }).map;
+  }
+
+  private currentMediaBinding(): StudioMediaBinding {
+    return deepFreeze({
+      sessionGeneration: this.sessionGeneration,
+      mediaGeneration: this.mediaGeneration,
+    });
+  }
+
+  private replacePlayback(
+    patch: Partial<Omit<StudioPlaybackSnapshot, "mediaBinding">> & {
+      mediaBinding?: StudioMediaBinding;
+    },
+  ): void {
+    this.playback = deepFreeze({
+      ...this.playback,
+      ...patch,
+    });
+  }
+
+  private seekPlayback(editedTimeSec: number): void {
+    const bounded = Number.isFinite(editedTimeSec)
+      ? Math.max(0, Math.min(this.playbackMap.editedDurationSec, editedTimeSec))
+      : 0;
+    this.playbackSourceTimeSec = this.sourceAnchorForEditedTime(bounded);
+    this.replacePlayback({ editedTimeSec: bounded });
+    if (this.mediaAssetKey) {
+      this.dependencies?.media?.command({
+        type: "seek",
+        binding: this.playback.mediaBinding,
+        mediaTimeSec: this.playbackSourceTimeSec - this.mediaOffsetSec,
+      });
+    }
+  }
+
+  private play(): void {
+    if (this.playback.editedTimeSec >= this.playback.durationSec - 0.02) {
+      this.seekPlayback(0);
+    }
+    this.replacePlayback({ state: "playing" });
+    if (this.mediaAssetKey) {
+      this.dependencies?.media?.command({
+        type: "play",
+        binding: this.playback.mediaBinding,
+      });
+    }
+  }
+
+  private pause(): void {
+    this.replacePlayback({ state: "paused" });
+    if (this.mediaAssetKey) {
+      this.dependencies?.media?.command({
+        type: "pause",
+        binding: this.playback.mediaBinding,
+      });
+    }
+  }
+
+  private reconcilePlaybackAfterDocumentChange(): void {
+    if (
+      playbackInputFingerprint(this.playbackDocument) ===
+      playbackInputFingerprint(this.unified.doc.present)
+    ) {
+      this.playbackDocument = this.unified.doc.present;
+      return;
+    }
+    const map = this.playbackMapFor(this.unified.doc.present);
+    const wasPlaying = this.playback.state === "playing";
+    let pauseForEndRelocation = false;
+    this.playbackDocument = this.unified.doc.present;
+    const containing = map.segments.find(
+      (segment) =>
+        this.playbackSourceTimeSec >= segment.sourceStartSec &&
+        this.playbackSourceTimeSec < segment.sourceEndSec,
+    );
+    if (containing) {
+      this.playbackMap = map;
+      this.replacePlayback({
+        editedTimeSec: sourceToEdited(map, this.playbackSourceTimeSec),
+        durationSec: map.editedDurationSec,
+      });
+    } else {
+      const next = map.segments.find(
+        (segment) => segment.sourceStartSec >= this.playbackSourceTimeSec,
+      );
+      this.playbackMap = map;
+      if (next) {
+        this.playbackSourceTimeSec = next.sourceStartSec;
+        this.replacePlayback({
+          editedTimeSec: next.editedStartSec,
+          durationSec: map.editedDurationSec,
+        });
+      } else if (map.segments.length > 0) {
+        this.playbackSourceTimeSec = editedToSource(
+          map,
+          Math.max(0, map.editedDurationSec - 0.001),
+        );
+        this.replacePlayback({
+          editedTimeSec: map.editedDurationSec,
+          durationSec: map.editedDurationSec,
+          state: "paused",
+        });
+        pauseForEndRelocation = wasPlaying;
+      } else {
+        this.playbackSourceTimeSec = map.clipStartSec;
+        this.replacePlayback({
+          editedTimeSec: 0,
+          durationSec: 0,
+          state: "paused",
+        });
+        pauseForEndRelocation = wasPlaying;
+      }
+    }
+    if (this.mediaAssetKey) {
+      if (pauseForEndRelocation) {
+        this.dependencies?.media?.command({
+          type: "pause",
+          binding: this.playback.mediaBinding,
+        });
+      }
+      this.dependencies?.media?.command({
+        type: "seek",
+        binding: this.playback.mediaBinding,
+        mediaTimeSec: this.playbackSourceTimeSec - this.mediaOffsetSec,
+      });
+    }
+  }
+
+  private bindMediaToActiveAsset(preview: StudioPreviewSnapshot): void {
+    const media = this.dependencies?.media;
+    if (!media || this.projection.status === "closed") return;
+    if (!this.unsubscribeMedia) {
+      this.unsubscribeMedia = media.subscribe((event) => this.onMediaEvent(event));
+    }
+    const asset = preview.activeAsset;
+    const key = asset.url ? `${asset.kind}:${asset.url}:${asset.offsetSec}` : null;
+    if (
+      key === this.mediaAssetKey &&
+      this.playback.mediaBinding.sessionGeneration === this.sessionGeneration
+    ) {
+      return;
+    }
+    this.mediaAssetKey = key;
+    this.mediaOffsetSec = asset.offsetSec;
+    this.mediaGeneration += 1;
+    const binding = this.currentMediaBinding();
+    this.replacePlayback({ mediaBinding: binding });
+    if (!asset.url) {
+      media.command({ type: "unload", binding });
+      return;
+    }
+    media.command({
+      type: "load",
+      binding,
+      url: asset.url,
+      mediaTimeSec: this.playbackSourceTimeSec - asset.offsetSec,
+      rate: this.playback.rate,
+      playing: this.playback.state === "playing",
+      ...this.sourceAudioCommand(),
+    });
+    this.mediaAudioFingerprint = this.sourceAudioFingerprint();
+  }
+
+  private sourceAudioCommand(): { muted: boolean; volume: number } {
+    const sourceAudio = this.unified.doc.present.studioEdits.sourceAudio;
+    return {
+      muted: sourceAudio.muted,
+      volume: Math.max(0, Math.min(1, sourceAudio.volume / 100)),
+    };
+  }
+
+  private sourceAudioFingerprint(): string {
+    const audio = this.sourceAudioCommand();
+    return `${audio.muted}:${audio.volume}`;
+  }
+
+  private reconcileMediaAudio(): void {
+    if (!this.mediaAssetKey) return;
+    const fingerprint = this.sourceAudioFingerprint();
+    if (fingerprint === this.mediaAudioFingerprint) return;
+    this.mediaAudioFingerprint = fingerprint;
+    this.dependencies?.media?.command({
+      type: "set-audio",
+      binding: this.playback.mediaBinding,
+      ...this.sourceAudioCommand(),
+    });
+  }
+
+  private releaseMedia(): void {
+    const media = this.dependencies?.media;
+    if (media && this.mediaAssetKey) {
+      media.command({ type: "pause", binding: this.playback.mediaBinding });
+      media.command({ type: "unload", binding: this.playback.mediaBinding });
+    }
+    this.unsubscribeMedia?.();
+    this.unsubscribeMedia = null;
+    this.mediaAssetKey = null;
+    this.mediaAudioFingerprint = null;
+    this.replacePlayback({ state: "paused" });
+  }
+
+  private onMediaEvent(event: StudioMediaEvent): void {
+    if (
+      event.binding.sessionGeneration !== this.sessionGeneration ||
+      event.binding.mediaGeneration !== this.mediaGeneration
+    ) {
+      return;
+    }
+    switch (event.type) {
+      case "played":
+        this.replacePlayback({ state: "playing" });
+        break;
+      case "paused":
+        this.replacePlayback({ state: "paused" });
+        break;
+      case "ended":
+        this.parkPlaybackAtEnd();
+        break;
+      case "seeked":
+        this.pendingMediaSeekSourceSec = null;
+        this.projectMediaTime(event.mediaTimeSec);
+        return;
+      case "time":
+        this.projectMediaTime(event.mediaTimeSec);
+        return;
+    }
+    this.publish();
+  }
+
+  private projectMediaTime(mediaTimeSec: number): void {
+    const sourceTimeSec = mediaTimeSec + this.mediaOffsetSec;
+    const step = stepRipple(this.playbackMap, sourceTimeSec);
+    if (step.atEnd) {
+      this.parkPlaybackAtEnd();
+      this.publish();
+      return;
+    }
+    if (step.skipToSourceSec !== undefined) {
+      this.playbackSourceTimeSec = step.skipToSourceSec;
+      if (
+        this.pendingMediaSeekSourceSec === null ||
+        Math.abs(this.pendingMediaSeekSourceSec - step.skipToSourceSec) >= 0.05
+      ) {
+        this.pendingMediaSeekSourceSec = step.skipToSourceSec;
+        this.dependencies?.media?.command({
+          type: "seek",
+          binding: this.playback.mediaBinding,
+          mediaTimeSec: step.skipToSourceSec - this.mediaOffsetSec,
+        });
+      }
+    } else {
+      this.pendingMediaSeekSourceSec = null;
+      this.playbackSourceTimeSec = sourceTimeSec;
+    }
+    this.replacePlayback({ editedTimeSec: step.editedTime });
+    this.publish();
+  }
+
+  private parkPlaybackAtEnd(): void {
+    const editedTimeSec = this.playbackMap.editedDurationSec;
+    this.playbackSourceTimeSec = this.sourceAnchorForEditedTime(editedTimeSec);
+    this.pendingMediaSeekSourceSec = this.playbackSourceTimeSec;
+    this.replacePlayback({ editedTimeSec, state: "paused" });
+    if (this.mediaAssetKey) {
+      this.dependencies?.media?.command({
+        type: "pause",
+        binding: this.playback.mediaBinding,
+      });
+      this.dependencies?.media?.command({
+        type: "seek",
+        binding: this.playback.mediaBinding,
+        mediaTimeSec: this.playbackSourceTimeSec - this.mediaOffsetSec,
+      });
+    }
+  }
+
+  private sourceAnchorForEditedTime(editedTimeSec: number): number {
+    const durationSec = this.playbackMap.editedDurationSec;
+    const anchoredEditedTimeSec =
+      durationSec > 0 && editedTimeSec >= durationSec
+        ? Math.max(0, durationSec - 0.001)
+        : editedTimeSec;
+    return editedToSource(this.playbackMap, anchoredEditedTimeSec);
   }
 
   private retireDerivedAssetsForAcknowledgedChange(

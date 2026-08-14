@@ -319,14 +319,14 @@ export function VideoPreview() {
     aspectRatio, setAspectRatio,
     layoutMode, setLayoutMode,
     studioEdits,
-    videoRef,
-    boundaryReconcileOwnsSeekRef,
+    mediaRef,
     playbackClock,
     sourceVideoUrl,
     previewVideoUrl,
     sourcePurged,
     useOriginalSourceFallback,
     setUseOriginalSourceFallback,
+    reloadPlayback,
     activeVideoUrl,
     activeOffsetSec,
     brollUrl,
@@ -348,12 +348,6 @@ export function VideoPreview() {
     autoLayoutAnalysis,
     clipWindow,
   } = useStudio();
-
-  // File-local position of edited time 0 — equals `playerClipStartSec`
-  // unless the clip's own opening seconds are themselves a deleted range,
-  // in which case playback should start at the first KEPT frame instead.
-  // See studio-shell.tsx's `playerRippleStartSec` for the same computation.
-  const playerRippleStartSec = editedToSource(editedTimeMap, 0) - activeOffsetSec;
 
   // Effective logo settings for THIS clip — studioEdits.logo overrides
   // merged over the project brand snapshot's defaults, via the exact same
@@ -398,6 +392,14 @@ export function VideoPreview() {
   const [sourceDims, setSourceDims] = useState<{ width: number; height: number } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const videoContainerRef = useRef<HTMLDivElement>(null);
+  const mainVideoRef = useRef<HTMLVideoElement | null>(null);
+  const attachMainVideo = useCallback(
+    (element: HTMLVideoElement | null) => {
+      mainVideoRef.current = element;
+      mediaRef(element);
+    },
+    [mediaRef],
+  );
   const musicAudioRef = useRef<HTMLAudioElement>(null);
   // Music/SFX library (vizard-parity.md): `studioEdits.music.url` for an
   // asset picked in a past session may be an expired R2 presign — the
@@ -425,10 +427,6 @@ export function VideoPreview() {
   // wrap the preview's offset+clock time the same way the renderer's
   // `-stream_loop -1` + atrim loops the track.
   const musicDurationRef = useRef(0);
-  // Read by the (rarely re-created) load effect below so a trim change never
-  // needs to be in that effect's deps just to seek to the right start point.
-  const playerRippleStartSecRef = useRef(playerRippleStartSec);
-
   const arConfig = ASPECT_RATIO_CONFIG[aspectRatio];
   const activeBrollAsset =
     brollPreviewAsset?.url === brollUrl ? brollPreviewAsset : null;
@@ -659,102 +657,46 @@ export function VideoPreview() {
 
   const handleRetry = useCallback(() => {
     setRetryNonce((n) => n + 1);
-  }, []);
+    reloadPlayback();
+  }, [reloadPlayback]);
 
+  // biome-ignore lint/correctness/useExhaustiveDependencies: source changes and explicit retries intentionally reset presentation-only load indicators.
   useEffect(() => {
-    playerRippleStartSecRef.current = playerRippleStartSec;
-  }, [playerRippleStartSec]);
-
-  // Assign the active source (proxy when ready, else the source once the
-  // user opts in) and wire loading/error/stall state. Keyed only on
-  // activeVideoUrl (+ retryNonce) — NOT playerClipStartSec — so trimming the
-  // clip seeks the already-buffered file instead of re-downloading it (see
-  // the dedicated seek effect below).
-  // biome-ignore lint/correctness/useExhaustiveDependencies: retryNonce explicitly rebuilds media listeners after a retry.
-  useEffect(() => {
-    const video = videoRef.current;
     setVideoLoaded(false);
     setLoadError(false);
     setIsStalled(false);
     setBufferedFraction(0);
     setSlowLoadHint(false);
-    if (!video || !activeVideoUrl) return;
+  }, [activeVideoUrl, retryNonce]);
 
-    video.src = activeVideoUrl;
-    video.load();
-
-    const handleLoaded = () => {
-      video.currentTime = playerRippleStartSecRef.current;
-      playbackClock.setTime(0);
+  const handleLoadedMetadata = useCallback(
+    (event: React.SyntheticEvent<HTMLVideoElement>) => {
+      const video = event.currentTarget;
       setVideoLoaded(true);
       setLoadError(false);
       setIsStalled(false);
-      // Screen packet C: source pixel dims for fitPipCropToTileNormalized's
-      // `probe` — see `sourceDims`'s doc comment above. Proxy and full
-      // source are cuts of the same footage, so either file's reported
-      // dimensions are equally valid here.
       if (video.videoWidth > 0 && video.videoHeight > 0) {
         setSourceDims({ width: video.videoWidth, height: video.videoHeight });
       }
-    };
-    const handleError = () => {
-      setLoadError(true);
-      setVideoLoaded(false);
-    };
-    const handleStalled = () => setIsStalled(true);
-    const handleProgress = () => {
+    },
+    [],
+  );
+  const handleVideoError = useCallback(() => {
+    setLoadError(true);
+    setVideoLoaded(false);
+  }, []);
+  const handleVideoStalled = useCallback(() => setIsStalled(true), []);
+  const handleVideoProgress = useCallback(
+    (event: React.SyntheticEvent<HTMLVideoElement>) => {
+      const video = event.currentTarget;
       setIsStalled(false);
       if (video.duration > 0 && video.buffered.length > 0) {
         const bufferedEnd = video.buffered.end(video.buffered.length - 1);
         setBufferedFraction(Math.min(1, bufferedEnd / video.duration));
       }
-    };
-
-    video.addEventListener("loadedmetadata", handleLoaded);
-    video.addEventListener("error", handleError);
-    video.addEventListener("stalled", handleStalled);
-    video.addEventListener("progress", handleProgress);
-    return () => {
-      video.removeEventListener("loadedmetadata", handleLoaded);
-      video.removeEventListener("error", handleError);
-      video.removeEventListener("stalled", handleStalled);
-      video.removeEventListener("progress", handleProgress);
-    };
-  }, [activeVideoUrl, videoRef, playbackClock, retryNonce]);
-
-  // Seek (rather than re-download) when the active file switches (proxy <->
-  // full source, which shifts `playerClipStartSec` via `activeOffsetSec`) on
-  // a file that's already loaded. Deliberately keyed on `playerClipStartSec`
-  // (unaffected by content deletes — only trim/file-switch move it), NOT
-  // `playerRippleStartSec` directly: keying on the latter would re-run this
-  // on every delete/revert that happens to touch the clip's opening range,
-  // yanking mid-playback back to the start for an edit that has nothing to
-  // do with trim. The CORRECTION target still goes through the ripple-aware
-  // ref, so a clip that opens with a deleted range doesn't get seeked back
-  // into the cut on a genuine file switch.
-  //
-  // Finding 5 (Phase B closing review): a TRIM also moves
-  // `playerClipStartSec`, but unconditionally resetting to the clip's own
-  // start (as this effect otherwise does) is wrong for a trim mid-playback —
-  // only studio-shell.tsx's `editedTimeMap` reconcile effect actually knows
-  // whether the current position is still valid after the window moved, so
-  // it — not this effect — owns the reposition for that case. commitTrim
-  // (and the undo/redo paths that cross a trim step) set
-  // `boundaryReconcileOwnsSeekRef` synchronously before dispatching; this
-  // effect runs first (child effects fire before the parent's within one
-  // commit) and simply stands down when it sees the flag set, leaving
-  // `video.currentTime` for the reconcile effect to correct (or not) a
-  // moment later in the same commit. A genuine file switch never sets this
-  // ref, so it's unaffected.
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video || !activeVideoUrl || !videoLoaded) return;
-    if (video.readyState < 1) return; // HAVE_METADATA not reached yet
-    if (boundaryReconcileOwnsSeekRef.current) return;
-    if (Math.abs(video.currentTime - playerClipStartSec) > 0.05) {
-      video.currentTime = playerRippleStartSecRef.current;
-    }
-  }, [playerClipStartSec, activeVideoUrl, videoLoaded, videoRef, boundaryReconcileOwnsSeekRef]);
+    },
+    [],
+  );
 
   // Large sources can sit well below HAVE_METADATA for a long time with no
   // error and no stall event — surface a hint rather than looking frozen.
@@ -848,16 +790,6 @@ export function VideoPreview() {
   useEffect(() => playbackClock.subscribe(() => {
     setCurrentTime(playbackClock.getSnapshot());
   }), [playbackClock]);
-
-  // ─── Source audio (volume/mute) — mirrors the render's dialogue-branch
-  // gain (see buildDialogueAudioFilter in the worker). Live and cheap: no
-  // reload, just the two element properties.
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video) return;
-    video.muted = studioEdits.sourceAudio.muted;
-    video.volume = Math.max(0, Math.min(1, studioEdits.sourceAudio.volume / 100));
-  }, [studioEdits.sourceAudio.muted, studioEdits.sourceAudio.volume, videoRef]);
 
   // ─── Music preview playback — a hidden looping <audio> element driven off
   // the same clock the video uses, so scrubbing/trimming the clip keeps the
@@ -1400,15 +1332,12 @@ export function VideoPreview() {
               backdrop) rather than cropped, since "screen" means the shared
               window/slide/app itself must stay fully visible up top. In
               every case the TOP tile deliberately reuses the SAME
-              `<video ref={videoRef}>` DOM node the single-video path
+              main `<video>` DOM node the single-video path
               renders (just restyled/clipped) rather than introducing a
               second element for it — that keeps every existing contract
-              that targets `videoRef` untouched: it's still the sole
-              playback-clock driver (`playbackClock.startVideo` in
-              studio-shell.tsx reads `requestVideoFrameCallback` off this
-              exact element), the sole audio source, and the same node the
-              load/seek/source-audio effects above already manage by
-              `.current` — none of them care how the element is positioned.
+              that targets the browser media adapter untouched: it remains
+              the sole playback driver and audio source, regardless of how
+              the element is positioned.
               The wrapper Box below is unconditionally present at this same
               JSX position across ALL THREE branches (only its inline style
               varies by `isSplit`/`isScreen`) specifically so React never
@@ -1445,7 +1374,7 @@ export function VideoPreview() {
             <Box position="absolute" inset="0" overflow="hidden">
               {/* biome-ignore lint/a11y/useMediaCaption: captions render via the separate interactive caption overlay; the raw video has no VTT track source to attach. */}
               <video
-                ref={videoRef}
+                ref={attachMainVideo}
                 style={
                   autoMainVideoStyle ?? {
                     position: "absolute",
@@ -1459,6 +1388,10 @@ export function VideoPreview() {
                 }
                 playsInline
                 preload="metadata"
+                onLoadedMetadata={handleLoadedMetadata}
+                onError={handleVideoError}
+                onStalled={handleVideoStalled}
+                onProgress={handleVideoProgress}
               />
             </Box>
             {activeSpeakerScene && autoMainLayer ? (
@@ -1513,7 +1446,7 @@ export function VideoPreview() {
                         : null
                   }
                   visible={previewPhase === "ready"}
-                  mainVideoRef={videoRef}
+                  mainVideoRef={mainVideoRef}
                 />
               </Box>
               {activeSpeakerScene && autoBottomLayer ? (

@@ -16,7 +16,6 @@ import { toaster } from "@narriflow/ui";
 import {
   getEffectiveClipTiming,
   editedToSource,
-  isSourceTimeDeleted,
   normalizeDeletedRanges,
   buildTranscriptSliceForWindow,
   mergeCorrectedWordsIntoWindow,
@@ -39,9 +38,8 @@ import { VideoPreview } from "./video-preview";
 import { ToolSidebar } from "./tool-sidebar";
 import { Timeline } from "./timeline";
 import { KeyboardShortcutsModal } from "./keyboard-shortcuts-modal";
-import { createPlaybackClock, type PlaybackClock } from "./playback-clock";
+import type { PlaybackClock } from "./playback-clock";
 import { buildStudioCutPlan, buildSegmentsFromUtterances } from "./edited-timeline";
-import { rippleSeekSourceSec, stepRipple } from "./ripple-playback";
 import { loadTrimTranscript } from "./trim-transcript-cache";
 import {
   releaseTimelineThumbnailResources,
@@ -70,13 +68,6 @@ import type { TimelineSegment } from "./studio-types";
  */
 const STUDIO_MIN_VIEWPORT_WIDTH = 900;
 
-/** Fix 4: a barely-there nudge back from the exact edited duration when
- *  resolving where end-of-playback should park — just enough that
- *  `editedToSource` lands inside the final kept segment instead of exactly
- *  on its far boundary (which, per edit-ranges.ts's half-open convention,
- *  is really the first INSTANT of the next cut, not a frame that's safe to
- *  park on). See `lastKeptPlayerTimeSec` below. */
-const LAST_KEPT_FRAME_EPSILON_SEC = 0.001;
 const TIMELINE_SNAP_THRESHOLD_SEC = 0.25;
 
 /** Shared guard for `deleteSelectedSegment` (timeline), `deleteSourceRange`
@@ -283,15 +274,7 @@ interface StudioState {
 interface StudioContextValue extends StudioState {
   transcript: TranscriptItem[];
   clipInfo: ClipInfo;
-  videoRef: React.RefObject<HTMLVideoElement | null>;
-  /** Phase B closing review finding 5: true for the duration of one commit
-   *  whenever a boundary-changing dispatch (trim, or an undo/redo crossing
-   *  one) is about to move `playerClipStartSec` — video-preview.tsx's own
-   *  `playerClipStartSec`-keyed seek effect checks this and stands down,
-   *  ceding the reposition to studio-shell.tsx's `editedTimeMap` reconcile
-   *  effect, which clears it once done. See that effect's doc comment for
-   *  the full race it resolves. */
-  boundaryReconcileOwnsSeekRef: React.RefObject<boolean>;
+  mediaRef: (element: HTMLVideoElement | null) => void;
   playbackClock: PlaybackClock;
   sourceVideoUrl: string | null;
   sourcePreviewId: string;
@@ -319,6 +302,7 @@ interface StudioContextValue extends StudioState {
    *  boundary-invalidated proxy is being replaced. */
   useOriginalSourceFallback: boolean;
   setUseOriginalSourceFallback: (v: boolean) => void;
+  reloadPlayback: () => void;
   /** Whichever URL the session selected for the `<video>` element: an
    *  eligible proxy, the source during explicit/automatic fallback, or null.
    *  Also what the timeline scrubs
@@ -431,7 +415,6 @@ interface StudioContextValue extends StudioState {
    *  delete path; returns false (no dispatch) when blocked, empty, or a
    *  no-op. */
   applyRemoveSilence: (detected: SourceRange[]) => boolean;
-  setIsPlaying: (v: boolean) => void;
   setPlaybackRate: (v: number) => void;
   setActiveTool: (t: ToolId | null) => void;
   setShowTimeline: (v: boolean) => void;
@@ -604,8 +587,6 @@ export function StudioShell({
   layoutAnalysis = null,
   autoLayoutAnalysis: initialAutoLayoutAnalysis = null,
 }: StudioShellProps) {
-  const videoRef = useRef<HTMLVideoElement | null>(null);
-  const playbackClock = useMemo(() => createPlaybackClock(), []);
   const isViewportTooSmall = useIsViewportBelow(STUDIO_MIN_VIEWPORT_WIDTH);
   const [brollPreviewAsset, setBrollPreviewAsset] =
     useState<StudioBrollPreviewAsset | null>(null);
@@ -617,6 +598,8 @@ export function StudioShell({
   const {
     session: studioSession,
     snapshot: sessionSnapshot,
+    mediaRef,
+    playbackClock,
     getCurrentDocument: getStudioDocument,
   } = useStudioEditingSession(
     {
@@ -669,6 +652,9 @@ export function StudioShell({
     },
     [studioSession],
   );
+  const reloadPlayback = useCallback(() => {
+    studioSession.dispatch({ type: "playback.reload" });
+  }, [studioSession]);
 
   // Named `doc` (not `document`) to avoid shadowing the global DOM object.
   const doc = sessionSnapshot.document;
@@ -745,34 +731,7 @@ export function StudioShell({
   // `duration` IS the edited duration — identical to the old
   // `clipEndSec - clipStartSec` computation whenever `deletedRanges` is
   // empty (the fast path), strictly shorter once cuts exist.
-  const duration = editedTimeMap.editedDurationSec;
-
-  // File-local position of edited time 0 — usually `playerClipStartSec`,
-  // EXCEPT when the clip's own opening seconds are themselves deleted, in
-  // which case the first kept frame starts later than the raw clip
-  // boundary. Anywhere code seeks/resets "to the start" of playback (as
-  // opposed to a trim boundary, which `playerClipStartSec` still owns) goes
-  // through this instead. Identical to `playerClipStartSec` whenever
-  // `deletedRanges` is empty.
-  const playerRippleStartSec = editedToSource(editedTimeMap, 0) - activeOffsetSec;
-
-  // Fix 4 (Phase B hardening): mirror of `playerRippleStartSec` for the
-  // OTHER end of playback. End-of-playback used to park at
-  // `playerClipEndSec` unconditionally — the RAW clip boundary — which is
-  // deleted footage whenever the clip's own tail is cut. This resolves the
-  // last KEPT source frame instead: a hair before `editedDurationSec` (so
-  // `editedToSource` lands strictly inside the final kept segment rather
-  // than exactly on its far boundary — see edit-ranges.ts's half-open
-  // convention) mapped back through the map, then re-expressed in the
-  // active file's own local time. Identical to `playerClipEndSec` whenever
-  // `deletedRanges` is empty.
-  const lastKeptPlayerTimeSec = useCallback(() => {
-    const lastKeptSourceSec = editedToSource(
-      editedTimeMap,
-      Math.max(0, editedTimeMap.editedDurationSec - LAST_KEPT_FRAME_EPSILON_SEC),
-    );
-    return lastKeptSourceSec - activeOffsetSec;
-  }, [editedTimeMap, activeOffsetSec]);
+  const duration = sessionSnapshot.playback.durationSec;
 
   // Derive TranscriptItem[] from utterances for existing TranscriptPanel
   const derivedTranscript: TranscriptItem[] = useMemo(
@@ -786,8 +745,8 @@ export function StudioShell({
     [utterances, effectiveClipStartSec],
   );
 
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [playbackRate, setPlaybackRateState] = useState(1);
+  const isPlaying = sessionSnapshot.playback.state === "playing";
+  const playbackRate = sessionSnapshot.playback.rate;
   const [activeTool, setActiveTool] = useState<ToolId | null>(null);
   const [showTimeline, setShowTimeline] = useState(true);
   const [timelineSnapping, setTimelineSnapping] = useState(true);
@@ -998,55 +957,20 @@ export function StudioShell({
   );
 
   const setPlaybackRate = useCallback((rate: number) => {
-    const normalized = Math.max(0.5, Math.min(2, rate));
-    setPlaybackRateState(normalized);
-    if (videoRef.current) videoRef.current.playbackRate = normalized;
-  }, []);
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: activeVideoUrl intentionally reapplies the rate after a source swap.
-  useEffect(() => {
-    if (videoRef.current) videoRef.current.playbackRate = playbackRate;
-  }, [activeVideoUrl, playbackRate]);
+    studioSession.dispatch({ type: "playback.set-rate", rate });
+  }, [studioSession]);
 
   const togglePlay = useCallback(() => {
-    const video = videoRef.current;
-    const currentTime = playbackClock.getSnapshot();
-    if (!video || !activeVideoUrl) {
-      if (currentTime >= duration - 0.02) {
-        playbackClock.setTime(0);
-      }
-      setIsPlaying((v) => !v);
-      return;
-    }
-
-    if (
-      video.currentTime >= playerClipEndSec - 0.02 ||
-      video.currentTime < playerRippleStartSec ||
-      currentTime >= duration - 0.02
-    ) {
-      video.currentTime = playerRippleStartSec;
-      playbackClock.setTime(0);
-    }
-    if (video.paused) {
-      video.play().catch(() => {});
-      setIsPlaying(true);
-    } else {
-      video.pause();
-      setIsPlaying(false);
-    }
-  }, [activeVideoUrl, playerRippleStartSec, playerClipEndSec, duration, playbackClock]);
+    studioSession.dispatch({ type: "playback.toggle" });
+  }, [studioSession]);
 
   // `t` is EDITED-timeline seconds (the clock's own unit) — converted to an
   // absolute source second via the map, then to the active file's own
   // local time, so a seek can never land inside a cut (editedToSource only
   // ever returns kept-segment seconds; see edit-ranges.ts).
   const seekTo = useCallback((t: number) => {
-    const clamped = Math.max(0, Math.min(duration, t));
-    playbackClock.setTime(clamped);
-    if (videoRef.current && activeVideoUrl) {
-      videoRef.current.currentTime = editedToSource(editedTimeMap, clamped) - activeOffsetSec;
-    }
-  }, [duration, editedTimeMap, activeOffsetSec, activeVideoUrl, playbackClock]);
+    studioSession.dispatch({ type: "playback.seek", editedTimeSec: t });
+  }, [studioSession]);
 
   // Split stays client-only (vizard-parity.md Phase B step 9) — it only
   // ever defines selection boundaries within the `segments` array, which is
@@ -1335,21 +1259,6 @@ export function StudioShell({
         newEffective.startSec,
         newEffective.durationSec,
       );
-      // Finding 5 (Phase B closing review): a start-handle trim moves
-      // `playerClipStartSec`, which video-preview.tsx's own seek effect
-      // reacts to by unconditionally snapping playback back to the new
-      // clip start — wrong whenever the playhead wasn't already there. The
-      // shell's `editedTimeMap` reconcile effect below is the one that
-      // actually knows whether the CURRENT playhead position is still valid
-      // after this trim (it reseeks only when it isn't, preserving the
-      // user's position otherwise), so it must be the one to act. Setting
-      // this ref here — synchronously, before the state update that will
-      // change both `playerClipStartSec` and `editedTimeMap` in the SAME
-      // commit — lets video-preview.tsx's seek effect (which runs first,
-      // since it's the child) check it and stand down for this commit; the
-      // reconcile effect (which runs after, as the parent) clears it once
-      // it's done owning the reposition.
-      boundaryReconcileOwnsSeekRef.current = true;
       await studioSession.perform({
         type: "trim",
         startSec: newStartSec,
@@ -1364,17 +1273,12 @@ export function StudioShell({
   // Cloud checkpoint and reset barriers are projected by the session.
   const trimHandlesDisabled = saveState === "saving" || resetState === "resetting";
 
-  const applyHistoryIntent = useCallback((type: "history.undo" | "history.redo") => {
-    const before = getStudioDocument();
-    studioSession.dispatch({ type });
-    const after = getStudioDocument();
-    if (
-      after.clipStartSec !== before.clipStartSec ||
-      after.clipEndSec !== before.clipEndSec
-    ) {
-      boundaryReconcileOwnsSeekRef.current = true;
-    }
-  }, [getStudioDocument, studioSession]);
+  const applyHistoryIntent = useCallback(
+    (type: "history.undo" | "history.redo") => {
+      studioSession.dispatch({ type });
+    },
+    [studioSession],
+  );
 
   const handleUndo = useCallback(() => {
     applyHistoryIntent("history.undo");
@@ -1384,7 +1288,6 @@ export function StudioShell({
     applyHistoryIntent("history.redo");
   }, [applyHistoryIntent]);
 
-  const boundaryReconcileOwnsSeekRef = useRef(false);
   const suppressUnloadGuardRef = useRef(false);
 
   useEffect(() => {
@@ -1556,10 +1459,7 @@ export function StudioShell({
     if (!sessionDraftConflict) return;
     void studioSession
       .perform({ type: "resolve-conflict", choice: "device" })
-      .then((result) => {
-        if (result.kind !== "conflict-resolved") return;
-        boundaryReconcileOwnsSeekRef.current = true;
-      });
+      .then(() => undefined);
   }, [sessionDraftConflict, studioSession]);
 
 
@@ -1610,7 +1510,7 @@ export function StudioShell({
   // Keyboard shortcuts
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (!hasWriteOwnership || sessionDraftConflict) return;
+      const canMutate = hasWriteOwnership && !sessionDraftConflict;
       const tag = (e.target as HTMLElement)?.tagName;
       if (
         tag === "INPUT" ||
@@ -1634,11 +1534,14 @@ export function StudioShell({
           break;
         case "d":
         case "D":
-          if (!e.ctrlKey && !e.metaKey) splitAtPlayhead();
+          if (canMutate && !e.ctrlKey && !e.metaKey) splitAtPlayhead();
           break;
         case "b":
         case "B":
-          if (e.ctrlKey || e.metaKey) { e.preventDefault(); splitAtPlayhead(); }
+          if (canMutate && (e.ctrlKey || e.metaKey)) {
+            e.preventDefault();
+            splitAtPlayhead();
+          }
           break;
         case "Backspace":
         case "Delete":
@@ -1648,6 +1551,7 @@ export function StudioShell({
           // the caption<->text-layer invariant) — without this check,
           // Delete could destroy a real document mutation (the segment)
           // while the user's visible selection is the text layer.
+          if (!canMutate) break;
           if (selectedTextLayerId) {
             deleteSelectedTextLayer();
           } else {
@@ -1686,8 +1590,13 @@ export function StudioShell({
           break;
         case "z":
         case "Z":
-          if ((e.ctrlKey || e.metaKey) && e.shiftKey) { e.preventDefault(); handleRedo(); }
-          else if (e.ctrlKey || e.metaKey) { e.preventDefault(); handleUndo(); }
+          if (canMutate && (e.ctrlKey || e.metaKey) && e.shiftKey) {
+            e.preventDefault();
+            handleRedo();
+          } else if (canMutate && (e.ctrlKey || e.metaKey)) {
+            e.preventDefault();
+            handleUndo();
+          }
           break;
         case "Escape":
           if (captionSelected) { deselectCaption(); break; }
@@ -1699,119 +1608,6 @@ export function StudioShell({
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [togglePlay, seekTo, playbackClock, duration, splitAtPlayhead, deleteSelectedSegment, deleteSelectedTextLayer, handleUndo, handleRedo, captionSelected, deselectCaption, selectedTextLayerId, deselectTextLayer, hasWriteOwnership, sessionDraftConflict]);
-
-  // Fix 3 (Phase B hardening): nothing else reconciles the <video> element
-  // or the clock against a delete/revert that just happened — a paused
-  // player keeps showing whatever frame it already had loaded even once
-  // that frame's SOURCE second is now deleted (or the clock's edited time
-  // now points past the new, shorter duration). Runs off `editedTimeMap`'s
-  // own identity (it's only rebuilt when deletedRanges/clipStartSec/
-  // clipEndSec actually change — see its useMemo above), so this is a
-  // total no-op on every other re-render, and it applies equally whether
-  // paused or mid-playback (a same-tick safety net ahead of the next rVFC
-  // tick in the latter case).
-  //
-  // Finding 5 (Phase B closing review): a start-handle trim changes
-  // `editedTimeMap` AND video-preview.tsx's `playerClipStartSec`-keyed seek
-  // effect in the SAME commit. That child effect runs first (child effects
-  // fire before parent effects within one commit) and used to unconditionally
-  // snap playback back to the new clip start regardless of where the
-  // playhead actually was — wrong for a trim mid-playback, and this effect's
-  // own `isSourceTimeDeleted` check then saw a now-valid position and left it
-  // there. This effect is the one that actually knows whether the CURRENT
-  // position survived the change, so it's now authoritative: commitTrim (and
-  // the undo/redo cases that cross a trim step) set
-  // `boundaryReconcileOwnsSeekRef` synchronously before dispatching, the
-  // child effect checks it and stands down for that commit, and this effect
-  // clears it below once it's run its own (correct) reposition — a plain
-  // cut/revert that never touched the ref is an unaffected no-op here.
-  const editedTimeMapRef = useRef(editedTimeMap);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: videoRef intentionally retriggers reconciliation when the media element changes.
-  useEffect(() => {
-    if (editedTimeMapRef.current === editedTimeMap) return;
-    editedTimeMapRef.current = editedTimeMap;
-
-    const clampedTime = Math.min(playbackClock.getSnapshot(), editedTimeMap.editedDurationSec);
-    if (clampedTime !== playbackClock.getSnapshot()) {
-      playbackClock.setTime(clampedTime);
-    }
-
-    const video = videoRef.current;
-    if (video && activeVideoUrl) {
-      const currentSourceSec = video.currentTime + activeOffsetSec;
-      if (isSourceTimeDeleted(editedTimeMap, currentSourceSec)) {
-        video.currentTime = rippleSeekSourceSec(editedTimeMap, clampedTime) - activeOffsetSec;
-      }
-    }
-
-    // Ownership of this commit's reposition ends here, whether or not a
-    // trim actually caused it — a no-op reset when it was already false.
-    boundaryReconcileOwnsSeekRef.current = false;
-  }, [editedTimeMap, playbackClock, activeVideoUrl, activeOffsetSec, videoRef]);
-
-  // Keep the clock aligned with explicit media updates without routing every
-  // playback frame through the top-level React context. Same ripple engine
-  // as playback-clock.ts's `startVideo` (stepRipple — see ripple-playback.ts)
-  // so this coarse native-`timeupdate` safety net can't disagree with the
-  // rVFC-driven loop about where edited time or end-of-clip actually falls
-  // once cuts exist.
-  useEffect(() => {
-    const video = videoRef.current;
-    if (!video || !activeVideoUrl) return;
-
-    const handleTimeUpdate = () => {
-      const sourceTimeSec = video.currentTime + activeOffsetSec;
-      const step = stepRipple(editedTimeMap, sourceTimeSec);
-
-      if (step.atEnd) {
-        video.pause();
-        // Fix 4: park at the last KEPT frame, not the raw clip boundary
-        // (which is deleted footage whenever the clip's own tail is cut).
-        video.currentTime = lastKeptPlayerTimeSec();
-        playbackClock.setTime(editedTimeMap.editedDurationSec);
-        setIsPlaying(false);
-        return;
-      }
-
-      if (step.skipToSourceSec !== undefined) {
-        video.currentTime = step.skipToSourceSec - activeOffsetSec;
-      }
-
-      if (video.paused) {
-        playbackClock.setTime(step.editedTime);
-      }
-    };
-
-    video.addEventListener("timeupdate", handleTimeUpdate);
-    return () => video.removeEventListener("timeupdate", handleTimeUpdate);
-  }, [activeVideoUrl, activeOffsetSec, editedTimeMap, lastKeptPlayerTimeSec, playbackClock]);
-
-  useEffect(() => {
-    if (!isPlaying || !activeVideoUrl) return;
-
-    return playbackClock.startVideo({
-      video: videoRef.current,
-      editedTimeMap,
-      sourceOffsetSec: activeOffsetSec,
-      onEnded: () => {
-        const video = videoRef.current;
-        if (video) {
-          video.pause();
-          // Fix 4: same last-kept-frame park as the timeupdate path above.
-          video.currentTime = lastKeptPlayerTimeSec();
-        }
-        setIsPlaying(false);
-      },
-    });
-  }, [isPlaying, activeVideoUrl, editedTimeMap, activeOffsetSec, lastKeptPlayerTimeSec, playbackClock]);
-
-  // Simulated time advancing when playing (fallback: no active video source
-  // — proxy not ready and the user hasn't opted into the full-source
-  // fallback, or nothing loaded at all).
-  useEffect(() => {
-    if (!isPlaying || activeVideoUrl) return;
-    return playbackClock.startSynthetic(duration, () => setIsPlaying(false));
-  }, [isPlaying, duration, activeVideoUrl, playbackClock]);
 
   // The timeline's thumbnail cache and hidden scrub <video> elements
   // (timeline-preview-manager.ts) live in module scope, not React state, so
@@ -1883,16 +1679,16 @@ export function StudioShell({
     captionPreset, captionSelected, selectedTextLayerId, transcriptOnly, segments, studioEdits, brollUrl,
     brollPreviewAsset,
     saveState: displayedSaveState, isDocDirty, exportState, resetState, canUndo, canRedo, canReset,
-    transcript: derivedTranscript, clipInfo, videoRef, boundaryReconcileOwnsSeekRef, playbackClock,
+    transcript: derivedTranscript, clipInfo, mediaRef, playbackClock,
     sourceVideoUrl, sourcePreviewId,
     clipStartSec: effectiveClipStartSec, clipEndSec: effectiveClipEndSec, sourcePurged,
-    previewVideoUrl, previewStartSec, waveformPeaksUrl, useOriginalSourceFallback, setUseOriginalSourceFallback,
+    previewVideoUrl, previewStartSec, waveformPeaksUrl, useOriginalSourceFallback, setUseOriginalSourceFallback, reloadPlayback,
     activeVideoUrl, activeOffsetSec, activeVideoKind, playerClipStartSec, playerClipEndSec,
     editedTimeMap, deletedRanges: doc.deletedRanges, clipWindow,
     brandLogo, layoutAnalysis, autoLayoutAnalysis, utterances, updateUtteranceText,
     updateParagraphText, addSubtitleLineAfter, deleteSubtitleLine, mergeSubtitleLineWithNext,
     updateWord, deleteSourceRange, applyRemoveSilence,
-    setIsPlaying, setPlaybackRate, setActiveTool, setShowTimeline, setTimelineSnapping, setAspectRatio,
+    setPlaybackRate, setActiveTool, setShowTimeline, setTimelineSnapping, setAspectRatio,
     setLayoutMode, setShowShortcuts, setTimelineZoom,
     setSelectedSegmentId, setTranscriptSelectionRange, setCaptionPreset, selectCaption, deselectCaption,
     selectTextLayer, deselectTextLayer,
