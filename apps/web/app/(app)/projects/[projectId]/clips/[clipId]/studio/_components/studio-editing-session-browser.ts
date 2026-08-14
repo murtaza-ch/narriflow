@@ -57,7 +57,7 @@ export function parseStudioCoordinationEvent(value: unknown): CoordinationEvent 
 
 type StudioCoordinationAdapter = StudioSessionDependencies["coordination"];
 
-class BrowserStudioCoordinationAdapter implements StudioCoordinationAdapter {
+export class BrowserStudioCoordinationAdapter implements StudioCoordinationAdapter {
   private readonly ownerId = crypto.randomUUID();
   private readonly leaseKey: string;
   private readonly generationKey: string;
@@ -272,6 +272,7 @@ class BrowserStudioCoordinationAdapter implements StudioCoordinationAdapter {
     options: LockOptions,
   ): Promise<number | null> {
     const acquired = new Promise<number | null>((resolve, reject) => {
+      let lockWasAcquired = false;
       void navigator.locks
         .request(this.leaseKey, options, async (lock) => {
           if (!lock || this.closed) {
@@ -280,6 +281,7 @@ class BrowserStudioCoordinationAdapter implements StudioCoordinationAdapter {
           }
           this.coordinationMode = "web-locks";
           this.ownsWrites = true;
+          lockWasAcquired = true;
           this.generation = this.nextGeneration();
           let release!: () => void;
           const held = new Promise<void>((done) => {
@@ -291,7 +293,16 @@ class BrowserStudioCoordinationAdapter implements StudioCoordinationAdapter {
           this.releaseBrowserLock = null;
           this.ownsWrites = false;
         })
-        .catch(reject);
+        .catch((error: unknown) => {
+          if (!lockWasAcquired) {
+            reject(error);
+            return;
+          }
+          if (!this.ownsWrites) return;
+          this.releaseBrowserLock = null;
+          this.ownsWrites = false;
+          this.participant?.onOwnershipLost();
+        });
     });
     return acquired;
   }
@@ -352,13 +363,26 @@ class BrowserStudioCoordinationAdapter implements StudioCoordinationAdapter {
 export function createBrowserStudioSessionDependencies(
   input: StudioSessionIdentity,
 ): StudioSessionDependencies {
+  const expectedDraftKey = editorDraftKey(input.projectId, input.clipId);
+  const assertDraftKey = (key: string) => {
+    if (key !== expectedDraftKey) {
+      throw new Error("Device Draft key does not match this Studio session");
+    }
+  };
   return {
     drafts: {
-      load: async () =>
-        (await loadEditorDraft(input.projectId, input.clipId)) as StudioDraftRecord | null,
+      load: async (key) => {
+        assertDraftKey(key);
+        return (await loadEditorDraft(
+          input.projectId,
+          input.clipId,
+        )) as StudioDraftRecord | null;
+      },
       write: (record) => persistEditorDraft(record),
-      remove: (_draftKey, generation) =>
-        removeEditorDraft(input.projectId, input.clipId, generation),
+      remove: (key, generation) => {
+        assertDraftKey(key);
+        return removeEditorDraft(input.projectId, input.clipId, generation);
+      },
     },
     coordination: new BrowserStudioCoordinationAdapter(input.projectId, input.clipId),
     cloud: {

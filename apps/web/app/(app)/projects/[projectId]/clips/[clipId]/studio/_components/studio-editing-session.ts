@@ -425,16 +425,21 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
         try {
           const outcome = await this.dependencies.drafts.remove(key, generation);
           if (outcome === "stale") {
-            this.projection = {
-              ...this.projection,
-              ownership: { kind: "reader", generation },
-            };
+            this.diagnose("studio_conflict_draft_remove_rejected", "stale");
+            this.dependencies.coordination.relinquish?.();
+            this.loseOwnership();
           }
-        } catch {
+        } catch (error) {
+          this.deviceDraftAvailable = false;
           this.projection = {
             ...this.projection,
             durability: { device: "degraded", protectsNavigation: true },
           };
+          this.diagnose(
+            "studio_conflict_draft_remove_failed",
+            "degraded",
+            error,
+          );
         }
       }
     }
@@ -504,23 +509,38 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
       ...this.unified,
       doc: { ...this.unified.doc, present: ownDocument(input.document) },
     };
-    this.projection = {
-      ...this.projection,
-      durability: { device: "durable", protectsNavigation: false },
-    };
-    this.publish();
     const generation = this.projection.ownership.generation;
     if (this.dependencies && generation !== null) {
-      const key = this.deviceDraftKey;
-      await this.dependencies.drafts.remove(key, generation).then((outcome) => {
-        if (outcome !== "stale") return;
+      try {
+        const outcome = await this.dependencies.drafts.remove(
+          this.deviceDraftKey,
+          generation,
+        );
+        if (outcome === "stale") {
+          this.diagnose("studio_cloud_ack_draft_remove_rejected", "stale");
+          this.dependencies.coordination.relinquish?.();
+          this.loseOwnership();
+          return;
+        }
         this.projection = {
           ...this.projection,
-          ownership: { kind: "reader", generation },
+          durability: { device: "durable", protectsNavigation: false },
         };
-        this.publish();
-      }).catch(() => undefined);
+      } catch (error) {
+        this.deviceDraftAvailable = false;
+        this.projection = {
+          ...this.projection,
+          durability: { device: "degraded", protectsNavigation: true },
+        };
+        this.diagnose("studio_cloud_ack_draft_remove_failed", "degraded", error);
+      }
+    } else {
+      this.projection = {
+        ...this.projection,
+        durability: { device: "durable", protectsNavigation: false },
+      };
     }
+    this.publish();
   }
 
   private publish(): void {

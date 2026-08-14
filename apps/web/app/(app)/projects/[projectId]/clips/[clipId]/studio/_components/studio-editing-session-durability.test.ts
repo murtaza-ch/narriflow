@@ -7,6 +7,7 @@ import {
 } from "@narriflow/validators";
 import {
   createStudioEditingSession,
+  getStudioEditingSessionMigrationAdapter,
   type StudioDraftRecord,
   type StudioSessionDependencies,
   type StudioSessionSnapshot,
@@ -573,6 +574,50 @@ test("marks an edit durable only after its fenced Device Draft write completes",
     document: { brollUrl: "https://cdn.example.com/new.mp4" },
   });
   expect(session.getSnapshot().durability.protectsNavigation).toBe(false);
+});
+
+test("keeps durability degraded when cloud acknowledgement cannot remove the Device Draft", async () => {
+  const cloud = makeDocument();
+  const session = createStudioEditingSession(
+    {
+      projectId: "project",
+      clipId: "clip",
+      cloudRevision: 3,
+      document: cloud,
+      segments: [],
+    },
+    {
+      drafts: {
+        load: async () => null,
+        write: async () => "written",
+        remove: async () => { throw new Error("IndexedDB unavailable"); },
+      },
+      coordination: {
+        start: async () => ({ kind: "writer", generation: 7 }),
+        takeOver: async () => ({ kind: "failed" }),
+        close: () => undefined,
+      },
+      cloud: { loadHead: async () => ({ revision: 4, document: cloud }) },
+      runtime: {
+        now: () => 275,
+        createId: () => "writer-a",
+        setTimeout: () => 1,
+        clearTimeout: () => undefined,
+      },
+    },
+  );
+  await waitForSnapshot(session, (value) => value.status === "ready");
+
+  await getStudioEditingSessionMigrationAdapter(session).acknowledgeCloud({
+    expectedDocument: session.getSnapshot().document as EditorDocument,
+    document: cloud,
+    revision: 4,
+  });
+
+  expect(session.getSnapshot().durability).toEqual({
+    device: "degraded",
+    protectsNavigation: true,
+  });
 });
 
 test("hands off the newest Device Draft before a second session becomes writable", async () => {
