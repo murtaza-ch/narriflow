@@ -41,16 +41,6 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
 
-      # The repository's historical migration chain predates the clean-schema
-      # harness and currently contains an unrelated ordering defect. Workflow
-      # concurrency tests need the current schema, while migration-chain repair
-      # remains a separate codebase-health task.
-      - name: Prepare current schema on PostgreSQL 17
-        run: bun run --cwd packages/db prisma:push:test
-        env:
-          DATABASE_URL: ${{ env.WORKFLOW_TEST_DATABASE_URL }}
-          DIRECT_URL: ${{ env.WORKFLOW_TEST_DATABASE_URL }}
-
       - name: Workflow concurrency integration tests
         run: bun run test:workflow:db
 

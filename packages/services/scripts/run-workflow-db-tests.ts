@@ -41,7 +41,7 @@ const requestedSchema = process.env.WORKFLOW_TEST_DATABASE_SCHEMA;
 const schema =
   requestedSchema ?? `workflow_lifecycle_test_${randomUUID().replaceAll("-", "")}`;
 const keepSchema = process.env.WORKFLOW_TEST_KEEP_SCHEMA === "1";
-const skipSchemaPush = process.env.WORKFLOW_TEST_SKIP_SCHEMA_PUSH === "1";
+const skipMigrations = process.env.WORKFLOW_TEST_SKIP_MIGRATIONS === "1";
 
 if (!/^workflow_lifecycle_test_[a-z0-9_]+$/.test(schema)) {
   throw new Error("Unsafe workflow test schema name");
@@ -67,14 +67,17 @@ try {
   await pool.query(`CREATE SCHEMA IF NOT EXISTS "${schema}"`);
 
   const migrationUrl = new URL(databaseUrl);
-  migrationUrl.searchParams.set("schema", schema);
   const testUrl = new URL(databaseUrl);
-  // Neon rejects search_path as a startup option on pooled endpoints. The
-  // equivalent unpooled endpoint accepts it, which keeps raw SQL and Prisma
-  // queries inside the disposable test schema.
+  // Migrations and search_path session options require Neon's direct endpoint.
+  // Keep the application URL pooled; only these disposable test connections
+  // are converted to their unpooled equivalent.
+  if (migrationUrl.hostname.includes("-pooler.")) {
+    migrationUrl.hostname = migrationUrl.hostname.replace("-pooler.", ".");
+  }
   if (testUrl.hostname.includes("-pooler.")) {
     testUrl.hostname = testUrl.hostname.replace("-pooler.", ".");
   }
+  migrationUrl.searchParams.set("schema", schema);
   testUrl.searchParams.set("options", `-csearch_path=${schema}`);
 
   const testPool = new Pool({ connectionString: testUrl.toString(), max: 1 });
@@ -89,8 +92,8 @@ try {
     await testPool.end();
   }
 
-  if (!skipSchemaPush) {
-    await run(["bun", "run", "--cwd", "packages/db", "prisma:push:test"], {
+  if (!skipMigrations) {
+    await run(["bun", "run", "--cwd", "packages/db", "prisma:migrate:deploy"], {
       DATABASE_URL: migrationUrl.toString(),
       DIRECT_URL: migrationUrl.toString(),
     });
