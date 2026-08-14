@@ -413,6 +413,7 @@ class BrowserStudioCoordinationAdapter implements StudioCoordinationAdapter {
 
 export function createBrowserStudioSessionDependencies(
   input: StudioSessionIdentity,
+  preview?: StudioSessionDependencies["preview"],
 ): StudioSessionDependencies {
   const expectedDraftKey = editorDraftKey(input.projectId, input.clipId);
   const assertDraftKey = (key: string) => {
@@ -496,6 +497,7 @@ export function createBrowserStudioSessionDependencies(
         }).catch(() => undefined);
       },
     },
+    ...(preview ? { preview } : {}),
     runtime: {
       now: () => Date.now(),
       createId: () => crypto.randomUUID(),

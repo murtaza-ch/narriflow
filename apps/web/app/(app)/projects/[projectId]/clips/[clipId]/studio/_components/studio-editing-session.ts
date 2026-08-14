@@ -1,4 +1,10 @@
-import type { EditorAction, EditorDocument } from "@narriflow/validators";
+import {
+  clipAutoLayoutMatchesInputs,
+  type ClipAutoLayoutAnalysis,
+  type EditorAction,
+  type EditorDocument,
+  type TranscriptUtterance,
+} from "@narriflow/validators";
 import {
   applyUnifiedEditorAction,
   canRedoUnified,
@@ -15,6 +21,11 @@ import {
 } from "./local-editor-draft";
 
 type Listener = () => void;
+const PREVIEW_POLL_INTERVAL_MS = 8_000;
+const PREVIEW_POLL_MAX_ATTEMPTS = 45;
+const AUTO_LAYOUT_POLL_INITIAL_MS = 2_000;
+const AUTO_LAYOUT_POLL_MAX_MS = 30_000;
+const AUTO_LAYOUT_POLL_DEADLINE_MS = 6 * 60_000;
 type Scalar = bigint | boolean | null | number | string | symbol | undefined;
 export type DeepReadonly<T> = T extends Scalar
   ? T
@@ -63,6 +74,7 @@ export interface StudioSessionSnapshot {
     dirty: boolean;
     rejectionCode: string | null;
   };
+  preview: StudioPreviewSnapshot;
   capabilities: {
     mutate: boolean;
     play: boolean;
@@ -79,7 +91,8 @@ export type StudioSessionIntent =
   | { type: "segments.replace"; segments: TimelineSegment[] }
   | { type: "gesture.end" }
   | { type: "history.undo" }
-  | { type: "history.redo" };
+  | { type: "history.redo" }
+  | { type: "preview.set-source-fallback"; enabled: boolean };
 
 export type IntentReceipt =
   | { accepted: true }
@@ -90,7 +103,13 @@ export type IntentReceipt =
 export type StudioSessionOperation =
   | { type: "start" }
   | { type: "resume" }
-  | { type: "trim"; startSec: number; endSec: number }
+  | {
+      type: "trim";
+      startSec: number;
+      endSec: number;
+      transcriptSlice: TranscriptUtterance[];
+      segments: TimelineSegment[];
+    }
   | { type: "checkpoint-cloud" }
   | { type: "prepare-cloud-revision" }
   | { type: "take-over" }
@@ -101,6 +120,7 @@ export type StudioSessionOperation =
 export type StudioOperationResult =
   | { kind: "unavailable"; reason: "not-implemented" | "invalid-state" }
   | { kind: "started" }
+  | { kind: "trimmed" }
   | { kind: "closed" }
   | { kind: "conflict-resolved"; choice: "device" | "cloud" }
   | {
@@ -167,6 +187,45 @@ export interface StudioSessionSeed
   extends StudioSessionRoot,
     Partial<StudioSessionIdentity> {
   cloudRevision?: number;
+  preview?: StudioPreviewSeed;
+}
+
+export type StudioDocumentWindowFingerprint = string;
+
+export interface StudioProxySeed {
+  url: string;
+  startSec: number;
+  durationSec: number | null;
+  waveformPeaksUrl: string | null;
+}
+
+export interface StudioProxyStatus {
+  previewUrl: string | null;
+  previewStartSec: number;
+  previewDurationSec: number | null;
+  waveformPeaksUrl: string | null;
+}
+
+export interface StudioPreviewSeed {
+  sourceUrl: string | null;
+  sourcePurged: boolean;
+  proxy: StudioProxySeed | null;
+  automaticLayout: ClipAutoLayoutAnalysis | null;
+}
+
+export interface StudioProxyDescriptor extends StudioProxySeed {
+  windowFingerprint: StudioDocumentWindowFingerprint;
+}
+
+export interface StudioPreviewSnapshot {
+  windowFingerprint: StudioDocumentWindowFingerprint;
+  proxy: DeepReadonly<StudioProxyDescriptor> | null;
+  waveformPeaksUrl: string | null;
+  automaticLayout: DeepReadonly<ClipAutoLayoutAnalysis> | null;
+  activeAsset:
+    | { kind: "proxy"; url: string; offsetSec: number }
+    | { kind: "source"; url: string; offsetSec: 0 }
+    | { kind: "unavailable"; url: null; offsetSec: 0 };
 }
 
 export interface StudioSessionOptions {
@@ -234,6 +293,10 @@ export interface StudioSessionDependencies {
     reset?(input: { baseRevision: number }): Promise<StudioCloudResetOutcome>;
     keepalive?(input: { baseRevision: number; document: EditorDocument }): void;
   };
+  preview?: {
+    fetchProxyStatus?(): Promise<StudioProxyStatus>;
+    fetchAutomaticLayout?(): Promise<ClipAutoLayoutAnalysis | null>;
+  };
   runtime: {
     now(): number;
     createId(): string;
@@ -279,6 +342,7 @@ type DraftLoadResult =
 function snapshotFor(
   unified: UnifiedEditorHistory,
   projection: SessionProjection,
+  preview: StudioPreviewSnapshot,
 ): StudioSessionSnapshot {
   const mutate =
     projection.status === "ready" &&
@@ -291,6 +355,7 @@ function snapshotFor(
       canRedo: canRedoUnified(unified),
     },
     ...projection,
+    preview,
     capabilities: {
       mutate,
       play: projection.status !== "closed",
@@ -335,8 +400,36 @@ function snapshotsObservablyEqual(
     left.cloud.state === right.cloud.state &&
     left.cloud.revision === right.cloud.revision &&
     left.cloud.dirty === right.cloud.dirty &&
-    left.cloud.rejectionCode === right.cloud.rejectionCode
+    left.cloud.rejectionCode === right.cloud.rejectionCode &&
+    left.preview.windowFingerprint === right.preview.windowFingerprint &&
+    left.preview.proxy === right.preview.proxy &&
+    left.preview.waveformPeaksUrl === right.preview.waveformPeaksUrl &&
+    left.preview.automaticLayout === right.preview.automaticLayout &&
+    left.preview.activeAsset.kind === right.preview.activeAsset.kind &&
+    left.preview.activeAsset.url === right.preview.activeAsset.url &&
+    left.preview.activeAsset.offsetSec === right.preview.activeAsset.offsetSec
   );
+}
+
+function documentWindowFingerprint(
+  document: Pick<EditorDocument, "clipStartSec" | "clipEndSec">,
+): StudioDocumentWindowFingerprint {
+  return `${document.clipStartSec.toFixed(3)}:${document.clipEndSec.toFixed(3)}`;
+}
+
+function automaticLayoutInputFingerprint(
+  document: Pick<
+    EditorDocument,
+    "clipStartSec" | "clipEndSec" | "deletedRanges"
+  >,
+): string {
+  return JSON.stringify({
+    window: documentWindowFingerprint(document),
+    deletedRanges: document.deletedRanges.map((range) => [
+      range.startSec.toFixed(3),
+      range.endSec.toFixed(3),
+    ]),
+  });
 }
 
 interface CloudAttempt {
@@ -388,6 +481,23 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
   private unsubscribeOnline: (() => void) | null = null;
   private resetInProgress = false;
   private cloudRefreshGeneration = 0;
+  private readonly sourceUrl: string | null;
+  private readonly sourcePurged: boolean;
+  private retainedProxy: StudioProxyDescriptor | null;
+  private retainedAutomaticLayout: ClipAutoLayoutAnalysis | null;
+  private replacementSourceFallback = false;
+  private manualSourceFallback = false;
+  private proxyPollTimer: number | null = null;
+  private proxyPollTarget: StudioDocumentWindowFingerprint | null = null;
+  private proxyPollAttempts = 0;
+  private proxyPollGeneration = 0;
+  private proxyPollRunning = false;
+  private automaticLayoutPollTimer: number | null = null;
+  private automaticLayoutPollTarget: string | null = null;
+  private automaticLayoutPollDeadline = 0;
+  private automaticLayoutPollDelayMs = AUTO_LAYOUT_POLL_INITIAL_MS;
+  private automaticLayoutPollGeneration = 0;
+  private automaticLayoutPollRunning = false;
 
   constructor(
     seed: StudioSessionSeed,
@@ -410,6 +520,17 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
       ownDocument(seed.document),
       ownSegments(seed.segments),
     );
+    this.sourceUrl = seed.preview?.sourceUrl ?? null;
+    this.sourcePurged = seed.preview?.sourcePurged ?? false;
+    this.retainedProxy = seed.preview?.proxy
+      ? deepFreeze({
+          ...structuredClone(seed.preview.proxy),
+          windowFingerprint: documentWindowFingerprint(seed.document),
+        })
+      : null;
+    this.retainedAutomaticLayout = seed.preview?.automaticLayout
+      ? deepFreeze(structuredClone(seed.preview.automaticLayout))
+      : null;
     this.projection = dependencies
       ? {
           status: "starting",
@@ -435,7 +556,11 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
             rejectionCode: null,
           },
         };
-    this.snapshot = snapshotFor(this.unified, this.projection);
+    this.snapshot = snapshotFor(
+      this.unified,
+      this.projection,
+      this.previewSnapshot(),
+    );
     this.started = !dependencies || !options.deferStart;
     if (dependencies && this.started) void this.initialize();
   }
@@ -448,6 +573,14 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
   };
 
   dispatch = (intent: StudioSessionIntent): IntentReceipt => {
+    if (intent.type === "preview.set-source-fallback") {
+      if (this.projection.status === "closed") {
+        return { accepted: false, reason: "closed" };
+      }
+      this.manualSourceFallback = intent.enabled;
+      this.publish();
+      return { accepted: true };
+    }
     if (!this.snapshot.capabilities.mutate) {
       const reason =
         this.projection.status === "starting"
@@ -509,6 +642,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
       }
       this.sessionGeneration += 1;
       this.clearCloudTimers();
+      this.clearDerivedPolling();
       this.unsubscribeOnline?.();
       this.unsubscribeOnline = null;
       if (
@@ -550,6 +684,21 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     }
     if (operation.type === "take-over") {
       return this.takeOver();
+    }
+    if (operation.type === "trim") {
+      if (!this.snapshot.capabilities.mutate) {
+        return { kind: "unavailable", reason: "invalid-state" };
+      }
+      this.applyDocumentAndResegment({
+        action: {
+          type: "trimClip",
+          startSec: operation.startSec,
+          endSec: operation.endSec,
+          transcriptSlice: structuredClone(operation.transcriptSlice),
+        },
+        segments: operation.segments,
+      });
+      return { kind: "trimmed" };
     }
     if (operation.type === "resume") {
       if (!this.dependencies || this.projection.status !== "ready") {
@@ -655,6 +804,13 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     segments: TimelineSegment[];
   }): void {
     if (!this.snapshot.capabilities.mutate) return;
+    this.applyDocumentAndResegment(input);
+  }
+
+  private applyDocumentAndResegment(input: {
+    action: EditorAction;
+    segments: TimelineSegment[];
+  }): void {
     const documentBefore = this.unified.doc.present;
     this.unified = applyUnifiedEditorAction(this.unified, {
       kind: "document",
@@ -926,6 +1082,10 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     if (outcome.kind === "saved") {
       this.cloudAttempt = null;
       this.cloudRevision = outcome.revision;
+      this.retireDerivedAssetsForAcknowledgedChange(
+        this.cloudDocument,
+        outcome.document,
+      );
       this.cloudDocument = ownDocument(outcome.document);
       const isCurrent = this.documentVersion === attempt.documentVersion;
       if (isCurrent) {
@@ -1113,6 +1273,10 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
       head.document,
     );
     this.cloudRevision = head.revision;
+    this.retireDerivedAssetsForAcknowledgedChange(
+      this.cloudDocument,
+      head.document,
+    );
     this.cloudDocument = ownDocument(head.document);
     this.cloudDirtySince = null;
     this.clearCloudTimers();
@@ -1383,10 +1547,268 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
   }
 
   private publish(): void {
-    const next = snapshotFor(this.unified, this.projection);
-    if (snapshotsObservablyEqual(next, this.snapshot)) return;
-    this.snapshot = next;
-    for (const listener of this.listeners) listener();
+    const next = snapshotFor(
+      this.unified,
+      this.projection,
+      this.previewSnapshot(),
+    );
+    if (!snapshotsObservablyEqual(next, this.snapshot)) {
+      this.snapshot = next;
+      for (const listener of this.listeners) listener();
+    }
+    this.reconcileProxyPolling();
+    this.reconcileAutomaticLayoutPolling();
+  }
+
+  private previewSnapshot(): StudioPreviewSnapshot {
+    const document = this.unified.doc.present;
+    const windowFingerprint = documentWindowFingerprint(this.unified.doc.present);
+    const proxy =
+      this.retainedProxy?.windowFingerprint === windowFingerprint
+        ? this.retainedProxy
+        : null;
+    const activeAsset: StudioPreviewSnapshot["activeAsset"] = proxy
+      ? { kind: "proxy", url: proxy.url, offsetSec: proxy.startSec }
+      : (this.retainedProxy ||
+            this.replacementSourceFallback ||
+            this.manualSourceFallback) &&
+          this.sourceUrl
+        ? { kind: "source", url: this.sourceUrl, offsetSec: 0 }
+        : { kind: "unavailable", url: null, offsetSec: 0 };
+    return deepFreeze({
+      windowFingerprint,
+      proxy,
+      waveformPeaksUrl: proxy?.waveformPeaksUrl ?? null,
+      automaticLayout:
+        this.retainedAutomaticLayout &&
+        clipAutoLayoutMatchesInputs(this.retainedAutomaticLayout, {
+          clipStartSec: document.clipStartSec,
+          clipEndSec: document.clipEndSec,
+          deletedRanges: document.deletedRanges,
+        })
+          ? this.retainedAutomaticLayout
+          : null,
+      activeAsset,
+    });
+  }
+
+  private retireDerivedAssetsForAcknowledgedChange(
+    previous: EditorDocument,
+    current: EditorDocument,
+  ): void {
+    if (
+      documentWindowFingerprint(previous) !==
+      documentWindowFingerprint(current)
+    ) {
+      this.retainedProxy = null;
+      this.replacementSourceFallback = true;
+    }
+    if (
+      previous.clipStartSec !== current.clipStartSec ||
+      previous.clipEndSec !== current.clipEndSec ||
+      JSON.stringify(previous.deletedRanges) !==
+        JSON.stringify(current.deletedRanges)
+    ) {
+      this.retainedAutomaticLayout = null;
+    }
+  }
+
+  private reconcileProxyPolling(): void {
+    const dependencies = this.dependencies;
+    const target = documentWindowFingerprint(this.unified.doc.present);
+    const cloudTarget = documentWindowFingerprint(this.cloudDocument);
+    const proxyIsEligible = this.retainedProxy?.windowFingerprint === target;
+    const shouldPoll =
+      Boolean(dependencies?.preview?.fetchProxyStatus) &&
+      !this.sourcePurged &&
+      this.projection.status === "ready" &&
+      !proxyIsEligible &&
+      target === cloudTarget;
+    if (!shouldPoll) {
+      if (this.proxyPollTarget !== null) this.clearProxyPolling();
+      return;
+    }
+    if (this.proxyPollTarget !== target) {
+      this.clearProxyPolling();
+      this.proxyPollTarget = target;
+    }
+    if (
+      !dependencies?.preview?.fetchProxyStatus ||
+      this.proxyPollTimer !== null ||
+      this.proxyPollRunning ||
+      this.proxyPollAttempts >= PREVIEW_POLL_MAX_ATTEMPTS
+    ) {
+      return;
+    }
+    const pollGeneration = this.proxyPollGeneration;
+    this.proxyPollTimer = dependencies.runtime.setTimeout(() => {
+      this.proxyPollTimer = null;
+      void this.pollProxy(target, pollGeneration);
+    }, PREVIEW_POLL_INTERVAL_MS);
+  }
+
+  private async pollProxy(
+    target: StudioDocumentWindowFingerprint,
+    pollGeneration: number,
+  ): Promise<void> {
+    const dependencies = this.dependencies;
+    if (!dependencies?.preview?.fetchProxyStatus) return;
+    const expectedSessionGeneration = this.sessionGeneration;
+    this.proxyPollRunning = true;
+    this.proxyPollAttempts += 1;
+    let status: StudioProxyStatus | null = null;
+    try {
+      status = await dependencies.preview.fetchProxyStatus();
+    } catch {
+      // Readiness is eventually consistent; a later bounded poll may succeed.
+    }
+    if (
+      this.proxyPollGeneration !== pollGeneration ||
+      this.sessionGeneration !== expectedSessionGeneration ||
+      this.proxyPollTarget !== target
+    ) {
+      return;
+    }
+    this.proxyPollRunning = false;
+    if (
+      status?.previewUrl &&
+      documentWindowFingerprint(this.unified.doc.present) === target &&
+      documentWindowFingerprint(this.cloudDocument) === target
+    ) {
+      this.retainedProxy = deepFreeze({
+        url: status.previewUrl,
+        startSec: status.previewStartSec,
+        durationSec: status.previewDurationSec,
+        waveformPeaksUrl: status.waveformPeaksUrl,
+        windowFingerprint: target,
+      });
+      this.replacementSourceFallback = false;
+      this.publish();
+      return;
+    }
+    this.reconcileProxyPolling();
+  }
+
+  private clearProxyPolling(): void {
+    if (this.proxyPollTimer !== null && this.dependencies) {
+      this.dependencies.runtime.clearTimeout(this.proxyPollTimer);
+    }
+    this.proxyPollTimer = null;
+    this.proxyPollTarget = null;
+    this.proxyPollAttempts = 0;
+    this.proxyPollRunning = false;
+    this.proxyPollGeneration += 1;
+  }
+
+  private reconcileAutomaticLayoutPolling(): void {
+    const dependencies = this.dependencies;
+    const document = this.unified.doc.present;
+    const target = automaticLayoutInputFingerprint(document);
+    const cloudTarget = automaticLayoutInputFingerprint(this.cloudDocument);
+    const proxyIsEligible =
+      this.retainedProxy?.windowFingerprint ===
+      documentWindowFingerprint(document);
+    const automaticLayoutIsEligible = Boolean(
+      this.retainedAutomaticLayout &&
+        clipAutoLayoutMatchesInputs(this.retainedAutomaticLayout, {
+          clipStartSec: document.clipStartSec,
+          clipEndSec: document.clipEndSec,
+          deletedRanges: document.deletedRanges,
+        }),
+    );
+    const shouldPoll =
+      Boolean(dependencies?.preview?.fetchAutomaticLayout) &&
+      this.projection.status === "ready" &&
+      proxyIsEligible &&
+      !automaticLayoutIsEligible &&
+      target === cloudTarget;
+    if (!shouldPoll) {
+      if (this.automaticLayoutPollTarget !== null) {
+        this.clearAutomaticLayoutPolling();
+      }
+      return;
+    }
+    if (this.automaticLayoutPollTarget !== target) {
+      this.clearAutomaticLayoutPolling();
+      this.automaticLayoutPollTarget = target;
+      this.automaticLayoutPollDeadline =
+        (dependencies?.runtime.now() ?? 0) + AUTO_LAYOUT_POLL_DEADLINE_MS;
+    }
+    if (
+      !dependencies?.preview?.fetchAutomaticLayout ||
+      this.automaticLayoutPollTimer !== null ||
+      this.automaticLayoutPollRunning ||
+      dependencies.runtime.now() >= this.automaticLayoutPollDeadline
+    ) {
+      return;
+    }
+    const pollGeneration = this.automaticLayoutPollGeneration;
+    const delayMs = this.automaticLayoutPollDelayMs;
+    this.automaticLayoutPollDelayMs = Math.min(
+      AUTO_LAYOUT_POLL_MAX_MS,
+      Math.round(delayMs * 1.7),
+    );
+    this.automaticLayoutPollTimer = dependencies.runtime.setTimeout(() => {
+      this.automaticLayoutPollTimer = null;
+      void this.pollAutomaticLayout(target, pollGeneration);
+    }, delayMs);
+  }
+
+  private async pollAutomaticLayout(
+    target: string,
+    pollGeneration: number,
+  ): Promise<void> {
+    const dependencies = this.dependencies;
+    if (!dependencies?.preview?.fetchAutomaticLayout) return;
+    const expectedSessionGeneration = this.sessionGeneration;
+    this.automaticLayoutPollRunning = true;
+    let analysis: ClipAutoLayoutAnalysis | null = null;
+    try {
+      analysis = await dependencies.preview.fetchAutomaticLayout();
+    } catch {
+      // Readiness is eventually consistent; a later bounded poll may succeed.
+    }
+    if (
+      this.automaticLayoutPollGeneration !== pollGeneration ||
+      this.sessionGeneration !== expectedSessionGeneration ||
+      this.automaticLayoutPollTarget !== target
+    ) {
+      return;
+    }
+    this.automaticLayoutPollRunning = false;
+    const document = this.unified.doc.present;
+    if (
+      analysis &&
+      automaticLayoutInputFingerprint(document) === target &&
+      automaticLayoutInputFingerprint(this.cloudDocument) === target &&
+      clipAutoLayoutMatchesInputs(analysis, {
+        clipStartSec: document.clipStartSec,
+        clipEndSec: document.clipEndSec,
+        deletedRanges: document.deletedRanges,
+      })
+    ) {
+      this.retainedAutomaticLayout = deepFreeze(structuredClone(analysis));
+      this.publish();
+      return;
+    }
+    this.reconcileAutomaticLayoutPolling();
+  }
+
+  private clearAutomaticLayoutPolling(): void {
+    if (this.automaticLayoutPollTimer !== null && this.dependencies) {
+      this.dependencies.runtime.clearTimeout(this.automaticLayoutPollTimer);
+    }
+    this.automaticLayoutPollTimer = null;
+    this.automaticLayoutPollTarget = null;
+    this.automaticLayoutPollDeadline = 0;
+    this.automaticLayoutPollDelayMs = AUTO_LAYOUT_POLL_INITIAL_MS;
+    this.automaticLayoutPollRunning = false;
+    this.automaticLayoutPollGeneration += 1;
+  }
+
+  private clearDerivedPolling(): void {
+    this.clearProxyPolling();
+    this.clearAutomaticLayoutPolling();
   }
 
   private get deviceDraftKey(): string {
@@ -1416,6 +1838,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
   private loseOwnership(): void {
     this.sessionGeneration += 1;
     this.clearCloudTimers();
+    this.clearDerivedPolling();
     if (this.draftWriteTimer !== null && this.dependencies) {
       this.dependencies.runtime.clearTimeout(this.draftWriteTimer);
       this.draftWriteTimer = null;
@@ -1757,6 +2180,10 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
       return { kind: "unavailable", reason: "invalid-state" };
     }
 
+    this.retireDerivedAssetsForAcknowledgedChange(
+      this.cloudDocument,
+      cloudResult.head.document,
+    );
     this.cloudDocument = ownDocument(cloudResult.head.document);
     this.cloudRevision = cloudResult.head.revision;
     const projection = await this.reconcileOwnedDraft({

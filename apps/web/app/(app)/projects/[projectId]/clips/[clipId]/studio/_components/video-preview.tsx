@@ -15,7 +15,6 @@ import {
 } from "lucide-react";
 import {
   capDuckingWindows,
-  clipAutoLayoutMatchesInputs,
   clipAspectRatioOptions,
   computeSpeechWindows,
   duckingGainMultiplierAt,
@@ -348,7 +347,6 @@ export function VideoPreview() {
     layoutAnalysis,
     autoLayoutAnalysis,
     clipWindow,
-    deletedRanges,
   } = useStudio();
 
   // File-local position of edited time 0 — equals `playerClipStartSec`
@@ -503,14 +501,8 @@ export function VideoPreview() {
     if (effectiveFramingMode !== "auto" || !autoLayoutAnalysis || !sourceDims) {
       return null;
     }
-    return clipAutoLayoutMatchesInputs(autoLayoutAnalysis, {
-      clipStartSec: clipWindow.startSec,
-      clipEndSec: clipWindow.endSec,
-      deletedRanges,
-    })
-      ? autoLayoutAnalysis
-      : null;
-  }, [effectiveFramingMode, autoLayoutAnalysis, sourceDims, clipWindow, deletedRanges]);
+    return autoLayoutAnalysis;
+  }, [effectiveFramingMode, autoLayoutAnalysis, sourceDims]);
   const autoSegments = useMemo(
     () =>
       validAutoLayout && sourceDims

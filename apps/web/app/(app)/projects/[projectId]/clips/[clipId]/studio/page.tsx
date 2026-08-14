@@ -110,9 +110,9 @@ export default async function StudioPage({
   /**
    * Server Action — re-checks whether this clip's preview proxy has landed
    * yet. A thin wrapper around the exact same `getClipPreviewSource` call
-   * this page makes above for its own first render, so studio-shell.tsx's
-   * poll effect and the initial SSR paint always agree on what "ready"
-   * means. Bound to the authenticated user/project/clip via closure (not a
+   * this page makes above for its own first render, so the Studio Editing
+   * Session's poll adapter and the initial SSR paint always agree on what
+   * "ready" means. Bound to the authenticated user/project/clip via closure (not a
    * client-supplied id), so polling can't be used to probe another user's
    * clip.
    *
@@ -156,6 +156,7 @@ export default async function StudioPage({
       clipEndSec={effective.endSec}
       previewVideoUrl={previewSource.previewUrl}
       previewStartSec={previewSource.previewStartSec}
+      previewDurationSec={previewSource.previewDurationSec}
       waveformPeaksUrl={previewSource.waveformPeaksUrl}
       // Once the source is purged, a still-missing proxy can never arrive —
       // the worker that cuts it reads straight from source storage — so the

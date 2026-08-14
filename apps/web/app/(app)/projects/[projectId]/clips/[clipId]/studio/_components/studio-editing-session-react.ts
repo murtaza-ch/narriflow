@@ -15,6 +15,7 @@ import {
   type StudioEditingSession,
   type StudioEditingSessionMigrationAdapter,
   type StudioSessionSeed,
+  type StudioSessionDependencies,
   type StudioSessionSnapshot,
 } from "./studio-editing-session";
 import type { TimelineSegment } from "./studio-types";
@@ -44,17 +45,22 @@ export interface StudioEditingSessionReactAdapter {
   getCurrentDocument(): EditorDocument;
 }
 
+export interface StudioEditingSessionReactAdapters {
+  preview?: StudioSessionDependencies["preview"];
+}
+
 export function useStudioEditingSession(
   seed: StudioSessionSeed,
+  adapters: StudioEditingSessionReactAdapters = {},
 ): StudioEditingSessionReactAdapter {
   const [session] = useState(() =>
     createStudioEditingSession(
       seed,
       seed.projectId && seed.clipId
-        ? createBrowserStudioSessionDependencies({
-            projectId: seed.projectId,
-            clipId: seed.clipId,
-          })
+          ? createBrowserStudioSessionDependencies({
+              projectId: seed.projectId,
+              clipId: seed.clipId,
+            }, adapters.preview)
         : undefined,
       { deferStart: Boolean(seed.projectId && seed.clipId) },
     ),

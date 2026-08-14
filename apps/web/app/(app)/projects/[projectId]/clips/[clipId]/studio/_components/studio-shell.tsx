@@ -19,7 +19,6 @@ import {
   isSourceTimeDeleted,
   normalizeDeletedRanges,
   buildTranscriptSliceForWindow,
-  clipAutoLayoutMatchesInputs,
   mergeCorrectedWordsIntoWindow,
   type TranscriptUtterance,
   type CaptionPreset,
@@ -71,20 +70,6 @@ import type { TimelineSegment } from "./studio-types";
  */
 const STUDIO_MIN_VIEWPORT_WIDTH = 900;
 
-/** How often to re-check preview-proxy readiness while it's still
- *  generating (see the poll effect in `StudioShell`). */
-const PREVIEW_POLL_INTERVAL_MS = 8_000;
-/** Give up after this many ticks (~6 minutes at the interval above) — the
- *  worker's proxy cut "usually takes a minute or two", so this leaves
- *  comfortable margin without polling a stuck job forever. */
-const PREVIEW_POLL_MAX_ATTEMPTS = 45;
-// Auto-layout usually lands seconds after the proxy. Start quickly for a
-// responsive editor, then exponentially back off so a stuck analysis costs
-// about a dozen tiny indexed reads rather than 45 full editor-document reads.
-const AUTO_LAYOUT_POLL_INITIAL_MS = 2_000;
-const AUTO_LAYOUT_POLL_MAX_MS = 30_000;
-const AUTO_LAYOUT_POLL_DEADLINE_MS = 6 * 60_000;
-
 /** Fix 4: a barely-there nudge back from the exact edited duration when
  *  resolving where end-of-playback should park — just enough that
  *  `editedToSource` lands inside the final kept segment instead of exactly
@@ -133,17 +118,6 @@ function nearestTimedWordBoundary(
     }
   }
   return nearestDistance <= TIMELINE_SNAP_THRESHOLD_SEC ? nearest : sourceSec;
-}
-
-/** True when the live document agrees with the latest cloud window. */
-function boundsConverged(
-  current: { clipStartSec: number; clipEndSec: number },
-  savedBounds: { startSec: number; endSec: number },
-): boolean {
-  return (
-    Math.abs(current.clipStartSec - savedBounds.startSec) <= 0.001 &&
-    Math.abs(current.clipEndSec - savedBounds.endSec) <= 0.001
-  );
 }
 
 /** Tracks whether the viewport is narrower than `px` via matchMedia. */
@@ -340,15 +314,14 @@ interface StudioContextValue extends StudioState {
    *  spinning forever, and hides the "Use original source" escape hatch
    *  (which needs that same now-gone source). */
   sourcePurged: boolean;
-  /** True once the user has explicitly opted into loading the full source
-   *  (see video-preview.tsx's "Use original source" affordance) because no
-   *  proxy exists yet — never set automatically, so a missing proxy never
-   *  silently triggers the ~44s full-source load Problem A measured. */
+  /** True while the session has selected the full source: either after the
+   *  user opts in for an initially missing proxy, or automatically while a
+   *  boundary-invalidated proxy is being replaced. */
   useOriginalSourceFallback: boolean;
   setUseOriginalSourceFallback: (v: boolean) => void;
-  /** Whichever URL is actually meant to be fed to the `<video>` element:
-   *  the proxy when ready, else the source only once the user opts in,
-   *  else null (nothing to play yet). Also what the timeline scrubs
+  /** Whichever URL the session selected for the `<video>` element: an
+   *  eligible proxy, the source during explicit/automatic fallback, or null.
+   *  Also what the timeline scrubs
    *  thumbnails from (see timeline-preview-manager.ts) — thumbnails
    *  deliberately mirror the player's source choice instead of eagerly
    *  opening the full source on their own, which was the bug this same
@@ -575,6 +548,9 @@ interface StudioShellProps {
   /** The proxy's t=0 expressed in source time (`Clip.previewStartSec`).
    *  Meaningless when `previewVideoUrl` is null. */
   previewStartSec?: number;
+  /** Duration of the generated proxy window, used by the session-owned
+   * descriptor to keep the server asset and its fingerprint together. */
+  previewDurationSec?: number | null;
   /** Same-origin endpoint for validated real amplitude peaks, or null when
    *  no preview exists yet. */
   waveformPeaksUrl?: string | null;
@@ -619,6 +595,7 @@ export function StudioShell({
   // `doc` via the `effectiveTiming` memo below.
   previewVideoUrl: initialPreviewVideoUrl = null,
   previewStartSec: initialPreviewStartSec = 0,
+  previewDurationSec: initialPreviewDurationSec = null,
   waveformPeaksUrl: initialWaveformPeaksUrl = null,
   sourcePurged = false,
   fetchPreviewStatus,
@@ -630,65 +607,8 @@ export function StudioShell({
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const playbackClock = useMemo(() => createPlaybackClock(), []);
   const isViewportTooSmall = useIsViewportBelow(STUDIO_MIN_VIEWPORT_WIDTH);
-  // Only ever flips true from an explicit user action (see video-preview.tsx)
-  // — a missing proxy must never silently fall back to the ~44s full-source
-  // load that motivated this whole feature.
-  const [useOriginalSourceFallback, setUseOriginalSourceFallback] = useState(false);
   const [brollPreviewAsset, setBrollPreviewAsset] =
     useState<StudioBrollPreviewAsset | null>(null);
-
-  // Seeded from the server-rendered snapshot; swapped in live by the poll
-  // effect below once the worker's proxy actually lands. Kept as state
-  // (rather than reading the props directly) because nothing else about
-  // this page ever refreshes on its own — see that effect for why.
-  const [previewVideoUrl, setPreviewVideoUrl] = useState(initialPreviewVideoUrl);
-  const [previewStartSec, setPreviewStartSec] = useState(initialPreviewStartSec);
-  const [waveformPeaksUrl, setWaveformPeaksUrl] = useState(initialWaveformPeaksUrl);
-  const [autoLayoutAnalysis, setAutoLayoutAnalysis] = useState(initialAutoLayoutAnalysis);
-
-  // While no proxy exists yet, periodically re-check readiness so "Preview
-  // generating…" resolves on its own instead of only ever updating on a
-  // manual reload (see the module doc comment on studio/page.tsx's
-  // `fetchPreviewStatus` for why this is a Server Action passed as a prop).
-  // Stops when: the proxy lands (previewVideoUrl flips non-null, which also
-  // makes the guard below skip scheduling a next tick), the source is
-  // purged (sourcePurged — nothing will ever land), the component unmounts
-  // (cleanup clears the pending timeout), or after PREVIEW_POLL_MAX_ATTEMPTS
-  // ticks so a genuinely stuck worker job doesn't poll forever.
-  useEffect(() => {
-    if (previewVideoUrl || sourcePurged || !fetchPreviewStatus) return;
-
-    let cancelled = false;
-    let attempts = 0;
-    let timeoutId: ReturnType<typeof setTimeout>;
-
-    const poll = async () => {
-      attempts += 1;
-      try {
-        const status = await fetchPreviewStatus();
-        if (cancelled) return;
-        if (status.previewUrl) {
-          setPreviewVideoUrl(status.previewUrl);
-          setPreviewStartSec(status.previewStartSec);
-          setWaveformPeaksUrl(status.waveformPeaksUrl);
-          return; // Ready — don't schedule another tick.
-        }
-      } catch {
-        // Transient failure (network blip, presign hiccup) — just retry on
-        // the next tick instead of surfacing an error for a background poll.
-      }
-      if (!cancelled && attempts < PREVIEW_POLL_MAX_ATTEMPTS) {
-        timeoutId = setTimeout(poll, PREVIEW_POLL_INTERVAL_MS);
-      }
-    };
-
-    timeoutId = setTimeout(poll, PREVIEW_POLL_INTERVAL_MS);
-
-    return () => {
-      cancelled = true;
-      clearTimeout(timeoutId);
-    };
-  }, [previewVideoUrl, sourcePurged, fetchPreviewStatus]);
 
   // React subscribes to one clip-scoped session and adapts its stable
   // snapshot into the existing presentation context. The migration adapter
@@ -697,15 +617,58 @@ export function StudioShell({
   const {
     session: studioSession,
     snapshot: sessionSnapshot,
-    migration: studioSessionMigration,
     getCurrentDocument: getStudioDocument,
-  } = useStudioEditingSession({
-    projectId: clipInfo.projectId,
-    clipId: clipInfo.id,
-    cloudRevision: initialEditorRevision,
-    document: initialEditorDocument,
-    segments: timelineSegments,
-  });
+  } = useStudioEditingSession(
+    {
+      projectId: clipInfo.projectId,
+      clipId: clipInfo.id,
+      cloudRevision: initialEditorRevision,
+      document: initialEditorDocument,
+      segments: timelineSegments,
+      preview: {
+        sourceUrl: sourceVideoUrl,
+        sourcePurged,
+        proxy: initialPreviewVideoUrl
+          ? {
+              url: initialPreviewVideoUrl,
+              startSec: initialPreviewStartSec,
+              durationSec: initialPreviewDurationSec,
+              waveformPeaksUrl: initialWaveformPeaksUrl,
+            }
+          : null,
+        automaticLayout: initialAutoLayoutAnalysis,
+      },
+    },
+    {
+      preview: {
+        ...(fetchPreviewStatus
+          ? { fetchProxyStatus: fetchPreviewStatus }
+          : {}),
+        ...(fetchAutoLayoutAnalysis
+          ? { fetchAutomaticLayout: fetchAutoLayoutAnalysis }
+          : {}),
+      },
+    },
+  );
+
+  const previewVideoUrl = sessionSnapshot.preview.proxy?.url ?? null;
+  const previewStartSec = sessionSnapshot.preview.proxy?.startSec ?? 0;
+  const waveformPeaksUrl = sessionSnapshot.preview.waveformPeaksUrl;
+  const autoLayoutAnalysis =
+    sessionSnapshot.preview.automaticLayout as ClipAutoLayoutAnalysis | null;
+  const activeVideoUrl = sessionSnapshot.preview.activeAsset.url;
+  const activeOffsetSec = sessionSnapshot.preview.activeAsset.offsetSec;
+  const useOriginalSourceFallback =
+    sessionSnapshot.preview.activeAsset.kind === "source";
+  const setUseOriginalSourceFallback = useCallback(
+    (enabled: boolean) => {
+      studioSession.dispatch({
+        type: "preview.set-source-fallback",
+        enabled,
+      });
+    },
+    [studioSession],
+  );
 
   // Named `doc` (not `document`) to avoid shadowing the global DOM object.
   const doc = sessionSnapshot.document;
@@ -752,15 +715,8 @@ export function StudioShell({
   const effectiveClipStartSec = effectiveTiming.startSec;
   const effectiveClipEndSec = effectiveTiming.endSec;
 
-  const activeVideoUrl = previewVideoUrl ?? (useOriginalSourceFallback ? sourceVideoUrl : null);
-  // Source time -> "whichever file is actually playing" time. Zero when
-  // there's no proxy (i.e. we're playing the source as-is, or nothing).
-  const activeOffsetSec = previewVideoUrl ? previewStartSec : 0;
-  // Mirrors activeOffsetSec's own condition: the proxy wins whenever it
-  // exists, regardless of useOriginalSourceFallback (that flag only decides
-  // what happens in ITS absence). Consumers only need to branch on this when
-  // activeVideoUrl is non-null.
-  const activeVideoKind: ThumbnailVideoKind = previewVideoUrl ? "proxy" : "source";
+  const activeVideoKind: ThumbnailVideoKind =
+    sessionSnapshot.preview.activeAsset.kind === "proxy" ? "proxy" : "source";
   const playerClipStartSec = effectiveClipStartSec - activeOffsetSec;
   const playerClipEndSec = effectiveClipEndSec - activeOffsetSec;
 
@@ -780,74 +736,6 @@ export function StudioShell({
       ? { startSec: doc.clipStartSec, endSec: doc.clipEndSec }
       : { startSec: doc.clipStartSec, endSec: doc.clipStartSec + Math.max(0, clipInfo.duration) };
   }, [doc.clipStartSec, doc.clipEndSec, clipInfo.duration]);
-
-  const autoLayoutAnalysisIsCurrent = useMemo(
-    () =>
-      autoLayoutAnalysis !== null &&
-      clipAutoLayoutMatchesInputs(autoLayoutAnalysis, {
-        clipStartSec: clipWindow.startSec,
-        clipEndSec: clipWindow.endSec,
-        deletedRanges: doc.deletedRanges,
-      }),
-    [autoLayoutAnalysis, clipWindow, doc.deletedRanges],
-  );
-
-  // The proxy and its framing analysis are separate worker products. Once
-  // the proxy is available, refresh the latter until a plan for the exact
-  // live edit window lands. A stale response racing a trim/save is ignored
-  // by the same fingerprint check used by the preview and renderer.
-  useEffect(() => {
-    if (!previewVideoUrl || autoLayoutAnalysisIsCurrent || !fetchAutoLayoutAnalysis) return;
-
-    let cancelled = false;
-    const deadline = Date.now() + AUTO_LAYOUT_POLL_DEADLINE_MS;
-    let nextDelayMs = AUTO_LAYOUT_POLL_INITIAL_MS;
-    let timeoutId: ReturnType<typeof setTimeout>;
-
-    const poll = async () => {
-      try {
-        const analysis = await fetchAutoLayoutAnalysis();
-        if (cancelled) return;
-        if (
-          analysis &&
-          clipAutoLayoutMatchesInputs(analysis, {
-            clipStartSec: clipWindow.startSec,
-            clipEndSec: clipWindow.endSec,
-            deletedRanges: doc.deletedRanges,
-          })
-        ) {
-          setAutoLayoutAnalysis(analysis);
-          return;
-        }
-      } catch {
-        // Background analysis readiness is eventually consistent. Keep the
-        // existing safe center fallback and retry transient failures.
-      }
-      if (!cancelled && Date.now() < deadline) {
-        timeoutId = setTimeout(poll, nextDelayMs);
-        nextDelayMs = Math.min(
-          AUTO_LAYOUT_POLL_MAX_MS,
-          Math.round(nextDelayMs * 1.7),
-        );
-      }
-    };
-
-    timeoutId = setTimeout(poll, nextDelayMs);
-    nextDelayMs = Math.min(
-      AUTO_LAYOUT_POLL_MAX_MS,
-      Math.round(nextDelayMs * 1.7),
-    );
-    return () => {
-      cancelled = true;
-      clearTimeout(timeoutId);
-    };
-  }, [
-    previewVideoUrl,
-    autoLayoutAnalysisIsCurrent,
-    fetchAutoLayoutAnalysis,
-    clipWindow,
-    doc.deletedRanges,
-  ]);
 
   const editedTimeMap: EditedTimeMap = useMemo(
     () => buildStudioCutPlan(doc.deletedRanges, clipWindow).map,
@@ -1447,7 +1335,6 @@ export function StudioShell({
         newEffective.startSec,
         newEffective.durationSec,
       );
-      boundaryEditIntentRef.current = true;
       // Finding 5 (Phase B closing review): a start-handle trim moves
       // `playerClipStartSec`, which video-preview.tsx's own seek effect
       // reacts to by unconditionally snapping playback back to the new
@@ -1463,17 +1350,15 @@ export function StudioShell({
       // reconcile effect (which runs after, as the parent) clears it once
       // it's done owning the reposition.
       boundaryReconcileOwnsSeekRef.current = true;
-      studioSessionMigration.editDocumentAndResegment({
-        action: {
-          type: "trimClip",
-          startSec: newStartSec,
-          endSec: newEndSec,
-          transcriptSlice: newSlice,
-        },
+      await studioSession.perform({
+        type: "trim",
+        startSec: newStartSec,
+        endSec: newEndSec,
+        transcriptSlice: newSlice,
         segments: newSegments,
       });
     },
-    [clipInfo.projectId, doc.transcriptSlice, studioSessionMigration],
+    [clipInfo.projectId, doc.transcriptSlice, studioSession],
   );
 
   // Cloud checkpoint and reset barriers are projected by the session.
@@ -1487,7 +1372,6 @@ export function StudioShell({
       after.clipStartSec !== before.clipStartSec ||
       after.clipEndSec !== before.clipEndSec
     ) {
-      boundaryEditIntentRef.current = true;
       boundaryReconcileOwnsSeekRef.current = true;
     }
   }, [getStudioDocument, studioSession]);
@@ -1500,41 +1384,12 @@ export function StudioShell({
     applyHistoryIntent("history.redo");
   }, [applyHistoryIntent]);
 
-  const docPresentRef = useRef(doc);
-  const lastSavedBoundsRef = useRef({
-    startSec: initialEditorDocument.clipStartSec,
-    endSec: initialEditorDocument.clipEndSec,
-  });
-  const boundaryEditIntentRef = useRef(false);
   const boundaryReconcileOwnsSeekRef = useRef(false);
   const suppressUnloadGuardRef = useRef(false);
 
   useEffect(() => {
-    docPresentRef.current = doc;
-  }, [doc]);
-
-  useEffect(() => {
-    const baseline = studioSessionMigration.getCloudBaseline();
-    const baselineDocument = baseline.document as EditorDocument;
     setRevisionState(sessionSnapshot.cloud.revision);
     setIsDocDirty(sessionSnapshot.cloud.dirty);
-
-    if (
-      sessionSnapshot.cloud.revision !== initialEditorRevision &&
-      !boundsConverged(baselineDocument, lastSavedBoundsRef.current)
-    ) {
-      setPreviewVideoUrl(null);
-      setPreviewStartSec(0);
-      setWaveformPeaksUrl(null);
-      setUseOriginalSourceFallback(true);
-    }
-    lastSavedBoundsRef.current = {
-      startSec: baselineDocument.clipStartSec,
-      endSec: baselineDocument.clipEndSec,
-    };
-    if (boundsConverged(docPresentRef.current, lastSavedBoundsRef.current)) {
-      boundaryEditIntentRef.current = false;
-    }
 
     setSaveState(() => {
       if (sessionSnapshot.ownership.kind === "reader") return "readonly";
@@ -1557,12 +1412,10 @@ export function StudioShell({
       }
     });
   }, [
-    initialEditorRevision,
     sessionSnapshot.cloud.dirty,
     sessionSnapshot.cloud.revision,
     sessionSnapshot.cloud.state,
     sessionSnapshot.ownership.kind,
-    studioSessionMigration,
   ]);
 
   const handleSave = useCallback(async () => {
@@ -1705,11 +1558,7 @@ export function StudioShell({
       .perform({ type: "resolve-conflict", choice: "device" })
       .then((result) => {
         if (result.kind !== "conflict-resolved") return;
-        const recovered = studioSession.getSnapshot().document as EditorDocument;
-        if (!boundsConverged(recovered, lastSavedBoundsRef.current)) {
-          boundaryEditIntentRef.current = true;
-          boundaryReconcileOwnsSeekRef.current = true;
-        }
+        boundaryReconcileOwnsSeekRef.current = true;
       });
   }, [sessionDraftConflict, studioSession]);
 
