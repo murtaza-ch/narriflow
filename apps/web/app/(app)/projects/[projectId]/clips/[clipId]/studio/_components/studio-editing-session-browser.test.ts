@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
-  BrowserStudioCoordinationAdapter,
+  createBrowserStudioSessionDependencies,
   parseStudioCoordinationEvent,
 } from "./studio-editing-session-browser";
 
@@ -37,8 +37,18 @@ describe("browser Studio coordination adapter", () => {
 
   test("reports ownership loss when a held Web Lock is forcibly stolen", async () => {
     const navigatorDescriptor = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+    const localStorageDescriptor = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "localStorage",
+    );
+    const windowDescriptor = Object.getOwnPropertyDescriptor(globalThis, "window");
+    const broadcastDescriptor = Object.getOwnPropertyDescriptor(
+      globalThis,
+      "BroadcastChannel",
+    );
     let rejectHeldRequest: ((error: Error) => void) | null = null;
     let ownershipLosses = 0;
+    const storage = new Map<string, string>();
     Object.defineProperty(globalThis, "navigator", {
       configurable: true,
       value: {
@@ -56,31 +66,53 @@ describe("browser Studio coordination adapter", () => {
         },
       },
     });
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: {
+        getItem: (key: string) => storage.get(key) ?? null,
+        setItem: (key: string, value: string) => { storage.set(key, value); },
+        removeItem: (key: string) => { storage.delete(key); },
+      },
+    });
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: {
+        addEventListener: () => undefined,
+        removeEventListener: () => undefined,
+        setInterval: () => 1,
+        clearInterval: () => undefined,
+        setTimeout,
+        clearTimeout,
+      },
+    });
+    Object.defineProperty(globalThis, "BroadcastChannel", {
+      configurable: true,
+      value: undefined,
+    });
     try {
-      const adapter = new BrowserStudioCoordinationAdapter("project", "clip");
-      const surface = adapter as unknown as {
-        participant: {
-          onTakeoverRequested(): Promise<"checkpointed">;
-          onOwnershipLost(): void;
-        };
-        acquireBrowserLock(options: LockOptions): Promise<number | null>;
-      };
-      surface.participant = {
+      const coordination = createBrowserStudioSessionDependencies({
+        projectId: "project",
+        clipId: "clip",
+      }).coordination;
+      expect(await coordination.start({
         onTakeoverRequested: async () => "checkpointed",
         onOwnershipLost: () => { ownershipLosses += 1; },
-      };
-
-      expect(await surface.acquireBrowserLock({})).toBeGreaterThan(0);
+      })).toMatchObject({ kind: "writer" });
       if (!rejectHeldRequest) throw new Error("expected a held Web Lock request");
       rejectHeldRequest(new Error("Lock was stolen"));
       await Promise.resolve();
       await Promise.resolve();
       expect(ownershipLosses).toBe(1);
+      coordination.close();
     } finally {
-      if (navigatorDescriptor) {
-        Object.defineProperty(globalThis, "navigator", navigatorDescriptor);
-      } else {
-        Reflect.deleteProperty(globalThis, "navigator");
+      for (const [name, descriptor] of [
+        ["navigator", navigatorDescriptor],
+        ["localStorage", localStorageDescriptor],
+        ["window", windowDescriptor],
+        ["BroadcastChannel", broadcastDescriptor],
+      ] as const) {
+        if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+        else Reflect.deleteProperty(globalThis, name);
       }
     }
   });

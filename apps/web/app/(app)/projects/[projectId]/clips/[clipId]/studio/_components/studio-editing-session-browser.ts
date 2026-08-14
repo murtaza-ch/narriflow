@@ -57,7 +57,7 @@ export function parseStudioCoordinationEvent(value: unknown): CoordinationEvent 
 
 type StudioCoordinationAdapter = StudioSessionDependencies["coordination"];
 
-export class BrowserStudioCoordinationAdapter implements StudioCoordinationAdapter {
+class BrowserStudioCoordinationAdapter implements StudioCoordinationAdapter {
   private readonly ownerId = crypto.randomUUID();
   private readonly leaseKey: string;
   private readonly generationKey: string;
