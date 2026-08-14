@@ -4,18 +4,18 @@
 
 **Blocked by:** 01 — Establish the Studio Editing Session seam through document edits and history.
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] Startup resolves Device Draft recovery and Studio Write Ownership before document mutations are accepted.
-- [ ] Conflict-free Device Drafts restore automatically; overlapping drafts remain durable and request an explicit decision.
-- [ ] IndexedDB failure leaves cloud editing available while exposing degraded durability and keeping navigation protection active.
-- [ ] Web Locks, BroadcastChannel, and local-storage fallback behavior is normalized behind one coordination adapter.
-- [ ] A second session is read-only for mutations but may inspect and play the clip.
-- [ ] Cooperative takeover checkpoints the outgoing writer before release, and the incoming writer reconciles before enabling edits.
-- [ ] An unresponsive writer can be force-taken after two seconds without allowing its later callbacks to regain ownership.
-- [ ] Device Draft writes carry a fenced ownership generation; older generations cannot overwrite newer checkpoints.
-- [ ] Existing draft records remain readable and are upgraded lazily without destructive migration.
-- [ ] Deterministic two-session tests cover contention, handoff, forced takeover, degraded coordination, ownership loss, and stale writes.
-- [ ] Browser adapter contract tests cover persistence validation, upgrade, and coordination event normalization.
-- [ ] Exactly one module owns draft and browser-ownership sequencing after cutover.
-- [ ] Repository typecheck and tests pass.
+- [x] Startup resolves Device Draft recovery and Studio Write Ownership before document mutations are accepted.
+- [x] Conflict-free Device Drafts restore automatically; overlapping drafts remain durable and request an explicit decision.
+- [x] IndexedDB failure leaves cloud editing available while exposing degraded durability and keeping navigation protection active.
+- [x] Web Locks, BroadcastChannel, and local-storage fallback behavior is normalized behind one coordination adapter.
+- [x] A second session is read-only for mutations but may inspect and play the clip.
+- [x] Cooperative takeover checkpoints the outgoing writer before release, and the incoming writer reconciles before enabling edits.
+- [x] An unresponsive writer can be force-taken after two seconds without allowing its later callbacks to regain ownership.
+- [x] Device Draft writes carry a fenced ownership generation; older generations cannot overwrite newer checkpoints.
+- [x] Existing draft records remain readable and are upgraded lazily without destructive migration.
+- [x] Deterministic two-session tests cover contention, handoff, forced takeover, degraded coordination, ownership loss, and stale writes.
+- [x] Browser adapter contract tests cover persistence validation, upgrade, and coordination event normalization.
+- [x] Exactly one module owns draft and browser-ownership sequencing after cutover.
+- [x] Repository typecheck and tests pass.
