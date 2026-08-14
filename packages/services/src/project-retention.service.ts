@@ -494,7 +494,11 @@ export class ProjectRetentionService {
             createdAt: { gte: windowStartedAt, lte: dueCutoff },
             OR: [
               { ingestJobs: { some: { status: { in: ["queued", "running"] } } } },
-              { workflowRuns: { some: { status: { in: ["queued", "running"] } } } },
+              {
+                workflowRuns: {
+                  some: { status: { in: ["queued", "running", "waiting"] } },
+                },
+              },
             ],
           },
         }),

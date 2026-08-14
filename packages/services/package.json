@@ -38,6 +38,9 @@
     "stripe": "^22.5.0"
   },
   "devDependencies": {
+    "@prisma/adapter-pg": "7.7.0",
+    "@types/pg": "8.15.5",
+    "pg": "8.16.3",
     "@types/node": "26.2.0"
   }
 }

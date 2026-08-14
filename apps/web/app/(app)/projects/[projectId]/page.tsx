@@ -365,7 +365,10 @@ export default async function ProjectDetailPage({
 
   const ingestInProgress = !isIngestReady && !isIngestFailed;
   const runInFlight =
-    activeRun !== null && (activeRun.status === "queued" || activeRun.status === "running");
+    activeRun !== null &&
+    (activeRun.status === "queued" ||
+      activeRun.status === "running" ||
+      activeRun.status === "waiting");
   const runFailed = activeRun !== null && activeRun.status === "failed";
   const quotaBlockedMidFlight = isQuotaBlockedMidFlight({
     ingestReady: isIngestReady,
@@ -432,7 +435,8 @@ export default async function ProjectDetailPage({
   //   its in-panel danger band (the checklist's render node already renders
   //   one) rather than dropping the user into an empty/incomplete results view.
   const renderGatesProcessingPanel = generationMode === "caption_only" || autoRenderClips;
-  const renderStageSucceeded = renderStage.status === "completed";
+  const renderStageSucceeded =
+    renderStage.status === "completed" || renderStage.status === "partial";
   const showProcessingPanel =
     hasCommittedPack &&
     (clips.length === 0
@@ -587,6 +591,15 @@ export default async function ProjectDetailPage({
               <Info size={13} aria-hidden />
               <Text fontSize="xs">
                 The original source was cleared after retention to save storage. Existing clips and renders are unaffected.
+              </Text>
+            </Flex>
+          )}
+          {activeRun?.status === "partial" && (
+            <Flex align="center" gap="2" color="warning.fg">
+              <AlertTriangle size={14} aria-hidden />
+              <Text fontSize="sm">
+                Some outputs failed, but successful clips remain ready to use.
+                Retry only the failed outputs from their rows.
               </Text>
             </Flex>
           )}

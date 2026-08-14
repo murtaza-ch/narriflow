@@ -78,6 +78,13 @@ import {
   workspaceService,
   type WorkspaceCapability,
 } from "./workspace.service";
+import {
+  currentWorkflowAttempt,
+  getWorkflowRunLifecycle,
+  WorkflowAttemptContextRequired,
+  WorkflowFailure,
+  WORKFLOW_LIFECYCLE_VERSION,
+} from "./workflow-run-lifecycle";
 
 interface ProjectSnapshot {
   id: string;
@@ -162,6 +169,9 @@ interface ClaimedWorkflowRun {
   status: string;
   progress: number;
   contentPackId: string | null;
+  lifecycleVersion: number;
+  attemptId: string | null;
+  attemptCount: number;
   project: Pick<
     Project,
     | "id"
@@ -770,6 +780,15 @@ export const TRANSIENT_FAILURE_CODES: ReadonlySet<string> = new Set([
   "worker_stalled",
 ]);
 
+function requireProtocolV1CompatibilityRun(run: {
+  id: string;
+  lifecycleVersion: number;
+}) {
+  if (run.lifecycleVersion !== 1) {
+    throw new WorkflowAttemptContextRequired(run.id);
+  }
+}
+
 export function isAutoRetryableFailureCode(errorCode: string): boolean {
   return !PERMANENT_FAILURE_CODES.has(errorCode);
 }
@@ -1261,7 +1280,7 @@ export class ProjectService {
               },
             },
             workflowRuns: {
-              where: { status: { in: ["queued", "running"] } },
+              where: { status: { in: ["queued", "running", "waiting"] } },
               select: { id: true },
               take: 1,
             },
@@ -1411,7 +1430,9 @@ export class ProjectService {
               },
             },
             {
-              workflowRuns: { some: { status: { in: ["queued", "running"] } } },
+              workflowRuns: {
+                some: { status: { in: ["queued", "running", "waiting"] } },
+              },
             },
           ],
         },
@@ -2106,50 +2127,24 @@ export class ProjectService {
         throw new Error("project ingest is not ready");
       }
 
-      const latestRun = await prisma.workflowRun.findFirst({
-        where: { projectId },
-        orderBy: { updatedAt: "desc" },
-      });
-
-      if (
-        !parsed.forceRegenerate &&
-        latestRun &&
-        (latestRun.status === "queued" || latestRun.status === "running")
-      ) {
-        return {
-          workflowRunId: latestRun.id,
-          acceptedAt: latestRun.updatedAt.toISOString(),
-          initialSeq: await getLastWorkflowSeq(projectId),
-        };
-      }
-
-      if (
-        !parsed.forceRegenerate &&
-        project.transcript?.status === "completed" &&
-        latestRun
-      ) {
-        return {
-          workflowRunId: latestRun.id,
-          acceptedAt: latestRun.updatedAt.toISOString(),
-          initialSeq: await getLastWorkflowSeq(projectId),
-        };
+      if (!parsed.forceRegenerate) {
+        const reusable = await getWorkflowRunLifecycle().findReusableGenerationRun(
+          projectId,
+          project.transcript?.status === "completed",
+        );
+        if (reusable) {
+          return {
+            workflowRunId: reusable.id,
+            acceptedAt: reusable.updatedAt.toISOString(),
+            initialSeq: await getLastWorkflowSeq(projectId),
+          };
+        }
       }
     }
 
     // Idempotency: prefer the durable DB unique constraint (survives restarts and
     // works across multiple instances); the in-memory map is only the no-DB path.
-    if (hasDatabase()) {
-      const existingRun = await this.requirePrisma().workflowRun.findUnique({
-        where: { projectId_idempotencyKey: { projectId, idempotencyKey } },
-      });
-      if (existingRun) {
-        return {
-          workflowRunId: existingRun.id,
-          acceptedAt: existingRun.updatedAt.toISOString(),
-          initialSeq: await getLastWorkflowSeq(projectId),
-        };
-      }
-    } else {
+    if (!hasDatabase()) {
       const existingRunId = idempotencyRuns.get(
         getIdempotencyKey(projectId, idempotencyKey),
       );
@@ -2162,114 +2157,57 @@ export class ProjectService {
       }
     }
 
-    const workflowRunId = randomUUID();
+    let workflowRunId: string = randomUUID();
     idempotencyRuns.set(
       getIdempotencyKey(projectId, idempotencyKey),
       workflowRunId,
     );
 
     if (hasDatabase()) {
-      const prisma = this.requirePrisma();
+      const contentPackId = options?.existingContentPackId ?? null;
+      const admitted = await getWorkflowRunLifecycle().admitTranscript({
+        projectId,
+        idempotencyKey,
+        contentPackId,
+        contentPack: contentPackId
+          ? undefined
+          : {
+            outputTypes: parsed.contentPack.outputTypes,
+            clipGenerationMode: parsed.contentPack.clipGenerationMode,
+            clipCountTarget: parsed.contentPack.clipCountTarget,
+            clipDurationSecTarget: parsed.contentPack.clipDurationSecTarget,
+            minDurationSec: parsed.contentPack.minDurationSec,
+            preferredMinDurationSec: parsed.contentPack.preferredMinDurationSec,
+            preferredMaxDurationSec: parsed.contentPack.preferredMaxDurationSec,
+            maxDurationSec: parsed.contentPack.maxDurationSec,
+            platformTargets: parsed.contentPack.platformTargets,
+            autoRenderClips: parsed.contentPack.autoRenderClips,
+            toneConstraints: parsed.contentPack.toneConstraints,
+            captionPreset: parsed.contentPack.captionPreset,
+            platformPlaybookVersion: parsed.contentPack.platformPlaybookVersion,
+            mode: parsed.contentPack.mode,
+            autoHook: parsed.contentPack.autoHook,
+            specificMoments: parsed.contentPack.specificMoments,
+            processingStartSec: parsed.contentPack.processingStartSec,
+            processingEndSec: parsed.contentPack.processingEndSec,
+            clipLengthPreset: parsed.contentPack.clipLengthPreset,
+            defaultAspectRatio: parsed.contentPack.defaultAspectRatio,
+          },
+        languageCode: parsed.languageCode,
+        transcriptProvider: STT_PROVIDER,
+        transcriptProviderModel: STT_PROVIDER_MODEL,
+      });
+      workflowRunId = admitted.id;
+      idempotencyRuns.set(
+        getIdempotencyKey(projectId, idempotencyKey),
+        workflowRunId,
+      );
 
-      try {
-        await prisma.$transaction(async (tx) => {
-          let contentPackId = options?.existingContentPackId ?? null;
-
-          if (!contentPackId) {
-            const createdPack = await tx.contentPack.create({
-              data: {
-                projectId,
-                outputTypes: parsed.contentPack.outputTypes,
-                clipGenerationMode: parsed.contentPack.clipGenerationMode,
-                clipCountTarget: parsed.contentPack.clipCountTarget,
-                clipDurationSecTarget: parsed.contentPack.clipDurationSecTarget,
-                minDurationSec: parsed.contentPack.minDurationSec,
-                preferredMinDurationSec:
-                  parsed.contentPack.preferredMinDurationSec,
-                preferredMaxDurationSec:
-                  parsed.contentPack.preferredMaxDurationSec,
-                maxDurationSec: parsed.contentPack.maxDurationSec,
-                platformTargets: parsed.contentPack.platformTargets,
-                autoRenderClips: parsed.contentPack.autoRenderClips,
-                toneConstraints: parsed.contentPack.toneConstraints,
-                captionPreset: parsed.contentPack.captionPreset,
-                platformPlaybookVersion:
-                  parsed.contentPack.platformPlaybookVersion,
-                mode: parsed.contentPack.mode,
-                autoHook: parsed.contentPack.autoHook,
-                specificMoments: parsed.contentPack.specificMoments,
-                processingStartSec: parsed.contentPack.processingStartSec,
-                processingEndSec: parsed.contentPack.processingEndSec,
-                clipLengthPreset: parsed.contentPack.clipLengthPreset,
-                defaultAspectRatio: parsed.contentPack.defaultAspectRatio,
-              },
-            });
-            contentPackId = createdPack.id;
-          }
-
-          await tx.workflowRun.create({
-            data: {
-              id: workflowRunId,
-              projectId,
-              idempotencyKey,
-              stage: "stt",
-              status: "queued",
-              progress: 0,
-              contentPackId,
-            },
-          });
-
-          if (parsed.languageCode !== undefined) {
-            await tx.project.update({
-              where: { id: projectId },
-              data: { languageCode: parsed.languageCode },
-            });
-          }
-
-          await tx.transcript.upsert({
-            where: { projectId },
-            create: {
-              projectId,
-              status: "queued",
-              provider: STT_PROVIDER,
-              providerModel: STT_PROVIDER_MODEL,
-              providerJobId: null,
-              errorCode: null,
-            },
-            update: {
-              status: "queued",
-              provider: STT_PROVIDER,
-              providerModel: STT_PROVIDER_MODEL,
-              providerJobId: null,
-              errorCode: null,
-              completedAt: null,
-            },
-          });
-        });
-      } catch (error) {
-        // Concurrent claim with the same (projectId, idempotencyKey): the
-        // loser recovers the winner's run and reports success — the web path
-        // must not 500 and the worker path must not swallow-and-stall.
-        if (isUniqueConstraintError(error)) {
-          const winner = await prisma.workflowRun.findUnique({
-            where: {
-              projectId_idempotencyKey: { projectId, idempotencyKey },
-            },
-          });
-          if (winner) {
-            idempotencyRuns.set(
-              getIdempotencyKey(projectId, idempotencyKey),
-              winner.id,
-            );
-            return {
-              workflowRunId: winner.id,
-              acceptedAt: winner.updatedAt.toISOString(),
-              initialSeq: await getLastWorkflowSeq(projectId),
-            };
-          }
-        }
-        throw error;
-      }
+      return {
+        workflowRunId,
+        acceptedAt: new Date().toISOString(),
+        initialSeq: await getLastWorkflowSeq(projectId),
+      };
     }
 
     const event = await this.publishWorkflowRunEvent({
@@ -3112,12 +3050,29 @@ export class ProjectService {
       await this.ensurePendingClipRenderingRun();
     }
 
+    const claimedV2 = await getWorkflowRunLifecycle().claim(stage);
+    if (claimedV2) {
+      return {
+        id: claimedV2.workflowRunId,
+        projectId: claimedV2.projectId,
+        stage: claimedV2.stage,
+        status: claimedV2.status,
+        progress: claimedV2.progress,
+        contentPackId: claimedV2.contentPackId,
+        lifecycleVersion: WORKFLOW_LIFECYCLE_VERSION,
+        attemptId: claimedV2.attemptId,
+        attemptCount: claimedV2.attemptCount,
+        project: claimedV2.project as ClaimedWorkflowRun["project"],
+      };
+    }
+
     // Bounded retry: under multi-worker contention the conditional update below
     // can lose the race (update.count === 0). Cap the retries and return null so
     // the poller simply tries again next tick, rather than recursing unbounded.
     for (let attempt = 0; attempt < 5; attempt++) {
       const queued = await prisma.workflowRun.findFirst({
         where: {
+          lifecycleVersion: 1,
           stage,
           status: "queued",
           project: accessibleProjectWhere(),
@@ -3160,6 +3115,7 @@ export class ProjectService {
       const update = await prisma.workflowRun.updateMany({
         where: {
           id: queued.id,
+          lifecycleVersion: 1,
           status: "queued",
           project: accessibleProjectWhere(),
           OR: [
@@ -3248,6 +3204,9 @@ export class ProjectService {
         status: "running",
         progress: 10,
         contentPackId: queued.contentPackId ?? null,
+        lifecycleVersion: queued.lifecycleVersion,
+        attemptId: null,
+        attemptCount: queued.attemptCount + 1,
         project: queued.project,
       };
     }
@@ -3274,7 +3233,7 @@ export class ProjectService {
             workflowRuns: {
               none: {
                 stage: "clip_rendering",
-                status: { in: ["queued", "running"] },
+                status: { in: ["queued", "running", "waiting"] },
               },
             },
           },
@@ -3285,38 +3244,18 @@ export class ProjectService {
     });
     if (!orphan) return null;
 
-    let run: { id: string } | null = null;
-    try {
-      run = await prisma.workflowRun.create({
-        data: {
-          id: randomUUID(),
-          projectId: orphan.clip.projectId,
-          idempotencyKey: `render-rescue:${randomUUID()}`,
-          stage: "clip_rendering",
-          status: "queued",
-          progress: 0,
-        },
-        select: { id: true },
-      });
-    } catch (error) {
-      if (!isUniqueConstraintError(error)) throw error;
-      run = await prisma.workflowRun.findFirst({
-        where: {
-          projectId: orphan.clip.projectId,
-          stage: "clip_rendering",
-          status: { in: ["queued", "running"] },
-        },
-        select: { id: true },
-      });
-    }
-    if (!run) return null;
+    const run = await getWorkflowRunLifecycle().admit({
+      projectId: orphan.clip.projectId,
+      idempotencyKey: `render-rescue:${randomUUID()}`,
+      stage: "clip_rendering",
+    });
 
     await prisma.clipExport.updateMany({
       where: {
         projectId: orphan.clip.projectId,
         status: { in: ["queued", "rendering"] },
       },
-      data: { workflowRunId: run.id },
+        data: { workflowRunId: run.id },
     });
     return run.id;
   }
@@ -3400,7 +3339,27 @@ export class ProjectService {
    *  providerJobId to null on every (re)claim, so a requeued run always
    *  resubmits instead of adopting a stale job. */
   async markTranscriptSubmitted(projectId: string, providerJobId: string) {
+    const attempt = currentWorkflowAttempt();
+    if (attempt?.projectId === projectId) {
+      await getWorkflowRunLifecycle().waitForProvider(attempt, {
+        providerJobId,
+        nextPollAt: new Date(Date.now() + 5_000),
+      });
+      return;
+    }
     const prisma = this.requirePrisma();
+    const compatibilityRun = await prisma.workflowRun.findFirst({
+      where: {
+        projectId,
+        lifecycleVersion: 1,
+        stage: "stt",
+        status: "running",
+      },
+      select: { id: true },
+    });
+    if (!compatibilityRun) {
+      throw new WorkflowAttemptContextRequired(projectId);
+    }
     await prisma.transcript.updateMany({
       where: { projectId },
       data: { providerJobId, status: "processing" },
@@ -3427,13 +3386,35 @@ export class ProjectService {
       progress: number;
       providerJobId: string;
       submittedAt: Date;
+      stage: "stt";
+      lifecycleVersion: number;
+      attemptId: string | null;
+      attemptCount: number;
     }>
   > {
     const prisma = this.requirePrisma();
+    const waitingV2 = await getWorkflowRunLifecycle().claimDueWaitingTranscripts(
+      batchSize,
+      minPollIntervalMs,
+    );
+    if (waitingV2.length >= batchSize) {
+      return waitingV2.map((run) => ({
+        id: run.workflowRunId,
+        projectId: run.projectId,
+        progress: run.progress,
+        providerJobId: run.providerJobId,
+        submittedAt: run.submittedAt,
+        stage: "stt" as const,
+        lifecycleVersion: WORKFLOW_LIFECYCLE_VERSION,
+        attemptId: run.attemptId,
+        attemptCount: run.attemptCount,
+      }));
+    }
     const cutoff = new Date(Date.now() - minPollIntervalMs);
 
     const candidates = await prisma.workflowRun.findMany({
       where: {
+        lifecycleVersion: 1,
         stage: "stt",
         status: "running",
         updatedAt: { lt: cutoff },
@@ -3446,11 +3427,12 @@ export class ProjectService {
         },
       },
       orderBy: { updatedAt: "asc" },
-      take: batchSize,
+      take: batchSize - waitingV2.length,
       select: {
         id: true,
         projectId: true,
         progress: true,
+        attemptCount: true,
         project: {
           select: {
             transcript: {
@@ -3467,6 +3449,10 @@ export class ProjectService {
       progress: number;
       providerJobId: string;
       submittedAt: Date;
+      stage: "stt";
+      lifecycleVersion: number;
+      attemptId: string | null;
+      attemptCount: number;
     }> = [];
 
     for (const run of candidates) {
@@ -3475,7 +3461,12 @@ export class ProjectService {
       if (!providerJobId || !submittedAt) continue;
 
       const won = await prisma.workflowRun.updateMany({
-        where: { id: run.id, status: "running", updatedAt: { lt: cutoff } },
+        where: {
+          id: run.id,
+          lifecycleVersion: 1,
+          status: "running",
+          updatedAt: { lt: cutoff },
+        },
         data: { progress: run.progress },
       });
       if (won.count === 0) continue;
@@ -3486,10 +3477,27 @@ export class ProjectService {
         progress: run.progress,
         providerJobId,
         submittedAt,
+        stage: "stt",
+        lifecycleVersion: 1,
+        attemptId: null,
+        attemptCount: run.attemptCount,
       });
     }
 
-    return claimed;
+    return [
+      ...waitingV2.map((run) => ({
+        id: run.workflowRunId,
+        projectId: run.projectId,
+        progress: run.progress,
+        providerJobId: run.providerJobId,
+        submittedAt: run.submittedAt,
+        stage: "stt" as const,
+        lifecycleVersion: WORKFLOW_LIFECYCLE_VERSION,
+        attemptId: run.attemptId,
+        attemptCount: run.attemptCount,
+      })),
+      ...claimed,
+    ];
   }
 
   async completeTranscriptWorkflowRun(
@@ -3515,6 +3523,14 @@ export class ProjectService {
       expectedProviderJobId?: string;
     },
   ) {
+    const attempt = currentWorkflowAttempt(workflowRunId);
+    if (attempt) {
+      await getWorkflowRunLifecycle().completeTranscript(attempt, {
+        ...input,
+        utterances: input.utterances as Prisma.InputJsonValue,
+      });
+      return;
+    }
     const prisma = this.requirePrisma();
     const run = await prisma.workflowRun.findUnique({
       where: { id: workflowRunId },
@@ -3523,6 +3539,7 @@ export class ProjectService {
     if (!run) {
       throw new Error("workflow run not found");
     }
+    requireProtocolV1CompatibilityRun(run);
 
     if (run.status === "completed" || run.status === "failed") {
       return;
@@ -3605,24 +3622,11 @@ export class ProjectService {
     // if the create failed, because a completed run is neither claimable nor
     // reapable.
     const mdIdempotencyKey = `${run.idempotencyKey}__moment_detection`;
-    let mdRun: { id: string } | null = null;
-    try {
-      mdRun = await prisma.workflowRun.create({
-        data: {
-          projectId: run.projectId,
-          idempotencyKey: mdIdempotencyKey,
-          stage: "moment_detection",
-          status: "queued",
-          progress: 0,
-        },
-      });
-    } catch (error) {
-      if (!isUniqueConstraintError(error)) {
-        throw error;
-      }
-      // Already created by an earlier (crashed or racing) finalize — its
-      // queued event was published then; don't re-publish.
-    }
+    await getWorkflowRunLifecycle().admit({
+      projectId: run.projectId,
+      idempotencyKey: mdIdempotencyKey,
+      stage: "moment_detection",
+    });
 
     // Conditional on still-running: a requeued/settled run must not be
     // completed by a stale finalizer that lost the race.
@@ -3657,19 +3661,14 @@ export class ProjectService {
       errorCode: null,
     });
 
-    if (mdRun) {
-      await this.publishWorkflowRunEvent({
-        projectId: run.projectId,
-        workflowRunId: mdRun.id,
-        stage: "moment_detection",
-        status: "queued",
-        progress: 0,
-        errorCode: null,
-      });
-    }
   }
 
   async completeClipDetectionWorkflowRun(workflowRunId: string) {
+    const attempt = currentWorkflowAttempt(workflowRunId);
+    if (attempt) {
+      await getWorkflowRunLifecycle().completeMomentDetection(attempt);
+      return;
+    }
     const prisma = this.requirePrisma();
     const run = await prisma.workflowRun.findUnique({
       where: { id: workflowRunId },
@@ -3678,6 +3677,7 @@ export class ProjectService {
     if (!run) {
       throw new Error("workflow run not found");
     }
+    requireProtocolV1CompatibilityRun(run);
 
     await prisma.workflowRun.update({
       where: { id: run.id },
@@ -3817,8 +3817,14 @@ export class ProjectService {
 
   async failClipDetectionWorkflowRun(
     workflowRunId: string,
-    errorCode: string,
+    failure: WorkflowFailure,
   ) {
+    const errorCode = failure.code;
+    const attempt = currentWorkflowAttempt(workflowRunId);
+    if (attempt) {
+      await getWorkflowRunLifecycle().failAttempt(attempt, failure);
+      return;
+    }
     const prisma = this.requirePrisma();
     const run = await prisma.workflowRun.findUnique({
       where: { id: workflowRunId },
@@ -3827,6 +3833,7 @@ export class ProjectService {
     if (!run) {
       throw new Error("workflow run not found");
     }
+    requireProtocolV1CompatibilityRun(run);
 
     await this.settleFailedWorkflowRun(run, "moment_detection", errorCode);
   }
@@ -3835,6 +3842,14 @@ export class ProjectService {
     workflowRunId: string,
     options?: { failedVariantCount?: number },
   ) {
+    const attempt = currentWorkflowAttempt(workflowRunId);
+    if (attempt) {
+      await getWorkflowRunLifecycle().completeRendering(
+        attempt,
+        options?.failedVariantCount ?? 0,
+      );
+      return;
+    }
     const prisma = this.requirePrisma();
     const run = await prisma.workflowRun.findUnique({
       where: { id: workflowRunId },
@@ -3843,6 +3858,7 @@ export class ProjectService {
     if (!run) {
       throw new Error("workflow run not found");
     }
+    requireProtocolV1CompatibilityRun(run);
 
     // Partial failures still complete the run (per-variant status carries the
     // detail), but the run records that it wasn't a clean sweep instead of
@@ -3890,7 +3906,7 @@ export class ProjectService {
 
   async failClipRenderingWorkflowRun(
     workflowRunId: string,
-    errorCode: string,
+    failure: WorkflowFailure,
     options?: {
       /** The variants the failed attempt touched (all individually `failed`
        *  when every encode in the run failed). Passing them here lets the
@@ -3902,6 +3918,12 @@ export class ProjectService {
       retryVariantIds?: string[];
     },
   ) {
+    const errorCode = failure.code;
+    const attempt = currentWorkflowAttempt(workflowRunId);
+    if (attempt) {
+      await getWorkflowRunLifecycle().failAttempt(attempt, failure);
+      return;
+    }
     const prisma = this.requirePrisma();
     const run = await prisma.workflowRun.findUnique({
       where: { id: workflowRunId },
@@ -3910,6 +3932,7 @@ export class ProjectService {
     if (!run) {
       throw new Error("workflow run not found");
     }
+    requireProtocolV1CompatibilityRun(run);
 
     const decision = await this.settleFailedWorkflowRun(
       run,
@@ -4031,6 +4054,11 @@ export class ProjectService {
   }
 
   async completeDubbingWorkflowRun(workflowRunId: string) {
+    const attempt = currentWorkflowAttempt(workflowRunId);
+    if (attempt) {
+      await getWorkflowRunLifecycle().completeDubbing(attempt);
+      return;
+    }
     const prisma = this.requirePrisma();
     const run = await prisma.workflowRun.findUnique({
       where: { id: workflowRunId },
@@ -4039,6 +4067,7 @@ export class ProjectService {
     if (!run) {
       throw new Error("workflow run not found");
     }
+    requireProtocolV1CompatibilityRun(run);
 
     await prisma.workflowRun.update({
       where: { id: run.id },
@@ -4060,7 +4089,16 @@ export class ProjectService {
     });
   }
 
-  async failDubbingWorkflowRun(workflowRunId: string, errorCode: string) {
+  async failDubbingWorkflowRun(
+    workflowRunId: string,
+    failure: WorkflowFailure,
+  ) {
+    const errorCode = failure.code;
+    const attempt = currentWorkflowAttempt(workflowRunId);
+    if (attempt) {
+      await getWorkflowRunLifecycle().failAttempt(attempt, failure);
+      return;
+    }
     const prisma = this.requirePrisma();
     const run = await prisma.workflowRun.findUnique({
       where: { id: workflowRunId },
@@ -4069,11 +4107,21 @@ export class ProjectService {
     if (!run) {
       throw new Error("workflow run not found");
     }
+    requireProtocolV1CompatibilityRun(run);
 
     await this.settleFailedWorkflowRun(run, "dubbing", errorCode);
   }
 
-  async failTranscriptWorkflowRun(workflowRunId: string, errorCode: string) {
+  async failTranscriptWorkflowRun(
+    workflowRunId: string,
+    failure: WorkflowFailure,
+  ) {
+    const errorCode = failure.code;
+    const attempt = currentWorkflowAttempt(workflowRunId);
+    if (attempt) {
+      await getWorkflowRunLifecycle().failAttempt(attempt, failure);
+      return;
+    }
     const prisma = this.requirePrisma();
     const run = await prisma.workflowRun.findUnique({
       where: { id: workflowRunId },
@@ -4082,6 +4130,7 @@ export class ProjectService {
     if (!run) {
       throw new Error("workflow run not found");
     }
+    requireProtocolV1CompatibilityRun(run);
 
     const decision = await this.settleFailedWorkflowRun(run, "stt", errorCode);
 
@@ -4868,6 +4917,11 @@ export class ProjectService {
     progress: number;
     errorCode: string | null;
   }) {
+    const attempt = currentWorkflowAttempt(input.workflowRunId);
+    if (attempt) {
+      await getWorkflowRunLifecycle().reportProgress(attempt, input.progress);
+      return null;
+    }
     // Heartbeat: bump the run row (updatedAt) while it is running so the reaper
     // can distinguish a live, progressing run from a worker that died mid-run.
     if (hasDatabase()) {
@@ -4875,6 +4929,7 @@ export class ProjectService {
         const heartbeat = await this.requirePrisma().workflowRun.updateMany({
           where: {
             id: input.workflowRunId,
+            lifecycleVersion: 1,
             status: "running",
             project: accessibleProjectWhere(),
           },
@@ -4910,10 +4965,15 @@ export class ProjectService {
   ): Promise<number> {
     if (!hasDatabase()) return 0;
     const prisma = this.requirePrisma();
+    const reapedV2 = await getWorkflowRunLifecycle().reapExpiredAttempts();
     const cutoff = new Date(Date.now() - stallTimeoutMs);
 
     const stalled = await prisma.workflowRun.findMany({
-      where: { status: "running", updatedAt: { lt: cutoff } },
+      where: {
+        lifecycleVersion: 1,
+        status: "running",
+        updatedAt: { lt: cutoff },
+      },
       select: { id: true, projectId: true, stage: true, attemptCount: true },
     });
 
@@ -4976,7 +5036,7 @@ export class ProjectService {
           decision.outcome === "requeue" ? null : decision.terminalErrorCode,
       }).catch(() => {});
     }
-    return reaped;
+    return reaped + reapedV2;
   }
 
   /**
@@ -5213,7 +5273,7 @@ export async function purgeExpiredProjectSources(
       ingestStatus: true,
       ingestCompletedAt: true,
       workflowRuns: {
-        where: { status: { in: ["queued", "running"] } },
+        where: { status: { in: ["queued", "running", "waiting"] } },
         select: { id: true },
         take: 1,
       },

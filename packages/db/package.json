@@ -18,6 +18,9 @@
   "scripts": {
     "prisma:generate": "DATABASE_URL=${DATABASE_URL:-postgresql://user:password@localhost:5432/narriflow?schema=public} prisma generate",
     "prisma:migrate:dev": "prisma migrate dev",
+    "prisma:migrate:deploy": "prisma migrate deploy",
+    "prisma:push:test": "prisma db push",
+    "prisma:validate": "DATABASE_URL=${DATABASE_URL:-postgresql://user:password@localhost:5432/narriflow?schema=public} prisma validate",
     "build": "bun run prisma:generate && tsc -p tsconfig.build.json",
     "lint": "echo 'db lint: no-op'",
     "typecheck": "bun run prisma:generate && tsc -p tsconfig.json --noEmit",

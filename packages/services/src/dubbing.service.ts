@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
   clipAspectRatioDbSchema,
@@ -11,11 +10,14 @@ import {
   type RequestClipDubInput,
 } from "@narriflow/validators";
 import { analyticsService } from "./analytics.service";
-import { presignDownloadUrl } from "./r2-storage";
+import { deleteObject, presignDownloadUrl } from "./r2-storage";
+import { getLastWorkflowSeq } from "./workflow.service";
 import {
-  getLastWorkflowSeq,
-  publishWorkflowStageUpdated,
-} from "./workflow.service";
+  currentWorkflowAttempt,
+  getWorkflowRunLifecycle,
+  requireProtocolV1WorkflowContext,
+  WorkflowAttemptLost,
+} from "./workflow-run-lifecycle";
 
 const DEFAULT_TTS_MODEL = "gpt-4o-mini-tts";
 
@@ -212,61 +214,17 @@ export class DubbingService {
       };
     }
 
-    const existingByIdempotency = await prisma.workflowRun.findUnique({
-      where: { projectId_idempotencyKey: { projectId, idempotencyKey } },
-    });
-    if (existingByIdempotency) {
-      return {
-        dub: toDubSnapshot(dub),
-        workflowRunId: existingByIdempotency.id,
-        acceptedAt: existingByIdempotency.updatedAt.toISOString(),
-        initialSeq: await getLastWorkflowSeq(projectId),
-      };
-    }
-
-    const activeRun = await prisma.workflowRun.findFirst({
-      where: {
-        projectId,
-        stage: "dubbing",
-        status: { in: ["queued", "running"] },
-      },
-    });
-    if (activeRun) {
-      return {
-        dub: toDubSnapshot(dub),
-        workflowRunId: activeRun.id,
-        acceptedAt: activeRun.updatedAt.toISOString(),
-        initialSeq: await getLastWorkflowSeq(projectId),
-      };
-    }
-
-    const workflowRunId = randomUUID();
-    await prisma.workflowRun.create({
-      data: {
-        id: workflowRunId,
-        projectId,
-        idempotencyKey,
-        stage: "dubbing",
-        status: "queued",
-        progress: 0,
-      },
-    });
-
-    const event = await publishWorkflowStageUpdated({
-      event: "workflow.stage.updated",
+    const admitted = await getWorkflowRunLifecycle().admit({
       projectId,
-      workflowRunId,
+      idempotencyKey,
       stage: "dubbing",
-      status: "queued",
-      progress: 0,
-      errorCode: null,
     });
 
     return {
       dub: toDubSnapshot(dub),
-      workflowRunId,
-      acceptedAt: event?.emittedAt ?? new Date().toISOString(),
-      initialSeq: event?.seq ?? 0,
+      workflowRunId: admitted.id,
+      acceptedAt: new Date().toISOString(),
+      initialSeq: await getLastWorkflowSeq(projectId),
     };
   }
 
@@ -291,14 +249,22 @@ export class DubbingService {
 
   async markDubProcessing(dubId: string): Promise<boolean> {
     const prisma = requirePrisma();
-    const updated = await prisma.clipDub.updateMany({
-      where: { id: dubId, status: "queued" },
-      data: {
-        status: "processing",
-        startedAt: new Date(),
-        errorCode: null,
-      },
-    });
+    const attempt = currentWorkflowAttempt();
+    const lifecycle = attempt ? getWorkflowRunLifecycle() : null;
+    if (attempt) await lifecycle?.assertOwnership(attempt);
+    else requireProtocolV1WorkflowContext("dubbing");
+    const updated =
+      attempt && lifecycle
+        ? await lifecycle.markDubProcessing(attempt, dubId)
+        : await prisma.clipDub.updateMany({
+            where: { id: dubId, status: "queued" },
+            data: {
+              status: "processing",
+              workflowAttemptId: null,
+              startedAt: new Date(),
+              errorCode: null,
+            },
+          });
     return updated.count > 0;
   }
 
@@ -316,10 +282,23 @@ export class DubbingService {
     },
   ) {
     const prisma = requirePrisma();
-    const dub = await prisma.clipDub.update({
-      where: { id: dubId },
-      data: {
-        status: "completed",
+    const attempt = currentWorkflowAttempt();
+    const lifecycle = attempt ? getWorkflowRunLifecycle() : null;
+    if (attempt) {
+      try {
+        await lifecycle?.assertOwnership(attempt);
+      } catch {
+        await Promise.all([
+          deleteObject(input.audioStorageKey).catch(() => {}),
+          deleteObject(input.renderStorageKey).catch(() => {}),
+        ]);
+        throw new WorkflowAttemptLost(attempt);
+      }
+    } else requireProtocolV1WorkflowContext("dubbing");
+    let updated: { count: number };
+    try {
+      const data = {
+        status: "completed" as const,
         transcriptText: input.transcriptText,
         translatedText: input.translatedText,
         audioStorageKey: input.audioStorageKey,
@@ -330,33 +309,86 @@ export class DubbingService {
         model: input.model,
         errorCode: null,
         completedAt: new Date(),
-      },
-    });
+      };
+      updated =
+        attempt && lifecycle
+          ? await lifecycle.completeDub(attempt, dubId, data)
+          : await prisma.clipDub.updateMany({
+              where: { id: dubId },
+              data,
+            });
+    } catch (error) {
+      if (!(error instanceof WorkflowAttemptLost)) throw error;
+      await Promise.all([
+        deleteObject(input.audioStorageKey).catch(() => {}),
+        deleteObject(input.renderStorageKey).catch(() => {}),
+      ]);
+      throw error;
+    }
+    if (updated.count === 0 && attempt) {
+      await Promise.all([
+        deleteObject(input.audioStorageKey).catch(() => {}),
+        deleteObject(input.renderStorageKey).catch(() => {}),
+      ]);
+      throw new WorkflowAttemptLost(attempt);
+    }
+    const dub = await prisma.clipDub.findUniqueOrThrow({ where: { id: dubId } });
 
-    await analyticsService.recordProjectEvent({
-      projectId: dub.projectId,
-      clipId: dub.clipId,
-      type: "dub_completed",
-      metadata: {
-        languageCode: dub.targetLanguageCode,
-        voice: dub.voice,
-        aspectRatio: aspectRatioFromDb(dub.aspectRatio),
-      },
-    });
+    await analyticsService
+      .recordProjectEvent({
+        projectId: dub.projectId,
+        clipId: dub.clipId,
+        type: "dub_completed",
+        metadata: {
+          languageCode: dub.targetLanguageCode,
+          voice: dub.voice,
+          aspectRatio: aspectRatioFromDb(dub.aspectRatio),
+        },
+      })
+      .catch((error) => {
+        console.warn(
+          JSON.stringify({
+            level: "warn",
+            message: "dub_analytics_record_failed",
+            projectId: dub.projectId,
+            clipId: dub.clipId,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        );
+      });
 
     return toDubSnapshot(dub);
   }
 
   async failDub(dubId: string, errorCode: string) {
     const prisma = requirePrisma();
-    await prisma.clipDub.update({
-      where: { id: dubId },
-      data: {
-        status: "failed",
-        errorCode,
-        completedAt: new Date(),
-      },
-    });
+    const attempt = currentWorkflowAttempt();
+    const lifecycle = attempt ? getWorkflowRunLifecycle() : null;
+    if (attempt) {
+      try {
+        await lifecycle?.assertOwnership(attempt);
+      } catch {
+        return;
+      }
+    } else requireProtocolV1WorkflowContext("dubbing");
+    let updated: { count: number };
+    try {
+      updated =
+        attempt && lifecycle
+          ? await lifecycle.failDub(attempt, dubId, errorCode)
+          : await prisma.clipDub.updateMany({
+              where: { id: dubId },
+              data: {
+                status: "failed",
+                errorCode,
+                completedAt: new Date(),
+              },
+            });
+    } catch (error) {
+      if (error instanceof WorkflowAttemptLost) return;
+      throw error;
+    }
+    if (updated.count === 0 && attempt) throw new WorkflowAttemptLost(attempt);
   }
 
   async getDubDownloadUrl(

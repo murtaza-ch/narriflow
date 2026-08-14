@@ -11,8 +11,15 @@ import { useProjectEvents } from "./project-events-provider";
 
 function stripeFor(status: string): string {
   if (status === "completed") return "success.solid";
+  if (status === "partial") return "warning.solid";
   if (status === "failed") return "danger.solid";
-  if (status === "processing" || status === "running") return "accent.solid";
+  if (
+    status === "processing" ||
+    status === "running" ||
+    status === "waiting"
+  ) {
+    return "accent.solid";
+  }
   return "border.emphasized";
 }
 

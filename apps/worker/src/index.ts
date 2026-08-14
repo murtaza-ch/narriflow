@@ -1,12 +1,16 @@
 import { createServer } from "node:http";
 import {
   billingService,
+  getWorkflowRunLifecycle,
   projectService,
   projectRetentionService,
   purgeExpiredProjectSources,
   purgeOldWebhookDeliveryLogs,
   purgeOldWorkflowEvents,
   socialService,
+  WorkflowAttemptLost,
+  workflowAttemptRef,
+  runProtocolV1Compatibility,
 } from "@narriflow/services";
 import { processDueAutopilotRules } from "./tasks/autopilot";
 import { processClipDetectionRun } from "./tasks/detect-clips";
@@ -41,6 +45,12 @@ const reapIntervalMs = Number(
 );
 const reapStallTimeoutMs = Number(
   process.env.WORKER_REAP_STALL_TIMEOUT_MS ?? String(30 * 60 * 1000),
+);
+const workflowLeaseReapIntervalMs = Number(
+  process.env.WORKFLOW_LEASE_REAP_INTERVAL_MS ?? "30000",
+);
+const workflowEventDispatchIntervalMs = Number(
+  process.env.WORKFLOW_EVENT_DISPATCH_INTERVAL_MS ?? "1000",
 );
 const maxConsecutivePollFailures = Number(
   process.env.WORKER_MAX_CONSECUTIVE_POLL_FAILURES ?? "20",
@@ -242,6 +252,52 @@ interface PollLoop {
   status: () => { polling: boolean; lastPollAt: string | null };
 }
 
+async function executeClaimedWorkflowRun<
+  TRun extends {
+    id: string;
+    projectId: string;
+    stage: string;
+    lifecycleVersion: number;
+    attemptId: string | null;
+    attemptCount: number;
+  },
+>(run: TRun, process: (run: TRun, signal?: AbortSignal) => Promise<void>) {
+  if (run.lifecycleVersion !== 2 || !run.attemptId) {
+    await runProtocolV1Compatibility(
+      {
+        workflowRunId: run.id,
+        projectId: run.projectId,
+        stage: run.stage as Parameters<typeof runProtocolV1Compatibility>[0]["stage"],
+      },
+      () => process(run),
+    );
+    return;
+  }
+  const attempt = workflowAttemptRef({
+    id: run.id,
+    projectId: run.projectId,
+    stage: run.stage,
+    attemptId: run.attemptId,
+    attemptCount: run.attemptCount,
+  });
+  try {
+    await getWorkflowRunLifecycle().runAttempt(attempt, ({ signal }) =>
+      process(run, signal),
+    );
+  } catch (error) {
+    if (!(error instanceof WorkflowAttemptLost)) throw error;
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        message: "workflow_attempt_lost",
+        workflowRunId: run.id,
+        attemptId: run.attemptId,
+        stage: run.stage,
+      }),
+    );
+  }
+}
+
 /**
  * One loop per stage, each with its own mutex and consecutive-failure circuit
  * breaker. The old single IO loop held one mutex across ingest + stt +
@@ -324,12 +380,30 @@ const maintenanceLoop = createPollLoop("maintenance", async () => {
   return 0;
 });
 
+const workflowLeaseLoop = createPollLoop("workflow_lease", async () => {
+  const reaped = await getWorkflowRunLifecycle().reapExpiredAttempts();
+  if (reaped > 0) {
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        message: "workflow_attempts_reaped",
+        count: reaped,
+      }),
+    );
+  }
+  return reaped;
+});
+
+const workflowEventLoop = createPollLoop("workflow_events", async () => {
+  return getWorkflowRunLifecycle().dispatchEvents(100);
+});
+
 // Submit-and-release: this claim only covers the AssemblyAI submission round
 // trip (seconds), not the transcription itself — see sttResultsLoop.
 const sttLoop = createPollLoop("stt", async () => {
   const run = await projectService.claimNextWorkflowRun("stt");
   if (!run) return 0;
-  await processTranscriptRun(run);
+  await executeClaimedWorkflowRun(run, processTranscriptRun);
   return 1;
 });
 
@@ -340,14 +414,14 @@ const sttResultsLoop = createPollLoop("stt_results", async () => {
 const detectionLoop = createPollLoop("moment_detection", async () => {
   const run = await projectService.claimNextWorkflowRun("moment_detection");
   if (!run) return 0;
-  await processClipDetectionRun(run);
+  await executeClaimedWorkflowRun(run, processClipDetectionRun);
   return 1;
 });
 
 const dubbingLoop = createPollLoop("dubbing", async () => {
   const run = await projectService.claimNextWorkflowRun("dubbing");
   if (!run) return 0;
-  await processDubbingRun(run);
+  await executeClaimedWorkflowRun(run, processDubbingRun);
   return 1;
 });
 
@@ -367,7 +441,7 @@ const autopilotLoop = createPollLoop("autopilot", async () => {
 const renderLoop = createPollLoop("render", async () => {
   const run = await projectService.claimNextWorkflowRun("clip_rendering");
   if (!run) return 0;
-  await processClipRenderingRun(run);
+  await executeClaimedWorkflowRun(run, processClipRenderingRun);
   return 1;
 });
 
@@ -403,6 +477,8 @@ const notificationRetryLoop = createPollLoop("notification_retry", async () => {
 
 const allLoops: Array<{ loop: PollLoop; intervalMs: number }> = [
   { loop: maintenanceLoop, intervalMs: 60 * 1000 },
+  { loop: workflowLeaseLoop, intervalMs: workflowLeaseReapIntervalMs },
+  { loop: workflowEventLoop, intervalMs: workflowEventDispatchIntervalMs },
   { loop: ingestLoop, intervalMs: pollIntervalMs },
   { loop: sttLoop, intervalMs: pollIntervalMs },
   { loop: sttResultsLoop, intervalMs: sttResultPollIntervalMs },

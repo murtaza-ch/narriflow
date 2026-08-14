@@ -7,6 +7,22 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: narriflow_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d narriflow_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      WORKFLOW_TEST_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/narriflow_test
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -24,6 +40,19 @@ jobs:
 
       - name: Typecheck
         run: bun run typecheck
+
+      # The repository's historical migration chain predates the clean-schema
+      # harness and currently contains an unrelated ordering defect. Workflow
+      # concurrency tests need the current schema, while migration-chain repair
+      # remains a separate codebase-health task.
+      - name: Prepare current schema on PostgreSQL 17
+        run: bun run --cwd packages/db prisma:push:test
+        env:
+          DATABASE_URL: ${{ env.WORKFLOW_TEST_DATABASE_URL }}
+          DIRECT_URL: ${{ env.WORKFLOW_TEST_DATABASE_URL }}
+
+      - name: Workflow concurrency integration tests
+        run: bun run test:workflow:db
 
       - name: Test
         run: bun run test

@@ -214,6 +214,7 @@ Useful runtime settings:
 - `OPENAI_TTS_MODEL=gpt-4o-mini-tts` and `OPENAI_DUB_TRANSLATION_MODEL=gpt-5.4-mini` for voiceover dubbing.
 - `ASSEMBLYAI_KEYTERMS_PROMPT=comma,separated,terms` to opt into deployment-specific names or brands. Terms are trimmed, deduplicated, limited to six words each, and capped at the Universal-2-safe 200-term limit; Narriflow sends no built-in demo vocabulary.
 - `WORKER_REAP_INTERVAL_MS=300000` and `WORKER_REAP_STALL_TIMEOUT_MS=1800000` to fail workflow/ingest jobs abandoned by a crashed worker.
+- `WORKFLOW_LEASE_REAP_INTERVAL_MS=30000` and `WORKFLOW_EVENT_DISPATCH_INTERVAL_MS=1000` for protocol-v2 Workflow Attempt recovery and durable event delivery.
 - `PEXELS_API_KEY=...` to enable stock B-roll search and automatic B-roll cutaways.
 - `SOCIAL_TOKEN_ENCRYPTION_KEY` and the social provider client IDs/secrets to refresh tokens and publish scheduled posts natively.
 - `LINKEDIN_API_VERSION=202606`, `INSTAGRAM_CONTAINER_POLL_ATTEMPTS`, `TIKTOK_STATUS_POLL_ATTEMPTS`, and `X_MEDIA_POLL_ATTEMPTS` can be tuned for provider processing windows.

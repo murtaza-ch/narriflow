@@ -6,6 +6,10 @@ import {
   computePlatformScore,
   computeViralityScore,
   projectService,
+  rethrowWorkflowAttemptLost,
+  WorkflowFailure,
+  workflowFailureFromUnknown,
+  workflowHttpFailureDisposition,
 } from "@narriflow/services";
 import {
   clipDetectionLlmResponseSchema,
@@ -43,12 +47,13 @@ export function buildCaptionOnlyTranscriptSlice(
   return normalizeTranscriptSliceForClip(utterances, startSec, endSec);
 }
 
-class WorkflowWorkerError extends Error {
-  code: string;
-
-  constructor(code: string, message: string) {
-    super(message);
-    this.code = code;
+class WorkflowWorkerError extends WorkflowFailure {
+  constructor(
+    code: string,
+    message: string,
+    disposition: "retryable" | "permanent" = "retryable",
+  ) {
+    super(code, disposition, message);
   }
 }
 
@@ -74,6 +79,7 @@ function getRequiredOpenAIApiKey() {
     throw new WorkflowWorkerError(
       "openai_api_key_missing",
       "OPENAI_API_KEY is not configured",
+      "permanent",
     );
   }
 
@@ -1078,7 +1084,11 @@ async function callOpenAI(
     const message =
       payload?.error?.message ??
       `OpenAI request failed with status ${response.status}`;
-    throw new WorkflowWorkerError("openai_request_failed", message);
+    throw new WorkflowWorkerError(
+      "openai_request_failed",
+      message,
+      workflowHttpFailureDisposition(response.status),
+    );
   }
 
   if (payload.status === "incomplete") {
@@ -1107,7 +1117,11 @@ async function callOpenAI(
   };
 }
 
-export async function processClipDetectionRun(run: WorkflowRunJob) {
+export async function processClipDetectionRun(
+  run: WorkflowRunJob,
+  signal?: AbortSignal,
+) {
+  signal?.throwIfAborted();
   log("info", "clip_detection_run_started", {
     workflowRunId: run.id,
     projectId: run.projectId,
@@ -1121,11 +1135,13 @@ export async function processClipDetectionRun(run: WorkflowRunJob) {
     const transcriptRow = await projectService.getTranscriptForWorker(
       run.projectId,
     );
+    signal?.throwIfAborted();
 
     if (!transcriptRow || transcriptRow.status !== "completed") {
       throw new WorkflowWorkerError(
         "transcript_not_ready",
         "Transcript is not completed",
+        "permanent",
       );
     }
 
@@ -1144,6 +1160,7 @@ export async function processClipDetectionRun(run: WorkflowRunJob) {
       throw new WorkflowWorkerError(
         "transcript_not_ready",
         "Transcript has no content",
+        "permanent",
       );
     }
 
@@ -1208,6 +1225,7 @@ export async function processClipDetectionRun(run: WorkflowRunJob) {
         ),
       };
 
+      signal?.throwIfAborted();
       await clipService.persistDetectedClips(
         run.projectId,
         run.id,
@@ -1257,6 +1275,7 @@ export async function processClipDetectionRun(run: WorkflowRunJob) {
       throw new WorkflowWorkerError(
         "transcript_processing_window_empty",
         "Processing window contains no transcript content",
+        "permanent",
       );
     }
 
@@ -1423,6 +1442,7 @@ export async function processClipDetectionRun(run: WorkflowRunJob) {
       throw new WorkflowWorkerError(
         "no_clips_detected",
         "LLM did not detect any valid clips",
+        "permanent",
       );
     }
 
@@ -1463,6 +1483,7 @@ export async function processClipDetectionRun(run: WorkflowRunJob) {
       throw new WorkflowWorkerError(
         "no_clips_detected",
         "Detected clips did not contain valid market-duration transcript ranges after timing normalization",
+        "permanent",
       );
     }
 
@@ -1488,6 +1509,7 @@ export async function processClipDetectionRun(run: WorkflowRunJob) {
     });
 
     // Persist clips
+    signal?.throwIfAborted();
     await clipService.persistDetectedClips(
       run.projectId,
       run.id,
@@ -1541,13 +1563,12 @@ export async function processClipDetectionRun(run: WorkflowRunJob) {
       });
     }
   } catch (error) {
-    const code =
-      error instanceof WorkflowWorkerError
-        ? error.code
-        : "workflow_unhandled_error";
+    rethrowWorkflowAttemptLost(error);
+    const failure = workflowFailureFromUnknown(error);
+    const code = failure.code;
     const message =
       error instanceof Error ? error.message : "Unknown worker error";
-    await projectService.failClipDetectionWorkflowRun(run.id, code);
+    await projectService.failClipDetectionWorkflowRun(run.id, failure);
     log("error", "clip_detection_run_failed", {
       workflowRunId: run.id,
       projectId: run.projectId,

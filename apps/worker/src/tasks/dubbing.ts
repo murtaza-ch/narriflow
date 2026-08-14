@@ -8,6 +8,10 @@ import {
   dubbingService,
   projectService,
   putFileFromPath,
+  rethrowWorkflowAttemptLost,
+  WorkflowFailure,
+  workflowFailureFromUnknown,
+  workflowHttpFailureDisposition,
 } from "@narriflow/services";
 import {
   clipAspectRatioDbSchema,
@@ -18,17 +22,19 @@ import {
 interface WorkflowRunJob {
   id: string;
   projectId: string;
+  attemptId?: string | null;
   project: {
     title: string;
   };
 }
 
-class WorkflowWorkerError extends Error {
-  code: string;
-
-  constructor(code: string, message: string) {
-    super(message);
-    this.code = code;
+class WorkflowWorkerError extends WorkflowFailure {
+  constructor(
+    code: string,
+    message: string,
+    disposition: "retryable" | "permanent" = "retryable",
+  ) {
+    super(code, disposition, message);
   }
 }
 
@@ -53,6 +59,7 @@ function getRequiredOpenAIApiKey() {
     throw new WorkflowWorkerError(
       "openai_api_key_missing",
       "OPENAI_API_KEY is not configured",
+      "permanent",
     );
   }
   return apiKey;
@@ -165,6 +172,7 @@ async function callOpenAIText(params: {
       "openai_request_failed",
       payload?.error?.message ??
         `OpenAI request failed with status ${response.status}`,
+      workflowHttpFailureDisposition(response.status),
     );
   }
 
@@ -234,6 +242,7 @@ async function synthesizeSpeech(params: {
     throw new WorkflowWorkerError(
       "openai_tts_failed",
       `OpenAI speech request failed with status ${response.status}: ${body.slice(0, 300)}`,
+      workflowHttpFailureDisposition(response.status),
     );
   }
 
@@ -258,6 +267,7 @@ async function execCommand(command: string, args: string[]) {
           ? new WorkflowWorkerError(
               "worker_command_missing",
               `${command} is not installed`,
+              "permanent",
             )
           : error,
       );
@@ -294,6 +304,7 @@ async function execCommandOutput(command: string, args: string[]) {
           ? new WorkflowWorkerError(
               "worker_command_missing",
               `${command} is not installed`,
+              "permanent",
             )
           : error,
       );
@@ -355,11 +366,11 @@ async function muxDubbedVideo(params: {
   ]);
 }
 
-function workerErrorCode(error: unknown) {
-  return error instanceof WorkflowWorkerError ? error.code : "dubbing_failed";
-}
-
-export async function processDubbingRun(run: WorkflowRunJob) {
+export async function processDubbingRun(
+  run: WorkflowRunJob,
+  signal?: AbortSignal,
+) {
+  signal?.throwIfAborted();
   log("info", "dubbing_run_started", {
     workflowRunId: run.id,
     projectId: run.projectId,
@@ -380,8 +391,10 @@ export async function processDubbingRun(run: WorkflowRunJob) {
 
     let completed = 0;
     let failed = 0;
+    let failedDisposition: "retryable" | "permanent" = "permanent";
 
     for (let index = 0; index < pendingDubs.length; index += 1) {
+      signal?.throwIfAborted();
       const dub = pendingDubs[index]!;
       const claimed = await dubbingService.markDubProcessing(dub.id);
       if (!claimed) continue;
@@ -398,6 +411,7 @@ export async function processDubbingRun(run: WorkflowRunJob) {
           throw new WorkflowWorkerError(
             "base_render_missing",
             "A completed rendered clip is required before dubbing",
+            "permanent",
           );
         }
 
@@ -412,6 +426,7 @@ export async function processDubbingRun(run: WorkflowRunJob) {
           throw new WorkflowWorkerError(
             "dub_transcript_empty",
             "Clip transcript text is empty",
+            "permanent",
           );
         }
 
@@ -478,8 +493,9 @@ export async function processDubbingRun(run: WorkflowRunJob) {
           probeDurationSec(outputPath).catch(() => null),
         ]);
 
-        const audioStorageKey = `projects/${run.projectId}/dubs/${dub.clipId}/${dub.id}.mp3`;
-        const renderStorageKey = `projects/${run.projectId}/dubs/${dub.clipId}/${dub.id}.mp4`;
+        const attemptSuffix = run.attemptId ?? "legacy";
+        const audioStorageKey = `projects/${run.projectId}/dubs/${dub.clipId}/${dub.id}-${attemptSuffix}.mp3`;
+        const renderStorageKey = `projects/${run.projectId}/dubs/${dub.clipId}/${dub.id}-${attemptSuffix}.mp4`;
 
         await putFileFromPath({
           key: audioStorageKey,
@@ -528,8 +544,13 @@ export async function processDubbingRun(run: WorkflowRunJob) {
           renderSizeBytes: Number(videoStat.size),
         });
       } catch (error) {
+        rethrowWorkflowAttemptLost(error);
         failed += 1;
-        const code = workerErrorCode(error);
+        const failure = workflowFailureFromUnknown(error);
+        const code = failure.code;
+        if (failure.disposition === "retryable") {
+          failedDisposition = "retryable";
+        }
         await dubbingService.failDub(dub.id, code).catch(() => {});
         log("error", "dub_failed", {
           workflowRunId: run.id,
@@ -543,7 +564,14 @@ export async function processDubbingRun(run: WorkflowRunJob) {
     }
 
     if (completed === 0 && failed > 0) {
-      await projectService.failDubbingWorkflowRun(run.id, "dubbing_failed");
+      await projectService.failDubbingWorkflowRun(
+        run.id,
+        new WorkflowFailure(
+          "dubbing_failed",
+          failedDisposition,
+          "Every requested dub failed",
+        ),
+      );
       return;
     }
 
@@ -555,8 +583,12 @@ export async function processDubbingRun(run: WorkflowRunJob) {
       failed,
     });
   } catch (error) {
-    const code = workerErrorCode(error);
-    await projectService.failDubbingWorkflowRun(run.id, code).catch(() => {});
+    rethrowWorkflowAttemptLost(error);
+    const failure = workflowFailureFromUnknown(error);
+    const code = failure.code;
+    await projectService
+      .failDubbingWorkflowRun(run.id, failure)
+      .catch(() => {});
     log("error", "dubbing_run_failed", {
       workflowRunId: run.id,
       projectId: run.projectId,

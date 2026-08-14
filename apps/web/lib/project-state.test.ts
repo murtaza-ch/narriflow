@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  deriveProcessingChecklist,
   deriveProjectPipelineStates,
   parseWorkflowEventMessage,
   rememberBoundedIdentity,
@@ -86,6 +87,7 @@ describe("project pipeline state", () => {
   test.each([
     ["success wins", { clipCount: 1, latestRun: { stage: "moment_detection", status: "failed" } }, "done"],
     ["active run", { latestRun: { stage: "moment_detection", status: "running" } }, "active"],
+    ["waiting run", { latestRun: { stage: "moment_detection", status: "waiting" } }, "active"],
     ["failed run", { latestRun: { stage: "moment_detection", status: "failed" } }, "failed"],
     ["unrequested", {}, "todo"],
   ])("derives detection: %s", (_label, override, expected) => {
@@ -141,5 +143,40 @@ describe("project pipeline state", () => {
     expect(
       deriveProjectPipelineStates({ ...EMPTY_PIPELINE, socialPosts }).publish,
     ).toBe(expected);
+  });
+});
+
+describe("processing checklist workflow-v2 states", () => {
+  const base = {
+    ingestStatus: "ready",
+    transcribe: { status: "completed" as const, progress: 100, errorCode: null },
+    detect: { status: "completed" as const, progress: 100, errorCode: null },
+    render: { status: "queued" as const, progress: 0, errorCode: null },
+    mode: "clip" as const,
+    autoRenderClips: true,
+    clipCount: 2,
+    hasAnyRendered: false,
+  };
+
+  test("waiting remains active", () => {
+    const nodes = deriveProcessingChecklist({
+      ...base,
+      render: { status: "waiting", progress: 40, errorCode: null },
+    });
+    expect(nodes.find((node) => node.id === "render")?.state).toBe("active");
+  });
+
+  test("partial is terminal and keeps successful artifacts usable", () => {
+    const nodes = deriveProcessingChecklist({
+      ...base,
+      render: {
+        status: "partial",
+        progress: 100,
+        errorCode: "partial_render_failure",
+      },
+      hasAnyRendered: true,
+    });
+    expect(nodes.find((node) => node.id === "render")?.state).toBe("done");
+    expect(nodes.find((node) => node.id === "done")?.state).toBe("done");
   });
 });

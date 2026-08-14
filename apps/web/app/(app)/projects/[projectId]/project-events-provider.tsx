@@ -167,7 +167,10 @@ export function ProjectEventsProvider({
         return { ...current, [parsed.stage]: parsed };
       });
 
-      const isTerminal = parsed.status === "completed" || parsed.status === "failed";
+      const isTerminal =
+        parsed.status === "completed" ||
+        parsed.status === "partial" ||
+        parsed.status === "failed";
       if (isTerminal) {
         if (
           rememberBoundedIdentity(

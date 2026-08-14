@@ -1,4 +1,5 @@
 import Redis from "ioredis";
+import { randomUUID } from "node:crypto";
 import { getPrismaClient } from "@narriflow/db/client";
 import { workflowStageUpdatedEventSchema, type WorkflowStageUpdatedEvent } from "@narriflow/validators";
 import {
@@ -12,6 +13,10 @@ import {
 } from "./optional-redis";
 
 const redisUrl = optionalRedisUrl(process.env.UPSTASH_REDIS_URL);
+
+export function isWorkflowRedisDeliveryEnabled() {
+  return Boolean(redisUrl);
+}
 
 let publisher: Redis | null = null;
 let publisherReady: Promise<void> | null = null;
@@ -63,6 +68,36 @@ function getPublisher() {
   return { client: publisher, ready: publisherReady! };
 }
 
+/** Publishes an already-persisted outbox event. Persistence and domain
+ * transitions are intentionally owned by WorkflowRunLifecycle. */
+export async function publishPersistedWorkflowEvent(
+  event: WorkflowStageUpdatedEvent,
+): Promise<boolean> {
+  const parsed = workflowStageUpdatedEventSchema.parse(event);
+  const pub = getPublisher();
+  if (!pub) return false;
+  try {
+    await pub.ready;
+    await pub.client.publish(
+      getWorkflowChannel(parsed.projectId),
+      JSON.stringify(parsed),
+    );
+  } catch (error) {
+    if (resetPublisher(pub.client)) {
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          message: "workflow_event_publish_failed",
+          projectId: parsed.projectId,
+          errorCode: optionalRedisFailureCode(error),
+        }),
+      );
+    }
+    throw error;
+  }
+  return true;
+}
+
 export function getWorkflowChannel(projectId: string) {
   return `workflow:${projectId}`;
 }
@@ -112,31 +147,41 @@ export async function publishWorkflowStageUpdated(
 
   const emittedAt = new Date();
 
-  // `seq` is allocated read-then-insert (max+1), which races when two
-  // writers publish for the same project concurrently — live incident
-  // 2026-08-06: the render loop's claim event collided with the preview
-  // loop's events on the (projectId, seq) unique constraint, the P2002
-  // escaped through the claim path, and the freshly-claimed run was left
-  // `running` with no worker attached (stuck until the stale-run reaper).
-  // Two-layer fix: retry the allocation a few times on P2002 (the loser
-  // just recomputes max+1), and if it STILL fails, drop the event
-  // non-fatally — the event stream is a UI side channel over polling that
-  // re-reads full project state; workflow correctness never depends on an
-  // event row landing, and a dropped event must never kill the caller's
-  // claim/completion path (the Redis leg below already degrades the same
-  // way).
+  // Protocol-v1 callers still use this compatibility adapter. Sequence truth
+  // now lives on Project, so concurrent writers serialize on one atomic
+  // increment instead of racing on MAX(seq)+1.
   let nextSeq: number | null = null;
+  let eventId: string | null = null;
   for (let attempt = 0; attempt < 5 && nextSeq === null; attempt++) {
     try {
-      nextSeq = await prisma.$transaction(async (tx) => {
-        const result = await tx.workflowEvent.aggregate({
-          where: { projectId: event.projectId },
-          _max: { seq: true },
+      const persisted = await prisma.$transaction(async (tx) => {
+        const projects = await tx.$queryRaw<Array<{ workflowEventSeq: number }>>`
+          UPDATE "Project"
+          SET "workflowEventSeq" = GREATEST(
+            "workflowEventSeq",
+            COALESCE(
+              (
+                SELECT MAX("seq")
+                FROM "WorkflowEvent"
+                WHERE "projectId" = ${event.projectId}::uuid
+              ),
+              0
+            )
+          ) + 1
+          WHERE "id" = ${event.projectId}::uuid
+          RETURNING "workflowEventSeq"
+        `;
+        const seq = projects[0]?.workflowEventSeq;
+        if (!seq) throw new Error("Workflow event project unavailable");
+        const id = randomUUID();
+        const payload = workflowStageUpdatedEventSchema.parse({
+          ...event,
+          seq,
+          emittedAt: emittedAt.toISOString(),
         });
-        const seq = (result._max.seq ?? 0) + 1;
-
         await tx.workflowEvent.create({
           data: {
+            id,
             projectId: event.projectId,
             workflowRunId: event.workflowRunId,
             seq,
@@ -145,11 +190,16 @@ export async function publishWorkflowStageUpdated(
             progress: event.progress,
             errorCode: event.errorCode,
             emittedAt,
+            dedupeKey: `compat:${id}`,
+            payload,
+            redisRequired: isWorkflowRedisDeliveryEnabled(),
+            nextDeliveryAt: emittedAt,
           },
         });
-
-        return seq;
+        return { seq, id };
       });
+      nextSeq = persisted.seq;
+      eventId = persisted.id;
     } catch (error) {
       const isSeqCollision =
         (error as { code?: string }).code === "P2002";
@@ -179,25 +229,16 @@ export async function publishWorkflowStageUpdated(
     emittedAt: emittedAt.toISOString(),
   });
 
-  const pub = getPublisher();
-  if (pub) {
-    try {
-      await pub.ready;
-      await pub.client.publish(getWorkflowChannel(parsed.projectId), JSON.stringify(parsed));
-    } catch (error) {
-      // Redis unavailable — event is persisted in DB, just no real-time push.
-      // Log so a flapping Redis is debuggable instead of silently degrading.
-      if (resetPublisher(pub.client)) {
-        console.warn(
-          JSON.stringify({
-            level: "warn",
-            message: "workflow_event_publish_failed",
-            projectId: parsed.projectId,
-            errorCode: optionalRedisFailureCode(error),
-          }),
-        );
-      }
+  try {
+    const published = await publishPersistedWorkflowEvent(parsed);
+    if (published && eventId) {
+      await prisma.workflowEvent.update({
+        where: { id: eventId },
+        data: { redisPublishedAt: new Date() },
+      });
     }
+  } catch {
+    // The durable outbox row remains due; the worker dispatcher retries it.
   }
 
   return parsed;

@@ -161,7 +161,9 @@ export function mergeStageWithLiveEvent(
 export type ProcessingStageStatus =
   | "queued"
   | "running"
+  | "waiting"
   | "completed"
+  | "partial"
   | "failed"
   | null;
 
@@ -316,9 +318,15 @@ export function deriveProcessingChecklist(
 }
 
 function stageToStepState(stage: ProcessingStageInput): PipelineStepState {
-  if (stage.status === "completed") return "done";
+  if (stage.status === "completed" || stage.status === "partial") return "done";
   if (stage.status === "failed") return "failed";
-  if (stage.status === "queued" || stage.status === "running") return "active";
+  if (
+    stage.status === "queued" ||
+    stage.status === "running" ||
+    stage.status === "waiting"
+  ) {
+    return "active";
+  }
   return "todo";
 }
 
@@ -364,7 +372,9 @@ export function deriveProjectPipelineStates(input: {
   const detect: PipelineStepState =
     input.clipCount > 0
       ? "done"
-      : detectionRun?.status === "queued" || detectionRun?.status === "running"
+      : detectionRun?.status === "queued" ||
+          detectionRun?.status === "running" ||
+          detectionRun?.status === "waiting"
         ? "active"
         : detectionRun?.status === "failed"
           ? "failed"

@@ -3190,7 +3190,10 @@ describe("downloadUrlToFile (bounded, timed remote B-roll/music download)", () =
             }),
         },
       ),
-    ).rejects.toMatchObject({ code: "broll_download_failed" });
+    ).rejects.toMatchObject({
+      code: "broll_download_failed",
+      disposition: "permanent",
+    });
   });
 
   test("rejects an oversized streamed body with no length header (mid-stream)", async () => {
@@ -3215,7 +3218,10 @@ describe("downloadUrlToFile (bounded, timed remote B-roll/music download)", () =
             ),
         },
       ),
-    ).rejects.toMatchObject({ code: "music_download_failed" });
+    ).rejects.toMatchObject({
+      code: "music_download_failed",
+      disposition: "permanent",
+    });
   });
 
   test("rejects a non-2xx status", async () => {
@@ -3229,7 +3235,27 @@ describe("downloadUrlToFile (bounded, timed remote B-roll/music download)", () =
           fetchImpl: async () => new Response(null, { status: 404 }),
         },
       ),
-    ).rejects.toMatchObject({ code: "broll_download_failed" });
+    ).rejects.toMatchObject({
+      code: "broll_download_failed",
+      disposition: "permanent",
+    });
+  });
+
+  test("keeps a server-side HTTP failure retryable", async () => {
+    await expect(
+      downloadUrlToFile(
+        "https://cdn.example/unavailable.mp4",
+        filePath,
+        "broll_download_failed",
+        {
+          resolver: publicResolver,
+          fetchImpl: async () => new Response(null, { status: 503 }),
+        },
+      ),
+    ).rejects.toMatchObject({
+      code: "broll_download_failed",
+      disposition: "retryable",
+    });
   });
 
   test("rejects a redirect to a private/reserved address instead of following it (SSRF guard)", async () => {

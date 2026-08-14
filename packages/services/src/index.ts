@@ -190,7 +190,34 @@ export {
   getWorkflowChannel,
   getWorkflowEventsSince,
   publishWorkflowStageUpdated,
+  publishPersistedWorkflowEvent,
 } from "./workflow.service";
+export {
+  WorkflowAttemptLost,
+  WorkflowAttemptContextRequired,
+  WorkflowFailure,
+  getWorkflowRunLifecycle,
+  workflowAttemptRef,
+  currentWorkflowAttempt,
+  runProtocolV1Compatibility,
+  requireProtocolV1WorkflowContext,
+  workflowFailureFromUnknown,
+  workflowHttpFailureDisposition,
+  isProtocolV2Run,
+  rethrowWorkflowAttemptLost,
+  WORKFLOW_LIFECYCLE_VERSION,
+  WORKFLOW_LEASE_DURATION_MS,
+  WORKFLOW_HEARTBEAT_INTERVAL_MS,
+  type WorkflowAttemptRef,
+  type LegacyWorkflowRunRef,
+  type ClaimedWorkflowAttempt,
+  type WorkflowAttemptContext,
+  type WaitingWorkflowAttempt,
+  type WorkflowAggregateResult,
+  type WorkflowFailureDisposition,
+  type CompleteTranscriptInput,
+  type AdmitWorkflowRunInput,
+} from "./workflow-run-lifecycle";
 export { purgeOldWebhookDeliveryLogs } from "./webhook-log.service";
 export * from "./url-guard";
 export * from "./rate-limit";

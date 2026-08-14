@@ -14,7 +14,14 @@ export const workflowStageSchema = z.enum([
   "export_bundle",
 ]);
 
-export const workflowStatusSchema = z.enum(["queued", "running", "completed", "failed"]);
+export const workflowStatusSchema = z.enum([
+  "queued",
+  "running",
+  "waiting",
+  "completed",
+  "partial",
+  "failed",
+]);
 
 export const workflowStageUpdatedEventSchema = z.object({
   event: z.literal("workflow.stage.updated"),
@@ -29,3 +36,5 @@ export const workflowStageUpdatedEventSchema = z.object({
 });
 
 export type WorkflowStageUpdatedEvent = z.infer<typeof workflowStageUpdatedEventSchema>;
+export type WorkflowStage = z.infer<typeof workflowStageSchema>;
+export type WorkflowStatus = z.infer<typeof workflowStatusSchema>;

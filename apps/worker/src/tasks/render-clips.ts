@@ -22,8 +22,13 @@ import {
   presignDownloadUrl,
   projectService,
   putFileFromPath,
+  rethrowWorkflowAttemptLost,
   RemoteFetchError,
   UnsafeUrlError,
+  WorkflowAttemptLost,
+  WorkflowFailure,
+  workflowFailureFromUnknown,
+  workflowHttpFailureDisposition,
   type GuardedFetchOptions,
 } from "@narriflow/services";
 import {
@@ -351,12 +356,13 @@ export function clipRenderAttemptStorageKey(
   return `projects/${projectId}/renders/${clipId}/${aspectRatioSlug}-${attemptId}.mp4`;
 }
 
-class WorkflowWorkerError extends Error {
-  code: string;
-
-  constructor(code: string, message: string) {
-    super(message);
-    this.code = code;
+class WorkflowWorkerError extends WorkflowFailure {
+  constructor(
+    code: string,
+    message: string,
+    disposition: "retryable" | "permanent" = "retryable",
+  ) {
+    super(code, disposition, message);
   }
 }
 
@@ -479,6 +485,7 @@ function runCommand(
           new WorkflowWorkerError(
             "worker_command_missing",
             `${command} is not installed`,
+            "permanent",
           ),
         );
         return;
@@ -2767,6 +2774,7 @@ export function buildCropAndScaleFilter(
     throw new WorkflowWorkerError(
       "unsupported_aspect_ratio",
       `Unsupported aspect ratio: ${aspectRatio}`,
+      "permanent",
     );
   }
 
@@ -2778,6 +2786,7 @@ export function buildCropAndScaleFilter(
     throw new WorkflowWorkerError(
       "invalid_source_dimensions",
       `Source reported invalid video dimensions (${probe.width}x${probe.height})`,
+      "permanent",
     );
   }
 
@@ -2954,6 +2963,7 @@ export function buildFitAndBackgroundFilter(params: {
     throw new WorkflowWorkerError(
       "unsupported_aspect_ratio",
       `Unsupported aspect ratio: ${params.aspectRatio}`,
+      "permanent",
     );
   }
   const { width: W, height: H } = config;
@@ -3036,6 +3046,7 @@ export function buildSingleVideoArgs(params: {
     throw new WorkflowWorkerError(
       "clip_cut_plan_empty",
       "cutPlan has no renderable segments — caller must guard before building ffmpeg args",
+      "permanent",
     );
   }
   const isCut = Boolean(params.cutPlan && !params.cutPlan.isUncut);
@@ -3153,6 +3164,7 @@ export function buildSingleVideoArgs(params: {
       throw new WorkflowWorkerError(
         "unsupported_aspect_ratio",
         `Unsupported aspect ratio: ${params.aspectRatio}`,
+        "permanent",
       );
     }
     filterParts.push(
@@ -3320,12 +3332,14 @@ export function buildBrollVideoArgs(params: {
     throw new WorkflowWorkerError(
       "broll_cutaways_empty",
       "buildBrollVideoArgs requires at least one cutaway",
+      "permanent",
     );
   }
   if (params.cutPlan?.isEmpty) {
     throw new WorkflowWorkerError(
       "clip_cut_plan_empty",
       "cutPlan has no renderable segments — caller must guard before building ffmpeg args",
+      "permanent",
     );
   }
 
@@ -3334,6 +3348,7 @@ export function buildBrollVideoArgs(params: {
     throw new WorkflowWorkerError(
       "unsupported_aspect_ratio",
       `Unsupported aspect ratio: ${params.aspectRatio}`,
+      "permanent",
     );
   }
   const { width: W, height: H } = config;
@@ -3634,6 +3649,7 @@ export async function downloadUrlToFile(
       throw new WorkflowWorkerError(
         errorCode,
         `Remote media download failed with status ${response.status}`,
+        workflowHttpFailureDisposition(response.status),
       );
     }
 
@@ -3643,6 +3659,7 @@ export async function downloadUrlToFile(
       throw new WorkflowWorkerError(
         errorCode,
         `Remote media declared size exceeds the ${maxBytes}-byte limit`,
+        "permanent",
       );
     }
 
@@ -3660,6 +3677,10 @@ export async function downloadUrlToFile(
     throw new WorkflowWorkerError(
       errorCode,
       `Remote media download failed: ${describeRemoteFetchError(error)}`,
+      error instanceof RemoteFetchError &&
+        error.code === "remote_response_too_large"
+        ? "permanent"
+        : "retryable",
     );
   } finally {
     if (response.body && !response.body.locked) {
@@ -3745,6 +3766,7 @@ export function buildMultiVideoArgs(params: {
         throw new WorkflowWorkerError(
           "unsupported_aspect_ratio",
           `Unsupported aspect ratio: ${output.aspectRatio}`,
+          "permanent",
         );
       }
       const targetWidth = computeLogoTargetWidth(logo, aspectConfig.width);
@@ -3875,12 +3897,14 @@ export function buildAudiogramArgs(params: {
     throw new WorkflowWorkerError(
       "unsupported_aspect_ratio",
       `Unsupported aspect ratio: ${params.aspectRatio}`,
+      "permanent",
     );
   }
   if (params.cutPlan?.isEmpty) {
     throw new WorkflowWorkerError(
       "clip_cut_plan_empty",
       "cutPlan has no renderable segments — caller must guard before building ffmpeg args",
+      "permanent",
     );
   }
 
@@ -4311,14 +4335,22 @@ async function uploadRenderedOutput(params: {
   });
   const uploadMs = Date.now() - uploadStartedAtMs;
 
-  const { persisted } = await clipService.completeClipRenderVariant(
-    params.output.clipRenderId,
-    {
-      storageKey: params.output.storageKey,
-      sizeBytes: Number(outputStat.size),
-      durationSec: params.clipDurationSec,
-    },
-  );
+  let persisted: boolean;
+  try {
+    ({ persisted } = await clipService.completeClipRenderVariant(
+      params.output.clipRenderId,
+      {
+        storageKey: params.output.storageKey,
+        sizeBytes: Number(outputStat.size),
+        durationSec: params.clipDurationSec,
+      },
+    ));
+  } catch (error) {
+    if (error instanceof WorkflowAttemptLost) {
+      await deleteObject(params.output.storageKey).catch(() => {});
+    }
+    throw error;
+  }
 
   if (!persisted) {
     // The ClipRender row this attempt was rendering for is gone — an editor
@@ -4349,11 +4381,19 @@ async function uploadRenderedOutput(params: {
   return true;
 }
 
-export async function processClipRenderingRun(run: WorkflowRunJob) {
+export async function processClipRenderingRun(
+  run: WorkflowRunJob,
+  signal?: AbortSignal,
+) {
+  signal?.throwIfAborted();
   if (!run.project.sourceStorageKey) {
     await projectService.failClipRenderingWorkflowRun(
       run.id,
-      "source_storage_key_missing",
+      new WorkflowFailure(
+        "source_storage_key_missing",
+        "permanent",
+        "The project source file is unavailable",
+      ),
     );
     log("error", "clip_rendering_run_failed", {
       workflowRunId: run.id,
@@ -4549,6 +4589,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
       throw new WorkflowWorkerError(
         "no_renderable_clips",
         "No clip render variants with status=pending found",
+        "permanent",
       );
     }
 
@@ -4593,6 +4634,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
     // completion always see the settled truth.
     const uploadQueue = createBoundedTaskQueue(uploadConcurrency());
     uploadQueueRef = uploadQueue;
+    let uploadOwnershipError: WorkflowAttemptLost | null = null;
     const scheduleUpload = (
       output: PendingRenderOutput,
       params: {
@@ -4613,6 +4655,10 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
           });
           if (persisted) renderedVariantCount += 1;
         } catch (error) {
+          if (error instanceof WorkflowAttemptLost) {
+            uploadOwnershipError = error;
+            return;
+          }
           const errorCode =
             error instanceof WorkflowWorkerError
               ? error.code
@@ -4635,6 +4681,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
     };
 
     for (let clipGroupIndex = 0; clipGroupIndex < clipGroups.length; clipGroupIndex++) {
+      signal?.throwIfAborted();
       const renderGroup = clipGroups[clipGroupIndex]!;
       // Export-bound rows carry a complete frozen rendering snapshot. The
       // cast is deliberate: the snapshot stores the exact Clip fields used by
@@ -6208,6 +6255,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
               encodeMs: Date.now() - encodeStartedAtMs,
             });
           } catch (error) {
+            rethrowWorkflowAttemptLost(error);
             const errorCode =
               error instanceof WorkflowWorkerError
                 ? error.code
@@ -6353,6 +6401,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
               encodeMs: Date.now() - encodeStartedAtMs,
             });
           } catch (error) {
+            rethrowWorkflowAttemptLost(error);
             const errorCode =
               error instanceof WorkflowWorkerError
                 ? error.code
@@ -6413,6 +6462,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
             });
           }
         } catch (error) {
+          rethrowWorkflowAttemptLost(error);
           const errorCode =
             error instanceof WorkflowWorkerError
               ? error.code
@@ -6453,6 +6503,7 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
     // completeClipRenderVariant write.
     const drainStartedAtMs = Date.now();
     await uploadQueue.drain();
+    if (uploadOwnershipError) throw uploadOwnershipError;
     log("info", "clip_render_upload_drain", {
       workflowRunId: run.id,
       projectId: run.projectId,
@@ -6511,16 +6562,15 @@ export async function processClipRenderingRun(run: WorkflowRunJob) {
       clipCount: clipGroups.length,
     });
   } catch (error) {
-    const code =
-      error instanceof WorkflowWorkerError
-        ? error.code
-        : "workflow_unhandled_error";
+    rethrowWorkflowAttemptLost(error);
+    const failure = workflowFailureFromUnknown(error);
+    const code = failure.code;
 
     const message =
       error instanceof Error ? error.message : "Unknown worker error";
     await projectService.failClipRenderingWorkflowRun(
       run.id,
-      code,
+      failure,
       code === "all_clip_renders_failed"
         ? { retryVariantIds: attemptVariantIds }
         : undefined,

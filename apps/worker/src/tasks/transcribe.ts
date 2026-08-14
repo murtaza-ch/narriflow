@@ -9,7 +9,14 @@ import {
   normalizeAssemblyAiTranscript,
   presignDownloadUrl,
   putJson,
+  getWorkflowRunLifecycle,
   projectService,
+  rethrowWorkflowAttemptLost,
+  WorkflowAttemptLost,
+  WorkflowFailure,
+  workflowFailureFromUnknown,
+  workflowHttpFailureDisposition,
+  workflowAttemptRef,
 } from "@narriflow/services";
 import { isR2Configured } from "@narriflow/services/r2-storage";
 import {
@@ -27,12 +34,13 @@ interface WorkflowRunJob {
   };
 }
 
-class WorkflowWorkerError extends Error {
-  code: string;
-
-  constructor(code: string, message: string) {
-    super(message);
-    this.code = code;
+class WorkflowWorkerError extends WorkflowFailure {
+  constructor(
+    code: string,
+    message: string,
+    disposition: "retryable" | "permanent" = "retryable",
+  ) {
+    super(code, disposition, message);
   }
 }
 
@@ -92,6 +100,7 @@ async function fetchWithRetry(
     timeoutMs: number;
     maxRetries?: number;
     baseDelayMs?: number;
+    fetchImpl?: typeof fetch;
   },
 ): Promise<Response> {
   const maxRetries = options.maxRetries ?? ASSEMBLYAI_FETCH_MAX_RETRIES;
@@ -99,7 +108,7 @@ async function fetchWithRetry(
 
   for (let attempt = 0; ; attempt++) {
     try {
-      const response = await fetch(url, {
+      const response = await (options.fetchImpl ?? fetch)(url, {
         ...init,
         signal: AbortSignal.timeout(options.timeoutMs),
       });
@@ -168,6 +177,7 @@ async function execCommand(command: string, args: string[]) {
           new WorkflowWorkerError(
             "worker_command_missing",
             `${command} is not installed`,
+            "permanent",
           ),
         );
         return;
@@ -199,6 +209,7 @@ function getRequiredAssemblyAiApiKey() {
     throw new WorkflowWorkerError(
       "assemblyai_api_key_missing",
       "ASSEMBLYAI_API_KEY is not configured",
+      "permanent",
     );
   }
 
@@ -254,19 +265,6 @@ function getAssemblyAiKeytermsPrompt() {
     if (!uniqueTerms.has(key)) uniqueTerms.set(key, term);
   }
   return [...uniqueTerms.values()].slice(0, ASSEMBLYAI_KEYTERM_LIMIT);
-}
-
-function getErrorCode(error: unknown) {
-  if (
-    error &&
-    typeof error === "object" &&
-    "code" in error &&
-    typeof error.code === "string"
-  ) {
-    return error.code;
-  }
-
-  return "workflow_unhandled_error";
 }
 
 async function parseJsonResponse(response: Response) {
@@ -327,6 +325,7 @@ async function uploadAssemblyAiAudio(audioPath: string, apiKey: string) {
         payload,
         `AssemblyAI upload failed with status ${response.status}`,
       ),
+      workflowHttpFailureDisposition(response.status),
     );
   }
 
@@ -398,6 +397,7 @@ async function submitAssemblyAiTranscript(
         payload,
         `AssemblyAI transcription submit failed with status ${response.status}`,
       ),
+      workflowHttpFailureDisposition(response.status),
     );
   }
 
@@ -413,7 +413,15 @@ async function submitAssemblyAiTranscript(
   return transcriptId;
 }
 
-async function getAssemblyAiTranscript(transcriptId: string, apiKey: string) {
+export async function getAssemblyAiTranscript(
+  transcriptId: string,
+  apiKey: string,
+  overrides?: {
+    fetchImpl?: typeof fetch;
+    maxRetries?: number;
+    baseDelayMs?: number;
+  },
+) {
   let response: Response;
   try {
     response = await fetchWithRetry(
@@ -426,7 +434,11 @@ async function getAssemblyAiTranscript(transcriptId: string, apiKey: string) {
       // The outer poll loop already re-calls this every pollIntervalMs, but
       // without this a single transient blip would throw out of the poll
       // loop and fail an otherwise-healthy, possibly near-complete run.
-      { label: "poll", timeoutMs: ASSEMBLYAI_POLL_TIMEOUT_MS },
+      {
+        label: "poll",
+        timeoutMs: ASSEMBLYAI_POLL_TIMEOUT_MS,
+        ...overrides,
+      },
     );
   } catch (error) {
     if (isAbortOrTimeoutError(error)) {
@@ -447,6 +459,7 @@ async function getAssemblyAiTranscript(transcriptId: string, apiKey: string) {
         payload,
         `AssemblyAI transcription poll failed with status ${response.status}`,
       ),
+      workflowHttpFailureDisposition(response.status),
     );
   }
 
@@ -473,6 +486,7 @@ async function submitAssemblyAiJob(
     throw new WorkflowWorkerError(
       "workflow_source_missing",
       "sourceStorageKey is required for transcription",
+      "permanent",
     );
   }
 
@@ -589,7 +603,11 @@ async function extractTranscriptionAudio(
  * processSubmittedTranscriptResults on its own poll loop, so this claim never
  * holds its poll slot for longer than the submission round trip.
  */
-export async function processTranscriptRun(run: WorkflowRunJob) {
+export async function processTranscriptRun(
+  run: WorkflowRunJob,
+  signal?: AbortSignal,
+) {
+  signal?.throwIfAborted();
   log("info", "transcription_run_started", {
     workflowRunId: run.id,
     projectId: run.projectId,
@@ -600,6 +618,7 @@ export async function processTranscriptRun(run: WorkflowRunJob) {
       throw new WorkflowWorkerError(
         "workflow_source_missing",
         "sourceStorageKey is required for transcription",
+        "permanent",
       );
     }
 
@@ -612,6 +631,7 @@ export async function processTranscriptRun(run: WorkflowRunJob) {
     const { transcriptId } = await submitAssemblyAiJob(run, apiKey, {
       languageCode,
     });
+    signal?.throwIfAborted();
     const submitMs = Date.now() - submitStartedAtMs;
     await projectService.markTranscriptSubmitted(run.projectId, transcriptId);
     await projectService.publishWorkflowProgress({
@@ -638,10 +658,12 @@ async function settleTranscriptRunFailure(
   run: { id: string; projectId: string },
   error: unknown,
 ) {
-  const code = getErrorCode(error);
+  rethrowWorkflowAttemptLost(error);
+  const failure = workflowFailureFromUnknown(error);
+  const code = failure.code;
   const message =
     error instanceof Error ? error.message : "Unknown worker error";
-  await projectService.failTranscriptWorkflowRun(run.id, code);
+  await projectService.failTranscriptWorkflowRun(run.id, failure);
   log("error", "transcription_run_failed", {
     workflowRunId: run.id,
     projectId: run.projectId,
@@ -737,7 +759,8 @@ export async function processSubmittedTranscriptResults(): Promise<number> {
   let settled = 0;
 
   for (const run of runs) {
-    try {
+    const pollOne = async () => {
+      try {
       // Timeout is checked BEFORE the provider GET so that persistently
       // failing polls (a revoked key, a 404'd job id, a broken finalize) are
       // still bounded by it — every claim refreshes the run's heartbeat, so
@@ -752,7 +775,7 @@ export async function processSubmittedTranscriptResults(): Promise<number> {
           ),
         );
         settled += 1;
-        continue;
+        return;
       }
 
       const payload = await getAssemblyAiTranscript(run.providerJobId, apiKey);
@@ -766,7 +789,7 @@ export async function processSubmittedTranscriptResults(): Promise<number> {
           providerMs: Date.now() - run.submittedAt.getTime(),
         });
         settled += 1;
-        continue;
+        return;
       }
 
       if (status === "error") {
@@ -778,7 +801,7 @@ export async function processSubmittedTranscriptResults(): Promise<number> {
           ),
         );
         settled += 1;
-        continue;
+        return;
       }
 
       const elapsedRatio = Math.min(1, elapsedMs / pollTimeoutMs);
@@ -790,12 +813,42 @@ export async function processSubmittedTranscriptResults(): Promise<number> {
         progress: Math.min(90, 40 + Math.round(elapsedRatio * 45)),
         errorCode: null,
       });
-    } catch (error) {
-      log("info", "assemblyai_result_poll_transient", {
-        workflowRunId: run.id,
+      } catch (error) {
+        rethrowWorkflowAttemptLost(error);
+        const failure = workflowFailureFromUnknown(error);
+        if (failure.disposition === "permanent") {
+          await settleTranscriptRunFailure(run, failure);
+          settled += 1;
+          return;
+        }
+        log("info", "assemblyai_result_poll_transient", {
+          workflowRunId: run.id,
+          projectId: run.projectId,
+          message: error instanceof Error ? error.message : "Unknown error",
+        });
+      }
+    };
+
+    if (run.lifecycleVersion === 2 && run.attemptId) {
+      const attempt = workflowAttemptRef({
+        id: run.id,
         projectId: run.projectId,
-        message: error instanceof Error ? error.message : "Unknown error",
+        stage: run.stage,
+        attemptId: run.attemptId,
+        attemptCount: run.attemptCount,
       });
+      try {
+        await getWorkflowRunLifecycle().runWaitingAttempt(attempt, pollOne);
+      } catch (error) {
+        if (!(error instanceof WorkflowAttemptLost)) throw error;
+        log("info", "transcription_stale_poll_discarded", {
+          workflowRunId: run.id,
+          projectId: run.projectId,
+          attemptId: run.attemptId,
+        });
+      }
+    } else {
+      await pollOne();
     }
   }
 

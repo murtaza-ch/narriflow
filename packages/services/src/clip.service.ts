@@ -66,7 +66,6 @@ import {
   getLastWorkflowSeq,
   publishWorkflowStageUpdated,
 } from "./workflow.service";
-import { isUniqueConstraintError } from "./generation-sequencing";
 import {
   copyObject,
   deleteObject,
@@ -85,6 +84,12 @@ import { assertPublicHttpUrl } from "./url-guard";
 import { hasFeature } from "./billing.service";
 import { accessibleProjectWhere } from "./project-retention.service";
 import { workspaceService } from "./workspace.service";
+import {
+  currentWorkflowAttempt,
+  getWorkflowRunLifecycle,
+  requireProtocolV1WorkflowContext,
+  WorkflowAttemptLost,
+} from "./workflow-run-lifecycle";
 
 interface DetectedClip {
   startSec: number;
@@ -1305,6 +1310,10 @@ export class ClipService {
     contentPack?: ContentPack | null,
   ) {
     const prisma = requirePrisma();
+    const attempt = currentWorkflowAttempt(workflowRunId);
+    const lifecycle = attempt ? getWorkflowRunLifecycle() : null;
+    if (attempt) await lifecycle?.assertOwnership(attempt);
+    else requireProtocolV1WorkflowContext("moment_detection", workflowRunId);
     const [staleRenderKeys, project] = await Promise.all([
       prisma.clipRender.findMany({
         where: {
@@ -1332,12 +1341,7 @@ export class ClipService {
       templateCaptionPreset,
     );
 
-    await prisma.$transaction(async (tx) => {
-      await tx.clip.deleteMany({ where: { projectId } });
-
-      if (clips.length > 0) {
-        await tx.clip.createMany({
-          data: clips.map((clip, i) => ({
+    const detectedClipRows = clips.map((clip, i) => ({
             projectId,
             workflowRunId,
             index: i,
@@ -1370,10 +1374,17 @@ export class ClipService {
             llmProvider: llmMeta.provider,
             llmModel: llmMeta.model,
             llmTokensUsed: llmMeta.totalTokensUsed,
-          })),
-        });
-      }
-    });
+          })) satisfies Prisma.ClipCreateManyInput[];
+    if (attempt && lifecycle) {
+      await lifecycle.replaceDetectedClips(attempt, detectedClipRows);
+    } else {
+      await prisma.$transaction(async (tx) => {
+        await tx.clip.deleteMany({ where: { projectId } });
+        if (detectedClipRows.length > 0) {
+          await tx.clip.createMany({ data: detectedClipRows });
+        }
+      });
+    }
 
     await deleteRenderAssets(
       staleRenderKeys
@@ -2250,29 +2261,12 @@ export class ClipService {
       workspaceContext?.workspaceId,
     );
 
-    const existing = await prisma.workflowRun.findFirst({
-      where: {
-        projectId,
-        stage: "moment_detection",
-        status: { in: ["queued", "running"] },
-      },
-    });
-
-    if (existing) {
-      return {
-        workflowRunId: existing.id,
-        acceptedAt: existing.updatedAt.toISOString(),
-        initialSeq: await getLastWorkflowSeq(projectId),
-      };
-    }
-
-    const workflowRunId = randomUUID();
-
-    await prisma.$transaction(async (tx) => {
-      if (parsedContentPack) {
-        await tx.contentPack.create({
-          data: {
-            projectId,
+    const admitted = await getWorkflowRunLifecycle().admit({
+      projectId,
+      idempotencyKey,
+      stage: "moment_detection",
+      contentPack: parsedContentPack
+        ? {
             outputTypes: parsedContentPack.outputTypes,
             clipGenerationMode: parsedContentPack.clipGenerationMode,
             clipCountTarget: parsedContentPack.clipCountTarget,
@@ -2291,36 +2285,16 @@ export class ClipService {
             specificMoments: parsedContentPack.specificMoments,
             processingStartSec: parsedContentPack.processingStartSec,
             processingEndSec: parsedContentPack.processingEndSec,
-          },
-        });
-      }
-
-      await tx.workflowRun.create({
-        data: {
-          id: workflowRunId,
-          projectId,
-          idempotencyKey,
-          stage: "moment_detection",
-          status: "queued",
-          progress: 0,
-        },
-      });
-    });
-
-    const event = await publishWorkflowStageUpdated({
-      event: "workflow.stage.updated",
-      projectId,
-      workflowRunId,
-      stage: "moment_detection",
-      status: "queued",
-      progress: 0,
-      errorCode: null,
+            clipLengthPreset: parsedContentPack.clipLengthPreset,
+            defaultAspectRatio: parsedContentPack.defaultAspectRatio,
+          }
+        : undefined,
     });
 
     return {
-      workflowRunId,
-      acceptedAt: event?.emittedAt ?? new Date().toISOString(),
-      initialSeq: event?.seq ?? 0,
+      workflowRunId: admitted.id,
+      acceptedAt: new Date().toISOString(),
+      initialSeq: await getLastWorkflowSeq(projectId),
     };
   }
 
@@ -2446,79 +2420,16 @@ export class ClipService {
       await prisma.$transaction([...createOperations, ...updateOperations]);
     }
 
-    const existingWorkflowRun = await prisma.workflowRun.findFirst({
-      where: {
-        projectId,
-        stage: "clip_rendering",
-        status: { in: ["queued", "running"] },
-      },
-    });
-
-    if (existingWorkflowRun) {
-      return {
-        workflowRunId: existingWorkflowRun.id,
-        acceptedAt: existingWorkflowRun.updatedAt.toISOString(),
-        initialSeq: await getLastWorkflowSeq(projectId),
-        clipCount: clipsToRender.length,
-        variantCount: clipsToRender.length * requestedAspectRatios.length,
-        resolution: resolvedResolution,
-      };
-    }
-
-    const workflowRunId = randomUUID();
-
-    try {
-      await prisma.workflowRun.create({
-        data: {
-          id: workflowRunId,
-          projectId,
-          idempotencyKey,
-          stage: "clip_rendering",
-          status: "queued",
-          progress: 0,
-        },
-      });
-    } catch (error) {
-      // Partial unique index: one live clip_rendering run per project. Losing
-      // this race means another caller just created the run — reuse it; the
-      // pending variants written above are picked up by whichever run runs.
-      if (!isUniqueConstraintError(error)) {
-        throw error;
-      }
-      const liveRun = await prisma.workflowRun.findFirst({
-        where: {
-          projectId,
-          stage: "clip_rendering",
-          status: { in: ["queued", "running"] },
-        },
-      });
-      if (!liveRun) {
-        throw error;
-      }
-      return {
-        workflowRunId: liveRun.id,
-        acceptedAt: liveRun.updatedAt.toISOString(),
-        initialSeq: await getLastWorkflowSeq(projectId),
-        clipCount: clipsToRender.length,
-        variantCount: clipsToRender.length * requestedAspectRatios.length,
-        resolution: resolvedResolution,
-      };
-    }
-
-    const event = await publishWorkflowStageUpdated({
-      event: "workflow.stage.updated",
+    const admitted = await getWorkflowRunLifecycle().admit({
       projectId,
-      workflowRunId,
+      idempotencyKey,
       stage: "clip_rendering",
-      status: "queued",
-      progress: 0,
-      errorCode: null,
     });
 
     return {
-      workflowRunId,
-      acceptedAt: event?.emittedAt ?? new Date().toISOString(),
-      initialSeq: event?.seq ?? 0,
+      workflowRunId: admitted.id,
+      acceptedAt: new Date().toISOString(),
+      initialSeq: await getLastWorkflowSeq(projectId),
       clipCount: clipsToRender.length,
       variantCount: clipsToRender.length * requestedAspectRatios.length,
       resolution: resolvedResolution,
@@ -2585,6 +2496,10 @@ export class ClipService {
 
   async markClipRenderVariantRendering(clipRenderId: string) {
     const prisma = requirePrisma();
+    const attempt = currentWorkflowAttempt();
+    const lifecycle = attempt ? getWorkflowRunLifecycle() : null;
+    if (attempt) await lifecycle?.assertOwnership(attempt);
+    else requireProtocolV1WorkflowContext("clip_rendering");
 
     const render = await prisma.clipRender.findUnique({
       where: { id: clipRenderId },
@@ -2592,22 +2507,34 @@ export class ClipService {
     });
 
     const startedAt = new Date();
-    const persisted = await prisma.$transaction(async (tx) => {
-      // updateMany: an editor save/reset can deleteMany this row while the
-      // encode is queued — a vanished row is a no-op, not a P2025 crash.
-      const claim = await tx.clipRender.updateMany({
-        where: { id: clipRenderId },
-        data: { status: "rendering", startedAt, errorCode: null },
-      });
-      if (claim.count === 0) return false;
-      if (render?.exportVariantId) {
-        await tx.clipExportVariant.update({
-          where: { id: render.exportVariantId },
-          data: { status: "rendering", startedAt, errorCode: null },
-        });
-      }
-      return true;
-    });
+    const persisted =
+      attempt && lifecycle
+        ? await lifecycle.markClipRenderVariantRendering(attempt, {
+            clipRenderId,
+            exportVariantId: render?.exportVariantId ?? null,
+            startedAt,
+          })
+        : await prisma.$transaction(async (tx) => {
+            // updateMany: an editor save/reset can deleteMany this row while
+            // the encode is queued — a vanished row is a no-op, not P2025.
+            const claim = await tx.clipRender.updateMany({
+              where: { id: clipRenderId, status: "pending" },
+              data: {
+                status: "rendering",
+                workflowAttemptId: null,
+                startedAt,
+                errorCode: null,
+              },
+            });
+            if (claim.count === 0) return false;
+            if (render?.exportVariantId) {
+              await tx.clipExportVariant.update({
+                where: { id: render.exportVariantId },
+                data: { status: "rendering", startedAt, errorCode: null },
+              });
+            }
+            return true;
+          });
     if (persisted && render?.exportVariantId) {
       const variant = await prisma.clipExportVariant.findUniqueOrThrow({
         where: { id: render.exportVariantId },
@@ -2640,6 +2567,11 @@ export class ClipService {
     },
   ): Promise<{ persisted: boolean }> {
     const prisma = requirePrisma();
+    const attempt = currentWorkflowAttempt();
+    const lifecycle = attempt ? getWorkflowRunLifecycle() : null;
+    if (attempt) {
+      await lifecycle?.assertOwnership(attempt);
+    } else requireProtocolV1WorkflowContext("clip_rendering");
     const render = await prisma.clipRender.findUnique({
       where: { id: clipRenderId },
       include: {
@@ -2652,80 +2584,120 @@ export class ClipService {
     }
 
     const completedAt = new Date();
-    const persisted = await prisma.$transaction(async (tx) => {
-      const claim = await tx.clipRender.updateMany({
-        where: { id: clipRenderId },
-        data: {
-          status: "completed",
-          storageKey: input.storageKey,
-          sizeBytes: BigInt(input.sizeBytes),
-          durationSec: input.durationSec,
-          errorCode: null,
-          completedAt,
-        },
-      });
-      if (claim.count === 0) return false;
-      if (render.exportVariant) {
-        await tx.clipExportVariant.update({
-          where: { id: render.exportVariant.id },
-          data: {
-            status: "completed",
-            storageKey: input.storageKey,
-            sizeBytes: BigInt(input.sizeBytes),
-            durationSec: input.durationSec,
-            errorCode: null,
+    const persisted =
+      attempt && lifecycle
+        ? await lifecycle.completeClipRenderVariant(attempt, {
+            clipRenderId,
+            exportVariantId: render.exportVariant?.id ?? null,
+            ...input,
             completedAt,
-          },
-        });
-      }
-      return true;
-    });
+          })
+        : await prisma.$transaction(async (tx) => {
+            const claim = await tx.clipRender.updateMany({
+              where: { id: clipRenderId },
+              data: {
+                status: "completed",
+                storageKey: input.storageKey,
+                sizeBytes: BigInt(input.sizeBytes),
+                durationSec: input.durationSec,
+                errorCode: null,
+                completedAt,
+              },
+            });
+            if (claim.count === 0) return false;
+            if (render.exportVariant) {
+              await tx.clipExportVariant.update({
+                where: { id: render.exportVariant.id },
+                data: {
+                  status: "completed",
+                  storageKey: input.storageKey,
+                  sizeBytes: BigInt(input.sizeBytes),
+                  durationSec: input.durationSec,
+                  errorCode: null,
+                  completedAt,
+                },
+              });
+            }
+            return true;
+          });
     if (!persisted) return { persisted: false };
 
     if (render.exportVariant) {
       await clipExportService.syncAggregate(render.exportVariant.exportId);
     }
 
-    await analyticsService.recordProjectEvent({
-      projectId: render.clip.projectId,
-      clipId: render.clipId,
-      type: "render_completed",
-      metadata: { aspectRatio: render.aspectRatio },
-    });
+    await analyticsService
+      .recordProjectEvent({
+        projectId: render.clip.projectId,
+        clipId: render.clipId,
+        type: "render_completed",
+        metadata: { aspectRatio: render.aspectRatio },
+      })
+      .catch((error) => {
+        console.warn(
+          JSON.stringify({
+            level: "warn",
+            message: "render_analytics_record_failed",
+            projectId: render.clip.projectId,
+            clipId: render.clipId,
+            error: error instanceof Error ? error.message : String(error),
+          }),
+        );
+      });
 
     // Incremental delivery: nudge the project's live stream as soon as this
     // individual clip's render lands, instead of only on the run's overall
     // completed/failed transition — see project-events.tsx's throttled
     // refresh-on-progress handling.
-    await this.pingActiveWorkflowRun(render.clip.projectId);
+    if (!attempt) await this.pingActiveWorkflowRun(render.clip.projectId);
 
     return { persisted: true };
   }
 
   async failClipRenderVariant(clipRenderId: string, errorCode: string) {
     const prisma = requirePrisma();
+    const attempt = currentWorkflowAttempt();
+    const lifecycle = attempt ? getWorkflowRunLifecycle() : null;
+    if (attempt) {
+      try {
+        await lifecycle?.assertOwnership(attempt);
+      } catch {
+        return;
+      }
+    } else requireProtocolV1WorkflowContext("clip_rendering");
 
     const render = await prisma.clipRender.findUnique({
       where: { id: clipRenderId },
       select: { exportVariantId: true },
     });
 
-    const persisted = await prisma.$transaction(async (tx) => {
-      // updateMany for the same deleted-mid-render reason as
-      // markClipRenderVariantRendering above.
-      const claim = await tx.clipRender.updateMany({
-        where: { id: clipRenderId },
-        data: { status: "failed", errorCode },
-      });
-      if (claim.count === 0) return false;
-      if (render?.exportVariantId) {
-        await tx.clipExportVariant.update({
-          where: { id: render.exportVariantId },
-          data: { status: "failed", errorCode },
-        });
-      }
-      return true;
-    });
+    let persisted: boolean;
+    try {
+      persisted =
+        attempt && lifecycle
+          ? await lifecycle.failClipRenderVariant(attempt, {
+              clipRenderId,
+              exportVariantId: render?.exportVariantId ?? null,
+              errorCode,
+            })
+          : await prisma.$transaction(async (tx) => {
+              const claim = await tx.clipRender.updateMany({
+                where: { id: clipRenderId },
+                data: { status: "failed", errorCode },
+              });
+              if (claim.count === 0) return false;
+              if (render?.exportVariantId) {
+                await tx.clipExportVariant.update({
+                  where: { id: render.exportVariantId },
+                  data: { status: "failed", errorCode },
+                });
+              }
+              return true;
+            });
+    } catch (error) {
+      if (error instanceof WorkflowAttemptLost) return;
+      throw error;
+    }
     if (persisted && render?.exportVariantId) {
       const variant = await prisma.clipExportVariant.findUniqueOrThrow({
         where: { id: render.exportVariantId },
@@ -2742,35 +2714,10 @@ export class ClipService {
    *  twice; a P2002 from the one-live-run index means another live run
    *  already exists and will pick the variants up. */
   async queueFollowUpRenderRun(projectId: string, completedRunId: string) {
-    const prisma = requirePrisma();
-    const workflowRunId = randomUUID();
-
-    try {
-      await prisma.workflowRun.create({
-        data: {
-          id: workflowRunId,
-          projectId,
-          idempotencyKey: `drain-${completedRunId}`,
-          stage: "clip_rendering",
-          status: "queued",
-          progress: 0,
-        },
-      });
-    } catch (error) {
-      if (isUniqueConstraintError(error)) {
-        return;
-      }
-      throw error;
-    }
-
-    await publishWorkflowStageUpdated({
-      event: "workflow.stage.updated",
+    await getWorkflowRunLifecycle().admit({
       projectId,
-      workflowRunId,
+      idempotencyKey: `drain-${completedRunId}`,
       stage: "clip_rendering",
-      status: "queued",
-      progress: 0,
-      errorCode: null,
     });
   }
 
@@ -3318,7 +3265,11 @@ export class ClipService {
     try {
       const prisma = requirePrisma();
       const run = await prisma.workflowRun.findFirst({
-        where: { projectId, status: { in: ["queued", "running"] } },
+        where: {
+          projectId,
+          lifecycleVersion: 1,
+          status: { in: ["queued", "running", "waiting"] },
+        },
         orderBy: { updatedAt: "desc" },
       });
       if (!run) return;
@@ -4361,6 +4312,14 @@ export class ClipService {
     aspectRatio: ClipAspectRatio = "9:16",
   ): Promise<void> {
     const prisma = requirePrisma();
+    const attempt = currentWorkflowAttempt(detectionWorkflowRunId);
+    const lifecycle = attempt ? getWorkflowRunLifecycle() : null;
+    if (attempt) await lifecycle?.assertOwnership(attempt);
+    else
+      requireProtocolV1WorkflowContext(
+        "moment_detection",
+        detectionWorkflowRunId,
+      );
 
     const clips = await prisma.clip.findMany({
       where: { projectId },
@@ -4404,74 +4363,26 @@ export class ClipService {
     const toCreate = clipIds.filter((id) => !alreadyQueued.has(id));
 
     if (toCreate.length > 0) {
-      await prisma.clipRender.createMany({
-        data: toCreate.map((clipId) => ({
-          clipId,
-          aspectRatio: aspectRatioDb,
-          status: "pending" as const,
-          resolution: resolvedResolution,
-        })),
-        skipDuplicates: true,
-      });
-    }
-
-    const existingWorkflowRun = await prisma.workflowRun.findFirst({
-      where: {
-        projectId,
-        stage: "clip_rendering",
-        status: { in: ["queued", "running"] },
-      },
-    });
-
-    if (existingWorkflowRun) {
-      return;
-    }
-
-    const workflowRunId = randomUUID();
-
-    try {
-      await prisma.workflowRun.create({
-        data: {
-          id: workflowRunId,
-          projectId,
-          idempotencyKey: `auto-render-${detectionWorkflowRunId}`,
-          stage: "clip_rendering",
-          status: "queued",
-          progress: 0,
-        },
-      });
-    } catch (error) {
-      if (!isUniqueConstraintError(error)) {
-        throw error;
+      const renderRows = toCreate.map((clipId) => ({
+            clipId,
+            aspectRatio: aspectRatioDb,
+            status: "pending" as const,
+            resolution: resolvedResolution,
+          })) satisfies Prisma.ClipRenderCreateManyInput[];
+      if (attempt && lifecycle) {
+        await lifecycle.createAutoRenderVariants(attempt, renderRows);
+      } else {
+        await prisma.clipRender.createMany({
+          data: renderRows,
+          skipDuplicates: true,
+        });
       }
-      // Two distinct uniques can fire here: the one-live-run partial index (a
-      // concurrent trigger created the live run first — fine, it picks up the
-      // variants written above) or the (projectId, idempotencyKey) unique (a
-      // re-run for the same detection whose earlier auto-render run already
-      // completed — in that case there is NO live run, so swallowing the
-      // error would strand the pending variants).
-      const liveRun = await prisma.workflowRun.findFirst({
-        where: {
-          projectId,
-          stage: "clip_rendering",
-          status: { in: ["queued", "running"] },
-        },
-        select: { id: true },
-      });
-      if (liveRun) {
-        return;
-      }
-      throw error;
     }
 
-    await publishWorkflowStageUpdated({
-      event: "workflow.stage.updated",
+    await getWorkflowRunLifecycle().admit({
       projectId,
-      workflowRunId,
+      idempotencyKey: `auto-render-${detectionWorkflowRunId}`,
       stage: "clip_rendering",
-      status: "queued",
-      progress: 0,
-      errorCode: null,
     });
   }
 }
