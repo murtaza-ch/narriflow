@@ -104,9 +104,14 @@ export interface StudioSessionRoot {
   segments: TimelineSegment[];
 }
 
-export interface StudioSessionSeed extends StudioSessionRoot {
-  projectId?: string;
-  clipId?: string;
+export interface StudioSessionIdentity {
+  projectId: string;
+  clipId: string;
+}
+
+export interface StudioSessionSeed
+  extends StudioSessionRoot,
+    Partial<StudioSessionIdentity> {
   cloudRevision?: number;
 }
 
@@ -117,7 +122,7 @@ export interface StudioSessionOptions {
 export type StudioDraftRecord = StoredEditorDraft;
 
 export interface StudioCoordinationParticipant {
-  onTakeoverRequested(): Promise<void>;
+  onTakeoverRequested(): Promise<"checkpointed" | "unavailable">;
   onOwnershipLost(): void;
 }
 
@@ -137,6 +142,7 @@ export interface StudioSessionDependencies {
       | { kind: "acquired"; generation: number; forced: boolean }
       | { kind: "failed" }
     >;
+    relinquish?(): void;
     close(): void;
   };
   cloud: {
@@ -178,6 +184,12 @@ interface SessionProjection {
   durability: StudioSessionSnapshot["durability"];
   ownership: StudioSessionSnapshot["ownership"];
 }
+
+type DeviceDraftCheckpointOutcome = "checkpointed" | "stale" | "unavailable";
+type DraftFenceOutcome = "fenced" | "stale" | "unavailable";
+type DraftLoadResult =
+  | { kind: "loaded"; draft: StudioDraftRecord | null }
+  | { kind: "failed"; draft: null; error: string };
 
 function snapshotFor(
   unified: UnifiedEditorHistory,
@@ -245,17 +257,21 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
   private projection: SessionProjection;
   private readonly dependencies?: StudioSessionDependencies;
   private readonly seed: StudioSessionSeed;
+  private readonly identity: StudioSessionIdentity | null;
   private readonly writerId: string;
   private cloudDocument: EditorDocument;
   private cloudRevision: number;
   private deviceDraftAvailable = true;
   private draftWriteTimer: number | null = null;
-  private draftWriteChain: Promise<void> = Promise.resolve();
+  private draftWriteChain: Promise<DeviceDraftCheckpointOutcome> = Promise.resolve(
+    "checkpointed",
+  );
   private pendingConflict: {
     deviceDocument: EditorDocument;
     cloudDocument: EditorDocument;
   } | null = null;
   private started: boolean;
+  private sessionGeneration = 0;
 
   constructor(
     seed: StudioSessionSeed,
@@ -264,6 +280,13 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
   ) {
     this.seed = seed;
     this.dependencies = dependencies;
+    if (dependencies && (!seed.projectId || !seed.clipId)) {
+      throw new Error("Durable Studio sessions require a project and clip identity");
+    }
+    this.identity =
+      seed.projectId && seed.clipId
+        ? { projectId: seed.projectId, clipId: seed.clipId }
+        : null;
     this.writerId = dependencies?.runtime.createId() ?? "standalone-session";
     this.cloudDocument = ownDocument(seed.document);
     this.cloudRevision = seed.cloudRevision ?? 0;
@@ -355,6 +378,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
       if (this.projection.status === "closed") {
         return { kind: "unavailable", reason: "invalid-state" };
       }
+      this.sessionGeneration += 1;
       if (
         this.projection.ownership.kind === "writer" ||
         this.projection.ownership.kind === "degraded"
@@ -397,7 +421,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     if (operation.choice === "cloud") {
       const generation = this.projection.ownership.generation;
       if (this.dependencies && generation !== null) {
-        const key = `${this.seed.projectId ?? ""}:${this.seed.clipId ?? ""}`;
+        const key = this.deviceDraftKey;
         try {
           const outcome = await this.dependencies.drafts.remove(key, generation);
           if (outcome === "stale") {
@@ -487,7 +511,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     this.publish();
     const generation = this.projection.ownership.generation;
     if (this.dependencies && generation !== null) {
-      const key = `${this.seed.projectId ?? ""}:${this.seed.clipId ?? ""}`;
+      const key = this.deviceDraftKey;
       await this.dependencies.drafts.remove(key, generation).then((outcome) => {
         if (outcome !== "stale") return;
         this.projection = {
@@ -506,80 +530,212 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     for (const listener of this.listeners) listener();
   }
 
+  private get deviceDraftKey(): string {
+    if (!this.identity) throw new Error("Device Draft identity is unavailable");
+    return `${this.identity.projectId}:${this.identity.clipId}`;
+  }
+
+  private diagnose(message: string, outcome: string, error?: unknown): void {
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        message,
+        projectId: this.identity?.projectId,
+        clipId: this.identity?.clipId,
+        sessionGeneration: this.sessionGeneration,
+        documentVersion: this.cloudRevision,
+        ownershipGeneration: this.projection.ownership.generation,
+        outcome,
+        ...(error === undefined
+          ? {}
+          : { error: error instanceof Error ? error.message : String(error) }),
+      }),
+    );
+  }
+
+  private loseOwnership(): void {
+    this.sessionGeneration += 1;
+    if (this.draftWriteTimer !== null && this.dependencies) {
+      this.dependencies.runtime.clearTimeout(this.draftWriteTimer);
+      this.draftWriteTimer = null;
+    }
+    if (this.projection.status === "closed") return;
+    this.projection = {
+      ...this.projection,
+      status: "ready",
+      ownership: {
+        kind: "reader",
+        generation: this.projection.ownership.generation,
+      },
+    };
+    this.publish();
+  }
+
+  private ownsGeneration(generation: number): boolean {
+    return (
+      this.projection.ownership.generation === generation &&
+      (this.projection.ownership.kind === "writer" ||
+        this.projection.ownership.kind === "degraded")
+    );
+  }
+
   private async initialize(): Promise<void> {
     const dependencies = this.dependencies;
     if (!dependencies) return;
-    const key = `${this.seed.projectId ?? ""}:${this.seed.clipId ?? ""}`;
+    const expectedSessionGeneration = this.sessionGeneration;
     const participant: StudioCoordinationParticipant = {
       onTakeoverRequested: async () => {
-        if (this.draftWriteTimer !== null) {
-          dependencies.runtime.clearTimeout(this.draftWriteTimer);
-          this.draftWriteTimer = null;
+        const priorOwnership = this.projection.ownership;
+        if (priorOwnership.kind !== "writer" && priorOwnership.kind !== "degraded") {
+          return "unavailable";
         }
-        await this.queueDeviceDraftCheckpoint();
-      },
-      onOwnershipLost: () => {
-        if (this.draftWriteTimer !== null) {
-          dependencies.runtime.clearTimeout(this.draftWriteTimer);
-          this.draftWriteTimer = null;
-        }
-        this.projection = {
-          ...this.projection,
-          ownership: {
-            kind: "reader",
-            generation: this.projection.ownership.generation,
-          },
-        };
+        this.projection = { ...this.projection, status: "starting" };
         this.publish();
+        if (this.draftWriteTimer !== null) {
+          dependencies.runtime.clearTimeout(this.draftWriteTimer);
+          this.draftWriteTimer = null;
+        }
+        const outcome = await this.queueDeviceDraftCheckpoint();
+        if (outcome === "checkpointed") return "checkpointed";
+        this.diagnose("studio_handoff_checkpoint_failed", outcome);
+        if (this.projection.ownership.kind !== "reader") {
+          this.projection = {
+            ...this.projection,
+            status: "ready",
+            ownership: priorOwnership,
+          };
+          this.publish();
+        }
+        return "unavailable";
       },
+      onOwnershipLost: () => this.loseOwnership(),
     };
 
     const [draftResult, ownership] = await Promise.all([
-      dependencies.drafts.load(key).then(
-        (draft) => ({ kind: "loaded" as const, draft }),
-        () => ({ kind: "failed" as const, draft: null }),
+      dependencies.drafts.load(this.deviceDraftKey).then<
+        DraftLoadResult,
+        DraftLoadResult
+      >(
+        (draft) => ({ kind: "loaded", draft }),
+        (error: unknown) => ({
+          kind: "failed",
+          draft: null,
+          error: error instanceof Error ? error.message : String(error),
+        }),
       ),
-      dependencies.coordination.start(participant).catch(() => ({
-        kind: "degraded" as const,
-        generation: Math.max(1, dependencies.runtime.now()),
-      })),
+      dependencies.coordination.start(participant).catch((error: unknown) => {
+        this.diagnose("studio_coordination_start_failed", "degraded", error);
+        return {
+          kind: "degraded" as const,
+          generation: Math.max(1, dependencies.runtime.now()),
+        };
+      }),
     ]);
-    const ownsWrites = ownership.kind === "writer" || ownership.kind === "degraded";
-    let ownershipGeneration = ownership.generation;
+    if (this.sessionGeneration !== expectedSessionGeneration) return;
+    this.projection = {
+      ...this.projection,
+      ownership: { kind: "pending", generation: ownership.generation },
+    };
+    if (ownership.kind === "reader") {
+      this.deviceDraftAvailable = draftResult.kind === "loaded";
+      this.projection = {
+        ...this.projection,
+        ownership,
+      };
+      if (draftResult.kind === "failed") {
+        this.diagnose("studio_device_draft_load_failed", "degraded", draftResult.error);
+      }
+      this.projection = {
+        status: "ready",
+        recovery: { kind: "none", conflictPaths: [] },
+        durability: this.deviceDraftAvailable
+          ? { device: "durable", protectsNavigation: false }
+          : { device: "degraded", protectsNavigation: true },
+        ownership,
+      };
+      this.publish();
+      return;
+    }
+    if (ownership.kind === "degraded") {
+      this.diagnose("studio_coordination_degraded", "degraded");
+    }
+    const projection = await this.reconcileOwnedDraft({
+      draftResult,
+      cloudDocument: this.seed.document,
+      cloudRevision: this.seed.cloudRevision ?? 0,
+      ownershipKind: ownership.kind,
+      ownershipGeneration: ownership.generation,
+      expectedSessionGeneration,
+    });
+    if (!projection || this.sessionGeneration !== expectedSessionGeneration) return;
+    this.projection = projection;
+    this.publish();
+  }
+
+  private async reconcileOwnedDraft(input: {
+    draftResult: DraftLoadResult;
+    cloudDocument: EditorDocument;
+    cloudRevision: number;
+    ownershipKind: "writer" | "degraded";
+    ownershipGeneration: number;
+    expectedSessionGeneration: number;
+  }): Promise<SessionProjection | null> {
+    let ownershipGeneration = input.ownershipGeneration;
     if (
-      ownsWrites &&
-      draftResult.kind === "loaded" &&
-      draftResult.draft &&
-      draftResult.draft.writerId !== this.writerId
+      input.draftResult.kind === "loaded" &&
+      input.draftResult.draft &&
+      input.draftResult.draft.writerId !== this.writerId
     ) {
       ownershipGeneration = Math.max(
         ownershipGeneration,
-        draftResult.draft.ownershipGeneration + 1,
+        input.draftResult.draft.ownershipGeneration + 1,
       );
     }
-    this.deviceDraftAvailable = draftResult.kind === "loaded";
-    if (ownsWrites && draftResult.kind === "loaded" && draftResult.draft) {
-      this.deviceDraftAvailable = await this.fenceLoadedDraft(
-        draftResult.draft,
+
+    this.deviceDraftAvailable = input.draftResult.kind === "loaded";
+    if (input.draftResult.kind === "failed") {
+      this.diagnose(
+        "studio_device_draft_load_failed",
+        "degraded",
+        input.draftResult.error,
+      );
+    } else if (input.draftResult.draft) {
+      const fence = await this.fenceLoadedDraft(
+        input.draftResult.draft,
         ownershipGeneration,
       );
+      if (this.sessionGeneration !== input.expectedSessionGeneration) return null;
+      if (fence === "stale") {
+        this.projection = {
+          ...this.projection,
+          ownership: { kind: "pending", generation: ownershipGeneration },
+        };
+        this.diagnose("studio_device_draft_fence_rejected", "stale");
+        this.dependencies?.coordination.relinquish?.();
+        this.loseOwnership();
+        return null;
+      }
+      if (fence === "unavailable") {
+        this.deviceDraftAvailable = false;
+        this.diagnose("studio_device_draft_fence_failed", "degraded");
+      }
     }
+
+    let status: SessionProjection["status"] = "ready";
     let recovery: SessionProjection["recovery"] = {
       kind: "none",
       conflictPaths: [],
     };
-    let status: SessionProjection["status"] = "ready";
-    if (ownsWrites && draftResult.kind === "loaded") {
+    let document = input.cloudDocument;
+    this.pendingConflict = null;
+    if (input.draftResult.kind === "loaded") {
       const decision = decideDraftRecovery(
-        draftResult.draft,
-        this.seed.document,
-        this.seed.cloudRevision ?? 0,
+        input.draftResult.draft,
+        input.cloudDocument,
+        input.cloudRevision,
       );
       if (decision.kind === "recover") {
-        this.unified = createUnifiedEditorHistory(
-          ownDocument(decision.document),
-          ownSegments(this.seed.segments),
-        );
+        document = decision.document;
         recovery = {
           kind: decision.merged ? "merged" : "recovered",
           conflictPaths: [],
@@ -587,25 +743,27 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
       } else if (decision.kind === "conflict") {
         this.pendingConflict = {
           deviceDocument: ownDocument(decision.document),
-          cloudDocument: ownDocument(this.seed.document),
+          cloudDocument: ownDocument(input.cloudDocument),
         };
-        recovery = { kind: "conflict", conflictPaths: decision.paths };
         status = "conflict";
+        recovery = { kind: "conflict", conflictPaths: decision.paths };
       }
     }
-    this.projection = {
+    this.unified = createUnifiedEditorHistory(
+      ownDocument(document),
+      ownSegments(this.seed.segments),
+    );
+    return {
       status,
       recovery,
-      durability:
-        !this.deviceDraftAvailable
-          ? { device: "degraded", protectsNavigation: true }
-          : { device: "durable", protectsNavigation: false },
+      durability: this.deviceDraftAvailable
+        ? { device: "durable", protectsNavigation: false }
+        : { device: "degraded", protectsNavigation: true },
       ownership: {
-        kind: ownership.kind,
+        kind: input.ownershipKind,
         generation: ownershipGeneration,
       },
     };
-    this.publish();
   }
 
   private async takeOver(): Promise<StudioOperationResult> {
@@ -613,6 +771,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     if (!dependencies || this.projection.ownership.kind !== "reader") {
       return { kind: "unavailable", reason: "invalid-state" };
     }
+    const expectedSessionGeneration = this.sessionGeneration;
     this.projection = {
       ...this.projection,
       status: "starting",
@@ -623,7 +782,11 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     };
     this.publish();
     const acquired = await dependencies.coordination.takeOver(2_000);
+    if (this.sessionGeneration !== expectedSessionGeneration) {
+      return { kind: "unavailable", reason: "invalid-state" };
+    }
     if (acquired.kind === "failed") {
+      this.diagnose("studio_takeover_failed", "unavailable");
       this.projection = {
         ...this.projection,
         status: "ready",
@@ -635,8 +798,11 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
       this.publish();
       return { kind: "unavailable", reason: "invalid-state" };
     }
+    this.projection = {
+      ...this.projection,
+      ownership: { kind: "pending", generation: acquired.generation },
+    };
 
-    const key = `${this.seed.projectId ?? ""}:${this.seed.clipId ?? ""}`;
     const [cloudResult, draftResult] = await Promise.all([
       dependencies.cloud.loadHead().then(
         (head) => ({ kind: "loaded" as const, head }),
@@ -646,105 +812,50 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
           error: error instanceof Error ? error.message : String(error),
         }),
       ),
-      dependencies.drafts.load(key).then(
-        (draft) => ({ kind: "loaded" as const, draft }),
-        () => ({ kind: "failed" as const, draft: null }),
+      dependencies.drafts.load(this.deviceDraftKey).then<
+        DraftLoadResult,
+        DraftLoadResult
+      >(
+        (draft) => ({ kind: "loaded", draft }),
+        (error: unknown) => ({
+          kind: "failed",
+          draft: null,
+          error: error instanceof Error ? error.message : String(error),
+        }),
       ),
     ]);
+    if (this.sessionGeneration !== expectedSessionGeneration) {
+      return { kind: "unavailable", reason: "invalid-state" };
+    }
     if (cloudResult.kind === "failed") {
-      console.warn(
-        JSON.stringify({
-          level: "warn",
-          message: "studio_takeover_cloud_refresh_failed",
-          projectId: this.seed.projectId,
-          clipId: this.seed.clipId,
-          ownershipGeneration: acquired.generation,
-          error: cloudResult.error,
-        }),
-      );
-      dependencies.coordination.close();
       this.projection = {
         ...this.projection,
-        status: "ready",
-        ownership: { kind: "reader", generation: acquired.generation },
+        ownership: { kind: "pending", generation: acquired.generation },
       };
-      this.publish();
+      this.diagnose(
+        "studio_takeover_cloud_refresh_failed",
+        "unavailable",
+        cloudResult.error,
+      );
+      dependencies.coordination.relinquish?.();
+      this.loseOwnership();
       return { kind: "unavailable", reason: "invalid-state" };
     }
 
     this.cloudDocument = ownDocument(cloudResult.head.document);
     this.cloudRevision = cloudResult.head.revision;
-    let ownershipGeneration = acquired.generation;
-    if (
-      draftResult.kind === "loaded" &&
-      draftResult.draft &&
-      draftResult.draft.writerId !== this.writerId
-    ) {
-      ownershipGeneration = Math.max(
-        ownershipGeneration,
-        draftResult.draft.ownershipGeneration + 1,
-      );
+    const projection = await this.reconcileOwnedDraft({
+      draftResult,
+      cloudDocument: this.cloudDocument,
+      cloudRevision: this.cloudRevision,
+      ownershipKind: "writer",
+      ownershipGeneration: acquired.generation,
+      expectedSessionGeneration,
+    });
+    if (!projection || this.sessionGeneration !== expectedSessionGeneration) {
+      return { kind: "unavailable", reason: "invalid-state" };
     }
-    this.deviceDraftAvailable = draftResult.kind === "loaded";
-    if (draftResult.kind === "loaded" && draftResult.draft) {
-      this.deviceDraftAvailable = await this.fenceLoadedDraft(
-        draftResult.draft,
-        ownershipGeneration,
-      );
-    }
-    let status: SessionProjection["status"] = "ready";
-    let recovery: SessionProjection["recovery"] = {
-      kind: "none",
-      conflictPaths: [],
-    };
-    this.pendingConflict = null;
-    if (draftResult.kind === "loaded") {
-      const decision = decideDraftRecovery(
-        draftResult.draft,
-        this.cloudDocument,
-        this.cloudRevision,
-      );
-      if (decision.kind === "recover") {
-        this.unified = createUnifiedEditorHistory(
-          ownDocument(decision.document),
-          ownSegments(this.seed.segments),
-        );
-        recovery = {
-          kind: decision.merged ? "merged" : "recovered",
-          conflictPaths: [],
-        };
-      } else if (decision.kind === "conflict") {
-        this.unified = createUnifiedEditorHistory(
-          ownDocument(this.cloudDocument),
-          ownSegments(this.seed.segments),
-        );
-        this.pendingConflict = {
-          deviceDocument: ownDocument(decision.document),
-          cloudDocument: ownDocument(this.cloudDocument),
-        };
-        status = "conflict";
-        recovery = { kind: "conflict", conflictPaths: decision.paths };
-      } else {
-        this.unified = createUnifiedEditorHistory(
-          ownDocument(this.cloudDocument),
-          ownSegments(this.seed.segments),
-        );
-      }
-    } else {
-      this.unified = createUnifiedEditorHistory(
-        ownDocument(this.cloudDocument),
-        ownSegments(this.seed.segments),
-      );
-    }
-    this.projection = {
-      status,
-      recovery,
-      durability:
-        draftResult.kind === "failed"
-          ? { device: "degraded", protectsNavigation: true }
-          : { device: "durable", protectsNavigation: false },
-      ownership: { kind: "writer", generation: ownershipGeneration },
-    };
+    this.projection = projection;
     this.publish();
     return {
       kind: "ownership-acquired",
@@ -770,27 +881,36 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     }, LOCAL_DRAFT_WRITE_DEBOUNCE_MS);
   }
 
-  private queueDeviceDraftCheckpoint(): Promise<void> {
+  private queueDeviceDraftCheckpoint(): Promise<DeviceDraftCheckpointOutcome> {
     this.draftWriteChain = this.draftWriteChain
-      .catch(() => undefined)
+      .catch((error: unknown) => {
+        this.diagnose("studio_device_draft_queue_failed", "unavailable", error);
+        return "unavailable" as const;
+      })
       .then(() => this.checkpointDeviceDraft());
     return this.draftWriteChain;
   }
 
-  private async checkpointDeviceDraft(): Promise<void> {
+  private async checkpointDeviceDraft(): Promise<DeviceDraftCheckpointOutcome> {
     const dependencies = this.dependencies;
     const generation = this.projection.ownership.generation;
-    if (!dependencies || generation === null || !this.deviceDraftAvailable) return;
+    if (!dependencies || generation === null) return "unavailable";
     const document = this.unified.doc.present;
-    const key = `${this.seed.projectId ?? ""}:${this.seed.clipId ?? ""}`;
+    if (!this.deviceDraftAvailable) {
+      return JSON.stringify(document) === JSON.stringify(this.cloudDocument)
+        ? "checkpointed"
+        : "unavailable";
+    }
+    const key = this.deviceDraftKey;
     try {
       if (JSON.stringify(document) === JSON.stringify(this.cloudDocument)) {
         const outcome = await dependencies.drafts.remove(key, generation);
+        if (!this.ownsGeneration(generation)) return "stale";
         if (outcome === "stale") {
-          this.projection = {
-            ...this.projection,
-            ownership: { kind: "reader", generation },
-          };
+          this.diagnose("studio_device_draft_remove_rejected", "stale");
+          dependencies.coordination.relinquish?.();
+          this.loseOwnership();
+          return "stale";
         } else {
           this.projection = {
             ...this.projection,
@@ -798,13 +918,14 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
           };
         }
         this.publish();
-        return;
+        return "checkpointed";
       }
+      if (!this.identity) return "unavailable";
       const outcome = await dependencies.drafts.write({
         formatVersion: 2,
         key,
-        projectId: this.seed.projectId ?? "",
-        clipId: this.seed.clipId ?? "",
+        projectId: this.identity.projectId,
+        clipId: this.identity.clipId,
         baseRevision: this.cloudRevision,
         baseDocument: ownDocument(this.cloudDocument),
         document: ownDocument(document),
@@ -812,53 +933,57 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
         writerId: this.writerId,
         ownershipGeneration: generation,
       });
+      if (!this.ownsGeneration(generation)) return "stale";
       if (outcome === "stale") {
-        this.projection = {
-          ...this.projection,
-          ownership: { kind: "reader", generation },
-          durability: { device: "pending", protectsNavigation: true },
-        };
+        this.diagnose("studio_device_draft_write_rejected", "stale");
+        dependencies.coordination.relinquish?.();
+        this.loseOwnership();
+        return "stale";
       } else if (this.unified.doc.present === document) {
         this.projection = {
           ...this.projection,
           durability: { device: "durable", protectsNavigation: false },
         };
       }
-    } catch {
+    } catch (error) {
       this.deviceDraftAvailable = false;
       this.projection = {
         ...this.projection,
         durability: { device: "degraded", protectsNavigation: true },
       };
+      this.diagnose("studio_device_draft_checkpoint_failed", "degraded", error);
+      this.publish();
+      return "unavailable";
     }
     this.publish();
+    return "checkpointed";
   }
 
   private async fenceLoadedDraft(
     draft: StudioDraftRecord,
     ownershipGeneration: number,
-  ): Promise<boolean> {
+  ): Promise<DraftFenceOutcome> {
     const dependencies = this.dependencies;
-    if (!dependencies) return false;
+    if (!dependencies) return "unavailable";
     if (
       draft.formatVersion === 2 &&
       draft.ownershipGeneration === ownershipGeneration &&
       draft.writerId === this.writerId
     ) {
-      return true;
+      return "fenced";
     }
     try {
-      return (
-        (await dependencies.drafts.write({
-          ...draft,
-          formatVersion: 2,
-          ownershipGeneration,
-          writerId: this.writerId,
-          updatedAt: dependencies.runtime.now(),
-        })) === "written"
-      );
-    } catch {
-      return false;
+      const outcome = await dependencies.drafts.write({
+        ...draft,
+        formatVersion: 2,
+        ownershipGeneration,
+        writerId: this.writerId,
+        updatedAt: dependencies.runtime.now(),
+      });
+      return outcome === "written" ? "fenced" : "stale";
+    } catch (error) {
+      this.diagnose("studio_device_draft_fence_write_failed", "unavailable", error);
+      return "unavailable";
     }
   }
 }

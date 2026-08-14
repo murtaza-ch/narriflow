@@ -949,11 +949,11 @@ export function StudioShell({
   const [resetState, setResetState] = useState<"idle" | "resetting">("idle");
   const [revision, setRevisionState] = useState(initialEditorRevision);
   const [isDocDirty, setIsDocDirty] = useState(false);
-  const isLocalDraftDurable = sessionSnapshot.durability.device === "durable";
-  const hasWriteLease =
+  const isDeviceDraftDurable = sessionSnapshot.durability.device === "durable";
+  const hasWriteOwnership =
     sessionSnapshot.ownership.kind === "writer" ||
     sessionSnapshot.ownership.kind === "degraded";
-  const writeLeaseReady = sessionSnapshot.ownership.kind !== "pending";
+  const writeOwnershipReady = sessionSnapshot.ownership.kind !== "pending";
   const draftRecoveryReady = sessionSnapshot.status !== "starting";
   const sessionDraftConflict = sessionSnapshot.status === "conflict";
   const sessionSafetyDegraded =
@@ -1600,7 +1600,7 @@ export function StudioShell({
   const resetInFlightRef = useRef(false);
   const suppressUnloadGuardRef = useRef(false);
   const keepaliveFiredRef = useRef(false);
-  const hasWriteLeaseRef = useRef(hasWriteLease);
+  const hasWriteOwnershipRef = useRef(hasWriteOwnership);
   const draftRecoveryReadyRef = useRef(draftRecoveryReady);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const retryAttemptRef = useRef(0);
@@ -1624,15 +1624,15 @@ export function StudioShell({
   }, [doc]);
 
   useEffect(() => {
-    hasWriteLeaseRef.current = hasWriteLease;
+    hasWriteOwnershipRef.current = hasWriteOwnership;
     draftRecoveryReadyRef.current = draftRecoveryReady;
     setSaveState((current) => {
       if (!draftRecoveryReady) return current;
-      if (!hasWriteLease) return "readonly";
+      if (!hasWriteOwnership) return "readonly";
       if (current !== "readonly") return current;
       return isDocDirty ? (navigator.onLine ? "local" : "offline") : "idle";
     });
-  }, [draftRecoveryReady, hasWriteLease, isDocDirty]);
+  }, [draftRecoveryReady, hasWriteOwnership, isDocDirty]);
 
   const clearRetry = useCallback(() => {
     if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
@@ -1647,7 +1647,7 @@ export function StudioShell({
     retryAttemptRef.current += 1;
     retryTimerRef.current = setTimeout(() => {
       retryTimerRef.current = null;
-      if (!hasWriteLeaseRef.current || !draftRecoveryReadyRef.current) return;
+      if (!hasWriteOwnershipRef.current || !draftRecoveryReadyRef.current) return;
       if (typeof navigator !== "undefined" && !navigator.onLine) {
         scheduleRetry();
         return;
@@ -1659,7 +1659,7 @@ export function StudioShell({
   useEffect(() => {
     const onOnline = () => {
       retryAttemptRef.current = 0;
-      if (hasWriteLeaseRef.current && draftRecoveryReadyRef.current) {
+      if (hasWriteOwnershipRef.current && draftRecoveryReadyRef.current) {
         void requestAutosaveRef.current();
       }
     };
@@ -1679,7 +1679,7 @@ export function StudioShell({
 
   const performSave = useCallback(async (): Promise<SaveOutcome> => {
     if (
-      !hasWriteLeaseRef.current ||
+      !hasWriteOwnershipRef.current ||
       !draftRecoveryReadyRef.current ||
       pendingDraftConflict ||
       sessionDraftConflict
@@ -2003,7 +2003,7 @@ export function StudioShell({
     if (
       autosaveStoppedRef.current ||
       resetInFlightRef.current ||
-      !hasWriteLeaseRef.current ||
+      !hasWriteOwnershipRef.current ||
       !draftRecoveryReadyRef.current ||
       pendingDraftConflict ||
       sessionDraftConflict
@@ -2119,7 +2119,7 @@ export function StudioShell({
       autosaveStoppedRef.current ||
       resetInFlightRef.current ||
       !draftRecoveryReadyRef.current ||
-      !hasWriteLeaseRef.current ||
+      !hasWriteOwnershipRef.current ||
       pendingDraftConflict ||
       sessionDraftConflict
     ) return;
@@ -2142,14 +2142,14 @@ export function StudioShell({
       // Fix 3: suppressed right before a successful reset's own reload, so
       // that reload can't get stuck behind this prompt.
       if (suppressUnloadGuardRef.current) return;
-      if ((isDocDirty && !isLocalDraftDurable) || (saveState === "saving" && !isLocalDraftDurable)) {
+      if ((isDocDirty && !isDeviceDraftDurable) || (saveState === "saving" && !isDeviceDraftDurable)) {
         e.preventDefault();
         e.returnValue = "";
       }
     };
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
-  }, [isDocDirty, isLocalDraftDurable, saveState]);
+  }, [isDocDirty, isDeviceDraftDurable, saveState]);
 
   // Fire-and-forget keepalive flush for pagehide/unmount: the page is
   // dismissing, so there's no meaningful way to await the single-flight
@@ -2170,7 +2170,7 @@ export function StudioShell({
   const flushKeepalive = useCallback(() => {
     if (keepaliveFiredRef.current) return;
     if (autosaveStoppedRef.current || resetInFlightRef.current) return;
-    if (!draftRecoveryReadyRef.current || !hasWriteLeaseRef.current) return;
+    if (!draftRecoveryReadyRef.current || !hasWriteOwnershipRef.current) return;
     if (saveQueueStateRef.current !== "idle") return;
     const documentToSave = docPresentRef.current;
     if (JSON.stringify(documentToSave) === lastSavedDocumentJsonRef.current) return;
@@ -2203,7 +2203,7 @@ export function StudioShell({
 
   // ─── Reset to original (vizard-parity.md Phase A step 4) ────────────────
   const handleReset = useCallback(async () => {
-    if (resetState === "resetting" || !hasWriteLeaseRef.current) return;
+    if (resetState === "resetting" || !hasWriteOwnershipRef.current) return;
     setResetState("resetting");
     try {
       // Fix 2: drain any in-flight/pending save chain BEFORE posting the
@@ -2341,7 +2341,7 @@ export function StudioShell({
     });
     setPendingDraftConflict(null);
     autosaveStoppedRef.current = false;
-    setSaveState(hasWriteLeaseRef.current ? "idle" : "readonly");
+    setSaveState(hasWriteOwnershipRef.current ? "idle" : "readonly");
   }, [
     pendingDraftConflict,
     sessionDraftConflict,
@@ -2390,7 +2390,7 @@ export function StudioShell({
     });
     setPendingDraftConflict(null);
     autosaveStoppedRef.current = false;
-    setSaveState(hasWriteLeaseRef.current ? (navigator.onLine ? "local" : "offline") : "readonly");
+    setSaveState(hasWriteOwnershipRef.current ? (navigator.onLine ? "local" : "offline") : "readonly");
   }, [
     pendingDraftConflict,
     sessionDraftConflict,
@@ -2448,7 +2448,7 @@ export function StudioShell({
   // Keyboard shortcuts
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (!hasWriteLeaseRef.current || pendingDraftConflict || sessionDraftConflict) return;
+      if (!hasWriteOwnershipRef.current || pendingDraftConflict || sessionDraftConflict) return;
       const tag = (e.target as HTMLElement)?.tagName;
       if (
         tag === "INPUT" ||
@@ -2773,7 +2773,7 @@ export function StudioShell({
         <KeyboardShortcutsModal />
 
         <StudioWriteLeaseOverlay
-          visible={draftRecoveryReady && writeLeaseReady && !hasWriteLease}
+          visible={draftRecoveryReady && writeOwnershipReady && !hasWriteOwnership}
           onTakeOver={handleTakeOverEditing}
         />
 

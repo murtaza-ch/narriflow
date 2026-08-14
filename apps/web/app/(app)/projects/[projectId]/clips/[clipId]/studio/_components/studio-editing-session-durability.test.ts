@@ -68,7 +68,8 @@ class CooperativeCoordinationHub {
         if (!participant) return { kind: "failed" };
         const previous = this.owner;
         if (previous && previous.endpoint !== endpoint) {
-          await previous.participant.onTakeoverRequested();
+          const checkpoint = await previous.participant.onTakeoverRequested();
+          if (checkpoint !== "checkpointed") return { kind: "failed" };
           previous.participant.onOwnershipLost();
         }
         this.generation += 1;
@@ -790,4 +791,199 @@ test("stops accepting mutations immediately when the coordination adapter report
       action: { type: "setBrollUrl", brollUrl: "https://cdn.example.com/rejected.mp4" },
     }),
   ).toEqual({ accepted: false, reason: "read-only" });
+});
+
+test("does not regain ownership when startup completes after ownership loss", async () => {
+  const cloud = makeDocument();
+  let finishLoad: ((draft: StudioDraftRecord | null) => void) | null = null;
+  let participant:
+    | Parameters<StudioSessionDependencies["coordination"]["start"]>[0]
+    | null = null;
+  const session = createStudioEditingSession(
+    {
+      projectId: "project",
+      clipId: "clip",
+      cloudRevision: 3,
+      document: cloud,
+      segments: [],
+    },
+    {
+      drafts: {
+        load: () => new Promise((resolve) => { finishLoad = resolve; }),
+        write: async () => "written",
+        remove: async () => "removed",
+      },
+      coordination: {
+        start: async (nextParticipant) => {
+          participant = nextParticipant;
+          return { kind: "writer", generation: 9 };
+        },
+        takeOver: async () => ({ kind: "failed" }),
+        close: () => undefined,
+      },
+      cloud: { loadHead: async () => ({ revision: 3, document: cloud }) },
+      runtime: {
+        now: () => 1_100,
+        createId: () => "startup-writer",
+        setTimeout: () => 1,
+        clearTimeout: () => undefined,
+      },
+    },
+  );
+  await Promise.resolve();
+  if (!participant || !finishLoad) throw new Error("expected pending startup");
+  participant.onOwnershipLost();
+  finishLoad(null);
+
+  const settled = await waitForSnapshot(session, (value) => value.status === "ready");
+  expect(settled.ownership).toEqual({ kind: "reader", generation: null });
+  expect(settled.capabilities.mutate).toBe(false);
+});
+
+test("does not regain ownership when takeover reconciliation finishes late", async () => {
+  const cloud = makeDocument();
+  let finishCloud: ((head: { revision: number; document: EditorDocument }) => void) | null = null;
+  let participant:
+    | Parameters<StudioSessionDependencies["coordination"]["start"]>[0]
+    | null = null;
+  const session = createStudioEditingSession(
+    {
+      projectId: "project",
+      clipId: "clip",
+      cloudRevision: 3,
+      document: cloud,
+      segments: [],
+    },
+    {
+      drafts: {
+        load: async () => null,
+        write: async () => "written",
+        remove: async () => "removed",
+      },
+      coordination: {
+        start: async (nextParticipant) => {
+          participant = nextParticipant;
+          return { kind: "reader", generation: 4 };
+        },
+        takeOver: async () => ({ kind: "acquired", generation: 5, forced: false }),
+        close: () => undefined,
+      },
+      cloud: {
+        loadHead: () => new Promise((resolve) => { finishCloud = resolve; }),
+      },
+      runtime: {
+        now: () => 1_200,
+        createId: () => "incoming-writer",
+        setTimeout: () => 1,
+        clearTimeout: () => undefined,
+      },
+    },
+  );
+  await waitForSnapshot(session, (value) => value.ownership.kind === "reader");
+  const takeover = session.perform({ type: "take-over" });
+  await Promise.resolve();
+  if (!participant || !finishCloud) throw new Error("expected pending takeover");
+  participant.onOwnershipLost();
+  finishCloud({ revision: 4, document: cloud });
+
+  expect(await takeover).toEqual({ kind: "unavailable", reason: "invalid-state" });
+  expect(session.getSnapshot().ownership.kind).toBe("reader");
+  expect(session.getSnapshot().capabilities.mutate).toBe(false);
+});
+
+test("refuses cooperative handoff when the newest Device Draft checkpoint fails", async () => {
+  const cloud = makeDocument();
+  let participant:
+    | Parameters<StudioSessionDependencies["coordination"]["start"]>[0]
+    | null = null;
+  const session = createStudioEditingSession(
+    {
+      projectId: "project",
+      clipId: "clip",
+      cloudRevision: 3,
+      document: cloud,
+      segments: [],
+    },
+    {
+      drafts: {
+        load: async () => null,
+        write: async () => { throw new Error("IndexedDB unavailable"); },
+        remove: async () => "removed",
+      },
+      coordination: {
+        start: async (nextParticipant) => {
+          participant = nextParticipant;
+          return { kind: "writer", generation: 6 };
+        },
+        takeOver: async () => ({ kind: "failed" }),
+        close: () => undefined,
+      },
+      cloud: { loadHead: async () => ({ revision: 3, document: cloud }) },
+      runtime: {
+        now: () => 1_300,
+        createId: () => "outgoing-writer",
+        setTimeout: () => 1,
+        clearTimeout: () => undefined,
+      },
+    },
+  );
+  await waitForSnapshot(session, (value) => value.status === "ready");
+  session.dispatch({
+    type: "document.edit",
+    action: { type: "setBrollUrl", brollUrl: "https://cdn.example.com/newest.mp4" },
+  });
+  if (!participant) throw new Error("expected coordination participant");
+
+  expect(await participant.onTakeoverRequested()).toBe("unavailable");
+  expect(session.getSnapshot().durability).toEqual({
+    device: "degraded",
+    protectsNavigation: true,
+  });
+});
+
+test("loses write ownership when lazy draft fencing reports a newer generation", async () => {
+  const cloud = makeDocument();
+  const session = createStudioEditingSession(
+    {
+      projectId: "project",
+      clipId: "clip",
+      cloudRevision: 3,
+      document: cloud,
+      segments: [],
+    },
+    {
+      drafts: {
+        load: async () => ({
+          formatVersion: 1,
+          key: "project:clip",
+          projectId: "project",
+          clipId: "clip",
+          baseRevision: 3,
+          baseDocument: cloud,
+          document: makeDocument("https://cdn.example.com/newer.mp4"),
+          updatedAt: 100,
+          writerId: "newer-writer",
+          ownershipGeneration: 8,
+        }),
+        write: async () => "stale",
+        remove: async () => "stale",
+      },
+      coordination: {
+        start: async () => ({ kind: "writer", generation: 7 }),
+        takeOver: async () => ({ kind: "failed" }),
+        close: () => undefined,
+      },
+      cloud: { loadHead: async () => ({ revision: 3, document: cloud }) },
+      runtime: {
+        now: () => 1_400,
+        createId: () => "stale-writer",
+        setTimeout: () => 1,
+        clearTimeout: () => undefined,
+      },
+    },
+  );
+
+  const settled = await waitForSnapshot(session, (value) => value.status === "ready");
+  expect(settled.ownership.kind).toBe("reader");
+  expect(settled.capabilities.mutate).toBe(false);
 });

@@ -17,11 +17,10 @@ export function StudioWriteLeaseOverlay({
       position="absolute"
       inset="0"
       zIndex={250}
-      align="center"
-      justify="center"
-      bg="rgba(8, 10, 16, 0.72)"
-      backdropFilter="blur(3px)"
-      px="6"
+      align="flex-start"
+      justify="flex-end"
+      pointerEvents="none"
+      p="4"
       role="status"
       aria-live="polite"
     >
@@ -31,9 +30,10 @@ export function StudioWriteLeaseOverlay({
         borderWidth="1px"
         borderColor="studio.borderStrong"
         borderRadius="l3"
-        p="6"
-        maxW="440px"
+        p="5"
+        maxW="380px"
         w="full"
+        pointerEvents="auto"
       >
         <Stack gap="4">
           <Stack gap="2">

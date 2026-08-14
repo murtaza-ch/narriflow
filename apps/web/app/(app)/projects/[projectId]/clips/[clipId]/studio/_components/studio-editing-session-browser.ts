@@ -13,12 +13,11 @@ import {
 import type {
   StudioCoordinationParticipant,
   StudioDraftRecord,
+  StudioSessionIdentity,
   StudioSessionDependencies,
 } from "./studio-editing-session";
 
 type CoordinationEvent =
-  | { type: "owner-probe"; ownerId: string }
-  | { type: "owner-alive"; ownerId: string; targetId: string }
   | { type: "takeover-request"; ownerId: string; requestId: string }
   | {
       type: "handoff-ready";
@@ -33,16 +32,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 export function parseStudioCoordinationEvent(value: unknown): CoordinationEvent | null {
   if (!isRecord(value) || typeof value.type !== "string") return null;
-  if (value.type === "owner-probe" && typeof value.ownerId === "string") {
-    return { type: value.type, ownerId: value.ownerId };
-  }
-  if (
-    value.type === "owner-alive" &&
-    typeof value.ownerId === "string" &&
-    typeof value.targetId === "string"
-  ) {
-    return { type: value.type, ownerId: value.ownerId, targetId: value.targetId };
-  }
   if (
     value.type === "takeover-request" &&
     typeof value.ownerId === "string" &&
@@ -149,14 +138,7 @@ class BrowserStudioCoordinationAdapter implements StudioCoordinationAdapter {
         if (generation !== null) {
           return { kind: "acquired" as const, generation, forced: !handedOff };
         }
-      } catch (error) {
-        console.warn(
-          JSON.stringify({
-            level: "warn",
-            message: "studio_coordination_web_lock_takeover_failed",
-            error: error instanceof Error ? error.message : String(error),
-          }),
-        );
+      } catch {
         // Continue through the compatibility fallback.
       }
     }
@@ -168,15 +150,7 @@ class BrowserStudioCoordinationAdapter implements StudioCoordinationAdapter {
         Date.now(),
         true,
       );
-      if (!claimed) {
-        console.warn(
-          JSON.stringify({
-            level: "warn",
-            message: "studio_coordination_storage_takeover_failed",
-          }),
-        );
-        return { kind: "failed" as const };
-      }
+      if (!claimed) return { kind: "failed" as const };
       this.ownsWrites = true;
       this.generation = this.nextGeneration();
       return {
@@ -185,13 +159,11 @@ class BrowserStudioCoordinationAdapter implements StudioCoordinationAdapter {
         forced: !handedOff,
       };
     }
-    console.warn(
-      JSON.stringify({
-        level: "warn",
-        message: "studio_coordination_takeover_unavailable",
-      }),
-    );
     return { kind: "failed" as const };
+  }
+
+  relinquish(): void {
+    this.releaseOwnership();
   }
 
   close(): void {
@@ -251,10 +223,6 @@ class BrowserStudioCoordinationAdapter implements StudioCoordinationAdapter {
   private receive(raw: unknown): void {
     const event = parseStudioCoordinationEvent(raw);
     if (!event || event.ownerId === this.ownerId) return;
-    if (event.type === "owner-probe" && this.ownsWrites) {
-      this.send({ type: "owner-alive", ownerId: this.ownerId, targetId: event.ownerId });
-      return;
-    }
     if (
       event.type === "handoff-ready" &&
       event.targetId === this.ownerId
@@ -271,8 +239,9 @@ class BrowserStudioCoordinationAdapter implements StudioCoordinationAdapter {
     if (this.handoffInFlight) return;
     this.handoffInFlight = true;
     try {
-      await this.participant?.onTakeoverRequested();
-    } finally {
+      const outcome =
+        (await this.participant?.onTakeoverRequested()) ?? "unavailable";
+      if (outcome !== "checkpointed") return;
       this.releaseOwnership();
       this.participant?.onOwnershipLost();
       this.send({
@@ -281,6 +250,7 @@ class BrowserStudioCoordinationAdapter implements StudioCoordinationAdapter {
         targetId,
         requestId,
       });
+    } finally {
       this.handoffInFlight = false;
     }
   }
@@ -379,10 +349,9 @@ class BrowserStudioCoordinationAdapter implements StudioCoordinationAdapter {
   }
 }
 
-export function createBrowserStudioSessionDependencies(input: {
-  projectId: string;
-  clipId: string;
-}): StudioSessionDependencies {
+export function createBrowserStudioSessionDependencies(
+  input: StudioSessionIdentity,
+): StudioSessionDependencies {
   return {
     drafts: {
       load: async () =>
