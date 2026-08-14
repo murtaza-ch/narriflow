@@ -12,6 +12,7 @@ export const EDITOR_LEASE_TTL_MS = 8_000;
 export const EDITOR_LEASE_HEARTBEAT_MS = 2_500;
 
 export interface StoredEditorDraft {
+  formatVersion: 1 | 2;
   key: string;
   projectId: string;
   clipId: string;
@@ -20,6 +21,7 @@ export interface StoredEditorDraft {
   document: EditorDocument;
   updatedAt: number;
   writerId: string;
+  ownershipGeneration: number;
 }
 
 export interface EditorLease {
@@ -151,6 +153,11 @@ export function parseStoredEditorDraft(value: unknown): StoredEditorDraft | null
   const baseRevision = value.baseRevision;
   const updatedAt = value.updatedAt;
   const writerId = value.writerId;
+  const formatVersion = value.formatVersion === undefined ? 1 : value.formatVersion;
+  const ownershipGeneration =
+    formatVersion === 1 && value.ownershipGeneration === undefined
+      ? 0
+      : value.ownershipGeneration;
   const baseDocument = editorDocumentSchema.safeParse(value.baseDocument);
   const document = editorDocumentSchema.safeParse(value.document);
   if (
@@ -163,6 +170,10 @@ export function parseStoredEditorDraft(value: unknown): StoredEditorDraft | null
     typeof updatedAt !== "number" ||
     !Number.isFinite(updatedAt) ||
     typeof writerId !== "string" ||
+    (formatVersion !== 1 && formatVersion !== 2) ||
+    typeof ownershipGeneration !== "number" ||
+    !Number.isInteger(ownershipGeneration) ||
+    ownershipGeneration < 0 ||
     key !== editorDraftKey(projectId, clipId) ||
     !baseDocument.success ||
     !document.success
@@ -170,12 +181,14 @@ export function parseStoredEditorDraft(value: unknown): StoredEditorDraft | null
     return null;
   }
   return {
+    formatVersion,
     key,
     projectId,
     clipId,
     baseRevision,
     updatedAt,
     writerId,
+    ownershipGeneration,
     baseDocument: baseDocument.data,
     document: document.data,
   };
@@ -240,18 +253,57 @@ export async function loadEditorDraft(
   return parseStoredEditorDraft(raw);
 }
 
-export async function persistEditorDraft(draft: StoredEditorDraft): Promise<void> {
+export async function persistEditorDraft(
+  draft: StoredEditorDraft,
+): Promise<"written" | "stale"> {
   const database = await openDraftDatabase();
   const transaction = database.transaction(DRAFT_STORE_NAME, "readwrite");
-  transaction.objectStore(DRAFT_STORE_NAME).put(draft);
+  const store = transaction.objectStore(DRAFT_STORE_NAME);
+  const request = store.get(draft.key);
+  const raw = await new Promise<unknown>((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error ?? new Error("Could not fence local draft"));
+  });
+  const current = raw === undefined ? null : parseStoredEditorDraft(raw);
+  if (raw !== undefined && !current) {
+    throw new Error("The existing local draft is unreadable");
+  }
+  if (current && current.ownershipGeneration > draft.ownershipGeneration) {
+    await waitForTransaction(transaction);
+    return "stale";
+  }
+  store.put(draft);
   await waitForTransaction(transaction);
+  return "written";
 }
 
-export async function removeEditorDraft(projectId: string, clipId: string): Promise<void> {
+export async function removeEditorDraft(
+  projectId: string,
+  clipId: string,
+  ownershipGeneration?: number,
+): Promise<"removed" | "stale"> {
   const database = await openDraftDatabase();
   const transaction = database.transaction(DRAFT_STORE_NAME, "readwrite");
-  transaction.objectStore(DRAFT_STORE_NAME).delete(editorDraftKey(projectId, clipId));
+  const store = transaction.objectStore(DRAFT_STORE_NAME);
+  const key = editorDraftKey(projectId, clipId);
+  if (ownershipGeneration !== undefined) {
+    const request = store.get(key);
+    const raw = await new Promise<unknown>((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error ?? new Error("Could not fence draft removal"));
+    });
+    const current = raw === undefined ? null : parseStoredEditorDraft(raw);
+    if (raw !== undefined && !current) {
+      throw new Error("The existing local draft is unreadable");
+    }
+    if (current && current.ownershipGeneration > ownershipGeneration) {
+      await waitForTransaction(transaction);
+      return "stale";
+    }
+  }
+  store.delete(key);
   await waitForTransaction(transaction);
+  return "removed";
 }
 
 export function readEditorLease(storage: StorageLike, key: string): EditorLease | null {

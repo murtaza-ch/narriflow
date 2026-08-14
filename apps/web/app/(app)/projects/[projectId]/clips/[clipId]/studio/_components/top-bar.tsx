@@ -76,6 +76,7 @@ function AutosaveIndicator({
   const isLocal = saveState === "local";
   const isOffline = saveState === "offline";
   const isReadonly = saveState === "readonly";
+  const isDegraded = saveState === "degraded";
   // Live-QA finding 2026-08-06: 'idle' alone is NOT proof the document is
   // saved — a failed save times back to idle after 4s with the retry still
   // pending, and the debounce window before the first PUT is also 'idle'.
@@ -91,7 +92,7 @@ function AutosaveIndicator({
         bg={
           isError
             ? "danger.solid"
-            : isOffline || isLocal
+            : isOffline || isLocal || isDegraded
               ? "accent.solid"
             : idleButDirty
               ? "studio.fgSubtle"
@@ -103,6 +104,8 @@ function AutosaveIndicator({
       <Text fontSize="12px" color={isError ? "danger.fg" : "studio.fgMuted"}>
         {isBlocked
           ? "Save needs attention"
+          : isDegraded
+            ? "Cloud safety only"
           : isReadonly
             ? "Read-only tab"
           : isOffline

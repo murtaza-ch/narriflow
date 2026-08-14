@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useMemo, useState, useSyncExternalStore } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
 import type { EditorDocument } from "@narriflow/validators";
 import {
   createStudioEditingSession,
@@ -11,6 +18,7 @@ import {
   type StudioSessionSnapshot,
 } from "./studio-editing-session";
 import type { TimelineSegment } from "./studio-types";
+import { createBrowserStudioSessionDependencies } from "./studio-editing-session-browser";
 
 type LegacyReactSnapshot = Omit<
   StudioSessionSnapshot,
@@ -39,7 +47,32 @@ export interface StudioEditingSessionReactAdapter {
 export function useStudioEditingSession(
   seed: StudioSessionSeed,
 ): StudioEditingSessionReactAdapter {
-  const [session] = useState(() => createStudioEditingSession(seed));
+  const [session] = useState(() =>
+    createStudioEditingSession(
+      seed,
+      seed.projectId && seed.clipId
+        ? createBrowserStudioSessionDependencies({
+            projectId: seed.projectId,
+            clipId: seed.clipId,
+          })
+        : undefined,
+      { deferStart: Boolean(seed.projectId && seed.clipId) },
+    ),
+  );
+  const closeTimerRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (closeTimerRef.current !== null) {
+      window.clearTimeout(closeTimerRef.current);
+      closeTimerRef.current = null;
+    }
+    void session.perform({ type: "start" });
+    return () => {
+      closeTimerRef.current = window.setTimeout(() => {
+        closeTimerRef.current = null;
+        void session.perform({ type: "close", reason: "unmount" });
+      }, 0);
+    };
+  }, [session]);
   const snapshot = useSyncExternalStore(
     session.subscribe,
     session.getSnapshot,

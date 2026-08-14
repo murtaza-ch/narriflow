@@ -40,6 +40,7 @@ function makeDocument(): EditorDocument {
 function makeDraft(overrides: Partial<StoredEditorDraft> = {}): StoredEditorDraft {
   const baseDocument = makeDocument();
   return {
+    formatVersion: 2,
     key: editorDraftKey("project", "clip"),
     projectId: "project",
     clipId: "clip",
@@ -51,6 +52,7 @@ function makeDraft(overrides: Partial<StoredEditorDraft> = {}): StoredEditorDraf
     },
     updatedAt: 100,
     writerId: "writer-a",
+    ownershipGeneration: 1,
     ...overrides,
   };
 }
@@ -75,10 +77,64 @@ describe("local editor draft recovery", () => {
       value: fakeIndexedDB,
     });
     const draft = makeDraft();
-    await persistEditorDraft(draft);
+    expect(await persistEditorDraft(draft)).toBe("written");
     expect(await loadEditorDraft(draft.projectId, draft.clipId)).toEqual(draft);
     await removeEditorDraft(draft.projectId, draft.clipId);
     expect(await loadEditorDraft(draft.projectId, draft.clipId)).toBeNull();
+  });
+
+  test("normalizes a version-one record without discarding its document", () => {
+    const current = makeDraft();
+    const { formatVersion: _formatVersion, ownershipGeneration: _generation, ...legacy } =
+      current;
+    expect(parseStoredEditorDraft(legacy)).toEqual({
+      ...legacy,
+      formatVersion: 1,
+      ownershipGeneration: 0,
+    });
+  });
+
+  test("rejects a Device Draft write from an older ownership generation", async () => {
+    Object.defineProperty(globalThis, "indexedDB", {
+      configurable: true,
+      value: fakeIndexedDB,
+    });
+    const key = editorDraftKey("fenced-project", "fenced-clip");
+    const newer = makeDraft({
+      key,
+      projectId: "fenced-project",
+      clipId: "fenced-clip",
+      ownershipGeneration: 5,
+      writerId: "writer-new",
+    });
+    const stale = makeDraft({
+      ...newer,
+      document: makeDocument(),
+      ownershipGeneration: 4,
+      writerId: "writer-old",
+    });
+
+    expect(await persistEditorDraft(newer)).toBe("written");
+    expect(await persistEditorDraft(stale)).toBe("stale");
+    expect(await loadEditorDraft("fenced-project", "fenced-clip")).toEqual(newer);
+  });
+
+  test("rejects draft removal from an older ownership generation", async () => {
+    Object.defineProperty(globalThis, "indexedDB", {
+      configurable: true,
+      value: fakeIndexedDB,
+    });
+    const draft = makeDraft({
+      key: editorDraftKey("remove-project", "remove-clip"),
+      projectId: "remove-project",
+      clipId: "remove-clip",
+      ownershipGeneration: 8,
+    });
+    await persistEditorDraft(draft);
+
+    expect(await removeEditorDraft("remove-project", "remove-clip", 7)).toBe("stale");
+    expect(await loadEditorDraft("remove-project", "remove-clip")).toEqual(draft);
+    expect(await removeEditorDraft("remove-project", "remove-clip", 8)).toBe("removed");
   });
 
   test("ignores a draft identical to the cloud document", () => {

@@ -50,6 +50,7 @@ import {
   type ThumbnailVideoKind,
 } from "./timeline-preview-manager";
 import { useStudioEditingSession } from "./studio-editing-session-react";
+import type { StudioSessionSnapshot } from "./studio-editing-session";
 import {
   combineSaveOutcomes,
   completeSave,
@@ -58,20 +59,8 @@ import {
   type SaveQueueState,
 } from "./save-queue";
 import {
-  EDITOR_LEASE_HEARTBEAT_MS,
-  LOCAL_DRAFT_WRITE_DEBOUNCE_MS,
-  claimEditorLease,
-  decideDraftRecovery,
-  editorDraftKey,
-  editorLeaseKey,
-  loadEditorDraft,
   mergeEditorDocuments,
-  persistEditorDraft,
-  releaseEditorLease,
-  removeEditorDraft,
-  renewEditorLease,
   retryDelayMs,
-  type StoredEditorDraft,
 } from "./local-editor-draft";
 import { DraftRecoveryDialog } from "./draft-recovery-dialog";
 import { StudioWriteLeaseOverlay } from "./studio-write-lease-overlay";
@@ -221,6 +210,7 @@ export type StudioSaveState =
   | "offline"
   | "error"
   | "blocked"
+  | "degraded"
   | "readonly";
 export type { CaptionAnimation, CaptionPreset };
 export type ToolId =
@@ -738,6 +728,9 @@ export function StudioShell({
     migration: studioSessionMigration,
     getCurrentDocument: getStudioDocument,
   } = useStudioEditingSession({
+    projectId: clipInfo.projectId,
+    clipId: clipInfo.id,
+    cloudRevision: initialEditorRevision,
     document: initialEditorDocument,
     segments: timelineSegments,
   });
@@ -956,19 +949,46 @@ export function StudioShell({
   const [resetState, setResetState] = useState<"idle" | "resetting">("idle");
   const [revision, setRevisionState] = useState(initialEditorRevision);
   const [isDocDirty, setIsDocDirty] = useState(false);
-  const [isLocalDraftDurable, setIsLocalDraftDurable] = useState(true);
-  // A missing lease is not the same as a confirmed competing writer. Start
-  // closed for save safety, but keep the read-only UI hidden until the
-  // asynchronous browser-lock probe has resolved.
-  const [hasWriteLease, setHasWriteLease] = useState(false);
-  const [writeLeaseReady, setWriteLeaseReady] = useState(false);
-  const [draftRecoveryReady, setDraftRecoveryReady] = useState(false);
+  const isLocalDraftDurable = sessionSnapshot.durability.device === "durable";
+  const hasWriteLease =
+    sessionSnapshot.ownership.kind === "writer" ||
+    sessionSnapshot.ownership.kind === "degraded";
+  const writeLeaseReady = sessionSnapshot.ownership.kind !== "pending";
+  const draftRecoveryReady = sessionSnapshot.status !== "starting";
+  const sessionDraftConflict = sessionSnapshot.status === "conflict";
+  const sessionSafetyDegraded =
+    sessionSnapshot.durability.device === "degraded" ||
+    sessionSnapshot.ownership.kind === "degraded";
   const [pendingDraftConflict, setPendingDraftConflict] = useState<{
     document: EditorDocument;
     cloudDocument: EditorDocument;
     cloudRevision: number;
     paths: string[];
   } | null>(null);
+  const recoveryNoticeRef = useRef<StudioSessionSnapshot["recovery"]["kind"]>("none");
+
+  useEffect(() => {
+    const kind = sessionSnapshot.recovery.kind;
+    if (kind === recoveryNoticeRef.current) return;
+    recoveryNoticeRef.current = kind;
+    if (kind === "recovered" || kind === "merged") {
+      toaster.create({
+        type: "info",
+        title: kind === "merged" ? "Draft recovered and merged" : "Draft recovered",
+        description:
+          kind === "merged"
+            ? "Your device draft was safely combined with newer cloud changes."
+            : "Unsynced edits from this device are ready to continue.",
+      });
+    } else if (sessionSnapshot.durability.device === "degraded") {
+      toaster.create({
+        type: "warning",
+        title: "Local recovery is unavailable",
+        description:
+          "Cloud autosave still works, but this browser could not open its recovery storage.",
+      });
+    }
+  }, [sessionSnapshot.durability.device, sessionSnapshot.recovery.kind]);
 
   // Fix 4: canReset used to be `revision > 0 || isDocDirty`, which offered
   // Reset even when nothing would actually change (e.g. right after a fresh
@@ -1580,17 +1600,8 @@ export function StudioShell({
   const resetInFlightRef = useRef(false);
   const suppressUnloadGuardRef = useRef(false);
   const keepaliveFiredRef = useRef(false);
-  const writerIdRef = useRef<string | null>(null);
-  const tabChannelRef = useRef<BroadcastChannel | null>(null);
-  const usesBrowserLockRef = useRef(false);
-  const browserLockReleaseRef = useRef<(() => void) | null>(null);
-  const takeoverPendingRef = useRef(false);
-  const hasWriteLeaseRef = useRef(false);
-  const writeLeaseReadyRef = useRef(false);
-  const draftRecoveryReadyRef = useRef(false);
-  const draftWriteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const draftWriteChainRef = useRef<Promise<void>>(Promise.resolve());
-  const localDraftDocumentJsonRef = useRef(JSON.stringify(initialEditorDocument));
+  const hasWriteLeaseRef = useRef(hasWriteLease);
+  const draftRecoveryReadyRef = useRef(draftRecoveryReady);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const retryAttemptRef = useRef(0);
   const dirtySinceRef = useRef<number | null>(null);
@@ -1610,26 +1621,18 @@ export function StudioShell({
     const documentJson = JSON.stringify(doc);
     const dirty = documentJson !== lastSavedDocumentJsonRef.current;
     setIsDocDirty(dirty);
-    setIsLocalDraftDurable(
-      !dirty || documentJson === localDraftDocumentJsonRef.current,
-    );
   }, [doc]);
 
-  const queueDraftOperation = useCallback((operation: () => Promise<void>) => {
-    draftWriteChainRef.current = draftWriteChainRef.current
-      .catch(() => undefined)
-      .then(operation)
-      .catch((error: unknown) => {
-        console.warn(
-          JSON.stringify({
-            level: "warn",
-            message: "editor_local_draft_write_failed",
-            clipId: clipInfo.id,
-            error: error instanceof Error ? error.message : "unknown",
-          }),
-        );
-      });
-  }, [clipInfo.id]);
+  useEffect(() => {
+    hasWriteLeaseRef.current = hasWriteLease;
+    draftRecoveryReadyRef.current = draftRecoveryReady;
+    setSaveState((current) => {
+      if (!draftRecoveryReady) return current;
+      if (!hasWriteLease) return "readonly";
+      if (current !== "readonly") return current;
+      return isDocDirty ? (navigator.onLine ? "local" : "offline") : "idle";
+    });
+  }, [draftRecoveryReady, hasWriteLease, isDocDirty]);
 
   const clearRetry = useCallback(() => {
     if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
@@ -1653,321 +1656,6 @@ export function StudioShell({
     }, delay);
   }, []);
 
-  // Establish one writable tab per clip, then recover any device-local
-  // draft before cloud autosave is allowed to run. The browser's exclusive
-  // Web Lock is primary (it releases immediately on refresh/crash);
-  // localStorage's expiring lease is the compatibility fallback.
-  // BroadcastChannel makes explicit takeovers immediate. The server
-  // revision remains the final split-brain backstop in every case.
-  useEffect(() => {
-    let cancelled = false;
-    let liveOwnerSeen = false;
-    let recoveredDraftNeedsSync = false;
-    hasWriteLeaseRef.current = false;
-    writeLeaseReadyRef.current = false;
-    setHasWriteLease(false);
-    setWriteLeaseReady(false);
-    const writerId = crypto.randomUUID();
-    writerIdRef.current = writerId;
-    const leaseKey = editorLeaseKey(clipInfo.projectId, clipInfo.id);
-    const channel =
-      typeof BroadcastChannel === "undefined"
-        ? null
-        : new BroadcastChannel(`narriflow:studio:${editorDraftKey(clipInfo.projectId, clipInfo.id)}`);
-    tabChannelRef.current = channel;
-
-    const updateOwnership = (owned: boolean) => {
-      hasWriteLeaseRef.current = owned;
-      writeLeaseReadyRef.current = true;
-      setHasWriteLease(owned);
-      setWriteLeaseReady(true);
-      setSaveState((current) => {
-        if (!owned) return "readonly";
-        if (current !== "readonly") return current;
-        const dirty = JSON.stringify(docPresentRef.current) !== lastSavedDocumentJsonRef.current;
-        return dirty ? (navigator.onLine ? "local" : "offline") : "idle";
-      });
-      if (
-        owned &&
-        draftRecoveryReadyRef.current &&
-        JSON.stringify(docPresentRef.current) !== lastSavedDocumentJsonRef.current
-      ) {
-        window.setTimeout(() => void requestAutosaveRef.current(), 0);
-      }
-    };
-
-    let heartbeat: number | null = null;
-    const startFallbackLease = () => {
-      usesBrowserLockRef.current = false;
-      updateOwnership(claimEditorLease(localStorage, leaseKey, writerId, Date.now()));
-      if (heartbeat !== null) return;
-      heartbeat = window.setInterval(() => {
-        if (hasWriteLeaseRef.current) {
-          updateOwnership(renewEditorLease(localStorage, leaseKey, writerId, Date.now()));
-        } else {
-          updateOwnership(claimEditorLease(localStorage, leaseKey, writerId, Date.now()));
-        }
-      }, EDITOR_LEASE_HEARTBEAT_MS);
-    };
-    if (navigator.locks) {
-      usesBrowserLockRef.current = true;
-      void navigator.locks
-        .request(leaseKey, { ifAvailable: true }, async (lock) => {
-          if (cancelled) return;
-          if (!lock) {
-            channel?.postMessage({ type: "owner-probe", ownerId: writerId });
-            window.setTimeout(() => {
-              if (cancelled || liveOwnerSeen) return;
-              // No active tab answered. This covers refresh/HMR/crash cases
-              // where an abandoned browser lock has not disappeared yet.
-              // Notify any delayed listener too, then replace the orphan.
-              channel?.postMessage({ type: "takeover", ownerId: writerId });
-              void navigator.locks.request(
-                leaseKey,
-                { steal: true },
-                async () => {
-                  if (cancelled) return;
-                  updateOwnership(true);
-                  await new Promise<void>((resolve) => {
-                    browserLockReleaseRef.current = resolve;
-                  });
-                  browserLockReleaseRef.current = null;
-                  if (!cancelled) updateOwnership(false);
-                },
-              );
-            }, 250);
-            return;
-          }
-          updateOwnership(true);
-          await new Promise<void>((resolve) => {
-            browserLockReleaseRef.current = resolve;
-          });
-          browserLockReleaseRef.current = null;
-          if (!cancelled) updateOwnership(false);
-        })
-        .catch(() => {
-          if (cancelled) return;
-          startFallbackLease();
-        });
-    } else {
-      startFallbackLease();
-    }
-
-    const onStorage = (event: StorageEvent) => {
-      if (event.key !== leaseKey || !event.newValue) return;
-      try {
-        const next = JSON.parse(event.newValue) as { ownerId?: unknown };
-        if (typeof next.ownerId === "string" && next.ownerId !== writerId) {
-          updateOwnership(false);
-        }
-      } catch {
-        // A malformed lease is treated as expired by the next heartbeat.
-      }
-    };
-    const onChannelMessage = (event: MessageEvent<unknown>) => {
-      const value = event.data;
-      if (value && typeof value === "object" && "type" in value) {
-        if (
-          value.type === "owner-probe" &&
-          "ownerId" in value &&
-          typeof value.ownerId === "string" &&
-          value.ownerId !== writerId &&
-          hasWriteLeaseRef.current
-        ) {
-          channel?.postMessage({
-            type: "owner-alive",
-            ownerId: writerId,
-            targetId: value.ownerId,
-          });
-          return;
-        }
-        if (
-          value.type === "owner-alive" &&
-          "targetId" in value &&
-          value.targetId === writerId
-        ) {
-          liveOwnerSeen = true;
-          updateOwnership(false);
-          return;
-        }
-      }
-      if (
-        value &&
-        typeof value === "object" &&
-        "type" in value &&
-        "ownerId" in value &&
-        value.type === "takeover" &&
-        typeof value.ownerId === "string" &&
-        value.ownerId !== writerId
-      ) {
-        browserLockReleaseRef.current?.();
-        if (!usesBrowserLockRef.current) {
-          releaseEditorLease(localStorage, leaseKey, writerId);
-        }
-        updateOwnership(false);
-      }
-    };
-    window.addEventListener("storage", onStorage);
-    channel?.addEventListener("message", onChannelMessage);
-
-    void loadEditorDraft(clipInfo.projectId, clipInfo.id)
-      .then((draft) => {
-        if (cancelled) return;
-        const recovery = decideDraftRecovery(
-          draft,
-          initialEditorDocument,
-          initialEditorRevision,
-        );
-        if (recovery.kind === "none") {
-          if (draft) queueDraftOperation(() => removeEditorDraft(clipInfo.projectId, clipInfo.id));
-        } else if (recovery.kind === "recover") {
-          recoveredDraftNeedsSync = true;
-          localDraftDocumentJsonRef.current = JSON.stringify(recovery.document);
-          if (!boundsConverged(recovery.document, lastSavedBoundsRef.current)) {
-            boundaryEditIntentRef.current = true;
-            boundaryReconcileOwnsSeekRef.current = true;
-          }
-          studioSessionMigration.replaceRuntimeRoot({
-            document: recovery.document,
-            segments: timelineSegments,
-          });
-          setSaveState(
-            writeLeaseReadyRef.current && !hasWriteLeaseRef.current
-              ? "readonly"
-              : typeof navigator !== "undefined" && !navigator.onLine
-                ? "offline"
-                : "local",
-          );
-          toaster.create({
-            type: "info",
-            title: recovery.merged ? "Draft recovered and merged" : "Draft recovered",
-            description: recovery.merged
-              ? "Your device draft was safely combined with newer cloud changes."
-              : "Unsynced edits from this device are ready to continue.",
-          });
-        } else {
-          localDraftDocumentJsonRef.current = JSON.stringify(recovery.document);
-          setPendingDraftConflict({
-            document: recovery.document,
-            cloudDocument: initialEditorDocument,
-            cloudRevision: initialEditorRevision,
-            paths: recovery.paths,
-          });
-          setSaveState("blocked");
-        }
-      })
-      .catch((error: unknown) => {
-        console.warn(
-          JSON.stringify({
-            level: "warn",
-            message: "editor_local_draft_load_failed",
-            clipId: clipInfo.id,
-            error: error instanceof Error ? error.message : "unknown",
-          }),
-        );
-        toaster.create({
-          type: "warning",
-          title: "Local recovery is unavailable",
-          description: "Cloud autosave still works, but this browser could not open its recovery storage.",
-        });
-      })
-      .finally(() => {
-        if (cancelled) return;
-        draftRecoveryReadyRef.current = true;
-        setDraftRecoveryReady(true);
-        if (recoveredDraftNeedsSync && hasWriteLeaseRef.current) {
-          window.setTimeout(() => {
-            if (
-              !cancelled &&
-              hasWriteLeaseRef.current &&
-              !autosaveStoppedRef.current
-            ) {
-              void requestAutosaveRef.current();
-            }
-          }, AUTOSAVE_DEBOUNCE_MS);
-        }
-      });
-
-    return () => {
-      cancelled = true;
-      if (heartbeat !== null) window.clearInterval(heartbeat);
-      window.removeEventListener("storage", onStorage);
-      channel?.removeEventListener("message", onChannelMessage);
-      channel?.close();
-      tabChannelRef.current = null;
-      browserLockReleaseRef.current?.();
-      browserLockReleaseRef.current = null;
-      writerIdRef.current = null;
-      takeoverPendingRef.current = false;
-      if (!usesBrowserLockRef.current && hasWriteLeaseRef.current) {
-        releaseEditorLease(localStorage, leaseKey, writerId);
-      }
-    };
-  }, [
-    clipInfo.id,
-    clipInfo.projectId,
-    initialEditorDocument,
-    initialEditorRevision,
-    queueDraftOperation,
-    studioSessionMigration.replaceRuntimeRoot,
-    timelineSegments,
-  ]);
-
-  // Persist the latest dirty document locally before the slower cloud
-  // debounce. Writes are serialized so a delayed older transaction can
-  // never commit after a newer draft or after draft removal on cloud ack.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: revision intentionally snapshots the matching editor revision with each draft.
-  useEffect(() => {
-    if (!draftRecoveryReady || !hasWriteLease) return;
-    if (draftWriteTimerRef.current) clearTimeout(draftWriteTimerRef.current);
-    const dirty = JSON.stringify(doc) !== lastSavedDocumentJsonRef.current;
-    draftWriteTimerRef.current = setTimeout(() => {
-      draftWriteTimerRef.current = null;
-      if (!dirty) {
-        queueDraftOperation(() => removeEditorDraft(clipInfo.projectId, clipInfo.id));
-        return;
-      }
-      const writerId = writerIdRef.current;
-      if (!writerId) return;
-      const draft: StoredEditorDraft = {
-        key: editorDraftKey(clipInfo.projectId, clipInfo.id),
-        projectId: clipInfo.projectId,
-        clipId: clipInfo.id,
-        baseRevision: baseRevisionRef.current,
-        baseDocument: lastSavedDocumentRef.current,
-        document: doc,
-        updatedAt: Date.now(),
-        writerId,
-      };
-      const draftJson = JSON.stringify(draft.document);
-      queueDraftOperation(async () => {
-        await persistEditorDraft(draft);
-        localDraftDocumentJsonRef.current = draftJson;
-        if (JSON.stringify(docPresentRef.current) === draftJson) {
-          setIsLocalDraftDurable(true);
-          setSaveState((current) =>
-            current === "idle" || current === "saved"
-              ? typeof navigator !== "undefined" && !navigator.onLine
-                ? "offline"
-                : "local"
-              : current,
-          );
-        }
-      });
-    }, LOCAL_DRAFT_WRITE_DEBOUNCE_MS);
-    return () => {
-      if (draftWriteTimerRef.current) clearTimeout(draftWriteTimerRef.current);
-    };
-  }, [
-    clipInfo.id,
-    clipInfo.projectId,
-    doc,
-    draftRecoveryReady,
-    hasWriteLease,
-    queueDraftOperation,
-    revision,
-  ]);
-
   useEffect(() => {
     const onOnline = () => {
       retryAttemptRef.current = 0;
@@ -1985,7 +1673,6 @@ export function StudioShell({
     return () => {
       window.removeEventListener("online", onOnline);
       window.removeEventListener("offline", onOffline);
-      if (draftWriteTimerRef.current) clearTimeout(draftWriteTimerRef.current);
       if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
     };
   }, []);
@@ -1994,7 +1681,8 @@ export function StudioShell({
     if (
       !hasWriteLeaseRef.current ||
       !draftRecoveryReadyRef.current ||
-      pendingDraftConflict
+      pendingDraftConflict ||
+      sessionDraftConflict
     ) {
       return "failure";
     }
@@ -2109,6 +1797,10 @@ export function StudioShell({
               studioSessionMigration.replaceRuntimeRoot({
                 document: merged.document,
                 segments: timelineSegments,
+                cloudBaseline: {
+                  revision: latestRevision,
+                  document: latestDocument.data,
+                },
               });
               setSaveState("local");
               toaster.create({
@@ -2235,18 +1927,17 @@ export function StudioShell({
         // `boundaryEditIntentRef.current = true` must survive for ITS save.
         clearBoundaryIntentIfConverged();
 
+        void studioSessionMigration.acknowledgeCloud({
+          expectedDocument: documentToSave,
+          document: json.document,
+          revision: json.revision,
+        });
+
         if (docPresentRef.current === documentToSave) {
           // No local edits landed mid-flight — safe to adopt the server's
           // (possibly rebased) document without recording a new undo step.
-          studioSessionMigration.acknowledgeCloud({
-            expectedDocument: documentToSave,
-            document: json.document,
-          });
           lastSavedDocumentJsonRef.current = JSON.stringify(json.document);
-          localDraftDocumentJsonRef.current = JSON.stringify(json.document);
-          setIsLocalDraftDurable(true);
           dirtySinceRef.current = null;
-          queueDraftOperation(() => removeEditorDraft(clipInfo.projectId, clipInfo.id));
         } else {
           // Local edits arrived while the request was in flight — leave
           // `present` alone; the next autosave cycle will converge.
@@ -2291,7 +1982,7 @@ export function StudioShell({
     clipInfo.projectId,
     clipInfo.id,
     pendingDraftConflict,
-    queueDraftOperation,
+    sessionDraftConflict,
     scheduleRetry,
     setBaseRevision,
     studioSessionMigration.acknowledgeCloud,
@@ -2314,7 +2005,8 @@ export function StudioShell({
       resetInFlightRef.current ||
       !hasWriteLeaseRef.current ||
       !draftRecoveryReadyRef.current ||
-      pendingDraftConflict
+      pendingDraftConflict ||
+      sessionDraftConflict
     ) {
       return Promise.resolve("failure");
     }
@@ -2336,7 +2028,7 @@ export function StudioShell({
       currentSavePromiseRef.current = performSave();
     }
     return currentSavePromiseRef.current;
-  }, [clearRetry, pendingDraftConflict, performSave]);
+  }, [clearRetry, pendingDraftConflict, performSave, sessionDraftConflict]);
 
   requestAutosaveRef.current = requestAutosave;
 
@@ -2428,7 +2120,8 @@ export function StudioShell({
       resetInFlightRef.current ||
       !draftRecoveryReadyRef.current ||
       !hasWriteLeaseRef.current ||
-      pendingDraftConflict
+      pendingDraftConflict ||
+      sessionDraftConflict
     ) return;
 
     if (dirtySinceRef.current === null) dirtySinceRef.current = Date.now();
@@ -2441,7 +2134,7 @@ export function StudioShell({
     }, Math.min(AUTOSAVE_DEBOUNCE_MS, timeUntilForcedCheckpoint));
 
     return () => clearTimeout(timeoutId);
-  }, [doc, pendingDraftConflict, requestAutosave]);
+  }, [doc, pendingDraftConflict, requestAutosave, sessionDraftConflict]);
 
   // Warn on tab close/refresh while a save is pending or in flight.
   useEffect(() => {
@@ -2549,6 +2242,12 @@ export function StudioShell({
         return;
       }
       if (!res.ok) throw new Error("reset failed");
+      const resetBody = (await res.json().catch(() => null)) as {
+        revision?: unknown;
+        document?: unknown;
+      } | null;
+      const resetDocument = editorDocumentSchema.safeParse(resetBody?.document);
+      const resetRevision = resetBody?.revision;
 
       // Fix 1: autosaveStoppedRef is now only ever set on this success path
       // (previously it was set unconditionally before the POST, with the
@@ -2559,10 +2258,14 @@ export function StudioShell({
       autosaveStoppedRef.current = true;
       suppressUnloadGuardRef.current = true;
       setIsDocDirty(false);
-      await draftWriteChainRef.current.catch(() => undefined);
-      await removeEditorDraft(clipInfo.projectId, clipInfo.id).catch(() => undefined);
-      localDraftDocumentJsonRef.current = JSON.stringify(originalDoc);
-      setIsLocalDraftDurable(true);
+      await studioSessionMigration.acknowledgeCloud({
+        expectedDocument: docPresentRef.current,
+        document: resetDocument.success ? resetDocument.data : originalDoc,
+        revision:
+          typeof resetRevision === "number" && Number.isInteger(resetRevision)
+            ? resetRevision
+            : undefined,
+      });
       // Boundaries and the preview proxy may have changed — a full reload
       // re-seeds everything (timing, segments, history) safely from the
       // server rather than trying to patch client state in place.
@@ -2580,97 +2283,89 @@ export function StudioShell({
       // reload above is somehow prevented or delayed.
       setResetState((s) => (s === "resetting" ? "idle" : s));
     }
-  }, [clipInfo.projectId, clipInfo.id, resetState, flushSave, originalDoc]);
+  }, [
+    clipInfo.projectId,
+    clipInfo.id,
+    resetState,
+    flushSave,
+    originalDoc,
+    studioSessionMigration.acknowledgeCloud,
+  ]);
 
   const handleTakeOverEditing = useCallback(() => {
-    const writerId = writerIdRef.current;
-    if (!writerId) return;
-    const leaseKey = editorLeaseKey(clipInfo.projectId, clipInfo.id);
-    if (usesBrowserLockRef.current && navigator.locks) {
-      if (takeoverPendingRef.current) return;
-      takeoverPendingRef.current = true;
-      tabChannelRef.current?.postMessage({ type: "takeover", ownerId: writerId });
-      void navigator.locks
-        .request(leaseKey, { steal: true }, async () => {
-          takeoverPendingRef.current = false;
-          if (writerIdRef.current !== writerId) return;
-          hasWriteLeaseRef.current = true;
-          writeLeaseReadyRef.current = true;
-          setHasWriteLease(true);
-          setWriteLeaseReady(true);
-          setSaveState(isDirtyNow() ? (navigator.onLine ? "local" : "offline") : "idle");
-          if (isDirtyNow() && draftRecoveryReadyRef.current) {
-            void requestAutosaveRef.current();
-          }
-          await new Promise<void>((resolve) => {
-            browserLockReleaseRef.current = resolve;
-          });
-          browserLockReleaseRef.current = null;
-          if (writerIdRef.current === writerId) {
-            hasWriteLeaseRef.current = false;
-            setHasWriteLease(false);
-            setSaveState("readonly");
-          }
-        })
-        .catch(() => {
-          takeoverPendingRef.current = false;
-          toaster.create({
-            type: "error",
-            title: "Could not take over editing",
-            description: "Try again in a moment. Your open draft has not been changed.",
-          });
+    void studioSession.perform({ type: "take-over" }).then((result) => {
+      if (result.kind !== "ownership-acquired") {
+        toaster.create({
+          type: "error",
+          title: "Could not take over editing",
+          description: "Try again in a moment. Your open draft has not been changed.",
+        });
+        return;
+      }
+      const cloudDocument = result.cloudDocument as EditorDocument;
+      lastSavedDocumentRef.current = cloudDocument;
+      lastSavedDocumentJsonRef.current = JSON.stringify(cloudDocument);
+      lastSavedBoundsRef.current = {
+        startSec: cloudDocument.clipStartSec,
+        endSec: cloudDocument.clipEndSec,
+      };
+      setBaseRevision(result.cloudRevision);
+      setSaveState(isDirtyNow() ? (navigator.onLine ? "local" : "offline") : "idle");
+      if (isDirtyNow()) void requestAutosaveRef.current();
+    });
+  }, [isDirtyNow, setBaseRevision, studioSession]);
+
+  const handleKeepCloudDraft = useCallback(() => {
+    if (sessionDraftConflict) {
+      void studioSession
+        .perform({ type: "resolve-conflict", choice: "cloud" })
+        .then((result) => {
+          if (result.kind === "conflict-resolved") setSaveState("idle");
         });
       return;
     }
-    const claimed = claimEditorLease(localStorage, leaseKey, writerId, Date.now(), true);
-    if (!claimed) {
-      toaster.create({
-        type: "error",
-        title: "Could not take over editing",
-        description: "Try again in a moment. Your open draft has not been changed.",
-      });
-      return;
-    }
-    hasWriteLeaseRef.current = true;
-    writeLeaseReadyRef.current = true;
-    setHasWriteLease(true);
-    setWriteLeaseReady(true);
-    setSaveState(isDirtyNow() ? (navigator.onLine ? "local" : "offline") : "idle");
-    tabChannelRef.current?.postMessage({ type: "takeover", ownerId: writerId });
-    if (isDirtyNow() && draftRecoveryReadyRef.current) void requestAutosaveRef.current();
-  }, [clipInfo.id, clipInfo.projectId, isDirtyNow]);
-
-  const handleKeepCloudDraft = useCallback(() => {
     if (!pendingDraftConflict) return;
-    const cloudJson = JSON.stringify(pendingDraftConflict.cloudDocument);
-    lastSavedDocumentRef.current = pendingDraftConflict.cloudDocument;
+    const cloudDocument = pendingDraftConflict.cloudDocument;
+    const cloudJson = JSON.stringify(cloudDocument);
+    lastSavedDocumentRef.current = cloudDocument;
     lastSavedDocumentJsonRef.current = cloudJson;
     lastSavedBoundsRef.current = {
-      startSec: pendingDraftConflict.cloudDocument.clipStartSec,
-      endSec: pendingDraftConflict.cloudDocument.clipEndSec,
+      startSec: cloudDocument.clipStartSec,
+      endSec: cloudDocument.clipEndSec,
     };
-    localDraftDocumentJsonRef.current = cloudJson;
     setBaseRevision(pendingDraftConflict.cloudRevision);
-    studioSessionMigration.replaceRuntimeRoot({
-      document: pendingDraftConflict.cloudDocument,
-      segments: timelineSegments,
+    studioSessionMigration.acknowledgeCloud({
+      expectedDocument: docPresentRef.current,
+      document: cloudDocument,
+      revision: pendingDraftConflict.cloudRevision,
     });
     setPendingDraftConflict(null);
     autosaveStoppedRef.current = false;
-    setIsLocalDraftDurable(true);
     setSaveState(hasWriteLeaseRef.current ? "idle" : "readonly");
-    queueDraftOperation(() => removeEditorDraft(clipInfo.projectId, clipInfo.id));
   }, [
-    clipInfo.id,
-    clipInfo.projectId,
     pendingDraftConflict,
-    queueDraftOperation,
+    sessionDraftConflict,
     setBaseRevision,
-    studioSessionMigration.replaceRuntimeRoot,
-    timelineSegments,
+    studioSession,
+    studioSessionMigration.acknowledgeCloud,
   ]);
 
   const handleRecoverConflictingDraft = useCallback(() => {
+    if (sessionDraftConflict) {
+      void studioSession
+        .perform({ type: "resolve-conflict", choice: "device" })
+        .then((result) => {
+          if (result.kind !== "conflict-resolved") return;
+          const recovered = studioSession.getSnapshot().document as EditorDocument;
+          if (!boundsConverged(recovered, lastSavedBoundsRef.current)) {
+            boundaryEditIntentRef.current = true;
+            boundaryReconcileOwnsSeekRef.current = true;
+          }
+          setSaveState(navigator.onLine ? "local" : "offline");
+          void requestAutosaveRef.current();
+        });
+      return;
+    }
     if (!pendingDraftConflict) return;
     const recovered = pendingDraftConflict.document;
     const cloudJson = JSON.stringify(pendingDraftConflict.cloudDocument);
@@ -2685,21 +2380,26 @@ export function StudioShell({
       boundaryEditIntentRef.current = true;
       boundaryReconcileOwnsSeekRef.current = true;
     }
-    localDraftDocumentJsonRef.current = JSON.stringify(recovered);
     studioSessionMigration.replaceRuntimeRoot({
       document: recovered,
       segments: timelineSegments,
+      cloudBaseline: {
+        revision: pendingDraftConflict.cloudRevision,
+        document: pendingDraftConflict.cloudDocument,
+      },
     });
     setPendingDraftConflict(null);
     autosaveStoppedRef.current = false;
-    setIsLocalDraftDurable(true);
     setSaveState(hasWriteLeaseRef.current ? (navigator.onLine ? "local" : "offline") : "readonly");
   }, [
     pendingDraftConflict,
+    sessionDraftConflict,
     setBaseRevision,
+    studioSession,
     studioSessionMigration.replaceRuntimeRoot,
     timelineSegments,
   ]);
+
 
   const selectCaption = useCallback(() => {
     setCaptionSelected(true);
@@ -2748,7 +2448,7 @@ export function StudioShell({
   // Keyboard shortcuts
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (!hasWriteLeaseRef.current || pendingDraftConflict) return;
+      if (!hasWriteLeaseRef.current || pendingDraftConflict || sessionDraftConflict) return;
       const tag = (e.target as HTMLElement)?.tagName;
       if (
         tag === "INPUT" ||
@@ -2836,7 +2536,7 @@ export function StudioShell({
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [togglePlay, seekTo, playbackClock, duration, splitAtPlayhead, deleteSelectedSegment, deleteSelectedTextLayer, handleUndo, handleRedo, captionSelected, deselectCaption, selectedTextLayerId, deselectTextLayer, pendingDraftConflict]);
+  }, [togglePlay, seekTo, playbackClock, duration, splitAtPlayhead, deleteSelectedSegment, deleteSelectedTextLayer, handleUndo, handleRedo, captionSelected, deselectCaption, selectedTextLayerId, deselectTextLayer, pendingDraftConflict, sessionDraftConflict]);
 
   // Fix 3 (Phase B hardening): nothing else reconciles the <video> element
   // or the clock against a delete/revert that just happened — a paused
@@ -3009,12 +2709,18 @@ export function StudioShell({
     );
   }
 
+  const displayedSaveState: StudioSaveState =
+    sessionSafetyDegraded &&
+    (saveState === "idle" || saveState === "local" || saveState === "readonly")
+      ? "degraded"
+      : saveState;
+
   const ctx: StudioContextValue = {
     isPlaying, playbackRate, duration, activeTool, showTimeline, timelineSnapping, aspectRatio,
     layoutMode, showShortcuts, timelineZoom, selectedSegmentId, transcriptSelectionRange,
     captionPreset, captionSelected, selectedTextLayerId, transcriptOnly, segments, studioEdits, brollUrl,
     brollPreviewAsset,
-    saveState, isDocDirty, exportState, resetState, canUndo, canRedo, canReset,
+    saveState: displayedSaveState, isDocDirty, exportState, resetState, canUndo, canRedo, canReset,
     transcript: derivedTranscript, clipInfo, videoRef, boundaryReconcileOwnsSeekRef, playbackClock,
     sourceVideoUrl, sourcePreviewId,
     clipStartSec: effectiveClipStartSec, clipEndSec: effectiveClipEndSec, sourcePurged,
@@ -3072,8 +2778,12 @@ export function StudioShell({
         />
 
         <DraftRecoveryDialog
-          open={pendingDraftConflict !== null}
-          conflictPaths={pendingDraftConflict?.paths ?? []}
+          open={sessionDraftConflict || pendingDraftConflict !== null}
+          conflictPaths={
+            sessionDraftConflict
+              ? [...sessionSnapshot.recovery.conflictPaths]
+              : pendingDraftConflict?.paths ?? []
+          }
           onKeepCloud={handleKeepCloudDraft}
           onRecoverLocal={handleRecoverConflictingDraft}
         />
