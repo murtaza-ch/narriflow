@@ -30,6 +30,22 @@ _Avoid_: Job, task, ingest job
 One exclusive, time-bounded claim to execute a Workflow Run, identified by an immutable attempt ID. Only the current Workflow Attempt may update or settle its Workflow Run.
 _Avoid_: Retry, worker, lease
 
+**Clip Render Attempt**:
+One execution of a clip-rendering Workflow Attempt that owns a fixed set of requested render variants through resolution, encoding, delivery, and settlement.
+_Avoid_: Render job, FFmpeg run, child attempt
+
+**Clip Render Variant**:
+One requested rendered artifact for a clip, aspect ratio, and frozen output configuration. Its outcome is tracked independently while ownership remains with its Clip Render Attempt.
+_Avoid_: Output file, encode task, child job
+
+**Render Work Set**:
+The fixed membership of Clip Render Variants assigned to one clip-rendering Workflow Run. Variants created after membership is fixed belong to a later Workflow Run.
+_Avoid_: Pending renders, render queue, clip group
+
+**Frozen Rendering State**:
+The canonical project, clip, entitlement, and output state a Clip Render Attempt uses for all decisions in one execution. Expiring access locations may be refreshed without changing that state.
+_Avoid_: Render manifest, live project state, FFmpeg options
+
 **Partial Workflow Outcome**:
 A terminal Workflow Run outcome in which an aggregate stage produced at least one successful child artifact and at least one failed child artifact.
 _Avoid_: Completed with errors, partial failure
