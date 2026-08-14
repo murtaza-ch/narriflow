@@ -73,6 +73,15 @@ export function useStudioEditingSession(
       }, 0);
     };
   }, [session]);
+  useEffect(() => {
+    const onPageHide = (event: PageTransitionEvent) => {
+      if (!event.persisted) {
+        void session.perform({ type: "close", reason: "pagehide" });
+      }
+    };
+    window.addEventListener("pagehide", onPageHide);
+    return () => window.removeEventListener("pagehide", onPageHide);
+  }, [session]);
   const snapshot = useSyncExternalStore(
     session.subscribe,
     session.getSnapshot,

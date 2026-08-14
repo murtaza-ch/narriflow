@@ -15,6 +15,8 @@ import type {
   StudioDraftRecord,
   StudioSessionIdentity,
   StudioSessionDependencies,
+  StudioCloudResetOutcome,
+  StudioCloudSaveOutcome,
 } from "./studio-editing-session";
 
 type CoordinationEvent =
@@ -28,6 +30,55 @@ type CoordinationEvent =
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+export function classifyStudioCloudResponse(
+  status: number,
+  body: unknown,
+): Exclude<StudioCloudSaveOutcome, { kind: "saved" }> {
+  const errorCode =
+    isRecord(body) && typeof body.error === "string"
+      ? body.error
+      : `editor_http_${status}`;
+  if (status === 408) return { kind: "transient", reason: "timeout" };
+  if (status === 425) return { kind: "transient", reason: "too-early" };
+  if (status === 429) return { kind: "transient", reason: "rate-limited" };
+  if (status >= 500) return { kind: "transient", reason: "server" };
+  if (status === 401 || status === 403) return { kind: "authentication-lost" };
+  if (status === 404) return { kind: "missing" };
+  if (status === 409) {
+    const currentRevision =
+      isRecord(body) &&
+      typeof body.currentRevision === "number" &&
+      Number.isSafeInteger(body.currentRevision)
+        ? body.currentRevision
+        : undefined;
+    return {
+      kind: "revision-conflict",
+      ...(currentRevision === undefined ? {} : { currentRevision }),
+    };
+  }
+  return { kind: "rejected", code: errorCode };
+}
+
+async function parseSuccessfulCloudWrite(
+  response: Response,
+): Promise<StudioCloudSaveOutcome> {
+  const body = (await response.json().catch(() => null)) as unknown;
+  if (!response.ok) return classifyStudioCloudResponse(response.status, body);
+  if (
+    !isRecord(body) ||
+    typeof body.revision !== "number" ||
+    !Number.isSafeInteger(body.revision) ||
+    body.revision < 0
+  ) {
+    return { kind: "rejected", code: "invalid_editor_response" };
+  }
+  const document = editorDocumentSchema.safeParse(body.document);
+  if (!document.success) {
+    return { kind: "rejected", code: "invalid_editor_response" };
+  }
+  return { kind: "saved", revision: body.revision, document: document.data };
 }
 
 export function parseStudioCoordinationEvent(value: unknown): CoordinationEvent | null {
@@ -369,6 +420,7 @@ export function createBrowserStudioSessionDependencies(
       throw new Error("Device Draft key does not match this Studio session");
     }
   };
+  const editorUrl = `/api/projects/${input.projectId}/clips/${input.clipId}/editor`;
   return {
     drafts: {
       load: async (key) => {
@@ -387,9 +439,7 @@ export function createBrowserStudioSessionDependencies(
     coordination: new BrowserStudioCoordinationAdapter(input.projectId, input.clipId),
     cloud: {
       loadHead: async () => {
-        const response = await fetch(
-          `/api/projects/${input.projectId}/clips/${input.clipId}/editor`,
-        );
+        const response = await fetch(editorUrl, { cache: "no-store" });
         if (!response.ok) throw new Error(`Could not refresh editor head (${response.status})`);
         const value = (await response.json()) as { revision?: unknown; document?: unknown };
         if (typeof value.revision !== "number" || !Number.isInteger(value.revision)) {
@@ -400,12 +450,69 @@ export function createBrowserStudioSessionDependencies(
           document: editorDocumentSchema.parse(value.document),
         };
       },
+      save: async ({ baseRevision, document }) => {
+        try {
+          const response = await fetch(editorUrl, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ baseRevision, document }),
+          });
+          return parseSuccessfulCloudWrite(response);
+        } catch {
+          return {
+            kind: "transient",
+            reason: navigator.onLine ? "network" : "offline",
+          };
+        }
+      },
+      reset: async ({ baseRevision }): Promise<StudioCloudResetOutcome> => {
+        try {
+          const response = await fetch(`${editorUrl}/reset`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ baseRevision }),
+          });
+          const outcome = await parseSuccessfulCloudWrite(response);
+          return outcome.kind === "saved"
+            ? {
+                kind: "reset",
+                revision: outcome.revision,
+                document: outcome.document,
+              }
+            : outcome;
+        } catch {
+          return {
+            kind: "transient",
+            reason: navigator.onLine ? "network" : "offline",
+          };
+        }
+      },
+      keepalive: ({ baseRevision, document }) => {
+        void fetch(editorUrl, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ baseRevision, document }),
+          keepalive: true,
+        }).catch(() => undefined);
+      },
     },
     runtime: {
       now: () => Date.now(),
       createId: () => crypto.randomUUID(),
       setTimeout: (callback, delayMs) => window.setTimeout(callback, delayMs),
       clearTimeout: (id) => window.clearTimeout(id),
+      random: () => Math.random(),
+      isOnline: () => navigator.onLine,
+      subscribeOnline: (listener) => {
+        const onOnline = () => listener(true);
+        const onOffline = () => listener(false);
+        window.addEventListener("online", onOnline);
+        window.addEventListener("offline", onOffline);
+        return () => {
+          window.removeEventListener("online", onOnline);
+          window.removeEventListener("offline", onOffline);
+        };
+      },
     },
   };
 }

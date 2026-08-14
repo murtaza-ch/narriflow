@@ -1,8 +1,41 @@
 import { describe, expect, test } from "bun:test";
 import {
+  classifyStudioCloudResponse,
   createBrowserStudioSessionDependencies,
   parseStudioCoordinationEvent,
 } from "./studio-editing-session-browser";
+
+test("classifies retryable and terminal editor responses without conflating them", () => {
+  expect(classifyStudioCloudResponse(408, null)).toEqual({
+    kind: "transient",
+    reason: "timeout",
+  });
+  expect(classifyStudioCloudResponse(425, null)).toEqual({
+    kind: "transient",
+    reason: "too-early",
+  });
+  expect(classifyStudioCloudResponse(429, null)).toEqual({
+    kind: "transient",
+    reason: "rate-limited",
+  });
+  expect(classifyStudioCloudResponse(503, null)).toEqual({
+    kind: "transient",
+    reason: "server",
+  });
+  expect(classifyStudioCloudResponse(401, null)).toEqual({
+    kind: "authentication-lost",
+  });
+  expect(classifyStudioCloudResponse(404, null)).toEqual({ kind: "missing" });
+  expect(
+    classifyStudioCloudResponse(422, { error: "editor_document_empty_timeline" }),
+  ).toEqual({
+    kind: "rejected",
+    code: "editor_document_empty_timeline",
+  });
+  expect(
+    classifyStudioCloudResponse(409, { currentRevision: 9 }),
+  ).toEqual({ kind: "revision-conflict", currentRevision: 9 });
+});
 
 describe("browser Studio coordination adapter", () => {
   test("normalizes only complete clip-scoped coordination events", () => {

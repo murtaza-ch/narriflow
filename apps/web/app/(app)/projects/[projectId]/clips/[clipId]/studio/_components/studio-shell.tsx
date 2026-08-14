@@ -51,17 +51,7 @@ import {
 } from "./timeline-preview-manager";
 import { useStudioEditingSession } from "./studio-editing-session-react";
 import type { StudioSessionSnapshot } from "./studio-editing-session";
-import {
-  combineSaveOutcomes,
-  completeSave,
-  requestSave,
-  type SaveOutcome,
-  type SaveQueueState,
-} from "./save-queue";
-import {
-  mergeEditorDocuments,
-  retryDelayMs,
-} from "./local-editor-draft";
+import { mergeEditorDocuments } from "./local-editor-draft";
 import { DraftRecoveryDialog } from "./draft-recovery-dialog";
 import { StudioWriteLeaseOverlay } from "./studio-write-lease-overlay";
 import {
@@ -96,11 +86,6 @@ const PREVIEW_POLL_MAX_ATTEMPTS = 45;
 const AUTO_LAYOUT_POLL_INITIAL_MS = 2_000;
 const AUTO_LAYOUT_POLL_MAX_MS = 30_000;
 const AUTO_LAYOUT_POLL_DEADLINE_MS = 6 * 60_000;
-
-/** How long to wait after the last edit before autosaving. */
-const AUTOSAVE_DEBOUNCE_MS = 1500;
-/** Continuous gestures still checkpoint to cloud periodically. */
-const AUTOSAVE_MAX_INTERVAL_MS = 5_000;
 
 /** Fix 4: a barely-there nudge back from the exact edited duration when
  *  resolving where end-of-playback should park — just enough that
@@ -152,18 +137,7 @@ function nearestTimedWordBoundary(
   return nearestDistance <= TIMELINE_SNAP_THRESHOLD_SEC ? nearest : sourceSec;
 }
 
-/** Finding 2 (Phase B closing review): `performSave` must only clear
- *  `boundaryEditIntentRef` once there is no PENDING boundary change left to
- *  cover — i.e. the LATEST document's bounds (which may have moved again
- *  while a save was in flight, or already matched going in on a true no-op
- *  save) still agree with `savedBounds`. Clearing it unconditionally on
- *  every save's success used to wipe the flag out from under a trim that
- *  committed mid-flight during an unrelated (non-boundary) save: the trim's
- *  own `boundaryEditIntentRef.current = true` landed before that in-flight
- *  save's fetch resolved, got clobbered by the unconditional clear, and the
- *  trim's own follow-up save then hit the `boundsChanged &&
- *  !boundaryEditIntentRef.current` guard and was falsely blocked as "editor
- *  state got out of sync" — even though both saves individually succeeded. */
+/** True when the live document agrees with the latest cloud window. */
 function boundsConverged(
   current: { clipStartSec: number; clipEndSec: number },
   savedBounds: { startSec: number; endSec: number },
@@ -949,7 +923,6 @@ export function StudioShell({
   const [resetState, setResetState] = useState<"idle" | "resetting">("idle");
   const [revision, setRevisionState] = useState(initialEditorRevision);
   const [isDocDirty, setIsDocDirty] = useState(false);
-  const isDeviceDraftDurable = sessionSnapshot.durability.device === "durable";
   const hasWriteOwnership =
     sessionSnapshot.ownership.kind === "writer" ||
     sessionSnapshot.ownership.kind === "degraded";
@@ -1511,12 +1484,7 @@ export function StudioShell({
     [clipInfo.projectId, doc.transcriptSlice, studioSessionMigration],
   );
 
-  // Guard item 8 (vizard-parity.md Phase B step 13): the single-flight save
-  // queue already serializes the actual PUTs — this just reflects "a save
-  // is in flight" in the UI so the handles can't stack a second trim on an
-  // unsaved one. Also disabled mid-reset for the same reason handleReset
-  // itself blocks autosave (resetInFlightRef) — a trim during a reset
-  // negotiation would race it for the same baseRevision.
+  // Cloud checkpoint and reset barriers are projected by the session.
   const trimHandlesDisabled = saveState === "saving" || resetState === "resetting";
 
   const applyHistoryIntent = useCallback((type: "history.undo" | "history.redo") => {
@@ -1540,522 +1508,191 @@ export function StudioShell({
     applyHistoryIntent("history.redo");
   }, [applyHistoryIntent]);
 
-  // ─── Single-endpoint revision-aware autosave (vizard-parity.md Phase A
-  // step 4) ────────────────────────────────────────────────────────────────
-  // Replaces the old three-PATCH persistEdits with one revision-guarded PUT
-  // of the whole document. Refs (not state) hold the values the async save
-  // loop needs to read without re-subscribing on every edit:
-  //  - docPresentRef: latest document, kept in sync via effect below.
-  //  - lastSavedDocumentJsonRef: what the server last confirmed — the dirty
-  //    check compares against this, so a true no-op issues zero requests.
-  //  - baseRevisionRef: the revision to send with the next save.
-  //  - saveQueueStateRef: the single-flight state machine (save-queue.ts) —
-  //    never two overlapping PUTs; an edit that lands mid-flight triggers
-  //    exactly one more save once the current one finishes.
-  //  - autosaveStoppedRef: set once a 409/422 tells us further autosaving
-  //    would just fail again until the user reloads or the conflict clears.
-  //  - resetInFlightRef: set for the duration of handleReset's drain+POST so
-  //    nothing else (debounce, an explicit save) starts a competing autosave
-  //    while a reset is being negotiated with the server (fix 2). Distinct
-  //    from autosaveStoppedRef, which is permanent-until-reload — this one
-  //    always clears itself when handleReset finishes, success or not.
-  //  - suppressUnloadGuardRef: set right before a successful reset's reload
-  //    so the beforeunload prompt can't block it (fix 3).
-  //  - keepaliveFiredRef: dedupes pagehide + unmount both firing the
-  //    keepalive flush for the same teardown (fix 6); reset on `pageshow`
-  //    (bfcache restores) so a later real teardown can still flush.
   const docPresentRef = useRef(doc);
-  const lastSavedDocumentRef = useRef(initialEditorDocument);
-  const lastSavedDocumentJsonRef = useRef(JSON.stringify(initialEditorDocument));
-  // Vizard-parity Phase B step 13 (in-studio trim): the bounds the server
-  // last confirmed — compared against each save's own bounds to detect a
-  // boundary-changing save (the server nulls the preview proxy for those;
-  // see the success branch below). Deliberately a SEPARATE ref from
-  // `lastSavedDocumentJsonRef` rather than parsing bounds back out of it —
-  // this only ever needs two numbers, not a full document round-trip.
   const lastSavedBoundsRef = useRef({
     startSec: initialEditorDocument.clipStartSec,
     endSec: initialEditorDocument.clipEndSec,
   });
-  // Boundary changes are only ever legitimate as the direct result of an
-  // explicit trim (commitTrim) or an undo/redo that crosses a trim step.
-  // Anything else producing boundary-differing state (a hot-reload replay
-  // in dev, or any future state-corruption bug) must NOT silently persist
-  // a trim now that the server accepts boundary changes — performSave
-  // refuses to send those and demands a reload instead.
   const boundaryEditIntentRef = useRef(false);
-  // Finding 5 (Phase B closing review): set (alongside boundaryEditIntentRef)
-  // whenever a dispatch is ABOUT to change both `playerClipStartSec` and
-  // `editedTimeMap` in the same commit — a trim (commitTrim) or an undo/redo
-  // that crosses one. video-preview.tsx's own `playerClipStartSec`-keyed
-  // seek effect checks this and stands down for that commit; the
-  // `editedTimeMap` reconcile effect further below — which actually knows
-  // whether the current playhead position survived the change — owns the
-  // reposition instead, and clears this ref once it has run. See both
-  // effects' own doc comments for the full walkthrough.
   const boundaryReconcileOwnsSeekRef = useRef(false);
-  const baseRevisionRef = useRef(initialEditorRevision);
-  const saveQueueStateRef = useRef<SaveQueueState>("idle");
-  const autosaveStoppedRef = useRef(false);
-  const resetInFlightRef = useRef(false);
   const suppressUnloadGuardRef = useRef(false);
-  const keepaliveFiredRef = useRef(false);
-  const hasWriteOwnershipRef = useRef(hasWriteOwnership);
-  const draftRecoveryReadyRef = useRef(draftRecoveryReady);
-  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const retryAttemptRef = useRef(0);
-  const dirtySinceRef = useRef<number | null>(null);
-  const saveFailureToastVisibleRef = useRef(false);
-  const requestAutosaveRef = useRef<() => Promise<SaveOutcome>>(() =>
-    Promise.resolve("failure"),
-  );
-  const currentSavePromiseRef = useRef<Promise<SaveOutcome>>(Promise.resolve("success"));
-
-  const setBaseRevision = useCallback((next: number) => {
-    baseRevisionRef.current = next;
-    setRevisionState(next);
-  }, []);
 
   useEffect(() => {
     docPresentRef.current = doc;
-    const documentJson = JSON.stringify(doc);
-    const dirty = documentJson !== lastSavedDocumentJsonRef.current;
-    setIsDocDirty(dirty);
   }, [doc]);
 
   useEffect(() => {
-    hasWriteOwnershipRef.current = hasWriteOwnership;
-    draftRecoveryReadyRef.current = draftRecoveryReady;
-    setSaveState((current) => {
-      if (!draftRecoveryReady) return current;
-      if (!hasWriteOwnership) return "readonly";
-      if (current !== "readonly") return current;
-      return isDocDirty ? (navigator.onLine ? "local" : "offline") : "idle";
-    });
-  }, [draftRecoveryReady, hasWriteOwnership, isDocDirty]);
+    const baseline = studioSessionMigration.getCloudBaseline();
+    const baselineDocument = baseline.document as EditorDocument;
+    setRevisionState(sessionSnapshot.cloud.revision);
+    setIsDocDirty(sessionSnapshot.cloud.dirty);
 
-  const clearRetry = useCallback(() => {
-    if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
-    retryTimerRef.current = null;
-    retryAttemptRef.current = 0;
-    saveFailureToastVisibleRef.current = false;
-  }, []);
-
-  const scheduleRetry = useCallback(() => {
-    if (retryTimerRef.current || autosaveStoppedRef.current) return;
-    const delay = retryDelayMs(retryAttemptRef.current);
-    retryAttemptRef.current += 1;
-    retryTimerRef.current = setTimeout(() => {
-      retryTimerRef.current = null;
-      if (!hasWriteOwnershipRef.current || !draftRecoveryReadyRef.current) return;
-      if (typeof navigator !== "undefined" && !navigator.onLine) {
-        scheduleRetry();
-        return;
-      }
-      void requestAutosaveRef.current();
-    }, delay);
-  }, []);
-
-  useEffect(() => {
-    const onOnline = () => {
-      retryAttemptRef.current = 0;
-      if (hasWriteOwnershipRef.current && draftRecoveryReadyRef.current) {
-        void requestAutosaveRef.current();
-      }
-    };
-    const onOffline = () => {
-      if (JSON.stringify(docPresentRef.current) !== lastSavedDocumentJsonRef.current) {
-        setSaveState("offline");
-      }
-    };
-    window.addEventListener("online", onOnline);
-    window.addEventListener("offline", onOffline);
-    return () => {
-      window.removeEventListener("online", onOnline);
-      window.removeEventListener("offline", onOffline);
-      if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
-    };
-  }, []);
-
-  const performSave = useCallback(async (): Promise<SaveOutcome> => {
     if (
-      !hasWriteOwnershipRef.current ||
-      !draftRecoveryReadyRef.current ||
-      pendingDraftConflict ||
-      sessionDraftConflict
+      sessionSnapshot.cloud.revision !== initialEditorRevision &&
+      !boundsConverged(baselineDocument, lastSavedBoundsRef.current)
     ) {
-      return "failure";
+      setPreviewVideoUrl(null);
+      setPreviewStartSec(0);
+      setWaveformPeaksUrl(null);
+      setUseOriginalSourceFallback(true);
     }
-    const documentToSave = docPresentRef.current;
-    const documentJson = JSON.stringify(documentToSave);
-    let outcome: SaveOutcome = "success";
-
-    // Finding 2: clears `boundaryEditIntentRef` iff the LATEST document
-    // (which may differ from `documentToSave` — an edit can land while this
-    // turn's fetch is in flight) has converged on the bounds already
-    // confirmed as saved — see `boundsConverged`'s own doc comment for why
-    // this can't just be unconditional.
-    const clearBoundaryIntentIfConverged = () => {
-      if (boundsConverged(docPresentRef.current, lastSavedBoundsRef.current)) {
-        boundaryEditIntentRef.current = false;
-      }
+    lastSavedBoundsRef.current = {
+      startSec: baselineDocument.clipStartSec,
+      endSec: baselineDocument.clipEndSec,
     };
-
-    const boundsChanged =
-      Math.abs(documentToSave.clipStartSec - lastSavedBoundsRef.current.startSec) > 0.001 ||
-      Math.abs(documentToSave.clipEndSec - lastSavedBoundsRef.current.endSec) > 0.001;
-    if (boundsChanged && !boundaryEditIntentRef.current) {
-      console.warn(
-        JSON.stringify({
-          level: "error",
-          message: "editor_boundary_save_without_intent_blocked",
-          clipId: clipInfo.id,
-          attemptedStartSec: documentToSave.clipStartSec,
-          attemptedEndSec: documentToSave.clipEndSec,
-          lastSavedStartSec: lastSavedBoundsRef.current.startSec,
-          lastSavedEndSec: lastSavedBoundsRef.current.endSec,
-        }),
-      );
-      autosaveStoppedRef.current = true;
-      setSaveState("blocked");
-      toaster.create({
-        type: "error",
-        title: "Editor state got out of sync",
-        description: "Reload to keep editing — nothing was saved.",
-        action: { label: "Reload", onClick: () => window.location.reload() },
-      });
-      saveQueueStateRef.current = "idle";
-      return "failure";
+    if (boundsConverged(docPresentRef.current, lastSavedBoundsRef.current)) {
+      boundaryEditIntentRef.current = false;
     }
 
-    if (documentJson === lastSavedDocumentJsonRef.current) {
-      // Reached via a queued request that turned out to be a no-op (e.g. an
-      // edit landed and was then undone before this turn ran) — nothing to
-      // send, but still drain the queue below.
-      //
-      // Finding 2 (Phase B closing review, LOW): this branch used to leave
-      // `boundaryEditIntentRef` completely untouched — a trim that lands and
-      // then gets undone back to exactly the last-saved bounds before its
-      // own save turn runs left the flag stuck `true` with nothing left to
-      // cover. Same conditional clear as the success branch below.
-      clearBoundaryIntentIfConverged();
-    } else {
-      setSaveState("saving");
-      try {
-        const res = await fetch(
-          `/api/projects/${clipInfo.projectId}/clips/${clipInfo.id}/editor`,
-          {
-            method: "PUT",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              baseRevision: baseRevisionRef.current,
-              document: documentToSave,
-            }),
-          },
-        );
+    setSaveState(() => {
+      if (sessionSnapshot.ownership.kind === "reader") return "readonly";
+      switch (sessionSnapshot.cloud.state) {
+        case "current":
+          return "idle";
+        case "pending":
+          return "local";
+        case "saving":
+          return "saving";
+        case "offline":
+          return "offline";
+        case "retrying":
+          return "error";
+        case "rejected":
+        case "authentication-lost":
+        case "missing":
+        case "revision-conflict":
+          return "blocked";
+      }
+    });
+  }, [
+    initialEditorRevision,
+    sessionSnapshot.cloud.dirty,
+    sessionSnapshot.cloud.revision,
+    sessionSnapshot.cloud.state,
+    sessionSnapshot.ownership.kind,
+    studioSessionMigration,
+  ]);
 
-        if (res.status === 409) {
-          const latestResponse = await fetch(
-            `/api/projects/${clipInfo.projectId}/clips/${clipInfo.id}/editor`,
-            { cache: "no-store" },
-          );
-          const latestBody = latestResponse.ok
-            ? ((await latestResponse.json().catch(() => null)) as {
-                revision?: unknown;
-                document?: unknown;
-              } | null)
-            : null;
-          const latestDocument = editorDocumentSchema.safeParse(latestBody?.document);
-          const latestRevision = latestBody?.revision;
+  const cloudConflictHandlingRef = useRef(false);
+  useEffect(() => {
+    if (
+      sessionSnapshot.cloud.state !== "revision-conflict" ||
+      pendingDraftConflict ||
+      cloudConflictHandlingRef.current
+    ) {
+      return;
+    }
+    cloudConflictHandlingRef.current = true;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const response = await fetch(
+          `/api/projects/${clipInfo.projectId}/clips/${clipInfo.id}/editor`,
+          { cache: "no-store" },
+        );
+        const body = response.ok
+          ? ((await response.json().catch(() => null)) as {
+              revision?: unknown;
+              document?: unknown;
+            } | null)
+          : null;
+        const latestDocument = editorDocumentSchema.safeParse(body?.document);
+        const latestRevision = body?.revision;
+        if (
+          !latestDocument.success ||
+          typeof latestRevision !== "number" ||
+          !Number.isSafeInteger(latestRevision) ||
+          latestRevision < 0
+        ) {
+          throw new Error("invalid cloud head");
+        }
+        const baseline = studioSessionMigration.getCloudBaseline();
+        const localDocument = studioSession.getSnapshot().document as EditorDocument;
+        const merged = mergeEditorDocuments(
+          baseline.document as EditorDocument,
+          localDocument,
+          latestDocument.data,
+        );
+        if (cancelled) return;
+        if (merged.conflicts.length === 0) {
           if (
-            latestDocument.success &&
-            typeof latestRevision === "number" &&
-            Number.isInteger(latestRevision) &&
-            latestRevision >= 0
-          ) {
-            const localDocument = docPresentRef.current;
-            const merged = mergeEditorDocuments(
-              lastSavedDocumentRef.current,
-              localDocument,
-              latestDocument.data,
-            );
-            const latestJson = JSON.stringify(latestDocument.data);
-            lastSavedDocumentRef.current = latestDocument.data;
-            lastSavedDocumentJsonRef.current = latestJson;
-            lastSavedBoundsRef.current = {
+            !boundsConverged(merged.document, {
               startSec: latestDocument.data.clipStartSec,
               endSec: latestDocument.data.clipEndSec,
-            };
-            setBaseRevision(latestRevision);
-
-            if (merged.conflicts.length === 0) {
-              if (!boundsConverged(merged.document, lastSavedBoundsRef.current)) {
-                boundaryEditIntentRef.current = true;
-                boundaryReconcileOwnsSeekRef.current = true;
-              }
-              docPresentRef.current = merged.document;
-              studioSessionMigration.replaceRuntimeRoot({
-                document: merged.document,
-                segments: timelineSegments,
-                cloudBaseline: {
-                  revision: latestRevision,
-                  document: latestDocument.data,
-                },
-              });
-              setSaveState("local");
-              toaster.create({
-                type: "info",
-                title: "Cloud changes merged",
-                description: "Your device edits were combined safely and autosave is continuing.",
-              });
-              return performSave();
-            }
-
-            autosaveStoppedRef.current = true;
-            setPendingDraftConflict({
-              document: localDocument,
-              cloudDocument: latestDocument.data,
-              cloudRevision: latestRevision,
-              paths: merged.conflicts,
-            });
-            setSaveState("blocked");
-            saveQueueStateRef.current = "idle";
-            return "failure";
+            })
+          ) {
+            boundaryEditIntentRef.current = true;
+            boundaryReconcileOwnsSeekRef.current = true;
           }
-
-          autosaveStoppedRef.current = true;
-          setSaveState("blocked");
+          studioSessionMigration.replaceRuntimeRoot({
+            document: merged.document,
+            segments: timelineSegments,
+            cloudBaseline: {
+              revision: latestRevision,
+              document: latestDocument.data,
+            },
+          });
+          toaster.create({
+            type: "info",
+            title: "Cloud changes merged",
+            description:
+              "Your device edits were combined safely and autosave is continuing.",
+          });
+          return;
+        }
+        setPendingDraftConflict({
+          document: localDocument,
+          cloudDocument: latestDocument.data,
+          cloudRevision: latestRevision,
+          paths: merged.conflicts,
+        });
+      } catch {
+        if (!cancelled) {
           toaster.create({
             type: "error",
-            title: "This clip was changed somewhere else",
-            description: "Your device draft is safe. Reload to recover it with the latest version.",
+            title: "This clip changed somewhere else",
+            description:
+              "Your device draft is safe. Reload to compare it with the latest cloud version.",
             action: { label: "Reload", onClick: () => window.location.reload() },
           });
-          saveQueueStateRef.current = "idle";
-          return "failure";
         }
-        if (res.status === 422) {
-          autosaveStoppedRef.current = true;
-          const body = (await res.json().catch(() => null)) as { error?: string } | null;
-          const isUnsafeBrollUrl = body?.error === "unsafe_broll_url";
-          // Phase B step 13: editor_boundaries_invalid is the server-side
-          // backstop for min-duration/out-of-source-range trims — the trim
-          // handles' own drag guard should make this unreachable in
-          // practice, same as editor_document_empty_timeline already was.
-          const isInvalidBoundaries = body?.error === "editor_boundaries_invalid";
-          console.warn(
-            JSON.stringify({
-              level: "error",
-              message: isUnsafeBrollUrl
-                ? "editor_unsafe_broll_url"
-                : isInvalidBoundaries
-                  ? "editor_boundaries_invalid_client_guard_bypassed"
-                  : "editor_document_save_rejected",
-              clipId: clipInfo.id,
-              projectId: clipInfo.projectId,
-              error: body?.error,
-            }),
-          );
-          setSaveState("blocked");
-          toaster.create({
-            type: "error",
-            title: "Save failed",
-            description: isUnsafeBrollUrl
-              ? "This clip's B-roll URL isn't allowed. Remove it and try again."
-              : isInvalidBoundaries
-                ? "That trim isn't valid anymore. Reload to continue."
-                : "This clip's boundaries changed unexpectedly. Reload to continue.",
-          });
-          saveQueueStateRef.current = "idle";
-          return "failure";
-        }
-        if (!res.ok) throw new Error("editor document save failed");
-
-        const json = (await res.json()) as { revision: number; document: EditorDocument };
-        setBaseRevision(json.revision);
-        clearRetry();
-        lastSavedDocumentRef.current = json.document;
-
-        // Phase B step 13: a boundary-changing save just had the server
-        // null the preview proxy (clip.service.ts's saveClipEditorDocument)
-        // — the old proxy's window no longer matches the new clip bounds.
-        // Drop the local proxy state immediately (video-preview.tsx falls
-        // back to the source so playback keeps working across the trim)
-        // and let the poll effect — keyed off `previewVideoUrl` — restart
-        // on its own now that it's null again. Compared against
-        // `documentToSave`'s OWN bounds regardless of whether local edits
-        // landed mid-flight below: the server accepted exactly this
-        // document's bounds, so that's the authoritative "did this save
-        // move the window" answer either way.
-        const priorBounds = lastSavedBoundsRef.current;
-        const boundariesChangedByThisSave =
-          Math.abs(documentToSave.clipStartSec - priorBounds.startSec) > 0.001 ||
-          Math.abs(documentToSave.clipEndSec - priorBounds.endSec) > 0.001;
-        lastSavedBoundsRef.current = {
-          startSec: documentToSave.clipStartSec,
-          endSec: documentToSave.clipEndSec,
-        };
-        if (boundariesChangedByThisSave) {
-          setPreviewVideoUrl(null);
-          setPreviewStartSec(0);
-          // Finding 7 (Phase B closing review): dropping the proxy makes
-          // `activeVideoUrl` (`previewVideoUrl ?? (useOriginalSourceFallback
-          // ? sourceVideoUrl : null)`) go straight to null unless the user
-          // had ALREADY opted into the source fallback — playback would
-          // otherwise just die the moment a trim saves, until the new proxy
-          // finishes cutting. Opt in on the trim's behalf so it keeps
-          // playing from source immediately; the poll effect below still
-          // swaps back to the (now-regenerating) proxy once it lands.
-          setUseOriginalSourceFallback(true);
-          // Finding 8 (Phase B closing review): the OLD proxy's amplitude
-          // peaks describe the OLD window — left in place, the waveform
-          // keeps painting the stale window's shape against the new bounds
-          // until the poll effect's `fetchPreviewStatus` call happens to
-          // repopulate it. Clear it in the same branch that drops the proxy
-          // itself so the two can never disagree about which window is
-          // current; the same poll effect (keyed off `previewVideoUrl`,
-          // already restarting because of the `setPreviewVideoUrl(null)`
-          // above) repopulates `waveformPeaksUrl` from the new proxy's
-          // status the same way it does today.
-          setWaveformPeaksUrl(null);
-        }
-        // The confirmed bounds are now the baseline — a fresh trim (or a
-        // trim-crossing undo/redo) must re-arm the intent flag before the
-        // next boundary-changing save is allowed through. Only cleared when
-        // the LATEST document has converged on these bounds (finding 2) — if
-        // a further trim landed while this save was in flight, its own
-        // `boundaryEditIntentRef.current = true` must survive for ITS save.
-        clearBoundaryIntentIfConverged();
-
-        void studioSessionMigration.acknowledgeCloud({
-          expectedDocument: documentToSave,
-          document: json.document,
-          revision: json.revision,
-        });
-
-        if (docPresentRef.current === documentToSave) {
-          // No local edits landed mid-flight — safe to adopt the server's
-          // (possibly rebased) document without recording a new undo step.
-          lastSavedDocumentJsonRef.current = JSON.stringify(json.document);
-          dirtySinceRef.current = null;
-        } else {
-          // Local edits arrived while the request was in flight — leave
-          // `present` alone; the next autosave cycle will converge.
-          lastSavedDocumentJsonRef.current = JSON.stringify(json.document);
-          dirtySinceRef.current = Date.now();
-        }
-
-        setSaveState("saved");
-        setTimeout(() => setSaveState((current) => (current === "saved" ? "idle" : current)), 2000);
-      } catch {
-        outcome = "failure";
-        const offline = typeof navigator !== "undefined" && !navigator.onLine;
-        setSaveState(offline ? "offline" : "error");
-        if (!saveFailureToastVisibleRef.current) {
-          saveFailureToastVisibleRef.current = true;
-          toaster.create({
-            type: offline ? "info" : "error",
-            title: offline ? "Working offline" : "Cloud autosave is retrying",
-            description: offline
-              ? "Your edits are saved on this device and will sync when you reconnect."
-              : "Your edits are safe on this device. Narriflow will retry automatically.",
-          });
-        }
-        scheduleRetry();
+      } finally {
+        cloudConflictHandlingRef.current = false;
       }
-    }
-
-    if (autosaveStoppedRef.current) {
-      saveQueueStateRef.current = "idle";
-      return outcome;
-    }
-    const transition = completeSave(saveQueueStateRef.current);
-    saveQueueStateRef.current = transition.state;
-    if (transition.shouldStartSave) {
-      currentSavePromiseRef.current = performSave();
-      const chainedOutcome = await currentSavePromiseRef.current;
-      return combineSaveOutcomes(outcome, chainedOutcome);
-    }
-    return outcome;
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [
-    clearRetry,
-    clipInfo.projectId,
     clipInfo.id,
+    clipInfo.projectId,
     pendingDraftConflict,
-    sessionDraftConflict,
-    scheduleRetry,
-    setBaseRevision,
-    studioSessionMigration.acknowledgeCloud,
-    studioSessionMigration.replaceRuntimeRoot,
+    sessionSnapshot.cloud.state,
+    studioSession,
+    studioSessionMigration,
     timelineSegments,
   ]);
 
-  // Enqueues a save (single-flight — see save-queue.ts) and returns a promise
-  // that resolves once the WHOLE chain (including any save(s) triggered by
-  // edits that landed mid-flight) has drained. Also doubles as the flush
-  // primitive for handleSave/handleExport: calling it when nothing is dirty
-  // and nothing is in flight resolves immediately.
-  const requestAutosave = useCallback((): Promise<SaveOutcome> => {
-    // fix 1/2: a stopped autosave or an in-flight reset (draining/POSTing)
-    // both mean "don't start a new PUT right now" — surface that as a
-    // failure so callers like handleExport don't proceed as if the document
-    // were safely persisted.
-    if (
-      autosaveStoppedRef.current ||
-      resetInFlightRef.current ||
-      !hasWriteOwnershipRef.current ||
-      !draftRecoveryReadyRef.current ||
-      pendingDraftConflict ||
-      sessionDraftConflict
-    ) {
-      return Promise.resolve("failure");
-    }
-    if (JSON.stringify(docPresentRef.current) === lastSavedDocumentJsonRef.current) {
-      dirtySinceRef.current = null;
-      clearRetry();
-      setSaveState((current) =>
-        current === "offline" || current === "error" || current === "local"
-          ? "idle"
-          : current,
-      );
-      return saveQueueStateRef.current === "idle"
-        ? Promise.resolve("success")
-        : currentSavePromiseRef.current;
-    }
-    const transition = requestSave(saveQueueStateRef.current);
-    saveQueueStateRef.current = transition.state;
-    if (transition.shouldStartSave) {
-      currentSavePromiseRef.current = performSave();
-    }
-    return currentSavePromiseRef.current;
-  }, [clearRetry, pendingDraftConflict, performSave, sessionDraftConflict]);
-
-  requestAutosaveRef.current = requestAutosave;
-
-  const flushSave = useCallback(() => requestAutosave(), [requestAutosave]);
-
-  const isDirtyNow = useCallback(
-    () => JSON.stringify(docPresentRef.current) !== lastSavedDocumentJsonRef.current,
-    [],
-  );
-
   const handleSave = useCallback(async () => {
-    // Failure is already surfaced by performSave itself (toast + saveState);
-    // nothing further to show here (fix 5 — handleSave now reflects
-    // failure by simply not pretending the save succeeded).
-    await flushSave();
-  }, [flushSave]);
+    const result = await studioSession.perform({ type: "checkpoint-cloud" });
+    if (result.kind === "cloud-current") return;
+    toaster.create({
+      type: "error",
+      title: "Save paused",
+      description:
+        result.kind === "cloud-blocked" && result.reason === "semantic-rejection"
+          ? "Correct the rejected edit and save again. Your device draft is safe."
+          : "Narriflow could not make this revision current yet. Your device draft is safe.",
+    });
+  }, [studioSession]);
 
   const handleExport = useCallback(async (options: StudioExportOptions) => {
     setExportState("exporting");
     try {
-      // A clean document is already represented by baseRevisionRef and does
-      // not require the tab's write lease. This matters in read-only/lease
-      // handoff states: exporting the last cloud-saved revision is safe, and
-      // the API still rejects a stale revision with 409. Dirty documents must
-      // acquire the save path and fully drain before an export is allowed.
-      const outcome = isDirtyNow() ? await flushSave() : "success";
-      if (outcome === "failure" || isDirtyNow()) {
+      const prepared = await studioSession.perform({
+        type: "prepare-cloud-revision",
+      });
+      if (prepared.kind !== "cloud-prepared") {
         throw new Error("save failed before export");
       }
       const response = await fetch(
@@ -2067,7 +1704,7 @@ export function StudioShell({
             "idempotency-key": crypto.randomUUID(),
           },
           body: JSON.stringify({
-            expectedRevision: baseRevisionRef.current,
+            expectedRevision: prepared.revision,
             aspectRatios: options.aspectRatios,
             resolution: options.resolution,
           }),
@@ -2094,181 +1731,35 @@ export function StudioShell({
             ? "The clip changed in another session. Reload before exporting."
             : "The render couldn't be queued. Try again.",
       });
-      // Don't clobber a 'blocked' indicator (fix 7) — that one is meant to
-      // persist until reload, not get reset to idle by an unrelated export
-      // failure toast's timeout.
-      if (!autosaveStoppedRef.current) {
-        setSaveState("error");
-        setTimeout(() => setSaveState("idle"), 4000);
-      }
     }
-  }, [flushSave, isDirtyNow, clipInfo.projectId, clipInfo.id, router]);
+  }, [studioSession, clipInfo.projectId, clipInfo.id, router]);
 
-  // Debounced autosave — triggers AUTOSAVE_DEBOUNCE_MS after the document
-  // actually changes (reference change on `unified.doc.present`).
-  const isInitialRender = useRef(true);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: doc is the explicit autosave debounce trigger while the callback reads refs.
-  useEffect(() => {
-    if (isInitialRender.current) {
-      isInitialRender.current = false;
-      return;
-    }
-    // Fix 2: a reset in flight is already draining/negotiating its own
-    // save — don't let a fresh debounce tick race it with a competing PUT.
-    if (
-      autosaveStoppedRef.current ||
-      resetInFlightRef.current ||
-      !draftRecoveryReadyRef.current ||
-      !hasWriteOwnershipRef.current ||
-      pendingDraftConflict ||
-      sessionDraftConflict
-    ) return;
-
-    if (dirtySinceRef.current === null) dirtySinceRef.current = Date.now();
-    const timeUntilForcedCheckpoint = Math.max(
-      0,
-      AUTOSAVE_MAX_INTERVAL_MS - (Date.now() - dirtySinceRef.current),
-    );
-    const timeoutId = setTimeout(() => {
-      void requestAutosave();
-    }, Math.min(AUTOSAVE_DEBOUNCE_MS, timeUntilForcedCheckpoint));
-
-    return () => clearTimeout(timeoutId);
-  }, [doc, pendingDraftConflict, requestAutosave, sessionDraftConflict]);
-
-  // Warn on tab close/refresh while a save is pending or in flight.
+  // Warn only while the current document is not Device Draft durable.
   useEffect(() => {
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
-      // Fix 3: suppressed right before a successful reset's own reload, so
-      // that reload can't get stuck behind this prompt.
       if (suppressUnloadGuardRef.current) return;
-      if ((isDocDirty && !isDeviceDraftDurable) || (saveState === "saving" && !isDeviceDraftDurable)) {
+      if (sessionSnapshot.durability.protectsNavigation) {
         e.preventDefault();
         e.returnValue = "";
       }
     };
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
-  }, [isDocDirty, isDeviceDraftDurable, saveState]);
-
-  // Fire-and-forget keepalive flush for pagehide/unmount: the page is
-  // dismissing, so there's no meaningful way to await the single-flight
-  // queue — just get the latest full document envelope out the door once.
-  // Fix 6: this used to bypass the queue unconditionally, so a keepalive
-  // fired while a regular autosave PUT was still in flight raced it at the
-  // SAME baseRevision — the server accepts whichever lands first and 409s
-  // the other, and nothing listens to that 409, so whichever request lost
-  // silently failed to persist. Skip the keepalive entirely whenever a save
-  // is already in flight/queued: that save's own body already carries real
-  // state, and once it completes the (still-scheduled, or about-to-fire)
-  // debounce naturally carries any further edits — this trades a small
-  // window of "the very last edits before an instant close might not be
-  // flushed" for eliminating a guaranteed-conflict, guaranteed-silent-loss
-  // race. Also dedupes pagehide + unmount (which can both fire for the same
-  // teardown) via a fired-once ref that resets on `pageshow` (bfcache
-  // restores), so a later real teardown can still flush.
-  const flushKeepalive = useCallback(() => {
-    if (keepaliveFiredRef.current) return;
-    if (autosaveStoppedRef.current || resetInFlightRef.current) return;
-    if (!draftRecoveryReadyRef.current || !hasWriteOwnershipRef.current) return;
-    if (saveQueueStateRef.current !== "idle") return;
-    const documentToSave = docPresentRef.current;
-    if (JSON.stringify(documentToSave) === lastSavedDocumentJsonRef.current) return;
-    keepaliveFiredRef.current = true;
-    void fetch(`/api/projects/${clipInfo.projectId}/clips/${clipInfo.id}/editor`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        baseRevision: baseRevisionRef.current,
-        document: documentToSave,
-      }),
-      keepalive: true,
-    });
-  }, [clipInfo.projectId, clipInfo.id]);
-
-  useEffect(() => {
-    const onPageHide = () => flushKeepalive();
-    const onPageShow = () => {
-      keepaliveFiredRef.current = false;
-    };
-    window.addEventListener("pagehide", onPageHide);
-    window.addEventListener("pageshow", onPageShow);
-    return () => {
-      window.removeEventListener("pagehide", onPageHide);
-      window.removeEventListener("pageshow", onPageShow);
-    };
-  }, [flushKeepalive]);
-
-  useEffect(() => () => flushKeepalive(), [flushKeepalive]);
+  }, [sessionSnapshot.durability.protectsNavigation]);
 
   // ─── Reset to original (vizard-parity.md Phase A step 4) ────────────────
   const handleReset = useCallback(async () => {
-    if (resetState === "resetting" || !hasWriteOwnershipRef.current) return;
+    if (resetState === "resetting" || !hasWriteOwnership) return;
     setResetState("resetting");
     try {
-      // Fix 2: drain any in-flight/pending save chain BEFORE posting the
-      // reset, so the reset's baseRevision reflects whatever the server was
-      // just brought up to date with instead of racing an autosave that's
-      // about to bump the revision out from under it — this removes most
-      // 409s at the source rather than just reacting to them. Uses the
-      // normal flushSave path (resetInFlightRef is still false here), so an
-      // already-in-flight save drains exactly like any other flush.
-      await flushSave();
-
-      // From here until the reset POST settles, block any FURTHER
-      // debounce-triggered or explicit autosave from starting — the two
-      // would otherwise race for the same baseRevision on different
-      // endpoints. Set synchronously right after the drain resolves (no
-      // `await` in between), so nothing else can slip in before this takes
-      // effect. Always cleared in `finally` below, success or not — this is
-      // intentionally NOT autosaveStoppedRef, which is permanent-until-reload.
-      resetInFlightRef.current = true;
-
-      const res = await fetch(
-        `/api/projects/${clipInfo.projectId}/clips/${clipInfo.id}/editor/reset`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ baseRevision: baseRevisionRef.current }),
-        },
-      );
-      if (res.status === 409) {
-        toaster.create({
-          type: "error",
-          title: "This clip was changed somewhere else",
-          description: "Reload to see the latest version before resetting.",
-          action: { label: "Reload", onClick: () => window.location.reload() },
-        });
-        return;
+      const result = await studioSession.perform({ type: "reset-to-original" });
+      if (result.kind !== "reset-complete") {
+        throw new Error(
+          result.kind === "cloud-blocked" ? result.reason : "reset unavailable",
+        );
       }
-      if (!res.ok) throw new Error("reset failed");
-      const resetBody = (await res.json().catch(() => null)) as {
-        revision?: unknown;
-        document?: unknown;
-      } | null;
-      const resetDocument = editorDocumentSchema.safeParse(resetBody?.document);
-      const resetRevision = resetBody?.revision;
-
-      // Fix 1: autosaveStoppedRef is now only ever set on this success path
-      // (previously it was set unconditionally before the POST, with the
-      // 409 branch never clearing it back — every later edit was silently
-      // dropped while the indicator kept showing "Saved"). Fix 3: suppress
-      // the unload guard and clear dirty state BEFORE reloading, so a stray
-      // beforeunload prompt can't leave the dialog wedged mid-reset.
-      autosaveStoppedRef.current = true;
       suppressUnloadGuardRef.current = true;
       setIsDocDirty(false);
-      await studioSessionMigration.acknowledgeCloud({
-        expectedDocument: docPresentRef.current,
-        document: resetDocument.success ? resetDocument.data : originalDoc,
-        revision:
-          typeof resetRevision === "number" && Number.isInteger(resetRevision)
-            ? resetRevision
-            : undefined,
-      });
-      // Boundaries and the preview proxy may have changed — a full reload
-      // re-seeds everything (timing, segments, history) safely from the
-      // server rather than trying to patch client state in place.
       window.location.reload();
     } catch {
       toaster.create({
@@ -2277,20 +1768,9 @@ export function StudioShell({
         description: "This clip couldn't be reset to its original version. Try again.",
       });
     } finally {
-      resetInFlightRef.current = false;
-      // Fix 3: unconditionally return to idle (not just on the error
-      // paths) so the dialog can never stay stuck on "Resetting…" if the
-      // reload above is somehow prevented or delayed.
       setResetState((s) => (s === "resetting" ? "idle" : s));
     }
-  }, [
-    clipInfo.projectId,
-    clipInfo.id,
-    resetState,
-    flushSave,
-    originalDoc,
-    studioSessionMigration.acknowledgeCloud,
-  ]);
+  }, [hasWriteOwnership, resetState, studioSession]);
 
   const handleTakeOverEditing = useCallback(() => {
     void studioSession.perform({ type: "take-over" }).then((result) => {
@@ -2300,52 +1780,32 @@ export function StudioShell({
           title: "Could not take over editing",
           description: "Try again in a moment. Your open draft has not been changed.",
         });
-        return;
       }
-      const cloudDocument = result.cloudDocument as EditorDocument;
-      lastSavedDocumentRef.current = cloudDocument;
-      lastSavedDocumentJsonRef.current = JSON.stringify(cloudDocument);
-      lastSavedBoundsRef.current = {
-        startSec: cloudDocument.clipStartSec,
-        endSec: cloudDocument.clipEndSec,
-      };
-      setBaseRevision(result.cloudRevision);
-      setSaveState(isDirtyNow() ? (navigator.onLine ? "local" : "offline") : "idle");
-      if (isDirtyNow()) void requestAutosaveRef.current();
     });
-  }, [isDirtyNow, setBaseRevision, studioSession]);
+  }, [studioSession]);
 
   const handleKeepCloudDraft = useCallback(() => {
     if (sessionDraftConflict) {
       void studioSession
         .perform({ type: "resolve-conflict", choice: "cloud" })
-        .then((result) => {
-          if (result.kind === "conflict-resolved") setSaveState("idle");
-        });
+        .then(() => undefined);
       return;
     }
     if (!pendingDraftConflict) return;
     const cloudDocument = pendingDraftConflict.cloudDocument;
-    const cloudJson = JSON.stringify(cloudDocument);
-    lastSavedDocumentRef.current = cloudDocument;
-    lastSavedDocumentJsonRef.current = cloudJson;
     lastSavedBoundsRef.current = {
       startSec: cloudDocument.clipStartSec,
       endSec: cloudDocument.clipEndSec,
     };
-    setBaseRevision(pendingDraftConflict.cloudRevision);
-    studioSessionMigration.acknowledgeCloud({
+    void studioSessionMigration.acknowledgeCloud({
       expectedDocument: docPresentRef.current,
       document: cloudDocument,
       revision: pendingDraftConflict.cloudRevision,
     });
     setPendingDraftConflict(null);
-    autosaveStoppedRef.current = false;
-    setSaveState(hasWriteOwnershipRef.current ? "idle" : "readonly");
   }, [
     pendingDraftConflict,
     sessionDraftConflict,
-    setBaseRevision,
     studioSession,
     studioSessionMigration.acknowledgeCloud,
   ]);
@@ -2361,21 +1821,15 @@ export function StudioShell({
             boundaryEditIntentRef.current = true;
             boundaryReconcileOwnsSeekRef.current = true;
           }
-          setSaveState(navigator.onLine ? "local" : "offline");
-          void requestAutosaveRef.current();
         });
       return;
     }
     if (!pendingDraftConflict) return;
     const recovered = pendingDraftConflict.document;
-    const cloudJson = JSON.stringify(pendingDraftConflict.cloudDocument);
-    lastSavedDocumentRef.current = pendingDraftConflict.cloudDocument;
-    lastSavedDocumentJsonRef.current = cloudJson;
     lastSavedBoundsRef.current = {
       startSec: pendingDraftConflict.cloudDocument.clipStartSec,
       endSec: pendingDraftConflict.cloudDocument.clipEndSec,
     };
-    setBaseRevision(pendingDraftConflict.cloudRevision);
     if (!boundsConverged(recovered, lastSavedBoundsRef.current)) {
       boundaryEditIntentRef.current = true;
       boundaryReconcileOwnsSeekRef.current = true;
@@ -2389,12 +1843,9 @@ export function StudioShell({
       },
     });
     setPendingDraftConflict(null);
-    autosaveStoppedRef.current = false;
-    setSaveState(hasWriteOwnershipRef.current ? (navigator.onLine ? "local" : "offline") : "readonly");
   }, [
     pendingDraftConflict,
     sessionDraftConflict,
-    setBaseRevision,
     studioSession,
     studioSessionMigration.replaceRuntimeRoot,
     timelineSegments,
@@ -2448,7 +1899,7 @@ export function StudioShell({
   // Keyboard shortcuts
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      if (!hasWriteOwnershipRef.current || pendingDraftConflict || sessionDraftConflict) return;
+      if (!hasWriteOwnership || pendingDraftConflict || sessionDraftConflict) return;
       const tag = (e.target as HTMLElement)?.tagName;
       if (
         tag === "INPUT" ||
@@ -2536,7 +1987,7 @@ export function StudioShell({
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [togglePlay, seekTo, playbackClock, duration, splitAtPlayhead, deleteSelectedSegment, deleteSelectedTextLayer, handleUndo, handleRedo, captionSelected, deselectCaption, selectedTextLayerId, deselectTextLayer, pendingDraftConflict, sessionDraftConflict]);
+  }, [togglePlay, seekTo, playbackClock, duration, splitAtPlayhead, deleteSelectedSegment, deleteSelectedTextLayer, handleUndo, handleRedo, captionSelected, deselectCaption, selectedTextLayerId, deselectTextLayer, hasWriteOwnership, pendingDraftConflict, sessionDraftConflict]);
 
   // Fix 3 (Phase B hardening): nothing else reconciles the <video> element
   // or the clock against a delete/revert that just happened — a paused

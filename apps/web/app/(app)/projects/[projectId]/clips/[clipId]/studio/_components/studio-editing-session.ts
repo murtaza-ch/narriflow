@@ -47,6 +47,21 @@ export interface StudioSessionSnapshot {
     kind: "pending" | "writer" | "reader" | "degraded";
     generation: number | null;
   };
+  cloud: {
+    state:
+      | "current"
+      | "pending"
+      | "saving"
+      | "offline"
+      | "retrying"
+      | "rejected"
+      | "authentication-lost"
+      | "missing"
+      | "revision-conflict";
+    revision: number;
+    dirty: boolean;
+    rejectionCode: string | null;
+  };
   capabilities: {
     mutate: boolean;
     play: boolean;
@@ -74,6 +89,7 @@ export type IntentReceipt =
 export type StudioSessionOperation =
   | { type: "start" }
   | { type: "trim"; startSec: number; endSec: number }
+  | { type: "checkpoint-cloud" }
   | { type: "prepare-cloud-revision" }
   | { type: "take-over" }
   | { type: "resolve-conflict"; choice: "device" | "cloud" }
@@ -85,6 +101,27 @@ export type StudioOperationResult =
   | { kind: "started" }
   | { kind: "closed" }
   | { kind: "conflict-resolved"; choice: "device" | "cloud" }
+  | { kind: "cloud-current"; revision: number }
+  | { kind: "cloud-prepared"; revision: number }
+  | {
+      kind: "cloud-blocked";
+      reason:
+        | "read-only"
+        | "semantic-rejection"
+        | "authentication-lost"
+        | "missing"
+        | "revision-conflict"
+        | "unresolved-conflict"
+        | "transient"
+        | "closed";
+      code?: string;
+    }
+  | {
+      kind: "reset-complete";
+      revision: number;
+      document: DeepReadonly<EditorDocument>;
+      reloadRequired: true;
+    }
   | {
       kind: "ownership-acquired";
       forced: boolean;
@@ -126,6 +163,32 @@ export interface StudioCoordinationParticipant {
   onOwnershipLost(): void;
 }
 
+export type StudioCloudSaveOutcome =
+  | { kind: "saved"; revision: number; document: EditorDocument }
+  | {
+      kind: "transient";
+      reason:
+        | "network"
+        | "offline"
+        | "timeout"
+        | "too-early"
+        | "rate-limited"
+        | "server";
+    }
+  | { kind: "authentication-lost" }
+  | { kind: "missing" }
+  | { kind: "rejected"; code: string }
+  | { kind: "revision-conflict"; currentRevision?: number };
+
+export type StudioCloudResetOutcome =
+  | { kind: "reset"; revision: number; document: EditorDocument }
+  | Exclude<StudioCloudSaveOutcome, { kind: "saved" }>;
+
+type StudioCloudTerminalOutcome = Exclude<
+  StudioCloudSaveOutcome,
+  { kind: "saved" | "transient" }
+>;
+
 export interface StudioSessionDependencies {
   drafts: {
     load(key: string): Promise<StudioDraftRecord | null>;
@@ -147,12 +210,21 @@ export interface StudioSessionDependencies {
   };
   cloud: {
     loadHead(): Promise<{ revision: number; document: EditorDocument }>;
+    save?(input: {
+      baseRevision: number;
+      document: EditorDocument;
+    }): Promise<StudioCloudSaveOutcome>;
+    reset?(input: { baseRevision: number }): Promise<StudioCloudResetOutcome>;
+    keepalive?(input: { baseRevision: number; document: EditorDocument }): void;
   };
   runtime: {
     now(): number;
     createId(): string;
     setTimeout(callback: () => void, delayMs: number): number;
     clearTimeout(id: number): void;
+    random?(): number;
+    isOnline?(): boolean;
+    subscribeOnline?(listener: (online: boolean) => void): () => void;
   };
 }
 
@@ -176,6 +248,10 @@ export interface StudioEditingSessionMigrationAdapter {
     document: EditorDocument;
     revision?: number;
   }): Promise<void>;
+  getCloudBaseline(): {
+    revision: number;
+    document: DeepReadonly<EditorDocument>;
+  };
 }
 
 interface SessionProjection {
@@ -183,6 +259,7 @@ interface SessionProjection {
   recovery: StudioSessionSnapshot["recovery"];
   durability: StudioSessionSnapshot["durability"];
   ownership: StudioSessionSnapshot["ownership"];
+  cloud: StudioSessionSnapshot["cloud"];
 }
 
 type DeviceDraftCheckpointOutcome = "checkpointed" | "stale" | "unavailable";
@@ -246,8 +323,24 @@ function snapshotsObservablyEqual(
     left.durability.device === right.durability.device &&
     left.durability.protectsNavigation === right.durability.protectsNavigation &&
     left.ownership.kind === right.ownership.kind &&
-    left.ownership.generation === right.ownership.generation
+    left.ownership.generation === right.ownership.generation &&
+    left.cloud.state === right.cloud.state &&
+    left.cloud.revision === right.cloud.revision &&
+    left.cloud.dirty === right.cloud.dirty &&
+    left.cloud.rejectionCode === right.cloud.rejectionCode
   );
+}
+
+interface CloudAttempt {
+  baseRevision: number;
+  document: EditorDocument;
+  documentVersion: number;
+  retryCount: number;
+}
+
+interface CloudWaiter {
+  kind: "checkpoint" | "prepare";
+  resolve(result: StudioOperationResult): void;
 }
 
 class StudioEditingSessionImplementation implements StudioEditingSession {
@@ -272,6 +365,18 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
   } | null = null;
   private started: boolean;
   private sessionGeneration = 0;
+  private documentVersion = 0;
+  private cloudAttempt: CloudAttempt | null = null;
+  private cloudSaveRunning = false;
+  private cloudWakeRequested = false;
+  private cloudAutosaveTimer: number | null = null;
+  private cloudRetryTimer: number | null = null;
+  private resetRetryTimer: number | null = null;
+  private resetRetryWake: (() => void) | null = null;
+  private cloudDirtySince: number | null = null;
+  private readonly cloudWaiters: CloudWaiter[] = [];
+  private unsubscribeOnline: (() => void) | null = null;
+  private resetInProgress = false;
 
   constructor(
     seed: StudioSessionSeed,
@@ -300,12 +405,24 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
           recovery: { kind: "none", conflictPaths: [] },
           durability: { device: "pending", protectsNavigation: true },
           ownership: { kind: "pending", generation: null },
+          cloud: {
+            state: "current",
+            revision: this.cloudRevision,
+            dirty: false,
+            rejectionCode: null,
+          },
         }
       : {
           status: "ready",
           recovery: { kind: "none", conflictPaths: [] },
           durability: { device: "durable", protectsNavigation: false },
           ownership: { kind: "writer", generation: 0 },
+          cloud: {
+            state: "current",
+            revision: this.cloudRevision,
+            dirty: false,
+            rejectionCode: null,
+          },
         };
     this.snapshot = snapshotFor(this.unified, this.projection);
     this.started = !dependencies || !options.deferStart;
@@ -360,6 +477,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
 
     if (this.unified.doc.present !== documentBefore) {
       this.scheduleDeviceDraftWrite();
+      this.markCloudDirty();
     }
     this.publish();
     return { accepted: true };
@@ -376,9 +494,26 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     }
     if (operation.type === "close") {
       if (this.projection.status === "closed") {
-        return { kind: "unavailable", reason: "invalid-state" };
+        return { kind: "closed" };
       }
       this.sessionGeneration += 1;
+      this.clearCloudTimers();
+      this.unsubscribeOnline?.();
+      this.unsubscribeOnline = null;
+      if (
+        !this.cloudSaveRunning &&
+        this.projection.cloud.dirty &&
+        this.dependencies?.cloud.keepalive &&
+        (this.projection.ownership.kind === "writer" ||
+          this.projection.ownership.kind === "degraded")
+      ) {
+        this.dependencies.cloud.keepalive({
+          baseRevision: this.cloudRevision,
+          document: ownDocument(this.unified.doc.present),
+        });
+      }
+      this.projection = { ...this.projection, status: "closed" };
+      this.publish();
       if (
         this.projection.ownership.kind === "writer" ||
         this.projection.ownership.kind === "degraded"
@@ -399,10 +534,24 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
         },
       };
       this.publish();
+      this.settleCloudWaiters();
       return { kind: "closed" };
     }
     if (operation.type === "take-over") {
       return this.takeOver();
+    }
+    if (operation.type === "checkpoint-cloud") {
+      if (this.resetInProgress && !this.projection.cloud.dirty) {
+        this.resetRetryWake?.();
+        return { kind: "cloud-current", revision: this.cloudRevision };
+      }
+      return this.waitForCloudCurrent("checkpoint");
+    }
+    if (operation.type === "prepare-cloud-revision") {
+      return this.waitForCloudCurrent("prepare");
+    }
+    if (operation.type === "reset-to-original") {
+      return this.resetToOriginal();
     }
     if (operation.type !== "resolve-conflict") {
       return { kind: "unavailable", reason: "not-implemented" };
@@ -452,6 +601,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
         conflictPaths: [],
       },
     };
+    if (operation.choice === "device") this.markCloudDirty();
     this.publish();
     return { kind: "conflict-resolved", choice: operation.choice };
   };
@@ -473,6 +623,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     });
     if (this.unified.doc.present !== documentBefore) {
       this.scheduleDeviceDraftWrite();
+      this.markCloudDirty();
     }
     this.publish();
   }
@@ -493,6 +644,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     );
     if (this.unified.doc.present !== documentBefore) {
       this.scheduleDeviceDraftWrite();
+      this.markCloudDirty();
     }
     this.publish();
   }
@@ -502,9 +654,19 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     document: EditorDocument;
     revision?: number;
   }): Promise<void> {
+    if (this.unified.doc.present !== input.expectedDocument) return;
     this.cloudDocument = ownDocument(input.document);
     if (input.revision !== undefined) this.cloudRevision = input.revision;
-    if (this.unified.doc.present !== input.expectedDocument) return;
+    this.cloudAttempt = null;
+    this.projection = {
+      ...this.projection,
+      cloud: {
+        state: "current",
+        revision: this.cloudRevision,
+        dirty: false,
+        rejectionCode: null,
+      },
+    };
     this.unified = {
       ...this.unified,
       doc: { ...this.unified.doc, present: ownDocument(input.document) },
@@ -541,6 +703,540 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
       };
     }
     this.publish();
+    this.settleCloudWaiters();
+  }
+
+  getCloudBaseline(): {
+    revision: number;
+    document: DeepReadonly<EditorDocument>;
+  } {
+    return {
+      revision: this.cloudRevision,
+      document: this.cloudDocument,
+    };
+  }
+
+  private markCloudDirty(): void {
+    this.documentVersion += 1;
+    if (this.documentsEqual(this.unified.doc.present, this.cloudDocument)) {
+      this.cloudAttempt = null;
+      this.clearCloudTimers();
+      this.cloudDirtySince = null;
+      this.projection = {
+        ...this.projection,
+        cloud: {
+          state: "current",
+          revision: this.cloudRevision,
+          dirty: false,
+          rejectionCode: null,
+        },
+      };
+      this.settleCloudWaiters();
+      return;
+    }
+    if (this.cloudDirtySince === null) {
+      this.cloudDirtySince = this.dependencies?.runtime.now() ?? Date.now();
+    }
+    const online = this.dependencies?.runtime.isOnline?.() ?? true;
+    this.projection = {
+      ...this.projection,
+      cloud: {
+        state: online ? "pending" : "offline",
+        revision: this.cloudRevision,
+        dirty: true,
+        rejectionCode: null,
+      },
+    };
+    if (!this.cloudAttempt) {
+      if (this.cloudAutosaveTimer !== null && this.dependencies) {
+        this.dependencies.runtime.clearTimeout(this.cloudAutosaveTimer);
+        this.cloudAutosaveTimer = null;
+      }
+      this.scheduleCloudAutosave();
+    }
+  }
+
+  private scheduleCloudAutosave(): void {
+    const dependencies = this.dependencies;
+    if (
+      !dependencies?.cloud.save ||
+      this.cloudSaveRunning ||
+      this.cloudAttempt ||
+      this.cloudAutosaveTimer !== null ||
+      this.projection.status !== "ready" ||
+      this.resetInProgress ||
+      (this.projection.ownership.kind !== "writer" &&
+        this.projection.ownership.kind !== "degraded")
+    ) {
+      return;
+    }
+    const dirtyFor = Math.max(
+      0,
+      dependencies.runtime.now() - (this.cloudDirtySince ?? dependencies.runtime.now()),
+    );
+    const delayMs = Math.min(1_500, Math.max(0, 5_000 - dirtyFor));
+    this.cloudAutosaveTimer = dependencies.runtime.setTimeout(() => {
+      this.cloudAutosaveTimer = null;
+      void this.startCloudCheckpoint();
+    }, delayMs);
+  }
+
+  private waitForCloudCurrent(
+    kind: CloudWaiter["kind"],
+  ): Promise<StudioOperationResult> {
+    if (this.projection.status === "starting" && !this.resetInProgress) {
+      return new Promise((resolve) => {
+        const unsubscribe = this.subscribe(() => {
+          if (this.projection.status === "starting") return;
+          unsubscribe();
+          void this.waitForCloudCurrent(kind).then(resolve);
+        });
+      });
+    }
+    const terminal = this.cloudTerminalResult();
+    if (terminal) return Promise.resolve(terminal);
+    if (!this.projection.cloud.dirty && this.projection.cloud.state === "current") {
+      return Promise.resolve(
+        kind === "prepare"
+          ? { kind: "cloud-prepared", revision: this.cloudRevision }
+          : { kind: "cloud-current", revision: this.cloudRevision },
+      );
+    }
+    return new Promise((resolve) => {
+      this.cloudWaiters.push({ kind, resolve });
+      this.wakeCloudCheckpoint();
+    });
+  }
+
+  private cloudTerminalResult(): StudioOperationResult | null {
+    if (this.projection.status === "closed") {
+      return { kind: "cloud-blocked", reason: "closed" };
+    }
+    if (this.projection.status === "conflict") {
+      return { kind: "cloud-blocked", reason: "unresolved-conflict" };
+    }
+    if (
+      this.projection.ownership.kind !== "writer" &&
+      this.projection.ownership.kind !== "degraded"
+    ) {
+      return this.projection.cloud.dirty
+        ? { kind: "cloud-blocked", reason: "read-only" }
+        : null;
+    }
+    switch (this.projection.cloud.state) {
+      case "rejected":
+        return {
+          kind: "cloud-blocked",
+          reason: "semantic-rejection",
+          ...(this.projection.cloud.rejectionCode
+            ? { code: this.projection.cloud.rejectionCode }
+            : {}),
+        };
+      case "authentication-lost":
+        return { kind: "cloud-blocked", reason: "authentication-lost" };
+      case "missing":
+        return { kind: "cloud-blocked", reason: "missing" };
+      case "revision-conflict":
+        return { kind: "cloud-blocked", reason: "revision-conflict" };
+      default:
+        return null;
+    }
+  }
+
+  private settleCloudWaiters(): void {
+    const terminal = this.cloudTerminalResult();
+    const current =
+      !this.projection.cloud.dirty && this.projection.cloud.state === "current";
+    if (!terminal && !current) return;
+    const waiters = this.cloudWaiters.splice(0);
+    for (const waiter of waiters) {
+      waiter.resolve(
+        terminal ??
+          (waiter.kind === "prepare"
+            ? { kind: "cloud-prepared", revision: this.cloudRevision }
+            : { kind: "cloud-current", revision: this.cloudRevision }),
+      );
+    }
+  }
+
+  private wakeCloudCheckpoint(): void {
+    const dependencies = this.dependencies;
+    if (!dependencies?.cloud.save) return;
+    if (this.cloudAutosaveTimer !== null) {
+      dependencies.runtime.clearTimeout(this.cloudAutosaveTimer);
+      this.cloudAutosaveTimer = null;
+    }
+    if (this.cloudRetryTimer !== null) {
+      dependencies.runtime.clearTimeout(this.cloudRetryTimer);
+      this.cloudRetryTimer = null;
+    }
+    if (this.cloudSaveRunning) {
+      this.cloudWakeRequested = true;
+      return;
+    }
+    void this.startCloudCheckpoint();
+  }
+
+  private async startCloudCheckpoint(): Promise<void> {
+    const dependencies = this.dependencies;
+    if (
+      !dependencies?.cloud.save ||
+      this.cloudSaveRunning ||
+      !this.projection.cloud.dirty ||
+      (this.projection.status !== "ready" && !this.resetInProgress) ||
+      (this.projection.ownership.kind !== "writer" &&
+        this.projection.ownership.kind !== "degraded")
+    ) {
+      return;
+    }
+    const expectedSessionGeneration = this.sessionGeneration;
+    const attempt =
+      this.cloudAttempt ??
+      ({
+        baseRevision: this.cloudRevision,
+        document: ownDocument(this.unified.doc.present),
+        documentVersion: this.documentVersion,
+        retryCount: 0,
+      } satisfies CloudAttempt);
+    this.cloudAttempt = attempt;
+    this.cloudSaveRunning = true;
+    this.projection = {
+      ...this.projection,
+      cloud: { ...this.projection.cloud, state: "saving", rejectionCode: null },
+    };
+    this.publish();
+
+    if (this.draftWriteTimer !== null) {
+      dependencies.runtime.clearTimeout(this.draftWriteTimer);
+      this.draftWriteTimer = null;
+    }
+    await this.queueDeviceDraftCheckpoint();
+    if (
+      this.sessionGeneration !== expectedSessionGeneration ||
+      this.projection.status === "closed"
+    ) {
+      this.cloudSaveRunning = false;
+      return;
+    }
+
+    let outcome: StudioCloudSaveOutcome;
+    if (!(dependencies.runtime.isOnline?.() ?? true)) {
+      outcome = { kind: "transient", reason: "offline" };
+    } else {
+      try {
+        outcome = await dependencies.cloud.save({
+          baseRevision: attempt.baseRevision,
+          document: ownDocument(attempt.document),
+        });
+      } catch {
+        outcome = { kind: "transient", reason: "network" };
+      }
+    }
+    if (this.sessionGeneration !== expectedSessionGeneration) {
+      this.cloudSaveRunning = false;
+      return;
+    }
+    await this.handleCloudOutcome(attempt, outcome);
+    this.cloudSaveRunning = false;
+    if (this.cloudWakeRequested) {
+      this.cloudWakeRequested = false;
+      void this.startCloudCheckpoint();
+      return;
+    }
+    if (
+      this.projection.cloud.dirty &&
+      this.projection.cloud.state === "pending" &&
+      !this.cloudAttempt
+    ) {
+      void this.startCloudCheckpoint();
+    }
+  }
+
+  private async handleCloudOutcome(
+    attempt: CloudAttempt,
+    outcome: StudioCloudSaveOutcome,
+  ): Promise<void> {
+    if (outcome.kind === "saved") {
+      this.cloudAttempt = null;
+      this.cloudRevision = outcome.revision;
+      this.cloudDocument = ownDocument(outcome.document);
+      const isCurrent = this.documentVersion === attempt.documentVersion;
+      if (isCurrent) {
+        this.unified = {
+          ...this.unified,
+          doc: { ...this.unified.doc, present: ownDocument(outcome.document) },
+        };
+        this.cloudDirtySince = null;
+        this.projection = {
+          ...this.projection,
+          cloud: {
+            state: "current",
+            revision: this.cloudRevision,
+            dirty: false,
+            rejectionCode: null,
+          },
+        };
+        const generation = this.projection.ownership.generation;
+        if (this.dependencies && generation !== null) {
+          try {
+            const removed = await this.dependencies.drafts.remove(
+              this.deviceDraftKey,
+              generation,
+            );
+            if (removed === "stale") {
+              this.dependencies.coordination.relinquish?.();
+              this.loseOwnership();
+              return;
+            }
+            this.projection = {
+              ...this.projection,
+              durability: { device: "durable", protectsNavigation: false },
+            };
+          } catch (error) {
+            this.deviceDraftAvailable = false;
+            this.projection = {
+              ...this.projection,
+              durability: { device: "degraded", protectsNavigation: true },
+            };
+            this.diagnose("studio_cloud_ack_draft_remove_failed", "degraded", error);
+          }
+        }
+      } else {
+        this.projection = {
+          ...this.projection,
+          cloud: {
+            state: "pending",
+            revision: this.cloudRevision,
+            dirty: true,
+            rejectionCode: null,
+          },
+        };
+      }
+      this.publish();
+      this.settleCloudWaiters();
+      return;
+    }
+
+    if (outcome.kind === "transient") {
+      attempt.retryCount += 1;
+      this.projection = {
+        ...this.projection,
+        cloud: {
+          ...this.projection.cloud,
+          state: outcome.reason === "offline" ? "offline" : "retrying",
+          dirty: true,
+          rejectionCode: null,
+        },
+      };
+      this.publish();
+      this.scheduleCloudRetry(attempt.retryCount - 1);
+      return;
+    }
+
+    this.cloudAttempt = null;
+    const newerDocumentExists = this.documentVersion !== attempt.documentVersion;
+    if (outcome.kind === "rejected" && newerDocumentExists) {
+      this.projection = {
+        ...this.projection,
+        cloud: {
+          state: "pending",
+          revision: this.cloudRevision,
+          dirty: true,
+          rejectionCode: null,
+        },
+      };
+      this.publish();
+      return;
+    }
+    this.projectTerminalCloudOutcome(outcome);
+    this.publish();
+    this.settleCloudWaiters();
+  }
+
+  private scheduleCloudRetry(attempt: number): void {
+    const dependencies = this.dependencies;
+    if (!dependencies || this.cloudRetryTimer !== null) return;
+    const delayMs = this.retryDelayMs(attempt);
+    this.cloudRetryTimer = dependencies.runtime.setTimeout(() => {
+      this.cloudRetryTimer = null;
+      void this.startCloudCheckpoint();
+    }, delayMs);
+  }
+
+  private clearCloudTimers(): void {
+    const dependencies = this.dependencies;
+    if (!dependencies) return;
+    this.cloudWakeRequested = false;
+    if (this.cloudAutosaveTimer !== null) {
+      dependencies.runtime.clearTimeout(this.cloudAutosaveTimer);
+      this.cloudAutosaveTimer = null;
+    }
+    if (this.cloudRetryTimer !== null) {
+      dependencies.runtime.clearTimeout(this.cloudRetryTimer);
+      this.cloudRetryTimer = null;
+    }
+    this.resetRetryWake?.();
+  }
+
+  private documentsEqual(left: EditorDocument, right: EditorDocument): boolean {
+    return JSON.stringify(left) === JSON.stringify(right);
+  }
+
+  private projectTerminalCloudOutcome(
+    outcome: StudioCloudTerminalOutcome,
+    dirty = true,
+  ): void {
+    this.projection = {
+      ...this.projection,
+      cloud: {
+        state: outcome.kind,
+        revision: this.cloudRevision,
+        dirty,
+        rejectionCode: outcome.kind === "rejected" ? outcome.code : null,
+      },
+    };
+  }
+
+  private retryDelayMs(attempt: number): number {
+    const dependencies = this.dependencies;
+    const base = Math.min(30_000, 1_000 * 2 ** Math.min(5, Math.max(0, attempt)));
+    const jitter = 0.75 + (dependencies?.runtime.random?.() ?? Math.random()) * 0.5;
+    return Math.min(30_000, Math.round(base * jitter));
+  }
+
+  private waitForResetRetry(attempt: number): Promise<void> {
+    const dependencies = this.dependencies;
+    if (!dependencies) return Promise.resolve();
+    return new Promise((resolve) => {
+      let settled = false;
+      const wake = () => {
+        if (settled) return;
+        settled = true;
+        if (this.resetRetryTimer !== null) {
+          dependencies.runtime.clearTimeout(this.resetRetryTimer);
+          this.resetRetryTimer = null;
+        }
+        this.resetRetryWake = null;
+        resolve();
+      };
+      this.resetRetryWake = wake;
+      this.resetRetryTimer = dependencies.runtime.setTimeout(
+        wake,
+        this.retryDelayMs(attempt),
+      );
+    });
+  }
+
+  private async resetToOriginal(): Promise<StudioOperationResult> {
+    const dependencies = this.dependencies;
+    if (
+      !dependencies?.cloud.reset ||
+      this.resetInProgress ||
+      this.projection.status !== "ready" ||
+      (this.projection.ownership.kind !== "writer" &&
+        this.projection.ownership.kind !== "degraded")
+    ) {
+      return { kind: "unavailable", reason: "invalid-state" };
+    }
+    this.resetInProgress = true;
+    const expectedSessionGeneration = this.sessionGeneration;
+    this.projection = { ...this.projection, status: "starting" };
+    this.publish();
+
+    const checkpoint = await this.waitForCloudCurrent("checkpoint");
+    if (this.sessionGeneration !== expectedSessionGeneration) {
+      this.resetInProgress = false;
+      return { kind: "cloud-blocked", reason: "closed" };
+    }
+    if (checkpoint.kind !== "cloud-current") {
+      this.resetInProgress = false;
+      this.projection = { ...this.projection, status: "ready" };
+      this.publish();
+      return checkpoint;
+    }
+
+    let outcome: StudioCloudResetOutcome;
+    let resetAttempt = 0;
+    while (true) {
+      if (this.sessionGeneration !== expectedSessionGeneration) {
+        this.resetInProgress = false;
+        return { kind: "cloud-blocked", reason: "closed" };
+      }
+      if (!(dependencies.runtime.isOnline?.() ?? true)) {
+        outcome = { kind: "transient", reason: "offline" };
+      } else {
+        try {
+          outcome = await dependencies.cloud.reset({
+            baseRevision: checkpoint.revision,
+          });
+        } catch {
+          outcome = { kind: "transient", reason: "network" };
+        }
+      }
+      if (this.sessionGeneration !== expectedSessionGeneration) {
+        this.resetInProgress = false;
+        return { kind: "cloud-blocked", reason: "closed" };
+      }
+      if (outcome.kind !== "transient") break;
+      this.projection = {
+        ...this.projection,
+        cloud: {
+          ...this.projection.cloud,
+          state: outcome.reason === "offline" ? "offline" : "retrying",
+        },
+      };
+      this.publish();
+      await this.waitForResetRetry(resetAttempt);
+      resetAttempt += 1;
+    }
+    if (outcome.kind !== "reset") {
+      this.resetInProgress = false;
+      this.projection = { ...this.projection, status: "ready" };
+      this.projectTerminalCloudOutcome(outcome, this.projection.cloud.dirty);
+      this.publish();
+      return (
+        this.cloudTerminalResult() ?? {
+          kind: "unavailable",
+          reason: "invalid-state",
+        }
+      );
+    }
+
+    this.cloudRevision = outcome.revision;
+    this.cloudDocument = ownDocument(outcome.document);
+    this.unified = createUnifiedEditorHistory(
+      ownDocument(outcome.document),
+      ownSegments(this.seed.segments),
+    );
+    this.documentVersion += 1;
+    this.cloudDirtySince = null;
+    this.clearCloudTimers();
+    this.unsubscribeOnline?.();
+    this.unsubscribeOnline = null;
+    dependencies.coordination.close();
+    this.projection = {
+      ...this.projection,
+      status: "closed",
+      ownership: {
+        kind: "reader",
+        generation: this.projection.ownership.generation,
+      },
+      cloud: {
+        state: "current",
+        revision: this.cloudRevision,
+        dirty: false,
+        rejectionCode: null,
+      },
+    };
+    this.resetInProgress = false;
+    this.publish();
+    this.settleCloudWaiters();
+    return {
+      kind: "reset-complete",
+      revision: this.cloudRevision,
+      document: this.cloudDocument,
+      reloadRequired: true,
+    };
   }
 
   private publish(): void {
@@ -563,7 +1259,8 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
         projectId: this.identity?.projectId,
         clipId: this.identity?.clipId,
         sessionGeneration: this.sessionGeneration,
-        documentVersion: this.cloudRevision,
+        documentVersion: this.documentVersion,
+        cloudRevision: this.cloudRevision,
         ownershipGeneration: this.projection.ownership.generation,
         outcome,
         ...(error === undefined
@@ -575,6 +1272,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
 
   private loseOwnership(): void {
     this.sessionGeneration += 1;
+    this.clearCloudTimers();
     if (this.draftWriteTimer !== null && this.dependencies) {
       this.dependencies.runtime.clearTimeout(this.draftWriteTimer);
       this.draftWriteTimer = null;
@@ -589,6 +1287,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
       },
     };
     this.publish();
+    this.settleCloudWaiters();
   }
 
   private ownsGeneration(generation: number): boolean {
@@ -603,6 +1302,26 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     const dependencies = this.dependencies;
     if (!dependencies) return;
     const expectedSessionGeneration = this.sessionGeneration;
+    this.unsubscribeOnline = dependencies.runtime.subscribeOnline?.((online) => {
+      if (!online) {
+        if (this.projection.cloud.dirty) {
+          this.projection = {
+            ...this.projection,
+            cloud: { ...this.projection.cloud, state: "offline" },
+          };
+          this.publish();
+        }
+        return;
+      }
+      this.resetRetryWake?.();
+      if (
+        this.projection.cloud.dirty &&
+        (this.projection.cloud.state === "offline" ||
+          this.projection.cloud.state === "retrying")
+      ) {
+        this.wakeCloudCheckpoint();
+      }
+    }) ?? null;
     const participant: StudioCoordinationParticipant = {
       onTakeoverRequested: async () => {
         const priorOwnership = this.projection.ownership;
@@ -672,6 +1391,12 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
           ? { device: "durable", protectsNavigation: false }
           : { device: "degraded", protectsNavigation: true },
         ownership,
+        cloud: {
+          state: "current",
+          revision: this.cloudRevision,
+          dirty: false,
+          rejectionCode: null,
+        },
       };
       this.publish();
       return;
@@ -690,6 +1415,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     if (!projection || this.sessionGeneration !== expectedSessionGeneration) return;
     this.projection = projection;
     this.publish();
+    if (this.projection.cloud.dirty) this.scheduleCloudAutosave();
   }
 
   private async reconcileOwnedDraft(input: {
@@ -783,6 +1509,21 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
         kind: input.ownershipKind,
         generation: ownershipGeneration,
       },
+      cloud: this.documentsEqual(document, input.cloudDocument)
+        ? {
+            state: "current",
+            revision: input.cloudRevision,
+            dirty: false,
+            rejectionCode: null,
+          }
+        : {
+            state: this.dependencies?.runtime.isOnline?.() === false
+              ? "offline"
+              : "pending",
+            revision: input.cloudRevision,
+            dirty: true,
+            rejectionCode: null,
+          },
     };
   }
 
@@ -877,6 +1618,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     }
     this.projection = projection;
     this.publish();
+    if (this.projection.cloud.dirty) this.scheduleCloudAutosave();
     return {
       kind: "ownership-acquired",
       forced: acquired.forced,
