@@ -1,4 +1,5 @@
 import {
+  EDITOR_HISTORY_LIMIT,
   applyWithHistory,
   canRedo as canRedoDoc,
   canUndo as canUndoDoc,
@@ -112,10 +113,26 @@ export function applyUnifiedEditorAction(
       // "reference, even at the cap" tests for the pinned-down contract.
       if (nextDoc === state.doc) return state;
       const pushedFrame = nextDoc.past !== state.doc.past;
+      let metaUndo = state.metaUndo;
+      if (pushedFrame) {
+        // The document history evicts its oldest frame at the cap. Evict the
+        // matching oldest document tag as well while preserving interleaved
+        // segment tags, so canUndo never advertises a discarded frame.
+        if (state.doc.past.length === EDITOR_HISTORY_LIMIT) {
+          const discardedDocumentTag = metaUndo.indexOf("document");
+          if (discardedDocumentTag >= 0) {
+            metaUndo = [
+              ...metaUndo.slice(0, discardedDocumentTag),
+              ...metaUndo.slice(discardedDocumentTag + 1),
+            ];
+          }
+        }
+        metaUndo = [...metaUndo, "document"];
+      }
       return {
         ...state,
         doc: nextDoc,
-        metaUndo: pushedFrame ? [...state.metaUndo, "document"] : state.metaUndo,
+        metaUndo,
         metaRedo: [],
       };
     }

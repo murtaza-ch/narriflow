@@ -45,7 +45,23 @@ import {
   releaseTimelineThumbnailResources,
   type ThumbnailVideoKind,
 } from "./timeline-preview-manager";
-import { useStudioEditingSession } from "./studio-editing-session-react";
+import {
+  selectStudioCloud,
+  selectStudioCanRedo,
+  selectStudioCanUndo,
+  selectStudioDocument,
+  selectStudioDurability,
+  selectStudioOwnership,
+  selectStudioPlaybackPresentation,
+  selectStudioPreview,
+  selectStudioRecovery,
+  selectStudioSegments,
+  selectStudioStatus,
+  studioPlaybackPresentationEqual,
+  studioPreviewPresentationEqual,
+  useStudioEditingSession,
+  useStudioSessionSelector,
+} from "./studio-editing-session-react";
 import type { StudioSessionSnapshot } from "./studio-editing-session";
 import { DraftRecoveryDialog } from "./draft-recovery-dialog";
 import { StudioWriteLeaseOverlay } from "./studio-write-lease-overlay";
@@ -149,6 +165,30 @@ export type StudioSaveState =
   | "blocked"
   | "degraded"
   | "readonly";
+
+function projectStudioSaveState(
+  cloud: StudioSessionSnapshot["cloud"],
+  ownership: StudioSessionSnapshot["ownership"],
+): StudioSaveState {
+  if (ownership.kind === "reader") return "readonly";
+  switch (cloud.state) {
+    case "current":
+      return "idle";
+    case "pending":
+      return "local";
+    case "saving":
+      return "saving";
+    case "offline":
+      return "offline";
+    case "retrying":
+      return "error";
+    case "rejected":
+    case "authentication-lost":
+    case "missing":
+    case "revision-conflict":
+      return "blocked";
+  }
+}
 export type { CaptionAnimation, CaptionPreset };
 export type ToolId =
   | "captions"
@@ -591,16 +631,15 @@ export function StudioShell({
   const [brollPreviewAsset, setBrollPreviewAsset] =
     useState<StudioBrollPreviewAsset | null>(null);
 
-  // React subscribes to one clip-scoped session and adapts its stable
-  // snapshot into the existing presentation context. The migration adapter
-  // exists only while later tickets move recovery/cloud convergence out of
-  // this component; edits and history already have exactly one owner here.
+  // React creates one clip-scoped session, then subscribes to focused
+  // immutable projections below. All editing protocols remain owned by the
+  // session; this component only translates snapshots and user gestures for
+  // presentation consumers.
   const {
     session: studioSession,
-    snapshot: sessionSnapshot,
     mediaRef,
     playbackClock,
-    getCurrentDocument: getStudioDocument,
+    suppressNavigationWarning,
   } = useStudioEditingSession(
     {
       projectId: clipInfo.projectId,
@@ -634,15 +673,39 @@ export function StudioShell({
     },
   );
 
-  const previewVideoUrl = sessionSnapshot.preview.proxy?.url ?? null;
-  const previewStartSec = sessionSnapshot.preview.proxy?.startSec ?? 0;
-  const waveformPeaksUrl = sessionSnapshot.preview.waveformPeaksUrl;
+  const doc = useStudioSessionSelector(studioSession, selectStudioDocument);
+  const segments = useStudioSessionSelector(studioSession, selectStudioSegments);
+  const canUndo = useStudioSessionSelector(studioSession, selectStudioCanUndo);
+  const canRedo = useStudioSessionSelector(studioSession, selectStudioCanRedo);
+  const status = useStudioSessionSelector(studioSession, selectStudioStatus);
+  const recovery = useStudioSessionSelector(studioSession, selectStudioRecovery);
+  const durability = useStudioSessionSelector(studioSession, selectStudioDurability);
+  const ownership = useStudioSessionSelector(studioSession, selectStudioOwnership);
+  const cloud = useStudioSessionSelector(studioSession, selectStudioCloud);
+  const preview = useStudioSessionSelector(
+    studioSession,
+    selectStudioPreview,
+    studioPreviewPresentationEqual,
+  );
+  const playbackPresentation = useStudioSessionSelector(
+    studioSession,
+    selectStudioPlaybackPresentation,
+    studioPlaybackPresentationEqual,
+  );
+  const getStudioDocument = useCallback(
+    () => studioSession.getSnapshot().document as EditorDocument,
+    [studioSession],
+  );
+
+  const previewVideoUrl = preview.proxy?.url ?? null;
+  const previewStartSec = preview.proxy?.startSec ?? 0;
+  const waveformPeaksUrl = preview.waveformPeaksUrl;
   const autoLayoutAnalysis =
-    sessionSnapshot.preview.automaticLayout as ClipAutoLayoutAnalysis | null;
-  const activeVideoUrl = sessionSnapshot.preview.activeAsset.url;
-  const activeOffsetSec = sessionSnapshot.preview.activeAsset.offsetSec;
+    preview.automaticLayout as ClipAutoLayoutAnalysis | null;
+  const activeVideoUrl = preview.activeAsset.url;
+  const activeOffsetSec = preview.activeAsset.offsetSec;
   const useOriginalSourceFallback =
-    sessionSnapshot.preview.activeAsset.kind === "source";
+    preview.activeAsset.kind === "source";
   const setUseOriginalSourceFallback = useCallback(
     (enabled: boolean) => {
       studioSession.dispatch({
@@ -657,13 +720,9 @@ export function StudioShell({
   }, [studioSession]);
 
   // Named `doc` (not `document`) to avoid shadowing the global DOM object.
-  const doc = sessionSnapshot.document;
   const captionPreset = doc.captionPreset;
   const studioEdits = doc.studioEdits;
   const brollUrl = doc.brollUrl;
-  const segments = sessionSnapshot.segments;
-  const canUndo = sessionSnapshot.history.canUndo;
-  const canRedo = sessionSnapshot.history.canRedo;
 
   // Derived from `doc.transcriptSlice`/`doc.clipStartSec`/`doc.clipEndSec`
   // via the exact same pure effective-timing computation studio/page.tsx
@@ -702,7 +761,7 @@ export function StudioShell({
   const effectiveClipEndSec = effectiveTiming.endSec;
 
   const activeVideoKind: ThumbnailVideoKind =
-    sessionSnapshot.preview.activeAsset.kind === "proxy" ? "proxy" : "source";
+    preview.activeAsset.kind === "proxy" ? "proxy" : "source";
   const playerClipStartSec = effectiveClipStartSec - activeOffsetSec;
   const playerClipEndSec = effectiveClipEndSec - activeOffsetSec;
 
@@ -731,7 +790,7 @@ export function StudioShell({
   // `duration` IS the edited duration — identical to the old
   // `clipEndSec - clipStartSec` computation whenever `deletedRanges` is
   // empty (the fast path), strictly shorter once cuts exist.
-  const duration = sessionSnapshot.playback.durationSec;
+  const duration = playbackPresentation.durationSec;
 
   // Derive TranscriptItem[] from utterances for existing TranscriptPanel
   const derivedTranscript: TranscriptItem[] = useMemo(
@@ -745,8 +804,8 @@ export function StudioShell({
     [utterances, effectiveClipStartSec],
   );
 
-  const isPlaying = sessionSnapshot.playback.state === "playing";
-  const playbackRate = sessionSnapshot.playback.rate;
+  const isPlaying = playbackPresentation.state === "playing";
+  const playbackRate = playbackPresentation.rate;
   const [activeTool, setActiveTool] = useState<ToolId | null>(null);
   const [showTimeline, setShowTimeline] = useState(true);
   const [timelineSnapping, setTimelineSnapping] = useState(true);
@@ -761,26 +820,24 @@ export function StudioShell({
   const [captionSelected, setCaptionSelected] = useState(false);
   const [selectedTextLayerId, setSelectedTextLayerId] = useState<string | null>(null);
   const [transcriptOnly, setTranscriptOnly] = useState(false);
-  const [saveState, setSaveState] = useState<StudioSaveState>("idle");
   const [exportState, setExportState] = useState<
     "idle" | "exporting" | "queued"
   >("idle");
   const [resetState, setResetState] = useState<"idle" | "resetting">("idle");
-  const [revision, setRevisionState] = useState(initialEditorRevision);
-  const [isDocDirty, setIsDocDirty] = useState(false);
+  const revision = cloud.revision;
+  const isDocDirty = cloud.dirty;
+  const saveState = projectStudioSaveState(cloud, ownership);
   const hasWriteOwnership =
-    sessionSnapshot.ownership.kind === "writer" ||
-    sessionSnapshot.ownership.kind === "degraded";
-  const writeOwnershipReady = sessionSnapshot.ownership.kind !== "pending";
-  const draftRecoveryReady = sessionSnapshot.status !== "starting";
-  const sessionDraftConflict = sessionSnapshot.status === "conflict";
+    ownership.kind === "writer" || ownership.kind === "degraded";
+  const writeOwnershipReady = ownership.kind !== "pending";
+  const draftRecoveryReady = status !== "starting";
+  const sessionDraftConflict = status === "conflict";
   const sessionSafetyDegraded =
-    sessionSnapshot.durability.device === "degraded" ||
-    sessionSnapshot.ownership.kind === "degraded";
+    durability.device === "degraded" || ownership.kind === "degraded";
   const recoveryNoticeRef = useRef<StudioSessionSnapshot["recovery"]["kind"]>("none");
 
   useEffect(() => {
-    const kind = sessionSnapshot.recovery.kind;
+    const kind = recovery.kind;
     if (kind === recoveryNoticeRef.current) return;
     recoveryNoticeRef.current = kind;
     if (kind === "recovered" || kind === "merged") {
@@ -792,7 +849,7 @@ export function StudioShell({
             ? "Your device draft was safely combined with newer cloud changes."
             : "Unsynced edits from this device are ready to continue.",
       });
-    } else if (sessionSnapshot.durability.device === "degraded") {
+    } else if (durability.device === "degraded") {
       toaster.create({
         type: "warning",
         title: "Local recovery is unavailable",
@@ -800,7 +857,7 @@ export function StudioShell({
           "Cloud autosave still works, but this browser could not open its recovery storage.",
       });
     }
-  }, [sessionSnapshot.durability.device, sessionSnapshot.recovery.kind]);
+  }, [durability.device, recovery.kind]);
 
   // Fix 4: canReset used to be `revision > 0 || isDocDirty`, which offered
   // Reset even when nothing would actually change (e.g. right after a fresh
@@ -1288,39 +1345,6 @@ export function StudioShell({
     applyHistoryIntent("history.redo");
   }, [applyHistoryIntent]);
 
-  const suppressUnloadGuardRef = useRef(false);
-
-  useEffect(() => {
-    setRevisionState(sessionSnapshot.cloud.revision);
-    setIsDocDirty(sessionSnapshot.cloud.dirty);
-
-    setSaveState(() => {
-      if (sessionSnapshot.ownership.kind === "reader") return "readonly";
-      switch (sessionSnapshot.cloud.state) {
-        case "current":
-          return "idle";
-        case "pending":
-          return "local";
-        case "saving":
-          return "saving";
-        case "offline":
-          return "offline";
-        case "retrying":
-          return "error";
-        case "rejected":
-        case "authentication-lost":
-        case "missing":
-        case "revision-conflict":
-          return "blocked";
-      }
-    });
-  }, [
-    sessionSnapshot.cloud.dirty,
-    sessionSnapshot.cloud.revision,
-    sessionSnapshot.cloud.state,
-    sessionSnapshot.ownership.kind,
-  ]);
-
   const handleSave = useCallback(async () => {
     const result = await studioSession.perform({ type: "checkpoint-cloud" });
     if (result.kind === "cloud-current") return;
@@ -1382,19 +1406,6 @@ export function StudioShell({
     }
   }, [studioSession, clipInfo.projectId, clipInfo.id, router]);
 
-  // Warn only while the current document is not Device Draft durable.
-  useEffect(() => {
-    const onBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (suppressUnloadGuardRef.current) return;
-      if (sessionSnapshot.durability.protectsNavigation) {
-        e.preventDefault();
-        e.returnValue = "";
-      }
-    };
-    window.addEventListener("beforeunload", onBeforeUnload);
-    return () => window.removeEventListener("beforeunload", onBeforeUnload);
-  }, [sessionSnapshot.durability.protectsNavigation]);
-
   // ─── Reset to original (vizard-parity.md Phase A step 4) ────────────────
   const handleReset = useCallback(async () => {
     if (resetState === "resetting" || !hasWriteOwnership) return;
@@ -1406,8 +1417,7 @@ export function StudioShell({
           result.kind === "cloud-blocked" ? result.reason : "reset unavailable",
         );
       }
-      suppressUnloadGuardRef.current = true;
-      setIsDocDirty(false);
+      suppressNavigationWarning();
       window.location.reload();
     } catch {
       toaster.create({
@@ -1418,7 +1428,7 @@ export function StudioShell({
     } finally {
       setResetState((s) => (s === "resetting" ? "idle" : s));
     }
-  }, [hasWriteOwnership, resetState, studioSession]);
+  }, [hasWriteOwnership, resetState, studioSession, suppressNavigationWarning]);
 
   const handleTakeOverEditing = useCallback(() => {
     void studioSession.perform({ type: "take-over" }).then((result) => {
@@ -1737,7 +1747,7 @@ export function StudioShell({
 
         <DraftRecoveryDialog
           open={sessionDraftConflict}
-          conflictPaths={[...sessionSnapshot.recovery.conflictPaths]}
+          conflictPaths={[...recovery.conflictPaths]}
           onKeepCloud={handleKeepCloudDraft}
           onRecoverLocal={handleRecoverConflictingDraft}
         />

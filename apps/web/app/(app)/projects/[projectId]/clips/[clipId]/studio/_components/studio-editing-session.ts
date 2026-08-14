@@ -42,8 +42,7 @@ type SynchronousEditorAction = Exclude<
   { type: "reset" | "setClipBoundaries" | "trimClip" }
 >;
 
-/** The ticket-01 projection. Later tickets extend this snapshot only when
- * their protocol moves, avoiding two owners during the migration. */
+/** Immutable projection rendered by React and observed by behavior tests. */
 export interface StudioSessionSnapshot {
   document: DeepReadonly<EditorDocument>;
   segments: readonly DeepReadonly<TimelineSegment>[];
@@ -110,8 +109,7 @@ export type IntentReceipt =
   | { accepted: true }
   | { accepted: false; reason: "starting" | "read-only" | "conflict" | "closed" };
 
-/** Typed operation surface agreed by the ADR. Ticket 01 establishes the
- * boundary; the owning behavior arrives with the corresponding ticket. */
+/** Typed asynchronous operation surface agreed by the Studio session ADR. */
 export type StudioSessionOperation =
   | { type: "start" }
   | { type: "resume" }
@@ -369,22 +367,6 @@ export interface StudioSessionDependencies {
   };
 }
 
-/**
- * Temporary seam used only while the legacy React protocols move behind the
- * session one ticket at a time. It is deliberately absent from the public
- * StudioEditingSession object.
- */
-export interface StudioEditingSessionMigrationAdapter {
-  editDocumentAndResegment(input: {
-    action: EditorAction;
-    segments: TimelineSegment[];
-  }): void;
-  getCloudBaseline(): {
-    revision: number;
-    document: DeepReadonly<EditorDocument>;
-  };
-}
-
 interface SessionProjection {
   status: StudioSessionSnapshot["status"];
   recovery: StudioSessionSnapshot["recovery"];
@@ -444,6 +426,21 @@ function ownSegments(segments: readonly TimelineSegment[]): TimelineSegment[] {
   return deepFreeze(structuredClone(segments)) as TimelineSegment[];
 }
 
+export function studioPreviewSnapshotsEqual(
+  left: StudioPreviewSnapshot,
+  right: StudioPreviewSnapshot,
+): boolean {
+  return (
+    left.windowFingerprint === right.windowFingerprint &&
+    left.proxy === right.proxy &&
+    left.waveformPeaksUrl === right.waveformPeaksUrl &&
+    left.automaticLayout === right.automaticLayout &&
+    left.activeAsset.kind === right.activeAsset.kind &&
+    left.activeAsset.url === right.activeAsset.url &&
+    left.activeAsset.offsetSec === right.activeAsset.offsetSec
+  );
+}
+
 function snapshotsObservablyEqual(
   left: StudioSessionSnapshot,
   right: StudioSessionSnapshot,
@@ -464,13 +461,7 @@ function snapshotsObservablyEqual(
     left.cloud.revision === right.cloud.revision &&
     left.cloud.dirty === right.cloud.dirty &&
     left.cloud.rejectionCode === right.cloud.rejectionCode &&
-    left.preview.windowFingerprint === right.preview.windowFingerprint &&
-    left.preview.proxy === right.preview.proxy &&
-    left.preview.waveformPeaksUrl === right.preview.waveformPeaksUrl &&
-    left.preview.automaticLayout === right.preview.automaticLayout &&
-    left.preview.activeAsset.kind === right.preview.activeAsset.kind &&
-    left.preview.activeAsset.url === right.preview.activeAsset.url &&
-    left.preview.activeAsset.offsetSec === right.preview.activeAsset.offsetSec &&
+    studioPreviewSnapshotsEqual(left.preview, right.preview) &&
     left.playback.editedTimeSec === right.playback.editedTimeSec &&
     left.playback.durationSec === right.playback.durationSec &&
     left.playback.state === right.playback.state &&
@@ -948,14 +939,6 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     return { kind: "conflict-resolved", choice: operation.choice };
   };
 
-  editDocumentAndResegment(input: {
-    action: EditorAction;
-    segments: TimelineSegment[];
-  }): void {
-    if (!this.snapshot.capabilities.mutate) return;
-    this.applyDocumentAndResegment(input);
-  }
-
   private applyDocumentAndResegment(input: {
     action: EditorAction;
     segments: TimelineSegment[];
@@ -976,16 +959,6 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
       this.markCloudDirty();
     }
     this.publish();
-  }
-
-  getCloudBaseline(): {
-    revision: number;
-    document: DeepReadonly<EditorDocument>;
-  } {
-    return {
-      revision: this.cloudRevision,
-      document: this.cloudDocument,
-    };
   }
 
   private markCloudDirty(): void {
@@ -2823,11 +2796,6 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
   }
 }
 
-const migrationAdapters = new WeakMap<
-  StudioEditingSession,
-  StudioEditingSessionImplementation
->();
-
 export function createStudioEditingSession(
   seed: StudioSessionSeed,
   dependencies?: StudioSessionDependencies,
@@ -2844,14 +2812,5 @@ export function createStudioEditingSession(
     dispatch: implementation.dispatch,
     perform: implementation.perform,
   };
-  migrationAdapters.set(session, implementation);
   return session;
-}
-
-export function getStudioEditingSessionMigrationAdapter(
-  session: StudioEditingSession,
-): StudioEditingSessionMigrationAdapter {
-  const adapter = migrationAdapters.get(session);
-  if (!adapter) throw new Error("Studio session was not created by this module");
-  return adapter;
 }

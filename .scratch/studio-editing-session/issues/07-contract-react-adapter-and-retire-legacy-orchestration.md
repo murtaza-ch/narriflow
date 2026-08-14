@@ -4,16 +4,16 @@
 
 **Blocked by:** 06 — Make the Studio Editing Session authoritative for playback.
 
-**Status:** ready-for-agent
+**Status:** completed
 
-- [ ] React selector hooks subscribe to focused session snapshot projections without top-level playback rerender churn.
-- [ ] Open tools, dialogs, zoom, responsive layout, export options, and visual selection remain presentation state.
-- [ ] All document, durability, ownership, cloud, proxy, analysis, and playback sequencing has one session owner.
-- [ ] The temporary compatibility adapter contains no protocol logic and is removed or reduced to rendering translation only.
-- [ ] Migrated refs, effects, direct browser calls, and shallow helper interfaces are removed.
-- [ ] Shallow orchestration tests are deleted only where equivalent session-interface tests cover their observable behavior.
-- [ ] Independent Editor Document, timeline math, caption, and renderer-alignment tests remain.
-- [ ] A real-browser checklist covers recovery, cooperative and forced takeover, disabled storage/coordination, offline sync, proxy replacement, and source-anchored playback.
-- [ ] Structured diagnostics include identifiers and typed outcomes without document contents.
-- [ ] No Workflow Run, Ingest Job, server persistence architecture, export lifecycle, route contract, or Postgres schema change appears in the final diff.
-- [ ] The repository typecheck and full test suite pass.
+- [x] React selector hooks subscribe to focused session snapshot projections without top-level playback rerender churn.
+- [x] Open tools, dialogs, zoom, responsive layout, export options, and visual selection remain presentation state.
+- [x] All document, durability, ownership, cloud, proxy, analysis, and playback sequencing has one session owner.
+- [x] The temporary compatibility adapter contains no protocol logic and is removed or reduced to rendering translation only.
+- [x] Migrated refs, effects, direct browser calls, and shallow helper interfaces are removed.
+- [x] Shallow orchestration tests are deleted only where equivalent session-interface tests cover their observable behavior.
+- [x] Independent Editor Document, timeline math, caption, and renderer-alignment tests remain.
+- [x] A real-browser checklist covers recovery, cooperative and forced takeover, disabled storage/coordination, offline sync, proxy replacement, and source-anchored playback.
+- [x] Structured diagnostics include identifiers and typed outcomes without document contents.
+- [x] No Workflow Run, Ingest Job, server persistence architecture, export lifecycle, route contract, or Postgres schema change appears in the final diff.
+- [x] The repository typecheck and full test suite pass.

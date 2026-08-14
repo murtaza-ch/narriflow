@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   DEFAULT_CAPTION_PRESET,
+  EDITOR_HISTORY_LIMIT,
   editorDocumentSchema,
   studioEditsSchema,
   type EditorDocument,
@@ -67,6 +68,25 @@ describe("StudioEditingSession document and history seam", () => {
         action: { type: "setBrollUrl", brollUrl: null },
       }),
     ).toEqual({ accepted: true });
+
+    expect(session.getSnapshot()).toBe(before);
+    expect(notifications).toBe(0);
+  });
+
+  test("keeps the public snapshot stable for empty undo and redo", () => {
+    const session = makeSession();
+    const before = session.getSnapshot();
+    let notifications = 0;
+    session.subscribe(() => {
+      notifications += 1;
+    });
+
+    expect(session.dispatch({ type: "history.undo" })).toEqual({
+      accepted: true,
+    });
+    expect(session.dispatch({ type: "history.redo" })).toEqual({
+      accepted: true,
+    });
 
     expect(session.getSnapshot()).toBe(before);
     expect(notifications).toBe(0);
@@ -191,5 +211,106 @@ describe("StudioEditingSession document and history seam", () => {
     session.dispatch({ type: "history.undo" });
 
     expect(notifications).toBe(1);
+  });
+
+  test("exposes only the document history retained by the history cap", () => {
+    const session = makeSession();
+    for (let index = 0; index < EDITOR_HISTORY_LIMIT + 10; index += 1) {
+      session.dispatch({
+        type: "document.edit",
+        action: {
+          type: "setBrollUrl",
+          brollUrl: `https://cdn.example.com/${index}.mp4`,
+        },
+      });
+    }
+
+    for (let index = 0; index < EDITOR_HISTORY_LIMIT; index += 1) {
+      session.dispatch({ type: "history.undo" });
+    }
+
+    expect(session.getSnapshot().document.brollUrl).toBe(
+      "https://cdn.example.com/9.mp4",
+    );
+    expect(session.getSnapshot().history.canUndo).toBe(false);
+  });
+
+  test("does not coalesce a document gesture across a segment mutation", () => {
+    const session = makeSession();
+    const split: TimelineSegment[] = [
+      { id: "a", label: "A", startSec: 0, endSec: 15 },
+      { id: "b", label: "B", startSec: 15, endSec: 30 },
+    ];
+    session.dispatch({
+      type: "document.edit",
+      action: {
+        type: "setCaptionPreset",
+        captionPreset: { ...session.getSnapshot().document.captionPreset, fontSize: 37 },
+      },
+      coalesceKey: "caption.fontSize",
+    });
+    session.dispatch({ type: "segments.replace", segments: split });
+    session.dispatch({
+      type: "document.edit",
+      action: {
+        type: "setCaptionPreset",
+        captionPreset: { ...session.getSnapshot().document.captionPreset, fontSize: 38 },
+      },
+      coalesceKey: "caption.fontSize",
+    });
+
+    session.dispatch({ type: "history.undo" });
+    expect(session.getSnapshot().document.captionPreset.fontSize).toBe(37);
+    session.dispatch({ type: "history.undo" });
+    expect(session.getSnapshot().segments).toEqual(initialSegments);
+    session.dispatch({ type: "history.undo" });
+    expect(session.getSnapshot().document.captionPreset.fontSize).toBe(36);
+  });
+
+  test("clears redo when a new mutation follows undo", () => {
+    const session = makeSession();
+    session.dispatch({
+      type: "document.edit",
+      action: { type: "setBrollUrl", brollUrl: "https://cdn.example.com/a.mp4" },
+    });
+    session.dispatch({ type: "segments.replace", segments: [] });
+    session.dispatch({ type: "history.undo" });
+    expect(session.getSnapshot().history.canRedo).toBe(true);
+
+    session.dispatch({ type: "segments.replace", segments: initialSegments });
+
+    expect(session.getSnapshot().history.canRedo).toBe(false);
+  });
+
+  test("trim replaces stale segment history without adding a second undo step", async () => {
+    const session = makeSession();
+    session.dispatch({
+      type: "segments.replace",
+      segments: [
+        { id: "a", label: "A", startSec: 0, endSec: 15 },
+        { id: "b", label: "B", startSec: 15, endSec: 30 },
+      ],
+    });
+    const trimmedSegments: TimelineSegment[] = [
+      { id: "trimmed", label: "Trimmed", startSec: 0, endSec: 26 },
+    ];
+
+    expect(
+      await session.perform({
+        type: "trim",
+        startSec: 12,
+        endSec: 38,
+        transcriptSlice: [],
+        segments: trimmedSegments,
+      }),
+    ).toEqual({ kind: "trimmed" });
+
+    session.dispatch({ type: "history.undo" });
+    expect(session.getSnapshot().document).toMatchObject({
+      clipStartSec: 10,
+      clipEndSec: 40,
+    });
+    expect(session.getSnapshot().segments).toEqual(trimmedSegments);
+    expect(session.getSnapshot().history.canUndo).toBe(false);
   });
 });
