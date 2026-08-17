@@ -11,6 +11,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "bun test src/",
     "retention:replay-tombstones": "bun run src/replay-retention-tombstones.ts",
+    "reconcile:render-objects": "bun run src/reconcile-render-objects.ts",
     "clean": "rm -rf dist"
   },
   "dependencies": {

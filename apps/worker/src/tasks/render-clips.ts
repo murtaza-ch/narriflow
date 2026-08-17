@@ -1,5 +1,4 @@
-import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createWriteStream } from "node:fs";
 import { stat, writeFile } from "node:fs/promises";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -12,7 +11,6 @@ import {
   assertPublicHttpUrl,
   assertResponseContentLength,
   audioAssetService,
-  clipExportVariantStorageKey,
   clipService,
   createByteLimitTransform,
   deleteObject,
@@ -30,6 +28,8 @@ import {
   workflowFailureFromUnknown,
   workflowHttpFailureDisposition,
   type GuardedFetchOptions,
+  type RenderWorkSetOutcome,
+  type WorkflowAttemptRef,
 } from "@narriflow/services";
 import {
   AUDIO_UPLOAD_MAX_BYTES,
@@ -126,11 +126,9 @@ import {
   saveBrollAssetToCache,
   type BrollCueInput,
 } from "./broll";
-import {
-  notifyAutoRenderCompleted,
-  notifyWorkflowFailureAfterSettlement,
-} from "../notifications";
 import { buildDuckingVolumeExpression } from "./ducking";
+import { parseRenderConfig, type RenderConfig } from "../render-config";
+import { productionRenderProcessAdapter } from "../render-process-adapter";
 
 interface BrollCutaway {
   path: string;
@@ -254,6 +252,23 @@ interface WorkflowRunJob {
   };
 }
 
+export type ClipRenderingWorkflowAttempt = Omit<WorkflowAttemptRef, "stage"> & {
+  stage: "clip_rendering";
+};
+
+interface ClipRenderAttemptLifecycle {
+  beginRenderWorkSet(attempt: WorkflowAttemptRef): Promise<{
+    variantIds: readonly string[];
+  }>;
+  settleRenderWorkSet(attempt: WorkflowAttemptRef): Promise<RenderWorkSetOutcome>;
+}
+
+export interface ClipRenderAttemptDependencies {
+  run: WorkflowRunJob;
+  config: Readonly<RenderConfig>;
+  lifecycle: ClipRenderAttemptLifecycle;
+}
+
 export function resolveRenderTimingForClip(input: {
   llmModel: string | null;
   startSec: number;
@@ -324,6 +339,33 @@ interface PendingRenderOutput {
    *  Drives the per-output 2/3 downscale; independent of the watermark,
    *  which is a run-level entitlement (see `applyWatermark` below). */
   resolution: ClipRenderResolution;
+  watermark: boolean;
+}
+
+interface RenderExecutionContext {
+  config: Readonly<RenderConfig>;
+  signal: AbortSignal;
+  attempt: ClipRenderingWorkflowAttempt;
+}
+
+const renderExecutionStorage = new AsyncLocalStorage<RenderExecutionContext>();
+
+function currentRenderConfig(): Readonly<RenderConfig> {
+  return renderExecutionStorage.getStore()?.config ?? parseRenderConfig(process.env);
+}
+
+function currentRenderSignal(): AbortSignal | undefined {
+  return renderExecutionStorage.getStore()?.signal;
+}
+
+function renderStorageSignal(includeAttemptSignal = true): AbortSignal {
+  const timeoutSignal = AbortSignal.timeout(
+    currentRenderConfig().storageOperationTimeoutMs,
+  );
+  const attemptSignal = includeAttemptSignal ? currentRenderSignal() : undefined;
+  return attemptSignal
+    ? AbortSignal.any([attemptSignal, timeoutSignal])
+    : timeoutSignal;
 }
 
 /**
@@ -356,6 +398,16 @@ export function clipRenderAttemptStorageKey(
   return `projects/${projectId}/renders/${clipId}/${aspectRatioSlug}-${attemptId}.mp4`;
 }
 
+export function clipExportAttemptStorageKey(input: {
+  projectId: string;
+  exportId: string;
+  variantId: string;
+  aspectRatioSlug: string;
+  attemptId: string;
+}): string {
+  return `projects/${input.projectId}/exports/${input.exportId}/${input.variantId}-${input.aspectRatioSlug}-${input.attemptId}.mp4`;
+}
+
 class WorkflowWorkerError extends WorkflowFailure {
   constructor(
     code: string,
@@ -385,7 +437,7 @@ function log(
   message: string,
   context?: Record<string, unknown>,
 ) {
-  console.log(
+  console.warn(
     JSON.stringify({
       level,
       message,
@@ -403,11 +455,11 @@ const DEFAULT_X264_PRESET = "veryfast";
 const DEFAULT_X264_CRF = "21";
 
 function x264Preset(): string {
-  return process.env.WORKER_X264_PRESET?.trim() || DEFAULT_X264_PRESET;
+  return currentRenderConfig().x264Preset || DEFAULT_X264_PRESET;
 }
 
 function x264Crf(): string {
-  return process.env.WORKER_X264_CRF?.trim() || DEFAULT_X264_CRF;
+  return currentRenderConfig().x264Crf || DEFAULT_X264_CRF;
 }
 
 // B-roll/background-music downloads are short, small, user- or API-supplied
@@ -415,110 +467,21 @@ function x264Crf(): string {
 // much tighter timeout/size budget than ingest's source download. Bounded so
 // a hostile or oversized URL can never OOM the worker or pin a slot for the
 // whole reaper window.
-const REMOTE_MEDIA_DOWNLOAD_TIMEOUT_MS = 45_000;
 const REMOTE_MEDIA_MAX_BYTES = 250 * 1024 * 1024;
-
-// Whole-process wall-clock bounds. With ranged reads, ffmpeg holds an HTTP
-// connection for the entire encode; -rw_timeout bounds a single stalled read
-// but (as clip-preview.ts's armProcessTimeout comment documents) a quiet
-// stall can still evade it — and a child that never exits would hold the
-// render loop's mutex forever with nothing detecting it. SIGTERM first,
-// SIGKILL after a grace period.
-const COMMAND_KILL_GRACE_MS = 5000;
-const RENDER_COMMAND_TIMEOUT_MS = Number(
-  process.env.WORKER_RENDER_FFMPEG_TIMEOUT_MS ?? String(30 * 60 * 1000),
-);
-const PROBE_COMMAND_TIMEOUT_MS = 2 * 60 * 1000;
-// Presigned source URLs carry their auth in the query string and ffmpeg
-// echoes the full URL into stderr on HTTP errors; strip query strings before
-// any of it can reach an error message (and from there structured logs).
-function redactUrlQueries(text: string): string {
-  return text.replace(/\?[^\s"']+/g, "?[redacted]");
-}
-// Only the error-message tail is ever consumed; cap accumulation so a flaky
-// HTTP source chattering -reconnect retries can't grow stderr unboundedly
-// over a multi-minute encode.
-const MAX_STDERR_CHARS = 8192;
 
 function runCommand(
   command: string,
   args: string[],
   options: { timeoutMs: number; captureStdout: boolean },
 ): Promise<string> {
-  return new Promise<string>((resolve, reject) => {
-    const child = spawn(command, args, {
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-
-    let stdout = "";
-    let stderr = "";
-    let timedOut = false;
-    let killTimer: ReturnType<typeof setTimeout> | undefined;
-
-    const timeoutTimer = setTimeout(() => {
-      timedOut = true;
-      child.kill("SIGTERM");
-      killTimer = setTimeout(() => {
-        child.kill("SIGKILL");
-      }, COMMAND_KILL_GRACE_MS);
-    }, options.timeoutMs);
-
-    const clearTimers = () => {
-      clearTimeout(timeoutTimer);
-      if (killTimer) clearTimeout(killTimer);
-    };
-
-    if (options.captureStdout) {
-      child.stdout.on("data", (chunk: Buffer) => {
-        stdout += chunk.toString();
-      });
-    }
-
-    child.stderr.on("data", (chunk: Buffer) => {
-      stderr = (stderr + chunk.toString()).slice(-MAX_STDERR_CHARS);
-    });
-
-    child.on("error", (error: NodeJS.ErrnoException) => {
-      clearTimers();
-      if (error.code === "ENOENT") {
-        reject(
-          new WorkflowWorkerError(
-            "worker_command_missing",
-            `${command} is not installed`,
-            "permanent",
-          ),
-        );
-        return;
-      }
-
-      reject(error);
-    });
-
-    child.on("close", (code) => {
-      clearTimers();
-
-      if (timedOut) {
-        reject(
-          new WorkflowWorkerError(
-            "worker_command_timeout",
-            `${command} timed out after ${options.timeoutMs}ms`,
-          ),
-        );
-        return;
-      }
-
-      if (code === 0) {
-        resolve(stdout);
-        return;
-      }
-
-      reject(
-        new WorkflowWorkerError(
-          "worker_command_failed",
-          `${command} failed with code ${code}: ${redactUrlQueries(stderr.slice(-500))}`,
-        ),
-      );
-    });
+  const config = currentRenderConfig();
+  return productionRenderProcessAdapter.execute({
+    command,
+    args,
+    signal: currentRenderSignal() ?? new AbortController().signal,
+    deadlineMs: options.timeoutMs,
+    killGraceMs: config.processKillGraceMs,
+    captureStdout: options.captureStdout,
   });
 }
 
@@ -528,7 +491,8 @@ async function execCommand(
   options?: { timeoutMs?: number },
 ) {
   await runCommand(command, args, {
-    timeoutMs: options?.timeoutMs ?? RENDER_COMMAND_TIMEOUT_MS,
+    timeoutMs:
+      options?.timeoutMs ?? currentRenderConfig().renderCommandTimeoutMs,
     captureStdout: false,
   });
 }
@@ -539,7 +503,8 @@ async function execCommandOutput(
   options?: { timeoutMs?: number },
 ): Promise<string> {
   return runCommand(command, args, {
-    timeoutMs: options?.timeoutMs ?? RENDER_COMMAND_TIMEOUT_MS,
+    timeoutMs:
+      options?.timeoutMs ?? currentRenderConfig().renderCommandTimeoutMs,
     captureStdout: true,
   });
 }
@@ -619,7 +584,7 @@ async function probeSource(sourcePath: string): Promise<SourceProbe> {
         : []),
       sourcePath,
     ],
-    { timeoutMs: PROBE_COMMAND_TIMEOUT_MS },
+    { timeoutMs: currentRenderConfig().probeCommandTimeoutMs },
   );
 
   const data = JSON.parse(output) as {
@@ -678,7 +643,7 @@ async function probeBackgroundImageDecodable(filePath: string): Promise<boolean>
     const output = await execCommandOutput(
       "ffprobe",
       ["-v", "quiet", "-print_format", "json", "-show_streams", filePath],
-      { timeoutMs: PROBE_COMMAND_TIMEOUT_MS },
+      { timeoutMs: currentRenderConfig().probeCommandTimeoutMs },
     );
     const data = JSON.parse(output) as {
       streams?: Array<{ codec_type?: string }>;
@@ -709,7 +674,7 @@ async function probeMediaDurationSec(filePath: string): Promise<number | null> {
         "format=duration",
         filePath,
       ],
-      { timeoutMs: PROBE_COMMAND_TIMEOUT_MS },
+      { timeoutMs: currentRenderConfig().probeCommandTimeoutMs },
     );
     const data = JSON.parse(output) as { format?: { duration?: string } };
     const parsed = data.format?.duration ? Number(data.format.duration) : NaN;
@@ -724,7 +689,7 @@ async function probeMediaDurationSec(filePath: string): Promise<number | null> {
  *  system `python3` frequently doesn't — the exact silent-center-crop
  *  failure the logging below exists to surface). */
 function reframePythonBin(): string {
-  return process.env.REFRAME_PYTHON ?? "python3";
+  return currentRenderConfig().reframePython;
 }
 
 /** Shared failure logging for the null-on-failure detector wrappers below.
@@ -741,9 +706,7 @@ function logDetectionFailure(
     detector,
     message,
     python: reframePythonBin(),
-    modelPath:
-      process.env.REFRAME_MODEL_PATH ??
-      "/usr/local/share/narriflow/face_yunet.onnx",
+    modelPath: currentRenderConfig().reframeModelPath,
     ...context,
   });
 }
@@ -762,10 +725,8 @@ async function detectFacePath(params: {
   const scriptPath = fileURLToPath(
     new URL("../../scripts/reframe_detect.py", import.meta.url),
   );
-  const modelPath =
-    process.env.REFRAME_MODEL_PATH ??
-    "/usr/local/share/narriflow/face_yunet.onnx";
-  const fps = process.env.REFRAME_SAMPLE_FPS ?? "4";
+  const modelPath = currentRenderConfig().reframeModelPath;
+  const fps = String(currentRenderConfig().reframeSampleFps);
 
   try {
     const out = await execCommandOutput(reframePythonBin(), [
@@ -878,10 +839,8 @@ async function detectMultiFacePath(params: {
   const scriptPath = fileURLToPath(
     new URL("../../scripts/reframe_detect.py", import.meta.url),
   );
-  const modelPath =
-    process.env.REFRAME_MODEL_PATH ??
-    "/usr/local/share/narriflow/face_yunet.onnx";
-  const fps = process.env.REFRAME_SAMPLE_FPS ?? "4";
+  const modelPath = currentRenderConfig().reframeModelPath;
+  const fps = String(currentRenderConfig().reframeSampleFps);
 
   try {
     const out = await execCommandOutput(reframePythonBin(), [
@@ -942,7 +901,7 @@ async function detectSceneCuts(params: {
   workflowRunId: string;
   clipId: string;
 }): Promise<number[]> {
-  const threshold = process.env.REFRAME_SCENE_THRESHOLD ?? "0.3";
+  const threshold = String(currentRenderConfig().reframeSceneThreshold);
   try {
     const out = await execCommandOutput("ffmpeg", [
       "-hide_banner",
@@ -1077,7 +1036,7 @@ async function extractFaceDetectionSegment(params: {
 /**
  * Drives every `reframeOutputs` output's crop via sendcmd from an already-
  * detected single-face sample list — the exact logic
- * `processClipRenderingRun`'s "auto" framing branch used to inline,
+ * the Clip Render Attempt's "auto" framing branch used to inline,
  * extracted (split packet B) so the split-mode fallback path below (footage
  * that can't support a real 2-up) can reuse it verbatim instead of
  * re-implementing the same remap -> smooth -> sendcmd-script pipeline a
@@ -1738,7 +1697,7 @@ export function decideSplitFallback(params: {
 
 /**
  * Whether this clip's framing choice ALONE forces the per-output render
- * path (`hasStudioVideoEdits` in `processClipRenderingRun`) rather than the
+ * path (`hasStudioVideoEdits` in the Clip Render Attempt) rather than the
  * shared `buildMultiVideoArgs` batch path — true only for the effective
  * "split" mode (split packet B): a 2-up composition needs its own
  * `buildSplitFilterChain` filter graph per output, which
@@ -1768,7 +1727,7 @@ export function decideSplitFallback(params: {
  *
  * M4 (adversarial review): this predicate's return value never even gets
  * consulted for an audio-only clip — `probe.hasVideo` gates the split/screen
- * detection blocks in `processClipRenderingRun` BEFORE either mode's plan
+ * detection blocks in the Clip Render Attempt BEFORE either mode's plan
  * exists, and `buildAudiogramArgs` (the audio-only render path) ignores
  * `studioEdits.framing` entirely — so a `true` here for "split"/"screen" on
  * an audio-only clip is a value nothing downstream reads, not a live
@@ -1776,8 +1735,8 @@ export function decideSplitFallback(params: {
  */
 export function framingForcesPerOutputRender(studioEdits: StudioEdits): boolean {
   const mode = resolveEffectiveFramingMode(studioEdits);
-  if (mode === "split") return process.env.WORKER_SPLIT !== "0";
-  if (mode === "screen") return process.env.WORKER_SCREEN_LAYOUT !== "0";
+  if (mode === "split") return currentRenderConfig().splitEnabled;
+  if (mode === "screen") return currentRenderConfig().screenLayoutEnabled;
   return false;
 }
 
@@ -2836,7 +2795,7 @@ export function buildCropAndScaleFilter(
  *    an exhaustive switch — but split is NOT actually undetected: it runs
  *    its own multi-face detection (`detectMultiFacePath` ->
  *    `buildSplitLayoutPlan`) through a separate gate in
- *    `processClipRenderingRun`, guarded directly on
+ *    the Clip Render Attempt, guarded directly on
  *    `resolveEffectiveFramingMode(studioEdits) === "split"` rather than this
  *    function. This function staying `false` for split just means split
  *    clips skip the SINGLE-face auto-reframe path — which they still fall
@@ -2847,7 +2806,7 @@ export function buildCropAndScaleFilter(
  *    reasoning as "split" — screen is NOT actually undetected either: it runs
  *    its own single-face detection (`detectFacePath`, same detector as
  *    "auto" but through its own gate) via `applyScreenSpeakerLayout`, through
- *    a separate gate in `processClipRenderingRun` guarded directly on
+ *    a separate gate in the Clip Render Attempt guarded directly on
  *    `resolveEffectiveFramingMode(studioEdits) === "screen"` rather than this
  *    function. This function staying `false` for screen just means screen
  *    clips skip the whole-frame SINGLE-face auto-reframe path — which they
@@ -3601,7 +3560,7 @@ interface DownloadUrlToFileOverrides {
    * default; it predates this change and isn't bounded by the upload gate.
    */
   maxBytes?: number;
-  /** Overrides REMOTE_MEDIA_DOWNLOAD_TIMEOUT_MS so the timeout path can be
+  /** Overrides RenderConfig.remoteMediaTimeoutMs so the timeout path can be
    *  tested in milliseconds instead of 45s. Production call sites never pass it. */
   timeoutMs?: number;
 }
@@ -3629,7 +3588,8 @@ export async function downloadUrlToFile(
   overrides?: DownloadUrlToFileOverrides,
 ): Promise<void> {
   const maxBytes = overrides?.maxBytes ?? REMOTE_MEDIA_MAX_BYTES;
-  const timeoutMs = overrides?.timeoutMs ?? REMOTE_MEDIA_DOWNLOAD_TIMEOUT_MS;
+  const timeoutMs =
+    overrides?.timeoutMs ?? currentRenderConfig().remoteMediaTimeoutMs;
   let response: Response;
   try {
     response = await guardedFetch(url, {
@@ -3701,7 +3661,7 @@ function describeRemoteFetchError(error: unknown): string {
  * split). Has no `split` param at all — split packet B forces every "split"
  * clip through the per-output `buildSingleVideoArgs`/`buildBrollVideoArgs`
  * path instead (see `framingForcesPerOutputRender` and its use in
- * `processClipRenderingRun`'s `hasStudioVideoEdits` gate), because
+ * the Clip Render Attempt's `hasStudioVideoEdits` gate), because
  * `buildSplitFilterChain`'s segment-concat graph replaces the base
  * composition entirely — something this function's shared crop-to-fill
  * `[0:v]split=N` fan-out has no concept of. Plain reframe (`output.reframe`,
@@ -3861,7 +3821,7 @@ export function buildMultiVideoArgs(params: {
  * "screen"'s top-fit/bottom-speaker layout has anything to seat a face or a
  * screen-share frame into. Split packet B and screen packet B don't change
  * this: an audio-only clip never reaches the split/screen detection blocks
- * in `processClipRenderingRun` (`probe.hasVideo` gates both), so
+ * in the Clip Render Attempt (`probe.hasVideo` gates both), so
  * `studioEdits.framing.mode === "split"` or `"screen"` on an audio-only clip
  * silently renders the same waveform panel as any other mode, exactly like
  * it already did before either feature existed.
@@ -4229,7 +4189,7 @@ export function buildFreeTierPostProcessArgs(params: {
  *    scheduled after a previous drain) has settled. Idempotent; safe to call
  *    from both the success path and `finally`.
  */
-export function createBoundedTaskQueue(limit: number): {
+export function createBoundedTaskQueue(limit: number, signal?: AbortSignal): {
   schedule: (task: () => Promise<void>) => void;
   drain: () => Promise<void>;
   /** Number of tasks scheduled over the queue's lifetime (for logging). */
@@ -4240,6 +4200,14 @@ export function createBoundedTaskQueue(limit: number): {
   let scheduled = 0;
   const waiting: Array<() => Promise<void>> = [];
   const inFlight = new Set<Promise<void>>();
+
+  signal?.addEventListener(
+    "abort",
+    () => {
+      waiting.splice(0, waiting.length);
+    },
+    { once: true },
+  );
 
   const pump = () => {
     while (active < concurrency && waiting.length > 0) {
@@ -4259,6 +4227,7 @@ export function createBoundedTaskQueue(limit: number): {
   return {
     schedule: (task) => {
       scheduled += 1;
+      if (signal?.aborted) return;
       waiting.push(task);
       pump();
     },
@@ -4273,12 +4242,11 @@ export function createBoundedTaskQueue(limit: number): {
   };
 }
 
-/** Upload concurrency for `processClipRenderingRun`'s bounded queue —
+/** Upload concurrency for the Clip Render Attempt's bounded queue —
  *  2 keeps one upload streaming while a burst finishes, without letting a
  *  slow uplink stack every clip's file into concurrent connections. */
 function uploadConcurrency(): number {
-  const raw = Number(process.env.WORKER_UPLOAD_CONCURRENCY ?? "2");
-  return Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : 2;
+  return currentRenderConfig().uploadConcurrency;
 }
 
 async function uploadRenderedOutput(params: {
@@ -4299,6 +4267,27 @@ async function uploadRenderedOutput(params: {
    *  it covered. */
   encodeMs?: number;
 }): Promise<boolean> {
+  const deleteProvisionalObject = async (reason: string) => {
+    try {
+      await deleteObject(params.output.storageKey, {
+        signal: renderStorageSignal(false),
+      });
+    } catch (error) {
+      log("error", "clip_render_provisional_cleanup_failed", {
+        workflowRunId: params.workflowRunId,
+        projectId: params.projectId,
+        clipId: params.output.clipId,
+        clipRenderId: params.output.clipRenderId,
+        phase: "cleanup",
+        operation: "storage_delete",
+        reason,
+        objectKeyClass: params.output.storageKey.includes("/exports/")
+          ? "export_attempt"
+          : "ordinary_attempt",
+        errorCode: error instanceof Error ? error.name : "storage_delete_failed",
+      });
+    }
+  };
   if (params.output.resolution === "720p") {
     // The downscale (and any watermark) is folded directly into the main
     // render's filtergraph now (see `buildExportTreatmentFilter` on each
@@ -4332,6 +4321,7 @@ async function uploadRenderedOutput(params: {
       format: params.output.aspectRatio,
       ...(params.brollCredits ? { broll_credits: params.brollCredits } : {}),
     },
+    signal: renderStorageSignal(),
   });
   const uploadMs = Date.now() - uploadStartedAtMs;
 
@@ -4347,7 +4337,7 @@ async function uploadRenderedOutput(params: {
     ));
   } catch (error) {
     if (error instanceof WorkflowAttemptLost) {
-      await deleteObject(params.output.storageKey).catch(() => {});
+      await deleteProvisionalObject("ownership_lost");
     }
     throw error;
   }
@@ -4358,7 +4348,7 @@ async function uploadRenderedOutput(params: {
     // flight. The storage key is attempt-unique (clipRenderAttemptStorageKey),
     // so this object can never be the one any other row points at; deleting
     // it is always safe and never touches another attempt's bytes.
-    await deleteObject(params.output.storageKey).catch(() => {});
+    await deleteProvisionalObject("variant_superseded");
     log("info", "clip_render_variant_completion_stale_discarded", {
       workflowRunId: params.workflowRunId,
       clipId: params.output.clipId,
@@ -4381,35 +4371,54 @@ async function uploadRenderedOutput(params: {
   return true;
 }
 
-export async function processClipRenderingRun(
-  run: WorkflowRunJob,
-  signal?: AbortSignal,
-) {
-  signal?.throwIfAborted();
-  if (!run.project.sourceStorageKey) {
-    await projectService.failClipRenderingWorkflowRun(
-      run.id,
-      new WorkflowFailure(
-        "source_storage_key_missing",
-        "permanent",
-        "The project source file is unavailable",
-      ),
-    );
-    log("error", "clip_rendering_run_failed", {
-      workflowRunId: run.id,
-      projectId: run.projectId,
-      code: "source_storage_key_missing",
-    });
-    await notifyWorkflowFailureAfterSettlement({
-      workflowRunId: run.id,
-      projectId: run.projectId,
-      errorCode: "source_storage_key_missing",
-      reason: "The project source file is unavailable.",
-      autoRenderOnly: true,
-    });
-    return;
+export class ClipRenderAttempt {
+  readonly #run: WorkflowRunJob;
+  readonly #config: Readonly<RenderConfig>;
+  readonly #lifecycle: ClipRenderAttemptLifecycle;
+
+  constructor(dependencies: ClipRenderAttemptDependencies) {
+    this.#run = dependencies.run;
+    this.#config = dependencies.config;
+    this.#lifecycle = dependencies.lifecycle;
   }
 
+  execute(input: {
+    attempt: ClipRenderingWorkflowAttempt;
+    signal: AbortSignal;
+  }): Promise<RenderWorkSetOutcome> {
+    if (
+      input.attempt.workflowRunId !== this.#run.id ||
+      input.attempt.projectId !== this.#run.projectId
+    ) {
+      throw new WorkflowAttemptLost(input.attempt);
+    }
+    return renderExecutionStorage.run(
+      { config: this.#config, signal: input.signal, attempt: input.attempt },
+      async () => {
+        const workSet = await this.#lifecycle.beginRenderWorkSet(input.attempt);
+        if (workSet.variantIds.length === 0) {
+          return this.#lifecycle.settleRenderWorkSet(input.attempt);
+        }
+        return executeClipRenderAttempt(
+          this.#run,
+          input.signal,
+          input.attempt,
+          this.#lifecycle,
+          workSet.variantIds,
+        );
+      },
+    );
+  }
+}
+
+async function executeClipRenderAttempt(
+  run: WorkflowRunJob,
+  signal: AbortSignal,
+  attempt: ClipRenderingWorkflowAttempt,
+  lifecycle: ClipRenderAttemptLifecycle,
+  workSetVariantIds: readonly string[],
+): Promise<RenderWorkSetOutcome> {
+  signal.throwIfAborted();
   // Watermark presence is a run-level entitlement (vizard-parity Phase C
   // export options) — looked up once per run, same as before, but now
   // through the shared hasFeature helper instead of a bare tier check so
@@ -4432,15 +4441,18 @@ export async function processClipRenderingRun(
   });
 
   const tempDir = await mkdtemp(join(tmpdir(), "narriflow-render-"));
-  // Captured outside the try so the failure path can hand exactly this
-  // attempt's variant ids to failClipRenderingWorkflowRun (see
-  // all_clip_renders_failed below).
-  let attemptVariantIds: string[] = [];
   // Captured outside the try so `finally` can settle in-flight background
   // uploads before deleting tempDir (their source files live there).
   let uploadQueueRef: { drain: () => Promise<void> } | null = null;
 
   try {
+    if (!run.project.sourceStorageKey) {
+      throw new WorkflowFailure(
+        "source_storage_key_missing",
+        "permanent",
+        "The project source file is unavailable",
+      );
+    }
     const sourceExt = extname(run.project.sourceStorageKey) || ".bin";
     const localSourcePath = join(tempDir, `source${sourceExt}`);
 
@@ -4451,18 +4463,7 @@ export async function processClipRenderingRun(
     let sourcePath: string | null = null;
     let probe: SourceProbe | null = null;
 
-    const configuredSourceMode = process.env.WORKER_RENDER_SOURCE_MODE;
-    if (
-      configuredSourceMode &&
-      configuredSourceMode !== "ranged" &&
-      configuredSourceMode !== "download"
-    ) {
-      log("error", "clip_rendering_unknown_source_mode", {
-        workflowRunId: run.id,
-        configuredSourceMode,
-        effectiveMode: "ranged",
-      });
-    }
+    const configuredSourceMode = currentRenderConfig().sourceMode;
 
     if (configuredSourceMode !== "download") {
       try {
@@ -4493,6 +4494,7 @@ export async function processClipRenderingRun(
         await downloadObjectToFile({
           key: run.project.sourceStorageKey,
           filePath: localSourcePath,
+          signal: renderStorageSignal(),
         });
       } catch (error) {
         throw new WorkflowWorkerError(
@@ -4524,6 +4526,7 @@ export async function processClipRenderingRun(
             await downloadObjectToFile({
               key: snapshot.logoStorageKey,
               filePath: logoPath,
+              signal: renderStorageSignal(),
             });
             brandLogo = {
               filePath: logoPath,
@@ -4551,49 +4554,13 @@ export async function processClipRenderingRun(
       });
     }
 
-    const pendingRenders = await clipService.getPendingClipRendersForProject(
-      run.projectId,
-    );
+    const pendingRenders = (
+      await clipService.getPendingClipRendersForWorkSet(run.projectId, run.id)
+    ).filter((render) => workSetVariantIds.includes(render.id));
 
     if (pendingRenders.length === 0) {
-      // Zero pending is TWO very different states, and only one is an error.
-      // Live incident 2026-08-06: a run rendered every variant, then its
-      // completion bookkeeping threw (expired transaction) — the catch below
-      // requeued the run, and this retry found nothing pending. Throwing
-      // no_renderable_clips here (a PERMANENT failure code) reported a
-      // fully-successful render as "Something went wrong". If completed
-      // variants exist, the render work already landed — finish the
-      // bookkeeping this attempt instead: complete the run and send the
-      // clips-ready notification the failed attempt never reached.
-      const completed =
-        await clipService.getCompletedClipRenderSummaryForProject(
-          run.projectId,
-        );
-      if (completed.completedVariantCount > 0) {
-        await projectService.completeClipRenderingWorkflowRun(run.id, {
-          failedVariantCount: 0,
-        });
-        log("info", "clip_rendering_resumed_already_complete", {
-          workflowRunId: run.id,
-          projectId: run.projectId,
-          completedVariantCount: completed.completedVariantCount,
-          completedClipCount: completed.completedClipCount,
-        });
-        await notifyAutoRenderCompleted({
-          workflowRunId: run.id,
-          projectId: run.projectId,
-          clipCount: completed.completedClipCount,
-        });
-        return;
-      }
-      throw new WorkflowWorkerError(
-        "no_renderable_clips",
-        "No clip render variants with status=pending found",
-        "permanent",
-      );
+      return lifecycle.settleRenderWorkSet(attempt);
     }
-
-    attemptVariantIds = pendingRenders.map((render) => render.id);
 
     // A clip may now have several immutable export revisions queued at once.
     // Group by export (or by clip for the ordinary mutable latest-render row)
@@ -4632,7 +4599,7 @@ export async function processClipRenderingRun(
     // fails the run — and `renderedVariantCount` is only read after
     // `uploadQueue.drain()` below, so the all-failed check and run
     // completion always see the settled truth.
-    const uploadQueue = createBoundedTaskQueue(uploadConcurrency());
+    const uploadQueue = createBoundedTaskQueue(uploadConcurrency(), signal);
     uploadQueueRef = uploadQueue;
     let uploadOwnershipError: WorkflowAttemptLost | null = null;
     const scheduleUpload = (
@@ -4664,7 +4631,13 @@ export async function processClipRenderingRun(
               ? error.code
               : "render_upload_failed";
           await clipService
-            .failClipRenderVariant(output.clipRenderId, errorCode)
+            .failClipRenderVariant(
+              output.clipRenderId,
+              errorCode,
+              error instanceof WorkflowWorkerError
+                ? error.disposition
+                : "retryable",
+            )
             .catch(() => {});
           log("error", "clip_render_variant_failed", {
             workflowRunId: run.id,
@@ -4821,19 +4794,21 @@ export async function processClipRenderingRun(
           aspectRatio,
           outputPath: join(tempDir, `clip-${clip.id}-${render.id}-${slug}.mp4`),
           storageKey: render.exportVariant
-            ? clipExportVariantStorageKey({
+            ? clipExportAttemptStorageKey({
                 projectId: run.projectId,
                 exportId: render.exportVariant.exportId,
                 variantId: render.exportVariantId!,
-                aspectRatio,
+                aspectRatioSlug: slug,
+                attemptId: attempt.attemptId,
               })
             : clipRenderAttemptStorageKey(
                 run.projectId,
                 clip.id,
                 slug,
-                randomUUID(),
+                attempt.attemptId,
               ),
           resolution,
+          watermark: render.exportVariant?.watermark ?? applyWatermark,
         };
       });
 
@@ -4854,6 +4829,7 @@ export async function processClipRenderingRun(
             clipService.failClipRenderVariant(
               output.clipRenderId,
               "clip_cut_plan_empty",
+              "permanent",
             ),
           ),
         );
@@ -4897,7 +4873,7 @@ export async function processClipRenderingRun(
       // the speaker's face path once per clip and drive each portrait output's
       // crop x via sendcmd so the framing follows the speaker. Falls back to a
       // static center crop if python/opencv/model is unavailable or no face.
-      const reframeEnabled = process.env.WORKER_AUTO_REFRAME !== "0";
+      const reframeEnabled = currentRenderConfig().autoReframeEnabled;
       const srcRatio =
         probe.hasVideo && probe.height > 0 ? probe.width / probe.height : 0;
       const reframeOutputs = outputs.filter((output) => {
@@ -4938,7 +4914,7 @@ export async function processClipRenderingRun(
       // didn't ask to see it repeated.
       let brollPlan: BrollPlan | null = null;
       const brollEnabled =
-        Boolean(process.env.PEXELS_API_KEY) && process.env.WORKER_BROLL !== "0";
+        Boolean(process.env.PEXELS_API_KEY) && currentRenderConfig().brollEnabled;
       const userBrollUrl = clip.brollUrl ?? null;
       if (
         (brollEnabled || userBrollUrl) &&
@@ -5138,7 +5114,7 @@ export async function processClipRenderingRun(
       let autoLayoutSegmentsFull: SplitLayoutSegment[] | null = null;
       let autoLayoutSegmentsNoSplit: SplitLayoutSegment[] | null = null;
       if (autoFramingActive) {
-        const layoutEngineEnabled = process.env.WORKER_LAYOUT_ENGINE !== "0";
+        const layoutEngineEnabled = currentRenderConfig().layoutEngineEnabled;
         let engineHandled = false;
         const persistedAutoLayout = parseClipAutoLayoutAnalysis(
           clip.autoLayoutAnalysis,
@@ -5385,7 +5361,7 @@ export async function processClipRenderingRun(
       // the v1 B-roll conflict policy needs to know whether this clip
       // already has cutaways before deciding whether to build a screen
       // layout at all (`decideScreenFallback`'s "broll_conflict" reason).
-      const screenLayoutEnabled = process.env.WORKER_SCREEN_LAYOUT !== "0";
+      const screenLayoutEnabled = currentRenderConfig().screenLayoutEnabled;
       const isScreenMode =
         resolveEffectiveFramingMode(studioEdits) === "screen" && probe.hasVideo;
       if (isScreenMode) {
@@ -5503,7 +5479,7 @@ export async function processClipRenderingRun(
               suffix: "-screen",
             });
 
-            const pipDetectEnabled = process.env.WORKER_PIP_DETECT !== "0";
+            const pipDetectEnabled = currentRenderConfig().pipDetectEnabled;
 
             // PiP persistence packet B (read-before-detect): a persisted
             // `Clip.layoutAnalysis` envelope whose detection window still
@@ -5676,7 +5652,7 @@ export async function processClipRenderingRun(
       // exactly these outputs through `params.reframe`/center-crop instead of
       // `params.split`.
       let splitIneligibleOutputs: PendingRenderOutput[] = [];
-      const splitEnabled = process.env.WORKER_SPLIT !== "0";
+      const splitEnabled = currentRenderConfig().splitEnabled;
       const isSplitMode =
         resolveEffectiveFramingMode(studioEdits) === "split" && probe.hasVideo;
       if (isSplitMode) {
@@ -6240,7 +6216,7 @@ export async function processClipRenderingRun(
               music: musicPlan,
               sfx: sfxPlans,
               resolution: output.resolution,
-              watermark: applyWatermark,
+              watermark: output.watermark,
               cutPlan,
             });
 
@@ -6261,7 +6237,13 @@ export async function processClipRenderingRun(
                 ? error.code
                 : "ffmpeg_render_failed";
 
-            await clipService.failClipRenderVariant(output.clipRenderId, errorCode);
+            await clipService.failClipRenderVariant(
+              output.clipRenderId,
+              errorCode,
+              error instanceof WorkflowWorkerError
+                ? error.disposition
+                : "retryable",
+            );
 
             log("error", "clip_render_variant_failed", {
               workflowRunId: run.id,
@@ -6324,7 +6306,7 @@ export async function processClipRenderingRun(
                   sfx: sfxPlans,
                   background: backgroundPlan,
                   resolution: output.resolution,
-                  watermark: applyWatermark,
+                  watermark: output.watermark,
                   cutPlan,
                 })
               : buildSingleVideoArgs({
@@ -6388,7 +6370,7 @@ export async function processClipRenderingRun(
                     ? { bottom: output.screenBottom }
                     : null,
                   resolution: output.resolution,
-                  watermark: applyWatermark,
+                  watermark: output.watermark,
                   cutPlan,
                 });
             const encodeStartedAtMs = Date.now();
@@ -6406,7 +6388,13 @@ export async function processClipRenderingRun(
               error instanceof WorkflowWorkerError
                 ? error.code
                 : "ffmpeg_render_failed";
-            await clipService.failClipRenderVariant(output.clipRenderId, errorCode);
+            await clipService.failClipRenderVariant(
+              output.clipRenderId,
+              errorCode,
+              error instanceof WorkflowWorkerError
+                ? error.disposition
+                : "retryable",
+            );
             log("error", "clip_render_variant_failed", {
               workflowRunId: run.id,
               clipId: output.clipId,
@@ -6435,7 +6423,7 @@ export async function processClipRenderingRun(
                   logo,
                   reframe: outputs[0]!.reframe,
                   resolution: outputs[0]!.resolution,
-                  watermark: applyWatermark,
+                  watermark: outputs[0]!.watermark,
                 })
               : buildMultiVideoArgs({
                   sourcePath,
@@ -6446,7 +6434,7 @@ export async function processClipRenderingRun(
                   srtPath,
                   captionPreset,
                   logo,
-                  watermark: applyWatermark,
+                  watermark: outputs[0]!.watermark,
                 });
 
           const encodeStartedAtMs = Date.now();
@@ -6470,7 +6458,13 @@ export async function processClipRenderingRun(
 
           await Promise.all(
             outputs.map((output) =>
-              clipService.failClipRenderVariant(output.clipRenderId, errorCode),
+              clipService.failClipRenderVariant(
+                output.clipRenderId,
+                errorCode,
+                error instanceof WorkflowWorkerError
+                  ? error.disposition
+                  : "retryable",
+              ),
             ),
           );
 
@@ -6503,6 +6497,7 @@ export async function processClipRenderingRun(
     // completeClipRenderVariant write.
     const drainStartedAtMs = Date.now();
     await uploadQueue.drain();
+    signal.throwIfAborted();
     if (uploadOwnershipError) throw uploadOwnershipError;
     log("info", "clip_render_upload_drain", {
       workflowRunId: run.id,
@@ -6511,38 +6506,7 @@ export async function processClipRenderingRun(
       drainMs: Date.now() - drainStartedAtMs,
     });
 
-    if (renderedVariantCount === 0 && pendingRenders.length > 0) {
-      // Every variant this attempt touched failed. Completing the run here
-      // would report success over an empty result. The variants are NOT reset
-      // here — failClipRenderingWorkflowRun (via the catch below, passed
-      // retryVariantIds) resets them to pending only when the run actually
-      // requeues; on the final attempt they stay `failed` with their real
-      // per-variant error codes so the UI settles.
-      throw new WorkflowWorkerError(
-        "all_clip_renders_failed",
-        `All ${pendingRenders.length} clip render variants failed`,
-      );
-    }
-
-    await projectService.completeClipRenderingWorkflowRun(run.id, {
-      failedVariantCount: pendingRenders.length - renderedVariantCount,
-    });
-
-    // A trigger that fired while this run was rendering had its variants
-    // absorbed by the one-live-run guard but missed this run's snapshot.
-    // Hand any such leftovers a fresh run (fresh attempt budget) so they
-    // don't sit pending forever with nothing claiming them.
-    const leftover = await clipService.getPendingClipRendersForProject(
-      run.projectId,
-    );
-    if (leftover.length > 0) {
-      await clipService.queueFollowUpRenderRun(run.projectId, run.id);
-      log("info", "clip_rendering_follow_up_queued", {
-        workflowRunId: run.id,
-        projectId: run.projectId,
-        leftoverVariantCount: leftover.length,
-      });
-    }
+    const outcome = await lifecycle.settleRenderWorkSet(attempt);
 
     log("info", "clip_rendering_run_completed", {
       workflowRunId: run.id,
@@ -6555,12 +6519,11 @@ export async function processClipRenderingRun(
       sourceMode: isHttpSource(sourcePath) ? "ranged" : "download",
       encoder: "libx264",
       preset: x264Preset(),
+      status: outcome.status,
+      supersededVariantCount: outcome.superseded,
+      followUpWorkflowRunId: outcome.followUpWorkflowRunId,
     });
-    await notifyAutoRenderCompleted({
-      workflowRunId: run.id,
-      projectId: run.projectId,
-      clipCount: clipGroups.length,
-    });
+    return outcome;
   } catch (error) {
     rethrowWorkflowAttemptLost(error);
     const failure = workflowFailureFromUnknown(error);
@@ -6568,13 +6531,14 @@ export async function processClipRenderingRun(
 
     const message =
       error instanceof Error ? error.message : "Unknown worker error";
-    await projectService.failClipRenderingWorkflowRun(
-      run.id,
-      failure,
-      code === "all_clip_renders_failed"
-        ? { retryVariantIds: attemptVariantIds }
-        : undefined,
-    );
+    for (const clipRenderId of workSetVariantIds) {
+      await clipService.markClipRenderVariantRendering(clipRenderId);
+      await clipService.failClipRenderVariant(
+        clipRenderId,
+        code,
+        failure.disposition,
+      );
+    }
 
     log("error", "clip_rendering_run_failed", {
       workflowRunId: run.id,
@@ -6582,13 +6546,7 @@ export async function processClipRenderingRun(
       code,
       message,
     });
-    await notifyWorkflowFailureAfterSettlement({
-      workflowRunId: run.id,
-      projectId: run.projectId,
-      errorCode: code,
-      reason: message,
-      autoRenderOnly: true,
-    });
+    return lifecycle.settleRenderWorkSet(attempt);
   } finally {
     // A failure path can reach here with uploads still in flight (their
     // output files live in tempDir) — settle them before deleting it, so a
@@ -6596,6 +6554,14 @@ export async function processClipRenderingRun(
     // the success path (already drained above). Never let a drain error
     // block cleanup.
     if (uploadQueueRef) await uploadQueueRef.drain().catch(() => {});
-    await rm(tempDir, { recursive: true, force: true });
+    await rm(tempDir, { recursive: true, force: true }).catch((error) => {
+      log("error", "clip_render_workspace_cleanup_failed", {
+        workflowRunId: run.id,
+        projectId: run.projectId,
+        phase: "cleanup",
+        operation: "workspace_remove",
+        errorCode: error instanceof Error ? error.name : "workspace_remove_failed",
+      });
+    });
   }
 }

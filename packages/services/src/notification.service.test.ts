@@ -174,6 +174,32 @@ const input = {
 };
 
 describe("NotificationService", () => {
+  test("handoff durably reuses one pending ledger without provider delivery", async () => {
+    const store = new MemoryNotificationStore();
+    let sends = 0;
+    const service = serviceWith(store, async () => {
+      sends += 1;
+      return { sent: true, id: "unexpected" };
+    });
+
+    const first = await service.handoff({
+      projectId: input.projectId,
+      sourceId: input.sourceId,
+      outcome: input.outcome,
+    });
+    const replay = await service.handoff({
+      projectId: input.projectId,
+      sourceId: input.sourceId,
+      outcome: input.outcome,
+    });
+
+    expect(first).toEqual({ ledgerId: "ledger-1", status: "pending" });
+    expect(replay).toEqual(first);
+    expect(store.ledgers.size).toBe(1);
+    expect(store.onlyLedger().status).toBe("pending");
+    expect(sends).toBe(0);
+  });
+
   test("send-once under concurrent enqueueAndSend", async () => {
     const store = new MemoryNotificationStore();
     let sends = 0;

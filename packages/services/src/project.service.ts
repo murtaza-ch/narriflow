@@ -5367,7 +5367,13 @@ export async function purgeOldWorkflowEvents(
   if (!prisma) return 0;
 
   const res = await prisma.workflowEvent.deleteMany({
-    where: { emittedAt: { lt: retentionCutoffDate(olderThanDays) } },
+    where: {
+      emittedAt: { lt: retentionCutoffDate(olderThanDays) },
+      OR: [
+        { notificationRequired: false },
+        { notificationDeliveredAt: { not: null } },
+      ],
+    },
   });
   return res.count;
 }

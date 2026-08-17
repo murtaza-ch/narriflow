@@ -479,6 +479,112 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     }
   });
 
+  test("a mixed Render Work Set settles partial with durable notification intent", async () => {
+    const { project, run } = await fixture("clip_rendering");
+    const clip = await clipFixture(project.id, run.id);
+    const [completedVariant, failedVariant] = await Promise.all([
+      prisma.clipRender.create({
+        data: { clipId: clip.id, aspectRatio: "ratio_9_16" },
+      }),
+      prisma.clipRender.create({
+        data: { clipId: clip.id, aspectRatio: "ratio_1_1" },
+      }),
+    ]);
+    const { lifecycle, attempt } = await claimRenderAttempt();
+    await lifecycle.beginRenderWorkSet(attempt);
+    await lifecycle.markClipRenderVariantRendering(attempt, {
+      clipRenderId: completedVariant.id,
+      exportVariantId: null,
+      startedAt: new Date(),
+    });
+    await lifecycle.completeClipRenderVariant(attempt, {
+      clipRenderId: completedVariant.id,
+      exportVariantId: null,
+      storageKey: "projects/test/renders/completed-attempt.mp4",
+      sizeBytes: 1024,
+      durationSec: 10,
+      completedAt: new Date(),
+    });
+    await lifecycle.markClipRenderVariantRendering(attempt, {
+      clipRenderId: failedVariant.id,
+      exportVariantId: null,
+      startedAt: new Date(),
+    });
+    await lifecycle.failClipRenderVariant(attempt, {
+      clipRenderId: failedVariant.id,
+      exportVariantId: null,
+      errorCode: "source_invalid",
+      disposition: "permanent",
+    });
+
+    const outcome = await lifecycle.settleRenderWorkSet(attempt);
+
+    expect(outcome).toEqual({
+      status: "partial",
+      requested: 2,
+      succeeded: 1,
+      failed: 1,
+      superseded: 0,
+      followUpWorkflowRunId: null,
+    });
+    expect(
+      await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } }),
+    ).toMatchObject({
+      status: "partial",
+      requestedCount: 2,
+      succeededCount: 1,
+      failedCount: 1,
+    });
+    expect(
+      await prisma.workflowEvent.findFirstOrThrow({
+        where: { workflowRunId: run.id, notificationRequired: true },
+      }),
+    ).toMatchObject({
+      status: "partial",
+      notificationDeliveredAt: null,
+    });
+
+    const handedOff: string[] = [];
+    const dispatcher = new WorkflowRunLifecycle({
+      prisma,
+      leaseOwner: randomUUID(),
+      handoffNotification: async (payload) => {
+        handedOff.push(payload.kind);
+      },
+    });
+    expect(await dispatcher.dispatchEvents()).toBeGreaterThan(0);
+    expect(handedOff).toEqual(["clip_render.partial"]);
+    expect(await dispatcher.dispatchEvents()).toBe(0);
+    expect(handedOff).toEqual(["clip_render.partial"]);
+  });
+
+  test("an all-superseded Render Work Set completes without notification intent", async () => {
+    const { project, run } = await fixture("clip_rendering");
+    const clip = await clipFixture(project.id, run.id);
+    const variant = await prisma.clipRender.create({
+      data: { clipId: clip.id, aspectRatio: "ratio_9_16" },
+    });
+    const { lifecycle, attempt } = await claimRenderAttempt();
+    expect((await lifecycle.beginRenderWorkSet(attempt)).variantIds).toEqual([
+      variant.id,
+    ]);
+    await prisma.clipRender.delete({ where: { id: variant.id } });
+
+    expect(await lifecycle.settleRenderWorkSet(attempt)).toEqual({
+      status: "completed",
+      requested: 1,
+      succeeded: 0,
+      failed: 0,
+      superseded: 1,
+      followUpWorkflowRunId: null,
+    });
+    expect(
+      await prisma.workflowEvent.count({
+        where: { workflowRunId: run.id, notificationRequired: true },
+      }),
+    ).toBe(0);
+  });
+
   test("50 identical admissions return one deterministic run", async () => {
     const { project } = await fixture();
     await prisma.workflowRun.deleteMany({ where: { projectId: project.id } });

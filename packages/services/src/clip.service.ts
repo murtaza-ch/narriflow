@@ -88,7 +88,6 @@ import {
   currentWorkflowAttempt,
   getWorkflowRunLifecycle,
   requireProtocolV1WorkflowContext,
-  WorkflowAttemptLost,
 } from "./workflow-run-lifecycle";
 
 interface DetectedClip {
@@ -2465,6 +2464,31 @@ export class ClipService {
     };
   }
 
+  async getProjectRenderStorageReferences(projectId: string) {
+    const prisma = requirePrisma();
+    const [renders, exportVariants] = await Promise.all([
+      prisma.clipRender.findMany({
+        where: {
+          storageKey: { not: null },
+          clip: { projectId, project: accessibleProjectWhere() },
+        },
+        select: { storageKey: true },
+      }),
+      prisma.clipExportVariant.findMany({
+        where: {
+          storageKey: { not: null },
+          export: { projectId, project: accessibleProjectWhere() },
+        },
+        select: { storageKey: true },
+      }),
+    ]);
+    return new Set(
+      [...renders, ...exportVariants].flatMap((row) =>
+        row.storageKey ? [row.storageKey] : [],
+      ),
+    );
+  }
+
   async getPendingClipRendersForProject(projectId: string) {
     const prisma = requirePrisma();
     const renders = await prisma.clipRender.findMany({
@@ -2490,6 +2514,39 @@ export class ClipService {
         clipAspectRatioDbSchema.parse(right.aspectRatio)
       ];
 
+      return (
+        (aspectRatioOrder.get(leftAspectRatio) ?? Number.MAX_SAFE_INTEGER) -
+        (aspectRatioOrder.get(rightAspectRatio) ?? Number.MAX_SAFE_INTEGER)
+      );
+    });
+  }
+
+  async getPendingClipRendersForWorkSet(
+    projectId: string,
+    workflowRunId: string,
+  ) {
+    const prisma = requirePrisma();
+    const renders = await prisma.clipRender.findMany({
+      where: {
+        workflowRunId,
+        status: "pending",
+        clip: { projectId, project: accessibleProjectWhere() },
+      },
+      include: {
+        clip: true,
+        exportVariant: { select: { exportId: true, watermark: true } },
+      },
+    });
+    return renders.sort((left, right) => {
+      if (left.clip.index !== right.clip.index) {
+        return left.clip.index - right.clip.index;
+      }
+      const leftAspectRatio = clipAspectRatioFromDb[
+        clipAspectRatioDbSchema.parse(left.aspectRatio)
+      ];
+      const rightAspectRatio = clipAspectRatioFromDb[
+        clipAspectRatioDbSchema.parse(right.aspectRatio)
+      ];
       return (
         (aspectRatioOrder.get(leftAspectRatio) ?? Number.MAX_SAFE_INTEGER) -
         (aspectRatioOrder.get(rightAspectRatio) ?? Number.MAX_SAFE_INTEGER)
@@ -2657,16 +2714,16 @@ export class ClipService {
     return { persisted: true };
   }
 
-  async failClipRenderVariant(clipRenderId: string, errorCode: string) {
+  async failClipRenderVariant(
+    clipRenderId: string,
+    errorCode: string,
+    disposition: "retryable" | "permanent" = "retryable",
+  ) {
     const prisma = requirePrisma();
     const attempt = currentWorkflowAttempt();
     const lifecycle = attempt ? getWorkflowRunLifecycle() : null;
     if (attempt) {
-      try {
-        await lifecycle?.assertOwnership(attempt);
-      } catch {
-        return;
-      }
+      await lifecycle?.assertOwnership(attempt);
     } else requireProtocolV1WorkflowContext("clip_rendering");
 
     const render = await prisma.clipRender.findUnique({
@@ -2674,33 +2731,28 @@ export class ClipService {
       select: { exportVariantId: true },
     });
 
-    let persisted: boolean;
-    try {
-      persisted =
-        attempt && lifecycle
-          ? await lifecycle.failClipRenderVariant(attempt, {
-              clipRenderId,
-              exportVariantId: render?.exportVariantId ?? null,
-              errorCode,
-            })
-          : await prisma.$transaction(async (tx) => {
-              const claim = await tx.clipRender.updateMany({
-                where: { id: clipRenderId },
+    const persisted =
+      attempt && lifecycle
+        ? await lifecycle.failClipRenderVariant(attempt, {
+            clipRenderId,
+            exportVariantId: render?.exportVariantId ?? null,
+            errorCode,
+            disposition,
+          })
+        : await prisma.$transaction(async (tx) => {
+            const claim = await tx.clipRender.updateMany({
+              where: { id: clipRenderId },
+              data: { status: "failed", errorCode },
+            });
+            if (claim.count === 0) return false;
+            if (render?.exportVariantId) {
+              await tx.clipExportVariant.update({
+                where: { id: render.exportVariantId },
                 data: { status: "failed", errorCode },
               });
-              if (claim.count === 0) return false;
-              if (render?.exportVariantId) {
-                await tx.clipExportVariant.update({
-                  where: { id: render.exportVariantId },
-                  data: { status: "failed", errorCode },
-                });
-              }
-              return true;
-            });
-    } catch (error) {
-      if (error instanceof WorkflowAttemptLost) return;
-      throw error;
-    }
+            }
+            return true;
+          });
     if (persisted && render?.exportVariantId) {
       const variant = await prisma.clipExportVariant.findUniqueOrThrow({
         where: { id: render.exportVariantId },

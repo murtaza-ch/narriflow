@@ -411,7 +411,9 @@ export async function putFileFromPath(params: {
   filePath: string;
   contentType?: string;
   metadata?: Record<string, string>;
+  signal?: AbortSignal;
 }) {
+  params.signal?.throwIfAborted();
   await projectStorageDeadline(params.key);
   const client = getClient();
   const { bucket } = getR2Config();
@@ -437,6 +439,7 @@ export async function putFileFromPath(params: {
         ContentType: params.contentType,
         Metadata: metadata,
       }),
+      { abortSignal: params.signal },
     );
   } else {
     const created = await client.send(
@@ -446,6 +449,7 @@ export async function putFileFromPath(params: {
         ContentType: params.contentType,
         Metadata: metadata,
       }),
+      { abortSignal: params.signal },
     );
     const uploadId = created.UploadId;
     if (!uploadId) {
@@ -488,6 +492,7 @@ export async function putFileFromPath(params: {
           );
 
           try {
+            params.signal?.throwIfAborted();
             // Read the part fully into memory rather than streaming it, for the
             // same reason as the single-PUT path above: a streamed body makes the
             // SDK use aws-chunked framing that R2 rejects, and the failure surfaces
@@ -506,6 +511,7 @@ export async function putFileFromPath(params: {
                 Body: body,
                 ContentLength: end - start,
               }),
+              { abortSignal: params.signal },
             );
             if (!uploaded.ETag) {
               throw new Error("R2 multipart part did not return an etag");
@@ -546,6 +552,7 @@ export async function putFileFromPath(params: {
           UploadId: uploadId,
           MultipartUpload: { Parts: parts },
         }),
+        { abortSignal: params.signal },
       );
     } catch (error) {
       await client
@@ -570,7 +577,9 @@ export async function putFileFromPath(params: {
 export async function downloadObjectToFile(params: {
   key: string;
   filePath: string;
+  signal?: AbortSignal;
 }) {
+  params.signal?.throwIfAborted();
   await projectStorageDeadline(params.key);
   const client = getClient();
   const { bucket } = getR2Config();
@@ -580,6 +589,7 @@ export async function downloadObjectToFile(params: {
       Bucket: bucket,
       Key: params.key,
     }),
+    { abortSignal: params.signal },
   );
 
   if (!response.Body) {
@@ -603,6 +613,7 @@ export async function downloadObjectToFile(params: {
       body.transformToWebStream() as unknown as import("node:stream/web").ReadableStream,
     ),
     createWriteStream(params.filePath),
+    { signal: params.signal },
   );
 
   return {
@@ -773,7 +784,11 @@ export async function copyObject(params: {
   return { key: params.destinationKey };
 }
 
-export async function deleteObject(key: string) {
+export async function deleteObject(
+  key: string,
+  options?: { signal?: AbortSignal },
+) {
+  options?.signal?.throwIfAborted();
   const client = getClient();
   const { bucket } = getR2Config();
 
@@ -782,6 +797,7 @@ export async function deleteObject(key: string) {
       Bucket: bucket,
       Key: key,
     }),
+    { abortSignal: options?.signal },
   );
 
   return { key };
@@ -790,6 +806,7 @@ export async function deleteObject(key: string) {
 export interface R2ObjectSummary {
   key: string;
   sizeBytes: number;
+  lastModified?: Date | null;
 }
 
 /** Lists one bounded prefix page. Purge callers repeatedly request the first
@@ -823,7 +840,11 @@ export async function listObjectPageByPrefix(
   return {
     objects: (response.Contents ?? []).flatMap((object) =>
       object.Key
-        ? [{ key: object.Key, sizeBytes: Number(object.Size ?? 0) }]
+        ? [{
+            key: object.Key,
+            sizeBytes: Number(object.Size ?? 0),
+            lastModified: object.LastModified ?? null,
+          }]
         : [],
     ),
     nextContinuationToken: response.NextContinuationToken ?? null,

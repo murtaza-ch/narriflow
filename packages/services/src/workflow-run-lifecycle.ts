@@ -14,6 +14,7 @@ import {
   isWorkflowRedisDeliveryEnabled,
   publishPersistedWorkflowEvent,
 } from "./workflow.service";
+import { notificationService, type NotificationOutcome } from "./notification.service";
 
 export const WORKFLOW_LIFECYCLE_VERSION = 2;
 export const WORKFLOW_LEASE_DURATION_MS = 2 * 60 * 1000;
@@ -127,6 +128,30 @@ export interface RenderWorkSet {
   variantIds: readonly string[];
 }
 
+export type RenderVariantFailureDisposition = "retryable" | "permanent";
+
+export interface RenderWorkSetOutcome {
+  status: "completed" | "partial" | "failed" | "requeued";
+  requested: number;
+  succeeded: number;
+  failed: number;
+  superseded: number;
+  followUpWorkflowRunId: string | null;
+}
+
+export interface RenderTerminalNotificationPayload {
+  kind:
+    | "clip_render.completed"
+    | "clip_render.partial"
+    | "clip_render.failed";
+  projectId: string;
+  workflowRunId: string;
+  requested: number;
+  succeeded: number;
+  failed: number;
+  superseded: number;
+}
+
 export interface CompleteTranscriptInput {
   provider: string;
   providerModel: string | null;
@@ -150,6 +175,9 @@ export interface WorkflowLifecycleDependencies {
     dedupeKey: string,
   ) => Promise<void>;
   publishRedis?: (event: WorkflowStageUpdatedEvent) => Promise<boolean>;
+  handoffNotification?: (
+    payload: RenderTerminalNotificationPayload,
+  ) => Promise<void>;
 }
 
 export interface AdmitWorkflowRunInput {
@@ -283,6 +311,9 @@ export class WorkflowRunLifecycle {
     WorkflowLifecycleDependencies["publishRedis"]
   >;
   private readonly redisDeliveryRequired: boolean;
+  private readonly handoffNotification: NonNullable<
+    WorkflowLifecycleDependencies["handoffNotification"]
+  >;
 
   constructor(dependencies: WorkflowLifecycleDependencies = {}) {
     const prisma = dependencies.prisma ?? getPrismaClient();
@@ -297,6 +328,19 @@ export class WorkflowRunLifecycle {
       dependencies.publishRedis ?? publishPersistedWorkflowEvent;
     this.redisDeliveryRequired =
       Boolean(dependencies.publishRedis) || isWorkflowRedisDeliveryEnabled();
+    this.handoffNotification =
+      dependencies.handoffNotification ??
+      (async (payload) => {
+        const outcome: NotificationOutcome =
+          payload.kind === "clip_render.failed"
+            ? "generation_failed"
+            : "clips_ready";
+        await notificationService.handoff({
+          projectId: payload.projectId,
+          sourceId: payload.workflowRunId,
+          outcome,
+        });
+      });
 
     if (this.heartbeatIntervalMs * 2 >= this.leaseDurationMs) {
       throw new Error("Workflow heartbeat interval must be less than half the lease duration");
@@ -363,6 +407,7 @@ export class WorkflowRunLifecycle {
       errorCode: string | null;
       transition: string;
       analyticsRequired?: boolean;
+      notification?: RenderTerminalNotificationPayload;
     },
   ) {
     const emittedAt = new Date();
@@ -400,6 +445,7 @@ export class WorkflowRunLifecycle {
       progress: input.progress,
       errorCode: input.errorCode,
       emittedAt: emittedAt.toISOString(),
+      ...(input.notification ? { notification: input.notification } : {}),
     } satisfies WorkflowStageUpdatedEvent;
 
     await tx.workflowEvent.create({
@@ -414,12 +460,13 @@ export class WorkflowRunLifecycle {
         emittedAt,
         dedupeKey,
         eventType: payload.event,
-        payload,
+        payload: payload as unknown as Prisma.InputJsonValue,
         availableAt: emittedAt,
         nextDeliveryAt: emittedAt,
         redisRequired: this.redisDeliveryRequired,
         analyticsRequired:
           (input.analyticsRequired ?? false) && Boolean(this.publishAnalytics),
+        notificationRequired: Boolean(input.notification),
       },
     });
   }
@@ -883,7 +930,10 @@ export class WorkflowRunLifecycle {
         frozenAt = await this.databaseNow(tx);
         await tx.workflowRun.update({
           where: { id: attempt.workflowRunId },
-          data: { renderWorkSetFrozenAt: frozenAt },
+          data: {
+            renderWorkSetFrozenAt: frozenAt,
+            requestedCount: candidateIds.length,
+          },
         });
       }
 
@@ -969,11 +1019,13 @@ export class WorkflowRunLifecycle {
         where: {
           id: input.clipRenderId,
           status: "pending",
+          workflowRunId: attempt.workflowRunId,
           clip: { projectId: attempt.projectId },
         },
         data: {
           status: "rendering",
           workflowAttemptId: attempt.attemptId,
+          failureDisposition: null,
           startedAt: input.startedAt,
           errorCode: null,
         },
@@ -1011,6 +1063,7 @@ export class WorkflowRunLifecycle {
           id: input.clipRenderId,
           status: "rendering",
           workflowAttemptId: attempt.attemptId,
+          workflowRunId: attempt.workflowRunId,
           clip: { projectId: attempt.projectId },
         },
         data: {
@@ -1019,6 +1072,7 @@ export class WorkflowRunLifecycle {
           sizeBytes: BigInt(input.sizeBytes),
           durationSec: input.durationSec,
           errorCode: null,
+          failureDisposition: null,
           completedAt: input.completedAt,
         },
       });
@@ -1060,6 +1114,7 @@ export class WorkflowRunLifecycle {
       clipRenderId: string;
       exportVariantId: string | null;
       errorCode: string;
+      disposition: RenderVariantFailureDisposition;
     },
   ) {
     return this.transaction(async (tx) => {
@@ -1067,10 +1122,17 @@ export class WorkflowRunLifecycle {
       const claim = await tx.clipRender.updateMany({
         where: {
           id: input.clipRenderId,
+          status: "rendering",
           workflowAttemptId: attempt.attemptId,
+          workflowRunId: attempt.workflowRunId,
           clip: { projectId: attempt.projectId },
         },
-        data: { status: "failed", errorCode: input.errorCode },
+        data: {
+          status: "failed",
+          errorCode: input.errorCode,
+          failureDisposition: input.disposition,
+          completedAt: new Date(),
+        },
       });
       if (claim.count === 0) return false;
       if (input.exportVariantId) {
@@ -1502,6 +1564,283 @@ export class WorkflowRunLifecycle {
     await this.completeStage(attempt);
   }
 
+  /**
+   * Settles the complete durable Render Work Set in one fenced transaction.
+   * Callers never derive aggregate state or admit late work themselves.
+   */
+  async settleRenderWorkSet(
+    attempt: WorkflowAttemptRef,
+  ): Promise<RenderWorkSetOutcome> {
+    if (attempt.stage !== "clip_rendering") throw new WorkflowAttemptLost(attempt);
+    return this.transaction(async (tx) => {
+      await this.lockAdmissionProject(tx, attempt.projectId);
+      const existingRun = await tx.workflowRun.findUniqueOrThrow({
+        where: { id: attempt.workflowRunId },
+        select: {
+          status: true,
+          attemptId: true,
+          requestedCount: true,
+          succeededCount: true,
+          failedCount: true,
+        },
+      });
+      if (
+        existingRun.attemptId === attempt.attemptId &&
+        (existingRun.status === "completed" ||
+          existingRun.status === "partial" ||
+          existingRun.status === "failed") &&
+        existingRun.requestedCount !== null &&
+        existingRun.succeededCount !== null &&
+        existingRun.failedCount !== null
+      ) {
+        const followUp = await tx.workflowRun.findUnique({
+          where: {
+            projectId_idempotencyKey: {
+              projectId: attempt.projectId,
+              idempotencyKey: `drain-${attempt.workflowRunId}`,
+            },
+          },
+          select: { id: true },
+        });
+        return {
+          status: existingRun.status,
+          requested: existingRun.requestedCount,
+          succeeded: existingRun.succeededCount,
+          failed: existingRun.failedCount,
+          superseded: Math.max(
+            0,
+            existingRun.requestedCount -
+              existingRun.succeededCount -
+              existingRun.failedCount,
+          ),
+          followUpWorkflowRunId: followUp?.id ?? null,
+        };
+      }
+
+      await this.fenceChildMutation(tx, attempt, "clip_rendering");
+      const run = await tx.workflowRun.findUniqueOrThrow({
+        where: { id: attempt.workflowRunId },
+        select: { requestedCount: true, attemptCount: true },
+      });
+      const variants = await tx.clipRender.findMany({
+        where: { workflowRunId: attempt.workflowRunId },
+        select: {
+          id: true,
+          status: true,
+          failureDisposition: true,
+          exportVariantId: true,
+        },
+      });
+      const requested = Math.max(run.requestedCount ?? variants.length, variants.length);
+      const succeeded = variants.filter((variant) => variant.status === "completed").length;
+      const permanentFailed = variants.filter(
+        (variant) =>
+          variant.status === "failed" &&
+          variant.failureDisposition === "permanent",
+      );
+      const retryable = variants.filter(
+        (variant) =>
+          variant.status === "pending" ||
+          variant.status === "rendering" ||
+          (variant.status === "failed" &&
+            variant.failureDisposition !== "permanent"),
+      );
+      const superseded = Math.max(0, requested - variants.length);
+      const failed = variants.length - succeeded;
+      const shouldRequeue =
+        succeeded === 0 &&
+        retryable.length > 0 &&
+        run.attemptCount < WORKFLOW_MAX_ATTEMPTS;
+
+      if (shouldRequeue) {
+        const databaseNow = await this.databaseNow(tx);
+        await tx.clipRender.updateMany({
+          where: { id: { in: retryable.map((variant) => variant.id) } },
+          data: {
+            status: "pending",
+            workflowAttemptId: null,
+            failureDisposition: null,
+            storageKey: null,
+            sizeBytes: null,
+            durationSec: null,
+            errorCode: null,
+            startedAt: null,
+            completedAt: null,
+          },
+        });
+        const exportVariantIds = retryable.flatMap((variant) =>
+          variant.exportVariantId ? [variant.exportVariantId] : [],
+        );
+        if (exportVariantIds.length > 0) {
+          await tx.clipExportVariant.updateMany({
+            where: { id: { in: exportVariantIds } },
+            data: {
+              status: "pending",
+              storageKey: null,
+              sizeBytes: null,
+              durationSec: null,
+              errorCode: null,
+              startedAt: null,
+              completedAt: null,
+            },
+          });
+        }
+        await tx.workflowRun.update({
+          where: { id: attempt.workflowRunId },
+          data: {
+            status: "queued",
+            progress: 0,
+            errorCode: null,
+            attemptId: null,
+            leaseOwner: null,
+            leaseExpiresAt: null,
+            heartbeatAt: null,
+            nextAttemptAt: new Date(
+              databaseNow.getTime() + retryBackoffMs(run.attemptCount),
+            ),
+            requestedCount: requested,
+            succeededCount: succeeded,
+            failedCount: failed,
+          },
+        });
+        await this.appendEvent(tx, {
+          projectId: attempt.projectId,
+          workflowRunId: attempt.workflowRunId,
+          attemptId: attempt.attemptId,
+          stage: "clip_rendering",
+          status: "queued",
+          progress: 0,
+          errorCode: null,
+          transition: `requeued:${run.attemptCount}`,
+        });
+        return {
+          status: "requeued",
+          requested,
+          succeeded,
+          failed,
+          superseded,
+          followUpWorkflowRunId: null,
+        };
+      }
+
+      const terminalStatus: "completed" | "partial" | "failed" =
+        succeeded > 0 && failed > 0
+          ? "partial"
+          : succeeded > 0 || failed === 0
+            ? "completed"
+            : "failed";
+      const terminalErrorCode =
+        terminalStatus === "failed"
+          ? retryable.length > 0 && run.attemptCount >= WORKFLOW_MAX_ATTEMPTS
+            ? WORKFLOW_RETRIES_EXHAUSTED_CODE
+            : permanentFailed[0]
+              ? "render_work_set_failed"
+              : "aggregate_failed"
+          : null;
+      const unfinished = variants.filter(
+        (variant) => variant.status === "pending" || variant.status === "rendering",
+      );
+      if (unfinished.length > 0) {
+        await tx.clipRender.updateMany({
+          where: { id: { in: unfinished.map((variant) => variant.id) } },
+          data: {
+            status: "failed",
+            errorCode: terminalErrorCode ?? "render_variant_interrupted",
+            failureDisposition: "retryable",
+            completedAt: new Date(),
+          },
+        });
+        const unfinishedExportVariantIds = unfinished.flatMap((variant) =>
+          variant.exportVariantId ? [variant.exportVariantId] : [],
+        );
+        if (unfinishedExportVariantIds.length > 0) {
+          await tx.clipExportVariant.updateMany({
+            where: { id: { in: unfinishedExportVariantIds } },
+            data: {
+              status: "failed",
+              errorCode: terminalErrorCode ?? "render_variant_interrupted",
+              completedAt: new Date(),
+            },
+          });
+        }
+      }
+      await tx.workflowRun.update({
+        where: { id: attempt.workflowRunId },
+        data: {
+          status: terminalStatus,
+          progress: 100,
+          errorCode: terminalErrorCode,
+          leaseOwner: null,
+          leaseExpiresAt: null,
+          heartbeatAt: null,
+          nextAttemptAt: null,
+          requestedCount: requested,
+          succeededCount: succeeded,
+          failedCount: failed,
+        },
+      });
+
+      const supersededOnly = requested > 0 && variants.length === 0;
+      const notification: RenderTerminalNotificationPayload | undefined =
+        supersededOnly
+          ? undefined
+          : {
+              kind:
+                terminalStatus === "completed"
+                  ? "clip_render.completed"
+                  : terminalStatus === "partial"
+                    ? "clip_render.partial"
+                    : "clip_render.failed",
+              projectId: attempt.projectId,
+              workflowRunId: attempt.workflowRunId,
+              requested,
+              succeeded,
+              failed,
+              superseded,
+            };
+      await this.appendEvent(tx, {
+        projectId: attempt.projectId,
+        workflowRunId: attempt.workflowRunId,
+        attemptId: attempt.attemptId,
+        stage: "clip_rendering",
+        status: terminalStatus,
+        progress: 100,
+        errorCode: terminalErrorCode,
+        transition: `terminal:${terminalStatus}`,
+        analyticsRequired: true,
+        notification,
+      });
+
+      let followUpWorkflowRunId: string | null = null;
+      const lateVariant = await tx.clipRender.findFirst({
+        where: {
+          workflowRunId: null,
+          status: "pending",
+          clip: { projectId: attempt.projectId },
+        },
+        select: { id: true },
+      });
+      if (lateVariant) {
+        const followUp = await this.admitWithinTransaction(tx, {
+          projectId: attempt.projectId,
+          idempotencyKey: `drain-${attempt.workflowRunId}`,
+          stage: "clip_rendering",
+          contentPackId: null,
+        });
+        followUpWorkflowRunId = followUp.id;
+      }
+
+      return {
+        status: terminalStatus,
+        requested,
+        succeeded,
+        failed,
+        superseded,
+        followUpWorkflowRunId,
+      };
+    });
+  }
+
   async completeRendering(
     attempt: WorkflowAttemptRef,
     failedVariantCount = 0,
@@ -1695,7 +2034,26 @@ export class WorkflowRunLifecycle {
         where: {
           clip: { projectId: attempt.projectId },
           workflowAttemptId: attempt.attemptId,
-          status: { in: ["rendering", "failed"] },
+          ...(outcome.requeue
+            ? {
+                OR: [
+                  { status: "rendering" as const },
+                  {
+                    status: "failed" as const,
+                    failureDisposition: "retryable",
+                  },
+                  { status: "failed" as const, failureDisposition: null },
+                ],
+              }
+            : {
+                OR: [
+                  { status: "rendering" as const },
+                  {
+                    status: "failed" as const,
+                    failureDisposition: { not: "permanent" },
+                  },
+                ],
+              }),
         },
         data: outcome.requeue
           ? {
@@ -1707,10 +2065,12 @@ export class WorkflowRunLifecycle {
               errorCode: null,
               startedAt: null,
               completedAt: null,
+              failureDisposition: null,
             }
           : {
               status: "failed",
               errorCode: outcome.errorCode,
+              failureDisposition: "retryable",
               completedAt: new Date(),
             },
       });
@@ -1819,6 +2179,10 @@ export class WorkflowRunLifecycle {
             OR: [
               { redisRequired: true, redisPublishedAt: null },
               { analyticsRequired: true, analyticsPublishedAt: null },
+              {
+                notificationRequired: true,
+                notificationDeliveredAt: null,
+              },
             ],
           },
         ],
@@ -1873,6 +2237,24 @@ export class WorkflowRunLifecycle {
               deliveryLeaseOwner: this.leaseOwner,
             },
             data: { analyticsPublishedAt: new Date() },
+          });
+          if (acknowledged.count === 0) continue;
+        }
+        if (event.notificationRequired && !event.notificationDeliveredAt) {
+          const payload = event.payload as {
+            notification?: RenderTerminalNotificationPayload;
+          } | null;
+          const notification = payload?.notification;
+          if (!notification) {
+            throw new Error("Render notification payload unavailable");
+          }
+          await this.handoffNotification(notification);
+          const acknowledged = await this.prisma.workflowEvent.updateMany({
+            where: {
+              id: event.id,
+              deliveryLeaseOwner: this.leaseOwner,
+            },
+            data: { notificationDeliveredAt: new Date() },
           });
           if (acknowledged.count === 0) continue;
         }

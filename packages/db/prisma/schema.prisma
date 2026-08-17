@@ -509,6 +509,11 @@ model WorkflowEvent {
   redisPublishedAt DateTime?
   analyticsRequired Boolean @default(false)
   analyticsPublishedAt DateTime?
+  /// Terminal render events use this event as their durable notification
+  /// intent. Delivery is acknowledged only after the send-once ledger has
+  /// durably accepted the handoff.
+  notificationRequired Boolean @default(false)
+  notificationDeliveredAt DateTime?
   deadLetteredAt DateTime?
   lastDeliveryError String?
   createdAt     DateTime @default(now())
@@ -518,6 +523,7 @@ model WorkflowEvent {
   @@unique([projectId, seq])
   @@index([projectId, seq])
   @@index([nextDeliveryAt, deliveryLeaseExpiresAt])
+  @@index([notificationRequired, notificationDeliveredAt, nextDeliveryAt])
 }
 
 model User {

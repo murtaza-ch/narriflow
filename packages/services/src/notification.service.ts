@@ -145,6 +145,11 @@ export interface EnqueueNotificationResult {
     | "project_not_found";
 }
 
+export interface NotificationHandoffResult {
+  ledgerId: string | null;
+  status: "pending" | "disabled" | "project_not_found";
+}
+
 function structuredWarn(
   message: string,
   context: Record<string, unknown>,
@@ -416,6 +421,24 @@ export class NotificationService {
     workflowRunId: string,
   ): Promise<WorkflowRunNotificationContext | null> {
     return this.store.getWorkflowRunContext(workflowRunId);
+  }
+
+  /**
+   * Durably hands an outbox intent to the send-once ledger without coupling
+   * domain settlement to provider delivery. Replays return the same ledger.
+   */
+  async handoff(input: {
+    projectId: string;
+    sourceId: string;
+    outcome: NotificationOutcome;
+  }): Promise<NotificationHandoffResult> {
+    const project = await this.store.getProject(input.projectId);
+    if (!project) return { ledgerId: null, status: "project_not_found" };
+    if (input.outcome !== "project_expiring" && !project.notifyOnComplete) {
+      return { ledgerId: null, status: "disabled" };
+    }
+    const ledger = await this.store.insertOrFind(input);
+    return { ledgerId: ledger.id, status: "pending" };
   }
 
   async enqueueAndSend(

@@ -18,7 +18,11 @@ import { processPendingClipPreviews } from "./tasks/clip-preview";
 import { processPendingAutoLayoutAnalyses } from "./tasks/auto-layout-analysis";
 import { processDubbingRun } from "./tasks/dubbing";
 import { processIngestJob } from "./tasks/ingest";
-import { processClipRenderingRun } from "./tasks/render-clips";
+import {
+  ClipRenderAttempt,
+  type ClipRenderingWorkflowAttempt,
+} from "./tasks/render-clips";
+import { parseWorkerRenderConfig } from "./render-config";
 import { processDueSocialPosts } from "./tasks/social-publisher";
 import {
   processSubmittedTranscriptResults,
@@ -55,6 +59,7 @@ const workflowEventDispatchIntervalMs = Number(
 const maxConsecutivePollFailures = Number(
   process.env.WORKER_MAX_CONSECUTIVE_POLL_FAILURES ?? "20",
 );
+const renderConfig = parseWorkerRenderConfig();
 
 // Preview proxies are short ffmpeg cuts, but "short" is ~12s each and a batch
 // runs them in sequence — roughly a minute of CPU+network per tick.
@@ -439,9 +444,43 @@ const autopilotLoop = createPollLoop("autopilot", async () => {
  *  processes — claimNextWorkflowRun's conditional update (status=queued ->
  *  running) is the same atomic claim every poller already relies on. */
 const renderLoop = createPollLoop("render", async () => {
+  if (!renderConfig.clipRenderAttemptEnabled) return 0;
   const run = await projectService.claimNextWorkflowRun("clip_rendering");
   if (!run) return 0;
-  await executeClaimedWorkflowRun(run, processClipRenderingRun);
+  if (run.lifecycleVersion !== 2 || !run.attemptId) {
+    throw new Error(
+      `clip_rendering run ${run.id} must be drained before ClipRenderAttempt cutover`,
+    );
+  }
+  const lifecycle = getWorkflowRunLifecycle();
+  const attempt = workflowAttemptRef({
+    id: run.id,
+    projectId: run.projectId,
+    stage: run.stage,
+    attemptId: run.attemptId,
+    attemptCount: run.attemptCount,
+  }) as ClipRenderingWorkflowAttempt;
+  const clipRenderAttempt = new ClipRenderAttempt({
+    run,
+    config: renderConfig,
+    lifecycle,
+  });
+  try {
+    await lifecycle.runAttempt(attempt, ({ signal }) =>
+      clipRenderAttempt.execute({ attempt, signal }),
+    );
+  } catch (error) {
+    if (!(error instanceof WorkflowAttemptLost)) throw error;
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        message: "workflow_attempt_lost",
+        workflowRunId: run.id,
+        attemptId: run.attemptId,
+        stage: run.stage,
+      }),
+    );
+  }
   return 1;
 });
 
