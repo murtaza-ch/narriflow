@@ -19,14 +19,18 @@ the same time. The additive schema remains in place during rollback.
    `bun test apps/worker/src/render-config.test.ts apps/worker/src/tasks/clip-render-attempt.test.ts apps/worker/src/render-object-reconciler.test.ts`
    and
    `bun run --cwd apps/worker reconcile:render-objects --project <project-uuid>`.
-   Exit `0` is clean, `1` reports reviewed dry-run orphans, and `2` is unsafe
-   or partially failed.
+   Exit `0` is clean, `1` reports reviewed dry-run orphans, `2` reports one or
+   more per-object deletion failures, and `3` means reconciliation was unsafe
+   or unavailable (including validation, listing, database, and deadline
+   failures).
 4. **Drain.** Stop every process that can poll `clip_rendering`. Wait until no
    render worker process is running and no protocol-version-2 render run has
    a live lease. Do not enable while any old render process remains.
 5. **Enable and restart.** Set `WORKER_CLIP_RENDER_ATTEMPT_ENABLED=1` on the
    upgraded worker pool and start it. No lifecycle protocol version change is
-   required.
+   required. Startup validates `WORKER_X264_PRESET`; supported non-default
+   presets emit a structured warning. `WORKER_STORAGE_TIMEOUT_MS` bounds each
+   render and reconciliation storage operation.
 6. **Observe.** Verify representative `completed`, `partial`, `requeued`, and
    `failed` runs. Query terminal Workflow Events where
    `notificationRequired = true AND notificationDeliveredAt IS NULL`; this

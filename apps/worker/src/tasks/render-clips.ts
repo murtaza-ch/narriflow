@@ -4354,6 +4354,24 @@ function uploadConcurrency(): number {
   return currentRenderConfig().uploadConcurrency;
 }
 
+export async function commitProvisionalRenderUpload<T>(input: {
+  signal?: AbortSignal;
+  complete: () => Promise<T>;
+  discard: (reason: string) => Promise<void>;
+}): Promise<T> {
+  try {
+    input.signal?.throwIfAborted();
+    return await input.complete();
+  } catch (error) {
+    if (input.signal?.aborted) {
+      await input.discard("attempt_cancelled_after_upload");
+    } else if (error instanceof WorkflowAttemptLost) {
+      await input.discard("ownership_lost");
+    }
+    throw error;
+  }
+}
+
 async function uploadRenderedOutput(params: {
   workflowRunId: string;
   projectId: string;
@@ -4435,22 +4453,19 @@ async function uploadRenderedOutput(params: {
   });
   const uploadMs = currentTimeMs() - uploadStartedAtMs;
 
-  let persisted: boolean;
-  try {
-    ({ persisted } = await currentRenderAdapters().clip.completeClipRenderVariant(
-      params.output.clipRenderId,
-      {
-        storageKey: params.output.storageKey,
-        sizeBytes: Number(outputStat.size),
-        durationSec: params.clipDurationSec,
-      },
-    ));
-  } catch (error) {
-    if (error instanceof WorkflowAttemptLost) {
-      await deleteProvisionalObject("ownership_lost");
-    }
-    throw error;
-  }
+  const { persisted } = await commitProvisionalRenderUpload({
+    signal: currentRenderSignal(),
+    complete: () =>
+      currentRenderAdapters().clip.completeClipRenderVariant(
+        params.output.clipRenderId,
+        {
+          storageKey: params.output.storageKey,
+          sizeBytes: Number(outputStat.size),
+          durationSec: params.clipDurationSec,
+        },
+      ),
+    discard: deleteProvisionalObject,
+  });
 
   if (!persisted) {
     // The ClipRender row this attempt was rendering for is gone — an editor

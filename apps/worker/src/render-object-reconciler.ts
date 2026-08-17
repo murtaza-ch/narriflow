@@ -3,9 +3,11 @@ import {
   deleteObject,
   listObjectPageByPrefix,
 } from "@narriflow/services";
+import { parseWorkerRenderConfig } from "./render-config";
 import { isAttemptUniqueProjectRenderObjectKey } from "./render-object-key";
 
 const ORPHAN_SAFETY_AGE_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_STORAGE_OPERATION_TIMEOUT_MS = 2 * 60 * 1000;
 
 interface ReconciliationObject {
   key: string;
@@ -17,16 +19,18 @@ interface RenderObjectReconcilerDependencies {
     listPage(
       prefix: string,
       continuationToken?: string,
+      options?: { signal?: AbortSignal },
     ): Promise<{
       objects: ReconciliationObject[];
       nextContinuationToken: string | null;
     }>;
-    delete(key: string): Promise<unknown>;
+    delete(key: string, options?: { signal?: AbortSignal }): Promise<unknown>;
   };
   persistence: {
     listReferencedKeys(projectId: string): Promise<ReadonlySet<string>>;
   };
   now?: () => Date;
+  storageOperationTimeoutMs?: number;
   diagnose?: (input: Record<string, unknown>) => void;
 }
 
@@ -45,6 +49,14 @@ export class RenderObjectReconciler {
 
   constructor(dependencies: RenderObjectReconcilerDependencies) {
     this.#dependencies = dependencies;
+  }
+
+  #storageSignal(signal?: AbortSignal): AbortSignal {
+    const timeoutSignal = AbortSignal.timeout(
+      this.#dependencies.storageOperationTimeoutMs ??
+        DEFAULT_STORAGE_OPERATION_TIMEOUT_MS,
+    );
+    return signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
   }
 
   async execute(input: {
@@ -68,10 +80,13 @@ export class RenderObjectReconciler {
       let continuationToken: string | undefined;
       do {
         signal?.throwIfAborted();
+        const operationSignal = this.#storageSignal(signal);
         const page = await this.#dependencies.storage.listPage(
           prefix,
           continuationToken,
+          { signal: operationSignal },
         );
+        operationSignal.throwIfAborted();
         candidates.push(
           ...page.objects.filter((object) =>
             isAttemptUniqueProjectRenderObjectKey(object.key, input.projectId),
@@ -120,10 +135,16 @@ export class RenderObjectReconciler {
           result.objectIds = result.objectIds.filter((key) => key !== object.key);
           continue;
         }
+        const operationSignal = this.#storageSignal(signal);
         try {
-          await this.#dependencies.storage.delete(object.key);
+          await this.#dependencies.storage.delete(object.key, {
+            signal: operationSignal,
+          });
+          operationSignal.throwIfAborted();
           result.deleted += 1;
         } catch (error) {
+          signal?.throwIfAborted();
+          if (operationSignal.aborted) throw operationSignal.reason;
           result.failed += 1;
           this.#dependencies.diagnose?.({
             level: "warn",
@@ -148,16 +169,18 @@ export class RenderObjectReconciler {
 }
 
 export function createProductionRenderObjectReconciler(): RenderObjectReconciler {
+  const config = parseWorkerRenderConfig();
   return new RenderObjectReconciler({
     storage: {
-      listPage: async (prefix, continuationToken) =>
-        listObjectPageByPrefix(prefix, 1000, continuationToken),
+      listPage: async (prefix, continuationToken, options) =>
+        listObjectPageByPrefix(prefix, 1000, continuationToken, options),
       delete: deleteObject,
     },
     persistence: {
       listReferencedKeys: (projectId) =>
         clipService.getProjectRenderStorageReferences(projectId),
     },
+    storageOperationTimeoutMs: config.storageOperationTimeoutMs,
     diagnose: (diagnostic) => console.warn(JSON.stringify(diagnostic)),
   });
 }

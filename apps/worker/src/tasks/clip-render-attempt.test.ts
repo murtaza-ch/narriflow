@@ -3,8 +3,29 @@ import type { RenderWorkSetOutcome } from "@narriflow/services";
 import { parseRenderConfig } from "../render-config";
 import {
   ClipRenderAttempt,
+  commitProvisionalRenderUpload,
   type ClipRenderingWorkflowAttempt,
 } from "./render-clips";
+
+test("cancellation after upload discards the object before persistence", async () => {
+  const controller = new AbortController();
+  const actions: string[] = [];
+  controller.abort(new DOMException("cancelled", "AbortError"));
+
+  await expect(
+    commitProvisionalRenderUpload({
+      signal: controller.signal,
+      complete: async () => {
+        actions.push("persist");
+        return { persisted: true };
+      },
+      discard: async (reason) => {
+        actions.push(`discard:${reason}`);
+      },
+    }),
+  ).rejects.toMatchObject({ name: "AbortError" });
+  expect(actions).toEqual(["discard:attempt_cancelled_after_upload"]);
+});
 
 test("ClipRenderAttempt settles an empty frozen work set through execute", async () => {
   const attempt: ClipRenderingWorkflowAttempt = {

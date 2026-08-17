@@ -122,3 +122,59 @@ test("destructive reconciliation reports deletion failures without hiding the or
     }),
   );
 });
+
+test("storage listing is deadline-bounded with an active abort signal", async () => {
+  const projectId = "11111111-1111-1111-1111-111111111111";
+  let receivedSignal: AbortSignal | undefined;
+  const reconciler = new RenderObjectReconciler({
+    storageOperationTimeoutMs: 5,
+    storage: {
+      listPage: async (_prefix, _continuationToken, options) => {
+        receivedSignal = options?.signal;
+        return await new Promise((_, reject) => {
+          options?.signal?.addEventListener(
+            "abort",
+            () => reject(options.signal?.reason),
+            { once: true },
+          );
+        });
+      },
+      delete: async () => {},
+    },
+    persistence: { listReferencedKeys: async () => new Set() },
+  });
+
+  await expect(reconciler.execute({ projectId })).rejects.toMatchObject({
+    name: "TimeoutError",
+  });
+  expect(receivedSignal?.aborted).toBe(true);
+});
+
+test("caller cancellation actively aborts destructive storage operations", async () => {
+  const projectId = "11111111-1111-1111-1111-111111111111";
+  const key = `projects/${projectId}/renders/clip/9x16-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.mp4`;
+  const controller = new AbortController();
+  let deleteSignal: AbortSignal | undefined;
+  const reconciler = new RenderObjectReconciler({
+    now: () => new Date("2026-08-17T12:00:00.000Z"),
+    storage: {
+      listPage: async (prefix) => ({
+        objects: prefix.endsWith("/renders/")
+          ? [{ key, lastModified: new Date("2026-08-15T00:00:00.000Z") }]
+          : [],
+        nextContinuationToken: null,
+      }),
+      delete: async (_objectKey, options) => {
+        deleteSignal = options?.signal;
+        controller.abort(new DOMException("cancelled", "AbortError"));
+        options?.signal?.throwIfAborted();
+      },
+    },
+    persistence: { listReferencedKeys: async () => new Set() },
+  });
+
+  await expect(
+    reconciler.execute({ projectId, delete: true, signal: controller.signal }),
+  ).rejects.toMatchObject({ name: "AbortError" });
+  expect(deleteSignal?.aborted).toBe(true);
+});

@@ -823,10 +823,12 @@ export async function listObjectPageByPrefix(
   prefix: string,
   limit = 1000,
   continuationToken?: string,
+  options?: { signal?: AbortSignal },
 ): Promise<{
   objects: R2ObjectSummary[];
   nextContinuationToken: string | null;
 }> {
+  options?.signal?.throwIfAborted();
   const client = getClient();
   const { bucket } = getR2Config();
   const response = await client.send(
@@ -836,6 +838,7 @@ export async function listObjectPageByPrefix(
       MaxKeys: Math.max(1, Math.min(1000, Math.floor(limit))),
       ContinuationToken: continuationToken,
     }),
+    { abortSignal: options?.signal },
   );
   return {
     objects: (response.Contents ?? []).flatMap((object) =>

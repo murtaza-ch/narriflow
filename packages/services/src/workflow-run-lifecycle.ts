@@ -152,6 +152,23 @@ export interface RenderTerminalNotificationPayload {
   superseded: number;
 }
 
+type RenderLineageVariant = {
+  id: string;
+  status: "pending" | "rendering" | "completed" | "failed";
+  exportVariantId: string | null;
+};
+
+type RenderTerminalSettlement = {
+  status: "completed" | "partial" | "failed";
+  errorCode: string | null;
+  requested: number;
+  succeeded: number;
+  failed: number;
+  superseded: number;
+  followUpWorkflowRunId: string | null;
+  notification?: RenderTerminalNotificationPayload;
+};
+
 export interface CompleteTranscriptInput {
   provider: string;
   providerModel: string | null;
@@ -1723,120 +1740,36 @@ export class WorkflowRunLifecycle {
         };
       }
 
-      const terminalStatus: "completed" | "partial" | "failed" =
-        succeeded > 0 && failed > 0
-          ? "partial"
-          : succeeded > 0 || failed === 0
-            ? "completed"
-            : "failed";
-      const terminalErrorCode =
-        terminalStatus === "failed"
-          ? retryable.length > 0 && run.attemptCount >= WORKFLOW_MAX_ATTEMPTS
+      const terminal = await this.settleTerminalRenderLineage(tx, attempt, {
+        requestedCount: run.requestedCount,
+        variants,
+        failureErrorCode:
+          retryable.length > 0 && run.attemptCount >= WORKFLOW_MAX_ATTEMPTS
             ? WORKFLOW_RETRIES_EXHAUSTED_CODE
             : permanentFailed[0]
               ? "render_work_set_failed"
-              : "aggregate_failed"
-          : null;
-      const unfinished = variants.filter(
-        (variant) => variant.status === "pending" || variant.status === "rendering",
-      );
-      if (unfinished.length > 0) {
-        await tx.clipRender.updateMany({
-          where: { id: { in: unfinished.map((variant) => variant.id) } },
-          data: {
-            status: "failed",
-            errorCode: terminalErrorCode ?? "render_variant_interrupted",
-            failureDisposition: "retryable",
-            completedAt: new Date(),
-          },
-        });
-        const unfinishedExportVariantIds = unfinished.flatMap((variant) =>
-          variant.exportVariantId ? [variant.exportVariantId] : [],
-        );
-        if (unfinishedExportVariantIds.length > 0) {
-          await tx.clipExportVariant.updateMany({
-            where: { id: { in: unfinishedExportVariantIds } },
-            data: {
-              status: "failed",
-              errorCode: terminalErrorCode ?? "render_variant_interrupted",
-              completedAt: new Date(),
-            },
-          });
-        }
-      }
-      await tx.workflowRun.update({
-        where: { id: attempt.workflowRunId },
-        data: {
-          status: terminalStatus,
-          progress: 100,
-          errorCode: terminalErrorCode,
-          leaseOwner: null,
-          leaseExpiresAt: null,
-          heartbeatAt: null,
-          nextAttemptAt: null,
-          requestedCount: requested,
-          succeededCount: succeeded,
-          failedCount: failed,
-        },
+              : "aggregate_failed",
       });
-
-      const supersededOnly = requested > 0 && variants.length === 0;
-      const notification: RenderTerminalNotificationPayload | undefined =
-        supersededOnly
-          ? undefined
-          : {
-              kind:
-                terminalStatus === "completed"
-                  ? "clip_render.completed"
-                  : terminalStatus === "partial"
-                    ? "clip_render.partial"
-                    : "clip_render.failed",
-              projectId: attempt.projectId,
-              workflowRunId: attempt.workflowRunId,
-              requested,
-              succeeded,
-              failed,
-              superseded,
-            };
       await this.appendEvent(tx, {
         projectId: attempt.projectId,
         workflowRunId: attempt.workflowRunId,
         attemptId: attempt.attemptId,
         stage: "clip_rendering",
-        status: terminalStatus,
+        status: terminal.status,
         progress: 100,
-        errorCode: terminalErrorCode,
-        transition: `terminal:${terminalStatus}`,
+        errorCode: terminal.errorCode,
+        transition: `terminal:${terminal.status}`,
         analyticsRequired: true,
-        notification,
+        notification: terminal.notification,
       });
-
-      let followUpWorkflowRunId: string | null = null;
-      const lateVariant = await tx.clipRender.findFirst({
-        where: {
-          workflowRunId: null,
-          status: "pending",
-          clip: { projectId: attempt.projectId },
-        },
-        select: { id: true },
-      });
-      if (lateVariant) {
-        const followUp = await this.admitWithinTransaction(tx, {
-          projectId: attempt.projectId,
-          idempotencyKey: `drain-${attempt.workflowRunId}`,
-          stage: "clip_rendering",
-          contentPackId: null,
-        });
-        followUpWorkflowRunId = followUp.id;
-      }
 
       return {
-        status: terminalStatus,
-        requested,
-        succeeded,
-        failed,
-        superseded,
-        followUpWorkflowRunId,
+        status: terminal.status,
+        requested: terminal.requested,
+        succeeded: terminal.succeeded,
+        failed: terminal.failed,
+        superseded: terminal.superseded,
+        followUpWorkflowRunId: terminal.followUpWorkflowRunId,
       };
     });
   }
@@ -1953,6 +1886,9 @@ export class WorkflowRunLifecycle {
   ) {
     await this.transaction(async (tx) => {
       const databaseNow = await this.databaseNow(tx);
+      if (attempt.stage === "clip_rendering") {
+        await this.lockAdmissionProject(tx, attempt.projectId);
+      }
       const run = await tx.workflowRun.findFirst({
         where: {
           id: attempt.workflowRunId,
@@ -2006,10 +1942,12 @@ export class WorkflowRunLifecycle {
         },
       });
       if (won.count === 0) throw new WorkflowAttemptLost(attempt);
-      await this.settleAttemptChildren(tx, attempt, {
-        requeue,
-        errorCode: errorCode ?? failure.code,
-      });
+      if (requeue || attempt.stage !== "clip_rendering") {
+        await this.settleAttemptChildren(tx, attempt, {
+          requeue,
+          errorCode: errorCode ?? failure.code,
+        });
+      }
       let settledStatus: WorkflowStatus = status;
       let settledErrorCode = errorCode;
       let notification: RenderTerminalNotificationPayload | undefined;
@@ -2018,79 +1956,15 @@ export class WorkflowRunLifecycle {
           where: { workflowRunId: attempt.workflowRunId },
           select: { id: true, status: true, exportVariantId: true },
         });
-        const requested = Math.max(
-          run.requestedCount ?? variants.length,
-          variants.length,
-        );
-        const succeeded = variants.filter(
-          (variant) => variant.status === "completed",
-        ).length;
-        const failed = variants.length - succeeded;
-        const superseded = Math.max(0, requested - variants.length);
-        settledStatus =
-          succeeded > 0 && failed > 0
-            ? "partial"
-            : succeeded > 0 || failed === 0
-              ? "completed"
-              : "failed";
-        settledErrorCode = settledStatus === "failed" ? errorCode : null;
-        const unfinished = variants.filter(
-          (variant) =>
-            variant.status === "pending" || variant.status === "rendering",
-        );
-        if (unfinished.length > 0) {
-          await tx.clipRender.updateMany({
-            where: { id: { in: unfinished.map((variant) => variant.id) } },
-            data: {
-              status: "failed",
-              errorCode: errorCode ?? failure.code,
-              failureDisposition: "retryable",
-              completedAt: new Date(),
-            },
-          });
-        }
-        const failedExportVariantIds = variants.flatMap((variant) =>
-          variant.status !== "completed" && variant.exportVariantId
-            ? [variant.exportVariantId]
-            : [],
-        );
-        if (failedExportVariantIds.length > 0) {
-          await tx.clipExportVariant.updateMany({
-            where: { id: { in: failedExportVariantIds } },
-            data: {
-              status: "failed",
-              errorCode: errorCode ?? failure.code,
-              completedAt: new Date(),
-            },
-          });
-        }
-        await tx.workflowRun.update({
-          where: { id: attempt.workflowRunId },
-          data: {
-            status: settledStatus,
-            errorCode: settledErrorCode,
-            requestedCount: requested,
-            succeededCount: succeeded,
-            failedCount: failed,
-          },
+        const terminal = await this.settleTerminalRenderLineage(tx, attempt, {
+          requestedCount: run.requestedCount,
+          variants,
+          failureErrorCode: errorCode ?? failure.code,
+          unfinishedErrorCode: errorCode ?? failure.code,
         });
-        const supersededOnly = requested > 0 && variants.length === 0;
-        if (!supersededOnly) {
-          notification = {
-            kind:
-              settledStatus === "completed"
-                ? "clip_render.completed"
-                : settledStatus === "partial"
-                  ? "clip_render.partial"
-                  : "clip_render.failed",
-            projectId: attempt.projectId,
-            workflowRunId: attempt.workflowRunId,
-            requested,
-            succeeded,
-            failed,
-            superseded,
-          };
-        }
+        settledStatus = terminal.status;
+        settledErrorCode = terminal.errorCode;
+        notification = terminal.notification;
       }
       await this.appendEvent(tx, {
         projectId: attempt.projectId,
@@ -2107,6 +1981,126 @@ export class WorkflowRunLifecycle {
         notification,
       });
     });
+  }
+
+  private async settleTerminalRenderLineage(
+    tx: TransactionClient,
+    attempt: WorkflowAttemptRef,
+    input: {
+      requestedCount: number | null;
+      variants: readonly RenderLineageVariant[];
+      failureErrorCode: string;
+      unfinishedErrorCode?: string;
+    },
+  ): Promise<RenderTerminalSettlement> {
+    const requested = Math.max(
+      input.requestedCount ?? input.variants.length,
+      input.variants.length,
+    );
+    const succeeded = input.variants.filter(
+      (variant) => variant.status === "completed",
+    ).length;
+    const failed = input.variants.length - succeeded;
+    const superseded = Math.max(0, requested - input.variants.length);
+    const status: RenderTerminalSettlement["status"] =
+      succeeded > 0 && failed > 0
+        ? "partial"
+        : succeeded > 0 || failed === 0
+          ? "completed"
+          : "failed";
+    const errorCode = status === "failed" ? input.failureErrorCode : null;
+    const unfinishedErrorCode =
+      errorCode ?? input.unfinishedErrorCode ?? "render_variant_interrupted";
+    const unfinished = input.variants.filter(
+      (variant) => variant.status === "pending" || variant.status === "rendering",
+    );
+    if (unfinished.length > 0) {
+      await tx.clipRender.updateMany({
+        where: { id: { in: unfinished.map((variant) => variant.id) } },
+        data: {
+          status: "failed",
+          errorCode: unfinishedErrorCode,
+          failureDisposition: "retryable",
+          completedAt: new Date(),
+        },
+      });
+    }
+    const failedExportVariantIds = unfinished.flatMap((variant) =>
+      variant.exportVariantId
+        ? [variant.exportVariantId]
+        : [],
+    );
+    if (failedExportVariantIds.length > 0) {
+      await tx.clipExportVariant.updateMany({
+        where: { id: { in: failedExportVariantIds } },
+        data: {
+          status: "failed",
+          errorCode: unfinishedErrorCode,
+          completedAt: new Date(),
+        },
+      });
+    }
+    await tx.workflowRun.update({
+      where: { id: attempt.workflowRunId },
+      data: {
+        status,
+        progress: 100,
+        errorCode,
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        heartbeatAt: null,
+        nextAttemptAt: null,
+        requestedCount: requested,
+        succeededCount: succeeded,
+        failedCount: failed,
+      },
+    });
+
+    const supersededOnly = requested > 0 && input.variants.length === 0;
+    const notification = supersededOnly
+      ? undefined
+      : {
+          kind:
+            status === "completed"
+              ? ("clip_render.completed" as const)
+              : status === "partial"
+                ? ("clip_render.partial" as const)
+                : ("clip_render.failed" as const),
+          projectId: attempt.projectId,
+          workflowRunId: attempt.workflowRunId,
+          requested,
+          succeeded,
+          failed,
+          superseded,
+        };
+    let followUpWorkflowRunId: string | null = null;
+    const lateVariant = await tx.clipRender.findFirst({
+      where: {
+        workflowRunId: null,
+        status: "pending",
+        clip: { projectId: attempt.projectId },
+      },
+      select: { id: true },
+    });
+    if (lateVariant) {
+      const followUp = await this.admitWithinTransaction(tx, {
+        projectId: attempt.projectId,
+        idempotencyKey: `drain-${attempt.workflowRunId}`,
+        stage: "clip_rendering",
+        contentPackId: null,
+      });
+      followUpWorkflowRunId = followUp.id;
+    }
+    return {
+      status,
+      errorCode,
+      requested,
+      succeeded,
+      failed,
+      superseded,
+      followUpWorkflowRunId,
+      notification,
+    };
   }
 
   private async settleAttemptChildren(

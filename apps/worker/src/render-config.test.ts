@@ -32,7 +32,11 @@ describe("RenderConfig", () => {
   test("caps upload concurrency at four and warns for accepted nonstandard values", () => {
     const warnings: Array<{ name: string; value: string; effective: unknown }> = [];
     const config = parseRenderConfig(
-      { WORKER_UPLOAD_CONCURRENCY: "9", WORKER_X264_CRF: "30" },
+      {
+        WORKER_UPLOAD_CONCURRENCY: "9",
+        WORKER_X264_CRF: "30",
+        WORKER_X264_PRESET: "slow",
+      },
       (warning) => warnings.push(warning),
     );
 
@@ -40,6 +44,7 @@ describe("RenderConfig", () => {
     expect(warnings).toEqual([
       { name: "WORKER_UPLOAD_CONCURRENCY", value: "9", effective: 4 },
       { name: "WORKER_X264_CRF", value: "30", effective: "30" },
+      { name: "WORKER_X264_PRESET", value: "slow", effective: "slow" },
     ]);
   });
 
@@ -53,5 +58,8 @@ describe("RenderConfig", () => {
     expect(() =>
       parseRenderConfig({ WORKER_PROBE_TIMEOUT_MS: "Infinity" }),
     ).toThrow("WORKER_PROBE_TIMEOUT_MS");
+    expect(() =>
+      parseRenderConfig({ WORKER_X264_PRESET: "warp-speed" }),
+    ).toThrow("WORKER_X264_PRESET");
   });
 });

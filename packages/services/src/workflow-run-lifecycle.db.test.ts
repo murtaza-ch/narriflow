@@ -626,16 +626,44 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
   test("terminal render reaping settles the full lineage as partial", async () => {
     const { project, run } = await fixture("clip_rendering");
     const clip = await clipFixture(project.id, run.id);
-    const [completedVariant, pendingVariant] = await Promise.all([
+    const clipExport = await prisma.clipExport.create({
+      data: {
+        projectId: project.id,
+        clipId: clip.id,
+        editorRevision: 0,
+        fingerprint: randomUUID(),
+        resolution: "1080p",
+        watermark: false,
+      },
+    });
+    const exportVariant = await prisma.clipExportVariant.create({
+      data: {
+        exportId: clipExport.id,
+        aspectRatio: "ratio_4_5",
+        resolution: "1080p",
+        watermark: false,
+      },
+    });
+    const [completedVariant, pendingVariant, permanentVariant] = await Promise.all([
       prisma.clipRender.create({
         data: { clipId: clip.id, aspectRatio: "ratio_9_16" },
       }),
       prisma.clipRender.create({
         data: { clipId: clip.id, aspectRatio: "ratio_1_1" },
       }),
+      prisma.clipRender.create({
+        data: {
+          clipId: clip.id,
+          aspectRatio: "ratio_4_5",
+          exportVariantId: exportVariant.id,
+        },
+      }),
     ]);
     const { lifecycle, attempt } = await claimRenderAttempt();
     await lifecycle.beginRenderWorkSet(attempt);
+    const lateVariant = await prisma.clipRender.create({
+      data: { clipId: clip.id, aspectRatio: "ratio_16_9" },
+    });
     await lifecycle.markClipRenderVariantRendering(attempt, {
       clipRenderId: completedVariant.id,
       exportVariantId: null,
@@ -648,6 +676,17 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       sizeBytes: 100,
       durationSec: 5,
       completedAt: new Date(),
+    });
+    await lifecycle.markClipRenderVariantRendering(attempt, {
+      clipRenderId: permanentVariant.id,
+      exportVariantId: exportVariant.id,
+      startedAt: new Date(),
+    });
+    await lifecycle.failClipRenderVariant(attempt, {
+      clipRenderId: permanentVariant.id,
+      exportVariantId: exportVariant.id,
+      errorCode: "source_invalid",
+      disposition: "permanent",
     });
     await prisma.workflowRun.update({
       where: { id: run.id },
@@ -663,9 +702,9 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } }),
     ).toMatchObject({
       status: "partial",
-      requestedCount: 2,
+      requestedCount: 3,
       succeededCount: 1,
-      failedCount: 1,
+      failedCount: 2,
     });
     expect(
       await prisma.clipRender.findUniqueOrThrow({
@@ -673,10 +712,28 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       }),
     ).toMatchObject({ status: "failed", failureDisposition: "retryable" });
     expect(
+      await prisma.clipExportVariant.findUniqueOrThrow({
+        where: { id: exportVariant.id },
+      }),
+    ).toMatchObject({ status: "failed", errorCode: "source_invalid" });
+    expect(
       await prisma.workflowEvent.findFirstOrThrow({
         where: { workflowRunId: run.id, notificationRequired: true },
       }),
     ).toMatchObject({ status: "partial" });
+    expect(
+      await prisma.workflowRun.findUniqueOrThrow({
+        where: {
+          projectId_idempotencyKey: {
+            projectId: project.id,
+            idempotencyKey: `drain-${run.id}`,
+          },
+        },
+      }),
+    ).toMatchObject({ status: "queued", stage: "clip_rendering" });
+    expect(
+      await prisma.clipRender.findUniqueOrThrow({ where: { id: lateVariant.id } }),
+    ).toMatchObject({ status: "pending", workflowRunId: null });
   });
 
   test("terminal render reaping completes an all-superseded lineage silently", async () => {

@@ -29,6 +29,18 @@ export interface RenderConfig {
 }
 
 type RenderEnvironment = Record<string, string | undefined>;
+const X264_PRESETS = new Set([
+  "ultrafast",
+  "superfast",
+  "veryfast",
+  "faster",
+  "fast",
+  "medium",
+  "slow",
+  "slower",
+  "veryslow",
+  "placebo",
+]);
 
 function positiveNumber(
   environment: RenderEnvironment,
@@ -95,6 +107,19 @@ export function parseRenderConfig(
       effective: x264Crf,
     });
   }
+  const x264Preset = environment.WORKER_X264_PRESET?.trim() || "veryfast";
+  if (!X264_PRESETS.has(x264Preset)) {
+    throw new Error(
+      `WORKER_X264_PRESET must be one of ${[...X264_PRESETS].join(", ")}`,
+    );
+  }
+  if (x264Preset !== "veryfast") {
+    warn({
+      name: "WORKER_X264_PRESET",
+      value: x264Preset,
+      effective: x264Preset,
+    });
+  }
 
   const reframeSceneThreshold = positiveNumber(
     environment,
@@ -112,7 +137,7 @@ export function parseRenderConfig(
     ),
     sourceMode,
     uploadConcurrency,
-    x264Preset: environment.WORKER_X264_PRESET?.trim() || "veryfast",
+    x264Preset,
     x264Crf,
     renderCommandTimeoutMs: positiveNumber(
       environment,
