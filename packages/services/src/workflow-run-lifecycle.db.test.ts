@@ -12,6 +12,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { Prisma, PrismaClient } from "@prisma/client";
 import { Pool } from "pg";
 import {
+  type WorkflowAttemptRef,
   WorkflowAttemptContextRequired,
   WorkflowAttemptLost,
   WorkflowFailure,
@@ -130,6 +131,67 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     });
   }
 
+  async function claimRenderAttempt() {
+    const lifecycle = new WorkflowRunLifecycle({
+      prisma,
+      leaseOwner: randomUUID(),
+    });
+    const attempt = await lifecycle.claim("clip_rendering");
+    if (!attempt) throw new Error("clip-rendering claim missing");
+    return { attempt, lifecycle };
+  }
+
+  async function failAndClaimRenderRetry(
+    runId: string,
+    lifecycle: WorkflowRunLifecycle,
+    attempt: WorkflowAttemptRef,
+  ) {
+    await lifecycle.failAttempt(
+      attempt,
+      new WorkflowFailure("transient_render_failure", "retryable", "retry"),
+    );
+    await prisma.workflowRun.update({
+      where: { id: runId },
+      data: { nextAttemptAt: new Date(Date.now() - 1_000) },
+    });
+    return claimRenderAttempt();
+  }
+
+  async function proveRenderWorkSetBeginRollback(
+    installFailure: (names: {
+      functionName: string;
+      triggerName: string;
+    }) => Promise<() => Promise<void>>,
+  ) {
+    const { project, run } = await fixture("clip_rendering");
+    const firstClip = await clipFixture(project.id, run.id);
+    const secondClip = await clipFixture(project.id, run.id, 1);
+    const firstVariant = await prisma.clipRender.create({
+      data: { clipId: firstClip.id, aspectRatio: "ratio_9_16" },
+    });
+    const { lifecycle, attempt } = await claimRenderAttempt();
+    const suffix = randomUUID().replaceAll("-", "");
+    const names = {
+      functionName: `workflow_test_failure_${suffix}`,
+      triggerName: `workflow_test_failure_${suffix}`,
+    };
+    const cleanup = await installFailure(names);
+    try {
+      await expect(lifecycle.beginRenderWorkSet(attempt)).rejects.toThrow();
+    } finally {
+      await cleanup();
+    }
+    const secondVariant = await prisma.clipRender.create({
+      data: { clipId: secondClip.id, aspectRatio: "ratio_1_1" },
+    });
+
+    const workSet = await lifecycle.beginRenderWorkSet(attempt);
+
+    expect([...workSet.variantIds].sort()).toEqual(
+      [firstVariant.id, secondVariant.id].sort(),
+    );
+  }
+
   test("the first owned begin freezes eligible pending variants without rewriting history", async () => {
     const { project, run } = await fixture("clip_rendering");
     const clip = await clipFixture(project.id, run.id);
@@ -156,12 +218,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
         },
       }),
     ]);
-    const lifecycle = new WorkflowRunLifecycle({
-      prisma,
-      leaseOwner: randomUUID(),
-    });
-    const attempt = await lifecycle.claim("clip_rendering");
-    if (!attempt) throw new Error("claim missing");
+    const { lifecycle, attempt } = await claimRenderAttempt();
 
     const workSet = await lifecycle.beginRenderWorkSet(attempt);
 
@@ -175,33 +232,16 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
   test("an initially empty Render Work Set cannot expand on retry", async () => {
     const { project, run } = await fixture("clip_rendering");
     const clip = await clipFixture(project.id, run.id);
-    const firstLifecycle = new WorkflowRunLifecycle({
-      prisma,
-      leaseOwner: randomUUID(),
-    });
-    const firstAttempt = await firstLifecycle.claim("clip_rendering");
-    if (!firstAttempt) throw new Error("first claim missing");
+    const { lifecycle: firstLifecycle, attempt: firstAttempt } =
+      await claimRenderAttempt();
 
     const firstWorkSet = await firstLifecycle.beginRenderWorkSet(firstAttempt);
     expect(firstWorkSet.variantIds).toEqual([]);
-    await firstLifecycle.failAttempt(
-      firstAttempt,
-      new WorkflowFailure("transient_render_failure", "retryable", "retry"),
-    );
     const lateVariant = await prisma.clipRender.create({
       data: { clipId: clip.id, aspectRatio: "ratio_9_16" },
     });
-    await prisma.workflowRun.update({
-      where: { id: run.id },
-      data: { nextAttemptAt: new Date(Date.now() - 1_000) },
-    });
-
-    const retryLifecycle = new WorkflowRunLifecycle({
-      prisma,
-      leaseOwner: randomUUID(),
-    });
-    const retryAttempt = await retryLifecycle.claim("clip_rendering");
-    if (!retryAttempt) throw new Error("retry claim missing");
+    const { lifecycle: retryLifecycle, attempt: retryAttempt } =
+      await failAndClaimRenderRetry(run.id, firstLifecycle, firstAttempt);
     const retryWorkSet = await retryLifecycle.beginRenderWorkSet(retryAttempt);
 
     expect(retryWorkSet.frozenAt).toEqual(firstWorkSet.frozenAt);
@@ -216,33 +256,16 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     const originalVariant = await prisma.clipRender.create({
       data: { clipId: firstClip.id, aspectRatio: "ratio_9_16" },
     });
-    const firstLifecycle = new WorkflowRunLifecycle({
-      prisma,
-      leaseOwner: randomUUID(),
-    });
-    const firstAttempt = await firstLifecycle.claim("clip_rendering");
-    if (!firstAttempt) throw new Error("first claim missing");
+    const { lifecycle: firstLifecycle, attempt: firstAttempt } =
+      await claimRenderAttempt();
     expect(
       (await firstLifecycle.beginRenderWorkSet(firstAttempt)).variantIds,
     ).toEqual([originalVariant.id]);
-    await firstLifecycle.failAttempt(
-      firstAttempt,
-      new WorkflowFailure("transient_render_failure", "retryable", "retry"),
-    );
     const lateVariant = await prisma.clipRender.create({
       data: { clipId: retryClip.id, aspectRatio: "ratio_1_1" },
     });
-    await prisma.workflowRun.update({
-      where: { id: run.id },
-      data: { nextAttemptAt: new Date(Date.now() - 1_000) },
-    });
-
-    const retryLifecycle = new WorkflowRunLifecycle({
-      prisma,
-      leaseOwner: randomUUID(),
-    });
-    const retryAttempt = await retryLifecycle.claim("clip_rendering");
-    if (!retryAttempt) throw new Error("retry claim missing");
+    const { lifecycle: retryLifecycle, attempt: retryAttempt } =
+      await failAndClaimRenderRetry(run.id, firstLifecycle, firstAttempt);
     const retryWorkSet = await retryLifecycle.beginRenderWorkSet(retryAttempt);
 
     expect(retryWorkSet.variantIds).toEqual([originalVariant.id]);
@@ -291,31 +314,14 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     const variant = await prisma.clipRender.create({
       data: { clipId: clip.id, aspectRatio: "ratio_9_16" },
     });
-    const firstLifecycle = new WorkflowRunLifecycle({
-      prisma,
-      leaseOwner: randomUUID(),
-    });
-    const firstAttempt = await firstLifecycle.claim("clip_rendering");
-    if (!firstAttempt) throw new Error("first claim missing");
+    const { lifecycle: firstLifecycle, attempt: firstAttempt } =
+      await claimRenderAttempt();
     expect(
       (await firstLifecycle.beginRenderWorkSet(firstAttempt)).variantIds,
     ).toEqual([variant.id]);
     await prisma.clipRender.delete({ where: { id: variant.id } });
-    await firstLifecycle.failAttempt(
-      firstAttempt,
-      new WorkflowFailure("transient_render_failure", "retryable", "retry"),
-    );
-    await prisma.workflowRun.update({
-      where: { id: run.id },
-      data: { nextAttemptAt: new Date(Date.now() - 1_000) },
-    });
-
-    const retryLifecycle = new WorkflowRunLifecycle({
-      prisma,
-      leaseOwner: randomUUID(),
-    });
-    const retryAttempt = await retryLifecycle.claim("clip_rendering");
-    if (!retryAttempt) throw new Error("retry claim missing");
+    const { lifecycle: retryLifecycle, attempt: retryAttempt } =
+      await failAndClaimRenderRetry(run.id, firstLifecycle, firstAttempt);
     expect(
       (await retryLifecycle.beginRenderWorkSet(retryAttempt)).variantIds,
     ).toEqual([]);
@@ -364,99 +370,55 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
   });
 
   test("a candidate-assignment failure leaves the Render Work Set unfrozen", async () => {
-    const { project, run } = await fixture("clip_rendering");
-    const firstClip = await clipFixture(project.id, run.id);
-    const secondClip = await clipFixture(project.id, run.id, 1);
-    const firstVariant = await prisma.clipRender.create({
-      data: { clipId: firstClip.id, aspectRatio: "ratio_9_16" },
-    });
-    const lifecycle = new WorkflowRunLifecycle({
-      prisma,
-      leaseOwner: randomUUID(),
-    });
-    const attempt = await lifecycle.claim("clip_rendering");
-    if (!attempt) throw new Error("claim missing");
-    const suffix = randomUUID().replaceAll("-", "");
-    const functionName = `workflow_test_fail_candidate_${suffix}`;
-    const triggerName = `workflow_test_fail_candidate_${suffix}`;
-    await pool.query(`
-      CREATE FUNCTION "${functionName}"() RETURNS trigger AS $$
-      BEGIN
-        RAISE EXCEPTION 'render_work_set_candidate_failure';
-      END;
-      $$ LANGUAGE plpgsql;
-      CREATE TRIGGER "${triggerName}"
-      BEFORE UPDATE OF "workflowRunId" ON "ClipRender"
-      FOR EACH ROW
-      WHEN (OLD."workflowRunId" IS DISTINCT FROM NEW."workflowRunId")
-      EXECUTE FUNCTION "${functionName}"();
-    `);
-    try {
-      await expect(lifecycle.beginRenderWorkSet(attempt)).rejects.toThrow();
-    } finally {
-      await pool.query(`
-        DROP TRIGGER IF EXISTS "${triggerName}" ON "ClipRender";
-        DROP FUNCTION IF EXISTS "${functionName}"();
-      `);
-    }
-    const secondVariant = await prisma.clipRender.create({
-      data: { clipId: secondClip.id, aspectRatio: "ratio_1_1" },
-    });
-
-    const workSet = await lifecycle.beginRenderWorkSet(attempt);
-
-    expect([...workSet.variantIds].sort()).toEqual(
-      [firstVariant.id, secondVariant.id].sort(),
+    await proveRenderWorkSetBeginRollback(
+      async ({ functionName, triggerName }) => {
+        await pool.query(`
+          CREATE FUNCTION "${functionName}"() RETURNS trigger AS $$
+          BEGIN
+            RAISE EXCEPTION 'render_work_set_candidate_failure';
+          END;
+          $$ LANGUAGE plpgsql;
+          CREATE TRIGGER "${triggerName}"
+          BEFORE UPDATE OF "workflowRunId" ON "ClipRender"
+          FOR EACH ROW
+          WHEN (OLD."workflowRunId" IS DISTINCT FROM NEW."workflowRunId")
+          EXECUTE FUNCTION "${functionName}"();
+        `);
+        return async () => {
+          await pool.query(`
+            DROP TRIGGER IF EXISTS "${triggerName}" ON "ClipRender";
+            DROP FUNCTION IF EXISTS "${functionName}"();
+          `);
+        };
+      },
     );
   });
 
   test("a failure immediately before commit rolls back assignment and freezing together", async () => {
-    const { project, run } = await fixture("clip_rendering");
-    const firstClip = await clipFixture(project.id, run.id);
-    const secondClip = await clipFixture(project.id, run.id, 1);
-    const firstVariant = await prisma.clipRender.create({
-      data: { clipId: firstClip.id, aspectRatio: "ratio_9_16" },
-    });
-    const lifecycle = new WorkflowRunLifecycle({
-      prisma,
-      leaseOwner: randomUUID(),
-    });
-    const attempt = await lifecycle.claim("clip_rendering");
-    if (!attempt) throw new Error("claim missing");
-    const suffix = randomUUID().replaceAll("-", "");
-    const functionName = `workflow_test_fail_commit_${suffix}`;
-    const triggerName = `workflow_test_fail_commit_${suffix}`;
-    await pool.query(`
-      CREATE FUNCTION "${functionName}"() RETURNS trigger AS $$
-      BEGIN
-        RAISE EXCEPTION 'render_work_set_commit_failure';
-      END;
-      $$ LANGUAGE plpgsql;
-      CREATE CONSTRAINT TRIGGER "${triggerName}"
-      AFTER UPDATE ON "WorkflowRun"
-      DEFERRABLE INITIALLY DEFERRED
-      FOR EACH ROW
-      WHEN (
-        OLD."renderWorkSetFrozenAt" IS DISTINCT FROM NEW."renderWorkSetFrozenAt"
-      )
-      EXECUTE FUNCTION "${functionName}"();
-    `);
-    try {
-      await expect(lifecycle.beginRenderWorkSet(attempt)).rejects.toThrow();
-    } finally {
-      await pool.query(`
-        DROP TRIGGER IF EXISTS "${triggerName}" ON "WorkflowRun";
-        DROP FUNCTION IF EXISTS "${functionName}"();
-      `);
-    }
-    const secondVariant = await prisma.clipRender.create({
-      data: { clipId: secondClip.id, aspectRatio: "ratio_1_1" },
-    });
-
-    const workSet = await lifecycle.beginRenderWorkSet(attempt);
-
-    expect([...workSet.variantIds].sort()).toEqual(
-      [firstVariant.id, secondVariant.id].sort(),
+    await proveRenderWorkSetBeginRollback(
+      async ({ functionName, triggerName }) => {
+        await pool.query(`
+          CREATE FUNCTION "${functionName}"() RETURNS trigger AS $$
+          BEGIN
+            RAISE EXCEPTION 'render_work_set_commit_failure';
+          END;
+          $$ LANGUAGE plpgsql;
+          CREATE CONSTRAINT TRIGGER "${triggerName}"
+          AFTER UPDATE ON "WorkflowRun"
+          DEFERRABLE INITIALLY DEFERRED
+          FOR EACH ROW
+          WHEN (
+            OLD."renderWorkSetFrozenAt" IS DISTINCT FROM NEW."renderWorkSetFrozenAt"
+          )
+          EXECUTE FUNCTION "${functionName}"();
+        `);
+        return async () => {
+          await pool.query(`
+            DROP TRIGGER IF EXISTS "${triggerName}" ON "WorkflowRun";
+            DROP FUNCTION IF EXISTS "${functionName}"();
+          `);
+        };
+      },
     );
   });
 

@@ -920,6 +920,8 @@ model ClipRender {
   /// the only authority for mutating this variant.
   workflowRunId String? @db.Uuid
   /// Recovery classification for a failed variant: retryable or permanent.
+  /// This remains text so old generated clients stay compatible during the
+  /// dark rollout; the database check constraint closes the allowed values.
   failureDisposition String?
   /// Fencing reference to the parent Workflow Attempt. It is not an
   /// independent lease or retry counter.
