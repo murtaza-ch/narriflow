@@ -278,12 +278,8 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     const variant = await prisma.clipRender.create({
       data: { clipId: clip.id, aspectRatio: "ratio_9_16" },
     });
-    const firstLifecycle = new WorkflowRunLifecycle({
-      prisma,
-      leaseOwner: randomUUID(),
-    });
-    const staleAttempt = await firstLifecycle.claim("clip_rendering");
-    if (!staleAttempt) throw new Error("first claim missing");
+    const { lifecycle: firstLifecycle, attempt: staleAttempt } =
+      await claimRenderAttempt();
     await prisma.workflowRun.update({
       where: { id: run.id },
       data: { leaseExpiresAt: new Date(Date.now() - 1_000) },
@@ -293,12 +289,8 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       where: { id: run.id },
       data: { nextAttemptAt: new Date(Date.now() - 1_000) },
     });
-    const currentLifecycle = new WorkflowRunLifecycle({
-      prisma,
-      leaseOwner: randomUUID(),
-    });
-    const currentAttempt = await currentLifecycle.claim("clip_rendering");
-    if (!currentAttempt) throw new Error("second claim missing");
+    const { lifecycle: currentLifecycle, attempt: currentAttempt } =
+      await claimRenderAttempt();
 
     await expect(
       firstLifecycle.beginRenderWorkSet(staleAttempt),
@@ -357,12 +349,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
         clipSnapshot: { id: clip.id, editorRevision: 1 },
       },
     });
-    const lifecycle = new WorkflowRunLifecycle({
-      prisma,
-      leaseOwner: randomUUID(),
-    });
-    const attempt = await lifecycle.claim("clip_rendering");
-    if (!attempt) throw new Error("claim missing");
+    const { lifecycle, attempt } = await claimRenderAttempt();
 
     expect((await lifecycle.beginRenderWorkSet(attempt)).variantIds).toEqual([
       render.id,
@@ -429,12 +416,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     const firstVariant = await prisma.clipRender.create({
       data: { clipId: firstClip.id, aspectRatio: "ratio_9_16" },
     });
-    const lifecycle = new WorkflowRunLifecycle({
-      prisma,
-      leaseOwner: randomUUID(),
-    });
-    const attempt = await lifecycle.claim("clip_rendering");
-    if (!attempt) throw new Error("claim missing");
+    const { lifecycle, attempt } = await claimRenderAttempt();
     const suffix = randomUUID().replaceAll("-", "");
     const functionName = `workflow_test_pause_candidate_${suffix}`;
     const triggerName = `workflow_test_pause_candidate_${suffix}`;
