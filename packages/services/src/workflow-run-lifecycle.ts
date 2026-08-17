@@ -165,7 +165,6 @@ type RenderTerminalSettlement = {
   succeeded: number;
   failed: number;
   superseded: number;
-  followUpWorkflowRunId: string | null;
   notification?: RenderTerminalNotificationPayload;
 };
 
@@ -1762,6 +1761,10 @@ export class WorkflowRunLifecycle {
         analyticsRequired: true,
         notification: terminal.notification,
       });
+      const followUpWorkflowRunId = await this.admitLateRenderFollowUp(
+        tx,
+        attempt,
+      );
 
       return {
         status: terminal.status,
@@ -1769,7 +1772,7 @@ export class WorkflowRunLifecycle {
         succeeded: terminal.succeeded,
         failed: terminal.failed,
         superseded: terminal.superseded,
-        followUpWorkflowRunId: terminal.followUpWorkflowRunId,
+        followUpWorkflowRunId,
       };
     });
   }
@@ -1980,6 +1983,9 @@ export class WorkflowRunLifecycle {
         analyticsRequired: !requeue,
         notification,
       });
+      if (!requeue && attempt.stage === "clip_rendering") {
+        await this.admitLateRenderFollowUp(tx, attempt);
+      }
     });
   }
 
@@ -2073,7 +2079,21 @@ export class WorkflowRunLifecycle {
           failed,
           superseded,
         };
-    let followUpWorkflowRunId: string | null = null;
+    return {
+      status,
+      errorCode,
+      requested,
+      succeeded,
+      failed,
+      superseded,
+      notification,
+    };
+  }
+
+  private async admitLateRenderFollowUp(
+    tx: TransactionClient,
+    attempt: WorkflowAttemptRef,
+  ): Promise<string | null> {
     const lateVariant = await tx.clipRender.findFirst({
       where: {
         workflowRunId: null,
@@ -2082,25 +2102,14 @@ export class WorkflowRunLifecycle {
       },
       select: { id: true },
     });
-    if (lateVariant) {
-      const followUp = await this.admitWithinTransaction(tx, {
-        projectId: attempt.projectId,
-        idempotencyKey: `drain-${attempt.workflowRunId}`,
-        stage: "clip_rendering",
-        contentPackId: null,
-      });
-      followUpWorkflowRunId = followUp.id;
-    }
-    return {
-      status,
-      errorCode,
-      requested,
-      succeeded,
-      failed,
-      superseded,
-      followUpWorkflowRunId,
-      notification,
-    };
+    if (!lateVariant) return null;
+    const followUp = await this.admitWithinTransaction(tx, {
+      projectId: attempt.projectId,
+      idempotencyKey: `drain-${attempt.workflowRunId}`,
+      stage: "clip_rendering",
+      contentPackId: null,
+    });
+    return followUp.id;
   }
 
   private async settleAttemptChildren(

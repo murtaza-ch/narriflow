@@ -721,16 +721,27 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
         where: { workflowRunId: run.id, notificationRequired: true },
       }),
     ).toMatchObject({ status: "partial" });
-    expect(
-      await prisma.workflowRun.findUniqueOrThrow({
-        where: {
-          projectId_idempotencyKey: {
-            projectId: project.id,
-            idempotencyKey: `drain-${run.id}`,
-          },
+    const followUpRun = await prisma.workflowRun.findUniqueOrThrow({
+      where: {
+        projectId_idempotencyKey: {
+          projectId: project.id,
+          idempotencyKey: `drain-${run.id}`,
         },
+      },
+    });
+    expect(followUpRun).toMatchObject({
+      status: "queued",
+      stage: "clip_rendering",
+    });
+    const [parentTerminalEvent, followUpQueuedEvent] = await Promise.all([
+      prisma.workflowEvent.findFirstOrThrow({
+        where: { workflowRunId: run.id, status: "partial" },
       }),
-    ).toMatchObject({ status: "queued", stage: "clip_rendering" });
+      prisma.workflowEvent.findFirstOrThrow({
+        where: { workflowRunId: followUpRun.id, status: "queued" },
+      }),
+    ]);
+    expect(parentTerminalEvent.seq).toBeLessThan(followUpQueuedEvent.seq);
     expect(
       await prisma.clipRender.findUniqueOrThrow({ where: { id: lateVariant.id } }),
     ).toMatchObject({ status: "pending", workflowRunId: null });

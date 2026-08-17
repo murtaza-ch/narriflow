@@ -4354,7 +4354,7 @@ function uploadConcurrency(): number {
   return currentRenderConfig().uploadConcurrency;
 }
 
-export async function commitProvisionalRenderUpload<T>(input: {
+async function commitProvisionalRenderUpload<T>(input: {
   signal?: AbortSignal;
   complete: () => Promise<T>;
   discard: (reason: string) => Promise<void>;
@@ -4534,24 +4534,31 @@ export class ClipRenderAttempt {
     ) {
       throw new WorkflowAttemptLost(input.attempt);
     }
+    const ownershipController = new AbortController();
+    const signal = AbortSignal.any([
+      input.signal,
+      ownershipController.signal,
+    ]);
     return renderExecutionStorage.run(
       {
         config: this.#config,
-        signal: input.signal,
+        signal,
         attempt: input.attempt,
         adapters: this.#adapters,
       },
       async () => {
+        signal.throwIfAborted();
         const workSet = await this.#lifecycle.beginRenderWorkSet(input.attempt);
         if (workSet.variantIds.length === 0) {
           return this.#lifecycle.settleRenderWorkSet(input.attempt);
         }
         return executeClipRenderAttempt(
           this.#run,
-          input.signal,
+          signal,
           input.attempt,
           this.#lifecycle,
           workSet.variantIds,
+          (error) => ownershipController.abort(error),
         );
       },
     );
@@ -4564,6 +4571,7 @@ async function executeClipRenderAttempt(
   attempt: ClipRenderingWorkflowAttempt,
   lifecycle: ClipRenderAttemptLifecycle,
   workSetVariantIds: readonly string[],
+  abortAttempt: (error: WorkflowAttemptLost) => void,
 ): Promise<RenderWorkSetOutcome> {
   signal.throwIfAborted();
   // Watermark presence is a run-level entitlement (vizard-parity Phase C
@@ -4593,7 +4601,6 @@ async function executeClipRenderAttempt(
   // Captured outside the try so `finally` can settle in-flight background
   // uploads before deleting tempDir (their source files live there).
   let uploadQueueRef: { drain: () => Promise<void> } | null = null;
-  let uploadOwnershipError: WorkflowAttemptLost | null = null;
 
   try {
     if (!run.project.sourceStorageKey) {
@@ -4779,7 +4786,7 @@ async function executeClipRenderAttempt(
           if (persisted) renderedVariantCount += 1;
         } catch (error) {
           if (error instanceof WorkflowAttemptLost) {
-            uploadOwnershipError = error;
+            abortAttempt(error);
             return;
           }
           rethrowRenderCancellation(error);
@@ -6678,7 +6685,6 @@ async function executeClipRenderAttempt(
     const drainStartedAtMs = currentTimeMs();
     await uploadQueue.drain();
     signal.throwIfAborted();
-    if (uploadOwnershipError) throw uploadOwnershipError;
     log("info", "clip_render_upload_drain", {
       workflowRunId: run.id,
       projectId: run.projectId,
@@ -6709,7 +6715,6 @@ async function executeClipRenderAttempt(
     rethrowRenderCancellation(error);
     if (uploadQueueRef) {
       await uploadQueueRef.drain();
-      if (uploadOwnershipError) throw uploadOwnershipError;
     }
     const failure = workflowFailureFromUnknown(error);
     const code = failure.code;

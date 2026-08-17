@@ -4068,6 +4068,29 @@ describe("createBoundedTaskQueue (background upload overlap)", () => {
     await queue.drain();
   });
 
+  test("aborting the queue cancels active work and rejects waiting work", async () => {
+    const controller = new AbortController();
+    const queue = createBoundedTaskQueue(1, controller.signal);
+    const started: string[] = [];
+    queue.schedule(async () => {
+      started.push("active");
+      await new Promise<void>((resolve) => {
+        controller.signal.addEventListener("abort", () => resolve(), {
+          once: true,
+        });
+      });
+    });
+    queue.schedule(async () => {
+      started.push("waiting");
+    });
+
+    await tick();
+    controller.abort(new Error("ownership lost"));
+    await queue.drain();
+
+    expect(started).toEqual(["active"]);
+  });
+
   test("a limit below 1 clamps to serial execution", async () => {
     const queue = createBoundedTaskQueue(0);
     let active = 0;

@@ -1,30 +1,137 @@
 import { expect, test } from "bun:test";
-import type { RenderWorkSetOutcome } from "@narriflow/services";
+import { clipService, type RenderWorkSetOutcome } from "@narriflow/services";
 import { parseRenderConfig } from "../render-config";
 import {
   ClipRenderAttempt,
-  commitProvisionalRenderUpload,
   type ClipRenderingWorkflowAttempt,
 } from "./render-clips";
 
-test("cancellation after upload discards the object before persistence", async () => {
+type PendingClipRender = Awaited<
+  ReturnType<typeof clipService.getPendingClipRendersForWorkSet>
+>[number];
+
+test("ClipRenderAttempt discards an uploaded object when cancellation wins before persistence", async () => {
   const controller = new AbortController();
   const actions: string[] = [];
-  controller.abort(new DOMException("cancelled", "AbortError"));
+  const attempt: ClipRenderingWorkflowAttempt = {
+    workflowRunId: "10000000-0000-0000-0000-000000000001",
+    projectId: "20000000-0000-0000-0000-000000000002",
+    stage: "clip_rendering",
+    attemptId: "30000000-0000-0000-0000-000000000003",
+    attemptCount: 1,
+  };
+  const pendingRender = {
+    id: "variant-1",
+    clipId: "clip-1",
+    aspectRatio: "ratio_9_16",
+    resolution: "1080p",
+    exportVariantId: null,
+    exportVariant: null,
+    clipSnapshot: null,
+    clip: {
+      id: "clip-1",
+      index: 0,
+      startSec: 0,
+      endSec: 5,
+      llmModel: "test",
+      transcriptSlice: [],
+      deletedRanges: null,
+      captionPreset: null,
+      studioEdits: null,
+      brollCues: null,
+      brollUrl: null,
+      category: "other",
+    },
+  } as unknown as PendingClipRender;
+  const clipRenderAttempt = new ClipRenderAttempt({
+    run: {
+      id: attempt.workflowRunId,
+      projectId: attempt.projectId,
+      project: {
+        title: "Post-upload cancellation",
+        sourceStorageKey: `projects/${attempt.projectId}/source/input.mp3`,
+        sourceDurationSeconds: 5,
+        userId: "user",
+        workspaceId: null,
+      },
+    },
+    config: parseRenderConfig({
+      WORKER_CLIP_RENDER_ATTEMPT_ENABLED: "1",
+      WORKER_RENDER_SOURCE_MODE: "download",
+      WORKER_AUTO_REFRAME: "0",
+      WORKER_LAYOUT_ENGINE: "0",
+      WORKER_SCREEN_LAYOUT: "0",
+      WORKER_SPLIT: "0",
+      WORKER_PIP_DETECT: "0",
+      WORKER_BROLL: "0",
+    }),
+    lifecycle: {
+      beginRenderWorkSet: async () => ({ variantIds: [pendingRender.id] }),
+      settleRenderWorkSet: async () => {
+        actions.push("settle");
+        throw new Error("settlement must not run after cancellation");
+      },
+    },
+    adapters: {
+      process: {
+        execute: async ({ command }) => {
+          if (command === "ffprobe") {
+            return JSON.stringify({ streams: [{ codec_type: "audio" }] });
+          }
+          actions.push("encode");
+          return "";
+        },
+      },
+      project: {
+        getUserPricingTier: async () => "pro",
+        getProjectBrandSnapshot: async () => null,
+        publishWorkflowProgress: async () => {},
+      },
+      clip: {
+        completeClipAutoLayoutAnalysis: async () => false,
+        completeClipRenderVariant: async () => {
+          actions.push("persist");
+          return { persisted: true };
+        },
+        failClipRenderVariant: async () => {
+          actions.push("fail");
+        },
+        getPendingClipRendersForWorkSet: async () => [pendingRender],
+        markClipRenderVariantRendering: async () => true,
+        setClipLayoutAnalysis: async () => {},
+      },
+      storage: {
+        downloadObjectToFile: async () => {},
+        putFileFromPath: async ({ key }) => {
+          actions.push("upload");
+          controller.abort(new DOMException("cancelled", "AbortError"));
+          return { key };
+        },
+        deleteObject: async (key) => {
+          actions.push("discard");
+          return { key };
+        },
+      },
+      workspace: {
+        mkdtemp: async () => "/tmp/narriflow-render-post-upload-cancel",
+        rm: async () => {
+          actions.push("cleanup");
+        },
+        stat: async () => ({ size: 100 }) as never,
+      },
+      diagnose: () => {},
+    },
+  });
 
   await expect(
-    commitProvisionalRenderUpload({
-      signal: controller.signal,
-      complete: async () => {
-        actions.push("persist");
-        return { persisted: true };
-      },
-      discard: async (reason) => {
-        actions.push(`discard:${reason}`);
-      },
-    }),
+    clipRenderAttempt.execute({ attempt, signal: controller.signal }),
   ).rejects.toMatchObject({ name: "AbortError" });
-  expect(actions).toEqual(["discard:attempt_cancelled_after_upload"]);
+  expect(actions).toContain("upload");
+  expect(actions).toContain("discard");
+  expect(actions).toContain("cleanup");
+  expect(actions).not.toContain("persist");
+  expect(actions).not.toContain("settle");
+  expect(actions).not.toContain("fail");
 });
 
 test("ClipRenderAttempt settles an empty frozen work set through execute", async () => {
