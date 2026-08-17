@@ -24,6 +24,7 @@ describe("RenderConfig", () => {
       splitEnabled: false,
       pipDetectEnabled: false,
       brollEnabled: false,
+      pexelsConfigured: false,
     });
     expect(Object.isFrozen(config)).toBe(true);
   });

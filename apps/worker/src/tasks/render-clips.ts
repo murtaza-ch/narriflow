@@ -457,6 +457,14 @@ function currentRenderSignal(): AbortSignal | undefined {
   return renderExecutionStorage.getStore()?.signal;
 }
 
+function rethrowRenderCancellation(error: unknown): void {
+  const signal = currentRenderSignal();
+  if (!signal?.aborted) return;
+  if (signal.reason instanceof Error) throw signal.reason;
+  if (error instanceof Error) throw error;
+  throw new DOMException("Clip render cancelled", "AbortError");
+}
+
 function currentRenderAdapters(): ClipRenderAttemptAdapters {
   return (
     renderExecutionStorage.getStore()?.adapters ??
@@ -467,35 +475,6 @@ function currentRenderAdapters(): ClipRenderAttemptAdapters {
 function currentTimeMs(): number {
   return currentRenderAdapters().clock.nowMs();
 }
-
-const projectService: ClipRenderAttemptAdapters["project"] = {
-  getProjectBrandSnapshot: (...args) =>
-    currentRenderAdapters().project.getProjectBrandSnapshot(...args),
-  getUserPricingTier: (...args) =>
-    currentRenderAdapters().project.getUserPricingTier(...args),
-  publishWorkflowProgress: (...args) =>
-    currentRenderAdapters().project.publishWorkflowProgress(...args),
-};
-
-const clipService: ClipRenderAttemptAdapters["clip"] = {
-  completeClipAutoLayoutAnalysis: (...args) =>
-    currentRenderAdapters().clip.completeClipAutoLayoutAnalysis(...args),
-  completeClipRenderVariant: (...args) =>
-    currentRenderAdapters().clip.completeClipRenderVariant(...args),
-  failClipRenderVariant: (...args) =>
-    currentRenderAdapters().clip.failClipRenderVariant(...args),
-  getPendingClipRendersForWorkSet: (...args) =>
-    currentRenderAdapters().clip.getPendingClipRendersForWorkSet(...args),
-  markClipRenderVariantRendering: (...args) =>
-    currentRenderAdapters().clip.markClipRenderVariantRendering(...args),
-  setClipLayoutAnalysis: (...args) =>
-    currentRenderAdapters().clip.setClipLayoutAnalysis(...args),
-};
-
-const audioAssetService: ClipRenderAttemptAdapters["audioAsset"] = {
-  resolveRenderSource: (...args) =>
-    currentRenderAdapters().audioAsset.resolveRenderSource(...args),
-};
 
 function renderStorageSignal(includeAttemptSignal = true): AbortSignal {
   const timeoutSignal = AbortSignal.timeout(
@@ -3756,6 +3735,7 @@ export async function downloadUrlToFile(
     );
   } catch (error) {
     rethrowWorkflowAttemptLost(error);
+    rethrowRenderCancellation(error);
     if (error instanceof WorkflowFailure) {
       throw error;
     }
@@ -4457,7 +4437,7 @@ async function uploadRenderedOutput(params: {
 
   let persisted: boolean;
   try {
-    ({ persisted } = await clipService.completeClipRenderVariant(
+    ({ persisted } = await currentRenderAdapters().clip.completeClipRenderVariant(
       params.output.clipRenderId,
       {
         storageKey: params.output.storageKey,
@@ -4580,7 +4560,7 @@ async function executeClipRenderAttempt(
   // row was created by clip.service's triggerClipRendering/
   // autoQueueDefaultRenders) — a single run can, in principle, cover rows at
   // different resolutions.
-  const ownerTier = await projectService.getUserPricingTier(
+  const ownerTier = await currentRenderAdapters().project.getUserPricingTier(
     run.project.userId,
   );
   const applyWatermark = !hasFeature(ownerTier, "export.noWatermark");
@@ -4672,7 +4652,10 @@ async function executeClipRenderAttempt(
 
     let brandLogo: LogoOverlay | null = null;
     try {
-      const rawSnapshot = await projectService.getProjectBrandSnapshot(run.projectId);
+      const rawSnapshot =
+        await currentRenderAdapters().project.getProjectBrandSnapshot(
+          run.projectId,
+        );
       if (rawSnapshot) {
         const snapshot = brandTemplateSnapshotSchema.parse(rawSnapshot);
         if (snapshot.logoStorageKey && probe.hasVideo) {
@@ -4711,7 +4694,10 @@ async function executeClipRenderAttempt(
     }
 
     const pendingRenders = (
-      await clipService.getPendingClipRendersForWorkSet(run.projectId, run.id)
+      await currentRenderAdapters().clip.getPendingClipRendersForWorkSet(
+        run.projectId,
+        run.id,
+      )
     ).filter((render) => workSetVariantIds.includes(render.id));
 
     if (pendingRenders.length === 0) {
@@ -4737,7 +4723,7 @@ async function executeClipRenderAttempt(
       (left, right) => left[0]!.clip.index - right[0]!.clip.index,
     );
 
-    await projectService.publishWorkflowProgress({
+    await currentRenderAdapters().project.publishWorkflowProgress({
       projectId: run.projectId,
       workflowRunId: run.id,
       stage: "clip_rendering",
@@ -4781,11 +4767,13 @@ async function executeClipRenderAttempt(
             uploadOwnershipError = error;
             return;
           }
+          rethrowRenderCancellation(error);
           const errorCode =
             error instanceof WorkflowFailure
               ? error.code
               : "render_upload_failed";
-          await clipService
+          await currentRenderAdapters()
+            .clip
             .failClipRenderVariant(
               output.clipRenderId,
               errorCode,
@@ -4985,7 +4973,7 @@ async function executeClipRenderAttempt(
         });
         await Promise.all(
           outputs.map((output) =>
-            clipService.failClipRenderVariant(
+            currentRenderAdapters().clip.failClipRenderVariant(
               output.clipRenderId,
               "clip_cut_plan_empty",
               "permanent",
@@ -4994,7 +4982,7 @@ async function executeClipRenderAttempt(
         );
         const progress =
           10 + Math.round(((clipGroupIndex + 1) / clipGroups.length) * 80);
-        await projectService.publishWorkflowProgress({
+        await currentRenderAdapters().project.publishWorkflowProgress({
           projectId: run.projectId,
           workflowRunId: run.id,
           stage: "clip_rendering",
@@ -5077,7 +5065,8 @@ async function executeClipRenderAttempt(
       // didn't ask to see it repeated.
       let brollPlan: BrollPlan | null = null;
       const brollEnabled =
-        Boolean(process.env.PEXELS_API_KEY) && currentRenderConfig().brollEnabled;
+        currentRenderConfig().pexelsConfigured &&
+        currentRenderConfig().brollEnabled;
       const userBrollUrl = clip.brollUrl ?? null;
       if (
         (brollEnabled || userBrollUrl) &&
@@ -5401,7 +5390,8 @@ async function executeClipRenderAttempt(
                 mappedSpeakerCount: fullPlan.mappedSpeakerCount,
               });
             if (clip.previewStorageKey) {
-              await clipService
+              await currentRenderAdapters()
+                .clip
                 .completeClipAutoLayoutAnalysis(clip.id, envelope, {
                   editorRevision: clip.editorRevision,
                   previewStorageKey: clip.previewStorageKey,
@@ -5685,7 +5675,11 @@ async function executeClipRenderAttempt(
                 rawClipStartSec: clip.startSec,
                 rawClipEndSec: clip.endSec,
                 detect: detectPipPath,
-                persist: (envelope) => clipService.setClipLayoutAnalysis(clip.id, envelope),
+                persist: (envelope) =>
+                  currentRenderAdapters().clip.setClipLayoutAnalysis(
+                    clip.id,
+                    envelope,
+                  ),
                 logContext: { workflowRunId: run.id, clipId: clip.id },
               });
 
@@ -5744,7 +5738,10 @@ async function executeClipRenderAttempt(
                 pipUsable: clipLevelPipDecision.useRect,
               });
               try {
-                await clipService.setClipLayoutAnalysis(clip.id, envelope);
+                await currentRenderAdapters().clip.setClipLayoutAnalysis(
+                  clip.id,
+                  envelope,
+                );
               } catch (persistError) {
                 log("error", "clip_screen_layout_analysis_persist_failed", {
                   workflowRunId: run.id,
@@ -6045,7 +6042,7 @@ async function executeClipRenderAttempt(
       let musicUrlIsAssetResolved = false;
       if (studioEdits.music.assetId) {
         try {
-          const resolved = await audioAssetService.resolveRenderSource(
+          const resolved = await currentRenderAdapters().audioAsset.resolveRenderSource(
             run.project.userId,
             studioEdits.music.assetId,
             run.project.workspaceId,
@@ -6157,7 +6154,7 @@ async function executeClipRenderAttempt(
 
         let sfxUrl: string | null = null;
         try {
-          const resolved = await audioAssetService.resolveRenderSource(
+          const resolved = await currentRenderAdapters().audioAsset.resolveRenderSource(
             run.project.userId,
             placement.assetId,
             run.project.workspaceId,
@@ -6352,7 +6349,9 @@ async function executeClipRenderAttempt(
 
       await Promise.all(
         outputs.map((output) =>
-          clipService.markClipRenderVariantRendering(output.clipRenderId),
+          currentRenderAdapters().clip.markClipRenderVariantRendering(
+            output.clipRenderId,
+          ),
         ),
       );
 
@@ -6395,12 +6394,13 @@ async function executeClipRenderAttempt(
             });
           } catch (error) {
             rethrowWorkflowAttemptLost(error);
+            rethrowRenderCancellation(error);
             const errorCode =
               error instanceof WorkflowFailure
                 ? error.code
                 : "ffmpeg_render_failed";
 
-            await clipService.failClipRenderVariant(
+            await currentRenderAdapters().clip.failClipRenderVariant(
               output.clipRenderId,
               errorCode,
               error instanceof WorkflowFailure
@@ -6547,11 +6547,12 @@ async function executeClipRenderAttempt(
             });
           } catch (error) {
             rethrowWorkflowAttemptLost(error);
+            rethrowRenderCancellation(error);
             const errorCode =
               error instanceof WorkflowFailure
                 ? error.code
                 : "ffmpeg_render_failed";
-            await clipService.failClipRenderVariant(
+            await currentRenderAdapters().clip.failClipRenderVariant(
               output.clipRenderId,
               errorCode,
               error instanceof WorkflowFailure
@@ -6614,6 +6615,7 @@ async function executeClipRenderAttempt(
           }
         } catch (error) {
           rethrowWorkflowAttemptLost(error);
+          rethrowRenderCancellation(error);
           const errorCode =
             error instanceof WorkflowFailure
               ? error.code
@@ -6621,7 +6623,7 @@ async function executeClipRenderAttempt(
 
           await Promise.all(
             outputs.map((output) =>
-              clipService.failClipRenderVariant(
+              currentRenderAdapters().clip.failClipRenderVariant(
                 output.clipRenderId,
                 errorCode,
                 error instanceof WorkflowFailure
@@ -6644,7 +6646,7 @@ async function executeClipRenderAttempt(
       }
 
       const progress = 10 + Math.round(((clipGroupIndex + 1) / clipGroups.length) * 80);
-      await projectService.publishWorkflowProgress({
+      await currentRenderAdapters().project.publishWorkflowProgress({
         projectId: run.projectId,
         workflowRunId: run.id,
         stage: "clip_rendering",
@@ -6689,6 +6691,7 @@ async function executeClipRenderAttempt(
     return outcome;
   } catch (error) {
     rethrowWorkflowAttemptLost(error);
+    rethrowRenderCancellation(error);
     if (uploadQueueRef) {
       await uploadQueueRef.drain();
       if (uploadOwnershipError) throw uploadOwnershipError;
@@ -6699,8 +6702,10 @@ async function executeClipRenderAttempt(
     const message =
       error instanceof Error ? error.message : "Unknown worker error";
     for (const clipRenderId of workSetVariantIds) {
-      await clipService.markClipRenderVariantRendering(clipRenderId);
-      await clipService.failClipRenderVariant(
+      await currentRenderAdapters().clip.markClipRenderVariantRendering(
+        clipRenderId,
+      );
+      await currentRenderAdapters().clip.failClipRenderVariant(
         clipRenderId,
         code,
         failure.disposition,

@@ -2010,11 +2010,13 @@ export class WorkflowRunLifecycle {
         requeue,
         errorCode: errorCode ?? failure.code,
       });
+      let settledStatus: WorkflowStatus = status;
+      let settledErrorCode = errorCode;
       let notification: RenderTerminalNotificationPayload | undefined;
       if (!requeue && attempt.stage === "clip_rendering") {
         const variants = await tx.clipRender.findMany({
           where: { workflowRunId: attempt.workflowRunId },
-          select: { status: true },
+          select: { id: true, status: true, exportVariantId: true },
         });
         const requested = Math.max(
           run.requestedCount ?? variants.length,
@@ -2025,33 +2027,82 @@ export class WorkflowRunLifecycle {
         ).length;
         const failed = variants.length - succeeded;
         const superseded = Math.max(0, requested - variants.length);
+        settledStatus =
+          succeeded > 0 && failed > 0
+            ? "partial"
+            : succeeded > 0 || failed === 0
+              ? "completed"
+              : "failed";
+        settledErrorCode = settledStatus === "failed" ? errorCode : null;
+        const unfinished = variants.filter(
+          (variant) =>
+            variant.status === "pending" || variant.status === "rendering",
+        );
+        if (unfinished.length > 0) {
+          await tx.clipRender.updateMany({
+            where: { id: { in: unfinished.map((variant) => variant.id) } },
+            data: {
+              status: "failed",
+              errorCode: errorCode ?? failure.code,
+              failureDisposition: "retryable",
+              completedAt: new Date(),
+            },
+          });
+        }
+        const failedExportVariantIds = variants.flatMap((variant) =>
+          variant.status !== "completed" && variant.exportVariantId
+            ? [variant.exportVariantId]
+            : [],
+        );
+        if (failedExportVariantIds.length > 0) {
+          await tx.clipExportVariant.updateMany({
+            where: { id: { in: failedExportVariantIds } },
+            data: {
+              status: "failed",
+              errorCode: errorCode ?? failure.code,
+              completedAt: new Date(),
+            },
+          });
+        }
         await tx.workflowRun.update({
           where: { id: attempt.workflowRunId },
           data: {
+            status: settledStatus,
+            errorCode: settledErrorCode,
             requestedCount: requested,
             succeededCount: succeeded,
             failedCount: failed,
           },
         });
-        notification = {
-          kind: "clip_render.failed",
-          projectId: attempt.projectId,
-          workflowRunId: attempt.workflowRunId,
-          requested,
-          succeeded,
-          failed,
-          superseded,
-        };
+        const supersededOnly = requested > 0 && variants.length === 0;
+        if (!supersededOnly) {
+          notification = {
+            kind:
+              settledStatus === "completed"
+                ? "clip_render.completed"
+                : settledStatus === "partial"
+                  ? "clip_render.partial"
+                  : "clip_render.failed",
+            projectId: attempt.projectId,
+            workflowRunId: attempt.workflowRunId,
+            requested,
+            succeeded,
+            failed,
+            superseded,
+          };
+        }
       }
       await this.appendEvent(tx, {
         projectId: attempt.projectId,
         workflowRunId: attempt.workflowRunId,
         attemptId: attempt.attemptId,
         stage: attempt.stage,
-        status,
+        status: settledStatus,
         progress: requeue ? 0 : 100,
-        errorCode,
-        transition: requeue ? `requeued:${run.attemptCount}` : "terminal:failed",
+        errorCode: settledErrorCode,
+        transition: requeue
+          ? `requeued:${run.attemptCount}`
+          : `terminal:${settledStatus}`,
         analyticsRequired: !requeue,
         notification,
       });
@@ -2064,31 +2115,36 @@ export class WorkflowRunLifecycle {
     outcome: { requeue: boolean; errorCode: string },
   ) {
     if (attempt.stage === "clip_rendering") {
+      const renderWhere: Prisma.ClipRenderWhereInput = {
+        clip: { projectId: attempt.projectId },
+        workflowAttemptId: attempt.attemptId,
+        ...(outcome.requeue
+          ? {
+              OR: [
+                { status: "rendering" as const },
+                {
+                  status: "failed" as const,
+                  failureDisposition: "retryable",
+                },
+                { status: "failed" as const, failureDisposition: null },
+              ],
+            }
+          : {
+              OR: [
+                { status: "rendering" as const },
+                {
+                  status: "failed" as const,
+                  failureDisposition: { not: "permanent" },
+                },
+              ],
+            }),
+      };
+      const affectedRenders = await tx.clipRender.findMany({
+        where: renderWhere,
+        select: { id: true, exportVariantId: true },
+      });
       await tx.clipRender.updateMany({
-        where: {
-          clip: { projectId: attempt.projectId },
-          workflowAttemptId: attempt.attemptId,
-          ...(outcome.requeue
-            ? {
-                OR: [
-                  { status: "rendering" as const },
-                  {
-                    status: "failed" as const,
-                    failureDisposition: "retryable",
-                  },
-                  { status: "failed" as const, failureDisposition: null },
-                ],
-              }
-            : {
-                OR: [
-                  { status: "rendering" as const },
-                  {
-                    status: "failed" as const,
-                    failureDisposition: { not: "permanent" },
-                  },
-                ],
-              }),
-        },
+        where: { id: { in: affectedRenders.map((render) => render.id) } },
         data: outcome.requeue
           ? {
               status: "pending",
@@ -2108,6 +2164,29 @@ export class WorkflowRunLifecycle {
               completedAt: new Date(),
             },
       });
+      const exportVariantIds = affectedRenders.flatMap((render) =>
+        render.exportVariantId ? [render.exportVariantId] : [],
+      );
+      if (exportVariantIds.length > 0) {
+        await tx.clipExportVariant.updateMany({
+          where: { id: { in: exportVariantIds } },
+          data: outcome.requeue
+            ? {
+                status: "pending",
+                storageKey: null,
+                sizeBytes: null,
+                durationSec: null,
+                errorCode: null,
+                startedAt: null,
+                completedAt: null,
+              }
+            : {
+                status: "failed",
+                errorCode: outcome.errorCode,
+                completedAt: new Date(),
+              },
+        });
+      }
     }
     if (attempt.stage === "dubbing") {
       await tx.clipDub.updateMany({

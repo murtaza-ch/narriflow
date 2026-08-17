@@ -25,6 +25,7 @@ export interface RenderConfig {
   readonly splitEnabled: boolean;
   readonly pipDetectEnabled: boolean;
   readonly brollEnabled: boolean;
+  readonly pexelsConfigured: boolean;
 }
 
 type RenderEnvironment = Record<string, string | undefined>;
@@ -154,6 +155,7 @@ export function parseRenderConfig(
     splitEnabled: featureEnabled(environment, "WORKER_SPLIT"),
     pipDetectEnabled: featureEnabled(environment, "WORKER_PIP_DETECT"),
     brollEnabled: featureEnabled(environment, "WORKER_BROLL"),
+    pexelsConfigured: Boolean(environment.PEXELS_API_KEY?.trim()),
   });
 }
 
