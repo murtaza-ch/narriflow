@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { parseRenderConfig } from "../render-config";
 import {
   computeSpeechWindows,
   getCaptionPresetById,
@@ -394,16 +395,12 @@ describe("framingForcesPerOutputRender (split packet B — batch-encoder gate)",
   // through the SAME batch path "auto"/"center" use, not force the
   // per-output path just to immediately fall back inside it on every render.
   test("false for split mode when WORKER_SPLIT=0, even though the effective mode is still 'split'", () => {
-    const previous = process.env.WORKER_SPLIT;
-    process.env.WORKER_SPLIT = "0";
-    try {
-      expect(
-        framingForcesPerOutputRender(studioEditsSchema.parse({ framing: { mode: "split" } })),
-      ).toBe(false);
-    } finally {
-      if (previous === undefined) delete process.env.WORKER_SPLIT;
-      else process.env.WORKER_SPLIT = previous;
-    }
+    expect(
+      framingForcesPerOutputRender(
+        studioEditsSchema.parse({ framing: { mode: "split" } }),
+        parseRenderConfig({ WORKER_SPLIT: "0" }),
+      ),
+    ).toBe(false);
   });
 
   // Screen packet B: "screen" gets the exact same per-output-forcing
@@ -423,40 +420,28 @@ describe("framingForcesPerOutputRender (split packet B — batch-encoder gate)",
   });
 
   test("false for screen mode when WORKER_SCREEN_LAYOUT=0 (fully reverts routing, mirrors split's kill switch)", () => {
-    const previous = process.env.WORKER_SCREEN_LAYOUT;
-    process.env.WORKER_SCREEN_LAYOUT = "0";
-    try {
-      expect(
-        framingForcesPerOutputRender(studioEditsSchema.parse({ framing: { mode: "screen" } })),
-      ).toBe(false);
-    } finally {
-      if (previous === undefined) delete process.env.WORKER_SCREEN_LAYOUT;
-      else process.env.WORKER_SCREEN_LAYOUT = previous;
-    }
+    expect(
+      framingForcesPerOutputRender(
+        studioEditsSchema.parse({ framing: { mode: "screen" } }),
+        parseRenderConfig({ WORKER_SCREEN_LAYOUT: "0" }),
+      ),
+    ).toBe(false);
   });
 
   // Cross-check: each kill switch only ever affects its own mode.
   test("WORKER_SCREEN_LAYOUT=0 does not affect split, and WORKER_SPLIT=0 does not affect screen", () => {
-    const previousScreen = process.env.WORKER_SCREEN_LAYOUT;
-    const previousSplit = process.env.WORKER_SPLIT;
-    process.env.WORKER_SCREEN_LAYOUT = "0";
-    try {
-      expect(
-        framingForcesPerOutputRender(studioEditsSchema.parse({ framing: { mode: "split" } })),
-      ).toBe(true);
-    } finally {
-      if (previousScreen === undefined) delete process.env.WORKER_SCREEN_LAYOUT;
-      else process.env.WORKER_SCREEN_LAYOUT = previousScreen;
-    }
-    process.env.WORKER_SPLIT = "0";
-    try {
-      expect(
-        framingForcesPerOutputRender(studioEditsSchema.parse({ framing: { mode: "screen" } })),
-      ).toBe(true);
-    } finally {
-      if (previousSplit === undefined) delete process.env.WORKER_SPLIT;
-      else process.env.WORKER_SPLIT = previousSplit;
-    }
+    expect(
+      framingForcesPerOutputRender(
+        studioEditsSchema.parse({ framing: { mode: "split" } }),
+        parseRenderConfig({ WORKER_SCREEN_LAYOUT: "0" }),
+      ),
+    ).toBe(true);
+    expect(
+      framingForcesPerOutputRender(
+        studioEditsSchema.parse({ framing: { mode: "screen" } }),
+        parseRenderConfig({ WORKER_SPLIT: "0" }),
+      ),
+    ).toBe(true);
   });
 });
 

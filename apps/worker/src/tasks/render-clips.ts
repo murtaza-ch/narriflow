@@ -1,25 +1,31 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { createWriteStream } from "node:fs";
-import { stat, writeFile } from "node:fs/promises";
-import { mkdtemp, rm } from "node:fs/promises";
+import { createWriteStream as productionCreateWriteStream } from "node:fs";
+import {
+  stat as productionStat,
+  writeFile as productionWriteFile,
+} from "node:fs/promises";
+import {
+  mkdtemp as productionMkdtemp,
+  rm as productionRm,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
 import { Readable } from "node:stream";
-import { pipeline } from "node:stream/promises";
+import { pipeline as productionPipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import {
   assertPublicHttpUrl,
   assertResponseContentLength,
-  audioAssetService,
-  clipService,
+  audioAssetService as productionAudioAssetService,
+  clipService as productionClipService,
   createByteLimitTransform,
-  deleteObject,
-  downloadObjectToFile,
-  guardedFetch,
+  deleteObject as productionDeleteObject,
+  downloadObjectToFile as productionDownloadObjectToFile,
+  guardedFetch as productionGuardedFetch,
   hasFeature,
-  presignDownloadUrl,
-  projectService,
-  putFileFromPath,
+  presignDownloadUrl as productionPresignDownloadUrl,
+  projectService as productionProjectService,
+  putFileFromPath as productionPutFileFromPath,
   rethrowWorkflowAttemptLost,
   RemoteFetchError,
   UnsafeUrlError,
@@ -128,6 +134,11 @@ import {
 } from "./broll";
 import { buildDuckingVolumeExpression } from "./ducking";
 import { parseRenderConfig, type RenderConfig } from "../render-config";
+import {
+  clipExportAttemptStorageKey,
+  clipRenderAttemptStorageKey,
+} from "../render-object-key";
+export { clipRenderAttemptStorageKey } from "../render-object-key";
 import { productionRenderProcessAdapter } from "../render-process-adapter";
 
 interface BrollCutaway {
@@ -263,10 +274,62 @@ interface ClipRenderAttemptLifecycle {
   settleRenderWorkSet(attempt: WorkflowAttemptRef): Promise<RenderWorkSetOutcome>;
 }
 
-export interface ClipRenderAttemptDependencies {
+interface ClipRenderAttemptAdapters {
+  process: Pick<typeof productionRenderProcessAdapter, "execute">;
+  project: Pick<
+    typeof productionProjectService,
+    | "getProjectBrandSnapshot"
+    | "getUserPricingTier"
+    | "publishWorkflowProgress"
+  >;
+  clip: Pick<
+    typeof productionClipService,
+    | "completeClipRenderVariant"
+    | "completeClipAutoLayoutAnalysis"
+    | "failClipRenderVariant"
+    | "getPendingClipRendersForWorkSet"
+    | "markClipRenderVariantRendering"
+    | "setClipLayoutAnalysis"
+  >;
+  audioAsset: Pick<typeof productionAudioAssetService, "resolveRenderSource">;
+  remoteMedia: {
+    createWriteStream: typeof productionCreateWriteStream;
+    guardedFetch: typeof productionGuardedFetch;
+    pipeline: typeof productionPipeline;
+  };
+  storage: {
+    deleteObject: typeof productionDeleteObject;
+    downloadObjectToFile: typeof productionDownloadObjectToFile;
+    presignDownloadUrl: typeof productionPresignDownloadUrl;
+    putFileFromPath: typeof productionPutFileFromPath;
+  };
+  workspace: {
+    mkdtemp: typeof productionMkdtemp;
+    rm: typeof productionRm;
+    stat: typeof productionStat;
+    writeFile: typeof productionWriteFile;
+  };
+  clock: { nowMs(): number };
+  diagnose(input: {
+    level: "info" | "error";
+    message: string;
+    context?: Record<string, unknown>;
+  }): void;
+}
+
+type ClipRenderAttemptAdapterOverrides = Partial<
+  Omit<ClipRenderAttemptAdapters, "storage" | "workspace" | "clock">
+> & {
+  storage?: Partial<ClipRenderAttemptAdapters["storage"]>;
+  workspace?: Partial<ClipRenderAttemptAdapters["workspace"]>;
+  clock?: Partial<ClipRenderAttemptAdapters["clock"]>;
+};
+
+interface ClipRenderAttemptDependencies {
   run: WorkflowRunJob;
   config: Readonly<RenderConfig>;
   lifecycle: ClipRenderAttemptLifecycle;
+  adapters?: ClipRenderAttemptAdapterOverrides;
 }
 
 export function resolveRenderTimingForClip(input: {
@@ -346,17 +409,93 @@ interface RenderExecutionContext {
   config: Readonly<RenderConfig>;
   signal: AbortSignal;
   attempt: ClipRenderingWorkflowAttempt;
+  adapters: ClipRenderAttemptAdapters;
 }
 
 const renderExecutionStorage = new AsyncLocalStorage<RenderExecutionContext>();
+const defaultRenderConfig = parseRenderConfig({});
+const productionClipRenderAttemptAdapters: ClipRenderAttemptAdapters = {
+  process: productionRenderProcessAdapter,
+  project: productionProjectService,
+  clip: productionClipService,
+  audioAsset: productionAudioAssetService,
+  remoteMedia: {
+    createWriteStream: productionCreateWriteStream,
+    guardedFetch: productionGuardedFetch,
+    pipeline: productionPipeline,
+  },
+  storage: {
+    deleteObject: productionDeleteObject,
+    downloadObjectToFile: productionDownloadObjectToFile,
+    presignDownloadUrl: productionPresignDownloadUrl,
+    putFileFromPath: productionPutFileFromPath,
+  },
+  workspace: {
+    mkdtemp: productionMkdtemp,
+    rm: productionRm,
+    stat: productionStat,
+    writeFile: productionWriteFile,
+  },
+  clock: { nowMs: () => Date.now() },
+  diagnose: ({ level, message, context }) => {
+    console.warn(
+      JSON.stringify({
+        level,
+        message,
+        ts: new Date().toISOString(),
+        ...context,
+      }),
+    );
+  },
+};
 
 function currentRenderConfig(): Readonly<RenderConfig> {
-  return renderExecutionStorage.getStore()?.config ?? parseRenderConfig(process.env);
+  return renderExecutionStorage.getStore()?.config ?? defaultRenderConfig;
 }
 
 function currentRenderSignal(): AbortSignal | undefined {
   return renderExecutionStorage.getStore()?.signal;
 }
+
+function currentRenderAdapters(): ClipRenderAttemptAdapters {
+  return (
+    renderExecutionStorage.getStore()?.adapters ??
+    productionClipRenderAttemptAdapters
+  );
+}
+
+function currentTimeMs(): number {
+  return currentRenderAdapters().clock.nowMs();
+}
+
+const projectService: ClipRenderAttemptAdapters["project"] = {
+  getProjectBrandSnapshot: (...args) =>
+    currentRenderAdapters().project.getProjectBrandSnapshot(...args),
+  getUserPricingTier: (...args) =>
+    currentRenderAdapters().project.getUserPricingTier(...args),
+  publishWorkflowProgress: (...args) =>
+    currentRenderAdapters().project.publishWorkflowProgress(...args),
+};
+
+const clipService: ClipRenderAttemptAdapters["clip"] = {
+  completeClipAutoLayoutAnalysis: (...args) =>
+    currentRenderAdapters().clip.completeClipAutoLayoutAnalysis(...args),
+  completeClipRenderVariant: (...args) =>
+    currentRenderAdapters().clip.completeClipRenderVariant(...args),
+  failClipRenderVariant: (...args) =>
+    currentRenderAdapters().clip.failClipRenderVariant(...args),
+  getPendingClipRendersForWorkSet: (...args) =>
+    currentRenderAdapters().clip.getPendingClipRendersForWorkSet(...args),
+  markClipRenderVariantRendering: (...args) =>
+    currentRenderAdapters().clip.markClipRenderVariantRendering(...args),
+  setClipLayoutAnalysis: (...args) =>
+    currentRenderAdapters().clip.setClipLayoutAnalysis(...args),
+};
+
+const audioAssetService: ClipRenderAttemptAdapters["audioAsset"] = {
+  resolveRenderSource: (...args) =>
+    currentRenderAdapters().audioAsset.resolveRenderSource(...args),
+};
 
 function renderStorageSignal(includeAttemptSignal = true): AbortSignal {
   const timeoutSignal = AbortSignal.timeout(
@@ -389,25 +528,6 @@ function renderStorageSignal(includeAttemptSignal = true): AbortSignal {
  * download endpoint, the project/clip storage deletion planner) reads the
  * persisted `ClipRender.storageKey` column verbatim.
  */
-export function clipRenderAttemptStorageKey(
-  projectId: string,
-  clipId: string,
-  aspectRatioSlug: string,
-  attemptId: string,
-): string {
-  return `projects/${projectId}/renders/${clipId}/${aspectRatioSlug}-${attemptId}.mp4`;
-}
-
-export function clipExportAttemptStorageKey(input: {
-  projectId: string;
-  exportId: string;
-  variantId: string;
-  aspectRatioSlug: string;
-  attemptId: string;
-}): string {
-  return `projects/${input.projectId}/exports/${input.exportId}/${input.variantId}-${input.aspectRatioSlug}-${input.attemptId}.mp4`;
-}
-
 class WorkflowWorkerError extends WorkflowFailure {
   constructor(
     code: string,
@@ -437,14 +557,7 @@ function log(
   message: string,
   context?: Record<string, unknown>,
 ) {
-  console.warn(
-    JSON.stringify({
-      level,
-      message,
-      ts: new Date().toISOString(),
-      ...context,
-    }),
-  );
+  currentRenderAdapters().diagnose({ level, message, context });
 }
 
 // Encoding is the dominant cost of a render. veryfast/CRF21 measured
@@ -475,7 +588,7 @@ function runCommand(
   options: { timeoutMs: number; captureStdout: boolean },
 ): Promise<string> {
   const config = currentRenderConfig();
-  return productionRenderProcessAdapter.execute({
+  return currentRenderAdapters().process.execute({
     command,
     args,
     signal: currentRenderSignal() ?? new AbortController().signal,
@@ -1102,7 +1215,11 @@ async function applyAutoReframe(params: {
       params.tempDir,
       `reframe-${params.clipId}-${output.aspectRatio.replace(":", "x")}.txt`,
     );
-    await writeFile(scriptPath, script, "utf-8");
+    await currentRenderAdapters().workspace.writeFile(
+      scriptPath,
+      script,
+      "utf-8",
+    );
     output.reframe = { scriptPath, cropName };
   }
   log("info", "clip_reframe_applied", {
@@ -1268,7 +1385,7 @@ function buildLayoutAnalysisEnvelope(params: {
 }): ClipLayoutAnalysis {
   return {
     version: 1,
-    analyzedAtISO: new Date().toISOString(),
+    analyzedAtISO: new Date(currentTimeMs()).toISOString(),
     sourceStartSec: params.startSec,
     sourceDurationSec: params.durationSec,
     clipStartSec: params.rawClipStartSec,
@@ -1595,7 +1712,11 @@ async function applyScreenSpeakerLayout(params: {
         params.tempDir,
         `screen-bottom-${params.clipId}-${output.aspectRatio.replace(":", "x")}.txt`,
       );
-      await writeFile(scriptPath, script, "utf-8");
+      await currentRenderAdapters().workspace.writeFile(
+        scriptPath,
+        script,
+        "utf-8",
+      );
       output.screenBottom = { cx: 0.5, reframe: { scriptPath, cropName } };
       appliedFaceTracking = true;
     } else {
@@ -1733,10 +1854,13 @@ export function decideSplitFallback(params: {
  * an audio-only clip is a value nothing downstream reads, not a live
  * routing decision.
  */
-export function framingForcesPerOutputRender(studioEdits: StudioEdits): boolean {
+export function framingForcesPerOutputRender(
+  studioEdits: StudioEdits,
+  config: Readonly<RenderConfig> = currentRenderConfig(),
+): boolean {
   const mode = resolveEffectiveFramingMode(studioEdits);
-  if (mode === "split") return currentRenderConfig().splitEnabled;
-  if (mode === "screen") return currentRenderConfig().screenLayoutEnabled;
+  if (mode === "split") return config.splitEnabled;
+  if (mode === "screen") return config.screenLayoutEnabled;
   return false;
 }
 
@@ -3592,7 +3716,7 @@ export async function downloadUrlToFile(
     overrides?.timeoutMs ?? currentRenderConfig().remoteMediaTimeoutMs;
   let response: Response;
   try {
-    response = await guardedFetch(url, {
+    response = await currentRenderAdapters().remoteMedia.guardedFetch(url, {
       timeoutMs,
       fetchImpl: overrides?.fetchImpl,
       resolver: overrides?.resolver,
@@ -3623,15 +3747,16 @@ export async function downloadUrlToFile(
       );
     }
 
-    await pipeline(
+    await currentRenderAdapters().remoteMedia.pipeline(
       Readable.fromWeb(
         response.body as unknown as import("node:stream/web").ReadableStream,
       ),
       createByteLimitTransform(maxBytes),
-      createWriteStream(filePath),
+      currentRenderAdapters().remoteMedia.createWriteStream(filePath),
     );
   } catch (error) {
-    if (error instanceof WorkflowWorkerError) {
+    rethrowWorkflowAttemptLost(error);
+    if (error instanceof WorkflowFailure) {
       throw error;
     }
     throw new WorkflowWorkerError(
@@ -4269,9 +4394,12 @@ async function uploadRenderedOutput(params: {
 }): Promise<boolean> {
   const deleteProvisionalObject = async (reason: string) => {
     try {
-      await deleteObject(params.output.storageKey, {
+      await currentRenderAdapters().storage.deleteObject(
+        params.output.storageKey,
+        {
         signal: renderStorageSignal(false),
-      });
+        },
+      );
     } catch (error) {
       log("error", "clip_render_provisional_cleanup_failed", {
         workflowRunId: params.workflowRunId,
@@ -4307,10 +4435,12 @@ async function uploadRenderedOutput(params: {
     });
   }
 
-  const outputStat = await stat(params.output.outputPath);
+  const outputStat = await currentRenderAdapters().workspace.stat(
+    params.output.outputPath,
+  );
 
-  const uploadStartedAtMs = Date.now();
-  await putFileFromPath({
+  const uploadStartedAtMs = currentTimeMs();
+  await currentRenderAdapters().storage.putFileFromPath({
     key: params.output.storageKey,
     filePath: params.output.outputPath,
     contentType: "video/mp4",
@@ -4323,7 +4453,7 @@ async function uploadRenderedOutput(params: {
     },
     signal: renderStorageSignal(),
   });
-  const uploadMs = Date.now() - uploadStartedAtMs;
+  const uploadMs = currentTimeMs() - uploadStartedAtMs;
 
   let persisted: boolean;
   try {
@@ -4375,11 +4505,28 @@ export class ClipRenderAttempt {
   readonly #run: WorkflowRunJob;
   readonly #config: Readonly<RenderConfig>;
   readonly #lifecycle: ClipRenderAttemptLifecycle;
+  readonly #adapters: ClipRenderAttemptAdapters;
 
   constructor(dependencies: ClipRenderAttemptDependencies) {
     this.#run = dependencies.run;
     this.#config = dependencies.config;
     this.#lifecycle = dependencies.lifecycle;
+    this.#adapters = {
+      ...productionClipRenderAttemptAdapters,
+      ...dependencies.adapters,
+      storage: {
+        ...productionClipRenderAttemptAdapters.storage,
+        ...dependencies.adapters?.storage,
+      },
+      workspace: {
+        ...productionClipRenderAttemptAdapters.workspace,
+        ...dependencies.adapters?.workspace,
+      },
+      clock: {
+        ...productionClipRenderAttemptAdapters.clock,
+        ...dependencies.adapters?.clock,
+      },
+    };
   }
 
   execute(input: {
@@ -4393,7 +4540,12 @@ export class ClipRenderAttempt {
       throw new WorkflowAttemptLost(input.attempt);
     }
     return renderExecutionStorage.run(
-      { config: this.#config, signal: input.signal, attempt: input.attempt },
+      {
+        config: this.#config,
+        signal: input.signal,
+        attempt: input.attempt,
+        adapters: this.#adapters,
+      },
       async () => {
         const workSet = await this.#lifecycle.beginRenderWorkSet(input.attempt);
         if (workSet.variantIds.length === 0) {
@@ -4433,17 +4585,20 @@ async function executeClipRenderAttempt(
   );
   const applyWatermark = !hasFeature(ownerTier, "export.noWatermark");
 
-  const runStartedAtMs = Date.now();
+  const runStartedAtMs = currentTimeMs();
   log("info", "clip_rendering_run_started", {
     workflowRunId: run.id,
     projectId: run.projectId,
     ownerTier,
   });
 
-  const tempDir = await mkdtemp(join(tmpdir(), "narriflow-render-"));
+  const tempDir = await currentRenderAdapters().workspace.mkdtemp(
+    join(tmpdir(), "narriflow-render-"),
+  );
   // Captured outside the try so `finally` can settle in-flight background
   // uploads before deleting tempDir (their source files live there).
   let uploadQueueRef: { drain: () => Promise<void> } | null = null;
+  let uploadOwnershipError: WorkflowAttemptLost | null = null;
 
   try {
     if (!run.project.sourceStorageKey) {
@@ -4467,7 +4622,8 @@ async function executeClipRenderAttempt(
 
     if (configuredSourceMode !== "download") {
       try {
-        const presignedUrl = await presignDownloadUrl({
+        const presignedUrl =
+          await currentRenderAdapters().storage.presignDownloadUrl({
           key: run.project.sourceStorageKey,
           expiresIn: RENDER_SOURCE_URL_TTL_SEC,
         });
@@ -4491,7 +4647,7 @@ async function executeClipRenderAttempt(
 
     if (sourcePath === null || probe === null) {
       try {
-        await downloadObjectToFile({
+        await currentRenderAdapters().storage.downloadObjectToFile({
           key: run.project.sourceStorageKey,
           filePath: localSourcePath,
           signal: renderStorageSignal(),
@@ -4523,7 +4679,7 @@ async function executeClipRenderAttempt(
           const logoExt = extname(snapshot.logoStorageKey) || ".png";
           const logoPath = join(tempDir, `brand-logo${logoExt}`);
           try {
-            await downloadObjectToFile({
+            await currentRenderAdapters().storage.downloadObjectToFile({
               key: snapshot.logoStorageKey,
               filePath: logoPath,
               signal: renderStorageSignal(),
@@ -4601,7 +4757,6 @@ async function executeClipRenderAttempt(
     // completion always see the settled truth.
     const uploadQueue = createBoundedTaskQueue(uploadConcurrency(), signal);
     uploadQueueRef = uploadQueue;
-    let uploadOwnershipError: WorkflowAttemptLost | null = null;
     const scheduleUpload = (
       output: PendingRenderOutput,
       params: {
@@ -4627,14 +4782,14 @@ async function executeClipRenderAttempt(
             return;
           }
           const errorCode =
-            error instanceof WorkflowWorkerError
+            error instanceof WorkflowFailure
               ? error.code
               : "render_upload_failed";
           await clipService
             .failClipRenderVariant(
               output.clipRenderId,
               errorCode,
-              error instanceof WorkflowWorkerError
+              error instanceof WorkflowFailure
                 ? error.disposition
                 : "retryable",
             )
@@ -4768,7 +4923,11 @@ async function executeClipRenderAttempt(
         );
         if (srtContent.length > 0) {
           srtPath = join(tempDir, `clip-${clip.id}.srt`);
-          await writeFile(srtPath, srtContent, "utf-8");
+          await currentRenderAdapters().workspace.writeFile(
+            srtPath,
+            srtContent,
+            "utf-8",
+          );
         }
       }
 
@@ -4863,7 +5022,11 @@ async function executeClipRenderAttempt(
               tempDir,
               `clip-${clip.id}-${output.aspectRatio.replace(":", "x")}.ass`,
             );
-            await writeFile(assPath, assContent, "utf-8");
+            await currentRenderAdapters().workspace.writeFile(
+              assPath,
+              assContent,
+              "utf-8",
+            );
             output.subtitlePath = assPath;
           }
         }
@@ -5221,7 +5384,7 @@ async function executeClipRenderAttempt(
               clipAutoLayoutAnalysisSchema.parse({
                 version: 1,
                 engine: "shot-layout-v1",
-                analyzedAtISO: new Date().toISOString(),
+                analyzedAtISO: new Date(currentTimeMs()).toISOString(),
                 clipStartSec: clip.startSec,
                 clipEndSec: clip.endSec,
                 deletedRanges,
@@ -6220,7 +6383,7 @@ async function executeClipRenderAttempt(
               cutPlan,
             });
 
-            const encodeStartedAtMs = Date.now();
+            const encodeStartedAtMs = currentTimeMs();
             await execCommand("ffmpeg", ffmpegArgs);
             // Upload runs in the bounded background queue (overlaps the next
             // clip's work). The stale-discard/`persisted` counting and the
@@ -6228,19 +6391,19 @@ async function executeClipRenderAttempt(
             // this catch now only ever sees ENCODE failures.
             scheduleUpload(output, {
               clipDurationSec,
-              encodeMs: Date.now() - encodeStartedAtMs,
+              encodeMs: currentTimeMs() - encodeStartedAtMs,
             });
           } catch (error) {
             rethrowWorkflowAttemptLost(error);
             const errorCode =
-              error instanceof WorkflowWorkerError
+              error instanceof WorkflowFailure
                 ? error.code
                 : "ffmpeg_render_failed";
 
             await clipService.failClipRenderVariant(
               output.clipRenderId,
               errorCode,
-              error instanceof WorkflowWorkerError
+              error instanceof WorkflowFailure
                 ? error.disposition
                 : "retryable",
             );
@@ -6373,25 +6536,25 @@ async function executeClipRenderAttempt(
                   watermark: output.watermark,
                   cutPlan,
                 });
-            const encodeStartedAtMs = Date.now();
+            const encodeStartedAtMs = currentTimeMs();
             await execCommand("ffmpeg", ffmpegArgs);
             // Bounded background upload — see `scheduleUpload`. This catch
             // now only ever sees encode/build failures.
             scheduleUpload(output, {
               clipDurationSec,
               brollCredits,
-              encodeMs: Date.now() - encodeStartedAtMs,
+              encodeMs: currentTimeMs() - encodeStartedAtMs,
             });
           } catch (error) {
             rethrowWorkflowAttemptLost(error);
             const errorCode =
-              error instanceof WorkflowWorkerError
+              error instanceof WorkflowFailure
                 ? error.code
                 : "ffmpeg_render_failed";
             await clipService.failClipRenderVariant(
               output.clipRenderId,
               errorCode,
-              error instanceof WorkflowWorkerError
+              error instanceof WorkflowFailure
                 ? error.disposition
                 : "retryable",
             );
@@ -6437,9 +6600,9 @@ async function executeClipRenderAttempt(
                   watermark: outputs[0]!.watermark,
                 });
 
-          const encodeStartedAtMs = Date.now();
+          const encodeStartedAtMs = currentTimeMs();
           await execCommand("ffmpeg", ffmpegArgs);
-          const sharedEncodeMs = Date.now() - encodeStartedAtMs;
+          const sharedEncodeMs = currentTimeMs() - encodeStartedAtMs;
 
           // Bounded background uploads — per-output failure marking (the
           // former inline try/catch here) lives in `scheduleUpload`.
@@ -6452,7 +6615,7 @@ async function executeClipRenderAttempt(
         } catch (error) {
           rethrowWorkflowAttemptLost(error);
           const errorCode =
-            error instanceof WorkflowWorkerError
+            error instanceof WorkflowFailure
               ? error.code
               : "ffmpeg_render_failed";
 
@@ -6461,7 +6624,7 @@ async function executeClipRenderAttempt(
               clipService.failClipRenderVariant(
                 output.clipRenderId,
                 errorCode,
-                error instanceof WorkflowWorkerError
+                error instanceof WorkflowFailure
                   ? error.disposition
                   : "retryable",
               ),
@@ -6495,7 +6658,7 @@ async function executeClipRenderAttempt(
     // the all-failed check and run completion below must see the final
     // truth, and completeClipRenderingWorkflowRun must never race a
     // completeClipRenderVariant write.
-    const drainStartedAtMs = Date.now();
+    const drainStartedAtMs = currentTimeMs();
     await uploadQueue.drain();
     signal.throwIfAborted();
     if (uploadOwnershipError) throw uploadOwnershipError;
@@ -6503,7 +6666,7 @@ async function executeClipRenderAttempt(
       workflowRunId: run.id,
       projectId: run.projectId,
       scheduledUploads: uploadQueue.scheduledCount(),
-      drainMs: Date.now() - drainStartedAtMs,
+      drainMs: currentTimeMs() - drainStartedAtMs,
     });
 
     const outcome = await lifecycle.settleRenderWorkSet(attempt);
@@ -6515,7 +6678,7 @@ async function executeClipRenderAttempt(
       totalVariantCount: pendingRenders.length,
       renderedVariantCount,
       failedVariantCount: pendingRenders.length - renderedVariantCount,
-      totalMs: Date.now() - runStartedAtMs,
+      totalMs: currentTimeMs() - runStartedAtMs,
       sourceMode: isHttpSource(sourcePath) ? "ranged" : "download",
       encoder: "libx264",
       preset: x264Preset(),
@@ -6526,6 +6689,10 @@ async function executeClipRenderAttempt(
     return outcome;
   } catch (error) {
     rethrowWorkflowAttemptLost(error);
+    if (uploadQueueRef) {
+      await uploadQueueRef.drain();
+      if (uploadOwnershipError) throw uploadOwnershipError;
+    }
     const failure = workflowFailureFromUnknown(error);
     const code = failure.code;
 
@@ -6554,7 +6721,9 @@ async function executeClipRenderAttempt(
     // the success path (already drained above). Never let a drain error
     // block cleanup.
     if (uploadQueueRef) await uploadQueueRef.drain().catch(() => {});
-    await rm(tempDir, { recursive: true, force: true }).catch((error) => {
+    await currentRenderAdapters()
+      .workspace.rm(tempDir, { recursive: true, force: true })
+      .catch((error) => {
       log("error", "clip_render_workspace_cleanup_failed", {
         workflowRunId: run.id,
         projectId: run.projectId,
@@ -6562,6 +6731,6 @@ async function executeClipRenderAttempt(
         operation: "workspace_remove",
         errorCode: error instanceof Error ? error.name : "workspace_remove_failed",
       });
-    });
+      });
   }
 }

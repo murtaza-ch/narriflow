@@ -585,6 +585,44 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     ).toBe(0);
   });
 
+  test("retry exhaustion creates durable failed-render notification intent", async () => {
+    const { project, run } = await fixture("clip_rendering");
+    const clip = await clipFixture(project.id, run.id);
+    const variant = await prisma.clipRender.create({
+      data: { clipId: clip.id, aspectRatio: "ratio_9_16" },
+    });
+    const { lifecycle, attempt } = await claimRenderAttempt();
+    await lifecycle.beginRenderWorkSet(attempt);
+    await lifecycle.markClipRenderVariantRendering(attempt, {
+      clipRenderId: variant.id,
+      exportVariantId: null,
+      startedAt: new Date(),
+    });
+    await prisma.workflowRun.update({
+      where: { id: run.id },
+      data: { attemptCount: 3 },
+    });
+
+    await lifecycle.failAttempt(
+      attempt,
+      new WorkflowFailure("worker_stalled", "retryable", "lease expired"),
+    );
+
+    expect(
+      await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } }),
+    ).toMatchObject({
+      status: "failed",
+      requestedCount: 1,
+      succeededCount: 0,
+      failedCount: 1,
+    });
+    expect(
+      await prisma.workflowEvent.findFirstOrThrow({
+        where: { workflowRunId: run.id, notificationRequired: true },
+      }),
+    ).toMatchObject({ status: "failed", notificationDeliveredAt: null });
+  });
+
   test("50 identical admissions return one deterministic run", async () => {
     const { project } = await fixture();
     await prisma.workflowRun.deleteMany({ where: { projectId: project.id } });

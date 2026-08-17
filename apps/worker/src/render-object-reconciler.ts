@@ -3,11 +3,9 @@ import {
   deleteObject,
   listObjectPageByPrefix,
 } from "@narriflow/services";
+import { isAttemptUniqueProjectRenderObjectKey } from "./render-object-key";
 
 const ORPHAN_SAFETY_AGE_MS = 24 * 60 * 60 * 1000;
-const ATTEMPT_UNIQUE_RENDER_KEY =
-  /^projects\/([0-9a-f-]{36})\/(?:renders\/[^/]+\/[^/]+|exports\/[^/]+\/[^/]+-[^-]+-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.mp4$/i;
-const UUID_SUFFIX = /-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.mp4$/i;
 
 interface ReconciliationObject {
   key: string;
@@ -40,11 +38,6 @@ export interface RenderObjectReconciliationResult {
   deleted: number;
   failed: number;
   objectIds: string[];
-}
-
-function isAttemptUniqueProjectKey(key: string, projectId: string): boolean {
-  const match = ATTEMPT_UNIQUE_RENDER_KEY.exec(key);
-  return match?.[1]?.toLowerCase() === projectId.toLowerCase() && UUID_SUFFIX.test(key);
 }
 
 export class RenderObjectReconciler {
@@ -81,7 +74,7 @@ export class RenderObjectReconciler {
         );
         candidates.push(
           ...page.objects.filter((object) =>
-            isAttemptUniqueProjectKey(object.key, input.projectId),
+            isAttemptUniqueProjectRenderObjectKey(object.key, input.projectId),
           ),
         );
         continuationToken = page.nextContinuationToken ?? undefined;

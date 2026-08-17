@@ -2010,6 +2010,39 @@ export class WorkflowRunLifecycle {
         requeue,
         errorCode: errorCode ?? failure.code,
       });
+      let notification: RenderTerminalNotificationPayload | undefined;
+      if (!requeue && attempt.stage === "clip_rendering") {
+        const variants = await tx.clipRender.findMany({
+          where: { workflowRunId: attempt.workflowRunId },
+          select: { status: true },
+        });
+        const requested = Math.max(
+          run.requestedCount ?? variants.length,
+          variants.length,
+        );
+        const succeeded = variants.filter(
+          (variant) => variant.status === "completed",
+        ).length;
+        const failed = variants.length - succeeded;
+        const superseded = Math.max(0, requested - variants.length);
+        await tx.workflowRun.update({
+          where: { id: attempt.workflowRunId },
+          data: {
+            requestedCount: requested,
+            succeededCount: succeeded,
+            failedCount: failed,
+          },
+        });
+        notification = {
+          kind: "clip_render.failed",
+          projectId: attempt.projectId,
+          workflowRunId: attempt.workflowRunId,
+          requested,
+          succeeded,
+          failed,
+          superseded,
+        };
+      }
       await this.appendEvent(tx, {
         projectId: attempt.projectId,
         workflowRunId: attempt.workflowRunId,
@@ -2020,6 +2053,7 @@ export class WorkflowRunLifecycle {
         errorCode,
         transition: requeue ? `requeued:${run.attemptCount}` : "terminal:failed",
         analyticsRequired: !requeue,
+        notification,
       });
     });
   }

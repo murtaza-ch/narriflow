@@ -49,3 +49,81 @@ test("ClipRenderAttempt settles an empty frozen work set through execute", async
     }),
   ).resolves.toEqual(expected);
 });
+
+test("ClipRenderAttempt drives failure and cleanup through construction adapters", async () => {
+  const attempt: ClipRenderingWorkflowAttempt = {
+    workflowRunId: "10000000-0000-0000-0000-000000000001",
+    projectId: "20000000-0000-0000-0000-000000000002",
+    stage: "clip_rendering",
+    attemptId: "30000000-0000-0000-0000-000000000003",
+    attemptCount: 1,
+  };
+  const expected: RenderWorkSetOutcome = {
+    status: "failed",
+    requested: 1,
+    succeeded: 0,
+    failed: 1,
+    superseded: 0,
+    followUpWorkflowRunId: null,
+  };
+  const mutations: string[] = [];
+  const diagnostics: string[] = [];
+  const clipRenderAttempt = new ClipRenderAttempt({
+    run: {
+      id: attempt.workflowRunId,
+      projectId: attempt.projectId,
+      project: {
+        title: "Missing source",
+        sourceStorageKey: null,
+        sourceDurationSeconds: null,
+        userId: "user",
+        workspaceId: null,
+      },
+    },
+    config: parseRenderConfig({ WORKER_CLIP_RENDER_ATTEMPT_ENABLED: "1" }),
+    lifecycle: {
+      beginRenderWorkSet: async () => ({ variantIds: ["variant-1"] }),
+      settleRenderWorkSet: async () => expected,
+    },
+    adapters: {
+      project: {
+        getUserPricingTier: async () => "free",
+        getProjectBrandSnapshot: async () => null,
+        publishWorkflowProgress: async () => {},
+      },
+      clip: {
+        completeClipAutoLayoutAnalysis: async () => false,
+        completeClipRenderVariant: async () => ({ persisted: true }),
+        failClipRenderVariant: async (_id, code, disposition) => {
+          mutations.push(`fail:${code}:${disposition}`);
+        },
+        getPendingClipRendersForWorkSet: async () => [],
+        markClipRenderVariantRendering: async (id) => {
+          mutations.push(`mark:${id}`);
+        },
+        setClipLayoutAnalysis: async () => {},
+      },
+      workspace: {
+        mkdtemp: async () => "/tmp/narriflow-render-test",
+        rm: async () => {
+          mutations.push("cleanup");
+        },
+      },
+      clock: { nowMs: () => 1_000 },
+      diagnose: ({ message }) => diagnostics.push(message),
+    },
+  });
+
+  await expect(
+    clipRenderAttempt.execute({
+      attempt,
+      signal: new AbortController().signal,
+    }),
+  ).resolves.toEqual(expected);
+  expect(mutations).toEqual([
+    "mark:variant-1",
+    "fail:source_storage_key_missing:permanent",
+    "cleanup",
+  ]);
+  expect(diagnostics).toContain("clip_rendering_run_failed");
+});

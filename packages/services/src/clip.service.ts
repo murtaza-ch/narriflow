@@ -193,6 +193,24 @@ const aspectRatioSlug = new Map(
   clipAspectRatioOptions.map((option) => [option.value, option.slug]),
 );
 
+function sortPendingClipRenders<
+  T extends { clip: { index: number }; aspectRatio: string },
+>(renders: T[]): T[] {
+  return renders.sort((left, right) => {
+    if (left.clip.index !== right.clip.index) {
+      return left.clip.index - right.clip.index;
+    }
+    const leftAspectRatio =
+      clipAspectRatioFromDb[clipAspectRatioDbSchema.parse(left.aspectRatio)];
+    const rightAspectRatio =
+      clipAspectRatioFromDb[clipAspectRatioDbSchema.parse(right.aspectRatio)];
+    return (
+      (aspectRatioOrder.get(leftAspectRatio) ?? Number.MAX_SAFE_INTEGER) -
+      (aspectRatioOrder.get(rightAspectRatio) ?? Number.MAX_SAFE_INTEGER)
+    );
+  });
+}
+
 function requirePrisma() {
   const prisma = getPrismaClient();
   if (!prisma) {
@@ -2470,14 +2488,14 @@ export class ClipService {
       prisma.clipRender.findMany({
         where: {
           storageKey: { not: null },
-          clip: { projectId, project: accessibleProjectWhere() },
+          clip: { projectId },
         },
         select: { storageKey: true },
       }),
       prisma.clipExportVariant.findMany({
         where: {
           storageKey: { not: null },
-          export: { projectId, project: accessibleProjectWhere() },
+          export: { projectId },
         },
         select: { storageKey: true },
       }),
@@ -2502,23 +2520,7 @@ export class ClipService {
       },
     });
 
-    return renders.sort((left, right) => {
-      if (left.clip.index !== right.clip.index) {
-        return left.clip.index - right.clip.index;
-      }
-
-      const leftAspectRatio = clipAspectRatioFromDb[
-        clipAspectRatioDbSchema.parse(left.aspectRatio)
-      ];
-      const rightAspectRatio = clipAspectRatioFromDb[
-        clipAspectRatioDbSchema.parse(right.aspectRatio)
-      ];
-
-      return (
-        (aspectRatioOrder.get(leftAspectRatio) ?? Number.MAX_SAFE_INTEGER) -
-        (aspectRatioOrder.get(rightAspectRatio) ?? Number.MAX_SAFE_INTEGER)
-      );
-    });
+    return sortPendingClipRenders(renders);
   }
 
   async getPendingClipRendersForWorkSet(
@@ -2537,21 +2539,7 @@ export class ClipService {
         exportVariant: { select: { exportId: true, watermark: true } },
       },
     });
-    return renders.sort((left, right) => {
-      if (left.clip.index !== right.clip.index) {
-        return left.clip.index - right.clip.index;
-      }
-      const leftAspectRatio = clipAspectRatioFromDb[
-        clipAspectRatioDbSchema.parse(left.aspectRatio)
-      ];
-      const rightAspectRatio = clipAspectRatioFromDb[
-        clipAspectRatioDbSchema.parse(right.aspectRatio)
-      ];
-      return (
-        (aspectRatioOrder.get(leftAspectRatio) ?? Number.MAX_SAFE_INTEGER) -
-        (aspectRatioOrder.get(rightAspectRatio) ?? Number.MAX_SAFE_INTEGER)
-      );
-    });
+    return sortPendingClipRenders(renders);
   }
 
   async markClipRenderVariantRendering(clipRenderId: string) {
