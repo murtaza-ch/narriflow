@@ -178,6 +178,47 @@ test("ClipRenderAttempt settles an empty frozen work set through execute", async
   ).resolves.toEqual(expected);
 });
 
+test("ClipRenderAttempt rechecks cancellation after freezing an empty work set", async () => {
+  const controller = new AbortController();
+  const attempt: ClipRenderingWorkflowAttempt = {
+    workflowRunId: "10000000-0000-0000-0000-000000000001",
+    projectId: "20000000-0000-0000-0000-000000000002",
+    stage: "clip_rendering",
+    attemptId: "30000000-0000-0000-0000-000000000003",
+    attemptCount: 1,
+  };
+  let settlementCalls = 0;
+  const clipRenderAttempt = new ClipRenderAttempt({
+    run: {
+      id: attempt.workflowRunId,
+      projectId: attempt.projectId,
+      project: {
+        title: "Cancelled frozen set",
+        sourceStorageKey: null,
+        sourceDurationSeconds: null,
+        userId: "user",
+        workspaceId: null,
+      },
+    },
+    config: parseRenderConfig({}),
+    lifecycle: {
+      beginRenderWorkSet: async () => {
+        controller.abort(new DOMException("cancelled", "AbortError"));
+        return { variantIds: [] };
+      },
+      settleRenderWorkSet: async () => {
+        settlementCalls += 1;
+        throw new Error("settlement must not run after cancellation");
+      },
+    },
+  });
+
+  await expect(
+    clipRenderAttempt.execute({ attempt, signal: controller.signal }),
+  ).rejects.toMatchObject({ name: "AbortError" });
+  expect(settlementCalls).toBe(0);
+});
+
 test("ClipRenderAttempt drives failure and cleanup through construction adapters", async () => {
   const attempt: ClipRenderingWorkflowAttempt = {
     workflowRunId: "10000000-0000-0000-0000-000000000001",

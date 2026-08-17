@@ -4549,6 +4549,7 @@ export class ClipRenderAttempt {
       async () => {
         signal.throwIfAborted();
         const workSet = await this.#lifecycle.beginRenderWorkSet(input.attempt);
+        signal.throwIfAborted();
         if (workSet.variantIds.length === 0) {
           return this.#lifecycle.settleRenderWorkSet(input.attempt);
         }
@@ -6711,7 +6712,10 @@ async function executeClipRenderAttempt(
     });
     return outcome;
   } catch (error) {
-    rethrowWorkflowAttemptLost(error);
+    if (error instanceof WorkflowAttemptLost) {
+      abortAttempt(error);
+      throw error;
+    }
     rethrowRenderCancellation(error);
     if (uploadQueueRef) {
       await uploadQueueRef.drain();
