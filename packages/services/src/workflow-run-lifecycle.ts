@@ -121,6 +121,12 @@ export interface WorkflowAggregateResult {
   failedCount: number;
 }
 
+export interface RenderWorkSet {
+  workflowRunId: string;
+  frozenAt: Date;
+  variantIds: readonly string[];
+}
+
 export interface CompleteTranscriptInput {
   provider: string;
   providerModel: string | null;
@@ -839,6 +845,59 @@ export class WorkflowRunLifecycle {
       LIMIT 1
     `;
     if (owned.length === 0) throw new WorkflowAttemptLost(attempt);
+  }
+
+  async beginRenderWorkSet(
+    attempt: WorkflowAttemptRef,
+  ): Promise<RenderWorkSet> {
+    return this.transaction(async (tx) => {
+      await this.fenceChildMutation(tx, attempt, "clip_rendering");
+      const run = await tx.workflowRun.findUniqueOrThrow({
+        where: { id: attempt.workflowRunId },
+        select: { renderWorkSetFrozenAt: true },
+      });
+
+      let frozenAt = run.renderWorkSetFrozenAt;
+      if (!frozenAt) {
+        const candidates = await tx.$queryRaw<Array<{ id: string }>>`
+          SELECT render."id"
+          FROM "ClipRender" AS render
+          INNER JOIN "Clip" AS clip ON clip."id" = render."clipId"
+          WHERE clip."projectId" = ${attempt.projectId}::uuid
+            AND render."status" = 'pending'
+            AND render."workflowRunId" IS NULL
+          ORDER BY render."createdAt", render."id"
+          FOR UPDATE OF render
+        `;
+        const candidateIds = candidates.map((candidate) => candidate.id);
+        if (candidateIds.length > 0) {
+          await tx.clipRender.updateMany({
+            where: {
+              id: { in: candidateIds },
+              status: "pending",
+              workflowRunId: null,
+            },
+            data: { workflowRunId: attempt.workflowRunId },
+          });
+        }
+        frozenAt = await this.databaseNow(tx);
+        await tx.workflowRun.update({
+          where: { id: attempt.workflowRunId },
+          data: { renderWorkSetFrozenAt: frozenAt },
+        });
+      }
+
+      const variants = await tx.clipRender.findMany({
+        where: { workflowRunId: attempt.workflowRunId },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+        select: { id: true },
+      });
+      return {
+        workflowRunId: attempt.workflowRunId,
+        frozenAt,
+        variantIds: variants.map((variant) => variant.id),
+      };
+    });
   }
 
   /**

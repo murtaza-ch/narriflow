@@ -375,6 +375,9 @@ model WorkflowRun {
   requestedCount  Int?
   succeededCount  Int?
   failedCount     Int?
+  /// Fixed-membership marker for a clip-rendering Render Work Set. Null means
+  /// the dark-deployed lineage path has never begun for this run.
+  renderWorkSetFrozenAt DateTime?
   // The immutable configuration this run was claimed with. Workers read the
   // bound pack, never "latest for project", so a draft written mid-run can
   // never swap an active run's settings. Null only on pre-split legacy runs.
@@ -382,8 +385,9 @@ model WorkflowRun {
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
-  project     Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  contentPack ContentPack? @relation(fields: [contentPackId], references: [id], onDelete: SetNull)
+  project        Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  contentPack    ContentPack? @relation(fields: [contentPackId], references: [id], onDelete: SetNull)
+  renderVariants ClipRender[]
 
   // Raw partial unique index (not expressible in Prisma schema — see the
   // 20260729000000_one_live_clip_rendering_run migration): at most one
@@ -912,6 +916,11 @@ model ClipRender {
   sizeBytes   BigInt?
   durationSec Float?
   errorCode   String?
+  /// Informational Render Work Set lineage. Workflow Attempt fencing remains
+  /// the only authority for mutating this variant.
+  workflowRunId String? @db.Uuid
+  /// Recovery classification for a failed variant: retryable or permanent.
+  failureDisposition String?
   /// Fencing reference to the parent Workflow Attempt. It is not an
   /// independent lease or retry counter.
   workflowAttemptId String?          @db.Uuid
@@ -939,9 +948,11 @@ model ClipRender {
 
   clip          Clip               @relation(fields: [clipId], references: [id], onDelete: Cascade)
   exportVariant ClipExportVariant? @relation(fields: [exportVariantId], references: [id], onDelete: Cascade)
+  workflowRun   WorkflowRun?       @relation(fields: [workflowRunId], references: [id], onDelete: SetNull)
 
   @@index([clipId])
   @@index([clipId, aspectRatio])
+  @@index([workflowRunId, createdAt, id])
 }
 
 /// Immutable delivery record for one exact editor revision and normalized
