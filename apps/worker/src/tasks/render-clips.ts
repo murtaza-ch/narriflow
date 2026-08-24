@@ -4496,6 +4496,15 @@ async function uploadRenderedOutput(params: {
   return true;
 }
 
+class ClipRenderAttemptDisabled extends Error {
+  readonly code = "clip_render_attempt_disabled";
+
+  constructor() {
+    super("Clip Render Attempt cutover is disabled");
+    this.name = "ClipRenderAttemptDisabled";
+  }
+}
+
 export class ClipRenderAttempt {
   readonly #run: WorkflowRunJob;
   readonly #config: Readonly<RenderConfig>;
@@ -4524,10 +4533,13 @@ export class ClipRenderAttempt {
     };
   }
 
-  execute(input: {
+  async execute(input: {
     attempt: ClipRenderingWorkflowAttempt;
     signal: AbortSignal;
   }): Promise<RenderWorkSetOutcome> {
+    if (!this.#config.clipRenderAttemptEnabled) {
+      throw new ClipRenderAttemptDisabled();
+    }
     if (
       input.attempt.workflowRunId !== this.#run.id ||
       input.attempt.projectId !== this.#run.projectId
@@ -4602,6 +4614,7 @@ async function executeClipRenderAttempt(
   // Captured outside the try so `finally` can settle in-flight background
   // uploads before deleting tempDir (their source files live there).
   let uploadQueueRef: { drain: () => Promise<void> } | null = null;
+  let settlementStarted = false;
 
   try {
     if (!run.project.sourceStorageKey) {
@@ -4724,7 +4737,9 @@ async function executeClipRenderAttempt(
     ).filter((render) => workSetVariantIds.includes(render.id));
 
     if (pendingRenders.length === 0) {
-      return lifecycle.settleRenderWorkSet(attempt);
+      settlementStarted = true;
+      const outcome = await lifecycle.settleRenderWorkSet(attempt);
+      return outcome;
     }
 
     // A clip may now have several immutable export revisions queued at once.
@@ -6696,6 +6711,7 @@ async function executeClipRenderAttempt(
       drainMs: currentTimeMs() - drainStartedAtMs,
     });
 
+    settlementStarted = true;
     const outcome = await lifecycle.settleRenderWorkSet(attempt);
 
     log("info", "clip_rendering_run_completed", {
@@ -6720,6 +6736,7 @@ async function executeClipRenderAttempt(
       throw error;
     }
     rethrowRenderCancellation(error);
+    if (settlementStarted) throw error;
     if (uploadQueueRef) {
       await uploadQueueRef.drain();
     }
@@ -6745,7 +6762,8 @@ async function executeClipRenderAttempt(
       code,
       message,
     });
-    return lifecycle.settleRenderWorkSet(attempt);
+    const outcome = await lifecycle.settleRenderWorkSet(attempt);
+    return outcome;
   } finally {
     // A failure path can reach here with uploads still in flight (their
     // output files live in tempDir) — settle them before deleting it, so a
