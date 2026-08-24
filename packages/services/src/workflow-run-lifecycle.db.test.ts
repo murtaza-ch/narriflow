@@ -10,6 +10,7 @@ import {
 } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { Prisma, PrismaClient } from "@prisma/client";
+import { workflowStageUpdatedEventSchema } from "@narriflow/validators";
 import { Pool } from "pg";
 import {
   type WorkflowAttemptRef,
@@ -19,6 +20,7 @@ import {
   WorkflowRunLifecycle,
   workflowAttemptRef,
 } from "./workflow-run-lifecycle";
+import { notificationService } from "./notification.service";
 import { projectService } from "./project.service";
 import { clipService } from "./clip.service";
 
@@ -369,6 +371,11 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       firstLifecycle.beginRenderWorkSet(staleAttempt),
     ).rejects.toBeInstanceOf(WorkflowAttemptLost);
     expect(
+      await prisma.workflowEvent.count({
+        where: { workflowRunId: run.id, notificationRequired: true },
+      }),
+    ).toBe(0);
+    expect(
       (await currentLifecycle.beginRenderWorkSet(currentAttempt)).variantIds,
     ).toEqual([variant.id]);
   });
@@ -631,6 +638,294 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     expect(handedOff).toEqual(["clip_render.partial"]);
   });
 
+  test("terminal Render Work Set outcomes carry distinct typed notification payloads", async () => {
+    const settle = async (outcome: "completed" | "partial" | "failed") => {
+      const { project, run } = await fixture("clip_rendering");
+      const clip = await clipFixture(project.id, run.id);
+      const variants = await Promise.all(
+        Array.from({ length: outcome === "partial" ? 2 : 1 }, (_, index) =>
+          prisma.clipRender.create({
+            data: {
+              clipId: clip.id,
+              aspectRatio: index === 0 ? "ratio_9_16" : "ratio_1_1",
+            },
+          }),
+        ),
+      );
+      const { lifecycle, attempt } = await claimRenderAttempt();
+      await lifecycle.beginRenderWorkSet(attempt);
+
+      if (outcome !== "failed") {
+        const completed = variants[0]!;
+        await lifecycle.markClipRenderVariantRendering(attempt, {
+          clipRenderId: completed.id,
+          exportVariantId: null,
+          startedAt: new Date(),
+        });
+        await lifecycle.completeClipRenderVariant(attempt, {
+          clipRenderId: completed.id,
+          exportVariantId: null,
+          storageKey: `projects/test/renders/${outcome}.mp4`,
+          sizeBytes: 512,
+          durationSec: 8,
+          completedAt: new Date(),
+        });
+      }
+      if (outcome !== "completed") {
+        const failed = variants.at(-1)!;
+        await failOwnedRenderVariant(
+          lifecycle,
+          attempt,
+          failed.id,
+          "permanent",
+          "source_invalid",
+        );
+      }
+
+      await lifecycle.settleRenderWorkSet(attempt);
+      const event = await prisma.workflowEvent.findFirstOrThrow({
+        where: { workflowRunId: run.id, notificationRequired: true },
+      });
+      return workflowStageUpdatedEventSchema.parse(event.payload);
+    };
+
+    const completed = await settle("completed");
+    const partial = await settle("partial");
+    const failed = await settle("failed");
+
+    expect([
+      completed.notification,
+      partial.notification,
+      failed.notification,
+    ]).toEqual([
+      {
+        kind: "clip_render.completed",
+        projectId: completed.projectId,
+        workflowRunId: completed.workflowRunId,
+        requested: 1,
+        succeeded: 1,
+        failed: 0,
+        superseded: 0,
+      },
+      {
+        kind: "clip_render.partial",
+        projectId: partial.projectId,
+        workflowRunId: partial.workflowRunId,
+        requested: 2,
+        succeeded: 1,
+        failed: 1,
+        superseded: 0,
+      },
+      {
+        kind: "clip_render.failed",
+        projectId: failed.projectId,
+        workflowRunId: failed.workflowRunId,
+        requested: 1,
+        succeeded: 0,
+        failed: 1,
+        superseded: 0,
+      },
+    ]);
+  });
+
+  test("notification dispatch replays safely around durable ledger handoff", async () => {
+    const { project, run } = await fixture("clip_rendering");
+    const clip = await clipFixture(project.id, run.id);
+    const variant = await prisma.clipRender.create({
+      data: { clipId: clip.id, aspectRatio: "ratio_9_16" },
+    });
+    const { lifecycle, attempt } = await claimRenderAttempt();
+    await lifecycle.beginRenderWorkSet(attempt);
+    await lifecycle.markClipRenderVariantRendering(attempt, {
+      clipRenderId: variant.id,
+      exportVariantId: null,
+      startedAt: new Date(),
+    });
+    await lifecycle.completeClipRenderVariant(attempt, {
+      clipRenderId: variant.id,
+      exportVariantId: null,
+      storageKey: "projects/test/renders/replay-safe.mp4",
+      sizeBytes: 512,
+      durationSec: 8,
+      completedAt: new Date(),
+    });
+    await lifecycle.settleRenderWorkSet(attempt);
+
+    const event = await prisma.workflowEvent.findFirstOrThrow({
+      where: { workflowRunId: run.id, notificationRequired: true },
+    });
+    const settledRun = await prisma.workflowRun.findUniqueOrThrow({
+      where: { id: run.id },
+    });
+    const settledVariant = await prisma.clipRender.findUniqueOrThrow({
+      where: { id: variant.id },
+    });
+    let failurePoint: "before_handoff" | "after_handoff" | null =
+      "before_handoff";
+    const dispatcher = new WorkflowRunLifecycle({
+      prisma,
+      leaseOwner: randomUUID(),
+      handoffNotification: async (payload) => {
+        if (failurePoint === "before_handoff") {
+          throw new Error("crash_before_ledger_handoff");
+        }
+        await notificationService.handoff({
+          projectId: payload.projectId,
+          sourceId: payload.workflowRunId,
+          outcome:
+            payload.kind === "clip_render.failed"
+              ? "generation_failed"
+              : "clips_ready",
+        });
+        if (failurePoint === "after_handoff") {
+          throw new Error("crash_after_ledger_handoff");
+        }
+      },
+    });
+
+    expect(await dispatcher.dispatchEvents()).toBe(0);
+    expect(
+      await prisma.notificationLedger.count({
+        where: { projectId: project.id, sourceId: run.id },
+      }),
+    ).toBe(0);
+
+    failurePoint = "after_handoff";
+    await prisma.workflowEvent.update({
+      where: { id: event.id },
+      data: { nextDeliveryAt: new Date(Date.now() - 1_000) },
+    });
+    expect(await dispatcher.dispatchEvents()).toBe(0);
+    expect(
+      await prisma.notificationLedger.count({
+        where: { projectId: project.id, sourceId: run.id },
+      }),
+    ).toBe(1);
+
+    failurePoint = null;
+    await prisma.workflowEvent.update({
+      where: { id: event.id },
+      data: { nextDeliveryAt: new Date(Date.now() - 1_000) },
+    });
+    expect(await dispatcher.dispatchEvents()).toBeGreaterThan(0);
+    expect(
+      await prisma.workflowEvent.findUniqueOrThrow({ where: { id: event.id } }),
+    ).toMatchObject({
+      notificationDeliveredAt: expect.any(Date),
+      deliveryAttempts: 3,
+      lastDeliveryError: null,
+    });
+    expect(
+      await prisma.notificationLedger.findMany({
+        where: { projectId: project.id, sourceId: run.id },
+      }),
+    ).toEqual([
+      expect.objectContaining({ outcome: "clips_ready", status: "pending" }),
+    ]);
+    expect(
+      await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } }),
+    ).toEqual(settledRun);
+    expect(
+      await prisma.clipRender.findUniqueOrThrow({ where: { id: variant.id } }),
+    ).toEqual(settledVariant);
+  });
+
+  test("notification delivery leaves unrelated Workflow Events on their normal dispatch path", async () => {
+    const { project, run } = await fixture("dubbing");
+    await prisma.workflowRun.update({
+      where: { id: run.id },
+      data: { status: "completed" },
+    });
+    const published: string[] = [];
+    let notificationHandoffs = 0;
+    const dispatcher = new WorkflowRunLifecycle({
+      prisma,
+      leaseOwner: randomUUID(),
+      publishRedis: async (event) => {
+        published.push(event.workflowRunId);
+        return true;
+      },
+      handoffNotification: async () => {
+        notificationHandoffs += 1;
+      },
+    });
+    const admitted = await dispatcher.admit({
+      projectId: project.id,
+      idempotencyKey: `unrelated-event:${randomUUID()}`,
+      stage: "dubbing",
+    });
+
+    expect(await dispatcher.dispatchEvents()).toBe(1);
+    expect(published).toEqual([admitted.id]);
+    expect(notificationHandoffs).toBe(0);
+    expect(
+      await prisma.workflowEvent.findFirstOrThrow({
+        where: { workflowRunId: admitted.id },
+      }),
+    ).toMatchObject({
+      redisPublishedAt: expect.any(Date),
+      notificationRequired: false,
+      notificationDeliveredAt: null,
+      lastDeliveryError: null,
+    });
+  });
+
+  test("notification dispatch rejects an invalid durable terminal payload", async () => {
+    const { project, run } = await fixture("clip_rendering");
+    const clip = await clipFixture(project.id, run.id);
+    const variant = await prisma.clipRender.create({
+      data: { clipId: clip.id, aspectRatio: "ratio_9_16" },
+    });
+    const { lifecycle, attempt } = await claimRenderAttempt();
+    await lifecycle.beginRenderWorkSet(attempt);
+    await failOwnedRenderVariant(
+      lifecycle,
+      attempt,
+      variant.id,
+      "permanent",
+      "source_invalid",
+    );
+    await lifecycle.settleRenderWorkSet(attempt);
+
+    const event = await prisma.workflowEvent.findFirstOrThrow({
+      where: { workflowRunId: run.id, notificationRequired: true },
+    });
+    const payload = event.payload as Prisma.JsonObject;
+    await prisma.workflowEvent.update({
+      where: { id: event.id },
+      data: {
+        payload: {
+          ...payload,
+          notification: {
+            ...(payload.notification as Prisma.JsonObject),
+            requested: "not-a-count",
+          },
+        },
+      },
+    });
+    let handoffs = 0;
+    const dispatcher = new WorkflowRunLifecycle({
+      prisma,
+      leaseOwner: randomUUID(),
+      handoffNotification: async () => {
+        handoffs += 1;
+      },
+    });
+
+    expect(await dispatcher.dispatchEvents()).toBe(0);
+    expect(handoffs).toBe(0);
+    expect(
+      await prisma.workflowEvent.findUniqueOrThrow({ where: { id: event.id } }),
+    ).toMatchObject({
+      notificationDeliveredAt: null,
+      deliveryAttempts: 1,
+      lastDeliveryError: expect.any(String),
+    });
+    expect(
+      await prisma.workflowRun.findUniqueOrThrow({ where: { id: run.id } }),
+    ).toMatchObject({ status: "failed", requestedCount: 1, failedCount: 1 });
+  });
+
   test("zero success requeues only retryable variants and reports durable failure counts", async () => {
     const { project, run } = await fixture("clip_rendering");
     const clip = await clipFixture(project.id, run.id);
@@ -683,6 +978,11 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
         where: { id: retryableVariant.id },
       }),
     ).toMatchObject({ status: "pending", failureDisposition: null });
+    expect(
+      await prisma.workflowEvent.count({
+        where: { workflowRunId: run.id, notificationRequired: true },
+      }),
+    ).toBe(0);
   });
 
   test("protocol-v2 settlement does not retry a legacy null disposition", async () => {

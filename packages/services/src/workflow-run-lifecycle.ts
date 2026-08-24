@@ -2,9 +2,11 @@ import { randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Prisma, type PrismaClient, type WorkflowRun } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
+import { workflowStageUpdatedEventSchema } from "@narriflow/validators";
 import type {
   ClipCategory,
   ContentPack,
+  RenderTerminalNotificationPayload,
   WorkflowStage,
   WorkflowStageUpdatedEvent,
   WorkflowStatus,
@@ -140,18 +142,7 @@ export interface RenderWorkSetOutcome {
   followUpWorkflowRunId: string | null;
 }
 
-export interface RenderTerminalNotificationPayload {
-  kind:
-    | "clip_render.completed"
-    | "clip_render.partial"
-    | "clip_render.failed";
-  projectId: string;
-  workflowRunId: string;
-  requested: number;
-  succeeded: number;
-  failed: number;
-  superseded: number;
-}
+export type { RenderTerminalNotificationPayload } from "@narriflow/validators";
 
 type RenderLineageVariant = {
   id: string;
@@ -2411,7 +2402,7 @@ export class WorkflowRunLifecycle {
       if (claimed.count === 0 || !event.dedupeKey) continue;
 
       try {
-        const parsed = event.payload as unknown as WorkflowStageUpdatedEvent;
+        const parsed = workflowStageUpdatedEventSchema.parse(event.payload);
         if (event.redisRequired && !event.redisPublishedAt) {
           const published = await this.publishRedis(parsed);
           if (!published) {
@@ -2440,10 +2431,7 @@ export class WorkflowRunLifecycle {
           if (acknowledged.count === 0) continue;
         }
         if (event.notificationRequired && !event.notificationDeliveredAt) {
-          const payload = event.payload as {
-            notification?: RenderTerminalNotificationPayload;
-          } | null;
-          const notification = payload?.notification;
+          const notification = parsed.notification;
           if (!notification) {
             throw new Error("Render notification payload unavailable");
           }
