@@ -17,6 +17,7 @@ const WORKFLOW_STAGE_LABELS: Record<string, string> = {
   ingest_queued: "Ingest",
   ingest_downloading: "Ingest",
   ingest_normalizing: "Ingest",
+  ingest_retrying: "Ingest",
   stt: "Transcribe",
   moment_detection: "Detect",
   clip_rendering: "Render",
@@ -36,6 +37,22 @@ export function workflowStageLabel(stage: string): string {
 }
 
 export type PipelineStepState = "done" | "active" | "failed" | "todo";
+
+export function pipelineStepStateWord(
+  state: PipelineStepState,
+  workflowStatus?: string | null,
+): string | null {
+  if (state === "failed") return "failed";
+  if (state !== "active") return null;
+  if (
+    workflowStatus === "queued" ||
+    workflowStatus === "waiting" ||
+    workflowStatus === "running"
+  ) {
+    return workflowStatus;
+  }
+  return "running";
+}
 
 type WorkflowRunLike = {
   stage: string;
@@ -116,10 +133,23 @@ export function ingestStageWord(ingestStatus: string): string {
   return INGEST_STAGE_WORDS[ingestStatus] ?? "Queued";
 }
 
+export type IngestRecoveryAction = "retry" | "new_upload";
+
+/** Provider access denials are deterministic for the same link and worker
+ * runtime. Repeating the same import is false recovery; start from a file. */
+export function ingestRecoveryAction(
+  errorCode: string | null | undefined,
+): IngestRecoveryAction {
+  return errorCode === "source_provider_access_denied"
+    ? "new_upload"
+    : "retry";
+}
+
 const INGEST_LIVE_STAGE_WORDS: Record<string, string> = {
   ingest_queued: "Queued",
   ingest_downloading: "Downloading",
   ingest_normalizing: "Normalizing",
+  ingest_retrying: "Retrying",
   ingest_ready: "Ready",
   ingest: "Queued",
 };
@@ -134,6 +164,7 @@ export function liveIngestStageWord(
     "ingest_queued",
     "ingest_downloading",
     "ingest_normalizing",
+    "ingest_retrying",
     "ingest_ready",
     "ingest",
   ];
@@ -380,19 +411,29 @@ export function deriveProjectPipelineStates(input: {
           ? "failed"
           : "todo";
 
-  const render: PipelineStepState = input.renderVariants.some(
-    (variant) => variant.hasAsset,
-  )
-    ? "done"
-    : input.renderVariants.some(
+  const renderRun =
+    input.latestRun?.stage === "clip_rendering" ? input.latestRun : null;
+  const render: PipelineStepState =
+    renderRun?.status === "queued" ||
+    renderRun?.status === "running" ||
+    renderRun?.status === "waiting"
+      ? "active"
+      : renderRun?.status === "completed" || renderRun?.status === "partial"
+        ? "done"
+        : input.renderVariants.some((variant) => variant.hasAsset)
+          ? "done"
+          : input.renderVariants.some(
           (variant) =>
             variant.status === "pending" || variant.status === "rendering",
         )
-      ? "active"
-      : input.renderVariants.length > 0 &&
-          input.renderVariants.every((variant) => variant.status === "failed")
-        ? "failed"
-        : "todo";
+            ? "active"
+            : renderRun?.status === "failed" ||
+                (input.renderVariants.length > 0 &&
+                  input.renderVariants.every(
+                    (variant) => variant.status === "failed",
+                  ))
+              ? "failed"
+              : "todo";
 
   // Orphaned posts (clip deleted, e.g. by "Regenerate clips") stay visible in
   // the Publish tab as history, but must not drive the CURRENT pipeline view:

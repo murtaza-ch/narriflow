@@ -105,6 +105,8 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
     "That step took too long and timed out. Please try again.",
   worker_command_failed:
     "We couldn't fetch that video. Make sure it's public and still available, then try again.",
+  source_provider_access_denied:
+    "The video provider refused this import. Upload the video file instead.",
   worker_command_missing:
     "Our processing service is temporarily unavailable. Please try again shortly, or contact support if this continues.",
   link_download_missing_file:

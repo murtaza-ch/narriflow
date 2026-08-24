@@ -1,5 +1,27 @@
 import { describe, expect, test } from "bun:test";
-import { normalizeDropboxDownloadUrl } from "./ingest";
+import {
+  classifyYtdlpProviderFailure,
+  normalizeDropboxDownloadUrl,
+} from "./ingest";
+
+describe("classifyYtdlpProviderFailure", () => {
+  test("turns an HTTP 403 media response into a permanent provider-access failure", () => {
+    expect(
+      classifyYtdlpProviderFailure(
+        "ERROR: unable to download video data: HTTP Error 403: Forbidden",
+      ),
+    ).toEqual({
+      code: "source_provider_access_denied",
+      message:
+        "The video provider refused the download. Upload the video file instead.",
+    });
+  });
+
+  test("leaves an unrelated command failure unclassified", () => {
+    expect(classifyYtdlpProviderFailure("ERROR: requested format is not available"))
+      .toBeNull();
+  });
+});
 
 describe("normalizeDropboxDownloadUrl", () => {
   test("forces dl=1 on a legacy /s/ share link with dl=0", () => {

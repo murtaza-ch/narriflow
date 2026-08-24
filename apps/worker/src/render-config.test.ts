@@ -14,7 +14,7 @@ describe("RenderConfig", () => {
 
     expect(config).toMatchObject({
       sourceMode: "ranged",
-      clipRenderAttemptEnabled: false,
+      clipRenderAttemptEnabled: true,
       uploadConcurrency: 2,
       renderCommandTimeoutMs: 1_800_000,
       probeCommandTimeoutMs: 120_000,
@@ -27,6 +27,17 @@ describe("RenderConfig", () => {
       pexelsConfigured: false,
     });
     expect(Object.isFrozen(config)).toBe(true);
+  });
+
+  test("renders by default and preserves an explicit operational pause", () => {
+    expect(parseRenderConfig({}).clipRenderAttemptEnabled).toBe(true);
+    expect(
+      parseRenderConfig({ WORKER_CLIP_RENDER_ATTEMPT_ENABLED: "0" })
+        .clipRenderAttemptEnabled,
+    ).toBe(false);
+    expect(() =>
+      parseRenderConfig({ WORKER_CLIP_RENDER_ATTEMPT_ENABLED: "yes" }),
+    ).toThrow("WORKER_CLIP_RENDER_ATTEMPT_ENABLED");
   });
 
   test("caps upload concurrency at four and warns for accepted nonstandard values", () => {

@@ -13,6 +13,8 @@ import {
   type ClipRenderResolution,
   resolvePricingTier,
 } from "@narriflow/validators";
+import { deriveClipExportAggregate } from "./clip-export-aggregate";
+export { deriveClipExportAggregate } from "./clip-export-aggregate";
 import { hasFeature } from "./billing.service";
 import { projectService } from "./project.service";
 import { accessibleProjectWhere } from "./project-retention.service";
@@ -90,30 +92,6 @@ export function buildClipExportFingerprint(input: {
 
 export function hashClipShareToken(token: string): string {
   return createHash("sha256").update(token).digest("hex");
-}
-
-export function deriveClipExportAggregate(
-  statuses: Array<"pending" | "rendering" | "completed" | "failed">,
-): { status: ClipExportStatus; progress: number; terminal: boolean } {
-  if (statuses.length === 0) return { status: "failed", progress: 100, terminal: true };
-  const completed = statuses.filter((status) => status === "completed").length;
-  const failed = statuses.filter((status) => status === "failed").length;
-  const rendering = statuses.filter((status) => status === "rendering").length;
-  const settled = completed + failed;
-
-  if (completed === statuses.length) {
-    return { status: "ready", progress: 100, terminal: true };
-  }
-  if (settled === statuses.length) {
-    return completed > 0
-      ? { status: "partial_ready", progress: 100, terminal: true }
-      : { status: "failed", progress: 100, terminal: true };
-  }
-  return {
-    status: rendering > 0 || settled > 0 ? "rendering" : "queued",
-    progress: Math.min(95, Math.round((settled / statuses.length) * 90) + (rendering > 0 ? 5 : 0)),
-    terminal: false,
-  };
 }
 
 export function clipExportVariantStorageKey(input: {

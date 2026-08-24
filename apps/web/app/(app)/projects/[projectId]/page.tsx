@@ -31,6 +31,7 @@ import {
 } from "@narriflow/validators";
 import { ProjectEvents } from "./project-events";
 import { ProjectEventsProvider } from "./project-events-provider";
+import { ingestRecoveryAction } from "@/lib/project-state";
 import { ProjectTabs, TabCountBadge } from "./project-tabs";
 import { ProcessingPanel } from "./processing-panel";
 import {
@@ -53,6 +54,7 @@ import { gradientForId } from "../_lib/gradient";
 import { formatDate, formatDuration } from "@/lib/format";
 import {
   deriveProjectPipelineStates,
+  pipelineStepStateWord,
   type PipelineStepState,
   type ProcessingStageInput,
 } from "@/lib/project-state";
@@ -71,13 +73,6 @@ const STEP_COLORS: Record<
   todo: { node: "border.emphasized", index: "fg.subtle", label: "fg.subtle" },
 };
 
-const STEP_STATE_WORD: Record<StepState, string | null> = {
-  done: null,
-  active: "running",
-  failed: "failed",
-  todo: null,
-};
-
 /**
  * Drawn pipeline stepper — 18px numbered nodes (check circles once done),
  * 11px labels beside them, hairline connectors between steps. State is
@@ -87,7 +82,7 @@ const STEP_STATE_WORD: Record<StepState, string | null> = {
 function PipelineStepper({
   steps,
 }: {
-  steps: Array<{ label: string; state: StepState }>;
+  steps: Array<{ label: string; state: StepState; status?: string | null }>;
 }) {
   return (
     <Flex
@@ -104,7 +99,7 @@ function PipelineStepper({
     >
       {steps.map((step, index) => {
         const colors = STEP_COLORS[step.state];
-        const stateWord = STEP_STATE_WORD[step.state];
+        const stateWord = pipelineStepStateWord(step.state, step.status);
         const isLast = index === steps.length - 1;
         return (
           <Flex
@@ -443,7 +438,11 @@ export default async function ProjectDetailPage({
       ? ingestInProgress || isIngestFailed || runInFlight || runFailed || quotaBlockedMidFlight
       : renderGatesProcessingPanel && !renderStageSucceeded);
 
-  const steps: Array<{ label: string; state: StepState }> = [
+  const steps: Array<{
+    label: string;
+    state: StepState;
+    status?: string | null;
+  }> = [
     {
       label: "Ingest",
       state:
@@ -452,6 +451,7 @@ export default async function ProjectDetailPage({
           : snapshot.project.ingestStatus === "failed"
             ? "failed"
             : "active",
+      status: snapshot.project.ingestStatus,
     },
     {
       label: "Transcribe",
@@ -462,14 +462,25 @@ export default async function ProjectDetailPage({
           : transcript?.status === "failed"
             ? "failed"
             : "todo",
+      status: activeRun?.stage === "stt" ? activeRun.status : transcript?.status,
     },
     {
       label: "Detect",
       state: pipelineStates.detect,
+      status:
+        activeRun?.stage === "moment_detection" ? activeRun.status : null,
     },
     {
       label: "Render",
       state: pipelineStates.render,
+      status:
+        activeRun?.stage === "clip_rendering"
+          ? activeRun.status
+          : renderVariants.some((variant) => variant.status === "rendering")
+            ? "running"
+            : renderVariants.some((variant) => variant.status === "pending")
+              ? "queued"
+              : null,
     },
     {
       label: "Publish",
@@ -611,13 +622,22 @@ export default async function ProjectDetailPage({
                   {userErrorMessage(snapshot.project.ingestErrorCode)}
                 </Text>
               </Flex>
-              {isIngestFailed && (
+              {isIngestFailed &&
+                ingestRecoveryAction(snapshot.project.ingestErrorCode) ===
+                  "retry" && (
                 <RetryIngestButton
                   projectId={projectId}
                   disabled={ingestAttemptsExhausted}
                   limitReachedMessage={`Retry limit reached (${snapshot.ingestAttemptCount}/${MAX_INGEST_RETRY_ATTEMPTS}). This source keeps failing to import.`}
                 />
               )}
+              {isIngestFailed &&
+                ingestRecoveryAction(snapshot.project.ingestErrorCode) ===
+                  "new_upload" && (
+                  <Button size="xs" variant="outline" asChild alignSelf="flex-start">
+                    <Link href="/upload">Upload video instead</Link>
+                  </Button>
+                )}
             </Stack>
           )}
         </Stack>

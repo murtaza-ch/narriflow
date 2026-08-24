@@ -4982,6 +4982,17 @@ async function executeClipRenderAttempt(
         };
       });
 
+      // Claim the variants before every terminal branch. Lifecycle failure
+      // settlement is fenced to rows owned by this render attempt; failing a
+      // still-pending row is intentionally rejected as stale.
+      await Promise.all(
+        outputs.map((output) =>
+          currentRenderAdapters().clip.markClipRenderVariantRendering(
+            output.clipRenderId,
+          ),
+        ),
+      );
+
       // Guard (vizard-parity Phase B step 7): deletedRanges covering the
       // whole clip window (or leaving only sub-50ms slivers) leaves nothing
       // renderable. Fail every variant in this group with a structured error
@@ -6369,14 +6380,6 @@ async function executeClipRenderAttempt(
         // routing stable against, and a plan-less render through the batch
         // path is byte-identical to before the engine existed.
         Boolean(autoLayoutSegmentsFull);
-
-      await Promise.all(
-        outputs.map((output) =>
-          currentRenderAdapters().clip.markClipRenderVariantRendering(
-            output.clipRenderId,
-          ),
-        ),
-      );
 
       if (!probe.hasVideo) {
         // Known divergence: audio-only sources render via buildAudiogramArgs,

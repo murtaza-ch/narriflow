@@ -440,18 +440,12 @@ const autopilotLoop = createPollLoop("autopilot", async () => {
   return processDueAutopilotRules();
 });
 
-/** CPU-bound stage: clip rendering only. Still safe under multiple worker
- *  processes — claimNextWorkflowRun's conditional update (status=queued ->
- *  running) is the same atomic claim every poller already relies on. */
+/** CPU-bound stage: clip rendering only. The dedicated claim is protocol-v2
+ *  only, so a legacy queued row cannot be mutated and then rejected. */
 const renderLoop = createPollLoop("render", async () => {
   if (!renderConfig.clipRenderAttemptEnabled) return 0;
-  const run = await projectService.claimNextWorkflowRun("clip_rendering");
+  const run = await projectService.claimNextClipRenderAttempt();
   if (!run) return 0;
-  if (run.lifecycleVersion !== 2 || !run.attemptId) {
-    throw new Error(
-      `clip_rendering run ${run.id} must be drained before ClipRenderAttempt cutover`,
-    );
-  }
   const lifecycle = getWorkflowRunLifecycle();
   const attempt = workflowAttemptRef({
     id: run.id,
@@ -538,6 +532,10 @@ const server = createServer(async (req, res) => {
       JSON.stringify({
         ok: true,
         service: "narriflow-worker",
+        render: {
+          enabled: renderConfig.clipRenderAttemptEnabled,
+          lifecycleVersion: 2,
+        },
         queue: {
           processedCount,
           loops: Object.fromEntries(

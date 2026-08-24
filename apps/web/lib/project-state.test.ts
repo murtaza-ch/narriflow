@@ -2,11 +2,26 @@ import { describe, expect, test } from "bun:test";
 import {
   deriveProcessingChecklist,
   deriveProjectPipelineStates,
+  ingestRecoveryAction,
+  liveIngestStageWord,
   parseWorkflowEventMessage,
+  pipelineStepStateWord,
   rememberBoundedIdentity,
   workflowEventRowIdentity,
   workflowTerminalEventIdentity,
 } from "./project-state";
+
+describe("ingest recovery action", () => {
+  test("provider access rejection directs the user to a new upload", () => {
+    expect(ingestRecoveryAction("source_provider_access_denied")).toBe(
+      "new_upload",
+    );
+  });
+
+  test("a transient exhausted import remains manually retryable", () => {
+    expect(ingestRecoveryAction("ingest_retries_exhausted")).toBe("retry");
+  });
+});
 
 const PROJECT_ID = "11111111-1111-4111-8111-111111111111";
 const FIRST_RUN_ID = "22222222-2222-4222-8222-222222222222";
@@ -121,6 +136,19 @@ describe("project pipeline state", () => {
     ).toBe(expected);
   });
 
+  test("an active render run stays active after its first asset completes", () => {
+    expect(
+      deriveProjectPipelineStates({
+        ...EMPTY_PIPELINE,
+        latestRun: { stage: "clip_rendering", status: "running" },
+        renderVariants: [
+          { status: "completed", hasAsset: true },
+          { status: "rendering", hasAsset: false },
+        ],
+      }).render,
+    ).toBe("active");
+  });
+
   test.each([
     ["success wins", [{ status: "failed" }, { status: "posted" }], "done"],
     ["active post", [{ status: "scheduled" }], "active"],
@@ -143,6 +171,26 @@ describe("project pipeline state", () => {
     expect(
       deriveProjectPipelineStates({ ...EMPTY_PIPELINE, socialPosts }).publish,
     ).toBe(expected);
+  });
+});
+
+describe("pipeline status copy", () => {
+  test("preserves queued, waiting, and running instead of calling all active work running", () => {
+    expect(pipelineStepStateWord("active", "queued")).toBe("queued");
+    expect(pipelineStepStateWord("active", "waiting")).toBe("waiting");
+    expect(pipelineStepStateWord("active", "running")).toBe("running");
+  });
+
+  test("shows an automatic ingest retry as retrying", () => {
+    const retrying = {
+      ...workflowEvent(FIRST_RUN_ID, 2),
+      stage: "ingest_retrying" as const,
+      status: "queued" as const,
+      progress: 40,
+    };
+    expect(liveIngestStageWord({ ingest_retrying: retrying }, "queued")).toBe(
+      "Retrying",
+    );
   });
 });
 

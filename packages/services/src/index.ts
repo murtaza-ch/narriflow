@@ -73,6 +73,7 @@ export {
   type ProjectListSourceFilter,
   type ProjectListStatusFilter,
   type ProjectSourcePurgeCandidate,
+  type ClaimedClipRenderAttempt,
   // Automatic job-level retry policy (requeue-with-backoff for IngestJob /
   // WorkflowRun) — see the "Automatic job-level retry policy" comment block
   // in project.service.ts for the full design.

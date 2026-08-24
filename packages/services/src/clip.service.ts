@@ -2583,7 +2583,7 @@ export class ClipService {
             }
             return true;
           });
-    if (persisted && render?.exportVariantId) {
+    if (persisted && render?.exportVariantId && !attempt) {
       const variant = await prisma.clipExportVariant.findUniqueOrThrow({
         where: { id: render.exportVariantId },
         select: { exportId: true },
@@ -2670,7 +2670,7 @@ export class ClipService {
           });
     if (!persisted) return { persisted: false };
 
-    if (render.exportVariant) {
+    if (render.exportVariant && !attempt) {
       await clipExportService.syncAggregate(render.exportVariant.exportId);
     }
 
@@ -2741,7 +2741,7 @@ export class ClipService {
             }
             return true;
           });
-    if (persisted && render?.exportVariantId) {
+    if (persisted && render?.exportVariantId && !attempt) {
       const variant = await prisma.clipExportVariant.findUniqueOrThrow({
         where: { id: render.exportVariantId },
         select: { exportId: true },
@@ -4405,21 +4405,26 @@ export class ClipService {
     const alreadyQueued = new Set(existingRenders.map((r) => r.clipId));
     const toCreate = clipIds.filter((id) => !alreadyQueued.has(id));
 
-    if (toCreate.length > 0) {
-      const renderRows = toCreate.map((clipId) => ({
-            clipId,
-            aspectRatio: aspectRatioDb,
-            status: "pending" as const,
-            resolution: resolvedResolution,
-          })) satisfies Prisma.ClipRenderCreateManyInput[];
-      if (attempt && lifecycle) {
-        await lifecycle.createAutoRenderVariants(attempt, renderRows);
-      } else {
-        await prisma.clipRender.createMany({
-          data: renderRows,
-          skipDuplicates: true,
-        });
-      }
+    const renderRows = toCreate.map((clipId) => ({
+      clipId,
+      aspectRatio: aspectRatioDb,
+      status: "pending" as const,
+      resolution: resolvedResolution,
+    })) satisfies Prisma.ClipRenderCreateManyInput[];
+
+    if (attempt && lifecycle) {
+      await lifecycle.admitAutoRenderWork(attempt, {
+        idempotencyKey: `auto-render-${detectionWorkflowRunId}`,
+        renders: renderRows,
+      });
+      return;
+    }
+
+    if (renderRows.length > 0) {
+      await prisma.clipRender.createMany({
+        data: renderRows,
+        skipDuplicates: true,
+      });
     }
 
     await getWorkflowRunLifecycle().admit({

@@ -1,7 +1,9 @@
 "use client";
 
 import { type ReactNode, useOptimistic, useState, useTransition } from "react";
+import Link from "next/link";
 import { Box, Flex, Stack, Text } from "@chakra-ui/react";
+import { Button } from "@narriflow/ui/components/button";
 import { ActionSubmitButton } from "@narriflow/ui/components/action-submit-button";
 import { Switch } from "@narriflow/ui/components/switch";
 import { GhostFrame } from "@narriflow/ui/components/ghost-frame";
@@ -10,6 +12,7 @@ import { AlertTriangle, Check, RotateCcw } from "lucide-react";
 import { formatDuration } from "@/lib/format";
 import {
   deriveProcessingChecklist,
+  ingestRecoveryAction,
   liveIngestStageWord,
   mergeStageWithLiveEvent,
   type PipelineStepState,
@@ -282,11 +285,17 @@ export function ProcessingPanel(props: ProcessingPanelProps) {
               <AlertTriangle size={14} aria-hidden />
               <Text fontSize="sm">{userErrorMessage(props.ingestErrorCode)}</Text>
             </Flex>
-            <RetryIngestButton
-              projectId={props.projectId}
-              disabled={props.ingestAttemptsExhausted}
-              limitReachedMessage={props.ingestRetryLimitMessage}
-            />
+            {ingestRecoveryAction(props.ingestErrorCode) === "new_upload" ? (
+              <Button asChild size="xs" variant="outline" alignSelf="flex-start">
+                <Link href="/upload">Upload video instead</Link>
+              </Button>
+            ) : (
+              <RetryIngestButton
+                projectId={props.projectId}
+                disabled={props.ingestAttemptsExhausted}
+                limitReachedMessage={props.ingestRetryLimitMessage}
+              />
+            )}
           </Stack>
         </Box>
       )}

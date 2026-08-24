@@ -1,15 +1,20 @@
 FROM oven/bun:1.3.6
 
-# ffmpeg + yt-dlp for media processing; fontconfig + base fonts for caption
+# ffmpeg for media processing; fontconfig + base fonts for caption
 # burn-in; Noto core/extra cover representative Arabic, Hebrew and Indic
 # scripts, while Noto CJK covers Chinese, Japanese and Korean glyphs. These
 # packages provide glyph coverage only; script-aware cue behavior is separate.
 # curl/ca-certificates fetch the Latin display fonts used by caption presets.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ffmpeg yt-dlp fontconfig curl ca-certificates python3 python3-pip \
+    ffmpeg fontconfig curl ca-certificates python3 python3-pip \
     fonts-dejavu-core fonts-liberation fonts-noto-core fonts-noto-cjk \
     fonts-noto-extra fonts-noto-color-emoji \
   && rm -rf /var/lib/apt/lists/*
+
+# Distribution packages lag YouTube extractor changes by months. Pin the
+# upstream release that removed the broken android_vr default client and added
+# working fallback clients for the August 2026 HTTP 403 regression.
+RUN pip3 install --no-cache-dir --break-system-packages "yt-dlp[default]==2026.8.19"
 
 # Auto-reframe: OpenCV YuNet face detector (CPU-only, MIT, ~232 KB). Bake the
 # tiny model into the image rather than fetching it at runtime.

@@ -187,6 +187,16 @@ interface ClaimedWorkflowRun {
   >;
 }
 
+export interface ClaimedClipRenderAttempt
+  extends Omit<
+    ClaimedWorkflowRun,
+    "stage" | "lifecycleVersion" | "attemptId"
+  > {
+  stage: "clip_rendering";
+  lifecycleVersion: 2;
+  attemptId: string;
+}
+
 const projects = new Map<string, ProjectSnapshot>();
 const idempotencyRuns = new Map<string, string>();
 
@@ -736,6 +746,7 @@ export const PERMANENT_FAILURE_CODES: ReadonlySet<string> = new Set([
   "assemblyai_api_key_missing",
   "openai_api_key_missing",
   "worker_command_missing",
+  "source_provider_access_denied",
   // Malformed job/payload: a bug, not a blip
   "worker_invalid_payload",
   "worker_unknown_job_type",
@@ -3035,6 +3046,25 @@ export class ProjectService {
     };
   }
 
+  async claimNextClipRenderAttempt(): Promise<ClaimedClipRenderAttempt | null> {
+    await this.ensurePendingClipRenderingRun();
+    const claimed = await getWorkflowRunLifecycle().claim("clip_rendering");
+    if (!claimed) return null;
+
+    return {
+      id: claimed.workflowRunId,
+      projectId: claimed.projectId,
+      stage: "clip_rendering",
+      status: claimed.status,
+      progress: claimed.progress,
+      contentPackId: claimed.contentPackId,
+      lifecycleVersion: WORKFLOW_LIFECYCLE_VERSION,
+      attemptId: claimed.attemptId,
+      attemptCount: claimed.attemptCount,
+      project: claimed.project as ClaimedWorkflowRun["project"],
+    };
+  }
+
   async claimNextWorkflowRun(
     stage:
       | "stt"
@@ -4303,6 +4333,7 @@ export class ProjectService {
         ingestStatus: "queued",
         eventStatus: "queued",
         errorCode: null,
+        retrying: true,
       });
       return;
     }
@@ -5158,14 +5189,17 @@ export class ProjectService {
     ingestStatus: IngestLifecycleStatus;
     eventStatus: "queued" | "running" | "completed" | "failed";
     errorCode: string | null;
+    retrying?: boolean;
   }) {
     await publishWorkflowStageUpdated({
       event: "workflow.stage.updated",
       projectId: input.projectId,
       workflowRunId: input.workflowRunId,
-      stage: ingestToWorkflowStage(input.ingestStatus),
+      stage: input.retrying
+        ? "ingest_retrying"
+        : ingestToWorkflowStage(input.ingestStatus),
       status: input.eventStatus,
-      progress: ingestProgress(input.ingestStatus),
+      progress: input.retrying ? 40 : ingestProgress(input.ingestStatus),
       errorCode: input.errorCode,
     });
   }

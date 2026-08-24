@@ -15,6 +15,7 @@ import {
   publishPersistedWorkflowEvent,
 } from "./workflow.service";
 import { notificationService, type NotificationOutcome } from "./notification.service";
+import { deriveClipExportAggregate } from "./clip-export-aggregate";
 
 export const WORKFLOW_LIFECYCLE_VERSION = 2;
 export const WORKFLOW_LEASE_DURATION_MS = 2 * 60 * 1000;
@@ -993,6 +994,43 @@ export class WorkflowRunLifecycle {
     if (owned.length === 0) throw new WorkflowAttemptLost(attempt);
   }
 
+  private async syncClipExportAggregate(
+    tx: TransactionClient,
+    exportVariantId: string,
+  ): Promise<void> {
+    const variant = await tx.clipExportVariant.findUniqueOrThrow({
+      where: { id: exportVariantId },
+      select: { exportId: true },
+    });
+    // Serialize aggregate recomputation for siblings. Without locking the
+    // parent first, two child completions can each observe the other child as
+    // non-terminal and leave the export stuck below 100%.
+    await tx.$queryRaw<Array<{ id: string }>>`
+      SELECT "id"
+      FROM "ClipExport"
+      WHERE "id" = ${variant.exportId}::uuid
+      FOR UPDATE
+    `;
+    const variants = await tx.clipExportVariant.findMany({
+      where: { exportId: variant.exportId },
+      select: { status: true, errorCode: true },
+    });
+    const aggregate = deriveClipExportAggregate(
+      variants.map((item) => item.status),
+    );
+    const firstError =
+      variants.find((item) => item.errorCode)?.errorCode ?? null;
+    await tx.clipExport.update({
+      where: { id: variant.exportId },
+      data: {
+        status: aggregate.status,
+        progress: aggregate.progress,
+        errorCode: aggregate.status === "failed" ? firstError : null,
+        completedAt: aggregate.terminal ? new Date() : null,
+      },
+    });
+  }
+
   async replaceDetectedClips(
     attempt: WorkflowAttemptRef,
     clips: DetectedClipArtifactInput[],
@@ -1056,6 +1094,7 @@ export class WorkflowRunLifecycle {
             errorCode: null,
           },
         });
+        await this.syncClipExportAggregate(tx, input.exportVariantId);
       }
       return true;
     });
@@ -1105,6 +1144,7 @@ export class WorkflowRunLifecycle {
             completedAt: input.completedAt,
           },
         });
+        await this.syncClipExportAggregate(tx, input.exportVariantId);
       }
       const run = await tx.workflowRun.findUniqueOrThrow({
         where: { id: attempt.workflowRunId },
@@ -1156,36 +1196,75 @@ export class WorkflowRunLifecycle {
           where: { id: input.exportVariantId },
           data: { status: "failed", errorCode: input.errorCode },
         });
+        await this.syncClipExportAggregate(tx, input.exportVariantId);
       }
       return true;
     });
   }
 
-  async createAutoRenderVariants(
+  async admitAutoRenderWork(
     attempt: WorkflowAttemptRef,
-    renders: RenderArtifactInput[],
+    input: {
+      idempotencyKey: string;
+      renders: RenderArtifactInput[];
+    },
   ) {
-    await this.transaction(async (tx) => {
-      await this.fenceChildMutation(tx, attempt, "clip_rendering");
-      if (renders.length > 0) {
+    return this.transaction(async (tx) => {
+      await this.fenceChildMutation(tx, attempt, "moment_detection");
+      if (input.renders.length > 0) {
         const projectClipCount = await tx.clip.count({
           where: {
             projectId: attempt.projectId,
-            id: { in: renders.map((render) => render.clipId) },
+            id: { in: input.renders.map((render) => render.clipId) },
           },
         });
-        if (projectClipCount !== new Set(renders.map((render) => render.clipId)).size) {
+        if (
+          projectClipCount !==
+          new Set(input.renders.map((render) => render.clipId)).size
+        ) {
           throw new WorkflowAttemptLost(attempt);
         }
         await tx.clipRender.createMany({
-          data: renders.map((render) => ({
+          data: input.renders.map((render) => ({
             ...render,
             aspectRatio: render.aspectRatio as Prisma.ClipRenderCreateManyInput["aspectRatio"],
-            workflowAttemptId: attempt.attemptId,
           })),
           skipDuplicates: true,
         });
       }
+
+      // The variants and their queued render run commit together. They are
+      // deliberately not assigned to the detection attempt: beginRenderWorkSet
+      // binds them to the render run, and markClipRenderVariantRendering binds
+      // each child to the render attempt that actually owns its mutation.
+      await this.lockAdmissionProject(tx, attempt.projectId);
+      const existing = await tx.workflowRun.findUnique({
+        where: {
+          projectId_idempotencyKey: {
+            projectId: attempt.projectId,
+            idempotencyKey: input.idempotencyKey,
+          },
+        },
+        select: { id: true },
+      });
+      if (existing) return { id: existing.id, created: false };
+
+      const active = await tx.workflowRun.findFirst({
+        where: {
+          projectId: attempt.projectId,
+          stage: "clip_rendering",
+          status: { in: ["queued", "running", "waiting"] },
+        },
+        select: { id: true },
+      });
+      if (active) return { id: active.id, created: false };
+
+      return this.admitWithinTransaction(tx, {
+        projectId: attempt.projectId,
+        idempotencyKey: input.idempotencyKey,
+        stage: "clip_rendering",
+        contentPackId: null,
+      });
     });
   }
 

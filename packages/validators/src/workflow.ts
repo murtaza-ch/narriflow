@@ -5,6 +5,7 @@ export const workflowStageSchema = z.enum([
   "ingest_queued",
   "ingest_downloading",
   "ingest_normalizing",
+  "ingest_retrying",
   "ingest_ready",
   "stt",
   "moment_detection",

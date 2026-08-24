@@ -371,3 +371,124 @@ test("ClipRenderAttempt cancellation drains to cleanup without persisting outcom
   expect(mutations).toEqual(["cleanup"]);
   expect(settlementCalls).toBe(0);
 });
+
+test("ClipRenderAttempt owns a fully deleted variant before permanently failing it", async () => {
+  const attempt: ClipRenderingWorkflowAttempt = {
+    workflowRunId: "10000000-0000-0000-0000-000000000011",
+    projectId: "20000000-0000-0000-0000-000000000012",
+    stage: "clip_rendering",
+    attemptId: "30000000-0000-0000-0000-000000000013",
+    attemptCount: 1,
+  };
+  const pendingRender = {
+    id: "variant-empty-cut",
+    clipId: "clip-empty-cut",
+    aspectRatio: "ratio_9_16",
+    resolution: "1080p",
+    exportVariantId: null,
+    exportVariant: null,
+    clipSnapshot: null,
+    clip: {
+      id: "clip-empty-cut",
+      index: 0,
+      startSec: 0,
+      endSec: 5,
+      llmModel: "test",
+      transcriptSlice: [],
+      deletedRanges: [{ startSec: 0, endSec: 5 }],
+      captionPreset: null,
+      studioEdits: null,
+      brollCues: null,
+      brollUrl: null,
+      category: "other",
+    },
+  } as unknown as PendingClipRender;
+  const mutations: string[] = [];
+  const expected: RenderWorkSetOutcome = {
+    status: "failed",
+    requested: 1,
+    succeeded: 0,
+    failed: 1,
+    superseded: 0,
+    followUpWorkflowRunId: null,
+  };
+  const clipRenderAttempt = new ClipRenderAttempt({
+    run: {
+      id: attempt.workflowRunId,
+      projectId: attempt.projectId,
+      project: {
+        title: "Fully deleted clip",
+        sourceStorageKey: `projects/${attempt.projectId}/source/input.mp4`,
+        sourceDurationSeconds: 5,
+        userId: "user",
+        workspaceId: null,
+      },
+    },
+    config: parseRenderConfig({
+      WORKER_RENDER_SOURCE_MODE: "download",
+      WORKER_AUTO_REFRAME: "0",
+      WORKER_LAYOUT_ENGINE: "0",
+      WORKER_SCREEN_LAYOUT: "0",
+      WORKER_SPLIT: "0",
+      WORKER_PIP_DETECT: "0",
+      WORKER_BROLL: "0",
+    }),
+    lifecycle: {
+      beginRenderWorkSet: async () => ({ variantIds: [pendingRender.id] }),
+      settleRenderWorkSet: async () => {
+        mutations.push("settle");
+        return expected;
+      },
+    },
+    adapters: {
+      process: {
+        execute: async ({ command }) =>
+          command === "ffprobe"
+            ? JSON.stringify({
+                streams: [
+                  { codec_type: "video", width: 1920, height: 1080 },
+                  { codec_type: "audio" },
+                ],
+              })
+            : "",
+      },
+      project: {
+        getUserPricingTier: async () => "pro",
+        getProjectBrandSnapshot: async () => null,
+        publishWorkflowProgress: async () => {},
+      },
+      clip: {
+        completeClipAutoLayoutAnalysis: async () => false,
+        completeClipRenderVariant: async () => ({ persisted: true }),
+        failClipRenderVariant: async (_id, code, disposition) => {
+          mutations.push(`fail:${code}:${disposition}`);
+        },
+        getPendingClipRendersForWorkSet: async () => [pendingRender],
+        markClipRenderVariantRendering: async (id) => {
+          mutations.push(`mark:${id}`);
+          return true;
+        },
+        setClipLayoutAnalysis: async () => {},
+      },
+      storage: { downloadObjectToFile: async () => {} },
+      workspace: {
+        mkdtemp: async () => "/tmp/narriflow-render-empty-cut",
+        rm: async () => mutations.push("cleanup"),
+      },
+      diagnose: () => {},
+    },
+  });
+
+  await expect(
+    clipRenderAttempt.execute({
+      attempt,
+      signal: new AbortController().signal,
+    }),
+  ).resolves.toEqual(expected);
+  expect(mutations).toEqual([
+    "mark:variant-empty-cut",
+    "fail:clip_cut_plan_empty:permanent",
+    "settle",
+    "cleanup",
+  ]);
+});

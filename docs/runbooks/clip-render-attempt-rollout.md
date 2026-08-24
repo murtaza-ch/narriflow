@@ -13,7 +13,9 @@ the same time. The additive schema remains in place during rollback.
 2. **Deploy dark.** Deploy the upgraded services, event dispatcher, worker
    adapters, and reconciliation command with
    `WORKER_CLIP_RENDER_ATTEMPT_ENABLED=0`. Existing render workers may remain
-   active during this step; upgraded workers do not claim render runs.
+   active during this step; upgraded workers do not claim render runs. The
+   variable defaults to enabled when omitted, so a dark deploy must set `0`
+   explicitly.
 3. **Verify adapters.** Run the worker contract tests and a project-scoped
    dry reconciliation:
    `bun test apps/worker/src/render-config.test.ts apps/worker/src/tasks/clip-render-attempt.test.ts apps/worker/src/render-object-reconciler.test.ts`

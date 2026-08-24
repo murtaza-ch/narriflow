@@ -4,30 +4,30 @@
 
 **Blocked by:** [01 — Establish durable Render Work Sets](01-establish-durable-render-work-sets.md).
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Specification:** [Deepen the Clip Render Attempt](../spec.md)
 
 ## Observable acceptance criteria
 
-- [ ] Aggregate counts are derived across the complete Render Work Set, including variants completed or permanently failed by earlier attempts.
-- [ ] Mixed surviving success and failure settles as a Partial Workflow Outcome without retrying failed variants inside that terminal run.
-- [ ] Zero success requeues when any causal failure is retryable and budget remains, fails immediately when all causal failures are permanent, and uses lifecycle retry exhaustion when budget is spent.
-- [ ] Requeue preserves completed and permanently failed variants while resetting only interrupted and retryable variants to pending.
-- [ ] Deleted or invalidated variants count as superseded rather than failed; an all-superseded set completes with zero artifacts.
-- [ ] Terminal settlement writes child disposition effects, run outcome and counts, terminal Workflow Event, and idempotent follow-up admission in one fenced transaction.
-- [ ] Late unassigned pending variants receive at most one follow-up run whose identifier is returned to the caller.
+- [x] Aggregate counts are derived across the complete Render Work Set, including variants completed or permanently failed by earlier attempts.
+- [x] Mixed surviving success and failure settles as a Partial Workflow Outcome without retrying failed variants inside that terminal run.
+- [x] Zero success requeues when any causal failure is retryable and budget remains, fails immediately when all causal failures are permanent, and uses lifecycle retry exhaustion when budget is spent.
+- [x] Requeue preserves completed and permanently failed variants while resetting only interrupted and retryable variants to pending.
+- [x] Deleted or invalidated variants count as superseded rather than failed; an all-superseded set completes with zero artifacts.
+- [x] Terminal settlement writes child disposition effects, run outcome and counts, terminal Workflow Event, and idempotent follow-up admission in one fenced transaction.
+- [x] Late unassigned pending variants receive at most one follow-up run whose identifier is returned to the caller.
 
 ## Public-interface and failure-injection tests
 
-- [ ] Database-backed tests drive settlement through the Workflow Run lifecycle interface and observe run, child, event, and follow-up records.
+- [x] Database-backed tests drive settlement through the Workflow Run lifecycle interface and observe run, child, event, and follow-up records.
 - [ ] Tests inject transaction failure before and after child settlement, aggregate update, event append, and follow-up admission; no partial combination commits.
 - [ ] Tests cover concurrent replay, unique-constraint contention, stale attempts, cross-attempt completion, permanent-plus-retryable mixes, and all terminal outcomes.
 
 ## Migration and mixed-version considerations
 
 - [ ] Settlement reads legacy null disposition conservatively only while the new path is disabled; new attempts always write a disposition for failures.
-- [ ] The follow-up idempotency key remains compatible with the existing one-live-render-run constraint.
+- [x] The follow-up idempotency key remains compatible with the existing one-live-render-run constraint.
 - [ ] No legacy worker may execute the new child-settlement semantics during rollout.
 
 ## Rollout and recovery safety

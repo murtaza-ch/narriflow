@@ -75,6 +75,20 @@ class IngestWorkerError extends Error {
   }
 }
 
+export function classifyYtdlpProviderFailure(
+  stderr: string,
+): { code: string; message: string } | null {
+  if (/HTTP Error 403\b|HTTP 403\b|403 Forbidden/i.test(stderr)) {
+    return {
+      code: "source_provider_access_denied",
+      message:
+        "The video provider refused the download. Upload the video file instead.",
+    };
+  }
+
+  return null;
+}
+
 function log(level: "info" | "error", message: string, context?: Record<string, unknown>) {
   console.log(
     JSON.stringify({
@@ -177,6 +191,23 @@ async function execCommand(
   });
 }
 
+async function execYtdlp(
+  args: string[],
+  options: { timeoutMs: number; acceptableExitCodes?: readonly number[] },
+) {
+  try {
+    return await execCommand("yt-dlp", args, options);
+  } catch (error) {
+    const classified = classifyYtdlpProviderFailure(
+      error instanceof Error ? error.message : String(error),
+    );
+    if (classified) {
+      throw new IngestWorkerError(classified.code, classified.message);
+    }
+    throw error;
+  }
+}
+
 // attemptCount is tracked at the job level (packages/db) but nothing here
 // ever retried within a single attempt — verified in production: a Google
 // Drive import died on "The socket connection was closed unexpectedly" with
@@ -201,6 +232,7 @@ const PERMANENT_INGEST_ERROR_CODES = new Set([
   "media_duration_unavailable",
   "worker_command_missing",
   "worker_command_timeout",
+  "source_provider_access_denied",
   "worker_invalid_payload",
 ]);
 
@@ -414,8 +446,7 @@ async function runYtdlpLinkDownload(
   try {
     const probeStartedAtMs = Date.now();
     const metadataOutput = await withTransientRetry("yt_dlp_metadata_probe", () =>
-      execCommand(
-        "yt-dlp",
+      execYtdlp(
         ["--dump-single-json", "--no-warnings", "--no-playlist", url],
         { timeoutMs: METADATA_PROBE_TIMEOUT_MS },
       ),
@@ -444,8 +475,7 @@ async function runYtdlpLinkDownload(
     // yt-dlp resumes/overwrites the same deterministic output path cleanly on
     // retry, so re-running the whole command on a transient failure is safe.
     const downloadOutput = await withTransientRetry("yt_dlp_download", () =>
-      execCommand(
-        "yt-dlp",
+      execYtdlp(
         [
           "--no-warnings",
           "--no-playlist",

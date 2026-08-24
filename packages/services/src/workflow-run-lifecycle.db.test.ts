@@ -1081,6 +1081,193 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     expect(await prisma.clip.count({ where: { projectId: project.id } })).toBe(0);
   });
 
+  test("a detection attempt atomically admits unowned auto-render work", async () => {
+    const { project } = await fixture("moment_detection");
+    const clip = await clipFixture(project.id, (
+      await prisma.workflowRun.findFirstOrThrow({
+        where: { projectId: project.id, stage: "moment_detection" },
+      })
+    ).id);
+    const lifecycle = new WorkflowRunLifecycle({
+      prisma,
+      leaseOwner: randomUUID(),
+    });
+    const attempt = await lifecycle.claim("moment_detection");
+    if (!attempt) throw new Error("moment-detection claim missing");
+
+    const admitted = await lifecycle.admitAutoRenderWork(attempt, {
+      idempotencyKey: `auto-render-${attempt.workflowRunId}`,
+      renders: [
+        {
+          clipId: clip.id,
+          aspectRatio: "ratio_9_16",
+          status: "pending",
+          resolution: "1080p",
+        },
+      ],
+    });
+
+    const [render, run] = await Promise.all([
+      prisma.clipRender.findFirstOrThrow({ where: { clipId: clip.id } }),
+      prisma.workflowRun.findUniqueOrThrow({ where: { id: admitted.id } }),
+    ]);
+    expect(run.stage).toBe("clip_rendering");
+    expect(run.status).toBe("queued");
+    expect(render.status).toBe("pending");
+    expect(render.workflowRunId).toBeNull();
+    expect(render.workflowAttemptId).toBeNull();
+  });
+
+  test("the production render claim ignores protocol-v1 rows", async () => {
+    const legacy = await fixture("clip_rendering");
+    await prisma.workflowRun.update({
+      where: { id: legacy.run.id },
+      data: { lifecycleVersion: 1 },
+    });
+    const current = await fixture("clip_rendering");
+
+    const claimed = await projectService.claimNextClipRenderAttempt();
+
+    expect(claimed?.id).toBe(current.run.id);
+    expect(claimed?.lifecycleVersion).toBe(2);
+    expect(claimed?.attemptId).not.toBeNull();
+    expect(
+      (await prisma.workflowRun.findUniqueOrThrow({
+        where: { id: legacy.run.id },
+      })).status,
+    ).toBe("queued");
+  });
+
+  test("export child completion settles its parent aggregate in the same lifecycle command", async () => {
+    const { project, run } = await fixture("clip_rendering");
+    const clip = await clipFixture(project.id, run.id);
+    const clipExport = await prisma.clipExport.create({
+      data: {
+        projectId: project.id,
+        clipId: clip.id,
+        editorRevision: 0,
+        fingerprint: randomUUID(),
+        resolution: "1080p",
+        watermark: false,
+      },
+    });
+    const exportVariant = await prisma.clipExportVariant.create({
+      data: {
+        exportId: clipExport.id,
+        aspectRatio: "ratio_9_16",
+        resolution: "1080p",
+        watermark: false,
+      },
+    });
+    const render = await prisma.clipRender.create({
+      data: {
+        clipId: clip.id,
+        aspectRatio: "ratio_9_16",
+        exportVariantId: exportVariant.id,
+      },
+    });
+    const { lifecycle, attempt } = await claimRenderAttempt();
+    await lifecycle.beginRenderWorkSet(attempt);
+    await lifecycle.markClipRenderVariantRendering(attempt, {
+      clipRenderId: render.id,
+      exportVariantId: exportVariant.id,
+      startedAt: new Date(),
+    });
+
+    expect(
+      await prisma.clipExport.findUniqueOrThrow({ where: { id: clipExport.id } }),
+    ).toMatchObject({ status: "rendering", progress: 5 });
+
+    await lifecycle.completeClipRenderVariant(attempt, {
+      clipRenderId: render.id,
+      exportVariantId: exportVariant.id,
+      storageKey: "projects/test/exports/completed.mp4",
+      sizeBytes: 100,
+      durationSec: 5,
+      completedAt: new Date(),
+    });
+
+    expect(
+      await prisma.clipExport.findUniqueOrThrow({ where: { id: clipExport.id } }),
+    ).toMatchObject({
+      status: "ready",
+      progress: 100,
+      errorCode: null,
+      completedAt: expect.any(Date),
+    });
+  });
+
+  test("concurrent export child completions serialize parent aggregate settlement", async () => {
+    const { project, run } = await fixture("clip_rendering");
+    const clip = await clipFixture(project.id, run.id);
+    const clipExport = await prisma.clipExport.create({
+      data: {
+        projectId: project.id,
+        clipId: clip.id,
+        editorRevision: 0,
+        fingerprint: randomUUID(),
+        resolution: "1080p",
+        watermark: false,
+      },
+    });
+    const exportVariants = await Promise.all(
+      (["ratio_9_16", "ratio_1_1"] as const).map((aspectRatio) =>
+        prisma.clipExportVariant.create({
+          data: {
+            exportId: clipExport.id,
+            aspectRatio,
+            resolution: "1080p",
+            watermark: false,
+          },
+        }),
+      ),
+    );
+    const renders = await Promise.all(
+      exportVariants.map((variant) =>
+        prisma.clipRender.create({
+          data: {
+            clipId: clip.id,
+            aspectRatio: variant.aspectRatio,
+            exportVariantId: variant.id,
+          },
+        }),
+      ),
+    );
+    const { lifecycle, attempt } = await claimRenderAttempt();
+    await lifecycle.beginRenderWorkSet(attempt);
+    await Promise.all(
+      renders.map((render, index) =>
+        lifecycle.markClipRenderVariantRendering(attempt, {
+          clipRenderId: render.id,
+          exportVariantId: exportVariants[index]!.id,
+          startedAt: new Date(),
+        }),
+      ),
+    );
+
+    await Promise.all(
+      renders.map((render, index) =>
+        lifecycle.completeClipRenderVariant(attempt, {
+          clipRenderId: render.id,
+          exportVariantId: exportVariants[index]!.id,
+          storageKey: `projects/test/exports/concurrent-${index}.mp4`,
+          sizeBytes: 100,
+          durationSec: 5,
+          completedAt: new Date(),
+        }),
+      ),
+    );
+
+    expect(
+      await prisma.clipExport.findUniqueOrThrow({ where: { id: clipExport.id } }),
+    ).toMatchObject({
+      status: "ready",
+      progress: 100,
+      errorCode: null,
+      completedAt: expect.any(Date),
+    });
+  });
+
   test("a child command rejects an attempt ref with the wrong project", async () => {
     const { user, run } = await fixture("moment_detection");
     const otherProject = await prisma.project.create({

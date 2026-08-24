@@ -4,20 +4,20 @@
 
 **Blocked by:** [03 — Deliver render notifications through Workflow Events](03-deliver-render-notifications-through-workflow-events.md); [07 — Preserve all core render paths and resume semantics](07-preserve-core-render-paths-and-resume-semantics.md); [08 — Preserve optional-asset fallbacks inside the Clip Render Attempt](08-preserve-optional-asset-fallbacks.md); [09 — Preserve framing and media-analysis paths](09-preserve-framing-and-media-analysis-paths.md); [10 — Add safe orphaned-render-object reconciliation](10-add-safe-orphaned-render-object-reconciliation.md).
 
-**Status:** ready-for-agent
+**Status:** in-progress
 
 **Specification:** [Deepen the Clip Render Attempt](../spec.md)
 
 ## Observable acceptance criteria
 
-- [ ] Worker startup parses all render environment inputs once into immutable validated configuration with current defaults.
-- [ ] Invalid numeric or enum values fail startup; literal `0` preserves every current kill switch; accepted nonstandard values warn; upload concurrency defaults to two and caps at four; every deadline is finite and positive.
-- [ ] The worker caller invokes only `ClipRenderAttempt.execute` for protocol-version-2 clip-rendering work and treats `WorkflowAttemptLost` only as control flow.
+- [x] Worker startup parses all render environment inputs once into immutable validated configuration with current defaults.
+- [x] Invalid numeric or enum values fail startup; literal `0` preserves every current kill switch; accepted nonstandard values warn; upload concurrency defaults to two and caps at four; every deadline is finite and positive.
+- [x] The worker caller invokes only `ClipRenderAttempt.execute` for protocol-version-2 clip-rendering work and treats `WorkflowAttemptLost` only as control flow.
 - [ ] Legacy asset, command, upload, persistence, settlement, notification, and cleanup sequencing is removed after equivalent interface coverage exists.
 - [ ] Production process, storage, media, persistence, workspace, clock, diagnostic, and notification adapters pass contract tests.
 - [ ] Structured success, partial, terminal failure, requeue, ownership loss, stale completion, follow-up, notification retry, cleanup failure, and orphan-recovery diagnostics contain stable fields and no secrets.
 - [ ] The full render behavior matrix preserves existing output probes and fallbacks; export-bound watermark uses its persisted value.
-- [ ] Operational documentation gives exact migrate, dark-deploy, drain, enable, observe, rollback-drain, disable, and reconcile steps.
+- [x] Operational documentation gives exact migrate, dark-deploy, drain, enable, observe, rollback-drain, disable, and reconcile steps.
 
 ## Public-interface and failure-injection tests
 
