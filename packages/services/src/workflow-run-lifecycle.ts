@@ -1733,21 +1733,26 @@ export class WorkflowRunLifecycle {
           variant.status === "failed" &&
           variant.failureDisposition === "permanent",
       );
+      const settledFailed = variants.filter(
+        (variant) =>
+          variant.status === "failed" &&
+          variant.failureDisposition !== "retryable",
+      );
       const retryable = variants.filter(
         (variant) =>
           variant.status === "pending" ||
           variant.status === "rendering" ||
           (variant.status === "failed" &&
-            variant.failureDisposition !== "permanent"),
+            variant.failureDisposition === "retryable"),
       );
       const superseded = Math.max(0, requested - variants.length);
-      const failed = variants.length - succeeded;
       const shouldRequeue =
         succeeded === 0 &&
         retryable.length > 0 &&
         run.attemptCount < WORKFLOW_MAX_ATTEMPTS;
 
       if (shouldRequeue) {
+        const settledFailedCount = settledFailed.length;
         const databaseNow = await this.databaseNow(tx);
         await tx.clipRender.updateMany({
           where: { id: { in: retryable.map((variant) => variant.id) } },
@@ -1795,7 +1800,7 @@ export class WorkflowRunLifecycle {
             ),
             requestedCount: requested,
             succeededCount: succeeded,
-            failedCount: failed,
+            failedCount: settledFailedCount,
           },
         });
         await this.appendEvent(tx, {
@@ -1812,7 +1817,7 @@ export class WorkflowRunLifecycle {
           status: "requeued",
           requested,
           succeeded,
-          failed,
+          failed: settledFailedCount,
           superseded,
           followUpWorkflowRunId: null,
         };
@@ -2208,7 +2213,6 @@ export class WorkflowRunLifecycle {
                   status: "failed" as const,
                   failureDisposition: "retryable",
                 },
-                { status: "failed" as const, failureDisposition: null },
               ],
             }
           : {

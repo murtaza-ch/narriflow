@@ -4,7 +4,7 @@
 
 **Blocked by:** [01 — Establish durable Render Work Sets](01-establish-durable-render-work-sets.md).
 
-**Status:** in-progress
+**Status:** completed
 
 **Specification:** [Deepen the Clip Render Attempt](../spec.md)
 
@@ -21,24 +21,30 @@
 ## Public-interface and failure-injection tests
 
 - [x] Database-backed tests drive settlement through the Workflow Run lifecycle interface and observe run, child, event, and follow-up records.
-- [ ] Tests inject transaction failure before and after child settlement, aggregate update, event append, and follow-up admission; no partial combination commits.
-- [ ] Tests cover concurrent replay, unique-constraint contention, stale attempts, cross-attempt completion, permanent-plus-retryable mixes, and all terminal outcomes.
+- [x] Tests inject transaction failure before and after child settlement, aggregate update, event append, and follow-up admission; no partial combination commits.
+- [x] Tests cover concurrent replay, unique-constraint contention, stale attempts, cross-attempt completion, permanent-plus-retryable mixes, and all terminal outcomes.
 
 ## Migration and mixed-version considerations
 
-- [ ] Settlement reads legacy null disposition conservatively only while the new path is disabled; new attempts always write a disposition for failures.
+- [x] Settlement reads legacy null disposition conservatively only while the new path is disabled; new attempts always write a disposition for failures.
 - [x] The follow-up idempotency key remains compatible with the existing one-live-render-run constraint.
-- [ ] No legacy worker may execute the new child-settlement semantics during rollout.
+- [x] No legacy worker may execute the new child-settlement semantics during rollout.
 
 ## Rollout and recovery safety
 
-- [ ] The behavior is dark-deployed and exercised by database tests before render cutover.
-- [ ] Replaying terminal settlement after an ambiguous database response is idempotent and cannot duplicate a run or event.
+- [x] The behavior is dark-deployed and exercised by database tests before render cutover.
+- [x] Replaying terminal settlement after an ambiguous database response is idempotent and cannot duplicate a run or event.
 
 ## Scope boundaries
 
-- [ ] Do not change lifecycle ownership, retry limits, backoff policy, or non-render stages.
-- [ ] Do not introduce clip-group claiming, dynamic mid-attempt adoption, new statuses, or render execution code.
+- [x] Do not change lifecycle ownership, retry limits, backoff policy, or non-render stages.
+- [x] Do not introduce clip-group claiming, dynamic mid-attempt adoption, new statuses, or render execution code.
+
+## Completion evidence
+
+- Commit `70d3fad` kept the render-attempt worker path disabled by default while database contracts for partial, superseded, exhaustion, and terminal-reaping outcomes were already present; the default-enabled cutover followed in `b003c05`.
+- On 2026-08-24, the isolated PostgreSQL lifecycle suite passed 50 tests with 162 assertions, including eight BEFORE/AFTER transaction failpoints and deterministic concurrent replay serialization.
+- On 2026-08-24, uncached repository verification passed all 33 test/typecheck/lint tasks and all 11 production-build tasks, including 52 Next.js routes.
 
 ## Fresh-task handoff
 
