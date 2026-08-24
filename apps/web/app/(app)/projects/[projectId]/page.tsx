@@ -31,6 +31,7 @@ import {
 } from "@narriflow/validators";
 import { ProjectEvents } from "./project-events";
 import { ProjectEventsProvider } from "./project-events-provider";
+import { PipelineStepper } from "./pipeline-stepper";
 import { ingestRecoveryAction } from "@/lib/project-state";
 import { ProjectTabs, TabCountBadge } from "./project-tabs";
 import { ProcessingPanel } from "./processing-panel";
@@ -54,121 +55,15 @@ import { gradientForId } from "../_lib/gradient";
 import { formatDate, formatDuration } from "@/lib/format";
 import {
   deriveProjectPipelineStates,
-  pipelineStepStateWord,
-  type PipelineStepState,
+  type PipelineStepView,
   type ProcessingStageInput,
 } from "@/lib/project-state";
 import { Stack, Box, Text, Flex, Tabs } from "@chakra-ui/react";
-import { AlertTriangle, ArrowLeft, Check, Film, Info, Link2 } from "lucide-react";
-
-type StepState = PipelineStepState;
-
-const STEP_COLORS: Record<
-  StepState,
-  { node: string; index: string; label: string }
-> = {
-  done: { node: "success.solid", index: "success.fg", label: "fg.muted" },
-  active: { node: "accent.solid", index: "accent.fg", label: "accent.fg" },
-  failed: { node: "danger.solid", index: "danger.fg", label: "danger.fg" },
-  todo: { node: "border.emphasized", index: "fg.subtle", label: "fg.subtle" },
-};
-
-/**
- * Drawn pipeline stepper — 18px numbered nodes (check circles once done),
- * 11px labels beside them, hairline connectors between steps. State is
- * never hue alone: done carries a check glyph and active/failed carry a
- * mono state word.
- */
-function PipelineStepper({
-  steps,
-}: {
-  steps: Array<{ label: string; state: StepState; status?: string | null }>;
-}) {
-  return (
-    <Flex
-      as="ol"
-      align="center"
-      w="full"
-      aria-label="Pipeline progress"
-      listStyleType="none"
-      m="0"
-      p="0"
-      rowGap="2.5"
-      columnGap="0"
-      wrap="wrap"
-    >
-      {steps.map((step, index) => {
-        const colors = STEP_COLORS[step.state];
-        const stateWord = pipelineStepStateWord(step.state, step.status);
-        const isLast = index === steps.length - 1;
-        return (
-          <Flex
-            key={step.label}
-            as="li"
-            align="center"
-            flex={isLast ? "0 0 auto" : "1 1 auto"}
-            minW="0"
-          >
-            <Flex align="center" gap="2" flexShrink={0}>
-              <Flex
-                w="18px"
-                h="18px"
-                align="center"
-                justify="center"
-                borderRadius="full"
-                borderWidth="1.5px"
-                borderColor={colors.node}
-                bg={step.state === "done" ? "success.subtle" : "transparent"}
-                flexShrink={0}
-              >
-                {step.state === "done" ? (
-                  <Box asChild color="success.fg" aria-label="complete">
-                    <Check size={10} strokeWidth={3} />
-                  </Box>
-                ) : (
-                  <Text
-                    textStyle="data"
-                    fontSize="10px"
-                    lineHeight="1"
-                    color={colors.index}
-                  >
-                    {index + 1}
-                  </Text>
-                )}
-              </Flex>
-              <Text
-                fontSize="11px"
-                fontWeight="500"
-                lineHeight="1.2"
-                color={colors.label}
-              >
-                {step.label}
-              </Text>
-              {stateWord && (
-                <Text
-                  textStyle="data"
-                  fontSize="10px"
-                  lineHeight="1.2"
-                  color={colors.label}
-                >
-                  · {stateWord}
-                </Text>
-              )}
-            </Flex>
-            {!isLast && (
-              <Box flex="1" h="1px" bg="border" mx="3" minW="12px" />
-            )}
-          </Flex>
-        );
-      })}
-    </Flex>
-  );
-}
+import { AlertTriangle, ArrowLeft, Film, Info, Link2 } from "lucide-react";
 
 function linkProviderLabel(sourceProvider: string | null | undefined): string {
   return LINK_PROVIDERS.find((p) => p.id === sourceProvider)?.label ?? "Link";
 }
-
 function SourceThumb({
   projectId,
   title,
@@ -438,11 +333,7 @@ export default async function ProjectDetailPage({
       ? ingestInProgress || isIngestFailed || runInFlight || runFailed || quotaBlockedMidFlight
       : renderGatesProcessingPanel && !renderStageSucceeded);
 
-  const steps: Array<{
-    label: string;
-    state: StepState;
-    status?: string | null;
-  }> = [
+  const steps: PipelineStepView[] = [
     {
       label: "Ingest",
       state:
@@ -504,6 +395,11 @@ export default async function ProjectDetailPage({
   // container was too narrow.
   return (
     <Stack gap="8" maxW="1240px" mx="auto" w="full">
+      <ProjectEventsProvider
+        projectId={projectId}
+        initialSeq={snapshot.lastSeq}
+        initialEvents={workflowHistory}
+      >
       {/* Vizard-style workspace bar: the sidebar is suppressed on open
           projects (see AppChrome), so this row is the navigation — back
           arrow + title + status meta left, destructive action right. */}
@@ -596,7 +492,10 @@ export default async function ProjectDetailPage({
         </MediaWell>
 
         <Stack flex="1" minW="0" gap="3">
-          <PipelineStepper steps={steps} />
+          <PipelineStepper
+            steps={steps}
+            workflowRunId={activeRun?.workflowRunId ?? null}
+          />
           {isSourceExpired && (
             <Flex align="center" gap="2" color="fg.muted">
               <Info size={13} aria-hidden />
@@ -646,12 +545,7 @@ export default async function ProjectDetailPage({
       {/* Workspace tabs — URL-driven (?tab=); SSE stream shared via
           ProjectEventsProvider so the Clips-tab processing checklist and the
           Activity tab consume the same EventSource (no second connection). */}
-      <ProjectEventsProvider
-        projectId={projectId}
-        initialSeq={snapshot.lastSeq}
-        initialEvents={workflowHistory}
-      >
-        <ProjectTabs clipsCountBadge={<TabCountBadge count={clips.length} />}>
+      <ProjectTabs clipsCountBadge={<TabCountBadge count={clips.length} />}>
         {/* CLIPS — processing panel while a run/ingest is in flight, ranked
             results once clips exist, legacy step cards otherwise. */}
         <Tabs.Content value="clips" pt="6">
@@ -884,7 +778,7 @@ export default async function ProjectDetailPage({
         <Tabs.Content value="activity" pt="6">
           <ProjectEvents />
         </Tabs.Content>
-        </ProjectTabs>
+      </ProjectTabs>
       </ProjectEventsProvider>
     </Stack>
   );

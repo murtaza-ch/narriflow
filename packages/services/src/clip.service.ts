@@ -2857,6 +2857,101 @@ export class ClipService {
   }
 
   /**
+   * Resolves the initial clip-row previews in one database read and one HTTP
+   * response. Browsers otherwise queue ten independent same-origin requests
+   * behind their per-origin connection limit, making later rows wait for
+   * multiple database-latency waves before they can paint.
+   */
+  async getProjectClipPreviewUrls(
+    userId: string,
+    projectId: string,
+    aspectRatio: ClipAspectRatio = "9:16",
+  ): Promise<{
+    previews: Record<
+      string,
+      | {
+          downloadUrl: string;
+          expiresInSeconds: number;
+          fileName: string;
+          isPreviewProxy?: boolean;
+          previewStartSec?: number;
+        }
+      | null
+    >;
+  }> {
+    const prisma = requirePrisma();
+    const aspectRatioDb = clipAspectRatioToDb[aspectRatio];
+    const clips = await prisma.clip.findMany({
+      where: {
+        projectId,
+        project: { userId, ...accessibleProjectWhere() },
+      },
+      orderBy: { index: "asc" },
+      select: {
+        id: true,
+        index: true,
+        category: true,
+        previewStorageKey: true,
+        previewStartSec: true,
+        renders: {
+          where: {
+            aspectRatio: aspectRatioDb,
+            exportVariantId: null,
+          },
+          orderBy: { createdAt: "desc" },
+          take: 1,
+          select: {
+            status: true,
+            storageKey: true,
+          },
+        },
+      },
+    });
+
+    const previews = await Promise.all(
+      clips.map(async (clip) => {
+        const render = clip.renders[0];
+        if (render?.status === "completed" && render.storageKey) {
+          const slug = aspectRatioSlug.get(aspectRatio) ?? "9x16";
+          const fileName = `clip-${clip.index + 1}-${clip.category}-${slug}.mp4`;
+          return [
+            clip.id,
+            {
+              downloadUrl: await presignDownloadUrl({
+                key: render.storageKey,
+                fileName,
+              }),
+              expiresInSeconds: 3600,
+              fileName,
+            },
+          ] as const;
+        }
+
+        if (clip.previewStorageKey) {
+          const fileName = `clip-${clip.index + 1}-preview.mp4`;
+          return [
+            clip.id,
+            {
+              downloadUrl: await presignDownloadUrl({
+                key: clip.previewStorageKey,
+                fileName,
+              }),
+              expiresInSeconds: 3600,
+              fileName,
+              isPreviewProxy: true as const,
+              previewStartSec: clip.previewStartSec ?? 0,
+            },
+          ] as const;
+        }
+
+        return [clip.id, null] as const;
+      }),
+    );
+
+    return { previews: Object.fromEntries(previews) };
+  }
+
+  /**
    * Resolves a presigned URL for a clip's preview proxy (if one has been
    * generated yet) for the studio editor. Returns nulls when no proxy
    * exists so the caller can fall back to the full source. Kept separate

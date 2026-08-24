@@ -30,6 +30,12 @@ import {
   Scissors,
 } from "lucide-react";
 import { formatDuration, formatTimecode } from "@/lib/format";
+import {
+  clipFileDownloadPath,
+  clipMediaPayloadForClip,
+  clipMediaDescriptorFromPayload,
+  loadClipPreview,
+} from "@/lib/clip-media";
 import { ClipActionsMenu } from "./clip-actions-menu";
 
 const platformLabels = [
@@ -66,17 +72,6 @@ function apiErrorCopy(payload: unknown, fallback: string): string {
     readPayloadString(payload, "message") ??
     fallback
   );
-}
-
-function downloadUrlFromPayload(payload: unknown): string | null {
-  const value = readPayloadString(payload, "downloadUrl");
-  if (!value) return null;
-  try {
-    const url = new URL(value);
-    return url.protocol === "https:" || url.protocol === "http:" ? value : null;
-  } catch {
-    return null;
-  }
 }
 
 function isRenderQueueResponse(payload: unknown): boolean {
@@ -296,7 +291,6 @@ export function ClipRow({ clip, projectId, rank, compact, selected, onToggleSele
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewPending, setPreviewPending] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
-  const [downloading, setDownloading] = useState(false);
   const [queuedAspectRatios, setQueuedAspectRatios] = useState<ClipAspectRatio[]>([]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: reset only when the clip identity or render variants change.
@@ -329,13 +323,12 @@ export function ClipRow({ clip, projectId, rank, compact, selected, onToggleSele
       setPreviewError(null);
       setPreviewPending(false);
       try {
-        const response = await fetch(
-          `/api/projects/${clip.projectId}/clips/${clip.id}/download?aspectRatio=${encodeURIComponent(selectedAspectRatio)}`,
+        const result = await loadClipPreview(
+          `/api/projects/${clip.projectId}/clips/previews?aspectRatio=${encodeURIComponent(selectedAspectRatio)}`,
         );
-        const payload: unknown = await response.json().catch(() => null);
 
-        if (!response.ok) {
-          const message = readPayloadString(payload, "message");
+        if (!result.ok) {
+          const message = readPayloadString(result.payload, "message");
           if (
             message === "clip render not found" ||
             message === "clip has not been rendered for this aspect ratio"
@@ -346,16 +339,27 @@ export function ClipRow({ clip, projectId, rank, compact, selected, onToggleSele
             }
             return;
           }
-          console.error("clip_preview_load_failed", response.status);
+          console.error("clip_preview_load_failed", result.status);
           if (!cancelled) {
             setPreviewUrl(null);
-            setPreviewError(apiErrorCopy(payload, "Could not load this preview."));
+            setPreviewError(
+              apiErrorCopy(result.payload, "Could not load this preview."),
+            );
           }
           return;
         }
 
-        const downloadUrl = downloadUrlFromPayload(payload);
-        if (!downloadUrl) {
+        const payload = clipMediaPayloadForClip(result.payload, clip.id);
+        if (!payload) {
+          if (!cancelled) {
+            setPreviewUrl(null);
+            setPreviewPending(true);
+          }
+          return;
+        }
+
+        const descriptor = clipMediaDescriptorFromPayload(payload);
+        if (!descriptor) {
           console.error("clip_preview_load_failed_invalid_response");
           if (!cancelled) {
             setPreviewUrl(null);
@@ -365,20 +369,9 @@ export function ClipRow({ clip, projectId, rank, compact, selected, onToggleSele
         }
 
         if (!cancelled) {
-          const isProxy =
-            payload !== null &&
-            typeof payload === "object" &&
-            (payload as Record<string, unknown>).isPreviewProxy === true;
-          const rawOffset =
-            payload !== null && typeof payload === "object"
-              ? (payload as Record<string, unknown>).previewStartSec
-              : undefined;
-
-          setPreviewUrl(downloadUrl);
-          setPreviewIsProxy(isProxy);
-          setPreviewOffsetSec(
-            typeof rawOffset === "number" && Number.isFinite(rawOffset) ? rawOffset : 0,
-          );
+          setPreviewUrl(descriptor.downloadUrl);
+          setPreviewIsProxy(descriptor.isPreviewProxy);
+          setPreviewOffsetSec(descriptor.previewStartSec);
         }
       } catch {
         console.error("clip_preview_load_failed");
@@ -451,30 +444,6 @@ export function ClipRow({ clip, projectId, rank, compact, selected, onToggleSele
     });
     if (!confirmed) return;
     await queueRender(aspectRatio);
-  }
-
-  async function handleDownload() {
-    if (downloading) return;
-    setDownloading(true);
-    setActionError(null);
-    try {
-      const response = await fetch(
-        `/api/projects/${clip.projectId}/clips/${clip.id}/download?aspectRatio=${encodeURIComponent(selectedAspectRatio)}`,
-      );
-      const payload: unknown = await response.json().catch(() => null);
-      const downloadUrl = downloadUrlFromPayload(payload);
-      if (!response.ok || !downloadUrl) {
-        console.error("clip_download_failed", response.status);
-        setActionError(apiErrorCopy(payload, "Could not prepare this download."));
-        return;
-      }
-      window.location.assign(downloadUrl);
-    } catch {
-      console.error("clip_download_failed");
-      setActionError("Could not prepare this download.");
-    } finally {
-      setDownloading(false);
-    }
   }
 
   const studioHref = `/projects/${clip.projectId}/clips/${clip.id}/studio`;
@@ -858,9 +827,18 @@ export function ClipRow({ clip, projectId, rank, compact, selected, onToggleSele
             )}
 
             {selectedVariantHasAsset ? (
-              <Button size="xs" variant="outline" disabled={downloading} onClick={handleDownload}>
-                {downloading ? <Spinner size="xs" /> : <Download size={12} />}
-                <Text ms="1">{downloading ? "Preparing…" : "Download"}</Text>
+              <Button size="xs" variant="outline" asChild>
+                <a
+                  href={clipFileDownloadPath(
+                    clip.projectId,
+                    clip.id,
+                    selectedAspectRatio,
+                  )}
+                  download
+                >
+                  <Download size={12} />
+                  <Text ms="1">Download</Text>
+                </a>
               </Button>
             ) : (
               <Button

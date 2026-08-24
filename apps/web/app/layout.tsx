@@ -141,7 +141,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       data-scroll-behavior="smooth"
       suppressHydrationWarning
     >
-      <head>
+      <body suppressHydrationWarning>
         <Script id="narriflow-theme" strategy="beforeInteractive">
           {`(() => {
             try {
@@ -156,8 +156,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             } catch {}
           })();`}
         </Script>
-      </head>
-      <body suppressHydrationWarning>
         <Provider>
           <ClerkProvider>{children}</ClerkProvider>
           <Toaster />

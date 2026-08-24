@@ -38,6 +38,46 @@ export function workflowStageLabel(stage: string): string {
 
 export type PipelineStepState = "done" | "active" | "failed" | "todo";
 
+export interface PipelineStepView {
+  label: string;
+  state: PipelineStepState;
+  status?: string | null;
+}
+
+const PIPELINE_STEP_LIVE_STAGE: Partial<Record<string, string>> = {
+  Transcribe: "stt",
+  Detect: "moment_detection",
+  Render: "clip_rendering",
+};
+
+/**
+ * Projects fresh SSE state into the compact header stepper. Events are fenced
+ * to the server snapshot's current Workflow Run so terminal history from an
+ * older render cannot overwrite a newer attempt's state.
+ */
+export function mergePipelineStepsWithLiveEvents(
+  steps: PipelineStepView[],
+  latestByStage: Record<string, WorkflowStageUpdatedEvent>,
+  workflowRunId: string | null,
+): PipelineStepView[] {
+  if (!workflowRunId) return steps;
+
+  return steps.map((step) => {
+    const stage = PIPELINE_STEP_LIVE_STAGE[step.label];
+    const live = stage ? latestByStage[stage] : undefined;
+    if (!live || live.workflowRunId !== workflowRunId) return step;
+
+    const state: PipelineStepState =
+      live.status === "completed" || live.status === "partial"
+        ? "done"
+        : live.status === "failed"
+          ? "failed"
+          : "active";
+
+    return { ...step, state, status: live.status };
+  });
+}
+
 export function pipelineStepStateWord(
   state: PipelineStepState,
   workflowStatus?: string | null,
@@ -92,6 +132,41 @@ export function workflowTerminalEventIdentity(
   event: Pick<WorkflowStageUpdatedEvent, "workflowRunId" | "seq">,
 ): string {
   return `${event.workflowRunId}:${event.seq}`;
+}
+
+function workflowActivityStateIdentity(event: WorkflowStageUpdatedEvent): string {
+  return [
+    event.workflowRunId,
+    event.stage,
+    event.status,
+    event.progress,
+    event.errorCode ?? "",
+  ].join(":");
+}
+
+/**
+ * Converts durable workflow events into user-visible Activity milestones.
+ * A render child completion and its aggregate progress event can describe the
+ * exact same state; adjacent duplicates collapse to the later timestamp while
+ * events from separate runs remain distinct.
+ */
+export function projectActivityRows(
+  events: WorkflowStageUpdatedEvent[],
+): WorkflowStageUpdatedEvent[] {
+  const collapsed: WorkflowStageUpdatedEvent[] = [];
+  for (const event of [...events].sort((left, right) => left.seq - right.seq)) {
+    const previous = collapsed.at(-1);
+    if (
+      previous &&
+      workflowActivityStateIdentity(previous) ===
+        workflowActivityStateIdentity(event)
+    ) {
+      collapsed[collapsed.length - 1] = event;
+    } else {
+      collapsed.push(event);
+    }
+  }
+  return collapsed.reverse();
 }
 
 /**

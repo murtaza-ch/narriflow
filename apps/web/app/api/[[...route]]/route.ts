@@ -2620,6 +2620,45 @@ app.get("/projects/:id/dubs/:dubId/download", async (c) => {
   }
 });
 
+app.get("/projects/:id/clips/previews", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+
+  const projectId = c.req.param("id");
+  const access = await projectService.getProjectAccess(
+    appUser.actorUserId,
+    projectId,
+    appUser.workspaceId,
+  );
+  if (access === "missing") return c.json({ error: "Project not found" }, 404);
+  if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
+
+  const parsedQuery = clipDownloadQuerySchema.safeParse({
+    aspectRatio:
+      new URL(c.req.url).searchParams.get("aspectRatio") ?? undefined,
+  });
+  if (!parsedQuery.success) {
+    return c.json(
+      { error: "Invalid query", issues: parsedQuery.error.issues },
+      400,
+    );
+  }
+
+  try {
+    const result = await clipService.getProjectClipPreviewUrls(
+      appUser.id,
+      projectId,
+      parsedQuery.data.aspectRatio,
+    );
+    return c.json(result, 200);
+  } catch (error) {
+    return c.json(
+      { error: "clip_preview_load_failed", message: errorMessage(error) },
+      400,
+    );
+  }
+});
+
 app.get("/projects/:id/clips/:clipId/download", async (c) => {
   const appUser = await getCurrentAppUser();
 
@@ -2663,6 +2702,46 @@ app.get("/projects/:id/clips/:clipId/download", async (c) => {
       parsedQuery.data.aspectRatio,
     );
     return c.json(result, 200);
+  } catch (error) {
+    return c.json(
+      { error: "clip_download_failed", message: errorMessage(error) },
+      400,
+    );
+  }
+});
+
+app.get("/projects/:id/clips/:clipId/file", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+
+  const projectId = c.req.param("id");
+  const access = await projectService.getProjectAccess(
+    appUser.actorUserId,
+    projectId,
+    appUser.workspaceId,
+  );
+  if (access === "missing") return c.json({ error: "Project not found" }, 404);
+  if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
+
+  const parsedQuery = clipDownloadQuerySchema.safeParse({
+    aspectRatio:
+      new URL(c.req.url).searchParams.get("aspectRatio") ?? undefined,
+  });
+  if (!parsedQuery.success) {
+    return c.json(
+      { error: "Invalid query", issues: parsedQuery.error.issues },
+      400,
+    );
+  }
+
+  try {
+    const result = await clipService.getClipDownloadUrl(
+      appUser.id,
+      projectId,
+      c.req.param("clipId"),
+      parsedQuery.data.aspectRatio,
+    );
+    return c.redirect(result.downloadUrl, 302);
   } catch (error) {
     return c.json(
       { error: "clip_download_failed", message: errorMessage(error) },

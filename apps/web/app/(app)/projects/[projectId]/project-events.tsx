@@ -6,7 +6,11 @@ import { StatusBadge } from "@narriflow/ui/components/status-badge";
 import { userErrorMessage } from "@narriflow/validators";
 import { AlertTriangle } from "lucide-react";
 import { formatDateTime } from "@/lib/format";
-import { PROJECT_EVENT_ROW_LIMIT, workflowStageLabel } from "@/lib/project-state";
+import {
+  PROJECT_EVENT_ROW_LIMIT,
+  projectActivityRows,
+  workflowStageLabel,
+} from "@/lib/project-state";
 import { useProjectEvents } from "./project-events-provider";
 
 function stripeFor(status: string): string {
@@ -36,7 +40,7 @@ export function ProjectEvents() {
   // State stays ascending (cheap append + dedup by seq); the list renders
   // newest-first so the user lands on the freshest event instead of having to
   // scroll past stale rows to find what just happened.
-  const rows = useMemo(() => [...events].reverse(), [events]);
+  const rows = useMemo(() => projectActivityRows(events), [events]);
 
   return (
     <Box layerStyle="band">
@@ -54,7 +58,7 @@ export function ProjectEvents() {
           </Box>
         </Flex>
 
-        {events.length === 0 ? (
+        {rows.length === 0 ? (
           <Flex align="center" gap="2" py="2">
             {/* Static accent dot — an open channel, not a blinking light */}
             <Box w="6px" h="6px" borderRadius="2px" bg="accent.solid" />

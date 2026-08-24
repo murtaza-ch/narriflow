@@ -4,8 +4,10 @@ import {
   deriveProjectPipelineStates,
   ingestRecoveryAction,
   liveIngestStageWord,
+  mergePipelineStepsWithLiveEvents,
   parseWorkflowEventMessage,
   pipelineStepStateWord,
+  projectActivityRows,
   rememberBoundedIdentity,
   workflowEventRowIdentity,
   workflowTerminalEventIdentity,
@@ -88,6 +90,30 @@ describe("workflow event state", () => {
       workflowEventRowIdentity(second),
       workflowEventRowIdentity(third),
     ]);
+  });
+
+  test("collapses duplicate render milestones but preserves distinct runs", () => {
+    const progress = {
+      ...workflowEvent(FIRST_RUN_ID, 1),
+      status: "running" as const,
+      progress: 18,
+    };
+    const childCompleted = { ...progress, seq: 2 };
+    const nextMilestone = { ...progress, seq: 3, progress: 26 };
+    const anotherRun = {
+      ...progress,
+      workflowRunId: SECOND_RUN_ID,
+      seq: 4,
+    };
+
+    expect(
+      projectActivityRows([
+        progress,
+        childCompleted,
+        nextMilestone,
+        anotherRun,
+      ]).map((event) => event.seq),
+    ).toEqual([4, 3, 2]);
   });
 });
 
@@ -175,6 +201,42 @@ describe("project pipeline state", () => {
 });
 
 describe("pipeline status copy", () => {
+  test("advances adjacent header stages from the same live workflow run", () => {
+    const sttCompleted = {
+      ...workflowEvent(FIRST_RUN_ID, 8),
+      stage: "stt" as const,
+    };
+    const detectionRunning = {
+      ...workflowEvent(FIRST_RUN_ID, 9),
+      stage: "moment_detection" as const,
+      status: "running" as const,
+      progress: 20,
+    };
+    const oldRenderCompleted = workflowEvent(SECOND_RUN_ID, 10);
+
+    expect(
+      mergePipelineStepsWithLiveEvents(
+        [
+          { label: "Ingest", state: "done" },
+          { label: "Transcribe", state: "active", status: "waiting" },
+          { label: "Detect", state: "todo" },
+          { label: "Render", state: "active", status: "running" },
+        ],
+        {
+          stt: sttCompleted,
+          moment_detection: detectionRunning,
+          clip_rendering: oldRenderCompleted,
+        },
+        FIRST_RUN_ID,
+      ),
+    ).toEqual([
+      { label: "Ingest", state: "done" },
+      { label: "Transcribe", state: "done", status: "completed" },
+      { label: "Detect", state: "active", status: "running" },
+      { label: "Render", state: "active", status: "running" },
+    ]);
+  });
+
   test("preserves queued, waiting, and running instead of calling all active work running", () => {
     expect(pipelineStepStateWord("active", "queued")).toBe("queued");
     expect(pipelineStepStateWord("active", "waiting")).toBe("waiting");
