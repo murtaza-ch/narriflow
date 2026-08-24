@@ -1,4 +1,8 @@
 import { expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
+import { copyFile, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   clipService,
   type RenderWorkSetOutcome,
@@ -6,6 +10,7 @@ import {
   WorkflowFailure,
 } from "@narriflow/services";
 import { parseRenderConfig } from "../render-config";
+import { ProductionRenderMediaAdapter } from "../render-media-adapter";
 import {
   ClipRenderAttempt,
   type ClipRenderingWorkflowAttempt,
@@ -18,18 +23,43 @@ type PendingClipRender = Awaited<
 type OrdinaryTracerFailure =
   | "begin"
   | "state_load"
+  | "presign"
+  | "ranged_probe"
+  | "download"
+  | "local_probe"
   | "command"
+  | "command_missing"
+  | "command_timeout_before_output"
+  | "command_timeout_after_output"
+  | "command_nonzero_exit"
   | "upload"
   | "guarded_completion"
   | "settlement"
   | "cleanup";
+
+type SourceFailure = Extract<
+  OrdinaryTracerFailure,
+  "presign" | "ranged_probe" | "download" | "local_probe"
+>;
 
 function createOrdinaryTracer(input: {
   attemptId: string;
   failure?: OrdinaryTracerFailure;
   initialVariantState?: "pending" | "completed";
   outcome: RenderWorkSetOutcome;
+  waitForCommandAbort?: boolean;
+  sourceFailures?: readonly SourceFailure[];
+  sourceInterruption?: {
+    operation: SourceFailure;
+    reason: "cancellation" | "ownership_loss";
+  };
+  presignNeverResolves?: boolean;
+  presignedUrl?: string;
+  productionMedia?: ProductionRenderMediaAdapter;
+  sourceMode?: "ranged" | "download";
   superseded?: boolean;
+  workspaceDirectory?: string;
+  downloadFixturePath?: string;
 }) {
   const attempt: ClipRenderingWorkflowAttempt = {
     workflowRunId: "10000000-0000-0000-0000-000000000051",
@@ -78,6 +108,34 @@ function createOrdinaryTracer(input: {
     | "superseded" = input.initialVariantState ?? "pending";
   let beginCalls = 0;
   let settlementCalls = 0;
+  let clockNowMs = 1_000;
+  let nextTimerId = 1;
+  const scheduledTimers = new Map<
+    number,
+    { callback: () => void; deadlineAtMs: number }
+  >();
+  const advanceClock = (elapsedMs: number): void => {
+    clockNowMs += elapsedMs;
+    const due = [...scheduledTimers.entries()]
+      .filter(([, timer]) => timer.deadlineAtMs <= clockNowMs)
+      .sort((left, right) => left[1].deadlineAtMs - right[1].deadlineAtMs);
+    for (const [id, timer] of due) {
+      scheduledTimers.delete(id);
+      timer.callback();
+    }
+  };
+  const sourceController = new AbortController();
+  const shouldFail = (failure: SourceFailure) =>
+    input.failure === failure || input.sourceFailures?.includes(failure);
+  const interruptSource = (operation: SourceFailure): void => {
+    if (input.sourceInterruption?.operation !== operation) return;
+    const reason =
+      input.sourceInterruption.reason === "ownership_loss"
+        ? new WorkflowAttemptLost(attempt)
+        : new DOMException("cancelled", "AbortError");
+    sourceController.abort(reason);
+    throw reason;
+  };
 
   const clipRenderAttempt = new ClipRenderAttempt({
     run: {
@@ -93,7 +151,10 @@ function createOrdinaryTracer(input: {
     },
     config: parseRenderConfig({
       WORKER_CLIP_RENDER_ATTEMPT_ENABLED: "1",
-      WORKER_RENDER_SOURCE_MODE: "download",
+      WORKER_RENDER_SOURCE_MODE: input.sourceMode ?? "download",
+      ...(input.presignNeverResolves
+        ? { WORKER_STORAGE_TIMEOUT_MS: "5" }
+        : {}),
       WORKER_AUTO_REFRAME: "0",
       WORKER_LAYOUT_ENGINE: "0",
       WORKER_SCREEN_LAYOUT: "0",
@@ -119,18 +180,102 @@ function createOrdinaryTracer(input: {
       },
     },
     adapters: {
-      process: {
-        execute: async ({ command }) => {
-          if (command === "ffprobe") {
-            return JSON.stringify({ streams: [{ codec_type: "audio" }] });
+      media: input.productionMedia ?? {
+        probe: async ({ sourcePath, signal, deadlineMs }) => {
+          const mode = sourcePath.startsWith("https://") ? "ranged" : "local";
+          if (
+            input.sourceMode === "ranged" ||
+            input.sourceInterruption?.operation === `${mode}_probe`
+          ) {
+            actions.push(`probe:${mode}`);
           }
-          actions.push("command");
-          if (input.failure === "command") {
+          expect(signal).toBeInstanceOf(AbortSignal);
+          expect(deadlineMs).toBeGreaterThan(0);
+          interruptSource(`${mode}_probe`);
+          if (shouldFail(`${mode}_probe`)) {
             throw new WorkflowFailure(
-              "ffmpeg_temporarily_unavailable",
-              "retryable",
-              "The encoder is temporarily unavailable",
+              mode === "ranged"
+                ? "worker_command_failed"
+                : "worker_command_input_invalid",
+              mode === "ranged" ? "retryable" : "permanent",
+              `injected ${mode} probe failure`,
             );
+          }
+          return {
+            width: 0,
+            height: 0,
+            hasVideo: false,
+            hasAudio: true,
+            fps: 30,
+          };
+        },
+      },
+      process: {
+        execute: async ({ command, deadlineMs, diagnose, signal }) => {
+          if (command === "ffprobe") {
+            throw new Error("source probes must use the media adapter");
+          }
+          expect(signal).toBeInstanceOf(AbortSignal);
+          expect(deadlineMs).toBeGreaterThan(0);
+          actions.push("command");
+          if (input.waitForCommandAbort) {
+            actions.push("command_started");
+            return new Promise<string>((_resolve, reject) => {
+              const abort = () => {
+                actions.push("command_terminated");
+                reject(
+                  signal.reason instanceof Error
+                    ? signal.reason
+                    : new DOMException("cancelled", "AbortError"),
+                );
+              };
+              signal.addEventListener("abort", abort, { once: true });
+              if (signal.aborted) abort();
+            });
+          }
+          if (input.failure === "command_timeout_after_output") {
+            actions.push("output_created");
+          }
+          const commandFailure =
+            input.failure === "command"
+              ? new WorkflowFailure(
+                  "ffmpeg_temporarily_unavailable",
+                  "retryable",
+                  "The encoder is temporarily unavailable",
+                )
+              : input.failure === "command_missing"
+                ? new WorkflowFailure(
+                    "worker_command_missing",
+                    "permanent",
+                    "Required render executable is unavailable",
+                  )
+                : input.failure === "command_nonzero_exit"
+                  ? new WorkflowFailure(
+                      "worker_command_failed",
+                      "retryable",
+                      "Render command exited nonzero",
+                    )
+                  : input.failure === "command_timeout_before_output" ||
+                      input.failure === "command_timeout_after_output"
+                    ? new WorkflowFailure(
+                        "worker_command_timeout",
+                        "retryable",
+                        "Render command timed out",
+                      )
+                    : null;
+          if (commandFailure) {
+            diagnose?.({
+              operation: commandFailure.code.includes("timeout")
+                ? "timeout"
+                : commandFailure.code.includes("missing")
+                  ? "spawn"
+                  : "exit",
+              status: "failed",
+              elapsedMs: 25,
+              failureCode: commandFailure.code,
+              disposition: commandFailure.disposition,
+            });
+            throw commandFailure;
           }
           return "";
         },
@@ -175,7 +320,28 @@ function createOrdinaryTracer(input: {
         setClipLayoutAnalysis: async () => {},
       },
       storage: {
-        downloadObjectToFile: async () => {},
+        presignDownloadUrl: async () => {
+          actions.push("presign");
+          interruptSource("presign");
+          if (input.presignNeverResolves) {
+            return new Promise<string>(() => {});
+          }
+          if (shouldFail("presign")) throw injectedError;
+          return (
+            input.presignedUrl ??
+            "https://media.example/source.mp3?signature=secret"
+          );
+        },
+        downloadObjectToFile: async ({ filePath }) => {
+          if (input.sourceMode === "ranged" || shouldFail("download")) {
+            actions.push("download");
+          }
+          interruptSource("download");
+          if (shouldFail("download")) throw injectedError;
+          if (input.downloadFixturePath) {
+            await copyFile(input.downloadFixturePath, filePath);
+          }
+        },
         putFileFromPath: async ({ key }) => {
           actions.push("upload");
           if (input.failure === "upload") {
@@ -195,14 +361,28 @@ function createOrdinaryTracer(input: {
         },
       },
       workspace: {
-        mkdtemp: async () => "/tmp/narriflow-render-ordinary-tracer",
+        mkdtemp: async () =>
+          input.workspaceDirectory ?? "/tmp/narriflow-render-ordinary-tracer",
         rm: async () => {
           actions.push("workspace_cleanup");
           if (input.failure === "cleanup") throw injectedError;
         },
         stat: async () => ({ size: 100 }) as never,
       },
-      clock: { nowMs: () => 1_000 },
+      clock: {
+        nowMs: () => clockNowMs,
+        setTimeout: (callback, delayMs) => {
+          const id = nextTimerId++;
+          scheduledTimers.set(id, {
+            callback,
+            deadlineAtMs: clockNowMs + delayMs,
+          });
+          return id as unknown as ReturnType<typeof setTimeout>;
+        },
+        clearTimeout: (handle) => {
+          scheduledTimers.delete(handle as unknown as number);
+        },
+      },
       diagnose: ({ message, context }) =>
         diagnostics.push({ message, context }),
     },
@@ -210,6 +390,7 @@ function createOrdinaryTracer(input: {
 
   return {
     actions,
+    advanceClock,
     attempt,
     beginCalls: () => beginCalls,
     clipRenderAttempt,
@@ -218,6 +399,7 @@ function createOrdinaryTracer(input: {
     injectedError,
     objectReferences,
     settlementCalls: () => settlementCalls,
+    sourceSignal: sourceController.signal,
     uploadedKeys,
     variantState: () => variantState,
   };
@@ -880,6 +1062,447 @@ test("ClipRenderAttempt renders and settles one ordinary variant through execute
   ]);
 });
 
+test("ClipRenderAttempt resolves a ranged source through its media adapter", async () => {
+  const expected: RenderWorkSetOutcome = {
+    status: "completed",
+    requested: 1,
+    succeeded: 1,
+    failed: 0,
+    superseded: 0,
+    followUpWorkflowRunId: null,
+  };
+  const harness = createOrdinaryTracer({
+    attemptId: "30000000-0000-4000-8000-000000000062",
+    outcome: expected,
+    sourceMode: "ranged",
+  });
+
+  await expect(
+    harness.clipRenderAttempt.execute({
+      attempt: harness.attempt,
+      signal: new AbortController().signal,
+    }),
+  ).resolves.toEqual(expected);
+  expect(harness.actions).toContain("presign");
+  expect(harness.actions).toContain("probe:ranged");
+  expect(harness.actions).not.toContain("probe:local");
+});
+
+test("ClipRenderAttempt falls back from a ranged probe to a downloaded local probe", async () => {
+  const expected: RenderWorkSetOutcome = {
+    status: "completed",
+    requested: 1,
+    succeeded: 1,
+    failed: 0,
+    superseded: 0,
+    followUpWorkflowRunId: null,
+  };
+  const harness = createOrdinaryTracer({
+    attemptId: "30000000-0000-4000-8000-000000000063",
+    failure: "ranged_probe",
+    outcome: expected,
+    sourceMode: "ranged",
+  });
+
+  await expect(
+    harness.clipRenderAttempt.execute({
+      attempt: harness.attempt,
+      signal: new AbortController().signal,
+    }),
+  ).resolves.toEqual(expected);
+  expect(harness.actions).toEqual(
+    expect.arrayContaining([
+      "presign",
+      "probe:ranged",
+      "download",
+      "probe:local",
+      "command",
+    ]),
+  );
+  expect(harness.diagnostics).toContainEqual({
+    message: "clip_render_source_operation_failed",
+    context: expect.objectContaining({
+      phase: "source_resolution",
+      operation: "ranged_probe",
+      failureCode: "worker_command_failed",
+      disposition: "retryable",
+    }),
+  });
+});
+
+const FFMPEG_AVAILABLE =
+  spawnSync("ffmpeg", ["-version"], { stdio: "ignore" }).status === 0;
+const FFPROBE_AVAILABLE =
+  spawnSync("ffprobe", ["-version"], { stdio: "ignore" }).status === 0;
+
+test.skipIf(!FFMPEG_AVAILABLE || !FFPROBE_AVAILABLE)(
+  "ClipRenderAttempt production media contract falls back from ranged access to a downloaded fixture",
+  async () => {
+    const directory = await mkdtemp(
+      join(tmpdir(), "narriflow-source-fallback-contract-"),
+    );
+    const fixturePath = join(directory, "fixture.mp3");
+    const workspaceDirectory = join(directory, "workspace");
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () => new Response("not media", { status: 200 }),
+    });
+    await mkdir(workspaceDirectory);
+    try {
+      const generated = spawnSync("ffmpeg", [
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        "sine=frequency=440:duration=0.2",
+        "-c:a",
+        "libmp3lame",
+        fixturePath,
+      ]);
+      expect(generated.status).toBe(0);
+
+      const harness = createOrdinaryTracer({
+        attemptId: "30000000-0000-4000-8000-000000000068",
+        downloadFixturePath: fixturePath,
+        outcome: {
+          status: "completed",
+          requested: 1,
+          succeeded: 1,
+          failed: 0,
+          superseded: 0,
+          followUpWorkflowRunId: null,
+        },
+        presignedUrl: `http://127.0.0.1:${server.port}/unavailable.mp3`,
+        productionMedia: new ProductionRenderMediaAdapter(),
+        sourceMode: "ranged",
+        workspaceDirectory,
+      });
+
+      await expect(
+        harness.clipRenderAttempt.execute({
+          attempt: harness.attempt,
+          signal: new AbortController().signal,
+        }),
+      ).resolves.toMatchObject({ status: "completed" });
+      expect(harness.actions).toEqual(
+        expect.arrayContaining(["presign", "download", "command"]),
+      );
+      expect(harness.diagnostics).toContainEqual({
+        message: "clip_render_source_operation_failed",
+        context: expect.objectContaining({
+          operation: "ranged_probe",
+          failureCode: "worker_command_failed",
+          disposition: "retryable",
+        }),
+      });
+      expect(harness.diagnostics).toContainEqual({
+        message: "clip_render_source_operation_completed",
+        context: expect.objectContaining({ operation: "local_probe" }),
+      });
+    } finally {
+      await server.stop(true);
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+test("ClipRenderAttempt falls back when source presigning fails", async () => {
+  const expected: RenderWorkSetOutcome = {
+    status: "completed",
+    requested: 1,
+    succeeded: 1,
+    failed: 0,
+    superseded: 0,
+    followUpWorkflowRunId: null,
+  };
+  const harness = createOrdinaryTracer({
+    attemptId: "30000000-0000-4000-8000-000000000064",
+    failure: "presign",
+    outcome: expected,
+    sourceMode: "ranged",
+  });
+
+  await expect(
+    harness.clipRenderAttempt.execute({
+      attempt: harness.attempt,
+      signal: new AbortController().signal,
+    }),
+  ).resolves.toEqual(expected);
+  expect(harness.actions).toContain("download");
+  expect(harness.actions).toContain("probe:local");
+  expect(harness.actions).not.toContain("probe:ranged");
+  expect(harness.diagnostics).toContainEqual({
+    message: "clip_render_source_operation_failed",
+    context: expect.objectContaining({
+      operation: "source_presign",
+      failureCode: "source_presign_failed",
+      disposition: "retryable",
+    }),
+  });
+});
+
+test("ClipRenderAttempt bounds presigning and falls back to a local source", async () => {
+  const harness = createOrdinaryTracer({
+    attemptId: "30000000-0000-4000-8000-000000000067",
+    outcome: {
+      status: "completed",
+      requested: 1,
+      succeeded: 1,
+      failed: 0,
+      superseded: 0,
+      followUpWorkflowRunId: null,
+    },
+    presignNeverResolves: true,
+    sourceMode: "ranged",
+  });
+
+  const executing = harness.clipRenderAttempt.execute({
+    attempt: harness.attempt,
+    signal: harness.sourceSignal,
+  });
+  while (!harness.actions.includes("presign")) await Promise.resolve();
+  harness.advanceClock(5);
+  await expect(executing).resolves.toMatchObject({ status: "completed" });
+  expect(harness.actions).toContain("download");
+  expect(harness.actions).toContain("probe:local");
+  expect(harness.actions).not.toContain("probe:ranged");
+  expect(harness.diagnostics).toContainEqual({
+    message: "clip_render_source_operation_failed",
+    context: expect.objectContaining({
+      operation: "source_presign",
+      failureCode: "source_presign_timeout",
+      disposition: "retryable",
+    }),
+  });
+});
+
+for (const reason of ["cancellation", "ownership_loss"] as const) {
+  for (const operation of [
+    "presign",
+    "ranged_probe",
+    "download",
+    "local_probe",
+  ] as const) {
+    test(`ClipRenderAttempt stops source resolution after ${reason} during ${operation}`, async () => {
+      const harness = createOrdinaryTracer({
+        attemptId: `30000000-0000-4000-8000-00000000009${operation.length}`,
+        outcome: {
+          status: "failed",
+          requested: 1,
+          succeeded: 0,
+          failed: 1,
+          superseded: 0,
+          followUpWorkflowRunId: null,
+        },
+        sourceInterruption: { operation, reason },
+        ...(operation === "download"
+          ? { sourceFailures: ["ranged_probe"] as const }
+          : {}),
+        sourceMode: operation === "local_probe" ? "download" : "ranged",
+      });
+
+      const executing = harness.clipRenderAttempt.execute({
+        attempt: harness.attempt,
+        signal: harness.sourceSignal,
+      });
+      await expect(executing).rejects.toMatchObject(
+        reason === "ownership_loss"
+          ? { name: "WorkflowAttemptLost" }
+          : { name: "AbortError" },
+      );
+
+      const operationIndex = harness.actions.indexOf(
+        operation.endsWith("probe") ? `probe:${operation.split("_")[0]}` : operation,
+      );
+      expect(operationIndex).toBeGreaterThanOrEqual(0);
+      const forbidden =
+        operation === "presign"
+          ? ["probe:ranged", "download", "probe:local", "command"]
+          : operation === "ranged_probe"
+            ? ["download", "probe:local", "command"]
+            : operation === "download"
+              ? ["probe:local", "command"]
+              : ["command"];
+      for (const dependent of forbidden) {
+        expect(harness.actions).not.toContain(dependent);
+      }
+      expect(
+        harness.actions.some((action) => action.startsWith("variant_failure:")),
+      ).toBe(false);
+      expect(harness.settlementCalls()).toBe(0);
+      expect(harness.actions).toContain("workspace_cleanup");
+    });
+  }
+}
+
+test("ClipRenderAttempt records a retryable failure when ranged probing and download both fail", async () => {
+  const harness = createOrdinaryTracer({
+    attemptId: "30000000-0000-4000-8000-000000000065",
+    outcome: {
+      status: "requeued",
+      requested: 1,
+      succeeded: 0,
+      failed: 1,
+      superseded: 0,
+      followUpWorkflowRunId: null,
+    },
+    sourceFailures: ["ranged_probe", "download"],
+    sourceMode: "ranged",
+  });
+
+  await expect(
+    harness.clipRenderAttempt.execute({
+      attempt: harness.attempt,
+      signal: new AbortController().signal,
+    }),
+  ).resolves.toMatchObject({ status: "requeued" });
+  expect(harness.actions).toContain(
+    "variant_failure:source_download_failed:retryable",
+  );
+  expect(harness.actions).not.toContain("command");
+  expect(harness.actions).not.toContain("upload");
+  expect(harness.diagnostics).toContainEqual({
+    message: "clip_render_source_operation_failed",
+    context: expect.objectContaining({
+      operation: "source_download",
+      failureCode: "source_download_failed",
+      disposition: "retryable",
+    }),
+  });
+});
+
+test("ClipRenderAttempt classifies corrupt downloaded source media as permanent", async () => {
+  const harness = createOrdinaryTracer({
+    attemptId: "30000000-0000-4000-8000-000000000066",
+    failure: "local_probe",
+    outcome: {
+      status: "failed",
+      requested: 1,
+      succeeded: 0,
+      failed: 1,
+      superseded: 0,
+      followUpWorkflowRunId: null,
+    },
+    sourceMode: "download",
+  });
+
+  await expect(
+    harness.clipRenderAttempt.execute({
+      attempt: harness.attempt,
+      signal: new AbortController().signal,
+    }),
+  ).resolves.toMatchObject({ status: "failed" });
+  expect(harness.actions).toContain(
+    "variant_failure:source_media_invalid:permanent",
+  );
+  expect(harness.actions).not.toContain("command");
+  expect(harness.actions).not.toContain("upload");
+});
+
+for (const failure of [
+  {
+    name: "missing executable",
+    injected: "command_missing",
+    code: "worker_command_missing",
+    disposition: "permanent",
+    status: "failed",
+  },
+  {
+    name: "timeout before output creation",
+    injected: "command_timeout_before_output",
+    code: "worker_command_timeout",
+    disposition: "retryable",
+    status: "requeued",
+  },
+  {
+    name: "timeout after output creation",
+    injected: "command_timeout_after_output",
+    code: "worker_command_timeout",
+    disposition: "retryable",
+    status: "requeued",
+  },
+  {
+    name: "nonzero exit",
+    injected: "command_nonzero_exit",
+    code: "worker_command_failed",
+    disposition: "retryable",
+    status: "requeued",
+  },
+] as const) {
+  test(`ClipRenderAttempt classifies a ${failure.name} and skips dependent operations`, async () => {
+    const harness = createOrdinaryTracer({
+      attemptId: `30000000-0000-4000-8000-00000000007${failure.injected.length}`,
+      failure: failure.injected,
+      outcome: {
+        status: failure.status,
+        requested: 1,
+        succeeded: 0,
+        failed: 1,
+        superseded: 0,
+        followUpWorkflowRunId: null,
+      },
+    });
+
+    await expect(
+      harness.clipRenderAttempt.execute({
+        attempt: harness.attempt,
+        signal: new AbortController().signal,
+      }),
+    ).resolves.toMatchObject({ status: failure.status });
+    expect(harness.actions).toContain(
+      `variant_failure:${failure.code}:${failure.disposition}`,
+    );
+    if (failure.injected === "command_timeout_after_output") {
+      expect(harness.actions).toContain("output_created");
+    }
+    expect(harness.actions).not.toContain("upload");
+    expect(harness.actions).not.toContain("guarded_completion");
+  });
+}
+
+for (const interruption of ["cancellation", "ownership loss"] as const) {
+  test(`ClipRenderAttempt waits for active command termination after ${interruption}`, async () => {
+    const controller = new AbortController();
+    const harness = createOrdinaryTracer({
+      attemptId:
+        interruption === "cancellation"
+          ? "30000000-0000-4000-8000-000000000081"
+          : "30000000-0000-4000-8000-000000000082",
+      outcome: {
+        status: "failed",
+        requested: 1,
+        succeeded: 0,
+        failed: 1,
+        superseded: 0,
+        followUpWorkflowRunId: null,
+      },
+      waitForCommandAbort: true,
+    });
+    const executing = harness.clipRenderAttempt.execute({
+      attempt: harness.attempt,
+      signal: controller.signal,
+    });
+    while (!harness.actions.includes("command_started")) await Promise.resolve();
+    const reason =
+      interruption === "cancellation"
+        ? new DOMException("cancelled", "AbortError")
+        : new WorkflowAttemptLost(harness.attempt);
+    controller.abort(reason);
+
+    await expect(executing).rejects.toBe(reason);
+    expect(harness.actions.indexOf("command_terminated")).toBeLessThan(
+      harness.actions.indexOf("workspace_cleanup"),
+    );
+    expect(harness.actions).not.toContain("upload");
+    expect(harness.actions).not.toContain("guarded_completion");
+    expect(harness.actions.some((action) => action.startsWith("variant_failure:"))).toBe(
+      false,
+    );
+    expect(harness.settlementCalls()).toBe(0);
+  });
+}
+
 for (const failure of ["command", "upload"] as const) {
   test(`ClipRenderAttempt requeues a retryable ${failure} failure`, async () => {
     const expected: RenderWorkSetOutcome = {
@@ -913,6 +1536,19 @@ for (const failure of ["command", "upload"] as const) {
       }:retryable`,
     );
     expect(harness.settlementCalls()).toBe(1);
+    if (failure === "command") {
+      expect(harness.diagnostics).toContainEqual({
+        message: "clip_render_command_operation",
+        context: expect.objectContaining({
+          phase: "command_execution",
+          operation: "exit",
+          status: "failed",
+          failureCode: "ffmpeg_temporarily_unavailable",
+          disposition: "retryable",
+          elapsedMs: 25,
+        }),
+      });
+    }
   });
 }
 

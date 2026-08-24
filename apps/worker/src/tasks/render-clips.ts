@@ -139,7 +139,17 @@ import {
   clipRenderAttemptStorageKey,
 } from "../render-object-key";
 export { clipRenderAttemptStorageKey } from "../render-object-key";
-import { productionRenderProcessAdapter } from "../render-process-adapter";
+import {
+  productionRenderProcessAdapter,
+  type RenderProcessDiagnostic,
+} from "../render-process-adapter";
+import {
+  DEFAULT_RENDER_MEDIA_FPS,
+  HTTP_SOURCE_RW_TIMEOUT_US,
+  ProductionRenderMediaAdapter,
+  productionRenderMediaAdapter,
+  type RenderMediaProbe,
+} from "../render-media-adapter";
 
 interface BrollCutaway {
   path: string;
@@ -275,6 +285,7 @@ interface ClipRenderAttemptLifecycle {
 }
 
 interface ClipRenderAttemptAdapters {
+  media: Pick<typeof productionRenderMediaAdapter, "probe">;
   process: Pick<typeof productionRenderProcessAdapter, "execute">;
   project: Pick<
     typeof productionProjectService,
@@ -309,7 +320,11 @@ interface ClipRenderAttemptAdapters {
     stat: typeof productionStat;
     writeFile: typeof productionWriteFile;
   };
-  clock: { nowMs(): number };
+  clock: {
+    nowMs(): number;
+    setTimeout(callback: () => void, delayMs: number): ReturnType<typeof setTimeout>;
+    clearTimeout(handle: ReturnType<typeof setTimeout>): void;
+  };
   diagnose(input: {
     level: "info" | "error";
     message: string;
@@ -366,19 +381,7 @@ export function resolveRenderTimingForClip(input: {
   });
 }
 
-interface SourceProbe {
-  width: number;
-  height: number;
-  hasVideo: boolean;
-  hasAudio: boolean;
-  /** Source frame rate (from ffprobe's `r_frame_rate`), always a positive
-   *  finite number — `probeSource` falls back to `DEFAULT_BACKGROUND_FPS`
-   *  when the stream reports none/an unparseable value. Currently consumed
-   *  only by `buildFitAndBackgroundFilter`'s image-mode chain (see its doc
-   *  comment for why: `overlay`'s output otherwise inherits the still
-   *  image's demuxer-default 25 fps instead of the source's real rate). */
-  fps: number;
-}
+type SourceProbe = RenderMediaProbe;
 
 interface PendingRenderOutput {
   clipRenderId: string;
@@ -415,6 +418,7 @@ interface RenderExecutionContext {
 const renderExecutionStorage = new AsyncLocalStorage<RenderExecutionContext>();
 const defaultRenderConfig = parseRenderConfig({});
 const productionClipRenderAttemptAdapters: ClipRenderAttemptAdapters = {
+  media: productionRenderMediaAdapter,
   process: productionRenderProcessAdapter,
   project: productionProjectService,
   clip: productionClipService,
@@ -436,7 +440,11 @@ const productionClipRenderAttemptAdapters: ClipRenderAttemptAdapters = {
     stat: productionStat,
     writeFile: productionWriteFile,
   },
-  clock: { nowMs: () => Date.now() },
+  clock: {
+    nowMs: () => Date.now(),
+    setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
+    clearTimeout: (handle) => clearTimeout(handle),
+  },
   diagnose: ({ level, message, context }) => {
     console.warn(
       JSON.stringify({
@@ -463,6 +471,59 @@ function rethrowRenderCancellation(error: unknown): void {
   if (signal.reason instanceof Error) throw signal.reason;
   if (error instanceof Error) throw error;
   throw new DOMException("Clip render cancelled", "AbortError");
+}
+
+function rethrowRenderControlFlow(error: unknown): void {
+  rethrowWorkflowAttemptLost(error);
+  rethrowRenderCancellation(error);
+}
+
+async function withRenderOperationDeadline<T>(input: {
+  operation: () => Promise<T>;
+  deadlineMs: number;
+  timeoutFailure: () => WorkflowFailure;
+}): Promise<T> {
+  const signal = currentRenderSignal();
+  const clock = currentRenderAdapters().clock;
+  signal?.throwIfAborted();
+
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const timeout = clock.setTimeout(() => {
+      finish(() => reject(input.timeoutFailure()));
+    }, input.deadlineMs);
+    const cleanup = () => {
+      clock.clearTimeout(timeout);
+      signal?.removeEventListener("abort", onAbort);
+    };
+    const finish = (settle: () => void) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      settle();
+    };
+    const onAbort = () => {
+      finish(() => {
+        if (signal?.reason instanceof Error) reject(signal.reason);
+        else reject(new DOMException("Clip render cancelled", "AbortError"));
+      });
+    };
+
+    signal?.addEventListener("abort", onAbort, { once: true });
+    if (signal?.aborted) {
+      onAbort();
+      return;
+    }
+    Promise.resolve()
+      .then(input.operation)
+      .then(
+        (value) => {
+          if (signal?.aborted) onAbort();
+          else finish(() => resolve(value));
+        },
+        (error: unknown) => finish(() => reject(error)),
+      );
+  });
 }
 
 function currentRenderAdapters(): ClipRenderAttemptAdapters {
@@ -574,7 +635,23 @@ function runCommand(
     deadlineMs: options.timeoutMs,
     killGraceMs: config.processKillGraceMs,
     captureStdout: options.captureStdout,
+    diagnose: diagnoseRenderProcessOperation,
   });
+}
+
+function diagnoseRenderProcessOperation(event: RenderProcessDiagnostic): void {
+  const attempt = renderExecutionStorage.getStore()?.attempt;
+  log(
+    event.status === "failed" ? "error" : "info",
+    "clip_render_command_operation",
+    {
+      workflowRunId: attempt?.workflowRunId,
+      projectId: attempt?.projectId,
+      workflowAttemptId: attempt?.attemptId,
+      phase: "command_execution",
+      ...event,
+    },
+  );
 }
 
 async function execCommand(
@@ -615,8 +692,6 @@ const RENDER_SOURCE_URL_TTL_SEC = 12 * 60 * 60;
 // can't hang the ffmpeg child forever (execCommand has no per-render timeout
 // here; the run-level reaper is the outer backstop).
 const HTTP_SOURCE_RECONNECT_HTTP_ERROR_CODES = "429,500,502,503,504";
-const HTTP_SOURCE_RW_TIMEOUT_US = 30_000_000; // 30s
-
 function isHttpSource(input: string): boolean {
   return /^https?:\/\//i.test(input);
 }
@@ -639,66 +714,196 @@ function httpSourceInputArgs(input: string): string[] {
   ];
 }
 
-/** Fallback frame rate when the source reports none, or reports something
- *  unparseable/zero — matches the aspirational default most consumer footage
- *  actually ships at, and (more importantly) is just *a* real, positive fps
- *  rather than the image2 demuxer's silent 25 fps default that motivated
- *  plumbing this value through in the first place. */
-const DEFAULT_BACKGROUND_FPS = 30;
-
-/** Parses ffprobe's `r_frame_rate` (a "num/den" string, e.g. "30000/1001" or
- *  "25/1") into a plain fps number. Falls back to `DEFAULT_BACKGROUND_FPS`
- *  for anything missing, malformed, non-finite, or non-positive (e.g. a
- *  degenerate "0/0" some containers report for stillimage-like streams). */
-function parseFrameRate(rFrameRate: string | undefined): number {
-  if (!rFrameRate) return DEFAULT_BACKGROUND_FPS;
-  const [numPart, denPart] = rFrameRate.split("/");
-  const num = Number(numPart);
-  const den = denPart === undefined ? 1 : Number(denPart);
-  if (!Number.isFinite(num) || !Number.isFinite(den) || den === 0) {
-    return DEFAULT_BACKGROUND_FPS;
-  }
-  const fps = num / den;
-  return Number.isFinite(fps) && fps > 0 ? fps : DEFAULT_BACKGROUND_FPS;
+async function probeSource(sourcePath: string): Promise<SourceProbe> {
+  const config = currentRenderConfig();
+  return currentRenderAdapters().media.probe({
+    sourcePath,
+    signal: currentRenderSignal() ?? new AbortController().signal,
+    deadlineMs: config.probeCommandTimeoutMs,
+    killGraceMs: config.processKillGraceMs,
+    diagnose: diagnoseRenderProcessOperation,
+  });
 }
 
-async function probeSource(sourcePath: string): Promise<SourceProbe> {
-  const output = await execCommandOutput(
-    "ffprobe",
-    [
-      "-v",
-      "quiet",
-      "-print_format",
-      "json",
-      "-show_streams",
-      ...(isHttpSource(sourcePath)
-        ? ["-rw_timeout", String(HTTP_SOURCE_RW_TIMEOUT_US)]
-        : []),
-      sourcePath,
-    ],
-    { timeoutMs: currentRenderConfig().probeCommandTimeoutMs },
+type RequiredSourceOperation =
+  | "source_presign"
+  | "ranged_probe"
+  | "source_download"
+  | "local_probe";
+
+function diagnoseRequiredSourceOperation(input: {
+  attempt: ClipRenderingWorkflowAttempt;
+  operation: RequiredSourceOperation;
+  startedAtMs: number;
+  failure?: WorkflowFailure;
+}): void {
+  log(
+    input.failure ? "error" : "info",
+    input.failure
+      ? "clip_render_source_operation_failed"
+      : "clip_render_source_operation_completed",
+    {
+      workflowRunId: input.attempt.workflowRunId,
+      projectId: input.attempt.projectId,
+      workflowAttemptId: input.attempt.attemptId,
+      phase: "source_resolution",
+      operation: input.operation,
+      ...(input.failure
+        ? {
+            failureCode: input.failure.code,
+            disposition: input.failure.disposition,
+          }
+        : {}),
+      elapsedMs: currentTimeMs() - input.startedAtMs,
+    },
   );
+}
 
-  const data = JSON.parse(output) as {
-    streams?: Array<{
-      codec_type?: string;
-      width?: number;
-      height?: number;
-      r_frame_rate?: string;
-    }>;
-  };
+async function resolveRequiredSource(input: {
+  run: WorkflowRunJob;
+  tempDir: string;
+  attempt: ClipRenderingWorkflowAttempt;
+}): Promise<{ sourcePath: string; probe: SourceProbe }> {
+  const sourceStorageKey = input.run.project.sourceStorageKey;
+  if (!sourceStorageKey) {
+    throw new WorkflowFailure(
+      "source_storage_key_missing",
+      "permanent",
+      "The project source file is unavailable",
+    );
+  }
 
-  const streams = data.streams ?? [];
-  const videoStream = streams.find((stream) => stream.codec_type === "video");
-  const audioStream = streams.find((stream) => stream.codec_type === "audio");
+  const sourceExt = extname(sourceStorageKey) || ".bin";
+  const localSourcePath = join(input.tempDir, `source${sourceExt}`);
+  currentRenderSignal()?.throwIfAborted();
+  if (currentRenderConfig().sourceMode !== "download") {
+    let presignedUrl: string | null = null;
+    const presignStartedAtMs = currentTimeMs();
+    try {
+      presignedUrl = await withRenderOperationDeadline({
+        operation: () =>
+          currentRenderAdapters().storage.presignDownloadUrl({
+            key: sourceStorageKey,
+            expiresIn: RENDER_SOURCE_URL_TTL_SEC,
+          }),
+        deadlineMs: currentRenderConfig().storageOperationTimeoutMs,
+        timeoutFailure: () =>
+          new WorkflowFailure(
+            "source_presign_timeout",
+            "retryable",
+            "Required source presigning timed out",
+          ),
+      });
+      currentRenderSignal()?.throwIfAborted();
+      diagnoseRequiredSourceOperation({
+        attempt: input.attempt,
+        operation: "source_presign",
+        startedAtMs: presignStartedAtMs,
+      });
+    } catch (error) {
+      rethrowRenderControlFlow(error);
+      const failure =
+        error instanceof WorkflowFailure &&
+        error.code === "source_presign_timeout"
+          ? error
+          : new WorkflowFailure(
+              "source_presign_failed",
+              "retryable",
+              "Required source could not be presigned",
+            );
+      diagnoseRequiredSourceOperation({
+        attempt: input.attempt,
+        operation: "source_presign",
+        startedAtMs: presignStartedAtMs,
+        failure,
+      });
+    }
 
-  return {
-    width: videoStream?.width ?? 0,
-    height: videoStream?.height ?? 0,
-    hasVideo: Boolean(videoStream),
-    hasAudio: Boolean(audioStream),
-    fps: parseFrameRate(videoStream?.r_frame_rate),
-  };
+    if (presignedUrl) {
+      currentRenderSignal()?.throwIfAborted();
+      const probeStartedAtMs = currentTimeMs();
+      try {
+        const probe = await probeSource(presignedUrl);
+        currentRenderSignal()?.throwIfAborted();
+        diagnoseRequiredSourceOperation({
+          attempt: input.attempt,
+          operation: "ranged_probe",
+          startedAtMs: probeStartedAtMs,
+        });
+        return { sourcePath: presignedUrl, probe };
+      } catch (error) {
+        rethrowRenderControlFlow(error);
+        diagnoseRequiredSourceOperation({
+          attempt: input.attempt,
+          operation: "ranged_probe",
+          startedAtMs: probeStartedAtMs,
+          failure: workflowFailureFromUnknown(error),
+        });
+      }
+    }
+  }
+
+  currentRenderSignal()?.throwIfAborted();
+  const downloadStartedAtMs = currentTimeMs();
+  try {
+    await currentRenderAdapters().storage.downloadObjectToFile({
+      key: sourceStorageKey,
+      filePath: localSourcePath,
+      signal: renderStorageSignal(),
+    });
+    currentRenderSignal()?.throwIfAborted();
+    diagnoseRequiredSourceOperation({
+      attempt: input.attempt,
+      operation: "source_download",
+      startedAtMs: downloadStartedAtMs,
+    });
+  } catch (error) {
+    rethrowRenderControlFlow(error);
+    const failure = new WorkflowFailure(
+      "source_download_failed",
+      "retryable",
+      "Failed to download required source",
+    );
+    diagnoseRequiredSourceOperation({
+      attempt: input.attempt,
+      operation: "source_download",
+      startedAtMs: downloadStartedAtMs,
+      failure,
+    });
+    throw failure;
+  }
+
+  currentRenderSignal()?.throwIfAborted();
+  const probeStartedAtMs = currentTimeMs();
+  try {
+    const probe = await probeSource(localSourcePath);
+    currentRenderSignal()?.throwIfAborted();
+    diagnoseRequiredSourceOperation({
+      attempt: input.attempt,
+      operation: "local_probe",
+      startedAtMs: probeStartedAtMs,
+    });
+    return { sourcePath: localSourcePath, probe };
+  } catch (error) {
+    rethrowRenderControlFlow(error);
+    const originalFailure = workflowFailureFromUnknown(error);
+    const failure =
+      originalFailure.code === "worker_command_input_invalid"
+        ? new WorkflowFailure(
+            "source_media_invalid",
+            "permanent",
+            "Required source media could not be read",
+            error instanceof Error ? { cause: error } : undefined,
+          )
+        : originalFailure;
+    diagnoseRequiredSourceOperation({
+      attempt: input.attempt,
+      operation: "local_probe",
+      startedAtMs: probeStartedAtMs,
+      failure,
+    });
+    throw failure;
+  }
 }
 
 /**
@@ -2996,7 +3201,7 @@ function buildSingleVideoFilter(
  * text/caption steps afterward, once cutaways are overlaid on top).
  *
  * Image mode's `[bgimg]` chain also pins its frame rate to `fps` (defaults
- * to `DEFAULT_BACKGROUND_FPS` when omitted). This matters because the still
+ * to `DEFAULT_RENDER_MEDIA_FPS` when omitted). This matters because the still
  * image is `overlay`'s MAIN (first) framesync input, so without an explicit
  * `fps=` the composed output's rate silently inherits the image2 demuxer's
  * default of 25 fps regardless of the actual source rate — verified with
@@ -3017,7 +3222,7 @@ export function buildFitAndBackgroundFilter(params: {
   trailingChain?: string;
   /** Source frame rate to pin the image-mode `[bgimg]` chain to (see doc
    *  comment above) — callers pass `probe.fps`. Ignored in color mode.
-   *  Defaults to `DEFAULT_BACKGROUND_FPS` if omitted or non-positive. */
+   *  Defaults to `DEFAULT_RENDER_MEDIA_FPS` if omitted or non-positive. */
   fps?: number;
 }): string[] {
   const config = aspectRatioConfig.get(params.aspectRatio);
@@ -3037,7 +3242,7 @@ export function buildFitAndBackgroundFilter(params: {
     params.imageInputIndex != null
   ) {
     const fps =
-      params.fps && params.fps > 0 ? params.fps : DEFAULT_BACKGROUND_FPS;
+      params.fps && params.fps > 0 ? params.fps : DEFAULT_RENDER_MEDIA_FPS;
     return [
       `[${params.imageInputIndex}:v]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},fps=${fps}[bgimg]`,
       `${params.videoInputLabel}scale=${W}:${H}:force_original_aspect_ratio=decrease:force_divisible_by=2[bgfitv]`,
@@ -4518,6 +4723,11 @@ export class ClipRenderAttempt {
     this.#adapters = {
       ...productionClipRenderAttemptAdapters,
       ...dependencies.adapters,
+      media:
+        dependencies.adapters?.media ??
+        (dependencies.adapters?.process
+          ? new ProductionRenderMediaAdapter(dependencies.adapters.process)
+          : productionRenderMediaAdapter),
       storage: {
         ...productionClipRenderAttemptAdapters.storage,
         ...dependencies.adapters?.storage,
@@ -4617,66 +4827,15 @@ async function executeClipRenderAttempt(
   let settlementStarted = false;
 
   try {
-    if (!run.project.sourceStorageKey) {
-      throw new WorkflowFailure(
-        "source_storage_key_missing",
-        "permanent",
-        "The project source file is unavailable",
-      );
-    }
-    const sourceExt = extname(run.project.sourceStorageKey) || ".bin";
-    const localSourcePath = join(tempDir, `source${sourceExt}`);
-
     // `sourcePath` is what every ffmpeg builder receives as input: a presigned
     // URL in ranged mode (see RENDER_SOURCE_URL_TTL_SEC above), or the local
     // download in fallback/download mode. All builders seek with -ss before
     // -i, so both forms behave identically apart from what gets transferred.
-    let sourcePath: string | null = null;
-    let probe: SourceProbe | null = null;
-
-    const configuredSourceMode = currentRenderConfig().sourceMode;
-
-    if (configuredSourceMode !== "download") {
-      try {
-        const presignedUrl =
-          await currentRenderAdapters().storage.presignDownloadUrl({
-          key: run.project.sourceStorageKey,
-          expiresIn: RENDER_SOURCE_URL_TTL_SEC,
-        });
-        probe = await probeSource(presignedUrl);
-        sourcePath = presignedUrl;
-        log("info", "clip_rendering_source_mode", {
-          workflowRunId: run.id,
-          projectId: run.projectId,
-          mode: "ranged",
-        });
-      } catch (error) {
-        log("error", "clip_rendering_ranged_source_fallback", {
-          workflowRunId: run.id,
-          projectId: run.projectId,
-          message: error instanceof Error ? error.message : "unknown",
-        });
-        sourcePath = null;
-        probe = null;
-      }
-    }
-
-    if (sourcePath === null || probe === null) {
-      try {
-        await currentRenderAdapters().storage.downloadObjectToFile({
-          key: run.project.sourceStorageKey,
-          filePath: localSourcePath,
-          signal: renderStorageSignal(),
-        });
-      } catch (error) {
-        throw new WorkflowWorkerError(
-          "source_download_failed",
-          `Failed to download source: ${error instanceof Error ? error.message : "unknown"}`,
-        );
-      }
-      sourcePath = localSourcePath;
-      probe = await probeSource(sourcePath);
-    }
+    const { sourcePath, probe } = await resolveRequiredSource({
+      run,
+      tempDir,
+      attempt,
+    });
 
     log("info", "clip_rendering_source_probed", {
       workflowRunId: run.id,
