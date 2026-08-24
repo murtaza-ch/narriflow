@@ -34,6 +34,8 @@ type OrdinaryTracerFailure =
   | "command_nonzero_exit"
   | "upload"
   | "guarded_completion"
+  | "guarded_completion_rejected"
+  | "object_cleanup"
   | "settlement"
   | "cleanup";
 
@@ -47,6 +49,7 @@ function createOrdinaryTracer(input: {
   failure?: OrdinaryTracerFailure;
   initialVariantState?: "pending" | "completed";
   outcome: RenderWorkSetOutcome;
+  failureWriteRejects?: boolean;
   waitForCommandAbort?: boolean;
   sourceFailures?: readonly SourceFailure[];
   sourceInterruption?: {
@@ -58,6 +61,7 @@ function createOrdinaryTracer(input: {
   productionMedia?: ProductionRenderMediaAdapter;
   sourceMode?: "ranged" | "download";
   superseded?: boolean;
+  exportBound?: boolean;
   workspaceDirectory?: string;
   downloadFixturePath?: string;
 }) {
@@ -73,8 +77,14 @@ function createOrdinaryTracer(input: {
     clipId: "clip-ordinary",
     aspectRatio: "ratio_9_16",
     resolution: "1080p",
-    exportVariantId: null,
-    exportVariant: null,
+    exportVariantId: input.exportBound ? "export-variant-ordinary" : null,
+    exportVariant: input.exportBound
+      ? {
+          id: "export-variant-ordinary",
+          exportId: "export-ordinary",
+          watermark: false,
+        }
+      : null,
     clipSnapshot: null,
     clip: {
       id: "clip-ordinary",
@@ -96,6 +106,11 @@ function createOrdinaryTracer(input: {
   const uploadedKeys: string[] = [];
   const objectReferences: string[] = [];
   const deletedKeys: string[] = [];
+  const uploads: Array<{
+    key: string;
+    contentType: string | undefined;
+    metadata: Record<string, string> | undefined;
+  }> = [];
   const diagnostics: Array<{
     message: string;
     context?: Record<string, unknown>;
@@ -296,6 +311,9 @@ function createOrdinaryTracer(input: {
           if (input.failure === "guarded_completion") {
             throw new WorkflowAttemptLost(attempt);
           }
+          if (input.failure === "guarded_completion_rejected") {
+            throw injectedError;
+          }
           if (input.superseded) {
             variantState = "superseded";
             return { persisted: false };
@@ -306,6 +324,7 @@ function createOrdinaryTracer(input: {
         },
         failClipRenderVariant: async (_variantId, code, disposition) => {
           actions.push(`variant_failure:${code}:${disposition}`);
+          if (input.failureWriteRejects) throw injectedError;
           variantState = "failed";
         },
         getPendingClipRendersForWorkSet: async () =>
@@ -342,7 +361,7 @@ function createOrdinaryTracer(input: {
             await copyFile(input.downloadFixturePath, filePath);
           }
         },
-        putFileFromPath: async ({ key }) => {
+        putFileFromPath: async ({ key, contentType, metadata }) => {
           actions.push("upload");
           if (input.failure === "upload") {
             throw new WorkflowFailure(
@@ -351,11 +370,13 @@ function createOrdinaryTracer(input: {
               "The object store is temporarily unavailable",
             );
           }
+          uploads.push({ key, contentType, metadata });
           uploadedKeys.push(key);
           return { key };
         },
         deleteObject: async (key) => {
           actions.push("object_cleanup");
+          if (input.failure === "object_cleanup") throw injectedError;
           deletedKeys.push(key);
           return { key };
         },
@@ -400,9 +421,209 @@ function createOrdinaryTracer(input: {
     objectReferences,
     settlementCalls: () => settlementCalls,
     sourceSignal: sourceController.signal,
+    uploads,
     uploadedKeys,
     variantState: () => variantState,
   };
+}
+
+function createUploadQueueTracer(input: {
+  attemptId: string;
+  configuredConcurrency?: number;
+  variantCount: number;
+}) {
+  const attempt: ClipRenderingWorkflowAttempt = {
+    workflowRunId: "10000000-0000-0000-0000-000000000071",
+    projectId: "20000000-0000-0000-0000-000000000072",
+    stage: "clip_rendering",
+    attemptId: input.attemptId,
+    attemptCount: 1,
+  };
+  const pendingRenders = Array.from({ length: input.variantCount }, (_, index) => ({
+    id: `variant-${index}`,
+    clipId: `clip-${index}`,
+    aspectRatio: "ratio_9_16",
+    resolution: "1080p",
+    exportVariantId: null,
+    exportVariant: null,
+    clipSnapshot: null,
+    clip: {
+      id: `clip-${index}`,
+      index,
+      startSec: 0,
+      endSec: 5,
+      llmModel: "test",
+      transcriptSlice: [],
+      deletedRanges: null,
+      captionPreset: null,
+      studioEdits: null,
+      brollCues: null,
+      brollUrl: null,
+      category: "other",
+    },
+  })) as unknown as PendingClipRender[];
+  const states = new Map(pendingRenders.map((render) => [render.id, "pending"]));
+  const actions: string[] = [];
+  const objectReferences: string[] = [];
+  const uploadStartedKeys: string[] = [];
+  const uploadAbortedKeys: string[] = [];
+  let activeUploads = 0;
+  let maxActiveUploads = 0;
+  let settlementCalls = 0;
+  let cleanupActiveUploads: number | null = null;
+  let releaseUploads = () => {};
+  const uploadGate = new Promise<void>((resolve) => {
+    releaseUploads = resolve;
+  });
+
+  const clipRenderAttempt = new ClipRenderAttempt({
+    run: {
+      id: attempt.workflowRunId,
+      projectId: attempt.projectId,
+      project: {
+        title: "Upload queue tracer",
+        sourceStorageKey: `projects/${attempt.projectId}/source/input.mp3`,
+        sourceDurationSeconds: 5,
+        userId: "user",
+        workspaceId: null,
+      },
+    },
+    config: parseRenderConfig({
+      WORKER_CLIP_RENDER_ATTEMPT_ENABLED: "1",
+      WORKER_RENDER_SOURCE_MODE: "download",
+      ...(input.configuredConcurrency === undefined
+        ? {}
+        : { WORKER_UPLOAD_CONCURRENCY: String(input.configuredConcurrency) }),
+      WORKER_AUTO_REFRAME: "0",
+      WORKER_LAYOUT_ENGINE: "0",
+      WORKER_SCREEN_LAYOUT: "0",
+      WORKER_SPLIT: "0",
+      WORKER_PIP_DETECT: "0",
+      WORKER_BROLL: "0",
+    }),
+    lifecycle: {
+      beginRenderWorkSet: async () => ({
+        variantIds: pendingRenders.map((render) => render.id),
+      }),
+      settleRenderWorkSet: async () => {
+        settlementCalls += 1;
+        actions.push("settle");
+        return {
+          status: "completed",
+          requested: input.variantCount,
+          succeeded: input.variantCount,
+          failed: 0,
+          superseded: 0,
+          followUpWorkflowRunId: null,
+        };
+      },
+    },
+    adapters: {
+      media: {
+        probe: async () => ({
+          width: 0,
+          height: 0,
+          hasVideo: false,
+          hasAudio: true,
+          fps: 30,
+        }),
+      },
+      process: { execute: async () => "" },
+      project: {
+        getUserPricingTier: async () => "pro",
+        getProjectBrandSnapshot: async () => null,
+        publishWorkflowProgress: async () => {},
+      },
+      clip: {
+        completeClipAutoLayoutAnalysis: async () => false,
+        completeClipRenderVariant: async (variantId, completion) => {
+          states.set(variantId, "completed");
+          objectReferences.push(completion.storageKey);
+          return { persisted: true };
+        },
+        failClipRenderVariant: async (variantId) => {
+          states.set(variantId, "failed");
+        },
+        getPendingClipRendersForWorkSet: async () =>
+          pendingRenders.filter((render) => {
+            const state = states.get(render.id);
+            return state === "pending" || state === "rendering";
+          }),
+        markClipRenderVariantRendering: async (variantId) => {
+          states.set(variantId, "rendering");
+          return true;
+        },
+        setClipLayoutAnalysis: async () => {},
+      },
+      storage: {
+        downloadObjectToFile: async () => {},
+        putFileFromPath: async ({ key, signal }) => {
+          uploadStartedKeys.push(key);
+          activeUploads += 1;
+          maxActiveUploads = Math.max(maxActiveUploads, activeUploads);
+          actions.push(`upload_started:${key}`);
+          try {
+            await new Promise<void>((resolve, reject) => {
+              let finished = false;
+              const finish = (operation: () => void) => {
+                if (finished) return;
+                finished = true;
+                signal?.removeEventListener("abort", onAbort);
+                operation();
+              };
+              const onAbort = () =>
+                finish(() => {
+                  uploadAbortedKeys.push(key);
+                  reject(
+                    signal?.reason instanceof Error
+                      ? signal.reason
+                      : new DOMException("cancelled", "AbortError"),
+                  );
+                });
+              signal?.addEventListener("abort", onAbort, { once: true });
+              if (signal?.aborted) onAbort();
+              else uploadGate.then(() => finish(resolve));
+            });
+            return { key };
+          } finally {
+            activeUploads -= 1;
+            actions.push(`upload_stopped:${key}`);
+          }
+        },
+        deleteObject: async (key) => ({ key }),
+      },
+      workspace: {
+        mkdtemp: async () => "/tmp/narriflow-render-upload-queue-tracer",
+        rm: async () => {
+          cleanupActiveUploads = activeUploads;
+          actions.push("workspace_cleanup");
+        },
+        stat: async () => ({ size: 100 }) as never,
+      },
+      diagnose: () => {},
+    },
+  });
+
+  return {
+    actions,
+    attempt,
+    cleanupActiveUploads: () => cleanupActiveUploads,
+    clipRenderAttempt,
+    maxActiveUploads: () => maxActiveUploads,
+    objectReferences,
+    releaseUploads,
+    settlementCalls: () => settlementCalls,
+    uploadAbortedKeys,
+    uploadStartedKeys,
+  };
+}
+
+async function waitFor(condition: () => boolean): Promise<void> {
+  for (let index = 0; index < 500; index += 1) {
+    if (condition()) return;
+    await Promise.resolve();
+  }
+  throw new Error("Timed out waiting for deterministic tracer state");
 }
 
 function createInterfaceGuardTracer(input: {
@@ -607,7 +828,7 @@ test("ClipRenderAttempt settles an empty frozen work set through execute", async
         workspaceId: null,
       },
     },
-    config: parseRenderConfig({}),
+    config: parseRenderConfig({ WORKER_CLIP_RENDER_ATTEMPT_ENABLED: "1" }),
     lifecycle,
   });
 
@@ -641,7 +862,7 @@ test("ClipRenderAttempt rechecks cancellation after freezing an empty work set",
         workspaceId: null,
       },
     },
-    config: parseRenderConfig({}),
+    config: parseRenderConfig({ WORKER_CLIP_RENDER_ATTEMPT_ENABLED: "1" }),
     lifecycle: {
       beginRenderWorkSet: async () => {
         controller.abort(new DOMException("cancelled", "AbortError"));
@@ -873,6 +1094,7 @@ test("ClipRenderAttempt owns a fully deleted variant before permanently failing 
       },
     },
     config: parseRenderConfig({
+      WORKER_CLIP_RENDER_ATTEMPT_ENABLED: "1",
       WORKER_RENDER_SOURCE_MODE: "download",
       WORKER_AUTO_REFRAME: "0",
       WORKER_LAYOUT_ENGINE: "0",
@@ -1050,6 +1272,18 @@ test("ClipRenderAttempt renders and settles one ordinary variant through execute
   expect(harness.uploadedKeys).toHaveLength(1);
   expect(harness.objectReferences).toEqual(harness.uploadedKeys);
   expect(harness.uploadedKeys[0]).toContain(harness.attempt.attemptId);
+  expect(harness.uploads).toEqual([
+    {
+      key: harness.uploadedKeys[0],
+      contentType: "video/mp4",
+      metadata: {
+        project_id: harness.attempt.projectId,
+        clip_id: "clip-ordinary",
+        workflow_run_id: harness.attempt.workflowRunId,
+        format: "9:16",
+      },
+    },
+  ]);
   expect(harness.actions).toEqual([
     "begin",
     "state_load",
@@ -1060,6 +1294,105 @@ test("ClipRenderAttempt renders and settles one ordinary variant through execute
     "settle",
     "workspace_cleanup",
   ]);
+});
+
+test("ClipRenderAttempt persists an attempt-unique export key with unchanged delivery metadata", async () => {
+  const expected: RenderWorkSetOutcome = {
+    status: "completed",
+    requested: 1,
+    succeeded: 1,
+    failed: 0,
+    superseded: 0,
+    followUpWorkflowRunId: null,
+  };
+  const harness = createOrdinaryTracer({
+    attemptId: "30000000-0000-4000-8000-000000000064",
+    exportBound: true,
+    outcome: expected,
+  });
+
+  await expect(
+    harness.clipRenderAttempt.execute({
+      attempt: harness.attempt,
+      signal: new AbortController().signal,
+    }),
+  ).resolves.toEqual(expected);
+  expect(harness.uploadedKeys).toHaveLength(1);
+  expect(harness.uploadedKeys[0]).toContain(
+    `/exports/export-ordinary/export-variant-ordinary-9x16-${harness.attempt.attemptId}.mp4`,
+  );
+  expect(harness.objectReferences).toEqual(harness.uploadedKeys);
+  expect(harness.uploads[0]).toEqual({
+    key: harness.uploadedKeys[0],
+    contentType: "video/mp4",
+    metadata: {
+      project_id: harness.attempt.projectId,
+      clip_id: "clip-ordinary",
+      workflow_run_id: harness.attempt.workflowRunId,
+      format: "9:16",
+    },
+  });
+});
+
+for (const concurrencyCase of [
+  { label: "defaults upload concurrency", configured: undefined, expected: 2 },
+  { label: "caps upload concurrency", configured: 9, expected: 4 },
+] as const) {
+  test(`ClipRenderAttempt ${concurrencyCase.label} and drains every scheduled upload`, async () => {
+    const harness = createUploadQueueTracer({
+      attemptId:
+        concurrencyCase.expected === 2
+          ? "30000000-0000-4000-8000-000000000065"
+          : "30000000-0000-4000-8000-000000000066",
+      configuredConcurrency: concurrencyCase.configured,
+      variantCount: 6,
+    });
+    const execution = harness.clipRenderAttempt.execute({
+      attempt: harness.attempt,
+      signal: new AbortController().signal,
+    });
+
+    await waitFor(
+      () => harness.uploadStartedKeys.length === concurrencyCase.expected,
+    );
+    expect(harness.maxActiveUploads()).toBe(concurrencyCase.expected);
+    expect(harness.settlementCalls()).toBe(0);
+    harness.releaseUploads();
+
+    await expect(execution).resolves.toMatchObject({
+      status: "completed",
+      requested: 6,
+      succeeded: 6,
+    });
+    expect(harness.uploadStartedKeys).toHaveLength(6);
+    expect(harness.objectReferences).toEqual(harness.uploadStartedKeys);
+    expect(harness.settlementCalls()).toBe(1);
+    expect(harness.cleanupActiveUploads()).toBe(0);
+  });
+}
+
+test("ClipRenderAttempt aborts active uploads and leaves queued uploads unstarted after ownership loss", async () => {
+  const harness = createUploadQueueTracer({
+    attemptId: "30000000-0000-4000-8000-000000000067",
+    variantCount: 5,
+  });
+  const controller = new AbortController();
+  const execution = harness.clipRenderAttempt.execute({
+    attempt: harness.attempt,
+    signal: controller.signal,
+  });
+
+  await waitFor(() => harness.uploadStartedKeys.length === 2);
+  const ownershipLoss = new WorkflowAttemptLost(harness.attempt);
+  controller.abort(ownershipLoss);
+
+  await expect(execution).rejects.toBe(ownershipLoss);
+  expect(harness.uploadStartedKeys).toHaveLength(2);
+  expect(harness.uploadAbortedKeys).toEqual(harness.uploadStartedKeys);
+  expect(harness.objectReferences).toEqual([]);
+  expect(harness.settlementCalls()).toBe(0);
+  expect(harness.cleanupActiveUploads()).toBe(0);
+  expect(harness.actions.at(-1)).toBe("workspace_cleanup");
 });
 
 test("ClipRenderAttempt resolves a ranged source through its media adapter", async () => {
@@ -1552,6 +1885,32 @@ for (const failure of ["command", "upload"] as const) {
   });
 }
 
+test("ClipRenderAttempt observes a rejected background upload task before settlement", async () => {
+  const harness = createOrdinaryTracer({
+    attemptId: "30000000-0000-4000-8000-000000000063",
+    failure: "upload",
+    failureWriteRejects: true,
+    outcome: {
+      status: "requeued",
+      requested: 1,
+      succeeded: 0,
+      failed: 1,
+      superseded: 0,
+      followUpWorkflowRunId: null,
+    },
+  });
+
+  await expect(
+    harness.clipRenderAttempt.execute({
+      attempt: harness.attempt,
+      signal: new AbortController().signal,
+    }),
+  ).rejects.toBe(harness.injectedError);
+  expect(harness.settlementCalls()).toBe(0);
+  expect(harness.actions.indexOf("variant_failure:render_upload_failed:retryable"))
+    .toBeLessThan(harness.actions.indexOf("workspace_cleanup"));
+});
+
 test("ClipRenderAttempt reports an owned deletion as superseded", async () => {
   const expected: RenderWorkSetOutcome = {
     status: "completed",
@@ -1576,6 +1935,44 @@ test("ClipRenderAttempt reports an owned deletion as superseded", async () => {
   expect(harness.variantState()).toBe("superseded");
   expect(harness.deletedKeys).toEqual(harness.uploadedKeys);
   expect(harness.objectReferences).toEqual([]);
+});
+
+test("ClipRenderAttempt diagnoses provisional deletion failure without reversing supersession", async () => {
+  const expected: RenderWorkSetOutcome = {
+    status: "completed",
+    requested: 1,
+    succeeded: 0,
+    failed: 0,
+    superseded: 1,
+    followUpWorkflowRunId: null,
+  };
+  const harness = createOrdinaryTracer({
+    attemptId: "30000000-0000-4000-8000-000000000068",
+    failure: "object_cleanup",
+    outcome: expected,
+    superseded: true,
+  });
+
+  await expect(
+    harness.clipRenderAttempt.execute({
+      attempt: harness.attempt,
+      signal: new AbortController().signal,
+    }),
+  ).resolves.toEqual(expected);
+  expect(harness.variantState()).toBe("superseded");
+  expect(harness.objectReferences).toEqual([]);
+  expect(harness.diagnostics).toContainEqual({
+    message: "clip_render_provisional_cleanup_failed",
+    context: expect.objectContaining({
+      attemptId: harness.attempt.attemptId,
+      phase: "cleanup",
+      operation: "storage_delete",
+      objectKey: harness.uploadedKeys[0],
+      reason: "variant_superseded",
+      failureCode: "provisional_object_delete_failed",
+      disposition: "orphan_candidate",
+    }),
+  });
 });
 
 test("ClipRenderAttempt replays the same frozen work set idempotently", async () => {
@@ -1659,6 +2056,45 @@ test("ClipRenderAttempt cleans a provisional object when guarded completion lose
   expect(
     harness.actions.some((action) => action.startsWith("variant_failure:")),
   ).toBe(false);
+});
+
+test("ClipRenderAttempt cleans a provisional object when guarded completion is rejected", async () => {
+  const expected: RenderWorkSetOutcome = {
+    status: "requeued",
+    requested: 1,
+    succeeded: 0,
+    failed: 1,
+    superseded: 0,
+    followUpWorkflowRunId: null,
+  };
+  const harness = createOrdinaryTracer({
+    attemptId: "30000000-0000-4000-8000-000000000062",
+    failure: "guarded_completion_rejected",
+    outcome: expected,
+  });
+
+  await expect(
+    harness.clipRenderAttempt.execute({
+      attempt: harness.attempt,
+      signal: new AbortController().signal,
+    }),
+  ).resolves.toEqual(expected);
+  expect(harness.deletedKeys).toEqual(harness.uploadedKeys);
+  expect(harness.objectReferences).toEqual([]);
+  expect(harness.actions).toContain(
+    "variant_failure:render_persistence_failed:retryable",
+  );
+  expect(harness.diagnostics).toContainEqual({
+    message: "clip_render_variant_failed",
+    context: expect.objectContaining({
+      attemptId: harness.attempt.attemptId,
+      phase: "persistence",
+      operation: "complete_clip_render_variant",
+      failureCode: "render_persistence_failed",
+      disposition: "retryable",
+      cleanupResult: "deleted",
+    }),
+  });
 });
 
 test("ClipRenderAttempt diagnoses cleanup failure without reversing settlement", async () => {

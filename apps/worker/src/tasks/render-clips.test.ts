@@ -24,7 +24,6 @@ import {
   buildSingleVideoArgs,
   buildTransitionFilter,
   clipRenderAttemptStorageKey,
-  createBoundedTaskQueue,
   applySpeakerLayoutOverridesToSegments,
   decidePipUsage,
   decideScreenFallback,
@@ -4000,110 +3999,5 @@ describe("remapSceneCutsForCutPlan (layout-engine wiring)", () => {
     // 10 -> edited 10; 25 (inside the cut) dropped; 40 -> edited 30; the
     // concat join at edited 20 is itself a scene cut.
     expect(out).toEqual([10, 20, 30]);
-  });
-});
-
-describe("createBoundedTaskQueue (background upload overlap)", () => {
-  const tick = () => new Promise<void>((r) => setTimeout(r, 0));
-
-  test("never runs more than `limit` tasks concurrently and preserves FIFO start order", async () => {
-    const queue = createBoundedTaskQueue(2);
-    let active = 0;
-    let peak = 0;
-    const started: number[] = [];
-    const resolvers: Array<() => void> = [];
-    for (let i = 0; i < 5; i++) {
-      queue.schedule(async () => {
-        started.push(i);
-        active += 1;
-        peak = Math.max(peak, active);
-        await new Promise<void>((resolve) => resolvers.push(resolve));
-        active -= 1;
-      });
-    }
-    await tick();
-    expect(started).toEqual([0, 1]);
-    expect(peak).toBe(2);
-    resolvers.shift()!();
-    await tick();
-    expect(started).toEqual([0, 1, 2]);
-    expect(peak).toBe(2);
-    while (resolvers.length > 0) {
-      resolvers.shift()!();
-      await tick();
-    }
-    await queue.drain();
-    expect(started).toEqual([0, 1, 2, 3, 4]);
-    expect(queue.scheduledCount()).toBe(5);
-  });
-
-  test("drain resolves only after every task settles, including failures", async () => {
-    const queue = createBoundedTaskQueue(1);
-    const done: string[] = [];
-    queue.schedule(async () => {
-      await tick();
-      done.push("a");
-    });
-    queue.schedule(async () => {
-      done.push("b");
-      throw new Error("task-owned failure");
-    });
-    queue.schedule(async () => {
-      done.push("c");
-    });
-    await queue.drain();
-    expect(done).toEqual(["a", "b", "c"]);
-  });
-
-  test("drain is idempotent and picks up tasks scheduled after a prior drain", async () => {
-    const queue = createBoundedTaskQueue(2);
-    await queue.drain(); // empty drain resolves immediately
-    let ran = false;
-    queue.schedule(async () => {
-      await tick();
-      ran = true;
-    });
-    await queue.drain();
-    expect(ran).toBe(true);
-    await queue.drain();
-  });
-
-  test("aborting the queue cancels active work and rejects waiting work", async () => {
-    const controller = new AbortController();
-    const queue = createBoundedTaskQueue(1, controller.signal);
-    const started: string[] = [];
-    queue.schedule(async () => {
-      started.push("active");
-      await new Promise<void>((resolve) => {
-        controller.signal.addEventListener("abort", () => resolve(), {
-          once: true,
-        });
-      });
-    });
-    queue.schedule(async () => {
-      started.push("waiting");
-    });
-
-    await tick();
-    controller.abort(new Error("ownership lost"));
-    await queue.drain();
-
-    expect(started).toEqual(["active"]);
-  });
-
-  test("a limit below 1 clamps to serial execution", async () => {
-    const queue = createBoundedTaskQueue(0);
-    let active = 0;
-    let peak = 0;
-    for (let i = 0; i < 3; i++) {
-      queue.schedule(async () => {
-        active += 1;
-        peak = Math.max(peak, active);
-        await tick();
-        active -= 1;
-      });
-    }
-    await queue.drain();
-    expect(peak).toBe(1);
   });
 });

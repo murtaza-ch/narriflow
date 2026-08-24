@@ -403,6 +403,7 @@ export async function headObject(key: string) {
     contentType: response.ContentType ?? null,
     sizeBytes: response.ContentLength ?? null,
     etag: response.ETag ?? null,
+    metadata: response.Metadata ?? {},
   };
 }
 

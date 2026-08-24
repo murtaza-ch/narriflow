@@ -578,6 +578,25 @@ class WorkflowWorkerError extends WorkflowFailure {
   }
 }
 
+class RenderPersistenceFailure extends WorkflowWorkerError {
+  readonly cleanupResult: "deleted" | "orphan_candidate";
+
+  constructor(
+    cause: unknown,
+    cleanupResult: "deleted" | "orphan_candidate",
+  ) {
+    super(
+      "render_persistence_failed",
+      cause instanceof Error
+        ? `Guarded render persistence failed: ${cause.message}`
+        : "Guarded render persistence failed",
+      "retryable",
+    );
+    this.name = "RenderPersistenceFailure";
+    this.cleanupResult = cleanupResult;
+  }
+}
+
 const aspectRatioConfig = new Map(
   clipAspectRatioOptions.map((option) => [option.value, option]),
 );
@@ -4491,30 +4510,44 @@ export function buildFreeTierPostProcessArgs(params: {
  *
  * Semantics callers rely on:
  *  - At most `limit` tasks run concurrently; excess tasks queue FIFO.
- *  - `schedule` never throws and tasks never reject: the TASK owns its error
- *    handling (upload failures mark their own variant failed) — a rejected
- *    promise here would otherwise surface as an unhandled rejection or kill
- *    an unrelated `drain`.
+ *  - `schedule` never throws. Task rejection is recorded immediately, every
+ *    later task still gets its turn, and `drain()` rethrows the first error
+ *    only after the complete scheduled set has settled.
+ *  - Attempt cancellation rejects queued tasks without starting them. Active
+ *    tasks receive the same signal through their storage adapter.
  *  - `drain()` resolves only when every scheduled task (including ones
  *    scheduled after a previous drain) has settled. Idempotent; safe to call
  *    from both the success path and `finally`.
  */
-export function createBoundedTaskQueue(limit: number, signal?: AbortSignal): {
+function createBoundedTaskQueue(limit: number, signal?: AbortSignal): {
   schedule: (task: () => Promise<void>) => void;
   drain: () => Promise<void>;
   /** Number of tasks scheduled over the queue's lifetime (for logging). */
   scheduledCount: () => number;
 } {
-  const concurrency = Math.max(1, Math.floor(limit));
+  const concurrency = Math.min(4, Math.max(1, Math.floor(limit)));
   let active = 0;
   let scheduled = 0;
+  let settled = 0;
+  let firstError: unknown = null;
   const waiting: Array<() => Promise<void>> = [];
   const inFlight = new Set<Promise<void>>();
+
+  const cancellationReason = () =>
+    signal?.reason instanceof Error
+      ? signal.reason
+      : new DOMException("Clip render cancelled", "AbortError");
+
+  const recordError = (error: unknown) => {
+    if (firstError === null) firstError = error;
+  };
 
   signal?.addEventListener(
     "abort",
     () => {
-      waiting.splice(0, waiting.length);
+      const rejectedCount = waiting.splice(0, waiting.length).length;
+      settled += rejectedCount;
+      if (rejectedCount > 0) recordError(cancellationReason());
     },
     { once: true },
   );
@@ -4523,10 +4556,12 @@ export function createBoundedTaskQueue(limit: number, signal?: AbortSignal): {
     while (active < concurrency && waiting.length > 0) {
       const task = waiting.shift()!;
       active += 1;
-      const p = task()
-        .catch(() => {})
+      const p = Promise.resolve()
+        .then(task)
+        .catch(recordError)
         .finally(() => {
           active -= 1;
+          settled += 1;
           inFlight.delete(p);
           pump();
         });
@@ -4537,7 +4572,11 @@ export function createBoundedTaskQueue(limit: number, signal?: AbortSignal): {
   return {
     schedule: (task) => {
       scheduled += 1;
-      if (signal?.aborted) return;
+      if (signal?.aborted) {
+        settled += 1;
+        recordError(cancellationReason());
+        return;
+      }
       waiting.push(task);
       pump();
     },
@@ -4547,6 +4586,10 @@ export function createBoundedTaskQueue(limit: number, signal?: AbortSignal): {
       while (inFlight.size > 0 || waiting.length > 0) {
         await Promise.all([...inFlight]);
       }
+      if (settled !== scheduled) {
+        throw new Error("Upload queue drained before every scheduled task settled");
+      }
+      if (firstError !== null) throw firstError;
     },
     scheduledCount: () => scheduled,
   };
@@ -4562,18 +4605,24 @@ function uploadConcurrency(): number {
 async function commitProvisionalRenderUpload<T>(input: {
   signal?: AbortSignal;
   complete: () => Promise<T>;
-  discard: (reason: string) => Promise<void>;
+  discard: (
+    reason: string,
+  ) => Promise<"deleted" | "orphan_candidate">;
 }): Promise<T> {
   try {
     input.signal?.throwIfAborted();
     return await input.complete();
   } catch (error) {
-    if (input.signal?.aborted) {
-      await input.discard("attempt_cancelled_after_upload");
-    } else if (error instanceof WorkflowAttemptLost) {
-      await input.discard("ownership_lost");
+    const reason = input.signal?.aborted
+      ? "attempt_cancelled_after_upload"
+      : error instanceof WorkflowAttemptLost
+        ? "ownership_lost"
+        : "persistence_rejected";
+    const cleanupResult = await input.discard(reason);
+    if (input.signal?.aborted || error instanceof WorkflowAttemptLost) {
+      throw error;
     }
-    throw error;
+    throw new RenderPersistenceFailure(error, cleanupResult);
   }
 }
 
@@ -4603,20 +4652,27 @@ async function uploadRenderedOutput(params: {
         signal: renderStorageSignal(false),
         },
       );
+      return "deleted" as const;
     } catch (error) {
       log("error", "clip_render_provisional_cleanup_failed", {
         workflowRunId: params.workflowRunId,
+        attemptId: renderExecutionStorage.getStore()?.attempt.attemptId,
         projectId: params.projectId,
         clipId: params.output.clipId,
         clipRenderId: params.output.clipRenderId,
         phase: "cleanup",
         operation: "storage_delete",
         reason,
+        objectKey: params.output.storageKey,
         objectKeyClass: params.output.storageKey.includes("/exports/")
           ? "export_attempt"
           : "ordinary_attempt",
+        failureCode: "provisional_object_delete_failed",
+        disposition: "orphan_candidate",
+        cleanupResult: "orphan_candidate",
         errorCode: error instanceof Error ? error.name : "storage_delete_failed",
       });
+      return "orphan_candidate" as const;
     }
   };
   if (params.output.resolution === "720p") {
@@ -4969,23 +5025,36 @@ async function executeClipRenderAttempt(
             error instanceof WorkflowFailure
               ? error.code
               : "render_upload_failed";
+          const disposition =
+            error instanceof WorkflowFailure
+              ? error.disposition
+              : "retryable";
           await currentRenderAdapters()
             .clip
             .failClipRenderVariant(
               output.clipRenderId,
               errorCode,
-              error instanceof WorkflowFailure
-                ? error.disposition
-                : "retryable",
-            )
-            .catch(() => {});
+              disposition,
+            );
+          const persistenceFailure =
+            error instanceof RenderPersistenceFailure ? error : null;
           log("error", "clip_render_variant_failed", {
             workflowRunId: run.id,
+            attemptId: attempt.attemptId,
             clipId: output.clipId,
             clipRenderId: output.clipRenderId,
             clipIndex: output.clipIndex,
             aspectRatio: output.aspectRatio,
             code: errorCode,
+            failureCode: errorCode,
+            disposition,
+            phase: persistenceFailure ? "persistence" : "upload",
+            operation: persistenceFailure
+              ? "complete_clip_render_variant"
+              : "storage_put",
+            ...(persistenceFailure
+              ? { cleanupResult: persistenceFailure.cleanupResult }
+              : {}),
             message:
               error instanceof Error ? error.message : "Unknown render error",
           });

@@ -60,9 +60,9 @@ function featureEnabled(environment: RenderEnvironment, name: string): boolean {
   return environment[name] !== "0";
 }
 
-function enabledUnlessPaused(environment: RenderEnvironment, name: string): boolean {
+function explicitlyEnabled(environment: RenderEnvironment, name: string): boolean {
   const value = environment[name]?.trim();
-  if (value === undefined || value === "") return true;
+  if (value === undefined || value === "") return false;
   if (value === "0") return false;
   if (value === "1") return true;
   throw new Error(`${name} must be either 0 or 1`);
@@ -132,7 +132,7 @@ export function parseRenderConfig(
   }
 
   return Object.freeze({
-    clipRenderAttemptEnabled: enabledUnlessPaused(
+    clipRenderAttemptEnabled: explicitlyEnabled(
       environment,
       "WORKER_CLIP_RENDER_ATTEMPT_ENABLED",
     ),

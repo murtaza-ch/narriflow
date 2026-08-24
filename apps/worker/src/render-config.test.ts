@@ -14,7 +14,7 @@ describe("RenderConfig", () => {
 
     expect(config).toMatchObject({
       sourceMode: "ranged",
-      clipRenderAttemptEnabled: true,
+      clipRenderAttemptEnabled: false,
       uploadConcurrency: 2,
       renderCommandTimeoutMs: 1_800_000,
       probeCommandTimeoutMs: 120_000,
@@ -29,8 +29,12 @@ describe("RenderConfig", () => {
     expect(Object.isFrozen(config)).toBe(true);
   });
 
-  test("renders by default and preserves an explicit operational pause", () => {
-    expect(parseRenderConfig({}).clipRenderAttemptEnabled).toBe(true);
+  test("keeps live claims dark by default and requires an explicit enable", () => {
+    expect(parseRenderConfig({}).clipRenderAttemptEnabled).toBe(false);
+    expect(
+      parseRenderConfig({ WORKER_CLIP_RENDER_ATTEMPT_ENABLED: "1" })
+        .clipRenderAttemptEnabled,
+    ).toBe(true);
     expect(
       parseRenderConfig({ WORKER_CLIP_RENDER_ATTEMPT_ENABLED: "0" })
         .clipRenderAttemptEnabled,
