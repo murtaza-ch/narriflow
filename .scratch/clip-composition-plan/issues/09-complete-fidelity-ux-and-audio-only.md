@@ -32,17 +32,17 @@
 - [ ] Real-media tests compare audio-only probes and representative audiogram frames with current output and prove unsupported backgrounds are omitted consistently.
 - [ ] Failure injection covers delayed evidence, stale evidence completion, failed optional assets, invalid geometry, missing required source, and ownership loss during evidence resolution.
 
-## Migration and mixed-version considerations
+## Plan-only implementation constraints
 
-- [ ] Add fidelity messages beside current UI until all plan modes emit stable notices and the copy is verified against real fallbacks.
-- [ ] Keep render failure and optional degradation compatibility while old and new adapters coexist.
+- [ ] Extend the existing plan notice model until every composition mode has verified copy for its real fallbacks.
+- [ ] Keep render failure and optional degradation behavior stable while moving the remaining visual and audio decisions into the plan.
 - [ ] Do not persist plans or composition notices as a new source of truth.
 
 ## Rollout and recovery safety
 
-- [ ] Enable fidelity UI per composition mode and verify that the shown fallback matches shadow and rendered results before broad rollout.
+- [ ] Verify that every shown fallback matches the shared plan and rendered result before deploying its fidelity UI.
 - [ ] Monitor notice code, requested and effective mode, target scope, plan version, invalid-plan count, and optional degradation count.
-- [ ] Rollback hides the new presentation and selects retained composition paths without discarding evidence or editor changes.
+- [ ] Recovery reverts the offending presentation or plan change without restoring a second composition path or discarding evidence and editor changes.
 
 ## Scope boundaries
 

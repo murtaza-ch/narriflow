@@ -14,10 +14,10 @@
 - [ ] Compatible targets and layout modes issue at most one request for the same evidence key during a render attempt.
 - [ ] Detectors over the same source window share one extracted analysis segment and one cleanup lifecycle.
 - [ ] Valid durable automatic and screen evidence is preferred over new analysis when its versioned fingerprint matches.
-- [ ] Multi-face evidence supplies an allowed single-face fallback only when interface tests and shadow comparisons prove equivalent behavior.
+- [ ] Evidence kinds remain isolated unless a new version explicitly records every fact required by both policies and shared fixtures prove equivalent behavior.
 - [ ] Screen face confirmation is skipped only when versioned evidence contains the complete deterministic confirmation facts.
 - [ ] Center, Fit, audio-only, disabled, and B-roll-short-circuited paths perform no unnecessary face or scene analysis.
-- [ ] Plain multi-output rendering keeps the current shared encode topology and does not multiply source decodes or commands.
+- [ ] The current independent per-target topology remains the safe baseline until measured grouping proves lower cost within the worker memory budget.
 - [ ] Structurally equivalent complex targets may share work only when pixel, branch, scene, command-size, and memory budgets all permit it.
 - [ ] Segment-heavy Split, Screen, B-roll, and edited plans keep the safer per-output topology by default.
 - [ ] Any newly enabled grouping must reduce a measured decode, extraction, analysis, or command cost and stay within the current peak-RSS envelope for the same representative fixture and measurement tolerance.
@@ -33,18 +33,18 @@
 - [ ] Diagnostics tests prove stable fields and reject signed URLs, raw commands, document contents, and provider errors.
 - [ ] Full real-media comparisons prove unchanged topology output remains byte-identical where intended and visually or audibly equivalent within approved tolerances elsewhere.
 
-## Migration and mixed-version considerations
+## Plan-only implementation constraints
 
 - [ ] Land keyed request and measurement support before enabling any analysis reuse or broader output grouping.
-- [ ] Keep existing explicit Split detection and Screen confirmation available until their replacement evidence versions pass compatibility checks.
-- [ ] Preserve current plain shared encoding and complex per-output behavior as the rollback path.
+- [ ] Preserve exact `explicit-split-v1` and `screen-layout-v2` reuse. Do not add compatibility reads for older or unrelated evidence.
+- [ ] Preserve independent per-target encoding as the recovery path for any grouped topology.
 
 ## Rollout and recovery safety
 
-- [ ] Enable evidence reuse by kind only after call-count, shadow, and real-media tests pass.
+- [ ] Enable new evidence reuse by kind only after call-count, shared-fixture, and real-media tests pass.
 - [ ] Enable any new complex grouping behind a separate validated budget control and start with the safest measured class.
 - [ ] Monitor analysis executions, extracted segments, source decodes, command grouping, encode time, and peak RSS by plan version and topology.
-- [ ] Rollback disables reuse or grouping without changing editor documents, durable evidence, workflow ownership, or render variants.
+- [ ] Recovery disables new reuse or grouping without changing editor documents, durable evidence, workflow ownership, or render variants.
 
 ## Scope boundaries
 

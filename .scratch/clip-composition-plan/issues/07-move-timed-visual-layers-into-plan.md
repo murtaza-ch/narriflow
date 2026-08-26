@@ -30,17 +30,17 @@
 - [ ] Failure injection covers unavailable logo media, invalid optional references, stale asset resolution, malformed geometry, and a transition boundary at clip end.
 - [ ] Existing copied geometry and ordering tests are removed only after the planner and adapter contracts cover the same external behavior.
 
-## Migration and mixed-version considerations
+## Plan-only implementation constraints
 
 - [ ] Extend plan fixtures additively and keep earlier Center, Fit, Auto, Split, Screen, and B-roll behavior green.
-- [ ] Run visual-layer planning in shadow mode and compare layer topology, timing, order, geometry, fallback, and adapter topology.
-- [ ] Keep existing overlay builders available until the corresponding plan decisions pass browser and real-media verification.
+- [ ] Compare planned layer topology, timing, order, geometry, fallback, and adapter translation through shared fixtures.
+- [ ] Remove adapter-owned overlay policy as each decision moves into the plan. Keep only syntax and platform translation in the adapters.
 
 ## Rollout and recovery safety
 
-- [ ] Enable visual-layer consumption only after representative compositions for every base mode pass shadow, browser, and FFmpeg checks.
+- [ ] Deploy visual-layer plan changes only after representative compositions for every base mode pass shared-fixture, browser, and FFmpeg checks.
 - [ ] Monitor scene and layer counts, optional omissions, notice codes, command size, planning time, and mismatch class.
-- [ ] Rollback selects the retained visual composition paths without changing editor documents or entitlement snapshots.
+- [ ] Recovery reverts the offending plan or adapter change without restoring a second composition-policy path or changing editor documents and entitlement snapshots.
 
 ## Scope boundaries
 

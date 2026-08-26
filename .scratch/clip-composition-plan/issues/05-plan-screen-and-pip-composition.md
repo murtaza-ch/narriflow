@@ -16,10 +16,10 @@
 - [x] Studio and FFmpeg consume the same canonical integer geometry, including the current encodable odd-height result for 4:5 output.
 - [x] Missing evidence produces a neutral pending state. Failed or ineligible evidence produces the documented effective fallback rather than a confident but different preview.
 - [x] Durable screen evidence is reused only when its source window and versioned input fingerprint match.
-- [x] Repeated face confirmation is removed only after the evidence version records every fact required to make reuse deterministic. Until then, the current confirmation guard fulfills the evidence request.
+- [x] Exact `screen-layout-v2` evidence records every PiP and face-band fact needed for deterministic reuse, so persisted evidence does not rerun face confirmation.
 - [x] A disabled Screen capability degrades to the current single-speaker behavior and emits one stable target-scoped notice.
 - [x] Studio mounts a synchronized second view only while an active Screen scene needs it and preserves playback when evidence changes.
-- [x] Current Screen output remains available for B-roll documents until the B-roll composition ticket lands.
+- [x] B-roll conflicts resolve through the plan to a truthful whole-target single-speaker fallback.
 
 ## Public-interface and failure-injection tests
 
@@ -28,25 +28,25 @@
 - [x] Browser tests assert exact tile geometry, pending and degraded messages, synchronized media behavior, target switching, and playback preservation.
 - [x] Real-FFmpeg tests inspect representative keyframes and probes for picture-in-picture, face-band, and static fallback paths at every target.
 - [x] Failure injection covers picture-in-picture analysis failure, face confirmation failure, stale completion, ownership loss, one unavailable target, and invalid geometry before encoding.
-- [x] Shadow tests compare evidence source, trackability, tile frames, crop rectangles, fallback reason, and adapter topology with the current worker path.
+- [x] Shared plan and adapter tests cover evidence source, trackability, tile frames, crop rectangles, fallback reason, and adapter topology.
 
-## Migration and mixed-version considerations
+## Plan-only state and evidence versioning
 
-- [x] Keep current screen evidence readable and introduce a new version only when deterministic reuse needs additional confirmation facts.
-- [x] Add Screen planning beside current Studio and worker behavior. Do not remove duplicate policy until the shared fixtures and cutover pass.
-- [x] A Screen-specific control excludes B-roll documents until ticket 06 is complete.
+- [x] Read only exact `screen-layout-v2` evidence. Do not migrate or reinterpret the incomplete v1 envelope.
+- [x] Studio and the worker always consume the Screen plan. No duplicate Screen composition policy remains.
+- [x] The Screen capability switch controls analysis only. The planner owns B-roll conflicts and disabled fallbacks.
 
 ## Rollout and recovery safety
 
-- [x] Enable Screen only after the picture-in-picture, face-band, and static fallback corpus has zero unexplained shadow mismatches.
+- [x] Verify picture-in-picture, face-band, and static fallback cases through shared fixtures, browser checks, and real FFmpeg.
 - [x] Monitor evidence source and version, requested and effective mode, notice code, target geometry, secondary-media use, and mismatch class.
-- [x] Rollback restores current Screen behavior without deleting durable evidence or changing editor documents.
+- [x] Disabling Screen analysis yields a typed Center fallback without deleting durable evidence or selecting another renderer.
 
 ## Scope boundaries
 
 - [x] Do not change picture-in-picture detection models, face thresholds, target resolutions, or the current fallback order.
 - [x] Do not change B-roll precedence or introduce new screen layouts.
-- [x] Do not eliminate the confirmation pass until versioned evidence proves reuse is safe.
+- [x] Require complete v2 evidence before skipping confirmation. Unavailable fresh analysis remains retryable and is not persisted as an exact result.
 
 ## Completion evidence
 

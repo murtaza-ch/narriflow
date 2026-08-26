@@ -17,9 +17,9 @@
 - [x] Detection unavailable, fewer than two stable faces, no usable two-up scenes, incompatible target geometry, and disabled capability produce stable scoped fallback reasons.
 - [x] A fallback produces the current single-speaker result and never emits an empty or duplicated tile.
 - [x] An ineligible target can fall back without changing an eligible target in the same plan.
-- [x] Compatible durable multi-face evidence is reused only after shadow fixtures prove parity with the current explicit Split detector. Until then, the current detector fulfills the plan's evidence request.
+- [x] Exact source-bound `explicit-split-v1` evidence is reused without detection. Missing or stale evidence produces one Split analysis request.
 - [x] Studio shows pending or degraded fidelity honestly and preserves playback when exact Split evidence arrives.
-- [x] Current Split output remains available for B-roll documents until the B-roll composition ticket lands.
+- [x] B-roll conflicts resolve through the plan to a truthful whole-target single-speaker fallback.
 
 ## Public-interface and failure-injection tests
 
@@ -28,25 +28,25 @@
 - [x] Browser tests assert per-scene crop changes, synchronized secondary media, target switching, fallback copy, and playback preservation.
 - [x] Real-FFmpeg tests compare representative Split frames and probes at every supported target and include the odd-height 4:5 case.
 - [x] Failure injection covers analysis timeout, stale evidence, one failed target, ownership loss during analysis, and invalid geometry before encoding.
-- [x] Shadow tests compare scene boundaries, speaker identity, crop rectangles, target geometry, and fallback classification with the current worker path.
+- [x] Shared plan and adapter tests cover scene boundaries, speaker identity, crop rectangles, target geometry, and fallback classification.
 
-## Migration and mixed-version considerations
+## Plan-only state and evidence versioning
 
-- [x] Add Split plan decisions beside the current worker detector and Studio approximation.
-- [x] Keep separate evidence versions distinguishable while compatibility is measured. Do not silently reinterpret old envelopes.
-- [x] A Split-specific control enables shadowing and cutover without enabling B-roll conflict handling or Screen composition.
+- [x] Store Split evidence in its own field with the `explicit-split-v1` discriminator. Do not read Automatic evidence as Split evidence.
+- [x] Reject stale, source-mismatched, and unknown Split evidence instead of migrating or reinterpreting it.
+- [x] The Split capability switch controls analysis only. It never selects a different renderer.
 
 ## Rollout and recovery safety
 
-- [x] Cut over only the non-B-roll Split corpus after representative browser and real-media comparisons pass.
+- [x] Verify Split and B-roll conflict cases through representative browser and real-media comparisons.
 - [x] Monitor requested and effective mode, evidence source, notice code, scene count, and mismatch class per target.
-- [x] Rollback restores both the fixed preview and current worker path without deleting shared evidence.
+- [x] Disabling Split analysis yields a typed target-scoped fallback without deleting durable evidence or selecting another renderer.
 
 ## Scope boundaries
 
 - [x] Do not change B-roll precedence, speaker detector models, thresholds, scene caps, or supported output dimensions.
 - [x] Do not introduce three-person grids or freeform speaker layouts.
-- [x] Do not remove the current explicit detector until durable evidence parity has been proved.
+- [x] Keep the explicit detector as an evidence producer, not a second composition implementation.
 
 ## Completion evidence
 

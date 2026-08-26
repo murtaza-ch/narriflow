@@ -42,6 +42,13 @@ Narriflow turns long videos into short, captioned, virality-scored clips
 - App-local env files: `apps/web/.env.local`, `apps/worker/.env`, `packages/db/.env`. Never a root `.env`. See `README.md`.
 - `.env*` is gitignored — never commit real secrets.
 
+## Pre-production compatibility policy
+
+- Narriflow has no production users, production data, or mixed-version deployments yet. Do not preserve obsolete behavior solely for backward compatibility.
+- When replacing a local-only implementation or data shape, remove the old path in the same change. Update or reset local test data instead of adding dual reads, dual writes, legacy parsers, fallback renderers, shadow modes, or cutover selectors.
+- Keep fallbacks that are part of the current product contract, such as typed degradation when analysis or optional media is unavailable. These fallbacks must use the current architecture and must not call an older implementation.
+- If production users, production data, or rolling mixed-version deployments are introduced, update this policy before adding any compatibility layer.
+
 ## DB
 
 - Generate client: `bun --cwd packages/db run prisma:generate`.

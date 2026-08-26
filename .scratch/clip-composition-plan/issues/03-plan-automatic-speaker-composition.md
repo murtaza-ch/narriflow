@@ -30,17 +30,17 @@
 - [x] Failure injection covers analysis timeout, detector failure, stale completion, ownership loss, and a document change while evidence is in flight.
 - [x] Property tests prove scene order, complete coverage, bounded crops, stable IDs, deterministic fingerprints, and capped scene counts.
 
-## Migration and mixed-version considerations
+## Plan-only state and evidence versioning
 
 - [x] Keep the current durable automatic layout envelope and Studio polling flow. Extend or version evidence only when the planner needs a deterministic new fact.
-- [x] Shadow comparison covers scene boundaries, full and no-split selection, target geometry, manual overrides, and fallback reasons before cutover.
-- [x] Auto cutover remains independent of explicit Split and Screen, and the current path remains available for rollback.
+- [x] Shared plan and adapter fixtures cover scene boundaries, full and no-split selection, target geometry, manual overrides, and fallback reasons.
+- [x] Automatic evidence and capability controls remain independent of explicit Split and Screen.
 
 ## Rollout and recovery safety
 
-- [x] Enable Auto for a representative corpus only after shadow mismatches are explained and approved.
+- [x] Verify Automatic composition against a representative browser and real-media corpus before changing its planner policy.
 - [x] Diagnostics record evidence source and version, scene count, requested and effective mode, target, notice code, and planning duration without source URLs or document contents.
-- [x] Rollback returns both adapters to current Auto behavior without deleting durable evidence.
+- [x] Disabling Automatic analysis yields a typed Center fallback without deleting durable evidence or selecting another renderer.
 
 ## Scope boundaries
 
@@ -51,7 +51,7 @@
 ## Completion evidence
 
 - Automatic evidence is source-bound and fingerprinted against the relevant clip window. Studio shows a provisional Center result while evidence is pending, then adopts eligible speaker scenes without a reload or media-element replacement.
-- Authenticated Chrome and worker verification produced six automatic scenes, persisted source-bound evidence, preserved playback, rendered all requested aspect ratios, and reported zero shadow mismatches.
+- Authenticated Chrome and worker verification produced six automatic scenes, persisted source-bound evidence, preserved playback, and rendered all requested aspect ratios.
 - The retained Neon test schema has all 50 migrations applied and no unresolved migration. All 58 PostgreSQL lifecycle invariants passed, including fenced replacement of independently stale automatic-layout evidence.
 
 ## Fresh-task handoff

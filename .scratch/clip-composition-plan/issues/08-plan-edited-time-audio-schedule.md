@@ -30,17 +30,17 @@
 - [ ] Real-media tests probe audio duration and compare representative windows for timing, silence, gain, fades, ducking, loops, and sound effects.
 - [ ] Failure injection covers optional audio resolution failure, short media, missing audio streams, invalid duration facts, and ownership loss before command execution.
 
-## Migration and mixed-version considerations
+## Plan-only implementation constraints
 
 - [ ] Compose existing shared audio helpers into the plan rather than forking their formulas or constants.
-- [ ] Run audio schedules in shadow mode and compare source gain, placements, fades, ducking windows, optional omissions, and adapter topology.
-- [ ] Keep current browser and worker audio paths available until shared fixtures and audible comparisons pass.
+- [ ] Compare planned source gain, placements, fades, ducking windows, optional omissions, and adapter translation through shared fixtures.
+- [ ] Remove adapter-owned audio policy as each decision moves into the plan. Keep only browser and FFmpeg translation in the adapters.
 
 ## Rollout and recovery safety
 
-- [ ] Enable each adapter only after timing and loudness comparisons pass the approved tolerance corpus.
+- [ ] Deploy the shared schedule only after timing and loudness comparisons pass the approved tolerance corpus.
 - [ ] Monitor schedule counts, omitted assets, notice codes, command branch count, planning time, and mismatch class without recording asset URLs.
-- [ ] Rollback restores current audio translation without changing editor documents or asset records.
+- [ ] Recovery reverts the offending plan or adapter change without restoring a second audio-policy path or changing editor documents and asset records.
 
 ## Scope boundaries
 

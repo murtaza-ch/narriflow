@@ -18,26 +18,26 @@
 - [x] Invalid required source facts produce a stable invalid-plan result before FFmpeg starts.
 - [x] Fit framing requests no speaker, face, scene, or picture-in-picture analysis.
 - [x] Switching between Center and Fit preserves the selected target, playhead, play state, playback rate, and main media element.
-- [x] Current visual output, optional-image degradation, and output treatment remain compatible during cutover.
+- [x] Visual output, optional-image degradation, and output treatment remain compatible with the approved fixtures.
 
 ## Public-interface and failure-injection tests
 
 - [x] Planning-interface tables cover color and image backgrounds, every target, landscape and portrait sources, deleted ranges, stale framing fields, usable images, missing images, failed images, and invalid source dimensions.
 - [x] Web and FFmpeg adapter contracts consume the same Fit plan fixtures and assert canvas, contain frame, layer order, and fallback notice.
 - [x] Real-browser checks cover Center-to-Fit switching, image arrival, image failure, and playback preservation.
-- [x] Real-FFmpeg checks compare representative frames and probes with the current path for color, image, and fallback cases.
+- [x] Real-FFmpeg checks compare representative frames and probes with approved color, image, and fallback fixtures.
 - [x] Failure injection proves that optional image failure omits only that image and that no signed URL or provider error enters the plan or diagnostics.
 
-## Migration and mixed-version considerations
+## Plan-only state
 
 - [x] Extend the plan version additively and keep Center fixtures valid.
-- [x] Run Fit decisions in shadow mode before either adapter consumes them.
+- [x] Both adapters consume the same Fit decisions and reject unknown plan versions.
 - [x] Keep the current Fit and background paths available until both adapters pass shared fixtures and real-media checks.
 
 ## Rollout and recovery safety
 
 - [x] Enable Fit independently of scene-aware modes and monitor requested mode, effective mode, notice code, and adapter mismatch counts.
-- [x] Rollback restores current Fit rendering without rewriting the editor document or optional asset records.
+- [x] Recovery keeps the plan-only Fit path and reverts the offending code change without rewriting editor documents or optional asset records.
 
 ## Scope boundaries
 
@@ -49,7 +49,7 @@
 
 - The shared planner gives an active background Fit precedence and declares contained-video and background layers for every target. Logical availability facts select the image or the deterministic color fallback without storage or browser I/O.
 - Shared planner and adapter tests cover landscape and portrait sources, all supported targets, color and image backgrounds, unavailable-image notices, invalid source facts, and optional-image degradation.
-- Browser, real-media, shadow, full-suite, typecheck, lint, and production-build verification passed without changing background UX, entitlements, codecs, or output dimensions.
+- Browser, real-media, full-suite, typecheck, lint, and production-build verification passed without changing background UX, entitlements, codecs, or output dimensions.
 
 ## Fresh-task handoff
 
