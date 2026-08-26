@@ -15,6 +15,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@narriflow/composition-plan": "workspace:*",
     "@narriflow/email": "workspace:*",
     "@narriflow/services": "workspace:*",
     "@narriflow/validators": "workspace:*"

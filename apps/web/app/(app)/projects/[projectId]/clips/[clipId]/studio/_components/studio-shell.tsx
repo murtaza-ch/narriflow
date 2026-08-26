@@ -312,6 +312,8 @@ interface StudioState {
 }
 
 interface StudioContextValue extends StudioState {
+  /** Current immutable Clip Editor Document projection owned by the session. */
+  editorDocument: EditorDocument;
   transcript: TranscriptItem[];
   clipInfo: ClipInfo;
   mediaRef: (element: HTMLVideoElement | null) => void;
@@ -1689,6 +1691,7 @@ export function StudioShell({
     captionPreset, captionSelected, selectedTextLayerId, transcriptOnly, segments, studioEdits, brollUrl,
     brollPreviewAsset,
     saveState: displayedSaveState, isDocDirty, exportState, resetState, canUndo, canRedo, canReset,
+    editorDocument: doc,
     transcript: derivedTranscript, clipInfo, mediaRef, playbackClock,
     sourceVideoUrl, sourcePreviewId,
     clipStartSec: effectiveClipStartSec, clipEndSec: effectiveClipEndSec, sourcePurged,

@@ -1,0 +1,15 @@
+# Clip Composition Plan owns preview and render geometry policy
+
+Narriflow resolves clip composition once through the browser-safe `@narriflow/composition-plan` deep module. Its single pure planning interface accepts a Clip Editor Document, stable source facts, bounded evidence and asset availability, startup capabilities, and one to four exact output targets. It returns an immutable, JSON-safe, versioned and size-bounded Clip Composition Plan containing edited-time scenes, ordered layers, source crops, output destinations, notices, evidence requests, and compact fingerprints. Center, Fit with background, and Automatic Speaker Composition are the first migrated modes.
+
+Studio and FFmpeg are adapters. Studio translates the active planned scene into CSS while preserving the existing main media element and playback identity. The worker translates the same scene geometry into FFmpeg filters and rejects unknown plan versions before starting a process. Neither adapter may select speakers, choose crops, resolve background fallback, apply manual speaker policy, or independently decide target-specific two-up eligibility. Manual speaker overrides are planner inputs applied after automatic analysis.
+
+Automatic speaker analysis remains evidence rather than composition truth. Evidence is bound to source identity, clip window, deleted ranges, and engine version. Missing or stale evidence produces one deduplicated request and a provisional Center plan in Studio. A Clip Render Attempt fulfills that request through the existing analysis seam and replans; a failed or disabled engine produces an explicit degraded Center plan that FFmpeg can render. Unrelated document edits do not invalidate the evidence binding.
+
+## Considered options
+
+We rejected keeping parallel preview and FFmpeg geometry helpers because small rounding and fallback differences become user-visible export mismatches; putting FFmpeg strings in the planner because that would make a browser-safe policy module depend on one renderer; treating analysis output as a render plan because it cannot express target canvases, manual overrides, asset fallback, or adapter validation; and absorbing planning into Clip Render Attempt because execution ownership and composition policy are separate deep modules.
+
+## Consequences
+
+Plan version `1` is rejected fail-closed by both adapters when unknown. Plan inputs and diagnostics contain stable logical identities rather than signed URLs or storage access locations. Plans support at most four targets and 512 KiB of serialized policy output, enough for the existing validated 64-scene evidence cap. Center preserves the established FFmpeg command topology and byte compatibility. Fit resolves image availability before choosing image or selected-color fallback. Automatic Speaker Composition chooses full or no-split evidence per target and emits exact final-time scenes. Mode-specific `legacy`, `shadow`, and `plan` controls permit incremental adoption and independent rollback.

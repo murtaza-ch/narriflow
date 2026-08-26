@@ -21,6 +21,7 @@
     "@hono/zod-openapi": "^1.2.2",
     "@modelcontextprotocol/server": "2.0.0",
     "@narriflow/auth": "workspace:*",
+    "@narriflow/composition-plan": "workspace:*",
     "@narriflow/db": "workspace:*",
     "@narriflow/email": "workspace:*",
     "@narriflow/mcp-core": "workspace:*",

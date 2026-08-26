@@ -37,6 +37,7 @@
         "@hono/zod-openapi": "^1.2.2",
         "@modelcontextprotocol/server": "2.0.0",
         "@narriflow/auth": "workspace:*",
+        "@narriflow/composition-plan": "workspace:*",
         "@narriflow/db": "workspace:*",
         "@narriflow/email": "workspace:*",
         "@narriflow/mcp-core": "workspace:*",
@@ -69,6 +70,7 @@
       "name": "@narriflow/worker",
       "version": "0.0.0",
       "dependencies": {
+        "@narriflow/composition-plan": "workspace:*",
         "@narriflow/email": "workspace:*",
         "@narriflow/services": "workspace:*",
         "@narriflow/validators": "workspace:*",
@@ -88,6 +90,13 @@
       },
       "devDependencies": {
         "@types/node": "26.2.0",
+      },
+    },
+    "packages/composition-plan": {
+      "name": "@narriflow/composition-plan",
+      "version": "0.0.0",
+      "dependencies": {
+        "@narriflow/validators": "workspace:*",
       },
     },
     "packages/config": {
@@ -459,6 +468,8 @@
     "@modelcontextprotocol/server": ["@modelcontextprotocol/server@2.0.0", "", { "dependencies": { "@modelcontextprotocol/core": "2.0.0", "zod": "^4.2.0" } }, "sha512-YhHWdHfpFMQfd0prsEnxKeS3Qz3ytIGmsS0sth4KDjnacIT7hxk6hXHkJ9KysxlkvTM+WZAtQbbcUhdoP4Hvtw=="],
 
     "@narriflow/auth": ["@narriflow/auth@workspace:packages/auth"],
+
+    "@narriflow/composition-plan": ["@narriflow/composition-plan@workspace:packages/composition-plan"],
 
     "@narriflow/config": ["@narriflow/config@workspace:packages/config"],
 

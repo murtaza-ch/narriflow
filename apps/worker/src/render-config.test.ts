@@ -27,6 +27,9 @@ describe("RenderConfig", () => {
       pexelsConfigured: false,
       pipMotionThreshold: 0.12,
       brollAssetCacheTtlMs: 24 * 60 * 60 * 1000,
+      compositionCenter: "shadow",
+      compositionFit: "shadow",
+      compositionAuto: "shadow",
     });
     expect(Object.isFrozen(config)).toBe(true);
   });
@@ -103,5 +106,22 @@ describe("RenderConfig", () => {
 
     expect(config.pipMotionThreshold).toBe(0.25);
     expect(config.brollAssetCacheTtlMs).toBe(30 * 60 * 1000);
+  });
+
+  test("validates mode-specific composition cutover controls", () => {
+    expect(
+      parseRenderConfig({
+        WORKER_COMPOSITION_CENTER: "legacy",
+        WORKER_COMPOSITION_FIT: "shadow",
+        WORKER_COMPOSITION_AUTO: "plan",
+      }),
+    ).toMatchObject({
+      compositionCenter: "legacy",
+      compositionFit: "shadow",
+      compositionAuto: "plan",
+    });
+    expect(() =>
+      parseRenderConfig({ WORKER_COMPOSITION_AUTO: "enabled" }),
+    ).toThrow("WORKER_COMPOSITION_AUTO");
   });
 });

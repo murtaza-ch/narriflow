@@ -1,0 +1,872 @@
+import { describe, expect, test } from "bun:test";
+import {
+  captionPresetSchema,
+  clipAutoLayoutAnalysisSchema,
+  editorDocumentSchema,
+  studioEditsSchema,
+} from "@narriflow/validators";
+import {
+  automaticLayoutInputFingerprint,
+  CLIP_COMPOSITION_MAX_SERIALIZED_BYTES,
+  planClipComposition,
+} from "./clip-composition-plan";
+
+function centerDocument() {
+  return editorDocumentSchema.parse({
+    clipStartSec: 10,
+    clipEndSec: 20,
+    captionPreset: captionPresetSchema.parse({}),
+    transcriptSlice: [],
+    studioEdits: studioEditsSchema.parse({
+      framing: { mode: "center" },
+    }),
+    brollUrl: null,
+    deletedRanges: [{ startSec: 12, endSec: 14 }],
+  });
+}
+
+function fitDocument() {
+  return editorDocumentSchema.parse({
+    clipStartSec: 0,
+    clipEndSec: 12,
+    captionPreset: captionPresetSchema.parse({}),
+    transcriptSlice: [],
+    studioEdits: studioEditsSchema.parse({
+      framing: { mode: "screen" },
+      background: {
+        mode: "image",
+        color: "#123456",
+        imageUrl: "https://example.com/background.jpg",
+      },
+    }),
+    brollUrl: null,
+    deletedRanges: [],
+  });
+}
+
+describe("Clip Composition Plan", () => {
+  test("plans Center once for mixed targets with exact bounded geometry", () => {
+    const input = {
+      document: centerDocument(),
+      source: {
+        identity: "source:project-1",
+        kind: "video" as const,
+        width: 1920,
+        height: 1080,
+      },
+      evidence: { automaticLayout: { state: "missing" as const } },
+      assets: { backgroundImage: { state: "missing" as const } },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+      targets: [
+        { id: "vertical", aspectRatio: "9:16" as const, width: 1080, height: 1920 },
+        { id: "landscape", aspectRatio: "16:9" as const, width: 1920, height: 1080 },
+      ],
+    };
+
+    const first = planClipComposition(input);
+    const second = planClipComposition(input);
+
+    expect(first.status).toBe("ready");
+    if (first.status === "invalid" || second.status === "invalid") {
+      throw new Error("expected a valid Center plan");
+    }
+    expect(first.plan.version).toBe(1);
+    expect(first.plan.fingerprint).toMatch(/^[0-9a-f]{16}$/);
+    expect(second.plan.fingerprint).toBe(first.plan.fingerprint);
+    expect(first.plan.editedDurationSec).toBe(8);
+    expect(first.plan.source).toEqual({
+      ref: "source:project-1",
+      width: 1920,
+      height: 1080,
+    });
+    expect(first.plan.evidenceRequests).toEqual([]);
+    expect(first.plan.notices).toEqual([]);
+    expect(first.plan.targets).toEqual([
+      {
+        id: "vertical",
+        aspectRatio: "9:16",
+        requestedMode: "center",
+        effectiveMode: "center",
+        canvas: { width: 1080, height: 1920, divisibleBy: 2 },
+        scenes: [
+          {
+            id: "scene:center:vertical:0",
+            startSec: 0,
+            endSec: 8,
+            layers: [
+              {
+                id: "layer:source:vertical:0",
+                kind: "source-video",
+                sourceRef: "source:project-1",
+                sourceCrop: { x: 656, y: 0, width: 608, height: 1080 },
+                destination: { x: 0, y: 0, width: 1080, height: 1920 },
+                fit: "cover",
+                rotationDeg: 0,
+                opacity: 1,
+                zIndex: 0,
+              },
+            ],
+          },
+        ],
+      },
+      {
+        id: "landscape",
+        aspectRatio: "16:9",
+        requestedMode: "center",
+        effectiveMode: "center",
+        canvas: { width: 1920, height: 1080, divisibleBy: 2 },
+        scenes: [
+          {
+            id: "scene:center:landscape:0",
+            startSec: 0,
+            endSec: 8,
+            layers: [
+              {
+                id: "layer:source:landscape:0",
+                kind: "source-video",
+                sourceRef: "source:project-1",
+                sourceCrop: { x: 0, y: 0, width: 1920, height: 1080 },
+                destination: { x: 0, y: 0, width: 1920, height: 1080 },
+                fit: "cover",
+                rotationDeg: 0,
+                opacity: 1,
+                zIndex: 0,
+              },
+            ],
+          },
+        ],
+      },
+    ]);
+    expect(Object.isFrozen(first.plan)).toBe(true);
+    expect(Object.isFrozen(first.plan.targets[0]?.scenes[0]?.layers[0])).toBe(true);
+    expect(JSON.stringify(first.plan).length).toBeLessThan(16_000);
+  });
+
+  test("plans Fit precedence and degrades an unavailable image to the selected color", () => {
+    const base = {
+      document: fitDocument(),
+      source: {
+        identity: "source:landscape",
+        kind: "video" as const,
+        width: 1920,
+        height: 1080,
+      },
+      evidence: { automaticLayout: { state: "missing" as const } },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+      targets: [
+        { id: "vertical", aspectRatio: "9:16" as const, width: 1080, height: 1920 },
+      ],
+    };
+    const available = planClipComposition({
+      ...base,
+      assets: {
+        backgroundImage: { state: "available" as const, ref: "asset:bg-1" },
+      },
+    });
+    const failed = planClipComposition({
+      ...base,
+      assets: { backgroundImage: { state: "failed" as const } },
+    });
+
+    expect(available.status).toBe("ready");
+    expect(failed.status).toBe("ready");
+    if (available.status === "invalid" || failed.status === "invalid") {
+      throw new Error("expected valid Fit plans");
+    }
+    expect(available.plan.evidenceRequests).toEqual([]);
+    expect(available.plan.targets[0]).toMatchObject({
+      requestedMode: "fit",
+      effectiveMode: "fit",
+      scenes: [
+        {
+          startSec: 0,
+          endSec: 12,
+          layers: [
+            {
+              id: "layer:background:vertical:0",
+              kind: "background",
+              color: "#123456",
+              imageRef: "asset:bg-1",
+              destination: { x: 0, y: 0, width: 1080, height: 1920 },
+              zIndex: 0,
+            },
+            {
+              id: "layer:source:vertical:0",
+              kind: "source-video",
+              sourceCrop: { x: 0, y: 0, width: 1920, height: 1080 },
+              destination: { x: 0, y: 656, width: 1080, height: 608 },
+              fit: "contain",
+              zIndex: 1,
+            },
+          ],
+        },
+      ],
+    });
+    expect(failed.plan.targets[0]?.scenes[0]?.layers[0]).toMatchObject({
+      kind: "background",
+      color: "#123456",
+      imageRef: null,
+    });
+    expect(failed.plan.notices).toEqual([
+      {
+        code: "background_image_unavailable",
+        fidelity: "degraded",
+        targetId: "vertical",
+        sceneId: null,
+        effectiveFallback: "fit",
+        userActionPossible: true,
+      },
+    ]);
+  });
+
+  test("requests missing Auto evidence once and plans target-specific speaker scenes when it arrives", () => {
+    const document = editorDocumentSchema.parse({
+      clipStartSec: 10,
+      clipEndSec: 20,
+      captionPreset: captionPresetSchema.parse({}),
+      transcriptSlice: [],
+      studioEdits: studioEditsSchema.parse({ framing: { mode: "auto" } }),
+      brollUrl: null,
+      deletedRanges: [],
+    });
+    const source = {
+      identity: "source:auto-1",
+      kind: "video" as const,
+      width: 1920,
+      height: 1080,
+    };
+    const capabilities = {
+      automaticSpeakerLayout: true,
+      automaticSpeakerEngineVersion: "shot-layout-v1",
+    };
+    const targets = [
+      { id: "vertical", aspectRatio: "9:16" as const, width: 1080, height: 1920 },
+      { id: "square", aspectRatio: "1:1" as const, width: 1080, height: 1080 },
+    ];
+    const missing = planClipComposition({
+      document,
+      source,
+      evidence: { automaticLayout: { state: "missing" } },
+      assets: { backgroundImage: { state: "missing" } },
+      capabilities,
+      targets,
+    });
+    const fingerprint = automaticLayoutInputFingerprint({
+      sourceIdentity: source.identity,
+      clipStartSec: 10,
+      clipEndSec: 20,
+      deletedRanges: [],
+      engineVersion: "shot-layout-v1",
+    });
+    const analysis = clipAutoLayoutAnalysisSchema.parse({
+      version: 1,
+      engine: "shot-layout-v1",
+      analyzedAtISO: "2026-08-26T00:00:00.000Z",
+      clipStartSec: 10,
+      clipEndSec: 20,
+      deletedRanges: [],
+      editedDurationSec: 10,
+      // Evidence may be measured on a same-source preview proxy. Speaker
+      // coordinates are normalized, so the planner scales them to the
+      // authoritative source facts instead of rejecting proxy dimensions.
+      sourceWidth: 960,
+      sourceHeight: 540,
+      segments: [
+        {
+          startSec: 0,
+          endSec: 10,
+          layout: "two-up",
+          topCxNorm: 0.25,
+          bottomCxNorm: 0.75,
+        },
+      ],
+      noSplitSegments: [
+        {
+          startSec: 0,
+          endSec: 10,
+          layout: "single",
+          cxNorm: 0.5,
+        },
+      ],
+      shotCount: 1,
+      soloShotCount: 0,
+      multiShotCount: 1,
+      twoUpSegmentCount: 1,
+      speakerCount: 2,
+      mappedSpeakerCount: 2,
+    });
+    const ready = planClipComposition({
+      document,
+      source,
+      evidence: {
+        automaticLayout: {
+          state: "available",
+          value: {
+            sourceIdentity: source.identity,
+            inputFingerprint: fingerprint,
+            engineVersion: "shot-layout-v1",
+            analysis,
+          },
+        },
+      },
+      assets: { backgroundImage: { state: "missing" } },
+      capabilities,
+      targets,
+    });
+
+    expect(missing.status).toBe("provisional");
+    if (missing.status === "invalid" || ready.status === "invalid") {
+      throw new Error("expected valid Auto plans");
+    }
+    expect(missing.plan.evidenceRequests).toEqual([
+      {
+        key: `automatic-speaker-layout:${fingerprint}`,
+        kind: "automatic-speaker-layout",
+        engineVersion: "shot-layout-v1",
+      },
+    ]);
+    expect(missing.plan.targets.map((target) => target.effectiveMode)).toEqual([
+      "center",
+      "center",
+    ]);
+    expect(ready.status).toBe("ready");
+    expect(ready.plan.evidenceRequests).toEqual([]);
+    expect(ready.plan.targets[0]).toMatchObject({
+      effectiveMode: "auto",
+      scenes: [
+        {
+          startSec: 0,
+          endSec: 10,
+          layers: [
+            {
+              speaker: { role: "top" },
+              destination: { x: 0, y: 0, width: 1080, height: 960 },
+              sourceCrop: { x: 0, y: 0, width: 1215, height: 1080 },
+            },
+            {
+              speaker: { role: "bottom" },
+              destination: { x: 0, y: 960, width: 1080, height: 960 },
+              sourceCrop: { x: 705, y: 0, width: 1215, height: 1080 },
+            },
+          ],
+        },
+      ],
+    });
+    expect(ready.plan.targets[1]).toMatchObject({
+      effectiveMode: "auto",
+      scenes: [
+        {
+          layers: [
+            {
+              speaker: { role: "single" },
+              destination: { x: 0, y: 0, width: 1080, height: 1080 },
+              sourceCrop: { x: 420, y: 0, width: 1080, height: 1080 },
+            },
+          ],
+        },
+      ],
+    });
+  });
+
+  test("invalidates Auto evidence when its source identity or relevant window fingerprint is stale", () => {
+    const document = editorDocumentSchema.parse({
+      clipStartSec: 0,
+      clipEndSec: 5,
+      captionPreset: captionPresetSchema.parse({}),
+      transcriptSlice: [],
+      studioEdits: studioEditsSchema.parse({ framing: { mode: "auto" } }),
+      brollUrl: null,
+      deletedRanges: [],
+    });
+    const analysis = clipAutoLayoutAnalysisSchema.parse({
+      version: 1,
+      engine: "shot-layout-v1",
+      analyzedAtISO: "2026-08-26T00:00:00.000Z",
+      clipStartSec: 0,
+      clipEndSec: 5,
+      deletedRanges: [],
+      editedDurationSec: 5,
+      sourceWidth: 1920,
+      sourceHeight: 1080,
+      segments: [{ startSec: 0, endSec: 5, layout: "single", cxNorm: 0.5 }],
+      noSplitSegments: [{ startSec: 0, endSec: 5, layout: "single", cxNorm: 0.5 }],
+      shotCount: 1,
+      soloShotCount: 1,
+      multiShotCount: 0,
+      twoUpSegmentCount: 0,
+      speakerCount: 1,
+      mappedSpeakerCount: 1,
+    });
+    const result = planClipComposition({
+      document,
+      source: { identity: "source:new", kind: "video", width: 1920, height: 1080 },
+      evidence: {
+        automaticLayout: {
+          state: "available",
+          value: {
+            sourceIdentity: "source:old",
+            inputFingerprint: "stale",
+            engineVersion: "shot-layout-v1",
+            analysis,
+          },
+        },
+      },
+      assets: { backgroundImage: { state: "missing" } },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+      targets: [{ id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 }],
+    });
+
+    expect(result.status).toBe("provisional");
+    if (result.status === "invalid") throw new Error(result.error.code);
+    expect(result.plan.targets[0]?.effectiveMode).toBe("center");
+    expect(result.plan.evidenceRequests).toHaveLength(1);
+
+    const source = {
+      identity: "source:new",
+      kind: "video" as const,
+      width: 1920,
+      height: 1080,
+    };
+    const common = {
+      document,
+      source,
+      assets: { backgroundImage: { state: "missing" as const } },
+      targets: [
+        {
+          id: "vertical",
+          aspectRatio: "9:16" as const,
+          width: 1080,
+          height: 1920,
+        },
+      ],
+    };
+    const failed = planClipComposition({
+      ...common,
+      evidence: { automaticLayout: { state: "failed" } },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+    });
+    const disabled = planClipComposition({
+      ...common,
+      evidence: { automaticLayout: { state: "disabled" } },
+      capabilities: {
+        automaticSpeakerLayout: false,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+    });
+    const versionMismatch = planClipComposition({
+      ...common,
+      evidence: {
+        automaticLayout: {
+          state: "available",
+          value: {
+            sourceIdentity: source.identity,
+            inputFingerprint: automaticLayoutInputFingerprint({
+              sourceIdentity: source.identity,
+              clipStartSec: 0,
+              clipEndSec: 5,
+              deletedRanges: [],
+              engineVersion: "shot-layout-v1",
+            }),
+            engineVersion: "shot-layout-v1",
+            analysis: { ...analysis, version: 2 } as never,
+          },
+        },
+      },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+    });
+    expect(failed).toMatchObject({
+      status: "ready",
+      plan: {
+        evidenceRequests: [],
+        notices: [{ code: "automatic_layout_unavailable", fidelity: "degraded" }],
+      },
+    });
+    expect(disabled).toMatchObject({
+      status: "ready",
+      plan: {
+        evidenceRequests: [],
+        notices: [{ code: "automatic_layout_disabled", fidelity: "degraded" }],
+      },
+    });
+    expect(versionMismatch).toMatchObject({
+      status: "provisional",
+      plan: {
+        evidenceRequests: [{ kind: "automatic-speaker-layout" }],
+        notices: [{ code: "automatic_layout_analyzing", fidelity: "provisional" }],
+      },
+    });
+  });
+
+  test("applies aspect-specific manual overrides after analysis without freezing caller state", () => {
+    const document = editorDocumentSchema.parse({
+      clipStartSec: 0,
+      clipEndSec: 5,
+      captionPreset: captionPresetSchema.parse({}),
+      transcriptSlice: [],
+      studioEdits: studioEditsSchema.parse({
+        framing: { mode: "auto" },
+        speakerLayoutOverrides: [
+          {
+            id: "manual-scene",
+            aspectRatio: "9:16",
+            startSec: 0,
+            endSec: 5,
+            layout: "two-up",
+            layers: [
+              {
+                role: "top",
+                frameX: 0.1,
+                frameY: 0,
+                frameWidth: 0.8,
+                frameHeight: 0.5,
+                rotationDeg: 0,
+                cropCxNorm: 0.25,
+                cropCyNorm: 0.5,
+                cropZoom: 2,
+              },
+              {
+                role: "bottom",
+                frameX: 0,
+                frameY: 0.5,
+                frameWidth: 1,
+                frameHeight: 0.5,
+                rotationDeg: 0,
+                cropCxNorm: 0.75,
+                cropCyNorm: 0.5,
+                cropZoom: 1,
+              },
+            ],
+          },
+        ],
+      }),
+      brollUrl: null,
+      deletedRanges: [],
+    });
+    const source = {
+      identity: "source:override",
+      kind: "video" as const,
+      width: 1920,
+      height: 1080,
+    };
+    const analysis = clipAutoLayoutAnalysisSchema.parse({
+      version: 1,
+      engine: "shot-layout-v1",
+      analyzedAtISO: "2026-08-26T00:00:00.000Z",
+      clipStartSec: 0,
+      clipEndSec: 5,
+      deletedRanges: [],
+      editedDurationSec: 5,
+      sourceWidth: 1920,
+      sourceHeight: 1080,
+      segments: [
+        { startSec: 0, endSec: 5, layout: "two-up", topCxNorm: 0.25, bottomCxNorm: 0.75 },
+      ],
+      noSplitSegments: [
+        { startSec: 0, endSec: 5, layout: "single", cxNorm: 0.5 },
+      ],
+      shotCount: 1,
+      soloShotCount: 0,
+      multiShotCount: 1,
+      twoUpSegmentCount: 1,
+      speakerCount: 2,
+      mappedSpeakerCount: 2,
+    });
+    const inputFingerprint = automaticLayoutInputFingerprint({
+      sourceIdentity: source.identity,
+      clipStartSec: 0,
+      clipEndSec: 5,
+      deletedRanges: [],
+      engineVersion: "shot-layout-v1",
+    });
+    const result = planClipComposition({
+      document,
+      source,
+      evidence: {
+        automaticLayout: {
+          state: "available",
+          value: {
+            sourceIdentity: source.identity,
+            inputFingerprint,
+            engineVersion: "shot-layout-v1",
+            analysis,
+          },
+        },
+      },
+      assets: { backgroundImage: { state: "missing" } },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+      targets: [{ id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 }],
+    });
+
+    expect(result.status).toBe("ready");
+    if (result.status === "invalid") throw new Error(result.error.code);
+    expect(result.plan.targets[0]?.scenes[0]?.layers[0]).toMatchObject({
+      destination: { x: 108, y: 0, width: 864, height: 960 },
+      speaker: {
+        overrideId: "manual-scene",
+        transform: { frameX: 0.1, frameWidth: 0.8, cropZoom: 2 },
+        defaultTransform: { frameX: 0, frameWidth: 1, cropZoom: 1 },
+      },
+    });
+    expect(Object.isFrozen(document.studioEdits.speakerLayoutOverrides[0])).toBe(false);
+    expect(Object.isFrozen(document.studioEdits.speakerLayoutOverrides[0]?.layers[0])).toBe(false);
+  });
+
+  test("rejects empty, duplicate, odd, or excessive target sets", () => {
+    const base = {
+      document: centerDocument(),
+      source: { identity: "source", kind: "video" as const, width: 1920, height: 1080 },
+      evidence: { automaticLayout: { state: "missing" as const } },
+      assets: { backgroundImage: { state: "missing" as const } },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+    };
+    const target = { id: "one", aspectRatio: "9:16" as const, width: 1080, height: 1920 };
+    expect(planClipComposition({ ...base, targets: [] })).toMatchObject({ status: "invalid", error: { code: "invalid_target" } });
+    expect(planClipComposition({ ...base, targets: [target, target] })).toMatchObject({ status: "invalid", error: { code: "invalid_target" } });
+    expect(planClipComposition({ ...base, targets: [{ ...target, height: 1919 }] })).toMatchObject({ status: "invalid", error: { code: "invalid_target" } });
+    expect(planClipComposition({ ...base, targets: Array.from({ length: 5 }, (_, index) => ({ ...target, id: `${index}` })) })).toMatchObject({ status: "invalid", error: { code: "too_many_targets" } });
+  });
+
+  test("keeps every Center target contiguous, complete, finite, bounded, and divisible", () => {
+    const targets = [
+      { id: "vertical", aspectRatio: "9:16" as const, width: 1080, height: 1920 },
+      { id: "square", aspectRatio: "1:1" as const, width: 1080, height: 1080 },
+      { id: "landscape", aspectRatio: "16:9" as const, width: 1920, height: 1080 },
+      { id: "portrait", aspectRatio: "4:5" as const, width: 1080, height: 1350 },
+    ];
+    const documents = [
+      centerDocument(),
+      editorDocumentSchema.parse({ ...centerDocument(), deletedRanges: [] }),
+    ];
+    for (const [source, document] of [
+      [
+        { identity: "landscape", kind: "video" as const, width: 1920, height: 1080 },
+        documents[0]!,
+      ],
+      [
+        { identity: "portrait", kind: "video" as const, width: 1080, height: 1920 },
+        documents[1]!,
+      ],
+    ] as const) {
+      const result = planClipComposition({
+        document,
+        source,
+        evidence: { automaticLayout: { state: "missing" } },
+        assets: { backgroundImage: { state: "missing" } },
+        capabilities: {
+          automaticSpeakerLayout: true,
+          automaticSpeakerEngineVersion: "shot-layout-v1",
+        },
+        targets,
+      });
+      expect(result.status).toBe("ready");
+      if (result.status === "invalid") throw new Error(result.error.code);
+      for (const target of result.plan.targets) {
+        expect(target.canvas.width % target.canvas.divisibleBy).toBe(0);
+        expect(target.canvas.height % target.canvas.divisibleBy).toBe(0);
+        expect(target.scenes).toHaveLength(1);
+        expect(target.scenes[0]?.startSec).toBe(0);
+        expect(target.scenes[0]?.endSec).toBe(result.plan.editedDurationSec);
+        for (const layer of target.scenes[0]!.layers) {
+          expect(Object.values(layer.destination).every(Number.isFinite)).toBe(true);
+          expect(layer.destination.x + layer.destination.width).toBeLessThanOrEqual(target.canvas.width);
+          expect(layer.destination.y + layer.destination.height).toBeLessThanOrEqual(target.canvas.height);
+          if (layer.kind === "source-video") {
+            expect(layer.sourceCrop.x + layer.sourceCrop.width).toBeLessThanOrEqual(source.width);
+            expect(layer.sourceCrop.y + layer.sourceCrop.height).toBeLessThanOrEqual(source.height);
+          }
+        }
+      }
+    }
+  });
+
+  test("plans bounded Fit layers for every target and source orientation", () => {
+    const targets = [
+      { id: "vertical", aspectRatio: "9:16" as const, width: 1080, height: 1920 },
+      { id: "square", aspectRatio: "1:1" as const, width: 1080, height: 1080 },
+      { id: "landscape", aspectRatio: "16:9" as const, width: 1920, height: 1080 },
+      { id: "portrait", aspectRatio: "4:5" as const, width: 1080, height: 1350 },
+    ];
+    for (const source of [
+      { identity: "fit:landscape", kind: "video" as const, width: 1920, height: 1080 },
+      { identity: "fit:portrait", kind: "video" as const, width: 1080, height: 1920 },
+    ]) {
+      const result = planClipComposition({
+        document: fitDocument(),
+        source,
+        evidence: { automaticLayout: { state: "missing" } },
+        assets: { backgroundImage: { state: "failed" } },
+        capabilities: {
+          automaticSpeakerLayout: true,
+          automaticSpeakerEngineVersion: "shot-layout-v1",
+        },
+        targets,
+      });
+      expect(result.status).toBe("ready");
+      if (result.status === "invalid") throw new Error(result.error.code);
+      for (const target of result.plan.targets) {
+        const layers = target.scenes[0]!.layers;
+        expect(layers.map((layer) => layer.kind)).toEqual([
+          "background",
+          "source-video",
+        ]);
+        const sourceLayer = layers[1]!;
+        expect(sourceLayer.destination.x + sourceLayer.destination.width).toBeLessThanOrEqual(
+          target.canvas.width,
+        );
+        expect(sourceLayer.destination.y + sourceLayer.destination.height).toBeLessThanOrEqual(
+          target.canvas.height,
+        );
+      }
+    }
+  });
+
+  test("deduplicates missing Auto evidence across targets and unrelated edits", () => {
+    const document = editorDocumentSchema.parse({
+      ...centerDocument(),
+      studioEdits: studioEditsSchema.parse({ framing: { mode: "auto" } }),
+    });
+    const input = {
+      document,
+      source: { identity: "source:stable", kind: "video" as const, width: 1920, height: 1080 },
+      evidence: { automaticLayout: { state: "missing" as const } },
+      assets: { backgroundImage: { state: "missing" as const } },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+      targets: [
+        { id: "vertical", aspectRatio: "9:16" as const, width: 1080, height: 1920 },
+        { id: "square", aspectRatio: "1:1" as const, width: 1080, height: 1080 },
+      ],
+    };
+    const first = planClipComposition(input);
+    const unrelated = planClipComposition({
+      ...input,
+      document: editorDocumentSchema.parse({
+        ...document,
+        studioEdits: {
+          ...document.studioEdits,
+          sourceAudio: { muted: true, volume: 37 },
+        },
+      }),
+    });
+    if (first.status === "invalid" || unrelated.status === "invalid") {
+      throw new Error("expected provisional Auto plans");
+    }
+    expect(first.plan.evidenceRequests).toHaveLength(1);
+    expect(unrelated.plan.evidenceRequests).toEqual(first.plan.evidenceRequests);
+  });
+
+  test("keeps the validated 64-scene, four-target Automatic boundary bounded", () => {
+    const document = editorDocumentSchema.parse({
+      clipStartSec: 0,
+      clipEndSec: 64,
+      captionPreset: captionPresetSchema.parse({}),
+      transcriptSlice: [],
+      studioEdits: studioEditsSchema.parse({ framing: { mode: "auto" } }),
+      brollUrl: null,
+      deletedRanges: [],
+    });
+    const source = {
+      identity: "source:max-scenes",
+      kind: "video" as const,
+      width: 1920,
+      height: 1080,
+    };
+    const segments = Array.from({ length: 64 }, (_, index) => ({
+      startSec: index,
+      endSec: index + 1,
+      layout: "two-up" as const,
+      topCxNorm: 0.25,
+      bottomCxNorm: 0.75,
+    }));
+    const noSplitSegments = Array.from({ length: 64 }, (_, index) => ({
+      startSec: index,
+      endSec: index + 1,
+      layout: "single" as const,
+      cxNorm: 0.5,
+    }));
+    const analysis = clipAutoLayoutAnalysisSchema.parse({
+      version: 1,
+      engine: "shot-layout-v1",
+      analyzedAtISO: "2026-08-26T00:00:00.000Z",
+      clipStartSec: 0,
+      clipEndSec: 64,
+      deletedRanges: [],
+      editedDurationSec: 64,
+      sourceWidth: 960,
+      sourceHeight: 540,
+      segments,
+      noSplitSegments,
+      shotCount: 64,
+      soloShotCount: 0,
+      multiShotCount: 64,
+      twoUpSegmentCount: 64,
+      speakerCount: 2,
+      mappedSpeakerCount: 2,
+    });
+    const inputFingerprint = automaticLayoutInputFingerprint({
+      sourceIdentity: source.identity,
+      clipStartSec: 0,
+      clipEndSec: 64,
+      deletedRanges: [],
+      engineVersion: "shot-layout-v1",
+    });
+    const result = planClipComposition({
+      document,
+      source,
+      evidence: {
+        automaticLayout: {
+          state: "available",
+          value: {
+            sourceIdentity: source.identity,
+            inputFingerprint,
+            engineVersion: "shot-layout-v1",
+            analysis,
+          },
+        },
+      },
+      assets: { backgroundImage: { state: "missing" } },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+      targets: [
+        { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },
+        { id: "square", aspectRatio: "1:1", width: 1080, height: 1080 },
+        { id: "landscape", aspectRatio: "16:9", width: 1920, height: 1080 },
+        { id: "portrait", aspectRatio: "4:5", width: 1080, height: 1350 },
+      ],
+    });
+
+    expect(result.status).toBe("ready");
+    if (result.status === "invalid") throw new Error(result.error.code);
+    expect(result.plan.targets.map((target) => target.scenes.length)).toEqual([
+      64, 64, 64, 64,
+    ]);
+    expect(new TextEncoder().encode(JSON.stringify(result.plan)).byteLength).toBeLessThanOrEqual(
+      CLIP_COMPOSITION_MAX_SERIALIZED_BYTES,
+    );
+  });
+});

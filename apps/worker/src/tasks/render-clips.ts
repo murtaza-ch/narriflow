@@ -6,6 +6,12 @@ import { Readable } from "node:stream";
 import { pipeline as productionPipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import {
+  automaticLayoutInputFingerprint,
+  compositionAssetRef,
+  planClipComposition,
+  type ClipCompositionPlan,
+} from "@narriflow/composition-plan";
+import {
   assertPublicHttpUrl,
   assertResponseContentLength,
   audioAssetService as productionAudioAssetService,
@@ -70,6 +76,7 @@ import type {
   ClipLayoutAnalysis,
   ClipRenderResolution,
   DuckingWindow,
+  EditorDocument,
   EditedTimeMap,
   SourceRange,
   StudioEdits,
@@ -143,6 +150,7 @@ import {
   type RenderMediaProbe,
 } from "../render-media-adapter";
 import { productionRenderDiagnosticAdapter } from "../render-diagnostic-adapter";
+import { compileCompositionPlanVideo } from "../composition-ffmpeg-adapter";
 import { classifyRenderObjectKey } from "../render-object-key";
 import {
   productionRenderClockAdapter,
@@ -3567,6 +3575,12 @@ export function buildSingleVideoArgs(params: {
   captionPreset?: CaptionPreset | null;
   logo?: LogoOverlay | null;
   reframe?: ReframeSpec | null;
+  /** Versioned composition policy. When present, the FFmpeg adapter consumes
+   *  its exact scene geometry before any legacy framing branch can run. */
+  composition?: {
+    plan: ClipCompositionPlan;
+    targetId: string;
+  } | null;
   studioEdits?: StudioEdits | null;
   music?: MusicPlan | null;
   /** One-shot SFX placements (vizard-parity.md "Music/SFX library") —
@@ -3662,7 +3676,18 @@ export function buildSingleVideoArgs(params: {
   const filterParts: string[] = cutConcat ? [...cutConcat.filterParts] : [];
   const composedOutputLabel = params.logo ? "[outvbase]" : "[outv]";
 
-  if (params.background) {
+  if (params.composition) {
+    const compiled = compileCompositionPlanVideo({
+      plan: params.composition.plan,
+      targetId: params.composition.targetId,
+      videoInputLabel,
+      outputLabel: composedOutputLabel,
+      trailingChain: textAndCaptionChain,
+      backgroundImageInputIndex: bgImageInputIndex,
+      fps: params.probe.fps,
+    });
+    filterParts.push(...compiled.filterParts);
+  } else if (params.background) {
     // Fit mode (vizard-parity Phase C item 2): letterbox instead of
     // crop-to-fill, background color/image fills the empty frame.
     // Auto-reframe never applies here — `params.reframe` is deliberately not
@@ -3879,6 +3904,10 @@ export function buildBrollVideoArgs(params: {
   captionPreset?: CaptionPreset | null;
   logo?: LogoOverlay | null;
   reframe?: ReframeSpec | null;
+  composition?: {
+    plan: ClipCompositionPlan;
+    targetId: string;
+  } | null;
   split?: { segments: SplitLayoutSegment[] } | null;
   studioEdits?: StudioEdits | null;
   music?: MusicPlan | null;
@@ -3957,7 +3986,18 @@ export function buildBrollVideoArgs(params: {
       : null;
 
   const parts: string[] = cutConcat ? [...cutConcat.filterParts] : [];
-  if (params.background) {
+  if (params.composition) {
+    parts.push(
+      ...compileCompositionPlanVideo({
+        plan: params.composition.plan,
+        targetId: params.composition.targetId,
+        videoInputLabel,
+        outputLabel: "[stage0]",
+        backgroundImageInputIndex: bgImageInputIndex,
+        fps: params.probe.fps,
+      }).filterParts,
+    );
+  } else if (params.background) {
     // Fit mode (vizard-parity Phase C item 2): letterbox the base frame
     // instead of cropping to fill; cutaways/text/captions/logo still overlay
     // on top of it exactly as they do today, unaware of how [stage0] was
@@ -4285,6 +4325,7 @@ export function buildMultiVideoArgs(params: {
   srtPath: string | null;
   captionPreset?: CaptionPreset | null;
   logo?: LogoOverlay | null;
+  composition?: ClipCompositionPlan | null;
   /** Run-level watermark entitlement (see `buildSingleVideoArgs`'s param
    *  doc) — uniform across every output in this shared-encode batch, unlike
    *  `resolution`, which each `PendingRenderOutput` carries individually
@@ -4299,8 +4340,23 @@ export function buildMultiVideoArgs(params: {
 
   const baseSections = [
     `[0:v]split=${params.outputs.length}${splitOutputs}`,
-    ...params.outputs.map((output, index) => {
+    ...params.outputs.flatMap((output, index) => {
       const subtitlePath = output.subtitlePath ?? params.srtPath;
+      const trailingChain = buildSubtitleFilter(
+        output.aspectRatio,
+        subtitlePath,
+        params.captionPreset,
+      );
+      const baseLabel = params.logo ? `[outvbase${index}]` : `[outv${index}]`;
+      if (params.composition) {
+        return compileCompositionPlanVideo({
+          plan: params.composition,
+          targetId: output.clipRenderId,
+          videoInputLabel: `[v${index}]`,
+          outputLabel: baseLabel,
+          trailingChain: trailingChain ?? undefined,
+        }).filterParts;
+      }
       const singleFilter = buildSingleVideoFilter(
         params.probe,
         output.aspectRatio,
@@ -4308,8 +4364,7 @@ export function buildMultiVideoArgs(params: {
         params.captionPreset,
         output.reframe,
       );
-      const baseLabel = params.logo ? `[outvbase${index}]` : `[outv${index}]`;
-      return `[v${index}]${singleFilter}${baseLabel}`;
+      return [`[v${index}]${singleFilter}${baseLabel}`];
     }),
   ];
 
@@ -5978,24 +6033,30 @@ async function executeClipRenderAttempt(
       //      by the studio, making preview and export one contract.
       //   2. Legacy single-face EMA reframe (`applyAutoReframe`) only when
       //      analysis is disabled/unavailable.
-      let autoLayoutSegmentsFull: SplitLayoutSegment[] | null = null;
-      let autoLayoutSegmentsNoSplit: SplitLayoutSegment[] | null = null;
-      if (autoFramingActive) {
-        const layoutEngineEnabled = currentRenderConfig().layoutEngineEnabled;
-        let engineHandled = false;
-        const persistedAutoLayout = parseClipAutoLayoutAnalysis(
-          clip.autoLayoutAnalysis,
-        );
-        if (
-          layoutEngineEnabled &&
+      const layoutEngineEnabled = currentRenderConfig().layoutEngineEnabled;
+      const persistedAutoLayout = parseClipAutoLayoutAnalysis(
+        clip.autoLayoutAnalysis,
+      );
+      const persistedAutoLayoutEligible = Boolean(
+        layoutEngineEnabled &&
           persistedAutoLayout &&
           clipAutoLayoutMatchesInputs(persistedAutoLayout, {
             clipStartSec: clip.startSec,
             clipEndSec: clip.endSec,
             deletedRanges,
           }) &&
-          Math.abs(persistedAutoLayout.editedDurationSec - clipDurationSec) <= 0.075
-        ) {
+          Math.abs(persistedAutoLayout.editedDurationSec - clipDurationSec) <=
+            0.075,
+      );
+      let autoLayoutSegmentsFull: SplitLayoutSegment[] | null = null;
+      let autoLayoutSegmentsNoSplit: SplitLayoutSegment[] | null = null;
+      let automaticLayoutAnalysisForPlan: ClipAutoLayoutAnalysis | null =
+        persistedAutoLayoutEligible ? persistedAutoLayout : null;
+      const automaticLayoutEvidenceFailure: "failed" | "disabled" =
+        layoutEngineEnabled ? "failed" : "disabled";
+      if (autoFramingActive) {
+        let engineHandled = false;
+        if (persistedAutoLayoutEligible && persistedAutoLayout) {
           autoLayoutSegmentsFull =
             persistedAutoLayout.segments.length > 0
               ? persistedAutoLayout.segments
@@ -6004,6 +6065,7 @@ async function executeClipRenderAttempt(
             persistedAutoLayout.noSplitSegments.length > 0
               ? persistedAutoLayout.noSplitSegments
               : null;
+          automaticLayoutAnalysisForPlan = persistedAutoLayout;
           engineHandled = true;
           log("info", "clip_layout_plan_reused", {
             workflowRunId: run.id,
@@ -6108,6 +6170,7 @@ async function executeClipRenderAttempt(
                 speakerCount: fullPlan.speakerCount,
                 mappedSpeakerCount: fullPlan.mappedSpeakerCount,
               });
+            automaticLayoutAnalysisForPlan = envelope;
             if (clip.previewStorageKey) {
               await currentRenderAdapters()
                 .clip
@@ -7196,6 +7259,158 @@ async function executeClipRenderAttempt(
           ? { mode: "color", color: backgroundPlan.color, imagePath: null }
           : backgroundPlan;
 
+      const requestedCompositionMode = resolveEffectiveFramingMode(studioEdits);
+      let compositionPlan: ClipCompositionPlan | null = null;
+      let fallbackCompositionPlan: ClipCompositionPlan | null = null;
+      const compositionControl =
+        requestedCompositionMode === "center"
+          ? currentRenderConfig().compositionCenter
+          : requestedCompositionMode === "fit"
+            ? currentRenderConfig().compositionFit
+            : requestedCompositionMode === "auto"
+              ? currentRenderConfig().compositionAuto
+              : "legacy";
+      if (
+        probe.hasVideo &&
+        (requestedCompositionMode === "center" ||
+          requestedCompositionMode === "fit" ||
+          requestedCompositionMode === "auto") &&
+        !(requestedCompositionMode === "auto" && brollPlan) &&
+        compositionControl !== "legacy"
+      ) {
+        const document: EditorDocument = {
+          clipStartSec: clip.startSec,
+          clipEndSec: clip.endSec,
+          captionPreset: captionPreset ?? captionPresetSchema.parse({}),
+          transcriptSlice: utterances,
+          studioEdits,
+          brollUrl: clip.brollUrl ?? null,
+          deletedRanges,
+        };
+        const planWithBackgroundAvailability = (
+          backgroundImage:
+            | { state: "missing" | "failed" }
+            | { state: "available"; ref: string },
+        ) =>
+          planClipComposition({
+          document,
+          source: {
+            identity: frozenState.sourceStorageKey!,
+            kind: "video",
+            width: probe.width,
+            height: probe.height,
+          },
+          evidence: {
+            automaticLayout: automaticLayoutAnalysisForPlan
+              ? {
+                  state: "available",
+                  value: {
+                    sourceIdentity: frozenState.sourceStorageKey!,
+                    inputFingerprint: automaticLayoutInputFingerprint({
+                      sourceIdentity: frozenState.sourceStorageKey!,
+                      clipStartSec: clip.startSec,
+                      clipEndSec: clip.endSec,
+                      deletedRanges,
+                      engineVersion: "shot-layout-v1",
+                    }),
+                    engineVersion: "shot-layout-v1",
+                    analysis: automaticLayoutAnalysisForPlan,
+                  },
+                }
+              : { state: automaticLayoutEvidenceFailure },
+          },
+          assets: { backgroundImage },
+          capabilities: {
+            automaticSpeakerLayout: currentRenderConfig().layoutEngineEnabled,
+            automaticSpeakerEngineVersion: "shot-layout-v1",
+          },
+          targets: outputs.map((output) => {
+            const target = aspectRatioConfig.get(output.aspectRatio)!;
+            return {
+              id: output.clipRenderId,
+              aspectRatio: output.aspectRatio,
+              width: target.width,
+              height: target.height,
+            };
+          }),
+          });
+        const backgroundImageAvailability =
+          requestedCompositionMode === "fit" &&
+          backgroundPlan?.mode === "image" &&
+          backgroundPlan.imagePath &&
+          studioEdits.background.imageUrl
+            ? {
+                state: "available" as const,
+                ref: compositionAssetRef(
+                  "background",
+                  studioEdits.background.imageUrl,
+                ),
+              }
+            : requestedCompositionMode === "fit" &&
+                studioEdits.background.mode === "image"
+              ? ({ state: "failed" } as const)
+              : ({ state: "missing" } as const);
+        const planningStartedAtMs = currentTimeMs();
+        const planned = planWithBackgroundAvailability(
+          backgroundImageAvailability,
+        );
+        const planningDurationMs = Math.max(
+          0,
+          currentTimeMs() - planningStartedAtMs,
+        );
+        if (planned.status === "invalid") {
+          throw new WorkflowWorkerError(
+            planned.error.code,
+            `Clip Composition Plan rejected ${planned.error.code}`,
+            "permanent",
+          );
+        }
+        const sceneCount = planned.plan.targets.reduce(
+          (count, target) => count + target.scenes.length,
+          0,
+        );
+        log("info", "clip_composition_plan", {
+          workflowRunId: run.id,
+          clipId: clip.id,
+          adapter: "ffmpeg",
+          control: compositionControl,
+          planVersion: planned.plan.version,
+          planFingerprint: planned.plan.fingerprint,
+          planningDurationMs,
+          requestedMode: requestedCompositionMode,
+          evidenceSource: automaticLayoutAnalysisForPlan
+            ? "durable"
+            : automaticLayoutEvidenceFailure,
+          evidenceVersion: automaticLayoutAnalysisForPlan?.version ?? null,
+          effectiveModes: planned.plan.targets.map(
+            (target) => target.effectiveMode,
+          ),
+          targets: planned.plan.targets.map((target) => ({
+            id: target.id,
+            aspectRatio: target.aspectRatio,
+            canvas: target.canvas,
+            scenes: target.scenes.map((scene) => ({
+              startSec: scene.startSec,
+              endSec: scene.endSec,
+              layerKinds: scene.layers.map((layer) => layer.kind),
+            })),
+          })),
+          sceneCount,
+          noticeCodes: planned.plan.notices.map((notice) => notice.code),
+        });
+        if (compositionControl === "plan") {
+          compositionPlan = planned.plan;
+          if (backgroundImageAvailability.state === "available") {
+            const fallbackPlan = planWithBackgroundAvailability({
+              state: "failed",
+            });
+            if (fallbackPlan.status !== "invalid") {
+              fallbackCompositionPlan = fallbackPlan.plan;
+            }
+          }
+        }
+      }
+
       // sourceAudio (volume/mute) is only applied by the per-output builders
       // (buildSingleVideoArgs/buildBrollVideoArgs/buildAudiogramArgs), same
       // as music — buildMultiVideoArgs (the shared multi-output batch path)
@@ -7250,7 +7465,15 @@ async function executeClipRenderAttempt(
         // plan presence — auto mode has no user-visible mode toggle to keep
         // routing stable against, and a plan-less render through the batch
         // path is byte-identical to before the engine existed.
-        Boolean(autoLayoutSegmentsFull);
+        Boolean(autoLayoutSegmentsFull) ||
+        // A ready Automatic Clip Composition Plan is scene/branch-heavy even
+        // when it came from durable evidence outside the legacy reframe gate.
+        // Keep it on the established safer per-output topology.
+        Boolean(
+          compositionPlan?.targets.some(
+            (target) => target.effectiveMode === "auto",
+          ),
+        );
 
       if (!probe.hasVideo) {
         // Known divergence: audio-only sources render via buildAudiogramArgs,
@@ -7383,6 +7606,9 @@ async function executeClipRenderAttempt(
                   captionPreset,
                   logo,
                   reframe: output.reframe,
+                  composition: compositionPlan
+                    ? { plan: compositionPlan, targetId: output.clipRenderId }
+                    : null,
                   split: fullAutoSegmentsForOutput
                     ? reframeOutputs.includes(output)
                       ? splitTilesAreDistinct(output.aspectRatio, probe)
@@ -7411,6 +7637,9 @@ async function executeClipRenderAttempt(
                   captionPreset,
                   logo,
                   reframe: output.reframe,
+                  composition: compositionPlan
+                    ? { plan: compositionPlan, targetId: output.clipRenderId }
+                    : null,
                   studioEdits,
                   music: musicPlan,
                   sfx: sfxPlans,
@@ -7481,6 +7710,12 @@ async function executeClipRenderAttempt(
                         captionPreset,
                         logo: null,
                         reframe: output.reframe,
+                        composition: (fallbackCompositionPlan ?? compositionPlan)
+                          ? {
+                              plan: (fallbackCompositionPlan ?? compositionPlan)!,
+                              targetId: output.clipRenderId,
+                            }
+                          : null,
                         studioEdits,
                         music: null,
                         sfx: [],
@@ -7561,6 +7796,12 @@ async function executeClipRenderAttempt(
                   captionPreset,
                   logo,
                   reframe: outputs[0]!.reframe,
+                  composition: compositionPlan
+                    ? {
+                        plan: compositionPlan,
+                        targetId: outputs[0]!.clipRenderId,
+                      }
+                    : null,
                   resolution: outputs[0]!.resolution,
                   watermark: outputs[0]!.watermark,
                 })
@@ -7573,6 +7814,7 @@ async function executeClipRenderAttempt(
                   srtPath,
                   captionPreset,
                   logo,
+                  composition: compositionPlan,
                   watermark: outputs[0]!.watermark,
                 });
 
@@ -7594,6 +7836,12 @@ async function executeClipRenderAttempt(
                           captionPreset,
                           logo: null,
                           reframe: outputs[0]!.reframe,
+                          composition: compositionPlan
+                            ? {
+                                plan: compositionPlan,
+                                targetId: outputs[0]!.clipRenderId,
+                              }
+                            : null,
                           resolution: outputs[0]!.resolution,
                           watermark: outputs[0]!.watermark,
                         })
@@ -7606,6 +7854,7 @@ async function executeClipRenderAttempt(
                           srtPath,
                           captionPreset,
                           logo: null,
+                          composition: compositionPlan,
                           watermark: outputs[0]!.watermark,
                         })
                 : undefined,

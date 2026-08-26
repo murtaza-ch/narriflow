@@ -4,6 +4,13 @@ import { useRef, useState, useCallback, useEffect, useMemo } from "react";
 import { Box, Flex, Menu, Portal, Text } from "@chakra-ui/react";
 import { Spinner } from "@narriflow/ui";
 import {
+  automaticLayoutInputFingerprint,
+  compositionAssetRef,
+  planClipComposition,
+  type CompositionBackgroundLayer,
+  type CompositionSourceVideoLayer,
+} from "@narriflow/composition-plan";
+import {
   Smartphone,
   Square,
   Monitor,
@@ -29,6 +36,7 @@ import {
   type LogoPosition,
   type SpeakerLayerRole,
   type SpeakerLayerTransform,
+  type ResolvedSpeakerLayoutScene,
 } from "@narriflow/validators";
 import { useStudio } from "./studio-shell";
 import type { AspectRatio, LayoutMode } from "./studio-shell";
@@ -51,6 +59,11 @@ import {
   manualBrollPreviewWindow,
   type ManualBrollPreviewWindow,
 } from "./broll-preview";
+import { adoptCompositionPreview } from "./composition-preview-adapter";
+import {
+  compositionPlanControl,
+  shouldAdoptCompositionPlan,
+} from "./composition-plan-control";
 
 /** `screenTileGeometry`'s `tileWidth` (apps/worker/src/tasks/screen-layout.ts)
  *  is just the target aspect ratio's own output WIDTH — mirrored here from
@@ -316,12 +329,14 @@ function BrollPreviewLayer({
 
 export function VideoPreview() {
   const {
+    editorDocument,
     aspectRatio, setAspectRatio,
     layoutMode, setLayoutMode,
     studioEdits,
     mediaRef,
     playbackClock,
     sourceVideoUrl,
+    sourcePreviewId,
     previewVideoUrl,
     sourcePurged,
     useOriginalSourceFallback,
@@ -390,6 +405,11 @@ export function VideoPreview() {
   // source file, so the value doesn't need to be invalidated on that
   // transition, only ever (re)set forward.
   const [sourceDims, setSourceDims] = useState<{ width: number; height: number } | null>(null);
+  const [backgroundImageAvailability, setBackgroundImageAvailability] =
+    useState<
+      | { state: "missing" | "pending" | "failed" }
+      | { state: "available"; ref: string }
+    >({ state: "missing" });
   const containerRef = useRef<HTMLDivElement>(null);
   const videoContainerRef = useRef<HTMLDivElement>(null);
   const mainVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -473,7 +493,139 @@ export function VideoPreview() {
   // determines its own framing via a fixed crop or letterbox, so there's no
   // fill/fit/blur state left to cycle through for it.
   const background = studioEdits.background;
+  useEffect(() => {
+    if (background.mode !== "image" || !background.imageUrl) {
+      setBackgroundImageAvailability({ state: "missing" });
+      return;
+    }
+    let active = true;
+    const image = new Image();
+    setBackgroundImageAvailability({ state: "pending" });
+    image.onload = () => {
+      if (active) {
+        setBackgroundImageAvailability({
+          state: "available",
+          ref: compositionAssetRef("background", background.imageUrl!),
+        });
+      }
+    };
+    image.onerror = () => {
+      if (active) setBackgroundImageAvailability({ state: "failed" });
+    };
+    image.src = background.imageUrl;
+    return () => {
+      active = false;
+      image.onload = null;
+      image.onerror = null;
+    };
+  }, [background.imageUrl, background.mode]);
   const effectiveFramingMode = resolveEffectiveFramingMode(studioEdits);
+  const compositionPlanResult = useMemo(() => {
+    if (!sourceDims) return null;
+    if (
+      effectiveFramingMode !== "center" &&
+      effectiveFramingMode !== "fit" &&
+      effectiveFramingMode !== "auto"
+    ) {
+      return null;
+    }
+    const target = clipAspectRatioOptions.find(
+      (option) => option.value === aspectRatio,
+    );
+    if (!target) return null;
+    return planClipComposition({
+      document: editorDocument,
+      source: {
+        identity: sourcePreviewId,
+        kind: "video",
+        width: sourceDims.width,
+        height: sourceDims.height,
+      },
+      evidence: {
+        automaticLayout: autoLayoutAnalysis
+          ? {
+              state: "available",
+              value: {
+                sourceIdentity: sourcePreviewId,
+                inputFingerprint: automaticLayoutInputFingerprint({
+                  sourceIdentity: sourcePreviewId,
+                  clipStartSec: editorDocument.clipStartSec,
+                  clipEndSec: editorDocument.clipEndSec,
+                  deletedRanges: editorDocument.deletedRanges,
+                  engineVersion: "shot-layout-v1",
+                }),
+                engineVersion: "shot-layout-v1",
+                analysis: autoLayoutAnalysis,
+              },
+            }
+          : { state: "missing" },
+      },
+      assets: { backgroundImage: backgroundImageAvailability },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+      targets: [
+        {
+          id: aspectRatio,
+          aspectRatio,
+          width: target.width,
+          height: target.height,
+        },
+      ],
+    });
+  }, [
+    aspectRatio,
+    autoLayoutAnalysis,
+    backgroundImageAvailability,
+    editorDocument,
+    effectiveFramingMode,
+    sourceDims,
+    sourcePreviewId,
+  ]);
+  const compositionPreview = useMemo(() => {
+    if (
+      !compositionPlanResult ||
+      compositionPlanResult.status === "invalid" ||
+      !shouldAdoptCompositionPlan(effectiveFramingMode)
+    ) {
+      return null;
+    }
+    return adoptCompositionPreview(
+      compositionPlanResult.plan,
+      aspectRatio,
+      currentTime,
+    );
+  }, [
+    aspectRatio,
+    compositionPlanResult,
+    currentTime,
+    effectiveFramingMode,
+  ]);
+  const plannedSourceLayers = useMemo(
+    () =>
+      compositionPreview?.layers.filter(
+        (layer): layer is CompositionSourceVideoLayer =>
+          layer.kind === "source-video",
+      ) ?? [],
+    [compositionPreview],
+  );
+  const plannedBackgroundLayer = compositionPreview?.layers.find(
+    (layer): layer is CompositionBackgroundLayer => layer.kind === "background",
+  );
+  const compositionNotice = compositionPreview?.notices[0] ?? null;
+  const compositionNoticeText =
+    compositionNotice?.code === "background_image_pending"
+      ? "Checking background image…"
+      : compositionNotice?.code === "background_image_unavailable"
+        ? "Background image unavailable. Using the selected color."
+        : compositionNotice?.code === "automatic_layout_analyzing"
+          ? "Analyzing speakers… Center framing is shown for now."
+          : compositionNotice?.code === "automatic_layout_disabled"
+            ? "Automatic speaker layout is disabled. Using Center."
+            : compositionNotice?.code === "automatic_layout_unavailable"
+              ? "Speaker analysis unavailable. Using Center."
+        : null;
   const backgroundActive = effectiveFramingMode === "fit";
   // resolveEffectiveFramingMode makes background and split/screen mutually
   // exclusive (background always wins as "fit"), so `isSplit`/`isScreen`
@@ -495,34 +647,49 @@ export function VideoPreview() {
   // further down.
   const isSplit = effectiveFramingMode === "split";
   const isScreen = effectiveFramingMode === "screen";
-  const validAutoLayout = useMemo(() => {
-    if (effectiveFramingMode !== "auto" || !autoLayoutAnalysis || !sourceDims) {
+  const plannedSpeakerScene = useMemo<ResolvedSpeakerLayoutScene | null>(() => {
+    if (
+      compositionPreview?.requestedMode !== "auto" ||
+      compositionPreview.effectiveMode !== "auto" ||
+      plannedSourceLayers.length === 0 ||
+      plannedSourceLayers.some((layer) => !layer.speaker)
+    ) {
       return null;
     }
-    return autoLayoutAnalysis;
-  }, [effectiveFramingMode, autoLayoutAnalysis, sourceDims]);
-  const autoSegments = useMemo(
+    return {
+      startSec: compositionPreview.sceneStartSec,
+      endSec: compositionPreview.sceneEndSec,
+      layout: plannedSourceLayers.length === 2 ? "two-up" : "single",
+      layers: plannedSourceLayers.map((layer) => ({ ...layer.speaker!.transform })),
+      overrideId: plannedSourceLayers[0]!.speaker!.overrideId,
+    };
+  }, [compositionPreview, plannedSourceLayers]);
+  const legacyAutoSegments = useMemo(
     () =>
-      validAutoLayout && sourceDims
-        ? autoLayoutSegmentsForAspect(validAutoLayout, aspectRatio, sourceDims)
+      compositionPlanControl.auto !== "plan" &&
+      effectiveFramingMode === "auto" &&
+      autoLayoutAnalysis &&
+      sourceDims
+        ? autoLayoutSegmentsForAspect(autoLayoutAnalysis, aspectRatio, sourceDims)
         : [],
-    [validAutoLayout, sourceDims, aspectRatio],
+    [aspectRatio, autoLayoutAnalysis, effectiveFramingMode, sourceDims],
   );
-  const activeAutoSegment = useMemo(
-    () => activeAutoLayoutSegment(autoSegments, currentTime),
-    [autoSegments, currentTime],
+  const legacyActiveAutoSegment = useMemo(
+    () => activeAutoLayoutSegment(legacyAutoSegments, currentTime),
+    [currentTime, legacyAutoSegments],
   );
-  const activeSpeakerScene = useMemo(
+  const legacySpeakerScene = useMemo(
     () =>
-      activeAutoSegment
+      legacyActiveAutoSegment
         ? resolveSpeakerLayoutScene(
-            activeAutoSegment,
+            legacyActiveAutoSegment,
             studioEdits.speakerLayoutOverrides,
             aspectRatio,
           )
         : null,
-    [activeAutoSegment, studioEdits.speakerLayoutOverrides, aspectRatio],
+    [aspectRatio, legacyActiveAutoSegment, studioEdits.speakerLayoutOverrides],
   );
+  const activeSpeakerScene = plannedSpeakerScene ?? legacySpeakerScene;
   const activeSpeakerSceneKey = activeSpeakerScene
     ? `${aspectRatio}:${activeSpeakerScene.startSec.toFixed(3)}:${activeSpeakerScene.endSec.toFixed(3)}:${activeSpeakerScene.layout}`
     : null;
@@ -562,24 +729,21 @@ export function VideoPreview() {
 
   const updateSpeakerLayer = useCallback(
     (nextLayer: SpeakerLayerTransform, gesture: string) => {
-      if (!activeAutoSegment) return;
+      if (!activeSpeakerScene) return;
       setStudioEdits(
         (previous) => {
-          const scene = resolveSpeakerLayoutScene(
-            activeAutoSegment,
-            previous.speakerLayoutOverrides,
-            aspectRatio,
-          );
           const nextScene = {
-            ...scene,
-            layers: scene.layers.map((layer) =>
+            ...activeSpeakerScene,
+            layers: activeSpeakerScene.layers.map((layer) =>
               layer.role === nextLayer.role ? nextLayer : layer,
             ),
           };
-          const id = scene.overrideId ?? `speaker-scene-${crypto.randomUUID()}`;
+          const id =
+            activeSpeakerScene.overrideId ??
+            `speaker-scene-${crypto.randomUUID()}`;
           const override = speakerLayoutOverrideFromScene(nextScene, aspectRatio, id);
           const withoutCurrent = previous.speakerLayoutOverrides.filter(
-            (candidate) => candidate.id !== scene.overrideId,
+            (candidate) => candidate.id !== activeSpeakerScene.overrideId,
           );
           return {
             ...previous,
@@ -589,30 +753,37 @@ export function VideoPreview() {
         `${activeSpeakerSceneKey ?? "speaker-scene"}:${gesture}`,
       );
     },
-    [activeAutoSegment, activeSpeakerSceneKey, aspectRatio, setStudioEdits],
+    [activeSpeakerScene, activeSpeakerSceneKey, aspectRatio, setStudioEdits],
   );
 
   const resetActiveSpeakerLayer = useCallback((role: SpeakerLayerRole) => {
-    if (!activeAutoSegment) return;
+    if (!activeSpeakerScene) return;
     setStudioEdits((previous) => {
-      const scene = resolveSpeakerLayoutScene(
-        activeAutoSegment,
-        previous.speakerLayoutOverrides,
-        aspectRatio,
-      );
-      if (!scene.overrideId) return previous;
+      if (!activeSpeakerScene.overrideId) return previous;
 
-      const defaults = resolveSpeakerLayoutScene(activeAutoSegment, [], aspectRatio);
+      const defaults =
+        plannedSourceLayers.length > 0
+          ? {
+              ...activeSpeakerScene,
+              overrideId: null,
+              layers: plannedSourceLayers.map((layer) => ({
+                ...layer.speaker!.defaultTransform,
+              })),
+            }
+          : legacyActiveAutoSegment
+            ? resolveSpeakerLayoutScene(legacyActiveAutoSegment, [], aspectRatio)
+            : null;
+      if (!defaults) return previous;
       const reset = resetSpeakerLayerTransform(
-        scene.layers,
+        activeSpeakerScene.layers,
         defaults.layers,
         role,
       );
       if (!reset.changed) return previous;
 
-      const nextScene = { ...scene, layers: reset.layers };
+      const nextScene = { ...activeSpeakerScene, layers: reset.layers };
       const withoutCurrent = previous.speakerLayoutOverrides.filter(
-        (candidate) => candidate.id !== scene.overrideId,
+        (candidate) => candidate.id !== activeSpeakerScene.overrideId,
       );
 
       return {
@@ -624,13 +795,13 @@ export function VideoPreview() {
               speakerLayoutOverrideFromScene(
                 nextScene,
                 aspectRatio,
-                scene.overrideId,
+                activeSpeakerScene.overrideId,
               ),
             ],
       };
     });
     endCoalesce();
-  }, [activeAutoSegment, aspectRatio, endCoalesce, setStudioEdits]);
+  }, [activeSpeakerScene, aspectRatio, endCoalesce, legacyActiveAutoSegment, plannedSourceLayers, setStudioEdits]);
 
   const autoTwoUp = activeSpeakerScene?.layout === "two-up";
   const isStacked = isSplit || isScreen || autoTwoUp;
@@ -640,7 +811,16 @@ export function VideoPreview() {
       ? "contain"
       : "cover";
   const backgroundStageStyle: React.CSSProperties = backgroundActive
-    ? background.mode === "image" && background.imageUrl
+    ? plannedBackgroundLayer
+      ? plannedBackgroundLayer.imageRef && background.imageUrl
+        ? {
+            backgroundImage: `url(${background.imageUrl})`,
+            backgroundSize: "cover",
+            backgroundPosition: "center",
+            backgroundColor: plannedBackgroundLayer.color,
+          }
+        : { backgroundColor: plannedBackgroundLayer.color }
+      : background.mode === "image" && background.imageUrl
       ? {
           backgroundImage: `url(${background.imageUrl})`,
           backgroundSize: "cover",
@@ -942,22 +1122,54 @@ export function VideoPreview() {
     activeSpeakerScene.layout === "two-up" ? layer.role === "top" : layer.role === "single",
   );
   const autoBottomLayer = activeSpeakerScene?.layers.find((layer) => layer.role === "bottom");
+  const plannedMainSourceLayer =
+    plannedSourceLayers.find(
+      (layer) => layer.speaker?.role === autoMainLayer?.role,
+    ) ?? plannedSourceLayers[0];
+  const plannedBottomSourceLayer = plannedSourceLayers.find(
+    (layer) => layer.speaker?.role === "bottom",
+  );
   const autoMainCrop = useMemo(() => {
     if (!autoMainLayer || !sourceDims) return null;
+    if (plannedMainSourceLayer) {
+      return {
+        x: plannedMainSourceLayer.sourceCrop.x / sourceDims.width,
+        y: plannedMainSourceLayer.sourceCrop.y / sourceDims.height,
+        w: plannedMainSourceLayer.sourceCrop.width / sourceDims.width,
+        h: plannedMainSourceLayer.sourceCrop.height / sourceDims.height,
+      };
+    }
     return speakerLayerCropRect(autoMainLayer, aspectRatio, sourceDims);
-  }, [autoMainLayer, sourceDims, aspectRatio]);
+  }, [autoMainLayer, plannedMainSourceLayer, sourceDims, aspectRatio]);
   const autoBottomCrop = useMemo((): SplitSecondaryTileCropRect | null => {
     if (!autoBottomLayer || !sourceDims) {
       return null;
     }
-    const crop = speakerLayerCropRect(autoBottomLayer, aspectRatio, sourceDims);
+    const crop = plannedBottomSourceLayer
+      ? {
+          x: plannedBottomSourceLayer.sourceCrop.x / sourceDims.width,
+          y: plannedBottomSourceLayer.sourceCrop.y / sourceDims.height,
+          w: plannedBottomSourceLayer.sourceCrop.width / sourceDims.width,
+          h: plannedBottomSourceLayer.sourceCrop.height / sourceDims.height,
+        }
+      : speakerLayerCropRect(autoBottomLayer, aspectRatio, sourceDims);
     if (!crop || previewWidth <= 0 || previewHeight <= 0) return null;
     return {
       ...crop,
-      tileWidthPx: previewWidth * autoBottomLayer.frameWidth,
-      tileHeightPx: previewHeight * autoBottomLayer.frameHeight,
+      tileWidthPx:
+        previewWidth *
+        (plannedBottomSourceLayer
+          ? plannedBottomSourceLayer.destination.width /
+            (compositionPreview?.canvas.width ?? 1)
+          : autoBottomLayer.frameWidth),
+      tileHeightPx:
+        previewHeight *
+        (plannedBottomSourceLayer
+          ? plannedBottomSourceLayer.destination.height /
+            (compositionPreview?.canvas.height ?? 1)
+          : autoBottomLayer.frameHeight),
     };
-  }, [autoBottomLayer, sourceDims, aspectRatio, previewWidth, previewHeight]);
+  }, [aspectRatio, autoBottomLayer, compositionPreview, plannedBottomSourceLayer, previewHeight, previewWidth, sourceDims]);
 
   // Screen packet C (PiP persistence — preview true facecam crop): once the
   // worker's analysis pass has run AND that render's own `decidePipUsage`
@@ -1052,6 +1264,88 @@ export function VideoPreview() {
     previewHeight * (autoMainLayer?.frameHeight ?? (autoTwoUp ? 0.5 : 1)),
     previewPhase === "ready",
   );
+  const plannedMainVideoStyle =
+    plannedMainSourceLayer && sourceDims && previewWidth > 0 && previewHeight > 0
+      ? explicitCropVideoStyle(
+          {
+            x: plannedMainSourceLayer.sourceCrop.x / sourceDims.width,
+            y: plannedMainSourceLayer.sourceCrop.y / sourceDims.height,
+            w: plannedMainSourceLayer.sourceCrop.width / sourceDims.width,
+            h: plannedMainSourceLayer.sourceCrop.height / sourceDims.height,
+          },
+          previewWidth *
+            (plannedMainSourceLayer.destination.width /
+              (compositionPreview?.canvas.width ?? 1)),
+          previewHeight *
+            (plannedMainSourceLayer.destination.height /
+              (compositionPreview?.canvas.height ?? 1)),
+          previewPhase === "ready",
+        )
+      : null;
+  const plannedSourceFrameStyle =
+    plannedMainSourceLayer && compositionPreview
+      ? {
+          position: "absolute" as const,
+          left: `${(plannedMainSourceLayer.destination.x / compositionPreview.canvas.width) * 100}%`,
+          top: `${(plannedMainSourceLayer.destination.y / compositionPreview.canvas.height) * 100}%`,
+          width: `${(plannedMainSourceLayer.destination.width / compositionPreview.canvas.width) * 100}%`,
+          height: `${(plannedMainSourceLayer.destination.height / compositionPreview.canvas.height) * 100}%`,
+        }
+      : null;
+  const plannedBottomFrameStyle =
+    plannedBottomSourceLayer && compositionPreview
+      ? {
+          position: "absolute" as const,
+          left: `${(plannedBottomSourceLayer.destination.x / compositionPreview.canvas.width) * 100}%`,
+          top: `${(plannedBottomSourceLayer.destination.y / compositionPreview.canvas.height) * 100}%`,
+          width: `${(plannedBottomSourceLayer.destination.width / compositionPreview.canvas.width) * 100}%`,
+          height: `${(plannedBottomSourceLayer.destination.height / compositionPreview.canvas.height) * 100}%`,
+        }
+      : null;
+
+  useEffect(() => {
+    if (
+      (effectiveFramingMode !== "center" &&
+        effectiveFramingMode !== "fit" &&
+        effectiveFramingMode !== "auto") ||
+      compositionPlanControl[effectiveFramingMode] !== "shadow" ||
+      !compositionPlanResult ||
+      compositionPlanResult.status === "invalid"
+    ) {
+      return;
+    }
+    const target = compositionPlanResult.plan.targets[0];
+    const layer = target?.scenes[0]?.layers.find(
+      (candidate) => candidate.kind === "source-video",
+    );
+    console.warn(
+      JSON.stringify({
+        level: "info",
+        message: "clip_composition_shadow",
+        adapter: "web",
+        planVersion: compositionPlanResult.plan.version,
+        planFingerprint: compositionPlanResult.plan.fingerprint,
+        requestedMode: effectiveFramingMode,
+        effectiveMode: target?.effectiveMode ?? null,
+        target: target?.aspectRatio ?? aspectRatio,
+        canvas: target?.canvas ?? null,
+        scenes:
+          target?.scenes.map((scene) => ({
+            startSec: scene.startSec,
+            endSec: scene.endSec,
+            layers: scene.layers.map((candidate) => ({
+              kind: candidate.kind,
+              destination: candidate.destination,
+              sourceCrop:
+                candidate.kind === "source-video"
+                  ? candidate.sourceCrop
+                  : null,
+            })),
+          })) ?? [],
+        sourceCrop: layer?.kind === "source-video" ? layer.sourceCrop : null,
+      }),
+    );
+  }, [aspectRatio, compositionPlanResult, effectiveFramingMode]);
 
   return (
     <Flex
@@ -1183,6 +1477,29 @@ export function VideoPreview() {
           {backgroundActive && (
             <Box position="absolute" inset="0" style={backgroundStageStyle} />
           )}
+
+          {compositionNoticeText ? (
+            <Flex
+              position="absolute"
+              top="8px"
+              left="50%"
+              transform="translateX(-50%)"
+              zIndex={8}
+              px="8px"
+              py="4px"
+              bg="studio.surface/92"
+              borderWidth="1px"
+              borderColor="studio.borderStrong"
+              borderRadius="l1"
+              color="studio.fgMuted"
+              fontSize="10px"
+              role="status"
+              aria-live="polite"
+              pointerEvents="none"
+            >
+              {compositionNoticeText}
+            </Flex>
+          ) : null}
 
           {/* Graphite ghost stage while no video is ready to show */}
           {previewPhase !== "ready" && (
@@ -1353,7 +1670,7 @@ export function VideoPreview() {
               drift-corrected rather than clock-driving. */}
           <Box
             style={
-              autoMainLayer
+              plannedSourceFrameStyle ?? (autoMainLayer
                 ? speakerFrameStyle(autoMainLayer)
                 : {
                     position: "absolute",
@@ -1361,7 +1678,7 @@ export function VideoPreview() {
                     left: 0,
                     right: 0,
                     bottom: isStacked ? "50%" : 0,
-                  }
+                  })
             }
             overflow="visible"
             zIndex={
@@ -1376,7 +1693,7 @@ export function VideoPreview() {
               <video
                 ref={attachMainVideo}
                 style={
-                  autoMainVideoStyle ?? {
+                  plannedMainVideoStyle ?? autoMainVideoStyle ?? {
                     position: "absolute",
                     inset: 0,
                     width: "100%",
@@ -1410,7 +1727,7 @@ export function VideoPreview() {
           {isStacked && activeVideoUrl && (
             <Box
               style={
-                autoBottomLayer
+                plannedBottomFrameStyle ?? (autoBottomLayer
                   ? speakerFrameStyle(autoBottomLayer)
                   : {
                       position: "absolute",
@@ -1418,7 +1735,7 @@ export function VideoPreview() {
                       left: 0,
                       right: 0,
                       bottom: 0,
-                    }
+                    })
               }
               overflow="visible"
               zIndex={
