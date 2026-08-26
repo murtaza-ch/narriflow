@@ -4,6 +4,7 @@ import {
   type ClipCompositionPlanResult,
   type CompositionBrollAvailability,
   type CompositionLayer,
+  type CompositionVisualLayer,
 } from "@narriflow/composition-plan";
 
 export function manualBrollAvailabilityForPlan(input: {
@@ -73,6 +74,8 @@ const COMPOSITION_NOTICE_COPY: Readonly<Record<string, string>> = {
   screen_broll_conflict: "B-roll uses single-speaker framing for this whole clip.",
   broll_asset_pending: "Checking B-roll media… Showing the base composition for now.",
   broll_asset_unavailable: "B-roll is unavailable. Showing the base composition.",
+  logo_asset_pending: "Checking logo media…",
+  logo_asset_unavailable: "Logo media is unavailable. Showing the rest of the composition.",
 };
 
 export function compositionNoticeText(code: string | null | undefined): string | null {
@@ -198,6 +201,32 @@ function assertLayerGeometry(
   }
 }
 
+function assertVisualLayers(
+  layers: readonly CompositionVisualLayer[],
+  canvas: { width: number; height: number },
+  durationSec: number,
+): void {
+  let previousZIndex = -Infinity;
+  for (const layer of layers) {
+    assertFiniteRect(
+      layer.destination,
+      canvas,
+      "invalid_clip_composition_visual_destination",
+    );
+    if (
+      !Number.isFinite(layer.activeRange.startSec) ||
+      !Number.isFinite(layer.activeRange.endSec) ||
+      layer.activeRange.startSec < 0 ||
+      layer.activeRange.endSec <= layer.activeRange.startSec ||
+      layer.activeRange.endSec > durationSec + SCENE_END_EPSILON_SEC ||
+      layer.zIndex < previousZIndex
+    ) {
+      throw new Error("invalid_clip_composition_visual_layers");
+    }
+    previousZIndex = layer.zIndex;
+  }
+}
+
 export function adoptCompositionPreview(
   plan: ClipCompositionPlan,
   targetId: string,
@@ -221,6 +250,7 @@ export function adoptCompositionPreview(
   if (target.scenes.length === 0) {
     throw new Error("invalid_clip_composition_scenes");
   }
+  assertVisualLayers(target.visualLayers, target.canvas, plan.editedDurationSec);
   let cursor = 0;
   for (const [index, candidate] of target.scenes.entries()) {
     if (
@@ -258,6 +288,14 @@ export function adoptCompositionPreview(
       layer.kind === "source-video",
   );
   if (!mainSource) throw new Error("clip_composition_source_layer_missing");
+  const visualLayers = target.visualLayers.filter(
+    (layer) =>
+      time >= layer.activeRange.startSec &&
+      (time < layer.activeRange.endSec ||
+        (Math.abs(layer.activeRange.endSec - plan.editedDurationSec) <=
+          SCENE_END_EPSILON_SEC &&
+          time <= layer.activeRange.endSec + SCENE_END_EPSILON_SEC)),
+  );
 
   return {
     planVersion: plan.version,
@@ -269,7 +307,7 @@ export function adoptCompositionPreview(
     sceneEndSec: scene.endSec,
     requestedMode: target.requestedMode,
     effectiveMode: target.effectiveMode,
-    layers: scene.layers,
+    layers: [...scene.layers, ...visualLayers],
     notices: plan.notices.filter(
       (notice) =>
         notice.targetId === target.id &&

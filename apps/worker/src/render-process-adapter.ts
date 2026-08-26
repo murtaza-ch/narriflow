@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { WorkflowFailure } from "@narriflow/services";
 
 const MAX_DIAGNOSTIC_CHARS = 8192;
+const PROCESS_GROUP_REAP_TIMEOUT_MS = 1_000;
 
 function redactUrlQueries(text: string): string {
   return text.replace(/\?[^\s"']+/g, "?[redacted]");
@@ -204,7 +205,10 @@ export class ProductionRenderProcessAdapter {
           // the detached process group before reporting cancellation or
           // timeout completion so temporary files are safe to remove.
           terminate("SIGKILL");
-          await waitForProcessGroupExit(child.pid, request.killGraceMs);
+          await waitForProcessGroupExit(
+            child.pid,
+            Math.max(request.killGraceMs, PROCESS_GROUP_REAP_TIMEOUT_MS),
+          );
         }
         cleanup();
         if (terminationReason === "cancellation") {

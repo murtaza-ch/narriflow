@@ -6,10 +6,10 @@ import { motion, useMotionValue, useReducedMotion } from "framer-motion";
 import { useStudio } from "./studio-shell";
 import { computeSnap, type SnapGuide } from "./snap-guides";
 import {
-  CAPTION_POSITION_Y_DEFAULTS,
   clipAspectRatioOptions,
 } from "@narriflow/validators";
-import { CaptionCue, useLiveCaption } from "./caption-style-engine";
+import { CaptionCue } from "./caption-style-engine";
+import type { CompositionCaptionVisualLayer } from "@narriflow/composition-plan";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
@@ -132,22 +132,22 @@ export function DragResizeHandles({
 
 export function InteractiveCaptionOverlay({
   videoContainerRef,
+  layer,
+  currentTime,
 }: {
   videoContainerRef: React.RefObject<HTMLDivElement | null>;
+  layer: CompositionCaptionVisualLayer;
+  currentTime: number;
 }) {
   const {
-    captionPreset,
     setCaptionPreset,
     captionSelected,
     selectCaption,
     deselectCaption,
     aspectRatio,
-    utterances,
-    clipStartSec,
-    editedTimeMap,
-    playbackClock,
     endCoalesce,
   } = useStudio();
+  const captionPreset = layer.preset;
 
   // Vizard-parity Phase C subtitle visibility toggle — hidden captions must
   // also be unselectable: if the caption was selected when the toggle flips
@@ -161,7 +161,17 @@ export function InteractiveCaptionOverlay({
     }
   }, [isVisible, captionSelected, deselectCaption]);
 
-  const caption = useLiveCaption(playbackClock, utterances, clipStartSec, editedTimeMap);
+  const caption = {
+    visibleWords: layer.words.map((word, index) => ({
+      word: word.text,
+      emoji: word.emoji,
+      isActive:
+        currentTime >= word.startSec &&
+        (currentTime < word.endSec ||
+          (index === layer.words.length - 1 && currentTime <= word.endSec)),
+    })),
+    utteranceIndex: layer.cueIndex,
+  };
   const reducedMotion = useReducedMotion() ?? false;
 
   const [hovered, setHovered] = useState(false);
@@ -197,10 +207,8 @@ export function InteractiveCaptionOverlay({
       : captionPreset.fontSize * 0.35; // fallback scale
 
   // Position: derive from preset or enum
-  const posX = captionPreset.positionX ?? 50;
-  const posY =
-    captionPreset.positionY ??
-    CAPTION_POSITION_Y_DEFAULTS[captionPreset.position];
+  const posX = layer.anchor.xPct;
+  const posY = layer.anchor.yPct;
 
   // Click handler
   const handleClick = useCallback(

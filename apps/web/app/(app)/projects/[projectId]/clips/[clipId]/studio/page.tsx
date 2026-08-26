@@ -7,6 +7,7 @@ import {
   presignDownloadUrl,
 } from "@narriflow/services";
 import { brandTemplateSnapshotSchema, getEffectiveClipTiming } from "@narriflow/validators";
+import { compositionAssetRef } from "@narriflow/composition-plan";
 import { StudioShell } from "./_components/studio-shell";
 import type { ClipInfo, StudioBrandLogo } from "./_components/studio-shell";
 import { buildSegmentsFromUtterances } from "./_components/edited-timeline";
@@ -70,9 +71,10 @@ export default async function StudioPage({
   ]);
 
   const brandLogo: StudioBrandLogo | null =
-    brandSnapshot && brandLogoUrl
+    brandSnapshot?.logoStorageKey
       ? {
           url: brandLogoUrl,
+          ref: compositionAssetRef("logo", brandSnapshot.logoStorageKey),
           position: brandSnapshot.logoPosition,
           opacity: brandSnapshot.logoOpacity,
           scalePct: brandSnapshot.logoScalePct,

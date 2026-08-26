@@ -11,7 +11,12 @@ import {
   splitLayoutInputFingerprint,
   type CompositionBackgroundLayer,
   type CompositionBrollVideoLayer,
+  type CompositionCaptionVisualLayer,
+  type CompositionLogoVisualLayer,
+  type CompositionOutputTreatmentVisualLayer,
   type CompositionSourceVideoLayer,
+  type CompositionTextVisualLayer,
+  type CompositionTransitionVisualLayer,
 } from "@narriflow/composition-plan";
 import {
   Smartphone,
@@ -43,6 +48,7 @@ import {
 import { useStudio } from "./studio-shell";
 import type { AspectRatio, LayoutMode } from "./studio-shell";
 import { InteractiveCaptionOverlay } from "./interactive-caption-overlay";
+import { hexToRgba } from "./caption-style-engine";
 import { InteractiveTextLayer } from "./interactive-text-layer";
 import { SfxPreviewTrack } from "./sfx-preview-track";
 import { SplitSecondaryTile, type SplitSecondaryTileCropRect } from "./split-secondary-tile";
@@ -54,7 +60,6 @@ import {
 import { InteractiveSpeakerLayer } from "./interactive-speaker-layer";
 import {
   brollPreviewLocalTime,
-  isBrollPreviewActive,
   manualBrollPreviewWindow,
   type ManualBrollPreviewWindow,
 } from "./broll-preview";
@@ -71,14 +76,6 @@ import { compositionCapabilities } from "./composition-capabilities";
 
 /** After this long with no metadata yet, hint that the source is just large. */
 const SLOW_LOAD_HINT_MS = 10_000;
-
-/** Approximates the worker's fixed 24px margin (render-clips.ts's
- *  LOGO_MARGIN_PX) as a fraction of canvas width, assuming a ~1080px-wide
- *  reference frame — matches the plan's "margin ≈ 24/1080 ≈ 2.2% of canvas
- *  width" approximation. Not pixel-exact (the worker's margin is a fixed px
- *  offset independent of aspect ratio; this scales with the preview's own
- *  rendered width), but close enough for a live preview. */
-const LOGO_MARGIN_FRACTION = 24 / 1080;
 
 /** Absolute-position styles for the 3x3 `LogoPosition` grid, mirroring
  *  `buildLogoOverlayPosition` in render-clips.ts (left/right/center-x,
@@ -698,6 +695,17 @@ export function VideoPreview() {
               }),
             }
           : {}),
+        ...(brandLogo && effectiveLogo
+          ? brandLogo.url
+            ? {
+                logo: {
+                  state: "available" as const,
+                  ref: brandLogo.ref,
+                  settings: effectiveLogo,
+                },
+              }
+            : { logo: { state: "failed" as const } }
+          : {}),
       },
       capabilities: {
         automaticSpeakerLayout:
@@ -715,6 +723,10 @@ export function VideoPreview() {
           aspectRatio,
           width: target.width,
           height: target.height,
+          outputTreatment: {
+            resolution: clipInfo.can1080pExport ? "1080p" : "720p",
+            watermark: clipInfo.exportHasWatermark,
+          },
         },
       ],
     });
@@ -727,6 +739,10 @@ export function VideoPreview() {
     brollUrl,
     brollMediaState,
     brollWindow,
+    brandLogo,
+    effectiveLogo,
+    clipInfo.can1080pExport,
+    clipInfo.exportHasWatermark,
     eligibleSplitLayoutAnalysis,
     autoLayoutAnalysisStatus,
     exactScreenLayoutAnalysis,
@@ -756,12 +772,38 @@ export function VideoPreview() {
     (layer): layer is CompositionBrollVideoLayer =>
       layer.kind === "broll-video",
   );
-  const activeBrollWindow = plannedBrollLayer?.activeRange ?? brollWindow;
-  const brollActive = plannedBrollLayer
-    ? true
-    : compositionPreview
-      ? false
-      : isBrollPreviewActive(currentTime, brollWindow);
+  const activeBrollWindow = plannedBrollLayer?.activeRange ?? null;
+  const brollActive = Boolean(plannedBrollLayer);
+  const plannedTextLayers = compositionPreview?.layers.filter(
+    (layer): layer is CompositionTextVisualLayer => layer.kind === "text",
+  ) ?? [];
+  const plannedCaptionLayer = compositionPreview?.layers.find(
+    (layer): layer is CompositionCaptionVisualLayer => layer.kind === "caption",
+  );
+  const plannedLogoLayer = compositionPreview?.layers.find(
+    (layer): layer is CompositionLogoVisualLayer => layer.kind === "logo",
+  );
+  const plannedTransitionLayer = compositionPreview?.layers.find(
+    (layer): layer is CompositionTransitionVisualLayer =>
+      layer.kind === "transition",
+  );
+  const plannedOutputTreatment = compositionPreview?.layers.find(
+    (layer): layer is CompositionOutputTreatmentVisualLayer =>
+      layer.kind === "output-treatment",
+  );
+  const transitionOverlayOpacity = (() => {
+    if (!plannedTransitionLayer) return 0;
+    const { fadeIn, fadeOut } = plannedTransitionLayer.windows;
+    if (currentTime <= fadeIn.endSec) {
+      const durationSec = Math.max(0.001, fadeIn.endSec - fadeIn.startSec);
+      return Math.max(0, Math.min(1, 1 - (currentTime - fadeIn.startSec) / durationSec));
+    }
+    if (currentTime >= fadeOut.startSec) {
+      const durationSec = Math.max(0.001, fadeOut.endSec - fadeOut.startSec);
+      return Math.max(0, Math.min(1, (currentTime - fadeOut.startSec) / durationSec));
+    }
+    return 0;
+  })();
   const plannedSourceDims = compositionPlanResult?.status === "invalid"
     ? null
     : compositionPlanResult?.plan.source ?? null;
@@ -1833,42 +1875,80 @@ export function VideoPreview() {
             />
           )}
 
-          {studioEdits.textLayers.map((layer) => {
-            const endSec = layer.endSec ?? Number.POSITIVE_INFINITY;
-            if (currentTime < layer.startSec || currentTime > endSec) return null;
-
+          {plannedTextLayers.map((layer) => {
             return (
               <InteractiveTextLayer
                 key={layer.id}
-                layer={layer}
+                layer={layer.value}
                 previewWidth={previewWidth}
                 videoContainerRef={videoContainerRef}
               />
             );
           })}
 
-          {/* Interactive caption overlay */}
-          <InteractiveCaptionOverlay videoContainerRef={videoContainerRef} />
+          {plannedCaptionLayer ? (
+            <InteractiveCaptionOverlay
+              videoContainerRef={videoContainerRef}
+              layer={plannedCaptionLayer}
+              currentTime={currentTime}
+            />
+          ) : null}
 
-          {/* Brand logo overlay — burns in on top of everything else
-              (captions, text layers) at render time (buildLogoFilter
-              overlays [outvbase] last in render-clips.ts), so it renders
-              last here too. Waits for a real measured previewWidth so
-              first paint never flashes a 0-sized/mispositioned logo. */}
-          {brandLogo && effectiveLogo?.enabled && previewWidth > 0 ? (
+          {/* The plan places the brand logo above captions and text. Wait for
+              a measured preview width so the planned pixel geometry never
+              flashes at zero size on first paint. */}
+          {brandLogo?.url && plannedLogoLayer && previewWidth > 0 ? (
             <img
               src={brandLogo.url}
               alt=""
               aria-hidden="true"
               style={{
-                ...logoPositionStyle(effectiveLogo.position, previewWidth * LOGO_MARGIN_FRACTION),
-                width: `${previewWidth * (effectiveLogo.scalePct / 100)}px`,
+                ...logoPositionStyle(
+                  plannedLogoLayer.position,
+                  previewWidth * (plannedLogoLayer.marginPx / compositionPreview!.canvas.width),
+                ),
+                width: `${previewWidth * (plannedLogoLayer.widthPx / compositionPreview!.canvas.width)}px`,
                 height: "auto",
-                opacity: effectiveLogo.opacity / 100,
+                opacity: plannedLogoLayer.opacity,
                 zIndex: 25,
                 pointerEvents: "none",
               }}
             />
+          ) : null}
+
+          {plannedTransitionLayer && transitionOverlayOpacity > 0 ? (
+            <Box
+              position="absolute"
+              inset="0"
+              bg={plannedTransitionLayer.color}
+              opacity={transitionOverlayOpacity}
+              pointerEvents="none"
+              zIndex={30}
+              aria-hidden="true"
+            />
+          ) : null}
+
+          {plannedOutputTreatment?.watermark.enabled ? (
+            <Box
+              position="absolute"
+              top={`${(plannedOutputTreatment.watermark.marginPx.y / (compositionPreview!.canvas.height * plannedOutputTreatment.scale.numerator / plannedOutputTreatment.scale.denominator)) * 100}%`}
+              right={`${(plannedOutputTreatment.watermark.marginPx.x / (compositionPreview!.canvas.width * plannedOutputTreatment.scale.numerator / plannedOutputTreatment.scale.denominator)) * 100}%`}
+              color={plannedOutputTreatment.watermark.color}
+              opacity={plannedOutputTreatment.watermark.opacity}
+              fontSize={`${previewWidth * plannedOutputTreatment.watermark.fontSizePx / (compositionPreview!.canvas.width * plannedOutputTreatment.scale.numerator / plannedOutputTreatment.scale.denominator)}px`}
+              fontFamily={plannedOutputTreatment.watermark.fontFamily}
+              fontWeight={plannedOutputTreatment.watermark.fontWeight}
+              textShadow="none"
+              style={{
+                WebkitTextStroke: `${previewWidth * plannedOutputTreatment.watermark.outline.widthPx / (compositionPreview!.canvas.width * plannedOutputTreatment.scale.numerator / plannedOutputTreatment.scale.denominator)}px ${hexToRgba(plannedOutputTreatment.watermark.outline.color, plannedOutputTreatment.watermark.outline.opacity)}`,
+                paintOrder: "stroke fill",
+              }}
+              pointerEvents="none"
+              zIndex={35}
+              aria-hidden="true"
+            >
+              {plannedOutputTreatment.watermark.text}
+            </Box>
           ) : null}
         </Box>
       </Box>

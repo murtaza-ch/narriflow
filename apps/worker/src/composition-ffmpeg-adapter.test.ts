@@ -11,7 +11,10 @@ import {
   editorDocumentSchema,
   studioEditsSchema,
 } from "@narriflow/validators";
-import { compileCompositionPlanVideo } from "./composition-ffmpeg-adapter";
+import {
+  compileCompositionPlanVideo,
+  compileCompositionPlanVisualLayers,
+} from "./composition-ffmpeg-adapter";
 import { buildSingleVideoArgs } from "./tasks/render-clips";
 
 function planCenter() {
@@ -283,7 +286,175 @@ function planBroll() {
   return result.plan;
 }
 
+function planVisualStack(input: { captions?: boolean } = {}) {
+  const result = planClipComposition({
+    document: editorDocumentSchema.parse({
+      clipStartSec: 0,
+      clipEndSec: 5,
+      captionPreset: captionPresetSchema.parse({ visible: input.captions ?? false }),
+      transcriptSlice: input.captions
+        ? [
+            {
+              index: 0,
+              speaker: 0,
+              speakerLabel: "Speaker 1",
+              startSec: 0.5,
+              endSec: 1.5,
+              text: "Plan first",
+              confidence: 0.99,
+              words: [
+                { word: "Plan", startSec: 0.5, endSec: 1, confidence: 0.99 },
+                { word: "first", startSec: 1, endSec: 1.5, confidence: 0.99 },
+              ],
+            },
+          ]
+        : [],
+      studioEdits: studioEditsSchema.parse({
+        framing: { mode: "center" },
+        textLayers: [{ id: "hook", text: "It's 50%", startSec: 1, endSec: 4 }],
+        transition: { type: "dip-white", durationSec: 0.5 },
+      }),
+      brollUrl: null,
+      deletedRanges: [],
+    }),
+    source: { identity: "source:key", kind: "video", width: 1920, height: 1080 },
+    evidence: { automaticLayout: { state: "missing" } },
+    assets: {
+      backgroundImage: { state: "missing" },
+      logo: {
+        state: "available",
+        ref: "logo:brand",
+        settings: {
+          enabled: true,
+          position: "top-right",
+          opacity: 80,
+          scalePct: 12,
+        },
+      },
+    },
+    capabilities: {
+      automaticSpeakerLayout: true,
+      automaticSpeakerEngineVersion: "shot-layout-v1",
+    },
+    targets: [{
+      id: "variant-1",
+      aspectRatio: "9:16",
+      width: 1080,
+      height: 1920,
+      outputTreatment: { resolution: "720p", watermark: true },
+    }],
+  });
+  if (result.status === "invalid") throw new Error(result.error.code);
+  return result.plan;
+}
+
 describe("composition FFmpeg adapter", () => {
+  test("compiles the planner's complete visual order without re-reading editor policy", () => {
+    expect(
+      compileCompositionPlanVisualLayers({
+        plan: planVisualStack(),
+        targetId: "variant-1",
+        inputLabel: "[composition_base]",
+        outputLabel: "[outv]",
+        logoInputIndex: 1,
+      }),
+    ).toEqual({
+      filterParts: [
+        "[composition_base]drawtext=font='Arial':text='It\\'s 50\\%':fontsize=44:fontcolor=0xFFFFFF:x=w*0.5000-text_w/2:y=h*0.1800-text_h/2:enable='between(t\\,1.000\\,4.000)':shadowcolor=black@0.45:shadowx=0:shadowy=2:borderw=2:bordercolor=0x000000[composition_visual_0]",
+        "[1:v]scale=130:-1,format=rgba,colorchannelmixer=aa=0.800[composition_logo_1]",
+        "[composition_visual_0][composition_logo_1]overlay=W-w-24:24[composition_visual_1]",
+        "[composition_visual_1]fade=t=in:st=0.000:d=0.500:color=white,fade=t=out:st=4.500:d=0.500:color=white[composition_visual_2]",
+        "[composition_visual_2]scale=trunc(iw*2/3/2)*2:trunc(ih*2/3/2)*2,drawtext=text=Made with Narriflow:font='Arial Bold':fontcolor=0xFFFFFF@0.85:borderw=2:bordercolor=0x000000@0.60:fontsize=46:x=w-tw-32:y=32[outv]",
+      ],
+      logoInput: { sourceRef: "logo:brand", inputIndex: 1 },
+    });
+  });
+
+  test("rejects missing resolved inputs for planned optional visual assets", () => {
+    expect(() =>
+      compileCompositionPlanVisualLayers({
+        plan: planVisualStack(),
+        targetId: "variant-1",
+        inputLabel: "[composition_base]",
+        outputLabel: "[outv]",
+      }),
+    ).toThrow("clip_composition_logo_input_missing");
+
+    expect(() =>
+      compileCompositionPlanVisualLayers({
+        plan: planVisualStack({ captions: true }),
+        targetId: "variant-1",
+        inputLabel: "[composition_base]",
+        outputLabel: "[outv]",
+        logoInputIndex: 1,
+      }),
+    ).toThrow("clip_composition_caption_asset_missing");
+  });
+
+  test("rejects visual geometry outside the planned target canvas", () => {
+    const plan = planVisualStack();
+    const target = plan.targets[0]!;
+    const layer = target.visualLayers[0]!;
+    const invalid = {
+      ...plan,
+      targets: [
+        {
+          ...target,
+          visualLayers: [
+            {
+              ...layer,
+              destination: { ...layer.destination, x: target.canvas.width },
+            },
+            ...target.visualLayers.slice(1),
+          ],
+        },
+      ],
+    };
+
+    expect(() =>
+      compileCompositionPlanVisualLayers({
+        plan: invalid,
+        targetId: "variant-1",
+        inputLabel: "[composition_base]",
+        outputLabel: "[outv]",
+        logoInputIndex: 1,
+      }),
+    ).toThrow("invalid_clip_composition_visual_destination");
+  });
+
+  test("rejects transition windows that overlap or cross the exact plan end", () => {
+    const plan = planVisualStack();
+    const target = plan.targets[0]!;
+    const transition = target.visualLayers.find(
+      (layer) => layer.kind === "transition",
+    )!;
+    const invalid = {
+      ...plan,
+      targets: [{
+        ...target,
+        visualLayers: target.visualLayers.map((layer) =>
+          layer.id === transition.id
+            ? {
+                ...transition,
+                windows: {
+                  fadeIn: { startSec: 0, endSec: 0.5 },
+                  fadeOut: { startSec: plan.editedDurationSec - 0.25, endSec: plan.editedDurationSec + 0.001 },
+                },
+              }
+            : layer,
+        ),
+      }],
+    };
+    expect(() =>
+      compileCompositionPlanVisualLayers({
+        plan: invalid,
+        targetId: "variant-1",
+        inputLabel: "[composition_base]",
+        outputLabel: "[outv]",
+        logoInputIndex: 1,
+      }),
+    ).toThrow("invalid_clip_composition_transition_windows");
+  });
   test("compiles the Center plan's exact crop without choosing geometry", () => {
     expect(
       compileCompositionPlanVideo({

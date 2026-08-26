@@ -6,7 +6,7 @@
 
 Creators use Studio to decide how a clip will look and sound, then trust Narriflow to export that composition. Center, Fit, Automatic Speaker Composition, explicit Split, Screen/PiP, and B-roll now resolve through one Clip Composition Plan in Studio and the worker. Their geometry, evidence eligibility, fallbacks, and B-roll conflicts no longer have separate preview and export implementations.
 
-The remaining work is narrower. Captions, text, logos, transitions, output treatment, audio scheduling, and audio-only rendering still need complete plan ownership and shared adapter fixtures. Analysis extraction and multi-target encoding also need measured resource budgets. Tickets 07 through 10 cover those gaps, and ticket 11 closes the remaining adapter contract after they land.
+The remaining work is narrower. Captions, text, logos, transitions, and output treatment now have complete plan ownership and shared adapter coverage. Audio scheduling and audio-only rendering still need the same treatment, while analysis extraction and multi-target encoding need measured resource budgets. Tickets 08 through 10 cover those gaps, and ticket 11 closes the remaining adapter contract after they land.
 
 This project has no production users or mixed-version deployment requirement. The base-video legacy selectors and renderers were removed after browser, FFmpeg, database, and failure-path verification. Analysis capability switches remain because they provide typed plan fallbacks when a detector is disabled. They never select another renderer.
 
@@ -109,7 +109,7 @@ The planner is now the only base-video composition path. Studio translates activ
 - Structured diagnostics include plan version and fingerprint, evidence version and source, requested and effective mode, target, notice codes, adapter, scene count, command grouping, elapsed time, and resource measurements. They follow the repository logging convention and omit secrets, URLs, document contents, and raw commands.
 - Base-video composition contracted directly to the plan-only path because the project has no production users or mixed-version fleet. The removed renderer selectors and compatibility evidence readers must not return.
 - Automatic, Split, and Screen capability values are validated once at startup. Unset or `1` enables analysis, `0` disables it, and any other value fails validation. Studio mirrors each worker capability so preview and export report the same fallback.
-- Tickets 07 through 10 extend the plan into timed visual layers, audio, audio-only behavior, and measured resource reuse. They must preserve Studio Editing Session and Clip Render Attempt ownership while using the existing plan-only base composition.
+- Ticket 07 extends the plan through timed visual layers. Tickets 08 through 10 continue with audio, audio-only behavior, and measured resource reuse. They must preserve Studio Editing Session and Clip Render Attempt ownership while using the existing plan-only visual composition.
 
 ## Testing decisions
 

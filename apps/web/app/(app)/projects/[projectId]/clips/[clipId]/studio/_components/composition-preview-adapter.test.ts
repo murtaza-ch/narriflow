@@ -367,4 +367,68 @@ describe("composition preview adapter", () => {
       ),
     ).toBe(false);
   });
+
+  test("adopts only active planned visual layers in stable z-order at boundaries", () => {
+    const result = planClipComposition({
+      document: editorDocumentSchema.parse({
+        clipStartSec: 0,
+        clipEndSec: 6,
+        captionPreset: captionPresetSchema.parse({ visible: false }),
+        transcriptSlice: [],
+        studioEdits: studioEditsSchema.parse({
+          framing: { mode: "center" },
+          textLayers: [
+            { id: "early", text: "Early", startSec: 0, endSec: 2 },
+            { id: "late", text: "Late", startSec: 2, endSec: 6 },
+          ],
+          transition: { type: "fade-black", durationSec: 0.5 },
+        }),
+        brollUrl: null,
+        deletedRanges: [],
+      }),
+      source: { identity: "preview:visual", kind: "video", width: 1920, height: 1080 },
+      evidence: { automaticLayout: { state: "missing" } },
+      assets: {
+        backgroundImage: { state: "missing" },
+        logo: {
+          state: "available",
+          ref: "logo:brand",
+          settings: {
+            enabled: true,
+            position: "top-right",
+            opacity: 80,
+            scalePct: 12,
+          },
+        },
+      },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+      targets: [
+        {
+          id: "9:16",
+          aspectRatio: "9:16",
+          width: 1080,
+          height: 1920,
+          outputTreatment: { resolution: "720p", watermark: true },
+        },
+      ],
+    });
+    if (result.status === "invalid") throw new Error(result.error.code);
+
+    expect(adoptCompositionPreview(result.plan, "9:16", 1).layers.map((layer) => layer.kind)).toEqual([
+      "source-video",
+      "text",
+      "logo",
+      "transition",
+      "output-treatment",
+    ]);
+    expect(adoptCompositionPreview(result.plan, "9:16", 2).layers.filter(
+      (layer) => layer.kind === "text",
+    ).map((layer) => layer.id)).toEqual(["layer:text:late:9:16"]);
+    expect(adoptCompositionPreview(result.plan, "9:16", 6).layers.filter(
+      (layer) => layer.kind === "text",
+    ).map((layer) => layer.id)).toEqual(["layer:text:late:9:16"]);
+  });
 });

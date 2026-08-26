@@ -93,6 +93,7 @@ describe("Clip Composition Plan", () => {
         requestedMode: "center",
         effectiveMode: "center",
         canvas: { width: 1080, height: 1920, divisibleBy: 2 },
+        visualLayers: [],
         scenes: [
           {
             id: "scene:center:vertical:0",
@@ -120,6 +121,7 @@ describe("Clip Composition Plan", () => {
         requestedMode: "center",
         effectiveMode: "center",
         canvas: { width: 1920, height: 1080, divisibleBy: 2 },
+        visualLayers: [],
         scenes: [
           {
             id: "scene:center:landscape:0",
@@ -1692,6 +1694,189 @@ describe("Clip Composition Plan", () => {
     expect(result.plan.targets[0]?.scenes).toHaveLength(1);
     expect(result.plan.notices).toContainEqual({
       code: "broll_asset_unavailable",
+      fidelity: "degraded",
+      targetId: "vertical",
+      sceneId: null,
+      effectiveFallback: "center",
+      userActionPossible: true,
+    });
+  });
+
+  test("plans the complete timed visual stack in edited time and omits only an unavailable logo", () => {
+    const document = editorDocumentSchema.parse({
+      clipStartSec: 10,
+      clipEndSec: 20,
+      captionPreset: captionPresetSchema.parse({
+        position: "bottom",
+        positionX: 42,
+        visible: true,
+      }),
+      transcriptSlice: [
+        {
+          index: 0,
+          speaker: 0,
+          speakerLabel: "Speaker 1",
+          startSec: 10.5,
+          endSec: 16,
+          text: "One two three four",
+          confidence: 0.99,
+          words: [
+            { word: "One", startSec: 10.5, endSec: 11, confidence: 0.99 },
+            { word: "two", startSec: 11, endSec: 11.5, confidence: 0.99 },
+            { word: "three", startSec: 12.5, endSec: 13, confidence: 0.99 },
+            { word: "four", startSec: 15, endSec: 16, confidence: 0.99 },
+          ],
+        },
+      ],
+      studioEdits: studioEditsSchema.parse({
+        framing: { mode: "center" },
+        textLayers: [
+          {
+            id: "hook",
+            text: "Read this",
+            startSec: 1,
+            endSec: 7,
+            positionX: 25,
+            positionY: 20,
+            fontName: "Arial",
+            fontSize: 44,
+            color: "#FFFFFF",
+            bold: true,
+            outlineColor: "#000000",
+            outlineWidth: 2,
+          },
+        ],
+        transition: { type: "dip-white", durationSec: 0.5 },
+      }),
+      brollUrl: null,
+      deletedRanges: [{ startSec: 12, endSec: 14 }],
+    });
+    const common = {
+      document,
+      source: {
+        identity: "source:visual-stack",
+        kind: "video" as const,
+        width: 1920,
+        height: 1080,
+      },
+      evidence: { automaticLayout: { state: "missing" as const } },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+      targets: [
+        {
+          id: "vertical",
+          aspectRatio: "9:16" as const,
+          width: 1080,
+          height: 1920,
+          outputTreatment: { resolution: "720p" as const, watermark: true },
+        },
+        {
+          id: "horizontal",
+          aspectRatio: "16:9" as const,
+          width: 1920,
+          height: 1080,
+          outputTreatment: { resolution: "1080p" as const, watermark: false },
+        },
+      ],
+    };
+
+    const available = planClipComposition({
+      ...common,
+      assets: {
+        backgroundImage: { state: "missing" as const },
+        logo: {
+          state: "available" as const,
+          ref: "logo:brand",
+          settings: {
+            enabled: true,
+            position: "top-right" as const,
+            opacity: 80,
+            scalePct: 12,
+          },
+        },
+      },
+    });
+    expect(available.status).toBe("ready");
+    if (available.status === "invalid") throw new Error(available.error.code);
+    expect(available.plan.editedDurationSec).toBe(8);
+    expect(available.plan.targets[0]?.visualLayers.map((layer) => [
+      layer.id,
+      layer.kind,
+      layer.zIndex,
+      layer.activeRange,
+    ])).toEqual([
+      ["layer:text:hook:vertical", "text", 30, { startSec: 1, endSec: 7 }],
+      ["layer:caption:0:0:vertical", "caption", 40, { startSec: 0.5, endSec: 4 }],
+      ["layer:logo:vertical", "logo", 50, { startSec: 0, endSec: 8 }],
+      ["layer:transition:vertical", "transition", 60, { startSec: 0, endSec: 8 }],
+      ["layer:output-treatment:vertical", "output-treatment", 70, { startSec: 0, endSec: 8 }],
+    ]);
+    expect(available.plan.targets[0]?.visualLayers[0]).toMatchObject({
+      kind: "text",
+      anchor: { xPct: 25, yPct: 20 },
+      rotationDeg: 0,
+      opacity: 1,
+    });
+    expect(available.plan.targets[0]?.visualLayers[1]).toMatchObject({
+      kind: "caption",
+      anchor: { xPct: 42, yPct: 88 },
+      words: [
+        { text: "ONE", startSec: 0.5, endSec: 1 },
+        { text: "TWO", startSec: 1, endSec: 3 },
+        { text: "FOUR", startSec: 3, endSec: 4 },
+      ],
+    });
+    expect(available.plan.targets[0]?.visualLayers.at(-1)).toMatchObject({
+      kind: "output-treatment",
+      resolution: "720p",
+      scale: { numerator: 2, denominator: 3 },
+      watermark: { enabled: true, text: "Made with Narriflow" },
+    });
+    expect(available.plan.targets[1]?.visualLayers.map((layer) => [
+      layer.id,
+      layer.kind,
+      layer.destination,
+    ])).toEqual([
+      ["layer:text:hook:horizontal", "text", { x: 0, y: 0, width: 1920, height: 1080 }],
+      ["layer:caption:0:0:horizontal", "caption", { x: 0, y: 0, width: 1920, height: 1080 }],
+      ["layer:logo:horizontal", "logo", { x: 0, y: 0, width: 1920, height: 1080 }],
+      ["layer:transition:horizontal", "transition", { x: 0, y: 0, width: 1920, height: 1080 }],
+      ["layer:output-treatment:horizontal", "output-treatment", { x: 0, y: 0, width: 1920, height: 1080 }],
+    ]);
+    expect(available.plan.targets[1]?.visualLayers.at(-2)).toMatchObject({
+      kind: "transition",
+      windows: {
+        fadeIn: { startSec: 0, endSec: 0.5 },
+        fadeOut: { startSec: 7.5, endSec: 8 },
+      },
+    });
+    expect(available.plan.targets[1]?.visualLayers.at(-1)).toMatchObject({
+      kind: "output-treatment",
+      resolution: "1080p",
+      scale: { numerator: 1, denominator: 1 },
+      watermark: {
+        enabled: false,
+        fontFamily: "Arial",
+        fontWeight: 700,
+        fontSizePx: 39,
+        marginPx: { x: 27, y: 27 },
+      },
+    });
+
+    const failedLogo = planClipComposition({
+      ...common,
+      assets: {
+        backgroundImage: { state: "missing" as const },
+        logo: { state: "failed" as const },
+      },
+    });
+    expect(failedLogo.status).toBe("ready");
+    if (failedLogo.status === "invalid") throw new Error(failedLogo.error.code);
+    expect(failedLogo.plan.targets[0]?.visualLayers.some((layer) => layer.kind === "logo")).toBe(false);
+    expect(failedLogo.plan.notices).toContainEqual({
+      code: "logo_asset_unavailable",
       fidelity: "degraded",
       targetId: "vertical",
       sceneId: null,

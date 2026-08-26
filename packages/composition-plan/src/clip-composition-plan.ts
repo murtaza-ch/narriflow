@@ -1,14 +1,23 @@
 import {
+  CAPTION_CHUNK_SIZE,
+  CAPTION_POSITION_Y_DEFAULTS,
   buildEditedTimeMap,
   clipAutoLayoutMatchesInputs,
+  emojiForWord,
+  formatCaptionWord,
   resolveEffectiveFramingMode,
   resolveSpeakerLayoutScene,
+  sourceRangeToEdited,
+  type CaptionPreset,
   type ClipAspectRatio,
   type ClipAutoLayoutAnalysis,
   type ClipAutoLayoutSegment,
   type EditorDocument,
+  type EffectiveLogoSettings,
+  type LogoPosition,
   type SpeakerLayerRole,
   type SpeakerLayerTransform,
+  type StudioTextLayer,
 } from "@narriflow/validators";
 
 export const CLIP_COMPOSITION_PLAN_VERSION = 1 as const;
@@ -29,11 +38,23 @@ export interface CompositionTarget {
   readonly aspectRatio: ClipAspectRatio;
   readonly width: number;
   readonly height: number;
+  readonly outputTreatment?: {
+    readonly resolution: "720p" | "1080p";
+    readonly watermark: boolean;
+  };
 }
 
 export type CompositionAssetAvailability =
   | { readonly state: "missing" | "pending" | "failed" }
   | { readonly state: "available"; readonly ref: string };
+
+export type CompositionLogoAvailability =
+  | { readonly state: "missing" | "pending" | "failed" }
+  | {
+      readonly state: "available";
+      readonly ref: string;
+      readonly settings: EffectiveLogoSettings;
+    };
 
 export interface CompositionBrollPlacement {
   readonly id: string;
@@ -141,6 +162,7 @@ export interface ClipCompositionPlanInput {
      * B-roll. A present non-available value means optional B-roll was
      * requested but could not yet be resolved. */
     readonly broll?: CompositionBrollAvailability;
+    readonly logo?: CompositionLogoAvailability;
   };
   readonly capabilities: {
     readonly automaticSpeakerLayout: boolean;
@@ -213,6 +235,108 @@ export type CompositionLayer =
   | CompositionBackgroundLayer
   | CompositionBrollVideoLayer;
 
+export interface CompositionActiveRange {
+  readonly startSec: number;
+  readonly endSec: number;
+}
+
+export interface CompositionTextVisualLayer {
+  readonly id: string;
+  readonly kind: "text";
+  readonly activeRange: CompositionActiveRange;
+  readonly anchor: { readonly xPct: number; readonly yPct: number };
+  readonly destination: CompositionRect;
+  readonly rotationDeg: 0;
+  readonly opacity: 1;
+  readonly zIndex: 30;
+  readonly value: StudioTextLayer;
+}
+
+export interface CompositionCaptionWord {
+  readonly text: string;
+  readonly emoji: string | null;
+  readonly startSec: number;
+  readonly endSec: number;
+}
+
+export interface CompositionCaptionVisualLayer {
+  readonly id: string;
+  readonly kind: "caption";
+  readonly activeRange: CompositionActiveRange;
+  readonly anchor: { readonly xPct: number; readonly yPct: number };
+  readonly destination: CompositionRect;
+  readonly rotationDeg: 0;
+  readonly opacity: 1;
+  readonly zIndex: 40;
+  readonly cueIndex: number;
+  readonly words: readonly CompositionCaptionWord[];
+  readonly preset: CaptionPreset;
+}
+
+export interface CompositionLogoVisualLayer {
+  readonly id: string;
+  readonly kind: "logo";
+  readonly sourceRef: string;
+  readonly activeRange: CompositionActiveRange;
+  readonly destination: CompositionRect;
+  readonly position: LogoPosition;
+  readonly marginPx: 24;
+  readonly widthPx: number;
+  readonly rotationDeg: 0;
+  readonly opacity: number;
+  readonly zIndex: 50;
+}
+
+export interface CompositionTransitionVisualLayer {
+  readonly id: string;
+  readonly kind: "transition";
+  readonly activeRange: CompositionActiveRange;
+  readonly destination: CompositionRect;
+  readonly transition: "fade" | "fade-black" | "dip-white";
+  readonly color: "black" | "white";
+  readonly windows: {
+    readonly fadeIn: CompositionActiveRange;
+    readonly fadeOut: CompositionActiveRange;
+  };
+  readonly rotationDeg: 0;
+  readonly opacity: 1;
+  readonly zIndex: 60;
+}
+
+export interface CompositionOutputTreatmentVisualLayer {
+  readonly id: string;
+  readonly kind: "output-treatment";
+  readonly activeRange: CompositionActiveRange;
+  readonly destination: CompositionRect;
+  readonly resolution: "720p" | "1080p";
+  readonly scale: { readonly numerator: 1 | 2; readonly denominator: 1 | 3 };
+  readonly watermark: {
+    readonly enabled: boolean;
+    readonly text: "Made with Narriflow";
+    readonly fontSizePx: number;
+    readonly fontFamily: "Arial";
+    readonly fontWeight: 700;
+    readonly color: "#FFFFFF";
+    readonly opacity: 0.85;
+    readonly marginPx: { readonly x: number; readonly y: number };
+    readonly outline: {
+      readonly widthPx: 2;
+      readonly color: "#000000";
+      readonly opacity: 0.6;
+    };
+  };
+  readonly rotationDeg: 0;
+  readonly opacity: 1;
+  readonly zIndex: 70;
+}
+
+export type CompositionVisualLayer =
+  | CompositionTextVisualLayer
+  | CompositionCaptionVisualLayer
+  | CompositionLogoVisualLayer
+  | CompositionTransitionVisualLayer
+  | CompositionOutputTreatmentVisualLayer;
+
 export interface CompositionScene {
   readonly id: string;
   readonly startSec: number;
@@ -230,8 +354,11 @@ export interface CompositionTargetPlan {
     readonly height: number;
     readonly divisibleBy: 2;
   };
+  readonly visualLayers: readonly CompositionVisualLayer[];
   readonly scenes: readonly CompositionScene[];
 }
+
+type CompositionBaseTargetPlan = Omit<CompositionTargetPlan, "visualLayers">;
 
 export interface CompositionEvidenceRequest {
   readonly key: string;
@@ -713,9 +840,9 @@ function validAutomaticLayoutEvidence(
 }
 
 function addBrollLayers(
-  target: CompositionTargetPlan,
+  target: CompositionBaseTargetPlan,
   placements: readonly CompositionBrollPlacement[],
-): CompositionTargetPlan {
+): CompositionBaseTargetPlan {
   if (placements.length === 0) return target;
 
   const scenes: CompositionScene[] = [];
@@ -776,6 +903,252 @@ function addBrollLayers(
     }
   }
   return { ...target, scenes };
+}
+
+function applyCaptionTextTransform(
+  text: string,
+  transform: CaptionPreset["textTransform"],
+): string {
+  switch (transform) {
+    case "uppercase":
+      return text.toUpperCase();
+    case "lowercase":
+      return text.toLowerCase();
+    case "capitalize":
+      return text.replace(/\b\w/g, (character) => character.toUpperCase());
+    default:
+      return text;
+  }
+}
+
+function captionLayersForTarget(input: {
+  document: EditorDocument;
+  target: CompositionTarget;
+  editedTimeMap: ReturnType<typeof buildEditedTimeMap>;
+}): CompositionCaptionVisualLayer[] {
+  const { document, target, editedTimeMap } = input;
+  const preset = document.captionPreset;
+  if (preset.visible === false) return [];
+  const destination = { x: 0, y: 0, width: target.width, height: target.height };
+  const anchor = {
+    xPct: preset.positionX ?? 50,
+    yPct:
+      preset.positionY ??
+      CAPTION_POSITION_Y_DEFAULTS[preset.position ?? "bottom"],
+  };
+  const punctuation = preset.punctuation !== false;
+  const layers: CompositionCaptionVisualLayer[] = [];
+
+  for (const utterance of document.transcriptSlice) {
+    const visibleWords = utterance.words.flatMap((word) => {
+      const range = sourceRangeToEdited(editedTimeMap, word);
+      if (!range) return [];
+      const formatted = applyCaptionTextTransform(
+        formatCaptionWord(word.word, { punctuation }),
+        preset.textTransform,
+      );
+      if (!formatted) return [];
+      return [{ word, range, formatted }];
+    });
+
+    if (utterance.words.length > 0) {
+      for (
+        let wordIndex = 0;
+        wordIndex < visibleWords.length;
+        wordIndex += CAPTION_CHUNK_SIZE
+      ) {
+        const group = visibleWords.slice(
+          wordIndex,
+          wordIndex + CAPTION_CHUNK_SIZE,
+        );
+        if (group.length === 0) continue;
+        const cueIndex = layers.length;
+        const startSec = group[0]!.range.startSec;
+        const endSec = Math.max(
+          startSec + 0.1,
+          group[group.length - 1]!.range.endSec,
+        );
+        layers.push({
+          id: `layer:caption:${utterance.index}:${Math.floor(wordIndex / CAPTION_CHUNK_SIZE)}:${target.id}`,
+          kind: "caption",
+          activeRange: { startSec, endSec },
+          anchor,
+          destination,
+          rotationDeg: 0,
+          opacity: 1,
+          zIndex: 40,
+          cueIndex,
+          words: group.map((entry, index) => ({
+            text: entry.formatted,
+            emoji: preset.emojis ? emojiForWord(entry.word.word) : null,
+            startSec: entry.range.startSec,
+            endSec:
+              index + 1 < group.length
+                ? Math.max(entry.range.startSec + 0.05, group[index + 1]!.range.startSec)
+                : Math.max(entry.range.startSec + 0.1, entry.range.endSec),
+          })),
+          preset,
+        });
+      }
+      continue;
+    }
+
+    const range = sourceRangeToEdited(editedTimeMap, utterance);
+    if (!range) continue;
+    const text = applyCaptionTextTransform(
+      utterance.text
+        .split(/\s+/)
+        .map((word) => formatCaptionWord(word, { punctuation }))
+        .filter(Boolean)
+        .join(" "),
+      preset.textTransform,
+    );
+    if (!text) continue;
+    layers.push({
+      id: `layer:caption:${utterance.index}:0:${target.id}`,
+      kind: "caption",
+      activeRange: range,
+      anchor,
+      destination,
+      rotationDeg: 0,
+      opacity: 1,
+      zIndex: 40,
+      cueIndex: layers.length,
+      words: [
+        {
+          text,
+          emoji: null,
+          startSec: range.startSec,
+          endSec: range.endSec,
+        },
+      ],
+      preset,
+    });
+  }
+
+  return layers;
+}
+
+function visualLayersForTarget(input: {
+  document: EditorDocument;
+  target: CompositionTarget;
+  editedTimeMap: ReturnType<typeof buildEditedTimeMap>;
+  logo: CompositionLogoAvailability | undefined;
+}): CompositionVisualLayer[] {
+  const { document, target, editedTimeMap, logo } = input;
+  const duration = editedTimeMap.editedDurationSec;
+  const destination = { x: 0, y: 0, width: target.width, height: target.height };
+  const visualLayers: CompositionVisualLayer[] = [];
+
+  for (const layer of document.studioEdits.textLayers) {
+    const startSec = Math.max(0, Math.min(duration, layer.startSec));
+    const endSec = Math.max(
+      startSec,
+      Math.min(duration, layer.endSec ?? duration),
+    );
+    if (endSec <= startSec) continue;
+    const value = { ...layer, startSec, endSec };
+    visualLayers.push({
+      id: `layer:text:${layer.id}:${target.id}`,
+      kind: "text",
+      activeRange: { startSec, endSec },
+      anchor: { xPct: layer.positionX ?? 50, yPct: layer.positionY ?? 18 },
+      destination,
+      rotationDeg: 0,
+      opacity: 1,
+      zIndex: 30,
+      value,
+    });
+  }
+
+  visualLayers.push(
+    ...captionLayersForTarget({ document, target, editedTimeMap }),
+  );
+
+  if (logo?.state === "available" && logo.settings.enabled) {
+    visualLayers.push({
+      id: `layer:logo:${target.id}`,
+      kind: "logo",
+      sourceRef: logo.ref,
+      activeRange: { startSec: 0, endSec: duration },
+      destination,
+      position: logo.settings.position,
+      marginPx: 24,
+      widthPx: Math.max(
+        40,
+        Math.round(target.width * (logo.settings.scalePct / 100)),
+      ),
+      rotationDeg: 0,
+      opacity: Math.max(0.1, Math.min(1, logo.settings.opacity / 100)),
+      zIndex: 50,
+    });
+  }
+
+  const transition = document.studioEdits.transition;
+  if (transition.type !== "none") {
+    const transitionDuration = Math.min(transition.durationSec, duration / 2);
+    if (transitionDuration > 0) {
+      visualLayers.push({
+        id: `layer:transition:${target.id}`,
+        kind: "transition",
+        activeRange: { startSec: 0, endSec: duration },
+        destination,
+        transition: transition.type,
+        color: transition.type === "dip-white" ? "white" : "black",
+        windows: {
+          fadeIn: { startSec: 0, endSec: transitionDuration },
+          fadeOut: {
+            startSec: Math.max(0, duration - transitionDuration),
+            endSec: duration,
+          },
+        },
+        rotationDeg: 0,
+        opacity: 1,
+        zIndex: 60,
+      });
+    }
+  }
+
+  if (target.outputTreatment) {
+    const outputHeight = Math.round(
+      target.height *
+        (target.outputTreatment.resolution === "720p" ? 2 / 3 : 1),
+    );
+    visualLayers.push({
+      id: `layer:output-treatment:${target.id}`,
+      kind: "output-treatment",
+      activeRange: { startSec: 0, endSec: duration },
+      destination,
+      resolution: target.outputTreatment.resolution,
+      scale:
+        target.outputTreatment.resolution === "720p"
+          ? { numerator: 2, denominator: 3 }
+          : { numerator: 1, denominator: 1 },
+      watermark: {
+        enabled: target.outputTreatment.watermark,
+        text: "Made with Narriflow",
+        fontSizePx: Math.max(1, Math.round(outputHeight / 28)),
+        fontFamily: "Arial",
+        fontWeight: 700,
+        color: "#FFFFFF",
+        opacity: 0.85,
+        marginPx: {
+          x: Math.max(1, Math.round(outputHeight / 40)),
+          y: Math.max(1, Math.round(outputHeight / 40)),
+        },
+        outline: {
+          widthPx: 2,
+          color: "#000000",
+          opacity: 0.6,
+        },
+      },
+      rotationDeg: 0,
+      opacity: 1,
+      zIndex: 70,
+    });
+  }
+
+  return visualLayers;
 }
 
 function validateInput(
@@ -886,6 +1259,12 @@ export function planClipComposition(
       },
       speakerLayoutOverrides:
         input.document.studioEdits.speakerLayoutOverrides,
+      visualLayers: {
+        captionPreset: input.document.captionPreset,
+        transcriptSlice: input.document.transcriptSlice,
+        textLayers: input.document.studioEdits.textLayers,
+        transition: input.document.studioEdits.transition,
+      },
       assets: input.assets,
       evidence:
         {
@@ -1036,7 +1415,7 @@ export function planClipComposition(
     });
   }
 
-  const baseTargets: CompositionTargetPlan[] = input.targets.map((target) => {
+  const baseTargets: CompositionBaseTargetPlan[] = input.targets.map((target) => {
     const canvas = {
       width: target.width,
       height: target.height,
@@ -1585,9 +1964,34 @@ export function planClipComposition(
     );
   }
 
-  const targets = baseTargets.map((target) =>
-    addBrollLayers(target, brollPlacements),
-  );
+  const targets = baseTargets.map((baseTarget) => {
+    const targetInput = input.targets.find(
+      (candidate) => candidate.id === baseTarget.id,
+    )!;
+    return {
+      ...addBrollLayers(baseTarget, brollPlacements),
+      visualLayers: visualLayersForTarget({
+        document: input.document,
+        target: targetInput,
+        editedTimeMap,
+        logo: input.assets.logo,
+      }),
+    } satisfies CompositionTargetPlan;
+  });
+
+  if (input.assets.logo && input.assets.logo.state !== "available") {
+    const pending = input.assets.logo.state === "pending";
+    notices.push(
+      ...targets.map((target) => ({
+        code: pending ? "logo_asset_pending" : "logo_asset_unavailable",
+        fidelity: pending ? ("provisional" as const) : ("degraded" as const),
+        targetId: target.id,
+        sceneId: null,
+        effectiveFallback: target.effectiveMode,
+        userActionPossible: !pending,
+      })),
+    );
+  }
 
   const withoutFingerprint = {
     version: CLIP_COMPOSITION_PLAN_VERSION,

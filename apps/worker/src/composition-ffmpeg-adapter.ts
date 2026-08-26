@@ -4,7 +4,217 @@ import {
   type CompositionBrollVideoLayer,
   type CompositionRect,
   type CompositionTargetPlan,
+  type CompositionVisualLayer,
 } from "@narriflow/composition-plan";
+
+function escapeDrawtextValue(value: string): string {
+  return value
+    .replace(/\\/g, "\\\\")
+    .replace(/:/g, "\\:")
+    .replace(/'/g, "\\'")
+    .replace(/\[/g, "\\[")
+    .replace(/\]/g, "\\]")
+    .replace(/%/g, "\\%");
+}
+
+function escapeSubtitlePath(filePath: string): string {
+  return filePath.replace(/\\/g, "\\\\").replace(/:/g, "\\:");
+}
+
+function logoOverlayPosition(position: string, marginPx: number) {
+  const [vertical, horizontal] = position.split("-");
+  const x =
+    horizontal === "left"
+      ? `${marginPx}`
+      : horizontal === "right"
+        ? `W-w-${marginPx}`
+        : "(W-w)/2";
+  const y =
+    vertical === "top"
+      ? `${marginPx}`
+      : vertical === "bot"
+        ? `H-h-${marginPx}`
+        : "(H-h)/2";
+  return { x, y };
+}
+
+function textLayerFilter(
+  layer: Extract<CompositionVisualLayer, { kind: "text" }>,
+): string {
+  const value = layer.value;
+  const border =
+    value.outlineWidth > 0
+      ? `:borderw=${value.outlineWidth}:bordercolor=0x${value.outlineColor.slice(1)}`
+      : "";
+  const box = value.backgroundColor
+    ? `:box=1:boxcolor=0x${value.backgroundColor.slice(1)}@${value.backgroundOpacity.toFixed(3)}:boxborderw=10`
+    : "";
+  return (
+    `drawtext=font='${escapeDrawtextValue(value.fontName)}'` +
+    `:text='${escapeDrawtextValue(value.text)}'` +
+    `:fontsize=${Math.round(value.fontSize)}` +
+    `:fontcolor=0x${value.color.slice(1)}` +
+    `:x=w*${(layer.anchor.xPct / 100).toFixed(4)}-text_w/2` +
+    `:y=h*${(layer.anchor.yPct / 100).toFixed(4)}-text_h/2` +
+    `:enable='between(t\\,${layer.activeRange.startSec.toFixed(3)}\\,${layer.activeRange.endSec.toFixed(3)})'` +
+    ":shadowcolor=black@0.45:shadowx=0:shadowy=2" +
+    border +
+    box
+  );
+}
+
+/** Translates the target's already-ordered visual schedule into FFmpeg syntax.
+ * It does not inspect the editor document or select timing, precedence,
+ * entitlement, geometry, or optional-media fallbacks. */
+export function compileCompositionPlanVisualLayers(input: {
+  plan: ClipCompositionPlan;
+  targetId: string;
+  inputLabel: string;
+  outputLabel: string;
+  subtitlePath?: string | null;
+  logoInputIndex?: number | null;
+}): {
+  filterParts: string[];
+  logoInput: { sourceRef: string; inputIndex: number } | null;
+} {
+  if (input.plan.version !== CLIP_COMPOSITION_PLAN_VERSION) {
+    throw new Error("unsupported_clip_composition_plan_version");
+  }
+  const target = input.plan.targets.find(
+    (candidate) => candidate.id === input.targetId,
+  );
+  if (!target) throw new Error("clip_composition_target_missing");
+
+  let previousZIndex = -Infinity;
+  for (const layer of target.visualLayers) {
+    assertRect(
+      layer.destination,
+      target.canvas,
+      "invalid_clip_composition_visual_destination",
+    );
+    if (
+      layer.zIndex < previousZIndex ||
+      layer.activeRange.startSec < 0 ||
+      layer.activeRange.endSec <= layer.activeRange.startSec ||
+      layer.activeRange.endSec > input.plan.editedDurationSec + 0.075
+    ) {
+      throw new Error("invalid_clip_composition_visual_layers");
+    }
+    if (layer.kind === "transition") {
+      const { fadeIn, fadeOut } = layer.windows;
+      const validWindow = (window: typeof fadeIn) =>
+        window.startSec >= layer.activeRange.startSec &&
+        window.endSec > window.startSec &&
+        window.endSec <= layer.activeRange.endSec &&
+        window.endSec <= input.plan.editedDurationSec;
+      if (
+        !validWindow(fadeIn) ||
+        !validWindow(fadeOut) ||
+        fadeIn.endSec > fadeOut.startSec
+      ) {
+        throw new Error("invalid_clip_composition_transition_windows");
+      }
+    }
+    previousZIndex = layer.zIndex;
+  }
+
+  type Stage = (
+    source: string,
+    output: string,
+    stageIndex: number,
+  ) => { parts: string[]; logoInput?: { sourceRef: string; inputIndex: number } };
+  const stages: Stage[] = [];
+  let captionsAdded = false;
+  for (const layer of target.visualLayers) {
+    if (layer.kind === "text") {
+      stages.push((source, output) => ({
+        parts: [`${source}${textLayerFilter(layer)}${output}`],
+      }));
+    } else if (layer.kind === "caption" && !captionsAdded) {
+      captionsAdded = true;
+      stages.push((source, output) => {
+        if (!input.subtitlePath) {
+          throw new Error("clip_composition_caption_asset_missing");
+        }
+        const filter = input.subtitlePath.endsWith(".ass")
+          ? `ass='${escapeSubtitlePath(input.subtitlePath)}'`
+          : `subtitles='${escapeSubtitlePath(input.subtitlePath)}'`;
+        return { parts: [`${source}${filter}${output}`] };
+      });
+    } else if (layer.kind === "logo") {
+      stages.push((source, output, stageIndex) => {
+        if (input.logoInputIndex == null) {
+          throw new Error("clip_composition_logo_input_missing");
+        }
+        const logoLabel = `[composition_logo_${stageIndex}]`;
+        const position = logoOverlayPosition(layer.position, layer.marginPx);
+        return {
+          parts: [
+            `[${input.logoInputIndex}:v]scale=${layer.widthPx}:-1,format=rgba,colorchannelmixer=aa=${layer.opacity.toFixed(3)}${logoLabel}`,
+            `${source}${logoLabel}overlay=${position.x}:${position.y}${output}`,
+          ],
+          logoInput: {
+            sourceRef: layer.sourceRef,
+            inputIndex: input.logoInputIndex,
+          },
+        };
+      });
+    } else if (layer.kind === "transition") {
+      stages.push((source, output) => {
+        const duration = layer.windows.fadeIn.endSec - layer.windows.fadeIn.startSec;
+        return {
+          parts: [
+            `${source}fade=t=in:st=${layer.windows.fadeIn.startSec.toFixed(3)}:d=${duration.toFixed(3)}:color=${layer.color},` +
+              `fade=t=out:st=${layer.windows.fadeOut.startSec.toFixed(3)}:d=${(layer.windows.fadeOut.endSec - layer.windows.fadeOut.startSec).toFixed(3)}:color=${layer.color}${output}`,
+          ],
+        };
+      });
+    } else if (layer.kind === "output-treatment") {
+      if (layer.resolution === "1080p" && !layer.watermark.enabled) continue;
+      stages.push((source, output) => {
+        const filters = [
+          layer.resolution === "720p"
+            ? "scale=trunc(iw*2/3/2)*2:trunc(ih*2/3/2)*2"
+            : "",
+          layer.watermark.enabled
+            ? `drawtext=text=${escapeDrawtextValue(layer.watermark.text)}` +
+              `:font='${escapeDrawtextValue(`${layer.watermark.fontFamily} Bold`)}'` +
+              `:fontcolor=0x${layer.watermark.color.slice(1)}@${layer.watermark.opacity.toFixed(2)}` +
+              `:borderw=${layer.watermark.outline.widthPx}` +
+              `:bordercolor=0x${layer.watermark.outline.color.slice(1)}@${layer.watermark.outline.opacity.toFixed(2)}` +
+              `:fontsize=${layer.watermark.fontSizePx}` +
+              `:x=w-tw-${layer.watermark.marginPx.x}:y=${layer.watermark.marginPx.y}`
+            : "",
+        ].filter(Boolean);
+        return { parts: [`${source}${filters.join(",")}${output}`] };
+      });
+    }
+  }
+
+  if (stages.length === 0) {
+    return {
+      filterParts:
+        input.inputLabel === input.outputLabel
+          ? []
+          : [`${input.inputLabel}null${input.outputLabel}`],
+      logoInput: null,
+    };
+  }
+  const filterParts: string[] = [];
+  let source = input.inputLabel;
+  let logoInput: { sourceRef: string; inputIndex: number } | null = null;
+  stages.forEach((stage, index) => {
+    const output =
+      index === stages.length - 1
+        ? input.outputLabel
+        : `[composition_visual_${index}]`;
+    const compiled = stage(source, output, index);
+    filterParts.push(...compiled.parts);
+    if (compiled.logoInput) logoInput = compiled.logoInput;
+    source = output;
+  });
+  return { filterParts, logoInput };
+}
 
 function baseOnlyTarget(target: CompositionTargetPlan): CompositionTargetPlan {
   const scenes = target.scenes.map((scene) => ({

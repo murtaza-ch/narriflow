@@ -335,7 +335,7 @@ export function useLiveCaption(
 
 export interface CaptionCueProps {
   preset: CaptionPreset;
-  words: CaptionWord[];
+  words: Array<CaptionWord & { emoji?: string | null }>;
   /** Display font size in px (already scaled to the preview surface). */
   fontSize: number;
   /** Shadow/outline scale relative to the full-size render (1 = overlay). */
@@ -435,6 +435,12 @@ export function CaptionCue({
             reducedMotion,
           );
           const showBox = hasHighlightBox && item.isActive;
+          const emoji =
+            "emoji" in item
+              ? item.emoji
+              : showEmojis
+                ? emojiForWord(item.word)
+                : null;
 
           return (
             <Box key={`${cueKey}-${i}`} position="relative" display="inline-flex">
@@ -474,14 +480,7 @@ export function CaptionCue({
                 }}
               >
                 {displayWord}
-                {/* Emoji lookup always reads the RAW word, never the
-                    punctuation-formatted one — emojiForWord already strips
-                    every non-a-z character via its own key normalization, so
-                    this can never disagree with the worker's identical
-                    choice in generateAssFromSlice. */}
-                {showEmojis && emojiForWord(item.word)
-                  ? ` ${emojiForWord(item.word)}`
-                  : ""}
+                {showEmojis && emoji ? ` ${emoji}` : ""}
               </motion.span>
             </Box>
           );

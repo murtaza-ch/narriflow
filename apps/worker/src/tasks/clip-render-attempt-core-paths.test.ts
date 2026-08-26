@@ -161,12 +161,14 @@ function createCoreRenderPathTracer(input: {
   } | null;
   realMedia?: {
     sourcePath: string;
+    logoPath?: string;
     probeOutput(variantId: string, filePath: string): Promise<void>;
   };
   sourceAccess?: {
     presignedUrl: string;
     failRangedProbe?: boolean;
   };
+  compositionAdapterFailure?: Error;
   workspaceCleanupFailure?: Error;
 }) {
   const attempt: ClipRenderingWorkflowAttempt = {
@@ -446,6 +448,15 @@ function createCoreRenderPathTracer(input: {
             : "";
         },
       },
+      ...(input.compositionAdapterFailure
+        ? {
+            composition: {
+              compileVisualLayers: () => {
+                throw input.compositionAdapterFailure;
+              },
+            },
+          }
+        : {}),
       project: {
         publishWorkflowProgress: async () => {},
       },
@@ -604,7 +615,12 @@ function createCoreRenderPathTracer(input: {
             throw input.logoDownloadFailure;
           }
           if (input.realMedia) {
-            await copyFile(input.realMedia.sourcePath, filePath);
+            await copyFile(
+              key.endsWith("/logo.png") && input.realMedia.logoPath
+                ? input.realMedia.logoPath
+                : input.realMedia.sourcePath,
+              filePath,
+            );
           }
         },
         putFileFromPath: async ({ filePath, key }) => {
@@ -2167,6 +2183,27 @@ test("ClipRenderAttempt contains a per-output command failure to its variant", a
   expect(harness.uploadedVariantIds).toEqual(["group-a-1x1", "group-b-9x16"]);
 });
 
+test("ClipRenderAttempt permanently classifies a composition adapter contract failure before FFmpeg", async () => {
+  const harness = createCoreRenderPathTracer({
+    topology: "single-video",
+    compositionAdapterFailure: new Error(
+      "invalid_clip_composition_visual_layers",
+    ),
+  });
+
+  await expect(
+    harness.clipRenderAttempt.execute({
+      attempt: harness.attempt,
+      signal: new AbortController().signal,
+    }),
+  ).resolves.toMatchObject({ status: "failed", succeeded: 0, failed: 1 });
+  expect(harness.commands).toHaveLength(0);
+  expect(harness.failureCodes.get("variant-9x16")).toBe(
+    "invalid_clip_composition_plan",
+  );
+  expect(harness.failureDispositions.get("variant-9x16")).toBe("permanent");
+});
+
 test("ClipRenderAttempt settles a per-output failure as terminal partial", async () => {
   const harness = createCoreRenderPathTracer({
     topology: "studio-per-output",
@@ -2490,10 +2527,39 @@ async function hashRenderedMedia(filePath: string): Promise<string> {
     .digest("hex");
 }
 
+function hashRenderedFrame(filePath: string, timeSec: number): string {
+  const result = spawnSync(
+    "ffmpeg",
+    [
+      "-v",
+      "error",
+      "-ss",
+      timeSec.toFixed(3),
+      "-i",
+      filePath,
+      "-frames:v",
+      "1",
+      "-f",
+      "framemd5",
+      "-",
+    ],
+    { encoding: "utf-8" },
+  );
+  if (result.status !== 0) {
+    throw new Error(`frame probe failed at ${timeSec}s: ${result.stderr}`);
+  }
+  const frame = result.stdout
+    .split("\n")
+    .find((line) => line.length > 0 && !line.startsWith("#"));
+  if (!frame) throw new Error(`missing frame at ${timeSec}s`);
+  return frame.split(",").at(-1)?.trim() ?? "";
+}
+
 describe("ClipRenderAttempt real-media plan fixtures", () => {
   let fixtureDirectory = "";
   let videoSourcePath = "";
   let audioSourcePath = "";
+  let logoSourcePath = "";
   let rangedVideoSourceUrl = "";
   let sourceServer: ReturnType<typeof createServer> | null = null;
 
@@ -2504,6 +2570,7 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
     );
     videoSourcePath = join(fixtureDirectory, "video-source.mp4");
     audioSourcePath = join(fixtureDirectory, "audio-source.m4a");
+    logoSourcePath = join(fixtureDirectory, "brand-logo.png");
     const videoFixture = spawnSync(
       "ffmpeg",
       [
@@ -2553,6 +2620,27 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
         `audio fixture generation failed: ${audioFixture.stderr}`,
       );
     }
+    const logoFixture = spawnSync(
+      "ffmpeg",
+      [
+        "-y",
+        "-f",
+        "lavfi",
+        "-i",
+        "color=c=0x5B6CFF:s=120x60:d=0.1",
+        "-frames:v",
+        "1",
+        "-update",
+        "1",
+        logoSourcePath,
+      ],
+      { encoding: "utf-8" },
+    );
+    if (logoFixture.status !== 0) {
+      throw new Error(
+        `logo fixture generation failed: ${logoFixture.stderr}`,
+      );
+    }
     const sourceBytes = await readFile(videoSourcePath);
     sourceServer = createServer((request, response) => {
       if (request.url !== "/video-source.mp4") {
@@ -2591,6 +2679,97 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
     }
     rangedVideoSourceUrl = `http://127.0.0.1:${address.port}/video-source.mp4`;
   });
+
+  test.skipIf(!ffmpegAvailable || !ffprobeAvailable)(
+    "renders the planner-owned caption, text, logo, transition, and output treatment stack",
+    async () => {
+      let output: RenderedMediaProbe | undefined;
+      let boundaryFrameHashes: string[] = [];
+      const harness = createCoreRenderPathTracer({
+        topology: "studio-per-output",
+        ownerTier: "free",
+        clipWindow: { startSec: 0, endSec: 0.8 },
+        variants: [
+          {
+            id: "variant-visual-stack",
+            aspectRatio: "ratio_9_16",
+            resolution: "720p",
+          },
+        ],
+        transcriptSlice: [
+          {
+            index: 0,
+            speaker: 0,
+            speakerLabel: "Speaker 1",
+            startSec: 0.1,
+            endSec: 0.6,
+            text: "Plan first",
+            confidence: 0.99,
+            words: [
+              { word: "Plan", startSec: 0.1, endSec: 0.3, confidence: 0.99 },
+              { word: "first", startSec: 0.3, endSec: 0.6, confidence: 0.99 },
+            ],
+          },
+        ],
+        clipOverrides: {
+          captionPreset: { visible: true },
+          studioEdits: {
+            framing: { mode: "center" },
+            textLayers: [
+              { id: "hook", text: "Plan first", startSec: 0.15, endSec: 0.65 },
+            ],
+            transition: { type: "dip-white", durationSec: 0.2 },
+          },
+        },
+        projectBrandSnapshot: {
+          templateId: null,
+          captionPreset: {},
+          logoStorageKey: "projects/brand/logo.png",
+          logoPosition: "top-right",
+          logoOpacity: 80,
+          logoScalePct: 15,
+          primaryColor: "#FFFFFF",
+          secondaryColor: "#00FF88",
+          accentColor: null,
+        },
+        realMedia: {
+          sourcePath: videoSourcePath,
+          logoPath: logoSourcePath,
+          probeOutput: async (variantId, filePath) => {
+            output = probeRenderedMedia(variantId, filePath);
+            boundaryFrameHashes = [0, 0.1, 0.15, 0.2, 0.3, 0.6, 0.65, 0.75].map(
+              (timeSec) => hashRenderedFrame(filePath, timeSec),
+            );
+          },
+        },
+      });
+
+      await expect(
+        harness.clipRenderAttempt.execute({
+          attempt: harness.attempt,
+          signal: new AbortController().signal,
+        }),
+      ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
+
+      expect(output).toMatchObject({
+        variantId: "variant-visual-stack",
+        width: 720,
+        height: 1280,
+        videoCodec: "h264",
+        audioCodec: "aac",
+      });
+      expect(output?.durationSec).toBeGreaterThan(0.7);
+      expect(boundaryFrameHashes).toHaveLength(8);
+      expect(boundaryFrameHashes.every(Boolean)).toBe(true);
+      expect(new Set(boundaryFrameHashes).size).toBeGreaterThanOrEqual(6);
+      const graph = harness.commands[0]?.args.join(" ") ?? "";
+      expect(graph).toContain("drawtext=font='Arial':text='Plan first'");
+      expect(graph).toContain("ass='");
+      expect(graph).toContain("colorchannelmixer=aa=0.800");
+      expect(graph).toContain("fade=t=in:st=0.000:d=0.200:color=white");
+      expect(graph).toContain("drawtext=text=Made with Narriflow");
+    },
+  );
 
   afterAll(async () => {
     await new Promise<void>((resolve, reject) => {

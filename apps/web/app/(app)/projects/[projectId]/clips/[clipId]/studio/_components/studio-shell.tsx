@@ -230,7 +230,10 @@ export type { TimelineSegment } from "./studio-types";
  *  has no logo. Immutable for the life of the studio session — swapping
  *  logos happens in Brand kit settings, not here. */
 export interface StudioBrandLogo {
-  url: string;
+  /** A stable logical logo remains present when presigning fails so the
+   * composition plan can surface deterministic optional-asset degradation. */
+  url: string | null;
+  ref: string;
   position: LogoPosition;
   opacity: number;
   scalePct: number;
@@ -1007,23 +1010,31 @@ export function StudioShell({
     const kind = recovery.kind;
     if (kind === recoveryNoticeRef.current) return;
     recoveryNoticeRef.current = kind;
+    let notice: Parameters<typeof toaster.create>[0] | null = null;
     if (kind === "recovered" || kind === "merged") {
-      toaster.create({
+      notice = {
         type: "info",
         title: kind === "merged" ? "Draft recovered and merged" : "Draft recovered",
         description:
           kind === "merged"
             ? "Your device draft was safely combined with newer cloud changes."
             : "Unsynced edits from this device are ready to continue.",
-      });
+      };
     } else if (durability.device === "degraded") {
-      toaster.create({
+      notice = {
         type: "warning",
         title: "Local recovery is unavailable",
         description:
           "Cloud autosave still works, but this browser could not open its recovery storage.",
-      });
+      };
     }
+    if (!notice) return;
+
+    // Chakra updates its toast store synchronously. Defer the update until
+    // after React finishes this effect's commit so recovery never calls
+    // flushSync from inside a lifecycle method.
+    const timeoutId = window.setTimeout(() => toaster.create(notice), 0);
+    return () => window.clearTimeout(timeoutId);
   }, [durability.device, recovery.kind]);
 
   // Fix 4: canReset used to be `revision > 0 || isDocDirty`, which offered

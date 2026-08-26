@@ -12,6 +12,7 @@ import {
   screenLayoutInputFingerprint,
   splitLayoutInputFingerprint,
   type ClipCompositionPlan,
+  type CompositionCaptionVisualLayer,
   type CompositionEvidenceAvailability,
   type ScreenLayoutEvidence,
   type ScreenLayoutFailureReason,
@@ -152,6 +153,7 @@ import {
 import { productionRenderDiagnosticAdapter } from "../render-diagnostic-adapter";
 import {
   compileCompositionPlanVideo,
+  compileCompositionPlanVisualLayers,
 } from "../composition-ffmpeg-adapter";
 import { classifyRenderObjectKey } from "../render-object-key";
 import {
@@ -230,12 +232,11 @@ interface BackgroundPlan {
 
 interface LogoOverlay {
   filePath: string;
+  ref: string;
   position: BrandTemplateSnapshot["logoPosition"];
   opacity: number;
   scalePct: number;
 }
-
-const LOGO_MARGIN_PX = 24;
 
 /**
  * Merge a clip's `studioEdits.logo` override over the base logo overlay
@@ -259,6 +260,7 @@ export function resolveClipLogoOverlay(
   if (!effective.enabled) return null;
   return {
     filePath: base.filePath,
+    ref: base.ref,
     position: effective.position,
     opacity: effective.opacity,
     scalePct: effective.scalePct,
@@ -340,6 +342,10 @@ interface ClipRenderAttemptAdapters {
   };
   workspace: RenderWorkspaceAdapter;
   clock: RenderClockAdapter;
+  composition: {
+    compileVideo: typeof compileCompositionPlanVideo;
+    compileVisualLayers: typeof compileCompositionPlanVisualLayers;
+  };
   diagnose(input: {
     level: "info" | "error";
     message: string;
@@ -350,7 +356,7 @@ interface ClipRenderAttemptAdapters {
 type ClipRenderAttemptAdapterOverrides = Partial<
   Omit<
     ClipRenderAttemptAdapters,
-    "analysis" | "clip" | "optionalAssets" | "storage" | "workspace" | "clock"
+    "analysis" | "clip" | "composition" | "optionalAssets" | "storage" | "workspace" | "clock"
   >
 > & {
   analysis?: Partial<ClipRenderAttemptAdapters["analysis"]>;
@@ -359,6 +365,7 @@ type ClipRenderAttemptAdapterOverrides = Partial<
   storage?: Partial<ClipRenderAttemptAdapters["storage"]>;
   workspace?: Partial<ClipRenderAttemptAdapters["workspace"]>;
   clock?: Partial<ClipRenderAttemptAdapters["clock"]>;
+  composition?: Partial<ClipRenderAttemptAdapters["composition"]>;
 };
 
 interface ClipRenderAttemptDependencies {
@@ -491,6 +498,10 @@ const productionClipRenderAttemptAdapters: ClipRenderAttemptAdapters = {
     ...productionRenderWorkspaceAdapter,
   },
   clock: productionRenderClockAdapter,
+  composition: {
+    compileVideo: compileCompositionPlanVideo,
+    compileVisualLayers: compileCompositionPlanVisualLayers,
+  },
   diagnose: productionRenderDiagnosticAdapter.diagnose,
 };
 
@@ -613,6 +624,22 @@ class WorkflowWorkerError extends WorkflowFailure {
   ) {
     super(code, disposition, message);
   }
+}
+
+function compositionContractFailure(error: unknown): WorkflowWorkerError | null {
+  if (!(error instanceof Error)) return null;
+  if (
+    !error.message.startsWith("invalid_clip_composition_") &&
+    !error.message.startsWith("clip_composition_") &&
+    error.message !== "unsupported_clip_composition_plan_version"
+  ) {
+    return null;
+  }
+  return new WorkflowWorkerError(
+    "invalid_clip_composition_plan",
+    `Clip Composition Plan adapter rejected ${error.message}`,
+    "permanent",
+  );
 }
 
 class RenderPersistenceFailure extends WorkflowWorkerError {
@@ -2351,6 +2378,113 @@ export function generateAssFromSlice(
   return header + "\n" + events.join("\n") + "\n";
 }
 
+/** Serializes the caption schedule already owned by the composition plan.
+ * No transcript filtering, chunking, formatting, or timing decisions are
+ * allowed here: video exports must render the exact cues Studio previews. */
+export function generateAssFromCompositionCaptionLayers(input: {
+  layers: readonly CompositionCaptionVisualLayer[];
+  canvas: { width: number; height: number };
+}): string {
+  const layer = input.layers[0];
+  if (!layer) return "";
+  const captionPreset = layer.preset;
+  const fontName = resolveFontName(captionPreset.fontName);
+  const fontSize =
+    captionPreset.fontSize ??
+    Math.round(input.canvas.width * (72 / 1080));
+  const primaryColor = hexToAssColor(captionPreset.primaryColor ?? "#FFFFFF");
+  const highlightColor = hexToAssColor(captionPreset.highlightColor ?? "#00FF88");
+  const outlineColor = hexToAssColor(captionPreset.outlineColor ?? "#000000");
+  const bold = captionPreset.bold !== false ? -1 : 0;
+  const outlineWidth = captionPreset.outlineWidth ?? 2;
+  const shadow = captionPreset.shadow ?? 1;
+  const spacing = Math.round((captionPreset.letterSpacing ?? 0) * fontSize);
+  let borderStyle = 1;
+  let backColour = "&H00000000";
+  if (captionPreset.backgroundColor) {
+    borderStyle = 3;
+    backColour = hexToAssColor(
+      captionPreset.backgroundColor,
+      assAlphaHex(captionPreset.backgroundOpacity ?? 0.6),
+    );
+  }
+  let glowOverride = "";
+  if (captionPreset.glowColor) {
+    const intensity = captionPreset.glowIntensity ?? 8;
+    glowOverride =
+      `\\4c${hexToAssColor(captionPreset.glowColor)}&` +
+      `\\shad${Math.max(1, Math.round(intensity / 4))}` +
+      `\\blur${Math.max(1, Math.round(intensity / 2))}`;
+  }
+  const hasHighlightBox = Boolean(captionPreset.highlightBoxColor);
+  const boxColor = hasHighlightBox
+    ? hexToAssColor(captionPreset.highlightBoxColor!)
+    : "";
+  const boxAlpha = assAlphaHex(captionPreset.highlightBoxOpacity ?? 1);
+  const boxBord = Math.max(outlineWidth, Math.round(fontSize * 0.16));
+  const animation = captionPreset.animation ?? "word-by-word";
+  const header = [
+    "[Script Info]",
+    "ScriptType: v4.00+",
+    `PlayResX: ${input.canvas.width}`,
+    `PlayResY: ${input.canvas.height}`,
+    "WrapStyle: 2",
+    "ScaledBorderAndShadow: yes",
+    "",
+    "[V4+ Styles]",
+    "Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding",
+    `Style: Default,${fontName},${fontSize},${primaryColor},${primaryColor},${outlineColor},${backColour},${bold},0,0,0,100,100,${spacing},0,${borderStyle},${outlineWidth},${shadow},5,0,0,0,1`,
+    "",
+    "[Events]",
+    "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
+  ].join("\n");
+  const renderWord = (word: string, active: boolean): string => {
+    if (!active) return word;
+    if (hasHighlightBox) {
+      return (
+        `{\\1c${highlightColor}&\\bord${boxBord}\\3c${boxColor}&\\3a&H${boxAlpha}&}` +
+        `${word}` +
+        `{\\1c${primaryColor}&\\bord${outlineWidth}\\3c${outlineColor}&\\3a&H00&}`
+      );
+    }
+    return `{\\1c${highlightColor}&}${word}{\\1c${primaryColor}&}`;
+  };
+  const entrance = (): string => {
+    let value = "\\fad(60,0)";
+    if (
+      animation === "grow" ||
+      animation === "bounce" ||
+      animation === "seamless-bounce" ||
+      animation === "soft-landing"
+    ) {
+      value += "\\fscx82\\fscy82\\t(0,160,\\fscx100\\fscy100)";
+    } else if (animation === "blur-in" && !captionPreset.glowColor) {
+      value += "\\blur6\\t(0,200,\\blur0)";
+    }
+    return value;
+  };
+  const events: string[] = [];
+  for (const cue of input.layers) {
+    const posXPx = Math.round((cue.anchor.xPct / 100) * input.canvas.width);
+    const posYPx = Math.round((cue.anchor.yPct / 100) * input.canvas.height);
+    cue.words.forEach((activeWord, activeIndex) => {
+      const text = cue.words
+        .map((word, index) => {
+          const rendered = renderWord(word.text, index === activeIndex);
+          return word.emoji ? `${rendered} ${word.emoji}` : rendered;
+        })
+        .join(" ");
+      const override =
+        `\\an5\\pos(${posXPx},${posYPx})${glowOverride}` +
+        (activeIndex === 0 ? entrance() : "");
+      events.push(
+        `Dialogue: 0,${formatAssTimestamp(activeWord.startSec)},${formatAssTimestamp(activeWord.endSec)},Default,,0,0,0,,{${override}}${text}`,
+      );
+    });
+  }
+  return header + "\n" + events.join("\n") + "\n";
+}
+
 function escapeSubtitlePath(filePath: string) {
   return filePath.replace(/\\/g, "\\\\").replace(/:/g, "\\:");
 }
@@ -2893,69 +3027,6 @@ function buildSubtitleFilter(
   return `subtitles='${escapedPath}':force_style='${forceStyle}'`;
 }
 
-function buildLogoOverlayPosition(
-  position: BrandTemplateSnapshot["logoPosition"],
-): { x: string; y: string } {
-  const [vertical, horizontal] = position.split("-") as [
-    "top" | "mid" | "bot",
-    "left" | "center" | "right",
-  ];
-  let x: string;
-  let y: string;
-
-  if (horizontal === "left") x = `${LOGO_MARGIN_PX}`;
-  else if (horizontal === "right") x = `W-w-${LOGO_MARGIN_PX}`;
-  else x = `(W-w)/2`;
-
-  if (vertical === "top") y = `${LOGO_MARGIN_PX}`;
-  else if (vertical === "bot") y = `H-h-${LOGO_MARGIN_PX}`;
-  else y = `(H-h)/2`;
-
-  return { x, y };
-}
-
-function computeLogoTargetWidth(
-  logo: LogoOverlay,
-  videoWidth: number,
-): number {
-  return Math.max(40, Math.round(videoWidth * (logo.scalePct / 100)));
-}
-
-function buildLogoFilter(
-  logo: LogoOverlay,
-  videoWidth: number,
-  inputStreamRef: string,
-  outputStreamRef: string,
-  logoInputIndex: number,
-  scratchSuffix: string,
-): string {
-  const opacity = Math.max(0.1, Math.min(1, logo.opacity / 100));
-  const targetWidth = computeLogoTargetWidth(logo, videoWidth);
-  const { x, y } = buildLogoOverlayPosition(logo.position);
-  const scratchLabel = `brandlogo${scratchSuffix}`;
-  return [
-    `[${logoInputIndex}:v]scale=${targetWidth}:-1,format=rgba,colorchannelmixer=aa=${opacity.toFixed(3)}[${scratchLabel}]`,
-    `${inputStreamRef}[${scratchLabel}]overlay=${x}:${y}${outputStreamRef}`,
-  ].join(";");
-}
-
-/** Text-layer drawtext filters + caption burn-in, comma-joined (or `""` when
- *  neither is present) for the compiled composition output. */
-function buildTextAndCaptionChain(
-  studioEdits: StudioEdits | null | undefined,
-  clipDurationSec: number,
-  aspectRatio: ClipAspectRatio,
-  srtPath: string | null,
-  captionPreset?: CaptionPreset | null,
-): string {
-  const chain: (string | null)[] = [];
-  if (studioEdits?.textLayers.length) {
-    chain.push(...buildTextLayerFilters(studioEdits.textLayers, clipDurationSec));
-  }
-  chain.push(buildSubtitleFilter(aspectRatio, srtPath, captionPreset));
-  return chain.filter(Boolean).join(",");
-}
-
 export function buildSingleVideoArgs(params: {
   sourcePath: string;
   outputPath: string;
@@ -2964,7 +3035,6 @@ export function buildSingleVideoArgs(params: {
   aspectRatio: ClipAspectRatio;
   probe: SourceProbe;
   srtPath: string | null;
-  captionPreset?: CaptionPreset | null;
   logo?: LogoOverlay | null;
   /** The sole versioned composition policy for every video render. */
   composition: {
@@ -2981,12 +3051,6 @@ export function buildSingleVideoArgs(params: {
    *  implies "on" (mode is always "color" or "image"); omit/null preserves
    *  today's crop-to-fill behavior. See `BackgroundPlan`. */
   background?: BackgroundPlan | null;
-  /** Target resolution (vizard-parity Phase C export options) — "720p"
-   *  applies the 2/3 downscale, "1080p"/omitted renders at base resolution. */
-  resolution?: ClipRenderResolution;
-  /** Corner watermark, gated by hasFeature(ownerTier, "export.noWatermark")
-   *  — independent of `resolution` (see `buildExportTreatmentFilter`). */
-  watermark?: boolean;
   /** Non-empty `deletedRanges` cut plan (vizard-parity Phase B step 7).
    *  Omitted/uncut: byte-identical to the pre-cut-concat filter graph. */
   cutPlan?: ClipCutPlan | null;
@@ -3027,73 +3091,49 @@ export function buildSingleVideoArgs(params: {
   const usesBackgroundImage = Boolean(
     params.background?.mode === "image" && params.background.imagePath,
   );
+  const plannedTarget = params.composition.plan.targets.find(
+    (target) => target.id === params.composition.targetId,
+  );
+  if (!plannedTarget) throw new Error("clip_composition_target_missing");
+  const plannedLogo = plannedTarget.visualLayers.find(
+    (layer) => layer.kind === "logo",
+  );
+  if (Boolean(plannedLogo) !== Boolean(params.logo)) {
+    throw new Error("clip_composition_logo_asset_mismatch");
+  }
   let nextInputIndex = 1;
   const bgImageInputIndex = usesBackgroundImage ? nextInputIndex++ : null;
-  const logoInputIndex = params.logo ? nextInputIndex++ : null;
+  const logoInputIndex = plannedLogo ? nextInputIndex++ : null;
   const musicInputIndex = params.music ? nextInputIndex++ : null;
   const sfxInputIndexes = (params.sfx ?? []).map(() => nextInputIndex++);
 
-  const textAndCaptionChain = buildTextAndCaptionChain(
-    params.studioEdits,
-    clipDurationSec,
-    params.aspectRatio,
-    params.srtPath,
-    params.captionPreset,
-  );
-
-  let finalLabel: string;
   const filterParts: string[] = cutConcat ? [...cutConcat.filterParts] : [];
-  const composedOutputLabel = params.logo ? "[outvbase]" : "[outv]";
 
-  const compiled = compileCompositionPlanVideo({
+  const compiled = currentRenderAdapters().composition.compileVideo({
     plan: params.composition.plan,
     targetId: params.composition.targetId,
     videoInputLabel,
-    outputLabel: composedOutputLabel,
-    trailingChain: textAndCaptionChain,
+    outputLabel: "[composition_base]",
     backgroundImageInputIndex: bgImageInputIndex,
     fps: params.probe.fps,
   });
   filterParts.push(...compiled.filterParts);
-
-  if (params.logo) {
-    const aspectConfig = aspectRatioConfig.get(params.aspectRatio);
-    if (!aspectConfig) {
-      throw new WorkflowWorkerError(
-        "unsupported_aspect_ratio",
-        `Unsupported aspect ratio: ${params.aspectRatio}`,
-        "permanent",
-      );
-    }
-    filterParts.push(
-      buildLogoFilter(
-        params.logo,
-        aspectConfig.width,
-        "[outvbase]",
-        "[outv]",
-        logoInputIndex!,
-        "",
-      ),
-    );
+  const visual = currentRenderAdapters().composition.compileVisualLayers({
+    plan: params.composition.plan,
+    targetId: params.composition.targetId,
+    inputLabel: "[composition_base]",
+    outputLabel: "[outv]",
+    subtitlePath: params.srtPath,
+    logoInputIndex,
+  });
+  filterParts.push(...visual.filterParts);
+  if (
+    visual.logoInput &&
+    (!params.logo || visual.logoInput.sourceRef !== params.logo.ref)
+  ) {
+    throw new Error("clip_composition_logo_asset_mismatch");
   }
-  finalLabel = "[outv]";
-
-  finalLabel = appendTransitionFilter(
-    filterParts,
-    finalLabel,
-    "[outvtransition]",
-    params.studioEdits,
-    clipDurationSec,
-  );
-
-  const singleExportTreatment = buildExportTreatmentFilter(
-    params.resolution,
-    params.watermark,
-  );
-  if (singleExportTreatment) {
-    filterParts.push(`${finalLabel}${singleExportTreatment}[outvfree]`);
-    finalLabel = "[outvfree]";
-  }
+  const finalLabel = "[outv]";
 
   const args = [
     "-y",
@@ -3110,7 +3150,7 @@ export function buildSingleVideoArgs(params: {
     args.push("-i", params.background!.imagePath!);
   }
 
-  if (params.logo) {
+  if (plannedLogo && params.logo) {
     args.push("-i", params.logo.filePath);
   }
 
@@ -3197,7 +3237,6 @@ export function buildBrollVideoArgs(params: {
   aspectRatio: ClipAspectRatio;
   probe: SourceProbe;
   srtPath: string | null;
-  captionPreset?: CaptionPreset | null;
   logo?: LogoOverlay | null;
   composition: {
     plan: ClipCompositionPlan;
@@ -3211,9 +3250,6 @@ export function buildBrollVideoArgs(params: {
   /** Resolved canvas background (vizard-parity Phase C item 2) — see
    *  `buildSingleVideoArgs`'s param doc; same contract here. */
   background?: BackgroundPlan | null;
-  /** See `buildSingleVideoArgs`'s param docs — same contract here. */
-  resolution?: ClipRenderResolution;
-  watermark?: boolean;
   /** See `buildSingleVideoArgs` — same cut-concat contract. */
   cutPlan?: ClipCutPlan | null;
 }) {
@@ -3240,14 +3276,6 @@ export function buildBrollVideoArgs(params: {
       "permanent",
     );
   }
-  const { width: W } = config;
-
-  const subtitleFilter = buildSubtitleFilter(
-    params.aspectRatio,
-    params.srtPath,
-    params.captionPreset,
-  );
-
   // Input index bookkeeping: source(0), background image (fit mode only,
   // when a local downloaded path is available), then the cutaways, then
   // logo, then music — same order the args are pushed in below. `bgOffset`
@@ -3278,7 +3306,7 @@ export function buildBrollVideoArgs(params: {
       : null;
 
   const parts: string[] = cutConcat ? [...cutConcat.filterParts] : [];
-  const compiledComposition = compileCompositionPlanVideo({
+  const compiledComposition = currentRenderAdapters().composition.compileVideo({
       plan: params.composition.plan,
       targetId: params.composition.targetId,
       videoInputLabel,
@@ -3289,45 +3317,34 @@ export function buildBrollVideoArgs(params: {
       brollInputStartIndex: 1 + bgOffset,
   });
   const cutawayCount = compiledComposition.brollInputs.length;
-  const logoInputIndex = 1 + bgOffset + cutawayCount;
+  const plannedTarget = params.composition.plan.targets.find(
+    (target) => target.id === params.composition.targetId,
+  );
+  if (!plannedTarget) throw new Error("clip_composition_target_missing");
+  const plannedLogo = plannedTarget.visualLayers.find(
+    (layer) => layer.kind === "logo",
+  );
+  if (Boolean(plannedLogo) !== Boolean(params.logo)) {
+    throw new Error("clip_composition_logo_asset_mismatch");
+  }
+  const logoInputIndex = plannedLogo ? 1 + bgOffset + cutawayCount : null;
   parts.push(...compiledComposition.filterParts);
-  let finalLabel = "[stage0]";
-
-  if (params.studioEdits?.textLayers.length) {
-    const textFilters = buildTextLayerFilters(
-      params.studioEdits.textLayers,
-      clipDurationSec,
-    ).join(",");
-    parts.push(`${finalLabel}${textFilters}[texted]`);
-    finalLabel = "[texted]";
+  const visual = currentRenderAdapters().composition.compileVisualLayers({
+    plan: params.composition.plan,
+    targetId: params.composition.targetId,
+    inputLabel: "[stage0]",
+    outputLabel: "[outv]",
+    subtitlePath: params.srtPath,
+    logoInputIndex,
+  });
+  parts.push(...visual.filterParts);
+  if (
+    visual.logoInput &&
+    (!params.logo || visual.logoInput.sourceRef !== params.logo.ref)
+  ) {
+    throw new Error("clip_composition_logo_asset_mismatch");
   }
-  if (subtitleFilter) {
-    parts.push(`${finalLabel}${subtitleFilter}[subbed]`);
-    finalLabel = "[subbed]";
-  }
-  if (params.logo) {
-    parts.push(
-      buildLogoFilter(params.logo, W, finalLabel, "[outv]", logoInputIndex, ""),
-    );
-    finalLabel = "[outv]";
-  }
-
-  finalLabel = appendTransitionFilter(
-    parts,
-    finalLabel,
-    "[outvtransition]",
-    params.studioEdits,
-    clipDurationSec,
-  );
-
-  const brollExportTreatment = buildExportTreatmentFilter(
-    params.resolution,
-    params.watermark,
-  );
-  if (brollExportTreatment) {
-    parts.push(`${finalLabel}${brollExportTreatment}[outvfree]`);
-    finalLabel = "[outvfree]";
-  }
+  const finalLabel = "[outv]";
 
   const args = [
     "-y",
@@ -3359,13 +3376,13 @@ export function buildBrollVideoArgs(params: {
     args.push("-t", windowDurationSec.toFixed(3), "-i", cutaway.path);
   }
 
-  if (params.logo) args.push("-i", params.logo.filePath);
+  if (plannedLogo && params.logo) args.push("-i", params.logo.filePath);
 
   // Music, then SFX, each consume the next input slot — same order as
   // buildSingleVideoArgs. musicInputIndex is computed unconditionally
   // (even when music is absent) so sfxInputIndexes can be derived from it
   // without duplicating the bgOffset/cutawayCount/logo arithmetic.
-  const musicInputIndex = 1 + bgOffset + cutawayCount + (params.logo ? 1 : 0);
+  const musicInputIndex = 1 + bgOffset + cutawayCount + (plannedLogo ? 1 : 0);
   const sfxInputIndexes = (params.sfx ?? []).map(
     (_, i) => musicInputIndex + (params.music ? 1 : 0) + i,
   );
@@ -3823,10 +3840,9 @@ function buildWatermarkDrawtextFilter(
  * meant to be appended to the *end* of an already-built video filter chain
  * (after crop/scale/captions/logo/transition) so the whole render is a
  * single encode. This exact combination (both always on together) is what
- * `buildFreeTierPostProcessArgs` below still tests; the main render pipeline
- * no longer applies them as a fused pair (see `buildExportTreatmentFilter`),
- * since resolution and watermark are now independent, entitlement-driven
- * knobs (vizard-parity Phase C export options).
+ * `buildFreeTierPostProcessArgs` below still tests. Video plans now declare
+ * these independent treatment facts directly; the audio-only audiogram path
+ * continues to use the fragment until its topology moves into the plan.
  */
 function buildFreeTierWatermarkFilter(
   watermarkText: string,
@@ -3858,12 +3874,9 @@ function buildExportTreatmentFilter(
 }
 
 /**
- * Free-tier export treatment as a standalone single-input ffmpeg pass. No
- * longer used by the render pipeline itself (see `buildExportTreatmentFilter`
- * on each `build*Args` builder, which folds the same downscale/watermark
- * fragments into the main encode instead of re-encoding a second time) —
- * kept as a tested, reusable utility for the same transformation applied to
- * an already-rendered file.
+ * Free-tier export treatment as a standalone single-input ffmpeg pass. Kept
+ * as a tested utility for applying the same transformation to an already-
+ * rendered file; planned video rendering does not call this second pass.
  */
 export function buildFreeTierPostProcessArgs(params: {
   inputPath: string;
@@ -4209,6 +4222,10 @@ export class ClipRenderAttempt {
         ...productionClipRenderAttemptAdapters.clock,
         ...dependencies.adapters?.clock,
       },
+      composition: {
+        ...productionClipRenderAttemptAdapters.composition,
+        ...dependencies.adapters?.composition,
+      },
     };
   }
 
@@ -4357,6 +4374,7 @@ async function executeClipRenderAttempt(
     });
 
     let brandLogo: LogoOverlay | null = null;
+    let brandLogoWasRequested = false;
     let rawBrandSnapshot: unknown = null;
     if (frozenState.brandSnapshot.status === "available") {
       rawBrandSnapshot = frozenState.brandSnapshot.value;
@@ -4372,6 +4390,7 @@ async function executeClipRenderAttempt(
       try {
         const snapshot = brandTemplateSnapshotSchema.parse(rawBrandSnapshot);
         if (snapshot.logoStorageKey && probe.hasVideo) {
+          brandLogoWasRequested = true;
           touchedOptionalAssetClasses.add("logo");
           const logoExt = extname(snapshot.logoStorageKey) || ".png";
           const logoPath = join(tempDir, `brand-logo${logoExt}`);
@@ -4389,6 +4408,7 @@ async function executeClipRenderAttempt(
             if (decodable) {
               brandLogo = {
                 filePath: logoPath,
+                ref: compositionAssetRef("logo", snapshot.logoStorageKey),
                 position: snapshot.logoPosition,
                 opacity: snapshot.logoOpacity,
                 scalePct: snapshot.logoScalePct,
@@ -4588,14 +4608,13 @@ async function executeClipRenderAttempt(
       const clipDurationSec = cutPlan.isUncut
         ? effective.durationSec
         : cutPlan.editedDurationSec;
-      // Time map used to retime caption cues (source-absolute word/utterance
-      // times -> edited timeline). Null for the uncut common case so
-      // generateSrtFromSlice/generateAssFromSlice take their original,
-      // unmodified codepath.
+      // Time map used by the audio-only subtitle path and by the composition
+      // planner to retime source-absolute words onto the edited timeline.
       const captionTimeMap = cutPlan.isUncut ? null : cutPlan.map;
 
       // Resilient parse: a single malformed stored caption JSON must not crash
-      // the whole render group — fall back to no preset (plain SRT) instead.
+      // the whole render group. Video uses the planner's default caption
+      // contract; audio-only rendering retains its plain-SRT fallback.
       let captionPreset: CaptionPreset | null = null;
       if (clip.captionPreset) {
         const parsedPreset = captionPresetSchema.nullable().safeParse(
@@ -4631,12 +4650,21 @@ async function executeClipRenderAttempt(
       // -downloaded file). `null` whenever there's no logo asset at all, or
       // this clip's override disables it.
       const logo = resolveClipLogoOverlay(brandLogo, studioEdits.logo);
+      const plannedLogoSettings = brandLogo
+        ? resolveEffectiveLogoSettings(
+            {
+              position: brandLogo.position,
+              opacity: brandLogo.opacity,
+              scalePct: brandLogo.scalePct,
+            },
+            studioEdits.logo,
+          )
+        : null;
 
-      // ASS is the authoritative path and is used whenever a preset is present
-      // (it carries per-word highlight, box, glow, position and animation so the
-      // export matches the studio preview). SRT is only a no-preset fallback.
+      // SRT remains only for audio-only, no-preset audiograms. Video captions
+      // are serialized from the Composition Plan after planning below.
       let srtPath: string | null = null;
-      if (!captionPreset && utterances.length > 0) {
+      if (!probe.hasVideo && !captionPreset && utterances.length > 0) {
         const srtContent = generateSrtFromSlice(
           utterances,
           clipStartSec,
@@ -4741,7 +4769,7 @@ async function executeClipRenderAttempt(
       // Per-aspect-ratio ASS files carry the full styled, word-synced captions.
       // Generated whenever a caption preset is present (positions are resolution
       // dependent, so one file per output).
-      if (captionPreset && utterances.length > 0) {
+      if (!probe.hasVideo && captionPreset && utterances.length > 0) {
         for (const output of outputs) {
           const assContent = generateAssFromSlice(
             utterances,
@@ -6349,6 +6377,7 @@ async function executeClipRenderAttempt(
             | { state: "missing" | "failed" }
             | { state: "available"; ref: string },
           brollAvailable = Boolean(brollPlan),
+          logoAvailable = Boolean(brandLogo),
         ) =>
           planClipComposition({
             document: compositionDocument,
@@ -6396,6 +6425,17 @@ async function executeClipRenderAttempt(
                 : userBrollUrl || brollPlan
                   ? { broll: { state: "failed" as const } }
                   : {}),
+              ...(brandLogo && logoAvailable && plannedLogoSettings
+                ? {
+                    logo: {
+                      state: "available" as const,
+                      ref: brandLogo.ref,
+                      settings: plannedLogoSettings,
+                    },
+                  }
+                : brandLogoWasRequested
+                  ? { logo: { state: "failed" as const } }
+                  : {}),
             },
             capabilities: {
               automaticSpeakerLayout: currentRenderConfig().layoutEngineEnabled,
@@ -6412,6 +6452,10 @@ async function executeClipRenderAttempt(
                 aspectRatio: output.aspectRatio,
                 width: target.width,
                 height: target.height,
+                outputTreatment: {
+                  resolution: output.resolution,
+                  watermark: output.watermark,
+                },
               };
             }),
           });
@@ -6448,6 +6492,10 @@ async function executeClipRenderAttempt(
         }
         const sceneCount = planned.plan.targets.reduce(
           (count, target) => count + target.scenes.length,
+          0,
+        );
+        const visualLayerCount = planned.plan.targets.reduce(
+          (count, target) => count + target.visualLayers.length,
           0,
         );
         const compositionEvidenceDiagnostics =
@@ -6492,19 +6540,53 @@ async function executeClipRenderAttempt(
               endSec: scene.endSec,
               layerKinds: scene.layers.map((layer) => layer.kind),
             })),
+            visualLayerKinds: target.visualLayers.map((layer) => layer.kind),
           })),
           sceneCount,
+          visualLayerCount,
           noticeCodes: planned.plan.notices.map((notice) => notice.code),
         });
         compositionPlan = planned.plan;
+        for (const output of outputs) {
+          const target = compositionPlan.targets.find(
+            (candidate) => candidate.id === output.clipRenderId,
+          );
+          if (!target) {
+            throw new WorkflowWorkerError(
+              "invalid_clip_composition_plan",
+              `Clip Composition Plan target missing for ${output.clipRenderId}`,
+              "permanent",
+            );
+          }
+          const assContent = generateAssFromCompositionCaptionLayers({
+            layers: target.visualLayers.filter(
+              (layer): layer is CompositionCaptionVisualLayer =>
+                layer.kind === "caption",
+            ),
+            canvas: target.canvas,
+          });
+          if (assContent.length > 0) {
+            const assPath = join(
+              tempDir,
+              `clip-${clip.id}-${output.aspectRatio.replace(":", "x")}.ass`,
+            );
+            await currentRenderAdapters().workspace.writeFile(
+              assPath,
+              assContent,
+              "utf-8",
+            );
+            output.subtitlePath = assPath;
+          }
+        }
         if (
           backgroundImageAvailability.state === "available" ||
-          brollPlan
+          brollPlan || brandLogo
         ) {
           const fallbackPlan = planWithAssetAvailability(
             backgroundImageAvailability.state === "available"
               ? { state: "failed" }
               : backgroundImageAvailability,
+            false,
             false,
           );
           if (fallbackPlan.status !== "invalid") {
@@ -6646,15 +6728,12 @@ async function executeClipRenderAttempt(
                   aspectRatio: output.aspectRatio,
                   probe,
                   srtPath: output.subtitlePath ?? srtPath,
-                  captionPreset,
                   logo,
                   composition: compositionForOutput,
                   studioEdits,
                   music: musicPlan,
                   sfx: sfxPlans,
                   background: backgroundPlan,
-                  resolution: output.resolution,
-                  watermark: output.watermark,
                   cutPlan,
                 })
               : buildSingleVideoArgs({
@@ -6665,15 +6744,12 @@ async function executeClipRenderAttempt(
                   aspectRatio: output.aspectRatio,
                   probe,
                   srtPath: output.subtitlePath ?? srtPath,
-                  captionPreset,
                   logo,
                   composition: compositionForOutput,
                   studioEdits,
                   music: musicPlan,
                   sfx: sfxPlans,
                   background: backgroundPlan,
-                  resolution: output.resolution,
-                  watermark: output.watermark,
                   cutPlan,
                 });
             const encodeStartedAtMs = currentTimeMs();
@@ -6690,15 +6766,12 @@ async function executeClipRenderAttempt(
                         aspectRatio: output.aspectRatio,
                         probe,
                         srtPath: output.subtitlePath ?? srtPath,
-                        captionPreset,
                         logo: null,
                         composition: fallbackCompositionForOutput,
                         studioEdits,
                         music: null,
                         sfx: [],
                         background: fallbackBackgroundPlan,
-                        resolution: output.resolution,
-                        watermark: output.watermark,
                         cutPlan,
                       })
                   : undefined,
@@ -6720,15 +6793,18 @@ async function executeClipRenderAttempt(
           } catch (error) {
             rethrowWorkflowAttemptLost(error);
             rethrowRenderCancellation(error);
+            const contractFailure = compositionContractFailure(error);
+            const renderFailure =
+              error instanceof WorkflowFailure ? error : contractFailure;
             const errorCode =
-              error instanceof WorkflowFailure
-                ? error.code
+              renderFailure
+                ? renderFailure.code
                 : "ffmpeg_render_failed";
             await currentRenderAdapters().clip.failClipRenderVariant(
               output.clipRenderId,
               errorCode,
-              error instanceof WorkflowFailure
-                ? error.disposition
+              renderFailure
+                ? renderFailure.disposition
                 : "retryable",
             );
             log("error", "clip_render_variant_failed", {

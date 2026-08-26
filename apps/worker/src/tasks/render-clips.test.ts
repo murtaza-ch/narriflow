@@ -3,11 +3,12 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
-  CLIP_COMPOSITION_PLAN_VERSION,
-  type ClipCompositionPlan,
+  planClipComposition,
 } from "@narriflow/composition-plan";
 import {
+  captionPresetSchema,
   computeSpeechWindows,
+  editorDocumentSchema,
   getCaptionPresetById,
   studioEditsSchema,
 } from "@narriflow/validators";
@@ -29,6 +30,7 @@ import {
   decideSplitFallback,
   downloadUrlToFile,
   escapeDrawtextText,
+  generateAssFromCompositionCaptionLayers,
   generateAssFromSlice,
   generateSrtFromSlice,
   layoutAnalysisMatchesWindow,
@@ -43,15 +45,32 @@ import type { SplitLayoutSegment } from "./two-up";
 
 type SingleVideoArgs = Parameters<typeof buildSingleVideoArgsWithPlan>[0];
 type BrollVideoArgs = Parameters<typeof buildBrollVideoArgsWithPlan>[0];
+type VisualTestOptions = {
+  captionPreset?: CaptionPreset | null;
+  resolution?: "720p" | "1080p";
+  watermark?: boolean;
+};
+type TestSingleVideoArgs = SingleVideoArgs & VisualTestOptions;
+type TestBrollVideoArgs = BrollVideoArgs & VisualTestOptions;
 
 function testComposition(params: {
-  aspectRatio: SingleVideoArgs["aspectRatio"];
-  probe: SingleVideoArgs["probe"];
+  aspectRatio: TestSingleVideoArgs["aspectRatio"];
+  probe: TestSingleVideoArgs["probe"];
   startSec: number;
   endSec: number;
-  cutPlan?: SingleVideoArgs["cutPlan"];
-  background?: SingleVideoArgs["background"];
-}): SingleVideoArgs["composition"] {
+  cutPlan?: TestSingleVideoArgs["cutPlan"];
+  background?: TestSingleVideoArgs["background"];
+  captionPreset?: CaptionPreset | null;
+  srtPath: string | null;
+  studioEdits?: TestSingleVideoArgs["studioEdits"];
+  logo?: TestSingleVideoArgs["logo"];
+  resolution?: "720p" | "1080p";
+  watermark?: boolean;
+  brollCutaways?: Array<{
+    path: string;
+    window: { startSec: number; endSec: number };
+  }>;
+}): TestSingleVideoArgs["composition"] {
   const canvas = {
     "9:16": { width: 1080, height: 1920 },
     "1:1": { width: 1080, height: 1080 },
@@ -62,173 +81,142 @@ function testComposition(params: {
     params.cutPlan && !params.cutPlan.isUncut
       ? params.cutPlan.editedDurationSec
       : params.endSec - params.startSec;
-  const fit = Boolean(params.background);
-  const sourceRatio = params.probe.width / params.probe.height;
-  const targetRatio = canvas.width / canvas.height;
-  const rawSourceCrop = fit
-    ? { x: 0, y: 0, width: params.probe.width, height: params.probe.height }
-    : sourceRatio > targetRatio
+  const captionPreset = params.captionPreset ?? captionPresetSchema.parse({});
+  const studioEdits = studioEditsSchema.parse({
+    ...params.studioEdits,
+    framing: { mode: "center" },
+    ...(params.background
       ? {
-          x: (params.probe.width - params.probe.height * targetRatio) / 2,
-          y: 0,
-          width: params.probe.height * targetRatio,
-          height: params.probe.height,
+          background: {
+            mode: params.background.mode,
+            color: params.background.color,
+            imageUrl:
+              params.background.mode === "image"
+                ? "https://example.com/background.jpg"
+                : null,
+          },
         }
-      : {
-          x: 0,
-          y: (params.probe.height - params.probe.width / targetRatio) / 2,
-          width: params.probe.width,
-          height: params.probe.width / targetRatio,
-        };
-  const sourceCrop = {
-    x: Math.round(rawSourceCrop.x),
-    y: Math.round(rawSourceCrop.y),
-    width: Math.round(rawSourceCrop.width),
-    height: Math.round(rawSourceCrop.height),
-  };
-  const plan: ClipCompositionPlan = {
-    version: CLIP_COMPOSITION_PLAN_VERSION,
-    fingerprint: "0000000000000000",
-    inputFingerprint: "0000000000000000",
-    editedDurationSec: duration,
+      : {}),
+  });
+  const transcriptSlice =
+    params.srtPath && captionPreset.visible !== false
+      ? [
+          {
+            index: 0,
+            speaker: 0,
+            speakerLabel: "Speaker 1",
+            startSec: 0,
+            endSec: duration,
+            text: "Test",
+            confidence: 1,
+            words: [
+              {
+                word: "Test",
+                startSec: 0,
+                endSec: duration,
+                confidence: 1,
+              },
+            ],
+          },
+        ]
+      : [];
+  const result = planClipComposition({
+    document: editorDocumentSchema.parse({
+      clipStartSec: 0,
+      clipEndSec: duration,
+      captionPreset,
+      transcriptSlice,
+      studioEdits,
+      brollUrl: null,
+      deletedRanges: [],
+    }),
     source: {
-      ref: "source:test",
+      identity: "source:test",
+      kind: "video",
       width: params.probe.width,
       height: params.probe.height,
+    },
+    evidence: { automaticLayout: { state: "missing" } },
+    assets: {
+      backgroundImage:
+        params.background?.mode === "image" && params.background.imagePath
+          ? { state: "available", ref: "background:test" }
+          : { state: "missing" },
+      ...(params.logo
+        ? {
+            logo: {
+              state: "available" as const,
+              ref: "logo:test",
+              settings: {
+                enabled: true,
+                position: params.logo.position,
+                opacity: params.logo.opacity,
+                scalePct: params.logo.scalePct,
+              },
+            },
+          }
+        : {}),
+      ...(params.brollCutaways
+        ? {
+            broll: {
+              state: "available" as const,
+              placements: params.brollCutaways.map((cutaway, index) => ({
+                id: `cutaway-${index}`,
+                ref: `broll:test:${index}`,
+                startSec: cutaway.window.startSec,
+                endSec: cutaway.window.endSec,
+              })),
+            },
+          }
+        : {}),
+    },
+    capabilities: {
+      automaticSpeakerLayout: true,
+      automaticSpeakerEngineVersion: "shot-layout-v1",
     },
     targets: [
       {
         id: "test-target",
         aspectRatio: params.aspectRatio,
-        requestedMode: fit ? "fit" : "center",
-        effectiveMode: fit ? "fit" : "center",
-        canvas: { ...canvas, divisibleBy: 2 },
-        scenes: [
-          {
-            id: "scene-0",
-            startSec: 0,
-            endSec: duration,
-            layers: [
-              ...(fit
-                ? [
-                    {
-                      id: "background",
-                      kind: "background" as const,
-                      color: params.background?.color ?? "#000000",
-                      imageRef: params.background?.imagePath
-                        ? "background:test"
-                        : null,
-                      destination: { x: 0, y: 0, ...canvas },
-                      rotationDeg: 0,
-                      opacity: 1 as const,
-                      zIndex: 0,
-                    },
-                  ]
-                : []),
-              {
-                id: "source",
-                kind: "source-video",
-                sourceRef: "source:test",
-                sourceCrop,
-                destination: { x: 0, y: 0, ...canvas },
-                fit: fit ? "contain" : "cover",
-                rotationDeg: 0,
-                opacity: 1,
-                zIndex: 1,
-                speaker: null,
-              },
-            ],
-          },
-        ],
+        ...canvas,
+        outputTreatment: {
+          resolution: params.resolution ?? "1080p",
+          watermark: params.watermark ?? false,
+        },
       },
     ],
-    notices: [],
-    evidenceRequests: [],
-  };
-  return { plan, targetId: "test-target" };
+  });
+  if (result.status === "invalid") throw new Error(result.error.code);
+  return { plan: result.plan, targetId: "test-target" };
 }
 
 function buildSingleVideoArgs(
-  params: Omit<SingleVideoArgs, "composition"> & {
-    composition?: SingleVideoArgs["composition"];
+  params: Omit<TestSingleVideoArgs, "composition"> & {
+    composition?: TestSingleVideoArgs["composition"];
   },
 ) {
   return buildSingleVideoArgsWithPlan({
     ...params,
+    logo: params.logo ? { ...params.logo, ref: "logo:test" } : params.logo,
     composition: params.composition ?? testComposition(params),
   });
 }
 
 function buildBrollVideoArgs(
-  params: Omit<BrollVideoArgs, "composition" | "resolvedBrollAssets"> & {
+  params: Omit<TestBrollVideoArgs, "composition" | "resolvedBrollAssets"> & {
     cutaways: Array<{
       path: string;
       window: { startSec: number; endSec: number };
     }>;
-    composition?: BrollVideoArgs["composition"];
+    composition?: TestBrollVideoArgs["composition"];
   },
 ) {
   const { cutaways, ...rest } = params;
-  const baseComposition = params.composition ?? testComposition(params);
-  const target = baseComposition.plan.targets.find(
-    (candidate) => candidate.id === baseComposition.targetId,
-  )!;
-  const boundaries = [
-    0,
-    baseComposition.plan.editedDurationSec,
-    ...cutaways.flatMap((cutaway) => [
-      cutaway.window.startSec,
-      cutaway.window.endSec,
-    ]),
-  ].sort((a, b) => a - b);
-  const uniqueBoundaries = boundaries.filter(
-    (value, index) => index === 0 || value !== boundaries[index - 1],
-  );
-  const baseLayers = target.scenes[0]!.layers.filter(
-    (layer) => layer.kind !== "broll-video",
-  );
-  const scenes = uniqueBoundaries.slice(0, -1).map((startSec, index) => {
-    const endSec = uniqueBoundaries[index + 1]!;
-    const activeIndex = cutaways.findIndex(
-      (cutaway) =>
-        startSec >= cutaway.window.startSec && endSec <= cutaway.window.endSec,
-    );
-    return {
-      id: `scene-${index}`,
-      startSec,
-      endSec,
-      layers: [
-        ...baseLayers,
-        ...(activeIndex >= 0
-          ? [
-              {
-                id: `layer:broll:${activeIndex}`,
-                kind: "broll-video" as const,
-                sourceRef: `broll:test:${activeIndex}`,
-                destination: { x: 0, y: 0, ...target.canvas },
-                fit: "cover" as const,
-                rotationDeg: 0,
-                opacity: 1,
-                zIndex: 100,
-                activeRange: { ...cutaways[activeIndex]!.window },
-                audio: "source" as const,
-              },
-            ]
-          : []),
-      ],
-    };
-  });
-  const composition = {
-    ...baseComposition,
-    plan: {
-      ...baseComposition.plan,
-      targets: baseComposition.plan.targets.map((candidate) =>
-        candidate.id === target.id ? { ...candidate, scenes } : candidate,
-      ),
-    },
-  };
+  const composition =
+    params.composition ?? testComposition({ ...params, brollCutaways: cutaways });
   return buildBrollVideoArgsWithPlan({
     ...rest,
+    logo: rest.logo ? { ...rest.logo, ref: "logo:test" } : rest.logo,
     resolvedBrollAssets: Object.fromEntries(
       cutaways.map((cutaway, index) => [
         `broll:test:${index}`,
@@ -453,6 +441,47 @@ describe("generateAssFromSlice (caption fidelity)", () => {
     expect(withPunct).toContain("🔥");
     expect(withoutPunct).toContain("🔥");
   });
+});
+
+test("planned ASS serialization preserves the planner's punctuation filtering and cue boundaries", () => {
+  const document = editorDocumentSchema.parse({
+    clipStartSec: 0,
+    clipEndSec: 2,
+    captionPreset: { ...preset("karaoke"), punctuation: false },
+    transcriptSlice: [makeUtterance([
+      ["one", 0, 0.3],
+      ["...", 0.3, 0.5],
+      ["two", 0.5, 0.8],
+      ["three", 0.8, 1.1],
+      ["four", 1.1, 1.4],
+    ])],
+  });
+  const result = planClipComposition({
+    document,
+    source: { identity: "source:caption", kind: "video", width: 1920, height: 1080 },
+    evidence: { automaticLayout: { state: "missing" } },
+    assets: { backgroundImage: { state: "missing" } },
+    capabilities: {
+      automaticSpeakerLayout: true,
+      automaticSpeakerEngineVersion: "shot-layout-v1",
+    },
+    targets: [{ id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 }],
+  });
+  if (result.status === "invalid") throw new Error(result.error.code);
+  const target = result.plan.targets[0]!;
+  const layers = target.visualLayers.filter(
+    (layer) => layer.kind === "caption",
+  );
+  const ass = generateAssFromCompositionCaptionLayers({ layers, canvas: target.canvas });
+
+  expect(layers.map((layer) => layer.words.map((word) => word.text))).toEqual([
+    ["ONE", "TWO", "THREE"],
+    ["FOUR"],
+  ]);
+  expect(countDialogues(ass)).toBe(4);
+  expect(ass).not.toContain("...");
+  expect(ass).toContain("Dialogue: 0,0:00:00.00,0:00:00.50");
+  expect(ass).toContain("Dialogue: 0,0:00:01.10,0:00:01.40");
 });
 
 describe("generateSrtFromSlice (no-preset fallback)", () => {
@@ -1056,10 +1085,9 @@ describe("buildSingleVideoArgs with a canvas background active", () => {
     expect(graph).toContain(
       "[1:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=30[composition_bg]",
     );
-    // logo overlays [outvbase] (the composed fit+background frame) exactly
-    // as it does for the crop-to-fill path — input index shifted to 2 since
-    // the background image now occupies input 1.
-    expect(graph).toContain("[outvbase][brandlogo]overlay=");
+    // The visual-plan adapter overlays the planned logo on the composed base;
+    // input index shifts to 2 because the background image occupies input 1.
+    expect(graph).toContain("[composition_base][composition_logo_0]overlay=");
     expect(graph).toContain("[2:v]scale=");
   });
 
@@ -1189,8 +1217,8 @@ describe("export treatment: resolution + watermark (vizard-parity Phase C export
       const graph720 = at720p[at720p.indexOf("-filter_complex") + 1]!;
       const graph1080 = at1080p[at1080p.indexOf("-filter_complex") + 1]!;
       expect(graph720).toContain(SCALE_FRAGMENT);
-      expect(graph720).toContain("[outvfree]");
-      expect(at720p).toContain("[outvfree]"); // mapped as the final output
+      expect(graph720).toContain("[outv]");
+      expect(at720p).toContain("[outv]"); // mapped as the final output
       expect(graph1080).not.toContain(SCALE_FRAGMENT);
       expect(graph1080).not.toContain("[outvfree]");
     });
@@ -1258,17 +1286,17 @@ describe("export treatment: resolution + watermark (vizard-parity Phase C export
         watermark: true,
       });
       const graph = args[args.indexOf("-filter_complex") + 1]!;
-      // Exactly one [outvfree] stage carries both fragments, comma-joined —
+      // Exactly one final visual-plan stage carries both fragments, comma-joined —
       // scale before drawtext (a filter chain is order-dependent: drawtext
       // computing font size off `h` must see the already-downscaled frame).
       const stage = graph
         .split(";")
-        .find((section) => section.endsWith("[outvfree]"))!;
+        .find((section) => section.endsWith("[outv]"))!;
       expect(stage).toContain(`${SCALE_FRAGMENT},${WATERMARK_FRAGMENT}`);
-      expect(args).toContain("[outvfree]");
+      expect(args).toContain("[outv]");
     });
 
-    test("combined with a canvas background and a fade transition, the map target is still [outvfree]", () => {
+    test("combined with a canvas background and a fade transition, the map target is the planned final output", () => {
       const studioEdits = studioEditsSchema.parse({
         transition: { type: "fade", durationSec: 0.4 },
       });
@@ -1288,10 +1316,10 @@ describe("export treatment: resolution + watermark (vizard-parity Phase C export
       const graph = args[args.indexOf("-filter_complex") + 1]!;
       expect(graph).toContain("pad=1080:1920"); // background still applied
       expect(graph).toContain("fade=t=in"); // transition still applied
-      const stage = stageEndingIn(graph, "[outvfree]");
+      const stage = stageEndingIn(graph, "[outv]");
       expect(stage).toContain(SCALE_FRAGMENT);
       expect(stage).toContain(WATERMARK_FRAGMENT);
-      expect(args[args.indexOf("-map") + 1]).toBe("[outvfree]");
+      expect(args[args.indexOf("-map") + 1]).toBe("[outv]");
     });
   });
 
@@ -1313,10 +1341,10 @@ describe("export treatment: resolution + watermark (vizard-parity Phase C export
       });
       const graph = args[args.indexOf("-filter_complex") + 1]!;
       expect(graph).toContain("overlay=0:0:enable='between(t,2,5)'");
-      const stage = stageEndingIn(graph, "[outvfree]");
+      const stage = stageEndingIn(graph, "[outv]");
       expect(stage).toContain(SCALE_FRAGMENT);
       expect(stage).toContain(WATERMARK_FRAGMENT);
-      expect(args[args.indexOf("-map") + 1]).toBe("[outvfree]");
+      expect(args[args.indexOf("-map") + 1]).toBe("[outv]");
     });
 
     test("neither flag set: no [outvfree] stage, maps the plain composited output", () => {
@@ -1335,9 +1363,9 @@ describe("export treatment: resolution + watermark (vizard-parity Phase C export
       const graph = args[args.indexOf("-filter_complex") + 1]!;
       expect(graph).not.toContain("[outvfree]");
       const mapTarget = args[args.indexOf("-map") + 1]!;
-      expect(mapTarget).toBe("[stage0]");
+      expect(mapTarget).toBe("[outv]");
       expect(graph).toContain(
-        `overlay=0:0:enable='between(t,2,5)'${mapTarget}`,
+        "overlay=0:0:enable='between(t,2,5)'[stage0]",
       );
     });
   });
@@ -1414,7 +1442,7 @@ describe("buildBrollVideoArgs with a canvas background active", () => {
     const graph = args[args.indexOf("-filter_complex") + 1]!;
     // The plan adapter composes Fit as the base, then applies its B-roll layer.
     expect(graph).toContain(
-      "[composition_bg][composition_source]overlay=0:0,format=yuv420p[composition_base]",
+      "[composition_bg][composition_source]overlay=0:656,format=yuv420p[composition_base]",
     );
     expect(graph).toContain(
       "[2:v]scale=1080:1920:force_original_aspect_ratio=increase",
@@ -1611,6 +1639,7 @@ describe("buildBrollVideoArgs (B-roll cutaway)", () => {
 describe("resolveClipLogoOverlay (per-clip logo override merge — vizard-parity Phase A step 6)", () => {
   const baseLogo = {
     filePath: "/tmp/logo.png",
+    ref: "logo:test",
     position: "bot-right" as const,
     opacity: 80,
     scalePct: 15,
@@ -1627,7 +1656,7 @@ describe("resolveClipLogoOverlay (per-clip logo override merge — vizard-parity
     ).toBeNull();
   });
 
-  test("no override object (legacy studioEdits) inherits the base/snapshot fully", () => {
+  test("no per-clip override inherits the base snapshot fully", () => {
     expect(resolveClipLogoOverlay(baseLogo, undefined)).toEqual(baseLogo);
   });
 
@@ -1642,6 +1671,7 @@ describe("resolveClipLogoOverlay (per-clip logo override merge — vizard-parity
     }).logo;
     expect(resolveClipLogoOverlay(baseLogo, overrides)).toEqual({
       filePath: "/tmp/logo.png",
+      ref: "logo:test",
       position: "top-left",
       opacity: 50,
       scalePct: 25,
@@ -1667,6 +1697,7 @@ describe("buildSingleVideoArgs logo filter graph (override parity with the studi
   // 9:16 target width is 1080 in the shared composition target catalog.
   const baseLogo = {
     filePath: "/tmp/logo.png",
+    ref: "logo:test",
     position: "bot-right" as const,
     opacity: 80,
     scalePct: 15,
