@@ -4,7 +4,7 @@
  * Pure helpers only — no FFmpeg execution, no Prisma, no render wiring (that
  * lives in render-clips.ts, same division of labor as two-up.ts/reframe.ts).
  * Turns three per-clip signals into one segment-based layout plan the
- * existing `buildSplitFilterChain` machinery can render:
+ * shared Clip Composition Plan can render:
  *
  *   - multi-face detector samples (reframe_detect.py --multi, remapped onto
  *     the edited timeline by the caller via `remapMultiFaceSamplesForCutPlan`)
@@ -299,7 +299,7 @@ export interface AnalyzeShotOptions {
    *  one-face close-ups (a missed camera cut) clusters into two seats with
    *  ~0.5 presence each and renders as a two-up of two crops of the SAME
    *  frame — one tile the speaker, the other their empty chair. Mirrors
-   *  the co-occurrence rule the legacy split path enforced per-sample
+   *  the co-occurrence rule used by the explicit Split evidence analyzer
    *  (`classifyOne` in two-up.ts). */
   minCoOccurrence?: number;
 }
@@ -839,7 +839,7 @@ function capSegments(
 
 /**
  * The full engine: shots -> per-shot analysis -> per-shot layout decision ->
- * merged/capped `SplitLayoutSegment[]` renderable by `buildSplitFilterChain`.
+ * merged/capped `SplitLayoutSegment[]` consumed by the shared planner.
  *
  * Solo shots frame the face (`frameFaceInCrop`); "none" shots hold a plain
  * center crop; multi-face shots split into a two-up of the two largest

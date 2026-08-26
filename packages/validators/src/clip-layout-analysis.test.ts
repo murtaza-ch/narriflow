@@ -1,13 +1,31 @@
 import { describe, expect, test } from "bun:test";
 import {
   clipLayoutAnalysisSchema,
+  clipLayoutAnalysisFailureSchema,
   parseClipLayoutAnalysis,
+  parseClipLayoutAnalysisFailure,
   type ClipLayoutAnalysis,
   type ClipLayoutAnalysisV2,
 } from "./clip-layout-analysis";
 
-const validWithRect: ClipLayoutAnalysis = {
-  version: 1,
+const validWithRect: ClipLayoutAnalysisV2 = {
+  version: 2,
+  engine: "screen-layout-v1",
+  sourceIdentity: "source:0123456789abcdef",
+  inputFingerprint: "0123456789abcdef",
+  sourceWidth: 1920,
+  sourceHeight: 1080,
+  deletedRanges: [],
+  faceBandSegments: [
+    {
+      startSec: 0,
+      endSec: 30,
+      layout: "single",
+      cxNorm: 0.72,
+      cyNorm: 0.5,
+      zoom: 1,
+    },
+  ],
   analyzedAtISO: "2026-08-06T09:00:00.000Z",
   sourceStartSec: 12.5,
   sourceDurationSec: 30,
@@ -29,8 +47,7 @@ const validRectNotUsable: ClipLayoutAnalysis = {
 };
 
 const validNoRect: ClipLayoutAnalysis = {
-  version: 1,
-  analyzedAtISO: "2026-08-06T09:00:00.000Z",
+  ...validWithRect,
   sourceStartSec: 0,
   sourceDurationSec: 20,
   clipStartSec: 0,
@@ -39,11 +56,11 @@ const validNoRect: ClipLayoutAnalysis = {
   insufficientSamples: false,
   pipRect: null,
   pipUsable: false,
+  faceBandSegments: null,
 };
 
 const validInsufficientSamples: ClipLayoutAnalysis = {
-  version: 1,
-  analyzedAtISO: "2026-08-06T09:00:00.000Z",
+  ...validWithRect,
   sourceStartSec: 5,
   sourceDurationSec: 2,
   clipStartSec: 5,
@@ -52,31 +69,13 @@ const validInsufficientSamples: ClipLayoutAnalysis = {
   insufficientSamples: true,
   pipRect: null,
   pipUsable: false,
+  faceBandSegments: null,
 };
 
-const validV2: ClipLayoutAnalysisV2 = {
-  ...validWithRect,
-  version: 2,
-  engine: "screen-layout-v1",
-  sourceIdentity: "source:0123456789abcdef",
-  inputFingerprint: "0123456789abcdef",
-  sourceWidth: 1920,
-  sourceHeight: 1080,
-  deletedRanges: [],
-  faceBandSegments: [
-    {
-      startSec: 0,
-      endSec: 30,
-      layout: "single",
-      cxNorm: 0.72,
-      cyNorm: 0.5,
-      zoom: 1,
-    },
-  ],
-};
+const validV2 = validWithRect;
 
 describe("clipLayoutAnalysisSchema", () => {
-  test("round-trips a screencast-with-PiP envelope", () => {
+  test("round-trips identity-complete screencast-with-PiP evidence", () => {
     const parsed = clipLayoutAnalysisSchema.parse(
       JSON.parse(JSON.stringify(validWithRect)),
     );
@@ -85,6 +84,20 @@ describe("clipLayoutAnalysisSchema", () => {
 
   test("round-trips identity-complete v2 Screen composition evidence", () => {
     expect(clipLayoutAnalysisSchema.parse(validV2)).toEqual(validV2);
+  });
+
+  test("parses identity-bound Screen failures without treating them as analysis", () => {
+    const failure = clipLayoutAnalysisFailureSchema.parse({
+      version: 2,
+      engine: "screen-layout-v1",
+      state: "failed",
+      sourceIdentity: "source:0123456789abcdef",
+      inputFingerprint: "0123456789abcdef",
+      analyzedAtISO: "2026-08-27T00:00:00.000Z",
+      reason: "analysis_unavailable",
+    });
+    expect(parseClipLayoutAnalysisFailure(failure)).toEqual(failure);
+    expect(parseClipLayoutAnalysis(failure)).toBeNull();
   });
 
   test("rejects malformed v2 identity, dimensions, and face-band evidence", () => {
@@ -145,9 +158,9 @@ describe("clipLayoutAnalysisSchema", () => {
   // existed must fail parse outright (self-heals to "never analyzed" via
   // parseClipLayoutAnalysis, not silently treated as usable or unusable).
   test("rejects an envelope missing pipUsable (pre-C1 write)", () => {
-    const legacy: Record<string, unknown> = { ...validWithRect };
-    delete legacy.pipUsable;
-    const result = clipLayoutAnalysisSchema.safeParse(legacy);
+    const incomplete: Record<string, unknown> = { ...validWithRect };
+    delete incomplete.pipUsable;
+    const result = clipLayoutAnalysisSchema.safeParse(incomplete);
     expect(result.success).toBe(false);
   });
 
@@ -240,7 +253,7 @@ describe("clipLayoutAnalysisSchema", () => {
 });
 
 describe("parseClipLayoutAnalysis", () => {
-  test("returns the parsed envelope for a valid v1 value", () => {
+  test("returns the parsed envelope for valid identity-complete evidence", () => {
     expect(parseClipLayoutAnalysis(validWithRect)).toEqual(validWithRect);
   });
 
@@ -249,7 +262,7 @@ describe("parseClipLayoutAnalysis", () => {
     expect(parseClipLayoutAnalysis(undefined)).toBeNull();
   });
 
-  test("reads v2 and treats an unrecognized version as absent", () => {
+  test("reads the current version and treats other versions as absent", () => {
     expect(parseClipLayoutAnalysis(validV2)).toEqual(validV2);
     const futureVersion = { ...validWithRect, version: 3 };
     expect(parseClipLayoutAnalysis(futureVersion)).toBeNull();

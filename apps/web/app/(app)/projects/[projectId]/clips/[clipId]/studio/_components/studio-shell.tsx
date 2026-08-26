@@ -16,6 +16,7 @@ import { toaster } from "@narriflow/ui";
 import {
   compositionAssetRef,
   screenLayoutInputFingerprint,
+  splitLayoutInputFingerprint,
 } from "@narriflow/composition-plan";
 import {
   getEffectiveClipTiming,
@@ -35,8 +36,12 @@ import {
   type SourceRange,
   type ClipWindow,
   type ClipLayoutAnalysis,
+  type ClipLayoutAnalysisFailure,
+  type ClipLayoutAnalysisOutcome,
   type ClipAutoLayoutAnalysis,
   type ClipSplitLayoutAnalysis,
+  type ClipSplitLayoutFailure,
+  type ClipSplitLayoutOutcome,
   type BrollCue,
 } from "@narriflow/validators";
 import { TopBar } from "./top-bar";
@@ -404,45 +409,18 @@ interface StudioContextValue extends StudioState {
   /** Server-seeded brand logo (URL + snapshot defaults), or null when the
    *  project has none. See `StudioBrandLogo`'s doc comment. */
   brandLogo: StudioBrandLogo | null;
-  /** PiP persistence packet C: the worker's screen-mode facecam layout
-   *  analysis (packet A/B — `getClipEditorDocument`'s sibling
-   *  `layoutAnalysis` field), or `null` when the clip hasn't been analyzed
-   *  yet / analysis found no qualifying rect / the stored envelope failed
-   *  to parse (see `parseClipLayoutAnalysis`'s doc comment — all three
-   *  collapse to `null` here, this context has no use for telling them
-   *  apart). Server-seeded ONCE from `studio/page.tsx`'s initial fetch,
-   *  same as `brandLogo` — deliberately NOT plumbed through `doc`/
-   *  `studioEdits`: it's worker-derived, read-only measurement data, not a
-   *  user edit, so it must never enter the undo/redo history or the
-   *  autosave PUT body. Consumed today only by video-preview.tsx's screen
-   *  framing bottom tile (the true facecam crop) — nothing else reads it.
-   *  That consumer gates on `layoutAnalysis.pipUsable === true` (never on
-   *  `pipRect`'s nullness alone — see `ClipLayoutAnalysis.pipUsable`'s own
-   *  doc comment) and additionally checks `layoutAnalysis.clipStartSec`/
-   *  `clipEndSec` against this context's own `clipWindow` before trusting
-   *  the rect — see that check's own comment in video-preview.tsx (H2,
-   *  adversarial review) for why a stale envelope from before a trim must
-   *  never be shown.
-   *
-   *  Residual staleness this "server-seeded once" contract does NOT close
-   *  (H2c, adversarial review): if a render for THIS clip completes and
-   *  re-persists `layoutAnalysis` WHILE this studio session is already
-   *  open, this context value keeps showing whatever was true at initial
-   *  page load until the session refetches (a reload, or a future explicit
-   *  poll — no such poll exists today). A newly-landed `pipUsable: true`
-   *  won't upgrade the preview from its static center-cover guess without
-   *  one; a newly-landed `pipUsable: false` (e.g. this same clip re-
-   *  rendered after a trim, and the fresh analysis's face-gate rejected the
-   *  new footage) similarly won't downgrade an already-shown crop until
-   *  then either. Same class of gap the render-vs-preview divergence note
-   *  above already accepts for a single render's face-gate outcome, just on
-   *  a longer timescale (across renders within one open session, not within
-   *  one render). */
+  /** Worker-derived Screen/PiP evidence. It is server-seeded, then refreshed
+   *  by exact source-identity/fingerprint polling while requested evidence is
+   *  pending. This read-only measurement never enters the editor document,
+   *  undo/redo history, or autosave body. Consumers must still validate the
+   *  evidence window and source identity before adopting its crop. */
   layoutAnalysis: ClipLayoutAnalysis | null;
   /** Persisted automatic shot-layout plan; derived/read-only like PiP analysis. */
   autoLayoutAnalysis: ClipAutoLayoutAnalysis | null;
   /** Durable explicit Split evidence, isolated from Automatic analysis. */
   splitLayoutAnalysis: ClipSplitLayoutAnalysis | null;
+  splitLayoutFailure: ClipSplitLayoutFailure | null;
+  layoutAnalysisFailure: ClipLayoutAnalysisFailure | null;
   autoLayoutAnalysisStatus: "available" | "pending" | "failed";
   utterances: TranscriptUtterance[];
   updateUtteranceText: (index: number, newText: string) => void;
@@ -607,8 +585,8 @@ interface StudioShellProps {
    *  still pending. The client accepts only a plan matching its live clip
    *  window and deleted ranges. */
   fetchAutoLayoutAnalysis?: () => Promise<ClipAutoLayoutAnalysis | null>;
-  fetchSplitLayoutAnalysis?: () => Promise<ClipSplitLayoutAnalysis | null>;
-  fetchScreenLayoutAnalysis?: () => Promise<ClipLayoutAnalysis | null>;
+  fetchSplitLayoutAnalysis?: () => Promise<ClipSplitLayoutOutcome | null>;
+  fetchScreenLayoutAnalysis?: () => Promise<ClipLayoutAnalysisOutcome | null>;
   /** Server-seeded brand logo (see studio/page.tsx and `StudioBrandLogo`'s
    *  doc comment), or null/omitted when the project has none. */
   brandLogo?: StudioBrandLogo | null;
@@ -618,6 +596,8 @@ interface StudioShellProps {
   layoutAnalysis?: ClipLayoutAnalysis | null;
   autoLayoutAnalysis?: ClipAutoLayoutAnalysis | null;
   splitLayoutAnalysis?: ClipSplitLayoutAnalysis | null;
+  splitLayoutFailure?: ClipSplitLayoutFailure | null;
+  layoutAnalysisFailure?: ClipLayoutAnalysisFailure | null;
 }
 
 export function StudioShell({
@@ -644,6 +624,8 @@ export function StudioShell({
   layoutAnalysis: initialLayoutAnalysis = null,
   autoLayoutAnalysis: initialAutoLayoutAnalysis = null,
   splitLayoutAnalysis: initialSplitLayoutAnalysis = null,
+  splitLayoutFailure: initialSplitLayoutFailure = null,
+  layoutAnalysisFailure: initialLayoutAnalysisFailure = null,
 }: StudioShellProps) {
   const isViewportTooSmall = useIsViewportBelow(STUDIO_MIN_VIEWPORT_WIDTH);
   const [brollPreviewAsset, setBrollPreviewAsset] =
@@ -652,6 +634,10 @@ export function StudioShell({
     useState<ClipLayoutAnalysis | null>(initialLayoutAnalysis);
   const [splitLayoutAnalysis, setSplitLayoutAnalysis] =
     useState<ClipSplitLayoutAnalysis | null>(initialSplitLayoutAnalysis);
+  const [splitLayoutFailure, setSplitLayoutFailure] =
+    useState<ClipSplitLayoutFailure | null>(initialSplitLayoutFailure);
+  const [layoutAnalysisFailure, setLayoutAnalysisFailure] =
+    useState<ClipLayoutAnalysisFailure | null>(initialLayoutAnalysisFailure);
 
   // React creates one clip-scoped session, then subscribes to focused
   // immutable projections below. All editing protocols remain owned by the
@@ -702,16 +688,25 @@ export function StudioShell({
     clipInfo.projectId,
   );
   const splitEvidenceMatchesDocument = Boolean(
-    splitLayoutAnalysis &&
+    (splitLayoutAnalysis &&
       splitLayoutAnalysis.sourceIdentity === compositionSourceIdentity &&
       clipAutoLayoutMatchesInputs(splitLayoutAnalysis, {
         clipStartSec: doc.clipStartSec,
         clipEndSec: doc.clipEndSec,
         deletedRanges: doc.deletedRanges,
-      }),
+      })) ||
+      (splitLayoutFailure?.sourceIdentity === compositionSourceIdentity &&
+        splitLayoutFailure.inputFingerprint ===
+          splitLayoutInputFingerprint({
+            sourceIdentity: compositionSourceIdentity,
+            clipStartSec: doc.clipStartSec,
+            clipEndSec: doc.clipEndSec,
+            deletedRanges: doc.deletedRanges,
+            engineVersion: "explicit-split-v1",
+          })),
   );
   const screenEvidenceMatchesDocument = Boolean(
-    layoutAnalysis?.version === 2 &&
+    ((layoutAnalysis?.version === 2 &&
       layoutAnalysis.engine === "screen-layout-v1" &&
       layoutAnalysis.sourceIdentity === compositionSourceIdentity &&
       layoutAnalysis.inputFingerprint ===
@@ -721,7 +716,16 @@ export function StudioShell({
           clipEndSec: doc.clipEndSec,
           deletedRanges: doc.deletedRanges,
           engineVersion: "screen-layout-v1",
-        }),
+        })) ||
+      (layoutAnalysisFailure?.sourceIdentity === compositionSourceIdentity &&
+        layoutAnalysisFailure.inputFingerprint ===
+        screenLayoutInputFingerprint({
+          sourceIdentity: compositionSourceIdentity,
+          clipStartSec: doc.clipStartSec,
+          clipEndSec: doc.clipEndSec,
+          deletedRanges: doc.deletedRanges,
+          engineVersion: "screen-layout-v1",
+        }))),
   );
 
   useEffect(() => {
@@ -740,7 +744,9 @@ export function StudioShell({
       try {
         const next = await fetchScreenLayoutAnalysis();
         if (cancelled) return;
-        setLayoutAnalysis(next);
+        const failed = next && "state" in next;
+        setLayoutAnalysis(failed ? null : next);
+        setLayoutAnalysisFailure(failed ? next : null);
         if (
           next?.version === 2 &&
           next.engine === "screen-layout-v1" &&
@@ -792,15 +798,26 @@ export function StudioShell({
       try {
         const next = await fetchSplitLayoutAnalysis();
         if (cancelled) return;
-        setSplitLayoutAnalysis(next);
+        const failed = next && "state" in next;
+        setSplitLayoutAnalysis(failed ? null : next);
+        setSplitLayoutFailure(failed ? next : null);
         if (
           next &&
           next.sourceIdentity === compositionSourceIdentity &&
-          clipAutoLayoutMatchesInputs(next, {
-            clipStartSec: doc.clipStartSec,
-            clipEndSec: doc.clipEndSec,
-            deletedRanges: doc.deletedRanges,
-          })
+          ("state" in next
+            ? next.inputFingerprint ===
+              splitLayoutInputFingerprint({
+                sourceIdentity: compositionSourceIdentity,
+                clipStartSec: doc.clipStartSec,
+                clipEndSec: doc.clipEndSec,
+                deletedRanges: doc.deletedRanges,
+                engineVersion: "explicit-split-v1",
+              })
+            : clipAutoLayoutMatchesInputs(next, {
+                clipStartSec: doc.clipStartSec,
+                clipEndSec: doc.clipEndSec,
+                deletedRanges: doc.deletedRanges,
+              }))
         ) {
           return;
         }
@@ -1846,7 +1863,7 @@ export function StudioShell({
     previewVideoUrl, previewStartSec, waveformPeaksUrl, useOriginalSourceFallback, setUseOriginalSourceFallback, reloadPlayback,
     activeVideoUrl, activeOffsetSec, activeVideoKind, playerClipStartSec, playerClipEndSec,
     editedTimeMap, deletedRanges: doc.deletedRanges, clipWindow,
-    brandLogo, layoutAnalysis, autoLayoutAnalysis, splitLayoutAnalysis, autoLayoutAnalysisStatus, utterances, updateUtteranceText,
+    brandLogo, layoutAnalysis, layoutAnalysisFailure, autoLayoutAnalysis, splitLayoutAnalysis, splitLayoutFailure, autoLayoutAnalysisStatus, utterances, updateUtteranceText,
     updateParagraphText, addSubtitleLineAfter, deleteSubtitleLine, mergeSubtitleLineWithNext,
     updateWord, deleteSourceRange, applyRemoveSilence,
     setPlaybackRate, setActiveTool, setShowTimeline, setTimelineSnapping, setAspectRatio,

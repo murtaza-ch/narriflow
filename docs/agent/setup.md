@@ -25,17 +25,16 @@ Local setup for the Claude Code + Codex workflow. Not agent instructions.
 
 ## Worker env flags
 
-- `WORKER_SPLIT=0` disables the "split" (2-up) framing mode's per-output render path; clips using it fall back to whole-clip single-speaker framing (auto-reframe or a static center crop).
-- `WORKER_SCREEN_LAYOUT=0` disables the "screen" (screen-share + facecam) framing mode's per-output render path the same way, falling back to whole-clip single-speaker framing.
-- `WORKER_PIP_DETECT=0` disables element segmentation v1's facecam PiP detection within "screen" mode only (`pip_detect.py`); screen-mode clips fall back to the pre-existing whole-frame face-tracked/static-center bottom tile, same as before that packet landed.
+- `WORKER_SPLIT=0` disables explicit Split evidence analysis. The composition planner emits a typed disabled notice and a single-speaker fallback plan.
+- `WORKER_SCREEN_LAYOUT=0` disables Screen evidence analysis. The composition planner emits a typed disabled notice and a Center fallback plan.
 - `WORKER_PIP_MOTION_THRESHOLD` (default `0.12`, clamped to `[0, 1]`) tunes `classifyScreencast`'s screencast-vs-regular-footage gate — a clip's `movingPxFrac` (share of analyzed pixels continuously moving frame-to-frame) below this is treated as screencast-like and eligible for PiP detection. Recalibrated (H1, adversarial review) through the SAME 360p CRF-30 ultrafast proxy production actually analyzes (`extractFaceDetectionSegment`), not the raw source files the original 0.25 default was measured against — proxy `movingPxFrac` measured 0.0000-0.0509 across the 7 synthetic screencast fixtures and 0.2726-0.5514 for the real talking-head control (`jensen-0-90.mp4`), a clean >5x separation; new default is the geometric mean of the two boundary values. Run `apps/worker/scripts/pip_calibrate.sh` to reproduce/re-validate against other footage — see `docs/plans/vizard-parity.md`'s landed note for the full table.
-- All three default to enabled/the measured default (unset, or any value other than `"0"` for the two kill switches).
-- `WORKER_LAYOUT_ENGINE=0` disables the speaker-aware auto-layout engine (`apps/worker/src/tasks/layout-engine.ts` — per-shot solo crops with vertical framing/zoom + stacked two-ups on multi-face shots, default-on for "auto" framing); clips revert to the legacy single-face EMA auto-reframe.
+- All four values default to enabled/the measured default. For the three capability switches, unset or `"1"` means enabled and `"0"` means disabled; any other value is rejected at startup.
+- `WORKER_LAYOUT_ENGINE=0` disables speaker-aware Automatic evidence analysis (`apps/worker/src/tasks/layout-engine.ts`). The composition planner emits a typed disabled notice and a Center fallback plan.
 - `REFRAME_SCENE_THRESHOLD` (default `0.3`) tunes ffmpeg scene-change sensitivity for the layout engine's shot segmentation (lower = more cuts). Face-position-discontinuity cuts are derived independently of this and always active.
 
 ## Face-detection runtime (required for any face-tracked framing)
 
-Auto-reframe, split, screen, and the layout engine all invoke `apps/worker/scripts/reframe_detect.py`, which needs OpenCV + the YuNet model. WITHOUT this setup every render silently-degrades to static center crops (now logged as `clip_face_detection_unavailable`). Local setup:
+Automatic, Split, and Screen evidence analysis invoke `apps/worker/scripts/reframe_detect.py`, which needs OpenCV + the YuNet model. Without this setup, the composition planner selects its explicit typed fallback (normally Center) and logs `clip_face_detection_unavailable`. Local setup:
 
 ```bash
 cd apps/worker

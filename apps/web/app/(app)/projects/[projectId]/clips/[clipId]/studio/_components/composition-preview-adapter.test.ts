@@ -7,6 +7,9 @@ import {
 } from "@narriflow/validators";
 import {
   adoptCompositionPreview,
+  adoptCompositionPreviewResult,
+  compositionNoticeText,
+  manualBrollAvailabilityForPlan,
   plannedCompositionSourceDimensions,
   plannedCompositionUsesStackedStage,
   plannedCompositionFrameStyle,
@@ -38,6 +41,76 @@ function centerPlan() {
 }
 
 describe("composition preview adapter", () => {
+  test("replans a requested manual B-roll asset only after browser media validation", () => {
+    const base = {
+      url: "https://example.com/cutaway.mp4",
+      ref: "broll:cutaway",
+      window: { startSec: 2, endSec: 4 },
+    };
+    expect(
+      manualBrollAvailabilityForPlan({ ...base, mediaState: "pending" }),
+    ).toEqual({ state: "pending" });
+    expect(
+      manualBrollAvailabilityForPlan({ ...base, mediaState: "failed" }),
+    ).toEqual({ state: "failed" });
+    expect(
+      manualBrollAvailabilityForPlan({ ...base, mediaState: "available" }),
+    ).toEqual({
+      state: "available",
+      placements: [
+        {
+          id: "manual",
+          ref: "broll:cutaway",
+          startSec: 2,
+          endSec: 4,
+        },
+      ],
+    });
+  });
+
+  test("maps every durable Split and Screen failure notice to accessible copy", () => {
+    const durableFailureCodes = [
+      "split_detection_unavailable",
+      "split_insufficient_clusters",
+      "split_empty_plan",
+      "split_no_two_up_segments",
+      "split_tiles_not_distinct",
+      "screen_analysis_unavailable",
+      "screen_detection_unavailable",
+      "screen_no_face_detected",
+      "screen_no_trustworthy_faces",
+    ];
+
+    for (const code of durableFailureCodes) {
+      expect(compositionNoticeText(code), code).toBeTruthy();
+    }
+  });
+
+  test("explains pending B-roll media validation", () => {
+    expect(compositionNoticeText("broll_asset_pending")).toBe(
+      "Checking B-roll media… Showing the base composition for now.",
+    );
+  });
+
+  test("always adopts a valid Clip Composition Plan result", () => {
+    const plan = centerPlan();
+
+    expect(
+      adoptCompositionPreviewResult(
+        { status: "ready", plan },
+        "9:16",
+        0,
+      )?.planFingerprint,
+    ).toBe(plan.fingerprint);
+    expect(() =>
+      adoptCompositionPreviewResult(
+        { status: "invalid", error: { code: "invalid_source_facts" } },
+        "9:16",
+        0,
+      ),
+    ).toThrow("invalid_clip_composition_plan:invalid_source_facts");
+  });
+
   test("uses durable source dimensions instead of proxy dimensions for planning", () => {
     expect(
       plannedCompositionSourceDimensions(
@@ -236,5 +309,62 @@ describe("composition preview adapter", () => {
 
     expect(plannedCompositionUsesStackedStage(splitSingle)).toBe(false);
     expect(plannedCompositionUsesStackedStage(splitTwoUp)).toBe(true);
+  });
+
+  test("adopts B-roll only inside the planner's active edited-time scene", () => {
+    const base = centerPlan();
+    const result = planClipComposition({
+      document: editorDocumentSchema.parse({
+        clipStartSec: 0,
+        clipEndSec: 6,
+        captionPreset: captionPresetSchema.parse({}),
+        transcriptSlice: [],
+        studioEdits: studioEditsSchema.parse({ framing: { mode: "center" } }),
+        brollUrl: "https://example.com/cutaway.mp4",
+        deletedRanges: [],
+      }),
+      source: {
+        identity: base.source.ref,
+        kind: "video",
+        width: base.source.width,
+        height: base.source.height,
+      },
+      evidence: { automaticLayout: { state: "missing" } },
+      assets: {
+        backgroundImage: { state: "missing" },
+        broll: {
+          state: "available",
+          placements: [
+            { id: "manual", ref: "broll:manual", startSec: 2, endSec: 4 },
+          ],
+        },
+      },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+      targets: [{ id: "9:16", aspectRatio: "9:16", width: 1080, height: 1920 }],
+    });
+    if (result.status === "invalid") throw new Error(result.error.code);
+
+    expect(
+      adoptCompositionPreview(result.plan, "9:16", 1).layers.some(
+        (layer) => layer.kind === "broll-video",
+      ),
+    ).toBe(false);
+    expect(
+      adoptCompositionPreview(result.plan, "9:16", 2).layers.find(
+        (layer) => layer.kind === "broll-video",
+      ),
+    ).toMatchObject({
+      sourceRef: "broll:manual",
+      activeRange: { startSec: 2, endSec: 4 },
+      audio: "source",
+    });
+    expect(
+      adoptCompositionPreview(result.plan, "9:16", 4).layers.some(
+        (layer) => layer.kind === "broll-video",
+      ),
+    ).toBe(false);
   });
 });

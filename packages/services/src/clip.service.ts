@@ -19,7 +19,9 @@ import {
   clipAspectRatioOptions,
   clipAspectRatioToDb,
   clipAutoLayoutAnalysisSchema,
+  clipSplitLayoutFailureSchema,
   clipLayoutAnalysisSchema,
+  clipLayoutAnalysisFailureSchema,
   clipRenderResolutionSchema,
   clipTitleSuggestionsLlmResponseSchema,
   contentPackSchema,
@@ -34,7 +36,11 @@ import {
   normalizeTranscriptSliceForClip,
   parseClipAutoLayoutAnalysis,
   parseClipSplitLayoutAnalysis,
+  parseClipSplitLayoutFailure,
+  parseClipSplitLayoutOutcome,
   parseClipLayoutAnalysis,
+  parseClipLayoutAnalysisFailure,
+  parseClipLayoutAnalysisOutcome,
   resolvePricingTier,
   saveEditorDocumentSchema,
   splitUtterancesIntoSentences,
@@ -49,10 +55,14 @@ import type {
   ClipAutoLayoutAnalysis,
   ClipCategory,
   ClipLayoutAnalysis,
+  ClipLayoutAnalysisFailure,
+  ClipLayoutAnalysisOutcome,
   ClipPlatformTarget,
   ClipRenderResolution,
   ClipRenderVariant,
   ClipSplitLayoutAnalysis,
+  ClipSplitLayoutFailure,
+  ClipSplitLayoutOutcome,
   ClipSnapshot,
   ClipWindow,
   ContentPack,
@@ -3365,21 +3375,14 @@ export class ClipService {
     return null;
   }
 
-  /**
-   * Atomically publishes a derived automatic layout plan only while the clip
-   * still has the same editor revision and proxy that were analyzed. Normal
-   * claims remain create-only; a fenced render may explicitly replace an
-   * envelope it independently proved stale during a rolling upgrade.
-   */
+  /** Atomically publishes a derived automatic layout plan only while the clip
+   * still has the same editor revision and proxy that were analyzed. */
   async completeClipAutoLayoutAnalysis(
     clipId: string,
     analysis: ClipAutoLayoutAnalysis,
     expected: {
       editorRevision: number;
       previewStorageKey: string;
-      /** A render attempt may replace evidence it independently proved stale.
-       * The same revision/proxy and workflow ownership fences still apply. */
-      replaceExisting?: boolean;
     },
   ): Promise<boolean> {
     const prisma = requirePrisma();
@@ -3391,7 +3394,6 @@ export class ClipService {
         analysis: parsed as unknown as Prisma.InputJsonValue,
         editorRevision: expected.editorRevision,
         previewStorageKey: expected.previewStorageKey,
-        replaceExisting: expected.replaceExisting,
       });
     }
     const result = await prisma.clip.updateMany({
@@ -3399,9 +3401,7 @@ export class ClipService {
         id: clipId,
         editorRevision: expected.editorRevision,
         previewStorageKey: expected.previewStorageKey,
-        ...(expected.replaceExisting
-          ? {}
-          : { autoLayoutAnalysis: { equals: Prisma.DbNull } }),
+        autoLayoutAnalysis: { equals: Prisma.DbNull },
       },
       data: {
         autoLayoutAnalysis: parsed as unknown as Prisma.InputJsonValue,
@@ -3414,9 +3414,7 @@ export class ClipService {
   }
 
   /** Publishes explicit Split evidence behind the same revision/proxy and
-   * workflow-ownership fences as Automatic evidence. The isolated column is
-   * authoritative for new readers; the legacy mirror keeps rolling web
-   * versions compatible until the old reader is retired. */
+   * workflow-ownership fences as Automatic evidence. */
   async completeClipSplitLayoutAnalysis(
     clipId: string,
     analysis: ClipSplitLayoutAnalysis,
@@ -3447,10 +3445,37 @@ export class ClipService {
       },
       data: {
         splitLayoutAnalysis: parsed as unknown as Prisma.InputJsonValue,
-        autoLayoutAnalysis: parsed as unknown as Prisma.InputJsonValue,
-        autoLayoutStatus: "completed",
-        autoLayoutClaimToken: null,
-        autoLayoutLeaseExpiresAt: null,
+      },
+    });
+    return result.count === 1;
+  }
+
+  /** Persists an identity-bound terminal Split analysis failure so Studio
+   * shows the same typed degraded plan as export instead of polling forever. */
+  async completeClipSplitLayoutFailure(
+    clipId: string,
+    failure: ClipSplitLayoutFailure,
+    expected: { editorRevision: number; previewStorageKey: string },
+  ): Promise<boolean> {
+    const prisma = requirePrisma();
+    const parsed = clipSplitLayoutFailureSchema.parse(failure);
+    const attempt = currentWorkflowAttempt();
+    if (attempt) {
+      return getWorkflowRunLifecycle().completeClipSplitLayoutFailure(attempt, {
+        clipId,
+        failure: parsed as unknown as Prisma.InputJsonValue,
+        editorRevision: expected.editorRevision,
+        previewStorageKey: expected.previewStorageKey,
+      });
+    }
+    const result = await prisma.clip.updateMany({
+      where: {
+        id: clipId,
+        editorRevision: expected.editorRevision,
+        previewStorageKey: expected.previewStorageKey,
+      },
+      data: {
+        splitLayoutAnalysis: parsed as unknown as Prisma.InputJsonValue,
       },
     });
     return result.count === 1;
@@ -3757,6 +3782,8 @@ export class ClipService {
     autoLayoutAnalysis: ClipAutoLayoutAnalysis | null;
     /** Explicit Split detector evidence, independent from Automatic. */
     splitLayoutAnalysis: ClipSplitLayoutAnalysis | null;
+    splitLayoutFailure: ClipSplitLayoutFailure | null;
+    layoutAnalysisFailure: ClipLayoutAnalysisFailure | null;
   }> {
     const prisma = requirePrisma();
 
@@ -3778,6 +3805,12 @@ export class ClipService {
     const splitLayoutAnalysis = parseClipSplitLayoutAnalysis(
       clip.splitLayoutAnalysis,
     );
+    const splitLayoutFailure = parseClipSplitLayoutFailure(
+      clip.splitLayoutAnalysis,
+    );
+    const layoutAnalysisFailure = parseClipLayoutAnalysisFailure(
+      clip.layoutAnalysis,
+    );
 
     return {
       revision: clip.editorRevision,
@@ -3786,6 +3819,8 @@ export class ClipService {
       layoutAnalysis,
       autoLayoutAnalysis,
       splitLayoutAnalysis,
+      splitLayoutFailure,
+      layoutAnalysisFailure,
     };
   }
 
@@ -3825,6 +3860,20 @@ export class ClipService {
     return parseClipSplitLayoutAnalysis(clip.splitLayoutAnalysis);
   }
 
+  async getClipSplitLayoutOutcome(
+    userId: string,
+    projectId: string,
+    clipId: string,
+  ): Promise<ClipSplitLayoutOutcome | null> {
+    const prisma = requirePrisma();
+    const clip = await prisma.clip.findFirst({
+      where: { id: clipId, projectId, project: { userId } },
+      select: { splitLayoutAnalysis: true },
+    });
+    if (!clip) throw new Error("clip not found");
+    return parseClipSplitLayoutOutcome(clip.splitLayoutAnalysis);
+  }
+
   async getClipLayoutAnalysis(
     userId: string,
     projectId: string,
@@ -3841,31 +3890,27 @@ export class ClipService {
     return parseClipLayoutAnalysis(clip.layoutAnalysis);
   }
 
-  /**
-   * Persists the worker's screen-mode PiP layout analysis
-   * (`pip_detect.py`/`classifyScreencast`/`selectPipRect`, packet B) for a
-   * clip. Deliberately a PLAIN update, not routed through
-   * `editorRevision`/`saveClipEditorDocument`'s guarded-write path:
-   * `layoutAnalysis` is DERIVED data (a measurement the worker took of the
-   * clip's source footage), not a user edit — bumping `editorRevision` here
-   * would falsely look like a document change to `assertEditorRevisionMatches`
-   * (a client mid-edit would see its `baseRevision` go stale from a write it
-   * never made) and would incorrectly invalidate completed renders the way
-   * a real `studioEdits`/boundary change does, even though re-running
-   * analysis changes nothing about what was already rendered.
-   *
-   * No userId/projectId scoping — same "worker writes by clipId alone"
-   * contract as `completeClipPreview` above; the worker already resolved
-   * `clipId` from its own claimed job, not from a user-facing request.
-   *
-   * Protocol-v2 render attempts route the write through WorkflowRunLifecycle,
-   * which fences ownership and the clip mutation in one transaction. Legacy
-   * non-attempt callers retain the direct update while readers continue to
-   * verify the envelope's validity window before adopting it.
-   */
+  async getClipLayoutAnalysisOutcome(
+    userId: string,
+    projectId: string,
+    clipId: string,
+  ): Promise<ClipLayoutAnalysisOutcome | null> {
+    const prisma = requirePrisma();
+    const clip = await prisma.clip.findFirst({
+      where: { id: clipId, projectId, project: { userId } },
+      select: { layoutAnalysis: true },
+    });
+    if (!clip) throw new Error("clip not found");
+    return parseClipLayoutAnalysisOutcome(clip.layoutAnalysis);
+  }
+
+  /** Publishes derived Screen evidence only while the analyzed editor
+   * revision and preview proxy are still current. The write does not bump the
+   * editor revision because evidence is not a user edit. */
   async setClipLayoutAnalysis(
     clipId: string,
     analysis: ClipLayoutAnalysis,
+    expected: { editorRevision: number; previewStorageKey: string },
   ): Promise<void> {
     const prisma = requirePrisma();
     const parsed = clipLayoutAnalysisSchema.parse(analysis);
@@ -3875,12 +3920,45 @@ export class ClipService {
       await getWorkflowRunLifecycle().setClipLayoutAnalysis(attempt, {
         clipId,
         analysis: parsed as unknown as Prisma.InputJsonValue,
+        editorRevision: expected.editorRevision,
+        previewStorageKey: expected.previewStorageKey,
       });
       return;
     }
 
-    await prisma.clip.update({
-      where: { id: clipId },
+    await prisma.clip.updateMany({
+      where: {
+        id: clipId,
+        editorRevision: expected.editorRevision,
+        previewStorageKey: expected.previewStorageKey,
+      },
+      data: { layoutAnalysis: parsed as unknown as Prisma.InputJsonValue },
+    });
+  }
+
+  async setClipLayoutAnalysisFailure(
+    clipId: string,
+    failure: ClipLayoutAnalysisFailure,
+    expected: { editorRevision: number; previewStorageKey: string },
+  ): Promise<void> {
+    const prisma = requirePrisma();
+    const parsed = clipLayoutAnalysisFailureSchema.parse(failure);
+    const attempt = currentWorkflowAttempt();
+    if (attempt) {
+      await getWorkflowRunLifecycle().setClipLayoutAnalysisFailure(attempt, {
+        clipId,
+        failure: parsed as unknown as Prisma.InputJsonValue,
+        editorRevision: expected.editorRevision,
+        previewStorageKey: expected.previewStorageKey,
+      });
+      return;
+    }
+    await prisma.clip.updateMany({
+      where: {
+        id: clipId,
+        editorRevision: expected.editorRevision,
+        previewStorageKey: expected.previewStorageKey,
+      },
       data: { layoutAnalysis: parsed as unknown as Prisma.InputJsonValue },
     });
   }
@@ -3995,10 +4073,6 @@ export class ClipService {
     const layoutInputsChanged =
       boundariesChanged ||
       JSON.stringify(next.deletedRanges) !== JSON.stringify(current.deletedRanges);
-    const legacySplitMirrorNeedsReplacement = Boolean(
-      next.studioEdits.framing.mode === "auto" &&
-        parseClipSplitLayoutAnalysis(clip.autoLayoutAnalysis),
-    );
     if (boundaryDriftDetected && plan.recomputedEffective) {
       // Diagnostic only — the transcript is already clamped to the stored
       // window regardless. Surfaces the cases where a client sent a
@@ -4052,7 +4126,7 @@ export class ClipService {
           ...(boundariesChanged
             ? { previewStorageKey: null, previewStartSec: null, previewDurationSec: null }
             : {}),
-          ...(layoutInputsChanged || legacySplitMirrorNeedsReplacement
+          ...(layoutInputsChanged
             ? {
                 autoLayoutAnalysis: Prisma.DbNull,
                 autoLayoutStatus: "pending" as const,
@@ -4222,10 +4296,6 @@ export class ClipService {
       boundariesChanged ||
       JSON.stringify(normalizedOriginalRanges) !==
         JSON.stringify(currentDocument.deletedRanges);
-    const legacySplitMirrorNeedsReplacement = Boolean(
-      original.studioEdits.framing.mode === "auto" &&
-        parseClipSplitLayoutAnalysis(clip.autoLayoutAnalysis),
-    );
     const staleRenderKeys = [
       ...clip.renders
         .filter((render) => render.exportVariantId === null)
@@ -4263,7 +4333,7 @@ export class ClipService {
                 previewDurationSec: null,
               }
             : {}),
-          ...(layoutInputsChanged || legacySplitMirrorNeedsReplacement
+          ...(layoutInputsChanged
             ? {
                 autoLayoutAnalysis: Prisma.DbNull,
                 autoLayoutStatus: "pending" as const,

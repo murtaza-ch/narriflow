@@ -141,12 +141,12 @@ export default async function StudioPage({
 
   async function fetchSplitLayoutAnalysis() {
     "use server";
-    return clipService.getClipSplitLayoutAnalysis(appUser.id, projectId, clipId);
+    return clipService.getClipSplitLayoutOutcome(appUser.id, projectId, clipId);
   }
 
   async function fetchScreenLayoutAnalysis() {
     "use server";
-    return clipService.getClipLayoutAnalysis(appUser.id, projectId, clipId);
+    return clipService.getClipLayoutAnalysisOutcome(appUser.id, projectId, clipId);
   }
 
   return (
@@ -185,6 +185,8 @@ export default async function StudioPage({
       layoutAnalysis={editorDoc.layoutAnalysis}
       autoLayoutAnalysis={editorDoc.autoLayoutAnalysis}
       splitLayoutAnalysis={editorDoc.splitLayoutAnalysis}
+      splitLayoutFailure={editorDoc.splitLayoutFailure}
+      layoutAnalysisFailure={editorDoc.layoutAnalysisFailure}
     />
   );
 }

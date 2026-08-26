@@ -74,9 +74,9 @@ other project's ingest/detection/dubbing on that worker for 10–40 min.
 
 Key verified facts:
 
-- Clip render loop is fully sequential (`apps/worker/src/tasks/render-clips.ts:1917`);
-  with B-roll/studio edits each aspect ratio is an independent full decode+encode
-  (`:2356-2417`). Without them, `buildMultiVideoArgs` shares one decode.
+- Clip render loop is fully sequential. Every aspect-ratio target is compiled
+  from its Clip Composition Plan into an independent full decode+encode, whether
+  or not it contains B-roll. Multi-target renders no longer share a source decode.
 - Measured in-repo benchmark (`apps/worker/src/index.ts:21-30`): 4 parallel clip
   encodes ≈ sequential (40.49s vs 39.50s) — x264 saturates cores, so naive
   `Promise.all` around ffmpeg buys nothing *for the encode phase*. It does not

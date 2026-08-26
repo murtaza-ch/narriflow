@@ -1,8 +1,83 @@
 import {
   CLIP_COMPOSITION_PLAN_VERSION,
   type ClipCompositionPlan,
+  type ClipCompositionPlanResult,
+  type CompositionBrollAvailability,
   type CompositionLayer,
 } from "@narriflow/composition-plan";
+
+export function manualBrollAvailabilityForPlan(input: {
+  url: string | null;
+  ref: string | null;
+  window: { startSec: number; endSec: number } | null;
+  mediaState: "missing" | "pending" | "available" | "failed";
+}): CompositionBrollAvailability | undefined {
+  if (!input.url) return undefined;
+  if (input.mediaState === "failed" || !input.window || !input.ref) {
+    return { state: "failed" };
+  }
+  if (input.mediaState !== "available") return { state: "pending" };
+  return {
+    state: "available",
+    placements: [
+      {
+        id: "manual",
+        ref: input.ref,
+        startSec: input.window.startSec,
+        endSec: input.window.endSec,
+      },
+    ],
+  };
+}
+
+const COMPOSITION_NOTICE_COPY: Readonly<Record<string, string>> = {
+  background_image_pending: "Checking background image…",
+  background_image_unavailable:
+    "Background image unavailable. Using the selected color.",
+  automatic_layout_analyzing:
+    "Analyzing speakers… Center framing is shown for now.",
+  automatic_layout_disabled: "Automatic speaker layout is disabled. Using Center.",
+  automatic_layout_unavailable: "Speaker analysis unavailable. Using Center.",
+  split_layout_analyzing: "Analyzing speakers… Center framing is shown for now.",
+  split_layout_disabled:
+    "Split analysis is disabled. Using single-speaker framing.",
+  split_target_ineligible:
+    "Split is unavailable for this format. Using single-speaker framing.",
+  split_detection_unavailable:
+    "Split analysis failed. Using single-speaker framing.",
+  split_insufficient_clusters:
+    "Two stable speakers were not found. Using single-speaker framing.",
+  split_empty_plan: "No usable Split scenes were found. Using single-speaker framing.",
+  split_no_two_up_segments:
+    "Two stable speakers were not found. Using single-speaker framing.",
+  split_tiles_not_distinct:
+    "The detected speakers cannot be separated for this format. Using single-speaker framing.",
+  split_layout_unavailable: "Split analysis is unavailable. Using Center.",
+  screen_layout_analyzing:
+    "Analyzing screen layout… A centered speaker tile is shown for now.",
+  screen_layout_disabled: "Screen layout is disabled. Using Center.",
+  screen_analysis_unavailable:
+    "Screen analysis failed. Using a centered speaker tile.",
+  screen_detection_unavailable:
+    "Speaker detection failed. Using a centered speaker tile.",
+  screen_no_face_detected:
+    "No speaker face was detected. Using a centered speaker tile.",
+  screen_no_trustworthy_faces:
+    "No stable speaker face was found. Using a centered speaker tile.",
+  screen_pip_too_small:
+    "The facecam is too small for this format. Using the speaker fallback.",
+  screen_face_band_fallback: "Using the detected speaker band.",
+  screen_static_center_fallback:
+    "Speaker tracking is unavailable. Using a centered speaker tile.",
+  split_broll_conflict: "B-roll uses single-speaker framing for this whole clip.",
+  screen_broll_conflict: "B-roll uses single-speaker framing for this whole clip.",
+  broll_asset_pending: "Checking B-roll media… Showing the base composition for now.",
+  broll_asset_unavailable: "B-roll is unavailable. Showing the base composition.",
+};
+
+export function compositionNoticeText(code: string | null | undefined): string | null {
+  return code ? COMPOSITION_NOTICE_COPY[code] ?? null : null;
+}
 
 export function plannedCompositionSourceDimensions(
   proxy: { width: number; height: number },
@@ -201,4 +276,16 @@ export function adoptCompositionPreview(
         (notice.sceneId === null || notice.sceneId === scene.id),
     ),
   };
+}
+
+export function adoptCompositionPreviewResult(
+  result: ClipCompositionPlanResult | null,
+  targetId: string,
+  editedTimeSec: number,
+) {
+  if (!result) return null;
+  if (result.status === "invalid") {
+    throw new Error(`invalid_clip_composition_plan:${result.error.code}`);
+  }
+  return adoptCompositionPreview(result.plan, targetId, editedTimeSec);
 }

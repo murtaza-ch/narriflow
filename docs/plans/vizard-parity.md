@@ -212,10 +212,9 @@ before the foundation steps it depends on.
 - Background color/image (+ apply-to-all) with render parity. *(per-clip
   color/image landed 2026-08-05 — `studioEdits.background` schema
   (`packages/validators/src/studio-edits.ts`); worker
-  `buildFitAndBackgroundFilter` fit+pad (color) / cover-fit-image+overlay
-  (image) compose path used instead of `buildCropAndScaleFilter` whenever a
-  background is active, in both the single-video and B-roll cutaway
-  builders, with auto-reframe bypassed; studio preview stage renders the same
+  shared composition planner emits fit+pad color or cover-fit-image geometry
+  whenever a background is active, and both the FFmpeg and Studio adapters
+  consume that geometry; studio preview stage renders the same
   color/image behind a letterboxed video; new Background tool panel.
   Apply-to-all landed 2026-08-05 — see the transition bullet below, same
   `applyStudioEditsPatchToAllClips` bulk service backs both.)*
@@ -247,8 +246,7 @@ before the foundation steps it depends on.
   1. **Framing modes (build first, cheap)** — persist
      `studioEdits.framing = { mode: "auto" | "center" | "fit" }`;
      `auto` = today's auto-reframe crop, `center` = static center crop
-     (skip `detectFacePath` entirely; the no-sendcmd `crop=` branch of
-     `buildCropAndScaleFilter` already exists), `fit` = the landed
+     (skip `detectFacePath` entirely), `fit` = the landed
      background/fit path. Consolidate the currently scattered mode checks
      (`background.mode` gates at three call sites in `render-clips.ts`)
      into ONE framing-mode dispatch so a fourth mode can't silently
@@ -266,10 +264,8 @@ before the foundation steps it depends on.
      branch never crops); the background/fit-plan gate now reads
      `resolveEffectiveFramingMode(studioEdits) === "fit"` instead of the raw
      `background.mode` check (same truth table, one source). The
-     `buildFitAndBackgroundFilter` vs `buildCropAndScaleFilter` builder branch
-     in both `buildSingleVideoArgs` and `buildBrollVideoArgs` needed no change
-     — it already keys off the resolved `BackgroundPlan | null`, which is only
-     ever constructed when the effective mode is "fit". Apply-to-all:
+     shared planner emits the background plan only when the effective mode is
+     "fit"; both video command builders compile that same plan. Apply-to-all:
      `applyStudioEditsPatchSchema` extended to a 3-way XOR
      (transition|background|framing); the Background tool panel was
      repurposed into a Layout panel (`tool-panels/layout-panel.tsx`, sidebar
@@ -307,9 +303,8 @@ before the foundation steps it depends on.
      diarization (`TranscriptUtterance.speaker`/`speakerLabel`) is unwired
      into the render path but is the cheapest region-assignment signal
      (correlate speaker turns with face-cluster positions instead of pure
-     visual tracking). Worker filtergraph is a natural
-     `buildFitAndBackgroundFilter`-style extension (split → 2× crop/scale →
-     vstack → same `[outvbase]` contract). The dominant cost is PREVIEW:
+     visual tracking). The shared composition compiler lowers two planned
+     crop layers into the FFmpeg stack. The dominant cost is PREVIEW:
      one `<video>` element can't show two different crops of one frame —
      needs dual clock-synced `<video>` elements (moderate rewrite) or a
      canvas compositor (large rewrite). Sequence: worker spike
@@ -324,7 +319,7 @@ before the foundation steps it depends on.
      `reframe_detect.py --multi` (additive; default output verified
      byte-identical), pure `apps/worker/src/tasks/two-up.ts`
      (`clusterFaceTracks`, `classifyShotSamples` + segment collapse,
-     `assignSpeakersToClusters`, `buildTwoUpFilterChain`) + 21 tests.
+     `assignSpeakersToClusters`) + 21 tests.
      VALIDATED: largest-gap 1-D clustering nails the two seats (host
      cx≈0.34, guest cx≈0.63) and survives 3-face false positives via
      nearest-distance matching; 5-sample majority smoothing + micro-segment
@@ -353,8 +348,8 @@ before the foundation steps it depends on.
      **Packets A/B/C landed (2026-08-05, this diff):** per-segment crop
      centers (`buildSplitLayoutPlan`'s per-window cluster means, not the
      spike's global mean), the segment-aware render-clips.ts machinery
-     (multi-face detection → `decideSplitFallback` → per-output
-     `buildSplitFilterChain`, with its own `SplitFallbackReason` set:
+     (multi-face detection → `decideSplitFallback` → shared composition plan,
+     with its own `SplitFallbackReason` set:
      `broll_conflict` / `detection_unavailable` / `insufficient_clusters` /
      `empty_plan` / `no_two_up_segments` / `tiles_not_distinct` / `disabled`
      / `null`), and the live dual-`<video>` preview (video-preview.tsx's top
@@ -424,11 +419,9 @@ before the foundation steps it depends on.
      v1" landed-note directly below for its own v1 landing (2026-08-06),
      which upgrades exactly this BOTTOM tile from a face-centered band to
      the actual facecam PiP rectangle when one can be found. Landed:
-     `apps/worker/src/tasks/screen-layout.ts`
-     (`buildScreenSpeakerFilterChain`/`screenTileGeometry`/
-     `screenBottomIsTrackable`), `render-clips.ts`'s
-     `applyScreenSpeakerLayout`/`decideScreenFallback`/
-     `framingForcesPerOutputRender`, the live two-tile preview
+     `apps/worker/src/tasks/screen-layout.ts` provides evidence analysis,
+     while the shared composition planner owns tile geometry and fallback
+     decisions. `render-clips.ts` and the live two-tile preview
      (video-preview.tsx's `isScreen` block, contain-fit top + centered-cover
      bottom), and a `WORKER_SCREEN_LAYOUT` kill switch (see
      `docs/agent/setup.md`). B-roll always wins the whole frame (v1 policy,
@@ -451,8 +444,8 @@ before the foundation steps it depends on.
      full source width, so the sendcmd track driving it is a mathematical
      no-op (every face position clamps to the same `x`), yet a sendcmd
      script was still being built and the log still claimed
-     `bottomTracking: "face"`; added `screenBottomIsTrackable` as the gate
-     (mirrors split's own `splitTilesAreDistinct`) so those outputs render
+     `bottomTracking: "face"`; the planner now gates tracking on its exact
+     resolved crop geometry so those outputs render
      an honest static-center bottom tile with no dead script and an accurate
      log reason (`no_lateral_room`).
   4. **Element segmentation v1 (facecam PiP detection for "screen" mode)** —
@@ -467,14 +460,13 @@ before the foundation steps it depends on.
      frame difference map, emits `movingPxFrac` + connected-component
      candidates each flagged corner-adjacent/area-share/fill-share —
      `reframe_detect.py` untouched); `screen-layout.ts`'s
-     `classifyScreencast`/`selectPipRect`/`fitPipCropToTile` (pure TS, the
-     corner-adjacent + compact + dense structural prior) and
-     `ScreenSpeakerBottomSpec.pipRect` (wins over `cx`/`reframe` — a facecam
-     overlay doesn't move, so its crop is always static, never
-     sendcmd-driven); `render-clips.ts`'s `detectPipPath` + the PiP-first
+     `classifyScreencast`/`selectPipRect` (pure TS, the corner-adjacent +
+     compact + dense structural prior); the shared planner fits confirmed
+     PiP evidence to its target tile as a static crop; `render-clips.ts`'s
+     `detectPipPath` + the PiP-first
      branch inside the "real screen layout" wiring (reuses the SAME
      extracted detection segment `detectFacePath` already used, rather than
-     extracting twice); a `WORKER_PIP_DETECT` kill switch and
+     extracting twice); Screen analysis capability gating and
      env-configurable `WORKER_PIP_MOTION_THRESHOLD` (default `0.12`, see
      `docs/agent/setup.md`).
 
@@ -521,7 +513,7 @@ before the foundation steps it depends on.
      rule, the new default is the GEOMETRIC MEAN of those two boundary
      values (sqrt(0.0509 × 0.2726) ≈ 0.1178, rounded to **0.12**) rather
      than either boundary itself, and the feature stays **default-ON**
-     (`WORKER_PIP_DETECT` unset/anything other than `"0"` still enables it)
+     (Screen analysis runs whenever `WORKER_SCREEN_LAYOUT` is enabled)
      — the (H2) face-confirmation guard below is the second line of defense
      against a misclassification, not the threshold alone.
 
@@ -572,8 +564,8 @@ before the foundation steps it depends on.
      `insufficient_samples` → `not_screencast_like` → `no_candidate` →
      `face_not_in_rect` → `pip_too_small` → `ok`) is the single decision
      matrix both the clip-level gate and each output's `pip_too_small` check
-     (M3: `screen-layout.ts`'s `pipCropTooSmall`, rejecting a fitted crop
-     under 40% of its tile's width) run through — replacing what used to be
+     (the planner rejects a fitted crop under 40% of its tile's width) run
+     through — replacing what used to be
      an inline if/else chain duplicated across two call sites.
 
      **(H3) the candidate-mask floor was below the classifier's own noise
@@ -606,72 +598,23 @@ before the foundation steps it depends on.
      pay a double-decode cost over the same segment, not restructured here.
      **(L1)** the module doc comment's claim about `reframe_detect.py`'s CLI
      shape was wrong (fps is the 4th positional arg, the model path is 5th,
-     not the other way around) — fixed. **(L2)** `fitPipCropToTile` now
-     rounds `w`/`h` BEFORE clamping `x`/`y` against them, so `x + w` can
-     never exceed the source frame by a rounding pixel. **(L3)** the
+     not the other way around) — fixed. **(L2)** the shared planner rounds
+     `w`/`h` before clamping `x`/`y`, so `x + w` can never exceed the source
+     frame by a rounding pixel. **(L3)** the
      `clip_screen_pip_detected` log now includes the per-OUTPUT fitted
      source-pixel rect (not just the one normalized rect shared across
-     outputs), since `fitPipCropToTile`'s result differs by output aspect
-     ratio.
+     outputs), since the planned PiP crop differs by output aspect ratio.
 
-     PiP persistence (M7 follow-up — NOW BUILT, previously an honest-scope
-     gap): the M7 note above originally accepted the live two-tile PREVIEW
-     (video-preview.tsx's `isScreen` block) showing a static 50%/50%
-     center-cover bottom tile forever, since PiP detection was a RENDER-time-
-     only step the browser preview couldn't run. That's closed:
-     - `Clip.layoutAnalysis` (new nullable JSONB column, additive migration)
-       persists a versioned envelope (`clipLayoutAnalysisSchema`, validators)
-       after the FIRST render of a screen-mode clip: the selected
-       `pipRect` (`selectPipRect`'s pre-gate output — kept even when a later
-       gate rejects it, see below), `movingPxFrac`/`insufficientSamples`,
-       the snapped detection window (`sourceStartSec`/`sourceDurationSec`)
-       AND the raw `Clip.startSec`/`endSec` window at write time
-       (`clipStartSec`/`clipEndSec` — the preview's own boundary check has
-       no way to recompute the render path's snapping), and `pipUsable`.
-     - `pipUsable` is the field that actually answers "was this rect
-       trustworthy," not `pipRect`'s nullness — `render-clips.ts`'s
-       `resolvePipAnalysis` (M2 follow-up) only persists a rect the SAME
-       render's own `decidePipUsage` clip-level gate chain (everything
-       through `face_not_in_rect`) confirmed. A gate-rejected rect is still
-       written with `pipUsable: false` and the raw `pipRect` intact
-       (deliberately not nulled: `faceConfirmed` is recomputed fresh every
-       render, so a one-off miss must not permanently poison future
-       renders' ability to retry the same measured rect).
-     - The render path reads-before-detecting: a persisted envelope whose
-       window still matches (`layoutAnalysisMatchesWindow`) skips
-       `pip_detect.py` entirely and reuses the stored measurement, still
-       running `decidePipUsage` fresh (face confirmation is never cached).
-     - The studio preview (video-preview.tsx's `screenBottomCropRect`) shows
-       the persisted crop ONLY when `pipUsable === true` AND the envelope's
-       `clipStartSec`/`clipEndSec` still match the studio's current
-       `clipWindow` (a trim since the analysis was written invalidates it,
-       same contract as the render side) AND the client-side twin of the
-       `pip_too_small` gate (`pipCropTooSmallNormalized`,
-       apps/web/.../pip-crop-math.ts, comparing against the RENDER OUTPUT
-       tile width, not the preview's own CSS pixel width) doesn't reject it.
-       Any other case falls back to the pre-existing static center-cover
-       crop.
-
-     Remaining accepted divergence (narrower than the original M7 gap, not
-     eliminated): (1) IN-SESSION STALENESS — a render that completes WHILE a
-     studio session is already open re-persists `layoutAnalysis` in the DB,
-     but the open session's context value was server-seeded once at initial
-     page load and doesn't refetch on its own; the preview keeps showing
-     whatever was true at load until a reload or a future explicit refetch.
-     (2) PER-RENDER FACE-GATE outcome — `faceConfirmed` is recomputed from
-     each render's own face samples, never cached, so a persisted
-     `pipUsable: true` is a snapshot of one past render's outcome; a
-     genuinely different (rare) face-detection result on a LATER render can
-     still diverge from what the preview shows without a new analysis pass
-     overwriting the envelope. Both are documented in full on
-     `StudioContextValue.layoutAnalysis`'s doc comment (studio-shell.tsx).
-
-     Deploy-order note (M1, adversarial review): the `layoutAnalysis`
-     migration must be APPLIED BEFORE deploying code that reads it — the
-     column is selected on every unscoped `Clip` read (not just the
-     screen-mode PiP path), so code-before-migration breaks ALL clip reads,
-     total blast radius, not feature-local. See the migration file's own
-     header comment.
+     PiP persistence is now identity-complete and deterministic. The worker
+     persists a v2 envelope only after motion analysis and face confirmation
+     are conclusive; transient failures use a typed failure envelope and stay
+     retryable. Matching evidence records the source identity, input
+     fingerprint, edit window, source geometry, PiP usability, and face-band
+     segments needed by the planner. Studio polls until the exact evidence or
+     exact failure fingerprint arrives. Studio and export then feed the same
+     parsed outcome into the shared planner, which applies the per-target
+     minimum crop-width gate and emits the exact crop geometry consumed by
+     both adapters.
 - Music/SFX library — **design converged 2026-08-05** from competitor
   research (OpusClip/Vizard/Submagic/Captions.app/Klap/Veed/Descript).
   Market pattern to match: curated self-hosted library filterable by mood
@@ -801,8 +744,9 @@ before the foundation steps it depends on.
   "export.noWatermark")`), recombined per output via
   `buildExportTreatmentFilter` — so a paid user can pick 720p with no
   watermark, matching the entitlement model instead of a single free/paid
-  toggle. `buildMultiVideoArgs` (the shared multi-output batch encode) now
-  reads resolution per output while watermark stays uniform for the run.
+  toggle. The plan-only worker reads resolution per render target while
+  watermark entitlement stays uniform for the run; each target is compiled to
+  its own FFmpeg decode+encode.
   UI: the "Render formats" popover (`render-clips-button.tsx`, used by both
   the project page's render button and the ranked-rows "Render selected"
   bulk action) gained a 720p/1080p `SegmentedControl`, defaulting to the

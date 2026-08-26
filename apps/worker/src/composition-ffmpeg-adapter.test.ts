@@ -12,7 +12,7 @@ import {
   studioEditsSchema,
 } from "@narriflow/validators";
 import { compileCompositionPlanVideo } from "./composition-ffmpeg-adapter";
-import { buildMultiVideoArgs, buildSingleVideoArgs } from "./tasks/render-clips";
+import { buildSingleVideoArgs } from "./tasks/render-clips";
 
 function planCenter() {
   const result = planClipComposition({
@@ -86,6 +86,7 @@ function planAuto() {
   const analysis = clipAutoLayoutAnalysisSchema.parse({
     version: 1,
     engine: "shot-layout-v1",
+    sourceIdentity,
     analyzedAtISO: "2026-08-26T00:00:00.000Z",
     clipStartSec: 0,
     clipEndSec: 5,
@@ -250,6 +251,38 @@ function planScreen() {
   return result.plan;
 }
 
+function planBroll() {
+  const result = planClipComposition({
+    document: editorDocumentSchema.parse({
+      clipStartSec: 0,
+      clipEndSec: 5,
+      captionPreset: captionPresetSchema.parse({}),
+      transcriptSlice: [],
+      studioEdits: studioEditsSchema.parse({ framing: { mode: "center" } }),
+      brollUrl: "https://example.com/cutaway.mp4",
+      deletedRanges: [],
+    }),
+    source: { identity: "source:key", kind: "video", width: 1920, height: 1080 },
+    evidence: { automaticLayout: { state: "missing" } },
+    assets: {
+      backgroundImage: { state: "missing" },
+      broll: {
+        state: "available",
+        placements: [
+          { id: "cutaway", ref: "broll:cutaway", startSec: 1.5, endSec: 4 },
+        ],
+      },
+    },
+    capabilities: {
+      automaticSpeakerLayout: true,
+      automaticSpeakerEngineVersion: "shot-layout-v1",
+    },
+    targets: [{ id: "variant-1", aspectRatio: "9:16", width: 1080, height: 1920 }],
+  });
+  if (result.status === "invalid") throw new Error(result.error.code);
+  return result.plan;
+}
+
 describe("composition FFmpeg adapter", () => {
   test("compiles the Center plan's exact crop without choosing geometry", () => {
     expect(
@@ -261,9 +294,10 @@ describe("composition FFmpeg adapter", () => {
       }),
     ).toEqual({
       filterParts: [
-        "[0:v]crop=608:1080,scale=1080:1920,format=yuv420p[outv]",
+        "[0:v]crop=608:1080:656:0,scale=1080:1920,format=yuv420p[outv]",
       ],
       backgroundImageInputRequired: false,
+      brollInputs: [],
     });
   });
 
@@ -371,40 +405,6 @@ describe("composition FFmpeg adapter", () => {
     ).toThrow("unsupported_clip_composition_plan_version");
   });
 
-  test("the shared multi-output builder consumes the same Center plan", () => {
-    const plan = planCenter();
-    const args = buildMultiVideoArgs({
-      sourcePath: "/tmp/source.mp4",
-      outputs: [
-        {
-          clipRenderId: "variant-1",
-          clipId: "clip-1",
-          clipIndex: 0,
-          aspectRatio: "9:16",
-          outputPath: "/tmp/output.mp4",
-          storageKey: "renders/output.mp4",
-          resolution: "1080p",
-          watermark: false,
-        },
-      ],
-      startSec: 0,
-      endSec: 5,
-      probe: {
-        hasVideo: true,
-        hasAudio: true,
-        width: 1920,
-        height: 1080,
-        durationSec: 5,
-        fps: 30,
-      },
-      srtPath: null,
-      composition: plan,
-    });
-
-    expect(args.join(" ")).toContain(
-      "[v0]crop=608:1080,scale=1080:1920,format=yuv420p[outv0]",
-    );
-  });
 
   test("compiles exact Fit image and color-fallback geometry from plan layers", () => {
     const image = compileCompositionPlanVideo({
@@ -425,6 +425,7 @@ describe("composition FFmpeg adapter", () => {
 
     expect(image).toEqual({
       backgroundImageInputRequired: true,
+      brollInputs: [],
       filterParts: [
         "[1:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=30[composition_bg]",
         "[0:v]crop=1920:1080:0:0,scale=1080:608[composition_source]",
@@ -433,6 +434,7 @@ describe("composition FFmpeg adapter", () => {
     });
     expect(fallback).toEqual({
       backgroundImageInputRequired: false,
+      brollInputs: [],
       filterParts: [
         "[0:v]crop=1920:1080:0:0,scale=1080:608,pad=1080:1920:0:656:color=0x123456,format=yuv420p[outv]",
       ],
@@ -449,6 +451,7 @@ describe("composition FFmpeg adapter", () => {
       }),
     ).toEqual({
       backgroundImageInputRequired: false,
+      brollInputs: [],
       filterParts: [
         "[0:v]trim=start=0.000:end=5.000,setpts=PTS-STARTPTS[composition_scene_0_trim]",
         "[composition_scene_0_trim]split=2[composition_scene_0_layer_0_src][composition_scene_0_layer_1_src]",
@@ -534,6 +537,33 @@ describe("composition FFmpeg adapter", () => {
     );
     expect(compiled).toContain(
       "overlay=108+(864-overlay_w)/2:200+(720-overlay_h)/2",
+    );
+  });
+
+  test("maps B-roll inputs from planned windows while compiling the unchanged base geometry", () => {
+    const plan = planBroll();
+    const compiled = compileCompositionPlanVideo({
+      plan,
+      targetId: "variant-1",
+      videoInputLabel: "[0:v]",
+      outputLabel: "[stage0]",
+      resolvedBrollAssets: { "broll:cutaway": "/tmp/cutaway.mp4" },
+      brollInputStartIndex: 1,
+    });
+    expect(compiled.brollInputs).toEqual([
+      {
+        sourceRef: "broll:cutaway",
+        path: "/tmp/cutaway.mp4",
+        inputIndex: 1,
+        startSec: 1.5,
+        endSec: 4,
+      },
+    ]);
+    expect(compiled.filterParts.join(";")).toContain(
+      "[1:v]scale=1080:1920:force_original_aspect_ratio=increase",
+    );
+    expect(compiled.filterParts.join(";")).toContain(
+      "overlay=0:0:enable='between(t,1.5,4)'[stage0]",
     );
   });
 });

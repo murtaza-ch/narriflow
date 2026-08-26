@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { CompositionTargetPlan } from "@narriflow/composition-plan";
-import { parseRenderConfig } from "../render-config";
+import {
+  CLIP_COMPOSITION_PLAN_VERSION,
+  type ClipCompositionPlan,
+} from "@narriflow/composition-plan";
 import {
   computeSpeechWindows,
   getCaptionPresetById,
@@ -17,23 +18,17 @@ import type {
 } from "@narriflow/validators";
 import {
   buildAudiogramArgs,
-  buildBrollVideoArgs,
-  buildCropAndScaleFilter,
-  buildFitAndBackgroundFilter,
+  buildBrollVideoArgs as buildBrollVideoArgsWithPlan,
   buildFreeTierPostProcessArgs,
-  buildLegacyCompositionShadowTarget,
-  buildMultiVideoArgs,
-  buildSingleVideoArgs,
+  buildSingleVideoArgs as buildSingleVideoArgsWithPlan,
   buildTransitionFilter,
   clipRenderAttemptStorageKey,
-  compareCompositionShadowTarget,
   applySpeakerLayoutOverridesToSegments,
   decidePipUsage,
   decideScreenFallback,
   decideSplitFallback,
   downloadUrlToFile,
   escapeDrawtextText,
-  framingForcesPerOutputRender,
   generateAssFromSlice,
   generateSrtFromSlice,
   layoutAnalysisMatchesWindow,
@@ -42,12 +37,207 @@ import {
   remapSceneCutsForCutPlan,
   resolvePipAnalysis,
   resolveRenderTimingForClip,
-  shouldRunAutoReframeDetection,
 } from "./render-clips";
-import type { PipDetectionResult } from "./render-clips";
 import { buildClipCutPlan } from "./cut-plan";
-import { SCREEN_BOTTOM_CROP_NAME } from "./screen-layout";
 import type { SplitLayoutSegment } from "./two-up";
+
+type SingleVideoArgs = Parameters<typeof buildSingleVideoArgsWithPlan>[0];
+type BrollVideoArgs = Parameters<typeof buildBrollVideoArgsWithPlan>[0];
+
+function testComposition(params: {
+  aspectRatio: SingleVideoArgs["aspectRatio"];
+  probe: SingleVideoArgs["probe"];
+  startSec: number;
+  endSec: number;
+  cutPlan?: SingleVideoArgs["cutPlan"];
+  background?: SingleVideoArgs["background"];
+}): SingleVideoArgs["composition"] {
+  const canvas = {
+    "9:16": { width: 1080, height: 1920 },
+    "1:1": { width: 1080, height: 1080 },
+    "16:9": { width: 1920, height: 1080 },
+    "4:5": { width: 1080, height: 1350 },
+  }[params.aspectRatio];
+  const duration =
+    params.cutPlan && !params.cutPlan.isUncut
+      ? params.cutPlan.editedDurationSec
+      : params.endSec - params.startSec;
+  const fit = Boolean(params.background);
+  const sourceRatio = params.probe.width / params.probe.height;
+  const targetRatio = canvas.width / canvas.height;
+  const rawSourceCrop = fit
+    ? { x: 0, y: 0, width: params.probe.width, height: params.probe.height }
+    : sourceRatio > targetRatio
+      ? {
+          x: (params.probe.width - params.probe.height * targetRatio) / 2,
+          y: 0,
+          width: params.probe.height * targetRatio,
+          height: params.probe.height,
+        }
+      : {
+          x: 0,
+          y: (params.probe.height - params.probe.width / targetRatio) / 2,
+          width: params.probe.width,
+          height: params.probe.width / targetRatio,
+        };
+  const sourceCrop = {
+    x: Math.round(rawSourceCrop.x),
+    y: Math.round(rawSourceCrop.y),
+    width: Math.round(rawSourceCrop.width),
+    height: Math.round(rawSourceCrop.height),
+  };
+  const plan: ClipCompositionPlan = {
+    version: CLIP_COMPOSITION_PLAN_VERSION,
+    fingerprint: "0000000000000000",
+    inputFingerprint: "0000000000000000",
+    editedDurationSec: duration,
+    source: {
+      ref: "source:test",
+      width: params.probe.width,
+      height: params.probe.height,
+    },
+    targets: [
+      {
+        id: "test-target",
+        aspectRatio: params.aspectRatio,
+        requestedMode: fit ? "fit" : "center",
+        effectiveMode: fit ? "fit" : "center",
+        canvas: { ...canvas, divisibleBy: 2 },
+        scenes: [
+          {
+            id: "scene-0",
+            startSec: 0,
+            endSec: duration,
+            layers: [
+              ...(fit
+                ? [
+                    {
+                      id: "background",
+                      kind: "background" as const,
+                      color: params.background?.color ?? "#000000",
+                      imageRef: params.background?.imagePath
+                        ? "background:test"
+                        : null,
+                      destination: { x: 0, y: 0, ...canvas },
+                      rotationDeg: 0,
+                      opacity: 1 as const,
+                      zIndex: 0,
+                    },
+                  ]
+                : []),
+              {
+                id: "source",
+                kind: "source-video",
+                sourceRef: "source:test",
+                sourceCrop,
+                destination: { x: 0, y: 0, ...canvas },
+                fit: fit ? "contain" : "cover",
+                rotationDeg: 0,
+                opacity: 1,
+                zIndex: 1,
+                speaker: null,
+              },
+            ],
+          },
+        ],
+      },
+    ],
+    notices: [],
+    evidenceRequests: [],
+  };
+  return { plan, targetId: "test-target" };
+}
+
+function buildSingleVideoArgs(
+  params: Omit<SingleVideoArgs, "composition"> & {
+    composition?: SingleVideoArgs["composition"];
+  },
+) {
+  return buildSingleVideoArgsWithPlan({
+    ...params,
+    composition: params.composition ?? testComposition(params),
+  });
+}
+
+function buildBrollVideoArgs(
+  params: Omit<BrollVideoArgs, "composition" | "resolvedBrollAssets"> & {
+    cutaways: Array<{
+      path: string;
+      window: { startSec: number; endSec: number };
+    }>;
+    composition?: BrollVideoArgs["composition"];
+  },
+) {
+  const { cutaways, ...rest } = params;
+  const baseComposition = params.composition ?? testComposition(params);
+  const target = baseComposition.plan.targets.find(
+    (candidate) => candidate.id === baseComposition.targetId,
+  )!;
+  const boundaries = [
+    0,
+    baseComposition.plan.editedDurationSec,
+    ...cutaways.flatMap((cutaway) => [
+      cutaway.window.startSec,
+      cutaway.window.endSec,
+    ]),
+  ].sort((a, b) => a - b);
+  const uniqueBoundaries = boundaries.filter(
+    (value, index) => index === 0 || value !== boundaries[index - 1],
+  );
+  const baseLayers = target.scenes[0]!.layers.filter(
+    (layer) => layer.kind !== "broll-video",
+  );
+  const scenes = uniqueBoundaries.slice(0, -1).map((startSec, index) => {
+    const endSec = uniqueBoundaries[index + 1]!;
+    const activeIndex = cutaways.findIndex(
+      (cutaway) =>
+        startSec >= cutaway.window.startSec && endSec <= cutaway.window.endSec,
+    );
+    return {
+      id: `scene-${index}`,
+      startSec,
+      endSec,
+      layers: [
+        ...baseLayers,
+        ...(activeIndex >= 0
+          ? [
+              {
+                id: `layer:broll:${activeIndex}`,
+                kind: "broll-video" as const,
+                sourceRef: `broll:test:${activeIndex}`,
+                destination: { x: 0, y: 0, ...target.canvas },
+                fit: "cover" as const,
+                rotationDeg: 0,
+                opacity: 1,
+                zIndex: 100,
+                activeRange: { ...cutaways[activeIndex]!.window },
+                audio: "source" as const,
+              },
+            ]
+          : []),
+      ],
+    };
+  });
+  const composition = {
+    ...baseComposition,
+    plan: {
+      ...baseComposition.plan,
+      targets: baseComposition.plan.targets.map((candidate) =>
+        candidate.id === target.id ? { ...candidate, scenes } : candidate,
+      ),
+    },
+  };
+  return buildBrollVideoArgsWithPlan({
+    ...rest,
+    resolvedBrollAssets: Object.fromEntries(
+      cutaways.map((cutaway, index) => [
+        `broll:test:${index}`,
+        cutaway.path,
+      ]),
+    ),
+    composition,
+  });
+}
 
 function makeUtterance(
   words: Array<[string, number, number]>,
@@ -78,294 +268,6 @@ function preset(id: string): CaptionPreset {
 function countDialogues(ass: string): number {
   return ass.split("\n").filter((line) => line.startsWith("Dialogue:")).length;
 }
-
-describe("composition shadow diagnostics", () => {
-  test("reports parity for the independent legacy center projection", () => {
-    const legacy = buildLegacyCompositionShadowTarget({
-      targetId: "vertical",
-      aspectRatio: "9:16",
-      target: { width: 1080, height: 1920 },
-      source: { width: 1920, height: 1080 },
-      durationSec: 30,
-      requestedMode: "center",
-      automaticSegments: null,
-      speakerLayoutOverrides: [],
-      background: null,
-    });
-    const planned: CompositionTargetPlan = {
-      id: "vertical",
-      aspectRatio: "9:16",
-      requestedMode: "center",
-      effectiveMode: "center",
-      canvas: { width: 1080, height: 1920, divisibleBy: 2 },
-      scenes: [
-        {
-          id: "center",
-          startSec: 0,
-          endSec: 30,
-          layers: [
-            {
-              id: "source",
-              kind: "source-video",
-              sourceRef: "source",
-              sourceCrop: { x: 656, y: 0, width: 608, height: 1080 },
-              destination: { x: 0, y: 0, width: 1080, height: 1920 },
-              fit: "cover",
-              rotationDeg: 0,
-              opacity: 1,
-              zIndex: 0,
-            },
-          ],
-        },
-      ],
-    };
-
-    expect(
-      compareCompositionShadowTarget({
-        planned,
-        plannedNoticeCodes: [],
-        legacy,
-      }),
-    ).toMatchObject({ mismatchCount: 0 });
-  });
-
-  test("detects topology, manual rotation, background, and notice drift", () => {
-    const legacy = buildLegacyCompositionShadowTarget({
-      targetId: "vertical",
-      aspectRatio: "9:16",
-      target: { width: 1080, height: 1920 },
-      source: { width: 1920, height: 1080 },
-      durationSec: 10,
-      requestedMode: "fit",
-      automaticSegments: null,
-      speakerLayoutOverrides: [],
-      background: { mode: "image", color: "#111111", imagePath: "/bg.png" },
-    });
-    const planned: CompositionTargetPlan = {
-      id: "vertical",
-      aspectRatio: "9:16",
-      requestedMode: "fit",
-      effectiveMode: "fit",
-      canvas: { width: 1080, height: 1920, divisibleBy: 2 },
-      scenes: [
-        {
-          id: "fit",
-          startSec: 0,
-          endSec: 10,
-          layers: [
-            {
-              id: "background",
-              kind: "background",
-              color: "#222222",
-              imageRef: null,
-              destination: { x: 0, y: 0, width: 1080, height: 1920 },
-              fit: "cover",
-              rotationDeg: 0,
-              opacity: 1,
-              zIndex: 0,
-            },
-            {
-              id: "source",
-              kind: "source-video",
-              sourceRef: "source",
-              sourceCrop: { x: 0, y: 0, width: 1920, height: 1080 },
-              destination: { x: 0, y: 656, width: 1080, height: 608 },
-              fit: "contain",
-              rotationDeg: 12,
-              opacity: 1,
-              zIndex: 2,
-            },
-          ],
-        },
-      ],
-    };
-
-    const result = compareCompositionShadowTarget({
-      planned,
-      plannedNoticeCodes: ["background_image_unavailable"],
-      legacy,
-    });
-    expect(result.comparison).toMatchObject({
-      layerTopologyMismatch: true,
-      rotationMismatch: true,
-      backgroundMismatch: true,
-      noticeMismatch: true,
-    });
-    expect(result.mismatchCount).toBeGreaterThanOrEqual(4);
-  });
-
-  test("compares explicit Split scene identity, crops, and target geometry", () => {
-    const segments: SplitLayoutSegment[] = [
-      {
-        startSec: 0,
-        endSec: 5,
-        layout: "two-up",
-        topCxNorm: 0.25,
-        bottomCxNorm: 0.75,
-      },
-    ];
-    const legacy = buildLegacyCompositionShadowTarget({
-      targetId: "vertical",
-      aspectRatio: "9:16",
-      target: { width: 1080, height: 1920 },
-      source: { width: 1920, height: 1080 },
-      durationSec: 5,
-      requestedMode: "split",
-      automaticSegments: null,
-      splitSegments: segments,
-      speakerLayoutOverrides: [],
-      background: null,
-    });
-    const planned: CompositionTargetPlan = {
-      id: "vertical",
-      aspectRatio: "9:16",
-      requestedMode: "split",
-      effectiveMode: "split",
-      canvas: { width: 1080, height: 1920, divisibleBy: 2 },
-      scenes: [
-        {
-          id: "split",
-          startSec: 0,
-          endSec: 5,
-          layers: [
-            {
-              id: "top",
-              kind: "source-video",
-              sourceRef: "source",
-              sourceCrop: { x: 0, y: 0, width: 1215, height: 1080 },
-              destination: { x: 0, y: 0, width: 1080, height: 960 },
-              fit: "cover",
-              rotationDeg: 0,
-              opacity: 1,
-              zIndex: 0,
-              speaker: {
-                role: "top",
-                transform: {
-                  role: "top",
-                  frameX: 0,
-                  frameY: 0,
-                  frameWidth: 1,
-                  frameHeight: 0.5,
-                  rotationDeg: 0,
-                  cropCxNorm: 0.25,
-                  cropCyNorm: 0.5,
-                  cropZoom: 1,
-                },
-                defaultTransform: {
-                  role: "top",
-                  frameX: 0,
-                  frameY: 0,
-                  frameWidth: 1,
-                  frameHeight: 0.5,
-                  rotationDeg: 0,
-                  cropCxNorm: 0.25,
-                  cropCyNorm: 0.5,
-                  cropZoom: 1,
-                },
-                overrideId: null,
-              },
-            },
-            {
-              id: "bottom",
-              kind: "source-video",
-              sourceRef: "source",
-              sourceCrop: { x: 705, y: 0, width: 1215, height: 1080 },
-              destination: { x: 0, y: 960, width: 1080, height: 960 },
-              fit: "cover",
-              rotationDeg: 0,
-              opacity: 1,
-              zIndex: 1,
-              speaker: {
-                role: "bottom",
-                transform: {
-                  role: "bottom",
-                  frameX: 0,
-                  frameY: 0.5,
-                  frameWidth: 1,
-                  frameHeight: 0.5,
-                  rotationDeg: 0,
-                  cropCxNorm: 0.75,
-                  cropCyNorm: 0.5,
-                  cropZoom: 1,
-                },
-                defaultTransform: {
-                  role: "bottom",
-                  frameX: 0,
-                  frameY: 0.5,
-                  frameWidth: 1,
-                  frameHeight: 0.5,
-                  rotationDeg: 0,
-                  cropCxNorm: 0.75,
-                  cropCyNorm: 0.5,
-                  cropZoom: 1,
-                },
-                overrideId: null,
-              },
-            },
-          ],
-        },
-      ],
-    };
-
-    expect(
-      compareCompositionShadowTarget({
-        planned,
-        plannedNoticeCodes: [],
-        legacy,
-      }),
-    ).toMatchObject({ mismatchCount: 0 });
-  });
-
-  test("makes an active legacy EMA reframe an explicit shadow mismatch", () => {
-    const legacy = buildLegacyCompositionShadowTarget({
-      targetId: "vertical",
-      aspectRatio: "9:16",
-      target: { width: 1080, height: 1920 },
-      source: { width: 1920, height: 1080 },
-      durationSec: 30,
-      requestedMode: "auto",
-      automaticSegments: null,
-      dynamicReframe: true,
-      speakerLayoutOverrides: [],
-      background: null,
-    });
-    const planned: CompositionTargetPlan = {
-      id: "vertical",
-      aspectRatio: "9:16",
-      requestedMode: "auto",
-      effectiveMode: "center",
-      canvas: { width: 1080, height: 1920, divisibleBy: 2 },
-      scenes: [
-        {
-          id: "fallback",
-          startSec: 0,
-          endSec: 30,
-          layers: [
-            {
-              id: "source",
-              kind: "source-video",
-              sourceRef: "source",
-              sourceCrop: { x: 656, y: 0, width: 608, height: 1080 },
-              destination: { x: 0, y: 0, width: 1080, height: 1920 },
-              fit: "cover",
-              rotationDeg: 0,
-              opacity: 1,
-              zIndex: 0,
-            },
-          ],
-        },
-      ],
-    };
-
-    const result = compareCompositionShadowTarget({
-      planned,
-      plannedNoticeCodes: [],
-      legacy,
-    });
-    expect(result.comparison.dynamicReframeMismatch).toBe(true);
-    expect(result.mismatchCount).toBeGreaterThan(0);
-  });
-});
 
 describe("resolveRenderTimingForClip", () => {
   test("does not cap caption-only renders to market clip duration", () => {
@@ -444,14 +346,24 @@ describe("generateAssFromSlice (caption fidelity)", () => {
   });
 
   test("renders a highlight box as a thick colored border on the active word", () => {
-    const ass = generateAssFromSlice([utterance], 0, "9:16", preset("highlighter"));
+    const ass = generateAssFromSlice(
+      [utterance],
+      0,
+      "9:16",
+      preset("highlighter"),
+    );
     // highlighter highlightBoxColor #FF3CAC -> BGR &H00AC3CFF
     expect(ass).toContain("\\3c&H00AC3CFF&");
     expect(ass).toMatch(/\\bord\d/);
   });
 
   test("renders glow as a colored, blurred shadow", () => {
-    const ass = generateAssFromSlice([utterance], 0, "9:16", preset("neon-dreams"));
+    const ass = generateAssFromSlice(
+      [utterance],
+      0,
+      "9:16",
+      preset("neon-dreams"),
+    );
     expect(ass).toContain("\\4c");
     expect(ass).toContain("\\blur");
   });
@@ -564,10 +476,22 @@ describe("generateSrtFromSlice (no-preset fallback)", () => {
       ["Hello,", 0, 0.4],
       ["world.", 0.4, 0.8],
     ]);
-    const withPunct = generateSrtFromSlice([utterance], 0, undefined, null, true);
+    const withPunct = generateSrtFromSlice(
+      [utterance],
+      0,
+      undefined,
+      null,
+      true,
+    );
     expect(withPunct).toContain("Hello, world.");
 
-    const noPunct = generateSrtFromSlice([utterance], 0, undefined, null, false);
+    const noPunct = generateSrtFromSlice(
+      [utterance],
+      0,
+      undefined,
+      null,
+      false,
+    );
     // The SRT timestamp line itself uses "," (e.g. "00:00:00,000") — only the
     // cue TEXT line (the last of the 3-line cue block) should be punctuation-free.
     const textLine = noPunct.trim().split("\n")[2]!;
@@ -581,157 +505,6 @@ describe("generateSrtFromSlice (no-preset fallback)", () => {
     ]);
     const srt = generateSrtFromSlice([utterance], 0, undefined, null, false);
     expect(srt).toBe("");
-  });
-});
-
-describe("buildCropAndScaleFilter (auto-reframe)", () => {
-  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true, fps: 30 };
-
-  test("uses a static center crop without a reframe spec", () => {
-    const f = buildCropAndScaleFilter(probe, "9:16");
-    expect(f).toContain("crop=");
-    expect(f).not.toContain("sendcmd");
-    expect(f).toContain("scale=1080:1920");
-  });
-
-  test("drives crop x via sendcmd when reframing landscape -> portrait", () => {
-    const f = buildCropAndScaleFilter(probe, "9:16", {
-      scriptPath: "/tmp/r.txt",
-      cropName: "crop@reframe",
-    });
-    expect(f).toContain("sendcmd=f='/tmp/r.txt'");
-    expect(f).toContain("crop@reframe=w=608:h=1080");
-    expect(f).toContain("scale=1080:1920");
-  });
-
-  test("does not reframe 16:9 from a 16:9 source (no horizontal crop)", () => {
-    const f = buildCropAndScaleFilter(probe, "16:9", {
-      scriptPath: "/tmp/r.txt",
-      cropName: "crop@reframe",
-    });
-    expect(f).not.toContain("sendcmd");
-  });
-});
-
-describe("shouldRunAutoReframeDetection (vizard-parity Phase C-2 stage 1 — framing modes)", () => {
-  test("auto mode (the default) runs detection", () => {
-    expect(shouldRunAutoReframeDetection(studioEditsSchema.parse({}))).toBe(true);
-    expect(
-      shouldRunAutoReframeDetection(
-        studioEditsSchema.parse({ framing: { mode: "auto" } }),
-      ),
-    ).toBe(true);
-  });
-
-  test("center mode skips detection entirely", () => {
-    expect(
-      shouldRunAutoReframeDetection(
-        studioEditsSchema.parse({ framing: { mode: "center" } }),
-      ),
-    ).toBe(false);
-  });
-
-  test("split mode (split packet B) skips the SINGLE-face gate — it runs its own multi-face detection separately", () => {
-    expect(
-      shouldRunAutoReframeDetection(
-        studioEditsSchema.parse({ framing: { mode: "split" } }),
-      ),
-    ).toBe(false);
-  });
-
-  test("fit (background active) skips detection regardless of framing.mode", () => {
-    const withAuto = studioEditsSchema.parse({
-      background: { mode: "color", color: "#112233", imageUrl: null },
-      framing: { mode: "auto" },
-    });
-    expect(shouldRunAutoReframeDetection(withAuto)).toBe(false);
-
-    const withCenter = studioEditsSchema.parse({
-      background: { mode: "color", color: "#112233", imageUrl: null },
-      framing: { mode: "center" },
-    });
-    expect(shouldRunAutoReframeDetection(withCenter)).toBe(false);
-  });
-});
-
-describe("framingForcesPerOutputRender (split packet B — batch-encoder gate)", () => {
-  test("true for split mode", () => {
-    expect(
-      framingForcesPerOutputRender(studioEditsSchema.parse({ framing: { mode: "split" } })),
-    ).toBe(true);
-  });
-
-  test("false for auto/center — those already route through buildMultiVideoArgs fine", () => {
-    expect(
-      framingForcesPerOutputRender(studioEditsSchema.parse({ framing: { mode: "auto" } })),
-    ).toBe(false);
-    expect(
-      framingForcesPerOutputRender(studioEditsSchema.parse({ framing: { mode: "center" } })),
-    ).toBe(false);
-  });
-
-  test("false when background wins as 'fit' even though framing.mode is 'split'", () => {
-    // resolveEffectiveFramingMode: background !== "off" always wins as "fit",
-    // so the effective mode here is "fit", not "split" — backgroundPlan
-    // (not this function) is what forces the per-output path in that case.
-    const withBackground = studioEditsSchema.parse({
-      background: { mode: "color", color: "#112233", imageUrl: null },
-      framing: { mode: "split" },
-    });
-    expect(framingForcesPerOutputRender(withBackground)).toBe(false);
-  });
-
-  // L1 (adversarial review): the WORKER_SPLIT=0 kill switch must route split
-  // through the SAME batch path "auto"/"center" use, not force the
-  // per-output path just to immediately fall back inside it on every render.
-  test("false for split mode when WORKER_SPLIT=0, even though the effective mode is still 'split'", () => {
-    expect(
-      framingForcesPerOutputRender(
-        studioEditsSchema.parse({ framing: { mode: "split" } }),
-        parseRenderConfig({ WORKER_SPLIT: "0" }),
-      ),
-    ).toBe(false);
-  });
-
-  // Screen packet B: "screen" gets the exact same per-output-forcing
-  // treatment as "split", gated by its own WORKER_SCREEN_LAYOUT kill switch.
-  test("true for screen mode", () => {
-    expect(
-      framingForcesPerOutputRender(studioEditsSchema.parse({ framing: { mode: "screen" } })),
-    ).toBe(true);
-  });
-
-  test("false when background wins as 'fit' even though framing.mode is 'screen'", () => {
-    const withBackground = studioEditsSchema.parse({
-      background: { mode: "color", color: "#112233", imageUrl: null },
-      framing: { mode: "screen" },
-    });
-    expect(framingForcesPerOutputRender(withBackground)).toBe(false);
-  });
-
-  test("false for screen mode when WORKER_SCREEN_LAYOUT=0 (fully reverts routing, mirrors split's kill switch)", () => {
-    expect(
-      framingForcesPerOutputRender(
-        studioEditsSchema.parse({ framing: { mode: "screen" } }),
-        parseRenderConfig({ WORKER_SCREEN_LAYOUT: "0" }),
-      ),
-    ).toBe(false);
-  });
-
-  // Cross-check: each kill switch only ever affects its own mode.
-  test("WORKER_SCREEN_LAYOUT=0 does not affect split, and WORKER_SPLIT=0 does not affect screen", () => {
-    expect(
-      framingForcesPerOutputRender(
-        studioEditsSchema.parse({ framing: { mode: "split" } }),
-        parseRenderConfig({ WORKER_SCREEN_LAYOUT: "0" }),
-      ),
-    ).toBe(true);
-    expect(
-      framingForcesPerOutputRender(
-        studioEditsSchema.parse({ framing: { mode: "screen" } }),
-        parseRenderConfig({ WORKER_SPLIT: "0" }),
-      ),
-    ).toBe(true);
   });
 });
 
@@ -751,7 +524,6 @@ describe("decidePipUsage (M6 — the PiP decision matrix, ordered, full coverage
   // isolate that gate, proving the ORDER (first blocking reason wins) as
   // well as each individual gate.
   const passingBase = {
-    pipDetectEnabled: true,
     segmentExtracted: true,
     detection: { movingPxFrac: 0.1, insufficientSamples: false },
     selectedRect: rect,
@@ -759,25 +531,19 @@ describe("decidePipUsage (M6 — the PiP decision matrix, ordered, full coverage
   };
 
   test("everything passes: ok, useRect true", () => {
-    expect(decidePipUsage(passingBase)).toEqual({ useRect: true, reason: "ok" });
+    expect(decidePipUsage(passingBase)).toEqual({
+      useRect: true,
+      reason: "ok",
+    });
   });
 
-  test("1. disabled wins over every other failing gate", () => {
+  test("1. segment_extract_failed when no segment is available", () => {
     expect(
       decidePipUsage({
         ...passingBase,
-        pipDetectEnabled: false,
         segmentExtracted: false,
         detection: null,
-        selectedRect: null,
-        faceConfirmed: false,
       }),
-    ).toEqual({ useRect: false, reason: "disabled" });
-  });
-
-  test("2. segment_extract_failed (when enabled but no segment)", () => {
-    expect(
-      decidePipUsage({ ...passingBase, segmentExtracted: false, detection: null }),
     ).toEqual({ useRect: false, reason: "segment_extract_failed" });
   });
 
@@ -846,63 +612,17 @@ describe("decidePipUsage (M6 — the PiP decision matrix, ordered, full coverage
     });
   });
 
-  test("8. pip_too_small (M3 — only checked when `fit` is provided)", () => {
-    expect(
-      decidePipUsage({ ...passingBase, fit: { fittedCropWidth: 100, tileWidth: 1000 } }),
-    ).toEqual({ useRect: false, reason: "pip_too_small" });
-    expect(
-      decidePipUsage({ ...passingBase, fit: { fittedCropWidth: 500, tileWidth: 1000 } }),
-    ).toEqual({ useRect: true, reason: "ok" });
-  });
-
-  test("omitting `fit` entirely skips the pip_too_small gate (clip-level check)", () => {
-    expect(decidePipUsage({ ...passingBase, fit: null })).toEqual({
-      useRect: true,
-      reason: "ok",
-    });
-  });
-
 });
 
 // M2 (adversarial review): `resolvePipAnalysis` is the extracted read-
-// before-detect/write-after-detect wiring — `detect`/`persist` are fake
-// spies here so these tests never touch `pip_detect.py` or a database.
-// Replaces the old "persisted-vs-fresh equivalence" test above (deleted):
-// that test only proved `decidePipUsage` doesn't care about its caller's
-// shape, which was true by construction (it takes plain values) and never
-// exercised any of `resolvePipAnalysis`'s actual read/write branching.
-describe("resolvePipAnalysis (M2 — PiP persistence read/write wiring, DI'd detect/persist)", () => {
-  const rect = { x: 0.8, y: 0.8, w: 0.15, h: 0.15 };
-  const qualifyingCandidate = {
-    x: 0.79,
-    y: 0.78,
-    w: 0.2,
-    h: 0.2,
-    areaFrac: 0.04,
-    fillFrac: 0.9,
-    cornerAdjacent: true,
-    medianDiffMean: 4.6,
-  };
-
-  function makeSpies(overrides?: {
-    detectResult?: PipDetectionResult | null;
-    persistShouldThrow?: boolean;
-  }) {
-    const detectCalls: unknown[] = [];
-    const persistCalls: ClipLayoutAnalysis[] = [];
-    const detect = async (params: unknown) => {
-      detectCalls.push(params);
-      return overrides?.detectResult ?? null;
-    };
-    const persist = async (envelope: ClipLayoutAnalysis) => {
-      persistCalls.push(envelope);
-      if (overrides?.persistShouldThrow) throw new Error("persist failed");
-    };
-    return { detect, persist, detectCalls, persistCalls };
-  }
-
+// PiP resolution only reads exact evidence or performs fresh detection.
+// Persistence happens later, after the complete Screen evidence is conclusive.
+describe("resolvePipAnalysis", () => {
   const persistedEnvelope: ClipLayoutAnalysis = {
-    version: 1,
+    version: 2,
+    engine: "screen-layout-v1",
+    sourceIdentity: "source:project-1",
+    inputFingerprint: "0123456789abcdef",
     analyzedAtISO: "2026-08-06T09:00:00.000Z",
     sourceStartSec: 12.5,
     sourceDurationSec: 30,
@@ -910,151 +630,43 @@ describe("resolvePipAnalysis (M2 — PiP persistence read/write wiring, DI'd det
     clipEndSec: 42.5,
     movingPxFrac: 0.04,
     insufficientSamples: false,
-    pipRect: rect,
+    pipRect: { x: 0.8, y: 0.8, w: 0.15, h: 0.15 },
     pipUsable: true,
+    sourceWidth: 1920,
+    sourceHeight: 1080,
+    deletedRanges: [],
+    faceBandSegments: null,
   };
 
-  test("persisted-hit skips detect() entirely", async () => {
-    const { detect, persist, detectCalls, persistCalls } = makeSpies();
+  test("exact evidence skips detection", async () => {
+    let detectCalls = 0;
     const result = await resolvePipAnalysis({
       persisted: persistedEnvelope,
-      pipDetectEnabled: true,
       detectInput: { path: "/tmp/seg.mp4", startSec: 0 },
       startSec: 12.5,
       durationSec: 30,
-      rawClipStartSec: 12.5,
-      rawClipEndSec: 42.5,
-      detect,
-      persist,
-    });
-    expect(detectCalls.length).toBe(0);
-    expect(persistCalls.length).toBe(0);
-    expect(result).toEqual({
-      detectionResult: { movingPxFrac: 0.04, insufficientSamples: false },
-      selectedRect: rect,
-      candidateCount: null,
-      analysisSource: "persisted",
-    });
-  });
-
-  test("analyzed-negative (selectedRect null) still persists, with pipUsable: false", async () => {
-    const { detect, persist, detectCalls, persistCalls } = makeSpies({
-      detectResult: { movingPxFrac: 0.03, insufficientSamples: false, candidates: [] },
-    });
-    const result = await resolvePipAnalysis({
-      persisted: null,
-      pipDetectEnabled: true,
-      detectInput: { path: "/tmp/seg.mp4", startSec: 0 },
-      startSec: 12.5,
-      durationSec: 30,
-      rawClipStartSec: 12.5,
-      rawClipEndSec: 42.5,
-      detect,
-      persist,
-    });
-    expect(detectCalls.length).toBe(1);
-    expect(result.selectedRect).toBeNull();
-    expect(result.analysisSource).toBe("fresh");
-    expect(persistCalls.length).toBe(1);
-    expect(persistCalls[0]).toMatchObject({
-      pipRect: null,
-      pipUsable: false,
-      sourceStartSec: 12.5,
-      sourceDurationSec: 30,
-    });
-  });
-
-  test("fresh detection WITH a qualifying candidate does NOT persist (deferred to the caller, which alone knows this render's pipUsable via decidePipUsage)", async () => {
-    const { detect, persist, persistCalls } = makeSpies({
-      detectResult: {
-        movingPxFrac: 0.15,
-        insufficientSamples: false,
-        candidates: [qualifyingCandidate],
+      detect: async () => {
+        detectCalls += 1;
+        return null;
       },
     });
+    expect(detectCalls).toBe(0);
+    expect(result.analysisSource).toBe("persisted");
+    expect(result.selectedRect).toEqual(persistedEnvelope.pipRect);
+  });
+
+  test("fresh detection returns selected facts without persisting a partial envelope", async () => {
     const result = await resolvePipAnalysis({
       persisted: null,
-      pipDetectEnabled: true,
       detectInput: { path: "/tmp/seg.mp4", startSec: 0 },
       startSec: 12.5,
       durationSec: 30,
-      rawClipStartSec: 12.5,
-      rawClipEndSec: 42.5,
-      detect,
-      persist,
+      detect: async () => ({
+        movingPxFrac: 0.03,
+        insufficientSamples: false,
+        candidates: [],
+      }),
     });
-    expect(result.selectedRect).not.toBeNull();
-    expect(result.analysisSource).toBe("fresh");
-    expect(persistCalls.length).toBe(0);
-  });
-
-  test("WORKER_PIP_DETECT=0 (pipDetectEnabled: false) calls neither detect() nor persist()", async () => {
-    const { detect, persist, detectCalls, persistCalls } = makeSpies({
-      detectResult: { movingPxFrac: 0.15, insufficientSamples: false, candidates: [qualifyingCandidate] },
-    });
-    const result = await resolvePipAnalysis({
-      persisted: null,
-      pipDetectEnabled: false,
-      detectInput: { path: "/tmp/seg.mp4", startSec: 0 },
-      startSec: 12.5,
-      durationSec: 30,
-      rawClipStartSec: 12.5,
-      rawClipEndSec: 42.5,
-      detect,
-      persist,
-    });
-    expect(detectCalls.length).toBe(0);
-    expect(persistCalls.length).toBe(0);
-    expect(result).toEqual({
-      detectionResult: null,
-      selectedRect: null,
-      candidateCount: null,
-      analysisSource: null,
-    });
-  });
-
-  test("no detectInput (segment extraction failed) calls neither, even when detection is enabled", async () => {
-    const { detect, persist, detectCalls, persistCalls } = makeSpies();
-    const result = await resolvePipAnalysis({
-      persisted: null,
-      pipDetectEnabled: true,
-      detectInput: null,
-      startSec: 12.5,
-      durationSec: 30,
-      rawClipStartSec: 12.5,
-      rawClipEndSec: 42.5,
-      detect,
-      persist,
-    });
-    expect(detectCalls.length).toBe(0);
-    expect(persistCalls.length).toBe(0);
-    expect(result.analysisSource).toBeNull();
-  });
-
-  test("persist() throwing logs-and-continues — resolvePipAnalysis still returns normally", async () => {
-    const { detect, persist, persistCalls } = makeSpies({
-      detectResult: { movingPxFrac: 0.03, insufficientSamples: false, candidates: [] },
-      persistShouldThrow: true,
-    });
-    let result: Awaited<ReturnType<typeof resolvePipAnalysis>> | undefined;
-    let thrown: unknown;
-    try {
-      result = await resolvePipAnalysis({
-        persisted: null,
-        pipDetectEnabled: true,
-        detectInput: { path: "/tmp/seg.mp4", startSec: 0 },
-        startSec: 12.5,
-        durationSec: 30,
-        rawClipStartSec: 12.5,
-        rawClipEndSec: 42.5,
-        detect,
-        persist,
-      });
-    } catch (e) {
-      thrown = e;
-    }
-    expect(thrown).toBeUndefined();
-    expect(persistCalls.length).toBe(1);
     expect(result).toEqual({
       detectionResult: { movingPxFrac: 0.03, insufficientSamples: false },
       selectedRect: null,
@@ -1062,10 +674,13 @@ describe("resolvePipAnalysis (M2 — PiP persistence read/write wiring, DI'd det
       analysisSource: "fresh",
     });
   });
-});
 
+});
 describe("layoutAnalysisMatchesWindow (PiP persistence packet B — window-match semantics)", () => {
-  const analysis: Pick<ClipLayoutAnalysis, "sourceStartSec" | "sourceDurationSec"> = {
+  const analysis: Pick<
+    ClipLayoutAnalysis,
+    "sourceStartSec" | "sourceDurationSec"
+  > = {
     sourceStartSec: 12.5,
     sourceDurationSec: 30,
   };
@@ -1080,8 +695,12 @@ describe("layoutAnalysisMatchesWindow (PiP persistence packet B — window-match
 
   test("exactly at the epsilon boundary still matches (<=, not <) — integer diffs to avoid float rounding at the assertion", () => {
     const wholeNumberWindow = { sourceStartSec: 100, sourceDurationSec: 200 };
-    expect(layoutAnalysisMatchesWindow(wholeNumberWindow, 101, 200, 1)).toBe(true);
-    expect(layoutAnalysisMatchesWindow(wholeNumberWindow, 100, 201, 1)).toBe(true);
+    expect(layoutAnalysisMatchesWindow(wholeNumberWindow, 101, 200, 1)).toBe(
+      true,
+    );
+    expect(layoutAnalysisMatchesWindow(wholeNumberWindow, 100, 201, 1)).toBe(
+      true,
+    );
   });
 
   test("just past the epsilon boundary on startSec does not match", () => {
@@ -1212,14 +831,22 @@ describe("decideSplitFallback (split packet B — fallback-decision matrix)", ()
       decideSplitFallback({
         hasBrollPlan: true,
         detectionAvailable: true,
-        plan: { segments: [{ startSec: 0, endSec: 1, layout: "single", cxNorm: 0.5 }], clusterCount: 2, cappedFromSegmentCount: null },
+        plan: {
+          segments: [{ startSec: 0, endSec: 1, layout: "single", cxNorm: 0.5 }],
+          clusterCount: 2,
+          cappedFromSegmentCount: null,
+        },
       }),
     ).toBe("broll_conflict");
   });
 
   test("detection unavailable (no python/opencv/model, or extraction failed)", () => {
     expect(
-      decideSplitFallback({ hasBrollPlan: false, detectionAvailable: false, plan: null }),
+      decideSplitFallback({
+        hasBrollPlan: false,
+        detectionAvailable: false,
+        plan: null,
+      }),
     ).toBe("detection_unavailable");
   });
 
@@ -1250,7 +877,13 @@ describe("decideSplitFallback (split packet B — fallback-decision matrix)", ()
         detectionAvailable: true,
         plan: {
           segments: [
-            { startSec: 0, endSec: 1, layout: "two-up", topCxNorm: 0.3, bottomCxNorm: 0.7 },
+            {
+              startSec: 0,
+              endSec: 1,
+              layout: "two-up",
+              topCxNorm: 0.3,
+              bottomCxNorm: 0.7,
+            },
           ],
           clusterCount: 2,
           cappedFromSegmentCount: null,
@@ -1285,8 +918,12 @@ describe("decideSplitFallback (split packet B — fallback-decision matrix)", ()
 });
 
 describe("buildTransitionFilter (vizard-parity Phase C — apply-to-all + fade-black)", () => {
-  function transition(type: "none" | "fade" | "fade-black" | "dip-white", durationSec = 0.4) {
-    return studioEditsSchema.parse({ transition: { type, durationSec } }).transition;
+  function transition(
+    type: "none" | "fade" | "fade-black" | "dip-white",
+    durationSec = 0.4,
+  ) {
+    return studioEditsSchema.parse({ transition: { type, durationSec } })
+      .transition;
   }
 
   test("none produces no filter", () => {
@@ -1320,141 +957,6 @@ describe("buildTransitionFilter (vizard-parity Phase C — apply-to-all + fade-b
     const f = buildTransitionFilter(transition("fade-black", 2), 1)!;
     expect(f).toContain("fade=t=in:st=0:d=0.500:color=black");
     expect(f).toContain("fade=t=out:st=0.500:d=0.500:color=black");
-  });
-});
-
-describe("buildFitAndBackgroundFilter (canvas background, vizard-parity Phase C item 2)", () => {
-  test("color mode: scale-to-fit then pad with the hex color, no crop", () => {
-    const parts = buildFitAndBackgroundFilter({
-      aspectRatio: "9:16",
-      background: { mode: "color", color: "#112233", imagePath: null },
-      videoInputLabel: "[0:v]",
-      outputLabel: "[outv]",
-    });
-    expect(parts).toHaveLength(1);
-    expect(parts[0]).toBe(
-      "[0:v]scale=1080:1920:force_original_aspect_ratio=decrease:force_divisible_by=2," +
-        "pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=0x112233,format=yuv420p[outv]",
-    );
-    expect(parts[0]).not.toContain("crop=");
-  });
-
-  test("color mode with no color set falls back to black", () => {
-    const parts = buildFitAndBackgroundFilter({
-      aspectRatio: "9:16",
-      background: { mode: "color", color: null, imagePath: null },
-      videoInputLabel: "[0:v]",
-      outputLabel: "[outv]",
-    });
-    expect(parts[0]).toContain("color=0x000000");
-  });
-
-  test("image mode: cover-fit the background image, scale-to-fit the video, overlay centered", () => {
-    const parts = buildFitAndBackgroundFilter({
-      aspectRatio: "9:16",
-      background: { mode: "image", color: "#112233", imagePath: "/tmp/bg.png" },
-      videoInputLabel: "[0:v]",
-      outputLabel: "[outv]",
-      imageInputIndex: 1,
-      fps: 60,
-    });
-    expect(parts).toEqual([
-      "[1:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=60[bgimg]",
-      "[0:v]scale=1080:1920:force_original_aspect_ratio=decrease:force_divisible_by=2[bgfitv]",
-      "[bgimg][bgfitv]overlay=(W-w)/2:(H-h)/2,format=yuv420p[outv]",
-    ]);
-  });
-
-  // Regression test for the HIGH finding: overlay's output inherits the MAIN
-  // (first) framesync input's rate, and the still image is that main input —
-  // without an explicit `fps=` on the [bgimg] chain the image2 demuxer's
-  // default of 25fps silently overrides the real source rate. This asserts
-  // the fps token is present regardless of the exact numeric value, so it
-  // fails loudly if the filter is ever refactored to drop it again.
-  test("image mode always pins the [bgimg] chain's fps, regardless of source rate", () => {
-    for (const fps of [23.976, 24, 25, 29.97, 30, 50, 60]) {
-      const parts = buildFitAndBackgroundFilter({
-        aspectRatio: "9:16",
-        background: { mode: "image", color: "#112233", imagePath: "/tmp/bg.png" },
-        videoInputLabel: "[0:v]",
-        outputLabel: "[outv]",
-        imageInputIndex: 1,
-        fps,
-      });
-      expect(parts[0]).toContain(`,fps=${fps}[bgimg]`);
-    }
-  });
-
-  test("image mode falls back to DEFAULT_BACKGROUND_FPS (30) when fps is omitted or non-positive", () => {
-    const omitted = buildFitAndBackgroundFilter({
-      aspectRatio: "9:16",
-      background: { mode: "image", color: "#112233", imagePath: "/tmp/bg.png" },
-      videoInputLabel: "[0:v]",
-      outputLabel: "[outv]",
-      imageInputIndex: 1,
-    });
-    expect(omitted[0]).toContain(",fps=30[bgimg]");
-
-    const zero = buildFitAndBackgroundFilter({
-      aspectRatio: "9:16",
-      background: { mode: "image", color: "#112233", imagePath: "/tmp/bg.png" },
-      videoInputLabel: "[0:v]",
-      outputLabel: "[outv]",
-      imageInputIndex: 1,
-      fps: 0,
-    });
-    expect(zero[0]).toContain(",fps=30[bgimg]");
-  });
-
-  test("color mode never emits an fps token (overlay is never invoked)", () => {
-    const parts = buildFitAndBackgroundFilter({
-      aspectRatio: "9:16",
-      background: { mode: "color", color: "#112233", imagePath: null },
-      videoInputLabel: "[0:v]",
-      outputLabel: "[outv]",
-      fps: 60,
-    });
-    expect(parts[0]).not.toContain("fps=");
-  });
-
-  test("image mode without a downloaded image (null imagePath) falls back to the color pad", () => {
-    const parts = buildFitAndBackgroundFilter({
-      aspectRatio: "9:16",
-      background: { mode: "image", color: "#112233", imagePath: null },
-      videoInputLabel: "[0:v]",
-      outputLabel: "[outv]",
-      imageInputIndex: null,
-    });
-    expect(parts).toHaveLength(1);
-    expect(parts[0]).toContain("pad=1080:1920");
-    expect(parts[0]).toContain("color=0x112233");
-  });
-
-  test("trailingChain (text layers + captions) folds into the final part for both modes", () => {
-    const color = buildFitAndBackgroundFilter({
-      aspectRatio: "9:16",
-      background: { mode: "color", color: "#112233", imagePath: null },
-      videoInputLabel: "[0:v]",
-      outputLabel: "[outv]",
-      trailingChain: "drawtext=text='hi',ass='/tmp/c.ass'",
-    });
-    expect(color[0]).toBe(
-      "[0:v]scale=1080:1920:force_original_aspect_ratio=decrease:force_divisible_by=2," +
-        "pad=1080:1920:(ow-iw)/2:(oh-ih)/2:color=0x112233,format=yuv420p," +
-        "drawtext=text='hi',ass='/tmp/c.ass'[outv]",
-    );
-
-    const image = buildFitAndBackgroundFilter({
-      aspectRatio: "9:16",
-      background: { mode: "image", color: "#112233", imagePath: "/tmp/bg.png" },
-      videoInputLabel: "[0:v]",
-      outputLabel: "[outv]",
-      imageInputIndex: 1,
-      trailingChain: "drawtext=text='hi'",
-    });
-    expect(image[2]).toBe(
-      "[bgimg][bgfitv]overlay=(W-w)/2:(H-h)/2,format=yuv420p,drawtext=text='hi'[outv]",
-    );
   });
 });
 
@@ -1497,9 +999,15 @@ describe("resolveBackgroundPlanForDownloadedImage (HIGH: non-decodable backgroun
 });
 
 describe("buildSingleVideoArgs with a canvas background active", () => {
-  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true, fps: 30 };
+  const probe = {
+    width: 1920,
+    height: 1080,
+    hasVideo: true,
+    hasAudio: true,
+    fps: 30,
+  };
 
-  test("color mode replaces crop+scale with fit+pad and adds no extra input", () => {
+  test("color Fit plan compiles its explicit full-source crop and pad", () => {
     const args = buildSingleVideoArgs({
       sourcePath: "/tmp/src.mp4",
       outputPath: "/tmp/out.mp4",
@@ -1513,7 +1021,7 @@ describe("buildSingleVideoArgs with a canvas background active", () => {
     const graph = args[args.indexOf("-filter_complex") + 1]!;
     expect(graph).toContain("pad=1080:1920");
     expect(graph).toContain("color=0x112233");
-    expect(graph).not.toContain("crop=");
+    expect(graph).toContain("crop=1920:1080:0:0");
     expect(args.filter((a) => a === "-i")).toHaveLength(1); // source only
   });
 
@@ -1546,7 +1054,7 @@ describe("buildSingleVideoArgs with a canvas background active", () => {
     // fps=30 pinned from probe.fps (Opus review Finding 1 — overlay's output
     // otherwise inherits the still image's demuxer-default 25fps).
     expect(graph).toContain(
-      "[1:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=30[bgimg]",
+      "[1:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=30[composition_bg]",
     );
     // logo overlays [outvbase] (the composed fit+background frame) exactly
     // as it does for the crop-to-fill path — input index shifted to 2 since
@@ -1567,7 +1075,7 @@ describe("buildSingleVideoArgs with a canvas background active", () => {
       background: { mode: "image", color: "#112233", imagePath: "/tmp/bg.png" },
     });
     const graph = args[args.indexOf("-filter_complex") + 1]!;
-    expect(graph).toContain(",fps=59.94[bgimg]");
+    expect(graph).toContain(",fps=59.94[composition_bg]");
   });
 
   test("music input index shifts correctly when a background image input is present", () => {
@@ -1636,413 +1144,14 @@ describe("buildSingleVideoArgs with a canvas background active", () => {
   });
 });
 
-describe("buildSingleVideoArgs with a split plan active (split packet B)", () => {
-  const probe = { width: 640, height: 360, hasVideo: true, hasAudio: true, fps: 30 };
-
-  test("replaces crop+scale with the segment-concat split filtergraph, reading [0:v] (uncut)", () => {
-    const args = buildSingleVideoArgs({
-      sourcePath: "/tmp/src.mp4",
-      outputPath: "/tmp/out.mp4",
-      startSec: 0,
-      endSec: 10,
-      aspectRatio: "9:16",
-      probe,
-      srtPath: null,
-      split: {
-        segments: [
-          { startSec: 0, endSec: 5, layout: "two-up", topCxNorm: 0.4, bottomCxNorm: 0.7 },
-          { startSec: 5, endSec: 10, layout: "single", cxNorm: 0.5 },
-        ],
-      },
-    });
-    const graph = args[args.indexOf("-filter_complex") + 1]!;
-    expect(graph).toContain("[0:v]split=2[split_seg0_src][split_seg1_src]");
-    expect(graph).toContain(
-      "trim=start=0.000:end=5.000,setpts=PTS-STARTPTS[split_seg0_t]",
-    );
-    expect(graph).toContain("vstack=inputs=2,format=yuv420p,setsar=1[split_seg0_out]");
-    expect(graph).toContain(
-      "trim=start=5.000:end=10.000,setpts=PTS-STARTPTS[split_seg1_t]",
-    );
-    expect(graph).toContain("[split_seg1_t]crop=");
-    expect(graph).toContain("[split_seg0_out][split_seg1_out]concat=n=2:v=1:a=0");
-    expect(graph).not.toMatch(/\[0:v\]crop=/); // the plain crop-and-scale fallback never runs
-  });
-
-  test("folds captions in as the concat's trailing chain, same [outv] contract", () => {
-    const args = buildSingleVideoArgs({
-      sourcePath: "/tmp/src.mp4",
-      outputPath: "/tmp/out.mp4",
-      startSec: 0,
-      endSec: 10,
-      aspectRatio: "9:16",
-      probe,
-      srtPath: "/tmp/x.srt",
-      split: { segments: [{ startSec: 0, endSec: 10, layout: "single", cxNorm: 0.5 }] },
-    });
-    const graph = args[args.indexOf("-filter_complex") + 1]!;
-    expect(graph).toContain("concat=n=1:v=1:a=0,format=yuv420p,subtitles=");
-    expect(args).toContain("-map");
-    expect(args[args.indexOf("-map") + 1]).toBe("[outv]");
-  });
-
-  test("applies AFTER cut-concat: reads [vcat], not [0:v], when the clip has real cuts", () => {
-    const cutPlan = buildClipCutPlan([{ startSec: 3, endSec: 4 }], { startSec: 0, endSec: 10 });
-    const args = buildSingleVideoArgs({
-      sourcePath: "/tmp/src.mp4",
-      outputPath: "/tmp/out.mp4",
-      startSec: 0,
-      endSec: 10,
-      aspectRatio: "9:16",
-      probe,
-      srtPath: null,
-      cutPlan,
-      split: { segments: [{ startSec: 0, endSec: 9, layout: "single", cxNorm: 0.5 }] },
-    });
-    const graph = args[args.indexOf("-filter_complex") + 1]!;
-    expect(graph).toContain("[vcat]split=1[split_seg0_src]");
-  });
-
-  test("an empty split.segments array falls through to the plain crop-and-scale path", () => {
-    const args = buildSingleVideoArgs({
-      sourcePath: "/tmp/src.mp4",
-      outputPath: "/tmp/out.mp4",
-      startSec: 0,
-      endSec: 10,
-      aspectRatio: "9:16",
-      probe,
-      srtPath: null,
-      split: { segments: [] },
-    });
-    const graph = args[args.indexOf("-filter_complex") + 1]!;
-    expect(graph).toContain("[0:v]crop=");
-    expect(graph).not.toContain("split_seg");
-  });
-
-  test("background (fit mode) wins over split when both are somehow present", () => {
-    const args = buildSingleVideoArgs({
-      sourcePath: "/tmp/src.mp4",
-      outputPath: "/tmp/out.mp4",
-      startSec: 0,
-      endSec: 10,
-      aspectRatio: "9:16",
-      probe,
-      srtPath: null,
-      background: { mode: "color", color: "#112233", imagePath: null },
-      split: { segments: [{ startSec: 0, endSec: 10, layout: "single", cxNorm: 0.5 }] },
-    });
-    const graph = args[args.indexOf("-filter_complex") + 1]!;
-    expect(graph).toContain("pad=1080:1920");
-    expect(graph).not.toContain("split_seg");
-  });
-
-  test("byte-identical to before this feature: omitting `split` (or passing it as null/undefined) never changes the graph", () => {
-    const baseParams = {
-      sourcePath: "/tmp/src.mp4",
-      outputPath: "/tmp/out.mp4",
-      startSec: 0,
-      endSec: 10,
-      aspectRatio: "9:16" as const,
-      probe,
-      srtPath: null,
-    };
-    const omitted = buildSingleVideoArgs(baseParams);
-    const withNull = buildSingleVideoArgs({ ...baseParams, split: null });
-    const withUndefined = buildSingleVideoArgs({ ...baseParams, split: undefined });
-    expect(withNull).toEqual(omitted);
-    expect(withUndefined).toEqual(omitted);
-  });
-});
-
-describe("buildSingleVideoArgs with a screen layout active (screen packet B)", () => {
-  const probe = { width: 640, height: 360, hasVideo: true, hasAudio: true, fps: 30 };
-
-  test("replaces crop+scale with the top-fit/bottom-speaker screen filtergraph, reading [0:v] (uncut)", () => {
-    const args = buildSingleVideoArgs({
-      sourcePath: "/tmp/src.mp4",
-      outputPath: "/tmp/out.mp4",
-      startSec: 0,
-      endSec: 10,
-      aspectRatio: "9:16",
-      probe,
-      srtPath: null,
-      screen: { bottom: { cx: 0.5 } },
-    });
-    const graph = args[args.indexOf("-filter_complex") + 1]!;
-    expect(graph).toContain("[0:v]split=2[screen_top_src][screen_bot_src]");
-    expect(graph).toContain("pad=1080:960:(ow-iw)/2:(oh-ih)/2:color=black");
-    expect(graph).toContain("[screen_bot_src]crop=");
-    expect(graph).toContain("vstack=inputs=2,format=yuv420p,setsar=1[outv]");
-    expect(graph).not.toMatch(/\[0:v\]crop=/); // the plain crop-and-scale fallback never runs
-  });
-
-  test("sendcmd-driven bottom tile (face detected) targets SCREEN_BOTTOM_CROP_NAME", () => {
-    const args = buildSingleVideoArgs({
-      sourcePath: "/tmp/src.mp4",
-      outputPath: "/tmp/out.mp4",
-      startSec: 0,
-      endSec: 10,
-      aspectRatio: "9:16",
-      probe,
-      srtPath: null,
-      screen: {
-        bottom: {
-          cx: 0.5,
-          reframe: { scriptPath: "/tmp/screen-bottom.txt", cropName: SCREEN_BOTTOM_CROP_NAME },
-        },
-      },
-    });
-    const graph = args[args.indexOf("-filter_complex") + 1]!;
-    expect(graph).toContain("sendcmd=f='/tmp/screen-bottom.txt'");
-    expect(graph).toContain(`${SCREEN_BOTTOM_CROP_NAME}=w=`);
-  });
-
-  test("static-center bottom tile (no face detected) has no sendcmd stage", () => {
-    const args = buildSingleVideoArgs({
-      sourcePath: "/tmp/src.mp4",
-      outputPath: "/tmp/out.mp4",
-      startSec: 0,
-      endSec: 10,
-      aspectRatio: "9:16",
-      probe,
-      srtPath: null,
-      screen: { bottom: { cx: 0.5 } },
-    });
-    const graph = args[args.indexOf("-filter_complex") + 1]!;
-    expect(graph).not.toContain("sendcmd");
-  });
-
-  test("folds captions in as the vstack's trailing chain, same [outv] contract", () => {
-    const args = buildSingleVideoArgs({
-      sourcePath: "/tmp/src.mp4",
-      outputPath: "/tmp/out.mp4",
-      startSec: 0,
-      endSec: 10,
-      aspectRatio: "9:16",
-      probe,
-      srtPath: "/tmp/x.srt",
-      screen: { bottom: { cx: 0.5 } },
-    });
-    const graph = args[args.indexOf("-filter_complex") + 1]!;
-    expect(graph).toContain("vstack=inputs=2,format=yuv420p,setsar=1,subtitles=");
-    expect(args).toContain("-map");
-    expect(args[args.indexOf("-map") + 1]).toBe("[outv]");
-  });
-
-  test("applies AFTER cut-concat: reads [vcat], not [0:v], when the clip has real cuts", () => {
-    const cutPlan = buildClipCutPlan([{ startSec: 3, endSec: 4 }], { startSec: 0, endSec: 10 });
-    const args = buildSingleVideoArgs({
-      sourcePath: "/tmp/src.mp4",
-      outputPath: "/tmp/out.mp4",
-      startSec: 0,
-      endSec: 10,
-      aspectRatio: "9:16",
-      probe,
-      srtPath: null,
-      cutPlan,
-      screen: { bottom: { cx: 0.5 } },
-    });
-    const graph = args[args.indexOf("-filter_complex") + 1]!;
-    expect(graph).toContain("[vcat]split=2[screen_top_src][screen_bot_src]");
-  });
-
-  // M8 (adversarial review): the cut-plan/[vcat] input-label variant above
-  // only ever exercised the `bottom.cx` (static-center) branch — this
-  // covers the SAME `[vcat]` input-label swap but for the `bottom.pipRect`
-  // branch specifically, since that branch reads its own crop straight off
-  // `screen_bot_src` rather than through `cropXForCenter`/sendcmd and could
-  // plausibly regress independently of the other two bottom-tile modes.
-  test("pipRect bottom tile also reads [vcat] (not [0:v]) after cut-concat", () => {
-    const cutPlan = buildClipCutPlan([{ startSec: 3, endSec: 4 }], { startSec: 0, endSec: 10 });
-    const args = buildSingleVideoArgs({
-      sourcePath: "/tmp/src.mp4",
-      outputPath: "/tmp/out.mp4",
-      startSec: 0,
-      endSec: 10,
-      aspectRatio: "9:16",
-      probe,
-      srtPath: null,
-      cutPlan,
-      screen: { bottom: { cx: 0.5, pipRect: { x: 480, y: 40, w: 200, h: 180 } } },
-    });
-    const graph = args[args.indexOf("-filter_complex") + 1]!;
-    expect(graph).toContain("[vcat]split=2[screen_top_src][screen_bot_src]");
-    expect(graph).toContain("[screen_bot_src]crop=200:180:480:40");
-    expect(graph).not.toContain("sendcmd");
-  });
-
-  test("background (fit mode) wins over screen when both are somehow present", () => {
-    const args = buildSingleVideoArgs({
-      sourcePath: "/tmp/src.mp4",
-      outputPath: "/tmp/out.mp4",
-      startSec: 0,
-      endSec: 10,
-      aspectRatio: "9:16",
-      probe,
-      srtPath: null,
-      background: { mode: "color", color: "#112233", imagePath: null },
-      screen: { bottom: { cx: 0.5 } },
-    });
-    const graph = args[args.indexOf("-filter_complex") + 1]!;
-    expect(graph).toContain("pad=1080:1920"); // full-canvas fit pad, not the tile pad
-    expect(graph).not.toContain("screen_top_src");
-  });
-
-  test("split wins over screen when both are somehow present (mutually exclusive in practice, but split is checked first)", () => {
-    const args = buildSingleVideoArgs({
-      sourcePath: "/tmp/src.mp4",
-      outputPath: "/tmp/out.mp4",
-      startSec: 0,
-      endSec: 10,
-      aspectRatio: "9:16",
-      probe,
-      srtPath: null,
-      split: { segments: [{ startSec: 0, endSec: 10, layout: "single", cxNorm: 0.5 }] },
-      screen: { bottom: { cx: 0.5 } },
-    });
-    const graph = args[args.indexOf("-filter_complex") + 1]!;
-    expect(graph).toContain("split_seg");
-    expect(graph).not.toContain("screen_top_src");
-  });
-
-  test("byte-identical to before this feature: omitting `screen` (or passing it as null/undefined) never changes the graph", () => {
-    const baseParams = {
-      sourcePath: "/tmp/src.mp4",
-      outputPath: "/tmp/out.mp4",
-      startSec: 0,
-      endSec: 10,
-      aspectRatio: "9:16" as const,
-      probe,
-      srtPath: null,
-    };
-    const omitted = buildSingleVideoArgs(baseParams);
-    const withNull = buildSingleVideoArgs({ ...baseParams, screen: null });
-    const withUndefined = buildSingleVideoArgs({ ...baseParams, screen: undefined });
-    expect(withNull).toEqual(omitted);
-    expect(withUndefined).toEqual(omitted);
-  });
-});
-
-// C1 (adversarial review) — SAR/pixel-format mismatch, real ffmpeg execution.
-//
-// Every other test in this file (and in two-up.test.ts) asserts on the
-// GENERATED FILTER STRING, never runs it. That's exactly why C1 slipped
-// through: a mixed two-up+single plan produces a `concat` whose inputs
-// disagree on SAR (each branch type rounds its own crop rect differently
-// before `scale`) — ffmpeg hard-rejects that with error -22 at RUN time, a
-// failure mode no string-matching assertion can ever observe. This is the
-// one test in the split-render suite that actually shells out to a real
-// ffmpeg binary and checks the process's own exit code/output, specifically
-// to catch this class of bug (and any regression that reintroduces it).
-//
-// Skipped cleanly (not failed) when ffmpeg isn't on PATH — probed once at
-// module load via `ffmpeg -version` so every test in the block shares one
-// probe instead of shelling out per test.
-const FFMPEG_AVAILABLE = spawnSync("ffmpeg", ["-version"], { stdio: "ignore" }).status === 0;
-const FFPROBE_AVAILABLE = spawnSync("ffprobe", ["-version"], { stdio: "ignore" }).status === 0;
-
-describe("C1 ffmpeg smoke test — mixed two-up + single split plan actually renders", () => {
-  let tempDir: string;
-
-  beforeEach(async () => {
-    tempDir = await mkdtemp(join(tmpdir(), "render-clips-c1-smoke-"));
-  });
-
-  afterEach(async () => {
-    await rm(tempDir, { recursive: true, force: true });
-  });
-
-  test.skipIf(!FFMPEG_AVAILABLE || !FFPROBE_AVAILABLE)(
-    "1920x1080 source, mixed two-up+single 9:16 plan: concat succeeds (exit 0), duration and resolution match",
-    async () => {
-      const sourcePath = join(tempDir, "source.mp4");
-      const outputPath = join(tempDir, "output.mp4");
-
-      // Synthetic 1920x1080 4s source — reviewer matrix's first failing case
-      // (1920x1080 -> 9:16). `testsrc` (not a flat color) so a broken crop
-      // geometry would also be visually obvious under manual inspection,
-      // though this test only checks exit code + probed duration/resolution.
-      const generate = spawnSync("ffmpeg", [
-        "-y",
-        "-f",
-        "lavfi",
-        "-i",
-        "testsrc=size=1920x1080:rate=25:duration=4",
-        "-pix_fmt",
-        "yuv420p",
-        sourcePath,
-      ]);
-      expect(generate.status).toBe(0);
-
-      // A MIXED plan — a "two-up" segment (0-2s) followed by a "single"
-      // segment (2-4s) — is exactly the shape that hits the C1 mismatch:
-      // buildTwoUpFilterChain's vstack output and buildSingleSegmentFilter's
-      // scale output round their crop rects differently for the same 9:16
-      // target, so without `setsar=1` on both, ffmpeg's `concat` between
-      // segment 0's output and segment 1's output fails at run time.
-      const segments: SplitLayoutSegment[] = [
-        { startSec: 0, endSec: 2, layout: "two-up", topCxNorm: 0.35, bottomCxNorm: 0.7 },
-        { startSec: 2, endSec: 4, layout: "single", cxNorm: 0.5 },
-      ];
-
-      const args = buildSingleVideoArgs({
-        sourcePath,
-        outputPath,
-        startSec: 0,
-        endSec: 4,
-        aspectRatio: "9:16",
-        probe: { width: 1920, height: 1080, hasVideo: true, hasAudio: false, fps: 25 },
-        srtPath: null,
-        split: { segments },
-      });
-
-      const render = spawnSync("ffmpeg", args, { encoding: "utf-8" });
-      // The actual assertion this test exists for: before the C1 fix, this
-      // fails with ffmpeg's SAR-mismatch error (concat: "Input link ...
-      // parameters ... do not match"), exit code != 0. After the fix, the
-      // mixed plan concatenates and encodes cleanly.
-      expect(render.status).toBe(0);
-      if (render.status !== 0) {
-        // Surface ffmpeg's own stderr in the failure message — invaluable
-        // when this regresses, since the default assertion above only shows
-        // "1 !== null".
-        throw new Error(`ffmpeg failed (status ${render.status}):\n${render.stderr}`);
-      }
-
-      const probe = spawnSync("ffprobe", [
-        "-v",
-        "quiet",
-        "-print_format",
-        "json",
-        "-show_format",
-        "-show_streams",
-        "-select_streams",
-        "v:0",
-        outputPath,
-      ]);
-      expect(probe.status).toBe(0);
-      const probed = JSON.parse(probe.stdout.toString()) as {
-        format?: { duration?: string };
-        streams?: Array<{ width?: number; height?: number }>;
-      };
-
-      const duration = Number(probed.format?.duration);
-      const stream = probed.streams?.[0];
-      // Real, measured output values (recorded for the report — not just
-      // "truthy"): the `-t 4.000` bound on `buildSingleVideoArgs`'s own
-      // output caps duration at/just under 4s; resolution is the 9:16
-      // target (1080x1920) regardless of which segment type produced it.
-      expect(duration).toBeGreaterThan(3.5);
-      expect(duration).toBeLessThanOrEqual(4.05);
-      expect(stream?.width).toBe(1080);
-      expect(stream?.height).toBe(1920);
-    },
-    30_000,
-  );
-});
-
 describe("export treatment: resolution + watermark (vizard-parity Phase C export options)", () => {
-  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true, fps: 30 };
+  const probe = {
+    width: 1920,
+    height: 1080,
+    hasVideo: true,
+    hasAudio: true,
+    fps: 30,
+  };
   const SCALE_FRAGMENT = "scale=trunc(iw*2/3/2)*2:trunc(ih*2/3/2)*2";
   const WATERMARK_FRAGMENT = "drawtext=text=Made with Narriflow";
 
@@ -2053,14 +1162,6 @@ describe("export treatment: resolution + watermark (vizard-parity Phase C export
     const stage = graph.split(";").find((section) => section.endsWith(label));
     if (!stage) throw new Error(`no filter-graph stage ends in ${label}`);
     return stage;
-  }
-
-  /** Every `-map` target that isn't an audio pad (`[outaN]`/`[outa]`) —
-   *  robust to `-map` calls interleaving video and audio per output. */
-  function videoMapTargets(args: string[]): string[] {
-    return indexesOf(args, "-map")
-      .map((i) => args[i + 1]!)
-      .filter((label) => !label.startsWith("[outa"));
   }
 
   describe("buildSingleVideoArgs", () => {
@@ -2132,12 +1233,10 @@ describe("export treatment: resolution + watermark (vizard-parity Phase C export
         resolution: "1080p",
         watermark: true,
       });
-      const graphNoWatermark = noWatermark1080[
-        noWatermark1080.indexOf("-filter_complex") + 1
-      ]!;
-      const graphWatermarked = watermarked1080[
-        watermarked1080.indexOf("-filter_complex") + 1
-      ]!;
+      const graphNoWatermark =
+        noWatermark1080[noWatermark1080.indexOf("-filter_complex") + 1]!;
+      const graphWatermarked =
+        watermarked1080[watermarked1080.indexOf("-filter_complex") + 1]!;
       expect(graphNoWatermark).not.toContain("drawtext=");
       // A paid user on 1080p still gets no watermark and no downscale.
       expect(graphNoWatermark).not.toContain(SCALE_FRAGMENT);
@@ -2197,38 +1296,12 @@ describe("export treatment: resolution + watermark (vizard-parity Phase C export
   });
 
   describe("buildBrollVideoArgs", () => {
-    test("composes the automatic speaker layout before B-roll cutaways", () => {
-      const args = buildBrollVideoArgs({
-        sourcePath: "/tmp/src.mp4",
-        cutaways: [{ path: "/tmp/broll.mp4", window: { startSec: 2, endSec: 5 } }],
-        outputPath: "/tmp/out.mp4",
-        startSec: 0,
-        endSec: 10,
-        aspectRatio: "9:16",
-        probe,
-        srtPath: null,
-        split: {
-          segments: [
-            {
-              startSec: 0,
-              endSec: 10,
-              layout: "two-up",
-              topCxNorm: 0.3,
-              bottomCxNorm: 0.7,
-            },
-          ],
-        },
-      });
-      const graph = args[args.indexOf("-filter_complex") + 1]!;
-      expect(graph).toContain("vstack=inputs=2");
-      expect(graph).toContain("[stage0][broll0]overlay=0:0:enable='between(t,2,5)'[stage1]");
-      expect(graph.indexOf("vstack=inputs=2")).toBeLessThan(graph.indexOf("overlay=0:0"));
-    });
-
     test("720p + watermark fold in after the b-roll overlay chain", () => {
       const args = buildBrollVideoArgs({
         sourcePath: "/tmp/src.mp4",
-        cutaways: [{ path: "/tmp/broll.mp4", window: { startSec: 2, endSec: 5 } }],
+        cutaways: [
+          { path: "/tmp/broll.mp4", window: { startSec: 2, endSec: 5 } },
+        ],
         outputPath: "/tmp/out.mp4",
         startSec: 0,
         endSec: 20,
@@ -2249,7 +1322,9 @@ describe("export treatment: resolution + watermark (vizard-parity Phase C export
     test("neither flag set: no [outvfree] stage, maps the plain composited output", () => {
       const args = buildBrollVideoArgs({
         sourcePath: "/tmp/src.mp4",
-        cutaways: [{ path: "/tmp/broll.mp4", window: { startSec: 2, endSec: 5 } }],
+        cutaways: [
+          { path: "/tmp/broll.mp4", window: { startSec: 2, endSec: 5 } },
+        ],
         outputPath: "/tmp/out.mp4",
         startSec: 0,
         endSec: 20,
@@ -2259,94 +1334,14 @@ describe("export treatment: resolution + watermark (vizard-parity Phase C export
       });
       const graph = args[args.indexOf("-filter_complex") + 1]!;
       expect(graph).not.toContain("[outvfree]");
-      // No logo/watermark stage renames the label, so the map target is
-      // whatever the single overlay stage produced ("[stage1]" here — b-roll
-      // has no logo in this fixture, so the composed frame is never renamed
-      // to "[outv]" the way buildSingleVideoArgs's plain path is).
       const mapTarget = args[args.indexOf("-map") + 1]!;
-      expect(mapTarget).toBe("[stage1]");
-      expect(graph).toContain(`overlay=0:0:enable='between(t,2,5)'${mapTarget}`);
+      expect(mapTarget).toBe("[stage0]");
+      expect(graph).toContain(
+        `overlay=0:0:enable='between(t,2,5)'${mapTarget}`,
+      );
     });
   });
 
-  describe("buildMultiVideoArgs", () => {
-    test("per-output resolution is independent; watermark is uniform across outputs", () => {
-      const args = buildMultiVideoArgs({
-        sourcePath: "/tmp/src.mp4",
-        outputs: [
-          {
-            clipRenderId: "r0",
-            clipId: "c0",
-            clipIndex: 0,
-            aspectRatio: "9:16",
-            outputPath: "/tmp/out0.mp4",
-            storageKey: "k0",
-            resolution: "720p",
-          },
-          {
-            clipRenderId: "r1",
-            clipId: "c0",
-            clipIndex: 0,
-            aspectRatio: "1:1",
-            outputPath: "/tmp/out1.mp4",
-            storageKey: "k1",
-            resolution: "1080p",
-          },
-        ],
-        startSec: 0,
-        endSec: 10,
-        probe,
-        srtPath: null,
-        watermark: true,
-      });
-      const graph = args[args.indexOf("-filter_complex") + 1]!;
-      const stage0 = graph
-        .split(";")
-        .find((section) => section.endsWith("[outvfree0]"))!;
-      const stage1 = graph
-        .split(";")
-        .find((section) => section.endsWith("[outvfree1]"))!;
-      expect(stage0).toContain(`${SCALE_FRAGMENT},${WATERMARK_FRAGMENT}`);
-      // output 1 is 1080p: watermark only, no downscale.
-      expect(stage1).not.toContain(SCALE_FRAGMENT);
-      expect(stage1).toContain(WATERMARK_FRAGMENT);
-
-      expect(videoMapTargets(args)).toEqual(["[outvfree0]", "[outvfree1]"]);
-    });
-
-    test("no watermark and both outputs at 1080p: no [outvfree] stages at all", () => {
-      const args = buildMultiVideoArgs({
-        sourcePath: "/tmp/src.mp4",
-        outputs: [
-          {
-            clipRenderId: "r0",
-            clipId: "c0",
-            clipIndex: 0,
-            aspectRatio: "9:16",
-            outputPath: "/tmp/out0.mp4",
-            storageKey: "k0",
-            resolution: "1080p",
-          },
-          {
-            clipRenderId: "r1",
-            clipId: "c0",
-            clipIndex: 0,
-            aspectRatio: "1:1",
-            outputPath: "/tmp/out1.mp4",
-            storageKey: "k1",
-            resolution: "1080p",
-          },
-        ],
-        startSec: 0,
-        endSec: 10,
-        probe,
-        srtPath: null,
-      });
-      const graph = args[args.indexOf("-filter_complex") + 1]!;
-      expect(graph).not.toContain("[outvfree");
-      expect(videoMapTargets(args)).toEqual(["[outv0]", "[outv1]"]);
-    });
-  });
 
   describe("buildAudiogramArgs", () => {
     test("720p + watermark fold in after the waveform/caption chain", () => {
@@ -2387,12 +1382,20 @@ describe("export treatment: resolution + watermark (vizard-parity Phase C export
 });
 
 describe("buildBrollVideoArgs with a canvas background active", () => {
-  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true, fps: 30 };
+  const probe = {
+    width: 1920,
+    height: 1080,
+    hasVideo: true,
+    hasAudio: true,
+    fps: 30,
+  };
 
   test("cutaway input indices shift by 1 when a background image occupies input 1", () => {
     const args = buildBrollVideoArgs({
       sourcePath: "/tmp/src.mp4",
-      cutaways: [{ path: "/tmp/broll.mp4", window: { startSec: 2, endSec: 5 } }],
+      cutaways: [
+        { path: "/tmp/broll.mp4", window: { startSec: 2, endSec: 5 } },
+      ],
       outputPath: "/tmp/out.mp4",
       startSec: 0,
       endSec: 20,
@@ -2409,12 +1412,15 @@ describe("buildBrollVideoArgs with a canvas background active", () => {
     expect(args[iIndexes[2]! + 1]).toBe("/tmp/broll.mp4");
 
     const graph = args[args.indexOf("-filter_complex") + 1]!;
-    // [stage0] is the composed fit+background frame; the cutaway (now input
-    // [2]) overlays on top of it exactly as it would over a crop-to-fill base.
-    expect(graph).toContain("[bgimg][bgfitv]overlay=(W-w)/2:(H-h)/2,format=yuv420p[stage0]");
-    expect(graph).toContain("[2:v]scale=1080:1920:force_original_aspect_ratio=increase");
+    // The plan adapter composes Fit as the base, then applies its B-roll layer.
+    expect(graph).toContain(
+      "[composition_bg][composition_source]overlay=0:0,format=yuv420p[composition_base]",
+    );
+    expect(graph).toContain(
+      "[2:v]scale=1080:1920:force_original_aspect_ratio=increase",
+    );
     // fps pinned from probe.fps on the [bgimg] chain specifically.
-    expect(graph).toContain(",fps=30[bgimg]");
+    expect(graph).toContain(",fps=30[composition_bg]");
   });
 
   test("music input index [N:a] shifts correctly with a background image AND cutaways present", () => {
@@ -2457,7 +1463,9 @@ describe("buildBrollVideoArgs with a canvas background active", () => {
   test("reframe is ignored (no crop@reframe) when a background is active", () => {
     const args = buildBrollVideoArgs({
       sourcePath: "/tmp/src.mp4",
-      cutaways: [{ path: "/tmp/broll.mp4", window: { startSec: 2, endSec: 5 } }],
+      cutaways: [
+        { path: "/tmp/broll.mp4", window: { startSec: 2, endSec: 5 } },
+      ],
       outputPath: "/tmp/out.mp4",
       startSec: 0,
       endSec: 20,
@@ -2475,12 +1483,20 @@ describe("buildBrollVideoArgs with a canvas background active", () => {
 });
 
 describe("buildBrollVideoArgs (B-roll cutaway)", () => {
-  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true, fps: 30 };
+  const probe = {
+    width: 1920,
+    height: 1080,
+    hasVideo: true,
+    hasAudio: true,
+    fps: 30,
+  };
 
   test("overlays a single b-roll cutaway only during its window, keeps source audio", () => {
     const args = buildBrollVideoArgs({
       sourcePath: "/tmp/src.mp4",
-      cutaways: [{ path: "/tmp/broll.mp4", window: { startSec: 8, endSec: 11.5 } }],
+      cutaways: [
+        { path: "/tmp/broll.mp4", window: { startSec: 8, endSec: 11.5 } },
+      ],
       outputPath: "/tmp/out.mp4",
       startSec: 0,
       endSec: 30,
@@ -2540,8 +1556,8 @@ describe("buildBrollVideoArgs (B-roll cutaway)", () => {
     expect(graph).toContain("overlay=0:0:enable='between(t,12,15)'");
     expect(graph).toContain("overlay=0:0:enable='between(t,21,24)'");
     // Each overlay stage feeds the next (chained, not independent/parallel).
-    expect(graph).toContain("[stage1]");
-    expect(graph).toContain("[stage2]");
+    expect(graph).toContain("[composition_broll_stage_0]");
+    expect(graph).toContain("[composition_broll_stage_1]");
 
     // Every b-roll input is trimmed to its own window's duration.
     const iIndexes: number[] = [];
@@ -2641,8 +1657,14 @@ describe("resolveClipLogoOverlay (per-clip logo override merge — vizard-parity
 });
 
 describe("buildSingleVideoArgs logo filter graph (override parity with the studio preview)", () => {
-  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true, fps: 30 };
-  // 9:16 target width is 1080 (see buildCropAndScaleFilter's "scale=1080:1920").
+  const probe = {
+    width: 1920,
+    height: 1080,
+    hasVideo: true,
+    hasAudio: true,
+    fps: 30,
+  };
+  // 9:16 target width is 1080 in the shared composition target catalog.
   const baseLogo = {
     filePath: "/tmp/logo.png",
     position: "bot-right" as const,
@@ -2803,7 +1825,13 @@ describe("buildAudiogramArgs (audio-only renders)", () => {
 });
 
 describe("subtitle visibility toggle (vizard-parity Phase C) — captionPreset.visible === false gates every render path", () => {
-  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true, fps: 30 };
+  const probe = {
+    width: 1920,
+    height: 1080,
+    hasVideo: true,
+    hasAudio: true,
+    fps: 30,
+  };
   const captionPresetVisible = getCaptionPresetById("karaoke")!.preset;
   const captionPresetHidden = { ...captionPresetVisible, visible: false };
 
@@ -2836,7 +1864,9 @@ describe("subtitle visibility toggle (vizard-parity Phase C) — captionPreset.v
   test("buildBrollVideoArgs: visible=false omits the ASS filter but keeps the cutaway overlay", () => {
     const hidden = buildBrollVideoArgs({
       sourcePath: "/tmp/src.mp4",
-      cutaways: [{ path: "/tmp/broll.mp4", window: { startSec: 1, endSec: 3 } }],
+      cutaways: [
+        { path: "/tmp/broll.mp4", window: { startSec: 1, endSec: 3 } },
+      ],
       outputPath: "/tmp/out.mp4",
       startSec: 0,
       endSec: 10,
@@ -2865,24 +1895,8 @@ describe("subtitle visibility toggle (vizard-parity Phase C) — captionPreset.v
     expect(graph).not.toContain("ass=");
     expect(graph).toContain("showwaves");
   });
-
-  test("buildMultiVideoArgs: visible=false omits the ASS filter for every output", () => {
-    const hidden = buildMultiVideoArgs({
-      sourcePath: "/tmp/src.mp4",
-      outputs: [
-        { clipRenderId: "r1", clipId: "c1", clipIndex: 0, aspectRatio: "9:16", outputPath: "/tmp/out-916.mp4", storageKey: "k1", subtitlePath: "/tmp/clip-916.ass" },
-        { clipRenderId: "r2", clipId: "c1", clipIndex: 0, aspectRatio: "16:9", outputPath: "/tmp/out-169.mp4", storageKey: "k2", subtitlePath: "/tmp/clip-169.ass" },
-      ],
-      startSec: 0,
-      endSec: 10,
-      probe,
-      srtPath: null,
-      captionPreset: captionPresetHidden,
-    });
-    const graph = hidden[hidden.indexOf("-filter_complex") + 1]!;
-    expect(graph).not.toContain("ass=");
-  });
 });
+
 
 function indexesOf(args: string[], value: string): number[] {
   const result: number[] = [];
@@ -2923,7 +1937,13 @@ function expectLabelConsumedOnce(graph: string, label: string) {
 }
 
 describe("output duration bound (FIX: over-long B-roll/inputs can no longer stretch the output)", () => {
-  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true, fps: 30 };
+  const probe = {
+    width: 1920,
+    height: 1080,
+    hasVideo: true,
+    hasAudio: true,
+    fps: 30,
+  };
 
   test("buildSingleVideoArgs adds an explicit output -t in addition to the input -t", () => {
     const args = buildSingleVideoArgs({
@@ -2981,39 +2001,6 @@ describe("output duration bound (FIX: over-long B-roll/inputs can no longer stre
     expect(outputTIndex).toBeGreaterThan(args.indexOf("-filter_complex"));
   });
 
-  test("buildMultiVideoArgs bounds every output's duration independently", () => {
-    const outputs = [
-      {
-        clipRenderId: "r1",
-        clipId: "c1",
-        clipIndex: 0,
-        aspectRatio: "9:16" as const,
-        outputPath: "/tmp/o1.mp4",
-        storageKey: "k1",
-      },
-      {
-        clipRenderId: "r2",
-        clipId: "c1",
-        clipIndex: 0,
-        aspectRatio: "16:9" as const,
-        outputPath: "/tmp/o2.mp4",
-        storageKey: "k2",
-      },
-    ];
-    const args = buildMultiVideoArgs({
-      sourcePath: "/tmp/src.mp4",
-      outputs,
-      startSec: 0,
-      endSec: 15,
-      probe,
-      srtPath: null,
-    });
-
-    const tValues = indexesOf(args, "-t").map((index) => args[index + 1]);
-    // one input-level -t ("15") + one output-level -t ("15.000") per output
-    expect(tValues).toEqual(["15", "15.000", "15.000"]);
-  });
-
   test("buildAudiogramArgs adds an explicit -t alongside -shortest", () => {
     const args = buildAudiogramArgs({
       sourcePath: "/tmp/a.mp3",
@@ -3033,7 +2020,13 @@ describe("output duration bound (FIX: over-long B-roll/inputs can no longer stre
 });
 
 describe("music mixing (FIX: no more quiet 6dB dialogue duck + startOffsetSec)", () => {
-  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true, fps: 30 };
+  const probe = {
+    width: 1920,
+    height: 1080,
+    hasVideo: true,
+    hasAudio: true,
+    fps: 30,
+  };
 
   test("mixes at unity gain (normalize=0) and applies volume only to the music branch", () => {
     const args = buildSingleVideoArgs({
@@ -3091,7 +2084,13 @@ describe("music mixing (FIX: no more quiet 6dB dialogue duck + startOffsetSec)",
 });
 
 describe("SFX one-shot mixing (vizard-parity.md Music/SFX library)", () => {
-  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true, fps: 30 };
+  const probe = {
+    width: 1920,
+    height: 1080,
+    hasVideo: true,
+    hasAudio: true,
+    fps: 30,
+  };
 
   test("adelay ms rounding: startSec=1.2345 rounds to 1235ms, all=1 delays every channel", () => {
     const args = buildSingleVideoArgs({
@@ -3154,7 +2153,9 @@ describe("SFX one-shot mixing (vizard-parity.md Music/SFX library)", () => {
     const graph = args[args.indexOf("-filter_complex") + 1]!;
     expect(graph).toContain("[0:a]");
     expect(graph).toContain("[1:a]adelay=2000");
-    expect(graph).toContain("[maina][sfx0a]amix=inputs=2:duration=first:dropout_transition=0:normalize=0");
+    expect(graph).toContain(
+      "[maina][sfx0a]amix=inputs=2:duration=first:dropout_transition=0:normalize=0",
+    );
     // Mixed audio (music or sfx) always maps -shortest, same as the music path.
     expect(args).toContain("-shortest");
   });
@@ -3189,11 +2190,15 @@ describe("SFX one-shot mixing (vizard-parity.md Music/SFX library)", () => {
       aspectRatio: "9:16",
       probe,
       srtPath: null,
-      studioEdits: studioEditsSchema.parse({ sourceAudio: { volume: 100, muted: true } }),
+      studioEdits: studioEditsSchema.parse({
+        sourceAudio: { volume: 100, muted: true },
+      }),
       sfx: [{ path: "/tmp/sfx.mp3", startSec: 1, volume: 80 }],
     });
     const graph = args[args.indexOf("-filter_complex") + 1]!;
-    expect(graph).toContain("[0:a]atrim=duration=10.000,asetpts=PTS-STARTPTS,volume=0.000[maina]");
+    expect(graph).toContain(
+      "[0:a]atrim=duration=10.000,asetpts=PTS-STARTPTS,volume=0.000[maina]",
+    );
     expect(graph).toContain("amix=inputs=2");
   });
 
@@ -3279,7 +2284,12 @@ describe("SFX one-shot mixing (vizard-parity.md Music/SFX library)", () => {
       aspectRatio: "9:16",
       probe,
       srtPath: null,
-      logo: { filePath: "/tmp/logo.png", position: "top-right", opacity: 100, scalePct: 12 },
+      logo: {
+        filePath: "/tmp/logo.png",
+        position: "top-right",
+        opacity: 100,
+        scalePct: 12,
+      },
       background: { mode: "image", color: "#000000", imagePath: "/tmp/bg.png" },
       music: { path: "/tmp/music.mp3", volume: 30, startOffsetSec: 0 },
       sfx: [
@@ -3297,19 +2307,32 @@ describe("SFX one-shot mixing (vizard-parity.md Music/SFX library)", () => {
 });
 
 describe("buildBrollVideoArgs SFX input index bookkeeping", () => {
-  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true, fps: 30 };
+  const probe = {
+    width: 1920,
+    height: 1080,
+    hasVideo: true,
+    hasAudio: true,
+    fps: 30,
+  };
 
   test("SFX input indexes continue after music, following the existing cutaway/logo/music order", () => {
     const args = buildBrollVideoArgs({
       sourcePath: "/tmp/src.mp4",
-      cutaways: [{ path: "/tmp/broll-0.mp4", window: { startSec: 3, endSec: 6 } }],
+      cutaways: [
+        { path: "/tmp/broll-0.mp4", window: { startSec: 3, endSec: 6 } },
+      ],
       outputPath: "/tmp/out.mp4",
       startSec: 0,
       endSec: 20,
       aspectRatio: "9:16",
       probe,
       srtPath: null,
-      logo: { filePath: "/tmp/logo.png", position: "top-right", opacity: 100, scalePct: 12 },
+      logo: {
+        filePath: "/tmp/logo.png",
+        position: "top-right",
+        opacity: 100,
+        scalePct: 12,
+      },
       music: { path: "/tmp/music.mp3", volume: 50, startOffsetSec: 0 },
       sfx: [{ path: "/tmp/sfx.mp3", startSec: 1, volume: 80 }],
     });
@@ -3323,14 +2346,21 @@ describe("buildBrollVideoArgs SFX input index bookkeeping", () => {
   test("SFX-only (no music) still uses the correct base index after cutaways/logo", () => {
     const args = buildBrollVideoArgs({
       sourcePath: "/tmp/src.mp4",
-      cutaways: [{ path: "/tmp/broll-0.mp4", window: { startSec: 3, endSec: 6 } }],
+      cutaways: [
+        { path: "/tmp/broll-0.mp4", window: { startSec: 3, endSec: 6 } },
+      ],
       outputPath: "/tmp/out.mp4",
       startSec: 0,
       endSec: 20,
       aspectRatio: "9:16",
       probe,
       srtPath: null,
-      logo: { filePath: "/tmp/logo.png", position: "top-right", opacity: 100, scalePct: 12 },
+      logo: {
+        filePath: "/tmp/logo.png",
+        position: "top-right",
+        opacity: 100,
+        scalePct: 12,
+      },
       sfx: [{ path: "/tmp/sfx.mp3", startSec: 1, volume: 80 }],
     });
     const graph = args[args.indexOf("-filter_complex") + 1]!;
@@ -3361,21 +2391,35 @@ describe("buildAudiogramArgs music + SFX + ducking", () => {
   });
 
   test("music + ducking: the music branch carries a volume=<expr>:eval=frame stage after its fade suffix", () => {
-    const utterances = [makeUtterance([["hello", 1, 1.5], ["world", 1.5, 2]])];
+    const utterances = [
+      makeUtterance([
+        ["hello", 1, 1.5],
+        ["world", 1.5, 2],
+      ]),
+    ];
     const args = buildSingleVideoArgs({
       sourcePath: "/tmp/src.mp4",
       outputPath: "/tmp/out.mp4",
       startSec: 0,
       endSec: 10,
       aspectRatio: "9:16",
-      probe: { width: 1920, height: 1080, hasVideo: true, hasAudio: true, fps: 30 },
+      probe: {
+        width: 1920,
+        height: 1080,
+        hasVideo: true,
+        hasAudio: true,
+        fps: 30,
+      },
       srtPath: null,
       music: {
         path: "/tmp/music.mp3",
         volume: 40,
         startOffsetSec: 0,
         duckingWindows: computeSpeechWindows(
-          utterances[0]!.words.map((w) => ({ startSec: w.startSec, endSec: w.endSec })),
+          utterances[0]!.words.map((w) => ({
+            startSec: w.startSec,
+            endSec: w.endSec,
+          })),
           10,
         ),
       },
@@ -3393,7 +2437,13 @@ describe("buildAudiogramArgs music + SFX + ducking", () => {
       startSec: 0,
       endSec: 10,
       aspectRatio: "9:16",
-      probe: { width: 1920, height: 1080, hasVideo: true, hasAudio: true, fps: 30 },
+      probe: {
+        width: 1920,
+        height: 1080,
+        hasVideo: true,
+        hasAudio: true,
+        fps: 30,
+      },
       srtPath: null,
       music: { path: "/tmp/music.mp3", volume: 40, startOffsetSec: 0 },
     });
@@ -3408,9 +2458,20 @@ describe("buildAudiogramArgs music + SFX + ducking", () => {
       startSec: 0,
       endSec: 10,
       aspectRatio: "9:16",
-      probe: { width: 1920, height: 1080, hasVideo: true, hasAudio: true, fps: 30 },
+      probe: {
+        width: 1920,
+        height: 1080,
+        hasVideo: true,
+        hasAudio: true,
+        fps: 30,
+      },
       srtPath: null,
-      music: { path: "/tmp/music.mp3", volume: 40, startOffsetSec: 0, duckingWindows: [] },
+      music: {
+        path: "/tmp/music.mp3",
+        volume: 40,
+        startOffsetSec: 0,
+        duckingWindows: [],
+      },
     });
     const graph = args[args.indexOf("-filter_complex") + 1]!;
     expect(graph).not.toContain("eval=frame");
@@ -3597,7 +2658,13 @@ describe("downloadUrlToFile (bounded, timed remote B-roll/music download)", () =
 });
 
 describe("ranged https source input (presigned URL reads)", () => {
-  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true, fps: 30 };
+  const probe = {
+    width: 1920,
+    height: 1080,
+    hasVideo: true,
+    hasAudio: true,
+    fps: 30,
+  };
   const httpsSource =
     "https://r2.example.com/projects/p1/source.mp4?X-Amz-Signature=abc";
 
@@ -3671,7 +2738,13 @@ describe("ranged https source input (presigned URL reads)", () => {
 });
 
 describe("boundary audio fade coverage", () => {
-  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true, fps: 30 };
+  const probe = {
+    width: 1920,
+    height: 1080,
+    hasVideo: true,
+    hasAudio: true,
+    fps: 30,
+  };
 
   test("buildSingleVideoArgs routes non-music audio through the fade chain", () => {
     const args = buildSingleVideoArgs({
@@ -3691,30 +2764,16 @@ describe("boundary audio fade coverage", () => {
     expect(args).not.toContain("0:a:0?");
   });
 
-  test("buildMultiVideoArgs splits audio per output and fades each branch", () => {
-    const args = buildMultiVideoArgs({
-      sourcePath: "/tmp/src.mp4",
-      outputs: [
-        { aspectRatio: "9:16", outputPath: "/tmp/a.mp4", subtitlePath: null, reframe: null },
-        { aspectRatio: "1:1", outputPath: "/tmp/b.mp4", subtitlePath: null, reframe: null },
-      ] as never,
-      startSec: 0,
-      endSec: 20,
-      probe,
-      srtPath: null,
-    });
-    const graph = args[args.indexOf("-filter_complex") + 1]!;
-
-    expect(graph).toContain("[0:a:0]asplit=2[aud0][aud1]");
-    expect(graph).toContain("[aud0]afade=t=in");
-    expect(graph).toContain("[aud1]afade=t=in");
-    expect(args).toContain("[outa0]");
-    expect(args).toContain("[outa1]");
-  });
 });
 
 describe("source audio gain/mute + music fades (vizard-parity Phase A step 5)", () => {
-  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true, fps: 30 };
+  const probe = {
+    width: 1920,
+    height: 1080,
+    hasVideo: true,
+    hasAudio: true,
+    fps: 30,
+  };
 
   test("unity source volume (100, unmuted) skips the gain filter entirely — unchanged filter graph", () => {
     const studioEdits = studioEditsSchema.parse({});
@@ -3757,7 +2816,9 @@ describe("source audio gain/mute + music fades (vizard-parity Phase A step 5)", 
     });
     const args = buildBrollVideoArgs({
       sourcePath: "/tmp/src.mp4",
-      cutaways: [{ path: "/tmp/broll.mp4", window: { startSec: 2, endSec: 5 } }],
+      cutaways: [
+        { path: "/tmp/broll.mp4", window: { startSec: 2, endSec: 5 } },
+      ],
       outputPath: "/tmp/out.mp4",
       startSec: 0,
       endSec: 20,
@@ -3884,7 +2945,13 @@ describe("source audio gain/mute + music fades (vizard-parity Phase A step 5)", 
       startSec: 0,
       endSec: 10,
       aspectRatio: "9:16",
-      probe: { width: 1920, height: 1080, hasVideo: true, hasAudio: false, fps: 30 },
+      probe: {
+        width: 1920,
+        height: 1080,
+        hasVideo: true,
+        hasAudio: false,
+        fps: 30,
+      },
       srtPath: null,
       music: {
         path: "/tmp/music.mp3",
@@ -3895,8 +2962,12 @@ describe("source audio gain/mute + music fades (vizard-parity Phase A step 5)", 
       },
     });
     const graph = args[args.indexOf("-filter_complex") + 1]!;
-    expect(graph).toContain("afade=t=in:st=0:d=1.000,afade=t=out:st=9.000:d=1.000[musica]");
-    expect(graph).toContain("[musica]afade=t=in:st=0:d=0.040,afade=t=out:st=9.880:d=0.120[outa]");
+    expect(graph).toContain(
+      "afade=t=in:st=0:d=1.000,afade=t=out:st=9.000:d=1.000[musica]",
+    );
+    expect(graph).toContain(
+      "[musica]afade=t=in:st=0:d=0.040,afade=t=out:st=9.880:d=0.120[outa]",
+    );
     expect(graph).not.toContain("amix");
     expect(args).toContain("[outa]");
   });
@@ -3904,26 +2975,57 @@ describe("source audio gain/mute + music fades (vizard-parity Phase A step 5)", 
 
 describe("clipRenderAttemptStorageKey", () => {
   test("is attempt-unique: two encode attempts for the same clip+aspect never collide", () => {
-    const first = clipRenderAttemptStorageKey("proj-1", "clip-1", "9x16", "attempt-a");
-    const second = clipRenderAttemptStorageKey("proj-1", "clip-1", "9x16", "attempt-b");
+    const first = clipRenderAttemptStorageKey(
+      "proj-1",
+      "clip-1",
+      "9x16",
+      "attempt-a",
+    );
+    const second = clipRenderAttemptStorageKey(
+      "proj-1",
+      "clip-1",
+      "9x16",
+      "attempt-b",
+    );
     expect(first).not.toBe(second);
   });
 
   test("stays scoped under the clip's own renders prefix", () => {
-    const key = clipRenderAttemptStorageKey("proj-1", "clip-1", "9x16", "attempt-a");
+    const key = clipRenderAttemptStorageKey(
+      "proj-1",
+      "clip-1",
+      "9x16",
+      "attempt-a",
+    );
     expect(key.startsWith("projects/proj-1/renders/clip-1/")).toBe(true);
     expect(key.endsWith(".mp4")).toBe(true);
   });
 
   test("is deterministic for the same inputs (pure function, no hidden randomness)", () => {
-    const a = clipRenderAttemptStorageKey("proj-1", "clip-1", "9x16", "attempt-a");
-    const b = clipRenderAttemptStorageKey("proj-1", "clip-1", "9x16", "attempt-a");
+    const a = clipRenderAttemptStorageKey(
+      "proj-1",
+      "clip-1",
+      "9x16",
+      "attempt-a",
+    );
+    const b = clipRenderAttemptStorageKey(
+      "proj-1",
+      "clip-1",
+      "9x16",
+      "attempt-a",
+    );
     expect(a).toBe(b);
   });
 });
 
 describe("cut-concat rendering (vizard-parity Phase B step 7 — deletedRanges)", () => {
-  const probe = { width: 1920, height: 1080, hasVideo: true, hasAudio: true, fps: 30 };
+  const probe = {
+    width: 1920,
+    height: 1080,
+    hasVideo: true,
+    hasAudio: true,
+    fps: 30,
+  };
   // 30s clip window, one mid-clip deletion [10,15) -> two kept segments
   // [0,10) and [15,30), 25s edited duration.
   const window = { startSec: 0, endSec: 30 };
@@ -3989,7 +3091,9 @@ describe("cut-concat rendering (vizard-parity Phase B step 7 — deletedRanges)"
       // Dialogue fade reads the concatenated audio.
       expect(graph).toContain("[acat]afade=t=in:st=0:d=0.040");
       // Concat filters land before the crop stage in the graph.
-      expect(graph.indexOf("concat=n=2")).toBeLessThan(graph.indexOf("[vcat]crop="));
+      expect(graph.indexOf("concat=n=2")).toBeLessThan(
+        graph.indexOf("[vcat]crop="),
+      );
       // Fix #1 regression check: every cut-concat output label is consumed
       // as a filter input exactly once (no implicit fan-out).
       expectLabelConsumedOnce(graph, "[vcat]");
@@ -4020,7 +3124,9 @@ describe("cut-concat rendering (vizard-parity Phase B step 7 — deletedRanges)"
       const graph = args[args.indexOf("-filter_complex") + 1]!;
       expect(graph).toContain("atrim=start=0.000:duration=25.000");
       // dialogue branch reads the concatenated audio, not [0:a]
-      expect(graph).toContain("[acat]atrim=duration=25.000,asetpts=PTS-STARTPTS[maina]");
+      expect(graph).toContain(
+        "[acat]atrim=duration=25.000,asetpts=PTS-STARTPTS[maina]",
+      );
       // buildSingleVideoArgs' [acat] feeds ONLY the dialogue branch here (the
       // video path reads [vcat] separately) — still worth pinning as a
       // regression check alongside the audiogram fix.
@@ -4029,7 +3135,10 @@ describe("cut-concat rendering (vizard-parity Phase B step 7 — deletedRanges)"
     });
 
     test("single kept segment (deletion at the very start) skips concat and uses acopy for audio, copy for video", () => {
-      const startOnlyPlan = buildClipCutPlan([{ startSec: 0, endSec: 5 }], window);
+      const startOnlyPlan = buildClipCutPlan(
+        [{ startSec: 0, endSec: 5 }],
+        window,
+      );
       expect(startOnlyPlan.segments).toHaveLength(1);
       const args = buildSingleVideoArgs({
         sourcePath: "/tmp/src.mp4",
@@ -4075,7 +3184,9 @@ describe("cut-concat rendering (vizard-parity Phase B step 7 — deletedRanges)"
     test("cut-concat runs before the b-roll overlay chain", () => {
       const args = buildBrollVideoArgs({
         sourcePath: "/tmp/src.mp4",
-        cutaways: [{ path: "/tmp/broll.mp4", window: { startSec: 2, endSec: 5 } }],
+        cutaways: [
+          { path: "/tmp/broll.mp4", window: { startSec: 2, endSec: 5 } },
+        ],
         outputPath: "/tmp/out.mp4",
         startSec: 0,
         endSec: 30,
@@ -4104,7 +3215,9 @@ describe("cut-concat rendering (vizard-parity Phase B step 7 — deletedRanges)"
       expect(() =>
         buildBrollVideoArgs({
           sourcePath: "/tmp/src.mp4",
-          cutaways: [{ path: "/tmp/broll.mp4", window: { startSec: 2, endSec: 5 } }],
+          cutaways: [
+            { path: "/tmp/broll.mp4", window: { startSec: 2, endSec: 5 } },
+          ],
           outputPath: "/tmp/out.mp4",
           startSec: 0,
           endSec: 30,

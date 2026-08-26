@@ -35,6 +35,20 @@ export type CompositionAssetAvailability =
   | { readonly state: "missing" | "pending" | "failed" }
   | { readonly state: "available"; readonly ref: string };
 
+export interface CompositionBrollPlacement {
+  readonly id: string;
+  readonly ref: string;
+  readonly startSec: number;
+  readonly endSec: number;
+}
+
+export type CompositionBrollAvailability =
+  | { readonly state: "missing" | "pending" | "failed" }
+  | {
+      readonly state: "available";
+      readonly placements: readonly CompositionBrollPlacement[];
+    };
+
 export type AutomaticLayoutEvidenceAvailability =
   | { readonly state: "missing" | "pending" | "failed" | "disabled" }
   | {
@@ -75,7 +89,10 @@ export interface SplitLayoutEvidence {
   readonly sourceIdentity: string;
   readonly inputFingerprint: string;
   readonly engineVersion: string;
-  readonly source: "explicit-detector" | "automatic-layout";
+  readonly source:
+    | "explicit-detector"
+    | "durable-explicit"
+    | "automatic-layout";
   readonly segments: readonly ClipAutoLayoutSegment[];
   readonly fallbackSegments: readonly ClipAutoLayoutSegment[];
 }
@@ -120,6 +137,10 @@ export interface ClipCompositionPlanInput {
   };
   readonly assets: {
     readonly backgroundImage: CompositionAssetAvailability;
+    /** Omitted when the document has no requested or automatically selected
+     * B-roll. A present non-available value means optional B-roll was
+     * requested but could not yet be resolved. */
+    readonly broll?: CompositionBrollAvailability;
   };
   readonly capabilities: {
     readonly automaticSpeakerLayout: boolean;
@@ -169,9 +190,28 @@ export interface CompositionBackgroundLayer {
   readonly zIndex: number;
 }
 
+export interface CompositionBrollVideoLayer {
+  readonly id: string;
+  readonly kind: "broll-video";
+  readonly sourceRef: string;
+  readonly activeRange: {
+    readonly startSec: number;
+    readonly endSec: number;
+  };
+  readonly destination: CompositionRect;
+  readonly fit: "cover";
+  readonly rotationDeg: 0;
+  readonly opacity: 1;
+  readonly zIndex: number;
+  /** Existing Narriflow behavior keeps dialogue from the source and discards
+   * B-roll audio. The plan states that choice so neither adapter decides it. */
+  readonly audio: "source";
+}
+
 export type CompositionLayer =
   | CompositionSourceVideoLayer
-  | CompositionBackgroundLayer;
+  | CompositionBackgroundLayer
+  | CompositionBrollVideoLayer;
 
 export interface CompositionScene {
   readonly id: string;
@@ -235,6 +275,7 @@ export type ClipCompositionPlanResult =
           | "invalid_target"
           | "too_many_targets"
           | "empty_edited_timeline"
+          | "invalid_broll_placement"
           | "unsupported_mode"
           | "plan_size_exceeded";
         readonly targetId?: string;
@@ -654,8 +695,7 @@ function validAutomaticLayoutEvidence(
     value.engineVersion !== input.capabilities.automaticSpeakerEngineVersion ||
     analysis.version !== 1 ||
     analysis.engine !== input.capabilities.automaticSpeakerEngineVersion ||
-    (analysis.sourceIdentity !== undefined &&
-      analysis.sourceIdentity !== input.source.identity) ||
+    analysis.sourceIdentity !== input.source.identity ||
     // Speaker coordinates are normalized. Evidence may have been measured
     // on the source-derived Studio proxy and then applied to the original
     // render dimensions, so pixel dimensions are descriptive rather than
@@ -670,6 +710,72 @@ function validAutomaticLayoutEvidence(
     return null;
   }
   return analysis;
+}
+
+function addBrollLayers(
+  target: CompositionTargetPlan,
+  placements: readonly CompositionBrollPlacement[],
+): CompositionTargetPlan {
+  if (placements.length === 0) return target;
+
+  const scenes: CompositionScene[] = [];
+  for (const baseScene of target.scenes) {
+    const boundaries = new Set<number>([
+      baseScene.startSec,
+      baseScene.endSec,
+    ]);
+    for (const placement of placements) {
+      if (
+        placement.endSec > baseScene.startSec &&
+        placement.startSec < baseScene.endSec
+      ) {
+        boundaries.add(Math.max(baseScene.startSec, placement.startSec));
+        boundaries.add(Math.min(baseScene.endSec, placement.endSec));
+      }
+    }
+    const ordered = [...boundaries].sort((left, right) => left - right);
+    for (let index = 0; index < ordered.length - 1; index += 1) {
+      const startSec = ordered[index]!;
+      const endSec = ordered[index + 1]!;
+      if (endSec <= startSec) continue;
+      const active = placements.find(
+        (placement) =>
+          placement.startSec <= startSec && placement.endSec >= endSec,
+      );
+      scenes.push({
+        ...baseScene,
+        id: `${baseScene.id}:slice:${scenes.length}`,
+        startSec,
+        endSec,
+        layers: active
+          ? [
+              ...baseScene.layers,
+              {
+                id: `layer:broll:${active.id}:${target.id}`,
+                kind: "broll-video",
+                sourceRef: active.ref,
+                activeRange: {
+                  startSec: active.startSec,
+                  endSec: active.endSec,
+                },
+                destination: {
+                  x: 0,
+                  y: 0,
+                  width: target.canvas.width,
+                  height: target.canvas.height,
+                },
+                fit: "cover",
+                rotationDeg: 0,
+                opacity: 1,
+                zIndex: 20,
+                audio: "source",
+              },
+            ]
+          : baseScene.layers,
+      });
+    }
+  }
+  return { ...target, scenes };
 }
 
 function validateInput(
@@ -726,6 +832,33 @@ export function planClipComposition(
   if (editedTimeMap.editedDurationSec <= 0) {
     return { status: "invalid", error: { code: "empty_edited_timeline" } };
   }
+
+  const brollAvailability = input.assets.broll;
+  const brollPlacements =
+    brollAvailability?.state === "available"
+      ? [...brollAvailability.placements].sort(
+          (left, right) => left.startSec - right.startSec,
+        )
+      : [];
+  for (const [index, placement] of brollPlacements.entries()) {
+    const previous = brollPlacements[index - 1];
+    if (
+      placement.id.length === 0 ||
+      placement.ref.length === 0 ||
+      !Number.isFinite(placement.startSec) ||
+      !Number.isFinite(placement.endSec) ||
+      placement.startSec < 0 ||
+      placement.endSec <= placement.startSec ||
+      placement.endSec > editedTimeMap.editedDurationSec ||
+      (previous !== undefined && placement.startSec < previous.endSec)
+    ) {
+      return {
+        status: "invalid",
+        error: { code: "invalid_broll_placement" },
+      };
+    }
+  }
+  const hasActiveBroll = brollPlacements.length > 0;
 
   const requestedMode = resolveEffectiveFramingMode(input.document.studioEdits);
   if (
@@ -806,7 +939,10 @@ export function planClipComposition(
     engineVersion: input.capabilities.automaticSpeakerEngineVersion,
   });
   const automaticAnalysis =
-    requestedMode === "auto" && input.capabilities.automaticSpeakerLayout
+    (requestedMode === "auto" ||
+      (hasActiveBroll &&
+        (requestedMode === "split" || requestedMode === "screen"))) &&
+    input.capabilities.automaticSpeakerLayout
       ? validAutomaticLayoutEvidence(
           input.evidence.automaticLayout,
           input,
@@ -847,7 +983,7 @@ export function planClipComposition(
   const splitEvidenceIsProvisional =
     requestedMode === "split" &&
     input.capabilities.explicitSplitLayout !== false &&
-    !input.document.brollUrl &&
+    !hasActiveBroll &&
     !splitEvidence &&
     splitAvailability.state !== "failed" &&
     splitAvailability.state !== "disabled";
@@ -882,7 +1018,7 @@ export function planClipComposition(
   const screenEvidenceIsProvisional =
     requestedMode === "screen" &&
     input.capabilities.screenLayout !== false &&
-    !input.document.brollUrl &&
+    !hasActiveBroll &&
     !screenEvidence &&
     screenAvailability.state !== "failed" &&
     screenAvailability.state !== "disabled";
@@ -900,13 +1036,15 @@ export function planClipComposition(
     });
   }
 
-  const targets: CompositionTargetPlan[] = input.targets.map((target) => {
+  const baseTargets: CompositionTargetPlan[] = input.targets.map((target) => {
     const canvas = {
       width: target.width,
       height: target.height,
       divisibleBy: 2 as const,
     };
     if (requestedMode === "split") {
+      const fallbackSegments =
+        splitEvidence?.fallbackSegments ?? automaticAnalysis?.noSplitSegments ?? null;
       const centerFallback = (effectiveMode: "center" | "auto") => ({
         id: target.id,
         aspectRatio: target.aspectRatio,
@@ -914,12 +1052,12 @@ export function planClipComposition(
         effectiveMode,
         canvas,
         scenes:
-          effectiveMode === "auto" && splitEvidence
+          effectiveMode === "auto" && fallbackSegments
             ? speakerScenes({
                 mode: "auto",
                 source: input.source,
                 target,
-                segments: splitEvidence.fallbackSegments,
+                segments: fallbackSegments,
                 overrides: input.document.studioEdits.speakerLayoutOverrides,
               })
             : [
@@ -948,10 +1086,12 @@ export function planClipComposition(
                 },
               ],
       });
-      const brollConflict = Boolean(input.document.brollUrl);
+      const brollConflict = hasActiveBroll;
       const disabled = input.capabilities.explicitSplitLayout === false;
       if (brollConflict || disabled || !splitEvidence) {
         const provisional = splitEvidenceIsProvisional;
+        const effectiveFallback =
+          brollConflict && fallbackSegments ? "auto" : "center";
         notices.push({
           code: brollConflict
             ? "split_broll_conflict"
@@ -965,10 +1105,10 @@ export function planClipComposition(
           fidelity: provisional ? "provisional" : "degraded",
           targetId: target.id,
           sceneId: null,
-          effectiveFallback: "center",
+          effectiveFallback,
           userActionPossible: false,
         });
-        return centerFallback("center");
+        return centerFallback(effectiveFallback);
       }
       if (!splitEvidence.segments.some((segment) => segment.layout === "two-up")) {
         notices.push({
@@ -1055,50 +1195,62 @@ export function planClipComposition(
       };
     }
     if (requestedMode === "screen") {
-      const fullCenter = () => ({
+      const screenFallbackSegments = automaticAnalysis?.noSplitSegments ?? null;
+      const wholeClipFallback = (effectiveMode: "center" | "auto") => ({
         id: target.id,
         aspectRatio: target.aspectRatio,
         requestedMode,
-        effectiveMode: "center" as const,
+        effectiveMode,
         canvas,
-        scenes: [
-          {
-            id: `scene:screen-fallback:${target.id}:0`,
-            startSec: 0,
-            endSec: editedTimeMap.editedDurationSec,
-            layers: [
-              {
-                id: `layer:source:${target.id}:0`,
-                kind: "source-video" as const,
-                sourceRef: input.source.identity,
-                sourceCrop: centeredCoverCrop(input.source, target),
-                destination: {
-                  x: 0,
-                  y: 0,
-                  width: target.width,
-                  height: target.height,
+        scenes:
+          effectiveMode === "auto" && screenFallbackSegments
+            ? speakerScenes({
+                mode: "auto",
+                source: input.source,
+                target,
+                segments: screenFallbackSegments,
+                overrides: input.document.studioEdits.speakerLayoutOverrides,
+              })
+            : [
+                {
+                  id: `scene:screen-fallback:${target.id}:0`,
+                  startSec: 0,
+                  endSec: editedTimeMap.editedDurationSec,
+                  layers: [
+                    {
+                      id: `layer:source:${target.id}:0`,
+                      kind: "source-video" as const,
+                      sourceRef: input.source.identity,
+                      sourceCrop: centeredCoverCrop(input.source, target),
+                      destination: {
+                        x: 0,
+                        y: 0,
+                        width: target.width,
+                        height: target.height,
+                      },
+                      fit: "cover" as const,
+                      rotationDeg: 0,
+                      opacity: 1,
+                      zIndex: 0,
+                    },
+                  ],
                 },
-                fit: "cover" as const,
-                rotationDeg: 0,
-                opacity: 1,
-                zIndex: 0,
-              },
-            ],
-          },
-        ],
+              ],
       });
-      const brollConflict = Boolean(input.document.brollUrl);
+      const brollConflict = hasActiveBroll;
       const disabled = input.capabilities.screenLayout === false;
       if (brollConflict || disabled) {
+        const effectiveFallback =
+          brollConflict && screenFallbackSegments ? "auto" : "center";
         notices.push({
           code: brollConflict ? "screen_broll_conflict" : "screen_layout_disabled",
           fidelity: "degraded",
           targetId: target.id,
           sceneId: null,
-          effectiveFallback: "center",
+          effectiveFallback,
           userActionPossible: false,
         });
-        return fullCenter();
+        return wholeClipFallback(effectiveFallback);
       }
 
       const pipCrop =
@@ -1418,6 +1570,24 @@ export function planClipComposition(
       })),
     );
   }
+
+  if (brollAvailability && brollAvailability.state !== "available") {
+    const pending = brollAvailability.state === "pending";
+    notices.push(
+      ...baseTargets.map((target) => ({
+        code: pending ? "broll_asset_pending" : "broll_asset_unavailable",
+        fidelity: pending ? ("provisional" as const) : ("degraded" as const),
+        targetId: target.id,
+        sceneId: null,
+        effectiveFallback: target.effectiveMode,
+        userActionPossible: !pending,
+      })),
+    );
+  }
+
+  const targets = baseTargets.map((target) =>
+    addBrollLayers(target, brollPlacements),
+  );
 
   const withoutFingerprint = {
     version: CLIP_COMPOSITION_PLAN_VERSION,

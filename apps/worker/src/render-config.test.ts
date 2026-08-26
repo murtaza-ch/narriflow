@@ -2,13 +2,19 @@ import { describe, expect, test } from "bun:test";
 import { parseRenderConfig } from "./render-config";
 
 describe("RenderConfig", () => {
+  test("exposes no composition renderer selector", () => {
+    const config = parseRenderConfig({});
+
+    expect(
+      Object.keys(config).filter((key) => key.startsWith("composition")),
+    ).toEqual([]);
+  });
+
   test("freezes current defaults and preserves literal zero kill switches", () => {
     const config = parseRenderConfig({
-      WORKER_AUTO_REFRAME: "0",
       WORKER_LAYOUT_ENGINE: "0",
       WORKER_SCREEN_LAYOUT: "0",
       WORKER_SPLIT: "0",
-      WORKER_PIP_DETECT: "0",
       WORKER_BROLL: "0",
     });
 
@@ -18,18 +24,13 @@ describe("RenderConfig", () => {
       uploadConcurrency: 2,
       renderCommandTimeoutMs: 1_800_000,
       probeCommandTimeoutMs: 120_000,
-      autoReframeEnabled: false,
       layoutEngineEnabled: false,
       screenLayoutEnabled: false,
       splitEnabled: false,
-      pipDetectEnabled: false,
       brollEnabled: false,
       pexelsConfigured: false,
       pipMotionThreshold: 0.12,
       brollAssetCacheTtlMs: 24 * 60 * 60 * 1000,
-      compositionCenter: "shadow",
-      compositionFit: "shadow",
-      compositionAuto: "shadow",
     });
     expect(Object.isFrozen(config)).toBe(true);
   });
@@ -82,9 +83,6 @@ describe("RenderConfig", () => {
       parseRenderConfig({ WORKER_X264_PRESET: "warp-speed" }),
     ).toThrow("WORKER_X264_PRESET");
     expect(() =>
-      parseRenderConfig({ WORKER_AUTO_REFRAME: "false" }),
-    ).toThrow("WORKER_AUTO_REFRAME");
-    expect(() =>
       parseRenderConfig({ WORKER_LAYOUT_ENGINE: "2" }),
     ).toThrow("WORKER_LAYOUT_ENGINE");
     expect(() =>
@@ -108,24 +106,4 @@ describe("RenderConfig", () => {
     expect(config.brollAssetCacheTtlMs).toBe(30 * 60 * 1000);
   });
 
-  test("validates mode-specific composition cutover controls", () => {
-    expect(
-      parseRenderConfig({
-        WORKER_COMPOSITION_CENTER: "legacy",
-        WORKER_COMPOSITION_FIT: "shadow",
-        WORKER_COMPOSITION_AUTO: "plan",
-        WORKER_COMPOSITION_SPLIT: "plan",
-        WORKER_COMPOSITION_SCREEN: "legacy",
-      }),
-    ).toMatchObject({
-      compositionCenter: "legacy",
-      compositionFit: "shadow",
-      compositionAuto: "plan",
-      compositionSplit: "plan",
-      compositionScreen: "legacy",
-    });
-    expect(() =>
-      parseRenderConfig({ WORKER_COMPOSITION_AUTO: "enabled" }),
-    ).toThrow("WORKER_COMPOSITION_AUTO");
-  });
 });

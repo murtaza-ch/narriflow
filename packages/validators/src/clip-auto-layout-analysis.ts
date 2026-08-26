@@ -8,8 +8,8 @@ import { deletedRangesSchema } from "./edit-ranges";
  * Coordinates are normalized against the source frame;
  * times are seconds on the edited clip timeline (after deleted ranges).
  *
- * This is deliberately separate from Clip.layoutAnalysis, whose v1 envelope
- * describes screen-share/PiP detection. Auto speaker framing has a different
+ * This is deliberately separate from Clip.layoutAnalysis, which describes
+ * identity-complete Screen/PiP evidence. Auto speaker framing has a different
  * lifecycle: it is produced for every video clip, invalidated by source-range
  * edits, and consumed on every aspect-ratio preview/render.
  */
@@ -49,15 +49,15 @@ export type ClipAutoLayoutSegment = z.infer<
 
 const segmentListSchema = z.array(clipAutoLayoutSegmentSchema).max(64);
 
-export const clipAutoLayoutAnalysisSchema = z
-  .object({
+function speakerLayoutAnalysisSchema<TEngine extends "shot-layout-v1" | "explicit-split-v1">(
+  engine: TEngine,
+) {
+  return z
+    .object({
     version: z.literal(1),
-    engine: z.enum(["shot-layout-v1", "explicit-split-v1"]),
-    /** Stable logical identity of the source media analyzed. Optional only
-     *  so rolling readers can parse v1 envelopes written before source
-     *  binding was added; composition consumers treat a missing value as
-     *  stale evidence and request a one-time refresh. */
-    sourceIdentity: z.string().min(1).optional(),
+    engine: z.literal(engine),
+    /** Stable logical identity of the source media analyzed. */
+    sourceIdentity: z.string().min(1),
     analyzedAtISO: z.string().datetime(),
     /** Raw source window represented by this plan. */
     clipStartSec: z.number().finite().min(0),
@@ -78,8 +78,8 @@ export const clipAutoLayoutAnalysisSchema = z
     twoUpSegmentCount: z.number().int().min(0),
     speakerCount: z.number().int().min(0),
     mappedSpeakerCount: z.number().int().min(0),
-  })
-  .superRefine((analysis, ctx) => {
+    })
+    .superRefine((analysis, ctx) => {
     if (analysis.clipEndSec <= analysis.clipStartSec) {
       ctx.addIssue({
         code: "custom",
@@ -120,16 +120,51 @@ export const clipAutoLayoutAnalysisSchema = z
         });
       }
     }
-  });
+    });
+}
+
+/** Automatic shot/speaker analysis. This schema cannot accept explicit Split
+ * evidence, keeping the autoLayoutAnalysis write boundary engine-safe. */
+export const clipAutoLayoutAnalysisSchema = speakerLayoutAnalysisSchema(
+  "shot-layout-v1",
+);
+
+/** Explicit Split detector evidence. It shares geometry with Automatic
+ * analysis but has a separate schema, storage column, and lifecycle. */
+export const clipSplitLayoutAnalysisSchema = speakerLayoutAnalysisSchema(
+  "explicit-split-v1",
+);
+
+export const clipSplitLayoutFailureSchema = z.object({
+  version: z.literal(1),
+  engine: z.literal("explicit-split-v1"),
+  state: z.literal("failed"),
+  sourceIdentity: z.string().min(1),
+  inputFingerprint: z.string().regex(/^[0-9a-f]{16}$/),
+  analyzedAtISO: z.string().datetime(),
+  reason: z.enum([
+    "broll_conflict",
+    "detection_unavailable",
+    "insufficient_clusters",
+    "empty_plan",
+    "no_two_up_segments",
+    "tiles_not_distinct",
+  ]),
+});
 
 export type ClipAutoLayoutAnalysis = z.infer<
   typeof clipAutoLayoutAnalysisSchema
 >;
 
-export type ClipSplitLayoutAnalysis = Omit<
-  ClipAutoLayoutAnalysis,
-  "engine"
-> & { engine: "explicit-split-v1" };
+export type ClipSplitLayoutAnalysis = z.infer<
+  typeof clipSplitLayoutAnalysisSchema
+>;
+export type ClipSplitLayoutFailure = z.infer<
+  typeof clipSplitLayoutFailureSchema
+>;
+export type ClipSplitLayoutOutcome =
+  | ClipSplitLayoutAnalysis
+  | ClipSplitLayoutFailure;
 
 export function parseClipAutoLayoutAnalysis(
   value: unknown,
@@ -142,10 +177,25 @@ export function parseClipAutoLayoutAnalysis(
 export function parseClipSplitLayoutAnalysis(
   value: unknown,
 ): ClipSplitLayoutAnalysis | null {
-  const parsed = parseClipAutoLayoutAnalysis(value);
-  return parsed?.engine === "explicit-split-v1"
-    ? (parsed as ClipSplitLayoutAnalysis)
-    : null;
+  if (value === null || value === undefined) return null;
+  const parsed = clipSplitLayoutAnalysisSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
+export function parseClipSplitLayoutFailure(
+  value: unknown,
+): ClipSplitLayoutFailure | null {
+  if (value === null || value === undefined) return null;
+  const parsed = clipSplitLayoutFailureSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
+export function parseClipSplitLayoutOutcome(
+  value: unknown,
+): ClipSplitLayoutOutcome | null {
+  return (
+    parseClipSplitLayoutAnalysis(value) ?? parseClipSplitLayoutFailure(value)
+  );
 }
 
 const RANGE_EPSILON_SEC = 0.05;
@@ -156,7 +206,7 @@ const RANGE_EPSILON_SEC = 0.05;
  * expensive re-analysis because none can move a detected face.
  */
 export function clipAutoLayoutMatchesInputs(
-  analysis: ClipAutoLayoutAnalysis,
+  analysis: ClipAutoLayoutAnalysis | ClipSplitLayoutAnalysis,
   input: {
     clipStartSec: number;
     clipEndSec: number;

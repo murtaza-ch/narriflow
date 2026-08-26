@@ -1921,12 +1921,30 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       firstLifecycle.setClipLayoutAnalysis(first, {
         clipId: clip.id,
         analysis: { version: 1 },
+        editorRevision: clip.editorRevision,
+        previewStorageKey: "stale-preview",
+      }),
+    ).rejects.toBeInstanceOf(WorkflowAttemptLost);
+    await expect(
+      firstLifecycle.setClipLayoutAnalysisFailure(first, {
+        clipId: clip.id,
+        failure: { version: 2, state: "failed" },
+        editorRevision: clip.editorRevision,
+        previewStorageKey: "stale-preview",
       }),
     ).rejects.toBeInstanceOf(WorkflowAttemptLost);
     await expect(
       firstLifecycle.completeClipSplitLayoutAnalysis(first, {
         clipId: clip.id,
         analysis: { version: 1 },
+        editorRevision: clip.editorRevision,
+        previewStorageKey: "stale-preview",
+      }),
+    ).rejects.toBeInstanceOf(WorkflowAttemptLost);
+    await expect(
+      firstLifecycle.completeClipSplitLayoutFailure(first, {
+        clipId: clip.id,
+        failure: { version: 1, state: "failed" },
         editorRevision: clip.editorRevision,
         previewStorageKey: "stale-preview",
       }),
@@ -1970,6 +1988,16 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       lifecycle.setClipLayoutAnalysis(attempt, {
         clipId: unownedClip.id,
         analysis: { version: 1 },
+        editorRevision: unownedClip.editorRevision,
+        previewStorageKey: "unowned-preview",
+      }),
+    ).rejects.toBeInstanceOf(WorkflowAttemptLost);
+    await expect(
+      lifecycle.setClipLayoutAnalysisFailure(attempt, {
+        clipId: unownedClip.id,
+        failure: { version: 2, state: "failed" },
+        editorRevision: unownedClip.editorRevision,
+        previewStorageKey: "unowned-preview",
       }),
     ).rejects.toBeInstanceOf(WorkflowAttemptLost);
     await expect(
@@ -1989,9 +2017,19 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       }),
     ).rejects.toBeInstanceOf(WorkflowAttemptLost);
     await expect(
+      lifecycle.completeClipSplitLayoutFailure(attempt, {
+        clipId: unownedClip.id,
+        failure: { version: 1, state: "failed" },
+        editorRevision: unownedClip.editorRevision,
+        previewStorageKey: "unowned-preview",
+      }),
+    ).rejects.toBeInstanceOf(WorkflowAttemptLost);
+    await expect(
       lifecycle.setClipLayoutAnalysis(attempt, {
         clipId: ownedClip.id,
         analysis: { version: 1 },
+        editorRevision: ownedClip.editorRevision,
+        previewStorageKey: ownedPreviewStorageKey,
       }),
     ).resolves.toBe(true);
     await expect(
@@ -2002,6 +2040,22 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
         previewStorageKey: ownedPreviewStorageKey,
       }),
     ).resolves.toBe(true);
+    await expect(
+      lifecycle.setClipLayoutAnalysisFailure(attempt, {
+        clipId: ownedClip.id,
+        failure: { version: 2, state: "failed" },
+        editorRevision: ownedClip.editorRevision + 1,
+        previewStorageKey: ownedPreviewStorageKey,
+      }),
+    ).resolves.toBe(false);
+    await expect(
+      lifecycle.completeClipSplitLayoutFailure(attempt, {
+        clipId: ownedClip.id,
+        failure: { version: 1, state: "failed" },
+        editorRevision: ownedClip.editorRevision,
+        previewStorageKey: `${ownedPreviewStorageKey}.stale`,
+      }),
+    ).resolves.toBe(false);
 
     const [storedOwned, storedUnowned] = await Promise.all([
       prisma.clip.findUniqueOrThrow({ where: { id: ownedClip.id } }),
@@ -2012,16 +2066,13 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       version: 1,
       engine: "explicit-split-v1",
     });
-    expect(storedOwned.autoLayoutAnalysis).toEqual({
-      version: 1,
-      engine: "explicit-split-v1",
-    });
+    expect(storedOwned.autoLayoutAnalysis).toBeNull();
     expect(storedUnowned.layoutAnalysis).toBeNull();
     expect(storedUnowned.autoLayoutAnalysis).toBeNull();
     expect(storedUnowned.splitLayoutAnalysis).toBeNull();
   });
 
-  test("a fenced render can replace independently stale automatic-layout evidence", async () => {
+  test("automatic-layout evidence is create-only", async () => {
     const { project, run } = await fixture("clip_rendering");
     const clip = await clipFixture(project.id, run.id);
     const previewStorageKey = `previews/${clip.id}/current.mp4`;
@@ -2057,17 +2108,11 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     await expect(
       lifecycle.completeClipAutoLayoutAnalysis(attempt, input),
     ).resolves.toBe(false);
-    await expect(
-      lifecycle.completeClipAutoLayoutAnalysis(attempt, {
-        ...input,
-        replaceExisting: true,
-      }),
-    ).resolves.toBe(true);
     expect(
       (
         await prisma.clip.findUniqueOrThrow({ where: { id: clip.id } })
       ).autoLayoutAnalysis,
-    ).toEqual({ version: 1, sourceIdentity: "source:current" });
+    ).toEqual({ version: 1, sourceIdentity: "source:stale" });
   });
 
   test("a stage-specific child command rejects an attempt from another stage", async () => {

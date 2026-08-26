@@ -376,67 +376,11 @@ const STUDIO_BACKGROUND_DEFAULT = {
   imageUrl: null,
 } as const;
 
-// Per-clip framing mode (vizard-parity.md Phase C-2 stage 1, split packet A,
-// screen packet A). "auto", "center", "split", and "screen" are the ways a
-// clip can be CROPPED/composed to fill the frame; "fit" (letterbox +
-// background) is deliberately NOT a value here — it's already fully
-// expressed by `background.mode !== "off"` (landed in Phase C item 2), so
-// representing it again here would let the two fields disagree. The
-// EFFECTIVE framing mode (which folds `background` in) is always resolved
-// through `resolveEffectiveFramingMode` below — never read `framing.mode`
-// directly when deciding crop vs fit vs split vs screen.
-//
-// "split" — stacked 2-up split-screen: the worker seats detected face
-// clusters into two vertically-stacked tiles (top/bottom), one per speaker
-// cluster, each independently cropped/scaled per SHOT SEGMENT (see
-// `two-up.ts`'s `buildSplitLayoutPlan`/`buildTwoUpFilterChain`/
-// `buildSplitFilterChain` and `render-clips.ts`'s `decideSplitFallback`).
-// Packets A (this schema/the panel), B (the worker render pipeline just
-// described), and C (the studio's dual-video live preview —
-// video-preview.tsx's top `<video>` tile plus a second muted
-// `SplitSecondaryTile` for the bottom seat) have all landed.
-//
-// Falls back to single-speaker framing (auto-reframe following the
-// detected face, or a static center crop if none is detected — the same
-// fallback "auto"/"center" already use) whenever the footage can't support
-// a real 2-up: fewer than two stable face clusters, the two clusters are
-// never both on screen at once, one of this clip's OUTPUT aspect ratios
-// specifically can't crop two laterally distinct tiles even though another
-// aspect ratio of the same clip can, B-roll is active for this clip (v1
-// policy: B-roll always wins over split), or the whole feature is disabled
-// via the `WORKER_SPLIT` env kill switch. Every one of those routes through
-// the exact same fallback path — never a failed render — and is logged with
-// its own `clip_split_fallback` reason (see `SplitFallbackReason`).
-//
-// "screen" — screen-share layout (Vizard's screencast-with-facecam preset):
-// the full source frame (the "screen" element — a shared window/slide/app)
-// fits UNCROPPED into the top tile (letterboxed, like "fit", but confined to
-// a top tile rather than the whole canvas), while the bottom tile carries a
-// face-CENTERED horizontal crop of the WHOLE source frame — the same
-// single-face tracking `reframe.ts`'s auto-reframe uses, just aimed at a
-// half-height tile, NOT a facecam/webcam sub-region detector (there is no
-// PiP-region localization anywhere in this pipeline). Packets A (this
-// schema/the panel), B (the worker's dedicated render path —
-// `apps/worker/src/tasks/screen-layout.ts`'s
-// `buildScreenSpeakerFilterChain`/`screenTileGeometry`, `render-clips.ts`'s
-// `applyScreenSpeakerLayout`/`decideScreenFallback`), and C (a live two-tile
-// studio preview mirroring split's dual-video approach, contain-fit top +
-// centered-cover bottom — see video-preview.tsx's `isScreen` block) have all
-// landed. The worker letterboxes the full frame into the top tile and seats
-// a face-tracked (horizontal-only) crop of the whole frame into the bottom
-// tile, driven per output by its own sendcmd script; when no face is
-// detected, detection is unavailable, or an output's aspect ratio has no
-// lateral room to track a face in at all (e.g. 1:1/16:9 against a landscape
-// source — see `screenBottomIsTrackable`), the bottom tile falls back to a
-// static CENTER crop instead, with the layout itself preserved either way —
-// never a failed render. B-roll cutaways are the one condition that DOES
-// fall back to whole-clip single-speaker auto-reframe framing (same v1
-// policy split uses: b-roll always wins the whole frame). The whole feature
-// can be disabled via the `WORKER_SCREEN_LAYOUT` env kill switch, which also
-// routes to whole-clip single-speaker framing. The studio preview
-// approximates this (contain-fit top tile + centered-cover bottom tile,
-// no client-side face detection) — the worker's render is the source of
-// truth for exact framing.
+// Per-clip framing intent. "fit" is deliberately derived from
+// `background.mode !== "off"` rather than duplicated here. Split and Screen
+// are resolved exclusively through the shared Clip Composition Plan: the
+// worker supplies identity-bound evidence, the planner owns exact per-target
+// geometry and typed fallbacks, and Studio plus FFmpeg consume the same plan.
 export const studioFramingSchema = z.object({
   mode: z.enum(["auto", "center", "split", "screen"]).default("auto"),
 });

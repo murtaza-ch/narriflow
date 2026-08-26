@@ -1219,7 +1219,6 @@ export class WorkflowRunLifecycle {
       analysis: Prisma.InputJsonValue;
       editorRevision: number;
       previewStorageKey: string;
-      replaceExisting?: boolean;
     },
   ): Promise<boolean> {
     return this.transaction(async (tx) => {
@@ -1230,9 +1229,7 @@ export class WorkflowRunLifecycle {
           projectId: attempt.projectId,
           editorRevision: input.editorRevision,
           previewStorageKey: input.previewStorageKey,
-          ...(input.replaceExisting
-            ? {}
-            : { autoLayoutAnalysis: { equals: Prisma.DbNull } }),
+          autoLayoutAnalysis: { equals: Prisma.DbNull },
         },
         data: {
           autoLayoutAnalysis: input.analysis,
@@ -1263,17 +1260,33 @@ export class WorkflowRunLifecycle {
           editorRevision: input.editorRevision,
           previewStorageKey: input.previewStorageKey,
         },
-        // Mirror explicit evidence into the legacy column during the additive
-        // rollout so an old Studio instance remains compatible with a new
-        // worker. New consumers use splitLayoutAnalysis; changing framing or
-        // layout inputs invalidates both columns before Auto is analyzed.
         data: {
           splitLayoutAnalysis: input.analysis,
-          autoLayoutAnalysis: input.analysis,
-          autoLayoutStatus: "completed",
-          autoLayoutClaimToken: null,
-          autoLayoutLeaseExpiresAt: null,
         },
+      });
+      return claim.count === 1;
+    });
+  }
+
+  async completeClipSplitLayoutFailure(
+    attempt: WorkflowAttemptRef,
+    input: {
+      clipId: string;
+      failure: Prisma.InputJsonValue;
+      editorRevision: number;
+      previewStorageKey: string;
+    },
+  ): Promise<boolean> {
+    return this.transaction(async (tx) => {
+      await this.fenceRenderAnalysisMutation(tx, attempt, input.clipId);
+      const claim = await tx.clip.updateMany({
+        where: {
+          id: input.clipId,
+          projectId: attempt.projectId,
+          editorRevision: input.editorRevision,
+          previewStorageKey: input.previewStorageKey,
+        },
+        data: { splitLayoutAnalysis: input.failure },
       });
       return claim.count === 1;
     });
@@ -1281,13 +1294,47 @@ export class WorkflowRunLifecycle {
 
   async setClipLayoutAnalysis(
     attempt: WorkflowAttemptRef,
-    input: { clipId: string; analysis: Prisma.InputJsonValue },
+    input: {
+      clipId: string;
+      analysis: Prisma.InputJsonValue;
+      editorRevision: number;
+      previewStorageKey: string;
+    },
   ): Promise<boolean> {
     return this.transaction(async (tx) => {
       await this.fenceRenderAnalysisMutation(tx, attempt, input.clipId);
       const claim = await tx.clip.updateMany({
-        where: { id: input.clipId, projectId: attempt.projectId },
+        where: {
+          id: input.clipId,
+          projectId: attempt.projectId,
+          editorRevision: input.editorRevision,
+          previewStorageKey: input.previewStorageKey,
+        },
         data: { layoutAnalysis: input.analysis },
+      });
+      return claim.count === 1;
+    });
+  }
+
+  async setClipLayoutAnalysisFailure(
+    attempt: WorkflowAttemptRef,
+    input: {
+      clipId: string;
+      failure: Prisma.InputJsonValue;
+      editorRevision: number;
+      previewStorageKey: string;
+    },
+  ): Promise<boolean> {
+    return this.transaction(async (tx) => {
+      await this.fenceRenderAnalysisMutation(tx, attempt, input.clipId);
+      const claim = await tx.clip.updateMany({
+        where: {
+          id: input.clipId,
+          projectId: attempt.projectId,
+          editorRevision: input.editorRevision,
+          previewStorageKey: input.previewStorageKey,
+        },
+        data: { layoutAnalysis: input.failure },
       });
       return claim.count === 1;
     });

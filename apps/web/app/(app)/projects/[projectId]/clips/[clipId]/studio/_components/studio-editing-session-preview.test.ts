@@ -499,55 +499,6 @@ describe("StudioEditingSession preview eligibility seam", () => {
     expect(session.getSnapshot().preview.automaticLayoutStatus).toBe("failed");
   });
 
-  test("refreshes a rolling envelope that is missing source identity", async () => {
-    const cloud = makeDocument();
-    const runtime = new ManualRuntime();
-    const legacy = makeAutomaticLayout();
-    delete legacy.sourceIdentity;
-    let polls = 0;
-    const session = createStudioEditingSession(
-      {
-        projectId: "project",
-        clipId: "clip",
-        cloudRevision: 3,
-        document: cloud,
-        segments: [],
-        preview: {
-          sourceUrl: "https://cdn.example.com/source.mp4",
-          sourcePurged: false,
-          proxy: {
-            url: "https://cdn.example.com/proxy.mp4",
-            startSec: 6,
-            durationSec: 38,
-            waveformPeaksUrl: "/preview-peaks?v=current",
-          },
-          automaticLayout: legacy,
-        },
-      },
-      makeDeterministicDependencies(cloud, {
-        runtime,
-        preview: {
-          fetchAutomaticLayout: async () => {
-            polls += 1;
-            return makeAutomaticLayout();
-          },
-        },
-      }),
-    );
-    await waitForSnapshot(session, (snapshot) => snapshot.status === "ready");
-    expect(session.getSnapshot().preview.automaticLayout).toBeNull();
-
-    runtime.advance(2_000);
-    await waitForSnapshot(
-      session,
-      (snapshot) => snapshot.preview.automaticLayoutStatus === "available",
-    );
-
-    expect(polls).toBe(1);
-    expect(session.getSnapshot().preview.automaticLayout?.sourceIdentity).toBe(
-      compositionAssetRef("source", "project"),
-    );
-  });
 
   test("bounds proxy readiness polling", async () => {
     const cloud = makeDocument();

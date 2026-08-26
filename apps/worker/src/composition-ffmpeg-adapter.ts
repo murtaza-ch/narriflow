@@ -1,8 +1,125 @@
 import {
   CLIP_COMPOSITION_PLAN_VERSION,
   type ClipCompositionPlan,
+  type CompositionBrollVideoLayer,
   type CompositionRect,
+  type CompositionTargetPlan,
 } from "@narriflow/composition-plan";
+
+function baseOnlyTarget(target: CompositionTargetPlan): CompositionTargetPlan {
+  const scenes = target.scenes.map((scene) => ({
+    ...scene,
+    layers: scene.layers.filter(
+      (layer) => layer.kind === "source-video" || layer.kind === "background",
+    ),
+  }));
+  const coalesced = scenes.reduce<typeof scenes>((result, scene) => {
+    const previous = result[result.length - 1];
+    if (
+      previous &&
+      Math.abs(previous.endSec - scene.startSec) <= 0.075 &&
+      JSON.stringify(previous.layers) === JSON.stringify(scene.layers)
+    ) {
+      result[result.length - 1] = { ...previous, endSec: scene.endSec };
+    } else {
+      result.push(scene);
+    }
+    return result;
+  }, []);
+  return { ...target, scenes: coalesced };
+}
+
+function plannedCompositionBrollPlacements(
+  plan: ClipCompositionPlan,
+  targetId: string,
+): Array<{
+  id: string;
+  sourceRef: string;
+  startSec: number;
+  endSec: number;
+  audio: "source";
+}> {
+  if (plan.version !== CLIP_COMPOSITION_PLAN_VERSION) {
+    throw new Error("unsupported_clip_composition_plan_version");
+  }
+  const target = plan.targets.find((candidate) => candidate.id === targetId);
+  if (!target) throw new Error("clip_composition_target_missing");
+
+  const fragments = new Map<
+    string,
+    { layer: CompositionBrollVideoLayer; ranges: Array<[number, number]> }
+  >();
+  for (const scene of target.scenes) {
+    const active = scene.layers.filter(
+      (layer): layer is CompositionBrollVideoLayer =>
+        layer.kind === "broll-video",
+    );
+    if (active.length > 1) {
+      throw new Error("invalid_clip_composition_broll_overlap");
+    }
+    for (const layer of active) {
+      assertRect(
+        layer.destination,
+        target.canvas,
+        "invalid_clip_composition_destination",
+      );
+      if (
+        layer.sourceRef.length === 0 ||
+        layer.fit !== "cover" ||
+        layer.audio !== "source" ||
+        layer.destination.x !== 0 ||
+        layer.destination.y !== 0 ||
+        layer.destination.width !== target.canvas.width ||
+        layer.destination.height !== target.canvas.height ||
+        layer.activeRange.startSec < 0 ||
+        layer.activeRange.endSec <= layer.activeRange.startSec ||
+        scene.startSec < layer.activeRange.startSec ||
+        scene.endSec > layer.activeRange.endSec
+      ) {
+        throw new Error("invalid_clip_composition_broll_layer");
+      }
+      const existing = fragments.get(layer.id);
+      if (existing) {
+        if (
+          existing.layer.sourceRef !== layer.sourceRef ||
+          existing.layer.activeRange.startSec !== layer.activeRange.startSec ||
+          existing.layer.activeRange.endSec !== layer.activeRange.endSec
+        ) {
+          throw new Error("invalid_clip_composition_broll_layer");
+        }
+        existing.ranges.push([scene.startSec, scene.endSec]);
+      } else {
+        fragments.set(layer.id, {
+          layer,
+          ranges: [[scene.startSec, scene.endSec]],
+        });
+      }
+    }
+  }
+
+  return [...fragments.values()]
+    .map(({ layer, ranges }) => {
+      const ordered = ranges.sort((left, right) => left[0] - right[0]);
+      let cursor = layer.activeRange.startSec;
+      for (const [startSec, endSec] of ordered) {
+        if (Math.abs(startSec - cursor) > 0.075) {
+          throw new Error("invalid_clip_composition_broll_layer");
+        }
+        cursor = endSec;
+      }
+      if (Math.abs(cursor - layer.activeRange.endSec) > 0.075) {
+        throw new Error("invalid_clip_composition_broll_layer");
+      }
+      return {
+        id: layer.id,
+        sourceRef: layer.sourceRef,
+        startSec: layer.activeRange.startSec,
+        endSec: layer.activeRange.endSec,
+        audio: layer.audio,
+      };
+    })
+    .sort((left, right) => left.startSec - right.startSec);
+}
 
 function assertRect(
   rect: CompositionRect,
@@ -31,17 +148,75 @@ export function compileCompositionPlanVideo(input: {
   trailingChain?: string;
   backgroundImageInputIndex?: number | null;
   fps?: number;
+  resolvedBrollAssets?: Readonly<Record<string, string>>;
+  brollInputStartIndex?: number;
 }): {
   filterParts: string[];
   backgroundImageInputRequired: boolean;
+  brollInputs: Array<{
+    sourceRef: string;
+    path: string;
+    inputIndex: number;
+    startSec: number;
+    endSec: number;
+  }>;
 } {
   if (input.plan.version !== CLIP_COMPOSITION_PLAN_VERSION) {
     throw new Error("unsupported_clip_composition_plan_version");
   }
-  const target = input.plan.targets.find(
+  const plannedTarget = input.plan.targets.find(
     (candidate) => candidate.id === input.targetId,
   );
-  if (!target) throw new Error("clip_composition_target_missing");
+  if (!plannedTarget) throw new Error("clip_composition_target_missing");
+  const brollPlacements = plannedCompositionBrollPlacements(
+    input.plan,
+    input.targetId,
+  );
+  if (brollPlacements.length > 0 && input.brollInputStartIndex == null) {
+    throw new Error("clip_composition_broll_input_index_missing");
+  }
+  const brollInputs = brollPlacements.map((placement, index) => {
+    const path = input.resolvedBrollAssets?.[placement.sourceRef];
+    if (!path) throw new Error("clip_composition_broll_input_missing");
+    return {
+      sourceRef: placement.sourceRef,
+      path,
+      inputIndex: input.brollInputStartIndex! + index,
+      startSec: placement.startSec,
+      endSec: placement.endSec,
+    };
+  });
+  const baseOutputLabel =
+    brollInputs.length > 0 ? "[composition_base]" : input.outputLabel;
+  const trailingSuffix = input.trailingChain ? `,${input.trailingChain}` : "";
+  const baseSuffix = brollInputs.length === 0 ? trailingSuffix : "";
+  const finalize = (result: {
+    filterParts: string[];
+    backgroundImageInputRequired: boolean;
+  }) => {
+    if (brollInputs.length === 0) {
+      return { ...result, brollInputs };
+    }
+    let current = baseOutputLabel;
+    brollInputs.forEach((asset, index) => {
+      const layer = `[composition_broll_${index}]`;
+      const next =
+        index === brollInputs.length - 1
+          ? input.outputLabel
+          : `[composition_broll_stage_${index}]`;
+      result.filterParts.push(
+        `[${asset.inputIndex}:v]scale=${plannedTarget.canvas.width}:${plannedTarget.canvas.height}:` +
+          `force_original_aspect_ratio=increase,crop=${plannedTarget.canvas.width}:` +
+          `${plannedTarget.canvas.height},setpts=PTS-STARTPTS+${asset.startSec}/TB,` +
+          `format=yuv420p${layer}`,
+        `${current}${layer}overlay=0:0:enable='between(t,${asset.startSec},${asset.endSec})'` +
+          `${index === brollInputs.length - 1 ? trailingSuffix : ""}${next}`,
+      );
+      current = next;
+    });
+    return { ...result, brollInputs };
+  };
+  const target = baseOnlyTarget(plannedTarget);
   if (
     target.effectiveMode === "auto" ||
     target.effectiveMode === "split" ||
@@ -211,16 +386,15 @@ export function compileCompositionPlanVideo(input: {
       });
     });
 
-    const suffix = input.trailingChain ? `,${input.trailingChain}` : "";
     if (sceneOutputs.length === 1) {
-      parts.push(`${sceneOutputs[0]}format=yuv420p${suffix}${input.outputLabel}`);
+      parts.push(`${sceneOutputs[0]}format=yuv420p${baseSuffix}${baseOutputLabel}`);
     } else {
       parts.push(
         `${sceneOutputs.join("")}concat=n=${sceneOutputs.length}:v=1:a=0,` +
-          `format=yuv420p${suffix}${input.outputLabel}`,
+          `format=yuv420p${baseSuffix}${baseOutputLabel}`,
       );
     }
-    return { filterParts: parts, backgroundImageInputRequired: false };
+    return finalize({ filterParts: parts, backgroundImageInputRequired: false });
   }
   if (target.scenes.length !== 1) {
     throw new Error("unsupported_clip_composition_target");
@@ -246,7 +420,6 @@ export function compileCompositionPlanVideo(input: {
     "invalid_clip_composition_destination",
   );
   const crop = sourceLayer.sourceCrop;
-  const suffix = input.trailingChain ? `,${input.trailingChain}` : "";
   if (target.effectiveMode === "fit") {
     const backgroundLayer = scene.layers.find(
       (layer) => layer.kind === "background",
@@ -267,27 +440,27 @@ export function compileCompositionPlanVideo(input: {
         throw new Error("clip_composition_background_input_missing");
       }
       const fps = input.fps && input.fps > 0 ? input.fps : 30;
-      return {
+      return finalize({
         filterParts: [
           `[${input.backgroundImageInputIndex}:v]scale=${target.canvas.width}:${target.canvas.height}:` +
             `force_original_aspect_ratio=increase,crop=${target.canvas.width}:${target.canvas.height},` +
             `fps=${fps}[composition_bg]`,
           `${sourceChain}[composition_source]`,
           `[composition_bg][composition_source]overlay=${sourceLayer.destination.x}:` +
-            `${sourceLayer.destination.y},format=yuv420p${suffix}${input.outputLabel}`,
+            `${sourceLayer.destination.y},format=yuv420p${baseSuffix}${baseOutputLabel}`,
         ],
         backgroundImageInputRequired: true,
-      };
+      });
     }
-    return {
+    return finalize({
       filterParts: [
         `${sourceChain},pad=${target.canvas.width}:${target.canvas.height}:` +
           `${sourceLayer.destination.x}:${sourceLayer.destination.y}:` +
           `color=${backgroundLayer.color.replace("#", "0x")},` +
-          `format=yuv420p${suffix}${input.outputLabel}`,
+          `format=yuv420p${baseSuffix}${baseOutputLabel}`,
       ],
       backgroundImageInputRequired: false,
-    };
+    });
   }
   if (target.effectiveMode !== "center" || scene.layers.length !== 1) {
     throw new Error("unsupported_clip_composition_target");
@@ -306,15 +479,11 @@ export function compileCompositionPlanVideo(input: {
   ) {
     throw new Error("unsupported_clip_composition_center_crop");
   }
-  // Center plans always carry the resolved x/y for preview parity, while the
-  // established FFmpeg command intentionally leaves x/y at crop's centered
-  // defaults. Keeping that spelling preserves byte-for-byte output during
-  // the Center cutover; the adapter is not choosing geometry here.
-  return {
+  return finalize({
     filterParts: [
-      `${input.videoInputLabel}crop=${crop.width}:${crop.height},` +
-        `scale=${target.canvas.width}:${target.canvas.height},format=yuv420p${suffix}${input.outputLabel}`,
+      `${input.videoInputLabel}crop=${crop.width}:${crop.height}:${crop.x}:${crop.y},` +
+        `scale=${target.canvas.width}:${target.canvas.height},format=yuv420p${baseSuffix}${baseOutputLabel}`,
     ],
     backgroundImageInputRequired: false,
-  };
+  });
 }

@@ -12,66 +12,10 @@ import {
 } from "@narriflow/validators";
 import { FramingPresetGrid } from "./framing-preset-thumbnails";
 
-// Vizard-parity Phase C-2 stage 1 (+ split packet A, + screen packet A):
-// per-clip framing mode. Five effective modes, resolved by the shared
-// `resolveEffectiveFramingMode` helper so this panel, the worker's render
-// pipeline, and the preview can never fork on the answer:
-//  - "auto"   — crop to fill, following the speaker's face when detected
-//               (`studioEdits.framing.mode === "auto"`, the default).
-//  - "center" — crop to fill, always centered, no face detection
-//               (`studioEdits.framing.mode === "center"`).
-//  - "fit"    — letterbox instead of crop; a color or image fills the empty
-//               frame (`studioEdits.background.mode !== "off"` — this is
-//               NOT a `framing` value, it's derived entirely from
-//               `background` so the two fields can't disagree; see
-//               `studioFramingSchema`'s doc comment in
-//               packages/validators/src/studio-edits.ts).
-//  - "split"  — stacked 2-up split-screen: two detected face clusters seated
-//               into vertically stacked tiles (`studioEdits.framing.mode ===
-//               "split"`). Packets A (schema/panel), B (worker: segment-aware
-//               2-up render — `apps/worker/src/tasks/two-up.ts`,
-//               `render-clips.ts`'s `decideSplitFallback`/
-//               `framingForcesPerOutputRender`), and C (this dual-video
-//               preview — see video-preview.tsx/split-secondary-tile.tsx)
-//               have all landed. Real detection runs per clip; when the
-//               footage can't support a genuine 2-up (fewer than two stable
-//               face clusters, no clusters ever on screen together, one of
-//               this clip's output aspect ratios can't crop two laterally
-//               distinct tiles, B-roll is active, or the whole feature is
-//               disabled via `WORKER_SPLIT=0`), both the worker and this
-//               live preview fall back to single-speaker framing (auto-
-//               reframe, or a static center crop) exactly like "auto"/
-//               "center" — never a failed render.
-//  - "screen"  — screen-share layout (Vizard's screencast-with-facecam
-//               preset): the full source frame fits uncropped into the top
-//               tile while a face-centered horizontal crop of the whole
-//               frame fills the bottom tile (`studioEdits.framing.mode ===
-//               "screen"`). Packets A (this schema/panel), B (worker render
-//               — `apps/worker/src/tasks/screen-layout.ts`'s
-//               `buildScreenSpeakerFilterChain`/`screenTileGeometry`,
-//               `render-clips.ts`'s `applyScreenSpeakerLayout`/
-//               `decideScreenFallback`), and C (the live two-tile preview —
-//               see video-preview.tsx) have all landed. The bottom tile is
-//               NOT facecam/webcam-region detection — there is no PiP
-//               sub-region localization, only the same single-face
-//               horizontal tracking auto-reframe already does, aimed at a
-//               half-height tile. When no face is detected (or this clip's
-//               output aspect ratio has no lateral room to track a face in
-//               at all, e.g. 1:1/16:9 against a landscape source — see
-//               `screenBottomIsTrackable`), the bottom tile stays a static
-//               CENTER crop; the layout itself is preserved either way,
-//               never a whole-clip fallback. B-roll cutaways are the one
-//               case that DOES fall back to whole-clip single-speaker
-//               (auto) framing, same as split's own B-roll policy. The
-//               whole feature can be disabled via the `WORKER_SCREEN_LAYOUT`
-//               env kill switch, in which case it also falls back to
-//               whole-clip single-speaker framing.
-// See buildFitAndBackgroundFilter / shouldRunAutoReframeDetection
-// (apps/worker/src/tasks/render-clips.ts) for the burn-in side of this
-// parity contract, and video-preview.tsx for how the stage renders it live.
-// The five presets are rendered as drawn thumbnail tiles (Vizard-style) by
-// FramingPresetGrid (./framing-preset-thumbnails.tsx) rather than an icon
-// radio — see that file for the tile art.
+// Five effective modes share one resolver. Automatic, Center, and Fit feed
+// the same composition planner as explicit Split and Screen. Identity-bound
+// worker evidence supplies analysis; the planner owns all per-target geometry
+// and fallback decisions; Studio and FFmpeg adapt the resulting plan.
 
 // "None" isn't offered here — inside Fit the only choices are Color/Image
 // (Fit itself already replaces "off"/crop-to-fill at the top level above).

@@ -13,12 +13,10 @@ import {
   splitLayoutInputFingerprint,
   type ClipCompositionPlan,
   type CompositionEvidenceAvailability,
-  type CompositionRect,
   type ScreenLayoutEvidence,
   type ScreenLayoutFailureReason,
   type SplitLayoutEvidence,
   type SplitLayoutFailureReason,
-  type CompositionTargetPlan,
 } from "@narriflow/composition-plan";
 import {
   assertPublicHttpUrl,
@@ -57,7 +55,9 @@ import {
   clipAspectRatioFromDb,
   clipAspectRatioOptions,
   clipAutoLayoutAnalysisSchema,
+  clipSplitLayoutFailureSchema,
   clipLayoutAnalysisV2Schema,
+  clipLayoutAnalysisFailureSchema,
   clipAutoLayoutMatchesInputs,
   clipRenderResolutionSchema,
   computeSpeechWindows,
@@ -102,38 +102,25 @@ import {
   speechWordsFromUtterances,
 } from "./layout-engine";
 import {
-  buildReframeSendcmdScript,
-  cropXForCenter,
-  REFRAME_CROP_NAME,
   remapFaceSamplesForCutPlan,
   smoothFacePath,
   type FaceSample,
   type SmoothedSample,
 } from "./reframe";
 import {
-  buildSplitFilterChain,
   buildSplitLayoutPlan,
-  computeTileCrop,
   deriveSingleFaceSamplesFromMulti,
   remapMultiFaceSamplesForCutPlan,
-  splitTilesAreDistinct,
   type BuildSplitLayoutPlanResult,
   type MultiFaceSample,
   type SplitLayoutSegment,
 } from "./two-up";
 import {
-  buildScreenSpeakerFilterChain,
   classifyScreencast,
   confirmsFaceInRect,
-  fitPipCropToTile,
-  pipCropTooSmall,
-  screenBottomIsTrackable,
-  screenTileGeometry,
   selectPipRect,
-  SCREEN_BOTTOM_CROP_NAME,
   type PipCandidate,
   type PipRect,
-  type ScreenSpeakerBottomSpec,
 } from "./screen-layout";
 import {
   brollQueryForClip,
@@ -157,14 +144,15 @@ import {
   type RenderProcessDiagnostic,
 } from "../render-process-adapter";
 import {
-  DEFAULT_RENDER_MEDIA_FPS,
   HTTP_SOURCE_RW_TIMEOUT_US,
   ProductionRenderMediaAdapter,
   productionRenderMediaAdapter,
   type RenderMediaProbe,
 } from "../render-media-adapter";
 import { productionRenderDiagnosticAdapter } from "../render-diagnostic-adapter";
-import { compileCompositionPlanVideo } from "../composition-ffmpeg-adapter";
+import {
+  compileCompositionPlanVideo,
+} from "../composition-ffmpeg-adapter";
 import { classifyRenderObjectKey } from "../render-object-key";
 import {
   productionRenderClockAdapter,
@@ -174,6 +162,7 @@ import {
 } from "../render-runtime-adapters";
 
 interface BrollCutaway {
+  ref: string;
   path: string;
   window: { startSec: number; endSec: number };
 }
@@ -230,20 +219,13 @@ interface SfxPlan {
  * (falls back to black) so it doubles as the mode="image" fallback when the
  * image URL was invalid or its download failed upstream. `imagePath` is the
  * local downloaded file, set only when mode="image" AND the download
- * actually succeeded — `buildFitAndBackgroundFilter` falls back to the solid
- * color whenever it's null, so a bad image URL degrades gracefully instead
- * of failing the render.
+ * actually succeeded. The composition plan compiler falls back to the solid
+ * color whenever it's null, so a bad image URL degrades gracefully.
  */
 interface BackgroundPlan {
   mode: "color" | "image";
   color: string;
   imagePath: string | null;
-}
-
-/** A resolved reframe crop for one output: the sendcmd script + its crop name. */
-interface ReframeSpec {
-  scriptPath: string;
-  cropName: string;
 }
 
 interface LogoOverlay {
@@ -322,9 +304,11 @@ interface ClipRenderAttemptAdapters {
     | "completeClipRenderVariant"
     | "completeClipAutoLayoutAnalysis"
     | "completeClipSplitLayoutAnalysis"
+    | "completeClipSplitLayoutFailure"
     | "failClipRenderVariant"
     | "markClipRenderVariantRendering"
     | "setClipLayoutAnalysis"
+    | "setClipLayoutAnalysisFailure"
   >;
   audioAsset: Pick<typeof productionAudioAssetService, "resolveRenderSource">;
   optionalAssets: {
@@ -428,14 +412,6 @@ interface PendingRenderOutput {
   outputPath: string;
   storageKey: string;
   subtitlePath?: string | null;
-  reframe?: ReframeSpec | null;
-  /** Screen packet B ("screen" framing mode): this output's resolved bottom
-   *  (speaker) tile spec — a sendcmd-driven face crop when detection
-   *  succeeded, else a static center crop. Set by `applyScreenSpeakerLayout`,
-   *  consumed by `buildSingleVideoArgs`'s `screen` param (mirrors how
-   *  `reframe` above is set by `applyAutoReframe` and consumed via
-   *  `params.reframe`). Never set for a non-"screen" clip. */
-  screenBottom?: ScreenSpeakerBottomSpec | null;
   /** Target resolution for this specific render row (vizard-parity Phase C
    *  export options) — read off the ClipRender row, already entitlement-
    *  clamped by clip.service's triggerClipRendering/autoQueueDefaultRenders.
@@ -445,411 +421,6 @@ interface PendingRenderOutput {
   watermark: boolean;
 }
 
-interface CompositionShadowLayerSnapshot {
-  kind: "background" | "source-video";
-  role: string | null;
-  zIndex: number;
-  sourceCrop: CompositionRect | null;
-  destination: CompositionRect;
-  rotationDeg: number;
-  backgroundColor: string | null;
-  backgroundImage: boolean;
-}
-
-interface CompositionShadowTargetSnapshot {
-  effectiveMode: "auto" | "center" | "fit" | "split" | "screen";
-  dynamicReframe: boolean;
-  scenes: Array<{
-    startSec: number;
-    endSec: number;
-    layers: CompositionShadowLayerSnapshot[];
-  }>;
-  noticeCodes: string[];
-}
-
-function legacyObjectFitGeometry(input: {
-  source: { width: number; height: number };
-  target: { width: number; height: number };
-  fit: "cover" | "contain";
-}): { sourceCrop: CompositionRect; destination: CompositionRect } {
-  if (input.fit === "contain") {
-    const scale = Math.min(
-      input.target.width / input.source.width,
-      input.target.height / input.source.height,
-    );
-    const width = Math.min(
-      input.target.width,
-      Math.max(2, Math.round((input.source.width * scale) / 2) * 2),
-    );
-    const height = Math.min(
-      input.target.height,
-      Math.max(2, Math.round((input.source.height * scale) / 2) * 2),
-    );
-    return {
-      sourceCrop: {
-        x: 0,
-        y: 0,
-        width: input.source.width,
-        height: input.source.height,
-      },
-      destination: {
-        x: Math.round((input.target.width - width) / 2),
-        y: Math.round((input.target.height - height) / 2),
-        width,
-        height,
-      },
-    };
-  }
-  const sourceRatio = input.source.width / input.source.height;
-  const targetRatio = input.target.width / input.target.height;
-  const width =
-    sourceRatio >= targetRatio
-      ? Math.round(input.source.height * targetRatio)
-      : input.source.width;
-  const height =
-    sourceRatio >= targetRatio
-      ? input.source.height
-      : Math.round(input.source.width / targetRatio);
-  return {
-    sourceCrop: {
-      x: Math.max(0, Math.round((input.source.width - width) / 2)),
-      y: Math.max(0, Math.round((input.source.height - height) / 2)),
-      width,
-      height,
-    },
-    destination: {
-      x: 0,
-      y: 0,
-      width: input.target.width,
-      height: input.target.height,
-    },
-  };
-}
-
-function normalizedFramePixels(
-  frame: {
-    frameX: number;
-    frameY: number;
-    frameWidth: number;
-    frameHeight: number;
-  },
-  target: { width: number; height: number },
-): CompositionRect {
-  const width = Math.max(
-    2,
-    Math.min(target.width, Math.round(frame.frameWidth * target.width)),
-  );
-  const height = Math.max(
-    2,
-    Math.min(target.height, Math.round(frame.frameHeight * target.height)),
-  );
-  return {
-    x: Math.max(
-      0,
-      Math.min(target.width - width, Math.round(frame.frameX * target.width)),
-    ),
-    y: Math.max(
-      0,
-      Math.min(target.height - height, Math.round(frame.frameY * target.height)),
-    ),
-    width,
-    height,
-  };
-}
-
-/** Independent projection of the established FFmpeg branches. This is
- * diagnostic-only and never drives rendering or planner output. */
-export function buildLegacyCompositionShadowTarget(input: {
-  targetId: string;
-  aspectRatio: ClipAspectRatio;
-  target: { width: number; height: number };
-  source: { width: number; height: number };
-  durationSec: number;
-  requestedMode: "auto" | "center" | "fit" | "split" | "screen";
-  automaticSegments: SplitLayoutSegment[] | null;
-  splitSegments?: SplitLayoutSegment[] | null;
-  screenBottom?: ScreenSpeakerBottomSpec | null;
-  dynamicReframe?: boolean;
-  speakerLayoutOverrides: StudioSpeakerLayoutOverride[];
-  background: BackgroundPlan | null;
-}): CompositionShadowTargetSnapshot {
-  if (
-    (input.requestedMode === "auto" || input.requestedMode === "split") &&
-    (input.requestedMode === "auto"
-      ? input.automaticSegments
-      : input.splitSegments) &&
-    (input.requestedMode === "auto"
-      ? input.automaticSegments!.length
-      : input.splitSegments!.length) > 0
-  ) {
-    const segments =
-      input.requestedMode === "auto"
-        ? input.automaticSegments!
-        : input.splitSegments!;
-    return {
-      effectiveMode: input.requestedMode,
-      dynamicReframe: false,
-      noticeCodes: [],
-      scenes: segments.map((segment) => {
-        const resolved = resolveSpeakerLayoutScene(
-          segment,
-          input.speakerLayoutOverrides,
-          input.aspectRatio,
-        );
-        return {
-          startSec: segment.startSec,
-          endSec: segment.endSec,
-          layers: resolved.layers.map((layer, index) => {
-            const destination = normalizedFramePixels(layer, input.target);
-            const { cropW: baseCropWidth, cropH: baseCropHeight } =
-              computeTileCrop(
-                input.source.width,
-                input.source.height,
-                destination.width / destination.height,
-              );
-            const zoom = Math.min(4, Math.max(1, layer.cropZoom));
-            const width = Math.max(2, Math.round(baseCropWidth / zoom));
-            const height = Math.max(2, Math.round(baseCropHeight / zoom));
-            return {
-              kind: "source-video" as const,
-              role: layer.role,
-              zIndex: index,
-              sourceCrop: {
-                x: cropXForCenter(layer.cropCxNorm, input.source.width, width),
-                y: cropXForCenter(layer.cropCyNorm, input.source.height, height),
-                width,
-                height,
-              },
-              destination,
-              rotationDeg: layer.rotationDeg,
-              backgroundColor: null,
-              backgroundImage: false,
-            };
-          }),
-        };
-      }),
-    };
-  }
-
-  if (input.requestedMode === "screen" && input.screenBottom) {
-    const tile = screenTileGeometry(input.aspectRatio, input.source);
-    const bottomCrop = input.screenBottom.pipRect
-      ? {
-          x: input.screenBottom.pipRect.x,
-          y: input.screenBottom.pipRect.y,
-          width: input.screenBottom.pipRect.w,
-          height: input.screenBottom.pipRect.h,
-        }
-      : {
-          x: cropXForCenter(
-            input.screenBottom.cx,
-            input.source.width,
-            tile.cropW,
-          ),
-          y: cropXForCenter(0.5, input.source.height, tile.cropH),
-          width: tile.cropW,
-          height: tile.cropH,
-        };
-    return {
-      effectiveMode: "screen",
-      dynamicReframe: Boolean(input.screenBottom.reframe),
-      noticeCodes: [],
-      scenes: [
-        {
-          startSec: 0,
-          endSec: input.durationSec,
-          layers: [
-            {
-              kind: "source-video",
-              role: null,
-              zIndex: 0,
-              sourceCrop: {
-                x: 0,
-                y: 0,
-                width: input.source.width,
-                height: input.source.height,
-              },
-              destination: {
-                x: 0,
-                y: 0,
-                width: tile.tileWidth,
-                height: tile.topHeight,
-              },
-              rotationDeg: 0,
-              backgroundColor: null,
-              backgroundImage: false,
-            },
-            {
-              kind: "source-video",
-              role: null,
-              zIndex: 1,
-              sourceCrop: bottomCrop,
-              destination: {
-                x: 0,
-                y: tile.topHeight,
-                width: tile.tileWidth,
-                height: tile.bottomHeight,
-              },
-              rotationDeg: 0,
-              backgroundColor: null,
-              backgroundImage: false,
-            },
-          ],
-        },
-      ],
-    };
-  }
-
-  const fit = input.requestedMode === "fit";
-  const geometry = legacyObjectFitGeometry({
-    source: input.source,
-    target: input.target,
-    fit: fit ? "contain" : "cover",
-  });
-  return {
-    effectiveMode: fit ? "fit" : "center",
-    dynamicReframe: Boolean(
-      input.requestedMode === "auto" && input.dynamicReframe,
-    ),
-    noticeCodes: [],
-    scenes: [
-      {
-        startSec: 0,
-        endSec: input.durationSec,
-        layers: [
-          ...(fit
-            ? [
-                {
-                  kind: "background" as const,
-                  role: null,
-                  zIndex: 0,
-                  sourceCrop: null,
-                  destination: {
-                    x: 0,
-                    y: 0,
-                    width: input.target.width,
-                    height: input.target.height,
-                  },
-                  rotationDeg: 0,
-                  backgroundColor: input.background?.color ?? "#000000",
-                  backgroundImage: Boolean(
-                    input.background?.mode === "image" &&
-                      input.background.imagePath,
-                  ),
-                },
-              ]
-            : []),
-          {
-            kind: "source-video" as const,
-            role: null,
-            zIndex: fit ? 1 : 0,
-            sourceCrop: geometry.sourceCrop,
-            destination: geometry.destination,
-            rotationDeg: 0,
-            backgroundColor: null,
-            backgroundImage: false,
-          },
-        ],
-      },
-    ],
-  };
-}
-
-function compositionShadowLayer(layer: CompositionTargetPlan["scenes"][number]["layers"][number]): CompositionShadowLayerSnapshot {
-  return {
-    kind: layer.kind,
-    role: layer.kind === "source-video" ? (layer.speaker?.role ?? null) : null,
-    zIndex: layer.zIndex,
-    sourceCrop: layer.kind === "source-video" ? layer.sourceCrop : null,
-    destination: layer.destination,
-    rotationDeg: layer.rotationDeg,
-    backgroundColor: layer.kind === "background" ? layer.color : null,
-    backgroundImage: layer.kind === "background" ? Boolean(layer.imageRef) : false,
-  };
-}
-
-function shadowRectsDiffer(
-  left: CompositionRect | null,
-  right: CompositionRect | null,
-): boolean {
-  if (!left || !right) return left !== right;
-  return (["x", "y", "width", "height"] as const).some(
-    (key) => Math.abs(left[key] - right[key]) > 1,
-  );
-}
-
-export function compareCompositionShadowTarget(input: {
-  planned: CompositionTargetPlan;
-  plannedNoticeCodes: string[];
-  legacy: CompositionShadowTargetSnapshot;
-}) {
-  const plannedScenes = input.planned.scenes.map((scene) => ({
-    startSec: scene.startSec,
-    endSec: scene.endSec,
-    layers: scene.layers.map(compositionShadowLayer),
-  }));
-  const scenePairs = plannedScenes.map((scene, index) => ({
-    planned: scene,
-    legacy: input.legacy.scenes[index] ?? null,
-  }));
-  const topology = (layers: CompositionShadowLayerSnapshot[]) =>
-    layers.map((layer) => `${layer.kind}:${layer.role ?? "none"}:${layer.zIndex}`);
-  const comparison = {
-    effectiveModeMismatch:
-      input.planned.effectiveMode !== input.legacy.effectiveMode,
-    dynamicReframeMismatch: input.legacy.dynamicReframe,
-    sceneCountMismatch: plannedScenes.length !== input.legacy.scenes.length,
-    sceneBoundsMismatch: scenePairs.some(
-      ({ planned, legacy }) =>
-        !legacy ||
-        Math.abs(planned.startSec - legacy.startSec) > 0.075 ||
-        Math.abs(planned.endSec - legacy.endSec) > 0.075,
-    ),
-    layerTopologyMismatch: scenePairs.some(
-      ({ planned, legacy }) =>
-        !legacy ||
-        JSON.stringify(topology(planned.layers)) !==
-          JSON.stringify(topology(legacy.layers)),
-    ),
-    geometryMismatch: scenePairs.some(({ planned, legacy }) => {
-      if (!legacy || planned.layers.length !== legacy.layers.length) return true;
-      return planned.layers.some((layer, index) => {
-        const legacyLayer = legacy.layers[index]!;
-        return (
-          shadowRectsDiffer(layer.sourceCrop, legacyLayer.sourceCrop) ||
-          shadowRectsDiffer(layer.destination, legacyLayer.destination)
-        );
-      });
-    }),
-    rotationMismatch: scenePairs.some(({ planned, legacy }) =>
-      planned.layers.some(
-        (layer, index) =>
-          !legacy?.layers[index] ||
-          Math.abs(layer.rotationDeg - legacy.layers[index]!.rotationDeg) > 0.01,
-      ),
-    ),
-    backgroundMismatch: scenePairs.some(({ planned, legacy }) =>
-      planned.layers.some((layer, index) => {
-        if (layer.kind !== "background") return false;
-        const legacyLayer = legacy?.layers[index];
-        return (
-          !legacyLayer ||
-          layer.backgroundColor !== legacyLayer.backgroundColor ||
-          layer.backgroundImage !== legacyLayer.backgroundImage
-        );
-      }),
-    ),
-    noticeMismatch:
-      JSON.stringify(input.plannedNoticeCodes) !==
-      JSON.stringify(input.legacy.noticeCodes),
-  };
-  return {
-    legacy: input.legacy,
-    plannedScenes,
-    comparison,
-    mismatchCount: Object.values(comparison).filter(Boolean).length,
-  };
-}
 
 interface RenderExecutionContext {
   config: Readonly<RenderConfig>;
@@ -871,12 +442,16 @@ const productionClipMutationAdapter: ClipRenderAttemptAdapters["clip"] = {
     productionClipService.completeClipAutoLayoutAnalysis(...args),
   completeClipSplitLayoutAnalysis: (...args) =>
     productionClipService.completeClipSplitLayoutAnalysis(...args),
+  completeClipSplitLayoutFailure: (...args) =>
+    productionClipService.completeClipSplitLayoutFailure(...args),
   failClipRenderVariant: (...args) =>
     productionClipService.failClipRenderVariant(...args),
   markClipRenderVariantRendering: (...args) =>
     productionClipService.markClipRenderVariantRendering(...args),
   setClipLayoutAnalysis: (...args) =>
     productionClipService.setClipLayoutAnalysis(...args),
+  setClipLayoutAnalysisFailure: (...args) =>
+    productionClipService.setClipLayoutAnalysisFailure(...args),
 };
 const productionClipRenderAttemptAdapters: ClipRenderAttemptAdapters = {
   media: productionRenderMediaAdapter,
@@ -2038,103 +1613,6 @@ async function extractFaceDetectionSegment(params: {
   }
 }
 
-/**
- * Drives every `reframeOutputs` output's crop via sendcmd from an already-
- * detected single-face sample list — the exact logic
- * the Clip Render Attempt's "auto" framing branch used to inline,
- * extracted (split packet B) so the split-mode fallback path below (footage
- * that can't support a real 2-up) can reuse it verbatim instead of
- * re-implementing the same remap -> smooth -> sendcmd-script pipeline a
- * second time. Returns whether a reframe was actually applied (false: no
- * samples, or they produced zero usable smoothed points) purely for the
- * caller's own logging/bookkeeping.
- *
- * Takes ALREADY-DETECTED `samples` rather than running `detectFacePath`
- * itself (M2, adversarial review): a split-mode clip that falls back after
- * multi-face detection already ran and succeeded can derive these from that
- * multi-face result (`deriveSingleFaceSamplesFromMulti`) instead of paying
- * for a second full YuNet pass — see this function's call sites for which
- * path each one takes.
- */
-async function applyAutoReframe(params: {
-  samples: FaceSample[] | null;
-  cutPlan: ClipCutPlan;
-  clipStartSec: number;
-  probe: SourceProbe;
-  outputs: PendingRenderOutput[];
-  reframeOutputs: PendingRenderOutput[];
-  tempDir: string;
-  clipId: string;
-  workflowRunId: string;
-}): Promise<boolean> {
-  const analysisStartedAtMs = currentTimeMs();
-  let smoothed: SmoothedSample[] = [];
-  if (params.samples) {
-    const segmentGroups = remapFaceSamplesForCutPlan(
-      params.samples,
-      params.cutPlan,
-      params.clipStartSec,
-    );
-    smoothed = segmentGroups.flatMap((group) => smoothFacePath(group));
-  }
-  if (smoothed.length === 0) {
-    // The static-center-crop fallback used to be silent — surface WHY the
-    // reframe didn't happen so a missing detector can't hide again.
-    log("info", "clip_reframe_skipped", {
-      workflowRunId: params.workflowRunId,
-      clipId: params.clipId,
-      phase: "media_analysis",
-      analysisMode: "auto_reframe",
-      fallbackMode: "center_crop",
-      failureCode: params.samples
-        ? "no_usable_face_samples"
-        : "analysis_unavailable",
-      disposition: "degraded",
-      durationMs: Math.max(0, currentTimeMs() - analysisStartedAtMs),
-      reason: params.samples
-        ? "no_usable_face_samples"
-        : "detection_unavailable",
-    });
-    return false;
-  }
-
-  const single = params.outputs.length === 1;
-  for (let i = 0; i < params.outputs.length; i++) {
-    const output = params.outputs[i]!;
-    if (!params.reframeOutputs.includes(output)) continue;
-    const cfg = aspectRatioConfig.get(output.aspectRatio)!;
-    const cropW = Math.round(params.probe.height * (cfg.width / cfg.height));
-    const cropName = single ? REFRAME_CROP_NAME : `${REFRAME_CROP_NAME}${i}`;
-    const script = buildReframeSendcmdScript(
-      smoothed,
-      params.probe.width,
-      cropW,
-      cropName,
-    );
-    if (!script) continue;
-    const scriptPath = join(
-      params.tempDir,
-      `reframe-${params.clipId}-${output.aspectRatio.replace(":", "x")}.txt`,
-    );
-    await currentRenderAdapters().workspace.writeFile(
-      scriptPath,
-      script,
-      "utf-8",
-    );
-    output.reframe = { scriptPath, cropName };
-  }
-  log("info", "clip_reframe_applied", {
-    workflowRunId: params.workflowRunId,
-    clipId: params.clipId,
-    phase: "media_analysis",
-    analysisMode: "auto_reframe",
-    selectedMode: "face_tracked",
-    durationMs: Math.max(0, currentTimeMs() - analysisStartedAtMs),
-    outputs: params.outputs.filter((o) => o.reframe).map((o) => o.aspectRatio),
-  });
-  return true;
-}
-
 /** M6 (adversarial review): every reason `decidePipUsage` can return —
  *  `"ok"` means every gate passed and the caller should prefer the PiP
  *  crop; anything else means fall through to the existing band (face-
@@ -2142,19 +1620,15 @@ async function applyAutoReframe(params: {
  *  same way `decidePipUsage` itself checks them (first blocking reason
  *  wins) — see that function's own doc comment for what each one means. */
 export type PipUsageReason =
-  | "disabled"
   | "segment_extract_failed"
   | "detection_unavailable"
   | "insufficient_samples"
   | "not_screencast_like"
   | "no_candidate"
   | "face_not_in_rect"
-  | "pip_too_small"
   | "ok";
 
 export interface DecidePipUsageParams {
-  /** `WORKER_PIP_DETECT` kill switch state. */
-  pipDetectEnabled: boolean;
   /** Whether `extractFaceDetectionSegment` produced a usable local segment
    *  (both `pip_detect.py` and `detectFacePath` run against the SAME
    *  segment — see this module's doc comment on the "real screen layout"
@@ -2173,28 +1647,14 @@ export interface DecidePipUsageParams {
    *  review: only meaningful when `selectedRect` is non-null; irrelevant
    *  otherwise since an earlier gate (`no_candidate`) already blocks first. */
   faceConfirmed: boolean;
-  /** M3 (adversarial review): the PER-OUTPUT `fitPipCropToTile` result
-   *  compared against that output's own tile width
-   *  (`pipCropTooSmall`, screen-layout.ts) — omit (or pass `null`) to skip
-   *  this gate entirely, e.g. for a clip-level "would we even attempt the
-   *  rect at all" check made before any output-specific fitting has run. */
-  fit?: { fittedCropWidth: number; tileWidth: number } | null;
 }
 
 /**
- * M6 (adversarial review): the PiP decision matrix, pulled out of what used
- * to be a chain of inline if/else branches spread across the "real screen
- * layout" wiring below AND (for `pip_too_small`) `applyScreenSpeakerLayout`'s
- * per-output loop — a single pure, exported, ordered gate so the whole
- * matrix (not just individual branches) is unit-testable, and so the SAME
- * ordering can't drift between a clip-level check (`fit: null`, run once
- * before any per-output geometry exists) and a per-output check (`fit` set,
- * run inside `applyScreenSpeakerLayout`'s loop) — both call sites share this
- * one function rather than reimplementing the ladder twice.
+ * Pure, ordered PiP decision matrix. Target-specific crop geometry belongs
+ * to the composition planner.
  *
  * Ordered top-to-bottom, first blocking reason wins:
- *  1. `disabled` — `WORKER_PIP_DETECT=0` kill switch.
- *  2. `segment_extract_failed` — `extractFaceDetectionSegment` failed (HTTP
+ *  1. `segment_extract_failed` — `extractFaceDetectionSegment` failed (HTTP
  *     source, extraction itself errored).
  *  3. `detection_unavailable` — `pip_detect.py` failed/unavailable (no
  *     python/opencv/numpy, or it errored).
@@ -2209,14 +1669,11 @@ export interface DecidePipUsageParams {
  *     segmentation's measured false positive (a hand gesture near the frame
  *     edge on real talking-head footage reads as a corner-adjacent, dense,
  *     compact motion blob just like a genuine facecam overlay).
- *  8. `pip_too_small` — M3: the per-output fitted crop is too narrow
- *     relative to its tile to be worth preferring over the band fallback.
- *  9. `ok` — every gate passed; the caller should use the PiP crop.
+ *  8. `ok` — every gate passed; the caller should use the PiP crop.
  */
 export function decidePipUsage(
   params: DecidePipUsageParams,
 ): { useRect: boolean; reason: PipUsageReason } {
-  if (!params.pipDetectEnabled) return { useRect: false, reason: "disabled" };
   if (!params.segmentExtracted) return { useRect: false, reason: "segment_extract_failed" };
   if (!params.detection) return { useRect: false, reason: "detection_unavailable" };
   if (params.detection.insufficientSamples || params.detection.movingPxFrac === null) {
@@ -2227,9 +1684,6 @@ export function decidePipUsage(
   }
   if (!params.selectedRect) return { useRect: false, reason: "no_candidate" };
   if (!params.faceConfirmed) return { useRect: false, reason: "face_not_in_rect" };
-  if (params.fit && pipCropTooSmall(params.fit.fittedCropWidth, params.fit.tileWidth)) {
-    return { useRect: false, reason: "pip_too_small" };
-  }
   return { useRect: true, reason: "ok" };
 }
 
@@ -2249,8 +1703,8 @@ export function decidePipUsage(
  * No separate invalidation hook exists for a trim (or any other edit that
  * moves the clip's `startSec`/`endSec`) — a trim changes
  * `clipStartSec`/`effective.durationSec` on the NEXT render, this match
- * fails, the stale envelope is simply not read, and the fresh detection that
- * runs instead overwrites it via `clipService.setClipLayoutAnalysis`. The
+ * fails, the stale envelope is simply not read, and fresh identity-complete
+ * evidence is persisted after all Screen facts are resolved. The
  * mismatch itself IS the invalidation.
  *
  * `epsilonSec` absorbs float round-trip noise (JSON storage through
@@ -2268,38 +1722,6 @@ export function layoutAnalysisMatchesWindow(
     Math.abs(analysis.sourceStartSec - startSec) <= epsilonSec &&
     Math.abs(analysis.sourceDurationSec - durationSec) <= epsilonSec
   );
-}
-
-/** Builds a `Clip.layoutAnalysis` v1 envelope from its constituent parts —
- *  shared by `resolvePipAnalysis`'s own early (conclusive-negative) persist
- *  and the screen-mode block's later (post-`decidePipUsage`) persist below,
- *  so the two write sites can't drift on which fields land where. */
-function buildLayoutAnalysisEnvelope(params: {
-  startSec: number;
-  durationSec: number;
-  /** H2 (adversarial review): the RAW `Clip.startSec`/`Clip.endSec` row —
-   *  see the schema's own doc comment (`clip-layout-analysis.ts`) for why
-   *  this is a SEPARATE pair from `startSec`/`durationSec` above (the
-   *  snapped render window). */
-  rawClipStartSec: number;
-  rawClipEndSec: number;
-  movingPxFrac: number | null;
-  insufficientSamples: boolean;
-  pipRect: PipRect | null;
-  pipUsable: boolean;
-}): ClipLayoutAnalysis {
-  return {
-    version: 1,
-    analyzedAtISO: new Date(currentTimeMs()).toISOString(),
-    sourceStartSec: params.startSec,
-    sourceDurationSec: params.durationSec,
-    clipStartSec: params.rawClipStartSec,
-    clipEndSec: params.rawClipEndSec,
-    movingPxFrac: params.movingPxFrac,
-    insufficientSamples: params.insufficientSamples,
-    pipRect: params.pipRect,
-    pipUsable: params.pipUsable,
-  };
 }
 
 /** `detectPipPath`'s success result shape, standalone so `resolvePipAnalysis`'s
@@ -2320,11 +1742,6 @@ export interface ResolvePipAnalysisParams {
    *  `null` means "nothing usable to reuse" (column was null, parse failed,
    *  or the window no longer matches), not literally "column is null." */
   persisted: ClipLayoutAnalysis | null;
-  /** `WORKER_PIP_DETECT` kill switch — mirrors `decidePipUsage`'s own
-   *  `pipDetectEnabled`. When false, neither `detect` nor `persist` is ever
-   *  called: the kill switch means "no persistence side effects at all,"
-   *  not just "no fresh detection." */
-  pipDetectEnabled: boolean;
   detectInput: { path: string; startSec: number } | null;
   /** The clip's real source-time detection window — written into a freshly
    *  persisted envelope's `sourceStartSec`/`sourceDurationSec` (see
@@ -2332,25 +1749,11 @@ export interface ResolvePipAnalysisParams {
    *  `detectInput.startSec`). */
   startSec: number;
   durationSec: number;
-  /** H2 (adversarial review): the RAW `Clip.startSec`/`Clip.endSec` row —
-   *  written into a freshly persisted envelope's `clipStartSec`/`clipEndSec`.
-   *  See `buildLayoutAnalysisEnvelope`'s doc comment for why this is a
-   *  separate pair from `startSec`/`durationSec` above. */
-  rawClipStartSec: number;
-  rawClipEndSec: number;
   detect: (params: {
     sourcePath: string;
     startSec: number;
     durationSec: number;
   }) => Promise<PipDetectionResult | null>;
-  /** Injected so tests can fake persistence without a database — see this
-   *  function's own doc comment for exactly when it's called. Errors are
-   *  caught and logged here (log-and-continue): a persistence miss must
-   *  never fail an otherwise-successful render. */
-  persist: (envelope: ClipLayoutAnalysis) => Promise<void>;
-  /** Merged into the `clip_screen_layout_analysis_persist_failed` log on a
-   *  `persist` failure — purely for observability, no behavioral effect. */
-  logContext?: Record<string, unknown>;
 }
 
 export interface ResolvePipAnalysisResult {
@@ -2368,23 +1771,9 @@ export interface ResolvePipAnalysisResult {
 /**
  * M2 (adversarial review): the PiP persistence read-before-detect /
  * write-after-detect decision, pulled out of the screen-mode render block
- * into one dependency-injected, unit-testable function — `detect`/`persist`
- * are injected so tests can fake both without touching `pip_detect.py` or
- * the database.
- *
- * Persistence split (C1, adversarial review): this function ONLY persists
- * the CONCLUSIVE-NEGATIVE case — a fresh detection whose `selectPipRect`
- * found no qualifying candidate at all (`selectedRect === null`). That
- * case's `pipUsable` is unconditionally `false` (`decidePipUsage`'s
- * `no_candidate` gate rejects a null `selectedRect` regardless of face
- * confirmation), so there's nothing left to wait for. Every OTHER fresh-
- * detection outcome (a non-null `selectedRect`) leaves persistence to the
- * CALLER, which must write the envelope only AFTER running `decidePipUsage`
- * with THAT render's own `faceConfirmed` — `pipUsable` genuinely can't be
- * known here, since face confirmation runs after this function returns (see
- * render-clips.ts's screen-mode block, and `ClipLayoutAnalysis.pipUsable`'s
- * own doc comment for why the persisted `pipRect` is never nulled out just
- * because a gate failed).
+ * into one dependency-injected, unit-testable function. Persistence belongs
+ * to the caller after PiP and face-band facts are conclusive, so only the
+ * identity-complete Screen envelope can ever be written.
  */
 export async function resolvePipAnalysis(
   params: ResolvePipAnalysisParams,
@@ -2401,7 +1790,7 @@ export async function resolvePipAnalysis(
     };
   }
 
-  if (!params.pipDetectEnabled || !params.detectInput) {
+  if (!params.detectInput) {
     return {
       detectionResult: null,
       selectedRect: null,
@@ -2429,90 +1818,15 @@ export async function resolvePipAnalysis(
     insufficientSamples: pip.insufficientSamples,
   };
   const candidateCount = pip.candidates.length;
-  // Selected NOW (pre face-confirmation) — the envelope persists this
-  // SELECTED rect, not the raw candidate list. `decidePipUsage`'s
-  // `face_not_in_rect` gate (fed by `faceConfirmed`, computed by the caller
-  // further down from THIS render's own face samples) still runs on every
-  // render, fresh or persisted, since face confirmation isn't a geometry
-  // fact that's safe to cache — see `ClipLayoutAnalysis`'s doc comment.
+  // Select the candidate before the caller performs face confirmation and
+  // constructs the identity-complete Screen evidence envelope.
   const selectedRect = selectPipRect(pip.candidates);
-
-  if (!selectedRect) {
-    const envelope = buildLayoutAnalysisEnvelope({
-      startSec: params.startSec,
-      durationSec: params.durationSec,
-      rawClipStartSec: params.rawClipStartSec,
-      rawClipEndSec: params.rawClipEndSec,
-      movingPxFrac: pip.movingPxFrac,
-      insufficientSamples: pip.insufficientSamples,
-      pipRect: null,
-      pipUsable: false,
-    });
-    try {
-      await params.persist(envelope);
-    } catch (persistError) {
-      rethrowRenderControlFlow(persistError);
-      log("error", "clip_screen_layout_analysis_persist_failed", {
-        ...params.logContext,
-        ...mediaAnalysisDiagnostic({
-          analysisMode: "picture_in_picture",
-          fallbackMode: "render_without_persisted_analysis",
-          failureCode: "analysis_persist_failed",
-        }),
-      });
-    }
-  }
 
   return { detectionResult, selectedRect, candidateCount, analysisSource: "fresh" };
 }
 
-/**
- * Screen packet B ("screen" framing mode, the worker render path): drives
- * every `outputs[]` entry's screen-layout BOTTOM (speaker) tile via sendcmd
- * from an already-detected single-face sample list — the sibling of
- * `applyAutoReframe` above, same remap -> smooth -> sendcmd-script pipeline,
- * but setting a `ScreenSpeakerBottomSpec` (consumed by
- * `buildScreenSpeakerFilterChain`'s `bottom` param, threaded through
- * `buildSingleVideoArgs`'s `screen` param) on EVERY output rather than only
- * the subset `applyAutoReframe`'s `reframeOutputs` filter would select — a
- * screen-mode bottom tile always crops the source to a tile-aspect region,
- * there's no "source already narrow enough to skip cropping" escape hatch
- * the way a full-frame reframe has.
- *
- * Deliberately does NOT fall back to the whole-clip auto-reframe path when
- * no face is detected (unlike split, which gives up on the whole 2-up and
- * re-frames the entire output around the single face instead): the
- * static-center crop this sets per output when `smoothed` is empty, a given
- * output's sendcmd script comes back empty (e.g. every sample landed on the
- * same x), or the output has no lateral room to track in at all
- * (`screenBottomIsTrackable` — H3, adversarial review: 1:1/16:9 against a
- * landscape source) IS the fallback. A screen layout with a centered bottom
- * tile is still a real, useful render — the whole point of this framing mode
- * is the TOP tile (the full source frame, always rendered, never cropped),
- * so losing speaker tracking on the bottom tile is a minor degradation, not
- * a reason to throw away the layout entirely. Returns whether a face-tracked
- * OR PiP-tracked (not static-center) crop was actually applied to at least
- * one output, purely for the caller's `clip_screen_bottom_center_fallback`
- * logging.
- *
- * Element segmentation v1 (this packet): `params.pipRect`, when set, means
- * the CLIP-LEVEL gates in `decidePipUsage` (everything except `pip_too_small`,
- * which needs per-output geometry) already passed — see
- * `ScreenSpeakerBottomSpec.pipRect`'s doc comment for why a confirmed
- * facecam PiP crop is preferred over face-tracking/static-center (it's a
- * real sub-region of the frame, not an approximation of one) and why
- * `screenBottomIsTrackable` doesn't gate it (that gate is specifically about
- * a *sendcmd-driven* crop having lateral room to move; a static PiP crop
- * doesn't move). H2/M3 (adversarial review): `params.pipRect` being set is
- * NOT the final word per output — this function still runs `decidePipUsage`
- * again PER OUTPUT with that output's own `fitPipCropToTile` result, since
- * `pip_too_small` can differ by output aspect ratio (a rect that fits a 9:16
- * tile comfortably might be too small relative to a 16:9 tile's width). Any
- * output `decidePipUsage` rejects at that point falls through to the SAME
- * face-tracked/static-center logic as when `pipRect` was never set — it
- * does not get a "no fallback" carve-out just because a candidate rect
- * existed at the clip level.
- */
+/** Converts detected face motion into bounded Screen face-band evidence for
+ * the composition planner. */
 function faceBandSegmentsForCompositionPlan(input: {
   samples: FaceSample[] | null;
   cutPlan: ClipCutPlan;
@@ -2569,176 +1883,16 @@ function faceBandSegmentsForCompositionPlan(input: {
   }));
 }
 
-async function applyScreenSpeakerLayout(params: {
-  samples: FaceSample[] | null;
-  pipRect: PipRect | null;
-  /** The SAME base inputs `decidePipUsage` was already called with (minus
-   *  `fit`) to decide whether `pipRect` should even be non-null — reused
-   *  here, per output, WITH `fit` filled in, to catch `pip_too_small`. Only
-   *  consulted when `pipRect` is non-null. */
-  pipUsageBase: Omit<DecidePipUsageParams, "fit">;
-  cutPlan: ClipCutPlan;
-  clipStartSec: number;
-  probe: SourceProbe;
-  outputs: PendingRenderOutput[];
-  tempDir: string;
-  clipId: string;
-  workflowRunId: string;
-}): Promise<boolean> {
-  let smoothed: SmoothedSample[] = [];
-  if (params.samples) {
-    const segmentGroups = remapFaceSamplesForCutPlan(
-      params.samples,
-      params.cutPlan,
-      params.clipStartSec,
-    );
-    smoothed = segmentGroups.flatMap((group) => smoothFacePath(group));
-  }
-
-  const single = params.outputs.length === 1;
-  let appliedPip = false;
-  let appliedFaceTracking = false;
-
-  for (let i = 0; i < params.outputs.length; i++) {
-    const output = params.outputs[i]!;
-    const { tileRatio, tileWidth } = screenTileGeometry(output.aspectRatio, params.probe);
-
-    if (params.pipRect) {
-      const fitted = fitPipCropToTile(params.pipRect, tileRatio, params.probe);
-      const decision = decidePipUsage({
-        ...params.pipUsageBase,
-        fit: { fittedCropWidth: fitted.w, tileWidth },
-      });
-      if (decision.useRect) {
-        output.screenBottom = { cx: 0.5, pipRect: fitted };
-        appliedPip = true;
-        // L3 (adversarial review): logs BOTH the normalized rect
-        // (`selectPipRect`'s output, same for every output) and this
-        // OUTPUT's own fitted source-pixel rect — the normalized rect alone
-        // can't answer "what did ffmpeg actually crop for the 16:9 output,"
-        // since that's `fitPipCropToTile`'s per-output result, not a value
-        // that exists until this loop runs.
-        log("info", "clip_screen_pip_detected", {
-          workflowRunId: params.workflowRunId,
-          clipId: params.clipId,
-          ...mediaAnalysisDiagnostic({
-            analysisMode: "picture_in_picture",
-            selectedMode: "pip_crop",
-          }),
-          aspectRatio: output.aspectRatio,
-          normalizedRect: params.pipRect,
-          sourcePxRect: fitted,
-        });
-        continue;
-      }
-      log("info", "clip_screen_pip_fallback", {
-        workflowRunId: params.workflowRunId,
-        clipId: params.clipId,
-        ...mediaAnalysisDiagnostic({
-          analysisMode: "picture_in_picture",
-          fallbackMode: "speaker_band",
-          failureCode: decision.reason,
-        }),
-        aspectRatio: output.aspectRatio,
-        reason: decision.reason,
-      });
-      // Falls through to the face-tracked/static-center logic below for
-      // THIS output only — other outputs in the same loop may still use
-      // the rect just fine.
-    }
-
-    // H3 (adversarial review): wide/square targets (1:1, 16:9 against a
-    // landscape source) have no lateral room for the bottom tile's crop to
-    // move — `computeTileCrop`'s width already equals the full source
-    // width, so `cropXForCenter`'s clamp forces every possible face
-    // position to the identical `x`. Driving that with a sendcmd script
-    // would be a pure no-op that still costs a script file and an extra
-    // filter stage, and used to still log `bottomTracking: "face"` even
-    // though nothing was actually tracked. Skip it outright and render an
-    // honest static-center bottom tile instead.
-    if (!screenBottomIsTrackable(output.aspectRatio, params.probe)) {
-      output.screenBottom = { cx: 0.5, reframe: null };
-      log("info", "clip_screen_bottom_center_fallback", {
-        workflowRunId: params.workflowRunId,
-        clipId: params.clipId,
-        ...mediaAnalysisDiagnostic({
-          analysisMode: "screen_layout",
-          fallbackMode: "center_crop",
-          failureCode: "no_lateral_room",
-        }),
-        reason: "no_lateral_room",
-        aspectRatio: output.aspectRatio,
-      });
-      continue;
-    }
-
-    // H1 (adversarial review): geometry comes from the SAME
-    // `screenTileGeometry` `buildScreenSpeakerFilterChain` uses — this used
-    // to re-derive tileHeight/tileRatio/cropW independently, which is
-    // exactly how C1's odd-tile-height fix could have landed here and not
-    // there with no error (ffmpeg clamps a mismatched `x`, it doesn't
-    // reject it).
-    const { cropW } = screenTileGeometry(output.aspectRatio, params.probe);
-    const cropName = single ? SCREEN_BOTTOM_CROP_NAME : `${SCREEN_BOTTOM_CROP_NAME}${i}`;
-
-    const script =
-      smoothed.length > 0
-        ? buildReframeSendcmdScript(smoothed, params.probe.width, cropW, cropName)
-        : "";
-
-    if (script) {
-      const scriptPath = join(
-        params.tempDir,
-        `screen-bottom-${params.clipId}-${output.aspectRatio.replace(":", "x")}.txt`,
-      );
-      await currentRenderAdapters().workspace.writeFile(
-        scriptPath,
-        script,
-        "utf-8",
-      );
-      output.screenBottom = { cx: 0.5, reframe: { scriptPath, cropName } };
-      appliedFaceTracking = true;
-    } else {
-      output.screenBottom = { cx: 0.5, reframe: null };
-    }
-  }
-
-  log("info", "clip_screen_layout_applied", {
-    workflowRunId: params.workflowRunId,
-    clipId: params.clipId,
-    ...mediaAnalysisDiagnostic({
-      analysisMode: "screen_layout",
-      selectedMode: appliedPip
-        ? "pip_crop"
-        : appliedFaceTracking
-          ? "face_tracked"
-          : "center_crop",
-    }),
-    bottomTracking: appliedPip ? "pip" : appliedFaceTracking ? "face" : "center",
-  });
-  return appliedPip || appliedFaceTracking;
-}
-
-/** Why screen packet B's screen-share layout couldn't render for this clip —
- *  `null` means it's rendering as the real top-fit/bottom-speaker layout
- *  (with either a face-tracked or static-center bottom tile — see
- *  `applyScreenSpeakerLayout`'s doc comment for why "no face detected" is
- *  NOT one of these reasons, unlike split's `detection_unavailable`/
- *  `insufficient_clusters`/etc.). `disabled` is never returned BY
+/** Why Screen evidence is unavailable for this clip. `disabled` is never returned BY
  *  `decideScreenFallback` itself — it short-circuits before the function is
  *  even called (the `WORKER_SCREEN_LAYOUT=0` kill switch), same pattern as
  *  split's own `disabled` reason. */
 export type ScreenFallbackReason = "disabled" | "broll_conflict" | null;
 
 /**
- * Pure fallback-decision logic for screen packet B: given what's known about
- * this clip so far, should it fall back to single-speaker framing instead of
- * the real screen-share layout? v1 policy mirrors split's own
- * `decideSplitFallback` exactly for the one condition both share: B-roll
- * always wins ("b-roll replaces the whole 2-up/screen frame" composition is
- * future work for either layout), independent of whether a face would
- * otherwise be found for the bottom tile — unlike split, screen has no
- * detection-availability or cluster-count reasons to fall back on, since an
+ * Pure Screen evidence fallback decision. B-roll currently wins because its
+ * placement occupies the full composition; unlike Split, Screen has no
+ * detection-availability or cluster-count fallback, since an
  * undetected face just means a static-center bottom tile (still a real
  * screen layout), not a reason to abandon the layout altogether.
  */
@@ -2801,54 +1955,6 @@ export function decideSplitFallback(params: {
     return "no_two_up_segments";
   }
   return null;
-}
-
-/**
- * Whether this clip's framing choice ALONE forces the per-output render
- * path (`hasStudioVideoEdits` in the Clip Render Attempt) rather than the
- * shared `buildMultiVideoArgs` batch path — true only for the effective
- * "split" mode (split packet B): a 2-up composition needs its own
- * `buildSplitFilterChain` filter graph per output, which
- * `buildMultiVideoArgs`'s shared crop-to-fill path has no concept of, same
- * reason a canvas background/cut-concat/music force it above. Note this is
- * necessary but not sufficient for a clip to actually render as 2-up — it
- * only decides which ffmpeg-arg builder family runs; `decideSplitFallback`
- * (evaluated once detection/broll are known) decides whether that per-output
- * call ends up passing a real split plan or falls back to single-speaker
- * framing.
- *
- * L1 (adversarial review): also false whenever the `WORKER_SPLIT=0` kill
- * switch is set, even if `studioEdits.framing.mode` is still "split" — with
- * the switch off, split must route through EXACTLY the same batch path
- * "auto"/"center" use, not force the per-output path just to immediately
- * fall back inside it every time.
- *
- * Screen packet B: "screen" gets the exact same treatment via its own
- * `WORKER_SCREEN_LAYOUT=0` kill switch — a screen-share clip forces the
- * per-output path (`buildScreenSpeakerFilterChain`'s top-fit/bottom-speaker
- * composition, threaded through `buildSingleVideoArgs`'s `screen` param)
- * unless that switch is set, in which case it fully reverts routing to the
- * shared batch path exactly like split's own kill switch does. Only one of
- * "split"/"screen" is ever true for a given clip (`resolveEffectiveFramingMode`
- * returns a single value), so there's no ordering concern between the two
- * branches below.
- *
- * M4 (adversarial review): this predicate's return value never even gets
- * consulted for an audio-only clip — `probe.hasVideo` gates the split/screen
- * detection blocks in the Clip Render Attempt BEFORE either mode's plan
- * exists, and `buildAudiogramArgs` (the audio-only render path) ignores
- * `studioEdits.framing` entirely — so a `true` here for "split"/"screen" on
- * an audio-only clip is a value nothing downstream reads, not a live
- * routing decision.
- */
-export function framingForcesPerOutputRender(
-  studioEdits: StudioEdits,
-  config: Readonly<RenderConfig> = currentRenderConfig(),
-): boolean {
-  const mode = resolveEffectiveFramingMode(studioEdits);
-  if (mode === "split") return config.splitEnabled;
-  if (mode === "screen") return config.screenLayoutEnabled;
-  return false;
 }
 
 /** Applies aspect-specific Studio speaker-layer edits to the derived AI plan
@@ -3833,111 +2939,8 @@ function buildLogoFilter(
   ].join(";");
 }
 
-export function buildCropAndScaleFilter(
-  probe: SourceProbe,
-  aspectRatio: ClipAspectRatio,
-  reframe?: ReframeSpec | null,
-) {
-  const config = aspectRatioConfig.get(aspectRatio);
-
-  if (!config) {
-    throw new WorkflowWorkerError(
-      "unsupported_aspect_ratio",
-      `Unsupported aspect ratio: ${aspectRatio}`,
-      "permanent",
-    );
-  }
-
-  if (!probe.hasVideo) {
-    return null;
-  }
-
-  if (probe.width <= 0 || probe.height <= 0) {
-    throw new WorkflowWorkerError(
-      "invalid_source_dimensions",
-      `Source reported invalid video dimensions (${probe.width}x${probe.height})`,
-      "permanent",
-    );
-  }
-
-  const srcRatio = probe.width / probe.height;
-  const targetRatio = config.width / config.height;
-
-  let cropW: number;
-  let cropH: number;
-
-  if (srcRatio >= targetRatio) {
-    cropH = probe.height;
-    cropW = Math.round(probe.height * targetRatio);
-  } else {
-    cropW = probe.width;
-    cropH = Math.round(probe.width / targetRatio);
-  }
-
-  // Auto-reframe: when we crop horizontally (srcRatio >= targetRatio) and a face
-  // path is available, drive crop x via sendcmd so the crop follows the speaker
-  // instead of a static center crop.
-  if (reframe && srcRatio >= targetRatio && cropW < probe.width) {
-    const escaped = escapeSubtitlePath(reframe.scriptPath);
-    return (
-      `sendcmd=f='${escaped}',` +
-      `${reframe.cropName}=w=${cropW}:h=${cropH}:x=${Math.round((probe.width - cropW) / 2)}:y=0,` +
-      `scale=${config.width}:${config.height},format=yuv420p`
-    );
-  }
-
-  return `crop=${cropW}:${cropH},scale=${config.width}:${config.height},format=yuv420p`;
-}
-
-/**
- * Whether the (relatively expensive: ffmpeg segment extraction + python/
- * opencv face detection) auto-reframe face-path detection should run for
- * this clip — vizard-parity.md Phase C-2 stage 1 (framing modes). Routes
- * through the single shared `resolveEffectiveFramingMode` so this can never
- * disagree with the fit/crop builder branch below:
- *  - "auto": run detection (today's only behavior, unchanged).
- *  - "center": skip detection entirely — cheaper, and `buildCropAndScaleFilter`
- *    already falls back to a static center crop whenever `reframe` is absent.
- *  - "fit": also skipped, but for a different reason — the fit branch never
- *    crops at all, so a detected face path would never be consumed. (In
- *    practice this never gets called for "fit" either, since the caller's
- *    own gate gets there first, but the mode check agrees regardless.)
- *  - "split" (split packet B): also `false` here — this is `=== "auto"`, not
- *    an exhaustive switch — but split is NOT actually undetected: it runs
- *    its own multi-face detection (`detectMultiFacePath` ->
- *    `buildSplitLayoutPlan`) through a separate gate in
- *    the Clip Render Attempt, guarded directly on
- *    `resolveEffectiveFramingMode(studioEdits) === "split"` rather than this
- *    function. This function staying `false` for split just means split
- *    clips skip the SINGLE-face auto-reframe path — which they still fall
- *    back to (via `applyAutoReframe`, called directly rather than through
- *    this gate) whenever the multi-face plan isn't usable, see
- *    `decideSplitFallback`.
- *  - "screen" (screen packet B): also `false` here, same `!== "auto"`
- *    reasoning as "split" — screen is NOT actually undetected either: it runs
- *    its own single-face detection (`detectFacePath`, same detector as
- *    "auto" but through its own gate) via `applyScreenSpeakerLayout`, through
- *    a separate gate in the Clip Render Attempt guarded directly on
- *    `resolveEffectiveFramingMode(studioEdits) === "screen"` rather than this
- *    function. This function staying `false` for screen just means screen
- *    clips skip the whole-frame SINGLE-face auto-reframe path — which they
- *    only fall back to (via `applyAutoReframe`, called directly rather than
- *    through this gate) when the screen layout itself is disabled or
- *    conflicts with B-roll, see `decideScreenFallback`. An undetected face
- *    within an otherwise-active screen layout does NOT fall back to this
- *    path — it degrades to a static-center BOTTOM TILE while the screen
- *    layout itself keeps rendering (see `applyScreenSpeakerLayout`'s doc
- *    comment).
- */
-export function shouldRunAutoReframeDetection(studioEdits: StudioEdits): boolean {
-  return resolveEffectiveFramingMode(studioEdits) === "auto";
-}
-
 /** Text-layer drawtext filters + caption burn-in, comma-joined (or `""` when
- *  neither is present) — the part of `buildSingleVideoFilter`'s chain that
- *  has nothing to do with crop/fit, extracted so the fit+background path
- *  (`buildFitAndBackgroundFilter`) can fold the exact same chain onto ITS
- *  composed frame instead of duplicating this logic. */
+ *  neither is present) for the compiled composition output. */
 function buildTextAndCaptionChain(
   studioEdits: StudioEdits | null | undefined,
   clipDurationSec: number,
@@ -3953,113 +2956,6 @@ function buildTextAndCaptionChain(
   return chain.filter(Boolean).join(",");
 }
 
-function buildSingleVideoFilter(
-  probe: SourceProbe,
-  aspectRatio: ClipAspectRatio,
-  srtPath: string | null,
-  captionPreset?: CaptionPreset | null,
-  reframe?: ReframeSpec | null,
-  studioEdits?: StudioEdits | null,
-  clipDurationSec = 0,
-) {
-  const cropScale = buildCropAndScaleFilter(probe, aspectRatio, reframe);
-  const textAndCaptionChain = buildTextAndCaptionChain(
-    studioEdits,
-    clipDurationSec,
-    aspectRatio,
-    srtPath,
-    captionPreset,
-  );
-  return [cropScale, textAndCaptionChain].filter(Boolean).join(",");
-}
-
-/**
- * Builds the "fit" pad/background composition filter_complex PARTS
- * (vizard-parity.md Phase C item 2), used INSTEAD of
- * `buildCropAndScaleFilter` whenever `studioEdits.background.mode !== "off"`:
- * the source letterboxes ("fit" — scale to contain, never crop) and the
- * empty frame is filled with a solid color or an image.
- *
- * Returns filter_complex PARTS (not a single comma-chain the way
- * `buildCropAndScaleFilter` does) because image mode needs a SECOND ffmpeg
- * input (the downloaded background image) composited via `overlay`, which
- * cannot be expressed as a chain hanging off one input label. Color mode
- * (and the fallback used when an image URL/download failed upstream) is
- * expressed the same way — a single-part pad chain — so callers have one
- * code path regardless of mode.
- *
- * Unlike `buildCropAndScaleFilter` this never needs the source probe: the
- * target frame is always the aspect ratio's fixed W×H, and ffmpeg's `scale`
- * filter reads the actual input dimensions at run time. There is
- * deliberately no `reframe` parameter either — auto-reframe never applies
- * here (nothing is cropped), so callers simply don't thread `output.reframe`
- * through when background is active.
- *
- * `trailingChain` (an already-comma-joined fragment, e.g. text layers +
- * caption burn-in from `buildTextAndCaptionChain`) is folded into the LAST
- * part so the composed frame and any per-clip overlays land in one filter
- * statement — mirrors how `buildCropAndScaleFilter`'s callers append the
- * same chain after crop+scale today. Pass `""` to leave the composed frame
- * as the final output (`buildBrollVideoArgs` does this and applies its own
- * text/caption steps afterward, once cutaways are overlaid on top).
- *
- * Image mode's `[bgimg]` chain also pins its frame rate to `fps` (defaults
- * to `DEFAULT_RENDER_MEDIA_FPS` when omitted). This matters because the still
- * image is `overlay`'s MAIN (first) framesync input, so without an explicit
- * `fps=` the composed output's rate silently inherits the image2 demuxer's
- * default of 25 fps regardless of the actual source rate — verified with
- * real ffmpeg: a 30fps or 60fps source both collapsed to 25fps output in
- * every image-background combination. Color mode never hits `overlay` at
- * all, so it's unaffected and doesn't take an `fps` param.
- */
-export function buildFitAndBackgroundFilter(params: {
-  aspectRatio: ClipAspectRatio;
-  background: { mode: "color" | "image"; color: string | null; imagePath: string | null };
-  videoInputLabel: string;
-  outputLabel: string;
-  /** ffmpeg input index of the downloaded background image — only consumed
-   *  when `background.mode === "image"` AND `background.imagePath` is set;
-   *  omit/null falls back to the solid-color pad even when mode is "image"
-   *  (e.g. the URL was invalid or the download failed upstream). */
-  imageInputIndex?: number | null;
-  trailingChain?: string;
-  /** Source frame rate to pin the image-mode `[bgimg]` chain to (see doc
-   *  comment above) — callers pass `probe.fps`. Ignored in color mode.
-   *  Defaults to `DEFAULT_RENDER_MEDIA_FPS` if omitted or non-positive. */
-  fps?: number;
-}): string[] {
-  const config = aspectRatioConfig.get(params.aspectRatio);
-  if (!config) {
-    throw new WorkflowWorkerError(
-      "unsupported_aspect_ratio",
-      `Unsupported aspect ratio: ${params.aspectRatio}`,
-      "permanent",
-    );
-  }
-  const { width: W, height: H } = config;
-  const suffix = params.trailingChain ? `,${params.trailingChain}` : "";
-
-  if (
-    params.background.mode === "image" &&
-    params.background.imagePath &&
-    params.imageInputIndex != null
-  ) {
-    const fps =
-      params.fps && params.fps > 0 ? params.fps : DEFAULT_RENDER_MEDIA_FPS;
-    return [
-      `[${params.imageInputIndex}:v]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},fps=${fps}[bgimg]`,
-      `${params.videoInputLabel}scale=${W}:${H}:force_original_aspect_ratio=decrease:force_divisible_by=2[bgfitv]`,
-      `[bgimg][bgfitv]overlay=(W-w)/2:(H-h)/2,format=yuv420p${suffix}${params.outputLabel}`,
-    ];
-  }
-
-  const ffColor = hexToFfmpegRgb(params.background.color ?? "#000000");
-  return [
-    `${params.videoInputLabel}scale=${W}:${H}:force_original_aspect_ratio=decrease:force_divisible_by=2,` +
-      `pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=${ffColor},format=yuv420p${suffix}${params.outputLabel}`,
-  ];
-}
-
 export function buildSingleVideoArgs(params: {
   sourcePath: string;
   outputPath: string;
@@ -4070,13 +2966,11 @@ export function buildSingleVideoArgs(params: {
   srtPath: string | null;
   captionPreset?: CaptionPreset | null;
   logo?: LogoOverlay | null;
-  reframe?: ReframeSpec | null;
-  /** Versioned composition policy. When present, the FFmpeg adapter consumes
-   *  its exact scene geometry before any legacy framing branch can run. */
-  composition?: {
+  /** The sole versioned composition policy for every video render. */
+  composition: {
     plan: ClipCompositionPlan;
     targetId: string;
-  } | null;
+  };
   studioEdits?: StudioEdits | null;
   music?: MusicPlan | null;
   /** One-shot SFX placements (vizard-parity.md "Music/SFX library") —
@@ -4087,27 +2981,6 @@ export function buildSingleVideoArgs(params: {
    *  implies "on" (mode is always "color" or "image"); omit/null preserves
    *  today's crop-to-fill behavior. See `BackgroundPlan`. */
   background?: BackgroundPlan | null;
-  /** Segment-aware stacked 2-up plan (split packet B, vizard-parity.md
-   *  "Split-screen 2-up") — presence means the effective framing mode is
-   *  "split" AND a real plan was built (never coexists with `background`;
-   *  see `resolveEffectiveFramingMode`'s doc comment). Checked AFTER
-   *  `background` and BEFORE the plain crop-and-scale fallback, so a split
-   *  clip that couldn't build a plan this render (see
-   *  `decideSplitFallback`) transparently falls through to the same
-   *  `params.reframe`-driven crop the "auto"/"center" modes use. */
-  split?: { segments: SplitLayoutSegment[] } | null;
-  /** Screen-share layout plan (screen packet B, "screen" framing mode) —
-   *  presence means the effective framing mode is "screen" (never coexists
-   *  with `background` or `split`; see `resolveEffectiveFramingMode`'s doc
-   *  comment). Checked AFTER `split` and BEFORE the plain crop-and-scale
-   *  fallback — mutually exclusive with `split` in practice (only one
-   *  effective mode is ever active), so the check order between the two
-   *  doesn't matter functionally, but mirrors `split`'s own placement
-   *  relative to `background`/the fallback. Unlike `split`, there's no
-   *  "empty plan" case: `applyScreenSpeakerLayout` always sets a bottom-tile
-   *  spec (face-tracked or static-center) whenever screen mode is active and
-   *  not disabled/B-roll-conflicted — see `output.screenBottom`. */
-  screen?: { bottom: ScreenSpeakerBottomSpec } | null;
   /** Target resolution (vizard-parity Phase C export options) — "720p"
    *  applies the 2/3 downscale, "1080p"/omitted renders at base resolution. */
   resolution?: ClipRenderResolution;
@@ -4172,78 +3045,16 @@ export function buildSingleVideoArgs(params: {
   const filterParts: string[] = cutConcat ? [...cutConcat.filterParts] : [];
   const composedOutputLabel = params.logo ? "[outvbase]" : "[outv]";
 
-  if (params.composition) {
-    const compiled = compileCompositionPlanVideo({
-      plan: params.composition.plan,
-      targetId: params.composition.targetId,
-      videoInputLabel,
-      outputLabel: composedOutputLabel,
-      trailingChain: textAndCaptionChain,
-      backgroundImageInputIndex: bgImageInputIndex,
-      fps: params.probe.fps,
-    });
-    filterParts.push(...compiled.filterParts);
-  } else if (params.background) {
-    // Fit mode (vizard-parity Phase C item 2): letterbox instead of
-    // crop-to-fill, background color/image fills the empty frame.
-    // Auto-reframe never applies here — `params.reframe` is deliberately not
-    // threaded through (see buildFitAndBackgroundFilter's doc comment).
-    filterParts.push(
-      ...buildFitAndBackgroundFilter({
-        aspectRatio: params.aspectRatio,
-        background: params.background,
-        videoInputLabel,
-        outputLabel: composedOutputLabel,
-        imageInputIndex: bgImageInputIndex,
-        trailingChain: textAndCaptionChain,
-        fps: params.probe.fps,
-      }),
-    );
-  } else if (params.split && params.split.segments.length > 0) {
-    // Split packet B: segment-aware stacked 2-up. Reads from `videoInputLabel`
-    // (the same post-cut-concat-aware label the crop-and-scale fallback below
-    // uses) because plan segments are already expressed on the EDITED
-    // timeline — see `buildSplitFilterChain`'s doc comment. `params.reframe`
-    // is irrelevant here (it's mutually exclusive with a real split plan:
-    // either this clip built a plan, or it fell back to the `else` branch
-    // below with `params.reframe` set instead — never both).
-    filterParts.push(
-      ...buildSplitFilterChain({
-        aspectRatio: params.aspectRatio,
-        probe: { width: params.probe.width, height: params.probe.height },
-        segments: params.split.segments,
-        videoInputLabel,
-        outputLabel: composedOutputLabel,
-        trailingChain: textAndCaptionChain,
-      }),
-    );
-  } else if (params.screen) {
-    // Screen packet B: static two-tile top-fit/bottom-speaker layout. Reads
-    // from `videoInputLabel` for the same reason `split` does (plan/spec is
-    // already expressed against the post-cut-concat-aware label). `params.
-    // reframe` is irrelevant here (it's mutually exclusive with a real
-    // screen plan: either screen mode is active and this branch runs, or it
-    // fell back to the plain `else` branch below with `params.reframe` set
-    // instead — never both, same contract `split` already established).
-    filterParts.push(
-      ...buildScreenSpeakerFilterChain({
-        aspectRatio: params.aspectRatio,
-        probe: { width: params.probe.width, height: params.probe.height },
-        bottom: params.screen.bottom,
-        videoInputLabel,
-        outputLabel: composedOutputLabel,
-        trailingChain: textAndCaptionChain,
-      }),
-    );
-  } else {
-    const cropScale = buildCropAndScaleFilter(
-      params.probe,
-      params.aspectRatio,
-      params.reframe,
-    );
-    const chain = [cropScale, textAndCaptionChain].filter(Boolean).join(",");
-    filterParts.push(`${videoInputLabel}${chain}${composedOutputLabel}`);
-  }
+  const compiled = compileCompositionPlanVideo({
+    plan: params.composition.plan,
+    targetId: params.composition.targetId,
+    videoInputLabel,
+    outputLabel: composedOutputLabel,
+    trailingChain: textAndCaptionChain,
+    backgroundImageInputIndex: bgImageInputIndex,
+    fps: params.probe.fps,
+  });
+  filterParts.push(...compiled.filterParts);
 
   if (params.logo) {
     const aspectConfig = aspectRatioConfig.get(params.aspectRatio);
@@ -4373,24 +3184,13 @@ export function buildSingleVideoArgs(params: {
 }
 
 /**
- * Builds an ffmpeg single-output render that overlays 1-4 B-roll cutaways on
- * top of the (cropped/reframed) source, each within its own non-overlapping
- * time window, then burns captions and the logo on top. The source audio
- * plays throughout (B-roll is silent). Each cutaway gets its own input,
- * chained through successive `overlay` stages so multiple recurring inserts
- * compose correctly (a single cutaway is just the N=1 case of this).
- *
- * The source base can use the same segment layout plan as a normal render;
- * B-roll then replaces that composed base only inside its cutaway windows.
- * This preserves Vizard-style speaker framing before and after B-roll rather
- * than downgrading the entire clip to a single-face/center crop.
+ * Builds FFmpeg args from a composition plan containing B-roll layers. Asset
+ * paths are keyed by the plan's sourceRef; the adapter validates and compiles
+ * every planned interval so callers cannot supply a parallel timing model.
  */
 export function buildBrollVideoArgs(params: {
   sourcePath: string;
-  cutaways: Array<{
-    path: string;
-    window: { startSec: number; endSec: number };
-  }>;
+  resolvedBrollAssets: Readonly<Record<string, string>>;
   outputPath: string;
   startSec: number;
   endSec: number;
@@ -4399,12 +3199,10 @@ export function buildBrollVideoArgs(params: {
   srtPath: string | null;
   captionPreset?: CaptionPreset | null;
   logo?: LogoOverlay | null;
-  reframe?: ReframeSpec | null;
-  composition?: {
+  composition: {
     plan: ClipCompositionPlan;
     targetId: string;
-  } | null;
-  split?: { segments: SplitLayoutSegment[] } | null;
+  };
   studioEdits?: StudioEdits | null;
   music?: MusicPlan | null;
   /** One-shot SFX placements — see `buildSingleVideoArgs`'s param doc; same
@@ -4419,7 +3217,7 @@ export function buildBrollVideoArgs(params: {
   /** See `buildSingleVideoArgs` — same cut-concat contract. */
   cutPlan?: ClipCutPlan | null;
 }) {
-  if (params.cutaways.length === 0) {
+  if (Object.keys(params.resolvedBrollAssets).length === 0) {
     throw new WorkflowWorkerError(
       "broll_cutaways_empty",
       "buildBrollVideoArgs requires at least one cutaway",
@@ -4442,7 +3240,7 @@ export function buildBrollVideoArgs(params: {
       "permanent",
     );
   }
-  const { width: W, height: H } = config;
+  const { width: W } = config;
 
   const subtitleFilter = buildSubtitleFilter(
     params.aspectRatio,
@@ -4450,7 +3248,6 @@ export function buildBrollVideoArgs(params: {
     params.captionPreset,
   );
 
-  const cutawayCount = params.cutaways.length;
   // Input index bookkeeping: source(0), background image (fit mode only,
   // when a local downloaded path is available), then the cutaways, then
   // logo, then music — same order the args are pushed in below. `bgOffset`
@@ -4461,7 +3258,6 @@ export function buildBrollVideoArgs(params: {
   );
   const bgImageInputIndex = usesBackgroundImage ? 1 : null;
   const bgOffset = usesBackgroundImage ? 1 : 0;
-  const logoInputIndex = 1 + bgOffset + cutawayCount;
   const isCut = Boolean(params.cutPlan && !params.cutPlan.isUncut);
   const clipDurationSec = isCut
     ? params.cutPlan!.editedDurationSec
@@ -4482,67 +3278,20 @@ export function buildBrollVideoArgs(params: {
       : null;
 
   const parts: string[] = cutConcat ? [...cutConcat.filterParts] : [];
-  if (params.composition) {
-    parts.push(
-      ...compileCompositionPlanVideo({
-        plan: params.composition.plan,
-        targetId: params.composition.targetId,
-        videoInputLabel,
-        outputLabel: "[stage0]",
-        backgroundImageInputIndex: bgImageInputIndex,
-        fps: params.probe.fps,
-      }).filterParts,
-    );
-  } else if (params.background) {
-    // Fit mode (vizard-parity Phase C item 2): letterbox the base frame
-    // instead of cropping to fill; cutaways/text/captions/logo still overlay
-    // on top of it exactly as they do today, unaware of how [stage0] was
-    // composed. Auto-reframe never applies here (nothing is cropped) —
-    // `params.reframe` is deliberately not threaded through.
-    parts.push(
-      ...buildFitAndBackgroundFilter({
-        aspectRatio: params.aspectRatio,
-        background: params.background,
-        videoInputLabel,
-        outputLabel: "[stage0]",
-        imageInputIndex: bgImageInputIndex,
-        fps: params.probe.fps,
-      }),
-    );
-  } else if (params.split && params.split.segments.length > 0) {
-    parts.push(
-      ...buildSplitFilterChain({
-        aspectRatio: params.aspectRatio,
-        probe: { width: params.probe.width, height: params.probe.height },
-        segments: params.split.segments,
-        videoInputLabel,
-        outputLabel: "[stage0]",
-      }),
-    );
-  } else {
-    const cropScale =
-      buildCropAndScaleFilter(params.probe, params.aspectRatio, params.reframe) ??
-      `scale=${W}:${H},format=yuv420p`;
-    parts.push(`${videoInputLabel}${cropScale}[stage0]`);
-  }
-  let finalLabel = "[stage0]";
-
-  params.cutaways.forEach((cutaway, index) => {
-    const brollInputIndex = 1 + bgOffset + index; // input 0 is the source
-    const start = cutaway.window.startSec;
-    const end = cutaway.window.endSec;
-    const brollLabel = `[broll${index}]`;
-    const nextStageLabel = `[stage${index + 1}]`;
-    parts.push(
-      // Cover-fit this cutaway's B-roll to the frame and delay it to begin at
-      // its own window's start.
-      `[${brollInputIndex}:v]scale=${W}:${H}:force_original_aspect_ratio=increase,crop=${W}:${H},setpts=PTS-STARTPTS+${start}/TB,format=yuv420p${brollLabel}`,
-    );
-    parts.push(
-      `${finalLabel}${brollLabel}overlay=0:0:enable='between(t,${start},${end})'${nextStageLabel}`,
-    );
-    finalLabel = nextStageLabel;
+  const compiledComposition = compileCompositionPlanVideo({
+      plan: params.composition.plan,
+      targetId: params.composition.targetId,
+      videoInputLabel,
+      outputLabel: "[stage0]",
+      backgroundImageInputIndex: bgImageInputIndex,
+      fps: params.probe.fps,
+      resolvedBrollAssets: params.resolvedBrollAssets,
+      brollInputStartIndex: 1 + bgOffset,
   });
+  const cutawayCount = compiledComposition.brollInputs.length;
+  const logoInputIndex = 1 + bgOffset + cutawayCount;
+  parts.push(...compiledComposition.filterParts);
+  let finalLabel = "[stage0]";
 
   if (params.studioEdits?.textLayers.length) {
     const textFilters = buildTextLayerFilters(
@@ -4595,7 +3344,7 @@ export function buildBrollVideoArgs(params: {
     args.push("-i", params.background!.imagePath!);
   }
 
-  for (const cutaway of params.cutaways) {
+  for (const cutaway of compiledComposition.brollInputs) {
     // Each B-roll input gets its own `-t`, scoped to just this input (ffmpeg
     // resets per-input options at each `-i`), sized to exactly its own
     // cutaway window. Without this, `overlay` runs until the *longer* of its
@@ -4605,7 +3354,7 @@ export function buildBrollVideoArgs(params: {
     // here means each B-roll stream can never outlast its own window.
     const windowDurationSec = Math.max(
       0.1,
-      cutaway.window.endSec - cutaway.window.startSec,
+      cutaway.endSec - cutaway.startSec,
     );
     args.push("-t", windowDurationSec.toFixed(3), "-i", cutaway.path);
   }
@@ -4801,191 +3550,6 @@ function describeRemoteFetchError(error: unknown): string {
   return "unknown";
 }
 
-/**
- * Shared multi-output batch render (no B-roll, no other studio edits, no
- * split). Has no `split` param at all — split packet B forces every "split"
- * clip through the per-output `buildSingleVideoArgs`/`buildBrollVideoArgs`
- * path instead (see `framingForcesPerOutputRender` and its use in
- * the Clip Render Attempt's `hasStudioVideoEdits` gate), because
- * `buildSplitFilterChain`'s segment-concat graph replaces the base
- * composition entirely — something this function's shared crop-to-fill
- * `[0:v]split=N` fan-out has no concept of. Plain reframe (`output.reframe`,
- * "auto" mode) DOES still flow through here unchanged.
- */
-export function buildMultiVideoArgs(params: {
-  sourcePath: string;
-  outputs: PendingRenderOutput[];
-  startSec: number;
-  endSec: number;
-  probe: SourceProbe;
-  srtPath: string | null;
-  captionPreset?: CaptionPreset | null;
-  logo?: LogoOverlay | null;
-  composition?: ClipCompositionPlan | null;
-  /** Run-level watermark entitlement (see `buildSingleVideoArgs`'s param
-   *  doc) — uniform across every output in this shared-encode batch, unlike
-   *  `resolution`, which each `PendingRenderOutput` carries individually
-   *  (`outputs[i].resolution`) since different rows in the same batch can
-   *  target different resolutions. */
-  watermark?: boolean;
-}) {
-  const clipDurationSec = params.endSec - params.startSec;
-  const splitOutputs = params.outputs
-    .map((_, index) => `[v${index}]`)
-    .join("");
-
-  const baseSections = [
-    `[0:v]split=${params.outputs.length}${splitOutputs}`,
-    ...params.outputs.flatMap((output, index) => {
-      const subtitlePath = output.subtitlePath ?? params.srtPath;
-      const trailingChain = buildSubtitleFilter(
-        output.aspectRatio,
-        subtitlePath,
-        params.captionPreset,
-      );
-      const baseLabel = params.logo ? `[outvbase${index}]` : `[outv${index}]`;
-      if (params.composition) {
-        return compileCompositionPlanVideo({
-          plan: params.composition,
-          targetId: output.clipRenderId,
-          videoInputLabel: `[v${index}]`,
-          outputLabel: baseLabel,
-          trailingChain: trailingChain ?? undefined,
-        }).filterParts;
-      }
-      const singleFilter = buildSingleVideoFilter(
-        params.probe,
-        output.aspectRatio,
-        subtitlePath,
-        params.captionPreset,
-        output.reframe,
-      );
-      return [`[v${index}]${singleFilter}${baseLabel}`];
-    }),
-  ];
-
-  const filterSections = [...baseSections];
-
-  if (params.logo) {
-    const logo = params.logo;
-    const logoOpacity = Math.max(0.1, Math.min(1, logo.opacity / 100));
-    const { x, y } = buildLogoOverlayPosition(logo.position);
-
-    // Pre-process logo once (alpha-blend), then split into N branches and scale
-    // each branch to that output's target video width.
-    const logoSplitRefs = params.outputs
-      .map((_, index) => `[logosrc${index}]`)
-      .join("");
-    filterSections.push(
-      `[1:v]format=rgba,colorchannelmixer=aa=${logoOpacity.toFixed(3)},split=${params.outputs.length}${logoSplitRefs}`,
-    );
-
-    for (const [index, output] of params.outputs.entries()) {
-      const aspectConfig = aspectRatioConfig.get(output.aspectRatio);
-      if (!aspectConfig) {
-        throw new WorkflowWorkerError(
-          "unsupported_aspect_ratio",
-          `Unsupported aspect ratio: ${output.aspectRatio}`,
-          "permanent",
-        );
-      }
-      const targetWidth = computeLogoTargetWidth(logo, aspectConfig.width);
-      filterSections.push(
-        `[logosrc${index}]scale=${targetWidth}:-1[logo${index}]`,
-        `[outvbase${index}][logo${index}]overlay=${x}:${y}[outv${index}]`,
-      );
-    }
-  }
-
-  // Per-output final label, overridden below when that output's export
-  // treatment (resolution downscale and/or watermark) needs to be folded in.
-  const finalLabels = params.outputs.map((_, index) => `[outv${index}]`);
-
-  for (const [index, output] of params.outputs.entries()) {
-    const exportTreatment = buildExportTreatmentFilter(
-      output.resolution,
-      params.watermark,
-    );
-    if (exportTreatment) {
-      filterSections.push(
-        `${finalLabels[index]}${exportTreatment}[outvfree${index}]`,
-      );
-      finalLabels[index] = `[outvfree${index}]`;
-    }
-  }
-
-  const args = [
-    "-y",
-    ...httpSourceInputArgs(params.sourcePath),
-    "-ss",
-    String(params.startSec),
-    "-t",
-    String(params.endSec - params.startSec),
-    "-i",
-    params.sourcePath,
-  ];
-
-  if (params.logo) {
-    args.push("-i", params.logo.filePath);
-  }
-
-  if (params.probe.hasAudio) {
-    const audioSplits = params.outputs.map((_, i) => `[aud${i}]`).join("");
-    filterSections.push(
-      `[0:a:0]asplit=${params.outputs.length}${audioSplits}`,
-      ...params.outputs.map(
-        (_, i) => `[aud${i}]${buildAudioFadeChain(clipDurationSec)}[outa${i}]`,
-      ),
-    );
-  }
-
-  args.push("-filter_complex", filterSections.join(";"));
-
-  for (const [index, output] of params.outputs.entries()) {
-    args.push("-map", finalLabels[index]!);
-
-    if (params.probe.hasAudio) {
-      args.push("-map", `[outa${index}]`, "-c:a", "aac", "-b:a", "128k");
-    } else {
-      args.push("-an");
-    }
-
-    // Explicit output-duration bound — see buildSingleVideoArgs.
-    args.push(
-      "-c:v",
-      "libx264",
-      "-preset",
-      x264Preset(),
-      "-crf",
-      x264Crf(),
-      "-t",
-      clipDurationSec.toFixed(3),
-      "-movflags",
-      "+faststart",
-      "-max_muxing_queue_size",
-      "1024",
-      output.outputPath,
-    );
-  }
-
-  return args;
-}
-
-/**
- * Renders an "audiogram" for audio-only sources (podcasts): an animated
- * waveform over a solid background with burned captions — instead of a black
- * screen. The waveform color follows the caption preset's highlight color.
- *
- * Ignores `studioEdits.framing` entirely (no `split`/`screen` param, no face
- * detection) — there is no video stream, so neither "split-screen 2-up" nor
- * "screen"'s top-fit/bottom-speaker layout has anything to seat a face or a
- * screen-share frame into. Split packet B and screen packet B don't change
- * this: an audio-only clip never reaches the split/screen detection blocks
- * in the Clip Render Attempt (`probe.hasVideo` gates both), so
- * `studioEdits.framing.mode === "split"` or `"screen"` on an audio-only clip
- * silently renders the same waveform panel as any other mode, exactly like
- * it already did before either feature existed.
- */
 export function buildAudiogramArgs(params: {
   sourcePath: string;
   outputPath: string;
@@ -6201,41 +4765,6 @@ async function executeClipRenderAttempt(
         }
       }
 
-      // Auto-reframe: for landscape sources cropped to a narrower ratio, detect
-      // the speaker's face path once per clip and drive each portrait output's
-      // crop x via sendcmd so the framing follows the speaker. Falls back to a
-      // static center crop if python/opencv/model is unavailable or no face.
-      const reframeEnabled = currentRenderConfig().autoReframeEnabled;
-      const srcRatio =
-        probe.hasVideo && probe.height > 0 ? probe.width / probe.height : 0;
-      const reframeOutputs = outputs.filter((output) => {
-        const cfg = aspectRatioConfig.get(output.aspectRatio);
-        if (!cfg) return false;
-        const targetRatio = cfg.width / cfg.height;
-        return (
-          srcRatio >= targetRatio &&
-          Math.round(probe.height * targetRatio) < probe.width
-        );
-      });
-
-      // Framing modes (vizard-parity Phase C-2 stage 1): only "auto" ever
-      // consumes a detected face path — fit never crops, center wants a
-      // static crop, and split/screen run their own detection through their
-      // own gates below (see `shouldRunAutoReframeDetection`'s doc comment).
-      //
-      // The detection itself now runs BELOW the B-roll plan (layout-engine
-      // wiring), not here: the segment-based layout plan replaces the whole
-      // base composition (same reason split forces the per-output path), so
-      // it must know whether B-roll cutaways won first — the same "b-roll
-      // always wins the whole frame" v1 policy split and screen already
-      // follow. A b-roll clip keeps the legacy single-face EMA reframe,
-      // which `buildBrollVideoArgs` threads through per output.
-      const autoFramingActive =
-        reframeEnabled &&
-        srcRatio > 1.05 &&
-        reframeOutputs.length > 0 &&
-        shouldRunAutoReframeDetection(studioEdits);
-
       // Stock B-roll: when a Pexels key is set, plan 2-4 recurring cutaways
       // (driven by the detection LLM's cues when present on the clip, else
       // the keyword-derived query spaced evenly across the clip) — a single
@@ -6306,7 +4835,13 @@ async function executeClipRenderAttempt(
 
               if (window) {
                 brollPlan = {
-                  cutaways: [{ path: brollPath, window }],
+                  cutaways: [
+                    {
+                      ref: compositionAssetRef("broll", safeUserBrollUrl),
+                      path: brollPath,
+                      window,
+                    },
+                  ],
                   credits: [],
                 };
                 log("info", "clip_broll_selected", {
@@ -6465,6 +5000,7 @@ async function executeClipRenderAttempt(
                     }
                   }
                   cutaways.push({
+                    ref: compositionAssetRef("broll", resolved.downloadUrl),
                     path: brollPath,
                     window: {
                       startSec: resolved.startSec,
@@ -6531,8 +5067,8 @@ async function executeClipRenderAttempt(
       //      to tier 2 whenever the footage has no dynamic structure (the
       //      detection is unavailable. The exact plan is persisted and reused
       //      by the studio, making preview and export one contract.
-      //   2. Legacy single-face EMA reframe (`applyAutoReframe`) only when
-      //      analysis is disabled/unavailable.
+      // Missing or unavailable evidence remains planner input and produces
+      // an explicit Center fallback.
       const layoutEngineEnabled = currentRenderConfig().layoutEngineEnabled;
       const compositionSourceIdentity = compositionAssetRef(
         "source",
@@ -6563,8 +5099,6 @@ async function executeClipRenderAttempt(
           Math.abs(persistedAutoLayout.editedDurationSec - clipDurationSec) <=
             0.075,
       );
-      let autoLayoutSegmentsFull: SplitLayoutSegment[] | null = null;
-      let autoLayoutSegmentsNoSplit: SplitLayoutSegment[] | null = null;
       let automaticLayoutAnalysisForPlan: ClipAutoLayoutAnalysis | null =
         persistedAutoLayoutEligible ? persistedAutoLayout : null;
       const automaticLayoutEvidenceFailure: "failed" | "disabled" =
@@ -6576,12 +5110,9 @@ async function executeClipRenderAttempt(
         | "disabled" = persistedAutoLayoutEligible
         ? "durable"
         : automaticLayoutEvidenceFailure;
-      const autoCompositionControl = currentRenderConfig().compositionAuto;
       const automaticEvidenceProbe =
         probe.hasVideo &&
-        resolveEffectiveFramingMode(studioEdits) === "auto" &&
-        !brollPlan &&
-        autoCompositionControl !== "legacy"
+        resolveEffectiveFramingMode(studioEdits) === "auto"
           ? planClipComposition({
               document: compositionDocument,
               source: {
@@ -6632,17 +5163,9 @@ async function executeClipRenderAttempt(
           automaticEvidenceProbe.status !== "invalid" &&
           automaticEvidenceProbe.plan.evidenceRequests.length > 0,
       );
-      if (autoFramingActive || automaticEvidenceRequested) {
+      if (automaticEvidenceRequested) {
         let engineHandled = false;
         if (persistedAutoLayoutEligible && persistedAutoLayout) {
-          autoLayoutSegmentsFull =
-            persistedAutoLayout.segments.length > 0
-              ? persistedAutoLayout.segments
-              : null;
-          autoLayoutSegmentsNoSplit =
-            persistedAutoLayout.noSplitSegments.length > 0
-              ? persistedAutoLayout.noSplitSegments
-              : null;
           automaticLayoutAnalysisForPlan = persistedAutoLayout;
           engineHandled = true;
           log("info", "clip_layout_plan_reused", {
@@ -6757,9 +5280,6 @@ async function executeClipRenderAttempt(
                 .completeClipAutoLayoutAnalysis(clip.id, envelope, {
                   editorRevision: clip.editorRevision,
                   previewStorageKey: clip.previewStorageKey,
-                  replaceExisting: Boolean(
-                    persistedAutoLayout && !persistedAutoLayoutEligible,
-                  ),
                 })
                 .catch((error) => {
                   rethrowRenderControlFlow(error);
@@ -6776,42 +5296,6 @@ async function executeClipRenderAttempt(
             }
 
             if (fullPlan.segments.length > 0) {
-              if (autoFramingActive) {
-                autoLayoutSegmentsFull = fullPlan.segments;
-              }
-              // Outputs whose aspect ratio can't seat two distinct tiles
-              // (H1's same geometry gate split uses) get a two-up-free
-              // variant of the SAME plan instead of a whole-clip fallback.
-              const anyIneligible = autoFramingActive && outputs.some(
-                (output) =>
-                  reframeOutputs.includes(output) &&
-                  !splitTilesAreDistinct(output.aspectRatio, probe),
-              );
-              if (anyIneligible) {
-                autoLayoutSegmentsNoSplit =
-                  noSplitPlan.segments.length > 0 ? noSplitPlan.segments : null;
-                if (!autoLayoutSegmentsNoSplit) {
-                  // Rare: the demoted plan collapsed to nothing — those
-                  // outputs fall back to the legacy EMA reframe instead.
-                  await applyAutoReframe({
-                    samples: deriveSingleFaceSamplesFromMulti(
-                      multiDetection.samples,
-                    ),
-                    cutPlan,
-                    clipStartSec,
-                    probe,
-                    outputs,
-                    reframeOutputs: outputs.filter(
-                      (output) =>
-                        reframeOutputs.includes(output) &&
-                        !splitTilesAreDistinct(output.aspectRatio, probe),
-                    ),
-                    tempDir,
-                    clipId: clip.id,
-                    workflowRunId: run.id,
-                  });
-                }
-              }
               engineHandled = true;
               log("info", "clip_layout_plan_applied", {
                 workflowRunId: run.id,
@@ -6855,7 +5339,7 @@ async function executeClipRenderAttempt(
               clipId: clip.id,
               ...mediaAnalysisDiagnostic({
                 analysisMode: "layout_engine",
-                fallbackMode: "legacy_auto_reframe",
+                fallbackMode: "composition_plan",
                 failureCode: "analysis_unavailable",
               }),
               reason: "detection_unavailable",
@@ -6863,31 +5347,6 @@ async function executeClipRenderAttempt(
           }
         }
 
-        if (!engineHandled && autoFramingActive) {
-          // Legacy tier: single-face EMA reframe (engine disabled,
-          // extraction failed, or detection unavailable — the last
-          // still calls applyAutoReframe so the skip reason is logged and
-          // the static-center fallback stays explicit).
-          const detection = detectInput
-            ? await currentRenderAdapters().analysis.detectFacePath({
-                sourcePath: detectInput.path,
-                startSec: detectInput.startSec,
-                durationSec: effective.durationSec,
-                logContext: { workflowRunId: run.id, clipId: clip.id },
-              })
-            : null;
-          await applyAutoReframe({
-            samples: detection?.samples ?? null,
-            cutPlan,
-            clipStartSec,
-            probe,
-            outputs,
-            reframeOutputs,
-            tempDir,
-            clipId: clip.id,
-            workflowRunId: run.id,
-          });
-        }
       }
 
       let splitLayoutEvidenceForPlan: CompositionEvidenceAvailability<
@@ -6903,70 +5362,23 @@ async function executeClipRenderAttempt(
         state: "missing",
       };
 
-      // Screen packet B ("screen" framing mode, the worker render path): when
-      // the clip's effective framing mode is "screen", run single-face
-      // detection (NOT `detectMultiFacePath` — screen mode only ever needs
-      // the dominant/single face for the bottom tile, unlike split's
-      // cluster-seat detection) and set every output's `screenBottom` spec
-      // (`applyScreenSpeakerLayout`, mirroring `applyAutoReframe`).
-      // Evaluated AFTER the B-roll plan above for the same reason split is:
-      // the v1 B-roll conflict policy needs to know whether this clip
-      // already has cutaways before deciding whether to build a screen
-      // layout at all (`decideScreenFallback`'s "broll_conflict" reason).
+      // Resolve the evidence needed by the shared planner for Screen mode.
       const screenLayoutEnabled = currentRenderConfig().screenLayoutEnabled;
       const isScreenMode =
         resolveEffectiveFramingMode(studioEdits) === "screen" && probe.hasVideo;
       if (isScreenMode) {
         if (!screenLayoutEnabled) {
           screenLayoutEvidenceForPlan = { state: "disabled" };
-          // Kill switch (mirrors split's `disabled` reason): fully reverts
-          // routing — `framingForcesPerOutputRender` also returns false for
-          // "screen" when this is set, so the clip renders through the exact
-          // same shared/batch path "auto"/"center" use, falling back to
-          // plain whole-frame single-face auto-reframe (never a static
-          // screen layout, never a failed render) exactly like split's own
-          // `disabled` branch does below.
           log("info", "clip_screen_fallback", {
             workflowRunId: run.id,
             clipId: clip.id,
             ...mediaAnalysisDiagnostic({
               analysisMode: "screen_layout",
-              fallbackMode: "auto_reframe",
+              fallbackMode: "composition_plan",
               failureCode: "analysis_disabled",
             }),
             reason: "disabled",
           });
-          if (reframeEnabled && srcRatio > 1.05 && reframeOutputs.length > 0) {
-            const detectInput =
-              await currentRenderAdapters().analysis.extractFaceDetectionSegment({
-              sourcePath,
-              tempDir,
-              clipId: clip.id,
-              workflowRunId: run.id,
-              clipStartSec,
-              durationSec: effective.durationSec,
-              suffix: "-screenfallback",
-            });
-            const detection = detectInput
-              ? await currentRenderAdapters().analysis.detectFacePath({
-                  sourcePath: detectInput.path,
-                  startSec: detectInput.startSec,
-                  durationSec: effective.durationSec,
-                  logContext: { workflowRunId: run.id, clipId: clip.id },
-                })
-              : null;
-            await applyAutoReframe({
-              samples: detection?.samples ?? null,
-              cutPlan,
-              clipStartSec,
-              probe,
-              outputs,
-              reframeOutputs,
-              tempDir,
-              clipId: clip.id,
-              workflowRunId: run.id,
-            });
-          }
         } else {
           const screenFallbackReason = decideScreenFallback({
             hasBrollPlan: Boolean(brollPlan),
@@ -6982,49 +5394,13 @@ async function executeClipRenderAttempt(
               clipId: clip.id,
               ...mediaAnalysisDiagnostic({
                 analysisMode: "screen_layout",
-                fallbackMode: "auto_reframe",
+                fallbackMode: "composition_plan",
                 failureCode: screenFallbackReason,
               }),
               reason: screenFallbackReason,
             });
-            // B-roll conflict: fall back to whole-frame single-speaker
-            // auto-reframe framing exactly like split's own broll_conflict
-            // branch — forced here since `shouldRunAutoReframeDetection`
-            // deliberately excludes "screen".
-            if (reframeEnabled && srcRatio > 1.05 && reframeOutputs.length > 0) {
-              const detectInput =
-                await currentRenderAdapters().analysis.extractFaceDetectionSegment({
-                sourcePath,
-                tempDir,
-                clipId: clip.id,
-                workflowRunId: run.id,
-                clipStartSec,
-                durationSec: effective.durationSec,
-                suffix: "-screenfallback",
-              });
-              const detection = detectInput
-                ? await currentRenderAdapters().analysis.detectFacePath({
-                    sourcePath: detectInput.path,
-                    startSec: detectInput.startSec,
-                    durationSec: effective.durationSec,
-                    logContext: { workflowRunId: run.id, clipId: clip.id },
-                  })
-                : null;
-              await applyAutoReframe({
-                samples: detection?.samples ?? null,
-                cutPlan,
-                clipStartSec,
-                probe,
-                outputs,
-                reframeOutputs,
-                tempDir,
-                clipId: clip.id,
-                workflowRunId: run.id,
-              });
-            }
           } else {
             const screenEngineVersion = "screen-layout-v1";
-            const pipDetectEnabled = currentRenderConfig().pipDetectEnabled;
             const screenFingerprint = screenLayoutInputFingerprint({
               sourceIdentity: compositionSourceIdentity,
               clipStartSec: clip.startSec,
@@ -7032,9 +5408,9 @@ async function executeClipRenderAttempt(
               deletedRanges,
               engineVersion: screenEngineVersion,
             });
-            const persistedAnalysisRaw = pipDetectEnabled
-              ? parseClipLayoutAnalysis(clip.layoutAnalysis)
-              : null;
+            const persistedAnalysisRaw = parseClipLayoutAnalysis(
+              clip.layoutAnalysis,
+            );
             const persistedAnalysis =
               persistedAnalysisRaw !== null &&
               layoutAnalysisMatchesWindow(
@@ -7042,16 +5418,12 @@ async function executeClipRenderAttempt(
                 clipStartSec,
                 effective.durationSec,
               ) &&
-              (persistedAnalysisRaw.version === 1 ||
-                (persistedAnalysisRaw.engine === screenEngineVersion &&
-                  persistedAnalysisRaw.sourceIdentity ===
-                    compositionSourceIdentity &&
-                  persistedAnalysisRaw.inputFingerprint === screenFingerprint))
+              persistedAnalysisRaw.engine === screenEngineVersion &&
+              persistedAnalysisRaw.sourceIdentity === compositionSourceIdentity &&
+              persistedAnalysisRaw.inputFingerprint === screenFingerprint
                 ? persistedAnalysisRaw
                 : null;
-            const reuseExactScreenPlan =
-              persistedAnalysis?.version === 2 &&
-              currentRenderConfig().compositionScreen === "plan";
+            const reuseExactScreenPlan = persistedAnalysis !== null;
             // Real screen layout: element segmentation v1 (vizard-parity.md's
             // element-segmentation spike) tries the actual facecam PiP
             // rectangle FIRST — only when the source is screencast-like
@@ -7085,22 +5457,14 @@ async function executeClipRenderAttempt(
             // (`layoutAnalysisMatchesWindow`) means `pip_detect.py` already
             // ran for this exact source range — reuse its
             // movingPxFrac/insufficientSamples/pipRect instead of paying for
-            // the script again. Gated on `pipDetectEnabled` too: the
-            // `WORKER_PIP_DETECT=0` kill switch must mean "no persistence
-            // side effects at all," not just "no fresh detection." A window
-            // mismatch (most commonly a trim moving `clipStartSec`/
+            // the script again. A window mismatch (most commonly a trim
+            // moving `clipStartSec`/
             // `endSec`) is the envelope's own invalidation — see that
             // function's doc comment — so the stale value is simply never
             // read here, not explicitly deleted.
-            // M2 (adversarial review): the read-before-detect/write-after-
-            // detect decision itself lives in `resolvePipAnalysis` (a
-            // dependency-injected, unit-tested pure function) — this block
-            // just wires it to the real `detectPipPath`/
-            // `clipService.setClipLayoutAnalysis`. `resolvePipAnalysis` only
-            // persists the CONCLUSIVE-negative case (a fresh detection with
-            // no qualifying candidate); the non-null-`selectedRect` case is
-            // persisted below, AFTER `decidePipUsage` — see C1/that
-            // function's own doc comment for why.
+            // The read-before-detect decision lives in `resolvePipAnalysis`.
+            // The identity-complete envelope is persisted below only after
+            // both PiP and face-band facts are conclusive.
             const resolvedPip = reuseExactScreenPlan
               ? {
                   detectionResult: {
@@ -7114,19 +5478,10 @@ async function executeClipRenderAttempt(
                 }
               : await resolvePipAnalysis({
                   persisted: persistedAnalysis,
-                  pipDetectEnabled,
                   detectInput,
                   startSec: clipStartSec,
                   durationSec: effective.durationSec,
-                  rawClipStartSec: clip.startSec,
-                  rawClipEndSec: clip.endSec,
                   detect: currentRenderAdapters().analysis.detectPipPath,
-                  persist: (envelope) =>
-                    currentRenderAdapters().clip.setClipLayoutAnalysis(
-                      clip.id,
-                      envelope,
-                    ),
-                  logContext: { workflowRunId: run.id, clipId: clip.id },
                 });
             const {
               detectionResult,
@@ -7151,7 +5506,6 @@ async function executeClipRenderAttempt(
             const faceConfirmed = confirmsFaceInRect(detection?.samples ?? null, selectedRect);
 
             const pipUsageBase: DecidePipUsageParams = {
-              pipDetectEnabled,
               segmentExtracted: reuseExactScreenPlan || Boolean(detectInput),
               detection: detectionResult,
               selectedRect,
@@ -7160,10 +5514,8 @@ async function executeClipRenderAttempt(
                 : faceConfirmed,
               screencastThreshold: currentRenderConfig().pipMotionThreshold,
             };
-            // Clip-level check only (no `fit` — that's per-output, decided
-            // again inside `applyScreenSpeakerLayout`'s loop): every gate
-            // except M3's `pip_too_small` is decided once here, since none
-            // of them depend on a specific output's tile geometry.
+            // Clip-level evidence gate. Target-specific geometry is resolved
+            // later by the composition planner.
             const clipLevelPipDecision = reuseExactScreenPlan
               ? {
                   useRect: persistedAnalysis.pipUsable,
@@ -7202,18 +5554,6 @@ async function executeClipRenderAttempt(
               });
             }
 
-            const appliedTracking = await applyScreenSpeakerLayout({
-              samples: detection?.samples ?? null,
-              pipRect,
-              pipUsageBase,
-              cutPlan,
-              clipStartSec,
-              probe,
-              outputs,
-              tempDir,
-              clipId: clip.id,
-              workflowRunId: run.id,
-            });
             const faceBandSegments = reuseExactScreenPlan
               ? persistedAnalysis.faceBandSegments
               : faceBandSegmentsForCompositionPlan({
@@ -7222,14 +5562,45 @@ async function executeClipRenderAttempt(
                   clipStartSec,
                   editedDurationSec: clipDurationSec,
                 });
-            const screenAnalysisConclusive = Boolean(
-              detectionResult && detection,
-            );
-            if (
-              pipDetectEnabled &&
-              persistedAnalysis?.version !== 2 &&
-              screenAnalysisConclusive
-            ) {
+            const screenAnalysisConclusive =
+              reuseExactScreenPlan || Boolean(detectionResult && detection);
+            if (!screenAnalysisConclusive) {
+              const failureReason = detectionResult
+                ? "analysis_unavailable"
+                : "detection_unavailable";
+              screenLayoutEvidenceForPlan = {
+                state: "failed",
+                reason: failureReason,
+              };
+              const failure = clipLayoutAnalysisFailureSchema.parse({
+                version: 2,
+                engine: screenEngineVersion,
+                state: "failed",
+                sourceIdentity: compositionSourceIdentity,
+                inputFingerprint: screenFingerprint,
+                analyzedAtISO: new Date(currentTimeMs()).toISOString(),
+                reason: failureReason,
+              });
+              if (clip.previewStorageKey) {
+                try {
+                  await currentRenderAdapters().clip.setClipLayoutAnalysisFailure(
+                    clip.id,
+                    failure,
+                    {
+                      editorRevision: clip.editorRevision,
+                      previewStorageKey: clip.previewStorageKey,
+                    },
+                  );
+                } catch (persistError) {
+                  rethrowRenderControlFlow(persistError);
+                  log("error", "clip_screen_layout_failure_persist_failed", {
+                    workflowRunId: run.id,
+                    clipId: clip.id,
+                    reason: failureReason,
+                  });
+                }
+              }
+            } else if (persistedAnalysis === null) {
               const screenEnvelope = clipLayoutAnalysisV2Schema.parse({
                 version: 2,
                 engine: screenEngineVersion,
@@ -7250,49 +5621,57 @@ async function executeClipRenderAttempt(
                 deletedRanges,
                 faceBandSegments,
               });
-              try {
-                await currentRenderAdapters().clip.setClipLayoutAnalysis(
-                  clip.id,
-                  screenEnvelope,
-                );
-              } catch (persistError) {
-                rethrowRenderControlFlow(persistError);
-                log("error", "clip_screen_layout_analysis_persist_failed", {
-                  workflowRunId: run.id,
-                  clipId: clip.id,
-                  ...mediaAnalysisDiagnostic({
-                    analysisMode: "screen_layout",
-                    fallbackMode: "render_without_persisted_analysis",
-                    failureCode: "analysis_persist_failed",
-                  }),
-                });
+              if (clip.previewStorageKey) {
+                try {
+                  await currentRenderAdapters().clip.setClipLayoutAnalysis(
+                    clip.id,
+                    screenEnvelope,
+                    {
+                      editorRevision: clip.editorRevision,
+                      previewStorageKey: clip.previewStorageKey,
+                    },
+                  );
+                } catch (persistError) {
+                  rethrowRenderControlFlow(persistError);
+                  log("error", "clip_screen_layout_analysis_persist_failed", {
+                    workflowRunId: run.id,
+                    clipId: clip.id,
+                    ...mediaAnalysisDiagnostic({
+                      analysisMode: "screen_layout",
+                      fallbackMode: "render_without_persisted_analysis",
+                      failureCode: "analysis_persist_failed",
+                    }),
+                  });
+                }
               }
             }
-            screenLayoutEvidenceForPlan = {
-              state: "available",
-              value: {
-                sourceIdentity: compositionSourceIdentity,
-                inputFingerprint: screenFingerprint,
-                engineVersion: screenEngineVersion,
-                source:
-                  analysisSource === "persisted" ? "durable-pip" : "analysis",
-                pictureInPicture: pipRect
-                  ? {
-                      state: "confirmed",
-                      rect: {
-                        x: pipRect.x,
-                        y: pipRect.y,
-                        width: pipRect.w,
-                        height: pipRect.h,
-                      },
-                    }
-                  : { state: "unavailable" },
-                faceBand: faceBandSegments
-                  ? { state: "available", segments: faceBandSegments }
-                  : { state: "unavailable" },
-              },
-            };
-            if (!appliedTracking) {
+            if (screenAnalysisConclusive) {
+              screenLayoutEvidenceForPlan = {
+                state: "available",
+                value: {
+                  sourceIdentity: compositionSourceIdentity,
+                  inputFingerprint: screenFingerprint,
+                  engineVersion: screenEngineVersion,
+                  source:
+                    analysisSource === "persisted" ? "durable-pip" : "analysis",
+                  pictureInPicture: pipRect
+                    ? {
+                        state: "confirmed",
+                        rect: {
+                          x: pipRect.x,
+                          y: pipRect.y,
+                          width: pipRect.w,
+                          height: pipRect.h,
+                        },
+                      }
+                    : { state: "unavailable" },
+                  faceBand: faceBandSegments
+                    ? { state: "available", segments: faceBandSegments }
+                    : { state: "unavailable" },
+                },
+              };
+            }
+            if (screenAnalysisConclusive && !pipRect && !faceBandSegments) {
               log("info", "clip_screen_bottom_center_fallback", {
                 workflowRunId: run.id,
                 clipId: clip.id,
@@ -7310,24 +5689,7 @@ async function executeClipRenderAttempt(
         }
       }
 
-      // Split packet B (vizard-parity.md "Split-screen 2-up"): when the
-      // clip's effective framing mode is "split", detect multi-face segments
-      // and build the per-segment 2-up layout plan. Evaluated AFTER the
-      // B-roll plan above (not alongside the single-face auto-reframe block)
-      // because the v1 B-roll/split conflict policy needs to know whether
-      // this clip already has cutaways: "b-roll replaces the whole 2-up
-      // frame" composition is future work, so a clip with both simply falls
-      // back to single-speaker framing (`decideSplitFallback`'s
-      // "broll_conflict" reason) rather than attempting to combine them.
-      let splitPlan: BuildSplitLayoutPlanResult | null = null;
-      // H1 (adversarial review): the subset of `outputs` whose ASPECT RATIO
-      // can't produce laterally distinct 2-up tiles even when `splitPlan` is
-      // non-null (e.g. this clip's 9:16 output gets a real split, but its
-      // 1:1/16:9 outputs of the SAME clip can't — see `splitTilesAreDistinct`).
-      // Populated below, consumed by the per-output render loop, which routes
-      // exactly these outputs through `params.reframe`/center-crop instead of
-      // `params.split`.
-      let splitIneligibleOutputs: PendingRenderOutput[] = [];
+      // Resolve the evidence needed by the shared planner for Split mode.
       const splitEnabled = currentRenderConfig().splitEnabled;
       const isSplitMode =
         resolveEffectiveFramingMode(studioEdits) === "split" && probe.hasVideo;
@@ -7347,51 +5709,50 @@ async function executeClipRenderAttempt(
             clipId: clip.id,
             ...mediaAnalysisDiagnostic({
               analysisMode: "split_layout",
-              fallbackMode: "auto_reframe",
+              fallbackMode: "composition_plan",
               failureCode: "analysis_disabled",
             }),
             reason: "disabled",
           });
-          if (reframeEnabled && srcRatio > 1.05 && reframeOutputs.length > 0) {
-            const detectInput =
-              await currentRenderAdapters().analysis.extractFaceDetectionSegment({
-              sourcePath,
-              tempDir,
-              clipId: clip.id,
-              workflowRunId: run.id,
-              clipStartSec,
-              durationSec: effective.durationSec,
-              suffix: "-splitfallback",
-            });
-            const detection = detectInput
-              ? await currentRenderAdapters().analysis.detectFacePath({
-                  sourcePath: detectInput.path,
-                  startSec: detectInput.startSec,
-                  durationSec: effective.durationSec,
-                  logContext: { workflowRunId: run.id, clipId: clip.id },
-                })
-              : null;
-            await applyAutoReframe({
-              samples: detection?.samples ?? null,
-              cutPlan,
-              clipStartSec,
-              probe,
-              outputs,
-              reframeOutputs,
-              tempDir,
-              clipId: clip.id,
-              workflowRunId: run.id,
-            });
-          }
         } else {
+          const splitEngineVersion = "explicit-split-v1";
+          const splitFingerprint = splitLayoutInputFingerprint({
+            sourceIdentity: compositionSourceIdentity,
+            clipStartSec: clip.startSec,
+            clipEndSec: clip.endSec,
+            deletedRanges,
+            engineVersion: splitEngineVersion,
+          });
+          const persistedSplitAnalysis = parseClipSplitLayoutAnalysis(
+            clip.splitLayoutAnalysis,
+          );
+          const reusableSplitAnalysis =
+            !brollPlan &&
+            persistedSplitAnalysis?.sourceIdentity === compositionSourceIdentity &&
+            persistedSplitAnalysis.sourceWidth === probe.width &&
+            persistedSplitAnalysis.sourceHeight === probe.height &&
+            clipAutoLayoutMatchesInputs(persistedSplitAnalysis, {
+              clipStartSec: clip.startSec,
+              clipEndSec: clip.endSec,
+              deletedRanges,
+            }) &&
+            Math.abs(
+              persistedSplitAnalysis.editedDurationSec - clipDurationSec,
+            ) <= 0.075
+              ? persistedSplitAnalysis
+              : null;
           let detectionAvailable = false;
           let plan: BuildSplitLayoutPlanResult | null = null;
-          // Hoisted so the fallback branch below (M2, adversarial review)
-          // can derive single-face samples from this multi-face result
-          // instead of re-running the python detector from scratch.
           let multiDetection: { samples: MultiFaceSample[] } | null = null;
 
-          if (!brollPlan) {
+          if (reusableSplitAnalysis) {
+            detectionAvailable = true;
+            plan = {
+              segments: reusableSplitAnalysis.segments,
+              clusterCount: reusableSplitAnalysis.speakerCount,
+              cappedFromSegmentCount: null,
+            };
+          } else if (!brollPlan) {
             const detectInput =
               await currentRenderAdapters().analysis.extractFaceDetectionSegment({
               sourcePath,
@@ -7406,8 +5767,7 @@ async function executeClipRenderAttempt(
             // above: detection scans the full uncut clip window in
             // elapsed-uncut-source seconds; `remapMultiFaceSamplesForCutPlan`
             // drops samples inside a cut and remaps the rest onto the edited
-            // timeline `buildSplitLayoutPlan`'s segments (and therefore
-            // `buildSplitFilterChain`'s `trim` windows) are expressed in.
+            // timeline used by `buildSplitLayoutPlan` and the shared planner.
             multiDetection = detectInput
               ? await currentRenderAdapters().analysis.detectMultiFacePath({
                   sourcePath: detectInput.path,
@@ -7438,83 +5798,60 @@ async function executeClipRenderAttempt(
               state: "failed",
               reason: fallbackReason,
             };
+            if (fallbackReason !== "broll_conflict" && clip.previewStorageKey) {
+              const failure = clipSplitLayoutFailureSchema.parse({
+                version: 1,
+                engine: splitEngineVersion,
+                state: "failed",
+                sourceIdentity: compositionSourceIdentity,
+                inputFingerprint: splitFingerprint,
+                analyzedAtISO: new Date(currentTimeMs()).toISOString(),
+                reason: fallbackReason,
+              });
+              await currentRenderAdapters()
+                .clip.completeClipSplitLayoutFailure(clip.id, failure, {
+                  editorRevision: clip.editorRevision,
+                  previewStorageKey: clip.previewStorageKey,
+                })
+                .catch((error) => {
+                  rethrowRenderControlFlow(error);
+                  log("error", "clip_split_layout_failure_persist_failed", {
+                    workflowRunId: run.id,
+                    clipId: clip.id,
+                    reason: fallbackReason,
+                  });
+                });
+            }
             log("info", "clip_split_fallback", {
               workflowRunId: run.id,
               clipId: clip.id,
               ...mediaAnalysisDiagnostic({
                 analysisMode: "split_layout",
-                fallbackMode: "auto_reframe",
+                fallbackMode: "composition_plan",
                 failureCode: fallbackReason,
               }),
               reason: fallbackReason,
             });
-            // Fall back to single-speaker framing exactly like "auto" mode —
-            // forced here since `shouldRunAutoReframeDetection` (and the
-            // block above gated on it) deliberately excludes "split".
-            if (reframeEnabled && srcRatio > 1.05 && reframeOutputs.length > 0) {
-              // M2 (adversarial review): only re-run the single-face python
-              // detector when multi-face detection never actually ran
-              // (kill switch is handled above; here that's the
-              // `broll_conflict` path, which is decided BEFORE detection
-              // runs at all — see the `!brollPlan` guard above). When multi
-              // detection did run (and either found <2 clusters or produced
-              // an empty/all-single plan), reuse ITS samples instead of a
-              // second extraction + a second full YuNet pass.
-              const samples = multiDetection
-                ? deriveSingleFaceSamplesFromMulti(multiDetection.samples)
-                : (
-                    await (async () => {
-                      const detectInput =
-                        await currentRenderAdapters().analysis.extractFaceDetectionSegment({
-                        sourcePath,
-                        tempDir,
-                        clipId: clip.id,
-                        workflowRunId: run.id,
-                        clipStartSec,
-                        durationSec: effective.durationSec,
-                        suffix: "-splitfallback",
-                      });
-                      return detectInput
-                        ? await currentRenderAdapters().analysis.detectFacePath({
-                            sourcePath: detectInput.path,
-                            startSec: detectInput.startSec,
-                            durationSec: effective.durationSec,
-                            logContext: { workflowRunId: run.id, clipId: clip.id },
-                          })
-                        : null;
-                    })()
-                  )?.samples ?? null;
-              await applyAutoReframe({
-                samples,
-                cutPlan,
-                clipStartSec,
-                probe,
-                outputs,
-                reframeOutputs,
-                tempDir,
-                clipId: clip.id,
-                workflowRunId: run.id,
-              });
-            }
           } else if (plan) {
-            splitPlan = plan;
-            const fallbackSegments = faceBandSegmentsForCompositionPlan({
-              samples: multiDetection
-                ? deriveSingleFaceSamplesFromMulti(multiDetection.samples)
-                : null,
-              cutPlan,
-              clipStartSec,
-              editedDurationSec: clipDurationSec,
-            }) ?? [
-              {
-                startSec: 0,
-                endSec: clipDurationSec,
-                layout: "single" as const,
-                cxNorm: 0.5,
-                cyNorm: 0.5,
-                zoom: 1,
-              },
-            ];
+            const fallbackSegments = reusableSplitAnalysis
+              ? reusableSplitAnalysis.noSplitSegments
+              : (faceBandSegmentsForCompositionPlan({
+                  samples: multiDetection
+                    ? deriveSingleFaceSamplesFromMulti(multiDetection.samples)
+                    : null,
+                  cutPlan,
+                  clipStartSec,
+                  editedDurationSec: clipDurationSec,
+                }) ?? [
+                  {
+                    startSec: 0,
+                    endSec: clipDurationSec,
+                    layout: "single" as const,
+                    cxNorm: 0.5,
+                    cyNorm: 0.5,
+                    zoom: 1,
+                  },
+                ]);
             const explicitSegments: ClipAutoLayoutSegment[] = plan.segments.map(
               (segment) =>
                 segment.layout === "single"
@@ -7538,20 +5875,15 @@ async function executeClipRenderAttempt(
                       bottomZoom: segment.bottomZoom ?? 1,
                     },
             );
-            const splitEngineVersion = "explicit-split-v1";
             splitLayoutEvidenceForPlan = {
               state: "available",
               value: {
                 sourceIdentity: compositionSourceIdentity,
-                inputFingerprint: splitLayoutInputFingerprint({
-                  sourceIdentity: compositionSourceIdentity,
-                  clipStartSec: clip.startSec,
-                  clipEndSec: clip.endSec,
-                  deletedRanges,
-                  engineVersion: splitEngineVersion,
-                }),
+                inputFingerprint: splitFingerprint,
                 engineVersion: splitEngineVersion,
-                source: "explicit-detector",
+                source: reusableSplitAnalysis
+                  ? "durable-explicit"
+                  : "explicit-detector",
                 segments: explicitSegments,
                 fallbackSegments,
               },
@@ -7586,7 +5918,7 @@ async function executeClipRenderAttempt(
             if (!splitPreviewEnvelope) {
               throw new Error("invalid_split_layout_analysis");
             }
-            if (clip.previewStorageKey) {
+            if (!reusableSplitAnalysis && clip.previewStorageKey) {
               await currentRenderAdapters()
                 .clip
                 .completeClipSplitLayoutAnalysis(clip.id, splitPreviewEnvelope, {
@@ -7625,51 +5957,6 @@ async function executeClipRenderAttempt(
               clusterCount: plan.clusterCount,
             });
 
-            // H1 (adversarial review): a real plan exists, but not every
-            // OUTPUT's aspect ratio can render it distinctly — a 9:16 output
-            // might have plenty of lateral crop room while this SAME clip's
-            // 1:1/16:9 output can't (the tile crop consumes the full source
-            // width, forcing both tiles' x to 0 regardless of cx). Those
-            // outputs fall back to single-speaker framing individually
-            // rather than the whole clip giving up on split.
-            splitIneligibleOutputs = outputs.filter(
-              (output) => !splitTilesAreDistinct(output.aspectRatio, probe),
-            );
-            if (splitIneligibleOutputs.length > 0) {
-              for (const output of splitIneligibleOutputs) {
-                log("info", "clip_split_fallback", {
-                  workflowRunId: run.id,
-                  clipId: clip.id,
-                  ...mediaAnalysisDiagnostic({
-                    analysisMode: "split_layout",
-                    fallbackMode: "auto_reframe",
-                    failureCode: "tiles_not_distinct",
-                  }),
-                  reason: "tiles_not_distinct",
-                  aspectRatio: output.aspectRatio,
-                });
-              }
-              if (reframeEnabled && srcRatio > 1.05) {
-                // Reuse the multi-face samples this clip already detected
-                // (M2's same reasoning) — no second extraction/detection
-                // pass needed since `multiDetection` is guaranteed non-null
-                // here (a `plan` only exists when it succeeded).
-                const samples = multiDetection
-                  ? deriveSingleFaceSamplesFromMulti(multiDetection.samples)
-                  : null;
-                await applyAutoReframe({
-                  samples,
-                  cutPlan,
-                  clipStartSec,
-                  probe,
-                  outputs,
-                  reframeOutputs: splitIneligibleOutputs,
-                  tempDir,
-                  clipId: clip.id,
-                  workflowRunId: run.id,
-                });
-              }
-            }
           }
         }
       }
@@ -8056,37 +6343,12 @@ async function executeClipRenderAttempt(
       const requestedCompositionMode = resolveEffectiveFramingMode(studioEdits);
       let compositionPlan: ClipCompositionPlan | null = null;
       let fallbackCompositionPlan: ClipCompositionPlan | null = null;
-      const compositionControl =
-        requestedCompositionMode === "center"
-          ? currentRenderConfig().compositionCenter
-          : requestedCompositionMode === "fit"
-            ? currentRenderConfig().compositionFit
-            : requestedCompositionMode === "auto"
-              ? currentRenderConfig().compositionAuto
-              : requestedCompositionMode === "split"
-                ? currentRenderConfig().compositionSplit
-                : requestedCompositionMode === "screen"
-                  ? currentRenderConfig().compositionScreen
-                  : "legacy";
-      if (
-        probe.hasVideo &&
-        (requestedCompositionMode === "center" ||
-          requestedCompositionMode === "fit" ||
-          requestedCompositionMode === "auto" ||
-          requestedCompositionMode === "split" ||
-          requestedCompositionMode === "screen") &&
-        !(requestedCompositionMode === "auto" && brollPlan) &&
-        !(
-          (requestedCompositionMode === "split" ||
-            requestedCompositionMode === "screen") &&
-          brollPlan
-        ) &&
-        compositionControl !== "legacy"
-      ) {
-        const planWithBackgroundAvailability = (
+      if (probe.hasVideo) {
+        const planWithAssetAvailability = (
           backgroundImage:
             | { state: "missing" | "failed" }
             | { state: "available"; ref: string },
+          brollAvailable = Boolean(brollPlan),
         ) =>
           planClipComposition({
             document: compositionDocument,
@@ -8117,7 +6379,24 @@ async function executeClipRenderAttempt(
               splitLayout: splitLayoutEvidenceForPlan,
               screenLayout: screenLayoutEvidenceForPlan,
             },
-            assets: { backgroundImage },
+            assets: {
+              backgroundImage,
+              ...(brollPlan && brollAvailable
+                ? {
+                    broll: {
+                      state: "available" as const,
+                      placements: brollPlan.cutaways.map((cutaway, index) => ({
+                        id: `cutaway-${index}`,
+                        ref: cutaway.ref,
+                        startSec: cutaway.window.startSec,
+                        endSec: cutaway.window.endSec,
+                      })),
+                    },
+                  }
+                : userBrollUrl || brollPlan
+                  ? { broll: { state: "failed" as const } }
+                  : {}),
+            },
             capabilities: {
               automaticSpeakerLayout: currentRenderConfig().layoutEngineEnabled,
               automaticSpeakerEngineVersion: "shot-layout-v1",
@@ -8153,7 +6432,7 @@ async function executeClipRenderAttempt(
               ? ({ state: "failed" } as const)
               : ({ state: "missing" } as const);
         const planningStartedAtMs = currentTimeMs();
-        const planned = planWithBackgroundAvailability(
+        const planned = planWithAssetAvailability(
           backgroundImageAvailability,
         );
         const planningDurationMs = Math.max(
@@ -8194,7 +6473,6 @@ async function executeClipRenderAttempt(
           workflowRunId: run.id,
           clipId: clip.id,
           adapter: "ffmpeg",
-          control: compositionControl,
           planVersion: planned.plan.version,
           planFingerprint: planned.plan.fingerprint,
           planningDurationMs,
@@ -8218,161 +6496,22 @@ async function executeClipRenderAttempt(
           sceneCount,
           noticeCodes: planned.plan.notices.map((notice) => notice.code),
         });
-        if (compositionControl === "shadow") {
-          for (const target of planned.plan.targets) {
-            const output = outputs.find(
-              (candidate) => candidate.clipRenderId === target.id,
-            );
-            if (!output) continue;
-            const legacyAutomaticSegments =
-              requestedCompositionMode === "auto" &&
-              autoLayoutSegmentsFull &&
-              reframeOutputs.includes(output)
-                ? splitTilesAreDistinct(output.aspectRatio, probe)
-                  ? autoLayoutSegmentsFull
-                  : autoLayoutSegmentsNoSplit
-                : null;
-            const legacy = buildLegacyCompositionShadowTarget({
-              targetId: target.id,
-              aspectRatio: output.aspectRatio,
-              target: {
-                width: target.canvas.width,
-                height: target.canvas.height,
-              },
-              source: { width: probe.width, height: probe.height },
-              durationSec: clipDurationSec,
-              requestedMode: requestedCompositionMode,
-              automaticSegments: legacyAutomaticSegments,
-              splitSegments:
-                requestedCompositionMode === "split" &&
-                splitPlan &&
-                !splitIneligibleOutputs.includes(output)
-                  ? splitPlan.segments
-                  : null,
-              screenBottom:
-                requestedCompositionMode === "screen"
-                  ? output.screenBottom
-                  : null,
-              dynamicReframe: Boolean(
-                output.reframe && !legacyAutomaticSegments,
-              ),
-              speakerLayoutOverrides: studioEdits.speakerLayoutOverrides,
-              background: backgroundPlan,
-            });
-            const shadow = compareCompositionShadowTarget({
-              planned: target,
-              plannedNoticeCodes: planned.plan.notices
-                .filter((notice) => notice.targetId === target.id)
-                .map((notice) => notice.code),
-              legacy,
-            });
-            log("info", "clip_composition_shadow", {
-              workflowRunId: run.id,
-              clipId: clip.id,
-              adapter: "ffmpeg",
-              planVersion: planned.plan.version,
-              planFingerprint: planned.plan.fingerprint,
-              requestedMode: requestedCompositionMode,
-              targetId: target.id,
-              aspectRatio: target.aspectRatio,
-              effectiveMode: target.effectiveMode,
-              ...shadow,
-            });
-          }
-        }
-        if (compositionControl === "plan") {
-          const preservesTrackedFallback =
-            (requestedCompositionMode === "split" &&
-              splitLayoutEvidenceForPlan.state !== "available") ||
-            (requestedCompositionMode === "screen" &&
-              screenLayoutEvidenceForPlan.state !== "available");
-          if (preservesTrackedFallback) {
-            log("info", "clip_composition_plan_retained_legacy_fallback", {
-              workflowRunId: run.id,
-              clipId: clip.id,
-              requestedMode: requestedCompositionMode,
-              evidenceState:
-                requestedCompositionMode === "split"
-                  ? splitLayoutEvidenceForPlan.state
-                  : screenLayoutEvidenceForPlan.state,
-            });
-          } else {
-            compositionPlan = planned.plan;
-            if (backgroundImageAvailability.state === "available") {
-              const fallbackPlan = planWithBackgroundAvailability({
-                state: "failed",
-              });
-              if (fallbackPlan.status !== "invalid") {
-                fallbackCompositionPlan = fallbackPlan.plan;
-              }
-            }
+        compositionPlan = planned.plan;
+        if (
+          backgroundImageAvailability.state === "available" ||
+          brollPlan
+        ) {
+          const fallbackPlan = planWithAssetAvailability(
+            backgroundImageAvailability.state === "available"
+              ? { state: "failed" }
+              : backgroundImageAvailability,
+            false,
+          );
+          if (fallbackPlan.status !== "invalid") {
+            fallbackCompositionPlan = fallbackPlan.plan;
           }
         }
       }
-
-      // sourceAudio (volume/mute) is only applied by the per-output builders
-      // (buildSingleVideoArgs/buildBrollVideoArgs/buildAudiogramArgs), same
-      // as music — buildMultiVideoArgs (the shared multi-output batch path)
-      // never learned to thread either through its filter graph, so any
-      // non-default sourceAudio setting must route through this same gate to
-      // actually take effect for multi-output renders.
-      //
-      // Cut-concat (vizard-parity Phase B step 7) is threaded through the
-      // same gate rather than taught to buildMultiVideoArgs directly: that
-      // path only ever handles multiple *plain* outputs (no B-roll, no other
-      // studio edits), and inserting cut/concat there would mean
-      // implementing the same trim+concat-before-split logic a third time
-      // for a case that's cheap to route through the already-cut-aware
-      // per-output builders instead.
-      //
-      // A canvas background also forces this gate: it changes the base
-      // composition itself (fit+pad instead of crop-to-fill), which
-      // buildMultiVideoArgs's shared crop-to-fill path has no concept of.
-      //
-      // SFX (vizard-parity.md "Music/SFX library") forces it for the same
-      // reason music does — buildMultiVideoArgs never learned a mix filter
-      // at all, so any SFX placement must route through the per-output
-      // builders. Ducking doesn't need its own clause: it only ever
-      // modifies the music branch, which is already gated by
-      // `Boolean(musicPlan)`.
-      //
-      // Split (packet B) forces it for the same reason a canvas background
-      // does: `buildSplitFilterChain`'s segment-concat graph replaces the
-      // base composition entirely, which `buildMultiVideoArgs`'s shared
-      // crop-to-fill path has no concept of (unlike plain reframe, which
-      // `buildMultiVideoArgs` DOES thread through per output via
-      // `output.reframe`). Gated on the effective mode
-      // (`framingForcesPerOutputRender`), not `Boolean(splitPlan)`, so a
-      // split clip always takes the per-output path even on a render where
-      // it fell back to single-speaker framing (`splitPlan` null) — keeps
-      // the routing decision simple/stable across renders rather than
-      // flapping between the batch and per-output path from one run to the
-      // next as detection succeeds or fails.
-      const hasStudioVideoEdits =
-        studioEdits.textLayers.length > 0 ||
-        studioEdits.transition.type !== "none" ||
-        Boolean(musicPlan) ||
-        sfxPlans.length > 0 ||
-        studioEdits.sourceAudio.muted ||
-        studioEdits.sourceAudio.volume !== 100 ||
-        !cutPlan.isUncut ||
-        Boolean(backgroundPlan) ||
-        framingForcesPerOutputRender(studioEdits) ||
-        // Layout-engine plan (auto mode): the segment-concat graph replaces
-        // the base composition exactly like split's does, so it needs the
-        // per-output path for the same reason. Unlike split this IS gated on
-        // plan presence — auto mode has no user-visible mode toggle to keep
-        // routing stable against, and a plan-less render through the batch
-        // path is byte-identical to before the engine existed.
-        Boolean(autoLayoutSegmentsFull) ||
-        // A ready Automatic Clip Composition Plan is scene/branch-heavy even
-        // when it came from durable evidence outside the legacy reframe gate.
-        // Keep it on the established safer per-output topology.
-        Boolean(
-          compositionPlan?.targets.some(
-            (target) => target.effectiveMode === "auto",
-          ),
-        );
 
       if (!probe.hasVideo) {
         // Known divergence: audio-only sources render via buildAudiogramArgs,
@@ -8470,48 +6609,37 @@ async function executeClipRenderAttempt(
             });
           }
         }
-      } else if (brollPlan || hasStudioVideoEdits) {
-        // B-roll or other studio edits active: render each output individually
-        // so each aspect ratio gets its own composited cutaway/text/fade/audio.
+      } else {
+        // Every video output is compiled from the shared composition plan.
         const plan = brollPlan;
         const brollCredits =
           plan && plan.credits.length > 0 ? JSON.stringify(plan.credits) : null;
         for (const output of outputs) {
-          const fullAutoSegmentsForOutput = autoLayoutSegmentsFull
-            ? applySpeakerLayoutOverridesToSegments(
-                autoLayoutSegmentsFull,
-                studioEdits.speakerLayoutOverrides,
-                output.aspectRatio,
-              )
-            : null;
-          const noSplitAutoSegmentsForOutput = autoLayoutSegmentsNoSplit
-            ? applySpeakerLayoutOverridesToSegments(
-                autoLayoutSegmentsNoSplit,
-                studioEdits.speakerLayoutOverrides,
-                output.aspectRatio,
-              )
-            : null;
-          const useLegacySplitFallback =
-            requestedCompositionMode === "split" &&
-            splitIneligibleOutputs.includes(output);
-          const compositionForOutput =
-            compositionPlan && !useLegacySplitFallback
-              ? { plan: compositionPlan, targetId: output.clipRenderId }
-              : null;
+          if (!compositionPlan) {
+            throw new WorkflowWorkerError(
+              "clip_composition_plan_missing",
+              "Video render requires a Clip Composition Plan",
+              "permanent",
+            );
+          }
+          const compositionForOutput = {
+            plan: compositionPlan,
+            targetId: output.clipRenderId,
+          };
           const optionalAssetFallbackPlan =
             fallbackCompositionPlan ?? compositionPlan;
-          const fallbackCompositionForOutput =
-            optionalAssetFallbackPlan && !useLegacySplitFallback
-              ? {
-                  plan: optionalAssetFallbackPlan,
-                  targetId: output.clipRenderId,
-                }
-              : null;
+          const fallbackCompositionForOutput = {
+            plan: optionalAssetFallbackPlan,
+            targetId: output.clipRenderId,
+          };
           try {
+            const resolvedBrollAssets = Object.fromEntries(
+              plan?.cutaways.map((cutaway) => [cutaway.ref, cutaway.path]) ?? [],
+            );
             const ffmpegArgs = plan
               ? buildBrollVideoArgs({
                   sourcePath,
-                  cutaways: plan.cutaways,
+                  resolvedBrollAssets,
                   outputPath: output.outputPath,
                   startSec: clipStartSec,
                   endSec: clipEndSec,
@@ -8520,17 +6648,7 @@ async function executeClipRenderAttempt(
                   srtPath: output.subtitlePath ?? srtPath,
                   captionPreset,
                   logo,
-                  reframe: output.reframe,
                   composition: compositionForOutput,
-                  split: fullAutoSegmentsForOutput
-                    ? reframeOutputs.includes(output)
-                      ? splitTilesAreDistinct(output.aspectRatio, probe)
-                        ? { segments: fullAutoSegmentsForOutput }
-                        : noSplitAutoSegmentsForOutput
-                          ? { segments: noSplitAutoSegmentsForOutput }
-                          : null
-                      : null
-                    : null,
                   studioEdits,
                   music: musicPlan,
                   sfx: sfxPlans,
@@ -8549,57 +6667,11 @@ async function executeClipRenderAttempt(
                   srtPath: output.subtitlePath ?? srtPath,
                   captionPreset,
                   logo,
-                  reframe: output.reframe,
                   composition: compositionForOutput,
                   studioEdits,
                   music: musicPlan,
                   sfx: sfxPlans,
                   background: backgroundPlan,
-                  // Split packet B: `splitPlan` is only ever non-null when
-                  // `backgroundPlan` is null and `brollPlan` is null (fit
-                  // wins as "fit" before `framing.mode` is read at all;
-                  // b-roll always wins the fallback per `decideSplitFallback`
-                  // above), so there's no ordering conflict with the
-                  // `background` param above.
-                  //
-                  // H1 (adversarial review): gated PER OUTPUT, not just per
-                  // clip — `splitIneligibleOutputs` (populated above) already
-                  // got a `params.reframe`/center-crop fallback applied, so
-                  // this output must NOT also receive `split` (which would
-                  // render laterally-identical duplicate tiles for its
-                  // aspect ratio).
-                  //
-                  // Layout-engine plans (auto mode) ride the same param:
-                  // full plan for outputs that can seat two-up tiles, the
-                  // demoted no-split variant otherwise (or none at all when
-                  // that variant collapsed — those outputs already got the
-                  // legacy reframe applied above).
-                  split: fullAutoSegmentsForOutput
-                    ? reframeOutputs.includes(output)
-                      ? splitTilesAreDistinct(output.aspectRatio, probe)
-                        ? { segments: fullAutoSegmentsForOutput }
-                        : noSplitAutoSegmentsForOutput
-                          ? { segments: noSplitAutoSegmentsForOutput }
-                          : null
-                      : null
-                    : splitPlan && !splitIneligibleOutputs.includes(output)
-                      ? { segments: splitPlan.segments }
-                      : null,
-                  // Screen packet B: `output.screenBottom` is only ever set
-                  // by `applyScreenSpeakerLayout`, which only ever runs when
-                  // `backgroundPlan`/`splitPlan` are both null (fit wins as
-                  // "fit" before `framing.mode` is read; only one of split/
-                  // screen's gates is ever active per clip) — no ordering
-                  // conflict with `background`/`split` above. Unlike split,
-                  // no per-output ineligibility filter is needed: a screen
-                  // layout's two tiles are always distinct content (see
-                  // screen-layout.ts's doc comment), and
-                  // `applyScreenSpeakerLayout` sets every output's
-                  // `screenBottom` (face-tracked or static-center) whenever
-                  // it runs at all.
-                  screen: output.screenBottom
-                    ? { bottom: output.screenBottom }
-                    : null,
                   resolution: output.resolution,
                   watermark: output.watermark,
                   cutPlan,
@@ -8620,27 +6692,11 @@ async function executeClipRenderAttempt(
                         srtPath: output.subtitlePath ?? srtPath,
                         captionPreset,
                         logo: null,
-                        reframe: output.reframe,
                         composition: fallbackCompositionForOutput,
                         studioEdits,
                         music: null,
                         sfx: [],
                         background: fallbackBackgroundPlan,
-                        split: fullAutoSegmentsForOutput
-                          ? reframeOutputs.includes(output)
-                            ? splitTilesAreDistinct(output.aspectRatio, probe)
-                              ? { segments: fullAutoSegmentsForOutput }
-                              : noSplitAutoSegmentsForOutput
-                                ? { segments: noSplitAutoSegmentsForOutput }
-                                : null
-                            : null
-                          : splitPlan &&
-                              !splitIneligibleOutputs.includes(output)
-                            ? { segments: splitPlan.segments }
-                            : null,
-                        screen: output.screenBottom
-                          ? { bottom: output.screenBottom }
-                          : null,
                         resolution: output.resolution,
                         watermark: output.watermark,
                         cutPlan,
@@ -8686,128 +6742,6 @@ async function executeClipRenderAttempt(
                 error instanceof Error ? error.message : "Unknown render error",
             });
           }
-        }
-      } else {
-        try {
-          const ffmpegArgs =
-            outputs.length === 1
-              ? buildSingleVideoArgs({
-                  sourcePath,
-                  outputPath: outputs[0]!.outputPath,
-                  startSec: clipStartSec,
-                  endSec: clipEndSec,
-                  aspectRatio: outputs[0]!.aspectRatio,
-                  probe,
-                  srtPath: outputs[0]!.subtitlePath ?? srtPath,
-                  captionPreset,
-                  logo,
-                  reframe: outputs[0]!.reframe,
-                  composition: compositionPlan
-                    ? {
-                        plan: compositionPlan,
-                        targetId: outputs[0]!.clipRenderId,
-                      }
-                    : null,
-                  resolution: outputs[0]!.resolution,
-                  watermark: outputs[0]!.watermark,
-                })
-              : buildMultiVideoArgs({
-                  sourcePath,
-                  outputs,
-                  startSec: clipStartSec,
-                  endSec: clipEndSec,
-                  probe,
-                  srtPath,
-                  captionPreset,
-                  logo,
-                  composition: compositionPlan,
-                  watermark: outputs[0]!.watermark,
-                });
-
-          const encodeStartedAtMs = currentTimeMs();
-          await executeRenderCommandWithOptionalFallback({
-            primaryArgs: ffmpegArgs,
-            fallbackArgs:
-              logo
-                ? () =>
-                    outputs.length === 1
-                      ? buildSingleVideoArgs({
-                          sourcePath,
-                          outputPath: outputs[0]!.outputPath,
-                          startSec: clipStartSec,
-                          endSec: clipEndSec,
-                          aspectRatio: outputs[0]!.aspectRatio,
-                          probe,
-                          srtPath: outputs[0]!.subtitlePath ?? srtPath,
-                          captionPreset,
-                          logo: null,
-                          reframe: outputs[0]!.reframe,
-                          composition: compositionPlan
-                            ? {
-                                plan: compositionPlan,
-                                targetId: outputs[0]!.clipRenderId,
-                              }
-                            : null,
-                          resolution: outputs[0]!.resolution,
-                          watermark: outputs[0]!.watermark,
-                        })
-                      : buildMultiVideoArgs({
-                          sourcePath,
-                          outputs,
-                          startSec: clipStartSec,
-                          endSec: clipEndSec,
-                          probe,
-                          srtPath,
-                          captionPreset,
-                          logo: null,
-                          composition: compositionPlan,
-                          watermark: outputs[0]!.watermark,
-                        })
-                : undefined,
-            optionalAssets: optionalCommandAssets.filter(
-              ({ assetClass }) => assetClass === "logo",
-            ),
-            context: { workflowRunId: run.id, clipId: clip.id },
-          });
-          const sharedEncodeMs = currentTimeMs() - encodeStartedAtMs;
-
-          // Bounded background uploads — per-output failure marking (the
-          // former inline try/catch here) lives in `scheduleUpload`.
-          for (const output of outputs) {
-            scheduleUpload(output, {
-              clipDurationSec,
-              encodeMs: sharedEncodeMs,
-            });
-          }
-        } catch (error) {
-          rethrowWorkflowAttemptLost(error);
-          rethrowRenderCancellation(error);
-          const errorCode =
-            error instanceof WorkflowFailure
-              ? error.code
-              : "ffmpeg_render_failed";
-
-          await Promise.all(
-            outputs.map((output) =>
-              currentRenderAdapters().clip.failClipRenderVariant(
-                output.clipRenderId,
-                errorCode,
-                error instanceof WorkflowFailure
-                  ? error.disposition
-                  : "retryable",
-              ),
-            ),
-          );
-
-          log("error", "clip_render_group_failed", {
-            workflowRunId: run.id,
-            clipId: clip.id,
-            clipIndex: clip.index,
-            aspectRatios: outputs.map((output) => output.aspectRatio),
-            code: errorCode,
-            message:
-              error instanceof Error ? error.message : "Unknown render error",
-          });
         }
       }
 

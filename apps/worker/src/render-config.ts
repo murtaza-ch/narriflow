@@ -19,23 +19,14 @@ export interface RenderConfig {
   readonly reframeModelPath: string;
   readonly reframeSampleFps: number;
   readonly reframeSceneThreshold: number;
-  readonly autoReframeEnabled: boolean;
   readonly layoutEngineEnabled: boolean;
   readonly screenLayoutEnabled: boolean;
   readonly splitEnabled: boolean;
-  readonly pipDetectEnabled: boolean;
   readonly pipMotionThreshold: number;
   readonly brollEnabled: boolean;
   readonly brollAssetCacheTtlMs: number;
   readonly pexelsConfigured: boolean;
-  readonly compositionCenter: CompositionPlanControlMode;
-  readonly compositionFit: CompositionPlanControlMode;
-  readonly compositionAuto: CompositionPlanControlMode;
-  readonly compositionSplit: CompositionPlanControlMode;
-  readonly compositionScreen: CompositionPlanControlMode;
 }
-
-export type CompositionPlanControlMode = "legacy" | "shadow" | "plan";
 
 type RenderEnvironment = Record<string, string | undefined>;
 const X264_PRESETS = new Set([
@@ -83,17 +74,6 @@ function featureEnabled(environment: RenderEnvironment, name: string): boolean {
 
 function explicitlyEnabled(environment: RenderEnvironment, name: string): boolean {
   return binaryFlag(environment, name, false);
-}
-
-function compositionPlanControl(
-  environment: RenderEnvironment,
-  name: string,
-): CompositionPlanControlMode {
-  const value = environment[name]?.trim() || "shadow";
-  if (value === "legacy" || value === "shadow" || value === "plan") {
-    return value;
-  }
-  throw new Error(`${name} must be one of legacy, shadow, plan`);
 }
 
 export function parseRenderConfig(
@@ -218,23 +198,13 @@ export function parseRenderConfig(
       4,
     ),
     reframeSceneThreshold,
-    autoReframeEnabled: featureEnabled(environment, "WORKER_AUTO_REFRAME"),
     layoutEngineEnabled: featureEnabled(environment, "WORKER_LAYOUT_ENGINE"),
     screenLayoutEnabled: featureEnabled(environment, "WORKER_SCREEN_LAYOUT"),
     splitEnabled: featureEnabled(environment, "WORKER_SPLIT"),
-    pipDetectEnabled: featureEnabled(environment, "WORKER_PIP_DETECT"),
     pipMotionThreshold,
     brollEnabled: featureEnabled(environment, "WORKER_BROLL"),
     brollAssetCacheTtlMs,
     pexelsConfigured: Boolean(environment.PEXELS_API_KEY?.trim()),
-    compositionCenter: compositionPlanControl(
-      environment,
-      "WORKER_COMPOSITION_CENTER",
-    ),
-    compositionFit: compositionPlanControl(environment, "WORKER_COMPOSITION_FIT"),
-    compositionAuto: compositionPlanControl(environment, "WORKER_COMPOSITION_AUTO"),
-    compositionSplit: compositionPlanControl(environment, "WORKER_COMPOSITION_SPLIT"),
-    compositionScreen: compositionPlanControl(environment, "WORKER_COMPOSITION_SCREEN"),
   });
 }
 

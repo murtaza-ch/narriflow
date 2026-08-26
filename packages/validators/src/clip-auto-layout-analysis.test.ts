@@ -1,7 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import {
   clipAutoLayoutAnalysisSchema,
+  clipSplitLayoutAnalysisSchema,
+  clipSplitLayoutFailureSchema,
   parseClipSplitLayoutAnalysis,
+  parseClipSplitLayoutFailure,
   clipAutoLayoutMatchesInputs,
   parseClipAutoLayoutAnalysis,
   type ClipAutoLayoutAnalysis,
@@ -10,6 +13,7 @@ import {
 const valid: ClipAutoLayoutAnalysis = {
   version: 1,
   engine: "shot-layout-v1",
+  sourceIdentity: "source:project-1",
   analyzedAtISO: "2026-08-10T12:00:00.000Z",
   clipStartSec: 10,
   clipEndSec: 30,
@@ -47,9 +51,10 @@ describe("clipAutoLayoutAnalysisSchema", () => {
     expect(clipAutoLayoutAnalysisSchema.parse(valid)).toEqual(valid);
   });
 
-  test("keeps explicit Split evidence distinguishable from Automatic evidence", () => {
+  test("enforces isolated Automatic and Split evidence schemas", () => {
     const explicitSplit = { ...valid, engine: "explicit-split-v1" as const };
-    expect(clipAutoLayoutAnalysisSchema.parse(explicitSplit)).toEqual(
+    expect(clipAutoLayoutAnalysisSchema.safeParse(explicitSplit).success).toBe(false);
+    expect(clipSplitLayoutAnalysisSchema.parse(explicitSplit)).toEqual(
       explicitSplit,
     );
     expect(
@@ -60,6 +65,20 @@ describe("clipAutoLayoutAnalysisSchema", () => {
     ).toBe(false);
     expect(parseClipSplitLayoutAnalysis(explicitSplit)).toEqual(explicitSplit);
     expect(parseClipSplitLayoutAnalysis(valid)).toBeNull();
+  });
+
+  test("parses identity-bound Split failures without treating them as analysis", () => {
+    const failure = clipSplitLayoutFailureSchema.parse({
+      version: 1,
+      engine: "explicit-split-v1",
+      state: "failed",
+      sourceIdentity: "source:project-1",
+      inputFingerprint: "0123456789abcdef",
+      analyzedAtISO: "2026-08-27T00:00:00.000Z",
+      reason: "detection_unavailable",
+    });
+    expect(parseClipSplitLayoutFailure(failure)).toEqual(failure);
+    expect(parseClipSplitLayoutAnalysis(failure)).toBeNull();
   });
 
   test("rejects gaps, overlap, and incomplete duration coverage", () => {
@@ -80,6 +99,9 @@ describe("clipAutoLayoutAnalysisSchema", () => {
       }).success,
     ).toBe(false);
     expect(parseClipAutoLayoutAnalysis({ ...valid, version: 2 })).toBeNull();
+    const identityless: Record<string, unknown> = { ...valid };
+    delete identityless.sourceIdentity;
+    expect(parseClipAutoLayoutAnalysis(identityless)).toBeNull();
   });
 });
 

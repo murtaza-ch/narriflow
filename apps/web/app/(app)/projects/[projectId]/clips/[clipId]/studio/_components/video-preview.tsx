@@ -7,9 +7,10 @@ import {
   automaticLayoutInputFingerprint,
   compositionAssetRef,
   planClipComposition,
+  screenLayoutInputFingerprint,
   splitLayoutInputFingerprint,
   type CompositionBackgroundLayer,
-  type CompositionRect,
+  type CompositionBrollVideoLayer,
   type CompositionSourceVideoLayer,
 } from "@narriflow/composition-plan";
 import {
@@ -32,7 +33,6 @@ import {
   resolveEffectiveFramingMode,
   resolveEffectiveLogoSettings,
   resolveMusicFadeWindows,
-  resolveSpeakerLayoutScene,
   speakerLayoutOverrideFromScene,
   type DuckingWindow,
   type LogoPosition,
@@ -46,11 +46,8 @@ import { InteractiveCaptionOverlay } from "./interactive-caption-overlay";
 import { InteractiveTextLayer } from "./interactive-text-layer";
 import { SfxPreviewTrack } from "./sfx-preview-track";
 import { SplitSecondaryTile, type SplitSecondaryTileCropRect } from "./split-secondary-tile";
-import { fitPipCropToTileNormalized, pipCropTooSmallNormalized } from "./pip-crop-math";
-import type { NormalizedCropRect } from "./pip-crop-math";
+import type { NormalizedCropRect } from "./normalized-crop";
 import {
-  activeAutoLayoutSegment,
-  autoLayoutSegmentsForAspect,
   resetSpeakerLayerTransform,
   speakerLayerCropRect,
 } from "./auto-layout-preview";
@@ -62,90 +59,15 @@ import {
   type ManualBrollPreviewWindow,
 } from "./broll-preview";
 import {
-  adoptCompositionPreview,
+  adoptCompositionPreviewResult,
+  compositionNoticeText,
+  manualBrollAvailabilityForPlan,
   plannedCompositionFrameStyle,
   plannedCompositionSourceDimensions,
   plannedCompositionUsesStackedStage,
   plannedCompositionVideoStyle,
 } from "./composition-preview-adapter";
-import {
-  compositionPlanControl,
-  shouldAdoptCompositionPlan,
-} from "./composition-plan-control";
-
-/** `screenTileGeometry`'s `tileWidth` (apps/worker/src/tasks/screen-layout.ts)
- *  is just the target aspect ratio's own output WIDTH — mirrored here from
- *  `clipAspectRatioOptions` (validators) rather than re-deriving it, so H1's
- *  `pipCropTooSmallNormalized` check compares against the exact same number
- *  the render pipeline's `pip_too_small` gate does (e.g. 1080 for 9:16, 1920
- *  for 16:9), not the preview container's own CSS pixel width. */
-const OUTPUT_TILE_WIDTH_PX: Record<AspectRatio, number> = Object.fromEntries(
-  clipAspectRatioOptions.map((option) => [option.value, option.width]),
-) as Record<AspectRatio, number>;
-
-/** Shadow-only projection of the browser's established object-fit geometry.
- * It never drives rendering; it gives rollout diagnostics an independent
- * legacy value to compare with the planned crop and destination. */
-function legacyObjectFitGeometry(input: {
-  source: { width: number; height: number };
-  target: { width: number; height: number };
-  fit: "cover" | "contain";
-}): { sourceCrop: CompositionRect; destination: CompositionRect } {
-  const { source, target } = input;
-  if (input.fit === "contain") {
-    const scale = Math.min(
-      target.width / source.width,
-      target.height / source.height,
-    );
-    const width = Math.min(
-      target.width,
-      Math.max(2, Math.round((source.width * scale) / 2) * 2),
-    );
-    const height = Math.min(
-      target.height,
-      Math.max(2, Math.round((source.height * scale) / 2) * 2),
-    );
-    return {
-      sourceCrop: { x: 0, y: 0, width: source.width, height: source.height },
-      destination: {
-        x: Math.round((target.width - width) / 2),
-        y: Math.round((target.height - height) / 2),
-        width,
-        height,
-      },
-    };
-  }
-  const sourceRatio = source.width / source.height;
-  const targetRatio = target.width / target.height;
-  const width =
-    sourceRatio >= targetRatio
-      ? Math.round(source.height * targetRatio)
-      : source.width;
-  const height =
-    sourceRatio >= targetRatio
-      ? source.height
-      : Math.round(source.width / targetRatio);
-  return {
-    sourceCrop: {
-      x: Math.max(0, Math.round((source.width - width) / 2)),
-      y: Math.max(0, Math.round((source.height - height) / 2)),
-      width,
-      height,
-    },
-    destination: { x: 0, y: 0, width: target.width, height: target.height },
-  };
-}
-
-function rectsDiffer(
-  left: CompositionRect | null,
-  right: CompositionRect | null,
-  epsilon = 1,
-): boolean {
-  if (!left || !right) return left !== right;
-  return (["x", "y", "width", "height"] as const).some(
-    (key) => Math.abs(left[key] - right[key]) > epsilon,
-  );
-}
+import { compositionCapabilities } from "./composition-capabilities";
 
 /** After this long with no metadata yet, hint that the source is just large. */
 const SLOW_LOAD_HINT_MS = 10_000;
@@ -308,6 +230,7 @@ function BrollPreviewLayer({
   currentTime,
   isPlaying,
   onDuration,
+  onAvailabilityChange,
 }: {
   src: string;
   poster: string | null;
@@ -315,6 +238,7 @@ function BrollPreviewLayer({
   currentTime: number;
   isPlaying: boolean;
   onDuration: (durationSec: number) => void;
+  onAvailabilityChange: (state: "available" | "failed") => void;
 }) {
   const ref = useRef<HTMLVideoElement>(null);
   const localTime = brollPreviewLocalTime(currentTime, window);
@@ -359,6 +283,7 @@ function BrollPreviewLayer({
         playsInline
         preload="metadata"
         onLoadedMetadata={(event) => {
+          onAvailabilityChange("available");
           const durationSec = event.currentTarget.duration;
           if (Number.isFinite(durationSec) && durationSec > 0) {
             onDuration(durationSec);
@@ -368,6 +293,7 @@ function BrollPreviewLayer({
             Math.max(0, durationSec - 0.05),
           );
         }}
+        onError={() => onAvailabilityChange("failed")}
         style={{
           width: "100%",
           height: "100%",
@@ -432,10 +358,11 @@ export function VideoPreview() {
     brandLogo,
     utterances,
     layoutAnalysis,
+    layoutAnalysisFailure,
     autoLayoutAnalysis,
     splitLayoutAnalysis,
+    splitLayoutFailure,
     autoLayoutAnalysisStatus,
-    clipWindow,
   } = useStudio();
 
   // Effective logo settings for THIS clip — studioEdits.logo overrides
@@ -461,19 +388,12 @@ export function VideoPreview() {
   const [retryNonce, setRetryNonce] = useState(0);
   const [currentTime, setCurrentTime] = useState(() => playbackClock.getSnapshot());
   const [previewWidth, setPreviewWidth] = useState(0);
-  // Screen packet C (PiP persistence — preview true facecam crop): the
-  // video container box's own rendered HEIGHT, tracked alongside
-  // `previewWidth` by the same ResizeObserver below. Needed (previewWidth
-  // alone wasn't) to derive the screen framing bottom tile's own CSS box
-  // (half that height, full that width) for `fitPipCropToTileNormalized`'s
-  // `tileRatio` and `SplitSecondaryTileCropRect`'s `tileHeightPx`.
+  // The rendered preview height is needed to map plan destinations to CSS.
   const [previewHeight, setPreviewHeight] = useState(0);
   const [selectedSpeakerRole, setSelectedSpeakerRole] =
     useState<SpeakerLayerRole | null>(null);
-  // Screen packet C: the SOURCE video's own pixel dimensions, captured once
-  // from `videoRef`'s `loadedmetadata` event (see the load effect below) —
-  // `fitPipCropToTileNormalized`'s `probe` argument, matching the worker's
-  // `detectPipPath` probe (`ffprobe`'s own reported source dimensions).
+  // Source dimensions are captured from loadedmetadata and feed the same
+  // plan geometry used by export.
   // Null until the main video has loaded metadata at least once; a source
   // switch (proxy <-> full source) reloads it from the SAME physical
   // source file, so the value doesn't need to be invalidated on that
@@ -524,6 +444,21 @@ export function VideoPreview() {
   const arConfig = ASPECT_RATIO_CONFIG[aspectRatio];
   const activeBrollAsset =
     brollPreviewAsset?.url === brollUrl ? brollPreviewAsset : null;
+  const [brollMediaProbe, setBrollMediaProbe] = useState<{
+    url: string | null;
+    state: "pending" | "available" | "failed";
+  }>({ url: null, state: "pending" });
+  const brollMediaState = !brollUrl
+    ? "missing"
+    : brollMediaProbe.url === brollUrl
+      ? brollMediaProbe.state
+      : "pending";
+  const handleBrollAvailability = useCallback(
+    (state: "available" | "failed") => {
+      if (brollUrl) setBrollMediaProbe({ url: brollUrl, state });
+    },
+    [brollUrl],
+  );
   const brollWindow = useMemo(
     () =>
       brollUrl
@@ -531,7 +466,6 @@ export function VideoPreview() {
         : null,
     [activeBrollAsset?.durationSec, brollUrl, duration],
   );
-  const brollActive = isBrollPreviewActive(currentTime, brollWindow);
   const handleBrollDuration = useCallback(
     (durationSec: number) => {
       if (!brollUrl) return;
@@ -551,7 +485,7 @@ export function VideoPreview() {
   // mode (resolveEffectiveFramingMode, shared with the Layout panel and the
   // worker's render pipeline) resolves to "fit", the video letterboxes and
   // a solid color or image fills the empty frame behind it, mirroring the
-  // worker's buildFitAndBackgroundFilter exactly (scale-to-contain,
+  // worker composition compiler exactly (scale-to-contain,
   // centered). When a persisted auto-layout plan is available, "auto" uses
   // the exact analyzed crop below. Pending/failed analysis and explicit
   // center mode fall back to the existing single-video behavior, so
@@ -598,6 +532,22 @@ export function VideoPreview() {
     "source",
     clipInfo.projectId,
   );
+  const splitEngineVersion = "explicit-split-v1";
+  const screenEngineVersion = "screen-layout-v1";
+  const splitFingerprint = splitLayoutInputFingerprint({
+    sourceIdentity: compositionSourceIdentity,
+    clipStartSec: editorDocument.clipStartSec,
+    clipEndSec: editorDocument.clipEndSec,
+    deletedRanges: editorDocument.deletedRanges,
+    engineVersion: splitEngineVersion,
+  });
+  const screenFingerprint = screenLayoutInputFingerprint({
+    sourceIdentity: compositionSourceIdentity,
+    clipStartSec: editorDocument.clipStartSec,
+    clipEndSec: editorDocument.clipEndSec,
+    deletedRanges: editorDocument.deletedRanges,
+    engineVersion: screenEngineVersion,
+  });
   const eligibleAutoLayoutAnalysis =
     autoLayoutAnalysis?.sourceIdentity === compositionSourceIdentity
       ? autoLayoutAnalysis
@@ -606,18 +556,25 @@ export function VideoPreview() {
     eligibleAutoLayoutAnalysis?.engine === "shot-layout-v1"
       ? eligibleAutoLayoutAnalysis
       : null;
-  const legacySplitLayoutAnalysis =
-    eligibleAutoLayoutAnalysis?.engine === "explicit-split-v1"
-      ? eligibleAutoLayoutAnalysis
-      : null;
   const eligibleSplitLayoutAnalysis =
     splitLayoutAnalysis?.sourceIdentity === compositionSourceIdentity
       ? splitLayoutAnalysis
-      : legacySplitLayoutAnalysis;
+      : null;
   const exactScreenLayoutAnalysis =
     layoutAnalysis?.version === 2 &&
-    layoutAnalysis.sourceIdentity === compositionSourceIdentity
+    layoutAnalysis.sourceIdentity === compositionSourceIdentity &&
+    layoutAnalysis.inputFingerprint === screenFingerprint
       ? layoutAnalysis
+      : null;
+  const exactSplitLayoutFailure =
+    splitLayoutFailure?.sourceIdentity === compositionSourceIdentity &&
+    splitLayoutFailure.inputFingerprint === splitFingerprint
+      ? splitLayoutFailure
+      : null;
+  const exactScreenLayoutFailure =
+    layoutAnalysisFailure?.sourceIdentity === compositionSourceIdentity &&
+    layoutAnalysisFailure.inputFingerprint === screenFingerprint
+      ? layoutAnalysisFailure
       : null;
   const compositionSourceDims = useMemo(() => {
     if (!sourceDims) return null;
@@ -641,8 +598,6 @@ export function VideoPreview() {
       (option) => option.value === aspectRatio,
     );
     if (!target) return null;
-    const splitEngineVersion = "explicit-split-v1";
-    const screenEngineVersion = "screen-layout-v1";
     return planClipComposition({
       document: editorDocument,
       source: {
@@ -652,7 +607,7 @@ export function VideoPreview() {
         height: compositionSourceDims.height,
       },
       evidence: {
-        automaticLayout: !compositionPlanControl.automaticSpeakerLayoutEnabled
+        automaticLayout: !compositionCapabilities.automaticSpeakerLayoutEnabled
           ? { state: "disabled" }
           : automaticLayoutAnalysis
             ? {
@@ -692,6 +647,8 @@ export function VideoPreview() {
                 fallbackSegments: eligibleSplitLayoutAnalysis.noSplitSegments,
               },
             }
+          : exactSplitLayoutFailure
+            ? { state: "failed", reason: exactSplitLayoutFailure.reason }
           : {
               state: "missing",
             },
@@ -724,18 +681,32 @@ export function VideoPreview() {
                       }
                     : { state: "unavailable" },
                 },
-              }
-            : { state: "missing" },
+            }
+            : exactScreenLayoutFailure
+              ? { state: "failed", reason: exactScreenLayoutFailure.reason }
+              : { state: "missing" },
       },
-      assets: { backgroundImage: backgroundImageAvailability },
+      assets: {
+        backgroundImage: backgroundImageAvailability,
+        ...(brollUrl
+          ? {
+              broll: manualBrollAvailabilityForPlan({
+                url: brollUrl,
+                ref: compositionAssetRef("broll", brollUrl),
+                window: brollWindow,
+                mediaState: brollMediaState,
+              }),
+            }
+          : {}),
+      },
       capabilities: {
         automaticSpeakerLayout:
-          compositionPlanControl.automaticSpeakerLayoutEnabled,
+          compositionCapabilities.automaticSpeakerLayoutEnabled,
         automaticSpeakerEngineVersion: "shot-layout-v1",
         explicitSplitLayout:
-          compositionPlanControl.explicitSplitLayoutEnabled,
+          compositionCapabilities.explicitSplitLayoutEnabled,
         splitEngineVersion,
-        screenLayout: compositionPlanControl.screenLayoutEnabled,
+        screenLayout: compositionCapabilities.screenLayoutEnabled,
         screenEngineVersion,
       },
       targets: [
@@ -753,33 +724,23 @@ export function VideoPreview() {
     compositionSourceIdentity,
     editorDocument,
     automaticLayoutAnalysis,
+    brollUrl,
+    brollMediaState,
+    brollWindow,
     eligibleSplitLayoutAnalysis,
     autoLayoutAnalysisStatus,
     exactScreenLayoutAnalysis,
+    exactScreenLayoutFailure,
+    exactSplitLayoutFailure,
     compositionSourceDims,
   ]);
   const compositionPreview = useMemo(() => {
-    if (
-      !compositionPlanResult ||
-      compositionPlanResult.status === "invalid" ||
-      (editorDocument.brollUrl &&
-        (effectiveFramingMode === "split" || effectiveFramingMode === "screen")) ||
-      !shouldAdoptCompositionPlan(effectiveFramingMode)
-    ) {
-      return null;
-    }
-    return adoptCompositionPreview(
-      compositionPlanResult.plan,
+    return adoptCompositionPreviewResult(
+      compositionPlanResult,
       aspectRatio,
       currentTime,
     );
-  }, [
-    aspectRatio,
-    compositionPlanResult,
-    currentTime,
-    editorDocument.brollUrl,
-    effectiveFramingMode,
-  ]);
+  }, [aspectRatio, compositionPlanResult, currentTime]);
   const plannedSourceLayers = useMemo(
     () =>
       compositionPreview?.layers.filter(
@@ -791,68 +752,33 @@ export function VideoPreview() {
   const plannedBackgroundLayer = compositionPreview?.layers.find(
     (layer): layer is CompositionBackgroundLayer => layer.kind === "background",
   );
+  const plannedBrollLayer = compositionPreview?.layers.find(
+    (layer): layer is CompositionBrollVideoLayer =>
+      layer.kind === "broll-video",
+  );
+  const activeBrollWindow = plannedBrollLayer?.activeRange ?? brollWindow;
+  const brollActive = plannedBrollLayer
+    ? true
+    : compositionPreview
+      ? false
+      : isBrollPreviewActive(currentTime, brollWindow);
   const plannedSourceDims = compositionPlanResult?.status === "invalid"
     ? null
     : compositionPlanResult?.plan.source ?? null;
   const compositionNotice = compositionPreview?.notices[0] ?? null;
-  const compositionNoticeText =
-    compositionNotice?.code === "background_image_pending"
-      ? "Checking background image…"
-      : compositionNotice?.code === "background_image_unavailable"
-        ? "Background image unavailable. Using the selected color."
-        : compositionNotice?.code === "automatic_layout_analyzing"
-          ? "Analyzing speakers… Center framing is shown for now."
-          : compositionNotice?.code === "automatic_layout_disabled"
-            ? "Automatic speaker layout is disabled. Using Center."
-            : compositionNotice?.code === "automatic_layout_unavailable"
-              ? "Speaker analysis unavailable. Using Center."
-              : compositionNotice?.code === "split_layout_analyzing"
-                ? "Analyzing speakers… Center framing is shown for now."
-                : compositionNotice?.code === "split_layout_disabled"
-                  ? "Split analysis is disabled. Using single-speaker framing."
-                  : compositionNotice?.code === "split_target_ineligible"
-                    ? "Split is unavailable for this format. Using single-speaker framing."
-                    : compositionNotice?.code === "split_no_two_up_scenes"
-                      ? "Two stable speakers were not found. Using single-speaker framing."
-                      : compositionNotice?.code === "split_layout_unavailable"
-                        ? "Split analysis is unavailable. Using Center."
-                        : compositionNotice?.code === "screen_layout_analyzing"
-                          ? "Analyzing screen layout… A centered speaker tile is shown for now."
-                          : compositionNotice?.code === "screen_layout_disabled"
-                            ? "Screen layout is disabled. Using Center."
-                            : compositionNotice?.code === "screen_pip_too_small"
-                              ? "The facecam is too small for this format. Using the speaker fallback."
-                              : compositionNotice?.code === "screen_face_band_fallback"
-                                ? "Using the detected speaker band."
-                                : compositionNotice?.code === "screen_static_center_fallback"
-                                  ? "Speaker tracking is unavailable. Using a centered speaker tile."
-                                  : null;
+  const compositionNoticeTextValue = compositionNoticeText(
+    compositionNotice?.code,
+  );
   const backgroundActive = effectiveFramingMode === "fit";
   // resolveEffectiveFramingMode makes background and split/screen mutually
   // exclusive (background always wins as "fit"), so `isSplit`/`isScreen`
   // only ever read true here while `backgroundActive` is false — never read
   // `studioEdits.framing.mode` directly, per the panel/schema doc comments.
-  // Screen packet C: "screen" gets its own two-tile stage, analogous to
-  // split's, but with different framing per tile — TOP is the full source
-  // frame letterboxed uncropped (object-fit: contain, black backdrop, same
-  // as a plain "fit" letterbox) rather than split's cropped-to-fill top
-  // tile, and BOTTOM is the facecam picture-in-picture crop. PiP persistence
-  // packet C: once the worker's analysis pass (packet B) has run and
-  // persisted a `pipRect` for this clip, the bottom tile shows that TRUE
-  // facecam crop (see `screenBottomCropRect` below) — matching the render's
-  // own framing exactly, not approximating it. Only falls back to a static
-  // center crop (no face detection client-side) when no analysis has landed
-  // yet or none qualified, same "render is the source of truth" stance split
-  // keeps for its fixed left/right seats — see `SplitSecondaryTile`'s
-  // `objectFit`/`objectPosition` (fallback) vs. `cropRect` (true crop) props
-  // further down.
-  const isSplit = compositionPreview
-    ? compositionPreview.effectiveMode === "split" &&
-      plannedCompositionUsesStackedStage(compositionPreview)
-    : effectiveFramingMode === "split";
-  const isScreen = compositionPreview
-    ? compositionPreview.effectiveMode === "screen"
-    : effectiveFramingMode === "screen";
+  const isSplit = Boolean(
+    compositionPreview?.effectiveMode === "split" &&
+      plannedCompositionUsesStackedStage(compositionPreview),
+  );
+  const isScreen = compositionPreview?.effectiveMode === "screen";
   const plannedSpeakerScene = useMemo<ResolvedSpeakerLayoutScene | null>(() => {
     if (
       (compositionPreview?.requestedMode !== "auto" &&
@@ -872,32 +798,7 @@ export function VideoPreview() {
       overrideId: plannedSourceLayers[0]!.speaker!.overrideId,
     };
   }, [compositionPreview, plannedSourceLayers]);
-  const legacyAutoSegments = useMemo(
-    () =>
-      compositionPlanControl.auto !== "plan" &&
-      effectiveFramingMode === "auto" &&
-      automaticLayoutAnalysis &&
-      sourceDims
-        ? autoLayoutSegmentsForAspect(automaticLayoutAnalysis, aspectRatio, sourceDims)
-        : [],
-    [aspectRatio, automaticLayoutAnalysis, effectiveFramingMode, sourceDims],
-  );
-  const legacyActiveAutoSegment = useMemo(
-    () => activeAutoLayoutSegment(legacyAutoSegments, currentTime),
-    [currentTime, legacyAutoSegments],
-  );
-  const legacySpeakerScene = useMemo(
-    () =>
-      legacyActiveAutoSegment
-        ? resolveSpeakerLayoutScene(
-            legacyActiveAutoSegment,
-            studioEdits.speakerLayoutOverrides,
-            aspectRatio,
-          )
-        : null,
-    [aspectRatio, legacyActiveAutoSegment, studioEdits.speakerLayoutOverrides],
-  );
-  const activeSpeakerScene = plannedSpeakerScene ?? legacySpeakerScene;
+  const activeSpeakerScene = plannedSpeakerScene;
   const activeSpeakerSceneKey = activeSpeakerScene
     ? `${aspectRatio}:${activeSpeakerScene.startSec.toFixed(3)}:${activeSpeakerScene.endSec.toFixed(3)}:${activeSpeakerScene.layout}`
     : null;
@@ -969,19 +870,14 @@ export function VideoPreview() {
     setStudioEdits((previous) => {
       if (!activeSpeakerScene.overrideId) return previous;
 
-      const defaults =
-        plannedSourceLayers.length > 0
-          ? {
-              ...activeSpeakerScene,
-              overrideId: null,
-              layers: plannedSourceLayers.map((layer) => ({
-                ...layer.speaker!.defaultTransform,
-              })),
-            }
-          : legacyActiveAutoSegment
-            ? resolveSpeakerLayoutScene(legacyActiveAutoSegment, [], aspectRatio)
-            : null;
-      if (!defaults) return previous;
+      if (plannedSourceLayers.length === 0) return previous;
+      const defaults = {
+        ...activeSpeakerScene,
+        overrideId: null,
+        layers: plannedSourceLayers.map((layer) => ({
+          ...layer.speaker!.defaultTransform,
+        })),
+      };
       const reset = resetSpeakerLayerTransform(
         activeSpeakerScene.layers,
         defaults.layers,
@@ -1009,7 +905,7 @@ export function VideoPreview() {
       };
     });
     endCoalesce();
-  }, [activeSpeakerScene, aspectRatio, endCoalesce, legacyActiveAutoSegment, plannedSourceLayers, setStudioEdits]);
+  }, [activeSpeakerScene, aspectRatio, endCoalesce, plannedSourceLayers, setStudioEdits]);
 
   const autoTwoUp = activeSpeakerScene?.layout === "two-up";
   const isStacked = isSplit || isScreen || autoTwoUp;
@@ -1382,82 +1278,6 @@ export function VideoPreview() {
     };
   }, [aspectRatio, autoBottomLayer, compositionPreview, plannedBottomSourceLayer, plannedSourceDims, previewHeight, previewWidth, sourceDims]);
 
-  // Screen packet C (PiP persistence — preview true facecam crop): once the
-  // worker's analysis pass has run AND that render's own `decidePipUsage`
-  // gate chain actually confirmed the rect (`layoutAnalysis.pipUsable ===
-  // true` — C1, adversarial review), the screen bottom tile shows the TRUE
-  // facecam crop instead of guessing a face-centered band. A non-null
-  // `pipRect` alone is NOT sufficient: it's the PRE-GATE `selectPipRect`
-  // output and can be a measured false positive the render itself rejected
-  // (`face_not_in_rect`, `not_screencast_like`, etc.) — showing it
-  // unconditionally would confidently render exactly the false positive the
-  // render pipeline was built to catch. `null` (no analysis yet, analyzed-
-  // but-not-usable, the envelope's window no longer matches this clip's
-  // current boundaries — H2 below, not screen mode, the crop would be too
-  // narrow to be worth it — H1 below, or the source/tile dimensions aren't
-  // measured yet) means "nothing to show" — `SplitSecondaryTile` falls back
-  // to exactly today's static `"50% 50%"` center-cover crop for that case,
-  // so every one of those states degrades safely rather than rendering a
-  // broken/blank tile.
-  //
-  // Render-is-truth note (screen packet C): previously ANY screen clip's
-  // bottom tile was an approximation (static center, no face tracking
-  // client-side) — the render pipeline was always the source of truth for
-  // exact facecam framing. With a persisted, `pipUsable` PiP crop, the
-  // preview and the render now agree (both run `fitPipCropToTile`/
-  // `fitPipCropToTileNormalized` against the same rect and the same output
-  // tile ratio) — divergence from here on is narrower and is spelled out in
-  // full on `StudioContextValue.layoutAnalysis`'s own doc comment
-  // (studio-shell.tsx): in-session staleness (a render that runs WHILE this
-  // studio session is open updates the DB but not this already-fetched
-  // context value until a refetch), and a genuinely PER-RENDER face-gate
-  // outcome that can differ from what was true when this envelope was
-  // written (rare — `faceConfirmed` is recomputed fresh every render, not
-  // cached, so a persisted `pipUsable: true` is a snapshot of ONE past
-  // render's outcome, not a permanent guarantee).
-  const tileWidthPx = previewWidth;
-  const tileHeightPx = previewHeight / 2;
-  const screenBottomCropRect: SplitSecondaryTileCropRect | null = useMemo(() => {
-    if (!isScreen) return null;
-    // C1 (adversarial review): gate on `pipUsable`, never on `pipRect`'s
-    // nullness alone — see this memo's own doc comment above.
-    if (!layoutAnalysis || layoutAnalysis.pipUsable !== true) return null;
-    const pipRect = layoutAnalysis.pipRect;
-    if (!pipRect) return null;
-    // H2 (adversarial review): the envelope's raw `clipStartSec`/`clipEndSec`
-    // must still match this clip's CURRENT boundary window — same "the
-    // window mismatch IS the invalidation" contract render-clips.ts's
-    // `layoutAnalysisMatchesWindow` gives the render path, just checked
-    // against the studio's own `clipWindow` (the raw window this session
-    // knows about) since the client has no way to recompute
-    // `resolveRenderTimingForClip`'s snapping. A trim since this analysis
-    // was written must never show a crop measured against footage that's no
-    // longer this clip's boundaries.
-    const WINDOW_MATCH_EPSILON_SEC = 0.05;
-    if (
-      Math.abs(layoutAnalysis.clipStartSec - clipWindow.startSec) > WINDOW_MATCH_EPSILON_SEC ||
-      Math.abs(layoutAnalysis.clipEndSec - clipWindow.endSec) > WINDOW_MATCH_EPSILON_SEC
-    ) {
-      return null;
-    }
-    if (!sourceDims) return null;
-    if (tileWidthPx <= 0 || tileHeightPx <= 0) return null;
-    const tileRatio = tileWidthPx / tileHeightPx;
-    const fitted = fitPipCropToTileNormalized(pipRect, tileRatio, sourceDims);
-    if (!fitted) return null;
-    // H1 (adversarial review): client-side analogue of `decidePipUsage`'s
-    // per-output `pip_too_small` gate — compares the fitted crop's SOURCE-
-    // PIXEL width (not the tile's on-screen CSS width, which has no
-    // relationship to the render's actual output resolution) against the
-    // RENDER OUTPUT tile's own width for this clip's target aspect ratio.
-    if (
-      pipCropTooSmallNormalized(fitted.w, sourceDims.width, OUTPUT_TILE_WIDTH_PX[aspectRatio])
-    ) {
-      return null;
-    }
-    return { ...fitted, tileWidthPx, tileHeightPx };
-  }, [isScreen, layoutAnalysis, sourceDims, tileWidthPx, tileHeightPx, clipWindow, aspectRatio]);
-
   const previewPhase: "generating" | "unavailable" | "loading" | "error" | "ready" =
     !previewVideoUrl && !useOriginalSourceFallback
       ? sourcePurged
@@ -1508,296 +1328,6 @@ export function VideoPreview() {
         )
       : null;
 
-  useEffect(() => {
-    if (
-      compositionPlanControl[effectiveFramingMode] !== "shadow" ||
-      !compositionPlanResult ||
-      compositionPlanResult.status === "invalid"
-    ) {
-      return;
-    }
-    const target = compositionPlanResult.plan.targets[0];
-    const plannedProjection = adoptCompositionPreview(
-      compositionPlanResult.plan,
-      aspectRatio,
-      legacyActiveAutoSegment?.startSec ?? 0,
-    );
-    const targetFacts = clipAspectRatioOptions.find(
-      (candidate) => candidate.value === aspectRatio,
-    );
-    if (!target || !targetFacts || !sourceDims) return;
-
-    const legacyEffectiveMode =
-      effectiveFramingMode === "auto"
-        ? legacyActiveAutoSegment
-          ? "auto"
-          : "center"
-        : effectiveFramingMode;
-    const legacyBounds = legacyActiveAutoSegment
-      ? {
-          startSec: legacyActiveAutoSegment.startSec,
-          endSec: legacyActiveAutoSegment.endSec,
-        }
-      : { startSec: 0, endSec: compositionPlanResult.plan.editedDurationSec };
-    const staticLegacyGeometry = legacyObjectFitGeometry({
-      source: sourceDims,
-      target: targetFacts,
-      fit: effectiveFramingMode === "fit" ? "contain" : "cover",
-    });
-    const stackedHeight = Math.round(targetFacts.height / 2);
-    const legacySplitCrop = legacyObjectFitGeometry({
-      source: sourceDims,
-      target: { width: targetFacts.width, height: stackedHeight },
-      fit: "cover",
-    }).sourceCrop;
-    const legacyScreenBottomCrop = screenBottomCropRect
-      ? {
-          x: Math.round(screenBottomCropRect.x * sourceDims.width),
-          y: Math.round(screenBottomCropRect.y * sourceDims.height),
-          width: Math.round(screenBottomCropRect.w * sourceDims.width),
-          height: Math.round(screenBottomCropRect.h * sourceDims.height),
-        }
-      : legacySplitCrop;
-    const legacySourceLayers =
-      effectiveFramingMode === "auto" && legacySpeakerScene
-        ? legacySpeakerScene.layers.map((layer, index) => {
-            const normalizedCrop = speakerLayerCropRect(
-              layer,
-              aspectRatio,
-              sourceDims,
-            );
-            const sourceCrop = normalizedCrop
-              ? {
-                  x: Math.round(normalizedCrop.x * sourceDims.width),
-                  y: Math.round(normalizedCrop.y * sourceDims.height),
-                  width: Math.round(normalizedCrop.w * sourceDims.width),
-                  height: Math.round(normalizedCrop.h * sourceDims.height),
-                }
-              : staticLegacyGeometry.sourceCrop;
-            return {
-              kind: "source-video" as const,
-              role: layer.role,
-              zIndex: index,
-              sourceCrop,
-              destination: {
-                x: Math.round(layer.frameX * targetFacts.width),
-                y: Math.round(layer.frameY * targetFacts.height),
-                width: Math.round(layer.frameWidth * targetFacts.width),
-                height: Math.round(layer.frameHeight * targetFacts.height),
-              },
-              rotationDeg: layer.rotationDeg,
-              backgroundColor: null,
-              backgroundImage: false,
-            };
-          })
-        : effectiveFramingMode === "split"
-          ? [
-              {
-                kind: "source-video" as const,
-                role: "top" as const,
-                zIndex: 0,
-                sourceCrop: { ...legacySplitCrop, x: 0 },
-                destination: {
-                  x: 0,
-                  y: 0,
-                  width: targetFacts.width,
-                  height: stackedHeight,
-                },
-                rotationDeg: 0,
-                backgroundColor: null,
-                backgroundImage: false,
-              },
-              {
-                kind: "source-video" as const,
-                role: "bottom" as const,
-                zIndex: 1,
-                sourceCrop: {
-                  ...legacySplitCrop,
-                  x: sourceDims.width - legacySplitCrop.width,
-                },
-                destination: {
-                  x: 0,
-                  y: stackedHeight,
-                  width: targetFacts.width,
-                  height: stackedHeight,
-                },
-                rotationDeg: 0,
-                backgroundColor: null,
-                backgroundImage: false,
-              },
-            ]
-          : effectiveFramingMode === "screen"
-            ? [
-                {
-                  kind: "source-video" as const,
-                  role: null,
-                  zIndex: 0,
-                  sourceCrop: {
-                    x: 0,
-                    y: 0,
-                    width: sourceDims.width,
-                    height: sourceDims.height,
-                  },
-                  destination: {
-                    x: 0,
-                    y: 0,
-                    width: targetFacts.width,
-                    height: stackedHeight,
-                  },
-                  rotationDeg: 0,
-                  backgroundColor: null,
-                  backgroundImage: false,
-                },
-                {
-                  kind: "source-video" as const,
-                  role: null,
-                  zIndex: 1,
-                  sourceCrop: legacyScreenBottomCrop,
-                  destination: {
-                    x: 0,
-                    y: stackedHeight,
-                    width: targetFacts.width,
-                    height: stackedHeight,
-                  },
-                  rotationDeg: 0,
-                  backgroundColor: null,
-                  backgroundImage: false,
-                },
-              ]
-            : [
-            {
-              kind: "source-video" as const,
-              role: null,
-              zIndex: effectiveFramingMode === "fit" ? 1 : 0,
-              sourceCrop: staticLegacyGeometry.sourceCrop,
-              destination: staticLegacyGeometry.destination,
-              rotationDeg: 0,
-              backgroundColor: null,
-              backgroundImage: false,
-            },
-            ];
-    const legacyLayers = [
-      ...(effectiveFramingMode === "fit"
-        ? [
-            {
-              kind: "background" as const,
-              role: null,
-              zIndex: 0,
-              sourceCrop: null,
-              destination: {
-                x: 0,
-                y: 0,
-                width: targetFacts.width,
-                height: targetFacts.height,
-              },
-              rotationDeg: 0,
-              backgroundColor: background.color ?? "#000000",
-              backgroundImage: Boolean(
-                background.mode === "image" && background.imageUrl,
-              ),
-            },
-          ]
-        : []),
-      ...legacySourceLayers,
-    ];
-    const plannedLayers = plannedProjection.layers.map((layer) => ({
-      kind: layer.kind,
-      role: layer.kind === "source-video" ? (layer.speaker?.role ?? null) : null,
-      zIndex: layer.zIndex,
-      sourceCrop: layer.kind === "source-video" ? layer.sourceCrop : null,
-      destination: layer.destination,
-      rotationDeg: layer.rotationDeg,
-      backgroundColor: layer.kind === "background" ? layer.color : null,
-      backgroundImage:
-        layer.kind === "background" ? Boolean(layer.imageRef) : false,
-    }));
-    const topology = (layers: typeof plannedLayers) =>
-      layers.map((layer) => `${layer.kind}:${layer.role ?? "none"}:${layer.zIndex}`);
-    const layerPairs = plannedLayers.map((layer, index) => ({
-      planned: layer,
-      legacy: legacyLayers[index] ?? null,
-    }));
-    const comparison = {
-      effectiveModeMismatch: target.effectiveMode !== legacyEffectiveMode,
-      sceneBoundsMismatch:
-        Math.abs(plannedProjection.sceneStartSec - legacyBounds.startSec) >
-          0.075 ||
-        Math.abs(plannedProjection.sceneEndSec - legacyBounds.endSec) > 0.075,
-      layerTopologyMismatch:
-        JSON.stringify(topology(plannedLayers)) !==
-        JSON.stringify(topology(legacyLayers)),
-      geometryMismatch:
-        plannedLayers.length !== legacyLayers.length ||
-        layerPairs.some(
-          ({ planned, legacy }) =>
-            !legacy ||
-            rectsDiffer(planned.sourceCrop, legacy.sourceCrop) ||
-            rectsDiffer(planned.destination, legacy.destination),
-        ),
-      rotationMismatch: layerPairs.some(
-        ({ planned, legacy }) =>
-          !legacy || Math.abs(planned.rotationDeg - legacy.rotationDeg) > 0.01,
-      ),
-      backgroundMismatch: layerPairs.some(
-        ({ planned, legacy }) =>
-          planned.kind === "background" &&
-          (!legacy ||
-            planned.backgroundColor !== legacy.backgroundColor ||
-            planned.backgroundImage !== legacy.backgroundImage),
-      ),
-      noticeMismatch: plannedProjection.notices.length > 0,
-    };
-    const mismatchCount = Object.values(comparison).filter(Boolean).length;
-    console.warn(
-      JSON.stringify({
-        level: "info",
-        message: "clip_composition_shadow",
-        adapter: "web",
-        planVersion: compositionPlanResult.plan.version,
-        planFingerprint: compositionPlanResult.plan.fingerprint,
-        requestedMode: effectiveFramingMode,
-        effectiveMode: target?.effectiveMode ?? null,
-        legacy: {
-          effectiveMode: legacyEffectiveMode,
-          sceneBounds: legacyBounds,
-          layers: legacyLayers,
-          noticeCodes: [],
-        },
-        comparison,
-        mismatchCount,
-        target: target?.aspectRatio ?? aspectRatio,
-        canvas: target?.canvas ?? null,
-        scenes:
-          target?.scenes.map((scene) => ({
-            startSec: scene.startSec,
-            endSec: scene.endSec,
-            layers: scene.layers.map((candidate) => ({
-              kind: candidate.kind,
-              destination: candidate.destination,
-              sourceCrop:
-                candidate.kind === "source-video"
-                  ? candidate.sourceCrop
-                  : null,
-            })),
-          })) ?? [],
-        plannedLayers,
-        plannedNoticeCodes: plannedProjection.notices.map(
-          (notice) => notice.code,
-        ),
-      }),
-    );
-  }, [
-    aspectRatio,
-    background.color,
-    background.imageUrl,
-    background.mode,
-    compositionPlanResult,
-    effectiveFramingMode,
-    legacyActiveAutoSegment,
-    legacySpeakerScene,
-    screenBottomCropRect,
-    sourceDims,
-  ]);
 
   return (
     <Flex
@@ -1930,7 +1460,7 @@ export function VideoPreview() {
             <Box position="absolute" inset="0" style={backgroundStageStyle} />
           )}
 
-          {compositionNoticeText ? (
+          {compositionNoticeTextValue ? (
             <Flex
               position="absolute"
               top="8px"
@@ -1949,7 +1479,7 @@ export function VideoPreview() {
               aria-live="polite"
               pointerEvents="none"
             >
-              {compositionNoticeText}
+              {compositionNoticeTextValue}
             </Flex>
           ) : null}
 
@@ -2203,19 +1733,7 @@ export function VideoPreview() {
                   targetTimeSec={secondaryTileTargetTimeSec}
                   objectFit="cover"
                   objectPosition={isSplit ? `${SPLIT_BOTTOM_TILE_CX * 100}% 50%` : "50% 50%"}
-                  // Screen packet C: `cropRect` is only ever computed for
-                  // screen mode (see `screenBottomCropRect`'s own `isScreen`
-                  // guard) — split always stays on the `objectFit`/
-                  // `objectPosition` path above via this always-null value.
-                  cropRect={
-                    plannedBottomSourceLayer
-                      ? autoBottomCrop
-                      : autoTwoUp
-                      ? autoBottomCrop
-                      : isScreen
-                        ? screenBottomCropRect
-                        : null
-                  }
+                  cropRect={autoBottomCrop}
                   visible={previewPhase === "ready"}
                   mainVideoRef={mainVideoRef}
                 />
@@ -2234,14 +1752,36 @@ export function VideoPreview() {
             </Box>
           )}
 
-          {brollUrl && brollWindow && brollActive ? (
+          {brollUrl ? (
+            <video
+              key={`broll-probe:${brollUrl}`}
+              src={brollUrl}
+              muted
+              playsInline
+              preload="metadata"
+              aria-hidden="true"
+              tabIndex={-1}
+              onLoadedMetadata={(event) => {
+                handleBrollAvailability("available");
+                const durationSec = event.currentTarget.duration;
+                if (Number.isFinite(durationSec) && durationSec > 0) {
+                  handleBrollDuration(durationSec);
+                }
+              }}
+              onError={() => handleBrollAvailability("failed")}
+              style={{ display: "none" }}
+            />
+          ) : null}
+
+          {brollUrl && activeBrollWindow && brollActive ? (
             <BrollPreviewLayer
               src={brollUrl}
               poster={activeBrollAsset?.posterUrl ?? null}
-              window={brollWindow}
+              window={activeBrollWindow}
               currentTime={currentTime}
               isPlaying={isPlaying}
               onDuration={handleBrollDuration}
+              onAvailabilityChange={handleBrollAvailability}
             />
           ) : null}
 

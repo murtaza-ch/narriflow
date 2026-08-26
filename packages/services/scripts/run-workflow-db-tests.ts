@@ -10,7 +10,7 @@ function configuredDatabaseUrl() {
     process.env.DATABASE_URL;
   if (configured) return configured;
 
-  const envPath = resolve(import.meta.dir, "../../db/.env");
+  const envPath = resolve(import.meta.dir, "../../../apps/web/.env.local");
   if (!existsSync(envPath)) return null;
   const values = new Map<string, string>();
   for (const rawLine of readFileSync(envPath, "utf8").split(/\r?\n/)) {
@@ -28,7 +28,7 @@ function configuredDatabaseUrl() {
     }
     if (value) values.set(key, value);
   }
-  return values.get("DIRECT_URL") ?? values.get("DATABASE_URL") ?? null;
+  return values.get("DATABASE_URL") ?? values.get("DIRECT_URL") ?? null;
 }
 
 const databaseUrl = configuredDatabaseUrl();

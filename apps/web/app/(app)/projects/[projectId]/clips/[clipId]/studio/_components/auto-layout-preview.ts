@@ -6,7 +6,7 @@ import {
   type SpeakerLayerRole,
   type SpeakerLayerTransform,
 } from "@narriflow/validators";
-import type { NormalizedCropRect } from "./pip-crop-math";
+import type { NormalizedCropRect } from "./normalized-crop";
 
 const aspectDimensions = new Map(
   clipAspectRatioOptions.map((option) => [

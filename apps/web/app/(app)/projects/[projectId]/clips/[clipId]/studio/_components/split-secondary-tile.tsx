@@ -4,14 +4,13 @@ import { useEffect, useRef, useState } from "react";
 
 /**
  * Screen packet C (PiP persistence — preview true facecam crop): a
- * normalized source rect (see `pip-crop-math.ts`'s `NormalizedCropRect`)
+ * normalized source rect
  * paired with the tile's own rendered CSS box dimensions, everything this
  * component needs to switch from the `objectFit`/`objectPosition` static
  * crop to an EXPLICIT-SIZE crop that reproduces an arbitrary sub-rect zoom —
  * something `object-fit`/`object-position` alone cannot express. `x`/`y`/`w`/
- * `h` are already fitted to THIS tile's own aspect ratio by the caller (via
- * `fitPipCropToTileNormalized`, the client twin of the worker's
- * `fitPipCropToTile`) — this component only turns them into concrete
+ * `h` are already fitted to this tile's own aspect ratio by the shared
+ * composition planner — this component only turns them into concrete
  * width/height/left/top, it does no aspect-fitting of its own.
  */
 export interface SplitSecondaryTileCropRect {
@@ -221,8 +220,7 @@ export function SplitSecondaryTile({
   //   top  = -cropRect.y * videoDisplayH
   //
   // Degenerate `cropRect` (not yet measured — zero/negative tile dims — or
-  // a zero/negative crop w/h, which `fitPipCropToTileNormalized` already
-  // guards against by returning `null`, but re-checked here defensively)
+  // a zero/negative crop w/h) is re-checked here defensively and
   // falls through to the exact same `objectFit`/`objectPosition` static
   // crop split mode has always used.
   const hasValidCropRect =

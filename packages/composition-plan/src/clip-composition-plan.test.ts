@@ -269,6 +269,7 @@ describe("Clip Composition Plan", () => {
     const analysis = clipAutoLayoutAnalysisSchema.parse({
       version: 1,
       engine: "shot-layout-v1",
+      sourceIdentity: source.identity,
       analyzedAtISO: "2026-08-26T00:00:00.000Z",
       clipStartSec: 10,
       clipEndSec: 20,
@@ -389,6 +390,7 @@ describe("Clip Composition Plan", () => {
     const analysis = clipAutoLayoutAnalysisSchema.parse({
       version: 1,
       engine: "shot-layout-v1",
+      sourceIdentity: "source:old",
       analyzedAtISO: "2026-08-26T00:00:00.000Z",
       clipStartSec: 0,
       clipEndSec: 5,
@@ -568,6 +570,7 @@ describe("Clip Composition Plan", () => {
     const analysis = clipAutoLayoutAnalysisSchema.parse({
       version: 1,
       engine: "shot-layout-v1",
+      sourceIdentity: source.identity,
       analyzedAtISO: "2026-08-26T00:00:00.000Z",
       clipStartSec: 0,
       clipEndSec: 5,
@@ -812,6 +815,7 @@ describe("Clip Composition Plan", () => {
     const analysis = clipAutoLayoutAnalysisSchema.parse({
       version: 1,
       engine: "shot-layout-v1",
+      sourceIdentity: source.identity,
       analyzedAtISO: "2026-08-26T00:00:00.000Z",
       clipStartSec: 0,
       clipEndSec: 64,
@@ -1476,5 +1480,223 @@ describe("Clip Composition Plan", () => {
     if (disabled.status === "invalid") throw new Error(disabled.error.code);
     expect(disabled.plan.targets[0]?.effectiveMode).toBe("center");
     expect(disabled.plan.notices[0]?.code).toBe("screen_layout_disabled");
+  });
+
+  test("plans resolved B-roll windows as edited-time layers over the existing base composition", () => {
+    const document = editorDocumentSchema.parse({
+      clipStartSec: 10,
+      clipEndSec: 20,
+      captionPreset: captionPresetSchema.parse({}),
+      transcriptSlice: [],
+      studioEdits: studioEditsSchema.parse({ framing: { mode: "center" } }),
+      brollUrl: "https://example.com/cutaway.mp4",
+      deletedRanges: [{ startSec: 13, endSec: 15 }],
+    });
+    const result = planClipComposition({
+      document,
+      source: {
+        identity: "source:broll",
+        kind: "video",
+        width: 1920,
+        height: 1080,
+      },
+      evidence: { automaticLayout: { state: "missing" } },
+      assets: {
+        backgroundImage: { state: "missing" },
+        broll: {
+          state: "available",
+          placements: [
+            {
+              id: "manual-1",
+              ref: "broll:manual-1",
+              startSec: 2,
+              endSec: 5.5,
+            },
+          ],
+        },
+      },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+      targets: [
+        { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },
+      ],
+    });
+
+    expect(result.status).toBe("ready");
+    if (result.status === "invalid") throw new Error(result.error.code);
+    expect(result.plan.editedDurationSec).toBe(8);
+    expect(result.plan.targets[0]?.scenes.map((scene) => [
+      scene.startSec,
+      scene.endSec,
+      scene.layers.map((layer) => layer.kind),
+    ])).toEqual([
+      [0, 2, ["source-video"]],
+      [2, 5.5, ["source-video", "broll-video"]],
+      [5.5, 8, ["source-video"]],
+    ]);
+    expect(result.plan.targets[0]?.scenes[1]?.layers[1]).toEqual({
+      id: "layer:broll:manual-1:vertical",
+      kind: "broll-video",
+      sourceRef: "broll:manual-1",
+      activeRange: { startSec: 2, endSec: 5.5 },
+      destination: { x: 0, y: 0, width: 1080, height: 1920 },
+      fit: "cover",
+      rotationDeg: 0,
+      opacity: 1,
+      zIndex: 20,
+      audio: "source",
+    });
+  });
+
+  test("keeps automatic speaker scenes below B-roll and makes Split fallback truthful for the whole target", () => {
+    const automaticDocument = editorDocumentSchema.parse({
+      clipStartSec: 0,
+      clipEndSec: 8,
+      captionPreset: captionPresetSchema.parse({}),
+      transcriptSlice: [],
+      studioEdits: studioEditsSchema.parse({ framing: { mode: "auto" } }),
+      brollUrl: "https://example.com/cutaway.mp4",
+      deletedRanges: [],
+    });
+    const source = {
+      identity: "source:broll-auto",
+      kind: "video" as const,
+      width: 1920,
+      height: 1080,
+    };
+    const analysis = clipAutoLayoutAnalysisSchema.parse({
+      version: 1,
+      engine: "shot-layout-v1",
+      sourceIdentity: source.identity,
+      clipStartSec: 0,
+      clipEndSec: 8,
+      deletedRanges: [],
+      editedDurationSec: 8,
+      analyzedAtISO: "2026-08-26T00:00:00.000Z",
+      sourceWidth: 1920,
+      sourceHeight: 1080,
+      segments: [
+        { startSec: 0, endSec: 4, layout: "single", cxNorm: 0.25 },
+        { startSec: 4, endSec: 8, layout: "single", cxNorm: 0.75 },
+      ],
+      noSplitSegments: [
+        { startSec: 0, endSec: 4, layout: "single", cxNorm: 0.25 },
+        { startSec: 4, endSec: 8, layout: "single", cxNorm: 0.75 },
+      ],
+      shotCount: 2,
+      soloShotCount: 2,
+      multiShotCount: 0,
+      twoUpSegmentCount: 0,
+      speakerCount: 1,
+      mappedSpeakerCount: 1,
+    });
+    const automaticLayout = {
+      state: "available" as const,
+      value: {
+        sourceIdentity: source.identity,
+        inputFingerprint: automaticLayoutInputFingerprint({
+          sourceIdentity: source.identity,
+          clipStartSec: 0,
+          clipEndSec: 8,
+          deletedRanges: [],
+          engineVersion: "shot-layout-v1",
+        }),
+        engineVersion: "shot-layout-v1",
+        analysis,
+      },
+    };
+    const common = {
+      source,
+      assets: {
+        backgroundImage: { state: "missing" as const },
+        broll: {
+          state: "available" as const,
+          placements: [
+            { id: "cutaway", ref: "broll:cutaway", startSec: 2, endSec: 6 },
+          ],
+        },
+      },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+        explicitSplitLayout: true,
+        splitEngineVersion: "explicit-split-v1",
+      },
+      targets: [
+        { id: "vertical", aspectRatio: "9:16" as const, width: 1080, height: 1920 },
+      ],
+    };
+    const automatic = planClipComposition({
+      ...common,
+      document: automaticDocument,
+      evidence: { automaticLayout },
+    });
+    const split = planClipComposition({
+      ...common,
+      document: { ...automaticDocument, studioEdits: studioEditsSchema.parse({ framing: { mode: "split" } }) },
+      evidence: { automaticLayout, splitLayout: { state: "missing" } },
+    });
+
+    expect(automatic.status).toBe("ready");
+    expect(split.status).toBe("ready");
+    if (automatic.status === "invalid" || split.status === "invalid") {
+      throw new Error("expected ready B-roll plans");
+    }
+    expect(automatic.plan.targets[0]?.scenes).toHaveLength(4);
+    expect(automatic.plan.targets[0]?.scenes[1]?.layers).toMatchObject([
+      { kind: "source-video", speaker: { role: "single" } },
+      { kind: "broll-video", sourceRef: "broll:cutaway" },
+    ]);
+    expect(split.plan.evidenceRequests).toEqual([]);
+    expect(split.plan.targets[0]?.effectiveMode).toBe("auto");
+    expect(split.plan.notices).toContainEqual({
+      code: "split_broll_conflict",
+      fidelity: "degraded",
+      targetId: "vertical",
+      sceneId: null,
+      effectiveFallback: "auto",
+      userActionPossible: false,
+    });
+    expect(split.plan.targets[0]?.scenes.every((scene) =>
+      scene.layers.some((layer) => layer.kind === "source-video"),
+    )).toBe(true);
+  });
+
+  test("omits failed optional B-roll without degrading the requested base mode", () => {
+    const document = editorDocumentSchema.parse({
+      ...centerDocument(),
+      brollUrl: "https://example.com/missing.mp4",
+    });
+    const result = planClipComposition({
+      document,
+      source: { identity: "source:broll-missing", kind: "video", width: 1920, height: 1080 },
+      evidence: { automaticLayout: { state: "missing" } },
+      assets: {
+        backgroundImage: { state: "missing" },
+        broll: { state: "failed" },
+      },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+      targets: [
+        { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },
+      ],
+    });
+
+    expect(result.status).toBe("ready");
+    if (result.status === "invalid") throw new Error(result.error.code);
+    expect(result.plan.targets[0]?.effectiveMode).toBe("center");
+    expect(result.plan.targets[0]?.scenes).toHaveLength(1);
+    expect(result.plan.notices).toContainEqual({
+      code: "broll_asset_unavailable",
+      fidelity: "degraded",
+      targetId: "vertical",
+      sceneId: null,
+      effectiveFallback: "center",
+      userActionPossible: true,
+    });
   });
 });

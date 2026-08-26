@@ -194,11 +194,9 @@ function createOrdinaryTracer(input: {
       ...(input.presignNeverResolves
         ? { WORKER_STORAGE_TIMEOUT_MS: "5" }
         : {}),
-      WORKER_AUTO_REFRAME: "0",
       WORKER_LAYOUT_ENGINE: "0",
       WORKER_SCREEN_LAYOUT: "0",
       WORKER_SPLIT: "0",
-      WORKER_PIP_DETECT: "0",
       WORKER_BROLL: "0",
     }),
     lifecycle: {
@@ -529,11 +527,9 @@ function createUploadQueueTracer(input: {
       ...(input.configuredConcurrency === undefined
         ? {}
         : { WORKER_UPLOAD_CONCURRENCY: String(input.configuredConcurrency) }),
-      WORKER_AUTO_REFRAME: "0",
       WORKER_LAYOUT_ENGINE: "0",
       WORKER_SCREEN_LAYOUT: "0",
       WORKER_SPLIT: "0",
-      WORKER_PIP_DETECT: "0",
       WORKER_BROLL: "0",
     }),
     lifecycle: {
@@ -757,11 +753,9 @@ test("ClipRenderAttempt discards an uploaded object when cancellation wins befor
     config: parseRenderConfig({
       WORKER_CLIP_RENDER_ATTEMPT_ENABLED: "1",
       WORKER_RENDER_SOURCE_MODE: "download",
-      WORKER_AUTO_REFRAME: "0",
       WORKER_LAYOUT_ENGINE: "0",
       WORKER_SCREEN_LAYOUT: "0",
       WORKER_SPLIT: "0",
-      WORKER_PIP_DETECT: "0",
       WORKER_BROLL: "0",
     }),
     lifecycle: {
@@ -1143,11 +1137,9 @@ test("ClipRenderAttempt owns a fully deleted variant before permanently failing 
     config: parseRenderConfig({
       WORKER_CLIP_RENDER_ATTEMPT_ENABLED: "1",
       WORKER_RENDER_SOURCE_MODE: "download",
-      WORKER_AUTO_REFRAME: "0",
       WORKER_LAYOUT_ENGINE: "0",
       WORKER_SCREEN_LAYOUT: "0",
       WORKER_SPLIT: "0",
-      WORKER_PIP_DETECT: "0",
       WORKER_BROLL: "0",
     }),
     lifecycle: {

@@ -31,10 +31,7 @@ import { productionRenderProcessAdapter } from "../render-process-adapter";
 import { buildClipCutPlan } from "./cut-plan";
 import {
   buildAudiogramArgs,
-  buildMultiVideoArgs,
-  buildSingleVideoArgs,
   ClipRenderAttempt,
-  generateSrtFromSlice,
   type ClipRenderingWorkflowAttempt,
 } from "./render-clips";
 
@@ -43,10 +40,7 @@ type PendingClipRender = Awaited<
 >[number];
 
 type CoreRenderTopology =
-  | "single-video"
-  | "shared-multi-output"
-  | "studio-per-output"
-  | "audiogram";
+  "single-video" | "shared-multi-output" | "studio-per-output" | "audiogram";
 
 type VariantState =
   | "pending"
@@ -58,11 +52,7 @@ type VariantState =
 
 interface CoreVariantFixture {
   id: string;
-  aspectRatio:
-    | "ratio_9_16"
-    | "ratio_1_1"
-    | "ratio_16_9"
-    | "ratio_4_5";
+  aspectRatio: "ratio_9_16" | "ratio_1_1" | "ratio_16_9" | "ratio_4_5";
   clipId?: string;
   clipIndex?: number;
   initialState?: VariantState;
@@ -143,12 +133,7 @@ function createCoreRenderPathTracer(input: {
   faceAnalysisFailure?: Error;
   analysisPersistenceFailure?: Error;
   analysisProcessOutcome?:
-    | "missing"
-    | "timeout"
-    | "nonzero"
-    | "invalid"
-    | "no-face"
-    | "cancel";
+    "missing" | "timeout" | "nonzero" | "invalid" | "no-face" | "cancel";
   analysisAbortController?: AbortController;
   multiFaceAnalysisSamples?: Array<{
     t: number;
@@ -231,10 +216,7 @@ function createCoreRenderPathTracer(input: {
     ]),
   );
   const failureCodes = new Map<string, string>();
-  const failureDispositions = new Map<
-    string,
-    "retryable" | "permanent"
-  >();
+  const failureDispositions = new Map<string, "retryable" | "permanent">();
   const commands: CommandProbe[] = [];
   const uploadedVariantIds: string[] = [];
   const persistedVariantIds: string[] = [];
@@ -336,11 +318,9 @@ function createCoreRenderPathTracer(input: {
     config: parseRenderConfig({
       WORKER_CLIP_RENDER_ATTEMPT_ENABLED: "1",
       WORKER_RENDER_SOURCE_MODE: input.sourceAccess ? "ranged" : "download",
-      WORKER_AUTO_REFRAME: "0",
       WORKER_LAYOUT_ENGINE: "0",
       WORKER_SCREEN_LAYOUT: "0",
       WORKER_SPLIT: "0",
-      WORKER_PIP_DETECT: "0",
       WORKER_BROLL: "0",
       ...input.configOverrides,
     }),
@@ -444,9 +424,7 @@ function createCoreRenderPathTracer(input: {
               "Injected first optional-media command failure",
             );
           }
-          if (
-            ids.some((id) => input.failCommandsForVariantIds?.includes(id))
-          ) {
+          if (ids.some((id) => input.failCommandsForVariantIds?.includes(id))) {
             throw new WorkflowFailure(
               "ffmpeg_render_failed",
               input.commandFailureDisposition ?? "retryable",
@@ -575,6 +553,10 @@ function createCoreRenderPathTracer(input: {
           persistedSplitLayouts.push(analysis);
           return true;
         },
+        completeClipSplitLayoutFailure: async (_clipId, failure) => {
+          persistedSplitLayouts.push(failure);
+          return true;
+        },
         completeClipRenderVariant: async (variantId) => {
           mutationVariantIds.push(variantId);
           if (input.rejectPersistenceForVariantIds?.includes(variantId)) {
@@ -610,6 +592,9 @@ function createCoreRenderPathTracer(input: {
             throw input.analysisPersistenceFailure;
           }
           persistedScreenLayouts.push(analysis);
+        },
+        setClipLayoutAnalysisFailure: async (_clipId, failure) => {
+          persistedScreenLayouts.push(failure);
         },
       },
       storage: {
@@ -652,7 +637,8 @@ function createCoreRenderPathTracer(input: {
         stat: input.realMedia ? stat : async () => ({ size: 256 }) as never,
         writeFile: input.realMedia ? writeFile : async () => {},
       },
-      diagnose: ({ message, context }) => diagnostics.push({ message, context }),
+      diagnose: ({ message, context }) =>
+        diagnostics.push({ message, context }),
     },
   });
 
@@ -687,8 +673,8 @@ const topologyFixtures: Array<{
   },
   {
     topology: "shared-multi-output",
-    commandCount: 1,
-    outputGroups: [["variant-9x16", "variant-1x1"]],
+    commandCount: 2,
+    outputGroups: [["variant-9x16"], ["variant-1x1"]],
   },
   {
     topology: "studio-per-output",
@@ -710,7 +696,7 @@ const deterministicProbe = {
   fps: 30,
 };
 
-function buildLegacyCommands(input: {
+function buildBaselineCommands(input: {
   topology: CoreRenderTopology;
   sourcePath: string;
   outputs: Array<{
@@ -737,84 +723,34 @@ function buildLegacyCommands(input: {
   }));
   const clipDurationSec = input.endSec - input.startSec;
 
-  if (input.topology === "audiogram") {
-    const cutPlan = buildClipCutPlan([], {
-      startSec: input.startSec,
-      endSec: input.endSec,
-    });
-    const studioEdits = studioEditsSchema.parse({});
-    return outputs.map((output) =>
-      buildAudiogramArgs({
-        sourcePath: input.sourcePath,
-        outputPath: output.outputPath,
-        startSec: input.startSec,
-        endSec: input.endSec,
-        aspectRatio: output.aspectRatio,
-        clipDurationSec,
-        srtPath: input.srtPath ?? null,
-        studioEdits,
-        resolution: output.resolution,
-        watermark: input.watermark,
-        cutPlan,
-      }),
-    );
+  if (input.topology !== "audiogram") {
+    throw new Error("baseline commands are only defined for audio-only renders");
   }
-
-  if (input.topology === "studio-per-output") {
-    const cutPlan = buildClipCutPlan([], {
-      startSec: input.startSec,
-      endSec: input.endSec,
-    });
-    const studioEdits = studioEditsSchema.parse({
-      sourceAudio: { volume: 100, muted: true },
-    });
-    return outputs.map((output) =>
-      buildSingleVideoArgs({
-        sourcePath: input.sourcePath,
-        outputPath: output.outputPath,
-        startSec: input.startSec,
-        endSec: input.endSec,
-        aspectRatio: output.aspectRatio,
-        probe: input.probe,
-        srtPath: input.srtPath ?? null,
-        studioEdits,
-        resolution: output.resolution,
-        watermark: input.watermark,
-        cutPlan,
-      }),
-    );
-  }
-
-  if (input.topology === "shared-multi-output") {
-    return [
-      buildMultiVideoArgs({
-        sourcePath: input.sourcePath,
-        outputs,
-        startSec: input.startSec,
-        endSec: input.endSec,
-        probe: input.probe,
-        srtPath: input.srtPath ?? null,
-        watermark: input.watermark,
-      }),
-    ];
-  }
-
-  return [
-    buildSingleVideoArgs({
+  const cutPlan = buildClipCutPlan([], {
+    startSec: input.startSec,
+    endSec: input.endSec,
+  });
+  const studioEdits = studioEditsSchema.parse({});
+  return outputs.map((output) =>
+    buildAudiogramArgs({
       sourcePath: input.sourcePath,
-      outputPath: outputs[0]!.outputPath,
+      outputPath: output.outputPath,
       startSec: input.startSec,
       endSec: input.endSec,
-      aspectRatio: outputs[0]!.aspectRatio,
-      probe: input.probe,
+      aspectRatio: output.aspectRatio,
+      clipDurationSec,
       srtPath: input.srtPath ?? null,
-      resolution: outputs[0]!.resolution,
+      studioEdits,
+      resolution: output.resolution,
       watermark: input.watermark,
+      cutPlan,
     }),
-  ];
+  );
 }
 
-function legacyCommandArgs(topology: CoreRenderTopology): readonly string[][] {
+function baselineCommandArgs(
+  topology: CoreRenderTopology,
+): readonly string[][] {
   const outputPath = (variantId: string) => `<output:${variantId}>`;
   const outputs = [
     {
@@ -830,11 +766,10 @@ function legacyCommandArgs(topology: CoreRenderTopology): readonly string[][] {
       resolution: "1080p" as const,
     },
   ];
-  return buildLegacyCommands({
+  return buildBaselineCommands({
     topology,
     sourcePath: "<source>",
-    outputs:
-      topology === "single-video" ? [outputs[0]!] : outputs,
+    outputs: topology === "single-video" ? [outputs[0]!] : outputs,
     startSec: 2,
     endSec: 7,
     probe: deterministicProbe,
@@ -859,7 +794,7 @@ function normalizeCommandArgs(
 }
 
 for (const fixture of topologyFixtures) {
-  test(`ClipRenderAttempt preserves the ${fixture.topology} command topology through execute`, async () => {
+  test(`ClipRenderAttempt routes ${fixture.topology} through the expected command topology`, async () => {
     const harness = createCoreRenderPathTracer({ topology: fixture.topology });
 
     await expect(
@@ -879,17 +814,20 @@ for (const fixture of topologyFixtures) {
     expect(harness.commands.map((command) => command.outputVariantIds)).toEqual(
       fixture.outputGroups,
     );
-    expect(
-      harness.commands.map((command) =>
-        normalizeCommandArgs(command.args, command.outputVariantIds),
-      ),
-    ).toEqual(legacyCommandArgs(fixture.topology));
-    expect(harness.uploadedVariantIds).toEqual(
-      fixture.outputGroups.flat(),
-    );
-    expect(harness.persistedVariantIds).toEqual(
-      fixture.outputGroups.flat(),
-    );
+    if (fixture.topology === "audiogram") {
+      expect(
+        harness.commands.map((command) =>
+          normalizeCommandArgs(command.args, command.outputVariantIds),
+        ),
+      ).toEqual(baselineCommandArgs(fixture.topology));
+    } else {
+      expect(harness.diagnostics).toContainEqual({
+        message: "clip_composition_plan",
+        context: expect.objectContaining({ requestedMode: "auto" }),
+      });
+    }
+    expect(harness.uploadedVariantIds).toEqual(fixture.outputGroups.flat());
+    expect(harness.persistedVariantIds).toEqual(fixture.outputGroups.flat());
     expect(harness.settlementCalls()).toBe(1);
   });
 }
@@ -917,7 +855,9 @@ test("ClipRenderAttempt omits an unavailable brand logo and diagnoses the fallba
       disposition: "degraded",
     }),
   });
-  expect(JSON.stringify(harness.diagnostics)).not.toContain("secret=do-not-log");
+  expect(JSON.stringify(harness.diagnostics)).not.toContain(
+    "secret=do-not-log",
+  );
 });
 
 test("ClipRenderAttempt propagates ownership loss during brand logo download", async () => {
@@ -1035,7 +975,9 @@ test("ClipRenderAttempt skips unavailable stock B-roll through its optional-asse
       disposition: "degraded",
     }),
   });
-  expect(JSON.stringify(harness.diagnostics)).not.toContain("secret=do-not-log");
+  expect(JSON.stringify(harness.diagnostics)).not.toContain(
+    "secret=do-not-log",
+  );
 });
 
 const resolvedBrollFixture = {
@@ -1521,148 +1463,6 @@ test("ClipRenderAttempt uses the frozen solid color when background decode fails
   });
 });
 
-test("ClipRenderAttempt applies deterministic auto-reframe analysis to the final render request", async () => {
-  const harness = createCoreRenderPathTracer({
-    topology: "single-video",
-    configOverrides: { WORKER_AUTO_REFRAME: "1" },
-    faceAnalysisSamples: [
-      { t: 0, cx: 0.2 },
-      { t: 1, cx: 0.5 },
-      { t: 2, cx: 0.8 },
-    ],
-  });
-
-  await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
-  ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
-  expect(harness.commands).toHaveLength(1);
-  expect(harness.diagnostics).toContainEqual({
-    message: "clip_reframe_applied",
-    context: expect.objectContaining({
-      phase: "media_analysis",
-      analysisMode: "auto_reframe",
-      selectedMode: "face_tracked",
-      durationMs: expect.any(Number),
-    }),
-  });
-});
-
-test("ClipRenderAttempt keeps center framing when auto-reframe analysis is unavailable", async () => {
-  const harness = createCoreRenderPathTracer({
-    topology: "single-video",
-    configOverrides: { WORKER_AUTO_REFRAME: "1" },
-    faceAnalysisSamples: null,
-  });
-
-  await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
-  ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
-  expect(harness.commands).toHaveLength(1);
-  expect(harness.diagnostics).toContainEqual({
-    message: "clip_reframe_skipped",
-    context: expect.objectContaining({
-      phase: "media_analysis",
-      analysisMode: "auto_reframe",
-      fallbackMode: "center_crop",
-      failureCode: "analysis_unavailable",
-      disposition: "degraded",
-      durationMs: expect.any(Number),
-    }),
-  });
-});
-
-for (const analysisFailure of [
-  "missing",
-  "timeout",
-  "nonzero",
-  "invalid",
-  "no-face",
-] as const) {
-  test(`ClipRenderAttempt degrades ${analysisFailure} face analysis to center framing`, async () => {
-    const harness = createCoreRenderPathTracer({
-      topology: "single-video",
-      configOverrides: { WORKER_AUTO_REFRAME: "1" },
-      analysisProcessOutcome: analysisFailure,
-    });
-
-    await expect(
-      harness.clipRenderAttempt.execute({
-        attempt: harness.attempt,
-        signal: new AbortController().signal,
-      }),
-    ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
-    expect(harness.commands).toHaveLength(1);
-    expect(harness.diagnostics).toContainEqual(
-      expect.objectContaining({
-        context: expect.objectContaining({
-          phase: "media_analysis",
-          fallbackMode: "center_crop",
-          failureCode:
-            analysisFailure === "no-face"
-              ? "no_usable_face_samples"
-              : analysisFailure === "missing"
-                ? "analysis_executable_missing"
-                : analysisFailure === "timeout"
-                  ? "analysis_timeout"
-                  : analysisFailure === "nonzero"
-                    ? "analysis_command_failed"
-                    : "analysis_unavailable",
-          disposition: "degraded",
-        }),
-      }),
-    );
-  });
-}
-
-test("ClipRenderAttempt propagates cancellation during active media analysis", async () => {
-  const controller = new AbortController();
-  const harness = createCoreRenderPathTracer({
-    topology: "single-video",
-    configOverrides: { WORKER_AUTO_REFRAME: "1" },
-    analysisProcessOutcome: "cancel",
-    analysisAbortController: controller,
-  });
-
-  const execution = harness.clipRenderAttempt.execute({
-    attempt: harness.attempt,
-    signal: controller.signal,
-  });
-  await expect(execution).rejects.toMatchObject({ name: "AbortError" });
-  expect(controller.signal.aborted).toBe(true);
-  expect(harness.commands).toHaveLength(0);
-  expect(harness.persistedVariantIds).toHaveLength(0);
-  expect(harness.settlementCalls()).toBe(0);
-});
-
-test("ClipRenderAttempt rejects stale media analysis without persisting output", async () => {
-  const harness = createCoreRenderPathTracer({
-    topology: "single-video",
-    configOverrides: { WORKER_AUTO_REFRAME: "1" },
-    faceAnalysisFailure: new WorkflowAttemptLost({
-      workflowRunId: "10000000-0000-4000-8000-000000000701",
-      projectId: "20000000-0000-4000-8000-000000000702",
-      stage: "clip_rendering",
-      attemptId: "30000000-0000-4000-8000-000000000703",
-      attemptCount: 1,
-    }),
-  });
-
-  await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
-  ).rejects.toBeInstanceOf(WorkflowAttemptLost);
-  expect(harness.persistedVariantIds).toEqual([]);
-  expect(harness.settlementCalls()).toBe(0);
-});
-
 test("ClipRenderAttempt propagates ownership loss from fenced analysis persistence", async () => {
   const baseline = createCoreRenderPathTracer({ topology: "single-video" });
   const ownershipLoss = new WorkflowAttemptLost(baseline.attempt);
@@ -1672,7 +1472,7 @@ test("ClipRenderAttempt propagates ownership loss from fenced analysis persisten
       previewStorageKey: "projects/test/previews/current.mp4",
       editorRevision: 0,
     },
-    configOverrides: { WORKER_LAYOUT_ENGINE: "1", WORKER_AUTO_REFRAME: "1" },
+    configOverrides: { WORKER_LAYOUT_ENGINE: "1" },
     multiFaceAnalysisSamples: [
       {
         t: 0,
@@ -1693,14 +1493,16 @@ test("ClipRenderAttempt propagates ownership loss from fenced analysis persisten
   expect(harness.settlementCalls()).toBe(0);
 });
 
-test("ClipRenderAttempt keeps the screen layout when picture-in-picture analysis is unavailable", async () => {
+test("ClipRenderAttempt records degraded Screen evidence when analysis is unavailable", async () => {
   const harness = createCoreRenderPathTracer({
     topology: "single-video",
-    clipOverrides: { studioEdits: { framing: { mode: "screen" } } },
+    clipOverrides: {
+      studioEdits: { framing: { mode: "screen" } },
+      previewStorageKey: "projects/test/previews/current.mp4",
+      editorRevision: 0,
+    },
     configOverrides: {
       WORKER_SCREEN_LAYOUT: "1",
-      WORKER_PIP_DETECT: "1",
-      WORKER_COMPOSITION_SCREEN: "plan",
     },
     faceAnalysisSamples: null,
     pipAnalysisResult: null,
@@ -1724,10 +1526,20 @@ test("ClipRenderAttempt keeps the screen layout when picture-in-picture analysis
     }),
   });
   expect(harness.diagnostics).toContainEqual({
-    message: "clip_screen_layout_applied",
-    context: expect.objectContaining({ selectedMode: "center_crop" }),
+    message: "clip_composition_plan",
+    context: expect.objectContaining({
+      requestedMode: "screen",
+      noticeCodes: ["screen_detection_unavailable"],
+    }),
   });
-  expect(harness.persistedScreenLayouts).toHaveLength(0);
+  expect(harness.persistedScreenLayouts).toContainEqual(
+    expect.objectContaining({
+      state: "failed",
+      reason: "detection_unavailable",
+      sourceIdentity: expect.any(String),
+      inputFingerprint: expect.stringMatching(/^[0-9a-f]{16}$/),
+    }),
+  );
 });
 
 const qualifyingPipCandidate = {
@@ -1747,7 +1559,6 @@ test("ClipRenderAttempt selects a qualifying picture-in-picture crop", async () 
     clipOverrides: { studioEdits: { framing: { mode: "screen" } } },
     configOverrides: {
       WORKER_SCREEN_LAYOUT: "1",
-      WORKER_PIP_DETECT: "1",
     },
     faceAnalysisSamples: Array.from({ length: 8 }, (_, index) => ({
       t: index * 0.25,
@@ -1777,14 +1588,16 @@ test("ClipRenderAttempt selects a qualifying picture-in-picture crop", async () 
   });
 });
 
-test("ClipRenderAttempt compiles Screen through the shared plan after analysis", async () => {
+test("ClipRenderAttempt always compiles Screen through the shared plan", async () => {
   const harness = createCoreRenderPathTracer({
     topology: "single-video",
-    clipOverrides: { studioEdits: { framing: { mode: "screen" } } },
+    clipOverrides: {
+      studioEdits: { framing: { mode: "screen" } },
+      previewStorageKey: "projects/test/previews/current.mp4",
+      editorRevision: 0,
+    },
     configOverrides: {
       WORKER_SCREEN_LAYOUT: "1",
-      WORKER_PIP_DETECT: "1",
-      WORKER_COMPOSITION_SCREEN: "plan",
     },
     faceAnalysisSamples: Array.from({ length: 8 }, (_, index) => ({
       t: index * 0.25,
@@ -1811,7 +1624,6 @@ test("ClipRenderAttempt compiles Screen through the shared plan after analysis",
     message: "clip_composition_plan",
     context: expect.objectContaining({
       requestedMode: "screen",
-      control: "plan",
       effectiveModes: ["screen"],
     }),
   });
@@ -1868,8 +1680,6 @@ test("ClipRenderAttempt reuses matching Screen v2 evidence without rerunning or 
     },
     configOverrides: {
       WORKER_SCREEN_LAYOUT: "1",
-      WORKER_PIP_DETECT: "1",
-      WORKER_COMPOSITION_SCREEN: "plan",
     },
     faceAnalysisFailure: new Error("face analysis must not rerun"),
   });
@@ -1890,38 +1700,12 @@ test("ClipRenderAttempt reuses matching Screen v2 evidence without rerunning or 
   });
 });
 
-test("ClipRenderAttempt does not persist Screen evidence while PiP detection is disabled", async () => {
-  const harness = createCoreRenderPathTracer({
-    topology: "single-video",
-    clipOverrides: { studioEdits: { framing: { mode: "screen" } } },
-    configOverrides: {
-      WORKER_SCREEN_LAYOUT: "1",
-      WORKER_PIP_DETECT: "0",
-      WORKER_COMPOSITION_SCREEN: "plan",
-    },
-    faceAnalysisSamples: Array.from({ length: 8 }, (_, index) => ({
-      t: index * 0.25,
-      cx: 0.88,
-    })),
-  });
-
-  await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
-  ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
-  expect(harness.persistedScreenLayouts).toHaveLength(0);
-});
-
 test("ClipRenderAttempt preserves speaker-band framing for a valid no-screen result", async () => {
   const harness = createCoreRenderPathTracer({
     topology: "single-video",
     clipOverrides: { studioEdits: { framing: { mode: "screen" } } },
     configOverrides: {
       WORKER_SCREEN_LAYOUT: "1",
-      WORKER_PIP_DETECT: "1",
-      WORKER_COMPOSITION_SCREEN: "plan",
     },
     faceAnalysisSamples: Array.from({ length: 8 }, (_, index) => ({
       t: index * 0.25,
@@ -1951,8 +1735,11 @@ test("ClipRenderAttempt preserves speaker-band framing for a valid no-screen res
     }),
   });
   expect(harness.diagnostics).toContainEqual({
-    message: "clip_screen_layout_applied",
-    context: expect.objectContaining({ selectedMode: "face_tracked" }),
+    message: "clip_composition_plan",
+    context: expect.objectContaining({
+      requestedMode: "screen",
+      noticeCodes: ["screen_face_band_fallback"],
+    }),
   });
   const graph = harness.commands[0]?.args.join(" ") ?? "";
   expect(graph).toContain("composition_scene_0_layer_1_src");
@@ -1994,6 +1781,73 @@ test("ClipRenderAttempt applies a deterministic split-layout analysis", async ()
   });
 });
 
+test("ClipRenderAttempt reuses matching durable Split evidence without rerunning or downgrading analysis", async () => {
+  const sourceIdentity = compositionAssetRef(
+    "source",
+    "20000000-0000-4000-8000-000000000702",
+  );
+  const harness = createCoreRenderPathTracer({
+    topology: "single-video",
+    clipOverrides: {
+      studioEdits: { framing: { mode: "split" } },
+      previewStorageKey: "projects/test/previews/current.mp4",
+      editorRevision: 0,
+      splitLayoutAnalysis: {
+        version: 1,
+        engine: "explicit-split-v1",
+        sourceIdentity,
+        analyzedAtISO: "2026-08-26T00:00:00.000Z",
+        clipStartSec: 2,
+        clipEndSec: 7,
+        deletedRanges: [],
+        editedDurationSec: 5,
+        sourceWidth: 1920,
+        sourceHeight: 1080,
+        segments: [
+          {
+            startSec: 0,
+            endSec: 5,
+            layout: "two-up",
+            topCxNorm: 0.3,
+            bottomCxNorm: 0.7,
+          },
+        ],
+        noSplitSegments: [
+          {
+            startSec: 0,
+            endSec: 5,
+            layout: "single",
+            cxNorm: 0.3,
+          },
+        ],
+        shotCount: 1,
+        soloShotCount: 0,
+        multiShotCount: 1,
+        twoUpSegmentCount: 1,
+        speakerCount: 2,
+        mappedSpeakerCount: 2,
+      },
+    },
+    configOverrides: { WORKER_SPLIT: "1" },
+    multiFaceAnalysisSamples: null,
+  });
+
+  await expect(
+    harness.clipRenderAttempt.execute({
+      attempt: harness.attempt,
+      signal: new AbortController().signal,
+    }),
+  ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
+  expect(harness.persistedSplitLayouts).toHaveLength(0);
+  expect(harness.diagnostics).toContainEqual({
+    message: "clip_composition_plan",
+    context: expect.objectContaining({
+      evidenceSource: "durable-explicit",
+      effectiveModes: ["split"],
+    }),
+  });
+});
+
 test("ClipRenderAttempt compiles explicit Split through the shared plan", async () => {
   const face = (cx: number) => ({
     cx,
@@ -2011,7 +1865,6 @@ test("ClipRenderAttempt compiles explicit Split through the shared plan", async 
     },
     configOverrides: {
       WORKER_SPLIT: "1",
-      WORKER_COMPOSITION_SPLIT: "plan",
     },
     multiFaceAnalysisSamples: Array.from({ length: 12 }, (_, index) => ({
       t: index * 0.25,
@@ -2032,7 +1885,11 @@ test("ClipRenderAttempt compiles explicit Split through the shared plan", async 
       }),
     );
   }
-  expect(splitResult).toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
+  expect(splitResult).toMatchObject({
+    status: "completed",
+    succeeded: 1,
+    failed: 0,
+  });
   const graph = harness.commands[0]?.args.join(" ") ?? "";
   expect(graph).toContain("composition_scene_0_layer_0_src");
   expect(graph).not.toContain("split_seg0_src");
@@ -2040,7 +1897,6 @@ test("ClipRenderAttempt compiles explicit Split through the shared plan", async 
     message: "clip_composition_plan",
     context: expect.objectContaining({
       requestedMode: "split",
-      control: "plan",
       effectiveModes: ["split"],
     }),
   });
@@ -2074,7 +1930,6 @@ test("ClipRenderAttempt keeps Split rendering when preview evidence persistence 
     },
     configOverrides: {
       WORKER_SPLIT: "1",
-      WORKER_COMPOSITION_SPLIT: "plan",
     },
     multiFaceAnalysisSamples: Array.from({ length: 12 }, (_, index) => ({
       t: index * 0.25,
@@ -2110,9 +1965,7 @@ test("ClipRenderAttempt degrades only the ineligible Split target", async () => 
     topology: "studio-per-output",
     clipOverrides: { studioEdits: { framing: { mode: "split" } } },
     configOverrides: {
-      WORKER_AUTO_REFRAME: "1",
       WORKER_SPLIT: "1",
-      WORKER_COMPOSITION_SPLIT: "plan",
     },
     multiFaceAnalysisSamples: Array.from({ length: 12 }, (_, index) => ({
       t: index * 0.25,
@@ -2127,21 +1980,17 @@ test("ClipRenderAttempt degrades only the ineligible Split target", async () => 
     }),
   ).resolves.toMatchObject({ status: "completed", succeeded: 2, failed: 0 });
   const verticalGraph =
-    harness.commands.find((command) =>
-      command.outputVariantIds.includes("variant-9x16"),
-    )?.args.join(" ") ?? "";
+    harness.commands
+      .find((command) => command.outputVariantIds.includes("variant-9x16"))
+      ?.args.join(" ") ?? "";
   const squareGraph =
-    harness.commands.find((command) =>
-      command.outputVariantIds.includes("variant-1x1"),
-    )?.args.join(" ") ?? "";
+    harness.commands
+      .find((command) => command.outputVariantIds.includes("variant-1x1"))
+      ?.args.join(" ") ?? "";
   expect(verticalGraph).toContain("vstack=inputs=2");
   expect(squareGraph).not.toContain("vstack=inputs=2");
-  expect(squareGraph).not.toContain("composition_scene_");
-  expect(squareGraph).toContain("sendcmd=f=");
-  expect(harness.diagnostics).toContainEqual({
-    message: "clip_reframe_applied",
-    context: expect.objectContaining({ outputs: ["1:1"] }),
-  });
+  expect(squareGraph).toContain("composition_scene_0_src");
+  expect(squareGraph).not.toContain("sendcmd=f=");
   expect(harness.diagnostics).toContainEqual({
     message: "clip_composition_plan",
     context: expect.objectContaining({
@@ -2163,7 +2012,6 @@ test("ClipRenderAttempt applies deterministic shot-layout analysis", async () =>
   const harness = createCoreRenderPathTracer({
     topology: "single-video",
     configOverrides: {
-      WORKER_AUTO_REFRAME: "1",
       WORKER_LAYOUT_ENGINE: "1",
     },
     multiFaceAnalysisSamples: Array.from({ length: 12 }, (_, index) => ({
@@ -2201,7 +2049,7 @@ for (const disabledAnalysisCase of [
     analysisMode: "split_layout",
   },
 ] as const) {
-  test(`ClipRenderAttempt preserves the literal-0 ${disabledAnalysisCase.mode} fallback`, async () => {
+  test(`ClipRenderAttempt reports the literal-0 ${disabledAnalysisCase.mode} capability fallback`, async () => {
     const harness = createCoreRenderPathTracer({
       topology: "single-video",
       clipOverrides: {
@@ -2220,7 +2068,7 @@ for (const disabledAnalysisCase of [
       context: expect.objectContaining({
         phase: "media_analysis",
         analysisMode: disabledAnalysisCase.analysisMode,
-        fallbackMode: "auto_reframe",
+        fallbackMode: "composition_plan",
         failureCode: "analysis_disabled",
         disposition: "degraded",
       }),
@@ -2229,25 +2077,16 @@ for (const disabledAnalysisCase of [
 }
 
 for (const disabledPlanCase of [
-  {
-    mode: "screen",
-    control: { WORKER_COMPOSITION_SCREEN: "plan" },
-  },
-  {
-    mode: "split",
-    control: { WORKER_COMPOSITION_SPLIT: "plan" },
-  },
+  { mode: "screen" },
+  { mode: "split" },
 ] as const) {
-  test(`ClipRenderAttempt plan cutover preserves tracked ${disabledPlanCase.mode} fallback when analysis is disabled`, async () => {
+  test(`ClipRenderAttempt uses the planned ${disabledPlanCase.mode} fallback when analysis is disabled`, async () => {
     const harness = createCoreRenderPathTracer({
       topology: "single-video",
       clipOverrides: {
         studioEdits: { framing: { mode: disabledPlanCase.mode } },
       },
-      configOverrides: {
-        WORKER_AUTO_REFRAME: "1",
-        ...disabledPlanCase.control,
-      },
+      configOverrides: {},
       faceAnalysisSamples: [
         { t: 0, cx: 0.2 },
         { t: 1, cx: 0.5 },
@@ -2262,22 +2101,23 @@ for (const disabledPlanCase of [
       }),
     ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
     const graph = harness.commands[0]?.args.join(" ") ?? "";
-    expect(graph).not.toContain("composition_scene_0_layer_0_src");
+    expect(graph).not.toContain("sendcmd=");
+    expect(
+      harness.diagnostics.some(
+        (diagnostic) => diagnostic.message === "clip_reframe_applied",
+      ),
+    ).toBe(false);
     expect(harness.diagnostics).toContainEqual({
-      message: "clip_reframe_applied",
-      context: expect.objectContaining({ selectedMode: "face_tracked" }),
-    });
-    expect(harness.diagnostics).toContainEqual({
-      message: "clip_composition_plan_retained_legacy_fallback",
+      message: "clip_composition_plan",
       context: expect.objectContaining({
         requestedMode: disabledPlanCase.mode,
-        evidenceState: "disabled",
+        effectiveModes: ["center"],
       }),
     });
   });
 }
 
-test("ClipRenderAttempt contains a shared command failure to its planned variants", async () => {
+test("ClipRenderAttempt contains a per-output command failure to its variant", async () => {
   const harness = createCoreRenderPathTracer({
     topology: "shared-multi-output",
     variants: [
@@ -2311,19 +2151,20 @@ test("ClipRenderAttempt contains a shared command failure to its planned variant
   ).resolves.toEqual({
     status: "partial",
     requested: 3,
-    succeeded: 1,
-    failed: 2,
+    succeeded: 2,
+    failed: 1,
     superseded: 0,
     followUpWorkflowRunId: null,
   });
   expect(harness.commands.map((command) => command.outputVariantIds)).toEqual([
-    ["group-a-9x16", "group-a-1x1"],
+    ["group-a-9x16"],
+    ["group-a-1x1"],
     ["group-b-9x16"],
   ]);
   expect(harness.states.get("group-a-9x16")).toBe("retryable-failure");
-  expect(harness.states.get("group-a-1x1")).toBe("retryable-failure");
+  expect(harness.states.get("group-a-1x1")).toBe("completed");
   expect(harness.states.get("group-b-9x16")).toBe("completed");
-  expect(harness.uploadedVariantIds).toEqual(["group-b-9x16"]);
+  expect(harness.uploadedVariantIds).toEqual(["group-a-1x1", "group-b-9x16"]);
 });
 
 test("ClipRenderAttempt settles a per-output failure as terminal partial", async () => {
@@ -2397,9 +2238,7 @@ test("ClipRenderAttempt records one failed upload without discarding sibling out
     succeeded: 1,
     failed: 1,
   });
-  expect(harness.failureCodes.get("variant-9x16")).toBe(
-    "render_upload_failed",
-  );
+  expect(harness.failureCodes.get("variant-9x16")).toBe("render_upload_failed");
   expect(harness.failureDispositions.get("variant-9x16")).toBe("retryable");
   expect(harness.states.get("variant-1x1")).toBe("completed");
   expect(harness.persistedVariantIds).toEqual(["variant-1x1"]);
@@ -2447,9 +2286,9 @@ for (const resumedDeliveryFailure of [
       superseded: 0,
       followUpWorkflowRunId: null,
     });
-    expect(harness.commands.map((command) => command.outputVariantIds)).toEqual([
-      ["variant-resumed"],
-    ]);
+    expect(harness.commands.map((command) => command.outputVariantIds)).toEqual(
+      [["variant-resumed"]],
+    );
     expect(harness.states.get("variant-completed")).toBe("completed");
     expect(harness.states.get("variant-resumed")).toBe("retryable-failure");
     expect(harness.failureCodes.get("variant-resumed")).toBe(
@@ -2585,10 +2424,7 @@ test("ClipRenderAttempt completes a Render Work Set whose variants are all super
     superseded: 2,
     followUpWorkflowRunId: null,
   });
-  expect([...harness.states.values()]).toEqual([
-    "superseded",
-    "superseded",
-  ]);
+  expect([...harness.states.values()]).toEqual(["superseded", "superseded"]);
   expect(harness.persistedVariantIds).toEqual([]);
 });
 
@@ -2606,21 +2442,6 @@ interface RenderedMediaProbe {
   audioCodec: string | null;
 }
 
-const captionCompatibilityUtterances: TranscriptUtterance[] = [
-  {
-    index: 0,
-    speaker: 0,
-    speakerLabel: "Speaker 1",
-    startSec: 0.05,
-    endSec: 0.32,
-    text: "Core path",
-    confidence: 0.99,
-    words: [
-      { word: "Core", startSec: 0.05, endSec: 0.16, confidence: 0.99 },
-      { word: "path", startSec: 0.18, endSec: 0.32, confidence: 0.99 },
-    ],
-  },
-];
 
 function probeRenderedMedia(
   variantId: string,
@@ -2664,10 +2485,12 @@ function probeRenderedMedia(
 }
 
 async function hashRenderedMedia(filePath: string): Promise<string> {
-  return createHash("sha256").update(await readFile(filePath)).digest("hex");
+  return createHash("sha256")
+    .update(await readFile(filePath))
+    .digest("hex");
 }
 
-describe("ClipRenderAttempt real-media compatibility fixtures", () => {
+describe("ClipRenderAttempt real-media plan fixtures", () => {
   let fixtureDirectory = "";
   let videoSourcePath = "";
   let audioSourcePath = "";
@@ -2707,7 +2530,9 @@ describe("ClipRenderAttempt real-media compatibility fixtures", () => {
       { encoding: "utf-8" },
     );
     if (videoFixture.status !== 0) {
-      throw new Error(`video fixture generation failed: ${videoFixture.stderr}`);
+      throw new Error(
+        `video fixture generation failed: ${videoFixture.stderr}`,
+      );
     }
     const audioFixture = spawnSync(
       "ffmpeg",
@@ -2724,7 +2549,9 @@ describe("ClipRenderAttempt real-media compatibility fixtures", () => {
       { encoding: "utf-8" },
     );
     if (audioFixture.status !== 0) {
-      throw new Error(`audio fixture generation failed: ${audioFixture.stderr}`);
+      throw new Error(
+        `audio fixture generation failed: ${audioFixture.stderr}`,
+      );
     }
     const sourceBytes = await readFile(videoSourcePath);
     sourceServer = createServer((request, response) => {
@@ -2775,135 +2602,6 @@ describe("ClipRenderAttempt real-media compatibility fixtures", () => {
     }
   });
 
-  for (const fixture of topologyFixtures) {
-    test.skipIf(!ffmpegAvailable || !ffprobeAvailable)(
-      `${fixture.topology} is byte- and probe-compatible with the offline legacy builder`,
-      async () => {
-        const renderedResults = new Map<
-          string,
-          { hash: string; probe: RenderedMediaProbe }
-        >();
-        const variants: CoreVariantFixture[] =
-          fixture.topology === "single-video"
-            ? [
-                {
-                  id: "variant-9x16",
-                  aspectRatio: "ratio_9_16",
-                  resolution: "720p",
-                },
-              ]
-            : [
-                {
-                  id: "variant-9x16",
-                  aspectRatio: "ratio_9_16",
-                  resolution: "720p",
-                },
-                {
-                  id: "variant-1x1",
-                  aspectRatio: "ratio_1_1",
-                  resolution: "720p",
-                },
-              ];
-        const sourcePath =
-          fixture.topology === "audiogram"
-            ? audioSourcePath
-            : videoSourcePath;
-        const legacyDirectory = await mkdtemp(
-          join(fixtureDirectory, `${fixture.topology}-legacy-`),
-        );
-        const legacySrtPath = join(legacyDirectory, "captions.srt");
-        await writeFile(
-          legacySrtPath,
-          generateSrtFromSlice(captionCompatibilityUtterances, 0),
-          "utf-8",
-        );
-        const legacyOutputs = variants.map((variant) => ({
-          variantId: variant.id,
-          aspectRatio:
-            variant.aspectRatio === "ratio_1_1"
-              ? ("1:1" as const)
-              : ("9:16" as const),
-          outputPath: join(legacyDirectory, `${variant.id}.mp4`),
-          resolution: "720p" as const,
-        }));
-        const legacyCommands = buildLegacyCommands({
-          topology: fixture.topology,
-          sourcePath,
-          outputs: legacyOutputs,
-          startSec: 0,
-          endSec: 0.4,
-          probe: {
-            width: 640,
-            height: 360,
-            hasVideo: fixture.topology !== "audiogram",
-            hasAudio: true,
-            fps: 24,
-          },
-          watermark: false,
-          srtPath: legacySrtPath,
-        });
-        for (const args of legacyCommands) {
-          const legacyRender = spawnSync("ffmpeg", args, {
-            encoding: "utf-8",
-          });
-          if (legacyRender.status !== 0) {
-            throw new Error(
-              `legacy ${fixture.topology} render failed: ${legacyRender.stderr}`,
-            );
-          }
-        }
-        const legacyResults = new Map(
-          await Promise.all(
-            legacyOutputs.map(async (output) => [
-              output.variantId,
-              {
-                hash: await hashRenderedMedia(output.outputPath),
-                probe: probeRenderedMedia(output.variantId, output.outputPath),
-              },
-            ] as const),
-          ),
-        );
-        const harness = createCoreRenderPathTracer({
-          topology: fixture.topology,
-          clipWindow: { startSec: 0, endSec: 0.4 },
-          variants,
-          transcriptSlice: captionCompatibilityUtterances,
-          realMedia: {
-            sourcePath,
-            probeOutput: async (variantId, filePath) => {
-              renderedResults.set(variantId, {
-                hash: await hashRenderedMedia(filePath),
-                probe: probeRenderedMedia(variantId, filePath),
-              });
-            },
-          },
-        });
-
-        const outcome = await harness.clipRenderAttempt.execute({
-          attempt: harness.attempt,
-          signal: new AbortController().signal,
-        });
-        if (outcome.status !== "completed") {
-          throw new Error(JSON.stringify(harness.diagnostics, null, 2));
-        }
-        expect(outcome).toMatchObject({
-          status: "completed",
-          succeeded: variants.length,
-        });
-        expect(
-          harness.commands.map((command) =>
-            normalizeCommandArgs(command.args, command.outputVariantIds),
-          ),
-        ).toEqual(
-          legacyCommands.map((args, index) =>
-            normalizeCommandArgs(args, fixture.outputGroups[index] ?? []),
-          ),
-        );
-        expect(renderedResults).toEqual(legacyResults);
-      },
-      30_000,
-    );
-  }
 
   test.skipIf(!ffmpegAvailable || !ffprobeAvailable)(
     "frozen export state overrides live clip timing and free-plan watermark",
@@ -2915,9 +2613,7 @@ describe("ClipRenderAttempt real-media compatibility fixtures", () => {
         exportVariant?: CoreVariantFixture["exportVariant"];
         clipSnapshot?: Record<string, unknown> | null;
       }) => {
-        let result:
-          | { hash: string; probe: RenderedMediaProbe }
-          | undefined;
+        let result: { hash: string; probe: RenderedMediaProbe } | undefined;
         const harness = createCoreRenderPathTracer({
           topology: "single-video",
           ownerTier: input.ownerTier,
@@ -3067,42 +2763,42 @@ describe("ClipRenderAttempt real-media compatibility fixtures", () => {
     test.skipIf(!ffmpegAvailable || !ffprobeAvailable)(
       `${optionalCase.label} degradation still produces probeable real media`,
       async () => {
-      let result: RenderedMediaProbe | undefined;
-      const harness = createCoreRenderPathTracer({
-        topology: "single-video",
-        clipWindow: { startSec: 0, endSec: 0.4 },
-        variants: [
-          {
-            id: "variant-optional-fallback",
-            aspectRatio: "ratio_9_16",
-            resolution: "720p",
+        let result: RenderedMediaProbe | undefined;
+        const harness = createCoreRenderPathTracer({
+          topology: "single-video",
+          clipWindow: { startSec: 0, endSec: 0.4 },
+          variants: [
+            {
+              id: "variant-optional-fallback",
+              aspectRatio: "ratio_9_16",
+              resolution: "720p",
+            },
+          ],
+          ...optionalCase.input,
+          realMedia: {
+            sourcePath: videoSourcePath,
+            probeOutput: async (variantId, filePath) => {
+              result = probeRenderedMedia(variantId, filePath);
+            },
           },
-        ],
-        ...optionalCase.input,
-        realMedia: {
-          sourcePath: videoSourcePath,
-          probeOutput: async (variantId, filePath) => {
-            result = probeRenderedMedia(variantId, filePath);
-          },
-        },
-      });
+        });
 
-      await expect(
-        harness.clipRenderAttempt.execute({
-          attempt: harness.attempt,
-          signal: new AbortController().signal,
-        }),
-      ).resolves.toMatchObject({ status: "completed", succeeded: 1 });
-      expect(result).toMatchObject({ width: 720, height: 1280 });
-      expect(harness.diagnostics).toContainEqual({
-        message: "clip_render_optional_asset_fallback",
-        context: expect.objectContaining({
-          assetClass: optionalCase.assetClass,
-          phase: optionalCase.phase,
-          failureCode: optionalCase.failureCode,
-          disposition: "degraded",
-        }),
-      });
+        await expect(
+          harness.clipRenderAttempt.execute({
+            attempt: harness.attempt,
+            signal: new AbortController().signal,
+          }),
+        ).resolves.toMatchObject({ status: "completed", succeeded: 1 });
+        expect(result).toMatchObject({ width: 720, height: 1280 });
+        expect(harness.diagnostics).toContainEqual({
+          message: "clip_render_optional_asset_fallback",
+          context: expect.objectContaining({
+            assetClass: optionalCase.assetClass,
+            phase: optionalCase.phase,
+            failureCode: optionalCase.failureCode,
+            disposition: "degraded",
+          }),
+        });
       },
       30_000,
     );
@@ -3110,25 +2806,10 @@ describe("ClipRenderAttempt real-media compatibility fixtures", () => {
 
   for (const analysisCase of [
     {
-      label: "auto-reframe",
-      diagnostic: "clip_reframe_applied",
-      configOverrides: { WORKER_AUTO_REFRAME: "1" },
-      clipOverrides: {},
-      faceAnalysisSamples: [
-        { t: 0, cx: 0.25 },
-        { t: 0.2, cx: 0.75 },
-      ],
-      multiFaceAnalysisSamples: undefined,
-      pipAnalysisResult: undefined,
-      resolution: "1080p" as const,
-    },
-    {
       label: "picture-in-picture screen layout",
       diagnostic: "clip_screen_pip_selected",
       configOverrides: {
         WORKER_SCREEN_LAYOUT: "1",
-        WORKER_PIP_DETECT: "1",
-        WORKER_COMPOSITION_SCREEN: "plan",
       },
       clipOverrides: { studioEdits: { framing: { mode: "screen" } } },
       faceAnalysisSamples: Array.from({ length: 8 }, (_, index) => ({
@@ -3148,7 +2829,6 @@ describe("ClipRenderAttempt real-media compatibility fixtures", () => {
       diagnostic: "clip_split_applied",
       configOverrides: {
         WORKER_SPLIT: "1",
-        WORKER_COMPOSITION_SPLIT: "plan",
       },
       clipOverrides: { studioEdits: { framing: { mode: "split" } } },
       faceAnalysisSamples: undefined,
@@ -3166,7 +2846,6 @@ describe("ClipRenderAttempt real-media compatibility fixtures", () => {
       label: "shot-layout engine",
       diagnostic: "clip_layout_plan_applied",
       configOverrides: {
-        WORKER_AUTO_REFRAME: "1",
         WORKER_LAYOUT_ENGINE: "1",
       },
       clipOverrides: {},
@@ -3234,10 +2913,26 @@ describe("ClipRenderAttempt real-media compatibility fixtures", () => {
       async () => {
         const probes = new Map<string, RenderedMediaProbe>();
         const variants: CoreVariantFixture[] = [
-          { id: `${plannedMode}-9x16`, aspectRatio: "ratio_9_16", resolution: "720p" },
-          { id: `${plannedMode}-1x1`, aspectRatio: "ratio_1_1", resolution: "720p" },
-          { id: `${plannedMode}-16x9`, aspectRatio: "ratio_16_9", resolution: "720p" },
-          { id: `${plannedMode}-4x5`, aspectRatio: "ratio_4_5", resolution: "720p" },
+          {
+            id: `${plannedMode}-9x16`,
+            aspectRatio: "ratio_9_16",
+            resolution: "720p",
+          },
+          {
+            id: `${plannedMode}-1x1`,
+            aspectRatio: "ratio_1_1",
+            resolution: "720p",
+          },
+          {
+            id: `${plannedMode}-16x9`,
+            aspectRatio: "ratio_16_9",
+            resolution: "720p",
+          },
+          {
+            id: `${plannedMode}-4x5`,
+            aspectRatio: "ratio_4_5",
+            resolution: "720p",
+          },
         ];
         const face = (cx: number) => ({
           cx,
@@ -3253,11 +2948,9 @@ describe("ClipRenderAttempt real-media compatibility fixtures", () => {
           clipOverrides: { studioEdits: { framing: { mode: plannedMode } } },
           configOverrides:
             plannedMode === "split"
-              ? { WORKER_SPLIT: "1", WORKER_COMPOSITION_SPLIT: "plan" }
+              ? { WORKER_SPLIT: "1" }
               : {
                   WORKER_SCREEN_LAYOUT: "1",
-                  WORKER_PIP_DETECT: "1",
-                  WORKER_COMPOSITION_SCREEN: "plan",
                 },
           faceAnalysisSamples:
             plannedMode === "screen"
@@ -3312,7 +3005,6 @@ describe("ClipRenderAttempt real-media compatibility fixtures", () => {
           message: "clip_composition_plan",
           context: expect.objectContaining({
             requestedMode: plannedMode,
-            control: "plan",
           }),
         });
       },
