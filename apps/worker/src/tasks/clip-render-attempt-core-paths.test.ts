@@ -21,6 +21,10 @@ import {
 } from "@narriflow/services";
 import { studioEditsSchema } from "@narriflow/validators";
 import type { TranscriptUtterance } from "@narriflow/validators";
+import {
+  compositionAssetRef,
+  screenLayoutInputFingerprint,
+} from "@narriflow/composition-plan";
 import { parseRenderConfig } from "../render-config";
 import { ProductionRenderMediaAdapter } from "../render-media-adapter";
 import { productionRenderProcessAdapter } from "../render-process-adapter";
@@ -241,6 +245,8 @@ function createCoreRenderPathTracer(input: {
   }> = [];
   const brollCacheWrites: string[] = [];
   const persistedAutoLayouts: Array<unknown> = [];
+  const persistedSplitLayouts: Array<unknown> = [];
+  const persistedScreenLayouts: Array<unknown> = [];
   let settlementCalls = 0;
 
   const variantIdFromPath = (path: string): string | null =>
@@ -562,6 +568,13 @@ function createCoreRenderPathTracer(input: {
           persistedAutoLayouts.push(analysis);
           return false;
         },
+        completeClipSplitLayoutAnalysis: async (_clipId, analysis) => {
+          if (input.analysisPersistenceFailure) {
+            throw input.analysisPersistenceFailure;
+          }
+          persistedSplitLayouts.push(analysis);
+          return true;
+        },
         completeClipRenderVariant: async (variantId) => {
           mutationVariantIds.push(variantId);
           if (input.rejectPersistenceForVariantIds?.includes(variantId)) {
@@ -592,10 +605,11 @@ function createCoreRenderPathTracer(input: {
           states.set(variantId, "rendering");
           return true;
         },
-        setClipLayoutAnalysis: async () => {
+        setClipLayoutAnalysis: async (_clipId, analysis) => {
           if (input.analysisPersistenceFailure) {
             throw input.analysisPersistenceFailure;
           }
+          persistedScreenLayouts.push(analysis);
         },
       },
       storage: {
@@ -653,6 +667,8 @@ function createCoreRenderPathTracer(input: {
     mutationVariantIds,
     persistedVariantIds,
     persistedAutoLayouts,
+    persistedSplitLayouts,
+    persistedScreenLayouts,
     settlementCalls: () => settlementCalls,
     states,
     uploadedVariantIds,
@@ -1711,6 +1727,7 @@ test("ClipRenderAttempt keeps the screen layout when picture-in-picture analysis
     message: "clip_screen_layout_applied",
     context: expect.objectContaining({ selectedMode: "center_crop" }),
   });
+  expect(harness.persistedScreenLayouts).toHaveLength(0);
 });
 
 const qualifyingPipCandidate = {
@@ -1798,6 +1815,103 @@ test("ClipRenderAttempt compiles Screen through the shared plan after analysis",
       effectiveModes: ["screen"],
     }),
   });
+  expect(harness.persistedScreenLayouts.at(-1)).toMatchObject({
+    version: 2,
+    engine: "screen-layout-v1",
+    sourceIdentity: expect.any(String),
+    inputFingerprint: expect.stringMatching(/^[0-9a-f]{16}$/),
+    sourceWidth: 1920,
+    sourceHeight: 1080,
+    faceBandSegments: expect.arrayContaining([
+      expect.objectContaining({ layout: "single" }),
+    ]),
+  });
+});
+
+test("ClipRenderAttempt reuses matching Screen v2 evidence without rerunning or downgrading face analysis", async () => {
+  const sourceIdentity = compositionAssetRef(
+    "source",
+    "20000000-0000-4000-8000-000000000702",
+  );
+  const engine = "screen-layout-v1";
+  const harness = createCoreRenderPathTracer({
+    topology: "single-video",
+    clipOverrides: {
+      studioEdits: { framing: { mode: "screen" } },
+      layoutAnalysis: {
+        version: 2,
+        engine,
+        sourceIdentity,
+        inputFingerprint: screenLayoutInputFingerprint({
+          sourceIdentity,
+          clipStartSec: 2,
+          clipEndSec: 7,
+          deletedRanges: [],
+          engineVersion: engine,
+        }),
+        analyzedAtISO: "2026-08-26T00:00:00.000Z",
+        sourceStartSec: 2,
+        sourceDurationSec: 5,
+        clipStartSec: 2,
+        clipEndSec: 7,
+        movingPxFrac: 0.04,
+        insufficientSamples: false,
+        pipRect: qualifyingPipCandidate,
+        pipUsable: true,
+        sourceWidth: 1920,
+        sourceHeight: 1080,
+        deletedRanges: [],
+        faceBandSegments: [
+          { startSec: 0, endSec: 5, layout: "single", cxNorm: 0.88 },
+        ],
+      },
+    },
+    configOverrides: {
+      WORKER_SCREEN_LAYOUT: "1",
+      WORKER_PIP_DETECT: "1",
+      WORKER_COMPOSITION_SCREEN: "plan",
+    },
+    faceAnalysisFailure: new Error("face analysis must not rerun"),
+  });
+
+  await expect(
+    harness.clipRenderAttempt.execute({
+      attempt: harness.attempt,
+      signal: new AbortController().signal,
+    }),
+  ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
+  expect(harness.persistedScreenLayouts).toHaveLength(0);
+  expect(harness.diagnostics).toContainEqual({
+    message: "clip_composition_plan",
+    context: expect.objectContaining({
+      evidenceSource: "durable-pip",
+      effectiveModes: ["screen"],
+    }),
+  });
+});
+
+test("ClipRenderAttempt does not persist Screen evidence while PiP detection is disabled", async () => {
+  const harness = createCoreRenderPathTracer({
+    topology: "single-video",
+    clipOverrides: { studioEdits: { framing: { mode: "screen" } } },
+    configOverrides: {
+      WORKER_SCREEN_LAYOUT: "1",
+      WORKER_PIP_DETECT: "0",
+      WORKER_COMPOSITION_SCREEN: "plan",
+    },
+    faceAnalysisSamples: Array.from({ length: 8 }, (_, index) => ({
+      t: index * 0.25,
+      cx: 0.88,
+    })),
+  });
+
+  await expect(
+    harness.clipRenderAttempt.execute({
+      attempt: harness.attempt,
+      signal: new AbortController().signal,
+    }),
+  ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
+  expect(harness.persistedScreenLayouts).toHaveLength(0);
 });
 
 test("ClipRenderAttempt preserves speaker-band framing for a valid no-screen result", async () => {
@@ -1905,12 +2019,20 @@ test("ClipRenderAttempt compiles explicit Split through the shared plan", async 
     })),
   });
 
-  await expect(
-    harness.clipRenderAttempt.execute({
-      attempt: harness.attempt,
-      signal: new AbortController().signal,
-    }),
-  ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
+  const splitResult = await harness.clipRenderAttempt.execute({
+    attempt: harness.attempt,
+    signal: new AbortController().signal,
+  });
+  if (splitResult.status !== "completed") {
+    throw new Error(
+      JSON.stringify({
+        splitResult,
+        diagnostics: harness.diagnostics,
+        failures: [...harness.failureCodes],
+      }),
+    );
+  }
+  expect(splitResult).toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
   const graph = harness.commands[0]?.args.join(" ") ?? "";
   expect(graph).toContain("composition_scene_0_layer_0_src");
   expect(graph).not.toContain("split_seg0_src");
@@ -1922,8 +2044,9 @@ test("ClipRenderAttempt compiles explicit Split through the shared plan", async 
       effectiveModes: ["split"],
     }),
   });
-  expect(harness.persistedAutoLayouts).toHaveLength(1);
-  expect(harness.persistedAutoLayouts[0]).toMatchObject({
+  expect(harness.persistedAutoLayouts).toHaveLength(0);
+  expect(harness.persistedSplitLayouts).toHaveLength(1);
+  expect(harness.persistedSplitLayouts[0]).toMatchObject({
     engine: "explicit-split-v1",
     segments: expect.arrayContaining([
       expect.objectContaining({ layout: "two-up" }),
@@ -1987,12 +2110,13 @@ test("ClipRenderAttempt degrades only the ineligible Split target", async () => 
     topology: "studio-per-output",
     clipOverrides: { studioEdits: { framing: { mode: "split" } } },
     configOverrides: {
+      WORKER_AUTO_REFRAME: "1",
       WORKER_SPLIT: "1",
       WORKER_COMPOSITION_SPLIT: "plan",
     },
     multiFaceAnalysisSamples: Array.from({ length: 12 }, (_, index) => ({
       t: index * 0.25,
-      faces: [face(0.3), face(0.7)],
+      faces: [face(0.2 + (index % 6) * 0.04), face(0.7)],
     })),
   });
 
@@ -2012,6 +2136,12 @@ test("ClipRenderAttempt degrades only the ineligible Split target", async () => 
     )?.args.join(" ") ?? "";
   expect(verticalGraph).toContain("vstack=inputs=2");
   expect(squareGraph).not.toContain("vstack=inputs=2");
+  expect(squareGraph).not.toContain("composition_scene_");
+  expect(squareGraph).toContain("sendcmd=f=");
+  expect(harness.diagnostics).toContainEqual({
+    message: "clip_reframe_applied",
+    context: expect.objectContaining({ outputs: ["1:1"] }),
+  });
   expect(harness.diagnostics).toContainEqual({
     message: "clip_composition_plan",
     context: expect.objectContaining({
@@ -2093,6 +2223,55 @@ for (const disabledAnalysisCase of [
         fallbackMode: "auto_reframe",
         failureCode: "analysis_disabled",
         disposition: "degraded",
+      }),
+    });
+  });
+}
+
+for (const disabledPlanCase of [
+  {
+    mode: "screen",
+    control: { WORKER_COMPOSITION_SCREEN: "plan" },
+  },
+  {
+    mode: "split",
+    control: { WORKER_COMPOSITION_SPLIT: "plan" },
+  },
+] as const) {
+  test(`ClipRenderAttempt plan cutover preserves tracked ${disabledPlanCase.mode} fallback when analysis is disabled`, async () => {
+    const harness = createCoreRenderPathTracer({
+      topology: "single-video",
+      clipOverrides: {
+        studioEdits: { framing: { mode: disabledPlanCase.mode } },
+      },
+      configOverrides: {
+        WORKER_AUTO_REFRAME: "1",
+        ...disabledPlanCase.control,
+      },
+      faceAnalysisSamples: [
+        { t: 0, cx: 0.2 },
+        { t: 1, cx: 0.5 },
+        { t: 2, cx: 0.8 },
+      ],
+    });
+
+    await expect(
+      harness.clipRenderAttempt.execute({
+        attempt: harness.attempt,
+        signal: new AbortController().signal,
+      }),
+    ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
+    const graph = harness.commands[0]?.args.join(" ") ?? "";
+    expect(graph).not.toContain("composition_scene_0_layer_0_src");
+    expect(harness.diagnostics).toContainEqual({
+      message: "clip_reframe_applied",
+      context: expect.objectContaining({ selectedMode: "face_tracked" }),
+    });
+    expect(harness.diagnostics).toContainEqual({
+      message: "clip_composition_plan_retained_legacy_fallback",
+      context: expect.objectContaining({
+        requestedMode: disabledPlanCase.mode,
+        evidenceState: "disabled",
       }),
     });
   });

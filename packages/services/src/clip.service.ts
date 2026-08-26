@@ -33,6 +33,7 @@ import {
   normalizeDeletedRanges,
   normalizeTranscriptSliceForClip,
   parseClipAutoLayoutAnalysis,
+  parseClipSplitLayoutAnalysis,
   parseClipLayoutAnalysis,
   resolvePricingTier,
   saveEditorDocumentSchema,
@@ -51,6 +52,7 @@ import type {
   ClipPlatformTarget,
   ClipRenderResolution,
   ClipRenderVariant,
+  ClipSplitLayoutAnalysis,
   ClipSnapshot,
   ClipWindow,
   ContentPack,
@@ -1524,6 +1526,7 @@ export class ClipService {
           previewStartSec: null,
           previewDurationSec: null,
           autoLayoutAnalysis: Prisma.DbNull,
+          splitLayoutAnalysis: Prisma.DbNull,
           autoLayoutStatus: "pending",
           autoLayoutClaimToken: null,
           autoLayoutLeaseExpiresAt: null,
@@ -3410,6 +3413,49 @@ export class ClipService {
     return result.count === 1;
   }
 
+  /** Publishes explicit Split evidence behind the same revision/proxy and
+   * workflow-ownership fences as Automatic evidence. The isolated column is
+   * authoritative for new readers; the legacy mirror keeps rolling web
+   * versions compatible until the old reader is retired. */
+  async completeClipSplitLayoutAnalysis(
+    clipId: string,
+    analysis: ClipSplitLayoutAnalysis,
+    expected: {
+      editorRevision: number;
+      previewStorageKey: string;
+    },
+  ): Promise<boolean> {
+    const prisma = requirePrisma();
+    const parsed = parseClipSplitLayoutAnalysis(analysis);
+    if (!parsed) {
+      throw new Error("invalid_split_layout_analysis_engine");
+    }
+    const attempt = currentWorkflowAttempt();
+    if (attempt) {
+      return getWorkflowRunLifecycle().completeClipSplitLayoutAnalysis(attempt, {
+        clipId,
+        analysis: parsed as unknown as Prisma.InputJsonValue,
+        editorRevision: expected.editorRevision,
+        previewStorageKey: expected.previewStorageKey,
+      });
+    }
+    const result = await prisma.clip.updateMany({
+      where: {
+        id: clipId,
+        editorRevision: expected.editorRevision,
+        previewStorageKey: expected.previewStorageKey,
+      },
+      data: {
+        splitLayoutAnalysis: parsed as unknown as Prisma.InputJsonValue,
+        autoLayoutAnalysis: parsed as unknown as Prisma.InputJsonValue,
+        autoLayoutStatus: "completed",
+        autoLayoutClaimToken: null,
+        autoLayoutLeaseExpiresAt: null,
+      },
+    });
+    return result.count === 1;
+  }
+
   /** Complete a worker claim only if its fencing token and analyzed inputs
    * are still current. */
   async completeClaimedClipAutoLayoutAnalysis(
@@ -3709,6 +3755,8 @@ export class ClipService {
     layoutAnalysis: ClipLayoutAnalysis | null;
     /** Automatic shot/speaker layout consumed by preview and render. */
     autoLayoutAnalysis: ClipAutoLayoutAnalysis | null;
+    /** Explicit Split detector evidence, independent from Automatic. */
+    splitLayoutAnalysis: ClipSplitLayoutAnalysis | null;
   }> {
     const prisma = requirePrisma();
 
@@ -3727,6 +3775,9 @@ export class ClipService {
     const autoLayoutAnalysis = parseClipAutoLayoutAnalysis(
       clip.autoLayoutAnalysis,
     );
+    const splitLayoutAnalysis = parseClipSplitLayoutAnalysis(
+      clip.splitLayoutAnalysis,
+    );
 
     return {
       revision: clip.editorRevision,
@@ -3734,6 +3785,7 @@ export class ClipService {
       original,
       layoutAnalysis,
       autoLayoutAnalysis,
+      splitLayoutAnalysis,
     };
   }
 
@@ -3755,6 +3807,38 @@ export class ClipService {
       throw new Error("clip not found");
     }
     return parseClipAutoLayoutAnalysis(clip.autoLayoutAnalysis);
+  }
+
+  async getClipSplitLayoutAnalysis(
+    userId: string,
+    projectId: string,
+    clipId: string,
+  ): Promise<ClipSplitLayoutAnalysis | null> {
+    const prisma = requirePrisma();
+    const clip = await prisma.clip.findFirst({
+      where: { id: clipId, projectId, project: { userId } },
+      select: { splitLayoutAnalysis: true },
+    });
+    if (!clip) {
+      throw new Error("clip not found");
+    }
+    return parseClipSplitLayoutAnalysis(clip.splitLayoutAnalysis);
+  }
+
+  async getClipLayoutAnalysis(
+    userId: string,
+    projectId: string,
+    clipId: string,
+  ): Promise<ClipLayoutAnalysis | null> {
+    const prisma = requirePrisma();
+    const clip = await prisma.clip.findFirst({
+      where: { id: clipId, projectId, project: { userId } },
+      select: { layoutAnalysis: true },
+    });
+    if (!clip) {
+      throw new Error("clip not found");
+    }
+    return parseClipLayoutAnalysis(clip.layoutAnalysis);
   }
 
   /**
@@ -3911,6 +3995,10 @@ export class ClipService {
     const layoutInputsChanged =
       boundariesChanged ||
       JSON.stringify(next.deletedRanges) !== JSON.stringify(current.deletedRanges);
+    const legacySplitMirrorNeedsReplacement = Boolean(
+      next.studioEdits.framing.mode === "auto" &&
+        parseClipSplitLayoutAnalysis(clip.autoLayoutAnalysis),
+    );
     if (boundaryDriftDetected && plan.recomputedEffective) {
       // Diagnostic only — the transcript is already clamped to the stored
       // window regardless. Surfaces the cases where a client sent a
@@ -3964,13 +4052,16 @@ export class ClipService {
           ...(boundariesChanged
             ? { previewStorageKey: null, previewStartSec: null, previewDurationSec: null }
             : {}),
-          ...(layoutInputsChanged
+          ...(layoutInputsChanged || legacySplitMirrorNeedsReplacement
             ? {
                 autoLayoutAnalysis: Prisma.DbNull,
                 autoLayoutStatus: "pending" as const,
                 autoLayoutClaimToken: null,
                 autoLayoutLeaseExpiresAt: null,
               }
+            : {}),
+          ...(layoutInputsChanged
+            ? { splitLayoutAnalysis: Prisma.DbNull }
             : {}),
           // First real save captures the pre-edit state as the immutable
           // revision-zero snapshot; never overwritten afterwards.
@@ -4131,6 +4222,10 @@ export class ClipService {
       boundariesChanged ||
       JSON.stringify(normalizedOriginalRanges) !==
         JSON.stringify(currentDocument.deletedRanges);
+    const legacySplitMirrorNeedsReplacement = Boolean(
+      original.studioEdits.framing.mode === "auto" &&
+        parseClipSplitLayoutAnalysis(clip.autoLayoutAnalysis),
+    );
     const staleRenderKeys = [
       ...clip.renders
         .filter((render) => render.exportVariantId === null)
@@ -4168,13 +4263,16 @@ export class ClipService {
                 previewDurationSec: null,
               }
             : {}),
-          ...(layoutInputsChanged
+          ...(layoutInputsChanged || legacySplitMirrorNeedsReplacement
             ? {
                 autoLayoutAnalysis: Prisma.DbNull,
                 autoLayoutStatus: "pending" as const,
                 autoLayoutClaimToken: null,
                 autoLayoutLeaseExpiresAt: null,
               }
+            : {}),
+          ...(layoutInputsChanged
+            ? { splitLayoutAnalysis: Prisma.DbNull }
             : {}),
         },
       });

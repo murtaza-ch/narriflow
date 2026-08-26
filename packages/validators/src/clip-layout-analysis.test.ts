@@ -3,6 +3,7 @@ import {
   clipLayoutAnalysisSchema,
   parseClipLayoutAnalysis,
   type ClipLayoutAnalysis,
+  type ClipLayoutAnalysisV2,
 } from "./clip-layout-analysis";
 
 const validWithRect: ClipLayoutAnalysis = {
@@ -53,12 +54,55 @@ const validInsufficientSamples: ClipLayoutAnalysis = {
   pipUsable: false,
 };
 
+const validV2: ClipLayoutAnalysisV2 = {
+  ...validWithRect,
+  version: 2,
+  engine: "screen-layout-v1",
+  sourceIdentity: "source:0123456789abcdef",
+  inputFingerprint: "0123456789abcdef",
+  sourceWidth: 1920,
+  sourceHeight: 1080,
+  deletedRanges: [],
+  faceBandSegments: [
+    {
+      startSec: 0,
+      endSec: 30,
+      layout: "single",
+      cxNorm: 0.72,
+      cyNorm: 0.5,
+      zoom: 1,
+    },
+  ],
+};
+
 describe("clipLayoutAnalysisSchema", () => {
   test("round-trips a screencast-with-PiP envelope", () => {
     const parsed = clipLayoutAnalysisSchema.parse(
       JSON.parse(JSON.stringify(validWithRect)),
     );
     expect(parsed).toEqual(validWithRect);
+  });
+
+  test("round-trips identity-complete v2 Screen composition evidence", () => {
+    expect(clipLayoutAnalysisSchema.parse(validV2)).toEqual(validV2);
+  });
+
+  test("rejects malformed v2 identity, dimensions, and face-band evidence", () => {
+    expect(
+      clipLayoutAnalysisSchema.safeParse({
+        ...validV2,
+        inputFingerprint: "not-a-fingerprint",
+      }).success,
+    ).toBe(false);
+    expect(
+      clipLayoutAnalysisSchema.safeParse({ ...validV2, sourceWidth: 0 }).success,
+    ).toBe(false);
+    expect(
+      clipLayoutAnalysisSchema.safeParse({
+        ...validV2,
+        faceBandSegments: [],
+      }).success,
+    ).toBe(false);
   });
 
   test("round-trips an analyzed-but-no-qualifying-rect envelope (pipRect null, movingPxFrac non-null)", () => {
@@ -205,8 +249,9 @@ describe("parseClipLayoutAnalysis", () => {
     expect(parseClipLayoutAnalysis(undefined)).toBeNull();
   });
 
-  test("treats an unrecognized version as absent rather than guessing at its shape", () => {
-    const futureVersion = { ...validWithRect, version: 2 };
+  test("reads v2 and treats an unrecognized version as absent", () => {
+    expect(parseClipLayoutAnalysis(validV2)).toEqual(validV2);
+    const futureVersion = { ...validWithRect, version: 3 };
     expect(parseClipLayoutAnalysis(futureVersion)).toBeNull();
 
     const noVersion: Record<string, unknown> = { ...validWithRect };

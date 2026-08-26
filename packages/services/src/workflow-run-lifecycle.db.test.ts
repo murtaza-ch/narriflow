@@ -321,6 +321,10 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       }),
     ]);
     const clip = await clipFixture(project.id, run.id);
+    await prisma.clip.update({
+      where: { id: clip.id },
+      data: { splitLayoutAnalysis: { version: 1, engine: "explicit-split-v1" } },
+    });
     const pending = await prisma.clipRender.create({
       data: { clipId: clip.id, aspectRatio: "ratio_9_16" },
     });
@@ -358,6 +362,10 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     expect(state?.pendingRenders.map((render) => render.id)).not.toContain(
       completed.id,
     );
+    expect(state?.pendingRenders[0]?.clip.splitLayoutAnalysis).toEqual({
+      version: 1,
+      engine: "explicit-split-v1",
+    });
   });
 
   test("an initially empty Render Work Set cannot expand on retry", async () => {
@@ -1915,11 +1923,24 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
         analysis: { version: 1 },
       }),
     ).rejects.toBeInstanceOf(WorkflowAttemptLost);
+    await expect(
+      firstLifecycle.completeClipSplitLayoutAnalysis(first, {
+        clipId: clip.id,
+        analysis: { version: 1 },
+        editorRevision: clip.editorRevision,
+        previewStorageKey: "stale-preview",
+      }),
+    ).rejects.toBeInstanceOf(WorkflowAttemptLost);
     const stored = await prisma.clip.findUniqueOrThrow({
       where: { id: clip.id },
-      select: { autoLayoutAnalysis: true, layoutAnalysis: true },
+      select: {
+        autoLayoutAnalysis: true,
+        splitLayoutAnalysis: true,
+        layoutAnalysis: true,
+      },
     });
     expect(stored.autoLayoutAnalysis).toBeNull();
+    expect(stored.splitLayoutAnalysis).toBeNull();
     expect(stored.layoutAnalysis).toBeNull();
   });
 
@@ -1929,6 +1950,11 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     const unownedClip = await clipFixture(project.id, run.id, 1);
     const ownedVariant = await prisma.clipRender.create({
       data: { clipId: ownedClip.id, aspectRatio: "ratio_9_16" },
+    });
+    const ownedPreviewStorageKey = `previews/${ownedClip.id}/current.mp4`;
+    await prisma.clip.update({
+      where: { id: ownedClip.id },
+      data: { previewStorageKey: ownedPreviewStorageKey },
     });
     const { lifecycle, attempt } = await claimRenderAttempt();
     expect((await lifecycle.beginRenderWorkSet(attempt)).variantIds).toEqual([
@@ -1955,9 +1981,25 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       }),
     ).rejects.toBeInstanceOf(WorkflowAttemptLost);
     await expect(
+      lifecycle.completeClipSplitLayoutAnalysis(attempt, {
+        clipId: unownedClip.id,
+        analysis: { version: 1 },
+        editorRevision: unownedClip.editorRevision,
+        previewStorageKey: "unowned-preview",
+      }),
+    ).rejects.toBeInstanceOf(WorkflowAttemptLost);
+    await expect(
       lifecycle.setClipLayoutAnalysis(attempt, {
         clipId: ownedClip.id,
         analysis: { version: 1 },
+      }),
+    ).resolves.toBe(true);
+    await expect(
+      lifecycle.completeClipSplitLayoutAnalysis(attempt, {
+        clipId: ownedClip.id,
+        analysis: { version: 1, engine: "explicit-split-v1" },
+        editorRevision: ownedClip.editorRevision,
+        previewStorageKey: ownedPreviewStorageKey,
       }),
     ).resolves.toBe(true);
 
@@ -1966,8 +2008,17 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       prisma.clip.findUniqueOrThrow({ where: { id: unownedClip.id } }),
     ]);
     expect(storedOwned.layoutAnalysis).toEqual({ version: 1 });
+    expect(storedOwned.splitLayoutAnalysis).toEqual({
+      version: 1,
+      engine: "explicit-split-v1",
+    });
+    expect(storedOwned.autoLayoutAnalysis).toEqual({
+      version: 1,
+      engine: "explicit-split-v1",
+    });
     expect(storedUnowned.layoutAnalysis).toBeNull();
     expect(storedUnowned.autoLayoutAnalysis).toBeNull();
+    expect(storedUnowned.splitLayoutAnalysis).toBeNull();
   });
 
   test("a fenced render can replace independently stale automatic-layout evidence", async () => {

@@ -398,12 +398,14 @@ function targetSupportsTwoUp(
   source: CompositionSourceFacts,
   target: CompositionTarget,
 ): boolean {
-  const tileRatio = target.width / Math.round(target.height / 2);
-  const cropWidth =
-    source.width / source.height >= tileRatio
-      ? Math.round(source.height * tileRatio)
-      : source.width;
-  return cropWidth < source.width;
+  return evenStackFrames(target).every((frame) => {
+    const tileRatio = frame.width / frame.height;
+    const cropWidth =
+      source.width / source.height >= tileRatio
+        ? Math.round(source.height * tileRatio)
+        : source.width;
+    return cropWidth < source.width;
+  });
 }
 
 function evenStackFrames(target: CompositionTarget): readonly [CompositionRect, CompositionRect] {
@@ -413,6 +415,16 @@ function evenStackFrames(target: CompositionTarget): readonly [CompositionRect, 
     { x: 0, y: 0, width: target.width, height: topHeight },
     { x: 0, y: topHeight, width: target.width, height: bottomHeight },
   ];
+}
+
+function cropsAreLaterallyDistinct(
+  left: CompositionRect,
+  right: CompositionRect,
+  sourceWidth: number,
+): boolean {
+  const leftCenter = left.x + left.width / 2;
+  const rightCenter = right.x + right.width / 2;
+  return Math.abs(leftCenter - rightCenter) >= Math.max(2, sourceWidth * 0.02);
 }
 
 function segmentsAreComplete(
@@ -980,19 +992,66 @@ export function planClipComposition(
         });
         return centerFallback("auto");
       }
+      const scenes = speakerScenes({
+        mode: "split",
+        source: input.source,
+        target,
+        segments: splitEvidence.segments,
+        overrides: input.document.studioEdits.speakerLayoutOverrides,
+      });
+      const resolvedScenes = scenes.flatMap((scene) => {
+        const layers = scene.layers.filter(
+          (layer) => layer.kind === "source-video",
+        );
+        const duplicated =
+          layers.length === 2 &&
+          !cropsAreLaterallyDistinct(
+            layers[0]!.sourceCrop,
+            layers[1]!.sourceCrop,
+            input.source.width,
+          );
+        if (!duplicated) return [scene];
+        notices.push({
+          code: "split_tiles_not_distinct",
+          fidelity: "degraded",
+          targetId: target.id,
+          sceneId: scene.id,
+          effectiveFallback: "auto",
+          userActionPossible: false,
+        });
+        const fallbackSegments = splitEvidence.fallbackSegments
+          .filter(
+            (segment) =>
+              segment.endSec > scene.startSec && segment.startSec < scene.endSec,
+          )
+          .map((segment) => ({
+            ...segment,
+            startSec: Math.max(segment.startSec, scene.startSec),
+            endSec: Math.min(segment.endSec, scene.endSec),
+          }));
+        return speakerScenes({
+          mode: "auto",
+          source: input.source,
+          target,
+          segments: fallbackSegments,
+          overrides: input.document.studioEdits.speakerLayoutOverrides,
+        }).map((fallbackScene, index) => ({
+          ...fallbackScene,
+          id: `${scene.id}:fallback:${index}`,
+        }));
+      });
+      const hasUsableTwoUpScene = resolvedScenes.some(
+        (scene) =>
+          scene.layers.filter((layer) => layer.kind === "source-video").length ===
+          2,
+      );
       return {
         id: target.id,
         aspectRatio: target.aspectRatio,
         requestedMode,
-        effectiveMode: "split",
+        effectiveMode: hasUsableTwoUpScene ? "split" : "auto",
         canvas,
-        scenes: speakerScenes({
-          mode: "split",
-          source: input.source,
-          target,
-          segments: splitEvidence.segments,
-          overrides: input.document.studioEdits.speakerLayoutOverrides,
-        }),
+        scenes: resolvedScenes,
       };
     }
     if (requestedMode === "screen") {
@@ -1062,7 +1121,10 @@ export function planClipComposition(
             pipCrop,
           ),
         ];
-      } else if (screenEvidence?.faceBand.state === "available") {
+      } else if (
+        screenEvidence?.faceBand.state === "available" &&
+        targetSupportsTwoUp(input.source, target)
+      ) {
         const [, bottom] = evenStackFrames(target);
         scenes = screenEvidence.faceBand.segments.map((segment, sceneIndex) => {
           const single =
@@ -1109,7 +1171,8 @@ export function planClipComposition(
               ? `screen_${screenAvailability.reason}`
               : pipCrop === null && screenEvidence?.pictureInPicture.state === "confirmed"
                 ? "screen_pip_too_small"
-                : screenEvidence?.faceBand.state === "available"
+                : screenEvidence?.faceBand.state === "available" &&
+                    targetSupportsTwoUp(input.source, target)
                   ? "screen_face_band_fallback"
                   : "screen_static_center_fallback",
           fidelity: provisional ? "provisional" : "degraded",

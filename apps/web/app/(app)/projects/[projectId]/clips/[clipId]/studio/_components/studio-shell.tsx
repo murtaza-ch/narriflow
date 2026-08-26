@@ -14,9 +14,15 @@ import { Box, Button, Flex, Heading, Stack, Text } from "@chakra-ui/react";
 import { Monitor } from "lucide-react";
 import { toaster } from "@narriflow/ui";
 import {
+  compositionAssetRef,
+  screenLayoutInputFingerprint,
+} from "@narriflow/composition-plan";
+import {
   getEffectiveClipTiming,
+  clipAutoLayoutMatchesInputs,
   editedToSource,
   normalizeDeletedRanges,
+  resolveEffectiveFramingMode,
   buildTranscriptSliceForWindow,
   mergeCorrectedWordsIntoWindow,
   type TranscriptUtterance,
@@ -30,6 +36,7 @@ import {
   type ClipWindow,
   type ClipLayoutAnalysis,
   type ClipAutoLayoutAnalysis,
+  type ClipSplitLayoutAnalysis,
   type BrollCue,
 } from "@narriflow/validators";
 import { TopBar } from "./top-bar";
@@ -434,6 +441,8 @@ interface StudioContextValue extends StudioState {
   layoutAnalysis: ClipLayoutAnalysis | null;
   /** Persisted automatic shot-layout plan; derived/read-only like PiP analysis. */
   autoLayoutAnalysis: ClipAutoLayoutAnalysis | null;
+  /** Durable explicit Split evidence, isolated from Automatic analysis. */
+  splitLayoutAnalysis: ClipSplitLayoutAnalysis | null;
   autoLayoutAnalysisStatus: "available" | "pending" | "failed";
   utterances: TranscriptUtterance[];
   updateUtteranceText: (index: number, newText: string) => void;
@@ -598,6 +607,8 @@ interface StudioShellProps {
    *  still pending. The client accepts only a plan matching its live clip
    *  window and deleted ranges. */
   fetchAutoLayoutAnalysis?: () => Promise<ClipAutoLayoutAnalysis | null>;
+  fetchSplitLayoutAnalysis?: () => Promise<ClipSplitLayoutAnalysis | null>;
+  fetchScreenLayoutAnalysis?: () => Promise<ClipLayoutAnalysis | null>;
   /** Server-seeded brand logo (see studio/page.tsx and `StudioBrandLogo`'s
    *  doc comment), or null/omitted when the project has none. */
   brandLogo?: StudioBrandLogo | null;
@@ -606,6 +617,7 @@ interface StudioShellProps {
    *  when the clip has none yet. */
   layoutAnalysis?: ClipLayoutAnalysis | null;
   autoLayoutAnalysis?: ClipAutoLayoutAnalysis | null;
+  splitLayoutAnalysis?: ClipSplitLayoutAnalysis | null;
 }
 
 export function StudioShell({
@@ -626,13 +638,20 @@ export function StudioShell({
   sourcePurged = false,
   fetchPreviewStatus,
   fetchAutoLayoutAnalysis,
+  fetchSplitLayoutAnalysis,
+  fetchScreenLayoutAnalysis,
   brandLogo = null,
-  layoutAnalysis = null,
+  layoutAnalysis: initialLayoutAnalysis = null,
   autoLayoutAnalysis: initialAutoLayoutAnalysis = null,
+  splitLayoutAnalysis: initialSplitLayoutAnalysis = null,
 }: StudioShellProps) {
   const isViewportTooSmall = useIsViewportBelow(STUDIO_MIN_VIEWPORT_WIDTH);
   const [brollPreviewAsset, setBrollPreviewAsset] =
     useState<StudioBrollPreviewAsset | null>(null);
+  const [layoutAnalysis, setLayoutAnalysis] =
+    useState<ClipLayoutAnalysis | null>(initialLayoutAnalysis);
+  const [splitLayoutAnalysis, setSplitLayoutAnalysis] =
+    useState<ClipSplitLayoutAnalysis | null>(initialSplitLayoutAnalysis);
 
   // React creates one clip-scoped session, then subscribes to focused
   // immutable projections below. All editing protocols remain owned by the
@@ -677,6 +696,133 @@ export function StudioShell({
   );
 
   const doc = useStudioSessionSelector(studioSession, selectStudioDocument);
+  const evidenceFramingMode = resolveEffectiveFramingMode(doc.studioEdits);
+  const compositionSourceIdentity = compositionAssetRef(
+    "source",
+    clipInfo.projectId,
+  );
+  const splitEvidenceMatchesDocument = Boolean(
+    splitLayoutAnalysis &&
+      splitLayoutAnalysis.sourceIdentity === compositionSourceIdentity &&
+      clipAutoLayoutMatchesInputs(splitLayoutAnalysis, {
+        clipStartSec: doc.clipStartSec,
+        clipEndSec: doc.clipEndSec,
+        deletedRanges: doc.deletedRanges,
+      }),
+  );
+  const screenEvidenceMatchesDocument = Boolean(
+    layoutAnalysis?.version === 2 &&
+      layoutAnalysis.engine === "screen-layout-v1" &&
+      layoutAnalysis.sourceIdentity === compositionSourceIdentity &&
+      layoutAnalysis.inputFingerprint ===
+        screenLayoutInputFingerprint({
+          sourceIdentity: compositionSourceIdentity,
+          clipStartSec: doc.clipStartSec,
+          clipEndSec: doc.clipEndSec,
+          deletedRanges: doc.deletedRanges,
+          engineVersion: "screen-layout-v1",
+        }),
+  );
+
+  useEffect(() => {
+    if (
+      !fetchScreenLayoutAnalysis ||
+      evidenceFramingMode !== "screen" ||
+      screenEvidenceMatchesDocument
+    ) {
+      return;
+    }
+    let cancelled = false;
+    let attempts = 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const poll = async () => {
+      attempts += 1;
+      try {
+        const next = await fetchScreenLayoutAnalysis();
+        if (cancelled) return;
+        setLayoutAnalysis(next);
+        if (
+          next?.version === 2 &&
+          next.engine === "screen-layout-v1" &&
+          next.sourceIdentity === compositionSourceIdentity &&
+          next.inputFingerprint ===
+            screenLayoutInputFingerprint({
+              sourceIdentity: compositionSourceIdentity,
+              clipStartSec: doc.clipStartSec,
+              clipEndSec: doc.clipEndSec,
+              deletedRanges: doc.deletedRanges,
+              engineVersion: "screen-layout-v1",
+            })
+        ) {
+          return;
+        }
+      } catch {
+        if (cancelled) return;
+      }
+      if (attempts < 30) timer = setTimeout(poll, 2_000);
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [
+    doc.clipEndSec,
+    doc.clipStartSec,
+    doc.deletedRanges,
+    compositionSourceIdentity,
+    evidenceFramingMode,
+    fetchScreenLayoutAnalysis,
+    screenEvidenceMatchesDocument,
+  ]);
+
+  useEffect(() => {
+    if (
+      !fetchSplitLayoutAnalysis ||
+      evidenceFramingMode !== "split" ||
+      splitEvidenceMatchesDocument
+    ) {
+      return;
+    }
+    let cancelled = false;
+    let attempts = 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const poll = async () => {
+      attempts += 1;
+      try {
+        const next = await fetchSplitLayoutAnalysis();
+        if (cancelled) return;
+        setSplitLayoutAnalysis(next);
+        if (
+          next &&
+          next.sourceIdentity === compositionSourceIdentity &&
+          clipAutoLayoutMatchesInputs(next, {
+            clipStartSec: doc.clipStartSec,
+            clipEndSec: doc.clipEndSec,
+            deletedRanges: doc.deletedRanges,
+          })
+        ) {
+          return;
+        }
+      } catch {
+        if (cancelled) return;
+      }
+      if (attempts < 30) timer = setTimeout(poll, 2_000);
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, [
+    doc.clipEndSec,
+    doc.clipStartSec,
+    doc.deletedRanges,
+    compositionSourceIdentity,
+    evidenceFramingMode,
+    fetchSplitLayoutAnalysis,
+    splitEvidenceMatchesDocument,
+  ]);
   const segments = useStudioSessionSelector(studioSession, selectStudioSegments);
   const canUndo = useStudioSessionSelector(studioSession, selectStudioCanUndo);
   const canRedo = useStudioSessionSelector(studioSession, selectStudioCanRedo);
@@ -1700,7 +1846,7 @@ export function StudioShell({
     previewVideoUrl, previewStartSec, waveformPeaksUrl, useOriginalSourceFallback, setUseOriginalSourceFallback, reloadPlayback,
     activeVideoUrl, activeOffsetSec, activeVideoKind, playerClipStartSec, playerClipEndSec,
     editedTimeMap, deletedRanges: doc.deletedRanges, clipWindow,
-    brandLogo, layoutAnalysis, autoLayoutAnalysis, autoLayoutAnalysisStatus, utterances, updateUtteranceText,
+    brandLogo, layoutAnalysis, autoLayoutAnalysis, splitLayoutAnalysis, autoLayoutAnalysisStatus, utterances, updateUtteranceText,
     updateParagraphText, addSubtitleLineAfter, deleteSubtitleLine, mergeSubtitleLineWithNext,
     updateWord, deleteSourceRange, applyRemoveSilence,
     setPlaybackRate, setActiveTool, setShowTimeline, setTimelineSnapping, setAspectRatio,

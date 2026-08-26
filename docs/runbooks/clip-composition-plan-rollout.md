@@ -14,9 +14,13 @@ Center, Fit, Automatic Speaker Composition, Explicit Split, and Screen/PiP have 
 
 Set `NEXT_PUBLIC_AUTOMATIC_SPEAKER_LAYOUT` to the same `0`/`1` capability as worker `WORKER_LAYOUT_ENGINE`. This mirror lets Studio show an explicit disabled fallback instead of an analysis-pending notice while the worker kill switch is active.
 
+Likewise, keep `NEXT_PUBLIC_SPLIT_LAYOUT` aligned with `WORKER_SPLIT` and `NEXT_PUBLIC_SCREEN_LAYOUT` aligned with `WORKER_SCREEN_LAYOUT`. These capability mirrors are independent of the five `legacy`/`shadow`/`plan` cutover pairs.
+
 ## Rollout
 
-1. Deploy the shared package and both adapters with all six controls set to `shadow`.
+The Split evidence migration is rolling-compatible. New web reads the isolated column and falls back to a legacy explicit envelope; new workers atomically publish the isolated value plus the legacy mirror, so old web instances remain exact while the fleet turns over. Changing framing or layout inputs invalidates both values before Auto is analyzed, preventing the compatibility mirror from becoming stale Auto evidence.
+
+1. Apply the database migrations, then roll out the shared package and both adapters with all ten composition controls set to `shadow`, with all three web capability mirrors aligned to their worker kill switches. Old and new web/worker versions may coexist during this expansion.
 2. Exercise Center across all four aspect ratios. Compare command topology and real-media bytes against legacy fixtures; any mismatch blocks promotion.
 3. Promote Center web and worker controls to `plan` together.
 4. Exercise Fit with a solid color, a valid image, a failed image download, and a failed FFmpeg image command. Confirm both adapters use the selected color for degradation and emit `background_image_unavailable` without exposing the URL.

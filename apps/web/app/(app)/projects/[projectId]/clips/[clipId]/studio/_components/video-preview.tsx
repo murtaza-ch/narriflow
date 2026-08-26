@@ -7,7 +7,6 @@ import {
   automaticLayoutInputFingerprint,
   compositionAssetRef,
   planClipComposition,
-  screenLayoutInputFingerprint,
   splitLayoutInputFingerprint,
   type CompositionBackgroundLayer,
   type CompositionRect,
@@ -434,6 +433,7 @@ export function VideoPreview() {
     utterances,
     layoutAnalysis,
     autoLayoutAnalysis,
+    splitLayoutAnalysis,
     autoLayoutAnalysisStatus,
     clipWindow,
   } = useStudio();
@@ -606,24 +606,43 @@ export function VideoPreview() {
     eligibleAutoLayoutAnalysis?.engine === "shot-layout-v1"
       ? eligibleAutoLayoutAnalysis
       : null;
-  const compositionSourceDims = sourceDims
-    ? plannedCompositionSourceDimensions(sourceDims, eligibleAutoLayoutAnalysis)
-    : null;
+  const legacySplitLayoutAnalysis =
+    eligibleAutoLayoutAnalysis?.engine === "explicit-split-v1"
+      ? eligibleAutoLayoutAnalysis
+      : null;
+  const eligibleSplitLayoutAnalysis =
+    splitLayoutAnalysis?.sourceIdentity === compositionSourceIdentity
+      ? splitLayoutAnalysis
+      : legacySplitLayoutAnalysis;
+  const exactScreenLayoutAnalysis =
+    layoutAnalysis?.version === 2 &&
+    layoutAnalysis.sourceIdentity === compositionSourceIdentity
+      ? layoutAnalysis
+      : null;
+  const compositionSourceDims = useMemo(() => {
+    if (!sourceDims) return null;
+    const durableDimensions =
+      effectiveFramingMode === "screen"
+        ? exactScreenLayoutAnalysis
+        : effectiveFramingMode === "split"
+          ? eligibleSplitLayoutAnalysis
+          : automaticLayoutAnalysis;
+    return plannedCompositionSourceDimensions(sourceDims, durableDimensions);
+  }, [
+    automaticLayoutAnalysis,
+    effectiveFramingMode,
+    eligibleSplitLayoutAnalysis,
+    exactScreenLayoutAnalysis,
+    sourceDims,
+  ]);
   const compositionPlanResult = useMemo(() => {
     if (!compositionSourceDims) return null;
     const target = clipAspectRatioOptions.find(
       (option) => option.value === aspectRatio,
     );
     if (!target) return null;
-    const splitEngineVersion =
-      eligibleAutoLayoutAnalysis?.engine ?? "explicit-split-v1";
+    const splitEngineVersion = "explicit-split-v1";
     const screenEngineVersion = "screen-layout-v1";
-    const screenWindowMatches = Boolean(
-      layoutAnalysis &&
-        editorDocument.deletedRanges.length === 0 &&
-        Math.abs(layoutAnalysis.clipStartSec - editorDocument.clipStartSec) <= 0.05 &&
-        Math.abs(layoutAnalysis.clipEndSec - editorDocument.clipEndSec) <= 0.05,
-    );
     return planClipComposition({
       document: editorDocument,
       source: {
@@ -655,59 +674,55 @@ export function VideoPreview() {
                 state:
                   autoLayoutAnalysisStatus === "failed" ? "failed" : "missing",
               },
-        splitLayout: eligibleAutoLayoutAnalysis
+        splitLayout: eligibleSplitLayoutAnalysis
           ? {
               state: "available",
               value: {
                 sourceIdentity: compositionSourceIdentity,
                 inputFingerprint: splitLayoutInputFingerprint({
                   sourceIdentity: compositionSourceIdentity,
-                  clipStartSec: eligibleAutoLayoutAnalysis.clipStartSec,
-                  clipEndSec: eligibleAutoLayoutAnalysis.clipEndSec,
-                  deletedRanges: eligibleAutoLayoutAnalysis.deletedRanges,
+                  clipStartSec: eligibleSplitLayoutAnalysis.clipStartSec,
+                  clipEndSec: eligibleSplitLayoutAnalysis.clipEndSec,
+                  deletedRanges: eligibleSplitLayoutAnalysis.deletedRanges,
                   engineVersion: splitEngineVersion,
                 }),
                 engineVersion: splitEngineVersion,
-                source:
-                  eligibleAutoLayoutAnalysis.engine === "explicit-split-v1"
-                    ? "explicit-detector"
-                    : "automatic-layout",
-                segments: eligibleAutoLayoutAnalysis.segments,
-                fallbackSegments: eligibleAutoLayoutAnalysis.noSplitSegments,
+                source: "explicit-detector",
+                segments: eligibleSplitLayoutAnalysis.segments,
+                fallbackSegments: eligibleSplitLayoutAnalysis.noSplitSegments,
               },
             }
           : {
-              state:
-                autoLayoutAnalysisStatus === "failed" ? "failed" : "missing",
+              state: "missing",
             },
         screenLayout:
-          screenWindowMatches && layoutAnalysis
+          exactScreenLayoutAnalysis
             ? {
                 state: "available",
                 value: {
                   sourceIdentity: compositionSourceIdentity,
-                  inputFingerprint: screenLayoutInputFingerprint({
-                    sourceIdentity: compositionSourceIdentity,
-                    clipStartSec: editorDocument.clipStartSec,
-                    clipEndSec: editorDocument.clipEndSec,
-                    deletedRanges: editorDocument.deletedRanges,
-                    engineVersion: screenEngineVersion,
-                  }),
+                  inputFingerprint: exactScreenLayoutAnalysis.inputFingerprint,
                   engineVersion: screenEngineVersion,
                   source: "durable-pip",
                   pictureInPicture:
-                    layoutAnalysis.pipUsable && layoutAnalysis.pipRect
+                    exactScreenLayoutAnalysis.pipUsable &&
+                    exactScreenLayoutAnalysis.pipRect
                       ? {
                           state: "confirmed",
                           rect: {
-                            x: layoutAnalysis.pipRect.x,
-                            y: layoutAnalysis.pipRect.y,
-                            width: layoutAnalysis.pipRect.w,
-                            height: layoutAnalysis.pipRect.h,
+                            x: exactScreenLayoutAnalysis.pipRect.x,
+                            y: exactScreenLayoutAnalysis.pipRect.y,
+                            width: exactScreenLayoutAnalysis.pipRect.w,
+                            height: exactScreenLayoutAnalysis.pipRect.h,
                           },
                         }
                       : { state: "unavailable" },
-                  faceBand: { state: "unavailable" },
+                  faceBand: exactScreenLayoutAnalysis.faceBandSegments
+                    ? {
+                        state: "available",
+                        segments: exactScreenLayoutAnalysis.faceBandSegments,
+                      }
+                    : { state: "unavailable" },
                 },
               }
             : { state: "missing" },
@@ -717,9 +732,10 @@ export function VideoPreview() {
         automaticSpeakerLayout:
           compositionPlanControl.automaticSpeakerLayoutEnabled,
         automaticSpeakerEngineVersion: "shot-layout-v1",
-        explicitSplitLayout: true,
+        explicitSplitLayout:
+          compositionPlanControl.explicitSplitLayoutEnabled,
         splitEngineVersion,
-        screenLayout: true,
+        screenLayout: compositionPlanControl.screenLayoutEnabled,
         screenEngineVersion,
       },
       targets: [
@@ -737,9 +753,9 @@ export function VideoPreview() {
     compositionSourceIdentity,
     editorDocument,
     automaticLayoutAnalysis,
-    eligibleAutoLayoutAnalysis,
+    eligibleSplitLayoutAnalysis,
     autoLayoutAnalysisStatus,
-    layoutAnalysis,
+    exactScreenLayoutAnalysis,
     compositionSourceDims,
   ]);
   const compositionPreview = useMemo(() => {

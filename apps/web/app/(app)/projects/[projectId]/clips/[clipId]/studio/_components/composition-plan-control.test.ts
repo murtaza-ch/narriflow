@@ -10,6 +10,8 @@ describe("composition plan web controls", () => {
       split: "shadow",
       screen: "shadow",
       automaticSpeakerLayoutEnabled: true,
+      explicitSplitLayoutEnabled: true,
+      screenLayoutEnabled: true,
     });
     expect(
       parseCompositionPlanControl({
@@ -26,11 +28,23 @@ describe("composition plan web controls", () => {
       split: "plan",
       screen: "legacy",
       automaticSpeakerLayoutEnabled: true,
+      explicitSplitLayoutEnabled: true,
+      screenLayoutEnabled: true,
     });
     expect(
       parseCompositionPlanControl({
         NEXT_PUBLIC_AUTOMATIC_SPEAKER_LAYOUT: "0",
+        NEXT_PUBLIC_SPLIT_LAYOUT: "0",
+        NEXT_PUBLIC_SCREEN_LAYOUT: "0",
       }).automaticSpeakerLayoutEnabled,
+    ).toBe(false);
+    expect(
+      parseCompositionPlanControl({ NEXT_PUBLIC_SPLIT_LAYOUT: "0" })
+        .explicitSplitLayoutEnabled,
+    ).toBe(false);
+    expect(
+      parseCompositionPlanControl({ NEXT_PUBLIC_SCREEN_LAYOUT: "0" })
+        .screenLayoutEnabled,
     ).toBe(false);
     expect(() =>
       parseCompositionPlanControl({ NEXT_PUBLIC_COMPOSITION_CENTER: "on" }),
@@ -40,5 +54,8 @@ describe("composition plan web controls", () => {
         NEXT_PUBLIC_AUTOMATIC_SPEAKER_LAYOUT: "disabled",
       }),
     ).toThrow("NEXT_PUBLIC_AUTOMATIC_SPEAKER_LAYOUT");
+    expect(() =>
+      parseCompositionPlanControl({ NEXT_PUBLIC_SPLIT_LAYOUT: "disabled" }),
+    ).toThrow("NEXT_PUBLIC_SPLIT_LAYOUT");
   });
 });

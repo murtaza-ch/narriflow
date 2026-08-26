@@ -15,25 +15,38 @@ function mode(
   throw new Error(`${name} must be one of legacy, shadow, plan`);
 }
 
+function enabled(environment: WebCompositionEnvironment, name: string): boolean {
+  const value = environment[name]?.trim() || "1";
+  if (value !== "0" && value !== "1") {
+    throw new Error(`${name} must be 0 or 1`);
+  }
+  return value === "1";
+}
+
 export function parseCompositionPlanControl(
   environment: WebCompositionEnvironment,
 ): Readonly<
   Record<"center" | "fit" | "auto", CompositionPlanControlMode> & {
     automaticSpeakerLayoutEnabled: boolean;
+    explicitSplitLayoutEnabled: boolean;
+    screenLayoutEnabled: boolean;
   } & Record<"split" | "screen", CompositionPlanControlMode>
 > {
-  const automaticSpeakerLayout =
-    environment.NEXT_PUBLIC_AUTOMATIC_SPEAKER_LAYOUT?.trim() || "1";
-  if (automaticSpeakerLayout !== "0" && automaticSpeakerLayout !== "1") {
-    throw new Error("NEXT_PUBLIC_AUTOMATIC_SPEAKER_LAYOUT must be 0 or 1");
-  }
   return Object.freeze({
     center: mode(environment, "NEXT_PUBLIC_COMPOSITION_CENTER"),
     fit: mode(environment, "NEXT_PUBLIC_COMPOSITION_FIT"),
     auto: mode(environment, "NEXT_PUBLIC_COMPOSITION_AUTO"),
     split: mode(environment, "NEXT_PUBLIC_COMPOSITION_SPLIT"),
     screen: mode(environment, "NEXT_PUBLIC_COMPOSITION_SCREEN"),
-    automaticSpeakerLayoutEnabled: automaticSpeakerLayout === "1",
+    automaticSpeakerLayoutEnabled: enabled(
+      environment,
+      "NEXT_PUBLIC_AUTOMATIC_SPEAKER_LAYOUT",
+    ),
+    explicitSplitLayoutEnabled: enabled(
+      environment,
+      "NEXT_PUBLIC_SPLIT_LAYOUT",
+    ),
+    screenLayoutEnabled: enabled(environment, "NEXT_PUBLIC_SCREEN_LAYOUT"),
   });
 }
 
@@ -46,6 +59,8 @@ export const compositionPlanControl = parseCompositionPlanControl({
   NEXT_PUBLIC_COMPOSITION_SCREEN: process.env.NEXT_PUBLIC_COMPOSITION_SCREEN,
   NEXT_PUBLIC_AUTOMATIC_SPEAKER_LAYOUT:
     process.env.NEXT_PUBLIC_AUTOMATIC_SPEAKER_LAYOUT,
+  NEXT_PUBLIC_SPLIT_LAYOUT: process.env.NEXT_PUBLIC_SPLIT_LAYOUT,
+  NEXT_PUBLIC_SCREEN_LAYOUT: process.env.NEXT_PUBLIC_SCREEN_LAYOUT,
 });
 
 export function shouldAdoptCompositionPlan(mode: CompositionMode): boolean {

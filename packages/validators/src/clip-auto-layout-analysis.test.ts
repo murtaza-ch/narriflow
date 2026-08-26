@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   clipAutoLayoutAnalysisSchema,
+  parseClipSplitLayoutAnalysis,
   clipAutoLayoutMatchesInputs,
   parseClipAutoLayoutAnalysis,
   type ClipAutoLayoutAnalysis,
@@ -57,6 +58,8 @@ describe("clipAutoLayoutAnalysisSchema", () => {
         engine: "future-layout-v2",
       }).success,
     ).toBe(false);
+    expect(parseClipSplitLayoutAnalysis(explicitSplit)).toEqual(explicitSplit);
+    expect(parseClipSplitLayoutAnalysis(valid)).toBeNull();
   });
 
   test("rejects gaps, overlap, and incomplete duration coverage", () => {

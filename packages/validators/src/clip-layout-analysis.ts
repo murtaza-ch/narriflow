@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { clipAutoLayoutSegmentSchema } from "./clip-auto-layout-analysis";
+import { deletedRangesSchema } from "./edit-ranges";
 
 /**
  * Screen-mode layout analysis (vizard-parity.md element-segmentation spike,
@@ -85,7 +87,7 @@ export type ClipLayoutAnalysisPipRect = z.infer<
  * export to `z.discriminatedUnion("version", [v1, v2])` if a second version
  * is ever needed — do not mutate v1's shape in place.
  */
-const clipLayoutAnalysisV1Schema = z.object({
+export const clipLayoutAnalysisV1Schema = z.object({
   version: z.literal(1),
   /** ISO timestamp of when the worker ran this analysis pass — lets a
    *  future re-analysis policy (e.g. "re-run if older than N days") compare
@@ -135,9 +137,32 @@ const clipLayoutAnalysisV1Schema = z.object({
   pipUsable: z.boolean(),
 });
 
-export const clipLayoutAnalysisSchema = clipLayoutAnalysisV1Schema;
+/** Version 2 binds the analysis to the exact composition inputs and carries
+ * the bounded face-band fallback used by both Studio and export. Version 1
+ * remains readable by the worker as a PiP-detection cache, but it is not
+ * identity-complete enough to be exact composition evidence. */
+export const clipLayoutAnalysisV2Schema = clipLayoutAnalysisV1Schema.extend({
+  version: z.literal(2),
+  engine: z.literal("screen-layout-v1"),
+  sourceIdentity: z.string().min(1),
+  inputFingerprint: z.string().regex(/^[0-9a-f]{16}$/),
+  sourceWidth: z.number().int().positive(),
+  sourceHeight: z.number().int().positive(),
+  deletedRanges: deletedRangesSchema,
+  faceBandSegments: z
+    .array(clipAutoLayoutSegmentSchema)
+    .min(1)
+    .max(64)
+    .nullable(),
+});
+
+export const clipLayoutAnalysisSchema = z.discriminatedUnion("version", [
+  clipLayoutAnalysisV1Schema,
+  clipLayoutAnalysisV2Schema,
+]);
 
 export type ClipLayoutAnalysis = z.infer<typeof clipLayoutAnalysisSchema>;
+export type ClipLayoutAnalysisV2 = z.infer<typeof clipLayoutAnalysisV2Schema>;
 
 /**
  * Parse-tolerant read of a stored `Clip.layoutAnalysis` value: `null`/

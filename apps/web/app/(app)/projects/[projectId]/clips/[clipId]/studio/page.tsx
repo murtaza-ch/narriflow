@@ -139,6 +139,16 @@ export default async function StudioPage({
     return clipService.getClipAutoLayoutAnalysis(appUser.id, projectId, clipId);
   }
 
+  async function fetchSplitLayoutAnalysis() {
+    "use server";
+    return clipService.getClipSplitLayoutAnalysis(appUser.id, projectId, clipId);
+  }
+
+  async function fetchScreenLayoutAnalysis() {
+    "use server";
+    return clipService.getClipLayoutAnalysis(appUser.id, projectId, clipId);
+  }
+
   return (
     <StudioShell
       clipInfo={clipInfo}
@@ -164,6 +174,8 @@ export default async function StudioPage({
       sourcePurged={!snapshot.project.sourceStorageKey}
       fetchPreviewStatus={fetchPreviewStatus}
       fetchAutoLayoutAnalysis={fetchAutoLayoutAnalysis}
+      fetchSplitLayoutAnalysis={fetchSplitLayoutAnalysis}
+      fetchScreenLayoutAnalysis={fetchScreenLayoutAnalysis}
       brandLogo={brandLogo}
       // PiP persistence packet C: the worker's screen-mode facecam layout
       // analysis (packet A/B), rides alongside `editorDoc.document`/
@@ -172,6 +184,7 @@ export default async function StudioPage({
       // this is read-only and never folds into the editor document.
       layoutAnalysis={editorDoc.layoutAnalysis}
       autoLayoutAnalysis={editorDoc.autoLayoutAnalysis}
+      splitLayoutAnalysis={editorDoc.splitLayoutAnalysis}
     />
   );
 }

@@ -126,12 +126,26 @@ export type ClipAutoLayoutAnalysis = z.infer<
   typeof clipAutoLayoutAnalysisSchema
 >;
 
+export type ClipSplitLayoutAnalysis = Omit<
+  ClipAutoLayoutAnalysis,
+  "engine"
+> & { engine: "explicit-split-v1" };
+
 export function parseClipAutoLayoutAnalysis(
   value: unknown,
 ): ClipAutoLayoutAnalysis | null {
   if (value === null || value === undefined) return null;
   const parsed = clipAutoLayoutAnalysisSchema.safeParse(value);
   return parsed.success ? parsed.data : null;
+}
+
+export function parseClipSplitLayoutAnalysis(
+  value: unknown,
+): ClipSplitLayoutAnalysis | null {
+  const parsed = parseClipAutoLayoutAnalysis(value);
+  return parsed?.engine === "explicit-split-v1"
+    ? (parsed as ClipSplitLayoutAnalysis)
+    : null;
 }
 
 const RANGE_EPSILON_SEC = 0.05;

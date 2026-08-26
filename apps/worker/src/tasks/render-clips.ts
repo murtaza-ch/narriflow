@@ -57,6 +57,7 @@ import {
   clipAspectRatioFromDb,
   clipAspectRatioOptions,
   clipAutoLayoutAnalysisSchema,
+  clipLayoutAnalysisV2Schema,
   clipAutoLayoutMatchesInputs,
   clipRenderResolutionSchema,
   computeSpeechWindows,
@@ -67,6 +68,7 @@ import {
   MAX_DUCKING_WINDOWS,
   normalizeTranscriptSliceForClip,
   parseClipAutoLayoutAnalysis,
+  parseClipSplitLayoutAnalysis,
   parseClipLayoutAnalysis,
   resolveEffectiveFramingMode,
   resolveEffectiveLogoSettings,
@@ -319,6 +321,7 @@ interface ClipRenderAttemptAdapters {
     typeof productionClipService,
     | "completeClipRenderVariant"
     | "completeClipAutoLayoutAnalysis"
+    | "completeClipSplitLayoutAnalysis"
     | "failClipRenderVariant"
     | "markClipRenderVariantRendering"
     | "setClipLayoutAnalysis"
@@ -363,10 +366,11 @@ interface ClipRenderAttemptAdapters {
 type ClipRenderAttemptAdapterOverrides = Partial<
   Omit<
     ClipRenderAttemptAdapters,
-    "analysis" | "optionalAssets" | "storage" | "workspace" | "clock"
+    "analysis" | "clip" | "optionalAssets" | "storage" | "workspace" | "clock"
   >
 > & {
   analysis?: Partial<ClipRenderAttemptAdapters["analysis"]>;
+  clip?: Partial<ClipRenderAttemptAdapters["clip"]>;
   optionalAssets?: Partial<ClipRenderAttemptAdapters["optionalAssets"]>;
   storage?: Partial<ClipRenderAttemptAdapters["storage"]>;
   workspace?: Partial<ClipRenderAttemptAdapters["workspace"]>;
@@ -856,12 +860,30 @@ interface RenderExecutionContext {
 
 const renderExecutionStorage = new AsyncLocalStorage<RenderExecutionContext>();
 const defaultRenderConfig = parseRenderConfig({});
+// ClipService methods live on the class prototype. Keep a plain adapter
+// object here because ClipRenderAttempt merges partial test overrides with
+// object spread; spreading the service instance itself drops every prototype
+// method and only fails in a real worker process.
+const productionClipMutationAdapter: ClipRenderAttemptAdapters["clip"] = {
+  completeClipRenderVariant: (...args) =>
+    productionClipService.completeClipRenderVariant(...args),
+  completeClipAutoLayoutAnalysis: (...args) =>
+    productionClipService.completeClipAutoLayoutAnalysis(...args),
+  completeClipSplitLayoutAnalysis: (...args) =>
+    productionClipService.completeClipSplitLayoutAnalysis(...args),
+  failClipRenderVariant: (...args) =>
+    productionClipService.failClipRenderVariant(...args),
+  markClipRenderVariantRendering: (...args) =>
+    productionClipService.markClipRenderVariantRendering(...args),
+  setClipLayoutAnalysis: (...args) =>
+    productionClipService.setClipLayoutAnalysis(...args),
+};
 const productionClipRenderAttemptAdapters: ClipRenderAttemptAdapters = {
   media: productionRenderMediaAdapter,
   process: productionRenderProcessAdapter,
   state: productionClipService,
   project: productionProjectService,
-  clip: productionClipService,
+  clip: productionClipMutationAdapter,
   audioAsset: productionAudioAssetService,
   optionalAssets: {
     downloadUrlToFile,
@@ -2509,7 +2531,7 @@ function faceBandSegmentsForCompositionPlan(input: {
         Number.isFinite(sample.t) &&
         Number.isFinite(sample.cx) &&
         sample.t >= 0 &&
-        sample.t <= input.editedDurationSec,
+        sample.t < input.editedDurationSec - 0.001,
     )
     .sort((left, right) => left.t - right.t);
   if (points.length === 0) return null;
@@ -5607,6 +5629,10 @@ export class ClipRenderAttempt {
         ...productionClipRenderAttemptAdapters.analysis,
         ...dependencies.adapters?.analysis,
       },
+      clip: {
+        ...productionClipRenderAttemptAdapters.clip,
+        ...dependencies.adapters?.clip,
+      },
       storage: {
         ...productionClipRenderAttemptAdapters.storage,
         ...dependencies.adapters?.storage,
@@ -6997,6 +7023,35 @@ async function executeClipRenderAttempt(
               });
             }
           } else {
+            const screenEngineVersion = "screen-layout-v1";
+            const pipDetectEnabled = currentRenderConfig().pipDetectEnabled;
+            const screenFingerprint = screenLayoutInputFingerprint({
+              sourceIdentity: compositionSourceIdentity,
+              clipStartSec: clip.startSec,
+              clipEndSec: clip.endSec,
+              deletedRanges,
+              engineVersion: screenEngineVersion,
+            });
+            const persistedAnalysisRaw = pipDetectEnabled
+              ? parseClipLayoutAnalysis(clip.layoutAnalysis)
+              : null;
+            const persistedAnalysis =
+              persistedAnalysisRaw !== null &&
+              layoutAnalysisMatchesWindow(
+                persistedAnalysisRaw,
+                clipStartSec,
+                effective.durationSec,
+              ) &&
+              (persistedAnalysisRaw.version === 1 ||
+                (persistedAnalysisRaw.engine === screenEngineVersion &&
+                  persistedAnalysisRaw.sourceIdentity ===
+                    compositionSourceIdentity &&
+                  persistedAnalysisRaw.inputFingerprint === screenFingerprint))
+                ? persistedAnalysisRaw
+                : null;
+            const reuseExactScreenPlan =
+              persistedAnalysis?.version === 2 &&
+              currentRenderConfig().compositionScreen === "plan";
             // Real screen layout: element segmentation v1 (vizard-parity.md's
             // element-segmentation spike) tries the actual facecam PiP
             // rectangle FIRST — only when the source is screencast-like
@@ -7012,8 +7067,9 @@ async function executeClipRenderAttempt(
             // single-face detection below, byte-identical to before this
             // packet. Both detectors share the SAME extracted segment
             // (`detectInput`) — no reason to extract it twice.
-            const detectInput =
-              await currentRenderAdapters().analysis.extractFaceDetectionSegment({
+            const detectInput = reuseExactScreenPlan
+              ? null
+              : await currentRenderAdapters().analysis.extractFaceDetectionSegment({
               sourcePath,
               tempDir,
               clipId: clip.id,
@@ -7022,8 +7078,6 @@ async function executeClipRenderAttempt(
               durationSec: effective.durationSec,
               suffix: "-screen",
             });
-
-            const pipDetectEnabled = currentRenderConfig().pipDetectEnabled;
 
             // PiP persistence packet B (read-before-detect): a persisted
             // `Clip.layoutAnalysis` envelope whose detection window still
@@ -7038,15 +7092,6 @@ async function executeClipRenderAttempt(
             // `endSec`) is the envelope's own invalidation — see that
             // function's doc comment — so the stale value is simply never
             // read here, not explicitly deleted.
-            const persistedAnalysisRaw = pipDetectEnabled
-              ? parseClipLayoutAnalysis(clip.layoutAnalysis)
-              : null;
-            const persistedAnalysis =
-              persistedAnalysisRaw !== null &&
-              layoutAnalysisMatchesWindow(persistedAnalysisRaw, clipStartSec, effective.durationSec)
-                ? persistedAnalysisRaw
-                : null;
-
             // M2 (adversarial review): the read-before-detect/write-after-
             // detect decision itself lives in `resolvePipAnalysis` (a
             // dependency-injected, unit-tested pure function) — this block
@@ -7056,32 +7101,45 @@ async function executeClipRenderAttempt(
             // no qualifying candidate); the non-null-`selectedRect` case is
             // persisted below, AFTER `decidePipUsage` — see C1/that
             // function's own doc comment for why.
-            const { detectionResult, selectedRect, candidateCount, analysisSource } =
-              await resolvePipAnalysis({
-                persisted: persistedAnalysis,
-                pipDetectEnabled,
-                detectInput,
-                startSec: clipStartSec,
-                durationSec: effective.durationSec,
-                rawClipStartSec: clip.startSec,
-                rawClipEndSec: clip.endSec,
-                detect: currentRenderAdapters().analysis.detectPipPath,
-                persist: (envelope) =>
-                  currentRenderAdapters().clip.setClipLayoutAnalysis(
-                    clip.id,
-                    envelope,
-                  ),
-                logContext: { workflowRunId: run.id, clipId: clip.id },
-              });
+            const resolvedPip = reuseExactScreenPlan
+              ? {
+                  detectionResult: {
+                    movingPxFrac: persistedAnalysis.movingPxFrac,
+                    insufficientSamples: persistedAnalysis.insufficientSamples,
+                    candidates: [],
+                  },
+                  selectedRect: persistedAnalysis.pipRect,
+                  candidateCount: persistedAnalysis.pipRect ? 1 : 0,
+                  analysisSource: "persisted" as const,
+                }
+              : await resolvePipAnalysis({
+                  persisted: persistedAnalysis,
+                  pipDetectEnabled,
+                  detectInput,
+                  startSec: clipStartSec,
+                  durationSec: effective.durationSec,
+                  rawClipStartSec: clip.startSec,
+                  rawClipEndSec: clip.endSec,
+                  detect: currentRenderAdapters().analysis.detectPipPath,
+                  persist: (envelope) =>
+                    currentRenderAdapters().clip.setClipLayoutAnalysis(
+                      clip.id,
+                      envelope,
+                    ),
+                  logContext: { workflowRunId: run.id, clipId: clip.id },
+                });
+            const {
+              detectionResult,
+              selectedRect,
+              candidateCount,
+              analysisSource,
+            } = resolvedPip;
 
-            // H2 (adversarial review): face detection now runs
-            // UNCONDITIONALLY on the same segment (it did before this
-            // packet introduced the PiP path) — both to confirm a candidate
-            // `selectedRect` actually contains a face, and, when the PiP
-            // path doesn't win, as the existing whole-frame single-face
-            // fallback. Same source<->edited timeline contract as every
-            // other detection path — `applyScreenSpeakerLayout` remaps
-            // through `remapFaceSamplesForCutPlan` internally.
+            // Face detection runs on the same segment both to confirm a new
+            // PiP candidate and to support the whole-frame speaker fallback.
+            // An exact v2 plan already contains both decisions, so reusing it
+            // deliberately skips this pass and cannot downgrade durable
+            // evidence after a transient detector failure.
             const detection = detectInput
               ? await currentRenderAdapters().analysis.detectFacePath({
                   sourcePath: detectInput.path,
@@ -7094,59 +7152,27 @@ async function executeClipRenderAttempt(
 
             const pipUsageBase: DecidePipUsageParams = {
               pipDetectEnabled,
-              segmentExtracted: Boolean(detectInput),
+              segmentExtracted: reuseExactScreenPlan || Boolean(detectInput),
               detection: detectionResult,
               selectedRect,
-              faceConfirmed,
+              faceConfirmed: reuseExactScreenPlan
+                ? persistedAnalysis.pipUsable
+                : faceConfirmed,
               screencastThreshold: currentRenderConfig().pipMotionThreshold,
             };
             // Clip-level check only (no `fit` — that's per-output, decided
             // again inside `applyScreenSpeakerLayout`'s loop): every gate
             // except M3's `pip_too_small` is decided once here, since none
             // of them depend on a specific output's tile geometry.
-            const clipLevelPipDecision = decidePipUsage(pipUsageBase);
+            const clipLevelPipDecision = reuseExactScreenPlan
+              ? {
+                  useRect: persistedAnalysis.pipUsable,
+                  reason: persistedAnalysis.pipUsable
+                    ? ("ok" as const)
+                    : ("no_candidate" as const),
+                }
+              : decidePipUsage(pipUsageBase);
             const pipRect = clipLevelPipDecision.useRect ? selectedRect : null;
-
-            // C1 (adversarial review): the persistence half of a FRESH
-            // detection that found a candidate (`resolvePipAnalysis` already
-            // persisted the conclusive-negative, no-candidate case itself)
-            // happens HERE, after `decidePipUsage` — `pipUsable` is this
-            // render's own `clipLevelPipDecision.useRect`, never derived
-            // from `selectedRect`'s nullness alone. `pipRect` in the
-            // envelope is the RAW `selectedRect` (not gated by
-            // `clipLevelPipDecision`) even when `pipUsable` ends up false —
-            // see `ClipLayoutAnalysis.pipUsable`'s doc comment for why a
-            // one-off `face_not_in_rect` miss must not permanently freeze
-            // the persisted rect to null for every future render.
-            if (analysisSource === "fresh" && selectedRect) {
-              const envelope = buildLayoutAnalysisEnvelope({
-                startSec: clipStartSec,
-                durationSec: effective.durationSec,
-                rawClipStartSec: clip.startSec,
-                rawClipEndSec: clip.endSec,
-                movingPxFrac: detectionResult?.movingPxFrac ?? null,
-                insufficientSamples: detectionResult?.insufficientSamples ?? false,
-                pipRect: selectedRect,
-                pipUsable: clipLevelPipDecision.useRect,
-              });
-              try {
-                await currentRenderAdapters().clip.setClipLayoutAnalysis(
-                  clip.id,
-                  envelope,
-                );
-              } catch (persistError) {
-                rethrowRenderControlFlow(persistError);
-                log("error", "clip_screen_layout_analysis_persist_failed", {
-                  workflowRunId: run.id,
-                  clipId: clip.id,
-                  ...mediaAnalysisDiagnostic({
-                    analysisMode: "picture_in_picture",
-                    fallbackMode: "render_without_persisted_analysis",
-                    failureCode: "analysis_persist_failed",
-                  }),
-                });
-              }
-            }
 
             if (pipRect) {
               log("info", "clip_screen_pip_selected", {
@@ -7188,26 +7214,68 @@ async function executeClipRenderAttempt(
               clipId: clip.id,
               workflowRunId: run.id,
             });
-            const faceBandSegments = faceBandSegmentsForCompositionPlan({
-              samples: detection?.samples ?? null,
-              cutPlan,
-              clipStartSec,
-              editedDurationSec: clipDurationSec,
-            });
-            const screenEngineVersion = "screen-layout-v1";
+            const faceBandSegments = reuseExactScreenPlan
+              ? persistedAnalysis.faceBandSegments
+              : faceBandSegmentsForCompositionPlan({
+                  samples: detection?.samples ?? null,
+                  cutPlan,
+                  clipStartSec,
+                  editedDurationSec: clipDurationSec,
+                });
+            const screenAnalysisConclusive = Boolean(
+              detectionResult && detection,
+            );
+            if (
+              pipDetectEnabled &&
+              persistedAnalysis?.version !== 2 &&
+              screenAnalysisConclusive
+            ) {
+              const screenEnvelope = clipLayoutAnalysisV2Schema.parse({
+                version: 2,
+                engine: screenEngineVersion,
+                sourceIdentity: compositionSourceIdentity,
+                inputFingerprint: screenFingerprint,
+                analyzedAtISO: new Date(currentTimeMs()).toISOString(),
+                sourceStartSec: clipStartSec,
+                sourceDurationSec: effective.durationSec,
+                clipStartSec: clip.startSec,
+                clipEndSec: clip.endSec,
+                movingPxFrac: detectionResult?.movingPxFrac ?? null,
+                insufficientSamples:
+                  detectionResult?.insufficientSamples ?? false,
+                pipRect: selectedRect,
+                pipUsable: clipLevelPipDecision.useRect,
+                sourceWidth: probe.width,
+                sourceHeight: probe.height,
+                deletedRanges,
+                faceBandSegments,
+              });
+              try {
+                await currentRenderAdapters().clip.setClipLayoutAnalysis(
+                  clip.id,
+                  screenEnvelope,
+                );
+              } catch (persistError) {
+                rethrowRenderControlFlow(persistError);
+                log("error", "clip_screen_layout_analysis_persist_failed", {
+                  workflowRunId: run.id,
+                  clipId: clip.id,
+                  ...mediaAnalysisDiagnostic({
+                    analysisMode: "screen_layout",
+                    fallbackMode: "render_without_persisted_analysis",
+                    failureCode: "analysis_persist_failed",
+                  }),
+                });
+              }
+            }
             screenLayoutEvidenceForPlan = {
               state: "available",
               value: {
                 sourceIdentity: compositionSourceIdentity,
-                inputFingerprint: screenLayoutInputFingerprint({
-                  sourceIdentity: compositionSourceIdentity,
-                  clipStartSec: clip.startSec,
-                  clipEndSec: clip.endSec,
-                  deletedRanges,
-                  engineVersion: screenEngineVersion,
-                }),
+                inputFingerprint: screenFingerprint,
                 engineVersion: screenEngineVersion,
-                source: "analysis",
+                source:
+                  analysisSource === "persisted" ? "durable-pip" : "analysis",
                 pictureInPicture: pipRect
                   ? {
                       state: "confirmed",
@@ -7495,7 +7563,7 @@ async function executeClipRenderAttempt(
             // evidence. Its explicit engine discriminator prevents an Auto
             // consumer from silently treating detector-specific scenes as a
             // shot-layout result when the user switches modes later.
-            const splitPreviewEnvelope = clipAutoLayoutAnalysisSchema.parse({
+            const splitPreviewEnvelope = parseClipSplitLayoutAnalysis({
               version: 1,
               engine: "explicit-split-v1",
               sourceIdentity: compositionSourceIdentity,
@@ -7515,16 +7583,15 @@ async function executeClipRenderAttempt(
               speakerCount: plan.clusterCount,
               mappedSpeakerCount: plan.clusterCount,
             });
-            automaticLayoutAnalysisForPlan = splitPreviewEnvelope;
+            if (!splitPreviewEnvelope) {
+              throw new Error("invalid_split_layout_analysis");
+            }
             if (clip.previewStorageKey) {
               await currentRenderAdapters()
                 .clip
-                .completeClipAutoLayoutAnalysis(clip.id, splitPreviewEnvelope, {
+                .completeClipSplitLayoutAnalysis(clip.id, splitPreviewEnvelope, {
                   editorRevision: clip.editorRevision,
                   previewStorageKey: clip.previewStorageKey,
-                  replaceExisting: Boolean(
-                    persistedAutoLayout && !persistedAutoLayoutEligible,
-                  ),
                 })
                 .catch((error) => {
                   rethrowRenderControlFlow(error);
@@ -8214,13 +8281,30 @@ async function executeClipRenderAttempt(
           }
         }
         if (compositionControl === "plan") {
-          compositionPlan = planned.plan;
-          if (backgroundImageAvailability.state === "available") {
-            const fallbackPlan = planWithBackgroundAvailability({
-              state: "failed",
+          const preservesTrackedFallback =
+            (requestedCompositionMode === "split" &&
+              splitLayoutEvidenceForPlan.state !== "available") ||
+            (requestedCompositionMode === "screen" &&
+              screenLayoutEvidenceForPlan.state !== "available");
+          if (preservesTrackedFallback) {
+            log("info", "clip_composition_plan_retained_legacy_fallback", {
+              workflowRunId: run.id,
+              clipId: clip.id,
+              requestedMode: requestedCompositionMode,
+              evidenceState:
+                requestedCompositionMode === "split"
+                  ? splitLayoutEvidenceForPlan.state
+                  : screenLayoutEvidenceForPlan.state,
             });
-            if (fallbackPlan.status !== "invalid") {
-              fallbackCompositionPlan = fallbackPlan.plan;
+          } else {
+            compositionPlan = planned.plan;
+            if (backgroundImageAvailability.state === "available") {
+              const fallbackPlan = planWithBackgroundAvailability({
+                state: "failed",
+              });
+              if (fallbackPlan.status !== "invalid") {
+                fallbackCompositionPlan = fallbackPlan.plan;
+              }
             }
           }
         }
@@ -8407,6 +8491,22 @@ async function executeClipRenderAttempt(
                 output.aspectRatio,
               )
             : null;
+          const useLegacySplitFallback =
+            requestedCompositionMode === "split" &&
+            splitIneligibleOutputs.includes(output);
+          const compositionForOutput =
+            compositionPlan && !useLegacySplitFallback
+              ? { plan: compositionPlan, targetId: output.clipRenderId }
+              : null;
+          const optionalAssetFallbackPlan =
+            fallbackCompositionPlan ?? compositionPlan;
+          const fallbackCompositionForOutput =
+            optionalAssetFallbackPlan && !useLegacySplitFallback
+              ? {
+                  plan: optionalAssetFallbackPlan,
+                  targetId: output.clipRenderId,
+                }
+              : null;
           try {
             const ffmpegArgs = plan
               ? buildBrollVideoArgs({
@@ -8421,9 +8521,7 @@ async function executeClipRenderAttempt(
                   captionPreset,
                   logo,
                   reframe: output.reframe,
-                  composition: compositionPlan
-                    ? { plan: compositionPlan, targetId: output.clipRenderId }
-                    : null,
+                  composition: compositionForOutput,
                   split: fullAutoSegmentsForOutput
                     ? reframeOutputs.includes(output)
                       ? splitTilesAreDistinct(output.aspectRatio, probe)
@@ -8452,9 +8550,7 @@ async function executeClipRenderAttempt(
                   captionPreset,
                   logo,
                   reframe: output.reframe,
-                  composition: compositionPlan
-                    ? { plan: compositionPlan, targetId: output.clipRenderId }
-                    : null,
+                  composition: compositionForOutput,
                   studioEdits,
                   music: musicPlan,
                   sfx: sfxPlans,
@@ -8525,12 +8621,7 @@ async function executeClipRenderAttempt(
                         captionPreset,
                         logo: null,
                         reframe: output.reframe,
-                        composition: (fallbackCompositionPlan ?? compositionPlan)
-                          ? {
-                              plan: (fallbackCompositionPlan ?? compositionPlan)!,
-                              targetId: output.clipRenderId,
-                            }
-                          : null,
+                        composition: fallbackCompositionForOutput,
                         studioEdits,
                         music: null,
                         sfx: [],

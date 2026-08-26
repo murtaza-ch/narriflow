@@ -123,6 +123,7 @@ function frozenClipSnapshot(clip: {
   deletedRanges: Prisma.JsonValue | null;
   layoutAnalysis: Prisma.JsonValue | null;
   autoLayoutAnalysis: Prisma.JsonValue | null;
+  splitLayoutAnalysis: Prisma.JsonValue | null;
   previewStorageKey: string | null;
   editorRevision: number;
   llmModel: string;
@@ -144,6 +145,7 @@ function frozenClipSnapshot(clip: {
     deletedRanges: clip.deletedRanges ?? Prisma.JsonNull,
     layoutAnalysis: clip.layoutAnalysis ?? Prisma.JsonNull,
     autoLayoutAnalysis: clip.autoLayoutAnalysis ?? Prisma.JsonNull,
+    splitLayoutAnalysis: clip.splitLayoutAnalysis ?? Prisma.JsonNull,
     previewStorageKey: clip.previewStorageKey,
     editorRevision: clip.editorRevision,
     llmModel: clip.llmModel,

@@ -861,12 +861,15 @@ model Clip {
   // `setClipLayoutAnalysis`'s doc comment).
   layoutAnalysis  Json?
 
-  // Versioned, worker-derived speaker-layout plan shared by the studio preview
-  // and final renderer. Its engine discriminator separates Automatic shot
-  // analysis from explicit Split analysis. Kept separate from layoutAnalysis,
+  // Versioned, worker-derived Automatic speaker-layout plan shared by the
+  // studio preview and final renderer. Kept separate from layoutAnalysis,
   // whose v1 envelope is screen-share/PiP specific. Parsed through
   // clipAutoLayoutAnalysisSchema; source-boundary/deleted-range edits null it.
   autoLayoutAnalysis      Json?
+  // Explicit Split detector evidence uses the same bounded scene-envelope
+  // shape but a distinct engine and column, so Automatic and Split can both
+  // remain durable without silently replacing or reinterpreting each other.
+  splitLayoutAnalysis     Json?
   // Durable, indexed work state for auto-layout analysis. The token fences
   // stale workers and the lease lets another replica recover abandoned work
   // without two healthy replicas paying for the same download/detection.

@@ -1150,6 +1150,138 @@ describe("Clip Composition Plan", () => {
     ]);
   });
 
+  test("rejects Split when exact 4:5 tile geometry or clamped crops duplicate tiles", () => {
+    const document = editorDocumentSchema.parse({
+      clipStartSec: 0,
+      clipEndSec: 8,
+      captionPreset: captionPresetSchema.parse({}),
+      transcriptSlice: [],
+      studioEdits: studioEditsSchema.parse({ framing: { mode: "split" } }),
+      brollUrl: null,
+      deletedRanges: [],
+    });
+    const engineVersion = "explicit-split-v1";
+    const planFor = (source: { identity: string; width: number; height: number }) =>
+      planClipComposition({
+        document,
+        source: { ...source, kind: "video" as const },
+        evidence: {
+          automaticLayout: { state: "missing" as const },
+          splitLayout: {
+            state: "available" as const,
+            value: {
+              sourceIdentity: source.identity,
+              inputFingerprint: splitLayoutInputFingerprint({
+                sourceIdentity: source.identity,
+                clipStartSec: 0,
+                clipEndSec: 8,
+                deletedRanges: [],
+                engineVersion,
+              }),
+              engineVersion,
+              source: "explicit-detector" as const,
+              segments: [
+                {
+                  startSec: 0,
+                  endSec: 8,
+                  layout: "two-up" as const,
+                  topCxNorm: 0.01,
+                  bottomCxNorm: 0.02,
+                },
+              ],
+              fallbackSegments: [
+                { startSec: 0, endSec: 8, layout: "single" as const, cxNorm: 0.5 },
+              ],
+            },
+          },
+        },
+        assets: { backgroundImage: { state: "missing" as const } },
+        capabilities: {
+          automaticSpeakerLayout: true,
+          automaticSpeakerEngineVersion: "shot-layout-v1",
+          explicitSplitLayout: true,
+          splitEngineVersion: engineVersion,
+        },
+        targets: [
+          { id: "portrait", aspectRatio: "4:5" as const, width: 1080, height: 1350 },
+        ],
+      });
+
+    const boundary = planFor({ identity: "source:boundary", width: 1600, height: 1000 });
+    expect(boundary.status).toBe("ready");
+    if (boundary.status === "invalid") throw new Error(boundary.error.code);
+    expect(boundary.plan.notices[0]?.code).toBe("split_target_ineligible");
+
+    const duplicated = planFor({ identity: "source:duplicate", width: 1920, height: 1080 });
+    expect(duplicated.status).toBe("ready");
+    if (duplicated.status === "invalid") throw new Error(duplicated.error.code);
+    expect(duplicated.plan.targets[0]?.effectiveMode).toBe("auto");
+    expect(duplicated.plan.targets[0]?.scenes[0]?.layers).toHaveLength(1);
+    expect(duplicated.plan.notices[0]?.code).toBe("split_tiles_not_distinct");
+    expect(duplicated.plan.notices[0]?.sceneId).not.toBeNull();
+  });
+
+  test("uses a static Screen speaker tile when the face band has no lateral crop room", () => {
+    const document = editorDocumentSchema.parse({
+      clipStartSec: 0,
+      clipEndSec: 8,
+      captionPreset: captionPresetSchema.parse({}),
+      transcriptSlice: [],
+      studioEdits: studioEditsSchema.parse({ framing: { mode: "screen" } }),
+      brollUrl: null,
+      deletedRanges: [],
+    });
+    const source = {
+      identity: "source:portrait-screen",
+      kind: "video" as const,
+      width: 1080,
+      height: 1920,
+    };
+    const engineVersion = "screen-layout-v1";
+    const result = planClipComposition({
+      document,
+      source,
+      evidence: {
+        automaticLayout: { state: "missing" },
+        screenLayout: {
+          state: "available",
+          value: {
+            sourceIdentity: source.identity,
+            inputFingerprint: screenLayoutInputFingerprint({
+              sourceIdentity: source.identity,
+              clipStartSec: 0,
+              clipEndSec: 8,
+              deletedRanges: [],
+              engineVersion,
+            }),
+            engineVersion,
+            source: "analysis",
+            pictureInPicture: { state: "unavailable" },
+            faceBand: {
+              state: "available",
+              segments: [
+                { startSec: 0, endSec: 8, layout: "single", cxNorm: 0.9 },
+              ],
+            },
+          },
+        },
+      },
+      assets: { backgroundImage: { state: "missing" } },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+        screenLayout: true,
+        screenEngineVersion: engineVersion,
+      },
+      targets: [
+        { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },
+      ],
+    });
+    expect(result.status).toBe("ready");
+    if (result.status === "invalid") throw new Error(result.error.code);
+    expect(result.plan.notices[0]?.code).toBe("screen_static_center_fallback");
+  });
+
   test("keeps Split failure, stale-evidence, and edited-timeline fallbacks typed", () => {
     const document = editorDocumentSchema.parse({
       clipStartSec: 0,
