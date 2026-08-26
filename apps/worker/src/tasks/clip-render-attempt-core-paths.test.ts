@@ -1,6 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
+import { createServer } from "node:http";
 import {
   copyFile,
   mkdtemp,
@@ -169,6 +170,10 @@ function createCoreRenderPathTracer(input: {
     sourcePath: string;
     probeOutput(variantId: string, filePath: string): Promise<void>;
   };
+  sourceAccess?: {
+    presignedUrl: string;
+    failRangedProbe?: boolean;
+  };
   workspaceCleanupFailure?: Error;
 }) {
   const attempt: ClipRenderingWorkflowAttempt = {
@@ -319,7 +324,7 @@ function createCoreRenderPathTracer(input: {
     },
     config: parseRenderConfig({
       WORKER_CLIP_RENDER_ATTEMPT_ENABLED: "1",
-      WORKER_RENDER_SOURCE_MODE: "download",
+      WORKER_RENDER_SOURCE_MODE: input.sourceAccess ? "ranged" : "download",
       WORKER_AUTO_REFRAME: "0",
       WORKER_LAYOUT_ENGINE: "0",
       WORKER_SCREEN_LAYOUT: "0",
@@ -336,7 +341,20 @@ function createCoreRenderPathTracer(input: {
     },
     adapters: {
       media: input.realMedia
-        ? new ProductionRenderMediaAdapter()
+        ? input.sourceAccess?.failRangedProbe
+          ? {
+              probe: async (request) => {
+                if (request.sourcePath === input.sourceAccess?.presignedUrl) {
+                  throw new WorkflowFailure(
+                    "worker_command_failed",
+                    "retryable",
+                    "Injected ranged probe failure",
+                  );
+                }
+                return new ProductionRenderMediaAdapter().probe(request);
+              },
+            }
+          : new ProductionRenderMediaAdapter()
         : {
             probe: async () => ({
               width: input.topology === "audiogram" ? 0 : 1920,
@@ -564,6 +582,7 @@ function createCoreRenderPathTracer(input: {
         },
       },
       storage: {
+        presignDownloadUrl: async () => input.sourceAccess?.presignedUrl ?? "",
         downloadObjectToFile: async ({ key, filePath }) => {
           if (input.logoDownloadFailure && key.endsWith("/logo.png")) {
             throw input.logoDownloadFailure;
@@ -2268,6 +2287,8 @@ describe("ClipRenderAttempt real-media compatibility fixtures", () => {
   let fixtureDirectory = "";
   let videoSourcePath = "";
   let audioSourcePath = "";
+  let rangedVideoSourceUrl = "";
+  let sourceServer: ReturnType<typeof createServer> | null = null;
 
   beforeAll(async () => {
     if (!ffmpegAvailable || !ffprobeAvailable) return;
@@ -2321,9 +2342,50 @@ describe("ClipRenderAttempt real-media compatibility fixtures", () => {
     if (audioFixture.status !== 0) {
       throw new Error(`audio fixture generation failed: ${audioFixture.stderr}`);
     }
+    const sourceBytes = await readFile(videoSourcePath);
+    sourceServer = createServer((request, response) => {
+      if (request.url !== "/video-source.mp4") {
+        response.writeHead(404).end();
+        return;
+      }
+      const range = request.headers.range?.match(/^bytes=(\d+)-(\d*)$/);
+      if (!range) {
+        response.writeHead(200, {
+          "accept-ranges": "bytes",
+          "content-length": sourceBytes.length,
+          "content-type": "video/mp4",
+        });
+        response.end(sourceBytes);
+        return;
+      }
+      const start = Number(range[1]);
+      const end = range[2]
+        ? Math.min(Number(range[2]), sourceBytes.length - 1)
+        : sourceBytes.length - 1;
+      response.writeHead(206, {
+        "accept-ranges": "bytes",
+        "content-length": end - start + 1,
+        "content-range": `bytes ${start}-${end}/${sourceBytes.length}`,
+        "content-type": "video/mp4",
+      });
+      response.end(sourceBytes.subarray(start, end + 1));
+    });
+    await new Promise<void>((resolve, reject) => {
+      sourceServer?.once("error", reject);
+      sourceServer?.listen(0, "127.0.0.1", resolve);
+    });
+    const address = sourceServer.address();
+    if (!address || typeof address === "string") {
+      throw new Error("real-media source server did not bind a TCP port");
+    }
+    rangedVideoSourceUrl = `http://127.0.0.1:${address.port}/video-source.mp4`;
   });
 
   afterAll(async () => {
+    await new Promise<void>((resolve, reject) => {
+      if (!sourceServer) return resolve();
+      sourceServer.close((error) => (error ? reject(error) : resolve()));
+    });
     if (fixtureDirectory) {
       await rm(fixtureDirectory, { recursive: true, force: true });
     }
@@ -2539,4 +2601,209 @@ describe("ClipRenderAttempt real-media compatibility fixtures", () => {
     },
     30_000,
   );
+
+  test.skipIf(!ffmpegAvailable || !ffprobeAvailable)(
+    "optional-asset degradation still produces probeable real media",
+    async () => {
+      let result: RenderedMediaProbe | undefined;
+      const harness = createCoreRenderPathTracer({
+        topology: "single-video",
+        clipWindow: { startSec: 0, endSec: 0.4 },
+        variants: [
+          {
+            id: "variant-optional-fallback",
+            aspectRatio: "ratio_9_16",
+            resolution: "720p",
+          },
+        ],
+        projectBrandSnapshotFailure: new Error("brand lookup unavailable"),
+        realMedia: {
+          sourcePath: videoSourcePath,
+          probeOutput: async (variantId, filePath) => {
+            result = probeRenderedMedia(variantId, filePath);
+          },
+        },
+      });
+
+      await expect(
+        harness.clipRenderAttempt.execute({
+          attempt: harness.attempt,
+          signal: new AbortController().signal,
+        }),
+      ).resolves.toMatchObject({ status: "completed", succeeded: 1 });
+      expect(result).toMatchObject({ width: 720, height: 1280 });
+      expect(harness.diagnostics).toContainEqual({
+        message: "clip_render_optional_asset_fallback",
+        context: expect.objectContaining({
+          assetClass: "logo",
+          disposition: "degraded",
+        }),
+      });
+    },
+    30_000,
+  );
+
+  for (const analysisCase of [
+    {
+      label: "auto-reframe",
+      diagnostic: "clip_reframe_applied",
+      configOverrides: { WORKER_AUTO_REFRAME: "1" },
+      clipOverrides: {},
+      faceAnalysisSamples: [
+        { t: 0, cx: 0.25 },
+        { t: 0.2, cx: 0.75 },
+      ],
+      multiFaceAnalysisSamples: undefined,
+      pipAnalysisResult: undefined,
+      resolution: "1080p" as const,
+    },
+    {
+      label: "picture-in-picture screen layout",
+      diagnostic: "clip_screen_pip_selected",
+      configOverrides: { WORKER_SCREEN_LAYOUT: "1", WORKER_PIP_DETECT: "1" },
+      clipOverrides: { studioEdits: { framing: { mode: "screen" } } },
+      faceAnalysisSamples: Array.from({ length: 8 }, (_, index) => ({
+        t: index * 0.04,
+        cx: 0.88,
+      })),
+      multiFaceAnalysisSamples: undefined,
+      pipAnalysisResult: {
+        movingPxFrac: 0.04,
+        insufficientSamples: false,
+        candidates: [qualifyingPipCandidate],
+      },
+      resolution: "720p" as const,
+    },
+    {
+      label: "split layout",
+      diagnostic: "clip_split_applied",
+      configOverrides: { WORKER_SPLIT: "1" },
+      clipOverrides: { studioEdits: { framing: { mode: "split" } } },
+      faceAnalysisSamples: undefined,
+      multiFaceAnalysisSamples: Array.from({ length: 8 }, (_, index) => ({
+        t: index * 0.04,
+        faces: [
+          { cx: 0.3, cy: 0.3, w: 0.1, h: 0.2, score: 0.9 },
+          { cx: 0.7, cy: 0.3, w: 0.1, h: 0.2, score: 0.9 },
+        ],
+      })),
+      pipAnalysisResult: undefined,
+      resolution: "720p" as const,
+    },
+    {
+      label: "shot-layout engine",
+      diagnostic: "clip_layout_plan_applied",
+      configOverrides: {
+        WORKER_AUTO_REFRAME: "1",
+        WORKER_LAYOUT_ENGINE: "1",
+      },
+      clipOverrides: {},
+      faceAnalysisSamples: undefined,
+      multiFaceAnalysisSamples: Array.from({ length: 8 }, (_, index) => ({
+        t: index * 0.04,
+        faces: [
+          { cx: 0.3, cy: 0.3, w: 0.1, h: 0.2, score: 0.9 },
+          { cx: 0.7, cy: 0.3, w: 0.1, h: 0.2, score: 0.9 },
+        ],
+      })),
+      pipAnalysisResult: undefined,
+      resolution: "720p" as const,
+    },
+  ]) {
+    test.skipIf(!ffmpegAvailable || !ffprobeAvailable)(
+      `${analysisCase.label} produces probeable real media`,
+      async () => {
+        let result: RenderedMediaProbe | undefined;
+        const harness = createCoreRenderPathTracer({
+          topology: "single-video",
+          clipWindow: { startSec: 0, endSec: 0.4 },
+          variants: [
+            {
+              id: `variant-${analysisCase.label}`,
+              aspectRatio: "ratio_9_16",
+              resolution: analysisCase.resolution,
+            },
+          ],
+          configOverrides: analysisCase.configOverrides,
+          clipOverrides: analysisCase.clipOverrides,
+          faceAnalysisSamples: analysisCase.faceAnalysisSamples,
+          multiFaceAnalysisSamples: analysisCase.multiFaceAnalysisSamples,
+          pipAnalysisResult: analysisCase.pipAnalysisResult,
+          realMedia: {
+            sourcePath: videoSourcePath,
+            probeOutput: async (variantId, filePath) => {
+              result = probeRenderedMedia(variantId, filePath);
+            },
+          },
+        });
+
+        await expect(
+          harness.clipRenderAttempt.execute({
+            attempt: harness.attempt,
+            signal: new AbortController().signal,
+          }),
+        ).resolves.toMatchObject({ status: "completed", succeeded: 1 });
+        expect(result).toMatchObject({
+          width: analysisCase.resolution === "1080p" ? 1080 : 720,
+          height: analysisCase.resolution === "1080p" ? 1920 : 1280,
+        });
+        expect(harness.diagnostics).toContainEqual({
+          message: analysisCase.diagnostic,
+          context: expect.objectContaining({ phase: "media_analysis" }),
+        });
+      },
+      30_000,
+    );
+  }
+
+  for (const sourceCase of [
+    { label: "ranged", failRangedProbe: false },
+    { label: "download fallback", failRangedProbe: true },
+  ]) {
+    test.skipIf(!ffmpegAvailable || !ffprobeAvailable)(
+      `${sourceCase.label} source access produces probeable real media`,
+      async () => {
+        let result: RenderedMediaProbe | undefined;
+        const harness = createCoreRenderPathTracer({
+          topology: "single-video",
+          clipWindow: { startSec: 0, endSec: 0.4 },
+          variants: [
+            {
+              id: `variant-source-${sourceCase.label}`,
+              aspectRatio: "ratio_9_16",
+              resolution: "720p",
+            },
+          ],
+          sourceAccess: {
+            presignedUrl: rangedVideoSourceUrl,
+            failRangedProbe: sourceCase.failRangedProbe,
+          },
+          realMedia: {
+            sourcePath: videoSourcePath,
+            probeOutput: async (variantId, filePath) => {
+              result = probeRenderedMedia(variantId, filePath);
+            },
+          },
+        });
+
+        await expect(
+          harness.clipRenderAttempt.execute({
+            attempt: harness.attempt,
+            signal: new AbortController().signal,
+          }),
+        ).resolves.toMatchObject({ status: "completed", succeeded: 1 });
+        expect(result).toMatchObject({ width: 720, height: 1280 });
+        expect(harness.diagnostics).toContainEqual({
+          message: "clip_render_source_operation_completed",
+          context: expect.objectContaining({
+            phase: "source_resolution",
+            operation: sourceCase.failRangedProbe
+              ? "source_download"
+              : "ranged_probe",
+          }),
+        });
+      },
+      30_000,
+    );
+  }
 });

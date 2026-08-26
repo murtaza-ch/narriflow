@@ -213,34 +213,6 @@ export async function notifyWorkflowFailureAfterSettlement(input: {
   }
 }
 
-export async function notifyAutoRenderCompleted(input: {
-  workflowRunId: string;
-  projectId: string;
-  clipCount: number;
-}): Promise<void> {
-  try {
-    const context = await notificationService.getWorkflowRunContext(
-      input.workflowRunId,
-    );
-    if (!context?.idempotencyKey.startsWith("auto-render-")) {
-      return;
-    }
-
-    await notifyTerminalOutcome({
-      projectId: input.projectId,
-      sourceId: input.workflowRunId,
-      outcome: "clips_ready",
-      clipCount: input.clipCount,
-    });
-  } catch (error) {
-    warn("auto_render_terminal_notification_failed", {
-      workflowRunId: input.workflowRunId,
-      projectId: input.projectId,
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
-}
-
 export async function notifyIngestFailureAfterSettlement(input: {
   jobId: string;
   projectId: string;

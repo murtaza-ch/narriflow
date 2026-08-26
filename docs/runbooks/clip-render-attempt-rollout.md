@@ -13,13 +13,21 @@ the same time. The additive schema remains in place during rollback.
 2. **Deploy dark.** Deploy the upgraded services, event dispatcher, worker
    adapters, and reconciliation command with
    `WORKER_CLIP_RENDER_ATTEMPT_ENABLED=0`. Existing render workers may remain
-   active during this step; upgraded workers do not claim render runs. The
-   variable defaults to enabled when omitted, so a dark deploy must set `0`
-   explicitly.
+   active during this step; upgraded workers do not claim render runs. Missing
+   or empty values also default to disabled, but set `0` explicitly so the
+   deployment configuration records that the pool is dark.
 3. **Verify adapters.** Run the worker contract tests and a project-scoped
    dry reconciliation:
-   `bun test apps/worker/src/render-config.test.ts apps/worker/src/tasks/clip-render-attempt.test.ts apps/worker/src/render-object-reconciler.test.ts`
-   and
+
+   ```sh
+   bun test apps/worker/src/render-config.test.ts apps/worker/src/render-process-adapter.test.ts apps/worker/src/render-media-adapter.test.ts apps/worker/src/render-runtime-adapters.test.ts apps/worker/src/render-diagnostic-adapter.test.ts apps/worker/src/tasks/clip-render-attempt.test.ts apps/worker/src/tasks/clip-render-attempt-core-paths.test.ts apps/worker/src/render-object-reconciler.test.ts packages/services/src/r2-storage.test.ts packages/services/src/notification.service.test.ts
+   bun run test:workflow:db
+   R2_CONTRACT_TEST_PREFIX=tests/narriflow-cutover bun --env-file=apps/worker/.env test packages/services/src/r2-storage.test.ts --test-name-pattern 'R2 object adapter uploads'
+   ```
+
+   The R2 command requires the isolated test prefix plus configured worker R2
+   credentials. It creates and removes only UUID-scoped objects below that
+   prefix. Then run
    `bun run --cwd apps/worker reconcile:render-objects --project <project-uuid>`.
    Exit `0` is clean, `1` reports reviewed dry-run orphans, `2` reports one or
    more per-object deletion failures, and `3` means reconciliation was unsafe

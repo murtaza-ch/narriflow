@@ -11,6 +11,7 @@ test("orphan reconciliation is project-scoped, attempt-only, and dry-run first",
   const legacy = `projects/${projectId}/renders/clip/9x16.mp4`;
   const deleted: string[] = [];
   const listedPrefixes: string[] = [];
+  const diagnostics: Array<Record<string, unknown>> = [];
   const reconciler = new RenderObjectReconciler({
     now: () => new Date("2026-08-17T12:00:00.000Z"),
     storage: {
@@ -33,6 +34,7 @@ test("orphan reconciliation is project-scoped, attempt-only, and dry-run first",
     persistence: {
       listReferencedKeys: async () => new Set([referenced]),
     },
+    diagnose: (diagnostic) => diagnostics.push(diagnostic),
   });
 
   const result = await reconciler.execute({ projectId, delete: false });
@@ -51,6 +53,18 @@ test("orphan reconciliation is project-scoped, attempt-only, and dry-run first",
     objectIds: [orphan],
   });
   expect(deleted).toEqual([]);
+  expect(diagnostics).toContainEqual(
+    expect.objectContaining({
+      message: "render_orphan_reconciliation_complete",
+      projectId,
+      phase: "orphan_recovery",
+      operation: "reconcile",
+      objectKeyClass: "attempt_unique_render_or_export",
+      disposition: "dry_run",
+      cleanupResult: "dry_run",
+      elapsedMs: 0,
+    }),
+  );
 });
 
 test("destructive reconciliation refreshes references before deletion", async () => {
@@ -161,6 +175,13 @@ test("destructive reconciliation reports deletion failures without hiding the or
     expect.objectContaining({
       message: "render_orphan_delete_failed",
       objectId: key,
+      phase: "orphan_recovery",
+      operation: "storage_delete",
+      objectKeyClass: "attempt_unique_export",
+      failureCode: "storage_operation_failed",
+      disposition: "orphan_candidate",
+      cleanupResult: "failed",
+      elapsedMs: 0,
     }),
   );
 });
@@ -207,6 +228,31 @@ test("orphan reconciliation scans every project-scoped storage page", async () =
     [`projects/${projectId}/renders/`, "page-2"],
     [`projects/${projectId}/exports/`, undefined],
   ]);
+});
+
+test("diagnostic sink failures cannot change a completed reconciliation", async () => {
+  const projectId = "11111111-1111-1111-1111-111111111111";
+  const reconciler = new RenderObjectReconciler({
+    now: () => new Date("2026-08-17T12:00:00.000Z"),
+    storage: {
+      listPage: async () => ({ objects: [], nextContinuationToken: null }),
+      delete: async () => {},
+    },
+    persistence: { listReferencedKeys: async () => new Set() },
+    diagnose: () => {
+      throw new Error("diagnostic sink unavailable");
+    },
+  });
+
+  await expect(reconciler.execute({ projectId })).resolves.toEqual({
+    examined: 0,
+    referenced: 0,
+    ageProtected: 0,
+    orphaned: 0,
+    deleted: 0,
+    failed: 0,
+    objectIds: [],
+  });
 });
 
 test("orphan reconciliation stops safely when durable references are unavailable", async () => {

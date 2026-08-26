@@ -1,6 +1,18 @@
 const UUID_SUFFIX =
   /-[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.mp4$/i;
 
+export type RenderObjectKeyClass =
+  | "attempt_unique_render"
+  | "attempt_unique_export"
+  | "other";
+
+export function classifyRenderObjectKey(key: string): RenderObjectKeyClass {
+  const namespace = key.split("/")[2];
+  if (namespace === "renders") return "attempt_unique_render";
+  if (namespace === "exports") return "attempt_unique_export";
+  return "other";
+}
+
 export function clipRenderAttemptStorageKey(
   projectId: string,
   clipId: string,

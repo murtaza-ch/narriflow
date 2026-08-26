@@ -46,7 +46,10 @@ type SourceFailure = Extract<
 
 function createOrdinaryTracer(input: {
   attemptId: string;
+  diagnoseThrows?: boolean;
   failure?: OrdinaryTracerFailure;
+  failureMessage?: string;
+  commandDiagnosticContext?: Record<string, unknown>;
   initialVariantState?: "pending" | "completed";
   outcome: RenderWorkSetOutcome;
   failureWriteRejects?: boolean;
@@ -256,7 +259,7 @@ function createOrdinaryTracer(input: {
               ? new WorkflowFailure(
                   "ffmpeg_temporarily_unavailable",
                   "retryable",
-                  "The encoder is temporarily unavailable",
+                  input.failureMessage ?? "The encoder is temporarily unavailable",
                 )
               : input.failure === "command_missing"
                 ? new WorkflowFailure(
@@ -280,6 +283,7 @@ function createOrdinaryTracer(input: {
                     : null;
           if (commandFailure) {
             diagnose?.({
+              ...input.commandDiagnosticContext,
               operation: commandFailure.code.includes("timeout")
                 ? "timeout"
                 : commandFailure.code.includes("missing")
@@ -404,8 +408,10 @@ function createOrdinaryTracer(input: {
           scheduledTimers.delete(handle as unknown as number);
         },
       },
-      diagnose: ({ message, context }) =>
-        diagnostics.push({ message, context }),
+      diagnose: ({ message, context }) => {
+        if (input.diagnoseThrows) throw new Error("diagnostic sink unavailable");
+        diagnostics.push({ message, context });
+      },
     },
   });
 
@@ -830,6 +836,7 @@ test("ClipRenderAttempt settles an empty frozen work set through execute", async
     },
     config: parseRenderConfig({ WORKER_CLIP_RENDER_ATTEMPT_ENABLED: "1" }),
     lifecycle,
+    adapters: { diagnose: () => {} },
   });
 
   await expect(
@@ -1294,6 +1301,24 @@ test("ClipRenderAttempt renders and settles one ordinary variant through execute
     "settle",
     "workspace_cleanup",
   ]);
+  expect(harness.diagnostics).toContainEqual({
+    message: "clip_render_attempt_settled",
+    context: expect.objectContaining({
+      workflowRunId: harness.attempt.workflowRunId,
+      workflowAttemptId: harness.attempt.attemptId,
+      projectId: harness.attempt.projectId,
+      stage: "clip_rendering",
+      attemptCount: harness.attempt.attemptCount,
+      phase: "settlement",
+      operation: "settle_render_work_set",
+      disposition: "completed",
+      requested: 1,
+      succeeded: 1,
+      failed: 0,
+      superseded: 0,
+      retryState: "terminal",
+    }),
+  });
 });
 
 test("ClipRenderAttempt persists an attempt-unique export key with unchanged delivery metadata", async () => {
@@ -1869,6 +1894,23 @@ for (const failure of ["command", "upload"] as const) {
       }:retryable`,
     );
     expect(harness.settlementCalls()).toBe(1);
+    expect(harness.diagnostics).toContainEqual({
+      message: "clip_render_attempt_settled",
+      context: expect.objectContaining({
+        workflowRunId: harness.attempt.workflowRunId,
+        workflowAttemptId: harness.attempt.attemptId,
+        projectId: harness.attempt.projectId,
+        phase: "settlement",
+        operation: "settle_render_work_set",
+        disposition: expected.status,
+        retryState: expected.status === "requeued" ? "retry_scheduled" : "terminal",
+        requested: expected.requested,
+        succeeded: expected.succeeded,
+        failed: expected.failed,
+        superseded: expected.superseded,
+        followUpWorkflowRunId: null,
+      }),
+    });
     if (failure === "command") {
       expect(harness.diagnostics).toContainEqual({
         message: "clip_render_command_operation",
@@ -1884,6 +1926,61 @@ for (const failure of ["command", "upload"] as const) {
     }
   });
 }
+
+test("ClipRenderAttempt redacts signed access queries from diagnostics", async () => {
+  const harness = createOrdinaryTracer({
+    attemptId: "30000000-0000-4000-8000-000000000083",
+    failure: "command",
+    failureMessage:
+      "Encoder rejected https://media.example/source.mp4?X-Amz-Signature=top-secret&token=private",
+    outcome: {
+      status: "requeued",
+      requested: 1,
+      succeeded: 0,
+      failed: 1,
+      superseded: 0,
+      followUpWorkflowRunId: null,
+    },
+  });
+
+  await expect(
+    harness.clipRenderAttempt.execute({
+      attempt: harness.attempt,
+      signal: new AbortController().signal,
+    }),
+  ).resolves.toMatchObject({ status: "requeued" });
+
+  const diagnostics = JSON.stringify(harness.diagnostics);
+  expect(diagnostics).toContain("https://media.example/source.mp4?[redacted]");
+  expect(diagnostics).not.toContain("top-secret");
+  expect(diagnostics).not.toContain("token=private");
+});
+
+test("ClipRenderAttempt does not let a diagnostic sink failure reverse settlement", async () => {
+  const expected: RenderWorkSetOutcome = {
+    status: "completed",
+    requested: 1,
+    succeeded: 1,
+    failed: 0,
+    superseded: 0,
+    followUpWorkflowRunId: null,
+  };
+  const harness = createOrdinaryTracer({
+    attemptId: "30000000-0000-4000-8000-000000000084",
+    diagnoseThrows: true,
+    outcome: expected,
+  });
+
+  await expect(
+    harness.clipRenderAttempt.execute({
+      attempt: harness.attempt,
+      signal: new AbortController().signal,
+    }),
+  ).resolves.toEqual(expected);
+  expect(harness.variantState()).toBe("completed");
+  expect(harness.objectReferences).toEqual(harness.uploadedKeys);
+  expect(harness.settlementCalls()).toBe(1);
+});
 
 test("ClipRenderAttempt observes a rejected background upload task before settlement", async () => {
   const harness = createOrdinaryTracer({
@@ -1935,6 +2032,58 @@ test("ClipRenderAttempt reports an owned deletion as superseded", async () => {
   expect(harness.variantState()).toBe("superseded");
   expect(harness.deletedKeys).toEqual(harness.uploadedKeys);
   expect(harness.objectReferences).toEqual([]);
+  expect(harness.diagnostics).toContainEqual({
+    message: "clip_render_variant_completion_stale_discarded",
+    context: expect.objectContaining({
+      workflowAttemptId: harness.attempt.attemptId,
+      clipRenderId: "variant-ordinary",
+      phase: "persistence",
+      operation: "complete_clip_render_variant",
+      failureCode: "variant_superseded",
+      disposition: "superseded",
+      objectKeyClass: "attempt_unique_render",
+      cleanupResult: "deleted",
+    }),
+  });
+});
+
+test("ClipRenderAttempt diagnostics keep the owned attempt identity authoritative", async () => {
+  const harness = createOrdinaryTracer({
+    attemptId: "30000000-0000-4000-8000-000000000085",
+    failure: "command",
+    commandDiagnosticContext: {
+      workflowRunId: "spoofed-run",
+      workflowAttemptId: "spoofed-attempt",
+      projectId: "spoofed-project",
+      stage: "spoofed-stage",
+      attemptCount: 99,
+    },
+    outcome: {
+      status: "requeued",
+      requested: 1,
+      succeeded: 0,
+      failed: 1,
+      superseded: 0,
+      followUpWorkflowRunId: null,
+    },
+  });
+
+  await expect(
+    harness.clipRenderAttempt.execute({
+      attempt: harness.attempt,
+      signal: new AbortController().signal,
+    }),
+  ).resolves.toMatchObject({ status: "requeued", failed: 1 });
+  expect(harness.diagnostics).toContainEqual({
+    message: "clip_render_command_operation",
+    context: expect.objectContaining({
+      workflowRunId: harness.attempt.workflowRunId,
+      workflowAttemptId: harness.attempt.attemptId,
+      projectId: harness.attempt.projectId,
+      stage: harness.attempt.stage,
+      attemptCount: harness.attempt.attemptCount,
+    }),
+  });
 });
 
 test("ClipRenderAttempt diagnoses provisional deletion failure without reversing supersession", async () => {
@@ -2056,6 +2205,19 @@ test("ClipRenderAttempt cleans a provisional object when guarded completion lose
   expect(
     harness.actions.some((action) => action.startsWith("variant_failure:")),
   ).toBe(false);
+  expect(harness.diagnostics).toContainEqual({
+    message: "clip_render_attempt_interrupted",
+    context: expect.objectContaining({
+      workflowRunId: harness.attempt.workflowRunId,
+      workflowAttemptId: harness.attempt.attemptId,
+      projectId: harness.attempt.projectId,
+      phase: "ownership",
+      operation: "execute",
+      failureCode: "workflow_attempt_lost",
+      disposition: "control",
+      retryState: "reaper_owned",
+    }),
+  });
 });
 
 test("ClipRenderAttempt cleans a provisional object when guarded completion is rejected", async () => {

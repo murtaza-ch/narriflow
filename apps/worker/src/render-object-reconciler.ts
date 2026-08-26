@@ -5,7 +5,10 @@ import {
   listObjectPageByPrefix,
 } from "@narriflow/services";
 import { parseWorkerRenderConfig } from "./render-config";
-import { isAttemptUniqueProjectRenderObjectKey } from "./render-object-key";
+import {
+  classifyRenderObjectKey,
+  isAttemptUniqueProjectRenderObjectKey,
+} from "./render-object-key";
 
 const ORPHAN_SAFETY_AGE_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_STORAGE_OPERATION_TIMEOUT_MS = 2 * 60 * 1000;
@@ -60,6 +63,14 @@ export class RenderObjectReconciler {
     return signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
   }
 
+  #diagnose(input: Record<string, unknown>): void {
+    try {
+      this.#dependencies.diagnose?.(input);
+    } catch {
+      // Recovery outcome is authoritative; diagnostics are best effort.
+    }
+  }
+
   async execute(input: {
     projectId: string;
     delete?: boolean;
@@ -69,6 +80,8 @@ export class RenderObjectReconciler {
       throw new Error("A valid project UUID is required");
     }
     const signal = input.signal;
+    const now = this.#dependencies.now ?? (() => new Date());
+    const startedAtMs = now().getTime();
     signal?.throwIfAborted();
     const referencedKeys = await this.#dependencies.persistence.listReferencedKeys(
       input.projectId,
@@ -106,9 +119,7 @@ export class RenderObjectReconciler {
       failed: 0,
       objectIds: [],
     };
-    const deletionCutoff =
-      (this.#dependencies.now ?? (() => new Date()))().getTime() -
-      ORPHAN_SAFETY_AGE_MS;
+    const deletionCutoff = now().getTime() - ORPHAN_SAFETY_AGE_MS;
     const oldOrphans: ReconciliationObject[] = [];
     for (const object of candidates) {
       if (referencedKeys.has(object.key)) {
@@ -149,20 +160,42 @@ export class RenderObjectReconciler {
           signal?.throwIfAborted();
           if (operationSignal.aborted) throw operationSignal.reason;
           result.failed += 1;
-          this.#dependencies.diagnose?.({
+          const failureCode = classifyR2StorageError(error);
+          this.#diagnose({
             level: "warn",
             message: "render_orphan_delete_failed",
             projectId: input.projectId,
             objectId: object.key,
-            errorCode: classifyR2StorageError(error),
+            phase: "orphan_recovery",
+            operation: "storage_delete",
+            objectKeyClass: classifyRenderObjectKey(object.key),
+            failureCode,
+            errorCode: failureCode,
+            disposition: "orphan_candidate",
+            cleanupResult: "failed",
+            elapsedMs: Math.max(0, now().getTime() - startedAtMs),
           });
         }
       }
     }
-    this.#dependencies.diagnose?.({
+    this.#diagnose({
       level: result.failed > 0 ? "warn" : "info",
       message: "render_orphan_reconciliation_complete",
       projectId: input.projectId,
+      phase: "orphan_recovery",
+      operation: "reconcile",
+      objectKeyClass: "attempt_unique_render_or_export",
+      disposition: !input.delete
+        ? "dry_run"
+        : result.failed > 0
+          ? "partial"
+          : "completed",
+      cleanupResult: !input.delete
+        ? "dry_run"
+        : result.failed > 0
+          ? "partial"
+          : "deleted",
+      elapsedMs: Math.max(0, now().getTime() - startedAtMs),
       destructive: Boolean(input.delete),
       ...result,
     });

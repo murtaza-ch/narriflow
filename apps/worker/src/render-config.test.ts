@@ -76,5 +76,11 @@ describe("RenderConfig", () => {
     expect(() =>
       parseRenderConfig({ WORKER_X264_PRESET: "warp-speed" }),
     ).toThrow("WORKER_X264_PRESET");
+    expect(() =>
+      parseRenderConfig({ WORKER_AUTO_REFRAME: "false" }),
+    ).toThrow("WORKER_AUTO_REFRAME");
+    expect(() =>
+      parseRenderConfig({ WORKER_LAYOUT_ENGINE: "2" }),
+    ).toThrow("WORKER_LAYOUT_ENGINE");
   });
 });

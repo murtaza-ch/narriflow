@@ -1,13 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createWriteStream as productionCreateWriteStream } from "node:fs";
-import {
-  stat as productionStat,
-  writeFile as productionWriteFile,
-} from "node:fs/promises";
-import {
-  mkdtemp as productionMkdtemp,
-  rm as productionRm,
-} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
 import { Readable } from "node:stream";
@@ -150,6 +142,14 @@ import {
   productionRenderMediaAdapter,
   type RenderMediaProbe,
 } from "../render-media-adapter";
+import { productionRenderDiagnosticAdapter } from "../render-diagnostic-adapter";
+import { classifyRenderObjectKey } from "../render-object-key";
+import {
+  productionRenderClockAdapter,
+  productionRenderWorkspaceAdapter,
+  type RenderClockAdapter,
+  type RenderWorkspaceAdapter,
+} from "../render-runtime-adapters";
 
 interface BrollCutaway {
   path: string;
@@ -330,17 +330,8 @@ interface ClipRenderAttemptAdapters {
     presignDownloadUrl: typeof productionPresignDownloadUrl;
     putFileFromPath: typeof productionPutFileFromPath;
   };
-  workspace: {
-    mkdtemp: typeof productionMkdtemp;
-    rm: typeof productionRm;
-    stat: typeof productionStat;
-    writeFile: typeof productionWriteFile;
-  };
-  clock: {
-    nowMs(): number;
-    setTimeout(callback: () => void, delayMs: number): ReturnType<typeof setTimeout>;
-    clearTimeout(handle: ReturnType<typeof setTimeout>): void;
-  };
+  workspace: RenderWorkspaceAdapter;
+  clock: RenderClockAdapter;
   diagnose(input: {
     level: "info" | "error";
     message: string;
@@ -472,26 +463,10 @@ const productionClipRenderAttemptAdapters: ClipRenderAttemptAdapters = {
     putFileFromPath: productionPutFileFromPath,
   },
   workspace: {
-    mkdtemp: productionMkdtemp,
-    rm: productionRm,
-    stat: productionStat,
-    writeFile: productionWriteFile,
+    ...productionRenderWorkspaceAdapter,
   },
-  clock: {
-    nowMs: () => Date.now(),
-    setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
-    clearTimeout: (handle) => clearTimeout(handle),
-  },
-  diagnose: ({ level, message, context }) => {
-    console.warn(
-      JSON.stringify({
-        level,
-        message,
-        ts: new Date().toISOString(),
-        ...context,
-      }),
-    );
-  },
+  clock: productionRenderClockAdapter,
+  diagnose: productionRenderDiagnosticAdapter.diagnose,
 };
 
 function currentRenderConfig(): Readonly<RenderConfig> {
@@ -648,12 +623,63 @@ const captionStyleByAspectRatio: Record<
   "4:5": { fontSize: 23, marginV: 90 },
 };
 
+const RENDER_DIAGNOSTIC_SECRET_KEY =
+  /(?:authorization|credential|password|secret|signature|token)/i;
+
+function sanitizeRenderDiagnosticValue(value: unknown): unknown {
+  if (typeof value === "string") {
+    return value.replace(/\bhttps?:\/\/[^\s"'?]+\?[^\s"']+/gi, (url) =>
+      url.replace(/\?.*$/, "?[redacted]"),
+    );
+  }
+  if (Array.isArray(value)) {
+    return value.map(sanitizeRenderDiagnosticValue);
+  }
+  if (
+    value &&
+    typeof value === "object" &&
+    (Object.getPrototypeOf(value) === Object.prototype ||
+      Object.getPrototypeOf(value) === null)
+  ) {
+    return Object.fromEntries(
+      Object.entries(value).map(([key, nestedValue]) => [
+        key,
+        RENDER_DIAGNOSTIC_SECRET_KEY.test(key)
+          ? "[redacted]"
+          : sanitizeRenderDiagnosticValue(nestedValue),
+      ]),
+    );
+  }
+  return value;
+}
+
 function log(
   level: "info" | "error",
   message: string,
   context?: Record<string, unknown>,
 ) {
-  currentRenderAdapters().diagnose({ level, message, context });
+  const attempt = renderExecutionStorage.getStore()?.attempt;
+  const enrichedContext = attempt
+    ? {
+        ...context,
+        workflowRunId: attempt.workflowRunId,
+        workflowAttemptId: attempt.attemptId,
+        projectId: attempt.projectId,
+        stage: attempt.stage,
+        attemptCount: attempt.attemptCount,
+      }
+    : context;
+  try {
+    currentRenderAdapters().diagnose({
+      level,
+      message,
+      context: sanitizeRenderDiagnosticValue(enrichedContext) as
+        | Record<string, unknown>
+        | undefined,
+    });
+  } catch {
+    // Diagnostic delivery must never change Clip Render Attempt settlement.
+  }
 }
 
 type OptionalAssetClass =
@@ -4986,12 +5012,18 @@ async function uploadRenderedOutput(params: {
     // flight. The storage key is attempt-unique (clipRenderAttemptStorageKey),
     // so this object can never be the one any other row points at; deleting
     // it is always safe and never touches another attempt's bytes.
-    await deleteProvisionalObject("variant_superseded");
+    const cleanupResult = await deleteProvisionalObject("variant_superseded");
     log("info", "clip_render_variant_completion_stale_discarded", {
       workflowRunId: params.workflowRunId,
       clipId: params.output.clipId,
       clipRenderId: params.output.clipRenderId,
       aspectRatio: params.output.aspectRatio,
+      phase: "persistence",
+      operation: "complete_clip_render_variant",
+      failureCode: "variant_superseded",
+      disposition: "superseded",
+      objectKeyClass: classifyRenderObjectKey(params.output.storageKey),
+      cleanupResult,
     });
     return false;
   }
@@ -5085,20 +5117,49 @@ export class ClipRenderAttempt {
         adapters: this.#adapters,
       },
       async () => {
-        signal.throwIfAborted();
-        const workSet = await this.#lifecycle.beginRenderWorkSet(input.attempt);
-        signal.throwIfAborted();
-        if (workSet.variantIds.length === 0) {
-          return this.#lifecycle.settleRenderWorkSet(input.attempt);
+        const attemptStartedAtMs = currentTimeMs();
+        try {
+          signal.throwIfAborted();
+          const workSet = await this.#lifecycle.beginRenderWorkSet(input.attempt);
+          signal.throwIfAborted();
+          const outcome =
+            workSet.variantIds.length === 0
+              ? await this.#lifecycle.settleRenderWorkSet(input.attempt)
+              : await executeClipRenderAttempt(
+                  this.#run,
+                  signal,
+                  input.attempt,
+                  this.#lifecycle,
+                  workSet.variantIds,
+                  (error) => ownershipController.abort(error),
+                );
+          log("info", "clip_render_attempt_settled", {
+            phase: "settlement",
+            operation: "settle_render_work_set",
+            disposition: outcome.status,
+            retryState:
+              outcome.status === "requeued" ? "retry_scheduled" : "terminal",
+            requested: outcome.requested,
+            succeeded: outcome.succeeded,
+            failed: outcome.failed,
+            superseded: outcome.superseded,
+            followUpWorkflowRunId: outcome.followUpWorkflowRunId,
+            elapsedMs: currentTimeMs() - attemptStartedAtMs,
+          });
+          return outcome;
+        } catch (error) {
+          if (error instanceof WorkflowAttemptLost) {
+            log("error", "clip_render_attempt_interrupted", {
+              phase: "ownership",
+              operation: "execute",
+              failureCode: error.code,
+              disposition: "control",
+              retryState: "reaper_owned",
+              elapsedMs: currentTimeMs() - attemptStartedAtMs,
+            });
+          }
+          throw error;
         }
-        return executeClipRenderAttempt(
-          this.#run,
-          signal,
-          input.attempt,
-          this.#lifecycle,
-          workSet.variantIds,
-          (error) => ownershipController.abort(error),
-        );
       },
     );
   }

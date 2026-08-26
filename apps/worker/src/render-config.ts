@@ -56,16 +56,24 @@ function positiveNumber(
   return parsed;
 }
 
-function featureEnabled(environment: RenderEnvironment, name: string): boolean {
-  return environment[name] !== "0";
-}
-
-function explicitlyEnabled(environment: RenderEnvironment, name: string): boolean {
+function binaryFlag(
+  environment: RenderEnvironment,
+  name: string,
+  fallback: boolean,
+): boolean {
   const value = environment[name]?.trim();
-  if (value === undefined || value === "") return false;
+  if (value === undefined || value === "") return fallback;
   if (value === "0") return false;
   if (value === "1") return true;
   throw new Error(`${name} must be either 0 or 1`);
+}
+
+function featureEnabled(environment: RenderEnvironment, name: string): boolean {
+  return binaryFlag(environment, name, true);
+}
+
+function explicitlyEnabled(environment: RenderEnvironment, name: string): boolean {
+  return binaryFlag(environment, name, false);
 }
 
 export function parseRenderConfig(

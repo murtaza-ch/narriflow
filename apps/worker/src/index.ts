@@ -285,6 +285,7 @@ async function executeClaimedWorkflowRun<
     attemptId: run.attemptId,
     attemptCount: run.attemptCount,
   });
+  const attemptStartedAtMs = Date.now();
   try {
     await getWorkflowRunLifecycle().runAttempt(attempt, ({ signal }) =>
       process(run, signal),
@@ -295,9 +296,18 @@ async function executeClaimedWorkflowRun<
       JSON.stringify({
         level: "warn",
         message: "workflow_attempt_lost",
+        ts: new Date().toISOString(),
         workflowRunId: run.id,
+        workflowAttemptId: run.attemptId,
         attemptId: run.attemptId,
+        projectId: run.projectId,
         stage: run.stage,
+        phase: "ownership",
+        operation: "execute",
+        failureCode: error.code,
+        disposition: "control",
+        retryState: "reaper_owned",
+        elapsedMs: Date.now() - attemptStartedAtMs,
       }),
     );
   }
@@ -459,6 +469,7 @@ const renderLoop = createPollLoop("render", async () => {
     config: renderConfig,
     lifecycle,
   });
+  const attemptStartedAtMs = Date.now();
   try {
     await lifecycle.runAttempt(attempt, ({ signal }) =>
       clipRenderAttempt.execute({ attempt, signal }),
@@ -469,9 +480,18 @@ const renderLoop = createPollLoop("render", async () => {
       JSON.stringify({
         level: "warn",
         message: "workflow_attempt_lost",
+        ts: new Date().toISOString(),
         workflowRunId: run.id,
+        workflowAttemptId: run.attemptId,
         attemptId: run.attemptId,
+        projectId: run.projectId,
         stage: run.stage,
+        phase: "ownership",
+        operation: "execute",
+        failureCode: error.code,
+        disposition: "control",
+        retryState: "reaper_owned",
+        elapsedMs: Date.now() - attemptStartedAtMs,
       }),
     );
   }
@@ -494,13 +514,19 @@ const autoLayoutLoop = createPollLoop("auto_layout", async () => {
 /** Durable terminal-email retries. The service performs an atomic
  *  pending/expired-lease claim, so this loop is safe across worker replicas. */
 const notificationRetryLoop = createPollLoop("notification_retry", async () => {
+  const startedAtMs = Date.now();
   const result = await retryPendingNotifications(notificationRetryBatchSize);
   if (result.claimed > 0) {
-    console.log(
+    console.warn(
       JSON.stringify({
         level: "info",
         message: "notification_retries_processed",
         ts: new Date().toISOString(),
+        phase: "notification_delivery",
+        operation: "retry_pending_notifications",
+        disposition: result.failed > 0 ? "partial" : "completed",
+        retryState: result.pending > 0 ? "pending" : "drained",
+        elapsedMs: Date.now() - startedAtMs,
         ...result,
       }),
     );
