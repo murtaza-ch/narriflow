@@ -456,6 +456,47 @@ describe("StudioEditingSession preview eligibility seam", () => {
     ]);
   });
 
+  test("marks automatic layout failed after the bounded polling deadline", async () => {
+    const cloud = makeDocument();
+    const runtime = new ManualRuntime();
+    const session = createStudioEditingSession(
+      {
+        projectId: "project",
+        clipId: "clip",
+        cloudRevision: 3,
+        document: cloud,
+        segments: [],
+        preview: {
+          sourceUrl: "https://cdn.example.com/source.mp4",
+          sourcePurged: false,
+          proxy: {
+            url: "https://cdn.example.com/proxy.mp4",
+            startSec: 6,
+            durationSec: 38,
+            waveformPeaksUrl: "/preview-peaks?v=current",
+          },
+          automaticLayout: null,
+        },
+      },
+      makeDeterministicDependencies(cloud, {
+        runtime,
+        preview: {
+          fetchAutomaticLayout: async () => null,
+        },
+      }),
+    );
+    await waitForSnapshot(session, (snapshot) => snapshot.status === "ready");
+    expect(session.getSnapshot().preview.automaticLayoutStatus).toBe("pending");
+
+    for (let elapsedMs = 0; elapsedMs < 390_000; elapsedMs += 30_000) {
+      runtime.advance(30_000);
+      await Promise.resolve();
+    }
+
+    expect(session.getSnapshot().preview.automaticLayout).toBeNull();
+    expect(session.getSnapshot().preview.automaticLayoutStatus).toBe("failed");
+  });
+
   test("bounds proxy readiness polling", async () => {
     const cloud = makeDocument();
     const runtime = new ManualRuntime();

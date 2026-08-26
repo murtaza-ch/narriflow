@@ -429,6 +429,7 @@ export function VideoPreview() {
     utterances,
     layoutAnalysis,
     autoLayoutAnalysis,
+    autoLayoutAnalysisStatus,
     clipWindow,
   } = useStudio();
 
@@ -636,7 +637,10 @@ export function VideoPreview() {
                   analysis: eligibleAutoLayoutAnalysis,
                 },
               }
-            : { state: "missing" },
+            : {
+                state:
+                  autoLayoutAnalysisStatus === "failed" ? "failed" : "missing",
+              },
       },
       assets: { backgroundImage: backgroundImageAvailability },
       capabilities: {
@@ -659,6 +663,7 @@ export function VideoPreview() {
     compositionSourceIdentity,
     editorDocument,
     eligibleAutoLayoutAnalysis,
+    autoLayoutAnalysisStatus,
     effectiveFramingMode,
     sourceDims,
   ]);
@@ -1393,9 +1398,6 @@ export function VideoPreview() {
       aspectRatio,
       legacyActiveAutoSegment?.startSec ?? 0,
     );
-    const plannedLayer = plannedProjection.layers.find(
-      (candidate) => candidate.kind === "source-video",
-    );
     const targetFacts = clipAspectRatioOptions.find(
       (candidate) => candidate.value === aspectRatio,
     );
@@ -1418,38 +1420,120 @@ export function VideoPreview() {
       target: targetFacts,
       fit: effectiveFramingMode === "fit" ? "contain" : "cover",
     });
-    const legacySourceCrop =
-      effectiveFramingMode === "auto" && autoMainCrop
-        ? {
-            x: Math.round(autoMainCrop.x * sourceDims.width),
-            y: Math.round(autoMainCrop.y * sourceDims.height),
-            width: Math.round(autoMainCrop.w * sourceDims.width),
-            height: Math.round(autoMainCrop.h * sourceDims.height),
-          }
-        : staticLegacyGeometry.sourceCrop;
-    const legacyDestination =
-      effectiveFramingMode === "auto" && autoMainLayer
-        ? {
-            x: Math.round(autoMainLayer.frameX * targetFacts.width),
-            y: Math.round(autoMainLayer.frameY * targetFacts.height),
-            width: Math.round(autoMainLayer.frameWidth * targetFacts.width),
-            height: Math.round(autoMainLayer.frameHeight * targetFacts.height),
-          }
-        : staticLegacyGeometry.destination;
+    const legacySourceLayers =
+      effectiveFramingMode === "auto" && legacySpeakerScene
+        ? legacySpeakerScene.layers.map((layer, index) => {
+            const normalizedCrop = speakerLayerCropRect(
+              layer,
+              aspectRatio,
+              sourceDims,
+            );
+            const sourceCrop = normalizedCrop
+              ? {
+                  x: Math.round(normalizedCrop.x * sourceDims.width),
+                  y: Math.round(normalizedCrop.y * sourceDims.height),
+                  width: Math.round(normalizedCrop.w * sourceDims.width),
+                  height: Math.round(normalizedCrop.h * sourceDims.height),
+                }
+              : staticLegacyGeometry.sourceCrop;
+            return {
+              kind: "source-video" as const,
+              role: layer.role,
+              zIndex: index,
+              sourceCrop,
+              destination: {
+                x: Math.round(layer.frameX * targetFacts.width),
+                y: Math.round(layer.frameY * targetFacts.height),
+                width: Math.round(layer.frameWidth * targetFacts.width),
+                height: Math.round(layer.frameHeight * targetFacts.height),
+              },
+              rotationDeg: layer.rotationDeg,
+              backgroundColor: null,
+              backgroundImage: false,
+            };
+          })
+        : [
+            {
+              kind: "source-video" as const,
+              role: null,
+              zIndex: effectiveFramingMode === "fit" ? 1 : 0,
+              sourceCrop: staticLegacyGeometry.sourceCrop,
+              destination: staticLegacyGeometry.destination,
+              rotationDeg: 0,
+              backgroundColor: null,
+              backgroundImage: false,
+            },
+          ];
+    const legacyLayers = [
+      ...(effectiveFramingMode === "fit"
+        ? [
+            {
+              kind: "background" as const,
+              role: null,
+              zIndex: 0,
+              sourceCrop: null,
+              destination: {
+                x: 0,
+                y: 0,
+                width: targetFacts.width,
+                height: targetFacts.height,
+              },
+              rotationDeg: 0,
+              backgroundColor: background.color ?? "#000000",
+              backgroundImage: Boolean(
+                background.mode === "image" && background.imageUrl,
+              ),
+            },
+          ]
+        : []),
+      ...legacySourceLayers,
+    ];
+    const plannedLayers = plannedProjection.layers.map((layer) => ({
+      kind: layer.kind,
+      role: layer.kind === "source-video" ? (layer.speaker?.role ?? null) : null,
+      zIndex: layer.zIndex,
+      sourceCrop: layer.kind === "source-video" ? layer.sourceCrop : null,
+      destination: layer.destination,
+      rotationDeg: layer.rotationDeg,
+      backgroundColor: layer.kind === "background" ? layer.color : null,
+      backgroundImage:
+        layer.kind === "background" ? Boolean(layer.imageRef) : false,
+    }));
+    const topology = (layers: typeof plannedLayers) =>
+      layers.map((layer) => `${layer.kind}:${layer.role ?? "none"}:${layer.zIndex}`);
+    const layerPairs = plannedLayers.map((layer, index) => ({
+      planned: layer,
+      legacy: legacyLayers[index] ?? null,
+    }));
     const comparison = {
       effectiveModeMismatch: target.effectiveMode !== legacyEffectiveMode,
       sceneBoundsMismatch:
         Math.abs(plannedProjection.sceneStartSec - legacyBounds.startSec) >
           0.075 ||
         Math.abs(plannedProjection.sceneEndSec - legacyBounds.endSec) > 0.075,
-      sourceCropMismatch: rectsDiffer(
-        plannedLayer?.kind === "source-video" ? plannedLayer.sourceCrop : null,
-        legacySourceCrop,
+      layerTopologyMismatch:
+        JSON.stringify(topology(plannedLayers)) !==
+        JSON.stringify(topology(legacyLayers)),
+      geometryMismatch:
+        plannedLayers.length !== legacyLayers.length ||
+        layerPairs.some(
+          ({ planned, legacy }) =>
+            !legacy ||
+            rectsDiffer(planned.sourceCrop, legacy.sourceCrop) ||
+            rectsDiffer(planned.destination, legacy.destination),
+        ),
+      rotationMismatch: layerPairs.some(
+        ({ planned, legacy }) =>
+          !legacy || Math.abs(planned.rotationDeg - legacy.rotationDeg) > 0.01,
       ),
-      destinationMismatch: rectsDiffer(
-        plannedLayer?.kind === "source-video" ? plannedLayer.destination : null,
-        legacyDestination,
+      backgroundMismatch: layerPairs.some(
+        ({ planned, legacy }) =>
+          planned.kind === "background" &&
+          (!legacy ||
+            planned.backgroundColor !== legacy.backgroundColor ||
+            planned.backgroundImage !== legacy.backgroundImage),
       ),
+      noticeMismatch: plannedProjection.notices.length > 0,
     };
     const mismatchCount = Object.values(comparison).filter(Boolean).length;
     console.warn(
@@ -1464,8 +1548,8 @@ export function VideoPreview() {
         legacy: {
           effectiveMode: legacyEffectiveMode,
           sceneBounds: legacyBounds,
-          sourceCrop: legacySourceCrop,
-          destination: legacyDestination,
+          layers: legacyLayers,
+          noticeCodes: [],
         },
         comparison,
         mismatchCount,
@@ -1484,19 +1568,21 @@ export function VideoPreview() {
                   : null,
             })),
           })) ?? [],
-        sourceCrop:
-          plannedLayer?.kind === "source-video"
-            ? plannedLayer.sourceCrop
-            : null,
+        plannedLayers,
+        plannedNoticeCodes: plannedProjection.notices.map(
+          (notice) => notice.code,
+        ),
       }),
     );
   }, [
     aspectRatio,
-    autoMainCrop,
-    autoMainLayer,
+    background.color,
+    background.imageUrl,
+    background.mode,
     compositionPlanResult,
     effectiveFramingMode,
     legacyActiveAutoSegment,
+    legacySpeakerScene,
     sourceDims,
   ]);
 

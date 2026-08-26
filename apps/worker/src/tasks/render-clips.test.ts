@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { CompositionTargetPlan } from "@narriflow/composition-plan";
 import { parseRenderConfig } from "../render-config";
 import {
   computeSpeechWindows,
@@ -20,10 +21,12 @@ import {
   buildCropAndScaleFilter,
   buildFitAndBackgroundFilter,
   buildFreeTierPostProcessArgs,
+  buildLegacyCompositionShadowTarget,
   buildMultiVideoArgs,
   buildSingleVideoArgs,
   buildTransitionFilter,
   clipRenderAttemptStorageKey,
+  compareCompositionShadowTarget,
   applySpeakerLayoutOverridesToSegments,
   decidePipUsage,
   decideScreenFallback,
@@ -75,6 +78,122 @@ function preset(id: string): CaptionPreset {
 function countDialogues(ass: string): number {
   return ass.split("\n").filter((line) => line.startsWith("Dialogue:")).length;
 }
+
+describe("composition shadow diagnostics", () => {
+  test("reports parity for the independent legacy center projection", () => {
+    const legacy = buildLegacyCompositionShadowTarget({
+      targetId: "vertical",
+      aspectRatio: "9:16",
+      target: { width: 1080, height: 1920 },
+      source: { width: 1920, height: 1080 },
+      durationSec: 30,
+      requestedMode: "center",
+      automaticSegments: null,
+      speakerLayoutOverrides: [],
+      background: null,
+    });
+    const planned: CompositionTargetPlan = {
+      id: "vertical",
+      aspectRatio: "9:16",
+      requestedMode: "center",
+      effectiveMode: "center",
+      canvas: { width: 1080, height: 1920, divisibleBy: 2 },
+      scenes: [
+        {
+          id: "center",
+          startSec: 0,
+          endSec: 30,
+          layers: [
+            {
+              id: "source",
+              kind: "source-video",
+              sourceRef: "source",
+              sourceCrop: { x: 656, y: 0, width: 608, height: 1080 },
+              destination: { x: 0, y: 0, width: 1080, height: 1920 },
+              fit: "cover",
+              rotationDeg: 0,
+              opacity: 1,
+              zIndex: 0,
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(
+      compareCompositionShadowTarget({
+        planned,
+        plannedNoticeCodes: [],
+        legacy,
+      }),
+    ).toMatchObject({ mismatchCount: 0 });
+  });
+
+  test("detects topology, manual rotation, background, and notice drift", () => {
+    const legacy = buildLegacyCompositionShadowTarget({
+      targetId: "vertical",
+      aspectRatio: "9:16",
+      target: { width: 1080, height: 1920 },
+      source: { width: 1920, height: 1080 },
+      durationSec: 10,
+      requestedMode: "fit",
+      automaticSegments: null,
+      speakerLayoutOverrides: [],
+      background: { mode: "image", color: "#111111", imagePath: "/bg.png" },
+    });
+    const planned: CompositionTargetPlan = {
+      id: "vertical",
+      aspectRatio: "9:16",
+      requestedMode: "fit",
+      effectiveMode: "fit",
+      canvas: { width: 1080, height: 1920, divisibleBy: 2 },
+      scenes: [
+        {
+          id: "fit",
+          startSec: 0,
+          endSec: 10,
+          layers: [
+            {
+              id: "background",
+              kind: "background",
+              color: "#222222",
+              imageRef: null,
+              destination: { x: 0, y: 0, width: 1080, height: 1920 },
+              fit: "cover",
+              rotationDeg: 0,
+              opacity: 1,
+              zIndex: 0,
+            },
+            {
+              id: "source",
+              kind: "source-video",
+              sourceRef: "source",
+              sourceCrop: { x: 0, y: 0, width: 1920, height: 1080 },
+              destination: { x: 0, y: 656, width: 1080, height: 608 },
+              fit: "contain",
+              rotationDeg: 12,
+              opacity: 1,
+              zIndex: 2,
+            },
+          ],
+        },
+      ],
+    };
+
+    const result = compareCompositionShadowTarget({
+      planned,
+      plannedNoticeCodes: ["background_image_unavailable"],
+      legacy,
+    });
+    expect(result.comparison).toMatchObject({
+      layerTopologyMismatch: true,
+      rotationMismatch: true,
+      backgroundMismatch: true,
+      noticeMismatch: true,
+    });
+    expect(result.mismatchCount).toBeGreaterThanOrEqual(4);
+  });
+});
 
 describe("resolveRenderTimingForClip", () => {
   test("does not cap caption-only renders to market clip duration", () => {

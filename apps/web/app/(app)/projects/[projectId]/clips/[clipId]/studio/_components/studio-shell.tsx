@@ -434,6 +434,7 @@ interface StudioContextValue extends StudioState {
   layoutAnalysis: ClipLayoutAnalysis | null;
   /** Persisted automatic shot-layout plan; derived/read-only like PiP analysis. */
   autoLayoutAnalysis: ClipAutoLayoutAnalysis | null;
+  autoLayoutAnalysisStatus: "available" | "pending" | "failed";
   utterances: TranscriptUtterance[];
   updateUtteranceText: (index: number, newText: string) => void;
   updateParagraphText: (indices: number[], newText: string) => void;
@@ -704,6 +705,7 @@ export function StudioShell({
   const waveformPeaksUrl = preview.waveformPeaksUrl;
   const autoLayoutAnalysis =
     preview.automaticLayout as ClipAutoLayoutAnalysis | null;
+  const autoLayoutAnalysisStatus = preview.automaticLayoutStatus;
   const activeVideoUrl = preview.activeAsset.url;
   const activeOffsetSec = preview.activeAsset.offsetSec;
   const useOriginalSourceFallback =
@@ -1698,7 +1700,7 @@ export function StudioShell({
     previewVideoUrl, previewStartSec, waveformPeaksUrl, useOriginalSourceFallback, setUseOriginalSourceFallback, reloadPlayback,
     activeVideoUrl, activeOffsetSec, activeVideoKind, playerClipStartSec, playerClipEndSec,
     editedTimeMap, deletedRanges: doc.deletedRanges, clipWindow,
-    brandLogo, layoutAnalysis, autoLayoutAnalysis, utterances, updateUtteranceText,
+    brandLogo, layoutAnalysis, autoLayoutAnalysis, autoLayoutAnalysisStatus, utterances, updateUtteranceText,
     updateParagraphText, addSubtitleLineAfter, deleteSubtitleLine, mergeSubtitleLineWithNext,
     updateWord, deleteSourceRange, applyRemoveSilence,
     setPlaybackRate, setActiveTool, setShowTimeline, setTimelineSnapping, setAspectRatio,

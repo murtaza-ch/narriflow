@@ -232,6 +232,7 @@ export interface StudioPreviewSnapshot {
   proxy: DeepReadonly<StudioProxyDescriptor> | null;
   waveformPeaksUrl: string | null;
   automaticLayout: DeepReadonly<ClipAutoLayoutAnalysis> | null;
+  automaticLayoutStatus: "available" | "pending" | "failed";
   activeAsset:
     | { kind: "proxy"; url: string; offsetSec: number }
     | { kind: "source"; url: string; offsetSec: 0 }
@@ -435,6 +436,7 @@ export function studioPreviewSnapshotsEqual(
     left.proxy === right.proxy &&
     left.waveformPeaksUrl === right.waveformPeaksUrl &&
     left.automaticLayout === right.automaticLayout &&
+    left.automaticLayoutStatus === right.automaticLayoutStatus &&
     left.activeAsset.kind === right.activeAsset.kind &&
     left.activeAsset.url === right.activeAsset.url &&
     left.activeAsset.offsetSec === right.activeAsset.offsetSec
@@ -567,11 +569,13 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
   private proxyPollGeneration = 0;
   private proxyPollRunning = false;
   private automaticLayoutPollTimer: number | null = null;
+  private automaticLayoutDeadlineTimer: number | null = null;
   private automaticLayoutPollTarget: string | null = null;
   private automaticLayoutPollDeadline = 0;
   private automaticLayoutPollDelayMs = AUTO_LAYOUT_POLL_INITIAL_MS;
   private automaticLayoutPollGeneration = 0;
   private automaticLayoutPollRunning = false;
+  private automaticLayoutPollFailed = false;
   private playbackMap: EditedTimeMap;
   private playbackDocument: EditorDocument;
   private playbackSourceTimeSec: number;
@@ -1705,19 +1709,25 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
           this.sourceUrl
         ? { kind: "source", url: this.sourceUrl, offsetSec: 0 }
         : { kind: "unavailable", url: null, offsetSec: 0 };
+    const automaticLayout =
+      this.retainedAutomaticLayout &&
+      clipAutoLayoutMatchesInputs(this.retainedAutomaticLayout, {
+        clipStartSec: document.clipStartSec,
+        clipEndSec: document.clipEndSec,
+        deletedRanges: document.deletedRanges,
+      })
+        ? this.retainedAutomaticLayout
+        : null;
     return deepFreeze({
       windowFingerprint,
       proxy,
       waveformPeaksUrl: proxy?.waveformPeaksUrl ?? null,
-      automaticLayout:
-        this.retainedAutomaticLayout &&
-        clipAutoLayoutMatchesInputs(this.retainedAutomaticLayout, {
-          clipStartSec: document.clipStartSec,
-          clipEndSec: document.clipEndSec,
-          deletedRanges: document.deletedRanges,
-        })
-          ? this.retainedAutomaticLayout
-          : null,
+      automaticLayout,
+      automaticLayoutStatus: automaticLayout
+        ? "available"
+        : this.automaticLayoutPollFailed
+          ? "failed"
+          : "pending",
       activeAsset,
     });
   }
@@ -2052,6 +2062,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
       if (this.proxyPollTarget !== null) this.clearProxyPolling();
       return;
     }
+    if (!dependencies) return;
     if (this.proxyPollTarget !== target) {
       this.clearProxyPolling();
       this.proxyPollTarget = target;
@@ -2152,17 +2163,43 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
       }
       return;
     }
+    if (!dependencies) return;
     if (this.automaticLayoutPollTarget !== target) {
       this.clearAutomaticLayoutPolling();
       this.automaticLayoutPollTarget = target;
       this.automaticLayoutPollDeadline =
-        (dependencies?.runtime.now() ?? 0) + AUTO_LAYOUT_POLL_DEADLINE_MS;
+        dependencies.runtime.now() + AUTO_LAYOUT_POLL_DEADLINE_MS;
+      const deadlineGeneration = this.automaticLayoutPollGeneration;
+      this.automaticLayoutDeadlineTimer = dependencies.runtime.setTimeout(
+        () => {
+          this.automaticLayoutDeadlineTimer = null;
+          if (
+            this.automaticLayoutPollGeneration !== deadlineGeneration ||
+            this.automaticLayoutPollTarget !== target
+          ) {
+            return;
+          }
+          if (this.automaticLayoutPollTimer !== null) {
+            dependencies.runtime.clearTimeout(this.automaticLayoutPollTimer);
+            this.automaticLayoutPollTimer = null;
+          }
+          this.automaticLayoutPollFailed = true;
+          this.publish();
+        },
+        AUTO_LAYOUT_POLL_DEADLINE_MS,
+      );
+    }
+    if (dependencies.runtime.now() >= this.automaticLayoutPollDeadline) {
+      if (!this.automaticLayoutPollFailed) {
+        this.automaticLayoutPollFailed = true;
+        this.publish();
+      }
+      return;
     }
     if (
       !dependencies?.preview?.fetchAutomaticLayout ||
       this.automaticLayoutPollTimer !== null ||
-      this.automaticLayoutPollRunning ||
-      dependencies.runtime.now() >= this.automaticLayoutPollDeadline
+      this.automaticLayoutPollRunning
     ) {
       return;
     }
@@ -2201,6 +2238,13 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     }
     this.automaticLayoutPollRunning = false;
     const document = this.unified.doc.present;
+    if (dependencies.runtime.now() >= this.automaticLayoutPollDeadline) {
+      if (!this.automaticLayoutPollFailed) {
+        this.automaticLayoutPollFailed = true;
+        this.publish();
+      }
+      return;
+    }
     if (
       analysis &&
       automaticLayoutInputFingerprint(document) === target &&
@@ -2222,11 +2266,16 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     if (this.automaticLayoutPollTimer !== null && this.dependencies) {
       this.dependencies.runtime.clearTimeout(this.automaticLayoutPollTimer);
     }
+    if (this.automaticLayoutDeadlineTimer !== null && this.dependencies) {
+      this.dependencies.runtime.clearTimeout(this.automaticLayoutDeadlineTimer);
+    }
     this.automaticLayoutPollTimer = null;
+    this.automaticLayoutDeadlineTimer = null;
     this.automaticLayoutPollTarget = null;
     this.automaticLayoutPollDeadline = 0;
     this.automaticLayoutPollDelayMs = AUTO_LAYOUT_POLL_INITIAL_MS;
     this.automaticLayoutPollRunning = false;
+    this.automaticLayoutPollFailed = false;
     this.automaticLayoutPollGeneration += 1;
   }
 

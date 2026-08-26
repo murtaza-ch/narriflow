@@ -10,6 +10,8 @@ import {
   compositionAssetRef,
   planClipComposition,
   type ClipCompositionPlan,
+  type CompositionRect,
+  type CompositionTargetPlan,
 } from "@narriflow/composition-plan";
 import {
   assertPublicHttpUrl,
@@ -91,6 +93,7 @@ import {
 } from "./layout-engine";
 import {
   buildReframeSendcmdScript,
+  cropXForCenter,
   REFRAME_CROP_NAME,
   remapFaceSamplesForCutPlan,
   smoothFacePath,
@@ -100,6 +103,7 @@ import {
 import {
   buildSplitFilterChain,
   buildSplitLayoutPlan,
+  computeTileCrop,
   deriveSingleFaceSamplesFromMulti,
   remapMultiFaceSamplesForCutPlan,
   splitTilesAreDistinct,
@@ -427,6 +431,326 @@ interface PendingRenderOutput {
    *  which is a run-level entitlement (see `applyWatermark` below). */
   resolution: ClipRenderResolution;
   watermark: boolean;
+}
+
+interface CompositionShadowLayerSnapshot {
+  kind: "background" | "source-video";
+  role: string | null;
+  zIndex: number;
+  sourceCrop: CompositionRect | null;
+  destination: CompositionRect;
+  rotationDeg: number;
+  backgroundColor: string | null;
+  backgroundImage: boolean;
+}
+
+interface CompositionShadowTargetSnapshot {
+  effectiveMode: "auto" | "center" | "fit";
+  scenes: Array<{
+    startSec: number;
+    endSec: number;
+    layers: CompositionShadowLayerSnapshot[];
+  }>;
+  noticeCodes: string[];
+}
+
+function legacyObjectFitGeometry(input: {
+  source: { width: number; height: number };
+  target: { width: number; height: number };
+  fit: "cover" | "contain";
+}): { sourceCrop: CompositionRect; destination: CompositionRect } {
+  if (input.fit === "contain") {
+    const scale = Math.min(
+      input.target.width / input.source.width,
+      input.target.height / input.source.height,
+    );
+    const width = Math.min(
+      input.target.width,
+      Math.max(2, Math.round((input.source.width * scale) / 2) * 2),
+    );
+    const height = Math.min(
+      input.target.height,
+      Math.max(2, Math.round((input.source.height * scale) / 2) * 2),
+    );
+    return {
+      sourceCrop: {
+        x: 0,
+        y: 0,
+        width: input.source.width,
+        height: input.source.height,
+      },
+      destination: {
+        x: Math.round((input.target.width - width) / 2),
+        y: Math.round((input.target.height - height) / 2),
+        width,
+        height,
+      },
+    };
+  }
+  const sourceRatio = input.source.width / input.source.height;
+  const targetRatio = input.target.width / input.target.height;
+  const width =
+    sourceRatio >= targetRatio
+      ? Math.round(input.source.height * targetRatio)
+      : input.source.width;
+  const height =
+    sourceRatio >= targetRatio
+      ? input.source.height
+      : Math.round(input.source.width / targetRatio);
+  return {
+    sourceCrop: {
+      x: Math.max(0, Math.round((input.source.width - width) / 2)),
+      y: Math.max(0, Math.round((input.source.height - height) / 2)),
+      width,
+      height,
+    },
+    destination: {
+      x: 0,
+      y: 0,
+      width: input.target.width,
+      height: input.target.height,
+    },
+  };
+}
+
+function normalizedFramePixels(
+  frame: {
+    frameX: number;
+    frameY: number;
+    frameWidth: number;
+    frameHeight: number;
+  },
+  target: { width: number; height: number },
+): CompositionRect {
+  const width = Math.max(
+    2,
+    Math.min(target.width, Math.round(frame.frameWidth * target.width)),
+  );
+  const height = Math.max(
+    2,
+    Math.min(target.height, Math.round(frame.frameHeight * target.height)),
+  );
+  return {
+    x: Math.max(
+      0,
+      Math.min(target.width - width, Math.round(frame.frameX * target.width)),
+    ),
+    y: Math.max(
+      0,
+      Math.min(target.height - height, Math.round(frame.frameY * target.height)),
+    ),
+    width,
+    height,
+  };
+}
+
+/** Independent projection of the established FFmpeg branches. This is
+ * diagnostic-only and never drives rendering or planner output. */
+export function buildLegacyCompositionShadowTarget(input: {
+  targetId: string;
+  aspectRatio: ClipAspectRatio;
+  target: { width: number; height: number };
+  source: { width: number; height: number };
+  durationSec: number;
+  requestedMode: "auto" | "center" | "fit";
+  automaticSegments: SplitLayoutSegment[] | null;
+  speakerLayoutOverrides: StudioSpeakerLayoutOverride[];
+  background: BackgroundPlan | null;
+}): CompositionShadowTargetSnapshot {
+  if (
+    input.requestedMode === "auto" &&
+    input.automaticSegments &&
+    input.automaticSegments.length > 0
+  ) {
+    return {
+      effectiveMode: "auto",
+      noticeCodes: [],
+      scenes: input.automaticSegments.map((segment) => {
+        const resolved = resolveSpeakerLayoutScene(
+          segment,
+          input.speakerLayoutOverrides,
+          input.aspectRatio,
+        );
+        return {
+          startSec: segment.startSec,
+          endSec: segment.endSec,
+          layers: resolved.layers.map((layer, index) => {
+            const destination = normalizedFramePixels(layer, input.target);
+            const { cropW: baseCropWidth, cropH: baseCropHeight } =
+              computeTileCrop(
+                input.source.width,
+                input.source.height,
+                destination.width / destination.height,
+              );
+            const zoom = Math.min(4, Math.max(1, layer.cropZoom));
+            const width = Math.max(2, Math.round(baseCropWidth / zoom));
+            const height = Math.max(2, Math.round(baseCropHeight / zoom));
+            return {
+              kind: "source-video" as const,
+              role: layer.role,
+              zIndex: index,
+              sourceCrop: {
+                x: cropXForCenter(layer.cropCxNorm, input.source.width, width),
+                y: cropXForCenter(layer.cropCyNorm, input.source.height, height),
+                width,
+                height,
+              },
+              destination,
+              rotationDeg: layer.rotationDeg,
+              backgroundColor: null,
+              backgroundImage: false,
+            };
+          }),
+        };
+      }),
+    };
+  }
+
+  const fit = input.requestedMode === "fit";
+  const geometry = legacyObjectFitGeometry({
+    source: input.source,
+    target: input.target,
+    fit: fit ? "contain" : "cover",
+  });
+  return {
+    effectiveMode: fit ? "fit" : "center",
+    noticeCodes: [],
+    scenes: [
+      {
+        startSec: 0,
+        endSec: input.durationSec,
+        layers: [
+          ...(fit
+            ? [
+                {
+                  kind: "background" as const,
+                  role: null,
+                  zIndex: 0,
+                  sourceCrop: null,
+                  destination: {
+                    x: 0,
+                    y: 0,
+                    width: input.target.width,
+                    height: input.target.height,
+                  },
+                  rotationDeg: 0,
+                  backgroundColor: input.background?.color ?? "#000000",
+                  backgroundImage: Boolean(
+                    input.background?.mode === "image" &&
+                      input.background.imagePath,
+                  ),
+                },
+              ]
+            : []),
+          {
+            kind: "source-video" as const,
+            role: null,
+            zIndex: fit ? 1 : 0,
+            sourceCrop: geometry.sourceCrop,
+            destination: geometry.destination,
+            rotationDeg: 0,
+            backgroundColor: null,
+            backgroundImage: false,
+          },
+        ],
+      },
+    ],
+  };
+}
+
+function compositionShadowLayer(layer: CompositionTargetPlan["scenes"][number]["layers"][number]): CompositionShadowLayerSnapshot {
+  return {
+    kind: layer.kind,
+    role: layer.kind === "source-video" ? (layer.speaker?.role ?? null) : null,
+    zIndex: layer.zIndex,
+    sourceCrop: layer.kind === "source-video" ? layer.sourceCrop : null,
+    destination: layer.destination,
+    rotationDeg: layer.rotationDeg,
+    backgroundColor: layer.kind === "background" ? layer.color : null,
+    backgroundImage: layer.kind === "background" ? Boolean(layer.imageRef) : false,
+  };
+}
+
+function shadowRectsDiffer(
+  left: CompositionRect | null,
+  right: CompositionRect | null,
+): boolean {
+  if (!left || !right) return left !== right;
+  return (["x", "y", "width", "height"] as const).some(
+    (key) => Math.abs(left[key] - right[key]) > 1,
+  );
+}
+
+export function compareCompositionShadowTarget(input: {
+  planned: CompositionTargetPlan;
+  plannedNoticeCodes: string[];
+  legacy: CompositionShadowTargetSnapshot;
+}) {
+  const plannedScenes = input.planned.scenes.map((scene) => ({
+    startSec: scene.startSec,
+    endSec: scene.endSec,
+    layers: scene.layers.map(compositionShadowLayer),
+  }));
+  const scenePairs = plannedScenes.map((scene, index) => ({
+    planned: scene,
+    legacy: input.legacy.scenes[index] ?? null,
+  }));
+  const topology = (layers: CompositionShadowLayerSnapshot[]) =>
+    layers.map((layer) => `${layer.kind}:${layer.role ?? "none"}:${layer.zIndex}`);
+  const comparison = {
+    effectiveModeMismatch:
+      input.planned.effectiveMode !== input.legacy.effectiveMode,
+    sceneCountMismatch: plannedScenes.length !== input.legacy.scenes.length,
+    sceneBoundsMismatch: scenePairs.some(
+      ({ planned, legacy }) =>
+        !legacy ||
+        Math.abs(planned.startSec - legacy.startSec) > 0.075 ||
+        Math.abs(planned.endSec - legacy.endSec) > 0.075,
+    ),
+    layerTopologyMismatch: scenePairs.some(
+      ({ planned, legacy }) =>
+        !legacy ||
+        JSON.stringify(topology(planned.layers)) !==
+          JSON.stringify(topology(legacy.layers)),
+    ),
+    geometryMismatch: scenePairs.some(({ planned, legacy }) => {
+      if (!legacy || planned.layers.length !== legacy.layers.length) return true;
+      return planned.layers.some((layer, index) => {
+        const legacyLayer = legacy.layers[index]!;
+        return (
+          shadowRectsDiffer(layer.sourceCrop, legacyLayer.sourceCrop) ||
+          shadowRectsDiffer(layer.destination, legacyLayer.destination)
+        );
+      });
+    }),
+    rotationMismatch: scenePairs.some(({ planned, legacy }) =>
+      planned.layers.some(
+        (layer, index) =>
+          !legacy?.layers[index] ||
+          Math.abs(layer.rotationDeg - legacy.layers[index]!.rotationDeg) > 0.01,
+      ),
+    ),
+    backgroundMismatch: scenePairs.some(({ planned, legacy }) =>
+      planned.layers.some((layer, index) => {
+        if (layer.kind !== "background") return false;
+        const legacyLayer = legacy?.layers[index];
+        return (
+          !legacyLayer ||
+          layer.backgroundColor !== legacyLayer.backgroundColor ||
+          layer.backgroundImage !== legacyLayer.backgroundImage
+        );
+      }),
+    ),
+    noticeMismatch:
+      JSON.stringify(input.plannedNoticeCodes) !==
+      JSON.stringify(input.legacy.noticeCodes),
+  };
+  return {
+    legacy: input.legacy,
+    plannedScenes,
+    comparison,
+    mismatchCount: Object.values(comparison).filter(Boolean).length,
+  };
 }
 
 interface RenderExecutionContext {
@@ -7475,6 +7799,55 @@ async function executeClipRenderAttempt(
           sceneCount,
           noticeCodes: planned.plan.notices.map((notice) => notice.code),
         });
+        if (compositionControl === "shadow") {
+          for (const target of planned.plan.targets) {
+            const output = outputs.find(
+              (candidate) => candidate.clipRenderId === target.id,
+            );
+            if (!output) continue;
+            const legacyAutomaticSegments =
+              requestedCompositionMode === "auto" &&
+              autoLayoutSegmentsFull &&
+              reframeOutputs.includes(output)
+                ? splitTilesAreDistinct(output.aspectRatio, probe)
+                  ? autoLayoutSegmentsFull
+                  : autoLayoutSegmentsNoSplit
+                : null;
+            const legacy = buildLegacyCompositionShadowTarget({
+              targetId: target.id,
+              aspectRatio: output.aspectRatio,
+              target: {
+                width: target.canvas.width,
+                height: target.canvas.height,
+              },
+              source: { width: probe.width, height: probe.height },
+              durationSec: planned.plan.editedDurationSec,
+              requestedMode: requestedCompositionMode,
+              automaticSegments: legacyAutomaticSegments,
+              speakerLayoutOverrides: studioEdits.speakerLayoutOverrides,
+              background: backgroundPlan,
+            });
+            const shadow = compareCompositionShadowTarget({
+              planned: target,
+              plannedNoticeCodes: planned.plan.notices
+                .filter((notice) => notice.targetId === target.id)
+                .map((notice) => notice.code),
+              legacy,
+            });
+            log("info", "clip_composition_shadow", {
+              workflowRunId: run.id,
+              clipId: clip.id,
+              adapter: "ffmpeg",
+              planVersion: planned.plan.version,
+              planFingerprint: planned.plan.fingerprint,
+              requestedMode: requestedCompositionMode,
+              targetId: target.id,
+              aspectRatio: target.aspectRatio,
+              effectiveMode: target.effectiveMode,
+              ...shadow,
+            });
+          }
+        }
         if (compositionControl === "plan") {
           compositionPlan = planned.plan;
           if (backgroundImageAvailability.state === "available") {
