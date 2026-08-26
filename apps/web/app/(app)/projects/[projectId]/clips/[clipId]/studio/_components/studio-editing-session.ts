@@ -1,3 +1,4 @@
+import { compositionAssetRef } from "@narriflow/composition-plan";
 import {
   clipAutoLayoutMatchesInputs,
   editedToSource,
@@ -559,6 +560,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
   private cloudRefreshGeneration = 0;
   private readonly sourceUrl: string | null;
   private readonly sourcePurged: boolean;
+  private readonly automaticLayoutSourceIdentity: string | null;
   private retainedProxy: StudioProxyDescriptor | null;
   private retainedAutomaticLayout: ClipAutoLayoutAnalysis | null;
   private replacementSourceFallback = false;
@@ -610,6 +612,9 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     );
     this.sourceUrl = seed.preview?.sourceUrl ?? null;
     this.sourcePurged = seed.preview?.sourcePurged ?? false;
+    this.automaticLayoutSourceIdentity = seed.projectId
+      ? compositionAssetRef("source", seed.projectId)
+      : null;
     this.retainedProxy = seed.preview?.proxy
       ? deepFreeze({
           ...structuredClone(seed.preview.proxy),
@@ -1711,11 +1716,10 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
         : { kind: "unavailable", url: null, offsetSec: 0 };
     const automaticLayout =
       this.retainedAutomaticLayout &&
-      clipAutoLayoutMatchesInputs(this.retainedAutomaticLayout, {
-        clipStartSec: document.clipStartSec,
-        clipEndSec: document.clipEndSec,
-        deletedRanges: document.deletedRanges,
-      })
+      this.automaticLayoutMatchesDocument(
+        this.retainedAutomaticLayout,
+        document,
+      )
         ? this.retainedAutomaticLayout
         : null;
     return deepFreeze({
@@ -2145,11 +2149,10 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
       documentWindowFingerprint(document);
     const automaticLayoutIsEligible = Boolean(
       this.retainedAutomaticLayout &&
-        clipAutoLayoutMatchesInputs(this.retainedAutomaticLayout, {
-          clipStartSec: document.clipStartSec,
-          clipEndSec: document.clipEndSec,
-          deletedRanges: document.deletedRanges,
-        }),
+        this.automaticLayoutMatchesDocument(
+          this.retainedAutomaticLayout,
+          document,
+        ),
     );
     const shouldPoll =
       Boolean(dependencies?.preview?.fetchAutomaticLayout) &&
@@ -2249,11 +2252,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
       analysis &&
       automaticLayoutInputFingerprint(document) === target &&
       automaticLayoutInputFingerprint(this.cloudDocument) === target &&
-      clipAutoLayoutMatchesInputs(analysis, {
-        clipStartSec: document.clipStartSec,
-        clipEndSec: document.clipEndSec,
-        deletedRanges: document.deletedRanges,
-      })
+      this.automaticLayoutMatchesDocument(analysis, document)
     ) {
       this.retainedAutomaticLayout = deepFreeze(structuredClone(analysis));
       this.publish();
@@ -2277,6 +2276,21 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     this.automaticLayoutPollRunning = false;
     this.automaticLayoutPollFailed = false;
     this.automaticLayoutPollGeneration += 1;
+  }
+
+  private automaticLayoutMatchesDocument(
+    analysis: ClipAutoLayoutAnalysis,
+    document: EditorDocument,
+  ): boolean {
+    return (
+      (this.automaticLayoutSourceIdentity === null ||
+        analysis.sourceIdentity === this.automaticLayoutSourceIdentity) &&
+      clipAutoLayoutMatchesInputs(analysis, {
+        clipStartSec: document.clipStartSec,
+        clipEndSec: document.clipEndSec,
+        deletedRanges: document.deletedRanges,
+      })
+    );
   }
 
   private clearDerivedPolling(): void {

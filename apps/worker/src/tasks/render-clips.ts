@@ -446,6 +446,7 @@ interface CompositionShadowLayerSnapshot {
 
 interface CompositionShadowTargetSnapshot {
   effectiveMode: "auto" | "center" | "fit";
+  dynamicReframe: boolean;
   scenes: Array<{
     startSec: number;
     endSec: number;
@@ -554,6 +555,7 @@ export function buildLegacyCompositionShadowTarget(input: {
   durationSec: number;
   requestedMode: "auto" | "center" | "fit";
   automaticSegments: SplitLayoutSegment[] | null;
+  dynamicReframe?: boolean;
   speakerLayoutOverrides: StudioSpeakerLayoutOverride[];
   background: BackgroundPlan | null;
 }): CompositionShadowTargetSnapshot {
@@ -564,6 +566,7 @@ export function buildLegacyCompositionShadowTarget(input: {
   ) {
     return {
       effectiveMode: "auto",
+      dynamicReframe: false,
       noticeCodes: [],
       scenes: input.automaticSegments.map((segment) => {
         const resolved = resolveSpeakerLayoutScene(
@@ -614,6 +617,9 @@ export function buildLegacyCompositionShadowTarget(input: {
   });
   return {
     effectiveMode: fit ? "fit" : "center",
+    dynamicReframe: Boolean(
+      input.requestedMode === "auto" && input.dynamicReframe,
+    ),
     noticeCodes: [],
     scenes: [
       {
@@ -700,6 +706,7 @@ export function compareCompositionShadowTarget(input: {
   const comparison = {
     effectiveModeMismatch:
       input.planned.effectiveMode !== input.legacy.effectiveMode,
+    dynamicReframeMismatch: input.legacy.dynamicReframe,
     sceneCountMismatch: plannedScenes.length !== input.legacy.scenes.length,
     sceneBoundsMismatch: scenePairs.some(
       ({ planned, legacy }) =>
@@ -7821,9 +7828,12 @@ async function executeClipRenderAttempt(
                 height: target.canvas.height,
               },
               source: { width: probe.width, height: probe.height },
-              durationSec: planned.plan.editedDurationSec,
+              durationSec: clipDurationSec,
               requestedMode: requestedCompositionMode,
               automaticSegments: legacyAutomaticSegments,
+              dynamicReframe: Boolean(
+                output.reframe && !legacyAutomaticSegments,
+              ),
               speakerLayoutOverrides: studioEdits.speakerLayoutOverrides,
               background: backgroundPlan,
             });

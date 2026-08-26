@@ -193,6 +193,56 @@ describe("composition shadow diagnostics", () => {
     });
     expect(result.mismatchCount).toBeGreaterThanOrEqual(4);
   });
+
+  test("makes an active legacy EMA reframe an explicit shadow mismatch", () => {
+    const legacy = buildLegacyCompositionShadowTarget({
+      targetId: "vertical",
+      aspectRatio: "9:16",
+      target: { width: 1080, height: 1920 },
+      source: { width: 1920, height: 1080 },
+      durationSec: 30,
+      requestedMode: "auto",
+      automaticSegments: null,
+      dynamicReframe: true,
+      speakerLayoutOverrides: [],
+      background: null,
+    });
+    const planned: CompositionTargetPlan = {
+      id: "vertical",
+      aspectRatio: "9:16",
+      requestedMode: "auto",
+      effectiveMode: "center",
+      canvas: { width: 1080, height: 1920, divisibleBy: 2 },
+      scenes: [
+        {
+          id: "fallback",
+          startSec: 0,
+          endSec: 30,
+          layers: [
+            {
+              id: "source",
+              kind: "source-video",
+              sourceRef: "source",
+              sourceCrop: { x: 656, y: 0, width: 608, height: 1080 },
+              destination: { x: 0, y: 0, width: 1080, height: 1920 },
+              fit: "cover",
+              rotationDeg: 0,
+              opacity: 1,
+              zIndex: 0,
+            },
+          ],
+        },
+      ],
+    };
+
+    const result = compareCompositionShadowTarget({
+      planned,
+      plannedNoticeCodes: [],
+      legacy,
+    });
+    expect(result.comparison.dynamicReframeMismatch).toBe(true);
+    expect(result.mismatchCount).toBeGreaterThan(0);
+  });
 });
 
 describe("resolveRenderTimingForClip", () => {
