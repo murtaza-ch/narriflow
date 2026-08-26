@@ -24,7 +24,9 @@ export interface RenderConfig {
   readonly screenLayoutEnabled: boolean;
   readonly splitEnabled: boolean;
   readonly pipDetectEnabled: boolean;
+  readonly pipMotionThreshold: number;
   readonly brollEnabled: boolean;
+  readonly brollAssetCacheTtlMs: number;
   readonly pexelsConfigured: boolean;
 }
 
@@ -139,6 +141,21 @@ export function parseRenderConfig(
     throw new Error("REFRAME_SCENE_THRESHOLD must be at most 1");
   }
 
+  const pipMotionThreshold = positiveNumber(
+    environment,
+    "WORKER_PIP_MOTION_THRESHOLD",
+    0.12,
+  );
+  if (pipMotionThreshold > 1) {
+    throw new Error("WORKER_PIP_MOTION_THRESHOLD must be at most 1");
+  }
+
+  const brollAssetCacheTtlMs =
+    positiveNumber(environment, "BROLL_ASSET_CACHE_TTL_HOURS", 24) *
+    60 *
+    60 *
+    1000;
+
   return Object.freeze({
     clipRenderAttemptEnabled: explicitlyEnabled(
       environment,
@@ -188,7 +205,9 @@ export function parseRenderConfig(
     screenLayoutEnabled: featureEnabled(environment, "WORKER_SCREEN_LAYOUT"),
     splitEnabled: featureEnabled(environment, "WORKER_SPLIT"),
     pipDetectEnabled: featureEnabled(environment, "WORKER_PIP_DETECT"),
+    pipMotionThreshold,
     brollEnabled: featureEnabled(environment, "WORKER_BROLL"),
+    brollAssetCacheTtlMs,
     pexelsConfigured: Boolean(environment.PEXELS_API_KEY?.trim()),
   });
 }

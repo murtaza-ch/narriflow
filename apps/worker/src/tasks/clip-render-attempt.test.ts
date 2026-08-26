@@ -20,6 +20,27 @@ type PendingClipRender = Awaited<
   ReturnType<typeof clipService.getPendingClipRendersForWorkSet>
 >[number];
 
+function frozenRenderingState(
+  pendingRenders: PendingClipRender[],
+  overrides: Partial<{
+    sourceStorageKey: string | null;
+    ownerTier: "free" | "pro";
+  }> = {},
+) {
+  return {
+    sourceStorageKey:
+      overrides.sourceStorageKey === undefined
+        ? "projects/project/source/input.mp4"
+        : overrides.sourceStorageKey,
+    sourceDurationSeconds: 5,
+    userId: "user",
+    workspaceId: null,
+    ownerTier: overrides.ownerTier ?? "pro",
+    brandSnapshot: { status: "available" as const, value: null },
+    pendingRenders,
+  };
+}
+
 type OrdinaryTracerFailure =
   | "begin"
   | "state_load"
@@ -198,6 +219,24 @@ function createOrdinaryTracer(input: {
       },
     },
     adapters: {
+      state: {
+        getFrozenRenderingStateForWorkSet: async () => {
+          actions.push("state_load");
+          if (input.failure === "state_load") throw injectedError;
+          return {
+            sourceStorageKey: `projects/${attempt.projectId}/source/input.mp3`,
+            sourceDurationSeconds: 5,
+            userId: "user",
+            workspaceId: null,
+            ownerTier: "pro" as const,
+            brandSnapshot: { status: "available" as const, value: null },
+            pendingRenders:
+              variantState === "pending" || variantState === "rendering"
+                ? [pendingRender]
+                : [],
+          };
+        },
+      },
       media: input.productionMedia ?? {
         probe: async ({ sourcePath, signal, deadlineMs }) => {
           const mode = sourcePath.startsWith("https://") ? "ranged" : "local";
@@ -300,12 +339,6 @@ function createOrdinaryTracer(input: {
         },
       },
       project: {
-        getUserPricingTier: async () => {
-          actions.push("state_load");
-          if (input.failure === "state_load") throw injectedError;
-          return "pro";
-        },
-        getProjectBrandSnapshot: async () => null,
         publishWorkflowProgress: async () => {},
       },
       clip: {
@@ -331,10 +364,6 @@ function createOrdinaryTracer(input: {
           if (input.failureWriteRejects) throw injectedError;
           variantState = "failed";
         },
-        getPendingClipRendersForWorkSet: async () =>
-          variantState === "pending" || variantState === "rendering"
-            ? [pendingRender]
-            : [],
         markClipRenderVariantRendering: async () => {
           actions.push("guarded_claim");
           variantState = "rendering";
@@ -525,6 +554,15 @@ function createUploadQueueTracer(input: {
       },
     },
     adapters: {
+      state: {
+        getFrozenRenderingStateForWorkSet: async () =>
+          frozenRenderingState(
+            pendingRenders.filter((render) => {
+              const state = states.get(render.id);
+              return state === "pending" || state === "rendering";
+            }),
+          ),
+      },
       media: {
         probe: async () => ({
           width: 0,
@@ -536,8 +574,6 @@ function createUploadQueueTracer(input: {
       },
       process: { execute: async () => "" },
       project: {
-        getUserPricingTier: async () => "pro",
-        getProjectBrandSnapshot: async () => null,
         publishWorkflowProgress: async () => {},
       },
       clip: {
@@ -550,11 +586,6 @@ function createUploadQueueTracer(input: {
         failClipRenderVariant: async (variantId) => {
           states.set(variantId, "failed");
         },
-        getPendingClipRendersForWorkSet: async () =>
-          pendingRenders.filter((render) => {
-            const state = states.get(render.id);
-            return state === "pending" || state === "rendering";
-          }),
         markClipRenderVariantRendering: async (variantId) => {
           states.set(variantId, "rendering");
           return true;
@@ -741,6 +772,10 @@ test("ClipRenderAttempt discards an uploaded object when cancellation wins befor
       },
     },
     adapters: {
+      state: {
+        getFrozenRenderingStateForWorkSet: async () =>
+          frozenRenderingState([pendingRender]),
+      },
       process: {
         execute: async ({ command }) => {
           if (command === "ffprobe") {
@@ -751,8 +786,6 @@ test("ClipRenderAttempt discards an uploaded object when cancellation wins befor
         },
       },
       project: {
-        getUserPricingTier: async () => "pro",
-        getProjectBrandSnapshot: async () => null,
         publishWorkflowProgress: async () => {},
       },
       clip: {
@@ -764,7 +797,6 @@ test("ClipRenderAttempt discards an uploaded object when cancellation wins befor
         failClipRenderVariant: async () => {
           actions.push("fail");
         },
-        getPendingClipRendersForWorkSet: async () => [pendingRender],
         markClipRenderVariantRendering: async () => true,
         setClipLayoutAnalysis: async () => {},
       },
@@ -929,9 +961,14 @@ test("ClipRenderAttempt drives failure and cleanup through construction adapters
       },
     },
     adapters: {
+      state: {
+        getFrozenRenderingStateForWorkSet: async () =>
+          frozenRenderingState([{ id: "variant-1" } as PendingClipRender], {
+            sourceStorageKey: null,
+            ownerTier: "free",
+          }),
+      },
       project: {
-        getUserPricingTier: async () => "free",
-        getProjectBrandSnapshot: async () => null,
         publishWorkflowProgress: async () => {},
       },
       clip: {
@@ -940,7 +977,6 @@ test("ClipRenderAttempt drives failure and cleanup through construction adapters
         failClipRenderVariant: async (_id, code, disposition) => {
           mutations.push(`fail:${code}:${disposition}`);
         },
-        getPendingClipRendersForWorkSet: async () => [],
         markClipRenderVariantRendering: async (id) => {
           mutations.push(`mark:${id}`);
         },
@@ -1008,9 +1044,14 @@ test("ClipRenderAttempt cancellation drains to cleanup without persisting outcom
       },
     },
     adapters: {
+      state: {
+        getFrozenRenderingStateForWorkSet: async () =>
+          frozenRenderingState([{ id: "variant-1" } as PendingClipRender], {
+            sourceStorageKey: `projects/${attempt.projectId}/source/input.mp4`,
+            ownerTier: "free",
+          }),
+      },
       project: {
-        getUserPricingTier: async () => "free",
-        getProjectBrandSnapshot: async () => null,
         publishWorkflowProgress: async () => {},
       },
       clip: {
@@ -1019,7 +1060,6 @@ test("ClipRenderAttempt cancellation drains to cleanup without persisting outcom
         failClipRenderVariant: async () => {
           mutations.push("fail");
         },
-        getPendingClipRendersForWorkSet: async () => [],
         markClipRenderVariantRendering: async () => {
           mutations.push("mark");
         },
@@ -1118,6 +1158,10 @@ test("ClipRenderAttempt owns a fully deleted variant before permanently failing 
       },
     },
     adapters: {
+      state: {
+        getFrozenRenderingStateForWorkSet: async () =>
+          frozenRenderingState([pendingRender]),
+      },
       process: {
         execute: async ({ command }) =>
           command === "ffprobe"
@@ -1130,8 +1174,6 @@ test("ClipRenderAttempt owns a fully deleted variant before permanently failing 
             : "",
       },
       project: {
-        getUserPricingTier: async () => "pro",
-        getProjectBrandSnapshot: async () => null,
         publishWorkflowProgress: async () => {},
       },
       clip: {
@@ -1140,7 +1182,6 @@ test("ClipRenderAttempt owns a fully deleted variant before permanently failing 
         failClipRenderVariant: async (_id, code, disposition) => {
           mutations.push(`fail:${code}:${disposition}`);
         },
-        getPendingClipRendersForWorkSet: async () => [pendingRender],
         markClipRenderVariantRendering: async (id) => {
           mutations.push(`mark:${id}`);
           return true;
@@ -1221,7 +1262,6 @@ test("ClipRenderAttempt leaves replay settlement failure for reaper recovery", a
     "begin",
     "state_load",
     "settle",
-    "workspace_cleanup",
   ]);
 });
 

@@ -2542,6 +2542,65 @@ export class ClipService {
     return sortPendingClipRenders(renders);
   }
 
+  /**
+   * Loads every mutable input a clip-render attempt is allowed to observe in
+   * one repeatable-read transaction. The worker must consume this value as an
+   * immutable attempt-start snapshot instead of interleaving project and
+   * render-row reads with source I/O.
+   */
+  async getFrozenRenderingStateForWorkSet(
+    projectId: string,
+    workflowRunId: string,
+  ) {
+    const prisma = requirePrisma();
+    const snapshotAt = new Date();
+    return prisma.$transaction(
+      async (tx) => {
+        const project = await tx.project.findFirst({
+          where: { id: projectId, ...accessibleProjectWhere(snapshotAt) },
+          select: {
+            sourceStorageKey: true,
+            sourceDurationSeconds: true,
+            userId: true,
+            workspaceId: true,
+            brandSnapshot: true,
+            user: { select: { pricingTier: true } },
+          },
+        });
+        if (!project) return null;
+
+        const pendingRenders = await tx.clipRender.findMany({
+          where: {
+            workflowRunId,
+            status: "pending",
+            clip: {
+              projectId,
+              project: accessibleProjectWhere(snapshotAt),
+            },
+          },
+          include: {
+            clip: true,
+            exportVariant: { select: { exportId: true, watermark: true } },
+          },
+        });
+
+        return {
+          sourceStorageKey: project.sourceStorageKey,
+          sourceDurationSeconds: project.sourceDurationSeconds,
+          userId: project.userId,
+          workspaceId: project.workspaceId,
+          ownerTier: resolvePricingTier(project.user.pricingTier),
+          brandSnapshot: {
+            status: "available" as const,
+            value: project.brandSnapshot,
+          },
+          pendingRenders: sortPendingClipRenders(pendingRenders),
+        };
+      },
+      { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead },
+    );
+  }
+
   async markClipRenderVariantRendering(clipRenderId: string) {
     const prisma = requirePrisma();
     const attempt = currentWorkflowAttempt();

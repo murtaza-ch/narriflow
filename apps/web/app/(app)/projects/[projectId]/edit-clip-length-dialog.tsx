@@ -95,12 +95,6 @@ function loadProjectTranscript(projectId: string): Promise<FlatTranscript> {
   return pending;
 }
 
-/** Fire-and-forget warmup — call on hover/focus of the Trim/Extend button so
- *  the ~1-2MB transcript is already parsed by the time the dialog opens. */
-export function prefetchProjectTranscript(projectId: string) {
-  void loadProjectTranscript(projectId).catch(() => {});
-}
-
 function formatClock(seconds: number): string {
   const safe = Math.max(0, seconds);
   const m = Math.floor(safe / 60);

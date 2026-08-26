@@ -64,14 +64,7 @@ export type { BrollAttribution, BrollClip } from "@narriflow/services";
 // migration, no cross-service coupling.
 
 const BROLL_ASSET_CACHE_DIR = join(tmpdir(), "narriflow-broll-asset-cache");
-const DEFAULT_ASSET_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24h
-
-function assetCacheTtlMs(): number {
-  const hours = Number(process.env.BROLL_ASSET_CACHE_TTL_HOURS);
-  return Number.isFinite(hours) && hours > 0
-    ? hours * 60 * 60 * 1000
-    : DEFAULT_ASSET_CACHE_TTL_MS;
-}
+const DEFAULT_ASSET_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 function assetCacheKey(downloadUrl: string): string {
   return createHash("sha256").update(downloadUrl).digest("hex");
@@ -89,11 +82,12 @@ function assetCachePath(downloadUrl: string): string {
  */
 export async function getCachedBrollAssetPath(
   downloadUrl: string,
+  cacheTtlMs: number = DEFAULT_ASSET_CACHE_TTL_MS,
 ): Promise<string | null> {
   const path = assetCachePath(downloadUrl);
   try {
     const stats = await stat(path);
-    if (Date.now() - stats.mtimeMs < assetCacheTtlMs()) return path;
+    if (Date.now() - stats.mtimeMs < cacheTtlMs) return path;
   } catch {
     // Not cached (or unreadable) — caller downloads normally.
   }

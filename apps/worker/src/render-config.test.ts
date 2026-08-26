@@ -25,6 +25,8 @@ describe("RenderConfig", () => {
       pipDetectEnabled: false,
       brollEnabled: false,
       pexelsConfigured: false,
+      pipMotionThreshold: 0.12,
+      brollAssetCacheTtlMs: 24 * 60 * 60 * 1000,
     });
     expect(Object.isFrozen(config)).toBe(true);
   });
@@ -82,5 +84,24 @@ describe("RenderConfig", () => {
     expect(() =>
       parseRenderConfig({ WORKER_LAYOUT_ENGINE: "2" }),
     ).toThrow("WORKER_LAYOUT_ENGINE");
+    expect(() =>
+      parseRenderConfig({ WORKER_PIP_MOTION_THRESHOLD: "0" }),
+    ).toThrow("WORKER_PIP_MOTION_THRESHOLD");
+    expect(() =>
+      parseRenderConfig({ WORKER_PIP_MOTION_THRESHOLD: "1.01" }),
+    ).toThrow("WORKER_PIP_MOTION_THRESHOLD");
+    expect(() =>
+      parseRenderConfig({ BROLL_ASSET_CACHE_TTL_HOURS: "NaN" }),
+    ).toThrow("BROLL_ASSET_CACHE_TTL_HOURS");
+  });
+
+  test("parses every render-affecting threshold and cache lifetime once", () => {
+    const config = parseRenderConfig({
+      WORKER_PIP_MOTION_THRESHOLD: "0.25",
+      BROLL_ASSET_CACHE_TTL_HOURS: "0.5",
+    });
+
+    expect(config.pipMotionThreshold).toBe(0.25);
+    expect(config.brollAssetCacheTtlMs).toBe(30 * 60 * 1000);
   });
 });

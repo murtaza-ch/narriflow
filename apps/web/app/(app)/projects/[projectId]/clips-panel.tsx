@@ -15,7 +15,6 @@ import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
 import { Filter } from "lucide-react";
 import { computeClipRanks } from "@/lib/project-state";
 import { ClipRow } from "./clip-row";
-import { prefetchProjectTranscript } from "./edit-clip-length-dialog";
 import { RenderClipsButton } from "./render-clips-button";
 
 const durationItems = [
@@ -189,19 +188,6 @@ export function ClipsPanel({
       return next;
     });
   }
-
-  // Warm the Trim/Extend transcript cache once the list is idle: the cold
-  // fetch is seconds (auth + ~650KB), hover-prefetch alone can't hide it.
-  useEffect(() => {
-    const idle =
-      typeof requestIdleCallback === "function"
-        ? requestIdleCallback
-        : (cb: () => void) => setTimeout(cb, 1500);
-    const cancel =
-      typeof cancelIdleCallback === "function" ? cancelIdleCallback : clearTimeout;
-    const handle = idle(() => prefetchProjectTranscript(projectId));
-    return () => cancel(handle as never);
-  }, [projectId]);
 
   // Scrollspy for the left jump rail — highlights the row nearest the top
   // of the viewport as the user scrolls.

@@ -236,9 +236,10 @@ export interface PipRect {
   h: number;
 }
 
-/** Env-configurable classification threshold for `classifyScreencast` —
- *  `WORKER_PIP_MOTION_THRESHOLD`, falling back to the packet's PROXY-
- *  calibrated default.
+/** Startup-frozen classification threshold for `classifyScreencast`.
+ *  Production passes `RenderConfig.pipMotionThreshold`, parsed from
+ *  `WORKER_PIP_MOTION_THRESHOLD`; direct callers fall back to the packet's
+ *  PROXY-calibrated default.
  *
  *  H1 (adversarial review): the original spike/landing-note default (0.25)
  *  was calibrated against RAW source files, but production always runs
@@ -252,32 +253,17 @@ export interface PipRect {
  *  screencast fixtures and 0.2726-0.5514 for jensen (window-length
  *  dependent) — a clean >5x separation between the worst-case screencast
  *  fixture and the worst-case (lowest) jensen measurement, comfortably over
- *  this packet's 2x bar for keeping the feature default-ON. New default is
+ *  this packet's 2x bar for keeping the feature default-ON. The default is
  *  the geometric mean of those two boundary values
  *  (sqrt(0.0509 * 0.2726) ≈ 0.118, rounded to 0.12) — equidistant (in log
- *  space) from both, rather than either boundary itself. Same "parse, fall
- *  back to a sane default on anything non-finite/non-positive" idiom
- *  clip-preview.ts's own env helpers (`previewPaddingSec` etc.) use. */
+ *  space) from both, rather than either boundary itself. Production callers
+ *  pass the startup-frozen RenderConfig value explicitly. */
 const DEFAULT_PIP_MOTION_THRESHOLD = 0.12;
-
-/** L6 (adversarial review): `movingPxFrac` is always a 0..1 fraction, so a
- *  configured threshold outside `[0, 1]` can only ever be a misconfiguration
- *  — clamped here (not just parsed) so e.g. `WORKER_PIP_MOTION_THRESHOLD=2`
- *  can't silently make `classifyScreencast` accept every clip as
- *  screencast-like (any `movingPxFrac <= 1 < 2` would always pass). Values
- *  `<= 0` or non-finite still fall back to the default entirely (a
- *  clamped-to-0 threshold would have the same "accept everything" problem
- *  from the other direction). */
-export function pipMotionThreshold(): number {
-  const raw = Number(process.env.WORKER_PIP_MOTION_THRESHOLD?.trim());
-  if (!Number.isFinite(raw) || raw <= 0) return DEFAULT_PIP_MOTION_THRESHOLD;
-  return Math.min(raw, 1);
-}
 
 /**
  * Classifies a clip as screencast-like (a facecam PiP is even plausible)
  * from `pip_detect.py`'s `movingPxFrac` signal. Below `threshold` (default:
- * `pipMotionThreshold()`, i.e. the env-configurable, proxy-calibrated 0.12)
+ * the proxy-calibrated 0.12)
  * means most of the
  * frame is NOT continuously moving frame-to-frame — the signature of a
  * mostly-static screen/slide with at most a small moving facecam region, as
@@ -290,7 +276,7 @@ export function pipMotionThreshold(): number {
  */
 export function classifyScreencast(
   movingPxFrac: number,
-  threshold: number = pipMotionThreshold(),
+  threshold: number = DEFAULT_PIP_MOTION_THRESHOLD,
 ): boolean {
   return movingPxFrac < threshold;
 }

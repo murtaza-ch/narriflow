@@ -304,6 +304,62 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     expect(workSet.variantIds).not.toContain(failed.id);
   });
 
+  test("the render state loader returns one attempt-start project and work-set snapshot", async () => {
+    const { user, project, run } = await fixture("clip_rendering");
+    await Promise.all([
+      prisma.user.update({
+        where: { id: user.id },
+        data: { pricingTier: "pro" },
+      }),
+      prisma.project.update({
+        where: { id: project.id },
+        data: {
+          sourceStorageKey: `projects/${project.id}/source/input.mp4`,
+          sourceDurationSeconds: 42,
+          brandSnapshot: { primaryColor: "#123456" },
+        },
+      }),
+    ]);
+    const clip = await clipFixture(project.id, run.id);
+    const pending = await prisma.clipRender.create({
+      data: { clipId: clip.id, aspectRatio: "ratio_9_16" },
+    });
+    const completed = await prisma.clipRender.create({
+      data: {
+        clipId: clip.id,
+        aspectRatio: "ratio_1_1",
+        status: "completed",
+        storageKey: "test/already-completed.mp4",
+        completedAt: new Date(),
+      },
+    });
+    const { lifecycle, attempt } = await claimRenderAttempt();
+    await lifecycle.beginRenderWorkSet(attempt);
+
+    const state = await clipService.getFrozenRenderingStateForWorkSet(
+      project.id,
+      run.id,
+    );
+
+    expect(state).toMatchObject({
+      sourceStorageKey: `projects/${project.id}/source/input.mp4`,
+      sourceDurationSeconds: 42,
+      userId: user.id,
+      workspaceId: null,
+      ownerTier: "pro",
+      brandSnapshot: {
+        status: "available",
+        value: { primaryColor: "#123456" },
+      },
+    });
+    expect(state?.pendingRenders.map((render) => render.id)).toEqual([
+      pending.id,
+    ]);
+    expect(state?.pendingRenders.map((render) => render.id)).not.toContain(
+      completed.id,
+    );
+  });
+
   test("an initially empty Render Work Set cannot expand on retry", async () => {
     const { project, run } = await fixture("clip_rendering");
     const clip = await clipFixture(project.id, run.id);

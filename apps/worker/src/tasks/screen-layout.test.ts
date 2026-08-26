@@ -311,7 +311,7 @@ describe("classifyScreencast — motion-fraction classification gate", () => {
   // H1 (adversarial review): default recalibrated to 0.12 — the geometric
   // mean of the PROXY-domain boundary values (worst-case screencast fixture
   // ~0.051, worst-case jensen control ~0.273) — see
-  // `pipMotionThreshold`'s own doc comment and
+  // `classifyScreencast`'s own doc comment and
   // `docs/plans/vizard-parity.md`'s landed note for the full table.
   test("below the default threshold (0.12): screencast-like", () => {
     expect(classifyScreencast(0.0)).toBe(true);
@@ -325,54 +325,9 @@ describe("classifyScreencast — motion-fraction classification gate", () => {
     expect(classifyScreencast(1.0)).toBe(false);
   });
 
-  test("an explicit threshold overrides the env-derived default", () => {
+  test("an explicit startup-frozen threshold overrides the default", () => {
     expect(classifyScreencast(0.3, 0.5)).toBe(true);
     expect(classifyScreencast(0.6, 0.5)).toBe(false);
-  });
-
-  test("reads WORKER_PIP_MOTION_THRESHOLD when no explicit threshold is given", () => {
-    const prev = process.env.WORKER_PIP_MOTION_THRESHOLD;
-    try {
-      process.env.WORKER_PIP_MOTION_THRESHOLD = "0.1";
-      expect(classifyScreencast(0.15)).toBe(false); // above the overridden 0.1
-      expect(classifyScreencast(0.05)).toBe(true);
-    } finally {
-      if (prev === undefined) delete process.env.WORKER_PIP_MOTION_THRESHOLD;
-      else process.env.WORKER_PIP_MOTION_THRESHOLD = prev;
-    }
-  });
-
-  test("a non-finite/non-positive env value falls back to the 0.12 default", () => {
-    const prev = process.env.WORKER_PIP_MOTION_THRESHOLD;
-    try {
-      process.env.WORKER_PIP_MOTION_THRESHOLD = "not-a-number";
-      expect(classifyScreencast(0.11)).toBe(true);
-      expect(classifyScreencast(0.13)).toBe(false);
-      process.env.WORKER_PIP_MOTION_THRESHOLD = "-1";
-      expect(classifyScreencast(0.11)).toBe(true);
-      expect(classifyScreencast(0.13)).toBe(false);
-      process.env.WORKER_PIP_MOTION_THRESHOLD = "0";
-      expect(classifyScreencast(0.11)).toBe(true);
-      expect(classifyScreencast(0.13)).toBe(false);
-    } finally {
-      if (prev === undefined) delete process.env.WORKER_PIP_MOTION_THRESHOLD;
-      else process.env.WORKER_PIP_MOTION_THRESHOLD = prev;
-    }
-  });
-
-  // L6 (adversarial review): `movingPxFrac` is always <= 1, so an env
-  // threshold above 1 would otherwise make `classifyScreencast` accept
-  // EVERY clip as screencast-like — clamped to 1, not accepted as-is.
-  test("an env value above 1 clamps to 1, not accepted as a literal threshold", () => {
-    const prev = process.env.WORKER_PIP_MOTION_THRESHOLD;
-    try {
-      process.env.WORKER_PIP_MOTION_THRESHOLD = "2";
-      expect(classifyScreencast(0.99)).toBe(true); // clamped threshold is 1, not 2
-      expect(classifyScreencast(1.0)).toBe(false); // 1.0 is never < the clamped threshold of 1
-    } finally {
-      if (prev === undefined) delete process.env.WORKER_PIP_MOTION_THRESHOLD;
-      else process.env.WORKER_PIP_MOTION_THRESHOLD = prev;
-    }
   });
 });
 

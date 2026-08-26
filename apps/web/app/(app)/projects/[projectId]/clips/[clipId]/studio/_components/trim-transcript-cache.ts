@@ -94,8 +94,7 @@ export function loadTrimTranscript(projectId: string): Promise<TrimTranscript> {
 }
 
 /** Fire-and-forget warmup — call on pointerdown of a trim handle so the drag
- *  itself never blocks on the fetch (mirrors the legacy dialog's
- *  `prefetchProjectTranscript`, called on hover there). */
+ *  itself never blocks on the fetch. */
 export function prefetchTrimTranscript(projectId: string) {
   void loadTrimTranscript(projectId).catch(() => {});
 }

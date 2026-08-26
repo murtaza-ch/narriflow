@@ -257,6 +257,36 @@ interface PollLoop {
   status: () => { polling: boolean; lastPollAt: string | null };
 }
 
+function diagnoseWorkflowAttemptLost(input: {
+  run: {
+    id: string;
+    projectId: string;
+    stage: string;
+    attemptId: string;
+  };
+  error: WorkflowAttemptLost;
+  startedAtMs: number;
+}) {
+  console.warn(
+    JSON.stringify({
+      level: "warn",
+      message: "workflow_attempt_lost",
+      ts: new Date().toISOString(),
+      workflowRunId: input.run.id,
+      workflowAttemptId: input.run.attemptId,
+      attemptId: input.run.attemptId,
+      projectId: input.run.projectId,
+      stage: input.run.stage,
+      phase: "ownership",
+      operation: "execute",
+      failureCode: input.error.code,
+      disposition: "control",
+      retryState: "reaper_owned",
+      elapsedMs: Date.now() - input.startedAtMs,
+    }),
+  );
+}
+
 async function executeClaimedWorkflowRun<
   TRun extends {
     id: string;
@@ -292,24 +322,11 @@ async function executeClaimedWorkflowRun<
     );
   } catch (error) {
     if (!(error instanceof WorkflowAttemptLost)) throw error;
-    console.warn(
-      JSON.stringify({
-        level: "warn",
-        message: "workflow_attempt_lost",
-        ts: new Date().toISOString(),
-        workflowRunId: run.id,
-        workflowAttemptId: run.attemptId,
-        attemptId: run.attemptId,
-        projectId: run.projectId,
-        stage: run.stage,
-        phase: "ownership",
-        operation: "execute",
-        failureCode: error.code,
-        disposition: "control",
-        retryState: "reaper_owned",
-        elapsedMs: Date.now() - attemptStartedAtMs,
-      }),
-    );
+    diagnoseWorkflowAttemptLost({
+      run: { ...run, attemptId: run.attemptId },
+      error,
+      startedAtMs: attemptStartedAtMs,
+    });
   }
 }
 
@@ -476,24 +493,7 @@ const renderLoop = createPollLoop("render", async () => {
     );
   } catch (error) {
     if (!(error instanceof WorkflowAttemptLost)) throw error;
-    console.warn(
-      JSON.stringify({
-        level: "warn",
-        message: "workflow_attempt_lost",
-        ts: new Date().toISOString(),
-        workflowRunId: run.id,
-        workflowAttemptId: run.attemptId,
-        attemptId: run.attemptId,
-        projectId: run.projectId,
-        stage: run.stage,
-        phase: "ownership",
-        operation: "execute",
-        failureCode: error.code,
-        disposition: "control",
-        retryState: "reaper_owned",
-        elapsedMs: Date.now() - attemptStartedAtMs,
-      }),
-    );
+    diagnoseWorkflowAttemptLost({ run, error, startedAtMs: attemptStartedAtMs });
   }
   return 1;
 });

@@ -34,6 +34,7 @@ import { ProjectEventsProvider } from "./project-events-provider";
 import { PipelineStepper } from "./pipeline-stepper";
 import { ingestRecoveryAction } from "@/lib/project-state";
 import { ProjectTabs, TabCountBadge } from "./project-tabs";
+import { projectTabFromSearchParam } from "./project-tab";
 import { ProcessingPanel } from "./processing-panel";
 import {
   queueTranscriptionFormAction,
@@ -89,6 +90,7 @@ function SourceThumb({
         alt={title}
         fill
         sizes="256px"
+        loading="eager"
         style={{ objectFit: "cover" }}
       />
     );
@@ -127,10 +129,13 @@ function SourceThumb({
 
 export default async function ProjectDetailPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ projectId: string }>;
+  searchParams: Promise<{ tab?: string }>;
 }) {
-  const { projectId } = await params;
+  const [{ projectId }, query] = await Promise.all([params, searchParams]);
+  const activeTab = projectTabFromSearchParam(query.tab);
   const appUser = await requireWorkspaceProject(projectId);
   const snapshot = await projectService.getProjectSnapshot(
     appUser.actorUserId,
@@ -143,7 +148,8 @@ export default async function ProjectDetailPage({
   }
 
   const [
-    transcript,
+    fullTranscript,
+    transcriptStatus,
     clips,
     latestContentPack,
     analytics,
@@ -153,16 +159,28 @@ export default async function ProjectDetailPage({
     workflowHistory,
     usage,
   ] = await Promise.all([
-    projectService.getTranscriptSnapshot(appUser.id, projectId),
+    activeTab === "transcript"
+      ? projectService.getTranscriptSnapshot(appUser.id, projectId)
+      : Promise.resolve(null),
+    activeTab === "transcript"
+      ? Promise.resolve(null)
+      : projectService.getTranscriptStatusSnapshot(appUser.id, projectId),
     clipService.listClips(appUser.id, projectId),
     projectService.getLatestContentPack(projectId),
-    analyticsService.getProjectAnalytics(appUser.id, projectId),
+    activeTab === "analytics"
+      ? analyticsService.getProjectAnalytics(appUser.id, projectId)
+      : Promise.resolve(null),
     socialService.listProjectPosts(appUser.id, projectId),
-    socialOAuthService.listAccounts(appUser.id, appUser.workspaceId),
-    dubbingService.listProjectDubs(appUser.id, projectId),
+    activeTab === "publish"
+      ? socialOAuthService.listAccounts(appUser.id, appUser.workspaceId)
+      : Promise.resolve([]),
+    activeTab === "dubbing"
+      ? dubbingService.listProjectDubs(appUser.id, projectId)
+      : Promise.resolve([]),
     projectService.getWorkflowHistory(appUser.id, projectId),
     projectService.getUsageSummary(appUser.id),
   ]);
+  const transcript = fullTranscript ?? transcriptStatus;
   const pricingTier = usage.tier;
   // vizard-parity Phase C export options: whether this owner's plan can
   // render at 1080p, via the shared entitlement helper — never a raw
@@ -183,7 +201,7 @@ export default async function ProjectDetailPage({
   // presign the studio uses). Null once the source is purged — the dialog
   // hides the player pane rather than breaking.
   let sourceVideoUrl: string | null = null;
-  if (snapshot.project.sourceStorageKey) {
+  if (activeTab === "clips" && snapshot.project.sourceStorageKey) {
     try {
       sourceVideoUrl = await presignDownloadUrl({
         key: snapshot.project.sourceStorageKey,
@@ -549,7 +567,7 @@ export default async function ProjectDetailPage({
         {/* CLIPS — processing panel while a run/ingest is in flight, ranked
             results once clips exist, legacy step cards otherwise. */}
         <Tabs.Content value="clips" pt="6">
-          {isDraftPack ? (
+          {activeTab === "clips" ? (isDraftPack ? (
             <Flex
               align="center"
               justify="space-between"
@@ -729,47 +747,57 @@ export default async function ProjectDetailPage({
                 sourceVideoUrl={sourceVideoUrl}
               />
             </Stack>
-          )}
+          )) : null}
         </Tabs.Content>
 
         {/* TRANSCRIPT */}
         <Tabs.Content value="transcript" pt="6">
-          <TranscriptPanel projectId={projectId} transcript={transcript} />
+          {activeTab === "transcript" ? (
+            <TranscriptPanel projectId={projectId} transcript={fullTranscript} />
+          ) : null}
         </Tabs.Content>
 
         {/* REPURPOSE */}
         <Tabs.Content value="repurpose" pt="6">
-          {transcriptReady ? (
-            <ContentSuitePanel
-              projectId={projectId}
-              transcriptReady={transcriptReady}
-            />
-          ) : (
-            <EmptyState
-              title="Transcript required"
-              description="Repurposing turns the finished transcript into a blog post, X thread, LinkedIn post, show notes and quote cards. Complete transcription first."
-            />
-          )}
+          {activeTab === "repurpose" ? (
+            transcriptReady ? (
+              <ContentSuitePanel
+                projectId={projectId}
+                transcriptReady={transcriptReady}
+              />
+            ) : (
+              <EmptyState
+                title="Transcript required"
+                description="Repurposing turns the finished transcript into a blog post, X thread, LinkedIn post, show notes and quote cards. Complete transcription first."
+              />
+            )
+          ) : null}
         </Tabs.Content>
 
         {/* DUBBING */}
         <Tabs.Content value="dubbing" pt="6">
-          <DubbingPanel projectId={projectId} clips={clips} dubs={dubs} />
+          {activeTab === "dubbing" ? (
+            <DubbingPanel projectId={projectId} clips={clips} dubs={dubs} />
+          ) : null}
         </Tabs.Content>
 
         {/* PUBLISH */}
         <Tabs.Content value="publish" pt="6">
-          <SocialSchedulingPanel
-            projectId={projectId}
-            clips={clips}
-            posts={socialPosts}
-            accounts={socialAccounts}
-          />
+          {activeTab === "publish" ? (
+            <SocialSchedulingPanel
+              projectId={projectId}
+              clips={clips}
+              posts={socialPosts}
+              accounts={socialAccounts}
+            />
+          ) : null}
         </Tabs.Content>
 
         {/* ANALYTICS */}
         <Tabs.Content value="analytics" pt="6">
-          <AnalyticsPanel analytics={analytics} />
+          {activeTab === "analytics" && analytics ? (
+            <AnalyticsPanel analytics={analytics} />
+          ) : null}
         </Tabs.Content>
 
         {/* ACTIVITY — keep mounted regardless of active tab: the SSE stream

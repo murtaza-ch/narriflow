@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PexelsVideo } from "@narriflow/services";
@@ -292,6 +292,21 @@ describe("downloaded-asset disk cache", () => {
     const cachedPath = await getCachedBrollAssetPath(url);
     expect(cachedPath).not.toBeNull();
     expect(cachedPath).not.toBe(sourcePath);
+  });
+
+  test("honors the startup-frozen cache lifetime supplied by the renderer", async () => {
+    tempDir = await mkdtemp(join(tmpdir(), "narriflow-broll-cache-test-"));
+    const sourcePath = join(tempDir, "source.mp4");
+    await writeFile(sourcePath, "fake mp4 bytes");
+    const url = `https://cdn.pexels.com/ttl-${Date.now()}-${Math.random()}.mp4`;
+    await saveBrollAssetToCache(url, sourcePath);
+    const cachedPath = await getCachedBrollAssetPath(url);
+    if (!cachedPath) throw new Error("expected cached fixture path");
+    const staleAt = new Date(Date.now() - 60_000);
+    await utimes(cachedPath, staleAt, staleAt);
+
+    expect(await getCachedBrollAssetPath(url, 1_000)).toBeNull();
+    expect(await getCachedBrollAssetPath(url, 120_000)).toBe(cachedPath);
   });
 
   test("a cache-write failure (bad source path) never throws", async () => {

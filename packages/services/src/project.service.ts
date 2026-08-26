@@ -1863,6 +1863,19 @@ export class ProjectService {
     return row ? toTranscriptSnapshot(row) : null;
   }
 
+  /** Status-only project-page read. Keeps the multi-thousand-word utterance
+   * payload off routes whose selected tab does not render the transcript. */
+  async getTranscriptStatusSnapshot(userId: string, projectId: string) {
+    const prisma = this.requirePrisma();
+    return prisma.transcript.findFirst({
+      where: {
+        projectId,
+        project: { userId, ...accessibleProjectWhere() },
+      },
+      select: { status: true, errorCode: true },
+    });
+  }
+
   /**
    * Raw utterances for timeline/trim UIs. Deliberately skips the snapshot
    * zod-parse: utterances were schema-validated when persisted, and

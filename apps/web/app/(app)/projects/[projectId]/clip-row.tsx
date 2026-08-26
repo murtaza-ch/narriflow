@@ -5,10 +5,7 @@ import { useEffect, useRef, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { MediaWell } from "@narriflow/ui/components/media-well";
-import {
-  EditClipLengthDialog,
-  prefetchProjectTranscript,
-} from "./edit-clip-length-dialog";
+import { EditClipLengthDialog } from "./edit-clip-length-dialog";
 import { Button } from "@narriflow/ui/components/button";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { Checkbox } from "@narriflow/ui/components/checkbox";
@@ -867,10 +864,6 @@ export function ClipRow({ clip, projectId, rank, compact, selected, onToggleSele
               size="xs"
               variant="ghost"
               ms="auto"
-              // Warm the (project-wide, module-cached) transcript on intent
-              // so the dialog opens with everything already parsed.
-              onMouseEnter={() => prefetchProjectTranscript(clip.projectId)}
-              onFocus={() => prefetchProjectTranscript(clip.projectId)}
               onClick={() => setEditingBoundaries(true)}
             >
               <Scissors size={12} />

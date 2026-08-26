@@ -340,6 +340,26 @@ function createCoreRenderPathTracer(input: {
       settleRenderWorkSet: async () => settle(),
     },
     adapters: {
+      state: {
+        getFrozenRenderingStateForWorkSet: async () => ({
+          sourceStorageKey: `projects/${attempt.projectId}/source/input.${
+            input.topology === "audiogram" ? "m4a" : "mp4"
+          }`,
+          sourceDurationSeconds: 20,
+          userId: "user-core-paths",
+          workspaceId: null,
+          ownerTier: input.ownerTier ?? "pro",
+          brandSnapshot: input.projectBrandSnapshotFailure
+            ? { status: "unavailable" as const }
+            : {
+                status: "available" as const,
+                value: input.projectBrandSnapshot ?? null,
+              },
+          pendingRenders: pendingRenders.filter(
+            (render) => states.get(render.id) === "pending",
+          ),
+        }),
+      },
       media: input.realMedia
         ? input.sourceAccess?.failRangedProbe
           ? {
@@ -438,13 +458,6 @@ function createCoreRenderPathTracer(input: {
         },
       },
       project: {
-        getUserPricingTier: async () => input.ownerTier ?? "pro",
-        getProjectBrandSnapshot: async () => {
-          if (input.projectBrandSnapshotFailure) {
-            throw input.projectBrandSnapshotFailure;
-          }
-          return input.projectBrandSnapshot ?? null;
-        },
         publishWorkflowProgress: async () => {},
       },
       optionalAssets: {
@@ -567,8 +580,6 @@ function createCoreRenderPathTracer(input: {
           failureCodes.set(variantId, code);
           failureDispositions.set(variantId, disposition);
         },
-        getPendingClipRendersForWorkSet: async () =>
-          pendingRenders.filter((render) => states.get(render.id) === "pending"),
         markClipRenderVariantRendering: async (variantId) => {
           mutationVariantIds.push(variantId);
           if (states.get(variantId) !== "pending") return false;
@@ -2602,9 +2613,87 @@ describe("ClipRenderAttempt real-media compatibility fixtures", () => {
     30_000,
   );
 
-  test.skipIf(!ffmpegAvailable || !ffprobeAvailable)(
-    "optional-asset degradation still produces probeable real media",
-    async () => {
+  for (const optionalCase of [
+    {
+      label: "brand logo",
+      assetClass: "logo",
+      phase: "lookup",
+      failureCode: "brand_snapshot_unavailable",
+      input: {
+        projectBrandSnapshotFailure: new Error("brand lookup unavailable"),
+      },
+    },
+    {
+      label: "B-roll",
+      assetClass: "broll",
+      phase: "lookup",
+      failureCode: "broll_provider_unavailable",
+      input: {
+        clipWindow: { startSec: 0, endSec: 15 },
+        clipOverrides: { title: "Build a camera", hookText: "Workshop" },
+        configOverrides: {
+          WORKER_BROLL: "1",
+          PEXELS_API_KEY: "configured",
+        },
+        brollProviderFailure: new Error("B-roll provider unavailable"),
+      },
+    },
+    {
+      label: "music",
+      assetClass: "music",
+      phase: "lookup",
+      failureCode: "music_asset_unavailable",
+      input: {
+        clipOverrides: {
+          studioEdits: {
+            music: { assetId: "40000000-0000-4000-8000-000000000704" },
+          },
+        },
+        audioAssetFailure: new Error("music lookup unavailable"),
+      },
+    },
+    {
+      label: "sound effect",
+      assetClass: "sound_effect",
+      phase: "lookup",
+      failureCode: "sound_effect_asset_unavailable",
+      input: {
+        clipOverrides: {
+          studioEdits: {
+            sfx: [
+              {
+                id: "impact",
+                assetId: "50000000-0000-4000-8000-000000000705",
+                startSec: 0.1,
+              },
+            ],
+          },
+        },
+        audioAssetFailure: new Error("sound-effect lookup unavailable"),
+      },
+    },
+    {
+      label: "background image",
+      assetClass: "background",
+      phase: "probe",
+      failureCode: "background_image_invalid",
+      input: {
+        clipOverrides: {
+          studioEdits: {
+            background: {
+              mode: "image",
+              color: "#123456",
+              imageUrl: "https://media.example/background.jpg",
+            },
+          },
+        },
+        backgroundDecodable: false,
+      },
+    },
+  ] as const) {
+    test.skipIf(!ffmpegAvailable || !ffprobeAvailable)(
+      `${optionalCase.label} degradation still produces probeable real media`,
+      async () => {
       let result: RenderedMediaProbe | undefined;
       const harness = createCoreRenderPathTracer({
         topology: "single-video",
@@ -2616,7 +2705,7 @@ describe("ClipRenderAttempt real-media compatibility fixtures", () => {
             resolution: "720p",
           },
         ],
-        projectBrandSnapshotFailure: new Error("brand lookup unavailable"),
+        ...optionalCase.input,
         realMedia: {
           sourcePath: videoSourcePath,
           probeOutput: async (variantId, filePath) => {
@@ -2635,13 +2724,16 @@ describe("ClipRenderAttempt real-media compatibility fixtures", () => {
       expect(harness.diagnostics).toContainEqual({
         message: "clip_render_optional_asset_fallback",
         context: expect.objectContaining({
-          assetClass: "logo",
+          assetClass: optionalCase.assetClass,
+          phase: optionalCase.phase,
+          failureCode: optionalCase.failureCode,
           disposition: "degraded",
         }),
       });
-    },
-    30_000,
-  );
+      },
+      30_000,
+    );
+  }
 
   for (const analysisCase of [
     {

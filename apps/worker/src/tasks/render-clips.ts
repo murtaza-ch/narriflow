@@ -287,18 +287,19 @@ interface ClipRenderAttemptLifecycle {
 interface ClipRenderAttemptAdapters {
   media: Pick<typeof productionRenderMediaAdapter, "probe">;
   process: Pick<typeof productionRenderProcessAdapter, "execute">;
+  state: Pick<
+    typeof productionClipService,
+    "getFrozenRenderingStateForWorkSet"
+  >;
   project: Pick<
     typeof productionProjectService,
-    | "getProjectBrandSnapshot"
-    | "getUserPricingTier"
-    | "publishWorkflowProgress"
+    "publishWorkflowProgress"
   >;
   clip: Pick<
     typeof productionClipService,
     | "completeClipRenderVariant"
     | "completeClipAutoLayoutAnalysis"
     | "failClipRenderVariant"
-    | "getPendingClipRendersForWorkSet"
     | "markClipRenderVariantRendering"
     | "setClipLayoutAnalysis"
   >;
@@ -432,6 +433,7 @@ const defaultRenderConfig = parseRenderConfig({});
 const productionClipRenderAttemptAdapters: ClipRenderAttemptAdapters = {
   media: productionRenderMediaAdapter,
   process: productionRenderProcessAdapter,
+  state: productionClipService,
   project: productionProjectService,
   clip: productionClipService,
   audioAsset: productionAudioAssetService,
@@ -937,11 +939,11 @@ function diagnoseRequiredSourceOperation(input: {
 }
 
 async function resolveRequiredSource(input: {
-  run: WorkflowRunJob;
+  sourceStorageKey: string | null;
   tempDir: string;
   attempt: ClipRenderingWorkflowAttempt;
 }): Promise<{ sourcePath: string; probe: SourceProbe }> {
-  const sourceStorageKey = input.run.project.sourceStorageKey;
+  const sourceStorageKey = input.sourceStorageKey;
   if (!sourceStorageKey) {
     throw new WorkflowFailure(
       "source_storage_key_missing",
@@ -5174,6 +5176,20 @@ async function executeClipRenderAttempt(
   abortAttempt: (error: WorkflowAttemptLost) => void,
 ): Promise<RenderWorkSetOutcome> {
   signal.throwIfAborted();
+  const frozenState =
+    await currentRenderAdapters().state.getFrozenRenderingStateForWorkSet(
+      run.projectId,
+      run.id,
+    );
+  signal.throwIfAborted();
+
+  const pendingRenders = (frozenState?.pendingRenders ?? []).filter((render) =>
+    workSetVariantIds.includes(render.id),
+  );
+  if (!frozenState || pendingRenders.length === 0) {
+    return lifecycle.settleRenderWorkSet(attempt);
+  }
+
   // Watermark presence is a run-level entitlement (vizard-parity Phase C
   // export options) — looked up once per run, same as before, but now
   // through the shared hasFeature helper instead of a bare tier check so
@@ -5183,9 +5199,7 @@ async function executeClipRenderAttempt(
   // row was created by clip.service's triggerClipRendering/
   // autoQueueDefaultRenders) — a single run can, in principle, cover rows at
   // different resolutions.
-  const ownerTier = await currentRenderAdapters().project.getUserPricingTier(
-    run.project.userId,
-  );
+  const ownerTier = frozenState.ownerTier;
   const applyWatermark = !hasFeature(ownerTier, "export.noWatermark");
 
   const runStartedAtMs = currentTimeMs();
@@ -5210,7 +5224,7 @@ async function executeClipRenderAttempt(
     // download in fallback/download mode. All builders seek with -ss before
     // -i, so both forms behave identically apart from what gets transferred.
     const { sourcePath, probe } = await resolveRequiredSource({
-      run,
+      sourceStorageKey: frozenState.sourceStorageKey,
       tempDir,
       attempt,
     });
@@ -5225,13 +5239,9 @@ async function executeClipRenderAttempt(
 
     let brandLogo: LogoOverlay | null = null;
     let rawBrandSnapshot: unknown = null;
-    try {
-      rawBrandSnapshot =
-        await currentRenderAdapters().project.getProjectBrandSnapshot(
-          run.projectId,
-        );
-    } catch (error) {
-      rethrowRenderControlFlow(error);
+    if (frozenState.brandSnapshot.status === "available") {
+      rawBrandSnapshot = frozenState.brandSnapshot.value;
+    } else {
       diagnoseOptionalAssetFallback({
         assetClass: "logo",
         phase: "lookup",
@@ -5294,19 +5304,6 @@ async function executeClipRenderAttempt(
           context: { workflowRunId: run.id, projectId: run.projectId },
         });
       }
-    }
-
-    const pendingRenders = (
-      await currentRenderAdapters().clip.getPendingClipRendersForWorkSet(
-        run.projectId,
-        run.id,
-      )
-    ).filter((render) => workSetVariantIds.includes(render.id));
-
-    if (pendingRenders.length === 0) {
-      settlementStarted = true;
-      const outcome = await lifecycle.settleRenderWorkSet(attempt);
-      return outcome;
     }
 
     // A clip may now have several immutable export revisions queued at once.
@@ -5858,6 +5855,7 @@ async function executeClipRenderAttempt(
                   let brollPath =
                     await currentRenderAdapters().optionalAssets.getCachedBrollAssetPath(
                       resolved.downloadUrl,
+                      currentRenderConfig().brollAssetCacheTtlMs,
                     );
                   let downloadedForCache = false;
                   if (!brollPath) {
@@ -6460,6 +6458,7 @@ async function executeClipRenderAttempt(
               detection: detectionResult,
               selectedRect,
               faceConfirmed,
+              screencastThreshold: currentRenderConfig().pipMotionThreshold,
             };
             // Clip-level check only (no `fit` — that's per-output, decided
             // again inside `applyScreenSpeakerLayout`'s loop): every gate
@@ -6838,9 +6837,9 @@ async function executeClipRenderAttempt(
       if (studioEdits.music.assetId) {
         try {
           const resolved = await currentRenderAdapters().audioAsset.resolveRenderSource(
-            run.project.userId,
+            frozenState.userId,
             studioEdits.music.assetId,
-            run.project.workspaceId,
+            frozenState.workspaceId,
           );
           musicUrl = resolved?.url ?? null;
           musicUrlIsAssetResolved = Boolean(resolved);
@@ -6969,9 +6968,9 @@ async function executeClipRenderAttempt(
         let sfxUrl: string | null = null;
         try {
           const resolved = await currentRenderAdapters().audioAsset.resolveRenderSource(
-            run.project.userId,
+            frozenState.userId,
             placement.assetId,
-            run.project.workspaceId,
+            frozenState.workspaceId,
           );
           sfxUrl = resolved?.url ?? null;
           if (!resolved) {

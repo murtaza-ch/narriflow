@@ -3,22 +3,7 @@
 import type { ReactNode } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { Box, Tabs } from "@chakra-ui/react";
-
-const VALID_TABS = [
-  "clips",
-  "transcript",
-  "repurpose",
-  "dubbing",
-  "publish",
-  "analytics",
-  "activity",
-] as const;
-
-type ProjectTab = (typeof VALID_TABS)[number];
-
-function isProjectTab(value: string | null): value is ProjectTab {
-  return value !== null && (VALID_TABS as readonly string[]).includes(value);
-}
+import { projectTabFromSearchParam } from "./project-tab";
 
 /**
  * Phase 3: project tabs become URL-driven (`?tab=`) — row-Publish (clip-row)
@@ -36,8 +21,7 @@ export function ProjectTabs({
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const rawTab = searchParams.get("tab");
-  const value: ProjectTab = isProjectTab(rawTab) ? rawTab : "clips";
+  const value = projectTabFromSearchParam(searchParams.get("tab"));
 
   function handleValueChange(details: { value: string }) {
     const params = new URLSearchParams(searchParams.toString());
