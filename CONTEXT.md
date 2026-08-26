@@ -16,6 +16,14 @@ _Avoid_: Form state, Studio payload, edits blob
 The immutable, versioned result of resolving one Clip Editor Document, source facts, bounded evidence, asset availability, capabilities, and up to four output targets into exact timed canvases, layers, crops, destinations, notices, and evidence requests. Studio preview and FFmpeg translate this plan; they do not choose composition policy.
 _Avoid_: FFmpeg filter graph, preview layout, auto-layout analysis
 
+**Scene Block**:
+A bounded visual insertion that occupies edited time in one Clip Editor Document and may contain video, an image, a color card, or a text card.
+_Avoid_: Timeline clip, composition scene, intro file
+
+**Censor Segment**:
+A timed Clip Editor Document instruction that masks caption text, replaces source audio with a beep, or silences source audio without changing the transcript.
+_Avoid_: Transcript correction, muted word, profanity flag
+
 **Device Draft**:
 The latest Clip Editor Document durably retained in the current browser but not necessarily confirmed by Narriflow.
 _Avoid_: Cache, local copy, backup
@@ -65,3 +73,29 @@ _Avoid_: Exception string, error-code registry
 **Ingest Job**:
 A persistent execution record for bringing source media into a project before post-ingest processing begins.
 _Avoid_: Workflow run, upload task
+
+## Brand and delivery
+
+**Brand Profile**:
+A workspace or personal collection of reusable identity, media, writing guidance, and style presets for one brand. A Brand Template is a style preset inside this broader identity.
+_Avoid_: Brand Template, client folder, workspace brand
+
+**Visual Asset**:
+A workspace or personal image or video that may be uploaded or generated, reused in Brand Profiles, and inserted into Clip Editor Documents.
+_Avoid_: B-roll URL, upload file, generated output
+
+**Scene Template**:
+A reusable Brand Profile definition that creates a Scene Block, usually an intro, outro, or branded card.
+_Avoid_: Brand Template, saved clip, preset video
+
+**Campaign Operation**:
+One idempotent request to apply a selection-scoped action to project clips, with an outcome recorded for each selected item.
+_Avoid_: Workflow Run, bulk job, campaign
+
+**Review Round**:
+An immutable client submission containing selected Clip Export revisions, guest access policy, comments, and approval decisions.
+_Avoid_: Share link, project snapshot, approval request
+
+**Generated Media Job**:
+One metered provider request that may produce a Visual Asset after moderation and usage settlement.
+_Avoid_: Workflow Run, image task, generation credit
