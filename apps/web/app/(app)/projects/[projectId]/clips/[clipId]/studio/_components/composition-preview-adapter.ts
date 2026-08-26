@@ -4,6 +4,15 @@ import {
   type CompositionLayer,
 } from "@narriflow/composition-plan";
 
+export function plannedCompositionSourceDimensions(
+  proxy: { width: number; height: number },
+  durable: { sourceWidth: number; sourceHeight: number } | null,
+): { width: number; height: number } {
+  return durable
+    ? { width: durable.sourceWidth, height: durable.sourceHeight }
+    : proxy;
+}
+
 export function plannedCompositionFrameStyle(
   layer: Extract<CompositionLayer, { kind: "source-video" }>,
   canvas: { width: number; height: number },
@@ -17,6 +26,55 @@ export function plannedCompositionFrameStyle(
     transform: `rotate(${layer.rotationDeg}deg)`,
     transformOrigin: "center",
   };
+}
+
+export function plannedCompositionVideoStyle(
+  layer: Extract<CompositionLayer, { kind: "source-video" }>,
+  source: { width: number; height: number },
+  destinationPixels: { width: number; height: number },
+  visible: boolean,
+) {
+  if (layer.fit === "contain") {
+    return {
+      position: "absolute" as const,
+      inset: 0,
+      width: "100%",
+      height: "100%",
+      objectFit: "contain" as const,
+      display: visible ? "block" : "none",
+    };
+  }
+  const normalized = {
+    x: layer.sourceCrop.x / source.width,
+    y: layer.sourceCrop.y / source.height,
+    width: layer.sourceCrop.width / source.width,
+    height: layer.sourceCrop.height / source.height,
+  };
+  const width = destinationPixels.width / normalized.width;
+  const height = destinationPixels.height / normalized.height;
+  return {
+    position: "absolute" as const,
+    left: `${-normalized.x * width}px`,
+    top: `${-normalized.y * height}px`,
+    width: `${width}px`,
+    height: `${height}px`,
+    maxWidth: "none" as const,
+    display: visible ? "block" : "none",
+  };
+}
+
+export function plannedCompositionUsesStackedStage(
+  preview: ReturnType<typeof adoptCompositionPreview>,
+): boolean {
+  if (
+    preview.effectiveMode !== "split" &&
+    preview.effectiveMode !== "screen"
+  ) {
+    return false;
+  }
+  return (
+    preview.layers.filter((layer) => layer.kind === "source-video").length > 1
+  );
 }
 
 const SCENE_END_EPSILON_SEC = 0.075;

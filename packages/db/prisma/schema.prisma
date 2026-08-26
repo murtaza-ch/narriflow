@@ -861,8 +861,9 @@ model Clip {
   // `setClipLayoutAnalysis`'s doc comment).
   layoutAnalysis  Json?
 
-  // Versioned, worker-derived automatic speaker-layout plan shared by the
-  // studio preview and final renderer. Kept separate from layoutAnalysis,
+  // Versioned, worker-derived speaker-layout plan shared by the studio preview
+  // and final renderer. Its engine discriminator separates Automatic shot
+  // analysis from explicit Split analysis. Kept separate from layoutAnalysis,
   // whose v1 envelope is screen-share/PiP specific. Parsed through
   // clipAutoLayoutAnalysisSchema; source-boundary/deleted-range edits null it.
   autoLayoutAnalysis      Json?

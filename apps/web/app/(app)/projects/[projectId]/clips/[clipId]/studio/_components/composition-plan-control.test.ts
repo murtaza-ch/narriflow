@@ -7,6 +7,8 @@ describe("composition plan web controls", () => {
       center: "shadow",
       fit: "shadow",
       auto: "shadow",
+      split: "shadow",
+      screen: "shadow",
       automaticSpeakerLayoutEnabled: true,
     });
     expect(
@@ -14,11 +16,15 @@ describe("composition plan web controls", () => {
         NEXT_PUBLIC_COMPOSITION_CENTER: "legacy",
         NEXT_PUBLIC_COMPOSITION_FIT: "shadow",
         NEXT_PUBLIC_COMPOSITION_AUTO: "plan",
+        NEXT_PUBLIC_COMPOSITION_SPLIT: "plan",
+        NEXT_PUBLIC_COMPOSITION_SCREEN: "legacy",
       }),
     ).toEqual({
       center: "legacy",
       fit: "shadow",
       auto: "plan",
+      split: "plan",
+      screen: "legacy",
       automaticSpeakerLayoutEnabled: true,
     });
     expect(

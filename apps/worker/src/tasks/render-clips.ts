@@ -9,8 +9,15 @@ import {
   automaticLayoutInputFingerprint,
   compositionAssetRef,
   planClipComposition,
+  screenLayoutInputFingerprint,
+  splitLayoutInputFingerprint,
   type ClipCompositionPlan,
+  type CompositionEvidenceAvailability,
   type CompositionRect,
+  type ScreenLayoutEvidence,
+  type ScreenLayoutFailureReason,
+  type SplitLayoutEvidence,
+  type SplitLayoutFailureReason,
   type CompositionTargetPlan,
 } from "@narriflow/composition-plan";
 import {
@@ -74,6 +81,7 @@ import type {
   CaptionPreset,
   ClipAspectRatio,
   ClipAutoLayoutAnalysis,
+  ClipAutoLayoutSegment,
   ClipCategory,
   ClipLayoutAnalysis,
   ClipRenderResolution,
@@ -445,7 +453,7 @@ interface CompositionShadowLayerSnapshot {
 }
 
 interface CompositionShadowTargetSnapshot {
-  effectiveMode: "auto" | "center" | "fit";
+  effectiveMode: "auto" | "center" | "fit" | "split" | "screen";
   dynamicReframe: boolean;
   scenes: Array<{
     startSec: number;
@@ -553,22 +561,32 @@ export function buildLegacyCompositionShadowTarget(input: {
   target: { width: number; height: number };
   source: { width: number; height: number };
   durationSec: number;
-  requestedMode: "auto" | "center" | "fit";
+  requestedMode: "auto" | "center" | "fit" | "split" | "screen";
   automaticSegments: SplitLayoutSegment[] | null;
+  splitSegments?: SplitLayoutSegment[] | null;
+  screenBottom?: ScreenSpeakerBottomSpec | null;
   dynamicReframe?: boolean;
   speakerLayoutOverrides: StudioSpeakerLayoutOverride[];
   background: BackgroundPlan | null;
 }): CompositionShadowTargetSnapshot {
   if (
-    input.requestedMode === "auto" &&
-    input.automaticSegments &&
-    input.automaticSegments.length > 0
+    (input.requestedMode === "auto" || input.requestedMode === "split") &&
+    (input.requestedMode === "auto"
+      ? input.automaticSegments
+      : input.splitSegments) &&
+    (input.requestedMode === "auto"
+      ? input.automaticSegments!.length
+      : input.splitSegments!.length) > 0
   ) {
+    const segments =
+      input.requestedMode === "auto"
+        ? input.automaticSegments!
+        : input.splitSegments!;
     return {
-      effectiveMode: "auto",
+      effectiveMode: input.requestedMode,
       dynamicReframe: false,
       noticeCodes: [],
-      scenes: input.automaticSegments.map((segment) => {
+      scenes: segments.map((segment) => {
         const resolved = resolveSpeakerLayoutScene(
           segment,
           input.speakerLayoutOverrides,
@@ -606,6 +624,75 @@ export function buildLegacyCompositionShadowTarget(input: {
           }),
         };
       }),
+    };
+  }
+
+  if (input.requestedMode === "screen" && input.screenBottom) {
+    const tile = screenTileGeometry(input.aspectRatio, input.source);
+    const bottomCrop = input.screenBottom.pipRect
+      ? {
+          x: input.screenBottom.pipRect.x,
+          y: input.screenBottom.pipRect.y,
+          width: input.screenBottom.pipRect.w,
+          height: input.screenBottom.pipRect.h,
+        }
+      : {
+          x: cropXForCenter(
+            input.screenBottom.cx,
+            input.source.width,
+            tile.cropW,
+          ),
+          y: cropXForCenter(0.5, input.source.height, tile.cropH),
+          width: tile.cropW,
+          height: tile.cropH,
+        };
+    return {
+      effectiveMode: "screen",
+      dynamicReframe: Boolean(input.screenBottom.reframe),
+      noticeCodes: [],
+      scenes: [
+        {
+          startSec: 0,
+          endSec: input.durationSec,
+          layers: [
+            {
+              kind: "source-video",
+              role: null,
+              zIndex: 0,
+              sourceCrop: {
+                x: 0,
+                y: 0,
+                width: input.source.width,
+                height: input.source.height,
+              },
+              destination: {
+                x: 0,
+                y: 0,
+                width: tile.tileWidth,
+                height: tile.topHeight,
+              },
+              rotationDeg: 0,
+              backgroundColor: null,
+              backgroundImage: false,
+            },
+            {
+              kind: "source-video",
+              role: null,
+              zIndex: 1,
+              sourceCrop: bottomCrop,
+              destination: {
+                x: 0,
+                y: tile.topHeight,
+                width: tile.tileWidth,
+                height: tile.bottomHeight,
+              },
+              rotationDeg: 0,
+              backgroundColor: null,
+              backgroundImage: false,
+            },
+          ],
+        },
+      ],
     };
   }
 
@@ -2404,6 +2491,62 @@ export async function resolvePipAnalysis(
  * does not get a "no fallback" carve-out just because a candidate rect
  * existed at the clip level.
  */
+function faceBandSegmentsForCompositionPlan(input: {
+  samples: FaceSample[] | null;
+  cutPlan: ClipCutPlan;
+  clipStartSec: number;
+  editedDurationSec: number;
+}): ClipAutoLayoutSegment[] | null {
+  if (!input.samples || input.samples.length === 0) return null;
+  const points = remapFaceSamplesForCutPlan(
+    input.samples,
+    input.cutPlan,
+    input.clipStartSec,
+  )
+    .flatMap((group) => smoothFacePath(group))
+    .filter(
+      (sample) =>
+        Number.isFinite(sample.t) &&
+        Number.isFinite(sample.cx) &&
+        sample.t >= 0 &&
+        sample.t <= input.editedDurationSec,
+    )
+    .sort((left, right) => left.t - right.t);
+  if (points.length === 0) return null;
+
+  const deduplicated: SmoothedSample[] = [];
+  for (const point of points) {
+    const previous = deduplicated.at(-1);
+    if (previous && Math.abs(previous.t - point.t) <= 0.001) {
+      deduplicated[deduplicated.length - 1] = point;
+      continue;
+    }
+    deduplicated.push(point);
+  }
+
+  const bounded =
+    deduplicated.length <= 64
+      ? deduplicated
+      : Array.from({ length: 64 }, (_, index) => {
+          const time = (index / 64) * input.editedDurationSec;
+          let selected = deduplicated[0]!;
+          for (const candidate of deduplicated) {
+            if (candidate.t > time) break;
+            selected = candidate;
+          }
+          return { t: time, cx: selected.cx };
+        });
+
+  return bounded.map((point, index) => ({
+    startSec: index === 0 ? 0 : point.t,
+    endSec: bounded[index + 1]?.t ?? input.editedDurationSec,
+    layout: "single" as const,
+    cxNorm: point.cx,
+    cyNorm: 0.5,
+    zoom: 1,
+  }));
+}
+
 async function applyScreenSpeakerLayout(params: {
   samples: FaceSample[] | null;
   pipRect: PipRect | null;
@@ -6384,6 +6527,7 @@ async function executeClipRenderAttempt(
       const persistedAutoLayoutEligible = Boolean(
         layoutEngineEnabled &&
           persistedAutoLayout &&
+          persistedAutoLayout.engine === "shot-layout-v1" &&
           persistedAutoLayout.sourceIdentity === compositionSourceIdentity &&
           clipAutoLayoutMatchesInputs(persistedAutoLayout, {
             clipStartSec: clip.startSec,
@@ -6720,6 +6864,19 @@ async function executeClipRenderAttempt(
         }
       }
 
+      let splitLayoutEvidenceForPlan: CompositionEvidenceAvailability<
+        SplitLayoutEvidence,
+        SplitLayoutFailureReason
+      > = {
+        state: "missing",
+      };
+      let screenLayoutEvidenceForPlan: CompositionEvidenceAvailability<
+        ScreenLayoutEvidence,
+        ScreenLayoutFailureReason
+      > = {
+        state: "missing",
+      };
+
       // Screen packet B ("screen" framing mode, the worker render path): when
       // the clip's effective framing mode is "screen", run single-face
       // detection (NOT `detectMultiFacePath` — screen mode only ever needs
@@ -6735,6 +6892,7 @@ async function executeClipRenderAttempt(
         resolveEffectiveFramingMode(studioEdits) === "screen" && probe.hasVideo;
       if (isScreenMode) {
         if (!screenLayoutEnabled) {
+          screenLayoutEvidenceForPlan = { state: "disabled" };
           // Kill switch (mirrors split's `disabled` reason): fully reverts
           // routing — `framingForcesPerOutputRender` also returns false for
           // "screen" when this is set, so the clip renders through the exact
@@ -6789,6 +6947,10 @@ async function executeClipRenderAttempt(
           });
 
           if (screenFallbackReason) {
+            screenLayoutEvidenceForPlan = {
+              state: "failed",
+              reason: screenFallbackReason,
+            };
             log("info", "clip_screen_fallback", {
               workflowRunId: run.id,
               clipId: clip.id,
@@ -7026,6 +7188,42 @@ async function executeClipRenderAttempt(
               clipId: clip.id,
               workflowRunId: run.id,
             });
+            const faceBandSegments = faceBandSegmentsForCompositionPlan({
+              samples: detection?.samples ?? null,
+              cutPlan,
+              clipStartSec,
+              editedDurationSec: clipDurationSec,
+            });
+            const screenEngineVersion = "screen-layout-v1";
+            screenLayoutEvidenceForPlan = {
+              state: "available",
+              value: {
+                sourceIdentity: compositionSourceIdentity,
+                inputFingerprint: screenLayoutInputFingerprint({
+                  sourceIdentity: compositionSourceIdentity,
+                  clipStartSec: clip.startSec,
+                  clipEndSec: clip.endSec,
+                  deletedRanges,
+                  engineVersion: screenEngineVersion,
+                }),
+                engineVersion: screenEngineVersion,
+                source: "analysis",
+                pictureInPicture: pipRect
+                  ? {
+                      state: "confirmed",
+                      rect: {
+                        x: pipRect.x,
+                        y: pipRect.y,
+                        width: pipRect.w,
+                        height: pipRect.h,
+                      },
+                    }
+                  : { state: "unavailable" },
+                faceBand: faceBandSegments
+                  ? { state: "available", segments: faceBandSegments }
+                  : { state: "unavailable" },
+              },
+            };
             if (!appliedTracking) {
               log("info", "clip_screen_bottom_center_fallback", {
                 workflowRunId: run.id,
@@ -7075,6 +7273,7 @@ async function executeClipRenderAttempt(
         // from "detection never ran for another reason" from its params
         // alone).
         if (!splitEnabled) {
+          splitLayoutEvidenceForPlan = { state: "disabled" };
           log("info", "clip_split_fallback", {
             workflowRunId: run.id,
             clipId: clip.id,
@@ -7167,6 +7366,10 @@ async function executeClipRenderAttempt(
           });
 
           if (fallbackReason) {
+            splitLayoutEvidenceForPlan = {
+              state: "failed",
+              reason: fallbackReason,
+            };
             log("info", "clip_split_fallback", {
               workflowRunId: run.id,
               clipId: clip.id,
@@ -7227,6 +7430,115 @@ async function executeClipRenderAttempt(
             }
           } else if (plan) {
             splitPlan = plan;
+            const fallbackSegments = faceBandSegmentsForCompositionPlan({
+              samples: multiDetection
+                ? deriveSingleFaceSamplesFromMulti(multiDetection.samples)
+                : null,
+              cutPlan,
+              clipStartSec,
+              editedDurationSec: clipDurationSec,
+            }) ?? [
+              {
+                startSec: 0,
+                endSec: clipDurationSec,
+                layout: "single" as const,
+                cxNorm: 0.5,
+                cyNorm: 0.5,
+                zoom: 1,
+              },
+            ];
+            const explicitSegments: ClipAutoLayoutSegment[] = plan.segments.map(
+              (segment) =>
+                segment.layout === "single"
+                  ? {
+                      startSec: segment.startSec,
+                      endSec: segment.endSec,
+                      layout: "single" as const,
+                      cxNorm: segment.cxNorm,
+                      cyNorm: segment.cyNorm ?? 0.5,
+                      zoom: segment.zoom ?? 1,
+                    }
+                  : {
+                      startSec: segment.startSec,
+                      endSec: segment.endSec,
+                      layout: "two-up" as const,
+                      topCxNorm: segment.topCxNorm,
+                      bottomCxNorm: segment.bottomCxNorm,
+                      topCyNorm: segment.topCyNorm ?? 0.5,
+                      bottomCyNorm: segment.bottomCyNorm ?? 0.5,
+                      topZoom: segment.topZoom ?? 1,
+                      bottomZoom: segment.bottomZoom ?? 1,
+                    },
+            );
+            const splitEngineVersion = "explicit-split-v1";
+            splitLayoutEvidenceForPlan = {
+              state: "available",
+              value: {
+                sourceIdentity: compositionSourceIdentity,
+                inputFingerprint: splitLayoutInputFingerprint({
+                  sourceIdentity: compositionSourceIdentity,
+                  clipStartSec: clip.startSec,
+                  clipEndSec: clip.endSec,
+                  deletedRanges,
+                  engineVersion: splitEngineVersion,
+                }),
+                engineVersion: splitEngineVersion,
+                source: "explicit-detector",
+                segments: explicitSegments,
+                fallbackSegments,
+              },
+            };
+            const twoUpSegmentCount = explicitSegments.filter(
+              (segment) => segment.layout === "two-up",
+            ).length;
+            // The shared scene envelope is also the browser's durable Split
+            // evidence. Its explicit engine discriminator prevents an Auto
+            // consumer from silently treating detector-specific scenes as a
+            // shot-layout result when the user switches modes later.
+            const splitPreviewEnvelope = clipAutoLayoutAnalysisSchema.parse({
+              version: 1,
+              engine: "explicit-split-v1",
+              sourceIdentity: compositionSourceIdentity,
+              analyzedAtISO: new Date(currentTimeMs()).toISOString(),
+              clipStartSec: clip.startSec,
+              clipEndSec: clip.endSec,
+              deletedRanges,
+              editedDurationSec: clipDurationSec,
+              sourceWidth: probe.width,
+              sourceHeight: probe.height,
+              segments: explicitSegments,
+              noSplitSegments: fallbackSegments,
+              shotCount: explicitSegments.length,
+              soloShotCount: explicitSegments.length - twoUpSegmentCount,
+              multiShotCount: twoUpSegmentCount,
+              twoUpSegmentCount,
+              speakerCount: plan.clusterCount,
+              mappedSpeakerCount: plan.clusterCount,
+            });
+            automaticLayoutAnalysisForPlan = splitPreviewEnvelope;
+            if (clip.previewStorageKey) {
+              await currentRenderAdapters()
+                .clip
+                .completeClipAutoLayoutAnalysis(clip.id, splitPreviewEnvelope, {
+                  editorRevision: clip.editorRevision,
+                  previewStorageKey: clip.previewStorageKey,
+                  replaceExisting: Boolean(
+                    persistedAutoLayout && !persistedAutoLayoutEligible,
+                  ),
+                })
+                .catch((error) => {
+                  rethrowRenderControlFlow(error);
+                  log("error", "clip_split_layout_analysis_persist_failed", {
+                    workflowRunId: run.id,
+                    clipId: clip.id,
+                    ...mediaAnalysisDiagnostic({
+                      analysisMode: "split_layout",
+                      fallbackMode: "render_without_persisted_analysis",
+                      failureCode: "analysis_persist_failed",
+                    }),
+                  });
+                });
+            }
             if (plan.cappedFromSegmentCount) {
               log("info", "clip_split_segments_capped", {
                 workflowRunId: run.id,
@@ -7684,13 +7996,24 @@ async function executeClipRenderAttempt(
             ? currentRenderConfig().compositionFit
             : requestedCompositionMode === "auto"
               ? currentRenderConfig().compositionAuto
-              : "legacy";
+              : requestedCompositionMode === "split"
+                ? currentRenderConfig().compositionSplit
+                : requestedCompositionMode === "screen"
+                  ? currentRenderConfig().compositionScreen
+                  : "legacy";
       if (
         probe.hasVideo &&
         (requestedCompositionMode === "center" ||
           requestedCompositionMode === "fit" ||
-          requestedCompositionMode === "auto") &&
+          requestedCompositionMode === "auto" ||
+          requestedCompositionMode === "split" ||
+          requestedCompositionMode === "screen") &&
         !(requestedCompositionMode === "auto" && brollPlan) &&
+        !(
+          (requestedCompositionMode === "split" ||
+            requestedCompositionMode === "screen") &&
+          brollPlan
+        ) &&
         compositionControl !== "legacy"
       ) {
         const planWithBackgroundAvailability = (
@@ -7724,11 +8047,17 @@ async function executeClipRenderAttempt(
                     },
                   }
                 : { state: automaticLayoutEvidenceFailure },
+              splitLayout: splitLayoutEvidenceForPlan,
+              screenLayout: screenLayoutEvidenceForPlan,
             },
             assets: { backgroundImage },
             capabilities: {
               automaticSpeakerLayout: currentRenderConfig().layoutEngineEnabled,
               automaticSpeakerEngineVersion: "shot-layout-v1",
+              explicitSplitLayout: currentRenderConfig().splitEnabled,
+              splitEngineVersion: "explicit-split-v1",
+              screenLayout: currentRenderConfig().screenLayoutEnabled,
+              screenEngineVersion: "screen-layout-v1",
             },
             targets: outputs.map((output) => {
               const target = aspectRatioConfig.get(output.aspectRatio)!;
@@ -7775,6 +8104,25 @@ async function executeClipRenderAttempt(
           (count, target) => count + target.scenes.length,
           0,
         );
+        const compositionEvidenceDiagnostics =
+          requestedCompositionMode === "auto"
+            ? {
+                source: automaticLayoutEvidenceSource,
+                version: automaticLayoutAnalysisForPlan?.version ?? null,
+              }
+            : requestedCompositionMode === "split" &&
+                splitLayoutEvidenceForPlan.state === "available"
+              ? {
+                  source: splitLayoutEvidenceForPlan.value.source,
+                  version: splitLayoutEvidenceForPlan.value.engineVersion,
+                }
+              : requestedCompositionMode === "screen" &&
+                  screenLayoutEvidenceForPlan.state === "available"
+                ? {
+                    source: screenLayoutEvidenceForPlan.value.source,
+                    version: screenLayoutEvidenceForPlan.value.engineVersion,
+                  }
+                : { source: null, version: null };
         log("info", "clip_composition_plan", {
           workflowRunId: run.id,
           clipId: clip.id,
@@ -7784,12 +8132,9 @@ async function executeClipRenderAttempt(
           planFingerprint: planned.plan.fingerprint,
           planningDurationMs,
           requestedMode: requestedCompositionMode,
-          evidenceSource: automaticLayoutEvidenceSource,
-          evidenceVersion: automaticLayoutAnalysisForPlan?.version ?? null,
-          evidenceRequestCount:
-            automaticEvidenceProbe?.status === "invalid"
-              ? 0
-              : (automaticEvidenceProbe?.plan.evidenceRequests.length ?? 0),
+          evidenceSource: compositionEvidenceDiagnostics.source,
+          evidenceVersion: compositionEvidenceDiagnostics.version,
+          evidenceRequestCount: planned.plan.evidenceRequests.length,
           effectiveModes: planned.plan.targets.map(
             (target) => target.effectiveMode,
           ),
@@ -7831,6 +8176,16 @@ async function executeClipRenderAttempt(
               durationSec: clipDurationSec,
               requestedMode: requestedCompositionMode,
               automaticSegments: legacyAutomaticSegments,
+              splitSegments:
+                requestedCompositionMode === "split" &&
+                splitPlan &&
+                !splitIneligibleOutputs.includes(output)
+                  ? splitPlan.segments
+                  : null,
+              screenBottom:
+                requestedCompositionMode === "screen"
+                  ? output.screenBottom
+                  : null,
               dynamicReframe: Boolean(
                 output.reframe && !legacyAutomaticSegments,
               ),

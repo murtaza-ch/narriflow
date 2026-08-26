@@ -20,7 +20,7 @@ export function parseCompositionPlanControl(
 ): Readonly<
   Record<"center" | "fit" | "auto", CompositionPlanControlMode> & {
     automaticSpeakerLayoutEnabled: boolean;
-  }
+  } & Record<"split" | "screen", CompositionPlanControlMode>
 > {
   const automaticSpeakerLayout =
     environment.NEXT_PUBLIC_AUTOMATIC_SPEAKER_LAYOUT?.trim() || "1";
@@ -31,6 +31,8 @@ export function parseCompositionPlanControl(
     center: mode(environment, "NEXT_PUBLIC_COMPOSITION_CENTER"),
     fit: mode(environment, "NEXT_PUBLIC_COMPOSITION_FIT"),
     auto: mode(environment, "NEXT_PUBLIC_COMPOSITION_AUTO"),
+    split: mode(environment, "NEXT_PUBLIC_COMPOSITION_SPLIT"),
+    screen: mode(environment, "NEXT_PUBLIC_COMPOSITION_SCREEN"),
     automaticSpeakerLayoutEnabled: automaticSpeakerLayout === "1",
   });
 }
@@ -40,11 +42,12 @@ export const compositionPlanControl = parseCompositionPlanControl({
     process.env.NEXT_PUBLIC_COMPOSITION_CENTER,
   NEXT_PUBLIC_COMPOSITION_FIT: process.env.NEXT_PUBLIC_COMPOSITION_FIT,
   NEXT_PUBLIC_COMPOSITION_AUTO: process.env.NEXT_PUBLIC_COMPOSITION_AUTO,
+  NEXT_PUBLIC_COMPOSITION_SPLIT: process.env.NEXT_PUBLIC_COMPOSITION_SPLIT,
+  NEXT_PUBLIC_COMPOSITION_SCREEN: process.env.NEXT_PUBLIC_COMPOSITION_SCREEN,
   NEXT_PUBLIC_AUTOMATIC_SPEAKER_LAYOUT:
     process.env.NEXT_PUBLIC_AUTOMATIC_SPEAKER_LAYOUT,
 });
 
 export function shouldAdoptCompositionPlan(mode: CompositionMode): boolean {
-  if (mode !== "center" && mode !== "fit" && mode !== "auto") return false;
   return compositionPlanControl[mode] === "plan";
 }

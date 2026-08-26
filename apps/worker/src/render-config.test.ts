@@ -114,11 +114,15 @@ describe("RenderConfig", () => {
         WORKER_COMPOSITION_CENTER: "legacy",
         WORKER_COMPOSITION_FIT: "shadow",
         WORKER_COMPOSITION_AUTO: "plan",
+        WORKER_COMPOSITION_SPLIT: "plan",
+        WORKER_COMPOSITION_SCREEN: "legacy",
       }),
     ).toMatchObject({
       compositionCenter: "legacy",
       compositionFit: "shadow",
       compositionAuto: "plan",
+      compositionSplit: "plan",
+      compositionScreen: "legacy",
     });
     expect(() =>
       parseRenderConfig({ WORKER_COMPOSITION_AUTO: "enabled" }),

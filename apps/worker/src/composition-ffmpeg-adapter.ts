@@ -42,7 +42,11 @@ export function compileCompositionPlanVideo(input: {
     (candidate) => candidate.id === input.targetId,
   );
   if (!target) throw new Error("clip_composition_target_missing");
-  if (target.effectiveMode === "auto") {
+  if (
+    target.effectiveMode === "auto" ||
+    target.effectiveMode === "split" ||
+    target.effectiveMode === "screen"
+  ) {
     if (target.scenes.length === 0) {
       throw new Error("invalid_clip_composition_scenes");
     }
@@ -139,9 +143,23 @@ export function compileCompositionPlanVideo(input: {
         parts.push(`${trimLabel}split=2${sourceLabels.join("")}`);
         layers.forEach((layer, layerIndex) => {
           const crop = layer.sourceCrop;
+          const isFullSource =
+            crop.x === 0 &&
+            crop.y === 0 &&
+            crop.width === input.plan.source.width &&
+            crop.height === input.plan.source.height;
+          const cropPrefix = isFullSource
+            ? ""
+            : `crop=${crop.width}:${crop.height}:${crop.x}:${crop.y},`;
+          const scale =
+            layer.fit === "contain"
+              ? `scale=${layer.destination.width}:${layer.destination.height}:` +
+                "force_original_aspect_ratio=decrease," +
+                `pad=${layer.destination.width}:${layer.destination.height}:` +
+                "(ow-iw)/2:(oh-ih)/2:color=black,setsar=1"
+              : `scale=${layer.destination.width}:${layer.destination.height}`;
           parts.push(
-            `${sourceLabels[layerIndex]}crop=${crop.width}:${crop.height}:${crop.x}:${crop.y},` +
-              `scale=${layer.destination.width}:${layer.destination.height}${outputLabels[layerIndex]}`,
+            `${sourceLabels[layerIndex]}${cropPrefix}${scale}${outputLabels[layerIndex]}`,
           );
         });
         parts.push(

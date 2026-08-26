@@ -7,7 +7,10 @@ import {
 } from "@narriflow/validators";
 import {
   adoptCompositionPreview,
+  plannedCompositionSourceDimensions,
+  plannedCompositionUsesStackedStage,
   plannedCompositionFrameStyle,
+  plannedCompositionVideoStyle,
 } from "./composition-preview-adapter";
 
 function centerPlan() {
@@ -35,6 +38,18 @@ function centerPlan() {
 }
 
 describe("composition preview adapter", () => {
+  test("uses durable source dimensions instead of proxy dimensions for planning", () => {
+    expect(
+      plannedCompositionSourceDimensions(
+        { width: 960, height: 540 },
+        { sourceWidth: 1920, sourceHeight: 1080 },
+      ),
+    ).toEqual({ width: 1920, height: 1080 });
+    expect(
+      plannedCompositionSourceDimensions({ width: 960, height: 540 }, null),
+    ).toEqual({ width: 960, height: 540 });
+  });
+
   test("adopts exact planned geometry at the final edited frame without changing media identity", () => {
     const adopted = adoptCompositionPreview(centerPlan(), "9:16", 6);
 
@@ -157,5 +172,69 @@ describe("composition preview adapter", () => {
       transform: "rotate(12.5deg)",
       transformOrigin: "center",
     });
+  });
+
+  test("translates Screen contain and crop layers without re-deciding fit policy", () => {
+    const layer = centerPlan().targets[0]!.scenes[0]!.layers[0]!;
+    if (layer.kind !== "source-video") throw new Error("expected source layer");
+
+    expect(
+      plannedCompositionVideoStyle(
+        {
+          ...layer,
+          fit: "contain",
+          sourceCrop: { x: 0, y: 0, width: 1920, height: 1080 },
+          destination: { x: 0, y: 0, width: 1080, height: 676 },
+        },
+        { width: 1920, height: 1080 },
+        { width: 540, height: 338 },
+        true,
+      ),
+    ).toEqual({
+      position: "absolute",
+      inset: 0,
+      width: "100%",
+      height: "100%",
+      objectFit: "contain",
+      display: "block",
+    });
+
+    expect(
+      plannedCompositionVideoStyle(
+        {
+          ...layer,
+          fit: "cover",
+          sourceCrop: { x: 480, y: 0, width: 960, height: 1080 },
+          destination: { x: 0, y: 676, width: 1080, height: 674 },
+        },
+        { width: 1920, height: 1080 },
+        { width: 540, height: 337 },
+        true,
+      ),
+    ).toEqual({
+      position: "absolute",
+      left: "-270px",
+      top: "0px",
+      width: "1080px",
+      height: "337px",
+      maxWidth: "none",
+      display: "block",
+    });
+  });
+
+  test("mounts the secondary tile only for a two-layer planned scene", () => {
+    const single = adoptCompositionPreview(centerPlan(), "9:16", 0);
+    const splitSingle = {
+      ...single,
+      requestedMode: "split" as const,
+      effectiveMode: "split" as const,
+    };
+    const splitTwoUp = {
+      ...splitSingle,
+      layers: [single.layers[0]!, { ...single.layers[0]!, id: "bottom" }],
+    };
+
+    expect(plannedCompositionUsesStackedStage(splitSingle)).toBe(false);
+    expect(plannedCompositionUsesStackedStage(splitTwoUp)).toBe(true);
   });
 });

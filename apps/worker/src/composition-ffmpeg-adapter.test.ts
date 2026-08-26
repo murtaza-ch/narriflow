@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import {
   automaticLayoutInputFingerprint,
   planClipComposition,
+  screenLayoutInputFingerprint,
+  splitLayoutInputFingerprint,
 } from "@narriflow/composition-plan";
 import {
   captionPresetSchema,
@@ -136,6 +138,113 @@ function planAuto() {
       automaticSpeakerEngineVersion: "shot-layout-v1",
     },
     targets: [{ id: "variant-1", aspectRatio: "9:16", width: 1080, height: 1920 }],
+  });
+  if (result.status === "invalid") throw new Error(result.error.code);
+  return result.plan;
+}
+
+function planSplit() {
+  const sourceIdentity = "source:key";
+  const engineVersion = "explicit-split-v1";
+  const result = planClipComposition({
+    document: editorDocumentSchema.parse({
+      clipStartSec: 0,
+      clipEndSec: 5,
+      captionPreset: captionPresetSchema.parse({}),
+      transcriptSlice: [],
+      studioEdits: studioEditsSchema.parse({ framing: { mode: "split" } }),
+      brollUrl: null,
+      deletedRanges: [],
+    }),
+    source: { identity: sourceIdentity, kind: "video", width: 1920, height: 1080 },
+    evidence: {
+      automaticLayout: { state: "missing" },
+      splitLayout: {
+        state: "available",
+        value: {
+          sourceIdentity,
+          inputFingerprint: splitLayoutInputFingerprint({
+            sourceIdentity,
+            clipStartSec: 0,
+            clipEndSec: 5,
+            deletedRanges: [],
+            engineVersion,
+          }),
+          engineVersion,
+          source: "explicit-detector",
+          segments: [
+            {
+              startSec: 0,
+              endSec: 5,
+              layout: "two-up",
+              topCxNorm: 0.25,
+              bottomCxNorm: 0.75,
+            },
+          ],
+          fallbackSegments: [
+            { startSec: 0, endSec: 5, layout: "single", cxNorm: 0.5 },
+          ],
+        },
+      },
+    },
+    assets: { backgroundImage: { state: "missing" } },
+    capabilities: {
+      automaticSpeakerLayout: true,
+      automaticSpeakerEngineVersion: "shot-layout-v1",
+      explicitSplitLayout: true,
+      splitEngineVersion: engineVersion,
+    },
+    targets: [{ id: "variant-1", aspectRatio: "4:5", width: 1080, height: 1350 }],
+  });
+  if (result.status === "invalid") throw new Error(result.error.code);
+  return result.plan;
+}
+
+function planScreen() {
+  const sourceIdentity = "source:key";
+  const engineVersion = "screen-layout-v1";
+  const result = planClipComposition({
+    document: editorDocumentSchema.parse({
+      clipStartSec: 0,
+      clipEndSec: 5,
+      captionPreset: captionPresetSchema.parse({}),
+      transcriptSlice: [],
+      studioEdits: studioEditsSchema.parse({ framing: { mode: "screen" } }),
+      brollUrl: null,
+      deletedRanges: [],
+    }),
+    source: { identity: sourceIdentity, kind: "video", width: 1920, height: 1080 },
+    evidence: {
+      automaticLayout: { state: "missing" },
+      screenLayout: {
+        state: "available",
+        value: {
+          sourceIdentity,
+          inputFingerprint: screenLayoutInputFingerprint({
+            sourceIdentity,
+            clipStartSec: 0,
+            clipEndSec: 5,
+            deletedRanges: [],
+            engineVersion,
+          }),
+          engineVersion,
+          source: "durable-pip",
+          pictureInPicture: {
+            state: "confirmed",
+            rect: { x: 0.72, y: 0.68, width: 0.2, height: 0.22 },
+          },
+          faceBand: { state: "unavailable" },
+        },
+      },
+    },
+    assets: { backgroundImage: { state: "missing" } },
+    capabilities: {
+      automaticSpeakerLayout: true,
+      automaticSpeakerEngineVersion: "shot-layout-v1",
+      screenLayout: true,
+      screenEngineVersion: engineVersion,
+    },
+    targets: [{ id: "variant-1", aspectRatio: "4:5", width: 1080, height: 1350 }],
   });
   if (result.status === "invalid") throw new Error(result.error.code);
   return result.plan;
@@ -349,6 +458,43 @@ describe("composition FFmpeg adapter", () => {
         "[composition_scene_0]format=yuv420p[outv]",
       ],
     });
+  });
+
+  test("compiles explicit Split with the planner's encodable 4:5 partition", () => {
+    const compiled = compileCompositionPlanVideo({
+      plan: planSplit(),
+      targetId: "variant-1",
+      videoInputLabel: "[0:v]",
+      outputLabel: "[outv]",
+    });
+
+    expect(compiled.filterParts).toContain(
+      "[composition_scene_0_layer_0_src]crop=1725:1080:0:0,scale=1080:676[composition_scene_0_layer_0]",
+    );
+    expect(compiled.filterParts).toContain(
+      "[composition_scene_0_layer_1_src]crop=1731:1080:189:0,scale=1080:674[composition_scene_0_layer_1]",
+    );
+    expect(compiled.filterParts).toContain(
+      "[composition_scene_0_layer_0][composition_scene_0_layer_1]vstack=inputs=2,setsar=1,format=yuv420p[composition_scene_0]",
+    );
+  });
+
+  test("compiles Screen from planned contain and PiP geometry", () => {
+    expect(
+      compileCompositionPlanVideo({
+        plan: planScreen(),
+        targetId: "variant-1",
+        videoInputLabel: "[0:v]",
+        outputLabel: "[outv]",
+      }).filterParts,
+    ).toEqual([
+      "[0:v]trim=start=0.000:end=5.000,setpts=PTS-STARTPTS[composition_scene_0_trim]",
+      "[composition_scene_0_trim]split=2[composition_scene_0_layer_0_src][composition_scene_0_layer_1_src]",
+      "[composition_scene_0_layer_0_src]scale=1080:676:force_original_aspect_ratio=decrease,pad=1080:676:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[composition_scene_0_layer_0]",
+      "[composition_scene_0_layer_1_src]crop=445:278:1352:714,scale=1080:674[composition_scene_0_layer_1]",
+      "[composition_scene_0_layer_0][composition_scene_0_layer_1]vstack=inputs=2,setsar=1,format=yuv420p[composition_scene_0]",
+      "[composition_scene_0]format=yuv420p[outv]",
+    ]);
   });
 
   test("keeps a rotated manual layer centered on its planned destination", () => {

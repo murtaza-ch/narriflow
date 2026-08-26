@@ -9,6 +9,8 @@ import {
   automaticLayoutInputFingerprint,
   CLIP_COMPOSITION_MAX_SERIALIZED_BYTES,
   planClipComposition,
+  screenLayoutInputFingerprint,
+  splitLayoutInputFingerprint,
 } from "./clip-composition-plan";
 
 function centerDocument() {
@@ -868,5 +870,479 @@ describe("Clip Composition Plan", () => {
     expect(new TextEncoder().encode(JSON.stringify(result.plan)).byteLength).toBeLessThanOrEqual(
       CLIP_COMPOSITION_MAX_SERIALIZED_BYTES,
     );
+  });
+
+  test("plans explicit Split scenes per target with distinct crops and encodable 4:5 tiles", () => {
+    const document = editorDocumentSchema.parse({
+      clipStartSec: 0,
+      clipEndSec: 8,
+      captionPreset: captionPresetSchema.parse({}),
+      transcriptSlice: [],
+      studioEdits: studioEditsSchema.parse({ framing: { mode: "split" } }),
+      brollUrl: null,
+      deletedRanges: [],
+    });
+    const source = {
+      identity: "source:split",
+      kind: "video" as const,
+      width: 1920,
+      height: 1080,
+    };
+    const engineVersion = "explicit-split-v1";
+    const result = planClipComposition({
+      document,
+      source,
+      evidence: {
+        automaticLayout: { state: "missing" },
+        splitLayout: {
+          state: "available",
+          value: {
+            sourceIdentity: source.identity,
+            inputFingerprint: splitLayoutInputFingerprint({
+              sourceIdentity: source.identity,
+              clipStartSec: 0,
+              clipEndSec: 8,
+              deletedRanges: [],
+              engineVersion,
+            }),
+            engineVersion,
+            source: "explicit-detector",
+            segments: [
+              {
+                startSec: 0,
+                endSec: 4,
+                layout: "two-up",
+                topCxNorm: 0.2,
+                bottomCxNorm: 0.8,
+              },
+              {
+                startSec: 4,
+                endSec: 8,
+                layout: "single",
+                cxNorm: 0.72,
+              },
+            ],
+            fallbackSegments: [
+              { startSec: 0, endSec: 4, layout: "single", cxNorm: 0.2 },
+              { startSec: 4, endSec: 8, layout: "single", cxNorm: 0.72 },
+            ],
+          },
+        },
+      },
+      assets: { backgroundImage: { state: "missing" } },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+        explicitSplitLayout: true,
+        splitEngineVersion: engineVersion,
+      },
+      targets: [
+        { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },
+        { id: "portrait", aspectRatio: "4:5", width: 1080, height: 1350 },
+        { id: "square", aspectRatio: "1:1", width: 1080, height: 1080 },
+      ],
+    });
+
+    expect(result.status).toBe("ready");
+    if (result.status === "invalid") throw new Error(result.error.code);
+    expect(result.plan.evidenceRequests).toEqual([]);
+    expect(result.plan.targets[0]).toMatchObject({
+      requestedMode: "split",
+      effectiveMode: "split",
+      scenes: [
+        {
+          startSec: 0,
+          endSec: 4,
+          layers: [
+            {
+              speaker: { role: "top" },
+              destination: { x: 0, y: 0, width: 1080, height: 960 },
+            },
+            {
+              speaker: { role: "bottom" },
+              destination: { x: 0, y: 960, width: 1080, height: 960 },
+            },
+          ],
+        },
+        { startSec: 4, endSec: 8, layers: [{ speaker: { role: "single" } }] },
+      ],
+    });
+    expect(result.plan.targets[1]?.scenes[0]?.layers).toMatchObject([
+      { destination: { x: 0, y: 0, width: 1080, height: 676 } },
+      { destination: { x: 0, y: 676, width: 1080, height: 674 } },
+    ]);
+    const verticalLayers = result.plan.targets[0]!.scenes[0]!.layers;
+    expect(verticalLayers[0]).not.toMatchObject({
+      sourceCrop: verticalLayers[1]?.kind === "source-video"
+        ? verticalLayers[1].sourceCrop
+        : null,
+    });
+    expect(result.plan.targets[2]).toMatchObject({
+      requestedMode: "split",
+      effectiveMode: "auto",
+      scenes: [
+        { layers: [{ speaker: { role: "single" } }] },
+        { layers: [{ speaker: { role: "single" } }] },
+      ],
+    });
+    expect(result.plan.notices).toContainEqual({
+      code: "split_target_ineligible",
+      fidelity: "degraded",
+      targetId: "square",
+      sceneId: null,
+      effectiveFallback: "auto",
+      userActionPossible: false,
+    });
+  });
+
+  test("plans Screen PiP, face-band, and static fallbacks from one evidence contract", () => {
+    const document = editorDocumentSchema.parse({
+      clipStartSec: 2,
+      clipEndSec: 10,
+      captionPreset: captionPresetSchema.parse({}),
+      transcriptSlice: [],
+      studioEdits: studioEditsSchema.parse({ framing: { mode: "screen" } }),
+      brollUrl: null,
+      deletedRanges: [],
+    });
+    const source = {
+      identity: "source:screen",
+      kind: "video" as const,
+      width: 1920,
+      height: 1080,
+    };
+    const engineVersion = "screen-layout-v1";
+    const common = {
+      document,
+      source,
+      evidence: { automaticLayout: { state: "missing" as const } },
+      assets: { backgroundImage: { state: "missing" as const } },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+        screenLayout: true,
+        screenEngineVersion: engineVersion,
+      },
+      targets: [
+        { id: "vertical", aspectRatio: "9:16" as const, width: 1080, height: 1920 },
+        { id: "portrait", aspectRatio: "4:5" as const, width: 1080, height: 1350 },
+      ],
+    };
+    const fingerprint = screenLayoutInputFingerprint({
+      sourceIdentity: source.identity,
+      clipStartSec: 2,
+      clipEndSec: 10,
+      deletedRanges: [],
+      engineVersion,
+    });
+    const pip = planClipComposition({
+      ...common,
+      evidence: {
+        ...common.evidence,
+        screenLayout: {
+          state: "available" as const,
+          value: {
+            sourceIdentity: source.identity,
+            inputFingerprint: fingerprint,
+            engineVersion,
+            source: "durable-pip" as const,
+            pictureInPicture: {
+              state: "confirmed" as const,
+              rect: { x: 0.72, y: 0.68, width: 0.2, height: 0.22 },
+            },
+            faceBand: { state: "unavailable" as const },
+          },
+        },
+      },
+    });
+    const faceBand = planClipComposition({
+      ...common,
+      evidence: {
+        ...common.evidence,
+        screenLayout: {
+          state: "available" as const,
+          value: {
+            sourceIdentity: source.identity,
+            inputFingerprint: fingerprint,
+            engineVersion,
+            source: "analysis" as const,
+            pictureInPicture: { state: "unavailable" as const },
+            faceBand: {
+              state: "available" as const,
+              segments: [
+                { startSec: 0, endSec: 8, layout: "single" as const, cxNorm: 0.75 },
+              ],
+            },
+          },
+        },
+      },
+    });
+    const pending = planClipComposition({
+      ...common,
+      evidence: {
+        ...common.evidence,
+        screenLayout: { state: "missing" as const },
+      },
+    });
+
+    expect(pip.status).toBe("ready");
+    expect(faceBand.status).toBe("ready");
+    expect(pending.status).toBe("provisional");
+    if (
+      pip.status === "invalid" ||
+      faceBand.status === "invalid" ||
+      pending.status === "invalid"
+    ) {
+      throw new Error("expected valid Screen plans");
+    }
+    expect(pip.plan.targets[0]).toMatchObject({
+      requestedMode: "screen",
+      effectiveMode: "screen",
+      scenes: [
+        {
+          layers: [
+            {
+              kind: "source-video",
+              fit: "contain",
+              sourceCrop: { x: 0, y: 0, width: 1920, height: 1080 },
+              destination: { x: 0, y: 0, width: 1080, height: 960 },
+            },
+            {
+              kind: "source-video",
+              fit: "cover",
+              destination: { x: 0, y: 960, width: 1080, height: 960 },
+            },
+          ],
+        },
+      ],
+    });
+    expect(pip.plan.targets[1]?.scenes[0]?.layers).toMatchObject([
+      { destination: { x: 0, y: 0, width: 1080, height: 676 } },
+      { destination: { x: 0, y: 676, width: 1080, height: 674 } },
+    ]);
+    expect(faceBand.plan.targets[0]?.scenes[0]?.layers[1]).toMatchObject({
+      sourceCrop: { x: 705, y: 0, width: 1215, height: 1080 },
+    });
+    expect(pending.plan.evidenceRequests).toEqual([
+      {
+        key: `screen-layout:${fingerprint}`,
+        kind: "screen-layout",
+        engineVersion,
+      },
+    ]);
+    expect(pending.plan.notices).toEqual([
+      {
+        code: "screen_layout_analyzing",
+        fidelity: "provisional",
+        targetId: "vertical",
+        sceneId: null,
+        effectiveFallback: "screen",
+        userActionPossible: false,
+      },
+      {
+        code: "screen_layout_analyzing",
+        fidelity: "provisional",
+        targetId: "portrait",
+        sceneId: null,
+        effectiveFallback: "screen",
+        userActionPossible: false,
+      },
+    ]);
+  });
+
+  test("keeps Split failure, stale-evidence, and edited-timeline fallbacks typed", () => {
+    const document = editorDocumentSchema.parse({
+      clipStartSec: 0,
+      clipEndSec: 10,
+      captionPreset: captionPresetSchema.parse({}),
+      transcriptSlice: [],
+      studioEdits: studioEditsSchema.parse({ framing: { mode: "split" } }),
+      brollUrl: null,
+      deletedRanges: [{ startSec: 4, endSec: 6 }],
+    });
+    const source = {
+      identity: "source:split-failures",
+      kind: "video" as const,
+      width: 1920,
+      height: 1080,
+    };
+    const engineVersion = "explicit-split-v1";
+    const common = {
+      document,
+      source,
+      assets: { backgroundImage: { state: "missing" as const } },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+        explicitSplitLayout: true,
+        splitEngineVersion: engineVersion,
+      },
+      targets: [
+        {
+          id: "vertical",
+          aspectRatio: "9:16" as const,
+          width: 1080,
+          height: 1920,
+        },
+      ],
+    };
+
+    for (const reason of [
+      "detection_unavailable",
+      "insufficient_clusters",
+      "empty_plan",
+      "no_two_up_segments",
+    ] as const) {
+      const result = planClipComposition({
+        ...common,
+        evidence: {
+          automaticLayout: { state: "missing" },
+          splitLayout: { state: "failed", reason },
+        },
+      });
+      expect(result.status).toBe("ready");
+      if (result.status === "invalid") throw new Error(result.error.code);
+      expect(result.plan.evidenceRequests).toEqual([]);
+      expect(result.plan.targets[0]?.effectiveMode).toBe("center");
+      expect(result.plan.targets[0]?.scenes[0]).toMatchObject({
+        startSec: 0,
+        endSec: 8,
+      });
+      expect(result.plan.notices[0]?.code).toBe(`split_${reason}`);
+    }
+
+    const stale = planClipComposition({
+      ...common,
+      evidence: {
+        automaticLayout: { state: "missing" },
+        splitLayout: {
+          state: "available",
+          value: {
+            sourceIdentity: source.identity,
+            inputFingerprint: "stale",
+            engineVersion,
+            source: "explicit-detector",
+            segments: [
+              {
+                startSec: 0,
+                endSec: 8,
+                layout: "two-up",
+                topCxNorm: 0.25,
+                bottomCxNorm: 0.75,
+              },
+            ],
+            fallbackSegments: [
+              { startSec: 0, endSec: 8, layout: "single", cxNorm: 0.5 },
+            ],
+          },
+        },
+      },
+    });
+    expect(stale.status).toBe("provisional");
+    if (stale.status === "invalid") throw new Error(stale.error.code);
+    expect(stale.plan.notices[0]?.code).toBe("split_layout_analyzing");
+    expect(stale.plan.evidenceRequests).toHaveLength(1);
+  });
+
+  test("keeps Screen PiP gating and unavailable-analysis fallbacks explicit", () => {
+    const document = editorDocumentSchema.parse({
+      clipStartSec: 0,
+      clipEndSec: 8,
+      captionPreset: captionPresetSchema.parse({}),
+      transcriptSlice: [],
+      studioEdits: studioEditsSchema.parse({ framing: { mode: "screen" } }),
+      brollUrl: null,
+      deletedRanges: [],
+    });
+    const source = {
+      identity: "source:screen-failures",
+      kind: "video" as const,
+      width: 1920,
+      height: 1080,
+    };
+    const engineVersion = "screen-layout-v1";
+    const fingerprint = screenLayoutInputFingerprint({
+      sourceIdentity: source.identity,
+      clipStartSec: 0,
+      clipEndSec: 8,
+      deletedRanges: [],
+      engineVersion,
+    });
+    const common = {
+      document,
+      source,
+      assets: { backgroundImage: { state: "missing" as const } },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+        screenLayout: true,
+        screenEngineVersion: engineVersion,
+      },
+      targets: [
+        {
+          id: "vertical",
+          aspectRatio: "9:16" as const,
+          width: 1080,
+          height: 1920,
+        },
+      ],
+    };
+    const tinyPip = planClipComposition({
+      ...common,
+      evidence: {
+        automaticLayout: { state: "missing" },
+        screenLayout: {
+          state: "available",
+          value: {
+            sourceIdentity: source.identity,
+            inputFingerprint: fingerprint,
+            engineVersion,
+            source: "analysis",
+            pictureInPicture: {
+              state: "confirmed",
+              rect: { x: 0.7, y: 0.7, width: 0.05, height: 0.05 },
+            },
+            faceBand: { state: "unavailable" },
+          },
+        },
+      },
+    });
+    expect(tinyPip.status).toBe("ready");
+    if (tinyPip.status === "invalid") throw new Error(tinyPip.error.code);
+    expect(tinyPip.plan.targets[0]?.effectiveMode).toBe("screen");
+    expect(tinyPip.plan.notices[0]?.code).toBe("screen_pip_too_small");
+
+    for (const reason of [
+      "analysis_unavailable",
+      "detection_unavailable",
+      "no_face_detected",
+      "no_trustworthy_faces",
+    ] as const) {
+      const failed = planClipComposition({
+        ...common,
+        evidence: {
+          automaticLayout: { state: "missing" },
+          screenLayout: { state: "failed", reason },
+        },
+      });
+      expect(failed.status).toBe("ready");
+      if (failed.status === "invalid") throw new Error(failed.error.code);
+      expect(failed.plan.evidenceRequests).toEqual([]);
+      expect(failed.plan.targets[0]?.effectiveMode).toBe("screen");
+      expect(failed.plan.notices[0]?.code).toBe(`screen_${reason}`);
+    }
+
+    const disabled = planClipComposition({
+      ...common,
+      capabilities: { ...common.capabilities, screenLayout: false },
+      evidence: {
+        automaticLayout: { state: "missing" },
+        screenLayout: { state: "disabled" },
+      },
+    });
+    expect(disabled.status).toBe("ready");
+    if (disabled.status === "invalid") throw new Error(disabled.error.code);
+    expect(disabled.plan.targets[0]?.effectiveMode).toBe("center");
+    expect(disabled.plan.notices[0]?.code).toBe("screen_layout_disabled");
   });
 });

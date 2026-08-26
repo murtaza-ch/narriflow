@@ -5,6 +5,7 @@ import {
   resolveSpeakerLayoutScene,
   type ClipAspectRatio,
   type ClipAutoLayoutAnalysis,
+  type ClipAutoLayoutSegment,
   type EditorDocument,
   type SpeakerLayerRole,
   type SpeakerLayerTransform,
@@ -48,11 +49,74 @@ export interface AutomaticLayoutEvidence {
   readonly analysis: ClipAutoLayoutAnalysis;
 }
 
+export type CompositionEvidenceAvailability<T, TFailureReason extends string = string> =
+  | { readonly state: "missing" | "pending" | "disabled" }
+  | { readonly state: "failed"; readonly reason?: TFailureReason }
+  | { readonly state: "available"; readonly value: T };
+
+export type SplitLayoutFailureReason =
+  | "disabled"
+  | "broll_conflict"
+  | "detection_unavailable"
+  | "insufficient_clusters"
+  | "empty_plan"
+  | "no_two_up_segments"
+  | "tiles_not_distinct";
+
+export type ScreenLayoutFailureReason =
+  | "disabled"
+  | "broll_conflict"
+  | "analysis_unavailable"
+  | "detection_unavailable"
+  | "no_face_detected"
+  | "no_trustworthy_faces";
+
+export interface SplitLayoutEvidence {
+  readonly sourceIdentity: string;
+  readonly inputFingerprint: string;
+  readonly engineVersion: string;
+  readonly source: "explicit-detector" | "automatic-layout";
+  readonly segments: readonly ClipAutoLayoutSegment[];
+  readonly fallbackSegments: readonly ClipAutoLayoutSegment[];
+}
+
+export interface ScreenLayoutEvidence {
+  readonly sourceIdentity: string;
+  readonly inputFingerprint: string;
+  readonly engineVersion: string;
+  readonly source: "durable-pip" | "analysis";
+  readonly pictureInPicture:
+    | {
+        readonly state: "confirmed";
+        readonly rect: {
+          readonly x: number;
+          readonly y: number;
+          readonly width: number;
+          readonly height: number;
+        };
+      }
+    | { readonly state: "unavailable" };
+  readonly faceBand:
+    | {
+        readonly state: "available";
+        readonly segments: readonly ClipAutoLayoutSegment[];
+      }
+    | { readonly state: "unavailable" };
+}
+
 export interface ClipCompositionPlanInput {
   readonly document: EditorDocument;
   readonly source: CompositionSourceFacts;
   readonly evidence: {
     readonly automaticLayout: AutomaticLayoutEvidenceAvailability;
+    readonly splitLayout?: CompositionEvidenceAvailability<
+      SplitLayoutEvidence,
+      SplitLayoutFailureReason
+    >;
+    readonly screenLayout?: CompositionEvidenceAvailability<
+      ScreenLayoutEvidence,
+      ScreenLayoutFailureReason
+    >;
   };
   readonly assets: {
     readonly backgroundImage: CompositionAssetAvailability;
@@ -60,6 +124,10 @@ export interface ClipCompositionPlanInput {
   readonly capabilities: {
     readonly automaticSpeakerLayout: boolean;
     readonly automaticSpeakerEngineVersion: string;
+    readonly explicitSplitLayout?: boolean;
+    readonly splitEngineVersion?: string;
+    readonly screenLayout?: boolean;
+    readonly screenEngineVersion?: string;
   };
   readonly targets: readonly CompositionTarget[];
 }
@@ -127,7 +195,10 @@ export interface CompositionTargetPlan {
 
 export interface CompositionEvidenceRequest {
   readonly key: string;
-  readonly kind: "automatic-speaker-layout";
+  readonly kind:
+    | "automatic-speaker-layout"
+    | "split-speaker-layout"
+    | "screen-layout";
   readonly engineVersion: string;
 }
 
@@ -204,6 +275,9 @@ export function automaticLayoutInputFingerprint(input: {
 }): string {
   return hashString(JSON.stringify(input));
 }
+
+export const splitLayoutInputFingerprint = automaticLayoutInputFingerprint;
+export const screenLayoutInputFingerprint = automaticLayoutInputFingerprint;
 
 function deepFreeze<T>(value: T): Readonly<T> {
   if (!value || typeof value !== "object" || Object.isFrozen(value)) {
@@ -332,6 +406,221 @@ function targetSupportsTwoUp(
   return cropWidth < source.width;
 }
 
+function evenStackFrames(target: CompositionTarget): readonly [CompositionRect, CompositionRect] {
+  const bottomHeight = 2 * Math.floor(target.height / 4);
+  const topHeight = target.height - bottomHeight;
+  return [
+    { x: 0, y: 0, width: target.width, height: topHeight },
+    { x: 0, y: topHeight, width: target.width, height: bottomHeight },
+  ];
+}
+
+function segmentsAreComplete(
+  segments: readonly ClipAutoLayoutSegment[],
+  editedDurationSec: number,
+): boolean {
+  if (segments.length === 0 || segments.length > 64) return false;
+  let cursor = 0;
+  for (const segment of segments) {
+    if (
+      !Number.isFinite(segment.startSec) ||
+      !Number.isFinite(segment.endSec) ||
+      Math.abs(segment.startSec - cursor) > 0.075 ||
+      segment.endSec <= segment.startSec
+    ) {
+      return false;
+    }
+    cursor = segment.endSec;
+  }
+  return Math.abs(cursor - editedDurationSec) <= 0.075;
+}
+
+function evidenceMatches(
+  value: Pick<
+    SplitLayoutEvidence | ScreenLayoutEvidence,
+    "sourceIdentity" | "inputFingerprint" | "engineVersion"
+  >,
+  input: ClipCompositionPlanInput,
+  engineVersion: string,
+): boolean {
+  return (
+    value.sourceIdentity === input.source.identity &&
+    value.engineVersion === engineVersion &&
+    value.inputFingerprint ===
+      automaticLayoutInputFingerprint({
+        sourceIdentity: input.source.identity,
+        clipStartSec: input.document.clipStartSec,
+        clipEndSec: input.document.clipEndSec,
+        deletedRanges: input.document.deletedRanges,
+        engineVersion,
+      })
+  );
+}
+
+function canonicalSplitTransforms(
+  segment: ClipAutoLayoutSegment,
+  target: CompositionTarget,
+): readonly SpeakerLayerTransform[] {
+  if (segment.layout === "single") {
+    return [
+      {
+        role: "single",
+        frameX: 0,
+        frameY: 0,
+        frameWidth: 1,
+        frameHeight: 1,
+        rotationDeg: 0,
+        cropCxNorm: segment.cxNorm,
+        cropCyNorm: segment.cyNorm ?? 0.5,
+        cropZoom: segment.zoom ?? 1,
+      },
+    ];
+  }
+  const [top, bottom] = evenStackFrames(target);
+  return [
+    {
+      role: "top",
+      frameX: 0,
+      frameY: 0,
+      frameWidth: 1,
+      frameHeight: top.height / target.height,
+      rotationDeg: 0,
+      cropCxNorm: segment.topCxNorm,
+      cropCyNorm: segment.topCyNorm ?? 0.5,
+      cropZoom: segment.topZoom ?? 1,
+    },
+    {
+      role: "bottom",
+      frameX: 0,
+      frameY: top.height / target.height,
+      frameWidth: 1,
+      frameHeight: bottom.height / target.height,
+      rotationDeg: 0,
+      cropCxNorm: segment.bottomCxNorm,
+      cropCyNorm: segment.bottomCyNorm ?? 0.5,
+      cropZoom: segment.bottomZoom ?? 1,
+    },
+  ];
+}
+
+function speakerScenes(input: {
+  mode: "auto" | "split";
+  source: CompositionSourceFacts;
+  target: CompositionTarget;
+  segments: readonly ClipAutoLayoutSegment[];
+  overrides: EditorDocument["studioEdits"]["speakerLayoutOverrides"];
+}): CompositionScene[] {
+  return input.segments.map((segment, sceneIndex) => {
+    const resolved = resolveSpeakerLayoutScene(
+      segment,
+      input.overrides,
+      input.target.aspectRatio,
+    );
+    const canonical =
+      input.mode === "split"
+        ? canonicalSplitTransforms(segment, input.target)
+        : resolved.layers;
+    const transforms = resolved.overrideId ? resolved.layers : canonical;
+    return {
+      id: `scene:${input.mode}:${input.target.id}:${sceneIndex}`,
+      startSec: segment.startSec,
+      endSec: segment.endSec,
+      layers: transforms.map((transform, layerIndex) => {
+        const defaultTransform = canonical.find(
+          (candidate) => candidate.role === transform.role,
+        )!;
+        const destination = framePixels(transform, input.target);
+        return {
+          id: `layer:speaker:${transform.role}:${input.target.id}:${sceneIndex}`,
+          kind: "source-video" as const,
+          sourceRef: input.source.identity,
+          sourceCrop: cropForSpeakerLayer(
+            input.source,
+            destination,
+            transform,
+          ),
+          destination,
+          fit: "cover" as const,
+          rotationDeg: transform.rotationDeg,
+          opacity: 1,
+          zIndex: layerIndex,
+          speaker: {
+            role: transform.role,
+            transform: { ...transform },
+            defaultTransform: { ...defaultTransform },
+            overrideId: resolved.overrideId,
+          },
+        };
+      }),
+    };
+  });
+}
+
+function screenPipCrop(
+  rect: Extract<
+    ScreenLayoutEvidence["pictureInPicture"],
+    { state: "confirmed" }
+  >["rect"],
+  target: CompositionTarget,
+  source: CompositionSourceFacts,
+): CompositionRect | null {
+  const [, bottom] = evenStackFrames(target);
+  const tileRatio = bottom.width / bottom.height;
+  const cx = (rect.x + rect.width / 2) * source.width;
+  const cy = (rect.y + rect.height / 2) * source.height;
+  let width = rect.width * source.width * 1.16;
+  let height = rect.height * source.height * 1.16;
+  const ratio = width / height;
+  if (ratio < tileRatio) width = height * tileRatio;
+  else if (ratio > tileRatio) height = width / tileRatio;
+  const shrink = Math.min(1, source.width / width, source.height / height);
+  width = Math.round(width * shrink);
+  height = Math.round(height * shrink);
+  const x = Math.round(clamp(cx - width / 2, 0, source.width - width));
+  const y = Math.round(clamp(cy - height / 2, 0, source.height - height));
+  return width < target.width * 0.4 ? null : { x, y, width, height };
+}
+
+function screenScene(
+  source: CompositionSourceFacts,
+  target: CompositionTarget,
+  sceneIndex: number,
+  startSec: number,
+  endSec: number,
+  bottomCrop: CompositionRect,
+): CompositionScene {
+  const [top, bottom] = evenStackFrames(target);
+  return {
+    id: `scene:screen:${target.id}:${sceneIndex}`,
+    startSec,
+    endSec,
+    layers: [
+      {
+        id: `layer:screen:${target.id}:${sceneIndex}`,
+        kind: "source-video",
+        sourceRef: source.identity,
+        sourceCrop: { x: 0, y: 0, width: source.width, height: source.height },
+        destination: top,
+        fit: "contain",
+        rotationDeg: 0,
+        opacity: 1,
+        zIndex: 0,
+      },
+      {
+        id: `layer:speaker:bottom:${target.id}:${sceneIndex}`,
+        kind: "source-video",
+        sourceRef: source.identity,
+        sourceCrop: bottomCrop,
+        destination: bottom,
+        fit: "cover",
+        rotationDeg: 0,
+        opacity: 1,
+        zIndex: 1,
+      },
+    ],
+  };
+}
+
 function validAutomaticLayoutEvidence(
   evidence: AutomaticLayoutEvidenceAvailability,
   input: ClipCompositionPlanInput,
@@ -430,7 +719,9 @@ export function planClipComposition(
   if (
     requestedMode !== "center" &&
     requestedMode !== "fit" &&
-    requestedMode !== "auto"
+    requestedMode !== "auto" &&
+    requestedMode !== "split" &&
+    requestedMode !== "screen"
   ) {
     return { status: "invalid", error: { code: "unsupported_mode" } };
   }
@@ -452,17 +743,42 @@ export function planClipComposition(
         input.document.studioEdits.speakerLayoutOverrides,
       assets: input.assets,
       evidence:
-        input.evidence.automaticLayout.state === "available"
-          ? {
-              state: "available",
-              sourceIdentity:
-                input.evidence.automaticLayout.value.sourceIdentity,
-              inputFingerprint:
-                input.evidence.automaticLayout.value.inputFingerprint,
-              engineVersion:
-                input.evidence.automaticLayout.value.engineVersion,
-            }
-          : { state: input.evidence.automaticLayout.state },
+        {
+          automatic:
+            input.evidence.automaticLayout.state === "available"
+              ? {
+                  state: "available",
+                  sourceIdentity:
+                    input.evidence.automaticLayout.value.sourceIdentity,
+                  inputFingerprint:
+                    input.evidence.automaticLayout.value.inputFingerprint,
+                  engineVersion:
+                    input.evidence.automaticLayout.value.engineVersion,
+                }
+              : { state: input.evidence.automaticLayout.state },
+          split:
+            input.evidence.splitLayout?.state === "available"
+              ? {
+                  state: "available",
+                  sourceIdentity: input.evidence.splitLayout.value.sourceIdentity,
+                  inputFingerprint:
+                    input.evidence.splitLayout.value.inputFingerprint,
+                  engineVersion: input.evidence.splitLayout.value.engineVersion,
+                  source: input.evidence.splitLayout.value.source,
+                }
+              : { state: input.evidence.splitLayout?.state ?? "missing" },
+          screen:
+            input.evidence.screenLayout?.state === "available"
+              ? {
+                  state: "available",
+                  sourceIdentity: input.evidence.screenLayout.value.sourceIdentity,
+                  inputFingerprint:
+                    input.evidence.screenLayout.value.inputFingerprint,
+                  engineVersion: input.evidence.screenLayout.value.engineVersion,
+                  source: input.evidence.screenLayout.value.source,
+                }
+              : { state: input.evidence.screenLayout?.state ?? "missing" },
+        },
       capabilities: input.capabilities,
       targets: input.targets,
     }),
@@ -499,12 +815,319 @@ export function planClipComposition(
     });
   }
 
+  const splitEngineVersion = input.capabilities.splitEngineVersion ?? "explicit-split-v1";
+  const splitAvailability = input.evidence.splitLayout ?? { state: "missing" as const };
+  const splitEvidence =
+    requestedMode === "split" &&
+    input.capabilities.explicitSplitLayout !== false &&
+    splitAvailability.state === "available" &&
+    evidenceMatches(splitAvailability.value, input, splitEngineVersion) &&
+    segmentsAreComplete(
+      splitAvailability.value.segments,
+      editedTimeMap.editedDurationSec,
+    ) &&
+    segmentsAreComplete(
+      splitAvailability.value.fallbackSegments,
+      editedTimeMap.editedDurationSec,
+    )
+      ? splitAvailability.value
+      : null;
+  const splitEvidenceIsProvisional =
+    requestedMode === "split" &&
+    input.capabilities.explicitSplitLayout !== false &&
+    !input.document.brollUrl &&
+    !splitEvidence &&
+    splitAvailability.state !== "failed" &&
+    splitAvailability.state !== "disabled";
+  if (splitEvidenceIsProvisional) {
+    evidenceRequests.push({
+      key: `split-speaker-layout:${splitLayoutInputFingerprint({
+        sourceIdentity: input.source.identity,
+        clipStartSec: input.document.clipStartSec,
+        clipEndSec: input.document.clipEndSec,
+        deletedRanges: input.document.deletedRanges,
+        engineVersion: splitEngineVersion,
+      })}`,
+      kind: "split-speaker-layout",
+      engineVersion: splitEngineVersion,
+    });
+  }
+
+  const screenEngineVersion = input.capabilities.screenEngineVersion ?? "screen-layout-v1";
+  const screenAvailability = input.evidence.screenLayout ?? { state: "missing" as const };
+  const screenEvidence =
+    requestedMode === "screen" &&
+    input.capabilities.screenLayout !== false &&
+    screenAvailability.state === "available" &&
+    evidenceMatches(screenAvailability.value, input, screenEngineVersion) &&
+    (screenAvailability.value.faceBand.state !== "available" ||
+      segmentsAreComplete(
+        screenAvailability.value.faceBand.segments,
+        editedTimeMap.editedDurationSec,
+      ))
+      ? screenAvailability.value
+      : null;
+  const screenEvidenceIsProvisional =
+    requestedMode === "screen" &&
+    input.capabilities.screenLayout !== false &&
+    !input.document.brollUrl &&
+    !screenEvidence &&
+    screenAvailability.state !== "failed" &&
+    screenAvailability.state !== "disabled";
+  if (screenEvidenceIsProvisional) {
+    evidenceRequests.push({
+      key: `screen-layout:${screenLayoutInputFingerprint({
+        sourceIdentity: input.source.identity,
+        clipStartSec: input.document.clipStartSec,
+        clipEndSec: input.document.clipEndSec,
+        deletedRanges: input.document.deletedRanges,
+        engineVersion: screenEngineVersion,
+      })}`,
+      kind: "screen-layout",
+      engineVersion: screenEngineVersion,
+    });
+  }
+
   const targets: CompositionTargetPlan[] = input.targets.map((target) => {
     const canvas = {
       width: target.width,
       height: target.height,
       divisibleBy: 2 as const,
     };
+    if (requestedMode === "split") {
+      const centerFallback = (effectiveMode: "center" | "auto") => ({
+        id: target.id,
+        aspectRatio: target.aspectRatio,
+        requestedMode,
+        effectiveMode,
+        canvas,
+        scenes:
+          effectiveMode === "auto" && splitEvidence
+            ? speakerScenes({
+                mode: "auto",
+                source: input.source,
+                target,
+                segments: splitEvidence.fallbackSegments,
+                overrides: input.document.studioEdits.speakerLayoutOverrides,
+              })
+            : [
+                {
+                  id: `scene:split-fallback:${target.id}:0`,
+                  startSec: 0,
+                  endSec: editedTimeMap.editedDurationSec,
+                  layers: [
+                    {
+                      id: `layer:source:${target.id}:0`,
+                      kind: "source-video" as const,
+                      sourceRef: input.source.identity,
+                      sourceCrop: centeredCoverCrop(input.source, target),
+                      destination: {
+                        x: 0,
+                        y: 0,
+                        width: target.width,
+                        height: target.height,
+                      },
+                      fit: "cover" as const,
+                      rotationDeg: 0,
+                      opacity: 1,
+                      zIndex: 0,
+                    },
+                  ],
+                },
+              ],
+      });
+      const brollConflict = Boolean(input.document.brollUrl);
+      const disabled = input.capabilities.explicitSplitLayout === false;
+      if (brollConflict || disabled || !splitEvidence) {
+        const provisional = splitEvidenceIsProvisional;
+        notices.push({
+          code: brollConflict
+            ? "split_broll_conflict"
+            : provisional
+              ? "split_layout_analyzing"
+              : disabled || splitAvailability.state === "disabled"
+                ? "split_layout_disabled"
+                : splitAvailability.state === "failed" && splitAvailability.reason
+                  ? `split_${splitAvailability.reason}`
+                  : "split_layout_unavailable",
+          fidelity: provisional ? "provisional" : "degraded",
+          targetId: target.id,
+          sceneId: null,
+          effectiveFallback: "center",
+          userActionPossible: false,
+        });
+        return centerFallback("center");
+      }
+      if (!splitEvidence.segments.some((segment) => segment.layout === "two-up")) {
+        notices.push({
+          code: "split_no_two_up_scenes",
+          fidelity: "degraded",
+          targetId: target.id,
+          sceneId: null,
+          effectiveFallback: "auto",
+          userActionPossible: false,
+        });
+        return centerFallback("auto");
+      }
+      if (!targetSupportsTwoUp(input.source, target)) {
+        notices.push({
+          code: "split_target_ineligible",
+          fidelity: "degraded",
+          targetId: target.id,
+          sceneId: null,
+          effectiveFallback: "auto",
+          userActionPossible: false,
+        });
+        return centerFallback("auto");
+      }
+      return {
+        id: target.id,
+        aspectRatio: target.aspectRatio,
+        requestedMode,
+        effectiveMode: "split",
+        canvas,
+        scenes: speakerScenes({
+          mode: "split",
+          source: input.source,
+          target,
+          segments: splitEvidence.segments,
+          overrides: input.document.studioEdits.speakerLayoutOverrides,
+        }),
+      };
+    }
+    if (requestedMode === "screen") {
+      const fullCenter = () => ({
+        id: target.id,
+        aspectRatio: target.aspectRatio,
+        requestedMode,
+        effectiveMode: "center" as const,
+        canvas,
+        scenes: [
+          {
+            id: `scene:screen-fallback:${target.id}:0`,
+            startSec: 0,
+            endSec: editedTimeMap.editedDurationSec,
+            layers: [
+              {
+                id: `layer:source:${target.id}:0`,
+                kind: "source-video" as const,
+                sourceRef: input.source.identity,
+                sourceCrop: centeredCoverCrop(input.source, target),
+                destination: {
+                  x: 0,
+                  y: 0,
+                  width: target.width,
+                  height: target.height,
+                },
+                fit: "cover" as const,
+                rotationDeg: 0,
+                opacity: 1,
+                zIndex: 0,
+              },
+            ],
+          },
+        ],
+      });
+      const brollConflict = Boolean(input.document.brollUrl);
+      const disabled = input.capabilities.screenLayout === false;
+      if (brollConflict || disabled) {
+        notices.push({
+          code: brollConflict ? "screen_broll_conflict" : "screen_layout_disabled",
+          fidelity: "degraded",
+          targetId: target.id,
+          sceneId: null,
+          effectiveFallback: "center",
+          userActionPossible: false,
+        });
+        return fullCenter();
+      }
+
+      const pipCrop =
+        screenEvidence?.pictureInPicture.state === "confirmed"
+          ? screenPipCrop(
+              screenEvidence.pictureInPicture.rect,
+              target,
+              input.source,
+            )
+          : null;
+      let scenes: CompositionScene[];
+      if (pipCrop) {
+        scenes = [
+          screenScene(
+            input.source,
+            target,
+            0,
+            0,
+            editedTimeMap.editedDurationSec,
+            pipCrop,
+          ),
+        ];
+      } else if (screenEvidence?.faceBand.state === "available") {
+        const [, bottom] = evenStackFrames(target);
+        scenes = screenEvidence.faceBand.segments.map((segment, sceneIndex) => {
+          const single =
+            segment.layout === "single"
+              ? segment
+              : {
+                  startSec: segment.startSec,
+                  endSec: segment.endSec,
+                  layout: "single" as const,
+                  cxNorm: (segment.topCxNorm + segment.bottomCxNorm) / 2,
+                  cyNorm: 0.5,
+                  zoom: 1,
+                };
+          const transform = canonicalSplitTransforms(single, target)[0]!;
+          return screenScene(
+            input.source,
+            target,
+            sceneIndex,
+            segment.startSec,
+            segment.endSec,
+            cropForSpeakerLayer(input.source, bottom, transform),
+          );
+        });
+      } else {
+        const [, bottom] = evenStackFrames(target);
+        scenes = [
+          screenScene(
+            input.source,
+            target,
+            0,
+            0,
+            editedTimeMap.editedDurationSec,
+            centeredCoverCrop(input.source, bottom),
+          ),
+        ];
+      }
+
+      const provisional = screenEvidenceIsProvisional;
+      if (!screenEvidence || !pipCrop) {
+        notices.push({
+          code: provisional
+            ? "screen_layout_analyzing"
+            : screenAvailability.state === "failed" && screenAvailability.reason
+              ? `screen_${screenAvailability.reason}`
+              : pipCrop === null && screenEvidence?.pictureInPicture.state === "confirmed"
+                ? "screen_pip_too_small"
+                : screenEvidence?.faceBand.state === "available"
+                  ? "screen_face_band_fallback"
+                  : "screen_static_center_fallback",
+          fidelity: provisional ? "provisional" : "degraded",
+          targetId: target.id,
+          sceneId: null,
+          effectiveFallback: "screen",
+          userActionPossible: false,
+        });
+      }
+      return {
+        id: target.id,
+        aspectRatio: target.aspectRatio,
+        requestedMode,
+        effectiveMode: "screen",
+        canvas,
+        scenes,
+      };
+    }
     if (requestedMode === "auto") {
       if (automaticAnalysis) {
         const segments = targetSupportsTwoUp(input.source, target)

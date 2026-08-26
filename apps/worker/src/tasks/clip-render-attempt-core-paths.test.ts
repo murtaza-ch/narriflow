@@ -54,7 +54,11 @@ type VariantState =
 
 interface CoreVariantFixture {
   id: string;
-  aspectRatio: "ratio_9_16" | "ratio_1_1";
+  aspectRatio:
+    | "ratio_9_16"
+    | "ratio_1_1"
+    | "ratio_16_9"
+    | "ratio_4_5";
   clipId?: string;
   clipIndex?: number;
   initialState?: VariantState;
@@ -236,6 +240,7 @@ function createCoreRenderPathTracer(input: {
     context?: Record<string, unknown>;
   }> = [];
   const brollCacheWrites: string[] = [];
+  const persistedAutoLayouts: Array<unknown> = [];
   let settlementCalls = 0;
 
   const variantIdFromPath = (path: string): string | null =>
@@ -550,10 +555,11 @@ function createCoreRenderPathTracer(input: {
           }
         : {}),
       clip: {
-        completeClipAutoLayoutAnalysis: async () => {
+        completeClipAutoLayoutAnalysis: async (_clipId, analysis) => {
           if (input.analysisPersistenceFailure) {
             throw input.analysisPersistenceFailure;
           }
+          persistedAutoLayouts.push(analysis);
           return false;
         },
         completeClipRenderVariant: async (variantId) => {
@@ -646,6 +652,7 @@ function createCoreRenderPathTracer(input: {
     failureDispositions,
     mutationVariantIds,
     persistedVariantIds,
+    persistedAutoLayouts,
     settlementCalls: () => settlementCalls,
     states,
     uploadedVariantIds,
@@ -1677,6 +1684,7 @@ test("ClipRenderAttempt keeps the screen layout when picture-in-picture analysis
     configOverrides: {
       WORKER_SCREEN_LAYOUT: "1",
       WORKER_PIP_DETECT: "1",
+      WORKER_COMPOSITION_SCREEN: "plan",
     },
     faceAnalysisSamples: null,
     pipAnalysisResult: null,
@@ -1752,6 +1760,46 @@ test("ClipRenderAttempt selects a qualifying picture-in-picture crop", async () 
   });
 });
 
+test("ClipRenderAttempt compiles Screen through the shared plan after analysis", async () => {
+  const harness = createCoreRenderPathTracer({
+    topology: "single-video",
+    clipOverrides: { studioEdits: { framing: { mode: "screen" } } },
+    configOverrides: {
+      WORKER_SCREEN_LAYOUT: "1",
+      WORKER_PIP_DETECT: "1",
+      WORKER_COMPOSITION_SCREEN: "plan",
+    },
+    faceAnalysisSamples: Array.from({ length: 8 }, (_, index) => ({
+      t: index * 0.25,
+      cx: 0.88,
+    })),
+    pipAnalysisResult: {
+      movingPxFrac: 0.04,
+      insufficientSamples: false,
+      candidates: [qualifyingPipCandidate],
+    },
+  });
+
+  await expect(
+    harness.clipRenderAttempt.execute({
+      attempt: harness.attempt,
+      signal: new AbortController().signal,
+    }),
+  ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
+  const graph = harness.commands[0]?.args.join(" ") ?? "";
+  expect(graph).toContain("composition_scene_0_layer_0_src");
+  expect(graph).toContain("force_original_aspect_ratio=decrease");
+  expect(graph).not.toContain("screen_top_src");
+  expect(harness.diagnostics).toContainEqual({
+    message: "clip_composition_plan",
+    context: expect.objectContaining({
+      requestedMode: "screen",
+      control: "plan",
+      effectiveModes: ["screen"],
+    }),
+  });
+});
+
 test("ClipRenderAttempt preserves speaker-band framing for a valid no-screen result", async () => {
   const harness = createCoreRenderPathTracer({
     topology: "single-video",
@@ -1759,6 +1807,7 @@ test("ClipRenderAttempt preserves speaker-band framing for a valid no-screen res
     configOverrides: {
       WORKER_SCREEN_LAYOUT: "1",
       WORKER_PIP_DETECT: "1",
+      WORKER_COMPOSITION_SCREEN: "plan",
     },
     faceAnalysisSamples: Array.from({ length: 8 }, (_, index) => ({
       t: index * 0.25,
@@ -1791,6 +1840,9 @@ test("ClipRenderAttempt preserves speaker-band framing for a valid no-screen res
     message: "clip_screen_layout_applied",
     context: expect.objectContaining({ selectedMode: "face_tracked" }),
   });
+  const graph = harness.commands[0]?.args.join(" ") ?? "";
+  expect(graph).toContain("composition_scene_0_layer_1_src");
+  expect(graph).not.toContain("sendcmd=");
 });
 
 test("ClipRenderAttempt applies a deterministic split-layout analysis", async () => {
@@ -1824,6 +1876,148 @@ test("ClipRenderAttempt applies a deterministic split-layout analysis", async ()
       analysisMode: "split_layout",
       selectedMode: "two_up",
       durationMs: expect.any(Number),
+    }),
+  });
+});
+
+test("ClipRenderAttempt compiles explicit Split through the shared plan", async () => {
+  const face = (cx: number) => ({
+    cx,
+    cy: 0.3,
+    w: 0.1,
+    h: 0.2,
+    score: 0.9,
+  });
+  const harness = createCoreRenderPathTracer({
+    topology: "single-video",
+    clipOverrides: {
+      studioEdits: { framing: { mode: "split" } },
+      previewStorageKey: "projects/test/previews/current.mp4",
+      editorRevision: 0,
+    },
+    configOverrides: {
+      WORKER_SPLIT: "1",
+      WORKER_COMPOSITION_SPLIT: "plan",
+    },
+    multiFaceAnalysisSamples: Array.from({ length: 12 }, (_, index) => ({
+      t: index * 0.25,
+      faces: [face(0.3), face(0.7)],
+    })),
+  });
+
+  await expect(
+    harness.clipRenderAttempt.execute({
+      attempt: harness.attempt,
+      signal: new AbortController().signal,
+    }),
+  ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
+  const graph = harness.commands[0]?.args.join(" ") ?? "";
+  expect(graph).toContain("composition_scene_0_layer_0_src");
+  expect(graph).not.toContain("split_seg0_src");
+  expect(harness.diagnostics).toContainEqual({
+    message: "clip_composition_plan",
+    context: expect.objectContaining({
+      requestedMode: "split",
+      control: "plan",
+      effectiveModes: ["split"],
+    }),
+  });
+  expect(harness.persistedAutoLayouts).toHaveLength(1);
+  expect(harness.persistedAutoLayouts[0]).toMatchObject({
+    engine: "explicit-split-v1",
+    segments: expect.arrayContaining([
+      expect.objectContaining({ layout: "two-up" }),
+    ]),
+    noSplitSegments: expect.arrayContaining([
+      expect.objectContaining({ layout: "single" }),
+    ]),
+  });
+});
+
+test("ClipRenderAttempt keeps Split rendering when preview evidence persistence fails", async () => {
+  const face = (cx: number) => ({
+    cx,
+    cy: 0.3,
+    w: 0.1,
+    h: 0.2,
+    score: 0.9,
+  });
+  const harness = createCoreRenderPathTracer({
+    topology: "single-video",
+    clipOverrides: {
+      studioEdits: { framing: { mode: "split" } },
+      previewStorageKey: "projects/test/previews/current.mp4",
+      editorRevision: 0,
+    },
+    configOverrides: {
+      WORKER_SPLIT: "1",
+      WORKER_COMPOSITION_SPLIT: "plan",
+    },
+    multiFaceAnalysisSamples: Array.from({ length: 12 }, (_, index) => ({
+      t: index * 0.25,
+      faces: [face(0.3), face(0.7)],
+    })),
+    analysisPersistenceFailure: new Error("injected persistence failure"),
+  });
+
+  await expect(
+    harness.clipRenderAttempt.execute({
+      attempt: harness.attempt,
+      signal: new AbortController().signal,
+    }),
+  ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
+  expect(harness.diagnostics).toContainEqual({
+    message: "clip_split_layout_analysis_persist_failed",
+    context: expect.objectContaining({
+      analysisMode: "split_layout",
+      failureCode: "analysis_persist_failed",
+    }),
+  });
+});
+
+test("ClipRenderAttempt degrades only the ineligible Split target", async () => {
+  const face = (cx: number) => ({
+    cx,
+    cy: 0.3,
+    w: 0.1,
+    h: 0.2,
+    score: 0.9,
+  });
+  const harness = createCoreRenderPathTracer({
+    topology: "studio-per-output",
+    clipOverrides: { studioEdits: { framing: { mode: "split" } } },
+    configOverrides: {
+      WORKER_SPLIT: "1",
+      WORKER_COMPOSITION_SPLIT: "plan",
+    },
+    multiFaceAnalysisSamples: Array.from({ length: 12 }, (_, index) => ({
+      t: index * 0.25,
+      faces: [face(0.3), face(0.7)],
+    })),
+  });
+
+  await expect(
+    harness.clipRenderAttempt.execute({
+      attempt: harness.attempt,
+      signal: new AbortController().signal,
+    }),
+  ).resolves.toMatchObject({ status: "completed", succeeded: 2, failed: 0 });
+  const verticalGraph =
+    harness.commands.find((command) =>
+      command.outputVariantIds.includes("variant-9x16"),
+    )?.args.join(" ") ?? "";
+  const squareGraph =
+    harness.commands.find((command) =>
+      command.outputVariantIds.includes("variant-1x1"),
+    )?.args.join(" ") ?? "";
+  expect(verticalGraph).toContain("vstack=inputs=2");
+  expect(squareGraph).not.toContain("vstack=inputs=2");
+  expect(harness.diagnostics).toContainEqual({
+    message: "clip_composition_plan",
+    context: expect.objectContaining({
+      requestedMode: "split",
+      effectiveModes: ["split", "auto"],
+      noticeCodes: ["split_target_ineligible"],
     }),
   });
 });
@@ -2752,7 +2946,11 @@ describe("ClipRenderAttempt real-media compatibility fixtures", () => {
     {
       label: "picture-in-picture screen layout",
       diagnostic: "clip_screen_pip_selected",
-      configOverrides: { WORKER_SCREEN_LAYOUT: "1", WORKER_PIP_DETECT: "1" },
+      configOverrides: {
+        WORKER_SCREEN_LAYOUT: "1",
+        WORKER_PIP_DETECT: "1",
+        WORKER_COMPOSITION_SCREEN: "plan",
+      },
       clipOverrides: { studioEdits: { framing: { mode: "screen" } } },
       faceAnalysisSamples: Array.from({ length: 8 }, (_, index) => ({
         t: index * 0.04,
@@ -2769,7 +2967,10 @@ describe("ClipRenderAttempt real-media compatibility fixtures", () => {
     {
       label: "split layout",
       diagnostic: "clip_split_applied",
-      configOverrides: { WORKER_SPLIT: "1" },
+      configOverrides: {
+        WORKER_SPLIT: "1",
+        WORKER_COMPOSITION_SPLIT: "plan",
+      },
       clipOverrides: { studioEdits: { framing: { mode: "split" } } },
       faceAnalysisSamples: undefined,
       multiFaceAnalysisSamples: Array.from({ length: 8 }, (_, index) => ({
@@ -2845,6 +3046,98 @@ describe("ClipRenderAttempt real-media compatibility fixtures", () => {
         });
       },
       30_000,
+    );
+  }
+
+  for (const plannedMode of ["split", "screen"] as const) {
+    test.skipIf(!ffmpegAvailable || !ffprobeAvailable)(
+      `${plannedMode} composition renders every target through ClipRenderAttempt`,
+      async () => {
+        const probes = new Map<string, RenderedMediaProbe>();
+        const variants: CoreVariantFixture[] = [
+          { id: `${plannedMode}-9x16`, aspectRatio: "ratio_9_16", resolution: "720p" },
+          { id: `${plannedMode}-1x1`, aspectRatio: "ratio_1_1", resolution: "720p" },
+          { id: `${plannedMode}-16x9`, aspectRatio: "ratio_16_9", resolution: "720p" },
+          { id: `${plannedMode}-4x5`, aspectRatio: "ratio_4_5", resolution: "720p" },
+        ];
+        const face = (cx: number) => ({
+          cx,
+          cy: 0.3,
+          w: 0.1,
+          h: 0.2,
+          score: 0.9,
+        });
+        const harness = createCoreRenderPathTracer({
+          topology: "studio-per-output",
+          clipWindow: { startSec: 0, endSec: 0.4 },
+          variants,
+          clipOverrides: { studioEdits: { framing: { mode: plannedMode } } },
+          configOverrides:
+            plannedMode === "split"
+              ? { WORKER_SPLIT: "1", WORKER_COMPOSITION_SPLIT: "plan" }
+              : {
+                  WORKER_SCREEN_LAYOUT: "1",
+                  WORKER_PIP_DETECT: "1",
+                  WORKER_COMPOSITION_SCREEN: "plan",
+                },
+          faceAnalysisSamples:
+            plannedMode === "screen"
+              ? Array.from({ length: 8 }, (_, index) => ({
+                  t: index * 0.04,
+                  cx: 0.88,
+                }))
+              : undefined,
+          multiFaceAnalysisSamples:
+            plannedMode === "split"
+              ? Array.from({ length: 8 }, (_, index) => ({
+                  t: index * 0.04,
+                  faces: [face(0.3), face(0.7)],
+                }))
+              : undefined,
+          pipAnalysisResult:
+            plannedMode === "screen"
+              ? {
+                  movingPxFrac: 0.04,
+                  insufficientSamples: false,
+                  candidates: [qualifyingPipCandidate],
+                }
+              : undefined,
+          realMedia: {
+            sourcePath: videoSourcePath,
+            probeOutput: async (variantId, filePath) => {
+              probes.set(variantId, probeRenderedMedia(variantId, filePath));
+            },
+          },
+        });
+
+        await expect(
+          harness.clipRenderAttempt.execute({
+            attempt: harness.attempt,
+            signal: new AbortController().signal,
+          }),
+        ).resolves.toMatchObject({
+          status: "completed",
+          succeeded: variants.length,
+        });
+        expect(
+          Object.fromEntries(
+            [...probes].map(([id, probe]) => [id, [probe.width, probe.height]]),
+          ),
+        ).toEqual({
+          [`${plannedMode}-9x16`]: [720, 1280],
+          [`${plannedMode}-1x1`]: [720, 720],
+          [`${plannedMode}-16x9`]: [1280, 720],
+          [`${plannedMode}-4x5`]: [720, 900],
+        });
+        expect(harness.diagnostics).toContainEqual({
+          message: "clip_composition_plan",
+          context: expect.objectContaining({
+            requestedMode: plannedMode,
+            control: "plan",
+          }),
+        });
+      },
+      60_000,
     );
   }
 

@@ -31,6 +31,8 @@ export interface RenderConfig {
   readonly compositionCenter: CompositionPlanControlMode;
   readonly compositionFit: CompositionPlanControlMode;
   readonly compositionAuto: CompositionPlanControlMode;
+  readonly compositionSplit: CompositionPlanControlMode;
+  readonly compositionScreen: CompositionPlanControlMode;
 }
 
 export type CompositionPlanControlMode = "legacy" | "shadow" | "plan";
@@ -231,6 +233,8 @@ export function parseRenderConfig(
     ),
     compositionFit: compositionPlanControl(environment, "WORKER_COMPOSITION_FIT"),
     compositionAuto: compositionPlanControl(environment, "WORKER_COMPOSITION_AUTO"),
+    compositionSplit: compositionPlanControl(environment, "WORKER_COMPOSITION_SPLIT"),
+    compositionScreen: compositionPlanControl(environment, "WORKER_COMPOSITION_SCREEN"),
   });
 }
 

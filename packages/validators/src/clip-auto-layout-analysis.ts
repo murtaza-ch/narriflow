@@ -2,8 +2,10 @@ import { z } from "zod";
 import { deletedRangesSchema } from "./edit-ranges";
 
 /**
- * Persisted automatic speaker-layout plan shared by the worker renderer and
- * the studio preview. Coordinates are normalized against the source frame;
+ * Persisted speaker-layout plan shared by the worker renderer and the studio
+ * preview. Its engine discriminator keeps Automatic shot analysis separate
+ * from explicit Split analysis even though both use the same scene envelope.
+ * Coordinates are normalized against the source frame;
  * times are seconds on the edited clip timeline (after deleted ranges).
  *
  * This is deliberately separate from Clip.layoutAnalysis, whose v1 envelope
@@ -50,7 +52,7 @@ const segmentListSchema = z.array(clipAutoLayoutSegmentSchema).max(64);
 export const clipAutoLayoutAnalysisSchema = z
   .object({
     version: z.literal(1),
-    engine: z.literal("shot-layout-v1"),
+    engine: z.enum(["shot-layout-v1", "explicit-split-v1"]),
     /** Stable logical identity of the source media analyzed. Optional only
      *  so rolling readers can parse v1 envelopes written before source
      *  binding was added; composition consumers treat a missing value as

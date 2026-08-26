@@ -46,6 +46,19 @@ describe("clipAutoLayoutAnalysisSchema", () => {
     expect(clipAutoLayoutAnalysisSchema.parse(valid)).toEqual(valid);
   });
 
+  test("keeps explicit Split evidence distinguishable from Automatic evidence", () => {
+    const explicitSplit = { ...valid, engine: "explicit-split-v1" as const };
+    expect(clipAutoLayoutAnalysisSchema.parse(explicitSplit)).toEqual(
+      explicitSplit,
+    );
+    expect(
+      clipAutoLayoutAnalysisSchema.safeParse({
+        ...valid,
+        engine: "future-layout-v2",
+      }).success,
+    ).toBe(false);
+  });
+
   test("rejects gaps, overlap, and incomplete duration coverage", () => {
     const gap = structuredClone(valid);
     gap.segments[1]!.startSec = 8.5;

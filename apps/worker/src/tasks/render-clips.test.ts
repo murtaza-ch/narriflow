@@ -194,6 +194,128 @@ describe("composition shadow diagnostics", () => {
     expect(result.mismatchCount).toBeGreaterThanOrEqual(4);
   });
 
+  test("compares explicit Split scene identity, crops, and target geometry", () => {
+    const segments: SplitLayoutSegment[] = [
+      {
+        startSec: 0,
+        endSec: 5,
+        layout: "two-up",
+        topCxNorm: 0.25,
+        bottomCxNorm: 0.75,
+      },
+    ];
+    const legacy = buildLegacyCompositionShadowTarget({
+      targetId: "vertical",
+      aspectRatio: "9:16",
+      target: { width: 1080, height: 1920 },
+      source: { width: 1920, height: 1080 },
+      durationSec: 5,
+      requestedMode: "split",
+      automaticSegments: null,
+      splitSegments: segments,
+      speakerLayoutOverrides: [],
+      background: null,
+    });
+    const planned: CompositionTargetPlan = {
+      id: "vertical",
+      aspectRatio: "9:16",
+      requestedMode: "split",
+      effectiveMode: "split",
+      canvas: { width: 1080, height: 1920, divisibleBy: 2 },
+      scenes: [
+        {
+          id: "split",
+          startSec: 0,
+          endSec: 5,
+          layers: [
+            {
+              id: "top",
+              kind: "source-video",
+              sourceRef: "source",
+              sourceCrop: { x: 0, y: 0, width: 1215, height: 1080 },
+              destination: { x: 0, y: 0, width: 1080, height: 960 },
+              fit: "cover",
+              rotationDeg: 0,
+              opacity: 1,
+              zIndex: 0,
+              speaker: {
+                role: "top",
+                transform: {
+                  role: "top",
+                  frameX: 0,
+                  frameY: 0,
+                  frameWidth: 1,
+                  frameHeight: 0.5,
+                  rotationDeg: 0,
+                  cropCxNorm: 0.25,
+                  cropCyNorm: 0.5,
+                  cropZoom: 1,
+                },
+                defaultTransform: {
+                  role: "top",
+                  frameX: 0,
+                  frameY: 0,
+                  frameWidth: 1,
+                  frameHeight: 0.5,
+                  rotationDeg: 0,
+                  cropCxNorm: 0.25,
+                  cropCyNorm: 0.5,
+                  cropZoom: 1,
+                },
+                overrideId: null,
+              },
+            },
+            {
+              id: "bottom",
+              kind: "source-video",
+              sourceRef: "source",
+              sourceCrop: { x: 705, y: 0, width: 1215, height: 1080 },
+              destination: { x: 0, y: 960, width: 1080, height: 960 },
+              fit: "cover",
+              rotationDeg: 0,
+              opacity: 1,
+              zIndex: 1,
+              speaker: {
+                role: "bottom",
+                transform: {
+                  role: "bottom",
+                  frameX: 0,
+                  frameY: 0.5,
+                  frameWidth: 1,
+                  frameHeight: 0.5,
+                  rotationDeg: 0,
+                  cropCxNorm: 0.75,
+                  cropCyNorm: 0.5,
+                  cropZoom: 1,
+                },
+                defaultTransform: {
+                  role: "bottom",
+                  frameX: 0,
+                  frameY: 0.5,
+                  frameWidth: 1,
+                  frameHeight: 0.5,
+                  rotationDeg: 0,
+                  cropCxNorm: 0.75,
+                  cropCyNorm: 0.5,
+                  cropZoom: 1,
+                },
+                overrideId: null,
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(
+      compareCompositionShadowTarget({
+        planned,
+        plannedNoticeCodes: [],
+        legacy,
+      }),
+    ).toMatchObject({ mismatchCount: 0 });
+  });
+
   test("makes an active legacy EMA reframe an explicit shadow mismatch", () => {
     const legacy = buildLegacyCompositionShadowTarget({
       targetId: "vertical",
