@@ -29,7 +29,7 @@
       .mass-implementation { background: #f8fafc; border: 1px solid #cbd5e1; }
       @media print {
         .break-card { break-inside: avoid; }
-        body { background: white !important; }
+        body.bg-stone-50 { background: white; }
       }
     </style>
   </head>
@@ -44,12 +44,12 @@
           <div class="text-sm text-slate-600 md:text-right">
             <div>14 August 2026</div>
             <div>Hot-path + critical-path audit</div>
-            <div class="mt-1 font-semibold text-emerald-700">Updated: Workflow and Studio recommendations completed</div>
+            <div class="mt-1 font-semibold text-emerald-700">Updated: Workflow, Studio, and Clip Render Attempt recommendations completed</div>
           </div>
         </div>
 
         <div class="grid grid-cols-2 md:grid-cols-5 border-y border-slate-300 bg-white">
-          <div class="p-4 border-r border-slate-200"><div class="font-mono text-2xl"><span class="text-emerald-700">2</span>/9</div><div class="text-xs uppercase tracking-wider text-slate-500">Completed</div></div>
+          <div class="p-4 border-r border-slate-200"><div class="font-mono text-2xl"><span class="text-emerald-700">3</span>/9</div><div class="text-xs uppercase tracking-wider text-slate-500">Completed</div></div>
           <div class="p-4 border-r border-slate-200"><div class="font-mono text-2xl">6,551</div><div class="text-xs uppercase tracking-wider text-slate-500">Largest source</div></div>
           <div class="p-4 border-r border-slate-200"><div class="font-mono text-2xl">77</div><div class="text-xs uppercase tracking-wider text-slate-500">HTTP handlers</div></div>
           <div class="p-4 border-r border-slate-200"><div class="font-mono text-2xl">93</div><div class="text-xs uppercase tracking-wider text-slate-500">Test files</div></div>
@@ -61,7 +61,7 @@
           <span class="inline-flex items-center gap-2"><span class="h-4 w-6 border-2 border-dashed border-slate-500 bg-white"></span> seam</span>
           <span class="inline-flex items-center gap-2"><span class="h-0.5 w-7 bg-red-600"></span> leakage</span>
           <span class="inline-flex items-center gap-2"><span class="h-4 w-6 bg-slate-900"></span> deep module</span>
-          <span class="normal-case tracking-normal text-emerald-700">Workflow and Studio are now documented in CONTEXT.md, ADR-0001, and ADR-0002.</span>
+          <span class="normal-case tracking-normal text-emerald-700">Workflow, Studio, and Clip Render Attempt are documented in CONTEXT.md and ADR-0001 through ADR-0003.</span>
         </div>
       </header>
 
@@ -70,7 +70,7 @@
         <ol class="grid md:grid-cols-3 gap-x-6 gap-y-2 text-sm">
           <li><a class="font-semibold text-emerald-700 hover:text-emerald-800" href="#workflow">✓ 1. Workflow Run lifecycle — completed</a></li>
           <li><a class="font-semibold text-emerald-700 hover:text-emerald-800" href="#studio">✓ 2. Studio Editing Session — completed</a></li>
-          <li><a class="hover:text-indigo-700" href="#render">3. Clip Render Attempt</a></li>
+          <li><a class="font-semibold text-emerald-700 hover:text-emerald-800" href="#render">✓ 3. Clip Render Attempt — completed</a></li>
           <li><a class="hover:text-indigo-700" href="#composition">4. Clip Composition Plan</a></li>
           <li><a class="hover:text-indigo-700" href="#upload">5. Upload Session intake</a></li>
           <li><a class="hover:text-indigo-700" href="#billing">6. Workspace Billing</a></li>
@@ -190,13 +190,23 @@ flowchart TB
           </div>
         </article>
 
-        <article id="render" class="break-card scroll-mt-6 rounded-xl border border-slate-300 bg-white shadow-sm overflow-hidden">
+        <article id="render" class="break-card scroll-mt-6 rounded-xl border-2 border-emerald-500 bg-white shadow-sm overflow-hidden">
           <div class="p-6 md:p-8 space-y-6">
             <div class="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
               <div><div class="text-xs uppercase tracking-widest text-slate-500">03</div><h2 class="text-3xl font-serif mt-1">Deepen the Clip Render Attempt</h2></div>
-              <div class="flex gap-2"><span class="rounded-full bg-emerald-100 text-emerald-800 px-3 py-1 text-xs font-semibold">Strong</span><span class="rounded-full bg-rose-100 text-rose-800 px-3 py-1 text-xs font-semibold">mock</span></div>
+              <div class="flex flex-wrap gap-2"><span class="rounded-full bg-emerald-600 text-white px-3 py-1 text-xs font-semibold">✓ Completed</span><span class="rounded-full bg-emerald-100 text-emerald-800 px-3 py-1 text-xs font-semibold">Strong</span><span class="rounded-full bg-rose-100 text-rose-800 px-3 py-1 text-xs font-semibold">mock</span></div>
             </div>
-            <div class="font-mono text-xs leading-6 text-slate-600 codepath">apps/worker/src/tasks/render-clips.ts:1–6551, processClipRenderingRun:4352–6550<br>apps/worker/src/tasks/render-clips.test.ts:1–4075</div>
+            <div class="rounded-lg border border-emerald-300 bg-emerald-50 p-5 text-sm text-emerald-950">
+              <div class="text-xs uppercase tracking-widest text-emerald-700 font-semibold">Implementation update · completed 26 August 2026</div>
+              <p class="mt-2"><code>ClipRenderAttempt.execute</code> now owns the frozen work set and rendering state, required-source resolution, media commands, optional-asset fallbacks, guarded uploads, fenced persistence, settlement, notifications, and cleanup. The worker caller supplies only the owned Workflow Attempt and its abort signal.</p>
+              <ul class="mt-3 grid gap-2 md:grid-cols-2 text-xs">
+                <li>✓ Eleven dependency-ordered implementation tickets completed</li>
+                <li>✓ 646 worker tests and 2,174 assertions passed</li>
+                <li>✓ 57-test disposable PostgreSQL recovery drill passed</li>
+                <li>✓ Commit range: <code>87bc87e</code> … <code>9d40995</code></li>
+              </ul>
+            </div>
+            <div class="font-mono text-xs leading-6 text-slate-600 codepath">apps/worker/src/tasks/render-clips.ts · ClipRenderAttempt.execute<br>apps/worker/src/tasks/clip-render-attempt.test.ts · clip-render-attempt-core-paths.test.ts</div>
             <div class="grid md:grid-cols-2 gap-5">
               <div class="diagram rounded-lg border border-red-200 bg-red-50/40 p-4">
                 <div class="text-xs uppercase tracking-widest text-red-700 font-semibold mb-3">Before · helper tests surround orchestration</div>
@@ -372,7 +382,7 @@ flowchart TB
             <div class="flex flex-col gap-3 md:flex-row md:items-start md:justify-between"><div><div class="text-xs uppercase tracking-widest text-slate-500">08</div><h2 class="text-3xl font-serif mt-1">Deepen Clip Editor Document persistence</h2></div><div class="flex gap-2"><span class="rounded-full bg-emerald-100 text-emerald-800 px-3 py-1 text-xs font-semibold">Strong</span><span class="rounded-full bg-sky-100 text-sky-800 px-3 py-1 text-xs font-semibold">local-substitutable</span></div></div>
             <div class="font-mono text-xs leading-6 text-slate-600 codepath">packages/services/src/clip.service.ts:434–884, 1403–1514, 3340–3514, 3668–4052<br>apps/web/app/api/[[...route]]/route.ts:1377–1555</div>
             <div class="grid md:grid-cols-2 gap-5">
-              <div class="diagram rounded-lg border border-red-200 bg-red-50/40 p-5"><div class="text-xs uppercase tracking-widest text-red-700 font-semibold mb-4">Before · each mutation remembers invariants</div><div class="grid grid-cols-2 gap-2 text-xs text-center"><div class="border bg-white p-3">save document</div><div class="border bg-white p-3">reset original</div><div class="border bg-white p-3">change bounds</div><div class="border bg-white p-3">change B-roll</div><div class="border bg-white p-3">change Studio edits</div><div class="border bg-white p-3">bulk apply</div></div><div class="mt-4 grid grid-cols-4 gap-1 text-[9px] text-center text-red-700"><div>revision</div><div>renders</div><div>preview</div><div>analysis</div></div><svg viewBox="0 0 400 60" class="w-full h-16"><path d="M40 5 C80 50, 320 50, 360 5" fill="none" stroke="#dc2626" stroke-width="3"/><path d="M80 5 C120 45, 280 45, 320 5" fill="none" stroke="#dc2626" stroke-width="2"/><path d="M120 5 C150 40, 250 40, 280 5" fill="none" stroke="#dc2626" stroke-width="2"/></svg></div>
+              <div class="diagram rounded-lg border border-red-200 bg-red-50/40 p-5"><div class="text-xs uppercase tracking-widest text-red-700 font-semibold mb-4">Before · each mutation remembers invariants</div><div class="grid grid-cols-2 gap-2 text-xs text-center"><div class="border bg-white p-3">save document</div><div class="border bg-white p-3">reset original</div><div class="border bg-white p-3">change bounds</div><div class="border bg-white p-3">change B-roll</div><div class="border bg-white p-3">change Studio edits</div><div class="border bg-white p-3">bulk apply</div></div><div class="mt-4 grid grid-cols-4 gap-1 text-[9px] text-center text-red-700"><div>revision</div><div>renders</div><div>preview</div><div>analysis</div></div><svg viewBox="0 0 400 60" class="w-full h-16"><title>Repeated editor mutations share invariants</title><path d="M40 5 C80 50, 320 50, 360 5" fill="none" stroke="#dc2626" stroke-width="3"/><path d="M80 5 C120 45, 280 45, 320 5" fill="none" stroke="#dc2626" stroke-width="2"/><path d="M120 5 C150 40, 250 40, 280 5" fill="none" stroke="#dc2626" stroke-width="2"/></svg></div>
               <div class="diagram rounded-lg border border-slate-800 deep p-5"><div class="text-xs uppercase tracking-widest text-slate-300 font-semibold mb-4">After · persistence obligations are internal</div><div class="rounded border-2 border-white/70 p-4 h-52 flex flex-col"><div class="bg-white text-slate-900 rounded p-3 text-center text-xs uppercase tracking-wider">Small document-mutation interface</div><div class="grid grid-cols-2 gap-2 mt-4 text-[11px] text-center text-slate-200"><div class="border border-slate-500 p-3">revision + canonicalization</div><div class="border border-slate-500 p-3">transaction</div><div class="border border-slate-500 p-3">render/preview invalidation</div><div class="border border-slate-500 p-3">cleanup + diagnostics</div></div></div></div>
             </div>
             <div class="grid md:grid-cols-3 gap-6 text-sm"><div><h3 class="text-xs uppercase tracking-wider text-slate-500 mb-2">Problem</h3><p>Revision ownership and downstream invalidation are repeated across mutation paths; pure planners test decisions but not persistence obligations.</p></div><div><h3 class="text-xs uppercase tracking-wider text-slate-500 mb-2">Solution</h3><p>Place every persisted Editor Document mutation and its cleanup obligations behind one deep module seam.</p></div><div><h3 class="text-xs uppercase tracking-wider text-slate-500 mb-2">Deletion test</h3><p>Deleting planners moves logic; deleting the document module spreads revision and invalidation rules across five-plus callers.</p></div></div>
@@ -404,14 +414,14 @@ flowchart TB
             <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr]"><div class="p-3 font-mono text-red-700">P0</div><div class="p-3 font-medium">Ambiguous social acceptance</div><div class="p-3 col-span-2 md:col-span-1 text-slate-600">A provider may accept before the worker crashes; the publishing-row reaper then marks failed and a retry can duplicate an irreversible post.</div></div>
             <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr]"><div class="p-3 font-mono text-amber-700">P1</div><div class="p-3 font-medium">Stripe delivery lacks ledger use</div><div class="p-3 col-span-2 md:col-span-1 text-slate-600">A generic WebhookDeliveryLog exists, but Stripe handleWebhook does not persist event.id; ordering falls back to second-resolution event.created.</div></div>
             <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr]"><div class="p-3 font-mono text-amber-700">P1</div><div class="p-3 font-medium">Distributed side effects lack full compensation</div><div class="p-3 col-span-2 md:col-span-1 text-slate-600">Upload start/finalize and Stripe customer/seat changes cross provider and Postgres state; failure injection is not covered through their interfaces.</div></div>
-            <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr]"><div class="p-3 font-mono text-amber-700">P1</div><div class="p-3 font-medium">Critical orchestration is helper-tested</div><div class="p-3 col-span-2 md:col-span-1 text-slate-600">Workflow Run database races and the Studio editing protocol are now covered through their public interfaces. Render attempt, Upload Session sequence, Billing synchronization, social publishing, and Hono policy remain.</div></div>
+            <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr]"><div class="p-3 font-mono text-amber-700">P1</div><div class="p-3 font-medium">Critical orchestration is helper-tested</div><div class="p-3 col-span-2 md:col-span-1 text-slate-600">Workflow Run races, the Studio editing protocol, and Clip Render Attempt behavior now run through their public interfaces. Upload Session sequencing, Billing synchronization, social publishing, and Hono policy remain.</div></div>
             <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr]"><div class="p-3 font-mono text-amber-700">P1</div><div class="p-3 font-medium">Persistence type safety is bypassed</div><div class="p-3 col-span-2 md:col-span-1 text-slate-600">clip.service.ts contains 21 <code>as unknown as Prisma.InputJsonValue</code> casts and several raw JSON-to-domain casts.</div></div>
             <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr]"><div class="p-3 font-mono text-amber-700">P1</div><div class="p-3 font-medium">Identity has dual semantics</div><div class="p-3 col-span-2 md:col-span-1 text-slate-600">apps/web/lib/workspace.ts replaces appUser.id with the legacy Workspace owner while adding actorUserId; callers must remember which identity each operation means.</div></div>
             <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr]"><div class="p-3 font-mono text-amber-700">P1</div><div class="p-3 font-medium">State-settlement errors are swallowed</div><div class="p-3 col-span-2 md:col-span-1 text-slate-600">32 silent catch patterns exist; asset deletion at clip.service.ts:1272–1280 discards every rejection.</div></div>
             <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr]"><div class="p-3 font-mono text-slate-600">P2</div><div class="p-3 font-medium">Stringly typed error contracts</div><div class="p-3 col-span-2 md:col-span-1 text-slate-600">HTTP error mapping compares error.message in several handlers; a copy edit can change transport behavior.</div></div>
             <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr]"><div class="p-3 font-mono text-slate-600">P2</div><div class="p-3 font-medium">Equality policy is repeated serialization</div><div class="p-3 col-span-2 md:col-span-1 text-slate-600">13 hot-path equality/hash checks use JSON.stringify, relying on informal canonical key order and repeating O(document size) work.</div></div>
             <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr]"><div class="p-3 font-mono text-slate-600">P2</div><div class="p-3 font-medium">Action safety disabled with any</div><div class="p-3 col-span-2 md:col-span-1 text-slate-600">apps/web/app/actions/project.ts:7–11 casts the safe-action client to any and dynamically reconstructs its interface.</div></div>
-            <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr]"><div class="p-3 font-mono text-slate-600">P2</div><div class="p-3 font-medium">Configuration is ad hoc</div><div class="p-3 col-span-2 md:col-span-1 text-slate-600">render-clips.ts reads process.env 21 times; invalid Number conversion can reach timer/concurrency behavior.</div></div>
+            <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr] bg-emerald-50"><div class="p-3 font-mono text-emerald-700">RESOLVED</div><div class="p-3 font-medium text-emerald-900">Render configuration was ad hoc</div><div class="p-3 col-span-2 md:col-span-1 text-emerald-800">The worker parses render-affecting environment values once into immutable validated configuration. Invalid numeric and enum values fail startup.</div></div>
             <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr]"><div class="p-3 font-mono text-slate-600">P2</div><div class="p-3 font-medium">Quality scripts overstate coverage</div><div class="p-3 col-span-2 md:col-span-1 text-slate-600">CI runs Biome directly, but 11 package lint scripts and 5 package test scripts are no-ops; database tests remain absent from the normal aggregate.</div></div>
             <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr]"><div class="p-3 font-mono text-slate-600">P2</div><div class="p-3 font-medium">Stale comments harm navigation</div><div class="p-3 col-span-2 md:col-span-1 text-slate-600">clip.service.ts:454–459 says an empty-timeline error becomes 500; route.ts:1461–1475 now maps it to 422.</div></div>
           </div>
@@ -423,18 +433,18 @@ flowchart TB
           <div><div class="text-xs uppercase tracking-wider text-slate-500">Typecheck</div><div class="mt-2 text-emerald-700 font-mono">11/11 passed</div></div>
           <div><div class="text-xs uppercase tracking-wider text-slate-500">Tests</div><div class="mt-2 text-emerald-700 font-mono">aggregate passed</div></div>
           <div><div class="text-xs uppercase tracking-wider text-slate-500">Biome</div><div class="mt-2 text-emerald-700 font-mono">572 files clean</div></div>
-          <div><div class="text-xs uppercase tracking-wider text-slate-500">Completed updates</div><div class="mt-2 text-emerald-700 text-sm">Workflow PostgreSQL concurrency and Studio deterministic/browser takeover verification pass; the broader audit caveats remain for other candidates.</div></div>
+          <div><div class="text-xs uppercase tracking-wider text-slate-500">Completed updates</div><div class="mt-2 text-emerald-700 text-sm">Workflow, Studio, and Clip Render Attempt interface verification pass. The broader audit caveats remain for other candidates.</div></div>
         </div>
       </section>
 
       <section id="top-recommendation" class="scroll-mt-6 rounded-xl border-2 border-emerald-500 bg-slate-950 text-white p-8 md:p-10">
         <div class="text-xs uppercase tracking-[0.25em] text-emerald-300">Latest completed recommendation</div>
-        <a href="#studio" class="block mt-3 text-3xl md:text-4xl font-serif underline decoration-emerald-400 underline-offset-8">✓ Deepen the Studio Editing Session</a>
-        <p class="mt-5 text-emerald-100 max-w-3xl">Completed with one public session interface owning document/history, local durability, cloud convergence, ownership fencing, proxy eligibility, playback coordination, and browser lifecycle behavior. React now remains a focused adapter.</p>
+        <a href="#render" class="block mt-3 text-3xl md:text-4xl font-serif underline decoration-emerald-400 underline-offset-8">✓ Deepen the Clip Render Attempt</a>
+        <p class="mt-5 text-emerald-100 max-w-3xl">Completed with one public attempt interface owning frozen inputs, source and media operations, guarded persistence, settlement, notifications, and cleanup. The worker caller now supplies only attempt identity and cancellation.</p>
         <div class="mt-8 border-t border-slate-700 pt-7">
           <div class="text-xs uppercase tracking-[0.25em] text-indigo-300">Next recommendation</div>
-          <a href="#render" class="block mt-3 text-2xl md:text-3xl font-serif underline decoration-indigo-400 underline-offset-8">Deepen the Clip Render Attempt</a>
-          <p class="mt-4 text-slate-300 max-w-3xl">Resolve and execute one canonical Render Attempt behind a small interface, keeping process, storage, media, guarded persistence, and settlement obligations behind deterministic adapters.</p>
+          <a href="#composition" class="block mt-3 text-2xl md:text-3xl font-serif underline decoration-indigo-400 underline-offset-8">Deepen a shared Clip Composition Plan</a>
+          <p class="mt-4 text-slate-300 max-w-3xl">Concentrate platform-neutral composition decisions in one module, then let the web preview and FFmpeg adapters translate the same plan.</p>
         </div>
       </section>
     </main>
