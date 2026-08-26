@@ -1989,6 +1989,13 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     expect((await lifecycle.beginRenderWorkSet(attempt)).variantIds).toEqual([
       variant.id,
     ]);
+    expect(
+      await lifecycle.markClipRenderVariantRendering(attempt, {
+        clipRenderId: variant.id,
+        exportVariantId: null,
+        startedAt: new Date(),
+      }),
+    ).toBe(true);
 
     const input = {
       clipId: clip.id,
