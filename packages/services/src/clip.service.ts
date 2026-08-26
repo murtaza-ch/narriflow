@@ -3315,6 +3315,15 @@ export class ClipService {
   ): Promise<boolean> {
     const prisma = requirePrisma();
     const parsed = clipAutoLayoutAnalysisSchema.parse(analysis);
+    const attempt = currentWorkflowAttempt();
+    if (attempt) {
+      return getWorkflowRunLifecycle().completeClipAutoLayoutAnalysis(attempt, {
+        clipId,
+        analysis: parsed as unknown as Prisma.InputJsonValue,
+        editorRevision: expected.editorRevision,
+        previewStorageKey: expected.previewStorageKey,
+      });
+    }
     const result = await prisma.clip.updateMany({
       where: {
         id: clipId,
@@ -3696,17 +3705,10 @@ export class ClipService {
    * contract as `completeClipPreview` above; the worker already resolved
    * `clipId` from its own claimed job, not from a user-facing request.
    *
-   * L2 (adversarial review): unlike `completeClipPreview`, this is a BARE
-   * `update`, not a conditional `updateMany` guarded against a stale/racing
-   * write — that's acceptable here because the envelope carries its own
-   * validity window (`clipStartSec`/`clipEndSec`/`sourceStartSec`/
-   * `sourceDurationSec`) and every reader (`layoutAnalysisMatchesWindow` on
-   * the render side, the studio preview's own window check) re-verifies
-   * that window before trusting the stored rect. A racing write here can at
-   * worst leave a slightly-stale-but-still-window-valid envelope in place
-   * (harmless — the next render or trim invalidates it the same way any
-   * other stale envelope would), never an envelope silently applied to the
-   * WRONG window the way an unguarded `completeClipPreview` write could.
+   * Protocol-v2 render attempts route the write through WorkflowRunLifecycle,
+   * which fences ownership and the clip mutation in one transaction. Legacy
+   * non-attempt callers retain the direct update while readers continue to
+   * verify the envelope's validity window before adopting it.
    */
   async setClipLayoutAnalysis(
     clipId: string,
@@ -3714,6 +3716,15 @@ export class ClipService {
   ): Promise<void> {
     const prisma = requirePrisma();
     const parsed = clipLayoutAnalysisSchema.parse(analysis);
+
+    const attempt = currentWorkflowAttempt();
+    if (attempt) {
+      await getWorkflowRunLifecycle().setClipLayoutAnalysis(attempt, {
+        clipId,
+        analysis: parsed as unknown as Prisma.InputJsonValue,
+      });
+      return;
+    }
 
     await prisma.clip.update({
       where: { id: clipId },

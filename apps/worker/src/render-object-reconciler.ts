@@ -1,4 +1,5 @@
 import {
+  classifyR2StorageError,
   clipService,
   deleteObject,
   listObjectPageByPrefix,
@@ -125,10 +126,12 @@ export class RenderObjectReconciler {
     }
 
     if (input.delete) {
-      const refreshedReferences =
-        await this.#dependencies.persistence.listReferencedKeys(input.projectId);
       for (const object of oldOrphans) {
         signal?.throwIfAborted();
+        const refreshedReferences =
+          await this.#dependencies.persistence.listReferencedKeys(
+            input.projectId,
+          );
         if (refreshedReferences.has(object.key)) {
           result.referenced += 1;
           result.orphaned -= 1;
@@ -151,8 +154,7 @@ export class RenderObjectReconciler {
             message: "render_orphan_delete_failed",
             projectId: input.projectId,
             objectId: object.key,
-            errorCode:
-              error instanceof Error ? error.name : "storage_delete_failed",
+            errorCode: classifyR2StorageError(error),
           });
         }
       }

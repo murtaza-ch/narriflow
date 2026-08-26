@@ -985,6 +985,25 @@ export class WorkflowRunLifecycle {
     if (owned.length === 0) throw new WorkflowAttemptLost(attempt);
   }
 
+  private async fenceRenderAnalysisMutation(
+    tx: TransactionClient,
+    attempt: WorkflowAttemptRef,
+    clipId: string,
+  ): Promise<void> {
+    await this.fenceChildMutation(tx, attempt, "clip_rendering");
+    const ownedVariant = await tx.clipRender.findFirst({
+      where: {
+        clipId,
+        status: "rendering",
+        workflowRunId: attempt.workflowRunId,
+        workflowAttemptId: attempt.attemptId,
+        clip: { projectId: attempt.projectId },
+      },
+      select: { id: true },
+    });
+    if (!ownedVariant) throw new WorkflowAttemptLost(attempt);
+  }
+
   private async syncClipExportAggregate(
     tx: TransactionClient,
     exportVariantId: string,
@@ -1190,6 +1209,50 @@ export class WorkflowRunLifecycle {
         await this.syncClipExportAggregate(tx, input.exportVariantId);
       }
       return true;
+    });
+  }
+
+  async completeClipAutoLayoutAnalysis(
+    attempt: WorkflowAttemptRef,
+    input: {
+      clipId: string;
+      analysis: Prisma.InputJsonValue;
+      editorRevision: number;
+      previewStorageKey: string;
+    },
+  ): Promise<boolean> {
+    return this.transaction(async (tx) => {
+      await this.fenceRenderAnalysisMutation(tx, attempt, input.clipId);
+      const claim = await tx.clip.updateMany({
+        where: {
+          id: input.clipId,
+          projectId: attempt.projectId,
+          editorRevision: input.editorRevision,
+          previewStorageKey: input.previewStorageKey,
+          autoLayoutAnalysis: { equals: Prisma.DbNull },
+        },
+        data: {
+          autoLayoutAnalysis: input.analysis,
+          autoLayoutStatus: "completed",
+          autoLayoutClaimToken: null,
+          autoLayoutLeaseExpiresAt: null,
+        },
+      });
+      return claim.count === 1;
+    });
+  }
+
+  async setClipLayoutAnalysis(
+    attempt: WorkflowAttemptRef,
+    input: { clipId: string; analysis: Prisma.InputJsonValue },
+  ): Promise<boolean> {
+    return this.transaction(async (tx) => {
+      await this.fenceRenderAnalysisMutation(tx, attempt, input.clipId);
+      const claim = await tx.clip.updateMany({
+        where: { id: input.clipId, projectId: attempt.projectId },
+        data: { layoutAnalysis: input.analysis },
+      });
+      return claim.count === 1;
     });
   }
 

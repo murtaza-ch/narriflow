@@ -1820,6 +1820,100 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     ).not.toBe("completed");
   });
 
+  test("a stale render attempt cannot publish media analysis", async () => {
+    const { project, run } = await fixture("clip_rendering");
+    const clip = await clipFixture(project.id, run.id);
+    const firstLifecycle = new WorkflowRunLifecycle({
+      prisma,
+      leaseOwner: randomUUID(),
+    });
+    const first = await firstLifecycle.claim("clip_rendering");
+    if (!first) throw new Error("first claim missing");
+
+    await prisma.workflowRun.update({
+      where: { id: run.id },
+      data: { leaseExpiresAt: new Date(Date.now() - 1_000) },
+    });
+    expect(await firstLifecycle.reapExpiredAttempts()).toBe(1);
+    await prisma.workflowRun.update({
+      where: { id: run.id },
+      data: { nextAttemptAt: new Date(Date.now() - 1_000) },
+    });
+    const second = await new WorkflowRunLifecycle({
+      prisma,
+      leaseOwner: randomUUID(),
+    }).claim("clip_rendering");
+    if (!second) throw new Error("second claim missing");
+
+    await expect(
+      firstLifecycle.completeClipAutoLayoutAnalysis(first, {
+        clipId: clip.id,
+        analysis: { version: 1 },
+        editorRevision: clip.editorRevision,
+        previewStorageKey: "stale-preview",
+      }),
+    ).rejects.toBeInstanceOf(WorkflowAttemptLost);
+    await expect(
+      firstLifecycle.setClipLayoutAnalysis(first, {
+        clipId: clip.id,
+        analysis: { version: 1 },
+      }),
+    ).rejects.toBeInstanceOf(WorkflowAttemptLost);
+    const stored = await prisma.clip.findUniqueOrThrow({
+      where: { id: clip.id },
+      select: { autoLayoutAnalysis: true, layoutAnalysis: true },
+    });
+    expect(stored.autoLayoutAnalysis).toBeNull();
+    expect(stored.layoutAnalysis).toBeNull();
+  });
+
+  test("media analysis writes are limited to the frozen Render Work Set", async () => {
+    const { project, run } = await fixture("clip_rendering");
+    const ownedClip = await clipFixture(project.id, run.id, 0);
+    const unownedClip = await clipFixture(project.id, run.id, 1);
+    const ownedVariant = await prisma.clipRender.create({
+      data: { clipId: ownedClip.id, aspectRatio: "ratio_9_16" },
+    });
+    const { lifecycle, attempt } = await claimRenderAttempt();
+    expect((await lifecycle.beginRenderWorkSet(attempt)).variantIds).toEqual([
+      ownedVariant.id,
+    ]);
+    expect(
+      await lifecycle.markClipRenderVariantRendering(attempt, {
+        clipRenderId: ownedVariant.id,
+      }),
+    ).toBe(true);
+
+    await expect(
+      lifecycle.setClipLayoutAnalysis(attempt, {
+        clipId: unownedClip.id,
+        analysis: { version: 1 },
+      }),
+    ).rejects.toBeInstanceOf(WorkflowAttemptLost);
+    await expect(
+      lifecycle.completeClipAutoLayoutAnalysis(attempt, {
+        clipId: unownedClip.id,
+        analysis: { version: 1 },
+        editorRevision: unownedClip.editorRevision,
+        previewStorageKey: "unowned-preview",
+      }),
+    ).rejects.toBeInstanceOf(WorkflowAttemptLost);
+    await expect(
+      lifecycle.setClipLayoutAnalysis(attempt, {
+        clipId: ownedClip.id,
+        analysis: { version: 1 },
+      }),
+    ).resolves.toBe(true);
+
+    const [storedOwned, storedUnowned] = await Promise.all([
+      prisma.clip.findUniqueOrThrow({ where: { id: ownedClip.id } }),
+      prisma.clip.findUniqueOrThrow({ where: { id: unownedClip.id } }),
+    ]);
+    expect(storedOwned.layoutAnalysis).toEqual({ version: 1 });
+    expect(storedUnowned.layoutAnalysis).toBeNull();
+    expect(storedUnowned.autoLayoutAnalysis).toBeNull();
+  });
+
   test("a stage-specific child command rejects an attempt from another stage", async () => {
     const { project } = await fixture("clip_rendering");
     const lifecycle = new WorkflowRunLifecycle({

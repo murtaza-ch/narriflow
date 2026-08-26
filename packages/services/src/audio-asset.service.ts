@@ -43,6 +43,18 @@ export class AudioAssetNotFoundError extends Error {
   }
 }
 
+/** Stable render-boundary classification for a live asset whose short-lived
+ * access location could not be refreshed. The underlying storage error is
+ * deliberately not exposed because provider messages may contain credentials. */
+export class AudioAssetAccessError extends Error {
+  readonly code = "audio_asset_presign_failed";
+
+  constructor() {
+    super("audio asset access location unavailable");
+    this.name = "AudioAssetAccessError";
+  }
+}
+
 export interface AudioAssetListRow {
   id: string;
   kind: AudioAssetKindInput;
@@ -339,7 +351,14 @@ export class AudioAssetService {
       },
     });
     if (!row) return null;
-    return { url: await presignDownloadUrl({ key: row.storageKey }), title: row.title };
+    try {
+      return {
+        url: await presignDownloadUrl({ key: row.storageKey }),
+        title: row.title,
+      };
+    } catch {
+      throw new AudioAssetAccessError();
+    }
   }
 }
 

@@ -25,6 +25,16 @@ the same time. The additive schema remains in place during rollback.
    more per-object deletion failures, and `3` means reconciliation was unsafe
    or unavailable (including validation, listing, database, and deadline
    failures).
+   During any mixed-version period, use dry-run only. Do not pass `--delete`
+   until every old render worker has drained and the upgraded worker pool is
+   the sole owner of clip-rendering claims.
+   Before cutover, compare legacy and attempt-path outputs for optional assets
+   present, absent, corrupt, expired, and provider-unavailable. Cover vertical
+   and horizontal talking-head footage, screen/PiP, split/two-speaker,
+   background-fit, and audiogram inputs with the relevant feature switch both
+   enabled and set to literal `0`. A crop, layout, timing, mix, or attribution
+   mismatch blocks cutover; do not tune geometry or composition policy as part
+   of the migration.
 4. **Drain.** Stop every process that can poll `clip_rendering`. Wait until no
    render worker process is running and no protocol-version-2 render run has
    a live lease. Do not enable while any old render process remains.
@@ -50,6 +60,9 @@ the same time. The additive schema remains in place during rollback.
    columns, Render Work Set lineage, attempt-unique objects, and committed
    Workflow Events. The upgraded event dispatcher must remain available until
    every notification-required event has a delivery acknowledgement.
+   Optional-asset and media-analysis rollback requires no asset-data migration:
+   stored snapshots, selected keys, legacy helpers, analysis envelopes, and
+   attempt-unique objects remain valid and are not renamed or backfilled.
 4. If legacy-compatible rendering must resume, start it only after confirming
    the upgraded render pool is fully stopped. Pending lineage remains readable;
    completed historical rows and objects must not be rewritten.

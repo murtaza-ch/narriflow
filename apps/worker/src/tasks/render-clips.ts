@@ -303,6 +303,22 @@ interface ClipRenderAttemptAdapters {
     | "setClipLayoutAnalysis"
   >;
   audioAsset: Pick<typeof productionAudioAssetService, "resolveRenderSource">;
+  optionalAssets: {
+    downloadUrlToFile: typeof downloadUrlToFile;
+    validateOptionalMedia: typeof validateOptionalMedia;
+    resolveBrollCutaways: typeof resolveBrollCutaways;
+    getCachedBrollAssetPath: typeof getCachedBrollAssetPath;
+    saveBrollAssetToCache: typeof saveBrollAssetToCache;
+    probeMediaDurationSec: typeof probeMediaDurationSec;
+    probeBackgroundImageDecodable: typeof probeBackgroundImageDecodable;
+  };
+  analysis: {
+    extractFaceDetectionSegment: typeof extractFaceDetectionSegment;
+    detectFacePath: typeof detectFacePath;
+    detectMultiFacePath: typeof detectMultiFacePath;
+    detectSceneCuts: typeof detectSceneCuts;
+    detectPipPath: typeof detectPipPath;
+  };
   remoteMedia: {
     createWriteStream: typeof productionCreateWriteStream;
     guardedFetch: typeof productionGuardedFetch;
@@ -333,8 +349,13 @@ interface ClipRenderAttemptAdapters {
 }
 
 type ClipRenderAttemptAdapterOverrides = Partial<
-  Omit<ClipRenderAttemptAdapters, "storage" | "workspace" | "clock">
+  Omit<
+    ClipRenderAttemptAdapters,
+    "analysis" | "optionalAssets" | "storage" | "workspace" | "clock"
+  >
 > & {
+  analysis?: Partial<ClipRenderAttemptAdapters["analysis"]>;
+  optionalAssets?: Partial<ClipRenderAttemptAdapters["optionalAssets"]>;
   storage?: Partial<ClipRenderAttemptAdapters["storage"]>;
   workspace?: Partial<ClipRenderAttemptAdapters["workspace"]>;
   clock?: Partial<ClipRenderAttemptAdapters["clock"]>;
@@ -423,6 +444,22 @@ const productionClipRenderAttemptAdapters: ClipRenderAttemptAdapters = {
   project: productionProjectService,
   clip: productionClipService,
   audioAsset: productionAudioAssetService,
+  optionalAssets: {
+    downloadUrlToFile,
+    validateOptionalMedia,
+    resolveBrollCutaways,
+    getCachedBrollAssetPath,
+    saveBrollAssetToCache,
+    probeMediaDurationSec,
+    probeBackgroundImageDecodable,
+  },
+  analysis: {
+    extractFaceDetectionSegment,
+    detectFacePath,
+    detectMultiFacePath,
+    detectSceneCuts,
+    detectPipPath,
+  },
   remoteMedia: {
     createWriteStream: productionCreateWriteStream,
     guardedFetch: productionGuardedFetch,
@@ -617,6 +654,101 @@ function log(
   context?: Record<string, unknown>,
 ) {
   currentRenderAdapters().diagnose({ level, message, context });
+}
+
+type OptionalAssetClass =
+  | "logo"
+  | "broll"
+  | "music"
+  | "sound_effect"
+  | "background";
+
+function diagnoseOptionalAssetFallback(input: {
+  assetClass: OptionalAssetClass;
+  phase:
+    | "lookup"
+    | "parse"
+    | "presign"
+    | "download"
+    | "probe"
+    | "decode"
+    | "command"
+    | "cleanup";
+  failureCode: string;
+  context: Record<string, unknown>;
+}): void {
+  const attempt = renderExecutionStorage.getStore()?.attempt;
+  log("error", "clip_render_optional_asset_fallback", {
+    ...input.context,
+    ...(attempt ? { workflowAttemptId: attempt.attemptId } : {}),
+    phase: input.phase,
+    assetClass: input.assetClass,
+    failureCode: input.failureCode,
+    disposition: "degraded",
+  });
+}
+
+function optionalAccessFailure(error: unknown, assetClass: "music" | "sound_effect") {
+  const code =
+    error instanceof Error &&
+    "code" in error &&
+    typeof error.code === "string"
+      ? error.code
+      : "";
+  const presignFailure = code.includes("presign") || code.includes("access_url");
+  return {
+    phase: presignFailure ? ("presign" as const) : ("lookup" as const),
+    failureCode: presignFailure
+      ? `${assetClass}_presign_failed`
+      : `${assetClass}_asset_unavailable`,
+  };
+}
+
+function mediaAnalysisDiagnostic(input: {
+  analysisMode: string;
+  selectedMode?: string;
+  fallbackMode?: string;
+  failureCode?: string;
+  durationMs?: number;
+}): Record<string, unknown> {
+  return {
+    phase: "media_analysis",
+    analysisMode: input.analysisMode,
+    ...(input.selectedMode ? { selectedMode: input.selectedMode } : {}),
+    ...(input.fallbackMode ? { fallbackMode: input.fallbackMode } : {}),
+    ...(input.failureCode
+      ? { failureCode: input.failureCode, disposition: "degraded" }
+      : {}),
+    durationMs: Math.max(0, input.durationMs ?? 0),
+  };
+}
+
+async function executeRenderCommandWithOptionalFallback(input: {
+  primaryArgs: string[];
+  fallbackArgs?: () => string[];
+  optionalAssets: Array<{
+    assetClass: OptionalAssetClass;
+    failureCode: string;
+  }>;
+  context: Record<string, unknown>;
+}): Promise<"primary" | "fallback"> {
+  try {
+    await execCommand("ffmpeg", input.primaryArgs);
+    return "primary";
+  } catch (error) {
+    rethrowRenderControlFlow(error);
+    if (!input.fallbackArgs || input.optionalAssets.length === 0) throw error;
+    await execCommand("ffmpeg", input.fallbackArgs());
+    for (const asset of input.optionalAssets) {
+      diagnoseOptionalAssetFallback({
+        assetClass: asset.assetClass,
+        phase: "command",
+        failureCode: asset.failureCode,
+        context: input.context,
+      });
+    }
+    return "fallback";
+  }
 }
 
 // Encoding is the dominant cost of a render. veryfast/CRF21 measured
@@ -965,7 +1097,8 @@ async function probeBackgroundImageDecodable(filePath: string): Promise<boolean>
       streams?: Array<{ codec_type?: string }>;
     };
     return (data.streams ?? []).some((stream) => stream.codec_type === "video");
-  } catch {
+  } catch (error) {
+    rethrowRenderControlFlow(error);
     return false;
   }
 }
@@ -995,8 +1128,50 @@ async function probeMediaDurationSec(filePath: string): Promise<number | null> {
     const data = JSON.parse(output) as { format?: { duration?: string } };
     const parsed = data.format?.duration ? Number(data.format.duration) : NaN;
     return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
-  } catch {
+  } catch (error) {
+    rethrowRenderControlFlow(error);
     return null;
+  }
+}
+
+type OptionalMediaKind = "video" | "audio" | "image";
+
+async function validateOptionalMedia(
+  filePath: string,
+  kind: OptionalMediaKind,
+): Promise<boolean> {
+  try {
+    const config = currentRenderConfig();
+    const signal = currentRenderSignal() ?? new AbortController().signal;
+    const probe = await currentRenderAdapters().media.probe({
+      sourcePath: filePath,
+      signal,
+      deadlineMs: config.probeCommandTimeoutMs,
+      killGraceMs: config.processKillGraceMs,
+      diagnose: diagnoseRenderProcessOperation,
+    });
+    const expectedStream =
+      kind === "audio" ? probe.hasAudio : probe.hasVideo;
+    if (!expectedStream) return false;
+    await execCommand(
+      "ffmpeg",
+      [
+        "-v",
+        "error",
+        "-i",
+        filePath,
+        "-map",
+        kind === "audio" ? "0:a:0" : "0:v:0",
+        "-f",
+        "null",
+        "-",
+      ],
+      { timeoutMs: config.probeCommandTimeoutMs },
+    );
+    return true;
+  } catch (error) {
+    rethrowRenderControlFlow(error);
+    return false;
   }
 }
 
@@ -1015,16 +1190,34 @@ function reframePythonBin(): string {
  *  run/clip correlation ids every other error log in this file has. */
 function logDetectionFailure(
   detector: string,
-  message: string,
+  failureCode: string,
   context?: Record<string, unknown>,
 ): void {
   log("error", "clip_face_detection_unavailable", {
     detector,
-    message,
-    python: reframePythonBin(),
-    modelPath: currentRenderConfig().reframeModelPath,
+    phase: "media_analysis",
+    analysisMode: detector,
+    fallbackMode: "center_crop",
+    failureCode,
+    disposition: "degraded",
+    durationMs: 0,
     ...context,
   });
+}
+
+function mediaAnalysisFailureCode(error: unknown): string {
+  const code =
+    error instanceof Error &&
+    "code" in error &&
+    typeof error.code === "string"
+      ? error.code
+      : "";
+  if (code === "worker_command_missing") return "analysis_executable_missing";
+  if (code === "worker_command_timeout") return "analysis_timeout";
+  if (code === "worker_command_failed" || code === "worker_command_spawn_failed") {
+    return "analysis_command_failed";
+  }
+  return "analysis_unavailable";
 }
 
 /**
@@ -1058,14 +1251,19 @@ async function detectFacePath(params: {
       error?: string;
     };
     if (parsed.error || !Array.isArray(parsed.samples)) {
-      logDetectionFailure("face_single", parsed.error ?? "malformed detector output", params.logContext);
+      logDetectionFailure(
+        "face_single",
+        "analysis_output_invalid",
+        params.logContext,
+      );
       return null;
     }
     return { samples: parsed.samples };
   } catch (error) {
+    rethrowRenderControlFlow(error);
     logDetectionFailure(
       "face_single",
-      error instanceof Error ? error.message : "unknown",
+      mediaAnalysisFailureCode(error),
       params.logContext,
     );
     return null;
@@ -1123,7 +1321,7 @@ async function detectPipPath(params: {
         parsed.movingPxFrac !== undefined &&
         typeof parsed.movingPxFrac !== "number")
     ) {
-      logDetectionFailure("pip", parsed.error ?? "malformed detector output");
+      logDetectionFailure("pip", "analysis_output_invalid");
       return null;
     }
     return {
@@ -1132,7 +1330,8 @@ async function detectPipPath(params: {
       candidates: parsed.candidates,
     };
   } catch (error) {
-    logDetectionFailure("pip", error instanceof Error ? error.message : "unknown");
+    rethrowRenderControlFlow(error);
+    logDetectionFailure("pip", mediaAnalysisFailureCode(error));
     return null;
   }
 }
@@ -1184,16 +1383,21 @@ async function detectMultiFacePath(params: {
       error?: string;
     };
     if (parsed.error || !Array.isArray(parsed.samples)) {
-      logDetectionFailure("face_multi", parsed.error ?? "malformed detector output", params.logContext);
+      logDetectionFailure(
+        "face_multi",
+        "analysis_output_invalid",
+        params.logContext,
+      );
       return null;
     }
     return {
       samples: parsed.samples.map((s) => ({ t: s.t, faces: s.faces ?? [] })),
     };
   } catch (error) {
+    rethrowRenderControlFlow(error);
     logDetectionFailure(
       "face_multi",
-      error instanceof Error ? error.message : "unknown",
+      mediaAnalysisFailureCode(error),
       params.logContext,
     );
     return null;
@@ -1240,10 +1444,15 @@ async function detectSceneCuts(params: {
     }
     return cuts;
   } catch (error) {
+    rethrowRenderControlFlow(error);
     log("error", "clip_scene_detect_failed", {
       workflowRunId: params.workflowRunId,
       clipId: params.clipId,
-      message: error instanceof Error ? error.message : "unknown",
+      ...mediaAnalysisDiagnostic({
+        analysisMode: "scene_detection",
+        fallbackMode: "single_shot",
+        failureCode: "analysis_unavailable",
+      }),
     });
     return [];
   }
@@ -1339,11 +1548,15 @@ async function extractFaceDetectionSegment(params: {
     ]);
     return { path: segmentPath, startSec: 0 };
   } catch (segmentError) {
+    rethrowRenderControlFlow(segmentError);
     log("error", "clip_reframe_segment_extract_failed", {
       workflowRunId: params.workflowRunId,
       clipId: params.clipId,
-      message:
-        segmentError instanceof Error ? segmentError.message : "unknown",
+      ...mediaAnalysisDiagnostic({
+        analysisMode: "segment_extraction",
+        fallbackMode: "center_crop",
+        failureCode: "analysis_input_unavailable",
+      }),
     });
     return null;
   }
@@ -1378,6 +1591,7 @@ async function applyAutoReframe(params: {
   clipId: string;
   workflowRunId: string;
 }): Promise<boolean> {
+  const analysisStartedAtMs = currentTimeMs();
   let smoothed: SmoothedSample[] = [];
   if (params.samples) {
     const segmentGroups = remapFaceSamplesForCutPlan(
@@ -1393,6 +1607,14 @@ async function applyAutoReframe(params: {
     log("info", "clip_reframe_skipped", {
       workflowRunId: params.workflowRunId,
       clipId: params.clipId,
+      phase: "media_analysis",
+      analysisMode: "auto_reframe",
+      fallbackMode: "center_crop",
+      failureCode: params.samples
+        ? "no_usable_face_samples"
+        : "analysis_unavailable",
+      disposition: "degraded",
+      durationMs: Math.max(0, currentTimeMs() - analysisStartedAtMs),
       reason: params.samples
         ? "no_usable_face_samples"
         : "detection_unavailable",
@@ -1428,6 +1650,10 @@ async function applyAutoReframe(params: {
   log("info", "clip_reframe_applied", {
     workflowRunId: params.workflowRunId,
     clipId: params.clipId,
+    phase: "media_analysis",
+    analysisMode: "auto_reframe",
+    selectedMode: "face_tracked",
+    durationMs: Math.max(0, currentTimeMs() - analysisStartedAtMs),
     outputs: params.outputs.filter((o) => o.reframe).map((o) => o.aspectRatio),
   });
   return true;
@@ -1749,10 +1975,14 @@ export async function resolvePipAnalysis(
     try {
       await params.persist(envelope);
     } catch (persistError) {
+      rethrowRenderControlFlow(persistError);
       log("error", "clip_screen_layout_analysis_persist_failed", {
         ...params.logContext,
-        message:
-          persistError instanceof Error ? persistError.message : "unknown",
+        ...mediaAnalysisDiagnostic({
+          analysisMode: "picture_in_picture",
+          fallbackMode: "render_without_persisted_analysis",
+          failureCode: "analysis_persist_failed",
+        }),
       });
     }
   }
@@ -1859,6 +2089,10 @@ async function applyScreenSpeakerLayout(params: {
         log("info", "clip_screen_pip_detected", {
           workflowRunId: params.workflowRunId,
           clipId: params.clipId,
+          ...mediaAnalysisDiagnostic({
+            analysisMode: "picture_in_picture",
+            selectedMode: "pip_crop",
+          }),
           aspectRatio: output.aspectRatio,
           normalizedRect: params.pipRect,
           sourcePxRect: fitted,
@@ -1868,6 +2102,11 @@ async function applyScreenSpeakerLayout(params: {
       log("info", "clip_screen_pip_fallback", {
         workflowRunId: params.workflowRunId,
         clipId: params.clipId,
+        ...mediaAnalysisDiagnostic({
+          analysisMode: "picture_in_picture",
+          fallbackMode: "speaker_band",
+          failureCode: decision.reason,
+        }),
         aspectRatio: output.aspectRatio,
         reason: decision.reason,
       });
@@ -1890,6 +2129,11 @@ async function applyScreenSpeakerLayout(params: {
       log("info", "clip_screen_bottom_center_fallback", {
         workflowRunId: params.workflowRunId,
         clipId: params.clipId,
+        ...mediaAnalysisDiagnostic({
+          analysisMode: "screen_layout",
+          fallbackMode: "center_crop",
+          failureCode: "no_lateral_room",
+        }),
         reason: "no_lateral_room",
         aspectRatio: output.aspectRatio,
       });
@@ -1930,6 +2174,14 @@ async function applyScreenSpeakerLayout(params: {
   log("info", "clip_screen_layout_applied", {
     workflowRunId: params.workflowRunId,
     clipId: params.clipId,
+    ...mediaAnalysisDiagnostic({
+      analysisMode: "screen_layout",
+      selectedMode: appliedPip
+        ? "pip_crop"
+        : appliedFaceTracking
+          ? "face_tracked"
+          : "center_crop",
+    }),
     bottomTracking: appliedPip ? "pip" : appliedFaceTracking ? "face" : "center",
   });
   return appliedPip || appliedFaceTracking;
@@ -4784,6 +5036,14 @@ export class ClipRenderAttempt {
         (dependencies.adapters?.process
           ? new ProductionRenderMediaAdapter(dependencies.adapters.process)
           : productionRenderMediaAdapter),
+      optionalAssets: {
+        ...productionClipRenderAttemptAdapters.optionalAssets,
+        ...dependencies.adapters?.optionalAssets,
+      },
+      analysis: {
+        ...productionClipRenderAttemptAdapters.analysis,
+        ...dependencies.adapters?.analysis,
+      },
       storage: {
         ...productionClipRenderAttemptAdapters.storage,
         ...dependencies.adapters?.storage,
@@ -4877,6 +5137,7 @@ async function executeClipRenderAttempt(
   const tempDir = await currentRenderAdapters().workspace.mkdtemp(
     join(tmpdir(), "narriflow-render-"),
   );
+  const touchedOptionalAssetClasses = new Set<OptionalAssetClass>();
   // Captured outside the try so `finally` can settle in-flight background
   // uploads before deleting tempDir (their source files live there).
   let uploadQueueRef: { drain: () => Promise<void> } | null = null;
@@ -4902,14 +5163,26 @@ async function executeClipRenderAttempt(
     });
 
     let brandLogo: LogoOverlay | null = null;
+    let rawBrandSnapshot: unknown = null;
     try {
-      const rawSnapshot =
+      rawBrandSnapshot =
         await currentRenderAdapters().project.getProjectBrandSnapshot(
           run.projectId,
         );
-      if (rawSnapshot) {
-        const snapshot = brandTemplateSnapshotSchema.parse(rawSnapshot);
+    } catch (error) {
+      rethrowRenderControlFlow(error);
+      diagnoseOptionalAssetFallback({
+        assetClass: "logo",
+        phase: "lookup",
+        failureCode: "brand_snapshot_unavailable",
+        context: { workflowRunId: run.id, projectId: run.projectId },
+      });
+    }
+    if (rawBrandSnapshot) {
+      try {
+        const snapshot = brandTemplateSnapshotSchema.parse(rawBrandSnapshot);
         if (snapshot.logoStorageKey && probe.hasVideo) {
+          touchedOptionalAssetClasses.add("logo");
           const logoExt = extname(snapshot.logoStorageKey) || ".png";
           const logoPath = join(tempDir, `brand-logo${logoExt}`);
           try {
@@ -4918,30 +5191,48 @@ async function executeClipRenderAttempt(
               filePath: logoPath,
               signal: renderStorageSignal(),
             });
-            brandLogo = {
-              filePath: logoPath,
-              position: snapshot.logoPosition,
-              opacity: snapshot.logoOpacity,
-              scalePct: snapshot.logoScalePct,
-            };
-          } catch (logoError) {
-            log("error", "brand_logo_download_failed", {
-              workflowRunId: run.id,
-              projectId: run.projectId,
-              key: snapshot.logoStorageKey,
-              message:
-                logoError instanceof Error ? logoError.message : "unknown",
+            const decodable =
+              await currentRenderAdapters().optionalAssets.validateOptionalMedia(
+                logoPath,
+                "image",
+              );
+            if (decodable) {
+              brandLogo = {
+                filePath: logoPath,
+                position: snapshot.logoPosition,
+                opacity: snapshot.logoOpacity,
+                scalePct: snapshot.logoScalePct,
+              };
+            } else {
+              diagnoseOptionalAssetFallback({
+                assetClass: "logo",
+                phase: "decode",
+                failureCode: "brand_logo_invalid",
+                context: { workflowRunId: run.id, projectId: run.projectId },
+              });
+            }
+          } catch (error) {
+            rethrowRenderControlFlow(error);
+            diagnoseOptionalAssetFallback({
+              assetClass: "logo",
+              phase: "download",
+              failureCode: "brand_logo_download_failed",
+              context: {
+                workflowRunId: run.id,
+                projectId: run.projectId,
+              },
             });
           }
         }
+      } catch (error) {
+        rethrowRenderControlFlow(error);
+        diagnoseOptionalAssetFallback({
+          assetClass: "logo",
+          phase: "parse",
+          failureCode: "brand_snapshot_invalid",
+          context: { workflowRunId: run.id, projectId: run.projectId },
+        });
       }
-    } catch (snapshotError) {
-      log("error", "brand_snapshot_parse_failed", {
-        workflowRunId: run.id,
-        projectId: run.projectId,
-        message:
-          snapshotError instanceof Error ? snapshotError.message : "unknown",
-      });
     }
 
     const pendingRenders = (
@@ -5355,52 +5646,84 @@ async function executeClipRenderAttempt(
           try {
             assertPublicHttpUrl(userBrollUrl);
             safeUserBrollUrl = userBrollUrl;
-          } catch (error) {
-            log("error", "clip_broll_url_rejected", {
-              workflowRunId: run.id,
-              clipId: clip.id,
-              reason:
-                error instanceof UnsafeUrlError ? error.reason : "unknown",
+          } catch {
+            diagnoseOptionalAssetFallback({
+              assetClass: "broll",
+              phase: "lookup",
+              failureCode: "broll_url_rejected",
+              context: { workflowRunId: run.id, clipId: clip.id },
             });
           }
         }
 
         if (safeUserBrollUrl) {
+          touchedOptionalAssetClasses.add("broll");
           const brollPath = join(tempDir, `broll-${clip.id}-manual.mp4`);
           try {
-            await downloadUrlToFile(
+            await currentRenderAdapters().optionalAssets.downloadUrlToFile(
               safeUserBrollUrl,
               brollPath,
               "broll_download_failed",
             );
+            const decodable =
+              await currentRenderAdapters().optionalAssets.validateOptionalMedia(
+                brollPath,
+                "video",
+              );
+            if (!decodable) {
+              diagnoseOptionalAssetFallback({
+                assetClass: "broll",
+                phase: "decode",
+                failureCode: "broll_media_invalid",
+                context: { workflowRunId: run.id, clipId: clip.id },
+              });
+            } else {
+              // A manual pick has no reported duration — probe the downloaded
+              // file so the cutaway window (and therefore the B-roll input's
+              // own -t trim in buildBrollVideoArgs) is sized against real
+              // footage rather than a guess.
+              const effectiveDurationSec =
+                await currentRenderAdapters().optionalAssets.probeMediaDurationSec(
+                  brollPath,
+                );
+              const window =
+                effectiveDurationSec !== null
+                  ? planBrollWindow(clipDurationSec, effectiveDurationSec)
+                  : null;
 
-            // A manual pick has no reported duration — probe the downloaded
-            // file so the cutaway window (and therefore the B-roll input's
-            // own -t trim in buildBrollVideoArgs) is sized against real
-            // footage rather than a guess.
-            const effectiveDurationSec = await probeMediaDurationSec(brollPath);
-            const window =
-              effectiveDurationSec !== null
-                ? planBrollWindow(clipDurationSec, effectiveDurationSec)
-                : null;
-
-            if (window) {
-              brollPlan = { cutaways: [{ path: brollPath, window }], credits: [] };
-              log("info", "clip_broll_selected", {
+              if (window) {
+                brollPlan = {
+                  cutaways: [{ path: brollPath, window }],
+                  credits: [],
+                };
+                log("info", "clip_broll_selected", {
+                  workflowRunId: run.id,
+                  clipId: clip.id,
+                  source: "studio_pick",
+                  cutawayCount: 1,
+                  brollDurationSec: effectiveDurationSec,
+                });
+              } else {
+                diagnoseOptionalAssetFallback({
+                  assetClass: "broll",
+                  phase: "probe",
+                  failureCode: "broll_media_unusable",
+                  context: { workflowRunId: run.id, clipId: clip.id },
+                });
+              }
+            }
+          } catch (error) {
+            rethrowRenderControlFlow(error);
+            brollPlan = null;
+            diagnoseOptionalAssetFallback({
+              assetClass: "broll",
+              phase: "download",
+              failureCode: "broll_download_failed",
+              context: {
                 workflowRunId: run.id,
                 clipId: clip.id,
                 source: "studio_pick",
-                cutawayCount: 1,
-                brollDurationSec: effectiveDurationSec,
-              });
-            }
-          } catch (error) {
-            brollPlan = null;
-            log("error", "clip_broll_prepare_failed", {
-              workflowRunId: run.id,
-              clipId: clip.id,
-              source: "studio_pick",
-              message: error instanceof Error ? error.message : "unknown",
+              },
             });
           }
         } else {
@@ -5412,6 +5735,14 @@ async function executeClipRenderAttempt(
           const brollCuesParsed = rawBrollCues
             ? brollCuesArraySchema.safeParse(rawBrollCues)
             : null;
+          if (brollCuesParsed && !brollCuesParsed.success) {
+            diagnoseOptionalAssetFallback({
+              assetClass: "broll",
+              phase: "parse",
+              failureCode: "broll_cues_invalid",
+              context: { workflowRunId: run.id, clipId: clip.id },
+            });
+          }
           const rawCues: BrollCueInput[] | null =
             brollCuesParsed?.success && brollCuesParsed.data.length > 0
               ? brollCuesParsed.data
@@ -5446,39 +5777,78 @@ async function executeClipRenderAttempt(
             const targetHeight = orientation === "landscape" ? 1080 : 1920;
 
             try {
-              const resolvedCutaways = await resolveBrollCutaways({
-                clipDurationSec,
-                cues,
-                fallbackQuery,
-                broaderFallbackQuery,
-                orientation,
-                targetWidth,
-                targetHeight,
-              });
+              const resolvedCutaways =
+                await currentRenderAdapters().optionalAssets.resolveBrollCutaways({
+                  clipDurationSec,
+                  cues,
+                  fallbackQuery,
+                  broaderFallbackQuery,
+                  orientation,
+                  targetWidth,
+                  targetHeight,
+                });
 
               const cutaways: BrollCutaway[] = [];
               const credits: BrollPlan["credits"] = [];
 
               for (const [index, resolved] of resolvedCutaways.entries()) {
                 try {
-                  let brollPath = await getCachedBrollAssetPath(
-                    resolved.downloadUrl,
-                  );
+                  touchedOptionalAssetClasses.add("broll");
+                  let brollPath =
+                    await currentRenderAdapters().optionalAssets.getCachedBrollAssetPath(
+                      resolved.downloadUrl,
+                    );
+                  let downloadedForCache = false;
                   if (!brollPath) {
                     const downloadedPath = join(
                       tempDir,
                       `broll-${clip.id}-${index}.mp4`,
                     );
-                    await downloadUrlToFile(
+                    await currentRenderAdapters().optionalAssets.downloadUrlToFile(
                       resolved.downloadUrl,
                       downloadedPath,
                       "broll_download_failed",
                     );
-                    await saveBrollAssetToCache(
-                      resolved.downloadUrl,
-                      downloadedPath,
-                    );
                     brollPath = downloadedPath;
+                    downloadedForCache = true;
+                  }
+                  const decodable =
+                    await currentRenderAdapters().optionalAssets.validateOptionalMedia(
+                      brollPath,
+                      "video",
+                    );
+                  if (!decodable) {
+                    diagnoseOptionalAssetFallback({
+                      assetClass: "broll",
+                      phase: "decode",
+                      failureCode: "broll_media_invalid",
+                      context: {
+                        workflowRunId: run.id,
+                        clipId: clip.id,
+                        query: resolved.query,
+                      },
+                    });
+                    continue;
+                  }
+                  if (downloadedForCache) {
+                    try {
+                      await currentRenderAdapters().optionalAssets.saveBrollAssetToCache(
+                        resolved.downloadUrl,
+                        brollPath,
+                      );
+                    } catch (error) {
+                      rethrowRenderControlFlow(error);
+                      diagnoseOptionalAssetFallback({
+                        assetClass: "broll",
+                        phase: "cleanup",
+                        failureCode: "broll_cache_write_failed",
+                        context: {
+                          workflowRunId: run.id,
+                          clipId: clip.id,
+                          query: resolved.query,
+                        },
+                      });
+                    }
                   }
                   cutaways.push({
                     path: brollPath,
@@ -5496,12 +5866,16 @@ async function executeClipRenderAttempt(
                     pageUrl: resolved.attribution.pageUrl,
                   });
                 } catch (error) {
-                  log("error", "clip_broll_cutaway_download_failed", {
-                    workflowRunId: run.id,
-                    clipId: clip.id,
-                    query: resolved.query,
-                    message:
-                      error instanceof Error ? error.message : "unknown",
+                  rethrowRenderControlFlow(error);
+                  diagnoseOptionalAssetFallback({
+                    assetClass: "broll",
+                    phase: "download",
+                    failureCode: "broll_download_failed",
+                    context: {
+                      workflowRunId: run.id,
+                      clipId: clip.id,
+                      query: resolved.query,
+                    },
                   });
                 }
               }
@@ -5517,11 +5891,16 @@ async function executeClipRenderAttempt(
                 });
               }
             } catch (error) {
-              log("error", "clip_broll_prepare_failed", {
-                workflowRunId: run.id,
-                clipId: clip.id,
-                source: "auto",
-                message: error instanceof Error ? error.message : "unknown",
+              rethrowRenderControlFlow(error);
+              diagnoseOptionalAssetFallback({
+                assetClass: "broll",
+                phase: "lookup",
+                failureCode: "broll_provider_unavailable",
+                context: {
+                  workflowRunId: run.id,
+                  clipId: clip.id,
+                  source: "auto",
+                },
               });
             }
           }
@@ -5570,6 +5949,10 @@ async function executeClipRenderAttempt(
           log("info", "clip_layout_plan_reused", {
             workflowRunId: run.id,
             clipId: clip.id,
+            ...mediaAnalysisDiagnostic({
+              analysisMode: "layout_engine",
+              selectedMode: "persisted_shot_layout",
+            }),
             segmentCount: persistedAutoLayout.segments.length,
             twoUpSegmentCount: persistedAutoLayout.twoUpSegmentCount,
             analyzedAtISO: persistedAutoLayout.analyzedAtISO,
@@ -5579,7 +5962,7 @@ async function executeClipRenderAttempt(
         // Detection deliberately scans the full uncut clip. It only runs on
         // a persisted-plan miss; the normal render path is now a cheap read.
         const detectInput = !engineHandled
-          ? await extractFaceDetectionSegment({
+          ? await currentRenderAdapters().analysis.extractFaceDetectionSegment({
               sourcePath,
               tempDir,
               clipId: clip.id,
@@ -5591,12 +5974,12 @@ async function executeClipRenderAttempt(
 
         if (!engineHandled && layoutEngineEnabled && detectInput) {
           const [multiDetection, sceneCuts] = await Promise.all([
-            detectMultiFacePath({
+            currentRenderAdapters().analysis.detectMultiFacePath({
               sourcePath: detectInput.path,
               startSec: detectInput.startSec,
               durationSec: effective.durationSec,
             }),
-            detectSceneCuts({
+            currentRenderAdapters().analysis.detectSceneCuts({
               sourcePath: detectInput.path,
               startSec: detectInput.startSec,
               durationSec: effective.durationSec,
@@ -5674,10 +6057,15 @@ async function executeClipRenderAttempt(
                   previewStorageKey: clip.previewStorageKey,
                 })
                 .catch((error) => {
+                  rethrowRenderControlFlow(error);
                   log("error", "clip_auto_layout_analysis_persist_failed", {
                     workflowRunId: run.id,
                     clipId: clip.id,
-                    message: error instanceof Error ? error.message : "unknown",
+                    ...mediaAnalysisDiagnostic({
+                      analysisMode: "layout_engine",
+                      fallbackMode: "render_without_persisted_analysis",
+                      failureCode: "analysis_persist_failed",
+                    }),
                   });
                 });
             }
@@ -5721,6 +6109,10 @@ async function executeClipRenderAttempt(
               log("info", "clip_layout_plan_applied", {
                 workflowRunId: run.id,
                 clipId: clip.id,
+                ...mediaAnalysisDiagnostic({
+                  analysisMode: "layout_engine",
+                  selectedMode: "shot_layout",
+                }),
                 segmentCount: fullPlan.segments.length,
                 twoUpSegmentCount: fullPlan.twoUpSegmentCount,
                 shotCount: fullPlan.shotCount,
@@ -5737,6 +6129,11 @@ async function executeClipRenderAttempt(
               log("info", "clip_layout_plan_fallback", {
                 workflowRunId: run.id,
                 clipId: clip.id,
+                ...mediaAnalysisDiagnostic({
+                  analysisMode: "layout_engine",
+                  fallbackMode: "center_crop",
+                  failureCode: "no_trustworthy_faces",
+                }),
                 reason: "no_trustworthy_faces",
                 shotCount: fullPlan.shotCount,
                 soloShotCount: fullPlan.soloShotCount,
@@ -5749,6 +6146,11 @@ async function executeClipRenderAttempt(
             log("info", "clip_layout_plan_fallback", {
               workflowRunId: run.id,
               clipId: clip.id,
+              ...mediaAnalysisDiagnostic({
+                analysisMode: "layout_engine",
+                fallbackMode: "legacy_auto_reframe",
+                failureCode: "analysis_unavailable",
+              }),
               reason: "detection_unavailable",
             });
           }
@@ -5760,7 +6162,7 @@ async function executeClipRenderAttempt(
           // still calls applyAutoReframe so the skip reason is logged and
           // the static-center fallback stays explicit).
           const detection = detectInput
-            ? await detectFacePath({
+            ? await currentRenderAdapters().analysis.detectFacePath({
                 sourcePath: detectInput.path,
                 startSec: detectInput.startSec,
                 durationSec: effective.durationSec,
@@ -5806,10 +6208,16 @@ async function executeClipRenderAttempt(
           log("info", "clip_screen_fallback", {
             workflowRunId: run.id,
             clipId: clip.id,
+            ...mediaAnalysisDiagnostic({
+              analysisMode: "screen_layout",
+              fallbackMode: "auto_reframe",
+              failureCode: "analysis_disabled",
+            }),
             reason: "disabled",
           });
           if (reframeEnabled && srcRatio > 1.05 && reframeOutputs.length > 0) {
-            const detectInput = await extractFaceDetectionSegment({
+            const detectInput =
+              await currentRenderAdapters().analysis.extractFaceDetectionSegment({
               sourcePath,
               tempDir,
               clipId: clip.id,
@@ -5819,7 +6227,7 @@ async function executeClipRenderAttempt(
               suffix: "-screenfallback",
             });
             const detection = detectInput
-              ? await detectFacePath({
+              ? await currentRenderAdapters().analysis.detectFacePath({
                   sourcePath: detectInput.path,
                   startSec: detectInput.startSec,
                   durationSec: effective.durationSec,
@@ -5847,6 +6255,11 @@ async function executeClipRenderAttempt(
             log("info", "clip_screen_fallback", {
               workflowRunId: run.id,
               clipId: clip.id,
+              ...mediaAnalysisDiagnostic({
+                analysisMode: "screen_layout",
+                fallbackMode: "auto_reframe",
+                failureCode: screenFallbackReason,
+              }),
               reason: screenFallbackReason,
             });
             // B-roll conflict: fall back to whole-frame single-speaker
@@ -5854,7 +6267,8 @@ async function executeClipRenderAttempt(
             // branch — forced here since `shouldRunAutoReframeDetection`
             // deliberately excludes "screen".
             if (reframeEnabled && srcRatio > 1.05 && reframeOutputs.length > 0) {
-              const detectInput = await extractFaceDetectionSegment({
+              const detectInput =
+                await currentRenderAdapters().analysis.extractFaceDetectionSegment({
                 sourcePath,
                 tempDir,
                 clipId: clip.id,
@@ -5864,7 +6278,7 @@ async function executeClipRenderAttempt(
                 suffix: "-screenfallback",
               });
               const detection = detectInput
-                ? await detectFacePath({
+                ? await currentRenderAdapters().analysis.detectFacePath({
                     sourcePath: detectInput.path,
                     startSec: detectInput.startSec,
                     durationSec: effective.durationSec,
@@ -5899,7 +6313,8 @@ async function executeClipRenderAttempt(
             // single-face detection below, byte-identical to before this
             // packet. Both detectors share the SAME extracted segment
             // (`detectInput`) — no reason to extract it twice.
-            const detectInput = await extractFaceDetectionSegment({
+            const detectInput =
+              await currentRenderAdapters().analysis.extractFaceDetectionSegment({
               sourcePath,
               tempDir,
               clipId: clip.id,
@@ -5951,7 +6366,7 @@ async function executeClipRenderAttempt(
                 durationSec: effective.durationSec,
                 rawClipStartSec: clip.startSec,
                 rawClipEndSec: clip.endSec,
-                detect: detectPipPath,
+                detect: currentRenderAdapters().analysis.detectPipPath,
                 persist: (envelope) =>
                   currentRenderAdapters().clip.setClipLayoutAnalysis(
                     clip.id,
@@ -5969,7 +6384,7 @@ async function executeClipRenderAttempt(
             // other detection path — `applyScreenSpeakerLayout` remaps
             // through `remapFaceSamplesForCutPlan` internally.
             const detection = detectInput
-              ? await detectFacePath({
+              ? await currentRenderAdapters().analysis.detectFacePath({
                   sourcePath: detectInput.path,
                   startSec: detectInput.startSec,
                   durationSec: effective.durationSec,
@@ -6020,11 +6435,15 @@ async function executeClipRenderAttempt(
                   envelope,
                 );
               } catch (persistError) {
+                rethrowRenderControlFlow(persistError);
                 log("error", "clip_screen_layout_analysis_persist_failed", {
                   workflowRunId: run.id,
                   clipId: clip.id,
-                  message:
-                    persistError instanceof Error ? persistError.message : "unknown",
+                  ...mediaAnalysisDiagnostic({
+                    analysisMode: "picture_in_picture",
+                    fallbackMode: "render_without_persisted_analysis",
+                    failureCode: "analysis_persist_failed",
+                  }),
                 });
               }
             }
@@ -6033,6 +6452,10 @@ async function executeClipRenderAttempt(
               log("info", "clip_screen_pip_selected", {
                 workflowRunId: run.id,
                 clipId: clip.id,
+                ...mediaAnalysisDiagnostic({
+                  analysisMode: "picture_in_picture",
+                  selectedMode: "pip_crop",
+                }),
                 movingPxFrac: detectionResult?.movingPxFrac ?? null,
                 rect: pipRect,
                 analysisSource,
@@ -6041,6 +6464,11 @@ async function executeClipRenderAttempt(
               log("info", "clip_screen_pip_fallback", {
                 workflowRunId: run.id,
                 clipId: clip.id,
+                ...mediaAnalysisDiagnostic({
+                  analysisMode: "picture_in_picture",
+                  fallbackMode: "speaker_band",
+                  failureCode: clipLevelPipDecision.reason,
+                }),
                 reason: clipLevelPipDecision.reason,
                 movingPxFrac: detectionResult?.movingPxFrac ?? null,
                 candidateCount,
@@ -6064,6 +6492,13 @@ async function executeClipRenderAttempt(
               log("info", "clip_screen_bottom_center_fallback", {
                 workflowRunId: run.id,
                 clipId: clip.id,
+                ...mediaAnalysisDiagnostic({
+                  analysisMode: "screen_layout",
+                  fallbackMode: "center_crop",
+                  failureCode: detection
+                    ? "no_face_detected"
+                    : "analysis_unavailable",
+                }),
                 reason: detection ? "no_face_detected" : "detection_unavailable",
               });
             }
@@ -6105,10 +6540,16 @@ async function executeClipRenderAttempt(
           log("info", "clip_split_fallback", {
             workflowRunId: run.id,
             clipId: clip.id,
+            ...mediaAnalysisDiagnostic({
+              analysisMode: "split_layout",
+              fallbackMode: "auto_reframe",
+              failureCode: "analysis_disabled",
+            }),
             reason: "disabled",
           });
           if (reframeEnabled && srcRatio > 1.05 && reframeOutputs.length > 0) {
-            const detectInput = await extractFaceDetectionSegment({
+            const detectInput =
+              await currentRenderAdapters().analysis.extractFaceDetectionSegment({
               sourcePath,
               tempDir,
               clipId: clip.id,
@@ -6118,7 +6559,7 @@ async function executeClipRenderAttempt(
               suffix: "-splitfallback",
             });
             const detection = detectInput
-              ? await detectFacePath({
+              ? await currentRenderAdapters().analysis.detectFacePath({
                   sourcePath: detectInput.path,
                   startSec: detectInput.startSec,
                   durationSec: effective.durationSec,
@@ -6146,7 +6587,8 @@ async function executeClipRenderAttempt(
           let multiDetection: { samples: MultiFaceSample[] } | null = null;
 
           if (!brollPlan) {
-            const detectInput = await extractFaceDetectionSegment({
+            const detectInput =
+              await currentRenderAdapters().analysis.extractFaceDetectionSegment({
               sourcePath,
               tempDir,
               clipId: clip.id,
@@ -6162,7 +6604,7 @@ async function executeClipRenderAttempt(
             // timeline `buildSplitLayoutPlan`'s segments (and therefore
             // `buildSplitFilterChain`'s `trim` windows) are expressed in.
             multiDetection = detectInput
-              ? await detectMultiFacePath({
+              ? await currentRenderAdapters().analysis.detectMultiFacePath({
                   sourcePath: detectInput.path,
                   startSec: detectInput.startSec,
                   durationSec: effective.durationSec,
@@ -6190,6 +6632,11 @@ async function executeClipRenderAttempt(
             log("info", "clip_split_fallback", {
               workflowRunId: run.id,
               clipId: clip.id,
+              ...mediaAnalysisDiagnostic({
+                analysisMode: "split_layout",
+                fallbackMode: "auto_reframe",
+                failureCode: fallbackReason,
+              }),
               reason: fallbackReason,
             });
             // Fall back to single-speaker framing exactly like "auto" mode —
@@ -6208,7 +6655,8 @@ async function executeClipRenderAttempt(
                 ? deriveSingleFaceSamplesFromMulti(multiDetection.samples)
                 : (
                     await (async () => {
-                      const detectInput = await extractFaceDetectionSegment({
+                      const detectInput =
+                        await currentRenderAdapters().analysis.extractFaceDetectionSegment({
                         sourcePath,
                         tempDir,
                         clipId: clip.id,
@@ -6218,7 +6666,7 @@ async function executeClipRenderAttempt(
                         suffix: "-splitfallback",
                       });
                       return detectInput
-                        ? await detectFacePath({
+                        ? await currentRenderAdapters().analysis.detectFacePath({
                             sourcePath: detectInput.path,
                             startSec: detectInput.startSec,
                             durationSec: effective.durationSec,
@@ -6252,6 +6700,10 @@ async function executeClipRenderAttempt(
             log("info", "clip_split_applied", {
               workflowRunId: run.id,
               clipId: clip.id,
+              ...mediaAnalysisDiagnostic({
+                analysisMode: "split_layout",
+                selectedMode: "two_up",
+              }),
               segmentCount: plan.segments.length,
               clusterCount: plan.clusterCount,
             });
@@ -6271,6 +6723,11 @@ async function executeClipRenderAttempt(
                 log("info", "clip_split_fallback", {
                   workflowRunId: run.id,
                   clipId: clip.id,
+                  ...mediaAnalysisDiagnostic({
+                    analysisMode: "split_layout",
+                    fallbackMode: "auto_reframe",
+                    failureCode: "tiles_not_distinct",
+                  }),
                   reason: "tiles_not_distinct",
                   aspectRatio: output.aspectRatio,
                 });
@@ -6327,18 +6784,20 @@ async function executeClipRenderAttempt(
           musicUrl = resolved?.url ?? null;
           musicUrlIsAssetResolved = Boolean(resolved);
           if (!resolved) {
-            log("error", "clip_music_asset_resolve_failed", {
-              workflowRunId: run.id,
-              clipId: clip.id,
-              assetId: studioEdits.music.assetId,
+            diagnoseOptionalAssetFallback({
+              assetClass: "music",
+              phase: "lookup",
+              failureCode: "music_asset_unavailable",
+              context: { workflowRunId: run.id, clipId: clip.id },
             });
           }
         } catch (error) {
-          log("error", "clip_music_asset_resolve_failed", {
-            workflowRunId: run.id,
-            clipId: clip.id,
-            assetId: studioEdits.music.assetId,
-            message: error instanceof Error ? error.message : "unknown",
+          rethrowRenderControlFlow(error);
+          const accessFailure = optionalAccessFailure(error, "music");
+          diagnoseOptionalAssetFallback({
+            assetClass: "music",
+            ...accessFailure,
+            context: { workflowRunId: run.id, clipId: clip.id },
           });
         }
       } else {
@@ -6350,35 +6809,52 @@ async function executeClipRenderAttempt(
         try {
           assertPublicHttpUrl(musicUrl);
           musicUrlSafe = true;
-        } catch (error) {
-          log("error", "clip_music_url_rejected", {
-            workflowRunId: run.id,
-            clipId: clip.id,
-            reason: error instanceof UnsafeUrlError ? error.reason : "unknown",
+        } catch {
+          diagnoseOptionalAssetFallback({
+            assetClass: "music",
+            phase: "lookup",
+            failureCode: "music_url_rejected",
+            context: { workflowRunId: run.id, clipId: clip.id },
           });
         }
         if (musicUrlSafe) {
+          touchedOptionalAssetClasses.add("music");
           const musicPath = join(tempDir, `music-${clip.id}.bin`);
           try {
-            await downloadUrlToFile(
+            await currentRenderAdapters().optionalAssets.downloadUrlToFile(
               musicUrl,
               musicPath,
               "music_download_failed",
               musicUrlIsAssetResolved ? { maxBytes: AUDIO_UPLOAD_MAX_BYTES } : undefined,
             );
-            musicPlan = {
-              path: musicPath,
-              volume: studioEdits.music.volume,
-              startOffsetSec: studioEdits.music.startOffsetSec,
-              fadeInSec: studioEdits.music.fadeInSec,
-              fadeOutSec: studioEdits.music.fadeOutSec,
-            };
-          } catch (musicError) {
-            log("error", "clip_music_download_failed", {
-              workflowRunId: run.id,
-              clipId: clip.id,
-              message:
-                musicError instanceof Error ? musicError.message : "unknown",
+            const decodable =
+              await currentRenderAdapters().optionalAssets.validateOptionalMedia(
+                musicPath,
+                "audio",
+              );
+            if (decodable) {
+              musicPlan = {
+                path: musicPath,
+                volume: studioEdits.music.volume,
+                startOffsetSec: studioEdits.music.startOffsetSec,
+                fadeInSec: studioEdits.music.fadeInSec,
+                fadeOutSec: studioEdits.music.fadeOutSec,
+              };
+            } else {
+              diagnoseOptionalAssetFallback({
+                assetClass: "music",
+                phase: "decode",
+                failureCode: "music_media_invalid",
+                context: { workflowRunId: run.id, clipId: clip.id },
+              });
+            }
+          } catch (error) {
+            rethrowRenderControlFlow(error);
+            diagnoseOptionalAssetFallback({
+              assetClass: "music",
+              phase: "download",
+              failureCode: "music_download_failed",
+              context: { workflowRunId: run.id, clipId: clip.id },
             });
           }
         }
@@ -6438,20 +6914,28 @@ async function executeClipRenderAttempt(
           );
           sfxUrl = resolved?.url ?? null;
           if (!resolved) {
-            log("error", "clip_sfx_asset_resolve_failed", {
-              workflowRunId: run.id,
-              clipId: clip.id,
-              sfxId: placement.id,
-              assetId: placement.assetId,
+            diagnoseOptionalAssetFallback({
+              assetClass: "sound_effect",
+              phase: "lookup",
+              failureCode: "sound_effect_asset_unavailable",
+              context: {
+                workflowRunId: run.id,
+                clipId: clip.id,
+                sfxId: placement.id,
+              },
             });
           }
         } catch (error) {
-          log("error", "clip_sfx_asset_resolve_failed", {
-            workflowRunId: run.id,
-            clipId: clip.id,
-            sfxId: placement.id,
-            assetId: placement.assetId,
-            message: error instanceof Error ? error.message : "unknown",
+          rethrowRenderControlFlow(error);
+          const accessFailure = optionalAccessFailure(error, "sound_effect");
+          diagnoseOptionalAssetFallback({
+            assetClass: "sound_effect",
+            ...accessFailure,
+            context: {
+              workflowRunId: run.id,
+              clipId: clip.id,
+              sfxId: placement.id,
+            },
           });
         }
         if (!sfxUrl) continue;
@@ -6461,35 +6945,69 @@ async function executeClipRenderAttempt(
           assertPublicHttpUrl(sfxUrl);
           sfxUrlSafe = true;
         } catch (error) {
-          log("error", "clip_sfx_url_rejected", {
-            workflowRunId: run.id,
-            clipId: clip.id,
-            sfxId: placement.id,
-            reason: error instanceof UnsafeUrlError ? error.reason : "unknown",
+          rethrowRenderControlFlow(error);
+          diagnoseOptionalAssetFallback({
+            assetClass: "sound_effect",
+            phase: "lookup",
+            failureCode: "sound_effect_url_rejected",
+            context: {
+              workflowRunId: run.id,
+              clipId: clip.id,
+              sfxId: placement.id,
+            },
           });
         }
         if (!sfxUrlSafe) continue;
 
         const sfxPath = join(tempDir, `sfx-${clip.id}-${placement.id}.bin`);
+        touchedOptionalAssetClasses.add("sound_effect");
         try {
           // M6: SFX placements are always resolved through an AudioAsset
           // (`assetId` is required by `studioSfxPlacementSchema`) — bounded
           // by the same AUDIO_UPLOAD_MAX_BYTES the upload gate enforced,
           // not the larger 250MB B-roll/pasted-URL budget.
-          await downloadUrlToFile(sfxUrl, sfxPath, "sfx_download_failed", {
-            maxBytes: AUDIO_UPLOAD_MAX_BYTES,
-          });
-          sfxPlans.push({
-            path: sfxPath,
-            startSec: placement.startSec,
-            volume: placement.volume,
-          });
-        } catch (sfxError) {
-          log("error", "clip_sfx_download_failed", {
-            workflowRunId: run.id,
-            clipId: clip.id,
-            sfxId: placement.id,
-            message: sfxError instanceof Error ? sfxError.message : "unknown",
+          await currentRenderAdapters().optionalAssets.downloadUrlToFile(
+            sfxUrl,
+            sfxPath,
+            "sfx_download_failed",
+            {
+              maxBytes: AUDIO_UPLOAD_MAX_BYTES,
+            },
+          );
+          const decodable =
+            await currentRenderAdapters().optionalAssets.validateOptionalMedia(
+              sfxPath,
+              "audio",
+            );
+          if (decodable) {
+            sfxPlans.push({
+              path: sfxPath,
+              startSec: placement.startSec,
+              volume: placement.volume,
+            });
+          } else {
+            diagnoseOptionalAssetFallback({
+              assetClass: "sound_effect",
+              phase: "decode",
+              failureCode: "sound_effect_media_invalid",
+              context: {
+                workflowRunId: run.id,
+                clipId: clip.id,
+                sfxId: placement.id,
+              },
+            });
+          }
+        } catch (error) {
+          rethrowRenderControlFlow(error);
+          diagnoseOptionalAssetFallback({
+            assetClass: "sound_effect",
+            phase: "download",
+            failureCode: "sound_effect_download_failed",
+            context: {
+              workflowRunId: run.id,
+              clipId: clip.id,
+              sfxId: placement.id,
+            },
           });
         }
       }
@@ -6527,27 +7045,41 @@ async function executeClipRenderAttempt(
           try {
             assertPublicHttpUrl(studioEdits.background.imageUrl);
             imageUrlSafe = true;
-          } catch (error) {
-            log("error", "clip_background_image_url_rejected", {
-              workflowRunId: run.id,
-              clipId: clip.id,
-              reason: error instanceof UnsafeUrlError ? error.reason : "unknown",
+          } catch {
+            diagnoseOptionalAssetFallback({
+              assetClass: "background",
+              phase: "lookup",
+              failureCode: "background_image_url_rejected",
+              context: { workflowRunId: run.id, clipId: clip.id },
             });
           }
           if (imageUrlSafe) {
+            touchedOptionalAssetClasses.add("background");
             const backgroundImagePath = join(tempDir, `background-${clip.id}.bin`);
             try {
-              await downloadUrlToFile(
+              await currentRenderAdapters().optionalAssets.downloadUrlToFile(
                 studioEdits.background.imageUrl,
                 backgroundImagePath,
                 "background_image_download_failed",
               );
-              const decodable = await probeBackgroundImageDecodable(backgroundImagePath);
+              const probeDecodable =
+                await currentRenderAdapters().optionalAssets.probeBackgroundImageDecodable(
+                  backgroundImagePath,
+                );
+              const decodable =
+                probeDecodable &&
+                (await currentRenderAdapters().optionalAssets.validateOptionalMedia(
+                  backgroundImagePath,
+                  "image",
+                ));
               if (!decodable) {
-                log("error", "clip_background_image_invalid", {
-                  workflowRunId: run.id,
-                  clipId: clip.id,
-                  message: "downloaded background is not a decodable image/video",
+                diagnoseOptionalAssetFallback({
+                  assetClass: "background",
+                  phase: probeDecodable ? "decode" : "probe",
+                  failureCode: probeDecodable
+                    ? "background_image_decode_failed"
+                    : "background_image_invalid",
+                  context: { workflowRunId: run.id, clipId: clip.id },
                 });
               }
               backgroundPlan = resolveBackgroundPlanForDownloadedImage({
@@ -6555,18 +7087,54 @@ async function executeClipRenderAttempt(
                 color: fallbackColor,
                 imagePath: backgroundImagePath,
               });
-            } catch (imageError) {
-              log("error", "clip_background_image_download_failed", {
-                workflowRunId: run.id,
-                clipId: clip.id,
-                message:
-                  imageError instanceof Error ? imageError.message : "unknown",
+            } catch (error) {
+              rethrowRenderControlFlow(error);
+              diagnoseOptionalAssetFallback({
+                assetClass: "background",
+                phase: "download",
+                failureCode: "background_image_download_failed",
+                context: { workflowRunId: run.id, clipId: clip.id },
               });
               // backgroundPlan stays the color fallback set above.
             }
           }
         }
       }
+
+      const optionalCommandAssets: Array<{
+        assetClass: OptionalAssetClass;
+        failureCode: string;
+      }> = [
+        ...(logo
+          ? [{ assetClass: "logo" as const, failureCode: "brand_logo_command_failed" }]
+          : []),
+        ...(brollPlan
+          ? [{ assetClass: "broll" as const, failureCode: "broll_command_failed" }]
+          : []),
+        ...(musicPlan
+          ? [{ assetClass: "music" as const, failureCode: "music_mix_failed" }]
+          : []),
+        ...(sfxPlans.length > 0
+          ? [
+              {
+                assetClass: "sound_effect" as const,
+                failureCode: "sound_effect_mix_failed",
+              },
+            ]
+          : []),
+        ...(backgroundPlan?.mode === "image"
+          ? [
+              {
+                assetClass: "background" as const,
+                failureCode: "background_image_command_failed",
+              },
+            ]
+          : []),
+      ];
+      const fallbackBackgroundPlan: BackgroundPlan | null =
+        backgroundPlan?.mode === "image"
+          ? { mode: "color", color: backgroundPlan.color, imagePath: null }
+          : backgroundPlan;
 
       // sourceAudio (volume/mute) is only applied by the per-output builders
       // (buildSingleVideoArgs/buildBrollVideoArgs/buildAudiogramArgs), same
@@ -6652,7 +7220,38 @@ async function executeClipRenderAttempt(
             });
 
             const encodeStartedAtMs = currentTimeMs();
-            await execCommand("ffmpeg", ffmpegArgs);
+            await executeRenderCommandWithOptionalFallback({
+              primaryArgs: ffmpegArgs,
+              fallbackArgs:
+                musicPlan || sfxPlans.length > 0
+                  ? () =>
+                      buildAudiogramArgs({
+                        sourcePath,
+                        outputPath: output.outputPath,
+                        startSec: clipStartSec,
+                        endSec: clipEndSec,
+                        aspectRatio: output.aspectRatio,
+                        clipDurationSec,
+                        srtPath: output.subtitlePath ?? srtPath,
+                        captionPreset,
+                        studioEdits,
+                        music: null,
+                        sfx: [],
+                        resolution: output.resolution,
+                        watermark: output.watermark,
+                        cutPlan,
+                      })
+                  : undefined,
+              optionalAssets: optionalCommandAssets.filter(
+                ({ assetClass }) =>
+                  assetClass === "music" || assetClass === "sound_effect",
+              ),
+              context: {
+                workflowRunId: run.id,
+                clipId: clip.id,
+                clipRenderId: output.clipRenderId,
+              },
+            });
             // Upload runs in the bounded background queue (overlaps the next
             // clip's work). The stale-discard/`persisted` counting and the
             // upload-failure variant marking both live in `scheduleUpload`;
@@ -6806,12 +7405,59 @@ async function executeClipRenderAttempt(
                   cutPlan,
                 });
             const encodeStartedAtMs = currentTimeMs();
-            await execCommand("ffmpeg", ffmpegArgs);
+            const commandMode = await executeRenderCommandWithOptionalFallback({
+              primaryArgs: ffmpegArgs,
+              fallbackArgs:
+                optionalCommandAssets.length > 0
+                  ? () =>
+                      buildSingleVideoArgs({
+                        sourcePath,
+                        outputPath: output.outputPath,
+                        startSec: clipStartSec,
+                        endSec: clipEndSec,
+                        aspectRatio: output.aspectRatio,
+                        probe,
+                        srtPath: output.subtitlePath ?? srtPath,
+                        captionPreset,
+                        logo: null,
+                        reframe: output.reframe,
+                        studioEdits,
+                        music: null,
+                        sfx: [],
+                        background: fallbackBackgroundPlan,
+                        split: fullAutoSegmentsForOutput
+                          ? reframeOutputs.includes(output)
+                            ? splitTilesAreDistinct(output.aspectRatio, probe)
+                              ? { segments: fullAutoSegmentsForOutput }
+                              : noSplitAutoSegmentsForOutput
+                                ? { segments: noSplitAutoSegmentsForOutput }
+                                : null
+                            : null
+                          : splitPlan &&
+                              !splitIneligibleOutputs.includes(output)
+                            ? { segments: splitPlan.segments }
+                            : null,
+                        screen: output.screenBottom
+                          ? { bottom: output.screenBottom }
+                          : null,
+                        resolution: output.resolution,
+                        watermark: output.watermark,
+                        cutPlan,
+                      })
+                  : undefined,
+              optionalAssets: optionalCommandAssets,
+              context: {
+                workflowRunId: run.id,
+                clipId: clip.id,
+                clipRenderId: output.clipRenderId,
+              },
+            });
             // Bounded background upload — see `scheduleUpload`. This catch
             // now only ever sees encode/build failures.
             scheduleUpload(output, {
               clipDurationSec,
-              brollCredits,
+              brollCredits:
+                commandMode === "primary" ? brollCredits : null,
               encodeMs: currentTimeMs() - encodeStartedAtMs,
             });
           } catch (error) {
@@ -6871,7 +7517,43 @@ async function executeClipRenderAttempt(
                 });
 
           const encodeStartedAtMs = currentTimeMs();
-          await execCommand("ffmpeg", ffmpegArgs);
+          await executeRenderCommandWithOptionalFallback({
+            primaryArgs: ffmpegArgs,
+            fallbackArgs:
+              logo
+                ? () =>
+                    outputs.length === 1
+                      ? buildSingleVideoArgs({
+                          sourcePath,
+                          outputPath: outputs[0]!.outputPath,
+                          startSec: clipStartSec,
+                          endSec: clipEndSec,
+                          aspectRatio: outputs[0]!.aspectRatio,
+                          probe,
+                          srtPath: outputs[0]!.subtitlePath ?? srtPath,
+                          captionPreset,
+                          logo: null,
+                          reframe: outputs[0]!.reframe,
+                          resolution: outputs[0]!.resolution,
+                          watermark: outputs[0]!.watermark,
+                        })
+                      : buildMultiVideoArgs({
+                          sourcePath,
+                          outputs,
+                          startSec: clipStartSec,
+                          endSec: clipEndSec,
+                          probe,
+                          srtPath,
+                          captionPreset,
+                          logo: null,
+                          watermark: outputs[0]!.watermark,
+                        })
+                : undefined,
+            optionalAssets: optionalCommandAssets.filter(
+              ({ assetClass }) => assetClass === "logo",
+            ),
+            context: { workflowRunId: run.id, clipId: clip.id },
+          });
           const sharedEncodeMs = currentTimeMs() - encodeStartedAtMs;
 
           // Bounded background uploads — per-output failure marking (the
@@ -7002,13 +7684,22 @@ async function executeClipRenderAttempt(
     await currentRenderAdapters()
       .workspace.rm(tempDir, { recursive: true, force: true })
       .catch((error) => {
-      log("error", "clip_render_workspace_cleanup_failed", {
-        workflowRunId: run.id,
-        projectId: run.projectId,
-        phase: "cleanup",
-        operation: "workspace_remove",
-        errorCode: error instanceof Error ? error.name : "workspace_remove_failed",
-      });
+        for (const assetClass of touchedOptionalAssetClasses) {
+          diagnoseOptionalAssetFallback({
+            assetClass,
+            phase: "cleanup",
+            failureCode: "optional_asset_cleanup_failed",
+            context: { workflowRunId: run.id, projectId: run.projectId },
+          });
+        }
+        log("error", "clip_render_workspace_cleanup_failed", {
+          workflowRunId: run.id,
+          projectId: run.projectId,
+          phase: "cleanup",
+          operation: "workspace_remove",
+          errorCode:
+            error instanceof Error ? error.name : "workspace_remove_failed",
+        });
       });
   }
 }

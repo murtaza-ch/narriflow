@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   buildAttachmentContentDisposition,
+  classifyR2StorageError,
   deleteObject,
   downloadObjectToFile,
   headObject,
@@ -14,6 +15,24 @@ import {
   putFileFromPath,
   sanitizeObjectMetadata,
 } from "./r2-storage";
+
+test("R2 adapter classifies access, missing-object, and cancellation failures", () => {
+  expect(
+    classifyR2StorageError({
+      name: "AccessDenied",
+      $metadata: { httpStatusCode: 403 },
+    }),
+  ).toBe("storage_access_denied");
+  expect(
+    classifyR2StorageError({
+      name: "NoSuchKey",
+      $metadata: { httpStatusCode: 404 },
+    }),
+  ).toBe("storage_object_missing");
+  expect(classifyR2StorageError(new DOMException("cancelled", "AbortError"))).toBe(
+    "storage_operation_cancelled",
+  );
+});
 
 describe("buildAttachmentContentDisposition", () => {
   test("forces attachment delivery with ASCII and UTF-8 filename forms", () => {
@@ -142,6 +161,11 @@ r2ContractTest(
         filePath: uploadPath,
         contentType: "video/mp4",
       });
+      await putFileFromPath({
+        key: secondAttemptKey,
+        filePath: uploadPath,
+        contentType: "video/mp4",
+      });
 
       const stored = await headObject(key);
       expect(stored).toMatchObject({
@@ -156,8 +180,25 @@ r2ContractTest(
       await downloadObjectToFile({ key, filePath: downloadPath });
       expect(await readFile(downloadPath)).toEqual(bytes);
 
-      const listed = await listObjectPageByPrefix(prefix, 100);
-      expect(listed.objects.map((object) => object.key)).toEqual([key]);
+      const firstPage = await listObjectPageByPrefix(prefix, 1);
+      expect(firstPage.objects).toHaveLength(1);
+      expect(firstPage.objects[0]).toEqual(
+        expect.objectContaining({
+          key: expect.stringMatching(new RegExp(`^${prefix}`)),
+          lastModified: expect.any(Date),
+        }),
+      );
+      expect(firstPage.nextContinuationToken).not.toBeNull();
+      const secondPage = await listObjectPageByPrefix(
+        prefix,
+        1,
+        firstPage.nextContinuationToken ?? undefined,
+      );
+      expect(
+        [...firstPage.objects, ...secondPage.objects]
+          .map((object) => object.key)
+          .sort(),
+      ).toEqual([key, secondAttemptKey].sort());
 
       expect(key).not.toBe(secondAttemptKey);
       expect(key).toEndWith(`9x16-${firstAttemptId}.mp4`);
@@ -173,15 +214,20 @@ r2ContractTest(
       });
       setTimeout(() => controller.abort(), 1);
       await expect(activeUpload).rejects.toMatchObject({ name: "AbortError" });
-      expect((await listObjectPageByPrefix(prefix, 100)).objects).toEqual([
-        expect.objectContaining({ key }),
-      ]);
+      expect(
+        (await listObjectPageByPrefix(prefix, 100)).objects
+          .map((object) => object.key)
+          .sort(),
+      ).toEqual([key, secondAttemptKey].sort());
 
       await deleteObject(key);
+      await deleteObject(key);
+      await deleteObject(secondAttemptKey);
       expect((await listObjectPageByPrefix(prefix, 100)).objects).toEqual([]);
     } finally {
       await Promise.allSettled([
         deleteObject(key),
+        deleteObject(secondAttemptKey),
         deleteObject(siblingKey),
         deleteObject(activeAbortKey),
       ]);

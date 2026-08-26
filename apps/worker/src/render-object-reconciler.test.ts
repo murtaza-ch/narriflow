@@ -88,6 +88,48 @@ test("destructive reconciliation refreshes references before deletion", async ()
   expect(deleted).toEqual([]);
 });
 
+test("destructive reconciliation rechecks each candidate immediately before deletion", async () => {
+  const projectId = "11111111-1111-1111-1111-111111111111";
+  const first = `projects/${projectId}/renders/clip/9x16-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.mp4`;
+  const second = `projects/${projectId}/renders/clip/1x1-bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb.mp4`;
+  const deleted: string[] = [];
+  let referenceRead = 0;
+  const reconciler = new RenderObjectReconciler({
+    now: () => new Date("2026-08-17T12:00:00.000Z"),
+    storage: {
+      listPage: async (prefix) => ({
+        objects: prefix.endsWith("/renders/")
+          ? [first, second].map((key) => ({
+              key,
+              lastModified: new Date("2026-08-15T00:00:00.000Z"),
+            }))
+          : [],
+        nextContinuationToken: null,
+      }),
+      delete: async (key) => {
+        deleted.push(key);
+      },
+    },
+    persistence: {
+      listReferencedKeys: async () => {
+        referenceRead += 1;
+        return referenceRead >= 3 ? new Set([second]) : new Set();
+      },
+    },
+  });
+
+  await expect(
+    reconciler.execute({ projectId, delete: true }),
+  ).resolves.toMatchObject({
+    referenced: 1,
+    orphaned: 1,
+    deleted: 1,
+    failed: 0,
+    objectIds: [first],
+  });
+  expect(deleted).toEqual([first]);
+});
+
 test("destructive reconciliation reports deletion failures without hiding the orphan", async () => {
   const projectId = "11111111-1111-1111-1111-111111111111";
   const key = `projects/${projectId}/exports/export/variant-9x16-bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb.mp4`;
@@ -121,6 +163,115 @@ test("destructive reconciliation reports deletion failures without hiding the or
       objectId: key,
     }),
   );
+});
+
+test("orphan reconciliation scans every project-scoped storage page", async () => {
+  const projectId = "11111111-1111-1111-1111-111111111111";
+  const first = `projects/${projectId}/renders/clip/9x16-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.mp4`;
+  const second = `projects/${projectId}/renders/clip/1x1-bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb.mp4`;
+  const listCalls: Array<[string, string | undefined]> = [];
+  const reconciler = new RenderObjectReconciler({
+    now: () => new Date("2026-08-17T12:00:00.000Z"),
+    storage: {
+      listPage: async (prefix, continuationToken) => {
+        listCalls.push([prefix, continuationToken]);
+        if (!prefix.endsWith("/renders/")) {
+          return { objects: [], nextContinuationToken: null };
+        }
+        return continuationToken
+          ? {
+              objects: [
+                { key: second, lastModified: new Date("2026-08-15T00:00:00Z") },
+              ],
+              nextContinuationToken: null,
+            }
+          : {
+              objects: [
+                { key: first, lastModified: new Date("2026-08-15T00:00:00Z") },
+              ],
+              nextContinuationToken: "page-2",
+            };
+      },
+      delete: async () => {},
+    },
+    persistence: { listReferencedKeys: async () => new Set() },
+  });
+
+  await expect(reconciler.execute({ projectId })).resolves.toMatchObject({
+    examined: 2,
+    orphaned: 2,
+    objectIds: [first, second],
+  });
+  expect(listCalls).toEqual([
+    [`projects/${projectId}/renders/`, undefined],
+    [`projects/${projectId}/renders/`, "page-2"],
+    [`projects/${projectId}/exports/`, undefined],
+  ]);
+});
+
+test("orphan reconciliation stops safely when durable references are unavailable", async () => {
+  const projectId = "11111111-1111-1111-1111-111111111111";
+  let listed = false;
+  let deleted = false;
+  const reconciler = new RenderObjectReconciler({
+    storage: {
+      listPage: async () => {
+        listed = true;
+        return { objects: [], nextContinuationToken: null };
+      },
+      delete: async () => {
+        deleted = true;
+      },
+    },
+    persistence: {
+      listReferencedKeys: async () => {
+        throw new Error("database unavailable");
+      },
+    },
+  });
+
+  await expect(
+    reconciler.execute({ projectId, delete: true }),
+  ).rejects.toThrow("database unavailable");
+  expect(listed).toBe(false);
+  expect(deleted).toBe(false);
+});
+
+test("destructive reconciliation is idempotent after a partial replay", async () => {
+  const projectId = "11111111-1111-1111-1111-111111111111";
+  const key = `projects/${projectId}/renders/clip/9x16-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa.mp4`;
+  const objects = new Set([key]);
+  const reconciler = new RenderObjectReconciler({
+    now: () => new Date("2026-08-17T12:00:00.000Z"),
+    storage: {
+      listPage: async (prefix) => ({
+        objects:
+          prefix.endsWith("/renders/") && objects.has(key)
+            ? [{ key, lastModified: new Date("2026-08-15T00:00:00Z") }]
+            : [],
+        nextContinuationToken: null,
+      }),
+      delete: async (objectKey) => {
+        objects.delete(objectKey);
+      },
+    },
+    persistence: { listReferencedKeys: async () => new Set() },
+  });
+
+  await expect(
+    reconciler.execute({ projectId, delete: true }),
+  ).resolves.toMatchObject({ examined: 1, orphaned: 1, deleted: 1, failed: 0 });
+  await expect(
+    reconciler.execute({ projectId, delete: true }),
+  ).resolves.toEqual({
+    examined: 0,
+    referenced: 0,
+    ageProtected: 0,
+    orphaned: 0,
+    deleted: 0,
+    failed: 0,
+    objectIds: [],
+  });
 });
 
 test("storage listing is deadline-bounded with an active abort signal", async () => {

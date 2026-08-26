@@ -1,6 +1,7 @@
 export {
   audioAssetService,
   AudioAssetService,
+  AudioAssetAccessError,
   AudioAssetNotFoundError,
   audioAssetUploadPrefix,
   isOwnedAudioUploadKey,
@@ -147,6 +148,7 @@ export {
   TranscriptNormalizationError,
 } from "./transcript.service";
 export {
+  classifyR2StorageError,
   deleteObject,
   deleteObjects,
   downloadObjectToFile,

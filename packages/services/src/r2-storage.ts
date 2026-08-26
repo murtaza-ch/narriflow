@@ -810,6 +810,27 @@ export interface R2ObjectSummary {
   lastModified?: Date | null;
 }
 
+export function classifyR2StorageError(error: unknown): string {
+  if (!error || typeof error !== "object") return "storage_operation_failed";
+  const name = "name" in error && typeof error.name === "string" ? error.name : "";
+  const status =
+    "$metadata" in error &&
+    error.$metadata &&
+    typeof error.$metadata === "object" &&
+    "httpStatusCode" in error.$metadata &&
+    typeof error.$metadata.httpStatusCode === "number"
+      ? error.$metadata.httpStatusCode
+      : null;
+  if (status === 403 || /accessdenied|forbidden/i.test(name)) {
+    return "storage_access_denied";
+  }
+  if (status === 404 || /nosuchkey|notfound/i.test(name)) {
+    return "storage_object_missing";
+  }
+  if (name === "AbortError") return "storage_operation_cancelled";
+  return "storage_operation_failed";
+}
+
 /** Lists one bounded prefix page. Purge callers repeatedly request the first
  * page after deleting it, which avoids continuation-token skips while the
  * listing is being mutated. */
