@@ -203,6 +203,40 @@ describe("composition FFmpeg adapter", () => {
     ).toThrow("invalid_clip_composition_source_crop");
   });
 
+  test("rejects a non-centered Center crop instead of letting FFmpeg choose", () => {
+    const plan = planCenter();
+    const target = plan.targets[0]!;
+    const scene = target.scenes[0]!;
+    const layer = scene.layers[0]!;
+    const invalid = {
+      ...plan,
+      targets: [
+        {
+          ...target,
+          scenes: [
+            {
+              ...scene,
+              layers: [
+                {
+                  ...layer,
+                  sourceCrop: { ...layer.sourceCrop, x: layer.sourceCrop.x - 1 },
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    expect(() =>
+      compileCompositionPlanVideo({
+        plan: invalid,
+        targetId: "variant-1",
+        videoInputLabel: "[0:v]",
+        outputLabel: "[outv]",
+      }),
+    ).toThrow("unsupported_clip_composition_center_crop");
+  });
+
   test("the production single-output builder rejects an unknown plan before FFmpeg starts", () => {
     expect(() =>
       buildSingleVideoArgs({
@@ -315,5 +349,45 @@ describe("composition FFmpeg adapter", () => {
         "[composition_scene_0]format=yuv420p[outv]",
       ],
     });
+  });
+
+  test("keeps a rotated manual layer centered on its planned destination", () => {
+    const plan = planAuto();
+    const target = plan.targets[0]!;
+    const scene = target.scenes[0]!;
+    const layer = scene.layers[0]!;
+    const rotated = {
+      ...plan,
+      targets: [
+        {
+          ...target,
+          scenes: [
+            {
+              ...scene,
+              layers: [
+                {
+                  ...layer,
+                  destination: { x: 108, y: 200, width: 864, height: 720 },
+                  rotationDeg: 15,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    const compiled = compileCompositionPlanVideo({
+      plan: rotated,
+      targetId: "variant-1",
+      videoInputLabel: "[0:v]",
+      outputLabel: "[outv]",
+    }).filterParts.join(";");
+    expect(compiled).toContain(
+      "rotate=15.000*PI/180:ow=rotw(iw):oh=roth(ih):c=black@0",
+    );
+    expect(compiled).toContain(
+      "overlay=108+(864-overlay_w)/2:200+(720-overlay_h)/2",
+    );
   });
 });

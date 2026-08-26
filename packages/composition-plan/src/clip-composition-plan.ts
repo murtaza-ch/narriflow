@@ -353,6 +353,8 @@ function validAutomaticLayoutEvidence(
     value.engineVersion !== input.capabilities.automaticSpeakerEngineVersion ||
     analysis.version !== 1 ||
     analysis.engine !== input.capabilities.automaticSpeakerEngineVersion ||
+    (analysis.sourceIdentity !== undefined &&
+      analysis.sourceIdentity !== input.source.identity) ||
     // Speaker coordinates are normalized. Evidence may have been measured
     // on the source-derived Studio proxy and then applied to the original
     // render dimensions, so pixel dimensions are descriptive rather than

@@ -10,6 +10,8 @@ Center, Fit, and Automatic Speaker Composition have independent web and worker c
 
 `legacy` uses the established adapter path. `shadow` computes and validates a plan, logs only safe version/fingerprint/geometry summaries, and continues to render through the legacy path. `plan` adopts the plan. A bad value fails startup or module initialization rather than silently selecting a mode.
 
+Set `NEXT_PUBLIC_AUTOMATIC_SPEAKER_LAYOUT` to the same `0`/`1` capability as worker `WORKER_LAYOUT_ENGINE`. This mirror lets Studio show an explicit disabled fallback instead of an analysis-pending notice while the worker kill switch is active.
+
 ## Rollout
 
 1. Deploy the shared package and both adapters with all six controls set to `shadow`.

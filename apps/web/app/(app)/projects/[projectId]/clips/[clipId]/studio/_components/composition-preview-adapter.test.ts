@@ -5,7 +5,10 @@ import {
   editorDocumentSchema,
   studioEditsSchema,
 } from "@narriflow/validators";
-import { adoptCompositionPreview } from "./composition-preview-adapter";
+import {
+  adoptCompositionPreview,
+  plannedCompositionFrameStyle,
+} from "./composition-preview-adapter";
 
 function centerPlan() {
   const result = planClipComposition({
@@ -129,5 +132,30 @@ describe("composition preview adapter", () => {
     expect(adoptCompositionPreview(automatic, "9:16", 6).sceneId).toBe(
       "scene:auto:last",
     );
+  });
+
+  test("translates planned main and secondary rotation without choosing geometry", () => {
+    const layer = centerPlan().targets[0]!.scenes[0]!.layers[0]!;
+    if (layer.kind !== "source-video") throw new Error("expected source layer");
+    const canvas = { width: 1080, height: 1920 };
+
+    expect(
+      plannedCompositionFrameStyle(
+        {
+          ...layer,
+          destination: { x: 108, y: 240, width: 864, height: 720 },
+          rotationDeg: 12.5,
+        },
+        canvas,
+      ),
+    ).toEqual({
+      position: "absolute",
+      left: "10%",
+      top: "12.5%",
+      width: "80%",
+      height: "37.5%",
+      transform: "rotate(12.5deg)",
+      transformOrigin: "center",
+    });
   });
 });

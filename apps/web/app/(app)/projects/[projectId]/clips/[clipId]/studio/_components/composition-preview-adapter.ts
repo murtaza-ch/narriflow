@@ -4,6 +4,21 @@ import {
   type CompositionLayer,
 } from "@narriflow/composition-plan";
 
+export function plannedCompositionFrameStyle(
+  layer: Extract<CompositionLayer, { kind: "source-video" }>,
+  canvas: { width: number; height: number },
+) {
+  return {
+    position: "absolute" as const,
+    left: `${(layer.destination.x / canvas.width) * 100}%`,
+    top: `${(layer.destination.y / canvas.height) * 100}%`,
+    width: `${(layer.destination.width / canvas.width) * 100}%`,
+    height: `${(layer.destination.height / canvas.height) * 100}%`,
+    transform: `rotate(${layer.rotationDeg}deg)`,
+    transformOrigin: "center",
+  };
+}
+
 const SCENE_END_EPSILON_SEC = 0.075;
 
 function assertFiniteRect(

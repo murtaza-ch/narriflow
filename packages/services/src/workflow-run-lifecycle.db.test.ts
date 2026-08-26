@@ -1970,6 +1970,48 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     expect(storedUnowned.autoLayoutAnalysis).toBeNull();
   });
 
+  test("a fenced render can replace independently stale automatic-layout evidence", async () => {
+    const { project, run } = await fixture("clip_rendering");
+    const clip = await clipFixture(project.id, run.id);
+    const previewStorageKey = `previews/${clip.id}/current.mp4`;
+    await prisma.clip.update({
+      where: { id: clip.id },
+      data: {
+        previewStorageKey,
+        autoLayoutAnalysis: { version: 1, sourceIdentity: "source:stale" },
+        autoLayoutStatus: "completed",
+      },
+    });
+    const variant = await prisma.clipRender.create({
+      data: { clipId: clip.id, aspectRatio: "ratio_9_16" },
+    });
+    const { lifecycle, attempt } = await claimRenderAttempt();
+    expect((await lifecycle.beginRenderWorkSet(attempt)).variantIds).toEqual([
+      variant.id,
+    ]);
+
+    const input = {
+      clipId: clip.id,
+      analysis: { version: 1, sourceIdentity: "source:current" },
+      editorRevision: clip.editorRevision,
+      previewStorageKey,
+    };
+    await expect(
+      lifecycle.completeClipAutoLayoutAnalysis(attempt, input),
+    ).resolves.toBe(false);
+    await expect(
+      lifecycle.completeClipAutoLayoutAnalysis(attempt, {
+        ...input,
+        replaceExisting: true,
+      }),
+    ).resolves.toBe(true);
+    expect(
+      (
+        await prisma.clip.findUniqueOrThrow({ where: { id: clip.id } })
+      ).autoLayoutAnalysis,
+    ).toEqual({ version: 1, sourceIdentity: "source:current" });
+  });
+
   test("a stage-specific child command rejects an attempt from another stage", async () => {
     const { project } = await fixture("clip_rendering");
     const lifecycle = new WorkflowRunLifecycle({

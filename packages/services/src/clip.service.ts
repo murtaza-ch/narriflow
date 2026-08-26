@@ -3364,13 +3364,20 @@ export class ClipService {
 
   /**
    * Atomically publishes a derived automatic layout plan only while the clip
-   * still has the same editor revision and proxy that were analyzed. A lost
-   * race leaves the column null so the next poll recomputes from fresh input.
+   * still has the same editor revision and proxy that were analyzed. Normal
+   * claims remain create-only; a fenced render may explicitly replace an
+   * envelope it independently proved stale during a rolling upgrade.
    */
   async completeClipAutoLayoutAnalysis(
     clipId: string,
     analysis: ClipAutoLayoutAnalysis,
-    expected: { editorRevision: number; previewStorageKey: string },
+    expected: {
+      editorRevision: number;
+      previewStorageKey: string;
+      /** A render attempt may replace evidence it independently proved stale.
+       * The same revision/proxy and workflow ownership fences still apply. */
+      replaceExisting?: boolean;
+    },
   ): Promise<boolean> {
     const prisma = requirePrisma();
     const parsed = clipAutoLayoutAnalysisSchema.parse(analysis);
@@ -3381,6 +3388,7 @@ export class ClipService {
         analysis: parsed as unknown as Prisma.InputJsonValue,
         editorRevision: expected.editorRevision,
         previewStorageKey: expected.previewStorageKey,
+        replaceExisting: expected.replaceExisting,
       });
     }
     const result = await prisma.clip.updateMany({
@@ -3388,7 +3396,9 @@ export class ClipService {
         id: clipId,
         editorRevision: expected.editorRevision,
         previewStorageKey: expected.previewStorageKey,
-        autoLayoutAnalysis: { equals: Prisma.DbNull },
+        ...(expected.replaceExisting
+          ? {}
+          : { autoLayoutAnalysis: { equals: Prisma.DbNull } }),
       },
       data: {
         autoLayoutAnalysis: parsed as unknown as Prisma.InputJsonValue,

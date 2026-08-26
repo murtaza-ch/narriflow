@@ -1219,6 +1219,7 @@ export class WorkflowRunLifecycle {
       analysis: Prisma.InputJsonValue;
       editorRevision: number;
       previewStorageKey: string;
+      replaceExisting?: boolean;
     },
   ): Promise<boolean> {
     return this.transaction(async (tx) => {
@@ -1229,7 +1230,9 @@ export class WorkflowRunLifecycle {
           projectId: attempt.projectId,
           editorRevision: input.editorRevision,
           previewStorageKey: input.previewStorageKey,
-          autoLayoutAnalysis: { equals: Prisma.DbNull },
+          ...(input.replaceExisting
+            ? {}
+            : { autoLayoutAnalysis: { equals: Prisma.DbNull } }),
         },
         data: {
           autoLayoutAnalysis: input.analysis,

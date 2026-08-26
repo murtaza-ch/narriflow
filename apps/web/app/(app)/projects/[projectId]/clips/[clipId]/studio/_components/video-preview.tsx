@@ -8,6 +8,7 @@ import {
   compositionAssetRef,
   planClipComposition,
   type CompositionBackgroundLayer,
+  type CompositionRect,
   type CompositionSourceVideoLayer,
 } from "@narriflow/composition-plan";
 import {
@@ -59,7 +60,10 @@ import {
   manualBrollPreviewWindow,
   type ManualBrollPreviewWindow,
 } from "./broll-preview";
-import { adoptCompositionPreview } from "./composition-preview-adapter";
+import {
+  adoptCompositionPreview,
+  plannedCompositionFrameStyle,
+} from "./composition-preview-adapter";
 import {
   compositionPlanControl,
   shouldAdoptCompositionPlan,
@@ -74,6 +78,70 @@ import {
 const OUTPUT_TILE_WIDTH_PX: Record<AspectRatio, number> = Object.fromEntries(
   clipAspectRatioOptions.map((option) => [option.value, option.width]),
 ) as Record<AspectRatio, number>;
+
+/** Shadow-only projection of the browser's established object-fit geometry.
+ * It never drives rendering; it gives rollout diagnostics an independent
+ * legacy value to compare with the planned crop and destination. */
+function legacyObjectFitGeometry(input: {
+  source: { width: number; height: number };
+  target: { width: number; height: number };
+  fit: "cover" | "contain";
+}): { sourceCrop: CompositionRect; destination: CompositionRect } {
+  const { source, target } = input;
+  if (input.fit === "contain") {
+    const scale = Math.min(
+      target.width / source.width,
+      target.height / source.height,
+    );
+    const width = Math.min(
+      target.width,
+      Math.max(2, Math.round((source.width * scale) / 2) * 2),
+    );
+    const height = Math.min(
+      target.height,
+      Math.max(2, Math.round((source.height * scale) / 2) * 2),
+    );
+    return {
+      sourceCrop: { x: 0, y: 0, width: source.width, height: source.height },
+      destination: {
+        x: Math.round((target.width - width) / 2),
+        y: Math.round((target.height - height) / 2),
+        width,
+        height,
+      },
+    };
+  }
+  const sourceRatio = source.width / source.height;
+  const targetRatio = target.width / target.height;
+  const width =
+    sourceRatio >= targetRatio
+      ? Math.round(source.height * targetRatio)
+      : source.width;
+  const height =
+    sourceRatio >= targetRatio
+      ? source.height
+      : Math.round(source.width / targetRatio);
+  return {
+    sourceCrop: {
+      x: Math.max(0, Math.round((source.width - width) / 2)),
+      y: Math.max(0, Math.round((source.height - height) / 2)),
+      width,
+      height,
+    },
+    destination: { x: 0, y: 0, width: target.width, height: target.height },
+  };
+}
+
+function rectsDiffer(
+  left: CompositionRect | null,
+  right: CompositionRect | null,
+  epsilon = 1,
+): boolean {
+  if (!left || !right) return left !== right;
+  return (["x", "y", "width", "height"] as const).some(
+    (key) => Math.abs(left[key] - right[key]) > epsilon,
+  );
+}
 
 /** After this long with no metadata yet, hint that the source is just large. */
 const SLOW_LOAD_HINT_MS = 10_000;
@@ -330,13 +398,13 @@ function BrollPreviewLayer({
 export function VideoPreview() {
   const {
     editorDocument,
+    clipInfo,
     aspectRatio, setAspectRatio,
     layoutMode, setLayoutMode,
     studioEdits,
     mediaRef,
     playbackClock,
     sourceVideoUrl,
-    sourcePreviewId,
     previewVideoUrl,
     sourcePurged,
     useOriginalSourceFallback,
@@ -520,6 +588,14 @@ export function VideoPreview() {
     };
   }, [background.imageUrl, background.mode]);
   const effectiveFramingMode = resolveEffectiveFramingMode(studioEdits);
+  const compositionSourceIdentity = compositionAssetRef(
+    "source",
+    clipInfo.projectId,
+  );
+  const eligibleAutoLayoutAnalysis =
+    autoLayoutAnalysis?.sourceIdentity === compositionSourceIdentity
+      ? autoLayoutAnalysis
+      : null;
   const compositionPlanResult = useMemo(() => {
     if (!sourceDims) return null;
     if (
@@ -536,33 +612,36 @@ export function VideoPreview() {
     return planClipComposition({
       document: editorDocument,
       source: {
-        identity: sourcePreviewId,
+        identity: compositionSourceIdentity,
         kind: "video",
         width: sourceDims.width,
         height: sourceDims.height,
       },
       evidence: {
-        automaticLayout: autoLayoutAnalysis
-          ? {
-              state: "available",
-              value: {
-                sourceIdentity: sourcePreviewId,
-                inputFingerprint: automaticLayoutInputFingerprint({
-                  sourceIdentity: sourcePreviewId,
-                  clipStartSec: editorDocument.clipStartSec,
-                  clipEndSec: editorDocument.clipEndSec,
-                  deletedRanges: editorDocument.deletedRanges,
+        automaticLayout: !compositionPlanControl.automaticSpeakerLayoutEnabled
+          ? { state: "disabled" }
+          : eligibleAutoLayoutAnalysis
+            ? {
+                state: "available",
+                value: {
+                  sourceIdentity: compositionSourceIdentity,
+                  inputFingerprint: automaticLayoutInputFingerprint({
+                    sourceIdentity: compositionSourceIdentity,
+                    clipStartSec: editorDocument.clipStartSec,
+                    clipEndSec: editorDocument.clipEndSec,
+                    deletedRanges: editorDocument.deletedRanges,
+                    engineVersion: "shot-layout-v1",
+                  }),
                   engineVersion: "shot-layout-v1",
-                }),
-                engineVersion: "shot-layout-v1",
-                analysis: autoLayoutAnalysis,
-              },
-            }
-          : { state: "missing" },
+                  analysis: eligibleAutoLayoutAnalysis,
+                },
+              }
+            : { state: "missing" },
       },
       assets: { backgroundImage: backgroundImageAvailability },
       capabilities: {
-        automaticSpeakerLayout: true,
+        automaticSpeakerLayout:
+          compositionPlanControl.automaticSpeakerLayoutEnabled,
         automaticSpeakerEngineVersion: "shot-layout-v1",
       },
       targets: [
@@ -576,12 +655,12 @@ export function VideoPreview() {
     });
   }, [
     aspectRatio,
-    autoLayoutAnalysis,
     backgroundImageAvailability,
+    compositionSourceIdentity,
     editorDocument,
+    eligibleAutoLayoutAnalysis,
     effectiveFramingMode,
     sourceDims,
-    sourcePreviewId,
   ]);
   const compositionPreview = useMemo(() => {
     if (
@@ -1284,23 +1363,17 @@ export function VideoPreview() {
       : null;
   const plannedSourceFrameStyle =
     plannedMainSourceLayer && compositionPreview
-      ? {
-          position: "absolute" as const,
-          left: `${(plannedMainSourceLayer.destination.x / compositionPreview.canvas.width) * 100}%`,
-          top: `${(plannedMainSourceLayer.destination.y / compositionPreview.canvas.height) * 100}%`,
-          width: `${(plannedMainSourceLayer.destination.width / compositionPreview.canvas.width) * 100}%`,
-          height: `${(plannedMainSourceLayer.destination.height / compositionPreview.canvas.height) * 100}%`,
-        }
+      ? plannedCompositionFrameStyle(
+          plannedMainSourceLayer,
+          compositionPreview.canvas,
+        )
       : null;
   const plannedBottomFrameStyle =
     plannedBottomSourceLayer && compositionPreview
-      ? {
-          position: "absolute" as const,
-          left: `${(plannedBottomSourceLayer.destination.x / compositionPreview.canvas.width) * 100}%`,
-          top: `${(plannedBottomSourceLayer.destination.y / compositionPreview.canvas.height) * 100}%`,
-          width: `${(plannedBottomSourceLayer.destination.width / compositionPreview.canvas.width) * 100}%`,
-          height: `${(plannedBottomSourceLayer.destination.height / compositionPreview.canvas.height) * 100}%`,
-        }
+      ? plannedCompositionFrameStyle(
+          plannedBottomSourceLayer,
+          compositionPreview.canvas,
+        )
       : null;
 
   useEffect(() => {
@@ -1315,9 +1388,70 @@ export function VideoPreview() {
       return;
     }
     const target = compositionPlanResult.plan.targets[0];
-    const layer = target?.scenes[0]?.layers.find(
+    const plannedProjection = adoptCompositionPreview(
+      compositionPlanResult.plan,
+      aspectRatio,
+      legacyActiveAutoSegment?.startSec ?? 0,
+    );
+    const plannedLayer = plannedProjection.layers.find(
       (candidate) => candidate.kind === "source-video",
     );
+    const targetFacts = clipAspectRatioOptions.find(
+      (candidate) => candidate.value === aspectRatio,
+    );
+    if (!target || !targetFacts || !sourceDims) return;
+
+    const legacyEffectiveMode =
+      effectiveFramingMode === "auto"
+        ? legacyActiveAutoSegment
+          ? "auto"
+          : "center"
+        : effectiveFramingMode;
+    const legacyBounds = legacyActiveAutoSegment
+      ? {
+          startSec: legacyActiveAutoSegment.startSec,
+          endSec: legacyActiveAutoSegment.endSec,
+        }
+      : { startSec: 0, endSec: compositionPlanResult.plan.editedDurationSec };
+    const staticLegacyGeometry = legacyObjectFitGeometry({
+      source: sourceDims,
+      target: targetFacts,
+      fit: effectiveFramingMode === "fit" ? "contain" : "cover",
+    });
+    const legacySourceCrop =
+      effectiveFramingMode === "auto" && autoMainCrop
+        ? {
+            x: Math.round(autoMainCrop.x * sourceDims.width),
+            y: Math.round(autoMainCrop.y * sourceDims.height),
+            width: Math.round(autoMainCrop.w * sourceDims.width),
+            height: Math.round(autoMainCrop.h * sourceDims.height),
+          }
+        : staticLegacyGeometry.sourceCrop;
+    const legacyDestination =
+      effectiveFramingMode === "auto" && autoMainLayer
+        ? {
+            x: Math.round(autoMainLayer.frameX * targetFacts.width),
+            y: Math.round(autoMainLayer.frameY * targetFacts.height),
+            width: Math.round(autoMainLayer.frameWidth * targetFacts.width),
+            height: Math.round(autoMainLayer.frameHeight * targetFacts.height),
+          }
+        : staticLegacyGeometry.destination;
+    const comparison = {
+      effectiveModeMismatch: target.effectiveMode !== legacyEffectiveMode,
+      sceneBoundsMismatch:
+        Math.abs(plannedProjection.sceneStartSec - legacyBounds.startSec) >
+          0.075 ||
+        Math.abs(plannedProjection.sceneEndSec - legacyBounds.endSec) > 0.075,
+      sourceCropMismatch: rectsDiffer(
+        plannedLayer?.kind === "source-video" ? plannedLayer.sourceCrop : null,
+        legacySourceCrop,
+      ),
+      destinationMismatch: rectsDiffer(
+        plannedLayer?.kind === "source-video" ? plannedLayer.destination : null,
+        legacyDestination,
+      ),
+    };
+    const mismatchCount = Object.values(comparison).filter(Boolean).length;
     console.warn(
       JSON.stringify({
         level: "info",
@@ -1327,6 +1461,14 @@ export function VideoPreview() {
         planFingerprint: compositionPlanResult.plan.fingerprint,
         requestedMode: effectiveFramingMode,
         effectiveMode: target?.effectiveMode ?? null,
+        legacy: {
+          effectiveMode: legacyEffectiveMode,
+          sceneBounds: legacyBounds,
+          sourceCrop: legacySourceCrop,
+          destination: legacyDestination,
+        },
+        comparison,
+        mismatchCount,
         target: target?.aspectRatio ?? aspectRatio,
         canvas: target?.canvas ?? null,
         scenes:
@@ -1342,10 +1484,21 @@ export function VideoPreview() {
                   : null,
             })),
           })) ?? [],
-        sourceCrop: layer?.kind === "source-video" ? layer.sourceCrop : null,
+        sourceCrop:
+          plannedLayer?.kind === "source-video"
+            ? plannedLayer.sourceCrop
+            : null,
       }),
     );
-  }, [aspectRatio, compositionPlanResult, effectiveFramingMode]);
+  }, [
+    aspectRatio,
+    autoMainCrop,
+    autoMainLayer,
+    compositionPlanResult,
+    effectiveFramingMode,
+    legacyActiveAutoSegment,
+    sourceDims,
+  ]);
 
   return (
     <Flex

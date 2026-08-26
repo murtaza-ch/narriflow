@@ -51,6 +51,11 @@ export const clipAutoLayoutAnalysisSchema = z
   .object({
     version: z.literal(1),
     engine: z.literal("shot-layout-v1"),
+    /** Stable logical identity of the source media analyzed. Optional only
+     *  so rolling readers can parse v1 envelopes written before source
+     *  binding was added; composition consumers treat a missing value as
+     *  stale evidence and request a one-time refresh. */
+    sourceIdentity: z.string().min(1).optional(),
     analyzedAtISO: z.string().datetime(),
     /** Raw source window represented by this plan. */
     clipStartSec: z.number().finite().min(0),

@@ -3,6 +3,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { compositionAssetRef } from "@narriflow/composition-plan";
 import {
   clipService,
   downloadObjectToFile,
@@ -335,6 +336,7 @@ export async function analyzeClipAutoLayout(params: {
   return clipAutoLayoutAnalysisSchema.parse({
     version: 1,
     engine: "shot-layout-v1",
+    sourceIdentity: compositionAssetRef("source", clip.projectId),
     analyzedAtISO: new Date().toISOString(),
     clipStartSec: clip.startSec,
     clipEndSec: clip.endSec,

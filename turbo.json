@@ -3,10 +3,30 @@
   "tasks": {
     "build": {
       "dependsOn": ["^build"],
+      "env": [
+        "NEXT_PUBLIC_AUTOMATIC_SPEAKER_LAYOUT",
+        "NEXT_PUBLIC_COMPOSITION_AUTO",
+        "NEXT_PUBLIC_COMPOSITION_CENTER",
+        "NEXT_PUBLIC_COMPOSITION_FIT",
+        "WORKER_COMPOSITION_AUTO",
+        "WORKER_COMPOSITION_CENTER",
+        "WORKER_COMPOSITION_FIT",
+        "WORKER_LAYOUT_ENGINE"
+      ],
       "outputs": ["dist/**", ".next/**", "!.next/cache/**"]
     },
     "dev": {
       "cache": false,
+      "env": [
+        "NEXT_PUBLIC_AUTOMATIC_SPEAKER_LAYOUT",
+        "NEXT_PUBLIC_COMPOSITION_AUTO",
+        "NEXT_PUBLIC_COMPOSITION_CENTER",
+        "NEXT_PUBLIC_COMPOSITION_FIT",
+        "WORKER_COMPOSITION_AUTO",
+        "WORKER_COMPOSITION_CENTER",
+        "WORKER_COMPOSITION_FIT",
+        "WORKER_LAYOUT_ENGINE"
+      ],
       "persistent": true
     },
     "lint": {

@@ -164,11 +164,11 @@ export function compileCompositionPlanVideo(input: {
       layers.forEach((layer, layerIndex) => {
         const crop = layer.sourceCrop;
         const layerOutput = `[composition_scene_${sceneIndex}_layer_${layerIndex}]`;
-        const rotation =
-          Math.abs(layer.rotationDeg) < 0.01
-            ? ""
-            : `,format=rgba,rotate=${layer.rotationDeg.toFixed(3)}*PI/180:` +
-              "ow=iw:oh=ih:c=black@0";
+        const rotated = Math.abs(layer.rotationDeg) >= 0.01;
+        const rotation = rotated
+          ? `,format=rgba,rotate=${layer.rotationDeg.toFixed(3)}*PI/180:` +
+            "ow=rotw(iw):oh=roth(ih):c=black@0"
+          : "";
         parts.push(
           `${layerSources[layerIndex]}crop=${crop.width}:${crop.height}:${crop.x}:${crop.y},` +
             `scale=${layer.destination.width}:${layer.destination.height}${rotation}${layerOutput}`,
@@ -179,8 +179,14 @@ export function compileCompositionPlanVideo(input: {
             : `[composition_scene_${sceneIndex}_composite_${layerIndex}]`;
         const final =
           layerIndex === layers.length - 1 ? ",setsar=1,format=yuv420p" : "";
+        const overlayX = rotated
+          ? `${layer.destination.x}+(${layer.destination.width}-overlay_w)/2`
+          : String(layer.destination.x);
+        const overlayY = rotated
+          ? `${layer.destination.y}+(${layer.destination.height}-overlay_h)/2`
+          : String(layer.destination.y);
         parts.push(
-          `${composite}${layerOutput}overlay=${layer.destination.x}:${layer.destination.y}:` +
+          `${composite}${layerOutput}overlay=${overlayX}:${overlayY}:` +
             `shortest=1:format=auto${final}${next}`,
         );
         composite = next;
@@ -275,6 +281,12 @@ export function compileCompositionPlanVideo(input: {
     sourceLayer.destination.height !== target.canvas.height
   ) {
     throw new Error("unsupported_clip_composition_destination");
+  }
+  if (
+    crop.x !== Math.max(0, Math.round((input.plan.source.width - crop.width) / 2)) ||
+    crop.y !== Math.max(0, Math.round((input.plan.source.height - crop.height) / 2))
+  ) {
+    throw new Error("unsupported_clip_composition_center_crop");
   }
   // Center plans always carry the resolved x/y for preview parity, while the
   // established FFmpeg command intentionally leaves x/y at crop's centered

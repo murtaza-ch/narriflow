@@ -7,6 +7,7 @@ describe("composition plan web controls", () => {
       center: "shadow",
       fit: "shadow",
       auto: "shadow",
+      automaticSpeakerLayoutEnabled: true,
     });
     expect(
       parseCompositionPlanControl({
@@ -14,9 +15,24 @@ describe("composition plan web controls", () => {
         NEXT_PUBLIC_COMPOSITION_FIT: "shadow",
         NEXT_PUBLIC_COMPOSITION_AUTO: "plan",
       }),
-    ).toEqual({ center: "legacy", fit: "shadow", auto: "plan" });
+    ).toEqual({
+      center: "legacy",
+      fit: "shadow",
+      auto: "plan",
+      automaticSpeakerLayoutEnabled: true,
+    });
+    expect(
+      parseCompositionPlanControl({
+        NEXT_PUBLIC_AUTOMATIC_SPEAKER_LAYOUT: "0",
+      }).automaticSpeakerLayoutEnabled,
+    ).toBe(false);
     expect(() =>
       parseCompositionPlanControl({ NEXT_PUBLIC_COMPOSITION_CENTER: "on" }),
     ).toThrow("NEXT_PUBLIC_COMPOSITION_CENTER");
+    expect(() =>
+      parseCompositionPlanControl({
+        NEXT_PUBLIC_AUTOMATIC_SPEAKER_LAYOUT: "disabled",
+      }),
+    ).toThrow("NEXT_PUBLIC_AUTOMATIC_SPEAKER_LAYOUT");
   });
 });

@@ -6034,12 +6034,26 @@ async function executeClipRenderAttempt(
       //   2. Legacy single-face EMA reframe (`applyAutoReframe`) only when
       //      analysis is disabled/unavailable.
       const layoutEngineEnabled = currentRenderConfig().layoutEngineEnabled;
+      const compositionSourceIdentity = compositionAssetRef(
+        "source",
+        run.projectId,
+      );
+      const compositionDocument: EditorDocument = {
+        clipStartSec: clip.startSec,
+        clipEndSec: clip.endSec,
+        captionPreset: captionPreset ?? captionPresetSchema.parse({}),
+        transcriptSlice: utterances,
+        studioEdits,
+        brollUrl: clip.brollUrl ?? null,
+        deletedRanges,
+      };
       const persistedAutoLayout = parseClipAutoLayoutAnalysis(
         clip.autoLayoutAnalysis,
       );
       const persistedAutoLayoutEligible = Boolean(
         layoutEngineEnabled &&
           persistedAutoLayout &&
+          persistedAutoLayout.sourceIdentity === compositionSourceIdentity &&
           clipAutoLayoutMatchesInputs(persistedAutoLayout, {
             clipStartSec: clip.startSec,
             clipEndSec: clip.endSec,
@@ -6054,7 +6068,70 @@ async function executeClipRenderAttempt(
         persistedAutoLayoutEligible ? persistedAutoLayout : null;
       const automaticLayoutEvidenceFailure: "failed" | "disabled" =
         layoutEngineEnabled ? "failed" : "disabled";
-      if (autoFramingActive) {
+      let automaticLayoutEvidenceSource:
+        | "durable"
+        | "analysis"
+        | "failed"
+        | "disabled" = persistedAutoLayoutEligible
+        ? "durable"
+        : automaticLayoutEvidenceFailure;
+      const autoCompositionControl = currentRenderConfig().compositionAuto;
+      const automaticEvidenceProbe =
+        probe.hasVideo &&
+        resolveEffectiveFramingMode(studioEdits) === "auto" &&
+        !brollPlan &&
+        autoCompositionControl !== "legacy"
+          ? planClipComposition({
+              document: compositionDocument,
+              source: {
+                identity: compositionSourceIdentity,
+                kind: "video",
+                width: probe.width,
+                height: probe.height,
+              },
+              evidence: {
+                automaticLayout: automaticLayoutAnalysisForPlan
+                  ? {
+                      state: "available",
+                      value: {
+                        sourceIdentity: compositionSourceIdentity,
+                        inputFingerprint: automaticLayoutInputFingerprint({
+                          sourceIdentity: compositionSourceIdentity,
+                          clipStartSec: clip.startSec,
+                          clipEndSec: clip.endSec,
+                          deletedRanges,
+                          engineVersion: "shot-layout-v1",
+                        }),
+                        engineVersion: "shot-layout-v1",
+                        analysis: automaticLayoutAnalysisForPlan,
+                      },
+                    }
+                  : {
+                      state: layoutEngineEnabled ? "missing" : "disabled",
+                    },
+              },
+              assets: { backgroundImage: { state: "missing" } },
+              capabilities: {
+                automaticSpeakerLayout: layoutEngineEnabled,
+                automaticSpeakerEngineVersion: "shot-layout-v1",
+              },
+              targets: outputs.map((output) => {
+                const target = aspectRatioConfig.get(output.aspectRatio)!;
+                return {
+                  id: output.clipRenderId,
+                  aspectRatio: output.aspectRatio,
+                  width: target.width,
+                  height: target.height,
+                };
+              }),
+            })
+          : null;
+      const automaticEvidenceRequested = Boolean(
+        automaticEvidenceProbe &&
+          automaticEvidenceProbe.status !== "invalid" &&
+          automaticEvidenceProbe.plan.evidenceRequests.length > 0,
+      );
+      if (autoFramingActive || automaticEvidenceRequested) {
         let engineHandled = false;
         if (persistedAutoLayoutEligible && persistedAutoLayout) {
           autoLayoutSegmentsFull =
@@ -6154,6 +6231,7 @@ async function executeClipRenderAttempt(
               clipAutoLayoutAnalysisSchema.parse({
                 version: 1,
                 engine: "shot-layout-v1",
+                sourceIdentity: compositionSourceIdentity,
                 analyzedAtISO: new Date(currentTimeMs()).toISOString(),
                 clipStartSec: clip.startSec,
                 clipEndSec: clip.endSec,
@@ -6171,12 +6249,16 @@ async function executeClipRenderAttempt(
                 mappedSpeakerCount: fullPlan.mappedSpeakerCount,
               });
             automaticLayoutAnalysisForPlan = envelope;
+            automaticLayoutEvidenceSource = "analysis";
             if (clip.previewStorageKey) {
               await currentRenderAdapters()
                 .clip
                 .completeClipAutoLayoutAnalysis(clip.id, envelope, {
                   editorRevision: clip.editorRevision,
                   previewStorageKey: clip.previewStorageKey,
+                  replaceExisting: Boolean(
+                    persistedAutoLayout && !persistedAutoLayoutEligible,
+                  ),
                 })
                 .catch((error) => {
                   rethrowRenderControlFlow(error);
@@ -6193,11 +6275,13 @@ async function executeClipRenderAttempt(
             }
 
             if (fullPlan.segments.length > 0) {
-              autoLayoutSegmentsFull = fullPlan.segments;
+              if (autoFramingActive) {
+                autoLayoutSegmentsFull = fullPlan.segments;
+              }
               // Outputs whose aspect ratio can't seat two distinct tiles
               // (H1's same geometry gate split uses) get a two-up-free
               // variant of the SAME plan instead of a whole-clip fallback.
-              const anyIneligible = outputs.some(
+              const anyIneligible = autoFramingActive && outputs.some(
                 (output) =>
                   reframeOutputs.includes(output) &&
                   !splitTilesAreDistinct(output.aspectRatio, probe),
@@ -6278,7 +6362,7 @@ async function executeClipRenderAttempt(
           }
         }
 
-        if (!engineHandled) {
+        if (!engineHandled && autoFramingActive) {
           // Legacy tier: single-face EMA reframe (engine disabled,
           // extraction failed, or detection unavailable — the last
           // still calls applyAutoReframe so the skip reason is logged and
@@ -7278,61 +7362,52 @@ async function executeClipRenderAttempt(
         !(requestedCompositionMode === "auto" && brollPlan) &&
         compositionControl !== "legacy"
       ) {
-        const document: EditorDocument = {
-          clipStartSec: clip.startSec,
-          clipEndSec: clip.endSec,
-          captionPreset: captionPreset ?? captionPresetSchema.parse({}),
-          transcriptSlice: utterances,
-          studioEdits,
-          brollUrl: clip.brollUrl ?? null,
-          deletedRanges,
-        };
         const planWithBackgroundAvailability = (
           backgroundImage:
             | { state: "missing" | "failed" }
             | { state: "available"; ref: string },
         ) =>
           planClipComposition({
-          document,
-          source: {
-            identity: frozenState.sourceStorageKey!,
-            kind: "video",
-            width: probe.width,
-            height: probe.height,
-          },
-          evidence: {
-            automaticLayout: automaticLayoutAnalysisForPlan
-              ? {
-                  state: "available",
-                  value: {
-                    sourceIdentity: frozenState.sourceStorageKey!,
-                    inputFingerprint: automaticLayoutInputFingerprint({
-                      sourceIdentity: frozenState.sourceStorageKey!,
-                      clipStartSec: clip.startSec,
-                      clipEndSec: clip.endSec,
-                      deletedRanges,
+            document: compositionDocument,
+            source: {
+              identity: compositionSourceIdentity,
+              kind: "video",
+              width: probe.width,
+              height: probe.height,
+            },
+            evidence: {
+              automaticLayout: automaticLayoutAnalysisForPlan
+                ? {
+                    state: "available",
+                    value: {
+                      sourceIdentity: compositionSourceIdentity,
+                      inputFingerprint: automaticLayoutInputFingerprint({
+                        sourceIdentity: compositionSourceIdentity,
+                        clipStartSec: clip.startSec,
+                        clipEndSec: clip.endSec,
+                        deletedRanges,
+                        engineVersion: "shot-layout-v1",
+                      }),
                       engineVersion: "shot-layout-v1",
-                    }),
-                    engineVersion: "shot-layout-v1",
-                    analysis: automaticLayoutAnalysisForPlan,
-                  },
-                }
-              : { state: automaticLayoutEvidenceFailure },
-          },
-          assets: { backgroundImage },
-          capabilities: {
-            automaticSpeakerLayout: currentRenderConfig().layoutEngineEnabled,
-            automaticSpeakerEngineVersion: "shot-layout-v1",
-          },
-          targets: outputs.map((output) => {
-            const target = aspectRatioConfig.get(output.aspectRatio)!;
-            return {
-              id: output.clipRenderId,
-              aspectRatio: output.aspectRatio,
-              width: target.width,
-              height: target.height,
-            };
-          }),
+                      analysis: automaticLayoutAnalysisForPlan,
+                    },
+                  }
+                : { state: automaticLayoutEvidenceFailure },
+            },
+            assets: { backgroundImage },
+            capabilities: {
+              automaticSpeakerLayout: currentRenderConfig().layoutEngineEnabled,
+              automaticSpeakerEngineVersion: "shot-layout-v1",
+            },
+            targets: outputs.map((output) => {
+              const target = aspectRatioConfig.get(output.aspectRatio)!;
+              return {
+                id: output.clipRenderId,
+                aspectRatio: output.aspectRatio,
+                width: target.width,
+                height: target.height,
+              };
+            }),
           });
         const backgroundImageAvailability =
           requestedCompositionMode === "fit" &&
@@ -7378,10 +7453,12 @@ async function executeClipRenderAttempt(
           planFingerprint: planned.plan.fingerprint,
           planningDurationMs,
           requestedMode: requestedCompositionMode,
-          evidenceSource: automaticLayoutAnalysisForPlan
-            ? "durable"
-            : automaticLayoutEvidenceFailure,
+          evidenceSource: automaticLayoutEvidenceSource,
           evidenceVersion: automaticLayoutAnalysisForPlan?.version ?? null,
+          evidenceRequestCount:
+            automaticEvidenceProbe?.status === "invalid"
+              ? 0
+              : (automaticEvidenceProbe?.plan.evidenceRequests.length ?? 0),
           effectiveModes: planned.plan.targets.map(
             (target) => target.effectiveMode,
           ),

@@ -17,11 +17,21 @@ function mode(
 
 export function parseCompositionPlanControl(
   environment: WebCompositionEnvironment,
-): Readonly<Record<"center" | "fit" | "auto", CompositionPlanControlMode>> {
+): Readonly<
+  Record<"center" | "fit" | "auto", CompositionPlanControlMode> & {
+    automaticSpeakerLayoutEnabled: boolean;
+  }
+> {
+  const automaticSpeakerLayout =
+    environment.NEXT_PUBLIC_AUTOMATIC_SPEAKER_LAYOUT?.trim() || "1";
+  if (automaticSpeakerLayout !== "0" && automaticSpeakerLayout !== "1") {
+    throw new Error("NEXT_PUBLIC_AUTOMATIC_SPEAKER_LAYOUT must be 0 or 1");
+  }
   return Object.freeze({
     center: mode(environment, "NEXT_PUBLIC_COMPOSITION_CENTER"),
     fit: mode(environment, "NEXT_PUBLIC_COMPOSITION_FIT"),
     auto: mode(environment, "NEXT_PUBLIC_COMPOSITION_AUTO"),
+    automaticSpeakerLayoutEnabled: automaticSpeakerLayout === "1",
   });
 }
 
@@ -30,6 +40,8 @@ export const compositionPlanControl = parseCompositionPlanControl({
     process.env.NEXT_PUBLIC_COMPOSITION_CENTER,
   NEXT_PUBLIC_COMPOSITION_FIT: process.env.NEXT_PUBLIC_COMPOSITION_FIT,
   NEXT_PUBLIC_COMPOSITION_AUTO: process.env.NEXT_PUBLIC_COMPOSITION_AUTO,
+  NEXT_PUBLIC_AUTOMATIC_SPEAKER_LAYOUT:
+    process.env.NEXT_PUBLIC_AUTOMATIC_SPEAKER_LAYOUT,
 });
 
 export function shouldAdoptCompositionPlan(mode: CompositionMode): boolean {
