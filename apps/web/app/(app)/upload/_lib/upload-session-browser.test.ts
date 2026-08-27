@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  createUploadSessionBrowserAdapter,
   runUploadSessionTransfer,
   uploadRetryDelayMs,
 } from "./upload-session-browser";
@@ -1087,5 +1088,551 @@ describe("Upload Session browser adapter", () => {
     await expect(transfer).rejects.toMatchObject({ name: "AbortError" });
     expect(active).toBe(0);
     expect(storage.values.has(UPLOAD_RESUME_STORAGE_KEY)).toBe(true);
+  });
+
+  test("owns Pause as an intent and publishes a paused snapshot after transfers settle", async () => {
+    const storage = memoryStorage();
+    const source = new File([new Uint8Array([1, 2, 3, 4])], "pause.mp4", {
+      type: "video/mp4",
+      lastModified: 91,
+    });
+    let activeTransfers = 0;
+    let settledTransfers = 0;
+    let releaseStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      releaseStarted = resolve;
+    });
+    const adapter = createUploadSessionBrowserAdapter({
+      storage,
+      createClientKey: () => "11111111-2222-4333-8444-555555555555",
+      navigate: () => {
+        throw new Error("paused upload must not navigate");
+      },
+      fetcher: async (request) => {
+        if (String(request) === "/api/upload-sessions/open") {
+          return Response.json({
+            outcome: "uploading",
+            sessionId: "aaaaaaaa-1111-4111-8111-aaaaaaaaaaaa",
+            projectId: "bbbbbbbb-2222-4222-8222-bbbbbbbbbbbb",
+            transfer: {
+              kind: "multipart",
+              partSizeBytes: 2,
+              partCount: 2,
+              concurrency: 2,
+              grantExpiresAt: "2099-08-27T00:15:00.000Z",
+              grants: [
+                { partNumber: 1, url: "https://upload.invalid/pause/1" },
+                { partNumber: 2, url: "https://upload.invalid/pause/2" },
+              ],
+              completedParts: [],
+            },
+          });
+        }
+        throw new Error(`Unexpected request: ${String(request)}`);
+      },
+      uploadTransport: ({ signal }) =>
+        new Promise((_resolve, reject) => {
+          activeTransfers += 1;
+          if (activeTransfers === 2) releaseStarted();
+          signal?.addEventListener(
+            "abort",
+            () => {
+              queueMicrotask(() => {
+                settledTransfers += 1;
+                reject(new DOMException("Upload paused", "AbortError"));
+              });
+            },
+            { once: true },
+          );
+        }),
+    });
+
+    const transfer = adapter.start({
+      file: source,
+      title: "Pause upload",
+      brandTemplateId: null,
+      generationContext: { languageCode: "en", contentPack: {} },
+    });
+    await started;
+    expect(adapter.shouldConfirmUnload()).toBe(true);
+    await adapter.pause();
+    await transfer;
+
+    expect(settledTransfers).toBe(2);
+    expect(adapter.shouldConfirmUnload()).toBe(false);
+    expect(adapter.snapshot()).toMatchObject({
+      phase: "paused",
+      canResume: true,
+      canDiscard: true,
+    });
+    expect(storage.values.has(UPLOAD_RESUME_STORAGE_KEY)).toBe(true);
+  });
+
+  test("converges when one part finishes as Pause stops the remaining request", async () => {
+    const storage = memoryStorage();
+    const source = new File([new Uint8Array([1, 2, 3, 4])], "pause-race.mp4", {
+      type: "video/mp4",
+      lastModified: 911,
+    });
+    let completedPart = false;
+    let releaseSecondStarted!: () => void;
+    const secondStarted = new Promise<void>((resolve) => {
+      releaseSecondStarted = resolve;
+    });
+    const adapter = createUploadSessionBrowserAdapter({
+      storage,
+      createClientKey: () => "10101010-2020-4030-8040-505050505050",
+      navigate: () => {
+        throw new Error("paused upload must not navigate");
+      },
+      fetcher: async (request) => {
+        if (String(request) === "/api/upload-sessions/open") {
+          return Response.json({
+            outcome: "uploading",
+            sessionId: "aaaaaaaa-1010-4010-8010-aaaaaaaaaaaa",
+            projectId: "bbbbbbbb-2020-4020-8020-bbbbbbbbbbbb",
+            transfer: {
+              kind: "multipart",
+              partSizeBytes: 2,
+              partCount: 2,
+              concurrency: 2,
+              grantExpiresAt: "2099-08-27T00:15:00.000Z",
+              grants: [
+                { partNumber: 1, url: "https://upload.invalid/pause-race/1" },
+                { partNumber: 2, url: "https://upload.invalid/pause-race/2" },
+              ],
+              completedParts: [],
+            },
+          });
+        }
+        throw new Error(`Unexpected request: ${String(request)}`);
+      },
+      uploadTransport: ({ url, body, signal, onProgress }) => {
+        if (url.endsWith("/1")) {
+          completedPart = true;
+          onProgress(body.size);
+          return Promise.resolve({ etag: "etag-1" });
+        }
+        releaseSecondStarted();
+        return new Promise((_resolve, reject) => {
+          signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("Paused", "AbortError")),
+            { once: true },
+          );
+        });
+      },
+    });
+
+    const transfer = adapter.start({
+      file: source,
+      title: "Pause race",
+      brandTemplateId: null,
+      generationContext: { languageCode: "en", contentPack: {} },
+    });
+    await secondStarted;
+    await adapter.pause();
+    await transfer;
+
+    expect(completedPart).toBe(true);
+    expect(adapter.snapshot()).toMatchObject({
+      phase: "paused",
+      canResume: true,
+      canDiscard: true,
+    });
+    expect(storage.values.has(UPLOAD_RESUME_STORAGE_KEY)).toBe(true);
+  });
+
+  test("checks the saved session before mutable form settings can drift", async () => {
+    const storage = memoryStorage();
+    const source = new File([new Uint8Array([1, 2, 3])], "resume.mp4", {
+      type: "video/mp4",
+      lastModified: 92,
+    });
+    storage.setItem(
+      UPLOAD_RESUME_STORAGE_KEY,
+      JSON.stringify({
+        version: 3,
+        clientIdempotencyKey: "22222222-3333-4444-8555-666666666666",
+        sessionId: "aaaaaaaa-3333-4333-8333-aaaaaaaaaaaa",
+        projectId: "bbbbbbbb-4444-4444-8444-bbbbbbbbbbbb",
+        fingerprint: JSON.stringify([
+          source.name,
+          source.size,
+          source.type,
+          source.lastModified,
+        ]),
+        fileName: source.name,
+        title: "Frozen title",
+      }),
+    );
+    const requests: string[] = [];
+    const navigations: string[] = [];
+    const adapter = createUploadSessionBrowserAdapter({
+      storage,
+      navigate: (projectId) => navigations.push(projectId),
+      fetcher: async (request, init) => {
+        const url = String(request);
+        requests.push(url);
+        expect(JSON.parse(String(init?.body))).toEqual({
+          clientIdempotencyKey: "22222222-3333-4444-8555-666666666666",
+          sessionId: "aaaaaaaa-3333-4333-8333-aaaaaaaaaaaa",
+          browserFingerprint: JSON.stringify([
+            source.name,
+            source.size,
+            source.type,
+            source.lastModified,
+          ]),
+        });
+        return Response.json({
+          outcome: "queued_for_ingest",
+          sessionId: "aaaaaaaa-3333-4333-8333-aaaaaaaaaaaa",
+          projectId: "bbbbbbbb-4444-4444-8444-bbbbbbbbbbbb",
+          queuedJobId: "cccccccc-5555-4555-8555-cccccccccccc",
+        });
+      },
+    });
+
+    await adapter.start({
+      file: source,
+      title: "Changed form title",
+      brandTemplateId: null,
+      generationContext: { languageCode: "fr", contentPack: { changed: true } },
+    });
+
+    expect(requests).toEqual(["/api/upload-sessions/status"]);
+    expect(navigations).toEqual(["bbbbbbbb-4444-4444-8444-bbbbbbbbbbbb"]);
+    expect(storage.values.has(UPLOAD_RESUME_STORAGE_KEY)).toBe(false);
+  });
+
+  test("stops browser writes before accepting server-side Discard compensation", async () => {
+    const storage = memoryStorage();
+    const source = new File([new Uint8Array([1, 2])], "discard.mp4", {
+      type: "video/mp4",
+      lastModified: 93,
+    });
+    let transferSettled = false;
+    let releaseStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      releaseStarted = resolve;
+    });
+    const adapter = createUploadSessionBrowserAdapter({
+      storage,
+      createClientKey: () => "33333333-4444-4555-8666-777777777777",
+      navigate: () => {
+        throw new Error("discarded upload must not navigate");
+      },
+      fetcher: async (request, init) => {
+        const url = String(request);
+        if (url === "/api/upload-sessions/open") {
+          return Response.json({
+            outcome: "uploading",
+            sessionId: "aaaaaaaa-5555-4555-8555-aaaaaaaaaaaa",
+            projectId: "bbbbbbbb-6666-4666-8666-bbbbbbbbbbbb",
+            transfer: {
+              kind: "multipart",
+              partSizeBytes: 2,
+              partCount: 1,
+              concurrency: 1,
+              grantExpiresAt: "2099-08-27T00:15:00.000Z",
+              grants: [
+                { partNumber: 1, url: "https://upload.invalid/discard/1" },
+              ],
+              completedParts: [],
+            },
+          });
+        }
+        if (url === "/api/upload-sessions/discard") {
+          expect(transferSettled).toBe(true);
+          expect(JSON.parse(String(init?.body))).toEqual({
+            sessionId: "aaaaaaaa-5555-4555-8555-aaaaaaaaaaaa",
+          });
+          return Response.json(
+            {
+              outcome: "compensating",
+              sessionId: "aaaaaaaa-5555-4555-8555-aaaaaaaaaaaa",
+              retryAfterSeconds: 5,
+            },
+            { status: 202 },
+          );
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      },
+      uploadTransport: ({ signal }) =>
+        new Promise((_resolve, reject) => {
+          releaseStarted();
+          signal?.addEventListener(
+            "abort",
+            () => {
+              queueMicrotask(() => {
+                transferSettled = true;
+                reject(new DOMException("Upload stopped", "AbortError"));
+              });
+            },
+            { once: true },
+          );
+        }),
+    });
+
+    const transfer = adapter.start({
+      file: source,
+      title: "Discard upload",
+      brandTemplateId: null,
+      generationContext: { languageCode: "en", contentPack: {} },
+    });
+    await started;
+    await adapter.discard();
+    await transfer;
+
+    expect(storage.values.has(UPLOAD_RESUME_STORAGE_KEY)).toBe(false);
+    expect(adapter.snapshot()).toMatchObject({
+      phase: "idle",
+      canDiscard: false,
+      message: "Upload discarded. Choose a file when you are ready.",
+    });
+  });
+
+  test("polls Verifying through repeated 202 and transient status failure", async () => {
+    const storage = memoryStorage();
+    const source = new File([new Uint8Array([1])], "verify.wav", {
+      type: "audio/wav",
+      lastModified: 94,
+    });
+    const delays: number[] = [];
+    let statusAttempt = 0;
+    const navigations: string[] = [];
+    const adapter = createUploadSessionBrowserAdapter({
+      storage,
+      createClientKey: () => "44444444-5555-4666-8777-888888888888",
+      random: () => 0.5,
+      waitBeforePoll: async (delayMs) => {
+        delays.push(delayMs);
+      },
+      navigate: (projectId) => navigations.push(projectId),
+      uploadTransport: async ({ body, onProgress }) => {
+        onProgress(body.size);
+        return { etag: null };
+      },
+      fetcher: async (request) => {
+        const url = String(request);
+        if (url === "/api/upload-sessions/open") {
+          return Response.json({
+            outcome: "uploading",
+            sessionId: "aaaaaaaa-7777-4777-8777-aaaaaaaaaaaa",
+            projectId: "bbbbbbbb-8888-4888-8888-bbbbbbbbbbbb",
+            transfer: {
+              kind: "single",
+              contentType: "audio/wav",
+              grant: {
+                url: "https://upload.invalid/verify",
+                contentType: "audio/wav",
+              },
+            },
+          });
+        }
+        if (url === "/api/upload-sessions/finalize") {
+          return Response.json(
+            {
+              outcome: "reconciling",
+              sessionId: "aaaaaaaa-7777-4777-8777-aaaaaaaaaaaa",
+              retryAfterSeconds: 4,
+            },
+            { status: 202, headers: { "Retry-After": "4" } },
+          );
+        }
+        if (url === "/api/upload-sessions/status") {
+          statusAttempt += 1;
+          if (statusAttempt === 1) {
+            return Response.json(
+              {
+                outcome: "reconciling",
+                sessionId: "aaaaaaaa-7777-4777-8777-aaaaaaaaaaaa",
+                projectId: "bbbbbbbb-8888-4888-8888-bbbbbbbbbbbb",
+                retryAfterSeconds: 7,
+              },
+              { status: 202, headers: { "Retry-After": "7" } },
+            );
+          }
+          if (statusAttempt === 2) {
+            return Response.json(
+              { error: "upload_session_unavailable" },
+              { status: 503 },
+            );
+          }
+          return Response.json({
+            outcome: "queued_for_ingest",
+            sessionId: "aaaaaaaa-7777-4777-8777-aaaaaaaaaaaa",
+            projectId: "bbbbbbbb-8888-4888-8888-bbbbbbbbbbbb",
+            queuedJobId: "cccccccc-9999-4999-8999-cccccccccccc",
+          });
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      },
+    });
+
+    await adapter.start({
+      file: source,
+      title: "Verify upload",
+      brandTemplateId: null,
+      generationContext: { languageCode: "en", contentPack: {} },
+    });
+
+    expect(statusAttempt).toBe(3);
+    expect(delays).toEqual([4_000, 7_000, 1_000]);
+    expect(navigations).toEqual(["bbbbbbbb-8888-4888-8888-bbbbbbbbbbbb"]);
+    expect(adapter.snapshot().phase).toBe("queued");
+  });
+
+  test("removes Discard and unload confirmation once finalization starts", async () => {
+    const storage = memoryStorage();
+    const source = new File([new Uint8Array([1])], "finalizing.wav", {
+      type: "audio/wav",
+      lastModified: 941,
+    });
+    let releaseFinalize!: () => void;
+    let announceFinalize!: () => void;
+    const finalizeStarted = new Promise<void>((resolve) => {
+      announceFinalize = resolve;
+    });
+    const finalizeGate = new Promise<void>((resolve) => {
+      releaseFinalize = resolve;
+    });
+    const requests: string[] = [];
+    const navigations: string[] = [];
+    const adapter = createUploadSessionBrowserAdapter({
+      storage,
+      createClientKey: () => "41414141-5151-4616-8717-818181818181",
+      navigate: (projectId) => navigations.push(projectId),
+      uploadTransport: async ({ body, onProgress }) => {
+        onProgress(body.size);
+        return { etag: null };
+      },
+      fetcher: async (request) => {
+        const url = String(request);
+        requests.push(url);
+        if (url === "/api/upload-sessions/open") {
+          return Response.json({
+            outcome: "uploading",
+            sessionId: "aaaaaaaa-3131-4313-8313-aaaaaaaaaaaa",
+            projectId: "bbbbbbbb-4141-4414-8414-bbbbbbbbbbbb",
+            transfer: {
+              kind: "single",
+              contentType: "audio/wav",
+              grant: {
+                url: "https://upload.invalid/finalizing",
+                contentType: "audio/wav",
+              },
+            },
+          });
+        }
+        if (url === "/api/upload-sessions/finalize") {
+          announceFinalize();
+          await finalizeGate;
+          return Response.json({
+            outcome: "queued_for_ingest",
+            sessionId: "aaaaaaaa-3131-4313-8313-aaaaaaaaaaaa",
+            projectId: "bbbbbbbb-4141-4414-8414-bbbbbbbbbbbb",
+            queuedJobId: "cccccccc-5151-4515-8515-cccccccccccc",
+          });
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      },
+    });
+
+    const transfer = adapter.start({
+      file: source,
+      title: "Finalizing upload",
+      brandTemplateId: null,
+      generationContext: { languageCode: "en", contentPack: {} },
+    });
+    await finalizeStarted;
+
+    expect(adapter.snapshot()).toMatchObject({
+      phase: "verifying",
+      canDiscard: false,
+      canPause: false,
+    });
+    expect(adapter.shouldConfirmUnload()).toBe(false);
+    await adapter.discard();
+    expect(requests).not.toContain("/api/upload-sessions/discard");
+
+    releaseFinalize();
+    await transfer;
+    expect(navigations).toEqual(["bbbbbbbb-4141-4414-8414-bbbbbbbbbbbb"]);
+  });
+
+  test("offers a fresh upload only after a terminal status proves cutover safety", async () => {
+    const storage = memoryStorage();
+    const source = new File([new Uint8Array([1])], "expired.wav", {
+      type: "audio/wav",
+      lastModified: 95,
+    });
+    const fingerprint = JSON.stringify([
+      source.name,
+      source.size,
+      source.type,
+      source.lastModified,
+    ]);
+    storage.setItem(
+      UPLOAD_RESUME_STORAGE_KEY,
+      JSON.stringify({
+        version: 3,
+        clientIdempotencyKey: "55555555-6666-4777-8888-999999999999",
+        sessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        projectId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+        fingerprint,
+        fileName: source.name,
+        title: "Expired source",
+      }),
+    );
+    const requests: string[] = [];
+    const navigations: string[] = [];
+    const adapter = createUploadSessionBrowserAdapter({
+      storage,
+      createClientKey: () => "66666666-7777-4888-8999-000000000000",
+      navigate: (projectId) => navigations.push(projectId),
+      fetcher: async (request) => {
+        const url = String(request);
+        requests.push(url);
+        if (url === "/api/upload-sessions/status") {
+          return Response.json({
+            outcome: "terminal",
+            sessionId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            state: "expired",
+            failureCode: "upload_session_expired",
+            freshUploadAllowed: true,
+          });
+        }
+        if (url === "/api/upload-sessions/open") {
+          return Response.json({
+            outcome: "queued_for_ingest",
+            sessionId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            projectId: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+            queuedJobId: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+          });
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      },
+    });
+    const input = {
+      file: source,
+      title: "Expired source",
+      brandTemplateId: null,
+      generationContext: { languageCode: "en", contentPack: {} },
+    };
+
+    await adapter.start(input);
+    expect(adapter.snapshot()).toMatchObject({
+      phase: "failed",
+      failureCode: "upload_session_expired",
+      canStartFresh: true,
+    });
+
+    await adapter.startFresh();
+    expect(requests).toEqual([
+      "/api/upload-sessions/status",
+      "/api/upload-sessions/open",
+    ]);
+    expect(navigations).toEqual(["dddddddd-dddd-4ddd-8ddd-dddddddddddd"]);
   });
 });

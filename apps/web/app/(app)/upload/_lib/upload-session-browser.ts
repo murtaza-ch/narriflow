@@ -16,6 +16,60 @@ type UploadProgress = {
   etaSeconds?: number | null;
 };
 
+export type UploadSessionBrowserPhase =
+  | "idle"
+  | "preparing"
+  | "uploading"
+  | "paused"
+  | "verifying"
+  | "queued"
+  | "failed";
+
+export interface UploadSessionBrowserSnapshot {
+  phase: UploadSessionBrowserPhase;
+  progressPercent: number;
+  transferredBytes: number;
+  totalBytes: number;
+  bytesPerSecond: number | null;
+  etaSeconds: number | null;
+  message: string;
+  failureCode: string | null;
+  canPause: boolean;
+  canResume: boolean;
+  canDiscard: boolean;
+  canStartFresh: boolean;
+}
+
+export interface UploadSessionBrowserStartInput {
+  file: File;
+  title: string;
+  brandTemplateId: string | null;
+  generationContext: unknown;
+}
+
+export interface UploadSessionBrowserAdapterDependencies {
+  storage: UploadResumeStorage | null;
+  navigate(projectId: string): void;
+  fetcher?: typeof fetch;
+  createClientKey?: () => string;
+  waitBeforeRetry?: (attempt: number) => Promise<void>;
+  waitBeforePoll?: (delayMs: number) => Promise<void>;
+  now?: () => number;
+  progressClock?: () => number;
+  random?: () => number;
+  uploadTransport?: RunUploadSessionTransferInput["uploadTransport"];
+}
+
+export interface UploadSessionBrowserAdapter {
+  snapshot(): UploadSessionBrowserSnapshot;
+  subscribe(listener: () => void): () => void;
+  start(input: UploadSessionBrowserStartInput): Promise<void>;
+  pause(): Promise<void>;
+  discard(): Promise<void>;
+  startFresh(): Promise<void>;
+  shouldConfirmUnload(): boolean;
+}
+
 interface RunUploadSessionTransferInput {
   file: File;
   title: string;
@@ -40,6 +94,13 @@ interface RunUploadSessionTransferInput {
 }
 
 type OpenOutcome =
+  | {
+      outcome: "terminal";
+      sessionId: string;
+      state: "aborted" | "expired" | "failed";
+      failureCode: string | null;
+      freshUploadAllowed: true;
+    }
   | {
       outcome: "queued_for_ingest";
       sessionId: string;
@@ -126,13 +187,26 @@ function parseParts(
 }
 
 function parseOpenOutcome(value: unknown): OpenOutcome | null {
-  if (
-    !isRecord(value) ||
-    !isUuid(value.sessionId) ||
-    !isUuid(value.projectId)
-  ) {
+  if (!isRecord(value) || !isUuid(value.sessionId)) {
     return null;
   }
+  if (
+    value.outcome === "terminal" &&
+    (value.state === "aborted" ||
+      value.state === "expired" ||
+      value.state === "failed") &&
+    (value.failureCode === null || typeof value.failureCode === "string") &&
+    value.freshUploadAllowed === true
+  ) {
+    return {
+      outcome: "terminal",
+      sessionId: value.sessionId,
+      state: value.state,
+      failureCode: value.failureCode,
+      freshUploadAllowed: true,
+    };
+  }
+  if (!isUuid(value.projectId)) return null;
   if (value.outcome === "queued_for_ingest") {
     return {
       outcome: "queued_for_ingest",
@@ -218,11 +292,53 @@ async function responsePayload(response: Response) {
   return response.json().catch(() => null) as Promise<unknown>;
 }
 
-function responseError(payload: unknown, fallback: string) {
-  if (!isRecord(payload)) return new Error(fallback);
-  if (typeof payload.message === "string") return new Error(payload.message);
-  if (typeof payload.error === "string") return new Error(payload.error);
-  return new Error(fallback);
+class UploadSessionBrowserFailure extends Error {
+  constructor(readonly code: string, message: string) {
+    super(message);
+    this.name = "UploadSessionBrowserFailure";
+  }
+}
+
+const UPLOAD_FAILURE_MESSAGES: Record<string, string> = {
+  quota_exceeded:
+    "Your workspace has reached its processing limit. Review usage before retrying.",
+  upload_session_idempotency_conflict:
+    "This saved upload belongs to different frozen settings. Discard it or re-select the original file.",
+  upload_session_not_found:
+    "Narriflow could not find this saved Upload Session.",
+  upload_session_invalid_state:
+    "This Upload Session changed state. Check its status before retrying.",
+  upload_session_integrity_failed:
+    "The stored object did not match the selected file. Start a fresh upload.",
+  rate_limited: "Too many upload requests. Wait a moment, then retry.",
+  upload_session_unavailable:
+    "Upload storage is temporarily unavailable. Your saved session is unchanged.",
+};
+
+function responseError(
+  response: Response,
+  payload: unknown,
+  fallback: string,
+) {
+  const payloadCode =
+    isRecord(payload) && typeof payload.error === "string"
+      ? payload.error
+      : null;
+  const code =
+    payloadCode ??
+    (response.status === 401 || response.status === 403
+      ? "upload_authorization_required"
+      : response.status === 429
+        ? "rate_limited"
+        : response.status >= 500
+          ? "upload_session_unavailable"
+          : "upload_failed");
+  const message =
+    UPLOAD_FAILURE_MESSAGES[code] ??
+    (code === "upload_authorization_required"
+      ? "Your upload permission changed. Refresh the page and sign in again."
+      : fallback);
+  return new UploadSessionBrowserFailure(code, message);
 }
 
 class UploadHttpError extends Error {
@@ -386,29 +502,56 @@ export async function runUploadSessionTransfer(
   });
 
   const contentType = input.file.type || "video/mp4";
-  const openedResponse = await fetcher("/api/upload-sessions/open", {
+  const openedResponse = await fetcher(
+    existing
+      ? "/api/upload-sessions/status"
+      : "/api/upload-sessions/open",
+    {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      clientIdempotencyKey: resume.clientIdempotencyKey,
-      title: input.title,
-      source: {
-        fileName: input.file.name,
-        sizeBytes: input.file.size,
-        contentType,
-        browserFingerprint: fingerprint,
-      },
-      brandTemplateId: input.brandTemplateId,
-      generationContext: input.generationContext,
-    }),
+    body: JSON.stringify(
+      existing
+        ? {
+            clientIdempotencyKey: resume.clientIdempotencyKey,
+            sessionId: resume.sessionId,
+            browserFingerprint: fingerprint,
+          }
+        : {
+            clientIdempotencyKey: resume.clientIdempotencyKey,
+            title: input.title,
+            source: {
+              fileName: input.file.name,
+              sizeBytes: input.file.size,
+              contentType,
+              browserFingerprint: fingerprint,
+            },
+            brandTemplateId: input.brandTemplateId,
+            generationContext: input.generationContext,
+          },
+    ),
     signal: input.signal,
-  });
+    },
+  );
   const openedPayload = await responsePayload(openedResponse);
   if (!openedResponse.ok) {
-    throw responseError(openedPayload, "Failed to open Upload Session.");
+    if (existing && openedResponse.status === 404) {
+      return {
+        outcome: "terminal" as const,
+        sessionId: resume.sessionId ?? resume.clientIdempotencyKey,
+        state: "failed" as const,
+        failureCode: "upload_session_not_found",
+        freshUploadAllowed: true as const,
+      };
+    }
+    throw responseError(
+      openedResponse,
+      openedPayload,
+      "Failed to open Upload Session.",
+    );
   }
   const opened = parseOpenOutcome(openedPayload);
   if (!opened) throw new Error("The upload service returned an invalid contract.");
+  if (opened.outcome === "terminal") return opened;
   if (opened.outcome === "queued_for_ingest") {
     if (input.storage) saveUploadResume(input.storage, null);
     return { projectId: opened.projectId };
@@ -534,7 +677,11 @@ export async function runUploadSessionTransfer(
       });
       const grantPayload = await responsePayload(grantResponse);
       if (!grantResponse.ok) {
-        throw responseError(grantPayload, "Failed to refresh upload grants.");
+        throw responseError(
+          grantResponse,
+          grantPayload,
+          "Failed to refresh upload grants.",
+        );
       }
       if (
         !isRecord(grantPayload) ||
@@ -669,7 +816,11 @@ export async function runUploadSessionTransfer(
   });
   const finalized = await responsePayload(finalizedResponse);
   if (!finalizedResponse.ok) {
-    throw responseError(finalized, "Failed to verify upload.");
+    throw responseError(
+      finalizedResponse,
+      finalized,
+      "Failed to verify upload.",
+    );
   }
   if (
     isRecord(finalized) &&
@@ -696,4 +847,367 @@ export async function runUploadSessionTransfer(
   }
   if (input.storage) saveUploadResume(input.storage, null);
   return { projectId: opened.projectId };
+}
+
+const IDLE_UPLOAD_SNAPSHOT: UploadSessionBrowserSnapshot = Object.freeze({
+  phase: "idle",
+  progressPercent: 0,
+  transferredBytes: 0,
+  totalBytes: 0,
+  bytesPerSecond: null,
+  etaSeconds: null,
+  message: "Choose a video or audio file to begin.",
+  failureCode: null,
+  canPause: false,
+  canResume: false,
+  canDiscard: false,
+  canStartFresh: false,
+});
+
+export function createUploadSessionBrowserAdapter(
+  dependencies: UploadSessionBrowserAdapterDependencies,
+): UploadSessionBrowserAdapter {
+  let currentSnapshot = IDLE_UPLOAD_SNAPSHOT;
+  let activeController: AbortController | null = null;
+  let activeOperation: Promise<void> | null = null;
+  let pauseRequested = false;
+  let discardRequested = false;
+  let freshStartAllowed = false;
+  let currentInput: UploadSessionBrowserStartInput | null = null;
+  const listeners = new Set<() => void>();
+
+  const publish = (snapshot: UploadSessionBrowserSnapshot) => {
+    currentSnapshot = Object.freeze(snapshot);
+    for (const listener of listeners) listener();
+  };
+
+  const finishQueued = (projectId: string, totalBytes: number) => {
+    if (dependencies.storage) saveUploadResume(dependencies.storage, null);
+    publish({
+      ...currentSnapshot,
+      phase: "queued",
+      progressPercent: 100,
+      transferredBytes: totalBytes,
+      totalBytes,
+      message: "Upload verified. Opening the queued project.",
+      failureCode: null,
+      canPause: false,
+      canResume: false,
+      canDiscard: false,
+    });
+    dependencies.navigate(projectId);
+  };
+
+  const pollVerification = async (
+    input: UploadSessionBrowserStartInput,
+    firstRetryAfterSeconds: number,
+  ) => {
+    const fetcher = dependencies.fetcher ?? fetch;
+    const waitBeforePoll =
+      dependencies.waitBeforePoll ??
+      ((delayMs: number) =>
+        new Promise<void>((resolve) => setTimeout(resolve, delayMs)));
+    const jitter = (delayMs: number) =>
+      Math.round(
+        Math.min(30_000, Math.max(1_000, delayMs)) *
+          (0.8 + (dependencies.random?.() ?? Math.random()) * 0.4),
+      );
+    let retryAfterSeconds = firstRetryAfterSeconds;
+    let transientFailures = 0;
+    for (let pollAttempt = 0; pollAttempt < 120; pollAttempt += 1) {
+      await waitBeforePoll(jitter(retryAfterSeconds * 1_000));
+      const resume = dependencies.storage
+        ? loadUploadResume(
+            dependencies.storage,
+            createUploadFileFingerprint(input.file),
+          )
+        : null;
+      if (!resume) {
+        throw new Error("The saved Upload Session is unavailable.");
+      }
+      let response: Response;
+      try {
+        response = await fetcher("/api/upload-sessions/status", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            clientIdempotencyKey: resume.clientIdempotencyKey,
+            sessionId: resume.sessionId,
+            browserFingerprint: resume.fingerprint,
+          }),
+        });
+      } catch {
+        transientFailures += 1;
+        if (transientFailures >= 8) break;
+        retryAfterSeconds = Math.min(30, 2 ** (transientFailures - 1));
+        continue;
+      }
+      const payload = await responsePayload(response);
+      if (response.status === 429 || response.status >= 500) {
+        transientFailures += 1;
+        if (transientFailures >= 8) break;
+        const retryHeader = Number(response.headers.get("Retry-After"));
+        retryAfterSeconds =
+          Number.isInteger(retryHeader) && retryHeader > 0
+            ? Math.min(30, retryHeader)
+            : Math.min(30, 2 ** (transientFailures - 1));
+        continue;
+      }
+      if (!response.ok) {
+        throw responseError(
+          response,
+          payload,
+          "Upload verification could not continue.",
+        );
+      }
+      const outcome = parseOpenOutcome(payload);
+      if (!outcome) {
+        throw new Error("The upload service returned an invalid status contract.");
+      }
+      transientFailures = 0;
+      if (outcome.outcome === "queued_for_ingest") {
+        finishQueued(outcome.projectId, input.file.size);
+        return;
+      }
+      if (outcome.outcome !== "reconciling") {
+        throw new Error("Upload verification returned to byte transfer unexpectedly.");
+      }
+      retryAfterSeconds = outcome.retryAfterSeconds;
+    }
+    throw new Error("Upload verification is taking longer than expected.");
+  };
+
+  const start = (input: UploadSessionBrowserStartInput) => {
+    if (activeOperation) return activeOperation;
+    pauseRequested = false;
+    discardRequested = false;
+    freshStartAllowed = false;
+    currentInput = input;
+    const controller = new AbortController();
+    activeController = controller;
+    publish({
+      ...IDLE_UPLOAD_SNAPSHOT,
+      phase: "preparing",
+      totalBytes: input.file.size,
+      message: "Preparing a secure upload session.",
+    });
+
+    const operation = (async () => {
+      try {
+        const result = await runUploadSessionTransfer({
+          ...input,
+          storage: dependencies.storage,
+          fetcher: dependencies.fetcher,
+          createClientKey: dependencies.createClientKey,
+          signal: controller.signal,
+          waitBeforeRetry: dependencies.waitBeforeRetry,
+          now: dependencies.now,
+          progressClock: dependencies.progressClock,
+          random: dependencies.random,
+          uploadTransport: dependencies.uploadTransport,
+          onProgress(progress) {
+            const phase =
+              progress.stage === "prepare"
+                ? "preparing"
+                : progress.stage === "upload"
+                  ? "uploading"
+                  : "verifying";
+            publish({
+              phase,
+              progressPercent: progress.percent,
+              transferredBytes: progress.transferredBytes,
+              totalBytes: progress.totalBytes,
+              bytesPerSecond: progress.bytesPerSecond ?? null,
+              etaSeconds: progress.etaSeconds ?? null,
+              message:
+                phase === "preparing"
+                  ? "Preparing a secure upload session."
+                  : phase === "uploading"
+                    ? "Uploading bytes to secure storage."
+                    : "Narriflow is checking your upload. You may leave this page safely.",
+              failureCode: null,
+              canPause: phase === "uploading",
+              canResume: false,
+              canDiscard: phase === "uploading",
+              canStartFresh: false,
+            });
+          },
+        });
+        if ("outcome" in result && result.outcome === "terminal") {
+          freshStartAllowed = result.freshUploadAllowed;
+          publish({
+            ...currentSnapshot,
+            phase: "failed",
+            message:
+              result.state === "expired"
+                ? "This saved Upload Session expired after safe cleanup. Start a fresh upload when ready."
+                : "This saved Upload Session is closed. Start a fresh upload when ready.",
+            failureCode: result.failureCode,
+            canPause: false,
+            canResume: false,
+            canDiscard: false,
+            canStartFresh: true,
+          });
+          return;
+        }
+        if ("outcome" in result && result.outcome === "reconciling") {
+          publish({
+            ...currentSnapshot,
+            phase: "verifying",
+            message:
+              "Narriflow is checking your upload. You may leave this page safely.",
+            canPause: false,
+            canResume: false,
+            canDiscard: false,
+            canStartFresh: false,
+          });
+          await pollVerification(input, result.retryAfterSeconds);
+          return;
+        }
+        finishQueued(result.projectId, input.file.size);
+      } catch (error) {
+        if (
+          discardRequested &&
+          error instanceof DOMException &&
+          error.name === "AbortError"
+        ) {
+          return;
+        }
+        if (
+          pauseRequested &&
+          error instanceof DOMException &&
+          error.name === "AbortError"
+        ) {
+          publish({
+            ...currentSnapshot,
+            phase: "paused",
+            message:
+              "Upload paused. Re-select the exact same file to continue with the saved settings.",
+            failureCode: null,
+            canPause: false,
+            canResume: true,
+            canDiscard: true,
+          });
+          return;
+        }
+        publish({
+          ...currentSnapshot,
+          phase: "failed",
+          message:
+            error instanceof Error
+              ? error.message
+              : "Upload is temporarily unavailable.",
+          failureCode:
+            error instanceof UploadSessionBrowserFailure
+              ? error.code
+              : "upload_failed",
+          canPause: false,
+          canResume: Boolean(
+            dependencies.storage &&
+              loadUploadResume(
+                dependencies.storage,
+                createUploadFileFingerprint(input.file),
+              ),
+          ),
+          canDiscard: Boolean(
+            currentSnapshot.phase !== "verifying" &&
+              dependencies.storage &&
+              loadUploadResume(
+                dependencies.storage,
+                createUploadFileFingerprint(input.file),
+              )?.sessionId,
+          ),
+          canStartFresh: false,
+        });
+      } finally {
+        if (activeController === controller) activeController = null;
+        activeOperation = null;
+      }
+    })();
+    activeOperation = operation;
+    return operation;
+  };
+
+  return {
+    snapshot: () => currentSnapshot,
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    start,
+    async pause() {
+      if (currentSnapshot.phase !== "uploading" || !activeController) return;
+      pauseRequested = true;
+      const operation = activeOperation;
+      activeController.abort();
+      await operation;
+    },
+    async discard() {
+      if (!currentSnapshot.canDiscard || !currentInput) return;
+      discardRequested = true;
+      const operation = activeOperation;
+      activeController?.abort();
+      await operation;
+
+      const resume = dependencies.storage
+        ? loadUploadResume(
+            dependencies.storage,
+            createUploadFileFingerprint(currentInput.file),
+          )
+        : null;
+      if (!resume?.sessionId) {
+        publish({
+          ...currentSnapshot,
+          phase: "failed",
+          message: "The saved Upload Session is unavailable.",
+          failureCode: "upload_session_unavailable",
+          canPause: false,
+          canResume: true,
+          canDiscard: false,
+          canStartFresh: false,
+        });
+        return;
+      }
+
+      const fetcher = dependencies.fetcher ?? fetch;
+      const response = await fetcher("/api/upload-sessions/discard", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ sessionId: resume.sessionId }),
+      });
+      const payload = await responsePayload(response);
+      if (
+        !response.ok ||
+        !isRecord(payload) ||
+        payload.sessionId !== resume.sessionId ||
+        (payload.outcome !== "discarded" &&
+          payload.outcome !== "compensating")
+      ) {
+        publish({
+          ...currentSnapshot,
+          phase: "failed",
+          message: "Narriflow could not accept Discard yet. Try again.",
+          failureCode: "upload_discard_unavailable",
+          canPause: false,
+          canResume: true,
+          canDiscard: true,
+          canStartFresh: false,
+        });
+        return;
+      }
+      if (dependencies.storage) saveUploadResume(dependencies.storage, null);
+      currentInput = null;
+      publish({
+        ...IDLE_UPLOAD_SNAPSHOT,
+        message: "Upload discarded. Choose a file when you are ready.",
+      });
+    },
+    async startFresh() {
+      if (!freshStartAllowed || !currentInput) return;
+      if (dependencies.storage) saveUploadResume(dependencies.storage, null);
+      freshStartAllowed = false;
+      await start(currentInput);
+    },
+    shouldConfirmUnload: () => currentSnapshot.phase === "uploading",
+  };
 }

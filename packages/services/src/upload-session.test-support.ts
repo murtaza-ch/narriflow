@@ -471,6 +471,28 @@ export function createInMemoryUploadSessionHarness() {
       session.updatedAt = updatedAt;
       return session;
     },
+    async beginDiscard({
+      sessionId,
+      reconciliationAttemptId,
+      leaseExpiresAt,
+      updatedAt,
+    }) {
+      const session = sessions.find((candidate) => candidate.id === sessionId);
+      if (!session) throw new Error("Upload Session reservation not found");
+      const claimed =
+        session.status === "uploading" &&
+        session.reconciliationAttemptId === null;
+      if (claimed) {
+        session.status = "compensating";
+        session.failureCode = "user_discarded";
+        session.reconcileAt = updatedAt;
+        session.reconciliationAttemptId = reconciliationAttemptId;
+        session.reconciliationLeaseExpiresAt = leaseExpiresAt;
+        session.reconciliationAttemptCount += 1;
+        session.updatedAt = updatedAt;
+      }
+      return { claimed, session };
+    },
     async releaseReconciliation({
       sessionId,
       reconciliationAttemptId,

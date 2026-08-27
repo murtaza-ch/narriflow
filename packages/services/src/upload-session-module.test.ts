@@ -2609,4 +2609,218 @@ describe("Upload Session", () => {
     expect(harness.facts.projects).toHaveLength(1);
     expect(harness.facts.ingestJobs).toHaveLength(1);
   });
+
+  test("resumes an exact browser file without resubmitting frozen settings", async () => {
+    const harness = createInMemoryUploadSessionHarness();
+    const module = createUploadSessionModule(harness.adapters);
+    const browserFingerprint = '["resume.mp4",2048,"video/mp4",7]';
+    const opened = await module.open({
+      ...ACTOR,
+      clientIdempotencyKey: "93939393-9393-4393-8393-939393939393",
+      title: "Frozen title",
+      source: {
+        fileName: "resume.mp4",
+        sizeBytes: 2_048,
+        contentType: "video/mp4",
+        browserFingerprint,
+      },
+      brandTemplateId: null,
+      generation: { languageCode: "en", contentPack: CONTENT_PACK },
+    });
+
+    const resumed = await module.status({
+      actorUserId: ACTOR.actorUserId,
+      workspaceId: ACTOR.workspaceId,
+      clientIdempotencyKey: "93939393-9393-4393-8393-939393939393",
+      sessionId: opened.sessionId,
+      browserFingerprint,
+    });
+
+    expect(resumed).toMatchObject({
+      outcome: "uploading",
+      sessionId: opened.sessionId,
+      projectId: opened.projectId,
+    });
+  });
+
+  test("discards an active multipart session through fenced compensation", async () => {
+    const harness = createInMemoryUploadSessionHarness();
+    const module = createUploadSessionModule({
+      ...harness.adapters,
+      config: defaultUploadSessionConfig({ smallFileThresholdBytes: 1 }),
+    });
+    const opened = await module.open({
+      ...ACTOR,
+      clientIdempotencyKey: "94949494-9494-4494-8494-949494949494",
+      title: "Discard me",
+      source: {
+        fileName: "discard.mp4",
+        sizeBytes: 2_048,
+        contentType: "video/mp4",
+        browserFingerprint: '["discard.mp4",2048,"video/mp4",8]',
+      },
+      brandTemplateId: null,
+      generation: { languageCode: "en", contentPack: CONTENT_PACK },
+    });
+
+    const discarded = await module.discard({
+      actorUserId: ACTOR.actorUserId,
+      workspaceId: ACTOR.workspaceId,
+      sessionId: opened.sessionId,
+    });
+
+    expect(discarded).toEqual({
+      outcome: "discarded",
+      sessionId: opened.sessionId,
+    });
+    expect(harness.facts.providerAborts).toHaveLength(1);
+    expect(harness.facts.sessions[0]).toMatchObject({
+      status: "aborted",
+      failureCode: "user_discarded",
+    });
+  });
+
+  test("accepts Discard as delayed compensation when provider cleanup fails", async () => {
+    const harness = createInMemoryUploadSessionHarness();
+    const module = createUploadSessionModule({
+      ...harness.adapters,
+      config: defaultUploadSessionConfig({ smallFileThresholdBytes: 1 }),
+      storage: {
+        ...harness.adapters.storage,
+        async abortMultipart() {
+          const error = new Error("provider detail must stay internal");
+          error.name = "AccessDenied";
+          throw error;
+        },
+      },
+    });
+    const opened = await module.open({
+      ...ACTOR,
+      clientIdempotencyKey: "96969696-9696-4696-8696-969696969691",
+      title: "Delayed discard",
+      source: {
+        fileName: "delayed-discard.mp4",
+        sizeBytes: 2_048,
+        contentType: "video/mp4",
+        browserFingerprint: '["delayed-discard.mp4",2048,"video/mp4",10]',
+      },
+      brandTemplateId: null,
+      generation: { languageCode: "en", contentPack: CONTENT_PACK },
+    });
+
+    await expect(
+      module.discard({
+        actorUserId: ACTOR.actorUserId,
+        workspaceId: ACTOR.workspaceId,
+        sessionId: opened.sessionId,
+      }),
+    ).resolves.toEqual({
+      outcome: "compensating",
+      sessionId: opened.sessionId,
+      retryAfterSeconds: 5,
+    });
+    expect(harness.facts.sessions[0]).toMatchObject({
+      status: "compensating",
+      failureCode: "user_discarded",
+    });
+  });
+
+  test("finalization intent fences a racing Discard", async () => {
+    const harness = createInMemoryUploadSessionHarness();
+    const baseStorage = harness.adapters.storage;
+    const admissionModule = createUploadSessionModule(harness.adapters);
+    const opened = await admissionModule.open({
+      ...ACTOR,
+      clientIdempotencyKey: "97979797-9797-4797-8797-979797979792",
+      title: "Finalize wins",
+      source: {
+        fileName: "finalize-wins.wav",
+        sizeBytes: 2_048,
+        contentType: "audio/wav",
+        browserFingerprint: '["finalize-wins.wav",2048,"audio/wav",11]',
+      },
+      brandTemplateId: null,
+      generation: { languageCode: "en", contentPack: CONTENT_PACK },
+    });
+    harness.putSingleObject(opened.sessionId, {
+      sizeBytes: 2_048,
+      contentType: "audio/wav",
+    });
+    let announceProbe!: () => void;
+    let releaseProbe!: () => void;
+    const probeStarted = new Promise<void>((resolve) => {
+      announceProbe = resolve;
+    });
+    const probeGate = new Promise<void>((resolve) => {
+      releaseProbe = resolve;
+    });
+    const module = createUploadSessionModule({
+      ...harness.adapters,
+      storage: {
+        ...baseStorage,
+        async headExactObject(storageKey, signal) {
+          announceProbe();
+          await probeGate;
+          return baseStorage.headExactObject(storageKey, signal);
+        },
+      },
+    });
+    const finalization = module.finalize({
+      actorUserId: ACTOR.actorUserId,
+      workspaceId: ACTOR.workspaceId,
+      sessionId: opened.sessionId,
+      parts: [],
+    });
+    await probeStarted;
+    await expect(
+      module.discard({
+        actorUserId: ACTOR.actorUserId,
+        workspaceId: ACTOR.workspaceId,
+        sessionId: opened.sessionId,
+      }),
+    ).rejects.toBeInstanceOf(UploadSessionInvalidStateError);
+    releaseProbe();
+    await expect(finalization).resolves.toMatchObject({
+      outcome: "queued_for_ingest",
+      projectId: opened.projectId,
+    });
+  });
+
+  test("proves a terminal compensated session before allowing a fresh upload", async () => {
+    const harness = createInMemoryUploadSessionHarness();
+    const module = createUploadSessionModule(harness.adapters);
+    const browserFingerprint = '["terminal.mp4",2048,"video/mp4",9]';
+    const opened = await module.open({
+      ...ACTOR,
+      clientIdempotencyKey: "95959595-9595-4595-8595-959595959595",
+      title: "Terminal upload",
+      source: {
+        fileName: "terminal.mp4",
+        sizeBytes: 2_048,
+        contentType: "video/mp4",
+        browserFingerprint,
+      },
+      brandTemplateId: null,
+      generation: { languageCode: "en", contentPack: CONTENT_PACK },
+    });
+    const session = harness.facts.sessions[0]!;
+    session.status = "expired";
+    session.failureCode = "upload_session_expired";
+
+    await expect(
+      module.status({
+        actorUserId: ACTOR.actorUserId,
+        workspaceId: ACTOR.workspaceId,
+        clientIdempotencyKey: "95959595-9595-4595-8595-959595959595",
+        sessionId: opened.sessionId,
+        browserFingerprint,
+      }),
+    ).resolves.toEqual({
+      outcome: "terminal",
+      sessionId: opened.sessionId,
+      state: "expired",
+      failureCode: "upload_session_expired",
+      freshUploadAllowed: true,
+    });
+  });
 });

@@ -1,12 +1,16 @@
 import { Hono } from "hono";
 import {
+  discardUploadSessionSchema,
   finalizeUploadSessionSchema,
   grantUploadPartsSchema,
   openUploadSessionSchema,
+  readUploadSessionSchema,
   userErrorMessage,
+  type DiscardUploadSessionInput,
   type FinalizeUploadSessionInput,
   type GrantUploadPartsInput,
   type OpenUploadSessionInput,
+  type ReadUploadSessionInput,
 } from "@narriflow/validators";
 import {
   UploadSessionIdempotencyConflictError,
@@ -14,9 +18,11 @@ import {
   UploadSessionInvalidStateError,
   UploadSessionNotFoundError,
   UploadSessionQuotaRefusedError,
+  type DiscardUploadSessionOutcome,
   type FinalizeUploadSessionOutcome,
   type GrantUploadPartsOutcome,
   type OpenUploadSessionOutcome,
+  type ReadUploadSessionOutcome,
 } from "@narriflow/services";
 
 interface UploadSessionHttpUser {
@@ -41,6 +47,16 @@ interface UploadSessionHttpService {
     input: GrantUploadPartsInput,
     workspaceId: string,
   ): Promise<GrantUploadPartsOutcome>;
+  status(
+    actorUserId: string,
+    input: ReadUploadSessionInput,
+    workspaceId: string,
+  ): Promise<ReadUploadSessionOutcome>;
+  discard(
+    actorUserId: string,
+    input: DiscardUploadSessionInput,
+    workspaceId: string,
+  ): Promise<DiscardUploadSessionOutcome>;
 }
 
 export interface UploadSessionHttpDependencies {
@@ -233,6 +249,108 @@ export function createUploadSessionHttpRoutes(
         {
           error: "upload_session_unavailable",
           message: "Upload grants are temporarily unavailable.",
+        },
+        503,
+      );
+    }
+  });
+
+  routes.post("/upload-sessions/status", async (c) => {
+    const appUser = await dependencies.getCurrentUser();
+    if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+    const rateLimit = await dependencies.checkRateLimit(
+      `upload-session-status:${appUser.id}`,
+      120,
+      60,
+    );
+    if (!rateLimit.allowed) {
+      c.header("Retry-After", "60");
+      return c.json(
+        { error: "rate_limited", message: userErrorMessage("rate_limited") },
+        429,
+      );
+    }
+    const payload = await c.req.json().catch(() => null);
+    const parsed = readUploadSessionSchema.safeParse(payload);
+    if (!parsed.success) {
+      return c.json(
+        { error: "Invalid payload", issues: parsed.error.issues },
+        400,
+      );
+    }
+    try {
+      const outcome = await dependencies.service.status(
+        appUser.actorUserId,
+        parsed.data,
+        appUser.workspaceId,
+      );
+      if (outcome.outcome === "reconciling") {
+        c.header("Retry-After", String(outcome.retryAfterSeconds));
+        return c.json(outcome, 202);
+      }
+      return c.json(outcome, 200);
+    } catch (error) {
+      if (error instanceof UploadSessionNotFoundError) {
+        return c.json({ error: error.code, message: error.message }, 404);
+      }
+      if (error instanceof UploadSessionInvalidStateError) {
+        return c.json({ error: error.code, message: error.message }, 409);
+      }
+      return c.json(
+        {
+          error: "upload_session_unavailable",
+          message: "Upload status is temporarily unavailable.",
+        },
+        503,
+      );
+    }
+  });
+
+  routes.post("/upload-sessions/discard", async (c) => {
+    const appUser = await dependencies.getCurrentUser();
+    if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+    const rateLimit = await dependencies.checkRateLimit(
+      `upload-session-discard:${appUser.id}`,
+      30,
+      60,
+    );
+    if (!rateLimit.allowed) {
+      c.header("Retry-After", "60");
+      return c.json(
+        { error: "rate_limited", message: userErrorMessage("rate_limited") },
+        429,
+      );
+    }
+    const payload = await c.req.json().catch(() => null);
+    const parsed = discardUploadSessionSchema.safeParse(payload);
+    if (!parsed.success) {
+      return c.json(
+        { error: "Invalid payload", issues: parsed.error.issues },
+        400,
+      );
+    }
+    try {
+      const outcome = await dependencies.service.discard(
+        appUser.actorUserId,
+        parsed.data,
+        appUser.workspaceId,
+      );
+      if (outcome.outcome === "compensating") {
+        c.header("Retry-After", String(outcome.retryAfterSeconds));
+        return c.json(outcome, 202);
+      }
+      return c.json(outcome, 200);
+    } catch (error) {
+      if (error instanceof UploadSessionNotFoundError) {
+        return c.json({ error: error.code, message: error.message }, 404);
+      }
+      if (error instanceof UploadSessionInvalidStateError) {
+        return c.json({ error: error.code, message: error.message }, 409);
+      }
+      return c.json(
+        {
+          error: "upload_session_unavailable",
+          message: "Upload cleanup is temporarily unavailable.",
         },
         503,
       );

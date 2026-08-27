@@ -87,3 +87,13 @@ export function formatTimecode(seconds: number): string {
   const s = total % 60;
   return [h, m, s].map((part) => String(part).padStart(2, "0")).join(":");
 }
+
+/** Formats an upload/download rate with a stable binary unit. */
+export function formatTransferRate(bytesPerSecond: number): string {
+  const safeRate = Number.isFinite(bytesPerSecond)
+    ? Math.max(0, bytesPerSecond)
+    : 0;
+  const mebibytes = safeRate / (1024 * 1024);
+  if (mebibytes >= 1) return `${mebibytes.toFixed(1)} MB/s`;
+  return `${Math.round(safeRate / 1024)} KB/s`;
+}

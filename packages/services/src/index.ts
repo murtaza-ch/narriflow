@@ -102,8 +102,10 @@ export {
   UploadSessionNotFoundError,
   UploadSessionQuotaRefusedError,
   type FinalizeUploadSessionOutcome,
+  type DiscardUploadSessionOutcome,
   type GrantUploadPartsOutcome,
   type OpenUploadSessionOutcome,
+  type ReadUploadSessionOutcome,
   type UploadSessionConfig,
 } from "./upload-session.service";
 export {

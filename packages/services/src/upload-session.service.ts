@@ -3,16 +3,20 @@ import { Prisma, type UploadSession as PrismaUploadSession } from "@prisma/clien
 import { getPrismaClient } from "@narriflow/db/client";
 import {
   contentPackSchema,
+  discardUploadSessionSchema,
   isProcessingQuotaExceeded,
   MONTHLY_PROCESSING_MINUTE_LIMITS,
   finalizeUploadSessionSchema,
   grantUploadPartsSchema,
   openUploadSessionSchema,
+  readUploadSessionSchema,
   processingMinutesFromSeconds,
   resolvePricingTier,
   uploadCompletionIntentSchema,
   uploadMimeTypes,
   type OpenUploadSessionInput as ValidatedOpenUploadSessionInput,
+  type ReadUploadSessionInput as ValidatedReadUploadSessionInput,
+  type DiscardUploadSessionInput as ValidatedDiscardUploadSessionInput,
   type FinalizeUploadSessionInput as ValidatedFinalizeUploadSessionInput,
   type GrantUploadPartsInput as ValidatedGrantUploadPartsInput,
 } from "@narriflow/validators";
@@ -296,6 +300,12 @@ export interface UploadSessionPersistence {
     leaseExpiresAt: Date;
     updatedAt: Date;
   }): Promise<UploadSessionRecord>;
+  beginDiscard(input: {
+    sessionId: string;
+    reconciliationAttemptId: string;
+    leaseExpiresAt: Date;
+    updatedAt: Date;
+  }): Promise<{ claimed: boolean; session: UploadSessionRecord }>;
   releaseReconciliation(input: {
     sessionId: string;
     reconciliationAttemptId: string;
@@ -412,6 +422,7 @@ export interface UploadSessionModuleDependencies {
     durationMs?: number;
     nextRetryAt?: string;
     takeover?: boolean;
+    replay?: boolean;
   }): void;
 }
 
@@ -430,6 +441,28 @@ export interface OpenUploadSessionInput {
   brandTemplateId: string | null;
   generation: unknown;
 }
+
+export interface ReadUploadSessionInput {
+  actorUserId: string;
+  workspaceId: string;
+  clientIdempotencyKey: string;
+  sessionId: string | null;
+  browserFingerprint: string;
+}
+
+export interface DiscardUploadSessionInput {
+  actorUserId: string;
+  workspaceId: string;
+  sessionId: string;
+}
+
+export type DiscardUploadSessionOutcome =
+  | { outcome: "discarded"; sessionId: string }
+  | {
+      outcome: "compensating";
+      sessionId: string;
+      retryAfterSeconds: number;
+    };
 
 export type OpenUploadSessionOutcome =
   | {
@@ -464,6 +497,16 @@ export type OpenUploadSessionOutcome =
         grantExpiresAt: string;
         completedParts: Array<{ partNumber: number; etag: string }>;
         };
+    };
+
+export type ReadUploadSessionOutcome =
+  | OpenUploadSessionOutcome
+  | {
+      outcome: "terminal";
+      sessionId: string;
+      state: "aborted" | "expired" | "failed";
+      failureCode: string | null;
+      freshUploadAllowed: true;
     };
 
 export interface FinalizeUploadSessionInput {
@@ -1521,6 +1564,10 @@ export function createUploadSessionModule(
         clientIdempotencyKey: input.clientIdempotencyKey,
       });
       if (existing) {
+        diagnose(existing.id, "reservation", "succeeded", {
+          state: existing.status,
+          replay: true,
+        });
         return resumeExisting(existing);
       }
 
@@ -1574,9 +1621,16 @@ export function createUploadSessionModule(
         updatedAt: now,
       });
       if (!reservation.created) {
+        diagnose(reservation.session.id, "reservation", "succeeded", {
+          state: reservation.session.status,
+          replay: true,
+        });
         return resumeExisting(reservation.session);
       }
-      diagnose(reservation.session.id, "reservation", "succeeded");
+      diagnose(reservation.session.id, "reservation", "succeeded", {
+        state: reservation.session.status,
+        replay: false,
+      });
 
       if (!normalizeUploadContentType(input.source.contentType)) {
         await dependencies.persistence.recordFailure({
@@ -1716,6 +1770,197 @@ export function createUploadSessionModule(
         ]);
       }
       return uploadingOutcome(session, []);
+    },
+
+    async status(
+      input: ReadUploadSessionInput,
+    ): Promise<ReadUploadSessionOutcome> {
+      const session = await dependencies.persistence.findByClientKey({
+        workspaceId: input.workspaceId,
+        clientIdempotencyKey: input.clientIdempotencyKey,
+      });
+      if (
+        !session ||
+        session.actorUserId !== input.actorUserId ||
+        (input.sessionId !== null && session.id !== input.sessionId) ||
+        session.browserFingerprint !== input.browserFingerprint
+      ) {
+        throw new UploadSessionNotFoundError();
+      }
+      if (session.status === "queued_for_ingest" && session.queuedJobId) {
+        return {
+          outcome: "queued_for_ingest",
+          sessionId: session.id,
+          projectId: session.preallocatedProjectId,
+          queuedJobId: session.queuedJobId,
+        };
+      }
+      if (session.status === "finalizing" || session.status === "reconciling") {
+        return {
+          outcome: "reconciling",
+          sessionId: session.id,
+          projectId: session.preallocatedProjectId,
+          retryAfterSeconds: Math.max(
+            1,
+            Math.ceil(
+              ((session.reconcileAt?.getTime() ??
+                dependencies.now().getTime() + 5_000) -
+                dependencies.now().getTime()) /
+                1_000,
+            ),
+          ),
+        };
+      }
+      if (session.status !== "uploading") {
+        if (
+          session.status === "aborted" ||
+          session.status === "expired" ||
+          session.status === "failed"
+        ) {
+          return {
+            outcome: "terminal",
+            sessionId: session.id,
+            state: session.status,
+            failureCode: session.failureCode,
+            freshUploadAllowed: true,
+          };
+        }
+        throw new UploadSessionInvalidStateError(`Upload Session is ${session.status}.`);
+      }
+      return uploadingOutcome(session);
+    },
+
+    async discard(
+      input: DiscardUploadSessionInput,
+    ): Promise<DiscardUploadSessionOutcome> {
+      const current = await dependencies.persistence.findByIdForWorkspace({
+        sessionId: input.sessionId,
+        workspaceId: input.workspaceId,
+      });
+      if (!current || current.actorUserId !== input.actorUserId) {
+        throw new UploadSessionNotFoundError();
+      }
+      if (current.status === "aborted" && current.failureCode === "user_discarded") {
+        return { outcome: "discarded", sessionId: current.id };
+      }
+      if (
+        current.status === "compensating" &&
+        current.failureCode === "user_discarded"
+      ) {
+        return {
+          outcome: "compensating",
+          sessionId: current.id,
+          retryAfterSeconds: 5,
+        };
+      }
+      if (current.status !== "uploading") {
+        throw new UploadSessionInvalidStateError(
+          "This Upload Session can no longer be discarded.",
+        );
+      }
+
+      const startedAt = dependencies.now();
+      const reconciliationAttemptId = dependencies.createId();
+      const claim = await dependencies.persistence.beginDiscard({
+        sessionId: current.id,
+        reconciliationAttemptId,
+        leaseExpiresAt: new Date(
+          startedAt.getTime() + dependencies.config.reconciliationLeaseMs,
+        ),
+        updatedAt: startedAt,
+      });
+      if (!claim.claimed) {
+        if (
+          claim.session.status === "aborted" &&
+          claim.session.failureCode === "user_discarded"
+        ) {
+          return { outcome: "discarded", sessionId: claim.session.id };
+        }
+        if (
+          claim.session.status === "compensating" &&
+          claim.session.failureCode === "user_discarded"
+        ) {
+          return {
+            outcome: "compensating",
+            sessionId: claim.session.id,
+            retryAfterSeconds: 5,
+          };
+        }
+        throw new UploadSessionInvalidStateError(
+          "This Upload Session can no longer be discarded.",
+        );
+      }
+
+      diagnose(current.id, "compensation", "started", {
+        state: "compensating",
+        declaredAbandonedBytes: current.fileSizeBytes,
+      });
+      try {
+        if (claim.session.transferKind === "multipart") {
+          if (!claim.session.providerUploadId) {
+            throw new Error("Upload Session provider binding is incomplete");
+          }
+          await withReconciliationDeadline((signal) =>
+            dependencies.storage.abortMultipart({
+              storageKey: claim.session.storageKey,
+              providerUploadId: claim.session.providerUploadId!,
+              signal,
+            }),
+          );
+        } else {
+          await withReconciliationDeadline((signal) =>
+            dependencies.storage.deleteExactObject(
+              claim.session.storageKey,
+              signal,
+            ),
+          );
+        }
+        await dependencies.persistence.settleTerminal({
+          sessionId: claim.session.id,
+          reconciliationAttemptId,
+          status: "aborted",
+          failureCode: "user_discarded",
+          updatedAt: dependencies.now(),
+        });
+        diagnose(current.id, "compensation", "succeeded", {
+          state: "aborted",
+          declaredAbandonedBytes: current.fileSizeBytes,
+        });
+        return { outcome: "discarded", sessionId: current.id };
+      } catch (error) {
+        if (error instanceof UploadSessionReconciliationClaimLostError) {
+          const winner = await dependencies.persistence.findByIdForWorkspace({
+            sessionId: current.id,
+            workspaceId: current.workspaceId,
+          });
+          if (
+            winner?.status === "aborted" &&
+            winner.failureCode === "user_discarded"
+          ) {
+            return { outcome: "discarded", sessionId: current.id };
+          }
+          throw new UploadSessionInvalidStateError(
+            "This Upload Session can no longer be discarded.",
+          );
+        }
+        await dependencies.persistence.deferReconciliation({
+          sessionId: claim.session.id,
+          reconciliationAttemptId,
+          failureCode: "user_discarded",
+          reconcileAt: new Date(dependencies.now().getTime() + 5_000),
+          updatedAt: dependencies.now(),
+        });
+        diagnose(current.id, "compensation", "failed", {
+          state: "compensating",
+          failureCode: "upload_cleanup_retry_scheduled",
+          declaredAbandonedBytes: current.fileSizeBytes,
+        });
+        return {
+          outcome: "compensating",
+          sessionId: current.id,
+          retryAfterSeconds: 5,
+        };
+      }
     },
 
     async grant(input: GrantUploadPartsInput): Promise<GrantUploadPartsOutcome> {
@@ -2171,6 +2416,8 @@ export function createUploadSessionModule(
                 compensating.failureCode === "upload_session_expired" ||
                 session.status === "uploading"
                   ? "expired"
+                  : compensating.failureCode === "user_discarded"
+                    ? "aborted"
                   : "failed",
               failureCode:
                 compensating.failureCode ?? "upload_compensation_completed",
@@ -3374,6 +3621,37 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
     }
     return fromPrismaUploadSession(row);
   },
+  async beginDiscard({
+    sessionId,
+    reconciliationAttemptId,
+    leaseExpiresAt,
+    updatedAt,
+  }) {
+    const updated = await requiredPrisma().uploadSession.updateMany({
+      where: {
+        id: sessionId,
+        status: "uploading",
+        reconciliationAttemptId: null,
+      },
+      data: {
+        status: "compensating",
+        failureCode: "user_discarded",
+        reconcileAt: updatedAt,
+        reconciliationAttemptId,
+        reconciliationLeaseExpiresAt: leaseExpiresAt,
+        reconciliationAttemptCount: { increment: 1 },
+        updatedAt,
+      },
+    });
+    const row = await requiredPrisma().uploadSession.findUnique({
+      where: { id: sessionId },
+    });
+    if (!row) throw new Error("Upload Session not found");
+    return {
+      claimed: updated.count === 1,
+      session: fromPrismaUploadSession(row),
+    };
+  },
   async releaseReconciliation({
     sessionId,
     reconciliationAttemptId,
@@ -3734,6 +4012,7 @@ export class UploadSessionService {
     input: ValidatedOpenUploadSessionInput,
     workspaceId?: string,
   ) {
+    const startedAt = performance.now();
     const parsed = openUploadSessionSchema.parse(input);
     const ownership = await workspaceService.resolveLegacyOwnership(
       actorUserId,
@@ -3767,6 +4046,9 @@ export class UploadSessionService {
           result.outcome === "uploading" && result.transfer.kind === "multipart"
             ? result.transfer.partCount
             : 1,
+        firstGrantLatencyMs: Math.round(performance.now() - startedAt),
+        terminalOutcome:
+          result.outcome === "queued_for_ingest" ? "queued_for_ingest" : null,
       }),
     );
     return result;
@@ -3777,6 +4059,7 @@ export class UploadSessionService {
     input: ValidatedFinalizeUploadSessionInput,
     workspaceId?: string,
   ) {
+    const startedAt = performance.now();
     const parsed = finalizeUploadSessionSchema.parse(input);
     const ownership = await workspaceService.resolveLegacyOwnership(
       actorUserId,
@@ -3800,6 +4083,9 @@ export class UploadSessionService {
         uploadSessionId: result.sessionId,
         workspaceId: ownership.workspaceId,
         state: result.outcome,
+        finalizeDurationMs: Math.round(performance.now() - startedAt),
+        terminalOutcome:
+          result.outcome === "queued_for_ingest" ? "queued_for_ingest" : null,
       }),
     );
     return result;
@@ -3820,12 +4106,97 @@ export class UploadSessionService {
       ownership.workspaceId,
       "processing.consume",
     );
-    return productionUploadSessionModule.grant({
+    const startedAt = performance.now();
+    const result = await productionUploadSessionModule.grant({
       actorUserId,
       workspaceId: ownership.workspaceId,
       sessionId: parsed.sessionId,
       partNumbers: parsed.partNumbers,
     });
+    console.warn(
+      JSON.stringify({
+        level: "info",
+        message: "upload_session_grant_issued",
+        uploadSessionId: result.sessionId,
+        workspaceId: ownership.workspaceId,
+        grantedPartCount: result.grants.length,
+        grantLatencyMs: Math.round(performance.now() - startedAt),
+      }),
+    );
+    return result;
+  }
+
+  async status(
+    actorUserId: string,
+    input: ValidatedReadUploadSessionInput,
+    workspaceId?: string,
+  ) {
+    const parsed = readUploadSessionSchema.parse(input);
+    const ownership = await workspaceService.resolveLegacyOwnership(
+      actorUserId,
+      workspaceId,
+    );
+    await workspaceService.requireActor(
+      actorUserId,
+      ownership.workspaceId,
+      "processing.consume",
+    );
+    const result = await productionUploadSessionModule.status({
+      actorUserId,
+      workspaceId: ownership.workspaceId,
+      clientIdempotencyKey: parsed.clientIdempotencyKey,
+      sessionId: parsed.sessionId,
+      browserFingerprint: parsed.browserFingerprint,
+    });
+    console.warn(
+      JSON.stringify({
+        level: "info",
+        message: "upload_session_resumed",
+        uploadSessionId: result.sessionId,
+        workspaceId: ownership.workspaceId,
+        state: result.outcome,
+        terminalOutcome:
+          result.outcome === "terminal"
+            ? result.state
+            : result.outcome === "queued_for_ingest"
+              ? "queued_for_ingest"
+              : null,
+      }),
+    );
+    return result;
+  }
+
+  async discard(
+    actorUserId: string,
+    input: ValidatedDiscardUploadSessionInput,
+    workspaceId?: string,
+  ) {
+    const parsed = discardUploadSessionSchema.parse(input);
+    const ownership = await workspaceService.resolveLegacyOwnership(
+      actorUserId,
+      workspaceId,
+    );
+    await workspaceService.requireActor(
+      actorUserId,
+      ownership.workspaceId,
+      "processing.consume",
+    );
+    const result = await productionUploadSessionModule.discard({
+      actorUserId,
+      workspaceId: ownership.workspaceId,
+      sessionId: parsed.sessionId,
+    });
+    console.warn(
+      JSON.stringify({
+        level: "info",
+        message: "upload_session_discarded",
+        uploadSessionId: result.sessionId,
+        workspaceId: ownership.workspaceId,
+        state: result.outcome,
+        terminalOutcome: result.outcome === "discarded" ? "aborted" : null,
+      }),
+    );
+    return result;
   }
 
   async reconcileDueSessions() {

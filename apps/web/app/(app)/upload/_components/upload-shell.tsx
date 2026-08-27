@@ -6,14 +6,14 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from "react";
 import { useRouter } from "next/navigation";
 import { Box, chakra, Flex, Grid, HStack, Stack, Text } from "@chakra-ui/react";
-import { AlertTriangle, Check, Info, Upload } from "lucide-react";
+import { AlertTriangle, Info, Upload } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { Input } from "@narriflow/ui/components/input";
-import { Meter } from "@narriflow/ui/components/meter";
 import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { Radio, RadioGroup } from "@narriflow/ui/components/radio";
@@ -31,7 +31,7 @@ import {
   detectLinkProvider,
   LINK_PROVIDERS,
 } from "@narriflow/validators";
-import { formatDate, formatDuration } from "@/lib/format";
+import { formatDate } from "@/lib/format";
 import { LanguageSelect } from "./language-select";
 import { ModeTabs } from "./mode-tabs";
 import { ProcessingTimeline } from "../../_shared/processing-timeline";
@@ -41,13 +41,17 @@ import { VideoPreview } from "./video-preview";
 import { RecommendationCard } from "./recommendation-card";
 import { BrandTemplatePicker } from "./brand-template-picker";
 import {
+  UploadSessionSecondaryActions,
+  UploadSessionStatusPanel,
+} from "./upload-session-status";
+import {
   buildUploadGenerationContext,
   buildUploadSettingsFormData,
 } from "../_lib/content-pack-form";
 import {
   safelyGetUploadResumeStorage,
 } from "../_lib/upload-resume";
-import { runUploadSessionTransfer } from "../_lib/upload-session-browser";
+import { createUploadSessionBrowserAdapter } from "../_lib/upload-session-browser";
 import { generateFromRssAction } from "../actions";
 import {
   LinkImportFlow,
@@ -57,7 +61,6 @@ import {
 
 type TabId = "file" | "link" | "rss";
 type PasteOverride = "auto" | "link" | "rss";
-type UploadStage = "prepare" | "upload" | "finalize";
 
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024 * 1024; // 5 GB
 const RSS_EPISODE_PAGE_SIZE = 50;
@@ -137,70 +140,6 @@ function ErrorNotice({ message }: { message: string }) {
   );
 }
 
-const UPLOAD_STAGES: { id: UploadStage; label: string }[] = [
-  { id: "prepare", label: "Prepare" },
-  { id: "upload", label: "Upload" },
-  { id: "finalize", label: "Finalize" },
-];
-
-/** The upload as a designed moment: Prepare → Upload → Finalize staged meter. */
-function UploadStages({
-  stage,
-  progress,
-  throughput,
-}: {
-  stage: UploadStage;
-  progress: number;
-  throughput: { mbps: number; etaSec: number | null } | null;
-}) {
-  const activeIndex = UPLOAD_STAGES.findIndex((s) => s.id === stage);
-  return (
-    <Stack gap="2.5" aria-live="polite">
-      <Flex gap="5" wrap="wrap">
-        {UPLOAD_STAGES.map((s, index) => {
-          const state =
-            index < activeIndex
-              ? "done"
-              : index === activeIndex
-                ? "active"
-                : "pending";
-          return (
-            <Flex key={s.id} align="center" gap="1.5">
-              {state === "done" ? (
-                <Box color="success.fg" display="inline-flex">
-                  <Check size={12} strokeWidth={2.5} />
-                </Box>
-              ) : state === "active" ? (
-                <Spinner size="xs" />
-              ) : (
-                <Box w="6px" h="6px" borderRadius="1px" bg="border.emphasized" />
-              )}
-              <Text
-                textStyle="eyebrow"
-                color={state === "pending" ? "fg.subtle" : "fg"}
-              >
-                {s.label}
-              </Text>
-            </Flex>
-          );
-        })}
-      </Flex>
-      {stage === "upload" && (
-        <>
-          <Meter value={progress} />
-          <Text textStyle="data" fontSize="11px" color="fg.muted">
-            {progress}%
-            {throughput ? ` · ${throughput.mbps.toFixed(1)} MB/s` : ""}
-            {throughput?.etaSec != null
-              ? ` · ETA ${formatDuration(throughput.etaSec)}`
-              : ""}
-          </Text>
-        </>
-      )}
-    </Stack>
-  );
-}
-
 interface UploadShellProps {
   brandTemplates: {
     builtIns: BrandTemplateSummary[];
@@ -222,6 +161,23 @@ export function UploadShell({
   usageSummary,
 }: UploadShellProps) {
   const router = useRouter();
+  const uploadAdapter = useMemo(
+    () =>
+      createUploadSessionBrowserAdapter({
+        storage: safelyGetUploadResumeStorage(() => window.localStorage),
+        navigate(projectId) {
+          router.push(`/projects/${projectId}`);
+          router.refresh();
+        },
+      }),
+    [router],
+  );
+  const uploadSnapshot = useSyncExternalStore(
+    uploadAdapter.subscribe,
+    uploadAdapter.snapshot,
+    uploadAdapter.snapshot,
+  );
+  const confirmUploadUnload = uploadAdapter.shouldConfirmUnload();
 
   // A recognized ?url= commits straight to a chosen source; anything else pre-fills the paste field.
   const initialLinkProvider = initialUrl ? detectLinkProvider(initialUrl.trim()) : null;
@@ -279,17 +235,16 @@ export function UploadShell({
 
   // Submit / progress
   const [submitting, setSubmitting] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [uploadStage, setUploadStage] = useState<UploadStage | null>(null);
-  const [throughput, setThroughput] = useState<{
-    mbps: number;
-    etaSec: number | null;
-  } | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
-  const [uploadReconciling, setUploadReconciling] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
   const rssCommitTokenRef = useRef<string | null>(null);
+  const uploadStatusRef = useRef<HTMLDivElement | null>(null);
+
+  const uploadBusy = ["preparing", "uploading", "verifying", "queued"].includes(
+    uploadSnapshot.phase,
+  );
+  const uploadSourceLocked = uploadSnapshot.phase !== "idle";
+  const busy = submitting || uploadBusy;
 
   // Drag & drop state
   const [dropzoneDragOver, setDropzoneDragOver] = useState(false);
@@ -303,6 +258,26 @@ export function UploadShell({
       setTitle(file.name.replace(/\.[^/.]+$/, ""));
     }
   }, [activeTab, file, title]);
+
+  useEffect(() => {
+    if (
+      uploadSnapshot.phase === "paused" ||
+      uploadSnapshot.phase === "failed"
+    ) {
+      uploadStatusRef.current?.focus();
+    }
+  }, [uploadSnapshot.phase]);
+
+  useEffect(() => {
+    if (!confirmUploadUnload) return;
+    const confirmInterruptedTransfer = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", confirmInterruptedTransfer);
+    return () =>
+      window.removeEventListener("beforeunload", confirmInterruptedTransfer);
+  }, [confirmUploadUnload]);
 
   const selectedEpisodes = useMemo(
     () => rssEpisodes.filter((e) => selectedEpisodeIds.includes(e.id)),
@@ -400,7 +375,7 @@ export function UploadShell({
       event.preventDefault();
       dragDepthRef.current = 0;
       setPageDragActive(false);
-      if (submitting) return;
+      if (busy || uploadSourceLocked) return;
       const dropped = event.dataTransfer?.files?.[0];
       if (dropped) acceptFile(dropped);
     }
@@ -414,7 +389,7 @@ export function UploadShell({
       window.removeEventListener("dragleave", onDragLeave);
       window.removeEventListener("drop", onDrop);
     };
-  }, [submitting, acceptFile]);
+  }, [busy, uploadSourceLocked, acceptFile]);
 
   const hasSource =
     (activeTab === "file" && file) ||
@@ -427,8 +402,7 @@ export function UploadShell({
     (activeTab === "link" && linkUrl.trim().length > 0) ||
     (activeTab === "rss" && rssCommitted);
 
-  const submitDisabled =
-    submitting || uploadReconciling || !hasSource || !title.trim();
+  const submitDisabled = busy || !hasSource || !title.trim();
 
   // Smart paste detection — provider detection lives in @narriflow/validators (frozen contract).
   const trimmedPaste = pasteValue.trim();
@@ -452,7 +426,7 @@ export function UploadShell({
             : null;
 
   function commitPastedLink() {
-    if (!detectedKind || submitting) return;
+    if (!detectedKind || busy) return;
     setErrorMessage(null);
     if (detectedKind === "link") {
       setActiveTab("link");
@@ -467,7 +441,7 @@ export function UploadShell({
   }
 
   function handleChangeSource() {
-    if (submitting) return;
+    if (busy || uploadSourceLocked) return;
     setFile(null);
     setLinkUrl("");
     setLinkProvider(null);
@@ -530,71 +504,13 @@ export function UploadShell({
       return;
     }
 
-    setSubmitting(true);
-    setUploadReconciling(false);
-    setStatusMessage(null);
     setErrorMessage(null);
-    setThroughput(null);
-    setProgress(0);
-    setUploadStage("prepare");
-    const abortController = new AbortController();
-    abortRef.current = abortController;
-
-    try {
-      const result = await runUploadSessionTransfer({
-        file,
-        title: title.trim(),
-        brandTemplateId,
-        generationContext: buildUploadGenerationContext(getFormValues()),
-        storage: safelyGetUploadResumeStorage(() => window.localStorage),
-        signal: abortController.signal,
-        onProgress(update) {
-          setUploadStage(update.stage);
-          setProgress(update.percent);
-
-          if (update.stage !== "upload") {
-            return;
-          }
-          const bytesPerSec = update.bytesPerSecond ?? 0;
-          if (bytesPerSec <= 0) {
-            setThroughput(null);
-            return;
-          }
-          setThroughput({
-            mbps: bytesPerSec / (1024 * 1024),
-            etaSec: update.etaSeconds ?? null,
-          });
-        },
-      });
-
-      if ("outcome" in result && result.outcome === "reconciling") {
-        setUploadReconciling(true);
-        setStatusMessage(
-          "Narriflow is verifying your upload. You can leave this page and resume later.",
-        );
-      } else {
-        router.push(`/projects/${result.projectId}`);
-        router.refresh();
-      }
-    } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") {
-        toaster.create({
-          type: "info",
-          title: "Upload paused",
-          description: "Re-select the same file to continue the upload.",
-        });
-      } else {
-        const message =
-          error instanceof Error ? error.message : "Upload failed.";
-        setErrorMessage(message);
-        toaster.error({ title: "Upload failed", description: message });
-      }
-    } finally {
-      setSubmitting(false);
-      setUploadStage(null);
-      setThroughput(null);
-      abortRef.current = null;
-    }
+    await uploadAdapter.start({
+      file,
+      title: title.trim(),
+      brandTemplateId,
+      generationContext: buildUploadGenerationContext(getFormValues()),
+    });
   }
 
   async function handleRssPreview(url: string = rssUrl) {
@@ -781,7 +697,7 @@ export function UploadShell({
             onDrop={(event) => {
               event.preventDefault();
               setDropzoneDragOver(false);
-              if (submitting) return;
+              if (busy) return;
               const dropped = event.dataTransfer?.files?.[0];
               if (dropped) acceptFile(dropped);
             }}
@@ -873,7 +789,7 @@ export function UploadShell({
               />
               <Button
                 onClick={commitPastedLink}
-                disabled={!detectedKind || submitting}
+                disabled={!detectedKind || busy}
                 type="button"
                 borderStartRadius="0"
                 ms="-1px"
@@ -972,7 +888,7 @@ export function UploadShell({
               <chakra.button
                 type="button"
                 onClick={handleChangeSource}
-                disabled={submitting}
+                disabled={busy || uploadSourceLocked}
                 fontSize="12px"
                 color="fg"
                 textDecoration="underline"
@@ -1207,47 +1123,62 @@ export function UploadShell({
 
             {/* Submit zone */}
             <Stack gap="3" pt="1">
-              {uploadStage && (
-                <UploadStages
-                  stage={uploadStage}
-                  progress={progress}
-                  throughput={throughput}
+              {activeTab === "file" && (
+                <UploadSessionStatusPanel
+                  snapshot={uploadSnapshot}
+                  statusRef={uploadStatusRef}
                 />
               )}
-              {(submitting || uploadReconciling) &&
-                !uploadStage &&
-                statusMessage && (
+              {activeTab === "rss" && submitting && statusMessage && (
                 <Flex align="center" gap="2">
                   <Spinner size="xs" />
                   <Text fontSize="12.5px" color="fg.muted">
                     {statusMessage}
                   </Text>
                 </Flex>
-                )}
+              )}
               {errorMessage && <ErrorNotice message={errorMessage} />}
               <HStack gap="2">
                 <Button
                   disabled={submitDisabled}
-                  onClick={handleSubmit}
+                  onClick={() => {
+                    if (
+                      activeTab === "file" &&
+                      uploadSnapshot.canStartFresh
+                    ) {
+                      void uploadAdapter.startFresh();
+                      return;
+                    }
+                    void handleSubmit();
+                  }}
                   type="button"
                   size="md"
                   flex="1"
                 >
-                  {uploadReconciling
-                    ? "Verifying…"
+                  {activeTab === "file"
+                    ? uploadSnapshot.phase === "paused"
+                      ? "Resume upload"
+                      : uploadSnapshot.canStartFresh
+                        ? "Start fresh upload"
+                      : uploadSnapshot.phase === "failed"
+                        ? "Try upload again"
+                        : uploadSnapshot.phase === "verifying"
+                          ? "Verifying…"
+                          : uploadSnapshot.phase === "uploading"
+                            ? "Uploading…"
+                            : uploadSnapshot.phase === "preparing"
+                              ? "Preparing…"
+                              : submitLabel
                     : submitting
                       ? "Working…"
                       : submitLabel}
                 </Button>
-                {submitting && abortRef.current && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="md"
-                    onClick={() => abortRef.current?.abort()}
-                  >
-                    Cancel
-                  </Button>
+                {activeTab === "file" && (
+                  <UploadSessionSecondaryActions
+                    snapshot={uploadSnapshot}
+                    onPause={() => void uploadAdapter.pause()}
+                    onDiscard={() => void uploadAdapter.discard()}
+                  />
                 )}
               </HStack>
               <Text fontSize="11px" color="fg.subtle" textAlign="center">

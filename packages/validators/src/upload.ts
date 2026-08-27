@@ -76,6 +76,18 @@ export const grantUploadPartsSchema = z
     path: ["partNumbers"],
   });
 
+export const readUploadSessionSchema = z
+  .object({
+    clientIdempotencyKey: z.string().uuid(),
+    sessionId: z.string().uuid().nullable(),
+    browserFingerprint: z.string().min(1).max(2_048),
+  })
+  .strict();
+
+export const discardUploadSessionSchema = z
+  .object({ sessionId: z.string().uuid() })
+  .strict();
+
 export type UploadMimeType = z.infer<typeof uploadMimeTypeSchema>;
 export type OpenUploadSessionInput = z.infer<typeof openUploadSessionSchema>;
 export type FinalizeUploadSessionInput = z.infer<
@@ -85,3 +97,7 @@ export type UploadCompletionIntent = z.infer<
   typeof uploadCompletionIntentSchema
 >;
 export type GrantUploadPartsInput = z.infer<typeof grantUploadPartsSchema>;
+export type ReadUploadSessionInput = z.infer<typeof readUploadSessionSchema>;
+export type DiscardUploadSessionInput = z.infer<
+  typeof discardUploadSessionSchema
+>;

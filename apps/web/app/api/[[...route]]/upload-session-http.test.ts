@@ -91,6 +91,21 @@ function dependencies(
           url: `https://storage.test/part/${partNumber}`,
         })),
       }),
+      status: async () => ({
+        outcome: "uploading",
+        sessionId: SESSION_ID,
+        projectId: PROJECT_ID,
+        expiresAt: "2026-08-27T12:00:00.000Z",
+        transfer: {
+          kind: "single",
+          contentType: "video/mp4",
+          grant: { url: "https://storage.test/put", contentType: "video/mp4" },
+        },
+      }),
+      discard: async () => ({
+        outcome: "discarded",
+        sessionId: SESSION_ID,
+      }),
     },
     ...overrides,
   };
@@ -381,5 +396,100 @@ describe("Upload Session HTTP routes", () => {
 
     expect(response.status).toBe(202);
     expect(response.headers.get("retry-after")).toBe("7");
+  });
+
+  test("exposes strict status and discard translation contracts", async () => {
+    const statusCalls: unknown[][] = [];
+    const discardCalls: unknown[][] = [];
+    const base = dependencies();
+    const app = createUploadSessionHttpRoutes(
+      dependencies({
+        service: {
+          ...base.service,
+          status: async (...args) => {
+            statusCalls.push(args);
+            return {
+              outcome: "reconciling",
+              sessionId: SESSION_ID,
+              projectId: PROJECT_ID,
+              retryAfterSeconds: 7,
+            };
+          },
+          discard: async (...args) => {
+            discardCalls.push(args);
+            return {
+              outcome: "compensating",
+              sessionId: SESSION_ID,
+              retryAfterSeconds: 5,
+            };
+          },
+        },
+      }),
+    );
+    const statusPayload = {
+      clientIdempotencyKey: OPEN_PAYLOAD.clientIdempotencyKey,
+      sessionId: SESSION_ID,
+      browserFingerprint: OPEN_PAYLOAD.source.browserFingerprint,
+    };
+
+    const statusResponse = await app.request("/upload-sessions/status", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(statusPayload),
+    });
+    const discardResponse = await app.request("/upload-sessions/discard", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: SESSION_ID }),
+    });
+
+    expect(statusResponse.status).toBe(202);
+    expect(statusResponse.headers.get("retry-after")).toBe("7");
+    expect(discardResponse.status).toBe(202);
+    expect(discardResponse.headers.get("retry-after")).toBe("5");
+    expect(statusCalls).toEqual([
+      [ACTOR_USER_ID, statusPayload, WORKSPACE_ID],
+    ]);
+    expect(discardCalls).toEqual([
+      [ACTOR_USER_ID, { sessionId: SESSION_ID }, WORKSPACE_ID],
+    ]);
+
+    const forged = await app.request("/upload-sessions/discard", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: SESSION_ID, storageKey: "forged" }),
+    });
+    expect(forged.status).toBe(400);
+
+    const forgedStatus = await app.request("/upload-sessions/status", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ ...statusPayload, providerUploadId: "forged" }),
+    });
+    expect(forgedStatus.status).toBe(400);
+
+    const rateKeys: string[] = [];
+    const limited = createUploadSessionHttpRoutes(
+      dependencies({
+        checkRateLimit: async (key) => {
+          rateKeys.push(key);
+          return { allowed: false };
+        },
+      }),
+    );
+    const limitedStatus = await limited.request("/upload-sessions/status", {
+      method: "POST",
+      body: "not-json",
+    });
+    const limitedDiscard = await limited.request("/upload-sessions/discard", {
+      method: "POST",
+      body: "not-json",
+    });
+    expect(limitedStatus.status).toBe(429);
+    expect(limitedDiscard.status).toBe(429);
+    expect(rateKeys).toEqual([
+      "upload-session-status:legacy-owner",
+      "upload-session-discard:legacy-owner",
+    ]);
   });
 });

@@ -9,6 +9,7 @@ import {
   classifyR2StorageError,
   collectUploadedParts,
   collectExactKeyMultipartUploads,
+  completeMultipartUpload,
   createMultipartUpload,
   deleteObject,
   downloadObjectToFile,
@@ -16,8 +17,10 @@ import {
   isExactMissingMultipartUploadError,
   InvalidObjectMetadataError,
   isR2Configured,
+  listUploadedParts,
   listExactKeyMultipartUploads,
   listObjectPageByPrefix,
+  presignMultipartPartUrls,
   putFileFromPath,
   presignSingleUploadUrl,
   sanitizeObjectMetadata,
@@ -369,6 +372,121 @@ r2ContractTest(
       await deleteObject(key);
     } finally {
       await deleteObject(key).catch(() => {});
+    }
+  },
+);
+
+r2ContractTest(
+  "R2 Upload Session signed multipart, CORS, expiry, completion, and NoSuchUpload contracts converge",
+  async () => {
+    const runPrefix = `${isolatedContractPrefix}/upload-session/${randomUUID()}`;
+    const multipartKey = `${runPrefix}/multipart.mp4`;
+    const expiredKey = `${runPrefix}/expired.wav`;
+    const firstPart = new Uint8Array(5 * 1024 * 1024);
+    const secondPart = new TextEncoder().encode("final-part");
+    const created = await createMultipartUpload({
+      key: multipartKey,
+      contentType: "video/mp4",
+    });
+
+    try {
+      const grants = await presignMultipartPartUrls({
+        key: multipartKey,
+        uploadId: created.uploadId,
+        partNumbers: [1, 2],
+        expiresIn: 60,
+      });
+      expect(grants.map((grant) => grant.partNumber)).toEqual([1, 2]);
+      expect(new URL(grants[0]!.url).origin).toBe(
+        new URL(grants[1]!.url).origin,
+      );
+
+      const uploadedParts = await Promise.all(
+        grants.map(async (grant) => {
+          const body = grant.partNumber === 1 ? firstPart : secondPart;
+          const response = await fetch(grant.url, { method: "PUT", body });
+          expect(response.ok).toBe(true);
+          const etag = response.headers.get("etag");
+          expect(etag).toBeTruthy();
+          return { partNumber: grant.partNumber, etag: etag! };
+        }),
+      );
+
+      expect(await listUploadedParts({ key: multipartKey, uploadId: created.uploadId }))
+        .toEqual(uploadedParts.map((part) => ({
+          ...part,
+          etag: part.etag,
+        })));
+      await completeMultipartUpload({
+        key: multipartKey,
+        uploadId: created.uploadId,
+        etags: uploadedParts.reverse(),
+      });
+      expect(await headObject(multipartKey)).toMatchObject({
+        sizeBytes: firstPart.byteLength + secondPart.byteLength,
+        contentType: "video/mp4",
+      });
+      let missingUploadError: unknown;
+      try {
+        await listUploadedParts({
+          key: multipartKey,
+          uploadId: created.uploadId,
+        });
+      } catch (error) {
+        missingUploadError = error;
+      }
+      expect(isExactMissingMultipartUploadError(missingUploadError)).toBe(true);
+      await abortMultipartUpload({
+        key: multipartKey,
+        uploadId: created.uploadId,
+      });
+
+      const directUrl = await presignSingleUploadUrl({
+        key: expiredKey,
+        contentType: "audio/wav",
+        expiresIn: 1,
+      });
+      const cors = await fetch(directUrl, {
+        method: "OPTIONS",
+        headers: {
+          Origin: "http://localhost:3000",
+          "Access-Control-Request-Method": "PUT",
+          "Access-Control-Request-Headers": "content-type",
+        },
+      });
+      expect(cors.ok).toBe(true);
+      expect(cors.headers.get("access-control-allow-origin")).toBeTruthy();
+      expect(cors.headers.get("access-control-allow-methods")?.toUpperCase())
+        .toContain("PUT");
+      const corsPut = await fetch(directUrl, {
+        method: "PUT",
+        headers: {
+          Origin: "http://localhost:3000",
+          "Content-Type": "audio/wav",
+        },
+        body: "cors-visible-etag",
+      });
+      expect(corsPut.ok).toBe(true);
+      expect(corsPut.headers.get("etag")).toBeTruthy();
+      expect(corsPut.headers.get("access-control-expose-headers")?.toLowerCase())
+        .toContain("etag");
+
+      await new Promise<void>((resolve) => setTimeout(resolve, 2_100));
+      const expired = await fetch(directUrl, {
+        method: "PUT",
+        headers: { "Content-Type": "audio/wav" },
+        body: "expired",
+      });
+      expect(expired.ok).toBe(false);
+    } finally {
+      await Promise.allSettled([
+        abortMultipartUpload({
+          key: multipartKey,
+          uploadId: created.uploadId,
+        }),
+        deleteObject(multipartKey),
+        deleteObject(expiredKey),
+      ]);
     }
   },
 );
