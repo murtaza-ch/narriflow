@@ -7,6 +7,7 @@ import {
   abortMultipartUpload,
   buildAttachmentContentDisposition,
   classifyR2StorageError,
+  collectExactKeyMultipartUploads,
   createMultipartUpload,
   deleteObject,
   downloadObjectToFile,
@@ -38,6 +39,54 @@ test("R2 adapter classifies access, missing-object, and cancellation failures", 
   expect(classifyR2StorageError(new DOMException("cancelled", "AbortError"))).toBe(
     "storage_operation_cancelled",
   );
+});
+
+test("R2 exact-key recovery follows every provider inventory page", async () => {
+  const markers: Array<{
+    keyMarker?: string;
+    uploadIdMarker?: string;
+  }> = [];
+  const uploads = await collectExactKeyMultipartUploads(
+    "workspaces/ws/upload-sessions/session/source.mp4",
+    async (pageMarkers) => {
+      markers.push(pageMarkers);
+      if (markers.length === 1) {
+        return {
+          Uploads: [
+            {
+              Key: "workspaces/ws/upload-sessions/session/source.mp4",
+              UploadId: "opaque/first",
+            },
+            {
+              Key: "workspaces/ws/upload-sessions/session/source.mp4.other",
+              UploadId: "sibling",
+            },
+          ],
+          IsTruncated: true,
+          NextKeyMarker: "next-key",
+          NextUploadIdMarker: "next-upload",
+        };
+      }
+      return {
+        Uploads: [
+          {
+            Key: "workspaces/ws/upload-sessions/session/source.mp4",
+            UploadId: "opaque/second",
+          },
+        ],
+        IsTruncated: false,
+      };
+    },
+  );
+
+  expect(markers).toEqual([
+    {},
+    { keyMarker: "next-key", uploadIdMarker: "next-upload" },
+  ]);
+  expect(uploads.map((upload) => upload.uploadId)).toEqual([
+    "opaque/first",
+    "opaque/second",
+  ]);
 });
 
 describe("buildAttachmentContentDisposition", () => {
@@ -295,6 +344,8 @@ r2ContractTest(
       expect(discovered[0]?.uploadId.length).toBeGreaterThan(0);
       expect(discovered[0]?.uploadId.length).toBeLessThanOrEqual(2_048);
       expect(discovered[0]?.uploadId).not.toBe(sibling.uploadId);
+      await abortMultipartUpload({ key, uploadId: created.uploadId });
+      await abortMultipartUpload({ key, uploadId: created.uploadId });
     } finally {
       await Promise.allSettled([
         abortMultipartUpload({ key, uploadId: created.uploadId }),

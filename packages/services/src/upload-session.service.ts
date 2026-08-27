@@ -22,6 +22,7 @@ import {
   createMultipartUpload,
   deleteObject,
   headObject,
+  InvalidMultipartUploadIdentityError,
   listExactKeyMultipartUploads,
   listUploadedParts,
   presignMultipartPartUrls,
@@ -125,8 +126,15 @@ export interface UploadSessionPersistence {
     created: boolean;
     session: UploadSessionRecord;
   }>;
+  claimAdmission(input: {
+    sessionId: string;
+    admissionAttemptId: string;
+    claimExpiresAt: Date;
+    updatedAt: Date;
+  }): Promise<{ claimed: boolean; session: UploadSessionRecord }>;
   prepareAdmission(input: {
     sessionId: string;
+    admissionAttemptId: string;
     brandTemplateId: string | null;
     brandSnapshot: unknown;
     updatedAt: Date;
@@ -134,15 +142,18 @@ export interface UploadSessionPersistence {
   waitForAdmission(sessionId: string): Promise<UploadSessionRecord>;
   bindMultipartProvider(input: {
     sessionId: string;
+    admissionAttemptId: string;
     providerUploadId: string;
     updatedAt: Date;
   }): Promise<UploadSessionRecord>;
   markSingleReady(input: {
     sessionId: string;
+    admissionAttemptId: string;
     updatedAt: Date;
   }): Promise<UploadSessionRecord>;
   releaseAdmissionClaim(input: {
     sessionId: string;
+    admissionAttemptId: string;
     updatedAt: Date;
   }): Promise<void>;
   findByIdForWorkspace(input: {
@@ -164,6 +175,7 @@ export interface UploadSessionPersistence {
   }): Promise<UploadSessionRecord>;
   recordFailure(input: {
     sessionId: string;
+    admissionAttemptId?: string;
     status: "compensating" | "failed";
     failureCode: string;
     cleanupRetryAt?: Date | null;
@@ -345,7 +357,7 @@ export class UploadSessionIntegrityError extends Error {
   }
 }
 
-class UploadSessionStorageProbeError extends Error {
+export class UploadSessionStorageProbeError extends Error {
   constructor(
     readonly disposition:
       | "missing"
@@ -358,9 +370,23 @@ class UploadSessionStorageProbeError extends Error {
   }
 }
 
+export class UploadSessionAdmissionClaimLostError extends Error {
+  constructor() {
+    super("Upload Session admission claim was superseded.");
+    this.name = "UploadSessionAdmissionClaimLostError";
+  }
+}
+
+class UploadSessionProviderIdentityError extends Error {
+  constructor() {
+    super("Storage provider returned a malformed upload identity.");
+    this.name = "UploadSessionProviderIdentityError";
+  }
+}
+
 function assertOpaqueProviderIdentity(value: string) {
   if (!value || value.length > 2_048) {
-    throw new Error("Storage provider returned a malformed upload identity");
+    throw new UploadSessionProviderIdentityError();
   }
   return value;
 }
@@ -460,6 +486,27 @@ export function createUploadSessionModule(
       NonNullable<typeof dependencies.diagnose>
     >[0]["disposition"],
   ) => dependencies.diagnose?.({ sessionId, phase, disposition });
+
+  const admissionAttemptIdFor = (session: UploadSessionRecord) => {
+    if (!session.admissionAttemptId) {
+      throw new UploadSessionAdmissionClaimLostError();
+    }
+    return session.admissionAttemptId;
+  };
+
+  async function failMalformedProviderIdentity(
+    session: UploadSessionRecord,
+    admissionAttemptId: string,
+  ) {
+    await dependencies.persistence.recordFailure({
+      sessionId: session.id,
+      admissionAttemptId,
+      status: "failed",
+      failureCode: "provider_identity_invalid",
+      updatedAt: dependencies.now(),
+    });
+    diagnose(session.id, "provider_creation", "failed");
+  }
 
   async function compensateObject(
     session: UploadSessionRecord,
@@ -596,6 +643,22 @@ export function createUploadSessionModule(
       });
     }
   }
+
+  async function convergeAfterLostAdmissionClaim(
+    session: UploadSessionRecord,
+  ) {
+    const settled = await dependencies.persistence.waitForAdmission(session.id);
+    if (
+      settled.status !== "uploading" ||
+      settled.transferKind !== "multipart" ||
+      !settled.providerUploadId
+    ) {
+      throw new UploadSessionInvalidStateError(
+        "Upload Session admission is still in progress.",
+      );
+    }
+    return settled;
+  }
   async function uploadingOutcome(
     session: UploadSessionRecord,
     knownCompletedParts?: Array<{ partNumber: number; etag: string }>,
@@ -658,6 +721,7 @@ export function createUploadSessionModule(
 
   async function recoverInitiatingSession(session: UploadSessionRecord) {
     let prepared = session;
+    const admissionAttemptId = admissionAttemptIdFor(prepared);
     if (!prepared.admissionPreparedAt) {
       try {
         await dependencies.admission.assertQuota(prepared.workspaceId);
@@ -669,13 +733,20 @@ export function createUploadSessionModule(
         });
         prepared = await dependencies.persistence.prepareAdmission({
           sessionId: prepared.id,
+          admissionAttemptId,
           brandTemplateId: brand?.templateId ?? null,
           brandSnapshot: brand?.snapshot ?? null,
           updatedAt: dependencies.now(),
         });
       } catch (error) {
+        if (error instanceof UploadSessionAdmissionClaimLostError) {
+          throw new UploadSessionInvalidStateError(
+            "Upload Session admission was superseded.",
+          );
+        }
         await dependencies.persistence.recordFailure({
           sessionId: prepared.id,
+          admissionAttemptId,
           status: "failed",
           failureCode:
             error instanceof UploadSessionQuotaRefusedError
@@ -689,12 +760,35 @@ export function createUploadSessionModule(
     if (prepared.transferKind === "single") {
       return dependencies.persistence.markSingleReady({
         sessionId: prepared.id,
+        admissionAttemptId,
         updatedAt: dependencies.now(),
       });
     }
-    const candidates = await dependencies.storage.listExactKeyMultipartUploads(
-      prepared.storageKey,
-    );
+    let candidates: Array<{
+      providerUploadId: string;
+      initiatedAt: Date | null;
+    }>;
+    try {
+      candidates =
+        await dependencies.storage.listExactKeyMultipartUploads(
+          prepared.storageKey,
+        );
+    } catch (error) {
+      if (error instanceof UploadSessionProviderIdentityError) {
+        await failMalformedProviderIdentity(prepared, admissionAttemptId);
+      }
+      throw error;
+    }
+    try {
+      for (const candidate of candidates) {
+        assertOpaqueProviderIdentity(candidate.providerUploadId);
+      }
+    } catch (error) {
+      if (error instanceof UploadSessionProviderIdentityError) {
+        await failMalformedProviderIdentity(prepared, admissionAttemptId);
+      }
+      throw error;
+    }
     const ordered = candidates.slice().sort((left, right) => {
       const time =
         (left.initiatedAt?.getTime() ?? Number.MAX_SAFE_INTEGER) -
@@ -712,12 +806,19 @@ export function createUploadSessionModule(
           file_name: prepared.fileName,
         },
       });
-      adopted = {
-        providerUploadId: assertOpaqueProviderIdentity(
-          created.providerUploadId,
-        ),
-        initiatedAt: dependencies.now(),
-      };
+      try {
+        adopted = {
+          providerUploadId: assertOpaqueProviderIdentity(
+            created.providerUploadId,
+          ),
+          initiatedAt: dependencies.now(),
+        };
+      } catch (error) {
+        if (error instanceof UploadSessionProviderIdentityError) {
+          await failMalformedProviderIdentity(prepared, admissionAttemptId);
+        }
+        throw error;
+      }
       diagnose(prepared.id, "provider_creation", "succeeded");
     } else {
       assertOpaqueProviderIdentity(adopted.providerUploadId);
@@ -728,18 +829,24 @@ export function createUploadSessionModule(
     try {
       bound = await dependencies.persistence.bindMultipartProvider({
         sessionId: prepared.id,
+        admissionAttemptId,
         providerUploadId: adopted.providerUploadId,
         updatedAt: dependencies.now(),
       });
     } catch (error) {
+      if (error instanceof UploadSessionAdmissionClaimLostError) {
+        bound = await convergeAfterLostAdmissionClaim(prepared);
+      } else {
       await dependencies.persistence
         .releaseAdmissionClaim({
           sessionId: prepared.id,
+          admissionAttemptId,
           updatedAt: dependencies.now(),
         })
         .catch(() => {});
       diagnose(prepared.id, "provider_bind", "failed");
       throw error;
+      }
     }
     diagnose(prepared.id, "provider_bind", "succeeded");
     await cleanupMultipartDuplicates(bound, [
@@ -771,26 +878,37 @@ export function createUploadSessionModule(
             queuedJobId: existing.queuedJobId,
           };
         }
+        let settled = existing;
         const admissionClaimIsLive =
-          existing.status === "initiating" &&
-          existing.admissionClaimExpiresAt &&
-          existing.admissionClaimExpiresAt.getTime() >
+          settled.status === "initiating" &&
+          settled.admissionClaimExpiresAt &&
+          settled.admissionClaimExpiresAt.getTime() >
             dependencies.now().getTime();
-        const settled = admissionClaimIsLive
-          ? await dependencies.persistence.waitForAdmission(existing.id)
-          : existing;
-        const active =
-          settled.status === "initiating"
-            ? settled.admissionClaimExpiresAt &&
-              settled.admissionClaimExpiresAt.getTime() >
-                dependencies.now().getTime()
-              ? (() => {
-                  throw new UploadSessionInvalidStateError(
-                    "Upload Session admission is still in progress.",
-                  );
-                })()
-              : await recoverInitiatingSession(settled)
-            : settled;
+        if (admissionClaimIsLive) {
+          settled = await dependencies.persistence.waitForAdmission(settled.id);
+        }
+        let active = settled;
+        if (settled.status === "initiating") {
+          const claimStartedAt = dependencies.now();
+          const claim = await dependencies.persistence.claimAdmission({
+            sessionId: settled.id,
+            admissionAttemptId: dependencies.createId(),
+            claimExpiresAt: new Date(claimStartedAt.getTime() + 30_000),
+            updatedAt: claimStartedAt,
+          });
+          if (claim.claimed) {
+            active = await recoverInitiatingSession(claim.session);
+          } else {
+            active = await dependencies.persistence.waitForAdmission(
+              settled.id,
+            );
+            if (active.status === "initiating") {
+              throw new UploadSessionInvalidStateError(
+                "Upload Session admission is still in progress.",
+              );
+            }
+          }
+        }
         if (active.status !== "uploading") {
           throw new UploadSessionInvalidStateError(
             `Upload Session is ${active.status}.`,
@@ -875,6 +993,7 @@ export function createUploadSessionModule(
       if (!normalizeUploadContentType(input.source.contentType)) {
         await dependencies.persistence.recordFailure({
           sessionId: reservation.session.id,
+          admissionAttemptId: admissionAttemptIdFor(reservation.session),
           status: "failed",
           failureCode: "unsupported_media_type",
           updatedAt: dependencies.now(),
@@ -883,6 +1002,7 @@ export function createUploadSessionModule(
       }
 
       let prepared: UploadSessionRecord;
+      const admissionAttemptId = admissionAttemptIdFor(reservation.session);
       try {
         await dependencies.admission.assertQuota(input.workspaceId);
         const brand = await dependencies.admission.resolveBrand({
@@ -893,13 +1013,20 @@ export function createUploadSessionModule(
         });
         prepared = await dependencies.persistence.prepareAdmission({
           sessionId: reservation.session.id,
+          admissionAttemptId,
           brandTemplateId: brand?.templateId ?? null,
           brandSnapshot: brand?.snapshot ?? null,
           updatedAt: dependencies.now(),
         });
       } catch (error) {
+        if (error instanceof UploadSessionAdmissionClaimLostError) {
+          throw new UploadSessionInvalidStateError(
+            "Upload Session admission was superseded.",
+          );
+        }
         await dependencies.persistence.recordFailure({
           sessionId: reservation.session.id,
+          admissionAttemptId,
           status: "failed",
           failureCode:
             error instanceof UploadSessionQuotaRefusedError
@@ -913,6 +1040,7 @@ export function createUploadSessionModule(
       if (prepared.transferKind === "single") {
         const session = await dependencies.persistence.markSingleReady({
           sessionId: prepared.id,
+          admissionAttemptId,
           updatedAt: dependencies.now(),
         });
         return uploadingOutcome(session, []);
@@ -933,6 +1061,10 @@ export function createUploadSessionModule(
         diagnose(prepared.id, "provider_creation", "succeeded");
       } catch (error) {
         diagnose(prepared.id, "provider_creation", "failed");
+        if (error instanceof UploadSessionProviderIdentityError) {
+          await failMalformedProviderIdentity(prepared, admissionAttemptId);
+          throw error;
+        }
         try {
           const candidates =
             await dependencies.storage.listExactKeyMultipartUploads(
@@ -944,6 +1076,7 @@ export function createUploadSessionModule(
           }
           await dependencies.persistence.recordFailure({
             sessionId: prepared.id,
+            admissionAttemptId,
             status: "failed",
             failureCode: "provider_creation_failed",
             updatedAt: dependencies.now(),
@@ -954,6 +1087,7 @@ export function createUploadSessionModule(
           await dependencies.persistence
             .releaseAdmissionClaim({
               sessionId: prepared.id,
+              admissionAttemptId,
               updatedAt: dependencies.now(),
             })
             .catch(() => {});
@@ -965,20 +1099,34 @@ export function createUploadSessionModule(
       try {
         session = await dependencies.persistence.bindMultipartProvider({
           sessionId: prepared.id,
+          admissionAttemptId,
           providerUploadId: provider.providerUploadId,
           updatedAt: dependencies.now(),
         });
       } catch (error) {
+        if (error instanceof UploadSessionAdmissionClaimLostError) {
+          session = await convergeAfterLostAdmissionClaim(prepared);
+        } else {
         await dependencies.persistence
           .releaseAdmissionClaim({
             sessionId: prepared.id,
+            admissionAttemptId,
             updatedAt: dependencies.now(),
           })
           .catch(() => {});
         diagnose(prepared.id, "provider_bind", "failed");
         throw error;
+        }
       }
       diagnose(prepared.id, "provider_bind", "succeeded");
+      if (session.providerUploadId !== provider.providerUploadId) {
+        await cleanupMultipartDuplicates(session, [
+          {
+            providerUploadId: provider.providerUploadId,
+            initiatedAt: dependencies.now(),
+          },
+        ]);
+      }
       return uploadingOutcome(session, []);
     },
 
@@ -1288,14 +1436,46 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
       return { created: false, session: fromPrismaUploadSession(row) };
     }
   },
+  async claimAdmission({
+    sessionId,
+    admissionAttemptId,
+    claimExpiresAt,
+    updatedAt,
+  }) {
+    const updated = await requiredPrisma().uploadSession.updateMany({
+      where: {
+        id: sessionId,
+        status: "initiating",
+        providerUploadId: null,
+        OR: [
+          { admissionClaimExpiresAt: null },
+          { admissionClaimExpiresAt: { lte: updatedAt } },
+        ],
+      },
+      data: {
+        admissionAttemptId,
+        admissionClaimExpiresAt: claimExpiresAt,
+        updatedAt,
+      },
+    });
+    const row = await requiredPrisma().uploadSession.findUnique({
+      where: { id: sessionId },
+    });
+    if (!row) throw new Error("Upload Session not found");
+    return {
+      claimed: updated.count === 1,
+      session: fromPrismaUploadSession(row),
+    };
+  },
   async prepareAdmission({
     sessionId,
+    admissionAttemptId,
     brandTemplateId,
     brandSnapshot,
     updatedAt,
   }) {
-    const row = await requiredPrisma().uploadSession.update({
-      where: { id: sessionId },
+    const updated = await requiredPrisma().uploadSession.updateMany({
+      where: { id: sessionId, status: "initiating", admissionAttemptId },
       data: {
         brandTemplateId,
         brandSnapshot:
@@ -1306,6 +1486,11 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
         updatedAt,
       },
     });
+    const row = await requiredPrisma().uploadSession.findUnique({
+      where: { id: sessionId },
+    });
+    if (!row) throw new Error("Upload Session not found");
+    if (updated.count !== 1) throw new UploadSessionAdmissionClaimLostError();
     return fromPrismaUploadSession(row);
   },
   async waitForAdmission(sessionId) {
@@ -1314,9 +1499,19 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
       (session) => session.status !== "initiating" || !!session.providerUploadId,
     );
   },
-  async bindMultipartProvider({ sessionId, providerUploadId, updatedAt }) {
+  async bindMultipartProvider({
+    sessionId,
+    admissionAttemptId,
+    providerUploadId,
+    updatedAt,
+  }) {
     const updated = await requiredPrisma().uploadSession.updateMany({
-      where: { id: sessionId, status: "initiating", providerUploadId: null },
+      where: {
+        id: sessionId,
+        status: "initiating",
+        providerUploadId: null,
+        admissionAttemptId,
+      },
       data: {
         providerUploadId,
         providerInitiatedAt: updatedAt,
@@ -1331,13 +1526,13 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
     });
     if (!row) throw new Error("Upload Session not found");
     if (updated.count === 0 && !row.providerUploadId) {
-      throw new Error("Upload Session provider binding was lost");
+      throw new UploadSessionAdmissionClaimLostError();
     }
     return fromPrismaUploadSession(row);
   },
-  async markSingleReady({ sessionId, updatedAt }) {
-    const row = await requiredPrisma().uploadSession.update({
-      where: { id: sessionId },
+  async markSingleReady({ sessionId, admissionAttemptId, updatedAt }) {
+    const updated = await requiredPrisma().uploadSession.updateMany({
+      where: { id: sessionId, status: "initiating", admissionAttemptId },
       data: {
         status: "uploading",
         admissionAttemptId: null,
@@ -1345,11 +1540,20 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
         updatedAt,
       },
     });
+    const row = await requiredPrisma().uploadSession.findUnique({
+      where: { id: sessionId },
+    });
+    if (!row) throw new Error("Upload Session not found");
+    if (updated.count !== 1) throw new UploadSessionAdmissionClaimLostError();
     return fromPrismaUploadSession(row);
   },
-  async releaseAdmissionClaim({ sessionId, updatedAt }) {
+  async releaseAdmissionClaim({ sessionId, admissionAttemptId, updatedAt }) {
     await requiredPrisma().uploadSession.updateMany({
-      where: { id: sessionId, status: "initiating" },
+      where: {
+        id: sessionId,
+        status: "initiating",
+        admissionAttemptId,
+      },
       data: {
         admissionClaimExpiresAt: updatedAt,
         updatedAt,
@@ -1541,13 +1745,17 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
   },
   async recordFailure({
     sessionId,
+    admissionAttemptId,
     status,
     failureCode,
     cleanupRetryAt,
     updatedAt,
   }) {
-    const row = await requiredPrisma().uploadSession.update({
-      where: { id: sessionId },
+    const updated = await requiredPrisma().uploadSession.updateMany({
+      where: {
+        id: sessionId,
+        ...(admissionAttemptId ? { admissionAttemptId } : {}),
+      },
       data: {
         status,
         failureCode,
@@ -1557,6 +1765,13 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
         updatedAt,
       },
     });
+    const row = await requiredPrisma().uploadSession.findUnique({
+      where: { id: sessionId },
+    });
+    if (!row) throw new Error("Upload Session not found");
+    if (updated.count !== 1 && admissionAttemptId) {
+      throw new UploadSessionAdmissionClaimLostError();
+    }
     return fromPrismaUploadSession(row);
   },
   async recordCleanupRetry({
@@ -1661,12 +1876,19 @@ const r2UploadSessionStorage: UploadSessionStorage = {
     }
   },
   async listExactKeyMultipartUploads(storageKey) {
-    return (await listExactKeyMultipartUploads({ key: storageKey })).map(
-      (upload) => ({
-        providerUploadId: upload.uploadId,
-        initiatedAt: upload.initiatedAt,
-      }),
-    );
+    try {
+      return (await listExactKeyMultipartUploads({ key: storageKey })).map(
+        (upload) => ({
+          providerUploadId: upload.uploadId,
+          initiatedAt: upload.initiatedAt,
+        }),
+      );
+    } catch (error) {
+      if (error instanceof InvalidMultipartUploadIdentityError) {
+        throw new UploadSessionProviderIdentityError();
+      }
+      throw error;
+    }
   },
   async abortMultipart({ storageKey, providerUploadId }) {
     try {
@@ -1831,446 +2053,3 @@ export class UploadSessionService {
 }
 
 export const uploadSessionService = new UploadSessionService();
-
-export function createInMemoryUploadSessionHarness() {
-  const sessions: UploadSessionRecord[] = [];
-  const providerInitiations: Array<{
-    storageKey: string;
-    providerUploadId: string;
-  }> = [];
-  const projects: Array<Record<string, unknown>> = [];
-  const contentPacks: Array<Record<string, unknown>> = [];
-  const ingestJobs: Array<Record<string, unknown>> = [];
-  const uploadedParts = new Map<
-    string,
-    Array<{ partNumber: number; etag: string }>
-  >();
-  const providerUploads = new Map<
-    string,
-    {
-      storageKey: string;
-      contentType: string;
-      sizeBytes: number;
-      initiatedAt: Date;
-    }
-  >();
-  const exactObjects = new Map<
-    string,
-    { sizeBytes: number; contentType: string }
-  >();
-  let sequence = 0;
-  let quotaChecks = 0;
-  let brandResolutions = 0;
-  let providerCompletions = 0;
-  let objectProbes = 0;
-  let singlePuts = 0;
-  let exactKeyListings = 0;
-  let objectDeletes = 0;
-  let failProviderBinding = false;
-  let quotaFailure: Error | null = null;
-  let providerCreationFailure: Error | null = null;
-  let providerAbortFailure: Error | null = null;
-  let objectProbeFailure:
-    | "missing"
-    | "access_denied"
-    | "invalid_metadata"
-    | "unavailable"
-    | null = null;
-  const providerAborts: string[] = [];
-
-  const persistence: UploadSessionPersistence = {
-    async findByClientKey({ workspaceId, clientIdempotencyKey }) {
-      return (
-        sessions.find(
-          (session) =>
-            session.workspaceId === workspaceId &&
-            session.clientIdempotencyKey === clientIdempotencyKey,
-        ) ?? null
-      );
-    },
-    async reserve(record) {
-      const existing = sessions.find(
-        (session) =>
-          session.workspaceId === record.workspaceId &&
-          session.clientIdempotencyKey === record.clientIdempotencyKey,
-      );
-      if (existing) return { created: false, session: existing };
-      sessions.push(record);
-      return { created: true, session: record };
-    },
-    async prepareAdmission({
-      sessionId,
-      brandTemplateId,
-      brandSnapshot,
-      updatedAt,
-    }) {
-      const session = sessions.find((candidate) => candidate.id === sessionId);
-      if (!session) throw new Error("Upload Session reservation not found");
-      session.brandTemplateId = brandTemplateId;
-      session.brandSnapshot = brandSnapshot;
-      session.admissionPreparedAt = updatedAt;
-      session.updatedAt = updatedAt;
-      return session;
-    },
-    async waitForAdmission(sessionId) {
-      for (let attempt = 0; attempt < 1_200; attempt += 1) {
-        const session = sessions.find((candidate) => candidate.id === sessionId);
-        if (!session) throw new Error("Upload Session reservation not found");
-        if (session.status !== "initiating" || session.providerUploadId) {
-          return session;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 1));
-      }
-      const session = sessions.find((candidate) => candidate.id === sessionId);
-      if (!session) throw new Error("Upload Session reservation not found");
-      return session;
-    },
-    async bindMultipartProvider({ sessionId, providerUploadId, updatedAt }) {
-      if (failProviderBinding) {
-        failProviderBinding = false;
-        throw new Error("injected provider bind loss");
-      }
-      const session = sessions.find((candidate) => candidate.id === sessionId);
-      if (!session) throw new Error("Upload Session reservation not found");
-      session.providerUploadId = providerUploadId;
-      session.status = "uploading";
-      session.updatedAt = updatedAt;
-      return session;
-    },
-    async markSingleReady({ sessionId, updatedAt }) {
-      const session = sessions.find((candidate) => candidate.id === sessionId);
-      if (!session) throw new Error("Upload Session reservation not found");
-      session.status = "uploading";
-      session.updatedAt = updatedAt;
-      return session;
-    },
-    async releaseAdmissionClaim({ sessionId, updatedAt }) {
-      const session = sessions.find((candidate) => candidate.id === sessionId);
-      if (!session) throw new Error("Upload Session reservation not found");
-      if (session.status === "initiating") {
-        session.admissionClaimExpiresAt = updatedAt;
-        session.updatedAt = updatedAt;
-      }
-    },
-    async findByIdForWorkspace({ sessionId, workspaceId }) {
-      return (
-        sessions.find(
-          (session) =>
-            session.id === sessionId && session.workspaceId === workspaceId,
-        ) ?? null
-      );
-    },
-    async beginFinalization({ sessionId, parts, updatedAt }) {
-      const session = sessions.find((candidate) => candidate.id === sessionId);
-      if (!session) throw new Error("Upload Session reservation not found");
-      if (session.status !== "uploading") {
-        return { claimed: false, session };
-      }
-      session.status = "finalizing";
-      session.completionParts = parts;
-      session.updatedAt = updatedAt;
-      return { claimed: true, session };
-    },
-    async waitForFinalization(sessionId) {
-      for (let attempt = 0; attempt < 20; attempt += 1) {
-        const session = sessions.find((candidate) => candidate.id === sessionId);
-        if (!session) throw new Error("Upload Session reservation not found");
-        if (session.status !== "finalizing") return session;
-        await Promise.resolve();
-      }
-      const session = sessions.find((candidate) => candidate.id === sessionId);
-      if (!session) throw new Error("Upload Session reservation not found");
-      return session;
-    },
-    async handoff({
-      sessionId,
-      queuedJobId,
-      verifiedSizeBytes,
-      verifiedContentType,
-      updatedAt,
-    }) {
-      const session = sessions.find((candidate) => candidate.id === sessionId);
-      if (!session) throw new Error("Upload Session reservation not found");
-      if (session.status === "queued_for_ingest") return session;
-      const generation = session.generation as {
-        languageCode: string;
-        contentPack: Record<string, unknown>;
-      };
-      projects.push({
-        id: session.preallocatedProjectId,
-        userId: session.legacyOwnerUserId,
-        workspaceId: session.workspaceId,
-        createdByUserId: session.actorUserId,
-        updatedByUserId: session.actorUserId,
-        title: session.title,
-        sourceInput: session.fileName,
-        sourceStorageKey: session.storageKey,
-        sourceMimeType: verifiedContentType,
-        sourceSizeBytes: verifiedSizeBytes,
-        languageCode: generation.languageCode,
-        ingestStatus: "queued",
-        brandTemplateId: session.brandTemplateId,
-        brandSnapshot: session.brandSnapshot,
-      });
-      contentPacks.push({
-        projectId: session.preallocatedProjectId,
-        ...generation.contentPack,
-      });
-      ingestJobs.push({
-        id: queuedJobId,
-        projectId: session.preallocatedProjectId,
-        jobType: "upload_finalize",
-        payload: {
-          storageKey: session.storageKey,
-          verifiedSizeBytes,
-          verifiedContentType,
-          uploadSessionId: session.id,
-        },
-      });
-      session.status = "queued_for_ingest";
-      session.queuedJobId = queuedJobId;
-      session.updatedAt = updatedAt;
-      return session;
-    },
-    async recordFailure({
-      sessionId,
-      status,
-      failureCode,
-      updatedAt,
-    }) {
-      const session = sessions.find((candidate) => candidate.id === sessionId);
-      if (!session) throw new Error("Upload Session reservation not found");
-      session.status = status;
-      session.failureCode = failureCode;
-      session.updatedAt = updatedAt;
-      return session;
-    },
-    async recordCleanupRetry({
-      sessionId,
-      failureCode,
-      cleanupRetryAt,
-      updatedAt,
-    }) {
-      const session = sessions.find((candidate) => candidate.id === sessionId);
-      if (!session) throw new Error("Upload Session reservation not found");
-      session.failureCode = failureCode;
-      session.cleanupRetryAt = cleanupRetryAt;
-      session.updatedAt = updatedAt;
-      return session;
-    },
-  };
-
-  const storage: UploadSessionStorage = {
-    async grantSinglePut() {
-      return { url: "https://upload.invalid/single" };
-    },
-    async createMultipart({ storageKey, contentType, metadata }) {
-      if (providerCreationFailure) {
-        const error = providerCreationFailure;
-        providerCreationFailure = null;
-        throw error;
-      }
-      const providerUploadId = `opaque/provider/${++sequence}`;
-      providerInitiations.push({ storageKey, providerUploadId });
-      providerUploads.set(providerUploadId, {
-        storageKey,
-        contentType,
-        sizeBytes: Number(metadata.file_size_bytes ?? 0),
-        initiatedAt: new Date(
-          `2026-08-27T00:00:${String(sequence).padStart(2, "0")}.000Z`,
-        ),
-      });
-      return { providerUploadId };
-    },
-    async grantMultipartParts({ partNumbers }) {
-      return partNumbers.map((partNumber) => ({
-        partNumber,
-        url: `https://upload.invalid/part/${partNumber}`,
-      }));
-    },
-    async completeMultipart({ storageKey, providerUploadId, parts }) {
-      const provider = providerUploads.get(providerUploadId);
-      if (!provider || provider.storageKey !== storageKey) {
-        throw new Error("NoSuchUpload");
-      }
-      const uploaded = uploadedParts.get(providerUploadId) ?? [];
-      if (JSON.stringify(uploaded) !== JSON.stringify(parts)) {
-        throw new Error("InvalidPart");
-      }
-      providerCompletions += 1;
-      exactObjects.set(storageKey, {
-        sizeBytes: provider.sizeBytes,
-        contentType: provider.contentType,
-      });
-    },
-    async listMultipartParts({ storageKey, providerUploadId }) {
-      const provider = providerUploads.get(providerUploadId);
-      if (!provider || provider.storageKey !== storageKey) {
-        throw new Error("NoSuchUpload");
-      }
-      return uploadedParts.get(providerUploadId) ?? [];
-    },
-    async headExactObject(storageKey) {
-      objectProbes += 1;
-      if (objectProbeFailure) {
-        const disposition = objectProbeFailure;
-        objectProbeFailure = null;
-        throw new UploadSessionStorageProbeError(disposition);
-      }
-      const object = exactObjects.get(storageKey);
-      if (!object) throw new UploadSessionStorageProbeError("missing");
-      return object;
-    },
-    async headExactObjectIfExists(storageKey) {
-      objectProbes += 1;
-      if (objectProbeFailure) {
-        const disposition = objectProbeFailure;
-        objectProbeFailure = null;
-        if (disposition === "missing") return null;
-        throw new UploadSessionStorageProbeError(disposition);
-      }
-      return exactObjects.get(storageKey) ?? null;
-    },
-    async listExactKeyMultipartUploads(storageKey) {
-      exactKeyListings += 1;
-      return Array.from(providerUploads, ([providerUploadId, upload]) => ({
-        providerUploadId,
-        initiatedAt: upload.initiatedAt,
-        storageKey: upload.storageKey,
-      }))
-        .filter((upload) => upload.storageKey === storageKey)
-        .map(({ providerUploadId, initiatedAt }) => ({
-          providerUploadId,
-          initiatedAt,
-        }));
-    },
-    async abortMultipart({ storageKey, providerUploadId }) {
-      if (providerAbortFailure) {
-        const error = providerAbortFailure;
-        providerAbortFailure = null;
-        throw error;
-      }
-      const upload = providerUploads.get(providerUploadId);
-      if (!upload || upload.storageKey !== storageKey) return;
-      providerAborts.push(providerUploadId);
-      providerUploads.delete(providerUploadId);
-    },
-    async deleteExactObject(storageKey) {
-      objectDeletes += 1;
-      exactObjects.delete(storageKey);
-    },
-  };
-
-  return {
-    adapters: {
-      config: defaultUploadSessionConfig(),
-      persistence,
-      storage,
-      admission: {
-        async assertQuota() {
-          quotaChecks += 1;
-          if (quotaFailure) throw quotaFailure;
-        },
-        async resolveBrand() {
-          brandResolutions += 1;
-          return null;
-        },
-      },
-      now: () => new Date("2026-08-27T00:00:00.000Z"),
-      createId: randomUUID,
-    } satisfies UploadSessionModuleDependencies,
-    facts: {
-      sessions,
-      providerInitiations,
-      projects,
-      get quotaChecks() {
-        return quotaChecks;
-      },
-      get brandResolutions() {
-        return brandResolutions;
-      },
-      contentPacks,
-      ingestJobs,
-      get providerCompletions() {
-        return providerCompletions;
-      },
-      get objectProbes() {
-        return objectProbes;
-      },
-      get singlePuts() {
-        return singlePuts;
-      },
-      get exactKeyListings() {
-        return exactKeyListings;
-      },
-      get objectDeletes() {
-        return objectDeletes;
-      },
-      providerAborts,
-      get unfinishedProviderUploads() {
-        return Array.from(providerUploads.keys()).sort();
-      },
-    },
-    uploadMultipartParts(
-      sessionId: string,
-      parts: Array<{ partNumber: number; etag: string }>,
-    ) {
-      const session = sessions.find((candidate) => candidate.id === sessionId);
-      if (!session?.providerUploadId) {
-        throw new Error("Upload Session provider binding not found");
-      }
-      uploadedParts.set(session.providerUploadId, parts);
-      const provider = providerUploads.get(session.providerUploadId);
-      if (provider) provider.sizeBytes = session.fileSizeBytes;
-    },
-    putSingleObject(
-      sessionId: string,
-      object: { sizeBytes: number; contentType: string },
-    ) {
-      const session = sessions.find((candidate) => candidate.id === sessionId);
-      if (!session || session.transferKind !== "single") {
-        throw new Error("Single-transfer Upload Session not found");
-      }
-      singlePuts += 1;
-      exactObjects.set(session.storageKey, object);
-    },
-    failNextProviderBinding() {
-      failProviderBinding = true;
-    },
-    failQuota(error: Error) {
-      quotaFailure = error;
-    },
-    failNextProviderCreation(error: Error) {
-      providerCreationFailure = error;
-    },
-    failNextProviderAbort(error: Error) {
-      providerAbortFailure = error;
-    },
-    failNextObjectProbe(
-      disposition:
-        | "missing"
-        | "access_denied"
-        | "invalid_metadata"
-        | "unavailable",
-    ) {
-      objectProbeFailure = disposition;
-    },
-    createDuplicateUnfinishedUpload(sessionId: string) {
-      const session = sessions.find((candidate) => candidate.id === sessionId);
-      if (!session) throw new Error("Upload Session not found");
-      const providerUploadId = `opaque/provider/${++sequence}`;
-      providerUploads.set(providerUploadId, {
-        storageKey: session.storageKey,
-        contentType: session.contentType,
-        sizeBytes: 0,
-        initiatedAt: new Date(
-          `2026-08-27T00:00:${String(sequence).padStart(2, "0")}.000Z`,
-        ),
-      });
-      providerInitiations.push({
-        storageKey: session.storageKey,
-        providerUploadId,
-      });
-    },
-  };
-}

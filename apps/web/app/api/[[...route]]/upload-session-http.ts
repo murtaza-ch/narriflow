@@ -60,6 +60,7 @@ export function createUploadSessionHttpRoutes(
       60,
     );
     if (!rateLimit.allowed) {
+      c.header("Retry-After", "60");
       return c.json(
         { error: "rate_limited", message: userErrorMessage("rate_limited") },
         429,
@@ -94,6 +95,9 @@ export function createUploadSessionHttpRoutes(
           409,
         );
       }
+      if (error instanceof UploadSessionInvalidStateError) {
+        return c.json({ error: error.code, message: error.message }, 409);
+      }
       if (error instanceof UploadSessionNotFoundError) {
         return c.json({ error: error.code, message: error.message }, 404);
       }
@@ -126,6 +130,7 @@ export function createUploadSessionHttpRoutes(
       60,
     );
     if (!rateLimit.allowed) {
+      c.header("Retry-After", "60");
       return c.json(
         { error: "rate_limited", message: userErrorMessage("rate_limited") },
         429,

@@ -136,6 +136,7 @@ describe("Upload Session HTTP routes", () => {
     });
 
     expect(response.status).toBe(429);
+    expect(response.headers.get("retry-after")).toBe("60");
     expect(seenKeys).toEqual(["upload-session-open:legacy-owner"]);
     expect(serviceCalls).toBe(0);
   });
@@ -189,6 +190,7 @@ describe("Upload Session HTTP routes", () => {
     });
     const cases = [
       [new UploadSessionIdempotencyConflictError(), 409],
+      [new UploadSessionInvalidStateError(), 409],
       [new UploadSessionNotFoundError(), 404],
       [new UploadSessionIntegrityError("mismatch"), 422],
       [quota, 402],
@@ -259,5 +261,15 @@ describe("Upload Session HTTP routes", () => {
       body: JSON.stringify({ ...payload, providerUploadId: "forged" }),
     });
     expect(invalidResponse.status).toBe(400);
+
+    const limitedResponse = await createUploadSessionHttpRoutes(
+      dependencies({ checkRateLimit: async () => ({ allowed: false }) }),
+    ).request("/upload-sessions/finalize", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    expect(limitedResponse.status).toBe(429);
+    expect(limitedResponse.headers.get("retry-after")).toBe("60");
   });
 });

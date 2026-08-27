@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { createInMemoryUploadSessionHarness } from "./upload-session.test-support";
 import {
-  createInMemoryUploadSessionHarness,
   createUploadSessionModule,
   defaultUploadSessionConfig,
   planUploadTransfer,
@@ -341,6 +341,124 @@ describe("Upload Session", () => {
     expect(harness.facts.providerInitiations).toHaveLength(1);
   });
 
+  test("elects one recovery claimant after an admission lease expires", async () => {
+    const harness = createInMemoryUploadSessionHarness();
+    harness.failNextProviderBinding();
+    const module = createUploadSessionModule({
+      ...harness.adapters,
+      config: defaultUploadSessionConfig({ smallFileThresholdBytes: 1 }),
+    });
+    const input = {
+      ...ACTOR,
+      clientIdempotencyKey: "69696969-6969-4696-8696-696969696969",
+      title: "Expired admission",
+      source: {
+        fileName: "expired.mp4",
+        sizeBytes: 33_554_432,
+        contentType: "video/mp4",
+        browserFingerprint: '["expired.mp4",33554432,"video/mp4",606]',
+      },
+      brandTemplateId: null,
+      generation: { languageCode: "auto", contentPack: CONTENT_PACK },
+    };
+    await expect(module.open(input)).rejects.toThrow(
+      "injected provider bind loss",
+    );
+    const session = harness.facts.sessions[0]!;
+    session.admissionPreparedAt = null;
+    session.admissionClaimExpiresAt = new Date("2026-08-26T23:59:59.000Z");
+
+    const [left, right] = await Promise.all([
+      module.open(input),
+      module.open(input),
+    ]);
+
+    expect(right.sessionId).toBe(left.sessionId);
+    expect(harness.facts.quotaChecks).toBe(2);
+    expect(harness.facts.brandResolutions).toBe(2);
+    expect(harness.facts.exactKeyListings).toBe(1);
+    expect(harness.facts.providerInitiations).toHaveLength(1);
+  });
+
+  test("aborts a newly-created provider transfer when another claimant already won binding", async () => {
+    const harness = createInMemoryUploadSessionHarness();
+    const basePersistence = harness.adapters.persistence;
+    let injectWinner = true;
+    const module = createUploadSessionModule({
+      ...harness.adapters,
+      config: defaultUploadSessionConfig({ smallFileThresholdBytes: 1 }),
+      persistence: {
+        ...basePersistence,
+        async bindMultipartProvider(input) {
+          if (injectWinner) {
+            injectWinner = false;
+            const session = harness.facts.sessions.find(
+              (candidate) => candidate.id === input.sessionId,
+            )!;
+            session.providerUploadId = "opaque/provider/winner";
+            session.status = "uploading";
+            session.admissionAttemptId = null;
+            session.admissionClaimExpiresAt = null;
+          }
+          return basePersistence.bindMultipartProvider(input);
+        },
+      },
+    });
+
+    const opened = await module.open({
+      ...ACTOR,
+      clientIdempotencyKey: "70707070-7070-4070-8070-707070707070",
+      title: "Losing provider",
+      source: {
+        fileName: "loser.mp4",
+        sizeBytes: 33_554_432,
+        contentType: "video/mp4",
+        browserFingerprint: '["loser.mp4",33554432,"video/mp4",707]',
+      },
+      brandTemplateId: null,
+      generation: { languageCode: "auto", contentPack: CONTENT_PACK },
+    });
+
+    expect(opened.outcome).toBe("uploading");
+    expect(harness.facts.providerAborts).toEqual(["opaque/provider/1"]);
+    expect(harness.facts.sessions[0]?.providerUploadId).toBe(
+      "opaque/provider/winner",
+    );
+  });
+
+  test("records malformed provider identity as a terminal typed failure", async () => {
+    const harness = createInMemoryUploadSessionHarness();
+    harness.returnNextProviderIdentity("");
+    const module = createUploadSessionModule({
+      ...harness.adapters,
+      config: defaultUploadSessionConfig({ smallFileThresholdBytes: 1 }),
+    });
+    const input = {
+      ...ACTOR,
+      clientIdempotencyKey: "71717171-7171-4171-8171-717171717171",
+      title: "Malformed provider",
+      source: {
+        fileName: "malformed.mp4",
+        sizeBytes: 33_554_432,
+        contentType: "video/mp4",
+        browserFingerprint: '["malformed.mp4",33554432,"video/mp4",808]',
+      },
+      brandTemplateId: null,
+      generation: { languageCode: "auto", contentPack: CONTENT_PACK },
+    };
+
+    await expect(module.open(input)).rejects.toThrow(
+      "malformed upload identity",
+    );
+    expect(harness.facts.sessions[0]).toMatchObject({
+      status: "failed",
+      failureCode: "provider_identity_invalid",
+    });
+    await expect(module.open(input)).rejects.toBeInstanceOf(
+      UploadSessionInvalidStateError,
+    );
+  });
+
   test("adopts the exact-key provider upload after its binding response is lost", async () => {
     const harness = createInMemoryUploadSessionHarness();
     harness.failNextProviderBinding();
@@ -512,7 +630,7 @@ describe("Upload Session", () => {
       generation: { languageCode: "en", contentPack: CONTENT_PACK },
     });
     if (opened.outcome !== "uploading" || opened.transfer.kind !== "multipart") {
-      throw new Error("expected multipart upload");
+      throw new Error("expected multipart transfer");
     }
     harness.uploadMultipartParts(
       opened.sessionId,

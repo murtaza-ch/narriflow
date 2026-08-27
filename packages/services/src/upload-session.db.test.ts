@@ -177,6 +177,54 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
       }),
     ).toBe(1);
 
+    const recoverySessionId = randomUUID();
+    const recoveryNow = new Date();
+    await prisma.uploadSession.create({
+      data: {
+        id: recoverySessionId,
+        workspaceId: workspace.id,
+        actorUserId: user.id,
+        legacyOwnerUserId: user.id,
+        clientIdempotencyKey: randomUUID(),
+        immutableInputFingerprint: "expired-recovery",
+        preallocatedProjectId: randomUUID(),
+        title: "Expired recovery",
+        fileName: "expired.mp4",
+        fileSizeBytes: 2_048n,
+        contentType: "video/mp4",
+        browserFingerprint: "expired-recovery",
+        generationSettings: { languageCode: "en", contentPack: CONTENT_PACK },
+        transferKind: "multipart",
+        partSizeBytes: 16 * 1024 * 1024,
+        partCount: 2,
+        storageKey: `workspaces/${workspace.id}/upload-sessions/${recoverySessionId}/expired.mp4`,
+        admissionAttemptId: randomUUID(),
+        admissionClaimExpiresAt: new Date(recoveryNow.getTime() - 1_000),
+        expiresAt: new Date(recoveryNow.getTime() + 60_000),
+        hardExpiresAt: new Date(recoveryNow.getTime() + 120_000),
+      },
+    });
+    const recoveryAttempts = [randomUUID(), randomUUID()];
+    const recoveryClaims = await Promise.all(
+      recoveryAttempts.map((admissionAttemptId) =>
+        prismaUploadSessionPersistence.claimAdmission({
+          sessionId: recoverySessionId,
+          admissionAttemptId,
+          claimExpiresAt: new Date(recoveryNow.getTime() + 30_000),
+          updatedAt: recoveryNow,
+        }),
+      ),
+    );
+    expect(recoveryClaims.filter((claim) => claim.claimed)).toHaveLength(1);
+    expect(
+      recoveryAttempts.includes(
+        (await prisma.uploadSession.findUniqueOrThrow({
+          where: { id: recoverySessionId },
+          select: { admissionAttemptId: true },
+        })).admissionAttemptId!,
+      ),
+    ).toBe(true);
+
     const finalizeInput = {
       actorUserId: user.id,
       workspaceId: workspace.id,

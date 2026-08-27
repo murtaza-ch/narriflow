@@ -46,6 +46,13 @@ export class InvalidObjectMetadataError extends Error {
   }
 }
 
+export class InvalidMultipartUploadIdentityError extends Error {
+  constructor() {
+    super("R2 returned a malformed multipart upload identity");
+    this.name = "InvalidMultipartUploadIdentityError";
+  }
+}
+
 function metadataByteLength(value: string): number {
   return Buffer.byteLength(value, "utf8");
 }
@@ -360,28 +367,36 @@ export async function listUploadedParts(params: {
   return parts;
 }
 
-export async function listExactKeyMultipartUploads(params: { key: string }) {
-  const client = getClient();
-  const { bucket } = getR2Config();
+interface MultipartUploadInventoryPage {
+  Uploads?: Array<{
+    Key?: string;
+    UploadId?: string;
+    Initiated?: Date;
+  }>;
+  IsTruncated?: boolean;
+  NextKeyMarker?: string;
+  NextUploadIdMarker?: string;
+}
+
+export async function collectExactKeyMultipartUploads(
+  key: string,
+  fetchPage: (markers: {
+    keyMarker?: string;
+    uploadIdMarker?: string;
+  }) => Promise<MultipartUploadInventoryPage>,
+) {
   const uploads: Array<{ uploadId: string; initiatedAt: Date | null }> = [];
   let keyMarker: string | undefined;
   let uploadIdMarker: string | undefined;
   let hasMoreUploads = true;
 
   while (hasMoreUploads) {
-    const response = await client.send(
-      new ListMultipartUploadsCommand({
-        Bucket: bucket,
-        Prefix: params.key,
-        KeyMarker: keyMarker,
-        UploadIdMarker: uploadIdMarker,
-      }),
-    );
+    const response = await fetchPage({ keyMarker, uploadIdMarker });
     for (const upload of response.Uploads ?? []) {
-      if (upload.Key !== params.key) continue;
+      if (upload.Key !== key) continue;
       const uploadId = upload.UploadId;
       if (!uploadId || uploadId.length > 2_048) {
-        throw new Error("R2 returned a malformed multipart upload identity");
+        throw new InvalidMultipartUploadIdentityError();
       }
       uploads.push({
         uploadId,
@@ -398,6 +413,23 @@ export async function listExactKeyMultipartUploads(params: { key: string }) {
   }
 
   return uploads;
+}
+
+export async function listExactKeyMultipartUploads(params: { key: string }) {
+  const client = getClient();
+  const { bucket } = getR2Config();
+  return collectExactKeyMultipartUploads(
+    params.key,
+    async ({ keyMarker, uploadIdMarker }) =>
+      client.send(
+        new ListMultipartUploadsCommand({
+          Bucket: bucket,
+          Prefix: params.key,
+          KeyMarker: keyMarker,
+          UploadIdMarker: uploadIdMarker,
+        }),
+      ),
+  );
 }
 
 export async function completeMultipartUpload(params: {
@@ -434,13 +466,27 @@ export async function abortMultipartUpload(params: {
   const client = getClient();
   const { bucket } = getR2Config();
 
-  await client.send(
-    new AbortMultipartUploadCommand({
-      Bucket: bucket,
-      Key: params.key,
-      UploadId: params.uploadId,
-    }),
-  );
+  try {
+    await client.send(
+      new AbortMultipartUploadCommand({
+        Bucket: bucket,
+        Key: params.key,
+        UploadId: params.uploadId,
+      }),
+    );
+  } catch (error) {
+    const candidate = error as {
+      name?: unknown;
+      code?: unknown;
+      Code?: unknown;
+      $metadata?: { httpStatusCode?: unknown };
+    };
+    const alreadyMissing =
+      [candidate.name, candidate.code, candidate.Code].includes(
+        "NoSuchUpload",
+      ) || candidate.$metadata?.httpStatusCode === 404;
+    if (!alreadyMissing) throw error;
+  }
 }
 
 export async function headObject(key: string) {
