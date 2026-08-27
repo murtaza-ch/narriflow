@@ -87,6 +87,11 @@ import {
   replaceSubtitleParagraphText,
 } from "./subtitle-lines";
 import type { TimelineSegment } from "./studio-types";
+import type { CompositionPlanQaFixture } from "./composition-plan-qa-fixture";
+import type {
+  StudioCompositionPlanStatus,
+  StudioExportState,
+} from "./studio-export-policy";
 
 /**
  * Below this width the transcript panel has already hidden (it collapses
@@ -319,7 +324,8 @@ interface StudioState {
    *  after a failed save timed back to idle with the retry still pending —
    *  so it must consult this to say "Unsaved changes" instead. */
   isDocDirty: boolean;
-  exportState: "idle" | "exporting" | "queued";
+  exportState: StudioExportState;
+  compositionPlanStatus: StudioCompositionPlanStatus;
   resetState: "idle" | "resetting";
   canUndo: boolean;
   canRedo: boolean;
@@ -495,6 +501,8 @@ interface StudioContextValue extends StudioState {
   deleteSelectedSegment: () => void;
   handleSave: () => void;
   handleExport: (options: StudioExportOptions) => void;
+  reportCompositionPlanStatus: (status: StudioCompositionPlanStatus) => void;
+  compositionPlanQaFixture: CompositionPlanQaFixture | null;
   handleUndo: () => void;
   handleRedo: () => void;
   handleReset: () => void;
@@ -604,6 +612,10 @@ interface StudioShellProps {
   splitLayoutAnalysis?: ClipSplitLayoutAnalysis | null;
   splitLayoutFailure?: ClipSplitLayoutFailure | null;
   layoutAnalysisFailure?: ClipLayoutAnalysisFailure | null;
+  /** Development-only browser fixture. The server page never forwards this
+   *  in production. It exists so Chrome QA can prove the invalid-plan alert
+   *  and export block without corrupting a Clip Editor Document. */
+  compositionPlanQaFixture?: CompositionPlanQaFixture | null;
 }
 
 export function StudioShell({
@@ -632,6 +644,7 @@ export function StudioShell({
   splitLayoutAnalysis: initialSplitLayoutAnalysis = null,
   splitLayoutFailure: initialSplitLayoutFailure = null,
   layoutAnalysisFailure: initialLayoutAnalysisFailure = null,
+  compositionPlanQaFixture = null,
 }: StudioShellProps) {
   const isViewportTooSmall = useIsViewportBelow(STUDIO_MIN_VIEWPORT_WIDTH);
   const [brollPreviewAsset, setBrollPreviewAsset] =
@@ -994,9 +1007,13 @@ export function StudioShell({
   const [captionSelected, setCaptionSelected] = useState(false);
   const [selectedTextLayerId, setSelectedTextLayerId] = useState<string | null>(null);
   const [transcriptOnly, setTranscriptOnly] = useState(false);
-  const [exportState, setExportState] = useState<
-    "idle" | "exporting" | "queued"
-  >("idle");
+  const [exportState, setExportState] = useState<StudioExportState>("idle");
+  const [compositionPlanStatus, setCompositionPlanStatus] =
+    useState<StudioCompositionPlanStatus>("unresolved");
+  const reportCompositionPlanStatus = useCallback(
+    (status: StudioCompositionPlanStatus) => setCompositionPlanStatus(status),
+    [],
+  );
   const [resetState, setResetState] = useState<"idle" | "resetting">("idle");
   const revision = cloud.revision;
   const isDocDirty = cloud.dirty;
@@ -1541,6 +1558,14 @@ export function StudioShell({
   }, [studioSession]);
 
   const handleExport = useCallback(async (options: StudioExportOptions) => {
+    if (compositionPlanStatus === "invalid") {
+      toaster.create({
+        type: "error",
+        title: "Export blocked",
+        description: "Fix the invalid composition before exporting.",
+      });
+      return;
+    }
     setExportState("exporting");
     try {
       const prepared = await studioSession.perform({
@@ -1586,7 +1611,13 @@ export function StudioShell({
             : "The render couldn't be queued. Try again.",
       });
     }
-  }, [studioSession, clipInfo.projectId, clipInfo.id, router]);
+  }, [
+    compositionPlanStatus,
+    studioSession,
+    clipInfo.projectId,
+    clipInfo.id,
+    router,
+  ]);
 
   // ─── Reset to original (vizard-parity.md Phase A step 4) ────────────────
   const handleReset = useCallback(async () => {
@@ -1870,7 +1901,8 @@ export function StudioShell({
     layoutMode, showShortcuts, timelineZoom, selectedSegmentId, transcriptSelectionRange,
     captionPreset, captionSelected, selectedTextLayerId, transcriptOnly, segments, studioEdits, brollUrl,
     brollPreviewAsset,
-    saveState: displayedSaveState, isDocDirty, exportState, resetState, canUndo, canRedo, canReset,
+    saveState: displayedSaveState, isDocDirty, exportState, compositionPlanStatus,
+    resetState, canUndo, canRedo, canReset,
     editorDocument: doc,
     transcript: derivedTranscript, clipInfo, mediaRef, playbackClock, setSourceAudioEnvelope,
     sourceVideoUrl, sourcePreviewId,
@@ -1888,6 +1920,7 @@ export function StudioShell({
     setTranscriptOnly, setSegments, setStudioEdits, setBrollUrl, setBrollPreviewAsset, endCoalesce,
     revertDeletedRange,
     togglePlay, seekTo, splitAtPlayhead, deleteSelectedSegment, handleSave, handleExport,
+    reportCompositionPlanStatus, compositionPlanQaFixture,
     handleUndo, handleRedo, handleReset, commitTrim, trimHandlesDisabled,
   };
 

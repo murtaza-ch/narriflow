@@ -18,6 +18,10 @@ import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { clipAspectRatioOptions } from "@narriflow/validators";
 import { useStudio, type AspectRatio } from "./studio-shell";
+import {
+  canSubmitStudioExport,
+  studioExportBlockReason,
+} from "./studio-export-policy";
 
 function defaultSelection(aspectRatio: AspectRatio): Record<AspectRatio, boolean> {
   return {
@@ -29,7 +33,13 @@ function defaultSelection(aspectRatio: AspectRatio): Record<AspectRatio, boolean
 }
 
 export function StudioExportMenu() {
-  const { clipInfo, aspectRatio, exportState, handleExport } = useStudio();
+  const {
+    clipInfo,
+    aspectRatio,
+    exportState,
+    compositionPlanStatus,
+    handleExport,
+  } = useStudio();
   const [open, setOpen] = useState(false);
   const [selection, setSelection] = useState(() => defaultSelection(aspectRatio));
   const [resolution, setResolution] = useState<"720p" | "1080p">(() =>
@@ -40,9 +50,15 @@ export function StudioExportMenu() {
     .filter((option) => selection[option.value])
     .map((option) => option.value);
   const busy = exportState === "exporting";
+  const blockReason = studioExportBlockReason(compositionPlanStatus);
+  const canSubmit = canSubmitStudioExport({
+    compositionPlanStatus,
+    exportState,
+    selectedVariantCount: selected.length,
+  });
 
   async function submit() {
-    if (selected.length === 0 || busy) return;
+    if (!canSubmit) return;
     // Acknowledge the click immediately; the top-bar trigger changes to
     // “Preparing…” while the durable export record is created.
     setOpen(false);
@@ -70,7 +86,15 @@ export function StudioExportMenu() {
           aria-haspopup="dialog"
         >
           {busy ? <Spinner size="xs" borderTopColor="accent.contrast" /> : <Download size={13} />}
-          <Text>{busy ? "Preparing…" : exportState === "queued" ? "Queued" : "Export"}</Text>
+          <Text>
+            {busy
+              ? "Preparing…"
+              : exportState === "queued"
+                ? "Queued"
+                : blockReason
+                  ? "Export blocked"
+                  : "Export"}
+          </Text>
           {exportState === "queued" ? <Check size={13} /> : <ChevronDown size={12} aria-hidden />}
         </Button>
       </Popover.Trigger>
@@ -97,36 +121,45 @@ export function StudioExportMenu() {
                 {clipAspectRatioOptions.map((option) => {
                   const checked = selection[option.value];
                   return (
-                    <Flex
+                    <Checkbox
                       key={option.value}
-                      align="center"
+                      w="full"
+                      alignItems="center"
                       px="2.5"
                       py="2"
                       borderWidth="1px"
                       borderColor={checked ? "border.emphasized" : "border"}
                       bg={checked ? "bg.muted" : "transparent"}
                       borderRadius="l1"
+                      checked={checked}
+                      inputProps={{
+                        "aria-label": `${option.label} ${option.width}×${option.height}`,
+                      }}
+                      onCheckedChange={(next) =>
+                        setSelection((current) => ({
+                          ...current,
+                          [option.value]: next,
+                        }))
+                      }
                     >
-                      <Checkbox
-                        flex="1"
-                        checked={checked}
-                        onCheckedChange={(next) =>
-                          setSelection((current) => ({ ...current, [option.value]: next }))
-                        }
-                      >
-                        <Flex justify="space-between" align="center" flex="1" gap="3">
-                          <Text fontSize="12px" color="fg">
-                            {option.label}
-                          </Text>
-                          <Text textStyle="data" fontSize="10px" color="fg.muted">
-                            {option.width}×{option.height}
-                          </Text>
-                        </Flex>
-                      </Checkbox>
-                    </Flex>
+                      <Flex justify="space-between" align="center" flex="1" gap="3">
+                        <Text fontSize="12px" color="fg">
+                          {option.label}
+                        </Text>
+                        <Text textStyle="data" fontSize="10px" color="fg.muted">
+                          {option.width}×{option.height}
+                        </Text>
+                      </Flex>
+                    </Checkbox>
                   );
                 })}
               </Stack>
+
+              {blockReason ? (
+                <Text role="alert" fontSize="11px" color="danger.fg">
+                  {blockReason}
+                </Text>
+              ) : null}
 
               <Box>
                 <Flex align="center" justify="space-between" mb="1.5">
@@ -164,7 +197,7 @@ export function StudioExportMenu() {
                   size="sm"
                   colorPalette="accent"
                   variant="solid"
-                  disabled={selected.length === 0 || busy}
+                  disabled={!canSubmit}
                   onClick={() => void submit()}
                 >
                   {busy ? <Spinner size="xs" borderTopColor="accent.contrast" /> : <Download size={13} />}

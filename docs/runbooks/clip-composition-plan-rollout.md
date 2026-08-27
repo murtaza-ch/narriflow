@@ -33,6 +33,10 @@ The historical 60-second, 24-scene 1080p Split comparison remains the grouping g
 7. Watch `clip_composition_plan` logs for plan version, fingerprint, effective modes, evidence source/version, evidence request count, and typed notice codes.
 8. Compare `clip_composition_resources` against the representative baseline for analysis executions, extracted segments, source decodes, command grouping, command bytes, encode time, and peak RSS.
 
+## Invalid-plan browser check
+
+In a development or test environment, append `?qaCompositionPlan=invalid` to a Studio clip URL. Studio must show the invalid composition notice, label the export trigger `Export blocked`, and keep the final export action disabled. Remove the query parameter to confirm the same clip returns to its normal export state. The fixture is ignored in production and never changes the editor document or durable composition evidence.
+
 ## Incident response
 
 Use the narrow analysis kill switch for a failing detector and keep Studio's public mirror aligned. Center, Fit, plan validation, and FFmpeg composition remain active. Unknown plan versions fail before FFmpeg starts and must not be bypassed.

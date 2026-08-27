@@ -75,6 +75,7 @@ import {
   reconcileSelectedAudioAssets,
   type PreviewAudioAssetResolutionMap,
 } from "./preview-audio-asset-resolution";
+import { applyCompositionPlanQaFixture } from "./composition-plan-qa-fixture";
 
 /** After this long with no metadata yet, hint that the source is just large. */
 const SLOW_LOAD_HINT_MS = 10_000;
@@ -361,6 +362,8 @@ export function VideoPreview() {
     splitLayoutAnalysis,
     splitLayoutFailure,
     autoLayoutAnalysisStatus,
+    reportCompositionPlanStatus,
+    compositionPlanQaFixture,
   } = useStudio();
 
   // Effective logo settings for THIS clip — studioEdits.logo overrides
@@ -644,7 +647,7 @@ export function VideoPreview() {
       (option) => option.value === aspectRatio,
     );
     if (!target) return null;
-    return planClipComposition({
+    const result = planClipComposition({
       document: editorDocument,
       source: {
         identity: compositionSourceIdentity,
@@ -809,6 +812,7 @@ export function VideoPreview() {
         },
       ],
     });
+    return applyCompositionPlanQaFixture(result, compositionPlanQaFixture);
   }, [
     aspectRatio,
     backgroundImageAvailability,
@@ -837,7 +841,12 @@ export function VideoPreview() {
     exactScreenLayoutFailure,
     exactSplitLayoutFailure,
     compositionSourceDims,
+    compositionPlanQaFixture,
   ]);
+  const compositionPlanStatus = compositionPlanResult?.status ?? "unresolved";
+  useEffect(() => {
+    reportCompositionPlanStatus(compositionPlanStatus);
+  }, [compositionPlanStatus, reportCompositionPlanStatus]);
   const compositionPreview = useMemo(() => {
     if (compositionPlanResult?.status === "invalid") return null;
     return adoptCompositionPreviewResult(

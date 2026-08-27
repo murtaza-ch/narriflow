@@ -11,14 +11,21 @@ import { compositionAssetRef } from "@narriflow/composition-plan";
 import { StudioShell } from "./_components/studio-shell";
 import type { ClipInfo, StudioBrandLogo } from "./_components/studio-shell";
 import { buildSegmentsFromUtterances } from "./_components/edited-timeline";
+import { resolveCompositionPlanQaFixture } from "./_components/composition-plan-qa-fixture";
 
 export default async function StudioPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ projectId: string; clipId: string }>;
+  searchParams: Promise<{ qaCompositionPlan?: string | string[] }>;
 }) {
-  const { projectId, clipId } = await params;
+  const [{ projectId, clipId }, query] = await Promise.all([params, searchParams]);
   const appUser = await requireWorkspaceProject(projectId, "content.edit");
+  const compositionPlanQaFixture = resolveCompositionPlanQaFixture(
+    query.qaCompositionPlan,
+    process.env.NODE_ENV,
+  );
 
   const [snapshot, clips, previewSource, rawBrandSnapshot, pricingTier] = await Promise.all([
     projectService.getProjectSnapshot(appUser.actorUserId, projectId, appUser.workspaceId),
@@ -194,6 +201,7 @@ export default async function StudioPage({
       splitLayoutAnalysis={editorDoc.splitLayoutAnalysis}
       splitLayoutFailure={editorDoc.splitLayoutFailure}
       layoutAnalysisFailure={editorDoc.layoutAnalysisFailure}
+      compositionPlanQaFixture={compositionPlanQaFixture}
     />
   );
 }
