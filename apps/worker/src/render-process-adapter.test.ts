@@ -86,6 +86,27 @@ test("process adapter classifies an otherwise nonzero exit as retryable", async 
   });
 });
 
+test("process adapter samples the worker and active command memory", async () => {
+  const baselineBytes = process.memoryUsage().rss;
+  const samples: number[] = [];
+
+  await adapter.execute({
+    command: process.execPath,
+    args: [
+      "-e",
+      "const held = Buffer.alloc(64 * 1024 * 1024, 1); setTimeout(() => process.exit(held[0] === 1 ? 0 : 1), 350)",
+    ],
+    signal: new AbortController().signal,
+    deadlineMs: 2_000,
+    killGraceMs: 20,
+    captureStdout: false,
+    recordResourceSample: (rssBytes) => samples.push(rssBytes),
+  });
+
+  expect(samples.length).toBeGreaterThan(0);
+  expect(Math.max(...samples)).toBeGreaterThan(baselineBytes + 32 * 1024 * 1024);
+});
+
 test("process adapter terminates and reaps a timed out process", async () => {
   await expect(
     adapter.execute({

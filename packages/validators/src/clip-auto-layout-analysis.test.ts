@@ -91,14 +91,26 @@ describe("clipAutoLayoutAnalysisSchema", () => {
     expect(clipAutoLayoutAnalysisSchema.safeParse(short).success).toBe(false);
   });
 
-  test("rejects invalid coordinates and future versions", () => {
+  test("rejects invalid coordinates and unknown evidence versions", () => {
     expect(
       clipAutoLayoutAnalysisSchema.safeParse({
         ...valid,
         segments: [{ ...valid.segments[0], cxNorm: 1.2 }],
       }).success,
     ).toBe(false);
-    expect(parseClipAutoLayoutAnalysis({ ...valid, version: 2 })).toBeNull();
+    expect(() =>
+      parseClipAutoLayoutAnalysis({ ...valid, version: 2 }),
+    ).toThrow("unsupported_clip_composition_evidence_version");
+    expect(() =>
+      parseClipAutoLayoutAnalysis({ ...valid, engine: "shot-layout-v2" }),
+    ).toThrow("unsupported_clip_composition_evidence_version");
+    expect(() =>
+      parseClipSplitLayoutAnalysis({
+        ...valid,
+        engine: "explicit-split-v1",
+        version: 2,
+      }),
+    ).toThrow("unsupported_clip_composition_evidence_version");
     const identityless: Record<string, unknown> = { ...valid };
     delete identityless.sourceIdentity;
     expect(parseClipAutoLayoutAnalysis(identityless)).toBeNull();

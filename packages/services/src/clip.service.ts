@@ -3766,11 +3766,11 @@ export class ClipService {
     document: EditorDocument;
     original: EditorDocument;
     /** Screen-mode PiP layout analysis (packet A — db/services foundation),
-     *  parsed null-safely via `parseClipLayoutAnalysis`: `null` for both
-     *  "never analyzed" (column NULL) and "stored value didn't parse /
-     *  unknown version" — this route has no use for telling those apart,
-     *  only the worker-side write path
-     *  (`setClipLayoutAnalysis`) needs the column's own NULL-vs-envelope
+     *  parsed via `parseClipLayoutAnalysis`: `null` for "never analyzed"
+     *  (column NULL) or unversioned malformed JSON. A declared unknown
+     *  version fails closed so the browser cannot adopt evidence written by
+     *  a contract this deployment does not understand. Only the worker-side
+     *  write path (`setClipLayoutAnalysis`) needs the column's NULL-vs-envelope
      *  distinction. Rides alongside `document`/`original` as a sibling
      *  derived field, same as `revision` — NOT folded into `document`
      *  itself, since it's worker-derived data the client never PUTs back

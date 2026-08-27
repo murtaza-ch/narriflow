@@ -916,7 +916,7 @@ describe("decidePipUsage (M6 — the PiP decision matrix, ordered, full coverage
 describe("resolvePipAnalysis", () => {
   const persistedEnvelope: ClipLayoutAnalysis = {
     version: 2,
-    engine: "screen-layout-v1",
+    engine: "screen-layout-v2",
     sourceIdentity: "source:project-1",
     inputFingerprint: "0123456789abcdef",
     analyzedAtISO: "2026-08-06T09:00:00.000Z",

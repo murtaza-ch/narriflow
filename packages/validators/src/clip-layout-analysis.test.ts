@@ -10,7 +10,7 @@ import {
 
 const validWithRect: ClipLayoutAnalysisV2 = {
   version: 2,
-  engine: "screen-layout-v1",
+  engine: "screen-layout-v2",
   sourceIdentity: "source:0123456789abcdef",
   inputFingerprint: "0123456789abcdef",
   sourceWidth: 1920,
@@ -75,6 +75,21 @@ const validInsufficientSamples: ClipLayoutAnalysis = {
 const validV2 = validWithRect;
 
 describe("clipLayoutAnalysisSchema", () => {
+  test("accepts only the exact screen-layout-v2 evidence discriminator", () => {
+    expect(
+      clipLayoutAnalysisSchema.safeParse({
+        ...validWithRect,
+        engine: "screen-layout-v2",
+      }).success,
+    ).toBe(true);
+    expect(
+      clipLayoutAnalysisSchema.safeParse({
+        ...validWithRect,
+        engine: "screen-layout-v1",
+      }).success,
+    ).toBe(false);
+  });
+
   test("round-trips identity-complete screencast-with-PiP evidence", () => {
     const parsed = clipLayoutAnalysisSchema.parse(
       JSON.parse(JSON.stringify(validWithRect)),
@@ -89,7 +104,7 @@ describe("clipLayoutAnalysisSchema", () => {
   test("parses identity-bound Screen failures without treating them as analysis", () => {
     const failure = clipLayoutAnalysisFailureSchema.parse({
       version: 2,
-      engine: "screen-layout-v1",
+      engine: "screen-layout-v2",
       state: "failed",
       sourceIdentity: "source:0123456789abcdef",
       inputFingerprint: "0123456789abcdef",
@@ -262,10 +277,19 @@ describe("parseClipLayoutAnalysis", () => {
     expect(parseClipLayoutAnalysis(undefined)).toBeNull();
   });
 
-  test("reads the current version and treats other versions as absent", () => {
+  test("reads the current version and rejects unknown evidence versions", () => {
     expect(parseClipLayoutAnalysis(validV2)).toEqual(validV2);
     const futureVersion = { ...validWithRect, version: 3 };
-    expect(parseClipLayoutAnalysis(futureVersion)).toBeNull();
+    expect(() => parseClipLayoutAnalysis(futureVersion)).toThrow(
+      "unsupported_clip_composition_evidence_version",
+    );
+
+    expect(() =>
+      parseClipLayoutAnalysis({
+        ...validWithRect,
+        engine: "screen-layout-v3",
+      }),
+    ).toThrow("unsupported_clip_composition_evidence_version");
 
     const noVersion: Record<string, unknown> = { ...validWithRect };
     delete noVersion.version;

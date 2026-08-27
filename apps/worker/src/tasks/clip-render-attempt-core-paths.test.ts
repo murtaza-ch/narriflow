@@ -144,6 +144,7 @@ function createCoreRenderPathTracer(input: {
   backgroundDecodable?: boolean;
   faceAnalysisSamples?: Array<{ t: number; cx: number | null }> | null;
   faceAnalysisFailure?: Error;
+  analysisExtractionFailure?: Error;
   analysisPersistenceFailure?: Error;
   analysisProcessOutcome?:
     "missing" | "timeout" | "nonzero" | "invalid" | "no-face" | "cancel";
@@ -183,6 +184,13 @@ function createCoreRenderPathTracer(input: {
   };
   compositionAdapterFailure?: Error;
   workspaceCleanupFailure?: Error;
+  resourceMeasure?: () => {
+    rssBytes: number;
+    scope:
+      | "worker_and_command_cgroup"
+      | "worker_and_command_processes"
+      | "worker_only";
+  };
 }) {
   const attempt: ClipRenderingWorkflowAttempt = {
     workflowRunId: "10000000-0000-4000-8000-000000000701",
@@ -244,6 +252,12 @@ function createCoreRenderPathTracer(input: {
   const persistedAutoLayouts: Array<unknown> = [];
   const persistedSplitLayouts: Array<unknown> = [];
   const persistedScreenLayouts: Array<unknown> = [];
+  let analysisExtractionCount = 0;
+  let faceDetectorCount = 0;
+  let multiFaceDetectorCount = 0;
+  let pipDetectorCount = 0;
+  let sceneDetectorCount = 0;
+  let workspaceCleanupCount = 0;
   let settlementCalls = 0;
 
   const variantIdFromPath = (path: string): string | null =>
@@ -541,18 +555,26 @@ function createCoreRenderPathTracer(input: {
         : {}),
       ...(input.faceAnalysisSamples !== undefined ||
       input.faceAnalysisFailure ||
+      input.analysisExtractionFailure ||
       input.multiFaceAnalysisSamples !== undefined ||
       input.pipAnalysisResult !== undefined
         ? {
             analysis: {
-              extractFaceDetectionSegment: async (params) => ({
-                path: params.sourcePath,
-                startSec: params.clipStartSec,
-              }),
+              extractFaceDetectionSegment: async (params) => {
+                analysisExtractionCount += 1;
+                if (input.analysisExtractionFailure) {
+                  throw input.analysisExtractionFailure;
+                }
+                return {
+                  path: `${params.tempDir}/extracted-analysis.mp4`,
+                  startSec: 0,
+                };
+              },
               ...(input.faceAnalysisSamples !== undefined ||
               input.faceAnalysisFailure
                 ? {
                     detectFacePath: async () => {
+                      faceDetectorCount += 1;
                       if (input.faceAnalysisFailure) {
                         throw input.faceAnalysisFailure;
                       }
@@ -564,16 +586,24 @@ function createCoreRenderPathTracer(input: {
                 : {}),
               ...(input.multiFaceAnalysisSamples !== undefined
                 ? {
-                    detectMultiFacePath: async () =>
-                      input.multiFaceAnalysisSamples
+                    detectMultiFacePath: async () => {
+                      multiFaceDetectorCount += 1;
+                      return input.multiFaceAnalysisSamples
                         ? { samples: input.multiFaceAnalysisSamples }
-                        : null,
-                    detectSceneCuts: async () => [],
+                        : null;
+                    },
+                    detectSceneCuts: async () => {
+                      sceneDetectorCount += 1;
+                      return [];
+                    },
                   }
                 : {}),
               ...(input.pipAnalysisResult !== undefined
                 ? {
-                    detectPipPath: async () => input.pipAnalysisResult ?? null,
+                    detectPipPath: async () => {
+                      pipDetectorCount += 1;
+                      return input.pipAnalysisResult ?? null;
+                    },
                   }
                 : {}),
             },
@@ -673,16 +703,19 @@ function createCoreRenderPathTracer(input: {
         mkdtemp: input.realMedia
           ? (prefix) => mkdtemp(prefix)
           : async () => "/tmp/narriflow-core-render-paths",
-        rm: input.workspaceCleanupFailure
-          ? async () => {
-              throw input.workspaceCleanupFailure;
-            }
-          : input.realMedia
-            ? rm
-            : async () => {},
+        rm: async (path, options) => {
+          workspaceCleanupCount += 1;
+          if (input.workspaceCleanupFailure) {
+            throw input.workspaceCleanupFailure;
+          }
+          if (input.realMedia) await rm(path, options);
+        },
         stat: input.realMedia ? stat : async () => ({ size: 256 }) as never,
         writeFile: input.realMedia ? writeFile : async () => {},
       },
+      ...(input.resourceMeasure
+        ? { resource: { measure: input.resourceMeasure } }
+        : {}),
       diagnose: ({ message, context }) =>
         diagnostics.push({ message, context }),
     },
@@ -690,6 +723,13 @@ function createCoreRenderPathTracer(input: {
 
   return {
     attempt,
+    analysisCounts: () => ({
+      extraction: analysisExtractionCount,
+      face: faceDetectorCount,
+      multiFace: multiFaceDetectorCount,
+      pip: pipDetectorCount,
+      scene: sceneDetectorCount,
+    }),
     brollCacheWrites,
     clipRenderAttempt,
     commands,
@@ -702,6 +742,7 @@ function createCoreRenderPathTracer(input: {
     persistedSplitLayouts,
     persistedScreenLayouts,
     settlementCalls: () => settlementCalls,
+    workspaceCleanupCount: () => workspaceCleanupCount,
     states,
     uploadedVariantIds,
   };
@@ -878,7 +919,13 @@ function normalizeCommandArgs(
 
 for (const fixture of topologyFixtures) {
   test(`ClipRenderAttempt routes ${fixture.topology} through the expected command topology`, async () => {
-    const harness = createCoreRenderPathTracer({ topology: fixture.topology });
+    const harness = createCoreRenderPathTracer({
+      topology: fixture.topology,
+      resourceMeasure: () => ({
+        rssBytes: 12_345,
+        scope: "worker_only",
+      }),
+    });
 
     await expect(
       harness.clipRenderAttempt.execute({
@@ -912,8 +959,359 @@ for (const fixture of topologyFixtures) {
     expect(harness.uploadedVariantIds).toEqual(fixture.outputGroups.flat());
     expect(harness.persistedVariantIds).toEqual(fixture.outputGroups.flat());
     expect(harness.settlementCalls()).toBe(1);
+    expect(harness.diagnostics).toContainEqual({
+      message: "clip_composition_resources",
+      context: expect.objectContaining({
+        planVersion: 1,
+        planFingerprint: expect.stringMatching(/^[0-9a-f]{16}$/),
+        requestedMode: expect.any(String),
+        effectiveModes: expect.any(Array),
+        sceneCount: expect.any(Number),
+        visualLayerCount: expect.any(Number),
+        commandGrouping: "independent",
+        targetCount: fixture.outputGroups.flat().length,
+        commandCount: fixture.commandCount,
+        sourceDecodeCount: fixture.commandCount,
+        commandBytes: expect.any(Number),
+        planningDurationMs: expect.any(Number),
+        encodeDurationMs: expect.any(Number),
+        peakRssBytes: 12_345,
+        peakRssScope: "worker_only",
+      }),
+    });
   });
 }
+
+test("ClipRenderAttempt isolates resource probe failure from rendering and settlement", async () => {
+  const harness = createCoreRenderPathTracer({
+    topology: "single-video",
+    resourceMeasure: () => {
+      throw new Error("Injected resource probe failure");
+    },
+  });
+
+  await expect(
+    harness.clipRenderAttempt.execute({
+      attempt: harness.attempt,
+      signal: new AbortController().signal,
+    }),
+  ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
+  expect(harness.persistedVariantIds).toEqual(["variant-9x16"]);
+  expect(harness.settlementCalls()).toBe(1);
+  expect(harness.diagnostics).toContainEqual({
+    message: "clip_composition_resource_probe_failed",
+    context: expect.objectContaining({
+      phase: "diagnostics",
+      failureCode: "resource_probe_failed",
+    }),
+  });
+});
+
+test("ClipRenderAttempt accepts the exact composition command budget and rejects one byte less before FFmpeg", async () => {
+  const baseline = createCoreRenderPathTracer({ topology: "single-video" });
+  await baseline.clipRenderAttempt.execute({
+    attempt: baseline.attempt,
+    signal: new AbortController().signal,
+  });
+  const command = baseline.commands[0];
+  if (!command) throw new Error("baseline command missing");
+  const encoder = new TextEncoder();
+  const exactBytes = ["ffmpeg", ...command.args].reduce(
+    (total, value) => total + encoder.encode(value).byteLength + 1,
+    0,
+  );
+
+  const accepted = createCoreRenderPathTracer({
+    topology: "single-video",
+    configOverrides: {
+      WORKER_COMPOSITION_MAX_COMMAND_BYTES: String(exactBytes),
+    },
+  });
+  await expect(
+    accepted.clipRenderAttempt.execute({
+      attempt: accepted.attempt,
+      signal: new AbortController().signal,
+    }),
+  ).resolves.toMatchObject({ status: "completed", succeeded: 1 });
+
+  const rejected = createCoreRenderPathTracer({
+    topology: "single-video",
+    configOverrides: {
+      WORKER_COMPOSITION_MAX_COMMAND_BYTES: String(exactBytes - 1),
+    },
+  });
+  await expect(
+    rejected.clipRenderAttempt.execute({
+      attempt: rejected.attempt,
+      signal: new AbortController().signal,
+    }),
+  ).resolves.toMatchObject({ status: "failed", failed: 1 });
+  expect(rejected.commands).toHaveLength(0);
+  expect(rejected.failureCodes.get("variant-9x16")).toBe(
+    "composition_command_budget_exceeded",
+  );
+  expect(rejected.failureDispositions.get("variant-9x16")).toBe("permanent");
+  expect(rejected.diagnostics).toContainEqual({
+    message: "clip_composition_budget_rejected",
+    context: expect.objectContaining({
+      phase: "composition_command",
+      failureCode: "composition_command_budget_exceeded",
+      disposition: "permanent",
+      budget: "command_bytes",
+      measured: exactBytes,
+      maximum: exactBytes - 1,
+      commandGrouping: "independent",
+    }),
+  });
+});
+
+test("ClipRenderAttempt deduplicates keyed analysis and extraction across mixed targets", async () => {
+  const face = (cx: number) => ({
+    cx,
+    cy: 0.3,
+    w: 0.1,
+    h: 0.2,
+    score: 0.9,
+  });
+  const multiFaceAnalysisSamples = Array.from({ length: 12 }, (_, index) => ({
+    t: index * 0.25,
+    faces: [face(0.3), face(0.7)],
+  }));
+  const cases = [
+    {
+      label: "Automatic",
+      input: {
+        topology: "studio-per-output" as const,
+        configOverrides: { WORKER_LAYOUT_ENGINE: "1" },
+        multiFaceAnalysisSamples,
+      },
+      counts: { extraction: 1, face: 0, multiFace: 1, pip: 0, scene: 1 },
+      requestKey: /^automatic-speaker-layout:[0-9a-f]{16}$/,
+      detectorExecutionCount: 2,
+    },
+    {
+      label: "Split",
+      input: {
+        topology: "studio-per-output" as const,
+        clipOverrides: { studioEdits: { framing: { mode: "split" } } },
+        configOverrides: { WORKER_SPLIT: "1" },
+        multiFaceAnalysisSamples,
+      },
+      counts: { extraction: 1, face: 0, multiFace: 1, pip: 0, scene: 0 },
+      requestKey: /^split-speaker-layout:[0-9a-f]{16}$/,
+      detectorExecutionCount: 1,
+    },
+    {
+      label: "Screen",
+      input: {
+        topology: "studio-per-output" as const,
+        clipOverrides: { studioEdits: { framing: { mode: "screen" } } },
+        configOverrides: { WORKER_SCREEN_LAYOUT: "1" },
+        faceAnalysisSamples: Array.from({ length: 8 }, (_, index) => ({
+          t: index * 0.25,
+          cx: 0.88,
+        })),
+        pipAnalysisResult: {
+          movingPxFrac: 0.04,
+          insufficientSamples: false,
+          candidates: [qualifyingPipCandidate],
+        },
+      },
+      counts: { extraction: 1, face: 1, multiFace: 0, pip: 1, scene: 0 },
+      requestKey: /^screen-layout:[0-9a-f]{16}$/,
+      detectorExecutionCount: 2,
+    },
+  ];
+
+  for (const analysisCase of cases) {
+    const harness = createCoreRenderPathTracer(analysisCase.input);
+    await expect(
+      harness.clipRenderAttempt.execute({
+        attempt: harness.attempt,
+        signal: new AbortController().signal,
+      }),
+      analysisCase.label,
+    ).resolves.toMatchObject({ status: "completed", succeeded: 2 });
+    expect(harness.analysisCounts(), analysisCase.label).toEqual(
+      analysisCase.counts,
+    );
+    expect(harness.workspaceCleanupCount(), analysisCase.label).toBe(1);
+    expect(harness.diagnostics, analysisCase.label).toContainEqual({
+      message: "clip_composition_resources",
+      context: expect.objectContaining({
+        analysisRequestCount: 1,
+        analysisRequestKeys: [expect.stringMatching(analysisCase.requestKey)],
+        analysisExecutionCount: 1,
+        detectorExecutionCount: analysisCase.detectorExecutionCount,
+        extractedSegmentCount: 1,
+      }),
+    });
+  }
+});
+
+test("ClipRenderAttempt degrades shared extraction failure without changing settlement", async () => {
+  const harness = createCoreRenderPathTracer({
+    topology: "studio-per-output",
+    configOverrides: { WORKER_LAYOUT_ENGINE: "1" },
+    analysisExtractionFailure: new Error("Injected extraction failure"),
+  });
+
+  await expect(
+    harness.clipRenderAttempt.execute({
+      attempt: harness.attempt,
+      signal: new AbortController().signal,
+    }),
+  ).resolves.toMatchObject({ status: "completed", succeeded: 2, failed: 0 });
+  expect(harness.analysisCounts()).toEqual({
+    extraction: 1,
+    face: 0,
+    multiFace: 0,
+    pip: 0,
+    scene: 0,
+  });
+  expect(harness.commands).toHaveLength(2);
+  expect(harness.workspaceCleanupCount()).toBe(1);
+  expect(harness.settlementCalls()).toBe(1);
+  expect(harness.diagnostics).toContainEqual({
+    message: "clip_reframe_segment_extract_failed",
+    context: expect.objectContaining({
+      phase: "media_analysis",
+      analysisMode: "segment_extraction",
+      failureCode: "analysis_input_unavailable",
+      disposition: "degraded",
+    }),
+  });
+  expect(harness.diagnostics).toContainEqual({
+    message: "clip_composition_resources",
+    context: expect.objectContaining({
+      analysisExecutionCount: 1,
+      detectorExecutionCount: 0,
+      extractedSegmentCount: 0,
+    }),
+  });
+});
+
+test("ClipRenderAttempt rejects unknown evidence versions before writes or commands", async () => {
+  const cases = [
+    {
+      label: "Automatic",
+      clipOverrides: {
+        autoLayoutAnalysis: { version: 99, engine: "shot-layout-v99" },
+      },
+      configOverrides: { WORKER_LAYOUT_ENGINE: "1" },
+    },
+    {
+      label: "Screen",
+      clipOverrides: {
+        studioEdits: { framing: { mode: "screen" } },
+        layoutAnalysis: { version: 99, engine: "screen-layout-v99" },
+      },
+      configOverrides: { WORKER_SCREEN_LAYOUT: "1" },
+    },
+    {
+      label: "Split",
+      clipOverrides: {
+        studioEdits: { framing: { mode: "split" } },
+        splitLayoutAnalysis: { version: 99, engine: "explicit-split-v99" },
+      },
+      configOverrides: { WORKER_SPLIT: "1" },
+    },
+  ];
+
+  for (const evidenceCase of cases) {
+    const harness = createCoreRenderPathTracer({
+      topology: "single-video",
+      clipOverrides: evidenceCase.clipOverrides,
+      configOverrides: evidenceCase.configOverrides,
+    });
+    await expect(
+      harness.clipRenderAttempt.execute({
+        attempt: harness.attempt,
+        signal: new AbortController().signal,
+      }),
+      evidenceCase.label,
+    ).resolves.toMatchObject({ status: "failed", succeeded: 0, failed: 1 });
+    expect(harness.commands, evidenceCase.label).toHaveLength(0);
+    expect(harness.persistedAutoLayouts, evidenceCase.label).toHaveLength(0);
+    expect(harness.persistedSplitLayouts, evidenceCase.label).toHaveLength(0);
+    expect(harness.persistedScreenLayouts, evidenceCase.label).toHaveLength(0);
+    expect(harness.persistedVariantIds, evidenceCase.label).toHaveLength(0);
+    expect(harness.failureCodes.get("variant-9x16"), evidenceCase.label).toBe(
+      "unsupported_clip_composition_evidence_version",
+    );
+    expect(
+      harness.failureDispositions.get("variant-9x16"),
+      evidenceCase.label,
+    ).toBe("permanent");
+    expect(harness.settlementCalls(), evidenceCase.label).toBe(1);
+  }
+});
+
+test("ClipRenderAttempt skips analysis for Center, Fit, B-roll-short-circuited, and audio-only plans", async () => {
+  const cases = [
+    {
+      topology: "single-video" as const,
+      clipOverrides: { studioEdits: { framing: { mode: "center" } } },
+    },
+    {
+      topology: "single-video" as const,
+      clipOverrides: {
+        studioEdits: { background: { mode: "color", color: "#000000" } },
+      },
+    },
+    {
+      topology: "single-video" as const,
+      clipWindow: { startSec: 0, endSec: 15 },
+      clipOverrides: {
+        studioEdits: { framing: { mode: "screen" } },
+        brollUrl: "https://media.example/broll.mp4",
+      },
+      brollDurationSec: 20,
+    },
+    { topology: "audiogram" as const },
+  ];
+  for (const analysisCase of cases) {
+    const harness = createCoreRenderPathTracer({
+      ...analysisCase,
+      configOverrides: {
+        WORKER_LAYOUT_ENGINE: "1",
+        WORKER_SPLIT: "1",
+        WORKER_SCREEN_LAYOUT: "1",
+      },
+      faceAnalysisSamples: [{ t: 0, cx: 0.5 }],
+      multiFaceAnalysisSamples: [{
+        t: 0,
+        faces: [{ cx: 0.5, cy: 0.5, w: 0.2, h: 0.2, score: 0.9 }],
+      }],
+      pipAnalysisResult: {
+        movingPxFrac: 0.04,
+        insufficientSamples: false,
+        candidates: [qualifyingPipCandidate],
+      },
+    });
+    await harness.clipRenderAttempt.execute({
+      attempt: harness.attempt,
+      signal: new AbortController().signal,
+    });
+    expect(harness.analysisCounts()).toEqual({
+      extraction: 0,
+      face: 0,
+      multiFace: 0,
+      pip: 0,
+      scene: 0,
+    });
+    expect(harness.diagnostics).toContainEqual({
+      message: "clip_composition_resources",
+      context: expect.objectContaining({
+        analysisRequestCount: 0,
+        analysisRequestKeys: [],
+        analysisExecutionCount: 0,
+        detectorExecutionCount: 0,
+        extractedSegmentCount: 0,
+      }),
+    });
+  }
+});
 
 test("ClipRenderAttempt omits an unavailable brand logo and diagnoses the fallback", async () => {
   const harness = createCoreRenderPathTracer({
@@ -1747,7 +2145,7 @@ test("ClipRenderAttempt always compiles Screen through the shared plan", async (
   });
   expect(harness.persistedScreenLayouts.at(-1)).toMatchObject({
     version: 2,
-    engine: "screen-layout-v1",
+    engine: "screen-layout-v2",
     sourceIdentity: expect.any(String),
     inputFingerprint: expect.stringMatching(/^[0-9a-f]{16}$/),
     sourceWidth: 1920,
@@ -1763,7 +2161,7 @@ test("ClipRenderAttempt reuses matching Screen v2 evidence without rerunning or 
     "source",
     "20000000-0000-4000-8000-000000000702",
   );
-  const engine = "screen-layout-v1";
+  const engine = "screen-layout-v2";
   const harness = createCoreRenderPathTracer({
     topology: "single-video",
     clipOverrides: {
@@ -1809,6 +2207,13 @@ test("ClipRenderAttempt reuses matching Screen v2 evidence without rerunning or 
     }),
   ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
   expect(harness.persistedScreenLayouts).toHaveLength(0);
+  expect(harness.analysisCounts()).toEqual({
+    extraction: 0,
+    face: 0,
+    multiFace: 0,
+    pip: 0,
+    scene: 0,
+  });
   expect(harness.diagnostics).toContainEqual({
     message: "clip_composition_plan",
     context: expect.objectContaining({
@@ -1957,6 +2362,13 @@ test("ClipRenderAttempt reuses matching durable Split evidence without rerunning
     }),
   ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
   expect(harness.persistedSplitLayouts).toHaveLength(0);
+  expect(harness.analysisCounts()).toEqual({
+    extraction: 0,
+    face: 0,
+    multiFace: 0,
+    pip: 0,
+    scene: 0,
+  });
   expect(harness.diagnostics).toContainEqual({
     message: "clip_composition_plan",
     context: expect.objectContaining({
@@ -2119,6 +2531,72 @@ test("ClipRenderAttempt degrades only the ineligible Split target", async () => 
   });
 });
 
+test("ClipRenderAttempt reuses matching durable Automatic evidence without rerunning analysis", async () => {
+  const sourceIdentity = compositionAssetRef(
+    "source",
+    "20000000-0000-4000-8000-000000000702",
+  );
+  const segment = {
+    startSec: 0,
+    endSec: 5,
+    layout: "single" as const,
+    cxNorm: 0.46,
+  };
+  const harness = createCoreRenderPathTracer({
+    topology: "studio-per-output",
+    clipOverrides: {
+      autoLayoutAnalysis: {
+        version: 1,
+        engine: "shot-layout-v1",
+        sourceIdentity,
+        analyzedAtISO: "2026-08-26T00:00:00.000Z",
+        clipStartSec: 2,
+        clipEndSec: 7,
+        deletedRanges: [],
+        editedDurationSec: 5,
+        sourceWidth: 1920,
+        sourceHeight: 1080,
+        segments: [segment],
+        noSplitSegments: [segment],
+        shotCount: 1,
+        soloShotCount: 1,
+        multiShotCount: 0,
+        twoUpSegmentCount: 0,
+        speakerCount: 1,
+        mappedSpeakerCount: 1,
+      },
+    },
+    configOverrides: { WORKER_LAYOUT_ENGINE: "1" },
+    multiFaceAnalysisSamples: null,
+  });
+
+  await expect(
+    harness.clipRenderAttempt.execute({
+      attempt: harness.attempt,
+      signal: new AbortController().signal,
+    }),
+  ).resolves.toMatchObject({ status: "completed", succeeded: 2, failed: 0 });
+  expect(harness.persistedAutoLayouts).toHaveLength(0);
+  expect(harness.analysisCounts()).toEqual({
+    extraction: 0,
+    face: 0,
+    multiFace: 0,
+    pip: 0,
+    scene: 0,
+  });
+  expect(harness.diagnostics).toContainEqual({
+    message: "clip_composition_resources",
+    context: expect.objectContaining({
+      analysisRequestCount: 0,
+      analysisExecutionCount: 0,
+      detectorExecutionCount: 0,
+      extractedSegmentCount: 0,
+      commandCount: 2,
+      sourceDecodeCount: 2,
+    }),
+  });
+});
+
 test("ClipRenderAttempt applies deterministic shot-layout analysis", async () => {
   const face = (cx: number) => ({
     cx,
@@ -2181,6 +2659,13 @@ for (const disabledAnalysisCase of [
         signal: new AbortController().signal,
       }),
     ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
+    expect(harness.analysisCounts()).toEqual({
+      extraction: 0,
+      face: 0,
+      multiFace: 0,
+      pip: 0,
+      scene: 0,
+    });
     expect(harness.diagnostics).toContainEqual({
       message: disabledAnalysisCase.message,
       context: expect.objectContaining({

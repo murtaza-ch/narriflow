@@ -1,8 +1,59 @@
 import { spawn } from "node:child_process";
+import { readFile } from "node:fs/promises";
 import { WorkflowFailure } from "@narriflow/services";
 
 const MAX_DIAGNOSTIC_CHARS = 8192;
 const PROCESS_GROUP_REAP_TIMEOUT_MS = 1_000;
+const RESOURCE_SAMPLE_INTERVAL_MS = 100;
+
+async function processTreeRssBytes(
+  childPid: number | undefined,
+): Promise<number> {
+  if (process.platform === "linux") {
+    try {
+      const cgroupBytes = Number(
+        (await readFile("/sys/fs/cgroup/memory.current", "utf8")).trim(),
+      );
+      if (Number.isFinite(cgroupBytes) && cgroupBytes > 0) return cgroupBytes;
+    } catch {
+      // A non-cgroup Linux host falls through to process accounting.
+    }
+  }
+  if (!childPid || process.platform === "win32") {
+    return process.memoryUsage().rss;
+  }
+  return new Promise((resolve) => {
+    const sampler = spawn(
+      "ps",
+      ["-o", "rss=", "-p", `${process.pid},${childPid}`],
+      { stdio: ["ignore", "pipe", "ignore"] },
+    );
+    let stdout = "";
+    let samplerSettled = false;
+    const settle = (rssBytes: number): void => {
+      if (samplerSettled) return;
+      samplerSettled = true;
+      resolve(rssBytes);
+    };
+    sampler.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString();
+    });
+    sampler.once("error", () => settle(process.memoryUsage().rss));
+    sampler.once("close", (code) => {
+      if (code !== 0) {
+        settle(process.memoryUsage().rss);
+        return;
+      }
+      const rssBytes = stdout
+        .trim()
+        .split(/\s+/)
+        .map(Number)
+        .filter((value) => Number.isFinite(value) && value > 0)
+        .reduce((total, rssKiB) => total + rssKiB * 1024, 0);
+      settle(rssBytes > 0 ? rssBytes : process.memoryUsage().rss);
+    });
+  });
+}
 
 function redactUrlQueries(text: string): string {
   return text.replace(/\?[^\s"']+/g, "?[redacted]");
@@ -60,6 +111,7 @@ export interface RenderProcessRequest {
   deadlineMs: number;
   killGraceMs: number;
   captureStdout: boolean;
+  recordResourceSample?(rssBytes: number): void;
   diagnose?(event: RenderProcessDiagnostic): void;
 }
 
@@ -111,6 +163,28 @@ export class ProductionRenderProcessAdapter {
       let terminationReason: "timeout" | "cancellation" | null = null;
       let settled = false;
       let killTimer: ReturnType<typeof setTimeout> | undefined;
+      let resourceTimer: ReturnType<typeof setTimeout> | undefined;
+      let resourceSampleActive = false;
+
+      const sampleResources = async (): Promise<void> => {
+        if (!request.recordResourceSample || settled || resourceSampleActive) {
+          return;
+        }
+        resourceSampleActive = true;
+        try {
+          request.recordResourceSample(await processTreeRssBytes(child.pid));
+        } catch {
+          // Resource diagnostics must never change command execution.
+        } finally {
+          resourceSampleActive = false;
+          if (!settled) {
+            resourceTimer = setTimeout(
+              () => void sampleResources(),
+              RESOURCE_SAMPLE_INTERVAL_MS,
+            );
+          }
+        }
+      };
 
       const terminate = (signal: NodeJS.Signals) => {
         diagnose({
@@ -157,11 +231,13 @@ export class ProductionRenderProcessAdapter {
       const cleanup = () => {
         clearTimeout(timeoutTimer);
         if (killTimer) clearTimeout(killTimer);
+        if (resourceTimer) clearTimeout(resourceTimer);
         request.signal.removeEventListener("abort", cancel);
       };
 
       child.once("spawn", () => {
         diagnose({ operation: "spawn", status: "completed" });
+        void sampleResources();
       });
 
       if (request.captureStdout) {

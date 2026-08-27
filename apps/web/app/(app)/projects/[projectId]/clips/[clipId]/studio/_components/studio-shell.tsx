@@ -24,6 +24,7 @@ import {
   editedToSource,
   normalizeDeletedRanges,
   resolveEffectiveFramingMode,
+  SCREEN_LAYOUT_ENGINE_VERSION,
   buildTranscriptSliceForWindow,
   mergeCorrectedWordsIntoWindow,
   type TranscriptUtterance,
@@ -713,7 +714,7 @@ export function StudioShell({
   );
   const screenEvidenceMatchesDocument = Boolean(
     ((layoutAnalysis?.version === 2 &&
-      layoutAnalysis.engine === "screen-layout-v1" &&
+      layoutAnalysis.engine === SCREEN_LAYOUT_ENGINE_VERSION &&
       layoutAnalysis.sourceIdentity === compositionSourceIdentity &&
       layoutAnalysis.inputFingerprint ===
         screenLayoutInputFingerprint({
@@ -721,7 +722,7 @@ export function StudioShell({
           clipStartSec: doc.clipStartSec,
           clipEndSec: doc.clipEndSec,
           deletedRanges: doc.deletedRanges,
-          engineVersion: "screen-layout-v1",
+          engineVersion: SCREEN_LAYOUT_ENGINE_VERSION,
         })) ||
       (layoutAnalysisFailure?.sourceIdentity === compositionSourceIdentity &&
         layoutAnalysisFailure.inputFingerprint ===
@@ -730,7 +731,7 @@ export function StudioShell({
           clipStartSec: doc.clipStartSec,
           clipEndSec: doc.clipEndSec,
           deletedRanges: doc.deletedRanges,
-          engineVersion: "screen-layout-v1",
+          engineVersion: SCREEN_LAYOUT_ENGINE_VERSION,
         }))),
   );
 
@@ -755,7 +756,7 @@ export function StudioShell({
         setLayoutAnalysisFailure(failed ? next : null);
         if (
           next?.version === 2 &&
-          next.engine === "screen-layout-v1" &&
+          next.engine === SCREEN_LAYOUT_ENGINE_VERSION &&
           next.sourceIdentity === compositionSourceIdentity &&
           next.inputFingerprint ===
             screenLayoutInputFingerprint({
@@ -763,7 +764,7 @@ export function StudioShell({
               clipStartSec: doc.clipStartSec,
               clipEndSec: doc.clipEndSec,
               deletedRanges: doc.deletedRanges,
-              engineVersion: "screen-layout-v1",
+              engineVersion: SCREEN_LAYOUT_ENGINE_VERSION,
             })
         ) {
           return;

@@ -5,9 +5,8 @@ describe("RenderConfig", () => {
   test("exposes no composition renderer selector", () => {
     const config = parseRenderConfig({});
 
-    expect(
-      Object.keys(config).filter((key) => key.startsWith("composition")),
-    ).toEqual([]);
+    expect(config).not.toHaveProperty("compositionRenderer");
+    expect(config).not.toHaveProperty("compositionPath");
   });
 
   test("freezes current defaults and preserves literal zero kill switches", () => {
@@ -24,6 +23,7 @@ describe("RenderConfig", () => {
       uploadConcurrency: 2,
       renderCommandTimeoutMs: 1_800_000,
       probeCommandTimeoutMs: 120_000,
+      compositionCommandMaxBytes: 512 * 1024,
       layoutEngineEnabled: false,
       screenLayoutEnabled: false,
       splitEnabled: false,
@@ -91,6 +91,12 @@ describe("RenderConfig", () => {
     expect(() =>
       parseRenderConfig({ WORKER_PIP_MOTION_THRESHOLD: "1.01" }),
     ).toThrow("WORKER_PIP_MOTION_THRESHOLD");
+    expect(() =>
+      parseRenderConfig({ WORKER_COMPOSITION_MAX_COMMAND_BYTES: "0" }),
+    ).toThrow("WORKER_COMPOSITION_MAX_COMMAND_BYTES");
+    expect(() =>
+      parseRenderConfig({ WORKER_COMPOSITION_MAX_COMMAND_BYTES: "100.5" }),
+    ).toThrow("WORKER_COMPOSITION_MAX_COMMAND_BYTES");
     expect(() =>
       parseRenderConfig({ BROLL_ASSET_CACHE_TTL_HOURS: "NaN" }),
     ).toThrow("BROLL_ASSET_CACHE_TTL_HOURS");

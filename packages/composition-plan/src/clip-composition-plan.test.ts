@@ -1395,6 +1395,31 @@ describe("Clip Composition Plan", () => {
     expect(unrelated.plan.evidenceRequests).toEqual(first.plan.evidenceRequests);
   });
 
+  test("keeps evidence fingerprints stable across caller property order", () => {
+    const first = automaticLayoutInputFingerprint({
+      sourceIdentity: "source:stable-key",
+      clipStartSec: 2,
+      clipEndSec: 10,
+      deletedRanges: [
+        { startSec: 4, endSec: 5 },
+        { startSec: 7, endSec: 8 },
+      ],
+      engineVersion: "shot-layout-v1",
+    });
+    const reordered = automaticLayoutInputFingerprint({
+      engineVersion: "shot-layout-v1",
+      deletedRanges: [
+        { startSec: 7, endSec: 8 },
+        { startSec: 4, endSec: 5 },
+      ],
+      clipEndSec: 10,
+      clipStartSec: 2,
+      sourceIdentity: "source:stable-key",
+    });
+
+    expect(reordered).toBe(first);
+  });
+
   test("keeps the validated 64-scene, four-target Automatic boundary bounded", () => {
     const document = editorDocumentSchema.parse({
       clipStartSec: 0,
@@ -1627,7 +1652,7 @@ describe("Clip Composition Plan", () => {
       width: 1920,
       height: 1080,
     };
-    const engineVersion = "screen-layout-v1";
+    const engineVersion = "screen-layout-v2";
     const common = {
       document,
       source,
@@ -1853,7 +1878,7 @@ describe("Clip Composition Plan", () => {
       width: 1080,
       height: 1920,
     };
-    const engineVersion = "screen-layout-v1";
+    const engineVersion = "screen-layout-v2";
     const result = planClipComposition({
       document,
       source,
@@ -2008,7 +2033,7 @@ describe("Clip Composition Plan", () => {
       width: 1920,
       height: 1080,
     };
-    const engineVersion = "screen-layout-v1";
+    const engineVersion = "screen-layout-v2";
     const fingerprint = screenLayoutInputFingerprint({
       sourceIdentity: source.identity,
       clipStartSec: 0,

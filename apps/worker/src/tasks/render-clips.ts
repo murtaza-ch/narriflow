@@ -1,5 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { createWriteStream as productionCreateWriteStream } from "node:fs";
+import {
+  createWriteStream as productionCreateWriteStream,
+  readFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { extname, join } from "node:path";
 import { Readable } from "node:stream";
@@ -14,6 +17,7 @@ import {
   type ClipCompositionPlan,
   type CompositionCaptionVisualLayer,
   type CompositionEvidenceAvailability,
+  type CompositionMode,
   type ScreenLayoutEvidence,
   type ScreenLayoutFailureReason,
   type SplitLayoutEvidence,
@@ -71,6 +75,7 @@ import {
   resolveEffectiveFramingMode,
   resolveEffectiveLogoSettings,
   resolveSpeakerLayoutScene,
+  SCREEN_LAYOUT_ENGINE_VERSION,
   sourceRangeToEdited,
   sourceToEdited,
   studioEditsSchema,
@@ -274,6 +279,16 @@ interface ClipRenderAttemptLifecycle {
   settleRenderWorkSet(attempt: WorkflowAttemptRef): Promise<RenderWorkSetOutcome>;
 }
 
+type CompositionPeakRssScope =
+  | "worker_and_command_cgroup"
+  | "worker_and_command_processes"
+  | "worker_only";
+
+interface CompositionResourceMeasurement {
+  rssBytes: number;
+  scope: CompositionPeakRssScope;
+}
+
 interface ClipRenderAttemptAdapters {
   media: Pick<typeof productionRenderMediaAdapter, "probe">;
   process: Pick<typeof productionRenderProcessAdapter, "execute">;
@@ -326,6 +341,9 @@ interface ClipRenderAttemptAdapters {
   };
   workspace: RenderWorkspaceAdapter;
   clock: RenderClockAdapter;
+  resource: {
+    measure(): CompositionResourceMeasurement;
+  };
   composition: {
     compileVideo: typeof compileCompositionPlanVideo;
     compileVisualLayers: typeof compileCompositionPlanVisualLayers;
@@ -340,7 +358,7 @@ interface ClipRenderAttemptAdapters {
 type ClipRenderAttemptAdapterOverrides = Partial<
   Omit<
     ClipRenderAttemptAdapters,
-    "analysis" | "clip" | "composition" | "optionalAssets" | "storage" | "workspace" | "clock"
+    "analysis" | "clip" | "composition" | "optionalAssets" | "storage" | "workspace" | "clock" | "resource"
   >
 > & {
   analysis?: Partial<ClipRenderAttemptAdapters["analysis"]>;
@@ -349,6 +367,7 @@ type ClipRenderAttemptAdapterOverrides = Partial<
   storage?: Partial<ClipRenderAttemptAdapters["storage"]>;
   workspace?: Partial<ClipRenderAttemptAdapters["workspace"]>;
   clock?: Partial<ClipRenderAttemptAdapters["clock"]>;
+  resource?: Partial<ClipRenderAttemptAdapters["resource"]>;
   composition?: Partial<ClipRenderAttemptAdapters["composition"]>;
 };
 
@@ -444,6 +463,32 @@ const productionClipMutationAdapter: ClipRenderAttemptAdapters["clip"] = {
   setClipLayoutAnalysisFailure: (...args) =>
     productionClipService.setClipLayoutAnalysisFailure(...args),
 };
+
+function measureCompositionResource(): CompositionResourceMeasurement {
+  if (process.platform === "linux") {
+    try {
+      const cgroupBytes = Number(
+        readFileSync("/sys/fs/cgroup/memory.current", "utf8").trim(),
+      );
+      if (Number.isFinite(cgroupBytes) && cgroupBytes > 0) {
+        return {
+          rssBytes: cgroupBytes,
+          scope: "worker_and_command_cgroup",
+        };
+      }
+    } catch {
+      // Non-cgroup hosts are measured as the worker plus active command.
+    }
+  }
+  return {
+    rssBytes: process.memoryUsage().rss,
+    scope:
+      process.platform === "win32"
+        ? "worker_only"
+        : "worker_and_command_processes",
+  };
+}
+
 const productionClipRenderAttemptAdapters: ClipRenderAttemptAdapters = {
   media: productionRenderMediaAdapter,
   process: productionRenderProcessAdapter,
@@ -482,6 +527,9 @@ const productionClipRenderAttemptAdapters: ClipRenderAttemptAdapters = {
     ...productionRenderWorkspaceAdapter,
   },
   clock: productionRenderClockAdapter,
+  resource: {
+    measure: measureCompositionResource,
+  },
   composition: {
     compileVideo: compileCompositionPlanVideo,
     compileVisualLayers: compileCompositionPlanVisualLayers,
@@ -785,6 +833,115 @@ function mediaAnalysisDiagnostic(input: {
   };
 }
 
+function commandSizeBytes(command: string, args: readonly string[]): number {
+  const encoder = new TextEncoder();
+  return [command, ...args].reduce(
+    (total, value) => total + encoder.encode(value).byteLength + 1,
+    0,
+  );
+}
+
+function assertCompositionCommandWithinBudget(
+  args: readonly string[],
+  context: Record<string, unknown>,
+): void {
+  const measuredBytes = commandSizeBytes("ffmpeg", args);
+  const maximumBytes = currentRenderConfig().compositionCommandMaxBytes;
+  if (measuredBytes <= maximumBytes) return;
+  log("error", "clip_composition_budget_rejected", {
+    ...context,
+    phase: "composition_command",
+    failureCode: "composition_command_budget_exceeded",
+    disposition: "permanent",
+    budget: "command_bytes",
+    measured: measuredBytes,
+    maximum: maximumBytes,
+    commandGrouping: "independent",
+  });
+  throw new WorkflowWorkerError(
+    "composition_command_budget_exceeded",
+    "Clip Composition Plan command exceeds the configured byte budget",
+    "permanent",
+  );
+}
+
+function startCompositionResourceSampling(
+  record?: (rssBytes: number) => void,
+): () => void {
+  if (!record) return () => {};
+  const clock = currentRenderAdapters().clock;
+  let active = true;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const sample = () => {
+    if (!active) return;
+    const measurement = measureCompositionResourceSafely();
+    if (measurement) {
+      recordCompositionResourceSampleSafely(record, measurement.rssBytes);
+    }
+    timer = clock.setTimeout(sample, 100);
+  };
+  sample();
+  return () => {
+    active = false;
+    if (timer) clock.clearTimeout(timer);
+    const measurement = measureCompositionResourceSafely();
+    if (measurement) {
+      recordCompositionResourceSampleSafely(record, measurement.rssBytes);
+    }
+  };
+}
+
+const resourceMeasurementFallback: CompositionResourceMeasurement = {
+  rssBytes: 0,
+  scope: "worker_only",
+};
+
+function diagnoseCompositionResourceFailure(
+  failureCode: "resource_probe_failed" | "resource_record_failed",
+): void {
+  log(
+    "error",
+    failureCode === "resource_probe_failed"
+      ? "clip_composition_resource_probe_failed"
+      : "clip_composition_resource_record_failed",
+    {
+      phase: "diagnostics",
+      failureCode,
+      disposition: "degraded",
+    },
+  );
+}
+
+function measureCompositionResourceSafely():
+  | CompositionResourceMeasurement
+  | null {
+  try {
+    const measurement = currentRenderAdapters().resource.measure();
+    if (
+      !Number.isFinite(measurement.rssBytes) ||
+      measurement.rssBytes < 0
+    ) {
+      throw new Error("invalid resource measurement");
+    }
+    return measurement;
+  } catch {
+    diagnoseCompositionResourceFailure("resource_probe_failed");
+    return null;
+  }
+}
+
+function recordCompositionResourceSampleSafely(
+  record: ((rssBytes: number) => void) | undefined,
+  rssBytes: number,
+): void {
+  if (!record) return;
+  try {
+    record(rssBytes);
+  } catch {
+    diagnoseCompositionResourceFailure("resource_record_failed");
+  }
+}
+
 async function executeRenderCommandWithOptionalFallback(input: {
   primaryArgs: string[];
   fallbackArgs?: () => string[];
@@ -793,14 +950,40 @@ async function executeRenderCommandWithOptionalFallback(input: {
     failureCode: string;
   }>;
   context: Record<string, unknown>;
+  recordCommand?: (args: readonly string[]) => void;
+  recordSourceDecodeCompleted?: () => void;
+  recordResourceSample?: (rssBytes: number) => void;
 }): Promise<"primary" | "fallback"> {
+  const execute = async (args: string[]): Promise<void> => {
+    assertCompositionCommandWithinBudget(args, input.context);
+    input.recordCommand?.(args);
+    const safeRecordResourceSample = input.recordResourceSample
+      ? (rssBytes: number): void =>
+          recordCompositionResourceSampleSafely(
+            input.recordResourceSample,
+            rssBytes,
+          )
+      : undefined;
+    const stopSampling = startCompositionResourceSampling(
+      safeRecordResourceSample,
+    );
+    try {
+      await execCommand("ffmpeg", args, {
+        recordResourceSample: safeRecordResourceSample,
+      });
+      input.recordSourceDecodeCompleted?.();
+    } finally {
+      stopSampling();
+    }
+  };
   try {
-    await execCommand("ffmpeg", input.primaryArgs);
+    await execute(input.primaryArgs);
     return "primary";
   } catch (error) {
     rethrowRenderControlFlow(error);
     if (!input.fallbackArgs || input.optionalAssets.length === 0) throw error;
-    await execCommand("ffmpeg", input.fallbackArgs());
+    const fallbackArgs = input.fallbackArgs();
+    await execute(fallbackArgs);
     for (const asset of input.optionalAssets) {
       diagnoseOptionalAssetFallback({
         assetClass: asset.assetClass,
@@ -838,7 +1021,11 @@ const REMOTE_MEDIA_MAX_BYTES = 250 * 1024 * 1024;
 function runCommand(
   command: string,
   args: string[],
-  options: { timeoutMs: number; captureStdout: boolean },
+  options: {
+    timeoutMs: number;
+    captureStdout: boolean;
+    recordResourceSample?: (rssBytes: number) => void;
+  },
 ): Promise<string> {
   const config = currentRenderConfig();
   return currentRenderAdapters().process.execute({
@@ -848,6 +1035,7 @@ function runCommand(
     deadlineMs: options.timeoutMs,
     killGraceMs: config.processKillGraceMs,
     captureStdout: options.captureStdout,
+    recordResourceSample: options.recordResourceSample,
     diagnose: diagnoseRenderProcessOperation,
   });
 }
@@ -870,12 +1058,16 @@ function diagnoseRenderProcessOperation(event: RenderProcessDiagnostic): void {
 async function execCommand(
   command: string,
   args: string[],
-  options?: { timeoutMs?: number },
+  options?: {
+    timeoutMs?: number;
+    recordResourceSample?: (rssBytes: number) => void;
+  },
 ) {
   await runCommand(command, args, {
     timeoutMs:
       options?.timeoutMs ?? currentRenderConfig().renderCommandTimeoutMs,
     captureStdout: false,
+    recordResourceSample: options?.recordResourceSample,
   });
 }
 
@@ -888,6 +1080,7 @@ async function execCommandOutput(
     timeoutMs:
       options?.timeoutMs ?? currentRenderConfig().renderCommandTimeoutMs,
     captureStdout: true,
+    recordResourceSample: undefined,
   });
 }
 
@@ -4038,6 +4231,10 @@ export class ClipRenderAttempt {
         ...productionClipRenderAttemptAdapters.clock,
         ...dependencies.adapters?.clock,
       },
+      resource: {
+        ...productionClipRenderAttemptAdapters.resource,
+        ...dependencies.adapters?.resource,
+      },
       composition: {
         ...productionClipRenderAttemptAdapters.composition,
         ...dependencies.adapters?.composition,
@@ -4424,6 +4621,91 @@ async function executeClipRenderAttempt(
       const clipDurationSec = cutPlan.isUncut
         ? effective.durationSec
         : cutPlan.editedDurationSec;
+      const initialResourceMeasurement =
+        measureCompositionResourceSafely() ?? resourceMeasurementFallback;
+      const compositionResources = {
+        planVersion: null as number | null,
+        planFingerprint: null as string | null,
+        requestedMode: null as CompositionMode | null,
+        effectiveModes: [] as CompositionMode[],
+        sceneCount: 0,
+        visualLayerCount: 0,
+        planningDurationMs: 0,
+        analysisRequestKeys: new Set<string>(),
+        analysisExecutionCount: 0,
+        detectorExecutionCount: 0,
+        extractedSegmentCount: 0,
+        commandCount: 0,
+        sourceDecodeCount: 0,
+        commandBytes: 0,
+        encodeDurationMs: 0,
+        peakRssBytes: initialResourceMeasurement.rssBytes,
+        peakRssScope: initialResourceMeasurement.scope,
+      };
+      const recordCompositionCommand = (args: readonly string[]): void => {
+        compositionResources.commandCount += 1;
+        compositionResources.commandBytes += commandSizeBytes("ffmpeg", args);
+        const measurement = measureCompositionResourceSafely();
+        if (measurement) {
+          compositionResources.peakRssScope = measurement.scope;
+          recordCompositionResourceSample(measurement.rssBytes);
+        }
+      };
+      const recordCompositionResourceSample = (rssBytes: number): void => {
+        compositionResources.peakRssBytes = Math.max(
+          compositionResources.peakRssBytes,
+          rssBytes,
+        );
+      };
+      const recordCompositionSourceDecodeCompleted = (): void => {
+        compositionResources.sourceDecodeCount += 1;
+      };
+      const recordCompositionEncodeCompleted = (startedAtMs: number): number => {
+        const durationMs = Math.max(0, currentTimeMs() - startedAtMs);
+        compositionResources.encodeDurationMs += durationMs;
+        const measurement = measureCompositionResourceSafely();
+        if (measurement) {
+          compositionResources.peakRssScope = measurement.scope;
+          recordCompositionResourceSample(measurement.rssBytes);
+        }
+        return durationMs;
+      };
+      let sharedAnalysisSegmentPromise: ReturnType<
+        ClipRenderAttemptAdapters["analysis"]["extractFaceDetectionSegment"]
+      > | null = null;
+      const getSharedAnalysisSegment = () => {
+        if (!sharedAnalysisSegmentPromise) {
+          sharedAnalysisSegmentPromise = currentRenderAdapters()
+            .analysis.extractFaceDetectionSegment({
+              sourcePath,
+              tempDir,
+              clipId: clip.id,
+              workflowRunId: run.id,
+              clipStartSec,
+              durationSec: effective.durationSec,
+            })
+            .then((segment) => {
+              if (segment && segment.path !== sourcePath) {
+                compositionResources.extractedSegmentCount += 1;
+              }
+              return segment;
+            })
+            .catch((error) => {
+              rethrowRenderControlFlow(error);
+              log("error", "clip_reframe_segment_extract_failed", {
+                workflowRunId: run.id,
+                clipId: clip.id,
+                ...mediaAnalysisDiagnostic({
+                  analysisMode: "segment_extraction",
+                  fallbackMode: "composition_plan",
+                  failureCode: "analysis_input_unavailable",
+                }),
+              });
+              return null;
+            });
+        }
+        return sharedAnalysisSegmentPromise;
+      };
       // Time map used by the audio-only subtitle path and by the composition
       // planner to retime source-absolute words onto the edited timeline.
       const captionTimeMap = cutPlan.isUncut ? null : cutPlan.map;
@@ -5008,6 +5290,15 @@ async function executeClipRenderAttempt(
           automaticEvidenceProbe.plan.evidenceRequests.length > 0,
       );
       if (automaticEvidenceRequested) {
+        if (
+          automaticEvidenceProbe &&
+          automaticEvidenceProbe.status !== "invalid"
+        ) {
+          for (const request of automaticEvidenceProbe.plan.evidenceRequests) {
+            compositionResources.analysisRequestKeys.add(request.key);
+          }
+        }
+        compositionResources.analysisExecutionCount += 1;
         let engineHandled = false;
         if (persistedAutoLayoutEligible && persistedAutoLayout) {
           automaticLayoutAnalysisForPlan = persistedAutoLayout;
@@ -5028,17 +5319,11 @@ async function executeClipRenderAttempt(
         // Detection deliberately scans the full uncut clip. It only runs on
         // a persisted-plan miss; the normal render path is now a cheap read.
         const detectInput = !engineHandled
-          ? await currentRenderAdapters().analysis.extractFaceDetectionSegment({
-              sourcePath,
-              tempDir,
-              clipId: clip.id,
-              workflowRunId: run.id,
-              clipStartSec,
-              durationSec: effective.durationSec,
-            })
+          ? await getSharedAnalysisSegment()
           : null;
 
         if (!engineHandled && layoutEngineEnabled && detectInput) {
+          compositionResources.detectorExecutionCount += 2;
           const [multiDetection, sceneCuts] = await Promise.all([
             currentRenderAdapters().analysis.detectMultiFacePath({
               sourcePath: detectInput.path,
@@ -5244,7 +5529,7 @@ async function executeClipRenderAttempt(
               reason: screenFallbackReason,
             });
           } else {
-            const screenEngineVersion = "screen-layout-v1";
+            const screenEngineVersion = SCREEN_LAYOUT_ENGINE_VERSION;
             const screenFingerprint = screenLayoutInputFingerprint({
               sourceIdentity: compositionSourceIdentity,
               clipStartSec: clip.startSec,
@@ -5268,6 +5553,12 @@ async function executeClipRenderAttempt(
                 ? persistedAnalysisRaw
                 : null;
             const reuseExactScreenPlan = persistedAnalysis !== null;
+            if (!reuseExactScreenPlan) {
+              compositionResources.analysisRequestKeys.add(
+                `screen-layout:${screenFingerprint}`,
+              );
+              compositionResources.analysisExecutionCount += 1;
+            }
             // Real screen layout: element segmentation v1 (vizard-parity.md's
             // element-segmentation spike) tries the actual facecam PiP
             // rectangle FIRST — only when the source is screencast-like
@@ -5285,15 +5576,7 @@ async function executeClipRenderAttempt(
             // (`detectInput`) — no reason to extract it twice.
             const detectInput = reuseExactScreenPlan
               ? null
-              : await currentRenderAdapters().analysis.extractFaceDetectionSegment({
-              sourcePath,
-              tempDir,
-              clipId: clip.id,
-              workflowRunId: run.id,
-              clipStartSec,
-              durationSec: effective.durationSec,
-              suffix: "-screen",
-            });
+              : await getSharedAnalysisSegment();
 
             // PiP persistence packet B (read-before-detect): a persisted
             // `Clip.layoutAnalysis` envelope whose detection window still
@@ -5309,6 +5592,9 @@ async function executeClipRenderAttempt(
             // The read-before-detect decision lives in `resolvePipAnalysis`.
             // The identity-complete envelope is persisted below only after
             // both PiP and face-band facts are conclusive.
+            if (!reuseExactScreenPlan && detectInput) {
+              compositionResources.detectorExecutionCount += 1;
+            }
             const resolvedPip = reuseExactScreenPlan
               ? {
                   detectionResult: {
@@ -5339,6 +5625,9 @@ async function executeClipRenderAttempt(
             // An exact v2 plan already contains both decisions, so reusing it
             // deliberately skips this pass and cannot downgrade durable
             // evidence after a transient detector failure.
+            if (detectInput) {
+              compositionResources.detectorExecutionCount += 1;
+            }
             const detection = detectInput
               ? await currentRenderAdapters().analysis.detectFacePath({
                   sourcePath: detectInput.path,
@@ -5597,21 +5886,19 @@ async function executeClipRenderAttempt(
               cappedFromSegmentCount: null,
             };
           } else if (!brollPlan) {
-            const detectInput =
-              await currentRenderAdapters().analysis.extractFaceDetectionSegment({
-              sourcePath,
-              tempDir,
-              clipId: clip.id,
-              workflowRunId: run.id,
-              clipStartSec,
-              durationSec: effective.durationSec,
-              suffix: "-split",
-            });
+            compositionResources.analysisRequestKeys.add(
+              `split-speaker-layout:${splitFingerprint}`,
+            );
+            compositionResources.analysisExecutionCount += 1;
+            const detectInput = await getSharedAnalysisSegment();
             // Same source<->edited timeline contract as the single-face path
             // above: detection scans the full uncut clip window in
             // elapsed-uncut-source seconds; `remapMultiFaceSamplesForCutPlan`
             // drops samples inside a cut and remaps the rest onto the edited
             // timeline used by `buildSplitLayoutPlan` and the shared planner.
+            if (detectInput) {
+              compositionResources.detectorExecutionCount += 1;
+            }
             multiDetection = detectInput
               ? await currentRenderAdapters().analysis.detectMultiFacePath({
                   sourcePath: detectInput.path,
@@ -6280,7 +6567,7 @@ async function executeClipRenderAttempt(
               explicitSplitLayout: currentRenderConfig().splitEnabled,
               splitEngineVersion: "explicit-split-v1",
               screenLayout: currentRenderConfig().screenLayoutEnabled,
-              screenEngineVersion: "screen-layout-v1",
+              screenEngineVersion: SCREEN_LAYOUT_ENGINE_VERSION,
             },
             targets: outputs.map((output) => {
               const target = aspectRatioConfig.get(output.aspectRatio)!;
@@ -6328,6 +6615,13 @@ async function executeClipRenderAttempt(
             "permanent",
           );
         }
+        compositionResources.planVersion = planned.plan.version;
+        compositionResources.planFingerprint = planned.plan.fingerprint;
+        compositionResources.requestedMode = requestedCompositionMode;
+        compositionResources.effectiveModes = planned.plan.targets.map(
+          (target) => target.effectiveMode,
+        );
+        compositionResources.planningDurationMs = planningDurationMs;
         const sceneCount = planned.plan.targets.reduce(
           (count, target) => count + target.scenes.length,
           0,
@@ -6336,6 +6630,8 @@ async function executeClipRenderAttempt(
           (count, target) => count + target.visualLayers.length,
           0,
         );
+        compositionResources.sceneCount = sceneCount;
+        compositionResources.visualLayerCount = visualLayerCount;
         const compositionEvidenceDiagnostics =
           requestedCompositionMode === "auto"
             ? {
@@ -6534,14 +6830,20 @@ async function executeClipRenderAttempt(
                 clipId: clip.id,
                 clipRenderId: output.clipRenderId,
               },
+              recordCommand: recordCompositionCommand,
+              recordSourceDecodeCompleted:
+                recordCompositionSourceDecodeCompleted,
+              recordResourceSample: recordCompositionResourceSample,
             });
+            const encodeDurationMs =
+              recordCompositionEncodeCompleted(encodeStartedAtMs);
             // Upload runs in the bounded background queue (overlaps the next
             // clip's work). The stale-discard/`persisted` counting and the
             // upload-failure variant marking both live in `scheduleUpload`;
             // this catch now only ever sees ENCODE failures.
             scheduleUpload(output, {
               clipDurationSec,
-              encodeMs: currentTimeMs() - encodeStartedAtMs,
+              encodeMs: encodeDurationMs,
             });
           } catch (error) {
             rethrowWorkflowAttemptLost(error);
@@ -6655,14 +6957,20 @@ async function executeClipRenderAttempt(
                 clipId: clip.id,
                 clipRenderId: output.clipRenderId,
               },
+              recordCommand: recordCompositionCommand,
+              recordSourceDecodeCompleted:
+                recordCompositionSourceDecodeCompleted,
+              recordResourceSample: recordCompositionResourceSample,
             });
+            const encodeDurationMs =
+              recordCompositionEncodeCompleted(encodeStartedAtMs);
             // Bounded background upload — see `scheduleUpload`. This catch
             // now only ever sees encode/build failures.
             scheduleUpload(output, {
               clipDurationSec,
               brollCredits:
                 commandMode === "primary" ? brollCredits : null,
-              encodeMs: currentTimeMs() - encodeStartedAtMs,
+              encodeMs: encodeDurationMs,
             });
           } catch (error) {
             rethrowWorkflowAttemptLost(error);
@@ -6694,6 +7002,42 @@ async function executeClipRenderAttempt(
           }
         }
       }
+
+      const finalResourceMeasurement = measureCompositionResourceSafely();
+      if (finalResourceMeasurement) {
+        compositionResources.peakRssScope = finalResourceMeasurement.scope;
+        recordCompositionResourceSample(finalResourceMeasurement.rssBytes);
+      }
+      log("info", "clip_composition_resources", {
+        workflowRunId: run.id,
+        clipId: clip.id,
+        planVersion: compositionResources.planVersion,
+        planFingerprint: compositionResources.planFingerprint,
+        requestedMode: compositionResources.requestedMode,
+        effectiveModes: compositionResources.effectiveModes,
+        sceneCount: compositionResources.sceneCount,
+        visualLayerCount: compositionResources.visualLayerCount,
+        commandGrouping: "independent",
+        targetCount: outputs.length,
+        analysisRequestCount:
+          compositionResources.analysisRequestKeys.size,
+        analysisRequestKeys: [
+          ...compositionResources.analysisRequestKeys,
+        ].sort(),
+        analysisExecutionCount:
+          compositionResources.analysisExecutionCount,
+        detectorExecutionCount:
+          compositionResources.detectorExecutionCount,
+        extractedSegmentCount:
+          compositionResources.extractedSegmentCount,
+        commandCount: compositionResources.commandCount,
+        sourceDecodeCount: compositionResources.sourceDecodeCount,
+        commandBytes: compositionResources.commandBytes,
+        planningDurationMs: compositionResources.planningDurationMs,
+        encodeDurationMs: compositionResources.encodeDurationMs,
+        peakRssBytes: compositionResources.peakRssBytes,
+        peakRssScope: compositionResources.peakRssScope,
+      });
 
       const progress = 10 + Math.round(((clipGroupIndex + 1) / clipGroups.length) * 80);
       await currentRenderAdapters().project.publishWorkflowProgress({

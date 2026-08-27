@@ -1,4 +1,7 @@
 import { z } from "zod";
+import {
+  assertSupportedClipCompositionEvidenceVersion,
+} from "./clip-composition-evidence";
 import { deletedRangesSchema } from "./edit-ranges";
 
 /**
@@ -170,6 +173,11 @@ export function parseClipAutoLayoutAnalysis(
   value: unknown,
 ): ClipAutoLayoutAnalysis | null {
   if (value === null || value === undefined) return null;
+  assertSupportedClipCompositionEvidenceVersion(
+    value,
+    { version: 1, engine: "shot-layout-v1" },
+    ["explicit-split-v1"],
+  );
   const parsed = clipAutoLayoutAnalysisSchema.safeParse(value);
   return parsed.success ? parsed.data : null;
 }
@@ -178,6 +186,11 @@ export function parseClipSplitLayoutAnalysis(
   value: unknown,
 ): ClipSplitLayoutAnalysis | null {
   if (value === null || value === undefined) return null;
+  assertSupportedClipCompositionEvidenceVersion(
+    value,
+    { version: 1, engine: "explicit-split-v1" },
+    ["shot-layout-v1"],
+  );
   const parsed = clipSplitLayoutAnalysisSchema.safeParse(value);
   return parsed.success ? parsed.data : null;
 }
@@ -186,6 +199,11 @@ export function parseClipSplitLayoutFailure(
   value: unknown,
 ): ClipSplitLayoutFailure | null {
   if (value === null || value === undefined) return null;
+  assertSupportedClipCompositionEvidenceVersion(
+    value,
+    { version: 1, engine: "explicit-split-v1" },
+    ["shot-layout-v1"],
+  );
   const parsed = clipSplitLayoutFailureSchema.safeParse(value);
   return parsed.success ? parsed.data : null;
 }

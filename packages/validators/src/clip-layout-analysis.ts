@@ -1,6 +1,12 @@
 import { z } from "zod";
 import { clipAutoLayoutSegmentSchema } from "./clip-auto-layout-analysis";
+import {
+  assertSupportedClipCompositionEvidenceVersion,
+} from "./clip-composition-evidence";
 import { deletedRangesSchema } from "./edit-ranges";
+
+/** Exact discriminator for the complete Screen evidence contract. */
+export const SCREEN_LAYOUT_ENGINE_VERSION = "screen-layout-v2" as const;
 
 /**
  * Identity-complete Screen composition evidence stored on
@@ -64,7 +70,7 @@ const clipLayoutAnalysisBaseSchema = z.object({
 /** Identity-complete Screen composition evidence shared by Studio and export. */
 export const clipLayoutAnalysisV2Schema = clipLayoutAnalysisBaseSchema.extend({
   version: z.literal(2),
-  engine: z.literal("screen-layout-v1"),
+  engine: z.literal(SCREEN_LAYOUT_ENGINE_VERSION),
   sourceIdentity: z.string().min(1),
   inputFingerprint: z.string().regex(/^[0-9a-f]{16}$/),
   sourceWidth: z.number().int().positive(),
@@ -81,7 +87,7 @@ export const clipLayoutAnalysisSchema = clipLayoutAnalysisV2Schema;
 
 export const clipLayoutAnalysisFailureSchema = z.object({
   version: z.literal(2),
-  engine: z.literal("screen-layout-v1"),
+  engine: z.literal(SCREEN_LAYOUT_ENGINE_VERSION),
   state: z.literal("failed"),
   sourceIdentity: z.string().min(1),
   inputFingerprint: z.string().regex(/^[0-9a-f]{16}$/),
@@ -106,17 +112,18 @@ export type ClipLayoutAnalysisOutcome =
 
 /**
  * Parse-tolerant read of a stored `Clip.layoutAnalysis` value: `null`/
- * `undefined` (never analyzed), a malformed value, or an envelope with an
- * unrecognized `version` all resolve to `null` rather than throwing —
- * callers (render path, studio preview, `getClipEditorDocument`) treat all
- * three identically as "no analysis to use," the same null-safe idiom
- * `captionPreset`/`studioEdits` already use elsewhere in this package
- * (`X.safeParse(raw).data ?? fallback`).
+ * `undefined` (never analyzed) or an unversioned malformed value resolve to
+ * `null`. A declared unknown version/engine fails closed before evidence can
+ * be adopted, replaced, or executed.
  */
 export function parseClipLayoutAnalysis(
   value: unknown,
 ): ClipLayoutAnalysis | null {
   if (value === null || value === undefined) return null;
+  assertSupportedClipCompositionEvidenceVersion(value, {
+    version: 2,
+    engine: SCREEN_LAYOUT_ENGINE_VERSION,
+  });
   const result = clipLayoutAnalysisSchema.safeParse(value);
   return result.success ? result.data : null;
 }
@@ -125,6 +132,10 @@ export function parseClipLayoutAnalysisFailure(
   value: unknown,
 ): ClipLayoutAnalysisFailure | null {
   if (value === null || value === undefined) return null;
+  assertSupportedClipCompositionEvidenceVersion(value, {
+    version: 2,
+    engine: SCREEN_LAYOUT_ENGINE_VERSION,
+  });
   const result = clipLayoutAnalysisFailureSchema.safeParse(value);
   return result.success ? result.data : null;
 }

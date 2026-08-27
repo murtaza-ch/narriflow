@@ -208,7 +208,7 @@ function planSplit() {
 
 function planScreen() {
   const sourceIdentity = "source:key";
-  const engineVersion = "screen-layout-v1";
+  const engineVersion = "screen-layout-v2";
   const result = planClipComposition({
     document: editorDocumentSchema.parse({
       clipStartSec: 0,

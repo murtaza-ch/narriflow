@@ -12,6 +12,7 @@ import {
   resolveMusicFadeWindows,
   resolveEffectiveFramingMode,
   resolveSpeakerLayoutScene,
+  SCREEN_LAYOUT_ENGINE_VERSION,
   sourceRangeToEdited,
   type CaptionPreset,
   type ClipAspectRatio,
@@ -530,7 +531,23 @@ export function automaticLayoutInputFingerprint(input: {
   deletedRanges: EditorDocument["deletedRanges"];
   engineVersion: string;
 }): string {
-  return hashString(JSON.stringify(input));
+  return hashString(
+    JSON.stringify({
+      sourceIdentity: input.sourceIdentity,
+      clipStartSec: input.clipStartSec,
+      clipEndSec: input.clipEndSec,
+      deletedRanges: input.deletedRanges
+        .map((range) => ({
+          startSec: range.startSec,
+          endSec: range.endSec,
+        }))
+        .sort(
+          (left, right) =>
+            left.startSec - right.startSec || left.endSec - right.endSec,
+        ),
+      engineVersion: input.engineVersion,
+    }),
+  );
 }
 
 export const splitLayoutInputFingerprint = automaticLayoutInputFingerprint;
@@ -1628,7 +1645,8 @@ export function planClipComposition(
     });
   }
 
-  const screenEngineVersion = input.capabilities.screenEngineVersion ?? "screen-layout-v1";
+  const screenEngineVersion =
+    input.capabilities.screenEngineVersion ?? SCREEN_LAYOUT_ENGINE_VERSION;
   const screenAvailability = input.evidence.screenLayout ?? { state: "missing" as const };
   const screenEvidence =
     requestedMode === "screen" &&

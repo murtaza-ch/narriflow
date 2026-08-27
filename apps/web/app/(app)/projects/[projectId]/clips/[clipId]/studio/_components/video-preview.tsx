@@ -33,6 +33,7 @@ import {
   editedToSource,
   resolveEffectiveFramingMode,
   resolveEffectiveLogoSettings,
+  SCREEN_LAYOUT_ENGINE_VERSION,
   speakerLayoutOverrideFromScene,
   type LogoPosition,
   type SpeakerLayerRole,
@@ -557,7 +558,7 @@ export function VideoPreview() {
     clipInfo.projectId,
   );
   const splitEngineVersion = "explicit-split-v1";
-  const screenEngineVersion = "screen-layout-v1";
+  const screenEngineVersion = SCREEN_LAYOUT_ENGINE_VERSION;
   const splitFingerprint = splitLayoutInputFingerprint({
     sourceIdentity: compositionSourceIdentity,
     clipStartSec: editorDocument.clipStartSec,

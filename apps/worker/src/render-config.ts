@@ -12,6 +12,7 @@ export interface RenderConfig {
   readonly x264Crf: string;
   readonly renderCommandTimeoutMs: number;
   readonly probeCommandTimeoutMs: number;
+  readonly compositionCommandMaxBytes: number;
   readonly remoteMediaTimeoutMs: number;
   readonly storageOperationTimeoutMs: number;
   readonly processKillGraceMs: number;
@@ -153,6 +154,14 @@ export function parseRenderConfig(
     60 *
     60 *
     1000;
+  const compositionCommandMaxBytes = positiveNumber(
+    environment,
+    "WORKER_COMPOSITION_MAX_COMMAND_BYTES",
+    512 * 1024,
+  );
+  if (!Number.isInteger(compositionCommandMaxBytes)) {
+    throw new Error("WORKER_COMPOSITION_MAX_COMMAND_BYTES must be an integer");
+  }
 
   return Object.freeze({
     clipRenderAttemptEnabled: explicitlyEnabled(
@@ -173,6 +182,7 @@ export function parseRenderConfig(
       "WORKER_PROBE_TIMEOUT_MS",
       2 * 60 * 1000,
     ),
+    compositionCommandMaxBytes,
     remoteMediaTimeoutMs: positiveNumber(
       environment,
       "WORKER_REMOTE_MEDIA_TIMEOUT_MS",
