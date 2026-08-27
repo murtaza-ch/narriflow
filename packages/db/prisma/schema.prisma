@@ -492,8 +492,10 @@ model UploadSession {
   queuedJobId               String?             @unique @db.Uuid
   failureCode               String?
   cleanupRetryAt            DateTime?
+  reconcileAt               DateTime?
   reconciliationAttemptId   String?             @db.Uuid
   reconciliationLeaseExpiresAt DateTime?
+  reconciliationAttemptCount Int                @default(0)
   expiresAt                 DateTime
   hardExpiresAt             DateTime
   queuedAt                  DateTime?
@@ -507,6 +509,7 @@ model UploadSession {
   @@index([workspaceId, status, createdAt])
   @@index([status, expiresAt, cleanupRetryAt])
   @@index([status, admissionClaimExpiresAt])
+  @@index([status, reconcileAt, reconciliationLeaseExpiresAt])
 }
 
 model IngestJob {

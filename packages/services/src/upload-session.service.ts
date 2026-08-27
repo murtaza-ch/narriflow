@@ -6,12 +6,15 @@ import {
   isProcessingQuotaExceeded,
   MONTHLY_PROCESSING_MINUTE_LIMITS,
   finalizeUploadSessionSchema,
+  grantUploadPartsSchema,
   openUploadSessionSchema,
   processingMinutesFromSeconds,
   resolvePricingTier,
+  uploadCompletionIntentSchema,
   uploadMimeTypes,
   type OpenUploadSessionInput as ValidatedOpenUploadSessionInput,
   type FinalizeUploadSessionInput as ValidatedFinalizeUploadSessionInput,
+  type GrantUploadPartsInput as ValidatedGrantUploadPartsInput,
 } from "@narriflow/validators";
 import { brandTemplateService } from "./brand-template.service";
 import { projectRetentionService } from "./project-retention.service";
@@ -52,8 +55,16 @@ export interface UploadSessionConfig {
   readonly multipartPartSizeBytes: number;
   readonly multipartConcurrency: number;
   readonly maximumMultipartParts: number;
+  readonly maximumGrantParts: number;
   readonly uploadGrantTtlSeconds: number;
   readonly sessionIdleMs: number;
+  readonly sessionHardLifetimeMs: number;
+  readonly reconciliationBatchSize: number;
+  readonly reconciliationConcurrency: number;
+  readonly reconciliationLeaseMs: number;
+  readonly reconciliationOperationDeadlineMs: number;
+  readonly reconciliationBackoffBaseMs: number;
+  readonly reconciliationBackoffCeilingMs: number;
 }
 
 export function defaultUploadSessionConfig(
@@ -65,8 +76,16 @@ export function defaultUploadSessionConfig(
     multipartPartSizeBytes: 16 * MEBIBYTE,
     multipartConcurrency: 4,
     maximumMultipartParts: 10_000,
+    maximumGrantParts: 16,
     uploadGrantTtlSeconds: 15 * 60,
     sessionIdleMs: 24 * 60 * 60 * 1000,
+    sessionHardLifetimeMs: 6 * 24 * 60 * 60 * 1000,
+    reconciliationBatchSize: 25,
+    reconciliationConcurrency: 4,
+    reconciliationLeaseMs: 60_000,
+    reconciliationOperationDeadlineMs: 10_000,
+    reconciliationBackoffBaseMs: 5_000,
+    reconciliationBackoffCeilingMs: 15 * 60 * 1_000,
     ...overrides,
   };
 
@@ -80,7 +99,51 @@ export function defaultUploadSessionConfig(
       "Invalid Upload Session configuration: smallFileThresholdBytes",
     );
   }
+  if (
+    config.multipartPartSizeBytes < 5 * MEBIBYTE ||
+    config.multipartPartSizeBytes > 5 * GIBIBYTE ||
+    config.maximumMultipartParts > 10_000 ||
+    config.maximumGrantParts > 16 ||
+    config.multipartConcurrency > 16
+  ) {
+    throw new Error("Invalid Upload Session multipart configuration");
+  }
+  if (config.sessionIdleMs >= config.sessionHardLifetimeMs) {
+    throw new Error("Invalid Upload Session configuration: sessionHardLifetimeMs");
+  }
+  if (
+    config.reconciliationConcurrency > config.reconciliationBatchSize ||
+    config.reconciliationBackoffBaseMs > config.reconciliationBackoffCeilingMs ||
+    config.reconciliationLeaseMs < config.reconciliationOperationDeadlineMs * 3
+  ) {
+    throw new Error("Invalid Upload Session reconciliation configuration");
+  }
   return Object.freeze(config);
+}
+
+export function assertUploadProviderLifecyclePrerequisite(
+  env: NodeJS.ProcessEnv,
+  hardLifetimeMs = defaultUploadSessionConfig().sessionHardLifetimeMs,
+) {
+  const name = "R2_INCOMPLETE_MULTIPART_LIFECYCLE_DAYS";
+  const raw = env[name]?.trim();
+  if (!raw) {
+    if (env.NODE_ENV === "production") {
+      throw new Error(
+        `${name} must confirm the deployed bucket's incomplete-multipart lifecycle rule.`,
+      );
+    }
+    return;
+  }
+  const days = Number(raw);
+  if (!Number.isSafeInteger(days) || days < 1 || days > 7) {
+    throw new Error(`${name} must be an integer from 1 through 7.`);
+  }
+  if (days * 24 * 60 * 60 * 1_000 <= hardLifetimeMs) {
+    throw new Error(
+      `${name} must be longer than the Upload Session hard lifetime.`,
+    );
+  }
 }
 
 export interface UploadSessionRecord {
@@ -108,11 +171,17 @@ export interface UploadSessionRecord {
   admissionClaimExpiresAt: Date | null;
   admissionPreparedAt: Date | null;
   completionParts: Array<{ partNumber: number; etag: string }> | null;
+  completionIntentMalformed: boolean;
   queuedJobId: string | null;
   failureCode: string | null;
   cleanupRetryAt: Date | null;
+  reconcileAt: Date | null;
+  reconciliationAttemptId: string | null;
+  reconciliationLeaseExpiresAt: Date | null;
+  reconciliationAttemptCount: number;
   status: UploadSessionStatus;
   expiresAt: Date;
+  hardExpiresAt: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -160,9 +229,15 @@ export interface UploadSessionPersistence {
     sessionId: string;
     workspaceId: string;
   }): Promise<UploadSessionRecord | null>;
+  renewTransferActivity(input: {
+    sessionId: string;
+    expiresAt: Date;
+    updatedAt: Date;
+  }): Promise<UploadSessionRecord>;
   beginFinalization(input: {
     sessionId: string;
     parts: Array<{ partNumber: number; etag: string }>;
+    reconcileAt: Date;
     updatedAt: Date;
   }): Promise<{ claimed: boolean; session: UploadSessionRecord }>;
   waitForFinalization(sessionId: string): Promise<UploadSessionRecord>;
@@ -171,6 +246,7 @@ export interface UploadSessionPersistence {
     queuedJobId: string;
     verifiedSizeBytes: number;
     verifiedContentType: string;
+    reconciliationAttemptId?: string;
     updatedAt: Date;
   }): Promise<UploadSessionRecord>;
   recordFailure(input: {
@@ -185,6 +261,48 @@ export interface UploadSessionPersistence {
     sessionId: string;
     failureCode: string | null;
     cleanupRetryAt: Date | null;
+    updatedAt: Date;
+  }): Promise<UploadSessionRecord>;
+  markReconciling(input: {
+    sessionId: string;
+    failureCode: string;
+    reconcileAt: Date;
+    reconciliationAttemptId?: string;
+    updatedAt: Date;
+  }): Promise<UploadSessionRecord>;
+  findDueReconciliation(input: {
+    now: Date;
+    limit: number;
+  }): Promise<UploadSessionRecord[]>;
+  claimReconciliation(input: {
+    sessionId: string;
+    reconciliationAttemptId: string;
+    leaseExpiresAt: Date;
+    updatedAt: Date;
+  }): Promise<{ claimed: boolean; session: UploadSessionRecord }>;
+  releaseReconciliation(input: {
+    sessionId: string;
+    reconciliationAttemptId: string;
+    updatedAt: Date;
+  }): Promise<UploadSessionRecord>;
+  beginCompensation(input: {
+    sessionId: string;
+    reconciliationAttemptId: string;
+    failureCode: string;
+    updatedAt: Date;
+  }): Promise<UploadSessionRecord>;
+  settleTerminal(input: {
+    sessionId: string;
+    reconciliationAttemptId: string;
+    status: "expired" | "aborted" | "failed";
+    failureCode: string;
+    updatedAt: Date;
+  }): Promise<UploadSessionRecord>;
+  deferReconciliation(input: {
+    sessionId: string;
+    reconciliationAttemptId: string;
+    failureCode: string;
+    reconcileAt: Date;
     updatedAt: Date;
   }): Promise<UploadSessionRecord>;
 }
@@ -250,6 +368,7 @@ export interface UploadSessionModuleDependencies {
   admission: UploadSessionAdmission;
   now(): Date;
   createId(): string;
+  random?(): number;
   diagnose?(event: {
     phase:
       | "reservation"
@@ -257,9 +376,17 @@ export interface UploadSessionModuleDependencies {
       | "provider_bind"
       | "adoption"
       | "duplicate_abort"
-      | "compensation";
+      | "compensation"
+      | "reconciliation";
     disposition: "started" | "succeeded" | "failed";
     sessionId: string;
+    state?: UploadSessionStatus;
+    providerOperation?: "head" | "complete" | "abort" | "delete" | "list";
+    failureCode?: string;
+    declaredAbandonedBytes?: number;
+    durationMs?: number;
+    nextRetryAt?: string;
+    takeover?: boolean;
   }): void;
 }
 
@@ -287,6 +414,12 @@ export type OpenUploadSessionOutcome =
       queuedJobId: string;
     }
   | {
+      outcome: "reconciling";
+      sessionId: string;
+      projectId: string;
+      retryAfterSeconds: number;
+    }
+  | {
       outcome: "uploading";
       sessionId: string;
       projectId: string;
@@ -303,6 +436,7 @@ export type OpenUploadSessionOutcome =
         partCount: number;
         concurrency: number;
         grants: Array<{ partNumber: number; url: string }>;
+        grantExpiresAt: string;
         completedParts: Array<{ partNumber: number; etag: string }>;
         };
     };
@@ -314,12 +448,34 @@ export interface FinalizeUploadSessionInput {
   parts: Array<{ partNumber: number; etag: string }>;
 }
 
-export type FinalizeUploadSessionOutcome = {
+export interface GrantUploadPartsInput {
+  actorUserId: string;
+  workspaceId: string;
+  sessionId: string;
+  partNumbers: number[];
+}
+
+export type GrantUploadPartsOutcome = {
+  outcome: "granted";
+  sessionId: string;
+  expiresAt: string;
+  grants: Array<{ partNumber: number; url: string }>;
+};
+
+export type QueuedUploadHandoffOutcome = {
   outcome: "queued_for_ingest";
   sessionId: string;
   projectId: string;
   queuedJobId: string;
 };
+
+export type FinalizeUploadSessionOutcome =
+  | QueuedUploadHandoffOutcome
+  | {
+      outcome: "reconciling";
+      sessionId: string;
+      retryAfterSeconds: number;
+    };
 
 export class UploadSessionIdempotencyConflictError extends Error {
   readonly code = "upload_session_idempotency_conflict";
@@ -374,6 +530,13 @@ export class UploadSessionAdmissionClaimLostError extends Error {
   constructor() {
     super("Upload Session admission claim was superseded.");
     this.name = "UploadSessionAdmissionClaimLostError";
+  }
+}
+
+export class UploadSessionReconciliationClaimLostError extends Error {
+  constructor() {
+    super("Upload Session reconciliation claim was superseded.");
+    this.name = "UploadSessionReconciliationClaimLostError";
   }
 }
 
@@ -465,6 +628,32 @@ function normalizeCompletionParts(
   })).sort((left, right) => left.partNumber - right.partNumber);
 }
 
+function normalizeProviderPartInventory(
+  parts: Array<{ partNumber: number; etag: string }>,
+  expectedPartCount: number,
+) {
+  const normalized = new Map<number, string>();
+  for (const part of parts) {
+    if (
+      !Number.isInteger(part.partNumber) ||
+      part.partNumber < 1 ||
+      part.partNumber > expectedPartCount ||
+      typeof part.etag !== "string" ||
+      part.etag.trim().length === 0 ||
+      normalized.has(part.partNumber)
+    ) {
+      throw new UploadSessionIntegrityError(
+        "Stored multipart inventory does not match the Upload Session.",
+      );
+    }
+    normalized.set(part.partNumber, part.etag);
+  }
+  return Array.from(normalized, ([partNumber, etag]) => ({
+    partNumber,
+    etag,
+  })).sort((left, right) => left.partNumber - right.partNumber);
+}
+
 function normalizeUploadContentType(value: string | null) {
   if (!value) return null;
   const base = value.split(";", 1)[0]!.trim().toLowerCase();
@@ -476,6 +665,23 @@ function normalizeUploadContentType(value: string | null) {
     : null;
 }
 
+function isAmbiguousProviderFailure(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as {
+    name?: unknown;
+    code?: unknown;
+    $metadata?: { httpStatusCode?: unknown };
+  };
+  const identity = [candidate.name, candidate.code]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ");
+  const status = candidate.$metadata?.httpStatusCode;
+  return (
+    /timeout|timedout|network|connection|socket|requesttimeout/i.test(identity) ||
+    (typeof status === "number" && (status === 408 || status === 429 || status >= 500))
+  );
+}
+
 export function createUploadSessionModule(
   dependencies: UploadSessionModuleDependencies,
 ) {
@@ -485,7 +691,79 @@ export function createUploadSessionModule(
     disposition: Parameters<
       NonNullable<typeof dependencies.diagnose>
     >[0]["disposition"],
-  ) => dependencies.diagnose?.({ sessionId, phase, disposition });
+    context: Omit<
+      Parameters<NonNullable<typeof dependencies.diagnose>>[0],
+      "sessionId" | "phase" | "disposition"
+    > = {},
+  ) => dependencies.diagnose?.({ sessionId, phase, disposition, ...context });
+
+  const withReconciliationDeadline = async <Result>(
+    operation: () => Promise<Result>,
+  ) => {
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        operation(),
+        new Promise<never>((_, reject) => {
+          timeout = setTimeout(
+            () => reject(new Error("Upload Session provider operation timed out")),
+            dependencies.config.reconciliationOperationDeadlineMs,
+          );
+        }),
+      ]);
+    } finally {
+      if (timeout) clearTimeout(timeout);
+    }
+  };
+
+  const reconciliationRetryDelayMs = (attemptCount: number) => {
+    const exponential = Math.min(
+      dependencies.config.reconciliationBackoffCeilingMs,
+      dependencies.config.reconciliationBackoffBaseMs *
+        2 ** Math.max(0, attemptCount - 1),
+    );
+    return Math.max(
+      1,
+      Math.min(
+        dependencies.config.reconciliationBackoffCeilingMs,
+        Math.floor(
+          exponential * (0.5 + (dependencies.random?.() ?? Math.random())),
+        ),
+      ),
+    );
+  };
+
+  const markInlineReconciliation = async (
+    sessionId: string,
+    failureCode: string,
+  ): Promise<FinalizeUploadSessionOutcome> => {
+    await dependencies.persistence.markReconciling({
+      sessionId,
+      failureCode,
+      reconcileAt: new Date(dependencies.now().getTime() + 5_000),
+      updatedAt: dependencies.now(),
+    });
+    return {
+      outcome: "reconciling",
+      sessionId,
+      retryAfterSeconds: 5,
+    };
+  };
+
+  const handoffInline = async (
+    session: UploadSessionRecord,
+    object: { sizeBytes: number; contentType: string | null },
+  ) => {
+    try {
+      return await handoffVerifiedObject(session, object);
+    } catch (error) {
+      if (error instanceof UploadSessionIntegrityError) throw error;
+      return markInlineReconciliation(
+        session.id,
+        "upload_handoff_ambiguous",
+      );
+    }
+  };
 
   const admissionAttemptIdFor = (session: UploadSessionRecord) => {
     if (!session.admissionAttemptId) {
@@ -544,9 +822,30 @@ export function createUploadSessionModule(
   async function handoffVerifiedObject(
     session: UploadSessionRecord,
     object: { sizeBytes: number; contentType: string | null },
-  ): Promise<FinalizeUploadSessionOutcome> {
+    reconciliationAttemptId?: string,
+  ): Promise<QueuedUploadHandoffOutcome> {
+    const compensateIntegrityFailure = async (failureCode: string) => {
+      if (!reconciliationAttemptId) {
+        await compensateObject(session, failureCode);
+        return;
+      }
+      await dependencies.persistence.beginCompensation({
+        sessionId: session.id,
+        reconciliationAttemptId,
+        failureCode,
+        updatedAt: dependencies.now(),
+      });
+      await dependencies.storage.deleteExactObject(session.storageKey);
+      await dependencies.persistence.settleTerminal({
+        sessionId: session.id,
+        reconciliationAttemptId,
+        status: "failed",
+        failureCode,
+        updatedAt: dependencies.now(),
+      });
+    };
     if (object.sizeBytes !== session.fileSizeBytes) {
-      await compensateObject(session, "upload_object_size_mismatch");
+      await compensateIntegrityFailure("upload_object_size_mismatch");
       throw new UploadSessionIntegrityError(
         "Uploaded object size does not match the declared source.",
       );
@@ -558,7 +857,7 @@ export function createUploadSessionModule(
       !verifiedContentType ||
       declaredContentType !== verifiedContentType
     ) {
-      await compensateObject(session, "upload_object_content_type_mismatch");
+      await compensateIntegrityFailure("upload_object_content_type_mismatch");
       throw new UploadSessionIntegrityError(
         "Uploaded object content type does not match the declared source.",
       );
@@ -568,6 +867,7 @@ export function createUploadSessionModule(
       queuedJobId: dependencies.createId(),
       verifiedSizeBytes: object.sizeBytes,
       verifiedContentType,
+      reconciliationAttemptId,
       updatedAt: dependencies.now(),
     });
     return {
@@ -588,8 +888,18 @@ export function createUploadSessionModule(
         queuedJobId: settled.queuedJobId,
       };
     }
+    if (
+      settled.status === "finalizing" ||
+      settled.status === "reconciling"
+    ) {
+      return {
+        outcome: "reconciling" as const,
+        sessionId: settled.id,
+        retryAfterSeconds: 5,
+      };
+    }
     throw new UploadSessionInvalidStateError(
-      "Upload Session finalization is still reconciling.",
+      `Upload Session finalization settled as ${settled.status}.`,
     );
   }
 
@@ -684,12 +994,14 @@ export function createUploadSessionModule(
     if (!session.providerUploadId) {
       throw new Error("Upload Session provider binding is incomplete");
     }
-    const completedParts =
+    const completedParts = normalizeProviderPartInventory(
       knownCompletedParts ??
-      (await dependencies.storage.listMultipartParts({
-        storageKey: session.storageKey,
-        providerUploadId: session.providerUploadId,
-      }));
+        (await dependencies.storage.listMultipartParts({
+          storageKey: session.storageKey,
+          providerUploadId: session.providerUploadId,
+        })),
+      session.partCount,
+    );
     const completedPartNumbers = new Set(
       completedParts.map((part) => part.partNumber),
     );
@@ -697,12 +1009,20 @@ export function createUploadSessionModule(
       { length: session.partCount },
       (_, index) => index + 1,
     ).filter((partNumber) => !completedPartNumbers.has(partNumber));
+    const grantPartNumbers = partNumbers.slice(
+      0,
+      dependencies.config.maximumGrantParts,
+    );
     const grants = await dependencies.storage.grantMultipartParts({
       storageKey: session.storageKey,
       providerUploadId: session.providerUploadId,
-      partNumbers,
+      partNumbers: grantPartNumbers,
       expiresInSeconds: dependencies.config.uploadGrantTtlSeconds,
     });
+    const grantExpiresAt = new Date(
+      dependencies.now().getTime() +
+        dependencies.config.uploadGrantTtlSeconds * 1_000,
+    ).toISOString();
     return {
       outcome: "uploading",
       sessionId: session.id,
@@ -714,6 +1034,7 @@ export function createUploadSessionModule(
         partCount: session.partCount,
         concurrency: dependencies.config.multipartConcurrency,
         grants,
+        grantExpiresAt,
         completedParts,
       },
     };
@@ -878,6 +1199,25 @@ export function createUploadSessionModule(
             queuedJobId: existing.queuedJobId,
           };
         }
+        if (
+          existing.status === "finalizing" ||
+          existing.status === "reconciling"
+        ) {
+          return {
+            outcome: "reconciling" as const,
+            sessionId: existing.id,
+            projectId: existing.preallocatedProjectId,
+            retryAfterSeconds: Math.max(
+              1,
+              Math.ceil(
+                ((existing.reconcileAt?.getTime() ??
+                  dependencies.now().getTime() + 5_000) -
+                  dependencies.now().getTime()) /
+                  1_000,
+              ),
+            ),
+          };
+        }
         let settled = existing;
         const admissionClaimIsLive =
           settled.status === "initiating" &&
@@ -926,12 +1266,19 @@ export function createUploadSessionModule(
               await dependencies.persistence.beginFinalization({
                 sessionId: active.id,
                 parts: [],
+                reconcileAt: new Date(dependencies.now().getTime() + 5_000),
                 updatedAt: dependencies.now(),
               });
             if (!finalization.claimed) {
-              return waitForQueuedHandoff(active.id);
+              const handoff = await waitForQueuedHandoff(active.id);
+              return handoff.outcome === "reconciling"
+                ? { ...handoff, projectId: active.preallocatedProjectId }
+                : handoff;
             }
-            return handoffVerifiedObject(finalization.session, object);
+            const handoff = await handoffInline(finalization.session, object);
+            return handoff.outcome === "reconciling"
+              ? { ...handoff, projectId: active.preallocatedProjectId }
+              : handoff;
           }
         }
         return uploadingOutcome(active);
@@ -977,11 +1324,19 @@ export function createUploadSessionModule(
         admissionClaimExpiresAt: new Date(now.getTime() + 30_000),
         admissionPreparedAt: null,
         completionParts: null,
+        completionIntentMalformed: false,
         queuedJobId: null,
         failureCode: null,
         cleanupRetryAt: null,
+        reconcileAt: null,
+        reconciliationAttemptId: null,
+        reconciliationLeaseExpiresAt: null,
+        reconciliationAttemptCount: 0,
         status: "initiating",
         expiresAt: new Date(now.getTime() + dependencies.config.sessionIdleMs),
+        hardExpiresAt: new Date(
+          now.getTime() + dependencies.config.sessionHardLifetimeMs,
+        ),
         createdAt: now,
         updatedAt: now,
       });
@@ -1130,6 +1485,73 @@ export function createUploadSessionModule(
       return uploadingOutcome(session, []);
     },
 
+    async grant(input: GrantUploadPartsInput): Promise<GrantUploadPartsOutcome> {
+      const session = await dependencies.persistence.findByIdForWorkspace({
+        sessionId: input.sessionId,
+        workspaceId: input.workspaceId,
+      });
+      if (!session || session.actorUserId !== input.actorUserId) {
+        throw new UploadSessionNotFoundError();
+      }
+      if (
+        session.status !== "uploading" ||
+        session.transferKind !== "multipart" ||
+        !session.providerUploadId
+      ) {
+        throw new UploadSessionInvalidStateError();
+      }
+      const activityAt = dependencies.now();
+      if (
+        session.expiresAt.getTime() <= activityAt.getTime() ||
+        session.hardExpiresAt.getTime() <= activityAt.getTime()
+      ) {
+        throw new UploadSessionInvalidStateError(
+          "The Upload Session has expired.",
+        );
+      }
+      const uniquePartNumbers = new Set(input.partNumbers);
+      if (
+        input.partNumbers.length < 1 ||
+        input.partNumbers.length > dependencies.config.maximumGrantParts ||
+        uniquePartNumbers.size !== input.partNumbers.length ||
+        input.partNumbers.some(
+          (partNumber) =>
+            !Number.isInteger(partNumber) ||
+            partNumber < 1 ||
+            partNumber > session.partCount,
+        )
+      ) {
+        throw new UploadSessionInvalidStateError(
+          "Requested upload parts are outside the session transfer plan.",
+        );
+      }
+      const activeSession = await dependencies.persistence.renewTransferActivity({
+        sessionId: session.id,
+        expiresAt: new Date(
+          Math.min(
+            activityAt.getTime() + dependencies.config.sessionIdleMs,
+            session.hardExpiresAt.getTime(),
+          ),
+        ),
+        updatedAt: activityAt,
+      });
+      const grants = await dependencies.storage.grantMultipartParts({
+        storageKey: activeSession.storageKey,
+        providerUploadId: activeSession.providerUploadId!,
+        partNumbers: input.partNumbers,
+        expiresInSeconds: dependencies.config.uploadGrantTtlSeconds,
+      });
+      return {
+        outcome: "granted",
+        sessionId: session.id,
+        expiresAt: new Date(
+          dependencies.now().getTime() +
+            dependencies.config.uploadGrantTtlSeconds * 1_000,
+        ).toISOString(),
+        grants,
+      };
+    },
+
     async finalize(
       input: FinalizeUploadSessionInput,
     ): Promise<FinalizeUploadSessionOutcome> {
@@ -1151,8 +1573,24 @@ export function createUploadSessionModule(
       if (current.status === "finalizing") {
         return waitForQueuedHandoff(current.id);
       }
+      if (current.status === "reconciling") {
+        return {
+          outcome: "reconciling",
+          sessionId: current.id,
+          retryAfterSeconds: 5,
+        };
+      }
       if (current.status !== "uploading") {
         throw new UploadSessionInvalidStateError();
+      }
+      const finalizationAcceptedAt = dependencies.now();
+      if (
+        current.expiresAt.getTime() <= finalizationAcceptedAt.getTime() ||
+        current.hardExpiresAt.getTime() <= finalizationAcceptedAt.getTime()
+      ) {
+        throw new UploadSessionInvalidStateError(
+          "The Upload Session expired before finalization was accepted.",
+        );
       }
       const parts =
         current.transferKind === "single"
@@ -1168,7 +1606,8 @@ export function createUploadSessionModule(
       const finalization = await dependencies.persistence.beginFinalization({
         sessionId: current.id,
         parts,
-        updatedAt: dependencies.now(),
+        reconcileAt: new Date(finalizationAcceptedAt.getTime() + 5_000),
+        updatedAt: finalizationAcceptedAt,
       });
       if (!finalization.claimed) {
         return waitForQueuedHandoff(current.id);
@@ -1178,11 +1617,46 @@ export function createUploadSessionModule(
         if (!finalizing.providerUploadId) {
           throw new Error("Upload Session provider binding is incomplete");
         }
-        await dependencies.storage.completeMultipart({
-          storageKey: finalizing.storageKey,
-          providerUploadId: finalizing.providerUploadId,
-          parts,
-        });
+        try {
+          await dependencies.storage.completeMultipart({
+            storageKey: finalizing.storageKey,
+            providerUploadId: finalizing.providerUploadId,
+            parts,
+          });
+        } catch (error) {
+          if (isAmbiguousProviderFailure(error)) {
+            return markInlineReconciliation(
+              finalizing.id,
+              "multipart_completion_ambiguous",
+            );
+          }
+          if (isMissingMultipartUpload(error)) {
+            const exactObject =
+              await dependencies.storage.headExactObjectIfExists(
+                finalizing.storageKey,
+              );
+            if (exactObject) {
+              return handoffInline(finalizing, exactObject);
+            }
+            return markInlineReconciliation(
+              finalizing.id,
+              "multipart_upload_missing",
+            );
+          }
+          const failureCode = permanentMultipartCompletionFailure(error);
+          if (failureCode) {
+            await dependencies.persistence.recordFailure({
+              sessionId: finalizing.id,
+              status: "failed",
+              failureCode,
+              updatedAt: dependencies.now(),
+            });
+            throw new UploadSessionIntegrityError(
+              "The storage provider rejected multipart completion.",
+            );
+          }
+          throw error;
+        }
       }
       let object: { sizeBytes: number; contentType: string | null };
       try {
@@ -1199,6 +1673,13 @@ export function createUploadSessionModule(
                 unavailable: "upload_object_probe_unavailable",
               }[error.disposition]
             : "upload_object_probe_unavailable";
+        if (
+          !(error instanceof UploadSessionStorageProbeError) ||
+          error.disposition === "missing" ||
+          error.disposition === "unavailable"
+        ) {
+          return markInlineReconciliation(finalizing.id, failureCode);
+        }
         await dependencies.persistence.recordFailure({
           sessionId: finalizing.id,
           status: "failed",
@@ -1209,7 +1690,289 @@ export function createUploadSessionModule(
           "Uploaded object could not be verified.",
         );
       }
-      return handoffVerifiedObject(finalizing, object);
+      return handoffInline(finalizing, object);
+    },
+
+    async reconcileDueSessions() {
+      const now = dependencies.now();
+      const due = await dependencies.persistence.findDueReconciliation({
+        now,
+        limit: dependencies.config.reconciliationBatchSize,
+      });
+      let claimed = 0;
+      let settled = 0;
+      let deferred = 0;
+      const processCandidate = async (candidate: UploadSessionRecord) => {
+        const reconciliationAttemptId = dependencies.createId();
+        const claim = await dependencies.persistence.claimReconciliation({
+          sessionId: candidate.id,
+          reconciliationAttemptId,
+          leaseExpiresAt: new Date(
+            now.getTime() + dependencies.config.reconciliationLeaseMs,
+          ),
+          updatedAt: now,
+        });
+        if (!claim.claimed) return;
+        claimed += 1;
+        const session = claim.session;
+        const attemptStartedAtMs = dependencies.now().getTime();
+        let providerOperation:
+          | "head"
+          | "complete"
+          | "abort"
+          | "delete"
+          | "list"
+          | undefined;
+        diagnose(session.id, "reconciliation", "started", {
+          state: session.status,
+          takeover: session.reconciliationAttemptCount > 1,
+        });
+        try {
+          if (
+            ((session.status === "initiating" ||
+              session.status === "uploading") &&
+              session.expiresAt.getTime() <= now.getTime()) ||
+            session.status === "compensating"
+          ) {
+            const compensating =
+              session.status === "compensating"
+                ? session
+                : await dependencies.persistence.beginCompensation({
+                    sessionId: session.id,
+                    reconciliationAttemptId,
+                    failureCode: "upload_session_expired",
+                    updatedAt: dependencies.now(),
+                  });
+            if (
+              compensating.transferKind === "multipart" &&
+              compensating.providerUploadId
+            ) {
+              providerOperation = "abort";
+              await withReconciliationDeadline(() =>
+                dependencies.storage.abortMultipart({
+                  storageKey: compensating.storageKey,
+                  providerUploadId: compensating.providerUploadId!,
+                }),
+              );
+            } else if (compensating.transferKind === "multipart") {
+              providerOperation = "list";
+              const unfinished = await withReconciliationDeadline(() =>
+                dependencies.storage.listExactKeyMultipartUploads(
+                  compensating.storageKey,
+                ),
+              );
+              for (const upload of unfinished) {
+                providerOperation = "abort";
+                await withReconciliationDeadline(() =>
+                  dependencies.storage.abortMultipart({
+                    storageKey: compensating.storageKey,
+                    providerUploadId: upload.providerUploadId,
+                  }),
+                );
+              }
+            } else {
+              providerOperation = "delete";
+              await withReconciliationDeadline(() =>
+                dependencies.storage.deleteExactObject(compensating.storageKey),
+              );
+            }
+            await dependencies.persistence.settleTerminal({
+              sessionId: compensating.id,
+              reconciliationAttemptId,
+              status:
+                compensating.failureCode === "upload_session_expired" ||
+                session.status === "uploading"
+                  ? "expired"
+                  : "failed",
+              failureCode:
+                compensating.failureCode ?? "upload_compensation_completed",
+              updatedAt: dependencies.now(),
+            });
+            settled += 1;
+            diagnose(session.id, "reconciliation", "succeeded", {
+              state: session.status,
+              providerOperation,
+              failureCode: compensating.failureCode ?? undefined,
+              declaredAbandonedBytes: compensating.fileSizeBytes,
+              durationMs: dependencies.now().getTime() - attemptStartedAtMs,
+            });
+            return;
+          }
+          if (session.status === "initiating") {
+            const admissionAttemptId = dependencies.createId();
+            const admissionClaim = await dependencies.persistence.claimAdmission({
+              sessionId: session.id,
+              admissionAttemptId,
+              claimExpiresAt: new Date(
+                dependencies.now().getTime() + 30_000,
+              ),
+              updatedAt: dependencies.now(),
+            });
+            if (!admissionClaim.claimed) {
+              throw new UploadSessionInvalidStateError(
+                "Upload Session admission recovery was superseded.",
+              );
+            }
+            await recoverInitiatingSession(admissionClaim.session);
+            await dependencies.persistence.releaseReconciliation({
+              sessionId: session.id,
+              reconciliationAttemptId,
+              updatedAt: dependencies.now(),
+            });
+            settled += 1;
+            diagnose(session.id, "reconciliation", "succeeded", {
+              state: session.status,
+              providerOperation: "list",
+              durationMs: dependencies.now().getTime() - attemptStartedAtMs,
+            });
+            return;
+          }
+          providerOperation = "head";
+          const existingObject = await withReconciliationDeadline(() =>
+            dependencies.storage.headExactObjectIfExists(session.storageKey),
+          );
+          if (existingObject) {
+            await handoffVerifiedObject(
+              session,
+              existingObject,
+              reconciliationAttemptId,
+            );
+            settled += 1;
+            diagnose(session.id, "reconciliation", "succeeded", {
+              state: session.status,
+              providerOperation,
+              durationMs: dependencies.now().getTime() - attemptStartedAtMs,
+            });
+            return;
+          }
+          if (session.completionIntentMalformed) {
+            const compensating =
+              await dependencies.persistence.beginCompensation({
+                sessionId: session.id,
+                reconciliationAttemptId,
+                failureCode: "completion_intent_malformed",
+                updatedAt: dependencies.now(),
+              });
+            if (compensating.providerUploadId) {
+              providerOperation = "abort";
+              await withReconciliationDeadline(() =>
+                dependencies.storage.abortMultipart({
+                  storageKey: compensating.storageKey,
+                  providerUploadId: compensating.providerUploadId!,
+                }),
+              );
+            }
+            await dependencies.persistence.settleTerminal({
+              sessionId: session.id,
+              reconciliationAttemptId,
+              status: "failed",
+              failureCode: "completion_intent_malformed",
+              updatedAt: dependencies.now(),
+            });
+            settled += 1;
+            diagnose(session.id, "reconciliation", "succeeded", {
+              state: session.status,
+              providerOperation,
+              failureCode: "completion_intent_malformed",
+              durationMs: dependencies.now().getTime() - attemptStartedAtMs,
+            });
+            return;
+          }
+          if (
+            session.transferKind === "multipart" &&
+            session.providerUploadId &&
+            session.completionParts
+          ) {
+            providerOperation = "complete";
+            await withReconciliationDeadline(() =>
+              dependencies.storage.completeMultipart({
+                storageKey: session.storageKey,
+                providerUploadId: session.providerUploadId!,
+                parts: session.completionParts!,
+              }),
+            );
+            const object = await withReconciliationDeadline(() =>
+              dependencies.storage.headExactObject(session.storageKey),
+            );
+            await handoffVerifiedObject(
+              session,
+              object,
+              reconciliationAttemptId,
+            );
+            settled += 1;
+            diagnose(session.id, "reconciliation", "succeeded", {
+              state: session.status,
+              providerOperation,
+              durationMs: dependencies.now().getTime() - attemptStartedAtMs,
+            });
+            return;
+          }
+          throw new UploadSessionStorageProbeError("missing");
+        } catch (error) {
+          if (error instanceof UploadSessionReconciliationClaimLostError) return;
+          if (error instanceof UploadSessionIntegrityError) {
+            settled += 1;
+            diagnose(session.id, "reconciliation", "succeeded", {
+              state: session.status,
+              providerOperation,
+              failureCode: "upload_object_integrity_failed",
+              durationMs: dependencies.now().getTime() - attemptStartedAtMs,
+            });
+            return;
+          }
+          const retryDelayMs = reconciliationRetryDelayMs(
+            session.reconciliationAttemptCount,
+          );
+          const nextRetryAt = new Date(
+            dependencies.now().getTime() + retryDelayMs,
+          );
+          try {
+            await dependencies.persistence.deferReconciliation({
+              sessionId: session.id,
+              failureCode: "upload_reconciliation_deferred",
+              reconcileAt: nextRetryAt,
+              reconciliationAttemptId,
+              updatedAt: dependencies.now(),
+            });
+          } catch (deferError) {
+            if (
+              deferError instanceof UploadSessionReconciliationClaimLostError
+            ) {
+              return;
+            }
+            throw deferError;
+          }
+          deferred += 1;
+          diagnose(session.id, "reconciliation", "failed", {
+            state: session.status,
+            providerOperation,
+            failureCode: "upload_reconciliation_deferred",
+            durationMs: dependencies.now().getTime() - attemptStartedAtMs,
+            nextRetryAt: nextRetryAt.toISOString(),
+          });
+        }
+      };
+      let cursor = 0;
+      const worker = async () => {
+        for (;;) {
+          const candidate = due[cursor];
+          cursor += 1;
+          if (!candidate) return;
+          await processCandidate(candidate);
+        }
+      };
+      await Promise.all(
+        Array.from(
+          {
+            length: Math.min(
+              dependencies.config.reconciliationConcurrency,
+              due.length,
+            ),
+          },
+          () => worker(),
+        ),
+      );
+      return { claimed, settled, deferred };
     },
   };
 }
@@ -1264,11 +2027,65 @@ export function uploadSessionConfigFromEnv(
       10_000,
       { minimum: 1, maximum: 10_000 },
     ),
+    maximumGrantParts: configuredInteger(
+      env,
+      "UPLOAD_MAXIMUM_GRANT_PARTS",
+      16,
+      { minimum: 1, maximum: 16 },
+    ),
     uploadGrantTtlSeconds: configuredInteger(
       env,
       "UPLOAD_GRANT_TTL_SECONDS",
       15 * 60,
       { minimum: 60, maximum: 60 * 60 },
+    ),
+    sessionIdleMs: configuredInteger(
+      env,
+      "UPLOAD_SESSION_IDLE_MS",
+      24 * 60 * 60 * 1_000,
+      { minimum: 60_000, maximum: 6 * 24 * 60 * 60 * 1_000 },
+    ),
+    sessionHardLifetimeMs: configuredInteger(
+      env,
+      "UPLOAD_SESSION_HARD_LIFETIME_MS",
+      6 * 24 * 60 * 60 * 1_000,
+      { minimum: 60 * 60 * 1_000, maximum: 6 * 24 * 60 * 60 * 1_000 },
+    ),
+    reconciliationBatchSize: configuredInteger(
+      env,
+      "UPLOAD_RECONCILIATION_BATCH_SIZE",
+      25,
+      { minimum: 1, maximum: 100 },
+    ),
+    reconciliationConcurrency: configuredInteger(
+      env,
+      "UPLOAD_RECONCILIATION_CONCURRENCY",
+      4,
+      { minimum: 1, maximum: 16 },
+    ),
+    reconciliationLeaseMs: configuredInteger(
+      env,
+      "UPLOAD_RECONCILIATION_LEASE_MS",
+      60_000,
+      { minimum: 10_000, maximum: 5 * 60 * 1_000 },
+    ),
+    reconciliationOperationDeadlineMs: configuredInteger(
+      env,
+      "UPLOAD_RECONCILIATION_OPERATION_DEADLINE_MS",
+      10_000,
+      { minimum: 1_000, maximum: 60_000 },
+    ),
+    reconciliationBackoffBaseMs: configuredInteger(
+      env,
+      "UPLOAD_RECONCILIATION_BACKOFF_BASE_MS",
+      5_000,
+      { minimum: 1_000, maximum: 60_000 },
+    ),
+    reconciliationBackoffCeilingMs: configuredInteger(
+      env,
+      "UPLOAD_RECONCILIATION_BACKOFF_CEILING_MS",
+      15 * 60 * 1_000,
+      { minimum: 5_000, maximum: 60 * 60 * 1_000 },
     ),
   });
 }
@@ -1298,24 +2115,15 @@ function requiredPrisma() {
 }
 
 function completionPartsFromJson(value: Prisma.JsonValue | null) {
-  if (!Array.isArray(value)) return null;
-  const parts: Array<{ partNumber: number; etag: string }> = [];
-  for (const item of value) {
-    if (
-      !item ||
-      typeof item !== "object" ||
-      Array.isArray(item) ||
-      typeof item.partNumber !== "number" ||
-      typeof item.etag !== "string"
-    ) {
-      return null;
-    }
-    parts.push({ partNumber: item.partNumber, etag: item.etag });
-  }
-  return parts;
+  const parsed = uploadCompletionIntentSchema.safeParse(value);
+  return {
+    parts: parsed.success ? parsed.data.parts : null,
+    malformed: value !== null && !parsed.success,
+  };
 }
 
 function fromPrismaUploadSession(row: PrismaUploadSession): UploadSessionRecord {
+  const completionIntent = completionPartsFromJson(row.completionParts);
   return {
     id: row.id,
     workspaceId: row.workspaceId,
@@ -1340,12 +2148,18 @@ function fromPrismaUploadSession(row: PrismaUploadSession): UploadSessionRecord 
     admissionAttemptId: row.admissionAttemptId,
     admissionClaimExpiresAt: row.admissionClaimExpiresAt,
     admissionPreparedAt: row.admissionPreparedAt,
-    completionParts: completionPartsFromJson(row.completionParts),
+    completionParts: completionIntent.parts,
+    completionIntentMalformed: completionIntent.malformed,
     queuedJobId: row.queuedJobId,
     failureCode: row.failureCode,
     cleanupRetryAt: row.cleanupRetryAt,
+    reconcileAt: row.reconcileAt,
+    reconciliationAttemptId: row.reconciliationAttemptId,
+    reconciliationLeaseExpiresAt: row.reconciliationLeaseExpiresAt,
+    reconciliationAttemptCount: row.reconciliationAttemptCount,
     status: row.status,
     expiresAt: row.expiresAt,
+    hardExpiresAt: row.hardExpiresAt,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -1410,9 +2224,7 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
           admissionAttemptId: record.admissionAttemptId,
           admissionClaimExpiresAt: new Date(record.createdAt.getTime() + 30_000),
           expiresAt: record.expiresAt,
-          hardExpiresAt: new Date(
-            record.createdAt.getTime() + 6 * 24 * 60 * 60 * 1000,
-          ),
+          hardExpiresAt: record.hardExpiresAt,
           createdAt: record.createdAt,
         },
       });
@@ -1566,12 +2378,28 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
     });
     return row ? fromPrismaUploadSession(row) : null;
   },
-  async beginFinalization({ sessionId, parts, updatedAt }) {
+  async renewTransferActivity({ sessionId, expiresAt, updatedAt }) {
+    const updated = await requiredPrisma().uploadSession.updateMany({
+      where: { id: sessionId, status: "uploading" },
+      data: { expiresAt, updatedAt },
+    });
+    const row = await requiredPrisma().uploadSession.findUnique({
+      where: { id: sessionId },
+    });
+    if (!row) throw new Error("Upload Session not found");
+    if (updated.count !== 1) throw new UploadSessionInvalidStateError();
+    return fromPrismaUploadSession(row);
+  },
+  async beginFinalization({ sessionId, parts, reconcileAt, updatedAt }) {
     const updated = await requiredPrisma().uploadSession.updateMany({
       where: { id: sessionId, status: "uploading" },
       data: {
         status: "finalizing",
-        completionParts: parts as Prisma.InputJsonValue,
+        completionParts: {
+          version: 1,
+          parts,
+        } satisfies Prisma.InputJsonValue,
+        reconcileAt,
         updatedAt,
       },
     });
@@ -1595,6 +2423,7 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
     queuedJobId,
     verifiedSizeBytes,
     verifiedContentType,
+    reconciliationAttemptId,
     updatedAt,
   }) {
     const initial = await requiredPrisma().uploadSession.findUnique({
@@ -1622,7 +2451,14 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
         });
         if (!current) throw new Error("Upload Session not found");
         if (current.status === "queued_for_ingest") return current;
-        if (current.status !== "finalizing") {
+        if (
+          (current.status !== "finalizing" && current.status !== "reconciling") ||
+          (reconciliationAttemptId &&
+            current.reconciliationAttemptId !== reconciliationAttemptId)
+        ) {
+          if (reconciliationAttemptId) {
+            throw new UploadSessionReconciliationClaimLostError();
+          }
           throw new Error("Upload Session is not ready for handoff");
         }
         await tx.project.create({
@@ -1723,6 +2559,9 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
             verifiedContentType,
             queuedJobId,
             queuedAt: updatedAt,
+            reconcileAt: null,
+            reconciliationAttemptId: null,
+            reconciliationLeaseExpiresAt: null,
             updatedAt,
           },
         });
@@ -1786,6 +2625,212 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
     });
     return fromPrismaUploadSession(row);
   },
+  async markReconciling({
+    sessionId,
+    failureCode,
+    reconcileAt,
+    reconciliationAttemptId,
+    updatedAt,
+  }) {
+    const updated = await requiredPrisma().uploadSession.updateMany({
+      where: {
+        id: sessionId,
+        status: { in: ["finalizing", "reconciling"] },
+        ...(reconciliationAttemptId ? { reconciliationAttemptId } : {}),
+      },
+      data: {
+        status: "reconciling",
+        failureCode,
+        reconcileAt,
+        reconciliationAttemptId: null,
+        reconciliationLeaseExpiresAt: null,
+        updatedAt,
+      },
+    });
+    const row = await requiredPrisma().uploadSession.findUnique({
+      where: { id: sessionId },
+    });
+    if (!row) throw new Error("Upload Session not found");
+    if (updated.count !== 1 && reconciliationAttemptId) {
+      throw new UploadSessionReconciliationClaimLostError();
+    }
+    return fromPrismaUploadSession(row);
+  },
+  async findDueReconciliation({ now, limit }) {
+    const rows = await requiredPrisma().uploadSession.findMany({
+      where: {
+        OR: [
+          { status: "uploading", expiresAt: { lte: now } },
+          {
+            status: "initiating",
+            admissionClaimExpiresAt: { lte: now },
+          },
+          {
+            status: { in: ["finalizing", "reconciling", "compensating"] },
+            OR: [{ reconcileAt: null }, { reconcileAt: { lte: now } }],
+          },
+        ],
+        AND: [
+          {
+            OR: [
+              { reconciliationLeaseExpiresAt: null },
+              { reconciliationLeaseExpiresAt: { lte: now } },
+            ],
+          },
+        ],
+      },
+      orderBy: [{ reconcileAt: "asc" }, { updatedAt: "asc" }, { id: "asc" }],
+      take: limit,
+    });
+    return rows.map(fromPrismaUploadSession);
+  },
+  async claimReconciliation({
+    sessionId,
+    reconciliationAttemptId,
+    leaseExpiresAt,
+    updatedAt,
+  }) {
+    const updated = await requiredPrisma().uploadSession.updateMany({
+      where: {
+        id: sessionId,
+        OR: [
+          {
+            status: "initiating",
+            admissionClaimExpiresAt: { lte: updatedAt },
+          },
+          { status: "uploading", expiresAt: { lte: updatedAt } },
+          {
+            status: { in: ["finalizing", "reconciling", "compensating"] },
+            OR: [{ reconcileAt: null }, { reconcileAt: { lte: updatedAt } }],
+          },
+        ],
+        AND: [
+          {
+            OR: [
+              { reconciliationLeaseExpiresAt: null },
+              { reconciliationLeaseExpiresAt: { lte: updatedAt } },
+            ],
+          },
+        ],
+      },
+      data: {
+        reconciliationAttemptId,
+        reconciliationLeaseExpiresAt: leaseExpiresAt,
+        reconciliationAttemptCount: { increment: 1 },
+        updatedAt,
+      },
+    });
+    const row = await requiredPrisma().uploadSession.findUnique({
+      where: { id: sessionId },
+    });
+    if (!row) throw new Error("Upload Session not found");
+    return {
+      claimed: updated.count === 1,
+      session: fromPrismaUploadSession(row),
+    };
+  },
+  async releaseReconciliation({
+    sessionId,
+    reconciliationAttemptId,
+    updatedAt,
+  }) {
+    const updated = await requiredPrisma().uploadSession.updateMany({
+      where: { id: sessionId, reconciliationAttemptId },
+      data: {
+        reconcileAt: null,
+        reconciliationAttemptId: null,
+        reconciliationLeaseExpiresAt: null,
+        updatedAt,
+      },
+    });
+    const row = await requiredPrisma().uploadSession.findUnique({
+      where: { id: sessionId },
+    });
+    if (!row) throw new Error("Upload Session not found");
+    if (updated.count !== 1) {
+      throw new UploadSessionReconciliationClaimLostError();
+    }
+    return fromPrismaUploadSession(row);
+  },
+  async beginCompensation({
+    sessionId,
+    reconciliationAttemptId,
+    failureCode,
+    updatedAt,
+  }) {
+    const updated = await requiredPrisma().uploadSession.updateMany({
+      where: {
+        id: sessionId,
+        status: {
+          in: ["initiating", "uploading", "finalizing", "reconciling"],
+        },
+        reconciliationAttemptId,
+      },
+      data: { status: "compensating", failureCode, updatedAt },
+    });
+    const row = await requiredPrisma().uploadSession.findUnique({
+      where: { id: sessionId },
+    });
+    if (!row) throw new Error("Upload Session not found");
+    if (updated.count !== 1) {
+      throw new UploadSessionReconciliationClaimLostError();
+    }
+    return fromPrismaUploadSession(row);
+  },
+  async settleTerminal({
+    sessionId,
+    reconciliationAttemptId,
+    status,
+    failureCode,
+    updatedAt,
+  }) {
+    const updated = await requiredPrisma().uploadSession.updateMany({
+      where: { id: sessionId, status: "compensating", reconciliationAttemptId },
+      data: {
+        status,
+        failureCode,
+        reconcileAt: null,
+        cleanupRetryAt: null,
+        reconciliationAttemptId: null,
+        reconciliationLeaseExpiresAt: null,
+        updatedAt,
+      },
+    });
+    const row = await requiredPrisma().uploadSession.findUnique({
+      where: { id: sessionId },
+    });
+    if (!row) throw new Error("Upload Session not found");
+    if (updated.count !== 1) {
+      throw new UploadSessionReconciliationClaimLostError();
+    }
+    return fromPrismaUploadSession(row);
+  },
+  async deferReconciliation({
+    sessionId,
+    reconciliationAttemptId,
+    failureCode,
+    reconcileAt,
+    updatedAt,
+  }) {
+    const updated = await requiredPrisma().uploadSession.updateMany({
+      where: { id: sessionId, reconciliationAttemptId },
+      data: {
+        failureCode,
+        reconcileAt,
+        reconciliationAttemptId: null,
+        reconciliationLeaseExpiresAt: null,
+        updatedAt,
+      },
+    });
+    const row = await requiredPrisma().uploadSession.findUnique({
+      where: { id: sessionId },
+    });
+    if (!row) throw new Error("Upload Session not found");
+    if (updated.count !== 1) {
+      throw new UploadSessionReconciliationClaimLostError();
+    }
+    return fromPrismaUploadSession(row);
+  },
 };
 
 function isMissingMultipartUpload(error: unknown) {
@@ -1794,6 +2839,30 @@ function isMissingMultipartUpload(error: unknown) {
   return [candidate.name, candidate.code, candidate.Code].some(
     (value) => value === "NoSuchUpload" || value === "NotFound",
   );
+}
+
+function permanentMultipartCompletionFailure(error: unknown) {
+  if (typeof error !== "object" || error === null) return null;
+  const candidate = error as {
+    name?: unknown;
+    code?: unknown;
+    Code?: unknown;
+    $metadata?: { httpStatusCode?: unknown };
+  };
+  const identity = [candidate.name, candidate.code, candidate.Code]
+    .filter((value): value is string => typeof value === "string")
+    .join(" ");
+  const status = candidate.$metadata?.httpStatusCode;
+  if (/invalidpart|invalidpartorder|entitytoosmall/i.test(identity)) {
+    return "multipart_completion_invalid_parts";
+  }
+  if (/nosuchbucket/i.test(identity)) {
+    return "multipart_completion_bucket_missing";
+  }
+  if (status === 403 || /accessdenied|forbidden/i.test(identity)) {
+    return "multipart_completion_access_denied";
+  }
+  return null;
 }
 
 const r2UploadSessionStorage: UploadSessionStorage = {
@@ -1962,13 +3031,13 @@ const productionUploadSessionModule = createUploadSessionModule({
   now: () => new Date(),
   createId: randomUUID,
   diagnose(event) {
+    const { sessionId, ...diagnostic } = event;
     console.warn(
       JSON.stringify({
         level: event.disposition === "failed" ? "warn" : "info",
         message: "upload_session_transition",
-        uploadSessionId: event.sessionId,
-        phase: event.phase,
-        disposition: event.disposition,
+        uploadSessionId: sessionId,
+        ...diagnostic,
       }),
     );
   },
@@ -2049,6 +3118,33 @@ export class UploadSessionService {
       }),
     );
     return result;
+  }
+
+  async grant(
+    actorUserId: string,
+    input: ValidatedGrantUploadPartsInput,
+    workspaceId?: string,
+  ) {
+    const parsed = grantUploadPartsSchema.parse(input);
+    const ownership = await workspaceService.resolveLegacyOwnership(
+      actorUserId,
+      workspaceId,
+    );
+    await workspaceService.requireActor(
+      actorUserId,
+      ownership.workspaceId,
+      "processing.consume",
+    );
+    return productionUploadSessionModule.grant({
+      actorUserId,
+      workspaceId: ownership.workspaceId,
+      sessionId: parsed.sessionId,
+      partNumbers: parsed.partNumbers,
+    });
+  }
+
+  async reconcileDueSessions() {
+    return productionUploadSessionModule.reconcileDueSessions();
   }
 }
 

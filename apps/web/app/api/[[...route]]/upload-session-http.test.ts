@@ -82,6 +82,15 @@ function dependencies(
         projectId: PROJECT_ID,
         queuedJobId: JOB_ID,
       }),
+      grant: async (_actorUserId, input) => ({
+        outcome: "granted",
+        sessionId: input.sessionId,
+        expiresAt: "2026-08-27T00:15:00.000Z",
+        grants: input.partNumbers.map((partNumber) => ({
+          partNumber,
+          url: `https://storage.test/part/${partNumber}`,
+        })),
+      }),
     },
     ...overrides,
   };
@@ -271,5 +280,106 @@ describe("Upload Session HTTP routes", () => {
     });
     expect(limitedResponse.status).toBe(429);
     expect(limitedResponse.headers.get("retry-after")).toBe("60");
+  });
+
+  test("validates a bounded grant request and passes only session intent", async () => {
+    const calls: unknown[][] = [];
+    const base = dependencies();
+    const app = createUploadSessionHttpRoutes(
+      dependencies({
+        service: {
+          ...base.service,
+          grant: async (...args: unknown[]) => {
+            calls.push(args);
+            return {
+              outcome: "granted" as const,
+              sessionId: SESSION_ID,
+              expiresAt: "2026-08-27T00:15:00.000Z",
+              grants: [{ partNumber: 17, url: "https://storage.test/part/17" }],
+            };
+          },
+        },
+      }),
+    );
+
+    const response = await app.request("/upload-sessions/grants", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: SESSION_ID, partNumbers: [17] }),
+    });
+
+    expect(response.status).toBe(200);
+    expect(calls).toEqual([
+      [
+        ACTOR_USER_ID,
+        { sessionId: SESSION_ID, partNumbers: [17] },
+        WORKSPACE_ID,
+      ],
+    ]);
+    const oversized = await app.request("/upload-sessions/grants", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        sessionId: SESSION_ID,
+        partNumbers: Array.from({ length: 17 }, (_, index) => index + 1),
+      }),
+    });
+    expect(oversized.status).toBe(400);
+  });
+
+  test("maps reconciliation to HTTP 202 with retry guidance", async () => {
+    const base = dependencies();
+    const app = createUploadSessionHttpRoutes(
+      dependencies({
+        service: {
+          ...base.service,
+          finalize: async () => ({
+            outcome: "reconciling",
+            sessionId: SESSION_ID,
+            retryAfterSeconds: 5,
+          }),
+        },
+      }),
+    );
+
+    const response = await app.request("/upload-sessions/finalize", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ sessionId: SESSION_ID, parts: [] }),
+    });
+
+    expect(response.status).toBe(202);
+    expect(response.headers.get("retry-after")).toBe("5");
+    expect(await response.json()).toEqual({
+      outcome: "reconciling",
+      sessionId: SESSION_ID,
+      retryAfterSeconds: 5,
+    });
+  });
+
+  test("maps a replayed open session that is reconciling to HTTP 202", async () => {
+    const base = dependencies();
+    const app = createUploadSessionHttpRoutes(
+      dependencies({
+        service: {
+          ...base.service,
+          open: async () => ({
+            outcome: "reconciling",
+            sessionId: SESSION_ID,
+            projectId: PROJECT_ID,
+            retryAfterSeconds: 7,
+          }),
+        },
+      }),
+    );
+
+    const response = await app.request("/upload-sessions/open", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(OPEN_PAYLOAD),
+    });
+
+    expect(response.status).toBe(202);
+    expect(response.headers.get("retry-after")).toBe("7");
   });
 });

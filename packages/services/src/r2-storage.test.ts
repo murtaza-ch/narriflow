@@ -7,6 +7,7 @@ import {
   abortMultipartUpload,
   buildAttachmentContentDisposition,
   classifyR2StorageError,
+  collectUploadedParts,
   collectExactKeyMultipartUploads,
   createMultipartUpload,
   deleteObject,
@@ -86,6 +87,33 @@ test("R2 exact-key recovery follows every provider inventory page", async () => 
   expect(uploads.map((upload) => upload.uploadId)).toEqual([
     "opaque/first",
     "opaque/second",
+  ]);
+});
+
+test("R2 multipart resume follows pagination and preserves malformed provider facts", async () => {
+  const markers: Array<string | undefined> = [];
+  const parts = await collectUploadedParts(async ({ partNumberMarker }) => {
+    markers.push(partNumberMarker);
+    return markers.length === 1
+      ? {
+          Parts: [{ PartNumber: 1, ETag: "etag-1" }],
+          IsTruncated: true,
+          NextPartNumberMarker: "1",
+        }
+      : {
+          Parts: [
+            { PartNumber: 2, ETag: "etag-2" },
+            { PartNumber: 0, ETag: "" },
+          ],
+          IsTruncated: false,
+        };
+  });
+
+  expect(markers).toEqual([undefined, "1"]);
+  expect(parts).toEqual([
+    { partNumber: 1, etag: "etag-1" },
+    { partNumber: 2, etag: "etag-2" },
+    { partNumber: 0, etag: "" },
   ]);
 });
 

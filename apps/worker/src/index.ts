@@ -1,6 +1,7 @@
 import { createServer } from "node:http";
 import {
   billingService,
+  assertUploadProviderLifecyclePrerequisite,
   getWorkflowRunLifecycle,
   projectService,
   projectRetentionService,
@@ -8,6 +9,7 @@ import {
   purgeOldWebhookDeliveryLogs,
   purgeOldWorkflowEvents,
   socialService,
+  uploadSessionService,
   WorkflowAttemptLost,
   workflowAttemptRef,
   runProtocolV1Compatibility,
@@ -34,6 +36,7 @@ import {
 } from "./notifications";
 
 const port = Number(process.env.PORT || 0);
+assertUploadProviderLifecyclePrerequisite(process.env);
 const pollIntervalMs = Number(process.env.INGEST_POLL_INTERVAL_MS ?? "2500");
 // Rendering is CPU-bound and can run for minutes (ffmpeg saturates all cores
 // per clip already — measured intra-machine clip parallelism buys nothing: 4
@@ -91,9 +94,7 @@ let lastReapAt = 0;
 let lastSeatReconcileAt = 0;
 
 /** Periodically fails workflow runs orphaned by a crashed/evicted worker.
- *  Called only from the ingest loop (rate-limited internally via lastReapAt),
- *  so it runs on a steady cadence regardless of what the other loops are
- *  doing. */
+ * The independent maintenance loop rate-limits this sweep via lastReapAt. */
 async function reapStalledRunsIfDue() {
   const now = Date.now();
   if (now - lastReapAt < reapIntervalMs) return;
@@ -412,6 +413,14 @@ const maintenanceLoop = createPollLoop("maintenance", async () => {
   return 0;
 });
 
+const uploadSessionMaintenanceLoop = createPollLoop(
+  "upload_session_maintenance",
+  async () => {
+    const uploads = await uploadSessionService.reconcileDueSessions();
+    return uploads.claimed;
+  },
+);
+
 const workflowLeaseLoop = createPollLoop("workflow_lease", async () => {
   const reaped = await getWorkflowRunLifecycle().reapExpiredAttempts();
   if (reaped > 0) {
@@ -536,6 +545,7 @@ const notificationRetryLoop = createPollLoop("notification_retry", async () => {
 
 const allLoops: Array<{ loop: PollLoop; intervalMs: number }> = [
   { loop: maintenanceLoop, intervalMs: 60 * 1000 },
+  { loop: uploadSessionMaintenanceLoop, intervalMs: 30 * 1000 },
   { loop: workflowLeaseLoop, intervalMs: workflowLeaseReapIntervalMs },
   { loop: workflowEventLoop, intervalMs: workflowEventDispatchIntervalMs },
   { loop: ingestLoop, intervalMs: pollIntervalMs },
@@ -598,6 +608,7 @@ for (const { loop, intervalMs } of allLoops) {
 }
 
 void maintenanceLoop.tick();
+void uploadSessionMaintenanceLoop.tick();
 void ingestLoop.tick();
 void sttLoop.tick();
 void renderLoop.tick();

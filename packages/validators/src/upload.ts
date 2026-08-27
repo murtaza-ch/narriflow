@@ -58,8 +58,30 @@ export const finalizeUploadSessionSchema = z
   })
   .strict();
 
+export const uploadCompletionIntentSchema = z
+  .object({
+    version: z.literal(1),
+    parts: finalizeUploadSessionSchema.shape.parts,
+  })
+  .strict();
+
+export const grantUploadPartsSchema = z
+  .object({
+    sessionId: z.string().uuid(),
+    partNumbers: z.array(z.number().int().positive()).min(1).max(16),
+  })
+  .strict()
+  .refine((value) => new Set(value.partNumbers).size === value.partNumbers.length, {
+    message: "Part numbers must be unique",
+    path: ["partNumbers"],
+  });
+
 export type UploadMimeType = z.infer<typeof uploadMimeTypeSchema>;
 export type OpenUploadSessionInput = z.infer<typeof openUploadSessionSchema>;
 export type FinalizeUploadSessionInput = z.infer<
   typeof finalizeUploadSessionSchema
 >;
+export type UploadCompletionIntent = z.infer<
+  typeof uploadCompletionIntentSchema
+>;
+export type GrantUploadPartsInput = z.infer<typeof grantUploadPartsSchema>;

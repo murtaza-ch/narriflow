@@ -337,25 +337,39 @@ export async function listUploadedParts(params: {
   const client = getClient();
   const { bucket } = getR2Config();
 
-  const parts: Array<{ partNumber: number; etag: string }> = [];
-  let partNumberMarker: string | undefined;
-  let hasMoreParts = true;
-  while (hasMoreParts) {
-    const response = await client.send(
+  return collectUploadedParts(async ({ partNumberMarker }) =>
+    client.send(
       new ListPartsCommand({
         Bucket: bucket,
         Key: params.key,
         UploadId: params.uploadId,
         PartNumberMarker: partNumberMarker,
       }),
-    );
+    ),
+  );
+}
+
+interface MultipartPartInventoryPage {
+  Parts?: Array<{ PartNumber?: number; ETag?: string }>;
+  IsTruncated?: boolean;
+  NextPartNumberMarker?: string;
+}
+
+export async function collectUploadedParts(
+  fetchPage: (markers: {
+    partNumberMarker?: string;
+  }) => Promise<MultipartPartInventoryPage>,
+) {
+  const parts: Array<{ partNumber: number; etag: string }> = [];
+  let partNumberMarker: string | undefined;
+  let hasMoreParts = true;
+  while (hasMoreParts) {
+    const response = await fetchPage({ partNumberMarker });
     parts.push(
-      ...(response.Parts ?? [])
-        .map((part) => ({
-          partNumber: part.PartNumber ?? 0,
-          etag: part.ETag ?? "",
-        }))
-        .filter((part) => part.partNumber > 0 && part.etag),
+      ...(response.Parts ?? []).map((part) => ({
+        partNumber: part.PartNumber ?? 0,
+        etag: part.ETag ?? "",
+      })),
     );
     hasMoreParts = response.IsTruncated === true;
     if (!hasMoreParts) break;

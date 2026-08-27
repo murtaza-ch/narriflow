@@ -12,6 +12,8 @@ type UploadProgress = {
   percent: number;
   transferredBytes: number;
   totalBytes: number;
+  bytesPerSecond?: number;
+  etaSeconds?: number | null;
 };
 
 interface RunUploadSessionTransferInput {
@@ -25,6 +27,16 @@ interface RunUploadSessionTransferInput {
   signal?: AbortSignal;
   onProgress?: (progress: UploadProgress) => void;
   waitBeforeRetry?: (attempt: number) => Promise<void>;
+  now?: () => number;
+  progressClock?: () => number;
+  random?: () => number;
+  uploadTransport?: (input: {
+    url: string;
+    body: Blob;
+    contentType?: string;
+    signal?: AbortSignal;
+    onProgress(loadedBytes: number): void;
+  }) => Promise<{ etag: string | null }>;
 }
 
 type OpenOutcome =
@@ -32,6 +44,12 @@ type OpenOutcome =
       outcome: "queued_for_ingest";
       sessionId: string;
       projectId: string;
+    }
+  | {
+      outcome: "reconciling";
+      sessionId: string;
+      projectId: string;
+      retryAfterSeconds: number;
     }
   | {
       outcome: "uploading";
@@ -49,6 +67,7 @@ type OpenOutcome =
             partCount: number;
             concurrency: number;
             grants: Array<{ partNumber: number; url: string }>;
+            grantExpiresAt: string;
             completedParts: Array<{ partNumber: number; etag: string }>;
           };
     };
@@ -121,6 +140,19 @@ function parseOpenOutcome(value: unknown): OpenOutcome | null {
       projectId: value.projectId,
     };
   }
+  if (
+    value.outcome === "reconciling" &&
+    typeof value.retryAfterSeconds === "number" &&
+    Number.isInteger(value.retryAfterSeconds) &&
+    value.retryAfterSeconds > 0
+  ) {
+    return {
+      outcome: "reconciling",
+      sessionId: value.sessionId,
+      projectId: value.projectId,
+      retryAfterSeconds: value.retryAfterSeconds,
+    };
+  }
   if (value.outcome !== "uploading" || !isRecord(value.transfer)) return null;
   if (
     value.transfer.kind === "single" &&
@@ -158,6 +190,8 @@ function parseOpenOutcome(value: unknown): OpenOutcome | null {
     !Number.isInteger(concurrency) ||
     concurrency < 1 ||
     concurrency > 16
+    || typeof value.transfer.grantExpiresAt !== "string"
+    || !Number.isFinite(Date.parse(value.transfer.grantExpiresAt))
   ) {
     return null;
   }
@@ -174,6 +208,7 @@ function parseOpenOutcome(value: unknown): OpenOutcome | null {
       partCount,
       concurrency,
       grants: grants as Array<{ partNumber: number; url: string }>,
+      grantExpiresAt: value.transfer.grantExpiresAt,
       completedParts: completed as Array<{ partNumber: number; etag: string }>,
     },
   };
@@ -190,6 +225,68 @@ function responseError(payload: unknown, fallback: string) {
   return new Error(fallback);
 }
 
+class UploadHttpError extends Error {
+  constructor(readonly status: number) {
+    super(`Upload failed with HTTP ${status}`);
+    this.name = "UploadHttpError";
+  }
+}
+
+export function uploadRetryDelayMs(
+  failedAttempt: number,
+  random: () => number = Math.random,
+) {
+  const exponentialMs = 500 * 2 ** Math.max(0, failedAttempt - 1);
+  return Math.round(exponentialMs * (0.5 + random()));
+}
+
+function browserUploadTransport(input: {
+  url: string;
+  body: Blob;
+  contentType?: string;
+  signal?: AbortSignal;
+  onProgress(loadedBytes: number): void;
+}) {
+  return new Promise<{ etag: string | null }>((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    const removeAbortListener = () =>
+      input.signal?.removeEventListener("abort", abortRequest);
+    const settle = (
+      callback: () => void,
+    ) => {
+      removeAbortListener();
+      callback();
+    };
+    const abortRequest = () => request.abort();
+    request.open("PUT", input.url);
+    if (input.contentType) {
+      request.setRequestHeader("Content-Type", input.contentType);
+    }
+    request.upload.addEventListener("progress", (event) => {
+      input.onProgress(event.loaded);
+    });
+    request.addEventListener("load", () => {
+      if (request.status >= 200 && request.status < 300) {
+        settle(() => resolve({ etag: request.getResponseHeader("ETag") }));
+      } else {
+        settle(() => reject(new UploadHttpError(request.status)));
+      }
+    });
+    request.addEventListener("error", () => {
+      settle(() => reject(new TypeError("Upload request failed")));
+    });
+    request.addEventListener("abort", () => {
+      settle(() => reject(new DOMException("Upload paused", "AbortError")));
+    });
+    if (input.signal?.aborted) {
+      request.abort();
+      return;
+    }
+    input.signal?.addEventListener("abort", abortRequest, { once: true });
+    request.send(input.body);
+  });
+}
+
 async function putWithRetry(input: {
   fetcher: typeof fetch;
   url: string;
@@ -197,11 +294,26 @@ async function putWithRetry(input: {
   contentType?: string;
   signal?: AbortSignal;
   waitBeforeRetry: (attempt: number) => Promise<void>;
+  uploadTransport?: RunUploadSessionTransferInput["uploadTransport"];
+  onProgress?: (loadedBytes: number) => void;
+  refreshUrlAfterFailure?: (error: unknown) => Promise<string | null>;
 }) {
   let lastError: unknown;
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
+  let attempt = 1;
+  let currentUrl = input.url;
+  let refreshedAfterFailure = false;
+  while (attempt <= 3) {
     try {
-      const response = await input.fetcher(input.url, {
+      if (input.uploadTransport) {
+        return await input.uploadTransport({
+          url: currentUrl,
+          body: input.body,
+          contentType: input.contentType,
+          signal: input.signal,
+          onProgress: input.onProgress ?? (() => {}),
+        });
+      }
+      const response = await input.fetcher(currentUrl, {
         method: "PUT",
         ...(input.contentType
           ? { headers: { "Content-Type": input.contentType } }
@@ -209,12 +321,32 @@ async function putWithRetry(input: {
         body: input.body,
         signal: input.signal,
       });
-      if (!response.ok) throw new Error(`Upload failed with HTTP ${response.status}`);
-      return response;
+      if (!response.ok) throw new UploadHttpError(response.status);
+      input.onProgress?.(input.body.size);
+      return {
+        etag: response.headers.get("ETag") ?? response.headers.get("etag"),
+      };
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") throw error;
+      if (
+        error instanceof UploadHttpError &&
+        error.status !== 408 &&
+        error.status !== 429 &&
+        error.status < 500
+      ) {
+        throw error;
+      }
       lastError = error;
+      if (!refreshedAfterFailure && input.refreshUrlAfterFailure) {
+        const refreshedUrl = await input.refreshUrlAfterFailure(error);
+        if (refreshedUrl) {
+          currentUrl = refreshedUrl;
+          refreshedAfterFailure = true;
+          continue;
+        }
+      }
       if (attempt < 3) await input.waitBeforeRetry(attempt);
+      attempt += 1;
     }
   }
   throw lastError instanceof Error ? lastError : new Error("Upload failed");
@@ -224,10 +356,14 @@ export async function runUploadSessionTransfer(
   input: RunUploadSessionTransferInput,
 ) {
   const fetcher = input.fetcher ?? fetch;
+  const uploadTransport =
+    input.uploadTransport ?? (input.fetcher ? undefined : browserUploadTransport);
   const waitBeforeRetry =
     input.waitBeforeRetry ??
     ((attempt: number) =>
-      new Promise<void>((resolve) => setTimeout(resolve, attempt * 500)));
+      new Promise<void>((resolve) =>
+        setTimeout(resolve, uploadRetryDelayMs(attempt, input.random)),
+      ));
   const fingerprint = createUploadFileFingerprint(input.file);
   const existing = input.storage
     ? loadUploadResume(input.storage, fingerprint)
@@ -277,6 +413,9 @@ export async function runUploadSessionTransfer(
     if (input.storage) saveUploadResume(input.storage, null);
     return { projectId: opened.projectId };
   }
+  if (opened.outcome === "reconciling") {
+    return opened;
+  }
 
   resume = {
     ...resume,
@@ -285,7 +424,7 @@ export async function runUploadSessionTransfer(
   };
   if (input.storage) saveUploadResume(input.storage, resume);
 
-  const completedParts: Array<{ partNumber: number; etag: string }> = [];
+  let completedParts: Array<{ partNumber: number; etag: string }> = [];
   if (opened.transfer.kind === "single") {
     input.onProgress?.({
       stage: "upload",
@@ -300,6 +439,7 @@ export async function runUploadSessionTransfer(
       contentType: opened.transfer.grant.contentType,
       signal: input.signal,
       waitBeforeRetry,
+      uploadTransport,
     });
     input.onProgress?.({
       stage: "upload",
@@ -309,11 +449,13 @@ export async function runUploadSessionTransfer(
     });
   } else {
     const transfer = opened.transfer;
-    completedParts.push(...transfer.completedParts);
-    const completedNumbers = new Set(
-      completedParts.map((part) => part.partNumber),
+    const completedByPartNumber = new Map(
+      transfer.completedParts.map((part) => [part.partNumber, part.etag]),
     );
-    let transferredBytes = Array.from(completedNumbers).reduce(
+    const completedNumbers = new Set(
+      completedByPartNumber.keys(),
+    );
+    let storedBytes = Array.from(completedNumbers).reduce(
       (total, partNumber) => {
         const start = (partNumber - 1) * transfer.partSizeBytes;
         return (
@@ -327,13 +469,105 @@ export async function runUploadSessionTransfer(
       },
       0,
     );
-    const pending = transfer.grants.filter(
+    const activeBytes = new Map<number, number>();
+    const initialStoredBytes = storedBytes;
+    const progressClock = input.progressClock ?? Date.now;
+    const progressStartedAt = progressClock();
+    const reportProgress = () => {
+      const transferredBytes = Math.min(
+        input.file.size,
+        storedBytes +
+          Array.from(activeBytes.values()).reduce(
+            (total, loadedBytes) => total + loadedBytes,
+            0,
+          ),
+      );
+      const elapsedSeconds = Math.max(
+        0,
+        (progressClock() - progressStartedAt) / 1_000,
+      );
+      const bytesTransferredThisRun = Math.max(
+        0,
+        transferredBytes - initialStoredBytes,
+      );
+      const bytesPerSecond =
+        elapsedSeconds > 0 ? bytesTransferredThisRun / elapsedSeconds : 0;
+      input.onProgress?.({
+        stage: "upload",
+        percent: Math.round((transferredBytes / input.file.size) * 100),
+        transferredBytes,
+        totalBytes: input.file.size,
+        ...(bytesPerSecond > 0
+          ? {
+              bytesPerSecond,
+              etaSeconds: Math.max(
+                0,
+                Math.round(
+                  (input.file.size - transferredBytes) / bytesPerSecond,
+                ),
+              ),
+            }
+          : { etaSeconds: null }),
+      });
+    };
+    reportProgress();
+    let pending = transfer.grants.filter(
       (grant) => !completedNumbers.has(grant.partNumber),
     );
-    let cursor = 0;
-    const worker = async () => {
-      while (cursor < pending.length) {
-        const grant = pending[cursor++]!;
+    let grantExpiresAt = Date.parse(transfer.grantExpiresAt);
+    const requestGrantWindow = async (partNumbers: number[]) => {
+      const grantResponse = await fetcher("/api/upload-sessions/grants", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sessionId: opened.sessionId,
+          partNumbers,
+        }),
+        signal: input.signal,
+      });
+      const grantPayload = await responsePayload(grantResponse);
+      if (!grantResponse.ok) {
+        throw responseError(grantPayload, "Failed to refresh upload grants.");
+      }
+      if (
+        !isRecord(grantPayload) ||
+        grantPayload.outcome !== "granted" ||
+        grantPayload.sessionId !== opened.sessionId ||
+        typeof grantPayload.expiresAt !== "string" ||
+        !Number.isFinite(Date.parse(grantPayload.expiresAt))
+      ) {
+        throw new Error("The upload service returned an invalid grant contract.");
+      }
+      const parsedGrants = parseParts(
+        grantPayload.grants,
+        transfer.partCount,
+        true,
+      );
+      if (
+        !parsedGrants ||
+        parsedGrants.length !== partNumbers.length ||
+        !partNumbers.every((partNumber) =>
+          parsedGrants.some((grant) => grant.partNumber === partNumber),
+        )
+      ) {
+        throw new Error("The upload service returned an invalid grant contract.");
+      }
+      grantExpiresAt = Date.parse(grantPayload.expiresAt);
+      return parsedGrants as Array<{ partNumber: number; url: string }>;
+    };
+    if (
+      pending.length > 0 &&
+      grantExpiresAt - (input.now?.() ?? Date.now()) <= 60_000
+    ) {
+      pending = await requestGrantWindow(
+        pending.map((grant) => grant.partNumber),
+      );
+    }
+    while (completedByPartNumber.size < transfer.partCount) {
+      let cursor = 0;
+      const worker = async () => {
+        while (cursor < pending.length) {
+          const grant = pending[cursor++]!;
         const start = (grant.partNumber - 1) * transfer.partSizeBytes;
         const end = Math.min(
           start + transfer.partSizeBytes,
@@ -346,32 +580,56 @@ export async function runUploadSessionTransfer(
           body: blob,
           signal: input.signal,
           waitBeforeRetry,
+          uploadTransport,
+          onProgress: (loadedBytes) => {
+            activeBytes.set(
+              grant.partNumber,
+              Math.max(0, Math.min(blob.size, loadedBytes)),
+            );
+            reportProgress();
+          },
+          refreshUrlAfterFailure: async (error) => {
+            if (
+              !(error instanceof TypeError) ||
+              grantExpiresAt - (input.now?.() ?? Date.now()) > 60_000
+            ) {
+              return null;
+            }
+            const [freshGrant] = await requestGrantWindow([grant.partNumber]);
+            return freshGrant?.url ?? null;
+          },
         });
-        const etag = response.headers.get("ETag") ?? response.headers.get("etag");
+        const etag = response.etag;
         if (!etag) throw new Error(`Upload part ${grant.partNumber} omitted ETag.`);
-        completedParts.push({
-          partNumber: grant.partNumber,
-          etag: etag.replaceAll('"', ""),
-        });
-        transferredBytes += blob.size;
-        input.onProgress?.({
-          stage: "upload",
-          percent: Math.round((transferredBytes / input.file.size) * 100),
-          transferredBytes,
-          totalBytes: input.file.size,
-        });
-      }
-    };
-    await Promise.all(
-      Array.from(
-        { length: Math.min(transfer.concurrency, pending.length) },
-        () => worker(),
-      ),
-    );
-    completedParts.sort((left, right) => left.partNumber - right.partNumber);
-    if (completedParts.length !== opened.transfer.partCount) {
-      throw new Error("Upload parts are incomplete.");
+          completedByPartNumber.set(grant.partNumber, etag.replaceAll('"', ""));
+          activeBytes.delete(grant.partNumber);
+          storedBytes += blob.size;
+          reportProgress();
+        }
+      };
+      const workerResults = await Promise.allSettled(
+        Array.from(
+          { length: Math.min(transfer.concurrency, pending.length) },
+          () => worker(),
+        ),
+      );
+      const failedWorker = workerResults.find(
+        (result): result is PromiseRejectedResult => result.status === "rejected",
+      );
+      if (failedWorker) throw failedWorker.reason;
+      if (completedByPartNumber.size === transfer.partCount) break;
+      const missingPartNumbers = Array.from(
+        { length: transfer.partCount },
+        (_, index) => index + 1,
+      )
+        .filter((partNumber) => !completedByPartNumber.has(partNumber))
+        .slice(0, 16);
+      pending = await requestGrantWindow(missingPartNumbers);
     }
+    completedParts = Array.from(
+      completedByPartNumber,
+      ([partNumber, etag]) => ({ partNumber, etag }),
+    ).sort((left, right) => left.partNumber - right.partNumber);
   }
 
   input.onProgress?.({
@@ -392,6 +650,21 @@ export async function runUploadSessionTransfer(
   const finalized = await responsePayload(finalizedResponse);
   if (!finalizedResponse.ok) {
     throw responseError(finalized, "Failed to verify upload.");
+  }
+  if (
+    isRecord(finalized) &&
+    finalized.outcome === "reconciling" &&
+    finalized.sessionId === opened.sessionId &&
+    typeof finalized.retryAfterSeconds === "number" &&
+    Number.isInteger(finalized.retryAfterSeconds) &&
+    finalized.retryAfterSeconds > 0
+  ) {
+    return {
+      outcome: "reconciling" as const,
+      projectId: opened.projectId,
+      sessionId: opened.sessionId,
+      retryAfterSeconds: finalized.retryAfterSeconds,
+    };
   }
   if (
     !isRecord(finalized) ||

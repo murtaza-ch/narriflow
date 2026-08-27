@@ -286,6 +286,7 @@ export function UploadShell({
     etaSec: number | null;
   } | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+  const [uploadReconciling, setUploadReconciling] = useState(false);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
   const rssCommitTokenRef = useRef<string | null>(null);
@@ -426,7 +427,8 @@ export function UploadShell({
     (activeTab === "link" && linkUrl.trim().length > 0) ||
     (activeTab === "rss" && rssCommitted);
 
-  const submitDisabled = submitting || !hasSource || !title.trim();
+  const submitDisabled =
+    submitting || uploadReconciling || !hasSource || !title.trim();
 
   // Smart paste detection — provider detection lives in @narriflow/validators (frozen contract).
   const trimmedPaste = pasteValue.trim();
@@ -529,6 +531,8 @@ export function UploadShell({
     }
 
     setSubmitting(true);
+    setUploadReconciling(false);
+    setStatusMessage(null);
     setErrorMessage(null);
     setThroughput(null);
     setProgress(0);
@@ -537,7 +541,6 @@ export function UploadShell({
     abortRef.current = abortController;
 
     try {
-      const uploadStartedAt = performance.now();
       const result = await runUploadSessionTransfer({
         file,
         title: title.trim(),
@@ -552,27 +555,27 @@ export function UploadShell({
           if (update.stage !== "upload") {
             return;
           }
-          const elapsedSec = (performance.now() - uploadStartedAt) / 1000;
-          const bytesPerSec =
-            elapsedSec > 0 ? update.transferredBytes / elapsedSec : 0;
+          const bytesPerSec = update.bytesPerSecond ?? 0;
+          if (bytesPerSec <= 0) {
+            setThroughput(null);
+            return;
+          }
           setThroughput({
             mbps: bytesPerSec / (1024 * 1024),
-            etaSec:
-              bytesPerSec > 0
-                ? Math.max(
-                    0,
-                    Math.round(
-                      (update.totalBytes - update.transferredBytes) /
-                        bytesPerSec,
-                    ),
-                  )
-                : null,
+            etaSec: update.etaSeconds ?? null,
           });
         },
       });
 
-      router.push(`/projects/${result.projectId}`);
-      router.refresh();
+      if ("outcome" in result && result.outcome === "reconciling") {
+        setUploadReconciling(true);
+        setStatusMessage(
+          "Narriflow is verifying your upload. You can leave this page and resume later.",
+        );
+      } else {
+        router.push(`/projects/${result.projectId}`);
+        router.refresh();
+      }
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
         toaster.create({
@@ -1211,14 +1214,16 @@ export function UploadShell({
                   throughput={throughput}
                 />
               )}
-              {submitting && !uploadStage && statusMessage && (
+              {(submitting || uploadReconciling) &&
+                !uploadStage &&
+                statusMessage && (
                 <Flex align="center" gap="2">
                   <Spinner size="xs" />
                   <Text fontSize="12.5px" color="fg.muted">
                     {statusMessage}
                   </Text>
                 </Flex>
-              )}
+                )}
               {errorMessage && <ErrorNotice message={errorMessage} />}
               <HStack gap="2">
                 <Button
@@ -1228,7 +1233,11 @@ export function UploadShell({
                   size="md"
                   flex="1"
                 >
-                  {submitting ? "Working…" : submitLabel}
+                  {uploadReconciling
+                    ? "Verifying…"
+                    : submitting
+                      ? "Working…"
+                      : submitLabel}
                 </Button>
                 {submitting && abortRef.current && (
                   <Button

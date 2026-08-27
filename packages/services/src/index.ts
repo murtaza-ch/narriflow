@@ -90,6 +90,7 @@ export {
 } from "./project.service";
 export {
   createUploadSessionModule,
+  assertUploadProviderLifecyclePrerequisite,
   defaultUploadSessionConfig,
   planUploadTransfer,
   uploadSessionConfigFromEnv,
@@ -101,6 +102,7 @@ export {
   UploadSessionNotFoundError,
   UploadSessionQuotaRefusedError,
   type FinalizeUploadSessionOutcome,
+  type GrantUploadPartsOutcome,
   type OpenUploadSessionOutcome,
   type UploadSessionConfig,
 } from "./upload-session.service";

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import {
   defaultUploadSessionConfig,
   UploadSessionAdmissionClaimLostError,
+  UploadSessionReconciliationClaimLostError,
   UploadSessionStorageProbeError,
   type UploadSessionModuleDependencies,
   type UploadSessionPersistence,
@@ -42,10 +43,14 @@ export function createInMemoryUploadSessionHarness() {
   let objectProbes = 0;
   let singlePuts = 0;
   let exactKeyListings = 0;
+  let multipartPartListings = 0;
   let objectDeletes = 0;
   let failProviderBinding = false;
   let quotaFailure: Error | null = null;
   let providerCreationFailure: Error | null = null;
+  let providerCompletionFailure: { error: Error; afterObjectCreation: boolean } | null =
+    null;
+  let handoffFailure: Error | null = null;
   let nextProviderIdentity: string | null = null;
   let providerAbortFailure: Error | null = null;
   let objectProbeFailure:
@@ -195,7 +200,17 @@ export function createInMemoryUploadSessionHarness() {
         ) ?? null
       );
     },
-    async beginFinalization({ sessionId, parts, updatedAt }) {
+    async renewTransferActivity({ sessionId, expiresAt, updatedAt }) {
+      const session = sessions.find((candidate) => candidate.id === sessionId);
+      if (!session) throw new Error("Upload Session reservation not found");
+      if (session.status !== "uploading") {
+        throw new Error("Upload Session cannot accept transfer activity");
+      }
+      session.expiresAt = expiresAt;
+      session.updatedAt = updatedAt;
+      return session;
+    },
+    async beginFinalization({ sessionId, parts, reconcileAt, updatedAt }) {
       const session = sessions.find((candidate) => candidate.id === sessionId);
       if (!session) throw new Error("Upload Session reservation not found");
       if (session.status !== "uploading") {
@@ -203,6 +218,8 @@ export function createInMemoryUploadSessionHarness() {
       }
       session.status = "finalizing";
       session.completionParts = parts;
+      session.completionIntentMalformed = false;
+      session.reconcileAt = reconcileAt;
       session.updatedAt = updatedAt;
       return { claimed: true, session };
     },
@@ -222,11 +239,23 @@ export function createInMemoryUploadSessionHarness() {
       queuedJobId,
       verifiedSizeBytes,
       verifiedContentType,
+      reconciliationAttemptId,
       updatedAt,
     }) {
       const session = sessions.find((candidate) => candidate.id === sessionId);
       if (!session) throw new Error("Upload Session reservation not found");
       if (session.status === "queued_for_ingest") return session;
+      if (
+        reconciliationAttemptId &&
+        session.reconciliationAttemptId !== reconciliationAttemptId
+      ) {
+        throw new UploadSessionReconciliationClaimLostError();
+      }
+      if (handoffFailure) {
+        const error = handoffFailure;
+        handoffFailure = null;
+        throw error;
+      }
       const generation = session.generation as {
         languageCode: string;
         contentPack: Record<string, unknown>;
@@ -264,6 +293,9 @@ export function createInMemoryUploadSessionHarness() {
       });
       session.status = "queued_for_ingest";
       session.queuedJobId = queuedJobId;
+      session.reconcileAt = null;
+      session.reconciliationAttemptId = null;
+      session.reconciliationLeaseExpiresAt = null;
       session.updatedAt = updatedAt;
       return session;
     },
@@ -272,6 +304,7 @@ export function createInMemoryUploadSessionHarness() {
       admissionAttemptId,
       status,
       failureCode,
+      cleanupRetryAt,
       updatedAt,
     }) {
       const session = sessions.find((candidate) => candidate.id === sessionId);
@@ -284,6 +317,7 @@ export function createInMemoryUploadSessionHarness() {
       }
       session.status = status;
       session.failureCode = failureCode;
+      session.cleanupRetryAt = cleanupRetryAt ?? null;
       session.admissionAttemptId = null;
       session.admissionClaimExpiresAt = null;
       session.updatedAt = updatedAt;
@@ -299,6 +333,158 @@ export function createInMemoryUploadSessionHarness() {
       if (!session) throw new Error("Upload Session reservation not found");
       session.failureCode = failureCode;
       session.cleanupRetryAt = cleanupRetryAt;
+      session.updatedAt = updatedAt;
+      return session;
+    },
+    async markReconciling({
+      sessionId,
+      failureCode,
+      reconcileAt,
+      reconciliationAttemptId,
+      updatedAt,
+    }) {
+      const session = sessions.find((candidate) => candidate.id === sessionId);
+      if (!session) throw new Error("Upload Session reservation not found");
+      if (
+        reconciliationAttemptId &&
+        session.reconciliationAttemptId !== reconciliationAttemptId
+      ) {
+        return session;
+      }
+      if (session.status !== "finalizing" && session.status !== "reconciling") {
+        return session;
+      }
+      session.status = "reconciling";
+      session.failureCode = failureCode;
+      session.reconcileAt = reconcileAt;
+      session.reconciliationAttemptId = null;
+      session.reconciliationLeaseExpiresAt = null;
+      session.updatedAt = updatedAt;
+      return session;
+    },
+    async findDueReconciliation({ now, limit }) {
+      return sessions
+        .filter(
+          (session) =>
+            ((session.status === "initiating" &&
+              !!session.admissionClaimExpiresAt &&
+              session.admissionClaimExpiresAt.getTime() <= now.getTime()) ||
+              (session.status === "uploading" &&
+              session.expiresAt.getTime() <= now.getTime()) ||
+              (["finalizing", "reconciling", "compensating"] as const).includes(
+                session.status as "finalizing" | "reconciling" | "compensating",
+              )) &&
+            (session.status === "uploading" ||
+              !session.reconcileAt ||
+              session.reconcileAt.getTime() <= now.getTime()) &&
+            (!session.reconciliationLeaseExpiresAt ||
+              session.reconciliationLeaseExpiresAt.getTime() <= now.getTime()),
+        )
+        .sort((left, right) => left.updatedAt.getTime() - right.updatedAt.getTime())
+        .slice(0, limit);
+    },
+    async claimReconciliation({
+      sessionId,
+      reconciliationAttemptId,
+      leaseExpiresAt,
+      updatedAt,
+    }) {
+      const session = sessions.find((candidate) => candidate.id === sessionId);
+      if (!session) throw new Error("Upload Session reservation not found");
+      const claimed =
+        ((session.status === "initiating" &&
+          !!session.admissionClaimExpiresAt &&
+          session.admissionClaimExpiresAt.getTime() <= updatedAt.getTime()) ||
+          (session.status === "uploading" &&
+          session.expiresAt.getTime() <= updatedAt.getTime()) ||
+          ["finalizing", "reconciling", "compensating"].includes(
+            session.status,
+          )) &&
+        (session.status === "uploading" || !session.reconcileAt ||
+          session.reconcileAt.getTime() <= updatedAt.getTime()) &&
+        (!session.reconciliationLeaseExpiresAt ||
+          session.reconciliationLeaseExpiresAt.getTime() <= updatedAt.getTime());
+      if (claimed) {
+        session.reconciliationAttemptId = reconciliationAttemptId;
+        session.reconciliationLeaseExpiresAt = leaseExpiresAt;
+        session.reconciliationAttemptCount += 1;
+        session.updatedAt = updatedAt;
+      }
+      return { claimed, session };
+    },
+    async releaseReconciliation({
+      sessionId,
+      reconciliationAttemptId,
+      updatedAt,
+    }) {
+      const session = sessions.find((candidate) => candidate.id === sessionId);
+      if (!session) throw new Error("Upload Session reservation not found");
+      if (session.reconciliationAttemptId !== reconciliationAttemptId) {
+        throw new UploadSessionReconciliationClaimLostError();
+      }
+      session.reconciliationAttemptId = null;
+      session.reconciliationLeaseExpiresAt = null;
+      session.reconcileAt = null;
+      session.updatedAt = updatedAt;
+      return session;
+    },
+    async beginCompensation({
+      sessionId,
+      reconciliationAttemptId,
+      failureCode,
+      updatedAt,
+    }) {
+      const session = sessions.find((candidate) => candidate.id === sessionId);
+      if (!session) throw new Error("Upload Session reservation not found");
+      if (
+        session.reconciliationAttemptId !== reconciliationAttemptId ||
+        !["initiating", "uploading", "finalizing", "reconciling"].includes(
+          session.status,
+        )
+      ) {
+        throw new UploadSessionReconciliationClaimLostError();
+      }
+      session.status = "compensating";
+      session.failureCode = failureCode;
+      session.updatedAt = updatedAt;
+      return session;
+    },
+    async settleTerminal({
+      sessionId,
+      reconciliationAttemptId,
+      status,
+      failureCode,
+      updatedAt,
+    }) {
+      const session = sessions.find((candidate) => candidate.id === sessionId);
+      if (!session) throw new Error("Upload Session reservation not found");
+      if (session.reconciliationAttemptId !== reconciliationAttemptId) {
+        throw new UploadSessionReconciliationClaimLostError();
+      }
+      session.status = status;
+      session.failureCode = failureCode;
+      session.reconcileAt = null;
+      session.reconciliationAttemptId = null;
+      session.reconciliationLeaseExpiresAt = null;
+      session.updatedAt = updatedAt;
+      return session;
+    },
+    async deferReconciliation({
+      sessionId,
+      reconciliationAttemptId,
+      failureCode,
+      reconcileAt,
+      updatedAt,
+    }) {
+      const session = sessions.find((candidate) => candidate.id === sessionId);
+      if (!session) throw new Error("Upload Session reservation not found");
+      if (session.reconciliationAttemptId !== reconciliationAttemptId) {
+        throw new UploadSessionReconciliationClaimLostError();
+      }
+      session.failureCode = failureCode;
+      session.reconcileAt = reconcileAt;
+      session.reconciliationAttemptId = null;
+      session.reconciliationLeaseExpiresAt = null;
       session.updatedAt = updatedAt;
       return session;
     },
@@ -345,12 +531,20 @@ export function createInMemoryUploadSessionHarness() {
         throw new Error("InvalidPart");
       }
       providerCompletions += 1;
-      exactObjects.set(storageKey, {
-        sizeBytes: provider.sizeBytes,
-        contentType: provider.contentType,
-      });
+      if (!providerCompletionFailure || providerCompletionFailure.afterObjectCreation) {
+        exactObjects.set(storageKey, {
+          sizeBytes: provider.sizeBytes,
+          contentType: provider.contentType,
+        });
+      }
+      if (providerCompletionFailure) {
+        const failure = providerCompletionFailure.error;
+        providerCompletionFailure = null;
+        throw failure;
+      }
     },
     async listMultipartParts({ storageKey, providerUploadId }) {
+      multipartPartListings += 1;
       const provider = providerUploads.get(providerUploadId);
       if (!provider || provider.storageKey !== storageKey) {
         throw new Error("NoSuchUpload");
@@ -425,6 +619,7 @@ export function createInMemoryUploadSessionHarness() {
       },
       now: () => new Date("2026-08-27T00:00:00.000Z"),
       createId: randomUUID,
+      random: () => 0.5,
     } satisfies UploadSessionModuleDependencies,
     facts: {
       sessions,
@@ -449,6 +644,9 @@ export function createInMemoryUploadSessionHarness() {
       },
       get exactKeyListings() {
         return exactKeyListings;
+      },
+      get multipartPartListings() {
+        return multipartPartListings;
       },
       get objectDeletes() {
         return objectDeletes;
@@ -489,6 +687,12 @@ export function createInMemoryUploadSessionHarness() {
     },
     failNextProviderCreation(error: Error) {
       providerCreationFailure = error;
+    },
+    failNextProviderCompletion(error: Error, afterObjectCreation = false) {
+      providerCompletionFailure = { error, afterObjectCreation };
+    },
+    failNextHandoff(error: Error) {
+      handoffFailure = error;
     },
     returnNextProviderIdentity(providerUploadId: string) {
       nextProviderIdentity = providerUploadId;
