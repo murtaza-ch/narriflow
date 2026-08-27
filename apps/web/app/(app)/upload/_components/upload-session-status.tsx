@@ -116,8 +116,8 @@ export function UploadSessionStatusPanel({
     <Box
       ref={statusRef}
       tabIndex={-1}
-      role={snapshot.phase === "failed" ? "alert" : "status"}
-      aria-atomic="true"
+      role={snapshot.phase === "failed" ? "alert" : undefined}
+      aria-atomic={snapshot.phase === "failed" ? "true" : undefined}
       borderTopWidth="1px"
       borderBottomWidth="1px"
       borderColor="border"

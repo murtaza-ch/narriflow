@@ -404,7 +404,10 @@ export interface UploadSessionModuleDependencies {
   now(): Date;
   createId(): string;
   random?(): number;
-  diagnose?(event: {
+  diagnose?(event: UploadSessionDiagnosticEvent): void;
+}
+
+export interface UploadSessionDiagnosticEvent {
     phase:
       | "reservation"
       | "provider_creation"
@@ -423,7 +426,18 @@ export interface UploadSessionModuleDependencies {
     nextRetryAt?: string;
     takeover?: boolean;
     replay?: boolean;
-  }): void;
+}
+
+export function uploadSessionDiagnosticRecord(
+  event: UploadSessionDiagnosticEvent,
+) {
+  const { sessionId, ...diagnostic } = event;
+  return {
+    level: event.disposition === "failed" ? "warn" : "info",
+    message: "upload_session_transition",
+    uploadSessionId: sessionId,
+    ...diagnostic,
+  } as const;
 }
 
 export interface OpenUploadSessionInput {
@@ -506,7 +520,7 @@ export type ReadUploadSessionOutcome =
       sessionId: string;
       state: "aborted" | "expired" | "failed";
       failureCode: string | null;
-      freshUploadAllowed: true;
+      freshUploadAllowed: boolean;
     };
 
 export interface FinalizeUploadSessionInput {
@@ -1775,7 +1789,7 @@ export function createUploadSessionModule(
     async status(
       input: ReadUploadSessionInput,
     ): Promise<ReadUploadSessionOutcome> {
-      const session = await dependencies.persistence.findByClientKey({
+      let session = await dependencies.persistence.findByClientKey({
         workspaceId: input.workspaceId,
         clientIdempotencyKey: input.clientIdempotencyKey,
       });
@@ -1795,7 +1809,11 @@ export function createUploadSessionModule(
           queuedJobId: session.queuedJobId,
         };
       }
-      if (session.status === "finalizing" || session.status === "reconciling") {
+      if (
+        session.status === "finalizing" ||
+        session.status === "reconciling" ||
+        session.status === "compensating"
+      ) {
         return {
           outcome: "reconciling",
           sessionId: session.id,
@@ -1822,10 +1840,41 @@ export function createUploadSessionModule(
             sessionId: session.id,
             state: session.status,
             failureCode: session.failureCode,
-            freshUploadAllowed: true,
+            freshUploadAllowed:
+              session.failureCode !== "upload_cleanup_access_denied",
           };
         }
         throw new UploadSessionInvalidStateError(`Upload Session is ${session.status}.`);
+      }
+      const activityAt = dependencies.now();
+      if (
+        session.expiresAt.getTime() <= activityAt.getTime() ||
+        session.hardExpiresAt.getTime() <= activityAt.getTime()
+      ) {
+        session = await dependencies.persistence.expireTransfer({
+          sessionId: session.id,
+          expiredAt: activityAt,
+        });
+        if (session.status === "compensating") {
+          return {
+            outcome: "reconciling",
+            sessionId: session.id,
+            projectId: session.preallocatedProjectId,
+            retryAfterSeconds: 1,
+          };
+        }
+        if (session.status === "expired") {
+          return {
+            outcome: "terminal",
+            sessionId: session.id,
+            state: "expired",
+            failureCode: session.failureCode,
+            freshUploadAllowed: true,
+          };
+        }
+        throw new UploadSessionInvalidStateError(
+          `Upload Session is ${session.status}.`,
+        );
       }
       return uploadingOutcome(session);
     },
@@ -3994,15 +4043,7 @@ const productionUploadSessionModule = createUploadSessionModule({
   now: () => new Date(),
   createId: randomUUID,
   diagnose(event) {
-    const { sessionId, ...diagnostic } = event;
-    console.warn(
-      JSON.stringify({
-        level: event.disposition === "failed" ? "warn" : "info",
-        message: "upload_session_transition",
-        uploadSessionId: sessionId,
-        ...diagnostic,
-      }),
-    );
+    console.warn(JSON.stringify(uploadSessionDiagnosticRecord(event)));
   },
 });
 
@@ -4046,6 +4087,17 @@ export class UploadSessionService {
           result.outcome === "uploading" && result.transfer.kind === "multipart"
             ? result.transfer.partCount
             : 1,
+        plannedProviderOperations:
+          result.outcome !== "uploading"
+            ? null
+            : result.transfer.kind === "single"
+              ? { putObject: 1, headObject: 1 }
+              : {
+                  createMultipartUpload: 1,
+                  uploadPart: result.transfer.partCount,
+                  completeMultipartUpload: 1,
+                  headObject: 1,
+                },
         firstGrantLatencyMs: Math.round(performance.now() - startedAt),
         terminalOutcome:
           result.outcome === "queued_for_ingest" ? "queued_for_ingest" : null,
@@ -4084,6 +4136,7 @@ export class UploadSessionService {
         workspaceId: ownership.workspaceId,
         state: result.outcome,
         finalizeDurationMs: Math.round(performance.now() - startedAt),
+        completionPartCount: parsed.parts.length,
         terminalOutcome:
           result.outcome === "queued_for_ingest" ? "queued_for_ingest" : null,
       }),
@@ -4120,6 +4173,8 @@ export class UploadSessionService {
         uploadSessionId: result.sessionId,
         workspaceId: ownership.workspaceId,
         grantedPartCount: result.grants.length,
+        providerOperationClass: "upload_part",
+        plannedProviderCallCount: result.grants.length,
         grantLatencyMs: Math.round(performance.now() - startedAt),
       }),
     );

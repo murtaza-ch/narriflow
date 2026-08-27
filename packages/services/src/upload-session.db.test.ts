@@ -13,6 +13,8 @@ import { Pool } from "pg";
 import {
   createUploadSessionModule,
   defaultUploadSessionConfig,
+  UploadSessionIdempotencyConflictError,
+  UploadSessionInvalidStateError,
   prismaUploadSessionPersistence,
   UploadSessionReconciliationClaimLostError,
   type UploadSessionStorage,
@@ -625,5 +627,289 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
         (session) => !firstBatch.some((claimed) => claimed.id === session.id),
       ),
     ).toBe(true);
+  });
+
+  test("Prisma persists immutable conflicts, lost binds, expiry cleanup, discard fencing, and event replay", async () => {
+    const suffix = randomUUID();
+    const user = await prisma.user.create({
+      data: {
+        clerkId: `upload-session-db-recovery:${suffix}`,
+        primaryEmail: `upload-recovery-${suffix}@example.test`,
+      },
+    });
+    const workspace = await prisma.workspace.create({
+      data: {
+        name: "Upload Session DB recovery",
+        ownerUserId: user.id,
+        personalOwnerUserId: user.id,
+      },
+    });
+    await prisma.uploadSession.updateMany({
+      where: {
+        status: {
+          in: [
+            "initiating",
+            "uploading",
+            "finalizing",
+            "reconciling",
+            "compensating",
+          ],
+        },
+      },
+      data: {
+        status: "failed",
+        failureCode: "prior_test_fixture_settled",
+        admissionAttemptId: null,
+        admissionClaimExpiresAt: null,
+        reconciliationAttemptId: null,
+        reconciliationLeaseExpiresAt: null,
+      },
+    });
+    let now = new Date("2026-08-28T00:00:00.000Z");
+    let providerCreations = 0;
+    const providerAborts: string[] = [];
+    const multipartStorage: UploadSessionStorage = {
+      async grantSinglePut() {
+        throw new Error("single PUT must not be used");
+      },
+      async createMultipart() {
+        providerCreations += 1;
+        return { providerUploadId: `provider-${providerCreations}` };
+      },
+      async grantMultipartParts({ partNumbers }) {
+        return partNumbers.map((partNumber) => ({
+          partNumber,
+          url: `https://upload.invalid/${partNumber}`,
+        }));
+      },
+      async completeMultipart() {},
+      async listMultipartParts() {
+        return [];
+      },
+      async headExactObject() {
+        throw new Error("multipart object must not be probed in this fixture");
+      },
+      async headExactObjectIfExists() {
+        return null;
+      },
+      async listExactKeyMultipartUploads() {
+        return [];
+      },
+      async abortMultipart({ providerUploadId }) {
+        providerAborts.push(providerUploadId);
+      },
+      async deleteExactObject() {},
+    };
+    const dependencies = {
+      config: defaultUploadSessionConfig({ smallFileThresholdBytes: 1 }),
+      persistence: prismaUploadSessionPersistence,
+      storage: multipartStorage,
+      admission: {
+        async assertQuota() {},
+        async resolveBrand() {
+          return null;
+        },
+      },
+      now: () => now,
+      createId: randomUUID,
+    };
+    const module = createUploadSessionModule(dependencies);
+    const immutableInput = {
+      actorUserId: user.id,
+      workspaceId: workspace.id,
+      legacyOwnerUserId: user.id,
+      clientIdempotencyKey: randomUUID(),
+      title: "Immutable",
+      source: {
+        fileName: "immutable.mp4",
+        sizeBytes: 2_048,
+        contentType: "video/mp4",
+        browserFingerprint: '["immutable.mp4",2048,"video/mp4",1]',
+      },
+      brandTemplateId: null,
+      generation: { languageCode: "en", contentPack: CONTENT_PACK },
+    };
+    const immutableOpened = await module.open(immutableInput);
+    await expect(
+      module.open({ ...immutableInput, title: "Changed immutable title" }),
+    ).rejects.toBeInstanceOf(UploadSessionIdempotencyConflictError);
+    expect(
+      await prisma.uploadSession.count({
+        where: { id: immutableOpened.sessionId },
+      }),
+    ).toBe(1);
+
+    const lostBindInput = {
+      ...immutableInput,
+      clientIdempotencyKey: randomUUID(),
+      title: "Lost provider bind response",
+      source: {
+        ...immutableInput.source,
+        fileName: "lost-bind.mp4",
+        browserFingerprint: '["lost-bind.mp4",2048,"video/mp4",2]',
+      },
+    };
+    let loseBindResponse = true;
+    const lostBindModule = createUploadSessionModule({
+      ...dependencies,
+      persistence: {
+        ...prismaUploadSessionPersistence,
+        async bindMultipartProvider(input) {
+          const bound =
+            await prismaUploadSessionPersistence.bindMultipartProvider(input);
+          if (loseBindResponse) {
+            loseBindResponse = false;
+            throw new Error("simulated lost provider bind response");
+          }
+          return bound;
+        },
+      },
+    });
+    await expect(lostBindModule.open(lostBindInput)).rejects.toThrow(
+      "simulated lost provider bind response",
+    );
+    const replayedBind = await module.open(lostBindInput);
+    expect(replayedBind.outcome).toBe("uploading");
+    expect(providerCreations).toBe(2);
+
+    await expect(
+      module.discard({
+        actorUserId: user.id,
+        workspaceId: workspace.id,
+        sessionId: replayedBind.sessionId,
+      }),
+    ).resolves.toEqual({
+      outcome: "discarded",
+      sessionId: replayedBind.sessionId,
+    });
+    expect(
+      await prisma.uploadSession.findUniqueOrThrow({
+        where: { id: replayedBind.sessionId },
+        select: { status: true, failureCode: true },
+      }),
+    ).toEqual({ status: "aborted", failureCode: "user_discarded" });
+
+    const expiringInput = {
+      ...immutableInput,
+      clientIdempotencyKey: randomUUID(),
+      title: "Persisted expiry",
+      source: {
+        ...immutableInput.source,
+        fileName: "persisted-expiry.mp4",
+        browserFingerprint: '["persisted-expiry.mp4",2048,"video/mp4",3]',
+      },
+    };
+    const expiring = await module.open(expiringInput);
+    now = new Date("2026-08-30T00:00:00.000Z");
+    await expect(
+      module.status({
+        actorUserId: user.id,
+        workspaceId: workspace.id,
+        clientIdempotencyKey: expiringInput.clientIdempotencyKey,
+        sessionId: expiring.sessionId,
+        browserFingerprint: expiringInput.source.browserFingerprint,
+      }),
+    ).resolves.toMatchObject({ outcome: "reconciling" });
+    let expiryRecoveryClaimed = 0;
+    let expiryRecoverySettled = 0;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const recovery = await module.reconcileDueSessions();
+      expiryRecoveryClaimed += recovery.claimed;
+      expiryRecoverySettled += recovery.settled;
+      const current = await prisma.uploadSession.findUniqueOrThrow({
+        where: { id: expiring.sessionId },
+        select: { status: true },
+      });
+      if (current.status === "expired") break;
+    }
+    expect(expiryRecoveryClaimed).toBeGreaterThanOrEqual(1);
+    expect(expiryRecoverySettled).toBeGreaterThanOrEqual(1);
+    expect(
+      await prisma.uploadSession.findUniqueOrThrow({
+        where: { id: expiring.sessionId },
+        select: { status: true, failureCode: true },
+      }),
+    ).toEqual({
+      status: "expired",
+      failureCode: "upload_session_expired",
+    });
+
+    let announceHead!: () => void;
+    let releaseHead!: () => void;
+    const headStarted = new Promise<void>((resolve) => {
+      announceHead = resolve;
+    });
+    const headGate = new Promise<void>((resolve) => {
+      releaseHead = resolve;
+    });
+    const directObject = { sizeBytes: 2_048, contentType: "video/mp4" };
+    const raceModule = createUploadSessionModule({
+      ...dependencies,
+      config: defaultUploadSessionConfig(),
+      storage: {
+        ...multipartStorage,
+        async grantSinglePut() {
+          return { url: "https://upload.invalid/direct" };
+        },
+        async headExactObject() {
+          announceHead();
+          await headGate;
+          return directObject;
+        },
+        async headExactObjectIfExists() {
+          return directObject;
+        },
+      },
+    });
+    const raceInput = {
+      ...immutableInput,
+      clientIdempotencyKey: randomUUID(),
+      title: "Finalize discard race",
+      source: {
+        ...immutableInput.source,
+        fileName: "finalize-discard-race.mp4",
+        browserFingerprint: '["finalize-discard-race.mp4",2048,"video/mp4",4]',
+      },
+    };
+    const racing = await raceModule.open(raceInput);
+    const finalization = raceModule.finalize({
+      actorUserId: user.id,
+      workspaceId: workspace.id,
+      sessionId: racing.sessionId,
+      parts: [],
+    });
+    await headStarted;
+    await expect(
+      raceModule.discard({
+        actorUserId: user.id,
+        workspaceId: workspace.id,
+        sessionId: racing.sessionId,
+      }),
+    ).rejects.toBeInstanceOf(UploadSessionInvalidStateError);
+    releaseHead();
+    await expect(finalization).resolves.toMatchObject({
+      outcome: "queued_for_ingest",
+      projectId: racing.projectId,
+    });
+    await expect(
+      raceModule.finalize({
+        actorUserId: user.id,
+        workspaceId: workspace.id,
+        sessionId: racing.sessionId,
+        parts: [],
+      }),
+    ).resolves.toMatchObject({ outcome: "queued_for_ingest" });
+    expect(
+      await prisma.workflowEvent.count({
+        where: { projectId: racing.projectId, seq: 1 },
+      }),
+    ).toBe(1);
+    expect(
+      await prisma.ingestJob.count({
+        where: { uploadSessionId: racing.sessionId },
+      }),
+    ).toBe(1);
+    expect(providerAborts).toContain("provider-2");
+    expect(providerAborts).toContain("provider-3");
   });
 });

@@ -94,6 +94,6 @@ export function formatTransferRate(bytesPerSecond: number): string {
     ? Math.max(0, bytesPerSecond)
     : 0;
   const mebibytes = safeRate / (1024 * 1024);
-  if (mebibytes >= 1) return `${mebibytes.toFixed(1)} MB/s`;
-  return `${Math.round(safeRate / 1024)} KB/s`;
+  if (mebibytes >= 1) return `${mebibytes.toFixed(1)} MiB/s`;
+  return `${Math.round(safeRate / 1024)} KiB/s`;
 }

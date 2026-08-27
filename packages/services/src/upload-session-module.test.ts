@@ -12,6 +12,7 @@ import {
   UploadSessionQuotaRefusedError,
   UploadSessionReconciliationClaimLostError,
   uploadSessionConfigFromEnv,
+  uploadSessionDiagnosticRecord,
 } from "./upload-session.service";
 
 const ACTOR = {
@@ -44,6 +45,50 @@ const CONTENT_PACK = {
 } as const;
 
 describe("Upload Session", () => {
+  test("serializes diagnostics through a secret-free allowlist", () => {
+    const record = uploadSessionDiagnosticRecord({
+      phase: "reconciliation",
+      disposition: "failed",
+      sessionId: "session-safe-id",
+      state: "compensating",
+      providerOperation: "abort",
+      failureCode: "upload_cleanup_access_denied",
+      declaredAbandonedBytes: 2_048,
+      durationMs: 12,
+      nextRetryAt: "2026-08-28T00:00:05.000Z",
+      takeover: true,
+      replay: false,
+    });
+
+    expect(Object.keys(record).sort()).toEqual([
+      "declaredAbandonedBytes",
+      "disposition",
+      "durationMs",
+      "failureCode",
+      "level",
+      "message",
+      "nextRetryAt",
+      "phase",
+      "providerOperation",
+      "replay",
+      "state",
+      "takeover",
+      "uploadSessionId",
+    ]);
+    const serialized = JSON.stringify(record);
+    for (const forbidden of [
+      "signedUrl",
+      "providerUploadId",
+      "storageKey",
+      "etag",
+      "fileName",
+      "credentials",
+      "rawError",
+    ]) {
+      expect(serialized).not.toContain(forbidden);
+    }
+  });
+
   test("requires a confirmed provider lifecycle beyond the application hard lifetime", () => {
     expect(() =>
       assertUploadProviderLifecyclePrerequisite({ NODE_ENV: "production" }),
@@ -2723,6 +2768,61 @@ describe("Upload Session", () => {
       status: "compensating",
       failureCode: "user_discarded",
     });
+    await expect(
+      module.status({
+        actorUserId: ACTOR.actorUserId,
+        workspaceId: ACTOR.workspaceId,
+        clientIdempotencyKey: "96969696-9696-4696-8696-969696969691",
+        sessionId: opened.sessionId,
+        browserFingerprint: '["delayed-discard.mp4",2048,"video/mp4",10]',
+      }),
+    ).resolves.toMatchObject({
+      outcome: "reconciling",
+      sessionId: opened.sessionId,
+      projectId: opened.projectId,
+    });
+  });
+
+  test("turns an idle-expired status read into a pollable cleanup decision", async () => {
+    const harness = createInMemoryUploadSessionHarness();
+    let now = new Date("2026-08-27T00:00:00.000Z");
+    const module = createUploadSessionModule({
+      ...harness.adapters,
+      now: () => now,
+    });
+    const browserFingerprint = '["expired-status.mp4",2048,"video/mp4",12]';
+    const opened = await module.open({
+      ...ACTOR,
+      clientIdempotencyKey: "98989898-9898-4898-8898-989898989893",
+      title: "Expired status",
+      source: {
+        fileName: "expired-status.mp4",
+        sizeBytes: 2_048,
+        contentType: "video/mp4",
+        browserFingerprint,
+      },
+      brandTemplateId: null,
+      generation: { languageCode: "en", contentPack: CONTENT_PACK },
+    });
+    now = new Date("2026-08-29T01:00:00.000Z");
+
+    await expect(
+      module.status({
+        actorUserId: ACTOR.actorUserId,
+        workspaceId: ACTOR.workspaceId,
+        clientIdempotencyKey: "98989898-9898-4898-8898-989898989893",
+        sessionId: opened.sessionId,
+        browserFingerprint,
+      }),
+    ).resolves.toMatchObject({
+      outcome: "reconciling",
+      sessionId: opened.sessionId,
+      projectId: opened.projectId,
+    });
+    expect(harness.facts.sessions[0]).toMatchObject({
+      status: "compensating",
+      failureCode: "upload_session_expired",
+    });
   });
 
   test("finalization intent fences a racing Discard", async () => {
@@ -2821,6 +2921,44 @@ describe("Upload Session", () => {
       state: "expired",
       failureCode: "upload_session_expired",
       freshUploadAllowed: true,
+    });
+  });
+
+  test("does not allow a fresh upload when cleanup was denied", async () => {
+    const harness = createInMemoryUploadSessionHarness();
+    const module = createUploadSessionModule(harness.adapters);
+    const browserFingerprint = '["unsafe-terminal.mp4",2048,"video/mp4",13]';
+    const opened = await module.open({
+      ...ACTOR,
+      clientIdempotencyKey: "99999999-9999-4999-8999-999999999994",
+      title: "Unsafe terminal",
+      source: {
+        fileName: "unsafe-terminal.mp4",
+        sizeBytes: 2_048,
+        contentType: "video/mp4",
+        browserFingerprint,
+      },
+      brandTemplateId: null,
+      generation: { languageCode: "en", contentPack: CONTENT_PACK },
+    });
+    const session = harness.facts.sessions[0]!;
+    session.status = "failed";
+    session.failureCode = "upload_cleanup_access_denied";
+
+    await expect(
+      module.status({
+        actorUserId: ACTOR.actorUserId,
+        workspaceId: ACTOR.workspaceId,
+        clientIdempotencyKey: "99999999-9999-4999-8999-999999999994",
+        sessionId: opened.sessionId,
+        browserFingerprint,
+      }),
+    ).resolves.toEqual({
+      outcome: "terminal",
+      sessionId: opened.sessionId,
+      state: "failed",
+      failureCode: "upload_cleanup_access_denied",
+      freshUploadAllowed: false,
     });
   });
 });

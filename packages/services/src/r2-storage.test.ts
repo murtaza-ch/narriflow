@@ -412,11 +412,31 @@ r2ContractTest(
         }),
       );
 
-      expect(await listUploadedParts({ key: multipartKey, uploadId: created.uploadId }))
+      expect(await listUploadedParts({
+        key: multipartKey,
+        uploadId: created.uploadId,
+        pageSize: 1,
+      }))
         .toEqual(uploadedParts.map((part) => ({
           ...part,
           etag: part.etag,
         })));
+      await expect(
+        completeMultipartUpload({
+          key: multipartKey,
+          uploadId: created.uploadId,
+          etags: uploadedParts.map((part) =>
+            part.partNumber === 2 ? { ...part, etag: "invalid-etag" } : part,
+          ),
+        }),
+      ).rejects.toBeDefined();
+      expect(
+        await listUploadedParts({
+          key: multipartKey,
+          uploadId: created.uploadId,
+          pageSize: 1,
+        }),
+      ).toHaveLength(2);
       await completeMultipartUpload({
         key: multipartKey,
         uploadId: created.uploadId,
@@ -474,10 +494,18 @@ r2ContractTest(
       await new Promise<void>((resolve) => setTimeout(resolve, 2_100));
       const expired = await fetch(directUrl, {
         method: "PUT",
-        headers: { "Content-Type": "audio/wav" },
+        headers: {
+          Origin: "http://localhost:3000",
+          "Content-Type": "audio/wav",
+        },
         body: "expired",
       });
       expect(expired.ok).toBe(false);
+      // R2's expired-signature response does not carry the bucket CORS header,
+      // so browsers surface it as an opaque network failure. The browser
+      // adapter must treat that as refresh/resume input, never parse provider
+      // error detail.
+      expect(expired.headers.get("access-control-allow-origin")).toBeNull();
     } finally {
       await Promise.allSettled([
         abortMultipartUpload({

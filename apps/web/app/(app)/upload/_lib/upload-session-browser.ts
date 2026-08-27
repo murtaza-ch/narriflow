@@ -68,6 +68,7 @@ export interface UploadSessionBrowserAdapter {
   discard(): Promise<void>;
   startFresh(): Promise<void>;
   shouldConfirmUnload(): boolean;
+  dispose(): void;
 }
 
 interface RunUploadSessionTransferInput {
@@ -99,7 +100,7 @@ type OpenOutcome =
       sessionId: string;
       state: "aborted" | "expired" | "failed";
       failureCode: string | null;
-      freshUploadAllowed: true;
+      freshUploadAllowed: boolean;
     }
   | {
       outcome: "queued_for_ingest";
@@ -196,14 +197,14 @@ function parseOpenOutcome(value: unknown): OpenOutcome | null {
       value.state === "expired" ||
       value.state === "failed") &&
     (value.failureCode === null || typeof value.failureCode === "string") &&
-    value.freshUploadAllowed === true
+    typeof value.freshUploadAllowed === "boolean"
   ) {
     return {
       outcome: "terminal",
       sessionId: value.sessionId,
       state: value.state,
       failureCode: value.failureCode,
-      freshUploadAllowed: true,
+      freshUploadAllowed: value.freshUploadAllowed,
     };
   }
   if (!isUuid(value.projectId)) return null;
@@ -348,6 +349,26 @@ class UploadHttpError extends Error {
   }
 }
 
+function stableBrowserFailure(error: unknown) {
+  if (error instanceof UploadSessionBrowserFailure) return error;
+  if (error instanceof UploadHttpError) {
+    return new UploadSessionBrowserFailure(
+      "upload_transfer_rejected",
+      "Secure storage rejected this transfer. Re-select the exact file and try again.",
+    );
+  }
+  if (error instanceof TypeError) {
+    return new UploadSessionBrowserFailure(
+      "upload_session_unavailable",
+      UPLOAD_FAILURE_MESSAGES.upload_session_unavailable!,
+    );
+  }
+  return new UploadSessionBrowserFailure(
+    "upload_failed",
+    "Narriflow could not continue this upload. Your saved session is unchanged.",
+  );
+}
+
 export function uploadRetryDelayMs(
   failedAttempt: number,
   random: () => number = Math.random,
@@ -468,7 +489,7 @@ async function putWithRetry(input: {
   throw lastError instanceof Error ? lastError : new Error("Upload failed");
 }
 
-export async function runUploadSessionTransfer(
+async function runUploadSessionTransfer(
   input: RunUploadSessionTransferInput,
 ) {
   const fetcher = input.fetcher ?? fetch;
@@ -874,14 +895,18 @@ export function createUploadSessionBrowserAdapter(
   let discardRequested = false;
   let freshStartAllowed = false;
   let currentInput: UploadSessionBrowserStartInput | null = null;
+  let disposed = false;
+  const lifecycleController = new AbortController();
   const listeners = new Set<() => void>();
 
   const publish = (snapshot: UploadSessionBrowserSnapshot) => {
+    if (disposed) return;
     currentSnapshot = Object.freeze(snapshot);
     for (const listener of listeners) listener();
   };
 
   const finishQueued = (projectId: string, totalBytes: number) => {
+    if (disposed) return;
     if (dependencies.storage) saveUploadResume(dependencies.storage, null);
     publish({
       ...currentSnapshot,
@@ -898,9 +923,42 @@ export function createUploadSessionBrowserAdapter(
     dependencies.navigate(projectId);
   };
 
+  const finishTerminal = (
+    outcome: Extract<OpenOutcome, { outcome: "terminal" }>,
+  ) => {
+    if (disposed) return;
+    freshStartAllowed = outcome.freshUploadAllowed;
+    publish({
+      ...currentSnapshot,
+      phase: "failed",
+      message:
+        !outcome.freshUploadAllowed
+          ? "Narriflow could not prove storage cleanup. Do not start a fresh upload yet; contact support if this persists."
+          : outcome.state === "expired"
+          ? "This saved Upload Session expired after safe cleanup. Start a fresh upload when ready."
+          : "This saved Upload Session is closed. Start a fresh upload when ready.",
+      failureCode: outcome.failureCode,
+      canPause: false,
+      canResume: false,
+      canDiscard: false,
+      canStartFresh: outcome.freshUploadAllowed,
+    });
+  };
+
+  const finishDiscarded = () => {
+    if (disposed) return;
+    if (dependencies.storage) saveUploadResume(dependencies.storage, null);
+    currentInput = null;
+    publish({
+      ...IDLE_UPLOAD_SNAPSHOT,
+      message: "Upload discarded. Choose a file when you are ready.",
+    });
+  };
+
   const pollVerification = async (
     input: UploadSessionBrowserStartInput,
     firstRetryAfterSeconds: number,
+    purpose: "finalize" | "discard" = "finalize",
   ) => {
     const fetcher = dependencies.fetcher ?? fetch;
     const waitBeforePoll =
@@ -916,6 +974,7 @@ export function createUploadSessionBrowserAdapter(
     let transientFailures = 0;
     for (let pollAttempt = 0; pollAttempt < 120; pollAttempt += 1) {
       await waitBeforePoll(jitter(retryAfterSeconds * 1_000));
+      if (disposed) return;
       const resume = dependencies.storage
         ? loadUploadResume(
             dependencies.storage,
@@ -935,8 +994,15 @@ export function createUploadSessionBrowserAdapter(
             sessionId: resume.sessionId,
             browserFingerprint: resume.fingerprint,
           }),
+          signal: lifecycleController.signal,
         });
-      } catch {
+      } catch (error) {
+        if (
+          disposed ||
+          (error instanceof DOMException && error.name === "AbortError")
+        ) {
+          return;
+        }
         transientFailures += 1;
         if (transientFailures >= 8) break;
         retryAfterSeconds = Math.min(30, 2 ** (transientFailures - 1));
@@ -969,6 +1035,19 @@ export function createUploadSessionBrowserAdapter(
         finishQueued(outcome.projectId, input.file.size);
         return;
       }
+      if (outcome.outcome === "terminal") {
+        if (
+          purpose === "discard" &&
+          outcome.state === "aborted" &&
+          outcome.failureCode === "user_discarded" &&
+          outcome.freshUploadAllowed
+        ) {
+          finishDiscarded();
+        } else {
+          finishTerminal(outcome);
+        }
+        return;
+      }
       if (outcome.outcome !== "reconciling") {
         throw new Error("Upload verification returned to byte transfer unexpectedly.");
       }
@@ -978,6 +1057,7 @@ export function createUploadSessionBrowserAdapter(
   };
 
   const start = (input: UploadSessionBrowserStartInput) => {
+    if (disposed) return Promise.resolve();
     if (activeOperation) return activeOperation;
     pauseRequested = false;
     discardRequested = false;
@@ -1034,20 +1114,7 @@ export function createUploadSessionBrowserAdapter(
           },
         });
         if ("outcome" in result && result.outcome === "terminal") {
-          freshStartAllowed = result.freshUploadAllowed;
-          publish({
-            ...currentSnapshot,
-            phase: "failed",
-            message:
-              result.state === "expired"
-                ? "This saved Upload Session expired after safe cleanup. Start a fresh upload when ready."
-                : "This saved Upload Session is closed. Start a fresh upload when ready.",
-            failureCode: result.failureCode,
-            canPause: false,
-            canResume: false,
-            canDiscard: false,
-            canStartFresh: true,
-          });
+          finishTerminal(result);
           return;
         }
         if ("outcome" in result && result.outcome === "reconciling") {
@@ -1090,17 +1157,12 @@ export function createUploadSessionBrowserAdapter(
           });
           return;
         }
+        const failure = stableBrowserFailure(error);
         publish({
           ...currentSnapshot,
           phase: "failed",
-          message:
-            error instanceof Error
-              ? error.message
-              : "Upload is temporarily unavailable.",
-          failureCode:
-            error instanceof UploadSessionBrowserFailure
-              ? error.code
-              : "upload_failed",
+          message: failure.message,
+          failureCode: failure.code,
           canPause: false,
           canResume: Boolean(
             dependencies.storage &&
@@ -1170,11 +1232,33 @@ export function createUploadSessionBrowserAdapter(
       }
 
       const fetcher = dependencies.fetcher ?? fetch;
-      const response = await fetcher("/api/upload-sessions/discard", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId: resume.sessionId }),
-      });
+      let response: Response;
+      try {
+        response = await fetcher("/api/upload-sessions/discard", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ sessionId: resume.sessionId }),
+          signal: lifecycleController.signal,
+        });
+      } catch (error) {
+        if (
+          disposed ||
+          (error instanceof DOMException && error.name === "AbortError")
+        ) {
+          return;
+        }
+        publish({
+          ...currentSnapshot,
+          phase: "failed",
+          message: "Narriflow could not accept Discard yet. Try again.",
+          failureCode: "upload_discard_unavailable",
+          canPause: false,
+          canResume: true,
+          canDiscard: true,
+          canStartFresh: false,
+        });
+        return;
+      }
       const payload = await responsePayload(response);
       if (
         !response.ok ||
@@ -1195,12 +1279,27 @@ export function createUploadSessionBrowserAdapter(
         });
         return;
       }
-      if (dependencies.storage) saveUploadResume(dependencies.storage, null);
-      currentInput = null;
+      if (payload.outcome === "discarded") {
+        finishDiscarded();
+        return;
+      }
       publish({
-        ...IDLE_UPLOAD_SNAPSHOT,
-        message: "Upload discarded. Choose a file when you are ready.",
+        ...currentSnapshot,
+        phase: "verifying",
+        message:
+          "Narriflow is finishing secure cleanup. You may leave this page safely.",
+        canPause: false,
+        canResume: false,
+        canDiscard: false,
+        canStartFresh: false,
       });
+      await pollVerification(
+        currentInput,
+        typeof payload.retryAfterSeconds === "number"
+          ? payload.retryAfterSeconds
+          : 5,
+        "discard",
+      );
     },
     async startFresh() {
       if (!freshStartAllowed || !currentInput) return;
@@ -1209,5 +1308,12 @@ export function createUploadSessionBrowserAdapter(
       await start(currentInput);
     },
     shouldConfirmUnload: () => currentSnapshot.phase === "uploading",
+    dispose() {
+      if (disposed) return;
+      disposed = true;
+      activeController?.abort();
+      lifecycleController.abort();
+      listeners.clear();
+    },
   };
 }

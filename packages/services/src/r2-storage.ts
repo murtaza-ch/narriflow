@@ -336,6 +336,7 @@ export async function listUploadedParts(params: {
   uploadId: string;
   signal?: AbortSignal;
   onProviderCall?: () => void;
+  pageSize?: number;
 }) {
   await projectStorageDeadline(params.key);
   const client = getClient();
@@ -349,6 +350,7 @@ export async function listUploadedParts(params: {
         Key: params.key,
         UploadId: params.uploadId,
         PartNumberMarker: partNumberMarker,
+        MaxParts: params.pageSize,
       }),
       { abortSignal: params.signal },
     );

@@ -177,6 +177,7 @@ export function UploadShell({
     uploadAdapter.snapshot,
     uploadAdapter.snapshot,
   );
+  useEffect(() => () => uploadAdapter.dispose(), [uploadAdapter]);
   const confirmUploadUnload = uploadAdapter.shouldConfirmUnload();
 
   // A recognized ?url= commits straight to a chosen source; anything else pre-fills the paste field.

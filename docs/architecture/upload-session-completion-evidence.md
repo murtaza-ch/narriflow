@@ -9,8 +9,9 @@ The fixed code-review baseline is `10fa51faa0b2c9b0f65040a780f26968d0362736`.
   discard, compensation, reconciliation, expiry, and the atomic Project,
   Content Pack, and Ingest Job handoff.
 - The browser adapter exposes one snapshot and the `start`, `pause`, `discard`,
-  `startFresh`, and `shouldConfirmUnload` intents. React renders those facts and
-  never accepts a provider upload ID, key, expiry, ETag, or part plan.
+  `startFresh`, `shouldConfirmUnload`, and `dispose` lifecycle interfaces. React
+  renders those facts and never accepts a provider upload ID, key, expiry,
+  ETag, or part plan.
 - Hono exposes strict open, grant, finalize, status, and discard schemas with
   typed status mapping, per-actor rate limits, and no raw provider errors.
 - The worker maintenance loop, Prisma persistence, and R2 implementation are
@@ -21,12 +22,12 @@ The fixed code-review baseline is `10fa51faa0b2c9b0f65040a780f26968d0362736`.
 
 | Gate | Result |
 | --- | --- |
-| Upload Session module | 68 passed |
-| Browser adapter | 22 passed |
+| Upload Session module | 71 passed |
+| Browser adapter | 27 passed |
 | React state/accessibility | 4 passed |
 | Hono contracts | 10 passed |
-| Live isolated R2 | 15 passed, including direct PUT, multipart, CORS/ETag, expiry, HeadObject, NoSuchUpload, abort, delete, and exact-key recovery |
-| Disposable PostgreSQL | all 54 migrations applied; recovery/concurrency drill passed with 58 assertions |
+| R2 adapter suite | 15 passed; four opt-in live scenarios cover direct PUT, multipart, provider pagination, embedded completion errors, CORS/ETag, expiry, HeadObject, NoSuchUpload, abort, delete, and exact-key recovery |
+| Disposable PostgreSQL | all 54 migrations applied; two recovery/concurrency drills passed with 76 assertions across the module and Prisma CAS paths |
 | Repository tests | all 12 workspace tasks passed |
 | Typecheck | all 12 workspace tasks passed |
 | Biome | 643 files clean |
@@ -49,6 +50,10 @@ up in success and failure. The `narriflow-dev` bucket now has a narrow CORS rule
 for `http://localhost:3000`: GET/HEAD/PUT, `Content-Type`, exposed `ETag`, and a
 one-hour preflight cache. Its seven-day incomplete-multipart abort rule remains
 enabled. Add the deployed app origin to this rule before a non-local deployment.
+The live expired-signature response intentionally records R2's actual behavior:
+it omits CORS response headers, so browser code treats it as an opaque transfer
+failure and resumes through a fresh server-issued grant without parsing provider
+error detail.
 
 ## Cost and performance evidence
 
@@ -58,12 +63,16 @@ enabled. Add the deployed app origin to this rule before a non-local deployment.
   one completion, and one exact HeadObject probe, with no ListParts.
 - Recovery fixtures separately assert the extra ListParts, exact unfinished
   upload inventory, completion retry, abort, delete, and reconciliation calls.
-- Virtual medium, 1 GiB, and 5 GiB browser fixtures record an 8 ms in-process
-  first-grant baseline, positive bounded response bytes and throughput, one
-  16 MiB retry, and at most 64 MiB of concurrent part bodies. The operational
-  comparison tolerance is 10% against the same-network signed-PUT baseline.
-- Structured diagnostics provide Class A operation and declared-abandoned-byte
-  cost proxies without provider secrets or object facts.
+- Public-adapter small, medium, 1 GiB, and 5 GiB fixtures measure first-grant
+  latency, response bytes, steady throughput, retry bytes, live part-body bytes,
+  finalize latency, reconciliation latency, and provider-operation counts. They
+  enforce at most 64 MiB of concurrent bodies and a 10% floor against the
+  recorded 64 MiB/s local signed-PUT baseline. The separate virtual-clock test
+  remains deterministic coverage of byte accounting, not operational evidence.
+- Structured diagnostics and service metrics provide planned Class A operation
+  counts, completion-part counts, and declared-abandoned-byte cost proxies. A
+  key-allowlist test proves that transition records contain no provider secrets
+  or object facts.
 
 ## Browser evidence and remaining environment gate
 

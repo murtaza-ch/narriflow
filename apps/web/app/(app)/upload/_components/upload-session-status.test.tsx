@@ -48,7 +48,8 @@ describe("Upload Session React status", () => {
       </>,
     );
 
-    expect(markup).toContain('role="status"');
+    expect(markup).toContain('<div tabindex="-1" class=');
+    expect(markup).toContain('aria-live="polite"');
     expect(markup).toContain('tabindex="-1"');
     expect(markup).toContain("Uploading");
     expect(markup).toContain("47%");
