@@ -276,6 +276,138 @@ describe("Upload Session", () => {
     );
   });
 
+  test("resume grants renew idle expiry without crossing hard expiry", async () => {
+    const harness = createInMemoryUploadSessionHarness();
+    let now = new Date("2026-08-27T00:00:00.000Z");
+    const module = createUploadSessionModule({
+      ...harness.adapters,
+      config: defaultUploadSessionConfig({
+        sessionIdleMs: 60_000,
+        sessionHardLifetimeMs: 180_000,
+      }),
+      now: () => now,
+    });
+    const input = {
+      ...ACTOR,
+      clientIdempotencyKey: "40000000-0000-4000-8000-000000000043",
+      title: "Resume renewal",
+      source: {
+        fileName: "resume-renew.mp4",
+        sizeBytes: 100,
+        contentType: "video/mp4",
+        browserFingerprint: '["resume-renew.mp4",100,"video/mp4",43]',
+      },
+      brandTemplateId: null,
+      generation: { languageCode: "en", contentPack: CONTENT_PACK },
+    };
+    await module.open(input);
+    now = new Date("2026-08-27T00:00:50.000Z");
+
+    const resumed = await module.open(input);
+
+    expect(resumed.outcome).toBe("uploading");
+    expect(harness.facts.sessions[0]?.expiresAt.toISOString()).toBe(
+      "2026-08-27T00:01:50.000Z",
+    );
+  });
+
+  test("a maintenance claim fences late grant renewal and finalization", async () => {
+    const harness = createInMemoryUploadSessionHarness();
+    const now = new Date("2026-08-27T00:00:00.000Z");
+    const module = createUploadSessionModule({
+      ...harness.adapters,
+      config: defaultUploadSessionConfig({ smallFileThresholdBytes: 1 }),
+      now: () => now,
+    });
+    const opened = await module.open({
+      ...ACTOR,
+      clientIdempotencyKey: "40000000-0000-4000-8000-000000000045",
+      title: "Fenced transfer",
+      source: {
+        fileName: "fenced.mp4",
+        sizeBytes: 2,
+        contentType: "video/mp4",
+        browserFingerprint: '["fenced.mp4",2,"video/mp4",45]',
+      },
+      brandTemplateId: null,
+      generation: { languageCode: "en", contentPack: CONTENT_PACK },
+    });
+    const session = harness.facts.sessions[0]!;
+    session.cleanupRetryAt = now;
+    const claim = await harness.adapters.persistence.claimReconciliation({
+      sessionId: session.id,
+      reconciliationAttemptId: "maintenance-claim",
+      leaseExpiresAt: new Date(now.getTime() + 60_000),
+      updatedAt: now,
+    });
+    expect(claim.claimed).toBe(true);
+
+    await expect(
+      module.grant({
+        actorUserId: ACTOR.actorUserId,
+        workspaceId: ACTOR.workspaceId,
+        sessionId: opened.sessionId,
+        partNumbers: [1],
+      }),
+    ).rejects.toBeInstanceOf(UploadSessionInvalidStateError);
+    await expect(
+      module.finalize({
+        actorUserId: ACTOR.actorUserId,
+        workspaceId: ACTOR.workspaceId,
+        sessionId: opened.sessionId,
+        parts: [{ partNumber: 1, etag: "etag-1" }],
+      }),
+    ).rejects.toBeInstanceOf(UploadSessionInvalidStateError);
+    expect(session.reconciliationAttemptId).toBe("maintenance-claim");
+    expect(session.status).toBe("uploading");
+  });
+
+  test("expired browser activity schedules compensation before issuing more grants", async () => {
+    const harness = createInMemoryUploadSessionHarness();
+    let now = new Date("2026-08-27T00:00:00.000Z");
+    const module = createUploadSessionModule({
+      ...harness.adapters,
+      config: defaultUploadSessionConfig({
+        smallFileThresholdBytes: 1,
+        sessionIdleMs: 60_000,
+        sessionHardLifetimeMs: 120_000,
+      }),
+      now: () => now,
+    });
+    const input = {
+      ...ACTOR,
+      clientIdempotencyKey: "40000000-0000-4000-8000-000000000044",
+      title: "Expired browser",
+      source: {
+        fileName: "expired-browser.mp4",
+        sizeBytes: 2,
+        contentType: "video/mp4",
+        browserFingerprint: '["expired-browser.mp4",2,"video/mp4",44]',
+      },
+      brandTemplateId: null,
+      generation: { languageCode: "en", contentPack: CONTENT_PACK },
+    };
+    const opened = await module.open(input);
+    now = new Date("2026-08-27T00:01:00.001Z");
+
+    await expect(module.open(input)).rejects.toBeInstanceOf(
+      UploadSessionInvalidStateError,
+    );
+    await expect(
+      module.grant({
+        actorUserId: ACTOR.actorUserId,
+        workspaceId: ACTOR.workspaceId,
+        sessionId: opened.sessionId,
+        partNumbers: [1],
+      }),
+    ).rejects.toBeInstanceOf(UploadSessionInvalidStateError);
+    expect(harness.facts.sessions[0]).toMatchObject({
+      status: "compensating",
+      failureCode: "upload_session_expired",
+      reconcileAt: now,
+    });
+  });
+
   test("rejects grants after idle expiry instead of reviving the session", async () => {
     const harness = createInMemoryUploadSessionHarness();
     let now = new Date("2026-08-27T00:00:00.000Z");
@@ -1205,6 +1337,8 @@ describe("Upload Session", () => {
       status: "failed",
       failureCode: "multipart_completion_invalid_parts",
     });
+    expect(harness.facts.providerAborts).toHaveLength(1);
+    expect(harness.facts.unfinishedProviderUploads).toHaveLength(0);
   });
 
   test("maintenance compensates an idle multipart session before expiring it", async () => {
@@ -1278,6 +1412,61 @@ describe("Upload Session", () => {
       reconciliationAttemptId: null,
     });
     expect(harness.facts.providerInitiations).toHaveLength(1);
+  });
+
+  test("initiating recovery applies the provider operation deadline", async () => {
+    const harness = createInMemoryUploadSessionHarness();
+    const now = new Date("2026-08-27T00:01:00.000Z");
+    const baseStorage = harness.adapters.storage;
+    let providerObservedAbort = false;
+    const module = createUploadSessionModule({
+      ...harness.adapters,
+      config: defaultUploadSessionConfig({
+        smallFileThresholdBytes: 1,
+        reconciliationOperationDeadlineMs: 5,
+        reconciliationLeaseMs: 30,
+      }),
+      now: () => now,
+      storage: {
+        ...baseStorage,
+        listExactKeyMultipartUploads: (_key, signal) =>
+          new Promise((_, reject) => {
+            signal?.addEventListener("abort", () => {
+              providerObservedAbort = true;
+              reject(signal.reason);
+            });
+          }),
+      },
+    });
+    await module.open({
+      ...ACTOR,
+      clientIdempotencyKey: "60000000-0000-4000-8000-000000000026",
+      title: "Bound initiating recovery",
+      source: {
+        fileName: "bound-initiation.mp4",
+        sizeBytes: 2,
+        contentType: "video/mp4",
+        browserFingerprint: '["bound-initiation.mp4",2,"video/mp4",26]',
+      },
+      brandTemplateId: null,
+      generation: { languageCode: "en", contentPack: CONTENT_PACK },
+    });
+    const session = harness.facts.sessions[0]!;
+    session.status = "initiating";
+    session.providerUploadId = null;
+    session.admissionAttemptId = null;
+    session.admissionClaimExpiresAt = new Date("2026-08-27T00:00:01.000Z");
+    session.admissionClaimExpiresAt = new Date(now.getTime() - 1);
+
+    const result = await module.reconcileDueSessions();
+
+    expect(result).toEqual({ claimed: 1, settled: 0, deferred: 1 });
+    expect(session).toMatchObject({
+      status: "initiating",
+      admissionAttemptId: null,
+      failureCode: "upload_reconciliation_deferred",
+    });
+    expect(providerObservedAbort).toBe(true);
   });
 
   test("maintenance compensates unbound multipart state before expiring admission", async () => {
@@ -1373,6 +1562,192 @@ describe("Upload Session", () => {
     ).toHaveLength(1);
   });
 
+  test("maintenance caps provider calls and defers remaining exact-key cleanup", async () => {
+    const harness = createInMemoryUploadSessionHarness();
+    let now = new Date("2026-08-27T00:00:00.000Z");
+    const module = createUploadSessionModule({
+      ...harness.adapters,
+      config: defaultUploadSessionConfig({
+        smallFileThresholdBytes: 1,
+        reconciliationProviderCallBudget: 3,
+      }),
+      now: () => now,
+    });
+    const opened = await module.open({
+      ...ACTOR,
+      clientIdempotencyKey: "60000000-0000-4000-8000-000000000048",
+      title: "Bound cleanup calls",
+      source: {
+        fileName: "bound-cleanup.mp4",
+        sizeBytes: 2,
+        contentType: "video/mp4",
+        browserFingerprint: '["bound-cleanup.mp4",2,"video/mp4",46]',
+      },
+      brandTemplateId: null,
+      generation: { languageCode: "en", contentPack: CONTENT_PACK },
+    });
+    for (let index = 0; index < 5; index += 1) {
+      harness.createDuplicateUnfinishedUpload(opened.sessionId);
+    }
+    const session = harness.facts.sessions[0]!;
+    session.status = "initiating";
+    session.providerUploadId = null;
+    session.admissionAttemptId = null;
+    session.admissionClaimExpiresAt = new Date("2026-08-27T00:00:01.000Z");
+    now = new Date("2026-08-28T00:00:00.001Z");
+
+    const result = await module.reconcileDueSessions();
+
+    expect(result).toEqual({ claimed: 1, settled: 0, deferred: 1 });
+    expect(harness.facts.providerAborts).toHaveLength(2);
+    expect(session.status).toBe("compensating");
+  });
+
+  test("paginated inventory charges every provider page against the attempt budget", async () => {
+    const harness = createInMemoryUploadSessionHarness();
+    let now = new Date("2026-08-27T00:00:00.000Z");
+    const baseStorage = harness.adapters.storage;
+    const module = createUploadSessionModule({
+      ...harness.adapters,
+      config: defaultUploadSessionConfig({
+        smallFileThresholdBytes: 1,
+        reconciliationProviderCallBudget: 2,
+      }),
+      now: () => now,
+      storage: {
+        ...baseStorage,
+        async listExactKeyMultipartUploads(storageKey, signal, onProviderCall) {
+          onProviderCall?.();
+          onProviderCall?.();
+          onProviderCall?.();
+          return baseStorage.listExactKeyMultipartUploads(
+            storageKey,
+            signal,
+            onProviderCall,
+          );
+        },
+      },
+    });
+    await module.open({
+      ...ACTOR,
+      clientIdempotencyKey: "60000000-0000-4000-8000-000000000058",
+      title: "Paged inventory budget",
+      source: {
+        fileName: "paged-budget.mp4",
+        sizeBytes: 2,
+        contentType: "video/mp4",
+        browserFingerprint: '["paged-budget.mp4",2,"video/mp4",58]',
+      },
+      brandTemplateId: null,
+      generation: { languageCode: "en", contentPack: CONTENT_PACK },
+    });
+    const session = harness.facts.sessions[0]!;
+    session.status = "initiating";
+    session.providerUploadId = null;
+    session.admissionAttemptId = null;
+    session.admissionClaimExpiresAt = new Date("2026-08-27T00:00:01.000Z");
+    now = new Date("2026-08-28T00:00:00.001Z");
+
+    expect(await module.reconcileDueSessions()).toEqual({
+      claimed: 1,
+      settled: 0,
+      deferred: 1,
+    });
+    expect(harness.facts.providerAborts).toHaveLength(0);
+  });
+
+  test.each(["AccessDenied", "NoSuchBucket"])(
+    "permanent %s inventory failure settles unbound compensation",
+    async (errorName) => {
+      const harness = createInMemoryUploadSessionHarness();
+      let now = new Date("2026-08-27T00:00:00.000Z");
+      const module = createUploadSessionModule({
+        ...harness.adapters,
+        config: defaultUploadSessionConfig({ smallFileThresholdBytes: 1 }),
+        now: () => now,
+        storage: {
+          ...harness.adapters.storage,
+          async listExactKeyMultipartUploads() {
+            const error = new Error(errorName);
+            error.name = errorName;
+            throw error;
+          },
+        },
+      });
+      await module.open({
+        ...ACTOR,
+        clientIdempotencyKey:
+          errorName === "AccessDenied"
+            ? "60000000-0000-4000-8000-000000000059"
+            : "60000000-0000-4000-8000-000000000060",
+        title: `Permanent ${errorName}`,
+        source: {
+          fileName: "permanent-list.mp4",
+          sizeBytes: 2,
+          contentType: "video/mp4",
+          browserFingerprint: `["permanent-list.mp4",2,"video/mp4","${errorName}"]`,
+        },
+        brandTemplateId: null,
+        generation: { languageCode: "en", contentPack: CONTENT_PACK },
+      });
+      const session = harness.facts.sessions[0]!;
+      session.status = "initiating";
+      session.providerUploadId = null;
+      session.admissionAttemptId = null;
+      session.admissionClaimExpiresAt = new Date("2026-08-27T00:00:01.000Z");
+      now = new Date("2026-08-28T00:00:00.001Z");
+
+      expect(await module.reconcileDueSessions()).toEqual({
+        claimed: 1,
+        settled: 1,
+        deferred: 0,
+      });
+      expect(session).toMatchObject({
+        status: "failed",
+        failureCode:
+          errorName === "AccessDenied"
+            ? "upload_cleanup_access_denied"
+            : "upload_cleanup_bucket_missing",
+      });
+    },
+  );
+
+  test("permanent compensation denial settles without reclaiming forever", async () => {
+    const harness = createInMemoryUploadSessionHarness();
+    let now = new Date("2026-08-27T00:00:00.000Z");
+    const module = createUploadSessionModule({
+      ...harness.adapters,
+      config: defaultUploadSessionConfig({ smallFileThresholdBytes: 1 }),
+      now: () => now,
+    });
+    await module.open({
+      ...ACTOR,
+      clientIdempotencyKey: "60000000-0000-4000-8000-000000000047",
+      title: "Denied cleanup",
+      source: {
+        fileName: "denied-cleanup.mp4",
+        sizeBytes: 2,
+        contentType: "video/mp4",
+        browserFingerprint: '["denied-cleanup.mp4",2,"video/mp4",47]',
+      },
+      brandTemplateId: null,
+      generation: { languageCode: "en", contentPack: CONTENT_PACK },
+    });
+    const denied = new Error("cleanup forbidden");
+    denied.name = "AccessDenied";
+    harness.failNextProviderAbort(denied);
+    now = new Date("2026-08-28T00:00:00.001Z");
+
+    const result = await module.reconcileDueSessions();
+
+    expect(result).toEqual({ claimed: 1, settled: 1, deferred: 0 });
+    expect(harness.facts.sessions[0]).toMatchObject({
+      status: "failed",
+      failureCode: "upload_cleanup_access_denied",
+      reconciliationAttemptId: null,
+    });
+  });
+
   test("maintenance caps a batch at twenty-five sessions and leaves the rest fair", async () => {
     const harness = createInMemoryUploadSessionHarness();
     let now = new Date("2026-08-27T00:00:00.000Z");
@@ -1405,6 +1780,182 @@ describe("Upload Session", () => {
     expect(
       harness.facts.sessions.filter((session) => session.status === "expired"),
     ).toHaveLength(30);
+  });
+
+  test("maintenance retries due duplicate multipart cleanup without a browser", async () => {
+    const harness = createInMemoryUploadSessionHarness();
+    const now = new Date("2026-08-27T00:02:00.000Z");
+    const module = createUploadSessionModule({
+      ...harness.adapters,
+      config: defaultUploadSessionConfig({ smallFileThresholdBytes: 1 }),
+      now: () => now,
+    });
+    const opened = await module.open({
+      ...ACTOR,
+      clientIdempotencyKey: "60000000-0000-4000-8000-000000000056",
+      title: "Duplicate cleanup",
+      source: {
+        fileName: "duplicate.mp4",
+        sizeBytes: 2,
+        contentType: "video/mp4",
+        browserFingerprint: '["duplicate.mp4",2,"video/mp4",56]',
+      },
+      brandTemplateId: null,
+      generation: { languageCode: "en", contentPack: CONTENT_PACK },
+    });
+    harness.createDuplicateUnfinishedUpload(opened.sessionId);
+    harness.facts.sessions[0]!.cleanupRetryAt = now;
+
+    const result = await module.reconcileDueSessions();
+
+    expect(result).toEqual({ claimed: 1, settled: 1, deferred: 0 });
+    expect(harness.facts.sessions[0]).toMatchObject({
+      status: "uploading",
+      cleanupRetryAt: null,
+    });
+    expect(harness.facts.unfinishedProviderUploads).toHaveLength(1);
+  });
+
+  test("background completion terminalizes a permanent InvalidPart refusal", async () => {
+    const harness = createInMemoryUploadSessionHarness();
+    let now = new Date("2026-08-27T00:00:00.000Z");
+    const module = createUploadSessionModule({
+      ...harness.adapters,
+      config: defaultUploadSessionConfig({ smallFileThresholdBytes: 1 }),
+      now: () => now,
+    });
+    const opened = await module.open({
+      ...ACTOR,
+      clientIdempotencyKey: "60000000-0000-4000-8000-000000000066",
+      title: "Permanent replay failure",
+      source: {
+        fileName: "permanent.mp4",
+        sizeBytes: 2,
+        contentType: "video/mp4",
+        browserFingerprint: '["permanent.mp4",2,"video/mp4",66]',
+      },
+      brandTemplateId: null,
+      generation: { languageCode: "en", contentPack: CONTENT_PACK },
+    });
+    const parts = [{ partNumber: 1, etag: "etag-1" }];
+    harness.uploadMultipartParts(opened.sessionId, parts);
+    const timeout = new Error("provider timeout");
+    timeout.name = "TimeoutError";
+    harness.failNextProviderCompletion(timeout);
+    await module.finalize({
+      actorUserId: ACTOR.actorUserId,
+      workspaceId: ACTOR.workspaceId,
+      sessionId: opened.sessionId,
+      parts,
+    });
+    const invalidPart = new Error("provider rejected persisted inventory");
+    invalidPart.name = "InvalidPart";
+    harness.failNextProviderCompletion(invalidPart);
+    now = new Date("2026-08-27T00:00:06.000Z");
+
+    const result = await module.reconcileDueSessions();
+
+    expect(result).toEqual({ claimed: 1, settled: 1, deferred: 0 });
+    expect(harness.facts.sessions[0]).toMatchObject({
+      status: "failed",
+      failureCode: "multipart_completion_invalid_parts",
+    });
+  });
+
+  test("ambiguous reconciliation stops after the validated attempt budget", async () => {
+    const harness = createInMemoryUploadSessionHarness();
+    let now = new Date("2026-08-27T00:00:00.000Z");
+    const module = createUploadSessionModule({
+      ...harness.adapters,
+      config: defaultUploadSessionConfig({ reconciliationMaximumAttempts: 1 }),
+      now: () => now,
+    });
+    const opened = await module.open({
+      ...ACTOR,
+      clientIdempotencyKey: "60000000-0000-4000-8000-000000000067",
+      title: "Bound reconciliation",
+      source: {
+        fileName: "bounded-reconciliation.mp4",
+        sizeBytes: 100,
+        contentType: "video/mp4",
+        browserFingerprint: '["bounded-reconciliation.mp4",100,"video/mp4",67]',
+      },
+      brandTemplateId: null,
+      generation: { languageCode: "en", contentPack: CONTENT_PACK },
+    });
+    harness.failNextObjectProbe("unavailable");
+    await module.finalize({
+      actorUserId: ACTOR.actorUserId,
+      workspaceId: ACTOR.workspaceId,
+      sessionId: opened.sessionId,
+      parts: [],
+    });
+    harness.failNextObjectProbe("unavailable");
+    now = new Date("2026-08-27T00:00:06.000Z");
+
+    const result = await module.reconcileDueSessions();
+
+    expect(result).toEqual({ claimed: 1, settled: 1, deferred: 0 });
+    expect(harness.facts.sessions[0]).toMatchObject({
+      status: "failed",
+      failureCode: "upload_reconciliation_exhausted",
+    });
+  });
+
+  test("each reconciliation claim receives a lease based on its actual start", async () => {
+    const harness = createInMemoryUploadSessionHarness();
+    let now = new Date("2026-08-27T00:00:00.000Z");
+    const claims: Array<{ updatedAt: Date; leaseExpiresAt: Date }> = [];
+    const basePersistence = harness.adapters.persistence;
+    const baseStorage = harness.adapters.storage;
+    let deletes = 0;
+    const module = createUploadSessionModule({
+      ...harness.adapters,
+      config: defaultUploadSessionConfig({ reconciliationConcurrency: 1 }),
+      now: () => now,
+      persistence: {
+        ...basePersistence,
+        async claimReconciliation(input) {
+          claims.push({
+            updatedAt: input.updatedAt,
+            leaseExpiresAt: input.leaseExpiresAt,
+          });
+          return basePersistence.claimReconciliation(input);
+        },
+      },
+      storage: {
+        ...baseStorage,
+        async deleteExactObject(key) {
+          await baseStorage.deleteExactObject(key);
+          deletes += 1;
+          if (deletes === 1) {
+            now = new Date("2026-08-28T00:01:10.000Z");
+          }
+        },
+      },
+    });
+    for (let index = 0; index < 2; index += 1) {
+      await module.open({
+        ...ACTOR,
+        clientIdempotencyKey: `60000000-0000-4000-8000-00000000007${index}`,
+        title: `Fresh lease ${index}`,
+        source: {
+          fileName: `fresh-${index}.mp4`,
+          sizeBytes: 100,
+          contentType: "video/mp4",
+          browserFingerprint: `["fresh-${index}.mp4",100,"video/mp4",${index}]`,
+        },
+        brandTemplateId: null,
+        generation: { languageCode: "en", contentPack: CONTENT_PACK },
+      });
+    }
+    now = new Date("2026-08-28T00:00:00.000Z");
+
+    await module.reconcileDueSessions();
+
+    expect(claims).toHaveLength(2);
+    expect(claims[1]!.updatedAt).toEqual(now);
+    expect(claims[1]!.leaseExpiresAt.getTime() - now.getTime()).toBe(60_000);
   });
 
   test("a stale reconciler cannot overwrite a newer terminal settlement", async () => {
@@ -1458,6 +2009,57 @@ describe("Upload Session", () => {
       queuedJobId: null,
     });
     expect(harness.facts.projects).toHaveLength(0);
+  });
+
+  test("claim renewal loss fences provider work before the next operation", async () => {
+    const harness = createInMemoryUploadSessionHarness();
+    const basePersistence = harness.adapters.persistence;
+    const now = new Date("2026-08-27T00:00:06.000Z");
+    let renewalCalls = 0;
+    const module = createUploadSessionModule({
+      ...harness.adapters,
+      now: () => now,
+      persistence: {
+        ...basePersistence,
+        async renewReconciliationClaim(input) {
+          renewalCalls += 1;
+          const session = harness.facts.sessions.find(
+            (candidate) => candidate.id === input.sessionId,
+          )!;
+          session.reconciliationAttemptId = "newer-attempt";
+          session.reconciliationLeaseExpiresAt = new Date(
+            now.getTime() + 60_000,
+          );
+          throw new UploadSessionReconciliationClaimLostError();
+        },
+      },
+    });
+    await module.open({
+      ...ACTOR,
+      clientIdempotencyKey: "60000000-0000-4000-8000-000000000061",
+      title: "Renewal fencing",
+      source: {
+        fileName: "renewal.mp4",
+        sizeBytes: 100,
+        contentType: "video/mp4",
+        browserFingerprint: '["renewal.mp4",100,"video/mp4",61]',
+      },
+      brandTemplateId: null,
+      generation: { languageCode: "en", contentPack: CONTENT_PACK },
+    });
+    const session = harness.facts.sessions[0]!;
+    session.status = "reconciling";
+    session.completionParts = [];
+    session.reconcileAt = now;
+
+    expect(await module.reconcileDueSessions()).toEqual({
+      claimed: 1,
+      settled: 0,
+      deferred: 0,
+    });
+    expect(renewalCalls).toBe(1);
+    expect(harness.facts.objectProbes).toBe(0);
+    expect(session.reconciliationAttemptId).toBe("newer-attempt");
   });
 
   test("an expired reconciliation lease can be taken over and fences its predecessor", async () => {
@@ -1775,6 +2377,195 @@ describe("Upload Session", () => {
     expect(harness.facts.projects[0]?.sourceMimeType).toBe("audio/wav");
   });
 
+  test("a late inline completion returns the worker winner without overwriting it", async () => {
+    const harness = createInMemoryUploadSessionHarness();
+    const baseStorage = harness.adapters.storage;
+    let now = new Date("2026-08-27T00:00:00.000Z");
+    let releaseInline!: () => void;
+    let signalInlineEntered!: () => void;
+    const inlineEntered = new Promise<void>((resolve) => {
+      signalInlineEntered = resolve;
+    });
+    const inlineReleased = new Promise<void>((resolve) => {
+      releaseInline = resolve;
+    });
+    let completionCalls = 0;
+    const module = createUploadSessionModule({
+      ...harness.adapters,
+      config: defaultUploadSessionConfig({ smallFileThresholdBytes: 1 }),
+      now: () => now,
+      storage: {
+        ...baseStorage,
+        async completeMultipart(input) {
+          completionCalls += 1;
+          if (completionCalls === 1) {
+            signalInlineEntered();
+            await inlineReleased;
+            return;
+          }
+          await baseStorage.completeMultipart(input);
+        },
+      },
+    });
+    const opened = await module.open({
+      ...ACTOR,
+      clientIdempotencyKey: "95959595-9595-4595-8595-959595959595",
+      title: "Inline fencing",
+      source: {
+        fileName: "inline-fencing.mp4",
+        sizeBytes: 2,
+        contentType: "video/mp4",
+        browserFingerprint: '["inline-fencing.mp4",2,"video/mp4",1]',
+      },
+      brandTemplateId: null,
+      generation: { languageCode: "en", contentPack: CONTENT_PACK },
+    });
+    const parts = [{ partNumber: 1, etag: "etag-1" }];
+    harness.uploadMultipartParts(opened.sessionId, parts);
+
+    const inline = module.finalize({
+      actorUserId: ACTOR.actorUserId,
+      workspaceId: ACTOR.workspaceId,
+      sessionId: opened.sessionId,
+      parts,
+    });
+    await inlineEntered;
+    now = new Date("2026-08-27T00:00:06.000Z");
+    expect(await module.reconcileDueSessions()).toEqual({
+      claimed: 1,
+      settled: 1,
+      deferred: 0,
+    });
+    releaseInline();
+
+    await expect(inline).resolves.toMatchObject({ outcome: "queued_for_ingest" });
+    expect(harness.facts.sessions[0]?.status).toBe("queued_for_ingest");
+    expect(harness.facts.projects).toHaveLength(1);
+    expect(harness.facts.ingestJobs).toHaveLength(1);
+  });
+
+  test("a stalled first-finalize provider call aborts and returns reconciling", async () => {
+    const harness = createInMemoryUploadSessionHarness();
+    let aborted = false;
+    const module = createUploadSessionModule({
+      ...harness.adapters,
+      config: defaultUploadSessionConfig({
+        smallFileThresholdBytes: 1,
+        reconciliationOperationDeadlineMs: 5,
+        reconciliationLeaseMs: 20,
+      }),
+      storage: {
+        ...harness.adapters.storage,
+        async completeMultipart({ signal }) {
+          await new Promise<void>((_resolve, reject) => {
+            signal?.addEventListener("abort", () => {
+              aborted = true;
+              reject(new DOMException("aborted", "AbortError"));
+            });
+          });
+        },
+      },
+    });
+    const opened = await module.open({
+      ...ACTOR,
+      clientIdempotencyKey: "98989898-9898-4898-8898-989898989898",
+      title: "Bound inline completion",
+      source: {
+        fileName: "bound-inline.mp4",
+        sizeBytes: 2,
+        contentType: "video/mp4",
+        browserFingerprint: '["bound-inline.mp4",2,"video/mp4",98]',
+      },
+      brandTemplateId: null,
+      generation: { languageCode: "en", contentPack: CONTENT_PACK },
+    });
+    const parts = [{ partNumber: 1, etag: "etag-1" }];
+    harness.uploadMultipartParts(opened.sessionId, parts);
+
+    await expect(
+      module.finalize({
+        actorUserId: ACTOR.actorUserId,
+        workspaceId: ACTOR.workspaceId,
+        sessionId: opened.sessionId,
+        parts,
+      }),
+    ).resolves.toEqual({
+      outcome: "reconciling",
+      sessionId: opened.sessionId,
+      retryAfterSeconds: 5,
+    });
+    expect(aborted).toBe(true);
+  });
+
+  test.each(["timeout", "AccessDenied"])(
+    "background integrity cleanup is bounded for %s",
+    async (failure) => {
+      const harness = createInMemoryUploadSessionHarness();
+      const baseStorage = harness.adapters.storage;
+      const now = new Date("2026-08-27T00:00:06.000Z");
+      let aborted = false;
+      const module = createUploadSessionModule({
+        ...harness.adapters,
+        config: defaultUploadSessionConfig({
+          reconciliationOperationDeadlineMs: 5,
+          reconciliationLeaseMs: 20,
+        }),
+        now: () => now,
+        storage: {
+          ...baseStorage,
+          async deleteExactObject(storageKey, signal) {
+            if (failure === "AccessDenied") {
+              const error = new Error("denied");
+              error.name = "AccessDenied";
+              throw error;
+            }
+            await new Promise<void>((_resolve, reject) => {
+              signal?.addEventListener("abort", () => {
+                aborted = true;
+                reject(new DOMException("aborted", "AbortError"));
+              });
+            });
+            await baseStorage.deleteExactObject(storageKey, signal);
+          },
+        },
+      });
+      const opened = await module.open({
+        ...ACTOR,
+        clientIdempotencyKey:
+          failure === "timeout"
+            ? "96969696-9696-4696-8696-969696969696"
+            : "97979797-9797-4797-8797-979797979797",
+        title: "Bound integrity cleanup",
+        source: {
+          fileName: "integrity.mp4",
+          sizeBytes: 100,
+          contentType: "video/mp4",
+          browserFingerprint: `["integrity.mp4",100,"video/mp4","${failure}"]`,
+        },
+        brandTemplateId: null,
+        generation: { languageCode: "en", contentPack: CONTENT_PACK },
+      });
+      harness.putSingleObject(opened.sessionId, {
+        sizeBytes: 99,
+        contentType: "video/mp4",
+      });
+      const session = harness.facts.sessions[0]!;
+      session.status = "reconciling";
+      session.completionParts = [];
+      session.reconcileAt = now;
+
+      const result = await module.reconcileDueSessions();
+
+      expect(result).toEqual(
+        failure === "timeout"
+          ? { claimed: 1, settled: 0, deferred: 1 }
+          : { claimed: 1, settled: 1, deferred: 0 },
+      );
+      if (failure === "timeout") expect(aborted).toBe(true);
+      else expect(session.failureCode).toBe("upload_cleanup_access_denied");
+    },
+  );
+
   test("concurrent finalization converges on one handoff", async () => {
     const harness = createInMemoryUploadSessionHarness();
     const module = createUploadSessionModule(harness.adapters);
@@ -1811,7 +2602,10 @@ describe("Upload Session", () => {
       }),
     ]);
 
-    expect(right).toEqual(left);
+    expect([left.outcome, right.outcome].sort()).toEqual([
+      "queued_for_ingest",
+      "reconciling",
+    ]);
     expect(harness.facts.projects).toHaveLength(1);
     expect(harness.facts.ingestJobs).toHaveLength(1);
   });

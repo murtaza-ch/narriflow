@@ -14,6 +14,7 @@ import {
   createUploadSessionModule,
   defaultUploadSessionConfig,
   prismaUploadSessionPersistence,
+  UploadSessionReconciliationClaimLostError,
   type UploadSessionStorage,
 } from "./upload-session.service";
 
@@ -237,7 +238,16 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
       module.finalize(finalizeInput),
     ]);
 
-    expect(secondFinalize).toEqual(firstFinalize);
+    expect([firstFinalize.outcome, secondFinalize.outcome]).toContain(
+      "queued_for_ingest",
+    );
+    expect(
+      [firstFinalize.outcome, secondFinalize.outcome].every((outcome) =>
+        ["queued_for_ingest", "reconciling"].includes(outcome),
+      ),
+    ).toBe(true);
+    const replay = await module.finalize(finalizeInput);
+    expect(replay.outcome).toBe("queued_for_ingest");
     expect(
       await prisma.project.count({
         where: { id: firstOpen.projectId, workspaceId: workspace.id },
@@ -256,5 +266,364 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
         where: { projectId: firstOpen.projectId, seq: 1 },
       }),
     ).toBe(1);
+
+    objectUploaded = false;
+    const rollbackOpen = await module.open({
+      ...input,
+      clientIdempotencyKey: randomUUID(),
+      title: "Rollback replay",
+      source: {
+        ...input.source,
+        fileName: "rollback-replay.mp4",
+        browserFingerprint: '["rollback-replay.mp4",2048,"video/mp4",2]',
+      },
+    });
+    await prisma.project.create({
+      data: {
+        id: rollbackOpen.projectId,
+        userId: user.id,
+        workspaceId: workspace.id,
+        title: "Conflicting transaction fixture",
+        sourceMediaUrl: "r2://test/conflict",
+        sourceInput: "conflict.mp4",
+      },
+    });
+    objectUploaded = true;
+    const ambiguousHandoff = await module.finalize({
+      actorUserId: user.id,
+      workspaceId: workspace.id,
+      sessionId: rollbackOpen.sessionId,
+      parts: [],
+    });
+    expect(ambiguousHandoff.outcome).toBe("reconciling");
+    expect(
+      await prisma.contentPack.count({
+        where: { projectId: rollbackOpen.projectId },
+      }),
+    ).toBe(0);
+    expect(
+      await prisma.ingestJob.count({
+        where: { uploadSessionId: rollbackOpen.sessionId },
+      }),
+    ).toBe(0);
+    await prisma.project.delete({ where: { id: rollbackOpen.projectId } });
+    await prisma.uploadSession.update({
+      where: { id: rollbackOpen.sessionId },
+      data: { reconcileAt: new Date(Date.now() - 1_000) },
+    });
+
+    const recoveredHandoff = await module.reconcileDueSessions();
+
+    expect(recoveredHandoff).toEqual({ claimed: 1, settled: 1, deferred: 0 });
+    expect(
+      await prisma.contentPack.count({
+        where: { projectId: rollbackOpen.projectId },
+      }),
+    ).toBe(1);
+    expect(
+      await prisma.ingestJob.count({
+        where: { uploadSessionId: rollbackOpen.sessionId },
+      }),
+    ).toBe(1);
+
+    const midTransactionInput = {
+      ...input,
+      clientIdempotencyKey: randomUUID(),
+      title: "Mid-transaction takeover",
+      source: {
+        ...input.source,
+        fileName: "mid-transaction.mp4",
+        browserFingerprint: '["mid-transaction.mp4",2048,"video/mp4",2]',
+      },
+    };
+    const midTransactionOpen = await module.open(midTransactionInput);
+    objectUploaded = true;
+    await prisma.$executeRawUnsafe(`
+      CREATE OR REPLACE FUNCTION upload_session_handoff_delay()
+      RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        PERFORM pg_advisory_xact_lock(8675309);
+        PERFORM pg_sleep(1);
+        RETURN NEW;
+      END;
+      $$
+    `);
+    await prisma.$executeRawUnsafe(`
+      CREATE TRIGGER upload_session_handoff_delay_trigger
+      BEFORE INSERT ON "ContentPack"
+      FOR EACH ROW EXECUTE FUNCTION upload_session_handoff_delay()
+    `);
+    try {
+      const staleFinalize = module.finalize({
+        actorUserId: user.id,
+        workspaceId: workspace.id,
+        sessionId: midTransactionOpen.sessionId,
+        parts: [],
+      });
+      let triggerEntered = false;
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const probe = await pool.query<{ acquired: boolean }>(
+          "SELECT pg_try_advisory_lock(8675309) AS acquired",
+        );
+        if (!probe.rows[0]?.acquired) {
+          triggerEntered = true;
+          break;
+        }
+        await pool.query("SELECT pg_advisory_unlock(8675309)");
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(triggerEntered).toBe(true);
+      const takeoverAttemptId = randomUUID();
+      await prisma.uploadSession.update({
+        where: { id: midTransactionOpen.sessionId },
+        data: {
+          status: "reconciling",
+          reconciliationAttemptId: takeoverAttemptId,
+          reconciliationLeaseExpiresAt: new Date(Date.now() + 60_000),
+        },
+      });
+      await expect(staleFinalize).resolves.toMatchObject({
+        outcome: "reconciling",
+      });
+      expect(
+        await prisma.project.count({
+          where: { id: midTransactionOpen.projectId },
+        }),
+      ).toBe(0);
+      expect(
+        await prisma.ingestJob.count({
+          where: { uploadSessionId: midTransactionOpen.sessionId },
+        }),
+      ).toBe(0);
+      expect(
+        await prisma.uploadSession.findUniqueOrThrow({
+          where: { id: midTransactionOpen.sessionId },
+          select: { status: true, reconciliationAttemptId: true },
+        }),
+      ).toEqual({
+        status: "reconciling",
+        reconciliationAttemptId: takeoverAttemptId,
+      });
+    } finally {
+      await prisma.$executeRawUnsafe(
+        'DROP TRIGGER IF EXISTS upload_session_handoff_delay_trigger ON "ContentPack"',
+      );
+      await prisma.$executeRawUnsafe(
+        "DROP FUNCTION IF EXISTS upload_session_handoff_delay()",
+      );
+    }
+
+    const backoffSessionId = randomUUID();
+    const backoffNow = new Date();
+    const backoffDueAt = new Date(backoffNow.getTime() + 60_000);
+    await prisma.uploadSession.create({
+      data: {
+        id: backoffSessionId,
+        workspaceId: workspace.id,
+        actorUserId: user.id,
+        legacyOwnerUserId: user.id,
+        clientIdempotencyKey: randomUUID(),
+        immutableInputFingerprint: "initiating-backoff",
+        preallocatedProjectId: randomUUID(),
+        title: "Initiating backoff",
+        fileName: "initiating.mp4",
+        fileSizeBytes: 2_048n,
+        contentType: "video/mp4",
+        browserFingerprint: "initiating-backoff",
+        generationSettings: { languageCode: "en", contentPack: CONTENT_PACK },
+        transferKind: "multipart",
+        partSizeBytes: 16 * 1024 * 1024,
+        partCount: 1,
+        storageKey: `workspaces/${workspace.id}/upload-sessions/${backoffSessionId}/initiating.mp4`,
+        status: "initiating",
+        admissionClaimExpiresAt: new Date(backoffNow.getTime() - 1_000),
+        reconcileAt: backoffDueAt,
+        expiresAt: new Date(backoffNow.getTime() + 120_000),
+        hardExpiresAt: new Date(backoffNow.getTime() + 180_000),
+      },
+    });
+    expect(
+      (
+        await prismaUploadSessionPersistence.findDueReconciliation({
+          now: backoffNow,
+          limit: 25,
+        })
+      ).some((session) => session.id === backoffSessionId),
+    ).toBe(false);
+    expect(
+      (
+        await prismaUploadSessionPersistence.claimReconciliation({
+          sessionId: backoffSessionId,
+          reconciliationAttemptId: randomUUID(),
+          leaseExpiresAt: new Date(backoffNow.getTime() + 30_000),
+          updatedAt: backoffNow,
+        })
+      ).claimed,
+    ).toBe(false);
+    const backoffClaim = await prismaUploadSessionPersistence.claimReconciliation({
+      sessionId: backoffSessionId,
+      reconciliationAttemptId: randomUUID(),
+      leaseExpiresAt: new Date(backoffDueAt.getTime() + 30_000),
+      updatedAt: backoffDueAt,
+    });
+    expect(backoffClaim.claimed).toBe(true);
+
+    const leaseSessionId = randomUUID();
+    const leaseNow = new Date();
+    await prisma.uploadSession.create({
+      data: {
+        id: leaseSessionId,
+        workspaceId: workspace.id,
+        actorUserId: user.id,
+        legacyOwnerUserId: user.id,
+        clientIdempotencyKey: randomUUID(),
+        immutableInputFingerprint: "reconciliation-lease",
+        preallocatedProjectId: randomUUID(),
+        title: "Reconciliation lease",
+        fileName: "lease.mp4",
+        fileSizeBytes: 2_048n,
+        contentType: "video/mp4",
+        browserFingerprint: "reconciliation-lease",
+        generationSettings: { languageCode: "en", contentPack: CONTENT_PACK },
+        transferKind: "single",
+        partCount: 1,
+        storageKey: `workspaces/${workspace.id}/upload-sessions/${leaseSessionId}/lease.mp4`,
+        completionParts: { version: 1, parts: [] },
+        status: "reconciling",
+        reconcileAt: new Date(leaseNow.getTime() - 1_000),
+        expiresAt: new Date(leaseNow.getTime() + 60_000),
+        hardExpiresAt: new Date(leaseNow.getTime() + 120_000),
+      },
+    });
+    const firstAttemptId = randomUUID();
+    const takeoverAttemptId = randomUUID();
+    const firstClaim = await prismaUploadSessionPersistence.claimReconciliation({
+      sessionId: leaseSessionId,
+      reconciliationAttemptId: firstAttemptId,
+      leaseExpiresAt: new Date(leaseNow.getTime() + 30_000),
+      updatedAt: leaseNow,
+    });
+    const blockedClaim = await prismaUploadSessionPersistence.claimReconciliation({
+      sessionId: leaseSessionId,
+      reconciliationAttemptId: randomUUID(),
+      leaseExpiresAt: new Date(leaseNow.getTime() + 30_000),
+      updatedAt: leaseNow,
+    });
+    const takeoverAt = new Date(leaseNow.getTime() + 30_001);
+    const takeover = await prismaUploadSessionPersistence.claimReconciliation({
+      sessionId: leaseSessionId,
+      reconciliationAttemptId: takeoverAttemptId,
+      leaseExpiresAt: new Date(takeoverAt.getTime() + 30_000),
+      updatedAt: takeoverAt,
+    });
+
+    expect(firstClaim.claimed).toBe(true);
+    expect(blockedClaim.claimed).toBe(false);
+    expect(takeover.claimed).toBe(true);
+    await prismaUploadSessionPersistence.beginCompensation({
+      sessionId: leaseSessionId,
+      reconciliationAttemptId: takeoverAttemptId,
+      failureCode: "takeover_settlement",
+      updatedAt: takeoverAt,
+    });
+    await expect(
+      prismaUploadSessionPersistence.settleTerminal({
+        sessionId: leaseSessionId,
+        reconciliationAttemptId: firstAttemptId,
+        status: "failed",
+        failureCode: "stale_writer",
+        updatedAt: takeoverAt,
+      }),
+    ).rejects.toBeInstanceOf(UploadSessionReconciliationClaimLostError);
+    await prismaUploadSessionPersistence.settleTerminal({
+      sessionId: leaseSessionId,
+      reconciliationAttemptId: takeoverAttemptId,
+      status: "failed",
+      failureCode: "takeover_settlement",
+      updatedAt: takeoverAt,
+    });
+    expect(
+      await prisma.uploadSession.findUniqueOrThrow({
+        where: { id: leaseSessionId },
+        select: { status: true, failureCode: true },
+      }),
+    ).toEqual({ status: "failed", failureCode: "takeover_settlement" });
+
+    const fairnessNow = new Date(Date.now() + 5 * 60_000);
+    await prisma.uploadSession.updateMany({
+      where: {
+        workspaceId: workspace.id,
+        status: {
+          in: [
+            "initiating",
+            "uploading",
+            "finalizing",
+            "reconciling",
+            "compensating",
+          ],
+        },
+      },
+      data: {
+        status: "failed",
+        failureCode: "test_fixture_settled",
+        reconciliationAttemptId: null,
+        reconciliationLeaseExpiresAt: null,
+      },
+    });
+    const fairnessRows = Array.from({ length: 30 }, (_, index) => {
+      const id = randomUUID();
+      return {
+        id,
+        workspaceId: workspace.id,
+        actorUserId: user.id,
+        legacyOwnerUserId: user.id,
+        clientIdempotencyKey: randomUUID(),
+        immutableInputFingerprint: `batch-fairness-${index}`,
+        preallocatedProjectId: randomUUID(),
+        title: `Batch fairness ${index}`,
+        fileName: `batch-${index}.mp4`,
+        fileSizeBytes: 2_048n,
+        contentType: "video/mp4",
+        browserFingerprint: `batch-fairness-${index}`,
+        generationSettings: { languageCode: "en", contentPack: CONTENT_PACK },
+        transferKind: "single" as const,
+        partCount: 1,
+        storageKey: `workspaces/${workspace.id}/upload-sessions/${id}/batch-${index}.mp4`,
+        completionParts: { version: 1, parts: [] },
+        status: "reconciling" as const,
+        reconcileAt: new Date(fairnessNow.getTime() - 1_000),
+        expiresAt: new Date(fairnessNow.getTime() + 60_000),
+        hardExpiresAt: new Date(fairnessNow.getTime() + 120_000),
+      };
+    });
+    await prisma.uploadSession.createMany({ data: fairnessRows });
+    const firstBatch = await prismaUploadSessionPersistence.findDueReconciliation({
+      now: fairnessNow,
+      limit: 25,
+    });
+    expect(firstBatch).toHaveLength(25);
+    for (const session of firstBatch) {
+      expect(
+        (
+          await prismaUploadSessionPersistence.claimReconciliation({
+            sessionId: session.id,
+            reconciliationAttemptId: randomUUID(),
+            leaseExpiresAt: new Date(fairnessNow.getTime() + 60_000),
+            updatedAt: fairnessNow,
+          })
+        ).claimed,
+      ).toBe(true);
+    }
+    const secondBatch =
+      await prismaUploadSessionPersistence.findDueReconciliation({
+        now: fairnessNow,
+        limit: 25,
+      });
+    expect(secondBatch).toHaveLength(5);
+    expect(
+      secondBatch.every(
+        (session) => !firstBatch.some((claimed) => claimed.id === session.id),
+      ),
+    ).toBe(true);
   });
 });

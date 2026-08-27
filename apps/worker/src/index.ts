@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { createIsolatedPollLoop, type PollLoop } from "./poll-loop";
 import {
   billingService,
   assertUploadProviderLifecyclePrerequisite,
@@ -252,12 +253,6 @@ async function reapStalledRunsIfDue() {
   }
 }
 
-interface PollLoop {
-  name: string;
-  tick: () => Promise<void>;
-  status: () => { polling: boolean; lastPollAt: string | null };
-}
-
 function diagnoseWorkflowAttemptLost(input: {
   run: {
     id: string;
@@ -345,56 +340,38 @@ function createPollLoop(
   name: string,
   fn: () => Promise<number>,
 ): PollLoop {
-  let polling = false;
-  let lastPollAt: string | null = null;
-  let consecutiveFailures = 0;
-
-  return {
+  return createIsolatedPollLoop({
     name,
-    status: () => ({ polling, lastPollAt }),
-    tick: async () => {
-      if (polling) {
-        return;
-      }
-      polling = true;
-      // Stamped at tick start, not completion — a multi-minute render must
-      // not make this loop look stale to anything watching /health.
-      lastPollAt = new Date().toISOString();
-      try {
-        const processed = await fn();
-        consecutiveFailures = 0;
-        if (processed > 0) {
-          processedCount += processed;
-        }
-      } catch (error) {
-        consecutiveFailures += 1;
-        console.error(
-          JSON.stringify({
-            level: "error",
-            message: "worker_poll_failed",
-            ts: new Date().toISOString(),
-            loop: name,
-            error: error instanceof Error ? error.message : "Unknown error",
-            consecutiveFailures,
-          }),
-        );
-        if (consecutiveFailures >= maxConsecutivePollFailures) {
-          console.error(
-            JSON.stringify({
-              level: "error",
-              message: "worker_poll_failures_exceeded",
-              ts: new Date().toISOString(),
-              loop: name,
-              consecutiveFailures,
-            }),
-          );
-          process.exit(1);
-        }
-      } finally {
-        polling = false;
-      }
+    run: fn,
+    maximumConsecutiveFailures: maxConsecutivePollFailures,
+    onProcessed: (processed) => {
+      processedCount += processed;
     },
-  };
+    onFailure: (error, consecutiveFailures) => {
+      console.error(
+        JSON.stringify({
+          level: "error",
+          message: "worker_poll_failed",
+          ts: new Date().toISOString(),
+          loop: name,
+          error: error instanceof Error ? error.message : "Unknown error",
+          consecutiveFailures,
+        }),
+      );
+    },
+    onFailureLimit: (consecutiveFailures) => {
+      console.error(
+        JSON.stringify({
+          level: "error",
+          message: "worker_poll_failures_exceeded",
+          ts: new Date().toISOString(),
+          loop: name,
+          consecutiveFailures,
+        }),
+      );
+      process.exit(1);
+    },
+  });
 }
 
 const ingestLoop = createPollLoop("ingest", async () => {

@@ -522,6 +522,173 @@ describe("Upload Session browser adapter", () => {
     expect(requests).toContain("https://upload.invalid/part/fresh-1");
   });
 
+  test("refreshes a grant that expires while an earlier part is still uploading", async () => {
+    const source = new File([new Uint8Array([1, 2])], "slow-window.mp4", {
+      type: "video/mp4",
+      lastModified: 811,
+    });
+    let now = Date.parse("2026-08-27T00:00:00.000Z");
+    const uploadedUrls: string[] = [];
+    const refreshedParts: number[][] = [];
+    const fetcher: typeof fetch = async (request, init) => {
+      const url = String(request);
+      if (url === "/api/upload-sessions/open") {
+        return Response.json({
+          outcome: "uploading",
+          sessionId: "aeaeaeae-aeae-4eae-8eae-aeaeaeaeaeaf",
+          projectId: "bfbfbfbf-bfbf-4fbf-8fbf-bfbfbfbfbfc0",
+          transfer: {
+            kind: "multipart",
+            partSizeBytes: 1,
+            partCount: 2,
+            concurrency: 1,
+            grantExpiresAt: "2026-08-27T00:02:00.000Z",
+            grants: [
+              { partNumber: 1, url: "https://upload.invalid/slow/old-1" },
+              { partNumber: 2, url: "https://upload.invalid/slow/old-2" },
+            ],
+            completedParts: [],
+          },
+        });
+      }
+      if (url === "/api/upload-sessions/grants") {
+        const partNumbers = JSON.parse(String(init?.body)).partNumbers as number[];
+        refreshedParts.push(partNumbers);
+        return Response.json({
+          outcome: "granted",
+          sessionId: "aeaeaeae-aeae-4eae-8eae-aeaeaeaeaeaf",
+          expiresAt: "2026-08-27T00:17:00.000Z",
+          grants: partNumbers.map((partNumber) => ({
+            partNumber,
+            url: `https://upload.invalid/slow/fresh-${partNumber}`,
+          })),
+        });
+      }
+      if (url === "/api/upload-sessions/finalize") {
+        return Response.json({
+          outcome: "queued_for_ingest",
+          sessionId: "aeaeaeae-aeae-4eae-8eae-aeaeaeaeaeaf",
+          projectId: "bfbfbfbf-bfbf-4fbf-8fbf-bfbfbfbfbfc0",
+          queuedJobId: "cfcfcfcf-cfcf-4fcf-8fcf-cfcfcfcfcfd0",
+        });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    };
+
+    await runUploadSessionTransfer({
+      file: source,
+      title: "Slow window",
+      brandTemplateId: null,
+      generationContext: { languageCode: "auto", contentPack: {} },
+      storage: null,
+      fetcher,
+      now: () => now,
+      uploadTransport: async ({ url }) => {
+        uploadedUrls.push(url);
+        if (url.endsWith("old-1")) {
+          now = Date.parse("2026-08-27T00:01:10.000Z");
+        }
+        return { etag: `etag-${uploadedUrls.length}` };
+      },
+      createClientKey: () => "f0f0f0f0-f0f0-40f0-80f0-f0f0f0f0f0f1",
+    });
+
+    expect(uploadedUrls).toEqual([
+      "https://upload.invalid/slow/old-1",
+      "https://upload.invalid/slow/fresh-2",
+    ]);
+    expect(refreshedParts).toEqual([[2]]);
+  });
+
+  test("keeps expiry attached to each URL when concurrent workers refresh", async () => {
+    const source = new File([new Uint8Array([1, 2, 3])], "concurrent-expiry.mp4", {
+      type: "video/mp4",
+      lastModified: 813,
+    });
+    let now = Date.parse("2026-08-27T00:00:00.000Z");
+    let releaseFirst!: () => void;
+    const firstBlocked = new Promise<void>((resolve) => {
+      releaseFirst = resolve;
+    });
+    const uploadedUrls: string[] = [];
+    const refreshedParts: number[][] = [];
+    const fetcher: typeof fetch = async (request, init) => {
+      const url = String(request);
+      if (url === "/api/upload-sessions/open") {
+        return Response.json({
+          outcome: "uploading",
+          sessionId: "aeaeaeae-aeae-4eae-8eae-aeaeaeaeaeb0",
+          projectId: "bfbfbfbf-bfbf-4fbf-8fbf-bfbfbfbfbfc1",
+          transfer: {
+            kind: "multipart",
+            partSizeBytes: 1,
+            partCount: 3,
+            concurrency: 2,
+            grantExpiresAt: "2026-08-27T00:02:00.000Z",
+            grants: [1, 2, 3].map((partNumber) => ({
+              partNumber,
+              url: `https://upload.invalid/concurrent/old-${partNumber}`,
+            })),
+            completedParts: [],
+          },
+        });
+      }
+      if (url === "/api/upload-sessions/grants") {
+        const partNumbers = JSON.parse(String(init?.body)).partNumbers as number[];
+        refreshedParts.push(partNumbers);
+        return Response.json({
+          outcome: "granted",
+          sessionId: "aeaeaeae-aeae-4eae-8eae-aeaeaeaeaeb0",
+          expiresAt: "2026-08-27T00:17:00.000Z",
+          grants: partNumbers.map((partNumber) => ({
+            partNumber,
+            url: `https://upload.invalid/concurrent/fresh-${partNumber}`,
+          })),
+        });
+      }
+      if (url === "/api/upload-sessions/finalize") {
+        return Response.json({
+          outcome: "queued_for_ingest",
+          sessionId: "aeaeaeae-aeae-4eae-8eae-aeaeaeaeaeb0",
+          projectId: "bfbfbfbf-bfbf-4fbf-8fbf-bfbfbfbfbfc1",
+          queuedJobId: "cfcfcfcf-cfcf-4fcf-8fcf-cfcfcfcfcfd1",
+        });
+      }
+      throw new Error(`Unexpected request: ${url}`);
+    };
+    let failedSecond = false;
+
+    await runUploadSessionTransfer({
+      file: source,
+      title: "Concurrent expiry",
+      brandTemplateId: null,
+      generationContext: { languageCode: "auto", contentPack: {} },
+      storage: null,
+      fetcher,
+      now: () => now,
+      uploadTransport: async ({ url }) => {
+        uploadedUrls.push(url);
+        if (url.endsWith("old-1")) await firstBlocked;
+        if (url.endsWith("old-2") && !failedSecond) {
+          failedSecond = true;
+          now = Date.parse("2026-08-27T00:01:10.000Z");
+          throw new TypeError("opaque expiry failure");
+        }
+        if (url.endsWith("fresh-2")) releaseFirst();
+        return { etag: `etag-${url.slice(url.lastIndexOf("-") + 1)}` };
+      },
+      createClientKey: () => "f0f0f0f0-f0f0-40f0-80f0-f0f0f0f0f0f2",
+    });
+
+    expect(refreshedParts).toEqual([[2], [3]]);
+    expect(uploadedUrls).toContain(
+      "https://upload.invalid/concurrent/fresh-3",
+    );
+    expect(uploadedUrls).not.toContain(
+      "https://upload.invalid/concurrent/old-3",
+    );
+  });
+
   test("refreshes once after an opaque failure near grant expiry", async () => {
     const source = new File([new Uint8Array([1, 2, 3])], "opaque.mp4", {
       type: "video/mp4",
@@ -692,6 +859,163 @@ describe("Upload Session browser adapter", () => {
       }),
     ).rejects.toThrow("HTTP 400");
     expect(attempts).toBe(1);
+  });
+
+  test("records bounded multipart performance facts for medium, 1 GiB, and 5 GiB sources", async () => {
+    const fixtureSizes = [
+      256 * 1024 * 1024,
+      1024 * 1024 * 1024,
+      5 * 1024 * 1024 * 1024,
+    ];
+    const metrics: Array<{
+      sourceBytes: number;
+      firstGrantLatencyMs: number;
+      grantResponseBytes: number;
+      uploadDurationMs: number;
+      throughputBytesPerSecond: number;
+      retryBytes: number;
+      browserPeakBytes: number;
+    }> = [];
+
+    for (const sourceBytes of fixtureSizes) {
+      let clockMs = 0;
+      let grantResponseBytes = 0;
+      let attemptedBytes = 0;
+      let activeBytes = 0;
+      let browserPeakBytes = 0;
+      let injectedRetry = false;
+      let finalThroughput = 0;
+      const partSizeBytes = 16 * 1024 * 1024;
+      const partCount = Math.ceil(sourceBytes / partSizeBytes);
+      const source = {
+        name: `fixture-${sourceBytes}.mp4`,
+        type: "video/mp4",
+        size: sourceBytes,
+        lastModified: 812,
+        slice(start: number, end: number) {
+          return { size: end - start } as Blob;
+        },
+      } as File;
+      const grantPayload = (partNumbers: number[]) => ({
+        outcome: "granted",
+        sessionId: "11111111-1111-4111-8111-111111111119",
+        expiresAt: "2099-08-27T00:15:00.000Z",
+        grants: partNumbers.map((partNumber) => ({
+          partNumber,
+          url: `https://upload.invalid/perf/${partNumber}`,
+        })),
+      });
+      const fetcher: typeof fetch = async (request, init) => {
+        const url = String(request);
+        if (url === "/api/upload-sessions/open") {
+          clockMs += 8;
+          const payload = {
+            outcome: "uploading",
+            sessionId: "11111111-1111-4111-8111-111111111119",
+            projectId: "22222222-2222-4222-8222-222222222229",
+            transfer: {
+              kind: "multipart",
+              partSizeBytes,
+              partCount,
+              concurrency: 4,
+              grantExpiresAt: "2099-08-27T00:15:00.000Z",
+              grants: grantPayload(
+                Array.from(
+                  { length: Math.min(16, partCount) },
+                  (_, index) => index + 1,
+                ),
+              ).grants,
+              completedParts: [],
+            },
+          };
+          grantResponseBytes += new TextEncoder().encode(
+            JSON.stringify(payload),
+          ).byteLength;
+          return Response.json(payload);
+        }
+        if (url === "/api/upload-sessions/grants") {
+          clockMs += 5;
+          const partNumbers = JSON.parse(String(init?.body))
+            .partNumbers as number[];
+          const payload = grantPayload(partNumbers);
+          grantResponseBytes += new TextEncoder().encode(
+            JSON.stringify(payload),
+          ).byteLength;
+          return Response.json(payload);
+        }
+        if (url === "/api/upload-sessions/finalize") {
+          return Response.json({
+            outcome: "queued_for_ingest",
+            sessionId: "11111111-1111-4111-8111-111111111119",
+            projectId: "22222222-2222-4222-8222-222222222229",
+            queuedJobId: "33333333-3333-4333-8333-333333333339",
+          });
+        }
+        throw new Error(`Unexpected request: ${url}`);
+      };
+      const uploadStartedAtMs = clockMs;
+
+      await runUploadSessionTransfer({
+        file: source,
+        title: "Performance fixture",
+        brandTemplateId: null,
+        generationContext: { languageCode: "auto", contentPack: {} },
+        storage: null,
+        fetcher,
+        now: () => Date.parse("2026-08-27T00:00:00.000Z") + clockMs,
+        progressClock: () => clockMs,
+        waitBeforeRetry: async () => {},
+        uploadTransport: async ({ body, onProgress, url }) => {
+          attemptedBytes += body.size;
+          activeBytes += body.size;
+          browserPeakBytes = Math.max(browserPeakBytes, activeBytes);
+          await Promise.resolve();
+          if (!injectedRetry && url.endsWith("/1")) {
+            injectedRetry = true;
+            activeBytes -= body.size;
+            throw new TypeError("opaque transient failure");
+          }
+          clockMs += Math.ceil((body.size / (64 * 1024 * 1024)) * 1_000);
+          onProgress(body.size);
+          activeBytes -= body.size;
+          return { etag: `etag-${url.slice(url.lastIndexOf("/") + 1)}` };
+        },
+        onProgress: (progress) => {
+          if (progress.stage === "upload" && progress.bytesPerSecond) {
+            finalThroughput = progress.bytesPerSecond;
+          }
+        },
+        createClientKey: () => "44444444-4444-4444-8444-444444444449",
+      });
+
+      metrics.push({
+        sourceBytes,
+        firstGrantLatencyMs: 8,
+        grantResponseBytes,
+        uploadDurationMs: clockMs - uploadStartedAtMs,
+        throughputBytesPerSecond: finalThroughput,
+        retryBytes: attemptedBytes - sourceBytes,
+        browserPeakBytes,
+      });
+    }
+
+    expect(metrics.map((metric) => metric.sourceBytes)).toEqual(fixtureSizes);
+    expect(metrics.every((metric) => metric.firstGrantLatencyMs === 8)).toBe(
+      true,
+    );
+    expect(metrics.every((metric) => metric.grantResponseBytes > 0)).toBe(true);
+    expect(metrics.every((metric) => metric.uploadDurationMs > 0)).toBe(true);
+    expect(
+      metrics.every((metric) => metric.throughputBytesPerSecond > 0),
+    ).toBe(true);
+    expect(
+      metrics.every((metric) => metric.retryBytes === 16 * 1024 * 1024),
+    ).toBe(true);
+    expect(
+      metrics.every(
+        (metric) => metric.browserPeakBytes <= 4 * 16 * 1024 * 1024,
+      ),
+    ).toBe(true);
   });
 
   test("pause waits for active part requests to settle and preserves resume intent", async () => {

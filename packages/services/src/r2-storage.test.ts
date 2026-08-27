@@ -13,6 +13,7 @@ import {
   deleteObject,
   downloadObjectToFile,
   headObject,
+  isExactMissingMultipartUploadError,
   InvalidObjectMetadataError,
   isR2Configured,
   listExactKeyMultipartUploads,
@@ -40,6 +41,27 @@ test("R2 adapter classifies access, missing-object, and cancellation failures", 
   expect(classifyR2StorageError(new DOMException("cancelled", "AbortError"))).toBe(
     "storage_operation_cancelled",
   );
+});
+
+test("R2 multipart abort only suppresses an exact missing-upload response", () => {
+  expect(
+    isExactMissingMultipartUploadError({
+      name: "NoSuchUpload",
+      $metadata: { httpStatusCode: 404 },
+    }),
+  ).toBe(true);
+  expect(
+    isExactMissingMultipartUploadError({
+      name: "NoSuchBucket",
+      $metadata: { httpStatusCode: 404 },
+    }),
+  ).toBe(false);
+  expect(
+    isExactMissingMultipartUploadError({
+      name: "NotFound",
+      $metadata: { httpStatusCode: 404 },
+    }),
+  ).toBe(false);
 });
 
 test("R2 exact-key recovery follows every provider inventory page", async () => {

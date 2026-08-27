@@ -328,6 +328,14 @@ async function putWithRetry(input: {
       };
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") throw error;
+      if (!refreshedAfterFailure && input.refreshUrlAfterFailure) {
+        const refreshedUrl = await input.refreshUrlAfterFailure(error);
+        if (refreshedUrl) {
+          currentUrl = refreshedUrl;
+          refreshedAfterFailure = true;
+          continue;
+        }
+      }
       if (
         error instanceof UploadHttpError &&
         error.status !== 408 &&
@@ -337,14 +345,6 @@ async function putWithRetry(input: {
         throw error;
       }
       lastError = error;
-      if (!refreshedAfterFailure && input.refreshUrlAfterFailure) {
-        const refreshedUrl = await input.refreshUrlAfterFailure(error);
-        if (refreshedUrl) {
-          currentUrl = refreshedUrl;
-          refreshedAfterFailure = true;
-          continue;
-        }
-      }
       if (attempt < 3) await input.waitBeforeRetry(attempt);
       attempt += 1;
     }
@@ -511,10 +511,17 @@ export async function runUploadSessionTransfer(
       });
     };
     reportProgress();
-    let pending = transfer.grants.filter(
-      (grant) => !completedNumbers.has(grant.partNumber),
-    );
-    let grantExpiresAt = Date.parse(transfer.grantExpiresAt);
+    type ActiveGrant = {
+      partNumber: number;
+      url: string;
+      expiresAtMs: number;
+    };
+    let pending: ActiveGrant[] = transfer.grants
+      .filter((grant) => !completedNumbers.has(grant.partNumber))
+      .map((grant) => ({
+        ...grant,
+        expiresAtMs: Date.parse(transfer.grantExpiresAt),
+      }));
     const requestGrantWindow = async (partNumbers: number[]) => {
       const grantResponse = await fetcher("/api/upload-sessions/grants", {
         method: "POST",
@@ -552,12 +559,15 @@ export async function runUploadSessionTransfer(
       ) {
         throw new Error("The upload service returned an invalid grant contract.");
       }
-      grantExpiresAt = Date.parse(grantPayload.expiresAt);
-      return parsedGrants as Array<{ partNumber: number; url: string }>;
+      const expiresAtMs = Date.parse(grantPayload.expiresAt);
+      return parsedGrants.map((grant) => ({ ...grant, expiresAtMs })) as ActiveGrant[];
     };
     if (
       pending.length > 0 &&
-      grantExpiresAt - (input.now?.() ?? Date.now()) <= 60_000
+      pending.some(
+        (grant) =>
+          grant.expiresAtMs - (input.now?.() ?? Date.now()) <= 60_000,
+      )
     ) {
       pending = await requestGrantWindow(
         pending.map((grant) => grant.partNumber),
@@ -567,7 +577,14 @@ export async function runUploadSessionTransfer(
       let cursor = 0;
       const worker = async () => {
         while (cursor < pending.length) {
-          const grant = pending[cursor++]!;
+          let grant = pending[cursor++]!;
+          if (grant.expiresAtMs - (input.now?.() ?? Date.now()) <= 60_000) {
+            const [freshGrant] = await requestGrantWindow([grant.partNumber]);
+            if (!freshGrant) {
+              throw new Error(`Upload part ${grant.partNumber} omitted a grant.`);
+            }
+            grant = freshGrant;
+          }
         const start = (grant.partNumber - 1) * transfer.partSizeBytes;
         const end = Math.min(
           start + transfer.partSizeBytes,
@@ -590,8 +607,11 @@ export async function runUploadSessionTransfer(
           },
           refreshUrlAfterFailure: async (error) => {
             if (
-              !(error instanceof TypeError) ||
-              grantExpiresAt - (input.now?.() ?? Date.now()) > 60_000
+              !(
+                error instanceof TypeError ||
+                (error instanceof UploadHttpError && error.status === 403)
+              ) ||
+              grant.expiresAtMs - (input.now?.() ?? Date.now()) > 60_000
             ) {
               return null;
             }

@@ -270,6 +270,7 @@ export async function createMultipartUpload(params: {
   key: string;
   contentType: string;
   metadata?: Record<string, string>;
+  signal?: AbortSignal;
 }) {
   await projectStorageDeadline(params.key);
   const client = getClient();
@@ -282,6 +283,7 @@ export async function createMultipartUpload(params: {
       ContentType: params.contentType,
       Metadata: sanitizeObjectMetadata(params.metadata),
     }),
+    { abortSignal: params.signal },
   );
 
   if (!response.UploadId) {
@@ -332,21 +334,25 @@ export async function presignMultipartPartUrls(params: {
 export async function listUploadedParts(params: {
   key: string;
   uploadId: string;
+  signal?: AbortSignal;
+  onProviderCall?: () => void;
 }) {
   await projectStorageDeadline(params.key);
   const client = getClient();
   const { bucket } = getR2Config();
 
-  return collectUploadedParts(async ({ partNumberMarker }) =>
-    client.send(
+  return collectUploadedParts(async ({ partNumberMarker }) => {
+    params.onProviderCall?.();
+    return client.send(
       new ListPartsCommand({
         Bucket: bucket,
         Key: params.key,
         UploadId: params.uploadId,
         PartNumberMarker: partNumberMarker,
       }),
-    ),
-  );
+      { abortSignal: params.signal },
+    );
+  });
 }
 
 interface MultipartPartInventoryPage {
@@ -429,20 +435,27 @@ export async function collectExactKeyMultipartUploads(
   return uploads;
 }
 
-export async function listExactKeyMultipartUploads(params: { key: string }) {
+export async function listExactKeyMultipartUploads(params: {
+  key: string;
+  signal?: AbortSignal;
+  onProviderCall?: () => void;
+}) {
   const client = getClient();
   const { bucket } = getR2Config();
   return collectExactKeyMultipartUploads(
     params.key,
-    async ({ keyMarker, uploadIdMarker }) =>
-      client.send(
+    async ({ keyMarker, uploadIdMarker }) => {
+      params.onProviderCall?.();
+      return client.send(
         new ListMultipartUploadsCommand({
           Bucket: bucket,
           Prefix: params.key,
           KeyMarker: keyMarker,
           UploadIdMarker: uploadIdMarker,
         }),
-      ),
+        { abortSignal: params.signal },
+      );
+    },
   );
 }
 
@@ -450,6 +463,7 @@ export async function completeMultipartUpload(params: {
   key: string;
   uploadId: string;
   etags: Array<{ partNumber: number; etag: string }>;
+  signal?: AbortSignal;
 }) {
   await projectStorageDeadline(params.key);
   const client = getClient();
@@ -470,12 +484,14 @@ export async function completeMultipartUpload(params: {
           })),
       },
     }),
+    { abortSignal: params.signal },
   );
 }
 
 export async function abortMultipartUpload(params: {
   key: string;
   uploadId: string;
+  signal?: AbortSignal;
 }) {
   const client = getClient();
   const { bucket } = getR2Config();
@@ -487,23 +503,22 @@ export async function abortMultipartUpload(params: {
         Key: params.key,
         UploadId: params.uploadId,
       }),
+      { abortSignal: params.signal },
     );
   } catch (error) {
-    const candidate = error as {
-      name?: unknown;
-      code?: unknown;
-      Code?: unknown;
-      $metadata?: { httpStatusCode?: unknown };
-    };
-    const alreadyMissing =
-      [candidate.name, candidate.code, candidate.Code].includes(
-        "NoSuchUpload",
-      ) || candidate.$metadata?.httpStatusCode === 404;
-    if (!alreadyMissing) throw error;
+    if (!isExactMissingMultipartUploadError(error)) throw error;
   }
 }
 
-export async function headObject(key: string) {
+export function isExactMissingMultipartUploadError(error: unknown) {
+  if (typeof error !== "object" || error === null) return false;
+  const candidate = error as { name?: unknown; code?: unknown; Code?: unknown };
+  return [candidate.name, candidate.code, candidate.Code].includes(
+    "NoSuchUpload",
+  );
+}
+
+export async function headObject(key: string, options?: { signal?: AbortSignal }) {
   await projectStorageDeadline(key);
   const client = getClient();
   const { bucket } = getR2Config();
@@ -513,6 +528,7 @@ export async function headObject(key: string) {
       Bucket: bucket,
       Key: key,
     }),
+    { abortSignal: options?.signal },
   );
 
   return {
