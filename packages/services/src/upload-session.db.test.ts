@@ -103,6 +103,7 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
       },
     });
     const object = { sizeBytes: 2_048, contentType: "video/mp4" };
+    let objectUploaded = false;
     const storage: UploadSessionStorage = {
       async grantSinglePut() {
         return { url: "https://upload.invalid/direct" };
@@ -121,6 +122,9 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
       },
       async headExactObject() {
         return object;
+      },
+      async headExactObjectIfExists() {
+        return objectUploaded ? object : null;
       },
       async listExactKeyMultipartUploads() {
         throw new Error("multipart must not be used");
@@ -179,6 +183,7 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
       sessionId: firstOpen.sessionId,
       parts: [],
     };
+    objectUploaded = true;
     const [firstFinalize, secondFinalize] = await Promise.all([
       module.finalize(finalizeInput),
       module.finalize(finalizeInput),

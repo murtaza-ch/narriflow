@@ -160,6 +160,40 @@ describe("Upload Session", () => {
     expect(harness.facts.projects).toHaveLength(1);
   });
 
+  test("adopts an exact direct object on replay without uploading it again", async () => {
+    const harness = createInMemoryUploadSessionHarness();
+    const module = createUploadSessionModule(harness.adapters);
+    const input = {
+      ...ACTOR,
+      clientIdempotencyKey: "46464646-4646-4464-8464-464646464646",
+      title: "Lost PUT response",
+      source: {
+        fileName: "adopt.wav",
+        sizeBytes: 2_048,
+        contentType: "audio/wav",
+        browserFingerprint: '["adopt.wav",2048,"audio/wav",102]',
+      },
+      brandTemplateId: null,
+      generation: { languageCode: "en", contentPack: CONTENT_PACK },
+    };
+    const opened = await module.open(input);
+    harness.putSingleObject(opened.sessionId, {
+      sizeBytes: 2_048,
+      contentType: "audio/wav",
+    });
+
+    const adopted = await module.open(input);
+
+    expect(adopted).toMatchObject({
+      outcome: "queued_for_ingest",
+      sessionId: opened.sessionId,
+      projectId: opened.projectId,
+    });
+    expect(harness.facts.singlePuts).toBe(1);
+    expect(harness.facts.objectProbes).toBe(1);
+    expect(harness.facts.projects).toHaveLength(1);
+  });
+
   test("replays the same immutable client intent without repeating admission or provider work", async () => {
     const harness = createInMemoryUploadSessionHarness();
     const module = createUploadSessionModule({
@@ -258,6 +292,55 @@ describe("Upload Session", () => {
     expect(harness.facts.providerInitiations).toHaveLength(1);
   });
 
+  test("waits for a live admission claim instead of bypassing quota during a slow check", async () => {
+    const harness = createInMemoryUploadSessionHarness();
+    const baseAdmission = harness.adapters.admission;
+    let releaseQuota!: () => void;
+    let signalQuotaEntered!: () => void;
+    const quotaEntered = new Promise<void>((resolve) => {
+      signalQuotaEntered = resolve;
+    });
+    const quotaReleased = new Promise<void>((resolve) => {
+      releaseQuota = resolve;
+    });
+    const module = createUploadSessionModule({
+      ...harness.adapters,
+      config: defaultUploadSessionConfig({ smallFileThresholdBytes: 1 }),
+      admission: {
+        ...baseAdmission,
+        async assertQuota(workspaceId) {
+          signalQuotaEntered();
+          await quotaReleased;
+          await baseAdmission.assertQuota(workspaceId);
+        },
+      },
+    });
+    const input = {
+      ...ACTOR,
+      clientIdempotencyKey: "68686868-6868-4686-8686-686868686868",
+      title: "Slow admission",
+      source: {
+        fileName: "slow.mp4",
+        sizeBytes: 33_554_432,
+        contentType: "video/mp4",
+        browserFingerprint: '["slow.mp4",33554432,"video/mp4",505]',
+      },
+      brandTemplateId: null,
+      generation: { languageCode: "auto", contentPack: CONTENT_PACK },
+    };
+
+    const first = module.open(input);
+    await quotaEntered;
+    const second = module.open(input);
+    releaseQuota();
+    const [left, right] = await Promise.all([first, second]);
+
+    expect(right.sessionId).toBe(left.sessionId);
+    expect(harness.facts.quotaChecks).toBe(1);
+    expect(harness.facts.brandResolutions).toBe(1);
+    expect(harness.facts.providerInitiations).toHaveLength(1);
+  });
+
   test("adopts the exact-key provider upload after its binding response is lost", async () => {
     const harness = createInMemoryUploadSessionHarness();
     harness.failNextProviderBinding();
@@ -328,6 +411,55 @@ describe("Upload Session", () => {
     expect(harness.facts.unfinishedProviderUploads).toEqual([
       "opaque/provider/1",
     ]);
+  });
+
+  test("persists and retries partial duplicate-upload cleanup", async () => {
+    const harness = createInMemoryUploadSessionHarness();
+    harness.failNextProviderBinding();
+    const module = createUploadSessionModule({
+      ...harness.adapters,
+      config: defaultUploadSessionConfig({ smallFileThresholdBytes: 1 }),
+    });
+    const input = {
+      ...ACTOR,
+      clientIdempotencyKey: "58585858-5858-4585-8585-585858585858",
+      title: "Retry cleanup",
+      source: {
+        fileName: "cleanup.mp4",
+        sizeBytes: 33_554_432,
+        contentType: "video/mp4",
+        browserFingerprint: '["cleanup.mp4",33554432,"video/mp4",304]',
+      },
+      brandTemplateId: null,
+      generation: { languageCode: "auto", contentPack: CONTENT_PACK },
+    };
+    await expect(module.open(input)).rejects.toThrow(
+      "injected provider bind loss",
+    );
+    const sessionId = harness.facts.sessions[0]!.id;
+    harness.createDuplicateUnfinishedUpload(sessionId);
+    harness.createDuplicateUnfinishedUpload(sessionId);
+    harness.failNextProviderAbort(new Error("temporary abort failure"));
+
+    await expect(module.open(input)).rejects.toThrow(
+      "storage cleanup must be retried",
+    );
+    expect(harness.facts.sessions[0]).toMatchObject({
+      status: "uploading",
+      failureCode: "duplicate_upload_cleanup_failed",
+      cleanupRetryAt: expect.any(Date),
+    });
+
+    await module.open(input);
+
+    expect(harness.facts.unfinishedProviderUploads).toEqual([
+      "opaque/provider/1",
+    ]);
+    expect(harness.facts.sessions[0]).toMatchObject({
+      status: "uploading",
+      failureCode: null,
+      cleanupRetryAt: null,
+    });
   });
 
   test("rejects changed immutable input for an existing workspace key without mutation", async () => {
@@ -548,6 +680,32 @@ describe("Upload Session", () => {
     ).rejects.toBeInstanceOf(UploadSessionNotFoundError);
   });
 
+  test("does not let another workspace actor resume a guessed client key", async () => {
+    const harness = createInMemoryUploadSessionHarness();
+    const module = createUploadSessionModule(harness.adapters);
+    const input = {
+      ...ACTOR,
+      clientIdempotencyKey: "8a8a8a8a-8a8a-4a8a-8a8a-8a8a8a8a8a8a",
+      title: "Actor-owned intent",
+      source: {
+        fileName: "actor.mp4",
+        sizeBytes: 100,
+        contentType: "video/mp4",
+        browserFingerprint: '["actor.mp4",100,"video/mp4",1]',
+      },
+      brandTemplateId: null,
+      generation: { languageCode: "en", contentPack: CONTENT_PACK },
+    };
+    await module.open(input);
+
+    await expect(
+      module.open({
+        ...input,
+        actorUserId: "abababab-abab-4bab-8bab-abababababab",
+      }),
+    ).rejects.toBeInstanceOf(UploadSessionNotFoundError);
+  });
+
   test("deletes a mismatched direct object and records a stable failed disposition", async () => {
     const harness = createInMemoryUploadSessionHarness();
     const module = createUploadSessionModule(harness.adapters);
@@ -583,6 +741,47 @@ describe("Upload Session", () => {
       status: "failed",
       failureCode: "upload_object_size_mismatch",
     });
+  });
+
+  test("records distinct missing and access-denied verification dispositions", async () => {
+    for (const [disposition, failureCode] of [
+      ["missing", "upload_object_missing"],
+      ["access_denied", "upload_object_access_denied"],
+    ] as const) {
+      const harness = createInMemoryUploadSessionHarness();
+      const module = createUploadSessionModule(harness.adapters);
+      const opened = await module.open({
+        ...ACTOR,
+        clientIdempotencyKey:
+          disposition === "missing"
+            ? "93939393-9393-4393-8393-939393939393"
+            : "94949494-9494-4494-8494-949494949494",
+        title: "Probe failure",
+        source: {
+          fileName: "probe.mp4",
+          sizeBytes: 100,
+          contentType: "video/mp4",
+          browserFingerprint: `["probe.mp4",100,"video/mp4","${disposition}"]`,
+        },
+        brandTemplateId: null,
+        generation: { languageCode: "en", contentPack: CONTENT_PACK },
+      });
+      harness.failNextObjectProbe(disposition);
+
+      await expect(
+        module.finalize({
+          actorUserId: ACTOR.actorUserId,
+          workspaceId: ACTOR.workspaceId,
+          sessionId: opened.sessionId,
+          parts: [],
+        }),
+      ).rejects.toBeInstanceOf(UploadSessionIntegrityError);
+      expect(harness.facts.sessions[0]).toMatchObject({
+        status: "failed",
+        failureCode,
+      });
+      expect(harness.facts.projects).toHaveLength(0);
+    }
   });
 
   test("normalizes an exact-object WAV content type before handoff", async () => {

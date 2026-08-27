@@ -20,7 +20,7 @@ describe("readVerifiedUploadPayload", () => {
     });
   });
 
-  test("rejects upload jobs without trusted finalize metadata", () => {
+  test("rejects Upload Finalize Ingest Jobs without trusted metadata", () => {
     expect(() =>
       readVerifiedUploadPayload({ storageKey: "source.mp4" }),
     ).toThrow("verifiedSizeBytes");

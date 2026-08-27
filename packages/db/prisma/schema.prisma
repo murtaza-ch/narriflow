@@ -485,6 +485,7 @@ model UploadSession {
   status                    UploadSessionStatus @default(initiating)
   admissionAttemptId        String?             @db.Uuid
   admissionClaimExpiresAt   DateTime?
+  admissionPreparedAt       DateTime?
   completionParts           Json?
   verifiedSizeBytes         BigInt?
   verifiedContentType       String?

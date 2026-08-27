@@ -19,7 +19,7 @@ Narriflow turns long videos into short, captioned, virality-scored clips
 ## Critical paths (where bugs hurt most)
 
 - Quota gate + Stripe billing webhook — `packages/services/src/billing.service.ts`.
-- Upload multipart completion + ingest — `packages/services/src/project.service.ts`.
+- Upload Session admission, verification, and ingest handoff — `packages/services/src/upload-session.service.ts`.
 - Workflow claiming/reaper — `packages/services/src/project.service.ts`.
 - Clip render pipeline — `apps/worker/src/tasks/render-clips.ts`.
 - Social publishing — `packages/services/src/social.service.ts` + `apps/worker/src/tasks/social-publisher.ts`.
