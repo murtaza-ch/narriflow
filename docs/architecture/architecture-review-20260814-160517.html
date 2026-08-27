@@ -71,7 +71,7 @@
           <li><a class="font-semibold text-emerald-700 hover:text-emerald-800" href="#workflow">✓ 1. Workflow Run lifecycle — completed</a></li>
           <li><a class="font-semibold text-emerald-700 hover:text-emerald-800" href="#studio">✓ 2. Studio Editing Session — completed</a></li>
           <li><a class="font-semibold text-emerald-700 hover:text-emerald-800" href="#render">✓ 3. Clip Render Attempt — completed</a></li>
-          <li><a class="hover:text-indigo-700" href="#composition">4. Clip Composition Plan</a></li>
+          <li><a class="font-semibold text-emerald-700 hover:text-emerald-800" href="#composition">✓ 4. Clip Composition Plan — completed</a></li>
           <li><a class="hover:text-indigo-700" href="#upload">5. Upload Session intake</a></li>
           <li><a class="hover:text-indigo-700" href="#billing">6. Workspace Billing</a></li>
           <li><a class="hover:text-indigo-700" href="#social">7. Social Publication Attempt</a></li>
@@ -240,10 +240,20 @@ flowchart TB
           </div>
         </article>
 
-        <article id="composition" class="break-card scroll-mt-6 rounded-xl border border-slate-300 bg-white shadow-sm overflow-hidden">
+        <article id="composition" class="break-card scroll-mt-6 rounded-xl border-2 border-emerald-500 bg-white shadow-sm overflow-hidden">
           <div class="p-6 md:p-8 space-y-6">
-            <div class="flex flex-col gap-3 md:flex-row md:items-start md:justify-between"><div><div class="text-xs uppercase tracking-widest text-slate-500">04</div><h2 class="text-3xl font-serif mt-1">Deepen a shared Clip Composition Plan</h2></div><div class="flex gap-2"><span class="rounded-full bg-emerald-100 text-emerald-800 px-3 py-1 text-xs font-semibold">Strong</span><span class="rounded-full bg-slate-100 text-slate-700 px-3 py-1 text-xs font-semibold">in-process</span></div></div>
-            <div class="font-mono text-xs leading-6 text-slate-600 codepath">apps/worker/src/tasks/{render-clips,screen-layout,layout-engine,two-up}.ts<br>apps/web/.../studio/_components/{video-preview,normalized-crop,auto-layout-preview}.ts(x)</div>
+            <div class="flex flex-col gap-3 md:flex-row md:items-start md:justify-between"><div><div class="text-xs uppercase tracking-widest text-slate-500">04</div><h2 class="text-3xl font-serif mt-1">Deepen a shared Clip Composition Plan</h2></div><div class="flex flex-wrap gap-2"><span class="rounded-full bg-emerald-600 text-white px-3 py-1 text-xs font-semibold">✓ Completed</span><span class="rounded-full bg-emerald-100 text-emerald-800 px-3 py-1 text-xs font-semibold">Strong</span><span class="rounded-full bg-slate-100 text-slate-700 px-3 py-1 text-xs font-semibold">in-process</span></div></div>
+            <div class="rounded-lg border border-emerald-300 bg-emerald-50 p-5 text-sm text-emerald-950">
+              <div class="text-xs uppercase tracking-widest text-emerald-700 font-semibold">Implementation update · completed 27 August 2026</div>
+              <p class="mt-2">One versioned Clip Composition Plan now owns base layout, B-roll precedence, timed visual layers, edited-time audio, evidence eligibility, fidelity, and typed degradation. Studio and FFmpeg translate the same ready plan. Unknown plan or evidence versions fail before browser adoption, evidence writes, or command execution.</p>
+              <ul class="mt-3 grid gap-2 md:grid-cols-2 text-xs">
+                <li>✓ Eleven dependency-ordered implementation tickets completed</li>
+                <li>✓ 162 worker contract tests and 111 web adapter tests passed</li>
+                <li>✓ Chrome exports covered Center, Auto, Split, Screen, B-roll, edited, and audio-only paths</li>
+                <li>✓ Completion commit: <code>6df0da6</code></li>
+              </ul>
+            </div>
+            <div class="font-mono text-xs leading-6 text-slate-600 codepath">packages/composition-plan/src/clip-composition-plan.ts<br>apps/web/.../studio/_components/{video-preview,composition-preview-adapter}.ts(x)<br>apps/worker/src/{composition-ffmpeg-adapter,render-process-adapter}.ts · tasks/render-clips.ts</div>
             <div class="grid md:grid-cols-2 gap-5">
               <div class="diagram rounded-lg border border-red-200 bg-red-50/40 p-5">
                 <div class="text-xs uppercase tracking-widest text-red-700 font-semibold mb-5">Before · same policy, two implementations</div>
@@ -414,7 +424,7 @@ flowchart TB
             <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr]"><div class="p-3 font-mono text-red-700">P0</div><div class="p-3 font-medium">Ambiguous social acceptance</div><div class="p-3 col-span-2 md:col-span-1 text-slate-600">A provider may accept before the worker crashes; the publishing-row reaper then marks failed and a retry can duplicate an irreversible post.</div></div>
             <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr]"><div class="p-3 font-mono text-amber-700">P1</div><div class="p-3 font-medium">Stripe delivery lacks ledger use</div><div class="p-3 col-span-2 md:col-span-1 text-slate-600">A generic WebhookDeliveryLog exists, but Stripe handleWebhook does not persist event.id; ordering falls back to second-resolution event.created.</div></div>
             <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr]"><div class="p-3 font-mono text-amber-700">P1</div><div class="p-3 font-medium">Distributed side effects lack full compensation</div><div class="p-3 col-span-2 md:col-span-1 text-slate-600">Upload start/finalize and Stripe customer/seat changes cross provider and Postgres state; failure injection is not covered through their interfaces.</div></div>
-            <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr]"><div class="p-3 font-mono text-amber-700">P1</div><div class="p-3 font-medium">Critical orchestration is helper-tested</div><div class="p-3 col-span-2 md:col-span-1 text-slate-600">Workflow Run races, the Studio editing protocol, and Clip Render Attempt behavior now run through their public interfaces. Upload Session sequencing, Billing synchronization, social publishing, and Hono policy remain.</div></div>
+            <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr]"><div class="p-3 font-mono text-amber-700">P1</div><div class="p-3 font-medium">Critical orchestration is helper-tested</div><div class="p-3 col-span-2 md:col-span-1 text-slate-600">Workflow Run races, the Studio editing protocol, Clip Render Attempt behavior, and composition policy now run through their public interfaces. Upload Session sequencing, Billing synchronization, social publishing, and Hono policy remain.</div></div>
             <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr]"><div class="p-3 font-mono text-amber-700">P1</div><div class="p-3 font-medium">Persistence type safety is bypassed</div><div class="p-3 col-span-2 md:col-span-1 text-slate-600">clip.service.ts contains 21 <code>as unknown as Prisma.InputJsonValue</code> casts and several raw JSON-to-domain casts.</div></div>
             <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr]"><div class="p-3 font-mono text-amber-700">P1</div><div class="p-3 font-medium">Identity has dual semantics</div><div class="p-3 col-span-2 md:col-span-1 text-slate-600">apps/web/lib/workspace.ts replaces appUser.id with the legacy Workspace owner while adding actorUserId; callers must remember which identity each operation means.</div></div>
             <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr]"><div class="p-3 font-mono text-amber-700">P1</div><div class="p-3 font-medium">State-settlement errors are swallowed</div><div class="p-3 col-span-2 md:col-span-1 text-slate-600">32 silent catch patterns exist; asset deletion at clip.service.ts:1272–1280 discards every rejection.</div></div>
@@ -433,18 +443,18 @@ flowchart TB
           <div><div class="text-xs uppercase tracking-wider text-slate-500">Typecheck</div><div class="mt-2 text-emerald-700 font-mono">11/11 passed</div></div>
           <div><div class="text-xs uppercase tracking-wider text-slate-500">Tests</div><div class="mt-2 text-emerald-700 font-mono">aggregate passed</div></div>
           <div><div class="text-xs uppercase tracking-wider text-slate-500">Biome</div><div class="mt-2 text-emerald-700 font-mono">572 files clean</div></div>
-          <div><div class="text-xs uppercase tracking-wider text-slate-500">Completed updates</div><div class="mt-2 text-emerald-700 text-sm">Workflow, Studio, and Clip Render Attempt interface verification pass. The broader audit caveats remain for other candidates.</div></div>
+          <div><div class="text-xs uppercase tracking-wider text-slate-500">Completed updates</div><div class="mt-2 text-emerald-700 text-sm">Workflow, Studio, Clip Render Attempt, and Clip Composition Plan interface verification pass. The broader audit caveats remain for other candidates.</div></div>
         </div>
       </section>
 
       <section id="top-recommendation" class="scroll-mt-6 rounded-xl border-2 border-emerald-500 bg-slate-950 text-white p-8 md:p-10">
         <div class="text-xs uppercase tracking-[0.25em] text-emerald-300">Latest completed recommendation</div>
-        <a href="#render" class="block mt-3 text-3xl md:text-4xl font-serif underline decoration-emerald-400 underline-offset-8">✓ Deepen the Clip Render Attempt</a>
-        <p class="mt-5 text-emerald-100 max-w-3xl">Completed with one public attempt interface owning frozen inputs, source and media operations, guarded persistence, settlement, notifications, and cleanup. The worker caller now supplies only attempt identity and cancellation.</p>
+        <a href="#composition" class="block mt-3 text-3xl md:text-4xl font-serif underline decoration-emerald-400 underline-offset-8">✓ Deepen a shared Clip Composition Plan</a>
+        <p class="mt-5 text-emerald-100 max-w-3xl">Completed with one versioned plan owning composition policy for Studio preview and FFmpeg export. Both adapters now translate the same scenes, layers, audio schedule, evidence, and fallback notices.</p>
         <div class="mt-8 border-t border-slate-700 pt-7">
           <div class="text-xs uppercase tracking-[0.25em] text-indigo-300">Next recommendation</div>
-          <a href="#composition" class="block mt-3 text-2xl md:text-3xl font-serif underline decoration-indigo-400 underline-offset-8">Deepen a shared Clip Composition Plan</a>
-          <p class="mt-4 text-slate-300 max-w-3xl">Concentrate platform-neutral composition decisions in one module, then let the web preview and FFmpeg adapters translate the same plan.</p>
+          <a href="#upload" class="block mt-3 text-2xl md:text-3xl font-serif underline decoration-indigo-400 underline-offset-8">Deepen Upload Session intake and reconciliation</a>
+          <p class="mt-4 text-slate-300 max-w-3xl">Give one Upload Session module ownership of multipart start, resume, finalize, compensation, reconciliation, and the ingest handoff.</p>
         </div>
       </section>
     </main>
