@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -18,7 +19,7 @@ import type {
   TranscriptUtterance,
 } from "@narriflow/validators";
 import {
-  buildAudiogramArgs,
+  buildAudiogramArgs as buildAudiogramArgsWithPlan,
   buildBrollVideoArgs as buildBrollVideoArgsWithPlan,
   buildFreeTierPostProcessArgs,
   buildSingleVideoArgs as buildSingleVideoArgsWithPlan,
@@ -45,6 +46,7 @@ import type { SplitLayoutSegment } from "./two-up";
 
 type SingleVideoArgs = Parameters<typeof buildSingleVideoArgsWithPlan>[0];
 type BrollVideoArgs = Parameters<typeof buildBrollVideoArgsWithPlan>[0];
+type AudiogramArgs = Parameters<typeof buildAudiogramArgsWithPlan>[0];
 type VisualTestOptions = {
   captionPreset?: CaptionPreset | null;
   resolution?: "720p" | "1080p";
@@ -199,6 +201,86 @@ function buildSingleVideoArgs(
     ...params,
     logo: params.logo ? { ...params.logo, ref: "logo:test" } : params.logo,
     composition: params.composition ?? testComposition(params),
+  });
+}
+
+function buildAudiogramArgs(
+  params: Omit<AudiogramArgs, "composition"> & {
+    composition?: AudiogramArgs["composition"];
+  },
+) {
+  const canvas = {
+    "9:16": { width: 1080, height: 1920 },
+    "1:1": { width: 1080, height: 1080 },
+    "16:9": { width: 1920, height: 1080 },
+    "4:5": { width: 1080, height: 1350 },
+  }[params.aspectRatio];
+  const studioEdits = studioEditsSchema.parse(params.studioEdits ?? {});
+  const result = planClipComposition({
+    document: editorDocumentSchema.parse({
+      clipStartSec: 0,
+      clipEndSec: params.clipDurationSec,
+      captionPreset: params.captionPreset ?? captionPresetSchema.parse({}),
+      transcriptSlice: [],
+      studioEdits,
+      brollUrl: null,
+      deletedRanges: [],
+    }),
+    source: { identity: "audio:test", kind: "audio", width: 0, height: 0 },
+    evidence: { automaticLayout: { state: "missing" } },
+    assets: {
+      backgroundImage: { state: "missing" },
+      ...(params.music && (studioEdits.music.assetId || studioEdits.music.url)
+        ? { music: { state: "available" as const, ref: "music:test" } }
+        : {}),
+      soundEffects: Object.fromEntries(
+        studioEdits.sfx.map((placement) => [
+          placement.id,
+          params.sfx?.some((effect) => effect.id === placement.id)
+            ? { state: "available" as const, ref: `sfx:${placement.id}` }
+            : { state: "failed" as const },
+        ]),
+      ),
+      ...(params.logo
+        ? {
+            logo: {
+              state: "available" as const,
+              ref: "logo:test",
+              settings: {
+                enabled: true,
+                position: params.logo.position,
+                opacity: params.logo.opacity,
+                scalePct: params.logo.scalePct,
+              },
+            },
+          }
+        : {}),
+    },
+    capabilities: {
+      automaticSpeakerLayout: true,
+      automaticSpeakerEngineVersion: "shot-layout-v1",
+    },
+    targets: [
+      {
+        id: "test-target",
+        aspectRatio: params.aspectRatio,
+        ...canvas,
+        outputTreatment: {
+          resolution: params.resolution ?? "1080p",
+          watermark: params.watermark ?? false,
+        },
+      },
+    ],
+  });
+  if (result.status === "invalid") throw new Error(result.error.code);
+  return buildAudiogramArgsWithPlan({
+    ...params,
+    logo: params.logo ? { ...params.logo, ref: "logo:test" } : params.logo,
+    studioEdits,
+    composition: params.composition ?? {
+      plan: result.plan,
+      targetId: "test-target",
+    },
   });
 }
 
@@ -1386,10 +1468,10 @@ describe("export treatment: resolution + watermark (vizard-parity Phase C export
       });
       const graph = args[args.indexOf("-filter_complex") + 1]!;
       expect(graph).toContain("showwaves=");
-      const stage = stageEndingIn(graph, "[outvfree]");
+      const stage = stageEndingIn(graph, "[composition_visual]");
       expect(stage).toContain(SCALE_FRAGMENT);
       expect(stage).toContain(WATERMARK_FRAGMENT);
-      expect(args[args.indexOf("-map") + 1]).toBe("[outvfree]");
+      expect(args[args.indexOf("-map") + 1]).toBe("[outv]");
     });
 
     test("neither flag set: no [outvfree] stage, maps the plain output", () => {
@@ -1853,7 +1935,176 @@ describe("buildAudiogramArgs (audio-only renders)", () => {
     expect(args).toContain("[outa]");
     expect(graph).toContain("afade=t=out");
   });
+
+  test("translates the plan-owned visual stack over the existing audiogram", () => {
+    const args = buildAudiogramArgs({
+      sourcePath: "/tmp/a.mp3",
+      outputPath: "/tmp/out.mp4",
+      startSec: 0,
+      endSec: 10,
+      aspectRatio: "9:16",
+      clipDurationSec: 10,
+      srtPath: null,
+      studioEdits: {
+        textLayers: [
+          {
+            id: "hook",
+            text: "Plan owned",
+            startSec: 1,
+            endSec: 6,
+            positionX: 50,
+            positionY: 20,
+          },
+        ],
+        transition: { type: "dip-white", durationSec: 0.5 },
+      },
+      logo: {
+        filePath: "/tmp/logo.png",
+        ref: "logo:test",
+        position: "top-right",
+        opacity: 80,
+        scalePct: 12,
+      },
+      resolution: "720p",
+      watermark: true,
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    expect(graph).toContain("text='Plan owned'");
+    expect(graph).toContain("[1:v]scale=");
+    expect(graph).toContain("fade=t=in:st=0.000:d=0.500:color=white");
+    expect(graph).toContain("scale=trunc(iw*2/3/2)*2");
+    expect(graph).toContain("drawtext=text=Made with Narriflow");
+    expect(args.slice(0, args.indexOf("-filter_complex"))).toContain("/tmp/logo.png");
+  });
 });
+
+const REAL_FFMPEG_AVAILABLE =
+  spawnSync("ffmpeg", ["-version"], { stdio: "ignore" }).status === 0;
+
+function meanVolumeDb(filePath: string, startSec: number): number {
+  const result = spawnSync(
+    "ffmpeg",
+    [
+      "-v",
+      "info",
+      "-ss",
+      startSec.toFixed(3),
+      "-t",
+      "0.120",
+      "-i",
+      filePath,
+      "-vn",
+      "-af",
+      "volumedetect",
+      "-f",
+      "null",
+      "-",
+    ],
+    { encoding: "utf-8" },
+  );
+  if (result.status !== 0) {
+    throw new Error(`volume probe failed: ${result.stderr}`);
+  }
+  const match = result.stderr.match(/mean_volume:\s*(-?[\d.]+) dB/);
+  if (!match) throw new Error(`mean volume missing: ${result.stderr}`);
+  return Number(match[1]);
+}
+
+test.skipIf(!REAL_FFMPEG_AVAILABLE)(
+  "real audiogram audio follows planned loop, fade, ducking, and SFX windows",
+  async () => {
+    const directory = await mkdtemp(join(tmpdir(), "narriflow-audio-schedule-"));
+    const sourcePath = join(directory, "source.m4a");
+    const musicPath = join(directory, "music.m4a");
+    const sfxPath = join(directory, "sfx.m4a");
+    const outputPath = join(directory, "output.mp4");
+    try {
+      for (const fixture of [
+        { path: sourcePath, frequency: 440, duration: 3 },
+        { path: musicPath, frequency: 880, duration: 0.4 },
+        { path: sfxPath, frequency: 1760, duration: 0.2 },
+      ]) {
+        const generated = spawnSync(
+          "ffmpeg",
+          [
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            `sine=frequency=${fixture.frequency}:sample_rate=48000:duration=${fixture.duration}`,
+            "-c:a",
+            "aac",
+            fixture.path,
+          ],
+          { encoding: "utf-8" },
+        );
+        expect(generated.status, generated.stderr).toBe(0);
+      }
+
+      const args = buildAudiogramArgs({
+        sourcePath,
+        outputPath,
+        startSec: 0,
+        endSec: 3,
+        aspectRatio: "1:1",
+        clipDurationSec: 3,
+        srtPath: null,
+        studioEdits: {
+          sourceAudio: { volume: 100, muted: true },
+          music: {
+            url: "https://example.com/music.m4a",
+            volume: 80,
+            fadeInSec: 1,
+            fadeOutSec: 1,
+            ducking: true,
+          },
+          sfx: [
+            {
+              id: "impact",
+              assetId: "22222222-2222-4222-8222-222222222222",
+              startSec: 1.5,
+              volume: 100,
+            },
+          ],
+        },
+        music: {
+          path: musicPath,
+          ref: "music:test",
+          volume: 80,
+          startOffsetSec: 0,
+          fadeInSec: 1,
+          fadeOutSec: 1,
+          duckingWindows: [{ startSec: 1, endSec: 2 }],
+        },
+        sfx: [
+          {
+            id: "impact",
+            ref: "sfx:impact",
+            path: sfxPath,
+            startSec: 1.5,
+            volume: 100,
+          },
+        ],
+        resolution: "720p",
+      });
+      const rendered = spawnSync("ffmpeg", args, { encoding: "utf-8" });
+      expect(rendered.status, rendered.stderr).toBe(0);
+
+      const fadeIn = meanVolumeDb(outputPath, 0.08);
+      const fullMusic = meanVolumeDb(outputPath, 0.75);
+      const duckedMusic = meanVolumeDb(outputPath, 1.2);
+      const sfxWindow = meanVolumeDb(outputPath, 1.54);
+      const fadeOut = meanVolumeDb(outputPath, 2.86);
+      expect(fullMusic).toBeGreaterThan(fadeIn + 8);
+      expect(fullMusic).toBeGreaterThan(duckedMusic + 5);
+      expect(sfxWindow).toBeGreaterThan(duckedMusic + 3);
+      expect(fullMusic).toBeGreaterThan(fadeOut + 8);
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  },
+  30_000,
+);
 
 describe("subtitle visibility toggle (vizard-parity Phase C) — captionPreset.visible === false gates every render path", () => {
   const probe = {

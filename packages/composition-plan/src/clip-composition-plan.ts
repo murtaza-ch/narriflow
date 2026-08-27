@@ -1,10 +1,15 @@
 import {
   CAPTION_CHUNK_SIZE,
   CAPTION_POSITION_Y_DEFAULTS,
+  DUCKING_DEFAULTS,
   buildEditedTimeMap,
+  capDuckingWindows,
   clipAutoLayoutMatchesInputs,
+  computeSpeechWindows,
   emojiForWord,
+  extractSpeechWordIntervals,
   formatCaptionWord,
+  resolveMusicFadeWindows,
   resolveEffectiveFramingMode,
   resolveSpeakerLayoutScene,
   sourceRangeToEdited,
@@ -24,13 +29,20 @@ export const CLIP_COMPOSITION_PLAN_VERSION = 1 as const;
 export const CLIP_COMPOSITION_MAX_TARGETS = 4;
 export const CLIP_COMPOSITION_MAX_SERIALIZED_BYTES = 512 * 1024;
 
-export type CompositionMode = "auto" | "center" | "fit" | "split" | "screen";
+export type CompositionMode =
+  | "auto"
+  | "center"
+  | "fit"
+  | "split"
+  | "screen"
+  | "audiogram";
 
 export interface CompositionSourceFacts {
   readonly identity: string;
   readonly kind: "video" | "audio";
   readonly width: number;
   readonly height: number;
+  readonly hasAudio?: boolean;
 }
 
 export interface CompositionTarget {
@@ -163,6 +175,10 @@ export interface ClipCompositionPlanInput {
      * requested but could not yet be resolved. */
     readonly broll?: CompositionBrollAvailability;
     readonly logo?: CompositionLogoAvailability;
+    readonly music?: CompositionAssetAvailability;
+    readonly soundEffects?: Readonly<
+      Record<string, CompositionAssetAvailability>
+    >;
   };
   readonly capabilities: {
     readonly automaticSpeakerLayout: boolean;
@@ -230,10 +246,24 @@ export interface CompositionBrollVideoLayer {
   readonly audio: "source";
 }
 
+export interface CompositionAudiogramLayer {
+  readonly id: string;
+  readonly kind: "audiogram";
+  readonly sourceRef: string;
+  readonly destination: CompositionRect;
+  readonly backgroundColor: "#0F172A";
+  readonly waveformColor: string;
+  readonly waveformHeightRatio: 0.42;
+  readonly rotationDeg: 0;
+  readonly opacity: 1;
+  readonly zIndex: 0;
+}
+
 export type CompositionLayer =
   | CompositionSourceVideoLayer
   | CompositionBackgroundLayer
-  | CompositionBrollVideoLayer;
+  | CompositionBrollVideoLayer
+  | CompositionAudiogramLayer;
 
 export interface CompositionActiveRange {
   readonly startSec: number;
@@ -371,23 +401,61 @@ export interface CompositionEvidenceRequest {
 
 export interface CompositionNotice {
   readonly code: string;
-  readonly fidelity: "provisional" | "degraded";
+  readonly fidelity: "pending" | "degraded";
   readonly targetId: string;
   readonly sceneId: string | null;
   readonly effectiveFallback: CompositionMode;
   readonly userActionPossible: boolean;
+  readonly assetId?: string;
+}
+
+export interface CompositionAudioSchedule {
+  readonly fingerprint: string;
+  readonly source: {
+    readonly sourceRef: string;
+    readonly available: boolean;
+    readonly activeRange: CompositionActiveRange;
+    readonly gain: number;
+    readonly muted: boolean;
+  };
+  readonly music: {
+    readonly sourceRef: string;
+    readonly activeRange: CompositionActiveRange;
+    readonly gain: number;
+    readonly startOffsetSec: number;
+    readonly loop: true;
+    readonly fades: {
+      readonly fadeIn: CompositionActiveRange;
+      readonly fadeOut: CompositionActiveRange;
+    };
+    readonly ducking: {
+      readonly enabled: boolean;
+      readonly windows: readonly { readonly startSec: number; readonly endSec: number }[];
+      readonly duckedGainFraction: number;
+      readonly attackSec: number;
+      readonly releaseSec: number;
+    };
+  } | null;
+  readonly soundEffects: readonly {
+    readonly id: string;
+    readonly sourceRef: string;
+    readonly activeRange: CompositionActiveRange;
+    readonly gain: number;
+  }[];
 }
 
 export interface ClipCompositionPlan {
   readonly version: typeof CLIP_COMPOSITION_PLAN_VERSION;
   readonly fingerprint: string;
   readonly inputFingerprint: string;
+  readonly fidelity: "exact" | "pending" | "degraded";
   readonly editedDurationSec: number;
   readonly source: {
     readonly ref: string;
     readonly width: number;
     readonly height: number;
   };
+  readonly audioSchedule: CompositionAudioSchedule;
   readonly targets: readonly CompositionTargetPlan[];
   readonly notices: readonly CompositionNotice[];
   readonly evidenceRequests: readonly CompositionEvidenceRequest[];
@@ -409,7 +477,7 @@ export type ClipCompositionPlanResult =
       };
     }
   | {
-      readonly status: "ready" | "provisional";
+      readonly status: "ready" | "pending";
       readonly plan: ClipCompositionPlan;
     };
 
@@ -456,6 +524,94 @@ function deepFreeze<T>(value: T): Readonly<T> {
     deepFreeze(nested);
   }
   return value;
+}
+
+function clampUnit(value: number): number {
+  return Math.max(0, Math.min(1, value));
+}
+
+function buildAudioSchedule(input: ClipCompositionPlanInput, editedDurationSec: number) {
+  const activeRange = { startSec: 0, endSec: editedDurationSec };
+  const sourceAudio = input.document.studioEdits.sourceAudio;
+  const musicAvailability = input.assets.music;
+  const musicSettings = input.document.studioEdits.music;
+  const musicRequested = Boolean(musicSettings.assetId || musicSettings.url);
+  const fadeWindows = resolveMusicFadeWindows(
+    musicSettings.fadeInSec,
+    musicSettings.fadeOutSec,
+    editedDurationSec,
+  );
+  const editedTimeMap = buildEditedTimeMap(input.document.deletedRanges, {
+    startSec: input.document.clipStartSec,
+    endSec: input.document.clipEndSec,
+  });
+  const duckingWindows = musicSettings.ducking
+    ? capDuckingWindows(
+        computeSpeechWindows(
+          extractSpeechWordIntervals(
+            input.document.transcriptSlice,
+            input.document.clipStartSec,
+            editedTimeMap,
+          ),
+          editedDurationSec,
+        ),
+      )
+    : [];
+  const music =
+    musicRequested && musicAvailability?.state === "available"
+      ? {
+          sourceRef: musicAvailability.ref,
+          activeRange,
+          gain: clampUnit(musicSettings.volume / 100),
+          startOffsetSec: Math.max(0, musicSettings.startOffsetSec),
+          loop: true as const,
+          fades: {
+            fadeIn: { startSec: 0, endSec: fadeWindows.fadeInSec },
+            fadeOut: {
+              startSec: fadeWindows.fadeOutStartSec,
+              endSec: editedDurationSec,
+            },
+          },
+          ducking: {
+            enabled: musicSettings.ducking,
+            windows: duckingWindows,
+            duckedGainFraction: DUCKING_DEFAULTS.duckedGainFraction,
+            attackSec: DUCKING_DEFAULTS.attackSec,
+            releaseSec: DUCKING_DEFAULTS.releaseSec,
+          },
+        }
+      : null;
+  const soundEffects = input.document.studioEdits.sfx.flatMap((placement) => {
+    if (placement.startSec >= editedDurationSec) return [];
+    const availability = input.assets.soundEffects?.[placement.id];
+    if (availability?.state !== "available") return [];
+    return [
+      {
+        id: placement.id,
+        sourceRef: availability.ref,
+        activeRange: {
+          startSec: placement.startSec,
+          endSec: editedDurationSec,
+        },
+        gain: clampUnit(placement.volume / 100),
+      },
+    ];
+  });
+  const withoutFingerprint = {
+    source: {
+      sourceRef: input.source.identity,
+      available: input.source.hasAudio !== false,
+      activeRange,
+      gain: clampUnit(sourceAudio.volume / 100),
+      muted: sourceAudio.muted,
+    },
+    music,
+    soundEffects,
+  };
+  return {
+    fingerprint: hashString(JSON.stringify(withoutFingerprint)),
+    ...withoutFingerprint,
+  } satisfies CompositionAudioSchedule;
 }
 
 function centeredCoverCrop(
@@ -1155,12 +1311,13 @@ function validateInput(
   input: ClipCompositionPlanInput,
 ): Extract<ClipCompositionPlanResult, { status: "invalid" }> | null {
   if (
-    input.source.kind !== "video" ||
     input.source.identity.length === 0 ||
     !Number.isInteger(input.source.width) ||
     !Number.isInteger(input.source.height) ||
-    input.source.width <= 0 ||
-    input.source.height <= 0
+    (input.source.kind === "video" &&
+      (input.source.width <= 0 || input.source.height <= 0)) ||
+    (input.source.kind === "audio" &&
+      (input.source.width !== 0 || input.source.height !== 0))
   ) {
     return { status: "invalid", error: { code: "invalid_source_facts" } };
   }
@@ -1318,6 +1475,7 @@ export function planClipComposition(
     engineVersion: input.capabilities.automaticSpeakerEngineVersion,
   });
   const automaticAnalysis =
+    input.source.kind === "video" &&
     (requestedMode === "auto" ||
       (hasActiveBroll &&
         (requestedMode === "split" || requestedMode === "screen"))) &&
@@ -1329,6 +1487,7 @@ export function planClipComposition(
         )
       : null;
   const automaticEvidenceIsProvisional =
+    input.source.kind === "video" &&
     requestedMode === "auto" &&
     input.capabilities.automaticSpeakerLayout &&
     !automaticAnalysis &&
@@ -1360,6 +1519,7 @@ export function planClipComposition(
       ? splitAvailability.value
       : null;
   const splitEvidenceIsProvisional =
+    input.source.kind === "video" &&
     requestedMode === "split" &&
     input.capabilities.explicitSplitLayout !== false &&
     !hasActiveBroll &&
@@ -1395,6 +1555,7 @@ export function planClipComposition(
       ? screenAvailability.value
       : null;
   const screenEvidenceIsProvisional =
+    input.source.kind === "video" &&
     requestedMode === "screen" &&
     input.capabilities.screenLayout !== false &&
     !hasActiveBroll &&
@@ -1421,6 +1582,42 @@ export function planClipComposition(
       height: target.height,
       divisibleBy: 2 as const,
     };
+    if (input.source.kind === "audio") {
+      return {
+        id: target.id,
+        aspectRatio: target.aspectRatio,
+        requestedMode,
+        effectiveMode: "audiogram",
+        canvas,
+        scenes: [
+          {
+            id: `scene:audiogram:${target.id}:0`,
+            startSec: 0,
+            endSec: editedTimeMap.editedDurationSec,
+            layers: [
+              {
+                id: `layer:audiogram:${target.id}:0`,
+                kind: "audiogram",
+                sourceRef: input.source.identity,
+                destination: {
+                  x: 0,
+                  y: 0,
+                  width: target.width,
+                  height: target.height,
+                },
+                backgroundColor: "#0F172A",
+                waveformColor:
+                  input.document.captionPreset.highlightColor ?? "#00FF88",
+                waveformHeightRatio: 0.42,
+                rotationDeg: 0,
+                opacity: 1,
+                zIndex: 0,
+              },
+            ],
+          },
+        ],
+      };
+    }
     if (requestedMode === "split") {
       const fallbackSegments =
         splitEvidence?.fallbackSegments ?? automaticAnalysis?.noSplitSegments ?? null;
@@ -1481,7 +1678,7 @@ export function planClipComposition(
                 : splitAvailability.state === "failed" && splitAvailability.reason
                   ? `split_${splitAvailability.reason}`
                   : "split_layout_unavailable",
-          fidelity: provisional ? "provisional" : "degraded",
+          fidelity: provisional ? "pending" : "degraded",
           targetId: target.id,
           sceneId: null,
           effectiveFallback,
@@ -1706,7 +1903,7 @@ export function planClipComposition(
                     targetSupportsTwoUp(input.source, target)
                   ? "screen_face_band_fallback"
                   : "screen_static_center_fallback",
-          fidelity: provisional ? "provisional" : "degraded",
+          fidelity: provisional ? "pending" : "degraded",
           targetId: target.id,
           sceneId: null,
           effectiveFallback: "screen",
@@ -1793,7 +1990,7 @@ export function planClipComposition(
           : disabled
             ? "automatic_layout_disabled"
             : "automatic_layout_unavailable",
-        fidelity: provisional ? "provisional" : "degraded",
+        fidelity: provisional ? "pending" : "degraded",
         targetId: target.id,
         sceneId: null,
         effectiveFallback: "center",
@@ -1920,6 +2117,22 @@ export function planClipComposition(
     requestedMode === "fit" &&
     input.document.studioEdits.background.mode === "image";
   if (
+    input.source.kind === "audio" &&
+    input.document.studioEdits.background.mode !== "off"
+  ) {
+    notices.push(
+      ...input.targets.map((target) => ({
+        code: "audio_only_background_unsupported",
+        fidelity: "degraded" as const,
+        targetId: target.id,
+        sceneId: null,
+        effectiveFallback: "audiogram" as const,
+        userActionPossible: true,
+      })),
+    );
+  }
+  if (
+    input.source.kind === "video" &&
     backgroundWantsImage &&
     input.assets.backgroundImage.state !== "available" &&
     input.assets.backgroundImage.state !== "pending"
@@ -1935,13 +2148,14 @@ export function planClipComposition(
       })),
     );
   } else if (
+    input.source.kind === "video" &&
     backgroundWantsImage &&
     input.assets.backgroundImage.state === "pending"
   ) {
     notices.push(
       ...input.targets.map((target) => ({
         code: "background_image_pending",
-        fidelity: "provisional" as const,
+        fidelity: "pending" as const,
         targetId: target.id,
         sceneId: null,
         effectiveFallback: "fit" as const,
@@ -1955,7 +2169,7 @@ export function planClipComposition(
     notices.push(
       ...baseTargets.map((target) => ({
         code: pending ? "broll_asset_pending" : "broll_asset_unavailable",
-        fidelity: pending ? ("provisional" as const) : ("degraded" as const),
+        fidelity: pending ? ("pending" as const) : ("degraded" as const),
         targetId: target.id,
         sceneId: null,
         effectiveFallback: target.effectiveMode,
@@ -1984,7 +2198,7 @@ export function planClipComposition(
     notices.push(
       ...targets.map((target) => ({
         code: pending ? "logo_asset_pending" : "logo_asset_unavailable",
-        fidelity: pending ? ("provisional" as const) : ("degraded" as const),
+        fidelity: pending ? ("pending" as const) : ("degraded" as const),
         targetId: target.id,
         sceneId: null,
         effectiveFallback: target.effectiveMode,
@@ -1993,15 +2207,70 @@ export function planClipComposition(
     );
   }
 
+  const musicRequested = Boolean(
+    input.document.studioEdits.music.assetId ||
+      input.document.studioEdits.music.url,
+  );
+  if (
+    musicRequested &&
+    input.assets.music?.state !== "available"
+  ) {
+    const pending = input.assets.music?.state === "pending";
+    notices.push(
+      ...targets.map((target) => ({
+        code: pending ? "music_asset_pending" : "music_asset_unavailable",
+        fidelity: pending ? ("pending" as const) : ("degraded" as const),
+        targetId: target.id,
+        sceneId: null,
+        effectiveFallback: target.effectiveMode,
+        userActionPossible: !pending,
+      })),
+    );
+  }
+
+  for (const placement of input.document.studioEdits.sfx) {
+    if (placement.startSec >= editedTimeMap.editedDurationSec) continue;
+    const availability = input.assets.soundEffects?.[placement.id];
+    if (availability?.state === "available") continue;
+    const pending = availability?.state === "pending";
+    notices.push(
+      ...targets.map((target) => ({
+        code: pending
+          ? "sound_effect_asset_pending"
+          : "sound_effect_asset_unavailable",
+        fidelity: pending ? ("pending" as const) : ("degraded" as const),
+        targetId: target.id,
+        sceneId: null,
+        effectiveFallback: target.effectiveMode,
+        userActionPossible: !pending,
+        assetId: placement.id,
+      })),
+    );
+  }
+
+  const audioSchedule = buildAudioSchedule(
+    input,
+    editedTimeMap.editedDurationSec,
+  );
+
+  const fidelity = notices.some(
+    (notice) => notice.fidelity === "pending",
+  )
+    ? ("pending" as const)
+    : notices.some((notice) => notice.fidelity === "degraded")
+      ? ("degraded" as const)
+      : ("exact" as const);
   const withoutFingerprint = {
     version: CLIP_COMPOSITION_PLAN_VERSION,
     inputFingerprint,
+    fidelity,
     editedDurationSec: editedTimeMap.editedDurationSec,
     source: {
       ref: input.source.identity,
       width: input.source.width,
       height: input.source.height,
     },
+    audioSchedule,
     targets,
     notices,
     evidenceRequests,
@@ -2018,8 +2287,8 @@ export function planClipComposition(
     fingerprint: hashString(serialized),
   }) as ClipCompositionPlan;
   return {
-    status: notices.some((notice) => notice.fidelity === "provisional")
-      ? "provisional"
+    status: notices.some((notice) => notice.fidelity === "pending")
+      ? "pending"
       : "ready",
     plan,
   };

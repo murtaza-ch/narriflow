@@ -3,6 +3,7 @@ import {
   captionPresetSchema,
   clipAutoLayoutAnalysisSchema,
   editorDocumentSchema,
+  MAX_DUCKING_WINDOWS,
   studioEditsSchema,
 } from "@narriflow/validators";
 import {
@@ -47,6 +48,506 @@ function fitDocument() {
 }
 
 describe("Clip Composition Plan", () => {
+  test("plans one edited-time audio schedule for source, music, ducking, and sound effects", () => {
+    const document = editorDocumentSchema.parse({
+      clipStartSec: 10,
+      clipEndSec: 20,
+      captionPreset: captionPresetSchema.parse({}),
+      transcriptSlice: [
+        {
+          index: 0,
+          speaker: 0,
+          speakerLabel: "Speaker 1",
+          startSec: 10.5,
+          endSec: 16,
+          text: "One two three",
+          confidence: 0.99,
+          words: [
+            { word: "One", startSec: 10.5, endSec: 11, confidence: 0.99 },
+            { word: "two", startSec: 12.5, endSec: 13, confidence: 0.99 },
+            { word: "three", startSec: 15, endSec: 16, confidence: 0.99 },
+          ],
+        },
+      ],
+      studioEdits: studioEditsSchema.parse({
+        framing: { mode: "center" },
+        sourceAudio: { volume: 65, muted: false },
+        music: {
+          url: "https://example.com/music.mp3",
+          volume: 40,
+          startOffsetSec: 3,
+          fadeInSec: 5,
+          fadeOutSec: 5,
+          ducking: true,
+        },
+        sfx: [
+          {
+            id: "sting",
+            assetId: "11111111-1111-4111-8111-111111111111",
+            startSec: 3,
+            volume: 80,
+          },
+        ],
+      }),
+      brollUrl: null,
+      deletedRanges: [{ startSec: 12, endSec: 14 }],
+    });
+    const result = planClipComposition({
+      document,
+      source: {
+        identity: "source:audio-schedule",
+        kind: "video",
+        width: 1920,
+        height: 1080,
+        hasAudio: true,
+      },
+      evidence: { automaticLayout: { state: "missing" } },
+      assets: {
+        backgroundImage: { state: "missing" },
+        music: { state: "available", ref: "music:bed" },
+        soundEffects: {
+          sting: { state: "available", ref: "sfx:sting" },
+        },
+      },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+      targets: [
+        { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },
+      ],
+    });
+
+    expect(result.status).toBe("ready");
+    if (result.status === "invalid") throw new Error(result.error.code);
+    expect(result.plan.audioSchedule.fingerprint).toMatch(/^[0-9a-f]{16}$/);
+    expect({ ...result.plan.audioSchedule, fingerprint: undefined }).toEqual({
+      fingerprint: undefined,
+      source: {
+        sourceRef: "source:audio-schedule",
+        available: true,
+        activeRange: { startSec: 0, endSec: 8 },
+        gain: 0.65,
+        muted: false,
+      },
+      music: {
+        sourceRef: "music:bed",
+        activeRange: { startSec: 0, endSec: 8 },
+        gain: 0.4,
+        startOffsetSec: 3,
+        loop: true,
+        fades: {
+          fadeIn: { startSec: 0, endSec: 4 },
+          fadeOut: { startSec: 4, endSec: 8 },
+        },
+        ducking: {
+          enabled: true,
+          windows: [
+            { startSec: 0.38, endSec: 1.12 },
+            { startSec: 2.88, endSec: 4.12 },
+          ],
+          duckedGainFraction: 0.3,
+          attackSec: 0.25,
+          releaseSec: 0.4,
+        },
+      },
+      soundEffects: [
+        {
+          id: "sting",
+          sourceRef: "sfx:sting",
+          activeRange: { startSec: 3, endSec: 8 },
+          gain: 0.8,
+        },
+      ],
+    });
+  });
+
+  test("keeps the audio schedule fingerprint isolated from unrelated visual edits", () => {
+    const audioEdits = {
+      sourceAudio: { volume: 75, muted: false },
+      music: {
+        url: "https://example.com/bed.mp3",
+        volume: 30,
+        startOffsetSec: 2,
+        fadeInSec: 1,
+        fadeOutSec: 1,
+      },
+    };
+    const makeDocument = (withVisualEdit: boolean) =>
+      editorDocumentSchema.parse({
+        clipStartSec: 0,
+        clipEndSec: 12,
+        captionPreset: captionPresetSchema.parse(
+          withVisualEdit ? { highlightColor: "#FFCC00" } : {},
+        ),
+        transcriptSlice: [],
+        studioEdits: studioEditsSchema.parse({
+          ...audioEdits,
+          ...(withVisualEdit
+            ? {
+                textLayers: [
+                  {
+                    id: "visual-only",
+                    text: "Visual edit",
+                    startSec: 1,
+                    endSec: 4,
+                    positionX: 50,
+                    positionY: 20,
+                  },
+                ],
+              }
+            : {}),
+        }),
+        brollUrl: withVisualEdit ? "https://example.com/broll.mp4" : null,
+        deletedRanges: [],
+      });
+    const plan = (withVisualEdit: boolean) =>
+      planClipComposition({
+        document: makeDocument(withVisualEdit),
+        source: {
+          identity: "source:fingerprint-isolation",
+          kind: "video",
+          width: 1920,
+          height: 1080,
+          hasAudio: true,
+        },
+        evidence: { automaticLayout: { state: "missing" } },
+        assets: {
+          backgroundImage: { state: "missing" },
+          music: { state: "available", ref: "music:stable" },
+          ...(withVisualEdit
+            ? {
+                broll: {
+                  state: "available" as const,
+                  placements: [
+                    {
+                      id: "visual-only",
+                      ref: "broll:visual-only",
+                      startSec: 2,
+                      endSec: 5,
+                    },
+                  ],
+                },
+              }
+            : {}),
+        },
+        capabilities: {
+          automaticSpeakerLayout: true,
+          automaticSpeakerEngineVersion: "shot-layout-v1",
+        },
+        targets: [
+          { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },
+        ],
+      });
+
+    const before = plan(false);
+    const after = plan(true);
+    if (before.status === "invalid" || after.status === "invalid") {
+      throw new Error("expected valid plans");
+    }
+    expect(after.plan.fingerprint).not.toBe(before.plan.fingerprint);
+    expect(after.plan.audioSchedule).toEqual(before.plan.audioSchedule);
+  });
+
+  test("omits unavailable optional audio independently and scopes stable notices", () => {
+    const document = editorDocumentSchema.parse({
+      clipStartSec: 0,
+      clipEndSec: 10,
+      captionPreset: captionPresetSchema.parse({}),
+      transcriptSlice: [],
+      studioEdits: studioEditsSchema.parse({
+        framing: { mode: "center" },
+        music: {
+          assetId: "11111111-1111-4111-8111-111111111111",
+          volume: 35,
+        },
+        sfx: [
+          {
+            id: "impact",
+            assetId: "22222222-2222-4222-8222-222222222222",
+            startSec: 4,
+            volume: 90,
+          },
+        ],
+      }),
+      brollUrl: null,
+      deletedRanges: [],
+    });
+    const result = planClipComposition({
+      document,
+      source: {
+        identity: "source:optional-audio",
+        kind: "video",
+        width: 1920,
+        height: 1080,
+        hasAudio: false,
+      },
+      evidence: { automaticLayout: { state: "missing" } },
+      assets: {
+        backgroundImage: { state: "missing" },
+        music: { state: "failed" },
+        soundEffects: { impact: { state: "pending" } },
+      },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+      targets: [
+        { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },
+        { id: "square", aspectRatio: "1:1", width: 1080, height: 1080 },
+      ],
+    });
+
+    expect(result.status).toBe("pending");
+    if (result.status === "invalid") throw new Error(result.error.code);
+    expect(result.plan.audioSchedule).toMatchObject({
+      source: { available: false, muted: false },
+      music: null,
+      soundEffects: [],
+    });
+    expect(result.plan.notices).toEqual([
+      ...["vertical", "square"].map((targetId) => ({
+        code: "music_asset_unavailable",
+        fidelity: "degraded" as const,
+        targetId,
+        sceneId: null,
+        effectiveFallback: "center" as const,
+        userActionPossible: true,
+      })),
+      ...["vertical", "square"].map((targetId) => ({
+        code: "sound_effect_asset_pending",
+        fidelity: "pending" as const,
+        targetId,
+        sceneId: null,
+        effectiveFallback: "center" as const,
+        userActionPossible: false,
+        assetId: "impact",
+      })),
+    ]);
+  });
+
+  test("keeps every planned audio range finite, ordered, clipped, capped, and deterministic", () => {
+    const words = Array.from({ length: MAX_DUCKING_WINDOWS * 3 }, (_, index) => ({
+      word: `w${index}`,
+      startSec: index * 1.5,
+      endSec: index * 1.5 + 0.2,
+      confidence: 0.99,
+    }));
+    const duration = words.at(-1)!.endSec + 1;
+    const document = editorDocumentSchema.parse({
+      clipStartSec: 0,
+      clipEndSec: duration,
+      captionPreset: captionPresetSchema.parse({}),
+      transcriptSlice: [
+        {
+          index: 0,
+          speaker: 0,
+          speakerLabel: "Speaker 1",
+          startSec: 0,
+          endSec: duration,
+          text: words.map((word) => word.word).join(" "),
+          confidence: 0.99,
+          words,
+        },
+      ],
+      studioEdits: studioEditsSchema.parse({
+        music: {
+          url: "https://example.com/music.mp3",
+          volume: 100,
+          fadeInSec: 5,
+          fadeOutSec: 5,
+          ducking: true,
+        },
+        sfx: Array.from({ length: 20 }, (_, index) => ({
+          id: `sfx-${index}`,
+          assetId: `${String(index + 1).padStart(8, "0")}-1111-4111-8111-111111111111`,
+          startSec: Math.min(duration, index * 3),
+          volume: index % 2 === 0 ? 0 : 100,
+        })),
+      }),
+      brollUrl: null,
+      deletedRanges: [],
+    });
+    const assets = {
+      backgroundImage: { state: "missing" as const },
+      music: { state: "available" as const, ref: "music:bounded" },
+      soundEffects: Object.fromEntries(
+        document.studioEdits.sfx.map((placement) => [
+          placement.id,
+          { state: "available" as const, ref: `sfx:${placement.id}` },
+        ]),
+      ),
+    };
+    const input = {
+      document,
+      source: {
+        identity: "source:bounded-audio",
+        kind: "video" as const,
+        width: 1920,
+        height: 1080,
+        hasAudio: true,
+      },
+      evidence: { automaticLayout: { state: "missing" as const } },
+      assets,
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+      targets: [
+        { id: "vertical", aspectRatio: "9:16" as const, width: 1080, height: 1920 },
+      ],
+    };
+    const first = planClipComposition(input);
+    const second = planClipComposition(input);
+    if (first.status === "invalid" || second.status === "invalid") {
+      throw new Error("expected valid bounded audio plans");
+    }
+    const schedule = first.plan.audioSchedule;
+    expect(schedule).toEqual(second.plan.audioSchedule);
+    expect(schedule.soundEffects).toHaveLength(20);
+    expect(schedule.music!.ducking.windows.length).toBeLessThanOrEqual(
+      MAX_DUCKING_WINDOWS,
+    );
+    const ranges = [
+      schedule.source.activeRange,
+      schedule.music!.activeRange,
+      schedule.music!.fades.fadeIn,
+      schedule.music!.fades.fadeOut,
+      ...schedule.music!.ducking.windows,
+      ...schedule.soundEffects.map((effect) => effect.activeRange),
+    ];
+    for (const range of ranges) {
+      expect(Number.isFinite(range.startSec)).toBe(true);
+      expect(Number.isFinite(range.endSec)).toBe(true);
+      expect(range.startSec).toBeGreaterThanOrEqual(0);
+      expect(range.endSec).toBeGreaterThanOrEqual(range.startSec);
+      expect(range.endSec).toBeLessThanOrEqual(schedule.source.activeRange.endSec);
+    }
+  });
+
+  test("plans audio-only input as the existing audiogram and makes unsupported backgrounds explicit", () => {
+    const document = editorDocumentSchema.parse({
+      clipStartSec: 0,
+      clipEndSec: 12,
+      captionPreset: captionPresetSchema.parse({ highlightColor: "#00FF88" }),
+      transcriptSlice: [],
+      studioEdits: studioEditsSchema.parse({
+        background: {
+          mode: "image",
+          color: "#123456",
+          imageUrl: "https://example.com/background.jpg",
+        },
+      }),
+      brollUrl: null,
+      deletedRanges: [],
+    });
+    const result = planClipComposition({
+      document,
+      source: {
+        identity: "source:podcast",
+        kind: "audio",
+        width: 0,
+        height: 0,
+        hasAudio: true,
+      },
+      evidence: { automaticLayout: { state: "missing" } },
+      assets: { backgroundImage: { state: "available", ref: "background:one" } },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+      targets: [
+        { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },
+      ],
+    });
+
+    expect(result.status).toBe("ready");
+    if (result.status === "invalid") throw new Error(result.error.code);
+    expect(result.plan.evidenceRequests).toEqual([]);
+    expect(result.plan.targets[0]).toMatchObject({
+      requestedMode: "fit",
+      effectiveMode: "audiogram",
+      scenes: [
+        {
+          startSec: 0,
+          endSec: 12,
+          layers: [
+            {
+              kind: "audiogram",
+              sourceRef: "source:podcast",
+              backgroundColor: "#0F172A",
+              waveformColor: "#00FF88",
+              waveformHeightRatio: 0.42,
+              destination: { x: 0, y: 0, width: 1080, height: 1920 },
+            },
+          ],
+        },
+      ],
+    });
+    expect(result.plan.notices).toEqual([
+      {
+        code: "audio_only_background_unsupported",
+        fidelity: "degraded",
+        targetId: "vertical",
+        sceneId: null,
+        effectiveFallback: "audiogram",
+        userActionPossible: true,
+      },
+    ]);
+  });
+
+  test("classifies exact, pending, degraded, and invalid composition fidelity", () => {
+    const base = {
+      document: centerDocument(),
+      source: {
+        identity: "source:fidelity",
+        kind: "video" as const,
+        width: 1920,
+        height: 1080,
+      },
+      assets: { backgroundImage: { state: "missing" as const } },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+      targets: [
+        { id: "vertical", aspectRatio: "9:16" as const, width: 1080, height: 1920 },
+      ],
+    };
+    const exact = planClipComposition({
+      ...base,
+      evidence: { automaticLayout: { state: "missing" as const } },
+    });
+    const autoDocument = editorDocumentSchema.parse({
+      ...centerDocument(),
+      studioEdits: studioEditsSchema.parse({ framing: { mode: "auto" } }),
+    });
+    const pending = planClipComposition({
+      ...base,
+      document: autoDocument,
+      evidence: { automaticLayout: { state: "missing" as const } },
+    });
+    const degraded = planClipComposition({
+      ...base,
+      document: autoDocument,
+      evidence: { automaticLayout: { state: "failed" as const } },
+    });
+    const invalid = planClipComposition({
+      ...base,
+      targets: [],
+      evidence: { automaticLayout: { state: "missing" as const } },
+    });
+
+    expect(exact.status === "invalid" ? null : exact.plan.fidelity).toBe("exact");
+    expect(pending.status === "invalid" ? null : pending.plan.fidelity).toBe(
+      "pending",
+    );
+    expect(degraded.status === "invalid" ? null : degraded.plan.fidelity).toBe(
+      "degraded",
+    );
+    expect(invalid).toEqual({ status: "invalid", error: { code: "invalid_target" } });
+  });
+
   test("plans Center once for mixed targets with exact bounded geometry", () => {
     const input = {
       document: centerDocument(),
@@ -325,7 +826,7 @@ describe("Clip Composition Plan", () => {
       targets,
     });
 
-    expect(missing.status).toBe("provisional");
+    expect(missing.status).toBe("pending");
     if (missing.status === "invalid" || ready.status === "invalid") {
       throw new Error("expected valid Auto plans");
     }
@@ -431,7 +932,7 @@ describe("Clip Composition Plan", () => {
       targets: [{ id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 }],
     });
 
-    expect(result.status).toBe("provisional");
+    expect(result.status).toBe("pending");
     if (result.status === "invalid") throw new Error(result.error.code);
     expect(result.plan.targets[0]?.effectiveMode).toBe("center");
     expect(result.plan.evidenceRequests).toHaveLength(1);
@@ -510,10 +1011,10 @@ describe("Clip Composition Plan", () => {
       },
     });
     expect(versionMismatch).toMatchObject({
-      status: "provisional",
+      status: "pending",
       plan: {
         evidenceRequests: [{ kind: "automatic-speaker-layout" }],
-        notices: [{ code: "automatic_layout_analyzing", fidelity: "provisional" }],
+        notices: [{ code: "automatic_layout_analyzing", fidelity: "pending" }],
       },
     });
   });
@@ -1093,7 +1594,7 @@ describe("Clip Composition Plan", () => {
 
     expect(pip.status).toBe("ready");
     expect(faceBand.status).toBe("ready");
-    expect(pending.status).toBe("provisional");
+    expect(pending.status).toBe("pending");
     if (
       pip.status === "invalid" ||
       faceBand.status === "invalid" ||
@@ -1139,7 +1640,7 @@ describe("Clip Composition Plan", () => {
     expect(pending.plan.notices).toEqual([
       {
         code: "screen_layout_analyzing",
-        fidelity: "provisional",
+        fidelity: "pending",
         targetId: "vertical",
         sceneId: null,
         effectiveFallback: "screen",
@@ -1147,7 +1648,7 @@ describe("Clip Composition Plan", () => {
       },
       {
         code: "screen_layout_analyzing",
-        fidelity: "provisional",
+        fidelity: "pending",
         targetId: "portrait",
         sceneId: null,
         effectiveFallback: "screen",
@@ -1376,7 +1877,7 @@ describe("Clip Composition Plan", () => {
         },
       },
     });
-    expect(stale.status).toBe("provisional");
+    expect(stale.status).toBe("pending");
     if (stale.status === "invalid") throw new Error(stale.error.code);
     expect(stale.plan.notices[0]?.code).toBe("split_layout_analyzing");
     expect(stale.plan.evidenceRequests).toHaveLength(1);

@@ -61,12 +61,9 @@ import {
   clipLayoutAnalysisFailureSchema,
   clipAutoLayoutMatchesInputs,
   clipRenderResolutionSchema,
-  computeSpeechWindows,
   deletedRangesSchema,
-  extractSpeechWordIntervals,
   formatCaptionWord,
   getEffectiveClipTiming,
-  MAX_DUCKING_WINDOWS,
   normalizeTranscriptSliceForClip,
   parseClipAutoLayoutAnalysis,
   parseClipSplitLayoutAnalysis,
@@ -93,7 +90,6 @@ import type {
   EditedTimeMap,
   SourceRange,
   StudioEdits,
-  StudioTextLayer,
   StudioSpeakerLayoutOverride,
   TranscriptUtterance,
 } from "@narriflow/validators";
@@ -152,6 +148,8 @@ import {
 } from "../render-media-adapter";
 import { productionRenderDiagnosticAdapter } from "../render-diagnostic-adapter";
 import {
+  compileCompositionPlanAudiogram,
+  compileCompositionPlanAudioSchedule,
   compileCompositionPlanVideo,
   compileCompositionPlanVisualLayers,
 } from "../composition-ffmpeg-adapter";
@@ -184,6 +182,7 @@ interface BrollPlan {
 
 interface MusicPlan {
   path: string;
+  ref?: string;
   volume: number;
   startOffsetSec: number;
   /** User-configured music fade in/out, seconds (0-5). Optional so existing
@@ -209,6 +208,8 @@ interface MusicPlan {
  */
 interface SfxPlan {
   path: string;
+  id?: string;
+  ref?: string;
   startSec: number;
   volume: number;
 }
@@ -244,7 +245,7 @@ interface LogoOverlay {
  * file, see `brandLogo` below) via the shared `resolveEffectiveLogoSettings`
  * helper — the same one the studio preview overlay uses, so burn-in and
  * preview can't fork (vizard-parity.md Phase A step 6). `base: null` (no
- * logo asset at all, e.g. no snapshot/no logoStorageKey/audio-only source)
+ * logo asset at all, e.g. no snapshot/no logoStorageKey)
  * always yields `null` — there's nothing to override. `enabled: false`
  * yields `null` too, skipping the overlay filter entirely for this clip.
  */
@@ -2485,64 +2486,9 @@ export function generateAssFromCompositionCaptionLayers(input: {
   return header + "\n" + events.join("\n") + "\n";
 }
 
-function escapeSubtitlePath(filePath: string) {
-  return filePath.replace(/\\/g, "\\\\").replace(/:/g, "\\:");
-}
-
 /** #RRGGBB -> 0xRRGGBB for the ffmpeg `color` / `showwaves` filters. */
 function hexToFfmpegRgb(hex: string): string {
   return `0x${hex.replace("#", "").slice(0, 6)}`;
-}
-
-function hexToFfmpegColor(hex: string): string {
-  // Converts #RRGGBB to \&H00BBGGRR\& (FFmpeg ASS BGRA color format, alpha=00=opaque)
-  const r = hex.slice(1, 3);
-  const g = hex.slice(3, 5);
-  const b = hex.slice(5, 7);
-  return `\\&H00${b}${g}${r}\\&`;
-}
-
-function escapeDrawtextValue(value: string): string {
-  return value
-    .replace(/\\/g, "\\\\")
-    .replace(/:/g, "\\:")
-    .replace(/'/g, "\\'")
-    .replace(/\[/g, "\\[")
-    .replace(/\]/g, "\\]")
-    .replace(/%/g, "\\%");
-}
-
-function buildTextLayerFilters(
-  layers: StudioTextLayer[],
-  clipDurationSec: number,
-): string[] {
-  return layers.map((layer) => {
-    const endSec = Math.min(
-      clipDurationSec,
-      layer.endSec ?? clipDurationSec,
-    );
-    const startSec = Math.min(layer.startSec, endSec);
-    const x = ((layer.positionX ?? 50) / 100).toFixed(4);
-    const y = ((layer.positionY ?? 18) / 100).toFixed(4);
-    const fontColor = hexToFfmpegRgb(layer.color);
-    const border = layer.outlineWidth > 0
-      ? `:borderw=${layer.outlineWidth}:bordercolor=${hexToFfmpegRgb(layer.outlineColor)}`
-      : "";
-    const box = layer.backgroundColor
-      ? `:box=1:boxcolor=${hexToFfmpegRgb(layer.backgroundColor)}@${layer.backgroundOpacity.toFixed(3)}:boxborderw=10`
-      : "";
-
-    return (
-      `drawtext=font='${escapeDrawtextValue(layer.fontName)}'` +
-      `:text='${escapeDrawtextValue(layer.text)}'` +
-      `:fontsize=${Math.round(layer.fontSize)}` +
-      `:fontcolor=${fontColor}` +
-      `:x=(w-text_w)*${x}:y=(h-text_h)*${y}` +
-      `:enable='between(t\\,${startSec.toFixed(3)}\\,${endSec.toFixed(3)})'` +
-      `:shadowcolor=black@0.45:shadowx=0:shadowy=2` +
-      `${border}${box}`
-    );
-  });
 }
 
 /**
@@ -2568,22 +2514,6 @@ export function buildTransitionFilter(
         ? ":color=black"
         : "";
   return `fade=t=in:st=0:d=${duration.toFixed(3)}${color},fade=t=out:st=${outStart.toFixed(3)}:d=${duration.toFixed(3)}${color}`;
-}
-
-function appendTransitionFilter(
-  filterParts: string[],
-  inputLabel: string,
-  outputLabel: string,
-  studioEdits: StudioEdits | null | undefined,
-  clipDurationSec: number,
-) {
-  const transitionFilter = buildTransitionFilter(
-    studioEdits?.transition,
-    clipDurationSec,
-  );
-  if (!transitionFilter) return inputLabel;
-  filterParts.push(`${inputLabel}${transitionFilter}${outputLabel}`);
-  return outputLabel;
 }
 
 export interface CutConcatResult {
@@ -2614,7 +2544,7 @@ export interface CutConcatResult {
  *
  * `trim`/`atrim` operate on the SAME input-relative time base that every
  * other filter in this file already assumes for a `-ss X -i ...`-seeked
- * input (e.g. `buildTextLayerFilters`'/`buildBrollVideoArgs`' `between(t,...)`
+ * input (e.g. planned visual layers and B-roll `between(t,...)`
  * windows) — i.e. 0 at `clipStartSec`, not absolute source time — so segment
  * bounds are expressed as `segment.sourceStartSec/EndSec - clipStartSec`.
  */
@@ -2960,71 +2890,6 @@ function buildAudioMixFilter(params: {
     ...branchFilters,
     `${branchLabels.join("")}amix=inputs=${branchLabels.length}:duration=first:dropout_transition=0:normalize=0,${fadeChain}[outa]`,
   ].join(";");
-}
-
-/**
- * The ONE choke point every render path (single-video, fit+background,
- * multi-video, B-roll cutaway, audiogram — see call sites) routes subtitle
- * burn-in through, so gating `captionPreset.visible === false` here turns
- * subtitles off everywhere at once instead of needing a check duplicated at
- * every call site. Text layers, logo, background, and transitions are all
- * composed independently and are unaffected by this gate.
- */
-function buildSubtitleFilter(
-  aspectRatio: ClipAspectRatio,
-  subtitlePath: string | null,
-  captionPreset?: CaptionPreset | null,
-) {
-  if (!subtitlePath || captionPreset?.visible === false) {
-    return null;
-  }
-
-  const escapedPath = escapeSubtitlePath(subtitlePath);
-
-  // ASS files carry their own styling and positioning
-  if (subtitlePath.endsWith(".ass")) {
-    return `ass='${escapedPath}'`;
-  }
-
-  // SRT path: apply force_style
-  const captionStyle = captionStyleByAspectRatio[aspectRatio];
-  const fontSize = captionPreset?.fontSize ?? captionStyle.fontSize;
-
-  const fontName = resolveFontName(captionPreset?.fontName);
-  const primaryColor = captionPreset?.primaryColor
-    ? hexToFfmpegColor(captionPreset.primaryColor)
-    : "\\&H00FFFFFF\\&";
-  const outlineColor = captionPreset?.outlineColor
-    ? hexToFfmpegColor(captionPreset.outlineColor)
-    : "\\&H00000000\\&";
-  const outlineWidth = captionPreset?.outlineWidth ?? 2;
-  const shadow = captionPreset?.shadow ?? 1;
-  const bold = captionPreset?.bold !== false ? 1 : 0;
-  const alignment =
-    captionPreset?.position === "top" ? 8 :
-    captionPreset?.position === "center" ? 5 : 2;
-
-  const spacing = Math.round((captionPreset?.letterSpacing ?? 0) * fontSize);
-
-  let borderStyle = 1;
-  let backColour = "";
-  if (captionPreset?.backgroundColor) {
-    borderStyle = 3;
-    const bgAlpha = Math.round((1 - (captionPreset.backgroundOpacity ?? 0.6)) * 255);
-    const bgAlphaHex = bgAlpha.toString(16).toUpperCase().padStart(2, "0");
-    const r = captionPreset.backgroundColor.slice(1, 3);
-    const g = captionPreset.backgroundColor.slice(3, 5);
-    const b = captionPreset.backgroundColor.slice(5, 7);
-    backColour = `,BackColour=\\&H${bgAlphaHex}${b}${g}${r}\\&,BorderStyle=${borderStyle}`;
-  }
-
-  const forceStyle =
-    `FontSize=${fontSize},Alignment=${alignment},MarginV=${captionStyle.marginV},FontName=${fontName},` +
-    `PrimaryColour=${primaryColor},OutlineColour=${outlineColor},Outline=${outlineWidth},Shadow=${shadow},Bold=${bold}` +
-    (spacing > 0 ? `,Spacing=${spacing}` : "") +
-    backColour;
-
-  return `subtitles='${escapedPath}':force_style='${forceStyle}'`;
 }
 
 export function buildSingleVideoArgs(params: {
@@ -3573,10 +3438,15 @@ export function buildAudiogramArgs(params: {
   startSec: number;
   endSec: number;
   aspectRatio: ClipAspectRatio;
+  composition: {
+    plan: ClipCompositionPlan;
+    targetId: string;
+  };
   clipDurationSec: number;
   srtPath: string | null;
   captionPreset?: CaptionPreset | null;
   studioEdits?: StudioEdits | null;
+  logo?: LogoOverlay | null;
   music?: MusicPlan | null;
   /** One-shot SFX placements — see `buildSingleVideoArgs`'s param doc. The
    *  audiogram path supports SFX the same way it already supports music
@@ -3609,18 +3479,21 @@ export function buildAudiogramArgs(params: {
     );
   }
 
-  const { width: W, height: H } = config;
-  const bgColor = "0x0F172A";
-  const waveColor = hexToFfmpegRgb(
-    params.captionPreset?.highlightColor ?? "#00FF88",
+  const audiogram = compileCompositionPlanAudiogram(
+    params.composition.plan,
+    params.composition.targetId,
   );
-  const waveHeight = Math.round(H * 0.42);
-  const subtitleFilter = buildSubtitleFilter(
-    params.aspectRatio,
-    params.srtPath,
-    params.captionPreset,
-  );
-
+  const { width: W, height: H } = audiogram.canvas;
+  if (W !== config.width || H !== config.height) {
+    throw new WorkflowWorkerError(
+      "invalid_clip_composition_target",
+      "Audiogram plan canvas does not match the requested aspect ratio",
+      "permanent",
+    );
+  }
+  const bgColor = audiogram.backgroundColor.replace("#", "0x");
+  const waveColor = hexToFfmpegRgb(audiogram.waveformColor);
+  const waveHeight = audiogram.waveformHeight;
   const isCut = Boolean(params.cutPlan && !params.cutPlan.isUncut);
   const cutConcat = isCut
     ? buildCutConcatFilter({
@@ -3672,37 +3545,37 @@ export function buildAudiogramArgs(params: {
         ]),
   );
 
-  let finalLabel = "[comp]";
-  if (params.studioEdits?.textLayers.length) {
-    const textFilters = buildTextLayerFilters(
-      params.studioEdits.textLayers,
-      params.clipDurationSec,
-    ).join(",");
-    chain.push(`${finalLabel}${textFilters}[texted]`);
-    finalLabel = "[texted]";
-  }
-  if (subtitleFilter) {
-    chain.push(`${finalLabel}${subtitleFilter}[subbed]`);
-    finalLabel = "[subbed]";
-  }
-  chain.push(`${finalLabel}format=yuv420p[outv]`);
-
-  let videoOutputLabel = appendTransitionFilter(
-    chain,
-    "[outv]",
-    "[outvtransition]",
-    params.studioEdits,
-    params.clipDurationSec,
+  const plannedTarget = params.composition.plan.targets.find(
+    (target) => target.id === params.composition.targetId,
   );
-
-  const audiogramExportTreatment = buildExportTreatmentFilter(
-    params.resolution,
-    params.watermark,
+  if (!plannedTarget) throw new Error("clip_composition_target_missing");
+  const plannedLogo = plannedTarget.visualLayers.find(
+    (layer) => layer.kind === "logo",
   );
-  if (audiogramExportTreatment) {
-    chain.push(`${videoOutputLabel}${audiogramExportTreatment}[outvfree]`);
-    videoOutputLabel = "[outvfree]";
+  if (Boolean(plannedLogo) !== Boolean(params.logo)) {
+    throw new Error("clip_composition_logo_asset_mismatch");
   }
+
+  // Source is input 0. The plan owns visual ordering, so a planned logo is
+  // inserted before the audio-only optional inputs, matching the video path.
+  const logoInputIndex = plannedLogo ? 1 : null;
+  const visual = currentRenderAdapters().composition.compileVisualLayers({
+    plan: params.composition.plan,
+    targetId: params.composition.targetId,
+    inputLabel: "[comp]",
+    outputLabel: "[composition_visual]",
+    subtitlePath: params.srtPath,
+    logoInputIndex,
+  });
+  chain.push(...visual.filterParts);
+  if (
+    visual.logoInput &&
+    (!params.logo || visual.logoInput.sourceRef !== params.logo.ref)
+  ) {
+    throw new Error("clip_composition_logo_asset_mismatch");
+  }
+  chain.push("[composition_visual]format=yuv420p[outv]");
+  const videoOutputLabel = "[outv]";
 
   const args = [
     "-y",
@@ -3715,13 +3588,15 @@ export function buildAudiogramArgs(params: {
     params.sourcePath,
   ];
 
-  // Music, then SFX — same order as buildSingleVideoArgs/buildBrollVideoArgs.
-  // Input 0 is the (audio-only) source, so music (if present) is always 1.
-  const musicInputIndex = 1;
+  // Logo, music, then SFX — same order as the video builders.
+  const musicInputIndex = plannedLogo ? 2 : 1;
   const sfxInputIndexes = (params.sfx ?? []).map(
-    (_, i) => (params.music ? 2 : 1) + i,
+    (_, i) => musicInputIndex + (params.music ? 1 : 0) + i,
   );
 
+  if (plannedLogo && params.logo) {
+    args.push("-i", params.logo.filePath);
+  }
   if (params.music) {
     args.push("-stream_loop", "-1", "-i", params.music.path);
   }
@@ -3782,8 +3657,6 @@ export function buildAudiogramArgs(params: {
   return args;
 }
 
-const FREE_TIER_WATERMARK_TEXT = "Made with Narriflow";
-
 /**
  * Escapes a literal string for use as a drawtext `text` value inside a
  * filtergraph. Two escaping levels apply (see ffmpeg-utils "Quoting and
@@ -3841,8 +3714,8 @@ function buildWatermarkDrawtextFilter(
  * (after crop/scale/captions/logo/transition) so the whole render is a
  * single encode. This exact combination (both always on together) is what
  * `buildFreeTierPostProcessArgs` below still tests. Video plans now declare
- * these independent treatment facts directly; the audio-only audiogram path
- * continues to use the fragment until its topology moves into the plan.
+ * these independent treatment facts directly. The standalone free-tier
+ * utility below shares these low-level primitives with the plan compiler.
  */
 function buildFreeTierWatermarkFilter(
   watermarkText: string,
@@ -3852,25 +3725,6 @@ function buildFreeTierWatermarkFilter(
     buildResolutionScaleFilter("720p"),
     buildWatermarkDrawtextFilter(watermarkText, fontFilePath),
   ].join(",");
-}
-
-/**
- * Per-output export treatment fragment: an optional 720p downscale (driven
- * by that row's resolution) followed by an optional watermark (driven by
- * the run's ownerTier entitlement) — the two Phase C knobs a render can
- * combine. Returns "" when neither applies, so callers can skip appending a
- * filter stage entirely (byte-identical to pre-Phase-C output for a paid,
- * 1080p, no-watermark render).
- */
-function buildExportTreatmentFilter(
-  resolution: ClipRenderResolution | undefined,
-  watermark: boolean | undefined,
-): string {
-  const parts = [
-    resolution ? buildResolutionScaleFilter(resolution) : "",
-    watermark ? buildWatermarkDrawtextFilter(FREE_TIER_WATERMARK_TEXT) : "",
-  ].filter(Boolean);
-  return parts.join(",");
 }
 
 /**
@@ -4389,7 +4243,7 @@ async function executeClipRenderAttempt(
     if (rawBrandSnapshot) {
       try {
         const snapshot = brandTemplateSnapshotSchema.parse(rawBrandSnapshot);
-        if (snapshot.logoStorageKey && probe.hasVideo) {
+        if (snapshot.logoStorageKey) {
           brandLogoWasRequested = true;
           touchedOptionalAssetClasses.add("logo");
           const logoExt = extname(snapshot.logoStorageKey) || ".png";
@@ -6067,6 +5921,10 @@ async function executeClipRenderAttempt(
             if (decodable) {
               musicPlan = {
                 path: musicPath,
+                ref: compositionAssetRef(
+                  "music",
+                  studioEdits.music.assetId ?? musicUrl,
+                ),
                 volume: studioEdits.music.volume,
                 startOffsetSec: studioEdits.music.startOffsetSec,
                 fadeInSec: studioEdits.music.fadeInSec,
@@ -6090,33 +5948,6 @@ async function executeClipRenderAttempt(
             });
           }
         }
-      }
-
-      // Auto-ducking v1 (vizard-parity.md "Music/SFX library"): only
-      // computed when a music track actually resolved AND the user turned
-      // ducking on. Word intervals are derived from the SAME
-      // `captionTimeMap`/`utterances` the caption burn-in above already
-      // uses, so ducking can't drift from what the captions themselves
-      // consider "speech" on this clip's edited timeline. An empty
-      // transcript naturally yields `duckingWindows: []`, which
-      // `buildAudioMixFilter`/`buildMusicDuckingSuffix` treat as a no-op
-      // (filter omitted entirely, not a `volume='1'` stage).
-      if (musicPlan && studioEdits.music.ducking) {
-        const wordIntervals = extractSpeechWordIntervals(
-          utterances,
-          clipStartSec,
-          captionTimeMap,
-        );
-        const speechWindows = computeSpeechWindows(wordIntervals, clipDurationSec);
-        if (speechWindows.length > MAX_DUCKING_WINDOWS) {
-          log("info", "clip_ducking_windows_capped", {
-            workflowRunId: run.id,
-            clipId: clip.id,
-            windowCount: speechWindows.length,
-            cappedTo: MAX_DUCKING_WINDOWS,
-          });
-        }
-        musicPlan.duckingWindows = speechWindows;
       }
 
       // One-shot SFX placements (vizard-parity.md "Music/SFX library" —
@@ -6214,6 +6045,8 @@ async function executeClipRenderAttempt(
           if (decodable) {
             sfxPlans.push({
               path: sfxPath,
+              id: placement.id,
+              ref: compositionAssetRef("sound-effect", placement.assetId),
               startSec: placement.startSec,
               volume: placement.volume,
             });
@@ -6369,9 +6202,10 @@ async function executeClipRenderAttempt(
           : backgroundPlan;
 
       const requestedCompositionMode = resolveEffectiveFramingMode(studioEdits);
+      let plannedStudioEdits = studioEdits;
       let compositionPlan: ClipCompositionPlan | null = null;
       let fallbackCompositionPlan: ClipCompositionPlan | null = null;
-      if (probe.hasVideo) {
+      {
         const planWithAssetAvailability = (
           backgroundImage:
             | { state: "missing" | "failed" }
@@ -6383,9 +6217,10 @@ async function executeClipRenderAttempt(
             document: compositionDocument,
             source: {
               identity: compositionSourceIdentity,
-              kind: "video",
-              width: probe.width,
-              height: probe.height,
+              kind: probe.hasVideo ? "video" : "audio",
+              width: probe.hasVideo ? probe.width : 0,
+              height: probe.hasVideo ? probe.height : 0,
+              hasAudio: probe.hasAudio,
             },
             evidence: {
               automaticLayout: automaticLayoutAnalysisForPlan
@@ -6410,6 +6245,32 @@ async function executeClipRenderAttempt(
             },
             assets: {
               backgroundImage,
+              ...(studioEdits.music.assetId || studioEdits.music.url
+                ? {
+                    music: musicPlan?.ref
+                      ? {
+                          state: "available" as const,
+                          ref: musicPlan.ref,
+                        }
+                      : { state: "failed" as const },
+                  }
+                : {}),
+              soundEffects: Object.fromEntries(
+                studioEdits.sfx.map((placement) => {
+                  const resolved = sfxPlans.find(
+                    (candidate) => candidate.id === placement.id,
+                  );
+                  return [
+                    placement.id,
+                    resolved?.ref
+                      ? {
+                          state: "available" as const,
+                          ref: resolved.ref,
+                        }
+                      : { state: "failed" as const },
+                  ];
+                }),
+              ),
               ...(brollPlan && brollAvailable
                 ? {
                     broll: {
@@ -6523,6 +6384,16 @@ async function executeClipRenderAttempt(
           adapter: "ffmpeg",
           planVersion: planned.plan.version,
           planFingerprint: planned.plan.fingerprint,
+          planFidelity: planned.plan.fidelity,
+          audioScheduleFingerprint: planned.plan.audioSchedule.fingerprint,
+          audioSchedule: {
+            sourceAvailable: planned.plan.audioSchedule.source.available,
+            musicIncluded: Boolean(planned.plan.audioSchedule.music),
+            duckingWindowCount:
+              planned.plan.audioSchedule.music?.ducking.windows.length ?? 0,
+            soundEffectCount:
+              planned.plan.audioSchedule.soundEffects.length,
+          },
           planningDurationMs,
           requestedMode: requestedCompositionMode,
           evidenceSource: compositionEvidenceDiagnostics.source,
@@ -6545,8 +6416,54 @@ async function executeClipRenderAttempt(
           sceneCount,
           visualLayerCount,
           noticeCodes: planned.plan.notices.map((notice) => notice.code),
+          optionalDegradationCount: planned.plan.notices.filter(
+            (notice) => notice.fidelity === "degraded",
+          ).length,
         });
         compositionPlan = planned.plan;
+        const plannedAudio = compileCompositionPlanAudioSchedule(
+          compositionPlan,
+        );
+        plannedStudioEdits = {
+          ...studioEdits,
+          sourceAudio: {
+            volume: Math.round(plannedAudio.source.gain * 100),
+            muted:
+              plannedAudio.source.muted || !plannedAudio.source.available,
+          },
+        };
+        musicPlan =
+          musicPlan &&
+          plannedAudio.music &&
+          musicPlan.ref === plannedAudio.music.sourceRef
+            ? {
+                ...musicPlan,
+                volume: plannedAudio.music.gain * 100,
+                startOffsetSec: plannedAudio.music.startOffsetSec,
+                fadeInSec: plannedAudio.music.fadeInSec,
+                fadeOutSec: plannedAudio.music.fadeOutSec,
+                duckingWindows: [...plannedAudio.music.duckingWindows],
+              }
+            : null;
+        const resolvedSfxPlans = plannedAudio.soundEffects.flatMap(
+          (plannedEffect) => {
+            const resolved = sfxPlans.find(
+              (candidate) =>
+                candidate.id === plannedEffect.id &&
+                candidate.ref === plannedEffect.sourceRef,
+            );
+            return resolved
+              ? [
+                  {
+                    ...resolved,
+                    startSec: plannedEffect.startSec,
+                    volume: plannedEffect.gain * 100,
+                  },
+                ]
+              : [];
+          },
+        );
+        sfxPlans.splice(0, sfxPlans.length, ...resolvedSfxPlans);
         for (const output of outputs) {
           const target = compositionPlan.targets.find(
             (candidate) => candidate.id === output.clipRenderId,
@@ -6596,25 +6513,31 @@ async function executeClipRenderAttempt(
       }
 
       if (!probe.hasVideo) {
-        // Known divergence: audio-only sources render via buildAudiogramArgs,
-        // which has no `background` param and always uses its own fixed
-        // waveform-panel color (see its `bgColor` constant) — a canvas
-        // background configured in studioEdits is silently ignored here even
-        // though the studio preview still shows it for these sources. Not
-        // fixed as part of vizard-parity.md Phase C item 2; revisit if
-        // audiogram background support becomes a real ask.
+        if (!compositionPlan) {
+          throw new WorkflowWorkerError(
+            "clip_composition_plan_missing",
+            "Audio-only render requires a Clip Composition Plan",
+            "permanent",
+          );
+        }
         for (const output of outputs) {
           try {
+            const compositionForOutput = {
+              plan: compositionPlan,
+              targetId: output.clipRenderId,
+            };
             const ffmpegArgs = buildAudiogramArgs({
               sourcePath,
               outputPath: output.outputPath,
               startSec: clipStartSec,
               endSec: clipEndSec,
               aspectRatio: output.aspectRatio,
+              composition: compositionForOutput,
               clipDurationSec,
               srtPath: output.subtitlePath ?? srtPath,
               captionPreset,
-              studioEdits,
+              studioEdits: plannedStudioEdits,
+              logo,
               music: musicPlan,
               sfx: sfxPlans,
               resolution: output.resolution,
@@ -6634,10 +6557,12 @@ async function executeClipRenderAttempt(
                         startSec: clipStartSec,
                         endSec: clipEndSec,
                         aspectRatio: output.aspectRatio,
+                        composition: compositionForOutput,
                         clipDurationSec,
                         srtPath: output.subtitlePath ?? srtPath,
                         captionPreset,
-                        studioEdits,
+                        studioEdits: plannedStudioEdits,
+                        logo,
                         music: null,
                         sfx: [],
                         resolution: output.resolution,
@@ -6730,7 +6655,7 @@ async function executeClipRenderAttempt(
                   srtPath: output.subtitlePath ?? srtPath,
                   logo,
                   composition: compositionForOutput,
-                  studioEdits,
+                  studioEdits: plannedStudioEdits,
                   music: musicPlan,
                   sfx: sfxPlans,
                   background: backgroundPlan,
@@ -6746,7 +6671,7 @@ async function executeClipRenderAttempt(
                   srtPath: output.subtitlePath ?? srtPath,
                   logo,
                   composition: compositionForOutput,
-                  studioEdits,
+                  studioEdits: plannedStudioEdits,
                   music: musicPlan,
                   sfx: sfxPlans,
                   background: backgroundPlan,
@@ -6768,7 +6693,7 @@ async function executeClipRenderAttempt(
                         srtPath: output.subtitlePath ?? srtPath,
                         logo: null,
                         composition: fallbackCompositionForOutput,
-                        studioEdits,
+                        studioEdits: plannedStudioEdits,
                         music: null,
                         sfx: [],
                         background: fallbackBackgroundPlan,

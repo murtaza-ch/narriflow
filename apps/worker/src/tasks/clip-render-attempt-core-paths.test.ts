@@ -19,10 +19,15 @@ import {
   WorkflowAttemptLost,
   WorkflowFailure,
 } from "@narriflow/services";
-import { studioEditsSchema } from "@narriflow/validators";
+import {
+  captionPresetSchema,
+  editorDocumentSchema,
+  studioEditsSchema,
+} from "@narriflow/validators";
 import type { TranscriptUtterance } from "@narriflow/validators";
 import {
   compositionAssetRef,
+  planClipComposition,
   screenLayoutInputFingerprint,
 } from "@narriflow/composition-plan";
 import { parseRenderConfig } from "../render-config";
@@ -754,6 +759,41 @@ function buildBaselineCommands(input: {
       startSec: input.startSec,
       endSec: input.endSec,
       aspectRatio: output.aspectRatio,
+      composition: (() => {
+        const canvas = {
+          "9:16": { width: 1080, height: 1920 },
+          "1:1": { width: 1080, height: 1080 },
+          "16:9": { width: 1920, height: 1080 },
+          "4:5": { width: 1080, height: 1350 },
+        }[output.aspectRatio];
+        const planned = planClipComposition({
+          document: editorDocumentSchema.parse({
+            clipStartSec: 0,
+            clipEndSec: clipDurationSec,
+            captionPreset: captionPresetSchema.parse({}),
+            transcriptSlice: [],
+            studioEdits,
+            brollUrl: null,
+            deletedRanges: [],
+          }),
+          source: { identity: "audio:baseline", kind: "audio", width: 0, height: 0 },
+          evidence: { automaticLayout: { state: "missing" } },
+          assets: { backgroundImage: { state: "missing" } },
+          capabilities: {
+            automaticSpeakerLayout: true,
+            automaticSpeakerEngineVersion: "shot-layout-v1",
+          },
+          targets: [
+            {
+              id: output.clipRenderId,
+              aspectRatio: output.aspectRatio,
+              ...canvas,
+            },
+          ],
+        });
+        if (planned.status === "invalid") throw new Error(planned.error.code);
+        return { plan: planned.plan, targetId: output.clipRenderId };
+      })(),
       clipDurationSec,
       srtPath: input.srtPath ?? null,
       studioEdits,
@@ -2769,6 +2809,93 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
       expect(graph).toContain("fade=t=in:st=0.000:d=0.200:color=white");
       expect(graph).toContain("drawtext=text=Made with Narriflow");
     },
+  );
+
+  test.skipIf(!ffmpegAvailable || !ffprobeAvailable)(
+    "renders the existing audio-only audiogram while omitting unsupported backgrounds",
+    async () => {
+      let output: RenderedMediaProbe | undefined;
+      let frameHashes: string[] = [];
+      const harness = createCoreRenderPathTracer({
+        topology: "audiogram",
+        clipWindow: { startSec: 0, endSec: 0.8 },
+        variants: [
+          {
+            id: "variant-audiogram-plan",
+            aspectRatio: "ratio_9_16",
+            resolution: "720p",
+          },
+        ],
+        clipOverrides: {
+          studioEdits: {
+            background: { mode: "color", color: "#123456" },
+            textLayers: [
+              {
+                id: "audio-hook",
+                text: "Listen closely",
+                startSec: 0.1,
+                endSec: 0.7,
+              },
+            ],
+          },
+        },
+        projectBrandSnapshot: {
+          templateId: null,
+          captionPreset: {},
+          logoStorageKey: "projects/brand/logo.png",
+          logoPosition: "top-right",
+          logoOpacity: 80,
+          logoScalePct: 15,
+          primaryColor: "#FFFFFF",
+          secondaryColor: "#00FF88",
+          accentColor: null,
+        },
+        realMedia: {
+          sourcePath: audioSourcePath,
+          logoPath: logoSourcePath,
+          probeOutput: async (variantId, filePath) => {
+            output = probeRenderedMedia(variantId, filePath);
+            frameHashes = [0.05, 0.2, 0.6].map((timeSec) =>
+              hashRenderedFrame(filePath, timeSec),
+            );
+          },
+        },
+      });
+
+      await expect(
+        harness.clipRenderAttempt.execute({
+          attempt: harness.attempt,
+          signal: new AbortController().signal,
+        }),
+      ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
+
+      expect(output).toMatchObject({
+        variantId: "variant-audiogram-plan",
+        width: 720,
+        height: 1280,
+        videoCodec: "h264",
+        audioCodec: "aac",
+      });
+      expect(output?.durationSec).toBeGreaterThan(0.7);
+      expect(frameHashes.every(Boolean)).toBe(true);
+      expect(new Set(frameHashes).size).toBeGreaterThanOrEqual(2);
+      const graph = harness.commands[0]?.args.join(" ") ?? "";
+      expect(graph).toContain("showwaves=");
+      expect(graph).toContain("color=c=0x0F172A");
+      expect(graph).not.toContain("color=c=0x123456");
+      expect(graph).toContain("text='Listen closely'");
+      expect(graph).toContain("colorchannelmixer=aa=0.800");
+      expect(harness.diagnostics).toContainEqual({
+        message: "clip_composition_plan",
+        context: expect.objectContaining({
+          planFidelity: "degraded",
+          effectiveModes: ["audiogram"],
+          noticeCodes: ["audio_only_background_unsupported"],
+          optionalDegradationCount: 1,
+        }),
+      });
+    },
+    30_000,
   );
 
   afterAll(async () => {

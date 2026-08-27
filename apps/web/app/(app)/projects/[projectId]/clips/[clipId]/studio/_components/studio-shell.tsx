@@ -256,6 +256,7 @@ export interface ClipInfo {
   aspectRatio: AspectRatio;
   viralityScore: number;
   category: string;
+  sourceKind: "video" | "audio";
   /** Detection-time visual cues, clip-relative. The studio uses the same
    *  cues as the worker so its automatic-cutaway plan never falls back to
    *  one repeated title query when richer timing data already exists. */

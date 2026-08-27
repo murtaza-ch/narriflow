@@ -7,6 +7,128 @@ import {
   type CompositionVisualLayer,
 } from "@narriflow/composition-plan";
 
+export function compileCompositionPlanAudiogram(
+  plan: ClipCompositionPlan,
+  targetId: string,
+) {
+  if (plan.version !== CLIP_COMPOSITION_PLAN_VERSION) {
+    throw new Error("unsupported_clip_composition_plan_version");
+  }
+  const target = plan.targets.find((candidate) => candidate.id === targetId);
+  if (!target) throw new Error("clip_composition_target_missing");
+  if (target.effectiveMode !== "audiogram" || target.scenes.length !== 1) {
+    throw new Error("clip_composition_audiogram_missing");
+  }
+  const scene = target.scenes[0]!;
+  const layer = scene.layers.find(
+    (candidate) => candidate.kind === "audiogram",
+  );
+  if (
+    !layer ||
+    layer.sourceRef !== plan.source.ref ||
+    layer.destination.x !== 0 ||
+    layer.destination.y !== 0 ||
+    layer.destination.width !== target.canvas.width ||
+    layer.destination.height !== target.canvas.height ||
+    layer.waveformHeightRatio <= 0 ||
+    layer.waveformHeightRatio > 1
+  ) {
+    throw new Error("invalid_clip_composition_audiogram");
+  }
+  return {
+    sourceRef: layer.sourceRef,
+    canvas: target.canvas,
+    backgroundColor: layer.backgroundColor,
+    waveformColor: layer.waveformColor,
+    waveformHeight: Math.round(
+      target.canvas.height * layer.waveformHeightRatio,
+    ),
+  };
+}
+
+export function compileCompositionPlanAudioSchedule(plan: ClipCompositionPlan) {
+  if (plan.version !== CLIP_COMPOSITION_PLAN_VERSION) {
+    throw new Error("unsupported_clip_composition_plan_version");
+  }
+  const schedule = plan.audioSchedule;
+  const validRange = (range: { startSec: number; endSec: number }) =>
+    Number.isFinite(range.startSec) &&
+    Number.isFinite(range.endSec) &&
+    range.startSec >= 0 &&
+    range.endSec > range.startSec &&
+    range.endSec <= plan.editedDurationSec;
+  const validFadeRange = (range: { startSec: number; endSec: number }) =>
+    Number.isFinite(range.startSec) &&
+    Number.isFinite(range.endSec) &&
+    range.startSec >= 0 &&
+    range.endSec >= range.startSec &&
+    range.endSec <= plan.editedDurationSec;
+  if (
+    !validRange(schedule.source.activeRange) ||
+    !Number.isFinite(schedule.source.gain) ||
+    schedule.source.gain < 0 ||
+    schedule.source.gain > 1
+  ) {
+    throw new Error("invalid_clip_composition_audio_schedule");
+  }
+  const music = schedule.music;
+  if (
+    music &&
+    (!validRange(music.activeRange) ||
+      !validFadeRange(music.fades.fadeIn) ||
+      !validFadeRange(music.fades.fadeOut) ||
+      music.fades.fadeIn.endSec > music.fades.fadeOut.startSec ||
+      !Number.isFinite(music.gain) ||
+      music.gain < 0 ||
+      music.gain > 1 ||
+      !Number.isFinite(music.startOffsetSec) ||
+      music.startOffsetSec < 0 ||
+      music.ducking.windows.some((window) => !validRange(window)))
+  ) {
+    throw new Error("invalid_clip_composition_audio_schedule");
+  }
+  if (
+    schedule.soundEffects.some(
+      (effect) =>
+        !validRange(effect.activeRange) ||
+        !Number.isFinite(effect.gain) ||
+        effect.gain < 0 ||
+        effect.gain > 1,
+    )
+  ) {
+    throw new Error("invalid_clip_composition_audio_schedule");
+  }
+  return {
+    scheduleFingerprint: schedule.fingerprint,
+    source: {
+      available: schedule.source.available,
+      gain: schedule.source.gain,
+      muted: schedule.source.muted,
+    },
+    music: music
+      ? {
+          sourceRef: music.sourceRef,
+          gain: music.gain,
+          startOffsetSec: music.startOffsetSec,
+          loop: music.loop,
+          fadeInSec: music.fades.fadeIn.endSec - music.fades.fadeIn.startSec,
+          fadeOutSec:
+            music.fades.fadeOut.endSec - music.fades.fadeOut.startSec,
+          duckingWindows: music.ducking.enabled
+            ? [...music.ducking.windows]
+            : [],
+        }
+      : null,
+    soundEffects: schedule.soundEffects.map((effect) => ({
+      id: effect.id,
+      sourceRef: effect.sourceRef,
+      startSec: effect.activeRange.startSec,
+      endSec: effect.activeRange.endSec,
+      gain: effect.gain,
+    })),
+  };
+}
+
 function escapeDrawtextValue(value: string): string {
   return value
     .replace(/\\/g, "\\\\")

@@ -9,8 +9,10 @@ import {
   adoptCompositionPreview,
   adoptCompositionPreviewResult,
   compositionNoticeText,
+  compositionInvalidText,
   manualBrollAvailabilityForPlan,
   plannedCompositionSourceDimensions,
+  plannedCompositionAudioState,
   plannedCompositionUsesStackedStage,
   plannedCompositionFrameStyle,
   plannedCompositionVideoStyle,
@@ -41,6 +43,149 @@ function centerPlan() {
 }
 
 describe("composition preview adapter", () => {
+  test("translates the planned audio schedule without recomputing audio policy", () => {
+    const schedule = {
+      fingerprint: "audio:fingerprint",
+      source: {
+        sourceRef: "source:one",
+        available: true,
+        activeRange: { startSec: 0, endSec: 8 },
+        gain: 0.65,
+        muted: false,
+      },
+      music: {
+        sourceRef: "music:one",
+        activeRange: { startSec: 0, endSec: 8 },
+        gain: 0.4,
+        startOffsetSec: 3,
+        loop: true as const,
+        fades: {
+          fadeIn: { startSec: 0, endSec: 4 },
+          fadeOut: { startSec: 6, endSec: 8 },
+        },
+        ducking: {
+          enabled: true,
+          windows: [{ startSec: 1, endSec: 2 }],
+          duckedGainFraction: 0.3,
+          attackSec: 0.25,
+          releaseSec: 0.4,
+        },
+      },
+      soundEffects: [
+        {
+          id: "sting",
+          sourceRef: "sfx:one",
+          activeRange: { startSec: 1, endSec: 8 },
+          gain: 0.8,
+        },
+      ],
+    };
+
+    const state = plannedCompositionAudioState(schedule, 1.5);
+    expect({
+      ...state,
+      music: state.music ? { ...state.music, volume: undefined } : null,
+    }).toEqual({
+      scheduleFingerprint: "audio:fingerprint",
+      source: { muted: false, volume: 0.65 },
+      music: {
+        sourceRef: "music:one",
+        timelineTimeSec: 4.5,
+        loop: true,
+        volume: undefined,
+      },
+      soundEffects: [
+        {
+          id: "sting",
+          sourceRef: "sfx:one",
+          localTimeSec: 0.5,
+          volume: 0.8,
+        },
+      ],
+    });
+    expect(state.music?.volume).toBeCloseTo(0.045, 8);
+  });
+
+  test("adopts an audio-only audiogram without pretending its background will render", () => {
+    const result = planClipComposition({
+      document: editorDocumentSchema.parse({
+        clipStartSec: 0,
+        clipEndSec: 6,
+        captionPreset: captionPresetSchema.parse({}),
+        transcriptSlice: [],
+        studioEdits: studioEditsSchema.parse({
+          background: { mode: "color", color: "#123456" },
+        }),
+        brollUrl: null,
+        deletedRanges: [],
+      }),
+      source: { identity: "audio:one", kind: "audio", width: 0, height: 0 },
+      evidence: { automaticLayout: { state: "missing" } },
+      assets: { backgroundImage: { state: "missing" } },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+      targets: [{ id: "9:16", aspectRatio: "9:16", width: 1080, height: 1920 }],
+    });
+    if (result.status === "invalid") throw new Error(result.error.code);
+
+    expect(adoptCompositionPreview(result.plan, "9:16", 1)).toMatchObject({
+      mainMediaKey: "audio:one",
+      requestedMode: "fit",
+      effectiveMode: "audiogram",
+      layers: [{ kind: "audiogram", backgroundColor: "#0F172A" }],
+      notices: [{ code: "audio_only_background_unsupported" }],
+    });
+    expect(compositionNoticeText("audio_only_background_unsupported")).toBe(
+      "Audiograms use the standard waveform background. Remove the background choice to clear this notice.",
+    );
+  });
+
+  test("maps deterministic invalid plans to one stable creator-facing error", () => {
+    expect(compositionInvalidText("invalid_target")).toBe(
+      "This composition is invalid for the selected format. Choose another format or adjust the layout before exporting.",
+    );
+    expect(compositionInvalidText("plan_size_exceeded")).toBe(
+      "This composition is too complex to export. Remove some timed elements and try again.",
+    );
+  });
+
+  test("names scoped pending and degraded fallbacks in accessible text", () => {
+    expect(
+      compositionNoticeText("automatic_layout_analyzing", {
+        notice: {
+          code: "automatic_layout_analyzing",
+          fidelity: "pending",
+          targetId: "9:16",
+          sceneId: null,
+          effectiveFallback: "center",
+          userActionPossible: false,
+        },
+        requestedMode: "auto",
+        effectiveMode: "center",
+      }),
+    ).toBe(
+      "9:16 · Auto requested; previewing Center while this composition update completes. Analyzing speakers… Center framing is shown for now.",
+    );
+    expect(
+      compositionNoticeText("screen_no_face_detected", {
+        notice: {
+          code: "screen_no_face_detected",
+          fidelity: "degraded",
+          targetId: "1:1",
+          sceneId: "scene:screen:2",
+          effectiveFallback: "center",
+          userActionPossible: true,
+        },
+        requestedMode: "screen",
+        effectiveMode: "center",
+      }),
+    ).toBe(
+      "1:1, scene scene:screen:2 · Screen requested; preview and export use Center. No speaker face was detected. Using a centered speaker tile. Choose another framing mode to clear this notice.",
+    );
+  });
+
   test("replans a requested manual B-roll asset only after browser media validation", () => {
     const base = {
       url: "https://example.com/cutaway.mp4",

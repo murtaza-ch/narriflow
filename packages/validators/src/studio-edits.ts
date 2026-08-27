@@ -122,7 +122,9 @@ export const DUCKING_DEFAULTS = {
   padSec: 0.12,
 } as const;
 
-export type DuckingOptions = Partial<typeof DUCKING_DEFAULTS>;
+export type DuckingOptions = Partial<{
+  [Key in keyof typeof DUCKING_DEFAULTS]: number;
+}>;
 
 export interface DuckingWindow {
   startSec: number;

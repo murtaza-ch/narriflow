@@ -12,6 +12,8 @@ import {
   studioEditsSchema,
 } from "@narriflow/validators";
 import {
+  compileCompositionPlanAudiogram,
+  compileCompositionPlanAudioSchedule,
   compileCompositionPlanVideo,
   compileCompositionPlanVisualLayers,
 } from "./composition-ffmpeg-adapter";
@@ -349,6 +351,103 @@ function planVisualStack(input: { captions?: boolean } = {}) {
 }
 
 describe("composition FFmpeg adapter", () => {
+  test("translates the planned audio-only audiogram without choosing its visual policy", () => {
+    const result = planClipComposition({
+      document: editorDocumentSchema.parse({
+        clipStartSec: 0,
+        clipEndSec: 5,
+        captionPreset: captionPresetSchema.parse({ highlightColor: "#12AB34" }),
+        transcriptSlice: [],
+        studioEdits: studioEditsSchema.parse({ framing: { mode: "center" } }),
+        brollUrl: null,
+        deletedRanges: [],
+      }),
+      source: { identity: "audio:key", kind: "audio", width: 0, height: 0 },
+      evidence: { automaticLayout: { state: "missing" } },
+      assets: { backgroundImage: { state: "missing" } },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+      targets: [{ id: "variant-1", aspectRatio: "9:16", width: 1080, height: 1920 }],
+    });
+    if (result.status === "invalid") throw new Error(result.error.code);
+
+    expect(compileCompositionPlanAudiogram(result.plan, "variant-1")).toEqual({
+      sourceRef: "audio:key",
+      canvas: { width: 1080, height: 1920, divisibleBy: 2 },
+      backgroundColor: "#0F172A",
+      waveformColor: "#12AB34",
+      waveformHeight: 806,
+    });
+  });
+
+  test("translates the shared audio schedule into normalized render requests", () => {
+    const plan = planCenter();
+    const translated = compileCompositionPlanAudioSchedule({
+      ...plan,
+      audioSchedule: {
+        fingerprint: "audio:one",
+        source: {
+          sourceRef: "source:key",
+          available: true,
+          activeRange: { startSec: 0, endSec: 5 },
+          gain: 0.65,
+          muted: false,
+        },
+        music: {
+          sourceRef: "music:bed",
+          activeRange: { startSec: 0, endSec: 5 },
+          gain: 0.4,
+          startOffsetSec: 3,
+          loop: true,
+          fades: {
+            fadeIn: { startSec: 0, endSec: 2 },
+            fadeOut: { startSec: 4, endSec: 5 },
+          },
+          ducking: {
+            enabled: true,
+            windows: [{ startSec: 1, endSec: 2 }],
+            duckedGainFraction: 0.3,
+            attackSec: 0.25,
+            releaseSec: 0.4,
+          },
+        },
+        soundEffects: [
+          {
+            id: "sting",
+            sourceRef: "sfx:sting",
+            activeRange: { startSec: 2, endSec: 5 },
+            gain: 0.8,
+          },
+        ],
+      },
+    });
+
+    expect(translated).toEqual({
+      scheduleFingerprint: "audio:one",
+      source: { available: true, gain: 0.65, muted: false },
+      music: {
+        sourceRef: "music:bed",
+        gain: 0.4,
+        startOffsetSec: 3,
+        loop: true,
+        fadeInSec: 2,
+        fadeOutSec: 1,
+        duckingWindows: [{ startSec: 1, endSec: 2 }],
+      },
+      soundEffects: [
+        {
+          id: "sting",
+          sourceRef: "sfx:sting",
+          startSec: 2,
+          endSec: 5,
+          gain: 0.8,
+        },
+      ],
+    });
+  });
+
   test("compiles the planner's complete visual order without re-reading editor policy", () => {
     expect(
       compileCompositionPlanVisualLayers({

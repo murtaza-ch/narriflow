@@ -3,9 +3,85 @@ import {
   type ClipCompositionPlan,
   type ClipCompositionPlanResult,
   type CompositionBrollAvailability,
+  type CompositionAudioSchedule,
   type CompositionLayer,
+  type CompositionMode,
+  type CompositionNotice,
   type CompositionVisualLayer,
 } from "@narriflow/composition-plan";
+import { duckingGainMultiplierAt } from "@narriflow/validators";
+
+function rangeContains(
+  range: { startSec: number; endSec: number },
+  timeSec: number,
+): boolean {
+  return timeSec >= range.startSec && timeSec <= range.endSec;
+}
+
+export function plannedCompositionAudioState(
+  schedule: CompositionAudioSchedule,
+  editedTimeSec: number,
+) {
+  const timeSec = Math.max(0, editedTimeSec);
+  const music = schedule.music;
+  let plannedMusic: {
+    sourceRef: string;
+    timelineTimeSec: number;
+    loop: true;
+    volume: number;
+  } | null = null;
+  if (music && rangeContains(music.activeRange, timeSec)) {
+    let volume = music.gain;
+    const fadeInDuration = music.fades.fadeIn.endSec - music.fades.fadeIn.startSec;
+    if (fadeInDuration > 0 && timeSec < music.fades.fadeIn.endSec) {
+      volume *= Math.max(
+        0,
+        Math.min(1, (timeSec - music.fades.fadeIn.startSec) / fadeInDuration),
+      );
+    }
+    const fadeOutDuration =
+      music.fades.fadeOut.endSec - music.fades.fadeOut.startSec;
+    if (fadeOutDuration > 0 && timeSec > music.fades.fadeOut.startSec) {
+      volume = Math.min(
+        volume,
+        music.gain *
+          Math.max(
+            0,
+            Math.min(1, (music.fades.fadeOut.endSec - timeSec) / fadeOutDuration),
+          ),
+      );
+    }
+    if (music.ducking.enabled) {
+      volume *= duckingGainMultiplierAt(timeSec, [...music.ducking.windows], {
+        duckedGainFraction: music.ducking.duckedGainFraction,
+        attackSec: music.ducking.attackSec,
+        releaseSec: music.ducking.releaseSec,
+      });
+    }
+    plannedMusic = {
+      sourceRef: music.sourceRef,
+      timelineTimeSec: music.startOffsetSec + timeSec,
+      loop: true,
+      volume: Math.max(0, Math.min(1, volume)),
+    };
+  }
+  return {
+    scheduleFingerprint: schedule.fingerprint,
+    source: {
+      muted: schedule.source.muted || !schedule.source.available,
+      volume: schedule.source.gain,
+    },
+    music: plannedMusic,
+    soundEffects: schedule.soundEffects
+      .filter((effect) => rangeContains(effect.activeRange, timeSec))
+      .map((effect) => ({
+        id: effect.id,
+        sourceRef: effect.sourceRef,
+        localTimeSec: timeSec - effect.activeRange.startSec,
+        volume: effect.gain,
+      })),
+  };
+}
 
 export function manualBrollAvailabilityForPlan(input: {
   url: string | null;
@@ -76,10 +152,67 @@ const COMPOSITION_NOTICE_COPY: Readonly<Record<string, string>> = {
   broll_asset_unavailable: "B-roll is unavailable. Showing the base composition.",
   logo_asset_pending: "Checking logo media…",
   logo_asset_unavailable: "Logo media is unavailable. Showing the rest of the composition.",
+  music_asset_pending: "Checking music… The clip remains available without it.",
+  music_asset_unavailable: "Music is unavailable. Playing the rest of the mix.",
+  sound_effect_asset_pending:
+    "Checking a sound effect… The clip remains available without it.",
+  sound_effect_asset_unavailable:
+    "A sound effect is unavailable. Playing the rest of the mix.",
+  audio_only_background_unsupported:
+    "Audiograms use the standard waveform background. Remove the background choice to clear this notice.",
 };
 
-export function compositionNoticeText(code: string | null | undefined): string | null {
-  return code ? COMPOSITION_NOTICE_COPY[code] ?? null : null;
+function compositionModeLabel(mode: CompositionMode): string {
+  return mode === "audiogram"
+    ? "Audiogram"
+    : `${mode.charAt(0).toUpperCase()}${mode.slice(1)}`;
+}
+
+function compositionNoticeAction(code: string): string {
+  if (code.includes("background")) {
+    return "Choose another background or turn it off.";
+  }
+  if (
+    code.startsWith("broll_") ||
+    code.startsWith("logo_") ||
+    code.startsWith("music_") ||
+    code.startsWith("sound_effect_")
+  ) {
+    return "Replace or remove the affected optional asset.";
+  }
+  return "Choose another framing mode to clear this notice.";
+}
+
+export function compositionNoticeText(
+  code: string | null | undefined,
+  context?: {
+    notice: CompositionNotice;
+    requestedMode: CompositionMode;
+    effectiveMode: CompositionMode;
+  },
+): string | null {
+  const detail = code ? COMPOSITION_NOTICE_COPY[code] ?? null : null;
+  if (!detail || !context) return detail;
+  const scope = context.notice.sceneId
+    ? `${context.notice.targetId}, scene ${context.notice.sceneId}`
+    : context.notice.targetId;
+  const requested = compositionModeLabel(context.requestedMode);
+  const effective = compositionModeLabel(context.effectiveMode);
+  const fidelity =
+    context.notice.fidelity === "pending"
+      ? `${requested} requested; previewing ${effective} while this composition update completes.`
+      : `${requested} requested; preview and export use ${effective}.`;
+  const action = context.notice.userActionPossible
+    ? ` ${compositionNoticeAction(context.notice.code)}`
+    : "";
+  return `${scope} · ${fidelity} ${detail}${action}`;
+}
+
+export function compositionInvalidText(code: string): string {
+  if (code === "plan_size_exceeded") {
+    return "This composition is too complex to export. Remove some timed elements and try again.";
+  }
+  return "This composition is invalid for the selected format. Choose another format or adjust the layout before exporting.";
 }
 
 export function plannedCompositionSourceDimensions(
@@ -265,7 +398,7 @@ export function adoptCompositionPreview(
     for (const layer of candidate.layers) {
       assertLayerGeometry(layer, target.canvas, plan.source);
       if (
-        layer.kind === "source-video" &&
+        (layer.kind === "source-video" || layer.kind === "audiogram") &&
         layer.sourceRef !== plan.source.ref
       ) {
         throw new Error("invalid_clip_composition_source_ref");
@@ -284,8 +417,12 @@ export function adoptCompositionPreview(
   );
   if (!scene) throw new Error("clip_composition_scene_missing");
   const mainSource = scene.layers.find(
-    (layer): layer is Extract<CompositionLayer, { kind: "source-video" }> =>
-      layer.kind === "source-video",
+    (
+      layer,
+    ): layer is Extract<
+      CompositionLayer,
+      { kind: "source-video" | "audiogram" }
+    > => layer.kind === "source-video" || layer.kind === "audiogram",
   );
   if (!mainSource) throw new Error("clip_composition_source_layer_missing");
   const visualLayers = target.visualLayers.filter(

@@ -104,6 +104,11 @@ export default async function StudioPage({
     aspectRatio: clip.renderVariants[0]?.aspectRatio ?? "9:16",
     viralityScore: clip.viralityScore,
     category: clip.category,
+    sourceKind:
+      snapshot.project.sourceMimeType?.startsWith("audio/") ||
+      snapshot.project.sourceType === "rss"
+        ? "audio"
+        : "video",
     brollCues: clip.brollCues ?? [],
     can1080pExport: hasFeature(pricingTier, "export.1080p"),
     exportHasWatermark: !hasFeature(pricingTier, "export.noWatermark"),

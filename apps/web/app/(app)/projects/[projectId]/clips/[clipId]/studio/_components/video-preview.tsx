@@ -29,17 +29,11 @@ import {
   RotateCcw,
 } from "lucide-react";
 import {
-  capDuckingWindows,
   clipAspectRatioOptions,
-  computeSpeechWindows,
-  duckingGainMultiplierAt,
   editedToSource,
-  extractSpeechWordIntervals,
   resolveEffectiveFramingMode,
   resolveEffectiveLogoSettings,
-  resolveMusicFadeWindows,
   speakerLayoutOverrideFromScene,
-  type DuckingWindow,
   type LogoPosition,
   type SpeakerLayerRole,
   type SpeakerLayerTransform,
@@ -65,9 +59,11 @@ import {
 } from "./broll-preview";
 import {
   adoptCompositionPreviewResult,
+  compositionInvalidText,
   compositionNoticeText,
   manualBrollAvailabilityForPlan,
   plannedCompositionFrameStyle,
+  plannedCompositionAudioState,
   plannedCompositionSourceDimensions,
   plannedCompositionUsesStackedStage,
   plannedCompositionVideoStyle,
@@ -343,7 +339,6 @@ export function VideoPreview() {
     brollPreviewAsset,
     setBrollPreviewAsset,
     editedTimeMap,
-    playerClipStartSec,
     deselectCaption,
     deselectTextLayer,
     captionSelected,
@@ -353,7 +348,6 @@ export function VideoPreview() {
     isPlaying,
     duration,
     brandLogo,
-    utterances,
     layoutAnalysis,
     layoutAnalysisFailure,
     autoLayoutAnalysis,
@@ -422,22 +416,16 @@ export function VideoPreview() {
   // never stale, since there's no presign to expire).
   const [resolvedMusicUrl, setResolvedMusicUrl] = useState<string | null>(null);
   // Same id -> playback-url resolution for SFX placements, batched per
-  // unique assetId and cached in a ref (not state) so resolving one more id
-  // doesn't need to be an effect dependency — a version counter bumps a
-  // render once new entries land instead.
-  const sfxUrlCacheRef = useRef<Record<string, string>>({});
-  // Calling the setter is what forces the re-render that re-reads
-  // `sfxUrlCacheRef` below — the value itself doesn't need to be read
-  // anywhere (React re-renders on any state update regardless), so it's
-  // discarded here rather than kept around just to silence an unused-var
-  // lint (L7: this used to also be baked into `SfxPreviewTrack`'s `key`
-  // below as a remount hack; that's gone now that the track's own volume
-  // effect correctly reacts to `src` changing on its own).
-  const [, setSfxUrlVersion] = useState(0);
+  // unique assetId. These URLs are preview-only and never dirty the editor
+  // document.
+  const [resolvedSfxUrls, setResolvedSfxUrls] = useState<Record<string, string>>(
+    {},
+  );
   // Music track's own duration (unknown until its metadata loads) — used to
   // wrap the preview's offset+clock time the same way the renderer's
   // `-stream_loop -1` + atrim loops the track.
   const musicDurationRef = useRef(0);
+  const musicSrc = resolvedMusicUrl ?? studioEdits.music.url;
   const arConfig = ASPECT_RATIO_CONFIG[aspectRatio];
   const activeBrollAsset =
     brollPreviewAsset?.url === brollUrl ? brollPreviewAsset : null;
@@ -589,6 +577,24 @@ export function VideoPreview() {
     exactScreenLayoutAnalysis,
     sourceDims,
   ]);
+  const soundEffectAvailability = useMemo(
+    () =>
+      Object.fromEntries(
+        studioEdits.sfx.map((placement) => {
+          const url = resolvedSfxUrls[placement.assetId];
+          return [
+            placement.id,
+            url
+              ? {
+                  state: "available" as const,
+                  ref: compositionAssetRef("sound-effect", placement.assetId),
+                }
+              : { state: "pending" as const },
+          ];
+        }),
+      ),
+    [resolvedSfxUrls, studioEdits.sfx],
+  );
   const compositionPlanResult = useMemo(() => {
     if (!compositionSourceDims) return null;
     const target = clipAspectRatioOptions.find(
@@ -599,9 +605,10 @@ export function VideoPreview() {
       document: editorDocument,
       source: {
         identity: compositionSourceIdentity,
-        kind: "video",
-        width: compositionSourceDims.width,
-        height: compositionSourceDims.height,
+        kind: clipInfo.sourceKind,
+        width: clipInfo.sourceKind === "audio" ? 0 : compositionSourceDims.width,
+        height: clipInfo.sourceKind === "audio" ? 0 : compositionSourceDims.height,
+        hasAudio: true,
       },
       evidence: {
         automaticLayout: !compositionCapabilities.automaticSpeakerLayoutEnabled
@@ -685,6 +692,20 @@ export function VideoPreview() {
       },
       assets: {
         backgroundImage: backgroundImageAvailability,
+        ...(studioEdits.music.assetId || studioEdits.music.url
+          ? {
+              music: musicSrc
+                ? {
+                    state: "available" as const,
+                    ref: compositionAssetRef(
+                      "music",
+                      studioEdits.music.assetId ?? musicSrc,
+                    ),
+                  }
+                : { state: "pending" as const },
+            }
+          : {}),
+        soundEffects: soundEffectAvailability,
         ...(brollUrl
           ? {
               broll: manualBrollAvailabilityForPlan({
@@ -743,6 +764,11 @@ export function VideoPreview() {
     effectiveLogo,
     clipInfo.can1080pExport,
     clipInfo.exportHasWatermark,
+    clipInfo.sourceKind,
+    musicSrc,
+    soundEffectAvailability,
+    studioEdits.music.assetId,
+    studioEdits.music.url,
     eligibleSplitLayoutAnalysis,
     autoLayoutAnalysisStatus,
     exactScreenLayoutAnalysis,
@@ -751,12 +777,23 @@ export function VideoPreview() {
     compositionSourceDims,
   ]);
   const compositionPreview = useMemo(() => {
+    if (compositionPlanResult?.status === "invalid") return null;
     return adoptCompositionPreviewResult(
       compositionPlanResult,
       aspectRatio,
       currentTime,
     );
   }, [aspectRatio, compositionPlanResult, currentTime]);
+  const plannedAudioState = useMemo(
+    () =>
+      compositionPlanResult && compositionPlanResult.status !== "invalid"
+        ? plannedCompositionAudioState(
+            compositionPlanResult.plan.audioSchedule,
+            currentTime,
+          )
+        : null,
+    [compositionPlanResult, currentTime],
+  );
   const plannedSourceLayers = useMemo(
     () =>
       compositionPreview?.layers.filter(
@@ -810,8 +847,22 @@ export function VideoPreview() {
   const compositionNotice = compositionPreview?.notices[0] ?? null;
   const compositionNoticeTextValue = compositionNoticeText(
     compositionNotice?.code,
+    compositionNotice && compositionPreview
+      ? {
+          notice: compositionNotice,
+          requestedMode: compositionPreview.requestedMode,
+          effectiveMode: compositionPreview.effectiveMode,
+        }
+      : undefined,
   );
-  const backgroundActive = effectiveFramingMode === "fit";
+  const compositionInvalidTextValue =
+    compositionPlanResult?.status === "invalid"
+      ? compositionInvalidText(compositionPlanResult.error.code)
+      : null;
+  const compositionStatusText =
+    compositionInvalidTextValue ?? compositionNoticeTextValue;
+  const backgroundActive =
+    effectiveFramingMode === "fit" && clipInfo.sourceKind === "video";
   // resolveEffectiveFramingMode makes background and split/screen mutually
   // exclusive (background always wins as "fit"), so `isSplit`/`isScreen`
   // only ever read true here while `backgroundActive` is false — never read
@@ -1062,56 +1113,42 @@ export function VideoPreview() {
     };
   }, [studioEdits.music.assetId]);
 
-  const musicSrc = resolvedMusicUrl ?? studioEdits.music.url;
-
   // Same stale-presign resolution for SFX placements, batched by unique
   // assetId so N placements sharing one asset cost one request each, not N.
   useEffect(() => {
-    const missingIds = Array.from(new Set(studioEdits.sfx.map((p) => p.assetId))).filter(
-      (id) => !(id in sfxUrlCacheRef.current),
-    );
+    const missingIds = Array.from(
+      new Set(studioEdits.sfx.map((p) => p.assetId)),
+    ).filter((id) => !(id in resolvedSfxUrls));
     if (missingIds.length === 0) return;
     let canceled = false;
     void Promise.all(
       missingIds.map(async (id) => {
         try {
           const res = await fetch(`/api/audio-assets/${id}/playback-url`);
-          if (!res.ok) return;
+          if (!res.ok) return null;
           const data = (await res.json()) as { url?: string };
-          if (data.url) sfxUrlCacheRef.current[id] = data.url;
+          return data.url ? ([id, data.url] as const) : null;
         } catch {
           // Best-effort — this placement just won't play until it resolves.
+          return null;
         }
       }),
-    ).then(() => {
-      if (!canceled) setSfxUrlVersion((v) => v + 1);
+    ).then((entries) => {
+      if (canceled) return;
+      const resolvedEntries = entries.filter(
+        (entry): entry is readonly [string, string] => entry !== null,
+      );
+      if (resolvedEntries.length > 0) {
+        setResolvedSfxUrls((current) => ({
+          ...current,
+          ...Object.fromEntries(resolvedEntries),
+        }));
+      }
     });
     return () => {
       canceled = true;
     };
-  }, [studioEdits.sfx]);
-
-  // Auto-ducking v1 (vizard-parity.md): speech windows derived from the same
-  // transcript word timings the caption overlay reads, run through the
-  // EXACT SAME three-function pipeline the worker's render-time volume
-  // automation composes (M1+M2: `extractSpeechWordIntervals` ->
-  // `computeSpeechWindows` -> `capDuckingWindows`, all shared from
-  // `@narriflow/validators`) — never forked. Before this, this component
-  // hand-rolled its own word extraction with no word-less-utterance
-  // fallback and no window-count cap, so a word-less transcript (or one
-  // with a pathological number of short utterances) ducked differently in
-  // the export than in the preview the user was actually watching.
-  // Cheap to compute even when ducking is off (returns `[]` fast via
-  // `computeSpeechWindows`'s own early-out), so this doesn't need to be
-  // gated on `studioEdits.music.ducking` itself.
-  const speechWindows: DuckingWindow[] = useMemo(() => {
-    const wordIntervals = extractSpeechWordIntervals(
-      utterances,
-      playerClipStartSec,
-      editedTimeMap,
-    );
-    return capDuckingWindows(computeSpeechWindows(wordIntervals, duration));
-  }, [utterances, editedTimeMap, duration, playerClipStartSec]);
+  }, [resolvedSfxUrls, studioEdits.sfx]);
 
   useEffect(() => playbackClock.subscribe(() => {
     setCurrentTime(playbackClock.getSnapshot());
@@ -1156,7 +1193,7 @@ export function VideoPreview() {
 
   useEffect(() => {
     const audio = musicAudioRef.current;
-    if (!audio || !musicSrc) return;
+    if (!audio || !musicSrc || !plannedAudioState?.music) return;
     if (isPlaying) {
       audio.play().catch(() => {
         // Autoplay can be rejected outside a user gesture (e.g. a stray
@@ -1166,12 +1203,12 @@ export function VideoPreview() {
     } else {
       audio.pause();
     }
-  }, [isPlaying, musicSrc]);
+  }, [isPlaying, musicSrc, plannedAudioState?.music]);
 
   useEffect(() => {
     const audio = musicAudioRef.current;
-    const music = studioEdits.music;
-    if (!audio || !musicSrc) return;
+    const plannedMusic = plannedAudioState?.music;
+    if (!audio || !musicSrc || !plannedMusic) return;
 
     // Fix 12 fallback: prefer the cached duration, but fall back to reading
     // the element directly — covers a render where metadata was already
@@ -1183,7 +1220,7 @@ export function VideoPreview() {
         : Number.isFinite(audio.duration) && audio.duration > 0
           ? audio.duration
           : 0;
-    let targetTime = music.startOffsetSec + currentTime;
+    let targetTime = plannedMusic.timelineTimeSec;
     if (trackDuration > 0) {
       targetTime = targetTime % trackDuration;
     }
@@ -1194,34 +1231,8 @@ export function VideoPreview() {
       audio.currentTime = Math.max(0, targetTime);
     }
 
-    // Fix 13: use the same clamped fade-window policy the render pipeline
-    // applies (resolveMusicFadeWindows) instead of dividing by the raw
-    // configured fadeInSec/fadeOutSec directly — keeps the preview's gain
-    // ramp thresholds/divisors from drifting out of parity with the burn-in
-    // when the two fades would otherwise overlap or exceed the clip.
-    const baseVolume = Math.max(0, Math.min(1, music.volume / 100));
-    const { fadeInSec, fadeOutSec, fadeOutStartSec } = resolveMusicFadeWindows(
-      music.fadeInSec,
-      music.fadeOutSec,
-      duration,
-    );
-    let gain = baseVolume;
-    if (fadeInSec > 0 && currentTime < fadeInSec) {
-      gain = baseVolume * (currentTime / fadeInSec);
-    }
-    if (fadeOutSec > 0 && currentTime > fadeOutStartSec) {
-      const remainingSec = Math.max(0, duration - currentTime);
-      gain = Math.min(gain, baseVolume * (remainingSec / fadeOutSec));
-    }
-    // Auto-ducking v1 (vizard-parity.md): the SAME `duckingGainMultiplierAt`
-    // the worker's timed volume automation calls, over the SAME
-    // `speechWindows` — multiplied on top of the fade envelope rather than
-    // replacing it, so a ducked moment inside a fade-in/out still fades.
-    if (music.ducking) {
-      gain *= duckingGainMultiplierAt(currentTime, speechWindows);
-    }
-    audio.volume = Math.max(0, Math.min(1, gain));
-  }, [currentTime, studioEdits.music, duration, musicSrc, speechWindows]);
+    audio.volume = plannedMusic.volume;
+  }, [musicSrc, plannedAudioState?.music]);
 
   useEffect(() => {
     const el = videoContainerRef.current;
@@ -1502,7 +1513,7 @@ export function VideoPreview() {
             <Box position="absolute" inset="0" style={backgroundStageStyle} />
           )}
 
-          {compositionNoticeTextValue ? (
+          {compositionStatusText ? (
             <Flex
               position="absolute"
               top="8px"
@@ -1517,11 +1528,12 @@ export function VideoPreview() {
               borderRadius="l1"
               color="studio.fgMuted"
               fontSize="10px"
-              role="status"
+              role={compositionInvalidTextValue ? "alert" : "status"}
               aria-live="polite"
+              aria-atomic="true"
               pointerEvents="none"
             >
-              {compositionNoticeTextValue}
+              {compositionStatusText}
             </Flex>
           ) : null}
 
@@ -1831,7 +1843,7 @@ export function VideoPreview() {
               bed, no user-facing controls; play/pause, looped offset
               seeking, and volume/fade ramps are all driven by the effects
               above off the shared playback clock. */}
-          {musicSrc ? (
+          {musicSrc && plannedAudioState?.music ? (
             // biome-ignore lint/a11y/useMediaCaption: decorative background music preview with no dialogue/captions of its own — the clip's own captions already cover spoken content via the interactive caption overlay.
             <audio
               ref={musicAudioRef}
@@ -1848,18 +1860,28 @@ export function VideoPreview() {
               L7): SfxPreviewTrack's volume effect now depends on `src`
               directly, so a newly-resolved (or re-picked) URL updates the
               SAME mounted instance instead of needing a full remount to
-              pick up the new value. The re-render itself still comes from
-              `setSfxUrlVersion` bumping above; only the forced remount was
-              redundant. */}
-          {studioEdits.sfx.map((placement) => (
-            <SfxPreviewTrack
-              key={placement.id}
-              placement={placement}
-              src={sfxUrlCacheRef.current[placement.assetId] ?? null}
-              isPlaying={isPlaying}
-              currentTime={currentTime}
-            />
-          ))}
+              pick up the new value. */}
+          {compositionPlanResult && compositionPlanResult.status !== "invalid"
+            ? compositionPlanResult.plan.audioSchedule.soundEffects.map((planned) => {
+                const placement = studioEdits.sfx.find(
+                  (candidate) => candidate.id === planned.id,
+                );
+                if (!placement) return null;
+                return (
+                  <SfxPreviewTrack
+                    key={planned.id}
+                    placement={{
+                      ...placement,
+                      startSec: planned.activeRange.startSec,
+                      volume: planned.gain * 100,
+                    }}
+                    src={resolvedSfxUrls[placement.assetId] ?? null}
+                    isPlaying={isPlaying}
+                    currentTime={currentTime}
+                  />
+                );
+              })
+            : null}
 
           {/* Layout blur layer — a persisted background overrides this
               cosmetic entirely (see backgroundActive above), and so do
