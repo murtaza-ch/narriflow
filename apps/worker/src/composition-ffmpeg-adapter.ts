@@ -64,6 +64,8 @@ export function compileCompositionPlanAudioSchedule(plan: ClipCompositionPlan) {
     range.endSec >= range.startSec &&
     range.endSec <= plan.editedDurationSec;
   if (
+    !validFadeRange(schedule.outputFades.fadeIn) ||
+    !validFadeRange(schedule.outputFades.fadeOut) ||
     !validRange(schedule.source.activeRange) ||
     !Number.isFinite(schedule.source.gain) ||
     schedule.source.gain < 0 ||
@@ -100,7 +102,9 @@ export function compileCompositionPlanAudioSchedule(plan: ClipCompositionPlan) {
   }
   return {
     scheduleFingerprint: schedule.fingerprint,
+    outputFades: schedule.outputFades,
     source: {
+      activeRange: schedule.source.activeRange,
       available: schedule.source.available,
       gain: schedule.source.gain,
       muted: schedule.source.muted,
@@ -108,26 +112,62 @@ export function compileCompositionPlanAudioSchedule(plan: ClipCompositionPlan) {
     music: music
       ? {
           sourceRef: music.sourceRef,
+          activeRange: music.activeRange,
           gain: music.gain,
           startOffsetSec: music.startOffsetSec,
+          sourceDurationSec: music.sourceDurationSec,
           loop: music.loop,
-          fadeInSec: music.fades.fadeIn.endSec - music.fades.fadeIn.startSec,
-          fadeOutSec:
-            music.fades.fadeOut.endSec - music.fades.fadeOut.startSec,
-          duckingWindows: music.ducking.enabled
-            ? [...music.ducking.windows]
-            : [],
+          fades: music.fades,
+          ducking: music.ducking,
         }
       : null,
     soundEffects: schedule.soundEffects.map((effect) => ({
       id: effect.id,
       sourceRef: effect.sourceRef,
-      startSec: effect.activeRange.startSec,
-      endSec: effect.activeRange.endSec,
+      activeRange: effect.activeRange,
       gain: effect.gain,
     })),
   };
 }
+
+export type CompositionAudioRenderRequest = ReturnType<
+  typeof compileCompositionPlanAudioSchedule
+>;
+
+export function bindCompositionPlanAudioInputs(
+  request: CompositionAudioRenderRequest,
+  resolved: {
+    music?: { sourceRef: string; path: string } | null;
+    soundEffects?: readonly {
+      id: string;
+      sourceRef: string;
+      path: string;
+    }[];
+  },
+) {
+  const music = request.music
+    ? resolved.music?.sourceRef === request.music.sourceRef
+      ? { ...request.music, path: resolved.music.path }
+      : null
+    : null;
+  if (request.music && !music) {
+    throw new Error("clip_composition_music_input_missing");
+  }
+  const soundEffects = request.soundEffects.map((planned) => {
+    const input = resolved.soundEffects?.find(
+      (candidate) =>
+        candidate.id === planned.id &&
+        candidate.sourceRef === planned.sourceRef,
+    );
+    if (!input) throw new Error("clip_composition_sound_effect_input_missing");
+    return { ...planned, path: input.path };
+  });
+  return { ...request, music, soundEffects };
+}
+
+export type BoundCompositionAudioRenderRequest = ReturnType<
+  typeof bindCompositionPlanAudioInputs
+>;
 
 function escapeDrawtextValue(value: string): string {
   return value

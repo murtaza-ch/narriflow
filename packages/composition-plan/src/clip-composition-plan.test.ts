@@ -106,7 +106,7 @@ describe("Clip Composition Plan", () => {
         backgroundImage: { state: "missing" },
         music: { state: "available", ref: "music:bed" },
         soundEffects: {
-          sting: { state: "available", ref: "sfx:sting" },
+          sting: { state: "available", ref: "sfx:sting", durationSec: 0.75 },
         },
       },
       capabilities: {
@@ -123,6 +123,10 @@ describe("Clip Composition Plan", () => {
     expect(result.plan.audioSchedule.fingerprint).toMatch(/^[0-9a-f]{16}$/);
     expect({ ...result.plan.audioSchedule, fingerprint: undefined }).toEqual({
       fingerprint: undefined,
+      outputFades: {
+        fadeIn: { startSec: 0, endSec: 0.04 },
+        fadeOut: { startSec: 7.88, endSec: 8 },
+      },
       source: {
         sourceRef: "source:audio-schedule",
         available: true,
@@ -135,6 +139,7 @@ describe("Clip Composition Plan", () => {
         activeRange: { startSec: 0, endSec: 8 },
         gain: 0.4,
         startOffsetSec: 3,
+        sourceDurationSec: null,
         loop: true,
         fades: {
           fadeIn: { startSec: 0, endSec: 4 },
@@ -155,11 +160,48 @@ describe("Clip Composition Plan", () => {
         {
           id: "sting",
           sourceRef: "sfx:sting",
-          activeRange: { startSec: 3, endSec: 8 },
+          activeRange: { startSec: 3, endSec: 3.75 },
           gain: 0.8,
         },
       ],
     });
+  });
+
+  test("scales boundary fades for sub-160ms clips so export filters never overlap", () => {
+    const result = planClipComposition({
+      document: editorDocumentSchema.parse({
+        clipStartSec: 0,
+        clipEndSec: 0.1,
+        captionPreset: captionPresetSchema.parse({}),
+        transcriptSlice: [],
+        studioEdits: studioEditsSchema.parse({ framing: { mode: "center" } }),
+        brollUrl: null,
+        deletedRanges: [],
+      }),
+      source: {
+        identity: "source:short-audio-fades",
+        kind: "video",
+        width: 1920,
+        height: 1080,
+        hasAudio: true,
+      },
+      evidence: { automaticLayout: { state: "missing" } },
+      assets: { backgroundImage: { state: "missing" } },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+      targets: [
+        { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },
+      ],
+    });
+
+    if (result.status === "invalid") throw new Error(result.error.code);
+    const { fadeIn, fadeOut } = result.plan.audioSchedule.outputFades;
+    expect(fadeIn.endSec).toBeCloseTo(fadeOut.startSec, 8);
+    expect(fadeOut.endSec).toBeLessThan(0.16);
+    expect(fadeIn.endSec - fadeIn.startSec).toBeGreaterThan(0);
+    expect(fadeOut.endSec - fadeOut.startSec).toBeGreaterThan(0);
   });
 
   test("keeps the audio schedule fingerprint isolated from unrelated visual edits", () => {
@@ -326,6 +368,69 @@ describe("Clip Composition Plan", () => {
     ]);
   });
 
+  test("degrades an available SFX fact whose duration cannot own a stop time", () => {
+    const document = editorDocumentSchema.parse({
+      clipStartSec: 0,
+      clipEndSec: 5,
+      captionPreset: captionPresetSchema.parse({}),
+      transcriptSlice: [],
+      studioEdits: studioEditsSchema.parse({
+        framing: { mode: "center" },
+        sfx: [
+          {
+            id: "invalid-duration",
+            assetId: "22222222-2222-4222-8222-222222222222",
+            startSec: 1,
+            volume: 90,
+          },
+        ],
+      }),
+      brollUrl: null,
+      deletedRanges: [],
+    });
+    const result = planClipComposition({
+      document,
+      source: {
+        identity: "source:invalid-sfx-duration",
+        kind: "video",
+        width: 1920,
+        height: 1080,
+      },
+      evidence: { automaticLayout: { state: "missing" } },
+      assets: {
+        backgroundImage: { state: "missing" },
+        soundEffects: {
+          "invalid-duration": {
+            state: "available",
+            ref: "sfx:invalid-duration",
+            durationSec: Number.NaN,
+          },
+        },
+      },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+      targets: [
+        { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },
+      ],
+    });
+
+    expect(result.status).toBe("ready");
+    if (result.status === "invalid") throw new Error(result.error.code);
+    expect(result.plan.fidelity).toBe("degraded");
+    expect(result.plan.audioSchedule.soundEffects).toEqual([]);
+    expect(result.plan.notices).toContainEqual({
+      code: "sound_effect_asset_unavailable",
+      fidelity: "degraded",
+      targetId: "vertical",
+      sceneId: null,
+      effectiveFallback: "center",
+      userActionPossible: true,
+      assetId: "invalid-duration",
+    });
+  });
+
   test("keeps every planned audio range finite, ordered, clipped, capped, and deterministic", () => {
     const words = Array.from({ length: MAX_DUCKING_WINDOWS * 3 }, (_, index) => ({
       word: `w${index}`,
@@ -374,7 +479,11 @@ describe("Clip Composition Plan", () => {
       soundEffects: Object.fromEntries(
         document.studioEdits.sfx.map((placement) => [
           placement.id,
-          { state: "available" as const, ref: `sfx:${placement.id}` },
+          {
+            state: "available" as const,
+            ref: `sfx:${placement.id}`,
+            durationSec: 0.5,
+          },
         ]),
       ),
     };

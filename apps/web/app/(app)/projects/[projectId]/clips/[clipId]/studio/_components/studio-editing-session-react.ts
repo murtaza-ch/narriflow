@@ -149,6 +149,7 @@ export interface StudioEditingSessionReactAdapter {
   session: StudioEditingSession;
   mediaRef(element: HTMLVideoElement | null): void;
   playbackClock: PlaybackClock;
+  setSourceAudioEnvelope(gain: number): void;
   suppressNavigationWarning(): void;
 }
 
@@ -201,11 +202,17 @@ export function useStudioEditingSession(
     () => lifecycle?.suppressNavigationWarning(),
     [lifecycle],
   );
+  const setSourceAudioEnvelope = useCallback(
+    (gain: number) =>
+      session.dispatch({ type: "preview.set-source-audio-envelope", gain }),
+    [session],
+  );
 
   return {
     session,
     mediaRef,
     playbackClock,
+    setSourceAudioEnvelope,
     suppressNavigationWarning,
   };
 }

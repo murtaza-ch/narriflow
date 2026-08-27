@@ -334,6 +334,7 @@ interface StudioContextValue extends StudioState {
   clipInfo: ClipInfo;
   mediaRef: (element: HTMLVideoElement | null) => void;
   playbackClock: PlaybackClock;
+  setSourceAudioEnvelope: (gain: number) => void;
   sourceVideoUrl: string | null;
   sourcePreviewId: string;
   clipStartSec: number;
@@ -651,6 +652,7 @@ export function StudioShell({
     session: studioSession,
     mediaRef,
     playbackClock,
+    setSourceAudioEnvelope,
     suppressNavigationWarning,
   } = useStudioEditingSession(
     {
@@ -1869,7 +1871,7 @@ export function StudioShell({
     brollPreviewAsset,
     saveState: displayedSaveState, isDocDirty, exportState, resetState, canUndo, canRedo, canReset,
     editorDocument: doc,
-    transcript: derivedTranscript, clipInfo, mediaRef, playbackClock,
+    transcript: derivedTranscript, clipInfo, mediaRef, playbackClock, setSourceAudioEnvelope,
     sourceVideoUrl, sourcePreviewId,
     clipStartSec: effectiveClipStartSec, clipEndSec: effectiveClipEndSec, sourcePurged,
     previewVideoUrl, previewStartSec, waveformPeaksUrl, useOriginalSourceFallback, setUseOriginalSourceFallback, reloadPlayback,

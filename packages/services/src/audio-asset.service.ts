@@ -268,11 +268,11 @@ export class AudioAssetService {
    * soft-deleted. Returns `null` (never throws) on any mismatch so callers
    * can 404 uniformly instead of leaking which case failed.
    */
-  async getPlaybackUrl(
+  async getPlaybackSource(
     userId: string,
     assetId: string,
     context?: AudioWorkspaceContext,
-  ): Promise<string | null> {
+  ): Promise<{ url: string; durationSec: number } | null> {
     const prisma = this.requirePrisma();
     const row = await prisma.audioAsset.findFirst({
       where: {
@@ -282,7 +282,10 @@ export class AudioAssetService {
       },
     });
     if (!row) return null;
-    return presignDownloadUrl({ key: row.storageKey });
+    return {
+      url: await presignDownloadUrl({ key: row.storageKey }),
+      durationSec: row.durationSec,
+    };
   }
 
   /**
@@ -320,7 +323,7 @@ export class AudioAssetService {
 
   /**
    * Worker-side resolution for render time, scoped to the render's owning
-   * user exactly like `getPlaybackUrl` above (`OR: [{ userId: null },
+   * user exactly like `getPlaybackSource` above (`OR: [{ userId: null },
    * { userId: ownerUserId }]`) — M4: a render must never resolve another
    * tenant's private upload just because it captured the row's id from a
    * `studioEdits.music.assetId`/`sfx[].assetId` value.
@@ -341,7 +344,7 @@ export class AudioAssetService {
     ownerUserId: string,
     assetId: string,
     workspaceId?: string | null,
-  ): Promise<{ url: string; title: string } | null> {
+  ): Promise<{ url: string; title: string; durationSec: number } | null> {
     const prisma = this.requirePrisma();
     const row = await prisma.audioAsset.findFirst({
       where: {
@@ -355,6 +358,7 @@ export class AudioAssetService {
       return {
         url: await presignDownloadUrl({ key: row.storageKey }),
         title: row.title,
+        durationSec: row.durationSec,
       };
     } catch {
       throw new AudioAssetAccessError();

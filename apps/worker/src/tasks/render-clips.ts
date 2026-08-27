@@ -70,7 +70,6 @@ import {
   parseClipLayoutAnalysis,
   resolveEffectiveFramingMode,
   resolveEffectiveLogoSettings,
-  resolveMusicFadeWindows,
   resolveSpeakerLayoutScene,
   sourceRangeToEdited,
   sourceToEdited,
@@ -85,7 +84,6 @@ import type {
   ClipCategory,
   ClipLayoutAnalysis,
   ClipRenderResolution,
-  DuckingWindow,
   EditorDocument,
   EditedTimeMap,
   SourceRange,
@@ -148,10 +146,12 @@ import {
 } from "../render-media-adapter";
 import { productionRenderDiagnosticAdapter } from "../render-diagnostic-adapter";
 import {
+  bindCompositionPlanAudioInputs,
   compileCompositionPlanAudiogram,
   compileCompositionPlanAudioSchedule,
   compileCompositionPlanVideo,
   compileCompositionPlanVisualLayers,
+  type BoundCompositionAudioRenderRequest,
 } from "../composition-ffmpeg-adapter";
 import { classifyRenderObjectKey } from "../render-object-key";
 import {
@@ -180,44 +180,27 @@ interface BrollPlan {
   }>;
 }
 
-interface MusicPlan {
+interface ResolvedMusicAsset {
   path: string;
-  ref?: string;
-  volume: number;
-  startOffsetSec: number;
-  /** User-configured music fade in/out, seconds (0-5). Optional so existing
-   *  test fixtures/call sites that predate this field keep compiling. */
-  fadeInSec?: number;
-  fadeOutSec?: number;
-  /**
-   * Auto-ducking v1 (vizard-parity.md "Music/SFX library"): merged/padded
-   * speech windows on the EDITED timeline (`computeSpeechWindows`'s
-   * output), set only when `studioEdits.music.ducking` is true. Absent or
-   * empty means "no-op" — `buildAudioMixFilter` omits the `volume=`
-   * automation stage entirely rather than emitting a no-op expression.
-   */
-  duckingWindows?: DuckingWindow[];
+  ref: string;
+  durationSec?: number;
 }
 
 /**
- * One resolved, downloaded one-shot SFX placement (vizard-parity.md
- * "Music/SFX library" — see `studioSfxPlacementSchema`'s doc comment for
- * the placement contract). `startSec` stays in EDITED-timeline seconds,
- * same convention as the schema — the render pipeline never needs to remap
- * it through a `timeMap`, unlike transcript-derived timings.
+ * One resolved, downloaded SFX asset binding. Composition policy such as
+ * edited-time placement and gain remains exclusively in the plan.
  */
-interface SfxPlan {
+interface ResolvedSfxAsset {
   path: string;
-  id?: string;
-  ref?: string;
-  startSec: number;
-  volume: number;
+  id: string;
+  ref: string;
+  durationSec: number;
 }
 
 /**
  * Resolved per-clip canvas background (vizard-parity.md Phase C item 2) —
  * built once per clip render (see the main flow below, mirroring how
- * `MusicPlan` is resolved from `studioEdits.music`) and threaded into
+ * `ResolvedMusicAsset` is resolved from `studioEdits.music`) and threaded into
  * whichever per-output builder actually runs. `color` is always populated
  * (falls back to black) so it doubles as the mode="image" fallback when the
  * image URL was invalid or its download failed upstream. `imagePath` is the
@@ -2638,16 +2621,15 @@ function buildCutConcatFilter(params: {
   return { filterParts, videoLabel: null, audioLabel: audioOutLabel };
 }
 
-// Every render gets a short audio fade at each boundary: clip ends land at
-// most ~0.25s after the last spoken word (and, when speech continues in the
-// source, just a few ms before the next word), so a hard cut audibly clicks
-// or clips a phoneme. The fade is short enough to be inaudible as an effect.
-const AUDIO_FADE_IN_SEC = 0.04;
-const AUDIO_FADE_OUT_SEC = 0.12;
-
-export function buildAudioFadeChain(clipDurationSec: number) {
-  const fadeOutStart = Math.max(0, clipDurationSec - AUDIO_FADE_OUT_SEC);
-  return `afade=t=in:st=0:d=${AUDIO_FADE_IN_SEC.toFixed(3)},afade=t=out:st=${fadeOutStart.toFixed(3)}:d=${AUDIO_FADE_OUT_SEC.toFixed(3)}`;
+function buildAudioFadeChain(
+  fades: BoundCompositionAudioRenderRequest["outputFades"],
+) {
+  const fadeInDuration = fades.fadeIn.endSec - fades.fadeIn.startSec;
+  const fadeOutDuration = fades.fadeOut.endSec - fades.fadeOut.startSec;
+  const fadeInStart = fades.fadeIn.startSec === 0
+    ? "0"
+    : fades.fadeIn.startSec.toFixed(3);
+  return `afade=t=in:st=${fadeInStart}:d=${fadeInDuration.toFixed(3)},afade=t=out:st=${fades.fadeOut.startSec.toFixed(3)}:d=${fadeOutDuration.toFixed(3)}`;
 }
 
 /**
@@ -2658,13 +2640,11 @@ export function buildAudioFadeChain(clipDurationSec: number) {
  * they always have.
  */
 function buildSourceGainFilter(
-  sourceAudio: StudioEdits["sourceAudio"] | null | undefined,
+  sourceAudio: BoundCompositionAudioRenderRequest["source"],
 ): string | null {
-  if (!sourceAudio) return null;
   if (sourceAudio.muted) return "volume=0.000";
-  if (sourceAudio.volume === 100) return null;
-  const gain = Math.max(0, Math.min(1, sourceAudio.volume / 100));
-  return `volume=${gain.toFixed(3)}`;
+  if (sourceAudio.gain === 1) return null;
+  return `volume=${sourceAudio.gain.toFixed(3)}`;
 }
 
 /**
@@ -2673,11 +2653,10 @@ function buildSourceGainFilter(
  * that has source audio and no music track to mix in.
  */
 function buildDialogueAudioFilter(
-  sourceAudio: StudioEdits["sourceAudio"] | null | undefined,
-  clipDurationSec: number,
+  audio: BoundCompositionAudioRenderRequest,
 ): string {
-  const gainFilter = buildSourceGainFilter(sourceAudio);
-  const fadeChain = buildAudioFadeChain(clipDurationSec);
+  const gainFilter = buildSourceGainFilter(audio.source);
+  const fadeChain = buildAudioFadeChain(audio.outputFades);
   return gainFilter ? `${gainFilter},${fadeChain}` : fadeChain;
 }
 
@@ -2697,21 +2676,22 @@ function buildDialogueAudioFilter(
  * preview already uses the shared helper; this keeps the render in lockstep.
  */
 function buildMusicUserFadeSuffix(
-  music: MusicPlan,
-  clipDurationSec: number,
+  music: NonNullable<BoundCompositionAudioRenderRequest["music"]>,
 ): string {
   const parts: string[] = [];
-  const { fadeInSec, fadeOutSec, fadeOutStartSec } = resolveMusicFadeWindows(
-    music.fadeInSec ?? 0,
-    music.fadeOutSec ?? 0,
-    clipDurationSec,
-  );
+  const fadeInSec = music.fades.fadeIn.endSec - music.fades.fadeIn.startSec;
+  const fadeOutSec = music.fades.fadeOut.endSec - music.fades.fadeOut.startSec;
   if (fadeInSec > 0) {
-    parts.push(`afade=t=in:st=0:d=${fadeInSec.toFixed(3)}`);
+    const startSec = music.fades.fadeIn.startSec === 0
+      ? "0"
+      : music.fades.fadeIn.startSec.toFixed(3);
+    parts.push(
+      `afade=t=in:st=${startSec}:d=${fadeInSec.toFixed(3)}`,
+    );
   }
   if (fadeOutSec > 0) {
     parts.push(
-      `afade=t=out:st=${fadeOutStartSec.toFixed(3)}:d=${fadeOutSec.toFixed(3)}`,
+      `afade=t=out:st=${music.fades.fadeOut.startSec.toFixed(3)}:d=${fadeOutSec.toFixed(3)}`,
     );
   }
   return parts.length ? `,${parts.join(",")}` : "";
@@ -2746,14 +2726,16 @@ function buildMusicUserFadeSuffix(
  */
 function buildSfxAudioFilter(params: {
   sfxInputIndex: number;
-  sfx: SfxPlan;
+  sfx: BoundCompositionAudioRenderRequest["soundEffects"][number];
   clipDurationSec: number;
   label: string;
 }): string {
   const duration = Math.max(0.1, params.clipDurationSec);
-  const delayMs = Math.max(0, Math.round(params.sfx.startSec * 1000));
-  const volume = Math.max(0, Math.min(1, params.sfx.volume / 100));
-  return `[${params.sfxInputIndex}:a]adelay=${delayMs}:all=1,volume=${volume.toFixed(3)},apad,atrim=duration=${duration.toFixed(3)},asetpts=PTS-STARTPTS${params.label}`;
+  const delayMs = Math.max(
+    0,
+    Math.round(params.sfx.activeRange.startSec * 1000),
+  );
+  return `[${params.sfxInputIndex}:a]adelay=${delayMs}:all=1,volume=${params.sfx.gain.toFixed(3)},atrim=duration=${params.sfx.activeRange.endSec.toFixed(3)},apad,atrim=duration=${duration.toFixed(3)},asetpts=PTS-STARTPTS${params.label}`;
 }
 
 /**
@@ -2767,9 +2749,15 @@ function buildSfxAudioFilter(params: {
  * `""` (no-op, byte-identical output) whenever `duckingWindows` is
  * absent/empty — the common case for every clip that isn't using ducking.
  */
-function buildMusicDuckingSuffix(music: MusicPlan): string {
-  if (!music.duckingWindows || music.duckingWindows.length === 0) return "";
-  const expr = buildDuckingVolumeExpression(music.duckingWindows);
+function buildMusicDuckingSuffix(
+  music: NonNullable<BoundCompositionAudioRenderRequest["music"]>,
+): string {
+  if (!music.ducking.enabled || music.ducking.windows.length === 0) return "";
+  const expr = buildDuckingVolumeExpression([...music.ducking.windows], {
+    duckedGainFraction: music.ducking.duckedGainFraction,
+    attackSec: music.ducking.attackSec,
+    releaseSec: music.ducking.releaseSec,
+  });
   return expr ? `,volume='${expr}':eval=frame` : "";
 }
 
@@ -2804,28 +2792,27 @@ function buildMusicDuckingSuffix(music: MusicPlan): string {
  * branch.
  */
 function buildAudioMixFilter(params: {
-  sourceHasAudio: boolean;
+  audio: BoundCompositionAudioRenderRequest;
   clipDurationSec: number;
-  sourceAudio?: StudioEdits["sourceAudio"] | null;
   /** Label to read the dialogue/source audio from — defaults to `[0:a]`
    *  (the raw source input). Cut-concat renders pass `[acat]` instead so the
    *  dialogue mix reads the concatenated edited-timeline audio, same as
    *  every other downstream audio consumer (vizard-parity Phase B step 7). */
   dialogueInputRef?: string;
-  music?: { inputIndex: number; plan: MusicPlan } | null;
-  sfx?: Array<{ inputIndex: number; plan: SfxPlan }>;
+  musicInputIndex: number | null;
+  sfxInputIndexes: readonly number[];
 }): string {
   const duration = Math.max(0.1, params.clipDurationSec);
-  const fadeChain = buildAudioFadeChain(duration);
+  const fadeChain = buildAudioFadeChain(params.audio.outputFades);
   const dialogueInputRef = params.dialogueInputRef ?? "[0:a]";
-  const sfxEntries = (params.sfx ?? []).filter(
-    (entry) => entry.plan.startSec < duration,
-  );
+  const sfxEntries = params.audio.soundEffects
+    .map((plan, index) => ({ plan, inputIndex: params.sfxInputIndexes[index]! }))
+    .filter((entry) => entry.plan.activeRange.startSec < duration);
 
   const branchFilters: string[] = [];
   const branchLabels: string[] = [];
 
-  if (params.sourceHasAudio) {
+  if (params.audio.source.available) {
     // normalize=0 below: amix's default normalization divides every input by
     // the input count (i.e. -6dB per input for a 2-input mix), quietly
     // ducking the dialogue whenever music/SFX is added. Each branch's own
@@ -2833,7 +2820,7 @@ function buildAudioMixFilter(params: {
     // `volume=`, dialogue gain), so every branch must mix at unity gain —
     // applied here on the dialogue branch (before amix) same as the
     // no-music path.
-    const dialogueGainFilter = buildSourceGainFilter(params.sourceAudio);
+    const dialogueGainFilter = buildSourceGainFilter(params.audio.source);
     const label = "[maina]";
     branchFilters.push(
       dialogueGainFilter
@@ -2843,18 +2830,16 @@ function buildAudioMixFilter(params: {
     branchLabels.push(label);
   }
 
-  if (params.music) {
-    const { plan } = params.music;
-    const volume = Math.max(0, Math.min(1, plan.volume / 100));
-    const startOffset = Math.max(0, plan.startOffsetSec || 0);
+  if (params.audio.music && params.musicInputIndex != null) {
+    const plan = params.audio.music;
     const label = "[musica]";
-    const userFadeSuffix = buildMusicUserFadeSuffix(plan, duration);
+    const userFadeSuffix = buildMusicUserFadeSuffix(plan);
     const duckingSuffix = buildMusicDuckingSuffix(plan);
     // start=<offset> seeks into the (infinitely -stream_loop'd) music input
     // so the user's chosen point in the track plays first, instead of
     // always the first `duration` seconds of the file.
     branchFilters.push(
-      `[${params.music.inputIndex}:a]atrim=start=${startOffset.toFixed(3)}:duration=${duration.toFixed(3)},asetpts=PTS-STARTPTS,volume=${volume.toFixed(3)}${userFadeSuffix}${duckingSuffix}${label}`,
+      `[${params.musicInputIndex}:a]atrim=start=${plan.startOffsetSec.toFixed(3)}:duration=${duration.toFixed(3)},asetpts=PTS-STARTPTS,volume=${plan.gain.toFixed(3)}${userFadeSuffix}${duckingSuffix}${label}`,
     );
     branchLabels.push(label);
   }
@@ -2892,6 +2877,16 @@ function buildAudioMixFilter(params: {
   ].join(";");
 }
 
+function assertBoundAudioMatchesPlan(
+  plan: ClipCompositionPlan,
+  audio: BoundCompositionAudioRenderRequest | undefined,
+): asserts audio is BoundCompositionAudioRenderRequest {
+  const planned = compileCompositionPlanAudioSchedule(plan);
+  if (!audio || audio.scheduleFingerprint !== planned.scheduleFingerprint) {
+    throw new Error("clip_composition_audio_input_mismatch");
+  }
+}
+
 export function buildSingleVideoArgs(params: {
   sourcePath: string;
   outputPath: string;
@@ -2906,12 +2901,7 @@ export function buildSingleVideoArgs(params: {
     plan: ClipCompositionPlan;
     targetId: string;
   };
-  studioEdits?: StudioEdits | null;
-  music?: MusicPlan | null;
-  /** One-shot SFX placements (vizard-parity.md "Music/SFX library") —
-   *  empty/omitted preserves today's behavior exactly (no new inputs, no
-   *  mix branch). See `SfxPlan`. */
-  sfx?: SfxPlan[] | null;
+  audio: BoundCompositionAudioRenderRequest;
   /** Resolved canvas background (vizard-parity Phase C item 2) — presence
    *  implies "on" (mode is always "color" or "image"); omit/null preserves
    *  today's crop-to-fill behavior. See `BackgroundPlan`. */
@@ -2920,6 +2910,7 @@ export function buildSingleVideoArgs(params: {
    *  Omitted/uncut: byte-identical to the pre-cut-concat filter graph. */
   cutPlan?: ClipCutPlan | null;
 }) {
+  assertBoundAudioMatchesPlan(params.composition.plan, params.audio);
   if (params.cutPlan?.isEmpty) {
     throw new WorkflowWorkerError(
       "clip_cut_plan_empty",
@@ -2969,8 +2960,8 @@ export function buildSingleVideoArgs(params: {
   let nextInputIndex = 1;
   const bgImageInputIndex = usesBackgroundImage ? nextInputIndex++ : null;
   const logoInputIndex = plannedLogo ? nextInputIndex++ : null;
-  const musicInputIndex = params.music ? nextInputIndex++ : null;
-  const sfxInputIndexes = (params.sfx ?? []).map(() => nextInputIndex++);
+  const musicInputIndex = params.audio.music ? nextInputIndex++ : null;
+  const sfxInputIndexes = params.audio.soundEffects.map(() => nextInputIndex++);
 
   const filterParts: string[] = cutConcat ? [...cutConcat.filterParts] : [];
 
@@ -3019,35 +3010,29 @@ export function buildSingleVideoArgs(params: {
     args.push("-i", params.logo.filePath);
   }
 
-  if (params.music) {
-    args.push("-stream_loop", "-1", "-i", params.music.path);
+  if (params.audio.music) {
+    args.push("-stream_loop", "-1", "-i", params.audio.music.path);
   }
 
-  for (const sfx of params.sfx ?? []) {
+  for (const sfx of params.audio.soundEffects) {
     // No -stream_loop: SFX is one-shot, never looped, unlike music above.
     args.push("-i", sfx.path);
   }
 
-  const hasMixedAudio = Boolean(params.music) || sfxInputIndexes.length > 0;
+  const hasMixedAudio = Boolean(params.audio.music) || sfxInputIndexes.length > 0;
   if (hasMixedAudio) {
     filterParts.push(
       buildAudioMixFilter({
-        sourceHasAudio: params.probe.hasAudio,
+        audio: params.audio,
         clipDurationSec,
-        sourceAudio: params.studioEdits?.sourceAudio,
         dialogueInputRef: cutConcat ? cutConcat.audioLabel! : undefined,
-        music: params.music
-          ? { inputIndex: musicInputIndex!, plan: params.music }
-          : null,
-        sfx: (params.sfx ?? []).map((plan, i) => ({
-          inputIndex: sfxInputIndexes[i]!,
-          plan,
-        })),
+        musicInputIndex,
+        sfxInputIndexes,
       }),
     );
   } else if (audioInputLabel) {
     filterParts.push(
-      `${audioInputLabel}${buildDialogueAudioFilter(params.studioEdits?.sourceAudio, clipDurationSec)}[outa]`,
+      `${audioInputLabel}${buildDialogueAudioFilter(params.audio)}[outa]`,
     );
   }
 
@@ -3107,17 +3092,14 @@ export function buildBrollVideoArgs(params: {
     plan: ClipCompositionPlan;
     targetId: string;
   };
-  studioEdits?: StudioEdits | null;
-  music?: MusicPlan | null;
-  /** One-shot SFX placements — see `buildSingleVideoArgs`'s param doc; same
-   *  contract here. */
-  sfx?: SfxPlan[] | null;
+  audio: BoundCompositionAudioRenderRequest;
   /** Resolved canvas background (vizard-parity Phase C item 2) — see
    *  `buildSingleVideoArgs`'s param doc; same contract here. */
   background?: BackgroundPlan | null;
   /** See `buildSingleVideoArgs` — same cut-concat contract. */
   cutPlan?: ClipCutPlan | null;
 }) {
+  assertBoundAudioMatchesPlan(params.composition.plan, params.audio);
   if (Object.keys(params.resolvedBrollAssets).length === 0) {
     throw new WorkflowWorkerError(
       "broll_cutaways_empty",
@@ -3248,37 +3230,31 @@ export function buildBrollVideoArgs(params: {
   // (even when music is absent) so sfxInputIndexes can be derived from it
   // without duplicating the bgOffset/cutawayCount/logo arithmetic.
   const musicInputIndex = 1 + bgOffset + cutawayCount + (plannedLogo ? 1 : 0);
-  const sfxInputIndexes = (params.sfx ?? []).map(
-    (_, i) => musicInputIndex + (params.music ? 1 : 0) + i,
+  const sfxInputIndexes = params.audio.soundEffects.map(
+    (_, i) => musicInputIndex + (params.audio.music ? 1 : 0) + i,
   );
 
-  if (params.music) {
-    args.push("-stream_loop", "-1", "-i", params.music.path);
+  if (params.audio.music) {
+    args.push("-stream_loop", "-1", "-i", params.audio.music.path);
   }
-  for (const sfx of params.sfx ?? []) {
+  for (const sfx of params.audio.soundEffects) {
     args.push("-i", sfx.path);
   }
 
-  const hasMixedAudio = Boolean(params.music) || sfxInputIndexes.length > 0;
+  const hasMixedAudio = Boolean(params.audio.music) || sfxInputIndexes.length > 0;
   if (hasMixedAudio) {
     parts.push(
       buildAudioMixFilter({
-        sourceHasAudio: params.probe.hasAudio,
+        audio: params.audio,
         clipDurationSec,
-        sourceAudio: params.studioEdits?.sourceAudio,
         dialogueInputRef: cutConcat ? cutConcat.audioLabel! : undefined,
-        music: params.music
-          ? { inputIndex: musicInputIndex, plan: params.music }
-          : null,
-        sfx: (params.sfx ?? []).map((plan, i) => ({
-          inputIndex: sfxInputIndexes[i]!,
-          plan,
-        })),
+        musicInputIndex: params.audio.music ? musicInputIndex : null,
+        sfxInputIndexes,
       }),
     );
   } else if (audioInputLabel) {
     parts.push(
-      `${audioInputLabel}${buildDialogueAudioFilter(params.studioEdits?.sourceAudio, clipDurationSec)}[outa]`,
+      `${audioInputLabel}${buildDialogueAudioFilter(params.audio)}[outa]`,
     );
   }
 
@@ -3444,24 +3420,15 @@ export function buildAudiogramArgs(params: {
   };
   clipDurationSec: number;
   srtPath: string | null;
-  captionPreset?: CaptionPreset | null;
-  studioEdits?: StudioEdits | null;
   logo?: LogoOverlay | null;
-  music?: MusicPlan | null;
-  /** One-shot SFX placements — see `buildSingleVideoArgs`'s param doc. The
-   *  audiogram path supports SFX the same way it already supports music
-   *  (unlike `background`, which it deliberately ignores — see the
-   *  divergence comment on the audio-only branch in the main render flow). */
-  sfx?: SfxPlan[] | null;
-  /** See `buildSingleVideoArgs`'s param docs — same contract here. */
-  resolution?: ClipRenderResolution;
-  watermark?: boolean;
+  audio: BoundCompositionAudioRenderRequest;
   /** See `buildSingleVideoArgs` — same cut-concat contract, applied to the
    *  audio stream only (audiogram sources have no video track). Callers must
    *  pass `clipDurationSec` already set to the plan's edited duration when
    *  cut — this builder does not derive it itself. */
   cutPlan?: ClipCutPlan | null;
 }) {
+  assertBoundAudioMatchesPlan(params.composition.plan, params.audio);
   const config = aspectRatioConfig.get(params.aspectRatio);
 
   if (!config) {
@@ -3510,7 +3477,8 @@ export function buildAudiogramArgs(params: {
   // path follows whatever it already does for music, so SFX shares the same
   // gate) both mix into the OUTPUT track only, never the waveform — the
   // waveform always visualizes the raw dialogue signal.
-  const hasMusicOrSfx = Boolean(params.music) || (params.sfx?.length ?? 0) > 0;
+  const hasMusicOrSfx =
+    Boolean(params.audio.music) || params.audio.soundEffects.length > 0;
 
   const chain: string[] = cutConcat ? [...cutConcat.filterParts] : [];
   // With music/SFX AND a real cut, `audioInputLabel` is `[acat]` — a named
@@ -3540,7 +3508,7 @@ export function buildAudiogramArgs(params: {
           // faded and mapped as the output track.
           `${audioInputLabel}asplit=2[wavesrc][fadesrc]`,
           `[wavesrc]showwaves=s=${W}x${waveHeight}:mode=cline:colors=${waveColor}:rate=25[wave]`,
-          `[fadesrc]${buildDialogueAudioFilter(params.studioEdits?.sourceAudio, params.clipDurationSec)}[outa]`,
+          `[fadesrc]${buildDialogueAudioFilter(params.audio)}[outa]`,
           `[bg][wave]overlay=0:(H-h)/2[comp]`,
         ]),
   );
@@ -3590,34 +3558,28 @@ export function buildAudiogramArgs(params: {
 
   // Logo, music, then SFX — same order as the video builders.
   const musicInputIndex = plannedLogo ? 2 : 1;
-  const sfxInputIndexes = (params.sfx ?? []).map(
-    (_, i) => musicInputIndex + (params.music ? 1 : 0) + i,
+  const sfxInputIndexes = params.audio.soundEffects.map(
+    (_, i) => musicInputIndex + (params.audio.music ? 1 : 0) + i,
   );
 
   if (plannedLogo && params.logo) {
     args.push("-i", params.logo.filePath);
   }
-  if (params.music) {
-    args.push("-stream_loop", "-1", "-i", params.music.path);
+  if (params.audio.music) {
+    args.push("-stream_loop", "-1", "-i", params.audio.music.path);
   }
-  for (const sfx of params.sfx ?? []) {
+  for (const sfx of params.audio.soundEffects) {
     args.push("-i", sfx.path);
   }
 
   if (hasMusicOrSfx) {
     chain.push(
       buildAudioMixFilter({
-        sourceHasAudio: true,
+        audio: params.audio,
         clipDurationSec: params.clipDurationSec,
-        sourceAudio: params.studioEdits?.sourceAudio,
         dialogueInputRef: dialogueAudioLabel,
-        music: params.music
-          ? { inputIndex: musicInputIndex, plan: params.music }
-          : null,
-        sfx: (params.sfx ?? []).map((plan, i) => ({
-          inputIndex: sfxInputIndexes[i]!,
-          plan,
-        })),
+        musicInputIndex: params.audio.music ? musicInputIndex : null,
+        sfxInputIndexes,
       }),
     );
   }
@@ -5843,7 +5805,7 @@ async function executeClipRenderAttempt(
         }
       }
 
-      let musicPlan: MusicPlan | null = null;
+      let musicPlan: ResolvedMusicAsset | null = null;
       // Library asset (vizard-parity.md "Music/SFX library" —
       // `studioMusicSchema.assetId`) wins over the pasted `url` at render
       // time — same precedence the schema's own doc comment documents.
@@ -5853,6 +5815,7 @@ async function executeClipRenderAttempt(
       // mirrors never actually fails the clip either — see the catch below,
       // which only logs).
       let musicUrl: string | null = null;
+      let musicDurationSec: number | undefined;
       // M6 (vizard-parity.md "Music/SFX library"): an AudioAsset-resolved
       // music track already passed the AUDIO_UPLOAD_MAX_BYTES gate once at
       // upload time (or is a curated row seeded well under it) — downloading
@@ -5868,6 +5831,7 @@ async function executeClipRenderAttempt(
             frozenState.workspaceId,
           );
           musicUrl = resolved?.url ?? null;
+          musicDurationSec = resolved?.durationSec;
           musicUrlIsAssetResolved = Boolean(resolved);
           if (!resolved) {
             diagnoseOptionalAssetFallback({
@@ -5925,10 +5889,7 @@ async function executeClipRenderAttempt(
                   "music",
                   studioEdits.music.assetId ?? musicUrl,
                 ),
-                volume: studioEdits.music.volume,
-                startOffsetSec: studioEdits.music.startOffsetSec,
-                fadeInSec: studioEdits.music.fadeInSec,
-                fadeOutSec: studioEdits.music.fadeOutSec,
+                durationSec: musicDurationSec,
               };
             } else {
               diagnoseOptionalAssetFallback({
@@ -5955,7 +5916,7 @@ async function executeClipRenderAttempt(
       // independently and best-effort: a single bad placement is skipped
       // (logged) rather than failing every other placement or the whole
       // clip, mirroring the music download policy above.
-      const sfxPlans: SfxPlan[] = [];
+      const sfxPlans: ResolvedSfxAsset[] = [];
       for (const placement of studioEdits.sfx) {
         if (placement.startSec >= clipDurationSec) {
           log("info", "clip_sfx_skipped_beyond_duration", {
@@ -5969,6 +5930,7 @@ async function executeClipRenderAttempt(
         }
 
         let sfxUrl: string | null = null;
+        let sfxDurationSec: number | null = null;
         try {
           const resolved = await currentRenderAdapters().audioAsset.resolveRenderSource(
             frozenState.userId,
@@ -5976,6 +5938,7 @@ async function executeClipRenderAttempt(
             frozenState.workspaceId,
           );
           sfxUrl = resolved?.url ?? null;
+          sfxDurationSec = resolved?.durationSec ?? null;
           if (!resolved) {
             diagnoseOptionalAssetFallback({
               assetClass: "sound_effect",
@@ -6042,13 +6005,12 @@ async function executeClipRenderAttempt(
               sfxPath,
               "audio",
             );
-          if (decodable) {
+          if (decodable && sfxDurationSec && sfxDurationSec > 0) {
             sfxPlans.push({
               path: sfxPath,
               id: placement.id,
               ref: compositionAssetRef("sound-effect", placement.assetId),
-              startSec: placement.startSec,
-              volume: placement.volume,
+              durationSec: sfxDurationSec,
             });
           } else {
             diagnoseOptionalAssetFallback({
@@ -6202,7 +6164,8 @@ async function executeClipRenderAttempt(
           : backgroundPlan;
 
       const requestedCompositionMode = resolveEffectiveFramingMode(studioEdits);
-      let plannedStudioEdits = studioEdits;
+      let plannedAudio: BoundCompositionAudioRenderRequest | null = null;
+      let fallbackAudio: BoundCompositionAudioRenderRequest | null = null;
       let compositionPlan: ClipCompositionPlan | null = null;
       let fallbackCompositionPlan: ClipCompositionPlan | null = null;
       {
@@ -6210,10 +6173,19 @@ async function executeClipRenderAttempt(
           backgroundImage:
             | { state: "missing" | "failed" }
             | { state: "available"; ref: string },
-          brollAvailable = Boolean(brollPlan),
-          logoAvailable = Boolean(brandLogo),
-        ) =>
-          planClipComposition({
+          availability: {
+            broll?: boolean;
+            logo?: boolean;
+            music?: boolean;
+            soundEffects?: boolean;
+          } = {},
+        ) => {
+          const brollAvailable = availability.broll ?? Boolean(brollPlan);
+          const logoAvailable = availability.logo ?? Boolean(brandLogo);
+          const musicAvailable = availability.music ?? Boolean(musicPlan);
+          const soundEffectsAvailable =
+            availability.soundEffects ?? sfxPlans.length > 0;
+          return planClipComposition({
             document: compositionDocument,
             source: {
               identity: compositionSourceIdentity,
@@ -6247,25 +6219,29 @@ async function executeClipRenderAttempt(
               backgroundImage,
               ...(studioEdits.music.assetId || studioEdits.music.url
                 ? {
-                    music: musicPlan?.ref
+                    music: musicAvailable && musicPlan?.ref
                       ? {
                           state: "available" as const,
                           ref: musicPlan.ref,
+                          durationSec: musicPlan.durationSec,
                         }
                       : { state: "failed" as const },
                   }
                 : {}),
               soundEffects: Object.fromEntries(
                 studioEdits.sfx.map((placement) => {
-                  const resolved = sfxPlans.find(
-                    (candidate) => candidate.id === placement.id,
-                  );
+                  const resolved = soundEffectsAvailable
+                    ? sfxPlans.find(
+                        (candidate) => candidate.id === placement.id,
+                      )
+                    : undefined;
                   return [
                     placement.id,
                     resolved?.ref
                       ? {
                           state: "available" as const,
                           ref: resolved.ref,
+                          durationSec: resolved.durationSec,
                         }
                       : { state: "failed" as const },
                   ];
@@ -6320,6 +6296,7 @@ async function executeClipRenderAttempt(
               };
             }),
           });
+        };
         const backgroundImageAvailability =
           requestedCompositionMode === "fit" &&
           backgroundPlan?.mode === "image" &&
@@ -6421,49 +6398,20 @@ async function executeClipRenderAttempt(
           ).length,
         });
         compositionPlan = planned.plan;
-        const plannedAudio = compileCompositionPlanAudioSchedule(
-          compositionPlan,
-        );
-        plannedStudioEdits = {
-          ...studioEdits,
-          sourceAudio: {
-            volume: Math.round(plannedAudio.source.gain * 100),
-            muted:
-              plannedAudio.source.muted || !plannedAudio.source.available,
-          },
-        };
-        musicPlan =
-          musicPlan &&
-          plannedAudio.music &&
-          musicPlan.ref === plannedAudio.music.sourceRef
-            ? {
-                ...musicPlan,
-                volume: plannedAudio.music.gain * 100,
-                startOffsetSec: plannedAudio.music.startOffsetSec,
-                fadeInSec: plannedAudio.music.fadeInSec,
-                fadeOutSec: plannedAudio.music.fadeOutSec,
-                duckingWindows: [...plannedAudio.music.duckingWindows],
-              }
-            : null;
-        const resolvedSfxPlans = plannedAudio.soundEffects.flatMap(
-          (plannedEffect) => {
-            const resolved = sfxPlans.find(
-              (candidate) =>
-                candidate.id === plannedEffect.id &&
-                candidate.ref === plannedEffect.sourceRef,
-            );
-            return resolved
-              ? [
-                  {
-                    ...resolved,
-                    startSec: plannedEffect.startSec,
-                    volume: plannedEffect.gain * 100,
-                  },
-                ]
-              : [];
+        plannedAudio = bindCompositionPlanAudioInputs(
+          compileCompositionPlanAudioSchedule(compositionPlan),
+          {
+            music:
+              musicPlan
+                ? { sourceRef: musicPlan.ref, path: musicPlan.path }
+                : null,
+            soundEffects: sfxPlans.map((effect) => ({
+              id: effect.id,
+              sourceRef: effect.ref,
+              path: effect.path,
+            })),
           },
         );
-        sfxPlans.splice(0, sfxPlans.length, ...resolvedSfxPlans);
         for (const output of outputs) {
           const target = compositionPlan.targets.find(
             (candidate) => candidate.id === output.clipRenderId,
@@ -6495,25 +6443,30 @@ async function executeClipRenderAttempt(
             output.subtitlePath = assPath;
           }
         }
-        if (
-          backgroundImageAvailability.state === "available" ||
-          brollPlan || brandLogo
-        ) {
+        if (optionalCommandAssets.length > 0) {
           const fallbackPlan = planWithAssetAvailability(
             backgroundImageAvailability.state === "available"
               ? { state: "failed" }
               : backgroundImageAvailability,
-            false,
-            false,
+            {
+              broll: false,
+              logo: false,
+              music: false,
+              soundEffects: false,
+            },
           );
           if (fallbackPlan.status !== "invalid") {
             fallbackCompositionPlan = fallbackPlan.plan;
+            fallbackAudio = bindCompositionPlanAudioInputs(
+              compileCompositionPlanAudioSchedule(fallbackPlan.plan),
+              {},
+            );
           }
         }
       }
 
       if (!probe.hasVideo) {
-        if (!compositionPlan) {
+        if (!compositionPlan || !plannedAudio) {
           throw new WorkflowWorkerError(
             "clip_composition_plan_missing",
             "Audio-only render requires a Clip Composition Plan",
@@ -6526,6 +6479,19 @@ async function executeClipRenderAttempt(
               plan: compositionPlan,
               targetId: output.clipRenderId,
             };
+            const fallbackCompositionForOutput =
+              fallbackCompositionPlan && fallbackAudio
+                ? {
+                    plan: fallbackCompositionPlan,
+                    targetId: output.clipRenderId,
+                  }
+                : null;
+            const audioOptionalAssets = optionalCommandAssets.filter(
+              ({ assetClass }) =>
+                assetClass === "logo" ||
+                assetClass === "music" ||
+                assetClass === "sound_effect",
+            );
             const ffmpegArgs = buildAudiogramArgs({
               sourcePath,
               outputPath: output.outputPath,
@@ -6535,13 +6501,8 @@ async function executeClipRenderAttempt(
               composition: compositionForOutput,
               clipDurationSec,
               srtPath: output.subtitlePath ?? srtPath,
-              captionPreset,
-              studioEdits: plannedStudioEdits,
               logo,
-              music: musicPlan,
-              sfx: sfxPlans,
-              resolution: output.resolution,
-              watermark: output.watermark,
+              audio: plannedAudio,
               cutPlan,
             });
 
@@ -6549,7 +6510,9 @@ async function executeClipRenderAttempt(
             await executeRenderCommandWithOptionalFallback({
               primaryArgs: ffmpegArgs,
               fallbackArgs:
-                musicPlan || sfxPlans.length > 0
+                fallbackCompositionForOutput &&
+                fallbackAudio &&
+                audioOptionalAssets.length > 0
                   ? () =>
                       buildAudiogramArgs({
                         sourcePath,
@@ -6557,23 +6520,15 @@ async function executeClipRenderAttempt(
                         startSec: clipStartSec,
                         endSec: clipEndSec,
                         aspectRatio: output.aspectRatio,
-                        composition: compositionForOutput,
+                        composition: fallbackCompositionForOutput,
                         clipDurationSec,
                         srtPath: output.subtitlePath ?? srtPath,
-                        captionPreset,
-                        studioEdits: plannedStudioEdits,
-                        logo,
-                        music: null,
-                        sfx: [],
-                        resolution: output.resolution,
-                        watermark: output.watermark,
+                        logo: null,
+                        audio: fallbackAudio,
                         cutPlan,
                       })
                   : undefined,
-              optionalAssets: optionalCommandAssets.filter(
-                ({ assetClass }) =>
-                  assetClass === "music" || assetClass === "sound_effect",
-              ),
+              optionalAssets: audioOptionalAssets,
               context: {
                 workflowRunId: run.id,
                 clipId: clip.id,
@@ -6622,7 +6577,7 @@ async function executeClipRenderAttempt(
         const brollCredits =
           plan && plan.credits.length > 0 ? JSON.stringify(plan.credits) : null;
         for (const output of outputs) {
-          if (!compositionPlan) {
+          if (!compositionPlan || !plannedAudio) {
             throw new WorkflowWorkerError(
               "clip_composition_plan_missing",
               "Video render requires a Clip Composition Plan",
@@ -6655,9 +6610,7 @@ async function executeClipRenderAttempt(
                   srtPath: output.subtitlePath ?? srtPath,
                   logo,
                   composition: compositionForOutput,
-                  studioEdits: plannedStudioEdits,
-                  music: musicPlan,
-                  sfx: sfxPlans,
+                  audio: plannedAudio,
                   background: backgroundPlan,
                   cutPlan,
                 })
@@ -6671,9 +6624,7 @@ async function executeClipRenderAttempt(
                   srtPath: output.subtitlePath ?? srtPath,
                   logo,
                   composition: compositionForOutput,
-                  studioEdits: plannedStudioEdits,
-                  music: musicPlan,
-                  sfx: sfxPlans,
+                  audio: plannedAudio,
                   background: backgroundPlan,
                   cutPlan,
                 });
@@ -6693,9 +6644,7 @@ async function executeClipRenderAttempt(
                         srtPath: output.subtitlePath ?? srtPath,
                         logo: null,
                         composition: fallbackCompositionForOutput,
-                        studioEdits: plannedStudioEdits,
-                        music: null,
-                        sfx: [],
+                        audio: fallbackAudio ?? plannedAudio,
                         background: fallbackBackgroundPlan,
                         cutPlan,
                       })

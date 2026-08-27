@@ -9,6 +9,8 @@ import {
   adoptCompositionPreview,
   adoptCompositionPreviewResult,
   compositionNoticeText,
+  compositionNoticeEntries,
+  compositionNoticeTexts,
   compositionInvalidText,
   manualBrollAvailabilityForPlan,
   plannedCompositionSourceDimensions,
@@ -43,9 +45,63 @@ function centerPlan() {
 }
 
 describe("composition preview adapter", () => {
+  test("keeps every active scoped fallback accessible", () => {
+    const context = {
+      requestedMode: "fit" as const,
+      effectiveMode: "fit" as const,
+    };
+    expect(
+      compositionNoticeTexts(
+        [
+          {
+            code: "background_image_unavailable",
+            fidelity: "degraded",
+            targetId: "9:16",
+            sceneId: null,
+            effectiveFallback: "fit",
+            userActionPossible: true,
+          },
+          {
+            code: "music_asset_unavailable",
+            fidelity: "degraded",
+            targetId: "9:16",
+            sceneId: null,
+            effectiveFallback: "fit",
+            userActionPossible: true,
+          },
+        ],
+        context,
+      ),
+    ).toHaveLength(2);
+  });
+
+  test("keeps duplicate notice copy keyed by stable placement identity", () => {
+    const entries = compositionNoticeEntries(
+      ["first", "second"].map((assetId) => ({
+        code: "sound_effect_asset_unavailable",
+        fidelity: "degraded" as const,
+        targetId: "9:16",
+        sceneId: null,
+        effectiveFallback: "center" as const,
+        userActionPossible: true,
+        assetId,
+      })),
+      { requestedMode: "center", effectiveMode: "center" },
+    );
+    expect(entries.map((entry) => entry.key)).toEqual([
+      "sound_effect_asset_unavailable:9:16:target:first",
+      "sound_effect_asset_unavailable:9:16:target:second",
+    ]);
+    expect(new Set(entries.map((entry) => entry.text))).toHaveLength(1);
+  });
+
   test("translates the planned audio schedule without recomputing audio policy", () => {
     const schedule = {
       fingerprint: "audio:fingerprint",
+      outputFades: {
+        fadeIn: { startSec: 0, endSec: 0.04 },
+        fadeOut: { startSec: 7.88, endSec: 8 },
+      },
       source: {
         sourceRef: "source:one",
         available: true,
@@ -58,6 +114,7 @@ describe("composition preview adapter", () => {
         activeRange: { startSec: 0, endSec: 8 },
         gain: 0.4,
         startOffsetSec: 3,
+        sourceDurationSec: 4,
         loop: true as const,
         fades: {
           fadeIn: { startSec: 0, endSec: 4 },
@@ -87,10 +144,10 @@ describe("composition preview adapter", () => {
       music: state.music ? { ...state.music, volume: undefined } : null,
     }).toEqual({
       scheduleFingerprint: "audio:fingerprint",
-      source: { muted: false, volume: 0.65 },
+      source: { muted: false, volume: 0.65, outputGain: 1 },
       music: {
         sourceRef: "music:one",
-        timelineTimeSec: 4.5,
+        timelineTimeSec: 0.5,
         loop: true,
         volume: undefined,
       },
@@ -104,6 +161,38 @@ describe("composition preview adapter", () => {
       ],
     });
     expect(state.music?.volume).toBeCloseTo(0.045, 8);
+    expect(plannedCompositionAudioState(schedule, 0.02).source.volume).toBeCloseTo(
+      0.325,
+      8,
+    );
+  });
+
+  test("matches sequential export fades for a sub-160ms planned schedule", () => {
+    const schedule = {
+      fingerprint: "audio:short",
+      outputFades: {
+        fadeIn: { startSec: 0, endSec: 0.025 },
+        fadeOut: { startSec: 0.025, endSec: 0.1 },
+      },
+      source: {
+        sourceRef: "source:short",
+        available: true,
+        activeRange: { startSec: 0, endSec: 0.1 },
+        gain: 1,
+        muted: false,
+      },
+      music: null,
+      soundEffects: [],
+    };
+
+    expect(plannedCompositionAudioState(schedule, 0.02).source.outputGain).toBeCloseTo(
+      0.8,
+      8,
+    );
+    expect(plannedCompositionAudioState(schedule, 0.05).source.outputGain).toBeCloseTo(
+      2 / 3,
+      8,
+    );
   });
 
   test("adopts an audio-only audiogram without pretending its background will render", () => {

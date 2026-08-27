@@ -96,6 +96,43 @@ function makeSession(
 }
 
 describe("StudioEditingSession playback seam", () => {
+  test("applies the planner-owned output envelope through the session audio command", async () => {
+    const media = new InMemoryMediaAdapter();
+    const session = makeSession(media);
+    while (session.getSnapshot().status !== "ready") await Promise.resolve();
+    const binding = session.getSnapshot().playback.mediaBinding;
+
+    expect(
+      session.dispatch({
+        type: "preview.set-source-audio-envelope",
+        gain: 0.25,
+      }),
+    ).toEqual({ accepted: true });
+    expect(media.commands.at(-1)).toEqual({
+      type: "set-audio",
+      binding,
+      muted: false,
+      volume: 0.25,
+    });
+
+    session.dispatch({
+      type: "document.edit",
+      action: {
+        type: "setStudioEdits",
+        studioEdits: {
+          ...makeDocument().studioEdits,
+          sourceAudio: { muted: false, volume: 60 },
+        },
+      },
+    });
+    expect(media.commands.at(-1)).toEqual({
+      type: "set-audio",
+      binding,
+      muted: false,
+      volume: 0.15,
+    });
+  });
+
   test("preserves a kept source frame across a cut and undo", async () => {
     const media = new InMemoryMediaAdapter();
     const session = makeSession(media);

@@ -18,11 +18,37 @@ function rangeContains(
   return timeSec >= range.startSec && timeSec <= range.endSec;
 }
 
+function fadeEnvelopeAt(
+  fades: {
+    fadeIn: { startSec: number; endSec: number };
+    fadeOut: { startSec: number; endSec: number };
+  },
+  timeSec: number,
+): number {
+  let gain = 1;
+  const fadeInDuration = fades.fadeIn.endSec - fades.fadeIn.startSec;
+  if (fadeInDuration > 0 && timeSec < fades.fadeIn.endSec) {
+    gain = Math.min(
+      gain,
+      Math.max(0, Math.min(1, (timeSec - fades.fadeIn.startSec) / fadeInDuration)),
+    );
+  }
+  const fadeOutDuration = fades.fadeOut.endSec - fades.fadeOut.startSec;
+  if (fadeOutDuration > 0 && timeSec > fades.fadeOut.startSec) {
+    gain = Math.min(
+      gain,
+      Math.max(0, Math.min(1, (fades.fadeOut.endSec - timeSec) / fadeOutDuration)),
+    );
+  }
+  return gain;
+}
+
 export function plannedCompositionAudioState(
   schedule: CompositionAudioSchedule,
   editedTimeSec: number,
 ) {
   const timeSec = Math.max(0, editedTimeSec);
+  const outputGain = fadeEnvelopeAt(schedule.outputFades, timeSec);
   const music = schedule.music;
   let plannedMusic: {
     sourceRef: string;
@@ -60,16 +86,20 @@ export function plannedCompositionAudioState(
     }
     plannedMusic = {
       sourceRef: music.sourceRef,
-      timelineTimeSec: music.startOffsetSec + timeSec,
+      timelineTimeSec:
+        music.sourceDurationSec && music.sourceDurationSec > 0
+          ? (music.startOffsetSec + timeSec) % music.sourceDurationSec
+          : music.startOffsetSec + timeSec,
       loop: true,
-      volume: Math.max(0, Math.min(1, volume)),
+      volume: Math.max(0, Math.min(1, volume * outputGain)),
     };
   }
   return {
     scheduleFingerprint: schedule.fingerprint,
     source: {
       muted: schedule.source.muted || !schedule.source.available,
-      volume: schedule.source.gain,
+      volume: schedule.source.gain * outputGain,
+      outputGain,
     },
     music: plannedMusic,
     soundEffects: schedule.soundEffects
@@ -78,7 +108,7 @@ export function plannedCompositionAudioState(
         id: effect.id,
         sourceRef: effect.sourceRef,
         localTimeSec: timeSec - effect.activeRange.startSec,
-        volume: effect.gain,
+        volume: effect.gain * outputGain,
       })),
   };
 }
@@ -206,6 +236,41 @@ export function compositionNoticeText(
     ? ` ${compositionNoticeAction(context.notice.code)}`
     : "";
   return `${scope} · ${fidelity} ${detail}${action}`;
+}
+
+export function compositionNoticeTexts(
+  notices: readonly CompositionNotice[],
+  context: {
+    requestedMode: CompositionMode;
+    effectiveMode: CompositionMode;
+  },
+): string[] {
+  return compositionNoticeEntries(notices, context).map((entry) => entry.text);
+}
+
+export function compositionNoticeEntries(
+  notices: readonly CompositionNotice[],
+  context: {
+    requestedMode: CompositionMode;
+    effectiveMode: CompositionMode;
+  },
+): Array<{ key: string; text: string }> {
+  return notices.flatMap((notice) => {
+    const text = compositionNoticeText(notice.code, { ...context, notice });
+    return text
+      ? [
+          {
+            key: [
+              notice.code,
+              notice.targetId,
+              notice.sceneId ?? "target",
+              notice.assetId ?? "composition",
+            ].join(":"),
+            text,
+          },
+        ]
+      : [];
+  });
 }
 
 export function compositionInvalidText(code: string): string {

@@ -1,58 +1,45 @@
 "use client";
 
 import { useEffect, useRef } from "react";
-import type { StudioSfxPlacement } from "@narriflow/validators";
 
 interface SfxPreviewTrackProps {
-  placement: StudioSfxPlacement;
-  /** Resolved playback URL for `placement.assetId`, or null while it's still
-   *  being fetched (see video-preview.tsx's `sfxUrlCacheRef`) — nothing
-   *  renders until this resolves. */
+  placement: {
+    startSec: number;
+    endSec: number;
+    volume: number;
+  };
+  /** Resolved playback URL, or null while it is still being fetched. */
   src: string | null;
   isPlaying: boolean;
   /** EDITED-timeline seconds from the shared playback clock — the same unit
    *  `placement.startSec` is stored in. */
   currentTime: number;
+  onPlaybackFailure(): void;
 }
 
 /**
  * One-shot SFX playback (vizard-parity.md "Music/SFX library"): mirrors
  * video-preview.tsx's clock-driven music preview at per-placement scale.
- * Plays once starting at `placement.startSec` for as long as this track's
- * own duration (unknown until `loadedmetadata`, at which point the window
- * narrows from "open-ended" to "closes after the track's real length"),
- * then stays silent until the playhead re-enters the window (loop, or a
- * scrub back before `startSec`). Not sample-accurate — the render is the
- * source of truth for exact placement — this only needs to stay inside the
- * same +/-0.25s tolerance the music bed already accepts.
+ * Plays only inside the planner-owned active range, then stays silent until
+ * the playhead re-enters that range. This preview only needs to stay inside
+ * the same +/-0.25s tolerance as the music bed.
  */
-export function SfxPreviewTrack({ placement, src, isPlaying, currentTime }: SfxPreviewTrackProps) {
+export function SfxPreviewTrack({
+  placement,
+  src,
+  isPlaying,
+  currentTime,
+  onPlaybackFailure,
+}: SfxPreviewTrackProps) {
   const audioRef = useRef<HTMLAudioElement>(null);
-  const durationRef = useRef(0);
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: src intentionally resets metadata for the newly mounted media source.
-  useEffect(() => {
-    durationRef.current = 0;
-    const audio = audioRef.current;
-    if (!audio) return;
-    const handleLoadedMetadata = () => {
-      durationRef.current = Number.isFinite(audio.duration) ? audio.duration : 0;
-    };
-    if (Number.isFinite(audio.duration) && audio.duration > 0) {
-      durationRef.current = audio.duration;
-    }
-    audio.addEventListener("loadedmetadata", handleLoadedMetadata);
-    return () => audio.removeEventListener("loadedmetadata", handleLoadedMetadata);
-  }, [src]);
 
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio || !src) return;
 
-    const trackDuration = durationRef.current;
     const withinWindow =
       currentTime >= placement.startSec &&
-      (trackDuration <= 0 || currentTime < placement.startSec + trackDuration);
+      currentTime < placement.endSec;
 
     if (!isPlaying || !withinWindow) {
       audio.pause();
@@ -67,7 +54,7 @@ export function SfxPreviewTrack({ placement, src, isPlaying, currentTime }: SfxP
       // Autoplay can be rejected outside a user gesture — the next
       // togglePlay() retries it; nothing to surface for a one-shot SFX cue.
     });
-  }, [isPlaying, currentTime, placement.startSec, src]);
+  }, [isPlaying, currentTime, placement.endSec, placement.startSec, src]);
 
   // L7: `src` is in the deps (not just `placement.volume`) because some
   // browsers reset a media element's `.volume` back to its default when its
@@ -85,6 +72,12 @@ export function SfxPreviewTrack({ placement, src, isPlaying, currentTime }: SfxP
 
   return (
     // biome-ignore lint/a11y/useMediaCaption: decorative one-shot SFX cue, no dialogue/captions of its own.
-    <audio ref={audioRef} src={src} preload="auto" style={{ display: "none" }} />
+    <audio
+      ref={audioRef}
+      src={src}
+      preload="auto"
+      onError={onPlaybackFailure}
+      style={{ display: "none" }}
+    />
   );
 }

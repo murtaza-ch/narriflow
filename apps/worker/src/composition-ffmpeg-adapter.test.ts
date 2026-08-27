@@ -388,6 +388,10 @@ describe("composition FFmpeg adapter", () => {
       ...plan,
       audioSchedule: {
         fingerprint: "audio:one",
+        outputFades: {
+          fadeIn: { startSec: 0, endSec: 0.04 },
+          fadeOut: { startSec: 4.88, endSec: 5 },
+        },
         source: {
           sourceRef: "source:key",
           available: true,
@@ -400,6 +404,7 @@ describe("composition FFmpeg adapter", () => {
           activeRange: { startSec: 0, endSec: 5 },
           gain: 0.4,
           startOffsetSec: 3,
+          sourceDurationSec: 10,
           loop: true,
           fades: {
             fadeIn: { startSec: 0, endSec: 2 },
@@ -426,22 +431,40 @@ describe("composition FFmpeg adapter", () => {
 
     expect(translated).toEqual({
       scheduleFingerprint: "audio:one",
-      source: { available: true, gain: 0.65, muted: false },
+      outputFades: {
+        fadeIn: { startSec: 0, endSec: 0.04 },
+        fadeOut: { startSec: 4.88, endSec: 5 },
+      },
+      source: {
+        activeRange: { startSec: 0, endSec: 5 },
+        available: true,
+        gain: 0.65,
+        muted: false,
+      },
       music: {
         sourceRef: "music:bed",
+        activeRange: { startSec: 0, endSec: 5 },
         gain: 0.4,
         startOffsetSec: 3,
+        sourceDurationSec: 10,
         loop: true,
-        fadeInSec: 2,
-        fadeOutSec: 1,
-        duckingWindows: [{ startSec: 1, endSec: 2 }],
+        fades: {
+          fadeIn: { startSec: 0, endSec: 2 },
+          fadeOut: { startSec: 4, endSec: 5 },
+        },
+        ducking: {
+          enabled: true,
+          windows: [{ startSec: 1, endSec: 2 }],
+          duckedGainFraction: 0.3,
+          attackSec: 0.25,
+          releaseSec: 0.4,
+        },
       },
       soundEffects: [
         {
           id: "sting",
           sourceRef: "sfx:sting",
-          startSec: 2,
-          endSec: 5,
+          activeRange: { startSec: 2, endSec: 5 },
           gain: 0.8,
         },
       ],

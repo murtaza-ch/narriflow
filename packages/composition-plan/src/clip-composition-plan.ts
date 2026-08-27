@@ -28,6 +28,8 @@ import {
 export const CLIP_COMPOSITION_PLAN_VERSION = 1 as const;
 export const CLIP_COMPOSITION_MAX_TARGETS = 4;
 export const CLIP_COMPOSITION_MAX_SERIALIZED_BYTES = 512 * 1024;
+export const CLIP_AUDIO_FADE_IN_SEC = 0.04;
+export const CLIP_AUDIO_FADE_OUT_SEC = 0.12;
 
 export type CompositionMode =
   | "auto"
@@ -58,7 +60,21 @@ export interface CompositionTarget {
 
 export type CompositionAssetAvailability =
   | { readonly state: "missing" | "pending" | "failed" }
-  | { readonly state: "available"; readonly ref: string };
+  | {
+      readonly state: "available";
+      readonly ref: string;
+      /** Known decoded duration for audio assets. Visual assets omit it. */
+      readonly durationSec?: number;
+    };
+
+export type CompositionSoundEffectAvailability =
+  | { readonly state: "missing" | "pending" | "failed" }
+  | {
+      readonly state: "available";
+      readonly ref: string;
+      /** Required decoded duration keeps the planned stop authoritative. */
+      readonly durationSec: number;
+    };
 
 export type CompositionLogoAvailability =
   | { readonly state: "missing" | "pending" | "failed" }
@@ -177,7 +193,7 @@ export interface ClipCompositionPlanInput {
     readonly logo?: CompositionLogoAvailability;
     readonly music?: CompositionAssetAvailability;
     readonly soundEffects?: Readonly<
-      Record<string, CompositionAssetAvailability>
+      Record<string, CompositionSoundEffectAvailability>
     >;
   };
   readonly capabilities: {
@@ -411,6 +427,10 @@ export interface CompositionNotice {
 
 export interface CompositionAudioSchedule {
   readonly fingerprint: string;
+  readonly outputFades: {
+    readonly fadeIn: CompositionActiveRange;
+    readonly fadeOut: CompositionActiveRange;
+  };
   readonly source: {
     readonly sourceRef: string;
     readonly available: boolean;
@@ -423,6 +443,7 @@ export interface CompositionAudioSchedule {
     readonly activeRange: CompositionActiveRange;
     readonly gain: number;
     readonly startOffsetSec: number;
+    readonly sourceDurationSec: number | null;
     readonly loop: true;
     readonly fades: {
       readonly fadeIn: CompositionActiveRange;
@@ -530,12 +551,64 @@ function clampUnit(value: number): number {
   return Math.max(0, Math.min(1, value));
 }
 
-function buildAudioSchedule(input: ClipCompositionPlanInput, editedDurationSec: number) {
-  const activeRange = { startSec: 0, endSec: editedDurationSec };
-  const sourceAudio = input.document.studioEdits.sourceAudio;
-  const musicAvailability = input.assets.music;
+function resolveRequestedAudioAssets(
+  input: ClipCompositionPlanInput,
+  editedDurationSec: number,
+) {
   const musicSettings = input.document.studioEdits.music;
-  const musicRequested = Boolean(musicSettings.assetId || musicSettings.url);
+  const normalizeSoundEffect = (
+    availability: CompositionSoundEffectAvailability | undefined,
+  ): CompositionSoundEffectAvailability | undefined =>
+    availability?.state === "available" &&
+    (!Number.isFinite(availability.durationSec) || availability.durationSec <= 0)
+      ? { state: "failed" }
+      : availability;
+  return {
+    music: {
+      requested: Boolean(musicSettings.assetId || musicSettings.url),
+      availability: input.assets.music,
+    },
+    soundEffects: input.document.studioEdits.sfx.flatMap((placement) =>
+      placement.startSec < editedDurationSec
+        ? [
+            {
+              placement,
+              availability: normalizeSoundEffect(
+                input.assets.soundEffects?.[placement.id],
+              ),
+            },
+          ]
+        : [],
+    ),
+  };
+}
+
+type ResolvedAudioAssets = ReturnType<typeof resolveRequestedAudioAssets>;
+
+function buildAudioSchedule(
+  input: ClipCompositionPlanInput,
+  editedDurationSec: number,
+  resolvedAssets: ResolvedAudioAssets,
+) {
+  const activeRange = { startSec: 0, endSec: editedDurationSec };
+  const outputFadeWindows = resolveMusicFadeWindows(
+    CLIP_AUDIO_FADE_IN_SEC,
+    CLIP_AUDIO_FADE_OUT_SEC,
+    editedDurationSec,
+  );
+  const outputFades = {
+    fadeIn: {
+      startSec: 0,
+      endSec: outputFadeWindows.fadeInSec,
+    },
+    fadeOut: {
+      startSec: outputFadeWindows.fadeOutStartSec,
+      endSec: editedDurationSec,
+    },
+  };
+  const sourceAudio = input.document.studioEdits.sourceAudio;
+  const musicAvailability = resolvedAssets.music.availability;
+  const musicSettings = input.document.studioEdits.music;
   const fadeWindows = resolveMusicFadeWindows(
     musicSettings.fadeInSec,
     musicSettings.fadeOutSec,
@@ -558,12 +631,18 @@ function buildAudioSchedule(input: ClipCompositionPlanInput, editedDurationSec: 
       )
     : [];
   const music =
-    musicRequested && musicAvailability?.state === "available"
+    resolvedAssets.music.requested && musicAvailability?.state === "available"
       ? {
           sourceRef: musicAvailability.ref,
           activeRange,
           gain: clampUnit(musicSettings.volume / 100),
           startOffsetSec: Math.max(0, musicSettings.startOffsetSec),
+          sourceDurationSec:
+            musicAvailability.durationSec &&
+            Number.isFinite(musicAvailability.durationSec) &&
+            musicAvailability.durationSec > 0
+              ? musicAvailability.durationSec
+              : null,
           loop: true as const,
           fades: {
             fadeIn: { startSec: 0, endSec: fadeWindows.fadeInSec },
@@ -581,23 +660,28 @@ function buildAudioSchedule(input: ClipCompositionPlanInput, editedDurationSec: 
           },
         }
       : null;
-  const soundEffects = input.document.studioEdits.sfx.flatMap((placement) => {
-    if (placement.startSec >= editedDurationSec) return [];
-    const availability = input.assets.soundEffects?.[placement.id];
+  const soundEffects = resolvedAssets.soundEffects.flatMap(
+    ({ placement, availability }) => {
     if (availability?.state !== "available") return [];
+    const endSec = Math.min(
+      editedDurationSec,
+      placement.startSec + availability.durationSec,
+    );
     return [
       {
         id: placement.id,
         sourceRef: availability.ref,
         activeRange: {
           startSec: placement.startSec,
-          endSec: editedDurationSec,
+          endSec,
         },
         gain: clampUnit(placement.volume / 100),
       },
     ];
-  });
+    },
+  );
   const withoutFingerprint = {
+    outputFades,
     source: {
       sourceRef: input.source.identity,
       available: input.source.hasAudio !== false,
@@ -1362,6 +1446,10 @@ export function planClipComposition(
   if (editedTimeMap.editedDurationSec <= 0) {
     return { status: "invalid", error: { code: "empty_edited_timeline" } };
   }
+  const resolvedAudioAssets = resolveRequestedAudioAssets(
+    input,
+    editedTimeMap.editedDurationSec,
+  );
 
   const brollAvailability = input.assets.broll;
   const brollPlacements =
@@ -2207,15 +2295,11 @@ export function planClipComposition(
     );
   }
 
-  const musicRequested = Boolean(
-    input.document.studioEdits.music.assetId ||
-      input.document.studioEdits.music.url,
-  );
   if (
-    musicRequested &&
-    input.assets.music?.state !== "available"
+    resolvedAudioAssets.music.requested &&
+    resolvedAudioAssets.music.availability?.state !== "available"
   ) {
-    const pending = input.assets.music?.state === "pending";
+    const pending = resolvedAudioAssets.music.availability?.state === "pending";
     notices.push(
       ...targets.map((target) => ({
         code: pending ? "music_asset_pending" : "music_asset_unavailable",
@@ -2228,9 +2312,7 @@ export function planClipComposition(
     );
   }
 
-  for (const placement of input.document.studioEdits.sfx) {
-    if (placement.startSec >= editedTimeMap.editedDurationSec) continue;
-    const availability = input.assets.soundEffects?.[placement.id];
+  for (const { placement, availability } of resolvedAudioAssets.soundEffects) {
     if (availability?.state === "available") continue;
     const pending = availability?.state === "pending";
     notices.push(
@@ -2251,6 +2333,7 @@ export function planClipComposition(
   const audioSchedule = buildAudioSchedule(
     input,
     editedTimeMap.editedDurationSec,
+    resolvedAudioAssets,
   );
 
   const fidelity = notices.some(

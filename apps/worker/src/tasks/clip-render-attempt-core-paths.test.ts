@@ -33,6 +33,10 @@ import {
 import { parseRenderConfig } from "../render-config";
 import { ProductionRenderMediaAdapter } from "../render-media-adapter";
 import { productionRenderProcessAdapter } from "../render-process-adapter";
+import {
+  bindCompositionPlanAudioInputs,
+  compileCompositionPlanAudioSchedule,
+} from "../composition-ffmpeg-adapter";
 import { buildClipCutPlan } from "./cut-plan";
 import {
   buildAudiogramArgs,
@@ -131,6 +135,10 @@ function createCoreRenderPathTracer(input: {
   brollDurationSec?: number | null;
   audioAssetFailure?: Error;
   audioAssetUrl?: string;
+  audioAssets?: Readonly<
+    Record<string, { url: string; durationSec: number }>
+  >;
+  optionalMediaFiles?: Readonly<Record<string, string>>;
   optionalDownloadFailure?: Error;
   optionalMediaInvalidFor?: "video" | "audio" | "image";
   backgroundDecodable?: boolean;
@@ -489,7 +497,12 @@ function createCoreRenderPathTracer(input: {
                 throw input.optionalDownloadFailure;
               },
             }
-          : { downloadUrlToFile: async () => {} }),
+          : {
+              downloadUrlToFile: async (url, filePath) => {
+                const sourcePath = input.optionalMediaFiles?.[url];
+                if (sourcePath) await copyFile(sourcePath, filePath);
+              },
+            }),
         ...(input.backgroundDecodable !== undefined
           ? {
               probeBackgroundImageDecodable: async () =>
@@ -502,13 +515,25 @@ function createCoreRenderPathTracer(input: {
             }
           : {}),
       },
-      ...(input.audioAssetFailure || input.audioAssetUrl
+      ...(input.audioAssetFailure || input.audioAssetUrl || input.audioAssets
         ? {
             audioAsset: {
-              resolveRenderSource: async () => {
+              resolveRenderSource: async (_userId, assetId) => {
                 if (input.audioAssetFailure) throw input.audioAssetFailure;
+                const asset = input.audioAssets?.[assetId];
+                if (asset) {
+                  return {
+                    url: asset.url,
+                    title: "Optional audio",
+                    durationSec: asset.durationSec,
+                  };
+                }
                 return input.audioAssetUrl
-                  ? { url: input.audioAssetUrl, title: "Optional audio" }
+                  ? {
+                      url: input.audioAssetUrl,
+                      title: "Optional audio",
+                      durationSec: 0.4,
+                    }
                   : null;
               },
             },
@@ -752,56 +777,58 @@ function buildBaselineCommands(input: {
     endSec: input.endSec,
   });
   const studioEdits = studioEditsSchema.parse({});
-  return outputs.map((output) =>
-    buildAudiogramArgs({
+  return outputs.map((output) => {
+    const canvas = {
+      "9:16": { width: 1080, height: 1920 },
+      "1:1": { width: 1080, height: 1080 },
+      "16:9": { width: 1920, height: 1080 },
+      "4:5": { width: 1080, height: 1350 },
+    }[output.aspectRatio];
+    const planned = planClipComposition({
+      document: editorDocumentSchema.parse({
+        clipStartSec: 0,
+        clipEndSec: clipDurationSec,
+        captionPreset: captionPresetSchema.parse({}),
+        transcriptSlice: [],
+        studioEdits,
+        brollUrl: null,
+        deletedRanges: [],
+      }),
+      source: { identity: "audio:baseline", kind: "audio", width: 0, height: 0 },
+      evidence: { automaticLayout: { state: "missing" } },
+      assets: { backgroundImage: { state: "missing" } },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+      targets: [
+        {
+          id: output.clipRenderId,
+          aspectRatio: output.aspectRatio,
+          ...canvas,
+        },
+      ],
+    });
+    if (planned.status === "invalid") throw new Error(planned.error.code);
+    const audio = bindCompositionPlanAudioInputs(
+      compileCompositionPlanAudioSchedule(planned.plan),
+      {},
+    );
+    return buildAudiogramArgs({
       sourcePath: input.sourcePath,
       outputPath: output.outputPath,
       startSec: input.startSec,
       endSec: input.endSec,
       aspectRatio: output.aspectRatio,
-      composition: (() => {
-        const canvas = {
-          "9:16": { width: 1080, height: 1920 },
-          "1:1": { width: 1080, height: 1080 },
-          "16:9": { width: 1920, height: 1080 },
-          "4:5": { width: 1080, height: 1350 },
-        }[output.aspectRatio];
-        const planned = planClipComposition({
-          document: editorDocumentSchema.parse({
-            clipStartSec: 0,
-            clipEndSec: clipDurationSec,
-            captionPreset: captionPresetSchema.parse({}),
-            transcriptSlice: [],
-            studioEdits,
-            brollUrl: null,
-            deletedRanges: [],
-          }),
-          source: { identity: "audio:baseline", kind: "audio", width: 0, height: 0 },
-          evidence: { automaticLayout: { state: "missing" } },
-          assets: { backgroundImage: { state: "missing" } },
-          capabilities: {
-            automaticSpeakerLayout: true,
-            automaticSpeakerEngineVersion: "shot-layout-v1",
-          },
-          targets: [
-            {
-              id: output.clipRenderId,
-              aspectRatio: output.aspectRatio,
-              ...canvas,
-            },
-          ],
-        });
-        if (planned.status === "invalid") throw new Error(planned.error.code);
-        return { plan: planned.plan, targetId: output.clipRenderId };
-      })(),
+      composition: { plan: planned.plan, targetId: output.clipRenderId },
+      audio,
       clipDurationSec,
       srtPath: input.srtPath ?? null,
-      studioEdits,
       resolution: output.resolution,
       watermark: input.watermark,
       cutPlan,
-    }),
-  );
+    });
+  });
 }
 
 function baselineCommandArgs(
@@ -914,6 +941,41 @@ test("ClipRenderAttempt omits an unavailable brand logo and diagnoses the fallba
   expect(JSON.stringify(harness.diagnostics)).not.toContain(
     "secret=do-not-log",
   );
+});
+
+test("ClipRenderAttempt retries an audio-only render without a command-failing logo", async () => {
+  const harness = createCoreRenderPathTracer({
+    topology: "audiogram",
+    failFirstRenderCommand: true,
+    projectBrandSnapshot: {
+      templateId: null,
+      captionPreset: {},
+      logoStorageKey: "projects/brand/logo.png",
+      logoPosition: "bot-right",
+      logoOpacity: 80,
+      logoScalePct: 15,
+      primaryColor: "#FFFFFF",
+      secondaryColor: "#00FF88",
+      accentColor: null,
+    },
+  });
+
+  await expect(
+    harness.clipRenderAttempt.execute({
+      attempt: harness.attempt,
+      signal: new AbortController().signal,
+    }),
+  ).resolves.toMatchObject({ status: "completed", succeeded: 2, failed: 0 });
+  expect(harness.commands).toHaveLength(3);
+  expect(harness.diagnostics).toContainEqual({
+    message: "clip_render_optional_asset_fallback",
+    context: expect.objectContaining({
+      phase: "command",
+      assetClass: "logo",
+      failureCode: "brand_logo_command_failed",
+      disposition: "degraded",
+    }),
+  });
 });
 
 test("ClipRenderAttempt propagates ownership loss during brand logo download", async () => {
@@ -2595,10 +2657,42 @@ function hashRenderedFrame(filePath: string, timeSec: number): string {
   return frame.split(",").at(-1)?.trim() ?? "";
 }
 
+function meanVolumeDb(filePath: string, startSec: number): number {
+  const result = spawnSync(
+    "ffmpeg",
+    [
+      "-v",
+      "info",
+      "-ss",
+      startSec.toFixed(3),
+      "-t",
+      "0.120",
+      "-i",
+      filePath,
+      "-vn",
+      "-af",
+      "volumedetect",
+      "-f",
+      "null",
+      "-",
+    ],
+    { encoding: "utf-8" },
+  );
+  if (result.status !== 0) {
+    throw new Error(`volume probe failed: ${result.stderr}`);
+  }
+  const match = result.stderr.match(/mean_volume:\s*(-?[\d.]+) dB/);
+  if (!match) throw new Error(`mean volume missing: ${result.stderr}`);
+  return Number(match[1]);
+}
+
 describe("ClipRenderAttempt real-media plan fixtures", () => {
   let fixtureDirectory = "";
   let videoSourcePath = "";
   let audioSourcePath = "";
+  let longAudioSourcePath = "";
+  let musicSourcePath = "";
+  let sfxSourcePath = "";
   let logoSourcePath = "";
   let rangedVideoSourceUrl = "";
   let sourceServer: ReturnType<typeof createServer> | null = null;
@@ -2610,6 +2704,9 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
     );
     videoSourcePath = join(fixtureDirectory, "video-source.mp4");
     audioSourcePath = join(fixtureDirectory, "audio-source.m4a");
+    longAudioSourcePath = join(fixtureDirectory, "long-audio-source.m4a");
+    musicSourcePath = join(fixtureDirectory, "music-source.m4a");
+    sfxSourcePath = join(fixtureDirectory, "sfx-source.m4a");
     logoSourcePath = join(fixtureDirectory, "brand-logo.png");
     const videoFixture = spawnSync(
       "ffmpeg",
@@ -2659,6 +2756,29 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
       throw new Error(
         `audio fixture generation failed: ${audioFixture.stderr}`,
       );
+    }
+    for (const fixture of [
+      { path: longAudioSourcePath, frequency: 440, duration: 3 },
+      { path: musicSourcePath, frequency: 880, duration: 0.4 },
+      { path: sfxSourcePath, frequency: 1760, duration: 0.2 },
+    ]) {
+      const generated = spawnSync(
+        "ffmpeg",
+        [
+          "-y",
+          "-f",
+          "lavfi",
+          "-i",
+          `sine=frequency=${fixture.frequency}:sample_rate=48000:duration=${fixture.duration}`,
+          "-c:a",
+          "aac",
+          fixture.path,
+        ],
+        { encoding: "utf-8" },
+      );
+      if (generated.status !== 0) {
+        throw new Error(`audio fixture generation failed: ${generated.stderr}`);
+      }
     }
     const logoFixture = spawnSync(
       "ffmpeg",
@@ -2826,9 +2946,11 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
             resolution: "720p",
           },
         ],
+        ownerTier: "free",
         clipOverrides: {
           studioEdits: {
             background: { mode: "color", color: "#123456" },
+            transition: { type: "dip-white", durationSec: 0.2 },
             textLayers: [
               {
                 id: "audio-hook",
@@ -2885,6 +3007,8 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
       expect(graph).not.toContain("color=c=0x123456");
       expect(graph).toContain("text='Listen closely'");
       expect(graph).toContain("colorchannelmixer=aa=0.800");
+      expect(graph).toContain("fade=t=in:st=0.000:d=0.200:color=white");
+      expect(graph).toContain("drawtext=text=Made with Narriflow");
       expect(harness.diagnostics).toContainEqual({
         message: "clip_composition_plan",
         context: expect.objectContaining({
@@ -2894,6 +3018,103 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
           optionalDegradationCount: 1,
         }),
       });
+    },
+    30_000,
+  );
+
+  test.skipIf(!ffmpegAvailable || !ffprobeAvailable)(
+    "renders the plan-owned loop, fades, ducking, and SFX stop through ClipRenderAttempt",
+    async () => {
+      const musicAssetId = "60000000-0000-4000-8000-000000000706";
+      const sfxAssetId = "70000000-0000-4000-8000-000000000707";
+      const musicUrl = "https://media.example/music.m4a";
+      const sfxUrl = "https://media.example/sfx.m4a";
+      let windows: Record<string, number> = {};
+      const harness = createCoreRenderPathTracer({
+        topology: "audiogram",
+        clipWindow: { startSec: 0, endSec: 3 },
+        variants: [
+          {
+            id: "variant-audio-schedule",
+            aspectRatio: "ratio_1_1",
+            resolution: "720p",
+          },
+        ],
+        transcriptSlice: [
+          {
+            index: 0,
+            speaker: 0,
+            speakerLabel: "Speaker 1",
+            startSec: 1.12,
+            endSec: 1.88,
+            text: "planned speech",
+            confidence: 1,
+            words: [
+              {
+                word: "planned",
+                startSec: 1.12,
+                endSec: 1.88,
+                confidence: 1,
+              },
+            ],
+          },
+        ],
+        clipOverrides: {
+          studioEdits: {
+            sourceAudio: { volume: 100, muted: true },
+            music: {
+              assetId: musicAssetId,
+              url: null,
+              volume: 80,
+              startOffsetSec: 0,
+              fadeInSec: 1,
+              fadeOutSec: 1,
+              ducking: true,
+            },
+            sfx: [
+              {
+                id: "impact",
+                assetId: sfxAssetId,
+                startSec: 1.5,
+                volume: 100,
+              },
+            ],
+          },
+        },
+        audioAssets: {
+          [musicAssetId]: { url: musicUrl, durationSec: 0.4 },
+          [sfxAssetId]: { url: sfxUrl, durationSec: 0.2 },
+        },
+        optionalMediaFiles: {
+          [musicUrl]: musicSourcePath,
+          [sfxUrl]: sfxSourcePath,
+        },
+        realMedia: {
+          sourcePath: longAudioSourcePath,
+          probeOutput: async (_variantId, filePath) => {
+            windows = {
+              fadeIn: meanVolumeDb(filePath, 0.08),
+              fullMusic: meanVolumeDb(filePath, 0.75),
+              duckedMusic: meanVolumeDb(filePath, 1.2),
+              sfx: meanVolumeDb(filePath, 1.54),
+              afterSfx: meanVolumeDb(filePath, 1.82),
+              fadeOut: meanVolumeDb(filePath, 2.86),
+            };
+          },
+        },
+      });
+
+      await expect(
+        harness.clipRenderAttempt.execute({
+          attempt: harness.attempt,
+          signal: new AbortController().signal,
+        }),
+      ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
+      expect(windows.fullMusic).toBeGreaterThan(windows.fadeIn + 8);
+      expect(windows.fullMusic).toBeGreaterThan(windows.duckedMusic + 5);
+      expect(windows.sfx).toBeGreaterThan(windows.duckedMusic + 3);
+      expect(windows.sfx).toBeGreaterThan(windows.afterSfx + 3);
+      expect(windows.fullMusic).toBeGreaterThan(windows.fadeOut + 8);
     },
     30_000,
   );

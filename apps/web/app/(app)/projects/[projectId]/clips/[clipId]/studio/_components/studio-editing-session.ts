@@ -99,6 +99,7 @@ export type StudioSessionIntent =
   | { type: "history.undo" }
   | { type: "history.redo" }
   | { type: "preview.set-source-fallback"; enabled: boolean }
+  | { type: "preview.set-source-audio-envelope"; gain: number }
   | { type: "playback.seek"; editedTimeSec: number }
   | { type: "playback.play" }
   | { type: "playback.pause" }
@@ -586,6 +587,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
   private mediaAssetKey: string | null = null;
   private mediaOffsetSec = 0;
   private mediaAudioFingerprint: string | null = null;
+  private sourceAudioEnvelope = 1;
   private unsubscribeMedia: (() => void) | null = null;
   private pendingMediaSeekSourceSec: number | null = null;
 
@@ -726,6 +728,19 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
       }
       this.manualSourceFallback = intent.enabled;
       this.publish();
+      return { accepted: true };
+    }
+    if (intent.type === "preview.set-source-audio-envelope") {
+      if (this.projection.status === "closed") {
+        return { accepted: false, reason: "closed" };
+      }
+      const next = Number.isFinite(intent.gain)
+        ? Math.max(0, Math.min(1, intent.gain))
+        : 1;
+      if (next !== this.sourceAudioEnvelope) {
+        this.sourceAudioEnvelope = next;
+        this.reconcileMediaAudio();
+      }
       return { accepted: true };
     }
     if (!this.snapshot.capabilities.mutate) {
@@ -1912,7 +1927,9 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     const sourceAudio = this.unified.doc.present.studioEdits.sourceAudio;
     return {
       muted: sourceAudio.muted,
-      volume: Math.max(0, Math.min(1, sourceAudio.volume / 100)),
+      volume:
+        Math.max(0, Math.min(1, sourceAudio.volume / 100)) *
+        this.sourceAudioEnvelope,
     };
   }
 

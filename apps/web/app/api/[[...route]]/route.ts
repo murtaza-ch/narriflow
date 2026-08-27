@@ -3020,9 +3020,9 @@ app.get("/audio-assets/:id/playback-url", async (c) => {
     return c.json({ error: "Invalid audio asset id" }, 400);
   }
   try {
-    const url = await audioAssetService.getPlaybackUrl(appUser.id, idParsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
-    if (!url) return c.json({ error: "audio_asset_not_found" }, 404);
-    return c.json({ url }, 200);
+    const source = await audioAssetService.getPlaybackSource(appUser.id, idParsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
+    if (!source) return c.json({ error: "audio_asset_not_found" }, 404);
+    return c.json(source, 200);
   } catch (error) {
     return c.json(
       { error: "audio_asset_playback_url_failed", message: errorMessage(error) },
