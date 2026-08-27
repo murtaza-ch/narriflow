@@ -11,6 +11,7 @@ import {
   UploadSessionNotFoundError,
   UploadSessionQuotaRefusedError,
   UploadSessionReconciliationClaimLostError,
+  type UploadSessionDiagnosticEvent,
   uploadSessionConfigFromEnv,
   uploadSessionDiagnosticRecord,
 } from "./upload-session.service";
@@ -46,7 +47,7 @@ const CONTENT_PACK = {
 
 describe("Upload Session", () => {
   test("serializes diagnostics through a secret-free allowlist", () => {
-    const record = uploadSessionDiagnosticRecord({
+    const event = {
       phase: "reconciliation",
       disposition: "failed",
       sessionId: "session-safe-id",
@@ -54,13 +55,21 @@ describe("Upload Session", () => {
       providerOperation: "abort",
       failureCode: "upload_cleanup_access_denied",
       declaredAbandonedBytes: 2_048,
+      declaredAbandonedAgeMs: 5_000,
+      providerCallCount: 3,
       durationMs: 12,
       nextRetryAt: "2026-08-28T00:00:05.000Z",
       takeover: true,
       replay: false,
-    });
+      signedUrl: "https://storage.invalid/secret",
+      providerUploadId: "provider-secret",
+      storageKey: "workspace/secret",
+      rawError: new Error("provider secret"),
+    } as const;
+    const record = uploadSessionDiagnosticRecord(event);
 
     expect(Object.keys(record).sort()).toEqual([
+      "declaredAbandonedAgeMs",
       "declaredAbandonedBytes",
       "disposition",
       "durationMs",
@@ -69,6 +78,7 @@ describe("Upload Session", () => {
       "message",
       "nextRetryAt",
       "phase",
+      "providerCallCount",
       "providerOperation",
       "replay",
       "state",
@@ -1389,10 +1399,12 @@ describe("Upload Session", () => {
   test("maintenance compensates an idle multipart session before expiring it", async () => {
     const harness = createInMemoryUploadSessionHarness();
     let now = new Date("2026-08-27T00:00:00.000Z");
+    const diagnostics: UploadSessionDiagnosticEvent[] = [];
     const module = createUploadSessionModule({
       ...harness.adapters,
       config: defaultUploadSessionConfig({ smallFileThresholdBytes: 1 }),
       now: () => now,
+      diagnose: (event) => diagnostics.push(event),
     });
     const opened = await module.open({
       ...ACTOR,
@@ -1420,6 +1432,18 @@ describe("Upload Session", () => {
     expect(harness.facts.unfinishedProviderUploads).toHaveLength(0);
     expect(harness.facts.projects).toHaveLength(0);
     expect(opened.outcome).toBe("uploading");
+    expect(
+      diagnostics.find(
+        (event) =>
+          event.phase === "reconciliation" &&
+          event.disposition === "succeeded",
+      ),
+    ).toMatchObject({
+      providerOperation: "abort",
+      providerCallCount: 1,
+      declaredAbandonedBytes: 32 * 1024 * 1024,
+      declaredAbandonedAgeMs: 86_400_001,
+    });
   });
 
   test("maintenance adopts an initiating multipart transfer after the browser disappears", async () => {
@@ -1790,6 +1814,61 @@ describe("Upload Session", () => {
       status: "failed",
       failureCode: "upload_cleanup_access_denied",
       reconciliationAttemptId: null,
+    });
+  });
+
+  test("cleanup exhaustion never authorizes a fresh upload", async () => {
+    const harness = createInMemoryUploadSessionHarness();
+    let now = new Date("2026-08-27T00:00:00.000Z");
+    const module = createUploadSessionModule({
+      ...harness.adapters,
+      config: defaultUploadSessionConfig({
+        smallFileThresholdBytes: 1,
+        reconciliationMaximumAttempts: 1,
+      }),
+      now: () => now,
+    });
+    const browserFingerprint = '["exhausted-cleanup.mp4",2,"video/mp4",61]';
+    const opened = await module.open({
+      ...ACTOR,
+      clientIdempotencyKey: "60000000-0000-4000-8000-000000000061",
+      title: "Exhausted cleanup",
+      source: {
+        fileName: "exhausted-cleanup.mp4",
+        sizeBytes: 2,
+        contentType: "video/mp4",
+        browserFingerprint,
+      },
+      brandTemplateId: null,
+      generation: { languageCode: "en", contentPack: CONTENT_PACK },
+    });
+    const unavailable = new Error("provider temporarily unavailable");
+    unavailable.name = "TimeoutError";
+    harness.failNextProviderAbort(unavailable);
+    now = new Date("2026-08-28T00:00:00.001Z");
+
+    expect(await module.reconcileDueSessions()).toEqual({
+      claimed: 1,
+      settled: 1,
+      deferred: 0,
+    });
+    expect(harness.facts.sessions[0]).toMatchObject({
+      status: "failed",
+      failureCode: "upload_reconciliation_exhausted",
+      providerUploadId: expect.any(String),
+    });
+    await expect(
+      module.status({
+        actorUserId: ACTOR.actorUserId,
+        workspaceId: ACTOR.workspaceId,
+        clientIdempotencyKey: "60000000-0000-4000-8000-000000000061",
+        sessionId: opened.sessionId,
+        browserFingerprint,
+      }),
+    ).resolves.toMatchObject({
+      outcome: "terminal",
+      failureCode: "upload_reconciliation_exhausted",
+      freshUploadAllowed: false,
     });
   });
 
@@ -2926,7 +3005,10 @@ describe("Upload Session", () => {
 
   test("does not allow a fresh upload when cleanup was denied", async () => {
     const harness = createInMemoryUploadSessionHarness();
-    const module = createUploadSessionModule(harness.adapters);
+    const module = createUploadSessionModule({
+      ...harness.adapters,
+      config: defaultUploadSessionConfig({ smallFileThresholdBytes: 1 }),
+    });
     const browserFingerprint = '["unsafe-terminal.mp4",2048,"video/mp4",13]';
     const opened = await module.open({
       ...ACTOR,
@@ -2943,8 +3025,57 @@ describe("Upload Session", () => {
     });
     const session = harness.facts.sessions[0]!;
     session.status = "failed";
-    session.failureCode = "upload_cleanup_access_denied";
+    session.providerUploadId = null;
+    for (const failureCode of [
+      "upload_cleanup_access_denied",
+      "upload_reconciliation_exhausted",
+      "multipart_completion_access_denied",
+      "multipart_completion_unknown_not_found",
+      "upload_object_access_denied",
+      "provider_identity_invalid",
+    ]) {
+      session.failureCode = failureCode;
+      await expect(
+        module.status({
+          actorUserId: ACTOR.actorUserId,
+          workspaceId: ACTOR.workspaceId,
+          clientIdempotencyKey: "99999999-9999-4999-8999-999999999994",
+          sessionId: opened.sessionId,
+          browserFingerprint,
+        }),
+      ).resolves.toEqual({
+        outcome: "terminal",
+        sessionId: opened.sessionId,
+        state: "failed",
+        failureCode,
+        freshUploadAllowed: false,
+      });
+    }
 
+    session.transferKind = "single";
+    for (const failureCode of [
+      "upload_object_access_denied",
+      "upload_reconciliation_exhausted",
+    ]) {
+      session.failureCode = failureCode;
+      await expect(
+        module.status({
+          actorUserId: ACTOR.actorUserId,
+          workspaceId: ACTOR.workspaceId,
+          clientIdempotencyKey: "99999999-9999-4999-8999-999999999994",
+          sessionId: opened.sessionId,
+          browserFingerprint,
+        }),
+      ).resolves.toMatchObject({
+        outcome: "terminal",
+        failureCode,
+        freshUploadAllowed: false,
+      });
+    }
+
+    session.transferKind = "multipart";
+    session.providerUploadId = "provider-state-may-remain";
+    session.failureCode = "upload_reconciliation_exhausted";
     await expect(
       module.status({
         actorUserId: ACTOR.actorUserId,
@@ -2953,12 +3084,26 @@ describe("Upload Session", () => {
         sessionId: opened.sessionId,
         browserFingerprint,
       }),
-    ).resolves.toEqual({
+    ).resolves.toMatchObject({
       outcome: "terminal",
-      sessionId: opened.sessionId,
-      state: "failed",
-      failureCode: "upload_cleanup_access_denied",
+      failureCode: "upload_reconciliation_exhausted",
       freshUploadAllowed: false,
+    });
+
+    session.providerUploadId = null;
+    session.failureCode = "upload_object_size_mismatch";
+    await expect(
+      module.status({
+        actorUserId: ACTOR.actorUserId,
+        workspaceId: ACTOR.workspaceId,
+        clientIdempotencyKey: "99999999-9999-4999-8999-999999999994",
+        sessionId: opened.sessionId,
+        browserFingerprint,
+      }),
+    ).resolves.toMatchObject({
+      outcome: "terminal",
+      failureCode: "upload_object_size_mismatch",
+      freshUploadAllowed: true,
     });
   });
 });

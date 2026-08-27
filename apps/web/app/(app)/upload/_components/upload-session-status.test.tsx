@@ -4,6 +4,7 @@ import { system } from "@narriflow/ui/theme";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { UploadSessionBrowserSnapshot } from "../_lib/upload-session-browser";
 import {
+  focusUploadSessionStatusForPhase,
   UploadSessionSecondaryActions,
   UploadSessionStatusPanel,
 } from "./upload-session-status";
@@ -35,6 +36,17 @@ function render(node: React.ReactNode) {
 }
 
 describe("Upload Session React status", () => {
+  test("moves focus to Paused and Failed status without stealing it during progress", () => {
+    let focusCount = 0;
+    const target = { focus: () => (focusCount += 1) };
+
+    focusUploadSessionStatusForPhase("uploading", target);
+    expect(focusCount).toBe(0);
+    focusUploadSessionStatusForPhase("paused", target);
+    focusUploadSessionStatusForPhase("failed", target);
+    expect(focusCount).toBe(2);
+  });
+
   test("renders coarse accessible progress and the active secondary controls", () => {
     const current = snapshot({});
     const markup = render(

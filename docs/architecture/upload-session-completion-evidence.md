@@ -22,16 +22,17 @@ The fixed code-review baseline is `10fa51faa0b2c9b0f65040a780f26968d0362736`.
 
 | Gate | Result |
 | --- | --- |
-| Upload Session module | 71 passed |
-| Browser adapter | 27 passed |
-| React state/accessibility | 4 passed |
+| Upload Session module | 72 passed |
+| Browser adapter | 28 passed |
+| React state/accessibility | 5 passed |
 | Hono contracts | 10 passed |
-| R2 adapter suite | 15 passed; four opt-in live scenarios cover direct PUT, multipart, provider pagination, embedded completion errors, CORS/ETag, expiry, HeadObject, NoSuchUpload, abort, delete, and exact-key recovery |
-| Disposable PostgreSQL | all 54 migrations applied; two recovery/concurrency drills passed with 76 assertions across the module and Prisma CAS paths |
+| R2 adapter suite | 16 passed; four opt-in live scenarios cover direct PUT, multipart, provider pagination, CORS/ETag, expiry, HeadObject, NoSuchUpload, abort, delete, and exact-key recovery; a deterministic HTTP-200 response contract proves SDK embedded-error rejection |
+| Disposable PostgreSQL | all 54 migrations applied; two recovery/concurrency drills passed with 77 assertions across the module and Prisma CAS paths |
 | Repository tests | all 12 workspace tasks passed |
 | Typecheck | all 12 workspace tasks passed |
 | Biome | 643 files clean |
 | Production build | all 12 workspace tasks passed; Next.js generated 52 pages |
+| Final code review | Standards: 0 findings; Spec: 0 findings; native Chrome evidence remains an external gate |
 
 Commands:
 
@@ -63,16 +64,15 @@ error detail.
   one completion, and one exact HeadObject probe, with no ListParts.
 - Recovery fixtures separately assert the extra ListParts, exact unfinished
   upload inventory, completion retry, abort, delete, and reconciliation calls.
-- Public-adapter small, medium, 1 GiB, and 5 GiB fixtures measure first-grant
-  latency, response bytes, steady throughput, retry bytes, live part-body bytes,
-  finalize latency, reconciliation latency, and provider-operation counts. They
-  enforce at most 64 MiB of concurrent bodies and a 10% floor against the
-  recorded 64 MiB/s local signed-PUT baseline. The separate virtual-clock test
-  remains deterministic coverage of byte accounting, not operational evidence.
-- Structured diagnostics and service metrics provide planned Class A operation
-  counts, completion-part counts, and declared-abandoned-byte cost proxies. A
-  key-allowlist test proves that transition records contain no provider secrets
-  or object facts.
+- Public-adapter small, medium, 1 GiB, and 5 GiB fixtures deterministically
+  verify grant-window size, retry-byte accounting, at most 64 MiB of concurrent
+  part bodies, finalize/reconciliation control flow, and expected provider
+  operations. They are regression tests, not same-network throughput or browser
+  heap measurements.
+- Structured diagnostics and service metrics provide expected healthy-path
+  Class A budgets, actual reconciliation provider-call counts, completion-part
+  counts, and declared-abandoned-byte age and size proxies. Runtime allowlisting
+  ensures transition records contain no provider secrets or object facts.
 
 ## Browser evidence and remaining environment gate
 
@@ -87,9 +87,10 @@ failure: the ChatGPT Chrome extension returns `Not allowed` because file-URL
 access is disabled, and browser security policy prevents the agent from opening
 `chrome://extensions` to change it. The live R2 contracts, browser-adapter
 tests, and React tests cover the local-file protocol, but the native Chrome
-small-audio/multipart/Pause/Discard checklist must be repeated after that
-permission is enabled. The architecture recommendation must not be counted as
-complete until that last real-browser row passes.
+small-audio/multipart/Pause/Discard checklist and the same-network throughput
+and browser-memory measurements must be repeated after that permission is
+enabled. The architecture recommendation must not be counted as complete until
+those real-browser rows pass.
 
 To unblock it: open `chrome://extensions`, click **Details** under the ChatGPT
 browser extension, and enable **Allow access to file URLs**. Then rerun the

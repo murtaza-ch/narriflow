@@ -4,7 +4,7 @@
 
 **Blocked by:** [07 — Finish safe pause, discard, and verification UX](07-finish-safe-upload-ux.md).
 
-**Status:** implementation-complete-browser-gate
+**Status:** implementation-complete-external-browser-and-performance-gates
 
 **Specification:** [Deepen Upload Session intake and reconciliation](../spec.md)
 
@@ -15,7 +15,7 @@
 - [x] No request or browser record exposes or accepts provider upload ID, storage key, provider expiry authority, or browser-chosen part count.
 - [x] Old Project-owned upload methods, old resume classifiers that duplicate module behavior, legacy payload validators, compatibility statuses, and dead-end reconciliation copy are removed.
 - [x] Immutable upload and reconciliation configuration validates once at startup with safe defaults and finite bounds.
-- [x] Structured diagnostics and metrics cover admission replay, transfer kind, planned parts, grants, provider operation class, resume, completion, reconciliation, compensation, expiry, declared abandoned bytes, first-grant latency, finalize duration, and terminal outcome.
+- [x] Structured diagnostics and metrics cover admission replay, transfer kind, planned parts, grants, provider operation class, resume, completion, reconciliation, compensation, expiry, declared abandoned bytes and age, actual reconciliation provider-call counts, first-grant latency, finalize duration, and terminal outcome.
 - [x] Diagnostics contain no signed URLs, credentials, provider upload IDs, object keys, raw ETags, frozen settings, full file names, or raw provider errors.
 - [x] The operational runbook documents migration deploy order, R2 CORS, exposed ETag, signed Content-Type, incomplete-multipart lifecycle, reconciliation controls, metrics, incident diagnosis, rollback, and safe cleanup.
 - [ ] The architecture review marks Upload Session complete only after all contract, browser, performance, and recovery evidence is recorded.
@@ -33,16 +33,17 @@
 - [x] A normal small upload records one PutObject and one verification probe, with no multipart operations.
 - [x] A normal large upload records one multipart initiation, exactly the planned part writes, one completion, and one verification probe, with no ListParts.
 - [x] Resume, ambiguous start, ambiguous completion, compensation, and expiry fixtures record and assert their expected additional provider calls.
-- [x] Small, medium, 1 GiB, and 5 GiB fixtures record time to first grant, grant response size, steady throughput, retry bytes, browser peak memory, finalize latency, reconciliation latency, and provider operation counts.
-- [x] The final multipart path does not reduce representative steady-state throughput beyond the approved tolerance and does not exceed the recorded browser memory budget.
-- [x] R2 Class A operation counts and declared abandoned-byte age are available as operational cost proxies.
+- [ ] Small, medium, 1 GiB, and 5 GiB fixtures record real time to first grant, grant response size, same-network steady throughput, retry bytes, browser peak memory, finalize latency, reconciliation latency, and provider operation counts. Deterministic adapter accounting is complete; native-browser measurement remains gated.
+- [ ] The final multipart path does not reduce representative same-network steady-state throughput beyond the approved tolerance and does not exceed a recorded browser memory budget.
+- [x] Expected healthy-path R2 Class A budgets, actual reconciliation provider-call counts, and declared abandoned-byte age are available as operational cost proxies.
 
 ## End-to-end verification
 
 - [ ] Authenticated browser verification covers a small audio single PUT, multipart video, exact-file Pause and resume, refreshed grants, simulated lost finalize response, leaving during Verifying, completed replay, safe Discard, and navigation into the queued Project.
 - [x] The created Project retains the frozen brand, language, caption, generation, and source facts and proceeds through the unchanged Ingest Job path.
 - [x] Link and RSS intake, project lists, processing timeline, quota messaging, and post-ingest generation remain unchanged.
-- [ ] Final Standards and Spec review reports no unresolved findings.
+- [ ] Repository typecheck, lint, full tests, production build, migration deploy chain, uncached focused suites, disposable database drill, isolated R2 contracts, and browser checks all pass. All non-browser gates pass; native local-file checks remain blocked by the Chrome extension permission.
+- [x] Final Standards and Spec review reports no unresolved findings.
 
 ## Rollout and recovery safety
 

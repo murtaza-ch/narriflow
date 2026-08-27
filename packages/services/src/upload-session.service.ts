@@ -408,35 +408,59 @@ export interface UploadSessionModuleDependencies {
 }
 
 export interface UploadSessionDiagnosticEvent {
-    phase:
-      | "reservation"
-      | "provider_creation"
-      | "provider_bind"
-      | "adoption"
-      | "duplicate_abort"
-      | "compensation"
-      | "reconciliation";
-    disposition: "started" | "succeeded" | "failed";
-    sessionId: string;
-    state?: UploadSessionStatus;
-    providerOperation?: "head" | "complete" | "abort" | "delete" | "list";
-    failureCode?: string;
-    declaredAbandonedBytes?: number;
-    durationMs?: number;
-    nextRetryAt?: string;
-    takeover?: boolean;
-    replay?: boolean;
+  phase:
+    | "reservation"
+    | "provider_creation"
+    | "provider_bind"
+    | "adoption"
+    | "duplicate_abort"
+    | "compensation"
+    | "reconciliation";
+  disposition: "started" | "succeeded" | "failed";
+  sessionId: string;
+  state?: UploadSessionStatus;
+  providerOperation?: "head" | "complete" | "abort" | "delete" | "list";
+  providerCallCount?: number;
+  failureCode?: string;
+  declaredAbandonedBytes?: number;
+  declaredAbandonedAgeMs?: number;
+  durationMs?: number;
+  nextRetryAt?: string;
+  takeover?: boolean;
+  replay?: boolean;
 }
 
 export function uploadSessionDiagnosticRecord(
   event: UploadSessionDiagnosticEvent,
 ) {
-  const { sessionId, ...diagnostic } = event;
   return {
     level: event.disposition === "failed" ? "warn" : "info",
     message: "upload_session_transition",
-    uploadSessionId: sessionId,
-    ...diagnostic,
+    uploadSessionId: event.sessionId,
+    phase: event.phase,
+    disposition: event.disposition,
+    ...(event.state === undefined ? {} : { state: event.state }),
+    ...(event.providerOperation === undefined
+      ? {}
+      : { providerOperation: event.providerOperation }),
+    ...(event.providerCallCount === undefined
+      ? {}
+      : { providerCallCount: event.providerCallCount }),
+    ...(event.failureCode === undefined
+      ? {}
+      : { failureCode: event.failureCode }),
+    ...(event.declaredAbandonedBytes === undefined
+      ? {}
+      : { declaredAbandonedBytes: event.declaredAbandonedBytes }),
+    ...(event.declaredAbandonedAgeMs === undefined
+      ? {}
+      : { declaredAbandonedAgeMs: event.declaredAbandonedAgeMs }),
+    ...(event.durationMs === undefined ? {} : { durationMs: event.durationMs }),
+    ...(event.nextRetryAt === undefined
+      ? {}
+      : { nextRetryAt: event.nextRetryAt }),
+    ...(event.takeover === undefined ? {} : { takeover: event.takeover }),
+    ...(event.replay === undefined ? {} : { replay: event.replay }),
   } as const;
 }
 
@@ -654,6 +678,32 @@ function immutableInputFingerprint(input: OpenUploadSessionInput) {
     brandTemplateId: input.brandTemplateId,
     generation: input.generation,
   });
+}
+
+function terminalFreshUploadAllowed(session: UploadSessionRecord) {
+  if (session.status === "aborted" || session.status === "expired") return true;
+  if (session.status !== "failed") return false;
+  switch (session.failureCode) {
+    case "quota_exceeded":
+    case "upload_admission_failed":
+    case "unsupported_media_type":
+    case "provider_creation_failed":
+    case "upload_object_size_mismatch":
+    case "upload_object_content_type_mismatch":
+    case "upload_object_missing":
+    case "multipart_upload_missing":
+    case "multipart_completion_bucket_missing":
+    case "upload_cleanup_bucket_missing":
+      return true;
+    case "completion_intent_malformed":
+    case "multipart_completion_invalid_parts":
+      return (
+        session.transferKind === "multipart" &&
+        Boolean(session.providerUploadId)
+      );
+    default:
+      return false;
+  }
 }
 
 export function planUploadTransfer(
@@ -1840,8 +1890,7 @@ export function createUploadSessionModule(
             sessionId: session.id,
             state: session.status,
             failureCode: session.failureCode,
-            freshUploadAllowed:
-              session.failureCode !== "upload_cleanup_access_denied",
+            freshUploadAllowed: terminalFreshUploadAllowed(session),
           };
         }
         throw new UploadSessionInvalidStateError(`Upload Session is ${session.status}.`);
@@ -1943,6 +1992,10 @@ export function createUploadSessionModule(
       diagnose(current.id, "compensation", "started", {
         state: "compensating",
         declaredAbandonedBytes: current.fileSizeBytes,
+        declaredAbandonedAgeMs: Math.max(
+          0,
+          startedAt.getTime() - current.updatedAt.getTime(),
+        ),
       });
       try {
         if (claim.session.transferKind === "multipart") {
@@ -1974,6 +2027,10 @@ export function createUploadSessionModule(
         diagnose(current.id, "compensation", "succeeded", {
           state: "aborted",
           declaredAbandonedBytes: current.fileSizeBytes,
+          declaredAbandonedAgeMs: Math.max(
+            0,
+            dependencies.now().getTime() - current.updatedAt.getTime(),
+          ),
         });
         return { outcome: "discarded", sessionId: current.id };
       } catch (error) {
@@ -2003,6 +2060,10 @@ export function createUploadSessionModule(
           state: "compensating",
           failureCode: "upload_cleanup_retry_scheduled",
           declaredAbandonedBytes: current.fileSizeBytes,
+          declaredAbandonedAgeMs: Math.max(
+            0,
+            dependencies.now().getTime() - current.updatedAt.getTime(),
+          ),
         });
         return {
           outcome: "compensating",
@@ -2273,6 +2334,7 @@ export function createUploadSessionModule(
       let deferred = 0;
       const processCandidate = async (candidate: UploadSessionRecord) => {
         const claimStartedAt = dependencies.now();
+        const candidateUpdatedAtMs = candidate.updatedAt.getTime();
         const reconciliationAttemptId = dependencies.createId();
         const claim = await dependencies.persistence.claimReconciliation({
           sessionId: candidate.id,
@@ -2397,6 +2459,7 @@ export function createUploadSessionModule(
             diagnose(session.id, "reconciliation", "succeeded", {
               state: session.status,
               providerOperation,
+              providerCallCount,
               durationMs: dependencies.now().getTime() - attemptStartedAtMs,
             });
             return;
@@ -2476,8 +2539,13 @@ export function createUploadSessionModule(
             diagnose(session.id, "reconciliation", "succeeded", {
               state: session.status,
               providerOperation,
+              providerCallCount,
               failureCode: compensating.failureCode ?? undefined,
               declaredAbandonedBytes: compensating.fileSizeBytes,
+              declaredAbandonedAgeMs: Math.max(
+                0,
+                claimStartedAt.getTime() - candidateUpdatedAtMs,
+              ),
               durationMs: dependencies.now().getTime() - attemptStartedAtMs,
             });
             return;
@@ -2514,6 +2582,7 @@ export function createUploadSessionModule(
             diagnose(session.id, "reconciliation", "succeeded", {
               state: session.status,
               providerOperation: "list",
+              providerCallCount,
               durationMs: dependencies.now().getTime() - attemptStartedAtMs,
             });
             return;
@@ -2540,6 +2609,7 @@ export function createUploadSessionModule(
             diagnose(session.id, "reconciliation", "succeeded", {
               state: session.status,
               providerOperation,
+              providerCallCount,
               durationMs: dependencies.now().getTime() - attemptStartedAtMs,
             });
             return;
@@ -2574,6 +2644,7 @@ export function createUploadSessionModule(
             diagnose(session.id, "reconciliation", "succeeded", {
               state: session.status,
               providerOperation,
+              providerCallCount,
               failureCode: "completion_intent_malformed",
               durationMs: dependencies.now().getTime() - attemptStartedAtMs,
             });
@@ -2610,6 +2681,7 @@ export function createUploadSessionModule(
             diagnose(session.id, "reconciliation", "succeeded", {
               state: session.status,
               providerOperation,
+              providerCallCount,
               durationMs: dependencies.now().getTime() - attemptStartedAtMs,
             });
             return;
@@ -2629,6 +2701,7 @@ export function createUploadSessionModule(
             diagnose(session.id, "reconciliation", "succeeded", {
               state: session.status,
               providerOperation,
+              providerCallCount,
               failureCode: "upload_object_integrity_failed",
               durationMs: dependencies.now().getTime() - attemptStartedAtMs,
             });
@@ -2674,6 +2747,7 @@ export function createUploadSessionModule(
                 diagnose(session.id, "reconciliation", "failed", {
                   state: session.status,
                   providerOperation,
+                  providerCallCount,
                   failureCode: permanentFailureCode,
                   durationMs: dependencies.now().getTime() - attemptStartedAtMs,
                 });
@@ -2721,6 +2795,7 @@ export function createUploadSessionModule(
               diagnose(session.id, "reconciliation", "failed", {
                 state: session.status,
                 providerOperation,
+                providerCallCount,
                 failureCode: permanentFailureCode,
                 durationMs: dependencies.now().getTime() - attemptStartedAtMs,
               });
@@ -2773,6 +2848,7 @@ export function createUploadSessionModule(
           diagnose(session.id, "reconciliation", "failed", {
             state: session.status,
             providerOperation,
+            providerCallCount,
             failureCode:
               session.status === "uploading" && session.cleanupRetryAt
                 ? "duplicate_upload_cleanup_failed"
@@ -4087,7 +4163,7 @@ export class UploadSessionService {
           result.outcome === "uploading" && result.transfer.kind === "multipart"
             ? result.transfer.partCount
             : 1,
-        plannedProviderOperations:
+        expectedProviderOperations:
           result.outcome !== "uploading"
             ? null
             : result.transfer.kind === "single"

@@ -33,7 +33,7 @@
 - [x] Browser-adapter tests use fake HTTP, upload transport, clock, local storage, and navigation adapters and do not depend on React effect order.
 - [x] Tests cover pause during several active parts, pause race with a completed part, exact resume, discard success, discard cleanup delay, discard denial after finalize, unload during upload, and unload during verifying.
 - [x] Status tests cover repeated 202, Retry-After, transient polling failure, queued replay, permanent terminal state, expired session, and server-proven fresh fallback.
-- [x] React tests assert visible controls, accessible labels, focus behavior, progress announcements, and stable error actions from adapter snapshots.
+- [x] React tests assert visible controls, accessible labels, focus behavior, and progress announcements; browser-adapter tests exercise stable recovery actions from the same snapshots.
 - [x] Hono contracts prove typed mapping, strict validation, workspace isolation, rate limits, and absence of provider details.
 - [ ] A real-browser checklist covers small audio, multipart video, Pause and resume, simulated lost finalize response, leaving during Verifying, completed replay, and Discard.
 

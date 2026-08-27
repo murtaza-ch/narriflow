@@ -3,6 +3,11 @@ import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { Readable } from "node:stream";
+import {
+  CompleteMultipartUploadCommand,
+  S3Client,
+} from "@aws-sdk/client-s3";
 import {
   abortMultipartUpload,
   buildAttachmentContentDisposition,
@@ -27,6 +32,51 @@ import {
 } from "./r2-storage";
 
 setDefaultTimeout(60_000);
+
+test("AWS SDK rejects an HTTP-200 embedded multipart completion error", async () => {
+  let providerStatusCode = 0;
+  const client = new S3Client({
+    region: "auto",
+    endpoint: "https://embedded-error.invalid",
+    credentials: { accessKeyId: "test", secretAccessKey: "test" },
+    requestHandler: {
+      async handle() {
+        providerStatusCode = 200;
+        return {
+          response: {
+            statusCode: providerStatusCode,
+            headers: { "content-type": "application/xml" },
+            body: Readable.from([
+              "<Error><Code>InvalidPart</Code><Message>embedded failure</Message></Error>",
+            ]),
+          },
+        };
+      },
+    },
+  });
+
+  let completionError: unknown;
+  try {
+    await client.send(
+      new CompleteMultipartUploadCommand({
+        Bucket: "test-bucket",
+        Key: "test-key",
+        UploadId: "test-upload",
+        MultipartUpload: { Parts: [{ PartNumber: 1, ETag: '"invalid"' }] },
+      }),
+    );
+  } catch (error) {
+    completionError = error;
+  } finally {
+    client.destroy();
+  }
+
+  expect(providerStatusCode).toBe(200);
+  expect(completionError).toMatchObject({
+    name: "InvalidPart",
+    message: "embedded failure",
+  });
+});
 
 test("R2 adapter classifies access, missing-object, and cancellation failures", () => {
   expect(

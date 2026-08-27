@@ -17,6 +17,13 @@ const UPLOAD_STAGES: { id: UploadStage; label: string }[] = [
   { id: "finalize", label: "Finalize" },
 ];
 
+export function focusUploadSessionStatusForPhase(
+  phase: UploadSessionBrowserSnapshot["phase"],
+  target: Pick<HTMLElement, "focus"> | null,
+) {
+  if (phase === "paused" || phase === "failed") target?.focus();
+}
+
 function UploadStages({
   stage,
   progress,

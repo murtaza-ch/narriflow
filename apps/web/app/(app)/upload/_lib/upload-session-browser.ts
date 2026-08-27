@@ -555,15 +555,6 @@ async function runUploadSessionTransfer(
   );
   const openedPayload = await responsePayload(openedResponse);
   if (!openedResponse.ok) {
-    if (existing && openedResponse.status === 404) {
-      return {
-        outcome: "terminal" as const,
-        sessionId: resume.sessionId ?? resume.clientIdempotencyKey,
-        state: "failed" as const,
-        failureCode: "upload_session_not_found",
-        freshUploadAllowed: true as const,
-      };
-    }
     throw responseError(
       openedResponse,
       openedPayload,

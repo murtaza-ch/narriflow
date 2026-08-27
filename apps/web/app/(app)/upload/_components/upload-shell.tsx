@@ -41,6 +41,7 @@ import { VideoPreview } from "./video-preview";
 import { RecommendationCard } from "./recommendation-card";
 import { BrandTemplatePicker } from "./brand-template-picker";
 import {
+  focusUploadSessionStatusForPhase,
   UploadSessionSecondaryActions,
   UploadSessionStatusPanel,
 } from "./upload-session-status";
@@ -261,12 +262,10 @@ export function UploadShell({
   }, [activeTab, file, title]);
 
   useEffect(() => {
-    if (
-      uploadSnapshot.phase === "paused" ||
-      uploadSnapshot.phase === "failed"
-    ) {
-      uploadStatusRef.current?.focus();
-    }
+    focusUploadSessionStatusForPhase(
+      uploadSnapshot.phase,
+      uploadStatusRef.current,
+    );
   }, [uploadSnapshot.phase]);
 
   useEffect(() => {
@@ -1039,25 +1038,35 @@ export function UploadShell({
 
           {/* RIGHT — settings as rule-band sections */}
           <Stack gap="8">
-            <SettingsBand eyebrow="Project">
+            <fieldset
+              disabled={uploadSourceLocked}
+              aria-disabled={uploadSourceLocked || undefined}
+              inert={uploadSourceLocked || undefined}
+              style={{ border: 0, margin: 0, minWidth: 0, padding: 0 }}
+            >
+              <Stack gap="8">
+                <SettingsBand eyebrow="Project">
               <Input
                 onChange={(event) => setTitle(event.target.value)}
                 placeholder="Episode 45 — Founder interview"
                 value={title}
                 aria-label="Project title"
               />
-            </SettingsBand>
+                </SettingsBand>
 
-            <SettingsBand eyebrow="Mode">
-              <ModeTabs value={mode} onChange={setMode} />
-            </SettingsBand>
+                <SettingsBand eyebrow="Mode">
+                  <ModeTabs value={mode} onChange={setMode} />
+                </SettingsBand>
 
-            <SettingsBand eyebrow="Speech language">
-              <LanguageSelect value={languageCode} onChange={setLanguageCode} />
-            </SettingsBand>
+                <SettingsBand eyebrow="Speech language">
+                  <LanguageSelect
+                    value={languageCode}
+                    onChange={setLanguageCode}
+                  />
+                </SettingsBand>
 
-            {/* ProcessingTimeline draws its own label under the section rule. */}
-            <Box layerStyle="band">
+                {/* ProcessingTimeline draws its own label under the section rule. */}
+                <Box layerStyle="band">
               <ProcessingTimeline
                 durationSec={durationSec}
                 startSec={startSec}
@@ -1069,20 +1078,20 @@ export function UploadShell({
                   setEndSec(e);
                 }}
               />
-            </Box>
+                </Box>
 
-            {/* BrandTemplatePicker draws its own label + Manage link. */}
-            <Box layerStyle="band">
+                {/* BrandTemplatePicker draws its own label + Manage link. */}
+                <Box layerStyle="band">
               <BrandTemplatePicker
                 builtIns={brandTemplates.builtIns}
                 mine={brandTemplates.mine}
                 value={brandTemplateId}
                 onChange={setBrandTemplateId}
               />
-            </Box>
+                </Box>
 
-            {mode === "clip" && (
-              <SettingsBand eyebrow="Clip settings">
+                {mode === "clip" && (
+                  <SettingsBand eyebrow="Clip settings">
                 <ClipSettingsForm
                   clipLength={clipLength}
                   onClipLengthChange={setClipLength}
@@ -1099,11 +1108,11 @@ export function UploadShell({
                   toneConstraints={toneConstraints}
                   onToneConstraintsChange={setToneConstraints}
                 />
-              </SettingsBand>
-            )}
+                  </SettingsBand>
+                )}
 
-            {mode === "caption_only" && (
-              <Box layerStyle="band">
+                {mode === "caption_only" && (
+                  <Box layerStyle="band">
                 <Stack gap="3">
                   <CaptionPresetSelect
                     value={captionPreset}
@@ -1119,8 +1128,10 @@ export function UploadShell({
                     </Text>
                   </Flex>
                 </Stack>
-              </Box>
-            )}
+                  </Box>
+                )}
+              </Stack>
+            </fieldset>
 
             {/* Submit zone */}
             <Stack gap="3" pt="1">

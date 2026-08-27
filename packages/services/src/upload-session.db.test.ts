@@ -668,13 +668,22 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
     let now = new Date("2026-08-28T00:00:00.000Z");
     let providerCreations = 0;
     const providerAborts: string[] = [];
+    const providerUploads = new Map<
+      string,
+      Array<{ providerUploadId: string; initiatedAt: Date }>
+    >();
     const multipartStorage: UploadSessionStorage = {
       async grantSinglePut() {
         throw new Error("single PUT must not be used");
       },
-      async createMultipart() {
+      async createMultipart({ storageKey }) {
         providerCreations += 1;
-        return { providerUploadId: `provider-${providerCreations}` };
+        const providerUploadId = `provider-${providerCreations}`;
+        providerUploads.set(storageKey, [
+          ...(providerUploads.get(storageKey) ?? []),
+          { providerUploadId, initiatedAt: now },
+        ]);
+        return { providerUploadId };
       },
       async grantMultipartParts({ partNumbers }) {
         return partNumbers.map((partNumber) => ({
@@ -692,11 +701,17 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
       async headExactObjectIfExists() {
         return null;
       },
-      async listExactKeyMultipartUploads() {
-        return [];
+      async listExactKeyMultipartUploads(storageKey) {
+        return providerUploads.get(storageKey) ?? [];
       },
-      async abortMultipart({ providerUploadId }) {
+      async abortMultipart({ storageKey, providerUploadId }) {
         providerAborts.push(providerUploadId);
+        providerUploads.set(
+          storageKey,
+          (providerUploads.get(storageKey) ?? []).filter(
+            (candidate) => candidate.providerUploadId !== providerUploadId,
+          ),
+        );
       },
       async deleteExactObject() {},
     };
@@ -755,22 +770,26 @@ dbDescribe("Upload Session PostgreSQL invariants", () => {
       persistence: {
         ...prismaUploadSessionPersistence,
         async bindMultipartProvider(input) {
-          const bound =
-            await prismaUploadSessionPersistence.bindMultipartProvider(input);
           if (loseBindResponse) {
             loseBindResponse = false;
-            throw new Error("simulated lost provider bind response");
+            throw new Error("simulated lost provider bind persistence");
           }
-          return bound;
+          return prismaUploadSessionPersistence.bindMultipartProvider(input);
         },
       },
     });
     await expect(lostBindModule.open(lostBindInput)).rejects.toThrow(
-      "simulated lost provider bind response",
+      "simulated lost provider bind persistence",
     );
     const replayedBind = await module.open(lostBindInput);
     expect(replayedBind.outcome).toBe("uploading");
     expect(providerCreations).toBe(2);
+    expect(
+      await prisma.uploadSession.findUniqueOrThrow({
+        where: { id: replayedBind.sessionId },
+        select: { providerUploadId: true },
+      }),
+    ).toEqual({ providerUploadId: "provider-2" });
 
     await expect(
       module.discard({
