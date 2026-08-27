@@ -9,7 +9,7 @@ import {
   audioAssetIdParamSchema,
   brandTemplateInputSchema,
   brandTemplateUpdateSchema,
-  completeMultipartUploadSchema,
+  finalizeUploadSessionSchema,
   createClipExportSchema,
   createClipShareLinkSchema,
   clipDownloadQuerySchema,
@@ -32,7 +32,7 @@ import {
   scheduleSocialPostSchema,
   socialPlatformSchema,
   socialPostMetricsSchema,
-  presignUploadSchema,
+  openUploadSessionSchema,
   transcriptExportFormatSchema,
   triggerClipRenderSchema,
   brollSearchQuerySchema,
@@ -79,8 +79,12 @@ import {
   SocialOAuthError,
   socialService,
   UnsafeUrlError,
-  UploadCompletionReconciliationRequiredError,
-  UploadSessionUnavailableError,
+  uploadSessionService,
+  UploadSessionIdempotencyConflictError,
+  UploadSessionIntegrityError,
+  UploadSessionInvalidStateError,
+  UploadSessionNotFoundError,
+  UploadSessionQuotaRefusedError,
   UploadTooLongError,
   workspaceLibraryService,
   workspaceService,
@@ -687,14 +691,14 @@ app.get("/projects/:id/transcript/export", async (c) => {
   }
 });
 
-app.post("/uploads/presign", async (c) => {
+app.post("/upload-sessions/open", async (c) => {
   const appUser = await getCurrentAppUser();
 
   if (!appUser) {
     return c.json({ error: "Unauthorized" }, 401);
   }
 
-  const rl = await checkRateLimit(`presign:${appUser.id}`, 60, 60);
+  const rl = await checkRateLimit(`upload-session-open:${appUser.id}`, 60, 60);
   if (!rl.allowed) {
     return c.json(
       { error: "rate_limited", message: userErrorMessage("rate_limited") },
@@ -703,7 +707,7 @@ app.post("/uploads/presign", async (c) => {
   }
 
   const payload = await c.req.json().catch(() => null);
-  const parsed = presignUploadSchema.safeParse(payload);
+  const parsed = openUploadSessionSchema.safeParse(payload);
 
   if (!parsed.success) {
     return c.json(
@@ -713,17 +717,14 @@ app.post("/uploads/presign", async (c) => {
   }
 
   try {
-    const response = await projectService.presignMultipartUpload(
+    const response = await uploadSessionService.open(
       appUser.actorUserId,
       parsed.data,
       appUser.workspaceId,
     );
     return c.json(response, 200);
   } catch (error) {
-    if (
-      error instanceof UploadSessionUnavailableError ||
-      error instanceof UploadCompletionReconciliationRequiredError
-    ) {
+    if (error instanceof UploadSessionIdempotencyConflictError) {
       return c.json(
         {
           error: error.code,
@@ -732,10 +733,7 @@ app.post("/uploads/presign", async (c) => {
         409,
       );
     }
-    if (
-      error instanceof QuotaExceededError ||
-      error instanceof UploadTooLongError
-    ) {
+    if (error instanceof UploadSessionQuotaRefusedError) {
       return c.json(
         { error: error.code, message: error.message, details: error.details },
         402,
@@ -743,23 +741,31 @@ app.post("/uploads/presign", async (c) => {
     }
     return c.json(
       {
-        error: "upload_presign_failed",
-        message: userErrorMessage("upload_presign_failed"),
+        error: "upload_session_unavailable",
+        message: "Upload storage is temporarily unavailable.",
       },
-      400,
+      503,
     );
   }
 });
 
-app.post("/uploads/complete", async (c) => {
+app.post("/upload-sessions/finalize", async (c) => {
   const appUser = await getCurrentAppUser();
 
   if (!appUser) {
     return c.json({ error: "Unauthorized" }, 401);
   }
 
+  const rl = await checkRateLimit(`upload-session-finalize:${appUser.id}`, 60, 60);
+  if (!rl.allowed) {
+    return c.json(
+      { error: "rate_limited", message: userErrorMessage("rate_limited") },
+      429,
+    );
+  }
+
   const payload = await c.req.json().catch(() => null);
-  const parsed = completeMultipartUploadSchema.safeParse(payload);
+  const parsed = finalizeUploadSessionSchema.safeParse(payload);
 
   if (!parsed.success) {
     return c.json(
@@ -769,19 +775,28 @@ app.post("/uploads/complete", async (c) => {
   }
 
   try {
-    const response = await projectService.completeMultipartUpload(
+    const response = await uploadSessionService.finalize(
       appUser.actorUserId,
       parsed.data,
       appUser.workspaceId,
     );
     return c.json(response, 200);
-  } catch {
+  } catch (error) {
+    if (error instanceof UploadSessionNotFoundError) {
+      return c.json({ error: error.code, message: error.message }, 404);
+    }
+    if (error instanceof UploadSessionInvalidStateError) {
+      return c.json({ error: error.code, message: error.message }, 409);
+    }
+    if (error instanceof UploadSessionIntegrityError) {
+      return c.json({ error: error.code, message: error.message }, 422);
+    }
     return c.json(
       {
-        error: "upload_complete_failed",
-        message: userErrorMessage("upload_complete_failed"),
+        error: "upload_session_unavailable",
+        message: "Upload verification is temporarily unavailable.",
       },
-      400,
+      503,
     );
   }
 });

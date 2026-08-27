@@ -58,8 +58,6 @@ export {
   projectService,
   ProjectService,
   QuotaExceededError,
-  UploadCompletionReconciliationRequiredError,
-  UploadSessionUnavailableError,
   UploadTooLongError,
   IngestNotFailedError,
   IngestRetryLimitExceededError,
@@ -90,6 +88,22 @@ export {
   claimBackoffWhereClauses,
   type AutoRetryDecision,
 } from "./project.service";
+export {
+  createUploadSessionModule,
+  defaultUploadSessionConfig,
+  planUploadTransfer,
+  uploadSessionConfigFromEnv,
+  uploadSessionService,
+  UploadSessionService,
+  UploadSessionIdempotencyConflictError,
+  UploadSessionIntegrityError,
+  UploadSessionInvalidStateError,
+  UploadSessionNotFoundError,
+  UploadSessionQuotaRefusedError,
+  type FinalizeUploadSessionOutcome,
+  type OpenUploadSessionOutcome,
+  type UploadSessionConfig,
+} from "./upload-session.service";
 export {
   autoTriggerIdempotencyKey,
   isQuotaBlockedMidFlight,

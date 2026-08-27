@@ -2,7 +2,30 @@ import { describe, expect, test } from "bun:test";
 import {
   classifyYtdlpProviderFailure,
   normalizeDropboxDownloadUrl,
+  readVerifiedUploadPayload,
 } from "./ingest";
+
+describe("readVerifiedUploadPayload", () => {
+  test("uses the Upload Session's verified object facts", () => {
+    expect(
+      readVerifiedUploadPayload({
+        storageKey: "workspaces/ws/upload-sessions/session/source.mp4",
+        verifiedSizeBytes: 42,
+        verifiedContentType: "video/mp4",
+      }),
+    ).toEqual({
+      storageKey: "workspaces/ws/upload-sessions/session/source.mp4",
+      sizeBytes: 42,
+      contentType: "video/mp4",
+    });
+  });
+
+  test("rejects upload jobs without trusted finalize metadata", () => {
+    expect(() =>
+      readVerifiedUploadPayload({ storageKey: "source.mp4" }),
+    ).toThrow("verifiedSizeBytes");
+  });
+});
 
 describe("classifyYtdlpProviderFailure", () => {
   test("turns an HTTP 403 media response into a permanent provider-access failure", () => {

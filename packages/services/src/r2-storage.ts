@@ -10,6 +10,7 @@ import {
   DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
+  ListMultipartUploadsCommand,
   ListPartsCommand,
   ListObjectsV2Command,
   PutObjectCommand,
@@ -287,12 +288,13 @@ export async function presignMultipartPartUrls(params: {
   key: string;
   uploadId: string;
   partNumbers: number[];
+  expiresIn?: number;
 }) {
   const client = getClient();
   const { bucket } = getR2Config();
   const expiresIn = await clampProjectTtl(
     params.key,
-    SIGNED_URL_TTL_SECONDS,
+    params.expiresIn ?? SIGNED_URL_TTL_SECONDS,
   );
 
   const uploadUrls = await Promise.all(
@@ -328,20 +330,74 @@ export async function listUploadedParts(params: {
   const client = getClient();
   const { bucket } = getR2Config();
 
-  const response = await client.send(
-    new ListPartsCommand({
-      Bucket: bucket,
-      Key: params.key,
-      UploadId: params.uploadId,
-    }),
-  );
+  const parts: Array<{ partNumber: number; etag: string }> = [];
+  let partNumberMarker: string | undefined;
+  let hasMoreParts = true;
+  while (hasMoreParts) {
+    const response = await client.send(
+      new ListPartsCommand({
+        Bucket: bucket,
+        Key: params.key,
+        UploadId: params.uploadId,
+        PartNumberMarker: partNumberMarker,
+      }),
+    );
+    parts.push(
+      ...(response.Parts ?? [])
+        .map((part) => ({
+          partNumber: part.PartNumber ?? 0,
+          etag: part.ETag ?? "",
+        }))
+        .filter((part) => part.partNumber > 0 && part.etag),
+    );
+    hasMoreParts = response.IsTruncated === true;
+    if (!hasMoreParts) break;
+    partNumberMarker = response.NextPartNumberMarker;
+    if (!partNumberMarker) {
+      throw new Error("R2 truncated multipart part inventory without a marker");
+    }
+  }
+  return parts;
+}
 
-  return (response.Parts ?? [])
-    .map((part) => ({
-      partNumber: part.PartNumber ?? 0,
-      etag: part.ETag ?? "",
-    }))
-    .filter((part) => part.partNumber > 0 && part.etag);
+export async function listExactKeyMultipartUploads(params: { key: string }) {
+  const client = getClient();
+  const { bucket } = getR2Config();
+  const uploads: Array<{ uploadId: string; initiatedAt: Date | null }> = [];
+  let keyMarker: string | undefined;
+  let uploadIdMarker: string | undefined;
+  let hasMoreUploads = true;
+
+  while (hasMoreUploads) {
+    const response = await client.send(
+      new ListMultipartUploadsCommand({
+        Bucket: bucket,
+        Prefix: params.key,
+        KeyMarker: keyMarker,
+        UploadIdMarker: uploadIdMarker,
+      }),
+    );
+    for (const upload of response.Uploads ?? []) {
+      if (upload.Key !== params.key) continue;
+      const uploadId = upload.UploadId;
+      if (!uploadId || uploadId.length > 2_048) {
+        throw new Error("R2 returned a malformed multipart upload identity");
+      }
+      uploads.push({
+        uploadId,
+        initiatedAt: upload.Initiated ?? null,
+      });
+    }
+    hasMoreUploads = response.IsTruncated === true;
+    if (!hasMoreUploads) break;
+    keyMarker = response.NextKeyMarker;
+    uploadIdMarker = response.NextUploadIdMarker;
+    if (!keyMarker) {
+      throw new Error("R2 truncated multipart upload inventory without a marker");
+    }
+  }
+
+  return uploads;
 }
 
 export async function completeMultipartUpload(params: {

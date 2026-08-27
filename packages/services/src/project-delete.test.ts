@@ -18,7 +18,6 @@ function storageSnapshot(
   return {
     sourceStorageKey: "projects/p1/source.mp4",
     transcriptRawStorageKey: "projects/p1/transcripts/raw.json",
-    uploadSessions: [],
     clipPreviewStorageKeys: [],
     clipRenderStorageKeys: [],
     clipDubStorageKeys: [],
@@ -55,7 +54,6 @@ describe("planProjectStorageDeletion", () => {
         "projects/p1/dubs/c1/d1.mp4",
       ]),
     );
-    expect(plan.multipartUploadsToAbort).toEqual([]);
   });
 
   test("drops null/empty keys instead of queuing empty-string deletes", () => {
@@ -70,77 +68,16 @@ describe("planProjectStorageDeletion", () => {
     expect(plan.objectKeysToDelete).toEqual([]);
   });
 
-  test("dedupes a completed UploadSession's key against sourceStorageKey", () => {
-    const plan = planProjectStorageDeletion(
-      storageSnapshot({
-        sourceStorageKey: "projects/p1/source.mp4",
-        transcriptRawStorageKey: null,
-        uploadSessions: [
-          {
-            storageKey: "projects/p1/source.mp4",
-            providerUploadId: "upload-1",
-            status: "completed",
-          },
-        ],
-      }),
-    );
-
-    expect(plan.objectKeysToDelete).toEqual(["projects/p1/source.mp4"]);
-    expect(plan.multipartUploadsToAbort).toEqual([]);
-  });
-
-  test("routes a still-initiated UploadSession to abort, not delete", () => {
-    const plan = planProjectStorageDeletion(
-      storageSnapshot({
-        sourceStorageKey: null,
-        transcriptRawStorageKey: null,
-        uploadSessions: [
-          {
-            storageKey: "projects/p1/pending-upload.mp4",
-            providerUploadId: "upload-2",
-            status: "initiated",
-          },
-        ],
-      }),
-    );
-
-    expect(plan.objectKeysToDelete).toEqual([]);
-    expect(plan.multipartUploadsToAbort).toEqual([
-      { key: "projects/p1/pending-upload.mp4", uploadId: "upload-2" },
-    ]);
-  });
-
-  test("leaves aborted/expired UploadSession keys alone beyond the dedupe pass", () => {
-    const plan = planProjectStorageDeletion(
-      storageSnapshot({
-        sourceStorageKey: null,
-        transcriptRawStorageKey: null,
-        uploadSessions: [
-          {
-            storageKey: "projects/p1/stale.mp4",
-            providerUploadId: "upload-3",
-            status: "expired",
-          },
-        ],
-      }),
-    );
-
-    // Not routed to abort (nothing left in-flight to abort) — and since
-    // nothing else claimed this key, it still shows up as a delete target.
-    expect(plan.objectKeysToDelete).toEqual(["projects/p1/stale.mp4"]);
-    expect(plan.multipartUploadsToAbort).toEqual([]);
-  });
 });
 
 describe("deleteProjectStorageObjects", () => {
   test("treats an already-missing object as success, not a failure", async () => {
     const result = await deleteProjectStorageObjects(
-      { objectKeysToDelete: ["gone.mp4"], multipartUploadsToAbort: [] },
+      { objectKeysToDelete: ["gone.mp4"] },
       {
         deleteObject: async () => {
           throw { name: "NoSuchKey" };
         },
-        abortMultipartUpload: async () => {},
         isMissingObjectError: (error) =>
           (error as { name?: string })?.name === "NoSuchKey",
       },
@@ -154,7 +91,6 @@ describe("deleteProjectStorageObjects", () => {
     const result = await deleteProjectStorageObjects(
       {
         objectKeysToDelete: ["ok-1.mp4", "broken.mp4", "ok-2.mp4"],
-        multipartUploadsToAbort: [],
       },
       {
         deleteObject: async (key) => {
@@ -163,7 +99,6 @@ describe("deleteProjectStorageObjects", () => {
             throw { name: "InternalError" };
           }
         },
-        abortMultipartUpload: async () => {},
         isMissingObjectError: () => false,
       },
     );
@@ -172,23 +107,6 @@ describe("deleteProjectStorageObjects", () => {
     expect(result.failedKeys).toEqual(["broken.mp4"]);
   });
 
-  test("a failed multipart abort is best-effort and never surfaces as a failedKey", async () => {
-    const result = await deleteProjectStorageObjects(
-      {
-        objectKeysToDelete: [],
-        multipartUploadsToAbort: [{ key: "pending.mp4", uploadId: "u1" }],
-      },
-      {
-        deleteObject: async () => {},
-        abortMultipartUpload: async () => {
-          throw new Error("network blip");
-        },
-        isMissingObjectError: () => false,
-      },
-    );
-
-    expect(result.failedKeys).toEqual([]);
-  });
 });
 
 describe("runProjectDeletion", () => {
@@ -213,7 +131,6 @@ describe("runProjectDeletion", () => {
       deleteObject: async (key) => {
         calls.deleteObject.push(key);
       },
-      abortMultipartUpload: async () => {},
       isMissingObjectError: () => false,
       deleteProjectRow: async () => {
         calls.deleteProjectRow += 1;
@@ -276,7 +193,6 @@ describe("runProjectDeletion", () => {
         attemptedDeletes.push(key);
         throw new Error("R2 5xx");
       },
-      abortMultipartUpload: async () => {},
       isMissingObjectError: () => false,
       deleteProjectRow: async () => {
         deleteProjectRowCalls += 1;
@@ -326,7 +242,7 @@ describe("runProjectDeletion", () => {
 
   test("idempotent re-delete: deleteProjectRow resolving to count 0 is a clean already_deleted outcome, not a thrown error", async () => {
     const deps = makeDeps(
-      { access: "owned", row: baseRow({ storage: storageSnapshot({ uploadSessions: [] }) }) },
+      { access: "owned", row: baseRow({ storage: storageSnapshot() }) },
       {
         deleteProjectRow: async () => ({ count: 0 }),
       },
@@ -347,7 +263,6 @@ describe("runProjectDeletion", () => {
           ? { access: "missing", row: null }
           : { access: "owned", row: baseRow() },
       deleteObject: async () => {},
-      abortMultipartUpload: async () => {},
       isMissingObjectError: () => false,
       deleteProjectRow: async () => {
         const wasAlreadyDeleted = deleted;

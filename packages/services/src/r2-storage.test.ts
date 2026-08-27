@@ -1,20 +1,26 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { mkdtemp, readFile, rm, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  abortMultipartUpload,
   buildAttachmentContentDisposition,
   classifyR2StorageError,
+  createMultipartUpload,
   deleteObject,
   downloadObjectToFile,
   headObject,
   InvalidObjectMetadataError,
   isR2Configured,
+  listExactKeyMultipartUploads,
   listObjectPageByPrefix,
   putFileFromPath,
+  presignSingleUploadUrl,
   sanitizeObjectMetadata,
 } from "./r2-storage";
+
+setDefaultTimeout(60_000);
 
 test("R2 adapter classifies access, missing-object, and cancellation failures", () => {
   expect(
@@ -232,6 +238,71 @@ r2ContractTest(
         deleteObject(activeAbortKey),
       ]);
       await rm(directory, { recursive: true, force: true });
+    }
+  },
+);
+
+r2ContractTest(
+  "R2 Upload Session adapter supports exact direct PUT verification, overwrite, and idempotent delete",
+  async () => {
+    const key = `${isolatedContractPrefix}/upload-session/${randomUUID()}/source.wav`;
+    const bytes = Buffer.from("direct Upload Session bytes");
+    try {
+      const url = await presignSingleUploadUrl({
+        key,
+        contentType: "audio/wav",
+        expiresIn: 60,
+      });
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const response = await fetch(url, {
+          method: "PUT",
+          headers: { "Content-Type": "audio/wav" },
+          body: bytes,
+        });
+        expect(response.ok).toBe(true);
+        expect(response.headers.get("etag")).toBeTruthy();
+      }
+      expect(await headObject(key)).toMatchObject({
+        sizeBytes: bytes.byteLength,
+        contentType: "audio/wav",
+      });
+      await deleteObject(key);
+      await deleteObject(key);
+    } finally {
+      await deleteObject(key).catch(() => {});
+    }
+  },
+);
+
+r2ContractTest(
+  "R2 Upload Session recovery lists one exact key and accepts opaque upload identities",
+  async () => {
+    const sessionPrefix = `${isolatedContractPrefix}/upload-session/${randomUUID()}`;
+    const key = `${sessionPrefix}/source.mp4`;
+    const siblingKey = `${key}.other`;
+    const created = await createMultipartUpload({
+      key,
+      contentType: "video/mp4",
+    });
+    const sibling = await createMultipartUpload({
+      key: siblingKey,
+      contentType: "video/mp4",
+    });
+    let discovered: Array<{ uploadId: string }> = [];
+    try {
+      discovered = await listExactKeyMultipartUploads({ key });
+      expect(discovered).toHaveLength(1);
+      expect(discovered[0]?.uploadId.length).toBeGreaterThan(0);
+      expect(discovered[0]?.uploadId.length).toBeLessThanOrEqual(2_048);
+      expect(discovered[0]?.uploadId).not.toBe(sibling.uploadId);
+    } finally {
+      await Promise.allSettled([
+        abortMultipartUpload({ key, uploadId: created.uploadId }),
+        ...discovered.map(({ uploadId }) =>
+          abortMultipartUpload({ key, uploadId }),
+        ),
+        abortMultipartUpload({ key: siblingKey, uploadId: sibling.uploadId }),
+      ]);
     }
   },
 );

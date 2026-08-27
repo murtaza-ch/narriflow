@@ -45,16 +45,9 @@ import {
   buildUploadSettingsFormData,
 } from "../_lib/content-pack-form";
 import {
-  createUploadFileFingerprint,
-  decideUploadInitialization,
-  loadUploadResume,
   safelyGetUploadResumeStorage,
-  saveUploadResume,
-  UPLOAD_RESUME_VERSION,
-  validateMultipartEtags,
-  type UploadInitializationDecision,
-  type UploadResumeSession,
 } from "../_lib/upload-resume";
+import { runUploadSessionTransfer } from "../_lib/upload-session-browser";
 import { generateFromRssAction } from "../actions";
 import {
   LinkImportFlow,
@@ -66,10 +59,7 @@ type TabId = "file" | "link" | "rss";
 type PasteOverride = "auto" | "link" | "rss";
 type UploadStage = "prepare" | "upload" | "finalize";
 
-const CHUNK_SIZE = 8 * 1024 * 1024;
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024 * 1024; // 5 GB
-const PART_CONCURRENCY = 4;
-const MAX_PART_RETRIES = 3;
 const RSS_EPISODE_PAGE_SIZE = 50;
 
 const FILE_ACCEPT =
@@ -86,35 +76,6 @@ function looksLikeUrl(value: string): boolean {
   return /^https?:\/\/\S+\.\S+/i.test(value.trim());
 }
 
-/** Uploads one multipart part with bounded retries + backoff. Returns its ETag. */
-async function uploadPartWithRetry(
-  partNumber: number,
-  url: string,
-  blob: Blob,
-  signal: AbortSignal,
-): Promise<string> {
-  let lastError: unknown;
-  for (let attempt = 1; attempt <= MAX_PART_RETRIES; attempt += 1) {
-    try {
-      const putRes = await fetch(url, { method: "PUT", body: blob, signal });
-      if (!putRes.ok) {
-        throw new Error(`Part ${partNumber} failed (HTTP ${putRes.status})`);
-      }
-      const etag = putRes.headers.get("ETag") ?? putRes.headers.get("etag");
-      if (!etag) throw new Error(`Missing ETag for part ${partNumber}`);
-      return etag.replaceAll('"', "");
-    } catch (error) {
-      if (error instanceof DOMException && error.name === "AbortError") throw error;
-      lastError = error;
-      if (attempt < MAX_PART_RETRIES) {
-        await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
-      }
-    }
-  }
-  throw lastError instanceof Error
-    ? lastError
-    : new Error(`Part ${partNumber} upload failed after ${MAX_PART_RETRIES} attempts`);
-}
 type RssEpisode = {
   id: string;
   title: string;
@@ -576,250 +537,48 @@ export function UploadShell({
     abortRef.current = abortController;
 
     try {
-      const fingerprint = createUploadFileFingerprint(file);
-      const resumeStorage = safelyGetUploadResumeStorage(
-        () => window.localStorage,
-      );
-      const existingSession = resumeStorage
-        ? loadUploadResume(resumeStorage, fingerprint)
-        : null;
-      const partCount = Math.max(1, Math.ceil(file.size / CHUNK_SIZE));
-
-      const requestInitialization = async (
-        resumeSession: UploadResumeSession | null,
-      ): Promise<UploadInitializationDecision> => {
-        const response = await fetch("/api/uploads/presign", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          signal: abortController.signal,
-          body: JSON.stringify({
-            title: title.trim(),
-            fileName: file.name,
-            fileSizeBytes: file.size,
-            mimeType: file.type || "video/mp4",
-            partCount,
-            projectId: resumeSession?.projectId,
-            uploadId: resumeSession?.uploadId,
-            brandTemplateId,
-          }),
-        });
-        const payload: unknown = await response.json().catch(() => null);
-        const decision = decideUploadInitialization({
-          responseOk: response.ok,
-          hadResumeSession: resumeSession !== null,
-          payload,
-          expectedPartCount: partCount,
-        });
-
-        if (
-          resumeSession &&
-          decision.kind === "active" &&
-          (decision.initialization.projectId !== resumeSession.projectId ||
-            decision.initialization.uploadId !== resumeSession.uploadId)
-        ) {
-          return {
-            kind: "error",
-            message: "The upload service returned mismatched resume metadata.",
-          };
-        }
-        if (
-          resumeSession &&
-          decision.kind === "completed" &&
-          decision.projectId !== resumeSession.projectId
-        ) {
-          return {
-            kind: "error",
-            message: "The upload service returned a mismatched project.",
-          };
-        }
-
-        return decision;
-      };
-
-      let initializationDecision = await requestInitialization(existingSession);
-      if (initializationDecision.kind === "fresh") {
-        if (resumeStorage) saveUploadResume(resumeStorage, null);
-        toaster.create({
-          type: "info",
-          title: "Starting a fresh upload",
-          description:
-            "The saved upload was no longer available, so we cleared it safely.",
-        });
-        initializationDecision = await requestInitialization(null);
-      }
-
-      if (initializationDecision.kind === "error") {
-        throw new Error(initializationDecision.message);
-      }
-      if (initializationDecision.kind === "fresh") {
-        throw new Error("Failed to initialize a fresh upload.");
-      }
-      if (initializationDecision.kind === "completed") {
-        if (resumeStorage) saveUploadResume(resumeStorage, null);
-        router.push(`/projects/${initializationDecision.projectId}`);
-        router.refresh();
-        return;
-      }
-
-      const presignJson = initializationDecision.initialization;
-      if (resumeStorage) {
-        saveUploadResume(resumeStorage, {
-          version: UPLOAD_RESUME_VERSION,
-          fingerprint,
-          projectId: presignJson.projectId,
-          uploadId: presignJson.uploadId,
-          key: presignJson.key,
-          fileName: file.name,
-          title: title.trim(),
-          partCount: presignJson.partCount,
-          expiresAt: presignJson.expiresAt,
-        });
-      }
-
-      const etagMap = new Map<number, string>(
-        presignJson.alreadyUploadedParts.map((part) => [
-          part.partNumber,
-          part.etag,
-        ]),
-      );
-      const uploadedSet = new Set(
-        presignJson.alreadyUploadedPartNumbers,
-      );
-      const urlMap = new Map<number, string>(
-        presignJson.uploadUrls.map((part) => [part.partNumber, part.url]),
-      );
-
-      if (uploadedSet.size > 0) {
-        toaster.create({
-          type: "info",
-          title: "Resuming upload",
-          description: `${uploadedSet.size} of ${presignJson.partCount} parts already uploaded.`,
-        });
-      }
-
-      setUploadStage("upload");
-
-      // Build the list of parts still needing upload, then run them through a
-      // bounded-concurrency pool with per-part retries. A single transient blip
-      // no longer aborts a multi-GB upload, and parts upload in parallel.
-      const pendingParts: Array<{ partNumber: number; url: string }> = [];
-      let pendingBytesTotal = 0;
-      for (
-        let partNumber = 1;
-        partNumber <= presignJson.partCount;
-        partNumber += 1
-      ) {
-        if (uploadedSet.has(partNumber)) continue;
-        const url = urlMap.get(partNumber);
-        if (!url) {
-          throw new Error(`Missing upload URL for part ${partNumber}`);
-        }
-        pendingParts.push({ partNumber, url });
-        const start = (partNumber - 1) * CHUNK_SIZE;
-        pendingBytesTotal += Math.min(start + CHUNK_SIZE, file.size) - start;
-      }
-
-      let completedParts = uploadedSet.size;
-      setProgress(
-        Math.round((completedParts / presignJson.partCount) * 100),
-      );
-
-      // Live MB/s + ETA from the part-completion counters.
       const uploadStartedAt = performance.now();
-      let uploadedBytesThisSession = 0;
+      const result = await runUploadSessionTransfer({
+        file,
+        title: title.trim(),
+        brandTemplateId,
+        generationContext: buildUploadGenerationContext(getFormValues()),
+        storage: safelyGetUploadResumeStorage(() => window.localStorage),
+        signal: abortController.signal,
+        onProgress(update) {
+          setUploadStage(update.stage);
+          setProgress(update.percent);
 
-      let cursor = 0;
-      const runWorker = async () => {
-        while (cursor < pendingParts.length) {
-          const { partNumber, url } = pendingParts[cursor++]!;
-          const start = (partNumber - 1) * CHUNK_SIZE;
-          const end = Math.min(start + CHUNK_SIZE, file.size);
-          const blob = file.slice(start, end);
-          const etag = await uploadPartWithRetry(
-            partNumber,
-            url,
-            blob,
-            abortController.signal,
-          );
-          etagMap.set(partNumber, etag);
-          completedParts += 1;
-          setProgress(
-            Math.round((completedParts / presignJson.partCount) * 100),
-          );
-
-          uploadedBytesThisSession += blob.size;
+          if (update.stage !== "upload") {
+            return;
+          }
           const elapsedSec = (performance.now() - uploadStartedAt) / 1000;
           const bytesPerSec =
-            elapsedSec > 0 ? uploadedBytesThisSession / elapsedSec : 0;
-          const remainingBytes = pendingBytesTotal - uploadedBytesThisSession;
+            elapsedSec > 0 ? update.transferredBytes / elapsedSec : 0;
           setThroughput({
             mbps: bytesPerSec / (1024 * 1024),
             etaSec:
               bytesPerSec > 0
-                ? Math.round(remainingBytes / bytesPerSec)
+                ? Math.max(
+                    0,
+                    Math.round(
+                      (update.totalBytes - update.transferredBytes) /
+                        bytesPerSec,
+                    ),
+                  )
                 : null,
           });
-        }
-      };
-
-      await Promise.all(
-        Array.from(
-          { length: Math.min(PART_CONCURRENCY, pendingParts.length) },
-          () => runWorker(),
-        ),
-      );
-
-      const etags = validateMultipartEtags(
-        etagMap.entries(),
-        presignJson.partCount,
-      );
-      if (!etags) {
-        throw new Error("The completed upload parts could not be verified.");
-      }
-
-      setUploadStage("finalize");
-      const completeRes = await fetch("/api/uploads/complete", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: abortController.signal,
-        body: JSON.stringify({
-          projectId: presignJson.projectId,
-          uploadId: presignJson.uploadId,
-          key: presignJson.key,
-          etags,
-          generationContext: buildUploadGenerationContext(getFormValues()),
-        }),
+        },
       });
-      const completePayload: unknown = await completeRes
-        .json()
-        .catch(() => null);
-      const completeJson =
-        typeof completePayload === "object" && completePayload !== null
-          ? (completePayload as Record<string, unknown>)
-          : null;
-      if (
-        !completeRes.ok ||
-        completeJson?.projectId !== presignJson.projectId
-      ) {
-        const message =
-          typeof completeJson?.message === "string"
-            ? completeJson.message
-            : typeof completeJson?.error === "string"
-              ? completeJson.error
-              : "Failed to finalize upload.";
-        throw new Error(message);
-      }
 
-      if (resumeStorage) saveUploadResume(resumeStorage, null);
-
-      router.push(`/projects/${presignJson.projectId}`);
+      router.push(`/projects/${result.projectId}`);
       router.refresh();
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
         toaster.create({
           type: "info",
-          title: "Upload canceled",
-          description: "Re-select the same file to resume where it left off.",
+          title: "Upload paused",
+          description: "Re-select the same file to continue the upload.",
         });
       } else {
         const message =

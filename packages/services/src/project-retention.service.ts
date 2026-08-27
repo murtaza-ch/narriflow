@@ -2,7 +2,6 @@ import { createHash } from "node:crypto";
 import type { PricingTier, Prisma } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
-  abortMultipartUpload,
   deleteObject,
   deleteObjects,
   getJsonObject,
@@ -189,13 +188,6 @@ function retryDelayMs(attemptCount: number): number {
   if (attemptCount === 2) return 5 * 60_000;
   if (attemptCount === 3) return 15 * 60_000;
   return 60 * 60_000;
-}
-
-function isMissingMultipartUpload(error: unknown): boolean {
-  const candidate = error as { name?: string; Code?: string; code?: string };
-  return [candidate.name, candidate.Code, candidate.code].some(
-    (value) => value === "NoSuchUpload" || value === "NotFound",
-  );
 }
 
 class ProjectPurgeRescuedError extends Error {
@@ -626,10 +618,6 @@ export class ProjectRetentionService {
           purgeAttemptCount: true,
           purgeDeletedObjectCount: true,
           purgeDeletedBytes: true,
-          uploadSessions: {
-            where: { status: "initiated" },
-            select: { id: true, storageKey: true, providerUploadId: true },
-          },
         },
       });
     });
@@ -688,17 +676,6 @@ export class ProjectRetentionService {
         }),
       );
       return "waiting";
-    }
-
-    for (const upload of project.uploadSessions) {
-      try {
-        await abortMultipartUpload({
-          key: upload.storageKey,
-          uploadId: upload.providerUploadId,
-        });
-      } catch (error) {
-        if (!isMissingMultipartUpload(error)) throw error;
-      }
     }
 
     await deleteProjectPrefixObjects(project.id, {

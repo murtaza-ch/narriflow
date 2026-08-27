@@ -11,7 +11,6 @@ import type {
 import { getPrismaClient } from "@narriflow/db/client";
 import {
   ASSEMBLYAI_SPEECH_MODEL_CHAIN,
-  completeMultipartUploadSchema,
   parseStoredContentPack,
   createProjectSchema,
   detectLinkProvider,
@@ -21,7 +20,6 @@ import {
   MAX_UPLOAD_LENGTH_SECONDS,
   MONTHLY_PROCESSING_MINUTE_LIMITS,
   processingMinutesFromSeconds,
-  presignUploadSchema,
   resolvePricingTier,
   rssImportSchema,
   rssPreviewSchema,
@@ -34,23 +32,12 @@ import {
   type GenerateProjectInput,
   type LinkIngestInput,
   type PricingTier,
-  type PresignUploadInput,
-  type CompleteMultipartUploadInput,
   type RssImportInput,
   type TranscriptExportFormat,
   type TranscriptSnapshot,
   type WorkflowStageUpdatedEvent,
 } from "@narriflow/validators";
-import {
-  abortMultipartUpload,
-  completeMultipartUpload as completeR2MultipartUpload,
-  createMultipartUpload,
-  deleteObject,
-  headObject,
-  isR2Configured,
-  listUploadedParts,
-  presignMultipartPartUrls,
-} from "./r2-storage";
+import { deleteObject } from "./r2-storage";
 import { brandTemplateService } from "./brand-template.service";
 import {
   autoTriggerIdempotencyKey,
@@ -200,7 +187,6 @@ export interface ClaimedClipRenderAttempt
 const projects = new Map<string, ProjectSnapshot>();
 const idempotencyRuns = new Map<string, string>();
 
-const UPLOAD_SESSION_EXPIRY_MS = 24 * 60 * 60 * 1000;
 const STT_PROVIDER = "assemblyai";
 const STT_PROVIDER_MODEL = ASSEMBLYAI_SPEECH_MODEL_CHAIN.join(",");
 const DEFAULT_PROJECT_PAGE_SIZE = 50;
@@ -278,198 +264,20 @@ function hasDatabase() {
   return Boolean(getPrismaClient());
 }
 
-function sanitizeStorageFileName(fileName: string) {
-  return fileName
-    .trim()
-    .replace(/[^a-zA-Z0-9._-]/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 120);
-}
-
-function providerErrorIdentifiers(error: unknown) {
-  if (typeof error !== "object" || error === null) {
-    return { name: null, explicitCodes: [] as string[] };
-  }
-
+function isMissingObjectError(error: unknown) {
+  if (typeof error !== "object" || error === null) return false;
   const candidate = error as {
     name?: unknown;
     code?: unknown;
     Code?: unknown;
   };
-  const explicitCodes = [candidate.code, candidate.Code].filter(
+  const codes = [candidate.code, candidate.Code].filter(
     (value): value is string => typeof value === "string",
   );
-
-  return {
-    name: typeof candidate.name === "string" ? candidate.name : null,
-    explicitCodes,
-  };
-}
-
-function hasExactProviderIdentifier(
-  error: unknown,
-  recognizedIdentifiers: readonly string[],
-) {
-  const { name, explicitCodes } = providerErrorIdentifiers(error);
-  if (explicitCodes.length > 0) {
-    return explicitCodes.every((code) =>
-      recognizedIdentifiers.includes(code),
-    );
+  if (codes.length > 0) {
+    return codes.every((code) => ["NoSuchKey", "NotFound"].includes(code));
   }
-  return name !== null && recognizedIdentifiers.includes(name);
-}
-
-export function isMissingMultipartUploadError(error: unknown) {
-  return hasExactProviderIdentifier(error, ["NoSuchUpload"]);
-}
-
-export function isMissingObjectError(error: unknown) {
-  return hasExactProviderIdentifier(error, ["NoSuchKey", "NotFound"]);
-}
-
-export interface MultipartUploadPart {
-  partNumber: number;
-  etag: string;
-}
-
-export async function probeMultipartPartsForResume(
-  listParts: () => Promise<readonly MultipartUploadPart[]>,
-): Promise<
-  | { kind: "found"; parts: readonly MultipartUploadPart[] }
-  | { kind: "missing" }
-> {
-  try {
-    return { kind: "found", parts: await listParts() };
-  } catch (error) {
-    if (isMissingMultipartUploadError(error)) {
-      return { kind: "missing" };
-    }
-    throw error;
-  }
-}
-
-export async function probeExactUploadObject(
-  probe: () => Promise<unknown>,
-): Promise<"present" | "missing"> {
-  try {
-    await probe();
-    return "present";
-  } catch (error) {
-    if (isMissingObjectError(error)) {
-      return "missing";
-    }
-    throw error;
-  }
-}
-
-export function normalizeMultipartParts(
-  parts: readonly MultipartUploadPart[],
-  expectedPartCount: number,
-  mode: "partial" | "complete",
-): MultipartUploadPart[] | null {
-  if (
-    !Number.isInteger(expectedPartCount) ||
-    expectedPartCount < 1 ||
-    (mode === "complete" && parts.length !== expectedPartCount) ||
-    parts.length > expectedPartCount
-  ) {
-    return null;
-  }
-
-  const byPartNumber = new Map<number, string>();
-  for (const part of parts) {
-    if (
-      !part ||
-      !Number.isInteger(part.partNumber) ||
-      part.partNumber < 1 ||
-      part.partNumber > expectedPartCount ||
-      typeof part.etag !== "string" ||
-      part.etag.trim().length === 0 ||
-      byPartNumber.has(part.partNumber)
-    ) {
-      return null;
-    }
-    byPartNumber.set(part.partNumber, part.etag);
-  }
-
-  return Array.from(byPartNumber, ([partNumber, etag]) => ({
-    partNumber,
-    etag,
-  })).sort((left, right) => left.partNumber - right.partNumber);
-}
-
-export type ExistingUploadSessionFacts = {
-  projectId: string;
-  fileName: string | null;
-  partCount: number;
-  status: "initiated" | "completed" | "aborted" | "expired";
-  expiresAtMs: number;
-};
-
-export type ExistingUploadResumeResolution =
-  | { kind: "completed"; projectId: string }
-  | { kind: "active"; parts: MultipartUploadPart[] }
-  | { kind: "unavailable"; shouldMarkExpired: boolean }
-  | { kind: "reconciliation_required" };
-
-export async function resolveExistingUploadResume(
-  input: {
-    session: ExistingUploadSessionFacts | null;
-    requestedFileName: string;
-    requestedPartCount: number;
-    nowMs: number;
-  },
-  probes: {
-    listParts(): Promise<
-      | { kind: "found"; parts: readonly MultipartUploadPart[] }
-      | { kind: "missing" }
-    >;
-    headObject(): Promise<"present" | "missing">;
-  },
-): Promise<ExistingUploadResumeResolution> {
-  const session = input.session;
-  if (
-    !session ||
-    session.fileName !== input.requestedFileName ||
-    session.partCount !== input.requestedPartCount
-  ) {
-    return { kind: "unavailable", shouldMarkExpired: false };
-  }
-
-  if (session.status === "completed") {
-    return { kind: "completed", projectId: session.projectId };
-  }
-
-  const isCurrent =
-    session.status === "initiated" && session.expiresAtMs > input.nowMs;
-  if (!isCurrent) {
-    const objectState = await probes.headObject();
-    if (objectState === "present") {
-      return { kind: "reconciliation_required" };
-    }
-    return {
-      kind: "unavailable",
-      shouldMarkExpired: session.status === "initiated",
-    };
-  }
-
-  const listed = await probes.listParts();
-  if (listed.kind === "missing") {
-    const objectState = await probes.headObject();
-    return objectState === "present"
-      ? { kind: "reconciliation_required" }
-      : { kind: "unavailable", shouldMarkExpired: false };
-  }
-
-  const parts = normalizeMultipartParts(
-    listed.parts,
-    session.partCount,
-    "partial",
-  );
-  return parts
-    ? { kind: "active", parts }
-    : { kind: "reconciliation_required" };
+  return ["NoSuchKey", "NotFound"].includes(String(candidate.name ?? ""));
 }
 
 function bigintToNumber(value: bigint | number | null) {
@@ -607,24 +415,6 @@ export class UploadTooLongError extends Error {
   ) {
     super(message);
     this.name = "UploadTooLongError";
-  }
-}
-
-export class UploadSessionUnavailableError extends Error {
-  readonly code = "upload_session_unavailable";
-
-  constructor() {
-    super("The saved upload session is no longer available.");
-    this.name = "UploadSessionUnavailableError";
-  }
-}
-
-export class UploadCompletionReconciliationRequiredError extends Error {
-  readonly code = "upload_completion_reconciliation_required";
-
-  constructor() {
-    super("The upload completion state needs to be reconciled.");
-    this.name = "UploadCompletionReconciliationRequiredError";
   }
 }
 
@@ -940,11 +730,6 @@ export class ProjectDeletionIncompleteError extends Error {
 export interface ProjectStorageSnapshot {
   sourceStorageKey: string | null;
   transcriptRawStorageKey: string | null;
-  uploadSessions: ReadonlyArray<{
-    storageKey: string;
-    providerUploadId: string;
-    status: "initiated" | "completed" | "aborted" | "expired";
-  }>;
   clipPreviewStorageKeys: ReadonlyArray<string | null>;
   clipRenderStorageKeys: ReadonlyArray<string | null>;
   clipDubStorageKeys: ReadonlyArray<string | null>;
@@ -953,9 +738,6 @@ export interface ProjectStorageSnapshot {
 export interface ProjectDeletionPlan {
   /** Deduped R2 object keys to DeleteObject. */
   objectKeysToDelete: string[];
-  /** Multipart uploads still in-flight — AbortMultipartUpload, never
-   *  DeleteObject, since no finished object exists yet for these. */
-  multipartUploadsToAbort: Array<{ key: string; uploadId: string }>;
 }
 
 /**
@@ -977,36 +759,11 @@ export function planProjectStorageDeletion(
   snapshot.clipRenderStorageKeys.forEach(addKey);
   snapshot.clipDubStorageKeys.forEach(addKey);
 
-  const multipartUploadsToAbort: Array<{ key: string; uploadId: string }> = [];
-  for (const session of snapshot.uploadSessions) {
-    if (session.status === "initiated") {
-      // An in-progress multipart upload has no finished object to
-      // DeleteObject — AbortMultipartUpload is the correct cleanup call, and
-      // this key must NOT also be queued as a DeleteObject target below.
-      multipartUploadsToAbort.push({
-        key: session.storageKey,
-        uploadId: session.providerUploadId,
-      });
-      continue;
-    }
-    // A completed session's key is the same physical object already
-    // captured via sourceStorageKey; add it defensively anyway (e.g. a
-    // session whose project row was never reconciled) — the Set dedupes.
-    addKey(session.storageKey);
-  }
-
-  return {
-    objectKeysToDelete: Array.from(keys),
-    multipartUploadsToAbort,
-  };
+  return { objectKeysToDelete: Array.from(keys) };
 }
 
 export interface ProjectDeletionIo {
   deleteObject: (key: string) => Promise<unknown>;
-  abortMultipartUpload: (input: {
-    key: string;
-    uploadId: string;
-  }) => Promise<unknown>;
   isMissingObjectError: (error: unknown) => boolean;
 }
 
@@ -1039,14 +796,6 @@ export async function deleteProjectStorageObjects(
     }
   });
 
-  // Best-effort only: aborting an in-progress multipart upload never blocks
-  // deletion. A failure here just leaves a small amount of never-completed
-  // part data in R2 until the bucket's lifecycle rules (or a future retry
-  // once the session is stale) clear it.
-  await Promise.allSettled(
-    plan.multipartUploadsToAbort.map((upload) => io.abortMultipartUpload(upload)),
-  );
-
   return { failedKeys };
 }
 
@@ -1073,10 +822,6 @@ export interface ProjectDeletionAccessResult {
 export interface ProjectDeletionDeps {
   getAccessAndRow: () => Promise<ProjectDeletionAccessResult>;
   deleteObject: (key: string) => Promise<unknown>;
-  abortMultipartUpload: (input: {
-    key: string;
-    uploadId: string;
-  }) => Promise<unknown>;
   isMissingObjectError: (error: unknown) => boolean;
   /** Conditioned delete (e.g. `deleteMany({ where: { id, userId } })`) so a
    *  row a concurrent call already removed resolves to count 0 instead of
@@ -1085,8 +830,8 @@ export interface ProjectDeletionDeps {
 }
 
 /**
- * Pure orchestration for project deletion, fully dependency-injected (same
- * style as resolveExistingUploadResume) so every guarantee below has direct
+   * Pure orchestration for project deletion, fully dependency-injected so
+   * every guarantee below has direct
  * test coverage without a live database or R2 bucket:
  *
  *  - ownership: "missing"/"forbidden" access short-circuits before any I/O.
@@ -1122,7 +867,6 @@ export async function runProjectDeletion(
   const plan = planProjectStorageDeletion(row.storage);
   const { failedKeys } = await deleteProjectStorageObjects(plan, {
     deleteObject: deps.deleteObject,
-    abortMultipartUpload: deps.abortMultipartUpload,
     isMissingObjectError: deps.isMissingObjectError,
   });
 
@@ -1241,10 +985,8 @@ export class ProjectService {
    * runProjectDeletion above for the guarantees this wires together.
    *
    * Storage-key-bearing tables covered: Project.sourceStorageKey,
-   * Transcript.rawStorageKey, UploadSession.storageKey (completed sessions
-   * dedupe against sourceStorageKey; still-"initiated" sessions get a
-   * best-effort AbortMultipartUpload instead), Clip.previewStorageKey,
-   * ClipRender.storageKey, ClipDub.audioStorageKey/renderStorageKey.
+   * Transcript.rawStorageKey, Clip.previewStorageKey, ClipRender.storageKey,
+   * and ClipDub.audioStorageKey/renderStorageKey.
    * Deliberately NOT touched: BrandTemplate.logoStorageKey and any logo key
    * embedded in Project.brandSnapshot (owned by the user's brand template,
    * which other projects may still reference) and Clip.brollUrl /
@@ -1274,13 +1016,6 @@ export class ProjectService {
             userId: true,
             sourceStorageKey: true,
             transcript: { select: { rawStorageKey: true } },
-            uploadSessions: {
-              select: {
-                storageKey: true,
-                providerUploadId: true,
-                status: true,
-              },
-            },
             clips: {
               select: {
                 previewStorageKey: true,
@@ -1312,7 +1047,6 @@ export class ProjectService {
             storage: {
               sourceStorageKey: project.sourceStorageKey,
               transcriptRawStorageKey: project.transcript?.rawStorageKey ?? null,
-              uploadSessions: project.uploadSessions,
               clipPreviewStorageKeys: project.clips.map(
                 (clip) => clip.previewStorageKey,
               ),
@@ -1330,7 +1064,6 @@ export class ProjectService {
         };
       },
       deleteObject,
-      abortMultipartUpload,
       isMissingObjectError,
       deleteProjectRow: async () => {
         const result = await prisma.project.deleteMany({
@@ -2247,352 +1980,6 @@ export class ProjectService {
       workflowRunId,
       acceptedAt: event?.emittedAt ?? new Date().toISOString(),
       initialSeq: event?.seq ?? 0,
-    };
-  }
-
-  async presignMultipartUpload(userId: string, input: PresignUploadInput, workspaceId?: string) {
-    const parsed = presignUploadSchema.parse(input);
-    const prisma = this.requirePrisma();
-    const ownership = await this.resolveWriteOwnership(
-      userId,
-      workspaceId,
-      "processing.consume",
-    );
-
-    if (Boolean(parsed.projectId) !== Boolean(parsed.uploadId)) {
-      throw new UploadSessionUnavailableError();
-    }
-
-    if (parsed.projectId && parsed.uploadId) {
-      const session = await prisma.uploadSession.findFirst({
-        where: {
-          projectId: parsed.projectId,
-          providerUploadId: parsed.uploadId,
-          project: {
-            workspaceId: ownership.workspaceId,
-            ...accessibleProjectWhere(),
-          },
-        },
-        include: { project: true },
-      });
-      const resolution = await resolveExistingUploadResume(
-        {
-          session: session
-            ? {
-                projectId: session.projectId,
-                fileName: session.project.sourceInput,
-                partCount: session.partCount,
-                status: session.status,
-                expiresAtMs: session.expiresAt.getTime(),
-              }
-            : null,
-          requestedFileName: parsed.fileName,
-          requestedPartCount: parsed.partCount,
-          nowMs: Date.now(),
-        },
-        {
-          listParts: async () => {
-            if (!session || !isR2Configured()) {
-              throw new Error("R2 configuration is missing");
-            }
-            return probeMultipartPartsForResume(() =>
-              listUploadedParts({
-                  key: session.storageKey,
-                  uploadId: session.providerUploadId,
-              }),
-            );
-          },
-          headObject: async () => {
-            if (!session || !isR2Configured()) {
-              throw new Error("R2 configuration is missing");
-            }
-            return probeExactUploadObject(() =>
-              headObject(session.storageKey),
-            );
-          },
-        },
-      );
-
-      if (resolution.kind === "completed") {
-        return {
-          outcome: "completed" as const,
-          projectId: resolution.projectId,
-        };
-      }
-      if (resolution.kind === "unavailable") {
-        if (resolution.shouldMarkExpired && session) {
-          await prisma.uploadSession.update({
-            where: { id: session.id },
-            data: { status: "expired" },
-          });
-        }
-        throw new UploadSessionUnavailableError();
-      }
-      if (resolution.kind === "reconciliation_required") {
-        throw new UploadCompletionReconciliationRequiredError();
-      }
-      if (!session) {
-        throw new UploadSessionUnavailableError();
-      }
-
-      const uploadedParts = resolution.parts;
-      const uploadedNumbers = new Set(
-        uploadedParts.map((part) => part.partNumber),
-      );
-
-      const partNumbers = Array.from(
-        { length: session.partCount },
-        (_, index) => index + 1,
-      );
-      const remaining = partNumbers.filter(
-        (partNumber) => !uploadedNumbers.has(partNumber),
-      );
-      const uploadUrls =
-        remaining.length > 0
-          ? await presignMultipartPartUrls({
-              key: session.storageKey,
-              uploadId: session.providerUploadId,
-              partNumbers: remaining,
-            })
-          : [];
-
-      return {
-        outcome: "active" as const,
-        projectId: session.projectId,
-        uploadId: session.providerUploadId,
-        key: session.storageKey,
-        partCount: session.partCount,
-        uploadUrls,
-        alreadyUploadedPartNumbers: Array.from(uploadedNumbers.values()).sort(
-          (a, b) => a - b,
-        ),
-        alreadyUploadedParts: uploadedParts,
-        expiresAt: session.expiresAt.toISOString(),
-      };
-    }
-
-    if (!isR2Configured()) {
-      throw new Error("R2 configuration is missing");
-    }
-
-    await this.assertWorkspaceWithinQuota(ownership.workspaceId);
-
-    const brandResolved = await brandTemplateService.resolveSnapshotForUser(
-      ownership.legacyOwnerUserId,
-      parsed.brandTemplateId ?? null,
-      { workspaceId: ownership.workspaceId, actorUserId: ownership.actorUserId },
-    );
-
-    const createdAt = new Date();
-    const retention = await projectRetentionService.assignmentForWorkspace(
-      ownership.workspaceId,
-      createdAt,
-    );
-
-    const project = await prisma.project.create({
-      data: {
-        userId: ownership.legacyOwnerUserId,
-        workspaceId: ownership.workspaceId,
-        createdByUserId: ownership.actorUserId,
-        updatedByUserId: ownership.actorUserId,
-        title: parsed.title,
-        sourceMediaUrl: "upload://pending",
-        sourceType: "upload",
-        sourceInput: parsed.fileName,
-        ingestStatus: "uploading",
-        brandTemplateId: brandResolved?.templateId ?? null,
-        brandSnapshot: brandResolved
-          ? (brandResolved.snapshot as unknown as Prisma.InputJsonValue)
-          : Prisma.JsonNull,
-        createdAt,
-        retentionPolicyKey: retention?.retentionPolicyKey ?? null,
-        expiresAt: retention?.expiresAt ?? null,
-      },
-    });
-
-    const safeName = sanitizeStorageFileName(parsed.fileName);
-    const key = `workspaces/${ownership.workspaceId}/projects/${project.id}/${Date.now()}-${safeName || "source.bin"}`;
-    const multipart = await createMultipartUpload({
-      key,
-      contentType: parsed.mimeType,
-      metadata: {
-        project_id: project.id,
-        file_name: parsed.fileName,
-      },
-    });
-
-    const expiresAt = new Date(Date.now() + UPLOAD_SESSION_EXPIRY_MS);
-    await prisma.uploadSession.create({
-      data: {
-        projectId: project.id,
-        providerUploadId: multipart.uploadId,
-        storageKey: key,
-        partCount: parsed.partCount,
-        expiresAt,
-        status: "initiated",
-      },
-    });
-
-    const partNumbers = Array.from(
-      { length: parsed.partCount },
-      (_, index) => index + 1,
-    );
-    const uploadUrls = await presignMultipartPartUrls({
-      key,
-      uploadId: multipart.uploadId,
-      partNumbers,
-    });
-
-    return {
-      outcome: "active" as const,
-      projectId: project.id,
-      uploadId: multipart.uploadId,
-      key,
-      partCount: parsed.partCount,
-      uploadUrls,
-      alreadyUploadedPartNumbers: [] as number[],
-      alreadyUploadedParts: [] as Array<{ partNumber: number; etag: string }>,
-      expiresAt: expiresAt.toISOString(),
-    };
-  }
-
-  async completeMultipartUpload(
-    userId: string,
-    input: CompleteMultipartUploadInput,
-    workspaceId?: string,
-  ) {
-    const parsed = completeMultipartUploadSchema.parse(input);
-    const prisma = this.requirePrisma();
-    const ownership = await this.resolveWriteOwnership(
-      userId,
-      workspaceId,
-      "processing.consume",
-    );
-
-    const session = await prisma.uploadSession.findFirst({
-      where: {
-        projectId: parsed.projectId,
-        providerUploadId: parsed.uploadId,
-        storageKey: parsed.key,
-        project: { workspaceId: ownership.workspaceId, ...accessibleProjectWhere() },
-      },
-      include: {
-        project: true,
-      },
-    });
-
-    if (!session) {
-      throw new Error("upload session not found");
-    }
-
-    if (session.status !== "initiated") {
-      throw new Error("upload session cannot be completed");
-    }
-
-    if (session.expiresAt.getTime() <= Date.now()) {
-      await prisma.uploadSession.update({
-        where: { id: session.id },
-        data: { status: "expired" },
-      });
-      throw new Error("upload session expired");
-    }
-
-    const completionParts = normalizeMultipartParts(
-      parsed.etags,
-      session.partCount,
-      "complete",
-    );
-    if (!completionParts) {
-      throw new Error("uploaded part set does not match the upload session");
-    }
-
-    await completeR2MultipartUpload({
-      key: parsed.key,
-      uploadId: parsed.uploadId,
-      etags: completionParts,
-    });
-
-    const objectMeta = await headObject(parsed.key);
-
-    const job = await prisma.$transaction(async (tx) => {
-      await tx.uploadSession.update({
-        where: { id: session.id },
-        data: { status: "completed" },
-      });
-
-      await tx.project.update({
-        where: { id: session.projectId },
-        data: {
-          sourceMediaUrl: buildR2Uri(parsed.key),
-          sourceStorageKey: parsed.key,
-          sourceInput: session.project.sourceInput ?? parsed.key,
-          sourceMimeType: objectMeta.contentType,
-          sourceSizeBytes: objectMeta.sizeBytes
-            ? BigInt(objectMeta.sizeBytes)
-            : undefined,
-          ingestStatus: "queued",
-          ingestErrorCode: null,
-          ingestCompletedAt: null,
-          ...(parsed.generationContext && {
-            languageCode: parsed.generationContext.languageCode,
-          }),
-        },
-      });
-
-      if (parsed.generationContext) {
-        const contentPack = parsed.generationContext.contentPack;
-        await tx.contentPack.create({
-          data: {
-            projectId: session.projectId,
-            outputTypes: contentPack.outputTypes,
-            clipGenerationMode: contentPack.clipGenerationMode,
-            clipCountTarget: contentPack.clipCountTarget,
-            clipDurationSecTarget: contentPack.clipDurationSecTarget,
-            minDurationSec: contentPack.minDurationSec,
-            preferredMinDurationSec: contentPack.preferredMinDurationSec,
-            preferredMaxDurationSec: contentPack.preferredMaxDurationSec,
-            maxDurationSec: contentPack.maxDurationSec,
-            platformTargets: contentPack.platformTargets,
-            autoRenderClips: contentPack.autoRenderClips,
-            toneConstraints: contentPack.toneConstraints,
-            captionPreset: contentPack.captionPreset,
-            platformPlaybookVersion: contentPack.platformPlaybookVersion,
-            mode: contentPack.mode,
-            autoHook: contentPack.autoHook,
-            specificMoments: contentPack.specificMoments,
-            processingStartSec: contentPack.processingStartSec,
-            processingEndSec: contentPack.processingEndSec,
-          },
-        });
-      }
-
-      return tx.ingestJob.create({
-        data: {
-          projectId: session.projectId,
-          jobType: "upload_finalize",
-          payload: {
-            storageKey: parsed.key,
-            uploadId: parsed.uploadId,
-          },
-        },
-      });
-    });
-
-    await this.publishIngestLifecycleEvent({
-      projectId: session.projectId,
-      workflowRunId: job.id,
-      ingestStatus: "queued",
-      eventStatus: "queued",
-      errorCode: null,
-    });
-
-    return {
-      projectId: session.projectId,
-      uploadId: parsed.uploadId,
-      key: parsed.key,
-      partsCompleted: parsed.etags.length,
-      queuedJobId: job.id,
-      completedAt: new Date().toISOString(),
     };
   }
 

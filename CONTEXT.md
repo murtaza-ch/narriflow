@@ -34,6 +34,10 @@ _Avoid_: Workflow Attempt, worker lease, tab lock
 
 ## Processing
 
+**Upload Session**:
+A workspace-owned, durable intake record that binds one immutable browser upload intent to its declared source, frozen brand and generation settings, server-chosen transfer plan, private storage identity, exact-object verification, and exactly-once handoff to a Project and Upload Finalize Ingest Job.
+_Avoid_: Upload job, multipart upload, empty Project, browser upload ID
+
 **Workflow Run**:
 A persistent execution record for one idempotent post-ingest processing stage of a project, such as transcription, moment detection, clip rendering, or dubbing.
 _Avoid_: Job, task, ingest job

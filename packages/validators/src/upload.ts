@@ -16,37 +16,50 @@ export const uploadMimeTypes = [
   "audio/aac",
 ] as const;
 
-const uploadMimeTypeSchema = z.enum(uploadMimeTypes);
+export const uploadMimeTypeSchema = z.enum(uploadMimeTypes);
 
-export const presignUploadSchema = z.object({
-  projectId: z.string().uuid().optional(),
-  uploadId: z.string().uuid().optional(),
-  title: z.string().min(1).max(200),
-  fileName: z.string().min(1),
-  fileSizeBytes: z.number().int().positive().max(MAX_UPLOAD_SIZE_BYTES),
-  mimeType: uploadMimeTypeSchema,
-  partCount: z.number().int().positive().max(10_000),
-  brandTemplateId: z.string().uuid().nullable().optional(),
-});
+const uploadGenerationContextSchema = z
+  .object({
+    contentPack: contentPackSchema,
+    languageCode: sourceLanguageCodeSchema,
+  })
+  .strict();
 
-export const completeMultipartUploadSchema = z.object({
-  projectId: z.string().uuid(),
-  uploadId: z.string().uuid(),
-  key: z.string().min(1),
-  etags: z.array(
-    z.object({
-      partNumber: z.number().int().positive(),
-      etag: z.string().min(1),
-    }),
-  ),
-  generationContext: z
-    .object({
-      contentPack: contentPackSchema,
-      languageCode: sourceLanguageCodeSchema,
-    })
-    .optional(),
-});
+export const openUploadSessionSchema = z
+  .object({
+    clientIdempotencyKey: z.string().uuid(),
+    title: z.string().trim().min(1).max(200),
+    source: z
+      .object({
+        fileName: z.string().trim().min(1).max(500),
+        sizeBytes: z.number().int().positive().max(MAX_UPLOAD_SIZE_BYTES),
+        contentType: uploadMimeTypeSchema,
+        browserFingerprint: z.string().min(1).max(2_048),
+      })
+      .strict(),
+    brandTemplateId: z.string().uuid().nullable().optional(),
+    generationContext: uploadGenerationContextSchema,
+  })
+  .strict();
 
-export type PresignUploadInput = z.infer<typeof presignUploadSchema>;
-export type CompleteMultipartUploadInput = z.infer<typeof completeMultipartUploadSchema>;
+export const finalizeUploadSessionSchema = z
+  .object({
+    sessionId: z.string().uuid(),
+    parts: z
+      .array(
+        z
+          .object({
+            partNumber: z.number().int().positive(),
+            etag: z.string().trim().min(1).max(1_024),
+          })
+          .strict(),
+      )
+      .max(10_000),
+  })
+  .strict();
+
 export type UploadMimeType = z.infer<typeof uploadMimeTypeSchema>;
+export type OpenUploadSessionInput = z.infer<typeof openUploadSessionSchema>;
+export type FinalizeUploadSessionInput = z.infer<
+  typeof finalizeUploadSessionSchema
+>;

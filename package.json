@@ -17,6 +17,7 @@
     "typecheck": "turbo run typecheck",
     "test": "turbo run test",
     "test:workflow:db": "bun packages/services/scripts/run-workflow-db-tests.ts",
+    "test:upload-session:db": "bun packages/services/scripts/run-upload-session-db-tests.ts",
     "test:mcp:e2e": "bun --cwd apps/web ../../packages/mcp-core/scripts/e2e-clients.ts",
     "audit:production": "bun audit --production --audit-level=high",
     "clean": "turbo run clean && rm -rf .turbo node_modules"

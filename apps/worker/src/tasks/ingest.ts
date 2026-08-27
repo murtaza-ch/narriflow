@@ -17,7 +17,6 @@ import {
   UnsafeUrlError,
 } from "@narriflow/services";
 import {
-  headObject,
   InvalidObjectMetadataError,
   presignDownloadUrl,
   putFileFromPath,
@@ -309,22 +308,16 @@ async function withTransientRetry<T>(
 }
 
 async function runUploadFinalize(job: IngestJob) {
-  const payload = assertObject(job.payload);
-  const storageKey = String(payload.storageKey ?? "").trim();
-
-  if (!storageKey) {
-    throw new IngestWorkerError("upload_finalize_missing_key", "storageKey is required");
-  }
+  const verified = readVerifiedUploadPayload(job.payload);
 
   await projectService.markIngestJobNormalizing(job.id);
-  const objectMeta = await headObject(storageKey);
 
   // ffprobe reads the header over range requests, so a presigned URL avoids
   // downloading the whole file here while still using the stored object as the
   // authoritative source.
   let probedDuration: number | null = null;
   try {
-    const url = await presignDownloadUrl({ key: storageKey });
+    const url = await presignDownloadUrl({ key: verified.storageKey });
     probedDuration = await probeDurationSeconds(url);
   } catch {
     probedDuration = null;
@@ -332,11 +325,43 @@ async function runUploadFinalize(job: IngestJob) {
   const durationSeconds = requireDuration(probedDuration);
 
   await projectService.completeIngestJob(job.id, {
-    sourceStorageKey: storageKey,
-    sourceMimeType: objectMeta.contentType,
-    sourceSizeBytes: objectMeta.sizeBytes,
+    sourceStorageKey: verified.storageKey,
+    sourceMimeType: verified.contentType,
+    sourceSizeBytes: verified.sizeBytes,
     sourceDurationSeconds: durationSeconds,
   });
+}
+
+export function readVerifiedUploadPayload(payload: unknown): {
+  storageKey: string;
+  sizeBytes: number;
+  contentType: string;
+} {
+  const value = assertObject(payload);
+  const storageKey = String(value.storageKey ?? "").trim();
+  const sizeBytes = Number(value.verifiedSizeBytes);
+  const contentType = String(value.verifiedContentType ?? "").trim();
+
+  if (!storageKey) {
+    throw new IngestWorkerError(
+      "upload_finalize_missing_key",
+      "storageKey is required",
+    );
+  }
+  if (!Number.isSafeInteger(sizeBytes) || sizeBytes <= 0) {
+    throw new IngestWorkerError(
+      "upload_finalize_missing_verified_size",
+      "verifiedSizeBytes must be a positive safe integer",
+    );
+  }
+  if (!contentType) {
+    throw new IngestWorkerError(
+      "upload_finalize_missing_verified_content_type",
+      "verifiedContentType is required",
+    );
+  }
+
+  return { storageKey, sizeBytes, contentType };
 }
 
 async function probeDurationSeconds(input: string): Promise<number | null> {

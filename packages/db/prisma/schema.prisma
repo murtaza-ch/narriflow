@@ -45,10 +45,20 @@ enum IngestStatus {
 }
 
 enum UploadSessionStatus {
-  initiated
-  completed
+  initiating
+  uploading
+  finalizing
+  reconciling
+  compensating
+  queued_for_ingest
   aborted
   expired
+  failed
+}
+
+enum UploadTransferKind {
+  single
+  multipart
 }
 
 enum IngestJobType {
@@ -246,7 +256,6 @@ model Project {
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @updatedAt
   contentPacks   ContentPack[]
-  uploadSessions UploadSession[]
   ingestJobs     IngestJob[]
   transcript     Transcript?
   clips          Clip[]
@@ -452,20 +461,51 @@ model Transcript {
 }
 
 model UploadSession {
-  id               String              @id @default(uuid()) @db.Uuid
-  projectId        String              @db.Uuid
-  providerUploadId String
-  storageKey       String
-  partCount        Int
-  expiresAt        DateTime
-  status           UploadSessionStatus @default(initiated)
-  createdAt        DateTime            @default(now())
-  updatedAt        DateTime            @updatedAt
-  project          Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  id                        String              @id @default(uuid()) @db.Uuid
+  workspaceId               String              @db.Uuid
+  actorUserId               String              @db.Uuid
+  legacyOwnerUserId         String              @db.Uuid
+  clientIdempotencyKey      String              @db.Uuid
+  immutableInputFingerprint String
+  preallocatedProjectId     String              @unique @db.Uuid
+  title                     String
+  fileName                  String
+  fileSizeBytes             BigInt
+  contentType               String
+  browserFingerprint        String
+  brandTemplateId           String?             @db.Uuid
+  brandSnapshot             Json?
+  generationSettings        Json
+  transferKind              UploadTransferKind
+  partSizeBytes             Int?
+  partCount                 Int                 @default(1)
+  storageKey                String              @unique
+  providerUploadId          String?
+  providerInitiatedAt       DateTime?
+  status                    UploadSessionStatus @default(initiating)
+  admissionAttemptId        String?             @db.Uuid
+  admissionClaimExpiresAt   DateTime?
+  completionParts           Json?
+  verifiedSizeBytes         BigInt?
+  verifiedContentType       String?
+  queuedJobId               String?             @unique @db.Uuid
+  failureCode               String?
+  cleanupRetryAt            DateTime?
+  reconciliationAttemptId   String?             @db.Uuid
+  reconciliationLeaseExpiresAt DateTime?
+  expiresAt                 DateTime
+  hardExpiresAt             DateTime
+  queuedAt                  DateTime?
+  createdAt                 DateTime            @default(now())
+  updatedAt                 DateTime            @updatedAt
 
-  @@unique([projectId, providerUploadId])
-  @@index([projectId, status, createdAt])
-  @@index([expiresAt])
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  ingestJob IngestJob? @relation("UploadSessionIngestJob")
+
+  @@unique([workspaceId, clientIdempotencyKey])
+  @@index([workspaceId, status, createdAt])
+  @@index([status, expiresAt, cleanupRetryAt])
+  @@index([status, admissionClaimExpiresAt])
 }
 
 model IngestJob {
@@ -480,7 +520,9 @@ model IngestJob {
   updatedAt    DateTime        @updatedAt
   startedAt    DateTime?
   completedAt  DateTime?
+  uploadSessionId String?       @unique @db.Uuid
   project      Project         @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  uploadSession UploadSession? @relation("UploadSessionIngestJob", fields: [uploadSessionId], references: [id], onDelete: SetNull)
 
   @@index([status, createdAt])
   @@index([projectId, status, createdAt])
@@ -586,6 +628,7 @@ model Workspace {
   members              WorkspaceMember[]
   invites              WorkspaceInvite[]
   projects             Project[]
+  uploadSessions       UploadSession[]
   folders              WorkspaceFolder[]
   autopilotRules       AutopilotRule[]
   apiKeys              ApiKey[]

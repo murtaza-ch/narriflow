@@ -1,0 +1,1989 @@
+import { randomUUID } from "node:crypto";
+import { Prisma, type UploadSession as PrismaUploadSession } from "@prisma/client";
+import { getPrismaClient } from "@narriflow/db/client";
+import {
+  contentPackSchema,
+  isProcessingQuotaExceeded,
+  MONTHLY_PROCESSING_MINUTE_LIMITS,
+  finalizeUploadSessionSchema,
+  openUploadSessionSchema,
+  processingMinutesFromSeconds,
+  resolvePricingTier,
+  uploadMimeTypes,
+  type OpenUploadSessionInput as ValidatedOpenUploadSessionInput,
+  type FinalizeUploadSessionInput as ValidatedFinalizeUploadSessionInput,
+} from "@narriflow/validators";
+import { brandTemplateService } from "./brand-template.service";
+import { projectRetentionService } from "./project-retention.service";
+import {
+  abortMultipartUpload,
+  completeMultipartUpload,
+  createMultipartUpload,
+  deleteObject,
+  headObject,
+  listExactKeyMultipartUploads,
+  listUploadedParts,
+  presignMultipartPartUrls,
+  presignSingleUploadUrl,
+} from "./r2-storage";
+import { isWorkflowRedisDeliveryEnabled } from "./workflow.service";
+import { workspaceService } from "./workspace.service";
+
+const MEBIBYTE = 1024 * 1024;
+const GIBIBYTE = 1024 * MEBIBYTE;
+
+export type UploadTransferKind = "single" | "multipart";
+export type UploadSessionStatus =
+  | "initiating"
+  | "uploading"
+  | "finalizing"
+  | "reconciling"
+  | "compensating"
+  | "queued_for_ingest"
+  | "aborted"
+  | "expired"
+  | "failed";
+
+export interface UploadSessionConfig {
+  readonly maximumSourceBytes: number;
+  readonly smallFileThresholdBytes: number;
+  readonly multipartPartSizeBytes: number;
+  readonly multipartConcurrency: number;
+  readonly maximumMultipartParts: number;
+  readonly uploadGrantTtlSeconds: number;
+  readonly sessionIdleMs: number;
+}
+
+export function defaultUploadSessionConfig(
+  overrides: Partial<UploadSessionConfig> = {},
+): UploadSessionConfig {
+  const config = {
+    maximumSourceBytes: 5 * GIBIBYTE,
+    smallFileThresholdBytes: 100 * MEBIBYTE,
+    multipartPartSizeBytes: 16 * MEBIBYTE,
+    multipartConcurrency: 4,
+    maximumMultipartParts: 10_000,
+    uploadGrantTtlSeconds: 15 * 60,
+    sessionIdleMs: 24 * 60 * 60 * 1000,
+    ...overrides,
+  };
+
+  for (const [name, value] of Object.entries(config)) {
+    if (!Number.isSafeInteger(value) || value < 1) {
+      throw new Error(`Invalid Upload Session configuration: ${name}`);
+    }
+  }
+  if (config.smallFileThresholdBytes > config.maximumSourceBytes) {
+    throw new Error(
+      "Invalid Upload Session configuration: smallFileThresholdBytes",
+    );
+  }
+  return Object.freeze(config);
+}
+
+export interface UploadSessionRecord {
+  id: string;
+  workspaceId: string;
+  actorUserId: string;
+  legacyOwnerUserId: string;
+  clientIdempotencyKey: string;
+  immutableInputFingerprint: string;
+  preallocatedProjectId: string;
+  title: string;
+  fileName: string;
+  fileSizeBytes: number;
+  contentType: string;
+  browserFingerprint: string;
+  brandTemplateId: string | null;
+  brandSnapshot: unknown;
+  generation: unknown;
+  transferKind: UploadTransferKind;
+  partSizeBytes: number | null;
+  partCount: number;
+  storageKey: string;
+  providerUploadId: string | null;
+  admissionAttemptId: string | null;
+  completionParts: Array<{ partNumber: number; etag: string }> | null;
+  queuedJobId: string | null;
+  failureCode: string | null;
+  status: UploadSessionStatus;
+  expiresAt: Date;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export interface UploadSessionPersistence {
+  findByClientKey(input: {
+    workspaceId: string;
+    clientIdempotencyKey: string;
+  }): Promise<UploadSessionRecord | null>;
+  reserve(record: UploadSessionRecord): Promise<{
+    created: boolean;
+    session: UploadSessionRecord;
+  }>;
+  prepareAdmission(input: {
+    sessionId: string;
+    brandTemplateId: string | null;
+    brandSnapshot: unknown;
+    updatedAt: Date;
+  }): Promise<UploadSessionRecord>;
+  waitForAdmission(sessionId: string): Promise<UploadSessionRecord>;
+  bindMultipartProvider(input: {
+    sessionId: string;
+    providerUploadId: string;
+    updatedAt: Date;
+  }): Promise<UploadSessionRecord>;
+  markSingleReady(input: {
+    sessionId: string;
+    updatedAt: Date;
+  }): Promise<UploadSessionRecord>;
+  findByIdForWorkspace(input: {
+    sessionId: string;
+    workspaceId: string;
+  }): Promise<UploadSessionRecord | null>;
+  beginFinalization(input: {
+    sessionId: string;
+    parts: Array<{ partNumber: number; etag: string }>;
+    updatedAt: Date;
+  }): Promise<{ claimed: boolean; session: UploadSessionRecord }>;
+  waitForFinalization(sessionId: string): Promise<UploadSessionRecord>;
+  handoff(input: {
+    sessionId: string;
+    queuedJobId: string;
+    verifiedSizeBytes: number;
+    verifiedContentType: string;
+    updatedAt: Date;
+  }): Promise<UploadSessionRecord>;
+  recordFailure(input: {
+    sessionId: string;
+    status: "compensating" | "failed";
+    failureCode: string;
+    cleanupRetryAt?: Date | null;
+    updatedAt: Date;
+  }): Promise<UploadSessionRecord>;
+}
+
+export interface UploadSessionStorage {
+  grantSinglePut(input: {
+    storageKey: string;
+    contentType: string;
+    expiresInSeconds: number;
+  }): Promise<{ url: string }>;
+  createMultipart(input: {
+    storageKey: string;
+    contentType: string;
+    metadata: Record<string, string>;
+  }): Promise<{ providerUploadId: string }>;
+  grantMultipartParts(input: {
+    storageKey: string;
+    providerUploadId: string;
+    partNumbers: number[];
+    expiresInSeconds: number;
+  }): Promise<Array<{ partNumber: number; url: string }>>;
+  completeMultipart(input: {
+    storageKey: string;
+    providerUploadId: string;
+    parts: Array<{ partNumber: number; etag: string }>;
+  }): Promise<void>;
+  listMultipartParts(input: {
+    storageKey: string;
+    providerUploadId: string;
+  }): Promise<Array<{ partNumber: number; etag: string }>>;
+  headExactObject(storageKey: string): Promise<{
+    sizeBytes: number;
+    contentType: string | null;
+  }>;
+  listExactKeyMultipartUploads(storageKey: string): Promise<
+    Array<{ providerUploadId: string; initiatedAt: Date | null }>
+  >;
+  abortMultipart(input: {
+    storageKey: string;
+    providerUploadId: string;
+  }): Promise<void>;
+  deleteExactObject(storageKey: string): Promise<void>;
+}
+
+export interface UploadSessionAdmission {
+  assertQuota(workspaceId: string): Promise<void>;
+  resolveBrand(input: {
+    workspaceId: string;
+    actorUserId: string;
+    legacyOwnerUserId: string;
+    brandTemplateId: string | null;
+  }): Promise<{ templateId: string; snapshot: unknown } | null>;
+}
+
+export interface UploadSessionModuleDependencies {
+  config: UploadSessionConfig;
+  persistence: UploadSessionPersistence;
+  storage: UploadSessionStorage;
+  admission: UploadSessionAdmission;
+  now(): Date;
+  createId(): string;
+  diagnose?(event: {
+    phase:
+      | "reservation"
+      | "provider_creation"
+      | "provider_bind"
+      | "adoption"
+      | "duplicate_abort"
+      | "compensation";
+    disposition: "started" | "succeeded" | "failed";
+    sessionId: string;
+  }): void;
+}
+
+export interface OpenUploadSessionInput {
+  actorUserId: string;
+  workspaceId: string;
+  legacyOwnerUserId: string;
+  clientIdempotencyKey: string;
+  title: string;
+  source: {
+    fileName: string;
+    sizeBytes: number;
+    contentType: string;
+    browserFingerprint: string;
+  };
+  brandTemplateId: string | null;
+  generation: unknown;
+}
+
+export type OpenUploadSessionOutcome =
+  | {
+      outcome: "queued_for_ingest";
+      sessionId: string;
+      projectId: string;
+      queuedJobId: string;
+    }
+  | {
+      outcome: "uploading";
+      sessionId: string;
+      projectId: string;
+      expiresAt: string;
+      transfer:
+    | {
+        kind: "single";
+        contentType: string;
+        grant: { url: string; contentType: string };
+      }
+    | {
+        kind: "multipart";
+        partSizeBytes: number;
+        partCount: number;
+        concurrency: number;
+        grants: Array<{ partNumber: number; url: string }>;
+        completedParts: Array<{ partNumber: number; etag: string }>;
+        };
+    };
+
+export interface FinalizeUploadSessionInput {
+  actorUserId: string;
+  workspaceId: string;
+  sessionId: string;
+  parts: Array<{ partNumber: number; etag: string }>;
+}
+
+export type FinalizeUploadSessionOutcome = {
+  outcome: "queued_for_ingest";
+  sessionId: string;
+  projectId: string;
+  queuedJobId: string;
+};
+
+export class UploadSessionIdempotencyConflictError extends Error {
+  readonly code = "upload_session_idempotency_conflict";
+
+  constructor() {
+    super("This upload key is already bound to different upload settings.");
+    this.name = "UploadSessionIdempotencyConflictError";
+  }
+}
+
+export class UploadSessionNotFoundError extends Error {
+  readonly code = "upload_session_not_found";
+
+  constructor() {
+    super("Upload Session not found.");
+    this.name = "UploadSessionNotFoundError";
+  }
+}
+
+export class UploadSessionInvalidStateError extends Error {
+  readonly code = "upload_session_invalid_state";
+
+  constructor(message = "The Upload Session cannot accept that operation.") {
+    super(message);
+    this.name = "UploadSessionInvalidStateError";
+  }
+}
+
+export class UploadSessionIntegrityError extends Error {
+  readonly code = "upload_session_integrity_failed";
+
+  constructor(message: string) {
+    super(message);
+    this.name = "UploadSessionIntegrityError";
+  }
+}
+
+function assertOpaqueProviderIdentity(value: string) {
+  if (!value || value.length > 2_048) {
+    throw new Error("Storage provider returned a malformed upload identity");
+  }
+  return value;
+}
+
+function sanitizeFileName(fileName: string) {
+  return (
+    fileName
+      .trim()
+      .replace(/[^a-zA-Z0-9._-]/g, "-")
+      .replace(/-+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 120) || "source.bin"
+  );
+}
+
+function immutableInputFingerprint(input: OpenUploadSessionInput) {
+  return JSON.stringify({
+    title: input.title,
+    source: input.source,
+    brandTemplateId: input.brandTemplateId,
+    generation: input.generation,
+  });
+}
+
+export function planUploadTransfer(
+  sizeBytes: number,
+  config: UploadSessionConfig,
+): {
+  kind: UploadTransferKind;
+  partSizeBytes: number | null;
+  partCount: number;
+} {
+  if (
+    !Number.isSafeInteger(sizeBytes) ||
+    sizeBytes < 1 ||
+    sizeBytes > config.maximumSourceBytes
+  ) {
+    throw new Error("Unsupported upload source size");
+  }
+  if (sizeBytes <= config.smallFileThresholdBytes) {
+    return { kind: "single", partSizeBytes: null, partCount: 1 };
+  }
+  const partSizeBytes = Math.max(
+    config.multipartPartSizeBytes,
+    Math.ceil(sizeBytes / config.maximumMultipartParts),
+  );
+  const partCount = Math.ceil(sizeBytes / partSizeBytes);
+  if (partCount > config.maximumMultipartParts) {
+    throw new Error("Upload source exceeds multipart provider limits");
+  }
+  return { kind: "multipart", partSizeBytes, partCount };
+}
+
+function normalizeCompletionParts(
+  parts: Array<{ partNumber: number; etag: string }>,
+  expectedPartCount: number,
+) {
+  if (parts.length !== expectedPartCount) return null;
+  const normalized = new Map<number, string>();
+  for (const part of parts) {
+    if (
+      !Number.isInteger(part.partNumber) ||
+      part.partNumber < 1 ||
+      part.partNumber > expectedPartCount ||
+      typeof part.etag !== "string" ||
+      part.etag.trim().length === 0 ||
+      normalized.has(part.partNumber)
+    ) {
+      return null;
+    }
+    normalized.set(part.partNumber, part.etag);
+  }
+  return Array.from(normalized, ([partNumber, etag]) => ({
+    partNumber,
+    etag,
+  })).sort((left, right) => left.partNumber - right.partNumber);
+}
+
+function normalizeUploadContentType(value: string | null) {
+  if (!value) return null;
+  const base = value.split(";", 1)[0]!.trim().toLowerCase();
+  const normalized = base === "audio/x-wav" ? "audio/wav" : base;
+  return uploadMimeTypes.includes(
+    normalized as (typeof uploadMimeTypes)[number],
+  )
+    ? normalized
+    : null;
+}
+
+export function createUploadSessionModule(
+  dependencies: UploadSessionModuleDependencies,
+) {
+  const diagnose = (
+    sessionId: string,
+    phase: Parameters<NonNullable<typeof dependencies.diagnose>>[0]["phase"],
+    disposition: Parameters<
+      NonNullable<typeof dependencies.diagnose>
+    >[0]["disposition"],
+  ) => dependencies.diagnose?.({ sessionId, phase, disposition });
+
+  async function compensateObject(
+    session: UploadSessionRecord,
+    failureCode: string,
+  ) {
+    diagnose(session.id, "compensation", "started");
+    await dependencies.persistence.recordFailure({
+      sessionId: session.id,
+      status: "compensating",
+      failureCode,
+      updatedAt: dependencies.now(),
+    });
+    try {
+      await dependencies.storage.deleteExactObject(session.storageKey);
+      await dependencies.persistence.recordFailure({
+        sessionId: session.id,
+        status: "failed",
+        failureCode,
+        cleanupRetryAt: null,
+        updatedAt: dependencies.now(),
+      });
+      diagnose(session.id, "compensation", "succeeded");
+    } catch {
+      await dependencies.persistence.recordFailure({
+        sessionId: session.id,
+        status: "compensating",
+        failureCode,
+        cleanupRetryAt: new Date(dependencies.now().getTime() + 60_000),
+        updatedAt: dependencies.now(),
+      });
+      diagnose(session.id, "compensation", "failed");
+    }
+  }
+  async function uploadingOutcome(
+    session: UploadSessionRecord,
+    knownCompletedParts?: Array<{ partNumber: number; etag: string }>,
+  ): Promise<OpenUploadSessionOutcome> {
+    if (session.transferKind === "single") {
+      const grant = await dependencies.storage.grantSinglePut({
+        storageKey: session.storageKey,
+        contentType: session.contentType,
+        expiresInSeconds: dependencies.config.uploadGrantTtlSeconds,
+      });
+      return {
+        outcome: "uploading",
+        sessionId: session.id,
+        projectId: session.preallocatedProjectId,
+        expiresAt: session.expiresAt.toISOString(),
+        transfer: {
+          kind: "single",
+          contentType: session.contentType,
+          grant: { url: grant.url, contentType: session.contentType },
+        },
+      };
+    }
+    if (!session.providerUploadId) {
+      throw new Error("Upload Session provider binding is incomplete");
+    }
+    const completedParts =
+      knownCompletedParts ??
+      (await dependencies.storage.listMultipartParts({
+        storageKey: session.storageKey,
+        providerUploadId: session.providerUploadId,
+      }));
+    const completedPartNumbers = new Set(
+      completedParts.map((part) => part.partNumber),
+    );
+    const partNumbers = Array.from(
+      { length: session.partCount },
+      (_, index) => index + 1,
+    ).filter((partNumber) => !completedPartNumbers.has(partNumber));
+    const grants = await dependencies.storage.grantMultipartParts({
+      storageKey: session.storageKey,
+      providerUploadId: session.providerUploadId,
+      partNumbers,
+      expiresInSeconds: dependencies.config.uploadGrantTtlSeconds,
+    });
+    return {
+      outcome: "uploading",
+      sessionId: session.id,
+      projectId: session.preallocatedProjectId,
+      expiresAt: session.expiresAt.toISOString(),
+      transfer: {
+        kind: "multipart",
+        partSizeBytes: session.partSizeBytes!,
+        partCount: session.partCount,
+        concurrency: dependencies.config.multipartConcurrency,
+        grants,
+        completedParts,
+      },
+    };
+  }
+
+  async function recoverInitiatingSession(session: UploadSessionRecord) {
+    if (session.transferKind === "single") {
+      return dependencies.persistence.markSingleReady({
+        sessionId: session.id,
+        updatedAt: dependencies.now(),
+      });
+    }
+    const candidates = await dependencies.storage.listExactKeyMultipartUploads(
+      session.storageKey,
+    );
+    const ordered = candidates.slice().sort((left, right) => {
+      const time =
+        (left.initiatedAt?.getTime() ?? Number.MAX_SAFE_INTEGER) -
+        (right.initiatedAt?.getTime() ?? Number.MAX_SAFE_INTEGER);
+      return time || left.providerUploadId.localeCompare(right.providerUploadId);
+    });
+    let adopted = ordered[0];
+    if (!adopted) {
+      diagnose(session.id, "provider_creation", "started");
+      const created = await dependencies.storage.createMultipart({
+        storageKey: session.storageKey,
+        contentType: session.contentType,
+        metadata: {
+          upload_session_id: session.id,
+          file_name: session.fileName,
+        },
+      });
+      adopted = {
+        providerUploadId: assertOpaqueProviderIdentity(
+          created.providerUploadId,
+        ),
+        initiatedAt: dependencies.now(),
+      };
+      diagnose(session.id, "provider_creation", "succeeded");
+    } else {
+      assertOpaqueProviderIdentity(adopted.providerUploadId);
+      diagnose(session.id, "adoption", "succeeded");
+    }
+    diagnose(session.id, "provider_bind", "started");
+    const bound = await dependencies.persistence.bindMultipartProvider({
+      sessionId: session.id,
+      providerUploadId: adopted.providerUploadId,
+      updatedAt: dependencies.now(),
+    });
+    diagnose(session.id, "provider_bind", "succeeded");
+    const losingProviderIds = new Set(
+      [...ordered.map((candidate) => candidate.providerUploadId), adopted.providerUploadId]
+        .filter((providerUploadId) => providerUploadId !== bound.providerUploadId),
+    );
+    await Promise.all(
+      Array.from(losingProviderIds).map(async (providerUploadId) => {
+        await dependencies.storage.abortMultipart({
+          storageKey: session.storageKey,
+          providerUploadId,
+        });
+        diagnose(session.id, "duplicate_abort", "succeeded");
+      }),
+    );
+    return bound;
+  }
+
+  return {
+    async open(input: OpenUploadSessionInput): Promise<OpenUploadSessionOutcome> {
+      const fingerprint = immutableInputFingerprint(input);
+      const resumeExisting = async (existing: UploadSessionRecord) => {
+        if (existing.immutableInputFingerprint !== fingerprint) {
+          throw new UploadSessionIdempotencyConflictError();
+        }
+        if (existing.status === "queued_for_ingest" && existing.queuedJobId) {
+          return {
+            outcome: "queued_for_ingest" as const,
+            sessionId: existing.id,
+            projectId: existing.preallocatedProjectId,
+            queuedJobId: existing.queuedJobId,
+          };
+        }
+        const settled =
+          existing.status === "initiating"
+            ? await dependencies.persistence.waitForAdmission(existing.id)
+            : existing;
+        const active =
+          settled.status === "initiating"
+            ? await recoverInitiatingSession(settled)
+            : settled;
+        if (active.status !== "uploading") {
+          throw new UploadSessionInvalidStateError(
+            `Upload Session is ${active.status}.`,
+          );
+        }
+        return uploadingOutcome(active);
+      };
+      const existing = await dependencies.persistence.findByClientKey({
+        workspaceId: input.workspaceId,
+        clientIdempotencyKey: input.clientIdempotencyKey,
+      });
+      if (existing) {
+        return resumeExisting(existing);
+      }
+
+      const now = dependencies.now();
+      const sessionId = dependencies.createId();
+      const projectId = dependencies.createId();
+      const transfer = planUploadTransfer(
+        input.source.sizeBytes,
+        dependencies.config,
+      );
+      const storageKey = `workspaces/${input.workspaceId}/upload-sessions/${sessionId}/${sanitizeFileName(input.source.fileName)}`;
+      const reservation = await dependencies.persistence.reserve({
+        id: sessionId,
+        workspaceId: input.workspaceId,
+        actorUserId: input.actorUserId,
+        legacyOwnerUserId: input.legacyOwnerUserId,
+        clientIdempotencyKey: input.clientIdempotencyKey,
+        immutableInputFingerprint: fingerprint,
+        preallocatedProjectId: projectId,
+        title: input.title,
+        fileName: input.source.fileName,
+        fileSizeBytes: input.source.sizeBytes,
+        contentType: input.source.contentType,
+        browserFingerprint: input.source.browserFingerprint,
+        brandTemplateId: input.brandTemplateId,
+        brandSnapshot: null,
+        generation: input.generation,
+        transferKind: transfer.kind,
+        partSizeBytes: transfer.partSizeBytes,
+        partCount: transfer.partCount,
+        storageKey,
+        providerUploadId: null,
+        admissionAttemptId: dependencies.createId(),
+        completionParts: null,
+        queuedJobId: null,
+        failureCode: null,
+        status: "initiating",
+        expiresAt: new Date(now.getTime() + dependencies.config.sessionIdleMs),
+        createdAt: now,
+        updatedAt: now,
+      });
+      if (!reservation.created) {
+        return resumeExisting(reservation.session);
+      }
+      diagnose(reservation.session.id, "reservation", "succeeded");
+
+      if (!normalizeUploadContentType(input.source.contentType)) {
+        await dependencies.persistence.recordFailure({
+          sessionId: reservation.session.id,
+          status: "failed",
+          failureCode: "unsupported_media_type",
+          updatedAt: dependencies.now(),
+        });
+        throw new Error("Unsupported upload content type");
+      }
+
+      let prepared: UploadSessionRecord;
+      try {
+        await dependencies.admission.assertQuota(input.workspaceId);
+        const brand = await dependencies.admission.resolveBrand({
+          workspaceId: input.workspaceId,
+          actorUserId: input.actorUserId,
+          legacyOwnerUserId: input.legacyOwnerUserId,
+          brandTemplateId: input.brandTemplateId,
+        });
+        prepared = await dependencies.persistence.prepareAdmission({
+          sessionId: reservation.session.id,
+          brandTemplateId: brand?.templateId ?? null,
+          brandSnapshot: brand?.snapshot ?? null,
+          updatedAt: dependencies.now(),
+        });
+      } catch (error) {
+        await dependencies.persistence.recordFailure({
+          sessionId: reservation.session.id,
+          status: "failed",
+          failureCode:
+            error instanceof UploadSessionQuotaRefusedError
+              ? "quota_exceeded"
+              : "upload_admission_failed",
+          updatedAt: dependencies.now(),
+        });
+        throw error;
+      }
+
+      if (prepared.transferKind === "single") {
+        const session = await dependencies.persistence.markSingleReady({
+          sessionId: prepared.id,
+          updatedAt: dependencies.now(),
+        });
+        return uploadingOutcome(session, []);
+      }
+
+      diagnose(prepared.id, "provider_creation", "started");
+      let provider: { providerUploadId: string };
+      try {
+        provider = await dependencies.storage.createMultipart({
+          storageKey: prepared.storageKey,
+          contentType: prepared.contentType,
+          metadata: {
+            upload_session_id: prepared.id,
+            file_name: prepared.fileName,
+          },
+        });
+        assertOpaqueProviderIdentity(provider.providerUploadId);
+        diagnose(prepared.id, "provider_creation", "succeeded");
+      } catch (error) {
+        diagnose(prepared.id, "provider_creation", "failed");
+        try {
+          const candidates =
+            await dependencies.storage.listExactKeyMultipartUploads(
+              prepared.storageKey,
+            );
+          if (candidates.length > 0) {
+            const recovered = await recoverInitiatingSession(prepared);
+            return uploadingOutcome(recovered);
+          }
+          await dependencies.persistence.recordFailure({
+            sessionId: prepared.id,
+            status: "failed",
+            failureCode: "provider_creation_failed",
+            updatedAt: dependencies.now(),
+          });
+        } catch {
+          // Discovery failure is ambiguous: retain the durable initiating row
+          // so the exact-key recovery path can safely retry later.
+        }
+        throw error;
+      }
+      diagnose(prepared.id, "provider_bind", "started");
+      const session = await dependencies.persistence.bindMultipartProvider({
+        sessionId: prepared.id,
+        providerUploadId: provider.providerUploadId,
+        updatedAt: dependencies.now(),
+      });
+      diagnose(prepared.id, "provider_bind", "succeeded");
+      return uploadingOutcome(session, []);
+    },
+
+    async finalize(
+      input: FinalizeUploadSessionInput,
+    ): Promise<FinalizeUploadSessionOutcome> {
+      const current = await dependencies.persistence.findByIdForWorkspace({
+        sessionId: input.sessionId,
+        workspaceId: input.workspaceId,
+      });
+      if (!current || current.actorUserId !== input.actorUserId) {
+        throw new UploadSessionNotFoundError();
+      }
+      if (current.status === "queued_for_ingest" && current.queuedJobId) {
+        return {
+          outcome: "queued_for_ingest",
+          sessionId: current.id,
+          projectId: current.preallocatedProjectId,
+          queuedJobId: current.queuedJobId,
+        };
+      }
+      if (current.status === "finalizing") {
+        const settled = await dependencies.persistence.waitForFinalization(
+          current.id,
+        );
+        if (settled.status === "queued_for_ingest" && settled.queuedJobId) {
+          return {
+            outcome: "queued_for_ingest",
+            sessionId: settled.id,
+            projectId: settled.preallocatedProjectId,
+            queuedJobId: settled.queuedJobId,
+          };
+        }
+        throw new UploadSessionInvalidStateError(
+          "Upload Session finalization is still reconciling.",
+        );
+      }
+      if (current.status !== "uploading") {
+        throw new UploadSessionInvalidStateError();
+      }
+      const parts =
+        current.transferKind === "single"
+          ? input.parts.length === 0
+            ? []
+            : null
+          : normalizeCompletionParts(input.parts, current.partCount);
+      if (!parts) {
+        throw new UploadSessionInvalidStateError(
+          "Uploaded part set does not match the Upload Session.",
+        );
+      }
+      const finalization = await dependencies.persistence.beginFinalization({
+        sessionId: current.id,
+        parts,
+        updatedAt: dependencies.now(),
+      });
+      if (!finalization.claimed) {
+        const settled = await dependencies.persistence.waitForFinalization(
+          current.id,
+        );
+        if (settled.status === "queued_for_ingest" && settled.queuedJobId) {
+          return {
+            outcome: "queued_for_ingest",
+            sessionId: settled.id,
+            projectId: settled.preallocatedProjectId,
+            queuedJobId: settled.queuedJobId,
+          };
+        }
+        throw new UploadSessionInvalidStateError(
+          "Upload Session finalization is still reconciling.",
+        );
+      }
+      const finalizing = finalization.session;
+      if (finalizing.transferKind === "multipart") {
+        if (!finalizing.providerUploadId) {
+          throw new Error("Upload Session provider binding is incomplete");
+        }
+        await dependencies.storage.completeMultipart({
+          storageKey: finalizing.storageKey,
+          providerUploadId: finalizing.providerUploadId,
+          parts,
+        });
+      }
+      let object: { sizeBytes: number; contentType: string | null };
+      try {
+        object = await dependencies.storage.headExactObject(
+          finalizing.storageKey,
+        );
+      } catch {
+        await dependencies.persistence.recordFailure({
+          sessionId: finalizing.id,
+          status: "failed",
+          failureCode: "upload_object_unavailable",
+          updatedAt: dependencies.now(),
+        });
+        throw new UploadSessionIntegrityError(
+          "Uploaded object could not be verified.",
+        );
+      }
+      if (object.sizeBytes !== finalizing.fileSizeBytes) {
+        await compensateObject(finalizing, "upload_object_size_mismatch");
+        throw new UploadSessionIntegrityError(
+          "Uploaded object size does not match the declared source.",
+        );
+      }
+      const declaredContentType = normalizeUploadContentType(
+        finalizing.contentType,
+      );
+      const verifiedContentType = normalizeUploadContentType(object.contentType);
+      if (
+        !declaredContentType ||
+        !verifiedContentType ||
+        declaredContentType !== verifiedContentType
+      ) {
+        await compensateObject(finalizing, "upload_object_content_type_mismatch");
+        throw new UploadSessionIntegrityError(
+          "Uploaded object content type does not match the declared source.",
+        );
+      }
+      const queuedJobId = dependencies.createId();
+      const queued = await dependencies.persistence.handoff({
+        sessionId: finalizing.id,
+        queuedJobId,
+        verifiedSizeBytes: object.sizeBytes,
+        verifiedContentType,
+        updatedAt: dependencies.now(),
+      });
+      return {
+        outcome: "queued_for_ingest",
+        sessionId: queued.id,
+        projectId: queued.preallocatedProjectId,
+        queuedJobId: queued.queuedJobId!,
+      };
+    },
+  };
+}
+
+function configuredInteger(
+  env: NodeJS.ProcessEnv,
+  name: string,
+  fallback: number,
+  limits: { minimum: number; maximum: number },
+) {
+  const raw = env[name]?.trim();
+  const value = raw === undefined || raw === "" ? fallback : Number(raw);
+  if (
+    !Number.isSafeInteger(value) ||
+    value < limits.minimum ||
+    value > limits.maximum
+  ) {
+    throw new Error(
+      `${name} must be an integer between ${limits.minimum} and ${limits.maximum}`,
+    );
+  }
+  return value;
+}
+
+export function uploadSessionConfigFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): UploadSessionConfig {
+  const maximumSourceBytes = 5 * GIBIBYTE;
+  return defaultUploadSessionConfig({
+    maximumSourceBytes,
+    smallFileThresholdBytes: configuredInteger(
+      env,
+      "UPLOAD_SINGLE_PUT_THRESHOLD_BYTES",
+      100 * MEBIBYTE,
+      { minimum: 1, maximum: maximumSourceBytes },
+    ),
+    multipartPartSizeBytes: configuredInteger(
+      env,
+      "UPLOAD_MULTIPART_PART_SIZE_BYTES",
+      16 * MEBIBYTE,
+      { minimum: 5 * MEBIBYTE, maximum: maximumSourceBytes },
+    ),
+    multipartConcurrency: configuredInteger(
+      env,
+      "UPLOAD_MULTIPART_CONCURRENCY",
+      4,
+      { minimum: 1, maximum: 16 },
+    ),
+    maximumMultipartParts: configuredInteger(
+      env,
+      "UPLOAD_MAXIMUM_MULTIPART_PARTS",
+      10_000,
+      { minimum: 1, maximum: 10_000 },
+    ),
+    uploadGrantTtlSeconds: configuredInteger(
+      env,
+      "UPLOAD_GRANT_TTL_SECONDS",
+      15 * 60,
+      { minimum: 60, maximum: 60 * 60 },
+    ),
+  });
+}
+
+export class UploadSessionQuotaRefusedError extends Error {
+  readonly code = "quota_exceeded";
+
+  constructor(
+    public readonly details: {
+      tier: string;
+      limitMinutes: number;
+      usedMinutes: number;
+      requestedMinutes: number;
+    },
+  ) {
+    super(
+      `Monthly processing limit reached on the ${details.tier} plan (${details.limitMinutes} min/mo; ${details.usedMinutes} min used). Upgrade the workspace to keep generating.`,
+    );
+    this.name = "UploadSessionQuotaRefusedError";
+  }
+}
+
+function requiredPrisma() {
+  const prisma = getPrismaClient();
+  if (!prisma) throw new Error("Database client unavailable");
+  return prisma;
+}
+
+function completionPartsFromJson(value: Prisma.JsonValue | null) {
+  if (!Array.isArray(value)) return null;
+  const parts: Array<{ partNumber: number; etag: string }> = [];
+  for (const item of value) {
+    if (
+      !item ||
+      typeof item !== "object" ||
+      Array.isArray(item) ||
+      typeof item.partNumber !== "number" ||
+      typeof item.etag !== "string"
+    ) {
+      return null;
+    }
+    parts.push({ partNumber: item.partNumber, etag: item.etag });
+  }
+  return parts;
+}
+
+function fromPrismaUploadSession(row: PrismaUploadSession): UploadSessionRecord {
+  return {
+    id: row.id,
+    workspaceId: row.workspaceId,
+    actorUserId: row.actorUserId,
+    legacyOwnerUserId: row.legacyOwnerUserId,
+    clientIdempotencyKey: row.clientIdempotencyKey,
+    immutableInputFingerprint: row.immutableInputFingerprint,
+    preallocatedProjectId: row.preallocatedProjectId,
+    title: row.title,
+    fileName: row.fileName,
+    fileSizeBytes: Number(row.fileSizeBytes),
+    contentType: row.contentType,
+    browserFingerprint: row.browserFingerprint,
+    brandTemplateId: row.brandTemplateId,
+    brandSnapshot: row.brandSnapshot,
+    generation: row.generationSettings,
+    transferKind: row.transferKind,
+    partSizeBytes: row.partSizeBytes,
+    partCount: row.partCount,
+    storageKey: row.storageKey,
+    providerUploadId: row.providerUploadId,
+    admissionAttemptId: row.admissionAttemptId,
+    completionParts: completionPartsFromJson(row.completionParts),
+    queuedJobId: row.queuedJobId,
+    failureCode: row.failureCode,
+    status: row.status,
+    expiresAt: row.expiresAt,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
+
+async function waitForSessionState(
+  sessionId: string,
+  isSettled: (session: UploadSessionRecord) => boolean,
+) {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const row = await requiredPrisma().uploadSession.findUnique({
+      where: { id: sessionId },
+    });
+    if (!row) throw new Error("Upload Session not found");
+    const session = fromPrismaUploadSession(row);
+    if (isSettled(session)) return session;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  const row = await requiredPrisma().uploadSession.findUnique({
+    where: { id: sessionId },
+  });
+  if (!row) throw new Error("Upload Session not found");
+  return fromPrismaUploadSession(row);
+}
+
+export const prismaUploadSessionPersistence: UploadSessionPersistence = {
+  async findByClientKey({ workspaceId, clientIdempotencyKey }) {
+    const row = await requiredPrisma().uploadSession.findUnique({
+      where: {
+        workspaceId_clientIdempotencyKey: {
+          workspaceId,
+          clientIdempotencyKey,
+        },
+      },
+    });
+    return row ? fromPrismaUploadSession(row) : null;
+  },
+  async reserve(record) {
+    try {
+      const row = await requiredPrisma().uploadSession.create({
+        data: {
+          id: record.id,
+          workspaceId: record.workspaceId,
+          actorUserId: record.actorUserId,
+          legacyOwnerUserId: record.legacyOwnerUserId,
+          clientIdempotencyKey: record.clientIdempotencyKey,
+          immutableInputFingerprint: record.immutableInputFingerprint,
+          preallocatedProjectId: record.preallocatedProjectId,
+          title: record.title,
+          fileName: record.fileName,
+          fileSizeBytes: BigInt(record.fileSizeBytes),
+          contentType: record.contentType,
+          browserFingerprint: record.browserFingerprint,
+          brandTemplateId: record.brandTemplateId,
+          brandSnapshot: Prisma.JsonNull,
+          generationSettings: record.generation as Prisma.InputJsonValue,
+          transferKind: record.transferKind,
+          partSizeBytes: record.partSizeBytes,
+          partCount: record.partCount,
+          storageKey: record.storageKey,
+          status: "initiating",
+          admissionAttemptId: record.admissionAttemptId,
+          admissionClaimExpiresAt: new Date(record.createdAt.getTime() + 30_000),
+          expiresAt: record.expiresAt,
+          hardExpiresAt: new Date(
+            record.createdAt.getTime() + 6 * 24 * 60 * 60 * 1000,
+          ),
+          createdAt: record.createdAt,
+        },
+      });
+      return { created: true, session: fromPrismaUploadSession(row) };
+    } catch (error) {
+      if (
+        !(error instanceof Prisma.PrismaClientKnownRequestError) ||
+        error.code !== "P2002"
+      ) {
+        throw error;
+      }
+      const row = await requiredPrisma().uploadSession.findUnique({
+        where: {
+          workspaceId_clientIdempotencyKey: {
+            workspaceId: record.workspaceId,
+            clientIdempotencyKey: record.clientIdempotencyKey,
+          },
+        },
+      });
+      if (!row) throw error;
+      return { created: false, session: fromPrismaUploadSession(row) };
+    }
+  },
+  async prepareAdmission({
+    sessionId,
+    brandTemplateId,
+    brandSnapshot,
+    updatedAt,
+  }) {
+    const row = await requiredPrisma().uploadSession.update({
+      where: { id: sessionId },
+      data: {
+        brandTemplateId,
+        brandSnapshot:
+          brandSnapshot === null
+            ? Prisma.JsonNull
+            : (brandSnapshot as Prisma.InputJsonValue),
+        updatedAt,
+      },
+    });
+    return fromPrismaUploadSession(row);
+  },
+  async waitForAdmission(sessionId) {
+    return waitForSessionState(
+      sessionId,
+      (session) => session.status !== "initiating" || !!session.providerUploadId,
+    );
+  },
+  async bindMultipartProvider({ sessionId, providerUploadId, updatedAt }) {
+    const updated = await requiredPrisma().uploadSession.updateMany({
+      where: { id: sessionId, status: "initiating", providerUploadId: null },
+      data: {
+        providerUploadId,
+        providerInitiatedAt: updatedAt,
+        status: "uploading",
+        admissionAttemptId: null,
+        admissionClaimExpiresAt: null,
+        updatedAt,
+      },
+    });
+    const row = await requiredPrisma().uploadSession.findUnique({
+      where: { id: sessionId },
+    });
+    if (!row) throw new Error("Upload Session not found");
+    if (updated.count === 0 && !row.providerUploadId) {
+      throw new Error("Upload Session provider binding was lost");
+    }
+    return fromPrismaUploadSession(row);
+  },
+  async markSingleReady({ sessionId, updatedAt }) {
+    const row = await requiredPrisma().uploadSession.update({
+      where: { id: sessionId },
+      data: {
+        status: "uploading",
+        admissionAttemptId: null,
+        admissionClaimExpiresAt: null,
+        updatedAt,
+      },
+    });
+    return fromPrismaUploadSession(row);
+  },
+  async findByIdForWorkspace({ sessionId, workspaceId }) {
+    const row = await requiredPrisma().uploadSession.findFirst({
+      where: { id: sessionId, workspaceId },
+    });
+    return row ? fromPrismaUploadSession(row) : null;
+  },
+  async beginFinalization({ sessionId, parts, updatedAt }) {
+    const updated = await requiredPrisma().uploadSession.updateMany({
+      where: { id: sessionId, status: "uploading" },
+      data: {
+        status: "finalizing",
+        completionParts: parts as Prisma.InputJsonValue,
+        updatedAt,
+      },
+    });
+    const row = await requiredPrisma().uploadSession.findUnique({
+      where: { id: sessionId },
+    });
+    if (!row) throw new Error("Upload Session not found");
+    return {
+      claimed: updated.count === 1,
+      session: fromPrismaUploadSession(row),
+    };
+  },
+  async waitForFinalization(sessionId) {
+    return waitForSessionState(
+      sessionId,
+      (session) => session.status !== "finalizing",
+    );
+  },
+  async handoff({
+    sessionId,
+    queuedJobId,
+    verifiedSizeBytes,
+    verifiedContentType,
+    updatedAt,
+  }) {
+    const initial = await requiredPrisma().uploadSession.findUnique({
+      where: { id: sessionId },
+    });
+    if (!initial) throw new Error("Upload Session not found");
+    if (initial.status === "queued_for_ingest") {
+      return fromPrismaUploadSession(initial);
+    }
+    const generation = initial.generationSettings as {
+      languageCode?: unknown;
+      contentPack?: unknown;
+    };
+    const languageCode = String(generation.languageCode ?? "auto");
+    const contentPack = contentPackSchema.parse(generation.contentPack);
+    const retention = await projectRetentionService.assignmentForWorkspace(
+      initial.workspaceId,
+      initial.createdAt,
+    );
+
+    try {
+      const settled = await requiredPrisma().$transaction(async (tx) => {
+        const current = await tx.uploadSession.findUnique({
+          where: { id: sessionId },
+        });
+        if (!current) throw new Error("Upload Session not found");
+        if (current.status === "queued_for_ingest") return current;
+        if (current.status !== "finalizing") {
+          throw new Error("Upload Session is not ready for handoff");
+        }
+        await tx.project.create({
+          data: {
+            id: current.preallocatedProjectId,
+            userId: current.legacyOwnerUserId,
+            workspaceId: current.workspaceId,
+            createdByUserId: current.actorUserId,
+            updatedByUserId: current.actorUserId,
+            title: current.title,
+            sourceMediaUrl: `r2://${process.env.R2_BUCKET ?? "unknown-bucket"}/${current.storageKey}`,
+            sourceType: "upload",
+            sourceInput: current.fileName,
+            sourceStorageKey: current.storageKey,
+            sourceMimeType: verifiedContentType,
+            sourceSizeBytes: BigInt(verifiedSizeBytes),
+            languageCode,
+            ingestStatus: "queued",
+            brandTemplateId: current.brandTemplateId,
+            brandSnapshot: current.brandSnapshot ?? Prisma.JsonNull,
+            retentionPolicyKey: retention?.retentionPolicyKey ?? null,
+            expiresAt: retention?.expiresAt ?? null,
+            workflowEventSeq: 1,
+            createdAt: current.createdAt,
+          },
+        });
+        await tx.contentPack.create({
+          data: {
+            projectId: current.preallocatedProjectId,
+            outputTypes: contentPack.outputTypes,
+            clipGenerationMode: contentPack.clipGenerationMode,
+            clipCountTarget: contentPack.clipCountTarget,
+            clipDurationSecTarget: contentPack.clipDurationSecTarget,
+            minDurationSec: contentPack.minDurationSec,
+            preferredMinDurationSec: contentPack.preferredMinDurationSec,
+            preferredMaxDurationSec: contentPack.preferredMaxDurationSec,
+            maxDurationSec: contentPack.maxDurationSec,
+            platformTargets: contentPack.platformTargets,
+            autoRenderClips: contentPack.autoRenderClips,
+            toneConstraints: contentPack.toneConstraints,
+            captionPreset: contentPack.captionPreset,
+            platformPlaybookVersion: contentPack.platformPlaybookVersion,
+            mode: contentPack.mode,
+            autoHook: contentPack.autoHook,
+            specificMoments: contentPack.specificMoments,
+            processingStartSec: contentPack.processingStartSec,
+            processingEndSec: contentPack.processingEndSec,
+            clipLengthPreset: contentPack.clipLengthPreset,
+            defaultAspectRatio: contentPack.defaultAspectRatio,
+          },
+        });
+        await tx.ingestJob.create({
+          data: {
+            id: queuedJobId,
+            projectId: current.preallocatedProjectId,
+            uploadSessionId: current.id,
+            jobType: "upload_finalize",
+            payload: {
+              storageKey: current.storageKey,
+              verifiedSizeBytes,
+              verifiedContentType,
+              uploadSessionId: current.id,
+            },
+          },
+        });
+        const emittedAt = updatedAt;
+        await tx.workflowEvent.create({
+          data: {
+            projectId: current.preallocatedProjectId,
+            workflowRunId: queuedJobId,
+            seq: 1,
+            stage: "ingest_queued",
+            status: "queued",
+            progress: 5,
+            errorCode: null,
+            emittedAt,
+            dedupeKey: `upload-session:${current.id}:queued`,
+            payload: {
+              event: "workflow.stage.updated",
+              projectId: current.preallocatedProjectId,
+              workflowRunId: queuedJobId,
+              seq: 1,
+              stage: "ingest_queued",
+              status: "queued",
+              progress: 5,
+              errorCode: null,
+              emittedAt: emittedAt.toISOString(),
+            },
+            redisRequired: isWorkflowRedisDeliveryEnabled(),
+            nextDeliveryAt: emittedAt,
+          },
+        });
+        return tx.uploadSession.update({
+          where: { id: current.id },
+          data: {
+            status: "queued_for_ingest",
+            verifiedSizeBytes: BigInt(verifiedSizeBytes),
+            verifiedContentType,
+            queuedJobId,
+            queuedAt: updatedAt,
+            updatedAt,
+          },
+        });
+      });
+      return fromPrismaUploadSession(settled);
+    } catch (error) {
+      if (
+        error instanceof Prisma.PrismaClientKnownRequestError &&
+        error.code === "P2002"
+      ) {
+        const replay = await requiredPrisma().uploadSession.findUnique({
+          where: { id: sessionId },
+        });
+        if (replay?.status === "queued_for_ingest") {
+          return fromPrismaUploadSession(replay);
+        }
+      }
+      throw error;
+    }
+  },
+  async recordFailure({
+    sessionId,
+    status,
+    failureCode,
+    cleanupRetryAt,
+    updatedAt,
+  }) {
+    const row = await requiredPrisma().uploadSession.update({
+      where: { id: sessionId },
+      data: {
+        status,
+        failureCode,
+        cleanupRetryAt,
+        admissionAttemptId: null,
+        admissionClaimExpiresAt: null,
+        updatedAt,
+      },
+    });
+    return fromPrismaUploadSession(row);
+  },
+};
+
+function isMissingMultipartUpload(error: unknown) {
+  if (typeof error !== "object" || error === null) return false;
+  const candidate = error as { name?: unknown; code?: unknown; Code?: unknown };
+  return [candidate.name, candidate.code, candidate.Code].some(
+    (value) => value === "NoSuchUpload" || value === "NotFound",
+  );
+}
+
+const r2UploadSessionStorage: UploadSessionStorage = {
+  async grantSinglePut({ storageKey, contentType, expiresInSeconds }) {
+    return {
+      url: await presignSingleUploadUrl({
+        key: storageKey,
+        contentType,
+        expiresIn: expiresInSeconds,
+      }),
+    };
+  },
+  async createMultipart({ storageKey, contentType, metadata }) {
+    const created = await createMultipartUpload({
+      key: storageKey,
+      contentType,
+      metadata,
+    });
+    return { providerUploadId: created.uploadId };
+  },
+  async grantMultipartParts({
+    storageKey,
+    providerUploadId,
+    partNumbers,
+    expiresInSeconds,
+  }) {
+    return presignMultipartPartUrls({
+      key: storageKey,
+      uploadId: providerUploadId,
+      partNumbers,
+      expiresIn: expiresInSeconds,
+    });
+  },
+  async completeMultipart({ storageKey, providerUploadId, parts }) {
+    await completeMultipartUpload({
+      key: storageKey,
+      uploadId: providerUploadId,
+      etags: parts,
+    });
+  },
+  async listMultipartParts({ storageKey, providerUploadId }) {
+    return listUploadedParts({
+      key: storageKey,
+      uploadId: providerUploadId,
+    });
+  },
+  async headExactObject(storageKey) {
+    const object = await headObject(storageKey);
+    if (object.sizeBytes === null) {
+      throw new Error("R2 object length is unavailable");
+    }
+    return {
+      sizeBytes: object.sizeBytes,
+      contentType: object.contentType,
+    };
+  },
+  async listExactKeyMultipartUploads(storageKey) {
+    return (await listExactKeyMultipartUploads({ key: storageKey })).map(
+      (upload) => ({
+        providerUploadId: upload.uploadId,
+        initiatedAt: upload.initiatedAt,
+      }),
+    );
+  },
+  async abortMultipart({ storageKey, providerUploadId }) {
+    try {
+      await abortMultipartUpload({
+        key: storageKey,
+        uploadId: providerUploadId,
+      });
+    } catch (error) {
+      if (!isMissingMultipartUpload(error)) throw error;
+    }
+  },
+  async deleteExactObject(storageKey) {
+    await deleteObject(storageKey);
+  },
+};
+
+async function assertWorkspaceUploadQuota(workspaceId: string) {
+  const prisma = requiredPrisma();
+  const startOfMonth = new Date();
+  startOfMonth.setUTCDate(1);
+  startOfMonth.setUTCHours(0, 0, 0, 0);
+  const [workspace, usage] = await Promise.all([
+    prisma.workspace.findUnique({
+      where: { id: workspaceId },
+      select: { pricingTier: true },
+    }),
+    prisma.project.aggregate({
+      where: { workspaceId, createdAt: { gte: startOfMonth } },
+      _sum: { sourceDurationSeconds: true },
+    }),
+  ]);
+  const tier = resolvePricingTier(workspace?.pricingTier ?? null);
+  const usedMinutes = processingMinutesFromSeconds(
+    usage._sum.sourceDurationSeconds ?? 0,
+  );
+  const limitMinutes = MONTHLY_PROCESSING_MINUTE_LIMITS[tier];
+  if (
+    isProcessingQuotaExceeded({
+      usedMinutes,
+      requestedSeconds: 0,
+      limitMinutes,
+      blockAtLimitWithoutRequest: true,
+    })
+  ) {
+    throw new UploadSessionQuotaRefusedError({
+      tier,
+      limitMinutes,
+      usedMinutes,
+      requestedMinutes: 0,
+    });
+  }
+}
+
+const productionUploadSessionModule = createUploadSessionModule({
+  config: uploadSessionConfigFromEnv(),
+  persistence: prismaUploadSessionPersistence,
+  storage: r2UploadSessionStorage,
+  admission: {
+    assertQuota: assertWorkspaceUploadQuota,
+    async resolveBrand(input) {
+      return brandTemplateService.resolveSnapshotForUser(
+        input.legacyOwnerUserId,
+        input.brandTemplateId,
+        {
+          workspaceId: input.workspaceId,
+          actorUserId: input.actorUserId,
+        },
+      );
+    },
+  },
+  now: () => new Date(),
+  createId: randomUUID,
+  diagnose(event) {
+    console.warn(
+      JSON.stringify({
+        level: event.disposition === "failed" ? "warn" : "info",
+        message: "upload_session_transition",
+        uploadSessionId: event.sessionId,
+        phase: event.phase,
+        disposition: event.disposition,
+      }),
+    );
+  },
+});
+
+export class UploadSessionService {
+  async open(
+    actorUserId: string,
+    input: ValidatedOpenUploadSessionInput,
+    workspaceId?: string,
+  ) {
+    const parsed = openUploadSessionSchema.parse(input);
+    const ownership = await workspaceService.resolveLegacyOwnership(
+      actorUserId,
+      workspaceId,
+    );
+    await workspaceService.requireActor(
+      actorUserId,
+      ownership.workspaceId,
+      "processing.consume",
+    );
+    const result = await productionUploadSessionModule.open({
+      actorUserId,
+      workspaceId: ownership.workspaceId,
+      legacyOwnerUserId: ownership.legacyOwnerUserId,
+      clientIdempotencyKey: parsed.clientIdempotencyKey,
+      title: parsed.title,
+      source: parsed.source,
+      brandTemplateId: parsed.brandTemplateId ?? null,
+      generation: parsed.generationContext,
+    });
+    console.warn(
+      JSON.stringify({
+        level: "info",
+        message: "upload_session_opened",
+        uploadSessionId: result.sessionId,
+        workspaceId: ownership.workspaceId,
+        state: result.outcome,
+        transferKind:
+          result.outcome === "uploading" ? result.transfer.kind : null,
+        partCount:
+          result.outcome === "uploading" && result.transfer.kind === "multipart"
+            ? result.transfer.partCount
+            : 1,
+      }),
+    );
+    return result;
+  }
+
+  async finalize(
+    actorUserId: string,
+    input: ValidatedFinalizeUploadSessionInput,
+    workspaceId?: string,
+  ) {
+    const parsed = finalizeUploadSessionSchema.parse(input);
+    const ownership = await workspaceService.resolveLegacyOwnership(
+      actorUserId,
+      workspaceId,
+    );
+    await workspaceService.requireActor(
+      actorUserId,
+      ownership.workspaceId,
+      "processing.consume",
+    );
+    const result = await productionUploadSessionModule.finalize({
+      actorUserId,
+      workspaceId: ownership.workspaceId,
+      sessionId: parsed.sessionId,
+      parts: parsed.parts,
+    });
+    console.warn(
+      JSON.stringify({
+        level: "info",
+        message: "upload_session_finalized",
+        uploadSessionId: result.sessionId,
+        workspaceId: ownership.workspaceId,
+        state: result.outcome,
+      }),
+    );
+    return result;
+  }
+}
+
+export const uploadSessionService = new UploadSessionService();
+
+export function createInMemoryUploadSessionHarness() {
+  const sessions: UploadSessionRecord[] = [];
+  const providerInitiations: Array<{
+    storageKey: string;
+    providerUploadId: string;
+  }> = [];
+  const projects: Array<Record<string, unknown>> = [];
+  const contentPacks: Array<Record<string, unknown>> = [];
+  const ingestJobs: Array<Record<string, unknown>> = [];
+  const uploadedParts = new Map<
+    string,
+    Array<{ partNumber: number; etag: string }>
+  >();
+  const providerUploads = new Map<
+    string,
+    {
+      storageKey: string;
+      contentType: string;
+      sizeBytes: number;
+      initiatedAt: Date;
+    }
+  >();
+  const exactObjects = new Map<
+    string,
+    { sizeBytes: number; contentType: string }
+  >();
+  let sequence = 0;
+  let quotaChecks = 0;
+  let brandResolutions = 0;
+  let providerCompletions = 0;
+  let objectProbes = 0;
+  let singlePuts = 0;
+  let exactKeyListings = 0;
+  let objectDeletes = 0;
+  let failProviderBinding = false;
+  let quotaFailure: Error | null = null;
+  let providerCreationFailure: Error | null = null;
+  const providerAborts: string[] = [];
+
+  const persistence: UploadSessionPersistence = {
+    async findByClientKey({ workspaceId, clientIdempotencyKey }) {
+      return (
+        sessions.find(
+          (session) =>
+            session.workspaceId === workspaceId &&
+            session.clientIdempotencyKey === clientIdempotencyKey,
+        ) ?? null
+      );
+    },
+    async reserve(record) {
+      const existing = sessions.find(
+        (session) =>
+          session.workspaceId === record.workspaceId &&
+          session.clientIdempotencyKey === record.clientIdempotencyKey,
+      );
+      if (existing) return { created: false, session: existing };
+      sessions.push(record);
+      return { created: true, session: record };
+    },
+    async prepareAdmission({
+      sessionId,
+      brandTemplateId,
+      brandSnapshot,
+      updatedAt,
+    }) {
+      const session = sessions.find((candidate) => candidate.id === sessionId);
+      if (!session) throw new Error("Upload Session reservation not found");
+      session.brandTemplateId = brandTemplateId;
+      session.brandSnapshot = brandSnapshot;
+      session.updatedAt = updatedAt;
+      return session;
+    },
+    async waitForAdmission(sessionId) {
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        const session = sessions.find((candidate) => candidate.id === sessionId);
+        if (!session) throw new Error("Upload Session reservation not found");
+        if (session.status !== "initiating" || session.providerUploadId) {
+          return session;
+        }
+        await Promise.resolve();
+      }
+      const session = sessions.find((candidate) => candidate.id === sessionId);
+      if (!session) throw new Error("Upload Session reservation not found");
+      return session;
+    },
+    async bindMultipartProvider({ sessionId, providerUploadId, updatedAt }) {
+      if (failProviderBinding) {
+        failProviderBinding = false;
+        throw new Error("injected provider bind loss");
+      }
+      const session = sessions.find((candidate) => candidate.id === sessionId);
+      if (!session) throw new Error("Upload Session reservation not found");
+      session.providerUploadId = providerUploadId;
+      session.status = "uploading";
+      session.updatedAt = updatedAt;
+      return session;
+    },
+    async markSingleReady({ sessionId, updatedAt }) {
+      const session = sessions.find((candidate) => candidate.id === sessionId);
+      if (!session) throw new Error("Upload Session reservation not found");
+      session.status = "uploading";
+      session.updatedAt = updatedAt;
+      return session;
+    },
+    async findByIdForWorkspace({ sessionId, workspaceId }) {
+      return (
+        sessions.find(
+          (session) =>
+            session.id === sessionId && session.workspaceId === workspaceId,
+        ) ?? null
+      );
+    },
+    async beginFinalization({ sessionId, parts, updatedAt }) {
+      const session = sessions.find((candidate) => candidate.id === sessionId);
+      if (!session) throw new Error("Upload Session reservation not found");
+      if (session.status !== "uploading") {
+        return { claimed: false, session };
+      }
+      session.status = "finalizing";
+      session.completionParts = parts;
+      session.updatedAt = updatedAt;
+      return { claimed: true, session };
+    },
+    async waitForFinalization(sessionId) {
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        const session = sessions.find((candidate) => candidate.id === sessionId);
+        if (!session) throw new Error("Upload Session reservation not found");
+        if (session.status !== "finalizing") return session;
+        await Promise.resolve();
+      }
+      const session = sessions.find((candidate) => candidate.id === sessionId);
+      if (!session) throw new Error("Upload Session reservation not found");
+      return session;
+    },
+    async handoff({
+      sessionId,
+      queuedJobId,
+      verifiedSizeBytes,
+      verifiedContentType,
+      updatedAt,
+    }) {
+      const session = sessions.find((candidate) => candidate.id === sessionId);
+      if (!session) throw new Error("Upload Session reservation not found");
+      if (session.status === "queued_for_ingest") return session;
+      const generation = session.generation as {
+        languageCode: string;
+        contentPack: Record<string, unknown>;
+      };
+      projects.push({
+        id: session.preallocatedProjectId,
+        userId: session.legacyOwnerUserId,
+        workspaceId: session.workspaceId,
+        createdByUserId: session.actorUserId,
+        updatedByUserId: session.actorUserId,
+        title: session.title,
+        sourceInput: session.fileName,
+        sourceStorageKey: session.storageKey,
+        sourceMimeType: verifiedContentType,
+        sourceSizeBytes: verifiedSizeBytes,
+        languageCode: generation.languageCode,
+        ingestStatus: "queued",
+        brandTemplateId: session.brandTemplateId,
+        brandSnapshot: session.brandSnapshot,
+      });
+      contentPacks.push({
+        projectId: session.preallocatedProjectId,
+        ...generation.contentPack,
+      });
+      ingestJobs.push({
+        id: queuedJobId,
+        projectId: session.preallocatedProjectId,
+        jobType: "upload_finalize",
+        payload: {
+          storageKey: session.storageKey,
+          verifiedSizeBytes,
+          verifiedContentType,
+          uploadSessionId: session.id,
+        },
+      });
+      session.status = "queued_for_ingest";
+      session.queuedJobId = queuedJobId;
+      session.updatedAt = updatedAt;
+      return session;
+    },
+    async recordFailure({
+      sessionId,
+      status,
+      failureCode,
+      updatedAt,
+    }) {
+      const session = sessions.find((candidate) => candidate.id === sessionId);
+      if (!session) throw new Error("Upload Session reservation not found");
+      session.status = status;
+      session.failureCode = failureCode;
+      session.updatedAt = updatedAt;
+      return session;
+    },
+  };
+
+  const storage: UploadSessionStorage = {
+    async grantSinglePut() {
+      return { url: "https://upload.invalid/single" };
+    },
+    async createMultipart({ storageKey, contentType, metadata }) {
+      if (providerCreationFailure) {
+        const error = providerCreationFailure;
+        providerCreationFailure = null;
+        throw error;
+      }
+      const providerUploadId = `opaque/provider/${++sequence}`;
+      providerInitiations.push({ storageKey, providerUploadId });
+      providerUploads.set(providerUploadId, {
+        storageKey,
+        contentType,
+        sizeBytes: Number(metadata.file_size_bytes ?? 0),
+        initiatedAt: new Date(
+          `2026-08-27T00:00:${String(sequence).padStart(2, "0")}.000Z`,
+        ),
+      });
+      return { providerUploadId };
+    },
+    async grantMultipartParts({ partNumbers }) {
+      return partNumbers.map((partNumber) => ({
+        partNumber,
+        url: `https://upload.invalid/part/${partNumber}`,
+      }));
+    },
+    async completeMultipart({ storageKey, providerUploadId, parts }) {
+      const provider = providerUploads.get(providerUploadId);
+      if (!provider || provider.storageKey !== storageKey) {
+        throw new Error("NoSuchUpload");
+      }
+      const uploaded = uploadedParts.get(providerUploadId) ?? [];
+      if (JSON.stringify(uploaded) !== JSON.stringify(parts)) {
+        throw new Error("InvalidPart");
+      }
+      providerCompletions += 1;
+      exactObjects.set(storageKey, {
+        sizeBytes: provider.sizeBytes,
+        contentType: provider.contentType,
+      });
+    },
+    async listMultipartParts({ storageKey, providerUploadId }) {
+      const provider = providerUploads.get(providerUploadId);
+      if (!provider || provider.storageKey !== storageKey) {
+        throw new Error("NoSuchUpload");
+      }
+      return uploadedParts.get(providerUploadId) ?? [];
+    },
+    async headExactObject(storageKey) {
+      objectProbes += 1;
+      const object = exactObjects.get(storageKey);
+      if (!object) throw new Error("NoSuchKey");
+      return object;
+    },
+    async listExactKeyMultipartUploads(storageKey) {
+      exactKeyListings += 1;
+      return Array.from(providerUploads, ([providerUploadId, upload]) => ({
+        providerUploadId,
+        initiatedAt: upload.initiatedAt,
+        storageKey: upload.storageKey,
+      }))
+        .filter((upload) => upload.storageKey === storageKey)
+        .map(({ providerUploadId, initiatedAt }) => ({
+          providerUploadId,
+          initiatedAt,
+        }));
+    },
+    async abortMultipart({ storageKey, providerUploadId }) {
+      const upload = providerUploads.get(providerUploadId);
+      if (!upload || upload.storageKey !== storageKey) return;
+      providerAborts.push(providerUploadId);
+      providerUploads.delete(providerUploadId);
+    },
+    async deleteExactObject(storageKey) {
+      objectDeletes += 1;
+      exactObjects.delete(storageKey);
+    },
+  };
+
+  return {
+    adapters: {
+      config: defaultUploadSessionConfig(),
+      persistence,
+      storage,
+      admission: {
+        async assertQuota() {
+          quotaChecks += 1;
+          if (quotaFailure) throw quotaFailure;
+        },
+        async resolveBrand() {
+          brandResolutions += 1;
+          return null;
+        },
+      },
+      now: () => new Date("2026-08-27T00:00:00.000Z"),
+      createId: randomUUID,
+    } satisfies UploadSessionModuleDependencies,
+    facts: {
+      sessions,
+      providerInitiations,
+      projects,
+      get quotaChecks() {
+        return quotaChecks;
+      },
+      get brandResolutions() {
+        return brandResolutions;
+      },
+      contentPacks,
+      ingestJobs,
+      get providerCompletions() {
+        return providerCompletions;
+      },
+      get objectProbes() {
+        return objectProbes;
+      },
+      get singlePuts() {
+        return singlePuts;
+      },
+      get exactKeyListings() {
+        return exactKeyListings;
+      },
+      get objectDeletes() {
+        return objectDeletes;
+      },
+      providerAborts,
+      get unfinishedProviderUploads() {
+        return Array.from(providerUploads.keys()).sort();
+      },
+    },
+    uploadMultipartParts(
+      sessionId: string,
+      parts: Array<{ partNumber: number; etag: string }>,
+    ) {
+      const session = sessions.find((candidate) => candidate.id === sessionId);
+      if (!session?.providerUploadId) {
+        throw new Error("Upload Session provider binding not found");
+      }
+      uploadedParts.set(session.providerUploadId, parts);
+      const provider = providerUploads.get(session.providerUploadId);
+      if (provider) provider.sizeBytes = session.fileSizeBytes;
+    },
+    putSingleObject(
+      sessionId: string,
+      object: { sizeBytes: number; contentType: string },
+    ) {
+      const session = sessions.find((candidate) => candidate.id === sessionId);
+      if (!session || session.transferKind !== "single") {
+        throw new Error("Single-transfer Upload Session not found");
+      }
+      singlePuts += 1;
+      exactObjects.set(session.storageKey, object);
+    },
+    failNextProviderBinding() {
+      failProviderBinding = true;
+    },
+    failQuota(error: Error) {
+      quotaFailure = error;
+    },
+    failNextProviderCreation(error: Error) {
+      providerCreationFailure = error;
+    },
+    createDuplicateUnfinishedUpload(sessionId: string) {
+      const session = sessions.find((candidate) => candidate.id === sessionId);
+      if (!session) throw new Error("Upload Session not found");
+      const providerUploadId = `opaque/provider/${++sequence}`;
+      providerUploads.set(providerUploadId, {
+        storageKey: session.storageKey,
+        contentType: session.contentType,
+        sizeBytes: 0,
+        initiatedAt: new Date(
+          `2026-08-27T00:00:${String(sequence).padStart(2, "0")}.000Z`,
+        ),
+      });
+      providerInitiations.push({
+        storageKey: session.storageKey,
+        providerUploadId,
+      });
+    },
+  };
+}
