@@ -5,11 +5,13 @@ import {
   hasFeature,
   projectService,
   socialService,
+  SocialPublicationRecoveryError,
   workspaceService,
   type WorkspaceCapability,
 } from "@narriflow/services";
 import {
   BRAND_DEFAULT_CAPTION_PRESET_ID,
+  confirmSocialPublicationSchema,
   contentPackSchema,
 } from "@narriflow/validators";
 import * as z from "zod/v4";
@@ -18,7 +20,7 @@ export const NARRIFLOW_MCP_SERVER_NAME = "narriflow";
 export const NARRIFLOW_MCP_SERVER_VERSION = "0.2.0";
 
 export const NARRIFLOW_MCP_INSTRUCTIONS =
-  "Start with narriflow_list_workspaces and use the returned workspaceId for later calls. Narriflow data and billing are workspace-scoped. Read tools are safe; call write tools only when the user clearly asks. Rechecking a social publication inspects its existing provider operation and never submits a new post. MCP workspace access requires an active Business plan, and media processing still consumes the workspace's monthly minute quota.";
+  "Start with narriflow_list_workspaces and use the returned workspaceId for later calls. Narriflow data and billing are workspace-scoped. Read tools are safe; call write tools only when the user clearly asks. Rechecking a social publication inspects its existing provider operation and never submits a new post. Confirming publication requires evidence. Publishing again creates a new attempt and requires explicit duplicate-risk acknowledgement. MCP workspace access requires an active Business plan, and media processing still consumes the workspace's monthly minute quota.";
 
 export type NarriflowMcpPrincipal =
   | {
@@ -59,10 +61,26 @@ function success(data: unknown) {
 }
 
 function failure(error: unknown) {
-  const message = error instanceof Error ? error.message : "Narriflow tool failed";
+  const apiKeyScope = error instanceof Error && error.message.startsWith("This API key requires");
+  const workspaceBoundary =
+    error instanceof Error && error.message === "This API key is bound to a different workspace";
+  const billingBoundary = error instanceof Error && error.message.startsWith("Narriflow MCP ");
+  const payload = error instanceof SocialPublicationRecoveryError
+    ? { error: error.code, message: error.message }
+    : apiKeyScope
+      ? { error: "mcp_api_key_scope_required", message: error.message }
+      : workspaceBoundary
+        ? { error: "mcp_workspace_boundary_violation", message: error.message }
+        : billingBoundary
+          ? { error: "mcp_workspace_access_unavailable", message: error.message }
+          : {
+              error: "narriflow_tool_failed",
+              message: "Narriflow tool failed without exposing internal details",
+            };
   return {
     isError: true as const,
-    content: [{ type: "text" as const, text: message }],
+    content: [{ type: "text" as const, text: JSON.stringify(payload) }],
+    structuredContent: { data: payload },
   };
 }
 
@@ -158,11 +176,51 @@ export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal) {
   );
 
   server.registerTool(
+    "narriflow_confirm_social_publication",
+    {
+      title: "Confirm social publication",
+      description:
+        "Record operator evidence that a Needs attention publication exists on the provider. This settles the existing attempt without submitting another post.",
+      inputSchema: confirmSocialPublicationSchema.extend({
+        ...workspaceInput,
+        socialPostId: z.string().uuid(),
+      }),
+      outputSchema: dataOutputSchema,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false,
+      },
+    },
+    async ({ socialPostId, reason, evidenceKind, providerReference, externalUrl, workspaceId }) => runTool(async () => {
+      const actor = await requireWorkspace(
+        principal,
+        workspaceId,
+        "publishing.manage",
+        "publishing:write",
+      );
+      logMutation("narriflow_confirm_social_publication", principal, actor.workspaceId);
+      return socialService.confirmPublication(
+        actor.workspaceId,
+        principal.userId,
+        socialPostId,
+        {
+          reason,
+          evidenceKind,
+          providerReference: providerReference ?? null,
+          externalUrl: externalUrl ?? null,
+        },
+      );
+    }),
+  );
+
+  server.registerTool(
     "narriflow_create_rss_autopilot_rule",
     {
       title: "Create RSS autopilot rule",
       description: "Create a workspace RSS rule that imports new episodes and queues clip generation.",
-      inputSchema: z.object({
+      inputSchema: z.strictObject({
         ...workspaceInput,
         name: z.string().min(1).max(120),
         rssUrl: z.url(),
@@ -207,7 +265,7 @@ export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal) {
     {
       title: "Get Narriflow project",
       description: "Fetch one project, its transcript summary, and its detected clips.",
-      inputSchema: z.object({
+      inputSchema: z.strictObject({
         ...workspaceInput,
         projectId: z.string().uuid(),
       }),
@@ -236,7 +294,7 @@ export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal) {
       title: "Get social publication recovery facts",
       description:
         "Inspect one social publication, its attempt outcomes, allowed recovery evidence, and manual decisions without exposing provider checkpoint state.",
-      inputSchema: z.object({
+      inputSchema: z.strictObject({
         ...workspaceInput,
         socialPostId: z.string().uuid(),
       }),
@@ -289,7 +347,7 @@ export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal) {
     {
       title: "List Narriflow projects",
       description: "List workspace projects with clip and processing statistics.",
-      inputSchema: z.object({
+      inputSchema: z.strictObject({
         ...workspaceInput,
         limit: z.number().int().min(1).max(100).optional(),
         cursor: z.string().nullable().optional(),
@@ -377,12 +435,49 @@ export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal) {
   );
 
   server.registerTool(
+    "narriflow_publish_social_publication_again",
+    {
+      title: "Publish social publication again",
+      description:
+        "Fence the uncertain provider operation and create a new publication attempt. This may create a duplicate post and requires explicit acknowledgement.",
+      inputSchema: z.strictObject({
+        ...workspaceInput,
+        socialPostId: z.string().uuid(),
+        reason: z.string().trim().min(1).max(500),
+        duplicateRiskAcknowledged: z.literal(true),
+      }),
+      outputSchema: dataOutputSchema,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: true,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
+    },
+    async ({ socialPostId, reason, duplicateRiskAcknowledged, workspaceId }) => runTool(async () => {
+      const actor = await requireWorkspace(
+        principal,
+        workspaceId,
+        "publishing.manage",
+        "publishing:write",
+      );
+      logMutation("narriflow_publish_social_publication_again", principal, actor.workspaceId);
+      return socialService.republishPublication(
+        actor.workspaceId,
+        principal.userId,
+        socialPostId,
+        { reason, duplicateRiskAcknowledged },
+      );
+    }),
+  );
+
+  server.registerTool(
     "narriflow_recheck_social_publication",
     {
       title: "Recheck social publication",
       description:
         "Queue a targeted read-only reconciliation of the existing provider operation. This cannot create a new Social Publication Attempt or submit another post.",
-      inputSchema: z.object({
+      inputSchema: z.strictObject({
         ...workspaceInput,
         socialPostId: z.string().uuid(),
         reason: z.string().trim().min(1).max(500),

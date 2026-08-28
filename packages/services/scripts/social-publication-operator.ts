@@ -1,5 +1,5 @@
-import { socialPublicationRecovery } from "../src/social-publication-recovery";
 import { parseSocialPublicationOperatorArgs } from "../src/social-publication-operator";
+import { socialService } from "../src/social.service";
 
 function write(value: unknown) {
   process.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
@@ -7,16 +7,23 @@ function write(value: unknown) {
 
 try {
   const input = parseSocialPublicationOperatorArgs(process.argv.slice(2));
-  const before = await socialPublicationRecovery.inspect(input);
+  const before = await socialService.inspectPublication(
+    input.workspaceId,
+    input.socialPostId,
+  );
   if (!input.recheck) {
     write({ mode: "inspect", inspection: before });
   } else {
-    const reconciliation = await socialPublicationRecovery.recheck({
-      ...input,
-      actorUserId: input.actorUserId,
-      reason: input.reason,
-    });
-    const after = await socialPublicationRecovery.inspect(input);
+    const reconciliation = await socialService.recheckPublication(
+      input.workspaceId,
+      input.actorUserId,
+      input.socialPostId,
+      { reason: input.reason },
+    );
+    const after = await socialService.inspectPublication(
+      input.workspaceId,
+      input.socialPostId,
+    );
     write({ mode: "recheck", reconciliation, before, after });
   }
 } catch (error) {

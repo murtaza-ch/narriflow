@@ -173,6 +173,12 @@ function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Unexpected server error";
 }
 
+function socialPublicationErrorStatus(error: SocialPublicationRecoveryError) {
+  if (error.code === "social_publication_not_found") return 404 as const;
+  if (error.code === "social_publication_reference_invalid") return 400 as const;
+  return 409 as const;
+}
+
 function getOAuthOrigin(requestUrl: string) {
   return resolveCanonicalAppOrigin({
     configuredOrigin: process.env.NEXT_PUBLIC_APP_URL,
@@ -2382,9 +2388,15 @@ app.get("/projects/:id/social-posts/:postId/publication", async (c) => {
       200,
     );
   } catch (error) {
+    if (error instanceof SocialPublicationRecoveryError) {
+      return c.json(
+        { error: error.code, message: error.message },
+        socialPublicationErrorStatus(error),
+      );
+    }
     return c.json(
-      { error: "social_publication_inspect_failed", message: errorMessage(error) },
-      error instanceof SocialPublicationRecoveryError ? 404 : 400,
+      { error: "social_publication_inspect_failed", message: "Could not inspect this publication" },
+      500,
     );
   }
 });
@@ -2392,11 +2404,15 @@ app.get("/projects/:id/social-posts/:postId/publication", async (c) => {
 app.post("/projects/:id/social-posts/:postId/recheck", async (c) => {
   const appUser = await getCurrentAppUser();
   if (!appUser) return c.json({ error: "Unauthorized" }, 401);
-  await workspaceService.requireActor(
-    appUser.actorUserId,
-    appUser.workspaceId,
-    "publishing.manage",
-  );
+  try {
+    await workspaceService.requireActor(
+      appUser.actorUserId,
+      appUser.workspaceId,
+      "publishing.manage",
+    );
+  } catch {
+    return c.json({ error: "Forbidden" }, 403);
+  }
   const projectId = c.req.param("id");
   const access = await projectService.getProjectAccess(
     appUser.actorUserId,
@@ -2421,9 +2437,15 @@ app.post("/projects/:id/social-posts/:postId/recheck", async (c) => {
       200,
     );
   } catch (error) {
+    if (error instanceof SocialPublicationRecoveryError) {
+      return c.json(
+        { error: error.code, message: error.message },
+        socialPublicationErrorStatus(error),
+      );
+    }
     return c.json(
-      { error: error instanceof SocialPublicationRecoveryError ? error.code : "social_publication_recheck_failed", message: errorMessage(error) },
-      error instanceof SocialPublicationRecoveryError ? 409 : 400,
+      { error: "social_publication_recheck_failed", message: "Could not recheck this publication" },
+      500,
     );
   }
 });
@@ -2431,11 +2453,15 @@ app.post("/projects/:id/social-posts/:postId/recheck", async (c) => {
 app.post("/projects/:id/social-posts/:postId/confirm", async (c) => {
   const appUser = await getCurrentAppUser();
   if (!appUser) return c.json({ error: "Unauthorized" }, 401);
-  await workspaceService.requireActor(
-    appUser.actorUserId,
-    appUser.workspaceId,
-    "publishing.manage",
-  );
+  try {
+    await workspaceService.requireActor(
+      appUser.actorUserId,
+      appUser.workspaceId,
+      "publishing.manage",
+    );
+  } catch {
+    return c.json({ error: "Forbidden" }, 403);
+  }
   const projectId = c.req.param("id");
   const access = await projectService.getProjectAccess(
     appUser.actorUserId,
@@ -2460,9 +2486,15 @@ app.post("/projects/:id/social-posts/:postId/confirm", async (c) => {
       200,
     );
   } catch (error) {
+    if (error instanceof SocialPublicationRecoveryError) {
+      return c.json(
+        { error: error.code, message: error.message },
+        socialPublicationErrorStatus(error),
+      );
+    }
     return c.json(
-      { error: error instanceof SocialPublicationRecoveryError ? error.code : "social_publication_confirm_failed", message: errorMessage(error) },
-      error instanceof SocialPublicationRecoveryError ? 409 : 400,
+      { error: "social_publication_confirm_failed", message: "Could not confirm this publication" },
+      500,
     );
   }
 });
@@ -2470,11 +2502,15 @@ app.post("/projects/:id/social-posts/:postId/confirm", async (c) => {
 app.post("/projects/:id/social-posts/:postId/publish-again", async (c) => {
   const appUser = await getCurrentAppUser();
   if (!appUser) return c.json({ error: "Unauthorized" }, 401);
-  await workspaceService.requireActor(
-    appUser.actorUserId,
-    appUser.workspaceId,
-    "publishing.manage",
-  );
+  try {
+    await workspaceService.requireActor(
+      appUser.actorUserId,
+      appUser.workspaceId,
+      "publishing.manage",
+    );
+  } catch {
+    return c.json({ error: "Forbidden" }, 403);
+  }
   const projectId = c.req.param("id");
   const access = await projectService.getProjectAccess(
     appUser.actorUserId,
@@ -2499,9 +2535,15 @@ app.post("/projects/:id/social-posts/:postId/publish-again", async (c) => {
       201,
     );
   } catch (error) {
+    if (error instanceof SocialPublicationRecoveryError) {
+      return c.json(
+        { error: error.code, message: error.message },
+        socialPublicationErrorStatus(error),
+      );
+    }
     return c.json(
-      { error: error instanceof SocialPublicationRecoveryError ? error.code : "social_publication_republish_failed", message: errorMessage(error) },
-      error instanceof SocialPublicationRecoveryError ? 409 : 400,
+      { error: "social_publication_republish_failed", message: "Could not publish this post again" },
+      500,
     );
   }
 });

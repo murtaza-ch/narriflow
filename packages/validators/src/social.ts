@@ -43,18 +43,33 @@ export const publicationEvidenceKindSchema = z.enum([
   "manual_unvalidated",
 ]);
 
-export const recheckSocialPublicationSchema = z.object({
+export const recheckSocialPublicationSchema = z.strictObject({
   reason: z.string().trim().min(1).max(500),
 });
 
-export const confirmSocialPublicationSchema = z.object({
+export const confirmSocialPublicationSchema = z.strictObject({
   reason: z.string().trim().min(1).max(500),
   evidenceKind: publicationEvidenceKindSchema,
   providerReference: z.string().trim().min(1).max(500).nullable().optional(),
   externalUrl: z.string().url().max(2_048).nullable().optional(),
+}).superRefine((value, context) => {
+  if (value.evidenceKind === "platform_url" && !value.externalUrl) {
+    context.addIssue({
+      code: "custom",
+      path: ["externalUrl"],
+      message: "A platform URL is required for platform URL evidence",
+    });
+  }
+  if (value.evidenceKind === "provider_reference" && !value.providerReference) {
+    context.addIssue({
+      code: "custom",
+      path: ["providerReference"],
+      message: "A provider reference is required for provider reference evidence",
+    });
+  }
 });
 
-export const republishSocialPublicationSchema = z.object({
+export const republishSocialPublicationSchema = z.strictObject({
   reason: z.string().trim().min(1).max(500),
   duplicateRiskAcknowledged: z.literal(true),
 });
@@ -130,6 +145,9 @@ export const socialPostSnapshotSchema = z.object({
   errorCode: z.string().nullable(),
   errorDisposition: publicationFailureDispositionSchema.nullable(),
   nextAttemptAt: z.string().datetime().nullable(),
+  providerProcessingStatus: z.enum(["processing", "succeeded", "failed", "unknown"]).nullable(),
+  providerProcessingFailureCode: z.string().nullable(),
+  providerVisibility: z.string().nullable(),
   allowedActions: z.array(socialPublicationActionSchema).default([]),
   latestMetrics: socialPostMetricsSnapshotSchema.nullable(),
   createdAt: z.string().datetime(),

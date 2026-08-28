@@ -167,6 +167,7 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 				status: "completed",
 				storageKey: `tests/${suffix}.mp4`,
 				sizeBytes: 1_024n,
+				durationSec: 30,
 				completedAt: new Date(),
 			},
 		});
@@ -236,6 +237,7 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 				exportFingerprint: fixture.clipExport.fingerprint,
 				storageKey: fixture.variant.storageKey,
 				sizeBytes: Number(fixture.variant.sizeBytes),
+				durationSec: fixture.variant.durationSec,
 				aspectRatio: "9:16" as const,
 				caption: "Frozen caption",
 				providerSettings: {},
@@ -275,10 +277,6 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		const claim = claims.find((row) => row.attemptId === attempt.id);
 		if (!claim) throw new Error("expected attention fixture claim");
 		await prisma.$transaction([
-			prisma.publicationClaim.update({
-				where: { id: claim.claimId },
-				data: { releasedAt: now, accountSlotKey: null },
-			}),
 			prisma.socialPublicationAttempt.update({
 				where: { id: attempt.id },
 				data: {
@@ -286,6 +284,9 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 					outcome: "unknown",
 					failureCode: "publication_outcome_unknown",
 					failureDisposition: "attention",
+					operationLookupHash: publicationOperationLookupHash(
+						`attention:${socialPostId}`,
+					),
 					terminalAt: now,
 					currentClaimId: null,
 				},
@@ -299,6 +300,7 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 					nextAttemptAt: null,
 				},
 			}),
+			prisma.publicationClaim.delete({ where: { id: claim.claimId } }),
 		]);
 		return { socialPostId, attemptId: attempt.id, now };
 	}
@@ -880,6 +882,7 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 						exportFingerprint: f.clipExport.fingerprint,
 						storageKey: f.variant.storageKey,
 						sizeBytes: f.variant.sizeBytes,
+						durationSec: f.variant.durationSec,
 						aspectRatio: "ratio_9_16" as const,
 						caption: "Frozen fairness fixture",
 						providerSettings: {},
@@ -898,6 +901,7 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 						exportFingerprint: f.clipExport.fingerprint,
 						storageKey: f.variant.storageKey,
 						sizeBytes: f.variant.sizeBytes,
+						durationSec: f.variant.durationSec,
 						aspectRatio: "ratio_9_16" as const,
 						caption: "Frozen unrelated fixture",
 						providerSettings: {},
@@ -1001,7 +1005,7 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 			actorUserId: f.user.id,
 			socialPostId: target.socialPostId,
 			reason: "Editor found the exact Short on the selected channel",
-			evidenceKind: "platform_url",
+			evidenceKind: "manual_unvalidated",
 			externalUrl: "https://youtube.com/shorts/manual-proof",
 			now: target.now,
 		});
@@ -1022,7 +1026,7 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 				where: { socialPostId: target.socialPostId },
 			}),
 		).toMatchObject({
-			evidenceKind: "platform_url",
+			evidenceKind: "manual_unvalidated",
 			ownershipValidated: false,
 		});
 	});
@@ -1069,6 +1073,7 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		if (post.status === "scheduled") {
 			expect(attempts).toHaveLength(2);
 			expect(attempts[0]!.phase).toBe("needs_attention");
+			expect(attempts[0]!.operationLookupHash).toBeNull();
 			expect(attempts[1]!.priorAttemptId).toBe(target.attemptId);
 		} else {
 			expect(attempts).toHaveLength(1);
@@ -1145,8 +1150,10 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 			prisma.socialPublicationAttempt.update({
 				where: { id: attempt.id },
 				data: {
-					phase: "processing",
-					outcome: "pending",
+					phase: "needs_attention",
+					outcome: "unknown",
+					failureCode: "tiktok_publication_outcome_unknown",
+					failureDisposition: "attention",
 					operationKind: "tiktok_processing",
 					operationLookupHash: publicationOperationLookupHash(
 						`tiktok:${publishId}`,
@@ -1156,7 +1163,11 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 			}),
 			prisma.socialPost.update({
 				where: { id: socialPostId },
-				data: { status: "processing" },
+				data: {
+					status: "needs_attention",
+					errorCode: "tiktok_publication_outcome_unknown",
+					errorDisposition: "attention",
+				},
 			}),
 		]);
 
@@ -1194,6 +1205,11 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		expect(
 			await prisma.providerReceipt.count({ where: { attemptId: attempt.id } }),
 		).toBe(1);
+		expect(
+			await prisma.publicationClaim.findUniqueOrThrow({
+				where: { id: claim.claimId },
+			}),
+		).toMatchObject({ releasedAt: now, accountSlotKey: null });
 		expect(
 			await prisma.projectAnalyticsEvent.count({
 				where: { projectId: f.project.id, type: "social_posted" },

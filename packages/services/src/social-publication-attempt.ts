@@ -11,6 +11,7 @@ import type {
 } from "./social-publication-platform";
 import { PublicationPlatformExecutionError } from "./social-publication-platform";
 import type { FrozenPublicationState } from "./social-publication-scheduling";
+import type { SocialPublicationMetrics } from "./social-publication-observability";
 
 export type PublicationAttemptPhase =
 	| "claimed"
@@ -65,9 +66,11 @@ export type PublicationAttemptSeed = {
 		nextActionAt: Date;
 		providerCallCount: number;
 		startedAt: Date;
+		phaseStartedAt?: Date;
 		processingDeadline: Date;
 		reconciliationDeadline: Date;
 		failureCode?: string | null;
+		failureEvidence?: Prisma.InputJsonValue | null;
 		failureDisposition?: PublicationFailureDisposition | null;
 	};
 	claim: {
@@ -162,6 +165,7 @@ export interface SocialPublicationAttemptStore {
 		phase: PublicationOperationPhase;
 		disposition: PublicationFailureDisposition;
 		retryAfterMs: number | null;
+		failureEvidence?: Prisma.InputJsonValue;
 		submissionMayHaveStarted: boolean;
 		now: Date;
 		retry: PublicationRetryPolicy;
@@ -266,6 +270,7 @@ export function createSocialPublicationAttempt(dependencies: {
 	};
 	clock: { now(): Date };
 	diagnostics: { record(event: SocialPublicationDiagnostic): void };
+	metrics?: SocialPublicationMetrics;
 	retry: PublicationRetryPolicy;
 	providerCallBudget: number;
 	processingDeadlineMs: number;
@@ -281,7 +286,19 @@ export function createSocialPublicationAttempt(dependencies: {
 				input.attempt,
 				dependencies.clock.now(),
 			);
-			if (loaded.terminalResult) return loaded.terminalResult;
+			if (loaded.terminalResult) {
+				dependencies.metrics?.observe(
+					"social_publication_settlement_replays_total",
+					1,
+					{ platform: loaded.frozen.platform, phase: loaded.attempt.phase },
+				);
+				return loaded.terminalResult;
+			}
+			dependencies.metrics?.observe(
+				"social_publication_queue_age_ms",
+				Math.max(0, startedAtMs - loaded.attempt.nextActionAt.getTime()),
+				{ platform: loaded.frozen.platform, phase: loaded.attempt.phase },
+			);
 			const recordDiagnostic = (
 				event: Omit<
 					SocialPublicationDiagnostic,
@@ -294,7 +311,7 @@ export function createSocialPublicationAttempt(dependencies: {
 					| "elapsedMs"
 				>,
 			) => {
-				dependencies.diagnostics.record({
+				const recorded = {
 					...event,
 					attemptId: input.attempt.attemptId,
 					claimId: input.attempt.claimId,
@@ -308,7 +325,78 @@ export function createSocialPublicationAttempt(dependencies: {
 								.slice(0, 16)
 						: undefined,
 					elapsedMs: dependencies.clock.now().getTime() - startedAtMs,
-				});
+				};
+				dependencies.diagnostics.record(recorded);
+				const attributes = {
+					platform: recorded.platform,
+					phase: recorded.phase,
+					outcome: recorded.outcome,
+					disposition: recorded.disposition,
+				};
+				if (recorded.phase === "processing") {
+					dependencies.metrics?.observe(
+						"social_publication_pending_age_ms",
+						Math.max(
+							0,
+							dependencies.clock.now().getTime() -
+								(loaded.attempt.phaseStartedAt ?? loaded.attempt.startedAt).getTime(),
+						),
+						attributes,
+					);
+				}
+				if (recorded.phase === "reconciling") {
+					dependencies.metrics?.observe(
+						"social_publication_reconciliation_age_ms",
+						Math.max(
+							0,
+							dependencies.clock.now().getTime() -
+								(loaded.attempt.phaseStartedAt ?? loaded.attempt.startedAt).getTime(),
+						),
+						attributes,
+					);
+				}
+				if (recorded.phase === "retry_scheduled") {
+					dependencies.metrics?.observe(
+						"social_publication_retries_total",
+						1,
+						attributes,
+					);
+				}
+				if (recorded.phase === "needs_attention") {
+					dependencies.metrics?.observe(
+						"social_publication_attention_total",
+						1,
+						attributes,
+					);
+				}
+				if (recorded.outcome === "accepted") {
+					dependencies.metrics?.observe(
+						"social_publication_receipts_total",
+						1,
+						attributes,
+					);
+				}
+				if (
+					recorded.errorCode?.includes("rate_limit") ||
+					recorded.errorCode?.includes("429")
+				) {
+					dependencies.metrics?.observe(
+						"social_publication_rate_limits_total",
+						1,
+						attributes,
+					);
+				}
+				if (
+					recorded.phase === "posted" ||
+					recorded.phase === "failed" ||
+					recorded.phase === "needs_attention"
+				) {
+					dependencies.metrics?.observe(
+						"social_publication_terminal_outcomes_total",
+						1,
+						attributes,
+					);
+				}
 			};
 			let platform: PublicationPlatform;
 			let account: PublishSocialAccount | null;
@@ -320,8 +408,18 @@ export function createSocialPublicationAttempt(dependencies: {
 				account = loaded.frozen.socialAccountId
 					? await dependencies.credentials.load(loaded.frozen.socialAccountId)
 					: null;
-			} catch {
+			} catch (error) {
 				const now = dependencies.clock.now();
+				const credentialCode =
+					error &&
+					typeof error === "object" &&
+					"code" in error &&
+					(error.code === "social_account_expired" ||
+						error.code === "social_account_missing")
+						? "social_account_reconnect_required"
+						: null;
+				const failureCode =
+					credentialCode ?? "publication_execution_dependency_unavailable";
 				const submissionMayHaveStarted =
 					loaded.attempt.phase === "submission_started" ||
 					loaded.attempt.phase === "processing" ||
@@ -342,13 +440,13 @@ export function createSocialPublicationAttempt(dependencies: {
 					}
 					const settled = await dependencies.store.settleUnknown({
 						owned: input.attempt,
-						code: "publication_execution_dependency_unavailable",
+						code: failureCode,
 						operation,
 						sealedState: loaded.sealedCheckpoint,
 						canReconcile: false,
 						nextActionAt: null,
 						now,
-					});
+							});
 					recordDiagnostic({
 						level: "error",
 						message: "social_publication_attempt_failed",
@@ -356,15 +454,15 @@ export function createSocialPublicationAttempt(dependencies: {
 						operation: operation?.kind ?? "platform_resolution",
 						outcome: settled.kind,
 						disposition: "attention",
-						errorCode: "publication_execution_dependency_unavailable",
+						errorCode: failureCode,
 					});
 					return settled;
 				}
 				const settled = await dependencies.store.settleFailed({
 					owned: input.attempt,
-					code: "publication_execution_dependency_unavailable",
+					code: failureCode,
 					phase: "preparation",
-					disposition: "safe_retry",
+					disposition: credentialCode ? "permanent" : "safe_retry",
 					retryAfterMs: null,
 					submissionMayHaveStarted: false,
 					now,
@@ -379,8 +477,8 @@ export function createSocialPublicationAttempt(dependencies: {
 					phase: settled.kind,
 					operation: "platform_resolution",
 					outcome: settled.kind,
-					disposition: "safe_retry",
-					errorCode: "publication_execution_dependency_unavailable",
+					disposition: credentialCode ? "permanent" : "safe_retry",
+					errorCode: failureCode,
 					retryAt:
 						settled.kind === "retry_scheduled"
 							? settled.nextActionAt.toISOString()
@@ -445,6 +543,7 @@ export function createSocialPublicationAttempt(dependencies: {
 					fileName: `social-${loaded.frozen.clipExportVariantId}.mp4`,
 					contentType: "video/mp4" as const,
 					sizeBytes: loaded.frozen.sizeBytes!,
+					durationSec: loaded.frozen.durationSec!,
 					aspectRatio: loaded.frozen.aspectRatio,
 				},
 			};
@@ -467,15 +566,25 @@ export function createSocialPublicationAttempt(dependencies: {
 					throw new DOMException("Aborted", "AbortError");
 				const context = {
 					signal: input.signal,
-					providerCall: () =>
-						dependencies.store.recordProviderCall({
+					providerCall: async () => {
+						await dependencies.store.recordProviderCall({
 							owned: input.attempt,
 							maximum: Math.min(
 								dependencies.providerCallBudget,
 								platform.capabilities.maxProviderCalls,
 							),
 							now: dependencies.clock.now(),
-						}),
+							});
+						dependencies.metrics?.observe(
+							"social_publication_provider_operations_total",
+							1,
+								{
+									platform: loaded.frozen.platform,
+									operation:
+										lastCheckpointOperation?.kind ?? loaded.attempt.phase,
+								},
+						);
+					},
 					checkpoint: async (operation: PublicationProviderOperation) => {
 						lastCheckpointOperation = operation;
 						const sealedState = dependencies.checkpointCipher.seal(
@@ -566,6 +675,7 @@ export function createSocialPublicationAttempt(dependencies: {
 							phase: result.failure.phase,
 							disposition: result.failure.disposition,
 							retryAfterMs: result.failure.retryAfterMs,
+							failureEvidence: result.failure.evidence,
 							submissionMayHaveStarted:
 								submissionCheckpointed &&
 								!result.failure.safeToRepublishAfterSubmission,
@@ -591,7 +701,9 @@ export function createSocialPublicationAttempt(dependencies: {
 								: null,
 							canReconcile,
 							nextActionAt: canReconcile
-								? new Date(now.getTime() + 30_000)
+								? new Date(
+										now.getTime() + Math.max(30_000, result.retryAfterMs ?? 0),
+									)
 								: null,
 							now,
 						});
@@ -630,7 +742,14 @@ export function createSocialPublicationAttempt(dependencies: {
 				});
 				return settled;
 			} catch (error) {
-				if (error instanceof PublicationClaimLostError) throw error;
+				if (error instanceof PublicationClaimLostError) {
+					dependencies.metrics?.observe(
+						"social_publication_stale_settlements_total",
+						1,
+						{ platform: loaded.frozen.platform },
+					);
+					throw error;
+				}
 				if (isAbort(error, input.signal)) {
 					const now = dependencies.clock.now();
 					if (submissionCheckpointed) {
@@ -825,6 +944,9 @@ export function createInMemorySocialPublicationAttemptStore(
 				input.operationKind === "submission_started"
 					? "submission_started"
 					: record.attempt.phase;
+			if (input.operationKind === "submission_started") {
+				record.attempt.phaseStartedAt = input.now;
+			}
 			record.checkpointKind = input.operationKind;
 			record.sealedCheckpoint = input.sealedState;
 		},
@@ -871,8 +993,12 @@ export function createInMemorySocialPublicationAttemptStore(
 					record.attempt.processingDeadline.getTime(),
 				),
 			);
-			record.attempt.phase =
+			const nextPhase =
 				input.result.submissionStarted === false ? "uploading" : "processing";
+			if (record.attempt.phase !== nextPhase) {
+				record.attempt.phaseStartedAt = input.now;
+			}
+			record.attempt.phase = nextPhase;
 			record.attempt.outcome = "pending";
 			record.attempt.nextActionAt = nextActionAt;
 			record.socialPost.status = "processing";
@@ -895,6 +1021,9 @@ export function createInMemorySocialPublicationAttemptStore(
 			record.sealedCheckpoint = input.sealedState;
 			record.claim = null;
 			if (input.canReconcile && input.nextActionAt) {
+				if (record.attempt.phase !== "reconciling") {
+					record.attempt.phaseStartedAt = input.now;
+				}
 				record.attempt.phase = "reconciling";
 				record.attempt.nextActionAt = input.nextActionAt;
 				record.socialPost.status = "reconciling";
@@ -928,6 +1057,7 @@ export function createInMemorySocialPublicationAttemptStore(
 					? "unknown"
 					: "failed";
 				record.attempt.failureCode = input.code;
+				record.attempt.failureEvidence = input.failureEvidence ?? null;
 				record.attempt.failureDisposition = "attention";
 				record.socialPost.status = "needs_attention";
 				record.socialPost.errorCode = input.code;
@@ -943,6 +1073,7 @@ export function createInMemorySocialPublicationAttemptStore(
 			record.attempt.phase = "failed";
 			record.attempt.outcome = "failed";
 			record.attempt.failureCode = input.code;
+			record.attempt.failureEvidence = input.failureEvidence ?? null;
 			record.attempt.failureDisposition = input.disposition;
 			record.socialPost.status = "failed";
 			record.socialPost.errorCode = input.code;
@@ -1126,6 +1257,7 @@ function rowToLoadedAttempt(
 				row.frozenState.sizeBytes === null
 					? null
 					: Number(row.frozenState.sizeBytes),
+			durationSec: row.frozenState.durationSec,
 			aspectRatio:
 				row.frozenState.aspectRatio === "ratio_9_16"
 					? "9:16"
@@ -1156,6 +1288,7 @@ function rowToLoadedAttempt(
 			nextActionAt: row.nextActionAt,
 			providerCallCount: row.providerCallCount,
 			startedAt: row.startedAt,
+			phaseStartedAt: row.phaseStartedAt,
 			processingDeadline: row.processingDeadline,
 			reconciliationDeadline: row.reconciliationDeadline,
 			failureCode: row.failureCode,
@@ -1266,6 +1399,10 @@ export const prismaSocialPublicationAttemptStore: SocialPublicationAttemptStore 
 							input.operationKind === "submission_started"
 								? "submission_started"
 								: undefined,
+						phaseStartedAt:
+							input.operationKind === "submission_started"
+								? input.now
+								: undefined,
 						operationKind: input.operationKind,
 						checkpointEncrypted: input.sealedState,
 						operationLookupHash: input.operationLookupHash,
@@ -1323,6 +1460,21 @@ export const prismaSocialPublicationAttemptStore: SocialPublicationAttemptStore 
 							metrics: input.result.receipt.metrics
 								? (input.result.receipt.metrics as Prisma.InputJsonValue)
 								: Prisma.JsonNull,
+							providerProcessingStatus:
+								input.result.receipt.providerProcessingStatus ?? null,
+							providerProcessingFailureCode:
+								input.result.receipt.providerProcessingFailureCode ?? null,
+							providerVisibility:
+								input.result.receipt.providerVisibility ?? null,
+							enrichmentNextCheckAt:
+								input.result.receipt.providerProcessingStatus === "processing"
+									? new Date(input.now.getTime() + 30_000)
+									: null,
+							enrichedAt:
+								input.result.receipt.providerProcessingStatus &&
+								input.result.receipt.providerProcessingStatus !== "processing"
+									? input.now
+									: null,
 						},
 					});
 					await tx.publicationAnalyticsIntent.create({
@@ -1389,8 +1541,11 @@ export const prismaSocialPublicationAttemptStore: SocialPublicationAttemptStore 
 							status: "posted",
 							postedAt: input.now,
 							externalUrl: input.result.receipt.externalUrl,
-							errorCode: null,
-							errorDisposition: null,
+							errorCode:
+								input.result.receipt.providerProcessingFailureCode ?? null,
+							errorDisposition: input.result.receipt.providerProcessingFailureCode
+								? "permanent"
+								: null,
 							nextAttemptAt: null,
 						},
 					});
@@ -1418,7 +1573,7 @@ export const prismaSocialPublicationAttemptStore: SocialPublicationAttemptStore 
 				await requireCurrentClaim(tx, input.owned, input.now);
 				const current = await tx.socialPublicationAttempt.findUniqueOrThrow({
 					where: { id: input.owned.attemptId },
-					select: { processingDeadline: true },
+					select: { processingDeadline: true, phase: true },
 				});
 				const nextActionAt = new Date(
 					Math.min(
@@ -1426,14 +1581,15 @@ export const prismaSocialPublicationAttemptStore: SocialPublicationAttemptStore 
 						current.processingDeadline.getTime(),
 					),
 				);
+				const nextPhase =
+					input.result.submissionStarted === false ? "uploading" : "processing";
 				const row = await tx.socialPublicationAttempt.update({
 					where: { id: input.owned.attemptId },
 					data: {
-						phase:
-							input.result.submissionStarted === false
-								? "uploading"
-								: "processing",
+						phase: nextPhase,
 						outcome: "pending",
+						phaseStartedAt:
+							current.phase === nextPhase ? undefined : input.now,
 						nextActionAt,
 						operationKind: input.result.operation.kind,
 						checkpointEncrypted: input.sealedState,
@@ -1461,12 +1617,17 @@ export const prismaSocialPublicationAttemptStore: SocialPublicationAttemptStore 
 		async settleUnknown(input) {
 			return requirePrisma().$transaction(async (tx) => {
 				await requireCurrentClaim(tx, input.owned, input.now);
+				const current = await tx.socialPublicationAttempt.findUniqueOrThrow({
+					where: { id: input.owned.attemptId },
+					select: { phase: true },
+				});
 				const phase = input.canReconcile ? "reconciling" : "needs_attention";
 				const row = await tx.socialPublicationAttempt.update({
 					where: { id: input.owned.attemptId },
 					data: {
 						phase,
 						outcome: "unknown",
+						phaseStartedAt: current.phase === phase ? undefined : input.now,
 						failureCode: input.code,
 						failureDisposition: "attention",
 						operationKind: input.operation?.kind,
@@ -1520,6 +1681,7 @@ export const prismaSocialPublicationAttemptStore: SocialPublicationAttemptStore 
 							phase: "needs_attention",
 							outcome: input.submissionMayHaveStarted ? "unknown" : "failed",
 							failureCode: input.code,
+							failureEvidence: input.failureEvidence,
 							failureDisposition: "attention",
 							terminalAt: input.now,
 						},
@@ -1568,6 +1730,7 @@ export const prismaSocialPublicationAttemptStore: SocialPublicationAttemptStore 
 						phase: "failed",
 						outcome: "failed",
 						failureCode: input.code,
+						failureEvidence: input.failureEvidence,
 						failureDisposition: input.disposition,
 						terminalAt: input.now,
 					},
@@ -1705,7 +1868,8 @@ export async function synchronizePreparedSocialPosts(now = new Date()) {
 		if (
 			state.clipExportVariant.status === "completed" &&
 			state.clipExportVariant.storageKey &&
-			state.clipExportVariant.sizeBytes !== null
+			state.clipExportVariant.sizeBytes !== null &&
+			state.clipExportVariant.durationSec !== null
 		) {
 			await prisma.$transaction(async (tx) => {
 				await tx.frozenPublicationState.updateMany({
@@ -1713,6 +1877,7 @@ export async function synchronizePreparedSocialPosts(now = new Date()) {
 					data: {
 						storageKey: state.clipExportVariant.storageKey,
 						sizeBytes: state.clipExportVariant.sizeBytes,
+						durationSec: state.clipExportVariant.durationSec,
 						mediaReadyAt: now,
 					},
 				});
@@ -1721,14 +1886,19 @@ export async function synchronizePreparedSocialPosts(now = new Date()) {
 					data: { status: "scheduled" },
 				});
 			});
-		} else if (state.clipExportVariant.status === "failed") {
+		} else if (
+			state.clipExportVariant.status === "failed" ||
+			state.clipExportVariant.status === "completed"
+		) {
 			await prisma.socialPost.updateMany({
 				where: { id: state.socialPostId, status: "preparing_video" },
 				data: {
 					status: "failed",
 					errorCode:
 						state.clipExportVariant.errorCode ??
-						"publication_media_preparation_failed",
+						(state.clipExportVariant.status === "completed"
+							? "publication_media_duration_missing"
+							: "publication_media_preparation_failed"),
 					errorDisposition: "permanent",
 				},
 			});
@@ -1742,6 +1912,7 @@ export async function claimDueSocialPublicationAttempts(input: {
 	now: Date;
 	config: PublicationClaimConfig;
 	createId?: () => string;
+	metrics?: SocialPublicationMetrics;
 }): Promise<OwnedPublicationAttempt[]> {
 	const prisma = requirePrisma();
 	const createId = input.createId ?? randomUUID;
@@ -1754,7 +1925,11 @@ export async function claimDueSocialPublicationAttempts(input: {
 			OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: input.now } }],
 			workspace: { status: "active" },
 			frozenState: {
-				is: { storageKey: { not: null }, sizeBytes: { not: null } },
+				is: {
+					storageKey: { not: null },
+					sizeBytes: { not: null },
+					durationSec: { not: null },
+				},
 			},
 			publicationAttempts: { none: {} },
 		},
@@ -1856,6 +2031,7 @@ export async function claimDueSocialPublicationAttempts(input: {
 			if (!submitted && candidate.socialPost.workspace?.status !== "active")
 				continue;
 			const claimId = createId();
+			let leaseTakenOver = false;
 			try {
 				const claimed = await prisma.$transaction(async (tx) => {
 					const current = await tx.socialPublicationAttempt.findUnique({
@@ -1896,6 +2072,7 @@ export async function claimDueSocialPublicationAttempts(input: {
 						) {
 							return false;
 						}
+						leaseTakenOver = true;
 						await tx.publicationClaim.updateMany({
 							where: { id: current.currentClaimId, releasedAt: null },
 							data: { releasedAt: input.now, accountSlotKey: null },
@@ -2020,7 +2197,19 @@ export async function claimDueSocialPublicationAttempts(input: {
 					}
 					return true;
 				});
-				if (claimed) owned.push({ attemptId: candidate.id, claimId });
+				if (claimed) {
+					owned.push({ attemptId: candidate.id, claimId });
+					input.metrics?.observe("social_publication_claims_total", 1, {
+						phase: candidate.phase,
+					});
+					if (leaseTakenOver) {
+						input.metrics?.observe(
+							"social_publication_lease_takeovers_total",
+							1,
+							{ phase: candidate.phase },
+						);
+					}
+				}
 			} catch (error) {
 				if (error instanceof PublicationClaimAdmissionRaceError) continue;
 				if (
@@ -2041,6 +2230,7 @@ export async function heartbeatSocialPublicationClaim(input: {
 	owned: OwnedPublicationAttempt;
 	now: Date;
 	leaseMs: number;
+	metrics?: SocialPublicationMetrics;
 }) {
 	const updated = await requirePrisma().$transaction(async (tx) => {
 		await requireCurrentClaim(tx, input.owned, input.now);
@@ -2057,4 +2247,5 @@ export async function heartbeatSocialPublicationClaim(input: {
 		});
 	});
 	if (updated.count !== 1) throw new PublicationClaimLostError();
+	input.metrics?.observe("social_publication_heartbeats_total", 1);
 }

@@ -169,34 +169,62 @@ export async function acceptTikTokPublicationWebhook(input: {
         return { kind: "already_settled" as const, attemptId: attempt.id };
       }
       if (event.event === "post.publish.failed") {
+        const knownReasons: Record<string, string> = {
+          spam_risk: "tiktok_spam_risk",
+          spam_risk_text: "tiktok_spam_risk",
+          spam_risk_too_many_posts: "tiktok_rate_limit",
+          spam_risk_user_banned_from_posting: "tiktok_account_restricted",
+          unaudited_client_can_only_post_to_private_accounts:
+            "tiktok_audit_privacy_required",
+        };
+        const failureCode = event.reason
+          ? knownReasons[event.reason] ?? "tiktok_publish_failed"
+          : "tiktok_publish_failed";
         const updated = await tx.socialPublicationAttempt.updateMany({
           where: {
             id: attempt.id,
-            phase: { in: ["uploading", "submission_started", "processing", "reconciling"] },
+            operationLookupHash: lookupHash,
+            phase: {
+              in: [
+                "uploading",
+                "submission_started",
+                "processing",
+                "reconciling",
+                "needs_attention",
+              ],
+            },
           },
           data: {
             phase: "failed",
             outcome: "failed",
-            failureCode: event.reason
-              ? `tiktok_${event.reason}`
-              : "tiktok_publish_failed",
+            failureCode,
+            failureEvidence: event.reason
+              ? { providerReason: event.reason }
+              : Prisma.JsonNull,
             failureDisposition: "permanent",
             terminalAt: now,
+            currentClaimId: null,
           },
         });
         if (updated.count !== 1) {
           return { kind: "already_settled" as const, attemptId: attempt.id };
         }
+        if (attempt.currentClaimId) {
+          await tx.publicationClaim.updateMany({
+            where: { id: attempt.currentClaimId, releasedAt: null },
+            data: { releasedAt: now, accountSlotKey: null },
+          });
+        }
         await tx.socialPost.updateMany({
           where: {
             id: attempt.socialPostId,
-            status: { in: ["publishing", "processing", "reconciling"] },
+            status: {
+              in: ["publishing", "processing", "reconciling", "needs_attention"],
+            },
           },
           data: {
             status: "failed",
-            errorCode: event.reason
-              ? `tiktok_${event.reason}`
-              : "tiktok_publish_failed",
+            errorCode: failureCode,
             errorDisposition: "permanent",
             nextAttemptAt: null,
           },
@@ -207,7 +235,16 @@ export async function acceptTikTokPublicationWebhook(input: {
       const updated = await tx.socialPublicationAttempt.updateMany({
         where: {
           id: attempt.id,
-          phase: { in: ["uploading", "submission_started", "processing", "reconciling"] },
+          operationLookupHash: lookupHash,
+          phase: {
+            in: [
+              "uploading",
+              "submission_started",
+              "processing",
+              "reconciling",
+              "needs_attention",
+            ],
+          },
         },
         data: {
           phase: "succeeded",
@@ -215,10 +252,17 @@ export async function acceptTikTokPublicationWebhook(input: {
           failureCode: null,
           failureDisposition: null,
           terminalAt: now,
+          currentClaimId: null,
         },
       });
       if (updated.count !== 1) {
         return { kind: "already_settled" as const, attemptId: attempt.id };
+      }
+      if (attempt.currentClaimId) {
+        await tx.publicationClaim.updateMany({
+          where: { id: attempt.currentClaimId, releasedAt: null },
+          data: { releasedAt: now, accountSlotKey: null },
+        });
       }
       const username = attempt.socialPost.socialAccount?.handle?.replace(/^@/, "");
       const externalUrl =

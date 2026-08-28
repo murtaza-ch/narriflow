@@ -43,6 +43,19 @@ describe("Social Publication configuration", () => {
         redirectPolicy: "error",
         maxResponseBytes: 65_536,
       },
+		providers: {
+			youtubeApiVersion: "v3",
+			youtubeChunkBytes: 8 * 1024 * 1024,
+			metaGraphVersion: "v24.0",
+			tiktokApiVersion: "v2",
+			tiktokChunkBytes: 64 * 1024 * 1024,
+			linkedInVersion: "202608",
+			xApiVersion: "v2",
+			xChunkBytes: 4 * 1024 * 1024,
+			xMaxMediaBytes: 512 * 1024 * 1024,
+			xRateLimitRetryFloorMs: 60_000,
+			xReconciliationMaxPages: 5,
+		},
     });
   });
 
@@ -54,6 +67,16 @@ describe("Social Publication configuration", () => {
     ["missing provider version", { META_GRAPH_VERSION: "" }],
     ["unsupported Meta provider version", { META_GRAPH_VERSION: "v25.0" }],
     ["unsupported LinkedIn provider version", { LINKEDIN_API_VERSION: "202609" }],
+		["unsupported YouTube provider version", { YOUTUBE_API_VERSION: "v4" }],
+		["unsupported TikTok provider version", { TIKTOK_API_VERSION: "v3" }],
+		["unsupported X provider version", { X_API_VERSION: "v3" }],
+		["misaligned YouTube chunk", { YOUTUBE_UPLOAD_CHUNK_BYTES: "300000" }],
+		["oversized TikTok chunk", { TIKTOK_UPLOAD_CHUNK_BYTES: "68157440" }],
+		["oversized X chunk", { X_UPLOAD_CHUNK_BYTES: "6291456" }],
+		["oversized X media limit", { X_MAX_MEDIA_BYTES: "536870913" }],
+		["unsafe X rate retry floor", { X_RATE_LIMIT_RETRY_FLOOR_MS: "999" }],
+		["unbounded X reconciliation", { X_RECONCILIATION_MAX_PAGES: "11" }],
+		["unsafe TikTok polling rate", { TIKTOK_STATUS_POLL_INTERVAL_MS: "1000" }],
     ["insecure receiver URL", { SOCIAL_PUBLISH_WEBHOOK_URL: "http://receiver.example/hook" }],
     ["short signing secret", { SOCIAL_PUBLISH_WEBHOOK_SECRET: "short" }],
     ["redirect following", { SOCIAL_PUBLISH_WEBHOOK_REDIRECT_POLICY: "follow" }],
@@ -61,5 +84,14 @@ describe("Social Publication configuration", () => {
     expect(() => parseSocialPublicationConfig({ ...valid, ...override })).toThrow(
       SocialPublicationConfigurationError,
     );
-  });
+	});
+
+	test("fails startup before the pinned LinkedIn version sunset becomes unsafe", () => {
+		expect(() =>
+			parseSocialPublicationConfig(
+				valid,
+				new Date("2027-08-02T00:00:00.000Z"),
+			),
+		).toThrow(SocialPublicationConfigurationError);
+	});
 });

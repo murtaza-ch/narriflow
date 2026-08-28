@@ -26,6 +26,8 @@ export type PublicationPlatformFailure = {
   retryAfterMs: number | null;
   /** The provider returned definitive evidence that no public post was created. */
   safeToRepublishAfterSubmission?: boolean;
+  /** Bounded provider evidence retained separately from the stable failure code. */
+  evidence?: Prisma.JsonObject;
 };
 
 export type PublicationProviderOperation = {
@@ -43,6 +45,9 @@ export type PublicationPlatformResult =
         platformPostId: string | null;
         externalUrl: string | null;
         metrics: SocialPostMetricsInput | null;
+        providerProcessingStatus?: "processing" | "succeeded" | "failed" | null;
+        providerProcessingFailureCode?: string | null;
+        providerVisibility?: string | null;
       };
     }
   | {
@@ -62,6 +67,7 @@ export type PublicationPlatformResult =
       code: string;
       phase: PublicationOperationPhase;
       operation: PublicationProviderOperation | null;
+      retryAfterMs?: number | null;
     };
 
 export type PublicationPlatformInput = {
@@ -79,6 +85,7 @@ export type PublicationPlatformInput = {
     fileName: string;
     contentType: "video/mp4";
     sizeBytes: number;
+    durationSec: number;
     aspectRatio: ClipAspectRatio;
   };
 };

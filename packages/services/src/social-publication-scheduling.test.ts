@@ -13,6 +13,7 @@ const readyState: FrozenPublicationState = {
 	exportFingerprint: "fingerprint-1",
 	storageKey: "projects/project-1/exports/export-1/variant-1.mp4",
 	sizeBytes: 42_000,
+	durationSec: 30,
 	aspectRatio: "9:16",
 	caption: "Approved caption",
 	providerSettings: { privacy: "public" },
@@ -148,6 +149,7 @@ describe("Social Publication scheduling", () => {
 			clipExportVariantId: "variant-1",
 			storageKey: readyState.storageKey!,
 			sizeBytes: readyState.sizeBytes!,
+			durationSec: readyState.durationSec!,
 		});
 
 		const scheduled = await scheduling.get("workspace-1", "social-post-1");
@@ -187,6 +189,7 @@ describe("Social Publication scheduling", () => {
 			clipExportVariantId: "variant-1",
 			storageKey: readyState.storageKey!,
 			sizeBytes: readyState.sizeBytes!,
+			durationSec: readyState.durationSec!,
 		});
 		expect(await scheduling.get("workspace-1", "social-post-1")).toMatchObject({
 			status: "cancelled",

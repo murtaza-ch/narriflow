@@ -390,6 +390,13 @@ export default async function CalendarPage({
 										</Link>
 									</Button>
 								) : null}
+								{post.status === "posted" && post.externalUrl ? (
+									<Button size="xs" variant="ghost" asChild>
+										<a href={post.externalUrl} target="_blank" rel="noreferrer">
+											View post
+										</a>
+									</Button>
+								) : null}
 							</Flex>
 						);
 					})}
@@ -461,9 +468,9 @@ export default async function CalendarPage({
 													{post.platform.replace("_", " ")} · {feedback.label}
 												</Text>
 												{post.status === "needs_attention" ? (
-											<Link
-												href={`/projects/${post.projectId}?tab=publish#social-publishing`}
-											>
+													<Link
+														href={`/projects/${post.projectId}?tab=publish#social-publishing`}
+													>
 														<Text
 															mt="1"
 															fontSize="10px"
@@ -472,6 +479,17 @@ export default async function CalendarPage({
 															Resolve safely
 														</Text>
 													</Link>
+												) : null}
+												{post.status === "posted" && post.externalUrl ? (
+													<a
+														href={post.externalUrl}
+														target="_blank"
+														rel="noreferrer"
+													>
+														<Text mt="1" fontSize="10px" textDecoration="underline">
+															View post
+														</Text>
+													</a>
 												) : null}
 											</Box>
 										);

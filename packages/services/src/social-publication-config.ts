@@ -30,9 +30,46 @@ function integer(
 }
 
 export const SOCIAL_PUBLICATION_CAPABILITY_VERSIONS = {
+	youtube_shorts: "v3",
 	instagram_reels: "v24.0",
+	tiktok: "v2",
 	linkedin: "202608",
+	x: "v2",
 } as const;
+
+const DEFAULT_LINKEDIN_VERSION_SUNSET_AT = "2027-08-31T23:59:59.000Z";
+const LINKEDIN_STARTUP_GUARD_MS = 30 * 24 * 60 * 60_000;
+
+function futureDate(
+	environment: Record<string, string | undefined>,
+	name: string,
+	fallback: string,
+	now: Date,
+	guardMs = 0,
+) {
+	const raw = environment[name]?.trim() || fallback;
+	const value = new Date(raw);
+	if (!Number.isFinite(value.getTime())) {
+		throw new SocialPublicationConfigurationError(
+			`${name} must be an ISO-8601 timestamp`,
+		);
+	}
+	if (value.getTime() - now.getTime() <= guardMs) {
+		throw new SocialPublicationConfigurationError(
+			`${name} must remain at least ${Math.ceil(guardMs / 86_400_000)} days in the future`,
+		);
+	}
+	return value;
+}
+
+function divisible(value: number, divisor: number, name: string) {
+	if (value % divisor !== 0) {
+		throw new SocialPublicationConfigurationError(
+			`${name} must be divisible by ${divisor}`,
+		);
+	}
+	return value;
+}
 
 function supportedVersion(
 	environment: Record<string, string | undefined>,
@@ -114,6 +151,7 @@ function webhookConfiguration(environment: Record<string, string | undefined>) {
 
 export function parseSocialPublicationConfig(
 	environment: Record<string, string | undefined>,
+	now = new Date(),
 ) {
 	const leaseMs = integer(
 		environment,
@@ -210,15 +248,104 @@ export function parseSocialPublicationConfig(
 		},
 		checkpointKey,
 		providers: {
+			youtubeApiVersion: supportedVersion(
+				environment,
+				"YOUTUBE_API_VERSION",
+				SOCIAL_PUBLICATION_CAPABILITY_VERSIONS.youtube_shorts,
+			),
+			youtubeChunkBytes: divisible(
+				integer(
+					environment,
+					"YOUTUBE_UPLOAD_CHUNK_BYTES",
+					8 * 1024 * 1024,
+					256 * 1024,
+					256 * 1024 * 1024,
+				),
+				256 * 1024,
+				"YOUTUBE_UPLOAD_CHUNK_BYTES",
+			),
 			metaGraphVersion: supportedVersion(
 				environment,
 				"META_GRAPH_VERSION",
 				SOCIAL_PUBLICATION_CAPABILITY_VERSIONS.instagram_reels,
 			),
+			instagramPollAttempts: integer(
+				environment,
+				"INSTAGRAM_CONTAINER_POLL_ATTEMPTS",
+				30,
+				1,
+				60,
+			),
+			instagramPollIntervalMs: integer(
+				environment,
+				"INSTAGRAM_CONTAINER_POLL_INTERVAL_MS",
+				5_000,
+				1_000,
+				60_000,
+			),
+			tiktokApiVersion: supportedVersion(
+				environment,
+				"TIKTOK_API_VERSION",
+				SOCIAL_PUBLICATION_CAPABILITY_VERSIONS.tiktok,
+			),
+			tiktokPollIntervalMs: integer(
+				environment,
+				"TIKTOK_STATUS_POLL_INTERVAL_MS",
+				5_000,
+				5_000,
+				60_000,
+			),
+			tiktokChunkBytes: integer(
+				environment,
+				"TIKTOK_UPLOAD_CHUNK_BYTES",
+				64 * 1024 * 1024,
+				5 * 1024 * 1024,
+				64 * 1024 * 1024,
+			),
 			linkedInVersion: supportedVersion(
 				environment,
 				"LINKEDIN_API_VERSION",
 				SOCIAL_PUBLICATION_CAPABILITY_VERSIONS.linkedin,
+			),
+			linkedInVersionSunsetAt: futureDate(
+				environment,
+				"LINKEDIN_API_VERSION_SUNSET_AT",
+				DEFAULT_LINKEDIN_VERSION_SUNSET_AT,
+				now,
+				LINKEDIN_STARTUP_GUARD_MS,
+			),
+			xApiVersion: supportedVersion(
+				environment,
+				"X_API_VERSION",
+				SOCIAL_PUBLICATION_CAPABILITY_VERSIONS.x,
+			),
+			xChunkBytes: integer(
+				environment,
+				"X_UPLOAD_CHUNK_BYTES",
+				4 * 1024 * 1024,
+				1024,
+				5 * 1024 * 1024,
+			),
+			xMaxMediaBytes: integer(
+				environment,
+				"X_MAX_MEDIA_BYTES",
+				512 * 1024 * 1024,
+				1024,
+				512 * 1024 * 1024,
+			),
+			xRateLimitRetryFloorMs: integer(
+				environment,
+				"X_RATE_LIMIT_RETRY_FLOOR_MS",
+				60_000,
+				1_000,
+				15 * 60_000,
+			),
+			xReconciliationMaxPages: integer(
+				environment,
+				"X_RECONCILIATION_MAX_PAGES",
+				5,
+				1,
+				10,
 			),
 		},
 		webhook: webhookConfiguration(environment),

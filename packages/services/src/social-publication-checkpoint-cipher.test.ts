@@ -33,8 +33,10 @@ describe("publication checkpoint encryption", () => {
 
     expect(second).not.toBe(first);
     expect(() => other.open(first)).toThrow(PublicationCheckpointCipherError);
-    const replacement = first.endsWith("A") ? "B" : "A";
-    expect(() => cipher.open(`${first.slice(0, -1)}${replacement}`)).toThrow(
+    const parts = first.split(":");
+    const tag = parts[2]!;
+    parts[2] = `${tag[0] === "A" ? "B" : "A"}${tag.slice(1)}`;
+    expect(() => cipher.open(parts.join(":"))).toThrow(
       PublicationCheckpointCipherError,
     );
   });

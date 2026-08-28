@@ -47,6 +47,13 @@ function toSocialPostSnapshot(row: {
   errorCode: string | null;
   errorDisposition?: string | null;
   nextAttemptAt?: Date | null;
+  publicationAttempts?: Array<{
+    receipt: {
+      providerProcessingStatus: string | null;
+      providerProcessingFailureCode: string | null;
+      providerVisibility: string | null;
+    } | null;
+  }>;
   metrics?: Array<{
     views: number;
     likes: number;
@@ -87,6 +94,13 @@ function toSocialPostSnapshot(row: {
     errorDisposition:
       (row.errorDisposition as SocialPostSnapshot["errorDisposition"]) ?? null,
     nextAttemptAt: row.nextAttemptAt?.toISOString() ?? null,
+    providerProcessingStatus:
+      (row.publicationAttempts?.[0]?.receipt
+        ?.providerProcessingStatus as SocialPostSnapshot["providerProcessingStatus"]) ?? null,
+    providerProcessingFailureCode:
+      row.publicationAttempts?.[0]?.receipt?.providerProcessingFailureCode ?? null,
+    providerVisibility:
+      row.publicationAttempts?.[0]?.receipt?.providerVisibility ?? null,
     allowedActions: allowedSocialPublicationActions(row),
     latestMetrics: row.metrics?.[0]
       ? {
@@ -167,6 +181,19 @@ export class SocialService {
       include: {
         socialAccount: { select: { displayName: true, handle: true, status: true } },
         workspace: { select: { status: true } },
+        publicationAttempts: {
+          orderBy: { attemptNumber: "desc" },
+          take: 1,
+          select: {
+            receipt: {
+              select: {
+                providerProcessingStatus: true,
+                providerProcessingFailureCode: true,
+                providerVisibility: true,
+              },
+            },
+          },
+        },
         metrics: {
           orderBy: { capturedAt: "desc" },
           take: 1,
@@ -207,6 +234,19 @@ export class SocialService {
       include: {
         socialAccount: { select: { displayName: true, handle: true, status: true } },
         workspace: { select: { status: true } },
+        publicationAttempts: {
+          orderBy: { attemptNumber: "desc" },
+          take: 1,
+          select: {
+            receipt: {
+              select: {
+                providerProcessingStatus: true,
+                providerProcessingFailureCode: true,
+                providerVisibility: true,
+              },
+            },
+          },
+        },
         metrics: {
           orderBy: { capturedAt: "desc" },
           take: 1,
@@ -310,6 +350,19 @@ export class SocialService {
       include: {
         socialAccount: { select: { displayName: true, handle: true, status: true } },
         workspace: { select: { status: true } },
+        publicationAttempts: {
+          orderBy: { attemptNumber: "desc" },
+          take: 1,
+          select: {
+            receipt: {
+              select: {
+                providerProcessingStatus: true,
+                providerProcessingFailureCode: true,
+                providerVisibility: true,
+              },
+            },
+          },
+        },
         metrics: {
           orderBy: { capturedAt: "desc" },
           take: 1,

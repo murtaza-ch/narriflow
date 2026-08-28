@@ -15,6 +15,10 @@ Streamable HTTP clients during the compatibility window.
 | `narriflow_list_projects` | `content.view` | `projects:read` | Active Business workspace |
 | `narriflow_get_project` | `content.view` | `projects:read` | Active Business workspace |
 | `narriflow_get_workspace_usage` | `content.view` | `usage:read` | Reports the existing monthly minute quota |
+| `narriflow_get_social_publication` | `content.view` | `publishing:read` | Returns recovery facts without provider checkpoint state |
+| `narriflow_recheck_social_publication` | `publishing.manage` | `publishing:write` | Reconciles the existing operation; never submits again |
+| `narriflow_confirm_social_publication` | `publishing.manage` | `publishing:write` | Records bounded operator evidence and settles without submission |
+| `narriflow_publish_social_publication_again` | `publishing.manage` | `publishing:write` | Requires explicit duplicate-risk acknowledgement and creates a linked attempt |
 | `narriflow_list_autopilot_rules` | `content.view` | `autopilot:read` | Active Business workspace |
 | `narriflow_create_rss_autopilot_rule` | `content.edit` | `autopilot:write` | Later imports use the normal processing quota gate |
 | `narriflow_run_autopilot_rule_now` | `content.edit` | `autopilot:write` | Marks the rule due; it does not bypass quota checks |

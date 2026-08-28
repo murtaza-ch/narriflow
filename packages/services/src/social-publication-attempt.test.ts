@@ -9,6 +9,7 @@ import {
 	PublicationClaimLostError,
 	type PublicationAttemptSeed,
 } from "./social-publication-attempt";
+import type { PublishSocialAccount } from "./social-oauth.service";
 
 const seed: PublicationAttemptSeed = {
 	socialPost: {
@@ -25,6 +26,7 @@ const seed: PublicationAttemptSeed = {
 		exportFingerprint: "fingerprint-1",
 		storageKey: "projects/project-1/exports/export-1/variant-1.mp4",
 		sizeBytes: 42_000,
+		durationSec: 30,
 		aspectRatio: "9:16",
 		caption: "Approved caption",
 		providerSettings: {},
@@ -75,19 +77,30 @@ function createAttemptHarness(
 		maxDelayMs: number;
 		jitterRatio: number;
 	}> = {},
+	credentialsLoad: (accountId: string) => Promise<PublishSocialAccount | null> =
+		async () => null,
 ) {
 	const store = createInMemorySocialPublicationAttemptStore([attemptSeed]);
 	const diagnostics: Array<Record<string, unknown>> = [];
+	const metrics: Array<{
+		name: string;
+		value: number;
+		attributes?: Record<string, string | number | boolean | null | undefined>;
+	}> = [];
 	const attempt = createSocialPublicationAttempt({
 		store,
 		platforms: createPublicationPlatformRegistry({ youtube_shorts: platform }),
-		credentials: { load: async () => null },
+		credentials: { load: credentialsLoad },
 		checkpointCipher: {
 			seal: (value) => `sealed:${JSON.stringify(value)}`,
 			open: (value) => JSON.parse(value.slice("sealed:".length)),
 		},
 		clock: { now: () => new Date("2026-08-28T10:00:10.000Z") },
 		diagnostics: { record: (event) => diagnostics.push(event) },
+		metrics: {
+			observe: (name, value, attributes) =>
+				metrics.push({ name, value, attributes }),
+		},
 		retry: {
 			maxAttempts: 3,
 			maxElapsedMs: 60 * 60_000,
@@ -101,10 +114,59 @@ function createAttemptHarness(
 		processingDeadlineMs: 60 * 60_000,
 		reconciliationDeadlineMs: 2 * 60 * 60_000,
 	});
-	return { attempt, store, diagnostics };
+	return { attempt, store, diagnostics, metrics };
 }
 
 describe("Social Publication Attempt", () => {
+	test("projects expired credentials as a reconnect action instead of retrying", async () => {
+		let providerCalls = 0;
+		const platform = createDeterministicPublicationPlatform([
+			{
+				kind: "accepted",
+				receipt: {
+					receiptId: "must-not-submit",
+					platformPostId: "must-not-submit",
+					externalUrl: null,
+					metrics: null,
+				},
+			},
+		]);
+		const counted = {
+			...platform,
+			async publish(...args: Parameters<typeof platform.publish>) {
+				providerCalls += 1;
+				return platform.publish(...args);
+			},
+		};
+		const accountSeed: PublicationAttemptSeed = {
+			...seed,
+			frozen: { ...seed.frozen, socialAccountId: "account-1" },
+		};
+		const { attempt, store } = createAttemptHarness(
+			counted,
+			accountSeed,
+			12,
+			{},
+			async () => {
+				throw Object.assign(new Error("expired"), {
+					code: "social_account_expired",
+				});
+			},
+		);
+		const result = await attempt.execute({
+			attempt: { attemptId: "attempt-1", claimId: "claim-1" },
+			signal: new AbortController().signal,
+		});
+		expect(result).toMatchObject({
+			kind: "failed",
+			code: "social_account_reconnect_required",
+		});
+		expect(providerCalls).toBe(0);
+		expect(await store.inspect("attempt-1")).toMatchObject({
+			socialPost: { status: "failed", errorCode: "social_account_reconnect_required" },
+		});
+	});
+
 	test("atomically settles accepted evidence and replays without another provider call", async () => {
 		let providerCalls = 0;
 		const platform = createDeterministicPublicationPlatform([
@@ -665,5 +727,45 @@ describe("Social Publication Attempt", () => {
 			socialPost: { status: "publishing" },
 			claim: null,
 		});
+	});
+
+	test("preserves phase age across repeated provider-processing checks", async () => {
+		const phaseStartedAt = new Date("2026-08-28T09:55:00.000Z");
+		const processingSeed: PublicationAttemptSeed = structuredClone(seed);
+		processingSeed.attempt.phase = "processing";
+		processingSeed.attempt.phaseStartedAt = phaseStartedAt;
+		processingSeed.sealedCheckpoint = "sealed:{}";
+		processingSeed.checkpointKind = "provider_processing";
+		const deterministic = createDeterministicPublicationPlatform([]);
+		const platform = {
+			...deterministic,
+			async reconcile() {
+				return {
+				kind: "pending",
+				receiptId: "provider-processing-1",
+				operation: { kind: "provider_processing", state: {} },
+				nextCheckAt: new Date("2026-08-28T10:01:00.000Z"),
+				} as const;
+			},
+		};
+		const { attempt, store, metrics } = createAttemptHarness(
+			platform,
+			processingSeed,
+		);
+
+		await attempt.execute({
+			attempt: { attemptId: "attempt-1", claimId: "claim-1" },
+			signal: new AbortController().signal,
+		});
+
+		expect((await store.inspect("attempt-1"))?.attempt.phaseStartedAt).toEqual(
+			phaseStartedAt,
+		);
+		expect(metrics).toContainEqual(
+			expect.objectContaining({
+				name: "social_publication_pending_age_ms",
+				value: 310_000,
+			}),
+		);
 	});
 });

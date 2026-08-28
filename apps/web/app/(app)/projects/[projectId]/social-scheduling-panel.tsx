@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { Box, Flex, Grid, Stack, Text } from "@chakra-ui/react";
 import { AlertTriangle, CalendarClock, Check, CheckCircle2, RefreshCw, Repeat2, Send, X } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
+import { Checkbox } from "@narriflow/ui/components/checkbox";
 import { Input } from "@narriflow/ui/components/input";
 import { Select } from "@narriflow/ui/components/select";
 import { DateTimePicker } from "@narriflow/ui/components/date-picker";
@@ -24,7 +25,7 @@ import { formatDateTime } from "@/lib/format";
 import { createPublicationIntentKeyStore } from "@/lib/publication-intent-key";
 import {
   describeSocialPost,
-  isLiveSocialPost,
+  isLiveSocialPostSnapshot,
   socialPollDelayMs,
   SOCIAL_PLATFORM_LABELS as platformLabels,
   type SocialPostTone,
@@ -64,8 +65,10 @@ type RecoveryAction = "recheck" | "confirm_published" | "publish_again";
 type RecoveryForm = {
   postId: string;
   action: RecoveryAction;
+  evidenceKind: "provider_reference" | "platform_url" | "manual_unvalidated";
   reason: string;
   externalUrl: string;
+  providerReference: string;
   duplicateRiskAcknowledged: boolean;
 };
 
@@ -151,8 +154,8 @@ export function SocialSchedulingPanel({
   const [statusStale, setStatusStale] = useState(false);
   const [nowMs, setNowMs] = useState<number | null>(null);
   const livePostsRef = useRef(livePosts);
-  const statusesRef = useRef(
-    new Map(posts.map((post) => [post.id, post.status])),
+  const livenessRef = useRef(
+    new Map(posts.map((post) => [post.id, isLiveSocialPostSnapshot(post)])),
   );
   /** Posts this client already saw reach a terminal status. A `router.refresh()`
    *  can land before the server render reflects the same write, and letting a
@@ -167,7 +170,7 @@ export function SocialSchedulingPanel({
       incoming.map((post) => {
         const settled = settledRef.current.get(post.id);
         if (!settled) return post;
-        if (!isLiveSocialPost(post.status)) {
+        if (!isLiveSocialPostSnapshot(post)) {
           settledRef.current.delete(post.id);
           return post;
         }
@@ -179,8 +182,8 @@ export function SocialSchedulingPanel({
   useEffect(() => {
     const reconciled = reconcileWithSettled(posts);
     setLivePosts(reconciled);
-    statusesRef.current = new Map(
-      reconciled.map((post) => [post.id, post.status]),
+    livenessRef.current = new Map(
+      reconciled.map((post) => [post.id, isLiveSocialPostSnapshot(post)]),
     );
   }, [posts, reconcileWithSettled]);
 
@@ -188,7 +191,7 @@ export function SocialSchedulingPanel({
     livePostsRef.current = livePosts;
   }, [livePosts]);
 
-  const hasLivePosts = livePosts.some((post) => isLiveSocialPost(post.status));
+  const hasLivePosts = livePosts.some(isLiveSocialPostSnapshot);
 
   // Relative phrasing ("in 12 min") is client-only: `nowMs` stays null through
   // SSR and the first render, so the markup can't mismatch on hydration.
@@ -203,14 +206,16 @@ export function SocialSchedulingPanel({
     (next: SocialPostSnapshot[]) => {
       let anySettled = false;
       for (const post of next) {
-        const previous = statusesRef.current.get(post.id);
-        if (isLiveSocialPost(post.status)) continue;
+        const previousWasLive = livenessRef.current.get(post.id);
+        if (isLiveSocialPostSnapshot(post)) continue;
         settledRef.current.set(post.id, post);
-        if (previous !== undefined && isLiveSocialPost(previous)) {
+        if (previousWasLive) {
           anySettled = true;
         }
       }
-      statusesRef.current = new Map(next.map((post) => [post.id, post.status]));
+      livenessRef.current = new Map(
+        next.map((post) => [post.id, isLiveSocialPostSnapshot(post)]),
+      );
       setLivePosts(next);
       // A post reaching its terminal status is also new analytics + activity
       // data, so pull the rest of the workspace forward once.
@@ -335,6 +340,17 @@ export function SocialSchedulingPanel({
       ? new Date(scheduledFor)
       : new Date(Date.now() + 10_000);
     const resolution = selectedRender?.resolution ?? "1080p";
+	const providerSettings =
+		platform === "tiktok"
+			? {
+					tiktokPrivacyLevel: "PUBLIC_TO_EVERYONE",
+					disableComment: false,
+					disableDuet: false,
+					disableStitch: false,
+					videoCoverTimestampMs: 1_000,
+					isAigc: false,
+				}
+			: {};
     const request = {
       projectId,
       clipId: selectedClip.id,
@@ -345,7 +361,7 @@ export function SocialSchedulingPanel({
       aspectRatio,
       resolution,
       scheduledFor: scheduledAt.toISOString(),
-      providerSettings: {},
+      providerSettings,
     };
     const intentKeys = createPublicationIntentKeyStore({
       storage: window.sessionStorage,
@@ -368,7 +384,7 @@ export function SocialSchedulingPanel({
           aspectRatio,
           resolution,
           scheduledFor: scheduledAt.toISOString(),
-          providerSettings: {},
+          providerSettings,
         }),
       });
       if (!response.ok) {
@@ -490,10 +506,9 @@ export function SocialSchedulingPanel({
         : recoveryForm.action === "confirm_published"
           ? {
               reason,
-              evidenceKind: recoveryForm.externalUrl.trim()
-                ? "platform_url"
-                : "manual_unvalidated",
+              evidenceKind: recoveryForm.evidenceKind,
               externalUrl: recoveryForm.externalUrl.trim() || null,
+              providerReference: recoveryForm.providerReference.trim() || null,
             }
           : { reason, duplicateRiskAcknowledged: true };
     setSubmitting(true);
@@ -510,6 +525,7 @@ export function SocialSchedulingPanel({
       const payload = (await response.json().catch(() => null)) as {
         error?: string;
         message?: string;
+        ownershipValidated?: boolean;
       } | null;
       if (!response.ok) {
         setNotice({
@@ -523,9 +539,12 @@ export function SocialSchedulingPanel({
         recoveryForm.action === "recheck"
           ? `Checking the existing ${platformLabels[post.platform]} operation. Nothing was submitted again.`
           : recoveryForm.action === "confirm_published"
-            ? "Marked published with manual evidence."
+            ? payload?.ownershipValidated
+              ? "Marked published after validating the post belongs to this connected account."
+              : "Marked published with unvalidated manual evidence."
             : `A linked ${platformLabels[post.platform]} attempt was scheduled with the duplicate risk recorded.`;
       setRecoveryForm(null);
+      settledRef.current.delete(post.id);
       setNotice({ tone: "success", text });
       requestAnimationFrame(() => noticeRef.current?.focus());
       startTransition(() => router.refresh());
@@ -706,7 +725,8 @@ export function SocialSchedulingPanel({
               <Flex
                 key={post.id}
                 position="relative"
-                align="center"
+                direction={{ base: "column", md: "row" }}
+                align={{ base: "stretch", md: "center" }}
                 justify="space-between"
                 gap="3"
                 ps="3.5"
@@ -797,7 +817,7 @@ export function SocialSchedulingPanel({
                         {recoveryForm.action === "recheck"
                           ? "Narriflow will inspect only the durable provider operation for this attempt."
                           : recoveryForm.action === "confirm_published"
-                            ? "Use this only after finding the post on the platform. Without a URL, the evidence stays labeled manual and unvalidated."
+                            ? "Use this only after finding the post on the platform. Add its URL or provider post ID; with neither, the evidence stays labeled manual and unvalidated."
                             : `${duplicateRiskCopy[post.platform]} The uncertain attempt stays in the audit history.`}
                       </Text>
                       <Input
@@ -812,6 +832,38 @@ export function SocialSchedulingPanel({
                         }
                       />
                       {recoveryForm.action === "confirm_published" ? (
+                        <Select
+                          size="sm"
+                          aria-label="Confirmation evidence type"
+                          items={[
+                            {
+                              value: "manual_unvalidated",
+                              label: "Manual evidence — unvalidated",
+                            },
+                            {
+                              value: "platform_url",
+                              label: "Validate a platform URL",
+                            },
+                            {
+                              value: "provider_reference",
+                              label: "Validate a provider post ID",
+                            },
+                          ]}
+                          value={recoveryForm.evidenceKind}
+                          onValueChange={(value) =>
+                            setRecoveryForm((current) =>
+                              current
+                                ? {
+                                    ...current,
+                                    evidenceKind: value as RecoveryForm["evidenceKind"],
+                                  }
+                                : current,
+                            )
+                          }
+                        />
+                      ) : null}
+                      {recoveryForm.action === "confirm_published" &&
+                      recoveryForm.evidenceKind !== "provider_reference" ? (
                         <Input
                           size="sm"
                           type="url"
@@ -821,34 +873,56 @@ export function SocialSchedulingPanel({
                           onChange={(event) =>
                             setRecoveryForm((current) =>
                               current
-                                ? { ...current, externalUrl: event.target.value }
+                                ? {
+                                    ...current,
+                                    externalUrl: event.target.value,
+                                  }
+                                : current,
+                            )
+                          }
+                        />
+                      ) : null}
+                      {recoveryForm.action === "confirm_published" &&
+                      recoveryForm.evidenceKind !== "platform_url" ? (
+                        <Input
+                          size="sm"
+                          aria-label={`${platformLabels[post.platform]} provider post ID`}
+                          placeholder={
+                            post.platform === "instagram_reels"
+                              ? "Instagram media ID (numbers only)"
+                              : "Provider post ID"
+                          }
+                          value={recoveryForm.providerReference}
+                          onChange={(event) =>
+                            setRecoveryForm((current) =>
+                              current
+                                ? {
+                                    ...current,
+                                    providerReference: event.target.value,
+                                  }
                                 : current,
                             )
                           }
                         />
                       ) : null}
                       {recoveryForm.action === "publish_again" ? (
-                        <label>
-                          <Flex align="flex-start" gap="2">
-                            <input
-                              type="checkbox"
-                              checked={recoveryForm.duplicateRiskAcknowledged}
-                              onChange={(event) =>
-                                setRecoveryForm((current) =>
-                                  current
-                                    ? {
-                                        ...current,
-                                        duplicateRiskAcknowledged: event.target.checked,
-                                      }
-                                    : current,
-                                )
-                              }
-                            />
-                            <Text fontSize="xs" color="fg">
-                              I checked {platformLabels[post.platform]} and accept the risk of a duplicate post.
-                            </Text>
-                          </Flex>
-                        </label>
+                        <Checkbox
+                          alignItems="flex-start"
+                          checked={recoveryForm.duplicateRiskAcknowledged}
+                          onCheckedChange={(checked) =>
+                            setRecoveryForm((current) =>
+                              current
+                                ? {
+                                    ...current,
+                                    duplicateRiskAcknowledged: checked,
+                                  }
+                                : current,
+                            )
+                          }
+                        >
+                          I checked {platformLabels[post.platform]} and accept the
+                          risk of a duplicate post.
+                        </Checkbox>
                       ) : null}
                       <Flex gap="2" justify="flex-end">
                         <Button
@@ -897,8 +971,10 @@ export function SocialSchedulingPanel({
                           setRecoveryForm({
                             postId: post.id,
                             action: "recheck",
+                            evidenceKind: "manual_unvalidated",
                             reason: "",
                             externalUrl: "",
+                            providerReference: "",
                             duplicateRiskAcknowledged: false,
                           })
                         }
@@ -914,8 +990,10 @@ export function SocialSchedulingPanel({
                           setRecoveryForm({
                             postId: post.id,
                             action: "confirm_published",
+                            evidenceKind: "manual_unvalidated",
                             reason: "",
                             externalUrl: "",
+                            providerReference: "",
                             duplicateRiskAcknowledged: false,
                           })
                         }
@@ -932,8 +1010,10 @@ export function SocialSchedulingPanel({
                           setRecoveryForm({
                             postId: post.id,
                             action: "publish_again",
+                            evidenceKind: "manual_unvalidated",
                             reason: "",
                             externalUrl: "",
+                            providerReference: "",
                             duplicateRiskAcknowledged: false,
                           })
                         }

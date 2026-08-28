@@ -84,6 +84,18 @@ export function isLiveSocialPost(
 	);
 }
 
+/** A provider can accept a post before its media has finished processing. */
+export function isLiveSocialPostSnapshot(
+	post: Pick<SocialPostSnapshot, "status"> &
+		Partial<Pick<SocialPostSnapshot, "providerProcessingStatus">>,
+): boolean {
+	return (
+		isLiveSocialPost(post.status) ||
+		(post.status === "posted" &&
+			post.providerProcessingStatus === "processing")
+	);
+}
+
 /** Rounded, unit-suffixed distance between two instants: `40 min`, `3 hr`. */
 export function formatTimeDistance(deltaMs: number): string {
 	const abs = Math.abs(deltaMs);
@@ -102,15 +114,14 @@ export function formatTimeDistance(deltaMs: number): string {
 /**
  * Friendly copy for a publish failure code, or `null` when there's no code.
  *
- * Unlike `userErrorMessage`, an unmapped code isn't flattened into the generic
- * "something went wrong" line — it's echoed so the row (and any support
- * ticket) still names the platform's actual rejection.
+ * Provider codes remain in operator facts and logs. The product UI maps
+ * unmapped codes to safe recovery copy instead of exposing internal values.
  */
 export function publishFailureMessage(errorCode: string | null): string | null {
 	if (!errorCode) return null;
 	return (
 		USER_ERROR_MESSAGES[errorCode] ??
-		`Publishing failed (${errorCode}). Schedule it again, or contact support if it keeps failing.`
+		"Publishing failed. Review the connected account and approved media, then schedule it again."
 	);
 }
 
@@ -130,9 +141,6 @@ function attentionGuidance(
 	) {
 		return "This X account or product tier does not allow the exact recent-post lookup Narriflow needs. Inspect the selected X account before taking another action.";
 	}
-	if (errorCode) {
-		return `Verify the post on ${SOCIAL_PLATFORM_LABELS[platform]} before taking another action (${errorCode}).`;
-	}
 	return `Verify the post on ${SOCIAL_PLATFORM_LABELS[platform]} before taking another action.`;
 }
 
@@ -145,7 +153,10 @@ type SocialPostFeedbackInput = Pick<
 	| "errorCode"
 	| "errorDisposition"
   | "nextAttemptAt"
-> & { createdAt?: string | null };
+> & {
+	createdAt?: string | null;
+	providerProcessingStatus?: SocialPostSnapshot["providerProcessingStatus"];
+};
 
 function timestampOf(value: string | null | undefined): number | null {
 	if (!value) return null;
@@ -282,6 +293,56 @@ export function describeSocialPost(
 			};
 
 		case "posted": {
+			if (post.providerProcessingStatus === "processing") {
+				return {
+					label: "Posted · processing",
+					tone: "accent",
+					detail:
+						"YouTube accepted this video. Final processing and visibility are still being checked.",
+					error: null,
+					isBusy: true,
+					isLive: true,
+				};
+			}
+			if (
+				post.errorCode === "social_account_reconnect_required" ||
+				post.errorCode?.includes("authentication") ||
+				post.errorCode?.includes("permission")
+			) {
+				return {
+					label: "Posted · reconnect required",
+					tone: "warning",
+					detail:
+						"YouTube accepted this video, but Narriflow lost permission to verify final processing.",
+					error: "Reconnect the YouTube account, then verify the accepted video.",
+					isBusy: false,
+					isLive: false,
+				};
+			}
+			if (post.errorCode === "youtube_processing_status_unknown") {
+				return {
+					label: "Posted · needs verification",
+					tone: "warning",
+					detail:
+						"YouTube accepted this video, but Narriflow could not confirm its final processing status before the recovery deadline.",
+					error:
+						"Verify the accepted video on YouTube before taking another action.",
+					isBusy: false,
+					isLive: false,
+				};
+			}
+			if (post.errorCode === "youtube_processing_failed") {
+				return {
+					label: "Posted · processing failed",
+					tone: "warning",
+					detail:
+						"YouTube accepted this video, but later reported a processing failure. The accepted video receipt was preserved.",
+					error:
+						"Review the accepted video in YouTube Studio. Narriflow will not upload it again automatically.",
+					isBusy: false,
+					isLive: false,
+				};
+			}
 			if (postedAt === null) {
 				return {
 					label: SOCIAL_POST_STATUS_LABELS.posted,
@@ -367,6 +428,10 @@ export function socialPollDelayMs(
 	};
 
 	for (const post of posts) {
+		if (post.status === "posted" && isLiveSocialPostSnapshot(post)) {
+			tighten(30_000);
+			continue;
+		}
 		if (!isLiveSocialPost(post.status)) continue;
 
 		if (post.status === "preparing_video" || post.status === "publishing") {

@@ -38,6 +38,7 @@ describe("Narriflow MCP 2026-07-28 server", () => {
 
     const { tools } = await client.listTools();
     expect(tools.map((tool) => tool.name)).toEqual([
+      "narriflow_confirm_social_publication",
       "narriflow_create_rss_autopilot_rule",
       "narriflow_get_project",
       "narriflow_get_social_publication",
@@ -46,6 +47,7 @@ describe("Narriflow MCP 2026-07-28 server", () => {
       "narriflow_list_projects",
       "narriflow_list_workspaces",
       "narriflow_run_autopilot_rule_now",
+      "narriflow_publish_social_publication_again",
       "narriflow_recheck_social_publication",
     ]);
 
@@ -55,6 +57,10 @@ describe("Narriflow MCP 2026-07-28 server", () => {
     expect(createRule?.annotations?.openWorldHint).toBe(true);
     expect(listProjects?.annotations?.readOnlyHint).toBe(true);
     expect(listProjects?.annotations?.destructiveHint).toBe(false);
+    expect(
+      tools.find((tool) => tool.name === "narriflow_publish_social_publication_again")
+        ?.annotations?.destructiveHint,
+    ).toBe(true);
   });
 
   test("keeps the legacy stateless protocol available during client migration", async () => {
@@ -69,7 +75,7 @@ describe("Narriflow MCP 2026-07-28 server", () => {
     );
 
     const { tools } = await client.listTools();
-    expect(tools).toHaveLength(9);
+    expect(tools).toHaveLength(11);
     expect(tools.some((tool) => tool.name === "narriflow_list_workspaces")).toBe(true);
   });
 
@@ -157,7 +163,10 @@ describe("Narriflow MCP 2026-07-28 server", () => {
     expect(result.isError).toBe(true);
     expect(result.content?.[0]).toEqual({
       type: "text",
-      text: "This API key requires the usage:read scope",
+      text: JSON.stringify({
+        error: "mcp_api_key_scope_required",
+        message: "This API key requires the usage:read scope",
+      }),
     });
   });
 
@@ -181,9 +190,89 @@ describe("Narriflow MCP 2026-07-28 server", () => {
     expect(result.isError).toBe(true);
     expect(result.content?.[0]).toEqual({
       type: "text",
-      text: "This API key requires the publishing:write scope",
+      text: JSON.stringify({
+        error: "mcp_api_key_scope_required",
+        message: "This API key requires the publishing:write scope",
+      }),
     });
   });
+
+  test.each([
+    [
+      "narriflow_confirm_social_publication",
+      {
+        socialPostId: "00000000-0000-4000-8000-000000000004",
+        reason: "Verified on the provider",
+        evidenceKind: "manual_unvalidated",
+      },
+    ],
+    [
+      "narriflow_publish_social_publication_again",
+      {
+        socialPostId: "00000000-0000-4000-8000-000000000004",
+        reason: "Operator accepted duplicate risk",
+        duplicateRiskAcknowledged: true,
+      },
+    ],
+  ])("requires an explicit write scope before %s", async (name, arguments_) => {
+    const client = await connect({
+      kind: "api_key",
+      userId: "00000000-0000-4000-8000-000000000001",
+      clientId: "narriflow-api-key:test",
+      apiKeyId: "00000000-0000-4000-8000-000000000002",
+      workspaceId: "00000000-0000-4000-8000-000000000003",
+      scopes: ["publishing:read"],
+    });
+
+    const result = await client.callTool({ name, arguments: arguments_ });
+    expect(result.isError).toBe(true);
+    expect(result.content?.[0]).toEqual({
+      type: "text",
+      text: JSON.stringify({
+        error: "mcp_api_key_scope_required",
+        message: "This API key requires the publishing:write scope",
+      }),
+    });
+  });
+
+  test("strictly rejects unknown recovery tool fields before service access", async () => {
+    const client = await connect({
+      kind: "oauth",
+      userId: "00000000-0000-4000-8000-000000000001",
+      clientId: "test-oauth-client",
+      scopes: ["openid"],
+    });
+
+    const result = await client.callTool({
+      name: "narriflow_get_social_publication",
+      arguments: {
+        socialPostId: "00000000-0000-4000-8000-000000000004",
+        providerCheckpoint: "must-not-be-accepted",
+      },
+    });
+    expect(result.isError).toBe(true);
+  });
+
+	test.each(["platform_url", "provider_reference"] as const)(
+		"rejects %s confirmation without its required evidence at the MCP boundary",
+		async (evidenceKind) => {
+			const client = await connect({
+				kind: "oauth",
+				userId: "00000000-0000-4000-8000-000000000001",
+				clientId: "test-oauth-client",
+				scopes: ["openid", "publishing:write"],
+			});
+			const result = await client.callTool({
+				name: "narriflow_confirm_social_publication",
+				arguments: {
+					socialPostId: "00000000-0000-4000-8000-000000000004",
+					reason: "Validate the evidence shape",
+					evidenceKind,
+				},
+			});
+			expect(result.isError).toBe(true);
+		},
+	);
 
   test("rejects an API key targeting a workspace other than its bound workspace", async () => {
     const client = await connect({
@@ -202,7 +291,10 @@ describe("Narriflow MCP 2026-07-28 server", () => {
     expect(result.isError).toBe(true);
     expect(result.content?.[0]).toEqual({
       type: "text",
-      text: "This API key is bound to a different workspace",
+      text: JSON.stringify({
+        error: "mcp_workspace_boundary_violation",
+        message: "This API key is bound to a different workspace",
+      }),
     });
   });
 });

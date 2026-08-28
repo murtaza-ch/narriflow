@@ -26,6 +26,8 @@ import {
 	presignDownloadUrl,
 } from "./r2-storage";
 import { socialOAuthService } from "./social-oauth.service";
+import { structuredSocialPublicationMetrics } from "./social-publication-observability";
+import { createYouTubeReceiptEnricher } from "./youtube-receipt-enrichment";
 
 async function materializeMedia(input: PublicationPlatformInput["media"]) {
 	const directory = await mkdtemp(join(tmpdir(), "narriflow-publication-"));
@@ -126,15 +128,23 @@ export function createProductionSocialPublicationRuntime(
 				}),
 		},
 		clock: { now: () => new Date() },
+		metrics: structuredSocialPublicationMetrics,
 		config: {
-			youtubeChunkBytes: 8 * 1024 * 1024,
+			youtubeApiVersion: config.providers.youtubeApiVersion,
+			youtubeChunkBytes: config.providers.youtubeChunkBytes,
 			metaGraphVersion: config.providers.metaGraphVersion,
 			linkedInVersion: config.providers.linkedInVersion,
-			instagramPollAttempts: 30,
-			instagramPollIntervalMs: 5_000,
-			tiktokPollIntervalMs: 5_000,
-			tiktokChunkBytes: 64 * 1024 * 1024,
-			xChunkBytes: 4 * 1024 * 1024,
+			instagramPollAttempts: config.providers.instagramPollAttempts,
+			instagramPollIntervalMs: config.providers.instagramPollIntervalMs,
+			tiktokPollIntervalMs: config.providers.tiktokPollIntervalMs,
+			tiktokChunkBytes: config.providers.tiktokChunkBytes,
+			tiktokApiVersion: config.providers.tiktokApiVersion,
+			xApiVersion: config.providers.xApiVersion,
+			xChunkBytes: config.providers.xChunkBytes,
+			xMaxMediaBytes: config.providers.xMaxMediaBytes,
+			xRateLimitRetryFloorMs: config.providers.xRateLimitRetryFloorMs,
+			xReconciliationMaxPages:
+				config.providers.xReconciliationMaxPages,
 		},
 	});
 	const webhook = config.webhook
@@ -164,6 +174,10 @@ export function createProductionSocialPublicationRuntime(
 			return native.get(platform);
 		},
 	};
+	const enrichAccepted = createYouTubeReceiptEnricher({
+		fetch,
+		metrics: structuredSocialPublicationMetrics,
+	});
 	const attempt = createSocialPublicationAttempt({
 		store: prismaSocialPublicationAttemptStore,
 		platforms,
@@ -179,6 +193,7 @@ export function createProductionSocialPublicationRuntime(
 				);
 			},
 		},
+		metrics: structuredSocialPublicationMetrics,
 		retry: { ...config.retry, random: Math.random },
 		providerCallBudget: config.worker.providerCallBudget,
 		processingDeadlineMs: config.worker.processingDeadlineMs,
@@ -187,6 +202,7 @@ export function createProductionSocialPublicationRuntime(
 	return {
 		config,
 		attempt,
+		enrichAccepted,
 		claimDue(claimantId: string, now = new Date()) {
 			return claimDueSocialPublicationAttempts({
 				claimantId,
@@ -198,6 +214,7 @@ export function createProductionSocialPublicationRuntime(
 					reconciliationDeadlineMs: config.worker.reconciliationDeadlineMs,
 					providerCallBudget: config.worker.providerCallBudget,
 				},
+				metrics: structuredSocialPublicationMetrics,
 			});
 		},
 		heartbeat(owned: OwnedPublicationAttempt, now = new Date()) {
@@ -205,6 +222,7 @@ export function createProductionSocialPublicationRuntime(
 				owned,
 				now,
 				leaseMs: config.worker.leaseMs,
+				metrics: structuredSocialPublicationMetrics,
 			});
 		},
 	};

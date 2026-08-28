@@ -10,7 +10,7 @@ const publisherWorkerId = `social-publisher:${process.pid}:${randomUUID()}`;
 type PublicationRuntime = Pick<
 	ReturnType<typeof getSocialPublicationRuntime>,
 	"config" | "claimDue" | "heartbeat" | "attempt"
->;
+> & { enrichAccepted?: () => Promise<number> };
 
 type PublicationWorkerLog = (
 	level: "info" | "warn" | "error",
@@ -128,11 +128,20 @@ export function createSocialPublisherWorker(dependencies: {
 	return {
 		async processDuePosts() {
 			if (dependencies.shutdownSignal?.aborted) return 0;
+			const enrichment = dependencies.runtime.enrichAccepted?.().catch(() => {
+				log("error", "social_publication_receipt_enrichment_crashed", {
+					errorCode: "social_publication_receipt_enrichment_crashed",
+				});
+				return 0;
+			});
 			const claimed = await dependencies.runtime.claimDue(
 				dependencies.workerId,
 			);
-			if (claimed.length === 0) return 0;
-			return runBounded(
+			if (claimed.length === 0) {
+				await enrichment;
+				return 0;
+			}
+			const started = await runBounded(
 				claimed,
 				dependencies.runtime.config.worker.concurrency,
 				(attempt) =>
@@ -145,6 +154,8 @@ export function createSocialPublisherWorker(dependencies: {
 				log,
 				() => dependencies.shutdownSignal?.aborted ?? false,
 			);
+			await enrichment;
+			return started;
 		},
 	};
 }

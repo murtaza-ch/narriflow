@@ -1,5 +1,6 @@
 import { getPrismaClient } from "@narriflow/db/client";
 import type { ClipAspectRatio, ClipExportStatus, SocialPlatform, SocialPostStatus } from "@prisma/client";
+import type { SocialPostSnapshot } from "@narriflow/validators";
 
 import { accessibleProjectWhere } from "./project-retention.service";
 import { workspaceService } from "./workspace.service";
@@ -269,6 +270,19 @@ export class WorkspaceLibraryService {
         createdAt: true,
         project: { select: { title: true } },
         socialAccount: { select: { id: true, displayName: true, handle: true } },
+        publicationAttempts: {
+          orderBy: { attemptNumber: "desc" },
+          take: 1,
+          select: {
+            receipt: {
+              select: {
+                providerProcessingStatus: true,
+                providerProcessingFailureCode: true,
+                providerVisibility: true,
+              },
+            },
+          },
+        },
       },
       orderBy: { scheduledFor: "asc" },
     });
@@ -278,6 +292,13 @@ export class WorkspaceLibraryService {
       postedAt: row.postedAt?.toISOString() ?? null,
       nextAttemptAt: row.nextAttemptAt?.toISOString() ?? null,
       createdAt: row.createdAt.toISOString(),
+      providerProcessingStatus:
+        (row.publicationAttempts[0]?.receipt
+          ?.providerProcessingStatus as SocialPostSnapshot["providerProcessingStatus"]) ?? null,
+      providerProcessingFailureCode:
+        row.publicationAttempts[0]?.receipt?.providerProcessingFailureCode ?? null,
+      providerVisibility:
+        row.publicationAttempts[0]?.receipt?.providerVisibility ?? null,
     }));
   }
 

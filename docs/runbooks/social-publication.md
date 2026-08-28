@@ -1,6 +1,6 @@
 # Social Publication operations
 
-Social Publication Attempt is the only owner of provider delivery. Deploy the database migrations through `20260828231000_social_publication_operation_lookup` before starting the web or worker process. Drain social workers before migration. Narriflow has no production users or mixed-version deployment contract, so obsolete local nonterminal fixtures are reset instead of supported through dual paths.
+Social Publication Attempt is the only owner of provider delivery. Deploy the database migrations through `20260828234000_frozen_publication_media_duration` before starting the web or worker process. Drain social workers before migration. Narriflow has no production users or mixed-version deployment contract, so obsolete local publication rows without frozen intent are deleted instead of supported through dual paths.
 
 ## Configuration
 
@@ -26,19 +26,21 @@ Bounded worker controls:
 | `SOCIAL_PUBLISH_RECONCILIATION_DEADLINE_MS` | 86,400,000 | 60,000–604,800,000 |
 | `SOCIAL_PUBLISH_MAX_ATTEMPTS` | 4 | 1–10 |
 
-Invalid values stop startup. Meta Graph `v24.0` and LinkedIn `202608` are shared web/worker capability contracts. Configured values must match them, and upgrades must change the shared contract and adapter fixtures together.
+Provider capability controls are validated at startup: YouTube API `v3` with 256 KiB-aligned 256 KiB–256 MiB chunks, Meta Graph `v24.0` with bounded container polling, TikTok API `v2` with 5–64 MiB chunks and polling no faster than five seconds, LinkedIn `202608` with a 30-day pre-sunset startup guard, and X API `v2` with bounded media, chunk, rate-retry, and reconciliation policies. Configure them with `YOUTUBE_API_VERSION`, `YOUTUBE_UPLOAD_CHUNK_BYTES`, `META_GRAPH_VERSION`, `INSTAGRAM_CONTAINER_POLL_ATTEMPTS`, `INSTAGRAM_CONTAINER_POLL_INTERVAL_MS`, `TIKTOK_API_VERSION`, `TIKTOK_UPLOAD_CHUNK_BYTES`, `TIKTOK_STATUS_POLL_INTERVAL_MS`, `LINKEDIN_API_VERSION`, `LINKEDIN_API_VERSION_SUNSET_AT`, `X_API_VERSION`, `X_UPLOAD_CHUNK_BYTES`, `X_MAX_MEDIA_BYTES`, `X_RATE_LIMIT_RETRY_FLOOR_MS`, and `X_RECONCILIATION_MAX_PAGES`. Invalid values stop startup; upgrades must change the shared contract and pinned adapter fixtures together.
 
 Provider recovery contracts:
 
-- YouTube: `youtube.upload`; resumable upload sessions use bounded chunks and are status-probed with the total byte count before resuming the provider-reported range. Audit-enforced accounts stay private.
+- YouTube: `youtube.upload`; resumable upload sessions use bounded chunks and are status-probed with the total byte count before resuming the provider-reported range. A confirmed video ID settles Posted immediately. The worker then enriches the retained receipt from `videos.list`, recording processing success or failure and observed privacy without uploading again. Audit-enforced accounts stay private.
 - Instagram: `instagram_content_publish`; the configured professional-account ID owns one durable Reel container. `IN_PROGRESS`, `FINISHED`, `PUBLISHED`, `ERROR`, and `EXPIRED` are the only accepted container states.
-- TikTok: `video.publish`; creator settings are refreshed before initialization. Content Posting webhook signatures use the raw body, `TikTok-Signature`, HMAC-SHA256, and a five-minute replay window. Duplicate or out-of-order events cannot reverse an accepted receipt.
-- LinkedIn: `w_member_social` or `w_organization_social`; exact lost-response recovery additionally needs `r_member_social` or `r_organization_social`. Requests send the pinned `Linkedin-Version` and Rest.li protocol header.
+- TikTok: `video.publish`; creator settings are refreshed before initialization. Moderation polling backs off exponentially to a 30-minute ceiling within the durable processing deadline. Content Posting webhook signatures use the raw body, `TikTok-Signature`, HMAC-SHA256, and a five-minute replay window. Duplicate or out-of-order events cannot reverse an accepted receipt, and Publish again fences the prior lookup hash before scheduling new work.
+- LinkedIn: `w_member_social` or `w_organization_social`; exact lost-response recovery additionally needs `r_member_social` or `r_organization_social`. Requests send the pinned `Linkedin-Version` and Rest.li protocol header. Finalized video stays in durable provider processing until LinkedIn reports `AVAILABLE`; only then may the Post be created.
 - X: `tweet.write` and `media.write`; exact lost-response recovery additionally needs `tweet.read` and `users.read`. Matching uses attached media keys, never text alone.
 
 ## Diagnosis and recovery
 
 Use structured `social_publication_*` diagnostics keyed by attempt ID, claim ID, platform, phase, and normalized error code. Logs must never contain access or refresh tokens, webhook signing secrets, reconciliation tokens, scoped media URLs, storage keys, captions, response bodies, or encrypted checkpoint contents.
+
+Structured `social_publication_metric` events provide counters and timers for queue age, claims, lease takeover, stale settlement, provider operations and duration, processing and reconciliation age, retries, attention, manual decisions, receipts and enrichment, cleanup, and terminal outcomes. Dimensions are limited to platform, phase, outcome, disposition, operation class, and decision class.
 
 - Preparing video: inspect the exact frozen Clip Export variant. A failed variant settles definitively; it does not select another render.
 - Scheduled but late: confirm worker health, workspace access, `nextAttemptAt`, and claim admission.
@@ -90,6 +92,8 @@ bun test packages/services/src/social-publication-native-platforms.test.ts
 bun test packages/services/src/social-publication-webhook.test.ts
 bun test packages/services/src/social-publication-tiktok-webhook.test.ts
 bun test packages/services/src/social-publication-config.test.ts
+bun test packages/services/src/youtube-receipt-enrichment.test.ts
+bun test packages/mcp-core/src/index.test.ts
 bun run typecheck
 bun run lint
 bun run test

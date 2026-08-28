@@ -3,6 +3,7 @@ import {
   describeSocialPost,
   formatTimeDistance,
   isLiveSocialPost,
+  isLiveSocialPostSnapshot,
   socialPollDelayMs,
   SOCIAL_PUBLISH_GRACE_MS,
 } from "./social-post-status";
@@ -20,6 +21,7 @@ function post(overrides: Partial<Post> = {}): Post {
     errorCode: null,
     errorDisposition: null,
     nextAttemptAt: null,
+    providerProcessingStatus: null,
     ...overrides,
   };
 }
@@ -171,7 +173,7 @@ describe("describeSocialPost", () => {
     expect(feedback.isLive).toBe(false);
   });
 
-  test("failure surfaces the mapped reason, with a fallback for unknown codes", () => {
+  test("failure surfaces mapped guidance without exposing unknown provider codes", () => {
     const known = describeSocialPost(
       post({ status: "failed", errorCode: "social_publish_failed" }),
       NOW,
@@ -185,8 +187,8 @@ describe("describeSocialPost", () => {
       post({ status: "failed", errorCode: "x_media_processing_timeout" }),
       NOW,
     );
-    expect(unknown.error).toContain("x_media_processing_timeout");
-    expect(unknown.error).toContain("Schedule it again");
+    expect(unknown.error).not.toContain("x_media_processing_timeout");
+    expect(unknown.error).toContain("schedule it again");
 
     const missing = describeSocialPost(
       post({ status: "failed", errorCode: null }),
@@ -228,6 +230,22 @@ describe("isLiveSocialPost", () => {
     expect(isLiveSocialPost("failed")).toBe(false);
     expect(isLiveSocialPost("cancelled")).toBe(false);
     expect(isLiveSocialPost("draft")).toBe(false);
+  });
+});
+
+describe("isLiveSocialPostSnapshot", () => {
+  test("keeps an accepted YouTube post live until provider processing settles", () => {
+    expect(
+      isLiveSocialPostSnapshot(
+        post({ status: "posted", providerProcessingStatus: "processing" }),
+      ),
+    ).toBe(true);
+    expect(
+      isLiveSocialPostSnapshot(
+        post({ status: "posted", providerProcessingStatus: "succeeded" }),
+      ),
+    ).toBe(false);
+    expect(isLiveSocialPostSnapshot(post({ status: "processing" }))).toBe(true);
   });
 });
 

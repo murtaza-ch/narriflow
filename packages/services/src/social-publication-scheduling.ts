@@ -20,6 +20,7 @@ export type FrozenPublicationState = {
 	exportFingerprint: string;
 	storageKey: string | null;
 	sizeBytes: number | null;
+	durationSec: number | null;
 	aspectRatio: ClipAspectRatio;
 	caption: string;
 	providerSettings: Prisma.JsonObject;
@@ -87,6 +88,7 @@ export interface PublicationSchedulingStore {
 		clipExportVariantId: string;
 		storageKey: string;
 		sizeBytes: number;
+		durationSec: number;
 		now: Date;
 	}): Promise<void>;
 }
@@ -227,6 +229,7 @@ export function createSocialPublicationScheduling(dependencies: {
 			clipExportVariantId: string;
 			storageKey: string;
 			sizeBytes: number;
+			durationSec: number;
 		}) {
 			return dependencies.store.recordExportReady({
 				...input,
@@ -350,6 +353,7 @@ export function createInMemoryPublicationSchedulingStore(): PublicationSchedulin
 						...current.frozen,
 						storageKey: input.storageKey,
 						sizeBytes: input.sizeBytes,
+						durationSec: input.durationSec,
 					},
 					updatedAt: input.now,
 				});
@@ -415,7 +419,8 @@ function toPublicationIntent(row: PublicationIntentRow): PublicationIntent {
 		submissionEligible:
 			status === "scheduled" &&
 			frozen.storageKey !== null &&
-			frozen.sizeBytes !== null,
+			frozen.sizeBytes !== null &&
+			frozen.durationSec !== null,
 		frozen: {
 			clipExportId: frozen.clipExportId,
 			clipExportVariantId: frozen.clipExportVariantId,
@@ -423,6 +428,7 @@ function toPublicationIntent(row: PublicationIntentRow): PublicationIntent {
 			exportFingerprint: frozen.exportFingerprint,
 			storageKey: frozen.storageKey,
 			sizeBytes: frozen.sizeBytes === null ? null : Number(frozen.sizeBytes),
+			durationSec: frozen.durationSec,
 			aspectRatio: clipAspectRatioFromDb[frozen.aspectRatio],
 			caption: frozen.caption,
 			providerSettings:
@@ -549,6 +555,7 @@ export const prismaPublicationSchedulingStore: PublicationSchedulingStore = {
 									exportFingerprint: candidate.frozen.exportFingerprint,
 									storageKey: candidate.frozen.storageKey,
 									sizeBytes: candidate.frozen.sizeBytes,
+									durationSec: candidate.frozen.durationSec,
 									aspectRatio:
 										clipAspectRatioToDb[candidate.frozen.aspectRatio],
 									caption: candidate.frozen.caption,
@@ -669,6 +676,7 @@ export const prismaPublicationSchedulingStore: PublicationSchedulingStore = {
 				data: {
 					storageKey: input.storageKey,
 					sizeBytes: input.sizeBytes,
+					durationSec: input.durationSec,
 					mediaReadyAt: input.now,
 				},
 			});
@@ -784,6 +792,8 @@ export function createProductionSocialPublicationScheduling() {
 					variant.status === "completed" && variant.sizeBytes !== null
 						? Number(variant.sizeBytes)
 						: null,
+				durationSec:
+					variant.status === "completed" ? variant.durationSec : null,
 				aspectRatio: input.aspectRatio,
 				caption: input.caption,
 				providerSettings: input.providerSettings,
@@ -793,19 +803,21 @@ export function createProductionSocialPublicationScheduling() {
 					input.accountId === null
 						? "publication-webhook-v1"
 						: input.platform === "youtube_shorts"
-							? "youtube-v3"
-						: input.platform === "instagram_reels"
+							? `youtube-${SOCIAL_PUBLICATION_CAPABILITY_VERSIONS.youtube_shorts}`
+							: input.platform === "instagram_reels"
 								? SOCIAL_PUBLICATION_CAPABILITY_VERSIONS.instagram_reels
 								: input.platform === "tiktok"
-									? "tiktok-v2"
+									? `tiktok-${SOCIAL_PUBLICATION_CAPABILITY_VERSIONS.tiktok}`
 									: input.platform === "linkedin"
 										? SOCIAL_PUBLICATION_CAPABILITY_VERSIONS.linkedin
-										: "x-v2",
+										: `x-${SOCIAL_PUBLICATION_CAPABILITY_VERSIONS.x}`,
 				scheduledFor: input.scheduledFor,
 			};
 			return {
 				kind:
-					state.storageKey !== null && state.sizeBytes !== null
+					state.storageKey !== null &&
+					state.sizeBytes !== null &&
+					state.durationSec !== null
 						? "ready"
 						: "preparing",
 				state,

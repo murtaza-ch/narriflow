@@ -1345,8 +1345,8 @@ model SocialPost {
   socialAccountId String?       @db.Uuid
   platform     SocialPlatform
   status       SocialPostStatus @default(scheduled)
-  clientIdempotencyKey String?
-  immutableRequestHash String?
+  clientIdempotencyKey String
+  immutableRequestHash String
   caption      String
   aspectRatio  ClipAspectRatio?
   scheduledFor DateTime?
@@ -1387,6 +1387,7 @@ model FrozenPublicationState {
   exportFingerprint     String
   storageKey            String?
   sizeBytes             BigInt?
+  durationSec           Float?
   aspectRatio           ClipAspectRatio
   caption               String
   providerSettings      Json
@@ -1416,6 +1417,7 @@ model SocialPublicationAttempt {
   phase                 PublicationAttemptPhase
   outcome               PublicationOutcome?
   failureCode           String?
+  failureEvidence       Json?
   failureDisposition    PublicationFailureDisposition?
   nextActionAt          DateTime
   providerCallCount     Int             @default(0)
@@ -1426,6 +1428,7 @@ model SocialPublicationAttempt {
   checkpointEncrypted   String?
   currentClaimId        String?         @unique @db.Uuid
   startedAt             DateTime        @default(now())
+  phaseStartedAt        DateTime        @default(now())
   terminalAt            DateTime?
   createdAt             DateTime        @default(now())
   updatedAt             DateTime        @updatedAt
@@ -1492,6 +1495,13 @@ model ProviderReceipt {
   platformPostId String?
   externalUrl    String?
   metrics        Json?
+  providerProcessingStatus String?
+  providerProcessingFailureCode String?
+  providerVisibility String?
+  enrichmentClaimId String? @unique
+  enrichmentLeaseExpiresAt DateTime?
+  enrichmentNextCheckAt DateTime?
+  enrichmentCheckCount Int @default(0)
   createdAt      DateTime       @default(now())
   enrichedAt     DateTime?
 
@@ -1499,6 +1509,7 @@ model ProviderReceipt {
 
   @@unique([platform, receiptId])
   @@index([platform, platformPostId])
+  @@index([platform, providerProcessingStatus, enrichedAt, enrichmentNextCheckAt])
 }
 
 model PublicationAnalyticsIntent {
