@@ -332,7 +332,7 @@ export interface WorkspaceBillingStore {
   commitNoSubscriptionState(input: {
     workspaceId: string;
     attemptId: string;
-    workspaceStatus: "active" | "pending_payment";
+    workspaceStatus: "active" | "pending_payment" | "restricted";
     health: "current" | "activating";
     now: Date;
   }): Promise<WorkspaceBillingProjection>;
@@ -1693,10 +1693,14 @@ export interface WorkspaceBillingDiagnostics {
 
 export type WorkspaceBillingMetricName =
   | "workspace_billing_deliveries_total"
+  | "workspace_billing_delivery_latency_ms"
   | "workspace_billing_queue_age_ms"
   | "workspace_billing_claims_total"
   | "workspace_billing_settlements_total"
   | "workspace_billing_operation_duration_ms"
+  | "workspace_billing_provider_calls_total"
+  | "workspace_billing_retry_delay_ms"
+  | "workspace_billing_transitions_total"
   | "workspace_billing_seat_quantity";
 
 export interface WorkspaceBillingMetrics {
@@ -1782,6 +1786,27 @@ export function createWorkspaceBillingModule(dependencies: {
   const metrics: WorkspaceBillingMetrics = dependencies.metrics ?? {
     observe: () => undefined,
   };
+  const retryBand = (attemptCount: number) =>
+    attemptCount <= 1 ? "first" : attemptCount <= 3 ? "early" : "persistent";
+  const callProvider = async <T>(
+    operation: string,
+    call: () => Promise<T> | T,
+  ): Promise<T> => {
+    try {
+      const value = await call();
+      metrics.observe("workspace_billing_provider_calls_total", 1, {
+        operation,
+        outcome: "success",
+      });
+      return value;
+    } catch (error) {
+      metrics.observe("workspace_billing_provider_calls_total", 1, {
+        operation,
+        outcome: "failure",
+      });
+      throw error;
+    }
+  };
   const reconcileOne = async (
     workspaceId: string,
     attemptId?: string,
@@ -1793,10 +1818,17 @@ export function createWorkspaceBillingModule(dependencies: {
     }
     const settleNoSubscription = async (activating: boolean) => {
       if (!attemptId) throw new WorkspaceBillingAttemptLost();
+      const workspaceStatus = activating
+        ? "pending_payment"
+        : current.status === "pending_payment"
+          ? "pending_payment"
+          : !current.personal && current.hasNonOwnerMembers
+            ? "restricted"
+            : "active";
       const settled = await dependencies.store.commitNoSubscriptionState({
         workspaceId,
         attemptId,
-        workspaceStatus: activating ? "pending_payment" : "active",
+        workspaceStatus,
         health: activating ? "activating" : "current",
         now: dependencies.clock.now(),
       });
@@ -1818,15 +1850,34 @@ export function createWorkspaceBillingModule(dependencies: {
           accessStatus: settled.status,
         },
       );
+      metrics.observe("workspace_billing_transitions_total", 1, {
+        transition:
+          current.status !== settled.status && settled.status === "restricted"
+            ? "access_restricted"
+            : activating
+              ? "activation_wait"
+              : "verified_free",
+        health: settled.health,
+        accessStatus: settled.status,
+      });
       return { kind: "reconciled" as const, view: billingView(settled) };
     };
     if (!current.providerCustomerId) {
       if (current.pricingTier === "free") return settleNoSubscription(false);
       throw new Error("Workspace Billing Account has no provider customer");
     }
-    const providerState = await dependencies.provider.retrieveCurrentState(
-      current.providerCustomerId,
+    const providerState = await callProvider("retrieve_current_state", () =>
+      dependencies.provider.retrieveCurrentState(current.providerCustomerId!),
     );
+    const unresolved = (reason: string): ReconcileCurrentStateResult => {
+      metrics.observe("workspace_billing_transitions_total", 1, {
+        transition: "conflict",
+        reason,
+        health: "attention_required",
+        accessStatus: current.status,
+      });
+      return { kind: "unresolved", reason, view: billingView(current) };
+    };
     if (
       attemptId &&
       !(await dependencies.store.renewClaim({
@@ -1839,33 +1890,17 @@ export function createWorkspaceBillingModule(dependencies: {
       throw new WorkspaceBillingAttemptLost();
     }
     if (providerState.customerId !== current.providerCustomerId) {
-      return {
-        kind: "unresolved",
-        reason: "customer_mismatch",
-        view: billingView(current),
-      };
+      return unresolved("customer_mismatch");
     }
     if (providerState.ownership.kind !== "verified") {
-      return {
-        kind: "unresolved",
-        reason: providerState.ownership.kind,
-        view: billingView(current),
-      };
+      return unresolved(providerState.ownership.kind);
     }
     if (providerState.ownership.workspaceId !== workspaceId) {
-      return {
-        kind: "unresolved",
-        reason: "workspace_mismatch",
-        view: billingView(current),
-      };
+      return unresolved("workspace_mismatch");
     }
     if (providerState.subscriptions.length === 0) {
       if (current.pricingTier !== "free") {
-        return {
-          kind: "unresolved",
-          reason: "missing_paid_subscription",
-          view: billingView(current),
-        };
+        return unresolved("missing_paid_subscription");
       }
       return settleNoSubscription(current.latestCheckout?.status === "complete");
     }
@@ -1926,7 +1961,7 @@ export function createWorkspaceBillingModule(dependencies: {
           : malformedEntitlement.items.invalidSeats
             ? "invalid_seat_items"
             : "ambiguous_base_price";
-      return { kind: "unresolved", reason, view: billingView(current) };
+      return unresolved(reason);
     }
     const entitlementCandidates = entitlementSubscriptions
       .filter((candidate) =>
@@ -1960,11 +1995,7 @@ export function createWorkspaceBillingModule(dependencies: {
       selectedItems.unknown.length > 0 ||
       selectedItems.invalidSeats
     ) {
-      return {
-        kind: "unresolved",
-        reason: "unsupported_provider_state",
-        view: billingView(current),
-      };
+      return unresolved("unsupported_provider_state");
     }
     const mapped = mappedItems[0]!;
     let tier: PricingTier;
@@ -2014,11 +2045,7 @@ export function createWorkspaceBillingModule(dependencies: {
         health = "current";
         break;
       default:
-        return {
-          kind: "unresolved",
-          reason: "unsupported_subscription_status",
-          view: billingView(current),
-        };
+        return unresolved("unsupported_subscription_status");
     }
     if (hasSubscriptionConflict) {
       if (tierRank[current.pricingTier] > tierRank[tier]) {
@@ -2042,11 +2069,7 @@ export function createWorkspaceBillingModule(dependencies: {
       let observed = providerSeat?.quantity ?? 0;
       let itemId = providerSeat?.id ?? null;
       if (providerSeat && !providerSeat.id) {
-        return {
-          kind: "unresolved",
-          reason: "seat_item_identity_missing",
-          view: billingView(current),
-        };
+        return unresolved("seat_item_identity_missing");
       }
       if (observed !== desired.desired) {
         const operationKey = `workspace-seat-${workspaceId}-${desired.revision}`;
@@ -2057,17 +2080,19 @@ export function createWorkspaceBillingModule(dependencies: {
               "Paid-seat synchronization is not configured",
             );
           }
-          const created = await dependencies.provider.createSeatItem(
-            {
-              subscriptionId: subscription.id,
-              priceId:
-                dependencies.catalog.seatPrices.find(
-                  (candidate) => candidate.interval === mapped.interval,
-                )?.priceId ?? "",
-              quantity: desired.desired,
-              prorationBehavior: "create_prorations",
-            },
-            operationKey,
+          const created = await callProvider("create_seat_item", () =>
+            dependencies.provider.createSeatItem!(
+              {
+                subscriptionId: subscription.id,
+                priceId:
+                  dependencies.catalog.seatPrices.find(
+                    (candidate) => candidate.interval === mapped.interval,
+                  )?.priceId ?? "",
+                quantity: desired.desired,
+                prorationBehavior: "create_prorations",
+              },
+              operationKey,
+            ),
           );
           providerSeatMutation = true;
           itemId = created.itemId;
@@ -2079,12 +2104,14 @@ export function createWorkspaceBillingModule(dependencies: {
               "Paid-seat synchronization is not configured",
             );
           }
-          await dependencies.provider.deleteSeatItem(
-            {
-              itemId: providerSeat.id!,
-              prorationBehavior: "create_prorations",
-            },
-            operationKey,
+          await callProvider("delete_seat_item", () =>
+            dependencies.provider.deleteSeatItem!(
+              {
+                itemId: providerSeat.id!,
+                prorationBehavior: "create_prorations",
+              },
+              operationKey,
+            ),
           );
           providerSeatMutation = true;
           itemId = null;
@@ -2096,13 +2123,15 @@ export function createWorkspaceBillingModule(dependencies: {
               "Paid-seat synchronization is not configured",
             );
           }
-          await dependencies.provider.updateSeatItem(
-            {
-              itemId: providerSeat.id!,
-              quantity: desired.desired,
-              prorationBehavior: "create_prorations",
-            },
-            operationKey,
+          await callProvider("update_seat_item", () =>
+            dependencies.provider.updateSeatItem!(
+              {
+                itemId: providerSeat.id!,
+                quantity: desired.desired,
+                prorationBehavior: "create_prorations",
+              },
+              operationKey,
+            ),
           );
           providerSeatMutation = true;
           observed = desired.desired;
@@ -2175,6 +2204,21 @@ export function createWorkspaceBillingModule(dependencies: {
     metrics.observe("workspace_billing_seat_quantity", seat?.observed ?? 0, {
       kind: "synchronized",
       health,
+    });
+    metrics.observe("workspace_billing_transitions_total", 1, {
+      transition:
+        !current.graceDeadlineAt && settled.graceDeadlineAt
+          ? "grace_entered"
+          : current.graceDeadlineAt && !settled.graceDeadlineAt
+            ? "grace_recovered"
+            : current.status !== settled.status && settled.status === "restricted"
+              ? "access_restricted"
+              : current.health !== settled.health
+                ? "health_changed"
+                : "verified",
+      health: settled.health,
+      accessStatus: settled.status,
+      retentionTransition: current.pricingTier === "free" && tier !== "free",
     });
     return { kind: "reconciled", view: billingView(settled) };
   };
@@ -2299,8 +2343,8 @@ export function createWorkspaceBillingModule(dependencies: {
       const provider = checkoutProvider();
       const attempt = prepared.attempt;
       if (attempt.providerSessionId) {
-        const session = await provider.retrieveCheckoutSession!(
-          attempt.providerSessionId,
+        const session = await callProvider("retrieve_checkout", () =>
+          provider.retrieveCheckoutSession!(attempt.providerSessionId!),
         );
         if (
           (session.workspaceId && session.workspaceId !== input.workspaceId) ||
@@ -2325,7 +2369,9 @@ export function createWorkspaceBillingModule(dependencies: {
 
       let customerId = current.providerCustomerId;
       if (!customerId) {
-        const matches = await provider.findCustomersByWorkspace!(input.workspaceId);
+        const matches = await callProvider("find_customers", () =>
+          provider.findCustomersByWorkspace!(input.workspaceId),
+        );
         if (matches.length > 1) {
           await dependencies.store.scheduleRetry({
             workspaceId: input.workspaceId,
@@ -2345,12 +2391,14 @@ export function createWorkspaceBillingModule(dependencies: {
         customerId =
           recoveredCustomer ??
           (
-            await provider.createCustomer!(
-              {
-                workspaceId: input.workspaceId,
-                actorUserId: input.actorUserId,
-              },
-              attempt.customerOperationKey,
+            await callProvider("create_customer", () =>
+              provider.createCustomer!(
+                {
+                  workspaceId: input.workspaceId,
+                  actorUserId: input.actorUserId,
+                },
+                attempt.customerOperationKey,
+              ),
             )
           ).customerId;
         dependencies.diagnostics.record({
@@ -2368,10 +2416,14 @@ export function createWorkspaceBillingModule(dependencies: {
         });
       }
 
-      const recovered = await provider.findCheckoutSessionsByAttempt?.({
-        attemptId: attempt.id,
-        customerId,
-      });
+      const recovered = provider.findCheckoutSessionsByAttempt
+        ? await callProvider("find_checkouts", () =>
+            provider.findCheckoutSessionsByAttempt!({
+              attemptId: attempt.id,
+              customerId,
+            }),
+          )
+        : undefined;
       if (recovered && recovered.length > 1) {
         throw new WorkspaceBillingError(
           "checkout_session_conflict",
@@ -2380,17 +2432,19 @@ export function createWorkspaceBillingModule(dependencies: {
       }
       const session =
         recovered?.[0] ??
-        (await provider.createCheckoutSession!(
-          {
-            attemptId: attempt.id,
-            workspaceId: input.workspaceId,
-            actorUserId: input.actorUserId,
-            customerId,
-            priceId: price.priceId,
-            successUrl: `${input.returnDestination}${input.returnDestination.includes("?") ? "&" : "?"}checkout=return&session_id={CHECKOUT_SESSION_ID}`,
-            cancelUrl: `${input.returnDestination}${input.returnDestination.includes("?") ? "&" : "?"}checkout=cancelled`,
-          },
-          attempt.checkoutOperationKey,
+        (await callProvider("create_checkout", () =>
+          provider.createCheckoutSession!(
+            {
+              attemptId: attempt.id,
+              workspaceId: input.workspaceId,
+              actorUserId: input.actorUserId,
+              customerId,
+              priceId: price.priceId,
+              successUrl: `${input.returnDestination}${input.returnDestination.includes("?") ? "&" : "?"}checkout=return&session_id={CHECKOUT_SESSION_ID}`,
+              cancelUrl: `${input.returnDestination}${input.returnDestination.includes("?") ? "&" : "?"}checkout=cancelled`,
+            },
+            attempt.checkoutOperationKey,
+          ),
         ));
       await dependencies.store.bindCheckoutSession({
         attemptId: attempt.id,
@@ -2416,7 +2470,9 @@ export function createWorkspaceBillingModule(dependencies: {
     }) {
       await requireBillingOwner(input);
       const provider = checkoutProvider();
-      const session = await provider.retrieveCheckoutSession!(input.sessionId);
+      const session = await callProvider("retrieve_checkout", () =>
+        provider.retrieveCheckoutSession!(input.sessionId),
+      );
       if (session.workspaceId !== input.workspaceId) {
         throw new WorkspaceBillingError(
           "checkout_session_conflict",
@@ -2477,10 +2533,12 @@ export function createWorkspaceBillingModule(dependencies: {
           "The billing portal is not configured",
         );
       }
-      const portal = await dependencies.provider.createPortalSession({
-        customerId: current.providerCustomerId,
-        returnUrl: input.returnUrl,
-      });
+      const portal = await callProvider("create_portal", () =>
+        dependencies.provider.createPortalSession!({
+          customerId: current.providerCustomerId!,
+          returnUrl: input.returnUrl,
+        }),
+      );
       dependencies.diagnostics.record({
         level: "info",
         message: "workspace_billing_portal_started",
@@ -2491,7 +2549,9 @@ export function createWorkspaceBillingModule(dependencies: {
       return portal;
     },
     async acceptStripeDelivery(rawBody: string, signature: string) {
-      const delivery = await dependencies.provider.verifyDelivery(rawBody, signature);
+      const delivery = await callProvider("verify_delivery", () =>
+        dependencies.provider.verifyDelivery(rawBody, signature),
+      );
       const wakeReconciliation = wakeEventTypes.has(delivery.eventType);
       const accepted = await dependencies.store.acceptDelivery({
         delivery,
@@ -2514,6 +2574,14 @@ export function createWorkspaceBillingModule(dependencies: {
         deliveryType: delivery.eventType,
         matchedWorkspace: Boolean(accepted.workspaceId),
       });
+      metrics.observe(
+        "workspace_billing_delivery_latency_ms",
+        Math.max(
+          0,
+          dependencies.clock.now().getTime() - delivery.providerCreatedAt.getTime(),
+        ),
+        { disposition, deliveryType: delivery.eventType },
+      );
       return { kind: disposition, workspaceId: accepted.workspaceId };
     },
     async reconcileCurrentState(
@@ -2542,22 +2610,28 @@ export function createWorkspaceBillingModule(dependencies: {
       metrics.observe(
         "workspace_billing_queue_age_ms",
         Math.max(0, now.getTime() - claim.dueAt.getTime()),
-        { attempt: claim.attemptCount },
+        {},
       );
       try {
         const result = await withProviderDeadline(
           reconcileOne(workspaceId, claim.attemptId),
         );
         if (result.kind === "reconciled") return result;
+        const attentionDelayMs = 6 * 60 * 60 * 1000;
         await dependencies.store.scheduleRetry({
           workspaceId,
           attemptId: claim.attemptId,
           now: dependencies.clock.now(),
           nextReconcileAt: new Date(
-            dependencies.clock.now().getTime() + 6 * 60 * 60 * 1000,
+            dependencies.clock.now().getTime() + attentionDelayMs,
           ),
           reason: result.reason,
           health: "attention_required",
+        });
+        metrics.observe("workspace_billing_retry_delay_ms", attentionDelayMs, {
+          surface: "interactive",
+          retryBand: retryBand(claim.attemptCount),
+          reason: "attention_required",
         });
         dependencies.diagnostics.record({
           level: "warn",
@@ -2581,15 +2655,21 @@ export function createWorkspaceBillingModule(dependencies: {
             view: billingView(current),
           };
         }
+        const retryDelayMs = 60_000;
         await dependencies.store.scheduleRetry({
           workspaceId,
           attemptId: claim.attemptId,
           now: dependencies.clock.now(),
           nextReconcileAt: new Date(
-            dependencies.clock.now().getTime() + 60_000,
+            dependencies.clock.now().getTime() + retryDelayMs,
           ),
           reason: "retryable_provider",
           health: "retrying",
+        });
+        metrics.observe("workspace_billing_retry_delay_ms", retryDelayMs, {
+          surface: "interactive",
+          retryBand: retryBand(claim.attemptCount),
+          reason: "retryable_provider",
         });
         dependencies.diagnostics.record({
           level: "warn",
@@ -2627,7 +2707,7 @@ export function createWorkspaceBillingModule(dependencies: {
         metrics.observe(
           "workspace_billing_queue_age_ms",
           Math.max(0, now.getTime() - claim.dueAt.getTime()),
-          { attempt: claim.attemptCount },
+          {},
         );
       }
       const summary = {
@@ -2652,15 +2732,21 @@ export function createWorkspaceBillingModule(dependencies: {
               continue;
             }
             summary.unresolved += 1;
+            const attentionDelayMs = 6 * 60 * 60 * 1000;
             const settled = await dependencies.store.scheduleRetry({
               workspaceId: claim.workspaceId,
               attemptId: claim.attemptId,
               now: dependencies.clock.now(),
               nextReconcileAt: new Date(
-                dependencies.clock.now().getTime() + 6 * 60 * 60 * 1000,
+                dependencies.clock.now().getTime() + attentionDelayMs,
               ),
               reason: result.reason,
               health: "attention_required",
+            });
+            metrics.observe("workspace_billing_retry_delay_ms", attentionDelayMs, {
+              surface: "worker",
+              retryBand: retryBand(claim.attemptCount),
+              reason: "attention_required",
             });
             if (settled) summary.retried += 1;
             else summary.staleSettlements += 1;
@@ -2686,6 +2772,11 @@ export function createWorkspaceBillingModule(dependencies: {
               ),
               reason: "retryable_provider",
               health: "retrying",
+            });
+            metrics.observe("workspace_billing_retry_delay_ms", baseDelay + jitter, {
+              surface: "worker",
+              retryBand: retryBand(claim.attemptCount),
+              reason: "retryable_provider",
             });
             if (settled) summary.retried += 1;
             else summary.staleSettlements += 1;
@@ -2738,8 +2829,8 @@ export function createWorkspaceBillingModule(dependencies: {
       if (!current.providerCustomerId) {
         return { workspaceId, local, provider: null };
       }
-      const providerState = await dependencies.provider.retrieveCurrentState(
-        current.providerCustomerId,
+      const providerState = await callProvider("inspect_current_state", () =>
+        dependencies.provider.retrieveCurrentState(current.providerCustomerId!),
       );
       return {
         workspaceId,

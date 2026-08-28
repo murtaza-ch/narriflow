@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { requireCurrentAppUser, setActiveWorkspace } from "@narriflow/auth";
 import { billingService, workspaceService } from "@narriflow/services";
 import type { BillingInterval } from "@narriflow/validators";
+import { resolveCanonicalAppOrigin } from "@/lib/safe-redirect";
 
 export interface CreateWorkspaceState {
   error?: string;
@@ -38,7 +39,11 @@ export async function createBusinessWorkspaceAction(
       workspaceId = workspace.id;
     }
 
-    const origin = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") ?? "http://localhost:3000";
+    const origin = resolveCanonicalAppOrigin({
+      configuredOrigin: process.env.NEXT_PUBLIC_APP_URL,
+      environment: process.env.NODE_ENV,
+      requestUrl: "http://localhost:3000/workspaces/new",
+    });
     const checkout = await billingService.startCheckout({
       userId: user.id,
       workspaceId,

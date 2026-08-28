@@ -144,6 +144,61 @@ describe("Workspace Billing Stripe adapter contracts", () => {
       .toEqual(statuses);
   });
 
+  test("normalizes a completed delayed-payment Checkout through the production adapter", async () => {
+    const workspaceId = "11111111-1111-4111-8111-111111111111";
+    const attemptId = "22222222-2222-4222-8222-222222222222";
+    const fakeStripe = {
+      checkout: {
+        sessions: {
+          retrieve: async () => ({
+            id: "cs_delayed_contract",
+            url: null,
+            expires_at: 1_788_000_000,
+            status: "complete",
+            payment_status: "unpaid",
+            client_reference_id: workspaceId,
+            metadata: { workspaceId, attemptId },
+          }),
+        },
+      },
+    } as unknown as Stripe;
+    const adapter = createWorkspaceBillingStripeContractHarness().providerWith({
+      stripe: fakeStripe,
+      catalog: createBillingCatalog({
+        basePrices: [
+          { priceId: "price_creator_monthly", tier: "creator", interval: "monthly" },
+          { priceId: "price_creator_annual", tier: "creator", interval: "annual" },
+          { priceId: "price_pro_monthly", tier: "pro", interval: "monthly" },
+          { priceId: "price_pro_annual", tier: "pro", interval: "annual" },
+          { priceId: "price_business_monthly", tier: "business", interval: "monthly" },
+          { priceId: "price_business_annual", tier: "business", interval: "annual" },
+        ],
+        seatPrices: [
+          { priceId: "price_business_seat_monthly", interval: "monthly" },
+          { priceId: "price_business_seat_annual", interval: "annual" },
+        ],
+        worker: {
+          batchSize: 25,
+          concurrency: 4,
+          leaseMs: 60_000,
+          providerDeadlineMs: 10_000,
+          providerCallBudget: 4,
+        },
+      }),
+    });
+
+    expect(await adapter.retrieveCheckoutSession!("cs_delayed_contract"))
+      .toEqual({
+        sessionId: "cs_delayed_contract",
+        url: null,
+        expiresAt: new Date(1_788_000_000 * 1000),
+        status: "complete",
+        paymentStatus: "unpaid",
+        workspaceId,
+        attemptId,
+      });
+  });
+
   test("verifies the exact raw body under the pinned API version", async () => {
     const rawBody = `${fixture("checkout.session.completed")}\n`;
     const signature = await Stripe.webhooks.generateTestHeaderStringAsync({

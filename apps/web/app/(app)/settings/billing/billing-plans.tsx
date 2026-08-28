@@ -62,6 +62,7 @@ export function BillingPlans({
       : null,
   );
   const statusRef = useRef<HTMLDivElement>(null);
+  const actionOriginRef = useRef<HTMLElement | null>(null);
   const startedReturnObservation = useRef(false);
   const previousStatus = useRef({
     health: initialView.health,
@@ -73,6 +74,15 @@ export function BillingPlans({
     canManageBilling,
     isConfigured,
   });
+
+  function rememberActionOrigin() {
+    actionOriginRef.current =
+      document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  }
+
+  function restoreActionOriginAfterError() {
+    requestAnimationFrame(() => actionOriginRef.current?.focus());
+  }
 
   const readBillingState = useCallback(async () => {
     const response = await fetch("/api/billing/state", { cache: "no-store" });
@@ -173,6 +183,7 @@ export function BillingPlans({
   }
 
   async function checkout(tier: PaidPricingTier) {
+    rememberActionOrigin();
     setBusy(tier);
     setInlineError(null);
     try {
@@ -211,10 +222,12 @@ export function BillingPlans({
             : "Checkout could not be started",
       );
       setBusy(null);
+      restoreActionOriginAfterError();
     }
   }
 
   async function openPortal() {
+    rememberActionOrigin();
     setBusy("portal");
     setInlineError(null);
     try {
@@ -224,10 +237,12 @@ export function BillingPlans({
         error instanceof Error ? error.message : "The billing portal is unavailable",
       );
       setBusy(null);
+      restoreActionOriginAfterError();
     }
   }
 
   async function retry() {
+    rememberActionOrigin();
     setBusy("retry");
     setInlineError(null);
     try {
@@ -243,6 +258,7 @@ export function BillingPlans({
       setInlineError(
         error instanceof Error ? error.message : "Billing sync is unavailable",
       );
+      restoreActionOriginAfterError();
     } finally {
       setBusy(null);
     }

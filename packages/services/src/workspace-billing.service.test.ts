@@ -281,6 +281,7 @@ describe("Workspace Billing", () => {
   test("settles ordinary Free accounts without a customer and keeps Checkout available", async () => {
     let providerCalls = 0;
     const metricNames: string[] = [];
+    const queueAgeAttributes: Array<Record<string, unknown>> = [];
     const store = createInMemoryWorkspaceBillingStore([
       {
         workspaceId: "workspace-free-no-customer",
@@ -306,7 +307,12 @@ describe("Workspace Billing", () => {
       clock: { now: () => new Date("2026-08-28T10:00:00.000Z") },
       diagnostics: { record: () => undefined },
       metrics: {
-        observe: (name) => metricNames.push(name),
+        observe: (name, _value, attributes) => {
+          metricNames.push(name);
+          if (name === "workspace_billing_queue_age_ms") {
+            queueAgeAttributes.push(attributes);
+          }
+        },
       },
     });
 
@@ -323,6 +329,83 @@ describe("Workspace Billing", () => {
         "workspace_billing_operation_duration_ms",
       ]),
     );
+    expect(queueAgeAttributes).toEqual([{}]);
+  });
+
+  test("keeps a collaborative Free workspace restricted without a customer", async () => {
+    const store = createInMemoryWorkspaceBillingStore([
+      {
+        workspaceId: "workspace-collaborative-free",
+        personal: false,
+        hasNonOwnerMembers: true,
+        pricingTier: "free",
+        status: "restricted",
+        providerCustomerId: null,
+      },
+    ]);
+    const billing = createWorkspaceBillingModule({
+      catalog,
+      store,
+      provider: {
+        verifyDelivery: () => {
+          throw new Error("not used");
+        },
+        retrieveCurrentState: async () => {
+          throw new Error("must not retrieve without a customer");
+        },
+      },
+      clock: { now: () => new Date("2026-08-28T10:00:00.000Z") },
+      diagnostics: { record: () => undefined },
+    });
+
+    expect(await billing.reconcileCurrentState("workspace-collaborative-free"))
+      .toMatchObject({
+        kind: "reconciled",
+        view: {
+          plan: "free",
+          workspaceAccessStatus: "restricted",
+          actions: ["contact_support"],
+        },
+      });
+    expect(await store.readProjection("workspace-collaborative-free"))
+      .toMatchObject({ pricingTier: "free", status: "restricted" });
+  });
+
+  test("keeps an abandoned Business setup pending and replayable", async () => {
+    const store = createInMemoryWorkspaceBillingStore([
+      {
+        workspaceId: "workspace-pending-business",
+        personal: false,
+        hasNonOwnerMembers: false,
+        pricingTier: "free",
+        status: "pending_payment",
+        providerCustomerId: null,
+      },
+    ]);
+    const billing = createWorkspaceBillingModule({
+      catalog,
+      store,
+      provider: {
+        verifyDelivery: () => {
+          throw new Error("not used");
+        },
+        retrieveCurrentState: async () => {
+          throw new Error("must not retrieve without a customer");
+        },
+      },
+      clock: { now: () => new Date("2026-08-28T10:00:00.000Z") },
+      diagnostics: { record: () => undefined },
+    });
+
+    expect(await billing.reconcileCurrentState("workspace-pending-business"))
+      .toMatchObject({
+        kind: "reconciled",
+        view: {
+          plan: "free",
+          workspaceAccessStatus: "pending_payment",
+          actions: ["start_checkout"],
+        },
+      });
   });
 
   test("keeps zero-subscription Checkout activation recoverable and expires safely", async () => {
@@ -652,6 +735,11 @@ describe("Workspace Billing", () => {
   });
 
   test("unknown catalog state and provider outages preserve verified access", async () => {
+    const metricEvents: Array<{
+      name: string;
+      value: number;
+      attributes: Record<string, string | number | boolean | null>;
+    }> = [];
     const makeStore = (workspaceId: string) =>
       createInMemoryWorkspaceBillingStore([
         {
@@ -690,6 +778,10 @@ describe("Workspace Billing", () => {
       },
       clock: { now: () => new Date("2026-08-28T10:00:00.000Z") },
       diagnostics: { record: () => undefined },
+      metrics: {
+        observe: (name, value, attributes) =>
+          metricEvents.push({ name, value, attributes }),
+      },
     });
     const unknownResult = await unknown.reconcileCurrentState("unknown");
     expect(unknownResult).toMatchObject({
@@ -697,6 +789,17 @@ describe("Workspace Billing", () => {
       reason: "unmapped_price",
       view: { plan: "pro", health: "attention_required" },
     });
+    expect(metricEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "workspace_billing_transitions_total",
+          attributes: expect.objectContaining({
+            transition: "conflict",
+            reason: "unmapped_price",
+          }),
+        }),
+      ]),
+    );
 
     const outageStore = makeStore("outage");
     const outage = createWorkspaceBillingModule({
@@ -712,6 +815,10 @@ describe("Workspace Billing", () => {
       },
       clock: { now: () => new Date("2026-08-28T10:00:00.000Z") },
       diagnostics: { record: () => undefined },
+      metrics: {
+        observe: (name, value, attributes) =>
+          metricEvents.push({ name, value, attributes }),
+      },
     });
     const outageResult = await outage.reconcileCurrentState("outage");
     expect(outageResult).toMatchObject({
@@ -719,6 +826,19 @@ describe("Workspace Billing", () => {
       reason: "retryable_provider",
       view: { plan: "pro", health: "retrying" },
     });
+    expect(metricEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          name: "workspace_billing_provider_calls_total",
+          attributes: { operation: "retrieve_current_state", outcome: "failure" },
+        }),
+        expect.objectContaining({
+          name: "workspace_billing_retry_delay_ms",
+          value: 60_000,
+          attributes: expect.objectContaining({ retryBand: "first" }),
+        }),
+      ]),
+    );
   });
 
   test("missing or mismatched provider ownership cannot be adopted", async () => {
@@ -910,6 +1030,7 @@ describe("Workspace Billing", () => {
   test("past-due grace starts once, expires exactly at seven days, and clears on recovery", async () => {
     let now = new Date("2026-08-28T10:00:00.000Z");
     let status = "past_due";
+    const transitions: string[] = [];
     const store = createInMemoryWorkspaceBillingStore([
       {
         workspaceId: "workspace-grace",
@@ -946,6 +1067,13 @@ describe("Workspace Billing", () => {
       },
       clock: { now: () => now },
       diagnostics: { record: () => undefined },
+      metrics: {
+        observe: (name, _value, attributes) => {
+          if (name === "workspace_billing_transitions_total") {
+            transitions.push(String(attributes.transition));
+          }
+        },
+      },
     });
 
     const entered = await billing.reconcileCurrentState("workspace-grace");
@@ -964,6 +1092,9 @@ describe("Workspace Billing", () => {
       health: "current",
       graceDeadlineAt: null,
     });
+    expect(transitions).toEqual(
+      expect.arrayContaining(["grace_entered", "grace_recovered"]),
+    );
   });
 
   test("applies the documented subscription health matrix", async () => {
@@ -1399,6 +1530,7 @@ describe("Workspace Billing", () => {
 
   test("accepts one signed delivery and treats exact redelivery as a duplicate", async () => {
     const verifiedBodies: Array<{ rawBody: string; signature: string }> = [];
+    const deliveryLatencies: number[] = [];
     const store = createInMemoryWorkspaceBillingStore([
       {
         workspaceId: "workspace-a",
@@ -1433,6 +1565,13 @@ describe("Workspace Billing", () => {
       },
       clock: { now: () => new Date("2026-08-28T10:00:00.000Z") },
       diagnostics: { record: () => undefined },
+      metrics: {
+        observe: (name, value) => {
+          if (name === "workspace_billing_delivery_latency_ms") {
+            deliveryLatencies.push(value);
+          }
+        },
+      },
     });
 
     expect(await billing.acceptStripeDelivery('{"untouched": true}\n', "sig_1"))
@@ -1443,6 +1582,7 @@ describe("Workspace Billing", () => {
       { rawBody: '{"untouched": true}\n', signature: "sig_1" },
       { rawBody: '{"untouched": true}\n', signature: "sig_1" },
     ]);
+    expect(deliveryLatencies).toEqual([60_000, 60_000]);
   });
 
   test("acknowledges unrelated signed events without making billing due", async () => {

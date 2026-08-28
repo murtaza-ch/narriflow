@@ -8,10 +8,10 @@ Deploy database migrations before web or worker code. For this cutover the requi
 
 1. `20260828100000_workspace_entitlement_cutover`
 2. `20260828110000_workspace_billing_account`
-3. `20260828120000_workspace_billing_delivery_claims`
+3. `20260828120000_stripe_delivery_acceptance`
 4. `20260828130000_replayable_workspace_checkout`
 5. `20260828140000_committed_membership_seats`
-6. `20260828150000_checkout_attempt_key_scope`
+6. `20260828150000_reusable_customer_operation_key`
 7. `20260828160000_typed_checkout_outcome`
 
 Run `bun --cwd packages/db run prisma:generate`, then `prisma migrate deploy` with `packages/db/.env`. Start web and worker only after deployment succeeds.
@@ -95,7 +95,7 @@ bun --env-file=apps/web/.env.local run packages/services/scripts/workspace-billi
 
 Compare local plan, access, health, desired/synchronized seats, ownership classification, subscription count/status, mapped base plan, cancellation, period facts, and provider seat quantity. Then inspect structured `workspace_billing_*` diagnostics by Workspace and phase. Never paste raw Stripe errors, webhook bodies, signatures, URLs, email, address, payment details, or full provider IDs into logs, tickets, analytics, or product copy.
 
-The service emits `workspace_billing_metric` records for delivery disposition, claim source, queue age, settlement outcome, operation duration, and desired/synchronized seat quantity. Labels are bounded billing facts such as event class, outcome, health, access, and retention transition; they never contain Workspace or provider identifiers.
+The service emits `workspace_billing_metric` records for delivery disposition and acceptance latency, provider-call success/failure, claim source, queue age, bounded retry bands and delay, settlement outcome, operation duration, desired/synchronized seat quantity, conflicts, grace entry/recovery, restrictions, retention changes, and terminal health. Labels are bounded billing facts such as event class, operation, outcome, retry band, health, access, and transition; they never contain Workspace or provider identifiers.
 
 For a safe manual current-state retry, add the explicit switch:
 

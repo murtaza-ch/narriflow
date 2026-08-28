@@ -44,6 +44,7 @@ if (!/^workspace_billing_test_[a-z0-9_]+$/.test(schema)) {
 const pool = new Pool({ connectionString: databaseUrl, max: 1 });
 const migrationsRoot = resolve(repositoryRoot, "packages/db/prisma/migrations");
 const cutoverMigration = "20260828100000_workspace_entitlement_cutover";
+const representativeFixtureMigration = "20260828130000_replayable_workspace_checkout";
 
 const migrationDirectories = readdirSync(migrationsRoot)
   .filter((entry) => /^\d+_/.test(entry))
@@ -107,6 +108,91 @@ async function seedLegacyBillingFixtures(schemaName: string, consistent: boolean
   }
 }
 
+async function seedRepresentativeBillingFixtures(schemaName: string) {
+  const client = await pool.connect();
+  try {
+    await client.query(`SET search_path TO "${schemaName}"`);
+    const owner = await client.query<{ id: string }>(
+      `SELECT id FROM "User" ORDER BY id LIMIT 1`,
+    );
+    const ownerId = owner.rows[0]?.id;
+    if (!ownerId) throw new Error("Representative billing fixtures need an owner");
+    const fixtures = [
+      {
+        name: "Pending fixture",
+        workspaceId: randomUUID(),
+        workspaceTier: "free",
+        workspaceStatus: "pending_payment",
+        customerId: "cus_pending_fixture",
+        subscriptionId: null,
+        providerStatus: "incomplete",
+        health: "activating",
+        attentionReason: null,
+      },
+      {
+        name: "Past-due fixture",
+        workspaceId: randomUUID(),
+        workspaceTier: "pro",
+        workspaceStatus: "active",
+        customerId: "cus_past_due_fixture",
+        subscriptionId: "sub_past_due_fixture",
+        providerStatus: "past_due",
+        health: "payment_action_required",
+        attentionReason: null,
+      },
+      {
+        name: "Conflicted fixture",
+        workspaceId: randomUUID(),
+        workspaceTier: "business",
+        workspaceStatus: "active",
+        customerId: "cus_conflicted_fixture",
+        subscriptionId: "sub_conflicted_fixture",
+        providerStatus: "active",
+        health: "attention_required",
+        attentionReason: "multiple_entitlement_subscriptions",
+      },
+    ] as const;
+    for (const fixture of fixtures) {
+      await client.query(
+        `INSERT INTO "Workspace" (id, name, "ownerUserId", "pricingTier", status, "updatedAt")
+         VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)`,
+        [
+          fixture.workspaceId,
+          fixture.name,
+          ownerId,
+          fixture.workspaceTier,
+          fixture.workspaceStatus,
+        ],
+      );
+      await client.query(
+        `INSERT INTO "WorkspaceMember" (id, "workspaceId", "userId", role, "updatedAt")
+         VALUES ($1, $2, $3, 'owner', CURRENT_TIMESTAMP)`,
+        [randomUUID(), fixture.workspaceId, ownerId],
+      );
+      await client.query(
+        `INSERT INTO "WorkspaceBillingAccount" (
+          "workspaceId", "providerCustomerId", "canonicalSubscriptionId",
+          "providerStatus", "health", "attentionReason", "firstPastDueAt",
+          "graceDeadlineAt", "lastVerifiedAt", "nextReconcileAt", "updatedAt"
+        ) VALUES ($1, $2, $3, $4, $5, $6,
+          CASE WHEN $4 = 'past_due' THEN '2026-08-20T09:00:00.000Z'::timestamp ELSE NULL END,
+          CASE WHEN $4 = 'past_due' THEN '2026-08-27T09:00:00.000Z'::timestamp ELSE NULL END,
+          '2026-08-20T09:00:00.000Z', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+        [
+          fixture.workspaceId,
+          fixture.customerId,
+          fixture.subscriptionId,
+          fixture.providerStatus,
+          fixture.health,
+          fixture.attentionReason,
+        ],
+      );
+    }
+  } finally {
+    client.release();
+  }
+}
+
 async function verifyMigratedFixtures(schemaName: string) {
   const client = await pool.connect();
   try {
@@ -153,6 +239,49 @@ async function verifyMigratedFixtures(schemaName: string) {
     if (retiredColumns.rows[0]?.count !== "0") {
       throw new Error("Workspace Billing migration retained obsolete billing columns");
     }
+    const representative = await client.query<{
+      name: string;
+      status: string;
+      health: string;
+      providerStatus: string | null;
+      attentionReason: string | null;
+    }>(
+      `SELECT w.name, w.status, a.health, a."providerStatus", a."attentionReason"
+       FROM "Workspace" w
+       JOIN "WorkspaceBillingAccount" a ON a."workspaceId" = w.id
+       WHERE w.name IN ('Pending fixture', 'Past-due fixture', 'Conflicted fixture')
+       ORDER BY w.name`,
+    );
+    if (
+      JSON.stringify(representative.rows) !==
+      JSON.stringify([
+        {
+          name: "Conflicted fixture",
+          status: "active",
+          health: "attention_required",
+          providerStatus: "active",
+          attentionReason: "multiple_entitlement_subscriptions",
+        },
+        {
+          name: "Past-due fixture",
+          status: "active",
+          health: "payment_action_required",
+          providerStatus: "past_due",
+          attentionReason: null,
+        },
+        {
+          name: "Pending fixture",
+          status: "pending_payment",
+          health: "activating",
+          providerStatus: "incomplete",
+          attentionReason: null,
+        },
+      ])
+    ) {
+      throw new Error(
+        `Workspace Billing migration did not preserve representative states: ${JSON.stringify(representative.rows)}`,
+      );
+    }
   } finally {
     client.release();
   }
@@ -176,7 +305,16 @@ try {
   await pool.query(`CREATE SCHEMA IF NOT EXISTS "${invalidSchema}"`);
   await applyMigrations(schema, (directory) => directory < cutoverMigration);
   await seedLegacyBillingFixtures(schema, true);
-  await applyMigrations(schema, (directory) => directory >= cutoverMigration);
+  await applyMigrations(
+    schema,
+    (directory) =>
+      directory >= cutoverMigration && directory < representativeFixtureMigration,
+  );
+  await seedRepresentativeBillingFixtures(schema);
+  await applyMigrations(
+    schema,
+    (directory) => directory >= representativeFixtureMigration,
+  );
   await verifyMigratedFixtures(schema);
 
   await applyMigrations(invalidSchema, (directory) => directory < cutoverMigration);

@@ -102,6 +102,7 @@ sandboxDescribe("Workspace Billing Stripe sandbox", () => {
 
       const portalConfig = await stripe.billingPortal.configurations.retrieve(
         portalConfiguration,
+        { expand: ["features.subscription_update.products"] },
       );
       expect(portalConfig).toMatchObject({
         active: true,
@@ -115,22 +116,19 @@ sandboxDescribe("Workspace Billing Stripe sandbox", () => {
           },
         },
       });
+      const expectedPortalPrices = [
+        process.env.STRIPE_PRICE_CREATOR_MONTHLY,
+        process.env.STRIPE_PRICE_CREATOR_ANNUAL,
+        process.env.STRIPE_PRICE_PRO_MONTHLY,
+        process.env.STRIPE_PRICE_PRO_ANNUAL,
+        process.env.STRIPE_PRICE_BUSINESS_MONTHLY,
+        process.env.STRIPE_PRICE_BUSINESS_ANNUAL,
+      ].filter((price): price is string => Boolean(price)).sort();
       const portalProducts = portalConfig.features.subscription_update.products;
-      if (portalProducts) {
-        const allowedPortalPrices = portalProducts.flatMap(
-          (product) => product.prices,
-        );
-        for (const configuredPrice of [
-          process.env.STRIPE_PRICE_CREATOR_MONTHLY,
-          process.env.STRIPE_PRICE_CREATOR_ANNUAL,
-          process.env.STRIPE_PRICE_PRO_MONTHLY,
-          process.env.STRIPE_PRICE_PRO_ANNUAL,
-          process.env.STRIPE_PRICE_BUSINESS_MONTHLY,
-          process.env.STRIPE_PRICE_BUSINESS_ANNUAL,
-        ].filter((price): price is string => Boolean(price))) {
-          expect(allowedPortalPrices).toContain(configuredPrice);
-        }
-      }
+      expect(portalProducts).toBeDefined();
+      expect(portalProducts?.flatMap((product) => product.prices).sort())
+        .toEqual(expectedPortalPrices);
+      expect(expectedPortalPrices).not.toContain(seatPrice);
       const portal = await adapter.createPortalSession!({
         customerId,
         returnUrl: "https://app.narriflow.test/settings/billing",
@@ -183,6 +181,11 @@ sandboxDescribe("Workspace Billing Stripe sandbox", () => {
         payment_behavior: "error_if_incomplete",
       });
       subscriptionId = subscription.id;
+      const baseItemId = subscription.items.data[0]?.id;
+      const annualBusinessPrice = process.env.STRIPE_PRICE_BUSINESS_ANNUAL;
+      if (!baseItemId || !annualBusinessPrice) {
+        throw new Error("The annual Business portal contract is required");
+      }
       expect(subscription.livemode).toBe(false);
       const current = await adapter.retrieveCurrentState(customerId);
       expect(current.ownership).toEqual({ kind: "verified", workspaceId });
@@ -200,7 +203,23 @@ sandboxDescribe("Workspace Billing Stripe sandbox", () => {
       await stripe.subscriptions.update(subscriptionId, {
         cancel_at_period_end: false,
       });
+      await stripe.subscriptionItems.update(baseItemId, {
+        price: annualBusinessPrice,
+        proration_behavior: "create_prorations",
+      });
+      expect(
+        (await adapter.retrieveCurrentState(customerId)).subscriptions[0]?.items,
+      ).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ priceId: annualBusinessPrice, quantity: 1 }),
+        ]),
+      );
+      await stripe.subscriptionItems.update(baseItemId, {
+        price: basePrice,
+        proration_behavior: "create_prorations",
+      });
 
+      const seatOperationKey = `${fixturePrefix}_seat_create`;
       const seat = await adapter.createSeatItem!(
         {
           subscriptionId,
@@ -208,9 +227,20 @@ sandboxDescribe("Workspace Billing Stripe sandbox", () => {
           quantity: 2,
           prorationBehavior: "create_prorations",
         },
-        `${fixturePrefix}_seat_create`,
+        seatOperationKey,
       );
       seatItemId = seat.itemId;
+      expect(
+        await adapter.createSeatItem!(
+          {
+            subscriptionId,
+            priceId: seatPrice,
+            quantity: 2,
+            prorationBehavior: "create_prorations",
+          },
+          seatOperationKey,
+        ),
+      ).toEqual(seat);
       await adapter.updateSeatItem!(
         {
           itemId: seatItemId,
