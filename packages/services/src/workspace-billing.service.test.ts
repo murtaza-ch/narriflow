@@ -50,12 +50,14 @@ describe("Workspace Billing", () => {
         },
         retrieveCurrentState: async () => ({
           customerId: "cus_cancel",
+          ownership: { kind: "verified", workspaceId: "workspace-cancel" },
           subscriptions: [
             {
               id: "sub_cancel",
               status: "active",
               items: [{ priceId: "price_creator_annual", quantity: 1 }],
               createdAt: new Date("2026-08-01T00:00:00.000Z"),
+              effectiveAt: new Date("2026-08-01T00:00:00.000Z"),
               currentPeriodEnd: new Date("2027-08-01T00:00:00.000Z"),
               trialEnd: null,
               cancelAtPeriodEnd,
@@ -101,12 +103,14 @@ describe("Workspace Billing", () => {
         },
         retrieveCurrentState: async () => ({
           customerId: "cus_unknown",
+          ownership: { kind: "verified", workspaceId: "unknown" },
           subscriptions: [
             {
               id: "sub_unknown",
               status: "active",
               items: [{ priceId: "price_not_in_catalog", quantity: 1 }],
               createdAt: new Date("2026-08-01T00:00:00.000Z"),
+              effectiveAt: new Date("2026-08-01T00:00:00.000Z"),
               currentPeriodEnd: null,
               trialEnd: null,
               cancelAtPeriodEnd: false,
@@ -145,6 +149,62 @@ describe("Workspace Billing", () => {
       reason: "retryable_provider",
       view: { plan: "pro", health: "retrying" },
     });
+  });
+
+  test("missing or mismatched provider ownership cannot be adopted", async () => {
+    for (const ownership of [
+      { kind: "missing_metadata" as const },
+      { kind: "workspace_mismatch" as const },
+      { kind: "verified" as const, workspaceId: "another-workspace" },
+    ]) {
+      const store = createInMemoryWorkspaceBillingStore([
+        {
+          workspaceId: "workspace-owned",
+          personal: true,
+          hasNonOwnerMembers: false,
+          pricingTier: "pro",
+          status: "active",
+          providerCustomerId: "cus_owned",
+        },
+      ]);
+      const billing = createWorkspaceBillingModule({
+        catalog,
+        store,
+        provider: {
+          verifyDelivery: () => {
+            throw new Error("not used");
+          },
+          retrieveCurrentState: async () => ({
+            customerId: "cus_owned",
+            ownership,
+            subscriptions: [
+              {
+                id: "sub_foreign",
+                status: "active",
+                items: [{ priceId: "price_business_monthly", quantity: 1 }],
+                createdAt: new Date("2026-08-01T00:00:00.000Z"),
+                effectiveAt: new Date("2026-08-28T09:00:00.000Z"),
+                currentPeriodEnd: new Date("2026-09-28T09:00:00.000Z"),
+                trialEnd: null,
+                cancelAtPeriodEnd: false,
+              },
+            ],
+          }),
+        },
+        clock: { now: () => new Date("2026-08-28T10:00:00.000Z") },
+        diagnostics: { record: () => undefined },
+      });
+
+      const result = await billing.reconcileCurrentState("workspace-owned");
+      expect(result).toMatchObject({
+        kind: "unresolved",
+        view: { plan: "pro", health: "attention_required" },
+      });
+      expect(await store.readProjection("workspace-owned")).toMatchObject({
+        pricingTier: "pro",
+        canonicalSubscriptionId: null,
+      });
+    }
   });
 
   test("unknown and duplicate seat items preserve the last verified entitlement", async () => {
@@ -186,12 +246,14 @@ describe("Workspace Billing", () => {
           },
           retrieveCurrentState: async () => ({
             customerId: `cus_${workspaceId}`,
+            ownership: { kind: "verified", workspaceId },
             subscriptions: [
               {
                 id: `sub_${workspaceId}`,
                 status: "active",
                 items: [...items],
                 createdAt: new Date("2026-08-01T00:00:00.000Z"),
+                effectiveAt: new Date("2026-08-01T00:00:00.000Z"),
                 currentPeriodEnd: new Date("2026-09-01T00:00:00.000Z"),
                 trialEnd: null,
                 cancelAtPeriodEnd: false,
@@ -227,6 +289,7 @@ describe("Workspace Billing", () => {
       status: "active",
       items: [{ priceId, quantity: 1 }],
       createdAt: new Date("2026-08-01T00:00:00.000Z"),
+      effectiveAt: new Date("2026-08-01T00:00:00.000Z"),
       currentPeriodEnd: new Date("2026-09-01T00:00:00.000Z"),
       trialEnd: null,
       cancelAtPeriodEnd: false,
@@ -240,6 +303,7 @@ describe("Workspace Billing", () => {
         },
         retrieveCurrentState: async () => ({
           customerId: "cus_conflict",
+          ownership: { kind: "verified", workspaceId: "workspace-conflict" },
           subscriptions: [
             subscription("sub_creator", "price_creator_monthly"),
             subscription("sub_business", "price_business_monthly"),
@@ -288,12 +352,14 @@ describe("Workspace Billing", () => {
         },
         retrieveCurrentState: async () => ({
           customerId: "cus_grace",
+          ownership: { kind: "verified", workspaceId: "workspace-grace" },
           subscriptions: [
             {
               id: "sub_grace",
               status,
               items: [{ priceId: "price_pro_monthly", quantity: 1 }],
               createdAt: new Date("2026-08-01T00:00:00.000Z"),
+              effectiveAt: new Date("2026-08-01T00:00:00.000Z"),
               currentPeriodEnd: new Date("2026-09-01T00:00:00.000Z"),
               trialEnd: null,
               cancelAtPeriodEnd: false,
@@ -354,12 +420,17 @@ describe("Workspace Billing", () => {
           },
           retrieveCurrentState: async () => ({
             customerId: `cus_${expected.status}`,
+            ownership: {
+              kind: "verified",
+              workspaceId: `workspace-${expected.status}`,
+            },
             subscriptions: [
               {
                 id: `sub_${expected.status}`,
                 status: expected.status,
                 items: [{ priceId: "price_creator_monthly", quantity: 1 }],
                 createdAt: new Date("2026-08-01T00:00:00.000Z"),
+                effectiveAt: new Date("2026-08-01T00:00:00.000Z"),
                 currentPeriodEnd: new Date("2026-09-01T00:00:00.000Z"),
                 trialEnd:
                   expected.status === "trialing"
@@ -405,12 +476,14 @@ describe("Workspace Billing", () => {
     let providerCalls = 0;
     const subscriptionState = (priceId: string) => ({
       customerId: "cus_a",
+      ownership: { kind: "verified" as const, workspaceId: "workspace-a" },
       subscriptions: [
         {
           id: "sub_a",
           status: "active",
           items: [{ priceId, quantity: 1 }],
           createdAt: new Date("2026-08-01T00:00:00.000Z"),
+          effectiveAt: new Date("2026-08-01T00:00:00.000Z"),
           currentPeriodEnd: new Date("2026-09-01T00:00:00.000Z"),
           trialEnd: null,
           cancelAtPeriodEnd: false,
@@ -460,6 +533,139 @@ describe("Workspace Billing", () => {
       pricingTier: "pro",
       canonicalSubscriptionId: "sub_a",
     });
+  });
+
+  test("an expired claimant cannot schedule retry ahead of takeover", async () => {
+    let now = new Date("2026-08-28T10:00:00.000Z");
+    let rejectFirst!: (error: Error) => void;
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const delayedFailure = new Promise<never>((_resolve, reject) => {
+      rejectFirst = reject;
+    });
+    let calls = 0;
+    const store = createInMemoryWorkspaceBillingStore([
+      {
+        workspaceId: "workspace-retry-fence",
+        personal: true,
+        hasNonOwnerMembers: false,
+        pricingTier: "free",
+        status: "active",
+        providerCustomerId: "cus_retry_fence",
+      },
+    ]);
+    const billing = createWorkspaceBillingModule({
+      catalog,
+      store,
+      provider: {
+        verifyDelivery: () => {
+          throw new Error("not used");
+        },
+        retrieveCurrentState: async () => {
+          calls += 1;
+          if (calls === 1) {
+            markStarted();
+            return delayedFailure;
+          }
+          return {
+            customerId: "cus_retry_fence",
+            ownership: {
+              kind: "verified",
+              workspaceId: "workspace-retry-fence",
+            },
+            subscriptions: [
+              {
+                id: "sub_retry_fence",
+                status: "active",
+                items: [{ priceId: "price_creator_monthly", quantity: 1 }],
+                createdAt: new Date("2026-08-01T00:00:00.000Z"),
+                effectiveAt: new Date("2026-08-28T09:00:00.000Z"),
+                currentPeriodEnd: new Date("2026-09-28T09:00:00.000Z"),
+                trialEnd: null,
+                cancelAtPeriodEnd: false,
+              },
+            ],
+          };
+        },
+      },
+      clock: { now: () => now },
+      diagnostics: { record: () => undefined },
+    });
+
+    const staleRun = billing.reconcileDueAccounts();
+    await started;
+    now = new Date(now.getTime() + catalog.worker.leaseMs + 1);
+    rejectFirst(new Error("provider failed after lease expiry"));
+    expect(await staleRun).toMatchObject({ staleSettlements: 1, retried: 0 });
+
+    expect(await billing.reconcileDueAccounts()).toMatchObject({
+      claimed: 1,
+      reconciled: 1,
+    });
+  });
+
+  test("uses provider-effective payment time and the fixed grace deadline", async () => {
+    let now = new Date("2026-08-28T10:00:00.000Z");
+    let status = "active";
+    const effectiveTimes: Date[] = [];
+    const baseStore = createInMemoryWorkspaceBillingStore([
+      {
+        workspaceId: "workspace-effective",
+        personal: true,
+        hasNonOwnerMembers: false,
+        pricingTier: "free",
+        status: "active",
+        providerCustomerId: "cus_effective",
+      },
+    ]);
+    const store = {
+      ...baseStore,
+      async commitVerifiedState(
+        input: Parameters<typeof baseStore.commitVerifiedState>[0],
+      ) {
+        effectiveTimes.push(input.effectiveAt);
+        return baseStore.commitVerifiedState(input);
+      },
+    };
+    const paidAt = new Date("2026-08-28T09:42:00.000Z");
+    const billing = createWorkspaceBillingModule({
+      catalog,
+      store,
+      provider: {
+        verifyDelivery: () => {
+          throw new Error("not used");
+        },
+        retrieveCurrentState: async () => ({
+          customerId: "cus_effective",
+          ownership: { kind: "verified", workspaceId: "workspace-effective" },
+          subscriptions: [
+            {
+              id: "sub_effective",
+              status,
+              items: [{ priceId: "price_pro_monthly", quantity: 1 }],
+              createdAt: new Date("2026-08-01T00:00:00.000Z"),
+              effectiveAt: paidAt,
+              currentPeriodEnd: new Date("2026-09-28T09:42:00.000Z"),
+              trialEnd: null,
+              cancelAtPeriodEnd: false,
+            },
+          ],
+        }),
+      },
+      clock: { now: () => now },
+      diagnostics: { record: () => undefined },
+    });
+
+    await billing.reconcileCurrentState("workspace-effective");
+    expect(effectiveTimes.at(-1)).toEqual(paidAt);
+    status = "past_due";
+    await billing.reconcileCurrentState("workspace-effective");
+    const graceDeadline = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+    now = graceDeadline;
+    await billing.reconcileCurrentState("workspace-effective");
+    expect(effectiveTimes.at(-1)).toEqual(graceDeadline);
   });
 
   test("accepts one signed delivery and treats exact redelivery as a duplicate", async () => {
@@ -599,12 +805,14 @@ describe("Workspace Billing", () => {
       },
       retrieveCurrentState: async () => ({
         customerId: "cus_a",
+        ownership: { kind: "verified", workspaceId: "workspace-a" },
         subscriptions: [
           {
             id: "sub_a",
             status: "active",
             items: [{ priceId: "price_creator_monthly", quantity: 1 }],
             createdAt: new Date("2026-08-01T00:00:00.000Z"),
+            effectiveAt: new Date("2026-08-01T00:00:00.000Z"),
             currentPeriodEnd: new Date("2026-09-01T00:00:00.000Z"),
             trialEnd: null,
             cancelAtPeriodEnd: false,

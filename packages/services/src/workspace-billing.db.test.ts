@@ -7,6 +7,7 @@ import {
   createBillingCatalog,
   createPrismaWorkspaceBillingStore,
   createWorkspaceBillingModule,
+  WorkspaceBillingAttemptLost,
   type WorkspaceBillingProvider,
 } from "./workspace-billing.service";
 
@@ -176,6 +177,19 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
       where: { workspaceId: workspace.id },
       data: { providerCustomerId: "cus_projection" },
     });
+    const projectionAccount =
+      await prisma.workspaceBillingAccount.findUniqueOrThrow({
+        where: { workspaceId: workspace.id },
+      });
+    const acceptedDelivery = await prisma.webhookDeliveryLog.create({
+      data: {
+        provider: "stripe",
+        eventId: `evt_projection_${randomUUID()}`,
+        eventType: "invoice.paid",
+        status: "accepted",
+        workspaceBillingAccountId: projectionAccount.id,
+      },
+    });
     const deadline = new Date("2026-09-10T00:00:00.000Z");
     const project = await prisma.project.create({
       data: {
@@ -194,12 +208,14 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
       },
       retrieveCurrentState: async () => ({
         customerId: "cus_projection",
+        ownership: { kind: "verified", workspaceId: workspace.id },
         subscriptions: [
           {
             id: "sub_projection",
             status: "active",
             items: [{ priceId: "price_pro_monthly", quantity: 1 }],
             createdAt: new Date("2026-08-28T09:00:00.000Z"),
+            effectiveAt: new Date("2026-08-28T09:00:00.000Z"),
             currentPeriodEnd: new Date("2026-09-28T09:00:00.000Z"),
             trialEnd: null,
             cancelAtPeriodEnd: false,
@@ -229,5 +245,193 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
         where: { billingAccount: { workspaceId: workspace.id } },
       }),
     ).toBe(1);
+    expect(
+      await prisma.webhookDeliveryLog.findUniqueOrThrow({
+        where: { id: acceptedDelivery.id },
+      }),
+    ).toMatchObject({ status: "reconciled", processedAt: now });
+  });
+
+  test("claims competing workers without duplication and drains beyond one batch", async () => {
+    await prisma.workspaceBillingAccount.updateMany({
+      data: {
+        nextReconcileAt: new Date("2027-01-01T00:00:00.000Z"),
+        reconcileAttemptId: null,
+        leaseExpiresAt: null,
+      },
+    });
+    const workspaces = await Promise.all(
+      Array.from({ length: 30 }, (_, index) => createWorkspace(`fair-${index}`)),
+    );
+    const now = new Date("2026-08-28T10:00:00.000Z");
+    await prisma.workspaceBillingAccount.updateMany({
+      where: { workspaceId: { in: workspaces.map(({ workspace }) => workspace.id) } },
+      data: { nextReconcileAt: now },
+    });
+    const firstStore = createPrismaWorkspaceBillingStore();
+    const secondStore = createPrismaWorkspaceBillingStore();
+
+    const [first, second] = await Promise.all([
+      firstStore.claimDueAccounts({ now, limit: 25, leaseMs: 60_000 }),
+      secondStore.claimDueAccounts({ now, limit: 25, leaseMs: 60_000 }),
+    ]);
+    const workspaceIds = [...first, ...second].map((claim) => claim.workspaceId);
+
+    expect(workspaceIds).toHaveLength(30);
+    expect(new Set(workspaceIds).size).toBe(30);
+  });
+
+  test("expired claims are taken over and stale retry or commit settlement is fenced", async () => {
+    const { workspace } = await createWorkspace("takeover");
+    await prisma.workspaceBillingAccount.update({
+      where: { workspaceId: workspace.id },
+      data: {
+        providerCustomerId: "cus_takeover",
+        nextReconcileAt: new Date("2026-08-28T10:00:00.000Z"),
+      },
+    });
+    const store = createPrismaWorkspaceBillingStore();
+    const claimedAt = new Date("2026-08-28T10:00:00.000Z");
+    const [first] = await store.claimDueAccounts({
+      now: claimedAt,
+      limit: 1,
+      leaseMs: 60_000,
+    });
+    expect(first).toBeDefined();
+    expect(
+      await store.claimDueAccounts({
+        now: new Date(claimedAt.getTime() + 59_999),
+        limit: 1,
+        leaseMs: 60_000,
+      }),
+    ).toHaveLength(0);
+    const takeoverAt = new Date(claimedAt.getTime() + 60_001);
+    const [takeover] = await store.claimDueAccounts({
+      now: takeoverAt,
+      limit: 1,
+      leaseMs: 60_000,
+    });
+    expect(takeover?.attemptId).not.toBe(first?.attemptId);
+
+    expect(
+      await store.scheduleRetry({
+        workspaceId: workspace.id,
+        attemptId: first!.attemptId,
+        now: takeoverAt,
+        nextReconcileAt: new Date(takeoverAt.getTime() + 60_000),
+        reason: "stale",
+        health: "retrying",
+      }),
+    ).toBe(false);
+    await expect(
+      store.commitVerifiedState({
+        workspaceId: workspace.id,
+        expectedCustomerId: "cus_takeover",
+        subscription: {
+          id: "sub_takeover",
+          status: "active",
+          items: [{ priceId: "price_creator_monthly", quantity: 1 }],
+          createdAt: claimedAt,
+          effectiveAt: claimedAt,
+          currentPeriodEnd: new Date("2026-09-28T10:00:00.000Z"),
+          trialEnd: null,
+          cancelAtPeriodEnd: false,
+        },
+        tier: "creator",
+        interval: "monthly",
+        workspaceStatus: "active",
+        health: "current",
+        attentionReason: null,
+        firstPastDueAt: null,
+        graceDeadlineAt: null,
+        effectiveAt: claimedAt,
+        now: takeoverAt,
+        attemptId: first!.attemptId,
+      }),
+    ).rejects.toBeInstanceOf(WorkspaceBillingAttemptLost);
+  });
+
+  test("a failed projection transaction rolls back tier, retention, and audit", async () => {
+    const first = await createWorkspace("rollback-first");
+    const second = await createWorkspace("rollback-second");
+    await prisma.workspaceBillingAccount.update({
+      where: { workspaceId: first.workspace.id },
+      data: { providerCustomerId: "cus_rollback_first" },
+    });
+    await prisma.workspaceBillingAccount.update({
+      where: { workspaceId: second.workspace.id },
+      data: {
+        providerCustomerId: "cus_rollback_second",
+        canonicalSubscriptionId: "sub_unique_collision",
+      },
+    });
+    const deadline = new Date("2026-09-10T00:00:00.000Z");
+    const project = await prisma.project.create({
+      data: {
+        title: "Rollback retention",
+        sourceMediaUrl: "https://example.test/rollback.mp4",
+        userId: first.user.id,
+        workspaceId: first.workspace.id,
+        retentionPolicyKey: "free_project_v1",
+        expiresAt: deadline,
+      },
+    });
+    const store = createPrismaWorkspaceBillingStore();
+    const now = new Date("2026-08-28T10:00:00.000Z");
+    const firstAccount = await prisma.workspaceBillingAccount.findUniqueOrThrow({
+      where: { workspaceId: first.workspace.id },
+    });
+    const delivery = await prisma.webhookDeliveryLog.create({
+      data: {
+        provider: "stripe",
+        eventId: `evt_rollback_${randomUUID()}`,
+        eventType: "customer.subscription.updated",
+        status: "accepted",
+        workspaceBillingAccountId: firstAccount.id,
+      },
+    });
+
+    await expect(
+      store.commitVerifiedState({
+        workspaceId: first.workspace.id,
+        expectedCustomerId: "cus_rollback_first",
+        subscription: {
+          id: "sub_unique_collision",
+          status: "active",
+          items: [{ priceId: "price_pro_monthly", quantity: 1 }],
+          createdAt: now,
+          effectiveAt: now,
+          currentPeriodEnd: new Date("2026-09-28T10:00:00.000Z"),
+          trialEnd: null,
+          cancelAtPeriodEnd: false,
+        },
+        tier: "pro",
+        interval: "monthly",
+        workspaceStatus: "active",
+        health: "current",
+        attentionReason: null,
+        firstPastDueAt: null,
+        graceDeadlineAt: null,
+        effectiveAt: now,
+        now,
+      }),
+    ).rejects.toMatchObject({ code: "P2002" });
+
+    expect(
+      await prisma.workspace.findUniqueOrThrow({ where: { id: first.workspace.id } }),
+    ).toMatchObject({ pricingTier: "free", status: "active" });
+    expect(
+      await prisma.project.findUniqueOrThrow({ where: { id: project.id } }),
+    ).toMatchObject({ retentionPolicyKey: "free_project_v1", expiresAt: deadline });
+    expect(
+      await prisma.workspaceBillingTransition.count({
+        where: { billingAccount: { workspaceId: first.workspace.id } },
+      }),
+    ).toBe(0);
+    expect(
+      await prisma.webhookDeliveryLog.findUniqueOrThrow({
+        where: { id: delivery.id },
+      }),
+    ).toMatchObject({ status: "accepted" });
   });
 });

@@ -2,6 +2,11 @@ import "server-only";
 
 import { auth, currentUser, type UserJSON } from "@clerk/nextjs/server";
 import { getPrismaClient } from "@narriflow/db/client";
+import {
+  roleHasWorkspaceCapability,
+  workspaceAllowsCapability,
+  type WorkspaceCapability,
+} from "@narriflow/validators";
 import { cookies } from "next/headers";
 import { Prisma } from "@prisma/client";
 import type {
@@ -29,58 +34,7 @@ export interface WorkspaceActorContext {
   isPersonal: boolean;
 }
 
-export type WorkspaceCapability =
-  | "content.view"
-  | "content.download"
-  | "content.edit"
-  | "processing.consume"
-  | "publishing.manage"
-  | "brand.manage"
-  | "social.manage"
-  | "workspace.manage"
-  | "api.manage"
-  | "members.invite"
-  | "members.promote_admin"
-  | "billing.manage";
-
-const ROLE_CAPABILITIES: Record<WorkspaceRole, ReadonlySet<WorkspaceCapability>> = {
-  owner: new Set([
-    "content.view",
-    "content.download",
-    "content.edit",
-    "processing.consume",
-    "publishing.manage",
-    "brand.manage",
-    "social.manage",
-    "workspace.manage",
-    "api.manage",
-    "members.invite",
-    "members.promote_admin",
-    "billing.manage",
-  ]),
-  admin: new Set([
-    "content.view",
-    "content.download",
-    "content.edit",
-    "processing.consume",
-    "publishing.manage",
-    "brand.manage",
-    "social.manage",
-    "workspace.manage",
-    "api.manage",
-    "members.invite",
-  ]),
-  editor: new Set([
-    "content.view",
-    "content.download",
-    "content.edit",
-    "processing.consume",
-    "publishing.manage",
-    "brand.manage",
-    "api.manage",
-  ]),
-  viewer: new Set(["content.view", "content.download"]),
-};
+export type { WorkspaceCapability } from "@narriflow/validators";
 
 interface WebhookDeliveryRecordInput {
   provider: WebhookProvider;
@@ -633,40 +587,14 @@ export function hasWorkspaceCapability(
   role: WorkspaceRole,
   capability: WorkspaceCapability,
 ): boolean {
-  return ROLE_CAPABILITIES[role].has(capability);
+  return roleHasWorkspaceCapability(role, capability);
 }
 
 export function assertWorkspaceCapability(
   context: WorkspaceActorContext,
   capability: WorkspaceCapability,
 ): void {
-  if (!hasWorkspaceCapability(context.role, capability)) {
-    throw new Error("Forbidden");
-  }
-
-  if (
-    context.status === "pending_payment" &&
-    !(
-      context.role === "owner" &&
-      ["content.view", "content.download", "workspace.manage", "billing.manage"].includes(
-        capability,
-      )
-    )
-  ) {
-    throw new Error("Workspace payment is pending");
-  }
-
-  if (
-    context.status === "restricted" &&
-    !(
-      context.role === "owner" &&
-      ["content.view", "content.download", "billing.manage"].includes(
-        capability,
-      )
-    )
-  ) {
-    throw new Error("Workspace is restricted");
-  }
+  if (!workspaceAllowsCapability(context, capability)) throw new Error("Forbidden");
 }
 
 export async function listUserWorkspaces(userId: string) {

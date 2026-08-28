@@ -32,3 +32,4 @@ export * from "./transcript";
 export * from "./upload";
 export * from "./utterance-split";
 export * from "./workflow";
+export * from "./workspace-access";

@@ -1,5 +1,7 @@
 import {
+  billingHealthSchema,
   resolvePricingTier,
+  type BillingHealth,
   type BillingInterval,
   type PaidPricingTier,
   type PricingTier,
@@ -8,12 +10,7 @@ import { getPrismaClient } from "@narriflow/db/client";
 import { projectRetentionService } from "./project-retention.service";
 import { randomUUID } from "node:crypto";
 
-export type WorkspaceBillingHealth =
-  | "current"
-  | "activating"
-  | "payment_action_required"
-  | "retrying"
-  | "attention_required";
+export type WorkspaceBillingHealth = BillingHealth;
 
 export type WorkspaceBillingAction = "open_portal" | "retry" | "contact_support";
 export type WorkspaceBillingProductStatus =
@@ -110,6 +107,8 @@ export interface ProviderSubscription {
   status: string;
   items: Array<{ priceId: string; quantity: number }>;
   createdAt: Date;
+  /** Provider-derived status/payment/period timestamp; never webhook receipt time. */
+  effectiveAt: Date;
   currentPeriodEnd: Date | null;
   trialEnd: Date | null;
   cancelAtPeriodEnd: boolean;
@@ -117,6 +116,10 @@ export interface ProviderSubscription {
 
 export interface ProviderCurrentState {
   customerId: string;
+  ownership:
+    | { kind: "verified"; workspaceId: string }
+    | { kind: "missing_metadata" }
+    | { kind: "workspace_mismatch" };
   subscriptions: ProviderSubscription[];
 }
 
@@ -194,6 +197,7 @@ export interface WorkspaceBillingStore {
   scheduleRetry(input: {
     workspaceId: string;
     attemptId?: string;
+    now: Date;
     nextReconcileAt: Date;
     reason: string;
     health: "retrying" | "attention_required";
@@ -332,7 +336,10 @@ export function createInMemoryWorkspaceBillingStore(
       const state = runtime.get(input.workspaceId);
       if (
         !state ||
-        (input.attemptId !== undefined && state.attemptId !== input.attemptId)
+        (input.attemptId !== undefined &&
+          (state.attemptId !== input.attemptId ||
+            !state.leaseExpiresAt ||
+            state.leaseExpiresAt.getTime() <= input.now.getTime()))
       ) {
         return false;
       }
@@ -392,16 +399,7 @@ export function createInMemoryWorkspaceBillingStore(
 }
 
 function billingHealth(value: string): WorkspaceBillingHealth {
-  if (
-    value === "current" ||
-    value === "activating" ||
-    value === "payment_action_required" ||
-    value === "retrying" ||
-    value === "attention_required"
-  ) {
-    return value;
-  }
-  throw new Error(`Unknown Workspace Billing health: ${value}`);
+  return billingHealthSchema.parse(value);
 }
 
 export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
@@ -647,7 +645,10 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
         where: {
           workspaceId: input.workspaceId,
           ...(input.attemptId
-            ? { reconcileAttemptId: input.attemptId }
+            ? {
+                reconcileAttemptId: input.attemptId,
+                leaseExpiresAt: { gt: input.now },
+              }
             : {}),
         },
         data: {
@@ -908,6 +909,20 @@ export function createWorkspaceBillingModule(dependencies: {
         view: billingView(current),
       };
     }
+    if (providerState.ownership.kind !== "verified") {
+      return {
+        kind: "unresolved",
+        reason: providerState.ownership.kind,
+        view: billingView(current),
+      };
+    }
+    if (providerState.ownership.workspaceId !== workspaceId) {
+      return {
+        kind: "unresolved",
+        reason: "workspace_mismatch",
+        view: billingView(current),
+      };
+    }
     const tierRank: Record<PricingTier, number> = {
       free: 0,
       creator: 1,
@@ -1001,7 +1016,7 @@ export function createWorkspaceBillingModule(dependencies: {
     let attentionReason: string | null = null;
     let firstPastDueAt: Date | null = null;
     let graceDeadlineAt: Date | null = null;
-    let effectiveAt = subscription.createdAt;
+    let effectiveAt = subscription.effectiveAt;
     switch (subscription.status) {
       case "active":
       case "trialing":
@@ -1027,7 +1042,7 @@ export function createWorkspaceBillingModule(dependencies: {
             ? "restricted"
             : "active";
         health = "payment_action_required";
-        effectiveAt = firstPastDueAt;
+        effectiveAt = withinGrace ? firstPastDueAt : graceDeadlineAt;
         break;
       }
       case "unpaid":
@@ -1040,7 +1055,6 @@ export function createWorkspaceBillingModule(dependencies: {
             ? "restricted"
             : "active";
         health = "current";
-        effectiveAt = subscription.currentPeriodEnd ?? subscription.createdAt;
         break;
       default:
         return {
@@ -1131,6 +1145,7 @@ export function createWorkspaceBillingModule(dependencies: {
         if (result.kind === "reconciled") return result;
         await dependencies.store.scheduleRetry({
           workspaceId,
+          now: dependencies.clock.now(),
           nextReconcileAt: new Date(
             dependencies.clock.now().getTime() + 6 * 60 * 60 * 1000,
           ),
@@ -1145,6 +1160,7 @@ export function createWorkspaceBillingModule(dependencies: {
       } catch (error) {
         await dependencies.store.scheduleRetry({
           workspaceId,
+          now: dependencies.clock.now(),
           nextReconcileAt: new Date(
             dependencies.clock.now().getTime() + 60_000,
           ),
@@ -1192,6 +1208,7 @@ export function createWorkspaceBillingModule(dependencies: {
             const settled = await dependencies.store.scheduleRetry({
               workspaceId: claim.workspaceId,
               attemptId: claim.attemptId,
+              now: dependencies.clock.now(),
               nextReconcileAt: new Date(
                 dependencies.clock.now().getTime() + 6 * 60 * 60 * 1000,
               ),
@@ -1216,6 +1233,7 @@ export function createWorkspaceBillingModule(dependencies: {
             const settled = await dependencies.store.scheduleRetry({
               workspaceId: claim.workspaceId,
               attemptId: claim.attemptId,
+              now: dependencies.clock.now(),
               nextReconcileAt: new Date(
                 dependencies.clock.now().getTime() + baseDelay + jitter,
               ),

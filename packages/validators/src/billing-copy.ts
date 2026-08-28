@@ -1,3 +1,15 @@
+import { z } from "zod";
+
+export const billingHealthSchema = z.enum([
+  "current",
+  "activating",
+  "payment_action_required",
+  "retrying",
+  "attention_required",
+]);
+
+export type BillingHealth = z.infer<typeof billingHealthSchema>;
+
 export const BILLING_HEALTH_COPY = {
   current: {
     label: "Current",
@@ -19,6 +31,7 @@ export const BILLING_HEALTH_COPY = {
     label: "Billing needs attention",
     description: "Open the billing portal or contact support to resolve this account.",
   },
-} as const;
-
-export type BillingHealth = keyof typeof BILLING_HEALTH_COPY;
+} as const satisfies Record<
+  BillingHealth,
+  { label: string; description: string }
+>;

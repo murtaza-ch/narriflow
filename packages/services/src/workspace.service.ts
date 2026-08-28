@@ -2,6 +2,11 @@ import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypt
 import type { PricingTier, WorkspaceRole, WorkspaceStatus } from "@prisma/client";
 
 import { getPrismaClient } from "@narriflow/db/client";
+import {
+  roleHasWorkspaceCapability,
+  workspaceAllowsCapability,
+  type WorkspaceCapability,
+} from "@narriflow/validators";
 import { hasFeature } from "./plan-features";
 import {
   isR2Configured,
@@ -9,19 +14,7 @@ import {
   presignSingleUploadUrl,
 } from "./r2-storage";
 
-export type WorkspaceCapability =
-  | "content.view"
-  | "content.download"
-  | "content.edit"
-  | "processing.consume"
-  | "publishing.manage"
-  | "brand.manage"
-  | "social.manage"
-  | "workspace.manage"
-  | "api.manage"
-  | "members.invite"
-  | "members.promote_admin"
-  | "billing.manage";
+export type { WorkspaceCapability } from "@narriflow/validators";
 
 export interface WorkspaceActorContext {
   userId: string;
@@ -50,49 +43,7 @@ export const WORKSPACE_API_KEY_SCOPES = [
 
 export type WorkspaceApiKeyScope = (typeof WORKSPACE_API_KEY_SCOPES)[number];
 
-const ROLE_CAPABILITIES: Record<WorkspaceRole, ReadonlySet<WorkspaceCapability>> = {
-  owner: new Set([
-    "content.view", "content.download", "content.edit", "processing.consume",
-    "publishing.manage", "brand.manage", "social.manage", "workspace.manage", "api.manage", "members.invite",
-    "members.promote_admin", "billing.manage",
-  ]),
-  admin: new Set([
-    "content.view", "content.download", "content.edit", "processing.consume",
-    "publishing.manage", "brand.manage", "social.manage", "workspace.manage", "api.manage", "members.invite",
-  ]),
-  editor: new Set([
-    "content.view", "content.download", "content.edit", "processing.consume",
-    "publishing.manage", "brand.manage", "api.manage",
-  ]),
-  viewer: new Set(["content.view", "content.download"]),
-};
-
-export function roleHasWorkspaceCapability(
-  role: WorkspaceRole,
-  capability: WorkspaceCapability,
-): boolean {
-  return ROLE_CAPABILITIES[role].has(capability);
-}
-
-export function workspaceAllowsCapability(
-  context: Pick<WorkspaceActorContext, "role" | "status">,
-  capability: WorkspaceCapability,
-): boolean {
-  if (!roleHasWorkspaceCapability(context.role, capability)) return false;
-  if (context.status === "active") return true;
-  if (context.status === "pending_payment") {
-    return (
-      context.role === "owner" &&
-      ["content.view", "content.download", "workspace.manage", "billing.manage"].includes(
-        capability,
-      )
-    );
-  }
-  return (
-    context.role === "owner" &&
-    ["content.view", "content.download", "billing.manage"].includes(capability)
-  );
-}
+export { roleHasWorkspaceCapability, workspaceAllowsCapability };
 
 function requiredPrisma() {
   const prisma = getPrismaClient();

@@ -1682,7 +1682,6 @@ app.post("/projects/:id/clips/:clipId/exports", async (c) => {
 
   try {
     const result = await clipExportService.create(
-      appUser.id,
       c.req.param("id"),
       c.req.param("clipId"),
       parsed.data,

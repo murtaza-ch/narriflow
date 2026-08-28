@@ -251,7 +251,6 @@ const exportInclude = {
 
 export class ClipExportService {
   async create(
-    userId: string,
     projectId: string,
     clipId: string,
     input: {
@@ -307,8 +306,8 @@ export class ClipExportService {
       where: { clipId_fingerprint: { clipId, fingerprint } },
       create: {
         id: exportId,
-        workspaceId: workspaceContext?.workspaceId ?? clip.project.workspaceId,
-        createdByUserId: workspaceContext?.actorUserId ?? userId,
+        workspaceId: workspaceContext.workspaceId,
+        createdByUserId: workspaceContext.actorUserId,
         projectId,
         clipId,
         editorRevision: clip.editorRevision,

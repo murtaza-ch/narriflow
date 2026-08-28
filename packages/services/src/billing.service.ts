@@ -152,6 +152,41 @@ export class BillingService {
     const periodEnds = subscription.items.data
       .map((item) => item.current_period_end)
       .filter((value) => Number.isFinite(value));
+    const latestInvoice =
+      subscription.latest_invoice && typeof subscription.latest_invoice === "object"
+        ? subscription.latest_invoice
+        : null;
+    const secondsToDate = (value: number | null | undefined) =>
+      value == null ? null : new Date(value * 1000);
+    const periodStarts = subscription.items.data
+      .map((item) => item.current_period_start)
+      .filter((value) => Number.isFinite(value));
+    const currentPeriodStart =
+      periodStarts.length > 0 ? Math.max(...periodStarts) : subscription.created;
+    const effectiveSeconds = (() => {
+      switch (subscription.status) {
+        case "trialing":
+          return subscription.trial_start ?? subscription.created;
+        case "active":
+          return latestInvoice?.status_transitions.paid_at ?? currentPeriodStart;
+        case "past_due":
+          return latestInvoice?.due_date ?? latestInvoice?.created ?? currentPeriodStart;
+        case "unpaid":
+          return latestInvoice?.status_transitions.marked_uncollectible_at ??
+            latestInvoice?.created ??
+            currentPeriodStart;
+        case "paused":
+          return subscription.trial_end ?? currentPeriodStart;
+        case "incomplete_expired":
+          return subscription.ended_at ?? latestInvoice?.created ?? subscription.created;
+        case "canceled":
+          return subscription.ended_at ??
+            subscription.canceled_at ??
+            subscription.created;
+        default:
+          return latestInvoice?.created ?? subscription.created;
+      }
+    })();
     return {
       id: subscription.id,
       status: subscription.status,
@@ -160,11 +195,10 @@ export class BillingService {
         quantity: item.quantity ?? 1,
       })),
       createdAt: new Date(subscription.created * 1000),
+      effectiveAt: new Date(effectiveSeconds * 1000),
       currentPeriodEnd:
         periodEnds.length > 0 ? new Date(Math.min(...periodEnds) * 1000) : null,
-      trialEnd: subscription.trial_end
-        ? new Date(subscription.trial_end * 1000)
-        : null,
+      trialEnd: secondsToDate(subscription.trial_end),
       cancelAtPeriodEnd: subscription.cancel_at_period_end,
     };
   }
@@ -191,6 +225,7 @@ export class BillingService {
       customer: customer.id,
       status: "all",
       limit: 100,
+      expand: ["data.latest_invoice"],
     });
     if (subscriptions.has_more) {
       throw new BillingError(
@@ -198,8 +233,18 @@ export class BillingService {
         "Billing customer has more subscriptions than the reconciliation limit",
       );
     }
+    const customerWorkspaceId = customer.metadata.workspaceId?.trim() || null;
+    const subscriptionWorkspaceIds = subscriptions.data.map(
+      (subscription) => subscription.metadata.workspaceId?.trim() || null,
+    );
+    const ownership = !customerWorkspaceId || subscriptionWorkspaceIds.some((id) => !id)
+      ? { kind: "missing_metadata" as const }
+      : subscriptionWorkspaceIds.some((id) => id !== customerWorkspaceId)
+        ? { kind: "workspace_mismatch" as const }
+        : { kind: "verified" as const, workspaceId: customerWorkspaceId };
     return {
       customerId: customer.id,
+      ownership,
       subscriptions: subscriptions.data.map((subscription) =>
         this.normalizeSubscription(subscription),
       ),

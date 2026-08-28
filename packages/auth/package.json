@@ -21,6 +21,7 @@
   "dependencies": {
     "@clerk/nextjs": "^6.39.5",
     "@narriflow/db": "workspace:*",
+    "@narriflow/validators": "workspace:*",
     "@prisma/client": "^7.4.2",
     "next": "16.3.0"
   },

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { Pool } from "pg";
 
@@ -42,6 +42,121 @@ if (!/^workspace_billing_test_[a-z0-9_]+$/.test(schema)) {
 }
 
 const pool = new Pool({ connectionString: databaseUrl, max: 1 });
+const migrationsRoot = resolve(repositoryRoot, "packages/db/prisma/migrations");
+const cutoverMigration = "20260828100000_workspace_entitlement_cutover";
+
+const migrationDirectories = readdirSync(migrationsRoot)
+  .filter((entry) => /^\d+_/.test(entry))
+  .sort();
+
+async function applyMigrations(
+  schemaName: string,
+  predicate: (directory: string) => boolean,
+) {
+  const client = await pool.connect();
+  try {
+    await client.query(`SET search_path TO "${schemaName}"`);
+    for (const directory of migrationDirectories.filter(predicate)) {
+      const sql = readFileSync(
+        resolve(migrationsRoot, directory, "migration.sql"),
+        "utf8",
+      );
+      await client.query(sql);
+    }
+  } finally {
+    client.release();
+  }
+}
+
+async function seedLegacyBillingFixtures(schemaName: string, consistent: boolean) {
+  const client = await pool.connect();
+  const ownerId = randomUUID();
+  const personalWorkspaceId = randomUUID();
+  const collaborativeWorkspaceId = randomUUID();
+  const observedAt = "2026-08-20T09:00:00.000Z";
+  try {
+    await client.query(`SET search_path TO "${schemaName}"`);
+    await client.query(
+      `INSERT INTO "User" (id, "clerkId", "primaryEmail", "pricingTier", "stripeCustomerId", "billingEventCreatedAt", "updatedAt")
+       VALUES ($1, $2, $3, 'pro', 'cus_personal_fixture', $4, CURRENT_TIMESTAMP)`,
+      [ownerId, `migration-${ownerId}`, `migration-${ownerId}@example.test`, observedAt],
+    );
+    await client.query(
+      `INSERT INTO "Workspace" (id, name, "ownerUserId", "personalOwnerUserId", "pricingTier", "stripeCustomerId", "stripeSubscriptionId", "billingInterval", "billingEventCreatedAt", "subscriptionEndsAt", "updatedAt")
+       VALUES ($1, 'Personal fixture', $2, $2, $3, $4, 'sub_personal_fixture', 'monthly', $5, '2026-09-20T09:00:00.000Z', CURRENT_TIMESTAMP)`,
+      [
+        personalWorkspaceId,
+        ownerId,
+        consistent ? "pro" : "free",
+        consistent ? "cus_personal_fixture" : "cus_mismatch",
+        observedAt,
+      ],
+    );
+    await client.query(
+      `INSERT INTO "Workspace" (id, name, "ownerUserId", "pricingTier", "stripeCustomerId", "stripeSubscriptionId", "billingInterval", "billingEventCreatedAt", "subscriptionEndsAt", "updatedAt")
+       VALUES ($1, 'Collaborative fixture', $2, 'business', 'cus_collaborative_fixture', 'sub_collaborative_fixture', 'annual', $3, '2027-08-20T09:00:00.000Z', CURRENT_TIMESTAMP)`,
+      [collaborativeWorkspaceId, ownerId, observedAt],
+    );
+    await client.query(
+      `INSERT INTO "WorkspaceMember" (id, "workspaceId", "userId", role, "updatedAt")
+       VALUES ($1, $2, $3, 'owner', CURRENT_TIMESTAMP), ($4, $5, $3, 'owner', CURRENT_TIMESTAMP)`,
+      [randomUUID(), personalWorkspaceId, ownerId, randomUUID(), collaborativeWorkspaceId],
+    );
+  } finally {
+    client.release();
+  }
+}
+
+async function verifyMigratedFixtures(schemaName: string) {
+  const client = await pool.connect();
+  try {
+    await client.query(`SET search_path TO "${schemaName}"`);
+    const accounts = await client.query<{
+      name: string;
+      pricingTier: string;
+      providerCustomerId: string | null;
+      canonicalSubscriptionId: string | null;
+    }>(
+      `SELECT w.name, w."pricingTier", a."providerCustomerId", a."canonicalSubscriptionId"
+       FROM "Workspace" w
+       JOIN "WorkspaceBillingAccount" a ON a."workspaceId" = w.id
+       WHERE w.name IN ('Personal fixture', 'Collaborative fixture')
+       ORDER BY w.name`,
+    );
+    if (
+      JSON.stringify(accounts.rows) !==
+      JSON.stringify([
+        {
+          name: "Collaborative fixture",
+          pricingTier: "business",
+          providerCustomerId: "cus_collaborative_fixture",
+          canonicalSubscriptionId: "sub_collaborative_fixture",
+        },
+        {
+          name: "Personal fixture",
+          pricingTier: "pro",
+          providerCustomerId: "cus_personal_fixture",
+          canonicalSubscriptionId: "sub_personal_fixture",
+        },
+      ])
+    ) {
+      throw new Error(`Workspace Billing migration did not preserve fixtures: ${JSON.stringify(accounts.rows)}`);
+    }
+    const retiredColumns = await client.query<{ count: string }>(
+      `SELECT count(*)::text AS count
+       FROM information_schema.columns
+       WHERE table_schema = $1
+         AND ((table_name = 'User' AND column_name IN ('pricingTier', 'stripeCustomerId', 'billingEventCreatedAt'))
+           OR (table_name = 'Workspace' AND column_name IN ('stripeCustomerId', 'stripeSubscriptionId', 'billingInterval', 'billingEventCreatedAt', 'subscriptionEndsAt')))`,
+      [schemaName],
+    );
+    if (retiredColumns.rows[0]?.count !== "0") {
+      throw new Error("Workspace Billing migration retained obsolete billing columns");
+    }
+  } finally {
+    client.release();
+  }
+}
 
 async function run(command: string[], env: Record<string, string>) {
   const child = Bun.spawn(command, {
@@ -57,20 +172,36 @@ async function run(command: string[], env: Record<string, string>) {
 
 try {
   await pool.query(`CREATE SCHEMA IF NOT EXISTS "${schema}"`);
-  const migrationUrl = new URL(databaseUrl);
+  const invalidSchema = `${schema}_invalid`;
+  await pool.query(`CREATE SCHEMA IF NOT EXISTS "${invalidSchema}"`);
+  await applyMigrations(schema, (directory) => directory < cutoverMigration);
+  await seedLegacyBillingFixtures(schema, true);
+  await applyMigrations(schema, (directory) => directory >= cutoverMigration);
+  await verifyMigratedFixtures(schema);
+
+  await applyMigrations(invalidSchema, (directory) => directory < cutoverMigration);
+  await seedLegacyBillingFixtures(invalidSchema, false);
+  let rejectedInconsistentFixture = false;
+  try {
+    await applyMigrations(
+      invalidSchema,
+      (directory) => directory === cutoverMigration,
+    );
+  } catch (error) {
+    rejectedInconsistentFixture =
+      error instanceof Error && error.message.includes("cutover rejected inconsistent");
+  }
+  if (!rejectedInconsistentFixture) {
+    throw new Error("Workspace Billing cutover accepted inconsistent legacy fixtures");
+  }
+
   const testUrl = new URL(databaseUrl);
-  for (const url of [migrationUrl, testUrl]) {
+  for (const url of [testUrl]) {
     if (url.hostname.includes("-pooler.")) {
       url.hostname = url.hostname.replace("-pooler.", ".");
     }
   }
-  migrationUrl.searchParams.set("schema", schema);
   testUrl.searchParams.set("options", `-csearch_path=${schema}`);
-
-  await run(["bun", "run", "--cwd", "packages/db", "prisma:migrate:deploy"], {
-    DATABASE_URL: migrationUrl.toString(),
-    DIRECT_URL: migrationUrl.toString(),
-  });
   await run(["bun", "test", "packages/services/src/workspace-billing.db.test.ts"], {
     ALLOW_WORKSPACE_BILLING_DB_TESTS: "1",
     DATABASE_URL: testUrl.toString(),
@@ -81,6 +212,7 @@ try {
 } finally {
   if (process.env.WORKSPACE_BILLING_TEST_KEEP_SCHEMA !== "1") {
     await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+    await pool.query(`DROP SCHEMA IF EXISTS "${schema}_invalid" CASCADE`);
   }
   await pool.end();
 }
