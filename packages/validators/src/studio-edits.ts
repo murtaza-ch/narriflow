@@ -514,7 +514,10 @@ export const applyStudioEditsPatchSchema = z
 export type ApplyStudioEditsPatch = z.infer<typeof applyStudioEditsPatchSchema>;
 
 /**
- * Request body for `POST /projects/:id/clips/apply-studio-edits`.
+ * Request body for `POST /projects/:id/clips/apply-studio-edits`. The
+ * single-patch form remains part of the current endpoint contract; first-party
+ * callers send the normalized grouped form so one user gesture always has one
+ * request shape.
  * `excludeClipId` lets the studio session that originated the patch skip
  * itself server-side — that clip already has the change applied locally
  * (undoable, via the open editor document) and will persist it through the

@@ -5157,8 +5157,8 @@ async function executeClipRenderAttempt(
         run.projectId,
       );
       const compositionDocument: EditorDocument = {
-        clipStartSec: clip.startSec,
-        clipEndSec: clip.endSec,
+        clipStartSec,
+        clipEndSec,
         captionPreset,
         transcriptSlice: utterances,
         studioEdits,
@@ -5174,8 +5174,8 @@ async function executeClipRenderAttempt(
           persistedAutoLayout.engine === "shot-layout-v1" &&
           persistedAutoLayout.sourceIdentity === compositionSourceIdentity &&
           clipAutoLayoutMatchesInputs(persistedAutoLayout, {
-            clipStartSec: clip.startSec,
-            clipEndSec: clip.endSec,
+            clipStartSec,
+            clipEndSec,
             deletedRanges,
           }) &&
           Math.abs(persistedAutoLayout.editedDurationSec - clipDurationSec) <=
@@ -5211,8 +5211,8 @@ async function executeClipRenderAttempt(
                         sourceIdentity: compositionSourceIdentity,
                         inputFingerprint: automaticLayoutInputFingerprint({
                           sourceIdentity: compositionSourceIdentity,
-                          clipStartSec: clip.startSec,
-                          clipEndSec: clip.endSec,
+                          clipStartSec,
+                          clipEndSec,
                           deletedRanges,
                           engineVersion: "shot-layout-v1",
                         }),
@@ -5342,8 +5342,8 @@ async function executeClipRenderAttempt(
                 engine: "shot-layout-v1",
                 sourceIdentity: compositionSourceIdentity,
                 analyzedAtISO: new Date(currentTimeMs()).toISOString(),
-                clipStartSec: clip.startSec,
-                clipEndSec: clip.endSec,
+                clipStartSec,
+                clipEndSec,
                 deletedRanges,
                 editedDurationSec: clipDurationSec,
                 sourceWidth: probe.width,
@@ -5488,8 +5488,8 @@ async function executeClipRenderAttempt(
             const screenEngineVersion = SCREEN_LAYOUT_ENGINE_VERSION;
             const screenFingerprint = screenLayoutInputFingerprint({
               sourceIdentity: compositionSourceIdentity,
-              clipStartSec: clip.startSec,
-              clipEndSec: clip.endSec,
+              clipStartSec,
+              clipEndSec,
               deletedRanges,
               engineVersion: screenEngineVersion,
             });
@@ -5698,8 +5698,8 @@ async function executeClipRenderAttempt(
                 analyzedAtISO: new Date(currentTimeMs()).toISOString(),
                 sourceStartSec: clipStartSec,
                 sourceDurationSec: effective.durationSec,
-                clipStartSec: clip.startSec,
-                clipEndSec: clip.endSec,
+                clipStartSec,
+                clipEndSec,
                 movingPxFrac: detectionResult?.movingPxFrac ?? null,
                 insufficientSamples:
                   detectionResult?.insufficientSamples ?? false,
@@ -5807,8 +5807,8 @@ async function executeClipRenderAttempt(
           const splitEngineVersion = "explicit-split-v1";
           const splitFingerprint = splitLayoutInputFingerprint({
             sourceIdentity: compositionSourceIdentity,
-            clipStartSec: clip.startSec,
-            clipEndSec: clip.endSec,
+            clipStartSec,
+            clipEndSec,
             deletedRanges,
             engineVersion: splitEngineVersion,
           });
@@ -5821,8 +5821,8 @@ async function executeClipRenderAttempt(
             persistedSplitAnalysis.sourceWidth === probe.width &&
             persistedSplitAnalysis.sourceHeight === probe.height &&
             clipAutoLayoutMatchesInputs(persistedSplitAnalysis, {
-              clipStartSec: clip.startSec,
-              clipEndSec: clip.endSec,
+              clipStartSec,
+              clipEndSec,
               deletedRanges,
             }) &&
             Math.abs(
@@ -5987,8 +5987,8 @@ async function executeClipRenderAttempt(
               engine: "explicit-split-v1",
               sourceIdentity: compositionSourceIdentity,
               analyzedAtISO: new Date(currentTimeMs()).toISOString(),
-              clipStartSec: clip.startSec,
-              clipEndSec: clip.endSec,
+              clipStartSec,
+              clipEndSec,
               deletedRanges,
               editedDurationSec: clipDurationSec,
               sourceWidth: probe.width,
@@ -6445,8 +6445,8 @@ async function executeClipRenderAttempt(
                       sourceIdentity: compositionSourceIdentity,
                       inputFingerprint: automaticLayoutInputFingerprint({
                         sourceIdentity: compositionSourceIdentity,
-                        clipStartSec: clip.startSec,
-                        clipEndSec: clip.endSec,
+                        clipStartSec,
+                        clipEndSec,
                         deletedRanges,
                         engineVersion: "shot-layout-v1",
                       }),

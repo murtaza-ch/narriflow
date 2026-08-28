@@ -2008,7 +2008,7 @@ app.post("/projects/:id/clips/apply-studio-edits", async (c) => {
     return c.json({ ...result, field }, 200);
   } catch (error) {
     if (error instanceof UnsafeUrlError) {
-      return c.json({ error: "unsafe_broll_url" }, 422);
+      return c.json({ error: "unsafe_media_url" }, 422);
     }
     const persistenceError = clipEditorPersistenceHttpError(error);
     if (persistenceError) return c.json(persistenceError.body, persistenceError.status);

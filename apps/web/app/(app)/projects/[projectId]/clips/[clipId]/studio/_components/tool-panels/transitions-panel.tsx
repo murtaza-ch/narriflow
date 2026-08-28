@@ -43,7 +43,9 @@ export function TransitionsPanel() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            patch: { transition: { type: selected, durationSec: duration } },
+            patches: [
+              { transition: { type: selected, durationSec: duration } },
+            ],
             excludeClipId: clipInfo.id,
           }),
         },
