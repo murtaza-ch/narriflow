@@ -64,44 +64,34 @@ export function LayoutPanel() {
   // to its instant local effect on the open clip.
   const [applyToAll, setApplyToAll] = useState(false);
 
-  // Bulk-apply worker shared by every control below. `applyStudioEditsPatchSchema`
-  // is a strict XOR — one call can only carry ONE of transition/background/
-  // framing — so callers build a `patches` array with exactly the field(s)
-  // the change requires:
+  // Bulk-apply worker shared by every control below. Each patch changes one
+  // Studio field, while the request can group related fields into one atomic
+  // project mutation:
   //  - Fit-only changes (submode switch, color commit, image apply): a
   //    single `background` patch is enough. It always wins over `framing`
   //    on the receiving clip (see resolveEffectiveFramingMode), so there's
   //    nothing else to send.
-  //  - Switching to Auto/Center: send `framing` for the mode itself, PLUS a
-  //    second `background: { mode: "off" }` call — without it, a receiving
+  //  - Switching to Auto/Center: send `framing` for the mode itself, plus
+  //    `background: { mode: "off" }` in the same request. Without it, a receiving
   //    clip that currently has its own background active would keep
   //    showing "fit" (background always wins), silently ignoring the
-  //    framing patch that was just applied. Two sequential calls, not a
-  //    combined payload, because the patch schema only ever carries one
-  //    field.
+  //    framing patch that was just applied.
   // A failure here never rolls back the already-committed local change on
   // the open clip — the open clip keeps its new value either way.
   async function applyPatchesToAll(patches: ApplyStudioEditsPatch[]) {
     if (applyState === "applying") return;
     setApplyState("applying");
     try {
-      let updated = 0;
-      for (const patch of patches) {
-        const res = await fetch(
-          `/api/projects/${clipInfo.projectId}/clips/apply-studio-edits`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ patch, excludeClipId: clipInfo.id }),
-          },
-        );
-        if (!res.ok) throw new Error("apply failed");
-        const data = (await res.json()) as { updated: number };
-        // The primary patch (framing, or background for fit) drives the
-        // count shown to the user; the secondary background-off call's
-        // count would double-count rows already touched by the first.
-        if (patch === patches[0]) updated = data.updated;
-      }
+      const res = await fetch(
+        `/api/projects/${clipInfo.projectId}/clips/apply-studio-edits`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ patches, excludeClipId: clipInfo.id }),
+        },
+      );
+      if (!res.ok) throw new Error("apply failed");
+      const { updated } = (await res.json()) as { updated: number };
 
       setApplyState("applied");
       toaster.create({

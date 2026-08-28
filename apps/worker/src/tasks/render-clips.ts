@@ -29,6 +29,7 @@ import {
   audioAssetService as productionAudioAssetService,
   clipService as productionClipService,
   createByteLimitTransform,
+  decodeClipEditorDocumentFromStorage,
   deleteObject as productionDeleteObject,
   downloadObjectToFile as productionDownloadObjectToFile,
   guardedFetch as productionGuardedFetch,
@@ -51,7 +52,6 @@ import {
   AUDIO_UPLOAD_MAX_BYTES,
   brandTemplateSnapshotSchema,
   brollCuesArraySchema,
-  captionPresetSchema,
   CAPTION_CHUNK_SIZE,
   CAPTION_POSITION_Y_DEFAULTS,
   CATEGORY_BROLL_FALLBACK_QUERY,
@@ -65,7 +65,6 @@ import {
   clipLayoutAnalysisFailureSchema,
   clipAutoLayoutMatchesInputs,
   clipRenderResolutionSchema,
-  deletedRangesSchema,
   formatCaptionWord,
   getEffectiveClipTiming,
   normalizeTranscriptSliceForClip,
@@ -78,7 +77,6 @@ import {
   SCREEN_LAYOUT_ENGINE_VERSION,
   sourceRangeToEdited,
   sourceToEdited,
-  studioEditsSchema,
 } from "@narriflow/validators";
 import type {
   BrandTemplateSnapshot,
@@ -91,7 +89,6 @@ import type {
   ClipRenderResolution,
   EditorDocument,
   EditedTimeMap,
-  SourceRange,
   StudioEdits,
   StudioSpeakerLayoutOverride,
   TranscriptUtterance,
@@ -4566,39 +4563,28 @@ async function executeClipRenderAttempt(
     for (let clipGroupIndex = 0; clipGroupIndex < clipGroups.length; clipGroupIndex++) {
       signal?.throwIfAborted();
       const renderGroup = clipGroups[clipGroupIndex]!;
-      // Export-bound rows carry a complete frozen rendering snapshot. The
-      // cast is deliberate: the snapshot stores the exact Clip fields used by
-      // this worker and omits unrelated DB metadata/relations.
+      const storedClip = renderGroup[0]!.clipSnapshot ?? renderGroup[0]!.clip;
+      const editorDocument = decodeClipEditorDocumentFromStorage(
+        storedClip,
+        frozenState.sourceDurationSeconds,
+      );
+      // Export-bound rows carry a complete frozen rendering snapshot. This
+      // metadata view deliberately excludes document decoding: every
+      // document-owned field above crossed the canonical persistence codec.
       const clip = renderGroup[0]!.clipSnapshot
         ? (renderGroup[0]!.clipSnapshot as unknown as (typeof renderGroup)[number]["clip"])
         : renderGroup[0]!.clip;
-      const rawUtterances = clip.transcriptSlice as unknown as TranscriptUtterance[];
       const effective = resolveRenderTimingForClip({
         llmModel: clip.llmModel,
-        utterances: rawUtterances,
-        startSec: clip.startSec,
-        endSec: clip.endSec,
+        utterances: editorDocument.transcriptSlice,
+        startSec: editorDocument.clipStartSec,
+        endSec: editorDocument.clipEndSec,
       });
       const clipStartSec = effective.startSec;
       const clipEndSec = effective.endSec;
       const utterances = effective.transcriptSlice;
 
-      // Vizard-parity Phase B step 7: resilient parse, same pattern as
-      // captionPreset/studioEdits below — a single malformed stored
-      // deletedRanges JSON must not crash the whole render group.
-      let deletedRanges: SourceRange[] = [];
-      if (clip.deletedRanges) {
-        const parsedRanges = deletedRangesSchema.safeParse(clip.deletedRanges);
-        if (parsedRanges.success) {
-          deletedRanges = parsedRanges.data;
-        } else {
-          log("error", "clip_deleted_ranges_parse_failed", {
-            workflowRunId: run.id,
-            clipId: clip.id,
-            message: parsedRanges.error.issues[0]?.message ?? "invalid deletedRanges",
-          });
-        }
-      }
+      const deletedRanges = editorDocument.deletedRanges;
       const cutPlan = buildClipCutPlan(deletedRanges, {
         startSec: clipStartSec,
         endSec: clipEndSec,
@@ -4710,38 +4696,8 @@ async function executeClipRenderAttempt(
       // planner to retime source-absolute words onto the edited timeline.
       const captionTimeMap = cutPlan.isUncut ? null : cutPlan.map;
 
-      // Resilient parse: a single malformed stored caption JSON must not crash
-      // the whole render group. Video uses the planner's default caption
-      // contract; audio-only rendering retains its plain-SRT fallback.
-      let captionPreset: CaptionPreset | null = null;
-      if (clip.captionPreset) {
-        const parsedPreset = captionPresetSchema.nullable().safeParse(
-          clip.captionPreset,
-        );
-        if (parsedPreset.success) {
-          captionPreset = parsedPreset.data;
-        } else {
-          log("error", "clip_caption_preset_parse_failed", {
-            workflowRunId: run.id,
-            clipId: clip.id,
-            message: parsedPreset.error.issues[0]?.message ?? "invalid preset",
-          });
-        }
-      }
-
-      let studioEdits: StudioEdits = studioEditsSchema.parse({});
-      if (clip.studioEdits) {
-        const parsedEdits = studioEditsSchema.safeParse(clip.studioEdits);
-        if (parsedEdits.success) {
-          studioEdits = parsedEdits.data;
-        } else {
-          log("error", "clip_studio_edits_parse_failed", {
-            workflowRunId: run.id,
-            clipId: clip.id,
-            message: parsedEdits.error.issues[0]?.message ?? "invalid edits",
-          });
-        }
-      }
+      const captionPreset = editorDocument.captionPreset;
+      const studioEdits = editorDocument.studioEdits;
 
       // Per-clip effective logo: this clip's studioEdits.logo override
       // merged over the project-wide brandLogo (frozen snapshot + already
@@ -4762,7 +4718,7 @@ async function executeClipRenderAttempt(
       // SRT remains only for audio-only, no-preset audiograms. Video captions
       // are serialized from the Composition Plan after planning below.
       let srtPath: string | null = null;
-      if (!probe.hasVideo && !captionPreset && utterances.length > 0) {
+      if (!probe.hasVideo && utterances.length > 0) {
         const srtContent = generateSrtFromSlice(
           utterances,
           clipStartSec,
@@ -4867,7 +4823,7 @@ async function executeClipRenderAttempt(
       // Per-aspect-ratio ASS files carry the full styled, word-synced captions.
       // Generated whenever a caption preset is present (positions are resolution
       // dependent, so one file per output).
-      if (!probe.hasVideo && captionPreset && utterances.length > 0) {
+      if (!probe.hasVideo && utterances.length > 0) {
         for (const output of outputs) {
           const assContent = generateAssFromSlice(
             utterances,
@@ -4903,7 +4859,7 @@ async function executeClipRenderAttempt(
       const brollEnabled =
         currentRenderConfig().pexelsConfigured &&
         currentRenderConfig().brollEnabled;
-      const userBrollUrl = clip.brollUrl ?? null;
+      const userBrollUrl = editorDocument.brollUrl;
       if (
         (brollEnabled || userBrollUrl) &&
         probe.hasVideo &&
@@ -5203,10 +5159,10 @@ async function executeClipRenderAttempt(
       const compositionDocument: EditorDocument = {
         clipStartSec: clip.startSec,
         clipEndSec: clip.endSec,
-        captionPreset: captionPreset ?? captionPresetSchema.parse({}),
+        captionPreset,
         transcriptSlice: utterances,
         studioEdits,
-        brollUrl: clip.brollUrl ?? null,
+        brollUrl: editorDocument.brollUrl,
         deletedRanges,
       };
       const persistedAutoLayout = parseClipAutoLayoutAnalysis(

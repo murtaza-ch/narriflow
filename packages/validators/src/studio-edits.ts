@@ -522,9 +522,38 @@ export type ApplyStudioEditsPatch = z.infer<typeof applyStudioEditsPatchSchema>;
  * bump its `editorRevision` out from under the client's in-flight
  * `baseRevision` and 409 the next autosave.
  */
-export const applyStudioEditsToAllSchema = z.object({
-  patch: applyStudioEditsPatchSchema,
-  excludeClipId: z.string().uuid().optional(),
-});
+const applyStudioEditsToAllSingleSchema = z
+  .object({
+    patch: applyStudioEditsPatchSchema,
+    excludeClipId: z.string().uuid().optional(),
+  })
+  .strict();
+
+const applyStudioEditsToAllGroupedSchema = z
+  .object({
+    patches: z.array(applyStudioEditsPatchSchema).min(1).max(3),
+    excludeClipId: z.string().uuid().optional(),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const fields = value.patches.map((patch) => Object.keys(patch)[0]);
+    if (new Set(fields).size !== fields.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["patches"],
+        message: "grouped patches cannot repeat a Studio edit field",
+      });
+    }
+  });
+
+export const applyStudioEditsToAllSchema = z
+  .union([
+    applyStudioEditsToAllSingleSchema,
+    applyStudioEditsToAllGroupedSchema,
+  ])
+  .transform((value) => ({
+    patches: "patches" in value ? value.patches : [value.patch],
+    excludeClipId: value.excludeClipId,
+  }));
 
 export type ApplyStudioEditsToAll = z.infer<typeof applyStudioEditsToAllSchema>;

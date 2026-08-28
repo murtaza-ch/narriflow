@@ -5,6 +5,7 @@ import {
   CLIP_MAX_DURATION_SEC,
   CLIP_MIN_DURATION_SEC,
   DEFAULT_CAPTION_PRESET,
+  applyStudioEditsPatchSchema,
   captionPresetSchema,
   deletedRangesSchema,
   editorDocumentSchema,
@@ -18,6 +19,7 @@ import {
   updateClipBoundariesSchema,
   updateClipTranscriptSliceSchema,
   type EditorDocument,
+  type ApplyStudioEditsPatch,
   type ClipStatus,
   type TranscriptUtterance,
 } from "@narriflow/validators";
@@ -34,20 +36,25 @@ export class ClipEditorRevisionConflictError extends Error {
 
 export type ClipEditorDocumentPersistenceErrorCode =
   | "clip_not_found"
+  | "project_not_found"
   | "corrupt_stored_document"
+  | "editor_document_invalid"
   | "editor_boundaries_invalid"
   | "editor_document_empty_timeline"
   | "retryable_contention"
-  | "persistence_unavailable"
-  | "project_selection_not_implemented";
+  | "persistence_unavailable";
 
 export class ClipEditorDocumentPersistenceError extends Error {
+  readonly retryable: boolean;
+
   constructor(
     readonly code: ClipEditorDocumentPersistenceErrorCode,
     message: string,
   ) {
     super(message);
     this.name = "ClipEditorDocumentPersistenceError";
+    this.retryable =
+      code === "retryable_contention" || code === "persistence_unavailable";
   }
 }
 
@@ -102,13 +109,19 @@ export type ClipEditorDocumentMutationIntent =
   | { kind: "replace"; baseRevision: number; document: EditorDocument }
   | { kind: "reset"; baseRevision: number }
   | { kind: "set_boundaries"; startSec: number; endSec: number }
-  | { kind: "set_transcript"; transcriptSlice: TranscriptUtterance[] };
+  | { kind: "set_transcript"; transcriptSlice: TranscriptUtterance[] }
+  | {
+      kind: "set_caption_preset";
+      captionPreset: EditorDocument["captionPreset"] | null;
+    }
+  | { kind: "set_broll_url"; brollUrl: string | null }
+  | { kind: "set_studio_edits"; studioEdits: EditorDocument["studioEdits"] };
 
 export type ClipEditorProjectSelectionIntent =
   | { kind: "set_caption_preset"; captionPreset: EditorDocument["captionPreset"] }
   | {
       kind: "patch_studio_edits";
-      patches: ReadonlyArray<Partial<EditorDocument["studioEdits"]>>;
+      patches: ReadonlyArray<ApplyStudioEditsPatch>;
     };
 
 export interface ClipEditorDocumentMutationResult {
@@ -128,17 +141,36 @@ interface ClipEditorDocumentCommit {
   cleanupIntents: EditorMediaCleanupIntent[];
 }
 
+interface ClipEditorProjectSelectionScope {
+  actorUserId: string;
+  projectId: string;
+  excludeClipId?: string;
+}
+
+interface ClipEditorProjectSelectionCommit {
+  scope: ClipEditorProjectSelectionScope;
+  expectedRevisions: Array<{ clipId: string; revision: number }>;
+  documents: ClipEditorDocumentCommit[];
+}
+
 export interface ClipEditorDocumentStore {
   read(scope: ClipEditorDocumentScope): Promise<ClipEditorDocumentStoredState | null>;
   confirmRevision(scope: ClipEditorDocumentScope, expectedRevision: number): Promise<boolean>;
   commit(input: ClipEditorDocumentCommit): Promise<ClipEditorDocumentStoredState | null>;
+  readProjectSelection(
+    scope: ClipEditorProjectSelectionScope,
+  ): Promise<ClipEditorDocumentStoredState[] | null>;
+  commitProjectSelection(input: ClipEditorProjectSelectionCommit): Promise<boolean>;
 }
 
 export interface ClipEditorDocumentDiagnostics {
   record(event: {
+    actorUserId: string;
     projectId: string;
-    clipId: string;
-    mutationKind: ClipEditorDocumentMutationIntent["kind"];
+    clipId: string | null;
+    mutationKind:
+      | ClipEditorDocumentMutationIntent["kind"]
+      | `project_${ClipEditorProjectSelectionIntent["kind"]}`;
     attempt: number;
     baseRevision: number | null;
     resultingRevision: number;
@@ -309,6 +341,27 @@ function planNextDocument(
       state.sourceDurationSec,
     );
   }
+  if (intent.kind === "set_caption_preset") {
+    return canonicalizeDocument(
+      {
+        ...state.document,
+        captionPreset: intent.captionPreset ?? DEFAULT_CAPTION_PRESET,
+      },
+      state.sourceDurationSec,
+    );
+  }
+  if (intent.kind === "set_broll_url") {
+    return canonicalizeDocument(
+      { ...state.document, brollUrl: intent.brollUrl },
+      state.sourceDurationSec,
+    );
+  }
+  if (intent.kind === "set_studio_edits") {
+    return canonicalizeDocument(
+      { ...state.document, studioEdits: intent.studioEdits },
+      state.sourceDurationSec,
+    );
+  }
   const parsed = updateClipTranscriptSliceSchema.safeParse({
     transcriptSlice: intent.transcriptSlice,
   });
@@ -326,6 +379,59 @@ function planNextDocument(
     },
     state.sourceDurationSec,
   );
+}
+
+function planProjectSelectionDocument(
+  state: ClipEditorDocumentStoredState,
+  intent: ClipEditorProjectSelectionIntent,
+): EditorDocument {
+  if (intent.kind === "set_caption_preset") {
+    return canonicalizeDocument(
+      { ...state.document, captionPreset: intent.captionPreset },
+      state.sourceDurationSec,
+    );
+  }
+  if (intent.patches.length === 0) {
+    persistenceError("editor_document_invalid", "Studio edit patches cannot be empty");
+  }
+  let studioEdits = state.document.studioEdits;
+  for (const patch of intent.patches) {
+    const parsed = applyStudioEditsPatchSchema.safeParse(patch);
+    if (!parsed.success) {
+      persistenceError("editor_document_invalid", "Studio edit patch is malformed");
+    }
+    studioEdits = { ...studioEdits, ...parsed.data };
+  }
+  return canonicalizeDocument(
+    { ...state.document, studioEdits },
+    state.sourceDurationSec,
+  );
+}
+
+function canonicalizeStoredState(
+  state: ClipEditorDocumentStoredState,
+): ClipEditorDocumentStoredState {
+  try {
+    return {
+      ...state,
+      document: canonicalizeDocument(state.document, state.sourceDurationSec),
+      original:
+        state.original !== null
+          ? canonicalizeDocument(state.original, state.sourceDurationSec)
+          : null,
+    };
+  } catch (error) {
+    if (
+      error instanceof ClipEditorDocumentPersistenceError ||
+      error instanceof UnsafeUrlError
+    ) {
+      throw error;
+    }
+    throw new ClipEditorDocumentPersistenceError(
+      "corrupt_stored_document",
+      "Clip Editor Document is malformed",
+    );
+  }
 }
 
 function safeRecord(
@@ -354,26 +460,7 @@ export function createClipEditorDocumentPersistence(input: {
   async function readState(scope: ClipEditorDocumentScope) {
     const state = await input.store.read(scope);
     if (!state) persistenceError("clip_not_found", "clip not found");
-    try {
-      return {
-        ...state,
-        document: canonicalizeDocument(state.document, state.sourceDurationSec),
-        original: state.original !== null
-          ? canonicalizeDocument(state.original, state.sourceDurationSec)
-          : null,
-      };
-    } catch (error) {
-      if (
-        error instanceof ClipEditorDocumentPersistenceError ||
-        error instanceof UnsafeUrlError
-      ) {
-        throw error;
-      }
-      throw new ClipEditorDocumentPersistenceError(
-        "corrupt_stored_document",
-        "Clip Editor Document is malformed",
-      );
-    }
+    return canonicalizeStoredState(state);
   }
 
   async function mutateDocument(
@@ -389,10 +476,16 @@ export function createClipEditorDocumentPersistence(input: {
     const record = (
       event: Omit<
         Parameters<ClipEditorDocumentDiagnostics["record"]>[0],
-        "projectId" | "clipId" | "mutationKind" | "baseRevision" | "elapsedMs"
+        | "actorUserId"
+        | "projectId"
+        | "clipId"
+        | "mutationKind"
+        | "baseRevision"
+        | "elapsedMs"
       >,
     ) =>
       safeRecord(input.diagnostics, {
+        actorUserId: request.actorUserId,
         projectId: request.projectId,
         clipId: request.clipId,
         mutationKind: request.intent.kind,
@@ -596,15 +689,94 @@ export function createClipEditorDocumentPersistence(input: {
       };
     },
     mutateDocument,
-    async mutateProjectSelection(_request: {
+    async mutateProjectSelection(request: {
       actorUserId: string;
       projectId: string;
       excludeClipId?: string;
       intent: ClipEditorProjectSelectionIntent;
     }): Promise<{ updated: number }> {
+      const startedAt = now().getTime();
+      const mutationKind =
+        request.intent.kind === "set_caption_preset"
+          ? "project_set_caption_preset" as const
+          : "project_patch_studio_edits" as const;
+      let lastStates: ClipEditorDocumentStoredState[] = [];
+      for (let attempt = 0; attempt < fieldRetryLimit; attempt += 1) {
+        const storedStates = await input.store.readProjectSelection(request);
+        if (!storedStates) persistenceError("project_not_found", "project not found");
+        const states = storedStates.map(canonicalizeStoredState);
+        lastStates = states;
+        const documents = states.flatMap((state) => {
+          const nextDocument = planProjectSelectionDocument(state, request.intent);
+          if (editorDocumentsEqual(state.document, nextDocument)) return [];
+          return [
+            {
+              scope: {
+                actorUserId: request.actorUserId,
+                projectId: request.projectId,
+                clipId: state.clipId,
+              },
+              expectedRevision: state.revision,
+              nextDocument,
+              captureOriginal: state.original ? null : state.document,
+              retirePreview: false,
+              retireEvidence: false,
+              scores: state.scores,
+              cleanupIntents: cleanupIntents(state, false),
+            },
+          ];
+        });
+        const committed = await input.store.commitProjectSelection({
+          scope: request,
+          expectedRevisions: states.map((state) => ({
+            clipId: state.clipId,
+            revision: state.revision,
+          })),
+          documents,
+        });
+        if (committed) {
+          const commitsByClipId = new Map(
+            documents.map((document) => [document.scope.clipId, document]),
+          );
+          for (const state of states) {
+            const document = commitsByClipId.get(state.clipId);
+            safeRecord(input.diagnostics, {
+              actorUserId: request.actorUserId,
+              projectId: request.projectId,
+              clipId: state.clipId,
+              mutationKind,
+              attempt: attempt + 1,
+              baseRevision: null,
+              resultingRevision: state.revision + (document ? 1 : 0),
+              noop: !document,
+              invalidationClasses: document ? ["mutable_renders"] : [],
+              cleanupCount: document?.cleanupIntents.length ?? 0,
+              outcome: "accepted",
+              elapsedMs: now().getTime() - startedAt,
+            });
+          }
+          return { updated: documents.length };
+        }
+      }
+      for (const state of lastStates) {
+        safeRecord(input.diagnostics, {
+          actorUserId: request.actorUserId,
+          projectId: request.projectId,
+          clipId: state.clipId,
+          mutationKind,
+          attempt: fieldRetryLimit,
+          baseRevision: null,
+          resultingRevision: state.revision,
+          noop: false,
+          invalidationClasses: [],
+          cleanupCount: 0,
+          outcome: "conflict",
+          elapsedMs: now().getTime() - startedAt,
+        });
+      }
       persistenceError(
-        "project_selection_not_implemented",
-        "Project-selection production adapters arrive with the presentation-mutation ticket",
+        "retryable_contention",
+        "Clip Editor Documents changed repeatedly; retry the project mutation",
       );
     },
   };
@@ -630,7 +802,48 @@ export function createInMemoryClipEditorDocumentStore(
       },
     ]),
   );
+  const projectOwners = new Map(
+    seeds.map((seed) => [seed.projectId, seed.actorUserId]),
+  );
   let forcedContention = 0;
+
+  const selectedRecords = (scope: ClipEditorProjectSelectionScope) =>
+    [...records.values()]
+      .filter(
+        (record) =>
+          record.state.projectId === scope.projectId &&
+          record.state.actorUserId === scope.actorUserId &&
+          record.state.clipId !== scope.excludeClipId,
+      )
+      .sort((left, right) => left.state.clipId.localeCompare(right.state.clipId));
+
+  const applyCommit = (input: ClipEditorDocumentCommit) => {
+    const record = records.get(input.scope.clipId)!;
+    record.state.document = clone(input.nextDocument);
+    record.state.revision += 1;
+    record.state.status = "edited";
+    if (!record.state.original && input.captureOriginal) {
+      record.state.original = clone(input.captureOriginal);
+    }
+    record.state.mutableRenders = [];
+    record.state.scores = clone(input.scores);
+    if (input.retirePreview) {
+      record.state.preview = { storageKey: null, startSec: null, durationSec: null };
+    }
+    if (input.retireEvidence) {
+      record.state.evidence = { screen: null, automatic: null, split: null };
+    }
+    for (const intent of input.cleanupIntents) {
+      if (
+        !record.cleanupObligations.some(
+          (existing) => existing.objectKey === intent.objectKey,
+        )
+      ) {
+        record.cleanupObligations.push({ id: randomUUID(), ...clone(intent) });
+      }
+    }
+    record.writeCount += 1;
+  };
 
   return {
     async read(scope) {
@@ -660,31 +873,42 @@ export function createInMemoryClipEditorDocumentStore(
         forcedContention -= 1;
         return null;
       }
-      record.state.document = clone(input.nextDocument);
-      record.state.revision += 1;
-      record.state.status = "edited";
-      if (!record.state.original && input.captureOriginal) {
-        record.state.original = clone(input.captureOriginal);
-      }
-      record.state.mutableRenders = [];
-      record.state.scores = clone(input.scores);
-      if (input.retirePreview) {
-        record.state.preview = { storageKey: null, startSec: null, durationSec: null };
-      }
-      if (input.retireEvidence) {
-        record.state.evidence = { screen: null, automatic: null, split: null };
-      }
-      for (const intent of input.cleanupIntents) {
-        if (
-          !record.cleanupObligations.some(
-            (existing) => existing.objectKey === intent.objectKey,
-          )
-        ) {
-          record.cleanupObligations.push({ id: randomUUID(), ...clone(intent) });
-        }
-      }
-      record.writeCount += 1;
+      applyCommit(input);
       return clone(record.state);
+    },
+    async readProjectSelection(scope) {
+      if (projectOwners.get(scope.projectId) !== scope.actorUserId) return null;
+      return selectedRecords(scope).map((record) => clone(record.state));
+    },
+    async commitProjectSelection(input) {
+      if (projectOwners.get(input.scope.projectId) !== input.scope.actorUserId) {
+        return false;
+      }
+      const selected = selectedRecords(input.scope);
+      const expected = [...input.expectedRevisions].sort((left, right) =>
+        left.clipId.localeCompare(right.clipId),
+      );
+      if (
+        selected.length !== expected.length ||
+        selected.some(
+          (record, index) =>
+            record.state.clipId !== expected[index]?.clipId ||
+            record.state.revision !== expected[index]?.revision,
+        ) ||
+        input.documents.some(
+          (documentCommit) =>
+            records.get(documentCommit.scope.clipId)?.state.revision !==
+            documentCommit.expectedRevision,
+        )
+      ) {
+        return false;
+      }
+      if (forcedContention > 0) {
+        forcedContention -= 1;
+        return false;
+      }
+      for (const documentCommit of input.documents) applyCommit(documentCommit);
+      return true;
     },
     inspect(clipId) {
       const record = records.get(clipId);
@@ -731,7 +955,7 @@ function toPrismaJson(value: unknown): Prisma.InputJsonValue {
 }
 
 export function encodeClipEditorDocumentForStorage(
-  value: unknown,
+  value: EditorDocument,
   sourceDurationSec: number | null,
 ): {
   startSec: number;
@@ -758,46 +982,62 @@ type PrismaStoredClip = Awaited<
   ReturnType<ReturnType<typeof requirePrisma>["clip"]["findFirst"]>
 >;
 
-function decodeStoredDocument(row: {
-  startSec: number;
-  endSec: number;
-  captionPreset: unknown;
-  transcriptSlice: unknown;
-  studioEdits: unknown;
-  brollUrl: string | null;
-  deletedRanges: unknown;
-}): EditorDocument {
+function decodeStoredDocument(row: unknown): EditorDocument {
+  if (typeof row !== "object" || row === null || Array.isArray(row)) {
+    persistenceError("corrupt_stored_document", "Stored Clip Editor Document is malformed");
+  }
+  const startSec = Reflect.get(row, "startSec");
+  const endSec = Reflect.get(row, "endSec");
+  const captionPreset = Reflect.get(row, "captionPreset");
+  const transcriptSlice = Reflect.get(row, "transcriptSlice");
+  const studioEdits = Reflect.get(row, "studioEdits");
+  const brollUrl = Reflect.get(row, "brollUrl");
+  const deletedRanges = Reflect.get(row, "deletedRanges");
+  if (
+    typeof startSec !== "number" ||
+    typeof endSec !== "number" ||
+    (brollUrl !== null && typeof brollUrl !== "string")
+  ) {
+    persistenceError("corrupt_stored_document", "Stored Clip Editor Document is malformed");
+  }
   const transcript = updateClipTranscriptSliceSchema.safeParse({
-    transcriptSlice: row.transcriptSlice,
+    transcriptSlice,
   });
   const caption =
-    row.captionPreset === null
+    captionPreset === null
       ? { success: true as const, data: DEFAULT_CAPTION_PRESET }
-      : captionPresetSchema.safeParse(row.captionPreset);
+      : captionPresetSchema.safeParse(captionPreset);
   const studio =
-    row.studioEdits === null
+    studioEdits === null
       ? studioEditsSchema.safeParse(undefined)
-      : studioEditsSchema.safeParse(row.studioEdits);
+      : studioEditsSchema.safeParse(studioEdits);
   const ranges =
-    row.deletedRanges === null
+    deletedRanges === null
       ? { success: true as const, data: [] }
-      : deletedRangesSchema.safeParse(row.deletedRanges);
+      : deletedRangesSchema.safeParse(deletedRanges);
   if (!transcript.success || !caption.success || !studio.success || !ranges.success) {
     persistenceError("corrupt_stored_document", "Stored Clip Editor Document is malformed");
   }
   const decoded = editorDocumentSchema.safeParse({
-    clipStartSec: row.startSec,
-    clipEndSec: row.endSec,
+    clipStartSec: startSec,
+    clipEndSec: endSec,
     captionPreset: caption.data,
     transcriptSlice: transcript.data.transcriptSlice,
     studioEdits: studio.data,
-    brollUrl: row.brollUrl,
+    brollUrl,
     deletedRanges: ranges.data,
   });
   if (!decoded.success) {
     persistenceError("corrupt_stored_document", "Stored Clip Editor Document is malformed");
   }
   return decoded.data;
+}
+
+export function decodeClipEditorDocumentFromStorage(
+  row: unknown,
+  sourceDurationSec: number | null,
+): EditorDocument {
+  return canonicalizeDocument(decodeStoredDocument(row), sourceDurationSec);
 }
 
 function decodePrismaState(
@@ -811,7 +1051,10 @@ function decodePrismaState(
     renders: Array<{ id: string; storageKey: string | null }>;
   },
 ): ClipEditorDocumentStoredState {
-  const document = decodeStoredDocument(row);
+  const document = decodeClipEditorDocumentFromStorage(
+    row,
+    row.project.sourceDurationSeconds,
+  );
   const original =
     row.editorOriginal === null
       ? null
@@ -874,6 +1117,48 @@ const prismaClipInclude = {
   },
 } as const;
 
+function prismaDocumentUpdateData(
+  input: ClipEditorDocumentCommit,
+): Prisma.ClipUpdateManyMutationInput {
+  return {
+    startSec: input.nextDocument.clipStartSec,
+    endSec: input.nextDocument.clipEndSec,
+    captionPreset: toPrismaJson(input.nextDocument.captionPreset),
+    transcriptSlice: toPrismaJson(input.nextDocument.transcriptSlice),
+    studioEdits: toPrismaJson(input.nextDocument.studioEdits),
+    brollUrl: input.nextDocument.brollUrl,
+    deletedRanges: toPrismaJson(input.nextDocument.deletedRanges),
+    editorRevision: { increment: 1 },
+    status: "edited",
+    durationOptimalityScore: input.scores.durationOptimality,
+    tiktokScore: input.scores.tiktok,
+    youtubeScore: input.scores.youtube,
+    instagramScore: input.scores.instagram,
+    ...(input.captureOriginal
+      ? { editorOriginal: toPrismaJson(input.captureOriginal) }
+      : {}),
+    ...(input.retirePreview
+      ? {
+          previewStorageKey: null,
+          previewStartSec: null,
+          previewDurationSec: null,
+        }
+      : {}),
+    ...(input.retireEvidence
+      ? {
+          layoutAnalysis: Prisma.DbNull,
+          autoLayoutAnalysis: Prisma.DbNull,
+          splitLayoutAnalysis: Prisma.DbNull,
+          autoLayoutStatus: "pending" as const,
+          autoLayoutClaimToken: null,
+          autoLayoutLeaseExpiresAt: null,
+        }
+      : {}),
+  };
+}
+
+class ProjectSelectionRevisionChanged extends Error {}
+
 export const prismaClipEditorDocumentStore: ClipEditorDocumentStore = {
   async read(scope) {
     const row = await requirePrisma().clip.findFirst({
@@ -909,41 +1194,7 @@ export const prismaClipEditorDocumentStore: ClipEditorDocumentStore = {
           editorRevision: input.expectedRevision,
           project: { userId: input.scope.actorUserId },
         },
-        data: {
-          startSec: input.nextDocument.clipStartSec,
-          endSec: input.nextDocument.clipEndSec,
-          captionPreset: toPrismaJson(input.nextDocument.captionPreset),
-          transcriptSlice: toPrismaJson(input.nextDocument.transcriptSlice),
-          studioEdits: toPrismaJson(input.nextDocument.studioEdits),
-          brollUrl: input.nextDocument.brollUrl,
-          deletedRanges: toPrismaJson(input.nextDocument.deletedRanges),
-          editorRevision: { increment: 1 },
-          status: "edited",
-          durationOptimalityScore: input.scores.durationOptimality,
-          tiktokScore: input.scores.tiktok,
-          youtubeScore: input.scores.youtube,
-          instagramScore: input.scores.instagram,
-          ...(input.captureOriginal
-            ? { editorOriginal: toPrismaJson(input.captureOriginal) }
-            : {}),
-          ...(input.retirePreview
-            ? {
-                previewStorageKey: null,
-                previewStartSec: null,
-                previewDurationSec: null,
-              }
-            : {}),
-          ...(input.retireEvidence
-            ? {
-                layoutAnalysis: Prisma.DbNull,
-                autoLayoutAnalysis: Prisma.DbNull,
-                splitLayoutAnalysis: Prisma.DbNull,
-                autoLayoutStatus: "pending" as const,
-                autoLayoutClaimToken: null,
-                autoLayoutLeaseExpiresAt: null,
-              }
-            : {}),
-        },
+        data: prismaDocumentUpdateData(input),
       });
       if (guarded.count !== 1) return null;
 
@@ -967,6 +1218,118 @@ export const prismaClipEditorDocumentStore: ClipEditorDocumentStore = {
       });
       return decodePrismaState(row);
     }, { isolationLevel: "ReadCommitted", timeout: 30_000, maxWait: 10_000 });
+  },
+
+  async readProjectSelection(scope) {
+    const project = await requirePrisma().project.findFirst({
+      where: { id: scope.projectId, userId: scope.actorUserId },
+      select: {
+        userId: true,
+        sourceDurationSeconds: true,
+        sourceStorageKey: true,
+        transcript: { select: { utterancesJson: true } },
+        clips: {
+          where: scope.excludeClipId ? { id: { not: scope.excludeClipId } } : {},
+          orderBy: { id: "asc" },
+          include: { renders: prismaClipInclude.renders },
+        },
+      },
+    });
+    if (!project) return null;
+    return project.clips.map((row) =>
+      decodePrismaState({
+        ...row,
+        project: {
+          userId: project.userId,
+          sourceDurationSeconds: project.sourceDurationSeconds,
+          sourceStorageKey: project.sourceStorageKey,
+          transcript: project.transcript,
+        },
+      }),
+    );
+  },
+
+  async commitProjectSelection(input) {
+    const prisma = requirePrisma();
+    try {
+      await prisma.$transaction(
+        async (tx) => {
+          const projectCount = await tx.project.count({
+            where: {
+              id: input.scope.projectId,
+              userId: input.scope.actorUserId,
+            },
+          });
+          if (projectCount !== 1) throw new ProjectSelectionRevisionChanged();
+
+          const excludeClause = input.scope.excludeClipId
+            ? Prisma.sql`AND "id" <> ${input.scope.excludeClipId}::uuid`
+            : Prisma.empty;
+          const locked = await tx.$queryRaw<
+            Array<{ id: string; editorRevision: number }>
+          >(Prisma.sql`
+            SELECT "id", "editorRevision"
+            FROM "Clip"
+            WHERE "projectId" = ${input.scope.projectId}::uuid
+            ${excludeClause}
+            ORDER BY "id"
+            FOR UPDATE
+          `);
+          const expected = [...input.expectedRevisions].sort((left, right) =>
+            left.clipId.localeCompare(right.clipId),
+          );
+          if (
+            locked.length !== expected.length ||
+            locked.some(
+              (row, index) =>
+                row.id !== expected[index]?.clipId ||
+                row.editorRevision !== expected[index]?.revision,
+            )
+          ) {
+            throw new ProjectSelectionRevisionChanged();
+          }
+
+          const documents = [...input.documents].sort((left, right) =>
+            left.scope.clipId.localeCompare(right.scope.clipId),
+          );
+          if (documents.length === 0) return;
+          const clipIds = documents.map((document) => document.scope.clipId);
+          await tx.clipRender.deleteMany({
+            where: { clipId: { in: clipIds }, exportVariantId: null },
+          });
+          for (const document of documents) {
+            await tx.clip.update({
+              where: { id: document.scope.clipId },
+              data: prismaDocumentUpdateData(document),
+            });
+          }
+          const cleanup = documents.flatMap((document) =>
+            document.cleanupIntents.map((intent) => ({
+              projectId: document.scope.projectId,
+              clipId: document.scope.clipId,
+              cleanupClass: intent.cleanupClass,
+              objectKey: intent.objectKey,
+            })),
+          );
+          if (cleanup.length > 0) {
+            await tx.editorMediaCleanupObligation.createMany({
+              data: cleanup,
+              skipDuplicates: true,
+            });
+          }
+        },
+        { isolationLevel: "Serializable", timeout: 30_000, maxWait: 10_000 },
+      );
+      return true;
+    } catch (error) {
+      if (
+        error instanceof ProjectSelectionRevisionChanged ||
+        (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2034")
+      ) {
+        return false;
+      }
+      throw error;
+    }
   },
 };
 

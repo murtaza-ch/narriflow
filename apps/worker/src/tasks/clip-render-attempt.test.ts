@@ -32,7 +32,7 @@ function frozenRenderingState(
       overrides.sourceStorageKey === undefined
         ? "projects/project/source/input.mp4"
         : overrides.sourceStorageKey,
-    sourceDurationSeconds: 5,
+    sourceDurationSeconds: 10,
     userId: "user",
     workspaceId: null,
     ownerTier: overrides.ownerTier ?? "pro",
@@ -114,7 +114,7 @@ function createOrdinaryTracer(input: {
       id: "clip-ordinary",
       index: 0,
       startSec: 0,
-      endSec: 5,
+      endSec: 10,
       llmModel: "test",
       transcriptSlice: [],
       deletedRanges: null,
@@ -183,7 +183,7 @@ function createOrdinaryTracer(input: {
       project: {
         title: "Ordinary tracer",
         sourceStorageKey: `projects/${attempt.projectId}/source/input.mp3`,
-        sourceDurationSeconds: 5,
+        sourceDurationSeconds: 10,
         userId: "user",
         workspaceId: null,
       },
@@ -223,7 +223,7 @@ function createOrdinaryTracer(input: {
           if (input.failure === "state_load") throw injectedError;
           return {
             sourceStorageKey: `projects/${attempt.projectId}/source/input.mp3`,
-            sourceDurationSeconds: 5,
+            sourceDurationSeconds: 10,
             userId: "user",
             workspaceId: null,
             ownerTier: "pro" as const,
@@ -484,7 +484,7 @@ function createUploadQueueTracer(input: {
       id: `clip-${index}`,
       index,
       startSec: 0,
-      endSec: 5,
+      endSec: 10,
       llmModel: "test",
       transcriptSlice: [],
       deletedRanges: null,
@@ -516,7 +516,7 @@ function createUploadQueueTracer(input: {
       project: {
         title: "Upload queue tracer",
         sourceStorageKey: `projects/${attempt.projectId}/source/input.mp3`,
-        sourceDurationSeconds: 5,
+        sourceDurationSeconds: 10,
         userId: "user",
         workspaceId: null,
       },
@@ -727,7 +727,7 @@ test("ClipRenderAttempt discards an uploaded object when cancellation wins befor
       id: "clip-1",
       index: 0,
       startSec: 0,
-      endSec: 5,
+      endSec: 10,
       llmModel: "test",
       transcriptSlice: [],
       deletedRanges: null,
@@ -745,7 +745,7 @@ test("ClipRenderAttempt discards an uploaded object when cancellation wins befor
       project: {
         title: "Post-upload cancellation",
         sourceStorageKey: `projects/${attempt.projectId}/source/input.mp3`,
-        sourceDurationSeconds: 5,
+        sourceDurationSeconds: 10,
         userId: "user",
         workspaceId: null,
       },
@@ -1082,7 +1082,7 @@ test("ClipRenderAttempt cancellation drains to cleanup without persisting outcom
   expect(settlementCalls).toBe(0);
 });
 
-test("ClipRenderAttempt owns a fully deleted variant before permanently failing it", async () => {
+test("ClipRenderAttempt permanently rejects a stored document with an empty timeline", async () => {
   const attempt: ClipRenderingWorkflowAttempt = {
     workflowRunId: "10000000-0000-0000-0000-000000000011",
     projectId: "20000000-0000-0000-0000-000000000012",
@@ -1102,10 +1102,10 @@ test("ClipRenderAttempt owns a fully deleted variant before permanently failing 
       id: "clip-empty-cut",
       index: 0,
       startSec: 0,
-      endSec: 5,
+      endSec: 10,
       llmModel: "test",
       transcriptSlice: [],
-      deletedRanges: [{ startSec: 0, endSec: 5 }],
+      deletedRanges: [{ startSec: 0, endSec: 10 }],
       captionPreset: null,
       studioEdits: null,
       brollCues: null,
@@ -1129,7 +1129,7 @@ test("ClipRenderAttempt owns a fully deleted variant before permanently failing 
       project: {
         title: "Fully deleted clip",
         sourceStorageKey: `projects/${attempt.projectId}/source/input.mp4`,
-        sourceDurationSeconds: 5,
+        sourceDurationSeconds: 10,
         userId: "user",
         workspaceId: null,
       },
@@ -1197,7 +1197,7 @@ test("ClipRenderAttempt owns a fully deleted variant before permanently failing 
   ).resolves.toEqual(expected);
   expect(mutations).toEqual([
     "mark:variant-empty-cut",
-    "fail:clip_cut_plan_empty:permanent",
+    "fail:editor_document_empty_timeline:permanent",
     "settle",
     "cleanup",
   ]);

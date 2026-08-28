@@ -11,6 +11,9 @@ import {
   ClipEditorRevisionConflictError,
   createClipEditorDocumentPersistence,
   createInMemoryClipEditorDocumentStore,
+  decodeClipEditorDocumentFromStorage,
+  encodeClipEditorDocumentForStorage,
+  type ClipEditorDocumentDiagnostics,
   type ClipEditorDocumentStoredState,
 } from "./clip-editor-document-persistence";
 
@@ -83,6 +86,21 @@ function setup(state = stored()) {
 }
 
 describe("Clip Editor Document Persistence", () => {
+  test("the storage codec round-trips canonical creation values and owns null defaults", () => {
+    const encoded = encodeClipEditorDocumentForStorage(document(), 300);
+    expect(
+      decodeClipEditorDocumentFromStorage(
+        {
+          ...encoded,
+          captionPreset: null,
+          studioEdits: null,
+          deletedRanges: null,
+        },
+        300,
+      ),
+    ).toEqual(document());
+  });
+
   test("canonical no-op performs no write or invalidation", async () => {
     const { persistence, scope, store } = setup();
     const result = await persistence.mutateDocument({
@@ -241,6 +259,263 @@ describe("Clip Editor Document Persistence", () => {
     expect(store.inspect(scope.clipId)!.state.scores).toEqual(stored().scores);
   });
 
+  test("caption preset intent applies to the latest document and retires only mutable renders", async () => {
+    const { persistence, scope, store } = setup();
+    const captionPreset = {
+      ...DEFAULT_CAPTION_PRESET,
+      fontName: "Bebas Neue",
+      primaryColor: "#123456",
+    };
+
+    const result = await persistence.mutateDocument({
+      ...scope,
+      intent: { kind: "set_caption_preset", captionPreset },
+    });
+
+    expect(result).toMatchObject({
+      revision: 4,
+      noop: false,
+      document: { captionPreset },
+    });
+    expect(store.inspect(scope.clipId)).toMatchObject({
+      writeCount: 1,
+      state: {
+        original: document(),
+        status: "edited",
+        preview: stored().preview,
+        evidence: stored().evidence,
+        scores: stored().scores,
+        mutableRenders: [],
+      },
+      cleanupObligations: [
+        {
+          cleanupClass: "mutable_render",
+          objectKey: "projects/project-1/renders/current.mp4",
+        },
+      ],
+    });
+  });
+
+  test("null caption intent resolves to the canonical default as a zero-write no-op", async () => {
+    const { persistence, scope, store } = setup();
+
+    const result = await persistence.mutateDocument({
+      ...scope,
+      intent: { kind: "set_caption_preset", captionPreset: null },
+    });
+
+    expect(result).toMatchObject({ revision: 3, noop: true });
+    expect(result.document.captionPreset).toEqual(DEFAULT_CAPTION_PRESET);
+    expect(store.inspect(scope.clipId)).toMatchObject({
+      writeCount: 0,
+      cleanupObligations: [],
+      state: { original: null, mutableRenders: stored().mutableRenders },
+    });
+  });
+
+  test("B-roll intent uses shared media safety and preserves unrelated document fields", async () => {
+    const current = document({
+      captionPreset: { ...DEFAULT_CAPTION_PRESET, fontName: "Impact" },
+    });
+    const { persistence, scope, store } = setup(stored({ document: current }));
+
+    const result = await persistence.mutateDocument({
+      ...scope,
+      intent: {
+        kind: "set_broll_url",
+        brollUrl: "https://cdn.example.com/cutaway.mp4",
+      },
+    });
+
+    expect(result.document).toMatchObject({
+      brollUrl: "https://cdn.example.com/cutaway.mp4",
+      captionPreset: current.captionPreset,
+      studioEdits: current.studioEdits,
+    });
+    await expect(
+      persistence.mutateDocument({
+        ...scope,
+        intent: {
+          kind: "set_broll_url",
+          brollUrl: "http://127.0.0.1/private.mp4",
+        },
+      }),
+    ).rejects.toThrow("unsafe_url");
+    expect(store.inspect(scope.clipId)?.writeCount).toBe(1);
+  });
+
+  test("Studio edits replace only that document field and deep-equivalent retries are no-ops", async () => {
+    const { persistence, scope, store } = setup();
+    const studioEdits = studioEditsSchema.parse({
+      transition: { type: "fade", durationSec: 0.8 },
+      sourceAudio: { volume: 72, muted: false },
+    });
+
+    const first = await persistence.mutateDocument({
+      ...scope,
+      intent: { kind: "set_studio_edits", studioEdits },
+    });
+    const retry = await persistence.mutateDocument({
+      ...scope,
+      intent: {
+        kind: "set_studio_edits",
+        studioEdits: studioEditsSchema.parse(structuredClone(studioEdits)),
+      },
+    });
+
+    expect(first).toMatchObject({ revision: 4, noop: false });
+    expect(first.document).toMatchObject({
+      captionPreset: DEFAULT_CAPTION_PRESET,
+      brollUrl: null,
+      studioEdits,
+    });
+    expect(retry).toMatchObject({ revision: 4, noop: true });
+    expect(store.inspect(scope.clipId)?.writeCount).toBe(1);
+  });
+
+  test("project selection applies one grouped layout intent atomically and excludes the open clip", async () => {
+    const targetStudioEdits = studioEditsSchema.parse({
+      background: { mode: "off" },
+      framing: { mode: "center" },
+    });
+    const open = stored({ clipId: "clip-open" });
+    const matching = stored({
+      clipId: "clip-matching",
+      document: document({ studioEdits: targetStudioEdits }),
+    });
+    const changedDocument = document({
+      brollUrl: "https://cdn.example.com/keep.mp4",
+      studioEdits: studioEditsSchema.parse({
+        background: { mode: "color", color: "#112233" },
+        framing: { mode: "auto" },
+        sourceAudio: { volume: 61, muted: false },
+      }),
+    });
+    const changed = stored({ clipId: "clip-changed", document: changedDocument });
+    const store = createInMemoryClipEditorDocumentStore([open, matching, changed]);
+    const persistence = createClipEditorDocumentPersistence({ store });
+
+    const result = await persistence.mutateProjectSelection({
+      actorUserId: open.actorUserId,
+      projectId: open.projectId,
+      excludeClipId: open.clipId,
+      intent: {
+        kind: "patch_studio_edits",
+        patches: [
+          { background: targetStudioEdits.background },
+          { framing: targetStudioEdits.framing },
+        ],
+      },
+    });
+
+    expect(result).toEqual({ updated: 1 });
+    expect(store.inspect(open.clipId)).toMatchObject({ writeCount: 0 });
+    expect(store.inspect(matching.clipId)).toMatchObject({
+      writeCount: 0,
+      state: { revision: 3, original: null, mutableRenders: matching.mutableRenders },
+    });
+    expect(store.inspect(changed.clipId)).toMatchObject({
+      writeCount: 1,
+      state: {
+        revision: 4,
+        original: changedDocument,
+        document: {
+          brollUrl: changedDocument.brollUrl,
+          captionPreset: changedDocument.captionPreset,
+          transcriptSlice: changedDocument.transcriptSlice,
+          studioEdits: {
+            background: targetStudioEdits.background,
+            framing: targetStudioEdits.framing,
+            sourceAudio: changedDocument.studioEdits.sourceAudio,
+          },
+        },
+        preview: changed.preview,
+        evidence: changed.evidence,
+        scores: changed.scores,
+        mutableRenders: [],
+      },
+      cleanupObligations: [
+        {
+          cleanupClass: "mutable_render",
+          objectKey: "projects/project-1/renders/current.mp4",
+        },
+      ],
+    });
+  });
+
+  test("project caption selection skips matching targets and changes each other clip once", async () => {
+    const captionPreset = {
+      ...DEFAULT_CAPTION_PRESET,
+      fontName: "Impact",
+      primaryColor: "#ABCDEF",
+    };
+    const matching = stored({
+      clipId: "clip-matching",
+      document: document({ captionPreset }),
+    });
+    const changed = stored({ clipId: "clip-changed" });
+    const store = createInMemoryClipEditorDocumentStore([matching, changed]);
+    const persistence = createClipEditorDocumentPersistence({ store });
+
+    await expect(
+      persistence.mutateProjectSelection({
+        actorUserId: matching.actorUserId,
+        projectId: matching.projectId,
+        intent: { kind: "set_caption_preset", captionPreset },
+      }),
+    ).resolves.toEqual({ updated: 1 });
+    expect(store.inspect(matching.clipId)).toMatchObject({ writeCount: 0 });
+    expect(store.inspect(changed.clipId)).toMatchObject({
+      writeCount: 1,
+      state: { revision: 4, document: { captionPreset }, mutableRenders: [] },
+    });
+  });
+
+  test("a malformed project target aborts before any target changes", async () => {
+    const valid = stored({ clipId: "clip-valid" });
+    const malformed = stored({ clipId: "clip-malformed" });
+    malformed.document = {
+      ...malformed.document,
+      studioEdits: { textLayers: "bad" },
+    } as never;
+    const store = createInMemoryClipEditorDocumentStore([valid, malformed]);
+    const persistence = createClipEditorDocumentPersistence({ store });
+    const before = store.inspect(valid.clipId);
+
+    await expect(
+      persistence.mutateProjectSelection({
+        actorUserId: valid.actorUserId,
+        projectId: valid.projectId,
+        intent: {
+          kind: "set_caption_preset",
+          captionPreset: { ...DEFAULT_CAPTION_PRESET, fontName: "Impact" },
+        },
+      }),
+    ).rejects.toMatchObject({ code: "corrupt_stored_document" });
+    expect(store.inspect(valid.clipId)).toEqual(before);
+  });
+
+  test("project contention exhausts without a partial mutation", async () => {
+    const first = stored({ clipId: "clip-first" });
+    const second = stored({ clipId: "clip-second" });
+    const store = createInMemoryClipEditorDocumentStore([first, second]);
+    store.forceContention(3);
+    const persistence = createClipEditorDocumentPersistence({ store });
+
+    await expect(
+      persistence.mutateProjectSelection({
+        actorUserId: first.actorUserId,
+        projectId: first.projectId,
+        intent: {
+          kind: "set_caption_preset",
+          captionPreset: { ...DEFAULT_CAPTION_PRESET, fontName: "Impact" },
+        },
+      }),
+    ).rejects.toMatchObject({ code: "retryable_contention" });
+    expect(store.inspect(first.clipId)).toMatchObject({ writeCount: 0 });
+    expect(store.inspect(second.clipId)).toMatchObject({ writeCount: 0 });
+  });
+
   test("bounded field retries surface typed retryable contention", async () => {
     const { persistence, scope, store } = setup();
     store.forceContention(3);
@@ -336,6 +611,61 @@ describe("Clip Editor Document Persistence", () => {
     expect(snapshot.cleanupObligations.map((item) => item.cleanupClass)).toEqual([
       "mutable_render",
     ]);
+  });
+
+  test.each([
+    {
+      name: "transcript",
+      intent: {
+        kind: "set_transcript" as const,
+        transcriptSlice: [utterance("changed transcript words")],
+      },
+    },
+    {
+      name: "caption",
+      intent: {
+        kind: "set_caption_preset" as const,
+        captionPreset: { ...DEFAULT_CAPTION_PRESET, fontName: "Impact" },
+      },
+    },
+    {
+      name: "B-roll",
+      intent: {
+        kind: "set_broll_url" as const,
+        brollUrl: "https://cdn.example.com/matrix.mp4",
+      },
+    },
+    {
+      name: "Studio visual",
+      intent: {
+        kind: "set_studio_edits" as const,
+        studioEdits: studioEditsSchema.parse({ framing: { mode: "center" } }),
+      },
+    },
+    {
+      name: "Studio audio",
+      intent: {
+        kind: "set_studio_edits" as const,
+        studioEdits: studioEditsSchema.parse({
+          sourceAudio: { volume: 40, muted: false },
+        }),
+      },
+    },
+  ])("$name changes retire renders while retaining window-bound work", async ({ intent }) => {
+    const seed = stored();
+    const { persistence, scope, store } = setup(seed);
+
+    await persistence.mutateDocument({ ...scope, intent });
+
+    expect(store.inspect(scope.clipId)).toMatchObject({
+      state: {
+        mutableRenders: [],
+        preview: seed.preview,
+        evidence: seed.evidence,
+        scores: seed.scores,
+      },
+      cleanupObligations: [{ cleanupClass: "mutable_render" }],
+    });
   });
 
   test("same-window Reset retains eligible preview and evidence", async () => {
@@ -561,5 +891,47 @@ describe("Clip Editor Document Persistence", () => {
       }),
     ).rejects.toThrow("injected transaction failure");
     expect(backing.inspect(seed.clipId)).toEqual(before);
+  });
+
+  test("mutation diagnostics expose settlement metadata without document or storage contents", async () => {
+    const seed = stored();
+    const store = createInMemoryClipEditorDocumentStore([seed]);
+    const events: Array<Parameters<ClipEditorDocumentDiagnostics["record"]>[0]> = [];
+    const persistence = createClipEditorDocumentPersistence({
+      store,
+      diagnostics: { record: (event) => events.push(event) },
+      now: () => new Date("2026-08-29T00:00:00.000Z"),
+    });
+
+    await persistence.mutateDocument({
+      actorUserId: seed.actorUserId,
+      projectId: seed.projectId,
+      clipId: seed.clipId,
+      intent: {
+        kind: "set_broll_url",
+        brollUrl: "https://cdn.example.com/private-object-key.mp4",
+      },
+    });
+
+    expect(events).toEqual([
+      {
+        actorUserId: seed.actorUserId,
+        projectId: seed.projectId,
+        clipId: seed.clipId,
+        mutationKind: "set_broll_url",
+        attempt: 1,
+        baseRevision: null,
+        resultingRevision: 4,
+        noop: false,
+        invalidationClasses: ["mutable_renders"],
+        cleanupCount: 1,
+        outcome: "accepted",
+        elapsedMs: 0,
+      },
+    ]);
+    const serialized = JSON.stringify(events);
+    expect(serialized).not.toContain("private-object-key");
+    expect(serialized).not.toContain("current.mp4");
+    expect(serialized).not.toContain("captionPreset");
   });
 });

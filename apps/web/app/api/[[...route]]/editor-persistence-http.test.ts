@@ -5,7 +5,9 @@ import { clipEditorPersistenceHttpError } from "./editor-persistence-http";
 describe("Clip Editor Document Persistence HTTP mapping", () => {
   test.each([
     ["clip_not_found", 404, "clip_not_found", false],
+    ["project_not_found", 404, "project_not_found", false],
     ["corrupt_stored_document", 409, "editor_document_corrupt", false],
+    ["editor_document_invalid", 422, "editor_document_invalid", false],
     ["retryable_contention", 409, "retryable_contention", true],
     ["editor_boundaries_invalid", 422, "editor_boundaries_invalid", false],
     ["editor_document_empty_timeline", 422, "editor_document_empty_timeline", false],

@@ -40,16 +40,10 @@ export function derivePeaksStorageKey(previewStorageKey: string): string {
 }
 
 /**
- * Deletion-path variant of `derivePeaksStorageKey`: every deletion planner
- * (planClipStorageDeletion, saveClipEditorDocument's staleRenderKeys,
- * resetClipEditorToOriginal, updateClipBoundaries) works off whatever
- * `previewStorageKey` happens to be persisted, including legacy/malformed
- * keys written before this convention existed or by code paths that don't
- * conform to it. Those deletion call sites must never throw — a delete is a
- * best-effort cleanup, not a place to validate the key shape — so this
- * returns `null` instead of throwing when derivation isn't possible, and
- * `null` filters out of the eventual delete list exactly like the "no
- * preview yet" case already does everywhere else.
+ * Deletion-path variant of `derivePeaksStorageKey`: storage deletion and the
+ * Clip Editor Document cleanup planner work from the persisted preview key.
+ * Cleanup planning must never throw over an unusable key, so this returns
+ * `null` when derivation is impossible; callers simply omit the peaks object.
  */
 export function tryDerivePeaksStorageKey(
   previewStorageKey: string | null,

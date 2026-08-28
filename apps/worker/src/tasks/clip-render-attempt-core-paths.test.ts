@@ -86,7 +86,7 @@ function clipFixture(input: {
     id: "clip-core-paths",
     index: 0,
     startSec: 2,
-    endSec: 7,
+    endSec: 12,
     llmModel: "test",
     transcriptSlice: [],
     deletedRanges: null,
@@ -895,7 +895,7 @@ function baselineCommandArgs(
     sourcePath: "<source>",
     outputs: topology === "single-video" ? [outputs[0]!] : outputs,
     startSec: 2,
-    endSec: 7,
+    endSec: 12,
     probe: deterministicProbe,
     watermark: false,
   });
@@ -2173,15 +2173,15 @@ test("ClipRenderAttempt reuses matching Screen v2 evidence without rerunning or 
         inputFingerprint: screenLayoutInputFingerprint({
           sourceIdentity,
           clipStartSec: 2,
-          clipEndSec: 7,
+          clipEndSec: 12,
           deletedRanges: [],
           engineVersion: engine,
         }),
         analyzedAtISO: "2026-08-26T00:00:00.000Z",
         sourceStartSec: 2,
-        sourceDurationSec: 5,
+        sourceDurationSec: 10,
         clipStartSec: 2,
-        clipEndSec: 7,
+        clipEndSec: 12,
         movingPxFrac: 0.04,
         insufficientSamples: false,
         pipRect: qualifyingPipCandidate,
@@ -2190,7 +2190,7 @@ test("ClipRenderAttempt reuses matching Screen v2 evidence without rerunning or 
         sourceHeight: 1080,
         deletedRanges: [],
         faceBandSegments: [
-          { startSec: 0, endSec: 5, layout: "single", cxNorm: 0.88 },
+          { startSec: 0, endSec: 10, layout: "single", cxNorm: 0.88 },
         ],
       },
     },
@@ -2281,7 +2281,7 @@ test("ClipRenderAttempt applies a deterministic split-layout analysis", async ()
     topology: "single-video",
     clipOverrides: { studioEdits: { framing: { mode: "split" } } },
     configOverrides: { WORKER_SPLIT: "1" },
-    multiFaceAnalysisSamples: Array.from({ length: 12 }, (_, index) => ({
+    multiFaceAnalysisSamples: Array.from({ length: 40 }, (_, index) => ({
       t: index * 0.25,
       faces: [face(0.3), face(0.7)],
     })),
@@ -2321,15 +2321,15 @@ test("ClipRenderAttempt reuses matching durable Split evidence without rerunning
         sourceIdentity,
         analyzedAtISO: "2026-08-26T00:00:00.000Z",
         clipStartSec: 2,
-        clipEndSec: 7,
+        clipEndSec: 12,
         deletedRanges: [],
-        editedDurationSec: 5,
+        editedDurationSec: 10,
         sourceWidth: 1920,
         sourceHeight: 1080,
         segments: [
           {
             startSec: 0,
-            endSec: 5,
+            endSec: 10,
             layout: "two-up",
             topCxNorm: 0.3,
             bottomCxNorm: 0.7,
@@ -2338,7 +2338,7 @@ test("ClipRenderAttempt reuses matching durable Split evidence without rerunning
         noSplitSegments: [
           {
             startSec: 0,
-            endSec: 5,
+            endSec: 10,
             layout: "single",
             cxNorm: 0.3,
           },
@@ -2538,7 +2538,7 @@ test("ClipRenderAttempt reuses matching durable Automatic evidence without rerun
   );
   const segment = {
     startSec: 0,
-    endSec: 5,
+    endSec: 10,
     layout: "single" as const,
     cxNorm: 0.46,
   };
@@ -2551,9 +2551,9 @@ test("ClipRenderAttempt reuses matching durable Automatic evidence without rerun
         sourceIdentity,
         analyzedAtISO: "2026-08-26T00:00:00.000Z",
         clipStartSec: 2,
-        clipEndSec: 7,
+        clipEndSec: 12,
         deletedRanges: [],
-        editedDurationSec: 5,
+        editedDurationSec: 10,
         sourceWidth: 1920,
         sourceHeight: 1080,
         segments: [segment],
@@ -2597,7 +2597,7 @@ test("ClipRenderAttempt reuses matching durable Automatic evidence without rerun
   });
 });
 
-test("ClipRenderAttempt applies deterministic shot-layout analysis", async () => {
+test("ClipRenderAttempt rejects shot-layout evidence truncated before the canonical window", async () => {
   const face = (cx: number) => ({
     cx,
     cy: 0.3,
@@ -2623,11 +2623,11 @@ test("ClipRenderAttempt applies deterministic shot-layout analysis", async () =>
     }),
   ).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
   expect(harness.diagnostics).toContainEqual({
-    message: "clip_layout_plan_applied",
+    message: "clip_layout_plan_fallback",
     context: expect.objectContaining({
       phase: "media_analysis",
       analysisMode: "layout_engine",
-      selectedMode: "shot_layout",
+      failureCode: "no_trustworthy_faces",
       durationMs: expect.any(Number),
     }),
   });
@@ -3243,7 +3243,7 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
       );
     }
     for (const fixture of [
-      { path: longAudioSourcePath, frequency: 440, duration: 3 },
+      { path: longAudioSourcePath, frequency: 440, duration: 10 },
       { path: musicSourcePath, frequency: 880, duration: 0.4 },
       { path: sfxSourcePath, frequency: 1760, duration: 0.2 },
     ]) {
@@ -3333,7 +3333,7 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
       const harness = createCoreRenderPathTracer({
         topology: "studio-per-output",
         ownerTier: "free",
-        clipWindow: { startSec: 0, endSec: 0.8 },
+        clipWindow: { startSec: 0, endSec: 10 },
         variants: [
           {
             id: "variant-visual-stack",
@@ -3423,7 +3423,7 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
       let frameHashes: string[] = [];
       const harness = createCoreRenderPathTracer({
         topology: "audiogram",
-        clipWindow: { startSec: 0, endSec: 0.8 },
+        clipWindow: { startSec: 0, endSec: 10 },
         variants: [
           {
             id: "variant-audiogram-plan",
@@ -3517,7 +3517,7 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
       let windows: Record<string, number> = {};
       const harness = createCoreRenderPathTracer({
         topology: "audiogram",
-        clipWindow: { startSec: 0, endSec: 3 },
+        clipWindow: { startSec: 0, endSec: 10 },
         variants: [
           {
             id: "variant-audio-schedule",
@@ -3583,7 +3583,7 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
               duckedMusic: meanVolumeDb(filePath, 1.2),
               sfx: meanVolumeDb(filePath, 1.54),
               afterSfx: meanVolumeDb(filePath, 1.82),
-              fadeOut: meanVolumeDb(filePath, 2.86),
+              fadeOut: meanVolumeDb(filePath, 9.5),
             };
           },
         },
@@ -3661,24 +3661,24 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
 
       const frozenClip = clipFixture({
         hasStudioEdit: false,
-        overrides: { startSec: 0.2, endSec: 0.6 },
+        overrides: { startSec: 0, endSec: 10 },
       });
       const exportResult = await renderOne({
         id: "variant-export",
         ownerTier: "free",
-        liveWindow: { startSec: 0, endSec: 0.2 },
+        liveWindow: { startSec: 0.1, endSec: 10.1 },
         exportVariant: { exportId: "export-frozen", watermark: false },
         clipSnapshot: frozenClip,
       });
       const ordinaryProResult = await renderOne({
         id: "variant-ordinary-pro",
         ownerTier: "pro",
-        liveWindow: { startSec: 0.2, endSec: 0.6 },
+        liveWindow: { startSec: 0, endSec: 10 },
       });
       const ordinaryFreeResult = await renderOne({
         id: "variant-ordinary-free",
         ownerTier: "free",
-        liveWindow: { startSec: 0.2, endSec: 0.6 },
+        liveWindow: { startSec: 0, endSec: 10 },
       });
 
       expect({ ...exportResult.probe, variantId: "same" }).toEqual({
@@ -3689,7 +3689,7 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
       expect(exportResult.hash).not.toBe(ordinaryFreeResult.hash);
       expect(exportResult.probe).toMatchObject({ width: 720, height: 1280 });
       expect(exportResult.probe.durationSec).toBeGreaterThanOrEqual(0.35);
-      expect(exportResult.probe.durationSec).toBeLessThanOrEqual(0.5);
+      expect(exportResult.probe.durationSec).toBeLessThanOrEqual(0.9);
     },
     30_000,
   );
@@ -3778,7 +3778,7 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
         let result: RenderedMediaProbe | undefined;
         const harness = createCoreRenderPathTracer({
           topology: "single-video",
-          clipWindow: { startSec: 0, endSec: 0.4 },
+          clipWindow: { startSec: 0, endSec: 10 },
           variants: [
             {
               id: "variant-optional-fallback",
@@ -3844,8 +3844,8 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
       },
       clipOverrides: { studioEdits: { framing: { mode: "split" } } },
       faceAnalysisSamples: undefined,
-      multiFaceAnalysisSamples: Array.from({ length: 8 }, (_, index) => ({
-        t: index * 0.04,
+      multiFaceAnalysisSamples: Array.from({ length: 40 }, (_, index) => ({
+        t: index * 0.25,
         faces: [
           { cx: 0.3, cy: 0.3, w: 0.1, h: 0.2, score: 0.9 },
           { cx: 0.7, cy: 0.3, w: 0.1, h: 0.2, score: 0.9 },
@@ -3855,8 +3855,8 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
       resolution: "720p" as const,
     },
     {
-      label: "shot-layout engine",
-      diagnostic: "clip_layout_plan_applied",
+      label: "truncated shot-layout evidence",
+      diagnostic: "clip_layout_plan_fallback",
       configOverrides: {
         WORKER_LAYOUT_ENGINE: "1",
       },
@@ -3879,7 +3879,7 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
         let result: RenderedMediaProbe | undefined;
         const harness = createCoreRenderPathTracer({
           topology: "single-video",
-          clipWindow: { startSec: 0, endSec: 0.4 },
+          clipWindow: { startSec: 0, endSec: 10 },
           variants: [
             {
               id: `variant-${analysisCase.label}`,
@@ -3955,7 +3955,7 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
         });
         const harness = createCoreRenderPathTracer({
           topology: "studio-per-output",
-          clipWindow: { startSec: 0, endSec: 0.4 },
+          clipWindow: { startSec: 0, endSec: 10 },
           variants,
           clipOverrides: { studioEdits: { framing: { mode: plannedMode } } },
           configOverrides:
@@ -4034,7 +4034,7 @@ describe("ClipRenderAttempt real-media plan fixtures", () => {
         let result: RenderedMediaProbe | undefined;
         const harness = createCoreRenderPathTracer({
           topology: "single-video",
-          clipWindow: { startSec: 0, endSec: 0.4 },
+          clipWindow: { startSec: 0, endSec: 10 },
           variants: [
             {
               id: `variant-source-${sourceCase.label}`,

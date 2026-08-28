@@ -760,7 +760,15 @@ export function CaptionsPanel() {
         },
       );
       if (!res.ok) throw new Error("apply failed");
+      const { updated } = (await res.json()) as { updated: number };
       setApplyState("applied");
+      toaster.create({
+        type: "success",
+        title:
+          updated > 0
+            ? `Applied to ${updated} other clip${updated === 1 ? "" : "s"}`
+            : "Every other clip already matches",
+      });
       setTimeout(() => setApplyState("idle"), 2000);
     } catch {
       setApplyState("error");

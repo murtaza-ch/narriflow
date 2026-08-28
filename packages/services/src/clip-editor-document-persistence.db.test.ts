@@ -8,9 +8,10 @@ import {
   test,
 } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
-import { Prisma, PrismaClient } from "@prisma/client";
+import { PrismaClient } from "@prisma/client";
 import {
   DEFAULT_CAPTION_PRESET,
+  captionPresetSchema,
   editorDocumentSchema,
   studioEditsSchema,
   type EditorDocument,
@@ -19,6 +20,7 @@ import { Pool } from "pg";
 import {
   ClipEditorRevisionConflictError,
   createClipEditorDocumentPersistence,
+  encodeClipEditorDocumentForStorage,
   prismaClipEditorDocumentStore,
   type ClipEditorDocumentStore,
 } from "./clip-editor-document-persistence";
@@ -117,20 +119,19 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
       },
     });
     const document = editorDocument();
+    const storedDocument = encodeClipEditorDocumentForStorage(
+      document,
+      project.sourceDurationSeconds,
+    );
     const clip = await prisma.clip.create({
       data: {
         projectId: project.id,
         workflowRunId: workflowRun.id,
         index: 0,
-        startSec: document.clipStartSec,
-        endSec: document.clipEndSec,
+        ...storedDocument,
         hookText: "Persistence fixture",
         reasoning: "Fixture",
         category: "hook",
-        transcriptSlice: document.transcriptSlice as Prisma.InputJsonValue,
-        captionPreset: document.captionPreset as Prisma.InputJsonValue,
-        studioEdits: document.studioEdits as Prisma.InputJsonValue,
-        deletedRanges: document.deletedRanges as Prisma.InputJsonValue,
         viralityScore: 70,
         hookStrengthScore: 70,
         emotionalIntensityScore: 70,
@@ -157,7 +158,54 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
         storageKey: `projects/${project.id}/renders/current.mp4`,
       },
     });
-    return { user, project, clip, document };
+    return { user, project, workflowRun, clip, document };
+  }
+
+  async function addClip(
+    fixtureState: Awaited<ReturnType<typeof fixture>>,
+    index: number,
+    document: EditorDocument,
+  ) {
+    const storedDocument = encodeClipEditorDocumentForStorage(
+      document,
+      fixtureState.project.sourceDurationSeconds,
+    );
+    const clip = await prisma.clip.create({
+      data: {
+        projectId: fixtureState.project.id,
+        workflowRunId: fixtureState.workflowRun.id,
+        index,
+        ...storedDocument,
+        hookText: `Persistence fixture ${index}`,
+        reasoning: "Fixture",
+        category: "hook",
+        viralityScore: 70,
+        hookStrengthScore: 70,
+        emotionalIntensityScore: 70,
+        pacingScore: 70,
+        durationOptimalityScore: 70,
+        tiktokScore: 70,
+        youtubeScore: 70,
+        instagramScore: 70,
+        llmProvider: "test",
+        llmModel: "test",
+        previewStorageKey: `projects/${fixtureState.project.id}/clips/preview-${index}.mp4`,
+        previewStartSec: 6,
+        previewDurationSec: 28,
+        layoutAnalysis: { version: 1 },
+        autoLayoutAnalysis: { version: 1 },
+        splitLayoutAnalysis: { version: 1 },
+      },
+    });
+    await prisma.clipRender.create({
+      data: {
+        clipId: clip.id,
+        aspectRatio: "ratio_9_16",
+        status: "completed",
+        storageKey: `projects/${fixtureState.project.id}/renders/current-${index}.mp4`,
+      },
+    });
+    return clip;
   }
 
   test("document, revision, original, render retirement, and cleanup commit together", async () => {
@@ -184,6 +232,70 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
     expect(clip.brollUrl).toBe(next.brollUrl);
     expect(mutableRenderCount).toBe(0);
     expect(obligations.map((item) => item.cleanupClass)).toEqual(["mutable_render"]);
+  });
+
+  test("project selection commits every changed document and cleanup obligation atomically", async () => {
+    const f = await fixture();
+    const secondDocument = editorDocument({
+      brollUrl: "https://cdn.example.com/keep.mp4",
+      studioEdits: studioEditsSchema.parse({ sourceAudio: { volume: 64 } }),
+    });
+    const second = await addClip(f, 1, secondDocument);
+    const captionPreset = {
+      ...DEFAULT_CAPTION_PRESET,
+      fontName: "Impact",
+      primaryColor: "#123456",
+    };
+    const persistence = createClipEditorDocumentPersistence({
+      store: prismaClipEditorDocumentStore,
+    });
+
+    const result = await persistence.mutateProjectSelection({
+      actorUserId: f.user.id,
+      projectId: f.project.id,
+      intent: { kind: "set_caption_preset", captionPreset },
+    });
+    expect(result).toEqual({ updated: 2 });
+
+    const [clips, renderCount, obligations] = await Promise.all([
+      prisma.clip.findMany({
+        where: { id: { in: [f.clip.id, second.id] } },
+        orderBy: { index: "asc" },
+      }),
+      prisma.clipRender.count({
+        where: { clipId: { in: [f.clip.id, second.id] }, exportVariantId: null },
+      }),
+      prisma.editorMediaCleanupObligation.findMany({
+        where: { clipId: { in: [f.clip.id, second.id] } },
+      }),
+    ]);
+    expect(clips.map((clip) => clip.editorRevision)).toEqual([1, 1]);
+    expect(clips.map((clip) => clip.status)).toEqual(["edited", "edited"]);
+    expect(editorDocumentSchema.parse(clips[0]!.editorOriginal)).toEqual(f.document);
+    expect(editorDocumentSchema.parse(clips[1]!.editorOriginal)).toEqual(secondDocument);
+    expect(clips[1]).toMatchObject({
+      brollUrl: secondDocument.brollUrl,
+      previewStorageKey: `projects/${f.project.id}/clips/preview-1.mp4`,
+      layoutAnalysis: { version: 1 },
+      autoLayoutAnalysis: { version: 1 },
+      splitLayoutAnalysis: { version: 1 },
+    });
+    expect(studioEditsSchema.parse(clips[1]!.studioEdits).sourceAudio.volume).toBe(64);
+    expect(renderCount).toBe(0);
+    expect(obligations).toHaveLength(2);
+
+    await expect(
+      persistence.mutateProjectSelection({
+        actorUserId: f.user.id,
+        projectId: f.project.id,
+        intent: { kind: "set_caption_preset", captionPreset },
+      }),
+    ).resolves.toEqual({ updated: 0 });
+    expect(
+      await prisma.editorMediaCleanupObligation.count({
+        where: { clipId: { in: [f.clip.id, second.id] } },
+      }),
+    ).toBe(2);
   });
 
   test("two different full replacements from one revision have one winner", async () => {
@@ -412,6 +524,64 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
     expect(clip.transcriptSlice).toMatchObject([{ text: "racing words" }]);
   });
 
+  test("a project selection race retries the whole selection without losing the winning edit", async () => {
+    const f = await fixture();
+    const second = await addClip(f, 1, editorDocument());
+    let releaseCommit!: () => void;
+    let announceCommit!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseCommit = resolve;
+    });
+    const entered = new Promise<void>((resolve) => {
+      announceCommit = resolve;
+    });
+    let firstCommit = true;
+    const delayingStore: ClipEditorDocumentStore = {
+      ...prismaClipEditorDocumentStore,
+      async commitProjectSelection(input) {
+        if (firstCommit) {
+          firstCommit = false;
+          announceCommit();
+          await gate;
+        }
+        return prismaClipEditorDocumentStore.commitProjectSelection(input);
+      },
+    };
+    const bulkPersistence = createClipEditorDocumentPersistence({ store: delayingStore });
+    const singlePersistence = createClipEditorDocumentPersistence({
+      store: prismaClipEditorDocumentStore,
+    });
+    const captionPreset = { ...DEFAULT_CAPTION_PRESET, fontName: "Impact" };
+    const bulk = bulkPersistence.mutateProjectSelection({
+      actorUserId: f.user.id,
+      projectId: f.project.id,
+      intent: { kind: "set_caption_preset", captionPreset },
+    });
+    await entered;
+    await singlePersistence.mutateDocument({
+      actorUserId: f.user.id,
+      projectId: f.project.id,
+      clipId: f.clip.id,
+      intent: {
+        kind: "set_broll_url",
+        brollUrl: "https://cdn.example.com/race-winner.mp4",
+      },
+    });
+    releaseCommit();
+
+    await expect(bulk).resolves.toEqual({ updated: 2 });
+    const clips = await prisma.clip.findMany({
+      where: { id: { in: [f.clip.id, second.id] } },
+      orderBy: { index: "asc" },
+    });
+    expect(clips.map((clip) => clip.editorRevision)).toEqual([2, 1]);
+    expect(clips[0]!.brollUrl).toBe("https://cdn.example.com/race-winner.mp4");
+    expect(clips.map((clip) => captionPresetSchema.parse(clip.captionPreset))).toEqual([
+      captionPreset,
+      captionPreset,
+    ]);
+  });
+
   test("an injected cleanup-insert failure rolls back every document side effect", async () => {
     const f = await fixture();
     const failingKey = `projects/${f.project.id}/renders/force-rollback.mp4`;
@@ -466,6 +636,70 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
     ]);
     expect(clip).toMatchObject({ editorRevision: 0, editorOriginal: null, brollUrl: null });
     expect(renderCount).toBe(1);
+    expect(cleanupCount).toBe(0);
+  });
+
+  test("a project cleanup-insert failure rolls back every selected clip", async () => {
+    const f = await fixture();
+    const second = await addClip(f, 1, editorDocument());
+    const failingKey = `projects/${f.project.id}/renders/bulk-force-rollback.mp4`;
+    await prisma.clipRender.updateMany({
+      where: { clipId: second.id, exportVariantId: null },
+      data: { storageKey: failingKey },
+    });
+    await prisma.$executeRawUnsafe(`
+      CREATE OR REPLACE FUNCTION "fail_editor_bulk_cleanup_insert"() RETURNS trigger
+      LANGUAGE plpgsql AS $$
+      BEGIN
+        IF NEW."objectKey" LIKE '%/bulk-force-rollback.mp4' THEN
+          RAISE EXCEPTION 'injected bulk cleanup failure';
+        END IF;
+        RETURN NEW;
+      END;
+      $$
+    `);
+    await prisma.$executeRawUnsafe(`
+      CREATE TRIGGER "fail_editor_bulk_cleanup_insert_trigger"
+      BEFORE INSERT ON "EditorMediaCleanupObligation"
+      FOR EACH ROW EXECUTE FUNCTION "fail_editor_bulk_cleanup_insert"()
+    `);
+    try {
+      const persistence = createClipEditorDocumentPersistence({
+        store: prismaClipEditorDocumentStore,
+      });
+      await expect(
+        persistence.mutateProjectSelection({
+          actorUserId: f.user.id,
+          projectId: f.project.id,
+          intent: {
+            kind: "set_caption_preset",
+            captionPreset: { ...DEFAULT_CAPTION_PRESET, fontName: "Impact" },
+          },
+        }),
+      ).rejects.toThrow();
+    } finally {
+      await prisma.$executeRawUnsafe(
+        `DROP TRIGGER IF EXISTS "fail_editor_bulk_cleanup_insert_trigger" ON "EditorMediaCleanupObligation"`,
+      );
+      await prisma.$executeRawUnsafe(
+        `DROP FUNCTION IF EXISTS "fail_editor_bulk_cleanup_insert"()`,
+      );
+    }
+    const [clips, renderCount, cleanupCount] = await Promise.all([
+      prisma.clip.findMany({
+        where: { id: { in: [f.clip.id, second.id] } },
+        orderBy: { index: "asc" },
+      }),
+      prisma.clipRender.count({
+        where: { clipId: { in: [f.clip.id, second.id] }, exportVariantId: null },
+      }),
+      prisma.editorMediaCleanupObligation.count({
+        where: { clipId: { in: [f.clip.id, second.id] } },
+      }),
+    ]);
+    expect(clips.map((clip) => clip.editorRevision)).toEqual([0, 0]);
+    expect(clips.map((clip) => clip.editorOriginal)).toEqual([null, null]);
+    expect(renderCount).toBe(2);
     expect(cleanupCount).toBe(0);
   });
 

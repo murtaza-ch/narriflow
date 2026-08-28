@@ -59,6 +59,7 @@ import {
   BrandTemplateForbiddenError,
   BrandTemplateNotFoundError,
   clipService,
+  clipEditorDocumentPersistence,
   clipExportService,
   ClipExportError,
   ClipExportRevisionConflictError,
@@ -1042,45 +1043,55 @@ app.patch("/projects/:id/clips/:clipId", async (c) => {
 
     const boundariesParsed = updateClipBoundariesSchema.safeParse(payload);
     if (boundariesParsed.success) {
-      const clip = await clipService.updateClipBoundaries(
-        appUser.id,
+      await clipEditorDocumentPersistence.mutateDocument({
+        actorUserId: appUser.id,
         projectId,
         clipId,
-        boundariesParsed.data,
-      );
+        intent: { kind: "set_boundaries", ...boundariesParsed.data },
+      });
+      const clip = await clipService.getClipSnapshot(appUser.id, projectId, clipId);
       return c.json(clip, 200);
     }
 
     const captionPresetParsed = updateClipCaptionPresetSchema.safeParse(payload);
     if (captionPresetParsed.success) {
-      const clip = await clipService.updateClipCaptionPreset(
-        appUser.id,
+      await clipEditorDocumentPersistence.mutateDocument({
+        actorUserId: appUser.id,
         projectId,
         clipId,
-        captionPresetParsed.data.captionPreset,
-      );
+        intent: {
+          kind: "set_caption_preset",
+          captionPreset: captionPresetParsed.data.captionPreset,
+        },
+      });
+      const clip = await clipService.getClipSnapshot(appUser.id, projectId, clipId);
       return c.json(clip, 200);
     }
 
     const transcriptParsed = updateClipTranscriptSliceSchema.safeParse(payload);
     if (transcriptParsed.success) {
-      const clip = await clipService.updateClipTranscriptSlice(
-        appUser.id,
+      await clipEditorDocumentPersistence.mutateDocument({
+        actorUserId: appUser.id,
         projectId,
         clipId,
-        transcriptParsed.data.transcriptSlice,
-      );
+        intent: {
+          kind: "set_transcript",
+          transcriptSlice: transcriptParsed.data.transcriptSlice,
+        },
+      });
+      const clip = await clipService.getClipSnapshot(appUser.id, projectId, clipId);
       return c.json(clip, 200);
     }
 
     const brollParsed = updateClipBrollSchema.safeParse(payload);
     if (brollParsed.success) {
-      const clip = await clipService.updateClipBroll(
-        appUser.id,
+      await clipEditorDocumentPersistence.mutateDocument({
+        actorUserId: appUser.id,
         projectId,
         clipId,
-        brollParsed.data.brollUrl,
-      );
+        intent: { kind: "set_broll_url", brollUrl: brollParsed.data.brollUrl },
+      });
+      const clip = await clipService.getClipSnapshot(appUser.id, projectId, clipId);
       return c.json(clip, 200);
     }
 
@@ -1095,12 +1106,16 @@ app.patch("/projects/:id/clips/:clipId", async (c) => {
         ? updateClipStudioEditsSchema.safeParse(payload)
         : null;
     if (studioEditsParsed?.success) {
-      const clip = await clipService.updateClipStudioEdits(
-        appUser.id,
+      await clipEditorDocumentPersistence.mutateDocument({
+        actorUserId: appUser.id,
         projectId,
         clipId,
-        studioEditsParsed.data.studioEdits,
-      );
+        intent: {
+          kind: "set_studio_edits",
+          studioEdits: studioEditsParsed.data.studioEdits,
+        },
+      });
+      const clip = await clipService.getClipSnapshot(appUser.id, projectId, clipId);
       return c.json(clip, 200);
     }
 
@@ -1113,6 +1128,9 @@ app.patch("/projects/:id/clips/:clipId", async (c) => {
       400,
     );
   } catch (error) {
+    if (error instanceof UnsafeUrlError) {
+      return c.json({ error: "unsafe_broll_url" }, 422);
+    }
     const persistenceError = clipEditorPersistenceHttpError(error);
     if (persistenceError) return c.json(persistenceError.body, persistenceError.status);
     if (error instanceof ClipActionError) {
@@ -1428,13 +1446,25 @@ app.put("/projects/:id/clips/:clipId/editor", async (c) => {
   }
 
   try {
-    const result = await clipService.saveClipEditorDocument(
+    const mutation = await clipEditorDocumentPersistence.mutateDocument({
+      actorUserId: appUser.id,
+      projectId,
+      clipId: c.req.param("clipId"),
+      intent: {
+        kind: "replace",
+        baseRevision: parsed.data.baseRevision,
+        document: parsed.data.document,
+      },
+    });
+    const clip = await clipService.getClipSnapshot(
       appUser.id,
       projectId,
       c.req.param("clipId"),
-      parsed.data,
     );
-    return c.json(result, 200);
+    return c.json(
+      { revision: mutation.revision, document: mutation.document, clip },
+      200,
+    );
   } catch (error) {
     if (error instanceof ClipEditorRevisionConflictError) {
       return c.json(
@@ -1508,13 +1538,21 @@ app.post("/projects/:id/clips/:clipId/editor/reset", async (c) => {
   }
 
   try {
-    const result = await clipService.resetClipEditorToOriginal(
+    const mutation = await clipEditorDocumentPersistence.mutateDocument({
+      actorUserId: appUser.id,
+      projectId,
+      clipId: c.req.param("clipId"),
+      intent: { kind: "reset", baseRevision: parsed.data.baseRevision },
+    });
+    const clip = await clipService.getClipSnapshot(
       appUser.id,
       projectId,
       c.req.param("clipId"),
-      parsed.data.baseRevision,
     );
-    return c.json(result, 200);
+    return c.json(
+      { revision: mutation.revision, document: mutation.document, clip },
+      200,
+    );
   } catch (error) {
     if (error instanceof ClipEditorRevisionConflictError) {
       return c.json(
@@ -1901,14 +1939,19 @@ app.post("/projects/:id/clips/apply-caption-preset", async (c) => {
   }
 
   try {
-    const result = await clipService.applyCaptionPresetToAllClips(
-      appUser.id,
+    const result = await clipEditorDocumentPersistence.mutateProjectSelection({
+      actorUserId: appUser.id,
       projectId,
-      parsed.data.captionPreset,
-      { excludeClipId: parsed.data.excludeClipId },
-    );
+      excludeClipId: parsed.data.excludeClipId,
+      intent: {
+        kind: "set_caption_preset",
+        captionPreset: parsed.data.captionPreset,
+      },
+    });
     return c.json(result, 200);
   } catch (error) {
+    const persistenceError = clipEditorPersistenceHttpError(error);
+    if (persistenceError) return c.json(persistenceError.body, persistenceError.status);
     return c.json(
       { error: "apply_caption_preset_failed", message: errorMessage(error) },
       400,
@@ -1949,14 +1992,26 @@ app.post("/projects/:id/clips/apply-studio-edits", async (c) => {
   }
 
   try {
-    const result = await clipService.applyStudioEditsPatchToAllClips(
-      appUser.id,
+    const result = await clipEditorDocumentPersistence.mutateProjectSelection({
+      actorUserId: appUser.id,
       projectId,
-      parsed.data.patch,
-      { excludeClipId: parsed.data.excludeClipId },
-    );
-    return c.json(result, 200);
+      excludeClipId: parsed.data.excludeClipId,
+      intent: { kind: "patch_studio_edits", patches: parsed.data.patches },
+    });
+    const firstPatch = parsed.data.patches[0]!;
+    const field =
+      firstPatch.transition !== undefined
+        ? "transition"
+        : firstPatch.background !== undefined
+          ? "background"
+          : "framing";
+    return c.json({ ...result, field }, 200);
   } catch (error) {
+    if (error instanceof UnsafeUrlError) {
+      return c.json({ error: "unsafe_broll_url" }, 422);
+    }
+    const persistenceError = clipEditorPersistenceHttpError(error);
+    if (persistenceError) return c.json(persistenceError.body, persistenceError.status);
     return c.json(
       { error: "apply_studio_edits_failed", message: errorMessage(error) },
       400,

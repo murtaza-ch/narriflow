@@ -208,9 +208,12 @@ export interface DetectedClipArtifactInput {
   reasoning: string;
   category: ClipCategory;
   platformFit?: string[];
-  transcriptSlice: unknown;
+  transcriptSlice: Prisma.InputJsonValue;
   brollCues?: unknown;
-  captionPreset?: unknown;
+  captionPreset: Prisma.InputJsonValue;
+  studioEdits: Prisma.InputJsonValue;
+  brollUrl: string | null;
+  deletedRanges: Prisma.InputJsonValue;
   viralityScore: number;
   hookStrengthScore: number;
   emotionalIntensityScore: number;
@@ -1051,15 +1054,10 @@ export class WorkflowRunLifecycle {
             ...clip,
             projectId: attempt.projectId,
             workflowRunId: attempt.workflowRunId,
-            transcriptSlice: clip.transcriptSlice as Prisma.InputJsonValue,
             brollCues:
               clip.brollCues === null || clip.brollCues === undefined
                 ? Prisma.JsonNull
                 : (clip.brollCues as Prisma.InputJsonValue),
-            captionPreset:
-              clip.captionPreset === null || clip.captionPreset === undefined
-                ? Prisma.JsonNull
-                : (clip.captionPreset as Prisma.InputJsonValue),
           })),
         });
       }

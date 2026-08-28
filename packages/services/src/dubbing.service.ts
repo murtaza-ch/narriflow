@@ -19,6 +19,7 @@ import {
   requireProtocolV1WorkflowContext,
   WorkflowAttemptLost,
 } from "./workflow-run-lifecycle";
+import { decodeClipEditorDocumentFromStorage } from "./clip-editor-document-persistence";
 
 const DEFAULT_TTS_MODEL = "gpt-4o-mini-tts";
 
@@ -233,7 +234,7 @@ export class DubbingService {
 
   async getPendingDubsForProject(projectId: string) {
     const prisma = requirePrisma();
-    return prisma.clipDub.findMany({
+    const dubs = await prisma.clipDub.findMany({
       where: { projectId, status: "queued" },
       include: {
         clip: { include: { renders: true } },
@@ -242,11 +243,31 @@ export class DubbingService {
             id: true,
             title: true,
             languageCode: true,
+            sourceDurationSeconds: true,
             transcript: { select: { languageCode: true } },
           },
         },
       },
       orderBy: { createdAt: "asc" },
+    });
+    return dubs.map((dub) => {
+      const document = decodeClipEditorDocumentFromStorage(
+        dub.clip,
+        dub.project.sourceDurationSeconds,
+      );
+      return {
+        ...dub,
+        clip: {
+          ...dub.clip,
+          startSec: document.clipStartSec,
+          endSec: document.clipEndSec,
+          captionPreset: document.captionPreset,
+          transcriptSlice: document.transcriptSlice,
+          studioEdits: document.studioEdits,
+          brollUrl: document.brollUrl,
+          deletedRanges: document.deletedRanges,
+        },
+      };
     });
   }
 

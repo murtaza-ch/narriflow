@@ -844,10 +844,39 @@ describe("ducking pipeline parity (M1+M2 — extract -> compute -> cap shared by
 
 describe("applyStudioEditsToAllSchema (bulk apply request body)", () => {
   test("excludeClipId is optional", () => {
+    const patch = { transition: { type: "dip-white" as const, durationSec: 0.4 } };
     const parsed = applyStudioEditsToAllSchema.parse({
-      patch: { transition: { type: "dip-white", durationSec: 0.4 } },
+      patch,
     });
     expect(parsed.excludeClipId).toBeUndefined();
+    expect(parsed.patches).toEqual([patch]);
+  });
+
+  test("accepts one coherent grouped layout request", () => {
+    const parsed = applyStudioEditsToAllSchema.parse({
+      patches: [
+        { background: { mode: "off", color: null, imageUrl: null } },
+        { framing: { mode: "center" } },
+      ],
+    });
+    expect(parsed.patches).toHaveLength(2);
+  });
+
+  test("rejects duplicate fields and mixed single/grouped requests", () => {
+    expect(() =>
+      applyStudioEditsToAllSchema.parse({
+        patches: [
+          { framing: { mode: "auto" } },
+          { framing: { mode: "center" } },
+        ],
+      }),
+    ).toThrow();
+    expect(() =>
+      applyStudioEditsToAllSchema.parse({
+        patch: { framing: { mode: "auto" } },
+        patches: [{ background: { mode: "off" } }],
+      }),
+    ).toThrow();
   });
 
   test("accepts a well-formed excludeClipId", () => {

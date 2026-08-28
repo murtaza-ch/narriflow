@@ -19,6 +19,10 @@ import { hasFeature } from "./billing.service";
 import { accessibleProjectWhere } from "./project-retention.service";
 import { presignDownloadUrl } from "./r2-storage";
 import { workspaceService } from "./workspace.service";
+import {
+  decodeClipEditorDocumentFromStorage,
+  encodeClipEditorDocumentForStorage,
+} from "./clip-editor-document-persistence";
 
 const EXPORT_DOWNLOAD_TTL_SECONDS = 15 * 60;
 
@@ -126,22 +130,26 @@ function frozenClipSnapshot(clip: {
   previewStorageKey: string | null;
   editorRevision: number;
   llmModel: string;
-}): Prisma.InputJsonValue {
+}, sourceDurationSec: number | null): Prisma.InputJsonValue {
+  const document = encodeClipEditorDocumentForStorage(
+    decodeClipEditorDocumentFromStorage(clip, sourceDurationSec),
+    sourceDurationSec,
+  );
   return {
     id: clip.id,
     projectId: clip.projectId,
     index: clip.index,
-    startSec: clip.startSec,
-    endSec: clip.endSec,
+    startSec: document.startSec,
+    endSec: document.endSec,
     title: clip.title,
     hookText: clip.hookText,
     category: clip.category,
-    transcriptSlice: clip.transcriptSlice,
-    captionPreset: clip.captionPreset ?? Prisma.JsonNull,
-    brollUrl: clip.brollUrl,
+    transcriptSlice: document.transcriptSlice,
+    captionPreset: document.captionPreset,
+    brollUrl: document.brollUrl,
     brollCues: clip.brollCues ?? Prisma.JsonNull,
-    studioEdits: clip.studioEdits ?? Prisma.JsonNull,
-    deletedRanges: clip.deletedRanges ?? Prisma.JsonNull,
+    studioEdits: document.studioEdits,
+    deletedRanges: document.deletedRanges,
     layoutAnalysis: clip.layoutAnalysis ?? Prisma.JsonNull,
     autoLayoutAnalysis: clip.autoLayoutAnalysis ?? Prisma.JsonNull,
     splitLayoutAnalysis: clip.splitLayoutAnalysis ?? Prisma.JsonNull,
@@ -274,7 +282,13 @@ export class ClipExportService {
         project: { workspaceId: workspaceContext.workspaceId },
       },
       include: {
-        project: { select: { workspaceId: true, workspace: { select: { pricingTier: true } } } },
+        project: {
+          select: {
+            workspaceId: true,
+            sourceDurationSeconds: true,
+            workspace: { select: { pricingTier: true } },
+          },
+        },
       },
     });
     if (!clip) throw new ClipExportError("clip_not_found", "Clip not found");
@@ -297,7 +311,7 @@ export class ClipExportService {
     });
 
     const exportId = randomUUID();
-    const snapshot = frozenClipSnapshot(clip);
+    const snapshot = frozenClipSnapshot(clip, clip.project.sourceDurationSeconds);
     // One atomic upsert is both the idempotency boundary and the durable
     // enqueue. ClipRender rows are the work queue; the render poller attaches
     // a one-live-per-project WorkflowRun, avoiding several high-latency DB and
