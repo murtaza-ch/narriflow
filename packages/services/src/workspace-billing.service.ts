@@ -613,7 +613,10 @@ export function createInMemoryWorkspaceBillingStore(
           throw new WorkspaceBillingAttemptLost();
         }
       }
-      if (input.wakeReconciliation) {
+      const preservesFailure =
+        row.latestCheckout?.paymentStatus === "failed" &&
+        input.paymentStatus === "unpaid";
+      if (input.wakeReconciliation && !preservesFailure) {
         row.health = "activating";
         row.attentionReason = null;
         const state = runtime.get(input.workspaceId)!;
@@ -621,11 +624,7 @@ export function createInMemoryWorkspaceBillingStore(
       }
       row.latestCheckout = {
         status: input.status,
-        paymentStatus:
-          row.latestCheckout?.paymentStatus === "failed" &&
-          input.paymentStatus === "unpaid"
-            ? "failed"
-            : input.paymentStatus,
+        paymentStatus: preservesFailure ? "failed" : input.paymentStatus,
       };
       return attempt;
     },
@@ -1114,14 +1113,11 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
             customerOperationKey: true,
             checkoutOperationKey: true,
             providerSessionId: true,
-            paymentStatus: true,
             expiresAt: true,
             billingAccount: {
               select: {
                 id: true,
                 workspaceId: true,
-                reconcileAttemptId: true,
-                leaseExpiresAt: true,
               },
             },
           },
@@ -1135,15 +1131,6 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
             "checkout_session_conflict",
             "Checkout session ownership could not be verified",
           );
-        }
-        if (
-          input.reconcileAttemptId &&
-          (attempt.billingAccount.reconcileAttemptId !==
-            input.reconcileAttemptId ||
-            !attempt.billingAccount.leaseExpiresAt ||
-            attempt.billingAccount.leaseExpiresAt.getTime() <= input.now.getTime())
-        ) {
-          throw new WorkspaceBillingAttemptLost();
         }
         if (
           attempt.targetTier !== "creator" &&
@@ -1161,22 +1148,58 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
             "Checkout attempt has an invalid interval",
           );
         }
-        await tx.workspaceCheckoutAttempt.update({
-          where: { id: attempt.id },
+        const claimWhere = input.reconcileAttemptId
+          ? {
+              billingAccount: {
+                reconcileAttemptId: input.reconcileAttemptId,
+                leaseExpiresAt: { gt: input.now },
+              },
+            }
+          : {};
+        const providerPhase =
+          input.source === "return" ? "return_observed" : "state_retrieved";
+        let preservesFailure = false;
+        const updated = await tx.workspaceCheckoutAttempt.updateMany({
+          where: {
+            id: attempt.id,
+            ...claimWhere,
+            ...(input.paymentStatus === "unpaid"
+              ? {
+                  OR: [
+                    { paymentStatus: null },
+                    { paymentStatus: { not: "failed" } },
+                  ],
+                }
+              : {}),
+          },
           data: {
-            providerPhase:
-              input.source === "return"
-                ? "return_observed"
-                : "state_retrieved",
+            providerPhase,
             sessionStatus: input.status,
-            paymentStatus:
-              attempt.paymentStatus === "failed" &&
-              input.paymentStatus === "unpaid"
-                ? "failed"
-                : input.paymentStatus,
+            paymentStatus: input.paymentStatus,
           },
         });
-        if (input.wakeReconciliation) {
+        if (updated.count === 0 && input.paymentStatus === "unpaid") {
+          const preserved = await tx.workspaceCheckoutAttempt.updateMany({
+            where: {
+              id: attempt.id,
+              ...claimWhere,
+              paymentStatus: "failed",
+            },
+            data: {
+              providerPhase,
+              sessionStatus: input.status,
+            },
+          });
+          preservesFailure = preserved.count === 1;
+        }
+        if (updated.count === 0 && !preservesFailure) {
+          if (input.reconcileAttemptId) throw new WorkspaceBillingAttemptLost();
+          throw new WorkspaceBillingError(
+            "checkout_session_conflict",
+            "Checkout state could not be recorded",
+          );
+        }
+        if (input.wakeReconciliation && !preservesFailure) {
           await tx.workspaceBillingAccount.update({
             where: { id: attempt.billingAccount.id },
             data: {

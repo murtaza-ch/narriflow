@@ -237,9 +237,10 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
           (session) => session.sessionId === sessionId,
         )!,
     };
+    const store = createPrismaWorkspaceBillingStore();
     const billing = createWorkspaceBillingModule({
       catalog,
-      store: createPrismaWorkspaceBillingStore(),
+      store,
       provider,
       clock: { now: () => new Date("2026-08-28T10:00:00.000Z") },
       diagnostics: { record: () => undefined },
@@ -362,9 +363,10 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
         paymentStatus: "unpaid",
       },
     });
+    const store = createPrismaWorkspaceBillingStore();
     const billing = createWorkspaceBillingModule({
       catalog,
-      store: createPrismaWorkspaceBillingStore(),
+      store,
       provider: {
         verifyDelivery: () => ({
           eventId: `evt_failed_${randomUUID()}`,
@@ -403,6 +405,68 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
         select: { sessionStatus: true, paymentStatus: true },
       }),
     ).toEqual({ sessionStatus: "complete", paymentStatus: "unpaid" });
+    const now = new Date("2026-08-28T10:00:00.000Z");
+    const claim = await store.claimAccount({
+      workspaceId: workspace.id,
+      now,
+      leaseMs: 60_000,
+    });
+    expect(claim).not.toBeNull();
+    await Promise.all([
+      store.recordCheckoutState({
+        workspaceId: workspace.id,
+        sessionId,
+        status: "complete",
+        paymentStatus: "failed",
+        source: "reconciliation",
+        wakeReconciliation: false,
+        reconcileAttemptId: claim!.attemptId,
+        now,
+      }),
+      store.recordCheckoutState({
+        workspaceId: workspace.id,
+        sessionId,
+        status: "complete",
+        paymentStatus: "unpaid",
+        source: "return",
+        wakeReconciliation: true,
+        now,
+      }),
+    ]);
+    expect(
+      await prisma.workspaceCheckoutAttempt.findUniqueOrThrow({
+        where: { id: attempt.id },
+        select: { paymentStatus: true },
+      }),
+    ).toEqual({ paymentStatus: "failed" });
+
+    await prisma.workspaceBillingAccount.update({
+      where: { id: account.id },
+      data: {
+        reconcileAttemptId: randomUUID(),
+        leaseExpiresAt: new Date("2026-08-28T10:02:00.000Z"),
+      },
+    });
+    await expect(
+      store.recordCheckoutState({
+        workspaceId: workspace.id,
+        sessionId,
+        status: "complete",
+        paymentStatus: "paid",
+        source: "reconciliation",
+        wakeReconciliation: false,
+        reconcileAttemptId: claim!.attemptId,
+        now,
+      }),
+    ).rejects.toBeInstanceOf(WorkspaceBillingAttemptLost);
+    await prisma.workspaceBillingAccount.update({
+      where: { id: account.id },
+      data: {
+        reconcileAttemptId: null,
+        leaseExpiresAt: null,
+        nextReconcileAt: now,
+      },
+    });
     await expect(billing.reconcileCurrentState(workspace.id)).resolves.toMatchObject({
       kind: "reconciled",
       view: {
