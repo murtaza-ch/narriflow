@@ -410,6 +410,11 @@ describe("Workspace Billing", () => {
 
   test("keeps zero-subscription Checkout activation recoverable and expires safely", async () => {
     let checkoutStatus: "complete" | "expired" = "complete";
+    let checkoutPaymentStatus = "unpaid";
+    let deliveryType:
+      | "checkout.session.async_payment_failed"
+      | "checkout.session.completed" =
+      "checkout.session.async_payment_failed";
     const store = createInMemoryWorkspaceBillingStore([
       {
         workspaceId: "workspace-zero-subscription",
@@ -426,16 +431,14 @@ describe("Workspace Billing", () => {
       store,
       provider: {
         verifyDelivery: () => ({
-          eventId: "evt_async_payment_failed",
-          eventType: "checkout.session.async_payment_failed",
+          eventId: `evt_${deliveryType.replaceAll(".", "_")}`,
+          eventType: deliveryType,
           providerCreatedAt: new Date("2026-08-28T09:59:00.000Z"),
           liveMode: false,
           apiVersion: "2026-07-29.dahlia",
           customerId: "cus_zero_subscription",
           subscriptionId: null,
           checkoutSessionId: "cs_zero_subscription",
-          checkoutStatus: "complete",
-          checkoutPaymentStatus: "unpaid",
           workspaceHint: "workspace-zero-subscription",
         }),
         retrieveCurrentState: async () => ({
@@ -462,7 +465,7 @@ describe("Workspace Billing", () => {
           url: null,
           expiresAt: new Date("2026-08-28T11:00:00.000Z"),
           status: checkoutStatus,
-          paymentStatus: "unpaid",
+          paymentStatus: checkoutPaymentStatus,
           workspaceId: "workspace-zero-subscription",
         }),
       },
@@ -487,10 +490,17 @@ describe("Workspace Billing", () => {
         view: { health: "activating", actions: [] },
       });
 
+    checkoutPaymentStatus = "failed";
     expect(await billing.acceptStripeDelivery("async-failed", "sig"))
       .toEqual({
         kind: "accepted",
         workspaceId: "workspace-zero-subscription",
+      });
+    expect(await billing.readBillingState("workspace-zero-subscription"))
+      .toMatchObject({
+        status: "payment_pending",
+        health: "activating",
+        actions: [],
       });
     expect(await billing.reconcileCurrentState("workspace-zero-subscription"))
       .toMatchObject({
@@ -501,7 +511,30 @@ describe("Workspace Billing", () => {
         },
       });
 
+    deliveryType = "checkout.session.completed";
+    expect(await billing.acceptStripeDelivery("delayed-completed", "sig"))
+      .toEqual({
+        kind: "accepted",
+        workspaceId: "workspace-zero-subscription",
+      });
+    expect(
+      await billing.observeCheckoutReturn({
+        workspaceId: "workspace-zero-subscription",
+        actorUserId: "owner-zero-subscription",
+        sessionId: "cs_zero_subscription",
+      }),
+    ).toMatchObject({ view: { status: "payment_failed" } });
+    expect(await billing.reconcileCurrentState("workspace-zero-subscription"))
+      .toMatchObject({
+        view: {
+          status: "payment_failed",
+          health: "current",
+          actions: ["start_checkout"],
+        },
+      });
+
     checkoutStatus = "expired";
+    checkoutPaymentStatus = "unpaid";
     await billing.observeCheckoutReturn({
       workspaceId: "workspace-zero-subscription",
       actorUserId: "owner-zero-subscription",

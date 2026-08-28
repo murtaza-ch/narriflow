@@ -202,6 +202,76 @@ describe("Workspace Billing Stripe adapter contracts", () => {
       });
   });
 
+  test("resolves delayed Checkout failure from the current invoice payment", async () => {
+    const workspaceId = "11111111-1111-4111-8111-111111111111";
+    const fakeStripe = {
+      checkout: {
+        sessions: {
+          retrieve: async () => ({
+            id: "cs_failed_contract",
+            url: null,
+            expires_at: 1_788_000_000,
+            status: "complete",
+            payment_status: "unpaid",
+            invoice: "in_failed_contract",
+            client_reference_id: workspaceId,
+            metadata: { workspaceId },
+          }),
+        },
+      },
+      invoicePayments: {
+        list: async () => ({
+          data: [
+            {
+              id: "inpay_failed_contract",
+              status: "open",
+              payment: {
+                type: "payment_intent",
+                payment_intent: {
+                  id: "pi_failed_contract",
+                  status: "requires_payment_method",
+                },
+              },
+            },
+          ],
+          has_more: false,
+        }),
+      },
+    } as unknown as Stripe;
+    const adapter = createWorkspaceBillingStripeContractHarness().providerWith({
+      stripe: fakeStripe,
+      catalog: createBillingCatalog({
+        basePrices: [
+          { priceId: "price_creator_monthly", tier: "creator", interval: "monthly" },
+          { priceId: "price_creator_annual", tier: "creator", interval: "annual" },
+          { priceId: "price_pro_monthly", tier: "pro", interval: "monthly" },
+          { priceId: "price_pro_annual", tier: "pro", interval: "annual" },
+          { priceId: "price_business_monthly", tier: "business", interval: "monthly" },
+          { priceId: "price_business_annual", tier: "business", interval: "annual" },
+        ],
+        seatPrices: [
+          { priceId: "price_business_seat_monthly", interval: "monthly" },
+          { priceId: "price_business_seat_annual", interval: "annual" },
+        ],
+        worker: {
+          batchSize: 25,
+          concurrency: 4,
+          leaseMs: 60_000,
+          providerDeadlineMs: 10_000,
+          providerCallBudget: 4,
+        },
+      }),
+    });
+
+    expect(await adapter.retrieveCheckoutSession!("cs_failed_contract"))
+      .toMatchObject({
+        sessionId: "cs_failed_contract",
+        status: "complete",
+        paymentStatus: "failed",
+        workspaceId,
+      });
+  });
+
   test("verifies the exact raw body under the pinned API version", async () => {
     const rawBody = `${fixture("checkout.session.completed")}\n`;
     const signature = await Stripe.webhooks.generateTestHeaderStringAsync({
@@ -222,8 +292,6 @@ describe("Workspace Billing Stripe adapter contracts", () => {
       apiVersion: WORKSPACE_BILLING_STRIPE_API_VERSION,
       customerId: "cus_contract",
       checkoutSessionId: "cs_contract",
-      checkoutStatus: "complete",
-      checkoutPaymentStatus: "paid",
       workspaceHint: "11111111-1111-4111-8111-111111111111",
     });
     await expect(
@@ -251,12 +319,6 @@ describe("Workspace Billing Stripe adapter contracts", () => {
       expect(delivery.liveMode).toBe(false);
       expect(delivery.apiVersion).toBe(WORKSPACE_BILLING_STRIPE_API_VERSION);
       expect(delivery.customerId).toBe("cus_contract");
-      if (type === "checkout.session.async_payment_failed") {
-        expect(delivery).toMatchObject({
-          checkoutStatus: "complete",
-          checkoutPaymentStatus: "unpaid",
-        });
-      }
       expect(delivery.subscriptionId).toBe(
         type.startsWith("customer.subscription") || type.startsWith("invoice.")
           ? "sub_contract"

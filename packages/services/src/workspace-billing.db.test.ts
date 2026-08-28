@@ -375,13 +375,21 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
           customerId,
           subscriptionId: null,
           checkoutSessionId: sessionId,
-          checkoutStatus: "complete",
-          checkoutPaymentStatus: "unpaid",
           workspaceHint: workspace.id,
         }),
-        retrieveCurrentState: async () => {
-          throw new Error("not used");
-        },
+        retrieveCurrentState: async () => ({
+          customerId,
+          ownership: { kind: "verified", workspaceId: workspace.id },
+          subscriptions: [],
+        }),
+        retrieveCheckoutSession: async () => ({
+          sessionId,
+          url: null,
+          expiresAt: new Date("2026-08-28T11:00:00.000Z"),
+          status: "complete",
+          paymentStatus: "failed",
+          workspaceId: workspace.id,
+        }),
       },
       clock: { now: () => new Date("2026-08-28T10:00:00.000Z") },
       diagnostics: { record: () => undefined },
@@ -389,6 +397,20 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
 
     await expect(billing.acceptStripeDelivery("body", "signature")).resolves
       .toMatchObject({ kind: "accepted", workspaceId: workspace.id });
+    expect(
+      await prisma.workspaceCheckoutAttempt.findUniqueOrThrow({
+        where: { id: attempt.id },
+        select: { sessionStatus: true, paymentStatus: true },
+      }),
+    ).toEqual({ sessionStatus: "complete", paymentStatus: "unpaid" });
+    await expect(billing.reconcileCurrentState(workspace.id)).resolves.toMatchObject({
+      kind: "reconciled",
+      view: {
+        status: "payment_failed",
+        health: "current",
+        actions: ["start_checkout"],
+      },
+    });
     const failedAttempt = await prisma.workspaceCheckoutAttempt.findUniqueOrThrow({
       where: { id: attempt.id },
       select: { sessionStatus: true, paymentStatus: true },

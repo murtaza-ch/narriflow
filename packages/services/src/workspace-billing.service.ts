@@ -136,8 +136,6 @@ export interface VerifiedBillingDelivery {
   customerId: string | null;
   subscriptionId: string | null;
   checkoutSessionId: string | null;
-  checkoutStatus?: ProviderCheckoutSession["status"] | null;
-  checkoutPaymentStatus?: string | null;
   workspaceHint: string | null;
 }
 
@@ -258,6 +256,7 @@ export interface WorkspaceBillingProjection {
   desiredAdditionalSeats: number;
   synchronizedAdditionalSeats: number | null;
   seatItemId: string | null;
+  latestCheckoutSessionId: string | null;
   latestCheckout: {
     status: ProviderCheckoutSession["status"];
     paymentStatus: string;
@@ -375,13 +374,15 @@ export interface WorkspaceBillingStore {
     expiresAt: Date;
     now: Date;
   }): Promise<void>;
-  recordCheckoutReturn(input: {
+  recordCheckoutState(input: {
     workspaceId: string;
     sessionId: string;
     providerAttemptId?: string;
     status: ProviderCheckoutSession["status"];
     paymentStatus: string;
+    source: "return" | "reconciliation";
     wakeReconciliation: boolean;
+    reconcileAttemptId?: string;
     now: Date;
   }): Promise<WorkspaceCheckoutAttempt>;
 }
@@ -486,6 +487,7 @@ export function createInMemoryWorkspaceBillingStore(
         desiredAdditionalSeats: workspace.desiredAdditionalSeats ?? 0,
         synchronizedAdditionalSeats: null,
         seatItemId: null,
+        latestCheckoutSessionId: null,
         latestCheckout: null,
       },
     ]),
@@ -583,8 +585,10 @@ export function createInMemoryWorkspaceBillingStore(
       }
       attempt.providerSessionId = input.sessionId;
       attempt.expiresAt = input.expiresAt;
+      const row = rows.get(attempt.workspaceId);
+      if (row) row.latestCheckoutSessionId = input.sessionId;
     },
-    async recordCheckoutReturn(input) {
+    async recordCheckoutState(input) {
       const attempt = [...checkoutAttempts.values()].find(
         (candidate) => candidate.providerSessionId === input.sessionId,
       );
@@ -599,6 +603,16 @@ export function createInMemoryWorkspaceBillingStore(
         );
       }
       const row = rows.get(input.workspaceId)!;
+      if (input.reconcileAttemptId) {
+        const state = runtime.get(input.workspaceId)!;
+        if (
+          state.attemptId !== input.reconcileAttemptId ||
+          !state.leaseExpiresAt ||
+          state.leaseExpiresAt.getTime() <= input.now.getTime()
+        ) {
+          throw new WorkspaceBillingAttemptLost();
+        }
+      }
       if (input.wakeReconciliation) {
         row.health = "activating";
         row.attentionReason = null;
@@ -607,7 +621,11 @@ export function createInMemoryWorkspaceBillingStore(
       }
       row.latestCheckout = {
         status: input.status,
-        paymentStatus: input.paymentStatus,
+        paymentStatus:
+          row.latestCheckout?.paymentStatus === "failed" &&
+          input.paymentStatus === "unpaid"
+            ? "failed"
+            : input.paymentStatus,
       };
       return attempt;
     },
@@ -628,24 +646,6 @@ export function createInMemoryWorkspaceBillingStore(
               (row) => row.providerCustomerId === input.delivery.customerId,
             ) ?? null;
       const workspaceId = matched?.workspaceId ?? null;
-      if (input.delivery.checkoutSessionId) {
-        const attempt = [...checkoutAttempts.values()].find(
-          (candidate) =>
-            candidate.providerSessionId === input.delivery.checkoutSessionId,
-        );
-        const row = attempt ? rows.get(attempt.workspaceId) : null;
-        const failed =
-          input.delivery.eventType === "checkout.session.async_payment_failed";
-        const paymentStatus = failed
-          ? "failed"
-          : input.delivery.checkoutPaymentStatus;
-        if (row && paymentStatus) {
-          row.latestCheckout = {
-            status: input.delivery.checkoutStatus ?? "complete",
-            paymentStatus,
-          };
-        }
-      }
       deliveries.set(input.delivery.eventId, workspaceId);
       return { kind: "accepted", workspaceId };
     },
@@ -873,7 +873,11 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
       const latestCheckout = await prisma.workspaceCheckoutAttempt.findFirst({
         where: { billingAccountId: account.id },
         orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-        select: { sessionStatus: true, paymentStatus: true },
+        select: {
+          providerSessionId: true,
+          sessionStatus: true,
+          paymentStatus: true,
+        },
       });
       return {
         workspaceId: row.id,
@@ -900,6 +904,7 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
         desiredAdditionalSeats: account.desiredAdditionalSeats,
         synchronizedAdditionalSeats: account.synchronizedAdditionalSeats,
         seatItemId: account.seatItemId,
+        latestCheckoutSessionId: latestCheckout?.providerSessionId ?? null,
         latestCheckout:
           latestCheckout &&
           (latestCheckout.sessionStatus === "open" ||
@@ -1094,7 +1099,7 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
         },
       });
     },
-    async recordCheckoutReturn(input) {
+    async recordCheckoutState(input) {
       return prisma.$transaction(async (tx) => {
         const attempt = await tx.workspaceCheckoutAttempt.findUnique({
           where: { providerSessionId: input.sessionId },
@@ -1109,8 +1114,16 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
             customerOperationKey: true,
             checkoutOperationKey: true,
             providerSessionId: true,
+            paymentStatus: true,
             expiresAt: true,
-            billingAccount: { select: { id: true, workspaceId: true } },
+            billingAccount: {
+              select: {
+                id: true,
+                workspaceId: true,
+                reconcileAttemptId: true,
+                leaseExpiresAt: true,
+              },
+            },
           },
         });
         if (
@@ -1122,6 +1135,15 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
             "checkout_session_conflict",
             "Checkout session ownership could not be verified",
           );
+        }
+        if (
+          input.reconcileAttemptId &&
+          (attempt.billingAccount.reconcileAttemptId !==
+            input.reconcileAttemptId ||
+            !attempt.billingAccount.leaseExpiresAt ||
+            attempt.billingAccount.leaseExpiresAt.getTime() <= input.now.getTime())
+        ) {
+          throw new WorkspaceBillingAttemptLost();
         }
         if (
           attempt.targetTier !== "creator" &&
@@ -1142,9 +1164,16 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
         await tx.workspaceCheckoutAttempt.update({
           where: { id: attempt.id },
           data: {
-            providerPhase: "return_observed",
+            providerPhase:
+              input.source === "return"
+                ? "return_observed"
+                : "state_retrieved",
             sessionStatus: input.status,
-            paymentStatus: input.paymentStatus,
+            paymentStatus:
+              attempt.paymentStatus === "failed" &&
+              input.paymentStatus === "unpaid"
+                ? "failed"
+                : input.paymentStatus,
           },
         });
         if (input.wakeReconciliation) {
@@ -1265,26 +1294,6 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
               processedAt: input.receivedAt,
             },
           });
-          if (input.delivery.checkoutSessionId) {
-            const failed =
-              input.delivery.eventType ===
-              "checkout.session.async_payment_failed";
-            const paymentStatus = failed
-              ? "failed"
-              : input.delivery.checkoutPaymentStatus;
-            if (paymentStatus) {
-              await tx.workspaceCheckoutAttempt.updateMany({
-                where: {
-                  providerSessionId: input.delivery.checkoutSessionId,
-                  ...(account ? { billingAccountId: account.id } : {}),
-                },
-                data: {
-                  sessionStatus: input.delivery.checkoutStatus ?? "complete",
-                  paymentStatus,
-                },
-              });
-            }
-          }
           if (input.wakeReconciliation && account) {
             await tx.workspaceBillingAccount.update({
               where: { id: account.id },
@@ -1509,7 +1518,11 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
         const latestCheckout = await tx.workspaceCheckoutAttempt.findFirst({
           where: { billingAccountId: account.id },
           orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-          select: { sessionStatus: true, paymentStatus: true },
+          select: {
+            providerSessionId: true,
+            sessionStatus: true,
+            paymentStatus: true,
+          },
         });
         const latestCheckoutState: WorkspaceBillingProjection["latestCheckout"] =
           latestCheckout &&
@@ -1544,6 +1557,7 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
           desiredAdditionalSeats: account.desiredAdditionalSeats,
           synchronizedAdditionalSeats: account.synchronizedAdditionalSeats,
           seatItemId: account.seatItemId,
+          latestCheckoutSessionId: latestCheckout?.providerSessionId ?? null,
           latestCheckout: latestCheckoutState,
         };
       });
@@ -1720,6 +1734,7 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
           desiredAdditionalSeats: currentDesiredSeats,
           synchronizedAdditionalSeats: account.synchronizedAdditionalSeats,
           seatItemId: account.seatItemId,
+          latestCheckoutSessionId: null,
           latestCheckout: null,
         };
       });
@@ -1941,13 +1956,61 @@ export function createWorkspaceBillingModule(dependencies: {
     if (providerState.ownership.workspaceId !== workspaceId) {
       return unresolved("workspace_mismatch");
     }
+    let checkoutState = current.latestCheckout;
+    if (current.latestCheckoutSessionId) {
+      if (!dependencies.provider.retrieveCheckoutSession) {
+        return unresolved("checkout_retrieval_unavailable");
+      }
+      const checkout = await callProvider("retrieve_checkout", () =>
+        dependencies.provider.retrieveCheckoutSession!(
+          current.latestCheckoutSessionId!,
+        ),
+      );
+      if (
+        checkout.sessionId !== current.latestCheckoutSessionId ||
+        (checkout.workspaceId && checkout.workspaceId !== workspaceId)
+      ) {
+        return unresolved("checkout_session_conflict");
+      }
+      if (
+        attemptId &&
+        !(await dependencies.store.renewClaim({
+          workspaceId,
+          attemptId,
+          now: dependencies.clock.now(),
+          leaseMs: dependencies.catalog.worker.leaseMs,
+        }))
+      ) {
+        throw new WorkspaceBillingAttemptLost();
+      }
+      const paymentStatus =
+        current.latestCheckout?.paymentStatus === "failed" &&
+        checkout.paymentStatus === "unpaid"
+          ? "failed"
+          : checkout.paymentStatus;
+      await dependencies.store.recordCheckoutState({
+        workspaceId,
+        sessionId: checkout.sessionId,
+        providerAttemptId: checkout.attemptId,
+        status: checkout.status,
+        paymentStatus,
+        source: "reconciliation",
+        wakeReconciliation: false,
+        reconcileAttemptId: attemptId,
+        now: dependencies.clock.now(),
+      });
+      checkoutState = {
+        status: checkout.status,
+        paymentStatus,
+      };
+    }
     if (providerState.subscriptions.length === 0) {
       if (current.pricingTier !== "free") {
         return unresolved("missing_paid_subscription");
       }
       return settleNoSubscription(
-        current.latestCheckout?.status === "complete" &&
-          current.latestCheckout.paymentStatus !== "failed",
+        checkoutState?.status === "complete" &&
+          checkoutState.paymentStatus !== "failed",
       );
     }
     const tierRank: Record<PricingTier, number> = {
@@ -2526,12 +2589,13 @@ export function createWorkspaceBillingModule(dependencies: {
         );
       }
       const expired = session.status === "expired";
-      await dependencies.store.recordCheckoutReturn({
+      await dependencies.store.recordCheckoutState({
         workspaceId: input.workspaceId,
         sessionId: input.sessionId,
         providerAttemptId: session.attemptId,
         status: session.status,
         paymentStatus: session.paymentStatus,
+        source: "return",
         wakeReconciliation: !expired,
         now: dependencies.clock.now(),
       });

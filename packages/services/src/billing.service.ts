@@ -21,6 +21,7 @@ export type BillingErrorCode =
   | WorkspaceBillingErrorCode
   | "billing_catalog_invalid"
   | "checkout_collection_unbounded"
+  | "checkout_payment_collection_unbounded"
   | "customer_collection_unbounded"
   | "customer_missing"
   | "invalid_signature"
@@ -362,10 +363,8 @@ export class BillingService {
           );
           return this.normalizeCheckoutSession(session);
         },
-        retrieveCheckoutSession: async (sessionId) =>
-          this.normalizeCheckoutSession(
-            await this.stripe().checkout.sessions.retrieve(sessionId),
-          ),
+        retrieveCheckoutSession: (sessionId) =>
+          this.retrieveCheckoutSession(sessionId),
         createPortalSession: async (input) => {
           const configuration = process.env.STRIPE_PORTAL_CONFIGURATION_ID;
           if (!configuration) {
@@ -444,17 +443,107 @@ export class BillingService {
 
   private normalizeCheckoutSession(
     session: Stripe.Checkout.Session,
+    paymentStatus = session.payment_status,
   ): ProviderCheckoutSession {
     return {
       sessionId: session.id,
       url: session.url,
       expiresAt: new Date(session.expires_at * 1000),
       status: session.status ?? "expired",
-      paymentStatus: session.payment_status,
+      paymentStatus,
       workspaceId:
         session.metadata?.workspaceId ?? session.client_reference_id ?? undefined,
       attemptId: session.metadata?.attemptId ?? undefined,
     };
+  }
+
+  private async retrieveCheckoutSession(
+    sessionId: string,
+  ): Promise<ProviderCheckoutSession> {
+    const stripe = this.stripe();
+    let calls = 0;
+    const consumeCall = () => {
+      calls += 1;
+      if (calls > (this.catalog?.worker.providerCallBudget ?? 0)) {
+        throw new BillingError(
+          "provider_call_budget_exhausted",
+          "Workspace Billing provider call budget exhausted",
+        );
+      }
+    };
+    consumeCall();
+    const session = await stripe.checkout.sessions.retrieve(sessionId, {
+      expand: ["payment_intent"],
+    });
+    if (
+      session.status !== "complete" ||
+      session.payment_status !== "unpaid"
+    ) {
+      return this.normalizeCheckoutSession(session);
+    }
+
+    const directPaymentIntent =
+      session.payment_intent && typeof session.payment_intent === "object"
+        ? session.payment_intent
+        : null;
+    const terminalPaymentStatus = (status: string | undefined) =>
+      status === "succeeded"
+        ? "paid"
+        : status === "requires_payment_method" || status === "canceled"
+          ? "failed"
+          : null;
+    const directOutcome = terminalPaymentStatus(directPaymentIntent?.status);
+    if (directOutcome) {
+      return this.normalizeCheckoutSession(session, directOutcome);
+    }
+
+    let invoiceId =
+      typeof session.invoice === "string" ? session.invoice : session.invoice?.id;
+    if (!invoiceId && session.subscription) {
+      const subscriptionId =
+        typeof session.subscription === "string"
+          ? session.subscription
+          : session.subscription.id;
+      consumeCall();
+      const subscription = await stripe.subscriptions.retrieve(subscriptionId, {
+        expand: ["latest_invoice"],
+      });
+      invoiceId =
+        typeof subscription.latest_invoice === "string"
+          ? subscription.latest_invoice
+          : subscription.latest_invoice?.id;
+    }
+    if (!invoiceId) return this.normalizeCheckoutSession(session);
+
+    consumeCall();
+    const payments = await stripe.invoicePayments.list({
+      invoice: invoiceId,
+      limit: 100,
+      expand: ["data.payment.payment_intent"],
+    });
+    if (payments.has_more) {
+      throw new BillingError(
+        "checkout_payment_collection_unbounded",
+        "Checkout payment recovery needs operator attention",
+      );
+    }
+    let outcome: string | null = null;
+    for (const payment of payments.data) {
+      const paymentIntent =
+        payment.payment.payment_intent &&
+        typeof payment.payment.payment_intent === "object"
+          ? payment.payment.payment_intent
+          : null;
+      const candidate = terminalPaymentStatus(paymentIntent?.status);
+      if (candidate === "paid" || payment.status === "paid") {
+        outcome = "paid";
+        break;
+      }
+      if (candidate === "failed" || payment.status === "canceled") {
+        outcome = "failed";
+      }
+    }
+    return this.normalizeCheckoutSession(session, outcome ?? session.payment_status);
   }
 
   reconcileCurrentState(workspaceId: string) {
@@ -545,18 +634,6 @@ export class BillingService {
       checkoutSessionId: event.type.startsWith("checkout.session")
         ? objectId
         : null,
-      checkoutStatus:
-        event.type.startsWith("checkout.session") &&
-        (object.status === "open" ||
-          object.status === "complete" ||
-          object.status === "expired")
-          ? (object.status as ProviderCheckoutSession["status"])
-          : null,
-      checkoutPaymentStatus:
-        event.type.startsWith("checkout.session") &&
-        typeof object.payment_status === "string"
-          ? object.payment_status
-          : null,
       workspaceHint:
         typeof metadata.workspaceId === "string"
           ? metadata.workspaceId
