@@ -1,6 +1,12 @@
-import { ClipEditorDocumentPersistenceError } from "@narriflow/services";
+import {
+  ClipEditorDocumentPersistenceError,
+  UnsafeUrlError,
+} from "@narriflow/services";
 
 export function clipEditorPersistenceHttpError(error: unknown) {
+  if (error instanceof UnsafeUrlError) {
+    return { status: 422 as const, body: { error: "unsafe_media_url" } };
+  }
   if (!(error instanceof ClipEditorDocumentPersistenceError)) return null;
   switch (error.code) {
     case "clip_not_found":

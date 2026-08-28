@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { ClipEditorDocumentPersistenceError } from "@narriflow/services";
+import {
+  ClipEditorDocumentPersistenceError,
+  UnsafeUrlError,
+} from "@narriflow/services";
 import { clipEditorPersistenceHttpError } from "./editor-persistence-http";
 
 describe("Clip Editor Document Persistence HTTP mapping", () => {
@@ -24,5 +27,11 @@ describe("Clip Editor Document Persistence HTTP mapping", () => {
 
   test("ignores errors owned by another HTTP surface", () => {
     expect(clipEditorPersistenceHttpError(new Error("other"))).toBeNull();
+  });
+
+  test("maps every persistence adapter's unsafe media failure consistently", () => {
+    expect(
+      clipEditorPersistenceHttpError(new UnsafeUrlError("private_host")),
+    ).toEqual({ status: 422, body: { error: "unsafe_media_url" } });
   });
 });

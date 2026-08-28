@@ -1128,9 +1128,6 @@ app.patch("/projects/:id/clips/:clipId", async (c) => {
       400,
     );
   } catch (error) {
-    if (error instanceof UnsafeUrlError) {
-      return c.json({ error: "unsafe_media_url" }, 422);
-    }
     const persistenceError = clipEditorPersistenceHttpError(error);
     if (persistenceError) return c.json(persistenceError.body, persistenceError.status);
     if (error instanceof ClipActionError) {
@@ -1486,12 +1483,6 @@ app.put("/projects/:id/clips/:clipId/editor", async (c) => {
       // practice too, same rule as the empty-timeline case above.
       return c.json({ error: error.code }, 422);
     }
-    // Non-public document media (localhost, a private IP, etc.) must remain a
-    // typed rejection instead of wedging autosave. Client validation is only
-    // the first line of defense; DNS-aware validation stays server-side.
-    if (error instanceof UnsafeUrlError) {
-      return c.json({ error: "unsafe_media_url" }, 422);
-    }
     const persistenceError = clipEditorPersistenceHttpError(error);
     if (persistenceError) return c.json(persistenceError.body, persistenceError.status);
     if (error instanceof Error && error.message === "clip not found") {
@@ -1560,11 +1551,6 @@ app.post("/projects/:id/clips/:clipId/editor/reset", async (c) => {
         },
         409,
       );
-    }
-    // Keep Reset's unsafe-media outcome identical to the other document
-    // mutation adapters.
-    if (error instanceof UnsafeUrlError) {
-      return c.json({ error: "unsafe_media_url" }, 422);
     }
     const persistenceError = clipEditorPersistenceHttpError(error);
     if (persistenceError) return c.json(persistenceError.body, persistenceError.status);
@@ -2004,9 +1990,6 @@ app.post("/projects/:id/clips/apply-studio-edits", async (c) => {
           : "framing";
     return c.json({ ...result, field }, 200);
   } catch (error) {
-    if (error instanceof UnsafeUrlError) {
-      return c.json({ error: "unsafe_media_url" }, 422);
-    }
     const persistenceError = clipEditorPersistenceHttpError(error);
     if (persistenceError) return c.json(persistenceError.body, persistenceError.status);
     return c.json(
