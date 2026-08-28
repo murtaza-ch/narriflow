@@ -12,6 +12,10 @@ _Avoid_: Studio shell, editor state, editing tab
 The complete revisioned edit state for one clip that can be saved to Narriflow and used to produce exports.
 _Avoid_: Form state, Studio payload, edits blob
 
+**Clip Editor Document Persistence**:
+The server-side module that owns canonical post-creation Clip Editor Document storage, revision fencing, dependent database invalidation, and durable obsolete-media cleanup intent.
+_Avoid_: Clip Service save helper, Studio cloud state, cleanup callback
+
 **Clip Composition Plan**:
 The immutable, versioned result of resolving one Clip Editor Document, source facts, bounded evidence, asset availability, capabilities, and up to four output targets into exact timed canvases, layers, crops, destinations, notices, and evidence requests. Studio preview and FFmpeg translate this plan; they do not choose composition policy.
 _Avoid_: FFmpeg filter graph, preview layout, auto-layout analysis

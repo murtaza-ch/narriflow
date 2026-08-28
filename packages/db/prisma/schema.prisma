@@ -1091,6 +1091,29 @@ model Clip {
   @@unique([projectId, workflowRunId, index])
 }
 
+/// Durable, fenced work created atomically when an accepted Clip Editor
+/// Document mutation removes the last ordinary database reference to media.
+/// Object keys never appear in diagnostics; workers delete only this exact key.
+model EditorMediaCleanupObligation {
+  id             String    @id @default(uuid()) @db.Uuid
+  projectId      String    @db.Uuid
+  clipId         String    @db.Uuid
+  cleanupClass   String
+  objectKey      String
+  attemptCount   Int       @default(0)
+  nextAttemptAt  DateTime  @default(now())
+  claimId        String?   @db.Uuid
+  claimExpiresAt DateTime?
+  failureCode    String?
+  completedAt    DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@unique([cleanupClass, objectKey])
+  @@index([completedAt, nextAttemptAt, claimExpiresAt])
+  @@index([clipId, completedAt])
+}
+
 model ClipRender {
   id          String           @id @default(uuid()) @db.Uuid
   clipId      String           @db.Uuid

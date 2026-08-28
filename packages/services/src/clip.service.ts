@@ -45,7 +45,6 @@ import {
   saveEditorDocumentSchema,
   splitUtterancesIntoSentences,
   studioEditsSchema,
-  updateClipTranscriptSliceSchema,
 } from "@narriflow/validators";
 import type {
   ApplyStudioEditsPatch,
@@ -101,6 +100,28 @@ import {
   getWorkflowRunLifecycle,
   requireProtocolV1WorkflowContext,
 } from "./workflow-run-lifecycle";
+import {
+  clipEditorDocumentPersistence,
+  ClipEditorRevisionConflictError,
+} from "./clip-editor-document-persistence";
+import {
+  computeDurationOptimality,
+  computePacingScore,
+  computePlatformScore,
+  computeViralityScore,
+} from "./clip-scoring";
+
+export {
+  ClipEditorDocumentPersistenceError,
+  ClipEditorRevisionConflictError,
+  editorDocumentsEqual,
+} from "./clip-editor-document-persistence";
+export {
+  computeDurationOptimality,
+  computePacingScore,
+  computePlatformScore,
+  computeViralityScore,
+} from "./clip-scoring";
 
 interface DetectedClip {
   startSec: number;
@@ -244,25 +265,6 @@ function normalizeAspectRatios(
       (aspectRatioOrder.get(left) ?? Number.MAX_SAFE_INTEGER) -
       (aspectRatioOrder.get(right) ?? Number.MAX_SAFE_INTEGER),
   );
-}
-
-/** Exact canonical comparison used to acknowledge a lost-response retry. */
-export function editorDocumentsEqual(
-  current: EditorDocument,
-  attempted: EditorDocument,
-): boolean {
-  return JSON.stringify(current) === JSON.stringify(attempted);
-}
-
-export async function runOrScheduleCleanup(
-  cleanup: () => Promise<void>,
-  schedule?: (cleanup: () => Promise<void>) => void,
-): Promise<void> {
-  if (schedule) {
-    schedule(cleanup);
-    return;
-  }
-  await cleanup();
 }
 
 /**
@@ -416,52 +418,6 @@ export class ClipActionError extends Error {
  * tab or an earlier in-flight save already bumped it). Carries the current
  * revision so the client can refetch, rebase its history, and retry.
  */
-export class ClipEditorRevisionConflictError extends Error {
-  constructor(readonly currentRevision: number) {
-    super("editor document revision conflict");
-    this.name = "ClipEditorRevisionConflictError";
-  }
-}
-
-function parseTranscriptSlice(value: unknown): TranscriptUtterance[] {
-  return updateClipTranscriptSliceSchema.parse({ transcriptSlice: value })
-    .transcriptSlice;
-}
-
-/**
- * Materialize the editor document from a stored clip row. A null stored
- * captionPreset maps to the default preset — the document model always has a
- * concrete preset, which is also what the preview falls back to.
- */
-function buildEditorDocumentFromClip(
-  clip: Pick<
-    Clip,
-    | "startSec"
-    | "endSec"
-    | "captionPreset"
-    | "transcriptSlice"
-    | "studioEdits"
-    | "brollUrl"
-    | "deletedRanges"
-  >,
-): EditorDocument {
-  return editorDocumentSchema.parse({
-    clipStartSec: clip.startSec,
-    clipEndSec: clip.endSec,
-    captionPreset: clip.captionPreset
-      ? captionPresetSchema.parse(clip.captionPreset)
-      : DEFAULT_CAPTION_PRESET,
-    transcriptSlice: parseTranscriptSlice(clip.transcriptSlice),
-    studioEdits: clip.studioEdits
-      ? studioEditsSchema.parse(clip.studioEdits)
-      : studioEditsSchema.parse({}),
-    brollUrl: clip.brollUrl ?? null,
-    deletedRanges: clip.deletedRanges
-      ? deletedRangesSchema.parse(clip.deletedRanges)
-      : [],
-  });
-}
-
 /**
  * Throws when `currentRevision` doesn't match the client's `baseRevision` —
  * shared guard for both saveClipEditorDocument and resetClipEditorToOriginal.
@@ -711,7 +667,7 @@ export function clampEditorDocumentToStoredWindow(
 export interface EditorDocumentSavePlanInput {
   /** The incoming payload's `document`, already schema-parsed. */
   document: EditorDocument;
-  /** `buildEditorDocumentFromClip(clip)` — the document as currently stored. */
+  /** The canonical document currently stored for the clip. */
   current: EditorDocument;
   /** `{ startSec: clip.startSec, endSec: clip.endSec }` — the clip's
    *  STORED window before this save. */
@@ -1332,6 +1288,22 @@ const EDITOR_WRITE_TRANSACTION_OPTIONS = {
 } as const;
 
 export class ClipService {
+  private async getClipSnapshotAfterDocumentMutation(
+    userId: string,
+    projectId: string,
+    clipId: string,
+  ): Promise<ClipSnapshot> {
+    const clip = await requirePrisma().clip.findFirst({
+      where: { id: clipId, projectId, project: { userId } },
+      include: {
+        project: { select: { sourceDurationSeconds: true } },
+        renders: true,
+      },
+    });
+    if (!clip) throw new Error("clip not found");
+    return toClipSnapshot(clip);
+  }
+
   async persistDetectedClips(
     projectId: string,
     workflowRunId: string,
@@ -1447,115 +1419,13 @@ export class ClipService {
     clipId: string,
     input: { startSec: number; endSec: number },
   ): Promise<ClipSnapshot> {
-    const prisma = requirePrisma();
-
-    const clip = await prisma.clip.findFirst({
-      where: {
-        id: clipId,
-        projectId,
-        project: { userId },
-      },
-      include: {
-        project: {
-          include: { transcript: true },
-        },
-        renders: true,
-      },
+    await clipEditorDocumentPersistence.mutateDocument({
+      actorUserId: userId,
+      projectId,
+      clipId,
+      intent: { kind: "set_boundaries", ...input },
     });
-
-    if (!clip) {
-      throw new Error("clip not found");
-    }
-
-    const storedUtterances = clip.project.transcript?.utterancesJson as
-      | TranscriptUtterance[]
-      | null;
-    // Re-split defensively: transcripts stored before sentence-level
-    // normalization hold whole speaker turns, whose utterance-end fallback
-    // would let boundary expansion overshoot by minutes.
-    const utterances = splitUtterancesIntoSentences(storedUtterances ?? []);
-    const effective = getEffectiveClipTiming({
-      utterances,
-      startSec: input.startSec,
-      endSec: input.endSec,
-      sourceDurationSec: clip.project.sourceDurationSeconds,
-    });
-    const newSlice = storedUtterances ? effective.transcriptSlice : [];
-
-    const durationSec = effective.durationSec;
-    const durationOptimalityScore = computeDurationOptimality(durationSec);
-
-    const tiktokScore = computePlatformScore(
-      clip.viralityScore,
-      durationSec,
-      "tiktok",
-    );
-    const youtubeScore = computePlatformScore(
-      clip.viralityScore,
-      durationSec,
-      "youtube",
-    );
-    const instagramScore = computePlatformScore(
-      clip.viralityScore,
-      durationSec,
-      "instagram",
-    );
-
-    const staleRenderKeys = [
-      ...clip.renders
-        .filter((render) => render.exportVariantId === null)
-        .map((render) => render.storageKey),
-      // The old-window preview proxy is orphaned once boundaries move.
-      clip.previewStorageKey,
-      // ...and so is its peaks sidecar (derived key, no own column).
-      tryDerivePeaksStorageKey(clip.previewStorageKey),
-    ].filter((key): key is string => Boolean(key));
-
-    const updated = await prisma.$transaction(async (tx) => {
-      await tx.clipRender.deleteMany({
-        where: { clipId, exportVariantId: null },
-      });
-
-      return tx.clip.update({
-        where: { id: clipId },
-        data: {
-          startSec: effective.startSec,
-          endSec: effective.endSec,
-          status: "edited",
-          transcriptSlice: newSlice as unknown as Prisma.InputJsonValue,
-          durationOptimalityScore,
-          tiktokScore,
-          youtubeScore,
-          instagramScore,
-          // The preview proxy covers the OLD window (±4s); new boundaries can
-          // fall outside it entirely. Null it so the preview backfill worker
-          // cuts a fresh proxy for the new window.
-          previewStorageKey: null,
-          previewStartSec: null,
-          previewDurationSec: null,
-          autoLayoutAnalysis: Prisma.DbNull,
-          splitLayoutAnalysis: Prisma.DbNull,
-          autoLayoutStatus: "pending",
-          autoLayoutClaimToken: null,
-          autoLayoutLeaseExpiresAt: null,
-          // Document-owned columns (startSec/transcriptSlice) are also
-          // writable through the revisioned editor document
-          // (saveClipEditorDocument) — every mutator that touches them must
-          // bump editorRevision so a concurrent studio PUT conflicts (409)
-          // instead of silently clobbering this write, and so it doesn't get
-          // captured as the eventual editorOriginal snapshot on the next
-          // first-save.
-          editorRevision: { increment: 1 },
-        },
-        include: {
-          renders: true,
-        },
-      });
-    }, EDITOR_WRITE_TRANSACTION_OPTIONS);
-
-    await deleteRenderAssets(staleRenderKeys);
-
-    return toClipSnapshot(updated);
+    return this.getClipSnapshotAfterDocumentMutation(userId, projectId, clipId);
   }
 
   /**
@@ -3771,42 +3641,20 @@ export class ClipService {
     splitLayoutFailure: ClipSplitLayoutFailure | null;
     layoutAnalysisFailure: ClipLayoutAnalysisFailure | null;
   }> {
-    const prisma = requirePrisma();
-
-    const clip = await prisma.clip.findFirst({
-      where: { id: clipId, projectId, project: { userId } },
+    const result = await clipEditorDocumentPersistence.readDocument({
+      actorUserId: userId,
+      projectId,
+      clipId,
     });
-    if (!clip) {
-      throw new Error("clip not found");
-    }
-
-    const document = buildEditorDocumentFromClip(clip);
-    const original = clip.editorOriginal
-      ? editorDocumentSchema.parse(clip.editorOriginal)
-      : document;
-    const layoutAnalysis = parseClipLayoutAnalysis(clip.layoutAnalysis);
-    const autoLayoutAnalysis = parseClipAutoLayoutAnalysis(
-      clip.autoLayoutAnalysis,
-    );
-    const splitLayoutAnalysis = parseClipSplitLayoutAnalysis(
-      clip.splitLayoutAnalysis,
-    );
-    const splitLayoutFailure = parseClipSplitLayoutFailure(
-      clip.splitLayoutAnalysis,
-    );
-    const layoutAnalysisFailure = parseClipLayoutAnalysisFailure(
-      clip.layoutAnalysis,
-    );
-
     return {
-      revision: clip.editorRevision,
-      document,
-      original,
-      layoutAnalysis,
-      autoLayoutAnalysis,
-      splitLayoutAnalysis,
-      splitLayoutFailure,
-      layoutAnalysisFailure,
+      revision: result.revision,
+      document: result.document,
+      original: result.original,
+      layoutAnalysis: parseClipLayoutAnalysis(result.evidence.screen),
+      autoLayoutAnalysis: parseClipAutoLayoutAnalysis(result.evidence.automatic),
+      splitLayoutAnalysis: parseClipSplitLayoutAnalysis(result.evidence.split),
+      splitLayoutFailure: parseClipSplitLayoutFailure(result.evidence.split),
+      layoutAnalysisFailure: parseClipLayoutAnalysisFailure(result.evidence.screen),
     };
   }
 
@@ -3987,196 +3835,28 @@ export class ClipService {
     projectId: string,
     clipId: string,
     payload: SaveEditorDocument,
-    options: {
-      scheduleCleanup?: (cleanup: () => Promise<void>) => void;
-    } = {},
   ): Promise<{ revision: number; document: EditorDocument; clip: ClipSnapshot }> {
-    const prisma = requirePrisma();
-    const { baseRevision, document } = saveEditorDocumentSchema.parse(payload);
-    if (document.brollUrl !== null) {
-      assertPublicHttpUrl(document.brollUrl);
-    }
-
-    const clip = await prisma.clip.findFirst({
-      where: { id: clipId, projectId, project: { userId } },
-      include: {
-        renders: true,
-        project: { select: { sourceDurationSeconds: true, sourceStorageKey: true } },
+    const parsed = saveEditorDocumentSchema.parse(payload);
+    const result = await clipEditorDocumentPersistence.mutateDocument({
+      actorUserId: userId,
+      projectId,
+      clipId,
+      intent: {
+        kind: "replace",
+        baseRevision: parsed.baseRevision,
+        document: parsed.document,
       },
     });
-    if (!clip) {
-      throw new Error("clip not found");
-    }
-    const current = buildEditorDocumentFromClip(clip);
-    if (clip.editorRevision !== baseRevision) {
-      // Idempotent lost-response retry: the first PUT may have committed and
-      // its response disappeared with the connection. If the canonical
-      // document already equals this retry, acknowledge the current revision
-      // instead of manufacturing a conflict and another write.
-      if (editorDocumentsEqual(current, document)) {
-        return {
-          revision: clip.editorRevision,
-          document: current,
-          clip: toClipSnapshot(clip),
-        };
-      }
-      throw new ClipEditorRevisionConflictError(clip.editorRevision);
-    }
-
-    const plan = planEditorDocumentSave({
-      document,
-      current,
-      storedWindow: { startSec: clip.startSec, endSec: clip.endSec },
-      sourceDurationSec: clip.project.sourceDurationSeconds,
-      viralityScore: clip.viralityScore,
-    });
-
-    if (!plan.noop && plan.boundariesChanged) {
-      try {
-        assertBoundaryChangeHasAvailableSource(clip.project.sourceStorageKey);
-      } catch (error) {
-        console.warn(
-          JSON.stringify({
-            level: "warn",
-            message: "editor_boundaries_rejected_source_purged",
-            clipId,
-            projectId,
-          }),
-        );
-        throw error;
-      }
-    }
-
-    if (plan.noop) {
-      return {
-        revision: clip.editorRevision,
-        document: current,
-        clip: toClipSnapshot(clip),
-      };
-    }
-
-    const { next, boundariesChanged, transcriptChanged, boundaryDriftDetected } = plan;
-    const layoutInputsChanged =
-      boundariesChanged ||
-      JSON.stringify(next.deletedRanges) !== JSON.stringify(current.deletedRanges);
-    if (boundaryDriftDetected && plan.recomputedEffective) {
-      // Diagnostic only — the transcript is already clamped to the stored
-      // window regardless. Surfaces the cases where a client sent a
-      // transcriptSlice implying a wider window than the clip actually has,
-      // so it's visible without being able to move boundaries.
-      console.warn(
-        JSON.stringify({
-          level: "warn",
-          message: "editor_document_transcript_boundary_drift_clamped",
-          clipId,
-          storedStartSec: clip.startSec,
-          storedEndSec: clip.endSec,
-          recomputedStartSec: plan.recomputedEffective.startSec,
-          recomputedEndSec: plan.recomputedEffective.endSec,
-        }),
-      );
-    }
-
-    const staleRenderKeys = [
-      ...clip.renders
-        .filter((render) => render.exportVariantId === null)
-        .map((render) => render.storageKey),
-      // The old-window preview proxy is orphaned once boundaries actually
-      // move — same rule as updateClipBoundaries/resetClipEditorToOriginal.
-      ...(boundariesChanged
-        ? [clip.previewStorageKey, tryDerivePeaksStorageKey(clip.previewStorageKey)]
-        : []),
-    ].filter((key): key is string => Boolean(key));
-
-    let deletedRenderCount = 0;
-    const updated = await prisma.$transaction(async (tx) => {
-      const guarded = await tx.clip.updateMany({
-        where: { id: clipId, editorRevision: baseRevision },
-        data: {
-          startSec: next.clipStartSec,
-          endSec: next.clipEndSec,
-          captionPreset: next.captionPreset as unknown as Prisma.InputJsonValue,
-          transcriptSlice:
-            next.transcriptSlice as unknown as Prisma.InputJsonValue,
-          studioEdits: next.studioEdits as unknown as Prisma.InputJsonValue,
-          brollUrl: next.brollUrl,
-          deletedRanges: next.deletedRanges as unknown as Prisma.InputJsonValue,
-          editorRevision: { increment: 1 },
-          status: "edited",
-          ...plan.durationDependentScores,
-          // The proxy covers the OLD window; new boundaries can fall
-          // outside it entirely. Null it so the preview backfill worker
-          // cuts a fresh proxy for the new window (the client also drops
-          // its own previewVideoUrl state immediately on a successful save
-          // — see studio-shell.tsx's trim commit handler).
-          ...(boundariesChanged
-            ? { previewStorageKey: null, previewStartSec: null, previewDurationSec: null }
-            : {}),
-          ...(layoutInputsChanged
-            ? {
-                autoLayoutAnalysis: Prisma.DbNull,
-                autoLayoutStatus: "pending" as const,
-                autoLayoutClaimToken: null,
-                autoLayoutLeaseExpiresAt: null,
-              }
-            : {}),
-          ...(layoutInputsChanged
-            ? { splitLayoutAnalysis: Prisma.DbNull }
-            : {}),
-          // First real save captures the pre-edit state as the immutable
-          // revision-zero snapshot; never overwritten afterwards.
-          ...(clip.editorOriginal
-            ? {}
-            : { editorOriginal: current as unknown as Prisma.InputJsonValue }),
-        },
-      });
-      if (guarded.count === 0) {
-        return null;
-      }
-      const deleted = await tx.clipRender.deleteMany({
-        where: { clipId, exportVariantId: null },
-      });
-      deletedRenderCount = deleted.count;
-      return tx.clip.findUniqueOrThrow({
-        where: { id: clipId },
-        include: { renders: true },
-      });
-    }, EDITOR_WRITE_TRANSACTION_OPTIONS);
-
-    if (!updated) {
-      const latest = await prisma.clip.findUnique({
-        where: { id: clipId },
-        select: { editorRevision: true },
-      });
-      throw new ClipEditorRevisionConflictError(
-        latest?.editorRevision ?? baseRevision + 1,
-      );
-    }
-
-    console.warn(
-      JSON.stringify({
-        level: "warn",
-        message: "editor_document_saved_invalidated_renders",
-        clipId,
-        revision: updated.editorRevision,
-        deletedRenderCount,
-        transcriptChanged,
-        boundariesChanged,
-      }),
-    );
-
-    await runOrScheduleCleanup(
-      () => deleteRenderAssets(staleRenderKeys),
-      options.scheduleCleanup,
-    );
-
     return {
-      revision: updated.editorRevision,
-      document: buildEditorDocumentFromClip(updated),
-      clip: toClipSnapshot(updated),
+      revision: result.revision,
+      document: result.document,
+      clip: await this.getClipSnapshotAfterDocumentMutation(
+        userId,
+        projectId,
+        clipId,
+      ),
     };
   }
-
   /**
    * Reset-to-original (docs/plans/vizard-parity.md Phase A step 4): restores
    * the whole editor document — INCLUDING clip boundaries and the transcript
@@ -4204,177 +3884,22 @@ export class ClipService {
     clipId: string,
     baseRevision: number,
   ): Promise<{ revision: number; document: EditorDocument; clip: ClipSnapshot }> {
-    const prisma = requirePrisma();
-
-    const clip = await prisma.clip.findFirst({
-      where: { id: clipId, projectId, project: { userId } },
-      include: {
-        project: { select: { sourceDurationSeconds: true } },
-        renders: true,
-      },
+    const result = await clipEditorDocumentPersistence.mutateDocument({
+      actorUserId: userId,
+      projectId,
+      clipId,
+      intent: { kind: "reset", baseRevision },
     });
-    if (!clip) {
-      throw new Error("clip not found");
-    }
-    assertEditorRevisionMatches(clip.editorRevision, baseRevision);
-
-    const plan = planEditorReset({
-      editorOriginal: clip.editorOriginal,
-      currentStartSec: clip.startSec,
-      currentEndSec: clip.endSec,
-      viralityScore: clip.viralityScore,
-      sourceDurationSec: clip.project.sourceDurationSeconds,
-    });
-
-    if (plan.noop) {
-      // Every mutator that can populate `editorOriginal` (only
-      // saveClipEditorDocument's first real save) increments editorRevision
-      // in the SAME write — that invariant is what makes this guarded
-      // no-op update a valid atomic re-check: if it still matches
-      // editorRevision: baseRevision, editorOriginal is PROVABLY still null
-      // at that instant, even though our own read of it happened earlier
-      // and unguarded. The write itself is value-preserving (sets
-      // editorRevision back to itself) — no real column changes, so this
-      // does not bump the visible revision or invalidate renders.
-      const noOpGuard = await prisma.clip.updateMany({
-        where: { id: clipId, editorRevision: baseRevision },
-        data: { editorRevision: baseRevision },
-      });
-      if (noOpGuard.count === 0) {
-        const latest = await prisma.clip.findUnique({
-          where: { id: clipId },
-          select: { editorRevision: true },
-        });
-        throw new ClipEditorRevisionConflictError(
-          latest?.editorRevision ?? baseRevision + 1,
-        );
-      }
-      return {
-        revision: clip.editorRevision,
-        document: buildEditorDocumentFromClip(clip),
-        clip: toClipSnapshot(clip),
-      };
-    }
-
-    // Fix (MEDIUM, no-op reset): pressing Reset again after the first reset
-    // already landed must be a true zero-write no-op — no revision bump, no
-    // render invalidation — not just a shortcut for the "never saved" case
-    // above. Same deep-equality pattern saveClipEditorDocument uses (both
-    // sides are schema-parse output, so serialized comparison is a valid
-    // check).
-    const currentDocument = buildEditorDocumentFromClip(clip);
-    if (
-      JSON.stringify(plan.plannedDocument) === JSON.stringify(currentDocument)
-    ) {
-      return {
-        revision: clip.editorRevision,
-        document: currentDocument,
-        clip: toClipSnapshot(clip),
-      };
-    }
-
-    const { original, effective, boundariesChanged } = plan;
-    const normalizedOriginalRanges = normalizeDeletedRanges(original.deletedRanges, {
-      startSec: effective.startSec,
-      endSec: effective.endSec,
-    });
-    const layoutInputsChanged =
-      boundariesChanged ||
-      JSON.stringify(normalizedOriginalRanges) !==
-        JSON.stringify(currentDocument.deletedRanges);
-    const staleRenderKeys = [
-      ...clip.renders
-        .filter((render) => render.exportVariantId === null)
-        .map((render) => render.storageKey),
-      // The old-window preview proxy is orphaned once boundaries move —
-      // same rule as updateClipBoundaries.
-      ...(boundariesChanged
-        ? [clip.previewStorageKey, tryDerivePeaksStorageKey(clip.previewStorageKey)]
-        : []),
-    ].filter((key): key is string => Boolean(key));
-
-    let deletedRenderCount = 0;
-    const updated = await prisma.$transaction(async (tx) => {
-      const guarded = await tx.clip.updateMany({
-        where: { id: clipId, editorRevision: baseRevision },
-        data: {
-          startSec: effective.startSec,
-          endSec: effective.endSec,
-          captionPreset: original.captionPreset as unknown as Prisma.InputJsonValue,
-          transcriptSlice:
-            effective.transcriptSlice as unknown as Prisma.InputJsonValue,
-          studioEdits: original.studioEdits as unknown as Prisma.InputJsonValue,
-          brollUrl: original.brollUrl,
-          deletedRanges: normalizedOriginalRanges as unknown as Prisma.InputJsonValue,
-          durationOptimalityScore: plan.durationOptimalityScore,
-          tiktokScore: plan.tiktokScore,
-          youtubeScore: plan.youtubeScore,
-          instagramScore: plan.instagramScore,
-          status: "edited",
-          editorRevision: { increment: 1 },
-          ...(boundariesChanged
-            ? {
-                previewStorageKey: null,
-                previewStartSec: null,
-                previewDurationSec: null,
-              }
-            : {}),
-          ...(layoutInputsChanged
-            ? {
-                autoLayoutAnalysis: Prisma.DbNull,
-                autoLayoutStatus: "pending" as const,
-                autoLayoutClaimToken: null,
-                autoLayoutLeaseExpiresAt: null,
-              }
-            : {}),
-          ...(layoutInputsChanged
-            ? { splitLayoutAnalysis: Prisma.DbNull }
-            : {}),
-        },
-      });
-      if (guarded.count === 0) {
-        return null;
-      }
-      const deleted = await tx.clipRender.deleteMany({
-        where: { clipId, exportVariantId: null },
-      });
-      deletedRenderCount = deleted.count;
-      return tx.clip.findUniqueOrThrow({
-        where: { id: clipId },
-        include: { renders: true },
-      });
-    }, EDITOR_WRITE_TRANSACTION_OPTIONS);
-
-    if (!updated) {
-      const latest = await prisma.clip.findUnique({
-        where: { id: clipId },
-        select: { editorRevision: true },
-      });
-      throw new ClipEditorRevisionConflictError(
-        latest?.editorRevision ?? baseRevision + 1,
-      );
-    }
-
-    console.warn(
-      JSON.stringify({
-        level: "warn",
-        message: "editor_document_reset_to_original",
-        clipId,
-        revision: updated.editorRevision,
-        deletedRenderCount,
-        boundariesChanged,
-      }),
-    );
-
-    await deleteRenderAssets(staleRenderKeys);
-
     return {
-      revision: updated.editorRevision,
-      document: buildEditorDocumentFromClip(updated),
-      clip: toClipSnapshot(updated),
+      revision: result.revision,
+      document: result.document,
+      clip: await this.getClipSnapshotAfterDocumentMutation(
+        userId,
+        projectId,
+        clipId,
+      ),
     };
   }
-
   /**
    * Applies a caption preset to every clip in an owned project ("apply to
    * all"). `captionPreset` is a plain column (unlike `studioEdits`), so the
@@ -4638,44 +4163,13 @@ export class ClipService {
     clipId: string,
     transcriptSlice: TranscriptUtterance[],
   ): Promise<ClipSnapshot> {
-    const prisma = requirePrisma();
-
-    const clip = await prisma.clip.findFirst({
-      where: {
-        id: clipId,
-        projectId,
-        project: { userId },
-      },
+    await clipEditorDocumentPersistence.mutateDocument({
+      actorUserId: userId,
+      projectId,
+      clipId,
+      intent: { kind: "set_transcript", transcriptSlice },
     });
-
-    if (!clip) {
-      throw new Error("clip not found");
-    }
-
-    // tailPadSec 0 — slice-only input; stored bounds are final (see
-    // toClipSnapshot).
-    const effective = getEffectiveClipTiming({
-      utterances: transcriptSlice,
-      startSec: clip.startSec,
-      endSec: clip.endSec,
-      tailPadSec: 0,
-    });
-
-    const updated = await prisma.clip.update({
-      where: { id: clipId },
-      data: {
-        startSec: effective.startSec,
-        endSec: effective.endSec,
-        transcriptSlice: effective.transcriptSlice as unknown as Prisma.InputJsonValue,
-        status: "edited",
-        // See updateClipBoundaries' comment: startSec/transcriptSlice are
-        // document-owned and also writable via saveClipEditorDocument.
-        editorRevision: { increment: 1 },
-      },
-      include: { renders: true },
-    });
-
-    return toClipSnapshot(updated);
+    return this.getClipSnapshotAfterDocumentMutation(userId, projectId, clipId);
   }
 
   async autoQueueDefaultRenders(
@@ -4823,125 +4317,6 @@ export function sliceTranscriptForClip(
   endSec: number,
 ): TranscriptUtterance[] {
   return normalizeTranscriptSliceForClip(utterances, startSec, endSec);
-}
-
-export function computeDurationOptimality(
-  durationSec: number,
-  policy: {
-    minDurationSec?: number;
-    preferredMinDurationSec?: number;
-    preferredMaxDurationSec?: number;
-    maxDurationSec?: number;
-  } = {},
-): number {
-  const minDurationSec = policy.minDurationSec ?? 15;
-  const preferredMinDurationSec = policy.preferredMinDurationSec ?? 30;
-  const preferredMaxDurationSec = policy.preferredMaxDurationSec ?? 60;
-  const maxDurationSec = policy.maxDurationSec ?? 120;
-
-  if (
-    durationSec >= preferredMinDurationSec &&
-    durationSec <= preferredMaxDurationSec
-  ) {
-    return 100;
-  }
-
-  if (durationSec >= minDurationSec && durationSec < preferredMinDurationSec) {
-    const span = Math.max(1, preferredMinDurationSec - minDurationSec);
-    return Math.round(60 + ((durationSec - minDurationSec) / span) * 40);
-  }
-
-  if (durationSec > preferredMaxDurationSec && durationSec <= maxDurationSec) {
-    const span = Math.max(1, maxDurationSec - preferredMaxDurationSec);
-    return Math.round(100 - ((durationSec - preferredMaxDurationSec) / span) * 60);
-  }
-
-  if (durationSec < minDurationSec) {
-    return Math.max(20, Math.round((durationSec / minDurationSec) * 60));
-  }
-
-  return 20;
-}
-
-export function computePacingScore(
-  utterances: TranscriptUtterance[],
-  durationSec: number,
-): number {
-  if (durationSec <= 0 || utterances.length === 0) return 50;
-
-  const totalWords = utterances.reduce(
-    (sum, u) => sum + u.text.split(/\s+/).length,
-    0,
-  );
-  const wps = totalWords / durationSec;
-  // Count actual speaker CHANGES, not utterance rows: utterances are now
-  // sentence-sized (a monologue is many rows), so `utterances.length` would
-  // inflate "turns" and with it pacing/virality for single-speaker content.
-  const speakerTurns = utterances.reduce(
-    (turns, utterance, index) =>
-      index === 0 || utterance.speaker !== utterances[index - 1]!.speaker
-        ? turns + 1
-        : turns,
-    0,
-  );
-  const turnsPerMinute = (speakerTurns / durationSec) * 60;
-
-  let score = 50;
-  if (wps >= 2 && wps <= 3.5) score += 25;
-  else if (wps >= 1.5 && wps < 2) score += 10;
-  else if (wps > 3.5 && wps <= 4.5) score += 10;
-
-  if (speakerTurns <= 1) {
-    // Monologue: turn cadence carries no signal either way, so award the
-    // midpoint rather than structurally penalizing single-speaker content
-    // against multi-speaker conversations.
-    score += 15;
-  } else if (turnsPerMinute >= 4 && turnsPerMinute <= 12) score += 25;
-  else if (turnsPerMinute >= 2 && turnsPerMinute < 4) score += 10;
-  else if (turnsPerMinute > 12 && turnsPerMinute <= 20) score += 10;
-
-  return Math.min(100, Math.max(1, score));
-}
-
-export function computeViralityScore(subScores: {
-  hookStrength: number;
-  emotionalIntensity: number;
-  storyCompleteness?: number;
-  pacing: number;
-  durationOptimality: number;
-}): number {
-  return Math.round(
-    subScores.hookStrength * 0.3 +
-      subScores.emotionalIntensity * 0.22 +
-      (subScores.storyCompleteness ?? 50) * 0.18 +
-      subScores.pacing * 0.15 +
-      subScores.durationOptimality * 0.15,
-  );
-}
-
-export function computePlatformScore(
-  compositeScore: number,
-  durationSec: number,
-  platform: "tiktok" | "youtube" | "instagram",
-): number {
-  const idealRanges: Record<string, [number, number]> = {
-    tiktok: [15, 60],
-    youtube: [30, 90],
-    instagram: [15, 45],
-  };
-
-  const [minIdeal, maxIdeal] = idealRanges[platform]!;
-  let modifier = 0;
-
-  if (durationSec >= minIdeal && durationSec <= maxIdeal) {
-    modifier = 10;
-  } else if (durationSec < minIdeal) {
-    modifier = -Math.round(((minIdeal - durationSec) / minIdeal) * 20);
-  } else {
-    modifier = -Math.round(((durationSec - maxIdeal) / maxIdeal) * 20);
-  }
-
-  return Math.min(100, Math.max(1, compositeScore + modifier));
 }
 
 export const clipService = new ClipService();

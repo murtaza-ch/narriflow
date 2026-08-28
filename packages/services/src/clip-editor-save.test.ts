@@ -14,7 +14,6 @@ import {
   clampEditorDocumentToStoredWindow,
   editorDocumentsEqual,
   planEditorDocumentSave,
-  runOrScheduleCleanup,
 } from "./clip.service";
 
 function makeDocument(
@@ -481,32 +480,5 @@ describe("editorDocumentsEqual (lost autosave response retry)", () => {
     const current = makeDocument([makeUtterance(10, ["cloud"])]);
     const attempted = { ...current, brollUrl: "https://cdn.example.com/local.mp4" };
     expect(editorDocumentsEqual(current, attempted)).toBe(false);
-  });
-});
-
-describe("runOrScheduleCleanup", () => {
-  test("does not hold the response path open when a post-response scheduler exists", async () => {
-    let cleanupStarted = false;
-    let scheduled: (() => Promise<void>) | null = null;
-    await runOrScheduleCleanup(
-      async () => {
-        cleanupStarted = true;
-      },
-      (cleanup) => {
-        scheduled = cleanup;
-      },
-    );
-    expect(cleanupStarted).toBe(false);
-    expect(scheduled).not.toBeNull();
-    await scheduled!();
-    expect(cleanupStarted).toBe(true);
-  });
-
-  test("awaits cleanup when used outside a request lifecycle", async () => {
-    let cleaned = false;
-    await runOrScheduleCleanup(async () => {
-      cleaned = true;
-    });
-    expect(cleaned).toBe(true);
   });
 });

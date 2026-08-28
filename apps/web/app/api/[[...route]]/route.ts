@@ -1,7 +1,6 @@
 import { Hono } from "hono";
 import type { Context, Next } from "hono";
 import { handle } from "hono/vercel";
-import { after } from "next/server";
 import { getCurrentWorkspaceAppUser as getCurrentAppUser } from "@/lib/workspace";
 import {
   applyCaptionPresetToAllSchema,
@@ -64,6 +63,7 @@ import {
   ClipExportError,
   ClipExportRevisionConflictError,
   ClipActionError,
+  ClipEditorDocumentPersistenceError,
   ClipEditorRevisionConflictError,
   contentSuiteService,
   ContentSuiteError,
@@ -1113,6 +1113,21 @@ app.patch("/projects/:id/clips/:clipId", async (c) => {
       400,
     );
   } catch (error) {
+    if (error instanceof ClipEditorDocumentPersistenceError) {
+      if (error.code === "retryable_contention") {
+        return c.json(
+          { error: error.code, message: error.message, retryable: true },
+          409,
+        );
+      }
+      if (error.code === "corrupt_stored_document") {
+        return c.json({ error: "editor_document_corrupt" }, 409);
+      }
+      if (error.code === "clip_not_found") {
+        return c.json({ error: "clip_not_found" }, 404);
+      }
+      return c.json({ error: error.code, message: error.message }, 400);
+    }
     if (error instanceof ClipActionError) {
       return c.json(
         { error: error.code, message: error.message },
@@ -1387,6 +1402,17 @@ app.get("/projects/:id/clips/:clipId/editor", async (c) => {
     );
     return c.json(result, 200);
   } catch (error) {
+    if (error instanceof ClipEditorDocumentPersistenceError) {
+      if (error.code === "clip_not_found") {
+        return c.json({ error: "Clip not found" }, 404);
+      }
+      if (error.code === "corrupt_stored_document") {
+        return c.json({ error: "editor_document_corrupt" }, 409);
+      }
+      if (error.code === "persistence_unavailable") {
+        return c.json({ error: error.code, retryable: true }, 503);
+      }
+    }
     if (error instanceof Error && error.message === "clip not found") {
       return c.json({ error: "Clip not found" }, 404);
     }
@@ -1429,9 +1455,6 @@ app.put("/projects/:id/clips/:clipId/editor", async (c) => {
       projectId,
       c.req.param("clipId"),
       parsed.data,
-      {
-        scheduleCleanup: (cleanup) => after(cleanup),
-      },
     );
     return c.json(result, 200);
   } catch (error) {
@@ -1445,13 +1468,9 @@ app.put("/projects/:id/clips/:clipId/editor", async (c) => {
       );
     }
     if (
-      error instanceof ClipActionError &&
+      (error instanceof ClipActionError ||
+        error instanceof ClipEditorDocumentPersistenceError) &&
       (error.code === "editor_boundaries_invalid" ||
-        // Phase B hardening: the client's own isEmpty guard
-        // (deleteSelectedSegment/buildStudioCutPlan in studio-shell.tsx)
-        // should make this unreachable in practice — this is the
-        // server-side backstop for a save whose deletedRanges leave
-        // nothing renderable (e.g. two tabs racing each other's edits).
         error.code === "editor_document_empty_timeline")
     ) {
       // Phase B step 13 (in-studio trim): editor_boundaries_invalid is the
@@ -1467,6 +1486,20 @@ app.put("/projects/:id/clips/:clipId/editor", async (c) => {
     // which only the DNS-aware half of assertPublicHttpUrl can catch).
     if (error instanceof UnsafeUrlError) {
       return c.json({ error: "unsafe_broll_url" }, 422);
+    }
+    if (
+      error instanceof ClipEditorDocumentPersistenceError &&
+      error.code === "corrupt_stored_document"
+    ) {
+      return c.json({ error: "editor_document_corrupt" }, 409);
+    }
+    if (error instanceof ClipEditorDocumentPersistenceError) {
+      if (error.code === "clip_not_found") {
+        return c.json({ error: "Clip not found" }, 404);
+      }
+      if (error.code === "persistence_unavailable") {
+        return c.json({ error: error.code, retryable: true }, 503);
+      }
     }
     if (error instanceof Error && error.message === "clip not found") {
       return c.json({ error: "Clip not found" }, 404);
@@ -1532,6 +1565,27 @@ app.post("/projects/:id/clips/:clipId/editor/reset", async (c) => {
     // public (e.g. it now resolves to a private address).
     if (error instanceof UnsafeUrlError) {
       return c.json({ error: "unsafe_broll_url" }, 422);
+    }
+    if (
+      error instanceof ClipEditorDocumentPersistenceError &&
+      (error.code === "editor_boundaries_invalid" ||
+        error.code === "editor_document_empty_timeline")
+    ) {
+      return c.json({ error: error.code }, 422);
+    }
+    if (
+      error instanceof ClipEditorDocumentPersistenceError &&
+      error.code === "corrupt_stored_document"
+    ) {
+      return c.json({ error: "editor_document_corrupt" }, 409);
+    }
+    if (error instanceof ClipEditorDocumentPersistenceError) {
+      if (error.code === "clip_not_found") {
+        return c.json({ error: "Clip not found" }, 404);
+      }
+      if (error.code === "persistence_unavailable") {
+        return c.json({ error: error.code, retryable: true }, 503);
+      }
     }
     if (error instanceof Error && error.message === "clip not found") {
       return c.json({ error: "Clip not found" }, 404);

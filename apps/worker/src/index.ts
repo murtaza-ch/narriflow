@@ -2,6 +2,7 @@ import { createServer } from "node:http";
 import { createIsolatedPollLoop, type PollLoop } from "./poll-loop";
 import {
 	billingService,
+	editorMediaCleanupWorker,
 	assertUploadProviderLifecyclePrerequisite,
 	getWorkflowRunLifecycle,
 	getSocialPublicationRuntime,
@@ -86,6 +87,9 @@ const sttResultPollIntervalMs = Number(
 );
 const notificationRetryPollIntervalMs = Number(
 	process.env.NOTIFICATION_RETRY_POLL_INTERVAL_MS ?? String(60 * 1000),
+);
+const editorMediaCleanupPollIntervalMs = Number(
+	process.env.EDITOR_MEDIA_CLEANUP_POLL_INTERVAL_MS ?? "10000",
 );
 const workspaceBillingPollIntervalMs = parseWorkspaceBillingPollInterval(
 	process.env.WORKSPACE_BILLING_POLL_INTERVAL_MS,
@@ -517,6 +521,13 @@ const notificationRetryLoop = createPollLoop("notification_retry", async () => {
 	return result.claimed;
 });
 
+const editorMediaCleanupLoop = createPollLoop("editor_media_cleanup", async () => {
+	const result = await editorMediaCleanupWorker.processDue({
+		signal: workerShutdown.signal,
+	});
+	return result.claimed;
+});
+
 const allLoops: Array<{ loop: PollLoop; intervalMs: number }> = [
 	{ loop: maintenanceLoop, intervalMs: 60 * 1000 },
 	{ loop: uploadSessionMaintenanceLoop, intervalMs: 30 * 1000 },
@@ -534,6 +545,7 @@ const allLoops: Array<{ loop: PollLoop; intervalMs: number }> = [
 	{ loop: previewLoop, intervalMs: previewPollIntervalMs },
 	{ loop: autoLayoutLoop, intervalMs: autoLayoutPollIntervalMs },
 	{ loop: notificationRetryLoop, intervalMs: notificationRetryPollIntervalMs },
+	{ loop: editorMediaCleanupLoop, intervalMs: editorMediaCleanupPollIntervalMs },
 ];
 
 const server = createServer(async (req, res) => {
@@ -599,3 +611,4 @@ void ingestLoop.tick();
 void sttLoop.tick();
 void renderLoop.tick();
 void notificationRetryLoop.tick();
+void editorMediaCleanupLoop.tick();
