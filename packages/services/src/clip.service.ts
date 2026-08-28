@@ -107,11 +107,6 @@ import {
 } from "./clip-scoring";
 
 export {
-  ClipEditorDocumentPersistenceError,
-  ClipEditorRevisionConflictError,
-  editorDocumentsEqual,
-} from "./clip-editor-document-persistence";
-export {
   computeDurationOptimality,
   computePacingScore,
   computePlatformScore,
@@ -3416,8 +3411,8 @@ export class ClipService {
    *
    * No-op (zero writes) when no snapshot exists yet — the clip was never
    * saved through the editor document, so its current state already IS the
-   * original. That decision is revision-guarded atomically (see the
-   * `noOpGuard` below): a first-save committing between the initial read and
+   * original. That decision is revision-guarded by the persistence store: a
+   * first-save committing between the initial read and
    * this check — which is exactly the transition from "no snapshot" to
    * "snapshot exists" — must surface as a 409 conflict, not a stale success
    * that silently skipped a now-possible real reset. Likewise, a second

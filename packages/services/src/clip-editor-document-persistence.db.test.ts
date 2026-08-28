@@ -344,6 +344,8 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
     let firstCommit = true;
     const delayingStore: ClipEditorDocumentStore = {
       read: (scope) => prismaClipEditorDocumentStore.read(scope),
+      confirmRevision: (scope, revision) =>
+        prismaClipEditorDocumentStore.confirmRevision(scope, revision),
       async commit(input) {
         if (firstCommit) {
           firstCommit = false;

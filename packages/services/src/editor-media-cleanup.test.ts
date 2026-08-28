@@ -5,6 +5,7 @@ import {
   createEditorMediaCleanupWorker,
   createInMemoryEditorMediaCleanupStore,
   defaultEditorMediaCleanupConfig,
+  type EditorMediaCleanupDiagnostics,
 } from "./editor-media-cleanup";
 
 function seed(overrides: Record<string, unknown> = {}) {
@@ -85,6 +86,40 @@ describe("obsolete editor media cleanup", () => {
 
     now = new Date(obligation.nextAttemptAt.getTime() + 1);
     expect((await worker.processDue()).claimed).toBe(1);
+  });
+
+  test("a failed reschedule is diagnosed as claim loss", async () => {
+    const now = new Date("2026-08-29T00:00:01.000Z");
+    const backing = createInMemoryEditorMediaCleanupStore([seed()]);
+    const events: Parameters<EditorMediaCleanupDiagnostics["record"]>[0][] = [];
+    const worker = createEditorMediaCleanupWorker({
+      store: {
+        ...backing,
+        async reschedule() {
+          return false;
+        },
+      },
+      storage: {
+        async deleteExact() {
+          throw new Error("outage");
+        },
+      },
+      classifyStorageError: () => "temporary",
+      diagnostics: { record: (event) => void events.push(event) },
+      now: () => now,
+      createId: () => "claim-1",
+      random: () => 0.5,
+      config: defaultEditorMediaCleanupConfig(),
+    });
+
+    expect(await worker.processDue()).toEqual({ claimed: 1, completed: 0, retried: 0 });
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        phase: "delete",
+        outcome: "claim_lost",
+        failureCode: "storage_temporary",
+      }),
+    );
   });
 
   test("an expired claim is recoverable and late settlement is fenced", async () => {

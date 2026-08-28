@@ -10,6 +10,7 @@ import {
   editorDocumentSchema,
   getEffectiveClipTiming,
   hasRenderableContent,
+  mergeCorrectedWordsIntoWindow,
   normalizeDeletedRanges,
   normalizeTranscriptSliceForClip,
   splitUtterancesIntoSentences,
@@ -129,6 +130,7 @@ interface ClipEditorDocumentCommit {
 
 export interface ClipEditorDocumentStore {
   read(scope: ClipEditorDocumentScope): Promise<ClipEditorDocumentStoredState | null>;
+  confirmRevision(scope: ClipEditorDocumentScope, expectedRevision: number): Promise<boolean>;
   commit(input: ClipEditorDocumentCommit): Promise<ClipEditorDocumentStoredState | null>;
 }
 
@@ -156,7 +158,7 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
-export function editorDocumentsEqual(
+function editorDocumentsEqual(
   left: EditorDocument,
   right: EditorDocument,
 ): boolean {
@@ -292,7 +294,13 @@ function planNextDocument(
         ...state.document,
         clipStartSec: effective.startSec,
         clipEndSec: effective.endSec,
-        transcriptSlice: state.sourceTranscript.length > 0 ? effective.transcriptSlice : [],
+        transcriptSlice:
+          state.sourceTranscript.length > 0
+            ? mergeCorrectedWordsIntoWindow(
+                effective.transcriptSlice,
+                state.document.transcriptSlice,
+              )
+            : [],
         deletedRanges: normalizeDeletedRanges(state.document.deletedRanges, {
           startSec: effective.startSec,
           endSec: effective.endSec,
@@ -392,6 +400,49 @@ export function createClipEditorDocumentPersistence(input: {
         elapsedMs: now().getTime() - startedAt,
         ...event,
       });
+    const acceptNoopIfCurrent = async (
+      state: ClipEditorDocumentStoredState,
+      attempt: number,
+    ): Promise<ClipEditorDocumentMutationResult | null> => {
+      let confirmed: boolean;
+      try {
+        confirmed = await input.store.confirmRevision(request, state.revision);
+      } catch (error) {
+        record({
+          attempt,
+          resultingRevision: state.revision,
+          noop: false,
+          invalidationClasses: [],
+          cleanupCount: 0,
+          outcome: "rejected",
+        });
+        throw error;
+      }
+      if (!confirmed) {
+        if (baseRevision !== null) {
+          const latest = await readState(request);
+          record({
+            attempt,
+            resultingRevision: latest.revision,
+            noop: false,
+            invalidationClasses: [],
+            cleanupCount: 0,
+            outcome: "conflict",
+          });
+          throw new ClipEditorRevisionConflictError(latest.revision);
+        }
+        return null;
+      }
+      record({
+        attempt,
+        resultingRevision: state.revision,
+        noop: true,
+        invalidationClasses: [],
+        cleanupCount: 0,
+        outcome: "accepted",
+      });
+      return { revision: state.revision, document: state.document, noop: true };
+    };
 
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       const state = await readState(request);
@@ -425,27 +476,15 @@ export function createClipEditorDocumentPersistence(input: {
           });
           throw new ClipEditorRevisionConflictError(state.revision);
         }
-        record({
-          attempt: attempt + 1,
-          resultingRevision: state.revision,
-          noop: true,
-          invalidationClasses: [],
-          cleanupCount: 0,
-          outcome: "accepted",
-        });
-        return { revision: state.revision, document: state.document, noop: true };
+        const accepted = await acceptNoopIfCurrent(state, attempt + 1);
+        if (accepted) return accepted;
+        continue;
       }
 
       if (editorDocumentsEqual(state.document, next)) {
-        record({
-          attempt: attempt + 1,
-          resultingRevision: state.revision,
-          noop: true,
-          invalidationClasses: [],
-          cleanupCount: 0,
-          outcome: "accepted",
-        });
-        return { revision: state.revision, document: state.document, noop: true };
+        const accepted = await acceptNoopIfCurrent(state, attempt + 1);
+        if (accepted) return accepted;
+        continue;
       }
 
       if (
@@ -604,6 +643,15 @@ export function createInMemoryClipEditorDocumentStore(
         return null;
       }
       return clone(record.state);
+    },
+    async confirmRevision(scope, expectedRevision) {
+      const record = records.get(scope.clipId);
+      return Boolean(
+        record &&
+          record.state.projectId === scope.projectId &&
+          record.state.actorUserId === scope.actorUserId &&
+          record.state.revision === expectedRevision,
+      );
     },
     async commit(input) {
       const record = records.get(input.scope.clipId);
@@ -837,6 +885,18 @@ export const prismaClipEditorDocumentStore: ClipEditorDocumentStore = {
       include: prismaClipInclude,
     });
     return row ? decodePrismaState(row) : null;
+  },
+
+  async confirmRevision(scope, expectedRevision) {
+    const count = await requirePrisma().clip.count({
+      where: {
+        id: scope.clipId,
+        projectId: scope.projectId,
+        editorRevision: expectedRevision,
+        project: { userId: scope.actorUserId },
+      },
+    });
+    return count === 1;
   },
 
   async commit(input) {

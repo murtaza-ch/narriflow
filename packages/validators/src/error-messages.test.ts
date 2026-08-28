@@ -11,6 +11,16 @@ describe("userErrorMessage", () => {
     );
   });
 
+  test("distinguishes invalid clip lengths from retryable edit contention", () => {
+    const invalid = userErrorMessage("editor_boundaries_invalid");
+    const contention = userErrorMessage("retryable_contention");
+    expect(invalid).toBe(USER_ERROR_MESSAGES.editor_boundaries_invalid);
+    expect(invalid).toContain("range");
+    expect(contention).toBe(USER_ERROR_MESSAGES.retryable_contention);
+    expect(contention).toContain("changed while");
+    expect(contention).not.toBe(invalid);
+  });
+
   test("returns friendly copy for the tier-gate codes", () => {
     expect(userErrorMessage("requires_pro_plan")).toBe(
       USER_ERROR_MESSAGES.requires_pro_plan,

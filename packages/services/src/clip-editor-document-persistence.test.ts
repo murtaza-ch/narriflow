@@ -156,6 +156,27 @@ describe("Clip Editor Document Persistence", () => {
     ]);
   });
 
+  test("an unchanged boundary intent preserves corrected words as a semantic no-op", async () => {
+    const raw = utterance("one two three four");
+    const corrected = structuredClone(raw);
+    corrected.words[0]!.word = "ONE";
+    corrected.text = "ONE two three four";
+    const seed = stored({
+      sourceTranscript: [raw],
+      document: document({ transcriptSlice: [corrected] }),
+    });
+    const { persistence, scope, store } = setup(seed);
+
+    const result = await persistence.mutateDocument({
+      ...scope,
+      intent: { kind: "set_boundaries", startSec: 10, endSec: 30 },
+    });
+
+    expect(result).toMatchObject({ revision: 3, noop: true });
+    expect(result.document.transcriptSlice[0]?.words[0]?.word).toBe("ONE");
+    expect(store.inspect(scope.clipId)?.writeCount).toBe(0);
+  });
+
   test("Reset restores the complete immutable original and repeated Reset is zero-write", async () => {
     const original = document({
       brollUrl: "https://cdn.example.com/original.mp4",
@@ -372,6 +393,87 @@ describe("Clip Editor Document Persistence", () => {
     });
   });
 
+  test("a no-op field intent rebases when a full save wins before acknowledgement", async () => {
+    const seed = stored();
+    const backing = createInMemoryClipEditorDocumentStore([seed]);
+    const competing = createClipEditorDocumentPersistence({ store: backing });
+    let raced = false;
+    const persistence = createClipEditorDocumentPersistence({
+      store: {
+        read: (scope) => backing.read(scope),
+        commit: (input) => backing.commit(input),
+        async confirmRevision(scope, revision) {
+          if (!raced) {
+            raced = true;
+            await competing.mutateDocument({
+              ...scope,
+              intent: {
+                kind: "replace",
+                baseRevision: revision,
+                document: document({ brollUrl: "https://cdn.example.com/race.mp4" }),
+              },
+            });
+          }
+          return backing.confirmRevision(scope, revision);
+        },
+      },
+    });
+
+    const result = await persistence.mutateDocument({
+      actorUserId: seed.actorUserId,
+      projectId: seed.projectId,
+      clipId: seed.clipId,
+      intent: { kind: "set_transcript", transcriptSlice: seed.document.transcriptSlice },
+    });
+
+    expect(result).toMatchObject({
+      revision: 4,
+      noop: true,
+      document: { brollUrl: "https://cdn.example.com/race.mp4" },
+    });
+    expect(backing.inspect(seed.clipId)?.writeCount).toBe(1);
+  });
+
+  test("Reset without an original conflicts when a first save wins before acknowledgement", async () => {
+    const seed = stored();
+    const backing = createInMemoryClipEditorDocumentStore([seed]);
+    const competing = createClipEditorDocumentPersistence({ store: backing });
+    let raced = false;
+    const persistence = createClipEditorDocumentPersistence({
+      store: {
+        read: (scope) => backing.read(scope),
+        commit: (input) => backing.commit(input),
+        async confirmRevision(scope, revision) {
+          if (!raced) {
+            raced = true;
+            await competing.mutateDocument({
+              ...scope,
+              intent: {
+                kind: "replace",
+                baseRevision: revision,
+                document: document({ brollUrl: "https://cdn.example.com/race.mp4" }),
+              },
+            });
+          }
+          return backing.confirmRevision(scope, revision);
+        },
+      },
+    });
+
+    await expect(
+      persistence.mutateDocument({
+        actorUserId: seed.actorUserId,
+        projectId: seed.projectId,
+        clipId: seed.clipId,
+        intent: { kind: "reset", baseRevision: seed.revision },
+      }),
+    ).rejects.toMatchObject({ currentRevision: 4 });
+    expect(backing.inspect(seed.clipId)).toMatchObject({
+      writeCount: 1,
+      state: { revision: 4, original: seed.document },
+    });
+  });
+
   test("a boundary-changing Reset after source removal preserves current state", async () => {
     const original = document({ clipStartSec: 12, clipEndSec: 32 });
     const seed = stored({ original, sourceStorageKey: null });
@@ -439,6 +541,7 @@ describe("Clip Editor Document Persistence", () => {
     const persistence = createClipEditorDocumentPersistence({
       store: {
         read: (scope) => backing.read(scope),
+        confirmRevision: (scope, revision) => backing.confirmRevision(scope, revision),
         async commit() {
           throw new Error("injected transaction failure");
         },

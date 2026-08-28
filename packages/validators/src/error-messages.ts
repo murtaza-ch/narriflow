@@ -165,6 +165,14 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 		"Processing was interrupted unexpectedly. Please try again, or contact support if it keeps happening.",
 	clip_not_found:
 		"That clip is no longer available. Refresh the page to see this project's current clips.",
+	editor_boundaries_invalid:
+		"That clip range is outside the editable source or duration limits. Choose a different start or end point.",
+	editor_document_empty_timeline:
+		"That edit would remove the entire clip. Keep at least one frame of footage.",
+	retryable_contention:
+		"This clip changed while you were editing it. Try saving the clip length again.",
+	persistence_unavailable:
+		"Clip editing is temporarily unavailable. Please try again shortly.",
 	clip_title_update_failed: "We couldn't rename this clip. Please try again.",
 	clip_title_suggestion_failed:
 		"We couldn't come up with title ideas just now. Please try again.",

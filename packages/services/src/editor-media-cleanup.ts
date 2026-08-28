@@ -272,7 +272,11 @@ export function createEditorMediaCleanupWorker(input: {
             cleanupClass: claim.cleanupClass,
             attempt: claim.attemptCount,
             phase: "delete",
-            outcome: outcome === "cancelled" ? "cancelled" : "retry_scheduled",
+            outcome: settled
+              ? outcome === "cancelled"
+                ? "cancelled"
+                : "retry_scheduled"
+              : "claim_lost",
             failureCode,
             elapsedMs: now().getTime() - startedAt,
           });
