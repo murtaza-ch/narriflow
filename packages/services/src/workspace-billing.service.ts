@@ -218,6 +218,9 @@ export interface ProviderCheckoutSession {
   attemptId?: string;
 }
 
+const isTerminalCheckoutPaymentOutcome = (paymentStatus: string) =>
+  paymentStatus === "paid" || paymentStatus === "failed";
+
 export interface WorkspaceBillingView {
   workspaceId: string;
   plan: PricingTier;
@@ -613,10 +616,14 @@ export function createInMemoryWorkspaceBillingStore(
           throw new WorkspaceBillingAttemptLost();
         }
       }
-      const preservesFailure =
-        row.latestCheckout?.paymentStatus === "failed" &&
+      const currentPaymentStatus = row.latestCheckout?.paymentStatus;
+      const preservesTerminalOutcome =
+        Boolean(
+          currentPaymentStatus &&
+            isTerminalCheckoutPaymentOutcome(currentPaymentStatus),
+        ) &&
         input.paymentStatus === "unpaid";
-      if (input.wakeReconciliation && !preservesFailure) {
+      if (input.wakeReconciliation && !preservesTerminalOutcome) {
         row.health = "activating";
         row.attentionReason = null;
         const state = runtime.get(input.workspaceId)!;
@@ -624,7 +631,9 @@ export function createInMemoryWorkspaceBillingStore(
       }
       row.latestCheckout = {
         status: input.status,
-        paymentStatus: preservesFailure ? "failed" : input.paymentStatus,
+        paymentStatus: preservesTerminalOutcome
+          ? currentPaymentStatus!
+          : input.paymentStatus,
       };
       return attempt;
     },
@@ -1158,7 +1167,7 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
           : {};
         const providerPhase =
           input.source === "return" ? "return_observed" : "state_retrieved";
-        let preservesFailure = false;
+        let preservesTerminalOutcome = false;
         const updated = await tx.workspaceCheckoutAttempt.updateMany({
           where: {
             id: attempt.id,
@@ -1167,7 +1176,7 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
               ? {
                   OR: [
                     { paymentStatus: null },
-                    { paymentStatus: { not: "failed" } },
+                    { paymentStatus: "unpaid" },
                   ],
                 }
               : {}),
@@ -1183,23 +1192,23 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
             where: {
               id: attempt.id,
               ...claimWhere,
-              paymentStatus: "failed",
+              paymentStatus: { in: ["paid", "failed"] },
             },
             data: {
               providerPhase,
               sessionStatus: input.status,
             },
           });
-          preservesFailure = preserved.count === 1;
+          preservesTerminalOutcome = preserved.count === 1;
         }
-        if (updated.count === 0 && !preservesFailure) {
+        if (updated.count === 0 && !preservesTerminalOutcome) {
           if (input.reconcileAttemptId) throw new WorkspaceBillingAttemptLost();
           throw new WorkspaceBillingError(
             "checkout_session_conflict",
             "Checkout state could not be recorded",
           );
         }
-        if (input.wakeReconciliation && !preservesFailure) {
+        if (input.wakeReconciliation && !preservesTerminalOutcome) {
           await tx.workspaceBillingAccount.update({
             where: { id: attempt.billingAccount.id },
             data: {
@@ -2007,9 +2016,10 @@ export function createWorkspaceBillingModule(dependencies: {
         throw new WorkspaceBillingAttemptLost();
       }
       const paymentStatus =
-        current.latestCheckout?.paymentStatus === "failed" &&
+        current.latestCheckout &&
+        isTerminalCheckoutPaymentOutcome(current.latestCheckout.paymentStatus) &&
         checkout.paymentStatus === "unpaid"
-          ? "failed"
+          ? current.latestCheckout.paymentStatus
           : checkout.paymentStatus;
       await dependencies.store.recordCheckoutState({
         workspaceId,

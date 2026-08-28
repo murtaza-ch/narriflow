@@ -335,7 +335,7 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
     expect(account.nextReconcileAt).toEqual(now);
   });
 
-  test("persists an asynchronous Checkout failure on its durable attempt", async () => {
+  test("persists asynchronous failure and keeps terminal Checkout outcomes monotonic", async () => {
     const { user, workspace } = await createWorkspace("checkout-failure");
     const account = await prisma.workspaceBillingAccount.findUniqueOrThrow({
       where: { workspaceId: workspace.id },
@@ -439,6 +439,44 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
         select: { paymentStatus: true },
       }),
     ).toEqual({ paymentStatus: "failed" });
+
+    await prisma.workspaceCheckoutAttempt.update({
+      where: { id: attempt.id },
+      data: { paymentStatus: "unpaid" },
+    });
+    await Promise.all([
+      store.recordCheckoutState({
+        workspaceId: workspace.id,
+        sessionId,
+        status: "complete",
+        paymentStatus: "paid",
+        source: "reconciliation",
+        wakeReconciliation: false,
+        reconcileAttemptId: claim!.attemptId,
+        now,
+      }),
+      store.recordCheckoutState({
+        workspaceId: workspace.id,
+        sessionId,
+        status: "complete",
+        paymentStatus: "unpaid",
+        source: "return",
+        wakeReconciliation: true,
+        now,
+      }),
+    ]);
+    expect(
+      await prisma.workspaceCheckoutAttempt.findUniqueOrThrow({
+        where: { id: attempt.id },
+        select: { paymentStatus: true },
+      }),
+    ).toEqual({ paymentStatus: "paid" });
+    expect(
+      await prisma.workspaceBillingAccount.findUniqueOrThrow({
+        where: { id: account.id },
+        select: { health: true },
+      }),
+    ).toEqual({ health: "current" });
 
     await prisma.workspaceBillingAccount.update({
       where: { id: account.id },

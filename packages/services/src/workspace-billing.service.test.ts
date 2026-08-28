@@ -206,6 +206,83 @@ describe("Workspace Billing", () => {
     });
   });
 
+  test("does not let a stale unpaid return regress a paid Checkout outcome", async () => {
+    const store = createInMemoryWorkspaceBillingStore([
+      {
+        workspaceId: "workspace-paid-return-race",
+        personal: true,
+        hasNonOwnerMembers: false,
+        pricingTier: "free",
+        status: "active",
+        providerCustomerId: null,
+        ownerUserId: "owner-paid-return-race",
+      },
+    ]);
+    const billing = createWorkspaceBillingModule({
+      catalog,
+      store,
+      provider: {
+        verifyDelivery: () => {
+          throw new Error("not used");
+        },
+        retrieveCurrentState: async () => {
+          throw new Error("not used");
+        },
+        findCustomersByWorkspace: async () => [],
+        createCustomer: async () => ({ customerId: "cus_paid_return_race" }),
+        createCheckoutSession: async (input) => ({
+          sessionId: "cs_paid_return_race",
+          url: "https://checkout.stripe.test/paid-return-race",
+          expiresAt: new Date("2026-08-28T11:00:00.000Z"),
+          status: "open",
+          paymentStatus: "unpaid",
+          workspaceId: input.workspaceId,
+          attemptId: input.attemptId,
+        }),
+        retrieveCheckoutSession: async () => {
+          throw new Error("not used");
+        },
+      },
+      clock: { now: () => new Date("2026-08-28T10:00:00.000Z") },
+      diagnostics: { record: () => undefined },
+    });
+    await billing.startCheckout({
+      workspaceId: "workspace-paid-return-race",
+      actorUserId: "owner-paid-return-race",
+      clientIdempotencyKey: "paid-return-race-key",
+      targetTier: "creator",
+      interval: "monthly",
+      returnDestination: "/settings/billing",
+    });
+
+    await store.recordCheckoutState({
+      workspaceId: "workspace-paid-return-race",
+      sessionId: "cs_paid_return_race",
+      status: "complete",
+      paymentStatus: "paid",
+      source: "reconciliation",
+      wakeReconciliation: false,
+      now: new Date("2026-08-28T10:00:01.000Z"),
+    });
+    await store.recordCheckoutState({
+      workspaceId: "workspace-paid-return-race",
+      sessionId: "cs_paid_return_race",
+      status: "complete",
+      paymentStatus: "unpaid",
+      source: "return",
+      wakeReconciliation: true,
+      now: new Date("2026-08-28T10:00:02.000Z"),
+    });
+
+    expect(await store.readProjection("workspace-paid-return-race")).toMatchObject({
+      health: "current",
+      latestCheckout: {
+        status: "complete",
+        paymentStatus: "paid",
+      },
+    });
+  });
+
   test("records an expired Checkout as terminal without waking activation", async () => {
     const store = createInMemoryWorkspaceBillingStore([
       {
