@@ -467,6 +467,38 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
     expect(cleanupCount).toBe(0);
   });
 
+  test("non-null malformed document columns never collapse to defaults", async () => {
+    const persistence = createClipEditorDocumentPersistence({
+      store: prismaClipEditorDocumentStore,
+    });
+    for (const column of ["captionPreset", "studioEdits", "deletedRanges"] as const) {
+      const f = await fixture();
+      if (column === "captionPreset") {
+        await prisma.clip.update({
+          where: { id: f.clip.id },
+          data: { captionPreset: false },
+        });
+      } else if (column === "studioEdits") {
+        await prisma.clip.update({
+          where: { id: f.clip.id },
+          data: { studioEdits: false },
+        });
+      } else {
+        await prisma.clip.update({
+          where: { id: f.clip.id },
+          data: { deletedRanges: false },
+        });
+      }
+      await expect(
+        persistence.readDocument({
+          actorUserId: f.user.id,
+          projectId: f.project.id,
+          clipId: f.clip.id,
+        }),
+      ).rejects.toMatchObject({ code: "corrupt_stored_document" });
+    }
+  });
+
   test("expired cleanup claims recover and stale settlement cannot win", async () => {
     const f = await fixture();
     const obligation = await prisma.editorMediaCleanupObligation.create({

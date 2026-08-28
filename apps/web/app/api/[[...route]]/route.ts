@@ -63,7 +63,6 @@ import {
   ClipExportError,
   ClipExportRevisionConflictError,
   ClipActionError,
-  ClipEditorDocumentPersistenceError,
   ClipEditorRevisionConflictError,
   contentSuiteService,
   ContentSuiteError,
@@ -98,6 +97,7 @@ import {
 import { createUploadSessionHttpRoutes } from "./upload-session-http";
 import { createStripeWebhookHttpRoutes } from "./stripe-webhook-http";
 import { createWorkspaceBillingHttpRoutes } from "./workspace-billing-routes";
+import { clipEditorPersistenceHttpError } from "./editor-persistence-http";
 
 export const runtime = "nodejs";
 // Content-suite generation makes a synchronous LLM call that can take ~30s.
@@ -1113,21 +1113,8 @@ app.patch("/projects/:id/clips/:clipId", async (c) => {
       400,
     );
   } catch (error) {
-    if (error instanceof ClipEditorDocumentPersistenceError) {
-      if (error.code === "retryable_contention") {
-        return c.json(
-          { error: error.code, message: error.message, retryable: true },
-          409,
-        );
-      }
-      if (error.code === "corrupt_stored_document") {
-        return c.json({ error: "editor_document_corrupt" }, 409);
-      }
-      if (error.code === "clip_not_found") {
-        return c.json({ error: "clip_not_found" }, 404);
-      }
-      return c.json({ error: error.code, message: error.message }, 400);
-    }
+    const persistenceError = clipEditorPersistenceHttpError(error);
+    if (persistenceError) return c.json(persistenceError.body, persistenceError.status);
     if (error instanceof ClipActionError) {
       return c.json(
         { error: error.code, message: error.message },
@@ -1402,17 +1389,8 @@ app.get("/projects/:id/clips/:clipId/editor", async (c) => {
     );
     return c.json(result, 200);
   } catch (error) {
-    if (error instanceof ClipEditorDocumentPersistenceError) {
-      if (error.code === "clip_not_found") {
-        return c.json({ error: "Clip not found" }, 404);
-      }
-      if (error.code === "corrupt_stored_document") {
-        return c.json({ error: "editor_document_corrupt" }, 409);
-      }
-      if (error.code === "persistence_unavailable") {
-        return c.json({ error: error.code, retryable: true }, 503);
-      }
-    }
+    const persistenceError = clipEditorPersistenceHttpError(error);
+    if (persistenceError) return c.json(persistenceError.body, persistenceError.status);
     if (error instanceof Error && error.message === "clip not found") {
       return c.json({ error: "Clip not found" }, 404);
     }
@@ -1468,8 +1446,7 @@ app.put("/projects/:id/clips/:clipId/editor", async (c) => {
       );
     }
     if (
-      (error instanceof ClipActionError ||
-        error instanceof ClipEditorDocumentPersistenceError) &&
+      error instanceof ClipActionError &&
       (error.code === "editor_boundaries_invalid" ||
         error.code === "editor_document_empty_timeline")
     ) {
@@ -1487,20 +1464,8 @@ app.put("/projects/:id/clips/:clipId/editor", async (c) => {
     if (error instanceof UnsafeUrlError) {
       return c.json({ error: "unsafe_broll_url" }, 422);
     }
-    if (
-      error instanceof ClipEditorDocumentPersistenceError &&
-      error.code === "corrupt_stored_document"
-    ) {
-      return c.json({ error: "editor_document_corrupt" }, 409);
-    }
-    if (error instanceof ClipEditorDocumentPersistenceError) {
-      if (error.code === "clip_not_found") {
-        return c.json({ error: "Clip not found" }, 404);
-      }
-      if (error.code === "persistence_unavailable") {
-        return c.json({ error: error.code, retryable: true }, 503);
-      }
-    }
+    const persistenceError = clipEditorPersistenceHttpError(error);
+    if (persistenceError) return c.json(persistenceError.body, persistenceError.status);
     if (error instanceof Error && error.message === "clip not found") {
       return c.json({ error: "Clip not found" }, 404);
     }
@@ -1566,27 +1531,8 @@ app.post("/projects/:id/clips/:clipId/editor/reset", async (c) => {
     if (error instanceof UnsafeUrlError) {
       return c.json({ error: "unsafe_broll_url" }, 422);
     }
-    if (
-      error instanceof ClipEditorDocumentPersistenceError &&
-      (error.code === "editor_boundaries_invalid" ||
-        error.code === "editor_document_empty_timeline")
-    ) {
-      return c.json({ error: error.code }, 422);
-    }
-    if (
-      error instanceof ClipEditorDocumentPersistenceError &&
-      error.code === "corrupt_stored_document"
-    ) {
-      return c.json({ error: "editor_document_corrupt" }, 409);
-    }
-    if (error instanceof ClipEditorDocumentPersistenceError) {
-      if (error.code === "clip_not_found") {
-        return c.json({ error: "Clip not found" }, 404);
-      }
-      if (error.code === "persistence_unavailable") {
-        return c.json({ error: error.code, retryable: true }, 503);
-      }
-    }
+    const persistenceError = clipEditorPersistenceHttpError(error);
+    if (persistenceError) return c.json(persistenceError.body, persistenceError.status);
     if (error instanceof Error && error.message === "clip not found") {
       return c.json({ error: "Clip not found" }, 404);
     }

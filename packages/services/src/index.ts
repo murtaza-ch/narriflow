@@ -47,6 +47,7 @@ export {
   clipEditorDocumentPersistence,
   createClipEditorDocumentPersistence,
   createInMemoryClipEditorDocumentStore,
+  encodeClipEditorDocumentForStorage,
   prismaClipEditorDocumentStore,
   ClipEditorDocumentPersistenceError,
   ClipEditorRevisionConflictError,

@@ -196,7 +196,13 @@ function canonicalizeDocument(
     persistenceError("corrupt_stored_document", "Clip Editor Document is malformed");
   }
   assertDocumentWindow(parsed.data, sourceDurationSec);
-  if (parsed.data.brollUrl !== null) assertPublicHttpUrl(parsed.data.brollUrl);
+  for (const externalUrl of [
+    parsed.data.brollUrl,
+    parsed.data.studioEdits.music.url,
+    parsed.data.studioEdits.background.imageUrl,
+  ]) {
+    if (externalUrl !== null) assertPublicHttpUrl(externalUrl);
+  }
   const window = {
     startSec: parsed.data.clipStartSec,
     endSec: parsed.data.clipEndSec,
@@ -344,7 +350,7 @@ export function createClipEditorDocumentPersistence(input: {
       return {
         ...state,
         document: canonicalizeDocument(state.document, state.sourceDurationSec),
-        original: state.original
+        original: state.original !== null
           ? canonicalizeDocument(state.original, state.sourceDurationSec)
           : null,
       };
@@ -372,6 +378,20 @@ export function createClipEditorDocumentPersistence(input: {
         : null;
     const attempts = baseRevision === null ? fieldRetryLimit : 1;
     let lastRevision = -1;
+    const record = (
+      event: Omit<
+        Parameters<ClipEditorDocumentDiagnostics["record"]>[0],
+        "projectId" | "clipId" | "mutationKind" | "baseRevision" | "elapsedMs"
+      >,
+    ) =>
+      safeRecord(input.diagnostics, {
+        projectId: request.projectId,
+        clipId: request.clipId,
+        mutationKind: request.intent.kind,
+        baseRevision,
+        elapsedMs: now().getTime() - startedAt,
+        ...event,
+      });
 
     for (let attempt = 0; attempt < attempts; attempt += 1) {
       const state = await readState(request);
@@ -380,18 +400,13 @@ export function createClipEditorDocumentPersistence(input: {
       try {
         next = planNextDocument(state, request.intent);
       } catch (error) {
-        safeRecord(input.diagnostics, {
-          projectId: request.projectId,
-          clipId: request.clipId,
-          mutationKind: request.intent.kind,
+        record({
           attempt: attempt + 1,
-          baseRevision,
           resultingRevision: state.revision,
           noop: false,
           invalidationClasses: [],
           cleanupCount: 0,
           outcome: "rejected",
-          elapsedMs: now().getTime() - startedAt,
         });
         throw error;
       }
@@ -400,50 +415,35 @@ export function createClipEditorDocumentPersistence(input: {
           request.intent.kind === "reset" &&
           state.revision !== request.intent.baseRevision
         ) {
-          safeRecord(input.diagnostics, {
-            projectId: request.projectId,
-            clipId: request.clipId,
-            mutationKind: request.intent.kind,
+          record({
             attempt: attempt + 1,
-            baseRevision,
             resultingRevision: state.revision,
             noop: false,
             invalidationClasses: [],
             cleanupCount: 0,
             outcome: "conflict",
-            elapsedMs: now().getTime() - startedAt,
           });
           throw new ClipEditorRevisionConflictError(state.revision);
         }
-        safeRecord(input.diagnostics, {
-          projectId: request.projectId,
-          clipId: request.clipId,
-          mutationKind: request.intent.kind,
+        record({
           attempt: attempt + 1,
-          baseRevision,
           resultingRevision: state.revision,
           noop: true,
           invalidationClasses: [],
           cleanupCount: 0,
           outcome: "accepted",
-          elapsedMs: now().getTime() - startedAt,
         });
         return { revision: state.revision, document: state.document, noop: true };
       }
 
       if (editorDocumentsEqual(state.document, next)) {
-        safeRecord(input.diagnostics, {
-          projectId: request.projectId,
-          clipId: request.clipId,
-          mutationKind: request.intent.kind,
+        record({
           attempt: attempt + 1,
-          baseRevision,
           resultingRevision: state.revision,
           noop: true,
           invalidationClasses: [],
           cleanupCount: 0,
           outcome: "accepted",
-          elapsedMs: now().getTime() - startedAt,
         });
         return { revision: state.revision, document: state.document, noop: true };
       }
@@ -452,18 +452,13 @@ export function createClipEditorDocumentPersistence(input: {
         (request.intent.kind === "replace" || request.intent.kind === "reset") &&
         state.revision !== request.intent.baseRevision
       ) {
-        safeRecord(input.diagnostics, {
-          projectId: request.projectId,
-          clipId: request.clipId,
-          mutationKind: request.intent.kind,
+        record({
           attempt: attempt + 1,
-          baseRevision,
           resultingRevision: state.revision,
           noop: false,
           invalidationClasses: [],
           cleanupCount: 0,
           outcome: "conflict",
-          elapsedMs: now().getTime() - startedAt,
         });
         throw new ClipEditorRevisionConflictError(state.revision);
       }
@@ -494,24 +489,27 @@ export function createClipEditorDocumentPersistence(input: {
           cleanupIntents: cleanup,
         });
       } catch (error) {
-        safeRecord(input.diagnostics, {
-          projectId: request.projectId,
-          clipId: request.clipId,
-          mutationKind: request.intent.kind,
+        record({
           attempt: attempt + 1,
-          baseRevision,
           resultingRevision: state.revision,
           noop: false,
           invalidationClasses: [],
           cleanupCount: 0,
           outcome: "rejected",
-          elapsedMs: now().getTime() - startedAt,
         });
         throw error;
       }
       if (!committed) {
         if (baseRevision !== null) {
           const latest = await readState(request);
+          record({
+            attempt: attempt + 1,
+            resultingRevision: latest.revision,
+            noop: false,
+            invalidationClasses: [],
+            cleanupCount: 0,
+            outcome: "conflict",
+          });
           throw new ClipEditorRevisionConflictError(latest.revision);
         }
         continue;
@@ -520,18 +518,13 @@ export function createClipEditorDocumentPersistence(input: {
       const invalidationClasses = ["mutable_renders"];
       if (windowChanged) invalidationClasses.push("preview", "duration_scores");
       if (retireEvidence) invalidationClasses.push("composition_evidence");
-      safeRecord(input.diagnostics, {
-        projectId: request.projectId,
-        clipId: request.clipId,
-        mutationKind: request.intent.kind,
+      record({
         attempt: attempt + 1,
-        baseRevision,
         resultingRevision: committed.revision,
         noop: false,
         invalidationClasses,
         cleanupCount: cleanup.length,
         outcome: "accepted",
-        elapsedMs: now().getTime() - startedAt,
       });
       return {
         revision: committed.revision,
@@ -539,18 +532,13 @@ export function createClipEditorDocumentPersistence(input: {
         noop: false,
       };
     }
-    safeRecord(input.diagnostics, {
-      projectId: request.projectId,
-      clipId: request.clipId,
-      mutationKind: request.intent.kind,
+    record({
       attempt: attempts,
-      baseRevision,
       resultingRevision: lastRevision,
       noop: false,
       invalidationClasses: [],
       cleanupCount: 0,
       outcome: "conflict",
-      elapsedMs: now().getTime() - startedAt,
     });
     persistenceError(
       "retryable_contention",
@@ -694,6 +682,30 @@ function toPrismaJson(value: unknown): Prisma.InputJsonValue {
   return encoded;
 }
 
+export function encodeClipEditorDocumentForStorage(
+  value: unknown,
+  sourceDurationSec: number | null,
+): {
+  startSec: number;
+  endSec: number;
+  captionPreset: Prisma.InputJsonValue;
+  transcriptSlice: Prisma.InputJsonValue;
+  studioEdits: Prisma.InputJsonValue;
+  brollUrl: string | null;
+  deletedRanges: Prisma.InputJsonValue;
+} {
+  const document = canonicalizeDocument(value, sourceDurationSec);
+  return {
+    startSec: document.clipStartSec,
+    endSec: document.clipEndSec,
+    captionPreset: toPrismaJson(document.captionPreset),
+    transcriptSlice: toPrismaJson(document.transcriptSlice),
+    studioEdits: toPrismaJson(document.studioEdits),
+    brollUrl: document.brollUrl,
+    deletedRanges: toPrismaJson(document.deletedRanges),
+  };
+}
+
 type PrismaStoredClip = Awaited<
   ReturnType<ReturnType<typeof requirePrisma>["clip"]["findFirst"]>
 >;
@@ -710,15 +722,18 @@ function decodeStoredDocument(row: {
   const transcript = updateClipTranscriptSliceSchema.safeParse({
     transcriptSlice: row.transcriptSlice,
   });
-  const caption = row.captionPreset
-    ? captionPresetSchema.safeParse(row.captionPreset)
-    : { success: true as const, data: DEFAULT_CAPTION_PRESET };
-  const studio = row.studioEdits
-    ? studioEditsSchema.safeParse(row.studioEdits)
-    : studioEditsSchema.safeParse(undefined);
-  const ranges = row.deletedRanges
-    ? deletedRangesSchema.safeParse(row.deletedRanges)
-    : { success: true as const, data: [] };
+  const caption =
+    row.captionPreset === null
+      ? { success: true as const, data: DEFAULT_CAPTION_PRESET }
+      : captionPresetSchema.safeParse(row.captionPreset);
+  const studio =
+    row.studioEdits === null
+      ? studioEditsSchema.safeParse(undefined)
+      : studioEditsSchema.safeParse(row.studioEdits);
+  const ranges =
+    row.deletedRanges === null
+      ? { success: true as const, data: [] }
+      : deletedRangesSchema.safeParse(row.deletedRanges);
   if (!transcript.success || !caption.success || !studio.success || !ranges.success) {
     persistenceError("corrupt_stored_document", "Stored Clip Editor Document is malformed");
   }
@@ -749,9 +764,10 @@ function decodePrismaState(
   },
 ): ClipEditorDocumentStoredState {
   const document = decodeStoredDocument(row);
-  const original = row.editorOriginal
-    ? editorDocumentSchema.safeParse(row.editorOriginal)
-    : null;
+  const original =
+    row.editorOriginal === null
+      ? null
+      : editorDocumentSchema.safeParse(row.editorOriginal);
   if (original && !original.success) {
     persistenceError("corrupt_stored_document", "Stored original Clip Editor Document is malformed");
   }

@@ -53,7 +53,7 @@ export const studioTransitionSchema = z.object({
 });
 
 export const studioMusicSchema = z.object({
-  url: z.string().url().nullable().default(null),
+  url: httpUrlSchema.nullable().default(null),
   title: z.string().trim().max(120).nullable().default(null),
   volume: z.number().min(0).max(100).default(35),
   startOffsetSec: z.number().min(0).default(0),

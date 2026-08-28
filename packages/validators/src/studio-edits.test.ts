@@ -230,6 +230,15 @@ describe("studioEditsSchema (source audio + music fades)", () => {
     expect(parsed.music.fadeOutSec).toBe(3);
   });
 
+  test("rejects non-http(s) music URL schemes", () => {
+    expect(() =>
+      studioEditsSchema.parse({ music: { url: "file:///tmp/track.mp3" } }),
+    ).toThrow();
+    expect(() =>
+      studioEditsSchema.parse({ music: { url: "ftp://example.com/track.mp3" } }),
+    ).toThrow();
+  });
+
   test("rejects out-of-range sourceAudio volume and music fade values", () => {
     expect(() =>
       studioEditsSchema.parse({ sourceAudio: { volume: 101, muted: false } }),

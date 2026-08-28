@@ -216,6 +216,8 @@ describe("Clip Editor Document Persistence", () => {
     expect(result.document.clipEndSec).toBe(30);
     expect(result.document.transcriptSlice[0]?.startSec).toBeGreaterThanOrEqual(10);
     expect(store.inspect(scope.clipId)!.state.preview.storageKey).not.toBeNull();
+    expect(store.inspect(scope.clipId)!.state.evidence).toEqual(stored().evidence);
+    expect(store.inspect(scope.clipId)!.state.scores).toEqual(stored().scores);
   });
 
   test("bounded field retries surface typed retryable contention", async () => {
@@ -271,6 +273,135 @@ describe("Clip Editor Document Persistence", () => {
       }),
     ).rejects.toMatchObject({ code: "editor_boundaries_invalid" });
     expect(purged.store.inspect(purged.scope.clipId)!.state.preview.storageKey).not.toBeNull();
+  });
+
+  test.each([
+    studioEditsSchema.parse({ music: { url: "http://127.0.0.1/music.mp3" } }),
+    studioEditsSchema.parse({
+      background: {
+        mode: "image",
+        imageUrl: "http://127.0.0.1/background.png",
+      },
+    }),
+  ])("full replacement rejects unsafe Studio media without mutation", async (studioEdits) => {
+    const { persistence, scope, store } = setup();
+    await expect(
+      persistence.mutateDocument({
+        ...scope,
+        intent: {
+          kind: "replace",
+          baseRevision: 3,
+          document: document({ studioEdits }),
+        },
+      }),
+    ).rejects.toThrow("unsafe_url");
+    expect(store.inspect(scope.clipId)!.writeCount).toBe(0);
+  });
+
+  test("deleted-range changes retain preview and scores but invalidate composition evidence", async () => {
+    const { persistence, scope, store } = setup();
+    await persistence.mutateDocument({
+      ...scope,
+      intent: {
+        kind: "replace",
+        baseRevision: 3,
+        document: document({ deletedRanges: [{ startSec: 14, endSec: 15 }] }),
+      },
+    });
+    const snapshot = store.inspect(scope.clipId)!;
+    expect(snapshot.state.preview).toEqual(stored().preview);
+    expect(snapshot.state.scores).toEqual(stored().scores);
+    expect(snapshot.state.evidence).toEqual({ screen: null, automatic: null, split: null });
+    expect(snapshot.cleanupObligations.map((item) => item.cleanupClass)).toEqual([
+      "mutable_render",
+    ]);
+  });
+
+  test("same-window Reset retains eligible preview and evidence", async () => {
+    const original = document({ brollUrl: "https://cdn.example.com/original.mp4" });
+    const { persistence, scope, store } = setup(stored({ original }));
+    await persistence.mutateDocument({
+      ...scope,
+      intent: { kind: "reset", baseRevision: 3 },
+    });
+    const snapshot = store.inspect(scope.clipId)!;
+    expect(snapshot.state.preview).toEqual(stored().preview);
+    expect(snapshot.state.evidence).toEqual(stored().evidence);
+    expect(snapshot.state.scores).toEqual(stored().scores);
+  });
+
+  test("unknown source duration permits an otherwise valid boundary window", async () => {
+    const { persistence, scope } = setup(stored({ sourceDurationSec: null }));
+    const result = await persistence.mutateDocument({
+      ...scope,
+      intent: { kind: "set_boundaries", startSec: 290, endSec: 310 },
+    });
+    expect(result).toMatchObject({
+      revision: 4,
+      document: { clipStartSec: 290, clipEndSec: 310 },
+    });
+  });
+
+  test("the exact maximum boundary duration remains valid", async () => {
+    const { persistence, scope } = setup();
+    const result = await persistence.mutateDocument({
+      ...scope,
+      intent: { kind: "set_boundaries", startSec: 10, endSec: 130 },
+    });
+    expect(result.document).toMatchObject({ clipStartSec: 10, clipEndSec: 130 });
+  });
+
+  test("a no-op transcript field intent preserves every dependent record", async () => {
+    const seed = stored();
+    const { persistence, scope, store } = setup(seed);
+    const result = await persistence.mutateDocument({
+      ...scope,
+      intent: { kind: "set_transcript", transcriptSlice: seed.document.transcriptSlice },
+    });
+    expect(result).toMatchObject({ revision: 3, noop: true });
+    expect(store.inspect(scope.clipId)).toMatchObject({
+      writeCount: 0,
+      cleanupObligations: [],
+      state: {
+        original: null,
+        mutableRenders: seed.mutableRenders,
+        preview: seed.preview,
+        evidence: seed.evidence,
+        scores: seed.scores,
+      },
+    });
+  });
+
+  test("a boundary-changing Reset after source removal preserves current state", async () => {
+    const original = document({ clipStartSec: 12, clipEndSec: 32 });
+    const seed = stored({ original, sourceStorageKey: null });
+    const { persistence, scope, store } = setup(seed);
+    await expect(
+      persistence.mutateDocument({
+        ...scope,
+        intent: { kind: "reset", baseRevision: 3 },
+      }),
+    ).rejects.toMatchObject({ code: "editor_boundaries_invalid" });
+    expect(store.inspect(scope.clipId)).toMatchObject({
+      writeCount: 0,
+      cleanupObligations: [],
+      state: { revision: 3, document: seed.document, preview: seed.preview },
+    });
+  });
+
+  test("frame-unsafe deleted-range slivers are rejected before commit", async () => {
+    const { persistence, scope, store } = setup();
+    await expect(
+      persistence.mutateDocument({
+        ...scope,
+        intent: {
+          kind: "replace",
+          baseRevision: 3,
+          document: document({ deletedRanges: [{ startSec: 10, endSec: 29.99 }] }),
+        },
+      }),
+    ).rejects.toMatchObject({ code: "editor_document_empty_timeline" });
+    expect(store.inspect(scope.clipId)!.writeCount).toBe(0);
   });
 
   test.each([
