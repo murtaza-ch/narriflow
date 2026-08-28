@@ -425,9 +425,19 @@ describe("Workspace Billing", () => {
       catalog,
       store,
       provider: {
-        verifyDelivery: () => {
-          throw new Error("not used");
-        },
+        verifyDelivery: () => ({
+          eventId: "evt_async_payment_failed",
+          eventType: "checkout.session.async_payment_failed",
+          providerCreatedAt: new Date("2026-08-28T09:59:00.000Z"),
+          liveMode: false,
+          apiVersion: "2026-07-29.dahlia",
+          customerId: "cus_zero_subscription",
+          subscriptionId: null,
+          checkoutSessionId: "cs_zero_subscription",
+          checkoutStatus: "complete",
+          checkoutPaymentStatus: "unpaid",
+          workspaceHint: "workspace-zero-subscription",
+        }),
         retrieveCurrentState: async () => ({
           customerId: "cus_zero_subscription",
           ownership: {
@@ -475,6 +485,20 @@ describe("Workspace Billing", () => {
     expect(await billing.reconcileCurrentState("workspace-zero-subscription"))
       .toMatchObject({
         view: { health: "activating", actions: [] },
+      });
+
+    expect(await billing.acceptStripeDelivery("async-failed", "sig"))
+      .toEqual({
+        kind: "accepted",
+        workspaceId: "workspace-zero-subscription",
+      });
+    expect(await billing.reconcileCurrentState("workspace-zero-subscription"))
+      .toMatchObject({
+        view: {
+          status: "payment_failed",
+          health: "current",
+          actions: ["start_checkout"],
+        },
       });
 
     checkoutStatus = "expired";

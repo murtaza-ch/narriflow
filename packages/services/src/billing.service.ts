@@ -545,6 +545,18 @@ export class BillingService {
       checkoutSessionId: event.type.startsWith("checkout.session")
         ? objectId
         : null,
+      checkoutStatus:
+        event.type.startsWith("checkout.session") &&
+        (object.status === "open" ||
+          object.status === "complete" ||
+          object.status === "expired")
+          ? (object.status as ProviderCheckoutSession["status"])
+          : null,
+      checkoutPaymentStatus:
+        event.type.startsWith("checkout.session") &&
+        typeof object.payment_status === "string"
+          ? object.payment_status
+          : null,
       workspaceHint:
         typeof metadata.workspaceId === "string"
           ? metadata.workspaceId

@@ -21,6 +21,9 @@ function fixture(type: (typeof WORKSPACE_BILLING_WAKE_EVENT_TYPES)[number]) {
     ? {
         id: "cs_contract",
         customer: "cus_contract",
+        status: "complete",
+        payment_status:
+          type === "checkout.session.async_payment_failed" ? "unpaid" : "paid",
         client_reference_id: "11111111-1111-4111-8111-111111111111",
         metadata: { workspaceId: "11111111-1111-4111-8111-111111111111" },
       }
@@ -219,6 +222,8 @@ describe("Workspace Billing Stripe adapter contracts", () => {
       apiVersion: WORKSPACE_BILLING_STRIPE_API_VERSION,
       customerId: "cus_contract",
       checkoutSessionId: "cs_contract",
+      checkoutStatus: "complete",
+      checkoutPaymentStatus: "paid",
       workspaceHint: "11111111-1111-4111-8111-111111111111",
     });
     await expect(
@@ -246,6 +251,12 @@ describe("Workspace Billing Stripe adapter contracts", () => {
       expect(delivery.liveMode).toBe(false);
       expect(delivery.apiVersion).toBe(WORKSPACE_BILLING_STRIPE_API_VERSION);
       expect(delivery.customerId).toBe("cus_contract");
+      if (type === "checkout.session.async_payment_failed") {
+        expect(delivery).toMatchObject({
+          checkoutStatus: "complete",
+          checkoutPaymentStatus: "unpaid",
+        });
+      }
       expect(delivery.subscriptionId).toBe(
         type.startsWith("customer.subscription") || type.startsWith("invoice.")
           ? "sub_contract"

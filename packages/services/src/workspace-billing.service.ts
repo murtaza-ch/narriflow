@@ -136,6 +136,8 @@ export interface VerifiedBillingDelivery {
   customerId: string | null;
   subscriptionId: string | null;
   checkoutSessionId: string | null;
+  checkoutStatus?: ProviderCheckoutSession["status"] | null;
+  checkoutPaymentStatus?: string | null;
   workspaceHint: string | null;
 }
 
@@ -626,6 +628,24 @@ export function createInMemoryWorkspaceBillingStore(
               (row) => row.providerCustomerId === input.delivery.customerId,
             ) ?? null;
       const workspaceId = matched?.workspaceId ?? null;
+      if (input.delivery.checkoutSessionId) {
+        const attempt = [...checkoutAttempts.values()].find(
+          (candidate) =>
+            candidate.providerSessionId === input.delivery.checkoutSessionId,
+        );
+        const row = attempt ? rows.get(attempt.workspaceId) : null;
+        const failed =
+          input.delivery.eventType === "checkout.session.async_payment_failed";
+        const paymentStatus = failed
+          ? "failed"
+          : input.delivery.checkoutPaymentStatus;
+        if (row && paymentStatus) {
+          row.latestCheckout = {
+            status: input.delivery.checkoutStatus ?? "complete",
+            paymentStatus,
+          };
+        }
+      }
       deliveries.set(input.delivery.eventId, workspaceId);
       return { kind: "accepted", workspaceId };
     },
@@ -1245,6 +1265,26 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
               processedAt: input.receivedAt,
             },
           });
+          if (input.delivery.checkoutSessionId) {
+            const failed =
+              input.delivery.eventType ===
+              "checkout.session.async_payment_failed";
+            const paymentStatus = failed
+              ? "failed"
+              : input.delivery.checkoutPaymentStatus;
+            if (paymentStatus) {
+              await tx.workspaceCheckoutAttempt.updateMany({
+                where: {
+                  providerSessionId: input.delivery.checkoutSessionId,
+                  ...(account ? { billingAccountId: account.id } : {}),
+                },
+                data: {
+                  sessionStatus: input.delivery.checkoutStatus ?? "complete",
+                  paymentStatus,
+                },
+              });
+            }
+          }
           if (input.wakeReconciliation && account) {
             await tx.workspaceBillingAccount.update({
               where: { id: account.id },
@@ -1740,6 +1780,9 @@ function billingView(row: WorkspaceBillingProjection): WorkspaceBillingView {
         if (row.latestCheckout?.status === "expired") {
           return "payment_expired";
         }
+        if (row.latestCheckout?.paymentStatus === "failed") {
+          return "payment_failed";
+        }
         return row.status === "pending_payment" ? "payment_pending" : "active";
     }
   };
@@ -1902,7 +1945,10 @@ export function createWorkspaceBillingModule(dependencies: {
       if (current.pricingTier !== "free") {
         return unresolved("missing_paid_subscription");
       }
-      return settleNoSubscription(current.latestCheckout?.status === "complete");
+      return settleNoSubscription(
+        current.latestCheckout?.status === "complete" &&
+          current.latestCheckout.paymentStatus !== "failed",
+      );
     }
     const tierRank: Record<PricingTier, number> = {
       free: 0,

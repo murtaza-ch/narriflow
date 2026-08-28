@@ -334,6 +334,71 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
     expect(account.nextReconcileAt).toEqual(now);
   });
 
+  test("persists an asynchronous Checkout failure on its durable attempt", async () => {
+    const { user, workspace } = await createWorkspace("checkout-failure");
+    const account = await prisma.workspaceBillingAccount.findUniqueOrThrow({
+      where: { workspaceId: workspace.id },
+    });
+    const customerId = `cus_failed_${randomUUID()}`;
+    await prisma.workspaceBillingAccount.update({
+      where: { id: account.id },
+      data: { providerCustomerId: customerId },
+    });
+    const sessionId = `cs_failed_${randomUUID()}`;
+    const attempt = await prisma.workspaceCheckoutAttempt.create({
+      data: {
+        billingAccountId: account.id,
+        actorUserId: user.id,
+        clientIdempotencyKey: randomUUID(),
+        targetTier: "pro",
+        interval: "monthly",
+        catalogVersion: "workspace-billing-test-v1",
+        returnDestination: "/settings/billing",
+        customerOperationKey: `customer:${randomUUID()}`,
+        checkoutOperationKey: `checkout:${randomUUID()}`,
+        providerSessionId: sessionId,
+        providerPhase: "created",
+        sessionStatus: "complete",
+        paymentStatus: "unpaid",
+      },
+    });
+    const billing = createWorkspaceBillingModule({
+      catalog,
+      store: createPrismaWorkspaceBillingStore(),
+      provider: {
+        verifyDelivery: () => ({
+          eventId: `evt_failed_${randomUUID()}`,
+          eventType: "checkout.session.async_payment_failed",
+          providerCreatedAt: new Date("2026-08-28T09:59:00.000Z"),
+          liveMode: false,
+          apiVersion: "2026-07-29.dahlia",
+          customerId,
+          subscriptionId: null,
+          checkoutSessionId: sessionId,
+          checkoutStatus: "complete",
+          checkoutPaymentStatus: "unpaid",
+          workspaceHint: workspace.id,
+        }),
+        retrieveCurrentState: async () => {
+          throw new Error("not used");
+        },
+      },
+      clock: { now: () => new Date("2026-08-28T10:00:00.000Z") },
+      diagnostics: { record: () => undefined },
+    });
+
+    await expect(billing.acceptStripeDelivery("body", "signature")).resolves
+      .toMatchObject({ kind: "accepted", workspaceId: workspace.id });
+    const failedAttempt = await prisma.workspaceCheckoutAttempt.findUniqueOrThrow({
+      where: { id: attempt.id },
+      select: { sessionStatus: true, paymentStatus: true },
+    });
+    expect(failedAttempt).toEqual({
+      sessionStatus: "complete",
+      paymentStatus: "failed",
+    });
+  });
+
   test("settles projection, retention, and audit atomically and replayably", async () => {
     const { user, workspace } = await createWorkspace("projection");
     await prisma.workspaceBillingAccount.update({
