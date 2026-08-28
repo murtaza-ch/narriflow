@@ -170,7 +170,7 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 	editor_document_empty_timeline:
 		"That edit would remove the entire clip. Keep at least one frame of footage.",
 	retryable_contention:
-		"This clip changed while you were editing it. Try saving the clip length again.",
+		"This clip changed while you were editing it. Try saving your changes again.",
 	persistence_unavailable:
 		"Clip editing is temporarily unavailable. Please try again shortly.",
 	clip_title_update_failed: "We couldn't rename this clip. Please try again.",
