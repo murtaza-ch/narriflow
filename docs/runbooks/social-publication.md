@@ -1,6 +1,6 @@
 # Social Publication operations
 
-Social Publication Attempt is the only owner of provider delivery. Deploy the database migrations through `20260828170000_provider_receipt_uniqueness` before starting the web or worker process. Drain old workers before migration; the migration deliberately removes local nonterminal Draft, Scheduled, and Publishing fixtures because Narriflow has no production users or mixed-version deployment contract.
+Social Publication Attempt is the only owner of provider delivery. Deploy the database migrations through `20260828231000_social_publication_operation_lookup` before starting the web or worker process. Drain social workers before migration. Narriflow has no production users or mixed-version deployment contract, so obsolete local nonterminal fixtures are reset instead of supported through dual paths.
 
 ## Configuration
 
@@ -10,6 +10,7 @@ Required worker configuration:
 
 - `SOCIAL_PUBLICATION_CHECKPOINT_KEY`: at least 32 characters; encrypts provider operation checkpoints.
 - Existing provider OAuth/application credentials required by each enabled native adapter.
+- `TIKTOK_CLIENT_KEY` and `TIKTOK_CLIENT_SECRET` in the web environment for the verified Content Posting webhook at `/api/webhooks/tiktok/publication`.
 
 Bounded worker controls:
 
@@ -27,6 +28,14 @@ Bounded worker controls:
 
 Invalid values stop startup. Meta Graph `v24.0` and LinkedIn `202608` are shared web/worker capability contracts. Configured values must match them, and upgrades must change the shared contract and adapter fixtures together.
 
+Provider recovery contracts:
+
+- YouTube: `youtube.upload`; resumable upload sessions use bounded chunks and are status-probed with the total byte count before resuming the provider-reported range. Audit-enforced accounts stay private.
+- Instagram: `instagram_content_publish`; the configured professional-account ID owns one durable Reel container. `IN_PROGRESS`, `FINISHED`, `PUBLISHED`, `ERROR`, and `EXPIRED` are the only accepted container states.
+- TikTok: `video.publish`; creator settings are refreshed before initialization. Content Posting webhook signatures use the raw body, `TikTok-Signature`, HMAC-SHA256, and a five-minute replay window. Duplicate or out-of-order events cannot reverse an accepted receipt.
+- LinkedIn: `w_member_social` or `w_organization_social`; exact lost-response recovery additionally needs `r_member_social` or `r_organization_social`. Requests send the pinned `Linkedin-Version` and Rest.li protocol header.
+- X: `tweet.write` and `media.write`; exact lost-response recovery additionally needs `tweet.read` and `users.read`. Matching uses attached media keys, never text alone.
+
 ## Diagnosis and recovery
 
 Use structured `social_publication_*` diagnostics keyed by attempt ID, claim ID, platform, phase, and normalized error code. Logs must never contain access or refresh tokens, webhook signing secrets, reconciliation tokens, scoped media URLs, storage keys, captions, response bodies, or encrypted checkpoint contents.
@@ -40,6 +49,33 @@ Use structured `social_publication_*` diagnostics keyed by attempt ID, claim ID,
 
 Never delete a Provider Receipt, rewrite attempt lineage, release another live claim, or manually reuse an attempt idempotency key.
 
+Use the identifier-safe operator command for one post:
+
+```sh
+bun --filter @narriflow/services social-publication:operator -- \
+  --workspace <workspace-uuid> --post <social-post-uuid>
+```
+
+Request targeted reconciliation only after confirming the account still permits provider reads. This reuses the existing attempt and cannot submit a new post:
+
+```sh
+bun --filter @narriflow/services social-publication:operator -- \
+  --workspace <workspace-uuid> --post <social-post-uuid> \
+  --recheck --actor <user-uuid> --reason "Provider account verified"
+```
+
+In the product, Confirm published requires `publishing.manage` and records manual or platform-reference evidence without fabricating metrics. Publish again is only available from Needs attention, requires a reason and explicit duplicate-risk acknowledgement, and creates a linked attempt.
+
+## Deploy, rollback, and escalation
+
+1. Drain every social worker and verify there are no live claims before applying migrations.
+2. Apply the complete migration chain, deploy web and worker from the same revision, then restart workers.
+3. Observe representative accepted, processing, definitive failure, and Needs attention outcomes plus TikTok webhook signature failures and delivery retries.
+4. For rollback, drain workers first. Preserve attempts, encrypted checkpoints, operation lookup hashes, receipts, and manual decisions. Never roll back by scheduling uncertain rows or deleting evidence.
+5. Escalate when exact lookup returns multiple matches, provider read permission is unavailable, a processing deadline expires without final evidence, or receipt uniqueness conflicts. Verify the provider account before authorizing Publish again.
+
+For a local-only reset, stop web and worker processes, reset the local database deliberately, reapply migrations, and reconnect provider test accounts. Do not add compatibility reads for obsolete fixture shapes.
+
 ## Verification
 
 Run from the repository root:
@@ -52,6 +88,7 @@ bun test packages/services/src/social-publication-scheduling.test.ts
 bun test packages/services/src/social-publication-attempt.test.ts
 bun test packages/services/src/social-publication-native-platforms.test.ts
 bun test packages/services/src/social-publication-webhook.test.ts
+bun test packages/services/src/social-publication-tiktok-webhook.test.ts
 bun test packages/services/src/social-publication-config.test.ts
 bun run typecheck
 bun run lint

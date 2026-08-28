@@ -104,6 +104,10 @@ _Avoid_: Publishing status, worker ID, account lock
 The unique durable evidence that a provider or webhook receiver accepted one Social Publication Attempt. Receipt creation, Social Post settlement, and analytics intent creation commit atomically.
 _Avoid_: HTTP 2xx, external URL, provider response
 
+**Publication Manual Decision**:
+An audited editor or operator choice to recheck the existing provider operation, confirm publication with labeled evidence, or authorize a linked new attempt despite duplicate risk. It records the actor and bounded reason without rewriting the uncertain attempt.
+_Avoid_: Retry flag, status edit, fabricated Provider Receipt
+
 **Brand Profile**:
 A workspace or personal collection of reusable identity, media, writing guidance, and style presets for one brand. A Brand Template is a style preset inside this broader identity.
 _Avoid_: Brand Template, client folder, workspace brand

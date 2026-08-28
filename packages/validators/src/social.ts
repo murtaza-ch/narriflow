@@ -28,6 +28,37 @@ export const publicationFailureDispositionSchema = z.enum([
   "attention",
 ]);
 
+export const socialPublicationActionSchema = z.enum([
+  "cancel",
+  "recheck",
+  "confirm_published",
+  "publish_again",
+  "reconnect_account",
+  "schedule_again",
+]);
+
+export const publicationEvidenceKindSchema = z.enum([
+  "provider_reference",
+  "platform_url",
+  "manual_unvalidated",
+]);
+
+export const recheckSocialPublicationSchema = z.object({
+  reason: z.string().trim().min(1).max(500),
+});
+
+export const confirmSocialPublicationSchema = z.object({
+  reason: z.string().trim().min(1).max(500),
+  evidenceKind: publicationEvidenceKindSchema,
+  providerReference: z.string().trim().min(1).max(500).nullable().optional(),
+  externalUrl: z.string().url().max(2_048).nullable().optional(),
+});
+
+export const republishSocialPublicationSchema = z.object({
+  reason: z.string().trim().min(1).max(500),
+  duplicateRiskAcknowledged: z.literal(true),
+});
+
 export const socialAccountStatusSchema = z.enum([
   "active",
   "expired",
@@ -99,6 +130,7 @@ export const socialPostSnapshotSchema = z.object({
   errorCode: z.string().nullable(),
   errorDisposition: publicationFailureDispositionSchema.nullable(),
   nextAttemptAt: z.string().datetime().nullable(),
+  allowedActions: z.array(socialPublicationActionSchema).default([]),
   latestMetrics: socialPostMetricsSnapshotSchema.nullable(),
   createdAt: z.string().datetime(),
 });
@@ -110,3 +142,8 @@ export type ScheduleSocialPostInput = z.infer<typeof scheduleSocialPostSchema>;
 export type SocialAccountSnapshot = z.infer<typeof socialAccountSnapshotSchema>;
 export type SocialPostMetricsInput = z.infer<typeof socialPostMetricsSchema>;
 export type SocialPostSnapshot = z.infer<typeof socialPostSnapshotSchema>;
+export type SocialPublicationAction = z.infer<typeof socialPublicationActionSchema>;
+export type PublicationEvidenceKind = z.infer<typeof publicationEvidenceKindSchema>;
+export type RecheckSocialPublicationInput = z.infer<typeof recheckSocialPublicationSchema>;
+export type ConfirmSocialPublicationInput = z.infer<typeof confirmSocialPublicationSchema>;
+export type RepublishSocialPublicationInput = z.infer<typeof republishSocialPublicationSchema>;

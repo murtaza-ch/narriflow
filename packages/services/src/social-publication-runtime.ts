@@ -27,24 +27,6 @@ import {
 } from "./r2-storage";
 import { socialOAuthService } from "./social-oauth.service";
 
-function abortableSleep(milliseconds: number, signal: AbortSignal) {
-	return new Promise<void>((resolve, reject) => {
-		if (signal.aborted) {
-			reject(new DOMException("Aborted", "AbortError"));
-			return;
-		}
-		const timer = setTimeout(resolve, milliseconds);
-		signal.addEventListener(
-			"abort",
-			() => {
-				clearTimeout(timer);
-				reject(new DOMException("Aborted", "AbortError"));
-			},
-			{ once: true },
-		);
-	});
-}
-
 async function materializeMedia(input: PublicationPlatformInput["media"]) {
 	const directory = await mkdtemp(join(tmpdir(), "narriflow-publication-"));
 	const path = join(directory, input.fileName);
@@ -143,18 +125,15 @@ export function createProductionSocialPublicationRuntime(
 					expiresIn: 2 * 60 * 60,
 				}),
 		},
-		sleep: abortableSleep,
-		random: Math.random,
 		clock: { now: () => new Date() },
 		config: {
+			youtubeChunkBytes: 8 * 1024 * 1024,
 			metaGraphVersion: config.providers.metaGraphVersion,
 			linkedInVersion: config.providers.linkedInVersion,
 			instagramPollAttempts: 30,
 			instagramPollIntervalMs: 5_000,
-			tiktokPollAttempts: 12,
 			tiktokPollIntervalMs: 5_000,
 			tiktokChunkBytes: 64 * 1024 * 1024,
-			xPollAttempts: 20,
 			xChunkBytes: 4 * 1024 * 1024,
 		},
 	});

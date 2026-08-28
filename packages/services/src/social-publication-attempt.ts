@@ -127,6 +127,7 @@ export interface SocialPublicationAttemptStore {
 		owned: OwnedPublicationAttempt;
 		operationKind: string;
 		sealedState: string;
+		operationLookupHash?: string | null;
 		now: Date;
 	}): Promise<void>;
 	recordProviderCall(input: {
@@ -143,6 +144,7 @@ export interface SocialPublicationAttemptStore {
 		owned: OwnedPublicationAttempt;
 		result: Extract<PublicationPlatformResult, { kind: "pending" }>;
 		sealedState: string;
+		operationLookupHash?: string | null;
 		now: Date;
 	}): Promise<PublicationAttemptExecutionResult>;
 	settleUnknown(input: {
@@ -188,6 +190,10 @@ export class PublicationProviderCallBudgetError extends Error {
 		super("The Social Publication Attempt provider-call budget is exhausted");
 		this.name = "PublicationProviderCallBudgetError";
 	}
+}
+
+export function publicationOperationLookupHash(lookupKey: string) {
+	return createHash("sha256").update(lookupKey).digest("hex");
 }
 
 export type PublicationRetryPolicy = {
@@ -479,6 +485,9 @@ export function createSocialPublicationAttempt(dependencies: {
 							owned: input.attempt,
 							operationKind: operation.kind,
 							sealedState,
+							operationLookupHash: operation.lookupKey
+								? publicationOperationLookupHash(operation.lookupKey)
+								: null,
 							now: dependencies.clock.now(),
 						});
 						submissionCheckpointed ||= operation.kind === "submission_started";
@@ -518,6 +527,12 @@ export function createSocialPublicationAttempt(dependencies: {
 						});
 						return settled;
 					}
+				} else if (lastCheckpointOperation && platform.resume) {
+					result = await platform.resume(
+						platformInput,
+						lastCheckpointOperation,
+						context,
+					);
 				} else {
 					result = await platform.publish(platformInput, context);
 				}
@@ -538,6 +553,9 @@ export function createSocialPublicationAttempt(dependencies: {
 							sealedState: dependencies.checkpointCipher.seal(
 								result.operation.state,
 							),
+							operationLookupHash: result.operation.lookupKey
+								? publicationOperationLookupHash(result.operation.lookupKey)
+								: null,
 							now,
 						});
 						break;
@@ -548,7 +566,9 @@ export function createSocialPublicationAttempt(dependencies: {
 							phase: result.failure.phase,
 							disposition: result.failure.disposition,
 							retryAfterMs: result.failure.retryAfterMs,
-							submissionMayHaveStarted: submissionCheckpointed,
+							submissionMayHaveStarted:
+								submissionCheckpointed &&
+								!result.failure.safeToRepublishAfterSubmission,
 							now,
 							retry: dependencies.retry,
 							processingDeadlineMs: dependencies.processingDeadlineMs,
@@ -851,7 +871,8 @@ export function createInMemorySocialPublicationAttemptStore(
 					record.attempt.processingDeadline.getTime(),
 				),
 			);
-			record.attempt.phase = "processing";
+			record.attempt.phase =
+				input.result.submissionStarted === false ? "uploading" : "processing";
 			record.attempt.outcome = "pending";
 			record.attempt.nextActionAt = nextActionAt;
 			record.socialPost.status = "processing";
@@ -1247,6 +1268,7 @@ export const prismaSocialPublicationAttemptStore: SocialPublicationAttemptStore 
 								: undefined,
 						operationKind: input.operationKind,
 						checkpointEncrypted: input.sealedState,
+						operationLookupHash: input.operationLookupHash,
 					},
 				});
 				if (updated.count !== 1) throw new PublicationClaimLostError();
@@ -1407,11 +1429,15 @@ export const prismaSocialPublicationAttemptStore: SocialPublicationAttemptStore 
 				const row = await tx.socialPublicationAttempt.update({
 					where: { id: input.owned.attemptId },
 					data: {
-						phase: "processing",
+						phase:
+							input.result.submissionStarted === false
+								? "uploading"
+								: "processing",
 						outcome: "pending",
 						nextActionAt,
 						operationKind: input.result.operation.kind,
 						checkpointEncrypted: input.sealedState,
+						operationLookupHash: input.operationLookupHash,
 					},
 					select: { id: true, socialPostId: true },
 				});
@@ -1848,7 +1874,11 @@ export async function claimDueSocialPublicationAttempts(input: {
 						current.phase === "processing" ||
 						current.phase === "reconciling";
 					const expectedPreSubmissionStatus =
-						current.phase === "retry_scheduled" ? "scheduled" : "publishing";
+						current.phase === "retry_scheduled"
+							? "scheduled"
+							: current.phase === "uploading"
+								? "processing"
+								: "publishing";
 					if (
 						!currentSubmitted &&
 						current.socialPost.status !== expectedPreSubmissionStatus
@@ -1878,7 +1908,7 @@ export async function claimDueSocialPublicationAttempts(input: {
 					const providerBudgetExhausted =
 						current.providerCallCount >= input.config.providerCallBudget;
 					const phaseDeadlineExceeded =
-						current.phase === "processing"
+						current.phase === "processing" || current.phase === "uploading"
 							? current.processingDeadline <= input.now
 							: currentSubmitted
 								? current.reconciliationDeadline <= input.now
@@ -1896,7 +1926,7 @@ export async function claimDueSocialPublicationAttempts(input: {
 							? "social_account_reconnect_required"
 							: providerBudgetExhausted
 								? "publication_provider_call_budget_exhausted"
-								: current.phase === "processing"
+								: current.phase === "processing" || current.phase === "uploading"
 									? "publication_processing_deadline_exceeded"
 									: "publication_reconciliation_deadline_exceeded";
 						const terminalAttempt =
@@ -1967,7 +1997,7 @@ export async function claimDueSocialPublicationAttempts(input: {
 						},
 						data: {
 							status:
-								current.phase === "processing"
+								current.phase === "processing" || current.phase === "uploading"
 									? "processing"
 									: current.phase === "reconciling"
 										? "reconciling"

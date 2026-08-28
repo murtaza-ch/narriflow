@@ -131,6 +131,32 @@ describe("describeSocialPost", () => {
     expect(feedback.error).not.toContain("Schedule it again");
   });
 
+  test("names provider lookup limitations instead of implying automatic proof", () => {
+    const linkedin = describeSocialPost(
+      post({
+        platform: "linkedin",
+        status: "needs_attention",
+        errorCode: "linkedin_reconciliation_permission_missing",
+        errorDisposition: "attention",
+      }),
+      NOW,
+    );
+    expect(linkedin.error).toContain("read permission");
+    expect(linkedin.error).toContain("author-and-video");
+
+    const x = describeSocialPost(
+      post({
+        platform: "x",
+        status: "needs_attention",
+        errorCode: "x_reconciliation_permission_missing",
+        errorDisposition: "attention",
+      }),
+      NOW,
+    );
+    expect(x.error).toContain("product tier");
+    expect(x.error).toContain("recent-post lookup");
+  });
+
   test("published shows when it went out and stops polling", () => {
     const feedback = describeSocialPost(
       post({

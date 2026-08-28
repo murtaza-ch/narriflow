@@ -24,11 +24,15 @@ export type PublicationPlatformFailure = {
   phase: PublicationOperationPhase;
   disposition: PublicationFailureDisposition;
   retryAfterMs: number | null;
+  /** The provider returned definitive evidence that no public post was created. */
+  safeToRepublishAfterSubmission?: boolean;
 };
 
 export type PublicationProviderOperation = {
   kind: string;
   state: Prisma.JsonObject;
+  /** Stable provider operation identity used only through a one-way lookup hash. */
+  lookupKey?: string;
 };
 
 export type PublicationPlatformResult =
@@ -46,6 +50,8 @@ export type PublicationPlatformResult =
       receiptId: string;
       operation: PublicationProviderOperation;
       nextCheckAt: Date;
+      /** False while provider media is still being prepared before public submission. */
+      submissionStarted?: boolean;
     }
   | {
       kind: "failed";
@@ -96,6 +102,12 @@ export interface PublicationPlatform {
   readonly capabilities: PublicationPlatformCapabilities;
   publish(
     input: PublicationPlatformInput,
+    context: PublicationPlatformContext,
+  ): Promise<PublicationPlatformResult>;
+  /** Resume a durable provider preparation or upload without starting over. */
+  resume?(
+    input: PublicationPlatformInput,
+    operation: PublicationProviderOperation,
     context: PublicationPlatformContext,
   ): Promise<PublicationPlatformResult>;
   reconcile?(

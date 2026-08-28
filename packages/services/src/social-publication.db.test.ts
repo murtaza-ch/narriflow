@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHmac, randomUUID } from "node:crypto";
 import {
 	afterAll,
 	beforeAll,
@@ -16,11 +16,17 @@ import {
 	prismaSocialPublicationAttemptStore,
 	PublicationClaimLostError,
 	ProviderReceiptConflictError,
+	publicationOperationLookupHash,
 } from "./social-publication-attempt";
 import {
 	prismaPublicationSchedulingStore,
 	PublicationIntentConflictError,
 } from "./social-publication-scheduling";
+import {
+	socialPublicationRecovery,
+	SocialPublicationRecoveryError,
+} from "./social-publication-recovery";
+import { acceptTikTokPublicationWebhook } from "./social-publication-tiktok-webhook";
 
 const databaseUrl = process.env.SOCIAL_PUBLICATION_TEST_DATABASE_URL;
 const databaseSchema = process.env.SOCIAL_PUBLICATION_TEST_DATABASE_SCHEMA;
@@ -237,6 +243,64 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 				scheduledFor: input.scheduledFor,
 			},
 		};
+	}
+
+	async function attentionPublication(
+		f: Awaited<ReturnType<typeof fixture>>,
+		label: string,
+	) {
+		const now = new Date();
+		const socialPostId = randomUUID();
+		const candidate = frozenCandidate(f, {
+			id: socialPostId,
+			key: randomUUID(),
+			hash: `attention-${label}`,
+			accountId: f.firstAccount.id,
+			scheduledFor: new Date(now.getTime() - 1_000),
+		});
+		await prismaPublicationSchedulingStore.open({
+			workspaceId: f.workspace.id,
+			clientIdempotencyKey: candidate.clientIdempotencyKey,
+			immutableRequestHash: candidate.immutableRequestHash,
+			create: async () => candidate,
+		});
+		const claims = await claimDueSocialPublicationAttempts({
+			claimantId: `attention-${label}`,
+			now,
+			config: claimConfig,
+		});
+		const attempt = await prisma.socialPublicationAttempt.findFirstOrThrow({
+			where: { socialPostId },
+		});
+		const claim = claims.find((row) => row.attemptId === attempt.id);
+		if (!claim) throw new Error("expected attention fixture claim");
+		await prisma.$transaction([
+			prisma.publicationClaim.update({
+				where: { id: claim.claimId },
+				data: { releasedAt: now, accountSlotKey: null },
+			}),
+			prisma.socialPublicationAttempt.update({
+				where: { id: attempt.id },
+				data: {
+					phase: "needs_attention",
+					outcome: "unknown",
+					failureCode: "publication_outcome_unknown",
+					failureDisposition: "attention",
+					terminalAt: now,
+					currentClaimId: null,
+				},
+			}),
+			prisma.socialPost.update({
+				where: { id: socialPostId },
+				data: {
+					status: "needs_attention",
+					errorCode: "publication_outcome_unknown",
+					errorDisposition: "attention",
+					nextAttemptAt: null,
+				},
+			}),
+		]);
+		return { socialPostId, attemptId: attempt.id, now };
 	}
 
 	test("concurrent scheduling replays one frozen intent and rejects key drift", async () => {
@@ -894,5 +958,252 @@ dbDescribe("Social Publication PostgreSQL invariants", () => {
 		expect(
 			claims.some((claim) => claim.attemptId === unrelated.attemptId),
 		).toBe(true);
+	});
+
+	test("manual recheck reuses the uncertain attempt and records an audit decision", async () => {
+		const f = await fixture();
+		const target = await attentionPublication(f, "recheck");
+		const result = await socialPublicationRecovery.recheck({
+			workspaceId: f.workspace.id,
+			projectId: f.project.id,
+			actorUserId: f.user.id,
+			socialPostId: target.socialPostId,
+			reason: "Operator requested an exact provider status check",
+			now: target.now,
+		});
+
+		expect(result).toMatchObject({
+			attemptId: target.attemptId,
+			status: "reconciling",
+		});
+		expect(
+			await prisma.socialPublicationAttempt.count({
+				where: { socialPostId: target.socialPostId },
+			}),
+		).toBe(1);
+		expect(
+			await prisma.publicationManualDecision.findFirstOrThrow({
+				where: { socialPostId: target.socialPostId },
+			}),
+		).toMatchObject({
+			kind: "recheck_requested",
+			actorUserId: f.user.id,
+			ownershipValidated: false,
+		});
+	});
+
+	test("manual confirmation records labeled evidence without fabricating metrics", async () => {
+		const f = await fixture();
+		const target = await attentionPublication(f, "confirm");
+		const result = await socialPublicationRecovery.confirmPublished({
+			workspaceId: f.workspace.id,
+			projectId: f.project.id,
+			actorUserId: f.user.id,
+			socialPostId: target.socialPostId,
+			reason: "Editor found the exact Short on the selected channel",
+			evidenceKind: "platform_url",
+			externalUrl: "https://youtube.com/shorts/manual-proof",
+			now: target.now,
+		});
+
+		expect(result).toMatchObject({ status: "posted", evidence: "manual" });
+		expect(
+			await prisma.providerReceipt.findUniqueOrThrow({
+				where: { attemptId: target.attemptId },
+			}),
+		).toMatchObject({ metrics: null });
+		expect(
+			await prisma.socialPostMetric.count({
+				where: { postId: target.socialPostId },
+			}),
+		).toBe(0);
+		expect(
+			await prisma.publicationManualDecision.findFirstOrThrow({
+				where: { socialPostId: target.socialPostId },
+			}),
+		).toMatchObject({
+			evidenceKind: "platform_url",
+			ownershipValidated: false,
+		});
+	});
+
+	test("concurrent manual decisions create one truth and preserve uncertain lineage", async () => {
+		const f = await fixture();
+		const target = await attentionPublication(f, "race");
+		const outcomes = await Promise.allSettled([
+			socialPublicationRecovery.confirmPublished({
+				workspaceId: f.workspace.id,
+				projectId: f.project.id,
+				actorUserId: f.user.id,
+				socialPostId: target.socialPostId,
+				reason: "Confirmed on provider",
+				evidenceKind: "manual_unvalidated",
+				now: target.now,
+			}),
+			socialPublicationRecovery.publishAgain({
+				workspaceId: f.workspace.id,
+				projectId: f.project.id,
+				actorUserId: f.user.id,
+				socialPostId: target.socialPostId,
+				reason: "Editor accepts the duplicate risk",
+				duplicateRiskAcknowledged: true,
+				now: target.now,
+			}),
+		]);
+
+		expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+		expect(
+			await prisma.publicationManualDecision.count({
+				where: { socialPostId: target.socialPostId },
+			}),
+		).toBe(1);
+		const post = await prisma.socialPost.findUniqueOrThrow({
+			where: { id: target.socialPostId },
+		});
+		expect(["posted", "scheduled"]).toContain(post.status);
+		const attempts = await prisma.socialPublicationAttempt.findMany({
+			where: { socialPostId: target.socialPostId },
+			orderBy: { attemptNumber: "asc" },
+		});
+		expect(attempts[0]!.id).toBe(target.attemptId);
+		if (post.status === "scheduled") {
+			expect(attempts).toHaveLength(2);
+			expect(attempts[0]!.phase).toBe("needs_attention");
+			expect(attempts[1]!.priorAttemptId).toBe(target.attemptId);
+		} else {
+			expect(attempts).toHaveLength(1);
+			expect(attempts[0]!.phase).toBe("succeeded");
+		}
+	});
+
+	test("recovery lookup is isolated by workspace and project", async () => {
+		const f = await fixture();
+		const target = await attentionPublication(f, "scope");
+		await expect(
+			socialPublicationRecovery.inspect({
+				workspaceId: f.workspace.id,
+				projectId: randomUUID(),
+				socialPostId: target.socialPostId,
+			}),
+		).rejects.toBeInstanceOf(SocialPublicationRecoveryError);
+	});
+
+	test("verified duplicate and out-of-order TikTok webhooks settle one publish_id once", async () => {
+		const f = await fixture();
+		const now = new Date("2026-08-28T10:00:00.000Z");
+		const publishId = `publish-${randomUUID()}`;
+		const account = await prisma.socialAccount.create({
+			data: {
+				userId: f.user.id,
+				workspaceId: f.workspace.id,
+				createdByUserId: f.user.id,
+				platform: "tiktok",
+				providerAccountId: `tiktok:${randomUUID()}`,
+				displayName: "TikTok fixture",
+				handle: "@fixture",
+				accessTokenEncrypted: "encrypted-test-token",
+			},
+		});
+		const socialPostId = randomUUID();
+		const base = frozenCandidate(f, {
+			id: socialPostId,
+			key: randomUUID(),
+			hash: "tiktok-webhook",
+			accountId: account.id,
+			scheduledFor: new Date(now.getTime() - 1_000),
+		});
+		const candidate = {
+			...base,
+			frozen: {
+				...base.frozen,
+				socialAccountId: account.id,
+				platform: "tiktok" as const,
+				capabilityVersion: "tiktok-v2",
+			},
+		};
+		await prismaPublicationSchedulingStore.open({
+			workspaceId: f.workspace.id,
+			clientIdempotencyKey: candidate.clientIdempotencyKey,
+			immutableRequestHash: candidate.immutableRequestHash,
+			create: async () => candidate,
+		});
+		const claims = await claimDueSocialPublicationAttempts({
+			claimantId: "tiktok-webhook-worker",
+			now,
+			config: claimConfig,
+		});
+		const attempt = await prisma.socialPublicationAttempt.findFirstOrThrow({
+			where: { socialPostId },
+		});
+		const claim = claims.find((row) => row.attemptId === attempt.id);
+		if (!claim) throw new Error("expected TikTok claim");
+		await prisma.$transaction([
+			prisma.publicationClaim.update({
+				where: { id: claim.claimId },
+				data: { releasedAt: now, accountSlotKey: null },
+			}),
+			prisma.socialPublicationAttempt.update({
+				where: { id: attempt.id },
+				data: {
+					phase: "processing",
+					outcome: "pending",
+					operationKind: "tiktok_processing",
+					operationLookupHash: publicationOperationLookupHash(
+						`tiktok:${publishId}`,
+					),
+					currentClaimId: null,
+				},
+			}),
+			prisma.socialPost.update({
+				where: { id: socialPostId },
+				data: { status: "processing" },
+			}),
+		]);
+
+		const clientSecret = "tiktok-webhook-test-secret";
+		const timestamp = String(Math.floor(now.getTime() / 1000));
+		const invoke = (event: string, content: Record<string, unknown>) => {
+			const rawBody = JSON.stringify({
+				client_key: "test-client",
+				event,
+				create_time: Number(timestamp),
+				user_openid: account.providerAccountId,
+				content: JSON.stringify({ publish_id: publishId, ...content }),
+			});
+			const digest = createHmac("sha256", clientSecret)
+				.update(`${timestamp}.${rawBody}`)
+				.digest("hex");
+			return acceptTikTokPublicationWebhook({
+				rawBody,
+				signature: `t=${timestamp},s=${digest}`,
+				clientKey: "test-client",
+				clientSecret,
+				now,
+			});
+		};
+
+		expect(
+			await invoke("post.publish.publicly_available", { post_id: "post-123" }),
+		).toMatchObject({ kind: "posted", attemptId: attempt.id });
+		expect(
+			await invoke("post.publish.publicly_available", { post_id: "post-123" }),
+		).toMatchObject({ kind: "already_settled", attemptId: attempt.id });
+		expect(
+			await invoke("post.publish.failed", { reason: "internal" }),
+		).toMatchObject({ kind: "already_settled", attemptId: attempt.id });
+		expect(
+			await prisma.providerReceipt.count({ where: { attemptId: attempt.id } }),
+		).toBe(1);
+		expect(
+			await prisma.projectAnalyticsEvent.count({
+				where: { projectId: f.project.id, type: "social_posted" },
+			}),
+		).toBe(1);
+		expect(
+			await prisma.socialPost.findUniqueOrThrow({ where: { id: socialPostId } }),
+		).toMatchObject({
+			status: "posted",
+			externalUrl: "https://www.tiktok.com/@fixture/video/post-123",
+		});
 	});
 });

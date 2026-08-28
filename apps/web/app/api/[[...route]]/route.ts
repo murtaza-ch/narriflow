@@ -28,6 +28,9 @@ import {
   rssImportSchema,
   rssPreviewSchema,
   scheduleSocialPostSchema,
+  recheckSocialPublicationSchema,
+  confirmSocialPublicationSchema,
+  republishSocialPublicationSchema,
   socialPlatformSchema,
   socialPostMetricsSchema,
   transcriptExportFormatSchema,
@@ -76,6 +79,9 @@ import {
   socialOAuthService,
   SocialOAuthError,
   socialService,
+  SocialPublicationRecoveryError,
+  acceptTikTokPublicationWebhook,
+  TikTokPublicationWebhookError,
   UnsafeUrlError,
   uploadSessionService,
   UploadTooLongError,
@@ -107,6 +113,40 @@ app.route(
       billingService.handleWebhook(rawBody, signature),
   }),
 );
+
+app.post("/webhooks/tiktok/publication", async (c) => {
+  const clientKey = process.env.TIKTOK_CLIENT_KEY;
+  const clientSecret = process.env.TIKTOK_CLIENT_SECRET;
+  if (!clientKey || !clientSecret) {
+    return c.json({ error: "tiktok_webhook_not_configured" }, 503);
+  }
+  const rawBody = await c.req.text();
+  try {
+    const result = await acceptTikTokPublicationWebhook({
+      rawBody,
+      signature: c.req.header("TikTok-Signature") ?? null,
+      clientKey,
+      clientSecret,
+    });
+    console.warn(JSON.stringify({
+      level: "info",
+      message: "social_publication_tiktok_webhook_accepted",
+      outcome: result.kind,
+    }));
+    return c.json(result, 200);
+  } catch (error) {
+    if (error instanceof TikTokPublicationWebhookError) {
+      const status = error.code === "tiktok_webhook_payload_invalid" ? 400 : 401;
+      return c.json({ error: error.code }, status);
+    }
+    console.warn(JSON.stringify({
+      level: "error",
+      message: "social_publication_tiktok_webhook_failed",
+      errorCode: "tiktok_webhook_persistence_failed",
+    }));
+    return c.json({ error: "tiktok_webhook_persistence_failed" }, 500);
+  }
+});
 
 app.route(
   "/billing",
@@ -2317,6 +2357,151 @@ app.delete("/projects/:id/social-posts/:postId", async (c) => {
     return c.json(
       { error: "social_post_cancel_failed", message: errorMessage(error) },
       400,
+    );
+  }
+});
+
+app.get("/projects/:id/social-posts/:postId/publication", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  const projectId = c.req.param("id");
+  const access = await projectService.getProjectAccess(
+    appUser.actorUserId,
+    projectId,
+    appUser.workspaceId,
+  );
+  if (access === "missing") return c.json({ error: "Project not found" }, 404);
+  if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
+  try {
+    return c.json(
+      await socialService.inspectPublication(
+        appUser.workspaceId,
+        c.req.param("postId"),
+        projectId,
+      ),
+      200,
+    );
+  } catch (error) {
+    return c.json(
+      { error: "social_publication_inspect_failed", message: errorMessage(error) },
+      error instanceof SocialPublicationRecoveryError ? 404 : 400,
+    );
+  }
+});
+
+app.post("/projects/:id/social-posts/:postId/recheck", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  await workspaceService.requireActor(
+    appUser.actorUserId,
+    appUser.workspaceId,
+    "publishing.manage",
+  );
+  const projectId = c.req.param("id");
+  const access = await projectService.getProjectAccess(
+    appUser.actorUserId,
+    projectId,
+    appUser.workspaceId,
+  );
+  if (access === "missing") return c.json({ error: "Project not found" }, 404);
+  if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
+  const parsed = recheckSocialPublicationSchema.safeParse(
+    await c.req.json().catch(() => ({})),
+  );
+  if (!parsed.success) return c.json({ error: "Invalid payload", issues: parsed.error.issues }, 400);
+  try {
+    return c.json(
+      await socialService.recheckPublication(
+        appUser.workspaceId,
+        appUser.actorUserId,
+        c.req.param("postId"),
+        parsed.data,
+        projectId,
+      ),
+      200,
+    );
+  } catch (error) {
+    return c.json(
+      { error: error instanceof SocialPublicationRecoveryError ? error.code : "social_publication_recheck_failed", message: errorMessage(error) },
+      error instanceof SocialPublicationRecoveryError ? 409 : 400,
+    );
+  }
+});
+
+app.post("/projects/:id/social-posts/:postId/confirm", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  await workspaceService.requireActor(
+    appUser.actorUserId,
+    appUser.workspaceId,
+    "publishing.manage",
+  );
+  const projectId = c.req.param("id");
+  const access = await projectService.getProjectAccess(
+    appUser.actorUserId,
+    projectId,
+    appUser.workspaceId,
+  );
+  if (access === "missing") return c.json({ error: "Project not found" }, 404);
+  if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
+  const parsed = confirmSocialPublicationSchema.safeParse(
+    await c.req.json().catch(() => ({})),
+  );
+  if (!parsed.success) return c.json({ error: "Invalid payload", issues: parsed.error.issues }, 400);
+  try {
+    return c.json(
+      await socialService.confirmPublication(
+        appUser.workspaceId,
+        appUser.actorUserId,
+        c.req.param("postId"),
+        parsed.data,
+        projectId,
+      ),
+      200,
+    );
+  } catch (error) {
+    return c.json(
+      { error: error instanceof SocialPublicationRecoveryError ? error.code : "social_publication_confirm_failed", message: errorMessage(error) },
+      error instanceof SocialPublicationRecoveryError ? 409 : 400,
+    );
+  }
+});
+
+app.post("/projects/:id/social-posts/:postId/publish-again", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  await workspaceService.requireActor(
+    appUser.actorUserId,
+    appUser.workspaceId,
+    "publishing.manage",
+  );
+  const projectId = c.req.param("id");
+  const access = await projectService.getProjectAccess(
+    appUser.actorUserId,
+    projectId,
+    appUser.workspaceId,
+  );
+  if (access === "missing") return c.json({ error: "Project not found" }, 404);
+  if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
+  const parsed = republishSocialPublicationSchema.safeParse(
+    await c.req.json().catch(() => ({})),
+  );
+  if (!parsed.success) return c.json({ error: "Invalid payload", issues: parsed.error.issues }, 400);
+  try {
+    return c.json(
+      await socialService.republishPublication(
+        appUser.workspaceId,
+        appUser.actorUserId,
+        c.req.param("postId"),
+        parsed.data,
+        projectId,
+      ),
+      201,
+    );
+  } catch (error) {
+    return c.json(
+      { error: error instanceof SocialPublicationRecoveryError ? error.code : "social_publication_republish_failed", message: errorMessage(error) },
+      error instanceof SocialPublicationRecoveryError ? 409 : 400,
     );
   }
 });

@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Box, Flex, Grid, Stack, Text } from "@chakra-ui/react";
-import { AlertTriangle, CalendarClock, Check, Send, X } from "lucide-react";
+import { AlertTriangle, CalendarClock, Check, CheckCircle2, RefreshCw, Repeat2, Send, X } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { Input } from "@narriflow/ui/components/input";
 import { Select } from "@narriflow/ui/components/select";
@@ -60,6 +60,14 @@ const toneFg: Record<SocialPostTone, string> = {
 };
 
 type Notice = { tone: "success" | "danger"; text: string };
+type RecoveryAction = "recheck" | "confirm_published" | "publish_again";
+type RecoveryForm = {
+  postId: string;
+  action: RecoveryAction;
+  reason: string;
+  externalUrl: string;
+  duplicateRiskAcknowledged: boolean;
+};
 
 /** Prefers mapped copy for a known error code, falls back to the API's own
  *  message, then to a caller-supplied default. */
@@ -75,6 +83,26 @@ const platformItems = platforms.map((value) => ({
   value,
   label: platformLabels[value],
 }));
+
+const platformPostUrlExamples: Record<SocialPlatform, string> = {
+  youtube_shorts: "https://youtube.com/shorts/…",
+  instagram_reels: "https://instagram.com/reel/…",
+  tiktok: "https://tiktok.com/@creator/video/…",
+  linkedin: "https://linkedin.com/feed/update/…",
+  x: "https://x.com/creator/status/…",
+};
+
+const duplicateRiskCopy: Record<SocialPlatform, string> = {
+  youtube_shorts:
+    "The earlier YouTube upload could have completed. Publishing again may create a second Short.",
+  instagram_reels:
+    "The earlier Instagram container could already be published. Publishing again may create a second Reel.",
+  tiktok:
+    "The earlier TikTok direct post could still finish moderation. Publishing again may create a second video.",
+  linkedin:
+    "LinkedIn could not prove the earlier Post outcome. Publishing again may create a second video Post.",
+  x: "X could not prove the earlier Post outcome. Publishing again may create a second Post.",
+};
 
 function preferredAspectRatio(clip: ClipSnapshot): ClipAspectRatio {
   return clip.renderVariants.find((render) => render.hasAsset)?.aspectRatio ?? "9:16";
@@ -108,6 +136,8 @@ export function SocialSchedulingPanel({
   const [scheduledFor, setScheduledFor] = useState("");
   const [notice, setNotice] = useState<Notice | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [recoveryForm, setRecoveryForm] = useState<RecoveryForm | null>(null);
+  const noticeRef = useRef<HTMLDivElement | null>(null);
   const selectedAccount =
     platformAccounts.find((account) => account.id === accountId) ?? null;
 
@@ -431,8 +461,83 @@ export function SocialSchedulingPanel({
     }
   }
 
+  async function submitRecovery(post: SocialPostSnapshot) {
+    if (!recoveryForm || recoveryForm.postId !== post.id || submitting) return;
+    const reason = recoveryForm.reason.trim();
+    if (!reason) {
+      setNotice({ tone: "danger", text: "Add a short audit reason before continuing." });
+      return;
+    }
+    if (
+      recoveryForm.action === "publish_again" &&
+      !recoveryForm.duplicateRiskAcknowledged
+    ) {
+      setNotice({
+        tone: "danger",
+        text: `Acknowledge that another ${platformLabels[post.platform]} post may already be live.`,
+      });
+      return;
+    }
+    const endpoint =
+      recoveryForm.action === "recheck"
+        ? "recheck"
+        : recoveryForm.action === "confirm_published"
+          ? "confirm"
+          : "publish-again";
+    const body =
+      recoveryForm.action === "recheck"
+        ? { reason }
+        : recoveryForm.action === "confirm_published"
+          ? {
+              reason,
+              evidenceKind: recoveryForm.externalUrl.trim()
+                ? "platform_url"
+                : "manual_unvalidated",
+              externalUrl: recoveryForm.externalUrl.trim() || null,
+            }
+          : { reason, duplicateRiskAcknowledged: true };
+    setSubmitting(true);
+    setNotice(null);
+    try {
+      const response = await fetch(
+        `/api/projects/${projectId}/social-posts/${post.id}/${endpoint}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        },
+      );
+      const payload = (await response.json().catch(() => null)) as {
+        error?: string;
+        message?: string;
+      } | null;
+      if (!response.ok) {
+        setNotice({
+          tone: "danger",
+          text: actionErrorText(payload, "The publication changed before this action completed."),
+        });
+        startTransition(() => router.refresh());
+        return;
+      }
+      const text =
+        recoveryForm.action === "recheck"
+          ? `Checking the existing ${platformLabels[post.platform]} operation. Nothing was submitted again.`
+          : recoveryForm.action === "confirm_published"
+            ? "Marked published with manual evidence."
+            : `A linked ${platformLabels[post.platform]} attempt was scheduled with the duplicate risk recorded.`;
+      setRecoveryForm(null);
+      setNotice({ tone: "success", text });
+      requestAnimationFrame(() => noticeRef.current?.focus());
+      startTransition(() => router.refresh());
+    } catch {
+      setNotice({ tone: "danger", text: "Could not complete the recovery action." });
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
   return (
-    <Box layerStyle="band">
+    <Box id="social-publishing" layerStyle="band">
       <Stack gap="4">
         <Box>
           <Text textStyle="eyebrow" color="fg.subtle">
@@ -542,6 +647,8 @@ export function SocialSchedulingPanel({
 
         {notice ? (
           <Flex
+            ref={noticeRef}
+            tabIndex={-1}
             align="center"
             gap="1.5"
             color={notice.tone === "success" ? "success.fg" : "danger.fg"}
@@ -668,8 +775,108 @@ export function SocialSchedulingPanel({
                       </Text>
                     </a>
                   ) : null}
+                  {recoveryForm?.postId === post.id ? (
+                    <Stack
+                      mt="2"
+                      p="3"
+                      gap="2"
+                      layerStyle={
+                        recoveryForm.action === "publish_again" ? "panel" : "well"
+                      }
+                      borderStartWidth="3px"
+                      borderStartColor="warning.solid"
+                    >
+                      <Text textStyle="eyebrow" color="warning.fg">
+                        {recoveryForm.action === "recheck"
+                          ? "Recheck existing operation"
+                          : recoveryForm.action === "confirm_published"
+                            ? "Confirm published"
+                            : `Duplicate risk on ${platformLabels[post.platform]}`}
+                      </Text>
+                      <Text fontSize="xs" color="fg.muted">
+                        {recoveryForm.action === "recheck"
+                          ? "Narriflow will inspect only the durable provider operation for this attempt."
+                          : recoveryForm.action === "confirm_published"
+                            ? "Use this only after finding the post on the platform. Without a URL, the evidence stays labeled manual and unvalidated."
+                            : `${duplicateRiskCopy[post.platform]} The uncertain attempt stays in the audit history.`}
+                      </Text>
+                      <Input
+                        size="sm"
+                        aria-label="Recovery reason"
+                        placeholder="Reason for this action"
+                        value={recoveryForm.reason}
+                        onChange={(event) =>
+                          setRecoveryForm((current) =>
+                            current ? { ...current, reason: event.target.value } : current,
+                          )
+                        }
+                      />
+                      {recoveryForm.action === "confirm_published" ? (
+                        <Input
+                          size="sm"
+                          type="url"
+                          aria-label={`${platformLabels[post.platform]} post URL`}
+                          placeholder={platformPostUrlExamples[post.platform]}
+                          value={recoveryForm.externalUrl}
+                          onChange={(event) =>
+                            setRecoveryForm((current) =>
+                              current
+                                ? { ...current, externalUrl: event.target.value }
+                                : current,
+                            )
+                          }
+                        />
+                      ) : null}
+                      {recoveryForm.action === "publish_again" ? (
+                        <label>
+                          <Flex align="flex-start" gap="2">
+                            <input
+                              type="checkbox"
+                              checked={recoveryForm.duplicateRiskAcknowledged}
+                              onChange={(event) =>
+                                setRecoveryForm((current) =>
+                                  current
+                                    ? {
+                                        ...current,
+                                        duplicateRiskAcknowledged: event.target.checked,
+                                      }
+                                    : current,
+                                )
+                              }
+                            />
+                            <Text fontSize="xs" color="fg">
+                              I checked {platformLabels[post.platform]} and accept the risk of a duplicate post.
+                            </Text>
+                          </Flex>
+                        </label>
+                      ) : null}
+                      <Flex gap="2" justify="flex-end">
+                        <Button
+                          size="xs"
+                          variant="ghost"
+                          onClick={() => setRecoveryForm(null)}
+                        >
+                          Close
+                        </Button>
+                        <Button
+                          size="xs"
+                          variant="outline"
+                          disabled={
+                            submitting ||
+                            !recoveryForm.reason.trim() ||
+                            (recoveryForm.action === "publish_again" &&
+                              !recoveryForm.duplicateRiskAcknowledged)
+                          }
+                          onClick={() => submitRecovery(post)}
+                        >
+                          {submitting ? <Spinner size="xs" /> : null}
+                          Continue
+                        </Button>
+                      </Flex>
+                    </Stack>
+                  ) : null}
                 </Box>
-                {post.status === "preparing_video" || post.status === "scheduled" ? (
+                {post.allowedActions.includes("cancel") ? (
                   <Button
                     size="xs"
                     variant="ghost"
@@ -679,6 +886,70 @@ export function SocialSchedulingPanel({
                   >
                     <X size={12} />
                     <Text ms="1">Cancel</Text>
+                  </Button>
+                ) : post.status === "needs_attention" ? (
+                  <Flex gap="1" flexShrink={0} wrap="wrap" justify="flex-end">
+                    {post.allowedActions.includes("recheck") ? (
+                      <Button
+                        size="xs"
+                        variant="ghost"
+                        onClick={() =>
+                          setRecoveryForm({
+                            postId: post.id,
+                            action: "recheck",
+                            reason: "",
+                            externalUrl: "",
+                            duplicateRiskAcknowledged: false,
+                          })
+                        }
+                      >
+                        <RefreshCw size={12} /> Recheck
+                      </Button>
+                    ) : null}
+                    {post.allowedActions.includes("confirm_published") ? (
+                      <Button
+                        size="xs"
+                        variant="ghost"
+                        onClick={() =>
+                          setRecoveryForm({
+                            postId: post.id,
+                            action: "confirm_published",
+                            reason: "",
+                            externalUrl: "",
+                            duplicateRiskAcknowledged: false,
+                          })
+                        }
+                      >
+                        <CheckCircle2 size={12} /> Confirm
+                      </Button>
+                    ) : null}
+                    {post.allowedActions.includes("publish_again") ? (
+                      <Button
+                        size="xs"
+                        variant="ghost"
+                        color="warning.fg"
+                        onClick={() =>
+                          setRecoveryForm({
+                            postId: post.id,
+                            action: "publish_again",
+                            reason: "",
+                            externalUrl: "",
+                            duplicateRiskAcknowledged: false,
+                          })
+                        }
+                      >
+                        <Repeat2 size={12} /> Publish again
+                      </Button>
+                    ) : null}
+                    {post.allowedActions.includes("reconnect_account") ? (
+                      <Button size="xs" variant="ghost" asChild>
+                        <Link href="/settings/social-accounts">Reconnect</Link>
+                      </Button>
+                    ) : null}
+                  </Flex>
+                ) : post.allowedActions.includes("reconnect_account") ? (
+                  <Button size="xs" variant="ghost" asChild>
+                    <Link href="/settings/social-accounts">Reconnect</Link>
                   </Button>
                 ) : null}
               </Flex>

@@ -6,8 +6,15 @@ import {
   type ScheduleSocialPostInput,
   type SocialPostMetricsInput,
   type SocialPostSnapshot,
+  type ConfirmSocialPublicationInput,
+  type RecheckSocialPublicationInput,
+  type RepublishSocialPublicationInput,
 } from "@narriflow/validators";
 import { createProductionSocialPublicationScheduling } from "./social-publication-scheduling";
+import {
+  allowedSocialPublicationActions,
+  socialPublicationRecovery,
+} from "./social-publication-recovery";
 
 const socialPublicationScheduling = createProductionSocialPublicationScheduling();
 
@@ -27,7 +34,9 @@ function toSocialPostSnapshot(row: {
   socialAccount?: {
     displayName: string;
     handle: string | null;
+    status?: string;
   } | null;
+  workspace?: { status?: string } | null;
   platform: string;
   status: string;
   caption: string;
@@ -78,6 +87,7 @@ function toSocialPostSnapshot(row: {
     errorDisposition:
       (row.errorDisposition as SocialPostSnapshot["errorDisposition"]) ?? null,
     nextAttemptAt: row.nextAttemptAt?.toISOString() ?? null,
+    allowedActions: allowedSocialPublicationActions(row),
     latestMetrics: row.metrics?.[0]
       ? {
           views: row.metrics[0].views,
@@ -94,6 +104,58 @@ function toSocialPostSnapshot(row: {
 }
 
 export class SocialService {
+  inspectPublication(workspaceId: string, socialPostId: string, projectId?: string) {
+    return socialPublicationRecovery.inspect({ workspaceId, socialPostId, projectId });
+  }
+
+  recheckPublication(
+    workspaceId: string,
+    actorUserId: string,
+    socialPostId: string,
+    input: RecheckSocialPublicationInput,
+    projectId?: string,
+  ) {
+    return socialPublicationRecovery.recheck({
+      workspaceId,
+      actorUserId,
+      socialPostId,
+      projectId,
+      ...input,
+    });
+  }
+
+  confirmPublication(
+    workspaceId: string,
+    actorUserId: string,
+    socialPostId: string,
+    input: ConfirmSocialPublicationInput,
+    projectId?: string,
+  ) {
+    return socialPublicationRecovery.confirmPublished({
+      workspaceId,
+      actorUserId,
+      socialPostId,
+      projectId,
+      ...input,
+    });
+  }
+
+  republishPublication(
+    workspaceId: string,
+    actorUserId: string,
+    socialPostId: string,
+    input: RepublishSocialPublicationInput,
+    projectId?: string,
+  ) {
+    return socialPublicationRecovery.publishAgain({
+      workspaceId,
+      actorUserId,
+      socialPostId,
+      projectId,
+      ...input,
+    });
+  }
+
   async listProjectPosts(
     userId: string,
     projectId: string,
@@ -103,7 +165,8 @@ export class SocialService {
       where: { projectId, project: { userId } },
       orderBy: [{ scheduledFor: "asc" }, { createdAt: "desc" }],
       include: {
-        socialAccount: { select: { displayName: true, handle: true } },
+        socialAccount: { select: { displayName: true, handle: true, status: true } },
+        workspace: { select: { status: true } },
         metrics: {
           orderBy: { capturedAt: "desc" },
           take: 1,
@@ -142,7 +205,8 @@ export class SocialService {
     const row = await prisma.socialPost.findUnique({
       where: { id: intent.id },
       include: {
-        socialAccount: { select: { displayName: true, handle: true } },
+        socialAccount: { select: { displayName: true, handle: true, status: true } },
+        workspace: { select: { status: true } },
         metrics: {
           orderBy: { capturedAt: "desc" },
           take: 1,
@@ -179,7 +243,8 @@ export class SocialService {
     const row = await prisma.socialPost.findUnique({
       where: { id: postId },
       include: {
-        socialAccount: { select: { displayName: true, handle: true } },
+        socialAccount: { select: { displayName: true, handle: true, status: true } },
+        workspace: { select: { status: true } },
         metrics: {
           orderBy: { capturedAt: "desc" },
           take: 1,
@@ -243,7 +308,8 @@ export class SocialService {
     const updated = await prisma.socialPost.findUnique({
       where: { id: post.id },
       include: {
-        socialAccount: { select: { displayName: true, handle: true } },
+        socialAccount: { select: { displayName: true, handle: true, status: true } },
+        workspace: { select: { status: true } },
         metrics: {
           orderBy: { capturedAt: "desc" },
           take: 1,

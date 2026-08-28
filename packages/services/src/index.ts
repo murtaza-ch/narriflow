@@ -288,6 +288,8 @@ export * from "./workspace.service";
 export * from "./workspace-library.service";
 export * from "./workspace-membership.service";
 export * from "./calendar-time";
+export * from "./social-publication-recovery";
+export * from "./social-publication-tiktok-webhook";
 export * from "./optional-redis";
 export {
   notificationService,

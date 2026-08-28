@@ -114,6 +114,28 @@ export function publishFailureMessage(errorCode: string | null): string | null {
 	);
 }
 
+function attentionGuidance(
+	platform: SocialPlatform,
+	errorCode: string | null,
+): string {
+	if (
+		platform === "linkedin" &&
+		errorCode === "linkedin_reconciliation_permission_missing"
+	) {
+		return "LinkedIn did not grant the read permission needed for an exact author-and-video check. Inspect the selected LinkedIn account before taking another action.";
+	}
+	if (
+		platform === "x" &&
+		errorCode === "x_reconciliation_permission_missing"
+	) {
+		return "This X account or product tier does not allow the exact recent-post lookup Narriflow needs. Inspect the selected X account before taking another action.";
+	}
+	if (errorCode) {
+		return `Verify the post on ${SOCIAL_PLATFORM_LABELS[platform]} before taking another action (${errorCode}).`;
+	}
+	return `Verify the post on ${SOCIAL_PLATFORM_LABELS[platform]} before taking another action.`;
+}
+
 type SocialPostFeedbackInput = Pick<
   SocialPostSnapshot,
 	| "status"
@@ -312,9 +334,7 @@ export function describeSocialPost(
 				label: SOCIAL_POST_STATUS_LABELS.needs_attention,
 				tone: "warning",
 				detail: `This post could already be live on ${platformLabel}; Narriflow will not submit it again automatically.`,
-				error: post.errorCode
-					? `Verify the post on ${platformLabel} before taking another action (${post.errorCode}).`
-					: `Verify the post on ${platformLabel} before taking another action.`,
+				error: attentionGuidance(post.platform, post.errorCode),
 				isBusy: false,
 				isLive: false,
 			};

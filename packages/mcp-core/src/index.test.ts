@@ -40,11 +40,13 @@ describe("Narriflow MCP 2026-07-28 server", () => {
     expect(tools.map((tool) => tool.name)).toEqual([
       "narriflow_create_rss_autopilot_rule",
       "narriflow_get_project",
+      "narriflow_get_social_publication",
       "narriflow_get_workspace_usage",
       "narriflow_list_autopilot_rules",
       "narriflow_list_projects",
       "narriflow_list_workspaces",
       "narriflow_run_autopilot_rule_now",
+      "narriflow_recheck_social_publication",
     ]);
 
     const createRule = tools.find((tool) => tool.name === "narriflow_create_rss_autopilot_rule");
@@ -67,7 +69,7 @@ describe("Narriflow MCP 2026-07-28 server", () => {
     );
 
     const { tools } = await client.listTools();
-    expect(tools).toHaveLength(7);
+    expect(tools).toHaveLength(9);
     expect(tools.some((tool) => tool.name === "narriflow_list_workspaces")).toBe(true);
   });
 
@@ -156,6 +158,30 @@ describe("Narriflow MCP 2026-07-28 server", () => {
     expect(result.content?.[0]).toEqual({
       type: "text",
       text: "This API key requires the usage:read scope",
+    });
+  });
+
+  test("requires an explicit write scope before a social publication recheck", async () => {
+    const client = await connect({
+      kind: "api_key",
+      userId: "00000000-0000-4000-8000-000000000001",
+      clientId: "narriflow-api-key:test",
+      apiKeyId: "00000000-0000-4000-8000-000000000002",
+      workspaceId: "00000000-0000-4000-8000-000000000003",
+      scopes: ["publishing:read"],
+    });
+
+    const result = await client.callTool({
+      name: "narriflow_recheck_social_publication",
+      arguments: {
+        socialPostId: "00000000-0000-4000-8000-000000000004",
+        reason: "Verify the existing provider operation",
+      },
+    });
+    expect(result.isError).toBe(true);
+    expect(result.content?.[0]).toEqual({
+      type: "text",
+      text: "This API key requires the publishing:write scope",
     });
   });
 

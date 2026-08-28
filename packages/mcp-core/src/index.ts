@@ -4,6 +4,7 @@ import {
   clipService,
   hasFeature,
   projectService,
+  socialService,
   workspaceService,
   type WorkspaceCapability,
 } from "@narriflow/services";
@@ -17,7 +18,7 @@ export const NARRIFLOW_MCP_SERVER_NAME = "narriflow";
 export const NARRIFLOW_MCP_SERVER_VERSION = "0.2.0";
 
 export const NARRIFLOW_MCP_INSTRUCTIONS =
-  "Start with narriflow_list_workspaces and use the returned workspaceId for later calls. Narriflow data and billing are workspace-scoped. Read tools are safe; call write tools only when the user clearly asks. MCP workspace access requires an active Business plan, and media processing still consumes the workspace's monthly minute quota.";
+  "Start with narriflow_list_workspaces and use the returned workspaceId for later calls. Narriflow data and billing are workspace-scoped. Read tools are safe; call write tools only when the user clearly asks. Rechecking a social publication inspects its existing provider operation and never submits a new post. MCP workspace access requires an active Business plan, and media processing still consumes the workspace's monthly minute quota.";
 
 export type NarriflowMcpPrincipal =
   | {
@@ -230,6 +231,30 @@ export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal) {
   );
 
   server.registerTool(
+    "narriflow_get_social_publication",
+    {
+      title: "Get social publication recovery facts",
+      description:
+        "Inspect one social publication, its attempt outcomes, allowed recovery evidence, and manual decisions without exposing provider checkpoint state.",
+      inputSchema: z.object({
+        ...workspaceInput,
+        socialPostId: z.string().uuid(),
+      }),
+      outputSchema: dataOutputSchema,
+      annotations: readOnlyAnnotations,
+    },
+    async ({ socialPostId, workspaceId }) => runTool(async () => {
+      const actor = await requireWorkspace(
+        principal,
+        workspaceId,
+        "content.view",
+        "publishing:read",
+      );
+      return socialService.inspectPublication(actor.workspaceId, socialPostId);
+    }),
+  );
+
+  server.registerTool(
     "narriflow_get_workspace_usage",
     {
       title: "Get workspace usage",
@@ -347,6 +372,46 @@ export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal) {
         actor.workspaceOwnerUserId,
         ruleId,
         { workspaceId: actor.workspaceId, actorUserId: principal.userId },
+      );
+    }),
+  );
+
+  server.registerTool(
+    "narriflow_recheck_social_publication",
+    {
+      title: "Recheck social publication",
+      description:
+        "Queue a targeted read-only reconciliation of the existing provider operation. This cannot create a new Social Publication Attempt or submit another post.",
+      inputSchema: z.object({
+        ...workspaceInput,
+        socialPostId: z.string().uuid(),
+        reason: z.string().trim().min(1).max(500),
+      }),
+      outputSchema: dataOutputSchema,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: true,
+      },
+    },
+    async ({ socialPostId, reason, workspaceId }) => runTool(async () => {
+      const actor = await requireWorkspace(
+        principal,
+        workspaceId,
+        "publishing.manage",
+        "publishing:write",
+      );
+      logMutation(
+        "narriflow_recheck_social_publication",
+        principal,
+        actor.workspaceId,
+      );
+      return socialService.recheckPublication(
+        actor.workspaceId,
+        principal.userId,
+        socialPostId,
+        { reason },
       );
     }),
   );

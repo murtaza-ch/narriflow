@@ -564,6 +564,87 @@ describe("Social Publication Attempt", () => {
 		}
 	});
 
+	test("resumes a durable pre-submission provider checkpoint without starting over", async () => {
+		let publishes = 0;
+		let resumes = 0;
+		const platform = {
+			capabilities: createDeterministicPublicationPlatform([]).capabilities,
+			async publish() {
+				publishes += 1;
+				throw new Error("must not restart provider preparation");
+			},
+			async resume() {
+				resumes += 1;
+				return {
+					kind: "accepted" as const,
+					receipt: {
+						receiptId: "provider-post-resumed",
+						platformPostId: "provider-post-resumed",
+						externalUrl: "https://social.example/provider-post-resumed",
+						metrics: null,
+					},
+				};
+			},
+		};
+		const resumedSeed: PublicationAttemptSeed = {
+			...seed,
+			attempt: { ...seed.attempt, phase: "uploading" },
+			checkpointKind: "provider_media_upload",
+			sealedCheckpoint: 'sealed:{"providerMediaId":"media-1"}',
+		};
+		const { attempt } = createAttemptHarness(platform, resumedSeed);
+
+		await expect(
+			attempt.execute({
+				attempt: { attemptId: "attempt-1", claimId: "claim-1" },
+				signal: new AbortController().signal,
+			}),
+		).resolves.toMatchObject({ kind: "posted" });
+		expect(publishes).toBe(0);
+		expect(resumes).toBe(1);
+	});
+
+	test("allows a linked retry after submission only when the provider proves non-publication", async () => {
+		const platform = {
+			capabilities: createDeterministicPublicationPlatform([]).capabilities,
+			async publish(
+				_input: Parameters<
+					ReturnType<typeof createDeterministicPublicationPlatform>["publish"]
+				>[0],
+				context: Parameters<
+					ReturnType<typeof createDeterministicPublicationPlatform>["publish"]
+				>[1],
+			) {
+				await context.checkpoint({
+					kind: "submission_started",
+					state: { providerOperation: "expired_session" },
+				});
+				return {
+					kind: "failed" as const,
+					failure: {
+						code: "provider_session_expired_without_acceptance",
+						phase: "reconciliation" as const,
+						disposition: "safe_retry" as const,
+						retryAfterMs: null,
+						safeToRepublishAfterSubmission: true,
+					},
+				};
+			},
+		};
+		const { attempt, store } = createAttemptHarness(platform);
+
+		await expect(
+			attempt.execute({
+				attempt: { attemptId: "attempt-1", claimId: "claim-1" },
+				signal: new AbortController().signal,
+			}),
+		).resolves.toMatchObject({ kind: "retry_scheduled" });
+		expect(await store.inspect("attempt-1")).toMatchObject({
+			attempt: { phase: "failed", outcome: "failed" },
+			socialPost: { status: "scheduled" },
+		});
+	});
+
 	test("aborting owned work releases it without recording a provider failure", async () => {
 		const controller = new AbortController();
 		controller.abort();
