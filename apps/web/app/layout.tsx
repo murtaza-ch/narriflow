@@ -14,6 +14,7 @@ import {
 import { ClerkProvider } from "@clerk/nextjs";
 import { Provider } from "@narriflow/ui/provider";
 import { Toaster } from "@narriflow/ui/components/toaster";
+import { billingService } from "@narriflow/services";
 import { validateCoreEnv } from "../lib/env";
 
 const metadataDescription =
@@ -133,6 +134,7 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   validateCoreEnv();
+  billingService.validateConfiguration();
 
   return (
     <html

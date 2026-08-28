@@ -22,6 +22,7 @@ export * from "./logo-overlay";
 export * from "./logo-position";
 export * from "./output-type";
 export * from "./pricing";
+export * from "./billing-copy";
 export * from "./project";
 export * from "./silence-detection";
 export * from "./social";

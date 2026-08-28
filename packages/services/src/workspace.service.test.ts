@@ -40,8 +40,10 @@ describe("workspace permission matrix", () => {
 
   test("restricted workspaces retain read and owner billing access", () => {
     expect(workspaceAllowsCapability({ role: "owner", status: "restricted" }, "content.view")).toBe(true);
+    expect(workspaceAllowsCapability({ role: "owner", status: "restricted" }, "content.download")).toBe(true);
     expect(workspaceAllowsCapability({ role: "owner", status: "restricted" }, "billing.manage")).toBe(true);
-    expect(workspaceAllowsCapability({ role: "owner", status: "restricted" }, "content.edit")).toBe(true);
+    expect(workspaceAllowsCapability({ role: "owner", status: "restricted" }, "content.edit")).toBe(false);
+    expect(workspaceAllowsCapability({ role: "owner", status: "restricted" }, "api.manage")).toBe(false);
     expect(workspaceAllowsCapability({ role: "owner", status: "restricted" }, "processing.consume")).toBe(false);
     expect(workspaceAllowsCapability({ role: "admin", status: "restricted" }, "content.edit")).toBe(false);
     expect(workspaceAllowsCapability({ role: "admin", status: "restricted" }, "social.manage")).toBe(false);

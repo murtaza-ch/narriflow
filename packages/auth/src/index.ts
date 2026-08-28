@@ -462,10 +462,6 @@ function personalWorkspaceName(user: Pick<User, "firstName" | "lastName">): stri
   return fullName ? `${fullName}'s workspace` : "Personal workspace";
 }
 
-function workspacePricingTier(tier: PricingTier): PricingTier {
-  return tier === "starter" ? "creator" : tier;
-}
-
 export function workspacesV1EnabledForUser(userId: string) {
   const globallyEnabled = ["1", "true", "on"].includes(
     process.env.WORKSPACES_V1?.trim().toLowerCase() ?? "",
@@ -498,10 +494,8 @@ export async function ensurePersonalWorkspace(userId: string) {
         name: personalWorkspaceName(user),
         ownerUserId: user.id,
         personalOwnerUserId: user.id,
-        pricingTier: workspacePricingTier(user.pricingTier),
-        stripeCustomerId: user.stripeCustomerId,
-        billingEventCreatedAt: user.billingEventCreatedAt,
         defaultBrandTemplateId: user.defaultBrandTemplateId,
+        billingAccount: { create: {} },
         members: {
           create: { userId: user.id, role: "owner" },
         },
@@ -664,15 +658,12 @@ export function assertWorkspaceCapability(
 
   if (
     context.status === "restricted" &&
-    (capability === "processing.consume" ||
-      capability === "publishing.manage" ||
-      capability === "members.invite" ||
-      (context.role !== "owner" &&
-        (capability === "content.edit" ||
-          capability === "brand.manage" ||
-          capability === "social.manage" ||
-          capability === "workspace.manage" ||
-          capability === "api.manage")))
+    !(
+      context.role === "owner" &&
+      ["content.view", "content.download", "billing.manage"].includes(
+        capability,
+      )
+    )
   ) {
     throw new Error("Workspace is restricted");
   }

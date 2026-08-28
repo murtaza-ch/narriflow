@@ -133,6 +133,28 @@ export {
   type PlanFeature,
 } from "./billing.service";
 export {
+  createBillingCatalog,
+  createInMemoryWorkspaceBillingStore,
+  createPrismaWorkspaceBillingStore,
+  createWorkspaceBillingModule,
+  WorkspaceBillingAttemptLost,
+  type BillingCatalog,
+  type BillingCatalogInput,
+  type ProviderCurrentState,
+  type ProviderSubscription,
+  type ReconcileCurrentStateResult,
+  type VerifiedBillingDelivery,
+  type WorkspaceBillingAction,
+  type WorkspaceBillingClock,
+  type WorkspaceBillingDiagnostics,
+  type WorkspaceBillingHealth,
+  type WorkspaceBillingProjection,
+  type WorkspaceBillingProductStatus,
+  type WorkspaceBillingProvider,
+  type WorkspaceBillingStore,
+  type WorkspaceBillingView,
+} from "./workspace-billing.service";
+export {
   analyticsService,
   AnalyticsService,
 } from "./analytics.service";

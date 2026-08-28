@@ -90,12 +90,22 @@ import {
   safeSocialRedirectPath,
 } from "@/lib/safe-redirect";
 import { createUploadSessionHttpRoutes } from "./upload-session-http";
+import { createStripeWebhookHttpRoutes } from "./stripe-webhook-http";
 
 export const runtime = "nodejs";
 // Content-suite generation makes a synchronous LLM call that can take ~30s.
 export const maxDuration = 60;
 
 const app = new Hono().basePath("/api");
+billingService.validateConfiguration();
+
+app.route(
+  "/",
+  createStripeWebhookHttpRoutes({
+    acceptDelivery: (rawBody, signature) =>
+      billingService.handleWebhook(rawBody, signature),
+  }),
+);
 
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : "Unexpected server error";
@@ -1560,7 +1570,6 @@ app.post("/projects/:id/clips/regenerate", async (c) => {
       ? contentPackParsed.data
       : undefined;
     const result = await clipService.regenerateClips(
-      appUser.id,
       projectId,
       idempotencyKey,
       contentPack,
@@ -1628,16 +1637,15 @@ app.post("/projects/:id/clips/render", async (c) => {
 
   try {
     const result = await clipService.triggerClipRendering(
-      appUser.id,
       projectId,
       idempotencyKey,
-      parsed.data.clipIds,
-      parsed.data.aspectRatios,
-      parsed.data.resolution,
       {
         workspaceId: appUser.workspaceId,
         actorUserId: appUser.actorUserId,
       },
+      parsed.data.clipIds,
+      parsed.data.aspectRatios,
+      parsed.data.resolution,
     );
     return c.json(result, 202);
   } catch (error) {
@@ -2068,7 +2076,8 @@ app.post("/projects/:id/content-suite", async (c) => {
 
   try {
     const assets = await contentSuiteService.generate(
-      appUser.id,
+      appUser.actorUserId,
+      appUser.workspaceId,
       projectId,
       parsed.data.types,
     );
@@ -2469,7 +2478,8 @@ app.post("/projects/:id/dubs", async (c) => {
 
   try {
     const result = await dubbingService.requestClipDub(
-      appUser.id,
+      appUser.actorUserId,
+      appUser.workspaceId,
       projectId,
       idempotencyKey,
       parsed.data,

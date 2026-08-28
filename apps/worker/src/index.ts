@@ -38,6 +38,7 @@ import {
 
 const port = Number(process.env.PORT || 0);
 assertUploadProviderLifecyclePrerequisite(process.env);
+billingService.validateConfiguration();
 const pollIntervalMs = Number(process.env.INGEST_POLL_INTERVAL_MS ?? "2500");
 // Rendering is CPU-bound and can run for minutes (ffmpeg saturates all cores
 // per clip already — measured intra-machine clip parallelism buys nothing: 4
@@ -82,6 +83,9 @@ const sttResultPollIntervalMs = Number(
 );
 const notificationRetryPollIntervalMs = Number(
   process.env.NOTIFICATION_RETRY_POLL_INTERVAL_MS ?? String(60 * 1000),
+);
+const workspaceBillingPollIntervalMs = Number(
+  process.env.WORKSPACE_BILLING_POLL_INTERVAL_MS ?? "5000",
 );
 const autopilotPollIntervalMs = Number(
   process.env.AUTOPILOT_POLL_INTERVAL_MS ?? "30000",
@@ -416,6 +420,21 @@ const workflowEventLoop = createPollLoop("workflow_events", async () => {
   return getWorkflowRunLifecycle().dispatchEvents(100);
 });
 
+const workspaceBillingLoop = createPollLoop("workspace_billing", async () => {
+  if (!billingService.isConfigured()) return 0;
+  const result = await billingService.reconcileDueAccounts();
+  if (result.claimed > 0) {
+    console.warn(
+      JSON.stringify({
+        level: result.retried > 0 || result.unresolved > 0 ? "warn" : "info",
+        message: "workspace_billing_reconciliation_batch",
+        ...result,
+      }),
+    );
+  }
+  return result.claimed;
+});
+
 // Submit-and-release: this claim only covers the AssemblyAI submission round
 // trip (seconds), not the transcription itself — see sttResultsLoop.
 const sttLoop = createPollLoop("stt", async () => {
@@ -525,6 +544,7 @@ const allLoops: Array<{ loop: PollLoop; intervalMs: number }> = [
   { loop: uploadSessionMaintenanceLoop, intervalMs: 30 * 1000 },
   { loop: workflowLeaseLoop, intervalMs: workflowLeaseReapIntervalMs },
   { loop: workflowEventLoop, intervalMs: workflowEventDispatchIntervalMs },
+  { loop: workspaceBillingLoop, intervalMs: workspaceBillingPollIntervalMs },
   { loop: ingestLoop, intervalMs: pollIntervalMs },
   { loop: sttLoop, intervalMs: pollIntervalMs },
   { loop: sttResultsLoop, intervalMs: sttResultPollIntervalMs },
@@ -586,6 +606,7 @@ for (const { loop, intervalMs } of allLoops) {
 
 void maintenanceLoop.tick();
 void uploadSessionMaintenanceLoop.tick();
+void workspaceBillingLoop.tick();
 void ingestLoop.tick();
 void sttLoop.tick();
 void renderLoop.tick();

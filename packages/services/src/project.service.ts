@@ -917,17 +917,14 @@ export class ProjectService {
     workspaceId?: string,
     capability: "content.view" | "content.edit" = "content.view",
   ): Promise<Prisma.ProjectWhereInput> {
-    if (!workspaceId) return { userId };
-
-    const actor = await workspaceService.requireActor(userId, workspaceId, capability);
-    return {
-      OR: [
-        { workspaceId: actor.workspaceId },
-        // Compatibility for the short deployment window between adding the
-        // nullable column and completing the production backfill.
-        { workspaceId: null, userId: actor.workspaceOwnerUserId },
-      ],
-    };
+    const targetWorkspaceId =
+      workspaceId ?? (await workspaceService.getPersonalWorkspaceId(userId));
+    const actor = await workspaceService.requireActor(
+      userId,
+      targetWorkspaceId,
+      capability,
+    );
+    return { workspaceId: actor.workspaceId };
   }
 
   async getProjectAccess(
@@ -1120,7 +1117,7 @@ export class ProjectService {
     return rows.map((row) => toProjectSnapshot(row));
   }
 
-  async getDashboardStats(userId: string, workspaceId?: string): Promise<{
+  async getDashboardStats(userId: string, workspaceId: string): Promise<{
     total: number;
     processing: number;
     completed: number;
@@ -1149,12 +1146,7 @@ export class ProjectService {
 
     const accessible = accessibleProjectWhere();
     const scope = await this.resolveProjectScope(userId, workspaceId);
-    const workspace = workspaceId
-      ? await this.requirePrisma().workspace.findUnique({
-          where: { id: workspaceId },
-          select: { pricingTier: true },
-        })
-      : null;
+    const actor = await workspaceService.requireActor(userId, workspaceId);
     const [total, processing, completed, tier, usedMinutes] = await Promise.all([
       prisma.project.count({ where: { AND: [scope, accessible] } }),
       // Active pipeline: ingest still moving, or a workflow run queued/running.
@@ -1183,10 +1175,8 @@ export class ProjectService {
       }),
       // Produced output: at least one detected clip.
       prisma.project.count({ where: { AND: [scope, accessible], clips: { some: {} } } }),
-      workspace ? resolvePricingTier(workspace.pricingTier) : this.getUserPricingTier(userId),
-      workspaceId
-        ? this.getWorkspaceMonthlyUsageMinutes(workspaceId)
-        : this.getMonthlyUsageMinutes(userId),
+      resolvePricingTier(actor.pricingTier),
+      this.getWorkspaceMonthlyUsageMinutes(workspaceId),
     ]);
 
     return {
@@ -1404,9 +1394,10 @@ export class ProjectService {
     const parsed = createProjectSchema.parse(input);
     const createdAt = new Date();
     const ownership = await this.resolveWriteOwnership(userId, workspaceId);
-    const retention = ownership.workspaceId
-      ? await projectRetentionService.assignmentForWorkspace(ownership.workspaceId, createdAt)
-      : await projectRetentionService.assignmentForNewProject(ownership.legacyOwnerUserId, createdAt);
+    const retention = await projectRetentionService.assignmentForWorkspace(
+      ownership.workspaceId,
+      createdAt,
+    );
 
     if (!hasDatabase()) {
       const project: ProjectSnapshot = {
@@ -1661,30 +1652,6 @@ export class ProjectService {
     };
   }
 
-  async getUserPricingTier(userId: string): Promise<PricingTier> {
-    if (!hasDatabase()) return "free";
-    const prisma = this.requirePrisma();
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { pricingTier: true },
-    });
-    return resolvePricingTier(user?.pricingTier ?? null);
-  }
-
-  /** Source minutes consumed this calendar month (the quota metric). */
-  async getMonthlyUsageMinutes(userId: string): Promise<number> {
-    if (!hasDatabase()) return 0;
-    const prisma = this.requirePrisma();
-    const startOfMonth = new Date();
-    startOfMonth.setUTCDate(1);
-    startOfMonth.setUTCHours(0, 0, 0, 0);
-    const agg = await prisma.project.aggregate({
-      where: { userId, createdAt: { gte: startOfMonth } },
-      _sum: { sourceDurationSeconds: true },
-    });
-    return processingMinutesFromSeconds(agg._sum.sourceDurationSeconds ?? 0);
-  }
-
   async getWorkspaceMonthlyUsageMinutes(workspaceId: string): Promise<number> {
     if (!hasDatabase()) return 0;
     const prisma = this.requirePrisma();
@@ -1704,7 +1671,8 @@ export class ProjectService {
       where: { id: workspaceId },
       select: { pricingTier: true },
     });
-    return resolvePricingTier(workspace?.pricingTier ?? null);
+    if (!workspace) throw new Error("Workspace not found");
+    return resolvePricingTier(workspace.pricingTier);
   }
 
   async assertWorkspaceWithinQuota(
@@ -1731,53 +1699,23 @@ export class ProjectService {
     }
   }
 
-  /** Throws QuotaExceededError if the user is over their monthly plan allotment. */
-  async assertWithinQuota(
-    userId: string,
-    requestedSeconds = 0,
-  ): Promise<void> {
-    if (!hasDatabase()) return;
-    const tier = await this.getUserPricingTier(userId);
-    const limit = MONTHLY_PROCESSING_MINUTE_LIMITS[tier];
-    const used = await this.getMonthlyUsageMinutes(userId);
-    const requestedMinutes = processingMinutesFromSeconds(requestedSeconds);
-    if (
-      isProcessingQuotaExceeded({
-        usedMinutes: used,
-        requestedSeconds,
-        limitMinutes: limit,
-        blockAtLimitWithoutRequest: true,
-      })
-    ) {
-      throw new QuotaExceededError(
-        `Monthly processing limit reached on the ${tier} plan (${limit} min/mo; ${used} min used). Upgrade your plan to keep generating.`,
-        { tier, limitMinutes: limit, usedMinutes: used, requestedMinutes },
-      );
-    }
-  }
-
   /**
    * Gate a project's generation on BOTH the monthly minute quota and the
    * per-upload length cap for the user's plan tier.
    */
   async assertProjectGenerationAllowed(
-    userId: string,
     projectId: string,
-    workspaceId?: string,
+    workspaceId: string,
   ): Promise<void> {
     if (!hasDatabase()) return;
     const prisma = this.requirePrisma();
     const [tier, used, project] = await Promise.all([
-      workspaceId
-        ? this.getWorkspacePricingTier(workspaceId)
-        : this.getUserPricingTier(userId),
-      workspaceId
-        ? this.getWorkspaceMonthlyUsageMinutes(workspaceId)
-        : this.getMonthlyUsageMinutes(userId),
+      this.getWorkspacePricingTier(workspaceId),
+      this.getWorkspaceMonthlyUsageMinutes(workspaceId),
       prisma.project.findFirst({
         where: {
           id: projectId,
-          ...(workspaceId ? { workspaceId } : { userId }),
+          workspaceId,
         },
         select: { sourceDurationSeconds: true },
       }),
@@ -1815,31 +1753,28 @@ export class ProjectService {
     projectId: string,
     input: GenerateProjectInput,
     idempotencyKey: string,
-    options?: {
+    options: {
       /**
        * Reuse this committed ContentPack instead of creating a new row, and
        * bind the run to it. Set by the link-first setup paths; the legacy
        * form/API paths still create their own pack.
        */
       existingContentPackId?: string;
-      workspaceContext?: { workspaceId: string; actorUserId: string };
+      workspaceContext: { workspaceId: string; actorUserId: string };
     },
   ) {
     const parsed = generateProjectRequestSchema.parse(input);
 
-    if (options?.workspaceContext) {
-      await workspaceService.requireActor(
-        options.workspaceContext.actorUserId,
-        options.workspaceContext.workspaceId,
-        "processing.consume",
-      );
-    }
+    await workspaceService.requireActor(
+      options.workspaceContext.actorUserId,
+      options.workspaceContext.workspaceId,
+      "processing.consume",
+    );
 
     // Enforce plan-tier processing-minute quota + per-upload length cap.
     await this.assertProjectGenerationAllowed(
-      userId,
       projectId,
-      options?.workspaceContext?.workspaceId,
+      options.workspaceContext.workspaceId,
     );
 
     if (!idempotencyKey) {
@@ -2511,12 +2446,7 @@ export class ProjectService {
           // previously-failed/stalled one waits out its exponential window.
           AND: [
             { OR: claimBackoffWhereClauses(WORKFLOW_AUTO_RETRY_MAX_ATTEMPTS) },
-            {
-              OR: [
-                { project: { workspaceId: null } },
-                { project: { workspace: { status: "active" } } },
-              ],
-            },
+            { project: { workspace: { status: "active" } } },
           ],
         },
         orderBy: { createdAt: "asc" },
@@ -2547,11 +2477,10 @@ export class ProjectService {
           id: queued.id,
           lifecycleVersion: 1,
           status: "queued",
-          project: accessibleProjectWhere(),
-          OR: [
-            { project: { workspaceId: null } },
-            { project: { workspace: { status: "active" } } },
-          ],
+          project: {
+            ...accessibleProjectWhere(),
+            workspace: { status: "active" },
+          },
         },
         data: {
           status: "running",
@@ -2705,12 +2634,7 @@ export class ProjectService {
           // previously-failed/stalled one waits out its exponential window.
           AND: [
             { OR: claimBackoffWhereClauses(INGEST_AUTO_RETRY_MAX_ATTEMPTS) },
-            {
-              OR: [
-                { project: { workspaceId: null } },
-                { project: { workspace: { status: "active" } } },
-              ],
-            },
+            { project: { workspace: { status: "active" } } },
           ],
         },
         orderBy: { createdAt: "asc" },
@@ -2724,11 +2648,10 @@ export class ProjectService {
         where: {
           id: queued.id,
           status: "queued",
-          project: accessibleProjectWhere(),
-          OR: [
-            { project: { workspaceId: null } },
-            { project: { workspace: { status: "active" } } },
-          ],
+          project: {
+            ...accessibleProjectWhere(),
+            workspace: { status: "active" },
+          },
         },
         data: {
           status: "running",
@@ -4015,6 +3938,7 @@ export class ProjectService {
       select: {
         id: true,
         userId: true,
+        workspaceId: true,
         ingestStatus: true,
         languageCode: true,
       },
@@ -4059,7 +3983,13 @@ export class ProjectService {
           : null,
       },
       autoTriggerIdempotencyKey(projectId, actionablePack.id),
-      { existingContentPackId: actionablePack.id },
+      {
+        existingContentPackId: actionablePack.id,
+        workspaceContext: {
+          workspaceId: project.workspaceId,
+          actorUserId: project.userId,
+        },
+      },
     );
 
     return true;
@@ -4085,7 +4015,7 @@ export class ProjectService {
 
     const project = await prisma.project.findFirst({
       where: { id: projectId, userId },
-      select: { id: true, ingestStatus: true },
+      select: { id: true, workspaceId: true, ingestStatus: true },
     });
     if (!project) {
       throw new Error("project not found");
@@ -4193,7 +4123,13 @@ export class ProjectService {
         languageCode: parsedLanguage.success ? parsedLanguage.data : null,
       },
       autoTriggerIdempotencyKey(projectId, committedPack.id),
-      { existingContentPackId: committedPack.id },
+      {
+        existingContentPackId: committedPack.id,
+        workspaceContext: {
+          workspaceId: project.workspaceId,
+          actorUserId: userId,
+        },
+      },
     );
 
     return {
@@ -4313,19 +4249,15 @@ export class ProjectService {
   }
 
   /** Read-only usage summary for the import pre-flight UI. */
-  async getUsageSummary(userId: string, workspaceId?: string): Promise<{
+  async getUsageSummary(userId: string, workspaceId: string): Promise<{
     tier: PricingTier;
     usedMinutes: number;
     limitMinutes: number;
     maxUploadSeconds: number;
   }> {
-    const workspace = workspaceId
-      ? await this.requirePrisma().workspace.findUnique({ where: { id: workspaceId }, select: { pricingTier: true } })
-      : null;
-    const tier = workspace ? resolvePricingTier(workspace.pricingTier) : await this.getUserPricingTier(userId);
-    const usedMinutes = workspaceId
-      ? await this.getWorkspaceMonthlyUsageMinutes(workspaceId)
-      : await this.getMonthlyUsageMinutes(userId);
+    const actor = await workspaceService.requireActor(userId, workspaceId);
+    const tier = resolvePricingTier(actor.pricingTier);
+    const usedMinutes = await this.getWorkspaceMonthlyUsageMinutes(workspaceId);
     return {
       tier,
       usedMinutes,

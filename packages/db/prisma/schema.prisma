@@ -161,6 +161,7 @@ enum WorkspaceStatus {
 enum WebhookProvider {
   clerk
   resend
+  stripe
 }
 
 enum SocialPlatform {
@@ -230,7 +231,7 @@ model Project {
   ingestErrorCode String?
   ingestCompletedAt DateTime?
   userId         String        @db.Uuid
-  workspaceId    String?       @db.Uuid
+  workspaceId    String        @db.Uuid
   createdByUserId String?      @db.Uuid
   updatedByUserId String?      @db.Uuid
   folderId       String?       @db.Uuid
@@ -260,7 +261,7 @@ model Project {
   transcript     Transcript?
   clips          Clip[]
   user           User          @relation(fields: [userId], references: [id], onDelete: Cascade)
-  workspace      Workspace?    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  workspace      Workspace     @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   folder         WorkspaceFolder? @relation(fields: [folderId], references: [id], onDelete: SetNull)
   brandTemplate  BrandTemplate? @relation(fields: [brandTemplateId], references: [id], onDelete: SetNull)
   workflowRuns   WorkflowRun[]
@@ -580,11 +581,8 @@ model User {
   firstName              String?
   lastName               String?
   imageUrl               String?
-  pricingTier            PricingTier      @default(free)
-  billingEventCreatedAt  DateTime?
   onboardingCompletedAt  DateTime?
   lastSignInAt           DateTime?
-  stripeCustomerId       String?          @unique
   defaultBrandTemplateId String?          @db.Uuid
   deletedAt              DateTime?
   createdAt              DateTime         @default(now())
@@ -615,12 +613,6 @@ model Workspace {
   status                 WorkspaceStatus @default(active)
   timezone               String          @default("UTC")
   pricingTier            PricingTier     @default(free)
-  stripeCustomerId       String?         @unique
-  stripeSubscriptionId   String?         @unique
-  stripeSeatItemId       String?         @unique
-  billingInterval        String?
-  billingEventCreatedAt  DateTime?
-  subscriptionEndsAt     DateTime?
   defaultBrandTemplateId String?         @db.Uuid
   seatLimit              Int             @default(1)
   createdAt              DateTime        @default(now())
@@ -643,9 +635,64 @@ model Workspace {
   audioAssetFavorites  AudioAssetFavorite[]
   clipExports          ClipExport[]
   socialPosts          SocialPost[]
+  billingAccount       WorkspaceBillingAccount?
 
   @@index([ownerUserId])
   @@index([status, pricingTier])
+}
+
+model WorkspaceBillingAccount {
+  id                        String    @id @default(uuid()) @db.Uuid
+  workspaceId               String    @unique @db.Uuid
+  providerCustomerId        String?   @unique
+  canonicalSubscriptionId   String?   @unique
+  seatItemId                String?   @unique
+  billingInterval           String?
+  providerStatus            String?
+  currentPeriodEndAt        DateTime?
+  trialEndAt                DateTime?
+  cancelAtPeriodEnd         Boolean   @default(false)
+  firstPastDueAt            DateTime?
+  graceDeadlineAt           DateTime?
+  desiredAdditionalSeats    Int       @default(0)
+  synchronizedAdditionalSeats Int?
+  health                    String    @default("current")
+  attentionReason           String?
+  lastVerifiedAt            DateTime?
+  nextReconcileAt           DateTime  @default(now())
+  reconcileAttemptId        String?   @db.Uuid
+  leaseExpiresAt            DateTime?
+  attemptCount              Int       @default(0)
+  snapshot                  Json?
+  createdAt                 DateTime  @default(now())
+  updatedAt                 DateTime  @updatedAt
+
+  workspace   Workspace                    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  transitions WorkspaceBillingTransition[]
+  deliveries  WebhookDeliveryLog[]
+
+  @@index([nextReconcileAt, id])
+  @@index([leaseExpiresAt])
+}
+
+model WorkspaceBillingTransition {
+  id                 String      @id @default(uuid()) @db.Uuid
+  billingAccountId   String      @db.Uuid
+  previousTier       PricingTier
+  nextTier           PricingTier
+  previousStatus     WorkspaceStatus
+  nextStatus         WorkspaceStatus
+  providerStatus     String?
+  reason             String
+  effectiveAt        DateTime
+  observedAt         DateTime
+  sourceEventId      String?
+  sourceSubscriptionId String?
+  createdAt          DateTime    @default(now())
+
+  billingAccount WorkspaceBillingAccount @relation(fields: [billingAccountId], references: [id], onDelete: Cascade)
+
+  @@index([billingAccountId, createdAt])
 }
 
 model WorkspaceMember {
@@ -850,11 +897,22 @@ model WebhookDeliveryLog {
   eventType   String
   status      String
   payload     Json?
+  providerCreatedAt DateTime?
+  liveMode            Boolean?
+  apiVersion          String?
+  subjectCustomerId   String?
+  subjectSubscriptionId String?
+  subjectCheckoutSessionId String?
+  workspaceHint       String?          @db.Uuid
+  workspaceBillingAccountId String?    @db.Uuid
   processedAt DateTime        @default(now())
   createdAt   DateTime        @default(now())
 
+  workspaceBillingAccount WorkspaceBillingAccount? @relation(fields: [workspaceBillingAccountId], references: [id], onDelete: SetNull)
+
   @@unique([provider, eventId])
   @@index([provider, eventType, createdAt])
+  @@index([workspaceBillingAccountId, createdAt])
 }
 
 model Clip {

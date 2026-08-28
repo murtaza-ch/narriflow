@@ -35,7 +35,7 @@ export default async function StudioPage({
     // the source of truth for the logo ASSET. The studio only overrides
     // how it's *shown* per clip (studioEdits.logo); see brand-template-panel.tsx.
     projectService.getProjectBrandSnapshot(projectId),
-    projectService.getUserPricingTier(appUser.id),
+    projectService.getWorkspacePricingTier(appUser.workspaceId),
   ]);
 
   if (!snapshot.project) notFound();

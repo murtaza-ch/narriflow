@@ -7,6 +7,7 @@ import {
   type ContentAsset,
   type TextOutputType,
 } from "@narriflow/validators";
+import { workspaceService } from "./workspace.service";
 
 export class ContentSuiteError extends Error {
   constructor(
@@ -186,10 +187,16 @@ export class ContentSuiteService {
 
   async generate(
     userId: string,
+    workspaceId: string,
     projectId: string,
     types: TextOutputType[] = ALL_TEXT_OUTPUT_TYPES,
   ): Promise<ContentAsset[]> {
     const prisma = requirePrisma();
+    const actor = await workspaceService.requireActor(
+      userId,
+      workspaceId,
+      "processing.consume",
+    );
 
     if (types.length === 0 || new Set(types).size !== types.length) {
       throw new ContentSuiteError(
@@ -199,7 +206,7 @@ export class ContentSuiteService {
     }
 
     const project = await prisma.project.findFirst({
-      where: { id: projectId, userId },
+      where: { id: projectId, workspaceId },
       select: {
         id: true,
         title: true,
@@ -208,11 +215,7 @@ export class ContentSuiteService {
     });
     if (!project) throw new ContentSuiteError("not_found", "Project not found");
 
-    const owner = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { pricingTier: true },
-    });
-    const tier = resolvePricingTier(owner?.pricingTier);
+    const tier = resolvePricingTier(actor.pricingTier);
     if (tier === "free") {
       throw new ContentSuiteError(
         "requires_creator_plan",

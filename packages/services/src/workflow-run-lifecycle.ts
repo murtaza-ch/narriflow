@@ -743,10 +743,7 @@ export class WorkflowRunLifecycle {
           OR: [{ nextAttemptAt: null }, { nextAttemptAt: { lte: now } }],
           project: {
             ...accessibleProjectWhere(now),
-            OR: [
-              { workspaceId: null },
-              { workspace: { status: "active" } },
-            ],
+            workspace: { status: "active" },
           },
         },
         orderBy: { createdAt: "asc" },

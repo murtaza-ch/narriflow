@@ -16,7 +16,6 @@ import {
 import { deriveClipExportAggregate } from "./clip-export-aggregate";
 export { deriveClipExportAggregate } from "./clip-export-aggregate";
 import { hasFeature } from "./billing.service";
-import { projectService } from "./project.service";
 import { accessibleProjectWhere } from "./project-retention.service";
 import { presignDownloadUrl } from "./r2-storage";
 import { workspaceService } from "./workspace.service";
@@ -261,32 +260,26 @@ export class ClipExportService {
       resolution: ClipRenderResolution;
     },
     _idempotencyKey: string,
-    workspaceContext?: { workspaceId: string; actorUserId: string },
+    workspaceContext: { workspaceId: string; actorUserId: string },
   ): Promise<{ export: ClipExportSnapshot; reused: boolean }> {
-    if (workspaceContext) {
-      await workspaceService.requireActor(
-        workspaceContext.actorUserId,
-        workspaceContext.workspaceId,
-        "processing.consume",
-      );
-    }
+    await workspaceService.requireActor(
+      workspaceContext.actorUserId,
+      workspaceContext.workspaceId,
+      "processing.consume",
+    );
     const prisma = requirePrisma();
     const clip = await prisma.clip.findFirst({
       where: {
         id: clipId,
         projectId,
-        project: workspaceContext
-          ? { workspaceId: workspaceContext.workspaceId }
-          : { userId },
+        project: { workspaceId: workspaceContext.workspaceId },
       },
       include: {
         project: { select: { workspaceId: true, workspace: { select: { pricingTier: true } } } },
       },
     });
     if (!clip) throw new ClipExportError("clip_not_found", "Clip not found");
-    const tier = clip.project.workspace
-      ? resolvePricingTier(clip.project.workspace.pricingTier)
-      : await projectService.getUserPricingTier(userId);
+    const tier = resolvePricingTier(clip.project.workspace.pricingTier);
     if (clip.editorRevision !== input.expectedRevision) {
       throw new ClipExportRevisionConflictError(clip.editorRevision);
     }

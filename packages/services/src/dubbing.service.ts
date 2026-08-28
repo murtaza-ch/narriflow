@@ -12,6 +12,7 @@ import {
 import { analyticsService } from "./analytics.service";
 import { deleteObject, presignDownloadUrl } from "./r2-storage";
 import { getLastWorkflowSeq } from "./workflow.service";
+import { workspaceService } from "./workspace.service";
 import {
   currentWorkflowAttempt,
   getWorkflowRunLifecycle,
@@ -111,6 +112,7 @@ export class DubbingService {
 
   async requestClipDub(
     userId: string,
+    workspaceId: string,
     projectId: string,
     idempotencyKey: string,
     input: RequestClipDubInput,
@@ -125,11 +127,12 @@ export class DubbingService {
     }
 
     const prisma = requirePrisma();
-    const owner = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { pricingTier: true },
-    });
-    const tier = resolvePricingTier(owner?.pricingTier);
+    const actor = await workspaceService.requireActor(
+      userId,
+      workspaceId,
+      "processing.consume",
+    );
+    const tier = resolvePricingTier(actor.pricingTier);
     if (tier !== "pro") {
       throw new DubbingTierError();
     }
@@ -141,7 +144,7 @@ export class DubbingService {
       where: {
         id: parsed.clipId,
         projectId,
-        project: { userId },
+        project: { workspaceId },
       },
       include: { renders: true },
     });

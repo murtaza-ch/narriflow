@@ -89,7 +89,7 @@ describe("project retention policy", () => {
     const calls: Array<Record<string, unknown>> = [];
     const service = new ProjectRetentionService();
     const effectiveAt = new Date("2026-08-25T10:00:00.000Z");
-    await service.applyTierTransition(
+    await service.applyWorkspaceTierTransition(
       {
         project: {
           updateMany: async (input: Record<string, unknown>) => {
@@ -99,7 +99,7 @@ describe("project retention policy", () => {
         },
       } as never,
       {
-        userId: "user-1",
+        workspaceId: "workspace-1",
         previousTier: "free",
         nextTier: "creator",
         effectiveAt,
@@ -114,6 +114,34 @@ describe("project retention policy", () => {
         purgeStorageVerifiedAt: null,
       },
     });
+  });
+
+  test("Workspace recovery cannot clear a deadline that passed before verification", async () => {
+    const calls: Array<Record<string, unknown>> = [];
+    const service = new ProjectRetentionService();
+    const effectiveAt = new Date("2026-08-25T10:00:00.000Z");
+    const observedAt = new Date("2026-08-26T10:00:00.000Z");
+    await service.applyWorkspaceTierTransition(
+      {
+        project: {
+          updateMany: async (input: Record<string, unknown>) => {
+            calls.push(input);
+            return { count: 1 };
+          },
+        },
+      } as never,
+      {
+        workspaceId: "workspace-1",
+        previousTier: "free",
+        nextTier: "pro",
+        effectiveAt,
+        observedAt,
+      },
+    );
+
+    expect(
+      ((calls[0]?.where as { expiresAt: { gt: Date } }).expiresAt.gt),
+    ).toEqual(observedAt);
   });
 
   test("observe mode does not assign downgrade deadlines", () => {

@@ -80,6 +80,10 @@ _Avoid_: Workflow run, upload task
 
 ## Brand and delivery
 
+**Workspace Billing Account**:
+The durable provider identity, verified subscription snapshot, reconciliation health, retry ownership, and repair state for one Workspace. The Workspace remains the access projection; Stripe deliveries only wake current-state reconciliation.
+_Avoid_: Stripe customer, billing event, subscription row
+
 **Brand Profile**:
 A workspace or personal collection of reusable identity, media, writing guidance, and style presets for one brand. A Brand Template is a style preset inside this broader identity.
 _Avoid_: Brand Template, client folder, workspace brand

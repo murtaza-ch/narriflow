@@ -4077,7 +4077,8 @@ async function assertWorkspaceUploadQuota(workspaceId: string) {
       _sum: { sourceDurationSeconds: true },
     }),
   ]);
-  const tier = resolvePricingTier(workspace?.pricingTier ?? null);
+  if (!workspace) throw new Error("Workspace not found");
+  const tier = resolvePricingTier(workspace.pricingTier);
   const usedMinutes = processingMinutesFromSeconds(
     usage._sum.sourceDurationSeconds ?? 0,
   );

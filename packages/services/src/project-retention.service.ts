@@ -266,44 +266,6 @@ function parseExternalTombstone(
 }
 
 export class ProjectRetentionService {
-  async assignmentForNewProject(
-    userId: string,
-    createdAt: Date,
-  ): Promise<RetentionAssignment | null> {
-    const prisma = getPrismaClient();
-    if (!prisma) {
-      return retentionAssignmentForNewProject({
-        tier: "free",
-        createdAt,
-      });
-    }
-    const user = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { pricingTier: true },
-    });
-    const config = getRetentionRuntimeConfig();
-    const assignment = retentionAssignmentForNewProject({
-      tier: user?.pricingTier ?? "free",
-      createdAt,
-      config,
-    });
-
-    if (user?.pricingTier === "free" && config.mode === "observe") {
-      console.warn(
-        JSON.stringify({
-          level: "info",
-          message: "project_retention_observed",
-          userId,
-          candidatePolicyKey: "free_project_v1",
-          candidateExpiresAt: new Date(
-            createdAt.getTime() + RETENTION_POLICIES.free_project_v1.durationMs,
-          ).toISOString(),
-        }),
-      );
-    }
-    return assignment;
-  }
-
   async assignmentForWorkspace(
     workspaceId: string,
     createdAt: Date,
@@ -316,13 +278,14 @@ export class ProjectRetentionService {
       where: { id: workspaceId },
       select: { pricingTier: true },
     });
+    if (!workspace) throw new Error("Workspace not found");
     const config = getRetentionRuntimeConfig();
     const assignment = retentionAssignmentForNewProject({
-      tier: workspace?.pricingTier ?? "free",
+      tier: workspace.pricingTier,
       createdAt,
       config,
     });
-    if (workspace?.pricingTier === "free" && config.mode === "observe") {
+    if (workspace.pricingTier === "free" && config.mode === "observe") {
       console.warn(JSON.stringify({
         level: "info",
         message: "project_retention_observed",
@@ -336,52 +299,6 @@ export class ProjectRetentionService {
     return assignment;
   }
 
-  async applyTierTransition(
-    tx: Prisma.TransactionClient,
-    input: {
-      userId: string;
-      previousTier: PricingTier;
-      nextTier: PricingTier;
-      effectiveAt: Date;
-    },
-  ): Promise<void> {
-    const transition = retentionTransitionForTierChange(input);
-    if (transition.kind === "clear_unexpired") {
-      await tx.project.updateMany({
-        where: {
-          userId: input.userId,
-          expiresAt: { gt: input.effectiveAt },
-          purgeDeletedObjectCount: 0,
-          purgeStorageVerifiedAt: null,
-        },
-        data: {
-          retentionPolicyKey: null,
-          expiresAt: null,
-          purgeStartedAt: null,
-          purgeLeaseExpiresAt: null,
-          purgeRetryAt: null,
-          purgeStorageVerifiedAt: null,
-          purgeLastError: null,
-        },
-      });
-      return;
-    }
-
-    if (transition.kind === "assign_downgrade") {
-      await tx.project.updateMany({
-        where: {
-          userId: input.userId,
-          purgeStartedAt: null,
-          expiresAt: null,
-        },
-        data: {
-          retentionPolicyKey: transition.assignment.retentionPolicyKey,
-          expiresAt: transition.assignment.expiresAt,
-        },
-      });
-    }
-  }
-
   async applyWorkspaceTierTransition(
     tx: Prisma.TransactionClient,
     input: {
@@ -389,14 +306,19 @@ export class ProjectRetentionService {
       previousTier: PricingTier;
       nextTier: PricingTier;
       effectiveAt: Date;
+      observedAt?: Date;
     },
   ): Promise<void> {
     const transition = retentionTransitionForTierChange(input);
     if (transition.kind === "clear_unexpired") {
+      const rescueCutoff =
+        input.observedAt && input.observedAt.getTime() > input.effectiveAt.getTime()
+          ? input.observedAt
+          : input.effectiveAt;
       await tx.project.updateMany({
         where: {
           workspaceId: input.workspaceId,
-          expiresAt: { gt: input.effectiveAt },
+          expiresAt: { gt: rescueCutoff },
           purgeDeletedObjectCount: 0,
           purgeStorageVerifiedAt: null,
         },
@@ -467,7 +389,7 @@ export class ProjectRetentionService {
     );
     const baseWhere: Prisma.ProjectWhereInput = {
       createdAt: { gte: windowStartedAt },
-      user: { pricingTier: "free" },
+      workspace: { pricingTier: "free" },
     };
     const [candidatesDue, warningsDue, activeJobCollisions, storage] =
       await Promise.all([

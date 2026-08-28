@@ -178,7 +178,7 @@ export default async function ProjectDetailPage({
       ? dubbingService.listProjectDubs(appUser.id, projectId)
       : Promise.resolve([]),
     projectService.getWorkflowHistory(appUser.id, projectId),
-    projectService.getUsageSummary(appUser.id),
+    projectService.getUsageSummary(appUser.actorUserId, appUser.workspaceId),
   ]);
   const transcript = fullTranscript ?? transcriptStatus;
   const pricingTier = usage.tier;

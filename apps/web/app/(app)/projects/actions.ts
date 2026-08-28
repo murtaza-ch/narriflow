@@ -165,10 +165,13 @@ export async function regenerateClipsFormAction(formData: FormData) {
 
   try {
     await clipService.regenerateClips(
-      appUser.id,
       projectId,
       idempotencyKey,
       readContentPackFromForm(formData),
+      {
+        workspaceId: appUser.workspaceId,
+        actorUserId: appUser.actorUserId,
+      },
     );
   } catch (error) {
     if (isPlanLimitError(error)) {
@@ -197,16 +200,15 @@ export async function renderClipsFormAction(formData: FormData) {
   const appUser = await requireWorkspaceProject(projectId, "processing.consume");
 
   await clipService.triggerClipRendering(
-    appUser.id,
     projectId,
     idempotencyKey,
-    undefined,
-    aspectRatios.length > 0 ? aspectRatios : undefined,
-    "1080p",
     {
       workspaceId: appUser.workspaceId,
       actorUserId: appUser.actorUserId,
     },
+    undefined,
+    aspectRatios.length > 0 ? aspectRatios : undefined,
+    "1080p",
   );
 
   revalidatePath(`/projects/${projectId}`);

@@ -88,22 +88,10 @@ export function workspaceAllowsCapability(
       )
     );
   }
-  if (["processing.consume", "publishing.manage", "members.invite"].includes(capability)) {
-    return false;
-  }
-  if (
-    context.role !== "owner" &&
-    [
-      "content.edit",
-      "brand.manage",
-      "social.manage",
-      "workspace.manage",
-      "api.manage",
-    ].includes(capability)
-  ) {
-    return false;
-  }
-  return true;
+  return (
+    context.role === "owner" &&
+    ["content.view", "content.download", "billing.manage"].includes(capability)
+  );
 }
 
 function requiredPrisma() {
@@ -175,6 +163,7 @@ export class WorkspaceService {
         status: "pending_payment",
         pricingTier: "business",
         timezone: personalWorkspace?.timezone ?? "UTC",
+        billingAccount: { create: { health: "activating" } },
         members: { create: { userId, role: "owner" } },
       },
       select: { id: true, name: true, status: true, pricingTier: true },
@@ -251,8 +240,12 @@ export class WorkspaceService {
         status: true,
         timezone: true,
         pricingTier: true,
-        billingInterval: true,
-        subscriptionEndsAt: true,
+        billingAccount: {
+          select: {
+            billingInterval: true,
+            currentPeriodEndAt: true,
+          },
+        },
         personalOwnerUserId: true,
         createdAt: true,
       },
