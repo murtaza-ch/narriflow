@@ -13,12 +13,25 @@ import {
   type ProviderCheckoutSession,
   type ProviderSubscription,
   type WorkspaceBillingProvider,
+  type WorkspaceBillingErrorCode,
   WorkspaceBillingError,
 } from "./workspace-billing.service";
 
+export type BillingErrorCode =
+  | WorkspaceBillingErrorCode
+  | "billing_catalog_invalid"
+  | "checkout_collection_unbounded"
+  | "customer_collection_unbounded"
+  | "customer_missing"
+  | "invalid_signature"
+  | "provider_call_budget_exhausted"
+  | "stripe_not_configured"
+  | "subscription_pagination_invalid"
+  | "webhook_not_configured";
+
 export class BillingError extends Error {
   constructor(
-    public readonly code: string,
+    public readonly code: BillingErrorCode,
     message: string,
   ) {
     super(message);
@@ -269,8 +282,7 @@ export class BillingService {
     };
   }
 
-  /** Production Stripe adapter exposed for isolated sandbox contract tests. */
-  stripeProviderAdapter(): WorkspaceBillingProvider {
+  protected stripeProviderAdapter(): WorkspaceBillingProvider {
     return {
         verifyDelivery: (rawBody, signature) =>
           this.verifyStripeDelivery(rawBody, signature),
@@ -443,7 +455,7 @@ export class BillingService {
     return this.workspaceBillingModule().reconcileDueAccounts();
   }
 
-  async verifyStripeDelivery(
+  protected async verifyStripeDelivery(
     rawBody: string,
     signature: string,
     contract?: { stripe: Stripe; webhookSecret: string },

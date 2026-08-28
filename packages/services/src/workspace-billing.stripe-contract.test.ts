@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import Stripe from "stripe";
 import {
-  BillingService,
   WORKSPACE_BILLING_STRIPE_API_VERSION,
 } from "./billing.service";
+import { WorkspaceBillingStripeContractHarness } from "./workspace-billing.stripe-test-support";
 import { WORKSPACE_BILLING_WAKE_EVENT_TYPES } from "./workspace-billing.service";
 
 const webhookSecret = "whsec_workspace_billing_contract_fixture";
@@ -61,10 +61,10 @@ describe("Workspace Billing Stripe adapter contracts", () => {
       secret: webhookSecret,
       timestamp: signatureTimestamp,
     });
-    const service = new BillingService();
+    const service = new WorkspaceBillingStripeContractHarness();
 
     expect(
-      await service.verifyStripeDelivery(rawBody, signature, {
+      await service.verifyDelivery(rawBody, signature, {
         stripe,
         webhookSecret,
       }),
@@ -77,7 +77,7 @@ describe("Workspace Billing Stripe adapter contracts", () => {
       workspaceHint: "11111111-1111-4111-8111-111111111111",
     });
     await expect(
-      service.verifyStripeDelivery(`${rawBody} `, signature, {
+      service.verifyDelivery(`${rawBody} `, signature, {
         stripe,
         webhookSecret,
       }),
@@ -85,7 +85,7 @@ describe("Workspace Billing Stripe adapter contracts", () => {
   });
 
   test("normalizes every registered delivery fixture without reading entitlement state", async () => {
-    const service = new BillingService();
+    const service = new WorkspaceBillingStripeContractHarness();
     for (const type of WORKSPACE_BILLING_WAKE_EVENT_TYPES) {
       const rawBody = fixture(type);
       const signature = await Stripe.webhooks.generateTestHeaderStringAsync({
@@ -93,7 +93,7 @@ describe("Workspace Billing Stripe adapter contracts", () => {
         secret: webhookSecret,
         timestamp: signatureTimestamp,
       });
-      const delivery = await service.verifyStripeDelivery(rawBody, signature, {
+      const delivery = await service.verifyDelivery(rawBody, signature, {
         stripe,
         webhookSecret,
       });

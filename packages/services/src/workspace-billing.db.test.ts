@@ -195,6 +195,19 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
     ).toBe(1);
     expect(providerCustomers.size).toBe(1);
     expect(providerSessions.size).toBe(1);
+
+    const retry = await billing.startCheckout({
+      ...input,
+      clientIdempotencyKey: randomUUID(),
+    });
+    expect(retry.kind).toBe("checkout");
+    expect(
+      await prisma.workspaceCheckoutAttempt.count({
+        where: { billingAccount: { workspaceId: workspace.id } },
+      }),
+    ).toBe(2);
+    expect(providerCustomers.size).toBe(1);
+    expect(providerSessions.size).toBe(2);
   });
 
   test("accepts one delivery and wakes its account atomically under concurrency", async () => {

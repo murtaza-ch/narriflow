@@ -12,8 +12,6 @@ import {
   createClipExportSchema,
   createClipShareLinkSchema,
   clipDownloadQuerySchema,
-  checkoutRequestSchema,
-  checkoutReturnRequestSchema,
   contentPackSchema,
   autopilotRuleInputSchema,
   autopilotRuleUpdateSchema,
@@ -85,13 +83,13 @@ import {
   type ProjectListSourceFilter,
   type ProjectListStatusFilter,
 } from "@narriflow/services";
-import { workspaceBillingHttpFailure } from "./workspace-billing-http";
 import {
   resolveCanonicalAppOrigin,
   safeSocialRedirectPath,
 } from "@/lib/safe-redirect";
 import { createUploadSessionHttpRoutes } from "./upload-session-http";
 import { createStripeWebhookHttpRoutes } from "./stripe-webhook-http";
+import { createWorkspaceBillingHttpRoutes } from "./workspace-billing-routes";
 
 export const runtime = "nodejs";
 // Content-suite generation makes a synchronous LLM call that can take ~30s.
@@ -105,6 +103,26 @@ app.route(
   createStripeWebhookHttpRoutes({
     acceptDelivery: (rawBody, signature) =>
       billingService.handleWebhook(rawBody, signature),
+  }),
+);
+
+app.route(
+  "/billing",
+  createWorkspaceBillingHttpRoutes({
+    getCurrentActor: getCurrentAppUser,
+    startCheckout: (input) => billingService.startCheckout(input),
+    observeCheckoutReturn: (input) => billingService.observeCheckoutReturn(input),
+    openPortal: (input) => billingService.openPortal(input),
+    readBillingState: (workspaceId) => billingService.readBillingState(workspaceId),
+    requireBillingManager: async (actorUserId, workspaceId) => {
+      await workspaceService.requireActor(
+        actorUserId,
+        workspaceId,
+        "billing.manage",
+      );
+    },
+    reconcileCurrentState: (workspaceId) =>
+      billingService.reconcileCurrentState(workspaceId),
   }),
 );
 
@@ -1894,110 +1912,6 @@ app.post("/projects/:id/clips/apply-studio-edits", async (c) => {
       { error: "apply_studio_edits_failed", message: errorMessage(error) },
       400,
     );
-  }
-});
-
-// --- Billing (Stripe) ---
-
-app.post("/billing/checkout", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
-
-  const payload = await c.req.json().catch(() => ({}));
-  const parsed = checkoutRequestSchema.safeParse(payload);
-  if (!parsed.success) {
-    return c.json({ error: "Invalid payload", issues: parsed.error.issues }, 400);
-  }
-
-  const origin = new URL(c.req.url).origin;
-  try {
-    const result = await billingService.startCheckout({
-      userId: appUser.actorUserId,
-      workspaceId: appUser.workspaceId,
-      clientIdempotencyKey: parsed.data.clientIdempotencyKey,
-      tier: parsed.data.tier,
-      interval: parsed.data.interval,
-      returnDestination: `${origin}/settings/billing`,
-    });
-    return c.json(result, 200);
-  } catch (error) {
-    const failure = workspaceBillingHttpFailure(error, "checkout_failed");
-    return c.json(failure.body, failure.status);
-  }
-});
-
-app.post("/billing/checkout/return", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
-  const payload = await c.req.json().catch(() => ({}));
-  const parsed = checkoutReturnRequestSchema.safeParse(payload);
-  if (!parsed.success) {
-    return c.json({ error: "invalid_checkout_return", issues: parsed.error.issues }, 400);
-  }
-  try {
-    const result = await billingService.observeCheckoutReturn({
-      userId: appUser.actorUserId,
-      workspaceId: appUser.workspaceId,
-      sessionId: parsed.data.sessionId,
-    });
-    c.header("Retry-After", String(result.retryAfterSeconds));
-    return c.json(result, 202);
-  } catch (error) {
-    const failure = workspaceBillingHttpFailure(error, "checkout_return_failed");
-    return c.json(failure.body, failure.status);
-  }
-});
-
-app.post("/billing/portal", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
-
-  const origin = new URL(c.req.url).origin;
-  try {
-    const result = await billingService.openPortal({
-      userId: appUser.actorUserId,
-      workspaceId: appUser.workspaceId,
-      returnUrl: `${origin}/settings/billing`,
-    });
-    return c.json(result, 200);
-  } catch (error) {
-    const failure = workspaceBillingHttpFailure(error, "portal_failed");
-    return c.json(failure.body, failure.status);
-  }
-});
-
-app.get("/billing/state", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
-  try {
-    const view = await billingService.readBillingState(appUser.workspaceId);
-    if (view.health === "activating") c.header("Retry-After", "2");
-    return c.json({ view }, 200);
-  } catch {
-    return c.json({ error: "billing_state_unavailable" }, 503);
-  }
-});
-
-app.post("/billing/reconcile", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
-  try {
-    await workspaceService.requireActor(
-      appUser.actorUserId,
-      appUser.workspaceId,
-      "billing.manage",
-    );
-    const result = await billingService.reconcileCurrentState(appUser.workspaceId);
-    if (result.view.health === "activating" || result.view.health === "retrying") {
-      c.header("Retry-After", "2");
-    }
-    return c.json(result, 200);
-  } catch (error) {
-    const failure = workspaceBillingHttpFailure(
-      error,
-      "billing_reconciliation_unavailable",
-    );
-    return c.json(failure.body, failure.status);
   }
 });
 

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   billingStatusPresentation,
+  canStartBillingCheckout,
   shouldShowSeatSyncStatus,
 } from "./billing-view-model";
 
@@ -21,6 +22,24 @@ const base = {
 };
 
 describe("billing status presentation", () => {
+  test("offers Checkout only when it is the single primary recovery path", () => {
+    const free = { ...base, plan: "free" as const, actions: ["start_checkout" as const] };
+    expect(
+      canStartBillingCheckout({
+        view: free,
+        canManageBilling: true,
+        isConfigured: true,
+      }),
+    ).toBe(true);
+    expect(
+      canStartBillingCheckout({
+        view: { ...free, health: "retrying", actions: ["retry"] },
+        canManageBilling: true,
+        isConfigured: true,
+      }),
+    ).toBe(false);
+  });
+
   test("uses durable health and access facts for recovery copy", () => {
     expect(
       billingStatusPresentation({ ...base, health: "activating" }),

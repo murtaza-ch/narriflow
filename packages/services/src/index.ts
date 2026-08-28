@@ -129,6 +129,7 @@ export {
   billingService,
   BillingService,
   BillingError,
+  type BillingErrorCode,
   hasFeature,
   type PlanFeature,
 } from "./billing.service";

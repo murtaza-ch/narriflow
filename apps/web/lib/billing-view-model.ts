@@ -11,6 +11,22 @@ export interface BillingStatusPresentation {
   tone: "neutral" | "accent" | "warning" | "danger";
 }
 
+export function canStartBillingCheckout(input: {
+  view: WorkspaceBillingView;
+  canManageBilling: boolean;
+  isConfigured: boolean;
+}) {
+  const { view } = input;
+  return (
+    input.canManageBilling &&
+    input.isConfigured &&
+    (view.plan === "free" || view.workspaceAccessStatus === "pending_payment") &&
+    view.health !== "retrying" &&
+    view.health !== "attention_required" &&
+    view.health !== "payment_action_required"
+  );
+}
+
 export function shouldShowSeatSyncStatus(
   view: WorkspaceBillingView,
   actorRole: "owner" | "admin" | "editor" | "viewer",

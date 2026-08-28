@@ -38,6 +38,18 @@ describe("Workspace Billing HTTP adapter", () => {
       ).status,
     ).toBe(409);
     expect(
+      workspaceBillingHttpFailure(
+        new BillingError("billing_customer_missing", "private detail"),
+        "portal_failed",
+      ),
+    ).toEqual({
+      status: 409,
+      body: {
+        error: "billing_customer_missing",
+        message: "No billing customer is available for this workspace.",
+      },
+    });
+    expect(
       workspaceBillingHttpFailure(new Error("network secret"), "portal_failed"),
     ).toEqual({
       status: 503,

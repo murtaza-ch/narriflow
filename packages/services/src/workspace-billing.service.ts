@@ -252,6 +252,7 @@ export interface WorkspaceBillingProjection {
   desiredAdditionalSeats: number;
   synchronizedAdditionalSeats: number | null;
   seatItemId: string | null;
+  latestCheckoutOutcome: string | null;
 }
 
 export interface WorkspaceBillingStore {
@@ -269,6 +270,11 @@ export interface WorkspaceBillingStore {
     limit: number;
     leaseMs: number;
   }): Promise<Array<{ workspaceId: string; attemptId: string; attemptCount: number }>>;
+  claimAccount(input: {
+    workspaceId: string;
+    now: Date;
+    leaseMs: number;
+  }): Promise<{ workspaceId: string; attemptId: string; attemptCount: number } | null>;
   renewClaim(input: {
     workspaceId: string;
     attemptId: string;
@@ -308,6 +314,10 @@ export interface WorkspaceBillingStore {
     desired: number;
     revision: number;
   }>;
+  markSeatVerificationDue(input: {
+    workspaceId: string;
+    now: Date;
+  }): Promise<void>;
   readBillingActor(input: {
     workspaceId: string;
     actorUserId: string;
@@ -342,6 +352,7 @@ export interface WorkspaceBillingStore {
     sessionId: string;
     providerAttemptId?: string;
     outcome: string;
+    wakeReconciliation: boolean;
     now: Date;
   }): Promise<WorkspaceCheckoutAttempt>;
 }
@@ -361,9 +372,25 @@ export interface WorkspaceCheckoutAttempt {
   expiresAt: Date | null;
 }
 
+export type WorkspaceBillingErrorCode =
+  | "billing_customer_missing"
+  | "billing_forbidden"
+  | "billing_portal_required"
+  | "checkout_attempt_conflict"
+  | "checkout_attempt_invalid"
+  | "checkout_attempt_missing"
+  | "checkout_attempt_terminal"
+  | "checkout_not_configured"
+  | "checkout_session_conflict"
+  | "customer_identity_conflict"
+  | "portal_not_configured"
+  | "price_not_configured"
+  | "seat_provider_not_configured"
+  | "workspace_not_found";
+
 export class WorkspaceBillingError extends Error {
   constructor(
-    public readonly code: string,
+    public readonly code: WorkspaceBillingErrorCode,
     message: string,
   ) {
     super(message);
@@ -376,6 +403,25 @@ export class WorkspaceBillingAttemptLost extends Error {
     super("Workspace Billing reconciliation attempt lost");
     this.name = "WorkspaceBillingAttemptLost";
   }
+}
+
+function nextVerifiedReconcileAt(input: {
+  now: Date;
+  health: WorkspaceBillingHealth;
+  changed: boolean;
+  seatStillDue: boolean;
+}): Date {
+  if (input.seatStillDue) return input.now;
+  if (input.health === "activating") {
+    return new Date(input.now.getTime() + 30_000);
+  }
+  if (input.health === "payment_action_required" || input.changed) {
+    return new Date(input.now.getTime() + 5 * 60_000);
+  }
+  if (input.health === "attention_required" || input.health === "retrying") {
+    return new Date(input.now.getTime() + 6 * 60 * 60_000);
+  }
+  return new Date(input.now.getTime() + 24 * 60 * 60_000);
 }
 
 export function createInMemoryWorkspaceBillingStore(
@@ -411,6 +457,7 @@ export function createInMemoryWorkspaceBillingStore(
         desiredAdditionalSeats: workspace.desiredAdditionalSeats ?? 0,
         synchronizedAdditionalSeats: null,
         seatItemId: null,
+        latestCheckoutOutcome: null,
       },
     ]),
   );
@@ -477,6 +524,8 @@ export function createInMemoryWorkspaceBillingStore(
         expiresAt: null,
       };
       checkoutAttempts.set(input.clientIdempotencyKey, attempt);
+      const row = rows.get(input.workspaceId);
+      if (row) row.latestCheckoutOutcome = null;
       return { kind: "created", attempt };
     },
     async bindCheckoutCustomer(input) {
@@ -521,10 +570,13 @@ export function createInMemoryWorkspaceBillingStore(
         );
       }
       const row = rows.get(input.workspaceId)!;
-      row.health = "activating";
-      row.attentionReason = null;
-      const state = runtime.get(input.workspaceId)!;
-      state.nextReconcileAt = input.now;
+      if (input.wakeReconciliation) {
+        row.health = "activating";
+        row.attentionReason = null;
+        const state = runtime.get(input.workspaceId)!;
+        state.nextReconcileAt = input.now;
+      }
+      row.latestCheckoutOutcome = input.outcome;
       return attempt;
     },
     async acceptDelivery(input) {
@@ -571,6 +623,24 @@ export function createInMemoryWorkspaceBillingStore(
       }
       return claimed;
     },
+    async claimAccount(input) {
+      const state = runtime.get(input.workspaceId);
+      if (
+        !state ||
+        (state.leaseExpiresAt && state.leaseExpiresAt.getTime() > input.now.getTime())
+      ) {
+        return null;
+      }
+      const attemptId = randomUUID();
+      state.attemptId = attemptId;
+      state.leaseExpiresAt = new Date(input.now.getTime() + input.leaseMs);
+      state.attemptCount += 1;
+      return {
+        workspaceId: input.workspaceId,
+        attemptId,
+        attemptCount: state.attemptCount,
+      };
+    },
     async renewClaim(input) {
       const state = runtime.get(input.workspaceId);
       if (
@@ -605,6 +675,14 @@ export function createInMemoryWorkspaceBillingStore(
       }
       return true;
     },
+    async markSeatVerificationDue(input) {
+      const state = runtime.get(input.workspaceId);
+      if (!state) return;
+      state.seatRevision += 1;
+      if (state.nextReconcileAt.getTime() > input.now.getTime()) {
+        state.nextReconcileAt = input.now;
+      }
+    },
     async commitVerifiedState(input) {
       const current = rows.get(input.workspaceId);
       if (!current) throw new Error("Workspace Billing Account not found");
@@ -620,6 +698,13 @@ export function createInMemoryWorkspaceBillingStore(
       if (current.providerCustomerId !== input.expectedCustomerId) {
         throw new Error("Workspace Billing customer mismatch");
       }
+      const changed =
+        current.pricingTier !== input.tier ||
+        current.status !== input.workspaceStatus ||
+        current.canonicalSubscriptionId !== input.subscription.id ||
+        current.providerStatus !== input.subscription.status ||
+        current.health !== input.health ||
+        current.attentionReason !== input.attentionReason;
       const next: WorkspaceBillingProjection = {
         ...current,
         pricingTier: input.tier,
@@ -645,9 +730,14 @@ export function createInMemoryWorkspaceBillingStore(
         runtimeState.attemptId = null;
         runtimeState.leaseExpiresAt = null;
         runtimeState.attemptCount = 0;
-        runtimeState.nextReconcileAt = new Date(
-          input.now.getTime() + 24 * 60 * 60 * 1000,
-        );
+        runtimeState.nextReconcileAt = nextVerifiedReconcileAt({
+          now: input.now,
+          health: input.health,
+          changed,
+          seatStillDue:
+            input.seat !== undefined &&
+            runtimeState.seatRevision !== input.seat.revision,
+        });
       }
       return next;
     },
@@ -682,6 +772,11 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
       });
       if (!row?.billingAccount) return null;
       const account = row.billingAccount;
+      const latestCheckout = await prisma.workspaceCheckoutAttempt.findFirst({
+        where: { billingAccountId: account.id },
+        orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+        select: { sessionOutcome: true },
+      });
       return {
         workspaceId: row.id,
         ownerUserId: row.ownerUserId,
@@ -707,6 +802,7 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
         desiredAdditionalSeats: account.desiredAdditionalSeats,
         synchronizedAdditionalSeats: account.synchronizedAdditionalSeats,
         seatItemId: account.seatItemId,
+        latestCheckoutOutcome: latestCheckout?.sessionOutcome ?? null,
       };
     },
     async readBillingActor(input) {
@@ -942,14 +1038,16 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
             sessionOutcome: input.outcome,
           },
         });
-        await tx.workspaceBillingAccount.update({
-          where: { id: attempt.billingAccount.id },
-          data: {
-            health: "activating",
-            attentionReason: null,
-            nextReconcileAt: input.now,
-          },
-        });
+        if (input.wakeReconciliation) {
+          await tx.workspaceBillingAccount.update({
+            where: { id: attempt.billingAccount.id },
+            data: {
+              health: "activating",
+              attentionReason: null,
+              nextReconcileAt: input.now,
+            },
+          });
+        }
         return {
           id: attempt.id,
           workspaceId: attempt.billingAccount.workspaceId,
@@ -1145,6 +1243,30 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
       }
       return claims;
     },
+    async claimAccount(input) {
+      const attemptId = randomUUID();
+      const won = await prisma.workspaceBillingAccount.updateMany({
+        where: {
+          workspaceId: input.workspaceId,
+          OR: [{ leaseExpiresAt: null }, { leaseExpiresAt: { lte: input.now } }],
+        },
+        data: {
+          reconcileAttemptId: attemptId,
+          leaseExpiresAt: new Date(input.now.getTime() + input.leaseMs),
+          attemptCount: { increment: 1 },
+        },
+      });
+      if (won.count === 0) return null;
+      const account = await prisma.workspaceBillingAccount.findUniqueOrThrow({
+        where: { workspaceId: input.workspaceId },
+        select: { attemptCount: true },
+      });
+      return {
+        workspaceId: input.workspaceId,
+        attemptId,
+        attemptCount: account.attemptCount,
+      };
+    },
     async renewClaim(input) {
       const renewed = await prisma.workspaceBillingAccount.updateMany({
         where: {
@@ -1178,6 +1300,15 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
         },
       });
       return settled.count === 1;
+    },
+    async markSeatVerificationDue(input) {
+      await prisma.workspaceBillingAccount.update({
+        where: { workspaceId: input.workspaceId },
+        data: {
+          seatRevision: { increment: 1 },
+          nextReconcileAt: input.now,
+        },
+      });
     },
     async commitVerifiedState(input) {
       return prisma.$transaction(async (tx) => {
@@ -1224,7 +1355,9 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
             })
           : row.billingAccount.desiredAdditionalSeats;
         const seatStillDue = Boolean(
-          input.seat && currentDesiredSeats !== input.seat.observed,
+          input.seat &&
+            (currentDesiredSeats !== input.seat.observed ||
+              row.billingAccount.seatRevision !== input.seat.revision),
         );
         const stateChanged =
           row.pricingTier !== input.tier ||
@@ -1275,9 +1408,12 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
             health: input.health,
             attentionReason: input.attentionReason,
             lastVerifiedAt: input.now,
-            nextReconcileAt: seatStillDue
-              ? input.now
-              : new Date(input.now.getTime() + 24 * 60 * 60 * 1000),
+            nextReconcileAt: nextVerifiedReconcileAt({
+              now: input.now,
+              health: input.health,
+              changed: stateChanged,
+              seatStillDue,
+            }),
             reconcileAttemptId: null,
             leaseExpiresAt: null,
             attemptCount: 0,
@@ -1346,6 +1482,7 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
           desiredAdditionalSeats: currentDesiredSeats,
           synchronizedAdditionalSeats: account.synchronizedAdditionalSeats,
           seatItemId: account.seatItemId,
+          latestCheckoutOutcome: null,
         };
       });
     },
@@ -1382,6 +1519,9 @@ function billingView(row: WorkspaceBillingProjection): WorkspaceBillingView {
       case "canceled":
         return "canceled";
       default:
+        if (row.latestCheckoutOutcome?.startsWith("expired:")) {
+          return "payment_expired";
+        }
         return row.status === "pending_payment" ? "payment_pending" : "active";
     }
   };
@@ -1618,6 +1758,7 @@ export function createWorkspaceBillingModule(dependencies: {
       health = "attention_required";
       attentionReason = "multiple_entitlement_subscriptions";
     }
+    let providerSeatMutation = false;
     let seat:
       | {
           desired: number;
@@ -1626,7 +1767,7 @@ export function createWorkspaceBillingModule(dependencies: {
           revision: number;
         }
       | undefined;
-    if (mapped.tier === "business") {
+    if (mapped.tier === "business" && !hasSubscriptionConflict) {
       const desired = await dependencies.store.readDesiredSeatState(workspaceId);
       const providerSeat = selectedItems.seatItems[0]?.item;
       let observed = providerSeat?.quantity ?? 0;
@@ -1659,6 +1800,7 @@ export function createWorkspaceBillingModule(dependencies: {
             },
             operationKey,
           );
+          providerSeatMutation = true;
           itemId = created.itemId;
           observed = desired.desired;
         } else if (providerSeat && desired.desired === 0) {
@@ -1675,6 +1817,7 @@ export function createWorkspaceBillingModule(dependencies: {
             },
             operationKey,
           );
+          providerSeatMutation = true;
           itemId = null;
           observed = 0;
         } else if (providerSeat) {
@@ -1692,6 +1835,7 @@ export function createWorkspaceBillingModule(dependencies: {
             },
             operationKey,
           );
+          providerSeatMutation = true;
           observed = desired.desired;
         }
       }
@@ -1702,22 +1846,33 @@ export function createWorkspaceBillingModule(dependencies: {
         revision: desired.revision,
       };
     }
-    const settled = await dependencies.store.commitVerifiedState({
-      workspaceId,
-      expectedCustomerId: providerState.customerId,
-      subscription,
-      tier,
-      interval: mapped.interval,
-      workspaceStatus,
-      health,
-      attentionReason,
-      firstPastDueAt,
-      graceDeadlineAt,
-      effectiveAt,
-      now: dependencies.clock.now(),
-      attemptId,
-      seat,
-    });
+    let settled: WorkspaceBillingProjection;
+    try {
+      settled = await dependencies.store.commitVerifiedState({
+        workspaceId,
+        expectedCustomerId: providerState.customerId,
+        subscription,
+        tier,
+        interval: mapped.interval,
+        workspaceStatus,
+        health,
+        attentionReason,
+        firstPastDueAt,
+        graceDeadlineAt,
+        effectiveAt,
+        now: dependencies.clock.now(),
+        attemptId,
+        seat,
+      });
+    } catch (error) {
+      if (error instanceof WorkspaceBillingAttemptLost && providerSeatMutation) {
+        await dependencies.store.markSeatVerificationDue({
+          workspaceId,
+          now: dependencies.clock.now(),
+        });
+      }
+      throw error;
+    }
     dependencies.diagnostics.record({
       level: "info",
       message: "workspace_billing_reconciled",
@@ -1769,6 +1924,19 @@ export function createWorkspaceBillingModule(dependencies: {
     return provider;
   };
 
+  const requireBillingOwner = async (input: {
+    workspaceId: string;
+    actorUserId: string;
+  }) => {
+    const actor = await dependencies.store.readBillingActor(input);
+    if (actor?.role !== "owner") {
+      throw new WorkspaceBillingError(
+        "billing_forbidden",
+        "Only the Workspace owner can manage billing",
+      );
+    }
+  };
+
   const checkoutDestination = (session: ProviderCheckoutSession) => {
     if (
       session.status !== "open" ||
@@ -1797,13 +1965,7 @@ export function createWorkspaceBillingModule(dependencies: {
       returnDestination: string;
     }) {
       const startedAt = dependencies.clock.now();
-      const actor = await dependencies.store.readBillingActor(input);
-      if (actor?.role !== "owner") {
-        throw new WorkspaceBillingError(
-          "billing_forbidden",
-          "Only the Workspace owner can manage billing",
-        );
-      }
+      await requireBillingOwner(input);
       const current = await dependencies.store.readProjection(input.workspaceId);
       if (!current) {
         throw new WorkspaceBillingError("workspace_not_found", "Workspace not found");
@@ -1964,13 +2126,7 @@ export function createWorkspaceBillingModule(dependencies: {
       actorUserId: string;
       sessionId: string;
     }) {
-      const actor = await dependencies.store.readBillingActor(input);
-      if (actor?.role !== "owner") {
-        throw new WorkspaceBillingError(
-          "billing_forbidden",
-          "Only the Workspace owner can manage billing",
-        );
-      }
+      await requireBillingOwner(input);
       const provider = checkoutProvider();
       const session = await provider.retrieveCheckoutSession!(input.sessionId);
       if (session.workspaceId !== input.workspaceId) {
@@ -1979,11 +2135,13 @@ export function createWorkspaceBillingModule(dependencies: {
           "Checkout session ownership could not be verified",
         );
       }
+      const expired = session.status === "expired";
       await dependencies.store.recordCheckoutReturn({
         workspaceId: input.workspaceId,
         sessionId: input.sessionId,
         providerAttemptId: session.attemptId,
         outcome: `${session.status}:${session.paymentStatus}`,
+        wakeReconciliation: !expired,
         now: dependencies.clock.now(),
       });
       dependencies.diagnostics.record({
@@ -1998,6 +2156,13 @@ export function createWorkspaceBillingModule(dependencies: {
       if (!view) {
         throw new WorkspaceBillingError("workspace_not_found", "Workspace not found");
       }
+      if (expired) {
+        return {
+          kind: "terminal" as const,
+          reason: "expired" as const,
+          view: billingView(view),
+        };
+      }
       return {
         kind: "activating" as const,
         retryAfterSeconds: 2,
@@ -2009,13 +2174,7 @@ export function createWorkspaceBillingModule(dependencies: {
       actorUserId: string;
       returnUrl: string;
     }) {
-      const actor = await dependencies.store.readBillingActor(input);
-      if (actor?.role !== "owner") {
-        throw new WorkspaceBillingError(
-          "billing_forbidden",
-          "Only the Workspace owner can manage billing",
-        );
-      }
+      await requireBillingOwner(input);
       const current = await dependencies.store.readProjection(input.workspaceId);
       if (!current?.providerCustomerId) {
         throw new WorkspaceBillingError(
@@ -2066,11 +2225,31 @@ export function createWorkspaceBillingModule(dependencies: {
     async reconcileCurrentState(
       workspaceId: string,
     ): Promise<ReconcileCurrentStateResult> {
+      const now = dependencies.clock.now();
+      const claim = await dependencies.store.claimAccount({
+        workspaceId,
+        now,
+        leaseMs: dependencies.catalog.worker.leaseMs,
+      });
+      if (!claim) {
+        const current = await dependencies.store.readProjection(workspaceId);
+        if (!current) {
+          throw new WorkspaceBillingError("workspace_not_found", "Workspace not found");
+        }
+        return {
+          kind: "unresolved",
+          reason: "reconciliation_in_progress",
+          view: billingView(current),
+        };
+      }
       try {
-        const result = await reconcileOne(workspaceId);
+        const result = await withProviderDeadline(
+          reconcileOne(workspaceId, claim.attemptId),
+        );
         if (result.kind === "reconciled") return result;
         await dependencies.store.scheduleRetry({
           workspaceId,
+          attemptId: claim.attemptId,
           now: dependencies.clock.now(),
           nextReconcileAt: new Date(
             dependencies.clock.now().getTime() + 6 * 60 * 60 * 1000,
@@ -2091,8 +2270,18 @@ export function createWorkspaceBillingModule(dependencies: {
           view: current ? billingView(current) : result.view,
         };
       } catch (error) {
+        if (error instanceof WorkspaceBillingAttemptLost) {
+          const current = await dependencies.store.readProjection(workspaceId);
+          if (!current) throw error;
+          return {
+            kind: "unresolved",
+            reason: "reconciliation_superseded",
+            view: billingView(current),
+          };
+        }
         await dependencies.store.scheduleRetry({
           workspaceId,
+          attemptId: claim.attemptId,
           now: dependencies.clock.now(),
           nextReconcileAt: new Date(
             dependencies.clock.now().getTime() + 60_000,

@@ -22,7 +22,10 @@ import {
   pollBillingActivation,
   waitForBillingPoll,
 } from "@/lib/billing-browser";
-import { billingStatusPresentation } from "@/lib/billing-view-model";
+import {
+  billingStatusPresentation,
+  canStartBillingCheckout,
+} from "@/lib/billing-view-model";
 
 const STATUS_STRIPE = {
   neutral: "border.emphasized",
@@ -61,12 +64,11 @@ export function BillingPlans({
   const startedReturnObservation = useRef(false);
   const previousHealth = useRef(initialView.health);
   const status = billingStatusPresentation(view);
-  const mayStartCheckout =
-    canManageBilling &&
-    isConfigured &&
-    (view.plan === "free" || view.workspaceAccessStatus === "pending_payment") &&
-    view.health !== "attention_required" &&
-    view.health !== "payment_action_required";
+  const mayStartCheckout = canStartBillingCheckout({
+    view,
+    canManageBilling,
+    isConfigured,
+  });
 
   const readBillingState = useCallback(async () => {
     const response = await fetch("/api/billing/state", { cache: "no-store" });
@@ -101,12 +103,22 @@ export function BillingPlans({
             body: JSON.stringify({ sessionId: checkoutReturnSessionId }),
             signal: controller.signal,
           });
-          const payload = (await response.json()) as { view?: unknown };
+          const payload = (await response.json()) as {
+            kind?: "activating" | "terminal";
+            reason?: "expired";
+            view?: unknown;
+          };
           if (!response.ok || !payload.view) {
             throw new Error("Checkout could not be verified. You can retry safely.");
           }
           setView(workspaceBillingViewSchema.parse(payload.view));
           router.replace("/settings/billing", { scroll: false });
+          if (payload.kind === "terminal") {
+            setInlineError(
+              "This Checkout session expired. Your plan is unchanged, and you can retry safely.",
+            );
+            return;
+          }
         }
         await pollUntilSettled(controller.signal);
       } catch (error) {

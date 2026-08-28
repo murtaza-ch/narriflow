@@ -686,7 +686,7 @@ model WorkspaceCheckoutAttempt {
   interval             String
   catalogVersion       String
   returnDestination    String
-  customerOperationKey String      @unique
+  customerOperationKey String
   checkoutOperationKey String      @unique
   providerSessionId    String?     @unique
   providerPhase        String      @default("prepared")

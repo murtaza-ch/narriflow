@@ -2,9 +2,9 @@ import { randomUUID } from "node:crypto";
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import Stripe from "stripe";
 import {
-  BillingService,
   WORKSPACE_BILLING_STRIPE_API_VERSION,
 } from "./billing.service";
+import { WorkspaceBillingStripeContractHarness } from "./workspace-billing.stripe-test-support";
 
 const enabled = process.env.RUN_STRIPE_SANDBOX_CONTRACTS === "1";
 const sandboxDescribe = enabled ? describe : describe.skip;
@@ -32,9 +32,9 @@ sandboxDescribe("Workspace Billing Stripe sandbox", () => {
       maxNetworkRetries: 0,
       timeout: 10_000,
     });
-    const service = new BillingService();
+    const service = new WorkspaceBillingStripeContractHarness();
     service.validateConfiguration({ surface: "web" });
-    const adapter = service.stripeProviderAdapter();
+    const adapter = service.provider();
     const workspaceId = randomUUID();
     const fixturePrefix = `narriflow_workspace_billing_contract_${randomUUID()}`;
     const customerKey = `${fixturePrefix}_customer`;

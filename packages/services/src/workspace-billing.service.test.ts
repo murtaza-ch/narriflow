@@ -4,6 +4,7 @@ import {
   createInMemoryWorkspaceBillingStore,
   createWorkspaceBillingModule,
   type WorkspaceBillingProvider,
+  type WorkspaceBillingStore,
 } from "./workspace-billing.service";
 
 const catalog = createBillingCatalog({
@@ -202,6 +203,78 @@ describe("Workspace Billing", () => {
       pricingTier: "free",
       canonicalSubscriptionId: null,
       health: "activating",
+    });
+  });
+
+  test("records an expired Checkout as terminal without waking activation", async () => {
+    const store = createInMemoryWorkspaceBillingStore([
+      {
+        workspaceId: "workspace-expired-return",
+        personal: true,
+        hasNonOwnerMembers: false,
+        pricingTier: "free",
+        status: "active",
+        providerCustomerId: null,
+        ownerUserId: "owner-expired-return",
+      },
+    ]);
+    const billing = createWorkspaceBillingModule({
+      catalog,
+      store,
+      provider: {
+        verifyDelivery: () => {
+          throw new Error("not used");
+        },
+        retrieveCurrentState: async () => {
+          throw new Error("not used");
+        },
+        findCustomersByWorkspace: async () => [],
+        createCustomer: async () => ({ customerId: "cus_expired_return" }),
+        createCheckoutSession: async (input) => ({
+          sessionId: "cs_expired_return",
+          url: "https://checkout.stripe.test/expired",
+          expiresAt: new Date("2026-08-28T11:00:00.000Z"),
+          status: "open",
+          paymentStatus: "unpaid",
+          workspaceId: input.workspaceId,
+          attemptId: input.attemptId,
+        }),
+        retrieveCheckoutSession: async () => ({
+          sessionId: "cs_expired_return",
+          url: null,
+          expiresAt: new Date("2026-08-28T09:00:00.000Z"),
+          status: "expired",
+          paymentStatus: "unpaid",
+          workspaceId: "workspace-expired-return",
+        }),
+      },
+      clock: { now: () => new Date("2026-08-28T10:00:00.000Z") },
+      diagnostics: { record: () => undefined },
+    });
+    await billing.startCheckout({
+      workspaceId: "workspace-expired-return",
+      actorUserId: "owner-expired-return",
+      clientIdempotencyKey: "expired-return-key",
+      targetTier: "creator",
+      interval: "monthly",
+      returnDestination: "/settings/billing",
+    });
+
+    expect(
+      await billing.observeCheckoutReturn({
+        workspaceId: "workspace-expired-return",
+        actorUserId: "owner-expired-return",
+        sessionId: "cs_expired_return",
+      }),
+    ).toMatchObject({
+      kind: "terminal",
+      reason: "expired",
+      view: { plan: "free", status: "payment_expired", health: "current" },
+    });
+    expect(await store.readProjection("workspace-expired-return")).toMatchObject({
+      pricingTier: "free",
+      canonicalSubscriptionId: null,
+      health: "current",
     });
   });
 
@@ -639,6 +712,7 @@ describe("Workspace Billing", () => {
   });
 
   test("multiple paid subscriptions preserve the highest entitlement and require attention", async () => {
+    let seatCreates = 0;
     const store = createInMemoryWorkspaceBillingStore([
       {
         workspaceId: "workspace-conflict",
@@ -647,6 +721,7 @@ describe("Workspace Billing", () => {
         pricingTier: "pro",
         status: "active",
         providerCustomerId: "cus_conflict",
+        desiredAdditionalSeats: 1,
       },
     ]);
     const subscription = (id: string, priceId: string) => ({
@@ -674,6 +749,10 @@ describe("Workspace Billing", () => {
             subscription("sub_business", "price_business_monthly"),
           ],
         }),
+        createSeatItem: async () => {
+          seatCreates += 1;
+          return { itemId: "si_must_not_be_created" };
+        },
       },
       clock: { now: () => new Date("2026-08-28T10:00:00.000Z") },
       diagnostics: { record: () => undefined },
@@ -693,6 +772,7 @@ describe("Workspace Billing", () => {
       pricingTier: "business",
       attentionReason: "multiple_entitlement_subscriptions",
     });
+    expect(seatCreates).toBe(0);
   });
 
   test("past-due grace starts once, expires exactly at seven days, and clears on recovery", async () => {
@@ -826,6 +906,57 @@ describe("Workspace Billing", () => {
     }
   });
 
+  test("rechecks activating accounts on the short recovery cadence", async () => {
+    let now = new Date("2026-08-28T10:00:00.000Z");
+    const store = createInMemoryWorkspaceBillingStore([
+      {
+        workspaceId: "workspace-activating-cadence",
+        personal: true,
+        hasNonOwnerMembers: false,
+        pricingTier: "free",
+        status: "pending_payment",
+        providerCustomerId: "cus_activating_cadence",
+      },
+    ]);
+    const billing = createWorkspaceBillingModule({
+      catalog,
+      store,
+      provider: {
+        verifyDelivery: () => {
+          throw new Error("not used");
+        },
+        retrieveCurrentState: async () => ({
+          customerId: "cus_activating_cadence",
+          ownership: {
+            kind: "verified",
+            workspaceId: "workspace-activating-cadence",
+          },
+          subscriptions: [
+            {
+              id: "sub_activating_cadence",
+              status: "incomplete",
+              items: [{ priceId: "price_creator_monthly", quantity: 1 }],
+              createdAt: now,
+              effectiveAt: now,
+              currentPeriodEnd: null,
+              trialEnd: null,
+              cancelAtPeriodEnd: false,
+            },
+          ],
+        }),
+      },
+      clock: { now: () => now },
+      diagnostics: { record: () => undefined },
+    });
+
+    expect(await billing.reconcileCurrentState("workspace-activating-cadence"))
+      .toMatchObject({ view: { health: "activating" } });
+    now = new Date(now.getTime() + 29_999);
+    expect(await billing.reconcileDueAccounts()).toMatchObject({ claimed: 0 });
+    now = new Date(now.getTime() + 1);
+    expect(await billing.reconcileDueAccounts()).toMatchObject({ claimed: 1 });
+  });
+
   test("an expired claimant cannot replace a newer reconciliation", async () => {
     let now = new Date("2026-08-28T10:00:00.000Z");
     let releaseFirst!: (state: Awaited<ReturnType<WorkspaceBillingProvider["retrieveCurrentState"]>>) => void;
@@ -898,6 +1029,107 @@ describe("Workspace Billing", () => {
       pricingTier: "pro",
       canonicalSubscriptionId: "sub_a",
     });
+  });
+
+  test("a stale seat mutation wakes verification of the latest membership revision", async () => {
+    let now = new Date("2026-08-28T10:00:00.000Z");
+    let desired = 1;
+    let revision = 1;
+    let providerQuantity = 0;
+    let releaseOldCreate!: () => void;
+    let markOldCreateStarted!: () => void;
+    const oldCreateStarted = new Promise<void>((resolve) => {
+      markOldCreateStarted = resolve;
+    });
+    const oldCreateReleased = new Promise<void>((resolve) => {
+      releaseOldCreate = resolve;
+    });
+    const baseStore = createInMemoryWorkspaceBillingStore([
+      {
+        workspaceId: "workspace-seat-fence",
+        personal: false,
+        hasNonOwnerMembers: true,
+        pricingTier: "business",
+        status: "active",
+        providerCustomerId: "cus_seat_fence",
+        desiredAdditionalSeats: 1,
+      },
+    ]);
+    const store: WorkspaceBillingStore = {
+      ...baseStore,
+      readDesiredSeatState: async () => ({ desired, revision }),
+    };
+    const providerState = () => ({
+      customerId: "cus_seat_fence",
+      ownership: {
+        kind: "verified" as const,
+        workspaceId: "workspace-seat-fence",
+      },
+      subscriptions: [
+        {
+          id: "sub_seat_fence",
+          status: "active",
+          items: [
+            { priceId: "price_business_monthly", quantity: 1 },
+            ...(providerQuantity > 0
+              ? [
+                  {
+                    id: "si_seat_fence",
+                    priceId: "price_business_seat_monthly",
+                    quantity: providerQuantity,
+                  },
+                ]
+              : []),
+          ],
+          createdAt: new Date("2026-08-01T00:00:00.000Z"),
+          effectiveAt: new Date("2026-08-01T00:00:00.000Z"),
+          currentPeriodEnd: new Date("2026-09-01T00:00:00.000Z"),
+          trialEnd: null,
+          cancelAtPeriodEnd: false,
+        },
+      ],
+    });
+    const billing = createWorkspaceBillingModule({
+      catalog,
+      store,
+      provider: {
+        verifyDelivery: () => {
+          throw new Error("not used");
+        },
+        retrieveCurrentState: async () => providerState(),
+        createSeatItem: async (input, key) => {
+          if (key.endsWith("-1")) {
+            markOldCreateStarted();
+            await oldCreateReleased;
+          }
+          providerQuantity = input.quantity;
+          return { itemId: "si_seat_fence" };
+        },
+        updateSeatItem: async (input) => {
+          providerQuantity = input.quantity;
+        },
+      },
+      clock: { now: () => now },
+      diagnostics: { record: () => undefined },
+    });
+
+    const staleRun = billing.reconcileDueAccounts();
+    await oldCreateStarted;
+    desired = 2;
+    revision = 2;
+    now = new Date(now.getTime() + catalog.worker.leaseMs + 1);
+    expect(await billing.reconcileDueAccounts()).toMatchObject({ reconciled: 1 });
+    expect(providerQuantity).toBe(2);
+
+    releaseOldCreate();
+    expect(await staleRun).toMatchObject({ staleSettlements: 1 });
+    expect(providerQuantity).toBe(1);
+
+    expect(await billing.reconcileDueAccounts()).toMatchObject({
+      claimed: 1,
+      reconciled: 1,
+    });
+    expect(providerQuantity).toBe(2);
   });
 
   test("an expired claimant cannot schedule retry ahead of takeover", async () => {

@@ -1,11 +1,11 @@
-import { BillingError } from "@narriflow/services";
+import { BillingError, type BillingErrorCode } from "@narriflow/services";
 
 type BillingHttpStatus = 400 | 403 | 404 | 409 | 503;
 
-const PRODUCT_FAILURES: Record<
-  string,
+const PRODUCT_FAILURES: Partial<Record<
+  BillingErrorCode,
   { status: BillingHttpStatus; message: string }
-> = {
+>> = {
   billing_forbidden: {
     status: 403,
     message: "Only the workspace owner can manage billing.",
@@ -34,7 +34,7 @@ const PRODUCT_FAILURES: Record<
     status: 409,
     message: "The billing account needs support before it can be changed.",
   },
-  portal_customer_missing: {
+  billing_customer_missing: {
     status: 409,
     message: "No billing customer is available for this workspace.",
   },
