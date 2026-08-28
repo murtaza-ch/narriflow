@@ -59,7 +59,7 @@ export function AccountAvatar({
 
 const MENU_LINKS = [
   { label: "Account", href: "/settings/profile", icon: UserRound },
-  { label: "Subscription", href: "/settings/subscription", icon: BadgeDollarSign },
+  { label: "Billing", href: "/settings/billing", icon: BadgeDollarSign },
 ] as const;
 
 export function AccountMenu({

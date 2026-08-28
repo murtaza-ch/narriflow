@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Box, Flex, Input, Stack, Text, chakra } from "@chakra-ui/react";
 import { Copy, Mail, Trash2, UserPlus, X } from "lucide-react";
@@ -14,6 +14,12 @@ import {
   resendInviteAction,
   revokeInviteAction,
 } from "../actions";
+import {
+  BUSINESS_ADDITIONAL_SEAT_PRICE,
+  type WorkspaceBillingView,
+} from "@narriflow/validators";
+import { formatDate } from "@/lib/format";
+import { shouldShowSeatSyncStatus } from "@/lib/billing-view-model";
 
 type Role = "owner" | "admin" | "editor" | "viewer";
 
@@ -23,12 +29,12 @@ export function MembersPanel({
   actorRole,
   isBusiness,
   workspaceStatus,
+  billingView,
 }: {
   members: Array<{
     id: string;
     role: Role;
     joinedAt: string;
-    pendingPaymentOperation: string | null;
     user: { id: string; primaryEmail: string | null; firstName: string | null; lastName: string | null };
   }>;
   invites: Array<{
@@ -37,30 +43,39 @@ export function MembersPanel({
     role: Role;
     expiresAt: string;
     createdAt: string;
-    pendingPaymentOperation: string | null;
   }>;
   actorRole: Role;
   isBusiness: boolean;
   workspaceStatus: "active" | "pending_payment" | "restricted";
+  billingView: WorkspaceBillingView;
 }) {
   const router = useRouter();
   const [email, setEmail] = useState("");
-  const [role, setRole] = useState<"admin" | "editor" | "viewer">("editor");
+  const [role, setRole] = useState<"admin" | "editor" | "viewer">("viewer");
   const [roleFilter, setRoleFilter] = useState<Role | "all">("all");
   const [feedback, setFeedback] = useState<string | null>(null);
   const [inviteUrl, setInviteUrl] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
-  const canInvite =
+  const inviteEmailRef = useRef<HTMLInputElement>(null);
+  const canManageMembers =
+    (actorRole === "owner" || actorRole === "admin") &&
+    (workspaceStatus === "active" || actorRole === "owner");
+  const canInviteViewer =
+    canManageMembers &&
+    (isBusiness || workspaceStatus === "restricted");
+  const canAddBillable =
+    canManageMembers &&
     isBusiness &&
     workspaceStatus === "active" &&
-    (actorRole === "owner" || actorRole === "admin");
+    billingView.health !== "attention_required" &&
+    billingView.health !== "payment_action_required";
   const visibleMembers =
     roleFilter === "all"
       ? members
       : members.filter((member) => member.role === roleFilter);
   const editableRoleItems = [
-    ...(actorRole === "owner" ? [{ value: "admin", label: "Admin" }] : []),
-    { value: "editor", label: "Editor" },
+    ...(canAddBillable && actorRole === "owner" ? [{ value: "admin", label: "Admin" }] : []),
+    ...(canAddBillable ? [{ value: "editor", label: "Editor" }] : []),
     { value: "viewer", label: "Viewer" },
   ];
 
@@ -72,6 +87,7 @@ export function MembersPanel({
       const result = await inviteMemberAction({ email, role });
       if (!result.ok) {
         setFeedback(result.error);
+        inviteEmailRef.current?.focus();
         return;
       }
       setEmail("");
@@ -119,7 +135,7 @@ export function MembersPanel({
     if (
       currentRole === "viewer" &&
       nextRole !== "viewer" &&
-      !window.confirm("This role adds a paid seat ($5/month or $60/year). Continue?")
+      !window.confirm(`This role adds a paid seat ($${BUSINESS_ADDITIONAL_SEAT_PRICE.monthlyUsd}/month or $${BUSINESS_ADDITIONAL_SEAT_PRICE.annualUsd}/year). Continue?`)
     ) return;
     setFeedback(null);
     startTransition(async () => {
@@ -144,15 +160,13 @@ export function MembersPanel({
       <Box as="form" onSubmit={submitInvite} borderTopWidth="1px" borderColor="border" py="6">
         <Stack gap="4">
           <Flex align="center" gap="2"><UserPlus size={16} /><Text fontWeight="600" fontSize="13px">Invite a member</Text></Flex>
-          {!isBusiness ? (
+          {!isBusiness && workspaceStatus !== "restricted" ? (
             <Text fontSize="12px" color="fg.muted">Collaboration is available on Business. Your personal workspace remains available on every plan.</Text>
-          ) : workspaceStatus !== "active" ? (
-            <Text fontSize="12px" color="fg.muted">Invitations are paused while this workspace is {workspaceStatus.replace("_", " ")}.</Text>
           ) : (
             <Flex direction={{ base: "column", md: "row" }} gap="3" align={{ md: "flex-end" }}>
               <Stack gap="1.5" flex="1">
                 <chakra.label htmlFor="invite-email" fontSize="12px" fontWeight="550">Email address</chakra.label>
-                <Input id="invite-email" type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="teammate@example.com" required disabled={!canInvite || pending} />
+                <Input ref={inviteEmailRef} id="invite-email" type="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="teammate@example.com" required disabled={!(role === "viewer" ? canInviteViewer : canAddBillable) || pending} />
               </Stack>
               <Stack gap="1.5" minW="150px">
                 <chakra.label htmlFor="invite-role" fontSize="12px" fontWeight="550">Role</chakra.label>
@@ -161,16 +175,16 @@ export function MembersPanel({
                   value={role}
                   onValueChange={(value) => setRole(value as typeof role)}
                   ariaLabel="Invitation role"
-                  disabled={!canInvite || pending}
+                  disabled={!canInviteViewer || pending}
                   items={editableRoleItems}
                 />
               </Stack>
-              <Button type="submit" size="sm" disabled={!canInvite || pending}>{pending ? <Spinner size="xs" /> : <Mail size={14} />}Send invite</Button>
+              <Button type="submit" size="sm" disabled={!(role === "viewer" ? canInviteViewer : canAddBillable) || pending}>{pending ? <Spinner size="xs" /> : <Mail size={14} />}Send invite</Button>
             </Flex>
           )}
           {isBusiness ? (
             <Text fontSize="11px" color="fg.subtle">
-              {role === "viewer" ? "Viewers are free." : `${role === "admin" ? "Admins" : "Editors"} add $5/month or $60/year after acceptance.`}
+              {role === "viewer" ? "Viewers are free." : `${role === "admin" ? "Admins" : "Editors"} add $${BUSINESS_ADDITIONAL_SEAT_PRICE.monthlyUsd}/month or $${BUSINESS_ADDITIONAL_SEAT_PRICE.annualUsd}/year after acceptance.`}
             </Text>
           ) : null}
           {feedback ? <Text fontSize="12px" color={inviteUrl ? "fg" : "danger.fg"}>{feedback}</Text> : null}
@@ -179,6 +193,22 @@ export function MembersPanel({
           ) : null}
         </Stack>
       </Box>
+
+      {shouldShowSeatSyncStatus(billingView, actorRole) ? (
+        <Box
+          role="status"
+          borderTopWidth="3px"
+          borderTopColor={billingView.health === "attention_required" ? "warning.solid" : "accent.solid"}
+          borderBottomWidth="1px"
+          borderBottomColor="border"
+          py="4"
+        >
+          <Text fontWeight="600" fontSize="13px">Paid-seat billing is updating</Text>
+          <Text fontSize="12px" color="fg.muted" mt="1">
+            Member changes are saved. Narriflow will synchronize {billingView.desiredAdditionalSeats} additional paid {billingView.desiredAdditionalSeats === 1 ? "seat" : "seats"} in the background.
+          </Text>
+        </Box>
+      ) : null}
 
       <Stack gap="0" borderTopWidth="1px" borderColor="border">
         <Flex align="center" justify="space-between" gap="3" py="3">
@@ -190,7 +220,7 @@ export function MembersPanel({
           return (
             <Flex key={member.id} align="center" gap="3" py="4" borderTopWidth="1px" borderColor="border.subtle">
               <Stack gap="0" flex="1" minW="0"><Text fontSize="13px" fontWeight="550" truncate>{name}</Text><Text fontSize="11px" color="fg.subtle" truncate>{member.user.primaryEmail}</Text></Stack>
-              {member.role === "owner" || !canInvite || (actorRole === "admin" && member.role === "admin") ? (
+              {member.role === "owner" || !canManageMembers || (actorRole === "admin" && member.role === "admin") ? (
                 <Text textStyle="eyebrow" color="fg.muted">{member.role}</Text>
               ) : (
                 <Select
@@ -199,17 +229,17 @@ export function MembersPanel({
                   onValueChange={(value) => changeRole(member.id, member.role, value as "admin" | "editor" | "viewer")}
                   size="sm"
                   w="130px"
-                  disabled={pending || Boolean(member.pendingPaymentOperation)}
+                  disabled={pending}
                   items={editableRoleItems}
                 />
               )}
-              {member.role !== "owner" && canInvite && !(actorRole === "admin" && member.role === "admin") ? (
+              {member.role !== "owner" && canManageMembers && !(actorRole === "admin" && member.role === "admin") ? (
                 <Button
                   size="xs"
                   variant="ghost"
                   aria-label={`Remove ${name}`}
                   onClick={() => remove(member.id, name)}
-                  disabled={pending || Boolean(member.pendingPaymentOperation)}
+                  disabled={pending}
                 >
                   <Trash2 size={14} />
                 </Button>
@@ -224,10 +254,10 @@ export function MembersPanel({
           <Text textStyle="eyebrow" color="fg.subtle" py="3">Pending invitations · {invites.length}</Text>
           {invites.map((invite) => (
             <Flex key={invite.id} align="center" gap="3" py="4" borderTopWidth="1px" borderColor="border.subtle">
-              <Stack gap="0" flex="1" minW="0"><Text fontSize="13px" fontWeight="550" truncate>{invite.email}</Text><Text fontSize="11px" color={new Date(invite.expiresAt) <= new Date() ? "danger.fg" : "fg.subtle"}>{new Date(invite.expiresAt) <= new Date() ? "Expired" : `Expires ${new Date(invite.expiresAt).toLocaleDateString()}`}</Text></Stack>
+              <Stack gap="0" flex="1" minW="0"><Text fontSize="13px" fontWeight="550" truncate>{invite.email}</Text><Text fontSize="11px" color={new Date(invite.expiresAt) <= new Date() ? "danger.fg" : "fg.subtle"}>{new Date(invite.expiresAt) <= new Date() ? "Expired" : `Expires ${formatDate(invite.expiresAt)}`}</Text></Stack>
               <Text textStyle="eyebrow" color="fg.muted">{invite.role}</Text>
-              {canInvite ? <Button size="xs" variant="ghost" onClick={() => resend(invite.id)} disabled={pending}><Mail size={14} />Resend</Button> : null}
-              {canInvite ? <Button size="xs" variant="ghost" aria-label={`Revoke invitation for ${invite.email}`} onClick={() => revoke(invite.id)} disabled={pending}><X size={14} /></Button> : null}
+              {canManageMembers ? <Button size="xs" variant="ghost" onClick={() => resend(invite.id)} disabled={pending}><Mail size={14} />Resend</Button> : null}
+              {canManageMembers ? <Button size="xs" variant="ghost" aria-label={`Revoke invitation for ${invite.email}`} onClick={() => revoke(invite.id)} disabled={pending}><X size={14} /></Button> : null}
             </Flex>
           ))}
         </Stack>

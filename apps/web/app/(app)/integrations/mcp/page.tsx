@@ -130,7 +130,7 @@ export default async function McpIntegrationPage() {
             </Text>
           </Stack>
           <Button asChild size="sm" flexShrink={0}>
-            <Link href="/settings/subscription">View Business plan<ArrowRight size={14} /></Link>
+            <Link href="/settings/billing">View Business plan<ArrowRight size={14} /></Link>
           </Button>
         </Flex>
       ) : null}

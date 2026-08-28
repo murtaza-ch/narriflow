@@ -1,65 +1,13 @@
 "use client";
 
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import { useRouter } from "next/navigation";
 import { Flex, Stack, Text } from "@chakra-ui/react";
 import { Button } from "@narriflow/ui/components/button";
 import { Input } from "@narriflow/ui/components/input";
-import { toaster } from "@narriflow/ui/components/toaster";
 import { LINK_PROVIDERS } from "@narriflow/validators";
 
 const HERO_PASTE_LINK_HINT = `${LINK_PROVIDERS.map((p) => p.label).join(" · ")} — or a podcast RSS feed`;
-
-/**
- * Fires the post-checkout success toast once, then strips `?upgraded=1`
- * from the URL so a refresh doesn't re-celebrate. Renders nothing —
- * the dashboard page stays a server component.
- */
-export function UpgradedToast({ sessionId }: { sessionId: string | null }) {
-  const router = useRouter();
-  const fired = useRef(false);
-
-  useEffect(() => {
-    if (fired.current) return;
-    fired.current = true;
-    void (async () => {
-      try {
-        if (sessionId) {
-          const response = await fetch("/api/billing/confirm", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ sessionId }),
-          });
-          if (!response.ok) {
-            const body = (await response.json().catch(() => ({}))) as {
-              message?: string;
-            };
-            throw new Error(body.message ?? "Could not confirm the upgrade");
-          }
-        }
-        toaster.create({
-          type: "success",
-          title: "You're upgraded",
-          description: "Your plan is active and unexpired projects are saved.",
-        });
-      } catch (error) {
-        toaster.create({
-          type: "error",
-          title: "Upgrade confirmation is delayed",
-          description:
-            error instanceof Error
-              ? error.message
-              : "Stripe will retry the confirmation automatically.",
-        });
-      } finally {
-        router.replace("/home", { scroll: false });
-        router.refresh();
-      }
-    })();
-  }, [router, sessionId]);
-
-  return null;
-}
 
 /**
  * Hero paste-link field — no upload logic here. Navigates to

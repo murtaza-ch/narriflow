@@ -717,7 +717,7 @@ export default async function ProjectDetailPage({
               {pricingTier === "free" && hasRenderableClips && (
                 <Text fontSize="xs" color="fg.muted">
                   Free plan renders are 720p and watermarked.{" "}
-                  <Link href="/settings/subscription">
+                  <Link href="/settings/billing">
                     <Text
                       as="span"
                       color="fg"

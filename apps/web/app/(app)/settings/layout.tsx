@@ -22,7 +22,7 @@ const WORKSPACE_LINKS = [
   { label: "Workspace settings", href: "/settings/workspace", icon: Building2 },
   { label: "Members", href: "/settings/members", icon: Users },
   { label: "Social accounts", href: "/settings/social-accounts", icon: Share2 },
-  { label: "Subscription", href: "/settings/subscription", icon: CreditCard },
+  { label: "Billing", href: "/settings/billing", icon: CreditCard },
   { label: "Usage history", href: "/settings/usage", icon: ChartNoAxesCombined },
   { label: "Developer access", href: "/settings/api", icon: Braces },
 ] as const;

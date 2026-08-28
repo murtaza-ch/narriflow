@@ -63,10 +63,16 @@ export const billingIntervalSchema = z.enum(["monthly", "annual"]);
 export type BillingInterval = z.infer<typeof billingIntervalSchema>;
 
 export const checkoutRequestSchema = z.object({
+  clientIdempotencyKey: z.uuid(),
   tier: paidPricingTierSchema,
   interval: billingIntervalSchema.default("monthly"),
-});
+}).strict();
 export type CheckoutRequest = z.infer<typeof checkoutRequestSchema>;
+
+export const checkoutReturnRequestSchema = z.object({
+  sessionId: z.string().trim().min(1).max(255),
+}).strict();
+export type CheckoutReturnRequest = z.infer<typeof checkoutReturnRequestSchema>;
 
 /** Display metadata for the billing UI (prices are informational; Stripe is source of truth). */
 export const PRICING_TABLE: Record<
@@ -77,6 +83,11 @@ export const PRICING_TABLE: Record<
   pro: { name: "Pro", monthlyUsd: 24, annualUsd: 192, minutes: 1800 },
   business: { name: "Business", monthlyUsd: 39, annualUsd: 312, minutes: 1800 },
 };
+
+export const BUSINESS_ADDITIONAL_SEAT_PRICE = {
+  monthlyUsd: 5,
+  annualUsd: 60,
+} as const;
 
 function formatUploadLimit(tier: PricingTier): string {
   const seconds = MAX_UPLOAD_LENGTH_SECONDS[tier];

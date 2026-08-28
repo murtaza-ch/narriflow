@@ -105,7 +105,7 @@ export interface ProviderSubscription {
   id: string;
   /** Raw provider status. Unknown values must preserve the last projection. */
   status: string;
-  items: Array<{ priceId: string; quantity: number }>;
+  items: Array<{ id?: string; priceId: string; quantity: number }>;
   createdAt: Date;
   /** Provider-derived status/payment/period timestamp; never webhook receipt time. */
   effectiveAt: Date;
@@ -135,26 +135,104 @@ export interface VerifiedBillingDelivery {
   workspaceHint: string | null;
 }
 
+export const WORKSPACE_BILLING_WAKE_EVENT_TYPES = [
+  "checkout.session.completed",
+  "checkout.session.async_payment_succeeded",
+  "checkout.session.async_payment_failed",
+  "customer.subscription.created",
+  "customer.subscription.updated",
+  "customer.subscription.paused",
+  "customer.subscription.resumed",
+  "customer.subscription.deleted",
+  "invoice.paid",
+  "invoice.payment_succeeded",
+  "invoice.payment_failed",
+  "customer.updated",
+  "customer.deleted",
+] as const;
+
 export interface WorkspaceBillingProvider {
-  verifyDelivery(rawBody: string, signature: string): VerifiedBillingDelivery;
+  verifyDelivery(
+    rawBody: string,
+    signature: string,
+  ): VerifiedBillingDelivery | Promise<VerifiedBillingDelivery>;
   retrieveCurrentState(customerId: string): Promise<ProviderCurrentState>;
+  findCustomersByWorkspace?(workspaceId: string): Promise<Array<{ customerId: string }>>;
+  createCustomer?(
+    input: { workspaceId: string; actorUserId: string },
+    idempotencyKey: string,
+  ): Promise<{ customerId: string }>;
+  findCheckoutSessionsByAttempt?(
+    input: { attemptId: string; customerId: string },
+  ): Promise<ProviderCheckoutSession[]>;
+  createCheckoutSession?(
+    input: {
+      attemptId: string;
+      workspaceId: string;
+      actorUserId: string;
+      customerId: string;
+      priceId: string;
+      successUrl: string;
+      cancelUrl: string;
+    },
+    idempotencyKey: string,
+  ): Promise<ProviderCheckoutSession>;
+  retrieveCheckoutSession?(sessionId: string): Promise<ProviderCheckoutSession>;
+  createPortalSession?(
+    input: { customerId: string; returnUrl: string },
+  ): Promise<{ url: string }>;
+  createSeatItem?(
+    input: {
+      subscriptionId: string;
+      priceId: string;
+      quantity: number;
+      prorationBehavior: "create_prorations";
+    },
+    idempotencyKey: string,
+  ): Promise<{ itemId: string }>;
+  updateSeatItem?(
+    input: {
+      itemId: string;
+      quantity: number;
+      prorationBehavior: "create_prorations";
+    },
+    idempotencyKey: string,
+  ): Promise<void>;
+  deleteSeatItem?(
+    input: { itemId: string; prorationBehavior: "create_prorations" },
+    idempotencyKey: string,
+  ): Promise<void>;
+}
+
+export interface ProviderCheckoutSession {
+  sessionId: string;
+  url: string | null;
+  expiresAt: Date;
+  status: "open" | "complete" | "expired";
+  paymentStatus: string;
+  workspaceId?: string;
+  attemptId?: string;
 }
 
 export interface WorkspaceBillingView {
   workspaceId: string;
   plan: PricingTier;
   interval: BillingInterval | null;
-  status: string;
+  status: WorkspaceBillingProductStatus;
+  workspaceAccessStatus: "active" | "pending_payment" | "restricted";
   health: WorkspaceBillingHealth;
   renewalOrEndAt: string | null;
   cancelAtPeriodEnd: boolean;
   graceDeadlineAt: string | null;
   lastSuccessfulSyncAt: string | null;
+  desiredAdditionalSeats: number;
+  synchronizedAdditionalSeats: number | null;
   actions: WorkspaceBillingAction[];
 }
 
 export interface WorkspaceBillingProjection {
   workspaceId: string;
+  ownerUserId: string;
   personal: boolean;
   hasNonOwnerMembers: boolean;
   pricingTier: PricingTier;
@@ -171,6 +249,9 @@ export interface WorkspaceBillingProjection {
   health: WorkspaceBillingHealth;
   attentionReason: string | null;
   lastVerifiedAt: Date | null;
+  desiredAdditionalSeats: number;
+  synchronizedAdditionalSeats: number | null;
+  seatItemId: string | null;
 }
 
 export interface WorkspaceBillingStore {
@@ -216,7 +297,78 @@ export interface WorkspaceBillingStore {
     effectiveAt: Date;
     now: Date;
     attemptId?: string;
+    seat?: {
+      desired: number;
+      observed: number;
+      itemId: string | null;
+      revision: number;
+    };
   }): Promise<WorkspaceBillingProjection>;
+  readDesiredSeatState(workspaceId: string): Promise<{
+    desired: number;
+    revision: number;
+  }>;
+  readBillingActor(input: {
+    workspaceId: string;
+    actorUserId: string;
+  }): Promise<{ role: "owner" | "admin" | "editor" | "viewer" } | null>;
+  prepareCheckoutAttempt(input: {
+    workspaceId: string;
+    actorUserId: string;
+    clientIdempotencyKey: string;
+    targetTier: PaidPricingTier;
+    interval: BillingInterval;
+    catalogVersion: string;
+    returnDestination: string;
+    now: Date;
+  }): Promise<{
+    kind: "created" | "existing" | "conflict";
+    attempt: WorkspaceCheckoutAttempt;
+  }>;
+  bindCheckoutCustomer(input: {
+    workspaceId: string;
+    attemptId: string;
+    customerId: string;
+    now: Date;
+  }): Promise<void>;
+  bindCheckoutSession(input: {
+    attemptId: string;
+    sessionId: string;
+    expiresAt: Date;
+    now: Date;
+  }): Promise<void>;
+  recordCheckoutReturn(input: {
+    workspaceId: string;
+    sessionId: string;
+    providerAttemptId?: string;
+    outcome: string;
+    now: Date;
+  }): Promise<WorkspaceCheckoutAttempt>;
+}
+
+export interface WorkspaceCheckoutAttempt {
+  id: string;
+  workspaceId: string;
+  actorUserId: string;
+  clientIdempotencyKey: string;
+  targetTier: PaidPricingTier;
+  interval: BillingInterval;
+  catalogVersion: string;
+  returnDestination: string;
+  customerOperationKey: string;
+  checkoutOperationKey: string;
+  providerSessionId: string | null;
+  expiresAt: Date | null;
+}
+
+export class WorkspaceBillingError extends Error {
+  constructor(
+    public readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = "WorkspaceBillingError";
+  }
 }
 
 export class WorkspaceBillingAttemptLost extends Error {
@@ -236,7 +388,7 @@ export function createInMemoryWorkspaceBillingStore(
       | "pricingTier"
       | "status"
       | "providerCustomerId"
-    >
+    > & { ownerUserId?: string; desiredAdditionalSeats?: number }
   >,
 ): WorkspaceBillingStore {
   const rows = new Map<string, WorkspaceBillingProjection>(
@@ -244,6 +396,7 @@ export function createInMemoryWorkspaceBillingStore(
       workspace.workspaceId,
       {
         ...workspace,
+        ownerUserId: workspace.ownerUserId ?? `owner-${workspace.workspaceId}`,
         canonicalSubscriptionId: null,
         interval: null,
         providerStatus: null,
@@ -255,10 +408,14 @@ export function createInMemoryWorkspaceBillingStore(
         health: "current",
         attentionReason: null,
         lastVerifiedAt: null,
+        desiredAdditionalSeats: workspace.desiredAdditionalSeats ?? 0,
+        synchronizedAdditionalSeats: null,
+        seatItemId: null,
       },
     ]),
   );
   const deliveries = new Map<string, string | null>();
+  const checkoutAttempts = new Map<string, WorkspaceCheckoutAttempt>();
   const runtime = new Map(
     workspaces.map((workspace) => [
       workspace.workspaceId,
@@ -267,6 +424,7 @@ export function createInMemoryWorkspaceBillingStore(
         attemptId: null as string | null,
         leaseExpiresAt: null as Date | null,
         attemptCount: 0,
+        seatRevision: workspace.desiredAdditionalSeats ? 1 : 0,
       },
     ]),
   );
@@ -274,6 +432,100 @@ export function createInMemoryWorkspaceBillingStore(
   return {
     async readProjection(workspaceId) {
       return rows.get(workspaceId) ?? null;
+    },
+    async readBillingActor(input) {
+      const row = rows.get(input.workspaceId);
+      if (!row || row.ownerUserId !== input.actorUserId) return null;
+      return { role: "owner" };
+    },
+    async readDesiredSeatState(workspaceId) {
+      const row = rows.get(workspaceId);
+      const state = runtime.get(workspaceId);
+      if (!row || !state) {
+        throw new WorkspaceBillingError("workspace_not_found", "Workspace not found");
+      }
+      return {
+        desired: row.desiredAdditionalSeats,
+        revision: state.seatRevision,
+      };
+    },
+    async prepareCheckoutAttempt(input) {
+      const existing = checkoutAttempts.get(input.clientIdempotencyKey);
+      if (existing) {
+        const unchanged =
+          existing.workspaceId === input.workspaceId &&
+          existing.actorUserId === input.actorUserId &&
+          existing.targetTier === input.targetTier &&
+          existing.interval === input.interval &&
+          existing.catalogVersion === input.catalogVersion &&
+          existing.returnDestination === input.returnDestination;
+        return { kind: unchanged ? "existing" : "conflict", attempt: existing };
+      }
+      const id = randomUUID();
+      const attempt: WorkspaceCheckoutAttempt = {
+        id,
+        workspaceId: input.workspaceId,
+        actorUserId: input.actorUserId,
+        clientIdempotencyKey: input.clientIdempotencyKey,
+        targetTier: input.targetTier,
+        interval: input.interval,
+        catalogVersion: input.catalogVersion,
+        returnDestination: input.returnDestination,
+        customerOperationKey: `workspace-customer-${input.workspaceId}`,
+        checkoutOperationKey: `workspace-checkout-${id}`,
+        providerSessionId: null,
+        expiresAt: null,
+      };
+      checkoutAttempts.set(input.clientIdempotencyKey, attempt);
+      return { kind: "created", attempt };
+    },
+    async bindCheckoutCustomer(input) {
+      const row = rows.get(input.workspaceId);
+      if (!row) throw new WorkspaceBillingError("workspace_not_found", "Workspace not found");
+      if (row.providerCustomerId && row.providerCustomerId !== input.customerId) {
+        throw new WorkspaceBillingError(
+          "customer_identity_conflict",
+          "Billing customer identity needs attention",
+        );
+      }
+      row.providerCustomerId = input.customerId;
+    },
+    async bindCheckoutSession(input) {
+      const attempt = [...checkoutAttempts.values()].find(
+        (candidate) => candidate.id === input.attemptId,
+      );
+      if (!attempt) {
+        throw new WorkspaceBillingError("checkout_attempt_missing", "Checkout attempt not found");
+      }
+      if (attempt.providerSessionId && attempt.providerSessionId !== input.sessionId) {
+        throw new WorkspaceBillingError(
+          "checkout_session_conflict",
+          "Checkout session needs attention",
+        );
+      }
+      attempt.providerSessionId = input.sessionId;
+      attempt.expiresAt = input.expiresAt;
+    },
+    async recordCheckoutReturn(input) {
+      const attempt = [...checkoutAttempts.values()].find(
+        (candidate) => candidate.providerSessionId === input.sessionId,
+      );
+      if (
+        !attempt ||
+        attempt.workspaceId !== input.workspaceId ||
+        (input.providerAttemptId && attempt.id !== input.providerAttemptId)
+      ) {
+        throw new WorkspaceBillingError(
+          "checkout_session_conflict",
+          "Checkout session ownership could not be verified",
+        );
+      }
+      const row = rows.get(input.workspaceId)!;
+      row.health = "activating";
+      row.attentionReason = null;
+      const state = runtime.get(input.workspaceId)!;
+      state.nextReconcileAt = input.now;
+      return attempt;
     },
     async acceptDelivery(input) {
       if (deliveries.has(input.delivery.eventId)) {
@@ -383,6 +635,10 @@ export function createInMemoryWorkspaceBillingStore(
         health: input.health,
         attentionReason: input.attentionReason,
         lastVerifiedAt: input.now,
+        desiredAdditionalSeats: input.seat?.desired ?? current.desiredAdditionalSeats,
+        synchronizedAdditionalSeats:
+          input.seat?.observed ?? current.synchronizedAdditionalSeats,
+        seatItemId: input.seat?.itemId ?? current.seatItemId,
       };
       rows.set(input.workspaceId, next);
       if (input.attemptId) {
@@ -412,6 +668,7 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
         where: { id: workspaceId },
         select: {
           id: true,
+          ownerUserId: true,
           personalOwnerUserId: true,
           pricingTier: true,
           status: true,
@@ -427,6 +684,7 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
       const account = row.billingAccount;
       return {
         workspaceId: row.id,
+        ownerUserId: row.ownerUserId,
         personal: Boolean(row.personalOwnerUserId),
         hasNonOwnerMembers: row.members.length > 0,
         pricingTier: resolvePricingTier(row.pricingTier),
@@ -446,7 +704,267 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
         health: billingHealth(account.health),
         attentionReason: account.attentionReason,
         lastVerifiedAt: account.lastVerifiedAt,
+        desiredAdditionalSeats: account.desiredAdditionalSeats,
+        synchronizedAdditionalSeats: account.synchronizedAdditionalSeats,
+        seatItemId: account.seatItemId,
       };
+    },
+    async readBillingActor(input) {
+      const membership = await prisma.workspaceMember.findUnique({
+        where: {
+          workspaceId_userId: {
+            workspaceId: input.workspaceId,
+            userId: input.actorUserId,
+          },
+        },
+        select: { role: true },
+      });
+      return membership;
+    },
+    async readDesiredSeatState(workspaceId) {
+      const [desired, account] = await Promise.all([
+        prisma.workspaceMember.count({
+          where: { workspaceId, role: { in: ["admin", "editor"] } },
+        }),
+        prisma.workspaceBillingAccount.findUnique({
+          where: { workspaceId },
+          select: { seatRevision: true },
+        }),
+      ]);
+      if (!account) {
+        throw new WorkspaceBillingError("workspace_not_found", "Workspace not found");
+      }
+      return { desired, revision: account.seatRevision };
+    },
+    async prepareCheckoutAttempt(input) {
+      const toAttempt = (row: {
+        id: string;
+        billingAccount: { workspaceId: string };
+        actorUserId: string;
+        clientIdempotencyKey: string;
+        targetTier: string;
+        interval: string;
+        catalogVersion: string;
+        returnDestination: string;
+        customerOperationKey: string;
+        checkoutOperationKey: string;
+        providerSessionId: string | null;
+        expiresAt: Date | null;
+      }): WorkspaceCheckoutAttempt => {
+        if (
+          row.targetTier !== "creator" &&
+          row.targetTier !== "pro" &&
+          row.targetTier !== "business"
+        ) {
+          throw new WorkspaceBillingError(
+            "checkout_attempt_invalid",
+            "Checkout attempt has an invalid plan",
+          );
+        }
+        if (row.interval !== "monthly" && row.interval !== "annual") {
+          throw new WorkspaceBillingError(
+            "checkout_attempt_invalid",
+            "Checkout attempt has an invalid interval",
+          );
+        }
+        return {
+          id: row.id,
+          workspaceId: row.billingAccount.workspaceId,
+          actorUserId: row.actorUserId,
+          clientIdempotencyKey: row.clientIdempotencyKey,
+          targetTier: row.targetTier,
+          interval: row.interval,
+          catalogVersion: row.catalogVersion,
+          returnDestination: row.returnDestination,
+          customerOperationKey: row.customerOperationKey,
+          checkoutOperationKey: row.checkoutOperationKey,
+          providerSessionId: row.providerSessionId,
+          expiresAt: row.expiresAt,
+        };
+      };
+      const classify = (attempt: WorkspaceCheckoutAttempt) => {
+        const unchanged =
+          attempt.workspaceId === input.workspaceId &&
+          attempt.actorUserId === input.actorUserId &&
+          attempt.targetTier === input.targetTier &&
+          attempt.interval === input.interval &&
+          attempt.catalogVersion === input.catalogVersion &&
+          attempt.returnDestination === input.returnDestination;
+        return {
+          kind: unchanged ? ("existing" as const) : ("conflict" as const),
+          attempt,
+        };
+      };
+      const select = {
+        id: true,
+        actorUserId: true,
+        clientIdempotencyKey: true,
+        targetTier: true,
+        interval: true,
+        catalogVersion: true,
+        returnDestination: true,
+        customerOperationKey: true,
+        checkoutOperationKey: true,
+        providerSessionId: true,
+        expiresAt: true,
+        billingAccount: { select: { workspaceId: true } },
+      } as const;
+      const existing = await prisma.workspaceCheckoutAttempt.findUnique({
+        where: { clientIdempotencyKey: input.clientIdempotencyKey },
+        select,
+      });
+      if (existing) return classify(toAttempt(existing));
+      const id = randomUUID();
+      try {
+        const created = await prisma.workspaceCheckoutAttempt.create({
+          data: {
+            id,
+            billingAccount: { connect: { workspaceId: input.workspaceId } },
+            actorUserId: input.actorUserId,
+            clientIdempotencyKey: input.clientIdempotencyKey,
+            targetTier: input.targetTier,
+            interval: input.interval,
+            catalogVersion: input.catalogVersion,
+            returnDestination: input.returnDestination,
+            customerOperationKey: `workspace-customer-${input.workspaceId}`,
+            checkoutOperationKey: `workspace-checkout-${id}`,
+          },
+          select,
+        });
+        return { kind: "created" as const, attempt: toAttempt(created) };
+      } catch (error) {
+        if (
+          error &&
+          typeof error === "object" &&
+          "code" in error &&
+          error.code === "P2002"
+        ) {
+          const raced = await prisma.workspaceCheckoutAttempt.findUnique({
+            where: { clientIdempotencyKey: input.clientIdempotencyKey },
+            select,
+          });
+          if (raced) return classify(toAttempt(raced));
+        }
+        throw error;
+      }
+    },
+    async bindCheckoutCustomer(input) {
+      await prisma.$transaction(async (tx) => {
+        const attempt = await tx.workspaceCheckoutAttempt.findUnique({
+          where: { id: input.attemptId },
+          select: { billingAccount: { select: { id: true, workspaceId: true, providerCustomerId: true } } },
+        });
+        if (
+          !attempt ||
+          attempt.billingAccount.workspaceId !== input.workspaceId
+        ) {
+          throw new WorkspaceBillingError(
+            "checkout_attempt_missing",
+            "Checkout attempt not found",
+          );
+        }
+        const currentCustomerId = attempt.billingAccount.providerCustomerId;
+        if (currentCustomerId && currentCustomerId !== input.customerId) {
+          throw new WorkspaceBillingError(
+            "customer_identity_conflict",
+            "Billing customer identity needs attention",
+          );
+        }
+        await tx.workspaceBillingAccount.update({
+          where: { id: attempt.billingAccount.id },
+          data: { providerCustomerId: input.customerId },
+        });
+        await tx.workspaceCheckoutAttempt.update({
+          where: { id: input.attemptId },
+          data: { providerPhase: "customer_bound" },
+        });
+      });
+    },
+    async bindCheckoutSession(input) {
+      await prisma.workspaceCheckoutAttempt.update({
+        where: { id: input.attemptId },
+        data: {
+          providerSessionId: input.sessionId,
+          providerPhase: "session_bound",
+          expiresAt: input.expiresAt,
+        },
+      });
+    },
+    async recordCheckoutReturn(input) {
+      return prisma.$transaction(async (tx) => {
+        const attempt = await tx.workspaceCheckoutAttempt.findUnique({
+          where: { providerSessionId: input.sessionId },
+          select: {
+            id: true,
+            actorUserId: true,
+            clientIdempotencyKey: true,
+            targetTier: true,
+            interval: true,
+            catalogVersion: true,
+            returnDestination: true,
+            customerOperationKey: true,
+            checkoutOperationKey: true,
+            providerSessionId: true,
+            expiresAt: true,
+            billingAccount: { select: { id: true, workspaceId: true } },
+          },
+        });
+        if (
+          !attempt ||
+          attempt.billingAccount.workspaceId !== input.workspaceId ||
+          (input.providerAttemptId && attempt.id !== input.providerAttemptId)
+        ) {
+          throw new WorkspaceBillingError(
+            "checkout_session_conflict",
+            "Checkout session ownership could not be verified",
+          );
+        }
+        if (
+          attempt.targetTier !== "creator" &&
+          attempt.targetTier !== "pro" &&
+          attempt.targetTier !== "business"
+        ) {
+          throw new WorkspaceBillingError(
+            "checkout_attempt_invalid",
+            "Checkout attempt has an invalid plan",
+          );
+        }
+        if (attempt.interval !== "monthly" && attempt.interval !== "annual") {
+          throw new WorkspaceBillingError(
+            "checkout_attempt_invalid",
+            "Checkout attempt has an invalid interval",
+          );
+        }
+        await tx.workspaceCheckoutAttempt.update({
+          where: { id: attempt.id },
+          data: {
+            providerPhase: "return_observed",
+            sessionOutcome: input.outcome,
+          },
+        });
+        await tx.workspaceBillingAccount.update({
+          where: { id: attempt.billingAccount.id },
+          data: {
+            health: "activating",
+            attentionReason: null,
+            nextReconcileAt: input.now,
+          },
+        });
+        return {
+          id: attempt.id,
+          workspaceId: attempt.billingAccount.workspaceId,
+          actorUserId: attempt.actorUserId,
+          clientIdempotencyKey: attempt.clientIdempotencyKey,
+          targetTier: attempt.targetTier,
+          interval: attempt.interval,
+          catalogVersion: attempt.catalogVersion,
+          returnDestination: attempt.returnDestination,
+          customerOperationKey: attempt.customerOperationKey,
+          checkoutOperationKey: attempt.checkoutOperationKey,
+          providerSessionId: attempt.providerSessionId,
+          expiresAt: attempt.expiresAt,
+        };
+      });
     },
     async acceptDelivery(input) {
       try {
@@ -667,6 +1185,7 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
           where: { id: input.workspaceId },
           select: {
             id: true,
+            ownerUserId: true,
             personalOwnerUserId: true,
             pricingTier: true,
             status: true,
@@ -696,6 +1215,17 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
           if (fenced.count !== 1) throw new WorkspaceBillingAttemptLost();
         }
 
+        const currentDesiredSeats = input.seat
+          ? await tx.workspaceMember.count({
+              where: {
+                workspaceId: row.id,
+                role: { in: ["admin", "editor"] },
+              },
+            })
+          : row.billingAccount.desiredAdditionalSeats;
+        const seatStillDue = Boolean(
+          input.seat && currentDesiredSeats !== input.seat.observed,
+        );
         const stateChanged =
           row.pricingTier !== input.tier ||
           row.status !== input.workspaceStatus ||
@@ -711,7 +1241,11 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
           row.billingAccount.graceDeadlineAt?.getTime() !==
             input.graceDeadlineAt?.getTime() ||
           row.billingAccount.health !== input.health ||
-          row.billingAccount.attentionReason !== input.attentionReason;
+          row.billingAccount.attentionReason !== input.attentionReason ||
+          (input.seat !== undefined &&
+            (row.billingAccount.desiredAdditionalSeats !== currentDesiredSeats ||
+              row.billingAccount.synchronizedAdditionalSeats !== input.seat.observed ||
+              row.billingAccount.seatItemId !== input.seat.itemId));
 
         if (row.pricingTier !== input.tier) {
           await projectRetentionService.applyWorkspaceTierTransition(tx, {
@@ -741,10 +1275,19 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
             health: input.health,
             attentionReason: input.attentionReason,
             lastVerifiedAt: input.now,
-            nextReconcileAt: new Date(input.now.getTime() + 24 * 60 * 60 * 1000),
+            nextReconcileAt: seatStillDue
+              ? input.now
+              : new Date(input.now.getTime() + 24 * 60 * 60 * 1000),
             reconcileAttemptId: null,
             leaseExpiresAt: null,
             attemptCount: 0,
+            ...(input.seat
+              ? {
+                  desiredAdditionalSeats: currentDesiredSeats,
+                  synchronizedAdditionalSeats: input.seat.observed,
+                  seatItemId: input.seat.itemId,
+                }
+              : {}),
             snapshot: {
               subscriptionId: input.subscription.id,
               status: input.subscription.status,
@@ -783,6 +1326,7 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
         });
         return {
           workspaceId: row.id,
+          ownerUserId: row.ownerUserId,
           personal: Boolean(row.personalOwnerUserId),
           hasNonOwnerMembers: row.members.length > 0,
           pricingTier: input.tier,
@@ -799,6 +1343,9 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
           health: billingHealth(account.health),
           attentionReason: account.attentionReason,
           lastVerifiedAt: account.lastVerifiedAt,
+          desiredAdditionalSeats: currentDesiredSeats,
+          synchronizedAdditionalSeats: account.synchronizedAdditionalSeats,
+          seatItemId: account.seatItemId,
         };
       });
     },
@@ -843,11 +1390,14 @@ function billingView(row: WorkspaceBillingProjection): WorkspaceBillingView {
     plan: row.pricingTier,
     interval: row.interval,
     status: productStatus(),
+    workspaceAccessStatus: row.status,
     health: row.health,
     renewalOrEndAt: (row.trialEnd ?? row.currentPeriodEnd)?.toISOString() ?? null,
     cancelAtPeriodEnd: row.cancelAtPeriodEnd,
     graceDeadlineAt: row.graceDeadlineAt?.toISOString() ?? null,
     lastSuccessfulSyncAt: row.lastVerifiedAt?.toISOString() ?? null,
+    desiredAdditionalSeats: row.desiredAdditionalSeats,
+    synchronizedAdditionalSeats: row.synchronizedAdditionalSeats,
     actions:
       row.health === "attention_required"
         ? ["open_portal", "contact_support"]
@@ -865,20 +1415,7 @@ export function createWorkspaceBillingModule(dependencies: {
   diagnostics: WorkspaceBillingDiagnostics;
   random?: () => number;
 }) {
-  const wakeEventTypes = new Set([
-    "checkout.session.completed",
-    "checkout.session.async_payment_succeeded",
-    "checkout.session.async_payment_failed",
-    "customer.subscription.created",
-    "customer.subscription.updated",
-    "customer.subscription.paused",
-    "customer.subscription.resumed",
-    "customer.subscription.deleted",
-    "invoice.payment_succeeded",
-    "invoice.payment_failed",
-    "customer.updated",
-    "customer.deleted",
-  ]);
+  const wakeEventTypes = new Set<string>(WORKSPACE_BILLING_WAKE_EVENT_TYPES);
   const reconcileOne = async (
     workspaceId: string,
     attemptId?: string,
@@ -936,6 +1473,17 @@ export function createWorkspaceBillingModule(dependencies: {
       const seats = candidate.items
         .map((item) => dependencies.catalog.seatPrice(item.priceId))
         .filter((item): item is NonNullable<typeof item> => Boolean(item));
+      const seatItems = candidate.items
+        .map((item) => ({
+          item,
+          mapping: dependencies.catalog.seatPrice(item.priceId),
+        }))
+        .filter(
+          (entry): entry is {
+            item: (typeof candidate.items)[number];
+            mapping: NonNullable<ReturnType<BillingCatalog["seatPrice"]>>;
+          } => Boolean(entry.mapping),
+        );
       const unknown = candidate.items.filter(
         (item) =>
           !dependencies.catalog.basePrice(item.priceId) &&
@@ -948,7 +1496,7 @@ export function createWorkspaceBillingModule(dependencies: {
           (!baseItem ||
             baseItem.tier !== "business" ||
             seats[0]!.interval !== baseItem.interval));
-      return { base, seats, unknown, invalidSeats };
+      return { base, seats, seatItems, unknown, invalidSeats };
     };
     const entitlementSubscriptions = providerState.subscriptions.filter(
       (candidate) =>
@@ -1070,6 +1618,90 @@ export function createWorkspaceBillingModule(dependencies: {
       health = "attention_required";
       attentionReason = "multiple_entitlement_subscriptions";
     }
+    let seat:
+      | {
+          desired: number;
+          observed: number;
+          itemId: string | null;
+          revision: number;
+        }
+      | undefined;
+    if (mapped.tier === "business") {
+      const desired = await dependencies.store.readDesiredSeatState(workspaceId);
+      const providerSeat = selectedItems.seatItems[0]?.item;
+      let observed = providerSeat?.quantity ?? 0;
+      let itemId = providerSeat?.id ?? null;
+      if (providerSeat && !providerSeat.id) {
+        return {
+          kind: "unresolved",
+          reason: "seat_item_identity_missing",
+          view: billingView(current),
+        };
+      }
+      if (observed !== desired.desired) {
+        const operationKey = `workspace-seat-${workspaceId}-${desired.revision}`;
+        if (!providerSeat && desired.desired > 0) {
+          if (!dependencies.provider.createSeatItem) {
+            throw new WorkspaceBillingError(
+              "seat_provider_not_configured",
+              "Paid-seat synchronization is not configured",
+            );
+          }
+          const created = await dependencies.provider.createSeatItem(
+            {
+              subscriptionId: subscription.id,
+              priceId:
+                dependencies.catalog.seatPrices.find(
+                  (candidate) => candidate.interval === mapped.interval,
+                )?.priceId ?? "",
+              quantity: desired.desired,
+              prorationBehavior: "create_prorations",
+            },
+            operationKey,
+          );
+          itemId = created.itemId;
+          observed = desired.desired;
+        } else if (providerSeat && desired.desired === 0) {
+          if (!dependencies.provider.deleteSeatItem) {
+            throw new WorkspaceBillingError(
+              "seat_provider_not_configured",
+              "Paid-seat synchronization is not configured",
+            );
+          }
+          await dependencies.provider.deleteSeatItem(
+            {
+              itemId: providerSeat.id!,
+              prorationBehavior: "create_prorations",
+            },
+            operationKey,
+          );
+          itemId = null;
+          observed = 0;
+        } else if (providerSeat) {
+          if (!dependencies.provider.updateSeatItem) {
+            throw new WorkspaceBillingError(
+              "seat_provider_not_configured",
+              "Paid-seat synchronization is not configured",
+            );
+          }
+          await dependencies.provider.updateSeatItem(
+            {
+              itemId: providerSeat.id!,
+              quantity: desired.desired,
+              prorationBehavior: "create_prorations",
+            },
+            operationKey,
+          );
+          observed = desired.desired;
+        }
+      }
+      seat = {
+        desired: desired.desired,
+        observed,
+        itemId,
+        revision: desired.revision,
+      };
+    }
     const settled = await dependencies.store.commitVerifiedState({
       workspaceId,
       expectedCustomerId: providerState.customerId,
@@ -1084,6 +1716,7 @@ export function createWorkspaceBillingModule(dependencies: {
       effectiveAt,
       now: dependencies.clock.now(),
       attemptId,
+      seat,
     });
     dependencies.diagnostics.record({
       level: "info",
@@ -1092,6 +1725,11 @@ export function createWorkspaceBillingModule(dependencies: {
       phase: "projection",
       providerOperation: "retrieve_current_state",
       mappedPlan: tier,
+      accessStatus: workspaceStatus,
+      billingHealth: health,
+      desiredAdditionalSeats: seat?.desired ?? 0,
+      synchronizedAdditionalSeats: seat?.observed ?? 0,
+      retentionTransition: current.pricingTier === "free" && tier !== "free",
       outcome: "reconciled",
       durationMs: dependencies.clock.now().getTime() - startedAt.getTime(),
     });
@@ -1115,9 +1753,297 @@ export function createWorkspaceBillingModule(dependencies: {
     }
   };
 
+  const checkoutProvider = () => {
+    const provider = dependencies.provider;
+    if (
+      !provider.findCustomersByWorkspace ||
+      !provider.createCustomer ||
+      !provider.createCheckoutSession ||
+      !provider.retrieveCheckoutSession
+    ) {
+      throw new WorkspaceBillingError(
+        "checkout_not_configured",
+        "Checkout is not configured",
+      );
+    }
+    return provider;
+  };
+
+  const checkoutDestination = (session: ProviderCheckoutSession) => {
+    if (
+      session.status !== "open" ||
+      !session.url ||
+      session.expiresAt.getTime() <= dependencies.clock.now().getTime()
+    ) {
+      throw new WorkspaceBillingError(
+        "checkout_attempt_terminal",
+        "This Checkout attempt is no longer available",
+      );
+    }
+    return {
+      kind: "checkout" as const,
+      url: session.url,
+      expiresAt: session.expiresAt.toISOString(),
+    };
+  };
+
   return {
+    async startCheckout(input: {
+      workspaceId: string;
+      actorUserId: string;
+      clientIdempotencyKey: string;
+      targetTier: PaidPricingTier;
+      interval: BillingInterval;
+      returnDestination: string;
+    }) {
+      const startedAt = dependencies.clock.now();
+      const actor = await dependencies.store.readBillingActor(input);
+      if (actor?.role !== "owner") {
+        throw new WorkspaceBillingError(
+          "billing_forbidden",
+          "Only the Workspace owner can manage billing",
+        );
+      }
+      const current = await dependencies.store.readProjection(input.workspaceId);
+      if (!current) {
+        throw new WorkspaceBillingError("workspace_not_found", "Workspace not found");
+      }
+      if (current.pricingTier !== "free" && current.status !== "pending_payment") {
+        throw new WorkspaceBillingError(
+          "billing_portal_required",
+          "Manage the current subscription in the billing portal",
+        );
+      }
+      const price = dependencies.catalog.basePrices.find(
+        (candidate) =>
+          candidate.tier === input.targetTier &&
+          candidate.interval === input.interval,
+      );
+      if (!price) {
+        throw new WorkspaceBillingError(
+          "price_not_configured",
+          "This plan is not available",
+        );
+      }
+      const catalogVersion = `${input.targetTier}:${input.interval}:${price.priceId}`;
+      const prepared = await dependencies.store.prepareCheckoutAttempt({
+        ...input,
+        catalogVersion,
+        now: dependencies.clock.now(),
+      });
+      if (prepared.kind === "conflict") {
+        throw new WorkspaceBillingError(
+          "checkout_attempt_conflict",
+          "This Checkout request was already used with different details",
+        );
+      }
+      dependencies.diagnostics.record({
+        level: "info",
+        message: "workspace_billing_checkout_prepared",
+        workspaceId: input.workspaceId,
+        phase: "checkout_attempt",
+        disposition: prepared.kind,
+        targetPlan: input.targetTier,
+        interval: input.interval,
+      });
+      const provider = checkoutProvider();
+      const attempt = prepared.attempt;
+      if (attempt.providerSessionId) {
+        const session = await provider.retrieveCheckoutSession!(
+          attempt.providerSessionId,
+        );
+        if (
+          (session.workspaceId && session.workspaceId !== input.workspaceId) ||
+          (session.attemptId && session.attemptId !== attempt.id)
+        ) {
+          throw new WorkspaceBillingError(
+            "checkout_session_conflict",
+            "Checkout session ownership could not be verified",
+          );
+        }
+        const destination = checkoutDestination(session);
+        dependencies.diagnostics.record({
+          level: "info",
+          message: "workspace_billing_checkout_ready",
+          workspaceId: input.workspaceId,
+          phase: "checkout_session",
+          disposition: "replayed",
+          durationMs: dependencies.clock.now().getTime() - startedAt.getTime(),
+        });
+        return destination;
+      }
+
+      let customerId = current.providerCustomerId;
+      if (!customerId) {
+        const matches = await provider.findCustomersByWorkspace!(input.workspaceId);
+        if (matches.length > 1) {
+          await dependencies.store.scheduleRetry({
+            workspaceId: input.workspaceId,
+            now: dependencies.clock.now(),
+            nextReconcileAt: new Date(
+              dependencies.clock.now().getTime() + 6 * 60 * 60 * 1000,
+            ),
+            reason: "multiple_provider_customers",
+            health: "attention_required",
+          });
+          throw new WorkspaceBillingError(
+            "customer_identity_conflict",
+            "Billing customer identity needs attention",
+          );
+        }
+        const recoveredCustomer = matches[0]?.customerId;
+        customerId =
+          recoveredCustomer ??
+          (
+            await provider.createCustomer!(
+              {
+                workspaceId: input.workspaceId,
+                actorUserId: input.actorUserId,
+              },
+              attempt.customerOperationKey,
+            )
+          ).customerId;
+        dependencies.diagnostics.record({
+          level: "info",
+          message: "workspace_billing_customer_resolved",
+          workspaceId: input.workspaceId,
+          phase: "customer_provisioning",
+          disposition: recoveredCustomer ? "recovered" : "created",
+        });
+        await dependencies.store.bindCheckoutCustomer({
+          workspaceId: input.workspaceId,
+          attemptId: attempt.id,
+          customerId,
+          now: dependencies.clock.now(),
+        });
+      }
+
+      const recovered = await provider.findCheckoutSessionsByAttempt?.({
+        attemptId: attempt.id,
+        customerId,
+      });
+      if (recovered && recovered.length > 1) {
+        throw new WorkspaceBillingError(
+          "checkout_session_conflict",
+          "Checkout session needs attention",
+        );
+      }
+      const session =
+        recovered?.[0] ??
+        (await provider.createCheckoutSession!(
+          {
+            attemptId: attempt.id,
+            workspaceId: input.workspaceId,
+            actorUserId: input.actorUserId,
+            customerId,
+            priceId: price.priceId,
+            successUrl: `${input.returnDestination}${input.returnDestination.includes("?") ? "&" : "?"}checkout=return&session_id={CHECKOUT_SESSION_ID}`,
+            cancelUrl: `${input.returnDestination}${input.returnDestination.includes("?") ? "&" : "?"}checkout=cancelled`,
+          },
+          attempt.checkoutOperationKey,
+        ));
+      await dependencies.store.bindCheckoutSession({
+        attemptId: attempt.id,
+        sessionId: session.sessionId,
+        expiresAt: session.expiresAt,
+        now: dependencies.clock.now(),
+      });
+      const destination = checkoutDestination(session);
+      dependencies.diagnostics.record({
+        level: "info",
+        message: "workspace_billing_checkout_ready",
+        workspaceId: input.workspaceId,
+        phase: "checkout_session",
+        disposition: recovered?.[0] ? "recovered" : "created",
+        durationMs: dependencies.clock.now().getTime() - startedAt.getTime(),
+      });
+      return destination;
+    },
+    async observeCheckoutReturn(input: {
+      workspaceId: string;
+      actorUserId: string;
+      sessionId: string;
+    }) {
+      const actor = await dependencies.store.readBillingActor(input);
+      if (actor?.role !== "owner") {
+        throw new WorkspaceBillingError(
+          "billing_forbidden",
+          "Only the Workspace owner can manage billing",
+        );
+      }
+      const provider = checkoutProvider();
+      const session = await provider.retrieveCheckoutSession!(input.sessionId);
+      if (session.workspaceId !== input.workspaceId) {
+        throw new WorkspaceBillingError(
+          "checkout_session_conflict",
+          "Checkout session ownership could not be verified",
+        );
+      }
+      await dependencies.store.recordCheckoutReturn({
+        workspaceId: input.workspaceId,
+        sessionId: input.sessionId,
+        providerAttemptId: session.attemptId,
+        outcome: `${session.status}:${session.paymentStatus}`,
+        now: dependencies.clock.now(),
+      });
+      dependencies.diagnostics.record({
+        level: "info",
+        message: "workspace_billing_checkout_return_observed",
+        workspaceId: input.workspaceId,
+        phase: "checkout_return",
+        checkoutStatus: session.status,
+        paymentStatus: session.paymentStatus,
+      });
+      const view = await dependencies.store.readProjection(input.workspaceId);
+      if (!view) {
+        throw new WorkspaceBillingError("workspace_not_found", "Workspace not found");
+      }
+      return {
+        kind: "activating" as const,
+        retryAfterSeconds: 2,
+        view: billingView(view),
+      };
+    },
+    async openPortal(input: {
+      workspaceId: string;
+      actorUserId: string;
+      returnUrl: string;
+    }) {
+      const actor = await dependencies.store.readBillingActor(input);
+      if (actor?.role !== "owner") {
+        throw new WorkspaceBillingError(
+          "billing_forbidden",
+          "Only the Workspace owner can manage billing",
+        );
+      }
+      const current = await dependencies.store.readProjection(input.workspaceId);
+      if (!current?.providerCustomerId) {
+        throw new WorkspaceBillingError(
+          "billing_customer_missing",
+          "Billing setup has not created a customer yet",
+        );
+      }
+      if (!dependencies.provider.createPortalSession) {
+        throw new WorkspaceBillingError(
+          "portal_not_configured",
+          "The billing portal is not configured",
+        );
+      }
+      const portal = await dependencies.provider.createPortalSession({
+        customerId: current.providerCustomerId,
+        returnUrl: input.returnUrl,
+      });
+      dependencies.diagnostics.record({
+        level: "info",
+        message: "workspace_billing_portal_started",
+        workspaceId: input.workspaceId,
+        phase: "portal",
+        disposition: "created",
+      });
+      return portal;
+    },
     async acceptStripeDelivery(rawBody: string, signature: string) {
-      const delivery = dependencies.provider.verifyDelivery(rawBody, signature);
+      const delivery = await dependencies.provider.verifyDelivery(rawBody, signature);
       const wakeReconciliation = wakeEventTypes.has(delivery.eventType);
       const accepted = await dependencies.store.acceptDelivery({
         delivery,
@@ -1152,6 +2078,13 @@ export function createWorkspaceBillingModule(dependencies: {
           reason: result.reason,
           health: "attention_required",
         });
+        dependencies.diagnostics.record({
+          level: "warn",
+          message: "workspace_billing_attention_required",
+          workspaceId,
+          phase: "current_state",
+          reason: result.reason,
+        });
         const current = await dependencies.store.readProjection(workspaceId);
         return {
           ...result,
@@ -1166,6 +2099,13 @@ export function createWorkspaceBillingModule(dependencies: {
           ),
           reason: "retryable_provider",
           health: "retrying",
+        });
+        dependencies.diagnostics.record({
+          level: "warn",
+          message: "workspace_billing_retry_scheduled",
+          workspaceId,
+          phase: "current_state",
+          reason: "retryable_provider",
         });
         const current = await dependencies.store.readProjection(workspaceId);
         if (!current) throw error;
@@ -1182,6 +2122,12 @@ export function createWorkspaceBillingModule(dependencies: {
         now,
         limit: dependencies.catalog.worker.batchSize,
         leaseMs: dependencies.catalog.worker.leaseMs,
+      });
+      dependencies.diagnostics.record({
+        level: "info",
+        message: "workspace_billing_accounts_claimed",
+        phase: "claim",
+        claimed: claims.length,
       });
       const summary = {
         claimed: claims.length,
@@ -1256,12 +2202,77 @@ export function createWorkspaceBillingModule(dependencies: {
           worker,
         ),
       );
+      dependencies.diagnostics.record({
+        level: "info",
+        message: "workspace_billing_batch_settled",
+        phase: "settlement",
+        ...summary,
+      });
       return summary;
     },
     async readBillingState(workspaceId: string): Promise<WorkspaceBillingView> {
       const current = await dependencies.store.readProjection(workspaceId);
       if (!current) throw new Error("Workspace Billing Account not found");
       return billingView(current);
+    },
+    async inspectAccount(workspaceId: string) {
+      const current = await dependencies.store.readProjection(workspaceId);
+      if (!current) {
+        throw new WorkspaceBillingError("workspace_not_found", "Workspace not found");
+      }
+      const view = billingView(current);
+      const local = {
+        ...view,
+        hasProviderCustomer: Boolean(current.providerCustomerId),
+        hasCanonicalSubscription: Boolean(current.canonicalSubscriptionId),
+        hasSeatItem: Boolean(current.seatItemId),
+        attentionReason: current.attentionReason,
+      };
+      if (!current.providerCustomerId) {
+        return { workspaceId, local, provider: null };
+      }
+      const providerState = await dependencies.provider.retrieveCurrentState(
+        current.providerCustomerId,
+      );
+      return {
+        workspaceId,
+        local,
+        provider: {
+          ownership: providerState.ownership.kind,
+          subscriptionCount: providerState.subscriptions.length,
+          subscriptions: providerState.subscriptions.map((subscription) => {
+            const baseItems = subscription.items.flatMap((item) => {
+              const match = dependencies.catalog.basePrices.find(
+                (price) => price.priceId === item.priceId,
+              );
+              return match ? [match] : [];
+            });
+            const seatItems = subscription.items.filter((item) =>
+              dependencies.catalog.seatPrices.some(
+                (price) => price.priceId === item.priceId,
+              ),
+            );
+            return {
+              status: subscription.status,
+              basePlan:
+                baseItems.length === 1
+                  ? `${baseItems[0]!.tier}/${baseItems[0]!.interval}`
+                  : baseItems.length === 0
+                    ? "unknown"
+                    : "conflict",
+              additionalSeats: seatItems.reduce(
+                (quantity, item) => quantity + item.quantity,
+                0,
+              ),
+              seatItemCount: seatItems.length,
+              itemCount: subscription.items.length,
+              cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
+              currentPeriodEnd: subscription.currentPeriodEnd?.toISOString() ?? null,
+              trialEnd: subscription.trialEnd?.toISOString() ?? null,
+            };
+          }),
+        },
+      };
     },
   };
 }

@@ -4,7 +4,7 @@
 
 **Blocked by:** [07 — Finish billing and member recovery UX](07-finish-billing-and-member-recovery-ux.md).
 
-**Status:** ready-for-agent
+**Status:** completed
 
 **Specification:** [Deepen Workspace Billing synchronization](../spec.md)
 
@@ -66,3 +66,11 @@
 ## Fresh-task handoff
 
 Implement after ticket 07 with `/implement`; use `/tdd` for any uncovered contract or recovery gap; finish with `/code-review`; run the full uncached verification matrix and record reproducible completion evidence in this ticket and the architecture review.
+
+## Completion evidence — 2026-08-28
+
+- The pre-production cutover removes the old subscription page, redirect, direct confirmation/toast, foreground seat operations, fixed first-page sweep, and obsolete member/invite schema markers.
+- Stripe uses pinned API version `2026-07-29.dahlia`; async raw-body signature fixtures cover every registered event, while a real test-mode contract covers idempotent customer/Checkout recovery, expiration, configured portal, active current-state retrieval, prorated seat create/update/delete, and isolated cleanup.
+- The operator command defaults to identifier-safe read-only inspection and requires `--reconcile` for a fenced current-state retry. The expanded runbook records exact events, catalog, secrets, worker bounds, diagnosis, deployment, rollback, and local reset.
+- The disposable PostgreSQL drill applies the full chain and passes account/provider uniqueness, concurrent Checkout, duplicate delivery, atomic projection/retention/audit, fairness beyond three batches, lease takeover, stale fencing, and transaction rollback.
+- `bun run typecheck`, `bun run lint`, `bun run test`, `bun run build`, focused uncached suites, Stripe sandbox contracts, the database drill, local migration deploy, and real Chrome checks pass.

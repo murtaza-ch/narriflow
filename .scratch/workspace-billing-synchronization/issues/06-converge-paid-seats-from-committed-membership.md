@@ -4,7 +4,7 @@
 
 **Blocked by:** [04 — Apply subscription health, access, and retention policy](04-apply-subscription-health-access-and-retention-policy.md).
 
-**Status:** ready-for-agent
+**Status:** completed
 
 **Specification:** [Deepen Workspace Billing synchronization](../spec.md)
 
@@ -58,3 +58,9 @@
 ## Fresh-task handoff
 
 Implement after ticket 04 with `/implement`; use `/tdd` for transaction coupling, latest-count convergence, ambiguity, and concurrency; finish with `/code-review`; run uncached module, membership, worker, database, Stripe sandbox, typecheck, lint, test, and build checks.
+
+## Completion evidence — 2026-08-28
+
+- Membership acceptance, role changes, demotions, and removals now commit the current desired paid-seat count, revision, and due marker in the same PostgreSQL transaction without a foreground Stripe call.
+- Fenced reconciliation discovers only the interval-specific seat item, uses stable revision keys and prorations, converges to the latest committed Admin/Editor count, and removes the known item at zero.
+- Obsolete payment-operation markers, compensating provider calls, and the fixed-page hourly sweep are removed. Module, sandbox seat create/update/delete/retrieval, and disposable PostgreSQL concurrency/fairness checks pass.

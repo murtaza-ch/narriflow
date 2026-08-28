@@ -70,12 +70,18 @@ describe("pricing tiers", () => {
 
 describe("billing (checkout request + pricing table)", () => {
   test("checkout request defaults the interval to monthly", () => {
-    const parsed = checkoutRequestSchema.parse({ tier: "creator" });
+    const parsed = checkoutRequestSchema.parse({
+      clientIdempotencyKey: "018f5f6a-4c31-7c75-9a4f-8f74f977bc10",
+      tier: "creator",
+    });
     expect(parsed.interval).toBe("monthly");
   });
 
   test("checkout request rejects the free tier (paid only)", () => {
-    expect(checkoutRequestSchema.safeParse({ tier: "free" }).success).toBe(false);
+    expect(checkoutRequestSchema.safeParse({
+      clientIdempotencyKey: "018f5f6a-4c31-7c75-9a4f-8f74f977bc10",
+      tier: "free",
+    }).success).toBe(false);
   });
 
   test("every paid tier has a pricing-table entry with an annual discount", () => {

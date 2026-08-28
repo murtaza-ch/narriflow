@@ -4,7 +4,7 @@
 
 **Blocked by:** [05 — Make Checkout and customer provisioning replayable](05-make-checkout-and-customer-provisioning-replayable.md); [06 — Converge paid seats from committed membership](06-converge-paid-seats-from-committed-membership.md).
 
-**Status:** ready-for-agent
+**Status:** completed
 
 **Specification:** [Deepen Workspace Billing synchronization](../spec.md)
 
@@ -55,3 +55,9 @@
 ## Fresh-task handoff
 
 Implement after tickets 05 and 06 with `/implement`; drive billing and member views through `/tdd`; finish with `/code-review`; run uncached React, browser-adapter, Hono, accessibility, real-browser, typecheck, lint, test, and build verification.
+
+## Completion evidence — 2026-08-28
+
+- Billing and member settings consume one validated product billing view for current, activating, retrying, payment-action, restricted, attention, cancellation, failed/expired Checkout, and paid-seat states.
+- The UI uses shared price/date facts, persistent live regions, bounded focus movement, stable inline recovery, owner-only actions, and safe non-owner/member gates without provider jargon or raw errors.
+- Real Chrome checks cover the active paid owner view, Business-only seat-copy gating, desktop/mobile and light/dark layouts, accessibility attributes, direct billing navigation, and removal of the legacy page.

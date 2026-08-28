@@ -29,6 +29,371 @@ const catalog = createBillingCatalog({
 });
 
 describe("Workspace Billing", () => {
+  test("replays one durable Checkout attempt and rejects changed immutable input", async () => {
+    const store = createInMemoryWorkspaceBillingStore([
+      {
+        workspaceId: "workspace-checkout",
+        personal: true,
+        hasNonOwnerMembers: false,
+        pricingTier: "free",
+        status: "active",
+        providerCustomerId: null,
+        ownerUserId: "owner-checkout",
+      },
+    ]);
+    let customerCreates = 0;
+    let checkoutCreates = 0;
+    let createdAttemptId = "";
+    const billing = createWorkspaceBillingModule({
+      catalog,
+      store,
+      provider: {
+        verifyDelivery: () => {
+          throw new Error("not used");
+        },
+        retrieveCurrentState: async () => {
+          throw new Error("not used");
+        },
+        findCustomersByWorkspace: async () => [],
+        createCustomer: async ({ workspaceId }, idempotencyKey) => {
+          customerCreates += 1;
+          expect(workspaceId).toBe("workspace-checkout");
+          expect(idempotencyKey).toBeTruthy();
+          return { customerId: "cus_checkout" };
+        },
+        createCheckoutSession: async (input, idempotencyKey) => {
+          checkoutCreates += 1;
+          createdAttemptId = input.attemptId;
+          expect(input).toMatchObject({
+            workspaceId: "workspace-checkout",
+            customerId: "cus_checkout",
+            priceId: "price_pro_annual",
+          });
+          expect(idempotencyKey).toBeTruthy();
+          return {
+            sessionId: "cs_checkout",
+            url: "https://checkout.stripe.test/session",
+            expiresAt: new Date("2026-08-28T11:00:00.000Z"),
+            status: "open",
+            paymentStatus: "unpaid",
+          };
+        },
+        retrieveCheckoutSession: async () => ({
+          sessionId: "cs_checkout",
+          url: "https://checkout.stripe.test/session",
+          expiresAt: new Date("2026-08-28T11:00:00.000Z"),
+          status: "open",
+          paymentStatus: "unpaid",
+          workspaceId: "workspace-checkout",
+          attemptId: createdAttemptId,
+        }),
+        createPortalSession: async () => {
+          throw new Error("not used");
+        },
+      },
+      clock: { now: () => new Date("2026-08-28T10:00:00.000Z") },
+      diagnostics: { record: () => undefined },
+    });
+    const input = {
+      workspaceId: "workspace-checkout",
+      actorUserId: "owner-checkout",
+      clientIdempotencyKey: "checkout-key-1",
+      targetTier: "pro" as const,
+      interval: "annual" as const,
+      returnDestination: "/settings/billing",
+    };
+
+    const first = await billing.startCheckout(input);
+    const replay = await billing.startCheckout(input);
+
+    expect(first).toEqual({
+      kind: "checkout",
+      url: "https://checkout.stripe.test/session",
+      expiresAt: "2026-08-28T11:00:00.000Z",
+    });
+    expect(replay).toEqual(first);
+    expect(customerCreates).toBe(1);
+    expect(checkoutCreates).toBe(1);
+    await expect(
+      billing.startCheckout({ ...input, targetTier: "creator" }),
+    ).rejects.toMatchObject({ code: "checkout_attempt_conflict" });
+  });
+
+  test("observes Checkout return without granting access and wakes activation", async () => {
+    const store = createInMemoryWorkspaceBillingStore([
+      {
+        workspaceId: "workspace-return",
+        personal: true,
+        hasNonOwnerMembers: false,
+        pricingTier: "free",
+        status: "active",
+        providerCustomerId: null,
+        ownerUserId: "owner-return",
+      },
+    ]);
+    let sessionWorkspaceId = "workspace-return";
+    const billing = createWorkspaceBillingModule({
+      catalog,
+      store,
+      provider: {
+        verifyDelivery: () => {
+          throw new Error("not used");
+        },
+        retrieveCurrentState: async () => {
+          throw new Error("worker reconciliation is deliberately not run");
+        },
+        findCustomersByWorkspace: async () => [],
+        createCustomer: async () => ({ customerId: "cus_return" }),
+        createCheckoutSession: async (input) => ({
+          sessionId: "cs_return",
+          url: "https://checkout.stripe.test/return",
+          expiresAt: new Date("2026-08-28T11:00:00.000Z"),
+          status: "open",
+          paymentStatus: "unpaid",
+          workspaceId: input.workspaceId,
+          attemptId: input.attemptId,
+        }),
+        retrieveCheckoutSession: async () => ({
+          sessionId: "cs_return",
+          url: null,
+          expiresAt: new Date("2026-08-28T11:00:00.000Z"),
+          status: "complete",
+          paymentStatus: "paid",
+          workspaceId: sessionWorkspaceId,
+        }),
+        createPortalSession: async () => {
+          throw new Error("not used");
+        },
+      },
+      clock: { now: () => new Date("2026-08-28T10:00:00.000Z") },
+      diagnostics: { record: () => undefined },
+    });
+    await billing.startCheckout({
+      workspaceId: "workspace-return",
+      actorUserId: "owner-return",
+      clientIdempotencyKey: "return-key",
+      targetTier: "creator",
+      interval: "monthly",
+      returnDestination: "/settings/billing",
+    });
+
+    sessionWorkspaceId = "another-workspace";
+    await expect(
+      billing.observeCheckoutReturn({
+        workspaceId: "workspace-return",
+        actorUserId: "owner-return",
+        sessionId: "cs_return",
+      }),
+    ).rejects.toMatchObject({ code: "checkout_session_conflict" });
+
+    sessionWorkspaceId = "workspace-return";
+    const result = await billing.observeCheckoutReturn({
+      workspaceId: "workspace-return",
+      actorUserId: "owner-return",
+      sessionId: "cs_return",
+    });
+
+    expect(result).toMatchObject({
+      kind: "activating",
+      retryAfterSeconds: 2,
+      view: { plan: "free", health: "activating" },
+    });
+    expect(await store.readProjection("workspace-return")).toMatchObject({
+      pricingTier: "free",
+      canonicalSubscriptionId: null,
+      health: "activating",
+    });
+  });
+
+  test("routes an existing paid Workspace to the hosted portal", async () => {
+    const store = createInMemoryWorkspaceBillingStore([
+      {
+        workspaceId: "workspace-portal",
+        personal: true,
+        hasNonOwnerMembers: false,
+        pricingTier: "pro",
+        status: "active",
+        providerCustomerId: "cus_portal",
+        ownerUserId: "owner-portal",
+      },
+    ]);
+    const billing = createWorkspaceBillingModule({
+      catalog,
+      store,
+      provider: {
+        verifyDelivery: () => {
+          throw new Error("not used");
+        },
+        retrieveCurrentState: async () => {
+          throw new Error("not used");
+        },
+        createPortalSession: async (input) => {
+          expect(input).toEqual({
+            customerId: "cus_portal",
+            returnUrl: "https://app.test/settings/billing",
+          });
+          return { url: "https://billing.stripe.test/portal" };
+        },
+      },
+      clock: { now: () => new Date("2026-08-28T10:00:00.000Z") },
+      diagnostics: { record: () => undefined },
+    });
+
+    expect(
+      await billing.openPortal({
+        workspaceId: "workspace-portal",
+        actorUserId: "owner-portal",
+        returnUrl: "https://app.test/settings/billing",
+      }),
+    ).toEqual({ url: "https://billing.stripe.test/portal" });
+    await expect(
+      billing.startCheckout({
+        workspaceId: "workspace-portal",
+        actorUserId: "owner-portal",
+        clientIdempotencyKey: "paid-checkout",
+        targetTier: "business",
+        interval: "monthly",
+        returnDestination: "/settings/billing",
+      }),
+    ).rejects.toMatchObject({ code: "billing_portal_required" });
+  });
+
+  test("inspects normalized local and provider state without provider identifiers", async () => {
+    const store = createInMemoryWorkspaceBillingStore([
+      {
+        workspaceId: "workspace-inspect",
+        personal: false,
+        hasNonOwnerMembers: true,
+        pricingTier: "business",
+        status: "active",
+        providerCustomerId: "cus_private",
+        desiredAdditionalSeats: 2,
+      },
+    ]);
+    const billing = createWorkspaceBillingModule({
+      catalog,
+      store,
+      provider: {
+        verifyDelivery: () => {
+          throw new Error("not used");
+        },
+        retrieveCurrentState: async () => ({
+          customerId: "cus_private",
+          ownership: { kind: "verified", workspaceId: "workspace-inspect" },
+          subscriptions: [
+            {
+              id: "sub_private",
+              status: "active",
+              items: [
+                { id: "si_base_private", priceId: "price_business_monthly", quantity: 1 },
+                { id: "si_seat_private", priceId: "price_business_seat_monthly", quantity: 2 },
+              ],
+              createdAt: new Date("2026-08-01T00:00:00.000Z"),
+              effectiveAt: new Date("2026-08-01T00:00:00.000Z"),
+              currentPeriodEnd: new Date("2026-09-01T00:00:00.000Z"),
+              trialEnd: null,
+              cancelAtPeriodEnd: false,
+            },
+          ],
+        }),
+      },
+      clock: { now: () => new Date("2026-08-28T10:00:00.000Z") },
+      diagnostics: { record: () => undefined },
+    });
+
+    const inspection = await billing.inspectAccount("workspace-inspect");
+
+    expect(inspection).toMatchObject({
+      workspaceId: "workspace-inspect",
+      local: {
+        plan: "business",
+        health: "current",
+        desiredAdditionalSeats: 2,
+        hasProviderCustomer: true,
+      },
+      provider: {
+        ownership: "verified",
+        subscriptionCount: 1,
+        subscriptions: [
+          {
+            status: "active",
+            basePlan: "business/monthly",
+            additionalSeats: 2,
+          },
+        ],
+      },
+    });
+    expect(JSON.stringify(inspection)).not.toContain("cus_private");
+    expect(JSON.stringify(inspection)).not.toContain("sub_private");
+    expect(JSON.stringify(inspection)).not.toContain("si_base_private");
+  });
+
+  test("converges Business seats from the latest committed membership count", async () => {
+    const store = createInMemoryWorkspaceBillingStore([
+      {
+        workspaceId: "workspace-seats",
+        personal: false,
+        hasNonOwnerMembers: true,
+        pricingTier: "business",
+        status: "active",
+        providerCustomerId: "cus_seats",
+        desiredAdditionalSeats: 2,
+      },
+    ]);
+    const updates: Array<{ itemId: string; quantity: number; key: string }> = [];
+    const billing = createWorkspaceBillingModule({
+      catalog,
+      store,
+      provider: {
+        verifyDelivery: () => {
+          throw new Error("not used");
+        },
+        retrieveCurrentState: async () => ({
+          customerId: "cus_seats",
+          ownership: { kind: "verified", workspaceId: "workspace-seats" },
+          subscriptions: [
+            {
+              id: "sub_seats",
+              status: "active",
+              items: [
+                { id: "si_base", priceId: "price_business_monthly", quantity: 1 },
+                { id: "si_seat", priceId: "price_business_seat_monthly", quantity: 1 },
+              ],
+              createdAt: new Date("2026-08-01T00:00:00.000Z"),
+              effectiveAt: new Date("2026-08-01T00:00:00.000Z"),
+              currentPeriodEnd: new Date("2026-09-01T00:00:00.000Z"),
+              trialEnd: null,
+              cancelAtPeriodEnd: false,
+            },
+          ],
+        }),
+        updateSeatItem: async (input, idempotencyKey) => {
+          updates.push({
+            itemId: input.itemId,
+            quantity: input.quantity,
+            key: idempotencyKey,
+          });
+        },
+      },
+      clock: { now: () => new Date("2026-08-28T10:00:00.000Z") },
+      diagnostics: { record: () => undefined },
+    });
+
+    const result = await billing.reconcileCurrentState("workspace-seats");
+
+    expect(updates).toEqual([
+      {
+        itemId: "si_seat",
+        quantity: 2,
+        key: "workspace-seat-workspace-seats-1",
+      },
+    ]);
+    expect(result.view).toMatchObject({
+      desiredAdditionalSeats: 2,
+      synchronizedAdditionalSeats: 2,
+    });
+  });
+
   test("period-end cancellation keeps paid access and clears after reactivation", async () => {
     let cancelAtPeriodEnd = true;
     const store = createInMemoryWorkspaceBillingStore([
@@ -837,11 +1202,14 @@ describe("Workspace Billing", () => {
         plan: "creator",
         interval: "monthly",
         status: "active",
+        workspaceAccessStatus: "active",
         health: "current",
         renewalOrEndAt: "2026-09-01T00:00:00.000Z",
         cancelAtPeriodEnd: false,
         graceDeadlineAt: null,
         lastSuccessfulSyncAt: now.toISOString(),
+        desiredAdditionalSeats: 0,
+        synchronizedAdditionalSeats: null,
         actions: ["open_portal"],
       },
     });

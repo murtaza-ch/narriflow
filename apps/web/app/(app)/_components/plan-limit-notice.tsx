@@ -16,7 +16,7 @@ export function PlanLimitNotice({ message }: { message: string | null }) {
       </Box>
       <Text fontSize="xs">
         {message}{" "}
-        <Link href="/settings/subscription">
+        <Link href="/settings/billing">
           <Text
             as="span"
             color="fg"

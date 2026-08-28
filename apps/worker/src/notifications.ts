@@ -92,7 +92,7 @@ export function buildRetryNotificationInput(
   const baseUrl = getWorkerAppBaseUrl();
   const deepLink =
     ledger.outcome === "project_expiring" && baseUrl
-      ? new URL("/settings/subscription", baseUrl).toString()
+      ? new URL("/settings/billing", baseUrl).toString()
       : getProjectDeepLink(ledger.projectId);
   return deepLink ? { deepLink } : null;
 }
@@ -145,7 +145,7 @@ export async function notifyExpiringProject(projectId: string): Promise<void> {
       projectId,
       sourceId: projectId,
       outcome: "project_expiring",
-      deepLink: new URL("/settings/subscription", baseUrl).toString(),
+      deepLink: new URL("/settings/billing", baseUrl).toString(),
       reason: "The Free-plan project retention deadline is approaching.",
     });
   } catch (error) {

@@ -27,6 +27,7 @@ import {
 } from "./tasks/render-clips";
 import { parseWorkerRenderConfig } from "./render-config";
 import { processDueSocialPosts } from "./tasks/social-publisher";
+import { parseWorkspaceBillingPollInterval } from "./workspace-billing-config";
 import {
   processSubmittedTranscriptResults,
   processTranscriptRun,
@@ -38,7 +39,7 @@ import {
 
 const port = Number(process.env.PORT || 0);
 assertUploadProviderLifecyclePrerequisite(process.env);
-billingService.validateConfiguration();
+billingService.validateConfiguration({ surface: "worker" });
 const pollIntervalMs = Number(process.env.INGEST_POLL_INTERVAL_MS ?? "2500");
 // Rendering is CPU-bound and can run for minutes (ffmpeg saturates all cores
 // per clip already — measured intra-machine clip parallelism buys nothing: 4
@@ -84,8 +85,8 @@ const sttResultPollIntervalMs = Number(
 const notificationRetryPollIntervalMs = Number(
   process.env.NOTIFICATION_RETRY_POLL_INTERVAL_MS ?? String(60 * 1000),
 );
-const workspaceBillingPollIntervalMs = Number(
-  process.env.WORKSPACE_BILLING_POLL_INTERVAL_MS ?? "5000",
+const workspaceBillingPollIntervalMs = parseWorkspaceBillingPollInterval(
+  process.env.WORKSPACE_BILLING_POLL_INTERVAL_MS,
 );
 const autopilotPollIntervalMs = Number(
   process.env.AUTOPILOT_POLL_INTERVAL_MS ?? "30000",
@@ -96,7 +97,6 @@ const notificationRetryBatchSize = Number(
 
 let processedCount = 0;
 let lastReapAt = 0;
-let lastSeatReconcileAt = 0;
 
 /** Periodically fails workflow runs orphaned by a crashed/evicted worker.
  * The independent maintenance loop rate-limits this sweep via lastReapAt. */
@@ -105,17 +105,6 @@ async function reapStalledRunsIfDue() {
   if (now - lastReapAt < reapIntervalMs) return;
   lastReapAt = now;
   try {
-    if (now - lastSeatReconcileAt >= 60 * 60 * 1000) {
-      lastSeatReconcileAt = now;
-      const seats = await billingService.reconcileAllWorkspaceSeats(
-        Number(process.env.WORKSPACE_SEAT_RECONCILIATION_BATCH_SIZE ?? 100),
-      );
-      console.warn(JSON.stringify({
-        level: seats.failed > 0 ? "warn" : "info",
-        message: "workspace_seat_reconciliation_complete",
-        ...seats,
-      }));
-    }
     const reaped = await projectService.reapStuckWorkflowRuns(
       reapStallTimeoutMs,
     );

@@ -420,7 +420,7 @@ describe("NotificationService", () => {
       projectId: "project-1",
       sourceId: "project-1",
       outcome: "project_expiring",
-      deepLink: "https://app.narriflow.test/settings/subscription",
+      deepLink: "https://app.narriflow.test/settings/billing",
     });
 
     expect(result.status).toBe("sent");
@@ -441,7 +441,7 @@ describe("NotificationService", () => {
       projectId: "project-1",
       sourceId: "project-1",
       outcome: "project_expiring",
-      deepLink: "https://app.narriflow.test/settings/subscription",
+      deepLink: "https://app.narriflow.test/settings/billing",
     });
 
     expect(result.status).toBe("skipped");

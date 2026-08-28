@@ -112,7 +112,7 @@ export class WorkspaceService {
         name,
         ownerUserId: userId,
         status: "pending_payment",
-        pricingTier: "business",
+        pricingTier: "free",
         timezone: personalWorkspace?.timezone ?? "UTC",
         billingAccount: { create: { health: "activating" } },
         members: { create: { userId, role: "owner" } },
@@ -297,7 +297,6 @@ export class WorkspaceService {
           id: true,
           role: true,
           joinedAt: true,
-          pendingPaymentOperation: true,
           user: {
             select: {
               id: true,
@@ -318,7 +317,6 @@ export class WorkspaceService {
           role: true,
           expiresAt: true,
           createdAt: true,
-          pendingPaymentOperation: true,
         },
         orderBy: { createdAt: "desc" },
       }),
@@ -335,7 +333,10 @@ export class WorkspaceService {
       throw new Error("Workspace collaboration is not enabled for this account");
     }
     const actor = await this.requireActor(userId, workspaceId, "members.invite");
-    if (actor.pricingTier !== "business") {
+    if (
+      actor.pricingTier !== "business" &&
+      !(actor.status === "restricted" && input.role === "viewer")
+    ) {
       throw new Error("Workspace invitations require the Business plan");
     }
     if (input.role === "admin" && actor.role !== "owner") {

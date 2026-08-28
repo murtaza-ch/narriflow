@@ -183,7 +183,7 @@ export function StudioExportMenu() {
                     : "Watermark-free export is included in your plan. "}
                   {!clipInfo.can1080pExport ? (
                     <ChakraLink asChild color="accent.fg" textUnderlineOffset="3px">
-                      <Link href="/settings/subscription">View upgrade options</Link>
+                      <Link href="/settings/billing">View upgrade options</Link>
                     </ChakraLink>
                   ) : null}
                 </Text>

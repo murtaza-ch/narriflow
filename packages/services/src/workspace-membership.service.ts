@@ -1,8 +1,7 @@
-import { createHash, randomUUID } from "node:crypto";
-import type { WorkspaceRole } from "@prisma/client";
+import { createHash } from "node:crypto";
+import type { Prisma, WorkspaceRole } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 
-import { billingService } from "./billing.service";
 import {
   workspaceService,
   workspacesV1EnabledForUser,
@@ -16,6 +15,49 @@ function requiredPrisma() {
 
 function isBillable(role: WorkspaceRole) {
   return role === "admin" || role === "editor";
+}
+
+async function requireBillableAdditionAllowed(
+  tx: Prisma.TransactionClient,
+  workspaceId: string,
+) {
+  const workspace = await tx.workspace.findUnique({
+    where: { id: workspaceId },
+    select: {
+      status: true,
+      pricingTier: true,
+      billingAccount: { select: { health: true } },
+    },
+  });
+  if (
+    !workspace ||
+    workspace.status !== "active" ||
+    workspace.pricingTier !== "business"
+  ) {
+    throw new Error("This workspace cannot add paid members right now");
+  }
+  if (
+    workspace.billingAccount?.health === "attention_required" ||
+    workspace.billingAccount?.health === "payment_action_required"
+  ) {
+    throw new Error("Resolve workspace billing before adding a paid member");
+  }
+}
+
+async function markSeatCountChanged(
+  tx: Prisma.TransactionClient,
+  workspaceId: string,
+  delta: number,
+) {
+  if (delta === 0) return;
+  await tx.workspaceBillingAccount.update({
+    where: { workspaceId },
+    data: {
+      desiredAdditionalSeats: { increment: delta },
+      seatRevision: { increment: 1 },
+      nextReconcileAt: new Date(),
+    },
+  });
 }
 
 export class WorkspaceMembershipService {
@@ -38,7 +80,11 @@ export class WorkspaceMembershipService {
     if (!user?.primaryEmail || user.primaryEmail.toLocaleLowerCase("en-US") !== invite.email.toLocaleLowerCase("en-US")) {
       throw new Error("Sign in with the email address this invitation was sent to");
     }
-    if (invite.workspace.pricingTier !== "business" || invite.workspace.status !== "active") {
+    if (
+      (invite.workspace.pricingTier !== "business" ||
+        invite.workspace.status !== "active") &&
+      !(invite.role === "viewer" && invite.workspace.status === "restricted")
+    ) {
       throw new Error("This workspace cannot accept members right now");
     }
 
@@ -50,48 +96,38 @@ export class WorkspaceMembershipService {
       return { workspaceId: invite.workspaceId, workspaceName: invite.workspace.name, role: existing.role };
     }
 
-    const operationId = `invite:${invite.id}:${randomUUID()}`;
-    await prisma.workspaceInvite.update({
-      where: { id: invite.id },
-      data: { pendingPaymentOperation: operationId },
+    const member = await prisma.$transaction(async (tx) => {
+      const fresh = await tx.workspaceInvite.findFirst({
+        where: {
+          id: invite.id,
+          acceptedAt: null,
+          revokedAt: null,
+          expiresAt: { gt: new Date() },
+        },
+      });
+      if (!fresh) throw new Error("This invitation is no longer available");
+      if (isBillable(fresh.role)) {
+        await requireBillableAdditionAllowed(tx, invite.workspaceId);
+      }
+      const created = await tx.workspaceMember.create({
+        data: { workspaceId: invite.workspaceId, userId, role: fresh.role },
+      });
+      await tx.workspaceInvite.update({
+        where: { id: invite.id },
+        data: { acceptedAt: new Date() },
+      });
+      await markSeatCountChanged(
+        tx,
+        invite.workspaceId,
+        isBillable(fresh.role) ? 1 : 0,
+      );
+      return created;
     });
-    try {
-      if (isBillable(invite.role)) {
-        const current = await prisma.workspaceMember.count({
-          where: { workspaceId: invite.workspaceId, role: { in: ["admin", "editor"] } },
-        });
-        await billingService.setWorkspaceSeatQuantity(
-          invite.workspaceId,
-          current + 1,
-          `workspace-seat-${operationId}`,
-        );
-      }
-
-      const member = await prisma.$transaction(async (tx) => {
-        const fresh = await tx.workspaceInvite.findFirst({
-          where: { id: invite.id, acceptedAt: null, revokedAt: null, expiresAt: { gt: new Date() } },
-        });
-        if (!fresh) throw new Error("This invitation is no longer available");
-        const created = await tx.workspaceMember.create({
-          data: { workspaceId: invite.workspaceId, userId, role: invite.role },
-        });
-        await tx.workspaceInvite.update({
-          where: { id: invite.id },
-          data: { acceptedAt: new Date(), pendingPaymentOperation: null },
-        });
-        return created;
-      });
-      if (isBillable(invite.role)) {
-        await billingService.reconcileWorkspaceSeats(invite.workspaceId, `invite-${invite.id}`);
-      }
-      return { workspaceId: invite.workspaceId, workspaceName: invite.workspace.name, role: member.role };
-    } catch (error) {
-      await prisma.workspaceInvite.updateMany({
-        where: { id: invite.id, acceptedAt: null },
-        data: { pendingPaymentOperation: null },
-      });
-      throw error;
-    }
+    return {
+      workspaceId: invite.workspaceId,
+      workspaceName: invite.workspace.name,
+      role: member.role,
+    };
   }
 
   async changeRole(
@@ -103,73 +139,44 @@ export class WorkspaceMembershipService {
     const actor = await workspaceService.requireActor(actorUserId, workspaceId, "members.invite");
     if (nextRole === "admin" && actor.role !== "owner") throw new Error("Only owners can promote admins");
     const prisma = requiredPrisma();
-    const member = await prisma.workspaceMember.findFirst({ where: { id: memberId, workspaceId } });
-    if (!member) throw new Error("Member not found");
-    if (member.role === "owner") throw new Error("The owner role cannot be changed");
-    if (actor.role === "admin" && member.role === "admin") throw new Error("Admins cannot manage other admins");
-    if (member.role === nextRole) return member;
-
-    const operationId = `role:${member.id}:${member.role}:${nextRole}`;
-    await prisma.workspaceMember.update({
-      where: { id: member.id },
-      data: { pendingPaymentOperation: operationId },
-    });
-    const current = await prisma.workspaceMember.count({
-      where: { workspaceId, role: { in: ["admin", "editor"] } },
-    });
-    const projected = current - (isBillable(member.role) ? 1 : 0) + (isBillable(nextRole) ? 1 : 0);
-    try {
-      if (projected !== current) {
-        await billingService.setWorkspaceSeatQuantity(workspaceId, projected, `workspace-seat-${operationId}`);
+    return prisma.$transaction(async (tx) => {
+      const member = await tx.workspaceMember.findFirst({
+        where: { id: memberId, workspaceId },
+      });
+      if (!member) throw new Error("Member not found");
+      if (member.role === "owner") throw new Error("The owner role cannot be changed");
+      if (actor.role === "admin" && member.role === "admin") {
+        throw new Error("Admins cannot manage other admins");
       }
-      const updated = await prisma.workspaceMember.update({
+      if (member.role === nextRole) return member;
+      const delta = Number(isBillable(nextRole)) - Number(isBillable(member.role));
+      if (delta > 0) await requireBillableAdditionAllowed(tx, workspaceId);
+      const updated = await tx.workspaceMember.update({
         where: { id: member.id },
-        data: { role: nextRole, pendingPaymentOperation: null },
+        data: { role: nextRole },
       });
-      if (projected !== current) await billingService.reconcileWorkspaceSeats(workspaceId, `role-${member.id}`);
+      await markSeatCountChanged(tx, workspaceId, delta);
       return updated;
-    } catch (error) {
-      await prisma.workspaceMember.updateMany({
-        where: { id: member.id, pendingPaymentOperation: operationId },
-        data: { pendingPaymentOperation: null },
-      });
-      throw error;
-    }
+    });
   }
 
   async removeMember(actorUserId: string, workspaceId: string, memberId: string) {
     const actor = await workspaceService.requireActor(actorUserId, workspaceId, "members.invite");
     const prisma = requiredPrisma();
-    const member = await prisma.workspaceMember.findFirst({ where: { id: memberId, workspaceId } });
-    if (!member) return;
-    if (member.role === "owner") throw new Error("The workspace owner cannot be removed");
-    if (actor.role === "admin" && member.role === "admin") throw new Error("Admins cannot remove other admins");
-    const current = await prisma.workspaceMember.count({
-      where: { workspaceId, role: { in: ["admin", "editor"] } },
-    });
-    const projected = current - (isBillable(member.role) ? 1 : 0);
-    const operationId = `remove:${member.id}:${projected}`;
-    await prisma.workspaceMember.update({
-      where: { id: member.id },
-      data: { pendingPaymentOperation: operationId },
-    });
-    try {
-      if (projected !== current) {
-        await billingService.setWorkspaceSeatQuantity(
-          workspaceId,
-          projected,
-          `workspace-seat-${operationId}`,
-        );
-      }
-      await prisma.workspaceMember.delete({ where: { id: member.id } });
-      if (projected !== current) await billingService.reconcileWorkspaceSeats(workspaceId, `remove-${member.id}`);
-    } catch (error) {
-      await prisma.workspaceMember.updateMany({
-        where: { id: member.id, pendingPaymentOperation: operationId },
-        data: { pendingPaymentOperation: null },
+    await prisma.$transaction(async (tx) => {
+      const member = await tx.workspaceMember.findFirst({
+        where: { id: memberId, workspaceId },
       });
-      throw error;
-    }
+      if (!member) return;
+      if (member.role === "owner") {
+        throw new Error("The workspace owner cannot be removed");
+      }
+      if (actor.role === "admin" && member.role === "admin") {
+        throw new Error("Admins cannot remove other admins");
+      }
+      await tx.workspaceMember.delete({ where: { id: member.id } });
+      await markSeatCountChanged(tx, workspaceId, isBillable(member.role) ? -1 : 0);
+    });
   }
 }
 

@@ -656,6 +656,7 @@ model WorkspaceBillingAccount {
   graceDeadlineAt           DateTime?
   desiredAdditionalSeats    Int       @default(0)
   synchronizedAdditionalSeats Int?
+  seatRevision              Int       @default(0)
   health                    String    @default("current")
   attentionReason           String?
   lastVerifiedAt            DateTime?
@@ -670,9 +671,33 @@ model WorkspaceBillingAccount {
   workspace   Workspace                    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   transitions WorkspaceBillingTransition[]
   deliveries  WebhookDeliveryLog[]
+  checkoutAttempts WorkspaceCheckoutAttempt[]
 
   @@index([nextReconcileAt, id])
   @@index([leaseExpiresAt])
+}
+
+model WorkspaceCheckoutAttempt {
+  id                   String      @id @default(uuid()) @db.Uuid
+  billingAccountId     String      @db.Uuid
+  actorUserId          String      @db.Uuid
+  clientIdempotencyKey String      @unique
+  targetTier           PricingTier
+  interval             String
+  catalogVersion       String
+  returnDestination    String
+  customerOperationKey String      @unique
+  checkoutOperationKey String      @unique
+  providerSessionId    String?     @unique
+  providerPhase        String      @default("prepared")
+  sessionOutcome       String?
+  expiresAt            DateTime?
+  createdAt            DateTime    @default(now())
+  updatedAt            DateTime    @updatedAt
+
+  billingAccount WorkspaceBillingAccount @relation(fields: [billingAccountId], references: [id], onDelete: Cascade)
+
+  @@index([billingAccountId, createdAt])
 }
 
 model WorkspaceBillingTransition {
@@ -700,7 +725,6 @@ model WorkspaceMember {
   workspaceId             String        @db.Uuid
   userId                  String        @db.Uuid
   role                    WorkspaceRole @default(viewer)
-  pendingPaymentOperation String?
   joinedAt                DateTime      @default(now())
   updatedAt               DateTime      @updatedAt
 
@@ -719,7 +743,6 @@ model WorkspaceInvite {
   role                    WorkspaceRole @default(viewer)
   tokenHash               String        @unique
   invitedByUserId         String?       @db.Uuid
-  pendingPaymentOperation String?
   expiresAt               DateTime
   acceptedAt              DateTime?
   revokedAt               DateTime?

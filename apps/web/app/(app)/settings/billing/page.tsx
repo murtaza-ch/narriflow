@@ -17,14 +17,15 @@ function reveal(index: number) {
 export default async function BillingPage({
   searchParams,
 }: {
-  searchParams: Promise<{ success?: string; upgraded?: string }>;
+  searchParams: Promise<{ checkout?: string; session_id?: string }>;
 }) {
   const appUser = await requireCurrentAppUser();
-  const [tier, usedMinutes, params] = await Promise.all([
-    projectService.getWorkspacePricingTier(appUser.workspaceId),
+  const [billingView, usedMinutes, params] = await Promise.all([
+    billingService.readBillingState(appUser.workspaceId),
     projectService.getWorkspaceMonthlyUsageMinutes(appUser.workspaceId),
     searchParams,
   ]);
+  const tier = billingView.plan;
   const limitMinutes = MONTHLY_PROCESSING_MINUTE_LIMITS[tier];
   const pct = Math.min(
     100,
@@ -79,11 +80,13 @@ export default async function BillingPage({
 
       <Box {...reveal(2)}>
         <BillingPlans
-          currentTier={tier}
+          initialView={billingView}
           availableTiers={billingService.configuredTiers()}
           isConfigured={billingService.isConfigured()}
-          checkoutSucceeded={Boolean(params.success ?? params.upgraded)}
-          workspaceStatus={appUser.workspace.status}
+          checkoutReturnSessionId={
+            params.checkout === "return" ? params.session_id ?? null : null
+          }
+          checkoutCancelled={params.checkout === "cancelled"}
           canManageBilling={appUser.workspace.role === "owner"}
         />
       </Box>

@@ -69,11 +69,11 @@ function DesktopTopBar({
         ) : null}
         {workspaceStatus === "pending_payment" && workspaceRole === "owner" ? (
           <Button variant="outline" size="sm" asChild>
-            <Link href="/settings/subscription">Complete setup</Link>
+            <Link href="/settings/billing">Complete setup</Link>
           </Button>
         ) : workspaceTier !== "business" ? (
           <Button variant="outline" size="sm" asChild>
-            <Link href="/settings/subscription">Upgrade</Link>
+            <Link href="/settings/billing">Upgrade</Link>
           </Button>
         ) : null}
         <ThemeToggle />

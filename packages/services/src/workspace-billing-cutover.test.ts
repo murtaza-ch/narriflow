@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 const schema = readFileSync(
   new URL("../../db/prisma/schema.prisma", import.meta.url),
@@ -41,5 +42,24 @@ describe("Workspace billing direct cutover", () => {
     expect(delivery).toMatch(/subjectCustomerId\s+String\?/);
     expect(delivery).toMatch(/workspaceBillingAccountId\s+String\?/);
     expect(delivery).not.toMatch(/\brawBody\b|\bsignature\b/);
+  });
+
+  test("obsolete billing routes and optimistic confirmation are absent", () => {
+    const root = resolve(import.meta.dir, "../../..");
+    const sources = [
+      "apps/web/next.config.ts",
+      "apps/web/app/(app)/home/page.tsx",
+      "apps/web/app/(app)/dashboard/dashboard-client.tsx",
+      "apps/web/app/(app)/_components/account-menu.tsx",
+      "apps/web/app/(app)/_components/app-chrome.tsx",
+      "apps/web/app/(app)/_components/plan-limit-notice.tsx",
+      "apps/web/app/(app)/settings/layout.tsx",
+      "apps/web/app/(marketing)/pricing/page.tsx",
+      "apps/worker/src/notifications.ts",
+    ].map((path) => readFileSync(resolve(root, path), "utf8"));
+
+    expect(sources.join("\n")).not.toContain("/settings/subscription");
+    expect(sources.join("\n")).not.toContain("/api/billing/confirm");
+    expect(sources.join("\n")).not.toContain("upgraded=1");
   });
 });

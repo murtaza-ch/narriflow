@@ -1,19 +1,19 @@
 import Stripe from "stripe";
-import { getPrismaClient } from "@narriflow/db/client";
 import {
   type BillingInterval,
   type PaidPricingTier,
-  type PricingTier,
 } from "@narriflow/validators";
 export { hasFeature, type PlanFeature } from "./plan-features";
-import { workspaceService } from "./workspace.service";
 import {
   createBillingCatalog,
   createPrismaWorkspaceBillingStore,
   createWorkspaceBillingModule,
   type BillingCatalog,
   type ProviderCurrentState,
+  type ProviderCheckoutSession,
   type ProviderSubscription,
+  type WorkspaceBillingProvider,
+  WorkspaceBillingError,
 } from "./workspace-billing.service";
 
 export class BillingError extends Error {
@@ -26,13 +26,7 @@ export class BillingError extends Error {
   }
 }
 
-function requirePrisma() {
-  const prisma = getPrismaClient();
-  if (!prisma) {
-    throw new BillingError("database_unavailable", "Database client unavailable");
-  }
-  return prisma;
-}
+export const WORKSPACE_BILLING_STRIPE_API_VERSION = "2026-07-29.dahlia" as const;
 
 let stripeClient: Stripe | null = null;
 function getStripe(): Stripe {
@@ -42,6 +36,7 @@ function getStripe(): Stripe {
     throw new BillingError("stripe_not_configured", "STRIPE_SECRET_KEY is not set");
   }
   stripeClient = new Stripe(key, {
+    apiVersion: WORKSPACE_BILLING_STRIPE_API_VERSION,
     timeout: Number(
       process.env.WORKSPACE_BILLING_PROVIDER_DEADLINE_MS ?? 10_000,
     ),
@@ -124,12 +119,26 @@ export class BillingService {
   private catalog: BillingCatalog | null = null;
 
   /** Validate once at each process entry point, before it accepts work. */
-  validateConfiguration(): void {
+  validateConfiguration(input?: { surface?: "core" | "web" | "worker" | "operator" }): void {
     if (!process.env.STRIPE_SECRET_KEY) {
       this.catalog = null;
       return;
     }
     this.catalog ??= catalogFromEnvironment();
+    if (input?.surface === "web") {
+      if (!process.env.STRIPE_WEBHOOK_SECRET?.startsWith("whsec_")) {
+        throw new BillingError(
+          "webhook_not_configured",
+          "STRIPE_WEBHOOK_SECRET must be configured for the web process",
+        );
+      }
+      if (!process.env.STRIPE_PORTAL_CONFIGURATION_ID?.startsWith("bpc_")) {
+        throw new BillingError(
+          "portal_not_configured",
+          "STRIPE_PORTAL_CONFIGURATION_ID must be configured for the web process",
+        );
+      }
+    }
   }
 
   /** Whether Stripe is wired up (secret key present). UI hides upgrade if not. */
@@ -191,6 +200,7 @@ export class BillingService {
       id: subscription.id,
       status: subscription.status,
       items: subscription.items.data.map((item) => ({
+        id: item.id,
         priceId: item.price.id,
         quantity: item.quantity ?? 1,
       })),
@@ -220,21 +230,29 @@ export class BillingService {
     if (customer.deleted) {
       throw new BillingError("customer_missing", "Billing customer no longer exists");
     }
-    consumeCall();
-    const subscriptions = await stripe.subscriptions.list({
-      customer: customer.id,
-      status: "all",
-      limit: 100,
-      expand: ["data.latest_invoice"],
-    });
-    if (subscriptions.has_more) {
-      throw new BillingError(
-        "subscription_collection_unbounded",
-        "Billing customer has more subscriptions than the reconciliation limit",
-      );
+    const subscriptions: Stripe.Subscription[] = [];
+    let startingAfter: string | undefined;
+    for (;;) {
+      consumeCall();
+      const page = await stripe.subscriptions.list({
+        customer: customer.id,
+        status: "all",
+        limit: 100,
+        expand: ["data.latest_invoice"],
+        starting_after: startingAfter,
+      });
+      subscriptions.push(...page.data);
+      if (!page.has_more) break;
+      startingAfter = page.data.at(-1)?.id;
+      if (!startingAfter) {
+        throw new BillingError(
+          "subscription_pagination_invalid",
+          "Billing subscription pagination could not continue",
+        );
+      }
     }
     const customerWorkspaceId = customer.metadata.workspaceId?.trim() || null;
-    const subscriptionWorkspaceIds = subscriptions.data.map(
+    const subscriptionWorkspaceIds = subscriptions.map(
       (subscription) => subscription.metadata.workspaceId?.trim() || null,
     );
     const ownership = !customerWorkspaceId || subscriptionWorkspaceIds.some((id) => !id)
@@ -245,10 +263,136 @@ export class BillingService {
     return {
       customerId: customer.id,
       ownership,
-      subscriptions: subscriptions.data.map((subscription) =>
+      subscriptions: subscriptions.map((subscription) =>
         this.normalizeSubscription(subscription),
       ),
     };
+  }
+
+  /** Production Stripe adapter exposed for isolated sandbox contract tests. */
+  stripeProviderAdapter(): WorkspaceBillingProvider {
+    return {
+        verifyDelivery: (rawBody, signature) =>
+          this.verifyStripeDelivery(rawBody, signature),
+        retrieveCurrentState: (customerId) => this.retrieveCurrentState(customerId),
+        findCustomersByWorkspace: async (workspaceId) => {
+          const result = await getStripe().customers.search({
+            query: `metadata['workspaceId']:'${workspaceId}'`,
+            limit: 10,
+          });
+          if (result.has_more) {
+            throw new BillingError(
+              "customer_collection_unbounded",
+              "Customer recovery needs operator attention",
+            );
+          }
+          return result.data
+            .filter((customer) => customer.metadata.workspaceId === workspaceId)
+            .map((customer) => ({ customerId: customer.id }));
+        },
+        createCustomer: async (input, idempotencyKey) => {
+          const customer = await getStripe().customers.create(
+            {
+              metadata: {
+                workspaceId: input.workspaceId,
+                ownerUserId: input.actorUserId,
+              },
+            },
+            { idempotencyKey },
+          );
+          return { customerId: customer.id };
+        },
+        findCheckoutSessionsByAttempt: async ({ attemptId, customerId }) => {
+          const sessions = await getStripe().checkout.sessions.list({
+            customer: customerId,
+            limit: 100,
+          });
+          if (sessions.has_more) {
+            throw new BillingError(
+              "checkout_collection_unbounded",
+              "Checkout recovery needs operator attention",
+            );
+          }
+          return sessions.data
+            .filter((session) => session.metadata?.attemptId === attemptId)
+            .map((session) => this.normalizeCheckoutSession(session));
+        },
+        createCheckoutSession: async (input, idempotencyKey) => {
+          const session = await getStripe().checkout.sessions.create(
+            {
+              mode: "subscription",
+              customer: input.customerId,
+              line_items: [{ price: input.priceId, quantity: 1 }],
+              success_url: input.successUrl,
+              cancel_url: input.cancelUrl,
+              client_reference_id: input.workspaceId,
+              allow_promotion_codes: true,
+              metadata: {
+                workspaceId: input.workspaceId,
+                actorUserId: input.actorUserId,
+                attemptId: input.attemptId,
+              },
+              subscription_data: {
+                metadata: {
+                  workspaceId: input.workspaceId,
+                  actorUserId: input.actorUserId,
+                  attemptId: input.attemptId,
+                },
+              },
+            },
+            { idempotencyKey },
+          );
+          return this.normalizeCheckoutSession(session);
+        },
+        retrieveCheckoutSession: async (sessionId) =>
+          this.normalizeCheckoutSession(
+            await getStripe().checkout.sessions.retrieve(sessionId),
+          ),
+        createPortalSession: async (input) => {
+          const configuration = process.env.STRIPE_PORTAL_CONFIGURATION_ID;
+          if (!configuration) {
+            throw new BillingError(
+              "portal_not_configured",
+              "The billing portal is not configured",
+            );
+          }
+          const session = await getStripe().billingPortal.sessions.create({
+            customer: input.customerId,
+            configuration,
+            return_url: input.returnUrl,
+          });
+          return { url: session.url };
+        },
+        createSeatItem: async (input, idempotencyKey) => {
+          const item = await getStripe().subscriptionItems.create(
+            {
+              subscription: input.subscriptionId,
+              price: input.priceId,
+              quantity: input.quantity,
+              proration_behavior: input.prorationBehavior,
+            },
+            { idempotencyKey },
+          );
+          return { itemId: item.id };
+        },
+        updateSeatItem: async (input, idempotencyKey) => {
+          await getStripe().subscriptionItems.update(
+            input.itemId,
+            {
+              quantity: input.quantity,
+              proration_behavior: input.prorationBehavior,
+            },
+            { idempotencyKey },
+          );
+        },
+        deleteSeatItem: async (input, idempotencyKey) => {
+          await getStripe().subscriptionItems.del(
+            input.itemId,
+            { proration_behavior: input.prorationBehavior },
+            { idempotencyKey },
+          );
+        },
+      };
   }
 
   private workspaceBillingModule() {
@@ -260,16 +404,27 @@ export class BillingService {
     return createWorkspaceBillingModule({
       catalog,
       store: createPrismaWorkspaceBillingStore(),
-      provider: {
-        verifyDelivery: (rawBody, signature) =>
-          this.verifyStripeDelivery(rawBody, signature),
-        retrieveCurrentState: (customerId) => this.retrieveCurrentState(customerId),
-      },
+      provider: this.stripeProviderAdapter(),
       clock: { now: () => new Date() },
       diagnostics: {
         record: (event) => console.warn(JSON.stringify(event)),
       },
     });
+  }
+
+  private normalizeCheckoutSession(
+    session: Stripe.Checkout.Session,
+  ): ProviderCheckoutSession {
+    return {
+      sessionId: session.id,
+      url: session.url,
+      expiresAt: new Date(session.expires_at * 1000),
+      status: session.status ?? "expired",
+      paymentStatus: session.payment_status,
+      workspaceId:
+        session.metadata?.workspaceId ?? session.client_reference_id ?? undefined,
+      attemptId: session.metadata?.attemptId ?? undefined,
+    };
   }
 
   reconcileCurrentState(workspaceId: string) {
@@ -280,12 +435,20 @@ export class BillingService {
     return this.workspaceBillingModule().readBillingState(workspaceId);
   }
 
+  inspectAccount(workspaceId: string) {
+    return this.workspaceBillingModule().inspectAccount(workspaceId);
+  }
+
   reconcileDueAccounts() {
     return this.workspaceBillingModule().reconcileDueAccounts();
   }
 
-  private verifyStripeDelivery(rawBody: string, signature: string) {
-    const secret = process.env.STRIPE_WEBHOOK_SECRET;
+  async verifyStripeDelivery(
+    rawBody: string,
+    signature: string,
+    contract?: { stripe: Stripe; webhookSecret: string },
+  ) {
+    const secret = contract?.webhookSecret ?? process.env.STRIPE_WEBHOOK_SECRET;
     if (!secret) {
       throw new BillingError(
         "webhook_not_configured",
@@ -294,7 +457,11 @@ export class BillingService {
     }
     let event: Stripe.Event;
     try {
-      event = getStripe().webhooks.constructEvent(rawBody, signature, secret);
+      event = await (contract?.stripe ?? getStripe()).webhooks.constructEventAsync(
+        rawBody,
+        signature,
+        secret,
+      );
     } catch {
       throw new BillingError(
         "invalid_signature",
@@ -358,104 +525,63 @@ export class BillingService {
     };
   }
 
-  async createCheckoutSession(
-    userId: string,
-    workspaceId: string,
-    tier: PaidPricingTier,
-    interval: BillingInterval,
-    urls: { successUrl: string; cancelUrl: string },
-  ): Promise<{ url: string }> {
-    const stripe = getStripe();
-    const priceId = priceIdFor(tier, interval);
-    if (!priceId) {
-      throw new BillingError(
-        "price_not_configured",
-        `No Stripe price configured for ${tier}/${interval}`,
-      );
-    }
-
-    const actor = await workspaceService.requireActor(userId, workspaceId, "billing.manage");
-    const prisma = requirePrisma();
-    if (tier !== "business") {
-      const additionalMembers = await prisma.workspaceMember.count({
-        where: { workspaceId, userId: { not: actor.workspaceOwnerUserId } },
-      });
-      if (additionalMembers > 0) {
-        throw new BillingError(
-          "members_block_downgrade",
-          "Remove all non-owner members before choosing a non-Business plan.",
-        );
+  private async callWorkspaceBilling<T>(operation: () => Promise<T>): Promise<T> {
+    try {
+      return await operation();
+    } catch (error) {
+      if (error instanceof WorkspaceBillingError) {
+        throw new BillingError(error.code, error.message);
       }
+      throw error;
     }
-
-    const customerId = await this.ensureCustomer(userId, workspaceId);
-    const session = await stripe.checkout.sessions.create({
-      mode: "subscription",
-      customer: customerId,
-      line_items: [{ price: priceId, quantity: 1 }],
-      success_url: urls.successUrl,
-      cancel_url: urls.cancelUrl,
-      client_reference_id: workspaceId,
-      allow_promotion_codes: true,
-      metadata: { workspaceId, actorUserId: userId, tier },
-      subscription_data: { metadata: { workspaceId, actorUserId: userId } },
-    });
-
-    if (!session.url) {
-      throw new BillingError("checkout_failed", "Stripe did not return a checkout URL");
-    }
-    return { url: session.url };
   }
 
-  async createBillingPortalSession(
-    userId: string,
-    workspaceId: string,
-    returnUrl: string,
-  ): Promise<{ url: string }> {
-    const stripe = getStripe();
-    const prisma = requirePrisma();
-    await workspaceService.requireActor(userId, workspaceId, "billing.manage");
-    const workspace = await prisma.workspace.findUnique({
-      where: { id: workspaceId },
-      select: { billingAccount: { select: { providerCustomerId: true } } },
-    });
-    if (!workspace?.billingAccount?.providerCustomerId) {
-      throw new BillingError("no_customer", "No billing account yet");
-    }
-    const session = await stripe.billingPortal.sessions.create({
-      customer: workspace.billingAccount.providerCustomerId,
-      return_url: returnUrl,
-    });
-    return { url: session.url };
+  startCheckout(input: {
+    userId: string;
+    workspaceId: string;
+    clientIdempotencyKey: string;
+    tier: PaidPricingTier;
+    interval: BillingInterval;
+    returnDestination: string;
+  }) {
+    return this.callWorkspaceBilling(() =>
+      this.workspaceBillingModule().startCheckout({
+        workspaceId: input.workspaceId,
+        actorUserId: input.userId,
+        clientIdempotencyKey: input.clientIdempotencyKey,
+        targetTier: input.tier,
+        interval: input.interval,
+        returnDestination: input.returnDestination,
+      }),
+    );
   }
 
-  private async ensureCustomer(userId: string, workspaceId: string): Promise<string> {
-    const stripe = getStripe();
-    const prisma = requirePrisma();
-    await workspaceService.requireActor(userId, workspaceId, "billing.manage");
-    const workspace = await prisma.workspace.findUnique({
-      where: { id: workspaceId },
-      select: {
-        billingAccount: { select: { providerCustomerId: true } },
-        name: true,
-        owner: { select: { primaryEmail: true } },
-      },
-    });
-    if (!workspace) throw new BillingError("workspace_not_found", "Workspace not found");
-    if (workspace.billingAccount?.providerCustomerId) {
-      return workspace.billingAccount.providerCustomerId;
-    }
+  observeCheckoutReturn(input: {
+    userId: string;
+    workspaceId: string;
+    sessionId: string;
+  }) {
+    return this.callWorkspaceBilling(() =>
+      this.workspaceBillingModule().observeCheckoutReturn({
+        workspaceId: input.workspaceId,
+        actorUserId: input.userId,
+        sessionId: input.sessionId,
+      }),
+    );
+  }
 
-    const customer = await stripe.customers.create({
-      email: workspace.owner.primaryEmail ?? undefined,
-      name: workspace.name,
-      metadata: { workspaceId, ownerUserId: userId },
-    });
-    await prisma.workspaceBillingAccount.update({
-      where: { workspaceId },
-      data: { providerCustomerId: customer.id },
-    });
-    return customer.id;
+  openPortal(input: {
+    userId: string;
+    workspaceId: string;
+    returnUrl: string;
+  }) {
+    return this.callWorkspaceBilling(() =>
+      this.workspaceBillingModule().openPortal({
+        workspaceId: input.workspaceId,
+        actorUserId: input.userId,
+        returnUrl: input.returnUrl,
+      }),
+    );
   }
 
   /** Verifies and durably accepts a Stripe delivery without reconciling inline. */
@@ -470,139 +596,6 @@ export class BillingService {
     return { received: true as const, disposition: result.kind };
   }
 
-  async setWorkspaceSeatQuantity(
-    workspaceId: string,
-    quantity: number,
-    idempotencyKey: string,
-  ): Promise<void> {
-    const prisma = requirePrisma();
-    const workspace = await prisma.workspace.findUnique({
-      where: { id: workspaceId },
-      include: { billingAccount: true },
-    });
-    if (!workspace || workspace.pricingTier !== "business" || workspace.status !== "active") {
-      throw new BillingError("business_required", "Active Business subscription required for paid seats");
-    }
-    if (!workspace.billingAccount?.canonicalSubscriptionId) {
-      throw new BillingError("subscription_missing", "Business subscription is not synchronized yet");
-    }
-    const stripe = getStripe();
-    const interval = workspace.billingAccount.billingInterval === "annual" ? "annual" : "monthly";
-    const priceId = seatPriceIdFor(interval);
-    if (!priceId) throw new BillingError("seat_price_not_configured", `No Business seat price configured for ${interval}`);
-    const safeQuantity = Math.max(0, Math.trunc(quantity));
-
-    if (safeQuantity === 0 && workspace.billingAccount.seatItemId) {
-      await stripe.subscriptionItems.del(workspace.billingAccount.seatItemId, {}, { idempotencyKey });
-      await prisma.workspaceBillingAccount.update({
-        where: { workspaceId },
-        data: { seatItemId: null },
-      });
-      return;
-    }
-    if (safeQuantity === 0) return;
-
-    if (workspace.billingAccount.seatItemId) {
-      await stripe.subscriptionItems.update(
-        workspace.billingAccount.seatItemId,
-        { quantity: safeQuantity, proration_behavior: "create_prorations" },
-        { idempotencyKey },
-      );
-      return;
-    }
-
-    const item = await stripe.subscriptionItems.create(
-      {
-        subscription: workspace.billingAccount.canonicalSubscriptionId,
-        price: priceId,
-        quantity: safeQuantity,
-        proration_behavior: "create_prorations",
-      },
-      { idempotencyKey },
-    );
-    await prisma.workspaceBillingAccount.update({
-      where: { workspaceId },
-      data: { seatItemId: item.id },
-    });
-  }
-
-  async reconcileWorkspaceSeats(workspaceId: string, reason = "reconcile") {
-    const prisma = requirePrisma();
-    const quantity = await prisma.workspaceMember.count({
-      where: { workspaceId, role: { in: ["admin", "editor"] } },
-    });
-    await this.setWorkspaceSeatQuantity(
-      workspaceId,
-      quantity,
-      `workspace-seats-${workspaceId}-${reason}-${quantity}`,
-    );
-    console.warn(JSON.stringify({
-      level: "info",
-      message: "workspace_seats_reconciled",
-      workspaceId,
-      quantity,
-      reason,
-    }));
-    return quantity;
-  }
-
-  async reconcileAllWorkspaceSeats(limit = 100) {
-    const prisma = requirePrisma();
-    const workspaces = await prisma.workspace.findMany({
-      where: {
-        pricingTier: "business",
-        status: "active",
-        billingAccount: { canonicalSubscriptionId: { not: null } },
-      },
-      select: { id: true },
-      orderBy: { updatedAt: "asc" },
-      take: Math.max(1, Math.min(500, limit)),
-    });
-    let reconciled = 0;
-    let failed = 0;
-    const hourBucket = new Date().toISOString().slice(0, 13);
-    for (const workspace of workspaces) {
-      try {
-        await this.reconcileWorkspaceSeats(workspace.id, `scheduled-${hourBucket}`);
-        reconciled += 1;
-      } catch (error) {
-        failed += 1;
-        console.warn(JSON.stringify({
-          level: "warn",
-          message: "workspace_seat_reconciliation_failed",
-          workspaceId: workspace.id,
-          error: error instanceof Error ? error.message : String(error),
-        }));
-      }
-    }
-    return { checked: workspaces.length, reconciled, failed };
-  }
-
-  /** Reconciles a successful Checkout return immediately. The signed Stripe
-   * webhook remains authoritative and idempotent, but this closes the window
-   * where a user paid before project expiry and the webhook arrived later. */
-  async confirmCheckoutSession(
-    userId: string,
-    workspaceId: string,
-    sessionId: string,
-  ): Promise<{ tier: PricingTier }> {
-    const stripe = getStripe();
-    await workspaceService.requireActor(userId, workspaceId, "billing.manage");
-    const session = await stripe.checkout.sessions.retrieve(sessionId, {
-      expand: ["subscription"],
-    });
-    if (
-      session.status !== "complete" ||
-      session.client_reference_id !== workspaceId
-    ) {
-      throw new BillingError(
-        "checkout_not_confirmed",
-        "Checkout session is not complete for this account",
-      );
-    }
-    const result = await this.reconcileCurrentState(workspaceId);
-    return { tier: result.view.plan };
-  }
 }
 
 export const billingService = new BillingService();

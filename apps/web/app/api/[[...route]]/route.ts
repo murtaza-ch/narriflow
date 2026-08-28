@@ -13,6 +13,7 @@ import {
   createClipShareLinkSchema,
   clipDownloadQuerySchema,
   checkoutRequestSchema,
+  checkoutReturnRequestSchema,
   contentPackSchema,
   autopilotRuleInputSchema,
   autopilotRuleUpdateSchema,
@@ -49,7 +50,6 @@ import {
   audioAssetService,
   AudioAssetNotFoundError,
   billingService,
-  BillingError,
   checkRateLimit,
   analyticsService,
   autopilotService,
@@ -85,6 +85,7 @@ import {
   type ProjectListSourceFilter,
   type ProjectListStatusFilter,
 } from "@narriflow/services";
+import { workspaceBillingHttpFailure } from "./workspace-billing-http";
 import {
   resolveCanonicalAppOrigin,
   safeSocialRedirectPath,
@@ -97,7 +98,7 @@ export const runtime = "nodejs";
 export const maxDuration = 60;
 
 const app = new Hono().basePath("/api");
-billingService.validateConfiguration();
+billingService.validateConfiguration({ surface: "web" });
 
 app.route(
   "/",
@@ -1910,54 +1911,40 @@ app.post("/billing/checkout", async (c) => {
 
   const origin = new URL(c.req.url).origin;
   try {
-    const result = await billingService.createCheckoutSession(
-      appUser.actorUserId,
-      appUser.workspaceId,
-      parsed.data.tier,
-      parsed.data.interval,
-      {
-        successUrl: `${origin}/home?upgraded=1&session_id={CHECKOUT_SESSION_ID}`,
-        cancelUrl: `${origin}/settings/subscription`,
-      },
-    );
+    const result = await billingService.startCheckout({
+      userId: appUser.actorUserId,
+      workspaceId: appUser.workspaceId,
+      clientIdempotencyKey: parsed.data.clientIdempotencyKey,
+      tier: parsed.data.tier,
+      interval: parsed.data.interval,
+      returnDestination: `${origin}/settings/billing`,
+    });
     return c.json(result, 200);
   } catch (error) {
-    if (error instanceof BillingError) {
-      return c.json({ error: error.code, message: error.message }, 400);
-    }
-    return c.json(
-      { error: "checkout_failed", message: errorMessage(error) },
-      400,
-    );
+    const failure = workspaceBillingHttpFailure(error, "checkout_failed");
+    return c.json(failure.body, failure.status);
   }
 });
 
-app.post("/billing/confirm", async (c) => {
+app.post("/billing/checkout/return", async (c) => {
   const appUser = await getCurrentAppUser();
   if (!appUser) return c.json({ error: "Unauthorized" }, 401);
   const payload = await c.req.json().catch(() => ({}));
-  const sessionId =
-    typeof payload?.sessionId === "string" ? payload.sessionId.trim() : "";
-  if (!sessionId) {
-    return c.json({ error: "Missing checkout session" }, 400);
+  const parsed = checkoutReturnRequestSchema.safeParse(payload);
+  if (!parsed.success) {
+    return c.json({ error: "invalid_checkout_return", issues: parsed.error.issues }, 400);
   }
   try {
-    return c.json(
-      await billingService.confirmCheckoutSession(
-        appUser.actorUserId,
-        appUser.workspaceId,
-        sessionId,
-      ),
-      200,
-    );
+    const result = await billingService.observeCheckoutReturn({
+      userId: appUser.actorUserId,
+      workspaceId: appUser.workspaceId,
+      sessionId: parsed.data.sessionId,
+    });
+    c.header("Retry-After", String(result.retryAfterSeconds));
+    return c.json(result, 202);
   } catch (error) {
-    if (error instanceof BillingError) {
-      return c.json({ error: error.code, message: error.message }, 400);
-    }
-    return c.json(
-      { error: "checkout_confirmation_failed", message: errorMessage(error) },
-      400,
-    );
+    const failure = workspaceBillingHttpFailure(error, "checkout_return_failed");
+    return c.json(failure.body, failure.status);
   }
 });
 
@@ -1967,17 +1954,50 @@ app.post("/billing/portal", async (c) => {
 
   const origin = new URL(c.req.url).origin;
   try {
-    const result = await billingService.createBillingPortalSession(
-      appUser.actorUserId,
-      appUser.workspaceId,
-      `${origin}/settings/subscription`,
-    );
+    const result = await billingService.openPortal({
+      userId: appUser.actorUserId,
+      workspaceId: appUser.workspaceId,
+      returnUrl: `${origin}/settings/billing`,
+    });
     return c.json(result, 200);
   } catch (error) {
-    if (error instanceof BillingError) {
-      return c.json({ error: error.code, message: error.message }, 400);
+    const failure = workspaceBillingHttpFailure(error, "portal_failed");
+    return c.json(failure.body, failure.status);
+  }
+});
+
+app.get("/billing/state", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  try {
+    const view = await billingService.readBillingState(appUser.workspaceId);
+    if (view.health === "activating") c.header("Retry-After", "2");
+    return c.json({ view }, 200);
+  } catch {
+    return c.json({ error: "billing_state_unavailable" }, 503);
+  }
+});
+
+app.post("/billing/reconcile", async (c) => {
+  const appUser = await getCurrentAppUser();
+  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  try {
+    await workspaceService.requireActor(
+      appUser.actorUserId,
+      appUser.workspaceId,
+      "billing.manage",
+    );
+    const result = await billingService.reconcileCurrentState(appUser.workspaceId);
+    if (result.view.health === "activating" || result.view.health === "retrying") {
+      c.header("Retry-After", "2");
     }
-    return c.json({ error: "portal_failed", message: errorMessage(error) }, 400);
+    return c.json(result, 200);
+  } catch (error) {
+    const failure = workspaceBillingHttpFailure(
+      error,
+      "billing_reconciliation_unavailable",
+    );
+    return c.json(failure.body, failure.status);
   }
 });
 

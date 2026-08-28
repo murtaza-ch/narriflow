@@ -47,6 +47,7 @@ const RESTRICTED_OWNER_CAPABILITIES = new Set<WorkspaceCapability>([
   "content.view",
   "content.download",
   "billing.manage",
+  "members.invite",
 ]);
 
 export function roleHasWorkspaceCapability(

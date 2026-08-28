@@ -4,7 +4,7 @@
 
 **Blocked by:** [04 — Apply subscription health, access, and retention policy](04-apply-subscription-health-access-and-retention-policy.md).
 
-**Status:** ready-for-agent
+**Status:** completed
 
 **Specification:** [Deepen Workspace Billing synchronization](../spec.md)
 
@@ -57,3 +57,9 @@
 ## Fresh-task handoff
 
 Implement after ticket 04 with `/implement`; use `/tdd` for idempotency, ambiguous customer creation, return verification, and activation UX; finish with `/code-review`; run uncached module, Hono, browser, React, database, typecheck, lint, test, and build checks.
+
+## Completion evidence — 2026-08-28
+
+- Workspace Billing now owns durable Checkout attempts, stable customer/session operation keys, exact metadata recovery, immutable replay conflicts, return observation, portal start, and the typed billing view. Checkout URLs remain response-only.
+- Browser-owned keys are persisted before requests; bounded polling honors `Retry-After`, survives transient failures, strips return parameters, and never grants access from a redirect.
+- Module, browser-adapter, Hono mapping, sandbox Stripe, concurrent PostgreSQL, full repository, production build, and real Chrome checks pass.

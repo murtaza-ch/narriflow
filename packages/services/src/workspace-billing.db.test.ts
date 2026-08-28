@@ -118,6 +118,85 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
     ).rejects.toMatchObject({ code: "P2002" });
   });
 
+  test("concurrent Checkout starts settle on one durable attempt and provider identity", async () => {
+    const { user, workspace } = await createWorkspace("checkout-race");
+    const providerCustomers = new Map<string, string>();
+    const providerSessions = new Map<
+      string,
+      {
+        sessionId: string;
+        url: string;
+        expiresAt: Date;
+        status: "open";
+        paymentStatus: string;
+        workspaceId: string;
+        attemptId: string;
+      }
+    >();
+    const provider: WorkspaceBillingProvider = {
+      verifyDelivery: () => {
+        throw new Error("not used");
+      },
+      retrieveCurrentState: async () => {
+        throw new Error("not used");
+      },
+      findCustomersByWorkspace: async () => [],
+      createCustomer: async (input, key) => {
+        const customerId = providerCustomers.get(key) ?? `cus_${input.workspaceId}`;
+        providerCustomers.set(key, customerId);
+        return { customerId };
+      },
+      findCheckoutSessionsByAttempt: async ({ attemptId }) =>
+        providerSessions.has(attemptId) ? [providerSessions.get(attemptId)!] : [],
+      createCheckoutSession: async (input, key) => {
+        const session = providerSessions.get(input.attemptId) ?? {
+          sessionId: `cs_${key}`,
+          url: "https://checkout.stripe.test/race",
+          expiresAt: new Date("2026-08-28T11:00:00.000Z"),
+          status: "open" as const,
+          paymentStatus: "unpaid",
+          workspaceId: input.workspaceId,
+          attemptId: input.attemptId,
+        };
+        providerSessions.set(input.attemptId, session);
+        return session;
+      },
+      retrieveCheckoutSession: async (sessionId) =>
+        [...providerSessions.values()].find(
+          (session) => session.sessionId === sessionId,
+        )!,
+    };
+    const billing = createWorkspaceBillingModule({
+      catalog,
+      store: createPrismaWorkspaceBillingStore(),
+      provider,
+      clock: { now: () => new Date("2026-08-28T10:00:00.000Z") },
+      diagnostics: { record: () => undefined },
+    });
+    const input = {
+      workspaceId: workspace.id,
+      actorUserId: user.id,
+      clientIdempotencyKey: randomUUID(),
+      targetTier: "pro" as const,
+      interval: "monthly" as const,
+      returnDestination: "https://app.test/settings/billing",
+    };
+
+    const [first, second] = await Promise.all([
+      billing.startCheckout(input),
+      billing.startCheckout(input),
+    ]);
+
+    expect(second).toEqual(first);
+    expect(
+      await prisma.workspaceCheckoutAttempt.count({
+        where: { billingAccount: { workspaceId: workspace.id } },
+      }),
+    ).toBe(1);
+    expect(providerCustomers.size).toBe(1);
+    expect(providerSessions.size).toBe(1);
+  });
+
   test("accepts one delivery and wakes its account atomically under concurrency", async () => {
     const { workspace } = await createWorkspace("delivery");
     await prisma.workspaceBillingAccount.update({
@@ -252,7 +331,7 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
     ).toMatchObject({ status: "reconciled", processedAt: now });
   });
 
-  test("claims competing workers without duplication and drains beyond one batch", async () => {
+  test("claims competing workers without duplication and drains beyond three batches", async () => {
     await prisma.workspaceBillingAccount.updateMany({
       data: {
         nextReconcileAt: new Date("2027-01-01T00:00:00.000Z"),
@@ -261,24 +340,25 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
       },
     });
     const workspaces = await Promise.all(
-      Array.from({ length: 30 }, (_, index) => createWorkspace(`fair-${index}`)),
+      Array.from({ length: 31 }, (_, index) => createWorkspace(`fair-${index}`)),
     );
     const now = new Date("2026-08-28T10:00:00.000Z");
     await prisma.workspaceBillingAccount.updateMany({
       where: { workspaceId: { in: workspaces.map(({ workspace }) => workspace.id) } },
       data: { nextReconcileAt: now },
     });
-    const firstStore = createPrismaWorkspaceBillingStore();
-    const secondStore = createPrismaWorkspaceBillingStore();
+    const stores = Array.from({ length: 4 }, () =>
+      createPrismaWorkspaceBillingStore(),
+    );
+    const batches = await Promise.all(
+      stores.map((store) =>
+        store.claimDueAccounts({ now, limit: 10, leaseMs: 60_000 }),
+      ),
+    );
+    const workspaceIds = batches.flat().map((claim) => claim.workspaceId);
 
-    const [first, second] = await Promise.all([
-      firstStore.claimDueAccounts({ now, limit: 25, leaseMs: 60_000 }),
-      secondStore.claimDueAccounts({ now, limit: 25, leaseMs: 60_000 }),
-    ]);
-    const workspaceIds = [...first, ...second].map((claim) => claim.workspaceId);
-
-    expect(workspaceIds).toHaveLength(30);
-    expect(new Set(workspaceIds).size).toBe(30);
+    expect(workspaceIds).toHaveLength(31);
+    expect(new Set(workspaceIds).size).toBe(31);
   });
 
   test("expired claims are taken over and stale retry or commit settlement is fenced", async () => {

@@ -24,7 +24,6 @@ const nextConfig: NextConfig = {
       { source: "/settings", destination: "/settings/profile", permanent: true },
       { source: "/settings/brand-templates", destination: "/brand-kit", permanent: true },
       { source: "/settings/social", destination: "/settings/social-accounts", permanent: true },
-      { source: "/settings/billing", destination: "/settings/subscription", permanent: true },
     ];
   },
   async headers() {

@@ -1,5 +1,6 @@
 "use server";
 
+import { randomUUID } from "node:crypto";
 import { requireCurrentAppUser, setActiveWorkspace } from "@narriflow/auth";
 import { billingService, workspaceService } from "@narriflow/services";
 import type { BillingInterval } from "@narriflow/validators";
@@ -8,6 +9,7 @@ export interface CreateWorkspaceState {
   error?: string;
   checkoutUrl?: string;
   workspaceId?: string;
+  checkoutIdempotencyKey?: string;
 }
 
 export async function createBusinessWorkspaceAction(
@@ -21,10 +23,12 @@ export async function createBusinessWorkspaceAction(
   }
 
   let workspaceId = previous.workspaceId;
+  const checkoutIdempotencyKey =
+    previous.checkoutIdempotencyKey ?? randomUUID();
   try {
     if (workspaceId) {
       const actor = await workspaceService.requireActor(user.id, workspaceId, "billing.manage");
-      if (actor.role !== "owner" || actor.status !== "pending_payment" || actor.pricingTier !== "business") {
+      if (actor.role !== "owner" || actor.status !== "pending_payment") {
         throw new Error("This workspace is not awaiting Business checkout");
       }
     } else {
@@ -35,21 +39,20 @@ export async function createBusinessWorkspaceAction(
     }
 
     const origin = process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") ?? "http://localhost:3000";
-    const checkout = await billingService.createCheckoutSession(
-      user.id,
+    const checkout = await billingService.startCheckout({
+      userId: user.id,
       workspaceId,
-      "business",
+      clientIdempotencyKey: checkoutIdempotencyKey,
+      tier: "business",
       interval,
-      {
-        successUrl: `${origin}/home?upgraded=1&session_id={CHECKOUT_SESSION_ID}`,
-        cancelUrl: `${origin}/settings/subscription?setup=cancelled`,
-      },
-    );
+      returnDestination: `${origin}/settings/billing`,
+    });
     await setActiveWorkspace(workspaceId);
-    return { workspaceId, checkoutUrl: checkout.url };
+    return { workspaceId, checkoutIdempotencyKey, checkoutUrl: checkout.url };
   } catch (error) {
     return {
       workspaceId,
+      checkoutIdempotencyKey,
       error: error instanceof Error ? error.message : "Workspace checkout could not be started",
     };
   }
