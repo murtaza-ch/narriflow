@@ -486,15 +486,12 @@ export function resolveEffectiveFramingMode(
 }
 
 /**
- * "Apply to all clips" for a single `studioEdits` sub-field (vizard-parity.md
- * Phase C — transitions/background/framing apply-to-all). Unlike
- * `captionPreset`, `studioEdits` is a JSON blob, so a bulk apply can't
- * overwrite the whole column — it must patch exactly one named sub-object
- * per call, merged per-row on top of that clip's existing `studioEdits` by
- * the service. The `.strict()` + refine keeps the payload to precisely one
- * of the known fields; add a new branch here (and in
- * `applyStudioEditsPatchToAllClips`) when another sub-field earns an
- * apply-to-all action.
+ * One `studioEdits` sub-field inside an Apply-to-all persistence intent.
+ * A user gesture may group several of these patches in one atomic project
+ * mutation, while each patch remains strict and names exactly one sub-object.
+ * Clip Editor Document Persistence merges the group onto each target's
+ * canonical document. Add a schema branch here and handle the field in that
+ * module's project-selection intent when another sub-field earns Apply-to-all.
  */
 export const applyStudioEditsPatchSchema = z
   .object({

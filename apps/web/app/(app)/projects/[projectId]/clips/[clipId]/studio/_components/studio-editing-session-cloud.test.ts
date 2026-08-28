@@ -526,11 +526,11 @@ test("a semantic rejection preserves editing and a corrected version can checkpo
   });
   const rejected = session.perform({ type: "checkpoint-cloud" });
   await waitUntil(() => cloud.saves.length === 1);
-  cloud.respond(0, { kind: "rejected", code: "unsafe_broll_url" });
+  cloud.respond(0, { kind: "rejected", code: "unsafe_media_url" });
   expect(await rejected).toEqual({
     kind: "cloud-blocked",
     reason: "semantic-rejection",
-    code: "unsafe_broll_url",
+    code: "unsafe_media_url",
   });
   expect(session.getSnapshot()).toMatchObject({
     durability: { device: "durable" },

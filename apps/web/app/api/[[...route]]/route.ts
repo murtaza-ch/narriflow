@@ -1129,7 +1129,7 @@ app.patch("/projects/:id/clips/:clipId", async (c) => {
     );
   } catch (error) {
     if (error instanceof UnsafeUrlError) {
-      return c.json({ error: "unsafe_broll_url" }, 422);
+      return c.json({ error: "unsafe_media_url" }, 422);
     }
     const persistenceError = clipEditorPersistenceHttpError(error);
     if (persistenceError) return c.json(persistenceError.body, persistenceError.status);
@@ -1486,13 +1486,11 @@ app.put("/projects/:id/clips/:clipId/editor", async (c) => {
       // practice too, same rule as the empty-timeline case above.
       return c.json({ error: error.code }, 422);
     }
-    // Fix 14: a non-public brollUrl (localhost, a private IP, etc.) used to
-    // rethrow as an unhandled 500 here and wedge autosave — the client
-    // pre-validates now (broll-panel.tsx), but this stays as the
-    // server-side backstop (e.g. a URL that resolves to a private address,
-    // which only the DNS-aware half of assertPublicHttpUrl can catch).
+    // Non-public document media (localhost, a private IP, etc.) must remain a
+    // typed rejection instead of wedging autosave. Client validation is only
+    // the first line of defense; DNS-aware validation stays server-side.
     if (error instanceof UnsafeUrlError) {
-      return c.json({ error: "unsafe_broll_url" }, 422);
+      return c.json({ error: "unsafe_media_url" }, 422);
     }
     const persistenceError = clipEditorPersistenceHttpError(error);
     if (persistenceError) return c.json(persistenceError.body, persistenceError.status);
@@ -1563,11 +1561,10 @@ app.post("/projects/:id/clips/:clipId/editor/reset", async (c) => {
         409,
       );
     }
-    // Fix 14: same UnsafeUrlError -> 422 mapping as the PUT above, in case
-    // the restored original document's brollUrl is no longer considered
-    // public (e.g. it now resolves to a private address).
+    // Keep Reset's unsafe-media outcome identical to the other document
+    // mutation adapters.
     if (error instanceof UnsafeUrlError) {
-      return c.json({ error: "unsafe_broll_url" }, 422);
+      return c.json({ error: "unsafe_media_url" }, 422);
     }
     const persistenceError = clipEditorPersistenceHttpError(error);
     if (persistenceError) return c.json(persistenceError.body, persistenceError.status);
