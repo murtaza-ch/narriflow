@@ -264,6 +264,9 @@ export class WorkspaceLibraryService {
         postedAt: true,
         externalUrl: true,
         errorCode: true,
+        errorDisposition: true,
+        nextAttemptAt: true,
+        createdAt: true,
         project: { select: { title: true } },
         socialAccount: { select: { id: true, displayName: true, handle: true } },
       },
@@ -273,6 +276,8 @@ export class WorkspaceLibraryService {
       ...row,
       scheduledFor: row.scheduledFor?.toISOString() ?? null,
       postedAt: row.postedAt?.toISOString() ?? null,
+      nextAttemptAt: row.nextAttemptAt?.toISOString() ?? null,
+      createdAt: row.createdAt.toISOString(),
     }));
   }
 
@@ -301,24 +306,14 @@ export class WorkspaceLibraryService {
       prisma.clip.findMany({
         where: {
           project: { workspaceId, ...accessibleProjectWhere() },
-          exports: { some: { workspaceId, status: "ready" } },
         },
         select: {
           id: true,
+          editorRevision: true,
           title: true,
           hookText: true,
           projectId: true,
           project: { select: { title: true } },
-          exports: {
-            where: { workspaceId, status: "ready" },
-            select: {
-              variants: {
-                where: { status: "completed" },
-                select: { aspectRatio: true },
-              },
-            },
-            take: 5,
-          },
         },
         orderBy: { createdAt: "desc" },
         take: 500,
@@ -332,10 +327,11 @@ export class WorkspaceLibraryService {
     return {
       clips: clips.map((clip) => ({
         id: clip.id,
+        editorRevision: clip.editorRevision,
         projectId: clip.projectId,
         title: clip.title?.trim() || clip.hookText,
         projectTitle: clip.project.title,
-        aspectRatios: [...new Set(clip.exports.flatMap((item) => item.variants.map((variant) => variant.aspectRatio)))],
+        aspectRatios: ["ratio_9_16", "ratio_1_1", "ratio_16_9", "ratio_4_5"] as ClipAspectRatio[],
       })),
       accounts,
     };

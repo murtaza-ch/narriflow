@@ -174,11 +174,41 @@ enum SocialPlatform {
 
 enum SocialPostStatus {
   draft
+  preparing_video
   scheduled
   publishing
+  processing
+  reconciling
   posted
   failed
+  needs_attention
   cancelled
+}
+
+enum PublicationAttemptPhase {
+  claimed
+  preparing
+  uploading
+  submission_started
+  processing
+  reconciling
+  retry_scheduled
+  succeeded
+  failed
+  needs_attention
+}
+
+enum PublicationOutcome {
+  accepted
+  pending
+  failed
+  unknown
+}
+
+enum PublicationFailureDisposition {
+  safe_retry
+  permanent
+  attention
 }
 
 enum SocialAccountStatus {
@@ -887,6 +917,7 @@ model SocialAccount {
   user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
   workspace   Workspace?    @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   socialPosts SocialPost[]
+  frozenPublicationStates FrozenPublicationState[]
 
   @@unique([workspaceId, platform, providerAccountId])
   @@index([userId, platform, status])
@@ -1121,6 +1152,7 @@ model ClipExport {
   clip       Clip                @relation(fields: [clipId], references: [id], onDelete: Cascade)
   variants   ClipExportVariant[]
   shareLinks ClipShareLink[]
+  frozenPublicationStates FrozenPublicationState[]
 
   @@unique([clipId, fingerprint])
   @@index([projectId, createdAt(sort: Desc)])
@@ -1147,6 +1179,7 @@ model ClipExportVariant {
 
   export ClipExport  @relation(fields: [exportId], references: [id], onDelete: Cascade)
   render ClipRender?
+  frozenPublicationStates FrozenPublicationState[]
 
   @@unique([exportId, aspectRatio])
   @@index([exportId, status])
@@ -1298,12 +1331,16 @@ model SocialPost {
   socialAccountId String?       @db.Uuid
   platform     SocialPlatform
   status       SocialPostStatus @default(scheduled)
+  clientIdempotencyKey String?
+  immutableRequestHash String?
   caption      String
   aspectRatio  ClipAspectRatio?
   scheduledFor DateTime?
   postedAt     DateTime?
   externalUrl  String?
   errorCode    String?
+  errorDisposition PublicationFailureDisposition?
+  nextAttemptAt DateTime?
   metadata     Json?
   createdAt    DateTime         @default(now())
   updatedAt    DateTime         @updatedAt
@@ -1313,12 +1350,130 @@ model SocialPost {
   clip    Clip?   @relation(fields: [clipId], references: [id], onDelete: SetNull)
   socialAccount SocialAccount? @relation(fields: [socialAccountId], references: [id], onDelete: SetNull)
   metrics SocialPostMetric[]
+  frozenState FrozenPublicationState?
+  publicationAttempts SocialPublicationAttempt[]
 
+  @@unique([workspaceId, clientIdempotencyKey])
   @@index([projectId, scheduledFor])
   @@index([workspaceId, scheduledFor])
   @@index([status, scheduledFor])
   @@index([clipId])
   @@index([socialAccountId])
+}
+
+model FrozenPublicationState {
+  id                    String          @id @default(uuid()) @db.Uuid
+  socialPostId          String          @unique @db.Uuid
+  clipExportId          String          @db.Uuid
+  clipExportVariantId   String          @db.Uuid
+  socialAccountId       String?         @db.Uuid
+  platform              SocialPlatform
+  editorRevision        Int
+  exportFingerprint     String
+  storageKey            String?
+  sizeBytes             BigInt?
+  aspectRatio           ClipAspectRatio
+  caption               String
+  providerSettings      Json
+  capabilityVersion     String
+  scheduledFor          DateTime
+  createdAt             DateTime        @default(now())
+  mediaReadyAt          DateTime?
+
+  socialPost        SocialPost        @relation(fields: [socialPostId], references: [id], onDelete: Cascade)
+  clipExport        ClipExport        @relation(fields: [clipExportId], references: [id], onDelete: Restrict)
+  clipExportVariant ClipExportVariant @relation(fields: [clipExportVariantId], references: [id], onDelete: Restrict)
+  socialAccount     SocialAccount?    @relation(fields: [socialAccountId], references: [id], onDelete: Restrict)
+  attempts          SocialPublicationAttempt[]
+
+  @@index([clipExportId])
+  @@index([clipExportVariantId])
+  @@index([socialAccountId])
+}
+
+model SocialPublicationAttempt {
+  id                    String          @id @default(uuid()) @db.Uuid
+  socialPostId          String          @db.Uuid
+  frozenStateId         String          @db.Uuid
+  attemptNumber         Int
+  priorAttemptId        String?         @db.Uuid
+  idempotencyKey        String          @unique
+  phase                 PublicationAttemptPhase
+  outcome               PublicationOutcome?
+  failureCode           String?
+  failureDisposition    PublicationFailureDisposition?
+  nextActionAt          DateTime
+  providerCallCount     Int             @default(0)
+  processingDeadline    DateTime
+  reconciliationDeadline DateTime
+  operationKind         String?
+  checkpointEncrypted   String?
+  currentClaimId        String?         @unique @db.Uuid
+  startedAt             DateTime        @default(now())
+  terminalAt            DateTime?
+  createdAt             DateTime        @default(now())
+  updatedAt             DateTime        @updatedAt
+
+  socialPost      SocialPost                @relation(fields: [socialPostId], references: [id], onDelete: Cascade)
+  frozenState     FrozenPublicationState    @relation(fields: [frozenStateId], references: [id], onDelete: Restrict)
+  priorAttempt    SocialPublicationAttempt? @relation("PublicationAttemptLineage", fields: [priorAttemptId], references: [id], onDelete: Restrict)
+  laterAttempts   SocialPublicationAttempt[] @relation("PublicationAttemptLineage")
+  claims          PublicationClaim[]
+  receipt         ProviderReceipt?
+  analyticsIntent PublicationAnalyticsIntent?
+
+  @@unique([socialPostId, attemptNumber])
+  @@index([phase, nextActionAt, id])
+  @@index([socialPostId, createdAt])
+}
+
+model PublicationClaim {
+  id             String   @id @db.Uuid
+  attemptId      String   @db.Uuid
+  claimantId     String
+  accountSlotKey String?  @unique @db.Uuid
+  leaseExpiresAt DateTime
+  heartbeatAt    DateTime
+  releasedAt     DateTime?
+  createdAt      DateTime @default(now())
+
+  attempt SocialPublicationAttempt @relation(fields: [attemptId], references: [id], onDelete: Cascade)
+
+  @@index([attemptId, createdAt])
+  @@index([leaseExpiresAt, releasedAt])
+}
+
+model ProviderReceipt {
+  id             String         @id @default(uuid()) @db.Uuid
+  attemptId      String         @unique @db.Uuid
+  platform       SocialPlatform
+  receiptId      String
+  platformPostId String?
+  externalUrl    String?
+  metrics        Json?
+  createdAt      DateTime       @default(now())
+  enrichedAt     DateTime?
+
+  attempt SocialPublicationAttempt @relation(fields: [attemptId], references: [id], onDelete: Restrict)
+
+  @@unique([platform, receiptId])
+  @@index([platform, platformPostId])
+}
+
+model PublicationAnalyticsIntent {
+  id          String   @id @default(uuid()) @db.Uuid
+  attemptId   String   @unique @db.Uuid
+  socialPostId String  @db.Uuid
+  projectId   String   @db.Uuid
+  kind        String
+  payload     Json?
+  deliveredAt DateTime?
+  createdAt   DateTime @default(now())
+
+  attempt SocialPublicationAttempt @relation(fields: [attemptId], references: [id], onDelete: Restrict)
+
+  @@index([deliveredAt, createdAt])
+  @@index([projectId, createdAt])
 }
 
 model SocialPostMetric {

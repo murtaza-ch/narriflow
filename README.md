@@ -217,8 +217,8 @@ Useful runtime settings:
 - `WORKFLOW_LEASE_REAP_INTERVAL_MS=30000` and `WORKFLOW_EVENT_DISPATCH_INTERVAL_MS=1000` for protocol-v2 Workflow Attempt recovery and durable event delivery.
 - `PEXELS_API_KEY=...` to enable stock B-roll search and automatic B-roll cutaways.
 - `SOCIAL_TOKEN_ENCRYPTION_KEY` and the social provider client IDs/secrets to refresh tokens and publish scheduled posts natively.
-- `LINKEDIN_API_VERSION=202606`, `INSTAGRAM_CONTAINER_POLL_ATTEMPTS`, `TIKTOK_STATUS_POLL_ATTEMPTS`, and `X_MEDIA_POLL_ATTEMPTS` can be tuned for provider processing windows.
-- `SOCIAL_PUBLISH_WEBHOOK_URL` and `SOCIAL_PUBLISH_WEBHOOK_SECRET` are now only a legacy fallback for posts scheduled without a connected social account. The worker signs the JSON body as `X-Narriflow-Signature: sha256=...`.
+- Social Publication fixes Meta Graph at `v24.0` and LinkedIn at `202608` as shared web/worker capability contracts. If `META_GRAPH_VERSION` or `LINKEDIN_API_VERSION` is set, it must match that contract; upgrade the shared contract and adapter fixtures together.
+- `SOCIAL_PUBLISH_WEBHOOK_URL` and `SOCIAL_PUBLISH_WEBHOOK_SECRET` configure the supported receiver channel for posts scheduled without a connected social account. The worker signs the JSON body as `X-Narriflow-Signature: sha256=...`.
 - `AUTOPILOT_BATCH_SIZE=3` to control how many due RSS rules are checked per worker poll.
 - `PROJECT_RETENTION_MODE=observe|enforce` and `PROJECT_RETENTION_ENFORCEMENT_STARTED_AT=<UTC ISO timestamp>` control the documentation-approved three-day Free-project policy. Set the same values in the web process, because project deadlines are assigned when projects are created. Batch sizes for warnings, purges, and receipt cleanup default to `100`, `10`, and `100`.
 

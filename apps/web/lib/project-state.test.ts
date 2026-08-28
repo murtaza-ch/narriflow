@@ -178,7 +178,11 @@ describe("project pipeline state", () => {
   test.each([
     ["success wins", [{ status: "failed" }, { status: "posted" }], "done"],
     ["active post", [{ status: "scheduled" }], "active"],
+    ["preparing post", [{ status: "preparing_video" }], "active"],
+    ["provider processing", [{ status: "processing" }], "active"],
+    ["reconciling outcome", [{ status: "reconciling" }], "active"],
     ["failed post", [{ status: "failed" }], "failed"],
+    ["attention required", [{ status: "needs_attention" }], "failed"],
     ["unrequested", [], "todo"],
     // Posts orphaned by clip deletion (clipId SetNull — e.g. after
     // "Regenerate clips") are history, not current pipeline state: a fresh

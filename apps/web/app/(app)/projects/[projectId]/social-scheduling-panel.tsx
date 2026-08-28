@@ -21,6 +21,7 @@ import {
   type SocialPostSnapshot,
 } from "@narriflow/validators";
 import { formatDateTime } from "@/lib/format";
+import { createPublicationIntentKeyStore } from "@/lib/publication-intent-key";
 import {
   describeSocialPost,
   isLiveSocialPost,
@@ -75,8 +76,8 @@ const platformItems = platforms.map((value) => ({
   label: platformLabels[value],
 }));
 
-function firstRenderedAspectRatio(clip: ClipSnapshot): ClipAspectRatio | null {
-  return clip.renderVariants.find((render) => render.hasAsset)?.aspectRatio ?? null;
+function preferredAspectRatio(clip: ClipSnapshot): ClipAspectRatio {
+  return clip.renderVariants.find((render) => render.hasAsset)?.aspectRatio ?? "9:16";
 }
 
 export function SocialSchedulingPanel({
@@ -92,12 +93,8 @@ export function SocialSchedulingPanel({
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
-  const renderedClips = useMemo(
-    () => clips.filter((clip) => firstRenderedAspectRatio(clip)),
-    [clips],
-  );
-  const [clipId, setClipId] = useState(renderedClips[0]?.id ?? "");
-  const selectedClip = renderedClips.find((clip) => clip.id === clipId) ?? null;
+  const [clipId, setClipId] = useState(clips[0]?.id ?? "");
+  const selectedClip = clips.find((clip) => clip.id === clipId) ?? null;
   const [platform, setPlatform] = useState<SocialPlatform>("tiktok");
   const platformAccounts = useMemo(
     () =>
@@ -258,13 +255,13 @@ export function SocialSchedulingPanel({
 
   const clipItems = useMemo(
     () =>
-      renderedClips.length === 0
-        ? [{ value: "", label: "No rendered clips", disabled: true }]
-        : renderedClips.map((clip) => ({
+      clips.length === 0
+        ? [{ value: "", label: "No clips", disabled: true }]
+        : clips.map((clip) => ({
             value: clip.id,
             label: `Clip ${clip.index + 1}`,
           })),
-    [renderedClips],
+    [clips],
   );
   const accountItems = useMemo(
     () =>
@@ -290,7 +287,7 @@ export function SocialSchedulingPanel({
       return;
     }
     if (!selectedClip) {
-      setNotice({ tone: "danger", text: "Render a clip before scheduling it." });
+      setNotice({ tone: "danger", text: "Choose a clip before scheduling it." });
       return;
     }
     if (!selectedAccount) {
@@ -300,14 +297,31 @@ export function SocialSchedulingPanel({
       });
       return;
     }
-    const aspectRatio = firstRenderedAspectRatio(selectedClip);
-    if (!aspectRatio) {
-      setNotice({
-        tone: "danger",
-        text: "Selected clip has no rendered asset.",
-      });
-      return;
-    }
+    const aspectRatio = preferredAspectRatio(selectedClip);
+    const selectedRender = selectedClip.renderVariants.find(
+      (render) => render.aspectRatio === aspectRatio,
+    );
+    const scheduledAt = scheduledFor
+      ? new Date(scheduledFor)
+      : new Date(Date.now() + 10_000);
+    const resolution = selectedRender?.resolution ?? "1080p";
+    const request = {
+      projectId,
+      clipId: selectedClip.id,
+      editorRevision: selectedClip.editorRevision,
+      accountId: selectedAccount.id,
+      platform,
+      caption,
+      aspectRatio,
+      resolution,
+      scheduledFor: scheduledAt.toISOString(),
+      providerSettings: {},
+    };
+    const intentKeys = createPublicationIntentKeyStore({
+      storage: window.sessionStorage,
+      createId: () => crypto.randomUUID(),
+    });
+    const clientIdempotencyKey = intentKeys.forRequest(request);
     setNotice(null);
     setSubmitting(true);
     try {
@@ -315,12 +329,16 @@ export function SocialSchedulingPanel({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          clientIdempotencyKey,
           clipId: selectedClip.id,
+          expectedEditorRevision: selectedClip.editorRevision,
           accountId: selectedAccount.id,
           platform,
           caption,
           aspectRatio,
-          scheduledFor: scheduledFor ? new Date(scheduledFor).toISOString() : null,
+          resolution,
+          scheduledFor: scheduledAt.toISOString(),
+          providerSettings: {},
         }),
       });
       if (!response.ok) {
@@ -336,6 +354,10 @@ export function SocialSchedulingPanel({
         return;
       }
       const created = socialPostSnapshotSchema.safeParse(await response.json());
+      if (!created.success) {
+        throw new Error("The scheduling response was incomplete");
+      }
+      intentKeys.confirm(request);
       setNotice({
         tone: "success",
         text: scheduledFor
@@ -344,9 +366,7 @@ export function SocialSchedulingPanel({
       });
       // Show the new row immediately; the refresh below reconciles the rest of
       // the server tree (and the poll loop takes over from here).
-      if (created.success) {
-        applyPosts([...livePostsRef.current, created.data]);
-      }
+      applyPosts([...livePostsRef.current, created.data]);
       startTransition(() => router.refresh());
     } catch (err) {
       console.error("schedule_post_failed", err);
@@ -419,7 +439,7 @@ export function SocialSchedulingPanel({
             Social schedule
           </Text>
           <Text mt="0.5" fontSize="xs" color="fg.muted">
-            Queue captions and rendered clips for platform publishing workflows.
+          Freeze a clip revision, caption, account, and delivery settings before publication.
           </Text>
         </Box>
 
@@ -441,12 +461,12 @@ export function SocialSchedulingPanel({
               value={clipId}
               onValueChange={(nextId) => {
                 setClipId(nextId);
-                const nextClip = renderedClips.find((clip) => clip.id === nextId);
+                const nextClip = clips.find((clip) => clip.id === nextId);
                 if (nextClip) setCaption(nextClip.hookText);
               }}
               size="sm"
-              placeholder="No rendered clips"
-              disabled={renderedClips.length === 0}
+              placeholder="No clips"
+              disabled={clips.length === 0}
               aria-label="Clip to publish"
             />
           </Box>
@@ -508,7 +528,7 @@ export function SocialSchedulingPanel({
               disabled={
                 isPending ||
                 submitting ||
-                renderedClips.length === 0 ||
+                clips.length === 0 ||
                 !caption.trim() ||
                 !selectedAccount
               }
@@ -649,7 +669,7 @@ export function SocialSchedulingPanel({
                     </a>
                   ) : null}
                 </Box>
-                {post.status === "scheduled" || post.status === "draft" ? (
+                {post.status === "preparing_video" || post.status === "scheduled" ? (
                   <Button
                     size="xs"
                     variant="ghost"
@@ -669,7 +689,7 @@ export function SocialSchedulingPanel({
           <EmptyState
             icon={<Send size={22} aria-hidden />}
             title="Nothing scheduled yet"
-            description="Queue a rendered clip to a connected account — scheduled and published posts will be listed here."
+          description="Schedule a clip to a connected account — Narriflow prepares the exact frozen video and lists its outcome here."
             ratio={9 / 16}
           />
         )}

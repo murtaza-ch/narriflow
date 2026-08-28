@@ -330,6 +330,7 @@ function toClipSnapshot(clip: ClipWithRenders): ClipSnapshot {
   return {
     id: clip.id,
     projectId: clip.projectId,
+    editorRevision: clip.editorRevision,
     index: clip.index,
     status: clip.status as ClipSnapshot["status"],
     startSec: effective.startSec,

@@ -18,6 +18,8 @@ function post(overrides: Partial<Post> = {}): Post {
     scheduledFor: new Date(NOW + 10 * 60_000).toISOString(),
     postedAt: null,
     errorCode: null,
+    errorDisposition: null,
+    nextAttemptAt: null,
     ...overrides,
   };
 }
@@ -79,11 +81,54 @@ describe("describeSocialPost", () => {
     expect(feedback.isLive).toBe(true);
   });
 
-  test("publishing shows a busy uploading line", () => {
+  test("safe automatic retry timing uses nextAttemptAt instead of the original slot", () => {
+    const feedback = describeSocialPost(
+      post({
+        scheduledFor: new Date(NOW - 60 * 60_000).toISOString(),
+        nextAttemptAt: new Date(NOW + 2 * 60_000).toISOString(),
+        errorDisposition: "safe_retry",
+        errorCode: "provider_rate_limited",
+      }),
+      NOW,
+    );
+    expect(feedback.label).toBe("Retry scheduled");
+    expect(feedback.detail).toContain("in 2 min");
+    expect(feedback.detail).not.toContain("publisher may be down");
+    expect(feedback.isLive).toBe(true);
+  });
+
+  test("preparation, publishing, processing, and reconciliation stay visibly live", () => {
+    const preparing = describeSocialPost(post({ status: "preparing_video" }), NOW);
+    expect(preparing.label).toBe("Preparing video");
+    expect(preparing.isBusy).toBe(true);
+
     const feedback = describeSocialPost(post({ status: "publishing" }), NOW);
     expect(feedback.label).toBe("Publishing");
     expect(feedback.isBusy).toBe(true);
     expect(feedback.isLive).toBe(true);
+
+    const processing = describeSocialPost(post({ status: "processing" }), NOW);
+    expect(processing.label).toBe("Processing on provider");
+    expect(processing.detail).toContain("YouTube Shorts");
+
+    const reconciling = describeSocialPost(post({ status: "reconciling" }), NOW);
+    expect(reconciling.label).toBe("Checking outcome");
+    expect(reconciling.tone).toBe("warning");
+  });
+
+  test("operator attention is terminal and never suggests an unsafe retry", () => {
+    const feedback = describeSocialPost(
+      post({
+        status: "needs_attention",
+        errorCode: "publication_outcome_unknown",
+        errorDisposition: "attention",
+      }),
+      NOW,
+    );
+    expect(feedback.label).toBe("Needs attention");
+    expect(feedback.isLive).toBe(false);
+    expect(feedback.detail).toContain("could already be live");
+    expect(feedback.error).not.toContain("Schedule it again");
   });
 
   test("published shows when it went out and stops polling", () => {
@@ -127,10 +172,14 @@ describe("describeSocialPost", () => {
   test("no status renders its raw enum value", () => {
     const statuses: Post["status"][] = [
       "draft",
+      "preparing_video",
       "scheduled",
       "publishing",
+      "processing",
+      "reconciling",
       "posted",
       "failed",
+      "needs_attention",
       "cancelled",
     ];
     for (const status of statuses) {
@@ -142,9 +191,13 @@ describe("describeSocialPost", () => {
 });
 
 describe("isLiveSocialPost", () => {
-  test("only scheduled and publishing posts are worker-owned", () => {
+  test("every non-terminal publication state is live", () => {
+    expect(isLiveSocialPost("preparing_video")).toBe(true);
     expect(isLiveSocialPost("scheduled")).toBe(true);
     expect(isLiveSocialPost("publishing")).toBe(true);
+    expect(isLiveSocialPost("processing")).toBe(true);
+    expect(isLiveSocialPost("reconciling")).toBe(true);
+    expect(isLiveSocialPost("needs_attention")).toBe(false);
     expect(isLiveSocialPost("posted")).toBe(false);
     expect(isLiveSocialPost("failed")).toBe(false);
     expect(isLiveSocialPost("cancelled")).toBe(false);
@@ -174,6 +227,8 @@ describe("socialPollDelayMs", () => {
       socialPollDelayMs([post({ scheduledFor: new Date(NOW - 1_000).toISOString() })], NOW),
     ).toBe(3_000);
     expect(socialPollDelayMs([post({ status: "publishing" })], NOW)).toBe(3_000);
+    expect(socialPollDelayMs([post({ status: "processing" })], NOW)).toBe(3_000);
+    expect(socialPollDelayMs([post({ status: "reconciling" })], NOW)).toBe(3_000);
   });
 
   test("uses the fastest cadence any single live post asks for", () => {
@@ -186,6 +241,21 @@ describe("socialPollDelayMs", () => {
       NOW,
     );
     expect(delay).toBe(3_000);
+  });
+
+  test("backs off provider polling according to the shared age policy", () => {
+    expect(
+      socialPollDelayMs(
+        [post({ status: "processing", createdAt: new Date(NOW - 3 * 60_000).toISOString() })],
+        NOW,
+      ),
+    ).toBe(10_000);
+    expect(
+      socialPollDelayMs(
+        [post({ status: "reconciling", createdAt: new Date(NOW - 20 * 60_000).toISOString() })],
+        NOW,
+      ),
+    ).toBe(30_000);
   });
 
   test("a scheduled post with no slot polls at the fast cadence", () => {

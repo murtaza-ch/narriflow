@@ -68,6 +68,8 @@ import {
   DubbingTierError,
   isUniqueConstraintError,
   projectService,
+  PublicationIntentConflictError,
+  PublicationIntentStateError,
   QuotaExceededError,
   RssFeedError,
   RemoteFetchError,
@@ -2272,6 +2274,15 @@ app.post("/projects/:id/social-posts", async (c) => {
     );
     return c.json(post, 201);
   } catch (error) {
+    if (
+      error instanceof PublicationIntentConflictError ||
+      error instanceof PublicationIntentStateError
+    ) {
+      return c.json(
+        { error: error.code, message: error.message },
+        409,
+      );
+    }
     return c.json(
       { error: "social_post_schedule_failed", message: errorMessage(error) },
       400,
@@ -2294,7 +2305,6 @@ app.delete("/projects/:id/social-posts/:postId", async (c) => {
 
   try {
     const post = await socialService.cancelPost(
-      appUser.id,
       projectId,
       c.req.param("postId"),
       {

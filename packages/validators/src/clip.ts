@@ -178,6 +178,7 @@ export const clipRenderVariantSchema = z.object({
 export const clipSnapshotSchema = z.object({
   id: z.string().uuid(),
   projectId: z.string().uuid(),
+  editorRevision: z.number().int().nonnegative(),
   index: z.number().int().nonnegative(),
   status: clipStatusSchema,
   startSec: z.number().nonnegative(),

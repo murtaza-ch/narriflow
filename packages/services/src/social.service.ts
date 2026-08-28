@@ -1,16 +1,15 @@
 import { Prisma } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
-  clipAspectRatioToDb,
   scheduleSocialPostSchema,
   socialPostMetricsSchema,
   type ScheduleSocialPostInput,
   type SocialPostMetricsInput,
   type SocialPostSnapshot,
 } from "@narriflow/validators";
-import { analyticsService } from "./analytics.service";
-import { accessibleProjectWhere } from "./project-retention.service";
-import { workspaceService } from "./workspace.service";
+import { createProductionSocialPublicationScheduling } from "./social-publication-scheduling";
+
+const socialPublicationScheduling = createProductionSocialPublicationScheduling();
 
 function requirePrisma() {
   const prisma = getPrismaClient();
@@ -37,6 +36,8 @@ function toSocialPostSnapshot(row: {
   postedAt: Date | null;
   externalUrl: string | null;
   errorCode: string | null;
+  errorDisposition?: string | null;
+  nextAttemptAt?: Date | null;
   metrics?: Array<{
     views: number;
     likes: number;
@@ -74,6 +75,9 @@ function toSocialPostSnapshot(row: {
     postedAt: row.postedAt?.toISOString() ?? null,
     externalUrl: row.externalUrl,
     errorCode: row.errorCode,
+    errorDisposition:
+      (row.errorDisposition as SocialPostSnapshot["errorDisposition"]) ?? null,
+    nextAttemptAt: row.nextAttemptAt?.toISOString() ?? null,
     latestMetrics: row.metrics?.[0]
       ? {
           views: row.metrics[0].views,
@@ -88,14 +92,6 @@ function toSocialPostSnapshot(row: {
     createdAt: row.createdAt.toISOString(),
   };
 }
-
-export type ClaimedSocialPost = Prisma.SocialPostGetPayload<{
-  include: {
-    project: { select: { id: true; userId: true; title: true } };
-    clip: { include: { renders: true } };
-    socialAccount: true;
-  };
-}>;
 
 export class SocialService {
   async listProjectPosts(
@@ -121,119 +117,30 @@ export class SocialService {
     userId: string,
     projectId: string,
     input: ScheduleSocialPostInput,
-    workspaceContext?: { workspaceId: string; actorUserId: string },
+    workspaceContext: { workspaceId: string; actorUserId: string },
   ): Promise<SocialPostSnapshot> {
     const parsed = scheduleSocialPostSchema.parse(input);
     const prisma = requirePrisma();
-    const scheduledFor = parsed.scheduledFor
-      ? new Date(parsed.scheduledFor)
-      : new Date();
-    if (parsed.scheduledFor && scheduledFor <= new Date()) {
-      throw new Error("Choose a future publish time");
-    }
-    if (workspaceContext) {
-      await workspaceService.requireActor(
-        workspaceContext.actorUserId,
-        workspaceContext.workspaceId,
-        "publishing.manage",
-      );
-    }
-
-    const project = await prisma.project.findFirst({
-      where: {
-        id: projectId,
-        ...(workspaceContext
-          ? { workspaceId: workspaceContext.workspaceId }
-          : { userId }),
-        ...accessibleProjectWhere(),
-      },
-      select: { id: true },
-    });
-    if (!project) {
-      throw new Error("project not found");
-    }
-
-    if (parsed.clipId) {
-      const clip = await prisma.clip.findFirst({
-        where: { id: parsed.clipId, projectId },
-        select: { id: true },
-      });
-      if (!clip) {
-        throw new Error("clip not found");
-      }
-    }
-
-    if (parsed.accountId) {
-      const account = await prisma.socialAccount.findFirst({
-        where: {
-          id: parsed.accountId,
-          ...(workspaceContext
-            ? { workspaceId: workspaceContext.workspaceId }
-            : { userId }),
-          platform: parsed.platform,
-          status: { not: "revoked" },
-        },
-        select: { id: true, status: true },
-      });
-      if (!account) {
-        throw new Error("social account not found for platform");
-      }
-      if (account.status === "expired") {
-        throw new Error("social account token expired");
-      }
-
-      const conflictWindowMs = 60 * 1000;
-      const conflict = await prisma.socialPost.findFirst({
-        where: {
-          socialAccountId: parsed.accountId,
-          ...(workspaceContext
-            ? { workspaceId: workspaceContext.workspaceId }
-            : { project: { userId } }),
-          status: { in: ["scheduled", "publishing"] },
-          scheduledFor: {
-            gte: new Date(scheduledFor.getTime() - conflictWindowMs),
-            lte: new Date(scheduledFor.getTime() + conflictWindowMs),
-          },
-        },
-        select: { id: true },
-      });
-      if (conflict) {
-        throw new Error(
-          "This social account already has a post scheduled at that time. Choose a time at least one minute away.",
-        );
-      }
-    }
-
-    const row = await prisma.socialPost.create({
-      data: {
-        workspaceId: workspaceContext?.workspaceId ?? null,
-        createdByUserId: workspaceContext?.actorUserId ?? userId,
-        projectId,
-        clipId: parsed.clipId ?? null,
-        socialAccountId: parsed.accountId ?? null,
-        platform: parsed.platform,
-        status: "scheduled",
-        caption: parsed.caption,
-        aspectRatio: parsed.aspectRatio
-          ? clipAspectRatioToDb[parsed.aspectRatio]
-          : null,
-        scheduledFor,
-        metadata: parsed.metadata
-          ? (parsed.metadata as Prisma.InputJsonValue)
-          : Prisma.JsonNull,
-      },
-    });
-
-    await analyticsService.recordProjectEvent({
+    const scheduledFor = new Date(parsed.scheduledFor);
+    const intent = await socialPublicationScheduling.schedule({
+      actorUserId: workspaceContext.actorUserId,
+      ownerUserId: userId,
+      workspaceId: workspaceContext.workspaceId,
       projectId,
-      clipId: parsed.clipId ?? null,
-      type: "social_scheduled",
+      clientIdempotencyKey: parsed.clientIdempotencyKey,
+      clipId: parsed.clipId,
+      expectedEditorRevision: parsed.expectedEditorRevision,
+      accountId: parsed.accountId,
       platform: parsed.platform,
-      metadata: parsed.metadata,
+      caption: parsed.caption,
+      aspectRatio: parsed.aspectRatio,
+      resolution: parsed.resolution,
+      scheduledFor,
+      providerSettings: parsed.providerSettings as Prisma.JsonObject,
     });
 
-    const withAccount = await prisma.socialPost.findUnique({
-      where: { id: row.id },
+    const row = await prisma.socialPost.findUnique({
+      where: { id: intent.id },
       include: {
         socialAccount: { select: { displayName: true, handle: true } },
         metrics: {
@@ -242,53 +149,31 @@ export class SocialService {
         },
       },
     });
-
-    return toSocialPostSnapshot(withAccount ?? row);
+    if (!row) throw new Error("social post not found after scheduling");
+    return toSocialPostSnapshot(row);
   }
 
   async cancelPost(
-    userId: string,
     projectId: string,
     postId: string,
-    workspaceContext?: { workspaceId: string; actorUserId: string },
+    workspaceContext: { workspaceId: string; actorUserId: string },
   ): Promise<SocialPostSnapshot> {
     const prisma = requirePrisma();
-    if (workspaceContext) {
-      await workspaceService.requireActor(
-        workspaceContext.actorUserId,
-        workspaceContext.workspaceId,
-        "content.edit",
-      );
-    }
     const existing = await prisma.socialPost.findFirst({
       where: {
         id: postId,
         projectId,
-        ...(workspaceContext
-          ? { workspaceId: workspaceContext.workspaceId }
-          : { project: { userId } }),
+        workspaceId: workspaceContext.workspaceId,
       },
+      select: { id: true },
     });
     if (!existing) {
       throw new Error("social post not found");
     }
-    if (existing.status !== "draft" && existing.status !== "scheduled") {
-      throw new Error("only draft or scheduled social posts can be cancelled");
-    }
-
-    const cancelled = await prisma.socialPost.updateMany({
-      where: { id: postId, status: { in: ["draft", "scheduled"] } },
-      data: { status: "cancelled" },
-    });
-    if (cancelled.count === 0) {
-      throw new Error("social post is already being published");
-    }
-
-    await analyticsService.recordProjectEvent({
-      projectId,
-      clipId: existing.clipId,
-      type: "social_cancelled",
-      platform: existing.platform,
+    await socialPublicationScheduling.cancel({
+      actorUserId: workspaceContext.actorUserId,
+      workspaceId: workspaceContext.workspaceId,
+      postId,
     });
 
     const row = await prisma.socialPost.findUnique({
@@ -306,197 +191,6 @@ export class SocialService {
     }
 
     return toSocialPostSnapshot(row);
-  }
-
-  async retryFailedPost(
-    actorUserId: string,
-    workspaceId: string,
-    postId: string,
-  ): Promise<void> {
-    await workspaceService.requireActor(
-      actorUserId,
-      workspaceId,
-      "publishing.manage",
-    );
-    const prisma = requirePrisma();
-    const post = await prisma.socialPost.findFirst({
-      where: { id: postId, workspaceId, status: "failed" },
-      select: { id: true, socialAccountId: true },
-    });
-    if (!post) throw new Error("Failed social post not found");
-    const scheduledFor = new Date(Date.now() + 60 * 1000);
-    if (post.socialAccountId) {
-      const conflict = await prisma.socialPost.findFirst({
-        where: {
-          workspaceId,
-          socialAccountId: post.socialAccountId,
-          status: { in: ["scheduled", "publishing"] },
-          scheduledFor: {
-            gte: new Date(scheduledFor.getTime() - 60 * 1000),
-            lte: new Date(scheduledFor.getTime() + 60 * 1000),
-          },
-        },
-        select: { id: true },
-      });
-      if (conflict) {
-        throw new Error(
-          "This account already has a post due now. Retry after it finishes.",
-        );
-      }
-    }
-    const updated = await prisma.socialPost.updateMany({
-      where: { id: postId, workspaceId, status: "failed" },
-      data: {
-        status: "scheduled",
-        scheduledFor,
-        errorCode: null,
-        postedAt: null,
-      },
-    });
-    if (updated.count === 0) throw new Error("Social post is no longer failed");
-  }
-
-  async claimDuePosts(limit = 5): Promise<ClaimedSocialPost[]> {
-    const prisma = requirePrisma();
-    const due = await prisma.socialPost.findMany({
-      where: {
-        status: "scheduled",
-        project: accessibleProjectWhere(),
-        AND: [
-          { OR: [{ scheduledFor: { lte: new Date() } }, { scheduledFor: null }] },
-          { OR: [{ workspaceId: null }, { workspace: { status: "active" } }] },
-        ],
-      },
-      orderBy: [{ scheduledFor: "asc" }, { createdAt: "asc" }],
-      take: Math.max(1, Math.min(25, limit)),
-    });
-
-    const claimed: ClaimedSocialPost[] = [];
-
-    for (const post of due) {
-      const updated = await prisma.socialPost.updateMany({
-        where: {
-          id: post.id,
-          status: "scheduled",
-          project: accessibleProjectWhere(),
-          OR: [{ workspaceId: null }, { workspace: { status: "active" } }],
-        },
-        data: { status: "publishing" },
-      });
-
-      if (updated.count === 0) continue;
-
-      const row = await prisma.socialPost.findUnique({
-        where: { id: post.id },
-      include: {
-        project: { select: { id: true, userId: true, title: true } },
-        clip: { include: { renders: true } },
-        socialAccount: true,
-      },
-    });
-
-      if (row) claimed.push(row);
-    }
-
-    return claimed;
-  }
-
-  async completePublishedPost(
-    postId: string,
-    input: {
-      externalUrl?: string | null;
-      metrics?: SocialPostMetricsInput | null;
-      metadata?: Record<string, unknown> | null;
-    },
-  ) {
-    const prisma = requirePrisma();
-    const existing = input.metadata
-      ? await prisma.socialPost.findUnique({
-          where: { id: postId },
-          select: { metadata: true },
-        })
-      : null;
-    const existingMetadata =
-      existing?.metadata &&
-      typeof existing.metadata === "object" &&
-      !Array.isArray(existing.metadata)
-        ? (existing.metadata as Record<string, unknown>)
-        : {};
-    const row = await prisma.socialPost.update({
-      where: { id: postId },
-      data: {
-        status: "posted",
-        postedAt: new Date(),
-        externalUrl: input.externalUrl ?? null,
-        errorCode: null,
-        ...(input.metadata
-          ? {
-              metadata: {
-                ...existingMetadata,
-                publish: input.metadata,
-              } as Prisma.InputJsonValue,
-            }
-          : {}),
-      },
-    });
-
-    await analyticsService.recordProjectEvent({
-      projectId: row.projectId,
-      clipId: row.clipId,
-      type: "social_posted",
-      platform: row.platform,
-    });
-
-    if (input.metrics) {
-      return this.recordMetricsForPostId(row.id, input.metrics);
-    }
-
-    return toSocialPostSnapshot(row);
-  }
-
-  async failPublishingPost(postId: string, errorCode: string) {
-    const prisma = requirePrisma();
-    const row = await prisma.socialPost.update({
-      where: { id: postId },
-      data: {
-        status: "failed",
-        errorCode,
-      },
-    });
-
-    await analyticsService.recordProjectEvent({
-      projectId: row.projectId,
-      clipId: row.clipId,
-      type: "social_failed",
-      platform: row.platform,
-      metadata: { errorCode },
-    });
-
-    return toSocialPostSnapshot(row);
-  }
-
-  /**
-   * Fails social posts stuck in `publishing` past the stall timeout (the worker
-   * that claimed them likely crashed mid-publish). Mirrors the workflow/ingest
-   * reapers: only touches rows older than the cutoff and guards each update with
-   * a conditional `status: "publishing"` check. Returns the number reaped.
-   */
-  async reapStuckPublishingPosts(stallTimeoutMs: number): Promise<number> {
-    const prisma = requirePrisma();
-    const cutoff = new Date(Date.now() - stallTimeoutMs);
-    const stuck = await prisma.socialPost.findMany({
-      where: { status: "publishing", updatedAt: { lt: cutoff } },
-      select: { id: true },
-    });
-    let reaped = 0;
-    for (const post of stuck) {
-      const res = await prisma.socialPost.updateMany({
-        where: { id: post.id, status: "publishing" },
-        data: { status: "failed", errorCode: "worker_stalled" },
-      });
-      if (res.count > 0) reaped += 1;
-    }
-    return reaped;
   }
 
   async recordPostMetrics(

@@ -522,10 +522,18 @@ export function deriveProjectPipelineStates(input: {
   )
     ? "done"
     : livePosts.some(
-          (post) => post.status === "scheduled" || post.status === "publishing",
+          (post) =>
+            post.status === "preparing_video" ||
+            post.status === "scheduled" ||
+            post.status === "publishing" ||
+            post.status === "processing" ||
+            post.status === "reconciling",
         )
       ? "active"
-      : livePosts.some((post) => post.status === "failed")
+      : livePosts.some(
+            (post) =>
+              post.status === "failed" || post.status === "needs_attention",
+          )
         ? "failed"
         : "todo";
 

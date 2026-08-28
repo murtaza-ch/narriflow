@@ -84,6 +84,26 @@ _Avoid_: Workflow run, upload task
 The durable provider identity, verified subscription snapshot, reconciliation health, retry ownership, and repair state for one Workspace. The Workspace remains the access projection; Stripe deliveries only wake current-state reconciliation.
 _Avoid_: Stripe customer, billing event, subscription row
 
+**Social Post**:
+The workspace-owned product projection of one frozen publication intent, including its scheduled slot, current publication state, final link, and user-safe failure or attention outcome.
+_Avoid_: Publish job, provider upload, retry row
+
+**Frozen Publication State**:
+The immutable editor revision, exact Clip Export and variant, social account, platform, caption, settings, capability version, and schedule that every attempt for one Social Post must use.
+_Avoid_: Current clip, latest render, execution payload
+
+**Social Publication Attempt**:
+One durable, idempotent attempt to deliver a Social Post, with ordered checkpoints, bounded provider calls, retry lineage, and a terminal accepted, failed, or unknown outcome.
+_Avoid_: Social Post, worker run, blind retry
+
+**Publication Claim**:
+One exclusive, time-bounded and heartbeat-renewed ownership lease for a Social Publication Attempt. Its immutable claim ID fences every checkpoint and settlement; before submission it also owns the social-account concurrency slot.
+_Avoid_: Publishing status, worker ID, account lock
+
+**Provider Receipt**:
+The unique durable evidence that a provider or webhook receiver accepted one Social Publication Attempt. Receipt creation, Social Post settlement, and analytics intent creation commit atomically.
+_Avoid_: HTTP 2xx, external URL, provider response
+
 **Brand Profile**:
 A workspace or personal collection of reusable identity, media, writing guidance, and style presets for one brand. A Brand Template is a style preset inside this broader identity.
 _Avoid_: Brand Template, client folder, workspace brand

@@ -11,11 +11,21 @@ export const socialPlatformSchema = z.enum([
 
 export const socialPostStatusSchema = z.enum([
   "draft",
+  "preparing_video",
   "scheduled",
   "publishing",
+  "processing",
+  "reconciling",
   "posted",
   "failed",
+  "needs_attention",
   "cancelled",
+]);
+
+export const publicationFailureDispositionSchema = z.enum([
+  "safe_retry",
+  "permanent",
+  "attention",
 ]);
 
 export const socialAccountStatusSchema = z.enum([
@@ -25,13 +35,16 @@ export const socialAccountStatusSchema = z.enum([
 ]);
 
 export const scheduleSocialPostSchema = z.object({
-  clipId: z.string().uuid().nullable().optional(),
-  accountId: z.string().uuid().nullable().optional(),
+  clientIdempotencyKey: z.string().uuid(),
+  clipId: z.string().uuid(),
+  expectedEditorRevision: z.number().int().nonnegative(),
+  accountId: z.string().uuid().nullable(),
   platform: socialPlatformSchema,
   caption: z.string().trim().min(1).max(2200),
-  aspectRatio: clipAspectRatioSchema.nullable().optional(),
-  scheduledFor: z.string().datetime().nullable().optional(),
-  metadata: z.record(z.string(), z.unknown()).optional(),
+  aspectRatio: clipAspectRatioSchema,
+  resolution: z.enum(["720p", "1080p"]),
+  scheduledFor: z.string().datetime(),
+  providerSettings: z.record(z.string(), z.unknown()).default({}),
 });
 
 export const socialPostMetricsSchema = z.object({
@@ -84,6 +97,8 @@ export const socialPostSnapshotSchema = z.object({
   postedAt: z.string().datetime().nullable(),
   externalUrl: z.string().nullable(),
   errorCode: z.string().nullable(),
+  errorDisposition: publicationFailureDispositionSchema.nullable(),
+  nextAttemptAt: z.string().datetime().nullable(),
   latestMetrics: socialPostMetricsSnapshotSchema.nullable(),
   createdAt: z.string().datetime(),
 });

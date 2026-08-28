@@ -166,6 +166,19 @@ export {
   SocialService,
 } from "./social.service";
 export {
+  createProductionSocialPublicationRuntime,
+  getSocialPublicationRuntime,
+} from "./social-publication-runtime";
+export {
+  PublicationIntentConflictError,
+  PublicationIntentStateError,
+} from "./social-publication-scheduling";
+export {
+  PublicationClaimLostError,
+  type OwnedPublicationAttempt,
+  type PublicationAttemptExecutionResult,
+} from "./social-publication-attempt";
+export {
   socialOAuthService,
   SocialOAuthService,
   SocialOAuthError,
