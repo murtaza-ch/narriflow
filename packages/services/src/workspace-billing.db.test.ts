@@ -471,6 +471,34 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
         select: { paymentStatus: true },
       }),
     ).toEqual({ paymentStatus: "paid" });
+    await prisma.workspaceBillingAccount.update({
+      where: { id: account.id },
+      data: { health: "current" },
+    });
+    await store.recordCheckoutState({
+      workspaceId: workspace.id,
+      sessionId,
+      status: "complete",
+      paymentStatus: "unpaid",
+      source: "return",
+      wakeReconciliation: true,
+      now,
+    });
+    await store.recordCheckoutState({
+      workspaceId: workspace.id,
+      sessionId,
+      status: "complete",
+      paymentStatus: "failed",
+      source: "return",
+      wakeReconciliation: true,
+      now,
+    });
+    expect(
+      await prisma.workspaceCheckoutAttempt.findUniqueOrThrow({
+        where: { id: attempt.id },
+        select: { paymentStatus: true },
+      }),
+    ).toEqual({ paymentStatus: "paid" });
     expect(
       await prisma.workspaceBillingAccount.findUniqueOrThrow({
         where: { id: account.id },
@@ -497,6 +525,10 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
         now,
       }),
     ).rejects.toBeInstanceOf(WorkspaceBillingAttemptLost);
+    await prisma.workspaceCheckoutAttempt.update({
+      where: { id: attempt.id },
+      data: { paymentStatus: "unpaid" },
+    });
     await prisma.workspaceBillingAccount.update({
       where: { id: account.id },
       data: {

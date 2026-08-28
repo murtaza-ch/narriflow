@@ -221,6 +221,20 @@ export interface ProviderCheckoutSession {
 const isTerminalCheckoutPaymentOutcome = (paymentStatus: string) =>
   paymentStatus === "paid" || paymentStatus === "failed";
 
+const checkoutPaymentOutcomeRank = (paymentStatus: string) =>
+  paymentStatus === "paid" ? 2 : paymentStatus === "failed" ? 1 : 0;
+
+const preservesCheckoutPaymentOutcome = (
+  currentPaymentStatus: string | undefined,
+  observedPaymentStatus: string,
+) =>
+  Boolean(
+    currentPaymentStatus &&
+      isTerminalCheckoutPaymentOutcome(currentPaymentStatus) &&
+      checkoutPaymentOutcomeRank(currentPaymentStatus) >=
+        checkoutPaymentOutcomeRank(observedPaymentStatus),
+  );
+
 export interface WorkspaceBillingView {
   workspaceId: string;
   plan: PricingTier;
@@ -617,13 +631,11 @@ export function createInMemoryWorkspaceBillingStore(
         }
       }
       const currentPaymentStatus = row.latestCheckout?.paymentStatus;
-      const preservesTerminalOutcome =
-        Boolean(
-          currentPaymentStatus &&
-            isTerminalCheckoutPaymentOutcome(currentPaymentStatus),
-        ) &&
-        input.paymentStatus === "unpaid";
-      if (input.wakeReconciliation && !preservesTerminalOutcome) {
+      const preservesEstablishedOutcome = preservesCheckoutPaymentOutcome(
+        currentPaymentStatus,
+        input.paymentStatus,
+      );
+      if (input.wakeReconciliation && !preservesEstablishedOutcome) {
         row.health = "activating";
         row.attentionReason = null;
         const state = runtime.get(input.workspaceId)!;
@@ -631,7 +643,7 @@ export function createInMemoryWorkspaceBillingStore(
       }
       row.latestCheckout = {
         status: input.status,
-        paymentStatus: preservesTerminalOutcome
+        paymentStatus: preservesEstablishedOutcome
           ? currentPaymentStatus!
           : input.paymentStatus,
       };
@@ -1167,19 +1179,17 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
           : {};
         const providerPhase =
           input.source === "return" ? "return_observed" : "state_retrieved";
-        let preservesTerminalOutcome = false;
+        const protectedPaymentStatuses =
+          input.paymentStatus === "paid" ? ["paid"] : ["paid", "failed"];
+        let preservesEstablishedOutcome = false;
         const updated = await tx.workspaceCheckoutAttempt.updateMany({
           where: {
             id: attempt.id,
             ...claimWhere,
-            ...(input.paymentStatus === "unpaid"
-              ? {
-                  OR: [
-                    { paymentStatus: null },
-                    { paymentStatus: "unpaid" },
-                  ],
-                }
-              : {}),
+            OR: [
+              { paymentStatus: null },
+              { paymentStatus: { notIn: protectedPaymentStatuses } },
+            ],
           },
           data: {
             providerPhase,
@@ -1187,28 +1197,28 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
             paymentStatus: input.paymentStatus,
           },
         });
-        if (updated.count === 0 && input.paymentStatus === "unpaid") {
+        if (updated.count === 0) {
           const preserved = await tx.workspaceCheckoutAttempt.updateMany({
             where: {
               id: attempt.id,
               ...claimWhere,
-              paymentStatus: { in: ["paid", "failed"] },
+              paymentStatus: { in: protectedPaymentStatuses },
             },
             data: {
               providerPhase,
               sessionStatus: input.status,
             },
           });
-          preservesTerminalOutcome = preserved.count === 1;
+          preservesEstablishedOutcome = preserved.count === 1;
         }
-        if (updated.count === 0 && !preservesTerminalOutcome) {
+        if (updated.count === 0 && !preservesEstablishedOutcome) {
           if (input.reconcileAttemptId) throw new WorkspaceBillingAttemptLost();
           throw new WorkspaceBillingError(
             "checkout_session_conflict",
             "Checkout state could not be recorded",
           );
         }
-        if (input.wakeReconciliation && !preservesTerminalOutcome) {
+        if (input.wakeReconciliation && !preservesEstablishedOutcome) {
           await tx.workspaceBillingAccount.update({
             where: { id: attempt.billingAccount.id },
             data: {
@@ -2015,12 +2025,13 @@ export function createWorkspaceBillingModule(dependencies: {
       ) {
         throw new WorkspaceBillingAttemptLost();
       }
-      const paymentStatus =
-        current.latestCheckout &&
-        isTerminalCheckoutPaymentOutcome(current.latestCheckout.paymentStatus) &&
-        checkout.paymentStatus === "unpaid"
-          ? current.latestCheckout.paymentStatus
-          : checkout.paymentStatus;
+      const currentPaymentStatus = current.latestCheckout?.paymentStatus;
+      const paymentStatus = preservesCheckoutPaymentOutcome(
+        currentPaymentStatus,
+        checkout.paymentStatus,
+      )
+        ? currentPaymentStatus!
+        : checkout.paymentStatus;
       await dependencies.store.recordCheckoutState({
         workspaceId,
         sessionId: checkout.sessionId,

@@ -206,7 +206,7 @@ describe("Workspace Billing", () => {
     });
   });
 
-  test("does not let a stale unpaid return regress a paid Checkout outcome", async () => {
+  test("does not let a stale return regress a paid Checkout outcome", async () => {
     const store = createInMemoryWorkspaceBillingStore([
       {
         workspaceId: "workspace-paid-return-race",
@@ -272,6 +272,15 @@ describe("Workspace Billing", () => {
       source: "return",
       wakeReconciliation: true,
       now: new Date("2026-08-28T10:00:02.000Z"),
+    });
+    await store.recordCheckoutState({
+      workspaceId: "workspace-paid-return-race",
+      sessionId: "cs_paid_return_race",
+      status: "complete",
+      paymentStatus: "failed",
+      source: "return",
+      wakeReconciliation: true,
+      now: new Date("2026-08-28T10:00:03.000Z"),
     });
 
     expect(await store.readProjection("workspace-paid-return-race")).toMatchObject({
