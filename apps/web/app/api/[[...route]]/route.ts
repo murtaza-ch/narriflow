@@ -110,6 +110,7 @@ app.route(
   "/billing",
   createWorkspaceBillingHttpRoutes({
     getCurrentActor: getCurrentAppUser,
+    resolveAppOrigin: getOAuthOrigin,
     startCheckout: (input) => billingService.startCheckout(input),
     observeCheckoutReturn: (input) => billingService.observeCheckoutReturn(input),
     openPortal: (input) => billingService.openPortal(input),

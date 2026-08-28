@@ -690,7 +690,8 @@ model WorkspaceCheckoutAttempt {
   checkoutOperationKey String      @unique
   providerSessionId    String?     @unique
   providerPhase        String      @default("prepared")
-  sessionOutcome       String?
+  sessionStatus        String?
+  paymentStatus        String?
   expiresAt            DateTime?
   createdAt            DateTime    @default(now())
   updatedAt            DateTime    @updatedAt

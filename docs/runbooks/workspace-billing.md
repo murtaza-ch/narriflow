@@ -11,6 +11,8 @@ Deploy database migrations before web or worker code. For this cutover the requi
 3. `20260828120000_workspace_billing_delivery_claims`
 4. `20260828130000_replayable_workspace_checkout`
 5. `20260828140000_committed_membership_seats`
+6. `20260828150000_checkout_attempt_key_scope`
+7. `20260828160000_typed_checkout_outcome`
 
 Run `bun --cwd packages/db run prisma:generate`, then `prisma migrate deploy` with `packages/db/.env`. Start web and worker only after deployment succeeds.
 
@@ -92,6 +94,8 @@ bun --env-file=apps/web/.env.local run packages/services/scripts/workspace-billi
 ```
 
 Compare local plan, access, health, desired/synchronized seats, ownership classification, subscription count/status, mapped base plan, cancellation, period facts, and provider seat quantity. Then inspect structured `workspace_billing_*` diagnostics by Workspace and phase. Never paste raw Stripe errors, webhook bodies, signatures, URLs, email, address, payment details, or full provider IDs into logs, tickets, analytics, or product copy.
+
+The service emits `workspace_billing_metric` records for delivery disposition, claim source, queue age, settlement outcome, operation duration, and desired/synchronized seat quantity. Labels are bounded billing facts such as event class, outcome, health, access, and retention transition; they never contain Workspace or provider identifiers.
 
 For a safe manual current-state retry, add the explicit switch:
 

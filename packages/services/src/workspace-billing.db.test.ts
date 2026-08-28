@@ -118,6 +118,77 @@ dbDescribe("Workspace Billing PostgreSQL invariants", () => {
     ).rejects.toMatchObject({ code: "P2002" });
   });
 
+  test("represents pending, paid, past-due, and conflicted cutover fixtures", async () => {
+    const pending = await createWorkspace("fixture-pending");
+    const paid = await createWorkspace("fixture-paid");
+    const pastDue = await createWorkspace("fixture-past-due");
+    const conflicted = await createWorkspace("fixture-conflicted");
+    await Promise.all([
+      prisma.workspace.update({
+        where: { id: pending.workspace.id },
+        data: { status: "pending_payment" },
+      }),
+      prisma.workspace.update({
+        where: { id: paid.workspace.id },
+        data: { pricingTier: "pro" },
+      }),
+      prisma.workspace.update({
+        where: { id: pastDue.workspace.id },
+        data: { pricingTier: "pro" },
+      }),
+      prisma.workspace.update({
+        where: { id: conflicted.workspace.id },
+        data: { pricingTier: "business" },
+      }),
+      prisma.workspaceBillingAccount.update({
+        where: { workspaceId: pending.workspace.id },
+        data: { health: "activating" },
+      }),
+      prisma.workspaceBillingAccount.update({
+        where: { workspaceId: paid.workspace.id },
+        data: { providerStatus: "active", health: "current" },
+      }),
+      prisma.workspaceBillingAccount.update({
+        where: { workspaceId: pastDue.workspace.id },
+        data: {
+          providerStatus: "past_due",
+          health: "payment_action_required",
+          firstPastDueAt: new Date("2026-08-28T10:00:00.000Z"),
+          graceDeadlineAt: new Date("2026-09-04T10:00:00.000Z"),
+        },
+      }),
+      prisma.workspaceBillingAccount.update({
+        where: { workspaceId: conflicted.workspace.id },
+        data: {
+          providerStatus: "active",
+          health: "attention_required",
+          attentionReason: "multiple_entitlement_subscriptions",
+        },
+      }),
+    ]);
+
+    const fixtures = await prisma.workspaceBillingAccount.findMany({
+      where: {
+        workspaceId: {
+          in: [
+            pending.workspace.id,
+            paid.workspace.id,
+            pastDue.workspace.id,
+            conflicted.workspace.id,
+          ],
+        },
+      },
+      select: { workspaceId: true, health: true, providerStatus: true },
+    });
+    expect(fixtures).toHaveLength(4);
+    expect(fixtures.map((fixture) => fixture.health).sort()).toEqual([
+      "activating",
+      "attention_required",
+      "current",
+      "payment_action_required",
+    ]);
+  });
+
   test("concurrent Checkout starts settle on one durable attempt and provider identity", async () => {
     const { user, workspace } = await createWorkspace("checkout-race");
     const providerCustomers = new Map<string, string>();

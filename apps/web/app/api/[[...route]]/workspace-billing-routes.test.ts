@@ -21,6 +21,7 @@ const view: WorkspaceBillingView = {
 
 function dependencies(overrides: Record<string, unknown> = {}) {
   return {
+    resolveAppOrigin: (requestUrl: string) => new URL(requestUrl).origin,
     getCurrentActor: async () => ({
       actorUserId: "user-owner",
       workspaceId: view.workspaceId,
@@ -56,10 +57,11 @@ describe("Workspace Billing HTTP routes", () => {
     expect(malformed.status).toBe(400);
   });
 
-  test("uses the request origin for safe return destinations", async () => {
+  test("uses the canonical configured origin for safe return destinations", async () => {
     let destination = "";
     const app = createWorkspaceBillingHttpRoutes(
       dependencies({
+        resolveAppOrigin: () => "https://canonical.narriflow.test",
         startCheckout: async (input: { returnDestination: string }) => {
           destination = input.returnDestination;
           return { kind: "checkout", url: "https://checkout.test" };
@@ -76,7 +78,7 @@ describe("Workspace Billing HTTP routes", () => {
       }),
     });
     expect(response.status).toBe(200);
-    expect(destination).toBe("https://app.narriflow.test/settings/billing");
+    expect(destination).toBe("https://canonical.narriflow.test/settings/billing");
   });
 
   test("maps activating and terminal returns with distinct polling contracts", async () => {

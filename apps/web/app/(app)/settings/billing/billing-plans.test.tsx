@@ -57,11 +57,27 @@ describe("BillingPlans", () => {
     expect(markup).toContain('aria-live="polite"');
   });
 
+  test("shows activation progress without allowing another payment", () => {
+    const markup = render({ ...current, health: "activating", actions: [] });
+    expect(markup).toContain("Activating your plan");
+    expect(markup).not.toContain("Continue with Creator");
+  });
+
   test("keeps non-owner billing read-only", () => {
     const markup = render(current, false);
     expect(markup).toContain("Only the workspace owner can change");
     expect(markup).not.toContain("Continue with Creator");
     expect(markup).not.toContain("Open billing portal");
+  });
+
+  test("renders portal repair without a competing Checkout in restricted state", () => {
+    const markup = render({
+      ...current,
+      workspaceAccessStatus: "restricted",
+      actions: ["open_portal"],
+    });
+    expect(markup).toContain("Open billing portal");
+    expect(markup).not.toContain("Continue with Creator");
   });
 
   test("shows verified Business seat facts without raw provider state", () => {

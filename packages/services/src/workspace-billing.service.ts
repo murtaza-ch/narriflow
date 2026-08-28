@@ -12,7 +12,11 @@ import { randomUUID } from "node:crypto";
 
 export type WorkspaceBillingHealth = BillingHealth;
 
-export type WorkspaceBillingAction = "open_portal" | "retry" | "contact_support";
+export type WorkspaceBillingAction =
+  | "start_checkout"
+  | "open_portal"
+  | "retry"
+  | "contact_support";
 export type WorkspaceBillingProductStatus =
   | "active"
   | "trial"
@@ -252,7 +256,10 @@ export interface WorkspaceBillingProjection {
   desiredAdditionalSeats: number;
   synchronizedAdditionalSeats: number | null;
   seatItemId: string | null;
-  latestCheckoutOutcome: string | null;
+  latestCheckout: {
+    status: ProviderCheckoutSession["status"];
+    paymentStatus: string;
+  } | null;
 }
 
 export interface WorkspaceBillingStore {
@@ -269,12 +276,24 @@ export interface WorkspaceBillingStore {
     now: Date;
     limit: number;
     leaseMs: number;
-  }): Promise<Array<{ workspaceId: string; attemptId: string; attemptCount: number }>>;
+  }): Promise<
+    Array<{
+      workspaceId: string;
+      attemptId: string;
+      attemptCount: number;
+      dueAt: Date;
+    }>
+  >;
   claimAccount(input: {
     workspaceId: string;
     now: Date;
     leaseMs: number;
-  }): Promise<{ workspaceId: string; attemptId: string; attemptCount: number } | null>;
+  }): Promise<{
+    workspaceId: string;
+    attemptId: string;
+    attemptCount: number;
+    dueAt: Date;
+  } | null>;
   renewClaim(input: {
     workspaceId: string;
     attemptId: string;
@@ -309,6 +328,13 @@ export interface WorkspaceBillingStore {
       itemId: string | null;
       revision: number;
     };
+  }): Promise<WorkspaceBillingProjection>;
+  commitNoSubscriptionState(input: {
+    workspaceId: string;
+    attemptId: string;
+    workspaceStatus: "active" | "pending_payment";
+    health: "current" | "activating";
+    now: Date;
   }): Promise<WorkspaceBillingProjection>;
   readDesiredSeatState(workspaceId: string): Promise<{
     desired: number;
@@ -351,7 +377,8 @@ export interface WorkspaceBillingStore {
     workspaceId: string;
     sessionId: string;
     providerAttemptId?: string;
-    outcome: string;
+    status: ProviderCheckoutSession["status"];
+    paymentStatus: string;
     wakeReconciliation: boolean;
     now: Date;
   }): Promise<WorkspaceCheckoutAttempt>;
@@ -457,7 +484,7 @@ export function createInMemoryWorkspaceBillingStore(
         desiredAdditionalSeats: workspace.desiredAdditionalSeats ?? 0,
         synchronizedAdditionalSeats: null,
         seatItemId: null,
-        latestCheckoutOutcome: null,
+        latestCheckout: null,
       },
     ]),
   );
@@ -525,7 +552,7 @@ export function createInMemoryWorkspaceBillingStore(
       };
       checkoutAttempts.set(input.clientIdempotencyKey, attempt);
       const row = rows.get(input.workspaceId);
-      if (row) row.latestCheckoutOutcome = null;
+      if (row) row.latestCheckout = null;
       return { kind: "created", attempt };
     },
     async bindCheckoutCustomer(input) {
@@ -576,7 +603,10 @@ export function createInMemoryWorkspaceBillingStore(
         const state = runtime.get(input.workspaceId)!;
         state.nextReconcileAt = input.now;
       }
-      row.latestCheckoutOutcome = input.outcome;
+      row.latestCheckout = {
+        status: input.status,
+        paymentStatus: input.paymentStatus,
+      };
       return attempt;
     },
     async acceptDelivery(input) {
@@ -604,6 +634,7 @@ export function createInMemoryWorkspaceBillingStore(
         workspaceId: string;
         attemptId: string;
         attemptCount: number;
+        dueAt: Date;
       }> = [];
       for (const workspaceId of [...runtime.keys()].sort()) {
         if (claimed.length >= input.limit) break;
@@ -619,7 +650,12 @@ export function createInMemoryWorkspaceBillingStore(
         state.attemptId = attemptId;
         state.leaseExpiresAt = new Date(input.now.getTime() + input.leaseMs);
         state.attemptCount += 1;
-        claimed.push({ workspaceId, attemptId, attemptCount: state.attemptCount });
+        claimed.push({
+          workspaceId,
+          attemptId,
+          attemptCount: state.attemptCount,
+          dueAt: state.nextReconcileAt,
+        });
       }
       return claimed;
     },
@@ -639,6 +675,7 @@ export function createInMemoryWorkspaceBillingStore(
         workspaceId: input.workspaceId,
         attemptId,
         attemptCount: state.attemptCount,
+        dueAt: state.nextReconcileAt,
       };
     },
     async renewClaim(input) {
@@ -682,6 +719,47 @@ export function createInMemoryWorkspaceBillingStore(
       if (state.nextReconcileAt.getTime() > input.now.getTime()) {
         state.nextReconcileAt = input.now;
       }
+    },
+    async commitNoSubscriptionState(input) {
+      const current = rows.get(input.workspaceId);
+      const state = runtime.get(input.workspaceId);
+      if (
+        !current ||
+        !state ||
+        state.attemptId !== input.attemptId ||
+        !state.leaseExpiresAt ||
+        state.leaseExpiresAt.getTime() <= input.now.getTime()
+      ) {
+        throw new WorkspaceBillingAttemptLost();
+      }
+      const changed =
+        current.status !== input.workspaceStatus || current.health !== input.health;
+      const next = {
+        ...current,
+        pricingTier: "free" as const,
+        status: input.workspaceStatus,
+        canonicalSubscriptionId: null,
+        interval: null,
+        providerStatus: null,
+        currentPeriodEnd: null,
+        trialEnd: null,
+        cancelAtPeriodEnd: false,
+        firstPastDueAt: null,
+        graceDeadlineAt: null,
+        health: input.health,
+        attentionReason: null,
+      };
+      rows.set(input.workspaceId, next);
+      state.attemptId = null;
+      state.leaseExpiresAt = null;
+      state.attemptCount = 0;
+      state.nextReconcileAt = nextVerifiedReconcileAt({
+        now: input.now,
+        health: input.health,
+        changed,
+        seatStillDue: false,
+      });
+      return next;
     },
     async commitVerifiedState(input) {
       const current = rows.get(input.workspaceId);
@@ -775,7 +853,7 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
       const latestCheckout = await prisma.workspaceCheckoutAttempt.findFirst({
         where: { billingAccountId: account.id },
         orderBy: [{ createdAt: "desc" }, { id: "desc" }],
-        select: { sessionOutcome: true },
+        select: { sessionStatus: true, paymentStatus: true },
       });
       return {
         workspaceId: row.id,
@@ -802,7 +880,17 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
         desiredAdditionalSeats: account.desiredAdditionalSeats,
         synchronizedAdditionalSeats: account.synchronizedAdditionalSeats,
         seatItemId: account.seatItemId,
-        latestCheckoutOutcome: latestCheckout?.sessionOutcome ?? null,
+        latestCheckout:
+          latestCheckout &&
+          (latestCheckout.sessionStatus === "open" ||
+            latestCheckout.sessionStatus === "complete" ||
+            latestCheckout.sessionStatus === "expired") &&
+          latestCheckout.paymentStatus
+            ? {
+                status: latestCheckout.sessionStatus,
+                paymentStatus: latestCheckout.paymentStatus,
+              }
+            : null,
       };
     },
     async readBillingActor(input) {
@@ -1035,7 +1123,8 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
           where: { id: attempt.id },
           data: {
             providerPhase: "return_observed",
-            sessionOutcome: input.outcome,
+            sessionStatus: input.status,
+            paymentStatus: input.paymentStatus,
           },
         });
         if (input.wakeReconciliation) {
@@ -1201,6 +1290,7 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
         workspaceId: string;
         attemptId: string;
         attemptCount: number;
+        dueAt: Date;
       }> = [];
       for (let index = 0; index < input.limit; index += 1) {
         const candidate = await prisma.workspaceBillingAccount.findFirst({
@@ -1212,7 +1302,12 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
             ],
           },
           orderBy: [{ nextReconcileAt: "asc" }, { id: "asc" }],
-          select: { id: true, workspaceId: true, attemptCount: true },
+          select: {
+            id: true,
+            workspaceId: true,
+            attemptCount: true,
+            nextReconcileAt: true,
+          },
         });
         if (!candidate) break;
         const attemptId = randomUUID();
@@ -1239,6 +1334,7 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
           workspaceId: candidate.workspaceId,
           attemptId,
           attemptCount: candidate.attemptCount + 1,
+          dueAt: candidate.nextReconcileAt,
         });
       }
       return claims;
@@ -1259,12 +1355,13 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
       if (won.count === 0) return null;
       const account = await prisma.workspaceBillingAccount.findUniqueOrThrow({
         where: { workspaceId: input.workspaceId },
-        select: { attemptCount: true },
+        select: { attemptCount: true, nextReconcileAt: true },
       });
       return {
         workspaceId: input.workspaceId,
         attemptId,
         attemptCount: account.attemptCount,
+        dueAt: account.nextReconcileAt,
       };
     },
     async renewClaim(input) {
@@ -1308,6 +1405,107 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
           seatRevision: { increment: 1 },
           nextReconcileAt: input.now,
         },
+      });
+    },
+    async commitNoSubscriptionState(input) {
+      return prisma.$transaction(async (tx) => {
+        const row = await tx.workspace.findUnique({
+          where: { id: input.workspaceId },
+          select: {
+            id: true,
+            ownerUserId: true,
+            personalOwnerUserId: true,
+            pricingTier: true,
+            status: true,
+            members: {
+              where: { role: { not: "owner" } },
+              select: { id: true },
+              take: 1,
+            },
+            billingAccount: { select: { health: true } },
+          },
+        });
+        if (!row?.billingAccount) throw new Error("Workspace not found");
+        const stateChanged =
+          row.pricingTier !== "free" ||
+          row.status !== input.workspaceStatus ||
+          row.billingAccount.health !== input.health;
+        const fenced = await tx.workspaceBillingAccount.updateMany({
+          where: {
+            workspaceId: input.workspaceId,
+            reconcileAttemptId: input.attemptId,
+            leaseExpiresAt: { gt: input.now },
+          },
+          data: {
+            canonicalSubscriptionId: null,
+            billingInterval: null,
+            providerStatus: null,
+            currentPeriodEndAt: null,
+            trialEndAt: null,
+            cancelAtPeriodEnd: false,
+            firstPastDueAt: null,
+            graceDeadlineAt: null,
+            health: input.health,
+            attentionReason: null,
+            nextReconcileAt: nextVerifiedReconcileAt({
+              now: input.now,
+              health: input.health,
+              changed: stateChanged,
+              seatStillDue: false,
+            }),
+            reconcileAttemptId: null,
+            leaseExpiresAt: null,
+            attemptCount: 0,
+          },
+        });
+        if (fenced.count !== 1) throw new WorkspaceBillingAttemptLost();
+        await tx.workspace.update({
+          where: { id: input.workspaceId },
+          data: { pricingTier: "free", status: input.workspaceStatus },
+        });
+        const account = await tx.workspaceBillingAccount.findUniqueOrThrow({
+          where: { workspaceId: input.workspaceId },
+        });
+        const latestCheckout = await tx.workspaceCheckoutAttempt.findFirst({
+          where: { billingAccountId: account.id },
+          orderBy: [{ createdAt: "desc" }, { id: "desc" }],
+          select: { sessionStatus: true, paymentStatus: true },
+        });
+        const latestCheckoutState: WorkspaceBillingProjection["latestCheckout"] =
+          latestCheckout &&
+          (latestCheckout.sessionStatus === "open" ||
+            latestCheckout.sessionStatus === "complete" ||
+            latestCheckout.sessionStatus === "expired") &&
+          latestCheckout.paymentStatus
+            ? {
+                status: latestCheckout.sessionStatus,
+                paymentStatus: latestCheckout.paymentStatus,
+              }
+            : null;
+        return {
+          workspaceId: row.id,
+          ownerUserId: row.ownerUserId,
+          personal: Boolean(row.personalOwnerUserId),
+          hasNonOwnerMembers: row.members.length > 0,
+          pricingTier: "free",
+          status: input.workspaceStatus,
+          providerCustomerId: account.providerCustomerId,
+          canonicalSubscriptionId: null,
+          interval: null,
+          providerStatus: null,
+          currentPeriodEnd: null,
+          trialEnd: null,
+          cancelAtPeriodEnd: false,
+          firstPastDueAt: null,
+          graceDeadlineAt: null,
+          health: input.health,
+          attentionReason: null,
+          lastVerifiedAt: account.lastVerifiedAt,
+          desiredAdditionalSeats: account.desiredAdditionalSeats,
+          synchronizedAdditionalSeats: account.synchronizedAdditionalSeats,
+          seatItemId: account.seatItemId,
+          latestCheckout: latestCheckoutState,
+        };
       });
     },
     async commitVerifiedState(input) {
@@ -1482,7 +1680,7 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
           desiredAdditionalSeats: currentDesiredSeats,
           synchronizedAdditionalSeats: account.synchronizedAdditionalSeats,
           seatItemId: account.seatItemId,
-          latestCheckoutOutcome: null,
+          latestCheckout: null,
         };
       });
     },
@@ -1491,6 +1689,22 @@ export function createPrismaWorkspaceBillingStore(): WorkspaceBillingStore {
 
 export interface WorkspaceBillingDiagnostics {
   record(event: Record<string, unknown>): void;
+}
+
+export type WorkspaceBillingMetricName =
+  | "workspace_billing_deliveries_total"
+  | "workspace_billing_queue_age_ms"
+  | "workspace_billing_claims_total"
+  | "workspace_billing_settlements_total"
+  | "workspace_billing_operation_duration_ms"
+  | "workspace_billing_seat_quantity";
+
+export interface WorkspaceBillingMetrics {
+  observe(
+    name: WorkspaceBillingMetricName,
+    value: number,
+    attributes: Record<string, string | number | boolean | null>,
+  ): void;
 }
 
 export interface WorkspaceBillingClock {
@@ -1519,7 +1733,7 @@ function billingView(row: WorkspaceBillingProjection): WorkspaceBillingView {
       case "canceled":
         return "canceled";
       default:
-        if (row.latestCheckoutOutcome?.startsWith("expired:")) {
+        if (row.latestCheckout?.status === "expired") {
           return "payment_expired";
         }
         return row.status === "pending_payment" ? "payment_pending" : "active";
@@ -1538,12 +1752,20 @@ function billingView(row: WorkspaceBillingProjection): WorkspaceBillingView {
     lastSuccessfulSyncAt: row.lastVerifiedAt?.toISOString() ?? null,
     desiredAdditionalSeats: row.desiredAdditionalSeats,
     synchronizedAdditionalSeats: row.synchronizedAdditionalSeats,
-    actions:
-      row.health === "attention_required"
-        ? ["open_portal", "contact_support"]
-        : row.health === "retrying"
-          ? ["retry"]
-          : ["open_portal"],
+    actions: ((): WorkspaceBillingAction[] => {
+      if (row.status === "restricted") {
+        return row.providerCustomerId ? ["open_portal"] : ["contact_support"];
+      }
+      if (row.health === "attention_required") {
+        return row.providerCustomerId
+          ? ["open_portal", "contact_support"]
+          : ["contact_support"];
+      }
+      if (row.health === "retrying") return ["retry"];
+      if (row.health === "activating") return [];
+      if (row.pricingTier === "free") return ["start_checkout"];
+      return ["open_portal"];
+    })(),
   };
 }
 
@@ -1553,16 +1775,53 @@ export function createWorkspaceBillingModule(dependencies: {
   provider: WorkspaceBillingProvider;
   clock: WorkspaceBillingClock;
   diagnostics: WorkspaceBillingDiagnostics;
+  metrics?: WorkspaceBillingMetrics;
   random?: () => number;
 }) {
   const wakeEventTypes = new Set<string>(WORKSPACE_BILLING_WAKE_EVENT_TYPES);
+  const metrics: WorkspaceBillingMetrics = dependencies.metrics ?? {
+    observe: () => undefined,
+  };
   const reconcileOne = async (
     workspaceId: string,
     attemptId?: string,
   ): Promise<ReconcileCurrentStateResult> => {
     const startedAt = dependencies.clock.now();
     const current = await dependencies.store.readProjection(workspaceId);
-    if (!current?.providerCustomerId) {
+    if (!current) {
+      throw new WorkspaceBillingError("workspace_not_found", "Workspace not found");
+    }
+    const settleNoSubscription = async (activating: boolean) => {
+      if (!attemptId) throw new WorkspaceBillingAttemptLost();
+      const settled = await dependencies.store.commitNoSubscriptionState({
+        workspaceId,
+        attemptId,
+        workspaceStatus: activating ? "pending_payment" : "active",
+        health: activating ? "activating" : "current",
+        now: dependencies.clock.now(),
+      });
+      dependencies.diagnostics.record({
+        level: "info",
+        message: "workspace_billing_no_subscription_verified",
+        workspaceId,
+        phase: "projection",
+        outcome: activating ? "activating" : "current_free",
+        durationMs: dependencies.clock.now().getTime() - startedAt.getTime(),
+      });
+      metrics.observe(
+        "workspace_billing_operation_duration_ms",
+        dependencies.clock.now().getTime() - startedAt.getTime(),
+        {
+          operation: "current_state",
+          outcome: activating ? "activating" : "current_free",
+          health: settled.health,
+          accessStatus: settled.status,
+        },
+      );
+      return { kind: "reconciled" as const, view: billingView(settled) };
+    };
+    if (!current.providerCustomerId) {
+      if (current.pricingTier === "free") return settleNoSubscription(false);
       throw new Error("Workspace Billing Account has no provider customer");
     }
     const providerState = await dependencies.provider.retrieveCurrentState(
@@ -1599,6 +1858,16 @@ export function createWorkspaceBillingModule(dependencies: {
         reason: "workspace_mismatch",
         view: billingView(current),
       };
+    }
+    if (providerState.subscriptions.length === 0) {
+      if (current.pricingTier !== "free") {
+        return {
+          kind: "unresolved",
+          reason: "missing_paid_subscription",
+          view: billingView(current),
+        };
+      }
+      return settleNoSubscription(current.latestCheckout?.status === "complete");
     }
     const tierRank: Record<PricingTier, number> = {
       free: 0,
@@ -1888,6 +2157,25 @@ export function createWorkspaceBillingModule(dependencies: {
       outcome: "reconciled",
       durationMs: dependencies.clock.now().getTime() - startedAt.getTime(),
     });
+    metrics.observe(
+      "workspace_billing_operation_duration_ms",
+      dependencies.clock.now().getTime() - startedAt.getTime(),
+      {
+        operation: "current_state",
+        outcome: "reconciled",
+        health,
+        accessStatus: workspaceStatus,
+        retentionTransition: current.pricingTier === "free" && tier !== "free",
+      },
+    );
+    metrics.observe("workspace_billing_seat_quantity", seat?.desired ?? 0, {
+      kind: "desired",
+      health,
+    });
+    metrics.observe("workspace_billing_seat_quantity", seat?.observed ?? 0, {
+      kind: "synchronized",
+      health,
+    });
     return { kind: "reconciled", view: billingView(settled) };
   };
 
@@ -2140,7 +2428,8 @@ export function createWorkspaceBillingModule(dependencies: {
         workspaceId: input.workspaceId,
         sessionId: input.sessionId,
         providerAttemptId: session.attemptId,
-        outcome: `${session.status}:${session.paymentStatus}`,
+        status: session.status,
+        paymentStatus: session.paymentStatus,
         wakeReconciliation: !expired,
         now: dependencies.clock.now(),
       });
@@ -2220,6 +2509,11 @@ export function createWorkspaceBillingModule(dependencies: {
         disposition,
         workspaceId: accepted.workspaceId,
       });
+      metrics.observe("workspace_billing_deliveries_total", 1, {
+        disposition,
+        deliveryType: delivery.eventType,
+        matchedWorkspace: Boolean(accepted.workspaceId),
+      });
       return { kind: disposition, workspaceId: accepted.workspaceId };
     },
     async reconcileCurrentState(
@@ -2242,6 +2536,14 @@ export function createWorkspaceBillingModule(dependencies: {
           view: billingView(current),
         };
       }
+      metrics.observe("workspace_billing_claims_total", 1, {
+        surface: "interactive",
+      });
+      metrics.observe(
+        "workspace_billing_queue_age_ms",
+        Math.max(0, now.getTime() - claim.dueAt.getTime()),
+        { attempt: claim.attemptCount },
+      );
       try {
         const result = await withProviderDeadline(
           reconcileOne(workspaceId, claim.attemptId),
@@ -2318,6 +2620,16 @@ export function createWorkspaceBillingModule(dependencies: {
         phase: "claim",
         claimed: claims.length,
       });
+      metrics.observe("workspace_billing_claims_total", claims.length, {
+        surface: "worker",
+      });
+      for (const claim of claims) {
+        metrics.observe(
+          "workspace_billing_queue_age_ms",
+          Math.max(0, now.getTime() - claim.dueAt.getTime()),
+          { attempt: claim.attemptCount },
+        );
+      }
       const summary = {
         claimed: claims.length,
         reconciled: 0,
@@ -2397,6 +2709,12 @@ export function createWorkspaceBillingModule(dependencies: {
         phase: "settlement",
         ...summary,
       });
+      for (const [outcome, value] of Object.entries(summary)) {
+        metrics.observe("workspace_billing_settlements_total", value, {
+          outcome,
+          surface: "worker",
+        });
+      }
       return summary;
     },
     async readBillingState(workspaceId: string): Promise<WorkspaceBillingView> {

@@ -20,10 +20,20 @@ export function canStartBillingCheckout(input: {
   return (
     input.canManageBilling &&
     input.isConfigured &&
-    (view.plan === "free" || view.workspaceAccessStatus === "pending_payment") &&
-    view.health !== "retrying" &&
-    view.health !== "attention_required" &&
-    view.health !== "payment_action_required"
+    view.actions.includes("start_checkout")
+  );
+}
+
+export function shouldFocusBillingStatus(
+  previous: Pick<WorkspaceBillingView, "health" | "workspaceAccessStatus">,
+  next: Pick<WorkspaceBillingView, "health" | "workspaceAccessStatus">,
+) {
+  return (
+    ((previous.health === "activating" ||
+      previous.health === "payment_action_required") &&
+      next.health === "current") ||
+    (previous.workspaceAccessStatus !== "restricted" &&
+      next.workspaceAccessStatus === "restricted")
   );
 }
 

@@ -62,6 +62,7 @@ function getStripe(): Stripe {
 
 const PAID_TIERS: PaidPricingTier[] = ["creator", "pro", "business"];
 const INTERVALS: BillingInterval[] = ["monthly", "annual"];
+const stripeContractAccess = Symbol("workspace-billing-stripe-contract-access");
 
 /**
  * Plan-gated capabilities (vizard-parity Phase C export options). Both
@@ -130,6 +131,11 @@ function catalogFromEnvironment(): BillingCatalog {
 
 export class BillingService {
   private catalog: BillingCatalog | null = null;
+  private stripeOverride: Stripe | null = null;
+
+  private stripe() {
+    return this.stripeOverride ?? getStripe();
+  }
 
   /** Validate once at each process entry point, before it accepts work. */
   validateConfiguration(input?: { surface?: "core" | "web" | "worker" | "operator" }): void {
@@ -227,7 +233,7 @@ export class BillingService {
   }
 
   private async retrieveCurrentState(customerId: string): Promise<ProviderCurrentState> {
-    const stripe = getStripe();
+    const stripe = this.stripe();
     let calls = 0;
     const consumeCall = () => {
       calls += 1;
@@ -282,13 +288,13 @@ export class BillingService {
     };
   }
 
-  protected stripeProviderAdapter(): WorkspaceBillingProvider {
+  private stripeProviderAdapter(): WorkspaceBillingProvider {
     return {
         verifyDelivery: (rawBody, signature) =>
           this.verifyStripeDelivery(rawBody, signature),
         retrieveCurrentState: (customerId) => this.retrieveCurrentState(customerId),
         findCustomersByWorkspace: async (workspaceId) => {
-          const result = await getStripe().customers.search({
+          const result = await this.stripe().customers.search({
             query: `metadata['workspaceId']:'${workspaceId}'`,
             limit: 10,
           });
@@ -303,7 +309,7 @@ export class BillingService {
             .map((customer) => ({ customerId: customer.id }));
         },
         createCustomer: async (input, idempotencyKey) => {
-          const customer = await getStripe().customers.create(
+          const customer = await this.stripe().customers.create(
             {
               metadata: {
                 workspaceId: input.workspaceId,
@@ -315,7 +321,7 @@ export class BillingService {
           return { customerId: customer.id };
         },
         findCheckoutSessionsByAttempt: async ({ attemptId, customerId }) => {
-          const sessions = await getStripe().checkout.sessions.list({
+          const sessions = await this.stripe().checkout.sessions.list({
             customer: customerId,
             limit: 100,
           });
@@ -330,7 +336,7 @@ export class BillingService {
             .map((session) => this.normalizeCheckoutSession(session));
         },
         createCheckoutSession: async (input, idempotencyKey) => {
-          const session = await getStripe().checkout.sessions.create(
+          const session = await this.stripe().checkout.sessions.create(
             {
               mode: "subscription",
               customer: input.customerId,
@@ -358,7 +364,7 @@ export class BillingService {
         },
         retrieveCheckoutSession: async (sessionId) =>
           this.normalizeCheckoutSession(
-            await getStripe().checkout.sessions.retrieve(sessionId),
+            await this.stripe().checkout.sessions.retrieve(sessionId),
           ),
         createPortalSession: async (input) => {
           const configuration = process.env.STRIPE_PORTAL_CONFIGURATION_ID;
@@ -368,7 +374,7 @@ export class BillingService {
               "The billing portal is not configured",
             );
           }
-          const session = await getStripe().billingPortal.sessions.create({
+          const session = await this.stripe().billingPortal.sessions.create({
             customer: input.customerId,
             configuration,
             return_url: input.returnUrl,
@@ -376,7 +382,7 @@ export class BillingService {
           return { url: session.url };
         },
         createSeatItem: async (input, idempotencyKey) => {
-          const item = await getStripe().subscriptionItems.create(
+          const item = await this.stripe().subscriptionItems.create(
             {
               subscription: input.subscriptionId,
               price: input.priceId,
@@ -388,7 +394,7 @@ export class BillingService {
           return { itemId: item.id };
         },
         updateSeatItem: async (input, idempotencyKey) => {
-          await getStripe().subscriptionItems.update(
+          await this.stripe().subscriptionItems.update(
             input.itemId,
             {
               quantity: input.quantity,
@@ -398,7 +404,7 @@ export class BillingService {
           );
         },
         deleteSeatItem: async (input, idempotencyKey) => {
-          await getStripe().subscriptionItems.del(
+          await this.stripe().subscriptionItems.del(
             input.itemId,
             { proration_behavior: input.prorationBehavior },
             { idempotencyKey },
@@ -420,6 +426,18 @@ export class BillingService {
       clock: { now: () => new Date() },
       diagnostics: {
         record: (event) => console.warn(JSON.stringify(event)),
+      },
+      metrics: {
+        observe: (metric, value, attributes) =>
+          console.warn(
+            JSON.stringify({
+              level: "info",
+              message: "workspace_billing_metric",
+              metric,
+              value,
+              ...attributes,
+            }),
+          ),
       },
     });
   }
@@ -455,7 +473,7 @@ export class BillingService {
     return this.workspaceBillingModule().reconcileDueAccounts();
   }
 
-  protected async verifyStripeDelivery(
+  private async verifyStripeDelivery(
     rawBody: string,
     signature: string,
     contract?: { stripe: Stripe; webhookSecret: string },
@@ -469,7 +487,7 @@ export class BillingService {
     }
     let event: Stripe.Event;
     try {
-      event = await (contract?.stripe ?? getStripe()).webhooks.constructEventAsync(
+      event = await (contract?.stripe ?? this.stripe()).webhooks.constructEventAsync(
         rawBody,
         signature,
         secret,
@@ -534,6 +552,25 @@ export class BillingService {
               typeof object.client_reference_id === "string"
             ? object.client_reference_id
             : null,
+    };
+  }
+
+  [stripeContractAccess]() {
+    return {
+      provider: (surface?: "core" | "web" | "worker" | "operator") => {
+        this.validateConfiguration(surface ? { surface } : undefined);
+        return this.stripeProviderAdapter();
+      },
+      providerWith: (input: { stripe: Stripe; catalog: BillingCatalog }) => {
+        this.stripeOverride = input.stripe;
+        this.catalog = input.catalog;
+        return this.stripeProviderAdapter();
+      },
+      verifyDelivery: (
+        rawBody: string,
+        signature: string,
+        contract: { stripe: Stripe; webhookSecret: string },
+      ) => this.verifyStripeDelivery(rawBody, signature, contract),
     };
   }
 
@@ -608,6 +645,11 @@ export class BillingService {
     return { received: true as const, disposition: result.kind };
   }
 
+}
+
+/** Internal contract capability; it is not exported from the package surface. */
+export function createWorkspaceBillingStripeContractHarness() {
+  return new BillingService()[stripeContractAccess]();
 }
 
 export const billingService = new BillingService();

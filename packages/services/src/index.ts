@@ -149,6 +149,8 @@ export {
   type WorkspaceBillingClock,
   type WorkspaceBillingDiagnostics,
   type WorkspaceBillingHealth,
+  type WorkspaceBillingMetricName,
+  type WorkspaceBillingMetrics,
   type WorkspaceBillingProjection,
   type WorkspaceBillingProductStatus,
   type WorkspaceBillingProvider,

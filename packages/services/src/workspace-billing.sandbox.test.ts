@@ -4,7 +4,7 @@ import Stripe from "stripe";
 import {
   WORKSPACE_BILLING_STRIPE_API_VERSION,
 } from "./billing.service";
-import { WorkspaceBillingStripeContractHarness } from "./workspace-billing.stripe-test-support";
+import { createWorkspaceBillingStripeContractHarness } from "./workspace-billing.stripe-test-support";
 
 const enabled = process.env.RUN_STRIPE_SANDBOX_CONTRACTS === "1";
 const sandboxDescribe = enabled ? describe : describe.skip;
@@ -32,9 +32,8 @@ sandboxDescribe("Workspace Billing Stripe sandbox", () => {
       maxNetworkRetries: 0,
       timeout: 10_000,
     });
-    const service = new WorkspaceBillingStripeContractHarness();
-    service.validateConfiguration({ surface: "web" });
-    const adapter = service.provider();
+    const service = createWorkspaceBillingStripeContractHarness();
+    const adapter = service.provider("web");
     const workspaceId = randomUUID();
     const fixturePrefix = `narriflow_workspace_billing_contract_${randomUUID()}`;
     const customerKey = `${fixturePrefix}_customer`;
@@ -43,6 +42,7 @@ sandboxDescribe("Workspace Billing Stripe sandbox", () => {
     let checkoutSessionId: string | null = null;
     let subscriptionId: string | null = null;
     let seatItemId: string | null = null;
+    const transientCustomerIds: string[] = [];
 
     try {
       const firstCustomer = await adapter.createCustomer!(
@@ -115,11 +115,60 @@ sandboxDescribe("Workspace Billing Stripe sandbox", () => {
           },
         },
       });
+      const portalProducts = portalConfig.features.subscription_update.products;
+      if (portalProducts) {
+        const allowedPortalPrices = portalProducts.flatMap(
+          (product) => product.prices,
+        );
+        for (const configuredPrice of [
+          process.env.STRIPE_PRICE_CREATOR_MONTHLY,
+          process.env.STRIPE_PRICE_CREATOR_ANNUAL,
+          process.env.STRIPE_PRICE_PRO_MONTHLY,
+          process.env.STRIPE_PRICE_PRO_ANNUAL,
+          process.env.STRIPE_PRICE_BUSINESS_MONTHLY,
+          process.env.STRIPE_PRICE_BUSINESS_ANNUAL,
+        ].filter((price): price is string => Boolean(price))) {
+          expect(allowedPortalPrices).toContain(configuredPrice);
+        }
+      }
       const portal = await adapter.createPortalSession!({
         customerId,
         returnUrl: "https://app.narriflow.test/settings/billing",
       });
       expect(portal.url).toStartWith("https://billing.stripe.com/");
+
+      const annualPrice = process.env.STRIPE_PRICE_CREATOR_ANNUAL;
+      if (!annualPrice) throw new Error("The annual Creator price is required");
+      const trialCustomer = await stripe.customers.create({
+        metadata: { workspaceId, fixturePrefix },
+      });
+      transientCustomerIds.push(trialCustomer.id);
+      await stripe.subscriptions.create({
+        customer: trialCustomer.id,
+        items: [{ price: annualPrice, quantity: 1 }],
+        trial_period_days: 1,
+        metadata: { workspaceId, fixturePrefix },
+      });
+      expect(
+        (await adapter.retrieveCurrentState(trialCustomer.id)).subscriptions[0],
+      ).toMatchObject({
+        status: "trialing",
+        items: [expect.objectContaining({ priceId: annualPrice })],
+      });
+
+      const incompleteCustomer = await stripe.customers.create({
+        metadata: { workspaceId, fixturePrefix },
+      });
+      transientCustomerIds.push(incompleteCustomer.id);
+      await stripe.subscriptions.create({
+        customer: incompleteCustomer.id,
+        items: [{ price: checkoutPrice, quantity: 1 }],
+        payment_behavior: "default_incomplete",
+        metadata: { workspaceId, fixturePrefix },
+      });
+      expect(
+        (await adapter.retrieveCurrentState(incompleteCustomer.id)).subscriptions[0],
+      ).toMatchObject({ status: "incomplete" });
 
       const paymentMethod = await stripe.paymentMethods.create({
         type: "card",
@@ -141,6 +190,15 @@ sandboxDescribe("Workspace Billing Stripe sandbox", () => {
       expect(current.subscriptions[0]).toMatchObject({
         status: "active",
         cancelAtPeriodEnd: false,
+      });
+      await stripe.subscriptions.update(subscriptionId, {
+        cancel_at_period_end: true,
+      });
+      expect(
+        (await adapter.retrieveCurrentState(customerId)).subscriptions[0],
+      ).toMatchObject({ status: "active", cancelAtPeriodEnd: true });
+      await stripe.subscriptions.update(subscriptionId, {
+        cancel_at_period_end: false,
       });
 
       const seat = await adapter.createSeatItem!(
@@ -179,6 +237,9 @@ sandboxDescribe("Workspace Billing Stripe sandbox", () => {
         expect.arrayContaining([expect.objectContaining({ priceId: seatPrice })]),
       );
     } finally {
+      for (const transientCustomerId of transientCustomerIds) {
+        await stripe.customers.del(transientCustomerId).catch(() => undefined);
+      }
       if (seatItemId) {
         await stripe.subscriptionItems.del(seatItemId).catch(() => undefined);
       }

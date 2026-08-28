@@ -25,6 +25,7 @@ import {
 import {
   billingStatusPresentation,
   canStartBillingCheckout,
+  shouldFocusBillingStatus,
 } from "@/lib/billing-view-model";
 
 const STATUS_STRIPE = {
@@ -62,7 +63,10 @@ export function BillingPlans({
   );
   const statusRef = useRef<HTMLDivElement>(null);
   const startedReturnObservation = useRef(false);
-  const previousHealth = useRef(initialView.health);
+  const previousStatus = useRef({
+    health: initialView.health,
+    workspaceAccessStatus: initialView.workspaceAccessStatus,
+  });
   const status = billingStatusPresentation(view);
   const mayStartCheckout = canStartBillingCheckout({
     view,
@@ -137,15 +141,14 @@ export function BillingPlans({
   }, [checkoutCancelled, router]);
 
   useEffect(() => {
-    if (
-      (previousHealth.current === "activating" ||
-        previousHealth.current === "payment_action_required") &&
-      view.health === "current"
-    ) {
+    if (shouldFocusBillingStatus(previousStatus.current, view)) {
       statusRef.current?.focus();
     }
-    previousHealth.current = view.health;
-  }, [view.health]);
+    previousStatus.current = {
+      health: view.health,
+      workspaceAccessStatus: view.workspaceAccessStatus,
+    };
+  }, [view]);
 
   async function postForUrl(url: string, body?: unknown) {
     const response = await fetch(url, {

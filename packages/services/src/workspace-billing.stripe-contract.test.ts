@@ -3,8 +3,11 @@ import Stripe from "stripe";
 import {
   WORKSPACE_BILLING_STRIPE_API_VERSION,
 } from "./billing.service";
-import { WorkspaceBillingStripeContractHarness } from "./workspace-billing.stripe-test-support";
-import { WORKSPACE_BILLING_WAKE_EVENT_TYPES } from "./workspace-billing.service";
+import { createWorkspaceBillingStripeContractHarness } from "./workspace-billing.stripe-test-support";
+import {
+  createBillingCatalog,
+  WORKSPACE_BILLING_WAKE_EVENT_TYPES,
+} from "./workspace-billing.service";
 
 const webhookSecret = "whsec_workspace_billing_contract_fixture";
 const stripe = new Stripe("sk_test_workspace_billing_contract_fixture", {
@@ -54,6 +57,93 @@ function fixture(type: (typeof WORKSPACE_BILLING_WAKE_EVENT_TYPES)[number]) {
 }
 
 describe("Workspace Billing Stripe adapter contracts", () => {
+  test("paginates the complete subscription collection and normalizes every status", async () => {
+    const workspaceId = "11111111-1111-4111-8111-111111111111";
+    const statuses = [
+      "incomplete",
+      "incomplete_expired",
+      "trialing",
+      "active",
+      "past_due",
+      "canceled",
+      "unpaid",
+      "paused",
+    ] as const;
+    const subscriptions = statuses.map((status, index) => ({
+      id: `sub_${status}`,
+      status,
+      metadata: { workspaceId },
+      items: {
+        data: [
+          {
+            id: `si_${index}`,
+            current_period_start: 1_787_900_000,
+            current_period_end: 1_790_492_800,
+            price: { id: "price_creator_monthly" },
+            quantity: 1,
+          },
+        ],
+      },
+      latest_invoice: null,
+      created: 1_787_900_000,
+      trial_start: status === "trialing" ? 1_787_900_000 : null,
+      trial_end: status === "trialing" ? 1_788_000_000 : null,
+      ended_at: status === "canceled" ? 1_788_000_000 : null,
+      canceled_at: status === "canceled" ? 1_788_000_000 : null,
+      cancel_at_period_end: false,
+    }));
+    let pages = 0;
+    const fakeStripe = {
+      customers: {
+        retrieve: async () => ({
+          id: "cus_contract",
+          deleted: false,
+          metadata: { workspaceId },
+        }),
+      },
+      subscriptions: {
+        list: async (input: { starting_after?: string }) => {
+          pages += 1;
+          return input.starting_after
+            ? { data: subscriptions.slice(4), has_more: false }
+            : { data: subscriptions.slice(0, 4), has_more: true };
+        },
+      },
+    } as unknown as Stripe;
+    const catalog = createBillingCatalog({
+      basePrices: [
+        { priceId: "price_creator_monthly", tier: "creator", interval: "monthly" },
+        { priceId: "price_creator_annual", tier: "creator", interval: "annual" },
+        { priceId: "price_pro_monthly", tier: "pro", interval: "monthly" },
+        { priceId: "price_pro_annual", tier: "pro", interval: "annual" },
+        { priceId: "price_business_monthly", tier: "business", interval: "monthly" },
+        { priceId: "price_business_annual", tier: "business", interval: "annual" },
+      ],
+      seatPrices: [
+        { priceId: "price_business_seat_monthly", interval: "monthly" },
+        { priceId: "price_business_seat_annual", interval: "annual" },
+      ],
+      worker: {
+        batchSize: 25,
+        concurrency: 4,
+        leaseMs: 60_000,
+        providerDeadlineMs: 10_000,
+        providerCallBudget: 4,
+      },
+    });
+    const adapter = createWorkspaceBillingStripeContractHarness().providerWith({
+      stripe: fakeStripe,
+      catalog,
+    });
+
+    const current = await adapter.retrieveCurrentState("cus_contract");
+
+    expect(pages).toBe(2);
+    expect(current.ownership).toEqual({ kind: "verified", workspaceId });
+    expect(current.subscriptions.map((subscription) => subscription.status))
+      .toEqual(statuses);
+  });
+
   test("verifies the exact raw body under the pinned API version", async () => {
     const rawBody = `${fixture("checkout.session.completed")}\n`;
     const signature = await Stripe.webhooks.generateTestHeaderStringAsync({
@@ -61,7 +151,7 @@ describe("Workspace Billing Stripe adapter contracts", () => {
       secret: webhookSecret,
       timestamp: signatureTimestamp,
     });
-    const service = new WorkspaceBillingStripeContractHarness();
+    const service = createWorkspaceBillingStripeContractHarness();
 
     expect(
       await service.verifyDelivery(rawBody, signature, {
@@ -85,7 +175,7 @@ describe("Workspace Billing Stripe adapter contracts", () => {
   });
 
   test("normalizes every registered delivery fixture without reading entitlement state", async () => {
-    const service = new WorkspaceBillingStripeContractHarness();
+    const service = createWorkspaceBillingStripeContractHarness();
     for (const type of WORKSPACE_BILLING_WAKE_EVENT_TYPES) {
       const rawBody = fixture(type);
       const signature = await Stripe.webhooks.generateTestHeaderStringAsync({

@@ -278,6 +278,138 @@ describe("Workspace Billing", () => {
     });
   });
 
+  test("settles ordinary Free accounts without a customer and keeps Checkout available", async () => {
+    let providerCalls = 0;
+    const metricNames: string[] = [];
+    const store = createInMemoryWorkspaceBillingStore([
+      {
+        workspaceId: "workspace-free-no-customer",
+        personal: true,
+        hasNonOwnerMembers: false,
+        pricingTier: "free",
+        status: "active",
+        providerCustomerId: null,
+      },
+    ]);
+    const billing = createWorkspaceBillingModule({
+      catalog,
+      store,
+      provider: {
+        verifyDelivery: () => {
+          throw new Error("not used");
+        },
+        retrieveCurrentState: async () => {
+          providerCalls += 1;
+          throw new Error("must not retrieve without a customer");
+        },
+      },
+      clock: { now: () => new Date("2026-08-28T10:00:00.000Z") },
+      diagnostics: { record: () => undefined },
+      metrics: {
+        observe: (name) => metricNames.push(name),
+      },
+    });
+
+    expect(await billing.reconcileCurrentState("workspace-free-no-customer"))
+      .toMatchObject({
+        kind: "reconciled",
+        view: { health: "current", actions: ["start_checkout"] },
+      });
+    expect(providerCalls).toBe(0);
+    expect(metricNames).toEqual(
+      expect.arrayContaining([
+        "workspace_billing_claims_total",
+        "workspace_billing_queue_age_ms",
+        "workspace_billing_operation_duration_ms",
+      ]),
+    );
+  });
+
+  test("keeps zero-subscription Checkout activation recoverable and expires safely", async () => {
+    let checkoutStatus: "complete" | "expired" = "complete";
+    const store = createInMemoryWorkspaceBillingStore([
+      {
+        workspaceId: "workspace-zero-subscription",
+        personal: true,
+        hasNonOwnerMembers: false,
+        pricingTier: "free",
+        status: "active",
+        providerCustomerId: null,
+        ownerUserId: "owner-zero-subscription",
+      },
+    ]);
+    const billing = createWorkspaceBillingModule({
+      catalog,
+      store,
+      provider: {
+        verifyDelivery: () => {
+          throw new Error("not used");
+        },
+        retrieveCurrentState: async () => ({
+          customerId: "cus_zero_subscription",
+          ownership: {
+            kind: "verified",
+            workspaceId: "workspace-zero-subscription",
+          },
+          subscriptions: [],
+        }),
+        findCustomersByWorkspace: async () => [],
+        createCustomer: async () => ({ customerId: "cus_zero_subscription" }),
+        createCheckoutSession: async (input) => ({
+          sessionId: "cs_zero_subscription",
+          url: "https://checkout.stripe.test/zero-subscription",
+          expiresAt: new Date("2026-08-28T11:00:00.000Z"),
+          status: "open",
+          paymentStatus: "unpaid",
+          workspaceId: input.workspaceId,
+          attemptId: input.attemptId,
+        }),
+        retrieveCheckoutSession: async () => ({
+          sessionId: "cs_zero_subscription",
+          url: null,
+          expiresAt: new Date("2026-08-28T11:00:00.000Z"),
+          status: checkoutStatus,
+          paymentStatus: "unpaid",
+          workspaceId: "workspace-zero-subscription",
+        }),
+      },
+      clock: { now: () => new Date("2026-08-28T10:00:00.000Z") },
+      diagnostics: { record: () => undefined },
+    });
+    await billing.startCheckout({
+      workspaceId: "workspace-zero-subscription",
+      actorUserId: "owner-zero-subscription",
+      clientIdempotencyKey: "zero-subscription-key",
+      targetTier: "creator",
+      interval: "monthly",
+      returnDestination: "/settings/billing",
+    });
+    await billing.observeCheckoutReturn({
+      workspaceId: "workspace-zero-subscription",
+      actorUserId: "owner-zero-subscription",
+      sessionId: "cs_zero_subscription",
+    });
+    expect(await billing.reconcileCurrentState("workspace-zero-subscription"))
+      .toMatchObject({
+        view: { health: "activating", actions: [] },
+      });
+
+    checkoutStatus = "expired";
+    await billing.observeCheckoutReturn({
+      workspaceId: "workspace-zero-subscription",
+      actorUserId: "owner-zero-subscription",
+      sessionId: "cs_zero_subscription",
+    });
+    expect(await billing.reconcileCurrentState("workspace-zero-subscription"))
+      .toMatchObject({
+        view: {
+          status: "payment_expired",
+          health: "current",
+          actions: ["start_checkout"],
+        },
+      });
+  });
+
   test("routes an existing paid Workspace to the hosted portal", async () => {
     const store = createInMemoryWorkspaceBillingStore([
       {

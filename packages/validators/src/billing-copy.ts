@@ -33,7 +33,9 @@ export const workspaceBillingViewSchema = z.object({
   lastSuccessfulSyncAt: z.iso.datetime().nullable(),
   desiredAdditionalSeats: z.number().int().nonnegative(),
   synchronizedAdditionalSeats: z.number().int().nonnegative().nullable(),
-  actions: z.array(z.enum(["open_portal", "retry", "contact_support"])),
+  actions: z.array(
+    z.enum(["start_checkout", "open_portal", "retry", "contact_support"]),
+  ),
 });
 export type WorkspaceBillingView = z.infer<typeof workspaceBillingViewSchema>;
 

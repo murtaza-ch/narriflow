@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   billingStatusPresentation,
   canStartBillingCheckout,
+  shouldFocusBillingStatus,
   shouldShowSeatSyncStatus,
 } from "./billing-view-model";
 
@@ -34,6 +35,24 @@ describe("billing status presentation", () => {
     expect(
       canStartBillingCheckout({
         view: { ...free, health: "retrying", actions: ["retry"] },
+        canManageBilling: true,
+        isConfigured: true,
+      }),
+    ).toBe(false);
+    expect(
+      canStartBillingCheckout({
+        view: { ...free, health: "activating", actions: [] },
+        canManageBilling: true,
+        isConfigured: true,
+      }),
+    ).toBe(false);
+    expect(
+      canStartBillingCheckout({
+        view: {
+          ...free,
+          workspaceAccessStatus: "restricted",
+          actions: ["open_portal"],
+        },
         canManageBilling: true,
         isConfigured: true,
       }),
@@ -96,5 +115,26 @@ describe("billing status presentation", () => {
       shouldShowSeatSyncStatus({ ...delayed, plan: "pro" }, "owner"),
     ).toBe(false);
     expect(shouldShowSeatSyncStatus(delayed, "admin")).toBe(false);
+  });
+
+  test("moves focus only for activation completion or a new restriction", () => {
+    expect(
+      shouldFocusBillingStatus(
+        { health: "activating", workspaceAccessStatus: "active" },
+        { health: "current", workspaceAccessStatus: "active" },
+      ),
+    ).toBe(true);
+    expect(
+      shouldFocusBillingStatus(
+        { health: "current", workspaceAccessStatus: "active" },
+        { health: "current", workspaceAccessStatus: "restricted" },
+      ),
+    ).toBe(true);
+    expect(
+      shouldFocusBillingStatus(
+        { health: "retrying", workspaceAccessStatus: "active" },
+        { health: "retrying", workspaceAccessStatus: "active" },
+      ),
+    ).toBe(false);
   });
 });

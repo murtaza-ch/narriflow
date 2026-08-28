@@ -12,6 +12,7 @@ interface BillingActor {
 }
 
 interface WorkspaceBillingHttpDependencies {
+  resolveAppOrigin(requestUrl: string): string;
   getCurrentActor(): Promise<BillingActor | null>;
   startCheckout(input: {
     userId: string;
@@ -65,7 +66,7 @@ export function createWorkspaceBillingHttpRoutes(
           clientIdempotencyKey: parsed.data.clientIdempotencyKey,
           tier: parsed.data.tier,
           interval: parsed.data.interval,
-          returnDestination: `${new URL(c.req.url).origin}/settings/billing`,
+          returnDestination: `${dependencies.resolveAppOrigin(c.req.url)}/settings/billing`,
         }),
         200,
       );
@@ -112,7 +113,7 @@ export function createWorkspaceBillingHttpRoutes(
         await dependencies.openPortal({
           userId: actor.actorUserId,
           workspaceId: actor.workspaceId,
-          returnUrl: `${new URL(c.req.url).origin}/settings/billing`,
+          returnUrl: `${dependencies.resolveAppOrigin(c.req.url)}/settings/billing`,
         }),
         200,
       );
