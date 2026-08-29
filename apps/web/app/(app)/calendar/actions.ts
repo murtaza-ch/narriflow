@@ -7,7 +7,10 @@ import {
 	workspaceService,
 } from "@narriflow/services";
 import type { ClipAspectRatio, SocialPlatform } from "@prisma/client";
-import { requireWorkspaceAppUser } from "@/lib/workspace";
+import {
+	executeProjectAction,
+	authenticatedActionResultError,
+} from "@/lib/authenticated-request-action";
 
 const ratioMap: Record<ClipAspectRatio, "9:16" | "1:1" | "16:9" | "4:5"> = {
 	ratio_9_16: "9:16",
@@ -29,7 +32,11 @@ export async function scheduleWorkspacePostAction(input: {
 	resolution: "720p" | "1080p";
 }) {
 	try {
-		const appUser = await requireWorkspaceAppUser("publishing.manage");
+		return await executeProjectAction(
+			input.projectId,
+			"publishing.manage",
+			async (appUser) => {
+			try {
 		const workspace = await workspaceService.getWorkspace(
 			appUser.actorUserId,
 			appUser.workspaceId,
@@ -39,7 +46,7 @@ export async function scheduleWorkspacePostAction(input: {
 			workspace?.timezone ?? "UTC",
 		);
 		const post = await socialService.schedulePost(
-			appUser.id,
+			appUser.workspaceOwnerUserId,
 			input.projectId,
 			{
 				clientIdempotencyKey: input.clientIdempotencyKey,
@@ -57,10 +64,30 @@ export async function scheduleWorkspacePostAction(input: {
 		);
 		revalidatePath("/calendar");
 		return { ok: true as const, postId: post.id };
-	} catch (error) {
+			} catch (error) {
+    const failure = authenticatedActionResultError(
+      error,
+      "Could not schedule post",
+    );
 		return {
 			ok: false as const,
-			error: error instanceof Error ? error.message : "Could not schedule post",
+			error: failure.message,
+      errorCode: failure.errorCode,
+      requestId: failure.requestId,
+		};
+			}
+		},
+		);
+	} catch (error) {
+    const failure = authenticatedActionResultError(
+      error,
+      "Could not schedule post",
+    );
+		return {
+			ok: false as const,
+			error: failure.message,
+      errorCode: failure.errorCode,
+      requestId: failure.requestId,
 		};
 	}
 }
@@ -69,10 +96,15 @@ export async function cancelWorkspacePostAction(
 	projectId: string,
 	postId: string,
 ) {
-	const appUser = await requireWorkspaceAppUser("content.edit");
-	await socialService.cancelPost(projectId, postId, {
-		workspaceId: appUser.workspaceId,
-		actorUserId: appUser.actorUserId,
-	});
-	revalidatePath("/calendar");
+	return executeProjectAction(
+		projectId,
+		"publishing.manage",
+		async (appUser) => {
+			await socialService.cancelPost(projectId, postId, {
+				workspaceId: appUser.workspaceId,
+				actorUserId: appUser.actorUserId,
+			});
+			revalidatePath("/calendar");
+		},
+	);
 }

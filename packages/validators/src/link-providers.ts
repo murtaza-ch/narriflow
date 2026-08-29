@@ -136,6 +136,6 @@ export const linkIngestSchema = z.object({
   mode: generationModeSchema.optional(),
   processingStartSec: z.number().int().min(0).nullable().optional(),
   processingEndSec: z.number().int().min(0).nullable().optional(),
-});
+}).strict();
 
 export type LinkIngestInput = z.infer<typeof linkIngestSchema>;

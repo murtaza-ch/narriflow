@@ -16,6 +16,10 @@ import {
   duplicateBrandTemplateAction,
   setDefaultBrandTemplateAction,
 } from "../actions";
+import {
+  authenticatedActionResultMessage,
+  isAuthenticatedActionFailure,
+} from "@/lib/authenticated-request-browser";
 
 interface TemplateGalleryProps {
   builtIns: BrandTemplateSummary[];
@@ -119,7 +123,18 @@ function TemplateCard({ template, isDefault, ownership }: TemplateCardProps) {
     setPendingAction("default");
     startTransition(async () => {
       try {
-        await setDefaultBrandTemplateAction(template.id);
+        const result = await setDefaultBrandTemplateAction(template.id);
+        if (isAuthenticatedActionFailure(result)) {
+          toaster.create({
+            type: "error",
+            title: "Could not set default",
+            description: authenticatedActionResultMessage(
+              result,
+              "The default template could not be changed.",
+            ),
+          });
+          return;
+        }
         toaster.create({
           type: "success",
           title: "Default template updated",
@@ -142,7 +157,18 @@ function TemplateCard({ template, isDefault, ownership }: TemplateCardProps) {
     setPendingAction("duplicate");
     startTransition(async () => {
       try {
-        await duplicateBrandTemplateAction(template.id);
+        const result = await duplicateBrandTemplateAction(template.id);
+        if (isAuthenticatedActionFailure(result)) {
+          toaster.create({
+            type: "error",
+            title: "Could not duplicate template",
+            description: authenticatedActionResultMessage(
+              result,
+              "The template could not be duplicated.",
+            ),
+          });
+          setPendingAction(null);
+        }
       } catch (error) {
         if (isNextRedirect(error)) throw error;
         setPendingAction(null);
@@ -166,7 +192,18 @@ function TemplateCard({ template, isDefault, ownership }: TemplateCardProps) {
     setPendingAction("delete");
     startTransition(async () => {
       try {
-        await deleteBrandTemplateAction(template.id);
+        const result = await deleteBrandTemplateAction(template.id);
+        if (isAuthenticatedActionFailure(result)) {
+          toaster.create({
+            type: "error",
+            title: "Could not delete template",
+            description: authenticatedActionResultMessage(
+              result,
+              "The template could not be deleted.",
+            ),
+          });
+          return;
+        }
         toaster.create({ type: "success", title: "Template deleted" });
       } catch (error) {
         if (isNextRedirect(error)) throw error;

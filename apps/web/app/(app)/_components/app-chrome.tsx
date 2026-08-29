@@ -1,8 +1,9 @@
 "use client";
 
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
+import { useState, useTransition } from "react";
 import Link from "next/link";
-import { Box, Flex } from "@chakra-ui/react";
+import { Box, Flex, Text } from "@chakra-ui/react";
 import { Gauge, UserPlus } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { Sidebar } from "./sidebar";
@@ -11,6 +12,11 @@ import { AccountMenu } from "./account-menu";
 import { ThemeToggle } from "./theme-toggle";
 import { GlobalSearch } from "./global-search";
 import type { WorkspaceSwitcherItem } from "./workspace-switcher";
+import { switchWorkspaceAction } from "../_actions/workspace";
+import {
+  authenticatedActionResultMessage,
+  isAuthenticatedActionFailure,
+} from "@/lib/authenticated-request-browser";
 
 interface AppChromeProps {
   email: string | null;
@@ -20,12 +26,62 @@ interface AppChromeProps {
   usedMinutes: number;
   limitMinutes: number;
   activeWorkspaceId: string;
+  workspaceSelectionChanged: boolean;
   workspaceRole: "owner" | "admin" | "editor" | "viewer";
   workspaceStatus: "active" | "pending_payment" | "restricted";
   workspaceTier: "free" | "creator" | "pro" | "business";
   workspaces: WorkspaceSwitcherItem[];
   canCreateWorkspace: boolean;
   children: React.ReactNode;
+}
+
+function WorkspaceChangedNotice({ workspaceId }: { workspaceId: string }) {
+  const router = useRouter();
+  const [visible, setVisible] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [pending, startTransition] = useTransition();
+  if (!visible) return null;
+  return (
+    <Flex
+      align="center"
+      justify="space-between"
+      gap="4"
+      px={{ base: "4", md: "8" }}
+      py="2"
+      borderBottomWidth="1px"
+      borderColor="border.subtle"
+      bg="accent.subtle"
+    >
+      <Text fontSize="sm" color="fg">
+        Your saved Workspace is no longer available. Narriflow opened a
+        Workspace you can access.
+      </Text>
+      <Button
+        size="xs"
+        variant="outline"
+        loading={pending}
+        onClick={() =>
+          startTransition(async () => {
+            const result = await switchWorkspaceAction(workspaceId);
+            if (isAuthenticatedActionFailure(result)) {
+              setError(
+                authenticatedActionResultMessage(
+                  result,
+                  "The Workspace could not be selected.",
+                ),
+              );
+              return;
+            }
+            setVisible(false);
+            router.refresh();
+          })
+        }
+      >
+        Continue here
+      </Button>
+      {error ? <Text role="alert" fontSize="xs" color="danger.fg">{error}</Text> : null}
+    </Flex>
+  );
 }
 
 /** Slim top bar (desktop only) — theme toggle + account menu. Present in
@@ -43,7 +99,8 @@ function DesktopTopBar({
   workspaceStatus,
   workspaceTier,
   activeWorkspaceId,
-}: Pick<AppChromeProps, "email" | "firstName" | "lastName" | "imageUrl" | "usedMinutes" | "limitMinutes" | "workspaceRole" | "workspaceStatus" | "workspaceTier" | "activeWorkspaceId">) {
+}: Pick<AppChromeProps,
+  | "email" | "firstName" | "lastName" | "imageUrl" | "usedMinutes" | "limitMinutes" | "workspaceRole" | "workspaceStatus" | "workspaceTier" | "activeWorkspaceId">) {
   const canInvite = workspaceStatus === "active" && workspaceTier === "business" && (workspaceRole === "owner" || workspaceRole === "admin");
   return (
     <Flex
@@ -134,6 +191,7 @@ export function AppChrome({
   usedMinutes,
   limitMinutes,
   activeWorkspaceId,
+  workspaceSelectionChanged,
   workspaceRole,
   workspaceStatus,
   workspaceTier,
@@ -157,6 +215,9 @@ export function AppChrome({
           lastName={lastName}
           imageUrl={imageUrl}
         />
+        {workspaceSelectionChanged ? (
+          <WorkspaceChangedNotice workspaceId={activeWorkspaceId} />
+        ) : null}
         <Box as="main" flex="1" w="full" px={{ base: "4", md: "8" }} py={{ base: "6", md: "8" }}>
           {children}
         </Box>
@@ -179,6 +240,9 @@ export function AppChrome({
           workspaceTier={workspaceTier}
           activeWorkspaceId={activeWorkspaceId}
         />
+        {workspaceSelectionChanged ? (
+          <WorkspaceChangedNotice workspaceId={activeWorkspaceId} />
+        ) : null}
         <Box as="main" flex="1" w="full" px={{ base: "4", md: "8" }} py={{ base: "6", md: "8" }}>
           {children}
         </Box>
@@ -236,6 +300,10 @@ export function AppChrome({
           workspaceTier={workspaceTier}
           activeWorkspaceId={activeWorkspaceId}
         />
+
+        {workspaceSelectionChanged ? (
+          <WorkspaceChangedNotice workspaceId={activeWorkspaceId} />
+        ) : null}
 
         {/* Page content */}
         <Box as="main" flex="1" w="full" px={{ base: "4", md: "8" }} py={{ base: "6", md: "8" }}>

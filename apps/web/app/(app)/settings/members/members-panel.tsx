@@ -20,6 +20,10 @@ import {
 } from "@narriflow/validators";
 import { formatDate } from "@/lib/format";
 import { shouldShowSeatSyncStatus } from "@/lib/billing-view-model";
+import {
+  authenticatedActionResultMessage,
+  isAuthenticatedActionFailure,
+} from "@/lib/authenticated-request-browser";
 
 type Role = "owner" | "admin" | "editor" | "viewer";
 
@@ -86,7 +90,7 @@ export function MembersPanel({
     startTransition(async () => {
       const result = await inviteMemberAction({ email, role });
       if (!result.ok) {
-        setFeedback(result.error);
+        setFeedback(authenticatedActionResultMessage(result, "The invitation could not be created."));
         inviteEmailRef.current?.focus();
         return;
       }
@@ -107,7 +111,7 @@ export function MembersPanel({
     startTransition(async () => {
       const result = await resendInviteAction(inviteId);
       if (!result.ok) {
-        setFeedback(result.error);
+        setFeedback(authenticatedActionResultMessage(result, "The invitation could not be resent."));
         return;
       }
       setInviteUrl(result.inviteUrl);
@@ -122,7 +126,16 @@ export function MembersPanel({
 
   function revoke(inviteId: string) {
     startTransition(async () => {
-      await revokeInviteAction(inviteId);
+      const result = await revokeInviteAction(inviteId);
+      if (isAuthenticatedActionFailure(result)) {
+        setFeedback(
+          authenticatedActionResultMessage(
+            result,
+            "The invitation could not be revoked.",
+          ),
+        );
+        return;
+      }
       router.refresh();
     });
   }
@@ -140,7 +153,9 @@ export function MembersPanel({
     setFeedback(null);
     startTransition(async () => {
       const result = await changeMemberRoleAction(memberId, nextRole);
-      if (!result.ok) setFeedback(result.error);
+      if (!result.ok) {
+        setFeedback(authenticatedActionResultMessage(result, "The role could not be changed."));
+      }
       router.refresh();
     });
   }
@@ -150,7 +165,9 @@ export function MembersPanel({
     setFeedback(null);
     startTransition(async () => {
       const result = await removeMemberAction(memberId);
-      if (!result.ok) setFeedback(result.error);
+      if (!result.ok) {
+        setFeedback(authenticatedActionResultMessage(result, "The member could not be removed."));
+      }
       router.refresh();
     });
   }

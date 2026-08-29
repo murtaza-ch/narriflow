@@ -91,7 +91,7 @@ export const scheduleSocialPostSchema = z.object({
   resolution: z.enum(["720p", "1080p"]),
   scheduledFor: z.string().datetime(),
   providerSettings: z.record(z.string(), z.unknown()).default({}),
-});
+}).strict();
 
 export const socialPostMetricsSchema = z.object({
   views: z.number().int().nonnegative().default(0),
@@ -102,7 +102,7 @@ export const socialPostMetricsSchema = z.object({
   watchTimeSeconds: z.number().int().nonnegative().nullable().optional(),
   capturedAt: z.string().datetime().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
-});
+}).strict();
 
 export const socialAccountSnapshotSchema = z.object({
   id: z.string().uuid(),

@@ -24,6 +24,7 @@ import { ModeTabs } from "./mode-tabs";
 import { VideoPreview } from "./video-preview";
 import { PlanLimitNotice } from "../../_components/plan-limit-notice";
 import { fetchYoutubeMetadataAction, commitLinkImportAction } from "../actions";
+import { isAuthenticatedActionFailure } from "@/lib/authenticated-request-browser";
 
 function linkProviderLabel(provider: LinkProviderId): string {
   return LINK_PROVIDERS.find((p) => p.id === provider)?.label ?? "Link";
@@ -116,7 +117,12 @@ export function CommitStep({
     let cancelled = false;
     fetchYoutubeMetadataAction(linkUrl)
       .then((result) => {
-        if (cancelled || titleTouchedRef.current || !result.title) return;
+        if (
+          cancelled ||
+          titleTouchedRef.current ||
+          isAuthenticatedActionFailure(result) ||
+          !result.title
+        ) return;
         setTitle(result.title);
       })
       .catch(() => {

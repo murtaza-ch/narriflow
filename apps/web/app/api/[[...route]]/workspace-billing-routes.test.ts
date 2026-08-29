@@ -22,11 +22,12 @@ const view: WorkspaceBillingView = {
 function dependencies(overrides: Record<string, unknown> = {}) {
   return {
     resolveAppOrigin: (requestUrl: string) => new URL(requestUrl).origin,
-    getCurrentActor: async () => ({
+    getActor: async () => ({
       actorUserId: "user-owner",
       workspaceId: view.workspaceId,
     }),
-    startCheckout: async () => ({ kind: "checkout", url: "https://checkout.test" }),
+    startCheckout: async () => ({ kind: "checkout", url: "https://checkout.test",
+    }),
     observeCheckoutReturn: async () => ({
       kind: "activating" as const,
       retryAfterSeconds: 3,
@@ -34,25 +35,19 @@ function dependencies(overrides: Record<string, unknown> = {}) {
     }),
     openPortal: async () => ({ url: "https://billing.test" }),
     readBillingState: async () => view,
-    requireBillingManager: async () => undefined,
     reconcileCurrentState: async () => ({ kind: "reconciled" as const, view }),
     ...overrides,
   };
 }
 
 describe("Workspace Billing HTTP routes", () => {
-  test("rejects unauthenticated and malformed Checkout requests", async () => {
-    const unauthenticated = createWorkspaceBillingHttpRoutes(
-      dependencies({ getCurrentActor: async () => null }),
-    );
-    expect((await unauthenticated.request("/checkout", { method: "POST" })).status)
-      .toBe(401);
-
+  test("rejects malformed Checkout requests", async () => {
     const app = createWorkspaceBillingHttpRoutes(dependencies());
     const malformed = await app.request("/checkout", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ tier: "creator", interval: "weekly", extra: true }),
+      body: JSON.stringify({ tier: "creator", interval: "weekly", extra: true,
+      }),
     });
     expect(malformed.status).toBe(400);
   });
@@ -78,7 +73,8 @@ describe("Workspace Billing HTTP routes", () => {
       }),
     });
     expect(response.status).toBe(200);
-    expect(destination).toBe("https://canonical.narriflow.test/settings/billing");
+    expect(destination).toBe("https://canonical.narriflow.test/settings/billing",
+    );
   });
 
   test("maps activating and terminal returns with distinct polling contracts", async () => {
@@ -106,10 +102,10 @@ describe("Workspace Billing HTTP routes", () => {
     expect(expired.headers.get("retry-after")).toBeNull();
   });
 
-  test("keeps owner authorization and provider failures typed", async () => {
+  test("keeps provider failures typed", async () => {
     const forbidden = createWorkspaceBillingHttpRoutes(
       dependencies({
-        requireBillingManager: async () => {
+        reconcileCurrentState: async () => {
           throw new BillingError("billing_forbidden", "private detail");
         },
         openPortal: async () => {
@@ -117,7 +113,8 @@ describe("Workspace Billing HTTP routes", () => {
         },
       }),
     );
-    expect((await forbidden.request("/reconcile", { method: "POST" })).status)
+    expect((await forbidden.request("/reconcile", { method: "POST" })).status,
+    )
       .toBe(403);
     const portal = await forbidden.request("/portal", { method: "POST" });
     expect(portal.status).toBe(409);

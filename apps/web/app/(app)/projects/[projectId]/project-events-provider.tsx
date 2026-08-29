@@ -19,6 +19,10 @@ import {
   workflowEventRowIdentity,
   workflowTerminalEventIdentity,
 } from "@/lib/project-state";
+import {
+  parseWorkflowAuthorizationControl,
+  recoverFromWorkflowAuthorizationLoss,
+} from "@/lib/workflow-stream-authorization";
 
 // Incremental (non-terminal) progress events — e.g. an individual clip's
 // preview or render landing mid-run — should refresh the page so newly
@@ -124,7 +128,8 @@ export function ProjectEventsProvider({
     });
     seenEventRows.current.clear();
     for (const event of initialEvents) {
-      rememberBoundedIdentity(seenEventRows.current, workflowEventRowIdentity(event));
+      rememberBoundedIdentity(seenEventRows.current, workflowEventRowIdentity(event),
+      );
     }
     refreshedTerminalEvents.current.clear();
     // Re-seeds whenever the server hands us a fresh history snapshot
@@ -189,10 +194,33 @@ export function ProjectEventsProvider({
       scheduleIncrementalRefresh();
     };
 
-    source.addEventListener("workflow.stage.updated", onWorkflowUpdate as EventListener);
+    const onAuthorizationRevoked = (event: MessageEvent<string>) => {
+      const control = parseWorkflowAuthorizationControl(event.data);
+      source.close();
+      if (!control) {
+        router.refresh();
+        return;
+      }
+      recoverFromWorkflowAuthorizationLoss(
+        control,
+        `${window.location.pathname}${window.location.search}`,
+      );
+    };
+
+    source.addEventListener("workflow.stage.updated", onWorkflowUpdate as EventListener,
+    );
+    source.addEventListener(
+      "authorization.revoked",
+      onAuthorizationRevoked as EventListener,
+    );
 
     return () => {
-      source.removeEventListener("workflow.stage.updated", onWorkflowUpdate as EventListener);
+      source.removeEventListener("workflow.stage.updated", onWorkflowUpdate as EventListener,
+      );
+      source.removeEventListener(
+        "authorization.revoked",
+        onAuthorizationRevoked as EventListener,
+      );
       source.close();
       if (pendingIncrementalRefreshTimerRef.current !== null) {
         clearTimeout(pendingIncrementalRefreshTimerRef.current);
@@ -218,7 +246,8 @@ export function ProjectEventsProvider({
 export function useProjectEvents(): ProjectEventsContextValue {
   const context = useContext(ProjectEventsContext);
   if (!context) {
-    throw new Error("useProjectEvents must be used within ProjectEventsProvider");
+    throw new Error("useProjectEvents must be used within ProjectEventsProvider",
+    );
   }
   return context;
 }

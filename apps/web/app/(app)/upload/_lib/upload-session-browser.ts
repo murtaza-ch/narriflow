@@ -6,6 +6,7 @@ import {
   type UploadResumeRecord,
   type UploadResumeStorage,
 } from "./upload-resume";
+import { authenticatedRequestFailureMessage } from "@/lib/authenticated-request-browser";
 
 type UploadProgress = {
   stage: "prepare" | "upload" | "finalize";
@@ -294,7 +295,8 @@ async function responsePayload(response: Response) {
 }
 
 class UploadSessionBrowserFailure extends Error {
-  constructor(readonly code: string, message: string) {
+  constructor(readonly code: string, message: string,
+  ) {
     super(message);
     this.name = "UploadSessionBrowserFailure";
   }
@@ -319,16 +321,17 @@ const UPLOAD_FAILURE_MESSAGES: Record<string, string> = {
 function responseError(
   response: Response,
   payload: unknown,
-  fallback: string,
-) {
+  fallback: string) {
   const payloadCode =
     isRecord(payload) && typeof payload.error === "string"
       ? payload.error
       : null;
   const code =
     payloadCode ??
-    (response.status === 401 || response.status === 403
-      ? "upload_authorization_required"
+    (response.status === 401
+      ? "authentication_required"
+      : response.status === 403
+      ? "capability_denied"
       : response.status === 429
         ? "rate_limited"
         : response.status >= 500
@@ -336,9 +339,26 @@ function responseError(
           : "upload_failed");
   const message =
     UPLOAD_FAILURE_MESSAGES[code] ??
-    (code === "upload_authorization_required"
-      ? "Your upload permission changed. Refresh the page and sign in again."
-      : fallback);
+    authenticatedRequestFailureMessage(
+      isRecord(payload)
+        ? {
+            error: code,
+            message:
+              typeof payload.message === "string" ? payload.message : undefined,
+            requestId:
+              typeof payload.requestId === "string"
+                ? payload.requestId
+                : undefined,
+            details: isRecord(payload.details) ? payload.details : undefined,
+            retryAfterSeconds:
+              Number(response.headers.get("Retry-After")) || undefined,
+          }
+        : { error: code },
+      typeof window === "undefined"
+      ? "/upload"
+      : `${window.location.pathname}${window.location.search}`,
+      fallback,
+    );
   return new UploadSessionBrowserFailure(code, message);
 }
 
@@ -389,8 +409,7 @@ function browserUploadTransport(input: {
     const removeAbortListener = () =>
       input.signal?.removeEventListener("abort", abortRequest);
     const settle = (
-      callback: () => void,
-    ) => {
+      callback: () => void) => {
       removeAbortListener();
       callback();
     };
@@ -490,8 +509,7 @@ async function putWithRetry(input: {
 }
 
 async function runUploadSessionTransfer(
-  input: RunUploadSessionTransferInput,
-) {
+  input: RunUploadSessionTransferInput) {
   const fetcher = input.fetcher ?? fetch;
   const uploadTransport =
     input.uploadTransport ?? (input.fetcher ? undefined : browserUploadTransport);
@@ -608,8 +626,7 @@ async function runUploadSessionTransfer(
       transfer.completedParts.map((part) => [part.partNumber, part.etag]),
     );
     const completedNumbers = new Set(
-      completedByPartNumber.keys(),
-    );
+      completedByPartNumber.keys());
     let storedBytes = Array.from(completedNumbers).reduce(
       (total, partNumber) => {
         const start = (partNumber - 1) * transfer.partSizeBytes;
@@ -702,7 +719,8 @@ async function runUploadSessionTransfer(
         typeof grantPayload.expiresAt !== "string" ||
         !Number.isFinite(Date.parse(grantPayload.expiresAt))
       ) {
-        throw new Error("The upload service returned an invalid grant contract.");
+        throw new Error("The upload service returned an invalid grant contract.",
+        );
       }
       const parsedGrants = parseParts(
         grantPayload.grants,
@@ -716,10 +734,12 @@ async function runUploadSessionTransfer(
           parsedGrants.some((grant) => grant.partNumber === partNumber),
         )
       ) {
-        throw new Error("The upload service returned an invalid grant contract.");
+        throw new Error("The upload service returned an invalid grant contract.",
+        );
       }
       const expiresAtMs = Date.parse(grantPayload.expiresAt);
-      return parsedGrants.map((grant) => ({ ...grant, expiresAtMs })) as ActiveGrant[];
+      return parsedGrants.map((grant) => ({ ...grant, expiresAtMs,
+      })) as ActiveGrant[];
     };
     if (
       pending.length > 0 &&
@@ -740,15 +760,15 @@ async function runUploadSessionTransfer(
           if (grant.expiresAtMs - (input.now?.() ?? Date.now()) <= 60_000) {
             const [freshGrant] = await requestGrantWindow([grant.partNumber]);
             if (!freshGrant) {
-              throw new Error(`Upload part ${grant.partNumber} omitted a grant.`);
+              throw new Error(`Upload part ${grant.partNumber} omitted a grant.`,
+              );
             }
             grant = freshGrant;
           }
         const start = (grant.partNumber - 1) * transfer.partSizeBytes;
         const end = Math.min(
           start + transfer.partSizeBytes,
-          input.file.size,
-        );
+          input.file.size);
         const blob = input.file.slice(start, end);
         const response = await putWithRetry({
           fetcher,
@@ -855,7 +875,8 @@ async function runUploadSessionTransfer(
     finalized.sessionId !== opened.sessionId ||
     finalized.projectId !== opened.projectId
   ) {
-    throw new Error("The upload service returned an invalid finalization contract.");
+    throw new Error("The upload service returned an invalid finalization contract.",
+    );
   }
   if (input.storage) saveUploadResume(input.storage, null);
   return { projectId: opened.projectId };
@@ -1019,7 +1040,8 @@ export function createUploadSessionBrowserAdapter(
       }
       const outcome = parseOpenOutcome(payload);
       if (!outcome) {
-        throw new Error("The upload service returned an invalid status contract.");
+        throw new Error("The upload service returned an invalid status contract.",
+        );
       }
       transientFailures = 0;
       if (outcome.outcome === "queued_for_ingest") {
@@ -1040,7 +1062,8 @@ export function createUploadSessionBrowserAdapter(
         return;
       }
       if (outcome.outcome !== "reconciling") {
-        throw new Error("Upload verification returned to byte transfer unexpectedly.");
+        throw new Error("Upload verification returned to byte transfer unexpectedly.",
+        );
       }
       retryAfterSeconds = outcome.retryAfterSeconds;
     }

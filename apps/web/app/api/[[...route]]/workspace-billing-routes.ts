@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import {
   checkoutRequestSchema,
   checkoutReturnRequestSchema,
@@ -13,7 +13,7 @@ interface BillingActor {
 
 interface WorkspaceBillingHttpDependencies {
   resolveAppOrigin(requestUrl: string): string;
-  getCurrentActor(): Promise<BillingActor | null>;
+  getActor(context: Context): Promise<BillingActor>;
   startCheckout(input: {
     userId: string;
     workspaceId: string;
@@ -27,7 +27,8 @@ interface WorkspaceBillingHttpDependencies {
     workspaceId: string;
     sessionId: string;
   }): Promise<
-    | { kind: "activating"; retryAfterSeconds: number; view: WorkspaceBillingView }
+    | { kind: "activating"; retryAfterSeconds: number; view: WorkspaceBillingView;
+      }
     | { kind: "terminal"; reason: "expired"; view: WorkspaceBillingView }
   >;
   openPortal(input: {
@@ -36,7 +37,6 @@ interface WorkspaceBillingHttpDependencies {
     returnUrl: string;
   }): Promise<{ url: string }>;
   readBillingState(workspaceId: string): Promise<WorkspaceBillingView>;
-  requireBillingManager(actorUserId: string, workspaceId: string): Promise<void>;
   reconcileCurrentState(workspaceId: string): Promise<{
     kind: "reconciled" | "unresolved";
     reason?: string;
@@ -50,13 +50,13 @@ export function createWorkspaceBillingHttpRoutes(
   const app = new Hono();
 
   app.post("/checkout", async (c) => {
-    const actor = await dependencies.getCurrentActor();
-    if (!actor) return c.json({ error: "Unauthorized" }, 401);
+    const actor = await dependencies.getActor(c);
     const parsed = checkoutRequestSchema.safeParse(
       await c.req.json().catch(() => ({})),
     );
     if (!parsed.success) {
-      return c.json({ error: "Invalid payload", issues: parsed.error.issues }, 400);
+      return c.json({ error: "validation_failed", issues: parsed.error.issues }, 400,
+      );
     }
     try {
       return c.json(
@@ -77,8 +77,7 @@ export function createWorkspaceBillingHttpRoutes(
   });
 
   app.post("/checkout/return", async (c) => {
-    const actor = await dependencies.getCurrentActor();
-    if (!actor) return c.json({ error: "Unauthorized" }, 401);
+    const actor = await dependencies.getActor(c);
     const parsed = checkoutReturnRequestSchema.safeParse(
       await c.req.json().catch(() => ({})),
     );
@@ -100,14 +99,14 @@ export function createWorkspaceBillingHttpRoutes(
       }
       return c.json(result, 200);
     } catch (error) {
-      const failure = workspaceBillingHttpFailure(error, "checkout_return_failed");
+      const failure = workspaceBillingHttpFailure(error, "checkout_return_failed",
+      );
       return c.json(failure.body, failure.status);
     }
   });
 
   app.post("/portal", async (c) => {
-    const actor = await dependencies.getCurrentActor();
-    if (!actor) return c.json({ error: "Unauthorized" }, 401);
+    const actor = await dependencies.getActor(c);
     try {
       return c.json(
         await dependencies.openPortal({
@@ -124,8 +123,7 @@ export function createWorkspaceBillingHttpRoutes(
   });
 
   app.get("/state", async (c) => {
-    const actor = await dependencies.getCurrentActor();
-    if (!actor) return c.json({ error: "Unauthorized" }, 401);
+    const actor = await dependencies.getActor(c);
     try {
       const view = await dependencies.readBillingState(actor.workspaceId);
       if (view.health === "activating") c.header("Retry-After", "2");
@@ -136,14 +134,10 @@ export function createWorkspaceBillingHttpRoutes(
   });
 
   app.post("/reconcile", async (c) => {
-    const actor = await dependencies.getCurrentActor();
-    if (!actor) return c.json({ error: "Unauthorized" }, 401);
+    const actor = await dependencies.getActor(c);
     try {
-      await dependencies.requireBillingManager(
-        actor.actorUserId,
-        actor.workspaceId,
+      const result = await dependencies.reconcileCurrentState(actor.workspaceId,
       );
-      const result = await dependencies.reconcileCurrentState(actor.workspaceId);
       if (result.view.health === "activating" || result.view.health === "retrying") {
         c.header("Retry-After", "2");
       }

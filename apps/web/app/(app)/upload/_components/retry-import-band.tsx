@@ -8,6 +8,7 @@ import { Button } from "@narriflow/ui/components/button";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { userErrorMessage } from "@narriflow/validators";
 import { retryIngestFormAction } from "../../projects/actions";
+import { authenticatedActionResultMessage } from "@/lib/authenticated-request-browser";
 
 type RetryState = { ok: boolean; error: string | null };
 const initialState: RetryState = { ok: true, error: null };
@@ -46,7 +47,10 @@ export function RetryImportBand({
       }
       return {
         ok: false,
-        error: result.error ?? "Could not retry import. Please try again.",
+        error: authenticatedActionResultMessage(
+          result,
+          "Could not retry import. Please try again.",
+        ),
       };
     },
     initialState,

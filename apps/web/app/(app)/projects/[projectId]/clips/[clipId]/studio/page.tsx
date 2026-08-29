@@ -1,12 +1,14 @@
 import { notFound } from "next/navigation";
-import { requireWorkspaceProject } from "@/lib/workspace";
+import { admitProjectPage } from "@/lib/authenticated-request-page";
+import { executeProjectAction } from "@/lib/authenticated-request-action";
 import {
   clipService,
   hasFeature,
   projectService,
   presignDownloadUrl,
 } from "@narriflow/services";
-import { brandTemplateSnapshotSchema, getEffectiveClipTiming } from "@narriflow/validators";
+import { brandTemplateSnapshotSchema, getEffectiveClipTiming,
+} from "@narriflow/validators";
 import { compositionAssetRef } from "@narriflow/composition-plan";
 import { StudioShell } from "./_components/studio-shell";
 import type { ClipInfo, StudioBrandLogo } from "./_components/studio-shell";
@@ -20,17 +22,20 @@ export default async function StudioPage({
   params: Promise<{ projectId: string; clipId: string }>;
   searchParams: Promise<{ qaCompositionPlan?: string | string[] }>;
 }) {
-  const [{ projectId, clipId }, query] = await Promise.all([params, searchParams]);
-  const appUser = await requireWorkspaceProject(projectId, "content.edit");
+  const [{ projectId, clipId }, query] = await Promise.all([params, searchParams,
+  ]);
+  const appUser = await admitProjectPage(projectId, "content.edit");
   const compositionPlanQaFixture = resolveCompositionPlanQaFixture(
     query.qaCompositionPlan,
     process.env.NODE_ENV,
   );
 
   const [snapshot, clips, previewSource, rawBrandSnapshot, pricingTier] = await Promise.all([
-    projectService.getProjectSnapshot(appUser.actorUserId, projectId, appUser.workspaceId),
-    clipService.listClips(appUser.id, projectId),
-    clipService.getClipPreviewSource(appUser.id, projectId, clipId),
+    projectService.getProjectSnapshot(appUser.actorUserId, projectId, appUser.workspaceId,
+      ),
+    clipService.listClips(appUser.workspaceOwnerUserId, projectId),
+    clipService.getClipPreviewSource(appUser.workspaceOwnerUserId, projectId, clipId,
+      ),
     // The project's frozen brand snapshot (captured once at ingest) —
     // the source of truth for the logo ASSET. The studio only overrides
     // how it's *shown* per clip (studioEdits.logo); see brand-template-panel.tsx.
@@ -62,7 +67,8 @@ export default async function StudioPage({
           expiresIn: 3600,
         }).catch(() => null)
       : Promise.resolve(null),
-    clipService.getClipEditorDocument(appUser.id, projectId, clipId),
+    clipService.getClipEditorDocument(appUser.workspaceOwnerUserId, projectId, clipId,
+    ),
     // Presign the brand logo (if any) for the preview overlay. Non-fatal —
     // a presign failure just means no logo overlay in preview, not a broken
     // studio. NOTE: this URL expires with the presign TTL below (1h); a
@@ -139,7 +145,9 @@ export default async function StudioPage({
    */
   async function fetchPreviewStatus() {
     "use server";
-    return clipService.getClipPreviewSource(appUser.id, projectId, clipId);
+    return executeProjectAction(projectId, "content.edit", async (actor) =>
+      clipService.getClipPreviewSource(actor.workspaceOwnerUserId, projectId, clipId),
+    );
   }
 
   /**
@@ -150,17 +158,23 @@ export default async function StudioPage({
    */
   async function fetchAutoLayoutAnalysis() {
     "use server";
-    return clipService.getClipAutoLayoutAnalysis(appUser.id, projectId, clipId);
+    return executeProjectAction(projectId, "content.edit", async (actor) =>
+      clipService.getClipAutoLayoutAnalysis(actor.workspaceOwnerUserId, projectId, clipId),
+    );
   }
 
   async function fetchSplitLayoutAnalysis() {
     "use server";
-    return clipService.getClipSplitLayoutOutcome(appUser.id, projectId, clipId);
+    return executeProjectAction(projectId, "content.edit", async (actor) =>
+      clipService.getClipSplitLayoutOutcome(actor.workspaceOwnerUserId, projectId, clipId),
+    );
   }
 
   async function fetchScreenLayoutAnalysis() {
     "use server";
-    return clipService.getClipLayoutAnalysisOutcome(appUser.id, projectId, clipId);
+    return executeProjectAction(projectId, "content.edit", async (actor) =>
+      clipService.getClipLayoutAnalysisOutcome(actor.workspaceOwnerUserId, projectId, clipId),
+    );
   }
 
   return (

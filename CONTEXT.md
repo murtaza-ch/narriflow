@@ -2,6 +2,16 @@
 
 Narriflow turns source media into publishable short-form content through distinct intake and post-ingest processing lifecycles. This glossary fixes the language used for those domain concepts.
 
+## Request admission
+
+**Authenticated Request Policy**:
+The browser-session application module that resolves signed-in App User identity and, when the declared admission requires it, one active Workspace Actor Scope. It enforces one explicitly declared capability, optionally admits an active Project and a common rate limit, sequences validation, and gives every adapter one typed request result and support identifier. Identity-only bootstrap flows never borrow authority or restrictions from an unrelated active Workspace.
+_Avoid_: Auth middleware, current-user helper, generic Project middleware
+
+**Actor Scope**:
+The immutable request fact set whose actor user ID always names the signed-in person and whose Workspace ID, Workspace owner user ID, role, status, tier, and personal-Workspace state are separately named.
+_Avoid_: Workspace user, effective user, owner-as-user
+
 ## Editing
 
 **Studio Editing Session**:

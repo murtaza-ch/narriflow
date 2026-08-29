@@ -23,6 +23,7 @@
     "node_modules",
     "**/*.test.ts",
     "**/*.test.tsx",
-    "**/*.focus.fixture.tsx"
+    "**/*.focus.fixture.tsx",
+    "scripts"
   ]
 }

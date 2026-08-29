@@ -5,7 +5,7 @@ import { FolderOpen } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
-import { requireWorkspaceAppUser as requireCurrentAppUser } from "@/lib/workspace";
+import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 import {
   isRetentionEnforcementActive,
   projectService,
@@ -18,6 +18,7 @@ import { ProjectsGridSkeleton } from "./_components/projects-skeleton";
 import { RetentionBanner } from "./_components/retention-banner";
 import { FoldersPanel } from "./_components/folders-panel";
 import { workspaceLibraryService } from "@narriflow/services";
+import { WorkspaceMismatchNotice } from "./_components/workspace-mismatch-notice";
 
 /**
  * Deliberately NOT async, and deliberately without a sibling `loading.tsx`.
@@ -42,6 +43,10 @@ type ProjectsSearchParams = {
   status?: string;
   source?: string;
   sort?: string;
+  requestFailure?: string;
+  workspaceId?: string;
+  workspaceName?: string;
+  returnTo?: string;
 };
 
 const PROJECT_STATUSES = new Set<ProjectListStatusFilter>([
@@ -83,6 +88,10 @@ export default function ProjectsPage({
         }
       />
 
+      <Suspense fallback={null}>
+        <WorkspaceRecovery searchParams={searchParams} />
+      </Suspense>
+
       {/* No entrance animation on this wrapper: the grid's own staggered
           card fade-up is the entrance, and wrapping the boundary in a second
           fade-up meant the region animated in with the skeleton and then the
@@ -94,8 +103,29 @@ export default function ProjectsPage({
   );
 }
 
+async function WorkspaceRecovery({
+  searchParams,
+}: {
+  searchParams: Promise<ProjectsSearchParams>;
+}) {
+  const params = await searchParams;
+  if (
+    params.requestFailure !== "active_workspace_mismatch" ||
+    !params.workspaceId
+  ) {
+    return null;
+  }
+  return (
+    <WorkspaceMismatchNotice
+      workspaceId={params.workspaceId}
+      workspaceName={params.workspaceName?.slice(0, 120) || "another Workspace"}
+      returnTo={params.returnTo || "/projects"}
+    />
+  );
+}
+
 async function ProjectsHeaderAction() {
-  const appUser = await requireCurrentAppUser();
+  const appUser = await admitWorkspacePage("content.view");
   if (
     appUser.workspace.role === "viewer" ||
     appUser.workspace.status !== "active"
@@ -114,7 +144,7 @@ async function ProjectsData({
 }: {
   searchParams: Promise<ProjectsSearchParams>;
 }) {
-  const appUser = await requireCurrentAppUser();
+  const appUser = await admitWorkspacePage("content.view");
   const params = await searchParams;
   const query = params.q?.trim().slice(0, 200) ?? "";
   const status = PROJECT_STATUSES.has(params.status as ProjectListStatusFilter)
@@ -135,7 +165,8 @@ async function ProjectsData({
       source,
       sort,
     }),
-    workspaceLibraryService.listFolders(appUser.actorUserId, appUser.workspaceId),
+    workspaceLibraryService.listFolders(appUser.actorUserId, appUser.workspaceId,
+    ),
   ]);
   const items = page.items;
   const canEdit =
@@ -147,15 +178,17 @@ async function ProjectsData({
     appUser.workspace.status === "active";
   const retentionBanner =
     appUser.workspace.pricingTier === "free" && isRetentionEnforcementActive()
-      ? <RetentionBanner />
-      : null;
+      ? (
+      <RetentionBanner />
+    ) : null;
   const hasFilters =
     query !== "" || status !== "all" || source !== "all" || Boolean(params.folder);
 
   if (items.length === 0 && !hasFilters) {
     return (
       <Stack gap="5">
-        <FoldersPanel folders={folders.map((folder) => ({ id: folder.id, name: folder.name, count: folder._count.projects }))} activeFolderId={params.folder ?? null} canEdit={canEdit} />
+        <FoldersPanel folders={folders.map((folder) => ({ id: folder.id, name: folder.name, count: folder._count.projects,
+          }))} activeFolderId={params.folder ?? null} canEdit={canEdit} />
         {retentionBanner}
         <EmptyState
           icon={<FolderOpen size={22} strokeWidth={1.5} />}
@@ -173,7 +206,8 @@ async function ProjectsData({
 
   return (
     <Stack gap="5">
-      <FoldersPanel folders={folders.map((folder) => ({ id: folder.id, name: folder.name, count: folder._count.projects }))} activeFolderId={params.folder ?? null} canEdit={canEdit} />
+      <FoldersPanel folders={folders.map((folder) => ({ id: folder.id, name: folder.name, count: folder._count.projects,
+        }))} activeFolderId={params.folder ?? null} canEdit={canEdit} />
       {retentionBanner}
       <ProjectsExplorer
         initialProjects={items}
@@ -185,7 +219,8 @@ async function ProjectsData({
         initialSource={source}
         initialSort={sort}
         folderId={params.folder}
-        folders={folders.map((folder) => ({ id: folder.id, name: folder.name }))}
+        folders={folders.map((folder) => ({ id: folder.id, name: folder.name,
+        }))}
         canEdit={canEdit}
       />
     </Stack>

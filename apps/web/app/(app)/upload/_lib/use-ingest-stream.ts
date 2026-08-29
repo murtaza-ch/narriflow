@@ -2,9 +2,13 @@
 
 import { useEffect, useState } from "react";
 import { parseWorkflowEventMessage } from "@/lib/project-state";
+import {
+  parseWorkflowAuthorizationControl,
+  recoverFromWorkflowAuthorizationLoss,
+} from "@/lib/workflow-stream-authorization";
 
 export type IngestStageStatus =
-  | "queued"
+  "queued"
   | "downloading"
   | "normalizing"
   | "ready"
@@ -84,11 +88,35 @@ export function useIngestStream(
       }
     };
 
-    source.addEventListener("workflow.stage.updated", onWorkflowUpdate as EventListener);
+    const onAuthorizationRevoked = (event: MessageEvent<string>) => {
+      closed = true;
+      source.close();
+      const control = parseWorkflowAuthorizationControl(event.data);
+      if (control) {
+        recoverFromWorkflowAuthorizationLoss(
+          control,
+          `${window.location.pathname}${window.location.search}`,
+        );
+      } else {
+        window.location.reload();
+      }
+    };
+
+    source.addEventListener("workflow.stage.updated", onWorkflowUpdate as EventListener,
+    );
+    source.addEventListener(
+      "authorization.revoked",
+      onAuthorizationRevoked as EventListener,
+    );
 
     return () => {
       closed = true;
-      source.removeEventListener("workflow.stage.updated", onWorkflowUpdate as EventListener);
+      source.removeEventListener("workflow.stage.updated", onWorkflowUpdate as EventListener,
+      );
+      source.removeEventListener(
+        "authorization.revoked",
+        onAuthorizationRevoked as EventListener,
+      );
       source.close();
     };
     // [projectId, initial.ingestStatus] — NOT `state`/`isCurrentInitialTerminal`

@@ -17,25 +17,36 @@ import { workspaceAllowsCapability } from "@narriflow/services";
 import { Button } from "@narriflow/ui/components/button";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { StatBand } from "@narriflow/ui/components/stat-band";
-import { requireWorkspaceAppUser } from "@/lib/workspace";
+import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 import { CopyControl } from "../_components/copy-control";
 
 const TOOLS = [
-  { name: "narriflow_list_workspaces", behavior: "Read", description: "List memberships and MCP eligibility." },
-  { name: "narriflow_list_projects", behavior: "Read", description: "Browse workspace projects and processing statistics." },
-  { name: "narriflow_get_project", behavior: "Read", description: "Fetch a project, transcript summary, and detected clips." },
-  { name: "narriflow_get_workspace_usage", behavior: "Read", description: "Check plan limits and monthly processing-minute usage." },
-  { name: "narriflow_list_autopilot_rules", behavior: "Read", description: "Inspect RSS autopilot rules." },
-  { name: "narriflow_create_rss_autopilot_rule", behavior: "Write", description: "Create a rule that can import and process new episodes." },
-  { name: "narriflow_run_autopilot_rule_now", behavior: "Write", description: "Mark an existing rule due for the worker." },
+  { name: "narriflow_list_workspaces", behavior: "Read", description: "List memberships and MCP eligibility.",
+  },
+  { name: "narriflow_list_projects", behavior: "Read", description: "Browse workspace projects and processing statistics.",
+  },
+  { name: "narriflow_get_project", behavior: "Read", description: "Fetch a project, transcript summary, and detected clips.",
+  },
+  { name: "narriflow_get_workspace_usage", behavior: "Read", description: "Check plan limits and monthly processing-minute usage.",
+  },
+  { name: "narriflow_list_autopilot_rules", behavior: "Read", description: "Inspect RSS autopilot rules.",
+  },
+  { name: "narriflow_create_rss_autopilot_rule", behavior: "Write", description: "Create a rule that can import and process new episodes.",
+  },
+  { name: "narriflow_run_autopilot_rule_now", behavior: "Write", description: "Mark an existing rule due for the worker.",
+  },
 ] as const;
 
-function SectionHeading({ eyebrow, title, description }: { eyebrow: string; title: string; description?: string }) {
+function SectionHeading({ eyebrow, title, description,
+}: { eyebrow: string; title: string; description?: string;
+}) {
   return (
     <Stack gap="1.5">
       <Text textStyle="eyebrow" color="fg.subtle">{eyebrow}</Text>
       <Text as="h2" textStyle="title" fontSize={{ base: "19px", md: "21px" }}>{title}</Text>
-      {description ? <Text fontSize="13px" lineHeight="1.65" color="fg.muted" maxW="76ch">{description}</Text> : null}
+      {description ? (
+        <Text fontSize="13px" lineHeight="1.65" color="fg.muted" maxW="76ch">{description}</Text>
+      ) : null}
     </Stack>
   );
 }
@@ -58,14 +69,19 @@ function ClientCard({
         <Text textStyle="eyebrow" color="fg.subtle">{label}</Text>
       </Flex>
       <Stack as="ol" gap="2" ps="5">
-        {steps.map((step) => <Text as="li" key={step} fontSize="13px" lineHeight="1.55" color="fg.muted">{step}</Text>)}
+        {steps.map((step) => (
+          <Text as="li" key={step} fontSize="13px" lineHeight="1.55" color="fg.muted">{step}</Text>))}
       </Stack>
-      {snippet ? <CopyControl value={snippet} label="Copy setup" multiline /> : null}
+      {snippet ? (
+        <CopyControl value={snippet} label="Copy setup" multiline />
+      ) : null}
     </Stack>
   );
 }
 
-function InfoColumn({ icon: Icon, title, children }: { icon: typeof ShieldCheck; title: string; children: React.ReactNode }) {
+function InfoColumn({ icon: Icon, title, children,
+}: { icon: typeof ShieldCheck; title: string; children: React.ReactNode;
+}) {
   return (
     <Stack gap="2.5" pt="4" borderTopWidth="1px" borderColor="border">
       <Flex align="center" gap="2"><Icon size={16} /><Text as="h3" fontSize="14px" fontWeight="650">{title}</Text></Flex>
@@ -75,7 +91,7 @@ function InfoColumn({ icon: Icon, title, children }: { icon: typeof ShieldCheck;
 }
 
 export default async function McpIntegrationPage() {
-  const appUser = await requireWorkspaceAppUser();
+  const appUser = await admitWorkspacePage("content.view");
   const mcpUrl = `${process.env.NEXT_PUBLIC_APP_URL?.replace(/\/$/, "") ?? "http://localhost:3000"}/mcp`;
   const isEligible =
     appUser.workspace.status === "active" && appUser.workspace.pricingTier === "business";
@@ -84,7 +100,8 @@ export default async function McpIntegrationPage() {
     : appUser.workspace.pricingTier === "business"
       ? "Inactive"
       : "Upgrade";
-  const canManageApi = workspaceAllowsCapability(appUser.workspace, "api.manage");
+  const canManageApi = workspaceAllowsCapability(appUser.workspace, "api.manage",
+  );
   const codexConfig = `[mcp_servers.narriflow]\nurl = "${mcpUrl}"`;
   const genericConfig = `Transport: Streamable HTTP\nURL: ${mcpUrl}\nAuthentication: OAuth 2.1 or Authorization: Bearer nf_…`;
 
@@ -160,7 +177,11 @@ export default async function McpIntegrationPage() {
           </InfoColumn>
           <InfoColumn icon={KeyRound} title="Workspace API key">
             Use a scoped, workspace-bound key for unattended or non-OAuth clients. Keys can grant read scopes and optional autopilot writes, are shown once, and can be revoked independently of personal connections.{" "}
-            {canManageApi ? <Link href="/settings/api" style={{ textDecoration: "underline" }}>Manage workspace keys</Link> : "A workspace member with developer-access permission must manage keys."}
+            {canManageApi ? (
+              <Link href="/settings/api" style={{ textDecoration: "underline" }}>Manage workspace keys</Link>
+            ) : (
+              "A workspace member with developer-access permission must manage keys."
+            )}
           </InfoColumn>
         </Grid>
       </Stack>
@@ -234,7 +255,8 @@ export default async function McpIntegrationPage() {
           {TOOLS.map((tool) => (
             <Grid
               key={tool.name}
-              templateColumns={{ base: "1fr auto", md: "minmax(280px, .9fr) 80px 1.4fr" }}
+              templateColumns={{ base: "1fr auto", md: "minmax(280px, .9fr) 80px 1.4fr",
+              }}
               gap={{ base: "2", md: "4" }}
               alignItems="baseline"
               py="3.5"

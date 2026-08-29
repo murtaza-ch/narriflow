@@ -1,5 +1,6 @@
-import { requireWorkspaceAppUser } from "@/lib/workspace";
-import { isRetentionEnforcementActive, projectService } from "@narriflow/services";
+import { admitWorkspacePage } from "@/lib/authenticated-request-page";
+import { isRetentionEnforcementActive, projectService,
+} from "@narriflow/services";
 import { DashboardView } from "../dashboard/dashboard-view";
 
 const RECENT_PROJECTS_LIMIT = 8;
@@ -12,7 +13,7 @@ function greetingForHour(hour: number): string {
 }
 
 export default async function HomePage() {
-  const appUser = await requireWorkspaceAppUser();
+  const appUser = await admitWorkspacePage("content.view");
   const recentProjects = await projectService.listProjectsWithStatsPage(
     appUser.actorUserId,
     {

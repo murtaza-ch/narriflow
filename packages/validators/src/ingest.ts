@@ -2,7 +2,7 @@ import { z } from "zod";
 
 export const rssPreviewSchema = z.object({
   rssUrl: z.string().url(),
-});
+}).strict();
 
 export const rssEpisodeSchema = z.object({
   id: z.string().min(1),

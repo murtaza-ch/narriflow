@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { userErrorMessage, USER_ERROR_MESSAGES } from ".";
+import { hasUserErrorMessage, userErrorMessage, USER_ERROR_MESSAGES } from ".";
 
 describe("userErrorMessage", () => {
   test("returns friendly copy for a known code", () => {
@@ -93,6 +93,11 @@ describe("userErrorMessage", () => {
     expect(userErrorMessage("totally_unknown_code")).toBe(
       "Something went wrong. Please try again or contact support.",
     );
+  });
+
+  test("distinguishes explicitly supported codes from generic fallback copy", () => {
+    expect(hasUserErrorMessage("quota_exceeded")).toBe(true);
+    expect(hasUserErrorMessage("P2024")).toBe(false);
   });
 
   test("does not tell users to retry deterministic storage metadata failures", () => {

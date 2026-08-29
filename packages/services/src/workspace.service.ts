@@ -19,6 +19,7 @@ export type { WorkspaceCapability } from "@narriflow/validators";
 export interface WorkspaceActorContext {
   userId: string;
   workspaceId: string;
+  workspaceName: string;
   workspaceOwnerUserId: string;
   role: WorkspaceRole;
   status: WorkspaceStatus;
@@ -43,6 +44,105 @@ export const WORKSPACE_API_KEY_SCOPES = [
 
 export type WorkspaceApiKeyScope = (typeof WORKSPACE_API_KEY_SCOPES)[number];
 
+export type WorkspaceOperationErrorCode =
+  | "workspace_name_invalid"
+  | "workspace_timezone_invalid"
+  | "workspace_collaboration_disabled"
+  | "workspace_invites_require_business"
+  | "workspace_admin_invite_owner_required"
+  | "workspace_invite_email_invalid"
+  | "workspace_member_already_exists"
+  | "workspace_invite_unavailable"
+  | "workspace_api_requires_business"
+  | "workspace_api_name_required"
+  | "workspace_api_scope_invalid"
+  | "workspace_paid_members_unavailable"
+  | "workspace_billing_action_required"
+  | "workspace_invite_invalid"
+  | "workspace_invite_email_mismatch"
+  | "workspace_members_unavailable"
+  | "workspace_admin_promotion_owner_required"
+  | "workspace_member_not_found"
+  | "workspace_owner_role_immutable"
+  | "workspace_admin_peer_forbidden"
+  | "workspace_owner_removal_forbidden"
+  | "workspace_creation_disabled"
+  | "workspace_user_not_found"
+  | "workspace_limit_reached"
+  | "workspace_checkout_state_invalid";
+
+export class WorkspaceOperationError extends Error {
+  constructor(
+    readonly code: WorkspaceOperationErrorCode,
+    message: string,
+  ) {
+    super(message);
+    this.name = "WorkspaceOperationError";
+  }
+}
+
+export function assertWorkspaceInviteEntitlement(input: {
+  collaborationEnabled: boolean;
+  pricingTier: PricingTier;
+  workspaceStatus: WorkspaceStatus;
+  actorRole: WorkspaceRole;
+  invitedRole: Exclude<WorkspaceRole, "owner">;
+}): void {
+  if (!input.collaborationEnabled) {
+    throw new WorkspaceOperationError(
+      "workspace_collaboration_disabled",
+      "Workspace collaboration is not enabled for this account",
+    );
+  }
+  if (
+    input.pricingTier !== "business" &&
+    !(input.workspaceStatus === "restricted" && input.invitedRole === "viewer")
+  ) {
+    throw new WorkspaceOperationError(
+      "workspace_invites_require_business",
+      "Workspace invitations require the Business plan",
+    );
+  }
+  if (input.invitedRole === "admin" && input.actorRole !== "owner") {
+    throw new WorkspaceOperationError(
+      "workspace_admin_invite_owner_required",
+      "Only workspace owners can invite admins",
+    );
+  }
+}
+
+export function normalizeWorkspaceApiKeyInput(
+  pricingTier: PricingTier,
+  input: { name: string; scopes?: string[] },
+): { name: string; scopes: WorkspaceApiKeyScope[] } {
+  if (!hasFeature(pricingTier, "integrations.api")) {
+    throw new WorkspaceOperationError(
+      "workspace_api_requires_business",
+      "Workspace API keys require Business",
+    );
+  }
+  const name = input.name.trim().slice(0, 80);
+  if (!name) {
+    throw new WorkspaceOperationError(
+      "workspace_api_name_required",
+      "API key name is required",
+    );
+  }
+  const scopes = input.scopes?.length
+    ? [...new Set(input.scopes)]
+    : ["projects:read"];
+  const invalidScopes = scopes.filter(
+    (scope) => !WORKSPACE_API_KEY_SCOPES.includes(scope as WorkspaceApiKeyScope),
+  );
+  if (invalidScopes.length) {
+    throw new WorkspaceOperationError(
+      "workspace_api_scope_invalid",
+      "One or more API key scopes are unsupported",
+    );
+  }
+  return { name, scopes: scopes as WorkspaceApiKeyScope[] };
+}
+
 export { roleHasWorkspaceCapability, workspaceAllowsCapability };
 
 function requiredPrisma() {
@@ -51,10 +151,13 @@ function requiredPrisma() {
   return prisma;
 }
 
-function normalizeWorkspaceName(value: string) {
+export function normalizeWorkspaceName(value: string) {
   const name = value.normalize("NFKC").trim().replace(/\s+/g, " ");
   if (name.length < 1 || name.length > 80) {
-    throw new Error("Workspace names must be between 1 and 80 characters");
+    throw new WorkspaceOperationError(
+      "workspace_name_invalid",
+      "Workspace names must be between 1 and 80 characters",
+    );
   }
   return name;
 }
@@ -92,7 +195,10 @@ export class WorkspaceService {
 
   async createPendingBusinessWorkspace(userId: string, input: { name: string }) {
     if (!workspacesV1EnabledForUser(userId)) {
-      throw new Error("Workspace creation is not enabled for this account");
+      throw new WorkspaceOperationError(
+        "workspace_creation_disabled",
+        "Workspace creation is not enabled for this account",
+      );
     }
     const prisma = requiredPrisma();
     const name = normalizeWorkspaceName(input.name);
@@ -104,8 +210,18 @@ export class WorkspaceService {
         select: { timezone: true },
       }),
     ]);
-    if (!user) throw new Error("User not found");
-    if (ownedCount >= 25) throw new Error("Workspace limit reached");
+    if (!user) {
+      throw new WorkspaceOperationError(
+        "workspace_user_not_found",
+        "User not found",
+      );
+    }
+    if (ownedCount >= 25) {
+      throw new WorkspaceOperationError(
+        "workspace_limit_reached",
+        "Workspace limit reached",
+      );
+    }
 
     const workspace = await prisma.workspace.create({
       data: {
@@ -140,7 +256,13 @@ export class WorkspaceService {
       select: {
         role: true,
         workspace: {
-          select: { id: true, ownerUserId: true, status: true, pricingTier: true },
+          select: {
+            id: true,
+            name: true,
+            ownerUserId: true,
+            status: true,
+            pricingTier: true,
+          },
         },
       },
     });
@@ -149,6 +271,7 @@ export class WorkspaceService {
     const context: WorkspaceActorContext = {
       userId,
       workspaceId: membership.workspace.id,
+      workspaceName: membership.workspace.name,
       workspaceOwnerUserId: membership.workspace.ownerUserId,
       role: membership.role,
       status: membership.workspace.status,
@@ -214,7 +337,10 @@ export class WorkspaceService {
     try {
       new Intl.DateTimeFormat("en-US", { timeZone: timezone }).format(new Date());
     } catch {
-      throw new Error("Enter a valid IANA timezone, such as America/New_York");
+      throw new WorkspaceOperationError(
+        "workspace_timezone_invalid",
+        "Enter a valid IANA timezone, such as America/New_York",
+      );
     }
     return requiredPrisma().workspace.update({
       where: { id: workspaceId },
@@ -329,21 +455,22 @@ export class WorkspaceService {
     workspaceId: string,
     input: { email: string; role: Exclude<WorkspaceRole, "owner"> },
   ) {
-    if (!workspacesV1EnabledForUser(userId)) {
-      throw new Error("Workspace collaboration is not enabled for this account");
-    }
+    const collaborationEnabled = workspacesV1EnabledForUser(userId);
     const actor = await this.requireActor(userId, workspaceId, "members.invite");
-    if (
-      actor.pricingTier !== "business" &&
-      !(actor.status === "restricted" && input.role === "viewer")
-    ) {
-      throw new Error("Workspace invitations require the Business plan");
-    }
-    if (input.role === "admin" && actor.role !== "owner") {
-      throw new Error("Only workspace owners can invite admins");
-    }
+    assertWorkspaceInviteEntitlement({
+      collaborationEnabled,
+      pricingTier: actor.pricingTier,
+      workspaceStatus: actor.status,
+      actorRole: actor.role,
+      invitedRole: input.role,
+    });
     const email = input.email.trim().toLocaleLowerCase("en-US");
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new Error("Enter a valid email address");
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      throw new WorkspaceOperationError(
+        "workspace_invite_email_invalid",
+        "Enter a valid email address",
+      );
+    }
     const prisma = requiredPrisma();
     const existingUser = await prisma.user.findFirst({
       where: { primaryEmail: { equals: email, mode: "insensitive" } },
@@ -353,7 +480,12 @@ export class WorkspaceService {
       const member = await prisma.workspaceMember.findUnique({
         where: { workspaceId_userId: { workspaceId, userId: existingUser.id } },
       });
-      if (member) throw new Error("This person is already a workspace member");
+      if (member) {
+        throw new WorkspaceOperationError(
+          "workspace_member_already_exists",
+          "This person is already a workspace member",
+        );
+      }
     }
     await prisma.workspaceInvite.updateMany({
       where: { workspaceId, email: { equals: email, mode: "insensitive" }, acceptedAt: null, revokedAt: null },
@@ -395,7 +527,10 @@ export class WorkspaceService {
       select: { email: true, role: true },
     });
     if (!invite || invite.role === "owner") {
-      throw new Error("Invitation is no longer available");
+      throw new WorkspaceOperationError(
+        "workspace_invite_unavailable",
+        "Invitation is no longer available",
+      );
     }
     return this.createInvite(userId, workspaceId, {
       email: invite.email,
@@ -435,18 +570,7 @@ export class WorkspaceService {
     input: { name: string; scopes?: string[] },
   ) {
     const actor = await this.requireActor(userId, workspaceId, "api.manage");
-    if (!hasFeature(actor.pricingTier, "integrations.api")) {
-      throw new Error("Workspace API keys require Business");
-    }
-    const name = input.name.trim().slice(0, 80);
-    if (!name) throw new Error("API key name is required");
-    const requestedScopes = input.scopes?.length ? [...new Set(input.scopes)] : ["projects:read"];
-    const invalidScopes = requestedScopes.filter(
-      (scope) => !WORKSPACE_API_KEY_SCOPES.includes(scope as WorkspaceApiKeyScope),
-    );
-    if (invalidScopes.length) {
-      throw new Error(`Unsupported API key scope: ${invalidScopes.join(", ")}`);
-    }
+    const normalized = normalizeWorkspaceApiKeyInput(actor.pricingTier, input);
     const secret = `nf_${randomBytes(32).toString("base64url")}`;
     const prefix = secret.slice(0, 11);
     const hashedSecret = createHash("sha256").update(secret).digest("hex");
@@ -455,10 +579,10 @@ export class WorkspaceService {
         userId,
         workspaceId,
         createdByUserId: userId,
-        name,
+        name: normalized.name,
         prefix,
         hashedSecret,
-        scopes: requestedScopes,
+        scopes: normalized.scopes,
       },
       select: { id: true, name: true, prefix: true, scopes: true, createdAt: true },
     });

@@ -5,7 +5,7 @@ import { workspaceAllowsCapability } from "@narriflow/services";
 import { Button } from "@narriflow/ui/components/button";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { StatBand } from "@narriflow/ui/components/stat-band";
-import { requireWorkspaceAppUser } from "@/lib/workspace";
+import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 
 function IntegrationRow({
   eyebrow,
@@ -52,7 +52,7 @@ function IntegrationRow({
 }
 
 export default async function IntegrationsPage() {
-  const appUser = await requireWorkspaceAppUser();
+  const appUser = await admitWorkspacePage("content.view");
   const isMcpEligible =
     appUser.workspace.status === "active" && appUser.workspace.pricingTier === "business";
   const mcpAccessLabel = isMcpEligible
@@ -60,7 +60,8 @@ export default async function IntegrationsPage() {
     : appUser.workspace.pricingTier === "business"
       ? "Inactive"
       : "Business";
-  const canManageApi = workspaceAllowsCapability(appUser.workspace, "api.manage");
+  const canManageApi = workspaceAllowsCapability(appUser.workspace, "api.manage",
+  );
 
   return (
     <Stack gap="8" maxW="1120px" mx="auto">

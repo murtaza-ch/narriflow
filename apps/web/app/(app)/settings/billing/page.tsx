@@ -1,7 +1,7 @@
 import { Box, Stack, Text } from "@chakra-ui/react";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { StatBand } from "@narriflow/ui/components/stat-band";
-import { requireWorkspaceAppUser as requireCurrentAppUser } from "@/lib/workspace";
+import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 import { billingService, projectService } from "@narriflow/services";
 import { MONTHLY_PROCESSING_MINUTE_LIMITS } from "@narriflow/validators";
 import { BillingPlans } from "./billing-plans";
@@ -19,7 +19,7 @@ export default async function BillingPage({
 }: {
   searchParams: Promise<{ checkout?: string; session_id?: string }>;
 }) {
-  const appUser = await requireCurrentAppUser();
+  const appUser = await admitWorkspacePage("content.view");
   const [billingView, usedMinutes, params] = await Promise.all([
     billingService.readBillingState(appUser.workspaceId),
     projectService.getWorkspaceMonthlyUsageMinutes(appUser.workspaceId),
@@ -84,7 +84,7 @@ export default async function BillingPage({
           availableTiers={billingService.configuredTiers()}
           isConfigured={billingService.isConfigured()}
           checkoutReturnSessionId={
-            params.checkout === "return" ? params.session_id ?? null : null
+            params.checkout === "return" ? (params.session_id ?? null) : null
           }
           checkoutCancelled={params.checkout === "cancelled"}
           canManageBilling={appUser.workspace.role === "owner"}

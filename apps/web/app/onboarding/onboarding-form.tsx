@@ -7,6 +7,7 @@ import { Input } from "@narriflow/ui/components/input";
 import { Label } from "@narriflow/ui/components/label";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { completeOnboardingAction } from "../actions/onboarding";
+import { AuthenticatedActionForm } from "../_components/authenticated-action-form";
 
 function SubmitButton() {
   const { pending } = useFormStatus();
@@ -36,7 +37,7 @@ interface OnboardingFormProps {
  */
 export function OnboardingForm({ defaultFirstName, defaultLastName }: OnboardingFormProps) {
   return (
-    <form action={completeOnboardingAction}>
+    <AuthenticatedActionForm action={completeOnboardingAction}>
       <Stack gap="4">
         <SimpleGrid columns={{ base: 1, sm: 2 }} gap="4">
           <Stack gap="1.5">
@@ -68,6 +69,6 @@ export function OnboardingForm({ defaultFirstName, defaultLastName }: Onboarding
         </SimpleGrid>
         <SubmitButton />
       </Stack>
-    </form>
+    </AuthenticatedActionForm>
   );
 }

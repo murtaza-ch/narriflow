@@ -1,5 +1,5 @@
 import { Box, Stack } from "@chakra-ui/react";
-import { requireWorkspaceAppUser as requireCurrentAppUser } from "@/lib/workspace";
+import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 import { socialOAuthService } from "@narriflow/services";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { SocialAccountsPanel } from "./social-accounts-panel";
@@ -9,9 +9,10 @@ export default async function SocialAccountsPage({
 }: {
   searchParams: Promise<{ connected?: string; error?: string }>;
 }) {
-  const appUser = await requireCurrentAppUser();
+  const appUser = await admitWorkspacePage("content.view");
   const [accounts, params] = await Promise.all([
-    socialOAuthService.listAccounts(appUser.id, appUser.workspaceId),
+    socialOAuthService.listAccounts(appUser.workspaceOwnerUserId, appUser.workspaceId,
+    ),
     searchParams,
   ]);
 

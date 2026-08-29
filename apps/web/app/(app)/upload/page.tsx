@@ -3,7 +3,7 @@ import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { Box, Flex, Stack, Text } from "@chakra-ui/react";
 import { PageHeader } from "@narriflow/ui/components/page-header";
-import { requireWorkspaceAppUser as requireCurrentAppUser } from "@/lib/workspace";
+import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 import { brandTemplateService, projectService } from "@narriflow/services";
 import { parseStoredContentPack } from "@narriflow/validators";
 import { UploadShell } from "./_components/upload-shell";
@@ -36,7 +36,8 @@ async function loadLinkResumeData(
   projectId: string,
   workspaceId: string,
 ): Promise<LinkResumeData | null> {
-  const snapshot = await projectService.getProjectSnapshot(userId, projectId, workspaceId);
+  const snapshot = await projectService.getProjectSnapshot(userId, projectId, workspaceId,
+  );
 
   if (!snapshot.project) {
     redirect("/upload");
@@ -71,19 +72,23 @@ async function loadLinkResumeData(
 export default async function UploadPage({
   searchParams,
 }: {
-  searchParams: Promise<{ url?: string | string[]; project?: string | string[] }>;
+  searchParams: Promise<{ url?: string | string[]; project?: string | string[];
+  }>;
 }) {
-  const appUser = await requireCurrentAppUser("processing.consume");
+  const appUser = await admitWorkspacePage("processing.consume");
   const [brandTemplates, params, usageSummary] = await Promise.all([
-    brandTemplateService.list(appUser.id, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId }),
+    brandTemplateService.list(appUser.workspaceOwnerUserId, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId,
+    }),
     searchParams,
-    projectService.getUsageSummary(appUser.id, appUser.workspaceId),
+    projectService.getUsageSummary(appUser.workspaceOwnerUserId, appUser.workspaceId,
+    ),
   ]);
   const rawUrl = Array.isArray(params.url) ? params.url[0] : params.url;
   const rawProjectId = Array.isArray(params.project) ? params.project[0] : params.project;
 
   const resumeData = rawProjectId
-    ? await loadLinkResumeData(appUser.actorUserId, rawProjectId, appUser.workspaceId)
+    ? await loadLinkResumeData(appUser.actorUserId, rawProjectId, appUser.workspaceId,
+      )
     : null;
 
   return (

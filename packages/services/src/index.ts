@@ -10,8 +10,7 @@ export {
 } from "./audio-asset.service";
 export {
   autopilotService,
-  AutopilotService,
-} from "./autopilot.service";
+  AutopilotService } from "./autopilot.service";
 export {
   fetchRssFeed,
   fetchRssEpisodes,
@@ -91,6 +90,12 @@ export {
   UploadTooLongError,
   IngestNotFailedError,
   IngestRetryLimitExceededError,
+  LinkUnsupportedSourceError,
+  ProjectAccessDeniedError,
+  ProjectDeletionIncompleteError,
+  ProjectHasActivePublicationError,
+  ProjectHasActiveWorkflowError,
+  ProjectNotFoundError,
   MAX_INGEST_RETRY_ATTEMPTS,
   purgeExpiredProjectSources,
   purgeOldWorkflowEvents,
@@ -189,12 +194,10 @@ export {
 } from "./workspace-billing.service";
 export {
   analyticsService,
-  AnalyticsService,
-} from "./analytics.service";
+  AnalyticsService } from "./analytics.service";
 export {
   socialService,
-  SocialService,
-} from "./social.service";
+  SocialService } from "./social.service";
 export {
   createProductionSocialPublicationRuntime,
   getSocialPublicationRuntime,

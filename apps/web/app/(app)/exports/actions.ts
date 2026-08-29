@@ -2,21 +2,22 @@
 
 import { revalidatePath } from "next/cache";
 import { clipExportService } from "@narriflow/services";
-import { requireWorkspaceAppUser } from "@/lib/workspace";
+import { executeWorkspaceAction } from "@/lib/authenticated-request-action";
 
 export async function retryWorkspaceExportAction(exportId: string) {
-  const appUser = await requireWorkspaceAppUser("processing.consume");
-  const exported = await clipExportService.getWorkspaceOwned(
-    appUser.workspaceId,
-    exportId,
-  );
-  if (!exported) throw new Error("Export not found");
-  await clipExportService.retryFailed(
-    appUser.id,
-    exported.projectId,
-    exported.clipId,
-    exported.id,
-    appUser.workspaceId,
-  );
-  revalidatePath("/exports");
+  return executeWorkspaceAction("processing.consume", async (appUser) => {
+    const exported = await clipExportService.getWorkspaceOwned(
+      appUser.workspaceId,
+      exportId,
+    );
+    if (!exported) throw new Error("Export not found");
+    await clipExportService.retryFailed(
+      appUser.workspaceOwnerUserId,
+      exported.projectId,
+      exported.clipId,
+      exported.id,
+      appUser.workspaceId,
+    );
+    revalidatePath("/exports");
+  });
 }

@@ -24,7 +24,7 @@ export const autopilotRuleInputSchema = z.object({
   maxEpisodesPerRun: z.number().int().min(1).max(10).default(3),
   initialImportMode: autopilotInitialImportModeSchema.default("future_only"),
   initialImportCount: z.number().int().min(1).max(10).default(3),
-});
+}).strict();
 
 export const autopilotRuleUpdateSchema = autopilotRuleInputSchema
   .partial()

@@ -1,7 +1,9 @@
 import { Hono } from "hono";
-import type { Context, Next } from "hono";
 import { handle } from "hono/vercel";
-import { getCurrentWorkspaceAppUser as getCurrentAppUser } from "@/lib/workspace";
+import {
+  authenticatedHonoActor,
+  authenticatedRequestHonoMiddleware,
+} from "@/lib/authenticated-request-hono";
 import {
   applyCaptionPresetToAllSchema,
   applyStudioEditsToAllSchema,
@@ -44,13 +46,13 @@ import {
   updateClipStudioEditsSchema,
   updateClipTitleSchema,
   updateClipTranscriptSliceSchema,
+  hasUserErrorMessage,
   userErrorMessage,
 } from "@narriflow/validators";
 import {
   audioAssetService,
   AudioAssetNotFoundError,
   billingService,
-  checkRateLimit,
   analyticsService,
   autopilotService,
   searchBrollVideos,
@@ -105,6 +107,7 @@ export const runtime = "nodejs";
 export const maxDuration = 60;
 
 const app = new Hono().basePath("/api");
+app.use("*", authenticatedRequestHonoMiddleware);
 billingService.validateConfiguration({ surface: "web" });
 
 app.route(
@@ -133,7 +136,8 @@ app.post("/webhooks/tiktok/publication", async (c) => {
       level: "info",
       message: "social_publication_tiktok_webhook_accepted",
       outcome: result.kind,
-    }));
+    }),
+    );
     return c.json(result, 200);
   } catch (error) {
     if (error instanceof TikTokPublicationWebhookError) {
@@ -144,7 +148,8 @@ app.post("/webhooks/tiktok/publication", async (c) => {
       level: "error",
       message: "social_publication_tiktok_webhook_failed",
       errorCode: "tiktok_webhook_persistence_failed",
-    }));
+    }),
+    );
     return c.json({ error: "tiktok_webhook_persistence_failed" }, 500);
   }
 });
@@ -152,26 +157,29 @@ app.post("/webhooks/tiktok/publication", async (c) => {
 app.route(
   "/billing",
   createWorkspaceBillingHttpRoutes({
-    getCurrentActor: getCurrentAppUser,
+    getActor: async (c) => authenticatedHonoActor(c),
     resolveAppOrigin: getOAuthOrigin,
     startCheckout: (input) => billingService.startCheckout(input),
     observeCheckoutReturn: (input) => billingService.observeCheckoutReturn(input),
     openPortal: (input) => billingService.openPortal(input),
     readBillingState: (workspaceId) => billingService.readBillingState(workspaceId),
-    requireBillingManager: async (actorUserId, workspaceId) => {
-      await workspaceService.requireActor(
-        actorUserId,
-        workspaceId,
-        "billing.manage",
-      );
-    },
     reconcileCurrentState: (workspaceId) =>
       billingService.reconcileCurrentState(workspaceId),
   }),
 );
 
 function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : "Unexpected server error";
+  if (
+    !error ||
+    typeof error !== "object" ||
+    !("code" in error) ||
+    typeof error.code !== "string"
+  ) {
+    throw error;
+  }
+  const code = error.code;
+  if (!hasUserErrorMessage(code)) throw error;
+  return userErrorMessage(code) ?? "The request could not be completed.";
 }
 
 function socialPublicationErrorStatus(error: SocialPublicationRecoveryError) {
@@ -190,52 +198,14 @@ function getOAuthOrigin(requestUrl: string) {
 
 app.get("/health", (c) => c.json({ ok: true, service: "narriflow-web-api" }));
 
-// One lifecycle gate for every project API surface. Individual handlers keep
-// their ownership checks for explicit errors, but this middleware guarantees
-// that a newly-added clip/export/social route cannot accidentally expose an
-// expired project by forgetting the retention predicate.
-const requireActiveProject = async (c: Context, next: Next) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
-  const projectId = c.req.param("id");
-  if (!projectId) return c.json({ error: "Project not found" }, 404);
-  const access = await projectService.getProjectAccess(
-    appUser.actorUserId,
-    projectId,
-    appUser.workspaceId,
-  );
-  if (access === "missing") {
-    return c.json({ error: "Project not found" }, 404);
-  }
-  if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
-  if (!["GET", "HEAD", "OPTIONS"].includes(c.req.method)) {
-    try {
-      await workspaceService.requireActor(
-        appUser.actorUserId,
-        appUser.workspaceId,
-        "content.edit",
-      );
-    } catch (error) {
-      return c.json(
-        { error: "Forbidden", message: errorMessage(error) },
-        403,
-      );
-    }
-  }
-  await next();
-};
-
-app.use("/projects/:id", requireActiveProject);
-app.use("/projects/:id/*", requireActiveProject);
-
 // --- Autopilot rules ---
 
 app.get("/autopilot/rules", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  const appUser = authenticatedHonoActor(c);
 
   try {
-    const rules = await autopilotService.listRules(appUser.id, appUser.workspaceId);
+    const rules = await autopilotService.listRules(appUser.workspaceOwnerUserId, appUser.workspaceId,
+    );
     return c.json({ rules }, 200);
   } catch (error) {
     return c.json(
@@ -246,36 +216,25 @@ app.get("/autopilot/rules", async (c) => {
 });
 
 app.post("/autopilot/rules", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
-
-  const rl = await checkRateLimit(`autopilot-create:${appUser.workspaceId}`, 5, 60 * 60);
-  if (!rl.allowed) {
-    return c.json(
-      { error: "rate_limited", message: userErrorMessage("rate_limited") },
-      429,
-    );
-  }
+  const appUser = authenticatedHonoActor(c);
 
   const payload = await c.req.json().catch(() => ({}));
   const parsed = autopilotRuleInputSchema.safeParse(payload);
   if (!parsed.success) {
     return c.json(
-      { error: "Invalid payload", issues: parsed.error.issues },
-      400,
-    );
+      { error: "invalid_input", issues: parsed.error.issues },
+      400);
   }
 
   try {
-    await workspaceService.requireActor(appUser.actorUserId, appUser.workspaceId, "content.edit");
-    const rule = await autopilotService.createRule(appUser.id, parsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
+    const rule = await autopilotService.createRule(appUser.workspaceOwnerUserId, parsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
+    );
     return c.json(rule, 201);
   } catch (error) {
-    const code = errorMessage(error);
     return c.json(
       {
         error: "autopilot_rule_create_failed",
-        message: userErrorMessage(code) ?? code,
+        message: errorMessage(error),
       },
       400,
     );
@@ -283,22 +242,19 @@ app.post("/autopilot/rules", async (c) => {
 });
 
 app.patch("/autopilot/rules/:ruleId", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  const appUser = authenticatedHonoActor(c);
 
   const payload = await c.req.json().catch(() => ({}));
   const parsed = autopilotRuleUpdateSchema.safeParse(payload);
   if (!parsed.success) {
     return c.json(
-      { error: "Invalid payload", issues: parsed.error.issues },
-      400,
-    );
+      { error: "invalid_input", issues: parsed.error.issues },
+      400);
   }
 
   try {
-    await workspaceService.requireActor(appUser.actorUserId, appUser.workspaceId, "content.edit");
     const rule = await autopilotService.updateRule(
-      appUser.id,
+      appUser.workspaceOwnerUserId,
       c.req.param("ruleId"),
       parsed.data,
       { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
@@ -313,12 +269,11 @@ app.patch("/autopilot/rules/:ruleId", async (c) => {
 });
 
 app.delete("/autopilot/rules/:ruleId", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  const appUser = authenticatedHonoActor(c);
 
   try {
-    await workspaceService.requireActor(appUser.actorUserId, appUser.workspaceId, "content.edit");
-    await autopilotService.deleteRule(appUser.id, c.req.param("ruleId"), { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
+    await autopilotService.deleteRule(appUser.workspaceOwnerUserId, c.req.param("ruleId"), { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
+    );
     return c.json({ ok: true }, 200);
   } catch (error) {
     return c.json(
@@ -329,21 +284,11 @@ app.delete("/autopilot/rules/:ruleId", async (c) => {
 });
 
 app.post("/autopilot/rules/:ruleId/run-now", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
-
-  const rl = await checkRateLimit(`autopilot-run:${appUser.workspaceId}`, 10, 60 * 60);
-  if (!rl.allowed) {
-    return c.json(
-      { error: "rate_limited", message: userErrorMessage("rate_limited") },
-      429,
-    );
-  }
+  const appUser = authenticatedHonoActor(c);
 
   try {
-    await workspaceService.requireActor(appUser.actorUserId, appUser.workspaceId, "content.edit");
     const rule = await autopilotService.triggerRuleNow(
-      appUser.id,
+      appUser.workspaceOwnerUserId,
       c.req.param("ruleId"),
       { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
     );
@@ -357,11 +302,7 @@ app.post("/autopilot/rules/:ruleId/run-now", async (c) => {
 });
 
 app.get("/projects", async (c) => {
-  const appUser = await getCurrentAppUser();
-
-  if (!appUser) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
+  const appUser = authenticatedHonoActor(c);
 
   const limitRaw = c.req.query("limit");
   const limit = limitRaw ? Number(limitRaw) : undefined;
@@ -381,7 +322,8 @@ app.get("/projects", async (c) => {
   )
     ? (sourceRaw as ProjectListSourceFilter | undefined)
     : undefined;
-  const sort = ["newest", "oldest", "title", "clips"].includes(sortRaw ?? "newest")
+  const sort = ["newest", "oldest", "title", "clips"].includes(sortRaw ?? "newest",
+  )
     ? (sortRaw as ProjectListSort | undefined)
     : undefined;
 
@@ -395,7 +337,8 @@ app.get("/projects", async (c) => {
       status,
       source,
       sort,
-    });
+    },
+    );
     return c.json(page, 200);
   } catch (error) {
     return c.json(
@@ -406,8 +349,7 @@ app.get("/projects", async (c) => {
 });
 
 app.get("/workspace/search", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  const appUser = authenticatedHonoActor(c);
   try {
     const results = await workspaceLibraryService.search(
       appUser.actorUserId,
@@ -416,18 +358,18 @@ app.get("/workspace/search", async (c) => {
     );
     return c.json({ results }, 200);
   } catch (error) {
-    return c.json({ error: "workspace_search_failed", message: errorMessage(error) }, 400);
+    return c.json({ error: "workspace_search_failed", message: errorMessage(error) }, 400,
+    );
   }
 });
 
 app.get("/workspace/exports/:exportId/download", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  const appUser = authenticatedHonoActor(c);
   const exported = await clipExportService.getWorkspaceOwned(
     appUser.workspaceId,
     c.req.param("exportId"),
   );
-  if (!exported) return c.json({ error: "Export not found" }, 404);
+  if (!exported) return c.json({ error: "export_not_found" }, 404);
   const requestedVariantId = c.req.query("variant");
   const variant = requestedVariantId
     ? exported.variants.find(
@@ -442,8 +384,7 @@ app.get("/workspace/exports/:exportId/download", async (c) => {
 });
 
 app.post("/workspace/avatar/presign", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  const appUser = authenticatedHonoActor(c);
   const payload = await c.req.json().catch(() => ({}));
   try {
     const result = await workspaceService.presignAvatarUpload(
@@ -457,15 +398,15 @@ app.post("/workspace/avatar/presign", async (c) => {
     return c.json(result, 200);
   } catch (error) {
     return c.json(
-      { error: "workspace_avatar_presign_failed", message: errorMessage(error) },
+      { error: "workspace_avatar_presign_failed", message: errorMessage(error),
+      },
       400,
     );
   }
 });
 
 app.patch("/workspace/avatar", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  const appUser = authenticatedHonoActor(c);
   const payload = await c.req.json().catch(() => ({}));
   const storageKey = payload.storageKey === null ? null : String(payload.storageKey ?? "");
   try {
@@ -484,49 +425,14 @@ app.patch("/workspace/avatar", async (c) => {
 });
 
 app.post("/projects/:id/generate", async (c) => {
-  const appUser = await getCurrentAppUser();
-
-  if (!appUser) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
-
-  try {
-    await workspaceService.requireActor(
-      appUser.actorUserId,
-      appUser.workspaceId,
-      "processing.consume",
-    );
-  } catch (error) {
-    return c.json({ error: "Forbidden", message: errorMessage(error) }, 403);
-  }
-
-  const rl = await checkRateLimit(`gen:${appUser.id}`, 20, 60);
-  if (!rl.allowed) {
-    return c.json(
-      { error: "rate_limited", message: userErrorMessage("rate_limited") },
-      429,
-    );
-  }
+  const appUser = authenticatedHonoActor(c);
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(
-    appUser.actorUserId,
-    projectId,
-    appUser.workspaceId,
-  );
-
-  if (access === "missing") {
-    return c.json({ error: "Project not found" }, 404);
-  }
-
-  if (access === "forbidden") {
-    return c.json({ error: "Forbidden" }, 403);
-  }
 
   const idempotencyKey = c.req.header("idempotency-key") ?? "";
 
   if (!idempotencyKey) {
-    return c.json({ error: "Missing idempotency-key header" }, 400);
+    return c.json({ error: "invalid_input", message: "Missing idempotency-key header" }, 400);
   }
 
   const payload = await c.req.json().catch(() => null);
@@ -534,14 +440,13 @@ app.post("/projects/:id/generate", async (c) => {
 
   if (!parsed.success) {
     return c.json(
-      { error: "Invalid payload", issues: parsed.error.issues },
-      400,
-    );
+      { error: "invalid_input", issues: parsed.error.issues },
+      400);
   }
 
   try {
     const result = await projectService.triggerGeneration(
-      appUser.id,
+      appUser.workspaceOwnerUserId,
       projectId,
       parsed.data,
       idempotencyKey,
@@ -559,7 +464,8 @@ app.post("/projects/:id/generate", async (c) => {
       error instanceof UploadTooLongError
     ) {
       return c.json(
-        { error: error.code, message: error.message, details: error.details },
+        { error: error.code, message: errorMessage(error), details: error.details,
+        },
         402,
       );
     }
@@ -571,60 +477,23 @@ app.post("/projects/:id/generate", async (c) => {
 });
 
 app.get("/projects/:id", async (c) => {
-  const appUser = await getCurrentAppUser();
-
-  if (!appUser) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
+  const appUser = authenticatedHonoActor(c);
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(
-    appUser.actorUserId,
-    projectId,
-    appUser.workspaceId,
-  );
-
-  if (access === "missing") {
-    return c.json({ error: "Project not found" }, 404);
-  }
-
-  if (access === "forbidden") {
-    return c.json({ error: "Forbidden" }, 403);
-  }
-
   const snapshot = await projectService.getProjectSnapshot(
-    appUser.id,
+    appUser.workspaceOwnerUserId,
     projectId,
   );
 
   if (!snapshot.project) {
-    return c.json({ error: "Project not found" }, 404);
+    return c.json({ error: "project_not_found" }, 404);
   }
 
   return c.json(snapshot, 200);
 });
 
 app.get("/projects/:id/runs/:workflowRunId", async (c) => {
-  const appUser = await getCurrentAppUser();
-
-  if (!appUser) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
-
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(
-    appUser.actorUserId,
-    projectId,
-    appUser.workspaceId,
-  );
-
-  if (access === "missing") {
-    return c.json({ error: "Project not found" }, 404);
-  }
-
-  if (access === "forbidden") {
-    return c.json({ error: "Forbidden" }, 403);
-  }
 
   const workflowRunId = c.req.param("workflowRunId");
   const snapshot = await projectService.getWorkflowRun(
@@ -640,29 +509,11 @@ app.get("/projects/:id/runs/:workflowRunId", async (c) => {
 });
 
 app.get("/projects/:id/transcript", async (c) => {
-  const appUser = await getCurrentAppUser();
-
-  if (!appUser) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
+  const appUser = authenticatedHonoActor(c);
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(
-    appUser.actorUserId,
-    projectId,
-    appUser.workspaceId,
-  );
-
-  if (access === "missing") {
-    return c.json({ error: "Project not found" }, 404);
-  }
-
-  if (access === "forbidden") {
-    return c.json({ error: "Forbidden" }, 403);
-  }
-
   const transcript = await projectService.getTranscriptSnapshot(
-    appUser.id,
+    appUser.workspaceOwnerUserId,
     projectId,
   );
 
@@ -677,29 +528,11 @@ app.get("/projects/:id/transcript", async (c) => {
 // only, no snapshot re-validation (see getTranscriptUtterancesRaw). Browser-
 // cacheable briefly — the client also keeps a session-level parsed cache.
 app.get("/projects/:id/transcript/utterances", async (c) => {
-  const appUser = await getCurrentAppUser();
-
-  if (!appUser) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
+  const appUser = authenticatedHonoActor(c);
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(
-    appUser.actorUserId,
-    projectId,
-    appUser.workspaceId,
-  );
-
-  if (access === "missing") {
-    return c.json({ error: "Project not found" }, 404);
-  }
-
-  if (access === "forbidden") {
-    return c.json({ error: "Forbidden" }, 403);
-  }
-
   const utterances = await projectService.getTranscriptUtterancesRaw(
-    appUser.id,
+    appUser.workspaceOwnerUserId,
     projectId,
   );
 
@@ -712,26 +545,9 @@ app.get("/projects/:id/transcript/utterances", async (c) => {
 });
 
 app.get("/projects/:id/transcript/export", async (c) => {
-  const appUser = await getCurrentAppUser();
-
-  if (!appUser) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
+  const appUser = authenticatedHonoActor(c);
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(
-    appUser.actorUserId,
-    projectId,
-    appUser.workspaceId,
-  );
-
-  if (access === "missing") {
-    return c.json({ error: "Project not found" }, 404);
-  }
-
-  if (access === "forbidden") {
-    return c.json({ error: "Forbidden" }, 403);
-  }
 
   const format = transcriptExportFormatSchema.safeParse(
     c.req.query("format") ?? "txt",
@@ -743,7 +559,7 @@ app.get("/projects/:id/transcript/export", async (c) => {
 
   try {
     const exported = await projectService.getTranscriptExport(
-      appUser.id,
+      appUser.workspaceOwnerUserId,
       projectId,
       format.data,
     );
@@ -767,27 +583,21 @@ app.get("/projects/:id/transcript/export", async (c) => {
 app.route(
   "/",
   createUploadSessionHttpRoutes({
-    getCurrentUser: getCurrentAppUser,
-    checkRateLimit,
+    getActor: async (c) => authenticatedHonoActor(c),
     service: uploadSessionService,
   }),
 );
 
 app.post("/ingest/link", async (c) => {
-  const appUser = await getCurrentAppUser();
-
-  if (!appUser) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
+  const appUser = authenticatedHonoActor(c);
 
   const payload = await c.req.json().catch(() => null);
   const parsed = linkIngestSchema.safeParse(payload);
 
   if (!parsed.success) {
     return c.json(
-      { error: "Invalid payload", issues: parsed.error.issues },
-      400,
-    );
+      { error: "invalid_input", issues: parsed.error.issues },
+      400);
   }
 
   try {
@@ -803,7 +613,8 @@ app.post("/ingest/link", async (c) => {
       error instanceof UploadTooLongError
     ) {
       return c.json(
-        { error: error.code, message: error.message, details: error.details },
+        { error: error.code, message: errorMessage(error), details: error.details,
+        },
         402,
       );
     }
@@ -818,34 +629,26 @@ app.post("/ingest/link", async (c) => {
 });
 
 app.post("/ingest/rss/preview", async (c) => {
-  const appUser = await getCurrentAppUser();
-
-  if (!appUser) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
-
-  const rl = await checkRateLimit(`rss-preview:${appUser.workspaceId}`, 20, 60);
-  if (!rl.allowed) {
-    return c.json(
-      { error: "rate_limited", message: userErrorMessage("rate_limited") },
-      429,
-    );
-  }
-
   const payload = await c.req.json().catch(() => null);
   const parsed = rssPreviewSchema.safeParse(payload);
 
   if (!parsed.success) {
     return c.json(
-      { error: "Invalid payload", issues: parsed.error.issues },
-      400,
-    );
+      { error: "invalid_input", issues: parsed.error.issues },
+      400);
   }
 
   try {
     const response = await projectService.previewRssFeed(parsed.data.rssUrl);
     return c.json(response, 200);
   } catch (error) {
+    if (
+      !(error instanceof UnsafeUrlError) &&
+      !(error instanceof RemoteFetchError) &&
+      !(error instanceof RssFeedError)
+    ) {
+      throw error;
+    }
     const errorCode =
       error instanceof UnsafeUrlError
         ? "remote_url_unsafe"
@@ -860,37 +663,26 @@ app.post("/ingest/rss/preview", async (c) => {
             : "rss_download_failed";
     return c.json(
       {
-        error: "rss_preview_failed",
+        error: errorCode,
         message: userErrorMessage(errorCode),
       },
-      400,
+      errorCode === "remote_fetch_timeout" || errorCode === "rss_download_failed"
+        ? 503
+        : 400,
     );
   }
 });
 
 app.post("/ingest/rss/import", async (c) => {
-  const appUser = await getCurrentAppUser();
-
-  if (!appUser) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
-
-  const rl = await checkRateLimit(`rss-import:${appUser.workspaceId}`, 5, 60);
-  if (!rl.allowed) {
-    return c.json(
-      { error: "rate_limited", message: userErrorMessage("rate_limited") },
-      429,
-    );
-  }
+  const appUser = authenticatedHonoActor(c);
 
   const payload = await c.req.json().catch(() => null);
   const parsed = rssImportSchema.safeParse(payload);
 
   if (!parsed.success) {
     return c.json(
-      { error: "Invalid payload", issues: parsed.error.issues },
-      400,
-    );
+      { error: "invalid_input", issues: parsed.error.issues },
+      400);
   }
 
   try {
@@ -906,15 +698,15 @@ app.post("/ingest/rss/import", async (c) => {
       error instanceof UploadTooLongError
     ) {
       return c.json(
-        { error: error.code, message: error.message, details: error.details },
+        { error: error.code, message: errorMessage(error), details: error.details,
+        },
         402,
       );
     }
     return c.json(
       {
         error: "rss_import_failed",
-        message:
-          userErrorMessage(errorMessage(error)) ?? errorMessage(error),
+        message: errorMessage(error),
       },
       400,
     );
@@ -922,34 +714,16 @@ app.post("/ingest/rss/import", async (c) => {
 });
 
 app.get("/ingest/:projectId", async (c) => {
-  const appUser = await getCurrentAppUser();
-
-  if (!appUser) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
+  const appUser = authenticatedHonoActor(c);
 
   const projectId = c.req.param("projectId");
-  const access = await projectService.getProjectAccess(
-    appUser.actorUserId,
-    projectId,
-    appUser.workspaceId,
-  );
-
-  if (access === "missing") {
-    return c.json({ error: "Project not found" }, 404);
-  }
-
-  if (access === "forbidden") {
-    return c.json({ error: "Forbidden" }, 403);
-  }
-
   const snapshot = await projectService.getIngestSnapshot(
-    appUser.id,
+    appUser.workspaceOwnerUserId,
     projectId,
   );
 
   if (!snapshot) {
-    return c.json({ error: "Project not found" }, 404);
+    return c.json({ error: "project_not_found" }, 404);
   }
 
   return c.json(snapshot, 200);
@@ -958,28 +732,11 @@ app.get("/ingest/:projectId", async (c) => {
 // --- Clips routes ---
 
 app.get("/projects/:id/clips", async (c) => {
-  const appUser = await getCurrentAppUser();
-
-  if (!appUser) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
+  const appUser = authenticatedHonoActor(c);
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(
-    appUser.actorUserId,
-    projectId,
-    appUser.workspaceId,
+  const clips = await clipService.listClips(appUser.workspaceOwnerUserId, projectId,
   );
-
-  if (access === "missing") {
-    return c.json({ error: "Project not found" }, 404);
-  }
-
-  if (access === "forbidden") {
-    return c.json({ error: "Forbidden" }, 403);
-  }
-
-  const clips = await clipService.listClips(appUser.id, projectId);
   return c.json({ clips }, 200);
 });
 
@@ -988,10 +745,9 @@ app.get("/projects/:id/clips", async (c) => {
  * proxying only this bounded, validated artifact avoids a bucket-wide CORS
  * dependency without putting video bytes through the web service. */
 app.get("/projects/:id/clips/:clipId/preview-peaks", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  const appUser = authenticatedHonoActor(c);
   const peaks = await clipService.getClipPreviewPeaks(
-    appUser.id,
+    appUser.workspaceOwnerUserId,
     c.req.param("id"),
     c.req.param("clipId"),
   );
@@ -1001,39 +757,22 @@ app.get("/projects/:id/clips/:clipId/preview-peaks", async (c) => {
 });
 
 app.patch("/projects/:id/clips/:clipId", async (c) => {
-  const appUser = await getCurrentAppUser();
-
-  if (!appUser) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
+  const appUser = authenticatedHonoActor(c);
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(
-    appUser.actorUserId,
-    projectId,
-    appUser.workspaceId,
-  );
-
-  if (access === "missing") {
-    return c.json({ error: "Project not found" }, 404);
-  }
-
-  if (access === "forbidden") {
-    return c.json({ error: "Forbidden" }, 403);
-  }
 
   const clipId = c.req.param("clipId");
   const payload = await c.req.json().catch(() => null);
 
   if (!payload || typeof payload !== "object") {
-    return c.json({ error: "Invalid payload" }, 400);
+    return c.json({ error: "invalid_input" }, 400);
   }
 
   try {
     const titleParsed = updateClipTitleSchema.safeParse(payload);
     if (titleParsed.success) {
       const clip = await clipService.updateClipTitle(
-        appUser.id,
+        appUser.workspaceOwnerUserId,
         projectId,
         clipId,
         titleParsed.data.title,
@@ -1044,19 +783,20 @@ app.patch("/projects/:id/clips/:clipId", async (c) => {
     const boundariesParsed = updateClipBoundariesSchema.safeParse(payload);
     if (boundariesParsed.success) {
       await clipEditorDocumentPersistence.mutateDocument({
-        actorUserId: appUser.id,
+        actorUserId: appUser.actorUserId,
         projectId,
         clipId,
         intent: { kind: "set_boundaries", ...boundariesParsed.data },
       });
-      const clip = await clipService.getClipSnapshot(appUser.id, projectId, clipId);
+      const clip = await clipService.getClipSnapshot(appUser.workspaceOwnerUserId, projectId, clipId,
+      );
       return c.json(clip, 200);
     }
 
     const captionPresetParsed = updateClipCaptionPresetSchema.safeParse(payload);
     if (captionPresetParsed.success) {
       await clipEditorDocumentPersistence.mutateDocument({
-        actorUserId: appUser.id,
+        actorUserId: appUser.actorUserId,
         projectId,
         clipId,
         intent: {
@@ -1064,14 +804,15 @@ app.patch("/projects/:id/clips/:clipId", async (c) => {
           captionPreset: captionPresetParsed.data.captionPreset,
         },
       });
-      const clip = await clipService.getClipSnapshot(appUser.id, projectId, clipId);
+      const clip = await clipService.getClipSnapshot(appUser.workspaceOwnerUserId, projectId, clipId,
+      );
       return c.json(clip, 200);
     }
 
     const transcriptParsed = updateClipTranscriptSliceSchema.safeParse(payload);
     if (transcriptParsed.success) {
       await clipEditorDocumentPersistence.mutateDocument({
-        actorUserId: appUser.id,
+        actorUserId: appUser.actorUserId,
         projectId,
         clipId,
         intent: {
@@ -1079,19 +820,21 @@ app.patch("/projects/:id/clips/:clipId", async (c) => {
           transcriptSlice: transcriptParsed.data.transcriptSlice,
         },
       });
-      const clip = await clipService.getClipSnapshot(appUser.id, projectId, clipId);
+      const clip = await clipService.getClipSnapshot(appUser.workspaceOwnerUserId, projectId, clipId,
+      );
       return c.json(clip, 200);
     }
 
     const brollParsed = updateClipBrollSchema.safeParse(payload);
     if (brollParsed.success) {
       await clipEditorDocumentPersistence.mutateDocument({
-        actorUserId: appUser.id,
+        actorUserId: appUser.actorUserId,
         projectId,
         clipId,
         intent: { kind: "set_broll_url", brollUrl: brollParsed.data.brollUrl },
       });
-      const clip = await clipService.getClipSnapshot(appUser.id, projectId, clipId);
+      const clip = await clipService.getClipSnapshot(appUser.workspaceOwnerUserId, projectId, clipId,
+      );
       return c.json(clip, 200);
     }
 
@@ -1107,7 +850,7 @@ app.patch("/projects/:id/clips/:clipId", async (c) => {
         : null;
     if (studioEditsParsed?.success) {
       await clipEditorDocumentPersistence.mutateDocument({
-        actorUserId: appUser.id,
+        actorUserId: appUser.actorUserId,
         projectId,
         clipId,
         intent: {
@@ -1115,7 +858,8 @@ app.patch("/projects/:id/clips/:clipId", async (c) => {
           studioEdits: studioEditsParsed.data.studioEdits,
         },
       });
-      const clip = await clipService.getClipSnapshot(appUser.id, projectId, clipId);
+      const clip = await clipService.getClipSnapshot(appUser.workspaceOwnerUserId, projectId, clipId,
+      );
       return c.json(clip, 200);
     }
 
@@ -1132,7 +876,7 @@ app.patch("/projects/:id/clips/:clipId", async (c) => {
     if (persistenceError) return c.json(persistenceError.body, persistenceError.status);
     if (error instanceof ClipActionError) {
       return c.json(
-        { error: error.code, message: error.message },
+        { error: error.code, message: errorMessage(error) },
         error.code === "clip_not_found" ? 404 : 400,
       );
     }
@@ -1174,38 +918,13 @@ function logClipActionFailure(
  * trigger is a single menu click that's cheap to hammer.
  */
 app.post("/projects/:id/clips/:clipId/title-suggestions", async (c) => {
-  const appUser = await getCurrentAppUser();
-
-  if (!appUser) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
-
-  const rl = await checkRateLimit(`clip-title-suggest:${appUser.id}`, 30, 60);
-  if (!rl.allowed) {
-    return c.json(
-      { error: "rate_limited", message: userErrorMessage("rate_limited") },
-      429,
-    );
-  }
+  const appUser = authenticatedHonoActor(c);
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(
-    appUser.actorUserId,
-    projectId,
-    appUser.workspaceId,
-  );
-
-  if (access === "missing") {
-    return c.json({ error: "Project not found" }, 404);
-  }
-
-  if (access === "forbidden") {
-    return c.json({ error: "Forbidden" }, 403);
-  }
 
   try {
     const titles = await clipService.suggestClipTitles(
-      appUser.id,
+      appUser.workspaceOwnerUserId,
       projectId,
       c.req.param("clipId"),
     );
@@ -1220,7 +939,7 @@ app.post("/projects/:id/clips/:clipId/title-suggestions", async (c) => {
     });
     if (error instanceof ClipActionError) {
       return c.json(
-        { error: error.code, message: error.message },
+        { error: error.code, message: errorMessage(error) },
         error.code === "clip_not_found" ? 404 : 400,
       );
     }
@@ -1237,40 +956,15 @@ app.post("/projects/:id/clips/:clipId/title-suggestions", async (c) => {
  * clip's snapshot.
  */
 app.post("/projects/:id/clips/:clipId/duplicate", async (c) => {
-  const appUser = await getCurrentAppUser();
-
-  if (!appUser) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
+  const appUser = authenticatedHonoActor(c);
 
   // Each duplicate copies real objects in R2; a rate limit keeps a stuck click
   // from fanning out into dozens of copies.
-  const rl = await checkRateLimit(`clip-duplicate:${appUser.id}`, 30, 60);
-  if (!rl.allowed) {
-    return c.json(
-      { error: "rate_limited", message: userErrorMessage("rate_limited") },
-      429,
-    );
-  }
-
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(
-    appUser.actorUserId,
-    projectId,
-    appUser.workspaceId,
-  );
-
-  if (access === "missing") {
-    return c.json({ error: "Project not found" }, 404);
-  }
-
-  if (access === "forbidden") {
-    return c.json({ error: "Forbidden" }, 403);
-  }
 
   try {
     const clip = await clipService.duplicateClip(
-      appUser.id,
+      appUser.workspaceOwnerUserId,
       projectId,
       c.req.param("clipId"),
     );
@@ -1282,7 +976,7 @@ app.post("/projects/:id/clips/:clipId/duplicate", async (c) => {
     });
     if (error instanceof ClipActionError) {
       return c.json(
-        { error: error.code, message: error.message },
+        { error: error.code, message: errorMessage(error) },
         error.code === "clip_not_found" ? 404 : 400,
       );
     }
@@ -1307,40 +1001,23 @@ app.post("/projects/:id/clips/:clipId/duplicate", async (c) => {
  * other failure mode mirrors the duplicate route above.
  */
 app.post("/projects/:id/clips/:clipId/create-from-selection", async (c) => {
-  const appUser = await getCurrentAppUser();
-
-  if (!appUser) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
+  const appUser = authenticatedHonoActor(c);
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(
-    appUser.actorUserId,
-    projectId,
-    appUser.workspaceId,
-  );
-
-  if (access === "missing") {
-    return c.json({ error: "Project not found" }, 404);
-  }
-
-  if (access === "forbidden") {
-    return c.json({ error: "Forbidden" }, 403);
-  }
 
   const payload = await c.req.json().catch(() => null);
   if (!payload || typeof payload !== "object") {
-    return c.json({ error: "Invalid payload" }, 400);
+    return c.json({ error: "invalid_input" }, 400);
   }
 
   const parsed = createClipFromSelectionSchema.safeParse(payload);
   if (!parsed.success) {
-    return c.json({ error: "Invalid payload" }, 400);
+    return c.json({ error: "invalid_input" }, 400);
   }
 
   try {
     const clip = await clipService.createClipFromSelection(
-      appUser.id,
+      appUser.workspaceOwnerUserId,
       projectId,
       c.req.param("clipId"),
       parsed.data,
@@ -1353,7 +1030,7 @@ app.post("/projects/:id/clips/:clipId/create-from-selection", async (c) => {
     });
     if (error instanceof ClipActionError) {
       return c.json(
-        { error: error.code, message: error.message },
+        { error: error.code, message: errorMessage(error) },
         error.code === "clip_selection_invalid"
           ? 422
           : error.code === "clip_not_found"
@@ -1362,7 +1039,8 @@ app.post("/projects/:id/clips/:clipId/create-from-selection", async (c) => {
       );
     }
     return c.json(
-      { error: "clip_create_from_selection_failed", message: errorMessage(error) },
+      { error: "clip_create_from_selection_failed", message: errorMessage(error),
+      },
       400,
     );
   }
@@ -1378,27 +1056,13 @@ app.post("/projects/:id/clips/:clipId/create-from-selection", async (c) => {
  * renderable.
  */
 app.get("/projects/:id/clips/:clipId/editor", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
+  const appUser = authenticatedHonoActor(c);
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(
-    appUser.actorUserId,
-    projectId,
-    appUser.workspaceId,
-  );
-  if (access === "missing") {
-    return c.json({ error: "Project not found" }, 404);
-  }
-  if (access === "forbidden") {
-    return c.json({ error: "Forbidden" }, 403);
-  }
 
   try {
     const result = await clipService.getClipEditorDocument(
-      appUser.id,
+      appUser.workspaceOwnerUserId,
       projectId,
       c.req.param("clipId"),
     );
@@ -1406,45 +1070,31 @@ app.get("/projects/:id/clips/:clipId/editor", async (c) => {
   } catch (error) {
     const persistenceError = clipEditorPersistenceHttpError(error);
     if (persistenceError) return c.json(persistenceError.body, persistenceError.status);
-    if (error instanceof Error && error.message === "clip not found") {
-      return c.json({ error: "Clip not found" }, 404);
+    if (error instanceof ClipActionError && error.code === "clip_not_found") {
+      return c.json({ error: error.code }, 404);
     }
     throw error;
   }
 });
 
 app.put("/projects/:id/clips/:clipId/editor", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
+  const appUser = authenticatedHonoActor(c);
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(
-    appUser.actorUserId,
-    projectId,
-    appUser.workspaceId,
-  );
-  if (access === "missing") {
-    return c.json({ error: "Project not found" }, 404);
-  }
-  if (access === "forbidden") {
-    return c.json({ error: "Forbidden" }, 403);
-  }
 
   const payload = await c.req.json().catch(() => null);
   if (!payload || typeof payload !== "object") {
-    return c.json({ error: "Invalid payload" }, 400);
+    return c.json({ error: "invalid_input" }, 400);
   }
 
   const parsed = saveEditorDocumentSchema.safeParse(payload);
   if (!parsed.success) {
-    return c.json({ error: "Invalid payload" }, 400);
+    return c.json({ error: "invalid_input" }, 400);
   }
 
   try {
     const mutation = await clipEditorDocumentPersistence.mutateDocument({
-      actorUserId: appUser.id,
+      actorUserId: appUser.actorUserId,
       projectId,
       clipId: c.req.param("clipId"),
       intent: {
@@ -1454,7 +1104,7 @@ app.put("/projects/:id/clips/:clipId/editor", async (c) => {
       },
     });
     const clip = await clipService.getClipSnapshot(
-      appUser.id,
+      appUser.workspaceOwnerUserId,
       projectId,
       c.req.param("clipId"),
     );
@@ -1485,8 +1135,8 @@ app.put("/projects/:id/clips/:clipId/editor", async (c) => {
     }
     const persistenceError = clipEditorPersistenceHttpError(error);
     if (persistenceError) return c.json(persistenceError.body, persistenceError.status);
-    if (error instanceof Error && error.message === "clip not found") {
-      return c.json({ error: "Clip not found" }, 404);
+    if (error instanceof ClipActionError && error.code === "clip_not_found") {
+      return c.json({ error: error.code }, 404);
     }
     throw error;
   }
@@ -1498,43 +1148,29 @@ app.put("/projects/:id/clips/:clipId/editor", async (c) => {
  * revision-zero snapshot. Same revision-guard/error mapping as the PUT above.
  */
 app.post("/projects/:id/clips/:clipId/editor/reset", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
+  const appUser = authenticatedHonoActor(c);
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(
-    appUser.actorUserId,
-    projectId,
-    appUser.workspaceId,
-  );
-  if (access === "missing") {
-    return c.json({ error: "Project not found" }, 404);
-  }
-  if (access === "forbidden") {
-    return c.json({ error: "Forbidden" }, 403);
-  }
 
   const payload = await c.req.json().catch(() => null);
   if (!payload || typeof payload !== "object") {
-    return c.json({ error: "Invalid payload" }, 400);
+    return c.json({ error: "invalid_input" }, 400);
   }
 
   const parsed = resetEditorDocumentSchema.safeParse(payload);
   if (!parsed.success) {
-    return c.json({ error: "Invalid payload" }, 400);
+    return c.json({ error: "invalid_input" }, 400);
   }
 
   try {
     const mutation = await clipEditorDocumentPersistence.mutateDocument({
-      actorUserId: appUser.id,
+      actorUserId: appUser.actorUserId,
       projectId,
       clipId: c.req.param("clipId"),
       intent: { kind: "reset", baseRevision: parsed.data.baseRevision },
     });
     const clip = await clipService.getClipSnapshot(
-      appUser.id,
+      appUser.workspaceOwnerUserId,
       projectId,
       c.req.param("clipId"),
     );
@@ -1554,8 +1190,8 @@ app.post("/projects/:id/clips/:clipId/editor/reset", async (c) => {
     }
     const persistenceError = clipEditorPersistenceHttpError(error);
     if (persistenceError) return c.json(persistenceError.body, persistenceError.status);
-    if (error instanceof Error && error.message === "clip not found") {
-      return c.json({ error: "Clip not found" }, 404);
+    if (error instanceof ClipActionError && error.code === "clip_not_found") {
+      return c.json({ error: error.code }, 404);
     }
     throw error;
   }
@@ -1568,29 +1204,13 @@ app.post("/projects/:id/clips/:clipId/editor/reset", async (c) => {
  * safe order.
  */
 app.delete("/projects/:id/clips/:clipId", async (c) => {
-  const appUser = await getCurrentAppUser();
-
-  if (!appUser) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
+  const appUser = authenticatedHonoActor(c);
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(
-    appUser.actorUserId,
-    projectId,
-    appUser.workspaceId,
-  );
-
-  if (access === "missing") {
-    return c.json({ error: "Project not found" }, 404);
-  }
-
-  if (access === "forbidden") {
-    return c.json({ error: "Forbidden" }, 403);
-  }
 
   try {
-    await clipService.deleteClip(appUser.id, projectId, c.req.param("clipId"));
+    await clipService.deleteClip(appUser.workspaceOwnerUserId, projectId, c.req.param("clipId"),
+    );
     return c.json({ ok: true }, 200);
   } catch (error) {
     logClipActionFailure("clip_delete_failed", error, {
@@ -1599,7 +1219,7 @@ app.delete("/projects/:id/clips/:clipId", async (c) => {
     });
     if (error instanceof ClipActionError) {
       return c.json(
-        { error: error.code, message: error.message },
+        { error: error.code, message: errorMessage(error) },
         error.code === "clip_not_found"
           ? 404
           : error.code === "clip_has_scheduled_posts"
@@ -1615,46 +1235,20 @@ app.delete("/projects/:id/clips/:clipId", async (c) => {
 });
 
 app.post("/projects/:id/clips/regenerate", async (c) => {
-  const appUser = await getCurrentAppUser();
-
-  if (!appUser) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
-
-  const rl = await checkRateLimit(`regenerate:${appUser.id}`, 20, 60);
-  if (!rl.allowed) {
-    return c.json(
-      { error: "rate_limited", message: userErrorMessage("rate_limited") },
-      429,
-    );
-  }
+  const appUser = authenticatedHonoActor(c);
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(
-    appUser.actorUserId,
-    projectId,
-    appUser.workspaceId,
-  );
-
-  if (access === "missing") {
-    return c.json({ error: "Project not found" }, 404);
-  }
-
-  if (access === "forbidden") {
-    return c.json({ error: "Forbidden" }, 403);
-  }
 
   const idempotencyKey = c.req.header("idempotency-key") ?? "";
 
   if (!idempotencyKey) {
-    return c.json({ error: "Missing idempotency-key header" }, 400);
+    return c.json({ error: "invalid_input", message: "Missing idempotency-key header" }, 400);
   }
 
   try {
     const payload = await c.req.json().catch(() => ({}));
     const contentPackParsed = contentPackSchema.safeParse(
-      payload?.contentPack,
-    );
+      payload?.contentPack);
     const contentPack = contentPackParsed.success
       ? contentPackParsed.data
       : undefined;
@@ -1679,39 +1273,14 @@ app.post("/projects/:id/clips/regenerate", async (c) => {
 // --- Clip rendering routes ---
 
 app.post("/projects/:id/clips/render", async (c) => {
-  const appUser = await getCurrentAppUser();
-
-  if (!appUser) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
-
-  const rl = await checkRateLimit(`render:${appUser.id}`, 20, 60);
-  if (!rl.allowed) {
-    return c.json(
-      { error: "rate_limited", message: userErrorMessage("rate_limited") },
-      429,
-    );
-  }
+  const appUser = authenticatedHonoActor(c);
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(
-    appUser.actorUserId,
-    projectId,
-    appUser.workspaceId,
-  );
-
-  if (access === "missing") {
-    return c.json({ error: "Project not found" }, 404);
-  }
-
-  if (access === "forbidden") {
-    return c.json({ error: "Forbidden" }, 403);
-  }
 
   const idempotencyKey = c.req.header("idempotency-key") ?? "";
 
   if (!idempotencyKey) {
-    return c.json({ error: "Missing idempotency-key header" }, 400);
+    return c.json({ error: "invalid_input", message: "Missing idempotency-key header" }, 400);
   }
 
   const payload = await c.req.json().catch(() => ({}));
@@ -1719,9 +1288,8 @@ app.post("/projects/:id/clips/render", async (c) => {
 
   if (!parsed.success) {
     return c.json(
-      { error: "Invalid payload", issues: parsed.error.issues },
-      400,
-    );
+      { error: "invalid_input", issues: parsed.error.issues },
+      400);
   }
 
   try {
@@ -1748,25 +1316,16 @@ app.post("/projects/:id/clips/render", async (c) => {
 // --- Versioned clip exports ---
 
 app.post("/projects/:id/clips/:clipId/exports", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
-
-  const rl = await checkRateLimit(`clip-export:${appUser.id}`, 20, 60);
-  if (!rl.allowed) {
-    return c.json(
-      { error: "rate_limited", message: userErrorMessage("rate_limited") },
-      429,
-    );
-  }
+  const appUser = authenticatedHonoActor(c);
 
   const idempotencyKey = c.req.header("idempotency-key")?.trim() ?? "";
   if (!idempotencyKey || idempotencyKey.length > 128) {
-    return c.json({ error: "Invalid idempotency-key header" }, 400);
+    return c.json({ error: "invalid_input", message: "Invalid idempotency-key header" }, 400);
   }
   const payload = await c.req.json().catch(() => ({}));
   const parsed = createClipExportSchema.safeParse(payload);
   if (!parsed.success) {
-    return c.json({ error: "Invalid payload", issues: parsed.error.issues }, 400);
+    return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
   }
 
   try {
@@ -1777,7 +1336,8 @@ app.post("/projects/:id/clips/:clipId/exports", async (c) => {
       idempotencyKey,
       { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
     );
-    return c.json(result, result.reused && result.export.status === "ready" ? 200 : 202);
+    return c.json(result, result.reused && result.export.status === "ready" ? 200 : 202,
+    );
   } catch (error) {
     if (error instanceof ClipExportRevisionConflictError) {
       return c.json(
@@ -1786,7 +1346,7 @@ app.post("/projects/:id/clips/:clipId/exports", async (c) => {
       );
     }
     if (error instanceof ClipExportError) {
-      return c.json({ error: error.code, message: error.message }, 404);
+      return c.json({ error: error.code, message: errorMessage(error) }, 404);
     }
     console.warn(
       JSON.stringify({
@@ -1797,41 +1357,29 @@ app.post("/projects/:id/clips/:clipId/exports", async (c) => {
         error: errorMessage(error),
       }),
     );
-    return c.json({ error: "clip_export_failed", message: "Could not start export" }, 500);
+    return c.json({ error: "clip_export_failed", message: "Could not start export" }, 500,
+    );
   }
 });
 
 app.get("/projects/:id/clips/:clipId/exports/:exportId", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  const appUser = authenticatedHonoActor(c);
   const result = await clipExportService.getOwned(
-    appUser.id,
+    appUser.workspaceOwnerUserId,
     c.req.param("id"),
     c.req.param("clipId"),
     c.req.param("exportId"),
     appUser.workspaceId,
   );
-  if (!result) return c.json({ error: "Export not found" }, 404);
+  if (!result) return c.json({ error: "export_not_found" }, 404);
   return c.json(result, 200, { "Cache-Control": "private, no-store" });
 });
 
 app.post("/projects/:id/clips/:clipId/exports/:exportId/retry", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
-  try {
-    await workspaceService.requireActor(
-      appUser.actorUserId,
-      appUser.workspaceId,
-      "processing.consume",
-    );
-  } catch (error) {
-    return c.json({ error: "Forbidden", message: errorMessage(error) }, 403);
-  }
-  const rl = await checkRateLimit(`clip-export-retry:${appUser.id}`, 12, 60);
-  if (!rl.allowed) return c.json({ error: "rate_limited" }, 429);
+  const appUser = authenticatedHonoActor(c);
   try {
     const result = await clipExportService.retryFailed(
-      appUser.id,
+      appUser.workspaceOwnerUserId,
       c.req.param("id"),
       c.req.param("clipId"),
       c.req.param("exportId"),
@@ -1839,25 +1387,23 @@ app.post("/projects/:id/clips/:clipId/exports/:exportId/retry", async (c) => {
     );
     return c.json(result, 202);
   } catch (error) {
-    const code = error instanceof ClipExportError ? error.code : "clip_export_retry_failed";
+    if (!(error instanceof ClipExportError)) throw error;
+    const code = error.code;
     return c.json({ error: code, message: "Could not retry export" }, 400);
   }
 });
 
 app.post("/projects/:id/clips/:clipId/exports/:exportId/share-links", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
-  const rl = await checkRateLimit(`clip-share:${appUser.id}`, 10, 60);
-  if (!rl.allowed) return c.json({ error: "rate_limited" }, 429);
+  const appUser = authenticatedHonoActor(c);
   const parsed = createClipShareLinkSchema.safeParse(
     await c.req.json().catch(() => ({})),
   );
   if (!parsed.success) {
-    return c.json({ error: "Invalid payload", issues: parsed.error.issues }, 400);
+    return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
   }
   try {
     const result = await clipExportService.createShareLink(
-      appUser.id,
+      appUser.workspaceOwnerUserId,
       c.req.param("id"),
       c.req.param("clipId"),
       c.req.param("exportId"),
@@ -1866,17 +1412,17 @@ app.post("/projects/:id/clips/:clipId/exports/:exportId/share-links", async (c) 
     );
     return c.json(result, 201, { "Cache-Control": "private, no-store" });
   } catch (error) {
-    const code = error instanceof ClipExportError ? error.code : "clip_share_failed";
+    if (!(error instanceof ClipExportError)) throw error;
+    const code = error.code;
     return c.json({ error: code, message: "Could not create share link" }, 400);
   }
 });
 
 app.delete("/projects/:id/clips/:clipId/exports/:exportId/share-links", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  const appUser = authenticatedHonoActor(c);
   try {
     const result = await clipExportService.revokeShareLinks(
-      appUser.id,
+      appUser.workspaceOwnerUserId,
       c.req.param("id"),
       c.req.param("clipId"),
       c.req.param("exportId"),
@@ -1884,46 +1430,24 @@ app.delete("/projects/:id/clips/:clipId/exports/:exportId/share-links", async (c
     );
     return c.json(result, 200);
   } catch (error) {
-    const code = error instanceof ClipExportError ? error.code : "clip_share_revoke_failed";
+    if (!(error instanceof ClipExportError)) throw error;
+    const code = error.code;
     return c.json({ error: code, message: "Could not revoke share links" }, 400);
   }
 });
 
 app.post("/projects/:id/clips/apply-caption-preset", async (c) => {
-  const appUser = await getCurrentAppUser();
-
-  if (!appUser) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
-
+  const appUser = authenticatedHonoActor(c);
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(
-    appUser.actorUserId,
-    projectId,
-    appUser.workspaceId,
+  const parsed = applyCaptionPresetToAllSchema.safeParse(
+    await c.req.json().catch(() => ({})),
   );
-
-  if (access === "missing") {
-    return c.json({ error: "Project not found" }, 404);
-  }
-
-  if (access === "forbidden") {
-    return c.json({ error: "Forbidden" }, 403);
-  }
-
-  const payload = await c.req.json().catch(() => ({}));
-  const parsed = applyCaptionPresetToAllSchema.safeParse(payload);
-
   if (!parsed.success) {
-    return c.json(
-      { error: "Invalid payload", issues: parsed.error.issues },
-      400,
-    );
+    return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
   }
-
   try {
     const result = await clipEditorDocumentPersistence.mutateProjectSelection({
-      actorUserId: appUser.id,
+      actorUserId: appUser.actorUserId,
       projectId,
       excludeClipId: parsed.data.excludeClipId,
       intent: {
@@ -1934,7 +1458,9 @@ app.post("/projects/:id/clips/apply-caption-preset", async (c) => {
     return c.json(result, 200);
   } catch (error) {
     const persistenceError = clipEditorPersistenceHttpError(error);
-    if (persistenceError) return c.json(persistenceError.body, persistenceError.status);
+    if (persistenceError) {
+      return c.json(persistenceError.body, persistenceError.status);
+    }
     return c.json(
       { error: "apply_caption_preset_failed", message: errorMessage(error) },
       400,
@@ -1943,40 +1469,17 @@ app.post("/projects/:id/clips/apply-caption-preset", async (c) => {
 });
 
 app.post("/projects/:id/clips/apply-studio-edits", async (c) => {
-  const appUser = await getCurrentAppUser();
-
-  if (!appUser) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
-
+  const appUser = authenticatedHonoActor(c);
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(
-    appUser.actorUserId,
-    projectId,
-    appUser.workspaceId,
+  const parsed = applyStudioEditsToAllSchema.safeParse(
+    await c.req.json().catch(() => ({})),
   );
-
-  if (access === "missing") {
-    return c.json({ error: "Project not found" }, 404);
-  }
-
-  if (access === "forbidden") {
-    return c.json({ error: "Forbidden" }, 403);
-  }
-
-  const payload = await c.req.json().catch(() => ({}));
-  const parsed = applyStudioEditsToAllSchema.safeParse(payload);
-
   if (!parsed.success) {
-    return c.json(
-      { error: "Invalid payload", issues: parsed.error.issues },
-      400,
-    );
+    return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
   }
-
   try {
     const result = await clipEditorDocumentPersistence.mutateProjectSelection({
-      actorUserId: appUser.id,
+      actorUserId: appUser.actorUserId,
       projectId,
       excludeClipId: parsed.data.excludeClipId,
       intent: { kind: "patch_studio_edits", patches: parsed.data.patches },
@@ -1991,7 +1494,9 @@ app.post("/projects/:id/clips/apply-studio-edits", async (c) => {
     return c.json({ ...result, field }, 200);
   } catch (error) {
     const persistenceError = clipEditorPersistenceHttpError(error);
-    if (persistenceError) return c.json(persistenceError.body, persistenceError.status);
+    if (persistenceError) {
+      return c.json(persistenceError.body, persistenceError.status);
+    }
     return c.json(
       { error: "apply_studio_edits_failed", message: errorMessage(error) },
       400,
@@ -2002,29 +1507,16 @@ app.post("/projects/:id/clips/apply-studio-edits", async (c) => {
 // --- Stock B-roll search (Pexels) ---
 
 app.get("/broll/search", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
-
-  const rl = await checkRateLimit(`broll-search:${appUser.id}`, 60, 60);
-  if (!rl.allowed) {
-    return c.json(
-      { error: "rate_limited", message: userErrorMessage("rate_limited") },
-      429,
-    );
-  }
-
   if (!isPexelsConfigured()) {
     return c.json({ configured: false, results: [] }, 200);
   }
-
   const parsed = brollSearchQuerySchema.safeParse({
     query: c.req.query("query") ?? "",
     orientation: c.req.query("orientation") ?? "portrait",
   });
   if (!parsed.success) {
-    return c.json({ error: "Invalid query", issues: parsed.error.issues }, 400);
+    return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
   }
-
   const results = await searchBrollVideos(
     parsed.data.query,
     parsed.data.orientation,
@@ -2035,25 +1527,15 @@ app.get("/broll/search", async (c) => {
 // --- Content suite (repurposed text outputs) ---
 
 app.get("/projects/:id/content-suite", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
-
+  const appUser = authenticatedHonoActor(c);
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(
-    appUser.actorUserId,
-    projectId,
-    appUser.workspaceId,
-  );
-  if (access === "missing") return c.json({ error: "Project not found" }, 404);
-  if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
-
   try {
-    const assets = await contentSuiteService.list(appUser.id, projectId);
+    const assets = await contentSuiteService.list(
+      appUser.workspaceOwnerUserId,
+      projectId,
+    );
     return c.json({ assets }, 200);
   } catch (error) {
-    if (error instanceof ContentSuiteError) {
-      return c.json({ error: error.code, message: error.message }, 400);
-    }
     return c.json(
       { error: "content_suite_failed", message: errorMessage(error) },
       400,
@@ -2062,35 +1544,14 @@ app.get("/projects/:id/content-suite", async (c) => {
 });
 
 app.post("/projects/:id/content-suite", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
-
-  const rl = await checkRateLimit(`content-suite:${appUser.id}`, 30, 60);
-  if (!rl.allowed) {
-    return c.json(
-      { error: "rate_limited", message: userErrorMessage("rate_limited") },
-      429,
-    );
-  }
-
+  const appUser = authenticatedHonoActor(c);
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(
-    appUser.actorUserId,
-    projectId,
-    appUser.workspaceId,
+  const parsed = generateContentSuiteRequestSchema.safeParse(
+    await c.req.json().catch(() => ({})),
   );
-  if (access === "missing") return c.json({ error: "Project not found" }, 404);
-  if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
-
-  const payload = await c.req.json().catch(() => ({}));
-  const parsed = generateContentSuiteRequestSchema.safeParse(payload);
   if (!parsed.success) {
-    return c.json(
-      { error: "Invalid payload", issues: parsed.error.issues },
-      400,
-    );
+    return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
   }
-
   try {
     const assets = await contentSuiteService.generate(
       appUser.actorUserId,
@@ -2108,7 +1569,13 @@ app.post("/projects/:id/content-suite", async (c) => {
         );
       }
       const status = error.code === "transcript_not_ready" ? 409 : 400;
-      return c.json({ error: error.code, message: error.message }, status);
+      return c.json(
+        {
+          error: error.code,
+          message: userErrorMessage(error.code) ?? "Content could not be generated.",
+        },
+        status,
+      );
     }
     return c.json(
       { error: "content_suite_failed", message: errorMessage(error) },
@@ -2120,22 +1587,11 @@ app.post("/projects/:id/content-suite", async (c) => {
 // --- First-party analytics ---
 
 app.get("/projects/:id/analytics", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
-
-  const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(
-    appUser.actorUserId,
-    projectId,
-    appUser.workspaceId,
-  );
-  if (access === "missing") return c.json({ error: "Project not found" }, 404);
-  if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
-
+  const appUser = authenticatedHonoActor(c);
   try {
     const analytics = await analyticsService.getProjectAnalytics(
-      appUser.id,
-      projectId,
+      appUser.workspaceOwnerUserId,
+      c.req.param("id"),
     );
     return c.json(analytics, 200);
   } catch (error) {
@@ -2149,11 +1605,12 @@ app.get("/projects/:id/analytics", async (c) => {
 // --- Native social accounts ---
 
 app.get("/social/accounts", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
-
+  const appUser = authenticatedHonoActor(c);
   try {
-    const accounts = await socialOAuthService.listAccounts(appUser.id, appUser.workspaceId);
+    const accounts = await socialOAuthService.listAccounts(
+      appUser.workspaceOwnerUserId,
+      appUser.workspaceId,
+    );
     return c.json({ accounts }, 200);
   } catch (error) {
     return c.json(
@@ -2164,17 +1621,10 @@ app.get("/social/accounts", async (c) => {
 });
 
 app.get("/social/oauth/start/:platform", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
-  try {
-    await workspaceService.requireActor(appUser.actorUserId, appUser.workspaceId, "social.manage");
-  } catch {
-    return c.json({ error: "Forbidden" }, 403);
-  }
-
+  const appUser = authenticatedHonoActor(c);
   const parsedPlatform = socialPlatformSchema.safeParse(c.req.param("platform"));
   if (!parsedPlatform.success) {
-    return c.json({ error: "Unsupported social platform" }, 400);
+    return c.json({ error: "invalid_input", message: "Unsupported social platform" }, 400);
   }
 
   let origin: string;
@@ -2190,25 +1640,21 @@ app.get("/social/oauth/start/:platform", async (c) => {
     );
   }
 
+  const redirectPath = safeSocialRedirectPath(c.req.query("redirect"));
   try {
     const url = await socialOAuthService.createAuthorizationUrl({
-      userId: appUser.id,
+      userId: appUser.workspaceOwnerUserId,
       workspaceId: appUser.workspaceId,
       actorUserId: appUser.actorUserId,
       platform: parsedPlatform.data,
       origin,
-      redirectPath: safeSocialRedirectPath(c.req.query("redirect")),
+      redirectPath,
     });
     return c.redirect(url, 302);
   } catch (error) {
-    const code =
-      error instanceof SocialOAuthError
-        ? error.code
-        : "social_oauth_start_failed";
-    const redirect = new URL(
-      safeSocialRedirectPath(c.req.query("redirect")),
-      origin,
-    );
+    if (!(error instanceof SocialOAuthError)) throw error;
+    const code = error.code;
+    const redirect = new URL(redirectPath, origin);
     redirect.searchParams.set("error", code);
     return c.redirect(redirect.toString(), 302);
   }
@@ -2231,23 +1677,16 @@ app.get("/social/oauth/callback", async (c) => {
   const code = c.req.query("code");
   const state = c.req.query("state");
   const providerError = c.req.query("error");
-
   if (providerError) {
     redirect.searchParams.set("error", providerError);
     return c.redirect(redirect.toString(), 302);
   }
-
   if (!code || !state) {
     redirect.searchParams.set("error", "social_oauth_callback_missing");
     return c.redirect(redirect.toString(), 302);
   }
-
   try {
-    const result = await socialOAuthService.handleCallback({
-      state,
-      code,
-      origin,
-    });
+    const result = await socialOAuthService.handleCallback({ state, code, origin });
     const successRedirect = new URL(
       safeSocialRedirectPath(result.redirectPath),
       origin,
@@ -2257,31 +1696,29 @@ app.get("/social/oauth/callback", async (c) => {
   } catch (error) {
     redirect.searchParams.set(
       "error",
-      error instanceof SocialOAuthError ? error.code : "social_oauth_callback_failed",
+      error instanceof SocialOAuthError
+        ? error.code
+        : "social_oauth_callback_failed",
     );
     return c.redirect(redirect.toString(), 302);
   }
 });
 
 app.delete("/social/accounts/:accountId", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
-  try {
-    await workspaceService.requireActor(appUser.actorUserId, appUser.workspaceId, "social.manage");
-  } catch {
-    return c.json({ error: "Forbidden" }, 403);
-  }
-
+  const appUser = authenticatedHonoActor(c);
   try {
     await socialOAuthService.disconnectAccount(
-      appUser.id,
+      appUser.workspaceOwnerUserId,
       c.req.param("accountId"),
       appUser.workspaceId,
     );
     return c.json({ ok: true }, 200);
   } catch (error) {
     return c.json(
-      { error: "social_account_disconnect_failed", message: errorMessage(error) },
+      {
+        error: "social_account_disconnect_failed",
+        message: errorMessage(error),
+      },
       400,
     );
   }
@@ -2290,20 +1727,12 @@ app.delete("/social/accounts/:accountId", async (c) => {
 // --- Social scheduling metadata ---
 
 app.get("/projects/:id/social-posts", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
-
-  const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(
-    appUser.actorUserId,
-    projectId,
-    appUser.workspaceId,
-  );
-  if (access === "missing") return c.json({ error: "Project not found" }, 404);
-  if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
-
+  const appUser = authenticatedHonoActor(c);
   try {
-    const posts = await socialService.listProjectPosts(appUser.id, projectId);
+    const posts = await socialService.listProjectPosts(
+      appUser.workspaceOwnerUserId,
+      c.req.param("id"),
+    );
     return c.json({ posts }, 200);
   } catch (error) {
     return c.json(
@@ -2314,38 +1743,17 @@ app.get("/projects/:id/social-posts", async (c) => {
 });
 
 app.post("/projects/:id/social-posts", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
-
-  const rl = await checkRateLimit(`social-posts:${appUser.id}`, 30, 60);
-  if (!rl.allowed) {
-    return c.json(
-      { error: "rate_limited", message: userErrorMessage("rate_limited") },
-      429,
-    );
-  }
-
+  const appUser = authenticatedHonoActor(c);
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(
-    appUser.actorUserId,
-    projectId,
-    appUser.workspaceId,
+  const parsed = scheduleSocialPostSchema.safeParse(
+    await c.req.json().catch(() => ({})),
   );
-  if (access === "missing") return c.json({ error: "Project not found" }, 404);
-  if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
-
-  const payload = await c.req.json().catch(() => ({}));
-  const parsed = scheduleSocialPostSchema.safeParse(payload);
   if (!parsed.success) {
-    return c.json(
-      { error: "Invalid payload", issues: parsed.error.issues },
-      400,
-    );
+    return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
   }
-
   try {
     const post = await socialService.schedulePost(
-      appUser.id,
+      appUser.workspaceOwnerUserId,
       projectId,
       parsed.data,
       {
@@ -2360,7 +1768,7 @@ app.post("/projects/:id/social-posts", async (c) => {
       error instanceof PublicationIntentStateError
     ) {
       return c.json(
-        { error: error.code, message: error.message },
+        { error: error.code, message: userErrorMessage(error.code) },
         409,
       );
     }
@@ -2372,21 +1780,10 @@ app.post("/projects/:id/social-posts", async (c) => {
 });
 
 app.delete("/projects/:id/social-posts/:postId", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
-
-  const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(
-    appUser.actorUserId,
-    projectId,
-    appUser.workspaceId,
-  );
-  if (access === "missing") return c.json({ error: "Project not found" }, 404);
-  if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
-
+  const appUser = authenticatedHonoActor(c);
   try {
     const post = await socialService.cancelPost(
-      projectId,
+      c.req.param("id"),
       c.req.param("postId"),
       {
         workspaceId: appUser.workspaceId,
@@ -2403,63 +1800,45 @@ app.delete("/projects/:id/social-posts/:postId", async (c) => {
 });
 
 app.get("/projects/:id/social-posts/:postId/publication", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
-  const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(
-    appUser.actorUserId,
-    projectId,
-    appUser.workspaceId,
-  );
-  if (access === "missing") return c.json({ error: "Project not found" }, 404);
-  if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
+  const appUser = authenticatedHonoActor(c);
   try {
     return c.json(
       await socialService.inspectPublication(
         appUser.workspaceId,
         c.req.param("postId"),
-        projectId,
+        c.req.param("id"),
       ),
       200,
     );
   } catch (error) {
     if (error instanceof SocialPublicationRecoveryError) {
       return c.json(
-        { error: error.code, message: error.message },
+        {
+          error: error.code,
+          message:
+            userErrorMessage(error.code) ?? "Could not inspect this publication",
+        },
         socialPublicationErrorStatus(error),
       );
     }
     return c.json(
-      { error: "social_publication_inspect_failed", message: "Could not inspect this publication" },
+      {
+        error: "social_publication_inspect_failed",
+        message: "Could not inspect this publication",
+      },
       500,
     );
   }
 });
 
 app.post("/projects/:id/social-posts/:postId/recheck", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
-  try {
-    await workspaceService.requireActor(
-      appUser.actorUserId,
-      appUser.workspaceId,
-      "publishing.manage",
-    );
-  } catch {
-    return c.json({ error: "Forbidden" }, 403);
-  }
-  const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(
-    appUser.actorUserId,
-    projectId,
-    appUser.workspaceId,
-  );
-  if (access === "missing") return c.json({ error: "Project not found" }, 404);
-  if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
+  const appUser = authenticatedHonoActor(c);
   const parsed = recheckSocialPublicationSchema.safeParse(
     await c.req.json().catch(() => ({})),
   );
-  if (!parsed.success) return c.json({ error: "Invalid payload", issues: parsed.error.issues }, 400);
+  if (!parsed.success) {
+    return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
+  }
   try {
     return c.json(
       await socialService.recheckPublication(
@@ -2467,48 +1846,35 @@ app.post("/projects/:id/social-posts/:postId/recheck", async (c) => {
         appUser.actorUserId,
         c.req.param("postId"),
         parsed.data,
-        projectId,
+        c.req.param("id"),
       ),
       200,
     );
   } catch (error) {
     if (error instanceof SocialPublicationRecoveryError) {
       return c.json(
-        { error: error.code, message: error.message },
+        { error: error.code, message: userErrorMessage(error.code) },
         socialPublicationErrorStatus(error),
       );
     }
     return c.json(
-      { error: "social_publication_recheck_failed", message: "Could not recheck this publication" },
+      {
+        error: "social_publication_recheck_failed",
+        message: "Could not recheck this publication",
+      },
       500,
     );
   }
 });
 
 app.post("/projects/:id/social-posts/:postId/confirm", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
-  try {
-    await workspaceService.requireActor(
-      appUser.actorUserId,
-      appUser.workspaceId,
-      "publishing.manage",
-    );
-  } catch {
-    return c.json({ error: "Forbidden" }, 403);
-  }
-  const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(
-    appUser.actorUserId,
-    projectId,
-    appUser.workspaceId,
-  );
-  if (access === "missing") return c.json({ error: "Project not found" }, 404);
-  if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
+  const appUser = authenticatedHonoActor(c);
   const parsed = confirmSocialPublicationSchema.safeParse(
     await c.req.json().catch(() => ({})),
   );
-  if (!parsed.success) return c.json({ error: "Invalid payload", issues: parsed.error.issues }, 400);
+  if (!parsed.success) {
+    return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
+  }
   try {
     return c.json(
       await socialService.confirmPublication(
@@ -2516,48 +1882,35 @@ app.post("/projects/:id/social-posts/:postId/confirm", async (c) => {
         appUser.actorUserId,
         c.req.param("postId"),
         parsed.data,
-        projectId,
+        c.req.param("id"),
       ),
       200,
     );
   } catch (error) {
     if (error instanceof SocialPublicationRecoveryError) {
       return c.json(
-        { error: error.code, message: error.message },
+        { error: error.code, message: userErrorMessage(error.code) },
         socialPublicationErrorStatus(error),
       );
     }
     return c.json(
-      { error: "social_publication_confirm_failed", message: "Could not confirm this publication" },
+      {
+        error: "social_publication_confirm_failed",
+        message: "Could not confirm this publication",
+      },
       500,
     );
   }
 });
 
 app.post("/projects/:id/social-posts/:postId/publish-again", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
-  try {
-    await workspaceService.requireActor(
-      appUser.actorUserId,
-      appUser.workspaceId,
-      "publishing.manage",
-    );
-  } catch {
-    return c.json({ error: "Forbidden" }, 403);
-  }
-  const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(
-    appUser.actorUserId,
-    projectId,
-    appUser.workspaceId,
-  );
-  if (access === "missing") return c.json({ error: "Project not found" }, 404);
-  if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
+  const appUser = authenticatedHonoActor(c);
   const parsed = republishSocialPublicationSchema.safeParse(
     await c.req.json().catch(() => ({})),
   );
-  if (!parsed.success) return c.json({ error: "Invalid payload", issues: parsed.error.issues }, 400);
+  if (!parsed.success) {
+    return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
+  }
   try {
     return c.json(
       await socialService.republishPublication(
@@ -2565,50 +1918,39 @@ app.post("/projects/:id/social-posts/:postId/publish-again", async (c) => {
         appUser.actorUserId,
         c.req.param("postId"),
         parsed.data,
-        projectId,
+        c.req.param("id"),
       ),
       201,
     );
   } catch (error) {
     if (error instanceof SocialPublicationRecoveryError) {
       return c.json(
-        { error: error.code, message: error.message },
+        { error: error.code, message: userErrorMessage(error.code) },
         socialPublicationErrorStatus(error),
       );
     }
     return c.json(
-      { error: "social_publication_republish_failed", message: "Could not publish this post again" },
+      {
+        error: "social_publication_republish_failed",
+        message: "Could not publish this post again",
+      },
       500,
     );
   }
 });
 
 app.post("/projects/:id/social-posts/:postId/metrics", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
-
-  const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(
-    appUser.actorUserId,
-    projectId,
-    appUser.workspaceId,
+  const appUser = authenticatedHonoActor(c);
+  const parsed = socialPostMetricsSchema.safeParse(
+    await c.req.json().catch(() => ({})),
   );
-  if (access === "missing") return c.json({ error: "Project not found" }, 404);
-  if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
-
-  const payload = await c.req.json().catch(() => ({}));
-  const parsed = socialPostMetricsSchema.safeParse(payload);
   if (!parsed.success) {
-    return c.json(
-      { error: "Invalid payload", issues: parsed.error.issues },
-      400,
-    );
+    return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
   }
-
   try {
     const post = await socialService.recordPostMetrics(
-      appUser.id,
-      projectId,
+      appUser.workspaceOwnerUserId,
+      c.req.param("id"),
       c.req.param("postId"),
       parsed.data,
     );
@@ -2624,69 +1966,35 @@ app.post("/projects/:id/social-posts/:postId/metrics", async (c) => {
 // --- Voiceover dubbing ---
 
 app.get("/projects/:id/dubs", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
-
-  const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(
-    appUser.actorUserId,
-    projectId,
-    appUser.workspaceId,
-  );
-  if (access === "missing") return c.json({ error: "Project not found" }, 404);
-  if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
-
+  const appUser = authenticatedHonoActor(c);
   try {
-    const dubs = await dubbingService.listProjectDubs(appUser.id, projectId);
+    const dubs = await dubbingService.listProjectDubs(
+      appUser.workspaceOwnerUserId,
+      c.req.param("id"),
+    );
     return c.json({ dubs }, 200);
   } catch (error) {
-    return c.json(
-      { error: "dubs_failed", message: errorMessage(error) },
-      400,
-    );
+    return c.json({ error: "dubs_failed", message: errorMessage(error) }, 400);
   }
 });
 
 app.post("/projects/:id/dubs", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
-
-  const rl = await checkRateLimit(`dubs:${appUser.id}`, 20, 60);
-  if (!rl.allowed) {
-    return c.json(
-      { error: "rate_limited", message: userErrorMessage("rate_limited") },
-      429,
-    );
-  }
-
-  const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(
-    appUser.actorUserId,
-    projectId,
-    appUser.workspaceId,
-  );
-  if (access === "missing") return c.json({ error: "Project not found" }, 404);
-  if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
-
+  const appUser = authenticatedHonoActor(c);
   const idempotencyKey = c.req.header("idempotency-key") ?? "";
   if (!idempotencyKey) {
-    return c.json({ error: "Missing idempotency-key header" }, 400);
+    return c.json({ error: "invalid_input", message: "Missing idempotency-key header" }, 400);
   }
-
-  const payload = await c.req.json().catch(() => ({}));
-  const parsed = requestClipDubSchema.safeParse(payload);
+  const parsed = requestClipDubSchema.safeParse(
+    await c.req.json().catch(() => ({})),
+  );
   if (!parsed.success) {
-    return c.json(
-      { error: "Invalid payload", issues: parsed.error.issues },
-      400,
-    );
+    return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
   }
-
   try {
     const result = await dubbingService.requestClipDub(
       appUser.actorUserId,
       appUser.workspaceId,
-      projectId,
+      c.req.param("id"),
       idempotencyKey,
       parsed.data,
     );
@@ -2706,32 +2014,17 @@ app.post("/projects/:id/dubs", async (c) => {
 });
 
 app.get("/projects/:id/dubs/:dubId/download", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
-
-  const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(
-    appUser.actorUserId,
-    projectId,
-    appUser.workspaceId,
-  );
-  if (access === "missing") return c.json({ error: "Project not found" }, 404);
-  if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
-
+  const appUser = authenticatedHonoActor(c);
   const parsed = dubDownloadQuerySchema.safeParse({
     asset: c.req.query("asset") ?? undefined,
   });
   if (!parsed.success) {
-    return c.json(
-      { error: "Invalid query", issues: parsed.error.issues },
-      400,
-    );
+    return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
   }
-
   try {
     const result = await dubbingService.getDubDownloadUrl(
-      appUser.id,
-      projectId,
+      appUser.workspaceOwnerUserId,
+      c.req.param("id"),
       c.req.param("dubId"),
       parsed.data.asset,
     );
@@ -2745,34 +2038,18 @@ app.get("/projects/:id/dubs/:dubId/download", async (c) => {
 });
 
 app.get("/projects/:id/clips/previews", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
-
-  const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(
-    appUser.actorUserId,
-    projectId,
-    appUser.workspaceId,
-  );
-  if (access === "missing") return c.json({ error: "Project not found" }, 404);
-  if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
-
-  const parsedQuery = clipDownloadQuerySchema.safeParse({
-    aspectRatio:
-      new URL(c.req.url).searchParams.get("aspectRatio") ?? undefined,
+  const appUser = authenticatedHonoActor(c);
+  const parsed = clipDownloadQuerySchema.safeParse({
+    aspectRatio: new URL(c.req.url).searchParams.get("aspectRatio") ?? undefined,
   });
-  if (!parsedQuery.success) {
-    return c.json(
-      { error: "Invalid query", issues: parsedQuery.error.issues },
-      400,
-    );
+  if (!parsed.success) {
+    return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
   }
-
   try {
     const result = await clipService.getProjectClipPreviewUrls(
-      appUser.id,
-      projectId,
-      parsedQuery.data.aspectRatio,
+      appUser.workspaceOwnerUserId,
+      c.req.param("id"),
+      parsed.data.aspectRatio,
     );
     return c.json(result, 200);
   } catch (error) {
@@ -2784,46 +2061,19 @@ app.get("/projects/:id/clips/previews", async (c) => {
 });
 
 app.get("/projects/:id/clips/:clipId/download", async (c) => {
-  const appUser = await getCurrentAppUser();
-
-  if (!appUser) {
-    return c.json({ error: "Unauthorized" }, 401);
-  }
-
-  const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(
-    appUser.actorUserId,
-    projectId,
-    appUser.workspaceId,
-  );
-
-  if (access === "missing") {
-    return c.json({ error: "Project not found" }, 404);
-  }
-
-  if (access === "forbidden") {
-    return c.json({ error: "Forbidden" }, 403);
-  }
-
-  const clipId = c.req.param("clipId");
-  const parsedQuery = clipDownloadQuerySchema.safeParse({
-    aspectRatio:
-      new URL(c.req.url).searchParams.get("aspectRatio") ?? undefined,
+  const appUser = authenticatedHonoActor(c);
+  const parsed = clipDownloadQuerySchema.safeParse({
+    aspectRatio: new URL(c.req.url).searchParams.get("aspectRatio") ?? undefined,
   });
-
-  if (!parsedQuery.success) {
-    return c.json(
-      { error: "Invalid query", issues: parsedQuery.error.issues },
-      400,
-    );
+  if (!parsed.success) {
+    return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
   }
-
   try {
     const result = await clipService.getClipDownloadUrl(
-      appUser.id,
-      projectId,
-      clipId,
-      parsedQuery.data.aspectRatio,
+      appUser.workspaceOwnerUserId,
+      c.req.param("id"),
+      c.req.param("clipId"),
+      parsed.data.aspectRatio,
     );
     return c.json(result, 200);
   } catch (error) {
@@ -2835,17 +2085,9 @@ app.get("/projects/:id/clips/:clipId/download", async (c) => {
 });
 
 app.get("/projects/:id/clips/:clipId/file", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  const appUser = authenticatedHonoActor(c);
 
   const projectId = c.req.param("id");
-  const access = await projectService.getProjectAccess(
-    appUser.actorUserId,
-    projectId,
-    appUser.workspaceId,
-  );
-  if (access === "missing") return c.json({ error: "Project not found" }, 404);
-  if (access === "forbidden") return c.json({ error: "Forbidden" }, 403);
 
   const parsedQuery = clipDownloadQuerySchema.safeParse({
     aspectRatio:
@@ -2853,14 +2095,14 @@ app.get("/projects/:id/clips/:clipId/file", async (c) => {
   });
   if (!parsedQuery.success) {
     return c.json(
-      { error: "Invalid query", issues: parsedQuery.error.issues },
+      { error: "invalid_input", issues: parsedQuery.error.issues },
       400,
     );
   }
 
   try {
     const result = await clipService.getClipDownloadUrl(
-      appUser.id,
+      appUser.workspaceOwnerUserId,
       projectId,
       c.req.param("clipId"),
       parsedQuery.data.aspectRatio,
@@ -2876,10 +2118,12 @@ app.get("/projects/:id/clips/:clipId/file", async (c) => {
 
 function brandTemplateErrorResponse(error: unknown) {
   if (error instanceof BrandTemplateNotFoundError) {
-    return { status: 404 as const, body: { error: "brand_template_not_found" } };
+    return { status: 404 as const, body: { error: "brand_template_not_found" },
+    };
   }
   if (error instanceof BrandTemplateForbiddenError) {
-    return { status: 403 as const, body: { error: "brand_template_forbidden" } };
+    return { status: 403 as const, body: { error: "brand_template_forbidden" },
+    };
   }
   return {
     status: 400 as const,
@@ -2888,17 +2132,17 @@ function brandTemplateErrorResponse(error: unknown) {
 }
 
 app.get("/brand-templates", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
-  const result = await brandTemplateService.list(appUser.id, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
+  const appUser = authenticatedHonoActor(c);
+  const result = await brandTemplateService.list(appUser.workspaceOwnerUserId, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId,
+  });
   return c.json(result, 200);
 });
 
 app.get("/brand-templates/:id", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  const appUser = authenticatedHonoActor(c);
   try {
-    const template = await brandTemplateService.get(appUser.id, c.req.param("id"), { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
+    const template = await brandTemplateService.get(appUser.workspaceOwnerUserId, c.req.param("id"), { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
+    );
     return c.json(template, 200);
   } catch (error) {
     const { status, body } = brandTemplateErrorResponse(error);
@@ -2907,16 +2151,15 @@ app.get("/brand-templates/:id", async (c) => {
 });
 
 app.post("/brand-templates", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  const appUser = authenticatedHonoActor(c);
   const payload = await c.req.json().catch(() => null);
   const parsed = brandTemplateInputSchema.safeParse(payload);
   if (!parsed.success) {
-    return c.json({ error: "Invalid payload", issues: parsed.error.issues }, 400);
+    return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
   }
   try {
-    await workspaceService.requireActor(appUser.actorUserId, appUser.workspaceId, "brand.manage");
-    const template = await brandTemplateService.create(appUser.id, parsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
+    const template = await brandTemplateService.create(appUser.workspaceOwnerUserId, parsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
+    );
     return c.json(template, 201);
   } catch (error) {
     const { status, body } = brandTemplateErrorResponse(error);
@@ -2925,17 +2168,15 @@ app.post("/brand-templates", async (c) => {
 });
 
 app.patch("/brand-templates/:id", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  const appUser = authenticatedHonoActor(c);
   const payload = await c.req.json().catch(() => null);
   const parsed = brandTemplateUpdateSchema.safeParse(payload);
   if (!parsed.success) {
-    return c.json({ error: "Invalid payload", issues: parsed.error.issues }, 400);
+    return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
   }
   try {
-    await workspaceService.requireActor(appUser.actorUserId, appUser.workspaceId, "brand.manage");
     const template = await brandTemplateService.update(
-      appUser.id,
+      appUser.workspaceOwnerUserId,
       c.req.param("id"),
       parsed.data,
       { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
@@ -2948,11 +2189,10 @@ app.patch("/brand-templates/:id", async (c) => {
 });
 
 app.delete("/brand-templates/:id", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  const appUser = authenticatedHonoActor(c);
   try {
-    await workspaceService.requireActor(appUser.actorUserId, appUser.workspaceId, "brand.manage");
-    await brandTemplateService.softDelete(appUser.id, c.req.param("id"), { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
+    await brandTemplateService.softDelete(appUser.workspaceOwnerUserId, c.req.param("id"), { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
+    );
     return c.json({ ok: true }, 200);
   } catch (error) {
     const { status, body } = brandTemplateErrorResponse(error);
@@ -2961,11 +2201,10 @@ app.delete("/brand-templates/:id", async (c) => {
 });
 
 app.post("/brand-templates/:id/set-default", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  const appUser = authenticatedHonoActor(c);
   try {
-    await workspaceService.requireActor(appUser.actorUserId, appUser.workspaceId, "workspace.manage");
-    await brandTemplateService.setDefault(appUser.id, c.req.param("id"), { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
+    await brandTemplateService.setDefault(appUser.workspaceOwnerUserId, c.req.param("id"), { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
+    );
     return c.json({ ok: true }, 200);
   } catch (error) {
     const { status, body } = brandTemplateErrorResponse(error);
@@ -2974,17 +2213,15 @@ app.post("/brand-templates/:id/set-default", async (c) => {
 });
 
 app.post("/brand-templates/:id/duplicate", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  const appUser = authenticatedHonoActor(c);
   const payload = await c.req.json().catch(() => ({}));
   const parsed = duplicateBrandTemplateSchema.safeParse(payload);
   if (!parsed.success) {
-    return c.json({ error: "Invalid payload", issues: parsed.error.issues }, 400);
+    return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
   }
   try {
-    await workspaceService.requireActor(appUser.actorUserId, appUser.workspaceId, "brand.manage");
     const template = await brandTemplateService.duplicate(
-      appUser.id,
+      appUser.workspaceOwnerUserId,
       c.req.param("id"),
       parsed.data.name,
       { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
@@ -2997,40 +2234,31 @@ app.post("/brand-templates/:id/duplicate", async (c) => {
 });
 
 app.post("/brand-templates/logo/presign", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
-
-  const rl = await checkRateLimit(`logo-presign:${appUser.id}`, 30, 60);
-  if (!rl.allowed) {
-    return c.json(
-      { error: "rate_limited", message: userErrorMessage("rate_limited") },
-      429,
-    );
-  }
+  const appUser = authenticatedHonoActor(c);
 
   const payload = await c.req.json().catch(() => null);
   const parsed = presignBrandLogoSchema.safeParse(payload);
   if (!parsed.success) {
-    return c.json({ error: "Invalid payload", issues: parsed.error.issues }, 400);
+    return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
   }
   try {
-    await workspaceService.requireActor(appUser.actorUserId, appUser.workspaceId, "brand.manage");
-    const result = await brandTemplateService.presignLogoUpload(appUser.id, parsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
+    const result = await brandTemplateService.presignLogoUpload(appUser.workspaceOwnerUserId, parsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
+    );
     return c.json(result, 200);
   } catch (error) {
     return c.json(
-      { error: "brand_template_logo_presign_failed", message: errorMessage(error) },
+      { error: "brand_template_logo_presign_failed", message: errorMessage(error),
+      },
       400,
     );
   }
 });
 
 app.get("/brand-templates/:id/logo-url", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  const appUser = authenticatedHonoActor(c);
   try {
     const url = await brandTemplateService.getLogoDownloadUrl(
-      appUser.id,
+      appUser.workspaceOwnerUserId,
       c.req.param("id"),
       { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
     );
@@ -3047,18 +2275,18 @@ app.get("/brand-templates/:id/logo-url", async (c) => {
 // presign against R2, verify ownership on finalize, serve playback through a
 // short-lived presigned download URL.
 app.get("/audio-assets", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  const appUser = authenticatedHonoActor(c);
 
   const parsed = listAudioAssetsQuerySchema.safeParse({
     kind: c.req.query("kind"),
     mood: c.req.query("mood") ?? undefined,
   });
   if (!parsed.success) {
-    return c.json({ error: "Invalid payload", issues: parsed.error.issues }, 400);
+    return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
   }
   try {
-    const result = await audioAssetService.listAssets(appUser.id, parsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
+    const result = await audioAssetService.listAssets(appUser.workspaceOwnerUserId, parsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
+    );
     return c.json(result, 200);
   } catch (error) {
     return c.json(
@@ -3069,25 +2297,16 @@ app.get("/audio-assets", async (c) => {
 });
 
 app.post("/audio-assets/presign-upload", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
-
-  const rl = await checkRateLimit(`audio-asset-presign:${appUser.id}`, 30, 60);
-  if (!rl.allowed) {
-    return c.json(
-      { error: "rate_limited", message: userErrorMessage("rate_limited") },
-      429,
-    );
-  }
+  const appUser = authenticatedHonoActor(c);
 
   const payload = await c.req.json().catch(() => null);
   const parsed = presignAudioUploadSchema.safeParse(payload);
   if (!parsed.success) {
-    return c.json({ error: "Invalid payload", issues: parsed.error.issues }, 400);
+    return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
   }
   try {
-    await workspaceService.requireActor(appUser.actorUserId, appUser.workspaceId, "brand.manage");
-    const result = await audioAssetService.presignUpload(appUser.id, parsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
+    const result = await audioAssetService.presignUpload(appUser.workspaceOwnerUserId, parsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
+    );
     return c.json(result, 200);
   } catch (error) {
     return c.json(
@@ -3098,17 +2317,16 @@ app.post("/audio-assets/presign-upload", async (c) => {
 });
 
 app.post("/audio-assets", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  const appUser = authenticatedHonoActor(c);
 
   const payload = await c.req.json().catch(() => null);
   const parsed = finalizeAudioUploadSchema.safeParse(payload);
   if (!parsed.success) {
-    return c.json({ error: "Invalid payload", issues: parsed.error.issues }, 400);
+    return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
   }
   try {
-    await workspaceService.requireActor(appUser.actorUserId, appUser.workspaceId, "brand.manage");
-    const asset = await audioAssetService.finalizeUpload(appUser.id, parsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
+    const asset = await audioAssetService.finalizeUpload(appUser.workspaceOwnerUserId, parsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
+    );
     return c.json(asset, 201);
   } catch (error) {
     // L3: a double-click (or a retried finalize) racing the same presigned
@@ -3133,8 +2351,7 @@ app.post("/audio-assets", async (c) => {
 });
 
 app.get("/audio-assets/:id/playback-url", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  const appUser = authenticatedHonoActor(c);
   // L3: validate the path param is a UUID before it ever reaches Prisma — a
   // malformed id would otherwise throw a raw PrismaClientValidationError,
   // surfaced through the generic 400 branch below with an ugly internal
@@ -3144,26 +2361,27 @@ app.get("/audio-assets/:id/playback-url", async (c) => {
     return c.json({ error: "Invalid audio asset id" }, 400);
   }
   try {
-    const source = await audioAssetService.getPlaybackSource(appUser.id, idParsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
+    const source = await audioAssetService.getPlaybackSource(appUser.workspaceOwnerUserId, idParsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
+    );
     if (!source) return c.json({ error: "audio_asset_not_found" }, 404);
     return c.json(source, 200);
   } catch (error) {
     return c.json(
-      { error: "audio_asset_playback_url_failed", message: errorMessage(error) },
+      { error: "audio_asset_playback_url_failed", message: errorMessage(error),
+      },
       400,
     );
   }
 });
 
 app.put("/audio-assets/:id/favorite", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  const appUser = authenticatedHonoActor(c);
   const idParsed = audioAssetIdParamSchema.safeParse(c.req.param("id"));
   if (!idParsed.success) return c.json({ error: "Invalid audio asset id" }, 400);
   try {
-    await workspaceService.requireActor(appUser.actorUserId, appUser.workspaceId, "brand.manage");
     return c.json(
-      await audioAssetService.setFavorite(appUser.id, idParsed.data, true, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId }),
+      await audioAssetService.setFavorite(appUser.workspaceOwnerUserId, idParsed.data, true, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
+      ),
       200,
     );
   } catch (error) {
@@ -3178,14 +2396,13 @@ app.put("/audio-assets/:id/favorite", async (c) => {
 });
 
 app.delete("/audio-assets/:id/favorite", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  const appUser = authenticatedHonoActor(c);
   const idParsed = audioAssetIdParamSchema.safeParse(c.req.param("id"));
   if (!idParsed.success) return c.json({ error: "Invalid audio asset id" }, 400);
   try {
-    await workspaceService.requireActor(appUser.actorUserId, appUser.workspaceId, "brand.manage");
     return c.json(
-      await audioAssetService.setFavorite(appUser.id, idParsed.data, false, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId }),
+      await audioAssetService.setFavorite(appUser.workspaceOwnerUserId, idParsed.data, false, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
+      ),
       200,
     );
   } catch (error) {
@@ -3200,15 +2417,14 @@ app.delete("/audio-assets/:id/favorite", async (c) => {
 });
 
 app.delete("/audio-assets/:id", async (c) => {
-  const appUser = await getCurrentAppUser();
-  if (!appUser) return c.json({ error: "Unauthorized" }, 401);
+  const appUser = authenticatedHonoActor(c);
   const idParsed = audioAssetIdParamSchema.safeParse(c.req.param("id"));
   if (!idParsed.success) {
     return c.json({ error: "Invalid audio asset id" }, 400);
   }
   try {
-    await workspaceService.requireActor(appUser.actorUserId, appUser.workspaceId, "brand.manage");
-    await audioAssetService.deleteUserAsset(appUser.id, idParsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
+    await audioAssetService.deleteUserAsset(appUser.workspaceOwnerUserId, idParsed.data, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
+    );
     return c.json({ ok: true }, 200);
   } catch (error) {
     if (error instanceof AudioAssetNotFoundError) {

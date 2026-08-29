@@ -44,10 +44,13 @@
     "zod": "^4.3.6"
   },
   "devDependencies": {
+    "@prisma/adapter-pg": "7.7.0",
+    "@types/pg": "8.15.5",
     "@types/node": "26.2.0",
     "@types/react": "19.2.18",
     "@types/react-dom": "19.2.4",
     "fake-indexeddb": "6.2.4",
-    "happy-dom": "^20.11.12"
+    "happy-dom": "^20.11.12",
+    "pg": "8.16.3"
   }
 }

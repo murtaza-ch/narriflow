@@ -23,14 +23,20 @@ export function CreateWorkspaceForm() {
             Workspace name
           </chakra.label>
           <Input
+            key={`${state.requestId ?? "initial"}:${state.workspaceName ?? ""}`}
             id="workspace-name"
             name="name"
+            autoComplete="organization"
             placeholder="Acme content team"
+            defaultValue={state.workspaceName}
             minLength={1}
             maxLength={80}
             required={!state.workspaceId}
             disabled={Boolean(state.workspaceId) || pending}
           />
+          {state.workspaceId && state.workspaceName ? (
+            <input type="hidden" name="name" value={state.workspaceName} />
+          ) : null}
           <Text fontSize="12px" color="fg.subtle">
             Each Business workspace has its own projects, members, usage, and subscription.
           </Text>
@@ -41,16 +47,20 @@ export function CreateWorkspaceForm() {
             Billing interval
           </chakra.label>
           <Select
+            key={`${state.requestId ?? "initial"}:${state.interval ?? "annual"}`}
             id="workspace-interval"
             name="interval"
-            defaultValue="annual"
+            defaultValue={state.interval ?? "annual"}
             ariaLabel="Billing interval"
-            disabled={pending}
+            disabled={Boolean(state.workspaceId) || pending}
             items={[
               { value: "annual", label: "Annual — $312/year" },
               { value: "monthly", label: "Monthly — $39/month" },
             ]}
           />
+          {state.workspaceId && state.interval ? (
+            <input type="hidden" name="interval" value={state.interval} />
+          ) : null}
           <Text fontSize="12px" color="fg.subtle">
             Includes the owner seat and 1,800 shared processing minutes. Additional Admins and Editors are billed per seat.
           </Text>
@@ -62,6 +72,11 @@ export function CreateWorkspaceForm() {
             {state.workspaceId ? (
               <Text fontSize="12px" color="fg.subtle" mt="1">
                 Your pending workspace was preserved. Submit again to retry checkout.
+              </Text>
+            ) : null}
+            {state.requestId ? (
+              <Text fontSize="11px" color="fg.subtle" mt="1">
+                Support ID: {state.requestId}
               </Text>
             ) : null}
           </Box>

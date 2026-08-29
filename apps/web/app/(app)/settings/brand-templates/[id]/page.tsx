@@ -3,7 +3,7 @@ import { Box, Stack } from "@chakra-ui/react";
 import Link from "next/link";
 import { Button } from "@narriflow/ui/components/button";
 import { PageHeader } from "@narriflow/ui/components/page-header";
-import { requireWorkspaceAppUser as requireCurrentAppUser } from "@/lib/workspace";
+import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 import {
   brandTemplateService,
   BrandTemplateNotFoundError,
@@ -16,10 +16,11 @@ interface PageProps {
 
 export default async function EditBrandTemplatePage({ params }: PageProps) {
   const { id } = await params;
-  const appUser = await requireCurrentAppUser();
+  const appUser = await admitWorkspacePage("content.view");
   let template;
   try {
-    template = await brandTemplateService.get(appUser.id, id, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
+    template = await brandTemplateService.get(appUser.workspaceOwnerUserId, id, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
+    );
   } catch (error) {
     if (error instanceof BrandTemplateNotFoundError) {
       notFound();

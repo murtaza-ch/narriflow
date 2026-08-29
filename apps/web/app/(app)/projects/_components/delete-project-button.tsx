@@ -8,6 +8,7 @@ import { useConfirm } from "@narriflow/ui/components/confirm-dialog";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { toaster } from "@narriflow/ui/components/toaster";
 import { deleteProjectFormAction } from "../actions";
+import { authenticatedActionResultMessage } from "@/lib/authenticated-request-browser";
 
 /**
  * Server-action redirects surface as a thrown NEXT_REDIRECT error when the
@@ -62,7 +63,10 @@ export function DeleteProjectButton({
           toaster.create({
             type: "error",
             title: "Could not delete project",
-            description: result.error ?? "Please try again.",
+            description: authenticatedActionResultMessage(
+              result,
+              "Please try again.",
+            ),
           });
         }
         // Otherwise the action redirected on success — nothing left to do.

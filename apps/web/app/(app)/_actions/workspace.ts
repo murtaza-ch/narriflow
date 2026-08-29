@@ -1,9 +1,13 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { setActiveWorkspace } from "@narriflow/auth";
+import { setActiveWorkspaceForActor } from "@narriflow/auth";
+import { workspaceSelectionActionSchema } from "@narriflow/validators";
+import { executeWorkspaceActionWithInput } from "@/lib/authenticated-request-action";
 
 export async function switchWorkspaceAction(workspaceId: string) {
-  await setActiveWorkspace(workspaceId);
-  revalidatePath("/", "layout");
+  return executeWorkspaceActionWithInput("content.view", { workspaceId }, workspaceSelectionActionSchema, async (actor, input) => {
+    await setActiveWorkspaceForActor(actor.actorUserId, input.workspaceId);
+    revalidatePath("/", "layout");
+  });
 }

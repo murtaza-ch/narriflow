@@ -1,10 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useTransition,
+} from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { Box, Flex, Grid, Stack, Text } from "@chakra-ui/react";
-import { AlertTriangle, CalendarClock, Check, CheckCircle2, RefreshCw, Repeat2, Send, X } from "lucide-react";
+import { AlertTriangle, CalendarClock, Check, CheckCircle2, RefreshCw, Repeat2, Send, X,
+} from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { Checkbox } from "@narriflow/ui/components/checkbox";
 import { Input } from "@narriflow/ui/components/input";
@@ -23,6 +25,7 @@ import {
 } from "@narriflow/validators";
 import { formatDateTime } from "@/lib/format";
 import { createPublicationIntentKeyStore } from "@/lib/publication-intent-key";
+import { authenticatedRequestFailureMessage } from "@/lib/authenticated-request-browser";
 import {
   describeSocialPost,
   isLiveSocialPostSnapshot,
@@ -79,7 +82,16 @@ function actionErrorText(
   fallback: string,
 ): string {
   const mapped = payload?.error ? USER_ERROR_MESSAGES[payload.error] : undefined;
-  return mapped ?? payload?.message ?? fallback;
+  return (
+    mapped ??
+    authenticatedRequestFailureMessage(
+      payload?? {},
+      typeof window === "undefined"
+        ? "/calendar"
+        : `${window.location.pathname}${window.location.search}`,
+      fallback,
+    )
+  );
 }
 
 const platformItems = platforms.map((value) => ({
@@ -108,7 +120,9 @@ const duplicateRiskCopy: Record<SocialPlatform, string> = {
 };
 
 function preferredAspectRatio(clip: ClipSnapshot): ClipAspectRatio {
-  return clip.renderVariants.find((render) => render.hasAsset)?.aspectRatio ?? "9:16";
+  return (
+    clip.renderVariants.find((render) => render.hasAsset)?.aspectRatio ?? "9:16"
+  );
 }
 
 export function SocialSchedulingPanel({
@@ -313,7 +327,7 @@ export function SocialSchedulingPanel({
     setAccountId((current) =>
       platformAccounts.some((account) => account.id === current)
         ? current
-        : platformAccounts[0]?.id ?? "",
+        : (platformAccounts[0]?.id ?? ""),
     );
   }, [platformAccounts]);
 
@@ -322,7 +336,8 @@ export function SocialSchedulingPanel({
       return;
     }
     if (!selectedClip) {
-      setNotice({ tone: "danger", text: "Choose a clip before scheduling it." });
+      setNotice({ tone: "danger", text: "Choose a clip before scheduling it.",
+      });
       return;
     }
     if (!selectedAccount) {
@@ -456,7 +471,8 @@ export function SocialSchedulingPanel({
         startTransition(() => router.refresh());
         return;
       }
-      const cancelled = socialPostSnapshotSchema.safeParse(await response.json());
+      const cancelled = socialPostSnapshotSchema.safeParse(await response.json(),
+      );
       if (cancelled.success) {
         applyPosts(
           livePostsRef.current.map((post) =>
@@ -481,7 +497,8 @@ export function SocialSchedulingPanel({
     if (!recoveryForm || recoveryForm.postId !== post.id || submitting) return;
     const reason = recoveryForm.reason.trim();
     if (!reason) {
-      setNotice({ tone: "danger", text: "Add a short audit reason before continuing." });
+      setNotice({ tone: "danger", text: "Add a short audit reason before continuing.",
+      });
       return;
     }
     if (
@@ -530,7 +547,8 @@ export function SocialSchedulingPanel({
       if (!response.ok) {
         setNotice({
           tone: "danger",
-          text: actionErrorText(payload, "The publication changed before this action completed."),
+          text: actionErrorText(payload, "The publication changed before this action completed.",
+          ),
         });
         startTransition(() => router.refresh());
         return;
@@ -549,7 +567,8 @@ export function SocialSchedulingPanel({
       requestAnimationFrame(() => noticeRef.current?.focus());
       startTransition(() => router.refresh());
     } catch {
-      setNotice({ tone: "danger", text: "Could not complete the recovery action." });
+      setNotice({ tone: "danger", text: "Could not complete the recovery action.",
+      });
     } finally {
       setSubmitting(false);
     }

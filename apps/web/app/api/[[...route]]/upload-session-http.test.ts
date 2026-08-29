@@ -58,12 +58,10 @@ function dependencies(
   overrides: Partial<UploadSessionHttpDependencies> = {},
 ): UploadSessionHttpDependencies {
   return {
-    getCurrentUser: async () => ({
-      id: "legacy-owner",
+    getActor: async () => ({
       actorUserId: ACTOR_USER_ID,
       workspaceId: WORKSPACE_ID,
     }),
-    checkRateLimit: async () => ({ allowed: true }),
     service: {
       open: async () => ({
         outcome: "uploading",
@@ -112,59 +110,6 @@ function dependencies(
 }
 
 describe("Upload Session HTTP routes", () => {
-  test("rejects unauthenticated requests before rate limiting or service work", async () => {
-    let rateChecks = 0;
-    const app = createUploadSessionHttpRoutes(
-      dependencies({
-        getCurrentUser: async () => null,
-        checkRateLimit: async () => {
-          rateChecks += 1;
-          return { allowed: true };
-        },
-      }),
-    );
-
-    const response = await app.request("/upload-sessions/open", {
-      method: "POST",
-      body: JSON.stringify(OPEN_PAYLOAD),
-      headers: { "content-type": "application/json" },
-    });
-
-    expect(response.status).toBe(401);
-    expect(rateChecks).toBe(0);
-  });
-
-  test("rate limits per authenticated identity before parsing or service work", async () => {
-    const seenKeys: string[] = [];
-    let serviceCalls = 0;
-    const base = dependencies();
-    const app = createUploadSessionHttpRoutes(
-      dependencies({
-        checkRateLimit: async (key) => {
-          seenKeys.push(key);
-          return { allowed: false };
-        },
-        service: {
-          ...base.service,
-          open: async () => {
-            serviceCalls += 1;
-            return base.service.open(ACTOR_USER_ID, OPEN_PAYLOAD, WORKSPACE_ID);
-          },
-        },
-      }),
-    );
-
-    const response = await app.request("/upload-sessions/open", {
-      method: "POST",
-      body: "not-json",
-    });
-
-    expect(response.status).toBe(429);
-    expect(response.headers.get("retry-after")).toBe("60");
-    expect(seenKeys).toEqual(["upload-session-open:legacy-owner"]);
-    expect(serviceCalls).toBe(0);
-  });
-
   test("strictly rejects unknown upload intent fields", async () => {
     const app = createUploadSessionHttpRoutes(dependencies());
     const response = await app.request("/upload-sessions/open", {
@@ -174,7 +119,7 @@ describe("Upload Session HTTP routes", () => {
     });
 
     expect(response.status).toBe(400);
-    expect(await response.json()).toMatchObject({ error: "Invalid payload" });
+    expect(await response.json()).toMatchObject({ error: "validation_failed" });
   });
 
   test("passes only validated intent with actor and workspace ownership", async () => {
@@ -285,16 +230,6 @@ describe("Upload Session HTTP routes", () => {
       body: JSON.stringify({ ...payload, providerUploadId: "forged" }),
     });
     expect(invalidResponse.status).toBe(400);
-
-    const limitedResponse = await createUploadSessionHttpRoutes(
-      dependencies({ checkRateLimit: async () => ({ allowed: false }) }),
-    ).request("/upload-sessions/finalize", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    expect(limitedResponse.status).toBe(429);
-    expect(limitedResponse.headers.get("retry-after")).toBe("60");
   });
 
   test("validates a bounded grant request and passes only session intent", async () => {
@@ -448,8 +383,7 @@ describe("Upload Session HTTP routes", () => {
     expect(discardResponse.status).toBe(202);
     expect(discardResponse.headers.get("retry-after")).toBe("5");
     expect(statusCalls).toEqual([
-      [ACTOR_USER_ID, statusPayload, WORKSPACE_ID],
-    ]);
+      [ACTOR_USER_ID, statusPayload, WORKSPACE_ID]]);
     expect(discardCalls).toEqual([
       [ACTOR_USER_ID, { sessionId: SESSION_ID }, WORKSPACE_ID],
     ]);
@@ -467,29 +401,5 @@ describe("Upload Session HTTP routes", () => {
       body: JSON.stringify({ ...statusPayload, providerUploadId: "forged" }),
     });
     expect(forgedStatus.status).toBe(400);
-
-    const rateKeys: string[] = [];
-    const limited = createUploadSessionHttpRoutes(
-      dependencies({
-        checkRateLimit: async (key) => {
-          rateKeys.push(key);
-          return { allowed: false };
-        },
-      }),
-    );
-    const limitedStatus = await limited.request("/upload-sessions/status", {
-      method: "POST",
-      body: "not-json",
-    });
-    const limitedDiscard = await limited.request("/upload-sessions/discard", {
-      method: "POST",
-      body: "not-json",
-    });
-    expect(limitedStatus.status).toBe(429);
-    expect(limitedDiscard.status).toBe(429);
-    expect(rateKeys).toEqual([
-      "upload-session-status:legacy-owner",
-      "upload-session-discard:legacy-owner",
-    ]);
   });
 });

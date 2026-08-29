@@ -32,6 +32,11 @@ import {
   LINK_PROVIDERS,
 } from "@narriflow/validators";
 import { formatDate } from "@/lib/format";
+import {
+  authenticatedRequestFailureMessage,
+  classifyAuthenticatedRequestFailure,
+  type BrowserRequestFailure,
+} from "@/lib/authenticated-request-browser";
 import { LanguageSelect } from "./language-select";
 import { ModeTabs } from "./mode-tabs";
 import { ProcessingTimeline } from "../../_shared/processing-timeline";
@@ -204,6 +209,31 @@ export function UploadShell({
   const [rssPreviewLoading, setRssPreviewLoading] = useState(false);
   const [rssNotice, setRssNotice] = useState<string | null>(null);
   const [rssError, setRssError] = useState<string | null>(null);
+
+  function recoverRssRequest(
+    failure: BrowserRequestFailure,
+    setMessage: (message: string) => void,
+    fallback: string,
+  ) {
+    const recovery = classifyAuthenticatedRequestFailure(failure, "/upload");
+    const message = authenticatedRequestFailureMessage(
+      failure,
+      "/upload",
+      fallback,
+    );
+    setMessage(message);
+    if (recovery.kind === "sign_in") {
+      router.push(
+        `/sign-in?redirect_url=${encodeURIComponent(recovery.returnDestination)}`,
+      );
+    } else if (recovery.kind === "billing") {
+      router.push("/settings/billing");
+    } else if (recovery.kind === "missing") {
+      setRssEpisodes([]);
+      setSelectedEpisodeIds([]);
+    }
+    return message;
+  }
 
   // Smart paste field
   const [pasteValue, setPasteValue] = useState(initialUrl?.trim() ?? "");
@@ -530,12 +560,20 @@ export function UploadShell({
       const payload = (await response.json()) as {
         error?: string;
         message?: string;
+        requestId?: string;
+        details?: Record<string, unknown>;
+        issues?: BrowserRequestFailure["issues"];
+        retryAfterSeconds?: number;
         episodes?: RssEpisode[];
       };
       if (!response.ok || !payload.episodes) {
-        throw new Error(
-          payload.message ?? payload.error ?? "Could not load RSS episodes.",
+        const message = recoverRssRequest(
+          payload,
+          setRssError,
+          "Could not load RSS episodes.",
         );
+        toaster.error({ title: "RSS preview failed", description: message });
+        return;
       }
       setRssEpisodes(payload.episodes);
       setSelectedEpisodeIds(payload.episodes.slice(0, 1).map((e) => e.id));
@@ -570,10 +608,16 @@ export function UploadShell({
       rssCommitTokenRef.current ??= crypto.randomUUID();
       formData.set("commitToken", rssCommitTokenRef.current);
       const result = await generateFromRssAction(formData);
-      if (result?.error) {
-        throw new Error(result.error);
+      if (!result.ok) {
+        const message = recoverRssRequest(
+          result,
+          setErrorMessage,
+          "RSS import failed.",
+        );
+        toaster.error({ title: "RSS import failed", description: message });
+        return;
       }
-      if (result?.projectId) {
+      if (result.projectId) {
         router.push(`/projects/${result.projectId}`);
         router.refresh();
       } else {

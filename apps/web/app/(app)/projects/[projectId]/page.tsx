@@ -7,7 +7,7 @@ import { ActionSubmitButton } from "@narriflow/ui/components/action-submit-butto
 import { StatusBadge } from "@narriflow/ui/components/status-badge";
 import { MediaWell } from "@narriflow/ui/components/media-well";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
-import { requireWorkspaceProject } from "@/lib/workspace";
+import { admitProjectPage } from "@/lib/authenticated-request-page";
 import {
   analyticsService,
   clipService,
@@ -40,6 +40,7 @@ import {
   queueTranscriptionFormAction,
   regenerateClipsFormAction,
 } from "../actions";
+import { AuthenticatedActionForm } from "@/app/_components/authenticated-action-form";
 import { DeleteProjectButton } from "../_components/delete-project-button";
 import { PlanLimitNotice } from "../../_components/plan-limit-notice";
 import { TranscriptPanel } from "./transcript-panel";
@@ -136,7 +137,7 @@ export default async function ProjectDetailPage({
 }) {
   const [{ projectId }, query] = await Promise.all([params, searchParams]);
   const activeTab = projectTabFromSearchParam(query.tab);
-  const appUser = await requireWorkspaceProject(projectId);
+  const appUser = await admitProjectPage(projectId, "content.view");
   const snapshot = await projectService.getProjectSnapshot(
     appUser.actorUserId,
     projectId,
@@ -160,24 +161,28 @@ export default async function ProjectDetailPage({
     usage,
   ] = await Promise.all([
     activeTab === "transcript"
-      ? projectService.getTranscriptSnapshot(appUser.id, projectId)
+      ? projectService.getTranscriptSnapshot(appUser.workspaceOwnerUserId, projectId,
+        )
       : Promise.resolve(null),
     activeTab === "transcript"
       ? Promise.resolve(null)
-      : projectService.getTranscriptStatusSnapshot(appUser.id, projectId),
-    clipService.listClips(appUser.id, projectId),
+      : projectService.getTranscriptStatusSnapshot(appUser.workspaceOwnerUserId, projectId,
+        ),
+    clipService.listClips(appUser.workspaceOwnerUserId, projectId),
     projectService.getLatestContentPack(projectId),
     activeTab === "analytics"
-      ? analyticsService.getProjectAnalytics(appUser.id, projectId)
+      ? analyticsService.getProjectAnalytics(appUser.workspaceOwnerUserId, projectId,
+        )
       : Promise.resolve(null),
-    socialService.listProjectPosts(appUser.id, projectId),
+    socialService.listProjectPosts(appUser.workspaceOwnerUserId, projectId),
     activeTab === "publish"
-      ? socialOAuthService.listAccounts(appUser.id, appUser.workspaceId)
+      ? socialOAuthService.listAccounts(appUser.workspaceOwnerUserId, appUser.workspaceId,
+        )
       : Promise.resolve([]),
     activeTab === "dubbing"
-      ? dubbingService.listProjectDubs(appUser.id, projectId)
+      ? dubbingService.listProjectDubs(appUser.workspaceOwnerUserId, projectId)
       : Promise.resolve([]),
-    projectService.getWorkflowHistory(appUser.id, projectId),
+    projectService.getWorkflowHistory(appUser.workspaceOwnerUserId, projectId),
     projectService.getUsageSummary(appUser.actorUserId, appUser.workspaceId),
   ]);
   const transcript = fullTranscript ?? transcriptStatus;
@@ -299,7 +304,8 @@ export default async function ProjectDetailPage({
       : transcriptReady
         ? { status: "completed", progress: 100, errorCode: null }
         : transcript?.status === "failed"
-          ? { status: "failed", progress: 0, errorCode: transcript.errorCode ?? null }
+          ? { status: "failed", progress: 0, errorCode: transcript.errorCode ?? null,
+            }
           : { status: null, progress: 0, errorCode: null };
 
   const detectStage: ProcessingStageInput =
@@ -628,7 +634,7 @@ export default async function ProjectDetailPage({
               defaultSourceLanguageCode={snapshot.project.languageCode}
             />
           ) : !transcriptReady ? (
-            <form action={queueTranscriptionFormAction}>
+            <AuthenticatedActionForm action={queueTranscriptionFormAction}>
               <input type="hidden" name="projectId" value={projectId} />
               <input type="hidden" name="idempotencyKey" value={randomUUID()} />
               <Stack gap="4">
@@ -673,9 +679,9 @@ export default async function ProjectDetailPage({
                   defaultSourceLanguageCode={snapshot.project.languageCode}
                 />
               </Stack>
-            </form>
+            </AuthenticatedActionForm>
           ) : clips.length === 0 ? (
-            <form action={regenerateClipsFormAction}>
+            <AuthenticatedActionForm action={regenerateClipsFormAction}>
               <input type="hidden" name="projectId" value={projectId} />
               <input type="hidden" name="idempotencyKey" value={randomUUID()} />
               <Stack gap="4">
@@ -707,7 +713,7 @@ export default async function ProjectDetailPage({
                   defaultSourceLanguageCode={snapshot.project.languageCode}
                 />
               </Stack>
-            </form>
+            </AuthenticatedActionForm>
           ) : (
             <Stack gap="5">
               {/* No "Regenerate clips" affordance once a clip set exists —

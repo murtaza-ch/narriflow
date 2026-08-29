@@ -2,8 +2,21 @@
 
 import { revalidatePath } from "next/cache";
 import { sendEmail } from "@narriflow/email";
-import { workspaceMembershipService, workspaceService } from "@narriflow/services";
-import { requireWorkspaceAppUser } from "@/lib/workspace";
+import { workspaceMembershipService, workspaceService,
+} from "@narriflow/services";
+import {
+  executeWorkspaceActionWithInput,
+  authenticatedActionResultError,
+} from "@/lib/authenticated-request-action";
+import {
+  workspaceApiKeyActionSchema,
+  workspaceApiKeyReferenceActionSchema,
+  workspaceInviteActionSchema,
+  workspaceInviteReferenceActionSchema,
+  workspaceMemberReferenceActionSchema,
+  workspaceMemberRoleActionSchema,
+  workspaceSettingsActionSchema,
+} from "@narriflow/validators";
 
 function inviteUrl(token: string) {
   const origin =
@@ -35,13 +48,24 @@ async function deliverWorkspaceInvite(input: {
 }
 
 export async function updateWorkspaceAction(formData: FormData) {
-  const appUser = await requireWorkspaceAppUser("workspace.manage");
-  await workspaceService.updateWorkspace(appUser.actorUserId, appUser.workspaceId, {
+  const input = {
     name: String(formData.get("name") ?? ""),
     timezone: String(formData.get("timezone") ?? "UTC"),
-  });
-  revalidatePath("/", "layout");
-  revalidatePath("/settings/workspace");
+  };
+  return executeWorkspaceActionWithInput(
+    "workspace.manage",
+    input,
+    workspaceSettingsActionSchema,
+    async (appUser, parsedInput) => {
+    await workspaceService.updateWorkspace(appUser.actorUserId, appUser.workspaceId, {
+      name: parsedInput.name,
+      timezone: parsedInput.timezone,
+    },
+    );
+    revalidatePath("/", "layout");
+    revalidatePath("/settings/workspace");
+    },
+  );
 }
 
 export async function inviteMemberAction(input: {
@@ -49,49 +73,86 @@ export async function inviteMemberAction(input: {
   role: "admin" | "editor" | "viewer";
 }) {
   try {
-    const appUser = await requireWorkspaceAppUser("members.invite");
-    const invite = await workspaceService.createInvite(
-      appUser.actorUserId,
-      appUser.workspaceId,
-      input,
-    );
-    revalidatePath("/settings/members");
-    const delivery = await deliverWorkspaceInvite({
-      ...invite,
-      workspaceName: appUser.workspace.workspaceName,
+    return await executeWorkspaceActionWithInput("members.invite", input, workspaceInviteActionSchema, async (appUser, parsedInput) => {
+      try {
+        const invite = await workspaceService.createInvite(
+          appUser.actorUserId,
+          appUser.workspaceId,
+          parsedInput,
+        );
+        revalidatePath("/settings/members");
+        const delivery = await deliverWorkspaceInvite({
+          ...invite,
+          workspaceName: appUser.workspace.workspaceName,
+        });
+        return { ok: true as const, inviteUrl: delivery.url, emailSent: delivery.emailSent,
+        };
+      } catch (error) {
+        const failure = authenticatedActionResultError(error, "Invite failed");
+        return { ok: false as const, error: failure.message,
+          errorCode: failure.errorCode,
+          requestId: failure.requestId,
+        };
+      }
     });
-    return { ok: true as const, inviteUrl: delivery.url, emailSent: delivery.emailSent };
   } catch (error) {
-    return { ok: false as const, error: error instanceof Error ? error.message : "Invite failed" };
+    const failure = authenticatedActionResultError(error, "Invite failed");
+    return { ok: false as const, error: failure.message,
+      errorCode: failure.errorCode,
+      requestId: failure.requestId,
+    };
   }
 }
 
 export async function resendInviteAction(inviteId: string) {
   try {
-    const appUser = await requireWorkspaceAppUser("members.invite");
-    const invite = await workspaceService.resendInvite(
-      appUser.actorUserId,
-      appUser.workspaceId,
-      inviteId,
-    );
-    revalidatePath("/settings/members");
-    const delivery = await deliverWorkspaceInvite({
-      ...invite,
-      workspaceName: appUser.workspace.workspaceName,
+    return await executeWorkspaceActionWithInput("members.invite", { inviteId }, workspaceInviteReferenceActionSchema, async (appUser, parsedInput) => {
+      try {
+        const invite = await workspaceService.resendInvite(
+          appUser.actorUserId,
+          appUser.workspaceId,
+          parsedInput.inviteId,
+        );
+        revalidatePath("/settings/members");
+        const delivery = await deliverWorkspaceInvite({
+          ...invite,
+          workspaceName: appUser.workspace.workspaceName,
+        });
+        return { ok: true as const, inviteUrl: delivery.url, emailSent: delivery.emailSent,
+        };
+      } catch (error) {
+        const failure = authenticatedActionResultError(
+          error,
+          "Invitation resend failed",
+        );
+        return {
+          ok: false as const,
+          error: failure.message,
+          errorCode: failure.errorCode,
+          requestId: failure.requestId,
+        };
+      }
     });
-    return { ok: true as const, inviteUrl: delivery.url, emailSent: delivery.emailSent };
   } catch (error) {
+    const failure = authenticatedActionResultError(
+      error,
+      "Invitation resend failed",
+    );
     return {
       ok: false as const,
-      error: error instanceof Error ? error.message : "Invitation resend failed",
+      error: failure.message,
+      errorCode: failure.errorCode,
+      requestId: failure.requestId,
     };
   }
 }
 
 export async function revokeInviteAction(inviteId: string) {
-  const appUser = await requireWorkspaceAppUser("members.invite");
-  await workspaceService.revokeInvite(appUser.actorUserId, appUser.workspaceId, inviteId);
-  revalidatePath("/settings/members");
+  return executeWorkspaceActionWithInput("members.invite", { inviteId }, workspaceInviteReferenceActionSchema, async (appUser, parsedInput) => {
+    await workspaceService.revokeInvite(appUser.actorUserId, appUser.workspaceId, parsedInput.inviteId,
+    );
+    revalidatePath("/settings/members");
+  });
 }
 
 export async function changeMemberRoleAction(
@@ -99,52 +160,107 @@ export async function changeMemberRoleAction(
   role: "admin" | "editor" | "viewer",
 ) {
   try {
-    const appUser = await requireWorkspaceAppUser("members.invite");
-    await workspaceMembershipService.changeRole(
-      appUser.actorUserId,
-      appUser.workspaceId,
-      memberId,
-      role,
-    );
-    revalidatePath("/settings/members");
-    return { ok: true as const };
+    return await executeWorkspaceActionWithInput("members.invite", { memberId, role }, workspaceMemberRoleActionSchema, async (appUser, parsedInput) => {
+      try {
+        await workspaceMembershipService.changeRole(
+          appUser.actorUserId,
+          appUser.workspaceId,
+          parsedInput.memberId,
+          parsedInput.role,
+        );
+        revalidatePath("/settings/members");
+        return { ok: true as const };
+      } catch (error) {
+        const failure = authenticatedActionResultError(error, "Role change failed");
+        return { ok: false as const, error: failure.message,
+          errorCode: failure.errorCode,
+          requestId: failure.requestId,
+        };
+      }
+    });
   } catch (error) {
-    return { ok: false as const, error: error instanceof Error ? error.message : "Role change failed" };
+    const failure = authenticatedActionResultError(error, "Role change failed");
+    return { ok: false as const, error: failure.message,
+      errorCode: failure.errorCode,
+      requestId: failure.requestId,
+    };
   }
 }
 
 export async function removeMemberAction(memberId: string) {
   try {
-    const appUser = await requireWorkspaceAppUser("members.invite");
-    await workspaceMembershipService.removeMember(
-      appUser.actorUserId,
-      appUser.workspaceId,
-      memberId,
-    );
-    revalidatePath("/settings/members");
-    return { ok: true as const };
+    return await executeWorkspaceActionWithInput("members.invite", { memberId }, workspaceMemberReferenceActionSchema, async (appUser, parsedInput) => {
+      try {
+        await workspaceMembershipService.removeMember(
+          appUser.actorUserId,
+          appUser.workspaceId,
+          parsedInput.memberId,
+        );
+        revalidatePath("/settings/members");
+        return { ok: true as const };
+      } catch (error) {
+        const failure = authenticatedActionResultError(
+          error,
+          "Member removal failed",
+        );
+        return { ok: false as const, error: failure.message,
+          errorCode: failure.errorCode,
+          requestId: failure.requestId,
+        };
+      }
+    });
   } catch (error) {
-    return { ok: false as const, error: error instanceof Error ? error.message : "Member removal failed" };
+    const failure = authenticatedActionResultError(
+      error,
+      "Member removal failed",
+    );
+    return { ok: false as const, error: failure.message,
+      errorCode: failure.errorCode,
+      requestId: failure.requestId,
+    };
   }
 }
 
-export async function createApiKeyAction(input: { name: string; scopes?: string[] }) {
+export async function createApiKeyAction(input: { name: string; scopes?: string[];
+}) {
   try {
-    const appUser = await requireWorkspaceAppUser("api.manage");
-    const key = await workspaceService.createApiKey(
-      appUser.actorUserId,
-      appUser.workspaceId,
-      input,
-    );
-    revalidatePath("/settings/api");
-    return { ok: true as const, key: { ...key, createdAt: key.createdAt.toISOString() } };
+    return await executeWorkspaceActionWithInput("api.manage", input, workspaceApiKeyActionSchema, async (appUser, parsedInput) => {
+      try {
+        const key = await workspaceService.createApiKey(
+          appUser.actorUserId,
+          appUser.workspaceId,
+          parsedInput,
+        );
+        revalidatePath("/settings/api");
+        return { ok: true as const, key: { ...key, createdAt: key.createdAt.toISOString() },
+        };
+      } catch (error) {
+        const failure = authenticatedActionResultError(
+          error,
+          "API key creation failed",
+        );
+        return { ok: false as const, error: failure.message,
+          errorCode: failure.errorCode,
+          requestId: failure.requestId,
+        };
+      }
+    });
   } catch (error) {
-    return { ok: false as const, error: error instanceof Error ? error.message : "API key creation failed" };
+    const failure = authenticatedActionResultError(
+      error,
+      "API key creation failed",
+    );
+    return { ok: false as const, error: failure.message,
+      errorCode: failure.errorCode,
+      requestId: failure.requestId,
+    };
   }
 }
 
 export async function revokeApiKeyAction(keyId: string) {
-  const appUser = await requireWorkspaceAppUser("api.manage");
-  await workspaceService.revokeApiKey(appUser.actorUserId, appUser.workspaceId, keyId);
-  revalidatePath("/settings/api");
+  return executeWorkspaceActionWithInput("api.manage", { keyId }, workspaceApiKeyReferenceActionSchema, async (appUser, parsedInput) => {
+    await workspaceService.revokeApiKey(appUser.actorUserId, appUser.workspaceId, parsedInput.keyId,
+    );
+    revalidatePath("/settings/api");
+  });
 }

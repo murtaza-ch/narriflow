@@ -7,6 +7,10 @@ import { Box, Flex, Image, Menu, Portal, Stack, Text } from "@chakra-ui/react";
 import { Building2, Check, ChevronDown, Plus, Settings, Users } from "lucide-react";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { switchWorkspaceAction } from "../_actions/workspace";
+import {
+  authenticatedActionResultMessage,
+  isAuthenticatedActionFailure,
+} from "@/lib/authenticated-request-browser";
 
 export interface WorkspaceSwitcherItem {
   id: string;
@@ -28,13 +32,25 @@ export function WorkspaceSwitcher({
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [switchingTo, setSwitchingTo] = useState<string | null>(null);
+  const [switchError, setSwitchError] = useState<string | null>(null);
   const active = items.find((item) => item.id === activeWorkspaceId) ?? items[0];
 
   function selectWorkspace(workspaceId: string) {
     if (workspaceId === activeWorkspaceId || isPending) return;
     setSwitchingTo(workspaceId);
     startTransition(async () => {
-      await switchWorkspaceAction(workspaceId);
+      setSwitchError(null);
+      const result = await switchWorkspaceAction(workspaceId);
+      if (isAuthenticatedActionFailure(result)) {
+        setSwitchError(
+          authenticatedActionResultMessage(
+            result,
+            "The Workspace could not be selected.",
+          ),
+        );
+        setSwitchingTo(null);
+        return;
+      }
       router.refresh();
       setSwitchingTo(null);
     });
@@ -84,6 +100,11 @@ export function WorkspaceSwitcher({
       <Portal>
         <Menu.Positioner>
           <Menu.Content layerStyle="panel" minW="260px" p="1">
+            {switchError ? (
+              <Text role="alert" px="3" py="2" fontSize="xs" color="danger.fg">
+                {switchError}
+              </Text>
+            ) : null}
             <Box px="3" py="2">
               <Text textStyle="eyebrow" color="fg.subtle">Workspaces</Text>
             </Box>

@@ -8,8 +8,7 @@ import {
   Grid,
   HStack,
   Stack,
-  Text,
-} from "@chakra-ui/react";
+  Text } from "@chakra-ui/react";
 import {
   AlertTriangle,
   ArrowLeft,
@@ -23,9 +22,14 @@ import {
   RefreshCw,
   ShieldCheck,
 } from "lucide-react";
-import { Button, MediaWell, Progress, Spinner, StatusBadge } from "@narriflow/ui";
+import { Button, MediaWell, Progress, Spinner, StatusBadge,
+} from "@narriflow/ui";
 import type { ClipExportSnapshot } from "@narriflow/validators";
 import { formatDateTime, formatDuration } from "@/lib/format";
+import {
+  parseWorkflowAuthorizationControl,
+  recoverFromWorkflowAuthorizationLoss,
+} from "@/lib/workflow-stream-authorization";
 
 const ACTIVE_STATUSES = new Set(["queued", "rendering", "partial_ready"]);
 
@@ -38,15 +42,20 @@ function formatBytes(value: number | null): string {
 function statusCopy(status: ClipExportSnapshot["status"]) {
   switch (status) {
     case "ready":
-      return { label: "Ready", detail: "Every requested variant is ready to deliver." };
+      return { label: "Ready", detail: "Every requested variant is ready to deliver.",
+      };
     case "partial_ready":
-      return { label: "Partially ready", detail: "Ready variants are available; failed ones can be retried." };
+      return { label: "Partially ready", detail: "Ready variants are available; failed ones can be retried.",
+      };
     case "failed":
-      return { label: "Failed", detail: "No variant completed. Retry the failed render." };
+      return { label: "Failed", detail: "No variant completed. Retry the failed render.",
+      };
     case "rendering":
-      return { label: "Rendering", detail: "Your saved version is rendering in the background." };
+      return { label: "Rendering", detail: "Your saved version is rendering in the background.",
+      };
     default:
-      return { label: "Queued", detail: "Your export is waiting for render capacity." };
+      return { label: "Queued", detail: "Your export is waiting for render capacity.",
+      };
   }
 }
 
@@ -64,7 +73,8 @@ export function ExportDeliveryClient({
       "",
   );
   const [sharePath, setSharePath] = useState<string | null>(null);
-  const [action, setAction] = useState<"share" | "retry" | "revoke" | null>(null);
+  const [action, setAction] = useState<"share" | "retry" | "revoke" | null>(null,
+  );
   const [actionError, setActionError] = useState<string | null>(null);
   const lastSeqRef = useRef(initialSeq);
 
@@ -75,9 +85,10 @@ export function ExportDeliveryClient({
     const next = (await response.json()) as ClipExportSnapshot;
     setData(next);
     setSelectedVariantId((current) =>
-      next.variants.some((variant) => variant.id === current && variant.hasAsset)
+      next.variants.some((variant) => variant.id === current && variant.hasAsset,
+      )
         ? current
-        : next.variants.find((variant) => variant.hasAsset)?.id ?? current,
+        : (next.variants.find((variant) => variant.hasAsset)?.id ?? current),
     );
   }, [apiPath]);
 
@@ -90,7 +101,8 @@ export function ExportDeliveryClient({
     );
     const onUpdate = (event: MessageEvent<string>) => {
       try {
-        const payload = JSON.parse(event.data) as { stage?: unknown; seq?: unknown };
+        const payload = JSON.parse(event.data) as { stage?: unknown; seq?: unknown;
+        };
         if (typeof payload.seq === "number") {
           lastSeqRef.current = Math.max(lastSeqRef.current, payload.seq);
         }
@@ -100,7 +112,20 @@ export function ExportDeliveryClient({
       }
       void refresh();
     };
+    const onAuthorizationRevoked = (event: MessageEvent<string>) => {
+      source.close();
+      const control = parseWorkflowAuthorizationControl(event.data);
+      if (control) {
+        recoverFromWorkflowAuthorizationLoss(
+          control,
+          `${window.location.pathname}${window.location.search}`,
+        );
+      } else {
+        window.location.reload();
+      }
+    };
     source.addEventListener("workflow.stage.updated", onUpdate);
+    source.addEventListener("authorization.revoked", onAuthorizationRevoked);
     source.onerror = () => {
       source.close();
       if (fallback !== null) clearInterval(fallback);
@@ -113,6 +138,10 @@ export function ExportDeliveryClient({
     }, 10_000);
     return () => {
       source.removeEventListener("workflow.stage.updated", onUpdate);
+      source.removeEventListener(
+        "authorization.revoked",
+        onAuthorizationRevoked,
+      );
       source.close();
       if (fallback !== null) clearInterval(fallback);
     };
@@ -124,9 +153,11 @@ export function ExportDeliveryClient({
     data.variants[0];
   const copy = statusCopy(data.status);
   const hasReady = data.variants.some((variant) => variant.hasAsset);
-  const hasFailed = data.variants.some((variant) => variant.status === "failed");
+  const hasFailed = data.variants.some((variant) => variant.status === "failed",
+  );
   const shareUrl = useMemo(
-    () => (sharePath && typeof window !== "undefined" ? `${window.location.origin}${sharePath}` : null),
+    () =>
+      sharePath && typeof window !== "undefined" ? `${window.location.origin}${sharePath}` : null,
     [sharePath],
   );
 
@@ -142,7 +173,8 @@ export function ExportDeliveryClient({
       const body = await response.json().catch(() => null);
       if (!response.ok || !body?.path) throw new Error("share_failed");
       setSharePath(body.path);
-      await navigator.clipboard.writeText(`${window.location.origin}${body.path}`);
+      await navigator.clipboard.writeText(`${window.location.origin}${body.path}`,
+      );
     } catch {
       setActionError("The private link could not be created. Try again.");
     } finally {
@@ -155,7 +187,8 @@ export function ExportDeliveryClient({
     try {
       await navigator.clipboard.writeText(shareUrl);
     } catch {
-      setActionError("Copy was blocked by the browser. Select the link manually.");
+      setActionError("Copy was blocked by the browser. Select the link manually.",
+      );
     }
   }
 
@@ -163,7 +196,8 @@ export function ExportDeliveryClient({
     setAction("revoke");
     setActionError(null);
     try {
-      const response = await fetch(`${apiPath}/share-links`, { method: "DELETE" });
+      const response = await fetch(`${apiPath}/share-links`, { method: "DELETE",
+      });
       if (!response.ok) throw new Error("revoke_failed");
       setSharePath(null);
     } catch {
@@ -249,7 +283,8 @@ export function ExportDeliveryClient({
           </Flex>
         ) : null}
 
-        <Grid templateColumns={{ base: "1fr", lg: "minmax(0, 1.65fr) minmax(300px, 0.75fr)" }} gap="6">
+        <Grid templateColumns={{ base: "1fr", lg: "minmax(0, 1.65fr) minmax(300px, 0.75fr)",
+          }} gap="6">
           <Stack gap="4" minW="0">
             <MediaWell
               ratio={selected?.aspectRatio === "9:16" ? 9 / 16 : selected?.aspectRatio === "1:1" ? 1 : selected?.aspectRatio === "4:5" ? 4 / 5 : 16 / 9}
@@ -265,7 +300,11 @@ export function ExportDeliveryClient({
                 </Box>
               ) : (
                 <Flex h="full" minH="320px" align="center" justify="center" direction="column" gap="3" color="studio.fgMuted">
-                  {data.status === "failed" ? <AlertTriangle size={28} /> : <Spinner size="md" />}
+                  {data.status === "failed" ? (
+                    <AlertTriangle size={28} />
+                  ) : (
+                    <Spinner size="md" />
+                  )}
                   <Text fontSize="13px">{data.status === "failed" ? "Render failed" : "Rendering your saved version"}</Text>
                 </Flex>
               )}
@@ -282,7 +321,13 @@ export function ExportDeliveryClient({
                   onClick={() => setSelectedVariantId(variant.id)}
                   aria-pressed={variant.id === selected?.id}
                 >
-                  {variant.status === "completed" ? <Check size={12} /> : variant.status === "failed" ? <AlertTriangle size={12} /> : <Clock3 size={12} />}
+                  {variant.status === "completed" ? (
+                    <Check size={12} />
+                  ) : variant.status === "failed" ? (
+                    <AlertTriangle size={12} />
+                  ) : (
+                    <Clock3 size={12} />
+                  )}
                   {variant.aspectRatio}
                 </Button>
               ))}
@@ -323,14 +368,19 @@ export function ExportDeliveryClient({
                 >
                   {selected?.downloadUrl ? (
                     <a href={selected.downloadUrl} download={`narriflow-${selected.aspectRatio.replace(":", "x")}.mp4`}>
-                      <Download size={14} /> Download {selected.aspectRatio} · {formatBytes(selected.sizeBytes)}
+                      <Download size={14} /> Download {selected.aspectRatio} · {" "}
+                      {formatBytes(selected.sizeBytes)}
                     </a>
                   ) : (
                     <><Download size={14} /> Download when ready</>
                   )}
                 </Button>
                 <Button variant="outline" w="full" disabled={!hasReady || action === "share"} onClick={() => void createShareLink()}>
-                  {action === "share" ? <Spinner size="xs" /> : <Link2 size={14} />}
+                  {action === "share" ? (
+                    <Spinner size="xs" />
+                  ) : (
+                    <Link2 size={14} />
+                  )}
                   Create 7-day private link
                 </Button>
                 <Button asChild variant="outline" w="full" disabled={!hasReady}>
@@ -338,7 +388,11 @@ export function ExportDeliveryClient({
                 </Button>
                 {hasFailed ? (
                   <Button variant="outline" w="full" disabled={action === "retry"} onClick={() => void retry()}>
-                    {action === "retry" ? <Spinner size="xs" /> : <RefreshCw size={14} />} Retry failed variants
+                    {action === "retry" ? (
+                      <Spinner size="xs" />
+                    ) : (
+                      <RefreshCw size={14} />
+                    )}{" "} Retry failed variants
                   </Button>
                 ) : null}
               </Stack>

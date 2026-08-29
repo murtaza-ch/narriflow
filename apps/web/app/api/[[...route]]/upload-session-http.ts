@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import {
   discardUploadSessionSchema,
   finalizeUploadSessionSchema,
@@ -26,7 +26,6 @@ import {
 } from "@narriflow/services";
 
 interface UploadSessionHttpUser {
-  id: string;
   actorUserId: string;
   workspaceId: string;
 }
@@ -60,12 +59,7 @@ interface UploadSessionHttpService {
 }
 
 export interface UploadSessionHttpDependencies {
-  getCurrentUser(): Promise<UploadSessionHttpUser | null>;
-  checkRateLimit(
-    key: string,
-    limit: number,
-    windowSeconds: number,
-  ): Promise<{ allowed: boolean }>;
+  getActor(context: Context): Promise<UploadSessionHttpUser>;
   service: UploadSessionHttpService;
 }
 
@@ -75,27 +69,13 @@ export function createUploadSessionHttpRoutes(
   const routes = new Hono();
 
   routes.post("/upload-sessions/open", async (c) => {
-    const appUser = await dependencies.getCurrentUser();
-    if (!appUser) return c.json({ error: "Unauthorized" }, 401);
-
-    const rateLimit = await dependencies.checkRateLimit(
-      `upload-session-open:${appUser.id}`,
-      60,
-      60,
-    );
-    if (!rateLimit.allowed) {
-      c.header("Retry-After", "60");
-      return c.json(
-        { error: "rate_limited", message: userErrorMessage("rate_limited") },
-        429,
-      );
-    }
+    const appUser = await dependencies.getActor(c);
 
     const payload = await c.req.json().catch(() => null);
     const parsed = openUploadSessionSchema.safeParse(payload);
     if (!parsed.success) {
       return c.json(
-        { error: "Invalid payload", issues: parsed.error.issues },
+        { error: "validation_failed", issues: parsed.error.issues },
         400,
       );
     }
@@ -116,23 +96,27 @@ export function createUploadSessionHttpRoutes(
         return c.json(
           {
             error: error.code,
-            message: userErrorMessage(error.code) ?? error.message,
+            message: userErrorMessage(error.code),
           },
           409,
         );
       }
       if (error instanceof UploadSessionInvalidStateError) {
-        return c.json({ error: error.code, message: error.message }, 409);
+        return c.json({ error: error.code, message: userErrorMessage(error.code) }, 409,
+        );
       }
       if (error instanceof UploadSessionNotFoundError) {
-        return c.json({ error: error.code, message: error.message }, 404);
+        return c.json({ error: error.code, message: userErrorMessage(error.code) }, 404,
+        );
       }
       if (error instanceof UploadSessionIntegrityError) {
-        return c.json({ error: error.code, message: error.message }, 422);
+        return c.json({ error: error.code, message: userErrorMessage(error.code) }, 422,
+        );
       }
       if (error instanceof UploadSessionQuotaRefusedError) {
         return c.json(
-          { error: error.code, message: error.message, details: error.details },
+          { error: error.code, message: userErrorMessage(error.code), details: error.details,
+          },
           402,
         );
       }
@@ -147,27 +131,13 @@ export function createUploadSessionHttpRoutes(
   });
 
   routes.post("/upload-sessions/finalize", async (c) => {
-    const appUser = await dependencies.getCurrentUser();
-    if (!appUser) return c.json({ error: "Unauthorized" }, 401);
-
-    const rateLimit = await dependencies.checkRateLimit(
-      `upload-session-finalize:${appUser.id}`,
-      60,
-      60,
-    );
-    if (!rateLimit.allowed) {
-      c.header("Retry-After", "60");
-      return c.json(
-        { error: "rate_limited", message: userErrorMessage("rate_limited") },
-        429,
-      );
-    }
+    const appUser = await dependencies.getActor(c);
 
     const payload = await c.req.json().catch(() => null);
     const parsed = finalizeUploadSessionSchema.safeParse(payload);
     if (!parsed.success) {
       return c.json(
-        { error: "Invalid payload", issues: parsed.error.issues },
+        { error: "validation_failed", issues: parsed.error.issues },
         400,
       );
     }
@@ -185,13 +155,16 @@ export function createUploadSessionHttpRoutes(
       return c.json(outcome, 200);
     } catch (error) {
       if (error instanceof UploadSessionNotFoundError) {
-        return c.json({ error: error.code, message: error.message }, 404);
+        return c.json({ error: error.code, message: userErrorMessage(error.code) }, 404,
+        );
       }
       if (error instanceof UploadSessionInvalidStateError) {
-        return c.json({ error: error.code, message: error.message }, 409);
+        return c.json({ error: error.code, message: userErrorMessage(error.code) }, 409,
+        );
       }
       if (error instanceof UploadSessionIntegrityError) {
-        return c.json({ error: error.code, message: error.message }, 422);
+        return c.json({ error: error.code, message: userErrorMessage(error.code) }, 422,
+        );
       }
       return c.json(
         {
@@ -204,27 +177,13 @@ export function createUploadSessionHttpRoutes(
   });
 
   routes.post("/upload-sessions/grants", async (c) => {
-    const appUser = await dependencies.getCurrentUser();
-    if (!appUser) return c.json({ error: "Unauthorized" }, 401);
-
-    const rateLimit = await dependencies.checkRateLimit(
-      `upload-session-grants:${appUser.id}`,
-      120,
-      60,
-    );
-    if (!rateLimit.allowed) {
-      c.header("Retry-After", "60");
-      return c.json(
-        { error: "rate_limited", message: userErrorMessage("rate_limited") },
-        429,
-      );
-    }
+    const appUser = await dependencies.getActor(c);
 
     const payload = await c.req.json().catch(() => null);
     const parsed = grantUploadPartsSchema.safeParse(payload);
     if (!parsed.success) {
       return c.json(
-        { error: "Invalid payload", issues: parsed.error.issues },
+        { error: "validation_failed", issues: parsed.error.issues },
         400,
       );
     }
@@ -240,10 +199,12 @@ export function createUploadSessionHttpRoutes(
       );
     } catch (error) {
       if (error instanceof UploadSessionNotFoundError) {
-        return c.json({ error: error.code, message: error.message }, 404);
+        return c.json({ error: error.code, message: userErrorMessage(error.code) }, 404,
+        );
       }
       if (error instanceof UploadSessionInvalidStateError) {
-        return c.json({ error: error.code, message: error.message }, 409);
+        return c.json({ error: error.code, message: userErrorMessage(error.code) }, 409,
+        );
       }
       return c.json(
         {
@@ -256,25 +217,12 @@ export function createUploadSessionHttpRoutes(
   });
 
   routes.post("/upload-sessions/status", async (c) => {
-    const appUser = await dependencies.getCurrentUser();
-    if (!appUser) return c.json({ error: "Unauthorized" }, 401);
-    const rateLimit = await dependencies.checkRateLimit(
-      `upload-session-status:${appUser.id}`,
-      120,
-      60,
-    );
-    if (!rateLimit.allowed) {
-      c.header("Retry-After", "60");
-      return c.json(
-        { error: "rate_limited", message: userErrorMessage("rate_limited") },
-        429,
-      );
-    }
+    const appUser = await dependencies.getActor(c);
     const payload = await c.req.json().catch(() => null);
     const parsed = readUploadSessionSchema.safeParse(payload);
     if (!parsed.success) {
       return c.json(
-        { error: "Invalid payload", issues: parsed.error.issues },
+        { error: "validation_failed", issues: parsed.error.issues },
         400,
       );
     }
@@ -291,10 +239,12 @@ export function createUploadSessionHttpRoutes(
       return c.json(outcome, 200);
     } catch (error) {
       if (error instanceof UploadSessionNotFoundError) {
-        return c.json({ error: error.code, message: error.message }, 404);
+        return c.json({ error: error.code, message: userErrorMessage(error.code) }, 404,
+        );
       }
       if (error instanceof UploadSessionInvalidStateError) {
-        return c.json({ error: error.code, message: error.message }, 409);
+        return c.json({ error: error.code, message: userErrorMessage(error.code) }, 409,
+        );
       }
       return c.json(
         {
@@ -307,25 +257,12 @@ export function createUploadSessionHttpRoutes(
   });
 
   routes.post("/upload-sessions/discard", async (c) => {
-    const appUser = await dependencies.getCurrentUser();
-    if (!appUser) return c.json({ error: "Unauthorized" }, 401);
-    const rateLimit = await dependencies.checkRateLimit(
-      `upload-session-discard:${appUser.id}`,
-      30,
-      60,
-    );
-    if (!rateLimit.allowed) {
-      c.header("Retry-After", "60");
-      return c.json(
-        { error: "rate_limited", message: userErrorMessage("rate_limited") },
-        429,
-      );
-    }
+    const appUser = await dependencies.getActor(c);
     const payload = await c.req.json().catch(() => null);
     const parsed = discardUploadSessionSchema.safeParse(payload);
     if (!parsed.success) {
       return c.json(
-        { error: "Invalid payload", issues: parsed.error.issues },
+        { error: "validation_failed", issues: parsed.error.issues },
         400,
       );
     }
@@ -342,10 +279,12 @@ export function createUploadSessionHttpRoutes(
       return c.json(outcome, 200);
     } catch (error) {
       if (error instanceof UploadSessionNotFoundError) {
-        return c.json({ error: error.code, message: error.message }, 404);
+        return c.json({ error: error.code, message: userErrorMessage(error.code) }, 404,
+        );
       }
       if (error instanceof UploadSessionInvalidStateError) {
-        return c.json({ error: error.code, message: error.message }, 409);
+        return c.json({ error: error.code, message: userErrorMessage(error.code) }, 409,
+        );
       }
       return c.json(
         {

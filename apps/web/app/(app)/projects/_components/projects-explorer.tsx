@@ -26,6 +26,10 @@ import { FilterToolbar } from "./filter-toolbar";
 import { ProjectCard } from "./project-card";
 import { ProjectRow } from "./project-row";
 import { moveProjectToFolderAction } from "../actions";
+import {
+  authenticatedActionResultMessage,
+  isAuthenticatedActionFailure,
+} from "@/lib/authenticated-request-browser";
 
 export type StatusFilter = ProjectListStatusFilter;
 export type SourceFilter = ProjectListSourceFilter;
@@ -56,6 +60,7 @@ function FolderControl({
 }) {
   const router = useRouter();
   const [pending, startMove] = useTransition();
+  const [moveError, setMoveError] = useState<string | null>(null);
   const [committedFolderId, setCommittedFolderId] = useState(project.folderId ?? "");
   const [optimisticFolderId, setOptimisticFolderId] = useOptimistic(committedFolderId);
 
@@ -64,6 +69,7 @@ function FolderControl({
   }, [project.folderId]);
 
   return (
+    <Stack gap="1">
     <Select
       ariaLabel={`Move ${project.title} to folder`}
       value={optimisticFolderId}
@@ -71,7 +77,17 @@ function FolderControl({
         const folderId = value || null;
         startMove(async () => {
           setOptimisticFolderId(value);
-          await moveProjectToFolderAction(project.id, folderId);
+          const result = await moveProjectToFolderAction(project.id, folderId);
+          if (isAuthenticatedActionFailure(result)) {
+            setMoveError(
+              authenticatedActionResultMessage(
+                result,
+                "The Project could not be moved.",
+              ),
+            );
+            return;
+          }
+          setMoveError(null);
           setCommittedFolderId(value);
           router.refresh();
         });
@@ -84,6 +100,8 @@ function FolderControl({
         ...folders.map((folder) => ({ value: folder.id, label: folder.name })),
       ]}
     />
+    {moveError ? <Text role="alert" fontSize="xs" color="danger.fg">{moveError}</Text> : null}
+    </Stack>
   );
 }
 

@@ -24,6 +24,8 @@ import {
   regenerateClipsFormAction,
   setNotifyPreferenceAction,
 } from "../actions";
+import { AuthenticatedActionForm } from "@/app/_components/authenticated-action-form";
+import { authenticatedActionResultMessage } from "@/lib/authenticated-request-browser";
 import { RetryIngestButton } from "./render-clips-button";
 import { useProjectEvents } from "./project-events-provider";
 import { AdvancedClipSettings } from "./advanced-clip-settings";
@@ -125,7 +127,7 @@ function NotifyToggle({
       if (result.ok) {
         setCommittedChecked(next);
       } else {
-        setError(result.error ?? "Could not save this preference.");
+        setError(authenticatedActionResultMessage(result, "Could not save this preference."));
       }
     });
   }
@@ -341,7 +343,7 @@ export function ProcessingPanel(props: ProcessingPanelProps) {
               </Text>
             </Flex>
             {genericFailureStage === "transcribe" ? (
-              <form action={queueTranscriptionFormAction}>
+              <AuthenticatedActionForm action={queueTranscriptionFormAction}>
                 <input type="hidden" name="projectId" value={props.projectId} />
                 <input type="hidden" name="idempotencyKey" value={transcribeRetryKey} />
                 <Flex align="center" gap="2" wrap="wrap">
@@ -356,9 +358,9 @@ export function ProcessingPanel(props: ProcessingPanelProps) {
                     compact
                   />
                 </Flex>
-              </form>
+              </AuthenticatedActionForm>
             ) : (
-              <form action={regenerateClipsFormAction}>
+              <AuthenticatedActionForm action={regenerateClipsFormAction}>
                 <input type="hidden" name="projectId" value={props.projectId} />
                 <input type="hidden" name="idempotencyKey" value={regenerateIdempotencyKey} />
                 <Flex align="center" gap="2" wrap="wrap">
@@ -373,7 +375,7 @@ export function ProcessingPanel(props: ProcessingPanelProps) {
                     compact
                   />
                 </Flex>
-              </form>
+              </AuthenticatedActionForm>
             )}
           </Stack>
         </Box>
@@ -393,7 +395,7 @@ export function ProcessingPanel(props: ProcessingPanelProps) {
               adjusting the processing window or moment prompt, then re-run.
             </Text>
           </Stack>
-          <form action={regenerateClipsFormAction}>
+          <AuthenticatedActionForm action={regenerateClipsFormAction}>
             <input type="hidden" name="projectId" value={props.projectId} />
             <input
               type="hidden"
@@ -412,7 +414,7 @@ export function ProcessingPanel(props: ProcessingPanelProps) {
                 compact
               />
             </Flex>
-          </form>
+          </AuthenticatedActionForm>
         </Flex>
       )}
     </Stack>

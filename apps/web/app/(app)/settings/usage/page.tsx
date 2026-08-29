@@ -3,16 +3,17 @@ import { PageHeader } from "@narriflow/ui/components/page-header";
 import { StatBand } from "@narriflow/ui/components/stat-band";
 import { projectService } from "@narriflow/services";
 import { MONTHLY_PROCESSING_MINUTE_LIMITS } from "@narriflow/validators";
-import { requireWorkspaceAppUser } from "@/lib/workspace";
+import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 
 export default async function UsageSettingsPage() {
-  const appUser = await requireWorkspaceAppUser();
+  const appUser = await admitWorkspacePage("content.view");
   const [tier, usedMinutes] = await Promise.all([
     projectService.getWorkspacePricingTier(appUser.workspaceId),
     projectService.getWorkspaceMonthlyUsageMinutes(appUser.workspaceId),
   ]);
   const limit = MONTHLY_PROCESSING_MINUTE_LIMITS[tier];
-  const percent = Math.min(100, Math.round((usedMinutes / Math.max(1, limit)) * 100));
+  const percent = Math.min(100, Math.round((usedMinutes / Math.max(1, limit)) * 100),
+  );
   return (
     <Stack gap="8">
       <PageHeader eyebrow={appUser.workspace.workspaceName} title="Usage history" description="Workspace processing consumption for the current billing month." />

@@ -8,6 +8,10 @@ import { Folder, FolderPlus, Pencil, Trash2 } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { createFolderAction, deleteFolderAction, moveProjectToFolderAction, renameFolderAction } from "../actions";
+import {
+  authenticatedActionResultMessage,
+  isAuthenticatedActionFailure,
+} from "@/lib/authenticated-request-browser";
 
 export function FoldersPanel({
   folders,
@@ -30,7 +34,9 @@ export function FoldersPanel({
     if (!name.trim()) return setError("Enter a folder name");
     startTransition(async () => {
       const result = await createFolderAction(name);
-      if (!result.ok) return setError(result.error);
+      if (!result.ok) {
+        return setError(authenticatedActionResultMessage(result, "The folder could not be created."));
+      }
       setCreating(false);
       setName("");
       setError(null);
@@ -47,7 +53,9 @@ export function FoldersPanel({
     if (!editingName.trim()) return setError("Enter a folder name");
     startTransition(async () => {
       const result = await renameFolderAction(folderId, editingName);
-      if (!result.ok) return setError(result.error);
+      if (!result.ok) {
+        return setError(authenticatedActionResultMessage(result, "The folder could not be renamed."));
+      }
       setEditingId(null);
       setEditingName("");
       setError(null);
@@ -60,7 +68,16 @@ export function FoldersPanel({
     const projectId = event.dataTransfer.getData("application/x-narriflow-project");
     if (!projectId) return;
     startTransition(async () => {
-      await moveProjectToFolderAction(projectId, folderId);
+      const result = await moveProjectToFolderAction(projectId, folderId);
+      if (isAuthenticatedActionFailure(result)) {
+        setError(
+          authenticatedActionResultMessage(
+            result,
+            "The Project could not be moved.",
+          ),
+        );
+        return;
+      }
       router.refresh();
     });
   }
@@ -97,7 +114,7 @@ export function FoldersPanel({
             {canEdit && editingId !== folder.id ? (
               <Button size="xs" variant="ghost" aria-label={`Rename ${folder.name}`} onClick={() => { setEditingId(folder.id); setEditingName(folder.name); }} disabled={pending}><Pencil size={12} /></Button>
             ) : null}
-            {canEdit && editingId !== folder.id ? <Button size="xs" variant="ghost" aria-label={`Delete ${folder.name}`} onClick={() => { if (!window.confirm(`Delete ${folder.name}? Its projects will move to All projects.`)) return; startTransition(async () => { await deleteFolderAction(folder.id); router.push("/projects"); router.refresh(); }); }} disabled={pending}>{pending ? <Spinner size="xs" /> : <Trash2 size={12} />}</Button> : null}
+            {canEdit && editingId !== folder.id ? <Button size="xs" variant="ghost" aria-label={`Delete ${folder.name}`} onClick={() => { if (!window.confirm(`Delete ${folder.name}? Its projects will move to All projects.`)) return; startTransition(async () => { const result = await deleteFolderAction(folder.id); if (isAuthenticatedActionFailure(result)) { setError(authenticatedActionResultMessage(result, "The folder could not be deleted.")); return; } router.push("/projects"); router.refresh(); }); }} disabled={pending}>{pending ? <Spinner size="xs" /> : <Trash2 size={12} />}</Button> : null}
           </Flex>
         ))}
       </Flex>

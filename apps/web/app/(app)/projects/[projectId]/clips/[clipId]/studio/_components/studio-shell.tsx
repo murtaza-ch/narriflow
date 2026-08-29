@@ -52,7 +52,8 @@ import { ToolSidebar } from "./tool-sidebar";
 import { Timeline } from "./timeline";
 import { KeyboardShortcutsModal } from "./keyboard-shortcuts-modal";
 import type { PlaybackClock } from "./playback-clock";
-import { buildStudioCutPlan, buildSegmentsFromUtterances } from "./edited-timeline";
+import { buildStudioCutPlan, buildSegmentsFromUtterances,
+} from "./edited-timeline";
 import { loadTrimTranscript } from "./trim-transcript-cache";
 import {
   releaseTimelineThumbnailResources,
@@ -92,6 +93,42 @@ import type {
   StudioCompositionPlanStatus,
   StudioExportState,
 } from "./studio-export-policy";
+import {
+  authenticatedRequestFailureMessage,
+  isAuthenticatedActionFailure,
+  type BrowserRequestFailure,
+} from "@/lib/authenticated-request-browser";
+
+class StudioExportRequestError extends Error {
+  constructor(
+    readonly code: "editor_revision_conflict" | "export_queue_failed",
+  ) {
+    super(code);
+    this.name = "StudioExportRequestError";
+  }
+}
+
+type StudioAuthenticatedActionFailure = BrowserRequestFailure & {
+  ok: false;
+  error: string;
+  code: string;
+  requestId: string;
+};
+
+function unwrapStudioActionResult<T>(
+  result: T | StudioAuthenticatedActionFailure,
+): T {
+  if (isAuthenticatedActionFailure(result)) {
+    throw new Error(
+      authenticatedRequestFailureMessage(
+        result,
+        window.location.pathname,
+        "Studio access changed. Refresh before continuing.",
+      ),
+    );
+  }
+  return result as T;
+}
 
 /**
  * Below this width the transcript panel has already hidden (it collapses
@@ -118,8 +155,10 @@ function computeDeleteCandidate(
   ranges: SourceRange | SourceRange[],
 ): { candidateRanges: SourceRange[]; blocked: boolean } {
   const additions = Array.isArray(ranges) ? ranges : [ranges];
-  const candidateRanges = normalizeDeletedRanges([...currentDeletedRanges, ...additions], window);
-  return { candidateRanges, blocked: buildStudioCutPlan(candidateRanges, window).isEmpty };
+  const candidateRanges = normalizeDeletedRanges([...currentDeletedRanges, ...additions], window,
+  );
+  return { candidateRanges, blocked: buildStudioCutPlan(candidateRanges, window).isEmpty,
+  };
 }
 
 function nearestTimedWordBoundary(
@@ -209,7 +248,7 @@ function projectStudioSaveState(
 }
 export type { CaptionAnimation, CaptionPreset };
 export type ToolId =
-  | "captions"
+  "captions"
   | "brand"
   | "broll"
   | "transitions"
@@ -589,7 +628,7 @@ interface StudioShellProps {
    *  through as a prop rather than imported by name). Polled by the effect
    *  below while `previewVideoUrl` is still null; omitted entirely (e.g. in
    *  tests) simply disables polling rather than throwing. */
-  fetchPreviewStatus?: () => Promise<{
+  fetchPreviewStatus?: () => Promise<StudioAuthenticatedActionFailure | {
     previewUrl: string | null;
     previewStartSec: number;
     previewDurationSec: number | null;
@@ -598,9 +637,9 @@ interface StudioShellProps {
   /** Authenticated Server Action used while worker-derived shot analysis is
    *  still pending. The client accepts only a plan matching its live clip
    *  window and deleted ranges. */
-  fetchAutoLayoutAnalysis?: () => Promise<ClipAutoLayoutAnalysis | null>;
-  fetchSplitLayoutAnalysis?: () => Promise<ClipSplitLayoutOutcome | null>;
-  fetchScreenLayoutAnalysis?: () => Promise<ClipLayoutAnalysisOutcome | null>;
+  fetchAutoLayoutAnalysis?: () => Promise<StudioAuthenticatedActionFailure | ClipAutoLayoutAnalysis | null>;
+  fetchSplitLayoutAnalysis?: () => Promise<StudioAuthenticatedActionFailure | ClipSplitLayoutOutcome | null>;
+  fetchScreenLayoutAnalysis?: () => Promise<StudioAuthenticatedActionFailure | ClipLayoutAnalysisOutcome | null>;
   /** Server-seeded brand logo (see studio/page.tsx and `StudioBrandLogo`'s
    *  doc comment), or null/omitted when the project has none. */
   brandLogo?: StudioBrandLogo | null;
@@ -692,10 +731,16 @@ export function StudioShell({
     {
       preview: {
         ...(fetchPreviewStatus
-          ? { fetchProxyStatus: fetchPreviewStatus }
+          ? {
+              fetchProxyStatus: async () =>
+                unwrapStudioActionResult(await fetchPreviewStatus()),
+            }
           : {}),
         ...(fetchAutoLayoutAnalysis
-          ? { fetchAutomaticLayout: fetchAutoLayoutAnalysis }
+          ? {
+              fetchAutomaticLayout: async () =>
+                unwrapStudioActionResult(await fetchAutoLayoutAnalysis()),
+            }
           : {}),
       },
     },
@@ -726,7 +771,7 @@ export function StudioShell({
           })),
   );
   const screenEvidenceMatchesDocument = Boolean(
-    ((layoutAnalysis?.version === 2 &&
+    (layoutAnalysis?.version === 2 &&
       layoutAnalysis.engine === SCREEN_LAYOUT_ENGINE_VERSION &&
       layoutAnalysis.sourceIdentity === compositionSourceIdentity &&
       layoutAnalysis.inputFingerprint ===
@@ -745,7 +790,7 @@ export function StudioShell({
           clipEndSec: doc.clipEndSec,
           deletedRanges: doc.deletedRanges,
           engineVersion: SCREEN_LAYOUT_ENGINE_VERSION,
-        }))),
+        })),
   );
 
   useEffect(() => {
@@ -764,6 +809,7 @@ export function StudioShell({
       try {
         const next = await fetchScreenLayoutAnalysis();
         if (cancelled) return;
+        if (isAuthenticatedActionFailure(next)) return;
         const failed = next && "state" in next;
         setLayoutAnalysis(failed ? null : next);
         setLayoutAnalysisFailure(failed ? next : null);
@@ -818,6 +864,7 @@ export function StudioShell({
       try {
         const next = await fetchSplitLayoutAnalysis();
         if (cancelled) return;
+        if (isAuthenticatedActionFailure(next)) return;
         const failed = next && "state" in next;
         setSplitLayoutAnalysis(failed ? null : next);
         setSplitLayoutFailure(failed ? next : null);
@@ -860,13 +907,17 @@ export function StudioShell({
     fetchSplitLayoutAnalysis,
     splitEvidenceMatchesDocument,
   ]);
-  const segments = useStudioSessionSelector(studioSession, selectStudioSegments);
+  const segments = useStudioSessionSelector(studioSession, selectStudioSegments,
+  );
   const canUndo = useStudioSessionSelector(studioSession, selectStudioCanUndo);
   const canRedo = useStudioSessionSelector(studioSession, selectStudioCanRedo);
   const status = useStudioSessionSelector(studioSession, selectStudioStatus);
-  const recovery = useStudioSessionSelector(studioSession, selectStudioRecovery);
-  const durability = useStudioSessionSelector(studioSession, selectStudioDurability);
-  const ownership = useStudioSessionSelector(studioSession, selectStudioOwnership);
+  const recovery = useStudioSessionSelector(studioSession, selectStudioRecovery,
+  );
+  const durability = useStudioSessionSelector(studioSession, selectStudioDurability,
+  );
+  const ownership = useStudioSessionSelector(studioSession, selectStudioOwnership,
+  );
   const cloud = useStudioSessionSelector(studioSession, selectStudioCloud);
   const preview = useStudioSessionSelector(
     studioSession,
@@ -966,7 +1017,8 @@ export function StudioShell({
     const hasRealBounds = doc.clipEndSec > doc.clipStartSec;
     return hasRealBounds
       ? { startSec: doc.clipStartSec, endSec: doc.clipEndSec }
-      : { startSec: doc.clipStartSec, endSec: doc.clipStartSec + Math.max(0, clipInfo.duration) };
+      : { startSec: doc.clipStartSec, endSec: doc.clipStartSec + Math.max(0, clipInfo.duration),
+        };
   }, [doc.clipStartSec, doc.clipEndSec, clipInfo.duration]);
 
   const editedTimeMap: EditedTimeMap = useMemo(
@@ -997,15 +1049,18 @@ export function StudioShell({
   const [showTimeline, setShowTimeline] = useState(true);
   const [timelineSnapping, setTimelineSnapping] = useState(true);
   const router = useRouter();
-  const [aspectRatio, setAspectRatio] = useState<AspectRatio>(clipInfo.aspectRatio);
+  const [aspectRatio, setAspectRatio] = useState<AspectRatio>(clipInfo.aspectRatio,
+  );
   const [layoutMode, setLayoutMode] = useState<LayoutMode>("fill");
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [timelineZoom, setTimelineZoom] = useState(1);
-  const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(null);
+  const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(null,
+  );
   const [transcriptSelectionRange, setTranscriptSelectionRange] =
     useState<SourceRange | null>(null);
   const [captionSelected, setCaptionSelected] = useState(false);
-  const [selectedTextLayerId, setSelectedTextLayerId] = useState<string | null>(null);
+  const [selectedTextLayerId, setSelectedTextLayerId] = useState<string | null>(null,
+  );
   const [transcriptOnly, setTranscriptOnly] = useState(false);
   const [exportState, setExportState] = useState<StudioExportState>("idle");
   const [compositionPlanStatus, setCompositionPlanStatus] =
@@ -1074,7 +1129,9 @@ export function StudioShell({
     const localDiffersFromOriginal = JSON.stringify(doc) !== originalJson;
     const serverDifferedFromOriginalAtLoad =
       JSON.stringify(initialEditorDocument) !== originalJson;
-    return localDiffersFromOriginal || (revision > 0 && serverDifferedFromOriginalAtLoad);
+    return (
+      localDiffersFromOriginal || (revision > 0 && serverDifferedFromOriginalAtLoad)
+    );
   }, [doc, originalDoc, initialEditorDocument, revision]);
 
   // Dispatch helpers — thin wrappers that turn context setter calls into
@@ -1128,11 +1185,13 @@ export function StudioShell({
       action: { type: "setBrollUrl", brollUrl: url },
       coalesceKey,
     });
-  }, [studioSession]);
+  }, [studioSession],
+  );
 
   const setSegments = useCallback((next: TimelineSegment[]) => {
     studioSession.dispatch({ type: "segments.replace", segments: next });
-  }, [studioSession]);
+  }, [studioSession],
+  );
 
   // Update utterance text — whole-utterance rewrite with proportional timing
   // redistribution across the new word count (distinct from the reducer's
@@ -1144,7 +1203,8 @@ export function StudioShell({
       type: "document.edit",
       action: { type: "setTranscriptSlice", transcriptSlice: nextSlice },
     });
-  }, [getStudioDocument, studioSession]);
+  }, [getStudioDocument, studioSession],
+  );
 
   const updateParagraphText = useCallback((indices: number[], newText: string) => {
     const nextSlice = replaceSubtitleParagraphText(
@@ -1156,7 +1216,8 @@ export function StudioShell({
       type: "document.edit",
       action: { type: "setTranscriptSlice", transcriptSlice: nextSlice },
     });
-  }, [getStudioDocument, studioSession]);
+  }, [getStudioDocument, studioSession],
+  );
 
   const addSubtitleLineAfter = useCallback((index: number) => {
     const nextSlice = insertSubtitleLineAfter(
@@ -1167,7 +1228,8 @@ export function StudioShell({
       type: "document.edit",
       action: { type: "setTranscriptSlice", transcriptSlice: nextSlice },
     });
-  }, [getStudioDocument, studioSession]);
+  }, [getStudioDocument, studioSession],
+  );
 
   const deleteSubtitleLine = useCallback((index: number) => {
     const nextSlice = removeSubtitleLine(
@@ -1178,7 +1240,8 @@ export function StudioShell({
       type: "document.edit",
       action: { type: "setTranscriptSlice", transcriptSlice: nextSlice },
     });
-  }, [getStudioDocument, studioSession]);
+  }, [getStudioDocument, studioSession],
+  );
 
   const mergeSubtitleLineWithNext = useCallback(
     (index: number) => {
@@ -1209,12 +1272,14 @@ export function StudioShell({
       });
       return true;
     },
-    [effectiveClipStartSec, getStudioDocument, segments, studioSession, utterances],
+    [effectiveClipStartSec, getStudioDocument, segments, studioSession, utterances,
+    ],
   );
 
   const setPlaybackRate = useCallback((rate: number) => {
     studioSession.dispatch({ type: "playback.set-rate", rate });
-  }, [studioSession]);
+  }, [studioSession],
+  );
 
   const togglePlay = useCallback(() => {
     studioSession.dispatch({ type: "playback.toggle" });
@@ -1226,7 +1291,8 @@ export function StudioShell({
   // ever returns kept-segment seconds; see edit-ranges.ts).
   const seekTo = useCallback((t: number) => {
     studioSession.dispatch({ type: "playback.seek", editedTimeSec: t });
-  }, [studioSession]);
+  }, [studioSession],
+  );
 
   // Split stays client-only (vizard-parity.md Phase B step 9) — it only
   // ever defines selection boundaries within the `segments` array, which is
@@ -1335,7 +1401,8 @@ export function StudioShell({
       endSec: effectiveClipStartSec + seg.endSec,
     };
     const window = { startSec: doc.clipStartSec, endSec: doc.clipEndSec };
-    const { blocked } = computeDeleteCandidate(doc.deletedRanges, window, range);
+    const { blocked } = computeDeleteCandidate(doc.deletedRanges, window, range,
+    );
     if (blocked) {
       toaster.create({
         type: "error",
@@ -1369,7 +1436,8 @@ export function StudioShell({
       type: "document.edit",
       action: { type: "revertRange", range },
     });
-  }, [studioSession]);
+  }, [studioSession],
+  );
 
   // Vizard-parity Phase B step 11: deletes an arbitrary absolute-source-
   // second range selected in the transcript panel (as opposed to
@@ -1467,7 +1535,8 @@ export function StudioShell({
       type: "document.edit",
       action: { type: "updateWordText", utteranceIndex, wordIndex, text },
     });
-  }, [studioSession]);
+  }, [studioSession],
+  );
 
   // Vizard-parity Phase B step 13 (in-studio trim): commits a drag on either
   // timeline trim handle. `newStartSec`/`newEndSec` arrive already
@@ -1499,7 +1568,8 @@ export function StudioShell({
       // corrected words back in is what stops a trim from silently
       // discarding them (see mergeCorrectedWordsIntoWindow's own doc
       // comment for the exact matching rule).
-      const newSlice = mergeCorrectedWordsIntoWindow(rawSlice, doc.transcriptSlice);
+      const newSlice = mergeCorrectedWordsIntoWindow(rawSlice, doc.transcriptSlice,
+      );
       // Same effective-timing pass the `effectiveTiming` memo above runs —
       // computed explicitly here (not read from that memo) because segments
       // need to be built against the window this dispatch is ABOUT to
@@ -1592,9 +1662,9 @@ export function StudioShell({
       const body = await response.json().catch(() => null);
       if (!response.ok || !body?.export?.id) {
         if (response.status === 409) {
-          throw new Error("revision_conflict");
+          throw new StudioExportRequestError("editor_revision_conflict");
         }
-        throw new Error("Failed to queue export");
+        throw new StudioExportRequestError("export_queue_failed");
       }
       setExportState("queued");
       router.push(
@@ -1606,7 +1676,7 @@ export function StudioShell({
         type: "error",
         title: "Export failed",
         description:
-          error instanceof Error && error.message === "revision_conflict"
+          error instanceof StudioExportRequestError && error.code === "editor_revision_conflict"
             ? "The clip changed in another session. Reload before exporting."
             : "The render couldn't be queued. Try again.",
       });
@@ -1617,7 +1687,8 @@ export function StudioShell({
     clipInfo.projectId,
     clipInfo.id,
     router,
-  ]);
+  ],
+  );
 
   // ─── Reset to original (vizard-parity.md Phase A step 4) ────────────────
   const handleReset = useCallback(async () => {
@@ -1830,7 +1901,8 @@ export function StudioShell({
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [togglePlay, seekTo, playbackClock, duration, splitAtPlayhead, deleteSelectedSegment, deleteSelectedTextLayer, handleUndo, handleRedo, captionSelected, deselectCaption, selectedTextLayerId, deselectTextLayer, hasWriteOwnership, sessionDraftConflict]);
+  }, [togglePlay, seekTo, playbackClock, duration, splitAtPlayhead, deleteSelectedSegment, deleteSelectedTextLayer, handleUndo, handleRedo, captionSelected, deselectCaption, selectedTextLayerId, deselectTextLayer, hasWriteOwnership, sessionDraftConflict,
+  ]);
 
   // The timeline's thumbnail cache and hidden scrub <video> elements
   // (timeline-preview-manager.ts) live in module scope, not React state, so

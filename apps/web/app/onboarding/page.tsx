@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 import { Stack, Box, Text, Flex } from "@chakra-ui/react";
 import { Shield, FolderOpen, Zap } from "lucide-react";
-import { getCurrentAppUser } from "@narriflow/auth";
+import { admitSignedInPage } from "@/lib/authenticated-request-page";
 import { AuthShell, AuthHeader } from "../components/auth-shell";
 import { OnboardingForm } from "./onboarding-form";
 
@@ -24,11 +24,7 @@ const SETUP_ITEMS = [
 ];
 
 export default async function OnboardingPage() {
-  const appUser = await getCurrentAppUser();
-
-  if (!appUser) {
-    redirect("/sign-in");
-  }
+  const appUser = await admitSignedInPage("/onboarding");
 
   if (appUser.onboardingCompletedAt) {
     redirect("/home");

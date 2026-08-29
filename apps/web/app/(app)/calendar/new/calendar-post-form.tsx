@@ -11,6 +11,7 @@ import { DateTimePicker } from "@narriflow/ui/components/date-picker";
 import { Select } from "@narriflow/ui/components/select";
 import { createPublicationIntentKeyStore } from "@/lib/publication-intent-key";
 import { scheduleWorkspacePostAction } from "../actions";
+import { authenticatedActionResultMessage } from "@/lib/authenticated-request-browser";
 
 type ClipOption = {
   id: string;
@@ -92,7 +93,11 @@ export function CalendarPostForm({
         aspectRatio: ratio,
         resolution,
       });
-      if (!result.ok) return setFeedback(result.error);
+      if (!result.ok) {
+        return setFeedback(
+          authenticatedActionResultMessage(result, "Could not schedule post."),
+        );
+      }
       intentKeys.confirm(request);
       router.push("/calendar");
       router.refresh();

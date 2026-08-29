@@ -24,6 +24,7 @@ import {
 } from "@chakra-ui/react";
 import { AlertTriangle, Check, ChevronDown } from "lucide-react";
 import { retryIngestFormAction } from "../actions";
+import { authenticatedActionResultMessage } from "@/lib/authenticated-request-browser";
 
 /** Preselects exactly the given aspect ratio (falling back to 9:16 when
  *  none is provided) — never a hardcoded 9:16 regardless of what the
@@ -308,7 +309,10 @@ export function RetryIngestButton({
     }
     return {
       ok: false,
-      error: result.error ?? "Could not retry ingest. Please try again.",
+      error: authenticatedActionResultMessage(
+        result,
+        "Could not retry ingest. Please try again.",
+      ),
     };
   }, initialRetryIngestState);
 

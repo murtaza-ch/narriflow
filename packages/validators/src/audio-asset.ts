@@ -24,7 +24,7 @@ export type AudioUploadContentType = z.infer<
 export const presignAudioUploadSchema = z.object({
   contentType: audioUploadContentTypeSchema,
   sizeBytes: z.number().int().positive().max(AUDIO_UPLOAD_MAX_BYTES),
-});
+}).strict();
 
 export type PresignAudioUploadInput = z.infer<typeof presignAudioUploadSchema>;
 
@@ -36,7 +36,7 @@ export const finalizeAudioUploadSchema = z.object({
   kind: audioAssetKindSchema,
   title: z.string().trim().min(1).max(120),
   durationSec: z.number().min(0).max(60 * 60).default(0),
-});
+}).strict();
 
 export type FinalizeAudioUploadInput = z.infer<
   typeof finalizeAudioUploadSchema
@@ -45,7 +45,7 @@ export type FinalizeAudioUploadInput = z.infer<
 export const listAudioAssetsQuerySchema = z.object({
   kind: audioAssetKindSchema,
   mood: z.string().trim().max(40).optional(),
-});
+}).strict();
 
 export type ListAudioAssetsQuery = z.infer<typeof listAudioAssetsQuerySchema>;
 

@@ -4,30 +4,24 @@ import { randomUUID } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import {
-	requireWorkspaceAppUser,
-	requireWorkspaceProject,
-} from "@/lib/workspace";
+  executeWorkspaceAction,
+  executeProjectAction,
+  authenticatedActionResultError,
+} from "@/lib/authenticated-request-action";
 import {
 	clipService,
 	IngestNotFailedError,
 	IngestRetryLimitExceededError,
-	projectService,
-	workspaceLibraryService,
-	QuotaExceededError,
-	UploadTooLongError,
-} from "@narriflow/services";
-// Imported via the "./project" subpath rather than the package root: these
-// error classes are new and not yet re-exported from
-// packages/services/src/index.ts (owned by another concurrent agent — see
-// this task's report for the exact lines to add there). The subpath resolves
-// to the same underlying module either way.
-import {
 	ProjectAccessDeniedError,
 	ProjectDeletionIncompleteError,
 	ProjectHasActivePublicationError,
 	ProjectHasActiveWorkflowError,
 	ProjectNotFoundError,
-} from "@narriflow/services/project";
+	projectService,
+	workspaceLibraryService,
+	QuotaExceededError,
+	UploadTooLongError,
+} from "@narriflow/services";
 import { type ClipAspectRatio, userErrorMessage } from "@narriflow/validators";
 
 /** True for plan-limit errors that should send the user to the upgrade view. */
@@ -54,50 +48,91 @@ import {
 
 export async function createFolderAction(name: string) {
 	try {
-		const appUser = await requireWorkspaceAppUser("content.edit");
-		const folder = await workspaceLibraryService.createFolder(
-			appUser.actorUserId,
-			appUser.workspaceId,
-			name,
-		);
-		revalidatePath("/projects");
-		return {
-			ok: true as const,
-			folder: { ...folder, createdAt: folder.createdAt.toISOString() },
-		};
+		return await executeWorkspaceAction("content.edit", async (appUser) => {
+			try {
+				const folder = await workspaceLibraryService.createFolder(
+					appUser.actorUserId,
+					appUser.workspaceId,
+					name,
+				);
+				revalidatePath("/projects");
+				return {
+					ok: true as const,
+					folder: { ...folder, createdAt: folder.createdAt.toISOString() },
+				};
+			} catch (error) {
+				const failure = authenticatedActionResultError(
+					error,
+					"Folder creation failed",
+				);
+				return {
+					ok: false as const,
+					error: failure.message,
+					errorCode: failure.errorCode,
+					requestId: failure.requestId,
+				};
+			}
+		});
 	} catch (error) {
+    const failure = authenticatedActionResultError(
+      error,
+      "Folder creation failed",
+    );
 		return {
 			ok: false as const,
-			error: error instanceof Error ? error.message : "Folder creation failed",
+			error: failure.message,
+      errorCode: failure.errorCode,
+      requestId: failure.requestId,
 		};
 	}
 }
 
 export async function deleteFolderAction(folderId: string) {
-	const appUser = await requireWorkspaceAppUser("content.edit");
-	await workspaceLibraryService.deleteFolder(
-		appUser.actorUserId,
-		appUser.workspaceId,
-		folderId,
-	);
-	revalidatePath("/projects");
+	return executeWorkspaceAction("content.edit", async (appUser) => {
+		await workspaceLibraryService.deleteFolder(
+			appUser.actorUserId,
+			appUser.workspaceId,
+			folderId,
+		);
+		revalidatePath("/projects");
+	});
 }
 
 export async function renameFolderAction(folderId: string, name: string) {
 	try {
-		const appUser = await requireWorkspaceAppUser("content.edit");
-		await workspaceLibraryService.renameFolder(
-			appUser.actorUserId,
-			appUser.workspaceId,
-			folderId,
-			name,
-		);
-		revalidatePath("/projects");
-		return { ok: true as const };
+		return await executeWorkspaceAction("content.edit", async (appUser) => {
+			try {
+				await workspaceLibraryService.renameFolder(
+					appUser.actorUserId,
+					appUser.workspaceId,
+					folderId,
+					name,
+				);
+				revalidatePath("/projects");
+				return { ok: true as const };
+			} catch (error) {
+				const failure = authenticatedActionResultError(
+					error,
+					"Folder rename failed",
+				);
+				return {
+					ok: false as const,
+					error: failure.message,
+					errorCode: failure.errorCode,
+					requestId: failure.requestId,
+				};
+			}
+		});
 	} catch (error) {
+    const failure = authenticatedActionResultError(
+      error,
+      "Folder rename failed",
+    );
 		return {
 			ok: false as const,
-			error: error instanceof Error ? error.message : "Folder rename failed",
+			error: failure.message,
+      errorCode: failure.errorCode,
+      requestId: failure.requestId,
 		};
 	}
 }
@@ -106,18 +141,19 @@ export async function moveProjectToFolderAction(
 	projectId: string,
 	folderId: string | null,
 ) {
-	const appUser = await requireWorkspaceProject(projectId, "content.edit");
-	await workspaceLibraryService.moveProject(
-		appUser.actorUserId,
-		appUser.workspaceId,
-		projectId,
-		folderId,
-	);
-	revalidatePath("/projects");
+	return executeProjectAction(projectId, "content.edit", async (appUser) => {
+		await workspaceLibraryService.moveProject(
+			appUser.actorUserId,
+			appUser.workspaceId,
+			projectId,
+			folderId,
+		);
+		revalidatePath("/projects");
+	});
 }
 
 export async function createProjectFormAction(formData: FormData) {
-	const appUser = await requireWorkspaceAppUser("content.edit");
+	return executeWorkspaceAction("content.edit", async (appUser) => {
 	const title = String(formData.get("title") ?? "");
 	const sourceMediaUrl = String(formData.get("sourceMediaUrl") ?? "");
 
@@ -132,6 +168,7 @@ export async function createProjectFormAction(formData: FormData) {
 
 	revalidatePath("/projects");
 	redirect(`/projects/${project.id}`);
+	});
 }
 
 export async function queueTranscriptionFormAction(formData: FormData) {
@@ -141,14 +178,14 @@ export async function queueTranscriptionFormAction(formData: FormData) {
 	if (!projectId) {
 		throw new Error("projectId is required");
 	}
-	const appUser = await requireWorkspaceProject(
+	return executeProjectAction(
 		projectId,
 		"processing.consume",
-	);
+		async (appUser) => {
 
 	try {
 		await projectService.triggerGeneration(
-			appUser.id,
+			appUser.workspaceOwnerUserId,
 			projectId,
 			{
 				contentPack: readContentPackFromForm(formData),
@@ -172,6 +209,8 @@ export async function queueTranscriptionFormAction(formData: FormData) {
 	}
 
 	revalidatePath(`/projects/${projectId}`);
+	},
+);
 }
 
 export const queueGenerationFormAction = queueTranscriptionFormAction;
@@ -183,10 +222,10 @@ export async function regenerateClipsFormAction(formData: FormData) {
 	if (!projectId) {
 		throw new Error("projectId is required");
 	}
-	const appUser = await requireWorkspaceProject(
+	return executeProjectAction(
 		projectId,
 		"processing.consume",
-	);
+		async (appUser) => {
 
 	try {
 		await clipService.regenerateClips(
@@ -207,6 +246,8 @@ export async function regenerateClipsFormAction(formData: FormData) {
 	}
 
 	revalidatePath(`/projects/${projectId}`);
+	},
+);
 }
 
 export async function renderClipsFormAction(formData: FormData) {
@@ -220,10 +261,10 @@ export async function renderClipsFormAction(formData: FormData) {
 	if (!projectId) {
 		throw new Error("projectId is required");
 	}
-	const appUser = await requireWorkspaceProject(
+	return executeProjectAction(
 		projectId,
 		"processing.consume",
-	);
+		async (appUser) => {
 
 	await clipService.triggerClipRendering(
 		projectId,
@@ -238,6 +279,8 @@ export async function renderClipsFormAction(formData: FormData) {
 	);
 
 	revalidatePath(`/projects/${projectId}`);
+	},
+);
 }
 
 /**
@@ -256,16 +299,17 @@ export async function retryIngestFormAction(
 	if (!projectId) {
 		return { ok: false, error: "projectId is required" };
 	}
-	const appUser = await requireWorkspaceProject(
+	return executeProjectAction(
 		projectId,
 		"processing.consume",
-	);
+		async (appUser) => {
 
 	try {
-		await projectService.retryFailedIngest(appUser.id, projectId, {
+		await projectService.retryFailedIngest(appUser.workspaceOwnerUserId, projectId, {
 			workspaceId: appUser.workspaceId,
 			actorUserId: appUser.actorUserId,
-		});
+		},
+    );
 	} catch (error) {
 		const code =
 			error instanceof IngestRetryLimitExceededError
@@ -273,6 +317,7 @@ export async function retryIngestFormAction(
 				: error instanceof IngestNotFailedError
 					? "ingest_not_failed"
 					: null;
+		if (!code) throw error;
 
 		return {
 			ok: false,
@@ -284,6 +329,8 @@ export async function retryIngestFormAction(
 
 	revalidatePath(`/projects/${projectId}`);
 	return { ok: true };
+	},
+);
 }
 
 /**
@@ -299,15 +346,15 @@ export async function setNotifyPreferenceAction(
 	if (!projectId) {
 		return { ok: false, error: "projectId is required" };
 	}
-	const appUser = await requireWorkspaceProject(projectId, "content.edit");
-
+	return executeProjectAction(projectId, "content.edit", async (appUser) => {
 	try {
 		await projectService.setProjectNotifyPreference(
-			appUser.id,
+			appUser.workspaceOwnerUserId,
 			projectId,
 			notifyOnComplete,
 		);
-	} catch {
+	} catch (error) {
+		if (!(error instanceof ProjectNotFoundError)) throw error;
 		return {
 			ok: false,
 			error: "Could not save this preference. Please try again.",
@@ -315,6 +362,7 @@ export async function setNotifyPreferenceAction(
 	}
 
 	return { ok: true };
+	});
 }
 
 /**
@@ -337,10 +385,9 @@ export async function deleteProjectFormAction(
 	if (!projectId) {
 		return { ok: false, error: "projectId is required" };
 	}
-	const appUser = await requireWorkspaceProject(projectId, "content.edit");
-
+	return executeProjectAction(projectId, "content.edit", async (appUser) => {
 	try {
-		await projectService.deleteProject(appUser.id, projectId);
+		await projectService.deleteProject(appUser.workspaceOwnerUserId, projectId);
 	} catch (error) {
 		if (!(error instanceof ProjectNotFoundError)) {
 			const code =
@@ -354,6 +401,7 @@ export async function deleteProjectFormAction(
 								? "project_deletion_incomplete"
 								: null;
 
+			if (!code) throw error;
 			return {
 				ok: false,
 				error:
@@ -366,4 +414,5 @@ export async function deleteProjectFormAction(
 
 	revalidatePath("/projects");
 	redirect("/projects");
+	});
 }

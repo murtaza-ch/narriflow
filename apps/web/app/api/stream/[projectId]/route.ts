@@ -1,5 +1,6 @@
 import Redis from "ioredis";
-import { getCurrentWorkspaceAppUser as getCurrentAppUser } from "@/lib/workspace";
+import { freshAuthenticatedRequestPolicy } from "@/lib/authenticated-request-policy.server";
+import { AuthenticatedRequestUnexpectedError } from "@/lib/authenticated-request-policy";
 import {
   boundedRedisRetryDelay,
   getWorkflowChannel,
@@ -8,7 +9,6 @@ import {
   OPTIONAL_REDIS_COMMAND_TIMEOUT_MS,
   OPTIONAL_REDIS_CONNECT_TIMEOUT_MS,
   optionalRedisUrl,
-  projectService,
 } from "@narriflow/services";
 import {
   workflowStageUpdatedEventSchema,
@@ -19,6 +19,10 @@ import {
   isAfterWorkflowCursor,
   normalizeWorkflowSeq,
 } from "@/lib/workflow-stream";
+import {
+  createWorkflowStreamReauthorizationGuard,
+  workflowStreamAuthorizationResult,
+} from "@/lib/workflow-stream-reauthorization";
 
 export const runtime = "nodejs";
 
@@ -33,40 +37,61 @@ export async function GET(
   req: Request,
   context: { params: Promise<{ projectId: string }> },
 ) {
-  const appUser = await getCurrentAppUser();
-
-  if (!appUser) {
-    return new Response(JSON.stringify({ error: "Unauthorized" }), {
-      status: 401,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
-
   const { projectId } = await context.params;
-  const access = await projectService.getProjectAccess(
-    appUser.actorUserId,
-    projectId,
-    appUser.workspaceId,
-  );
-
-  if (access === "missing") {
-    return new Response(JSON.stringify({ error: "Project not found" }), {
-      status: 404,
-      headers: { "Content-Type": "application/json" },
+  let admission;
+  try {
+    admission = await freshAuthenticatedRequestPolicy.execute({
+      adapter: "stream",
+      operationName: "open-workflow-progress-stream",
+      admission: { kind: "project", capability: "content.view", projectId },
+      operation: async ({ actor }) => actor,
     });
+  } catch (error) {
+    const requestId =
+      error instanceof AuthenticatedRequestUnexpectedError
+        ? error.requestId
+        : crypto.randomUUID();
+    console.warn(JSON.stringify({
+        level: "error",
+        message: "workflow_progress_stream_admission_failed",
+        requestId,
+    projectId,
+      }),
+    );
+    return Response.json(
+      {
+        error: "internal_error",
+        message: "The progress stream is temporarily unavailable.",
+        requestId,
+      }, {
+      status: 500,
+      headers: { "X-Request-ID": requestId } },
+  );
   }
 
-  if (access === "forbidden") {
-    return new Response(JSON.stringify({ error: "Forbidden" }), {
-      status: 403,
-      headers: { "Content-Type": "application/json" },
-    });
+  if (!admission.ok) {
+    const headers: Record<string, string> = { "Content-Type": "application/json",
+      "X-Request-ID": admission.requestId,
+    };
+    if (admission.failure.retryAfterSeconds) {
+      headers["Retry-After"] = String(admission.failure.retryAfterSeconds);
+  }
+    return new Response(JSON.stringify({ error: admission.failure.code,
+        message: admission.failure.message,
+        requestId: admission.requestId,
+        ...(admission.failure.details
+          ? { details: admission.failure.details }
+          : {}),
+      }), {
+      status: admission.failure.status,
+      headers },
+    );
   }
 
   const channel = getWorkflowChannel(projectId);
   const redisUrl = optionalRedisUrl(process.env.UPSTASH_REDIS_URL);
   const requestedSinceSeq = Number(
-    req.url ? new URL(req.url).searchParams.get("sinceSeq") ?? "0" : "0",
+    req.url ? (new URL(req.url).searchParams.get("sinceSeq") ?? "0") : "0",
   );
   const sinceSeq = normalizeWorkflowSeq(requestedSinceSeq) ?? 0;
   const encoder = new TextEncoder();
@@ -74,7 +99,9 @@ export async function GET(
   let heartbeat: ReturnType<typeof setInterval> | null = null;
   let fallbackPoller: ReturnType<typeof setInterval> | null = null;
   let fallbackPollInFlight = false;
-  let accessCheckInFlight = false;
+  let authorizationGuard: ReturnType<
+    typeof createWorkflowStreamReauthorizationGuard
+  > | null = null;
   let lastSentSeq = sinceSeq;
   let subscriber: Redis | null = null;
   let streamActive = true;
@@ -92,6 +119,7 @@ export async function GET(
 
   function cleanup() {
     streamActive = false;
+    authorizationGuard?.stop();
     if (abortHandler !== null) {
       req.signal.removeEventListener("abort", abortHandler);
       abortHandler = null;
@@ -140,7 +168,8 @@ export async function GET(
         for (const event of events) {
           if (!isAfterWorkflowCursor(lastSentSeq, event.seq)) continue;
           try {
-            controller.enqueue(encoder.encode(sseEvent("workflow.stage.updated", event)));
+            controller.enqueue(encoder.encode(sseEvent("workflow.stage.updated", event)),
+            );
           } catch {
             cleanup();
             return false;
@@ -197,13 +226,15 @@ export async function GET(
             startFallbackPolling();
           };
 
-          const enqueueRedisEvent = async (event: WorkflowStageUpdatedEvent) => {
+          const enqueueRedisEvent = async (event: WorkflowStageUpdatedEvent,
+          ) => {
             if (!streamActive || !isAfterWorkflowCursor(lastSentSeq, event.seq)) return;
 
             if (event.seq > lastSentSeq + 1) {
               let missingEvents: Awaited<ReturnType<typeof getWorkflowEventsSince>>;
               try {
-                missingEvents = await getWorkflowEventsSince(projectId, lastSentSeq);
+                missingEvents = await getWorkflowEventsSince(projectId, lastSentSeq,
+                );
               } catch {
                 fallbackToPolling();
                 return;
@@ -222,7 +253,8 @@ export async function GET(
             }
 
             try {
-              controller.enqueue(encoder.encode(sseEvent("workflow.stage.updated", event)));
+              controller.enqueue(encoder.encode(sseEvent("workflow.stage.updated", event)),
+              );
               lastSentSeq = advanceWorkflowCursor(lastSentSeq, event.seq);
             } catch {
               cleanup();
@@ -278,7 +310,8 @@ export async function GET(
 
           // Close the replay/subscribe race, then drain messages that arrived
           // during the database catch-up in sequence order.
-          const catchUpEvents = await getWorkflowEventsSince(projectId, lastSentSeq);
+          const catchUpEvents = await getWorkflowEventsSince(projectId, lastSentSeq,
+          );
           if (!streamActive) return;
           if (!enqueuePersistedEvents(catchUpEvents)) {
             if (streamActive) fallbackToPolling();
@@ -301,29 +334,54 @@ export async function GET(
 
       if (!streamActive) return;
 
-      heartbeat = setInterval(() => {
-        if (accessCheckInFlight) return;
-        accessCheckInFlight = true;
-        void projectService
-          .getProjectAccess(appUser.actorUserId, projectId, appUser.workspaceId)
-          .then((currentAccess) => {
-            if (currentAccess !== "owned") {
-              cleanup();
-              try {
-                controller.close();
-              } catch {
-                // Client and expiry check may close concurrently.
-              }
-              return;
-            }
-            controller.enqueue(
-              encoder.encode(sseEvent("ping", { ts: Date.now() })),
-            );
-          })
-          .catch(() => cleanup())
-          .finally(() => {
-            accessCheckInFlight = false;
+      authorizationGuard = createWorkflowStreamReauthorizationGuard({
+        authorize: async () => {
+          const result = await freshAuthenticatedRequestPolicy.execute({
+            adapter: "stream",
+            operationName: "reauthorize-workflow-progress-stream",
+            admission: {
+              kind: "project",
+              capability: "content.view", projectId,
+            },
+            operation: async () => true,
           });
+          return workflowStreamAuthorizationResult(result);
+        },
+        onAuthorized: () => {
+          controller.enqueue(
+            encoder.encode(sseEvent("ping", { ts: Date.now() })),
+          );
+        },
+        onRevoked: (control) => {
+          try {
+            controller.enqueue(
+              encoder.encode(sseEvent("authorization.revoked", control)),
+            );
+          } catch {
+            // The connection may close at the same time as revocation.
+          }
+        },
+        cleanup,
+        close: () => {
+          try {
+            controller.close();
+          } catch {
+            // Client and expiry check may close concurrently.
+          }
+        },
+        unexpectedControl: (error) => {
+          const requestId =
+            error instanceof AuthenticatedRequestUnexpectedError
+              ? error.requestId
+              : null;
+          return {
+            error: "internal_error",
+            ...(requestId ? { requestId } : {}),
+          };
+        },
+      });
+      heartbeat = setInterval(() => {
+        void authorizationGuard?.check();
       }, 15000);
 
     },
@@ -337,6 +395,7 @@ export async function GET(
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
       "Content-Type": "text/event-stream; charset=utf-8",
+      "X-Request-ID": admission.requestId,
       "X-Accel-Buffering": "no",
     },
   });

@@ -11,7 +11,7 @@ import {
 } from "lucide-react";
 import { NavLink } from "@narriflow/ui/components/nav-link";
 import { workspaceAllowsCapability } from "@narriflow/services";
-import { requireWorkspaceAppUser } from "@/lib/workspace";
+import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 
 const ACCOUNT_LINKS = [
   { label: "Profile", href: "/settings/profile", icon: UserRound },
@@ -23,7 +23,8 @@ const WORKSPACE_LINKS = [
   { label: "Members", href: "/settings/members", icon: Users },
   { label: "Social accounts", href: "/settings/social-accounts", icon: Share2 },
   { label: "Billing", href: "/settings/billing", icon: CreditCard },
-  { label: "Usage history", href: "/settings/usage", icon: ChartNoAxesCombined },
+  { label: "Usage history", href: "/settings/usage", icon: ChartNoAxesCombined,
+  },
   { label: "Developer access", href: "/settings/api", icon: Braces },
 ] as const;
 
@@ -46,9 +47,12 @@ function SettingsGroup({
   );
 }
 
-export default async function SettingsLayout({ children }: { children: React.ReactNode }) {
-  const appUser = await requireWorkspaceAppUser();
-  const workspaceLinks = workspaceAllowsCapability(appUser.workspace, "api.manage")
+export default async function SettingsLayout({ children,
+}: { children: React.ReactNode;
+}) {
+  const appUser = await admitWorkspacePage("content.view");
+  const workspaceLinks = workspaceAllowsCapability(appUser.workspace, "api.manage",
+  )
     ? WORKSPACE_LINKS
     : WORKSPACE_LINKS.filter((link) => link.href !== "/settings/api");
   return (
@@ -75,7 +79,8 @@ export default async function SettingsLayout({ children }: { children: React.Rea
           borderBottomWidth={{ base: "1px", lg: "0" }}
           borderColor="border"
           pb={{ base: "3", lg: "0" }}
-          css={{ scrollbarWidth: "none", "&::-webkit-scrollbar": { display: "none" } }}
+          css={{ scrollbarWidth: "none", "&::-webkit-scrollbar": { display: "none" },
+          }}
         >
           <SettingsGroup label="Your account" links={ACCOUNT_LINKS} />
           <SettingsGroup label={appUser.workspace.workspaceName} links={workspaceLinks} />

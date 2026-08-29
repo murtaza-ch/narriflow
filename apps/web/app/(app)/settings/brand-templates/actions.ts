@@ -2,7 +2,10 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { requireWorkspaceAppUser as requireCurrentAppUser } from "@/lib/workspace";
+import {
+  executeWorkspaceAction,
+  executeWorkspaceActionWithInput,
+} from "@/lib/authenticated-request-action";
 import { brandTemplateService } from "@narriflow/services";
 import {
   brandTemplateInputSchema,
@@ -12,47 +15,54 @@ import {
 } from "@narriflow/validators";
 
 export async function createBrandTemplateAction(input: BrandTemplateInput) {
-  const appUser = await requireCurrentAppUser("brand.manage");
-  const parsed = brandTemplateInputSchema.parse(input);
-  const template = await brandTemplateService.create(appUser.id, parsed, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
-  revalidatePath("/brand-kit");
-  return template;
+  return executeWorkspaceActionWithInput("brand.manage", input, brandTemplateInputSchema, async (appUser, parsed) => {
+    const template = await brandTemplateService.create(appUser.workspaceOwnerUserId, parsed, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
+    );
+    revalidatePath("/brand-kit");
+    return template;
+  });
 }
 
 export async function updateBrandTemplateAction(
   id: string,
   input: BrandTemplateUpdate,
 ) {
-  const appUser = await requireCurrentAppUser("brand.manage");
-  const parsed = brandTemplateUpdateSchema.parse(input);
-  const template = await brandTemplateService.update(appUser.id, id, parsed, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
-  revalidatePath("/brand-kit");
-  return template;
+  return executeWorkspaceActionWithInput("brand.manage", input, brandTemplateUpdateSchema, async (appUser, parsed) => {
+    const template = await brandTemplateService.update(appUser.workspaceOwnerUserId, id, parsed, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
+    );
+    revalidatePath("/brand-kit");
+    return template;
+  });
 }
 
 export async function deleteBrandTemplateAction(id: string) {
-  const appUser = await requireCurrentAppUser("brand.manage");
-  await brandTemplateService.softDelete(appUser.id, id, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
-  revalidatePath("/brand-kit");
+  return executeWorkspaceAction("brand.manage", async (appUser) => {
+    await brandTemplateService.softDelete(appUser.workspaceOwnerUserId, id, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId,
+    });
+    revalidatePath("/brand-kit");
+  });
 }
 
 export async function setDefaultBrandTemplateAction(id: string) {
-  const appUser = await requireCurrentAppUser("workspace.manage");
-  await brandTemplateService.setDefault(appUser.id, id, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId });
-  revalidatePath("/brand-kit");
+  return executeWorkspaceAction("workspace.manage", async (appUser) => {
+    await brandTemplateService.setDefault(appUser.workspaceOwnerUserId, id, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId,
+    });
+    revalidatePath("/brand-kit");
+  });
 }
 
 export async function duplicateBrandTemplateAction(
   id: string,
   newName?: string,
 ) {
-  const appUser = await requireCurrentAppUser("brand.manage");
-  const template = await brandTemplateService.duplicate(
-    appUser.id,
-    id,
-    newName,
-    { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
-  );
-  revalidatePath("/brand-kit");
-  redirect(`/brand-kit/${template.id}`);
+  return executeWorkspaceAction("brand.manage", async (appUser) => {
+    const template = await brandTemplateService.duplicate(
+      appUser.workspaceOwnerUserId,
+      id,
+      newName,
+      { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
+    );
+    revalidatePath("/brand-kit");
+    redirect(`/brand-kit/${template.id}`);
+  });
 }

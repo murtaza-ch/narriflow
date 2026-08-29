@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
 
 import {
+  assertWorkspaceInviteEntitlement,
+  normalizeWorkspaceApiKeyInput,
+  normalizeWorkspaceName,
   roleHasWorkspaceCapability,
+  WorkspaceOperationError,
   workspaceAllowsCapability,
   type WorkspaceCapability,
 } from "./workspace.service";
@@ -59,5 +63,59 @@ describe("workspace permission matrix", () => {
     expect(workspaceAllowsCapability({ role: "owner", status: "pending_payment" }, "processing.consume")).toBe(false);
     expect(workspaceAllowsCapability({ role: "owner", status: "pending_payment" }, "members.invite")).toBe(false);
     expect(workspaceAllowsCapability({ role: "admin", status: "pending_payment" }, "content.view")).toBe(false);
+  });
+});
+
+describe("Workspace name normalization", () => {
+  test("uses the canonical service name returned to checkout state", () => {
+    expect(normalizeWorkspaceName("  Ａｃｍｅ   Studio  ")).toBe("Acme Studio");
+  });
+});
+
+describe("workspace administration failures", () => {
+  test("uses stable codes for plan and owner-only invitation refusals", () => {
+    expect(() =>
+      assertWorkspaceInviteEntitlement({
+        collaborationEnabled: true,
+        pricingTier: "free",
+        workspaceStatus: "active",
+        actorRole: "owner",
+        invitedRole: "viewer",
+      }),
+    ).toThrow(expect.objectContaining({ code: "workspace_invites_require_business" }));
+    expect(() =>
+      assertWorkspaceInviteEntitlement({
+        collaborationEnabled: true,
+        pricingTier: "business",
+        workspaceStatus: "active",
+        actorRole: "admin",
+        invitedRole: "admin",
+      }),
+    ).toThrow(
+      expect.objectContaining({ code: "workspace_admin_invite_owner_required" }),
+    );
+  });
+
+  test("uses stable codes for invalid API-key scope and plan refusal", () => {
+    expect(() =>
+      normalizeWorkspaceApiKeyInput("free", {
+        name: "Automation",
+        scopes: ["projects:read"],
+      }),
+    ).toThrow(expect.objectContaining({ code: "workspace_api_requires_business" }));
+    expect(() =>
+      normalizeWorkspaceApiKeyInput("business", {
+        name: "Automation",
+        scopes: ["billing:write"],
+      }),
+    ).toThrow(expect.objectContaining({ code: "workspace_api_scope_invalid" }));
+  });
+
+  test("duplicate-membership refusal is typed for the action mapper", () => {
+    const error = new WorkspaceOperationError(
+      "workspace_member_already_exists",
+      "This person is already a workspace member",
+    );
+    expect(error.code).toBe("workspace_member_already_exists");
   });
 });

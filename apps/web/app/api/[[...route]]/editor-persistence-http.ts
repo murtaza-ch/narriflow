@@ -2,6 +2,7 @@ import {
   ClipEditorDocumentPersistenceError,
   UnsafeUrlError,
 } from "@narriflow/services";
+import { userErrorMessage } from "@narriflow/validators";
 
 export function clipEditorPersistenceHttpError(error: unknown) {
   if (error instanceof UnsafeUrlError) {
@@ -14,11 +15,13 @@ export function clipEditorPersistenceHttpError(error: unknown) {
     case "project_not_found":
       return { status: 404 as const, body: { error: "project_not_found" } };
     case "corrupt_stored_document":
-      return { status: 409 as const, body: { error: "editor_document_corrupt" } };
+      return { status: 409 as const, body: { error: "editor_document_corrupt" },
+      };
     case "retryable_contention":
       return {
         status: 409 as const,
-        body: { error: error.code, message: error.message, retryable: true },
+        body: { error: error.code, message: userErrorMessage(error.code), retryable: true,
+        },
       };
     case "editor_boundaries_invalid":
     case "editor_document_empty_timeline":
@@ -32,7 +35,7 @@ export function clipEditorPersistenceHttpError(error: unknown) {
     default:
       return {
         status: 400 as const,
-        body: { error: error.code, message: error.message },
+        body: { error: error.code, message: userErrorMessage(error.code) },
       };
   }
 }

@@ -2,14 +2,15 @@ import Link from "next/link";
 import { Stack } from "@chakra-ui/react";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { Button } from "@narriflow/ui/components/button";
-import { requireWorkspaceAppUser } from "@/lib/workspace";
+import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 import { workspaceLibraryService, workspaceService } from "@narriflow/services";
 import { CalendarPostForm } from "./calendar-post-form";
 
 export default async function NewCalendarPostPage() {
-  const appUser = await requireWorkspaceAppUser("publishing.manage");
+  const appUser = await admitWorkspacePage("publishing.manage");
   const [options, workspace] = await Promise.all([
-    workspaceLibraryService.getCalendarComposerOptions(appUser.actorUserId, appUser.workspaceId),
+    workspaceLibraryService.getCalendarComposerOptions(appUser.actorUserId, appUser.workspaceId,
+    ),
     workspaceService.getWorkspace(appUser.actorUserId, appUser.workspaceId),
   ]);
   return (

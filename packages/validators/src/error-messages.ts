@@ -1,6 +1,55 @@
 /** Maps internal error codes to user-facing copy. Keep messages calm,
  *  specific, and actionable. Fall back to a generic message for unknowns. */
 export const USER_ERROR_MESSAGES: Record<string, string> = {
+  workspace_name_invalid:
+    "Workspace names must be between 1 and 80 characters.",
+  workspace_timezone_invalid:
+    "Enter a valid IANA timezone, such as America/New_York.",
+  workspace_collaboration_disabled:
+    "Workspace collaboration is not enabled for this account.",
+  workspace_invites_require_business:
+    "Workspace invitations require the Business plan.",
+  workspace_admin_invite_owner_required:
+    "Only Workspace owners can invite admins.",
+  workspace_invite_email_invalid: "Enter a valid email address.",
+  workspace_member_already_exists:
+    "This person is already a Workspace member.",
+  workspace_invite_unavailable: "This invitation is no longer available.",
+  workspace_api_requires_business:
+    "Workspace API keys require the Business plan.",
+  workspace_api_name_required: "Enter a name for this API key.",
+  workspace_api_scope_invalid:
+    "One or more requested API key permissions are unsupported.",
+  workspace_paid_members_unavailable:
+    "This Workspace cannot add paid members right now.",
+  workspace_billing_action_required:
+    "Resolve Workspace billing before adding a paid member.",
+  workspace_invite_invalid: "This invitation is invalid or has expired.",
+  workspace_invite_email_mismatch:
+    "Sign in with the email address this invitation was sent to.",
+  workspace_members_unavailable:
+    "This Workspace cannot accept members right now.",
+  workspace_admin_promotion_owner_required:
+    "Only Workspace owners can promote admins.",
+  workspace_member_not_found: "This member is no longer available.",
+  workspace_owner_role_immutable: "The Workspace owner role cannot be changed.",
+  workspace_admin_peer_forbidden: "Admins cannot manage other admins.",
+  workspace_owner_removal_forbidden: "The Workspace owner cannot be removed.",
+  workspace_creation_disabled:
+    "Workspace creation is not enabled for this account.",
+  workspace_user_not_found: "Your account is no longer available.",
+  workspace_limit_reached:
+    "This account has reached the Workspace limit.",
+  workspace_checkout_state_invalid:
+    "This Workspace is not awaiting Business checkout.",
+  upload_session_idempotency_conflict:
+    "This upload was already started with different settings. Start a new upload.",
+  upload_session_not_found:
+    "This upload is no longer available. Choose the file again to restart it.",
+  upload_session_invalid_state:
+    "This upload changed state. Refresh its status before trying again.",
+  upload_session_integrity_failed:
+    "The uploaded file could not be verified. Choose the file again to restart it.",
 	ingest_max_duration_exceeded:
 		"This video is longer than your plan allows. Upgrade or trim it and try again.",
 	ingest_download_failed:
@@ -195,6 +244,10 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 		"This clip has scheduled or publishing social posts. Cancel them in Publish, then delete the clip.",
 	// Extend as new codes appear.
 };
+
+export function hasUserErrorMessage(code: string): boolean {
+	return Object.hasOwn(USER_ERROR_MESSAGES, code);
+}
 
 export function userErrorMessage(
 	code: string | null | undefined,

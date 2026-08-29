@@ -7,7 +7,7 @@ import { Button } from "@narriflow/ui/components/button";
 import { ActionSubmitButton } from "@narriflow/ui/components/action-submit-button";
 import { Select } from "@narriflow/ui/components/select";
 import { workspaceLibraryService, workspaceService } from "@narriflow/services";
-import { requireWorkspaceAppUser } from "@/lib/workspace";
+import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 import type { SocialPlatform, SocialPostStatus } from "@prisma/client";
 import {
 	describeSocialPost,
@@ -17,6 +17,7 @@ import {
 } from "@/lib/social-post-status";
 import { cancelWorkspacePostAction } from "./actions";
 import { CalendarLiveRefresh } from "./calendar-live-refresh";
+import { AuthenticatedActionForm } from "@/app/_components/authenticated-action-form";
 
 type CalendarView = "month" | "week" | "list";
 
@@ -134,7 +135,7 @@ export default async function CalendarPage({
 		project?: string;
 	}>;
 }) {
-	const appUser = await requireWorkspaceAppUser();
+	const appUser = await admitWorkspacePage("content.view");
 	const params = await searchParams;
 	const view: CalendarView =
 		params.view === "week" || params.view === "list" ? params.view : "month";
@@ -364,7 +365,7 @@ export default async function CalendarPage({
 								{canEdit &&
 								(post.status === "preparing_video" ||
 									post.status === "scheduled") ? (
-									<form
+									<AuthenticatedActionForm
 										action={cancelWorkspacePostAction.bind(
 											null,
 											post.projectId,
@@ -379,7 +380,7 @@ export default async function CalendarPage({
 											<X size={12} />
 											Cancel
 										</ActionSubmitButton>
-									</form>
+									</AuthenticatedActionForm>
 								) : null}
 								{post.status === "needs_attention" ? (
 									<Button size="xs" variant="ghost" asChild>

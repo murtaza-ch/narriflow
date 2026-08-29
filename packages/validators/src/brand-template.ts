@@ -19,7 +19,7 @@ export const brandTemplateInputSchema = z.object({
   primaryColor: hexColorSchema.default("#FFFFFF"),
   secondaryColor: hexColorSchema.default("#00FF88"),
   accentColor: hexColorSchema.nullable().optional(),
-});
+}).strict();
 
 export type BrandTemplateInput = z.infer<typeof brandTemplateInputSchema>;
 
@@ -63,13 +63,13 @@ export type BrandTemplateSummary = z.infer<typeof brandTemplateSummarySchema>;
 
 export const duplicateBrandTemplateSchema = z.object({
   name: z.string().min(1).max(60).optional(),
-});
+}).strict();
 
 export type DuplicateBrandTemplateInput = z.infer<typeof duplicateBrandTemplateSchema>;
 
 export const presignBrandLogoSchema = z.object({
   contentType: z.enum(["image/png", "image/svg+xml", "image/jpeg", "image/webp"]),
   sizeBytes: z.number().int().positive().max(2 * 1024 * 1024),
-});
+}).strict();
 
 export type PresignBrandLogoInput = z.infer<typeof presignBrandLogoSchema>;

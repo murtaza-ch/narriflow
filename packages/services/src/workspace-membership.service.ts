@@ -3,6 +3,7 @@ import type { Prisma, WorkspaceRole } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 
 import {
+  WorkspaceOperationError,
   workspaceService,
   workspacesV1EnabledForUser,
 } from "./workspace.service";
@@ -34,13 +35,19 @@ async function requireBillableAdditionAllowed(
     workspace.status !== "active" ||
     workspace.pricingTier !== "business"
   ) {
-    throw new Error("This workspace cannot add paid members right now");
+    throw new WorkspaceOperationError(
+      "workspace_paid_members_unavailable",
+      "This workspace cannot add paid members right now",
+    );
   }
   if (
     workspace.billingAccount?.health === "attention_required" ||
     workspace.billingAccount?.health === "payment_action_required"
   ) {
-    throw new Error("Resolve workspace billing before adding a paid member");
+    throw new WorkspaceOperationError(
+      "workspace_billing_action_required",
+      "Resolve workspace billing before adding a paid member",
+    );
   }
 }
 
@@ -63,7 +70,10 @@ async function markSeatCountChanged(
 export class WorkspaceMembershipService {
   async acceptInvite(userId: string, rawToken: string) {
     if (!workspacesV1EnabledForUser(userId)) {
-      throw new Error("Workspace collaboration is not enabled for this account");
+      throw new WorkspaceOperationError(
+        "workspace_collaboration_disabled",
+        "Workspace collaboration is not enabled for this account",
+      );
     }
     const prisma = requiredPrisma();
     const tokenHash = createHash("sha256").update(rawToken).digest("hex");
@@ -74,18 +84,27 @@ export class WorkspaceMembershipService {
       },
     });
     if (!invite || invite.revokedAt || invite.acceptedAt || invite.expiresAt <= new Date()) {
-      throw new Error("This invitation is invalid or has expired");
+      throw new WorkspaceOperationError(
+        "workspace_invite_invalid",
+        "This invitation is invalid or has expired",
+      );
     }
     const user = await prisma.user.findUnique({ where: { id: userId }, select: { primaryEmail: true } });
     if (!user?.primaryEmail || user.primaryEmail.toLocaleLowerCase("en-US") !== invite.email.toLocaleLowerCase("en-US")) {
-      throw new Error("Sign in with the email address this invitation was sent to");
+      throw new WorkspaceOperationError(
+        "workspace_invite_email_mismatch",
+        "Sign in with the email address this invitation was sent to",
+      );
     }
     if (
       (invite.workspace.pricingTier !== "business" ||
         invite.workspace.status !== "active") &&
       !(invite.role === "viewer" && invite.workspace.status === "restricted")
     ) {
-      throw new Error("This workspace cannot accept members right now");
+      throw new WorkspaceOperationError(
+        "workspace_members_unavailable",
+        "This workspace cannot accept members right now",
+      );
     }
 
     const existing = await prisma.workspaceMember.findUnique({
@@ -105,7 +124,12 @@ export class WorkspaceMembershipService {
           expiresAt: { gt: new Date() },
         },
       });
-      if (!fresh) throw new Error("This invitation is no longer available");
+      if (!fresh) {
+        throw new WorkspaceOperationError(
+          "workspace_invite_unavailable",
+          "This invitation is no longer available",
+        );
+      }
       if (isBillable(fresh.role)) {
         await requireBillableAdditionAllowed(tx, invite.workspaceId);
       }
@@ -137,16 +161,34 @@ export class WorkspaceMembershipService {
     nextRole: Exclude<WorkspaceRole, "owner">,
   ) {
     const actor = await workspaceService.requireActor(actorUserId, workspaceId, "members.invite");
-    if (nextRole === "admin" && actor.role !== "owner") throw new Error("Only owners can promote admins");
+    if (nextRole === "admin" && actor.role !== "owner") {
+      throw new WorkspaceOperationError(
+        "workspace_admin_promotion_owner_required",
+        "Only owners can promote admins",
+      );
+    }
     const prisma = requiredPrisma();
     return prisma.$transaction(async (tx) => {
       const member = await tx.workspaceMember.findFirst({
         where: { id: memberId, workspaceId },
       });
-      if (!member) throw new Error("Member not found");
-      if (member.role === "owner") throw new Error("The owner role cannot be changed");
+      if (!member) {
+        throw new WorkspaceOperationError(
+          "workspace_member_not_found",
+          "Member not found",
+        );
+      }
+      if (member.role === "owner") {
+        throw new WorkspaceOperationError(
+          "workspace_owner_role_immutable",
+          "The owner role cannot be changed",
+        );
+      }
       if (actor.role === "admin" && member.role === "admin") {
-        throw new Error("Admins cannot manage other admins");
+        throw new WorkspaceOperationError(
+          "workspace_admin_peer_forbidden",
+          "Admins cannot manage other admins",
+        );
       }
       if (member.role === nextRole) return member;
       const delta = Number(isBillable(nextRole)) - Number(isBillable(member.role));
@@ -169,10 +211,16 @@ export class WorkspaceMembershipService {
       });
       if (!member) return;
       if (member.role === "owner") {
-        throw new Error("The workspace owner cannot be removed");
+        throw new WorkspaceOperationError(
+          "workspace_owner_removal_forbidden",
+          "The workspace owner cannot be removed",
+        );
       }
       if (actor.role === "admin" && member.role === "admin") {
-        throw new Error("Admins cannot remove other admins");
+        throw new WorkspaceOperationError(
+          "workspace_admin_peer_forbidden",
+          "Admins cannot remove other admins",
+        );
       }
       await tx.workspaceMember.delete({ where: { id: member.id } });
       await markSeatCountChanged(tx, workspaceId, isBillable(member.role) ? -1 : 0);

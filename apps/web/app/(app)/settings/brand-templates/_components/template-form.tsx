@@ -27,6 +27,10 @@ import {
   createBrandTemplateAction,
   updateBrandTemplateAction,
 } from "../actions";
+import {
+  authenticatedRequestFailureMessage,
+  isAuthenticatedActionFailure,
+} from "@/lib/authenticated-request-browser";
 
 const POSITION_GRID: LogoPosition[][] = [
   ["top-left", "top-center", "top-right"],
@@ -245,10 +249,34 @@ export function TemplateForm({ mode, initialTemplate }: TemplateFormProps) {
       try {
         if (mode === "create") {
           const created = await createBrandTemplateAction(parsed.data);
+          if (isAuthenticatedActionFailure(created)) {
+            toaster.create({
+              type: "error",
+              title: "Save failed",
+              description: authenticatedRequestFailureMessage(
+                created,
+                window.location.pathname,
+                "The template could not be created.",
+              ),
+            });
+            return;
+          }
           toaster.create({ type: "success", title: "Template created" });
           router.push(`/brand-kit/${created.id}`);
         } else if (initialTemplate) {
-          await updateBrandTemplateAction(initialTemplate.id, parsed.data);
+          const updated = await updateBrandTemplateAction(initialTemplate.id, parsed.data);
+          if (isAuthenticatedActionFailure(updated)) {
+            toaster.create({
+              type: "error",
+              title: "Save failed",
+              description: authenticatedRequestFailureMessage(
+                updated,
+                window.location.pathname,
+                "The template could not be saved.",
+              ),
+            });
+            return;
+          }
           toaster.create({ type: "success", title: "Template saved" });
           router.refresh();
         }

@@ -1,6 +1,6 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
-import { requireWorkspaceProject } from "@/lib/workspace";
+import { admitProjectPage } from "@/lib/authenticated-request-page";
 import { clipService } from "@narriflow/services";
 import { Box, Flex, Stack, Text } from "@chakra-ui/react";
 import { ChevronRight } from "lucide-react";
@@ -14,9 +14,10 @@ export default async function ClipEditPage({
   params: Promise<{ projectId: string; clipId: string }>;
 }) {
   const { projectId, clipId } = await params;
-  const appUser = await requireWorkspaceProject(projectId, "content.edit");
+  const appUser = await admitProjectPage(projectId, "content.edit");
 
-  const clips = await clipService.listClips(appUser.id, projectId);
+  const clips = await clipService.listClips(appUser.workspaceOwnerUserId, projectId,
+  );
   const clip = clips.find((c) => c.id === clipId);
   if (!clip) notFound();
 

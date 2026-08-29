@@ -1,14 +1,17 @@
 import { redirect } from "next/navigation";
 import { listUserWorkspaces } from "@narriflow/auth";
-import { getCurrentWorkspaceAppUser as getCurrentAppUser } from "@/lib/workspace";
+import { admitOptionalWorkspacePage } from "@/lib/authenticated-request-page";
 import { Box } from "@chakra-ui/react";
 import { resolvePricingTier } from "@narriflow/validators";
 import { AppChrome } from "./_components/app-chrome";
 import { getCachedDashboardStats } from "./_components/usage";
-import { workspaceService, workspacesV1EnabledForUser } from "@narriflow/services";
+import { workspaceService, workspacesV1EnabledForUser,
+} from "@narriflow/services";
 
-export default async function AppLayout({ children }: { children: React.ReactNode }) {
-  const appUser = await getCurrentAppUser();
+export default async function AppLayout({ children,
+}: { children: React.ReactNode;
+}) {
+  const appUser = await admitOptionalWorkspacePage("content.view");
 
   if (!appUser) {
     redirect("/sign-in");
@@ -47,6 +50,7 @@ export default async function AppLayout({ children }: { children: React.ReactNod
         usedMinutes={stats.usedMinutes}
         limitMinutes={stats.limitMinutes}
         activeWorkspaceId={appUser.workspaceId}
+        workspaceSelectionChanged={appUser.workspaceSelectionChanged}
         workspaceRole={appUser.workspace.role}
         workspaceStatus={appUser.workspace.status}
         workspaceTier={resolvePricingTier(appUser.workspace.pricingTier)}

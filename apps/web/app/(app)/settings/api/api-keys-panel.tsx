@@ -8,6 +8,10 @@ import { Button } from "@narriflow/ui/components/button";
 import { Checkbox } from "@narriflow/ui/components/checkbox";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { createApiKeyAction, revokeApiKeyAction } from "../actions";
+import {
+  authenticatedActionResultMessage,
+  isAuthenticatedActionFailure,
+} from "@/lib/authenticated-request-browser";
 
 export function ApiKeysPanel({
   keys,
@@ -37,7 +41,9 @@ export function ApiKeysPanel({
           ...(allowAutopilotWrites ? ["autopilot:write"] : []),
         ],
       });
-      if (!result.ok) return setError(result.error);
+      if (!result.ok) {
+        return setError(authenticatedActionResultMessage(result, "The API key could not be created."));
+      }
       setName("");
       setSecret(result.key.secret);
       router.refresh();
@@ -46,7 +52,16 @@ export function ApiKeysPanel({
 
   function revoke(keyId: string) {
     startTransition(async () => {
-      await revokeApiKeyAction(keyId);
+      const result = await revokeApiKeyAction(keyId);
+      if (isAuthenticatedActionFailure(result)) {
+        setError(
+          authenticatedActionResultMessage(
+            result,
+            "The API key could not be revoked.",
+          ),
+        );
+        return;
+      }
       router.refresh();
     });
   }

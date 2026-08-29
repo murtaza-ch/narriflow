@@ -112,13 +112,13 @@ export interface ProjectListItem extends ProjectSnapshot {
 }
 
 export type ProjectListStatusFilter =
-	| "all"
+  "all"
 	| "ready"
 	| "processing"
 	| "queued"
 	| "failed";
 export type ProjectListSourceFilter =
-	| "all"
+  "all"
 	| "youtube"
 	| "link"
 	| "upload"
@@ -135,7 +135,7 @@ export interface ProjectListPage {
 type ProjectAccessResult = "owned" | "forbidden" | "missing";
 
 type IngestLifecycleStatus =
-	| "queued"
+  "queued"
 	| "downloading"
 	| "normalizing"
 	| "ready"
@@ -605,7 +605,7 @@ export function isAutoRetryableFailureCode(errorCode: string): boolean {
 }
 
 export type AutoRetryDecision =
-	| { outcome: "requeue" }
+  { outcome: "requeue" }
 	| { outcome: "permanent"; terminalErrorCode: string };
 
 /**
@@ -691,6 +691,15 @@ export class ProjectNotFoundError extends Error {
 	constructor() {
 		super("Project not found.");
 		this.name = "ProjectNotFoundError";
+	}
+}
+
+export class LinkUnsupportedSourceError extends Error {
+  readonly code = "link_unsupported_source";
+
+  constructor() {
+    super("This link source is not supported.");
+    this.name = "LinkUnsupportedSourceError";
 	}
 }
 
@@ -2061,7 +2070,7 @@ export class ProjectService {
 
 		const provider = detectLinkProvider(parsed.url);
 		if (!provider) {
-			throw new Error("link_unsupported_source");
+			throw new LinkUnsupportedSourceError();
 		}
 		const sourceType = provider === "youtube" ? "youtube" : "link";
 
@@ -4011,7 +4020,7 @@ export class ProjectService {
 		}
 
 		let brandSnapshotData:
-			| Prisma.InputJsonValue
+      Prisma.InputJsonValue
 			| typeof Prisma.JsonNull
 			| undefined;
 		let brandTemplateIdData: string | null | undefined;

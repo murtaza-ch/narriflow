@@ -2,11 +2,6 @@ import "server-only";
 
 import { auth, currentUser, type UserJSON } from "@clerk/nextjs/server";
 import { getPrismaClient } from "@narriflow/db/client";
-import {
-  roleHasWorkspaceCapability,
-  workspaceAllowsCapability,
-  type WorkspaceCapability,
-} from "@narriflow/validators";
 import { cookies } from "next/headers";
 import { Prisma } from "@prisma/client";
 import type {
@@ -32,6 +27,7 @@ export interface WorkspaceActorContext {
   status: WorkspaceStatus;
   pricingTier: PricingTier;
   isPersonal: boolean;
+  workspaceSelectionChanged: boolean;
 }
 
 export type { WorkspaceCapability } from "@narriflow/validators";
@@ -48,7 +44,8 @@ function getRequiredPrisma() {
   const prisma = getPrismaClient();
 
   if (!prisma) {
-    throw new Error("DATABASE_URL must be configured for authentication features");
+    throw new Error("DATABASE_URL must be configured for authentication features",
+    );
   }
 
   return prisma;
@@ -89,12 +86,14 @@ function getValue(record: Record<string, unknown>, keys: string[]): unknown {
   return undefined;
 }
 
-function getString(record: Record<string, unknown>, keys: string[]): string | null {
+function getString(record: Record<string, unknown>, keys: string[],
+): string | null {
   const value = getValue(record, keys);
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
-function getRecord(record: Record<string, unknown>, keys: string[]): Record<string, unknown> | null {
+function getRecord(record: Record<string, unknown>, keys: string[],
+): Record<string, unknown> | null {
   const value = getValue(record, keys);
   return asRecord(value);
 }
@@ -108,8 +107,10 @@ function getEmailFromEntry(entry: Record<string, unknown>): string | null {
   return getString(entry, ["email_address", "emailAddress"]);
 }
 
-function getPrimaryEmailEntry(user: Record<string, unknown>): Record<string, unknown> | null {
-  const primaryFromObject = getRecord(user, ["primaryEmailAddress", "primary_email_address"]);
+function getPrimaryEmailEntry(user: Record<string, unknown>,
+): Record<string, unknown> | null {
+  const primaryFromObject = getRecord(user, ["primaryEmailAddress", "primary_email_address",
+  ]);
   if (primaryFromObject) {
     return primaryFromObject;
   }
@@ -118,10 +119,12 @@ function getPrimaryEmailEntry(user: Record<string, unknown>): Record<string, unk
     .map((entry) => asRecord(entry))
     .filter((entry): entry is Record<string, unknown> => entry !== null);
 
-  const primaryEmailAddressId = getString(user, ["primary_email_address_id", "primaryEmailAddressId"]);
+  const primaryEmailAddressId = getString(user, ["primary_email_address_id", "primaryEmailAddressId",
+  ]);
 
   if (primaryEmailAddressId) {
-    const preferred = emailEntries.find((entry) => getString(entry, ["id"]) === primaryEmailAddressId);
+    const preferred = emailEntries.find((entry) => getString(entry, ["id"]) === primaryEmailAddressId,
+    );
     if (preferred) {
       return preferred;
     }
@@ -139,7 +142,8 @@ function extractPrimaryEmail(user: Record<string, unknown>): string | null {
   return getEmailFromEntry(primaryEntry);
 }
 
-function extractPrimaryEmailVerifiedAt(user: Record<string, unknown>): Date | null {
+function extractPrimaryEmailVerifiedAt(user: Record<string, unknown>,
+): Date | null {
   const primaryEntry = getPrimaryEmailEntry(user);
 
   if (!primaryEntry) {
@@ -153,7 +157,8 @@ function extractPrimaryEmailVerifiedAt(user: Record<string, unknown>): Date | nu
     return null;
   }
 
-  const emailUpdatedAt = parseDate(getValue(primaryEntry, ["updated_at", "updatedAt"]));
+  const emailUpdatedAt = parseDate(getValue(primaryEntry, ["updated_at", "updatedAt"]),
+  );
   if (emailUpdatedAt) {
     return emailUpdatedAt;
   }
@@ -209,7 +214,8 @@ interface ClerkIdentityShape {
   email: string | null;
 }
 
-function extractIdentities(user: Record<string, unknown>): ClerkIdentityShape[] {
+function extractIdentities(user: Record<string, unknown>,
+): ClerkIdentityShape[] {
   const identities: ClerkIdentityShape[] = [];
   const primaryEmail = extractPrimaryEmail(user);
   const clerkUserId = getString(user, ["id"]);
@@ -222,13 +228,15 @@ function extractIdentities(user: Record<string, unknown>): ClerkIdentityShape[] 
     });
   }
 
-  const externalAccounts = getArray(user, ["external_accounts", "externalAccounts"])
+  const externalAccounts = getArray(user, ["external_accounts", "externalAccounts",
+  ])
     .map((account) => asRecord(account))
     .filter((account): account is Record<string, unknown> => account !== null);
 
   for (const account of externalAccounts) {
     const provider = mapProvider(getString(account, ["provider"]));
-    const providerUserId = getString(account, ["provider_user_id", "providerUserId"]);
+    const providerUserId = getString(account, ["provider_user_id", "providerUserId",
+    ]);
 
     if (!provider || !providerUserId) {
       continue;
@@ -244,7 +252,8 @@ function extractIdentities(user: Record<string, unknown>): ClerkIdentityShape[] 
   return identities;
 }
 
-async function upsertIdentity(userId: string, identity: ClerkIdentityShape): Promise<AuthIdentity> {
+async function upsertIdentity(userId: string, identity: ClerkIdentityShape,
+): Promise<AuthIdentity> {
   const prisma = getRequiredPrisma();
 
   return prisma.authIdentity.upsert({
@@ -269,7 +278,8 @@ async function upsertIdentity(userId: string, identity: ClerkIdentityShape): Pro
   });
 }
 
-export async function getWebhookDeliveryLog(provider: WebhookProvider, eventId: string) {
+export async function getWebhookDeliveryLog(provider: WebhookProvider, eventId: string,
+) {
   const prisma = getRequiredPrisma();
 
   return prisma.webhookDeliveryLog.findUnique({
@@ -282,7 +292,8 @@ export async function getWebhookDeliveryLog(provider: WebhookProvider, eventId: 
   });
 }
 
-export async function recordWebhookDeliveryLog(input: WebhookDeliveryRecordInput) {
+export async function recordWebhookDeliveryLog(input: WebhookDeliveryRecordInput,
+) {
   const prisma = getRequiredPrisma();
 
   return prisma.webhookDeliveryLog.upsert({
@@ -308,7 +319,8 @@ export async function recordWebhookDeliveryLog(input: WebhookDeliveryRecordInput
   });
 }
 
-export async function syncClerkUserPayload(clerkUser: Partial<UserJSON> | Record<string, unknown>) {
+export async function syncClerkUserPayload(clerkUser: Partial<UserJSON> | Record<string, unknown>,
+) {
   const payload = asRecord(clerkUser);
   const clerkId = payload ? getString(payload, ["id"]) : null;
 
@@ -322,7 +334,8 @@ export async function syncClerkUserPayload(clerkUser: Partial<UserJSON> | Record
   const firstName = getString(payload, ["first_name", "firstName"]);
   const lastName = getString(payload, ["last_name", "lastName"]);
   const imageUrl = getString(payload, ["image_url", "imageUrl"]);
-  const lastSignInAt = parseDate(getValue(payload, ["last_sign_in_at", "lastSignInAt"]));
+  const lastSignInAt = parseDate(getValue(payload, ["last_sign_in_at", "lastSignInAt"]),
+  );
 
   const userData = {
     primaryEmail,
@@ -373,7 +386,8 @@ export async function syncClerkUserPayload(clerkUser: Partial<UserJSON> | Record
   }
 
   const identities = extractIdentities(payload);
-  await Promise.all(identities.map((identity) => upsertIdentity(appUser.id, identity)));
+  await Promise.all(identities.map((identity) => upsertIdentity(appUser.id, identity)),
+  );
 
   await ensureFirstUseBrandTemplate(appUser.id);
   await ensurePersonalWorkspace(appUser.id);
@@ -400,7 +414,8 @@ async function ensureFirstUseBrandTemplate(userId: string): Promise<void> {
   }
 
   const fallback = await prisma.brandTemplate.findFirst({
-    where: { isBuiltIn: true, builtInKey: FIRST_USE_BRAND_TEMPLATE_KEY, deletedAt: null },
+    where: { isBuiltIn: true, builtInKey: FIRST_USE_BRAND_TEMPLATE_KEY, deletedAt: null,
+    },
     select: { id: true },
   });
   if (!fallback) return;
@@ -411,7 +426,8 @@ async function ensureFirstUseBrandTemplate(userId: string): Promise<void> {
   });
 }
 
-function personalWorkspaceName(user: Pick<User, "firstName" | "lastName">): string {
+function personalWorkspaceName(user: Pick<User, "firstName" | "lastName">,
+): string {
   const fullName = [user.firstName, user.lastName].filter(Boolean).join(" ").trim();
   return fullName ? `${fullName}'s workspace` : "Personal workspace";
 }
@@ -509,7 +525,9 @@ function toWorkspaceActorContext(input: {
     status: WorkspaceStatus;
     pricingTier: PricingTier;
   };
-}): WorkspaceActorContext {
+},
+  workspaceSelectionChanged = false,
+): WorkspaceActorContext {
   return {
     userId: input.userId,
     workspaceId: input.workspace.id,
@@ -519,6 +537,7 @@ function toWorkspaceActorContext(input: {
     status: input.workspace.status,
     pricingTier: input.workspace.pricingTier,
     isPersonal: input.workspace.personalOwnerUserId !== null,
+    workspaceSelectionChanged,
   };
 }
 
@@ -546,55 +565,32 @@ export async function getWorkspaceContextForUser(
   const requestedMembership = requestedWorkspaceId
     ? await prisma.workspaceMember.findUnique({
         where: {
-          workspaceId_userId: { workspaceId: requestedWorkspaceId, userId: user.id },
+          workspaceId_userId: { workspaceId: requestedWorkspaceId, userId: user.id,
+          },
         },
         include: includeWorkspace,
       })
     : null;
 
   if (
-    requestedMembership &&
-    (requestedMembership.workspace.personalOwnerUserId === user.id ||
-      workspacesV1EnabledForUser(user.id))
-  ) {
+    requestedMembership) {
     return toWorkspaceActorContext(requestedMembership);
   }
 
   const personalWorkspace = await ensurePersonalWorkspace(user.id);
   const fallbackMembership = await prisma.workspaceMember.findUnique({
     where: {
-      workspaceId_userId: { workspaceId: personalWorkspace.id, userId: user.id },
+      workspaceId_userId: { workspaceId: personalWorkspace.id, userId: user.id,
+      },
     },
     include: includeWorkspace,
   });
 
-  return fallbackMembership ? toWorkspaceActorContext(fallbackMembership) : null;
-}
-
-/** Resolve the active workspace from a validated membership, never from the cookie alone. */
-export async function getCurrentWorkspaceContext(): Promise<WorkspaceActorContext | null> {
-  const user = await getCurrentAppUser();
-  return user ? getWorkspaceContextForUser(user) : null;
-}
-
-export async function requireWorkspaceContext(): Promise<WorkspaceActorContext> {
-  const context = await getCurrentWorkspaceContext();
-  if (!context) throw new Error("Unauthorized");
-  return context;
-}
-
-export function hasWorkspaceCapability(
-  role: WorkspaceRole,
-  capability: WorkspaceCapability,
-): boolean {
-  return roleHasWorkspaceCapability(role, capability);
-}
-
-export function assertWorkspaceCapability(
-  context: WorkspaceActorContext,
-  capability: WorkspaceCapability,
-): void {
-  if (!workspaceAllowsCapability(context, capability)) throw new Error("Forbidden");
+  return fallbackMembership ? toWorkspaceActorContext(fallbackMembership,
+        Boolean(
+          requestedWorkspaceId && requestedWorkspaceId !== personalWorkspace.id,
+        ),
+      ) : null;
 }
 
 export async function listUserWorkspaces(userId: string) {
@@ -603,11 +599,9 @@ export async function listUserWorkspaces(userId: string) {
   return prisma.workspaceMember.findMany({
     where: {
       userId,
-      ...(workspacesV1EnabledForUser(userId)
-        ? {}
-        : { workspace: { personalOwnerUserId: userId } }),
     },
-    orderBy: [{ workspace: { personalOwnerUserId: "desc" } }, { joinedAt: "asc" }],
+    orderBy: [{ workspace: { personalOwnerUserId: "desc" } }, { joinedAt: "asc" },
+    ],
     select: {
       role: true,
       workspace: {
@@ -630,22 +624,17 @@ export async function listCurrentUserWorkspaces() {
   return listUserWorkspaces(user.id);
 }
 
-/** Validate membership before persisting the clean-URL workspace selection. */
-export async function setActiveWorkspace(workspaceId: string): Promise<void> {
-  const user = await requireCurrentAppUser();
+/** Validate explicit actor membership before persisting the clean-URL workspace selection. */
+export async function setActiveWorkspaceForActor(
+  actorUserId: string,
+  workspaceId: string,
+): Promise<void> {
   const prisma = getRequiredPrisma();
   const membership = await prisma.workspaceMember.findUnique({
-    where: { workspaceId_userId: { workspaceId, userId: user.id } },
+    where: { workspaceId_userId: { workspaceId, userId: actorUserId } },
     select: { id: true, workspace: { select: { personalOwnerUserId: true } } },
   });
   if (!membership) throw new Error("Forbidden");
-  if (
-    membership.workspace.personalOwnerUserId !== user.id &&
-    !workspacesV1EnabledForUser(user.id)
-  ) {
-    throw new Error("Workspace collaboration is not enabled for this account");
-  }
-
   const cookieStore = await cookies();
   cookieStore.set(ACTIVE_WORKSPACE_COOKIE, workspaceId, {
     httpOnly: true,
@@ -731,7 +720,8 @@ export async function requireCurrentAppUser(): Promise<AppUser> {
   return user;
 }
 
-export async function getAppUserByClerkId(clerkId: string): Promise<AppUser | null> {
+export async function getAppUserByClerkId(clerkId: string,
+): Promise<AppUser | null> {
   const prisma = getRequiredPrisma();
   return prisma.user.findFirst({ where: { clerkId, deletedAt: null } });
 }

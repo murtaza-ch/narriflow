@@ -460,8 +460,8 @@ const CREATE_FROM_SELECTION_TITLE_WORD_COUNT = 8;
  *  chain's asset-orphaning risk, not adding a new external call), so both
  *  are derived straight from the selected text itself. */
 function deriveTitleAndHookFromSlice(
-  transcriptSlice: TranscriptUtterance[],
-): { title: string; hookText: string } {
+  transcriptSlice: TranscriptUtterance[]): { title: string; hookText: string;
+} {
   const fullText = transcriptSlice
     .map((u) => u.text.trim())
     .filter(Boolean)
@@ -546,7 +546,8 @@ export function planStudioEditsForClipFromSelection(
 export function planCreateClipFromSelection(
   input: CreateClipFromSelectionPlanInput,
 ): CreateClipFromSelectionPlan {
-  const sentenceUtterances = splitUtterancesIntoSentences(input.rawUtterances ?? []);
+  const sentenceUtterances = splitUtterancesIntoSentences(input.rawUtterances ?? [],
+  );
   const tokens = collectSelectionTokens(sentenceUtterances);
 
   if (tokens.length === 0) {
@@ -631,7 +632,8 @@ export function planCreateClipFromSelection(
     while (endIndex > startIndex && tokens[endIndex]!.endSec > maxEnd) {
       endIndex -= 1;
     }
-    endSec = Math.max(tokens[endIndex]!.endSec, startSec + CLIP_MIN_DURATION_SEC);
+    endSec = Math.max(tokens[endIndex]!.endSec, startSec + CLIP_MIN_DURATION_SEC,
+    );
   }
 
   startSec = roundSec(Math.max(0, Math.min(startSec, sourceDurationSec)));
@@ -640,7 +642,8 @@ export function planCreateClipFromSelection(
   const transcriptSlice = buildTranscriptSliceForWindow(input.rawUtterances ?? [], {
     startSec,
     endSec,
-  });
+  },
+  );
 
   const durationSec = roundSec(endSec - startSec);
   const { title, hookText } = deriveTitleAndHookFromSlice(transcriptSlice);
@@ -679,7 +682,8 @@ export function planCreateClipFromSelection(
     viralityScore,
     tiktokScore: computePlatformScore(viralityScore, durationSec, "tiktok"),
     youtubeScore: computePlatformScore(viralityScore, durationSec, "youtube"),
-    instagramScore: computePlatformScore(viralityScore, durationSec, "instagram"),
+    instagramScore: computePlatformScore(viralityScore, durationSec, "instagram",
+    ),
   };
 }
 
@@ -839,7 +843,7 @@ export class ClipService {
         renders: true,
       },
     });
-    if (!clip) throw new Error("clip not found");
+    if (!clip) throw new ClipActionError("clip_not_found", "Clip not found");
     return toClipSnapshot(clip);
   }
 
@@ -1128,8 +1132,8 @@ export class ClipService {
       );
     }
 
-    const payload = (await response.json().catch(() => null)) as
-      | { error?: { message?: string } }
+    const payload = (await response.json().catch(() => null)) as { error?: { message?: string };
+    }
       | null;
 
     if (!response.ok || !payload) {
@@ -2349,7 +2353,7 @@ export class ClipService {
   ): Promise<{
     previews: Record<
       string,
-      | {
+      {
           downloadUrl: string;
           expiresInSeconds: number;
           fileName: string;
@@ -2858,7 +2862,8 @@ export class ClipService {
         analysis: parsed as unknown as Prisma.InputJsonValue,
         editorRevision: expected.editorRevision,
         previewStorageKey: expected.previewStorageKey,
-      });
+      },
+      );
     }
     const result = await prisma.clip.updateMany({
       where: {
@@ -3041,10 +3046,12 @@ export class ClipService {
       document: result.document,
       original: result.original,
       layoutAnalysis: parseClipLayoutAnalysis(result.evidence.screen),
-      autoLayoutAnalysis: parseClipAutoLayoutAnalysis(result.evidence.automatic),
+      autoLayoutAnalysis: parseClipAutoLayoutAnalysis(result.evidence.automatic,
+      ),
       splitLayoutAnalysis: parseClipSplitLayoutAnalysis(result.evidence.split),
       splitLayoutFailure: parseClipSplitLayoutFailure(result.evidence.split),
-      layoutAnalysisFailure: parseClipLayoutAnalysisFailure(result.evidence.screen),
+      layoutAnalysisFailure: parseClipLayoutAnalysisFailure(result.evidence.screen,
+      ),
     };
   }
 
