@@ -3,6 +3,12 @@
 Narriflow turns long videos into short, captioned, virality-scored clips
 (OpusClip-class), plus content repurposing, dubbing, and social publishing.
 
+## Engineering principles
+
+I like ambitious ideas, simple systems, and software that feels obvious. Do not preserve complexity just because it already exists. Do not introduce machinery because it looks architecturally impressive. Understand the real constraint, then fight for the smallest model that makes the correct behavior unsurprising.
+
+Channel both "measure twice, cut once" and YAGNI. Fight scope creep. Honor the developer's intent in a minimal, realistic way.
+
 ## Monorepo layout (Bun + Turborepo)
 
 - `apps/web` — Next.js 16 App Router + Hono API (`app/api/[[...route]]/route.ts`) + Clerk auth.
