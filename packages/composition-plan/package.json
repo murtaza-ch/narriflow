@@ -13,7 +13,6 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "lint": "echo 'composition-plan lint: no-op'",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "bun test",
     "clean": "rm -rf dist"

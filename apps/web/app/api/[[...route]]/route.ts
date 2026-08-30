@@ -101,6 +101,7 @@ import { createUploadSessionHttpRoutes } from "./upload-session-http";
 import { createStripeWebhookHttpRoutes } from "./stripe-webhook-http";
 import { createWorkspaceBillingHttpRoutes } from "./workspace-billing-routes";
 import { clipEditorPersistenceHttpError } from "./editor-persistence-http";
+import { clipDeleteHttpError } from "./clip-delete-http";
 
 export const runtime = "nodejs";
 // Content-suite generation makes a synchronous LLM call that can take ~30s.
@@ -1209,7 +1210,10 @@ app.delete("/projects/:id/clips/:clipId", async (c) => {
   const projectId = c.req.param("id");
 
   try {
-    await clipService.deleteClip(appUser.workspaceOwnerUserId, projectId, c.req.param("clipId"),
+    await clipService.deleteClip(
+      appUser.workspaceOwnerUserId,
+      projectId,
+      c.req.param("clipId"),
     );
     return c.json({ ok: true }, 200);
   } catch (error) {
@@ -1217,18 +1221,13 @@ app.delete("/projects/:id/clips/:clipId", async (c) => {
       projectId,
       clipId: c.req.param("clipId"),
     });
-    if (error instanceof ClipActionError) {
-      return c.json(
-        { error: error.code, message: errorMessage(error) },
-        error.code === "clip_not_found"
-          ? 404
-          : error.code === "clip_has_scheduled_posts"
-            ? 409
-            : 400,
-      );
-    }
+    const translated = clipDeleteHttpError(error);
+    if (translated) return c.json(translated.body, translated.status);
     return c.json(
-      { error: "clip_delete_failed", message: errorMessage(error) },
+      {
+        error: "clip_delete_failed",
+        message: userErrorMessage("clip_delete_failed"),
+      },
       400,
     );
   }

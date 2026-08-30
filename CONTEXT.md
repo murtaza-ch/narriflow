@@ -92,6 +92,10 @@ _Avoid_: Exception string, error-code registry
 A persistent execution record for bringing source media into a project before post-ingest processing begins.
 _Avoid_: Workflow run, upload task
 
+**Media Cleanup**:
+The durable execution module that owns exact-key removal of unreferenced private media after an approved producer commits its database state. It owns idempotent obligation admission, provisional copy-compensation holds, fenced claims, renewal, storage outcome classification, bounded retry, settlement, and identifier-safe diagnostics. Clip Editor Document Persistence, detected Clip replacement, and Clip duplication still own the decision and transaction that create or adopt cleanup intent.
+_Avoid_: Editor Media Cleanup, best-effort delete, cleanup callback
+
 ## Brand and delivery
 
 **Workspace Billing Account**:

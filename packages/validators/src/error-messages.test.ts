@@ -107,6 +107,15 @@ describe("userErrorMessage", () => {
     expect(message).toContain("won't resolve");
   });
 
+  test("keeps an incomplete Clip deletion retryable without exposing storage details", () => {
+    const message = userErrorMessage("clip_storage_delete_incomplete");
+    expect(message).toBe(
+      "Some clip media could not be deleted. The clip is still here, so try deleting it again.",
+    );
+    expect(message).not.toContain("object key");
+    expect(message).not.toContain("provider");
+  });
+
   test("returns null for null and undefined", () => {
     expect(userErrorMessage(null)).toBeNull();
     expect(userErrorMessage(undefined)).toBeNull();

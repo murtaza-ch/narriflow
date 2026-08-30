@@ -17,9 +17,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "lint": "echo 'email lint: no-op'",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "echo 'email test: no-op'",
     "clean": "rm -rf dist"
   },
   "dependencies": {

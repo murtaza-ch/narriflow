@@ -7,7 +7,6 @@
     "dev": "bun run src/index.ts",
     "build": "tsc -p tsconfig.json --noEmit",
     "start": "bun run src/index.ts",
-    "lint": "echo 'worker lint: no-op'",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "bun test src/",
     "retention:replay-tombstones": "bun run src/replay-retention-tombstones.ts",

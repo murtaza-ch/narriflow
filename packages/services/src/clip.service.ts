@@ -68,11 +68,18 @@ import {
   publishWorkflowStageUpdated,
 } from "./workflow.service";
 import {
+  classifyR2StorageError,
   copyObject,
   deleteObject,
   getJsonObject,
   presignDownloadUrl,
 } from "./r2-storage";
+import {
+  adoptDurableMediaCopies,
+  admitRetiredClipMediaCleanup,
+  runDurableMediaCopies,
+  type DurableMediaCopyPlan,
+} from "./media-cleanup";
 import {
   derivePeaksStorageKey,
   isClipPreviewPeaks,
@@ -789,6 +796,61 @@ export function planClipStorageDeletion(
   ];
 }
 
+export interface ClipDeletionRow {
+  hasActivePublication: boolean;
+  storage: ClipStorageSnapshot;
+}
+
+export interface ClipDeletionDeps {
+  getClipRow(): Promise<ClipDeletionRow | null>;
+  deleteObject(key: string): Promise<unknown>;
+  isMissingObjectError(error: unknown): boolean;
+  deleteClipRow(): Promise<{ count: number }>;
+}
+
+export type ClipDeletionOutcome =
+  | { kind: "not_found" }
+  | { kind: "active_publication" }
+  | { kind: "storage_incomplete"; failedObjectCount: number }
+  | { kind: "deleted" }
+  | { kind: "already_deleted" };
+
+export interface ClipDeletionAdapter {
+  getClipRow(input: {
+    userId: string;
+    projectId: string;
+    clipId: string;
+  }): Promise<ClipDeletionRow | null>;
+  deleteObject(key: string): Promise<unknown>;
+  isMissingObjectError(error: unknown): boolean;
+  deleteClipRow(input: {
+    userId: string;
+    projectId: string;
+    clipId: string;
+  }): Promise<{ count: number }>;
+}
+
+export async function runClipDeletion(
+  deps: ClipDeletionDeps,
+): Promise<ClipDeletionOutcome> {
+  const row = await deps.getClipRow();
+  if (!row) return { kind: "not_found" };
+  if (row.hasActivePublication) return { kind: "active_publication" };
+
+  const keys = planClipStorageDeletion(row.storage);
+  const results = await Promise.allSettled(keys.map((key) => deps.deleteObject(key)));
+  const failedObjectCount = results.filter(
+    (result) =>
+      result.status === "rejected" && !deps.isMissingObjectError(result.reason),
+  ).length;
+  if (failedObjectCount > 0) {
+    return { kind: "storage_incomplete", failedObjectCount };
+  }
+
+  const deleted = await deps.deleteClipRow();
+  return deleted.count === 1 ? { kind: "deleted" } : { kind: "already_deleted" };
+}
+
 /**
  * Destination key for a duplicated clip's render — the same
  * `projects/{projectId}/renders/{clipId}/{slug}.mp4` shape the worker writes,
@@ -820,17 +882,11 @@ export function clipDuplicatePreviewStorageKey(
   return `projects/${projectId}/previews/${newClipId}/${attemptId}.mp4`;
 }
 
-async function deleteRenderAssets(storageKeys: string[]) {
-  const uniqueKeys = [...new Set(storageKeys.filter(Boolean))];
-
-  if (uniqueKeys.length === 0) {
-    return;
-  }
-
-  await Promise.allSettled(uniqueKeys.map((key) => deleteObject(key)));
-}
-
 export class ClipService {
+  constructor(
+    private readonly options: { clipDeletionAdapter?: ClipDeletionAdapter } = {},
+  ) {}
+
   async getClipSnapshot(
     userId: string,
     projectId: string,
@@ -859,19 +915,10 @@ export class ClipService {
     const lifecycle = attempt ? getWorkflowRunLifecycle() : null;
     if (attempt) await lifecycle?.assertOwnership(attempt);
     else requireProtocolV1WorkflowContext("moment_detection", workflowRunId);
-    const [staleRenderKeys, project] = await Promise.all([
-      prisma.clipRender.findMany({
-        where: {
-          clip: { projectId },
-          storageKey: { not: null },
-        },
-        select: { storageKey: true },
-      }),
-      prisma.project.findUnique({
-        where: { id: projectId },
-        select: { brandSnapshot: true, sourceDurationSeconds: true },
-      }),
-    ]);
+    const project = await prisma.project.findUnique({
+      where: { id: projectId },
+      select: { brandSnapshot: true, sourceDurationSeconds: true },
+    });
 
     let templateCaptionPreset: CaptionPreset | null = null;
     const snapshotRaw = project?.brandSnapshot;
@@ -932,18 +979,17 @@ export class ClipService {
       await lifecycle.replaceDetectedClips(attempt, detectedClipRows);
     } else {
       await prisma.$transaction(async (tx) => {
+        await admitRetiredClipMediaCleanup(
+          tx,
+          "detected_clip_replacement",
+          projectId,
+        );
         await tx.clip.deleteMany({ where: { projectId } });
         if (detectedClipRows.length > 0) {
           await tx.clip.createMany({ data: detectedClipRows });
         }
       });
     }
-
-    await deleteRenderAssets(
-      staleRenderKeys
-        .map((render) => render.storageKey)
-        .filter((key): key is string => Boolean(key)),
-    );
   }
 
   async listClips(userId: string, projectId: string): Promise<ClipSnapshot[]> {
@@ -1260,146 +1306,205 @@ export class ClipService {
     // 7.7 MB render plus a 1.0 MB proxy, serialising them cost 2.5s against
     // 1.5s in parallel, and a clip rendered in all four aspect ratios would
     // have serialised five copies deep.
+    const renderCopies = completedRenders.map((render) => {
+      const aspectRatio =
+        clipAspectRatioFromDb[clipAspectRatioDbSchema.parse(render.aspectRatio)];
+      return {
+        render,
+        aspectRatio,
+        destinationKey: clipDuplicateRenderStorageKey(
+          projectId,
+          newClipId,
+          aspectRatio,
+        ),
+      };
+    });
     const previewDestinationKey = source.previewStorageKey
       ? clipDuplicatePreviewStorageKey(projectId, newClipId, randomUUID())
       : null;
-
-    const [renderResults, previewCopied] = await Promise.all([
-      Promise.all(
-        completedRenders.map(async (render) => {
-          const aspectRatio = clipAspectRatioFromDb[
-            clipAspectRatioDbSchema.parse(render.aspectRatio)
-          ];
-          const destinationKey = clipDuplicateRenderStorageKey(
-            projectId,
-            newClipId,
-            aspectRatio,
-          );
-
-          try {
-            await copyObject({
-              sourceKey: render.storageKey as string,
-              destinationKey,
-            });
-            return { render, destinationKey };
-          } catch (error) {
-            // One unusable variant must not sink the duplicate — the row is the
-            // thing being copied. Logged, then dropped from the new clip.
-            console.warn(
-              JSON.stringify({
-                level: "warn",
-                message: "clip_duplicate_render_copy_failed",
-                clipId,
-                newClipId,
-                aspectRatio,
-                error: error instanceof Error ? error.message : String(error),
-              }),
-            );
-            return null;
-          }
-        }),
-      ),
-      (async () => {
-        if (!source.previewStorageKey || !previewDestinationKey) return false;
-        try {
-          await copyObject({
-            sourceKey: source.previewStorageKey,
-            destinationKey: previewDestinationKey,
-          });
-          return true;
-        } catch (error) {
-          console.warn(
-            JSON.stringify({
-              level: "warn",
-              message: "clip_duplicate_preview_copy_failed",
-              clipId,
-              newClipId,
-              error: error instanceof Error ? error.message : String(error),
-            }),
-          );
-          return false;
-        }
-      })(),
-    ]);
-
-    const copiedRenders: Array<{
-      render: ClipRender;
-      destinationKey: string;
-    }> = renderResults.filter(
-      (result): result is { render: ClipRender; destinationKey: string } =>
-        result !== null,
-    );
-    const previewStorageKey = previewCopied ? previewDestinationKey : null;
-    const copiedKeys = [
-      ...copiedRenders.map((copied) => copied.destinationKey),
-      ...(previewStorageKey ? [previewStorageKey] : []),
+    const compensationClaimId = randomUUID();
+    type DuplicateCopyValue =
+      | { kind: "render"; render: ClipRender; aspectRatio: ClipAspectRatio }
+      | { kind: "preview" };
+    const copyPlans: DurableMediaCopyPlan<DuplicateCopyValue>[] = [
+      ...renderCopies.map((copy) => ({
+        origin: "clip_duplicate_compensation" as const,
+        cleanupClass: "mutable_render" as const,
+        projectId,
+        clipId: newClipId,
+        objectKey: copy.destinationKey,
+        sourceKey: copy.render.storageKey as string,
+        value: {
+          kind: "render" as const,
+          render: copy.render,
+          aspectRatio: copy.aspectRatio,
+        },
+      })),
+      ...(previewDestinationKey && source.previewStorageKey
+        ? [
+            {
+              origin: "clip_duplicate_compensation" as const,
+              cleanupClass: "preview_proxy" as const,
+              projectId,
+              clipId: newClipId,
+              objectKey: previewDestinationKey,
+              sourceKey: source.previewStorageKey,
+              value: { kind: "preview" as const },
+            },
+          ]
+        : []),
     ];
 
     try {
-      const created = await prisma.$transaction(async (tx) => {
-        const highest = await tx.clip.aggregate({
-          where: { projectId, workflowRunId: source.workflowRunId },
-          _max: { index: true },
-        });
-
-        const clip = await tx.clip.create({
-          data: {
-            id: newClipId,
-            projectId,
-            workflowRunId: source.workflowRunId,
-            index: (highest._max.index ?? source.index) + 1,
-            // A duplicate is a fresh starting point for edits.
-            status: "detected",
-            ...duplicateDocument,
-            title: source.title,
-            hookText: source.hookText,
-            payoffText: source.payoffText,
-            reasoning: source.reasoning,
-            category: source.category,
-            platformFit: source.platformFit,
-            brollCues:
-              source.brollCues === null
-                ? Prisma.JsonNull
-                : (source.brollCues as Prisma.InputJsonValue),
-            previewStorageKey,
-            previewStartSec: previewStorageKey ? source.previewStartSec : null,
-            previewDurationSec: previewStorageKey
-              ? source.previewDurationSec
-              : null,
-            viralityScore: source.viralityScore,
-            hookStrengthScore: source.hookStrengthScore,
-            emotionalIntensityScore: source.emotionalIntensityScore,
-            storyCompletenessScore: source.storyCompletenessScore,
-            pacingScore: source.pacingScore,
-            durationOptimalityScore: source.durationOptimalityScore,
-            tiktokScore: source.tiktokScore,
-            youtubeScore: source.youtubeScore,
-            instagramScore: source.instagramScore,
-            llmProvider: source.llmProvider,
-            llmModel: source.llmModel,
-            llmTokensUsed: source.llmTokensUsed,
-          },
-        });
-
-        if (copiedRenders.length > 0) {
-          await tx.clipRender.createMany({
-            data: copiedRenders.map(({ render, destinationKey }) => ({
-              clipId: clip.id,
-              aspectRatio: render.aspectRatio,
-              status: render.status,
-              storageKey: destinationKey,
-              sizeBytes: render.sizeBytes,
-              durationSec: render.durationSec,
-              startedAt: render.startedAt,
-              completedAt: render.completedAt,
-              // Duplicating an already-rendered object verbatim — copy the
-              // resolution it actually rendered at, not the default.
-              resolution: render.resolution,
-            })),
+      const created: { id: string } = await runDurableMediaCopies({
+        store: prisma.mediaCleanupObligation,
+        plans: copyPlans,
+        claimId: compensationClaimId,
+        claimExpiresAt: new Date(Date.now() + 15 * 60 * 1000),
+        leaseMs: 15 * 60 * 1000,
+        heartbeatMs: 5 * 60 * 1000,
+        async renew({ plans, claimId, now, claimExpiresAt }) {
+          const renewed = await prisma.mediaCleanupObligation.updateMany({
+            where: {
+              claimId,
+              claimExpiresAt: { gt: now },
+              completedAt: null,
+              OR: plans.map((plan) => ({
+                origin: plan.origin,
+                cleanupClass: plan.cleanupClass,
+                objectKey: plan.objectKey,
+              })),
+            },
+            data: { claimExpiresAt },
           });
-        }
+          return renewed.count === plans.length;
+        },
+        async copy({ sourceKey, objectKey }) {
+          await copyObject({ sourceKey, destinationKey: objectKey });
+        },
+        onCopyFailure(plan) {
+          console.warn(
+            JSON.stringify({
+              level: "warn",
+              message:
+                plan.value.kind === "render"
+                  ? "clip_duplicate_render_copy_failed"
+                  : "clip_duplicate_preview_copy_failed",
+              clipId,
+              newClipId,
+              ...(plan.value.kind === "render"
+                ? { aspectRatio: plan.value.aspectRatio }
+                : {}),
+              failureCode: "storage_copy_failed",
+            }),
+          );
+        },
+        onReleaseFailure() {
+          console.warn(
+            JSON.stringify({
+              level: "warn",
+              message: "clip_duplicate_compensation_release_failed",
+              clipId,
+              newClipId,
+            }),
+          );
+        },
+        async release(objectKeys, claimId) {
+          await prisma.mediaCleanupObligation.updateMany({
+            where: {
+              origin: "clip_duplicate_compensation",
+              objectKey: { in: [...objectKeys] },
+              claimId,
+              completedAt: null,
+            },
+            data: {
+              claimId: null,
+              claimExpiresAt: null,
+              nextAttemptAt: new Date(),
+              failureCode: "duplicate_compensation_released",
+            },
+          });
+        },
+        async adopt(copied, claimId, fencedAt) {
+          const copiedRenders = copied.flatMap((plan) =>
+            plan.value.kind === "render"
+              ? [{ render: plan.value.render, destinationKey: plan.objectKey }]
+              : [],
+          );
+          const previewStorageKey =
+            copied.find((plan) => plan.value.kind === "preview")?.objectKey ??
+            null;
+          return prisma.$transaction(async (tx) => {
+            await adoptDurableMediaCopies(
+              tx.mediaCleanupObligation,
+              copied,
+              claimId,
+              fencedAt,
+            );
+            const highest = await tx.clip.aggregate({
+              where: { projectId, workflowRunId: source.workflowRunId },
+              _max: { index: true },
+            });
 
-        return clip;
+            const clip = await tx.clip.create({
+              data: {
+                id: newClipId,
+                projectId,
+                workflowRunId: source.workflowRunId,
+                index: (highest._max.index ?? source.index) + 1,
+                status: "detected",
+                ...duplicateDocument,
+                title: source.title,
+                hookText: source.hookText,
+                payoffText: source.payoffText,
+                reasoning: source.reasoning,
+                category: source.category,
+                platformFit: source.platformFit,
+                brollCues:
+                  source.brollCues === null
+                    ? Prisma.JsonNull
+                    : (source.brollCues as Prisma.InputJsonValue),
+                previewStorageKey,
+                previewStartSec: previewStorageKey
+                  ? source.previewStartSec
+                  : null,
+                previewDurationSec: previewStorageKey
+                  ? source.previewDurationSec
+                  : null,
+                viralityScore: source.viralityScore,
+                hookStrengthScore: source.hookStrengthScore,
+                emotionalIntensityScore: source.emotionalIntensityScore,
+                storyCompletenessScore: source.storyCompletenessScore,
+                pacingScore: source.pacingScore,
+                durationOptimalityScore: source.durationOptimalityScore,
+                tiktokScore: source.tiktokScore,
+                youtubeScore: source.youtubeScore,
+                instagramScore: source.instagramScore,
+                llmProvider: source.llmProvider,
+                llmModel: source.llmModel,
+                llmTokensUsed: source.llmTokensUsed,
+              },
+            });
+
+            if (copiedRenders.length > 0) {
+              await tx.clipRender.createMany({
+                data: copiedRenders.map(({ render, destinationKey }) => ({
+                  clipId: clip.id,
+                  aspectRatio: render.aspectRatio,
+                  status: render.status,
+                  storageKey: destinationKey,
+                  sizeBytes: render.sizeBytes,
+                  durationSec: render.durationSec,
+                  startedAt: render.startedAt,
+                  completedAt: render.completedAt,
+                  resolution: render.resolution,
+                })),
+              });
+            }
+
+            return clip;
+          });
+        },
       });
 
       // Read the snapshot back OUTSIDE the transaction. The row is committed by
@@ -1416,9 +1521,9 @@ export class ClipService {
 
       return toClipSnapshot(snapshot);
     } catch (error) {
-      // The row never landed, so nothing references the objects just copied —
-      // clean them up rather than leaking them.
-      await deleteRenderAssets(copiedKeys);
+      // Planned destinations are admitted before copying. If persistence fails,
+      // releasing the hold makes every successful or ambiguous copy recoverable
+      // without relying on this process to finish a best-effort delete.
       throw new ClipActionError(
         "clip_duplicate_failed",
         error instanceof Error ? error.message : "clip duplicate failed",
@@ -1617,55 +1722,88 @@ export class ClipService {
     projectId: string,
     clipId: string,
   ): Promise<void> {
-    const prisma = requirePrisma();
+    const context = { userId, projectId, clipId };
+    const adapter: ClipDeletionAdapter =
+      this.options.clipDeletionAdapter ??
+      (() => {
+        const prisma = requirePrisma();
+        return {
+          async getClipRow(input) {
+            const clip = await prisma.clip.findFirst({
+              where: {
+                id: input.clipId,
+                projectId: input.projectId,
+                project: { userId: input.userId },
+              },
+              select: {
+                previewStorageKey: true,
+                renders: { select: { storageKey: true } },
+                dubs: {
+                  select: { audioStorageKey: true, renderStorageKey: true },
+                },
+                socialPosts: {
+                  where: { status: { in: ["scheduled", "publishing"] } },
+                  select: { id: true },
+                },
+              },
+            });
+            if (!clip) return null;
+            return {
+              hasActivePublication: clip.socialPosts.length > 0,
+              storage: {
+                previewStorageKey: clip.previewStorageKey,
+                renderStorageKeys: clip.renders.map(
+                  (render) => render.storageKey,
+                ),
+                dubStorageKeys: clip.dubs.flatMap((dub) => [
+                  dub.audioStorageKey,
+                  dub.renderStorageKey,
+                ]),
+              },
+            };
+          },
+          deleteObject,
+          isMissingObjectError: (error) =>
+            classifyR2StorageError(error) === "storage_object_missing",
+          async deleteClipRow(input) {
+            try {
+              return await prisma.clip.deleteMany({
+                where: {
+                  id: input.clipId,
+                  projectId: input.projectId,
+                  project: { userId: input.userId },
+                },
+              });
+            } catch {
+              throw new ClipActionError(
+                "clip_delete_failed",
+                "clip delete failed",
+              );
+            }
+          }
+        };
+      })();
 
-    const clip = await prisma.clip.findFirst({
-      where: { id: clipId, projectId, project: { userId } },
-      select: {
-        id: true,
-        previewStorageKey: true,
-        renders: { select: { storageKey: true } },
-        dubs: {
-          select: { audioStorageKey: true, renderStorageKey: true },
-        },
-        socialPosts: {
-          where: { status: { in: ["scheduled", "publishing"] } },
-          select: { id: true },
-        },
-      },
+    const outcome = await runClipDeletion({
+      getClipRow: () => adapter.getClipRow(context),
+      deleteObject: (key) => adapter.deleteObject(key),
+      isMissingObjectError: (error) => adapter.isMissingObjectError(error),
+      deleteClipRow: () => adapter.deleteClipRow(context),
     });
 
-    if (!clip) {
+    if (outcome.kind === "not_found") {
       throw new ClipActionError("clip_not_found", "clip not found");
     }
-
-    if (clip.socialPosts.length > 0) {
+    if (outcome.kind === "active_publication") {
       throw new ClipActionError(
         "clip_has_scheduled_posts",
-        `clip has ${clip.socialPosts.length} scheduled or publishing social post(s)`,
+        "clip has scheduled or publishing social posts",
       );
     }
-
-    const storageKeys = planClipStorageDeletion({
-      previewStorageKey: clip.previewStorageKey,
-      renderStorageKeys: clip.renders.map((render) => render.storageKey),
-      dubStorageKeys: clip.dubs.flatMap((dub) => [
-        dub.audioStorageKey,
-        dub.renderStorageKey,
-      ]),
-    });
-
-    // Objects first: a failed row delete leaves keys already gone (the row is
-    // then re-deletable), whereas a failed object delete after the row is gone
-    // leaks bytes nothing references. Same ordering as project deletion.
-    await deleteRenderAssets(storageKeys);
-
-    try {
-      await prisma.clip.delete({ where: { id: clipId } });
-    } catch (error) {
+    if (outcome.kind === "storage_incomplete") {
       throw new ClipActionError(
-        "clip_delete_failed",
-        error instanceof Error ? error.message : "clip delete failed",
+        "clip_storage_delete_incomplete",
+        "clip storage deletion is incomplete",
       );
     }
   }

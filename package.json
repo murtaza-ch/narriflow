@@ -12,10 +12,9 @@
     "dev": "turbo run dev --parallel --filter=!@narriflow/mcp-server",
     "dev:mcp": "bun --filter @narriflow/mcp-server dev",
     "build": "turbo run build",
-    "lint": "turbo run lint",
-    "lint:biome": "biome check .",
+    "lint": "biome check .",
     "typecheck": "turbo run typecheck",
-    "test": "turbo run test",
+    "test": "bun -e 'console.log(\"Fast tests exclude disposable-schema PostgreSQL invariants; run the six test:*:db commands separately.\")' && turbo run test",
     "test:workflow:db": "bun packages/services/scripts/run-workflow-db-tests.ts",
     "test:upload-session:db": "bun packages/services/scripts/run-upload-session-db-tests.ts",
     "test:workspace-billing:db": "bun packages/services/scripts/run-workspace-billing-db-tests.ts",
@@ -35,11 +34,12 @@
     "stripe": "^22.5.0"
   },
   "overrides": {
+    "deepmerge-ts": "8.0.2",
     "fast-uri": "3.1.5",
     "fast-xml-builder": "1.2.1",
     "hono": "4.12.28",
     "ip-address": "10.5.0",
-    "nanoid": "3.3.17",
+    "nanoid": "3.3.18",
     "postcss": "8.5.26",
     "sharp": "0.35.3"
   }

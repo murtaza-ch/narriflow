@@ -26,6 +26,10 @@ import {
 import { assertPublicHttpUrl, UnsafeUrlError } from "./url-guard";
 import { tryDerivePeaksStorageKey } from "./clip-preview-storage";
 import { computeDurationOptimality, computePlatformScore } from "./clip-scoring";
+import {
+  admitMediaCleanupObligations,
+  type MediaCleanupObligationInput,
+} from "./media-cleanup";
 
 export class ClipEditorRevisionConflictError extends Error {
   constructor(readonly currentRevision: number) {
@@ -56,16 +60,6 @@ export class ClipEditorDocumentPersistenceError extends Error {
     this.retryable =
       code === "retryable_contention" || code === "persistence_unavailable";
   }
-}
-
-export type EditorMediaCleanupClass =
-  | "mutable_render"
-  | "preview_proxy"
-  | "preview_peaks";
-
-export interface EditorMediaCleanupIntent {
-  cleanupClass: EditorMediaCleanupClass;
-  objectKey: string;
 }
 
 export interface ClipEditorDocumentStoredState {
@@ -138,7 +132,7 @@ interface ClipEditorDocumentCommit {
   retirePreview: boolean;
   retireEvidence: boolean;
   scores: ClipEditorDocumentStoredState["scores"];
-  cleanupIntents: EditorMediaCleanupIntent[];
+  cleanupIntents: MediaCleanupObligationInput[];
 }
 
 interface ClipEditorProjectSelectionScope {
@@ -275,16 +269,26 @@ function durationScores(
 function cleanupIntents(
   state: ClipEditorDocumentStoredState,
   retirePreview: boolean,
-): EditorMediaCleanupIntent[] {
-  const intents: EditorMediaCleanupIntent[] = state.mutableRenders.flatMap((render) =>
+): MediaCleanupObligationInput[] {
+  const obligation = (
+    cleanupClass: MediaCleanupObligationInput["cleanupClass"],
+    objectKey: string,
+  ): MediaCleanupObligationInput => ({
+    origin: "clip_editor_document_persistence",
+    projectId: state.projectId,
+    clipId: state.clipId,
+    cleanupClass,
+    objectKey,
+  });
+  const intents: MediaCleanupObligationInput[] = state.mutableRenders.flatMap((render) =>
     render.storageKey
-      ? [{ cleanupClass: "mutable_render" as const, objectKey: render.storageKey }]
+      ? [obligation("mutable_render", render.storageKey)]
       : [],
   );
   if (retirePreview && state.preview.storageKey) {
-    intents.push({ cleanupClass: "preview_proxy", objectKey: state.preview.storageKey });
+    intents.push(obligation("preview_proxy", state.preview.storageKey));
     const peaksKey = tryDerivePeaksStorageKey(state.preview.storageKey);
-    if (peaksKey) intents.push({ cleanupClass: "preview_peaks", objectKey: peaksKey });
+    if (peaksKey) intents.push(obligation("preview_peaks", peaksKey));
   }
   return [...new Map(intents.map((intent) => [intent.objectKey, intent])).values()];
 }
@@ -787,7 +791,7 @@ export function createInMemoryClipEditorDocumentStore(
 ): ClipEditorDocumentStore & {
   inspect(clipId: string): {
     state: ClipEditorDocumentStoredState;
-    cleanupObligations: Array<EditorMediaCleanupIntent & { id: string }>;
+    cleanupObligations: Array<MediaCleanupObligationInput & { id: string }>;
     writeCount: number;
   } | null;
   forceContention(count: number): void;
@@ -797,7 +801,7 @@ export function createInMemoryClipEditorDocumentStore(
       seed.clipId,
       {
         state: clone(seed),
-        cleanupObligations: [] as Array<EditorMediaCleanupIntent & { id: string }>,
+        cleanupObligations: [] as Array<MediaCleanupObligationInput & { id: string }>,
         writeCount: 0,
       },
     ]),
@@ -1202,15 +1206,10 @@ export const prismaClipEditorDocumentStore: ClipEditorDocumentStore = {
         where: { clipId: input.scope.clipId, exportVariantId: null },
       });
       if (input.cleanupIntents.length > 0) {
-        await tx.editorMediaCleanupObligation.createMany({
-          data: input.cleanupIntents.map((intent) => ({
-            projectId: input.scope.projectId,
-            clipId: input.scope.clipId,
-            cleanupClass: intent.cleanupClass,
-            objectKey: intent.objectKey,
-          })),
-          skipDuplicates: true,
-        });
+        await admitMediaCleanupObligations(
+          tx.mediaCleanupObligation,
+          input.cleanupIntents,
+        );
       }
       const row = await tx.clip.findUniqueOrThrow({
         where: { id: input.scope.clipId },
@@ -1303,19 +1302,9 @@ export const prismaClipEditorDocumentStore: ClipEditorDocumentStore = {
               data: prismaDocumentUpdateData(document),
             });
           }
-          const cleanup = documents.flatMap((document) =>
-            document.cleanupIntents.map((intent) => ({
-              projectId: document.scope.projectId,
-              clipId: document.scope.clipId,
-              cleanupClass: intent.cleanupClass,
-              objectKey: intent.objectKey,
-            })),
-          );
+          const cleanup = documents.flatMap((document) => document.cleanupIntents);
           if (cleanup.length > 0) {
-            await tx.editorMediaCleanupObligation.createMany({
-              data: cleanup,
-              skipDuplicates: true,
-            });
+            await admitMediaCleanupObligations(tx.mediaCleanupObligation, cleanup);
           }
         },
         { isolationLevel: "Serializable", timeout: 30_000, maxWait: 10_000 },

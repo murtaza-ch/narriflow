@@ -24,7 +24,7 @@ import {
   prismaClipEditorDocumentStore,
   type ClipEditorDocumentStore,
 } from "./clip-editor-document-persistence";
-import { prismaEditorMediaCleanupStore } from "./editor-media-cleanup";
+import { prismaMediaCleanupStore } from "./media-cleanup";
 
 const databaseUrl = process.env.CLIP_EDITOR_PERSISTENCE_TEST_DATABASE_URL;
 const databaseSchema = process.env.CLIP_EDITOR_PERSISTENCE_TEST_DATABASE_SCHEMA;
@@ -225,13 +225,16 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
     const [clip, mutableRenderCount, obligations] = await Promise.all([
       prisma.clip.findUniqueOrThrow({ where: { id: f.clip.id } }),
       prisma.clipRender.count({ where: { clipId: f.clip.id, exportVariantId: null } }),
-      prisma.editorMediaCleanupObligation.findMany({ where: { clipId: f.clip.id } }),
+      prisma.mediaCleanupObligation.findMany({ where: { clipId: f.clip.id } }),
     ]);
     expect(clip.editorRevision).toBe(1);
     expect(editorDocumentSchema.parse(clip.editorOriginal)).toEqual(f.document);
     expect(clip.brollUrl).toBe(next.brollUrl);
     expect(mutableRenderCount).toBe(0);
     expect(obligations.map((item) => item.cleanupClass)).toEqual(["mutable_render"]);
+    expect(obligations.map((item) => item.origin)).toEqual([
+      "clip_editor_document_persistence",
+    ]);
   });
 
   test("project selection commits every changed document and cleanup obligation atomically", async () => {
@@ -265,7 +268,7 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
       prisma.clipRender.count({
         where: { clipId: { in: [f.clip.id, second.id] }, exportVariantId: null },
       }),
-      prisma.editorMediaCleanupObligation.findMany({
+      prisma.mediaCleanupObligation.findMany({
         where: { clipId: { in: [f.clip.id, second.id] } },
       }),
     ]);
@@ -292,7 +295,7 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
       }),
     ).resolves.toEqual({ updated: 0 });
     expect(
-      await prisma.editorMediaCleanupObligation.count({
+      await prisma.mediaCleanupObligation.count({
         where: { clipId: { in: [f.clip.id, second.id] } },
       }),
     ).toBe(2);
@@ -375,7 +378,7 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
       intent: { kind: "reset", baseRevision: 1 },
     });
     expect(reset).toMatchObject({ revision: 2, document: f.document, noop: false });
-    const beforeRetry = await prisma.editorMediaCleanupObligation.count({
+    const beforeRetry = await prisma.mediaCleanupObligation.count({
       where: { clipId: f.clip.id },
     });
     const retry = await persistence.mutateDocument({
@@ -389,7 +392,7 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
     const [clip, mutableRenders, cleanupCount] = await Promise.all([
       prisma.clip.findUniqueOrThrow({ where: { id: f.clip.id } }),
       prisma.clipRender.count({ where: { clipId: f.clip.id, exportVariantId: null } }),
-      prisma.editorMediaCleanupObligation.count({ where: { clipId: f.clip.id } }),
+      prisma.mediaCleanupObligation.count({ where: { clipId: f.clip.id } }),
     ]);
     expect(editorDocumentSchema.parse(clip.editorOriginal)).toEqual(f.document);
     expect(clip).toMatchObject({
@@ -602,7 +605,7 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
     `);
     await prisma.$executeRawUnsafe(`
       CREATE TRIGGER "fail_editor_cleanup_insert_trigger"
-      BEFORE INSERT ON "EditorMediaCleanupObligation"
+      BEFORE INSERT ON "MediaCleanupObligation"
       FOR EACH ROW EXECUTE FUNCTION "fail_editor_cleanup_insert"()
     `);
     try {
@@ -623,7 +626,7 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
       ).rejects.toThrow();
     } finally {
       await prisma.$executeRawUnsafe(
-        `DROP TRIGGER IF EXISTS "fail_editor_cleanup_insert_trigger" ON "EditorMediaCleanupObligation"`,
+        `DROP TRIGGER IF EXISTS "fail_editor_cleanup_insert_trigger" ON "MediaCleanupObligation"`,
       );
       await prisma.$executeRawUnsafe(
         `DROP FUNCTION IF EXISTS "fail_editor_cleanup_insert"()`,
@@ -632,7 +635,7 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
     const [clip, renderCount, cleanupCount] = await Promise.all([
       prisma.clip.findUniqueOrThrow({ where: { id: f.clip.id } }),
       prisma.clipRender.count({ where: { clipId: f.clip.id, storageKey: failingKey } }),
-      prisma.editorMediaCleanupObligation.count({ where: { clipId: f.clip.id } }),
+      prisma.mediaCleanupObligation.count({ where: { clipId: f.clip.id } }),
     ]);
     expect(clip).toMatchObject({ editorRevision: 0, editorOriginal: null, brollUrl: null });
     expect(renderCount).toBe(1);
@@ -660,7 +663,7 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
     `);
     await prisma.$executeRawUnsafe(`
       CREATE TRIGGER "fail_editor_bulk_cleanup_insert_trigger"
-      BEFORE INSERT ON "EditorMediaCleanupObligation"
+      BEFORE INSERT ON "MediaCleanupObligation"
       FOR EACH ROW EXECUTE FUNCTION "fail_editor_bulk_cleanup_insert"()
     `);
     try {
@@ -679,7 +682,7 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
       ).rejects.toThrow();
     } finally {
       await prisma.$executeRawUnsafe(
-        `DROP TRIGGER IF EXISTS "fail_editor_bulk_cleanup_insert_trigger" ON "EditorMediaCleanupObligation"`,
+        `DROP TRIGGER IF EXISTS "fail_editor_bulk_cleanup_insert_trigger" ON "MediaCleanupObligation"`,
       );
       await prisma.$executeRawUnsafe(
         `DROP FUNCTION IF EXISTS "fail_editor_bulk_cleanup_insert"()`,
@@ -693,7 +696,7 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
       prisma.clipRender.count({
         where: { clipId: { in: [f.clip.id, second.id] }, exportVariantId: null },
       }),
-      prisma.editorMediaCleanupObligation.count({
+      prisma.mediaCleanupObligation.count({
         where: { clipId: { in: [f.clip.id, second.id] } },
       }),
     ]);
@@ -737,8 +740,9 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
 
   test("expired cleanup claims recover and stale settlement cannot win", async () => {
     const f = await fixture();
-    const obligation = await prisma.editorMediaCleanupObligation.create({
+    const obligation = await prisma.mediaCleanupObligation.create({
       data: {
+        origin: "clip_editor_document_persistence",
         projectId: f.project.id,
         clipId: f.clip.id,
         cleanupClass: "mutable_render",
@@ -749,7 +753,7 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
       },
     });
     const now = new Date("2026-08-29T00:01:00.000Z");
-    const [claim] = await prismaEditorMediaCleanupStore.claimDue({
+    const [claim] = await prismaMediaCleanupStore.claimDue({
       now,
       limit: 1,
       leaseMs: 30_000,
@@ -757,18 +761,93 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
     });
     expect(claim?.id).toBe(obligation.id);
     expect(
-      await prismaEditorMediaCleanupStore.complete({
+      await prismaMediaCleanupStore.complete({
         id: obligation.id,
         claimId: obligation.claimId!,
         now,
       }),
     ).toBe(false);
     expect(
-      await prismaEditorMediaCleanupStore.complete({
+      await prismaMediaCleanupStore.complete({
         id: obligation.id,
         claimId: claim!.claimId,
         now,
       }),
     ).toBe(true);
+  });
+
+  test("cleanup meaning and exact object key are unique", async () => {
+    const f = await fixture();
+    const data = {
+      origin: "clip_editor_document_persistence",
+      projectId: f.project.id,
+      clipId: f.clip.id,
+      cleanupClass: "mutable_render",
+      objectKey: `private/${randomUUID()}/unique.mp4`,
+      nextAttemptAt: new Date("2100-01-01T00:00:00.000Z"),
+    };
+    await prisma.mediaCleanupObligation.create({ data });
+
+    await expect(
+      Promise.resolve(prisma.mediaCleanupObligation.create({ data })),
+    ).rejects.toMatchObject({ code: "P2002" });
+  });
+
+  test("concurrent claimers cannot own the same obligation", async () => {
+    await prisma.mediaCleanupObligation.updateMany({
+      where: { completedAt: null },
+      data: { nextAttemptAt: new Date("2100-01-01T00:00:00.000Z") },
+    });
+    const obligation = await prisma.mediaCleanupObligation.create({
+      data: {
+        origin: "clip_editor_document_persistence",
+        cleanupClass: "preview_proxy",
+        objectKey: `private/${randomUUID()}/claim.mp4`,
+        nextAttemptAt: new Date("2000-01-01T00:00:00.000Z"),
+      },
+    });
+    const now = new Date("2026-08-29T00:01:00.000Z");
+    const claims = await Promise.all([
+      prismaMediaCleanupStore.claimDue({
+        now,
+        limit: 1,
+        leaseMs: 30_000,
+        createId: () => randomUUID(),
+      }),
+      prismaMediaCleanupStore.claimDue({
+        now,
+        limit: 1,
+        leaseMs: 30_000,
+        createId: () => randomUUID(),
+      }),
+    ]);
+
+    expect(claims.flat().map((claim) => claim.id)).toEqual([obligation.id]);
+  });
+
+  test("cleanup obligations survive deletion of their source Clip", async () => {
+    const f = await fixture();
+    const obligation = await prisma.mediaCleanupObligation.create({
+      data: {
+        origin: "clip_editor_document_persistence",
+        projectId: f.project.id,
+        clipId: f.clip.id,
+        cleanupClass: "preview_peaks",
+        objectKey: `private/${randomUUID()}/preview.peaks.json`,
+      },
+    });
+
+    await prisma.clip.delete({ where: { id: f.clip.id } });
+
+    await expect(
+      Promise.resolve(
+        prisma.mediaCleanupObligation.findUniqueOrThrow({
+          where: { id: obligation.id },
+        }),
+      ),
+    ).resolves.toMatchObject({
+      projectId: f.project.id,
+      clipId: f.clip.id,
+    });
   });
 });

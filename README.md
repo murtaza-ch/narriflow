@@ -426,7 +426,23 @@ For a quality bakeoff against older archived outputs, run the same source media 
 
 ## Verification Commands
 
+The default commands cover repository lint, type safety, and fast deterministic tests. The web package has active tests. Database suites stay out of the fast aggregate and print as skipped unless you run their disposable-schema command with PostgreSQL configured.
+
 ```bash
+bun run lint
 bun run typecheck
 bun run test
 ```
+
+Run each critical PostgreSQL module against its own disposable schema before handoff:
+
+```bash
+bun run test:workflow:db
+bun run test:upload-session:db
+bun run test:workspace-billing:db
+bun run test:social-publication:db
+bun run test:clip-editor-persistence:db
+bun run test:authenticated-request-policy:db
+```
+
+Each database runner applies the migration chain, verifies that its connection selected the generated schema, runs only that module's database suite, and removes the schema on success or failure. A skipped suite in `bun run test` is not database verification.

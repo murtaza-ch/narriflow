@@ -18,6 +18,9 @@ import {
 } from "./workflow.service";
 import { notificationService, type NotificationOutcome } from "./notification.service";
 import { deriveClipExportAggregate } from "./clip-export-aggregate";
+import {
+  admitRetiredClipMediaCleanup,
+} from "./media-cleanup";
 
 export const WORKFLOW_LIFECYCLE_VERSION = 2;
 export const WORKFLOW_LEASE_DURATION_MS = 2 * 60 * 1000;
@@ -1047,6 +1050,11 @@ export class WorkflowRunLifecycle {
   ) {
     await this.transaction(async (tx) => {
       await this.fenceChildMutation(tx, attempt, "moment_detection");
+      await admitRetiredClipMediaCleanup(
+        tx,
+        "detected_clip_replacement",
+        attempt.projectId,
+      );
       await tx.clip.deleteMany({ where: { projectId: attempt.projectId } });
       if (clips.length > 0) {
         await tx.clip.createMany({

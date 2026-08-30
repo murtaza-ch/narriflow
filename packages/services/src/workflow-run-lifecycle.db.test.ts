@@ -88,11 +88,23 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
         primaryEmail: `workflow-${suffix}@example.test`,
       },
     });
+    const workspace = await prisma.workspace.create({
+      data: {
+        name: "Workflow lifecycle test",
+        ownerUserId: user.id,
+        personalOwnerUserId: user.id,
+        members: {
+          create: { userId: user.id, role: "owner" },
+        },
+      },
+    });
     const project = await prisma.project.create({
       data: {
         title: "Workflow lifecycle test",
         sourceMediaUrl: "r2://test/source.mp4",
         userId: user.id,
+        workspaceId: workspace.id,
+        createdByUserId: user.id,
       },
     });
     const run = await prisma.workflowRun.create({
@@ -104,7 +116,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
         lifecycleVersion: 2,
       },
     });
-    return { user, project, run };
+    return { user, workspace, project, run };
   }
 
   async function clipFixture(projectId: string, workflowRunId: string, index = 0) {
@@ -305,10 +317,10 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
   });
 
   test("the render state loader returns one attempt-start project and work-set snapshot", async () => {
-    const { user, project, run } = await fixture("clip_rendering");
+    const { user, workspace, project, run } = await fixture("clip_rendering");
     await Promise.all([
-      prisma.user.update({
-        where: { id: user.id },
+      prisma.workspace.update({
+        where: { id: workspace.id },
         data: { pricingTier: "pro" },
       }),
       prisma.project.update({
@@ -349,7 +361,7 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
       sourceStorageKey: `projects/${project.id}/source/input.mp4`,
       sourceDurationSeconds: 42,
       userId: user.id,
-      workspaceId: null,
+      workspaceId: workspace.id,
       ownerTier: "pro",
       brandSnapshot: {
         status: "available",
@@ -1658,13 +1670,15 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
   });
 
   test("existing Content Packs must be committed and belong to the admitted project", async () => {
-    const { user, project } = await fixture("moment_detection");
+    const { user, workspace, project } = await fixture("moment_detection");
     await prisma.workflowRun.deleteMany({ where: { projectId: project.id } });
     const otherProject = await prisma.project.create({
       data: {
         title: "Other workflow project",
         sourceMediaUrl: "r2://test/other.mp4",
         userId: user.id,
+        workspaceId: workspace.id,
+        createdByUserId: user.id,
       },
     });
     const packData = {
@@ -2130,6 +2144,109 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
     expect(await prisma.clip.count({ where: { projectId: project.id } })).toBe(0);
   });
 
+  test("detected-clip replacement durably retires every referenced media object", async () => {
+    const { project, run } = await fixture("moment_detection");
+    const clip = await clipFixture(project.id, run.id);
+    await prisma.clip.update({
+      where: { id: clip.id },
+      data: { previewStorageKey: `private/${clip.id}/preview.mp4` },
+    });
+    await prisma.clipRender.create({
+      data: {
+        clipId: clip.id,
+        aspectRatio: "ratio_9_16",
+        status: "completed",
+        storageKey: `private/${clip.id}/render.mp4`,
+      },
+    });
+    const lifecycle = new WorkflowRunLifecycle({
+      prisma,
+      leaseOwner: randomUUID(),
+    });
+    const attempt = await lifecycle.claim("moment_detection");
+    if (!attempt) throw new Error("moment-detection claim missing");
+
+    await lifecycle.replaceDetectedClips(attempt, []);
+
+    expect(await prisma.clip.findUnique({ where: { id: clip.id } })).toBeNull();
+    expect(
+      await prisma.mediaCleanupObligation.findMany({
+        where: {
+          origin: "detected_clip_replacement",
+          projectId: project.id,
+          clipId: clip.id,
+        },
+        orderBy: { cleanupClass: "asc" },
+        select: { cleanupClass: true, objectKey: true },
+      }),
+    ).toEqual([
+      {
+        cleanupClass: "mutable_render",
+        objectKey: `private/${clip.id}/render.mp4`,
+      },
+      {
+        cleanupClass: "preview_peaks",
+        objectKey: `private/${clip.id}/preview.peaks.json`,
+      },
+      {
+        cleanupClass: "preview_proxy",
+        objectKey: `private/${clip.id}/preview.mp4`,
+      },
+    ]);
+  });
+
+  test("detected-clip replacement rolls back cleanup admission when Clip removal fails", async () => {
+    const { project, run } = await fixture("moment_detection");
+    const clip = await clipFixture(project.id, run.id);
+    const render = await prisma.clipRender.create({
+      data: {
+        clipId: clip.id,
+        aspectRatio: "ratio_9_16",
+        status: "completed",
+        storageKey: `private/${clip.id}/render.mp4`,
+      },
+    });
+    const lifecycle = new WorkflowRunLifecycle({
+      prisma,
+      leaseOwner: randomUUID(),
+    });
+    const attempt = await lifecycle.claim("moment_detection");
+    if (!attempt) throw new Error("moment-detection claim missing");
+    const suffix = randomUUID().replaceAll("-", "");
+    const functionName = `workflow_test_clip_delete_failure_${suffix}`;
+    const triggerName = `workflow_test_clip_delete_failure_${suffix}`;
+    await pool.query(`
+      CREATE FUNCTION "${functionName}"() RETURNS trigger AS $$
+      BEGIN
+        RAISE EXCEPTION 'detected_clip_replacement_delete_failure';
+      END;
+      $$ LANGUAGE plpgsql;
+      CREATE TRIGGER "${triggerName}"
+      BEFORE DELETE ON "Clip"
+      FOR EACH ROW EXECUTE FUNCTION "${functionName}"();
+    `);
+    try {
+      await expect(lifecycle.replaceDetectedClips(attempt, [])).rejects.toThrow(
+        "detected_clip_replacement_delete_failure",
+      );
+    } finally {
+      await pool.query(`
+        DROP TRIGGER IF EXISTS "${triggerName}" ON "Clip";
+        DROP FUNCTION IF EXISTS "${functionName}"();
+      `);
+    }
+
+    expect(await prisma.clip.findUnique({ where: { id: clip.id } })).not.toBeNull();
+    expect(
+      await prisma.clipRender.findUnique({ where: { id: render.id } }),
+    ).not.toBeNull();
+    expect(
+      await prisma.mediaCleanupObligation.count({
+        where: { origin: "detected_clip_replacement", clipId: clip.id },
+      }),
+    ).toBe(0);
+  });
+
   test("a detection attempt atomically admits unowned auto-render work", async () => {
     const { project } = await fixture("moment_detection");
     const clip = await clipFixture(project.id, (
@@ -2318,12 +2435,14 @@ dbDescribe("WorkflowRunLifecycle PostgreSQL invariants", () => {
   });
 
   test("a child command rejects an attempt ref with the wrong project", async () => {
-    const { user, run } = await fixture("moment_detection");
+    const { user, workspace, run } = await fixture("moment_detection");
     const otherProject = await prisma.project.create({
       data: {
         title: "Other workflow project",
         sourceMediaUrl: "r2://test/other.mp4",
         userId: user.id,
+        workspaceId: workspace.id,
+        createdByUserId: user.id,
       },
     });
     const lifecycle = new WorkflowRunLifecycle({

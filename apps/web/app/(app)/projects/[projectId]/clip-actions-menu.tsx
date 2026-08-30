@@ -12,26 +12,10 @@ import { Spinner } from "@narriflow/ui/components/spinner";
 import { toaster } from "@narriflow/ui/components/toaster";
 import {
   CLIP_TITLE_MAX_LENGTH,
-  userErrorMessage,
   type ClipSnapshot,
 } from "@narriflow/validators";
 import { AlertTriangle, Copy, MoreVertical, Pencil, Sparkles, Trash2, Wand2 } from "lucide-react";
-
-function readPayloadString(payload: unknown, key: string): string | null {
-  if (!payload || typeof payload !== "object") return null;
-  const value = (payload as Record<string, unknown>)[key];
-  return typeof value === "string" && value.length > 0 ? value : null;
-}
-
-/** Prefers our own mapped copy for a known error code, then the API's message,
- *  then the caller's fallback. Same precedence as clip-row's apiErrorCopy. */
-function apiErrorCopy(payload: unknown, fallback: string): string {
-  return (
-    userErrorMessage(readPayloadString(payload, "error")) ??
-    readPayloadString(payload, "message") ??
-    fallback
-  );
-}
+import { clipActionErrorCopy } from "./clip-action-error-copy";
 
 function titleSuggestionsFromPayload(payload: unknown): string[] | null {
   if (!payload || typeof payload !== "object") return null;
@@ -128,7 +112,9 @@ export function ClipActionsMenu({
     if (!response.ok) {
       const payload: unknown = await response.json().catch(() => null);
       console.error("clip_rename_failed", response.status);
-      throw new Error(apiErrorCopy(payload, "Could not rename this clip."));
+      throw new Error(
+        clipActionErrorCopy(payload, "Could not rename this clip."),
+      );
     }
 
     return true;
@@ -190,7 +176,7 @@ export function ClipActionsMenu({
       if (!response.ok) {
         console.error("clip_title_suggestions_failed", response.status);
         setSuggestError(
-          apiErrorCopy(payload, "Could not come up with title ideas."),
+          clipActionErrorCopy(payload, "Could not come up with title ideas."),
         );
         return;
       }
@@ -260,7 +246,7 @@ export function ClipActionsMenu({
         toaster.create({
           type: "error",
           title: "Could not duplicate clip",
-          description: apiErrorCopy(payload, "Please try again."),
+          description: clipActionErrorCopy(payload, "Please try again."),
         });
         return;
       }
@@ -302,7 +288,7 @@ export function ClipActionsMenu({
         toaster.create({
           type: "error",
           title: "Could not delete clip",
-          description: apiErrorCopy(payload, "Please try again."),
+          description: clipActionErrorCopy(payload, "Please try again."),
         });
         return;
       }

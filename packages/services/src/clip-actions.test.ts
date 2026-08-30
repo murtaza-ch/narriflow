@@ -1,11 +1,15 @@
 import { describe, expect, test } from "bun:test";
 import {
   ClipActionError,
+  ClipService,
   CLIP_TITLE_SYSTEM_PROMPT,
   buildClipTitleUserPrompt,
   clipDuplicatePreviewStorageKey,
   clipDuplicateRenderStorageKey,
   planClipStorageDeletion,
+  runClipDeletion,
+  type ClipDeletionDeps,
+  type ClipDeletionAdapter,
   type ClipStorageSnapshot,
 } from "./clip.service";
 import { buildCopySource } from "./r2-storage";
@@ -90,6 +94,339 @@ describe("planClipStorageDeletion", () => {
     // 9x16.mp4, attempt-1.mp4 (deduped preview/dub), attempt-1.peaks.json.
     expect(keys).toHaveLength(3);
     expect(new Set(keys).size).toBe(keys.length);
+  });
+});
+
+describe("runClipDeletion", () => {
+  function makeDeps(
+    overrides: Partial<ClipDeletionDeps> = {},
+  ): ClipDeletionDeps & {
+    attempted: string[];
+    rowDeleteCalls: number;
+  } {
+    const attempted: string[] = [];
+    const state = { rowDeleteCalls: 0 };
+    return {
+      attempted,
+      get rowDeleteCalls() {
+        return state.rowDeleteCalls;
+      },
+      getClipRow: async () => ({
+        hasActivePublication: false,
+        storage: storageSnapshot({
+          renderStorageKeys: ["private/render-a.mp4", "private/render-b.mp4"],
+          dubStorageKeys: ["private/dub.mp3"],
+          previewStorageKey: null,
+        }),
+      }),
+      deleteObject: async (key) => void attempted.push(key),
+      isMissingObjectError: () => false,
+      deleteClipRow: async () => {
+        state.rowDeleteCalls += 1;
+        return { count: 1 };
+      },
+      ...overrides,
+    };
+  }
+
+  test("full storage success deletes the Clip row", async () => {
+    const deps = makeDeps();
+
+    expect(await runClipDeletion(deps)).toEqual({ kind: "deleted" });
+    expect(deps.attempted.sort()).toEqual(
+      ["private/dub.mp3", "private/render-a.mp4", "private/render-b.mp4"].sort(),
+    );
+    expect(deps.rowDeleteCalls).toBe(1);
+  });
+
+  test("one genuine storage failure attempts every object and preserves the Clip", async () => {
+    const attempted: string[] = [];
+    let rowDeleteCalls = 0;
+    const deps = makeDeps({
+      deleteObject: async (key) => {
+        attempted.push(key);
+        if (key === "private/render-a.mp4") throw new Error("provider detail");
+      },
+      deleteClipRow: async () => {
+        rowDeleteCalls += 1;
+        return { count: 1 };
+      },
+    });
+
+    expect(await runClipDeletion(deps)).toEqual({
+      kind: "storage_incomplete",
+      failedObjectCount: 1,
+    });
+    expect(attempted.sort()).toEqual(
+      ["private/dub.mp3", "private/render-a.mp4", "private/render-b.mp4"].sort(),
+    );
+    expect(rowDeleteCalls).toBe(0);
+  });
+
+  test("multiple genuine failures never reach Clip-row deletion", async () => {
+    let rowDeleteCalls = 0;
+    const deps = makeDeps({
+      deleteObject: async () => {
+        throw new Error("storage unavailable");
+      },
+      deleteClipRow: async () => {
+        rowDeleteCalls += 1;
+        return { count: 1 };
+      },
+    });
+
+    expect(await runClipDeletion(deps)).toEqual({
+      kind: "storage_incomplete",
+      failedObjectCount: 3,
+    });
+    expect(rowDeleteCalls).toBe(0);
+  });
+
+  test("missing objects and successful deletions both converge", async () => {
+    const deps = makeDeps({
+      deleteObject: async (key) => {
+        if (key === "private/render-a.mp4") throw { name: "NoSuchKey" };
+      },
+      isMissingObjectError: (error) =>
+        (error as { name?: string })?.name === "NoSuchKey",
+    });
+
+    expect(await runClipDeletion(deps)).toEqual({ kind: "deleted" });
+  });
+
+  test("a retry after partial progress accepts missing objects and completes", async () => {
+    const existing = new Set([
+      "private/render-a.mp4",
+      "private/render-b.mp4",
+      "private/dub.mp3",
+    ]);
+    let firstAttempt = true;
+    let rowDeleteCalls = 0;
+    const deps = makeDeps({
+      deleteObject: async (key) => {
+        if (!existing.has(key)) throw { name: "NoSuchKey" };
+        if (firstAttempt && key === "private/render-b.mp4") {
+          throw new Error("temporary outage");
+        }
+        existing.delete(key);
+      },
+      isMissingObjectError: (error) =>
+        (error as { name?: string })?.name === "NoSuchKey",
+      deleteClipRow: async () => {
+        rowDeleteCalls += 1;
+        return { count: 1 };
+      },
+    });
+
+    expect(await runClipDeletion(deps)).toMatchObject({ kind: "storage_incomplete" });
+    firstAttempt = false;
+    expect(await runClipDeletion(deps)).toEqual({ kind: "deleted" });
+    expect(rowDeleteCalls).toBe(1);
+  });
+
+  test("database deletion failure leaves the Clip retryable after storage success", async () => {
+    const existing = new Set([
+      "private/render-a.mp4",
+      "private/render-b.mp4",
+      "private/dub.mp3",
+    ]);
+    let failDatabase = true;
+    const deps = makeDeps({
+      deleteObject: async (key) => {
+        if (!existing.delete(key)) throw { name: "NoSuchKey" };
+      },
+      isMissingObjectError: (error) =>
+        (error as { name?: string })?.name === "NoSuchKey",
+      deleteClipRow: async () => {
+        if (failDatabase) throw new Error("database unavailable");
+        return { count: 1 };
+      },
+    });
+
+    await expect(runClipDeletion(deps)).rejects.toThrow("database unavailable");
+    failDatabase = false;
+    await expect(runClipDeletion(deps)).resolves.toEqual({ kind: "deleted" });
+  });
+
+  test("ownership denial touches neither storage nor the Clip row", async () => {
+    const deps = makeDeps({ getClipRow: async () => null });
+
+    expect(await runClipDeletion(deps)).toEqual({ kind: "not_found" });
+    expect(deps.attempted).toEqual([]);
+    expect(deps.rowDeleteCalls).toBe(0);
+  });
+
+  test("active publication preserves storage and the Clip row", async () => {
+    const deps = makeDeps({
+      getClipRow: async () => ({
+        hasActivePublication: true,
+        storage: storageSnapshot(),
+      }),
+    });
+
+    expect(await runClipDeletion(deps)).toEqual({ kind: "active_publication" });
+    expect(deps.attempted).toEqual([]);
+    expect(deps.rowDeleteCalls).toBe(0);
+  });
+});
+
+describe("ClipService.deleteClip", () => {
+  function makeAdapter(
+    overrides: Partial<ClipDeletionAdapter> = {},
+  ): ClipDeletionAdapter & {
+    attempted: string[];
+    rowDeleteCalls: number;
+  } {
+    const attempted: string[] = [];
+    let rowDeleteCalls = 0;
+    return {
+      attempted,
+      get rowDeleteCalls() {
+        return rowDeleteCalls;
+      },
+      getClipRow: async (context) => {
+        expect(context).toEqual({
+          userId: "user-1",
+          projectId: "project-1",
+          clipId: "clip-1",
+        });
+        return {
+          hasActivePublication: false,
+          storage: storageSnapshot({
+            renderStorageKeys: ["private/render-a.mp4", "private/render-b.mp4"],
+            dubStorageKeys: ["private/dub.mp3"],
+            previewStorageKey: null,
+          }),
+        };
+      },
+      deleteObject: async (key) => void attempted.push(key),
+      isMissingObjectError: () => false,
+      deleteClipRow: async () => {
+        rowDeleteCalls += 1;
+        return { count: 1 };
+      },
+      ...overrides,
+    };
+  }
+
+  async function expectActionCode(
+    promise: Promise<unknown>,
+    code: string,
+  ): Promise<void> {
+    try {
+      await promise;
+      throw new Error("expected ClipActionError");
+    } catch (error) {
+      expect(error).toBeInstanceOf(ClipActionError);
+      expect((error as ClipActionError).code).toBe(code);
+    }
+  }
+
+  test("returns the retryable public error after attempting every object and preserves the row", async () => {
+    const attempted: string[] = [];
+    let rowDeleteCalls = 0;
+    const adapter = makeAdapter({
+      deleteObject: async (key) => {
+        attempted.push(key);
+        if (key === "private/render-a.mp4") {
+          throw new Error("provider detail must not escape");
+        }
+      },
+      deleteClipRow: async () => {
+        rowDeleteCalls += 1;
+        return { count: 1 };
+      },
+    });
+
+    await expectActionCode(
+      new ClipService({ clipDeletionAdapter: adapter }).deleteClip(
+        "user-1",
+        "project-1",
+        "clip-1",
+      ),
+      "clip_storage_delete_incomplete",
+    );
+    expect(attempted.sort()).toEqual(
+      ["private/dub.mp3", "private/render-a.mp4", "private/render-b.mp4"].sort(),
+    );
+    expect(rowDeleteCalls).toBe(0);
+  });
+
+  test("a public retry accepts objects removed by the first attempt", async () => {
+    const existing = new Set([
+      "private/render-a.mp4",
+      "private/render-b.mp4",
+      "private/dub.mp3",
+    ]);
+    let firstAttempt = true;
+    const adapter = makeAdapter({
+      deleteObject: async (key) => {
+        if (!existing.has(key)) throw { name: "NoSuchKey" };
+        if (firstAttempt && key === "private/render-b.mp4") {
+          throw new Error("temporary outage");
+        }
+        existing.delete(key);
+      },
+      isMissingObjectError: (error) =>
+        (error as { name?: string })?.name === "NoSuchKey",
+    });
+    const service = new ClipService({ clipDeletionAdapter: adapter });
+
+    await expectActionCode(
+      service.deleteClip("user-1", "project-1", "clip-1"),
+      "clip_storage_delete_incomplete",
+    );
+    firstAttempt = false;
+    await expect(
+      service.deleteClip("user-1", "project-1", "clip-1"),
+    ).resolves.toBeUndefined();
+    expect(adapter.rowDeleteCalls).toBe(1);
+  });
+
+  test("preserves the typed database failure after storage succeeds", async () => {
+    const adapter = makeAdapter({
+      deleteClipRow: async () => {
+        throw new ClipActionError("clip_delete_failed", "clip delete failed");
+      },
+    });
+
+    await expectActionCode(
+      new ClipService({ clipDeletionAdapter: adapter }).deleteClip(
+        "user-1",
+        "project-1",
+        "clip-1",
+      ),
+      "clip_delete_failed",
+    );
+  });
+
+  test("ownership and active-publication rejection never touch storage", async () => {
+    const missing = makeAdapter({ getClipRow: async () => null });
+    await expectActionCode(
+      new ClipService({ clipDeletionAdapter: missing }).deleteClip(
+        "user-1",
+        "project-1",
+        "clip-1",
+      ),
+      "clip_not_found",
+    );
+    expect(missing.attempted).toEqual([]);
+
+    const active = makeAdapter({
+      getClipRow: async () => ({
+        hasActivePublication: true,
+        storage: storageSnapshot(),
+      }),
+    });
+    await expectActionCode(
+      new ClipService({ clipDeletionAdapter: active }).deleteClip(
+        "user-1",
+        "project-1",
+        "clip-1",
+      ),
+      "clip_has_scheduled_posts",
+    );
+    expect(active.attempted).toEqual([]);
   });
 });
 

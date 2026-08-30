@@ -236,6 +236,8 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 		"The AI returned something we couldn't use. Please try again.",
 	clip_duplicate_failed: "We couldn't duplicate this clip. Please try again.",
 	clip_delete_failed: "We couldn't delete this clip. Please try again.",
+	clip_storage_delete_incomplete:
+		"Some clip media could not be deleted. The clip is still here, so try deleting it again.",
 	clip_selection_invalid:
 		"That selection is too close to the edge of the transcript to create a clip. Select a bit more and try again.",
 	clip_create_from_selection_failed:

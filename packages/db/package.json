@@ -22,9 +22,7 @@
     "prisma:push:test": "prisma db push",
     "prisma:validate": "DATABASE_URL=${DATABASE_URL:-postgresql://user:password@localhost:5432/narriflow?schema=public} prisma validate",
     "build": "bun run prisma:generate && tsc -p tsconfig.build.json",
-    "lint": "echo 'db lint: no-op'",
     "typecheck": "bun run prisma:generate && tsc -p tsconfig.json --noEmit",
-    "test": "echo 'db test: no-op'",
     "clean": "rm -rf dist"
   },
   "dependencies": {

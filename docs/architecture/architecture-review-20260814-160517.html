@@ -42,9 +42,9 @@
             <h1 class="mt-2 text-4xl md:text-5xl font-serif tracking-tight">Narriflow</h1>
           </div>
           <div class="text-sm text-slate-600 md:text-right">
-            <div>14 August 2026</div>
+            <div>14 August 2026 · evidence refreshed 30 August 2026</div>
             <div>Hot-path + critical-path audit</div>
-            <div class="mt-1 font-semibold text-emerald-700">Updated: all nine recommendations completed, including Authenticated Request Policy</div>
+            <div class="mt-1 font-semibold text-emerald-700">Updated: all nine recommendations remain complete; media recovery and verification findings are closed</div>
           </div>
         </div>
 
@@ -52,7 +52,7 @@
           <div class="p-4 border-r border-slate-200"><div class="font-mono text-2xl"><span class="text-emerald-700">9</span>/9</div><div class="text-xs uppercase tracking-wider text-slate-500">Completed</div></div>
           <div class="p-4 border-r border-slate-200"><div class="font-mono text-2xl">6,551</div><div class="text-xs uppercase tracking-wider text-slate-500">Largest source</div></div>
           <div class="p-4 border-r border-slate-200"><div class="font-mono text-2xl">77</div><div class="text-xs uppercase tracking-wider text-slate-500">HTTP handlers</div></div>
-          <div class="p-4 border-r border-slate-200"><div class="font-mono text-2xl">93</div><div class="text-xs uppercase tracking-wider text-slate-500">Test files</div></div>
+          <div class="p-4 border-r border-slate-200"><div class="font-mono text-2xl">168</div><div class="text-xs uppercase tracking-wider text-slate-500">Test files</div></div>
           <div class="p-4 col-span-2 md:col-span-1"><div class="font-mono text-2xl text-emerald-700">Green</div><div class="text-xs uppercase tracking-wider text-slate-500">Current checks</div></div>
         </div>
 
@@ -479,12 +479,12 @@ flowchart TB
             <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr] bg-emerald-50"><div class="p-3 font-mono text-emerald-700">RESOLVED</div><div class="p-3 font-medium text-emerald-900">Critical orchestration is helper-tested</div><div class="p-3 col-span-2 md:col-span-1 text-emerald-800">All nine recommendations now run through public interfaces. Authenticated Request Policy coverage includes exact inventory checks, PostgreSQL admission tests, stream reauthorization, Server Actions, pages, and browser recovery.</div></div>
             <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr] bg-emerald-50"><div class="p-3 font-mono text-emerald-700">RESOLVED</div><div class="p-3 font-medium text-emerald-900">Clip Editor Document persistence type safety was bypassed</div><div class="p-3 col-span-2 md:col-span-1 text-emerald-800">All document-owned JSON now crosses one canonical codec, and post-creation writes have one typed persistence owner. Unrelated analysis and provider payload conversions remain outside this seam.</div></div>
             <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr] bg-emerald-50"><div class="p-3 font-mono text-emerald-700">RESOLVED</div><div class="p-3 font-medium text-emerald-900">Identity had dual semantics</div><div class="p-3 col-span-2 md:col-span-1 text-emerald-800">Actor Scope now names the signed-in App User as <code>actorUserId</code> and keeps Workspace ID, owner ID, role, status, tier, and selection state in separate fields. The ambiguous legacy helper was deleted.</div></div>
-            <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr]"><div class="p-3 font-mono text-amber-700">P1</div><div class="p-3 font-medium">State-settlement errors are swallowed</div><div class="p-3 col-span-2 md:col-span-1 text-slate-600">32 silent catch patterns exist; asset deletion at clip.service.ts:1272–1280 discards every rejection.</div></div>
+            <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr] bg-emerald-50"><div class="p-3 font-mono text-emerald-700">RESOLVED</div><div class="p-3 font-medium text-emerald-900">Media deletion lacked recoverable settlement</div><div class="p-3 col-span-2 md:col-span-1 text-emerald-800">Clip deletion now fails closed and remains retryable. One fenced Media Cleanup module durably covers editor mutations, detected-Clip replacement, and duplicate-copy compensation without exposing storage details.</div></div>
             <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr] bg-emerald-50"><div class="p-3 font-mono text-emerald-700">RESOLVED</div><div class="p-3 font-medium text-emerald-900">Stringly typed error contracts</div><div class="p-3 col-span-2 md:col-span-1 text-emerald-800">Browser-session adapters now translate stable error codes into bounded transport responses and recovery instructions. Unknown failures receive a request ID without exposing provider or stack details.</div></div>
-            <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr]"><div class="p-3 font-mono text-slate-600">P2</div><div class="p-3 font-medium">Equality policy remains repeated outside document persistence</div><div class="p-3 col-span-2 md:col-span-1 text-slate-600">Clip Editor Document canonical equivalence now lives at its persistence seam; other hot-path equality and hash checks still rely on repeated JSON serialization.</div></div>
+            <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr]"><div class="p-3 font-mono text-slate-600">P2</div><div class="p-3 font-medium">Equality policy remains repeated outside document persistence</div><div class="p-3 col-span-2 md:col-span-1 text-slate-600">Clip Editor Document canonical equivalence still has private serializer-based implementations in persistence and Studio. The shared typed equality cutover remains a separate scheduled finding.</div></div>
             <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr] bg-emerald-50"><div class="p-3 font-mono text-emerald-700">RESOLVED</div><div class="p-3 font-medium text-emerald-900">Action safety was disabled with any</div><div class="p-3 col-span-2 md:col-span-1 text-emerald-800">The obsolete safe-action wrapper and duplicate project action module were deleted. Server Actions now use typed Workspace, Project, or signed-in policy adapters with strict schemas.</div></div>
             <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr] bg-emerald-50"><div class="p-3 font-mono text-emerald-700">RESOLVED</div><div class="p-3 font-medium text-emerald-900">Render configuration was ad hoc</div><div class="p-3 col-span-2 md:col-span-1 text-emerald-800">The worker parses render-affecting environment values once into immutable validated configuration. Invalid numeric and enum values fail startup.</div></div>
-            <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr]"><div class="p-3 font-mono text-slate-600">P2</div><div class="p-3 font-medium">Quality scripts overstate coverage</div><div class="p-3 col-span-2 md:col-span-1 text-slate-600">CI runs Biome directly, but 11 package lint scripts and 5 package test scripts are no-ops; database tests remain absent from the normal aggregate.</div></div>
+            <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr] bg-emerald-50"><div class="p-3 font-mono text-emerald-700">RESOLVED</div><div class="p-3 font-medium text-emerald-900">Quality scripts overstated coverage</div><div class="p-3 col-span-2 md:col-span-1 text-emerald-800">The root lint command is the repository-wide Biome check, no-op tasks are excluded from success totals, fast tests state their database boundary, and CI gates all six isolated PostgreSQL invariant suites.</div></div>
             <div class="grid grid-cols-[90px_1fr] md:grid-cols-[90px_1.2fr_1.8fr] bg-emerald-50"><div class="p-3 font-mono text-emerald-700">RESOLVED</div><div class="p-3 font-medium text-emerald-900">Obsolete editor-persistence navigation</div><div class="p-3 col-span-2 md:col-span-1 text-emerald-800">The cutover removed stale Clip Service mutation helpers, planners, comments, and shallow orchestration tests after equivalent persistence-interface coverage landed.</div></div>
           </div>
         </div>
@@ -493,9 +493,9 @@ flowchart TB
       <section id="verification" class="rounded-xl border border-slate-300 bg-white p-6 md:p-8">
         <div class="grid md:grid-cols-4 gap-6">
           <div><div class="text-xs uppercase tracking-wider text-slate-500">Typecheck</div><div class="mt-2 text-emerald-700 font-mono">12/12 passed</div></div>
-          <div><div class="text-xs uppercase tracking-wider text-slate-500">Tests</div><div class="mt-2 text-emerald-700 font-mono">aggregate passed</div></div>
-          <div><div class="text-xs uppercase tracking-wider text-slate-500">Biome</div><div class="mt-2 text-emerald-700 font-mono">643 files clean</div></div>
-          <div><div class="text-xs uppercase tracking-wider text-slate-500">Completed updates</div><div class="mt-2 text-emerald-700 text-sm">All nine architecture recommendations have implementation and interface verification coverage.</div></div>
+          <div><div class="text-xs uppercase tracking-wider text-slate-500">Tests</div><div class="mt-2 text-emerald-700 font-mono">168 files · fast aggregate + 6 DB gates</div></div>
+          <div><div class="text-xs uppercase tracking-wider text-slate-500">Biome</div><div class="mt-2 text-emerald-700 font-mono">736 files clean</div></div>
+          <div><div class="text-xs uppercase tracking-wider text-slate-500">Completed updates</div><div class="mt-2 text-emerald-700 text-sm">All nine recommendations remain complete. The media-recovery and verification findings are closed; typed document equality remains scheduled separately.</div></div>
         </div>
       </section>
 
