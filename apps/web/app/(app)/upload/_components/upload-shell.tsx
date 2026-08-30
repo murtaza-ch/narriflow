@@ -152,6 +152,15 @@ interface UploadShellProps {
     mine: BrandTemplateSummary[];
     defaultId: string | null;
   };
+  brandProfiles: {
+    items: Array<{
+      id: string;
+      name: string;
+      defaultTemplateId: string | null;
+      templates: Array<{ id: string; name: string }>;
+    }>;
+    defaultId: string | null;
+  };
   /** Pre-fills the smart paste field (dashboard links to /upload?url=…). */
   initialUrl?: string | null;
   /** Present when the page mounted with `?project=<id>` — the link flow's
@@ -162,6 +171,7 @@ interface UploadShellProps {
 
 export function UploadShell({
   brandTemplates,
+  brandProfiles,
   initialUrl,
   resumeData,
   usageSummary,
@@ -251,8 +261,16 @@ export function UploadShell({
   const [durationSec, setDurationSec] = useState<number | null>(null);
   const [startSec, setStartSec] = useState(0);
   const [endSec, setEndSec] = useState(0);
+  const defaultBrandProfile = brandProfiles.items.find(
+    (profile) => profile.id === brandProfiles.defaultId,
+  );
   const [brandTemplateId, setBrandTemplateId] = useState<string | null>(
-    brandTemplates.defaultId,
+    defaultBrandProfile
+      ? defaultBrandProfile.defaultTemplateId
+      : brandTemplates.defaultId,
+  );
+  const [brandProfileId, setBrandProfileId] = useState<string | null>(
+    brandProfiles.defaultId,
   );
   const [platformTargets, setPlatformTargets] = useState<ClipPlatformTarget[]>([
     "tiktok",
@@ -507,6 +525,7 @@ export function UploadShell({
       processingEndSec: hasCustomWindow ? nextEndSec : null,
       captionPreset,
       brandTemplateId,
+      brandProfileId,
       clipCountTarget,
       platformTargets,
       autoRenderClips,
@@ -539,6 +558,7 @@ export function UploadShell({
       file,
       title: title.trim(),
       brandTemplateId,
+      brandProfileId,
       generationContext: buildUploadGenerationContext(getFormValues()),
     });
   }
@@ -906,6 +926,7 @@ export function UploadShell({
             (resumeData?.sourceProvider as LinkProviderId | null) ?? linkProvider ?? "youtube"
           }
           brandTemplates={brandTemplates}
+          brandProfiles={brandProfiles}
           usageSummary={usageSummary}
           resumeData={resumeData}
           onChangeSource={handleChangeSource}
@@ -1131,6 +1152,9 @@ export function UploadShell({
                 mine={brandTemplates.mine}
                 value={brandTemplateId}
                 onChange={setBrandTemplateId}
+                profiles={brandProfiles.items}
+                profileValue={brandProfileId}
+                onProfileChange={setBrandProfileId}
               />
                 </Box>
 

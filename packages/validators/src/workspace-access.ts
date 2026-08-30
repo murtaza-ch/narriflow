@@ -13,7 +13,9 @@ export type WorkspaceCapability =
   | "api.manage"
   | "members.invite"
   | "members.promote_admin"
-  | "billing.manage";
+  | "billing.manage"
+  | "review.manage"
+  | "review.override";
 
 const ROLE_CAPABILITIES: Record<
   WorkspaceAccessRole,
@@ -23,15 +25,18 @@ const ROLE_CAPABILITIES: Record<
     "content.view", "content.download", "content.edit", "processing.consume",
     "publishing.manage", "brand.manage", "social.manage", "workspace.manage",
     "api.manage", "members.invite", "members.promote_admin", "billing.manage",
+    "review.manage", "review.override",
   ]),
   admin: new Set([
     "content.view", "content.download", "content.edit", "processing.consume",
     "publishing.manage", "brand.manage", "social.manage", "workspace.manage",
     "api.manage", "members.invite",
+    "review.manage", "review.override",
   ]),
   editor: new Set([
     "content.view", "content.download", "content.edit", "processing.consume",
     "publishing.manage", "brand.manage", "api.manage",
+    "review.manage",
   ]),
   viewer: new Set(["content.view", "content.download"]),
 };

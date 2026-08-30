@@ -15,6 +15,7 @@ describe("workspace permission matrix", () => {
     "content.view", "content.download", "content.edit", "processing.consume",
     "publishing.manage", "brand.manage", "social.manage", "workspace.manage", "api.manage", "members.invite",
     "members.promote_admin", "billing.manage",
+    "review.manage", "review.override",
   ];
 
   test("owner has every capability", () => {
@@ -34,6 +35,15 @@ describe("workspace permission matrix", () => {
     expect(roleHasWorkspaceCapability("editor", "brand.manage")).toBe(true);
     expect(roleHasWorkspaceCapability("editor", "social.manage")).toBe(false);
     expect(roleHasWorkspaceCapability("editor", "members.invite")).toBe(false);
+    expect(roleHasWorkspaceCapability("editor", "review.manage")).toBe(true);
+    expect(roleHasWorkspaceCapability("editor", "review.override")).toBe(false);
+  });
+
+  test("review override is owner and admin only", () => {
+    expect(roleHasWorkspaceCapability("owner", "review.override")).toBe(true);
+    expect(roleHasWorkspaceCapability("admin", "review.override")).toBe(true);
+    expect(roleHasWorkspaceCapability("editor", "review.override")).toBe(false);
+    expect(roleHasWorkspaceCapability("viewer", "review.override")).toBe(false);
   });
 
   test("viewer is read-only", () => {

@@ -28,6 +28,42 @@ export {
   BrandTemplateNotFoundError,
 } from "./brand-template.service";
 export {
+  brandProfileService,
+  BrandProfileService,
+  BrandProfileConflictError,
+  BrandProfileMembershipError,
+  BrandProfileNotFoundError,
+  BrandProfileReferenceError,
+  buildBrandProfileSnapshot,
+  compatibilityProfileSlug,
+  resolveProfileStyleSelection,
+} from "./brand-profile.service";
+export {
+  visualAssetService,
+  VisualAssetService,
+  VisualAssetIntegrityError,
+  VisualAssetReferenceError,
+  assertFinalizedVisualObject,
+  visualAssetKindForContentType,
+  type VisualAssetStorage,
+  type VisualMediaProbe,
+} from "./visual-asset.service";
+export {
+  brandFontService,
+  BrandFontService,
+  BrandFontIntegrityError,
+  BrandFontReferenceError,
+  parseBrandFontHeader,
+} from "./brand-font.service";
+export {
+  assertBrandMutationAllowed,
+  brandOwnerStoragePrefix,
+  brandOwnerWhere,
+  resolveBrandOwner,
+  BrandAccessError,
+  type BrandActorScope,
+} from "./brand-ownership";
+export {
   clipService,
   ClipService,
   ClipActionError,
@@ -210,6 +246,17 @@ export {
 export {
   analyticsService,
   AnalyticsService } from "./analytics.service";
+export {
+  assertProgramWriteEnabled,
+  isProgramWriteEnabled,
+  ProgramWriteDisabledError,
+  type ProgramReleaseGroup,
+} from "./program-rollout";
+export {
+  generationAccessForTier,
+  type GeneratedMediaKind,
+  type GenerationUsagePolicy,
+} from "./generation-usage";
 export {
   socialService,
   SocialService } from "./social.service";

@@ -38,6 +38,7 @@ export const openUploadSessionSchema = z
       })
       .strict(),
     brandTemplateId: z.string().uuid().nullable().optional(),
+    brandProfileId: z.string().uuid().nullable().optional(),
     generationContext: uploadGenerationContextSchema,
   })
   .strict();

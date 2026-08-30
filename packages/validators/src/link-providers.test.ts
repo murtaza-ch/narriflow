@@ -121,10 +121,11 @@ describe("detectLinkProvider", () => {
 });
 
 describe("linkIngestSchema", () => {
-  test("accepts a valid youtube link with optional title/brandTemplateId", () => {
+  test("accepts a valid youtube link with optional brand selections", () => {
     const result = linkIngestSchema.safeParse({
       title: "My Podcast Episode",
       url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+      brandProfileId: "bc25be61-113c-4fa0-b7a6-6e757270cd94",
     });
     expect(result.success).toBe(true);
   });

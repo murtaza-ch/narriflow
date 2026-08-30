@@ -14,6 +14,14 @@ interface BrandTemplatePickerProps {
   mine: BrandTemplateSummary[];
   value: string | null;
   onChange: (id: string | null) => void;
+  profiles?: Array<{
+    id: string;
+    name: string;
+    defaultTemplateId: string | null;
+    templates: Array<{ id: string; name: string }>;
+  }>;
+  profileValue?: string | null;
+  onProfileChange?: (id: string | null) => void;
 }
 
 export function BrandTemplatePicker({
@@ -21,12 +29,18 @@ export function BrandTemplatePicker({
   mine,
   value,
   onChange,
+  profiles = [],
+  profileValue = null,
+  onProfileChange = () => undefined,
 }: BrandTemplatePickerProps) {
-  const allOptions = [...mine, ...builtIns];
+  const activeProfile = profiles.find((profile) => profile.id === profileValue) ?? null;
+  const profileTemplateIds = new Set(activeProfile?.templates.map((template) => template.id) ?? []);
+  const compatibleMine = activeProfile ? mine.filter((template) => profileTemplateIds.has(template.id)) : mine;
+  const allOptions = [...compatibleMine, ...builtIns];
   const items = [
     { label: "System default", value: SYSTEM_DEFAULT_VALUE },
-    ...mine.map((template) => ({ label: template.name, value: template.id })),
-    ...builtIns.map((template) => ({
+    ...compatibleMine.map((template) => ({ label: template.name, value: template.id })),
+    ...(!activeProfile ? builtIns : []).map((template) => ({
       label: `${template.name} · built-in`,
       value: template.id,
     })),
@@ -36,7 +50,7 @@ export function BrandTemplatePicker({
     <Box>
       <Flex align="center" justify="space-between" mb="2">
         <Text textStyle="eyebrow" color="fg.subtle">
-          Brand template
+          Brand selection
         </Text>
         <Link href="/brand-kit">
           <Text
@@ -57,15 +71,32 @@ export function BrandTemplatePicker({
         </Link>
       </Flex>
 
-      <Select
-        items={items}
-        value={value ?? SYSTEM_DEFAULT_VALUE}
-        onValueChange={(next) =>
-          onChange(next && next !== SYSTEM_DEFAULT_VALUE ? next : null)
-        }
-        placeholder="Select brand template"
-        size="sm"
-      />
+      <Flex direction={{ base: "column", sm: "row" }} gap="2">
+        <Select
+          items={[
+            { label: "No Brand Profile", value: SYSTEM_DEFAULT_VALUE },
+            ...profiles.map((profile) => ({ label: profile.name, value: profile.id })),
+          ]}
+          value={profileValue ?? SYSTEM_DEFAULT_VALUE}
+          onValueChange={(next) => {
+            const profileId = next && next !== SYSTEM_DEFAULT_VALUE ? next : null;
+            onProfileChange(profileId);
+            const profile = profiles.find((candidate) => candidate.id === profileId);
+            onChange(profile?.defaultTemplateId ?? null);
+          }}
+          placeholder="Select Brand Profile"
+          size="sm"
+        />
+        <Select
+          items={items}
+          value={value ?? SYSTEM_DEFAULT_VALUE}
+          onValueChange={(next) =>
+            onChange(next && next !== SYSTEM_DEFAULT_VALUE ? next : null)
+          }
+          placeholder="Select style preset"
+          size="sm"
+        />
+      </Flex>
 
       {value && (
         <BrandTemplatePreview

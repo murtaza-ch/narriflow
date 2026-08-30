@@ -102,6 +102,7 @@ import { createStripeWebhookHttpRoutes } from "./stripe-webhook-http";
 import { createWorkspaceBillingHttpRoutes } from "./workspace-billing-routes";
 import { clipEditorPersistenceHttpError } from "./editor-persistence-http";
 import { clipDeleteHttpError } from "./clip-delete-http";
+import { createBrandProfileRoutes } from "./brand-profile-routes";
 
 export const runtime = "nodejs";
 // Content-suite generation makes a synchronous LLM call that can take ~30s.
@@ -166,6 +167,13 @@ app.route(
     readBillingState: (workspaceId) => billingService.readBillingState(workspaceId),
     reconcileCurrentState: (workspaceId) =>
       billingService.reconcileCurrentState(workspaceId),
+  }),
+);
+
+app.route(
+  "/",
+  createBrandProfileRoutes({
+    getActor: (context) => authenticatedHonoActor(context),
   }),
 );
 

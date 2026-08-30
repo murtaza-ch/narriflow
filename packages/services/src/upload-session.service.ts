@@ -21,6 +21,7 @@ import {
   type GrantUploadPartsInput as ValidatedGrantUploadPartsInput,
 } from "@narriflow/validators";
 import { brandTemplateService } from "./brand-template.service";
+import { brandProfileService } from "./brand-profile.service";
 import { projectRetentionService } from "./project-retention.service";
 import {
   abortMultipartUpload,
@@ -171,6 +172,8 @@ export interface UploadSessionRecord {
   browserFingerprint: string;
   brandTemplateId: string | null;
   brandSnapshot: unknown;
+  brandProfileId: string | null;
+  brandProfileSnapshot: unknown;
   generation: unknown;
   transferKind: UploadTransferKind;
   partSizeBytes: number | null;
@@ -216,6 +219,8 @@ export interface UploadSessionPersistence {
     admissionAttemptId: string;
     brandTemplateId: string | null;
     brandSnapshot: unknown;
+    brandProfileId: string | null;
+    brandProfileSnapshot: unknown;
     updatedAt: Date;
   }): Promise<UploadSessionRecord>;
   waitForAdmission(sessionId: string): Promise<UploadSessionRecord>;
@@ -393,7 +398,13 @@ export interface UploadSessionAdmission {
     actorUserId: string;
     legacyOwnerUserId: string;
     brandTemplateId: string | null;
-  }): Promise<{ templateId: string; snapshot: unknown } | null>;
+    brandProfileId: string | null;
+  }): Promise<{
+    templateId: string | null;
+    snapshot: unknown;
+    profileId: string | null;
+    profileSnapshot: unknown;
+  } | null>;
 }
 
 export interface UploadSessionModuleDependencies {
@@ -477,6 +488,7 @@ export interface OpenUploadSessionInput {
     browserFingerprint: string;
   };
   brandTemplateId: string | null;
+  brandProfileId: string | null;
   generation: unknown;
 }
 
@@ -676,6 +688,7 @@ function immutableInputFingerprint(input: OpenUploadSessionInput) {
     title: input.title,
     source: input.source,
     brandTemplateId: input.brandTemplateId,
+    brandProfileId: input.brandProfileId,
     generation: input.generation,
   });
 }
@@ -1371,12 +1384,15 @@ export function createUploadSessionModule(
           actorUserId: prepared.actorUserId,
           legacyOwnerUserId: prepared.legacyOwnerUserId,
           brandTemplateId: prepared.brandTemplateId,
+          brandProfileId: prepared.brandProfileId,
         });
         prepared = await dependencies.persistence.prepareAdmission({
           sessionId: prepared.id,
           admissionAttemptId,
           brandTemplateId: brand?.templateId ?? null,
           brandSnapshot: brand?.snapshot ?? null,
+          brandProfileId: brand?.profileId ?? null,
+          brandProfileSnapshot: brand?.profileSnapshot ?? null,
           updatedAt: dependencies.now(),
         });
       } catch (error) {
@@ -1658,6 +1674,8 @@ export function createUploadSessionModule(
         browserFingerprint: input.source.browserFingerprint,
         brandTemplateId: input.brandTemplateId,
         brandSnapshot: null,
+        brandProfileId: input.brandProfileId,
+        brandProfileSnapshot: null,
         generation: input.generation,
         transferKind: transfer.kind,
         partSizeBytes: transfer.partSizeBytes,
@@ -1716,12 +1734,15 @@ export function createUploadSessionModule(
           actorUserId: input.actorUserId,
           legacyOwnerUserId: input.legacyOwnerUserId,
           brandTemplateId: input.brandTemplateId,
+          brandProfileId: input.brandProfileId,
         });
         prepared = await dependencies.persistence.prepareAdmission({
           sessionId: reservation.session.id,
           admissionAttemptId,
           brandTemplateId: brand?.templateId ?? null,
           brandSnapshot: brand?.snapshot ?? null,
+          brandProfileId: brand?.profileId ?? null,
+          brandProfileSnapshot: brand?.profileSnapshot ?? null,
           updatedAt: dependencies.now(),
         });
       } catch (error) {
@@ -3057,6 +3078,8 @@ function fromPrismaUploadSession(row: PrismaUploadSession): UploadSessionRecord 
     browserFingerprint: row.browserFingerprint,
     brandTemplateId: row.brandTemplateId,
     brandSnapshot: row.brandSnapshot,
+    brandProfileId: row.brandProfileId,
+    brandProfileSnapshot: row.brandProfileSnapshot,
     generation: row.generationSettings,
     transferKind: row.transferKind,
     partSizeBytes: row.partSizeBytes,
@@ -3133,6 +3156,8 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
           browserFingerprint: record.browserFingerprint,
           brandTemplateId: record.brandTemplateId,
           brandSnapshot: Prisma.JsonNull,
+          brandProfileId: record.brandProfileId,
+          brandProfileSnapshot: Prisma.JsonNull,
           generationSettings: record.generation as Prisma.InputJsonValue,
           transferKind: record.transferKind,
           partSizeBytes: record.partSizeBytes,
@@ -3202,6 +3227,8 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
     admissionAttemptId,
     brandTemplateId,
     brandSnapshot,
+    brandProfileId,
+    brandProfileSnapshot,
     updatedAt,
   }) {
     const updated = await requiredPrisma().uploadSession.updateMany({
@@ -3212,6 +3239,11 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
           brandSnapshot === null
             ? Prisma.JsonNull
             : (brandSnapshot as Prisma.InputJsonValue),
+        brandProfileId,
+        brandProfileSnapshot:
+          brandProfileSnapshot === null
+            ? Prisma.JsonNull
+            : (brandProfileSnapshot as Prisma.InputJsonValue),
         admissionPreparedAt: updatedAt,
         updatedAt,
       },
@@ -3430,6 +3462,8 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
             ingestStatus: "queued",
             brandTemplateId: current.brandTemplateId,
             brandSnapshot: current.brandSnapshot ?? Prisma.JsonNull,
+            brandProfileId: current.brandProfileId,
+            brandProfileSnapshot: current.brandProfileSnapshot ?? Prisma.JsonNull,
             retentionPolicyKey: retention?.retentionPolicyKey ?? null,
             expiresAt: retention?.expiresAt ?? null,
             workflowEventSeq: 1,
@@ -4107,14 +4141,38 @@ const productionUploadSessionModule = createUploadSessionModule({
   admission: {
     assertQuota: assertWorkspaceUploadQuota,
     async resolveBrand(input) {
-      return brandTemplateService.resolveSnapshotForUser(
+      if (input.brandProfileId) {
+        const [actor, workspace] = await Promise.all([
+          workspaceService.requireActor(input.actorUserId, input.workspaceId, "content.view"),
+          requiredPrisma().workspace.findUnique({ where: { id: input.workspaceId }, select: { personalOwnerUserId: true } }),
+        ]);
+        const resolved = await brandProfileService.resolveForProject({
+          actorUserId: input.actorUserId,
+          workspaceId: input.workspaceId,
+          workspaceOwnerUserId: actor.workspaceOwnerUserId,
+          role: actor.role,
+          status: actor.status,
+          pricingTier: actor.pricingTier,
+          isPersonalWorkspace: workspace?.personalOwnerUserId !== null,
+        }, {
+          profileId: input.brandProfileId,
+          templateId: input.brandTemplateId,
+        });
+        return {
+          templateId: resolved.templateId,
+          snapshot: resolved.templateSnapshot,
+          profileId: resolved.profileId,
+          profileSnapshot: resolved.profileSnapshot,
+        };
+      }
+      const legacy = await brandTemplateService.resolveSnapshotForUser(
         input.legacyOwnerUserId,
         input.brandTemplateId,
-        {
-          workspaceId: input.workspaceId,
-          actorUserId: input.actorUserId,
-        },
+        { workspaceId: input.workspaceId, actorUserId: input.actorUserId },
       );
+      return legacy
+        ? { templateId: legacy.templateId, snapshot: legacy.snapshot, profileId: null, profileSnapshot: null }
+        : null;
     },
   },
   now: () => new Date(),
@@ -4149,6 +4207,7 @@ export class UploadSessionService {
       title: parsed.title,
       source: parsed.source,
       brandTemplateId: parsed.brandTemplateId ?? null,
+      brandProfileId: parsed.brandProfileId ?? null,
       generation: parsed.generationContext,
     });
     console.warn(

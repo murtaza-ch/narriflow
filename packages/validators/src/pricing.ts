@@ -111,7 +111,7 @@ export const PRICING_FEATURES: Record<PricingTier, string[]> = {
   creator: [
     `${MONTHLY_PROCESSING_MINUTE_LIMITS.creator} processing minutes / month`,
     "1080p exports, no watermark",
-    "Caption presets and brand templates",
+    "Personal Brand Profiles, fonts, scenes, and motion",
     "Content-suite repurposing (blog, X, LinkedIn, show notes)",
     formatUploadLimit("creator"),
   ],
@@ -119,12 +119,14 @@ export const PRICING_FEATURES: Record<PricingTier, string[]> = {
     `${MONTHLY_PROCESSING_MINUTE_LIMITS.pro} processing minutes / month`,
     "Everything in Creator",
     "Voiceover dubbing",
+    "Campaign operations, export bundles, and generated video",
     formatUploadLimit("pro"),
   ],
   business: [
     `${MONTHLY_PROCESSING_MINUTE_LIMITS.business} shared processing minutes / month`,
     "Everything in Pro",
     "Workspace members and shared brand assets",
+    "Governed Brand Profiles and client review rooms",
     "Scoped API keys and MCP integrations",
     "Owner seat included; additional Editors/Admins billed separately",
     formatUploadLimit("business"),

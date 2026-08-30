@@ -28,15 +28,21 @@ export class AnalyticsService {
     platform?: SocialPlatform | null;
     metadata?: Record<string, unknown>;
   }): Promise<void> {
+    const parsed = recordAnalyticsEventSchema.parse({
+      type: input.type,
+      clipId: input.clipId,
+      platform: input.platform,
+      metadata: input.metadata,
+    });
     const prisma = requirePrisma();
     await prisma.projectAnalyticsEvent.create({
       data: {
         projectId: input.projectId,
-        clipId: input.clipId ?? null,
-        type: toEventType(input.type),
-        platform: input.platform ?? null,
-        metadata: input.metadata
-          ? (input.metadata as Prisma.InputJsonValue)
+        clipId: parsed.clipId ?? null,
+        type: toEventType(parsed.type),
+        platform: parsed.platform ?? null,
+        metadata: parsed.metadata
+          ? (parsed.metadata as Prisma.InputJsonValue)
           : Prisma.JsonNull,
       },
     });

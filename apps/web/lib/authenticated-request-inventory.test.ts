@@ -294,9 +294,12 @@ describe("authenticated request inventory", () => {
   });
 
   test("declares every route registered by the browser Hono app", async () => {
-    const source = await Bun.file(
-      new URL("app/api/[[...route]]/route.ts", webRoot),
-    ).text();
+    const source = (
+      await Promise.all([
+        "app/api/[[...route]]/route.ts",
+        "app/api/[[...route]]/brand-profile-routes.ts",
+      ].map((module) => Bun.file(new URL(module, webRoot)).text()))
+    ).join("\n");
     const registered = source.matchAll(
       /app\.(get|post|put|patch|delete)\(\s*["']([^"']+)["']/g,
     );
@@ -319,7 +322,13 @@ describe("authenticated request inventory", () => {
         ([, method, path]) => `${method?.toUpperCase()} ${path}`,
       ),
     );
-    const extractedPrefixes = ["/upload-sessions/", "/billing/"];
+    const extractedPrefixes = [
+      "/upload-sessions/",
+      "/billing/",
+      "/brand-profiles",
+      "/visual-assets",
+      "/brand-fonts",
+    ];
     const expected = [
       ...browserSessionHonoSurfaces.filter(
         ({ path }) => !extractedPrefixes.some((prefix) => path.startsWith(prefix)),

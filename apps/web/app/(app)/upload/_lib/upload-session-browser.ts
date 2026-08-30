@@ -45,6 +45,7 @@ export interface UploadSessionBrowserStartInput {
   file: File;
   title: string;
   brandTemplateId: string | null;
+  brandProfileId?: string | null;
   generationContext: unknown;
 }
 
@@ -76,6 +77,7 @@ interface RunUploadSessionTransferInput {
   file: File;
   title: string;
   brandTemplateId: string | null;
+  brandProfileId?: string | null;
   generationContext: unknown;
   storage: UploadResumeStorage | null;
   fetcher?: typeof fetch;
@@ -565,6 +567,7 @@ async function runUploadSessionTransfer(
               browserFingerprint: fingerprint,
             },
             brandTemplateId: input.brandTemplateId,
+            brandProfileId: input.brandProfileId ?? null,
             generationContext: input.generationContext,
           },
     ),

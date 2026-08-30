@@ -128,6 +128,7 @@ export const linkIngestSchema = z.object({
       "We couldn't recognize that link. Supported: YouTube, Google Drive, StreamYard, Loom, Twitch, X, TikTok, LinkedIn, Facebook, Vimeo, Dropbox.",
   }),
   brandTemplateId: z.string().uuid().nullable().optional(),
+  brandProfileId: z.string().uuid().nullable().optional(),
   // Link-first split (Step 1 · Commit). commitToken makes repeated submits
   // collapse on the Project.commitToken unique; the draft fields seed the
   // draft ContentPack so a refresh of Step 2 can rehydrate them.

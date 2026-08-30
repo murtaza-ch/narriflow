@@ -42,6 +42,15 @@ interface LinkImportFlowProps {
     mine: BrandTemplateSummary[];
     defaultId: string | null;
   };
+  brandProfiles: {
+    items: Array<{
+      id: string;
+      name: string;
+      defaultTemplateId: string | null;
+      templates: Array<{ id: string; name: string }>;
+    }>;
+    defaultId: string | null;
+  };
   usageSummary: UploadUsageSummary;
   /** Present when the page mounted with `?project=<id>` — skips Step 1
    *  entirely and rehydrates Step 2 from the server-loaded draft. */
@@ -75,6 +84,7 @@ export function LinkImportFlow({
   linkUrl,
   linkProvider,
   brandTemplates,
+  brandProfiles,
   usageSummary,
   resumeData,
   onChangeSource,
@@ -144,6 +154,7 @@ export function LinkImportFlow({
         linkUrl={linkUrl}
         linkProvider={linkProvider}
         brandTemplates={brandTemplates}
+        brandProfiles={brandProfiles}
         usageSummary={usageSummary}
         commitToken={commitTokenRef.current}
         onCommitted={handleCommitted}

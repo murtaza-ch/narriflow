@@ -2,6 +2,7 @@ export * from "./analytics";
 export * from "./audio-asset";
 export * from "./autopilot";
 export * from "./brand-template";
+export * from "./brand-profile";
 export * from "./broll";
 export * from "./caption-preset";
 export * from "./clip";

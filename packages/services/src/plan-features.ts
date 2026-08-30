@@ -4,7 +4,18 @@ export type PlanFeature =
   | "export.1080p"
   | "export.noWatermark"
   | "integrations.api"
-  | "integrations.mcp";
+  | "integrations.mcp"
+  | "brand.profiles"
+  | "brand.customFonts"
+  | "brand.scenes"
+  | "editor.censoring"
+  | "editor.motion"
+  | "publishing.assistedCopy"
+  | "campaign.operations"
+  | "export.bundles"
+  | "review.rooms"
+  | "generated.images"
+  | "generated.video";
 
 const PLAN_FEATURES: Record<PricingTier, Record<PlanFeature, boolean>> = {
   free: {
@@ -12,24 +23,68 @@ const PLAN_FEATURES: Record<PricingTier, Record<PlanFeature, boolean>> = {
     "export.noWatermark": false,
     "integrations.api": false,
     "integrations.mcp": false,
+    "brand.profiles": false,
+    "brand.customFonts": false,
+    "brand.scenes": false,
+    "editor.censoring": false,
+    "editor.motion": false,
+    "publishing.assistedCopy": false,
+    "campaign.operations": false,
+    "export.bundles": false,
+    "review.rooms": false,
+    "generated.images": true,
+    "generated.video": false,
   },
   creator: {
     "export.1080p": true,
     "export.noWatermark": true,
     "integrations.api": false,
     "integrations.mcp": false,
+    "brand.profiles": true,
+    "brand.customFonts": true,
+    "brand.scenes": true,
+    "editor.censoring": true,
+    "editor.motion": true,
+    "publishing.assistedCopy": true,
+    "campaign.operations": false,
+    "export.bundles": false,
+    "review.rooms": false,
+    "generated.images": true,
+    "generated.video": false,
   },
   pro: {
     "export.1080p": true,
     "export.noWatermark": true,
     "integrations.api": false,
     "integrations.mcp": false,
+    "brand.profiles": true,
+    "brand.customFonts": true,
+    "brand.scenes": true,
+    "editor.censoring": true,
+    "editor.motion": true,
+    "publishing.assistedCopy": true,
+    "campaign.operations": true,
+    "export.bundles": true,
+    "review.rooms": false,
+    "generated.images": true,
+    "generated.video": true,
   },
   business: {
     "export.1080p": true,
     "export.noWatermark": true,
     "integrations.api": true,
     "integrations.mcp": true,
+    "brand.profiles": true,
+    "brand.customFonts": true,
+    "brand.scenes": true,
+    "editor.censoring": true,
+    "editor.motion": true,
+    "publishing.assistedCopy": true,
+    "campaign.operations": true,
+    "export.bundles": true,
+    "review.rooms": true,
+    "generated.images": true,
+    "generated.video": true,
   },
 };
 

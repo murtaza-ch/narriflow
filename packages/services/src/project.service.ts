@@ -39,6 +39,7 @@ import {
 } from "@narriflow/validators";
 import { deleteObject } from "./r2-storage";
 import { brandTemplateService } from "./brand-template.service";
+import { brandProfileService } from "./brand-profile.service";
 import {
 	autoTriggerIdempotencyKey,
 	isUniqueConstraintError,
@@ -2074,14 +2075,46 @@ export class ProjectService {
 		}
 		const sourceType = provider === "youtube" ? "youtube" : "link";
 
-		const brandResolved = await brandTemplateService.resolveSnapshotForUser(
-			ownership.legacyOwnerUserId,
-			parsed.brandTemplateId ?? null,
-			{
-				workspaceId: ownership.workspaceId,
-				actorUserId: ownership.actorUserId,
-			},
-		);
+		const profileResolved = parsed.brandProfileId
+			? await (async () => {
+				const [actor, workspace] = await Promise.all([
+					workspaceService.requireActor(
+						ownership.actorUserId,
+						ownership.workspaceId,
+						"content.view",
+					),
+					prisma.workspace.findUnique({
+						where: { id: ownership.workspaceId },
+						select: { personalOwnerUserId: true },
+					}),
+				]);
+				return brandProfileService.resolveForProject(
+					{
+						actorUserId: ownership.actorUserId,
+						workspaceId: ownership.workspaceId,
+						workspaceOwnerUserId: actor.workspaceOwnerUserId,
+						role: actor.role,
+						status: actor.status,
+						pricingTier: actor.pricingTier,
+						isPersonalWorkspace: workspace?.personalOwnerUserId !== null,
+					},
+					{
+						profileId: parsed.brandProfileId!,
+						templateId: parsed.brandTemplateId,
+					},
+				);
+			})()
+			: null;
+		const brandResolved = profileResolved
+			? null
+			: await brandTemplateService.resolveSnapshotForUser(
+					ownership.legacyOwnerUserId,
+					parsed.brandTemplateId ?? null,
+					{
+						workspaceId: ownership.workspaceId,
+						actorUserId: ownership.actorUserId,
+					},
+				);
 		const createdAt = new Date();
 		const retention = await projectRetentionService.assignmentForWorkspace(
 			ownership.workspaceId,
@@ -2119,9 +2152,15 @@ export class ProjectService {
 						ingestStatus: "queued",
 						languageCode: parsed.languageCode ?? null,
 						commitToken: parsed.commitToken ?? null,
-						brandTemplateId: brandResolved?.templateId ?? null,
-						brandSnapshot: brandResolved
-							? (brandResolved.snapshot as unknown as Prisma.InputJsonValue)
+						brandTemplateId: profileResolved?.templateId ?? brandResolved?.templateId ?? null,
+						brandSnapshot: profileResolved?.templateSnapshot
+							? (profileResolved.templateSnapshot as unknown as Prisma.InputJsonValue)
+							: brandResolved
+								? (brandResolved.snapshot as unknown as Prisma.InputJsonValue)
+								: Prisma.JsonNull,
+						brandProfileId: profileResolved?.profileId ?? null,
+						brandProfileSnapshot: profileResolved?.profileSnapshot
+							? (profileResolved.profileSnapshot as unknown as Prisma.InputJsonValue)
 							: Prisma.JsonNull,
 						createdAt,
 						retentionPolicyKey: retention?.retentionPolicyKey ?? null,

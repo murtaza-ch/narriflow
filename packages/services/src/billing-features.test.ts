@@ -9,7 +9,24 @@ import { hasFeature, type PlanFeature } from "./billing.service";
 const ALL_TIERS: PricingTier[] = ["free", "creator", "pro", "business"];
 const EXPORT_FEATURES: PlanFeature[] = ["export.1080p", "export.noWatermark"];
 const INTEGRATION_FEATURES: PlanFeature[] = ["integrations.api", "integrations.mcp"];
-const ALL_FEATURES: PlanFeature[] = [...EXPORT_FEATURES, ...INTEGRATION_FEATURES];
+const PROGRAM_FEATURES: PlanFeature[] = [
+  "brand.profiles",
+  "brand.customFonts",
+  "brand.scenes",
+  "editor.censoring",
+  "editor.motion",
+  "publishing.assistedCopy",
+  "campaign.operations",
+  "export.bundles",
+  "review.rooms",
+  "generated.images",
+  "generated.video",
+];
+const ALL_FEATURES: PlanFeature[] = [
+  ...EXPORT_FEATURES,
+  ...INTEGRATION_FEATURES,
+  ...PROGRAM_FEATURES,
+];
 
 describe("hasFeature (PLAN_FEATURES matrix)", () => {
   test("free has neither export feature", () => {
@@ -48,5 +65,41 @@ describe("hasFeature (PLAN_FEATURES matrix)", () => {
         expect(typeof hasFeature(tier, feature)).toBe("boolean");
       }
     }
+  });
+
+  test("matches the Vizard expansion packaging matrix", () => {
+    for (const feature of [
+      "brand.profiles",
+      "brand.customFonts",
+      "brand.scenes",
+      "editor.censoring",
+      "editor.motion",
+      "publishing.assistedCopy",
+    ] as const) {
+      expect(hasFeature("free", feature)).toBe(false);
+      expect(hasFeature("creator", feature)).toBe(true);
+      expect(hasFeature("pro", feature)).toBe(true);
+      expect(hasFeature("business", feature)).toBe(true);
+    }
+
+    for (const feature of [
+      "campaign.operations",
+      "export.bundles",
+      "generated.video",
+    ] as const) {
+      expect(hasFeature("creator", feature)).toBe(false);
+      expect(hasFeature("pro", feature)).toBe(true);
+      expect(hasFeature("business", feature)).toBe(true);
+    }
+
+    expect(hasFeature("free", "generated.images")).toBe(true);
+    expect(hasFeature("business", "review.rooms")).toBe(true);
+    expect(hasFeature("pro", "review.rooms")).toBe(false);
+  });
+
+  test("unknown tiers fail closed and starter has Creator capabilities", () => {
+    expect(hasFeature("enterprise", "brand.profiles")).toBe(false);
+    expect(hasFeature("starter", "brand.profiles")).toBe(true);
+    expect(hasFeature("starter", "campaign.operations")).toBe(false);
   });
 });

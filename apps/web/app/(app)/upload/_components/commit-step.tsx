@@ -79,6 +79,15 @@ interface CommitStepProps {
     mine: BrandTemplateSummary[];
     defaultId: string | null;
   };
+  brandProfiles: {
+    items: Array<{
+      id: string;
+      name: string;
+      defaultTemplateId: string | null;
+      templates: Array<{ id: string; name: string }>;
+    }>;
+    defaultId: string | null;
+  };
   usageSummary: UsageSummary;
   commitToken: string;
   onCommitted: (result: CommitStepResult) => void;
@@ -89,6 +98,7 @@ export function CommitStep({
   linkUrl,
   linkProvider,
   brandTemplates,
+  brandProfiles,
   usageSummary,
   commitToken,
   onCommitted,
@@ -98,8 +108,16 @@ export function CommitStep({
   const titleTouchedRef = useRef(false);
   const [languageCode, setLanguageCode] = useState("auto");
   const [mode, setMode] = useState<GenerationMode>("clip");
+  const defaultBrandProfile = brandProfiles.items.find(
+    (profile) => profile.id === brandProfiles.defaultId,
+  );
   const [brandTemplateId, setBrandTemplateId] = useState<string | null>(
-    brandTemplates.defaultId,
+    defaultBrandProfile
+      ? defaultBrandProfile.defaultTemplateId
+      : brandTemplates.defaultId,
+  );
+  const [brandProfileId, setBrandProfileId] = useState<string | null>(
+    brandProfiles.defaultId,
   );
 
   const [durationSec, setDurationSec] = useState<number | null>(null);
@@ -180,6 +198,7 @@ export function CommitStep({
       url: linkUrl,
       title: title.trim() || null,
       brandTemplateId,
+      brandProfileId,
       commitToken,
       languageCode: languageCode === "auto" ? null : languageCode,
       mode,
@@ -333,6 +352,9 @@ export function CommitStep({
           mine={brandTemplates.mine}
           value={brandTemplateId}
           onChange={setBrandTemplateId}
+          profiles={brandProfiles.items}
+          profileValue={brandProfileId}
+          onProfileChange={setBrandProfileId}
         />
       </Box>
 

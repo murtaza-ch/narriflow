@@ -72,6 +72,7 @@ export async function commitLinkImportAction(input: {
   url: string;
   title: string | null;
   brandTemplateId: string | null;
+  brandProfileId: string | null;
   commitToken: string;
   languageCode: string | null;
   mode: GenerationMode;
@@ -84,6 +85,7 @@ export async function commitLinkImportAction(input: {
       url: input.url,
       title: input.title || undefined,
       brandTemplateId: input.brandTemplateId,
+      brandProfileId: input.brandProfileId,
       commitToken: input.commitToken,
       languageCode: input.languageCode,
       mode: input.mode,

@@ -541,6 +541,51 @@ export async function headObject(key: string, options?: { signal?: AbortSignal }
   };
 }
 
+export async function readObjectBytes(
+  key: string,
+  maxBytes: number,
+  options?: { signal?: AbortSignal },
+): Promise<Buffer> {
+  await projectStorageDeadline(key);
+  const client = getClient();
+  const { bucket } = getR2Config();
+  const response = await client.send(
+    new GetObjectCommand({ Bucket: bucket, Key: key }),
+    { abortSignal: options?.signal },
+  );
+  if (!response.Body) throw new Error("R2 object body is missing");
+  if ((response.ContentLength ?? 0) > maxBytes) {
+    throw new Error("R2 object exceeds the bounded read limit");
+  }
+  const body = response.Body as { transformToByteArray?: () => Promise<Uint8Array> };
+  if (!body.transformToByteArray) throw new Error("R2 object body cannot be buffered");
+  const bytes = Buffer.from(await body.transformToByteArray());
+  if (bytes.byteLength > maxBytes) throw new Error("R2 object exceeds the bounded read limit");
+  return bytes;
+}
+
+export async function hashObjectSha256(
+  key: string,
+  options?: { signal?: AbortSignal },
+): Promise<string> {
+  await projectStorageDeadline(key);
+  const client = getClient();
+  const { bucket } = getR2Config();
+  const response = await client.send(
+    new GetObjectCommand({ Bucket: bucket, Key: key }),
+    { abortSignal: options?.signal },
+  );
+  if (!response.Body) throw new Error("R2 object body is missing");
+  const body = response.Body as AsyncIterable<Uint8Array>;
+  if (!body[Symbol.asyncIterator]) throw new Error("R2 object body cannot be streamed");
+  const digest = createHash("sha256");
+  for await (const chunk of body) {
+    options?.signal?.throwIfAborted();
+    digest.update(chunk);
+  }
+  return digest.digest("hex");
+}
+
 export async function putFileFromPath(params: {
   key: string;
   filePath: string;

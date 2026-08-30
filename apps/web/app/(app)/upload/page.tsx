@@ -4,7 +4,7 @@ import { ArrowLeft } from "lucide-react";
 import { Box, Flex, Stack, Text } from "@chakra-ui/react";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
-import { brandTemplateService, projectService } from "@narriflow/services";
+import { brandProfileService, brandTemplateService, projectService } from "@narriflow/services";
 import { parseStoredContentPack } from "@narriflow/validators";
 import { UploadShell } from "./_components/upload-shell";
 import type { LinkResumeData } from "./_components/link-import-flow";
@@ -76,9 +76,20 @@ export default async function UploadPage({
   }>;
 }) {
   const appUser = await admitWorkspacePage("processing.consume");
-  const [brandTemplates, params, usageSummary] = await Promise.all([
+  const brandScope = {
+    actorUserId: appUser.actorUserId,
+    workspaceId: appUser.workspaceId,
+    workspaceOwnerUserId: appUser.workspaceOwnerUserId,
+    role: appUser.role,
+    status: appUser.status,
+    pricingTier: appUser.pricingTier,
+    isPersonalWorkspace: appUser.isPersonalWorkspace,
+  };
+  const [brandTemplates, brandProfiles, defaultBrandProfileId, params, usageSummary] = await Promise.all([
     brandTemplateService.list(appUser.workspaceOwnerUserId, { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId,
     }),
+    brandProfileService.list(brandScope),
+    brandProfileService.getDefaultId(brandScope),
     searchParams,
     projectService.getUsageSummary(appUser.workspaceOwnerUserId, appUser.workspaceId,
     ),
@@ -130,6 +141,7 @@ export default async function UploadPage({
       >
         <UploadShell
           brandTemplates={brandTemplates}
+          brandProfiles={{ items: brandProfiles, defaultId: defaultBrandProfileId }}
           initialUrl={rawUrl ?? null}
           resumeData={resumeData}
           usageSummary={usageSummary}
