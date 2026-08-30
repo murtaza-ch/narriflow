@@ -61,6 +61,12 @@ export function assertBrandMutationAllowed(
   if (!hasFeature(scope.pricingTier, feature)) {
     throw new BrandAccessError("brand_entitlement_required");
   }
+  if (
+    !scope.isPersonalWorkspace &&
+    resolvePricingTier(scope.pricingTier) !== "business"
+  ) {
+    throw new BrandAccessError("brand_entitlement_required");
+  }
 }
 
 export async function assertBrandMutationAllowedWithAnalytics(
@@ -97,6 +103,12 @@ export function assertBrandApplicationAllowed(scope: BrandActorScope): void {
     throw new BrandAccessError("brand_forbidden");
   }
   if (!hasFeature(scope.pricingTier, "brand.profiles")) {
+    throw new BrandAccessError("brand_entitlement_required");
+  }
+  if (
+    !scope.isPersonalWorkspace &&
+    resolvePricingTier(scope.pricingTier) !== "business"
+  ) {
     throw new BrandAccessError("brand_entitlement_required");
   }
 }

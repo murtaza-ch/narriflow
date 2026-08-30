@@ -147,6 +147,49 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     expect(updated.defaultTemplateId).toBe(template.id);
   });
 
+  test("refuses to move a style that remains another profile's default", async () => {
+    const fixture = await workspaceFixture("default-style-move");
+    const first = await brandProfileService.create(fixture.scope, {
+      name: "First profile",
+      slug: "first-profile",
+    });
+    const second = await brandProfileService.create(fixture.scope, {
+      name: "Second profile",
+      slug: "second-profile",
+    });
+    const template = await prisma.brandTemplate.create({
+      data: {
+        workspaceId: fixture.workspace.id,
+        name: "Anchored default",
+        captionPreset: DEFAULT_CAPTION_PRESET,
+      },
+    });
+    const withMembership = await brandProfileService.setMembership(
+      fixture.scope,
+      first.id,
+      { kind: "template", resourceId: template.id, position: 0 },
+    );
+    await brandProfileService.update(fixture.scope, first.id, {
+      revision: withMembership.revision,
+      defaultTemplateId: template.id,
+    });
+    await expect(
+      brandProfileService.setMembership(fixture.scope, second.id, {
+        kind: "template",
+        resourceId: template.id,
+        position: 0,
+      }),
+    ).rejects.toBeInstanceOf(BrandProfileMembershipError);
+    expect(
+      await prisma.brandProfileTemplate.findUniqueOrThrow({
+        where: { templateId: template.id },
+      }),
+    ).toMatchObject({ profileId: first.id });
+    expect(
+      await prisma.brandProfile.findUniqueOrThrow({ where: { id: first.id } }),
+    ).toMatchObject({ defaultTemplateId: template.id });
+  });
+
   test("stops project profile writes when the projection rollout is disabled", async () => {
     process.env.NARRIFLOW_WRITES_BRAND_KIT_PROJECTION = "0";
     try {

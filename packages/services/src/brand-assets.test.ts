@@ -49,6 +49,17 @@ describe("brand ownership", () => {
     expect(() =>
       assertBrandApplicationAllowed({ ...personalScope, pricingTier: "free" }),
     ).toThrow();
+    const downgradedSharedScope = {
+      ...personalScope,
+      pricingTier: "pro",
+      isPersonalWorkspace: false,
+    };
+    expect(() =>
+      assertBrandMutationAllowed(downgradedSharedScope, "brand.profiles"),
+    ).toThrow();
+    expect(() =>
+      assertBrandApplicationAllowed(downgradedSharedScope),
+    ).toThrow();
   });
 });
 

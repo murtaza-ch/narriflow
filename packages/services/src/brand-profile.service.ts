@@ -448,6 +448,16 @@ export class BrandProfileService {
       if (parsed.kind === "template") {
         const resource = await tx.brandTemplate.findFirst({ where: { id: parsed.resourceId, isBuiltIn: false, deletedAt: null, OR: [{ workspaceId: scope.workspaceId }, { userId: scope.workspaceOwnerUserId }] }, select: { id: true } });
         if (!resource) throw new BrandProfileMembershipError();
+        const existingMembership = await tx.brandProfileTemplate.findUnique({
+          where: { templateId: resource.id },
+          select: { profileId: true },
+        });
+        if (
+          existingMembership &&
+          existingMembership.profileId !== profileId
+        ) {
+          throw new BrandProfileMembershipError();
+        }
         await tx.brandProfileTemplate.upsert({ where: { templateId: resource.id }, create: { profileId, templateId: resource.id, position: parsed.position }, update: { profileId, position: parsed.position } });
       } else if (parsed.kind === "asset") {
         const resource = await tx.visualAsset.findFirst({ where: { id: parsed.resourceId, ...owner, deletedAt: null }, select: { id: true } });
