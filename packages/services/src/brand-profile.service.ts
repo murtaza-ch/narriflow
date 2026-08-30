@@ -1,4 +1,4 @@
-import type { BrandProfile, BrandTemplate, Prisma } from "@prisma/client";
+import { Prisma, type BrandProfile, type BrandTemplate } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
   brandProfileCreateSchema,
@@ -9,19 +9,23 @@ import {
   brandTemplateSnapshotSchema,
   brandVisualIdentitySchema,
   brandVoiceGuidanceSchema,
+  resolvePricingTier,
   type BrandProfileCreateInput,
   type BrandProfileListInput,
   type BrandProfileMembershipInput,
   type BrandProfileSoftDeleteInput,
   type BrandProfileUpdateInput,
+  type BrandVisualIdentity,
   type BrandTemplateSnapshot,
 } from "@narriflow/validators";
 import {
+  assertBrandApplicationAllowed,
   assertBrandMutationAllowed,
   brandOwnerWhere,
   resolveBrandOwner,
   type BrandActorScope,
 } from "./brand-ownership";
+import { analyticsService } from "./analytics.service";
 import { presignDownloadUrl } from "./r2-storage";
 
 export class BrandProfileNotFoundError extends Error {
@@ -140,6 +144,46 @@ const profileInclude = {
 } satisfies Prisma.BrandProfileInclude;
 
 type ProfileAggregate = Prisma.BrandProfileGetPayload<{ include: typeof profileInclude }>;
+
+async function requireOwnedLogoAssets(
+  tx: Prisma.TransactionClient,
+  scope: BrandActorScope,
+  identity: BrandVisualIdentity,
+) {
+  const assetIds = [
+    identity.primaryLogoAssetId,
+    identity.alternateLogoAssetId,
+  ].filter((id): id is string => Boolean(id));
+  if (assetIds.length === 0) return [];
+  const uniqueIds = [...new Set(assetIds)];
+  const owned = await tx.visualAsset.findMany({
+    where: {
+      id: { in: uniqueIds },
+      ...brandOwnerWhere(scope),
+      deletedAt: null,
+      kind: "image",
+    },
+    select: { id: true },
+  });
+  if (owned.length !== uniqueIds.length) throw new BrandProfileMembershipError();
+  return uniqueIds;
+}
+
+async function recordBrandEvent(
+  scope: BrandActorScope,
+  input: Parameters<typeof analyticsService.recordBrandProgramEvent>[0],
+) {
+  await analyticsService.recordBrandProgramEvent(input).catch(() => {
+    console.warn(
+      JSON.stringify({
+        level: "warn",
+        message: "brand_program_analytics_record_failed",
+        workspaceId: scope.workspaceId,
+        eventType: input.type,
+      }),
+    );
+  });
+}
 
 async function safeAccessUrl(key: string) {
   try {
@@ -260,6 +304,8 @@ export class BrandProfileService {
     const prisma = this.requirePrisma();
     const owner = resolveBrandOwner(scope);
     const created = await prisma.$transaction(async (tx) => {
+      const identity = parsed.identity ?? brandVisualIdentitySchema.parse({});
+      const logoAssetIds = await requireOwnedLogoAssets(tx, scope, identity);
       let template: BrandTemplate | null = null;
       if (parsed.defaultTemplateId) {
         template = await tx.brandTemplate.findFirst({ where: { id: parsed.defaultTemplateId, isBuiltIn: false, deletedAt: null, OR: [{ workspaceId: scope.workspaceId }, { userId: scope.workspaceOwnerUserId }] } });
@@ -271,28 +317,80 @@ export class BrandProfileService {
         updatedByUserId: scope.actorUserId,
         name: parsed.name,
         slug: parsed.slug,
-        visualIdentity: (parsed.identity ?? brandVisualIdentitySchema.parse({})) as Prisma.InputJsonValue,
+        visualIdentity: identity as Prisma.InputJsonValue,
         voiceGuidance: (parsed.voice ?? brandVoiceGuidanceSchema.parse({})) as Prisma.InputJsonValue,
         approvalRule: parsed.approvalRule,
         defaultTemplateId: template?.id ?? null,
       } });
       if (template) await tx.brandProfileTemplate.create({ data: { profileId: profile.id, templateId: template.id, position: 0 } });
+      if (logoAssetIds.length) {
+        await tx.brandProfileAsset.createMany({
+          data: logoAssetIds.map((assetId, position) => ({
+            profileId: profile.id,
+            assetId,
+            role: "logo" as const,
+            position,
+          })),
+        });
+      }
       return profile;
     });
-    return this.get(scope, created.id);
+    const aggregate = await this.get(scope, created.id);
+    await recordBrandEvent(scope, {
+      type: "brand_profile_created",
+      workspaceId: scope.workspaceId,
+      actorUserId: scope.actorUserId,
+      metadata: {
+        profileId: created.id,
+        assetKind: "profile",
+        planTier: resolvePricingTier(scope.pricingTier),
+        outcome: "succeeded",
+      },
+    });
+    return aggregate;
   }
 
   async update(scope: BrandActorScope, id: string, input: BrandProfileUpdateInput) {
     assertBrandMutationAllowed(scope, "brand.profiles");
     const parsed = brandProfileUpdateSchema.parse(input);
     const prisma = this.requirePrisma();
+    const current = await prisma.brandProfile.findFirst({
+      where: { id, ...brandOwnerWhere(scope), deletedAt: null },
+      select: { visualIdentity: true },
+    });
+    if (!current) throw new BrandProfileNotFoundError();
+    const currentIdentity = brandVisualIdentitySchema.parse(current.visualIdentity);
+    const nextLogoAssetIds = parsed.identity
+      ? await requireOwnedLogoAssets(prisma, scope, parsed.identity)
+      : null;
     const data: Prisma.BrandProfileUncheckedUpdateManyInput = { updatedByUserId: scope.actorUserId, revision: { increment: 1 } };
     if (parsed.name !== undefined) data.name = parsed.name;
     if (parsed.slug !== undefined) data.slug = parsed.slug;
     if (parsed.identity !== undefined) data.visualIdentity = parsed.identity as Prisma.InputJsonValue;
     if (parsed.voice !== undefined) data.voiceGuidance = parsed.voice as Prisma.InputJsonValue;
     if (parsed.approvalRule !== undefined) data.approvalRule = parsed.approvalRule;
-    const result = await prisma.brandProfile.updateMany({ where: { id, revision: parsed.revision, ...brandOwnerWhere(scope), deletedAt: null }, data });
+    const result = await prisma.$transaction(async (tx) => {
+      const updated = await tx.brandProfile.updateMany({ where: { id, revision: parsed.revision, ...brandOwnerWhere(scope), deletedAt: null }, data });
+      if (updated.count === 0 || !nextLogoAssetIds) return updated;
+      const priorLogoIds = [
+        currentIdentity.primaryLogoAssetId,
+        currentIdentity.alternateLogoAssetId,
+      ].filter((assetId): assetId is string => Boolean(assetId));
+      const removedIds = priorLogoIds.filter((assetId) => !nextLogoAssetIds.includes(assetId));
+      if (removedIds.length) {
+        await tx.brandProfileAsset.deleteMany({
+          where: { profileId: id, assetId: { in: removedIds }, role: "logo" },
+        });
+      }
+      for (const [position, assetId] of nextLogoAssetIds.entries()) {
+        await tx.brandProfileAsset.upsert({
+          where: { profileId_assetId: { profileId: id, assetId } },
+          create: { profileId: id, assetId, role: "logo", position },
+          update: { role: "logo", position },
+        });
+      }
+      return updated;
+    });
     if (result.count === 0) {
       const exists = await prisma.brandProfile.count({ where: { id, ...brandOwnerWhere(scope), deletedAt: null } });
       if (!exists) throw new BrandProfileNotFoundError();
@@ -352,6 +450,22 @@ export class BrandProfileService {
   }
 
   async resolveForProject(scope: BrandActorScope, input: { profileId: string; templateId?: string | null }) {
+    try {
+      assertBrandApplicationAllowed(scope);
+    } catch (error) {
+      await recordBrandEvent(scope, {
+        type: "brand_premium_mutation_blocked",
+        workspaceId: scope.workspaceId,
+        actorUserId: scope.actorUserId,
+        metadata: {
+          profileId: input.profileId,
+          assetKind: "profile",
+          planTier: resolvePricingTier(scope.pricingTier),
+          outcome: "blocked",
+        },
+      });
+      throw error;
+    }
     const prisma = this.requirePrisma();
     const profile = await prisma.brandProfile.findFirst({ where: { id: input.profileId, ...brandOwnerWhere(scope), deletedAt: null }, include: { templates: { include: { template: true } } } });
     if (!profile) throw new BrandProfileNotFoundError();
@@ -363,6 +477,49 @@ export class BrandProfileService {
       templateId: selected?.id ?? null,
       templateSnapshot: selected ? templateSnapshot(selected) : null,
     };
+  }
+
+  async applyToProject(
+    scope: BrandActorScope,
+    projectId: string,
+    input: { profileId: string; templateId?: string | null },
+  ) {
+    const resolved = await this.resolveForProject(scope, input);
+    const prisma = this.requirePrisma();
+    await prisma.$transaction(async (tx) => {
+      const updated = await tx.project.updateMany({
+        where: {
+          id: projectId,
+          workspaceId: scope.workspaceId,
+        },
+        data: {
+          brandProfileId: resolved.profileId,
+          brandProfileSnapshot: resolved.profileSnapshot as Prisma.InputJsonValue,
+          brandTemplateId: resolved.templateId,
+          brandSnapshot: resolved.templateSnapshot
+            ? (resolved.templateSnapshot as unknown as Prisma.InputJsonValue)
+            : Prisma.JsonNull,
+          updatedByUserId: scope.actorUserId,
+        },
+      });
+      if (updated.count === 0) throw new BrandProfileNotFoundError();
+      await tx.programAnalyticsEvent.create({
+        data: {
+          workspaceId: scope.workspaceId,
+          actorUserId: scope.actorUserId,
+          projectId,
+          type: "brand_profile_applied",
+          metadata: {
+            profileId: resolved.profileId,
+            ...(resolved.templateId ? { templateId: resolved.templateId } : {}),
+            assetKind: "profile",
+            planTier: resolvePricingTier(scope.pricingTier),
+            outcome: "succeeded",
+          },
+        },
+      });
+    });
+    return resolved;
   }
 
   async resolveProfileForTemplate(scope: BrandActorScope, templateId: string) {

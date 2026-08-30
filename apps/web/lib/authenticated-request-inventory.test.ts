@@ -238,6 +238,25 @@ describe("authenticated request inventory", () => {
     });
   });
 
+  test("declares strict policy input for Brand Profile mutation surfaces", () => {
+    const create = matchBrowserSessionHonoSurface("POST", "/brand-profiles");
+    expect(create?.input?.schema.safeParse({
+      body: { name: "Northstar", slug: "northstar" },
+    }).success).toBe(true);
+    expect(create?.input?.schema.safeParse({
+      body: { name: "Northstar", slug: "northstar", arbitrary: true },
+    }).success).toBe(false);
+
+    const update = matchBrowserSessionHonoSurface(
+      "PATCH",
+      "/brand-profiles/11111111-1111-4111-8111-111111111111",
+    );
+    expect(update?.input?.schema.safeParse({
+      id: "not-a-uuid",
+      body: { revision: 1, name: "Northstar" },
+    }).success).toBe(false);
+  });
+
   test("keeps independent trust models out of browser-session policy", () => {
     expect(isIndependentTrustHonoSurface("POST", "/webhooks/stripe")).toBe(
       true,

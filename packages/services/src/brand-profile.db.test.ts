@@ -10,6 +10,7 @@ import {
   BrandProfileNotFoundError,
   brandProfileService,
 } from "./brand-profile.service";
+import { BrandAccessError } from "./brand-ownership";
 import { projectService } from "./project.service";
 import {
   VisualAssetReferenceError,
@@ -74,6 +75,18 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     const second = await workspaceFixture("scope-second");
     const profile = await brandProfileService.create(first.scope, { name: "Northstar", slug: "northstar" });
     await expect(brandProfileService.get(second.scope, profile.id)).rejects.toBeInstanceOf(BrandProfileNotFoundError);
+    await expect(
+      brandProfileService.resolveForProject(
+        { ...first.scope, pricingTier: "free" },
+        { profileId: profile.id },
+      ),
+    ).rejects.toBeInstanceOf(BrandAccessError);
+    await expect(
+      brandProfileService.resolveForProject(
+        { ...first.scope, status: "restricted" },
+        { profileId: profile.id },
+      ),
+    ).rejects.toBeInstanceOf(BrandAccessError);
 
     const builtIn = await prisma.brandTemplate.create({ data: { name: "Global", isBuiltIn: true, builtInKey: `global-${randomUUID()}`, captionPreset: DEFAULT_CAPTION_PRESET } });
     await expect(brandProfileService.setMembership(first.scope, profile.id, { kind: "template", resourceId: builtIn.id, position: 0 })).rejects.toBeInstanceOf(BrandProfileMembershipError);
@@ -138,8 +151,38 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
       height: 64,
       fingerprint: "b".repeat(64),
     } });
-    const profile = await brandProfileService.create(first.scope, { name: "Asset profile", slug: "asset-profile" });
-    await brandProfileService.setMembership(first.scope, profile.id, { kind: "asset", resourceId: original.id, role: "logo", position: 0 });
+    const otherTenantAsset = await prisma.visualAsset.findFirstOrThrow({
+      where: { workspaceId: second.workspace.id, fingerprint },
+    });
+    await expect(
+      brandProfileService.create(first.scope, {
+        name: "Cross tenant logo",
+        slug: "cross-tenant-logo",
+        identity: {
+          primaryColor: "#FFFFFF",
+          secondaryColor: "#111522",
+          accentColor: null,
+          primaryLogoAssetId: otherTenantAsset.id,
+          alternateLogoAssetId: null,
+        },
+      }),
+    ).rejects.toBeInstanceOf(BrandProfileMembershipError);
+    const profile = await brandProfileService.create(first.scope, {
+      name: "Asset profile",
+      slug: "asset-profile",
+      identity: {
+        primaryColor: "#FFFFFF",
+        secondaryColor: "#111522",
+        accentColor: null,
+        primaryLogoAssetId: original.id,
+        alternateLogoAssetId: null,
+      },
+    });
+    expect(
+      await prisma.brandProfileAsset.findUnique({
+        where: { profileId_assetId: { profileId: profile.id, assetId: original.id } },
+      }),
+    ).not.toBeNull();
     await expect(visualAssetService.softDelete(first.scope, original.id, {})).rejects.toBeInstanceOf(VisualAssetReferenceError);
     await visualAssetService.softDelete(first.scope, original.id, { replacementId: replacement.id });
     expect(await prisma.brandProfileAsset.findUnique({ where: { profileId_assetId: { profileId: profile.id, assetId: replacement.id } } })).not.toBeNull();

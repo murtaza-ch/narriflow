@@ -10,6 +10,7 @@ import {
 } from "@/lib/authenticated-request-action";
 import {
 	clipService,
+	brandProfileService,
 	IngestNotFailedError,
 	IngestRetryLimitExceededError,
 	ProjectAccessDeniedError,
@@ -214,6 +215,29 @@ export async function queueTranscriptionFormAction(formData: FormData) {
 }
 
 export const queueGenerationFormAction = queueTranscriptionFormAction;
+
+export async function applyProjectBrandProfileFormAction(formData: FormData) {
+	const projectId = String(formData.get("projectId") ?? "");
+	const profileId = String(formData.get("profileId") ?? "");
+	const templateId = String(formData.get("templateId") ?? "") || null;
+	if (!projectId || !profileId) throw new Error("Project and Brand Profile are required");
+	return executeProjectAction(projectId, "content.edit", async (appUser) => {
+		await brandProfileService.applyToProject(
+			{
+				actorUserId: appUser.actorUserId,
+				workspaceId: appUser.workspaceId,
+				workspaceOwnerUserId: appUser.workspaceOwnerUserId,
+				role: appUser.role,
+				status: appUser.status,
+				pricingTier: appUser.pricingTier,
+				isPersonalWorkspace: appUser.isPersonalWorkspace,
+			},
+			projectId,
+			{ profileId, templateId },
+		);
+		revalidatePath(`/projects/${projectId}`);
+	});
+}
 
 export async function regenerateClipsFormAction(formData: FormData) {
 	const projectId = String(formData.get("projectId") ?? "");

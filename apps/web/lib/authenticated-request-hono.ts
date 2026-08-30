@@ -18,6 +18,7 @@ import {
 
 const ACTOR_KEY = "authenticatedRequestActor";
 const PROJECT_KEY = "authenticatedRequestProject";
+const INPUT_KEY = "authenticatedRequestInput";
 
 export function authenticatedHonoActor(c: Context): BrowserActorScope {
   const actor = c.get(ACTOR_KEY) as BrowserActorScope | undefined;
@@ -30,6 +31,14 @@ export function authenticatedHonoProject(
   c: Context,
 ): ActiveProjectScope | null {
   return (c.get(PROJECT_KEY) as ActiveProjectScope | null | undefined) ?? null;
+}
+
+export function authenticatedHonoInput<T>(c: Context): T {
+  const input = c.get(INPUT_KEY) as T | undefined;
+  if (input === undefined) {
+    throw new Error("Authenticated Request Policy did not validate route input");
+  }
+  return input;
 }
 
 function routePath(c: Context): string {
@@ -68,19 +77,37 @@ export async function authenticatedRequestHonoMiddleware(
   }
 
   try {
-    const result = await authenticatedRequestPolicy.execute({
+    const common = {
       adapter: "hono",
       operationName: declaration.operationName,
       admission: declaration.admission,
       rateLimit: declaration.rateLimit,
-      operation: async ({ actor, project, requestId }) => {
+    } as const;
+    const operation = async ({
+      actor,
+      project,
+      requestId,
+      input,
+    }: {
+      actor: BrowserActorScope;
+      project: ActiveProjectScope | null;
+      requestId: string;
+      input?: unknown;
+    }) => {
         c.set(ACTOR_KEY, actor);
         c.set(PROJECT_KEY, project);
+        if (input !== undefined) c.set(INPUT_KEY, input);
         c.header("X-Request-ID", requestId);
         await next();
         return normalizeAuthenticatedErrorResponse(c.res, requestId);
-      },
-      diagnoseResult: async (response) => {
+      };
+    const diagnoseResult = async (
+      response: Response,
+    ): Promise<{
+      disposition: "failed" | "refused";
+      failureCode: string;
+      status: number;
+    } | null> => {
         if (response.status < 400) return null;
         let failureCode = response.status >= 500 ? "internal_error" : "request_failed";
         try {
@@ -94,8 +121,41 @@ export async function authenticatedRequestHonoMiddleware(
           failureCode,
           status: response.status,
         };
-      },
-    });
+      };
+    const result = declaration.input
+      ? await authenticatedRequestPolicy.execute({
+          ...common,
+          input: {
+            schema: declaration.input.schema,
+            load: async () => {
+              const value: Record<string, unknown> = {};
+              for (const name of declaration.input?.params ?? []) {
+                value[name] = c.req.param(name);
+              }
+              for (const name of declaration.input?.query ?? []) {
+                const queryValue = c.req.query(name);
+                if (queryValue !== undefined) value[name] = queryValue;
+              }
+              if (declaration.input?.body) {
+                value.body = await c.req.raw
+                  .clone()
+                  .json()
+                  .catch(() =>
+                    declaration.input?.body === "optional" ? {} : null,
+                  );
+              }
+              return value;
+            },
+          },
+          operation,
+          diagnoseResult,
+        })
+      : await authenticatedRequestPolicy.execute({
+          ...common,
+          operation: async ({ actor, project, requestId }) =>
+            operation({ actor, project, requestId }),
+          diagnoseResult,
+        });
 
     if (result.ok) return result.value;
     const translated = authenticatedRequestHttpFailure(result.failure);

@@ -40,6 +40,7 @@ import {
 import { deleteObject } from "./r2-storage";
 import { brandTemplateService } from "./brand-template.service";
 import { brandProfileService } from "./brand-profile.service";
+import type { BrandActorScope } from "./brand-ownership";
 import {
 	autoTriggerIdempotencyKey,
 	isUniqueConstraintError,
@@ -89,6 +90,8 @@ interface ProjectSnapshot {
 	sourceSizeBytes: number | null;
 	sourceDurationSeconds: number | null;
 	languageCode: string | null;
+	brandProfileId: string | null;
+	brandTemplateId: string | null;
 	ingestStatus: PrismaIngestStatus;
 	ingestErrorCode: string | null;
 	ingestCompletedAt: string | null;
@@ -316,6 +319,8 @@ function toProjectSnapshot(row: Project): ProjectSnapshot {
 		sourceSizeBytes: bigintToNumber(row.sourceSizeBytes),
 		sourceDurationSeconds: row.sourceDurationSeconds,
 		languageCode: row.languageCode,
+		brandProfileId: row.brandProfileId,
+		brandTemplateId: row.brandTemplateId,
 		ingestStatus: row.ingestStatus,
 		ingestErrorCode: row.ingestErrorCode,
 		ingestCompletedAt: row.ingestCompletedAt
@@ -1522,6 +1527,8 @@ export class ProjectService {
 				sourceSizeBytes: null,
 				sourceDurationSeconds: null,
 				languageCode: parsed.languageCode ?? null,
+				brandProfileId: null,
+				brandTemplateId: null,
 				ingestStatus: "ready",
 				ingestErrorCode: null,
 				ingestCompletedAt: new Date().toISOString(),
@@ -2075,9 +2082,9 @@ export class ProjectService {
 		}
 		const sourceType = provider === "youtube" ? "youtube" : "link";
 
-		const profileResolved = parsed.brandProfileId
-			? await (async () => {
-				const [actor, workspace] = await Promise.all([
+		let brandActorScope: BrandActorScope | null = null;
+		if (parsed.brandProfileId) {
+			const [actor, workspace] = await Promise.all([
 					workspaceService.requireActor(
 						ownership.actorUserId,
 						ownership.workspaceId,
@@ -2088,22 +2095,21 @@ export class ProjectService {
 						select: { personalOwnerUserId: true },
 					}),
 				]);
-				return brandProfileService.resolveForProject(
-					{
-						actorUserId: ownership.actorUserId,
-						workspaceId: ownership.workspaceId,
-						workspaceOwnerUserId: actor.workspaceOwnerUserId,
-						role: actor.role,
-						status: actor.status,
-						pricingTier: actor.pricingTier,
-						isPersonalWorkspace: workspace?.personalOwnerUserId !== null,
-					},
-					{
-						profileId: parsed.brandProfileId!,
-						templateId: parsed.brandTemplateId,
-					},
-				);
-			})()
+			brandActorScope = {
+				actorUserId: ownership.actorUserId,
+				workspaceId: ownership.workspaceId,
+				workspaceOwnerUserId: actor.workspaceOwnerUserId,
+				role: actor.role,
+				status: actor.status,
+				pricingTier: actor.pricingTier,
+				isPersonalWorkspace: workspace?.personalOwnerUserId !== null,
+			};
+		}
+		const profileResolved = brandActorScope
+			? await brandProfileService.resolveForProject(brandActorScope, {
+					profileId: parsed.brandProfileId!,
+					templateId: parsed.brandTemplateId,
+				})
 			: null;
 		const brandResolved = profileResolved
 			? null
@@ -2167,6 +2173,25 @@ export class ProjectService {
 						expiresAt: retention?.expiresAt ?? null,
 					},
 				});
+				if (profileResolved && brandActorScope) {
+					await tx.programAnalyticsEvent.create({
+						data: {
+							workspaceId: ownership.workspaceId,
+							actorUserId: ownership.actorUserId,
+							projectId: createdProject.id,
+							type: "brand_profile_applied",
+							metadata: {
+								profileId: profileResolved.profileId,
+								...(profileResolved.templateId
+									? { templateId: profileResolved.templateId }
+									: {}),
+								assetKind: "profile",
+								planTier: resolvePricingTier(brandActorScope.pricingTier),
+								outcome: "succeeded",
+							},
+						},
+					});
+				}
 
 				const createdJob = await tx.ingestJob.create({
 					data: {

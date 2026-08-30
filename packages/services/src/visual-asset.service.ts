@@ -5,6 +5,7 @@ import type { Prisma, VisualAsset, VisualAssetKind } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
   reusableAssetSoftDeleteSchema,
+  resolvePricingTier,
   visualAssetFinalizeSchema,
   visualAssetUploadSchema,
   type ReusableAssetSoftDeleteInput,
@@ -25,6 +26,7 @@ import {
   presignDownloadUrl,
   presignSingleUploadUrl,
 } from "./r2-storage";
+import { analyticsService } from "./analytics.service";
 
 const execFileAsync = promisify(execFile);
 
@@ -161,6 +163,36 @@ export class VisualAssetService {
   }
 
   async finalizeUpload(scope: BrandActorScope, input: VisualAssetFinalizeInput) {
+    try {
+      const result = await this.finalizeVerifiedUpload(scope, input);
+      await analyticsService.recordBrandProgramEventBestEffort({
+          type: "visual_asset_upload_succeeded",
+          workspaceId: scope.workspaceId,
+          actorUserId: scope.actorUserId,
+          metadata: {
+            assetId: result.id,
+            assetKind: result.kind,
+            planTier: resolvePricingTier(scope.pricingTier),
+            outcome: "succeeded",
+          },
+        });
+      return result;
+    } catch (error) {
+      await analyticsService.recordBrandProgramEventBestEffort({
+          type: "visual_asset_upload_failed",
+          workspaceId: scope.workspaceId,
+          actorUserId: scope.actorUserId,
+          metadata: {
+            assetKind: visualAssetKindForContentType(input.contentType),
+            planTier: resolvePricingTier(scope.pricingTier),
+            outcome: "failed",
+          },
+        });
+      throw error;
+    }
+  }
+
+  private async finalizeVerifiedUpload(scope: BrandActorScope, input: VisualAssetFinalizeInput) {
     assertBrandMutationAllowed(scope, "brand.profiles");
     const parsed = visualAssetFinalizeSchema.parse(input);
     if (!parsed.key.startsWith(brandOwnerStoragePrefix(scope, "visual-assets"))) {
@@ -217,10 +249,26 @@ export class VisualAssetService {
     const prisma = this.requirePrisma();
     const asset = await prisma.visualAsset.findFirst({
       where: { id, ...brandOwnerWhere(scope), deletedAt: null },
-      include: { profiles: { include: { profile: { select: { id: true, visualIdentity: true } } } } },
+      include: { profiles: true },
     });
     if (!asset) throw new VisualAssetIntegrityError("visual_asset_not_found");
-    if (asset.profiles.length > 0 && !parsed.replacementId) throw new VisualAssetReferenceError();
+    const identityReferences = await prisma.brandProfile.findMany({
+      where: {
+        ...brandOwnerWhere(scope),
+        deletedAt: null,
+        OR: [
+          { visualIdentity: { path: ["primaryLogoAssetId"], equals: id } },
+          { visualIdentity: { path: ["alternateLogoAssetId"], equals: id } },
+        ],
+      },
+      select: { id: true, visualIdentity: true },
+    });
+    if (
+      (asset.profiles.length > 0 || identityReferences.length > 0) &&
+      !parsed.replacementId
+    ) {
+      throw new VisualAssetReferenceError();
+    }
     const replacement = parsed.replacementId
       ? await prisma.visualAsset.findFirst({ where: { id: parsed.replacementId, ...brandOwnerWhere(scope), deletedAt: null, kind: asset.kind }, select: { id: true } })
       : null;
@@ -231,13 +279,15 @@ export class VisualAssetService {
           const existing = await tx.brandProfileAsset.findUnique({ where: { profileId_assetId: { profileId: membership.profileId, assetId: replacement.id } }, select: { id: true } });
           if (existing) await tx.brandProfileAsset.delete({ where: { id: membership.id } });
           else await tx.brandProfileAsset.update({ where: { id: membership.id }, data: { assetId: replacement.id } });
-          const identity = membership.profile.visualIdentity as Record<string, unknown>;
+        }
+        for (const profile of identityReferences) {
+          const identity = profile.visualIdentity as Record<string, unknown>;
           const nextIdentity = {
             ...identity,
             ...(identity.primaryLogoAssetId === id ? { primaryLogoAssetId: replacement.id } : {}),
             ...(identity.alternateLogoAssetId === id ? { alternateLogoAssetId: replacement.id } : {}),
           };
-          await tx.brandProfile.update({ where: { id: membership.profileId }, data: { visualIdentity: nextIdentity as Prisma.InputJsonValue, revision: { increment: 1 }, updatedByUserId: scope.actorUserId } });
+          await tx.brandProfile.update({ where: { id: profile.id }, data: { visualIdentity: nextIdentity as Prisma.InputJsonValue, revision: { increment: 1 }, updatedByUserId: scope.actorUserId } });
         }
       }
       await tx.visualAsset.update({ where: { id }, data: { deletedAt: new Date() } });

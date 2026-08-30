@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  assertBrandApplicationAllowed,
   assertBrandMutationAllowed,
   brandOwnerStoragePrefix,
   resolveBrandOwner,
@@ -37,6 +38,18 @@ describe("brand ownership", () => {
     expect(() => assertBrandMutationAllowed({ ...personalScope, status: "restricted" }, "brand.profiles")).toThrow();
     expect(() => assertBrandMutationAllowed({ ...personalScope, pricingTier: "free" }, "brand.profiles")).toThrow();
   });
+
+  test("allows active editors to apply profiles but blocks downgrade and free application", () => {
+    expect(() =>
+      assertBrandApplicationAllowed({ ...personalScope, role: "editor" }),
+    ).not.toThrow();
+    expect(() =>
+      assertBrandApplicationAllowed({ ...personalScope, status: "restricted" }),
+    ).toThrow();
+    expect(() =>
+      assertBrandApplicationAllowed({ ...personalScope, pricingTier: "free" }),
+    ).toThrow();
+  });
 });
 
 describe("visual object verification", () => {
@@ -55,11 +68,11 @@ describe("visual object verification", () => {
 });
 
 describe("font parsing", () => {
-  test("accepts standalone sfnt and WOFF2 headers and rejects collections or malformed files", () => {
-    expect(parseBrandFontHeader(Buffer.from([0x00, 0x01, 0x00, 0x00]))).toBe("ttf");
-    expect(parseBrandFontHeader(Buffer.from("OTTO"))).toBe("otf");
-    expect(parseBrandFontHeader(Buffer.from("wOF2"))).toBe("woff2");
+  test("rejects collections, unknown signatures, and truncated files with valid signatures", () => {
     expect(() => parseBrandFontHeader(Buffer.from("ttcf"))).toThrow();
     expect(() => parseBrandFontHeader(Buffer.from("nope"))).toThrow();
+    expect(() => parseBrandFontHeader(Buffer.from([0x00, 0x01, 0x00, 0x00]))).toThrow();
+    expect(() => parseBrandFontHeader(Buffer.from("OTTO"))).toThrow();
+    expect(() => parseBrandFontHeader(Buffer.from("wOF2"))).toThrow();
   });
 });

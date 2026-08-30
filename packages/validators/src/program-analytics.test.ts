@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { recordAnalyticsEventSchema } from "./analytics";
+import {
+  brandProgramAnalyticsEventSchema,
+  recordAnalyticsEventSchema,
+} from "./analytics";
 
 describe("program analytics metadata", () => {
   test("accepts the approved campaign interval and bounded guardrail metadata", () => {
@@ -33,6 +36,40 @@ describe("program analytics metadata", () => {
       recordAnalyticsEventSchema.parse({
         type: "review_opened",
         metadata: { safe: { nested: { [key]: "secret" } } },
+      }),
+    ).toThrow();
+  });
+
+  test("rejects metadata outside the approved recursive allowlist", () => {
+    expect(() =>
+      recordAnalyticsEventSchema.parse({
+        type: "campaign_scheduled",
+        metadata: { workspaceId: crypto.randomUUID(), arbitraryPayload: true },
+      }),
+    ).toThrow();
+  });
+
+  test("limits brand-program metadata to identifiers, kind, plan, and outcome", () => {
+    expect(
+      brandProgramAnalyticsEventSchema.parse({
+        type: "brand_profile_applied",
+        workspaceId: crypto.randomUUID(),
+        actorUserId: crypto.randomUUID(),
+        projectId: crypto.randomUUID(),
+        metadata: {
+          profileId: crypto.randomUUID(),
+          assetKind: "profile",
+          planTier: "business",
+          outcome: "succeeded",
+        },
+      }).type,
+    ).toBe("brand_profile_applied");
+    expect(() =>
+      brandProgramAnalyticsEventSchema.parse({
+        type: "brand_profile_applied",
+        workspaceId: crypto.randomUUID(),
+        actorUserId: crypto.randomUUID(),
+        metadata: { profileId: crypto.randomUUID(), profileName: "secret" },
       }),
     ).toThrow();
   });

@@ -10,6 +10,7 @@ import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { admitProjectPage } from "@/lib/authenticated-request-page";
 import {
   analyticsService,
+  brandProfileService,
   clipService,
   dubbingService,
   hasFeature,
@@ -28,6 +29,7 @@ import {
   defaultAspectRatioSchema,
   processingMinutesFromSeconds,
   userErrorMessage,
+  workspaceAllowsCapability,
 } from "@narriflow/validators";
 import { ProjectEvents } from "./project-events";
 import { ProjectEventsProvider } from "./project-events-provider";
@@ -37,6 +39,7 @@ import { ProjectTabs, TabCountBadge } from "./project-tabs";
 import { projectTabFromSearchParam } from "./project-tab";
 import { ProcessingPanel } from "./processing-panel";
 import {
+  applyProjectBrandProfileFormAction,
   queueTranscriptionFormAction,
   regenerateClipsFormAction,
 } from "../actions";
@@ -60,7 +63,7 @@ import {
   type PipelineStepView,
   type ProcessingStageInput,
 } from "@/lib/project-state";
-import { Stack, Box, Text, Flex, Tabs } from "@chakra-ui/react";
+import { Stack, Box, Text, Flex, NativeSelect, Tabs } from "@chakra-ui/react";
 import { AlertTriangle, ArrowLeft, Film, Info, Link2 } from "lucide-react";
 
 function linkProviderLabel(sourceProvider: string | null | undefined): string {
@@ -138,6 +141,15 @@ export default async function ProjectDetailPage({
   const [{ projectId }, query] = await Promise.all([params, searchParams]);
   const activeTab = projectTabFromSearchParam(query.tab);
   const appUser = await admitProjectPage(projectId, "content.view");
+  const brandScope = {
+    actorUserId: appUser.actorUserId,
+    workspaceId: appUser.workspaceId,
+    workspaceOwnerUserId: appUser.workspaceOwnerUserId,
+    role: appUser.role,
+    status: appUser.status,
+    pricingTier: appUser.pricingTier,
+    isPersonalWorkspace: appUser.isPersonalWorkspace,
+  };
   const snapshot = await projectService.getProjectSnapshot(
     appUser.actorUserId,
     projectId,
@@ -159,6 +171,7 @@ export default async function ProjectDetailPage({
     dubs,
     workflowHistory,
     usage,
+    brandProfiles,
   ] = await Promise.all([
     activeTab === "transcript"
       ? projectService.getTranscriptSnapshot(appUser.workspaceOwnerUserId, projectId,
@@ -184,6 +197,9 @@ export default async function ProjectDetailPage({
       : Promise.resolve([]),
     projectService.getWorkflowHistory(appUser.workspaceOwnerUserId, projectId),
     projectService.getUsageSummary(appUser.actorUserId, appUser.workspaceId),
+    activeTab === "clips"
+      ? brandProfileService.list(brandScope)
+      : Promise.resolve([]),
   ]);
   const transcript = fullTranscript ?? transcriptStatus;
   const pricingTier = usage.tier;
@@ -192,6 +208,12 @@ export default async function ProjectDetailPage({
   // `pricingTier === "free"` check — so the render popover's resolution
   // picker degrades exactly the way the worker's render-time gate does.
   const can1080pExport = hasFeature(pricingTier, "export.1080p");
+  const canApplyBrandProfile =
+    hasFeature(pricingTier, "brand.profiles") &&
+    workspaceAllowsCapability(
+      { role: appUser.role, status: appUser.status },
+      "content.edit",
+    );
 
   const isIngestReady = snapshot.project.ingestStatus === "ready";
   const isIngestFailed = snapshot.project.ingestStatus === "failed";
@@ -573,6 +595,64 @@ export default async function ProjectDetailPage({
         {/* CLIPS — processing panel while a run/ingest is in flight, ranked
             results once clips exist, legacy step cards otherwise. */}
         <Tabs.Content value="clips" pt="6">
+          {activeTab === "clips" && brandProfiles.length > 0 ? (
+            <AuthenticatedActionForm action={applyProjectBrandProfileFormAction}>
+              <input type="hidden" name="projectId" value={projectId} />
+              <Flex
+                align={{ base: "stretch", md: "center" }}
+                direction={{ base: "column", md: "row" }}
+                justify="space-between"
+                gap="4"
+                mb="5"
+                py="4"
+                borderTopWidth="1px"
+                borderBottomWidth="1px"
+                borderColor="border"
+              >
+                <Stack gap="1">
+                  <Text textStyle="eyebrow" color="fg.subtle">
+                    Project identity
+                  </Text>
+                  <Text fontSize="sm" color="fg.muted">
+                    Choose the profile to freeze for future project work.
+                  </Text>
+                </Stack>
+                <Flex gap="2" align="center" minW={{ md: "360px" }}>
+                  <NativeSelect.Root
+                    key={snapshot.project.brandProfileId ?? "unassigned"}
+                    flex="1"
+                    disabled={!canApplyBrandProfile}
+                  >
+                    <NativeSelect.Field
+                      name="profileId"
+                      defaultValue={snapshot.project.brandProfileId ?? ""}
+                      minH="9"
+                      borderColor="border.control"
+                      bg="bg.panel"
+                      color="fg"
+                    >
+                      <option value="" disabled>Select a Brand Profile</option>
+                      {brandProfiles.map((profile) => (
+                        <option key={profile.id} value={profile.id}>
+                          {profile.name}
+                        </option>
+                      ))}
+                    </NativeSelect.Field>
+                    <NativeSelect.Indicator />
+                  </NativeSelect.Root>
+                  <ActionSubmitButton
+                    type="submit"
+                    size="sm"
+                    variant="outline"
+                    pendingLabel="Applying…"
+                    disabled={!canApplyBrandProfile}
+                  >
+                    Apply
+                  </ActionSubmitButton>
+                </Flex>
+              </Flex>
+            </AuthenticatedActionForm>
+          ) : null}
           {activeTab === "clips" ? (isDraftPack ? (
             <Flex
               align="center"

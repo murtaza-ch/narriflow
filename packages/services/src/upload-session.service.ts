@@ -830,6 +830,33 @@ function isAmbiguousProviderFailure(error: unknown) {
 export function createUploadSessionModule(
   dependencies: UploadSessionModuleDependencies,
 ) {
+  type ResolvedBrand = Awaited<
+    ReturnType<UploadSessionAdmission["resolveBrand"]>
+  >;
+  const admissionPreflights = new Map<string, Promise<ResolvedBrand>>();
+  const preflightInitialAdmission = (input: OpenUploadSessionInput) => {
+    const key = `${input.workspaceId}:${input.clientIdempotencyKey}`;
+    const existing = admissionPreflights.get(key);
+    if (existing) return existing;
+    const preflight = (async () => {
+      await dependencies.admission.assertQuota(input.workspaceId);
+      return dependencies.admission.resolveBrand({
+        workspaceId: input.workspaceId,
+        actorUserId: input.actorUserId,
+        legacyOwnerUserId: input.legacyOwnerUserId,
+        brandTemplateId: input.brandTemplateId,
+        brandProfileId: input.brandProfileId,
+      });
+    })();
+    admissionPreflights.set(key, preflight);
+    const release = () => {
+      if (admissionPreflights.get(key) === preflight) {
+        admissionPreflights.delete(key);
+      }
+    };
+    void preflight.then(release, release);
+    return preflight;
+  };
   const diagnose = (
     sessionId: string,
     phase: Parameters<NonNullable<typeof dependencies.diagnose>>[0]["phase"],
@@ -1379,20 +1406,13 @@ export function createUploadSessionModule(
     if (!prepared.admissionPreparedAt) {
       try {
         await dependencies.admission.assertQuota(prepared.workspaceId);
-        const brand = await dependencies.admission.resolveBrand({
-          workspaceId: prepared.workspaceId,
-          actorUserId: prepared.actorUserId,
-          legacyOwnerUserId: prepared.legacyOwnerUserId,
-          brandTemplateId: prepared.brandTemplateId,
-          brandProfileId: prepared.brandProfileId,
-        });
         prepared = await dependencies.persistence.prepareAdmission({
           sessionId: prepared.id,
           admissionAttemptId,
-          brandTemplateId: brand?.templateId ?? null,
-          brandSnapshot: brand?.snapshot ?? null,
-          brandProfileId: brand?.profileId ?? null,
-          brandProfileSnapshot: brand?.profileSnapshot ?? null,
+          brandTemplateId: prepared.brandTemplateId,
+          brandSnapshot: prepared.brandSnapshot,
+          brandProfileId: prepared.brandProfileId,
+          brandProfileSnapshot: prepared.brandProfileSnapshot,
           updatedAt: dependencies.now(),
         });
       } catch (error) {
@@ -1659,7 +1679,7 @@ export function createUploadSessionModule(
         dependencies.config,
       );
       const storageKey = `workspaces/${input.workspaceId}/upload-sessions/${sessionId}/${sanitizeFileName(input.source.fileName)}`;
-      const reservation = await dependencies.persistence.reserve({
+      const reservationRecord = (brand: ResolvedBrand): UploadSessionRecord => ({
         id: sessionId,
         workspaceId: input.workspaceId,
         actorUserId: input.actorUserId,
@@ -1672,10 +1692,10 @@ export function createUploadSessionModule(
         fileSizeBytes: input.source.sizeBytes,
         contentType: input.source.contentType,
         browserFingerprint: input.source.browserFingerprint,
-        brandTemplateId: input.brandTemplateId,
-        brandSnapshot: null,
-        brandProfileId: input.brandProfileId,
-        brandProfileSnapshot: null,
+        brandTemplateId: brand?.templateId ?? null,
+        brandSnapshot: brand?.snapshot ?? null,
+        brandProfileId: brand?.profileId ?? null,
+        brandProfileSnapshot: brand?.profileSnapshot ?? null,
         generation: input.generation,
         transferKind: transfer.kind,
         partSizeBytes: transfer.partSizeBytes,
@@ -1702,6 +1722,47 @@ export function createUploadSessionModule(
         createdAt: now,
         updatedAt: now,
       });
+      if (!normalizeUploadContentType(input.source.contentType)) {
+        const invalid = await dependencies.persistence.reserve(
+          reservationRecord(null),
+        );
+        if (invalid.created) {
+          await dependencies.persistence.recordFailure({
+            sessionId: invalid.session.id,
+            admissionAttemptId: admissionAttemptIdFor(invalid.session),
+            status: "failed",
+            failureCode: "unsupported_media_type",
+            updatedAt: dependencies.now(),
+          });
+        }
+        throw new Error("Unsupported upload content type");
+      }
+
+      let brand: ResolvedBrand;
+      try {
+        brand = await preflightInitialAdmission(input);
+      } catch (error) {
+        const refused = await dependencies.persistence.reserve(
+          reservationRecord(null),
+        );
+        if (refused.created) {
+          await dependencies.persistence.recordFailure({
+            sessionId: refused.session.id,
+            admissionAttemptId: admissionAttemptIdFor(refused.session),
+            status: "failed",
+            failureCode:
+              error instanceof UploadSessionQuotaRefusedError
+                ? "quota_exceeded"
+                : "upload_admission_failed",
+            updatedAt: dependencies.now(),
+          });
+        }
+        throw error;
+      }
+
+      const reservation = await dependencies.persistence.reserve(
+        reservationRecord(brand),
+      );
       if (!reservation.created) {
         diagnose(reservation.session.id, "reservation", "succeeded", {
           state: reservation.session.status,
@@ -1714,35 +1775,16 @@ export function createUploadSessionModule(
         replay: false,
       });
 
-      if (!normalizeUploadContentType(input.source.contentType)) {
-        await dependencies.persistence.recordFailure({
-          sessionId: reservation.session.id,
-          admissionAttemptId: admissionAttemptIdFor(reservation.session),
-          status: "failed",
-          failureCode: "unsupported_media_type",
-          updatedAt: dependencies.now(),
-        });
-        throw new Error("Unsupported upload content type");
-      }
-
       let prepared: UploadSessionRecord;
       const admissionAttemptId = admissionAttemptIdFor(reservation.session);
       try {
-        await dependencies.admission.assertQuota(input.workspaceId);
-        const brand = await dependencies.admission.resolveBrand({
-          workspaceId: input.workspaceId,
-          actorUserId: input.actorUserId,
-          legacyOwnerUserId: input.legacyOwnerUserId,
-          brandTemplateId: input.brandTemplateId,
-          brandProfileId: input.brandProfileId,
-        });
         prepared = await dependencies.persistence.prepareAdmission({
           sessionId: reservation.session.id,
           admissionAttemptId,
-          brandTemplateId: brand?.templateId ?? null,
-          brandSnapshot: brand?.snapshot ?? null,
-          brandProfileId: brand?.profileId ?? null,
-          brandProfileSnapshot: brand?.profileSnapshot ?? null,
+          brandTemplateId: reservation.session.brandTemplateId,
+          brandSnapshot: reservation.session.brandSnapshot,
+          brandProfileId: reservation.session.brandProfileId,
+          brandProfileSnapshot: reservation.session.brandProfileSnapshot,
           updatedAt: dependencies.now(),
         });
       } catch (error) {
@@ -1755,10 +1797,7 @@ export function createUploadSessionModule(
           sessionId: reservation.session.id,
           admissionAttemptId,
           status: "failed",
-          failureCode:
-            error instanceof UploadSessionQuotaRefusedError
-              ? "quota_exceeded"
-              : "upload_admission_failed",
+          failureCode: "upload_admission_failed",
           updatedAt: dependencies.now(),
         });
         throw error;
@@ -3155,9 +3194,15 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
           contentType: record.contentType,
           browserFingerprint: record.browserFingerprint,
           brandTemplateId: record.brandTemplateId,
-          brandSnapshot: Prisma.JsonNull,
+          brandSnapshot:
+            record.brandSnapshot === null
+              ? Prisma.JsonNull
+              : (record.brandSnapshot as Prisma.InputJsonValue),
           brandProfileId: record.brandProfileId,
-          brandProfileSnapshot: Prisma.JsonNull,
+          brandProfileSnapshot:
+            record.brandProfileSnapshot === null
+              ? Prisma.JsonNull
+              : (record.brandProfileSnapshot as Prisma.InputJsonValue),
           generationSettings: record.generation as Prisma.InputJsonValue,
           transferKind: record.transferKind,
           partSizeBytes: record.partSizeBytes,
@@ -3420,10 +3465,16 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
     };
     const languageCode = String(generation.languageCode ?? "auto");
     const contentPack = contentPackSchema.parse(generation.contentPack);
-    const retention = await projectRetentionService.assignmentForWorkspace(
-      initial.workspaceId,
-      initial.createdAt,
-    );
+    const [retention, workspace] = await Promise.all([
+      projectRetentionService.assignmentForWorkspace(
+        initial.workspaceId,
+        initial.createdAt,
+      ),
+      requiredPrisma().workspace.findUnique({
+        where: { id: initial.workspaceId },
+        select: { pricingTier: true },
+      }),
+    ]);
 
     try {
       const settled = await requiredPrisma().$transaction(async (tx) => {
@@ -3470,6 +3521,30 @@ export const prismaUploadSessionPersistence: UploadSessionPersistence = {
             createdAt: current.createdAt,
           },
         });
+        if (current.brandProfileId && workspace) {
+          const profileSnapshot = current.brandProfileSnapshot as {
+            style?: { templateId?: unknown } | null;
+          } | null;
+          const templateId =
+            typeof profileSnapshot?.style?.templateId === "string"
+              ? profileSnapshot.style.templateId
+              : null;
+          await tx.programAnalyticsEvent.create({
+            data: {
+              workspaceId: current.workspaceId,
+              actorUserId: current.actorUserId,
+              projectId: current.preallocatedProjectId,
+              type: "brand_profile_applied",
+              metadata: {
+                profileId: current.brandProfileId,
+                ...(templateId ? { templateId } : {}),
+                assetKind: "profile",
+                planTier: resolvePricingTier(workspace.pricingTier),
+                outcome: "succeeded",
+              },
+            },
+          });
+        }
         await tx.contentPack.create({
           data: {
             projectId: current.preallocatedProjectId,

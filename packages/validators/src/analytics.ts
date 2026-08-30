@@ -20,10 +20,45 @@ export const analyticsEventTypeSchema = z.enum([
   "campaign_scheduled",
   "generated_asset_completed",
   "generated_asset_inserted",
+  "brand_profile_created",
+  "brand_profile_applied",
+  "visual_asset_upload_succeeded",
+  "visual_asset_upload_failed",
+  "brand_font_upload_succeeded",
+  "brand_font_upload_failed",
+  "scene_template_used",
+  "brand_premium_mutation_blocked",
 ]);
 
 const SENSITIVE_ANALYTICS_KEY =
   /(transcript|prompt|comment|reviewer(?:email|identity)?|token|passcode|signed.?url)/i;
+
+const ALLOWED_ANALYTICS_METADATA_KEYS = new Set([
+  "aspectRatio",
+  "asset",
+  "assetId",
+  "assetKind",
+  "approvalOverrides",
+  "campaignOperationId",
+  "durationBucket",
+  "featureVersion",
+  "fontId",
+  "generatedMediaJobId",
+  "guardrails",
+  "languageCode",
+  "outcome",
+  "planTier",
+  "platform",
+  "profileId",
+  "projectId",
+  "revisionCount",
+  "reviewRoundId",
+  "sceneTemplateId",
+  "selectedCount",
+  "templateId",
+  "voice",
+  "workspaceId",
+]);
 
 function findSensitiveMetadataPath(
   value: unknown,
@@ -40,6 +75,26 @@ function findSensitiveMetadataPath(
   for (const [key, nested] of Object.entries(value)) {
     if (SENSITIVE_ANALYTICS_KEY.test(key)) return [...path, key];
     const found = findSensitiveMetadataPath(nested, [...path, key]);
+    if (found) return found;
+  }
+  return null;
+}
+
+function findUnknownMetadataPath(
+  value: unknown,
+  path: Array<string | number> = [],
+): Array<string | number> | null {
+  if (Array.isArray(value)) {
+    for (const [index, item] of value.entries()) {
+      const found = findUnknownMetadataPath(item, [...path, index]);
+      if (found) return found;
+    }
+    return null;
+  }
+  if (!value || typeof value !== "object") return null;
+  for (const [key, nested] of Object.entries(value)) {
+    if (!ALLOWED_ANALYTICS_METADATA_KEYS.has(key)) return [...path, key];
+    const found = findUnknownMetadataPath(nested, [...path, key]);
     if (found) return found;
   }
   return null;
@@ -80,14 +135,55 @@ export const recordAnalyticsEventSchema = z
   .strict()
   .superRefine((value, context) => {
     const sensitivePath = findSensitiveMetadataPath(value.metadata);
-    if (!sensitivePath) return;
-    context.addIssue({
-      code: "custom",
-      message: "Analytics metadata contains a prohibited sensitive field",
-      path: ["metadata", ...sensitivePath],
-    });
+    if (sensitivePath) {
+      context.addIssue({
+        code: "custom",
+        message: "Analytics metadata contains a prohibited sensitive field",
+        path: ["metadata", ...sensitivePath],
+      });
+      return;
+    }
+    const unknownPath = findUnknownMetadataPath(value.metadata);
+    if (unknownPath) {
+      context.addIssue({
+        code: "custom",
+        message: "Analytics metadata contains a field outside the approved allowlist",
+        path: ["metadata", ...unknownPath],
+      });
+    }
   });
+
+export const brandProgramAnalyticsEventSchema = z
+  .object({
+    type: z.enum([
+      "brand_profile_created",
+      "brand_profile_applied",
+      "visual_asset_upload_succeeded",
+      "visual_asset_upload_failed",
+      "brand_font_upload_succeeded",
+      "brand_font_upload_failed",
+      "scene_template_used",
+      "brand_premium_mutation_blocked",
+    ]),
+    workspaceId: z.string().uuid(),
+    actorUserId: z.string().uuid(),
+    projectId: z.string().uuid().nullable().optional(),
+    metadata: z
+      .object({
+        profileId: z.string().uuid().optional(),
+        assetId: z.string().uuid().optional(),
+        fontId: z.string().uuid().optional(),
+        templateId: z.string().uuid().optional(),
+        sceneTemplateId: z.string().uuid().optional(),
+        assetKind: z.enum(["image", "video", "font", "profile", "scene"]).optional(),
+        planTier: z.enum(["free", "creator", "pro", "business"]).optional(),
+        outcome: z.enum(["succeeded", "failed", "blocked"]).optional(),
+      })
+      .strict(),
+  })
+  .strict();
 
 export type AnalyticsEventType = z.infer<typeof analyticsEventTypeSchema>;
 export type AnalyticsSnapshot = z.infer<typeof analyticsSnapshotSchema>;
 export type RecordAnalyticsEventInput = z.infer<typeof recordAnalyticsEventSchema>;
+export type BrandProgramAnalyticsEventInput = z.infer<typeof brandProgramAnalyticsEventSchema>;

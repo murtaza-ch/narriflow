@@ -762,6 +762,62 @@ describe("Upload Session", () => {
     expect(harness.facts.providerInitiations).toHaveLength(1);
   });
 
+  test("persists the frozen profile snapshot in the initial durable reservation", async () => {
+    const harness = createInMemoryUploadSessionHarness();
+    const basePersistence = harness.adapters.persistence;
+    const baseAdmission = harness.adapters.admission;
+    const profileId = "77777777-7777-4777-8777-777777777777";
+    const profileSnapshot = { version: 1, profileId, profileRevision: 3 };
+    let observedReservation: { profileId: string | null; snapshot: unknown } | null = null;
+    const module = createUploadSessionModule({
+      ...harness.adapters,
+      admission: {
+        ...baseAdmission,
+        async resolveBrand() {
+          return {
+            templateId: null,
+            snapshot: null,
+            profileId,
+            profileSnapshot,
+          };
+        },
+      },
+      persistence: {
+        ...basePersistence,
+        async prepareAdmission(input) {
+          const reserved = harness.facts.sessions.find(
+            (session) => session.id === input.sessionId,
+          );
+          observedReservation = {
+            profileId: reserved?.brandProfileId ?? null,
+            snapshot: reserved?.brandProfileSnapshot ?? null,
+          };
+          return basePersistence.prepareAdmission(input);
+        },
+      },
+    });
+
+    await module.open({
+      ...ACTOR,
+      clientIdempotencyKey: "78787878-7878-4878-8878-787878787878",
+      title: "Frozen reservation",
+      source: {
+        fileName: "frozen.mp4",
+        sizeBytes: 100,
+        contentType: "video/mp4",
+        browserFingerprint: '["frozen.mp4",100,"video/mp4",1]',
+      },
+      brandTemplateId: null,
+      brandProfileId: profileId,
+      generation: { languageCode: "en", contentPack: CONTENT_PACK },
+    });
+
+    expect(observedReservation).toEqual({
+      profileId,
+      snapshot: profileSnapshot,
+    });
+  });
+
   test("waits for a live admission claim instead of bypassing quota during a slow check", async () => {
     const harness = createInMemoryUploadSessionHarness();
     const baseAdmission = harness.adapters.admission;
@@ -845,7 +901,7 @@ describe("Upload Session", () => {
 
     expect(right.sessionId).toBe(left.sessionId);
     expect(harness.facts.quotaChecks).toBe(2);
-    expect(harness.facts.brandResolutions).toBe(2);
+    expect(harness.facts.brandResolutions).toBe(1);
     expect(harness.facts.exactKeyListings).toBe(1);
     expect(harness.facts.providerInitiations).toHaveLength(1);
   });

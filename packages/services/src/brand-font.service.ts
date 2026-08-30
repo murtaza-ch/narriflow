@@ -1,10 +1,12 @@
 import { randomUUID } from "node:crypto";
 import type { BrandFont, BrandFontFormat } from "@prisma/client";
+import { create as parseFont } from "fontkit";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
   brandFontFinalizeSchema,
   brandFontUploadSchema,
   reusableAssetSoftDeleteSchema,
+  resolvePricingTier,
   type BrandFontFinalizeInput,
   type BrandFontUploadInput,
   type ReusableAssetSoftDeleteInput,
@@ -24,6 +26,7 @@ import {
   presignSingleUploadUrl,
   readObjectBytes,
 } from "./r2-storage";
+import { analyticsService } from "./analytics.service";
 
 export class BrandFontIntegrityError extends Error {
   constructor(readonly code: string) {
@@ -40,14 +43,57 @@ export class BrandFontReferenceError extends Error {
   }
 }
 
-export function parseBrandFontHeader(bytes: Uint8Array): "ttf" | "otf" | "woff2" {
+export interface ParsedBrandFont {
+  format: "ttf" | "otf" | "woff2";
+  family: string;
+  style: string;
+  weight: number;
+}
+
+function normalizeFontName(value: string, maximumLength: number) {
+  const normalized = value.normalize("NFKC").replace(/\s+/g, " ").trim();
+  if (!normalized || normalized.length > maximumLength) {
+    throw new BrandFontIntegrityError("brand_font_name_invalid");
+  }
+  return normalized;
+}
+
+export function parseBrandFont(bytes: Uint8Array): ParsedBrandFont {
   if (bytes.byteLength < 4) throw new BrandFontIntegrityError("brand_font_malformed");
   const signature = Buffer.from(bytes.subarray(0, 4));
   if (signature.toString("ascii") === "ttcf") throw new BrandFontIntegrityError("brand_font_collection_unsupported");
-  if (signature.equals(Buffer.from([0x00, 0x01, 0x00, 0x00])) || signature.toString("ascii") === "true") return "ttf";
-  if (signature.toString("ascii") === "OTTO") return "otf";
-  if (signature.toString("ascii") === "wOF2") return "woff2";
-  throw new BrandFontIntegrityError("brand_font_malformed");
+  const format = signature.toString("ascii") === "OTTO"
+    ? "otf"
+    : signature.toString("ascii") === "wOF2"
+      ? "woff2"
+      : signature.equals(Buffer.from([0x00, 0x01, 0x00, 0x00])) ||
+          signature.toString("ascii") === "true"
+        ? "ttf"
+        : null;
+  if (!format) throw new BrandFontIntegrityError("brand_font_malformed");
+  try {
+    const font = parseFont(Buffer.from(bytes));
+    if ("fonts" in font) {
+      throw new BrandFontIntegrityError("brand_font_collection_unsupported");
+    }
+    const family = normalizeFontName(font.familyName, 120);
+    const style = normalizeFontName(font.subfamilyName, 80);
+    if (!font.postscriptName || font.numGlyphs <= 0 || font.unitsPerEm <= 0) {
+      throw new BrandFontIntegrityError("brand_font_malformed");
+    }
+    const weight = Math.max(
+      100,
+      Math.min(900, Math.round(font["OS/2"].usWeightClass || 400)),
+    );
+    return { format, family, style, weight };
+  } catch (error) {
+    if (error instanceof BrandFontIntegrityError) throw error;
+    throw new BrandFontIntegrityError("brand_font_malformed");
+  }
+}
+
+export function parseBrandFontHeader(bytes: Uint8Array): "ttf" | "otf" | "woff2" {
+  return parseBrandFont(bytes).format;
 }
 
 function formatForContentType(contentType: string): "ttf" | "otf" | "woff2" {
@@ -90,6 +136,36 @@ export class BrandFontService {
   }
 
   async finalizeUpload(scope: BrandActorScope, input: BrandFontFinalizeInput) {
+    try {
+      const result = await this.finalizeVerifiedUpload(scope, input);
+      await analyticsService.recordBrandProgramEventBestEffort({
+          type: "brand_font_upload_succeeded",
+          workspaceId: scope.workspaceId,
+          actorUserId: scope.actorUserId,
+          metadata: {
+            fontId: result.id,
+            assetKind: "font",
+            planTier: resolvePricingTier(scope.pricingTier),
+            outcome: "succeeded",
+          },
+        });
+      return result;
+    } catch (error) {
+      await analyticsService.recordBrandProgramEventBestEffort({
+          type: "brand_font_upload_failed",
+          workspaceId: scope.workspaceId,
+          actorUserId: scope.actorUserId,
+          metadata: {
+            assetKind: "font",
+            planTier: resolvePricingTier(scope.pricingTier),
+            outcome: "failed",
+          },
+        });
+      throw error;
+    }
+  }
+
+  private async finalizeVerifiedUpload(scope: BrandActorScope, input: BrandFontFinalizeInput) {
     assertBrandMutationAllowed(scope, "brand.customFonts");
     const parsed = brandFontFinalizeSchema.parse(input);
     if (!parsed.key.startsWith(brandOwnerStoragePrefix(scope, "brand-fonts"))) throw new BrandFontIntegrityError("brand_font_key_forbidden");
@@ -109,18 +185,18 @@ export class BrandFontService {
       readObjectBytes(parsed.key, 20 * 1024 * 1024),
       hashObjectSha256(parsed.key),
     ]);
-    const format = parseBrandFontHeader(bytes);
-    if (format !== formatForContentType(parsed.contentType)) throw new BrandFontIntegrityError("brand_font_format_mismatch");
+    const parsedFont = parseBrandFont(bytes);
+    if (parsedFont.format !== formatForContentType(parsed.contentType)) throw new BrandFontIntegrityError("brand_font_format_mismatch");
     if (fingerprint !== parsed.fingerprint) throw new BrandFontIntegrityError("brand_font_fingerprint_mismatch");
     const owner = resolveBrandOwner(scope);
     try {
       const created = await prisma.brandFont.create({ data: {
         ...owner,
         licenseConfirmedByUserId: scope.actorUserId,
-        family: parsed.family,
-        style: parsed.style,
-        weight: parsed.weight,
-        format: format as BrandFontFormat,
+        family: parsedFont.family,
+        style: parsedFont.style,
+        weight: parsedFont.weight,
+        format: parsedFont.format as BrandFontFormat,
         storageKey: parsed.key,
         sizeBytes: BigInt(parsed.sizeBytes),
         fingerprint,

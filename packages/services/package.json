@@ -36,13 +36,15 @@
     "@narriflow/validators": "workspace:*",
     "@prisma/client": "^7.4.2",
     "fast-xml-parser": "^5.10.1",
+    "fontkit": "2.0.4",
     "ioredis": "^5.9.3",
     "stripe": "^22.5.0"
   },
   "devDependencies": {
     "@prisma/adapter-pg": "7.7.0",
+    "@types/fontkit": "2.0.8",
+    "@types/node": "26.2.0",
     "@types/pg": "8.15.5",
-    "pg": "8.16.3",
-    "@types/node": "26.2.0"
+    "pg": "8.16.3"
   }
 }

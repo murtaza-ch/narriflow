@@ -1,14 +1,14 @@
 import { Hono, type Context } from "hono";
-import {
-  brandFontFinalizeSchema,
-  brandFontUploadSchema,
-  brandProfileCreateSchema,
-  brandProfileMembershipSchema,
-  brandProfileSoftDeleteSchema,
-  brandProfileUpdateSchema,
-  reusableAssetSoftDeleteSchema,
-  visualAssetFinalizeSchema,
-  visualAssetUploadSchema,
+import type {
+  BrandFontFinalizeInput,
+  BrandFontUploadInput,
+  BrandProfileCreateInput,
+  BrandProfileMembershipInput,
+  BrandProfileSoftDeleteInput,
+  BrandProfileUpdateInput,
+  ReusableAssetSoftDeleteInput,
+  VisualAssetFinalizeInput,
+  VisualAssetUploadInput,
 } from "@narriflow/validators";
 import {
   assertProgramWriteEnabled,
@@ -20,13 +20,10 @@ import {
   visualAssetService,
   type BrandActorScope,
 } from "@narriflow/services";
+import { authenticatedHonoInput } from "@/lib/authenticated-request-hono";
 
 interface BrandProfileRouteDependencies {
   getActor(context: Context): BrandActorScope;
-}
-
-function uuid(value: string) {
-  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
 
 function failure(error: unknown, fallback: string) {
@@ -41,10 +38,11 @@ export function createBrandProfileRoutes(dependencies: BrandProfileRouteDependen
   const app = new Hono();
 
   app.get("/brand-profiles", async (c) => {
+    const input = authenticatedHonoInput<{ limit?: number; query?: string }>(c);
     try {
       return c.json({ profiles: await brandProfileService.list(dependencies.getActor(c), {
-        limit: Number(c.req.query("limit") ?? 24),
-        query: c.req.query("query") || undefined,
+        limit: input.limit ?? 24,
+        query: input.query,
         includeDeleted: false,
       }) }, 200);
     } catch (error) {
@@ -54,9 +52,9 @@ export function createBrandProfileRoutes(dependencies: BrandProfileRouteDependen
   });
 
   app.get("/brand-profiles/:id", async (c) => {
-    if (!uuid(c.req.param("id"))) return c.json({ error: "invalid_brand_profile_id" }, 400);
+    const { id } = authenticatedHonoInput<{ id: string }>(c);
     try {
-      return c.json(await brandProfileService.get(dependencies.getActor(c), c.req.param("id")), 200);
+      return c.json(await brandProfileService.get(dependencies.getActor(c), id), 200);
     } catch (error) {
       const result = failure(error, "brand_profile_read_failed");
       return c.json(result.body, result.status);
@@ -64,11 +62,10 @@ export function createBrandProfileRoutes(dependencies: BrandProfileRouteDependen
   });
 
   app.post("/brand-profiles", async (c) => {
-    const parsed = brandProfileCreateSchema.safeParse(await c.req.json().catch(() => null));
-    if (!parsed.success) return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
+    const { body } = authenticatedHonoInput<{ body: BrandProfileCreateInput }>(c);
     try {
       assertProgramWriteEnabled("brand_profiles");
-      return c.json(await brandProfileService.create(dependencies.getActor(c), parsed.data), 201);
+      return c.json(await brandProfileService.create(dependencies.getActor(c), body), 201);
     } catch (error) {
       const result = failure(error, "brand_profile_create_failed");
       return c.json(result.body, result.status);
@@ -76,11 +73,10 @@ export function createBrandProfileRoutes(dependencies: BrandProfileRouteDependen
   });
 
   app.patch("/brand-profiles/:id", async (c) => {
-    const parsed = brandProfileUpdateSchema.safeParse(await c.req.json().catch(() => null));
-    if (!uuid(c.req.param("id")) || !parsed.success) return c.json({ error: "invalid_input", issues: parsed.success ? [] : parsed.error.issues }, 400);
+    const { id, body } = authenticatedHonoInput<{ id: string; body: BrandProfileUpdateInput }>(c);
     try {
       assertProgramWriteEnabled("brand_profiles");
-      return c.json(await brandProfileService.update(dependencies.getActor(c), c.req.param("id"), parsed.data), 200);
+      return c.json(await brandProfileService.update(dependencies.getActor(c), id, body), 200);
     } catch (error) {
       const result = failure(error, "brand_profile_update_failed");
       return c.json(result.body, result.status);
@@ -88,11 +84,10 @@ export function createBrandProfileRoutes(dependencies: BrandProfileRouteDependen
   });
 
   app.put("/brand-profiles/:id/membership", async (c) => {
-    const parsed = brandProfileMembershipSchema.safeParse(await c.req.json().catch(() => null));
-    if (!uuid(c.req.param("id")) || !parsed.success) return c.json({ error: "invalid_input", issues: parsed.success ? [] : parsed.error.issues }, 400);
+    const { id, body } = authenticatedHonoInput<{ id: string; body: BrandProfileMembershipInput }>(c);
     try {
-      assertProgramWriteEnabled(parsed.data.kind === "font" ? "brand_fonts" : "brand_profiles");
-      return c.json(await brandProfileService.setMembership(dependencies.getActor(c), c.req.param("id"), parsed.data), 200);
+      assertProgramWriteEnabled(body.kind === "font" ? "brand_fonts" : "brand_profiles");
+      return c.json(await brandProfileService.setMembership(dependencies.getActor(c), id, body), 200);
     } catch (error) {
       const result = failure(error, "brand_profile_membership_failed");
       return c.json(result.body, result.status);
@@ -100,10 +95,10 @@ export function createBrandProfileRoutes(dependencies: BrandProfileRouteDependen
   });
 
   app.post("/brand-profiles/:id/set-default", async (c) => {
-    if (!uuid(c.req.param("id"))) return c.json({ error: "invalid_brand_profile_id" }, 400);
+    const { id } = authenticatedHonoInput<{ id: string }>(c);
     try {
       assertProgramWriteEnabled("brand_profiles");
-      await brandProfileService.setDefault(dependencies.getActor(c), c.req.param("id"));
+      await brandProfileService.setDefault(dependencies.getActor(c), id);
       return c.json({ ok: true }, 200);
     } catch (error) {
       const result = failure(error, "brand_profile_default_failed");
@@ -112,11 +107,10 @@ export function createBrandProfileRoutes(dependencies: BrandProfileRouteDependen
   });
 
   app.delete("/brand-profiles/:id", async (c) => {
-    const parsed = brandProfileSoftDeleteSchema.safeParse(await c.req.json().catch(() => null));
-    if (!uuid(c.req.param("id")) || !parsed.success) return c.json({ error: "invalid_input", issues: parsed.success ? [] : parsed.error.issues }, 400);
+    const { id, body } = authenticatedHonoInput<{ id: string; body: BrandProfileSoftDeleteInput }>(c);
     try {
       assertProgramWriteEnabled("brand_profiles");
-      await brandProfileService.softDelete(dependencies.getActor(c), c.req.param("id"), parsed.data);
+      await brandProfileService.softDelete(dependencies.getActor(c), id, body);
       return c.json({ ok: true }, 200);
     } catch (error) {
       const result = failure(error, "brand_profile_delete_failed");
@@ -134,11 +128,10 @@ export function createBrandProfileRoutes(dependencies: BrandProfileRouteDependen
   });
 
   app.post("/visual-assets/presign-upload", async (c) => {
-    const parsed = visualAssetUploadSchema.safeParse(await c.req.json().catch(() => null));
-    if (!parsed.success) return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
+    const { body } = authenticatedHonoInput<{ body: VisualAssetUploadInput }>(c);
     try {
       assertProgramWriteEnabled("visual_assets");
-      return c.json(await visualAssetService.presignUpload(dependencies.getActor(c), parsed.data), 200);
+      return c.json(await visualAssetService.presignUpload(dependencies.getActor(c), body), 200);
     } catch (error) {
       const result = failure(error, "visual_asset_presign_failed");
       return c.json(result.body, result.status);
@@ -146,11 +139,10 @@ export function createBrandProfileRoutes(dependencies: BrandProfileRouteDependen
   });
 
   app.post("/visual-assets", async (c) => {
-    const parsed = visualAssetFinalizeSchema.safeParse(await c.req.json().catch(() => null));
-    if (!parsed.success) return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
+    const { body } = authenticatedHonoInput<{ body: VisualAssetFinalizeInput }>(c);
     try {
       assertProgramWriteEnabled("visual_assets");
-      return c.json(await visualAssetService.finalizeUpload(dependencies.getActor(c), parsed.data), 201);
+      return c.json(await visualAssetService.finalizeUpload(dependencies.getActor(c), body), 201);
     } catch (error) {
       const result = failure(error, "visual_asset_finalize_failed");
       return c.json(result.body, result.status);
@@ -158,11 +150,10 @@ export function createBrandProfileRoutes(dependencies: BrandProfileRouteDependen
   });
 
   app.delete("/visual-assets/:id", async (c) => {
-    const parsed = reusableAssetSoftDeleteSchema.safeParse(await c.req.json().catch(() => ({})));
-    if (!uuid(c.req.param("id")) || !parsed.success) return c.json({ error: "invalid_input" }, 400);
+    const { id, body } = authenticatedHonoInput<{ id: string; body: ReusableAssetSoftDeleteInput }>(c);
     try {
       assertProgramWriteEnabled("visual_assets");
-      await visualAssetService.softDelete(dependencies.getActor(c), c.req.param("id"), parsed.data);
+      await visualAssetService.softDelete(dependencies.getActor(c), id, body);
       return c.json({ ok: true }, 200);
     } catch (error) {
       const result = failure(error, "visual_asset_delete_failed");
@@ -180,11 +171,10 @@ export function createBrandProfileRoutes(dependencies: BrandProfileRouteDependen
   });
 
   app.post("/brand-fonts/presign-upload", async (c) => {
-    const parsed = brandFontUploadSchema.safeParse(await c.req.json().catch(() => null));
-    if (!parsed.success) return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
+    const { body } = authenticatedHonoInput<{ body: BrandFontUploadInput }>(c);
     try {
       assertProgramWriteEnabled("brand_fonts");
-      return c.json(await brandFontService.presignUpload(dependencies.getActor(c), parsed.data), 200);
+      return c.json(await brandFontService.presignUpload(dependencies.getActor(c), body), 200);
     } catch (error) {
       const result = failure(error, "brand_font_presign_failed");
       return c.json(result.body, result.status);
@@ -192,11 +182,10 @@ export function createBrandProfileRoutes(dependencies: BrandProfileRouteDependen
   });
 
   app.post("/brand-fonts", async (c) => {
-    const parsed = brandFontFinalizeSchema.safeParse(await c.req.json().catch(() => null));
-    if (!parsed.success) return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
+    const { body } = authenticatedHonoInput<{ body: BrandFontFinalizeInput }>(c);
     try {
       assertProgramWriteEnabled("brand_fonts");
-      return c.json(await brandFontService.finalizeUpload(dependencies.getActor(c), parsed.data), 201);
+      return c.json(await brandFontService.finalizeUpload(dependencies.getActor(c), body), 201);
     } catch (error) {
       const result = failure(error, "brand_font_finalize_failed");
       return c.json(result.body, result.status);
@@ -204,11 +193,10 @@ export function createBrandProfileRoutes(dependencies: BrandProfileRouteDependen
   });
 
   app.delete("/brand-fonts/:id", async (c) => {
-    const parsed = reusableAssetSoftDeleteSchema.safeParse(await c.req.json().catch(() => ({})));
-    if (!uuid(c.req.param("id")) || !parsed.success) return c.json({ error: "invalid_input" }, 400);
+    const { id, body } = authenticatedHonoInput<{ id: string; body: ReusableAssetSoftDeleteInput }>(c);
     try {
       assertProgramWriteEnabled("brand_fonts");
-      await brandFontService.softDelete(dependencies.getActor(c), c.req.param("id"), parsed.data);
+      await brandFontService.softDelete(dependencies.getActor(c), id, body);
       return c.json({ ok: true }, 200);
     } catch (error) {
       const result = failure(error, "brand_font_delete_failed");

@@ -60,3 +60,17 @@ export function assertBrandMutationAllowed(
     throw new BrandAccessError("brand_entitlement_required");
   }
 }
+
+export function assertBrandApplicationAllowed(scope: BrandActorScope): void {
+  if (
+    !workspaceAllowsCapability(
+      { role: scope.role, status: scope.status },
+      "content.edit",
+    )
+  ) {
+    throw new BrandAccessError("brand_forbidden");
+  }
+  if (!hasFeature(scope.pricingTier, "brand.profiles")) {
+    throw new BrandAccessError("brand_entitlement_required");
+  }
+}

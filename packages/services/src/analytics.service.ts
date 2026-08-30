@@ -1,9 +1,11 @@
 import { Prisma } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
+  brandProgramAnalyticsEventSchema,
   recordAnalyticsEventSchema,
   type AnalyticsEventType,
   type AnalyticsSnapshot,
+  type BrandProgramAnalyticsEventInput,
   type RecordAnalyticsEventInput,
   type SocialPlatform,
 } from "@narriflow/validators";
@@ -21,6 +23,39 @@ function toEventType(type: AnalyticsEventType) {
 }
 
 export class AnalyticsService {
+  async recordBrandProgramEvent(
+    input: BrandProgramAnalyticsEventInput,
+  ): Promise<void> {
+    const parsed = brandProgramAnalyticsEventSchema.parse(input);
+    const prisma = requirePrisma();
+    await prisma.programAnalyticsEvent.create({
+      data: {
+        workspaceId: parsed.workspaceId,
+        actorUserId: parsed.actorUserId,
+        projectId: parsed.projectId ?? null,
+        type: parsed.type,
+        metadata: parsed.metadata as Prisma.InputJsonValue,
+      },
+    });
+  }
+
+  async recordBrandProgramEventBestEffort(
+    input: BrandProgramAnalyticsEventInput,
+  ): Promise<void> {
+    try {
+      await this.recordBrandProgramEvent(input);
+    } catch {
+      console.warn(
+        JSON.stringify({
+          level: "warn",
+          message: "brand_program_analytics_record_failed",
+          workspaceId: input.workspaceId,
+          eventType: input.type,
+        }),
+      );
+    }
+  }
+
   async recordProjectEvent(input: {
     projectId: string;
     clipId?: string | null;

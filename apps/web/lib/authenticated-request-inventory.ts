@@ -1,4 +1,16 @@
-import type { WorkspaceCapability } from "@narriflow/validators";
+import {
+  brandFontFinalizeSchema,
+  brandFontUploadSchema,
+  brandProfileCreateSchema,
+  brandProfileMembershipSchema,
+  brandProfileSoftDeleteSchema,
+  brandProfileUpdateSchema,
+  reusableAssetSoftDeleteSchema,
+  visualAssetFinalizeSchema,
+  visualAssetUploadSchema,
+  type WorkspaceCapability,
+} from "@narriflow/validators";
+import { z, type ZodType } from "zod";
 import type { AuthenticatedRequestAdmission } from "./authenticated-request-policy";
 
 interface HonoSurface {
@@ -12,7 +24,37 @@ interface HonoSurface {
     limit: number;
     windowSeconds: number;
   };
+  input?: {
+    schema: ZodType;
+    body?: "required" | "optional";
+    params?: readonly string[];
+    query?: readonly string[];
+  };
 }
+
+const uuidInput = z.string().uuid();
+const bodyInput = (schema: ZodType, params: readonly string[] = []) => ({
+  schema: z.object({
+    ...Object.fromEntries(params.map((name) => [name, uuidInput])),
+    body: schema,
+  }).strict(),
+  body: "required" as const,
+  params,
+});
+const optionalBodyInput = (schema: ZodType, params: readonly string[]) => ({
+  schema: z.object({
+    ...Object.fromEntries(params.map((name) => [name, uuidInput])),
+    body: schema,
+  }).strict(),
+  body: "optional" as const,
+  params,
+});
+const paramsInput = (...params: string[]) => ({
+  schema: z.object(
+    Object.fromEntries(params.map((name) => [name, uuidInput])),
+  ).strict(),
+  params,
+});
 
 const project = (
   method: HonoSurface["method"],
@@ -279,31 +321,44 @@ export const browserSessionHonoSurfaces: readonly HonoSurface[] = [
     path: "/brand-templates/:id/logo-url",
     capability: "content.view",
   },
-  { method: "GET", path: "/brand-profiles", capability: "content.view" },
-  { method: "GET", path: "/brand-profiles/:id", capability: "content.view" },
-  { method: "POST", path: "/brand-profiles", capability: "brand.manage" },
-  { method: "PATCH", path: "/brand-profiles/:id", capability: "brand.manage" },
-  { method: "PUT", path: "/brand-profiles/:id/membership", capability: "brand.manage" },
-  { method: "POST", path: "/brand-profiles/:id/set-default", capability: "brand.manage" },
-  { method: "DELETE", path: "/brand-profiles/:id", capability: "brand.manage" },
+  {
+    method: "GET",
+    path: "/brand-profiles",
+    capability: "content.view",
+    input: {
+      schema: z.object({
+        limit: z.coerce.number().int().min(1).max(100).optional(),
+        query: z.string().trim().max(100).optional(),
+      }).strict(),
+      query: ["limit", "query"],
+    },
+  },
+  { method: "GET", path: "/brand-profiles/:id", capability: "content.view", input: paramsInput("id") },
+  { method: "POST", path: "/brand-profiles", capability: "brand.manage", input: bodyInput(brandProfileCreateSchema) },
+  { method: "PATCH", path: "/brand-profiles/:id", capability: "brand.manage", input: bodyInput(brandProfileUpdateSchema, ["id"]) },
+  { method: "PUT", path: "/brand-profiles/:id/membership", capability: "brand.manage", input: bodyInput(brandProfileMembershipSchema, ["id"]) },
+  { method: "POST", path: "/brand-profiles/:id/set-default", capability: "brand.manage", input: paramsInput("id") },
+  { method: "DELETE", path: "/brand-profiles/:id", capability: "brand.manage", input: bodyInput(brandProfileSoftDeleteSchema, ["id"]) },
   { method: "GET", path: "/visual-assets", capability: "content.view" },
   {
     method: "POST",
     path: "/visual-assets/presign-upload",
     capability: "brand.manage",
     rateLimit: actorRate("visual-asset-presign", 30),
+    input: bodyInput(visualAssetUploadSchema),
   },
-  { method: "POST", path: "/visual-assets", capability: "brand.manage" },
-  { method: "DELETE", path: "/visual-assets/:id", capability: "brand.manage" },
+  { method: "POST", path: "/visual-assets", capability: "brand.manage", input: bodyInput(visualAssetFinalizeSchema) },
+  { method: "DELETE", path: "/visual-assets/:id", capability: "brand.manage", input: optionalBodyInput(reusableAssetSoftDeleteSchema, ["id"]) },
   { method: "GET", path: "/brand-fonts", capability: "content.view" },
   {
     method: "POST",
     path: "/brand-fonts/presign-upload",
     capability: "brand.manage",
     rateLimit: actorRate("brand-font-presign", 30),
+    input: bodyInput(brandFontUploadSchema),
   },
-  { method: "POST", path: "/brand-fonts", capability: "brand.manage" },
-  { method: "DELETE", path: "/brand-fonts/:id", capability: "brand.manage" },
+  { method: "POST", path: "/brand-fonts", capability: "brand.manage", input: bodyInput(brandFontFinalizeSchema) },
+  { method: "DELETE", path: "/brand-fonts/:id", capability: "brand.manage", input: optionalBodyInput(reusableAssetSoftDeleteSchema, ["id"]) },
   { method: "GET", path: "/audio-assets", capability: "content.view" },
   {
     method: "POST",
@@ -421,6 +476,7 @@ export const browserSessionServerActions: readonly ServerActionSurface[] = [
   action("app/(app)/projects/actions.ts", "createProjectFormAction", "workspace", "content.edit"),
   action("app/(app)/projects/actions.ts", "queueTranscriptionFormAction", "project", "processing.consume"),
   action("app/(app)/projects/actions.ts", "queueGenerationFormAction", "project", "processing.consume"),
+  action("app/(app)/projects/actions.ts", "applyProjectBrandProfileFormAction", "project", "content.edit"),
   action("app/(app)/projects/actions.ts", "regenerateClipsFormAction", "project", "processing.consume"),
   action("app/(app)/projects/actions.ts", "renderClipsFormAction", "project", "processing.consume"),
   action("app/(app)/projects/actions.ts", "retryIngestFormAction", "project", "processing.consume"),
@@ -573,6 +629,7 @@ export function matchBrowserSessionHonoSurface(
     limit: number;
     windowSeconds: number;
   };
+  input?: HonoSurface["input"];
 } | null {
   for (const surface of browserSessionHonoSurfaces) {
     if (surface.method !== method.toUpperCase()) continue;
@@ -601,6 +658,7 @@ export function matchBrowserSessionHonoSurface(
             },
           }
         : {}),
+      ...(surface.input ? { input: surface.input } : {}),
     };
   }
   return null;

@@ -107,6 +107,8 @@ export function createInMemoryUploadSessionHarness() {
       admissionAttemptId,
       brandTemplateId,
       brandSnapshot,
+      brandProfileId,
+      brandProfileSnapshot,
       updatedAt,
     }) {
       const session = sessions.find((candidate) => candidate.id === sessionId);
@@ -119,6 +121,8 @@ export function createInMemoryUploadSessionHarness() {
       }
       session.brandTemplateId = brandTemplateId;
       session.brandSnapshot = brandSnapshot;
+      session.brandProfileId = brandProfileId;
+      session.brandProfileSnapshot = brandProfileSnapshot;
       session.admissionPreparedAt = updatedAt;
       session.updatedAt = updatedAt;
       return session;

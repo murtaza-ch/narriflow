@@ -1,4 +1,4 @@
-import { Box, Flex, Grid, Stack, Text } from "@chakra-ui/react";
+import { Box, Flex, Grid, Image, Stack, Text } from "@chakra-ui/react";
 import { ArrowRight, AudioLines, Check, ImageIcon, Type } from "lucide-react";
 import Link from "next/link";
 import { brandProfileService, brandTemplateService, hasFeature, isProgramWriteEnabled } from "@narriflow/services";
@@ -69,6 +69,11 @@ export default async function BrandKitPage() {
             {profiles.map((profile, index) => {
               const defaultStyle = profile.templates.find((template) => template.id === profile.defaultTemplateId) ?? profile.templates[0];
               const displayFont = profile.fonts.find((font) => font.role === "display") ?? profile.fonts[0];
+              const logo = profile.assets.find(
+                (asset) =>
+                  asset.id === profile.identity.primaryLogoAssetId ||
+                  asset.role === "logo",
+              );
               const isDefault = profile.id === defaultProfileId;
               return (
                 <Box key={profile.id} as="article" position="relative" borderTopWidth="1px" borderBottomWidth="1px" borderColor={isDefault ? "border.accent" : "border"} py="5" ps="5" pe="4" _before={{ content: '""', position: "absolute", insetInlineStart: "0", top: "0", bottom: "0", w: "3px", bg: isDefault ? "accent.solid" : "border.control" }}>
@@ -79,10 +84,33 @@ export default async function BrandKitPage() {
                         <Box h="1px" flex="1" bg="border" />
                         {isDefault && <Flex align="center" gap="1.5" color="accent.fg"><Check size={12} /><Text textStyle="eyebrow">Default</Text></Flex>}
                       </Flex>
-                      <Stack gap="1">
-                        <Text textStyle="title" fontSize="24px" lineClamp={1}>{profile.name}</Text>
-                        <Text fontSize="12.5px" color="fg.muted">{defaultStyle?.name ?? "No style selected"} · {displayFont ? `${displayFont.family} ${displayFont.weight}` : "System typography"}</Text>
-                      </Stack>
+                      <Flex gap="3" align="center">
+                        <Flex
+                          layerStyle="well"
+                          w="12"
+                          h="12"
+                          flexShrink="0"
+                          align="center"
+                          justify="center"
+                          overflow="hidden"
+                        >
+                          {logo?.accessUrl ? (
+                            <Image
+                              src={logo.accessUrl}
+                              alt={`${profile.name} logo`}
+                              w="full"
+                              h="full"
+                              objectFit="contain"
+                            />
+                          ) : (
+                            <ImageIcon size={17} />
+                          )}
+                        </Flex>
+                        <Stack gap="1" minW="0">
+                          <Text textStyle="title" fontSize="24px" lineClamp={1}>{profile.name}</Text>
+                          <Text fontSize="12.5px" color="fg.muted">{defaultStyle?.name ?? "No style selected"} · {displayFont ? `${displayFont.family} ${displayFont.weight}` : "System typography"}</Text>
+                        </Stack>
+                      </Flex>
                       <Flex gap="2" flexWrap="wrap">
                         {[profile.identity.primaryColor, profile.identity.secondaryColor, profile.identity.accentColor].filter((color): color is string => Boolean(color)).map((color) => <Box key={color} w="30px" h="8px" borderRadius="l1" borderWidth="1px" borderColor="border" style={{ background: color }} />)}
                       </Flex>
