@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { captionPresetSchema } from "./caption-preset";
+import { captionPresetSchema, type CaptionPreset } from "./caption-preset";
 import {
   buildEditedTimeMap,
   deletedRangesSchema,
@@ -17,11 +17,13 @@ import {
 } from "./edit-ranges";
 import {
   studioEditsSchema,
+  type StudioEdits,
   type StudioSfxPlacement,
   type StudioTextLayer,
   type StudioSpeakerLayoutOverride,
 } from "./studio-edits";
 import { transcriptUtteranceSchema } from "./transcript";
+import type { TranscriptUtterance, TranscriptWord } from "./transcript";
 
 // The single editor document (vizard-parity.md Phase A step 2): everything the
 // studio can mutate lives in one value so undo/redo, reset, and the atomic
@@ -98,14 +100,205 @@ function documentWindow(doc: EditorDocument) {
   return { startSec: doc.clipStartSec, endSec: doc.clipEndSec };
 }
 
-/** Cheap-at-these-sizes deep-equality check used by the setter branches below
- *  so re-applying a semantically identical value (e.g. undo/redo replaying a
- *  step, or a panel re-dispatching its current value) returns the ORIGINAL
- *  document reference instead of a fresh clone. `applyWithHistory`'s no-op
- *  detection is reference-based (`next === history.present`), so without
- *  this a semantic no-op still pushed a fake undo step. */
-function jsonEqual(a: unknown, b: unknown): boolean {
-  return JSON.stringify(a) === JSON.stringify(b);
+function arraysEqual<T>(
+  left: readonly T[],
+  right: readonly T[],
+  itemEqual: (left: T, right: T) => boolean,
+): boolean {
+  if (left === right) return true;
+  if (left.length !== right.length) return false;
+  return left.every((item, index) => itemEqual(item, right[index]!));
+}
+
+function captionPresetsEqual(left: CaptionPreset, right: CaptionPreset): boolean {
+  return (
+    left === right ||
+    (left.fontName === right.fontName &&
+      left.emojis === right.emojis &&
+      left.visible === right.visible &&
+      left.punctuation === right.punctuation &&
+      left.primaryColor === right.primaryColor &&
+      left.outlineColor === right.outlineColor &&
+      left.outlineWidth === right.outlineWidth &&
+      left.shadow === right.shadow &&
+      left.bold === right.bold &&
+      left.position === right.position &&
+      left.highlightColor === right.highlightColor &&
+      left.animation === right.animation &&
+      left.fontSize === right.fontSize &&
+      left.positionX === right.positionX &&
+      left.positionY === right.positionY &&
+      left.backgroundColor === right.backgroundColor &&
+      left.backgroundOpacity === right.backgroundOpacity &&
+      left.highlightBoxColor === right.highlightBoxColor &&
+      left.highlightBoxOpacity === right.highlightBoxOpacity &&
+      left.glowColor === right.glowColor &&
+      left.glowIntensity === right.glowIntensity &&
+      left.textTransform === right.textTransform &&
+      left.letterSpacing === right.letterSpacing)
+  );
+}
+
+function transcriptWordsEqual(left: TranscriptWord, right: TranscriptWord): boolean {
+  return (
+    left === right ||
+    (left.word === right.word &&
+      left.startSec === right.startSec &&
+      left.endSec === right.endSec &&
+      left.confidence === right.confidence)
+  );
+}
+
+function transcriptUtterancesEqual(
+  left: TranscriptUtterance,
+  right: TranscriptUtterance,
+): boolean {
+  return (
+    left === right ||
+    (left.index === right.index &&
+      left.speaker === right.speaker &&
+      left.speakerLabel === right.speakerLabel &&
+      left.startSec === right.startSec &&
+      left.endSec === right.endSec &&
+      left.text === right.text &&
+      left.confidence === right.confidence &&
+      arraysEqual(left.words, right.words, transcriptWordsEqual))
+  );
+}
+
+function transcriptSlicesEqual(
+  left: readonly TranscriptUtterance[],
+  right: readonly TranscriptUtterance[],
+): boolean {
+  return arraysEqual(left, right, transcriptUtterancesEqual);
+}
+
+function studioEditsEqual(left: StudioEdits, right: StudioEdits): boolean {
+  if (left === right) return true;
+  if (
+    left.transition.type !== right.transition.type ||
+    left.transition.durationSec !== right.transition.durationSec ||
+    left.music.url !== right.music.url ||
+    left.music.title !== right.music.title ||
+    left.music.volume !== right.music.volume ||
+    left.music.startOffsetSec !== right.music.startOffsetSec ||
+    left.music.fadeInSec !== right.music.fadeInSec ||
+    left.music.fadeOutSec !== right.music.fadeOutSec ||
+    left.music.assetId !== right.music.assetId ||
+    left.music.ducking !== right.music.ducking ||
+    left.sourceAudio.volume !== right.sourceAudio.volume ||
+    left.sourceAudio.muted !== right.sourceAudio.muted ||
+    left.logo.enabled !== right.logo.enabled ||
+    left.logo.position !== right.logo.position ||
+    left.logo.opacity !== right.logo.opacity ||
+    left.logo.scalePct !== right.logo.scalePct ||
+    left.background.mode !== right.background.mode ||
+    left.background.color !== right.background.color ||
+    left.background.imageUrl !== right.background.imageUrl ||
+    left.framing.mode !== right.framing.mode
+  ) {
+    return false;
+  }
+  if (
+    !arraysEqual(left.textLayers, right.textLayers, (a, b) =>
+      a === b ||
+      (a.id === b.id &&
+        a.text === b.text &&
+        a.startSec === b.startSec &&
+        a.endSec === b.endSec &&
+        a.positionX === b.positionX &&
+        a.positionY === b.positionY &&
+        a.fontName === b.fontName &&
+        a.fontSize === b.fontSize &&
+        a.color === b.color &&
+        a.backgroundColor === b.backgroundColor &&
+        a.backgroundOpacity === b.backgroundOpacity &&
+        a.bold === b.bold &&
+        a.outlineColor === b.outlineColor &&
+        a.outlineWidth === b.outlineWidth),
+    )
+  ) {
+    return false;
+  }
+  if (
+    !arraysEqual(left.sfx, right.sfx, (a, b) =>
+      a === b ||
+      (a.id === b.id &&
+        a.assetId === b.assetId &&
+        a.title === b.title &&
+        a.startSec === b.startSec &&
+        a.volume === b.volume),
+    )
+  ) {
+    return false;
+  }
+  return arraysEqual(
+    left.speakerLayoutOverrides,
+    right.speakerLayoutOverrides,
+    (a, b) =>
+      a === b ||
+      (a.id === b.id &&
+        a.aspectRatio === b.aspectRatio &&
+        a.startSec === b.startSec &&
+        a.endSec === b.endSec &&
+        a.layout === b.layout &&
+        arraysEqual(
+          a.layers,
+          b.layers,
+          (leftLayer, rightLayer) =>
+            leftLayer === rightLayer ||
+            (leftLayer.role === rightLayer.role &&
+              leftLayer.frameX === rightLayer.frameX &&
+              leftLayer.frameY === rightLayer.frameY &&
+              leftLayer.frameWidth === rightLayer.frameWidth &&
+              leftLayer.frameHeight === rightLayer.frameHeight &&
+              leftLayer.rotationDeg === rightLayer.rotationDeg &&
+              leftLayer.cropCxNorm === rightLayer.cropCxNorm &&
+              leftLayer.cropCyNorm === rightLayer.cropCyNorm &&
+              leftLayer.cropZoom === rightLayer.cropZoom),
+        )),
+  );
+}
+
+/** Compares deleted footage by its normalized domain meaning. */
+export function deletedRangesEqual(
+  left: readonly SourceRange[],
+  right: readonly SourceRange[],
+  window: ClipWindow,
+): boolean {
+  if (left === right) return true;
+  const normalizedLeft = normalizeDeletedRanges([...left], window);
+  const normalizedRight = normalizeDeletedRanges([...right], window);
+  return arraysEqual(
+    normalizedLeft,
+    normalizedRight,
+    (a, b) => a.startSec === b.startSec && a.endSec === b.endSec,
+  );
+}
+
+/**
+ * The shared typed equality policy for canonical Clip Editor Documents.
+ * Callers must validate and canonicalize untrusted or stored values first.
+ */
+export function editorDocumentsEqual(
+  left: EditorDocument,
+  right: EditorDocument,
+): boolean {
+  if (left === right) return true;
+  if (
+    left.clipStartSec !== right.clipStartSec ||
+    left.clipEndSec !== right.clipEndSec ||
+    left.brollUrl !== right.brollUrl
+  ) {
+    return false;
+  }
+  const window = documentWindow(left);
+  return (
+    captionPresetsEqual(left.captionPreset, right.captionPreset) &&
+    studioEditsEqual(left.studioEdits, right.studioEdits) &&
+    deletedRangesEqual(left.deletedRanges, right.deletedRanges, window) &&
+    transcriptSlicesEqual(left.transcriptSlice, right.transcriptSlice)
+  );
 }
 
 // ─── Text-layer ripple (Phase B hardening, fix 2) ──────────────────────────
@@ -306,11 +499,11 @@ export function applyEditorAction(
 ): EditorDocument {
   switch (action.type) {
     case "setCaptionPreset":
-      return jsonEqual(action.captionPreset, doc.captionPreset)
+      return captionPresetsEqual(action.captionPreset, doc.captionPreset)
         ? doc
         : { ...doc, captionPreset: action.captionPreset };
     case "setTranscriptSlice":
-      return jsonEqual(action.transcriptSlice, doc.transcriptSlice)
+      return transcriptSlicesEqual(action.transcriptSlice, doc.transcriptSlice)
         ? doc
         : { ...doc, transcriptSlice: action.transcriptSlice };
     case "updateWordText": {
@@ -335,7 +528,7 @@ export function applyEditorAction(
       };
     }
     case "setStudioEdits":
-      return jsonEqual(action.studioEdits, doc.studioEdits)
+      return studioEditsEqual(action.studioEdits, doc.studioEdits)
         ? doc
         : { ...doc, studioEdits: action.studioEdits };
     case "setBrollUrl":
@@ -348,7 +541,7 @@ export function applyEditorAction(
         [...doc.deletedRanges, action.range],
         window,
       );
-      if (jsonEqual(deletedRanges, doc.deletedRanges)) return doc;
+      if (deletedRangesEqual(deletedRanges, doc.deletedRanges, window)) return doc;
       // Fix 2: a delete can shift every kept frame after it — rebase any
       // text layers so their edited-timeline timing keeps pointing at the
       // same underlying footage (see rebaseTextLayers's doc comment).
@@ -358,14 +551,14 @@ export function applyEditorAction(
     case "revertRange": {
       const window = documentWindow(doc);
       const deletedRanges = subtractDeletedRange(doc.deletedRanges, action.range, window);
-      if (jsonEqual(deletedRanges, doc.deletedRanges)) return doc;
+      if (deletedRangesEqual(deletedRanges, doc.deletedRanges, window)) return doc;
       const studioEdits = rebaseStudioEdits(doc, window, doc.deletedRanges, window, deletedRanges);
       return { ...doc, deletedRanges, studioEdits };
     }
     case "setDeletedRanges": {
       const window = documentWindow(doc);
       const deletedRanges = normalizeDeletedRanges(action.ranges, window);
-      if (jsonEqual(deletedRanges, doc.deletedRanges)) return doc;
+      if (deletedRangesEqual(deletedRanges, doc.deletedRanges, window)) return doc;
       const studioEdits = rebaseStudioEdits(doc, window, doc.deletedRanges, window, deletedRanges);
       return { ...doc, deletedRanges, studioEdits };
     }
@@ -409,7 +602,10 @@ export function applyEditorAction(
       // rules, just applied atomically.
       const boundariesChanged =
         action.startSec !== doc.clipStartSec || action.endSec !== doc.clipEndSec;
-      const transcriptChanged = !jsonEqual(action.transcriptSlice, doc.transcriptSlice);
+      const transcriptChanged = !transcriptSlicesEqual(
+        action.transcriptSlice,
+        doc.transcriptSlice,
+      );
       if (!boundariesChanged && !transcriptChanged) return doc;
 
       const oldWindow = documentWindow(doc);

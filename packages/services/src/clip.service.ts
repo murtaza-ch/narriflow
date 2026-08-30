@@ -882,9 +882,16 @@ export function clipDuplicatePreviewStorageKey(
   return `projects/${projectId}/previews/${newClipId}/${attemptId}.mp4`;
 }
 
+export interface ClipDuplicationStorageAdapter {
+  copy(input: { sourceKey: string; destinationKey: string }): Promise<void>;
+}
+
 export class ClipService {
   constructor(
-    private readonly options: { clipDeletionAdapter?: ClipDeletionAdapter } = {},
+    private readonly options: {
+      clipDeletionAdapter?: ClipDeletionAdapter;
+      clipDuplicationStorageAdapter?: ClipDuplicationStorageAdapter;
+    } = {},
   ) {}
 
   async getClipSnapshot(
@@ -1323,6 +1330,7 @@ export class ClipService {
       ? clipDuplicatePreviewStorageKey(projectId, newClipId, randomUUID())
       : null;
     const compensationClaimId = randomUUID();
+    const duplicationStorage = this.options.clipDuplicationStorageAdapter;
     type DuplicateCopyValue =
       | { kind: "render"; render: ClipRender; aspectRatio: ClipAspectRatio }
       | { kind: "preview" };
@@ -1380,7 +1388,14 @@ export class ClipService {
           return renewed.count === plans.length;
         },
         async copy({ sourceKey, objectKey }) {
-          await copyObject({ sourceKey, destinationKey: objectKey });
+          if (duplicationStorage) {
+            await duplicationStorage.copy({
+              sourceKey,
+              destinationKey: objectKey,
+            });
+          } else {
+            await copyObject({ sourceKey, destinationKey: objectKey });
+          }
         },
         onCopyFailure(plan) {
           console.warn(

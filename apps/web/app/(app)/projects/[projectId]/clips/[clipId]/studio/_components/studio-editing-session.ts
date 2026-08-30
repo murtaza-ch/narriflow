@@ -1,7 +1,9 @@
 import { compositionAssetRef } from "@narriflow/composition-plan";
 import {
   clipAutoLayoutMatchesInputs,
+  deletedRangesEqual,
   editedToSource,
+  editorDocumentsEqual,
   sourceToEdited,
   type ClipAutoLayoutAnalysis,
   type EditedTimeMap,
@@ -987,7 +989,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
 
   private markCloudDirty(): void {
     this.documentVersion += 1;
-    if (this.documentsEqual(this.unified.doc.present, this.cloudDocument)) {
+    if (editorDocumentsEqual(this.unified.doc.present, this.cloudDocument)) {
       this.cloudAttempt = null;
       this.clearCloudTimers();
       this.cloudDirtySince = null;
@@ -1370,7 +1372,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
           if (!refreshIsCurrent()) return null;
           const currentBaseline =
             candidate.revision === baselineRevision &&
-            this.documentsEqual(candidate.document, this.cloudDocument);
+            editorDocumentsEqual(candidate.document, this.cloudDocument);
           if (
             candidate.revision >= refreshPolicy.minimumRevision &&
             (candidate.revision > baselineRevision || currentBaseline)
@@ -1403,7 +1405,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     if (!head || !refreshIsCurrent()) return null;
     if (
       head.revision === baselineRevision &&
-      this.documentsEqual(head.document, this.cloudDocument)
+      editorDocumentsEqual(head.document, this.cloudDocument)
     ) {
       this.projection = { ...projectionBeforeRefresh, status: "ready" };
       this.publish();
@@ -1455,7 +1457,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
       ownSegments(this.unified.segments),
     );
     this.documentVersion += 1;
-    const dirty = !this.documentsEqual(merged.document, this.cloudDocument);
+    const dirty = !editorDocumentsEqual(merged.document, this.cloudDocument);
     this.projection = {
       ...this.projection,
       status: "ready",
@@ -1507,10 +1509,6 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     }
     this.cloudRefreshRetryWake?.();
     this.resetRetryWake?.();
-  }
-
-  private documentsEqual(left: EditorDocument, right: EditorDocument): boolean {
-    return JSON.stringify(left) === JSON.stringify(right);
   }
 
   private projectTerminalCloudOutcome(
@@ -2061,8 +2059,10 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     if (
       previous.clipStartSec !== current.clipStartSec ||
       previous.clipEndSec !== current.clipEndSec ||
-      JSON.stringify(previous.deletedRanges) !==
-        JSON.stringify(current.deletedRanges)
+      !deletedRangesEqual(previous.deletedRanges, current.deletedRanges, {
+        startSec: current.clipStartSec,
+        endSec: current.clipEndSec,
+      })
     ) {
       this.retainedAutomaticLayout = null;
     }
@@ -2580,7 +2580,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
         kind: input.ownershipKind,
         generation: ownershipGeneration,
       },
-      cloud: this.documentsEqual(document, input.cloudDocument)
+      cloud: editorDocumentsEqual(document, input.cloudDocument)
         ? {
             state: "current",
             revision: input.cloudRevision,
@@ -2676,7 +2676,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     if (
       cloudResult.head.revision < this.cloudRevision ||
       (cloudResult.head.revision === this.cloudRevision &&
-        !this.documentsEqual(cloudResult.head.document, this.cloudDocument))
+        !editorDocumentsEqual(cloudResult.head.document, this.cloudDocument))
     ) {
       this.diagnose("studio_takeover_cloud_refresh_stale", "unavailable");
       dependencies.coordination.relinquish?.();
@@ -2785,13 +2785,13 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     if (!dependencies || generation === null) return "unavailable";
     const document = this.unified.doc.present;
     if (!this.deviceDraftAvailable) {
-      return JSON.stringify(document) === JSON.stringify(this.cloudDocument)
+      return editorDocumentsEqual(document, this.cloudDocument)
         ? "checkpointed"
         : "unavailable";
     }
     const key = this.deviceDraftKey;
     try {
-      if (JSON.stringify(document) === JSON.stringify(this.cloudDocument)) {
+      if (editorDocumentsEqual(document, this.cloudDocument)) {
         const outcome = await dependencies.drafts.remove(key, generation);
         if (!this.ownsGeneration(generation)) return "stale";
         if (outcome === "stale") {

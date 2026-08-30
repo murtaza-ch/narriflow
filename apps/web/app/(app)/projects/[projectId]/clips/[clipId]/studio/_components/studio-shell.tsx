@@ -22,6 +22,8 @@ import {
   getEffectiveClipTiming,
   clipAutoLayoutMatchesInputs,
   editedToSource,
+  deletedRangesEqual,
+  editorDocumentsEqual,
   normalizeDeletedRanges,
   resolveEffectiveFramingMode,
   SCREEN_LAYOUT_ENGINE_VERSION,
@@ -1125,10 +1127,9 @@ export function StudioShell({
   // disabling reset.
   const originalDoc = initialEditorOriginal ?? initialEditorDocument;
   const canReset = useMemo(() => {
-    const originalJson = JSON.stringify(originalDoc);
-    const localDiffersFromOriginal = JSON.stringify(doc) !== originalJson;
+    const localDiffersFromOriginal = !editorDocumentsEqual(doc, originalDoc);
     const serverDifferedFromOriginalAtLoad =
-      JSON.stringify(initialEditorDocument) !== originalJson;
+      !editorDocumentsEqual(initialEditorDocument, originalDoc);
     return (
       localDiffersFromOriginal || (revision > 0 && serverDifferedFromOriginalAtLoad)
     );
@@ -1470,7 +1471,7 @@ export function StudioShell({
       // itself should never reach this path (an all-deleted selection shows
       // Revert, not Delete), but skip the dispatch defensively rather than
       // relying on that alone.
-      if (JSON.stringify(candidateRanges) === JSON.stringify(doc.deletedRanges)) {
+      if (deletedRangesEqual(candidateRanges, doc.deletedRanges, window)) {
         return false;
       }
       studioSession.dispatch({
@@ -1512,7 +1513,7 @@ export function StudioShell({
       // (silence-detection.ts subtracts existingDeleted before returning),
       // but guard defensively against a stale preview re-detecting nothing
       // new rather than relying on that alone.
-      if (JSON.stringify(candidateRanges) === JSON.stringify(doc.deletedRanges)) {
+      if (deletedRangesEqual(candidateRanges, doc.deletedRanges, clipWindow)) {
         return false;
       }
       studioSession.dispatch({

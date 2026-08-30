@@ -1,5 +1,6 @@
 import {
   editorDocumentSchema,
+  editorDocumentsEqual,
   type EditorDocument,
 } from "@narriflow/validators";
 
@@ -111,7 +112,9 @@ export function decideDraftRecovery(
   serverDocument: EditorDocument,
   serverRevision: number,
 ): DraftRecovery {
-  if (!draft || jsonEqual(draft.document, serverDocument)) return { kind: "none" };
+  if (!draft || editorDocumentsEqual(draft.document, serverDocument)) {
+    return { kind: "none" };
+  }
 
   if (draft.baseRevision === serverRevision) {
     return {

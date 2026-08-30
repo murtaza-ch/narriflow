@@ -4,6 +4,7 @@ import {
   MediaCleanupClaimLost,
   adoptDurableMediaCopies,
   admitMediaCleanupObligations,
+  admitRetiredClipMediaCleanup,
   classifyMediaCleanupStorageError,
   createMediaCleanupWorker,
   createInMemoryMediaCleanupStore,
@@ -92,6 +93,129 @@ describe("Media Cleanup", () => {
       ["preview_proxy", "private/preview.mp4"],
       ["preview_peaks", "private/preview.peaks.json"],
     ]);
+  });
+
+  test("detected replacement admits no work for empty results or Clips without media", async () => {
+    let admissionCalls = 0;
+    const store = {
+      clip: {
+        findMany: async () => [
+          {
+            id: "clip-empty",
+            previewStorageKey: null,
+            renders: [{ storageKey: null }],
+            dubs: [{ audioStorageKey: null, renderStorageKey: null }],
+          },
+        ],
+      },
+      mediaCleanupObligation: {
+        async createMany() {
+          admissionCalls += 1;
+          return { count: 0 };
+        },
+      },
+    };
+
+    expect(
+      await admitRetiredClipMediaCleanup(
+        store,
+        "detected_clip_replacement",
+        "project-1",
+      ),
+    ).toBe(0);
+    expect(admissionCalls).toBe(0);
+
+    store.clip.findMany = async () => [];
+    expect(
+      await admitRetiredClipMediaCleanup(
+        store,
+        "detected_clip_replacement",
+        "project-1",
+      ),
+    ).toBe(0);
+    expect(admissionCalls).toBe(0);
+  });
+
+  test("detected replacement deduplicates mixed keys and replayed admission", async () => {
+    const admitted = new Set<string>();
+    const store = {
+      clip: {
+        findMany: async () => [
+          {
+            id: "clip-1",
+            previewStorageKey: "private/preview.mp4",
+            renders: [
+              { storageKey: null },
+              { storageKey: "private/render.mp4" },
+              { storageKey: "private/render.mp4" },
+            ],
+            dubs: [],
+          },
+        ],
+      },
+      mediaCleanupObligation: {
+        async createMany(input: {
+          data: Array<{
+            origin: string;
+            cleanupClass: string;
+            objectKey: string;
+          }>;
+        }) {
+          let count = 0;
+          for (const item of input.data) {
+            const key = `${item.origin}:${item.cleanupClass}:${item.objectKey}`;
+            if (admitted.has(key)) continue;
+            admitted.add(key);
+            count += 1;
+          }
+          return { count };
+        },
+      },
+    };
+
+    expect(
+      await admitRetiredClipMediaCleanup(
+        store,
+        "detected_clip_replacement",
+        "project-1",
+      ),
+    ).toBe(3);
+    expect(
+      await admitRetiredClipMediaCleanup(
+        store,
+        "detected_clip_replacement",
+        "project-1",
+      ),
+    ).toBe(0);
+    expect(admitted.size).toBe(3);
+  });
+
+  test("detected replacement surfaces admission failure to its transaction owner", async () => {
+    const store = {
+      clip: {
+        findMany: async () => [
+          {
+            id: "clip-1",
+            previewStorageKey: null,
+            renders: [{ storageKey: "private/render.mp4" }],
+            dubs: [],
+          },
+        ],
+      },
+      mediaCleanupObligation: {
+        async createMany() {
+          throw new Error("injected cleanup admission failure");
+        },
+      },
+    };
+
+    await expect(
+      admitRetiredClipMediaCleanup(
+        store,
+        "detected_clip_replacement",
+        "project-1",
+      ),
+    ).rejects.toThrow("injected cleanup admission failure");
   });
 
   test("failed duplicate adoption releases every copied or ambiguous destination", async () => {

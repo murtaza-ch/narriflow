@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
   DEFAULT_CAPTION_PRESET,
   editorDocumentSchema,
+  editorDocumentsEqual,
   studioEditsSchema,
   type EditorDocument,
 } from "@narriflow/validators";
@@ -78,7 +79,7 @@ class ControlledCloud {
     });
     if (
       input.baseRevision !== this.revision &&
-      JSON.stringify(input.document) === JSON.stringify(this.document)
+      editorDocumentsEqual(input.document, this.document)
     ) {
       result.resolve({
         kind: "saved",

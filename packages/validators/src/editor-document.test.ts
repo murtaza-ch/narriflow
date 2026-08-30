@@ -8,7 +8,9 @@ import {
   canRedo,
   canUndo,
   createEditorHistory,
+  deletedRangesEqual,
   editorDocumentSchema,
+  editorDocumentsEqual,
   redoEditor,
   undoEditor,
   type EditorDocument,
@@ -90,6 +92,218 @@ function makeDocumentWithSfx(startSec: number): EditorDocument {
     },
   };
 }
+
+describe("Clip Editor Document equality", () => {
+  test("accepts the same reference and separately allocated canonical documents", () => {
+    const document = makeDocument();
+
+    expect(editorDocumentsEqual(document, document)).toBe(true);
+    expect(editorDocumentsEqual(document, structuredClone(document))).toBe(true);
+  });
+
+  test("ignores object property insertion order after schema parsing", () => {
+    const document = makeDocument();
+    const reversed = Object.fromEntries(
+      Object.entries(structuredClone(document)).reverse(),
+    );
+
+    expect(
+      editorDocumentsEqual(
+        editorDocumentSchema.parse(document),
+        editorDocumentSchema.parse(reversed),
+      ),
+    ).toBe(true);
+  });
+
+  test("detects a change in every top-level field", () => {
+    const document = makeDocument();
+    const changedDocuments: EditorDocument[] = [
+      { ...document, clipStartSec: 11 },
+      { ...document, clipEndSec: 41 },
+      {
+        ...document,
+        captionPreset: {
+          ...document.captionPreset,
+          primaryColor: "#123456",
+        },
+      },
+      {
+        ...document,
+        transcriptSlice: [
+          {
+            ...document.transcriptSlice[0]!,
+            text: "changed transcript",
+          },
+          ...document.transcriptSlice.slice(1),
+        ],
+      },
+      {
+        ...document,
+        studioEdits: {
+          ...document.studioEdits,
+          sourceAudio: {
+            ...document.studioEdits.sourceAudio,
+            muted: true,
+          },
+        },
+      },
+      { ...document, brollUrl: "https://example.com/broll.mp4" },
+      {
+        ...document,
+        deletedRanges: [{ startSec: 12, endSec: 13 }],
+      },
+    ];
+
+    for (const changed of changedDocuments) {
+      expect(editorDocumentsEqual(document, changed)).toBe(false);
+    }
+  });
+
+  test("keeps ordered transcript, layer, placement, and override arrays order-sensitive", () => {
+    const document = makeDocument();
+    const textLayers = [
+      studioTextLayerSchema.parse({ id: "layer-1", text: "First" }),
+      studioTextLayerSchema.parse({ id: "layer-2", text: "Second" }),
+    ];
+    const sfx = [
+      studioSfxPlacementSchema.parse({
+        id: "sfx-1",
+        assetId: "11111111-1111-4111-8111-111111111111",
+        startSec: 1,
+      }),
+      studioSfxPlacementSchema.parse({
+        id: "sfx-2",
+        assetId: "22222222-2222-4222-8222-222222222222",
+        startSec: 2,
+      }),
+    ];
+    const overrides = [
+      {
+        id: "override-1",
+        aspectRatio: "9:16" as const,
+        startSec: 0,
+        endSec: 5,
+        layout: "single" as const,
+        layers: [
+          {
+            role: "single" as const,
+            frameX: 0,
+            frameY: 0,
+            frameWidth: 1,
+            frameHeight: 1,
+            rotationDeg: 0,
+            cropCxNorm: 0.5,
+            cropCyNorm: 0.5,
+            cropZoom: 1,
+          },
+        ],
+      },
+      {
+        id: "override-2",
+        aspectRatio: "9:16" as const,
+        startSec: 5,
+        endSec: 10,
+        layout: "single" as const,
+        layers: [
+          {
+            role: "single" as const,
+            frameX: 0,
+            frameY: 0,
+            frameWidth: 1,
+            frameHeight: 1,
+            rotationDeg: 0,
+            cropCxNorm: 0.6,
+            cropCyNorm: 0.5,
+            cropZoom: 1,
+          },
+        ],
+      },
+    ];
+    const populated = editorDocumentSchema.parse({
+      ...document,
+      studioEdits: {
+        ...document.studioEdits,
+        textLayers,
+        sfx,
+        speakerLayoutOverrides: overrides,
+      },
+    });
+
+    const reorderings = [
+      {
+        ...populated,
+        transcriptSlice: [...populated.transcriptSlice].reverse(),
+      },
+      {
+        ...populated,
+        studioEdits: {
+          ...populated.studioEdits,
+          textLayers: [...populated.studioEdits.textLayers].reverse(),
+        },
+      },
+      {
+        ...populated,
+        studioEdits: {
+          ...populated.studioEdits,
+          sfx: [...populated.studioEdits.sfx].reverse(),
+        },
+      },
+      {
+        ...populated,
+        studioEdits: {
+          ...populated.studioEdits,
+          speakerLayoutOverrides: [
+            ...populated.studioEdits.speakerLayoutOverrides,
+          ].reverse(),
+        },
+      },
+    ];
+
+    for (const reordered of reorderings) {
+      expect(editorDocumentsEqual(populated, reordered)).toBe(false);
+    }
+  });
+
+  test("normalizes deleted ranges before comparing their domain meaning", () => {
+    const window = { startSec: 10, endSec: 40 };
+
+    expect(
+      deletedRangesEqual(
+        [
+          { startSec: 14, endSec: 16 },
+          { startSec: 12, endSec: 15 },
+        ],
+        [{ startSec: 12, endSec: 16 }],
+        window,
+      ),
+    ).toBe(true);
+  });
+
+  test("returns after an early scalar difference without reading a large transcript", () => {
+    const document = {
+      ...makeDocument(),
+      transcriptSlice: Array.from({ length: 500 }, (_, index) =>
+        makeUtterance(index, 10 + index * 0.01, ["word"]),
+      ),
+    };
+    const changed = {
+      ...document,
+      clipStartSec: document.clipStartSec + 1,
+    };
+    Object.defineProperty(changed, "transcriptSlice", {
+      get() {
+        throw new Error("transcript should not be read after a scalar mismatch");
+      },
+    });
+
+    expect(
+      editorDocumentsEqual(
+        document,
+        changed as unknown as EditorDocument,
+      ),
+    ).toBe(false);
+  });
+});
 
 describe("applyEditorAction", () => {
   test("updateWordText changes one word and rebuilds utterance text only", () => {

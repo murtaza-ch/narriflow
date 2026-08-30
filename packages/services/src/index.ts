@@ -40,6 +40,7 @@ export {
   sliceTranscriptForClip,
   type ClipPendingPreview,
   type ClipPendingAutoLayoutAnalysis,
+  type ClipDuplicationStorageAdapter,
 } from "./clip.service";
 export {
   clipEditorDocumentPersistence,

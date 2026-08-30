@@ -24,6 +24,7 @@ import {
   prismaClipEditorDocumentStore,
   type ClipEditorDocumentStore,
 } from "./clip-editor-document-persistence";
+import { ClipService } from "./clip.service";
 import { prismaMediaCleanupStore } from "./media-cleanup";
 
 const databaseUrl = process.env.CLIP_EDITOR_PERSISTENCE_TEST_DATABASE_URL;
@@ -849,5 +850,180 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
       projectId: f.project.id,
       clipId: f.clip.id,
     });
+  });
+
+  test("a committed duplicate adopts every successful copy in the same transaction", async () => {
+    const f = await fixture();
+    const copied: Array<{ sourceKey: string; destinationKey: string }> = [];
+    const service = new ClipService({
+      clipDuplicationStorageAdapter: {
+        async copy(input) {
+          copied.push(input);
+        },
+      },
+    });
+
+    const duplicate = await service.duplicateClip(
+      f.user.id,
+      f.project.id,
+      f.clip.id,
+    );
+    const storedDuplicate = await prisma.clip.findUniqueOrThrow({
+      where: { id: duplicate.id },
+      include: { renders: true },
+    });
+
+    expect(copied).toHaveLength(2);
+    expect(storedDuplicate.previewStorageKey).toBe(
+      copied.find((item) => item.sourceKey === f.clip.previewStorageKey)
+        ?.destinationKey,
+    );
+    expect(storedDuplicate.renders.map((render) => render.storageKey)).toEqual([
+      copied.find((item) => item.sourceKey.includes("/renders/current.mp4"))
+        ?.destinationKey,
+    ]);
+    expect(
+      await prisma.mediaCleanupObligation.count({
+        where: {
+          origin: "clip_duplicate_compensation",
+          clipId: duplicate.id,
+        },
+      }),
+    ).toBe(0);
+  });
+
+  test("partial duplicate copies adopt only successful media and release the rest for cleanup", async () => {
+    const f = await fixture();
+    const service = new ClipService({
+      clipDuplicationStorageAdapter: {
+        async copy(input) {
+          if (input.sourceKey === f.clip.previewStorageKey) {
+            throw new Error("injected preview copy failure");
+          }
+        },
+      },
+    });
+
+    const duplicate = await service.duplicateClip(
+      f.user.id,
+      f.project.id,
+      f.clip.id,
+    );
+
+    expect(duplicate.hasPreview).toBe(false);
+    expect(duplicate.renderVariants).toHaveLength(1);
+    expect(
+      await prisma.mediaCleanupObligation.findMany({
+        where: {
+          origin: "clip_duplicate_compensation",
+          clipId: duplicate.id,
+        },
+        select: {
+          cleanupClass: true,
+          claimId: true,
+          completedAt: true,
+        },
+      }),
+    ).toEqual([
+      {
+        cleanupClass: "preview_proxy",
+        claimId: null,
+        completedAt: null,
+      },
+    ]);
+  });
+
+  test("a duplicate persistence failure releases all copied destinations without creating a Clip", async () => {
+    const f = await fixture();
+    const copied: string[] = [];
+    const service = new ClipService({
+      clipDuplicationStorageAdapter: {
+        async copy({ destinationKey }) {
+          copied.push(destinationKey);
+        },
+      },
+    });
+    const suffix = randomUUID().replaceAll("-", "");
+    const functionName = `duplicate_insert_failure_${suffix}`;
+    const triggerName = `duplicate_insert_failure_${suffix}`;
+    await pool.query(`
+      CREATE FUNCTION "${functionName}"() RETURNS trigger AS $$
+      BEGIN
+        RAISE EXCEPTION 'duplicate_insert_failure';
+      END;
+      $$ LANGUAGE plpgsql;
+      CREATE TRIGGER "${triggerName}"
+      BEFORE INSERT ON "Clip"
+      FOR EACH ROW EXECUTE FUNCTION "${functionName}"();
+    `);
+    try {
+      await expect(
+        service.duplicateClip(f.user.id, f.project.id, f.clip.id),
+      ).rejects.toMatchObject({ code: "clip_duplicate_failed" });
+    } finally {
+      await pool.query(`
+        DROP TRIGGER IF EXISTS "${triggerName}" ON "Clip";
+        DROP FUNCTION IF EXISTS "${functionName}"();
+      `);
+    }
+
+    expect(copied).toHaveLength(2);
+    expect(
+      await prisma.clip.count({ where: { projectId: f.project.id } }),
+    ).toBe(1);
+    expect(
+      await prisma.mediaCleanupObligation.findMany({
+        where: {
+          origin: "clip_duplicate_compensation",
+          projectId: f.project.id,
+        },
+        select: { objectKey: true, claimId: true, completedAt: true },
+        orderBy: { objectKey: "asc" },
+      }),
+    ).toEqual(
+      [...copied]
+        .sort()
+        .map((objectKey) => ({ objectKey, claimId: null, completedAt: null })),
+    );
+  });
+
+  test("concurrent duplicate requests never expose winning media to cleanup", async () => {
+    const f = await fixture();
+    const service = new ClipService({
+      clipDuplicationStorageAdapter: { copy: async () => undefined },
+    });
+
+    const outcomes = await Promise.allSettled([
+      service.duplicateClip(f.user.id, f.project.id, f.clip.id),
+      service.duplicateClip(f.user.id, f.project.id, f.clip.id),
+    ]);
+    const winners = outcomes.flatMap((outcome) =>
+      outcome.status === "fulfilled" ? [outcome.value] : [],
+    );
+    expect(winners.length).toBeGreaterThanOrEqual(1);
+
+    const winningRows = await prisma.clip.findMany({
+      where: { id: { in: winners.map((winner) => winner.id) } },
+      select: {
+        previewStorageKey: true,
+        renders: { select: { storageKey: true } },
+      },
+    });
+    const winningKeys = winningRows
+      .flatMap((winner) => [
+        winner.previewStorageKey,
+        ...winner.renders.map((render) => render.storageKey),
+      ])
+      .filter((key): key is string => Boolean(key));
+    const cleanupKeys = await prisma.mediaCleanupObligation.findMany({
+      where: {
+        origin: "clip_duplicate_compensation",
+        projectId: f.project.id,
+      },
+      select: { objectKey: true },
+    });
+    expect(cleanupKeys.map((item) => item.objectKey)).not.toContainAnyValues(
+      winningKeys,
+    );
   });
 });

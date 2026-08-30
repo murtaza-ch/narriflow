@@ -144,6 +144,24 @@ describe("local editor draft recovery", () => {
     });
   });
 
+  test("removes a draft whose deleted ranges are semantically equal to the cloud", () => {
+    const server = {
+      ...makeDocument(),
+      deletedRanges: [{ startSec: 12, endSec: 16 }],
+    };
+    const draft = makeDraft({
+      document: {
+        ...server,
+        deletedRanges: [
+          { startSec: 14, endSec: 16 },
+          { startSec: 12, endSec: 15 },
+        ],
+      },
+    });
+
+    expect(decideDraftRecovery(draft, server, 3)).toEqual({ kind: "none" });
+  });
+
   test("recovers a dirty draft based on the current cloud revision", () => {
     const draft = makeDraft();
     expect(decideDraftRecovery(draft, draft.baseDocument, 3)).toEqual({

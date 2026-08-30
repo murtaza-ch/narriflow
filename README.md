@@ -446,3 +446,12 @@ bun run test:authenticated-request-policy:db
 ```
 
 Each database runner applies the migration chain, verifies that its connection selected the generated schema, runs only that module's database suite, and removes the schema on success or failure. A skipped suite in `bun run test` is not database verification.
+
+Finish a release-quality handoff with the production dependency and build gates:
+
+```bash
+bun run audit:production
+bun run build
+```
+
+Changes to Clip deletion or Studio document behavior also require an authenticated Chrome check. Verify successful deletion, the bounded retry message for `clip_storage_incomplete`, semantic no-op edits, one real dirty edit through cloud acknowledgement, Reset eligibility, Device Draft removal, and a clean console and network log.

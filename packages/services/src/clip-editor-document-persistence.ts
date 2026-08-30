@@ -7,8 +7,10 @@ import {
   DEFAULT_CAPTION_PRESET,
   applyStudioEditsPatchSchema,
   captionPresetSchema,
+  deletedRangesEqual,
   deletedRangesSchema,
   editorDocumentSchema,
+  editorDocumentsEqual,
   getEffectiveClipTiming,
   hasRenderableContent,
   mergeCorrectedWordsIntoWindow,
@@ -178,17 +180,6 @@ export interface ClipEditorDocumentDiagnostics {
 
 function clone<T>(value: T): T {
   return structuredClone(value);
-}
-
-function canonicalJson(value: unknown): string {
-  return JSON.stringify(value);
-}
-
-function editorDocumentsEqual(
-  left: EditorDocument,
-  right: EditorDocument,
-): boolean {
-  return canonicalJson(left) === canonicalJson(right);
 }
 
 function persistenceError(
@@ -609,7 +600,11 @@ export function createClipEditorDocumentPersistence(input: {
         );
       }
       const deletedRangesChanged =
-        canonicalJson(state.document.deletedRanges) !== canonicalJson(next.deletedRanges);
+        !windowChanged &&
+        !deletedRangesEqual(state.document.deletedRanges, next.deletedRanges, {
+          startSec: state.document.clipStartSec,
+          endSec: state.document.clipEndSec,
+        });
       const retireEvidence = windowChanged || deletedRangesChanged;
       const cleanup = cleanupIntents(state, windowChanged);
       let committed: ClipEditorDocumentStoredState | null;
