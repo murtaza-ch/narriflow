@@ -324,6 +324,8 @@ const WaveformCanvas = memo(function WaveformCanvas({
   width,
   height,
   waveformPeaksUrl,
+  compositeToBaseEdited,
+  isInsertedSceneTime,
 }: {
   utterances: TranscriptUtterance[];
   /** Vizard-parity Phase B step 8: pixel positions on this canvas are
@@ -338,6 +340,8 @@ const WaveformCanvas = memo(function WaveformCanvas({
   height: number;
   /** Same-origin authenticated endpoint for validated real amplitude data. */
   waveformPeaksUrl: string | null;
+  compositeToBaseEdited: (timeSec: number) => number;
+  isInsertedSceneTime: (timeSec: number) => boolean;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const canvasWidth = Math.max(
@@ -407,10 +411,13 @@ const WaveformCanvas = memo(function WaveformCanvas({
       // non-decreasing (segments stay in source order), so the speechIndex/
       // wordIndex cursors below can keep advancing left-to-right exactly as
       // they did before ripple existed.
-      const absoluteTime = editedToSource(editedTimeMap, px * secPerPx);
+      const compositeTime = px * secPerPx;
+      const absoluteTime = editedToSource(editedTimeMap, compositeToBaseEdited(compositeTime));
 
       let amplitude: number;
-      if (hasRealPeaks) {
+      if (isInsertedSceneTime(compositeTime)) {
+        amplitude = 0.03;
+      } else if (hasRealPeaks) {
         // Real waveform: same floor as the synthetic silence baseline below
         // so a genuinely-silent stretch of real audio still reads as a
         // visible flatline rather than vanishing entirely.
@@ -441,7 +448,7 @@ const WaveformCanvas = memo(function WaveformCanvas({
       const barH = amplitude * midY;
       ctx.fillRect(px, midY - barH, 1, barH * 2);
     }
-  }, [timingIndex, editedTimeMap, duration, canvasWidth, height, peaksData]);
+  }, [timingIndex, editedTimeMap, duration, canvasWidth, height, peaksData, compositeToBaseEdited, isInsertedSceneTime]);
 
   return (
     <canvas
@@ -474,12 +481,14 @@ const WordChipsRow = memo(function WordChipsRow({
   pxPerSec,
   height,
   editedTimeMap,
+  compositeToBaseEdited,
   onSeek,
 }: {
   words: WordChipDatum[];
   pxPerSec: number;
   height: number;
   editedTimeMap: EditedTimeMap;
+  compositeToBaseEdited: (timeSec: number) => number;
   onSeek: (t: number) => void;
 }) {
   const { playbackClock } = useStudio();
@@ -503,13 +512,13 @@ const WordChipsRow = memo(function WordChipsRow({
 
   const updateActive = useCallback(() => {
     const editedTime = playbackClock.getSnapshot();
-    const sourceTime = editedToSource(editedTimeMap, editedTime);
+    const sourceTime = editedToSource(editedTimeMap, compositeToBaseEdited(editedTime));
     const nextId = findActiveWordId(words, sourceTime);
     if (nextId === activeIdRef.current) return;
     paintActive(activeIdRef.current, false);
     paintActive(nextId, true);
     activeIdRef.current = nextId;
-  }, [words, editedTimeMap, playbackClock, paintActive]);
+  }, [words, editedTimeMap, compositeToBaseEdited, playbackClock, paintActive]);
 
   useEffect(() => {
     return playbackClock.subscribe(updateActive);
@@ -575,6 +584,7 @@ const WordChipsRow = memo(function WordChipsRow({
 
 type CaptionLaneChip = {
   id: string;
+	renderId?: string;
   text: string;
   editedStartSec: number;
   editedEndSec: number;
@@ -598,7 +608,7 @@ const CaptionChipsRow = memo(function CaptionChipsRow({
         const width = Math.max((chip.editedEndSec - chip.editedStartSec) * pxPerSec - 2, 8);
         return (
           <Box
-            key={chip.id}
+						key={chip.renderId ?? chip.id}
             as="button"
             position="absolute"
             top="1px"
@@ -669,6 +679,25 @@ function TimelineLaneLabel({
       </Text>
     </Flex>
   );
+}
+
+function SceneGapMasks({ scenes, pxPerSec }: { scenes: readonly { id: string; anchorSec: number; durationSec: number }[]; pxPerSec: number }) {
+  return scenes.map((scene) => (
+    <Box
+      key={`scene-gap-${scene.id}`}
+      position="absolute"
+      top="0"
+      bottom="0"
+      bg="studio.canvas"
+      borderLeftWidth="1px"
+      borderRightWidth="1px"
+      borderColor="studio.accent/38"
+      pointerEvents="none"
+      zIndex={8}
+      style={{ left: `${scene.anchorSec * pxPerSec}px`, width: `${Math.max(2, scene.durationSec * pxPerSec)}px` }}
+      aria-hidden="true"
+    />
+  ));
 }
 
 // ─── Control button ───────────────────────────────────────────────────────────
@@ -890,6 +919,7 @@ function RemoveSilencePopover() {
 // ─── Timeline ─────────────────────────────────────────────────────────────────
 
 const TRACK_HEIGHT = 64;
+const SCENE_TRACK_HEIGHT = 28;
 const BROLL_TRACK_HEIGHT = 28;
 const WORD_CHIPS_HEIGHT = 24;
 const WAVEFORM_HEIGHT = 40;
@@ -950,6 +980,8 @@ const TimelineSegmentBlock = memo(function TimelineSegmentBlock({
   label,
   editedStartSec,
   editedEndSec,
+  sampleStartSec,
+  sampleEndSec,
   isSelected,
   pxPerSec,
   thumbnailVideoUrl,
@@ -972,6 +1004,8 @@ const TimelineSegmentBlock = memo(function TimelineSegmentBlock({
    *  make wider than what's actually drawn/kept. */
   editedStartSec: number;
   editedEndSec: number;
+  sampleStartSec: number;
+  sampleEndSec: number;
   isSelected: boolean;
   pxPerSec: number;
   thumbnailVideoUrl: string | null;
@@ -1037,8 +1071,8 @@ const TimelineSegmentBlock = memo(function TimelineSegmentBlock({
           offsetSec={offsetSec}
           sourcePreviewId={sourcePreviewId}
           clipStartSec={clipStartSec}
-          editedStartSec={editedStartSec}
-          editedEndSec={editedEndSec}
+          editedStartSec={sampleStartSec}
+          editedEndSec={sampleEndSec}
           editedTimeMap={editedTimeMap}
           cutsSignature={cutsSignature}
           width={Math.max(w - 4, 4)}
@@ -1573,6 +1607,8 @@ const TextLayerChip = memo(function TextLayerChip({
   isSelected,
   pxPerSec,
   duration,
+  baseEditedToComposite,
+  compositeToBaseEdited,
 }: {
   id: string;
   text: string;
@@ -1581,12 +1617,16 @@ const TextLayerChip = memo(function TextLayerChip({
   isSelected: boolean;
   pxPerSec: number;
   duration: number;
+  baseEditedToComposite: (timeSec: number) => number;
+  compositeToBaseEdited: (timeSec: number) => number;
 }) {
   const { setStudioEdits, endCoalesce, selectTextLayer, seekTo } = useStudio();
   const dragRef = useRef<TextLayerDragState | null>(null);
 
-  const x = startSec * pxPerSec;
-  const w = Math.max(((endSec ?? duration) - startSec) * pxPerSec, 10);
+  const displayStartSec = baseEditedToComposite(startSec);
+  const displayEndSec = baseEditedToComposite(endSec ?? duration);
+  const x = displayStartSec * pxPerSec;
+  const w = Math.max((displayEndSec - displayStartSec) * pxPerSec, 10);
 
   const patch = useCallback(
     (fields: { startSec?: number; endSec?: number | null }) => {
@@ -1637,28 +1677,28 @@ const TextLayerChip = memo(function TextLayerChip({
 
       if (drag.mode === "move") {
         if (drag.grabEndSec == null) {
-          const newStart = Math.max(0, Math.min(drag.grabStartSec + deltaSec, duration));
+          const newStart = Math.max(0, Math.min(compositeToBaseEdited(baseEditedToComposite(drag.grabStartSec) + deltaSec), duration));
           patch({ startSec: newStart });
         } else {
           const layerDur = drag.grabEndSec - drag.grabStartSec;
-          const newStart = Math.max(0, Math.min(drag.grabStartSec + deltaSec, duration - layerDur));
+          const newStart = Math.max(0, Math.min(compositeToBaseEdited(baseEditedToComposite(drag.grabStartSec) + deltaSec), duration - layerDur));
           patch({ startSec: newStart, endSec: newStart + layerDur });
         }
       } else if (drag.mode === "resize-start") {
         const newStart = Math.max(
           0,
-          Math.min(drag.grabStartSec + deltaSec, grabEndOrDuration - MIN_TEXT_LAYER_DURATION_SEC),
+          Math.min(compositeToBaseEdited(baseEditedToComposite(drag.grabStartSec) + deltaSec), grabEndOrDuration - MIN_TEXT_LAYER_DURATION_SEC),
         );
         patch({ startSec: newStart });
       } else {
         const newEnd = Math.max(
           drag.grabStartSec + MIN_TEXT_LAYER_DURATION_SEC,
-          Math.min(grabEndOrDuration + deltaSec, duration),
+          Math.min(compositeToBaseEdited(baseEditedToComposite(grabEndOrDuration) + deltaSec), duration),
         );
         patch({ endSec: newEnd });
       }
     },
-    [pxPerSec, duration, patch, endCoalesce],
+    [pxPerSec, duration, patch, endCoalesce, baseEditedToComposite, compositeToBaseEdited],
   );
 
   const handlePointerUp = useCallback(
@@ -1672,11 +1712,11 @@ const TextLayerChip = memo(function TextLayerChip({
       dragRef.current = null;
       if (drag && !drag.moved) {
         selectTextLayer(id);
-        seekTo(startSec);
+        seekTo(displayStartSec);
       }
       if (drag) endCoalesce();
     },
-    [id, startSec, selectTextLayer, seekTo, endCoalesce],
+    [id, displayStartSec, selectTextLayer, seekTo, endCoalesce],
   );
 
   // Mirrors TrimHandle's onPointerCancel: without it, a canceled pointer
@@ -1798,12 +1838,18 @@ export function Timeline() {
     clipInfo,
     brollUrl,
     brollPreviewAsset,
+    sceneBlocks,
+    baseEditedToComposite,
+		baseEditedRangeToComposite,
+    compositeToBaseEdited,
+    isInsertedSceneTime,
   } = useStudio();
 
   const stripRef = useRef<HTMLDivElement>(null);
   const { viewport, onScroll } = useTimelineViewport(stripRef);
 
   const safeDuration = Math.max(0, duration);
+  const baseDuration = editedTimeMap.editedDurationSec;
   const TIMELINE_PX_PER_SEC = 80 * timelineZoom;
   const totalWidth = safeDuration * TIMELINE_PX_PER_SEC;
   const activeBrollAsset =
@@ -1811,9 +1857,9 @@ export function Timeline() {
   const manualBrollWindow = useMemo(
     () =>
       brollUrl
-        ? manualBrollPreviewWindow(safeDuration, activeBrollAsset?.durationSec)
+        ? manualBrollPreviewWindow(baseDuration, activeBrollAsset?.durationSec)
         : null,
-    [activeBrollAsset?.durationSec, brollUrl, safeDuration],
+    [activeBrollAsset?.durationSec, baseDuration, brollUrl],
   );
   const automaticBrollCutaways = useMemo(() => {
     if (brollUrl) return [];
@@ -1821,15 +1867,24 @@ export function Timeline() {
       clipInfo.brollCues[0]?.query.trim() ||
       brollQueryForClip(clipInfo.title, null);
     return planBrollCutaways(
-      safeDuration,
+      baseDuration,
       clipInfo.brollCues,
       fallbackQuery,
     );
-  }, [brollUrl, clipInfo.brollCues, clipInfo.title, safeDuration]);
-  const brollTimelineCutaways = manualBrollWindow
+  }, [baseDuration, brollUrl, clipInfo.brollCues, clipInfo.title]);
+	const brollTimelineCutaways = manualBrollWindow
     ? [{ ...manualBrollWindow, query: "Selected stock clip", manual: true }]
     : automaticBrollCutaways.map((cutaway) => ({ ...cutaway, manual: false }));
-  const hasBrollLane = brollTimelineCutaways.length > 0;
+	const brollTimelineFragments = brollTimelineCutaways.flatMap((cutaway, cutawayIndex) =>
+		baseEditedRangeToComposite(cutaway.startSec, cutaway.endSec).map((range, rangeIndex) => ({
+			...cutaway,
+			baseStartSec: range.baseStartSec,
+			baseEndSec: range.baseEndSec,
+			compositeStartSec: range.startSec,
+			compositeEndSec: range.endSec,
+			renderId: `${cutawayIndex}:${rangeIndex}`,
+		})));
+	const hasBrollLane = brollTimelineFragments.length > 0;
 
   useEffect(() => {
     setTimelineThumbnailPlaybackActive(isPlaying);
@@ -1894,8 +1949,9 @@ export function Timeline() {
     return segments.flatMap((seg) => {
       const edited = projectSegmentToEdited(seg, clipStartSec, editedTimeMap);
       if (!edited) return [];
-      return [{
+			return baseEditedRangeToComposite(edited.startSec, edited.endSec).map((range, index) => ({
         id: seg.id,
+				renderId: `${seg.id}:${index}`,
         label: labelForTimelineSegment(
           utterances,
           clipStartSec,
@@ -1903,11 +1959,13 @@ export function Timeline() {
           seg.endSec,
           seg.label,
         ),
-        editedStartSec: edited.startSec,
-        editedEndSec: edited.endSec,
-      }];
+				baseEditedStartSec: range.baseStartSec,
+				baseEditedEndSec: range.baseEndSec,
+				editedStartSec: range.startSec,
+				editedEndSec: range.endSec,
+			}));
     });
-  }, [segments, clipStartSec, editedTimeMap, utterances]);
+	}, [baseEditedRangeToComposite, segments, clipStartSec, editedTimeMap, utterances]);
 
   const transcriptSelectionEdited = useMemo(
     () =>
@@ -1916,6 +1974,9 @@ export function Timeline() {
         : null,
     [editedTimeMap, transcriptSelectionRange],
   );
+	const transcriptSelectionCompositeRanges = transcriptSelectionEdited
+		? baseEditedRangeToComposite(transcriptSelectionEdited.startSec, transcriptSelectionEdited.endSec)
+		: [];
 
   const visibleSegments = useMemo(
     () =>
@@ -1946,10 +2007,10 @@ export function Timeline() {
     () =>
       cutMarkers.filter(
         (marker) =>
-          marker.editedSec >= visibleRange.startSec - 0.5 &&
-          marker.editedSec <= visibleRange.endSec + 0.5,
+          baseEditedToComposite(marker.editedSec) >= visibleRange.startSec - 0.5 &&
+          baseEditedToComposite(marker.editedSec) <= visibleRange.endSec + 0.5,
       ),
-    [cutMarkers, visibleRange.endSec, visibleRange.startSec],
+    [baseEditedToComposite, cutMarkers, visibleRange.endSec, visibleRange.startSec],
   );
 
   const visiblePauseMarkers = useMemo(() => {
@@ -1971,28 +2032,24 @@ export function Timeline() {
       });
       if (!edited) continue;
 
-      const startSec = Math.max(0, edited.startSec);
-      const endSec = Math.min(safeDuration, edited.endSec);
-
-      if (endSec <= visibleRange.startSec || startSec >= visibleRange.endSec) {
-        continue;
-      }
-
-      markers.push({
-        id: `pause-${i}`,
-        startSec,
-        endSec,
+			for (const [rangeIndex, range] of baseEditedRangeToComposite(Math.max(0, edited.startSec), Math.min(baseDuration, edited.endSec)).entries()) {
+				if (range.endSec <= visibleRange.startSec || range.startSec >= visibleRange.endSec) continue;
+				markers.push({
+				id: `pause-${i}:${rangeIndex}`,
+				startSec: range.startSec,
+				endSec: range.endSec,
         // Fix 10: the LABEL must match what's actually drawn (the edited/
         // projected width, `endSec - startSec`) rather than the raw source
         // `gap` — if a cut has eaten part of this pause, the marker's own
         // width already shrank to reflect that, but the label used to keep
         // quoting the pre-cut duration.
-        duration: endSec - startSec,
-      });
+					duration: range.endSec - range.startSec,
+				});
+			}
     }
 
     return markers;
-  }, [editedTimeMap, safeDuration, utterances, visibleRange.endSec, visibleRange.startSec]);
+	}, [baseDuration, baseEditedRangeToComposite, editedTimeMap, utterances, visibleRange.endSec, visibleRange.startSec]);
 
   // Vizard-parity Phase B step 15: word chips. `allWordChips` projects every
   // timed word once per utterances/editedTimeMap change (cheap — the words
@@ -2000,8 +2057,14 @@ export function Timeline() {
   // px-per-word >= WORD_CHIP_MIN_PX_PER_WORD); `visibleWordChips` re-windows
   // on every scroll/zoom tick via a binary search, not a full re-derive.
   const allWordChips = useMemo(
-    () => projectWordsToEdited(utterances, editedTimeMap),
-    [utterances, editedTimeMap],
+		() => projectWordsToEdited(utterances, editedTimeMap).flatMap((chip) =>
+			baseEditedRangeToComposite(chip.editedStartSec, chip.editedEndSec).map((range, index) => ({
+				...chip,
+				id: `${chip.id}:${index}`,
+				editedStartSec: range.startSec,
+				editedEndSec: range.endSec,
+			}))),
+		[baseEditedRangeToComposite, utterances, editedTimeMap],
   );
 
   const avgWordDurationSec = useMemo(() => averageWordDurationSec(utterances), [utterances]);
@@ -2023,14 +2086,15 @@ export function Timeline() {
           endSec: utterance.endSec,
         });
         if (!edited) return [];
-        return [{
+				return baseEditedRangeToComposite(edited.startSec, edited.endSec).map((range, rangeIndex) => ({
           id: `caption-${index}-${utterance.startSec}`,
+					renderId: `caption-${index}-${utterance.startSec}:${rangeIndex}`,
           text: utterance.text,
-          editedStartSec: edited.startSec,
-          editedEndSec: edited.endSec,
-        } satisfies CaptionLaneChip];
+					editedStartSec: range.startSec,
+					editedEndSec: range.endSec,
+				} satisfies CaptionLaneChip & { renderId: string }));
       }),
-    [editedTimeMap, utterances],
+		[baseEditedRangeToComposite, editedTimeMap, utterances],
   );
 
   const visibleCaptionLaneChips = useMemo(
@@ -2094,7 +2158,9 @@ export function Timeline() {
   }, [playbackRate, setPlaybackRate]);
 
   const hasTextLayers = studioEdits.textLayers.length > 0;
-  const brollTrackTop = RULER_HEIGHT + TRACK_HEIGHT + 4;
+  const hasSceneBlocks = sceneBlocks.length > 0;
+  const sceneTrackTop = RULER_HEIGHT + TRACK_HEIGHT + 4;
+  const brollTrackTop = sceneTrackTop + (hasSceneBlocks ? SCENE_TRACK_HEIGHT + 4 : 0);
   const wordTrackTop =
     brollTrackTop + (hasBrollLane ? BROLL_TRACK_HEIGHT + 4 : 0);
   const waveformTrackTop = wordTrackTop + WORD_CHIPS_HEIGHT + 4;
@@ -2374,11 +2440,13 @@ export function Timeline() {
 
               {visibleSegments.map((seg) => (
                 <TimelineSegmentBlock
-                  key={seg.id}
+							key={seg.renderId}
                   id={seg.id}
                   label={seg.label}
                   editedStartSec={seg.editedStartSec}
                   editedEndSec={seg.editedEndSec}
+                  sampleStartSec={seg.baseEditedStartSec}
+                  sampleEndSec={seg.baseEditedEndSec}
                   isSelected={selectedSegmentId === seg.id}
                   pxPerSec={TIMELINE_PX_PER_SEC}
                   thumbnailVideoUrl={activeVideoUrl}
@@ -2396,7 +2464,7 @@ export function Timeline() {
                 <CutMarkerBlock
                   key={marker.id}
                   marker={marker}
-                  x={marker.editedSec * TIMELINE_PX_PER_SEC}
+                  x={baseEditedToComposite(marker.editedSec) * TIMELINE_PX_PER_SEC}
                   onRevert={revertDeletedRange}
                 />
               ))}
@@ -2425,7 +2493,51 @@ export function Timeline() {
                 );
               })}
 
+              <SceneGapMasks scenes={sceneBlocks} pxPerSec={TIMELINE_PX_PER_SEC} />
+
             </Box>
+
+            {hasSceneBlocks ? (
+              <Box
+                position="absolute"
+                top={`${sceneTrackTop}px`}
+                left={`${LEFT_GUTTER}px`}
+                style={{ width: `${totalWidth}px`, height: `${SCENE_TRACK_HEIGHT}px` }}
+                bg="studio.surface"
+                borderRadius="l1"
+                borderWidth="1px"
+                borderColor="studio.borderStrong"
+                overflow="hidden"
+                onClick={handleStripClick}
+              >
+                {sceneBlocks.map((scene) => (
+                  <Box
+                    key={scene.id}
+                    position="absolute"
+                    top="2px"
+                    bottom="2px"
+                    style={{
+                      left: `${scene.anchorSec * TIMELINE_PX_PER_SEC}px`,
+                      width: `${Math.max(3, scene.durationSec * TIMELINE_PX_PER_SEC)}px`,
+                    }}
+                    bg="studio.accentMuted"
+                    borderLeftWidth="3px"
+                    borderLeftColor="studio.accent"
+                    px="2"
+                    cursor="pointer"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      seekTo(scene.anchorSec);
+                    }}
+                    title={`${scene.content.kind} scene · ${scene.durationSec.toFixed(1)}s`}
+                  >
+                    <Text fontSize="10px" color="studio.fg" truncate lineHeight="22px">
+                      {scene.content.kind === "text" ? scene.content.text : `${scene.content.kind} scene`}
+                    </Text>
+                  </Box>
+                ))}
+              </Box>
+            ) : null}
 
             {hasBrollLane ? (
               <Box
@@ -2444,18 +2556,18 @@ export function Timeline() {
                 onClick={handleStripClick}
                 cursor="pointer"
               >
-                {brollTimelineCutaways.map((cutaway, index) => {
-                  const left = cutaway.startSec * TIMELINE_PX_PER_SEC;
+				{brollTimelineFragments.map((cutaway, index) => {
+					const left = cutaway.compositeStartSec * TIMELINE_PX_PER_SEC;
                   const width = Math.max(
                     2,
-                    (cutaway.endSec - cutaway.startSec) * TIMELINE_PX_PER_SEC,
+							(cutaway.compositeEndSec - cutaway.compositeStartSec) * TIMELINE_PX_PER_SEC,
                   );
-                  const durationLabel = `${(cutaway.endSec - cutaway.startSec).toFixed(1)}s`;
+						const durationLabel = `${(cutaway.baseEndSec - cutaway.baseStartSec).toFixed(1)}s`;
                   return (
                     <Flex
-                      key={`${cutaway.manual ? "manual" : "auto"}-${cutaway.startSec}-${index}`}
+							key={cutaway.renderId}
                       as="button"
-                      aria-label={`${cutaway.manual ? "B-roll" : `Automatic B-roll ${index + 1}`}, ${formatTimecode(cutaway.startSec)} to ${formatTimecode(cutaway.endSec)}`}
+							aria-label={`${cutaway.manual ? "B-roll" : `Automatic B-roll ${index + 1}`}, ${formatTimecode(cutaway.baseStartSec)} to ${formatTimecode(cutaway.baseEndSec)}`}
                       title={cutaway.query}
                       position="absolute"
                       top="2px"
@@ -2477,7 +2589,7 @@ export function Timeline() {
                       transition="border-color 120ms ease, color 120ms ease"
                       onClick={(event) => {
                         event.stopPropagation();
-                        seekTo(cutaway.startSec);
+								seekTo(cutaway.compositeStartSec);
                       }}
                     >
                       <Text textStyle="eyebrow" fontSize="9px" flexShrink={0}>
@@ -2492,6 +2604,7 @@ export function Timeline() {
                     </Flex>
                   );
                 })}
+                <SceneGapMasks scenes={sceneBlocks} pxPerSec={TIMELINE_PX_PER_SEC} />
               </Box>
             ) : null}
 
@@ -2511,6 +2624,7 @@ export function Timeline() {
                   pxPerSec={TIMELINE_PX_PER_SEC}
                   height={WORD_CHIPS_HEIGHT}
                   editedTimeMap={editedTimeMap}
+                  compositeToBaseEdited={compositeToBaseEdited}
                   onSeek={seekTo}
                 />
               )}
@@ -2522,8 +2636,10 @@ export function Timeline() {
                   onSeek={seekTo}
                 />
               )}
-              {transcriptSelectionEdited && (
+              <SceneGapMasks scenes={sceneBlocks} pxPerSec={TIMELINE_PX_PER_SEC} />
+							{transcriptSelectionCompositeRanges.map((selection, index) => (
                 <Box
+								key={`word-selection:${index}`}
                   position="absolute"
                   top="0"
                   bottom="0"
@@ -2533,16 +2649,16 @@ export function Timeline() {
                   borderWidth="1px"
                   borderColor="studio.accent"
                   style={{
-                    left: `${transcriptSelectionEdited.startSec * TIMELINE_PX_PER_SEC}px`,
+									left: `${selection.startSec * TIMELINE_PX_PER_SEC}px`,
                     width: `${Math.max(
                       2,
-                      (transcriptSelectionEdited.endSec - transcriptSelectionEdited.startSec) *
+										(selection.endSec - selection.startSec) *
                         TIMELINE_PX_PER_SEC,
                     )}px`,
                   }}
                   aria-hidden="true"
                 />
-              )}
+							))}
             </Box>
 
             {/* ── Waveform track ───────────────────────────────── */}
@@ -2569,6 +2685,8 @@ export function Timeline() {
                 width={totalWidth}
                 height={WAVEFORM_HEIGHT}
                 waveformPeaksUrl={waveformPeaksUrl}
+                compositeToBaseEdited={compositeToBaseEdited}
+                isInsertedSceneTime={isInsertedSceneTime}
               />
               <Box
                 position="absolute"
@@ -2581,8 +2699,10 @@ export function Timeline() {
                 pointerEvents="none"
                 aria-hidden="true"
               />
-              {transcriptSelectionEdited && (
+              <SceneGapMasks scenes={sceneBlocks} pxPerSec={TIMELINE_PX_PER_SEC} />
+							{transcriptSelectionCompositeRanges.map((selection, index) => (
                 <Box
+								key={`waveform-selection:${index}`}
                   position="absolute"
                   top="0"
                   bottom="0"
@@ -2593,16 +2713,16 @@ export function Timeline() {
                   borderRightWidth="1px"
                   borderColor="studio.accent"
                   style={{
-                    left: `${transcriptSelectionEdited.startSec * TIMELINE_PX_PER_SEC}px`,
+									left: `${selection.startSec * TIMELINE_PX_PER_SEC}px`,
                     width: `${Math.max(
                       2,
-                      (transcriptSelectionEdited.endSec - transcriptSelectionEdited.startSec) *
+										(selection.endSec - selection.startSec) *
                         TIMELINE_PX_PER_SEC,
                     )}px`,
                   }}
                   aria-hidden="true"
                 />
-              )}
+							))}
             </Box>
 
             {/* ── Text overlay track (Vizard-parity Phase C step 1) ── */}
@@ -2625,9 +2745,12 @@ export function Timeline() {
                     endSec={layer.endSec ?? null}
                     isSelected={selectedTextLayerId === layer.id}
                     pxPerSec={TIMELINE_PX_PER_SEC}
-                    duration={safeDuration}
+                    duration={baseDuration}
+                    baseEditedToComposite={baseEditedToComposite}
+                    compositeToBaseEdited={compositeToBaseEdited}
                   />
                 ))}
+                <SceneGapMasks scenes={sceneBlocks} pxPerSec={TIMELINE_PX_PER_SEC} />
               </Box>
             )}
 
@@ -2655,6 +2778,9 @@ export function Timeline() {
             </Box>
           </Box>
           <TimelineLaneLabel label="VIDEO" top={RULER_HEIGHT} height={TRACK_HEIGHT} />
+          {hasSceneBlocks ? (
+            <TimelineLaneLabel label="SCENES" top={sceneTrackTop} height={SCENE_TRACK_HEIGHT} />
+          ) : null}
           {hasBrollLane ? (
             <TimelineLaneLabel
               label={brollUrl ? "B-ROLL" : "AUTO"}

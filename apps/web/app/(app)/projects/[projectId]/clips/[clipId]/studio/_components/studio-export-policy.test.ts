@@ -34,6 +34,11 @@ describe("Studio export policy", () => {
     }
   });
 
+	test("blocks unavailable frozen Scene assets and Brand fonts", () => {
+		expect(canSubmitStudioExport({ compositionPlanStatus: "blocked", exportState: "idle", selectedVariantCount: 1 })).toBe(false);
+		expect(studioExportBlockReason("blocked")).toContain("unavailable Scene asset or Brand font");
+	});
+
   test("still blocks empty selections and in-flight exports", () => {
     expect(
       canSubmitStudioExport({

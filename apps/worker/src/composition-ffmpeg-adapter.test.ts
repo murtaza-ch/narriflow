@@ -1,6 +1,10 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   automaticLayoutInputFingerprint,
+  compositionAssetRef,
   planClipComposition,
   screenLayoutInputFingerprint,
   splitLayoutInputFingerprint,
@@ -14,14 +18,17 @@ import {
 import {
   compileCompositionPlanAudiogram,
   compileCompositionPlanAudioSchedule,
+  compileCompositionPlanSceneAudio,
   compileCompositionPlanVideo,
   compileCompositionPlanVisualLayers,
+  bindCompositionPlanAudioInputs,
 } from "./composition-ffmpeg-adapter";
-import { buildSingleVideoArgs } from "./tasks/render-clips";
+import { buildAudiogramArgs, buildSingleVideoArgs } from "./tasks/render-clips";
 
 function planCenter() {
   const result = planClipComposition({
     document: editorDocumentSchema.parse({
+    version: 2,
       clipStartSec: 0,
       clipEndSec: 5,
       captionPreset: captionPresetSchema.parse({}),
@@ -43,9 +50,57 @@ function planCenter() {
   return result.plan;
 }
 
+const realMediaDirectories: string[] = [];
+afterEach(async () => Promise.all(realMediaDirectories.splice(0).map((path) => rm(path, { recursive: true, force: true }))));
+
+function planInsertedScenes(targets = [
+  { id: "vertical", aspectRatio: "9:16" as const, width: 1080, height: 1920 },
+  { id: "square", aspectRatio: "1:1" as const, width: 1080, height: 1080 },
+  { id: "landscape", aspectRatio: "16:9" as const, width: 1920, height: 1080 },
+  { id: "portrait", aspectRatio: "4:5" as const, width: 1080, height: 1350 },
+], source = { width: 1920, height: 1080 }) {
+  const imageId = "141b738e-f106-4da1-b670-8b71ff7f0a58";
+  const videoId = "9e2af81d-8a41-4404-af89-b560f9c4eb98";
+  const fontId = "2eb2cc4f-1d68-44d7-acbc-447388066562";
+  const fingerprint = "a".repeat(64);
+  const result = planClipComposition({
+    document: editorDocumentSchema.parse({
+      version: 2,
+      clipStartSec: 0,
+      clipEndSec: 5,
+      captionPreset: captionPresetSchema.parse({}),
+      transcriptSlice: [],
+      studioEdits: studioEditsSchema.parse({ framing: { mode: "center" } }),
+      brollUrl: null,
+      deletedRanges: [],
+      censorSegments: [],
+      mediaMotions: [],
+      sceneBlocks: [
+        { id: "8ab9d330-688f-4574-932c-27ac661245c1", schemaVersion: 1, anchorSec: 0, durationSec: 1, content: { kind: "color", color: "#112233" }, motion: { entrance: "none", exit: "none" }, templateSnapshot: null },
+        { id: "d8ab95f8-fc16-4e60-814e-69762a59a99b", schemaVersion: 1, anchorSec: 1, durationSec: 1, content: { kind: "text", text: "Opening: 100%", fontFamily: "Missing Brand Font", fontAsset: { kind: "brand_font", id: fontId, fingerprint: "a".repeat(64) }, color: "#FFFFFF", backgroundColor: "#111827" }, motion: { entrance: "fade", exit: "fade" }, templateSnapshot: null },
+        { id: "a3196d76-b71d-4b93-8812-7435b9e17faf", schemaVersion: 1, anchorSec: 2, durationSec: 1, content: { kind: "image", asset: { kind: "visual_asset", id: imageId, fingerprint }, fit: "contain", backgroundColor: "#223344" }, motion: { entrance: "zoom-in", exit: "zoom-out" }, templateSnapshot: null },
+        { id: "31ddc1dd-838c-4fed-a940-4cbed7a3974b", schemaVersion: 1, anchorSec: 3, durationSec: 1, content: { kind: "video", asset: { kind: "visual_asset", id: videoId, fingerprint }, sourceStartSec: 0, sourceEndSec: 1, fit: "cover", backgroundColor: "#000000", muted: false, volume: 65 }, motion: { entrance: "slide-up", exit: "slide-down" }, templateSnapshot: null },
+      ],
+    }),
+    source: { identity: "source:key", kind: "video", ...source },
+    evidence: { automaticLayout: { state: "missing" } },
+    assets: { backgroundImage: { state: "missing" } },
+    capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v1" },
+    targets,
+  });
+  if (result.status === "invalid") throw new Error(result.error.code);
+  return {
+    plan: result.plan,
+    imageRef: compositionAssetRef("visual_asset", `${imageId}:${fingerprint}`),
+    videoRef: compositionAssetRef("visual_asset", `${videoId}:${fingerprint}`),
+    fontRef: compositionAssetRef("brand_font", `${fontId}:${fingerprint}`),
+  };
+}
+
 function planFit(imageAvailable: boolean) {
   const result = planClipComposition({
     document: editorDocumentSchema.parse({
+    version: 2,
       clipStartSec: 0,
       clipEndSec: 5,
       captionPreset: captionPresetSchema.parse({}),
@@ -79,6 +134,7 @@ function planFit(imageAvailable: boolean) {
 
 function planAuto() {
   const document = editorDocumentSchema.parse({
+    version: 2,
     clipStartSec: 0,
     clipEndSec: 5,
     captionPreset: captionPresetSchema.parse({}),
@@ -154,6 +210,7 @@ function planSplit() {
   const engineVersion = "explicit-split-v1";
   const result = planClipComposition({
     document: editorDocumentSchema.parse({
+    version: 2,
       clipStartSec: 0,
       clipEndSec: 5,
       captionPreset: captionPresetSchema.parse({}),
@@ -211,6 +268,7 @@ function planScreen() {
   const engineVersion = "screen-layout-v2";
   const result = planClipComposition({
     document: editorDocumentSchema.parse({
+    version: 2,
       clipStartSec: 0,
       clipEndSec: 5,
       captionPreset: captionPresetSchema.parse({}),
@@ -259,6 +317,7 @@ function planScreen() {
 function planBroll() {
   const result = planClipComposition({
     document: editorDocumentSchema.parse({
+    version: 2,
       clipStartSec: 0,
       clipEndSec: 5,
       captionPreset: captionPresetSchema.parse({}),
@@ -291,6 +350,7 @@ function planBroll() {
 function planVisualStack(input: { captions?: boolean } = {}) {
   const result = planClipComposition({
     document: editorDocumentSchema.parse({
+    version: 2,
       clipStartSec: 0,
       clipEndSec: 5,
       captionPreset: captionPresetSchema.parse({ visible: input.captions ?? false }),
@@ -354,6 +414,7 @@ describe("composition FFmpeg adapter", () => {
   test("translates the planned audio-only audiogram without choosing its visual policy", () => {
     const result = planClipComposition({
       document: editorDocumentSchema.parse({
+    version: 2,
         clipStartSec: 0,
         clipEndSec: 5,
         captionPreset: captionPresetSchema.parse({ highlightColor: "#12AB34" }),
@@ -380,6 +441,55 @@ describe("composition FFmpeg adapter", () => {
       waveformColor: "#12AB34",
       waveformHeight: 806,
     });
+  });
+
+  test("splices inserted scenes into an audio-only audiogram and pauses source audio", () => {
+    const result = planClipComposition({
+      document: editorDocumentSchema.parse({
+        version: 2,
+        clipStartSec: 0,
+        clipEndSec: 5,
+        captionPreset: captionPresetSchema.parse({}),
+        transcriptSlice: [],
+        studioEdits: studioEditsSchema.parse({ framing: { mode: "center" } }),
+        brollUrl: null,
+        deletedRanges: [],
+        censorSegments: [],
+        mediaMotions: [],
+        sceneBlocks: [{
+          id: "2fc72899-b6f5-4a8e-a708-8c8c6ffc4bba",
+          schemaVersion: 1,
+          anchorSec: 2,
+          durationSec: 1,
+          content: { kind: "color", color: "#112233" },
+          motion: { entrance: "fade", exit: "fade" },
+          templateSnapshot: null,
+        }],
+      }),
+      source: { identity: "audio:key", kind: "audio", width: 0, height: 0 },
+      evidence: { automaticLayout: { state: "missing" } },
+      assets: { backgroundImage: { state: "missing" } },
+      capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v1" },
+      targets: [{ id: "variant-1", aspectRatio: "9:16", width: 1080, height: 1920 }],
+    });
+    if (result.status === "invalid") throw new Error(result.error.code);
+    const audio = bindCompositionPlanAudioInputs(compileCompositionPlanAudioSchedule(result.plan), {});
+    const args = buildAudiogramArgs({
+      sourcePath: "/tmp/source.mp3",
+      outputPath: "/tmp/output.mp4",
+      startSec: 0,
+      endSec: 5,
+      aspectRatio: "9:16",
+      composition: { plan: result.plan, targetId: "variant-1" },
+      clipDurationSec: 5,
+      srtPath: null,
+      audio,
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+    expect(graph).toContain("[audiogram_source]");
+    expect(graph).toContain("concat=n=3:v=1:a=0");
+    expect(graph).toContain("anullsrc=channel_layout=stereo");
+    expect(args.slice(-20)).toContain("6.000");
   });
 
   test("translates the shared audio schedule into normalized render requests", () => {
@@ -591,6 +701,7 @@ describe("composition FFmpeg adapter", () => {
       ],
       backgroundImageInputRequired: false,
       brollInputs: [],
+      sceneInputs: [],
     });
   });
 
@@ -719,6 +830,7 @@ describe("composition FFmpeg adapter", () => {
     expect(image).toEqual({
       backgroundImageInputRequired: true,
       brollInputs: [],
+      sceneInputs: [],
       filterParts: [
         "[1:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,fps=30[composition_bg]",
         "[0:v]crop=1920:1080:0:0,scale=1080:608[composition_source]",
@@ -728,6 +840,7 @@ describe("composition FFmpeg adapter", () => {
     expect(fallback).toEqual({
       backgroundImageInputRequired: false,
       brollInputs: [],
+      sceneInputs: [],
       filterParts: [
         "[0:v]crop=1920:1080:0:0,scale=1080:608,pad=1080:1920:0:656:color=0x123456,format=yuv420p[outv]",
       ],
@@ -745,6 +858,7 @@ describe("composition FFmpeg adapter", () => {
     ).toEqual({
       backgroundImageInputRequired: false,
       brollInputs: [],
+      sceneInputs: [],
       filterParts: [
         "[0:v]trim=start=0.000:end=5.000,setpts=PTS-STARTPTS[composition_scene_0_trim]",
         "[composition_scene_0_trim]split=2[composition_scene_0_layer_0_src][composition_scene_0_layer_1_src]",
@@ -859,4 +973,122 @@ describe("composition FFmpeg adapter", () => {
       "overlay=0:0:enable='between(t,1.5,4)'[stage0]",
     );
   });
+
+  test("compiles every inserted scene kind, fit treatment, own audio, frozen font, and target from one plan", () => {
+    const { plan, imageRef, videoRef, fontRef } = planInsertedScenes();
+    for (const target of plan.targets) {
+      const compiled = compileCompositionPlanVideo({
+        plan,
+        targetId: target.id,
+        videoInputLabel: "[0:v]",
+        outputLabel: "[outv]",
+        resolvedSceneAssets: {
+          [imageRef]: { path: "/tmp/card.png", kind: "image" },
+          [videoRef]: { path: "/tmp/insert.mp4", kind: "video" },
+        },
+        resolvedSceneFonts: { [fontRef]: "/tmp/brand.ttf" },
+        sceneInputStartIndex: 1,
+      });
+      const graph = compiled.filterParts.join(";");
+      expect(compiled.sceneInputs.map((input) => input.sourceRef)).toEqual([imageRef, videoRef]);
+      expect(graph).toContain(`s=${target.canvas.width}x${target.canvas.height}`);
+      expect(graph).toContain("drawtext=fontfile='/tmp/brand.ttf':text='Opening\\: 100\\%' ".trim());
+      expect(graph).toContain("force_original_aspect_ratio=decrease,pad=");
+      expect(graph).toContain("force_original_aspect_ratio=increase,crop=");
+		expect(graph).toContain("0.920000+0.080000");
+		expect(graph).toContain(`pad=${target.canvas.width}:${target.canvas.height * 3}:0:${target.canvas.height}`);
+		expect(graph).toContain(`crop=${target.canvas.width}:${target.canvas.height}:0:`);
+      expect(graph).toContain("concat=n=5:v=1:a=0");
+
+      const audio = compileCompositionPlanSceneAudio({
+        plan,
+        targetId: target.id,
+        sourceAudioLabel: "[0:a]",
+        sceneInputs: [
+          { sourceRef: imageRef, inputIndex: 1, hasAudio: false },
+          { sourceRef: videoRef, inputIndex: 2, hasAudio: true },
+        ],
+      });
+      expect(audio.outputLabel).toBe("[composition_scene_audio]");
+      expect(audio.filterParts.join(";")).toContain("[2:a]atrim=start=0.000:end=1.000");
+      expect(audio.filterParts.join(";")).toContain("volume=0.650");
+      expect(audio.filterParts.join(";")).toContain("concat=n=5:v=0:a=1");
+    }
+  });
+
+  test("fails closed when a required inserted-scene asset is missing", () => {
+    const { plan } = planInsertedScenes();
+    expect(() => compileCompositionPlanVideo({
+      plan,
+      targetId: "vertical",
+      videoInputLabel: "[0:v]",
+      outputLabel: "[outv]",
+      resolvedSceneAssets: {},
+      sceneInputStartIndex: 1,
+    })).toThrow("clip_composition_scene_input_missing");
+  });
+
+  test("fails closed when a frozen Brand font file is missing", () => {
+    const { plan, imageRef, videoRef } = planInsertedScenes();
+    expect(() => compileCompositionPlanVideo({
+      plan,
+      targetId: "vertical",
+      videoInputLabel: "[0:v]",
+      outputLabel: "[outv]",
+      resolvedSceneAssets: {
+        [imageRef]: { path: "/tmp/card.png", kind: "image" },
+        [videoRef]: { path: "/tmp/insert.mp4", kind: "video" },
+      },
+      sceneInputStartIndex: 1,
+    })).toThrow("clip_composition_scene_font_missing");
+  });
+
+  test("renders all inserted scene kinds and motion with real media", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "narriflow-scene-render-"));
+    realMediaDirectories.push(directory);
+    const sourcePath = join(directory, "source.mp4");
+    const imagePath = join(directory, "image.png");
+    const sceneVideoPath = join(directory, "scene.mp4");
+    const outputPath = join(directory, "output.mp4");
+    const run = async (args: string[]) => {
+      const process = Bun.spawn(args, { stdout: "ignore", stderr: "pipe" });
+      const stderr = await new Response(process.stderr).text();
+      expect(await process.exited, stderr).toBe(0);
+    };
+    await run(["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=24", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "5", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", sourcePath]);
+    await run(["ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=0x88aaff:s=80x80", "-frames:v", "1", imagePath]);
+    await run(["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc2=size=100x100:rate=24", "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000", "-t", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", sceneVideoPath]);
+
+    const { plan, imageRef, videoRef, fontRef } = planInsertedScenes([
+      { id: "real", aspectRatio: "9:16", width: 180, height: 320 },
+    ], { width: 320, height: 180 });
+    const audio = bindCompositionPlanAudioInputs(compileCompositionPlanAudioSchedule(plan), {});
+    const fontMatch = Bun.spawn(["fc-match", "-f", "%{file}", "Archivo"], { stdout: "pipe" });
+    const fontPath = (await new Response(fontMatch.stdout).text()).trim();
+    expect(await fontMatch.exited).toBe(0);
+    expect(fontPath.length).toBeGreaterThan(0);
+    const args = buildSingleVideoArgs({
+      sourcePath,
+      outputPath,
+      startSec: 0,
+      endSec: 5,
+      aspectRatio: "9:16",
+      probe: { hasVideo: true, hasAudio: true, width: 320, height: 180, durationSec: 5, fps: 24 },
+      srtPath: null,
+      composition: { plan, targetId: "real" },
+      audio,
+      resolvedSceneAssets: {
+        [imageRef]: { path: imagePath, kind: "image", hasAudio: false },
+        [videoRef]: { path: sceneVideoPath, kind: "video", hasAudio: true },
+      },
+      resolvedSceneFonts: { [fontRef]: fontPath },
+    });
+    await run(["ffmpeg", ...args]);
+    const probe = Bun.spawn(["ffprobe", "-v", "error", "-show_entries", "format=duration:stream=codec_type,width,height", "-of", "json", outputPath], { stdout: "pipe" });
+    const result = await new Response(probe.stdout).json() as { format: { duration: string }; streams: Array<{ codec_type: string; width?: number; height?: number }> };
+    expect(await probe.exited).toBe(0);
+    expect(Number(result.format.duration)).toBeCloseTo(plan.editedDurationSec, 1);
+    expect(result.streams).toContainEqual(expect.objectContaining({ codec_type: "video", width: 180, height: 320 }));
+    expect(result.streams).toContainEqual(expect.objectContaining({ codec_type: "audio" }));
+  }, 30_000);
 });

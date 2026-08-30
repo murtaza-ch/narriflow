@@ -7,6 +7,7 @@ import {
   brandFontUploadSchema,
   reusableAssetSoftDeleteSchema,
   resolvePricingTier,
+  type SceneBlock,
   type BrandFontFinalizeInput,
   type BrandFontUploadInput,
   type ReusableAssetSoftDeleteInput,
@@ -27,6 +28,7 @@ import {
   readObjectBytes,
 } from "./r2-storage";
 import { analyticsService } from "./analytics.service";
+import { withSerializableTransaction } from "./serializable-transaction";
 
 export class BrandFontIntegrityError extends Error {
   constructor(readonly code: string) {
@@ -38,9 +40,27 @@ export class BrandFontIntegrityError extends Error {
 export class BrandFontReferenceError extends Error {
   readonly code = "brand_font_in_use";
   constructor() {
-    super("Remove or replace this font in every Brand Profile before deleting it");
+    super("Remove this font from every Brand Profile and Scene template before deleting it");
     this.name = "BrandFontReferenceError";
   }
+}
+
+export function assertSceneBrandFontReferences(
+	scenes: readonly SceneBlock[],
+	fonts: readonly { id: string; family: string; fingerprint: string }[],
+): void {
+	const byId = new Map(fonts.map((font) => [font.id, font]));
+	for (const scene of scenes) {
+		if (scene.content.kind !== "text" || !scene.content.fontAsset) continue;
+		const font = byId.get(scene.content.fontAsset.id);
+		if (
+			!font ||
+			font.fingerprint !== scene.content.fontAsset.fingerprint ||
+			font.family !== scene.content.fontFamily
+		) {
+			throw new BrandFontIntegrityError("scene_brand_font_invalid");
+		}
+	}
 }
 
 export interface ParsedBrandFont {
@@ -217,18 +237,82 @@ export class BrandFontService {
     return Promise.all(rows.map(async (row) => toRow(row, await presignDownloadUrl({ key: row.storageKey }))));
   }
 
+	async resolveSceneReferences(scope: BrandActorScope, scenes: readonly SceneBlock[]) {
+		const fontIds = [...new Set(scenes.flatMap((scene) =>
+			scene.content.kind === "text" && scene.content.fontAsset
+				? [scene.content.fontAsset.id]
+				: [],
+		))];
+		if (fontIds.length === 0) return [];
+		const rows = await this.requirePrisma().brandFont.findMany({
+			where: { id: { in: fontIds }, ...brandOwnerWhere(scope) },
+		});
+		return Promise.all(rows.map(async (font) => {
+			let accessUrl: string | null = null;
+			try {
+				await headObject(font.storageKey);
+				accessUrl = await presignDownloadUrl({ key: font.storageKey });
+			} catch {
+				accessUrl = null;
+			}
+			return { id: font.id, family: font.family, style: font.style, weight: font.weight, fingerprint: font.fingerprint, accessUrl, missing: accessUrl === null, insertable: false as const };
+		}));
+	}
+
+	async assertSceneReferences(
+		scope: BrandActorScope,
+		projectId: string,
+		scenes: readonly SceneBlock[],
+		options: { allowDeleted: boolean; requireActiveProfile: boolean },
+	) {
+		const fontIds = [...new Set(scenes.flatMap((scene) =>
+			scene.content.kind === "text" && scene.content.fontAsset
+				? [scene.content.fontAsset.id]
+				: [],
+		))];
+		if (fontIds.length === 0) return;
+		const project = options.requireActiveProfile
+			? await this.requirePrisma().project.findFirst({
+				where: { id: projectId, workspaceId: scope.workspaceId },
+				select: { brandProfileId: true },
+			})
+			: null;
+		if (options.requireActiveProfile && !project?.brandProfileId) {
+			throw new BrandFontIntegrityError("scene_brand_font_profile_invalid");
+		}
+		const fonts = await this.requirePrisma().brandFont.findMany({
+			where: {
+				id: { in: fontIds },
+				...brandOwnerWhere(scope),
+				...(options.allowDeleted ? {} : { deletedAt: null }),
+				...(project?.brandProfileId ? { profiles: { some: { profileId: project.brandProfileId } } } : {}),
+			},
+			select: { id: true, family: true, fingerprint: true },
+		});
+		assertSceneBrandFontReferences(scenes, fonts);
+	}
+
   async softDelete(scope: BrandActorScope, id: string, input: ReusableAssetSoftDeleteInput) {
     await assertBrandMutationAllowedWithAnalytics(scope, "brand.customFonts", "font");
     const parsed = reusableAssetSoftDeleteSchema.parse(input);
     const prisma = this.requirePrisma();
-    const font = await prisma.brandFont.findFirst({ where: { id, ...brandOwnerWhere(scope), deletedAt: null }, include: { profiles: { select: { id: true } } } });
-    if (!font) throw new BrandFontIntegrityError("brand_font_not_found");
-    if (font.profiles.length > 0 && !parsed.replacementId) throw new BrandFontReferenceError();
-    const replacement = parsed.replacementId
-      ? await prisma.brandFont.findFirst({ where: { id: parsed.replacementId, ...brandOwnerWhere(scope), deletedAt: null }, select: { id: true } })
-      : null;
-    if (parsed.replacementId && !replacement) throw new BrandFontIntegrityError("brand_font_replacement_invalid");
-    await prisma.$transaction(async (tx) => {
+    await withSerializableTransaction(prisma, async (tx) => {
+      const font = await tx.brandFont.findFirst({ where: { id, ...brandOwnerWhere(scope), deletedAt: null }, include: { profiles: { select: { id: true } } } });
+      if (!font) throw new BrandFontIntegrityError("brand_font_not_found");
+      const templateReference = await tx.sceneTemplate.findFirst({
+        where: {
+          deletedAt: null,
+          profile: { ...brandOwnerWhere(scope), deletedAt: null },
+          definition: { path: ["content", "fontAsset", "id"], equals: id },
+        },
+        select: { id: true },
+      });
+      if (templateReference) throw new BrandFontReferenceError();
+      if (font.profiles.length > 0 && !parsed.replacementId) throw new BrandFontReferenceError();
+      const replacement = parsed.replacementId
+        ? await tx.brandFont.findFirst({ where: { id: parsed.replacementId, ...brandOwnerWhere(scope), deletedAt: null }, select: { id: true } })
+        : null;
+      if (parsed.replacementId && !replacement) throw new BrandFontIntegrityError("brand_font_replacement_invalid");
       if (replacement) {
         await tx.brandProfileFont.updateMany({ where: { fontId: id }, data: { fontId: replacement.id } });
         await tx.brandProfile.updateMany({ where: { fonts: { some: { fontId: replacement.id } } }, data: { revision: { increment: 1 }, updatedByUserId: scope.actorUserId } });

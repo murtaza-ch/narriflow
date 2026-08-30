@@ -20,6 +20,7 @@ export const SOCIAL_PLATFORM_LABELS: Record<SocialPlatform, string> = {
 	tiktok: "TikTok",
 	youtube_shorts: "YouTube Shorts",
 	instagram_reels: "Instagram Reels",
+	facebook_reels: "Facebook Reels",
 	linkedin: "LinkedIn",
 	x: "X",
 };

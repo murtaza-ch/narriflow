@@ -11,13 +11,14 @@ import {
   type ClipExportSnapshot,
   type ClipExportStatus,
   type ClipRenderResolution,
+  type EditorDocument,
   resolvePricingTier,
 } from "@narriflow/validators";
 import { deriveClipExportAggregate } from "./clip-export-aggregate";
 export { deriveClipExportAggregate } from "./clip-export-aggregate";
 import { hasFeature } from "./billing.service";
 import { accessibleProjectWhere } from "./project-retention.service";
-import { presignDownloadUrl } from "./r2-storage";
+import { headObject, presignDownloadUrl } from "./r2-storage";
 import { workspaceService } from "./workspace.service";
 import {
   decodeClipEditorDocumentFromStorage,
@@ -150,6 +151,10 @@ function frozenClipSnapshot(clip: {
     brollCues: clip.brollCues ?? Prisma.JsonNull,
     studioEdits: document.studioEdits,
     deletedRanges: document.deletedRanges,
+    editorDocumentVersion: document.editorDocumentVersion,
+    sceneBlocks: document.sceneBlocks,
+    censorSegments: document.censorSegments,
+    mediaMotions: document.mediaMotions,
     layoutAnalysis: clip.layoutAnalysis ?? Prisma.JsonNull,
     autoLayoutAnalysis: clip.autoLayoutAnalysis ?? Prisma.JsonNull,
     splitLayoutAnalysis: clip.splitLayoutAnalysis ?? Prisma.JsonNull,
@@ -257,6 +262,101 @@ const exportInclude = {
   variants: { orderBy: { createdAt: "asc" as const } },
 };
 
+type SceneExportOwner =
+  | { workspaceId: string }
+  | { userId: string; workspaceId: null };
+
+export function sceneExportOwnerWhere(input: {
+  projectUserId: string;
+  workspaceId: string;
+  workspace: { personalOwnerUserId: string | null; pricingTier: string };
+}): SceneExportOwner {
+  return input.workspace.personalOwnerUserId && input.workspace.pricingTier !== "business"
+    ? { userId: input.workspace.personalOwnerUserId, workspaceId: null }
+    : { workspaceId: input.workspaceId };
+}
+
+async function assertSceneExportAvailability(
+  document: EditorDocument,
+  owner: SceneExportOwner,
+): Promise<void> {
+  const visualReferences = [...new Map(document.sceneBlocks.flatMap((scene) =>
+    scene.content.kind === "image" || scene.content.kind === "video"
+      ? [[scene.content.asset.id, {
+          id: scene.content.asset.id,
+          fingerprint: scene.content.asset.fingerprint,
+          kind: scene.content.kind,
+        }] as const]
+      : [],
+  )).values()];
+  const fontReferences = [...new Map(document.sceneBlocks.flatMap((scene) =>
+    scene.content.kind === "text" && scene.content.fontAsset
+      ? [[scene.content.fontAsset.id, {
+          id: scene.content.fontAsset.id,
+          fingerprint: scene.content.fontAsset.fingerprint,
+          family: scene.content.fontFamily,
+        }] as const]
+      : [],
+  )).values()];
+  if (visualReferences.length === 0 && fontReferences.length === 0) return;
+  const prisma = requirePrisma();
+  const [visuals, fonts] = await Promise.all([
+    visualReferences.length > 0
+      ? prisma.visualAsset.findMany({
+          where: { id: { in: visualReferences.map((reference) => reference.id) }, ...owner },
+          select: { id: true, fingerprint: true, kind: true, storageKey: true },
+        })
+      : [],
+    fontReferences.length > 0
+      ? prisma.brandFont.findMany({
+          where: { id: { in: fontReferences.map((reference) => reference.id) }, ...owner },
+          select: { id: true, fingerprint: true, family: true, storageKey: true },
+        })
+      : [],
+  ]);
+  assertSceneExportReferenceRows(document, visuals, fonts);
+  const objects = await Promise.all(
+    [...visuals, ...fonts].map((asset) => headObject(asset.storageKey).catch(() => null)),
+  );
+  if (objects.some((object) => object === null)) {
+    throw new ClipExportError(
+      "scene_asset_unavailable",
+      "Replace or remove the unavailable Scene asset or Brand font before exporting",
+    );
+  }
+}
+
+export function assertSceneExportReferenceRows(
+  document: EditorDocument,
+  visuals: readonly { id: string; fingerprint: string; kind: string }[],
+  fonts: readonly { id: string; fingerprint: string; family: string }[],
+): void {
+  const visualById = new Map(visuals.map((asset) => [asset.id, asset]));
+  const fontById = new Map(fonts.map((font) => [font.id, font]));
+  const invalidVisual = document.sceneBlocks.some((scene) => {
+    if (scene.content.kind !== "image" && scene.content.kind !== "video") return false;
+    const asset = visualById.get(scene.content.asset.id);
+    return !asset || asset.fingerprint !== scene.content.asset.fingerprint || asset.kind !== scene.content.kind;
+  });
+  if (invalidVisual) {
+    throw new ClipExportError(
+      "scene_asset_unavailable",
+      "Replace or remove the unavailable Scene asset before exporting",
+    );
+  }
+  const invalidFont = document.sceneBlocks.some((scene) => {
+    if (scene.content.kind !== "text" || !scene.content.fontAsset) return false;
+    const font = fontById.get(scene.content.fontAsset.id);
+    return !font || font.fingerprint !== scene.content.fontAsset.fingerprint || font.family !== scene.content.fontFamily;
+  });
+  if (invalidFont) {
+    throw new ClipExportError(
+      "scene_font_unavailable",
+      "Replace or remove the unavailable Brand font before exporting",
+    );
+  }
+}
+
 export class ClipExportService {
   async create(
     projectId: string,
@@ -284,9 +384,10 @@ export class ClipExportService {
       include: {
         project: {
           select: {
+            userId: true,
             workspaceId: true,
             sourceDurationSeconds: true,
-            workspace: { select: { pricingTier: true } },
+            workspace: { select: { personalOwnerUserId: true, pricingTier: true } },
           },
         },
       },
@@ -296,6 +397,18 @@ export class ClipExportService {
     if (clip.editorRevision !== input.expectedRevision) {
       throw new ClipExportRevisionConflictError(clip.editorRevision);
     }
+    const document = decodeClipEditorDocumentFromStorage(
+      clip,
+      clip.project.sourceDurationSeconds,
+    );
+    await assertSceneExportAvailability(
+      document,
+      sceneExportOwnerWhere({
+        projectUserId: clip.project.userId,
+        workspaceId: clip.project.workspaceId,
+        workspace: clip.project.workspace,
+      }),
+    );
 
     const resolution: ClipRenderResolution =
       input.resolution === "1080p" && !hasFeature(tier, "export.1080p")
@@ -403,13 +516,38 @@ export class ClipExportService {
         clipId,
         project: workspaceId ? { workspaceId } : { userId },
       },
-      include: { variants: { include: { render: true } } },
+      include: {
+        project: {
+          select: {
+            userId: true,
+            workspaceId: true,
+            sourceDurationSeconds: true,
+            workspace: { select: { personalOwnerUserId: true, pricingTier: true } },
+          },
+        },
+        variants: { include: { render: true } },
+      },
     });
     if (!owned) throw new ClipExportError("export_not_found", "Export not found");
     const failed = owned.variants.filter((variant) => variant.status === "failed");
     if (failed.length === 0) {
       return this.getOwned(userId, projectId, clipId, exportId, workspaceId);
     }
+    const frozenSnapshot = failed.find((variant) => variant.render)?.render?.clipSnapshot;
+    if (!frozenSnapshot) {
+      throw new ClipExportError("export_snapshot_missing", "Export snapshot is missing");
+    }
+    await assertSceneExportAvailability(
+      decodeClipEditorDocumentFromStorage(
+        frozenSnapshot,
+        owned.project.sourceDurationSeconds,
+      ),
+      sceneExportOwnerWhere({
+        projectUserId: owned.project.userId,
+        workspaceId: owned.project.workspaceId,
+        workspace: owned.project.workspace,
+      }),
+    );
 
     await prisma.$transaction(async (tx) => {
       for (const variant of failed) {

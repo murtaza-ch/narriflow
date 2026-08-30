@@ -133,6 +133,8 @@ export function createProductionSocialPublicationRuntime(
 			youtubeApiVersion: config.providers.youtubeApiVersion,
 			youtubeChunkBytes: config.providers.youtubeChunkBytes,
 			metaGraphVersion: config.providers.metaGraphVersion,
+			facebookReelsPublishingEnabled:
+				config.providers.facebookReelsPublishingEnabled,
 			linkedInVersion: config.providers.linkedInVersion,
 			instagramPollAttempts: config.providers.instagramPollAttempts,
 			instagramPollIntervalMs: config.providers.instagramPollIntervalMs,

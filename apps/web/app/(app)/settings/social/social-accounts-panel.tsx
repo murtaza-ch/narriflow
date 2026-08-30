@@ -27,6 +27,7 @@ const platformLabels: Record<SocialPlatform, string> = {
   tiktok: "TikTok",
   youtube_shorts: "YouTube Shorts",
   instagram_reels: "Instagram Reels",
+  facebook_reels: "Facebook Reels",
   linkedin: "LinkedIn",
   x: "X",
 };
@@ -35,6 +36,7 @@ const platformHelp: Record<SocialPlatform, string> = {
   tiktok: "Direct video publishing through TikTok Content Posting API.",
   youtube_shorts: "Uploads rendered clips to the selected YouTube channel.",
   instagram_reels: "Publishes Reels through a connected Instagram Business or Creator account.",
+  facebook_reels: "Connects an eligible Facebook Page. Publishing remains gated until provider sandbox verification is complete.",
   linkedin: "Publishes video posts to the connected LinkedIn member profile.",
   x: "Uploads video media and creates posts through X API v2.",
 };
@@ -86,16 +88,20 @@ export function SocialAccountsPanel({
   accounts,
   connectedCount,
   errorCode,
+  facebookSelectionToken,
   canManage,
 }: {
   accounts: SocialAccountSnapshot[];
   connectedCount: number | null;
   errorCode: string | null;
+  facebookSelectionToken: string | null;
   canManage: boolean;
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
   const [disconnecting, setDisconnecting] = useState<string | null>(null);
+  const [facebookPages, setFacebookPages] = useState<Array<{ id: string; name: string | null; avatarUrl: string | null }>>([]);
+  const [selectingPage, setSelectingPage] = useState<string | null>(null);
   const { confirm, dialog } = useConfirm();
   const callbackFired = useRef(false);
 
@@ -129,6 +135,34 @@ export function SocialAccountsPanel({
 
     return () => window.clearTimeout(timeoutId);
   }, [connectedCount, errorCode, router]);
+
+  useEffect(() => {
+    if (!facebookSelectionToken) return;
+    fetch(`/api/social/oauth/facebook-selection/${encodeURIComponent(facebookSelectionToken)}`, { cache: "no-store" })
+      .then(async (response) => {
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.message || "Facebook Pages could not be loaded");
+        setFacebookPages(payload.pages);
+      })
+      .catch((reason) => toaster.create({ type: "error", title: "Could not load Facebook Pages", description: reason instanceof Error ? reason.message : "Try connecting Facebook again." }));
+  }, [facebookSelectionToken]);
+
+  async function selectFacebookPage(pageId: string) {
+    if (!facebookSelectionToken) return;
+    setSelectingPage(pageId);
+    try {
+      const response = await fetch(`/api/social/oauth/facebook-selection/${encodeURIComponent(facebookSelectionToken)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ pageId }) });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.message || "Facebook Page could not be connected");
+      toaster.create({ type: "success", title: "Facebook Page connected", description: payload.account.displayName });
+      router.replace("/settings/social-accounts", { scroll: false });
+      startTransition(() => router.refresh());
+    } catch (reason) {
+      toaster.create({ type: "error", title: "Could not connect Facebook Page", description: reason instanceof Error ? reason.message : "Try connecting Facebook again." });
+    } finally {
+      setSelectingPage(null);
+    }
+  }
 
   async function disconnect(account: SocialAccountSnapshot) {
     const confirmed = await confirm({
@@ -176,6 +210,21 @@ export function SocialAccountsPanel({
 
   return (
     <Box as="section">
+      {facebookSelectionToken && facebookPages.length > 0 ? (
+        <Box mb="6" borderTopWidth="3px" borderColor="accent.solid" pt="4">
+          <Text textStyle="eyebrow" color="accent.fg">Choose one Facebook Page</Text>
+          <Text mt="1" fontSize="13px" color="fg.muted">Only the Page you choose will be connected to this workspace.</Text>
+          <Stack mt="3" gap="0" borderTopWidth="1px" borderColor="border">
+            {facebookPages.map((page) => (
+              <Flex key={page.id} py="3" align="center" gap="3" borderBottomWidth="1px" borderColor="border.subtle">
+                <Flex boxSize="8" borderRadius="full" overflow="hidden" align="center" justify="center" bg="bg.muted">{page.avatarUrl ? <Image src={page.avatarUrl} alt="" boxSize="full" objectFit="cover" /> : (page.name ?? "F").charAt(0)}</Flex>
+                <Text flex="1" fontSize="13px" fontWeight="600">{page.name ?? "Facebook Page"}</Text>
+                <Button size="sm" variant="outline" disabled={selectingPage !== null} onClick={() => selectFacebookPage(page.id)}>{selectingPage === page.id ? "Connecting…" : "Connect"}</Button>
+              </Flex>
+            ))}
+          </Stack>
+        </Box>
+      ) : null}
       <Text textStyle="eyebrow" color="fg.subtle" mb="2">
         Platforms
       </Text>

@@ -1,6 +1,11 @@
 import type { NextConfig } from "next";
 
+const reviewScriptSource = process.env.NODE_ENV === "development"
+  ? "script-src 'self' 'unsafe-inline' 'unsafe-eval' https://*.clerk.accounts.dev https://*.clerk.com"
+  : "script-src 'self' 'unsafe-inline' https://*.clerk.accounts.dev https://*.clerk.com";
+
 const nextConfig: NextConfig = {
+  serverExternalPackages: ["@node-rs/argon2"],
   transpilePackages: [
     "@narriflow/auth",
     "@narriflow/db",
@@ -75,6 +80,26 @@ const nextConfig: NextConfig = {
               "worker-src 'self' blob:",
             ].join("; ") + ";",
           },
+        ],
+      },
+      {
+        source: "/review/:path*",
+        headers: [
+          { key: "X-Robots-Tag", value: "noindex, nofollow, noarchive" },
+          { key: "Referrer-Policy", value: "no-referrer" },
+          { key: "Cache-Control", value: "private, no-store, max-age=0" },
+          {
+            key: "Content-Security-Policy",
+            value: `default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; form-action 'self'; img-src 'self' data: blob: https://*.clerk.accounts.dev https://*.clerk.com; media-src 'self' blob: https://*.r2.cloudflarestorage.com; font-src 'self' data:; style-src 'self' 'unsafe-inline'; ${reviewScriptSource}; connect-src 'self' https://*.clerk.accounts.dev https://*.clerk.com; frame-src 'self' https://*.clerk.accounts.dev https://*.clerk.com;`,
+          },
+        ],
+      },
+      {
+        source: "/api/review/:path*",
+        headers: [
+          { key: "X-Robots-Tag", value: "noindex, nofollow, noarchive" },
+          { key: "Referrer-Policy", value: "no-referrer" },
+          { key: "Cache-Control", value: "private, no-store, max-age=0" },
         ],
       },
     ];

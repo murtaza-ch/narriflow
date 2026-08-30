@@ -17,6 +17,7 @@ import {
   type CompositionSourceVideoLayer,
   type CompositionTextVisualLayer,
   type CompositionTransitionVisualLayer,
+  type CompositionInsertedSceneLayer,
 } from "@narriflow/composition-plan";
 import {
   Smartphone,
@@ -42,6 +43,10 @@ import {
 } from "@narriflow/validators";
 import { useStudio } from "./studio-shell";
 import type { AspectRatio, LayoutMode } from "./studio-shell";
+import {
+  sceneFontPreviewFamily,
+  systemSceneFontPreviewFamily,
+} from "./scene-fonts";
 import { InteractiveCaptionOverlay } from "./interactive-caption-overlay";
 import { hexToRgba } from "./caption-style-engine";
 import { InteractiveTextLayer } from "./interactive-text-layer";
@@ -345,8 +350,11 @@ export function VideoPreview() {
     activeOffsetSec,
     brollUrl,
     brollPreviewAsset,
+    visualAssets,
+		sceneFonts,
     setBrollPreviewAsset,
     editedTimeMap,
+    compositeToBaseEdited,
     deselectCaption,
     deselectTextLayer,
     captionSelected,
@@ -641,6 +649,69 @@ export function VideoPreview() {
       ),
     [sfxAssetResolutions, studioEdits.sfx],
   );
+  const [sceneFontLoadState, setSceneFontLoadState] = useState<
+    Record<string, "pending" | "available" | "failed">
+  >({});
+  const sceneVisualAvailability = useMemo(() => Object.fromEntries(
+    editorDocument.sceneBlocks.flatMap((scene) => {
+      if (scene.content.kind !== "image" && scene.content.kind !== "video") return [];
+      const assetReference = scene.content.asset;
+      const asset = visualAssets.find((candidate) =>
+        candidate.id === assetReference.id &&
+        candidate.fingerprint === assetReference.fingerprint,
+      );
+      return [[scene.id, asset?.accessUrl
+        ? { state: "available" as const, ref: compositionAssetRef("visual_asset", `${asset.id}:${asset.fingerprint}`) }
+        : { state: "failed" as const }]];
+    }),
+  ), [editorDocument.sceneBlocks, visualAssets]);
+  const sceneFontAvailability = useMemo(() => Object.fromEntries(
+    editorDocument.sceneBlocks.flatMap((scene) => {
+      if (scene.content.kind !== "text" || !scene.content.fontAsset) return [];
+      const fontReference = scene.content.fontAsset;
+      const font = sceneFonts.find((candidate) =>
+        candidate.id === fontReference.id &&
+        candidate.fingerprint === fontReference.fingerprint,
+      );
+      if (!font?.accessUrl) return [[scene.id, { state: "failed" as const }]];
+      const key = `${font.id}:${font.fingerprint}`;
+      const loadState = sceneFontLoadState[key] ?? "pending";
+      return [[scene.id, loadState === "available"
+        ? { state: "available" as const, ref: compositionAssetRef("brand_font", key) }
+        : { state: loadState as "pending" | "failed" }]];
+    }),
+  ), [editorDocument.sceneBlocks, sceneFontLoadState, sceneFonts]);
+  useEffect(() => {
+    const loaded: FontFace[] = [];
+    let active = true;
+    for (const font of sceneFonts) {
+      if (!font.accessUrl) continue;
+      const key = `${font.id}:${font.fingerprint}`;
+      setSceneFontLoadState((current) => ({ ...current, [key]: "pending" }));
+      const face = new FontFace(
+        sceneFontPreviewFamily(font),
+        `url(${JSON.stringify(font.accessUrl)})`,
+        {
+          style: font.style.toLowerCase().includes("italic") ? "italic" : "normal",
+          weight: String(font.weight),
+        },
+      );
+      document.fonts.add(face);
+      loaded.push(face);
+      void face.load().then(
+        () => {
+          if (active) setSceneFontLoadState((current) => ({ ...current, [key]: "available" }));
+        },
+        () => {
+          if (active) setSceneFontLoadState((current) => ({ ...current, [key]: "failed" }));
+        },
+      );
+    }
+    return () => {
+      active = false;
+      for (const face of loaded) document.fonts.delete(face);
+    };
+  }, [sceneFonts]);
   const compositionPlanResult = useMemo(() => {
     if (!compositionSourceDims) return null;
     const target = clipAspectRatioOptions.find(
@@ -767,6 +838,8 @@ export function VideoPreview() {
             }
           : {}),
         soundEffects: soundEffectAvailability,
+			sceneVisuals: sceneVisualAvailability,
+			sceneFonts: sceneFontAvailability,
         ...(brollUrl
           ? {
               broll: manualBrollAvailabilityForPlan({
@@ -833,6 +906,8 @@ export function VideoPreview() {
     failedMusicSrc,
     musicDurationSec,
     soundEffectAvailability,
+		sceneVisualAvailability,
+		sceneFontAvailability,
     studioEdits.music.assetId,
     studioEdits.music.url,
     eligibleSplitLayoutAnalysis,
@@ -843,7 +918,10 @@ export function VideoPreview() {
     compositionSourceDims,
     compositionPlanQaFixture,
   ]);
-  const compositionPlanStatus = compositionPlanResult?.status ?? "unresolved";
+	const blockingSceneNotice = compositionPlanResult?.status === "invalid"
+		? false
+		: compositionPlanResult?.plan.notices.some((notice) => ["scene_asset_pending", "scene_asset_unavailable", "scene_font_pending", "scene_font_unavailable"].includes(notice.code)) ?? false;
+  const compositionPlanStatus = blockingSceneNotice ? "blocked" : compositionPlanResult?.status ?? "unresolved";
   useEffect(() => {
     reportCompositionPlanStatus(compositionPlanStatus);
   }, [compositionPlanStatus, reportCompositionPlanStatus]);
@@ -887,6 +965,71 @@ export function VideoPreview() {
     (layer): layer is CompositionBrollVideoLayer =>
       layer.kind === "broll-video",
   );
+  const plannedInsertedScene = compositionPreview?.layers.find(
+    (layer): layer is CompositionInsertedSceneLayer => layer.kind === "inserted-scene",
+  );
+  const insertedSceneAssetReference = (() => {
+    const content = plannedInsertedScene?.content;
+    return content?.kind === "image" || content?.kind === "video" ? content.asset : null;
+  })();
+  const insertedSceneAsset = insertedSceneAssetReference
+    ? visualAssets.find((asset) => asset.id === insertedSceneAssetReference.id && asset.fingerprint === insertedSceneAssetReference.fingerprint)
+    : null;
+  const insertedSceneFontReference = plannedInsertedScene?.content.kind === "text"
+    ? plannedInsertedScene.content.fontAsset
+    : null;
+  const insertedSceneFont = insertedSceneFontReference
+    ? sceneFonts.find((font) =>
+        font.id === insertedSceneFontReference.id &&
+        font.fingerprint === insertedSceneFontReference.fingerprint,
+      )
+    : null;
+  const insertedSceneVideoRef = useRef<HTMLVideoElement | null>(null);
+  const insertedSceneMotionStyle = (() => {
+    if (!plannedInsertedScene || !compositionPreview) return undefined;
+    const durationSec = Math.max(0.001, compositionPreview.sceneEndSec - compositionPreview.sceneStartSec);
+    const edgeSec = Math.min(0.35, durationSec / 2);
+    const localSec = Math.max(0, Math.min(durationSec, currentTime - compositionPreview.sceneStartSec));
+    const entranceProgress = Math.max(0, Math.min(1, localSec / edgeSec));
+    const exitRemaining = Math.max(0, Math.min(1, (durationSec - localSec) / edgeSec));
+    const entrance = plannedInsertedScene.motion.entrance;
+    const exit = plannedInsertedScene.motion.exit;
+    const opacity =
+      (entrance === "fade" ? entranceProgress : 1) *
+      (exit === "fade" ? exitRemaining : 1);
+    const translateY = entrance === "slide-up"
+      ? (1 - entranceProgress) * 100
+      : exit === "slide-down"
+        ? (1 - exitRemaining) * 100
+        : 0;
+    const scale = entrance === "zoom-in"
+      ? 0.92 + 0.08 * entranceProgress
+      : exit === "zoom-out"
+        ? 0.92 + 0.08 * exitRemaining
+        : 1;
+    return {
+      opacity,
+      transform: `translateY(${translateY}%) scale(${scale})`,
+      transformOrigin: "center",
+    };
+  })();
+  useEffect(() => {
+    const node = insertedSceneVideoRef.current;
+    const content = plannedInsertedScene?.content;
+    if (!node || content?.kind !== "video" || !compositionPreview) return;
+    const localSec = Math.max(0, currentTime - compositionPreview.sceneStartSec);
+    const desiredSec = Math.min(content.sourceEndSec, content.sourceStartSec + localSec);
+    if (Number.isFinite(node.duration) && Math.abs(node.currentTime - desiredSec) > 0.25) {
+      node.currentTime = desiredSec;
+    }
+    node.volume = content.volume / 100;
+    node.muted = content.muted;
+    if (isPlaying) {
+      void node.play().catch(() => undefined);
+    } else {
+      node.pause();
+    }
+  }, [compositionPreview, currentTime, isPlaying, plannedInsertedScene]);
   const activeBrollWindow = plannedBrollLayer?.activeRange ?? null;
   const brollActive = Boolean(plannedBrollLayer);
   const plannedTextLayers = compositionPreview?.layers.filter(
@@ -1315,7 +1458,7 @@ export function VideoPreview() {
   // meaningful (and only computed) while split or screen is active; the tile
   // that consumes it doesn't otherwise exist.
   const secondaryTileTargetTimeSec = isStacked
-    ? editedToSource(editedTimeMap, currentTime) - activeOffsetSec
+    ? editedToSource(editedTimeMap, compositeToBaseEdited(currentTime)) - activeOffsetSec
     : 0;
 
   const autoMainLayer = activeSpeakerScene?.layers.find((layer) =>
@@ -1884,6 +2027,20 @@ export function VideoPreview() {
               onDuration={handleBrollDuration}
               onAvailabilityChange={handleBrollAvailability}
             />
+          ) : null}
+
+          {plannedInsertedScene ? (
+            <Flex key={plannedInsertedScene.sceneBlockId} position="absolute" inset="0" zIndex="24" align="center" justify="center" overflow="hidden" bg={plannedInsertedScene.content.kind === "color" ? plannedInsertedScene.content.color : plannedInsertedScene.content.kind === "text" ? plannedInsertedScene.content.backgroundColor : plannedInsertedScene.content.backgroundColor} style={insertedSceneMotionStyle}>
+              {plannedInsertedScene.content.kind === "text" ? (
+                <Text maxW="82%" textAlign="center" fontFamily={insertedSceneFont ? sceneFontPreviewFamily(insertedSceneFont) : systemSceneFontPreviewFamily(plannedInsertedScene.content.fontFamily)} fontSize="clamp(24px, 5vw, 68px)" fontWeight={insertedSceneFont?.weight ?? 700} fontStyle={insertedSceneFont?.style.toLowerCase().includes("italic") ? "italic" : "normal"} lineHeight="1.05" color={plannedInsertedScene.content.color}>{plannedInsertedScene.content.text}</Text>
+              ) : plannedInsertedScene.content.kind === "image" && insertedSceneAsset?.accessUrl ? (
+                <img src={insertedSceneAsset.accessUrl} alt="" style={{ width: "100%", height: "100%", objectFit: plannedInsertedScene.content.fit }} />
+              ) : plannedInsertedScene.content.kind === "video" && insertedSceneAsset?.accessUrl ? (
+                <Box width="full" height="full">
+                  <video ref={insertedSceneVideoRef} src={insertedSceneAsset.accessUrl} muted={plannedInsertedScene.content.muted} autoPlay playsInline style={{ width: "100%", height: "100%", objectFit: plannedInsertedScene.content.fit }} />
+                </Box>
+              ) : null}
+            </Flex>
           ) : null}
 
           {/* Hidden background-music preview track — decorative render-parity

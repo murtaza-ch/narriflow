@@ -1,7 +1,9 @@
 import {
   CLIP_COMPOSITION_PLAN_VERSION,
+  compositionAssetRef,
   type ClipCompositionPlan,
   type CompositionBrollVideoLayer,
+  type CompositionInsertedSceneLayer,
   type CompositionRect,
   type CompositionTargetPlan,
   type CompositionVisualLayer,
@@ -16,10 +18,12 @@ export function compileCompositionPlanAudiogram(
   }
   const target = plan.targets.find((candidate) => candidate.id === targetId);
   if (!target) throw new Error("clip_composition_target_missing");
-  if (target.effectiveMode !== "audiogram" || target.scenes.length !== 1) {
+  if (target.effectiveMode !== "audiogram" || target.scenes.length === 0) {
     throw new Error("clip_composition_audiogram_missing");
   }
-  const scene = target.scenes[0]!;
+  const scene = target.scenes.find((candidate) =>
+    candidate.layers.some((layer) => layer.kind === "audiogram"));
+  if (!scene) throw new Error("clip_composition_audiogram_missing");
   const layer = scene.layers.find(
     (candidate) => candidate.kind === "audiogram",
   );
@@ -168,6 +172,106 @@ export function bindCompositionPlanAudioInputs(
 export type BoundCompositionAudioRenderRequest = ReturnType<
   typeof bindCompositionPlanAudioInputs
 >;
+
+export function compileCompositionPlanSceneAudio(input: {
+  plan: ClipCompositionPlan;
+  targetId: string;
+  sourceAudioLabel: string | null;
+  sceneInputs: ReadonlyArray<{ sourceRef: string; inputIndex: number; hasAudio: boolean }>;
+}) {
+  const target = input.plan.targets.find((candidate) => candidate.id === input.targetId);
+  if (!target) throw new Error("clip_composition_target_missing");
+  if (!target.scenes.some((scene) => scene.layers.some((layer) => layer.kind === "inserted-scene"))) {
+    return { filterParts: [] as string[], outputLabel: input.sourceAudioLabel };
+  }
+  const sourceScenes = target.scenes.filter((scene) => scene.sourceRange);
+  const sourceLabels = sourceScenes.map((_, index) => `[composition_source_audio_${index}]`);
+  const parts: string[] = [];
+  if (input.sourceAudioLabel && sourceLabels.length > 1) {
+    parts.push(`${input.sourceAudioLabel}asplit=${sourceLabels.length}${sourceLabels.join("")}`);
+  }
+  let sourceIndex = 0;
+  const outputs: string[] = [];
+  target.scenes.forEach((scene, index) => {
+    const duration = scene.endSec - scene.startSec;
+    const output = `[composition_scene_audio_${index}]`;
+    outputs.push(output);
+    const inserted = scene.layers.find(
+      (layer): layer is CompositionInsertedSceneLayer => layer.kind === "inserted-scene",
+    );
+    if (!inserted) {
+      if (!input.sourceAudioLabel) {
+        parts.push(`anullsrc=channel_layout=stereo:sample_rate=48000,atrim=duration=${duration.toFixed(3)}${output}`);
+        return;
+      }
+      const source = sourceLabels.length === 1 ? input.sourceAudioLabel : sourceLabels[sourceIndex]!;
+      sourceIndex += 1;
+      parts.push(`${source}atrim=start=${scene.sourceRange!.startSec.toFixed(3)}:end=${scene.sourceRange!.endSec.toFixed(3)},asetpts=PTS-STARTPTS${output}`);
+      return;
+    }
+    if (inserted.content.kind === "video" && !inserted.content.muted) {
+      const asset = input.sceneInputs.find((candidate) => candidate.sourceRef === inserted.sourceRef);
+      if (asset?.hasAudio) {
+        parts.push(`[${asset.inputIndex}:a]atrim=start=${inserted.content.sourceStartSec.toFixed(3)}:end=${inserted.content.sourceEndSec.toFixed(3)},asetpts=PTS-STARTPTS,volume=${(inserted.content.volume / 100).toFixed(3)},apad,atrim=duration=${duration.toFixed(3)}${output}`);
+        return;
+      }
+    }
+    parts.push(`anullsrc=channel_layout=stereo:sample_rate=48000,atrim=duration=${duration.toFixed(3)}${output}`);
+  });
+  parts.push(`${outputs.join("")}concat=n=${outputs.length}:v=0:a=1[composition_scene_audio]`);
+  return { filterParts: parts, outputLabel: "[composition_scene_audio]" };
+}
+
+function insertedSceneMotionFilters(input: {
+  motion: CompositionInsertedSceneLayer["motion"];
+  durationSec: number;
+  width: number;
+  height: number;
+  backgroundColor: string;
+}) {
+  const duration = input.durationSec;
+  const edge = Math.min(0.35, duration / 2);
+  const filters: string[] = [];
+  if (input.motion.entrance === "fade") {
+    filters.push(`fade=t=in:st=0:d=${edge.toFixed(3)}`);
+  }
+  if (input.motion.exit === "fade") {
+    filters.push(`fade=t=out:st=${Math.max(0, duration - edge).toFixed(3)}:d=${edge.toFixed(3)}`);
+  }
+
+  const slidesIn = input.motion.entrance === "slide-up";
+  const slidesOut = input.motion.exit === "slide-down";
+  if (slidesIn || slidesOut) {
+    const center = input.height;
+    const entrance = slidesIn
+      ? `if(lt(t,${edge.toFixed(3)}),(t/${edge.toFixed(3)})*${center},${center})`
+      : `${center}`;
+    const y = slidesOut
+      ? `if(gt(t,${Math.max(0, duration - edge).toFixed(3)}),${center}+((t-${Math.max(0, duration - edge).toFixed(3)})/${edge.toFixed(3)})*${center},${entrance})`
+      : entrance;
+    filters.push(
+      `pad=${input.width}:${input.height * 3}:0:${input.height}:color=0x${input.backgroundColor.slice(1)}`,
+      `crop=${input.width}:${input.height}:0:'${y}'`,
+    );
+  }
+
+  const zoomsIn = input.motion.entrance === "zoom-in";
+  const zoomsOut = input.motion.exit === "zoom-out";
+  if (zoomsIn || zoomsOut) {
+    const entrance = zoomsIn
+      ? `if(lt(t,${edge.toFixed(3)}),0.920000+0.080000*(t/${edge.toFixed(3)}),1)`
+      : "1";
+    const factor = zoomsOut
+      ? `if(gt(t,${Math.max(0, duration - edge).toFixed(3)}),1-0.080000*((t-${Math.max(0, duration - edge).toFixed(3)})/${edge.toFixed(3)}),${entrance})`
+      : entrance;
+    filters.push(
+      `scale=w='iw*(${factor})':h='ih*(${factor})':eval=frame`,
+      `pad=${input.width}:${input.height}:(ow-iw)/2:(oh-ih)/2:color=0x${input.backgroundColor.slice(1)}:eval=frame`,
+      `crop=${input.width}:${input.height}`,
+    );
+  }
+  return filters.length ? `,${filters.join(",")},setsar=1` : "";
+}
 
 function escapeDrawtextValue(value: string): string {
   return value
@@ -512,6 +616,120 @@ function assertRect(
   }
 }
 
+export function compileCompositionPlanInsertedSceneSequence(input: {
+  plan: ClipCompositionPlan;
+  targetId: string;
+  baseVideoLabel: string;
+  outputLabel: string;
+  trailingChain?: string;
+  fps?: number;
+  resolvedSceneAssets?: Readonly<Record<string, { path: string; kind: "image" | "video" }>>;
+  resolvedSceneFonts?: Readonly<Record<string, string>>;
+  sceneInputStartIndex?: number;
+}) {
+  const target = input.plan.targets.find((candidate) => candidate.id === input.targetId);
+  if (!target) throw new Error("clip_composition_target_missing");
+  const insertedLayers = target.scenes.flatMap((scene) => scene.layers.filter(
+    (layer): layer is CompositionInsertedSceneLayer => layer.kind === "inserted-scene",
+  ));
+  if (insertedLayers.length === 0) {
+    throw new Error("clip_composition_inserted_scenes_missing");
+  }
+  const uniqueLayers = [...new Map(insertedLayers
+    .filter((layer) => layer.sourceRef !== null)
+    .map((layer) => [layer.sourceRef!, layer])).values()];
+  if (uniqueLayers.length > 0 && input.sceneInputStartIndex == null) {
+    throw new Error("clip_composition_scene_input_index_missing");
+  }
+  const sceneInputs = uniqueLayers.map((layer, index) => {
+    const asset = input.resolvedSceneAssets?.[layer.sourceRef!];
+    if (!asset || asset.kind !== layer.content.kind) {
+      throw new Error("clip_composition_scene_input_missing");
+    }
+    return { ...asset, sourceRef: layer.sourceRef!, inputIndex: input.sceneInputStartIndex! + index };
+  });
+  let cursor = 0;
+  for (const scene of target.scenes) {
+    if (Math.abs(scene.startSec - cursor) > 0.075 || scene.endSec <= scene.startSec) {
+      throw new Error("invalid_clip_composition_scenes");
+    }
+    cursor = scene.endSec;
+  }
+  if (Math.abs(cursor - input.plan.editedDurationSec) > 0.075) {
+    throw new Error("invalid_clip_composition_scenes");
+  }
+
+  const sourceFragments = target.scenes.filter((scene) => scene.sourceRange);
+  if (sourceFragments.length === 0) throw new Error("invalid_clip_composition_source_scenes");
+  const sourceLabels = sourceFragments.map((_, index) => `[composition_source_fragment_${index}]`);
+  const parts: string[] = [];
+  if (sourceLabels.length > 1) {
+    parts.push(`${input.baseVideoLabel}split=${sourceLabels.length}${sourceLabels.join("")}`);
+  }
+  let sourceIndex = 0;
+  const outputs: string[] = [];
+  const fps = input.fps && input.fps > 0 ? input.fps : 30;
+  target.scenes.forEach((scene, sceneIndex) => {
+    const output = `[composition_insert_sequence_${sceneIndex}]`;
+    outputs.push(output);
+    const duration = scene.endSec - scene.startSec;
+    const inserted = scene.layers.find(
+      (layer): layer is CompositionInsertedSceneLayer => layer.kind === "inserted-scene",
+    );
+    if (!inserted) {
+      const source = sourceLabels.length === 1 ? input.baseVideoLabel : sourceLabels[sourceIndex]!;
+      sourceIndex += 1;
+      parts.push(`${source}trim=start=${scene.sourceRange!.startSec.toFixed(3)}:end=${scene.sourceRange!.endSec.toFixed(3)},setpts=PTS-STARTPTS,setsar=1${output}`);
+      return;
+    }
+    const color = inserted.content.kind === "color"
+      ? inserted.content.color
+      : inserted.content.backgroundColor;
+    const motionFilters = insertedSceneMotionFilters({
+      motion: inserted.motion,
+      durationSec: duration,
+      width: target.canvas.width,
+      height: target.canvas.height,
+      backgroundColor: color,
+    });
+    if (inserted.content.kind === "color") {
+      parts.push(`color=c=0x${color.slice(1)}:s=${target.canvas.width}x${target.canvas.height}:r=${fps}:d=${duration.toFixed(3)},format=yuv420p${motionFilters}${output}`);
+      return;
+    }
+    if (inserted.content.kind === "text") {
+      const fontSelector = inserted.content.fontAsset
+        ? (() => {
+            const fontPath = input.resolvedSceneFonts?.[
+              compositionAssetRef(
+                "brand_font",
+                `${inserted.content.fontAsset.id}:${inserted.content.fontAsset.fingerprint}`,
+              )
+            ];
+            if (!fontPath) throw new Error("clip_composition_scene_font_missing");
+            return `fontfile='${escapeDrawtextValue(fontPath)}'`;
+          })()
+        : `font='${escapeDrawtextValue(inserted.content.fontFamily)}'`;
+      parts.push(
+        `color=c=0x${color.slice(1)}:s=${target.canvas.width}x${target.canvas.height}:r=${fps}:d=${duration.toFixed(3)},` +
+          `drawtext=${fontSelector}:text='${escapeDrawtextValue(inserted.content.text)}':fontcolor=0x${inserted.content.color.slice(1)}:fontsize=${Math.max(24, Math.round(target.canvas.height / 18))}:x=(w-text_w)/2:y=(h-text_h)/2:line_spacing=12,format=yuv420p${motionFilters}${output}`,
+      );
+      return;
+    }
+    const asset = sceneInputs.find((candidate) => candidate.sourceRef === inserted.sourceRef);
+    if (!asset) throw new Error("clip_composition_scene_input_missing");
+    const fit = inserted.content.fit === "cover"
+      ? `scale=${target.canvas.width}:${target.canvas.height}:force_original_aspect_ratio=increase,crop=${target.canvas.width}:${target.canvas.height}`
+      : `scale=${target.canvas.width}:${target.canvas.height}:force_original_aspect_ratio=decrease,pad=${target.canvas.width}:${target.canvas.height}:(ow-iw)/2:(oh-ih)/2:color=0x${inserted.content.backgroundColor.slice(1)}`;
+    const trim = inserted.content.kind === "video"
+      ? `trim=start=${inserted.content.sourceStartSec.toFixed(3)}:end=${inserted.content.sourceEndSec.toFixed(3)},setpts=PTS-STARTPTS,tpad=stop_mode=clone:stop_duration=${duration.toFixed(3)},trim=duration=${duration.toFixed(3)}`
+      : `trim=duration=${duration.toFixed(3)},setpts=PTS-STARTPTS`;
+    parts.push(`[${asset.inputIndex}:v]${trim},${fit},setsar=1,format=yuv420p${motionFilters}${output}`);
+  });
+  const trailingSuffix = input.trailingChain ? `,${input.trailingChain}` : "";
+  parts.push(`${outputs.join("")}concat=n=${outputs.length}:v=1:a=0,format=yuv420p${trailingSuffix}${input.outputLabel}`);
+  return { filterParts: parts, sceneInputs };
+}
+
 export function compileCompositionPlanVideo(input: {
   plan: ClipCompositionPlan;
   targetId: string;
@@ -522,6 +740,9 @@ export function compileCompositionPlanVideo(input: {
   fps?: number;
   resolvedBrollAssets?: Readonly<Record<string, string>>;
   brollInputStartIndex?: number;
+  resolvedSceneAssets?: Readonly<Record<string, { path: string; kind: "image" | "video" }>>;
+  resolvedSceneFonts?: Readonly<Record<string, string>>;
+  sceneInputStartIndex?: number;
 }): {
   filterParts: string[];
   backgroundImageInputRequired: boolean;
@@ -532,6 +753,7 @@ export function compileCompositionPlanVideo(input: {
     startSec: number;
     endSec: number;
   }>;
+  sceneInputs: Array<{ sourceRef: string; path: string; kind: "image" | "video"; inputIndex: number }>;
 } {
   if (input.plan.version !== CLIP_COMPOSITION_PLAN_VERSION) {
     throw new Error("unsupported_clip_composition_plan_version");
@@ -540,6 +762,104 @@ export function compileCompositionPlanVideo(input: {
     (candidate) => candidate.id === input.targetId,
   );
   if (!plannedTarget) throw new Error("clip_composition_target_missing");
+  const insertedLayers = plannedTarget.scenes.flatMap((scene) =>
+    scene.layers.filter(
+      (layer): layer is CompositionInsertedSceneLayer => layer.kind === "inserted-scene",
+    ),
+  );
+  const uniqueSceneLayers = [...new Map(
+    insertedLayers
+      .filter((layer) => layer.sourceRef !== null)
+      .map((layer) => [layer.sourceRef!, layer]),
+  ).values()];
+  if (uniqueSceneLayers.length > 0 && input.sceneInputStartIndex == null) {
+    throw new Error("clip_composition_scene_input_index_missing");
+  }
+  const sceneInputs = uniqueSceneLayers.map((layer, index) => {
+    const asset = input.resolvedSceneAssets?.[layer.sourceRef!];
+    if (!asset || asset.kind !== layer.content.kind) {
+      throw new Error("clip_composition_scene_input_missing");
+    }
+    return { ...asset, sourceRef: layer.sourceRef!, inputIndex: input.sceneInputStartIndex! + index };
+  });
+
+  if (insertedLayers.length > 0) {
+    let cursor = 0;
+    for (const scene of plannedTarget.scenes) {
+      if (Math.abs(scene.startSec - cursor) > 0.075 || scene.endSec <= scene.startSec) {
+        throw new Error("invalid_clip_composition_scenes");
+      }
+      cursor = scene.endSec;
+    }
+    if (Math.abs(cursor - input.plan.editedDurationSec) > 0.075) {
+      throw new Error("invalid_clip_composition_scenes");
+    }
+    const sourceScenes = plannedTarget.scenes
+      .filter((scene) => scene.sourceRange)
+      .map((scene) => ({
+        ...scene,
+        startSec: scene.sourceRange!.startSec,
+        endSec: scene.sourceRange!.endSec,
+        sourceRange: undefined,
+      }));
+    const sourceDurationSec = sourceScenes.reduce((max, scene) => Math.max(max, scene.endSec), 0);
+    if (sourceScenes.length === 0 || sourceDurationSec <= 0) {
+      throw new Error("invalid_clip_composition_source_scenes");
+    }
+    const brollRanges = new Map<string, { startSec: number; endSec: number }>();
+    for (const scene of sourceScenes) {
+      for (const layer of scene.layers) {
+        if (layer.kind !== "broll-video") continue;
+        const current = brollRanges.get(layer.id);
+        brollRanges.set(layer.id, {
+          startSec: Math.min(current?.startSec ?? scene.startSec, scene.startSec),
+          endSec: Math.max(current?.endSec ?? scene.endSec, scene.endSec),
+        });
+      }
+    }
+    const normalizedSourceScenes = sourceScenes.map((scene) => ({
+      ...scene,
+      layers: scene.layers.map((layer) =>
+        layer.kind === "broll-video"
+          ? { ...layer, activeRange: brollRanges.get(layer.id)! }
+          : layer,
+      ),
+    }));
+    const sourcePlan: ClipCompositionPlan = {
+      ...input.plan,
+      editedDurationSec: sourceDurationSec,
+      targets: input.plan.targets.map((target) =>
+        target.id === plannedTarget.id
+          ? { ...target, scenes: normalizedSourceScenes }
+          : target,
+      ),
+    };
+    const base = compileCompositionPlanVideo({
+      ...input,
+      plan: sourcePlan,
+      outputLabel: "[composition_without_insertions]",
+      trailingChain: undefined,
+      resolvedSceneAssets: undefined,
+      sceneInputStartIndex: undefined,
+    });
+    const sequence = compileCompositionPlanInsertedSceneSequence({
+      plan: input.plan,
+      targetId: input.targetId,
+      baseVideoLabel: "[composition_without_insertions]",
+      outputLabel: input.outputLabel,
+      trailingChain: input.trailingChain,
+      fps: input.fps,
+      resolvedSceneAssets: input.resolvedSceneAssets,
+      resolvedSceneFonts: input.resolvedSceneFonts,
+      sceneInputStartIndex: input.sceneInputStartIndex,
+    });
+    return {
+      filterParts: [...base.filterParts, ...sequence.filterParts],
+      backgroundImageInputRequired: base.backgroundImageInputRequired,
+      brollInputs: base.brollInputs,
+      sceneInputs: sequence.sceneInputs,
+    };
+  }
   const brollPlacements = plannedCompositionBrollPlacements(
     input.plan,
     input.targetId,
@@ -567,7 +887,7 @@ export function compileCompositionPlanVideo(input: {
     backgroundImageInputRequired: boolean;
   }) => {
     if (brollInputs.length === 0) {
-      return { ...result, brollInputs };
+      return { ...result, brollInputs, sceneInputs };
     }
     let current = baseOutputLabel;
     brollInputs.forEach((asset, index) => {
@@ -586,7 +906,7 @@ export function compileCompositionPlanVideo(input: {
       );
       current = next;
     });
-    return { ...result, brollInputs };
+    return { ...result, brollInputs, sceneInputs };
   };
   const target = baseOnlyTarget(plannedTarget);
   if (

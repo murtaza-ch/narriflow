@@ -1,10 +1,13 @@
 import { describe, expect, test } from "bun:test";
+import { editorDocumentSchema } from "@narriflow/validators";
 import {
+  assertSceneExportReferenceRows,
   buildClipExportFingerprint,
   clipExportDownloadFileName,
   clipExportVariantStorageKey,
   deriveClipExportAggregate,
   hashClipShareToken,
+  sceneExportOwnerWhere,
 } from "./clip-export.service";
 
 describe("clip export fingerprint", () => {
@@ -75,6 +78,59 @@ describe("clip export aggregate state", () => {
 });
 
 describe("clip export storage and sharing", () => {
+  test("blocks export admission when a frozen Scene file identity is unavailable", () => {
+    const visualId = "11111111-1111-4111-8111-111111111111";
+    const fontId = "22222222-2222-4222-8222-222222222222";
+    const document = editorDocumentSchema.parse({
+      version: 2,
+      clipStartSec: 0,
+      clipEndSec: 10,
+      captionPreset: {},
+      transcriptSlice: [],
+      studioEdits: {},
+      brollUrl: null,
+      deletedRanges: [],
+      sceneBlocks: [
+        {
+          id: "33333333-3333-4333-8333-333333333333",
+          schemaVersion: 1,
+          anchorSec: 0,
+          durationSec: 2,
+          content: { kind: "image", asset: { kind: "visual_asset", id: visualId, fingerprint: "a".repeat(64) }, fit: "cover", backgroundColor: "#000000" },
+          motion: { entrance: "none", exit: "none" },
+          templateSnapshot: null,
+        },
+        {
+          id: "44444444-4444-4444-8444-444444444444",
+          schemaVersion: 1,
+          anchorSec: 4,
+          durationSec: 2,
+          content: { kind: "text", text: "Opening", fontFamily: "Acme", fontAsset: { kind: "brand_font", id: fontId, fingerprint: "b".repeat(64) }, color: "#FFFFFF", backgroundColor: "#111827" },
+          motion: { entrance: "fade", exit: "fade" },
+          templateSnapshot: null,
+        },
+      ],
+    });
+    const visuals = [{ id: visualId, kind: "image", fingerprint: "a".repeat(64) }];
+    const fonts = [{ id: fontId, family: "Acme", fingerprint: "b".repeat(64) }];
+    expect(() => assertSceneExportReferenceRows(document, visuals, fonts)).not.toThrow();
+    expect(() => assertSceneExportReferenceRows(document, [], fonts)).toThrow("unavailable Scene asset");
+    expect(() => assertSceneExportReferenceRows(document, visuals, [])).toThrow("unavailable Brand font");
+  });
+
+  test("uses personal Brand ownership for Creator exports and workspace ownership for Business", () => {
+    expect(sceneExportOwnerWhere({
+      projectUserId: "project-user",
+      workspaceId: "personal-workspace",
+      workspace: { personalOwnerUserId: "owner", pricingTier: "creator" },
+    })).toEqual({ userId: "owner", workspaceId: null });
+    expect(sceneExportOwnerWhere({
+      projectUserId: "project-user",
+      workspaceId: "shared-workspace",
+      workspace: { personalOwnerUserId: null, pricingTier: "business" },
+    })).toEqual({ workspaceId: "shared-workspace" });
+  });
+
   test("builds a safe, descriptive download filename", () => {
     expect(
       clipExportDownloadFileName({

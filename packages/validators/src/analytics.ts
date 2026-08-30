@@ -64,6 +64,9 @@ function findSensitiveMetadataPath(
   value: unknown,
   path: Array<string | number> = [],
 ): Array<string | number> | null {
+	if (typeof value === "string" && /(?:https?|s3|r2):\/\//i.test(value)) {
+		return path;
+	}
   if (Array.isArray(value)) {
     for (const [index, item] of value.entries()) {
       const found = findSensitiveMetadataPath(item, [...path, index]);

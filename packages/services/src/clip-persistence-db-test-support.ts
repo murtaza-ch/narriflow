@@ -34,6 +34,7 @@ export function clipPersistenceEditorDocument(
   overrides: Partial<EditorDocument> = {},
 ) {
   return editorDocumentSchema.parse({
+    version: 2,
     clipStartSec: 10,
     clipEndSec: 30,
     captionPreset: DEFAULT_CAPTION_PRESET,

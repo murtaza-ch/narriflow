@@ -7,9 +7,13 @@ import {
 } from "./brand-ownership";
 import {
   assertFinalizedVisualObject,
+  assertSceneVisualAssetReferences,
   visualAssetKindForContentType,
 } from "./visual-asset.service";
-import { parseBrandFontHeader } from "./brand-font.service";
+import {
+  assertSceneBrandFontReferences,
+  parseBrandFontHeader,
+} from "./brand-font.service";
 
 const personalScope = {
   actorUserId: "actor",
@@ -78,9 +82,36 @@ describe("visual object verification", () => {
     expect(() => assertFinalizedVisualObject(declared, { contentType: "image/png", sizeBytes: 128 }, null)).toThrow();
     expect(() => assertFinalizedVisualObject(declared, { contentType: "image/png", sizeBytes: 128 }, { ...validProbe, contentType: "image/jpeg" })).toThrow();
   });
+
+  test("binds Scene asset kind, fingerprint, and video trim to the owned asset", () => {
+    const assetId = crypto.randomUUID();
+    const scene = {
+      id: crypto.randomUUID(), schemaVersion: 1 as const, anchorSec: 0, durationSec: 3,
+      content: { kind: "video" as const, asset: { kind: "visual_asset" as const, id: assetId, fingerprint: "a".repeat(64) }, sourceStartSec: 0, sourceEndSec: 3, fit: "cover" as const, backgroundColor: "#000000", muted: false, volume: 100 },
+      motion: { entrance: "none" as const, exit: "none" as const }, templateSnapshot: null,
+    };
+    const asset = { id: assetId, kind: "video" as const, fingerprint: "a".repeat(64), durationSec: 3 };
+    expect(() => assertSceneVisualAssetReferences([scene], [asset])).not.toThrow();
+    expect(() => assertSceneVisualAssetReferences([{ ...scene, content: { ...scene.content, sourceEndSec: 999 } }], [asset])).toThrow();
+    expect(() => assertSceneVisualAssetReferences([scene], [{ ...asset, fingerprint: "b".repeat(64) }])).toThrow();
+    expect(() => assertSceneVisualAssetReferences([scene], [{ ...asset, kind: "image", durationSec: null }])).toThrow();
+  });
 });
 
 describe("font parsing", () => {
+  test("binds a text Scene to the exact retained Brand font identity", () => {
+    const fontId = crypto.randomUUID();
+    const scene = {
+      id: crypto.randomUUID(), schemaVersion: 1 as const, anchorSec: 0, durationSec: 2,
+      content: { kind: "text" as const, text: "Opening", fontFamily: "Narriflow Display", fontAsset: { kind: "brand_font" as const, id: fontId, fingerprint: "a".repeat(64) }, color: "#FFFFFF", backgroundColor: "#111827" },
+      motion: { entrance: "fade" as const, exit: "fade" as const }, templateSnapshot: null,
+    };
+    const font = { id: fontId, family: "Narriflow Display", fingerprint: "a".repeat(64) };
+    expect(() => assertSceneBrandFontReferences([scene], [font])).not.toThrow();
+    expect(() => assertSceneBrandFontReferences([scene], [{ ...font, family: "Wrong Font" }])).toThrow();
+    expect(() => assertSceneBrandFontReferences([scene], [{ ...font, fingerprint: "b".repeat(64) }])).toThrow();
+  });
+
   test("rejects collections, unknown signatures, and truncated files with valid signatures", () => {
     expect(() => parseBrandFontHeader(Buffer.from("ttcf"))).toThrow();
     expect(() => parseBrandFontHeader(Buffer.from("nope"))).toThrow();

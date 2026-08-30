@@ -38,6 +38,7 @@ try {
     env: {
       ...process.env,
       ALLOW_BRAND_PROFILE_DB_TESTS: "1",
+      NARRIFLOW_WRITES_SCENE_TEMPLATES: "1",
       DATABASE_URL: databaseUrl,
       BRAND_PROFILE_TEST_DATABASE_URL: databaseUrl,
       BRAND_PROFILE_TEST_DATABASE_SCHEMA: schema,

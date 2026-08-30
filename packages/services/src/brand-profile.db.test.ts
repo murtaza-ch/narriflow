@@ -13,8 +13,10 @@ import {
   brandProfileService,
 } from "./brand-profile.service";
 import { BrandAccessError } from "./brand-ownership";
+import { brandFontService } from "./brand-font.service";
 import { projectService } from "./project.service";
 import { ProgramWriteDisabledError } from "./program-rollout";
+import { sceneTemplateService } from "./scene-template.service";
 import {
   VisualAssetReferenceError,
   VisualAssetService,
@@ -419,9 +421,192 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
       }),
     ).not.toBeNull();
     await expect(visualAssetService.softDelete(first.scope, original.id, {})).rejects.toBeInstanceOf(VisualAssetReferenceError);
+    const sceneTemplate = await prisma.sceneTemplate.create({
+      data: {
+        profileId: profile.id,
+        sourceAssetId: original.id,
+        createdByUserId: first.user.id,
+        name: "Referenced visual",
+        definition: {
+          schemaVersion: 1,
+          durationSec: 3,
+          content: {
+            kind: "image",
+            asset: { kind: "visual_asset", id: original.id, fingerprint: original.fingerprint },
+            fit: "cover",
+            backgroundColor: "#000000",
+          },
+          motion: { entrance: "fade", exit: "fade" },
+        },
+        fingerprint: "c".repeat(64),
+      },
+    });
+    await expect(
+      visualAssetService.softDelete(first.scope, original.id, { replacementId: replacement.id }),
+    ).rejects.toBeInstanceOf(VisualAssetReferenceError);
+    await prisma.sceneTemplate.update({
+      where: { id: sceneTemplate.id },
+      data: { deletedAt: new Date() },
+    });
     await visualAssetService.softDelete(first.scope, original.id, { replacementId: replacement.id });
     expect(await prisma.brandProfileAsset.findUnique({ where: { profileId_assetId: { profileId: profile.id, assetId: replacement.id } } })).not.toBeNull();
     expect((await prisma.visualAsset.findUniqueOrThrow({ where: { id: original.id } })).deletedAt).not.toBeNull();
+  });
+
+  test("serializes Scene Template creation against referenced asset and font deletion", async () => {
+    if (!databaseSchema || !/^[a-zA-Z0-9_]+$/.test(databaseSchema)) {
+      throw new Error("A safe disposable Brand Profile test schema is required");
+    }
+    const fixture = await workspaceFixture("scene-reference-race");
+    const profile = await brandProfileService.create(fixture.scope, {
+      name: "Scene race profile",
+      slug: `scene-race-${randomUUID()}`,
+    });
+    const lockKey = 1_000_000 + Math.floor(Math.random() * 1_000_000_000);
+    const triggerFunction = "narriflow_test_block_scene_template_insert";
+    const triggerName = "narriflow_test_block_scene_template_insert";
+    const blocker = await pool.connect();
+
+    const waitForBlockedInsert = async () => {
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const result = await blocker.query<{ waiting: boolean }>(
+          "SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype = 'advisory' AND NOT granted AND objid = $1::oid) AS waiting",
+          [lockKey],
+        );
+        if (result.rows[0]?.waiting) return;
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      throw new Error("Scene Template insert did not reach the concurrency barrier");
+    };
+
+    const raceCreateAgainstDelete = async (
+      name: string,
+      definition: unknown,
+      deleteReference: () => Promise<unknown>,
+      expectedCode: string,
+    ) => {
+      await blocker.query("SELECT pg_advisory_lock($1)", [lockKey]);
+      const create = sceneTemplateService.create(fixture.scope, profile.id, {
+        name,
+        role: "inline",
+        definition,
+      });
+      await waitForBlockedInsert();
+      await deleteReference();
+      await blocker.query("SELECT pg_advisory_unlock($1)", [lockKey]);
+      await expect(create).rejects.toMatchObject({ code: expectedCode });
+      expect(await prisma.sceneTemplate.count({ where: { profileId: profile.id, name, deletedAt: null } })).toBe(0);
+    };
+
+    try {
+      await prisma.$executeRawUnsafe(`
+        CREATE OR REPLACE FUNCTION "${databaseSchema}"."${triggerFunction}"()
+        RETURNS trigger LANGUAGE plpgsql AS $body$
+        BEGIN
+          IF NEW."name" LIKE 'Concurrent race %' THEN
+            PERFORM pg_advisory_xact_lock(${lockKey});
+          END IF;
+          RETURN NEW;
+        END
+        $body$
+      `);
+      await prisma.$executeRawUnsafe(`
+        CREATE TRIGGER "${triggerName}"
+        BEFORE INSERT ON "${databaseSchema}"."SceneTemplate"
+        FOR EACH ROW EXECUTE FUNCTION "${databaseSchema}"."${triggerFunction}"()
+      `);
+
+      const visual = await prisma.visualAsset.create({
+        data: {
+          workspaceId: fixture.workspace.id,
+          createdByUserId: fixture.user.id,
+          title: "Race visual",
+          kind: "image",
+          storageKey: `workspaces/${fixture.workspace.id}/visual-assets/race.png`,
+          contentType: "image/png",
+          sizeBytes: 128,
+          width: 64,
+          height: 64,
+          fingerprint: "d".repeat(64),
+        },
+      });
+      await raceCreateAgainstDelete(
+        "Concurrent race visual",
+        {
+          schemaVersion: 1,
+          durationSec: 3,
+          content: {
+            kind: "image",
+            asset: { kind: "visual_asset", id: visual.id, fingerprint: visual.fingerprint },
+            fit: "cover",
+            backgroundColor: "#000000",
+          },
+          motion: { entrance: "fade", exit: "fade" },
+        },
+        () => visualAssetService.softDelete(fixture.scope, visual.id, {}),
+        "scene_template_asset_invalid",
+      );
+      expect((await prisma.visualAsset.findUniqueOrThrow({ where: { id: visual.id } })).deletedAt).not.toBeNull();
+
+      const sourceFont = await prisma.brandFont.create({
+        data: {
+          workspaceId: fixture.workspace.id,
+          licenseConfirmedByUserId: fixture.user.id,
+          family: "Race Sans",
+          style: "normal",
+          weight: 400,
+          format: "ttf",
+          storageKey: `workspaces/${fixture.workspace.id}/brand-fonts/race-source.ttf`,
+          sizeBytes: 128,
+          fingerprint: "e".repeat(64),
+          licenseConfirmedAt: new Date(),
+        },
+      });
+      const replacementFont = await prisma.brandFont.create({
+        data: {
+          workspaceId: fixture.workspace.id,
+          licenseConfirmedByUserId: fixture.user.id,
+          family: "Race Sans Replacement",
+          style: "normal",
+          weight: 400,
+          format: "ttf",
+          storageKey: `workspaces/${fixture.workspace.id}/brand-fonts/race-replacement.ttf`,
+          sizeBytes: 128,
+          fingerprint: "f".repeat(64),
+          licenseConfirmedAt: new Date(),
+        },
+      });
+      await prisma.brandProfileFont.create({ data: { profileId: profile.id, fontId: sourceFont.id, role: "body", position: 0 } });
+      await raceCreateAgainstDelete(
+        "Concurrent race font",
+        {
+          schemaVersion: 1,
+          durationSec: 3,
+          content: {
+            kind: "text",
+            text: "Race-safe",
+            fontFamily: sourceFont.family,
+            fontAsset: { kind: "brand_font", id: sourceFont.id, fingerprint: sourceFont.fingerprint },
+            color: "#FFFFFF",
+            backgroundColor: "#000000",
+          },
+          motion: { entrance: "fade", exit: "fade" },
+        },
+        () => brandFontService.softDelete(fixture.scope, sourceFont.id, { replacementId: replacementFont.id }),
+        "scene_template_font_invalid",
+      );
+      expect((await prisma.brandFont.findUniqueOrThrow({ where: { id: sourceFont.id } })).deletedAt).not.toBeNull();
+      expect(
+        await prisma.brandProfileFont.findUnique({
+          where: { profileId_role: { profileId: profile.id, role: "body" } },
+        }),
+      ).toMatchObject({ fontId: replacementFont.id });
+    } finally {
+      await blocker.query("SELECT pg_advisory_unlock_all()");
+      await prisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS "${triggerName}" ON "${databaseSchema}"."SceneTemplate"`);
+      await prisma.$executeRawUnsafe(`DROP FUNCTION IF EXISTS "${databaseSchema}"."${triggerFunction}"()`);
+      blocker.release();
+    }
   });
 
   test("replays upload finalization without reading the object twice", async () => {

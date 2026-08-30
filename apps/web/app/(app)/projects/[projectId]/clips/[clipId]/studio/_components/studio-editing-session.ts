@@ -34,6 +34,69 @@ const PREVIEW_POLL_MAX_ATTEMPTS = 45;
 const AUTO_LAYOUT_POLL_INITIAL_MS = 2_000;
 const AUTO_LAYOUT_POLL_MAX_MS = 30_000;
 const AUTO_LAYOUT_POLL_DEADLINE_MS = 6 * 60_000;
+
+function insertedSceneTimeline(document: EditorDocument) {
+  let insertedBeforeSec = 0;
+  const scenes = [...document.sceneBlocks]
+    .sort((left, right) => left.anchorSec - right.anchorSec || left.id.localeCompare(right.id))
+    .map((scene) => {
+      const baseAnchorSec = scene.anchorSec - insertedBeforeSec;
+      insertedBeforeSec += scene.durationSec;
+      return { scene, baseAnchorSec };
+    });
+  return { scenes, insertedDurationSec: insertedBeforeSec };
+}
+
+export function baseEditedToComposite(document: EditorDocument, baseEditedTimeSec: number) {
+  const timeline = insertedSceneTimeline(document);
+  return baseEditedTimeSec + timeline.scenes
+    .filter(({ baseAnchorSec }) => baseAnchorSec <= baseEditedTimeSec)
+    .reduce((sum, { scene }) => sum + scene.durationSec, 0);
+}
+
+export function baseEditedRangeToCompositeRanges(
+	document: EditorDocument,
+	baseStartSec: number,
+	baseEndSec: number,
+) {
+	if (baseEndSec <= baseStartSec) return [];
+	const timeline = insertedSceneTimeline(document);
+	const boundaries = [...new Set(timeline.scenes
+		.map(({ baseAnchorSec }) => baseAnchorSec)
+		.filter((anchorSec) => anchorSec > baseStartSec && anchorSec < baseEndSec))]
+		.sort((left, right) => left - right);
+	const points = [baseStartSec, ...boundaries, baseEndSec];
+	return points.slice(0, -1).map((startSec, index) => {
+		const endSec = points[index + 1]!;
+		const insertedAtStart = timeline.scenes
+			.filter(({ baseAnchorSec }) => baseAnchorSec <= startSec)
+			.reduce((sum, { scene }) => sum + scene.durationSec, 0);
+		const insertedBeforeEnd = timeline.scenes
+			.filter(({ baseAnchorSec }) => baseAnchorSec < endSec)
+			.reduce((sum, { scene }) => sum + scene.durationSec, 0);
+		return {
+			baseStartSec: startSec,
+			baseEndSec: endSec,
+			startSec: startSec + insertedAtStart,
+			endSec: endSec + insertedBeforeEnd,
+		};
+	});
+}
+
+export function compositeToBaseEdited(document: EditorDocument, compositeTimeSec: number) {
+  let insertedBeforeSec = 0;
+  for (const { scene, baseAnchorSec } of insertedSceneTimeline(document).scenes) {
+    if (compositeTimeSec < scene.anchorSec) break;
+    if (compositeTimeSec < scene.anchorSec + scene.durationSec) return baseAnchorSec;
+    insertedBeforeSec += scene.durationSec;
+  }
+  return compositeTimeSec - insertedBeforeSec;
+}
+
+export function insertedSceneAtCompositeTime(document: EditorDocument, compositeTimeSec: number) {
+  return insertedSceneTimeline(document).scenes.find(({ scene }) =>
+    compositeTimeSec >= scene.anchorSec && compositeTimeSec < scene.anchorSec + scene.durationSec)?.scene ?? null;
+}
 type Scalar = bigint | boolean | null | number | string | symbol | undefined;
 export type DeepReadonly<T> = T extends Scalar
   ? T
@@ -488,7 +551,7 @@ function documentWindowFingerprint(
 function automaticLayoutInputFingerprint(
   document: Pick<
     EditorDocument,
-    "clipStartSec" | "clipEndSec" | "deletedRanges"
+    "clipStartSec" | "clipEndSec" | "deletedRanges" | "sceneBlocks"
   >,
 ): string {
   return JSON.stringify({
@@ -503,12 +566,13 @@ function automaticLayoutInputFingerprint(
 function playbackInputFingerprint(
   document: Pick<
     EditorDocument,
-    "clipStartSec" | "clipEndSec" | "deletedRanges"
+    "clipStartSec" | "clipEndSec" | "deletedRanges" | "sceneBlocks"
   >,
 ): string {
   return JSON.stringify({
     window: documentWindowFingerprint(document),
     deletedRanges: document.deletedRanges,
+    sceneBlocks: document.sceneBlocks,
   });
 }
 
@@ -592,6 +656,11 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
   private sourceAudioEnvelope = 1;
   private unsubscribeMedia: (() => void) | null = null;
   private pendingMediaSeekSourceSec: number | null = null;
+  private pendingCompositeSeekTimeSec: number | null = null;
+  private insertedSceneTimer: number | null = null;
+  private insertedSceneId: string | null = null;
+  private insertedSceneTimerStartedAt = 0;
+  private insertedSceneTimerStartSec = 0;
 
   constructor(
     seed: StudioSessionSeed,
@@ -633,7 +702,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     this.playbackSourceTimeSec = editedToSource(this.playbackMap, 0);
     this.playback = deepFreeze({
       editedTimeSec: 0,
-      durationSec: this.playbackMap.editedDurationSec,
+      durationSec: this.compositeDurationFor(seed.document, this.playbackMap),
       state: "paused",
       rate: 1,
       mediaBinding: {
@@ -707,6 +776,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
           const rate = Number.isFinite(intent.rate)
             ? Math.max(0.5, Math.min(2, intent.rate))
             : 1;
+          if (this.insertedSceneId) this.rebaseInsertedSceneTimer();
           this.replacePlayback({ rate });
           if (this.mediaAssetKey) {
             this.dependencies?.media?.command({
@@ -1760,6 +1830,10 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     }).map;
   }
 
+  private compositeDurationFor(document: EditorDocument, map = this.playbackMap) {
+    return map.editedDurationSec + insertedSceneTimeline(document).insertedDurationSec;
+  }
+
   private currentMediaBinding(): StudioMediaBinding {
     return deepFreeze({
       sessionGeneration: this.sessionGeneration,
@@ -1779,10 +1853,12 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
   }
 
   private seekPlayback(editedTimeSec: number): void {
+    this.clearInsertedScenePlayback();
     const bounded = Number.isFinite(editedTimeSec)
-      ? Math.max(0, Math.min(this.playbackMap.editedDurationSec, editedTimeSec))
+      ? Math.max(0, Math.min(this.compositeDurationFor(this.unified.doc.present), editedTimeSec))
       : 0;
     this.playbackSourceTimeSec = this.sourceAnchorForEditedTime(bounded);
+    this.pendingCompositeSeekTimeSec = bounded;
     this.replacePlayback({ editedTimeSec: bounded });
     if (this.mediaAssetKey) {
       this.dependencies?.media?.command({
@@ -1798,6 +1874,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
       this.seekPlayback(0);
     }
     this.replacePlayback({ state: "playing" });
+    if (this.startInsertedSceneAt(this.playback.editedTimeSec)) return;
     if (this.mediaAssetKey) {
       this.dependencies?.media?.command({
         type: "play",
@@ -1807,6 +1884,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
   }
 
   private pause(): void {
+    this.clearInsertedScenePlayback();
     this.replacePlayback({ state: "paused" });
     if (this.mediaAssetKey) {
       this.dependencies?.media?.command({
@@ -1826,6 +1904,8 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     }
     const map = this.playbackMapFor(this.unified.doc.present);
     const wasPlaying = this.playback.state === "playing";
+    const wasPlayingInsertedScene = wasPlaying && this.insertedSceneId !== null;
+    if (wasPlayingInsertedScene) this.clearInsertedScenePlayback();
     let pauseForEndRelocation = false;
     this.playbackDocument = this.unified.doc.present;
     const containing = map.segments.find(
@@ -1836,8 +1916,8 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     if (containing) {
       this.playbackMap = map;
       this.replacePlayback({
-        editedTimeSec: sourceToEdited(map, this.playbackSourceTimeSec),
-        durationSec: map.editedDurationSec,
+        editedTimeSec: baseEditedToComposite(this.unified.doc.present, sourceToEdited(map, this.playbackSourceTimeSec)),
+        durationSec: this.compositeDurationFor(this.unified.doc.present, map),
       });
     } else {
       const next = map.segments.find(
@@ -1847,8 +1927,8 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
       if (next) {
         this.playbackSourceTimeSec = next.sourceStartSec;
         this.replacePlayback({
-          editedTimeSec: next.editedStartSec,
-          durationSec: map.editedDurationSec,
+          editedTimeSec: baseEditedToComposite(this.unified.doc.present, next.editedStartSec),
+          durationSec: this.compositeDurationFor(this.unified.doc.present, map),
         });
       } else if (map.segments.length > 0) {
         this.playbackSourceTimeSec = editedToSource(
@@ -1856,8 +1936,8 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
           Math.max(0, map.editedDurationSec - 0.001),
         );
         this.replacePlayback({
-          editedTimeSec: map.editedDurationSec,
-          durationSec: map.editedDurationSec,
+          editedTimeSec: this.compositeDurationFor(this.unified.doc.present, map),
+          durationSec: this.compositeDurationFor(this.unified.doc.present, map),
           state: "paused",
         });
         pauseForEndRelocation = wasPlaying;
@@ -1884,6 +1964,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
         mediaTimeSec: this.playbackSourceTimeSec - this.mediaOffsetSec,
       });
     }
+    if (wasPlayingInsertedScene && !pauseForEndRelocation) this.play();
   }
 
   private bindMediaToActiveAsset(preview: StudioPreviewSnapshot): void {
@@ -1949,6 +2030,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
   }
 
   private releaseMedia(): void {
+    this.clearInsertedScenePlayback();
     const media = this.dependencies?.media;
     if (media && this.mediaAssetKey) {
       media.command({ type: "pause", binding: this.playback.mediaBinding });
@@ -1970,9 +2052,11 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     }
     switch (event.type) {
       case "played":
+        if (this.insertedSceneId) return;
         this.replacePlayback({ state: "playing" });
         break;
       case "paused":
+        if (this.insertedSceneId) return;
         this.replacePlayback({ state: "paused" });
         break;
       case "ended":
@@ -1990,6 +2074,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
   }
 
   private projectMediaTime(mediaTimeSec: number): void {
+    if (this.insertedSceneId) return;
     const sourceTimeSec = mediaTimeSec + this.mediaOffsetSec;
     const step = stepRipple(this.playbackMap, sourceTimeSec);
     if (step.atEnd) {
@@ -2014,12 +2099,31 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
       this.pendingMediaSeekSourceSec = null;
       this.playbackSourceTimeSec = sourceTimeSec;
     }
-    this.replacePlayback({ editedTimeSec: step.editedTime });
+    const pendingComposite = this.pendingCompositeSeekTimeSec;
+    this.pendingCompositeSeekTimeSec = null;
+    if (pendingComposite === null && this.playback.state === "playing") {
+      const previousBaseTime = compositeToBaseEdited(
+        this.unified.doc.present,
+        this.playback.editedTimeSec,
+      );
+      const crossedScene = insertedSceneTimeline(this.unified.doc.present).scenes.find(
+        ({ baseAnchorSec }) =>
+          baseAnchorSec > previousBaseTime + 0.0005 &&
+          baseAnchorSec <= step.editedTime + 0.0005,
+      );
+      if (crossedScene && this.startInsertedSceneAt(crossedScene.scene.anchorSec)) {
+        return;
+      }
+    }
+    this.replacePlayback({
+      editedTimeSec: pendingComposite ?? baseEditedToComposite(this.unified.doc.present, step.editedTime),
+    });
     this.publish();
   }
 
   private parkPlaybackAtEnd(): void {
-    const editedTimeSec = this.playbackMap.editedDurationSec;
+    this.clearInsertedScenePlayback();
+    const editedTimeSec = this.compositeDurationFor(this.unified.doc.present);
     this.playbackSourceTimeSec = this.sourceAnchorForEditedTime(editedTimeSec);
     this.pendingMediaSeekSourceSec = this.playbackSourceTimeSec;
     this.replacePlayback({ editedTimeSec, state: "paused" });
@@ -2037,12 +2141,106 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
   }
 
   private sourceAnchorForEditedTime(editedTimeSec: number): number {
-    const durationSec = this.playbackMap.editedDurationSec;
+    const durationSec = this.compositeDurationFor(this.unified.doc.present);
     const anchoredEditedTimeSec =
       durationSec > 0 && editedTimeSec >= durationSec
         ? Math.max(0, durationSec - 0.001)
         : editedTimeSec;
-    return editedToSource(this.playbackMap, anchoredEditedTimeSec);
+    return editedToSource(
+      this.playbackMap,
+      compositeToBaseEdited(this.unified.doc.present, anchoredEditedTimeSec),
+    );
+  }
+
+  private insertedSceneAt(editedTimeSec: number) {
+    return insertedSceneTimeline(this.unified.doc.present).scenes.find(
+      ({ scene }) =>
+        editedTimeSec >= scene.anchorSec - 0.0005 &&
+        editedTimeSec < scene.anchorSec + scene.durationSec - 0.0005,
+    ) ?? null;
+  }
+
+  private startInsertedSceneAt(editedTimeSec: number): boolean {
+    const dependencies = this.dependencies;
+    const entry = this.insertedSceneAt(editedTimeSec);
+    if (!dependencies || !entry || this.playback.state !== "playing") return false;
+    this.clearInsertedScenePlayback();
+    const bounded = Math.max(entry.scene.anchorSec, editedTimeSec);
+    this.insertedSceneId = entry.scene.id;
+    this.insertedSceneTimerStartedAt = dependencies.runtime.now();
+    this.insertedSceneTimerStartSec = bounded;
+    this.playbackSourceTimeSec = editedToSource(this.playbackMap, entry.baseAnchorSec);
+    this.replacePlayback({ editedTimeSec: bounded });
+    if (this.mediaAssetKey) {
+      dependencies.media?.command({ type: "pause", binding: this.playback.mediaBinding });
+      dependencies.media?.command({
+        type: "seek",
+        binding: this.playback.mediaBinding,
+        mediaTimeSec: this.playbackSourceTimeSec - this.mediaOffsetSec,
+      });
+    }
+    this.scheduleInsertedSceneTick();
+    this.publish();
+    return true;
+  }
+
+  private rebaseInsertedSceneTimer(): void {
+    const dependencies = this.dependencies;
+    if (!dependencies || !this.insertedSceneId) return;
+    this.insertedSceneTimerStartSec = this.playback.editedTimeSec;
+    this.insertedSceneTimerStartedAt = dependencies.runtime.now();
+  }
+
+  private scheduleInsertedSceneTick(): void {
+    const dependencies = this.dependencies;
+    if (!dependencies || !this.insertedSceneId) return;
+    this.insertedSceneTimer = dependencies.runtime.setTimeout(() => {
+      this.insertedSceneTimer = null;
+      this.tickInsertedScene();
+    }, 33);
+  }
+
+  private tickInsertedScene(): void {
+    const dependencies = this.dependencies;
+    const sceneId = this.insertedSceneId;
+    if (!dependencies || !sceneId || this.playback.state !== "playing") return;
+    const entry = insertedSceneTimeline(this.unified.doc.present).scenes.find(
+      ({ scene }) => scene.id === sceneId,
+    );
+    if (!entry) {
+      this.clearInsertedScenePlayback();
+      return;
+    }
+    const elapsedSec = Math.max(0, dependencies.runtime.now() - this.insertedSceneTimerStartedAt) / 1_000;
+    const nextTime = this.insertedSceneTimerStartSec + elapsedSec * this.playback.rate;
+    const endTime = entry.scene.anchorSec + entry.scene.durationSec;
+    if (nextTime < endTime - 0.0005) {
+      this.replacePlayback({ editedTimeSec: nextTime });
+      this.publish();
+      this.scheduleInsertedSceneTick();
+      return;
+    }
+    this.clearInsertedScenePlayback();
+    this.replacePlayback({ editedTimeSec: endTime });
+    this.playbackSourceTimeSec = editedToSource(this.playbackMap, entry.baseAnchorSec);
+    if (this.startInsertedSceneAt(endTime)) return;
+    if (this.mediaAssetKey) {
+      dependencies.media?.command({
+        type: "seek",
+        binding: this.playback.mediaBinding,
+        mediaTimeSec: this.playbackSourceTimeSec - this.mediaOffsetSec,
+      });
+      dependencies.media?.command({ type: "play", binding: this.playback.mediaBinding });
+    }
+    this.publish();
+  }
+
+  private clearInsertedScenePlayback(): void {
+    if (this.insertedSceneTimer !== null && this.dependencies) {
+      this.dependencies.runtime.clearTimeout(this.insertedSceneTimer);
+    }
+    this.insertedSceneTimer = null;
+    this.insertedSceneId = null;
   }
 
   private retireDerivedAssetsForAcknowledgedChange(

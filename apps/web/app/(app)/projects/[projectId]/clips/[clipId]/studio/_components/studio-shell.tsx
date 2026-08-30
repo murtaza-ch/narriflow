@@ -46,6 +46,10 @@ import {
   type ClipSplitLayoutFailure,
   type ClipSplitLayoutOutcome,
   type BrollCue,
+  type SceneBlock,
+  type SceneContent,
+	type SceneMotion,
+  type SceneTemplateDefinition,
 } from "@narriflow/validators";
 import { TopBar } from "./top-bar";
 import { TranscriptPanel } from "./transcript-panel";
@@ -78,7 +82,7 @@ import {
   useStudioEditingSession,
   useStudioSessionSelector,
 } from "./studio-editing-session-react";
-import type { StudioSessionSnapshot } from "./studio-editing-session";
+import { baseEditedRangeToCompositeRanges, baseEditedToComposite, compositeToBaseEdited, insertedSceneAtCompositeTime, type StudioSessionSnapshot } from "./studio-editing-session";
 import { DraftRecoveryDialog } from "./draft-recovery-dialog";
 import { StudioWriteLeaseOverlay } from "./studio-write-lease-overlay";
 import {
@@ -256,7 +260,39 @@ export type ToolId =
   | "transitions"
   | "text"
   | "music"
-  | "layout";
+  | "layout"
+  | "scenes";
+
+export interface StudioVisualAsset {
+  id: string;
+  title: string;
+  kind: "image" | "video";
+  fingerprint: string;
+  durationSec: number | null;
+  accessUrl: string | null;
+	missing: boolean;
+	insertable: boolean;
+}
+
+export interface StudioSceneFont {
+	id: string;
+	family: string;
+	style: string;
+	weight: number;
+	fingerprint: string;
+	accessUrl: string | null;
+	missing: boolean;
+	insertable: boolean;
+}
+
+export interface StudioSceneTemplate {
+  id: string;
+  name: string;
+  revision: number;
+  fingerprint: string;
+  role: string;
+  definition: SceneTemplateDefinition;
+}
 
 export interface TranscriptItem {
   id: string;
@@ -355,6 +391,11 @@ interface StudioState {
    *  the editor document; this lightweight companion lets preview/timeline
    *  match the renderer's duration-bounded placement immediately. */
   brollPreviewAsset: StudioBrollPreviewAsset | null;
+  sceneBlocks: readonly SceneBlock[];
+  visualAssets: readonly StudioVisualAsset[];
+	sceneFonts: readonly StudioSceneFont[];
+  sceneTemplates: readonly StudioSceneTemplate[];
+  sceneWriteCapabilities: Readonly<{ cards: boolean; images: boolean; videos: boolean; templates: boolean }>;
   /** 'blocked' is a distinct terminal state from 'error': it means autosave
    *  has permanently stopped (a 409/422 that a reload is needed to clear),
    *  as opposed to 'error''s transient/retryable failure. */
@@ -378,6 +419,10 @@ interface StudioState {
 interface StudioContextValue extends StudioState {
   /** Current immutable Clip Editor Document projection owned by the session. */
   editorDocument: EditorDocument;
+  baseEditedToComposite: (timeSec: number) => number;
+	baseEditedRangeToComposite: (startSec: number, endSec: number) => ReturnType<typeof baseEditedRangeToCompositeRanges>;
+  compositeToBaseEdited: (timeSec: number) => number;
+  isInsertedSceneTime: (timeSec: number) => boolean;
   transcript: TranscriptItem[];
   clipInfo: ClipInfo;
   mediaRef: (element: HTMLVideoElement | null) => void;
@@ -563,6 +608,13 @@ interface StudioContextValue extends StudioState {
    *  (Phase B step 13 guard item 8; the single-flight save queue already
    *  serializes the actual requests, this just reflects that in the UI). */
   trimHandlesDisabled: boolean;
+  insertSceneBlock: (scene: SceneBlock) => void;
+  moveSceneBlock: (id: string, anchorSec: number) => void;
+  trimSceneBlock: (id: string, durationSec: number) => void;
+  duplicateSceneBlock: (id: string) => void;
+	replaceSceneBlock: (id: string, content: SceneContent, durationSec?: number) => void;
+	updateSceneMotion: (id: string, motion: SceneMotion) => void;
+  deleteSceneBlock: (id: string) => void;
 }
 
 const StudioContext = createContext<StudioContextValue | null>(null);
@@ -657,6 +709,10 @@ interface StudioShellProps {
    *  in production. It exists so Chrome QA can prove the invalid-plan alert
    *  and export block without corrupting a Clip Editor Document. */
   compositionPlanQaFixture?: CompositionPlanQaFixture | null;
+  visualAssets?: StudioVisualAsset[];
+	sceneFonts?: StudioSceneFont[];
+  sceneTemplates?: StudioSceneTemplate[];
+  sceneWriteCapabilities?: Readonly<{ cards: boolean; images: boolean; videos: boolean; templates: boolean }>;
 }
 
 export function StudioShell({
@@ -686,6 +742,10 @@ export function StudioShell({
   splitLayoutFailure: initialSplitLayoutFailure = null,
   layoutAnalysisFailure: initialLayoutAnalysisFailure = null,
   compositionPlanQaFixture = null,
+  visualAssets = [],
+	sceneFonts = [],
+  sceneTemplates = [],
+  sceneWriteCapabilities = { cards: false, images: false, videos: false, templates: false },
 }: StudioShellProps) {
   const isViewportTooSmall = useIsViewportBelow(STUDIO_MIN_VIEWPORT_WIDTH);
   const [brollPreviewAsset, setBrollPreviewAsset] =
@@ -1189,6 +1249,28 @@ export function StudioShell({
   }, [studioSession],
   );
 
+  const insertSceneBlock = useCallback((scene: SceneBlock) => {
+    studioSession.dispatch({ type: "document.edit", action: { type: "insertSceneBlock", scene } });
+  }, [studioSession]);
+  const moveSceneBlock = useCallback((id: string, anchorSec: number) => {
+    studioSession.dispatch({ type: "document.edit", action: { type: "moveSceneBlock", id, anchorSec } });
+  }, [studioSession]);
+  const trimSceneBlock = useCallback((id: string, durationSec: number) => {
+    studioSession.dispatch({ type: "document.edit", action: { type: "trimSceneBlock", id, durationSec } });
+  }, [studioSession]);
+  const duplicateSceneBlock = useCallback((id: string) => {
+    studioSession.dispatch({ type: "document.edit", action: { type: "duplicateSceneBlock", id, duplicateId: crypto.randomUUID() } });
+  }, [studioSession]);
+	const replaceSceneBlock = useCallback((id: string, content: SceneContent, durationSec?: number) => {
+		studioSession.dispatch({ type: "document.edit", action: { type: "replaceSceneBlock", id, content, ...(durationSec === undefined ? {} : { durationSec }) } });
+  }, [studioSession]);
+	const updateSceneMotion = useCallback((id: string, motion: SceneMotion) => {
+		studioSession.dispatch({ type: "document.edit", action: { type: "updateSceneMotion", id, motion } });
+	}, [studioSession]);
+  const deleteSceneBlock = useCallback((id: string) => {
+    studioSession.dispatch({ type: "document.edit", action: { type: "deleteSceneBlock", id } });
+  }, [studioSession]);
+
   const setSegments = useCallback((next: TimelineSegment[]) => {
     studioSession.dispatch({ type: "segments.replace", segments: next });
   }, [studioSession],
@@ -1629,7 +1711,7 @@ export function StudioShell({
   }, [studioSession]);
 
   const handleExport = useCallback(async (options: StudioExportOptions) => {
-    if (compositionPlanStatus === "invalid") {
+    if (compositionPlanStatus === "invalid" || compositionPlanStatus === "blocked") {
       toaster.create({
         type: "error",
         title: "Export blocked",
@@ -1974,9 +2056,14 @@ export function StudioShell({
     layoutMode, showShortcuts, timelineZoom, selectedSegmentId, transcriptSelectionRange,
     captionPreset, captionSelected, selectedTextLayerId, transcriptOnly, segments, studioEdits, brollUrl,
     brollPreviewAsset,
+    sceneBlocks: doc.sceneBlocks, visualAssets, sceneFonts, sceneTemplates, sceneWriteCapabilities,
     saveState: displayedSaveState, isDocDirty, exportState, compositionPlanStatus,
     resetState, canUndo, canRedo, canReset,
     editorDocument: doc,
+    baseEditedToComposite: (timeSec) => baseEditedToComposite(doc, timeSec),
+		baseEditedRangeToComposite: (startSec, endSec) => baseEditedRangeToCompositeRanges(doc, startSec, endSec),
+    compositeToBaseEdited: (timeSec) => compositeToBaseEdited(doc, timeSec),
+    isInsertedSceneTime: (timeSec) => insertedSceneAtCompositeTime(doc, timeSec) !== null,
     transcript: derivedTranscript, clipInfo, mediaRef, playbackClock, setSourceAudioEnvelope,
     sourceVideoUrl, sourcePreviewId,
     clipStartSec: effectiveClipStartSec, clipEndSec: effectiveClipEndSec, sourcePurged,
@@ -1995,6 +2082,7 @@ export function StudioShell({
     togglePlay, seekTo, splitAtPlayhead, deleteSelectedSegment, handleSave, handleExport,
     reportCompositionPlanStatus, compositionPlanQaFixture,
     handleUndo, handleRedo, handleReset, commitTrim, trimHandlesDisabled,
+		insertSceneBlock, moveSceneBlock, trimSceneBlock, duplicateSceneBlock, replaceSceneBlock, updateSceneMotion, deleteSceneBlock,
   };
 
   return (

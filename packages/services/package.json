@@ -34,6 +34,7 @@
     "@narriflow/db": "workspace:*",
     "@narriflow/email": "workspace:*",
     "@narriflow/validators": "workspace:*",
+    "@node-rs/argon2": "^2.2.0",
     "@prisma/client": "^7.4.2",
     "fast-xml-parser": "^5.10.1",
     "fontkit": "2.0.4",

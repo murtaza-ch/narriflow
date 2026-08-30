@@ -4,33 +4,33 @@
 
 **Blocked by:** [Extend entitlements, permissions, and program analytics](02-extend-entitlements-permissions-and-program-analytics.md).
 
-**Status:** ready-for-agent
+**Status:** done
 
 **Specification:** [Publishing expansion and assisted copy](../features/publishing-expansion.md)
 
 ## Observable acceptance criteria
 
-- [ ] Shared platform schemas and Prisma support `facebook_reels` through an additive migration.
-- [ ] Meta OAuth lists eligible Pages, persists the selected Page account, and keeps Instagram connection behavior unchanged.
-- [ ] Facebook publishing follows existing Social Post status, retry, metric, and error contracts.
-- [ ] One capability table supplies aspect ratio, duration, text limits, thumbnail types, provider polling, and scheduling support to UI, validation, service, and worker.
-- [ ] Capability version is recorded with the Social Post validation result.
-- [ ] Provider errors map to stable codes without leaking tokens or response bodies.
+- [x] Shared platform schemas and Prisma support `facebook_reels` through an additive migration.
+- [x] Meta OAuth lists eligible Pages, persists the selected Page account, and keeps Instagram connection behavior unchanged.
+- [x] Facebook publishing follows existing Social Post status, retry, metric, and error contracts.
+- [x] One capability table supplies aspect ratio, duration, text limits, thumbnail types, provider polling, and scheduling support to UI, validation, service, and worker.
+- [x] Capability version is recorded with the Social Post validation result.
+- [x] Provider errors map to stable codes without leaking tokens or response bodies.
 
 ## Tests and failure injection
 
-- [ ] Contract tests cover Page selection, wrong workspace, missing role, expired token, revoked permission, upload failure, processing timeout, rate limit, lost response, and duplicate publish.
-- [ ] Existing Instagram provider tests remain unchanged and pass.
-- [ ] Tests prove an unsupported thumbnail cannot pass direct API validation.
+- [x] Contract tests cover Page selection, wrong workspace, missing role, expired token, revoked permission, upload failure, processing timeout, rate limit, lost response, and duplicate publish.
+- [x] Existing Instagram provider tests remain unchanged and pass.
+- [x] Tests prove an unsupported thumbnail cannot pass direct API validation.
 
 ## Migration and rollout
 
-- [ ] Deploy the enum migration before code and enable account connection separately from publishing.
-- [ ] Keep the Facebook publisher dark until provider sandbox or test-Page evidence passes.
+- [x] Deploy the enum migration before code and enable account connection separately from publishing.
+- [x] Keep the Facebook publisher dark until provider sandbox or test-Page evidence passes.
 
 ## Scope boundaries
 
-- [ ] Do not add other platforms or replace current Meta OAuth ownership.
+- [x] Do not add other platforms or replace current Meta OAuth ownership.
 
 ## Fresh-task handoff
 

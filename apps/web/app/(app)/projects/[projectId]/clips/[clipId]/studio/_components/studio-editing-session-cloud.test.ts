@@ -17,6 +17,7 @@ import {
 
 function makeDocument(brollUrl: string | null = null): EditorDocument {
   return editorDocumentSchema.parse({
+    version: 2,
     clipStartSec: 10,
     clipEndSec: 40,
     captionPreset: DEFAULT_CAPTION_PRESET,
@@ -24,6 +25,47 @@ function makeDocument(brollUrl: string | null = null): EditorDocument {
     studioEdits: studioEditsSchema.parse(undefined),
     brollUrl,
     deletedRanges: [],
+  });
+}
+
+function makeTimedDocument(): EditorDocument {
+  const sceneId = "8ab9d330-688f-4574-932c-27ac661245c1";
+  return editorDocumentSchema.parse({
+    version: 2,
+    ...makeDocument(),
+    sceneBlocks: [{
+      schemaVersion: 1,
+      id: sceneId,
+      anchorSec: 4,
+      durationSec: 2,
+      content: { kind: "color", color: "#111827" },
+      motion: { entrance: "fade", exit: "zoom-out" },
+      templateSnapshot: null,
+    }],
+    censorSegments: [{
+      schemaVersion: 1,
+      id: "dbb670b3-e28a-4514-bf2d-63e56608a4d0",
+      sourceWordIds: ["word-1"],
+      sourceStartSec: 14,
+      sourceEndSec: 14.5,
+      treatment: "beep",
+      paddingSec: 0.1,
+      beepSettings: { frequencyHz: 1_000, levelDb: -12 },
+      captionMaskPolicy: null,
+      suggestionFingerprint: "a".repeat(64),
+      policyVersion: "profanity-v1",
+      enabled: true,
+    }],
+    mediaMotions: [{
+      schemaVersion: 1,
+      id: "2adf79cc-35b2-4de5-85dc-c9ed197763e4",
+      target: { kind: "scene_block", sceneBlockId: sceneId },
+      startSec: 4,
+      endSec: 6,
+      entrance: "scale-in",
+      exit: "fade",
+      enabled: true,
+    }],
   });
 }
 
@@ -249,6 +291,30 @@ async function makeSession(
   await waitForSnapshot(session, (snapshot) => snapshot.status === "ready");
   return session;
 }
+
+test("checkpoints every timed-edit family without narrowing the document", async () => {
+  const cloud = new ControlledCloud(3, makeDocument());
+  const session = await makeSession(cloud);
+  const timed = makeTimedDocument();
+  session.dispatch({ type: "document.edit", action: {
+    type: "insertSceneBlock",
+    scene: timed.sceneBlocks[0]!,
+  } });
+  session.dispatch({ type: "document.edit", action: {
+    type: "insertCensorSegment",
+    segment: timed.censorSegments[0]!,
+  } });
+  session.dispatch({ type: "document.edit", action: {
+    type: "insertMediaMotion",
+    motion: timed.mediaMotions[0]!,
+  } });
+
+  const checkpoint = session.perform({ type: "checkpoint-cloud" });
+  await waitUntil(() => cloud.saves.length === 1);
+  expect(cloud.saves[0]?.document).toEqual(timed);
+  cloud.acknowledge(0, 4);
+  expect(await checkpoint).toEqual({ kind: "cloud-current", revision: 4 });
+});
 
 test("ignores an older document-generation response and serializes one latest follow-up", async () => {
   const cloud = new ControlledCloud(3, makeDocument());

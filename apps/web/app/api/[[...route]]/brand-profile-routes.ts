@@ -9,6 +9,9 @@ import type {
   ReusableAssetSoftDeleteInput,
   VisualAssetFinalizeInput,
   VisualAssetUploadInput,
+  SceneTemplateCreateInput,
+  SceneTemplateDeleteInput,
+  SceneTemplateUpdateInput,
 } from "@narriflow/validators";
 import {
   assertProgramWriteEnabled,
@@ -18,6 +21,8 @@ import {
   BrandProfileNotFoundError,
   ProgramWriteDisabledError,
   visualAssetService,
+  sceneTemplateService,
+  SceneTemplateError,
   type BrandActorScope,
 } from "@narriflow/services";
 import { authenticatedHonoInput } from "@/lib/authenticated-request-hono";
@@ -30,6 +35,14 @@ function failure(error: unknown, fallback: string) {
   if (error instanceof BrandProfileNotFoundError) return { status: 404 as const, body: { error: error.code } };
   if (error instanceof BrandProfileConflictError) return { status: 409 as const, body: { error: error.code, message: error.message } };
   if (error instanceof ProgramWriteDisabledError) return { status: 503 as const, body: { error: error.code, message: error.message } };
+  if (error instanceof SceneTemplateError) {
+    const status = error.code === "scene_template_revision_conflict"
+      ? 409 as const
+      : error.code === "scene_template_not_found" || error.code === "scene_template_profile_not_found" || error.code === "brand_profile_not_found"
+        ? 404 as const
+        : 400 as const;
+    return { status, body: { error: error.code, message: error.message } };
+  }
   const code = typeof error === "object" && error && "code" in error && typeof error.code === "string" ? error.code : fallback;
   return { status: 400 as const, body: { error: code, message: "The brand library request could not be completed." } };
 }
@@ -157,6 +170,49 @@ export function createBrandProfileRoutes(dependencies: BrandProfileRouteDependen
       return c.json({ ok: true }, 200);
     } catch (error) {
       const result = failure(error, "visual_asset_delete_failed");
+      return c.json(result.body, result.status);
+    }
+  });
+
+  app.get("/brand-profiles/:id/scene-templates", async (c) => {
+    const { id } = authenticatedHonoInput<{ id: string }>(c);
+    try {
+      return c.json({ scenes: await sceneTemplateService.list(dependencies.getActor(c), id) }, 200);
+    } catch (error) {
+      const result = failure(error, "scene_template_list_failed");
+      return c.json(result.body, result.status);
+    }
+  });
+
+  app.post("/brand-profiles/:id/scene-templates", async (c) => {
+    const { id, body } = authenticatedHonoInput<{ id: string; body: SceneTemplateCreateInput }>(c);
+    try {
+      assertProgramWriteEnabled("brand_profiles");
+      return c.json(await sceneTemplateService.create(dependencies.getActor(c), id, body), 201);
+    } catch (error) {
+      const result = failure(error, "scene_template_create_failed");
+      return c.json(result.body, result.status);
+    }
+  });
+
+  app.patch("/brand-profiles/:id/scene-templates/:templateId", async (c) => {
+    const { id, templateId, body } = authenticatedHonoInput<{ id: string; templateId: string; body: SceneTemplateUpdateInput }>(c);
+    try {
+      assertProgramWriteEnabled("brand_profiles");
+      return c.json(await sceneTemplateService.update(dependencies.getActor(c), id, templateId, body), 200);
+    } catch (error) {
+      const result = failure(error, "scene_template_update_failed");
+      return c.json(result.body, result.status);
+    }
+  });
+
+  app.delete("/brand-profiles/:id/scene-templates/:templateId", async (c) => {
+    const { id, templateId, body } = authenticatedHonoInput<{ id: string; templateId: string; body: SceneTemplateDeleteInput }>(c);
+    try {
+      assertProgramWriteEnabled("brand_profiles");
+      return c.json(await sceneTemplateService.softDelete(dependencies.getActor(c), id, templateId, body), 200);
+    } catch (error) {
+      const result = failure(error, "scene_template_delete_failed");
       return c.json(result.body, result.status);
     }
   });

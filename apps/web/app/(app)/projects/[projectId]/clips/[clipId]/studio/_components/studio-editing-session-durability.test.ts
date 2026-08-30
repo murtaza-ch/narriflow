@@ -133,6 +133,7 @@ class ForcedCoordinationHub {
 
 function makeDocument(brollUrl: string | null = null): EditorDocument {
   return editorDocumentSchema.parse({
+    version: 2,
     clipStartSec: 10,
     clipEndSec: 40,
     captionPreset: DEFAULT_CAPTION_PRESET,
@@ -140,6 +141,47 @@ function makeDocument(brollUrl: string | null = null): EditorDocument {
     studioEdits: studioEditsSchema.parse(undefined),
     brollUrl,
     deletedRanges: [],
+  });
+}
+
+function makeTimedDocument(brollUrl: string | null = null): EditorDocument {
+  const sceneId = "8ab9d330-688f-4574-932c-27ac661245c1";
+  return editorDocumentSchema.parse({
+    version: 2,
+    ...makeDocument(brollUrl),
+    sceneBlocks: [{
+      schemaVersion: 1,
+      id: sceneId,
+      anchorSec: 4,
+      durationSec: 2,
+      content: { kind: "color", color: "#111827" },
+      motion: { entrance: "fade", exit: "zoom-out" },
+      templateSnapshot: null,
+    }],
+    censorSegments: [{
+      schemaVersion: 1,
+      id: "dbb670b3-e28a-4514-bf2d-63e56608a4d0",
+      sourceWordIds: ["word-1"],
+      sourceStartSec: 14,
+      sourceEndSec: 14.5,
+      treatment: "beep",
+      paddingSec: 0.1,
+      beepSettings: { frequencyHz: 1_000, levelDb: -12 },
+      captionMaskPolicy: null,
+      suggestionFingerprint: "a".repeat(64),
+      policyVersion: "profanity-v1",
+      enabled: true,
+    }],
+    mediaMotions: [{
+      schemaVersion: 1,
+      id: "2adf79cc-35b2-4de5-85dc-c9ed197763e4",
+      target: { kind: "scene_block", sceneBlockId: sceneId },
+      startSec: 4,
+      endSec: 6,
+      entrance: "scale-in",
+      exit: "fade",
+      enabled: true,
+    }],
   });
 }
 
@@ -208,7 +250,7 @@ test("defers browser adapter startup until the public session lifecycle starts",
 
 test("recovers a conflict-free Device Draft before accepting mutations", async () => {
   const cloud = makeDocument();
-  const recovered = makeDocument("https://cdn.example.com/recovered.mp4");
+  const recovered = makeTimedDocument("https://cdn.example.com/recovered.mp4");
   const draft: StudioDraftRecord = {
     formatVersion: 2,
     key: "project:clip",
@@ -267,6 +309,9 @@ test("recovers a conflict-free Device Draft before accepting mutations", async (
   const snapshot = await waitForSnapshot(session, (value) => value.status !== "starting");
   expect(snapshot.status).toBe("ready");
   expect(snapshot.document).toEqual(recovered);
+  expect(snapshot.document.sceneBlocks).toHaveLength(1);
+  expect(snapshot.document.censorSegments).toHaveLength(1);
+  expect(snapshot.document.mediaMotions).toHaveLength(1);
   expect(snapshot.recovery).toEqual({ kind: "recovered", conflictPaths: [] });
   expect(snapshot.durability).toEqual({ device: "durable", protectsNavigation: false });
   expect(snapshot.ownership).toEqual({ kind: "writer", generation: 2 });

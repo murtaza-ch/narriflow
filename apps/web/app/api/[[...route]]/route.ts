@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { handle } from "hono/vercel";
 import {
   authenticatedHonoActor,
+  authenticatedHonoInput,
   authenticatedRequestHonoMiddleware,
 } from "@/lib/authenticated-request-hono";
 import {
@@ -48,6 +49,12 @@ import {
   updateClipTranscriptSliceSchema,
   hasUserErrorMessage,
   userErrorMessage,
+  resolvePricingTier,
+  type CreateExportBundleInput,
+  type CreateReviewRoundInput,
+  type ApplySceneTemplateInput,
+  type EditorDocument,
+  type SceneBlock,
 } from "@narriflow/validators";
 import {
   audioAssetService,
@@ -92,6 +99,17 @@ import {
   type ProjectListSort,
   type ProjectListSourceFilter,
   type ProjectListStatusFilter,
+  campaignOperationService,
+  CampaignOperationError,
+  reviewService,
+  ReviewServiceError,
+  visualAssetService,
+  VisualAssetIntegrityError,
+  brandFontService,
+  BrandFontIntegrityError,
+  ProgramWriteDisabledError,
+  hasFeature,
+  isProgramWriteEnabled,
 } from "@narriflow/services";
 import {
   resolveCanonicalAppOrigin,
@@ -109,6 +127,49 @@ export const runtime = "nodejs";
 export const maxDuration = 60;
 
 const app = new Hono().basePath("/api");
+
+function sceneDocumentMutationError(pricingTier: string, current: EditorDocument, next: EditorDocument) {
+  const currentById = new Map(current.sceneBlocks.map((scene) => [scene.id, scene]));
+  const nextById = new Map(next.sceneBlocks.map((scene) => [scene.id, scene]));
+  const changed = new Set([...currentById.keys(), ...nextById.keys()].filter((id) =>
+    JSON.stringify(currentById.get(id)) !== JSON.stringify(nextById.get(id)),
+  ));
+  if (changed.size === 0) return null;
+  if (!hasFeature(pricingTier, "brand.scenes")) return { status: 403 as const, error: "scene_feature_unavailable", message: "Scene editing is not available on this plan" };
+  const disabled = [...changed].flatMap((id) => [currentById.get(id), nextById.get(id)]).filter((scene): scene is SceneBlock => Boolean(scene)).some((scene) => {
+    if (scene.templateSnapshot && !isProgramWriteEnabled("scene_templates")) return true;
+    if ((scene.content.kind === "text" || scene.content.kind === "color") && !isProgramWriteEnabled("scene_cards")) return true;
+    if (scene.content.kind === "image" && !isProgramWriteEnabled("scene_images")) return true;
+    return scene.content.kind === "video" && !isProgramWriteEnabled("scene_videos");
+  });
+  return disabled ? { status: 503 as const, error: "program_write_disabled", message: "This scene type is temporarily read-only" } : null;
+}
+
+function changedSceneBlocks(current: EditorDocument, next: EditorDocument): SceneBlock[] {
+  const currentById = new Map(current.sceneBlocks.map((scene) => [scene.id, scene]));
+  return next.sceneBlocks.filter((scene) =>
+    JSON.stringify(currentById.get(scene.id)) !== JSON.stringify(scene),
+  );
+}
+
+function introducedSceneReferences(current: EditorDocument, next: EditorDocument): SceneBlock[] {
+  const currentById = new Map(current.sceneBlocks.map((scene) => [scene.id, scene]));
+  return next.sceneBlocks.filter((scene) => {
+    const previous = currentById.get(scene.id);
+    if (!previous || previous.content.kind !== scene.content.kind) return true;
+    const previousAsset = previous.content.kind === "image" || previous.content.kind === "video"
+      ? previous.content.asset
+      : previous.content.kind === "text"
+        ? previous.content.fontAsset
+        : null;
+    const nextAsset = scene.content.kind === "image" || scene.content.kind === "video"
+      ? scene.content.asset
+      : scene.content.kind === "text"
+        ? scene.content.fontAsset
+        : null;
+    return JSON.stringify(previousAsset) !== JSON.stringify(nextAsset);
+  });
+}
 app.use("*", authenticatedRequestHonoMiddleware);
 billingService.validateConfiguration({ surface: "web" });
 
@@ -1102,6 +1163,21 @@ app.put("/projects/:id/clips/:clipId/editor", async (c) => {
   }
 
   try {
+    const current = await clipService.getClipEditorDocument(
+      appUser.workspaceOwnerUserId,
+      projectId,
+      c.req.param("clipId"),
+    );
+    const sceneError = sceneDocumentMutationError(appUser.pricingTier, current.document, parsed.data.document);
+    if (sceneError) return c.json({ error: sceneError.error, message: sceneError.message }, sceneError.status);
+    const changedScenes = changedSceneBlocks(current.document, parsed.data.document);
+    const introducedScenes = introducedSceneReferences(current.document, parsed.data.document);
+    await Promise.all([
+      visualAssetService.assertSceneReferencesWithPolicy(appUser, changedScenes, true),
+      visualAssetService.assertSceneReferences(appUser, introducedScenes),
+      brandFontService.assertSceneReferences(appUser, projectId, changedScenes, { allowDeleted: true, requireActiveProfile: false }),
+      brandFontService.assertSceneReferences(appUser, projectId, introducedScenes, { allowDeleted: false, requireActiveProfile: true }),
+    ]);
     const mutation = await clipEditorDocumentPersistence.mutateDocument({
       actorUserId: appUser.actorUserId,
       projectId,
@@ -1122,6 +1198,12 @@ app.put("/projects/:id/clips/:clipId/editor", async (c) => {
       200,
     );
   } catch (error) {
+    if (error instanceof VisualAssetIntegrityError) {
+      return c.json({ error: error.code, message: "The selected Scene asset or source range is no longer valid" }, 422);
+    }
+    if (error instanceof BrandFontIntegrityError) {
+      return c.json({ error: error.code, message: "The selected Scene font is no longer valid for this Brand Profile" }, 422);
+    }
     if (error instanceof ClipEditorRevisionConflictError) {
       return c.json(
         {
@@ -1172,6 +1254,9 @@ app.post("/projects/:id/clips/:clipId/editor/reset", async (c) => {
   }
 
   try {
+    const current = await clipService.getClipEditorDocument(appUser.workspaceOwnerUserId, projectId, c.req.param("clipId"));
+    const sceneError = sceneDocumentMutationError(appUser.pricingTier, current.document, current.original);
+    if (sceneError) return c.json({ error: sceneError.error, message: sceneError.message }, sceneError.status);
     const mutation = await clipEditorDocumentPersistence.mutateDocument({
       actorUserId: appUser.actorUserId,
       projectId,
@@ -1300,23 +1385,161 @@ app.post("/projects/:id/clips/render", async (c) => {
   }
 
   try {
-    const result = await clipService.triggerClipRendering(
-      projectId,
-      idempotencyKey,
-      {
-        workspaceId: appUser.workspaceId,
-        actorUserId: appUser.actorUserId,
-      },
-      parsed.data.clipIds,
-      parsed.data.aspectRatios,
-      parsed.data.resolution,
+    const execute = (clipIds?: string[]) => clipService.triggerClipRendering(
+      projectId, idempotencyKey,
+      { workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
+      clipIds, parsed.data.aspectRatios, parsed.data.resolution,
     );
+    const result = parsed.data.clipIds
+      ? await campaignOperationService.renderSelected({
+          actorUserId: appUser.actorUserId,
+          workspaceId: appUser.workspaceId,
+          projectId,
+          pricingTier: resolvePricingTier(appUser.pricingTier),
+          idempotencyKey,
+          clipIds: parsed.data.clipIds,
+          aspectRatios: parsed.data.aspectRatios,
+          resolution: parsed.data.resolution,
+          execute,
+        })
+      : await execute();
     return c.json(result, 202);
   } catch (error) {
     return c.json(
       { error: "clip_render_failed", message: errorMessage(error) },
       400,
     );
+  }
+});
+
+app.post("/projects/:id/export-bundles", async (c) => {
+  const appUser = authenticatedHonoActor(c);
+  const { id, body } = authenticatedHonoInput<{ id: string; body: CreateExportBundleInput }>(c);
+  const idempotencyKey = c.req.header("idempotency-key")?.trim() ?? "";
+  if (!idempotencyKey || idempotencyKey.length > 128) return c.json({ error: "invalid_input", message: "Invalid idempotency-key header" }, 400);
+  try {
+    return c.json(await campaignOperationService.createExportBundle({ actorUserId: appUser.actorUserId, workspaceId: appUser.workspaceId, projectId: id, pricingTier: resolvePricingTier(appUser.pricingTier), idempotencyKey }, body), 202);
+  } catch (error) {
+    if (error instanceof ProgramWriteDisabledError) return c.json({ error: error.code, message: error.message }, 503);
+    const code = error instanceof CampaignOperationError ? error.code : "export_bundle_failed";
+    return c.json({ error: code, message: error instanceof CampaignOperationError ? error.message : "Export bundle could not be created" }, code.includes("conflict") ? 409 : 400);
+  }
+});
+
+app.get("/projects/:id/export-bundles", async (c) => {
+  const appUser = authenticatedHonoActor(c);
+  const projectId = c.req.param("id");
+  return c.json({ bundles: await campaignOperationService.listExportBundles({ workspaceId: appUser.workspaceId, projectId }) }, 200);
+});
+
+app.get("/projects/:id/campaign-operations", async (c) => {
+  const appUser = authenticatedHonoActor(c);
+  const projectId = c.req.param("id");
+  return c.json({ operations: await campaignOperationService.listOperations({ workspaceId: appUser.workspaceId, projectId }) }, 200);
+});
+
+app.get("/projects/:id/export-bundles/:bundleId", async (c) => {
+  const appUser = authenticatedHonoActor(c);
+  const { id: projectId, bundleId } = authenticatedHonoInput<{ id: string; bundleId: string }>(c);
+  try {
+    return c.json(await campaignOperationService.getExportBundle({ workspaceId: appUser.workspaceId, projectId }, bundleId), 200);
+  } catch (error) {
+    const code = error instanceof CampaignOperationError ? error.code : "export_bundle_read_failed";
+    return c.json({ error: code, message: error instanceof CampaignOperationError ? error.message : "Export bundle could not be read" }, code === "export_bundle_not_found" ? 404 : 400);
+  }
+});
+
+app.post("/projects/:id/export-bundles/:bundleId/retry", async (c) => {
+  const appUser = authenticatedHonoActor(c);
+  const { id: projectId, bundleId } = authenticatedHonoInput<{ id: string; bundleId: string }>(c);
+  const idempotencyKey = c.req.header("idempotency-key")?.trim() ?? "";
+  if (!idempotencyKey || idempotencyKey.length > 128) return c.json({ error: "invalid_input", message: "Invalid idempotency-key header" }, 400);
+  try {
+    return c.json(await campaignOperationService.retryExportBundle({ actorUserId: appUser.actorUserId, workspaceId: appUser.workspaceId, projectId, pricingTier: resolvePricingTier(appUser.pricingTier), idempotencyKey }, bundleId), 202);
+  } catch (error) {
+    const code = error instanceof CampaignOperationError ? error.code : "export_bundle_retry_failed";
+    return c.json({ error: code, message: error instanceof CampaignOperationError ? error.message : "Export bundle could not be retried" }, code.includes("already_retried") || code.includes("conflict") ? 409 : code.includes("not_found") ? 404 : 400);
+  }
+});
+
+app.post("/projects/:id/campaign-operations/:operationId/retry-export-bundle", async (c) => {
+	const appUser = authenticatedHonoActor(c);
+	const { id: projectId, operationId } = authenticatedHonoInput<{ id: string; operationId: string }>(c);
+	const idempotencyKey = c.req.header("idempotency-key")?.trim() ?? "";
+	if (!idempotencyKey || idempotencyKey.length > 128) return c.json({ error: "invalid_input", message: "Invalid idempotency-key header" }, 400);
+	try {
+		return c.json(await campaignOperationService.retryExportBundleOperation({ actorUserId: appUser.actorUserId, workspaceId: appUser.workspaceId, projectId, pricingTier: resolvePricingTier(appUser.pricingTier), idempotencyKey }, operationId), 202);
+	} catch (error) {
+		const code = error instanceof CampaignOperationError ? error.code : "export_bundle_retry_failed";
+		return c.json({ error: code, message: error instanceof CampaignOperationError ? error.message : "Export bundle could not be retried" }, code.includes("already_retried") || code.includes("conflict") ? 409 : code.includes("not_found") ? 404 : 400);
+	}
+});
+
+app.get("/projects/:id/export-bundles/:bundleId/download", async (c) => {
+  const appUser = authenticatedHonoActor(c);
+  const { id: projectId, bundleId } = authenticatedHonoInput<{ id: string; bundleId: string }>(c);
+  try {
+    const url = await campaignOperationService.getExportBundleDownload({ workspaceId: appUser.workspaceId, projectId }, bundleId);
+    return c.redirect(url, 307);
+  } catch (error) {
+    const code = error instanceof CampaignOperationError ? error.code : "export_bundle_download_failed";
+    const status = code === "export_bundle_not_found" ? 404 : code === "export_bundle_expired" ? 410 : code === "export_bundle_not_ready" ? 409 : 400;
+    return c.json({ error: code, message: error instanceof CampaignOperationError ? error.message : "Export bundle could not be downloaded" }, status);
+  }
+});
+
+app.post("/projects/:id/brand-profiles/:profileId/scene-templates/:templateId/apply", async (c) => {
+  const appUser = authenticatedHonoActor(c);
+  const { id, profileId, templateId, body } = authenticatedHonoInput<{
+    id: string;
+    profileId: string;
+    templateId: string;
+    body: ApplySceneTemplateInput;
+  }>(c);
+  const idempotencyKey = c.req.header("idempotency-key")?.trim() ?? "";
+  if (!idempotencyKey || idempotencyKey.length > 128) {
+    return c.json({ error: "invalid_input" }, 400);
+  }
+  try {
+    const result = await campaignOperationService.applySceneTemplate({
+      actorUserId: appUser.actorUserId,
+      workspaceId: appUser.workspaceId,
+      workspaceOwnerUserId: appUser.workspaceOwnerUserId,
+      role: appUser.role,
+      status: appUser.status,
+      pricingTier: appUser.pricingTier,
+      isPersonalWorkspace: appUser.isPersonalWorkspace,
+      projectId: id,
+      idempotencyKey,
+    }, profileId, templateId, body);
+    return c.json(result, 200);
+  } catch (error) {
+    if (error instanceof ProgramWriteDisabledError) return c.json({ error: error.code, message: error.message }, 503);
+    const code = error instanceof CampaignOperationError ? error.code : "scene_template_apply_failed";
+    return c.json({ error: code, message: error instanceof CampaignOperationError ? error.message : "Scene template could not be applied" }, code.includes("conflict") ? 409 : 400);
+  }
+});
+
+app.post("/projects/:id/review-rounds", async (c) => {
+  const appUser = authenticatedHonoActor(c);
+  const { id, body } = authenticatedHonoInput<{ id: string; body: CreateReviewRoundInput }>(c);
+  try {
+    return c.json(await reviewService.createRound({ actorUserId: appUser.actorUserId, workspaceId: appUser.workspaceId, projectId: id, pricingTier: resolvePricingTier(appUser.pricingTier) }, body), 201);
+  } catch (error) {
+    if (error instanceof ProgramWriteDisabledError) return c.json({ error: error.code, message: error.message }, 503);
+    const code = error instanceof ReviewServiceError ? error.code : "review_round_create_failed";
+    return c.json({ error: code, message: error instanceof ReviewServiceError ? error.message : "Review round could not be created" }, code.includes("stale") ? 409 : code.includes("not_found") ? 404 : 400);
+  }
+});
+
+app.post("/projects/:id/review-rounds/:roundId/revoke", async (c) => {
+  const appUser = authenticatedHonoActor(c);
+  const { id, roundId } = authenticatedHonoInput<{ id: string; roundId: string }>(c);
+  try {
+    return c.json(await reviewService.revokeRound({ actorUserId: appUser.actorUserId, workspaceId: appUser.workspaceId, projectId: id }, roundId), 200);
+  } catch (error) {
+    const code = error instanceof ReviewServiceError ? error.code : "review_round_revoke_failed";
+    return c.json({ error: code, message: error instanceof ReviewServiceError ? error.message : "Review round could not be revoked" }, code.includes("not_found") ? 404 : 400);
   }
 });
 
@@ -1353,7 +1576,11 @@ app.post("/projects/:id/clips/:clipId/exports", async (c) => {
       );
     }
     if (error instanceof ClipExportError) {
-      return c.json({ error: error.code, message: errorMessage(error) }, 404);
+      const unavailable = error.code === "scene_asset_unavailable" || error.code === "scene_font_unavailable";
+      return c.json(
+        { error: error.code, message: errorMessage(error) },
+        unavailable ? 422 : 404,
+      );
     }
     console.warn(
       JSON.stringify({
@@ -1396,7 +1623,10 @@ app.post("/projects/:id/clips/:clipId/exports/:exportId/retry", async (c) => {
   } catch (error) {
     if (!(error instanceof ClipExportError)) throw error;
     const code = error.code;
-    return c.json({ error: code, message: "Could not retry export" }, 400);
+    return c.json(
+      { error: code, message: error.message },
+      code === "scene_asset_unavailable" || code === "scene_font_unavailable" ? 422 : 400,
+    );
   }
 });
 
@@ -1698,7 +1928,8 @@ app.get("/social/oauth/callback", async (c) => {
       safeSocialRedirectPath(result.redirectPath),
       origin,
     );
-    successRedirect.searchParams.set("connected", String(result.accounts.length));
+    if (result.facebookSelectionToken) successRedirect.searchParams.set("facebook_selection", result.facebookSelectionToken);
+    else successRedirect.searchParams.set("connected", String(result.accounts.length));
     return c.redirect(successRedirect.toString(), 302);
   } catch (error) {
     redirect.searchParams.set(
@@ -1708,6 +1939,34 @@ app.get("/social/oauth/callback", async (c) => {
         : "social_oauth_callback_failed",
     );
     return c.redirect(redirect.toString(), 302);
+  }
+});
+
+app.get("/social/oauth/facebook-selection/:token", async (c) => {
+  const appUser = authenticatedHonoActor(c);
+  const token = c.req.param("token");
+  if (!/^[A-Za-z0-9_-]{32,128}$/.test(token)) return c.json({ error: "social_facebook_selection_invalid" }, 400);
+  try {
+    return c.json({ pages: await socialOAuthService.getFacebookPageSelection(appUser.workspaceOwnerUserId, appUser.workspaceId, token) }, 200);
+  } catch (error) {
+    const code = error instanceof SocialOAuthError ? error.code : "social_facebook_selection_failed";
+    return c.json({ error: code, message: error instanceof SocialOAuthError ? error.message : "Facebook Pages could not be loaded" }, 400);
+  }
+});
+
+app.post("/social/oauth/facebook-selection/:token", async (c) => {
+  const appUser = authenticatedHonoActor(c);
+  const token = c.req.param("token");
+  const payload = await c.req.json().catch(() => null) as { pageId?: unknown } | null;
+  if (!/^[A-Za-z0-9_-]{32,128}$/.test(token) || typeof payload?.pageId !== "string" || payload.pageId.length > 200) {
+    return c.json({ error: "invalid_input" }, 400);
+  }
+  try {
+    const account = await socialOAuthService.completeFacebookPageSelection(appUser.workspaceOwnerUserId, appUser.workspaceId, token, payload.pageId);
+    return c.json({ account }, 201);
+  } catch (error) {
+    const code = error instanceof SocialOAuthError ? error.code : "social_facebook_selection_failed";
+    return c.json({ error: code, message: error instanceof SocialOAuthError ? error.message : "Facebook Page could not be connected" }, 400);
   }
 });
 

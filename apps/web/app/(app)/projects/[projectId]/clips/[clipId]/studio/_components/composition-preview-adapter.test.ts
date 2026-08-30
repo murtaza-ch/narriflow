@@ -23,6 +23,7 @@ import {
 function centerPlan() {
   const result = planClipComposition({
     document: editorDocumentSchema.parse({
+    version: 2,
       clipStartSec: 0,
       clipEndSec: 6,
       captionPreset: captionPresetSchema.parse({}),
@@ -198,6 +199,7 @@ describe("composition preview adapter", () => {
   test("adopts an audio-only audiogram without pretending its background will render", () => {
     const result = planClipComposition({
       document: editorDocumentSchema.parse({
+    version: 2,
         clipStartSec: 0,
         clipEndSec: 6,
         captionPreset: captionPresetSchema.parse({}),
@@ -549,6 +551,7 @@ describe("composition preview adapter", () => {
     const base = centerPlan();
     const result = planClipComposition({
       document: editorDocumentSchema.parse({
+    version: 2,
         clipStartSec: 0,
         clipEndSec: 6,
         captionPreset: captionPresetSchema.parse({}),
@@ -605,6 +608,7 @@ describe("composition preview adapter", () => {
   test("adopts only active planned visual layers in stable z-order at boundaries", () => {
     const result = planClipComposition({
       document: editorDocumentSchema.parse({
+    version: 2,
         clipStartSec: 0,
         clipEndSec: 6,
         captionPreset: captionPresetSchema.parse({ visible: false }),
@@ -664,5 +668,45 @@ describe("composition preview adapter", () => {
     expect(adoptCompositionPreview(result.plan, "9:16", 6).layers.filter(
       (layer) => layer.kind === "text",
     ).map((layer) => layer.id)).toEqual(["layer:text:late:9:16"]);
+  });
+
+  test("adopts an inserted scene that intentionally has no source-video layer", () => {
+    const base = editorDocumentSchema.parse({
+    version: 2,
+      clipStartSec: 0,
+      clipEndSec: 6,
+      captionPreset: captionPresetSchema.parse({}),
+      transcriptSlice: [],
+      studioEdits: studioEditsSchema.parse({ framing: { mode: "center" } }),
+      brollUrl: null,
+      deletedRanges: [],
+    });
+    const result = planClipComposition({
+      document: {
+        ...base,
+        sceneBlocks: [{
+          id: "11111111-1111-4111-8111-111111111111",
+          schemaVersion: 1,
+          anchorSec: 0,
+          durationSec: 2,
+          content: { kind: "text", text: "Opening", fontFamily: "Archivo", fontAsset: null, color: "#FFFFFF", backgroundColor: "#111827" },
+          motion: { entrance: "fade", exit: "fade" },
+          templateSnapshot: null,
+        }],
+      },
+      source: { identity: "preview:inserted", kind: "video", width: 1920, height: 1080 },
+      evidence: { automaticLayout: { state: "missing" } },
+      assets: { backgroundImage: { state: "missing" } },
+      capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v1" },
+      targets: [{ id: "9:16", aspectRatio: "9:16", width: 1080, height: 1920 }],
+    });
+    if (result.status === "invalid") throw new Error(result.error.code);
+
+    expect(adoptCompositionPreview(result.plan, "9:16", 1)).toMatchObject({
+      mainMediaKey: "preview:inserted",
+      sceneStartSec: 0,
+      sceneEndSec: 2,
+      layers: [expect.objectContaining({ kind: "inserted-scene" })],
+    });
   });
 });

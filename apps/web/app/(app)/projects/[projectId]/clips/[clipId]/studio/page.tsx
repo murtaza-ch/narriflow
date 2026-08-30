@@ -4,14 +4,19 @@ import { executeProjectAction } from "@/lib/authenticated-request-action";
 import {
   clipService,
   hasFeature,
+  isProgramWriteEnabled,
   projectService,
   presignDownloadUrl,
+  visualAssetService,
+  sceneTemplateService,
+  brandFontService,
+  brandProfileService,
 } from "@narriflow/services";
-import { brandTemplateSnapshotSchema, getEffectiveClipTiming,
+import { brandTemplateSnapshotSchema, getEffectiveClipTiming, sceneTemplateDefinitionSchema,
 } from "@narriflow/validators";
 import { compositionAssetRef } from "@narriflow/composition-plan";
 import { StudioShell } from "./_components/studio-shell";
-import type { ClipInfo, StudioBrandLogo } from "./_components/studio-shell";
+import type { ClipInfo, StudioBrandLogo, StudioSceneFont, StudioVisualAsset } from "./_components/studio-shell";
 import { buildSegmentsFromUtterances } from "./_components/edited-timeline";
 import { resolveCompositionPlanQaFixture } from "./_components/composition-plan-qa-fixture";
 
@@ -45,6 +50,14 @@ export default async function StudioPage({
 
   if (!snapshot.project) notFound();
 
+  const scenesEntitled = hasFeature(pricingTier, "brand.scenes");
+  const sceneWriteCapabilities = {
+    cards: scenesEntitled && isProgramWriteEnabled("scene_cards"),
+    images: scenesEntitled && isProgramWriteEnabled("scene_images"),
+    videos: scenesEntitled && isProgramWriteEnabled("scene_videos"),
+    templates: scenesEntitled && isProgramWriteEnabled("scene_templates"),
+  };
+
   const clip = clips.find((c) => c.id === clipId);
   if (!clip) notFound();
 
@@ -57,7 +70,7 @@ export default async function StudioPage({
   // throws on a missing clip (unlike getClipPreviewSource's soft-empty
   // return), so running it before the notFound() check would surface an
   // unhandled error instead of a clean 404.
-  const [sourceVideoUrl, editorDoc, brandLogoUrl] = await Promise.all([
+  const [sourceVideoUrl, editorDoc, brandLogoUrl, activeVisualAssets, rawSceneTemplates, activeProfile] = await Promise.all([
     // Presign source video URL (works for both uploads and YouTube — both
     // stored in R2). Non-fatal: a presign failure just means no source
     // playback, not a broken page.
@@ -81,7 +94,42 @@ export default async function StudioPage({
           expiresIn: 3600,
         }).catch(() => null)
       : Promise.resolve(null),
+    scenesEntitled ? visualAssetService.list(appUser) : Promise.resolve([]),
+    scenesEntitled && snapshot.project.brandProfileId
+      ? sceneTemplateService.list(appUser, snapshot.project.brandProfileId)
+      : Promise.resolve([]),
+    scenesEntitled && snapshot.project.brandProfileId
+      ? brandProfileService.get(appUser, snapshot.project.brandProfileId).catch(() => null)
+      : Promise.resolve(null),
   ]);
+	const [retainedVisualAssets, retainedSceneFonts] = scenesEntitled
+		? await Promise.all([
+			visualAssetService.resolveSceneReferences(appUser, editorDoc.document.sceneBlocks),
+			brandFontService.resolveSceneReferences(appUser, editorDoc.document.sceneBlocks),
+		])
+		: [[], []];
+	const visualAssets = [...new Map<string, StudioVisualAsset>([
+		...retainedVisualAssets.map((asset) => [asset.id, asset as StudioVisualAsset] as const),
+		...activeVisualAssets.map((asset) => [asset.id, { ...asset, missing: asset.accessUrl === null, insertable: true }] as const),
+	]).values()];
+	const activeSceneFonts: StudioSceneFont[] = (activeProfile?.fonts ?? []).map((font) => ({
+		id: font.id,
+		family: font.family,
+		style: font.style,
+		weight: font.weight,
+		fingerprint: font.fingerprint,
+		accessUrl: font.accessUrl,
+		missing: font.missing,
+		insertable: !font.missing,
+	}));
+	const sceneFonts = [...new Map<string, StudioSceneFont>([
+		...retainedSceneFonts.map((font) => [font.id, font as StudioSceneFont] as const),
+		...activeSceneFonts.map((font) => [font.id, font] as const),
+	]).values()];
+  const sceneTemplates = rawSceneTemplates.flatMap((template) => {
+    const definition = sceneTemplateDefinitionSchema.safeParse(template.definition);
+    return definition.success ? [{ id: template.id, name: template.name, revision: template.revision, fingerprint: template.fingerprint, role: template.role, definition: definition.data }] : [];
+  });
 
   const brandLogo: StudioBrandLogo | null =
     brandSnapshot?.logoStorageKey
@@ -216,6 +264,10 @@ export default async function StudioPage({
       splitLayoutFailure={editorDoc.splitLayoutFailure}
       layoutAnalysisFailure={editorDoc.layoutAnalysisFailure}
       compositionPlanQaFixture={compositionPlanQaFixture}
+      visualAssets={visualAssets}
+		sceneFonts={sceneFonts}
+      sceneTemplates={sceneTemplates}
+      sceneWriteCapabilities={sceneWriteCapabilities}
     />
   );
 }

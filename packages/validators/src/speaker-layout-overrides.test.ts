@@ -81,6 +81,7 @@ describe("speaker layout overrides", () => {
       endSec: 12,
     });
     const doc = editorDocumentSchema.parse({
+    version: 2,
       clipStartSec: 0,
       clipEndSec: 20,
       captionPreset: DEFAULT_CAPTION_PRESET,
@@ -122,6 +123,7 @@ describe("speaker layout overrides", () => {
     };
     const override = speakerLayoutOverrideFromScene(scene, "9:16", "shifted");
     const doc = editorDocumentSchema.parse({
+    version: 2,
       clipStartSec: 0,
       clipEndSec: 20,
       captionPreset: DEFAULT_CAPTION_PRESET,

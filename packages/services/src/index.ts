@@ -45,15 +45,32 @@ export {
   VisualAssetIntegrityError,
   VisualAssetReferenceError,
   assertFinalizedVisualObject,
+  assertSceneVisualAssetReferences,
   visualAssetKindForContentType,
   type VisualAssetStorage,
   type VisualMediaProbe,
 } from "./visual-asset.service";
 export {
+  sceneTemplateService,
+  SceneTemplateService,
+  SceneTemplateError,
+} from "./scene-template.service";
+export {
+  reviewService,
+  ReviewService,
+  ReviewServiceError,
+  hashReviewAccessToken,
+  issueReviewSession,
+  verifyReviewSession,
+  deriveReviewRoundStatus,
+} from "./review.service";
+export { isSocialProviderPublishingEnabled } from "./social-publication-config";
+export {
   brandFontService,
   BrandFontService,
   BrandFontIntegrityError,
   BrandFontReferenceError,
+  assertSceneBrandFontReferences,
   parseBrandFontHeader,
 } from "./brand-font.service";
 export {
@@ -80,6 +97,12 @@ export {
   type ClipPendingAutoLayoutAnalysis,
   type ClipDuplicationStorageAdapter,
 } from "./clip.service";
+export {
+  campaignOperationService,
+  CampaignOperationService,
+  CampaignOperationError,
+  allocateBundleFileNames,
+} from "./campaign-operation.service";
 export {
   clipEditorDocumentPersistence,
   createClipEditorDocumentPersistence,
@@ -302,6 +325,7 @@ export {
 } from "./transcript.service";
 export {
   classifyR2StorageError,
+  copyObject,
   deleteObject,
   deleteObjects,
   downloadObjectToFile,

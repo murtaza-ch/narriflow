@@ -250,6 +250,8 @@ async function toAggregate(profile: ProfileAggregate) {
     voice: brandVoiceGuidanceSchema.parse(profile.voiceGuidance),
     approvalRule: profile.approvalRule as "none" | "approval_required",
     defaultTemplateId: profile.defaultTemplateId,
+    defaultIntroSceneTemplateId: profile.defaultIntroSceneTemplateId,
+    defaultOutroSceneTemplateId: profile.defaultOutroSceneTemplateId,
     isCompatibility: profile.isCompatibility,
     createdAt: profile.createdAt.toISOString(),
     updatedAt: profile.updatedAt.toISOString(),

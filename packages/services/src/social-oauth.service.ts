@@ -6,12 +6,13 @@ import {
   type SocialAccountSnapshot,
   type SocialPlatform,
 } from "@narriflow/validators";
+import { SOCIAL_PROVIDER_CAPABILITIES } from "./social-publication-config";
 
 const CALLBACK_PATH = "/api/social/oauth/callback";
 const DEFAULT_REDIRECT_PATH = "/settings/social-accounts";
 const OAUTH_STATE_TTL_MS = 15 * 60 * 1000;
 const TOKEN_REFRESH_WINDOW_MS = 60 * 1000;
-const META_GRAPH_VERSION = process.env.META_GRAPH_VERSION?.trim() || "v20.0";
+const META_GRAPH_VERSION = SOCIAL_PROVIDER_CAPABILITIES.instagram_reels.apiVersion;
 
 export class SocialOAuthError extends Error {
   code: string;
@@ -126,7 +127,7 @@ function decryptToken(encrypted: string) {
   ]).toString("utf8");
 }
 
-async function readJson(response: Response) {
+export async function readSocialProviderJson(response: Response) {
   const body = await response.text();
   let parsed: unknown = null;
   if (body) {
@@ -140,15 +141,47 @@ async function readJson(response: Response) {
   if (!response.ok) {
     throw new SocialOAuthError(
       "social_oauth_http_failed",
-      `Social provider request failed with ${response.status}: ${body.slice(0, 500)}`,
+      `Social provider request failed with status ${response.status}`,
     );
   }
 
   return parsed;
 }
 
+type FacebookPageCandidate = { id: string; name: string | null; accessToken: string; avatarUrl: string | null; tasks: string[] };
+type FacebookSelectionPayload = {
+  pages: FacebookPageCandidate[];
+  scopes: string[];
+  expiresAt: string | null;
+};
+
+export function eligibleFacebookPages(value: unknown): FacebookPageCandidate[] {
+  if (!value || typeof value !== "object" || !("data" in value) || !Array.isArray(value.data)) return [];
+  return value.data.slice(0, 100).flatMap((candidate) => {
+    if (!candidate || typeof candidate !== "object") return [];
+    const page = candidate as { id?: unknown; name?: unknown; access_token?: unknown; picture?: { data?: { url?: unknown } }; tasks?: unknown };
+    if (typeof page.id !== "string" || page.id.length > 200 || typeof page.access_token !== "string" || page.access_token.length > 4_096 || !Array.isArray(page.tasks) || !page.tasks.includes("CREATE_CONTENT")) return [];
+    return [{
+      id: page.id,
+      name: typeof page.name === "string" ? page.name.slice(0, 200) : null,
+      accessToken: page.access_token,
+      avatarUrl: typeof page.picture?.data?.url === "string" && page.picture.data.url.length <= 2_048 ? page.picture.data.url : null,
+      tasks: page.tasks.filter((task): task is string => typeof task === "string").slice(0, 32),
+    }];
+  });
+}
+
+export function grantedFacebookScopes(value: unknown): string[] {
+  if (!value || typeof value !== "object" || !("data" in value) || !Array.isArray(value.data)) return [];
+  return value.data.flatMap((permission) => {
+    if (!permission || typeof permission !== "object") return [];
+    const item = permission as { permission?: unknown; status?: unknown };
+    return typeof item.permission === "string" && item.status === "granted" ? [item.permission] : [];
+  });
+}
+
 async function postForm(url: string, body: URLSearchParams, headers?: Record<string, string>) {
-  return readJson(
+  return readSocialProviderJson(
     await fetch(url, {
       method: "POST",
       headers: {
@@ -264,7 +297,8 @@ export class SocialOAuthService {
       case "youtube_shorts":
         return this.youtubeAuthorizationUrl(state, redirectUri, verifier);
       case "instagram_reels":
-        return this.instagramAuthorizationUrl(state, redirectUri);
+      case "facebook_reels":
+        return this.metaAuthorizationUrl(platform, state, redirectUri);
       case "linkedin":
         return this.linkedinAuthorizationUrl(state, redirectUri);
       case "x":
@@ -276,7 +310,7 @@ export class SocialOAuthService {
     state: string;
     code: string;
     origin: string;
-  }): Promise<{ accounts: SocialAccountSnapshot[]; redirectPath: string }> {
+  }): Promise<{ accounts: SocialAccountSnapshot[]; redirectPath: string; facebookSelectionToken?: string }> {
     const prisma = requirePrisma();
     const savedState = await prisma.socialOAuthState.findUnique({
       where: { state: params.state },
@@ -289,10 +323,20 @@ export class SocialOAuthService {
       throw new SocialOAuthError("social_oauth_state_invalid", "Social OAuth state is missing or expired");
     }
 
-    await prisma.socialOAuthState.delete({ where: { id: savedState.id } });
-
     const redirectUri = callbackUrl(params.origin);
     const platform = savedState.platform as SocialPlatform;
+    if (platform === "facebook_reels") {
+      const facebook = await this.connectFacebook(savedState.userId, params.code, redirectUri, savedState.workspaceId);
+      if (facebook.selection) {
+        await prisma.socialOAuthState.update({
+          where: { id: savedState.id },
+          data: { codeVerifier: encryptToken(JSON.stringify(facebook.selection)), expiresAt: new Date(Date.now() + OAUTH_STATE_TTL_MS) },
+        });
+        return { accounts: [], redirectPath: savedState.redirectPath || DEFAULT_REDIRECT_PATH, facebookSelectionToken: savedState.state };
+      }
+      await prisma.socialOAuthState.delete({ where: { id: savedState.id } });
+      return { accounts: facebook.accounts, redirectPath: savedState.redirectPath || DEFAULT_REDIRECT_PATH };
+    }
     const connected =
       platform === "tiktok"
         ? await this.connectTikTok(savedState.userId, params.code, redirectUri, savedState.workspaceId)
@@ -304,10 +348,47 @@ export class SocialOAuthService {
               ? await this.connectLinkedIn(savedState.userId, params.code, redirectUri, savedState.workspaceId)
               : await this.connectX(savedState.userId, params.code, redirectUri, savedState.codeVerifier, savedState.workspaceId);
 
+    await prisma.socialOAuthState.delete({ where: { id: savedState.id } });
+
     return {
       accounts: connected,
       redirectPath: savedState.redirectPath || DEFAULT_REDIRECT_PATH,
     };
+  }
+
+  async getFacebookPageSelection(userId: string, workspaceId: string, token: string) {
+    const state = await requirePrisma().socialOAuthState.findFirst({
+      where: { state: token, userId, workspaceId, platform: "facebook_reels", expiresAt: { gt: new Date() }, codeVerifier: { not: null } },
+    });
+    if (!state?.codeVerifier) throw new SocialOAuthError("social_facebook_selection_invalid", "Facebook Page selection is invalid or expired");
+    const payload = JSON.parse(decryptToken(state.codeVerifier)) as FacebookSelectionPayload;
+    return payload.pages.map(({ id, name, avatarUrl }) => ({ id, name, avatarUrl }));
+  }
+
+  async completeFacebookPageSelection(userId: string, workspaceId: string, token: string, pageId: string) {
+    const prisma = requirePrisma();
+    const state = await prisma.socialOAuthState.findFirst({
+      where: { state: token, userId, workspaceId, platform: "facebook_reels", expiresAt: { gt: new Date() }, codeVerifier: { not: null } },
+    });
+    if (!state?.codeVerifier) throw new SocialOAuthError("social_facebook_selection_invalid", "Facebook Page selection is invalid or expired");
+    const payload = JSON.parse(decryptToken(state.codeVerifier)) as FacebookSelectionPayload;
+    const page = payload.pages.find((candidate) => candidate.id === pageId);
+    if (!page) throw new SocialOAuthError("social_facebook_page_invalid", "Selected Facebook Page is not eligible");
+    return prisma.$transaction(async (tx) => {
+      const claimed = await tx.socialOAuthState.deleteMany({ where: { id: state.id, codeVerifier: state.codeVerifier } });
+      if (claimed.count !== 1) throw new SocialOAuthError("social_facebook_selection_invalid", "Facebook Page selection is invalid or expired");
+      return this.upsertAccount(userId, "facebook_reels", {
+        providerAccountId: page.id,
+        displayName: page.name || "Facebook Page",
+        handle: null,
+        avatarUrl: page.avatarUrl,
+        accessToken: page.accessToken,
+        refreshToken: null,
+        scopes: payload.scopes,
+        expiresAt: payload.expiresAt ? new Date(payload.expiresAt) : null,
+        metadata: { pageId: page.id, pageName: page.name ?? null, tasks: page.tasks },
+      }, workspaceId, tx);
+    });
   }
 
   async getPublishAccount(accountId: string): Promise<PublishSocialAccount> {
@@ -356,8 +437,9 @@ export class SocialOAuthService {
     platform: SocialPlatform,
     input: ConnectedAccountInput,
     workspaceId?: string | null,
+    client?: Prisma.TransactionClient,
   ) {
-    const prisma = requirePrisma();
+    const prisma = client ?? requirePrisma();
     const existing = workspaceId
       ? await prisma.socialAccount.findUnique({
           where: {
@@ -417,7 +499,7 @@ export class SocialOAuthService {
     url.searchParams.set("response_type", "code");
     url.searchParams.set(
       "scope",
-      "user.info.basic,video.list,video.upload,video.publish",
+      SOCIAL_PROVIDER_CAPABILITIES.tiktok.requiredScopes.join(","),
     );
     url.searchParams.set("redirect_uri", redirectUri);
     url.searchParams.set("state", state);
@@ -431,7 +513,7 @@ export class SocialOAuthService {
     url.searchParams.set("response_type", "code");
     url.searchParams.set(
       "scope",
-      "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly",
+      SOCIAL_PROVIDER_CAPABILITIES.youtube_shorts.requiredScopes.join(" "),
     );
     url.searchParams.set("access_type", "offline");
     url.searchParams.set("prompt", "consent");
@@ -444,20 +526,14 @@ export class SocialOAuthService {
     return url.toString();
   }
 
-  private instagramAuthorizationUrl(state: string, redirectUri: string) {
+  private metaAuthorizationUrl(platform: "instagram_reels" | "facebook_reels", state: string, redirectUri: string) {
     const url = new URL(`https://www.facebook.com/${META_GRAPH_VERSION}/dialog/oauth`);
     url.searchParams.set("client_id", requireEnv("META_CLIENT_ID"));
     url.searchParams.set("redirect_uri", redirectUri);
     url.searchParams.set("response_type", "code");
     url.searchParams.set(
       "scope",
-      [
-        "instagram_basic",
-        "instagram_content_publish",
-        "pages_show_list",
-        "pages_read_engagement",
-        "business_management",
-      ].join(","),
+      SOCIAL_PROVIDER_CAPABILITIES[platform].requiredScopes.join(","),
     );
     url.searchParams.set("state", state);
     return url.toString();
@@ -468,7 +544,7 @@ export class SocialOAuthService {
     url.searchParams.set("response_type", "code");
     url.searchParams.set("client_id", requireEnv("LINKEDIN_CLIENT_ID"));
     url.searchParams.set("redirect_uri", redirectUri);
-    url.searchParams.set("scope", "openid profile w_member_social");
+    url.searchParams.set("scope", SOCIAL_PROVIDER_CAPABILITIES.linkedin.requiredScopes.join(" "));
     url.searchParams.set("state", state);
     return url.toString();
   }
@@ -481,7 +557,7 @@ export class SocialOAuthService {
     url.searchParams.set("response_type", "code");
     url.searchParams.set("client_id", requireEnv("X_CLIENT_ID"));
     url.searchParams.set("redirect_uri", redirectUri);
-    url.searchParams.set("scope", "tweet.read tweet.write users.read offline.access media.write");
+    url.searchParams.set("scope", SOCIAL_PROVIDER_CAPABILITIES.x.requiredScopes.join(" "));
     url.searchParams.set("state", state);
     url.searchParams.set("code_challenge", codeChallenge(verifier));
     url.searchParams.set("code_challenge_method", "S256");
@@ -505,7 +581,7 @@ export class SocialOAuthService {
       throw new SocialOAuthError("social_oauth_token_missing", "TikTok did not return an access token");
     }
 
-    const userInfo = await readJson(
+    const userInfo = await readSocialProviderJson(
       await fetch("https://open.tiktokapis.com/v2/user/info/?fields=open_id,display_name,avatar_url", {
         headers: { Authorization: `Bearer ${accessToken}` },
       }),
@@ -558,7 +634,7 @@ export class SocialOAuthService {
       throw new SocialOAuthError("social_oauth_token_missing", "Google did not return an access token");
     }
 
-    const channelResponse = await readJson(
+    const channelResponse = await readSocialProviderJson(
       await fetch("https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true", {
         headers: { Authorization: `Bearer ${accessToken}` },
       }),
@@ -593,7 +669,7 @@ export class SocialOAuthService {
   }
 
   private async connectInstagram(userId: string, code: string, redirectUri: string, workspaceId?: string | null) {
-    const shortToken = await readJson(
+    const shortToken = await readSocialProviderJson(
       await fetch(
         `https://graph.facebook.com/${META_GRAPH_VERSION}/oauth/access_token?` +
           new URLSearchParams({
@@ -610,7 +686,7 @@ export class SocialOAuthService {
       throw new SocialOAuthError("social_oauth_token_missing", "Meta did not return an access token");
     }
 
-    const longToken = await readJson(
+    const longToken = await readSocialProviderJson(
       await fetch(
         `https://graph.facebook.com/${META_GRAPH_VERSION}/oauth/access_token?` +
           new URLSearchParams({
@@ -623,7 +699,7 @@ export class SocialOAuthService {
     ).catch(() => shortToken) as Record<string, unknown>;
 
     const userAccessToken = String(longToken.access_token ?? shortAccessToken);
-    const pages = await readJson(
+    const pages = await readSocialProviderJson(
       await fetch(
         `https://graph.facebook.com/${META_GRAPH_VERSION}/me/accounts?` +
           new URLSearchParams({
@@ -677,6 +753,68 @@ export class SocialOAuthService {
     return connected;
   }
 
+  private async connectFacebook(userId: string, code: string, redirectUri: string, workspaceId?: string | null): Promise<{ accounts: SocialAccountSnapshot[]; selection: FacebookSelectionPayload | null }> {
+    const shortToken = await readSocialProviderJson(await fetch(
+      `https://graph.facebook.com/${META_GRAPH_VERSION}/oauth/access_token?${new URLSearchParams({
+        client_id: requireEnv("META_CLIENT_ID"),
+        client_secret: requireEnv("META_CLIENT_SECRET"),
+        code,
+        redirect_uri: redirectUri,
+      })}`,
+    )) as Record<string, unknown>;
+    const shortAccessToken = String(shortToken.access_token ?? "");
+    if (!shortAccessToken) {
+      throw new SocialOAuthError("social_oauth_token_missing", "Meta did not return an access token");
+    }
+    const longToken = await readSocialProviderJson(await fetch(
+      `https://graph.facebook.com/${META_GRAPH_VERSION}/oauth/access_token?${new URLSearchParams({
+        grant_type: "fb_exchange_token",
+        client_id: requireEnv("META_CLIENT_ID"),
+        client_secret: requireEnv("META_CLIENT_SECRET"),
+        fb_exchange_token: shortAccessToken,
+      })}`,
+    )) as Record<string, unknown>;
+    const userAccessToken = String(longToken.access_token ?? "");
+    if (!userAccessToken) {
+      throw new SocialOAuthError("social_oauth_token_missing", "Meta did not return a long-lived access token");
+    }
+    const permissions = await readSocialProviderJson(await fetch(
+      `https://graph.facebook.com/${META_GRAPH_VERSION}/me/permissions?${new URLSearchParams({ access_token: userAccessToken })}`,
+    )) as { data?: Array<{ permission?: unknown; status?: unknown }> };
+    const grantedScopes = grantedFacebookScopes(permissions);
+    const missingScopes = SOCIAL_PROVIDER_CAPABILITIES.facebook_reels.requiredScopes.filter((scope) => !grantedScopes.includes(scope));
+    if (missingScopes.length > 0) {
+      throw new SocialOAuthError("social_facebook_permissions_missing", "Facebook did not grant every required Page publishing permission");
+    }
+    const pages = await readSocialProviderJson(await fetch(
+      `https://graph.facebook.com/${META_GRAPH_VERSION}/me/accounts?${new URLSearchParams({
+        fields: "id,name,access_token,picture{url},tasks",
+        access_token: userAccessToken,
+      })}`,
+    ));
+    const eligiblePages = eligibleFacebookPages(pages);
+    if (eligiblePages.length === 0) {
+      throw new SocialOAuthError("social_facebook_page_missing", "No Facebook Page with content publishing access was returned");
+    }
+    const expiresAt = expiresAtFromSeconds(longToken.expires_in);
+    if (eligiblePages.length > 1) {
+      return { accounts: [], selection: { pages: eligiblePages, scopes: grantedScopes, expiresAt: expiresAt?.toISOString() ?? null } };
+    }
+    const page = eligiblePages[0]!;
+    const account = await this.upsertAccount(userId, "facebook_reels", {
+        providerAccountId: page.id,
+        displayName: page.name || "Facebook Page",
+        handle: null,
+        avatarUrl: page.avatarUrl,
+        accessToken: page.accessToken,
+        refreshToken: null,
+        scopes: grantedScopes,
+        expiresAt,
+        metadata: { pageId: page.id, pageName: page.name ?? null, tasks: page.tasks },
+      }, workspaceId);
+    return { accounts: [account], selection: null };
+  }
+
   private async connectLinkedIn(userId: string, code: string, redirectUri: string, workspaceId?: string | null) {
     const token = await postForm(
       "https://www.linkedin.com/oauth/v2/accessToken",
@@ -693,7 +831,7 @@ export class SocialOAuthService {
       throw new SocialOAuthError("social_oauth_token_missing", "LinkedIn did not return an access token");
     }
 
-    const profile = await readJson(
+    const profile = await readSocialProviderJson(
       await fetch("https://api.linkedin.com/v2/userinfo", {
         headers: { Authorization: `Bearer ${accessToken}` },
       }),
@@ -757,7 +895,7 @@ export class SocialOAuthService {
       throw new SocialOAuthError("social_oauth_token_missing", "X did not return an access token");
     }
 
-    const profile = await readJson(
+    const profile = await readSocialProviderJson(
       await fetch("https://api.x.com/2/users/me?user.fields=profile_image_url", {
         headers: { Authorization: `Bearer ${accessToken}` },
       }),

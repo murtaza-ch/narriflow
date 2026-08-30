@@ -15,6 +15,7 @@ import {
 
 function makeDocument(startSec = 10, endSec = 40): EditorDocument {
   return editorDocumentSchema.parse({
+    version: 2,
     clipStartSec: startSec,
     clipEndSec: endSec,
     captionPreset: DEFAULT_CAPTION_PRESET,

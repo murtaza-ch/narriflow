@@ -188,6 +188,10 @@ const COMPOSITION_NOTICE_COPY: Readonly<Record<string, string>> = {
     "Checking a sound effect… The clip remains available without it.",
   sound_effect_asset_unavailable:
     "A sound effect is unavailable. Playing the rest of the mix.",
+	scene_asset_pending: "Checking the inserted Scene asset… Export is paused until it is available.",
+	scene_asset_unavailable: "An inserted Scene asset is unavailable. Replace or remove this Scene before exporting.",
+	scene_font_pending: "Checking the inserted Scene font… Export is paused until it is available.",
+	scene_font_unavailable: "An inserted Scene font is unavailable. Replace the font or remove this Scene before exporting.",
   audio_only_background_unsupported:
     "Audiograms use the standard waveform background. Remove the background choice to clear this notice.",
 };
@@ -210,6 +214,7 @@ function compositionNoticeAction(code: string): string {
   ) {
     return "Replace or remove the affected optional asset.";
   }
+	if (code.startsWith("scene_")) return "Replace or remove the affected Scene reference.";
   return "Choose another framing mode to clear this notice.";
 }
 
@@ -489,7 +494,8 @@ export function adoptCompositionPreview(
       { kind: "source-video" | "audiogram" }
     > => layer.kind === "source-video" || layer.kind === "audiogram",
   );
-  if (!mainSource) throw new Error("clip_composition_source_layer_missing");
+  const insertedScene = scene.layers.some((layer) => layer.kind === "inserted-scene");
+  if (!mainSource && !insertedScene) throw new Error("clip_composition_source_layer_missing");
   const visualLayers = target.visualLayers.filter(
     (layer) =>
       time >= layer.activeRange.startSec &&
@@ -502,7 +508,7 @@ export function adoptCompositionPreview(
   return {
     planVersion: plan.version,
     planFingerprint: plan.fingerprint,
-    mainMediaKey: mainSource.sourceRef,
+    mainMediaKey: mainSource?.sourceRef ?? plan.source.ref,
     canvas: target.canvas,
     sceneId: scene.id,
     sceneStartSec: scene.startSec,

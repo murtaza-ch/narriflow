@@ -427,6 +427,7 @@ export function createPublicationWebhookPlatform(dependencies: {
 			idempotency: "narriflow",
 			requiredScopes: [],
 			apiVersion: "publication-webhook-v1",
+			capabilityVersion: "publication-webhook-v1",
 			maxProviderCalls: 20,
 		},
 

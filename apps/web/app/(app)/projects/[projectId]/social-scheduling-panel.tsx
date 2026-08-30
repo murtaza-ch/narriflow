@@ -16,6 +16,7 @@ import { Spinner } from "@narriflow/ui/components/spinner";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
 import {
   socialPostSnapshotSchema,
+  SOCIAL_PROVIDER_CAPABILITIES,
   USER_ERROR_MESSAGES,
   type ClipAspectRatio,
   type ClipSnapshot,
@@ -102,6 +103,7 @@ const platformItems = platforms.map((value) => ({
 const platformPostUrlExamples: Record<SocialPlatform, string> = {
   youtube_shorts: "https://youtube.com/shorts/…",
   instagram_reels: "https://instagram.com/reel/…",
+  facebook_reels: "https://facebook.com/reel/…",
   tiktok: "https://tiktok.com/@creator/video/…",
   linkedin: "https://linkedin.com/feed/update/…",
   x: "https://x.com/creator/status/…",
@@ -112,6 +114,8 @@ const duplicateRiskCopy: Record<SocialPlatform, string> = {
     "The earlier YouTube upload could have completed. Publishing again may create a second Short.",
   instagram_reels:
     "The earlier Instagram container could already be published. Publishing again may create a second Reel.",
+  facebook_reels:
+    "The earlier Facebook upload could already be published. Publishing again may create a second Reel.",
   tiktok:
     "The earlier TikTok direct post could still finish moderation. Publishing again may create a second video.",
   linkedin:
@@ -119,9 +123,10 @@ const duplicateRiskCopy: Record<SocialPlatform, string> = {
   x: "X could not prove the earlier Post outcome. Publishing again may create a second Post.",
 };
 
-function preferredAspectRatio(clip: ClipSnapshot): ClipAspectRatio {
+function preferredAspectRatio(clip: ClipSnapshot, platform: SocialPlatform): ClipAspectRatio | null {
+  const supported = SOCIAL_PROVIDER_CAPABILITIES[platform].aspectRatios as readonly string[];
   return (
-    clip.renderVariants.find((render) => render.hasAsset)?.aspectRatio ?? "9:16"
+    clip.renderVariants.find((render) => render.hasAsset && supported.includes(render.aspectRatio))?.aspectRatio ?? null
   );
 }
 
@@ -130,11 +135,13 @@ export function SocialSchedulingPanel({
   clips,
   posts,
   accounts,
+  facebookPublishingEnabled,
 }: {
   projectId: string;
   clips: ClipSnapshot[];
   posts: SocialPostSnapshot[];
   accounts: SocialAccountSnapshot[];
+  facebookPublishingEnabled: boolean;
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -347,7 +354,11 @@ export function SocialSchedulingPanel({
       });
       return;
     }
-    const aspectRatio = preferredAspectRatio(selectedClip);
+    const aspectRatio = preferredAspectRatio(selectedClip, platform);
+    if (!aspectRatio) {
+      setNotice({ tone: "danger", text: `${platformLabels[platform]} does not support any ready aspect ratio for this clip.` });
+      return;
+    }
     const selectedRender = selectedClip.renderVariants.find(
       (render) => render.aspectRatio === aspectRatio,
     );
@@ -649,7 +660,8 @@ export function SocialSchedulingPanel({
             <Input
               size="sm"
               value={caption}
-              onChange={(event) => setCaption(event.target.value)}
+              maxLength={SOCIAL_PROVIDER_CAPABILITIES[platform].textLimit}
+              onChange={(event) => setCaption(event.target.value.slice(0, SOCIAL_PROVIDER_CAPABILITIES[platform].textLimit))}
             />
           </Box>
 
@@ -673,7 +685,8 @@ export function SocialSchedulingPanel({
                 submitting ||
                 clips.length === 0 ||
                 !caption.trim() ||
-                !selectedAccount
+                !selectedAccount ||
+                !(platform === "facebook_reels" ? facebookPublishingEnabled : SOCIAL_PROVIDER_CAPABILITIES[platform].publishingEnabledByDefault)
               }
               onClick={schedulePost}
             >

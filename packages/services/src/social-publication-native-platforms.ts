@@ -13,6 +13,7 @@ import {
 	PublicationPlatformConfigurationError,
 	createPublicationPlatformRegistry,
 } from "./social-publication-platform";
+import { SOCIAL_PROVIDER_CAPABILITIES } from "./social-publication-config";
 
 export type NativePublicationMedia = {
 	sizeBytes: number;
@@ -40,6 +41,7 @@ export type NativePublicationDependencies = {
 		linkedInVersion: string;
 		instagramPollAttempts: number;
 		instagramPollIntervalMs: number;
+		facebookReelsPublishingEnabled?: boolean;
 		tiktokPollIntervalMs: number;
 		tiktokChunkBytes: number;
 		tiktokApiVersion: string;
@@ -67,6 +69,276 @@ function providerOperationClass(url: string, init?: RequestInit) {
 	if (method === "PUT") return "upload";
 	if (method === "GET") return "reconciliation";
 	return "provider_request";
+}
+
+function facebookReelsPlatform(
+	dependencies: NativePublicationDependencies,
+): PublicationPlatform {
+	type FacebookReelStatus = {
+		status?: {
+			video_status?: string;
+			uploading_phase?: { status?: string };
+			processing_phase?: { status?: string };
+			publishing_phase?: { status?: string; publish_status?: string };
+		};
+	};
+	const processingOperation = (videoId: string): PublicationProviderOperation => ({
+		kind: "facebook_reel_processing",
+		state: { videoId },
+	});
+	const processingResult = (videoId: string): PublicationPlatformResult => ({
+		kind: "pending",
+		receiptId: videoId,
+		operation: processingOperation(videoId),
+		nextCheckAt: pendingAt(dependencies, 15_000),
+		submissionStarted: true,
+	});
+	const statusOutcome = (value: FacebookReelStatus) => {
+		const status = value.status;
+		if (!status) return "invalid" as const;
+		const values = [
+			status.video_status,
+			status.uploading_phase?.status,
+			status.processing_phase?.status,
+			status.publishing_phase?.status,
+			status.publishing_phase?.publish_status,
+		].filter((entry): entry is string => typeof entry === "string")
+			.map((entry) => entry.toLowerCase());
+		if (values.some((entry) => ["error", "failed", "expired"].includes(entry))) {
+			return "failed" as const;
+		}
+		const publishingComplete = status.publishing_phase?.status?.toLowerCase() === "complete";
+		const published = status.publishing_phase?.publish_status?.toLowerCase() === "published";
+		const processingComplete = status.processing_phase?.status?.toLowerCase() === "complete";
+		const videoReady = ["ready", "published"].includes(status.video_status?.toLowerCase() ?? "");
+		if (publishingComplete && published && processingComplete && videoReady) return "published" as const;
+		const videoStatus = status.video_status?.toLowerCase() ?? "";
+		const hasSubmissionEvidence = Boolean(status.processing_phase || status.publishing_phase) ||
+			["processing", "ready", "published"].includes(videoStatus);
+		return hasSubmissionEvidence ? "processing" as const : "unsubmitted" as const;
+	};
+	const hasPublishingEvidence = (value: FacebookReelStatus) => {
+		const phaseStatus = value.status?.publishing_phase?.status?.toLowerCase();
+		const publishStatus = value.status?.publishing_phase?.publish_status?.toLowerCase();
+		return value.status?.video_status?.toLowerCase() === "published" ||
+			Boolean(phaseStatus && !["not_started", "not started"].includes(phaseStatus)) ||
+			Boolean(publishStatus && !["not_started", "not started"].includes(publishStatus));
+	};
+	const accepted = (videoId: string): PublicationPlatformResult => ({
+		kind: "accepted",
+		receipt: {
+			receiptId: videoId,
+			platformPostId: videoId,
+			externalUrl: null,
+			metrics: null,
+			providerProcessingStatus: "succeeded",
+		},
+	});
+	const assertPublishingEnabled = () => {
+		if (!dependencies.config.facebookReelsPublishingEnabled) {
+			throw new PublicationPlatformConfigurationError(
+				"facebook_reels_rollout_disabled",
+				"Facebook Reels publishing is awaiting provider sandbox evidence",
+			);
+		}
+	};
+	const uploadAndPublish = async (
+		input: PublicationPlatformInput,
+		context: PublicationPlatformContext,
+		videoId: string,
+		uploadUrl: string,
+		markSubmitted: () => void,
+	): Promise<PublicationPlatformResult> => {
+		assertPublishingEnabled();
+		const account = requireAccount(input, "facebook_reels");
+		requireScopes(account, SOCIAL_PROVIDER_CAPABILITIES.facebook_reels.requiredScopes);
+		const duration = SOCIAL_PROVIDER_CAPABILITIES.facebook_reels.durationSec;
+		if (input.media.durationSec < duration.min || input.media.durationSec > duration.max) {
+			throw new PublicationPlatformConfigurationError(
+				"facebook_reel_duration_invalid",
+				`Facebook Reel duration must be between ${duration.min} and ${duration.max} seconds`,
+			);
+		}
+		const fileUrl = await dependencies.media.createScopedAccess(input.media);
+		// Meta's official Reels Publishing flow: start an upload session, send
+		// the hosted file to its upload_url, then finish with PUBLISHED.
+		// https://www.postman.com/meta/facebook/documentation/r56bjfd/facebook-api
+		await jsonRequest<Record<string, unknown>>(
+			dependencies,
+			context,
+			uploadUrl,
+			{
+				method: "POST",
+				headers: { Authorization: `OAuth ${account.accessToken}`, file_url: fileUrl },
+				signal: context.signal,
+			},
+			"facebook_reel_upload_failed",
+			"upload",
+		);
+		await context.checkpoint({
+			kind: "facebook_reel_finish_pending",
+			state: { videoId },
+		});
+		return finishPublish(input, context, videoId, markSubmitted);
+	};
+	const finishPublish = async (
+		input: PublicationPlatformInput,
+		context: PublicationPlatformContext,
+		videoId: string,
+		markSubmitted: () => void,
+	): Promise<PublicationPlatformResult> => {
+		const account = requireAccount(input, "facebook_reels");
+		markSubmitted();
+		try {
+			await jsonRequest<Record<string, unknown>>(
+				dependencies,
+				context,
+				`https://graph.facebook.com/${dependencies.config.metaGraphVersion}/${account.providerAccountId}/video_reels`,
+				{
+					method: "POST",
+					headers: { "Content-Type": "application/x-www-form-urlencoded" },
+					body: new URLSearchParams({
+						upload_phase: "finish",
+						video_state: "PUBLISHED",
+						video_id: videoId,
+						description: input.caption,
+						access_token: account.accessToken,
+					}),
+					signal: context.signal,
+				},
+				"facebook_reel_publish_failed",
+				"submission",
+			);
+			await context.checkpoint({
+				kind: "submission_started",
+				state: { providerOperation: "facebook_reel_processing", videoId },
+			});
+		} catch (error) {
+			const failure = normalizedFailure(error, true);
+			return failure.kind === "unknown"
+				? { ...failure, operation: processingOperation(videoId) }
+				: failure;
+		}
+		return processingResult(videoId);
+	};
+
+	return {
+		capabilities: {
+			recovery: "bounded",
+			asynchronous: true,
+			idempotency: "narriflow",
+			requiredScopes: [...SOCIAL_PROVIDER_CAPABILITIES.facebook_reels.requiredScopes],
+			capabilityVersion: SOCIAL_PROVIDER_CAPABILITIES.facebook_reels.version,
+			apiVersion: dependencies.config.metaGraphVersion,
+			// The worker-level provider budget remains the hard ceiling. This
+			// platform ceiling must leave room for repeated processing polls after
+			// the three-call start/upload/finish handshake.
+			maxProviderCalls: 100,
+		},
+		publish(input, context) {
+			return withNativeOutcome(async (markSubmitted) => {
+				assertPublishingEnabled();
+				const account = requireAccount(input, "facebook_reels");
+				requireScopes(account, this.capabilities.requiredScopes);
+				const started = await jsonRequest<{ video_id?: string; upload_url?: string }>(
+					dependencies,
+					context,
+					`https://graph.facebook.com/${dependencies.config.metaGraphVersion}/${account.providerAccountId}/video_reels`,
+					{
+						method: "POST",
+						headers: { "Content-Type": "application/x-www-form-urlencoded" },
+						body: new URLSearchParams({ upload_phase: "start", access_token: account.accessToken }),
+						signal: context.signal,
+					},
+					"facebook_reel_start_failed",
+					"preparation",
+				);
+				if (!started.video_id || !started.upload_url) {
+					throw new ProviderHttpError("facebook_reel_upload_session_missing", "preparation", 502, null);
+				}
+				await context.checkpoint({ kind: "facebook_reel_upload", state: { videoId: started.video_id, uploadUrl: started.upload_url } });
+				return uploadAndPublish(input, context, started.video_id, started.upload_url, markSubmitted);
+			});
+		},
+		resume(input, operation, context) {
+			return withNativeOutcome(async (markSubmitted) => {
+				assertPublishingEnabled();
+				const videoId = operationString(operation.state, "videoId");
+				if (operation.kind === "facebook_reel_finish_pending" && videoId) {
+					const account = requireAccount(input, "facebook_reels");
+					requireScopes(account, this.capabilities.requiredScopes);
+					const status = await jsonRequest<FacebookReelStatus>(
+						dependencies,
+						context,
+						`https://graph.facebook.com/${dependencies.config.metaGraphVersion}/${encodeURIComponent(videoId)}?${new URLSearchParams({ fields: "status", access_token: account.accessToken })}`,
+						{ method: "GET", signal: context.signal },
+						"facebook_reel_status_failed",
+						"reconciliation",
+					);
+					const outcome = statusOutcome(status);
+					if (outcome === "published") {
+						markSubmitted();
+						return accepted(videoId);
+					}
+					if (hasPublishingEvidence(status)) {
+						markSubmitted();
+						return processingResult(videoId);
+					}
+					if (outcome === "failed") {
+						return { kind: "failed", failure: { code: "facebook_reel_processing_failed", phase: "reconciliation", disposition: "attention", retryAfterMs: null } };
+					}
+					return finishPublish(input, context, videoId, markSubmitted);
+				}
+				const uploadUrl = operationString(operation.state, "uploadUrl");
+				if (!videoId || !uploadUrl) {
+					return { kind: "failed", failure: { code: "facebook_reel_upload_session_missing", phase: "preparation", disposition: "permanent", retryAfterMs: null } };
+				}
+				return uploadAndPublish(input, context, videoId, uploadUrl, markSubmitted);
+			});
+		},
+		reconcile(input, operation, context) {
+			return withNativeOutcome(async (markSubmitted) => {
+				assertPublishingEnabled();
+				const account = requireAccount(input, "facebook_reels");
+				requireScopes(account, this.capabilities.requiredScopes);
+				const videoId = operationString(operation.state, "videoId");
+				if ((operation.kind !== "facebook_reel_processing" && operation.kind !== "submission_started") || !videoId) {
+					return {
+						kind: "failed",
+						failure: {
+							code: "facebook_reel_checkpoint_invalid",
+							phase: "reconciliation",
+							disposition: "attention",
+							retryAfterMs: null,
+						},
+					};
+				}
+				markSubmitted();
+				const status = await jsonRequest<FacebookReelStatus>(
+					dependencies,
+					context,
+					`https://graph.facebook.com/${dependencies.config.metaGraphVersion}/${encodeURIComponent(videoId)}?${new URLSearchParams({ fields: "status", access_token: account.accessToken })}`,
+					{ method: "GET", signal: context.signal },
+					"facebook_reel_status_failed",
+					"reconciliation",
+				);
+				const outcome = statusOutcome(status);
+				if (outcome === "published") return accepted(videoId);
+				if (outcome === "processing") return processingResult(videoId);
+				return {
+					kind: "failed",
+					failure: {
+						code: outcome === "failed"
+							? "facebook_reel_processing_failed"
+							: "facebook_reel_status_invalid",
+						phase: "reconciliation",
+						disposition: "attention",
+						retryAfterMs: null,
+					},
+				};
+			});
+		},
+	};
 }
 
 function withProviderLatency(
@@ -625,6 +897,7 @@ function youtubePlatform(
 			asynchronous: true,
 			idempotency: "none",
 			requiredScopes: ["https://www.googleapis.com/auth/youtube.upload"],
+			capabilityVersion: SOCIAL_PROVIDER_CAPABILITIES.youtube_shorts.version,
 			apiVersion: `youtube-${dependencies.config.youtubeApiVersion}`,
 			maxProviderCalls: 100,
 		},
@@ -821,6 +1094,7 @@ function instagramPlatform(
 			asynchronous: true,
 			idempotency: "none",
 			requiredScopes: ["instagram_content_publish"],
+			capabilityVersion: SOCIAL_PROVIDER_CAPABILITIES.instagram_reels.version,
 			apiVersion: dependencies.config.metaGraphVersion,
 			maxProviderCalls: dependencies.config.instagramPollAttempts + 5,
 		},
@@ -1278,6 +1552,7 @@ function tiktokPlatform(
 			asynchronous: true,
 			idempotency: "provider",
 			requiredScopes: ["video.publish"],
+			capabilityVersion: SOCIAL_PROVIDER_CAPABILITIES.tiktok.version,
 			apiVersion: `tiktok-${dependencies.config.tiktokApiVersion}`,
 			maxProviderCalls: 200,
 		},
@@ -1857,6 +2132,7 @@ function linkedInPlatform(
 			asynchronous: true,
 			idempotency: "none",
 			requiredScopes: [],
+			capabilityVersion: SOCIAL_PROVIDER_CAPABILITIES.linkedin.version,
 			apiVersion: dependencies.config.linkedInVersion,
 			maxProviderCalls: 100,
 		},
@@ -2475,6 +2751,7 @@ function xPlatform(
 			asynchronous: true,
 			idempotency: "none",
 			requiredScopes: ["tweet.write", "media.write"],
+			capabilityVersion: SOCIAL_PROVIDER_CAPABILITIES.x.version,
 			apiVersion: `x-${dependencies.config.xApiVersion}`,
 			maxProviderCalls: 100,
 		},
@@ -2725,6 +3002,9 @@ export function createNativePublicationPlatformRegistry(
 		),
 		instagram_reels: instagramPlatform(
 			withProviderLatency(dependencies, "instagram_reels"),
+		),
+		facebook_reels: facebookReelsPlatform(
+			withProviderLatency(dependencies, "facebook_reels"),
 		),
 		tiktok: tiktokPlatform(withProviderLatency(dependencies, "tiktok")),
 		linkedin: linkedInPlatform(withProviderLatency(dependencies, "linkedin")),

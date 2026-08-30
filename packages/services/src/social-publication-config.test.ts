@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
+  isSocialProviderPublishingEnabled,
   parseSocialPublicationConfig,
+  SOCIAL_PROVIDER_CAPABILITIES,
+  socialPublicationCapabilityVersion,
   SocialPublicationConfigurationError,
 } from "./social-publication-config";
 
@@ -29,6 +32,18 @@ const valid = {
 };
 
 describe("Social Publication configuration", () => {
+  test("keeps Facebook connection metadata visible while publishing remains dark", () => {
+    expect(SOCIAL_PROVIDER_CAPABILITIES.facebook_reels).toMatchObject({
+      apiVersion: "v24.0",
+      connectionEnabled: true,
+      publishingEnabledByDefault: false,
+      requiredScopes: ["pages_show_list", "pages_read_engagement", "pages_manage_posts"],
+    });
+    expect(socialPublicationCapabilityVersion("facebook_reels")).toBe("facebook-reels-2026-08-31");
+    expect(isSocialProviderPublishingEnabled("facebook_reels", {})).toBe(false);
+    expect(isSocialProviderPublishingEnabled("facebook_reels", { FACEBOOK_REELS_PUBLISHING_ENABLED: "1" })).toBe(true);
+  });
+
   test("parses finite bounded worker and receiver policy once", () => {
     expect(parseSocialPublicationConfig(valid)).toMatchObject({
       worker: {
@@ -47,6 +62,7 @@ describe("Social Publication configuration", () => {
 			youtubeApiVersion: "v3",
 			youtubeChunkBytes: 8 * 1024 * 1024,
 			metaGraphVersion: "v24.0",
+			facebookReelsPublishingEnabled: false,
 			tiktokApiVersion: "v2",
 			tiktokChunkBytes: 64 * 1024 * 1024,
 			linkedInVersion: "202608",

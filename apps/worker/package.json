@@ -15,11 +15,14 @@
   },
   "dependencies": {
     "@narriflow/composition-plan": "workspace:*",
+    "@narriflow/db": "workspace:*",
     "@narriflow/email": "workspace:*",
     "@narriflow/services": "workspace:*",
-    "@narriflow/validators": "workspace:*"
+    "@narriflow/validators": "workspace:*",
+    "archiver": "7.0.1"
   },
   "devDependencies": {
+    "@types/archiver": "6.0.3",
     "@types/node": "26.2.0"
   }
 }

@@ -131,7 +131,7 @@ export async function authenticatedRequestHonoMiddleware(
             load: async () => {
               const value: Record<string, unknown> = {};
               for (const name of declaration.input?.params ?? []) {
-                value[name] = c.req.param(name);
+                value[name] = declaration.params[name];
               }
               for (const name of declaration.input?.query ?? []) {
                 const queryValue = c.req.query(name);

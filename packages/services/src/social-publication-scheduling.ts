@@ -10,7 +10,10 @@ import {
 } from "@narriflow/validators";
 import { clipExportService } from "./clip-export.service";
 import { accessibleProjectWhere } from "./project-retention.service";
-import { SOCIAL_PUBLICATION_CAPABILITY_VERSIONS } from "./social-publication-config";
+import {
+	isSocialProviderPublishingEnabled,
+	socialPublicationCapabilityVersion,
+} from "./social-publication-config";
 import { workspaceService } from "./workspace.service";
 
 export type FrozenPublicationState = {
@@ -698,6 +701,12 @@ export function createProductionSocialPublicationScheduling() {
 			await workspaceService.requireActor(actorUserId, workspaceId, permission);
 		},
 		async freeze(input) {
+			if (!isSocialProviderPublishingEnabled(input.platform)) {
+				throw new PublicationIntentStateError(
+					"social_provider_publishing_disabled",
+					"Publishing for this provider is not enabled yet",
+				);
+			}
 			const prisma = requirePrisma();
 			const project = await prisma.project.findFirst({
 				where: {
@@ -802,15 +811,7 @@ export function createProductionSocialPublicationScheduling() {
 				capabilityVersion:
 					input.accountId === null
 						? "publication-webhook-v1"
-						: input.platform === "youtube_shorts"
-							? `youtube-${SOCIAL_PUBLICATION_CAPABILITY_VERSIONS.youtube_shorts}`
-							: input.platform === "instagram_reels"
-								? SOCIAL_PUBLICATION_CAPABILITY_VERSIONS.instagram_reels
-								: input.platform === "tiktok"
-									? `tiktok-${SOCIAL_PUBLICATION_CAPABILITY_VERSIONS.tiktok}`
-									: input.platform === "linkedin"
-										? SOCIAL_PUBLICATION_CAPABILITY_VERSIONS.linkedin
-										: `x-${SOCIAL_PUBLICATION_CAPABILITY_VERSIONS.x}`,
+						: socialPublicationCapabilityVersion(input.platform),
 				scheduledFor: input.scheduledFor,
 			};
 			return {

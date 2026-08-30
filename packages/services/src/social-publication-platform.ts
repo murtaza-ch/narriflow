@@ -101,6 +101,7 @@ export type PublicationPlatformCapabilities = {
   asynchronous: boolean;
   idempotency: "provider" | "narriflow" | "none";
   requiredScopes: readonly string[];
+  capabilityVersion: string;
   apiVersion: string;
   maxProviderCalls: number;
 };
@@ -187,6 +188,7 @@ export function createDeterministicPublicationPlatform(
       asynchronous: true,
       idempotency: "provider",
       requiredScopes: [],
+      capabilityVersion: "deterministic-v1",
       apiVersion: "deterministic-v1",
       maxProviderCalls: 10,
     },

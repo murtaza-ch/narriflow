@@ -19,6 +19,7 @@ import {
 function makeSession(withSourcePreview = false) {
   return createStudioEditingSession({
     document: editorDocumentSchema.parse({
+    version: 2,
       clipStartSec: 10,
       clipEndSec: 40,
       captionPreset: DEFAULT_CAPTION_PRESET,

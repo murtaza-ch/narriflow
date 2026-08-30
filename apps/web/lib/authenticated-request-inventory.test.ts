@@ -214,6 +214,7 @@ describe("authenticated request inventory", () => {
       matchBrowserSessionHonoSurface("GET", "/projects/p1/clips/c1/download"),
     ).toMatchObject({
       operationName: "GET /projects/:id/clips/:clipId/download",
+      params: { id: "p1", clipId: "c1" },
       admission: {
         kind: "project",
         capability: "content.download",
@@ -251,6 +252,9 @@ describe("authenticated request inventory", () => {
       "PATCH",
       "/brand-profiles/11111111-1111-4111-8111-111111111111",
     );
+    expect(update?.params).toEqual({
+      id: "11111111-1111-4111-8111-111111111111",
+    });
     expect(update?.input?.schema.safeParse({
       id: "not-a-uuid",
       body: { revision: 1, name: "Northstar" },

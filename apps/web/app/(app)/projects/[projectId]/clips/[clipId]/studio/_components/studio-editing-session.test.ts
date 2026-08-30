@@ -6,11 +6,12 @@ import {
   studioEditsSchema,
   type EditorDocument,
 } from "@narriflow/validators";
-import { createStudioEditingSession } from "./studio-editing-session";
+import { baseEditedRangeToCompositeRanges, createStudioEditingSession } from "./studio-editing-session";
 import type { TimelineSegment } from "./studio-types";
 
 function makeDocument(): EditorDocument {
   return editorDocumentSchema.parse({
+    version: 2,
     clipStartSec: 10,
     clipEndSec: 40,
     captionPreset: DEFAULT_CAPTION_PRESET,
@@ -34,6 +35,20 @@ function makeSession() {
 }
 
 describe("StudioEditingSession document and history seam", () => {
+	test("splits source-backed ranges around intro and midroll scenes", () => {
+		const document = editorDocumentSchema.parse({
+			...makeDocument(),
+			sceneBlocks: [
+				{ id: crypto.randomUUID(), schemaVersion: 1, anchorSec: 0, durationSec: 2, content: { kind: "color", color: "#111827" }, motion: { entrance: "none", exit: "none" }, templateSnapshot: null },
+				{ id: crypto.randomUUID(), schemaVersion: 1, anchorSec: 7, durationSec: 2, content: { kind: "color", color: "#1D4ED8" }, motion: { entrance: "none", exit: "none" }, templateSnapshot: null },
+			],
+		});
+		expect(baseEditedRangeToCompositeRanges(document, 0, 10)).toEqual([
+			{ baseStartSec: 0, baseEndSec: 5, startSec: 2, endSec: 7 },
+			{ baseStartSec: 5, baseEndSec: 10, startSec: 9, endSec: 14 },
+		]);
+	});
+
   test("publishes an accepted document edit synchronously", () => {
     const session = makeSession();
     let notifications = 0;
@@ -144,6 +159,75 @@ describe("StudioEditingSession document and history seam", () => {
     );
     session.dispatch({ type: "history.redo" });
     expect(session.getSnapshot().segments).toEqual(split);
+  });
+
+  test("keeps scene, censor, and media-motion edits in the unified history", () => {
+    const session = makeSession();
+    const sceneId = "8ab9d330-688f-4574-932c-27ac661245c1";
+    const censorId = "dbb670b3-e28a-4514-bf2d-63e56608a4d0";
+    const motionId = "2adf79cc-35b2-4de5-85dc-c9ed197763e4";
+
+    session.dispatch({
+      type: "document.edit",
+      action: {
+        type: "insertSceneBlock",
+        scene: {
+          schemaVersion: 1,
+          id: sceneId,
+          anchorSec: 4,
+          durationSec: 2,
+          content: { kind: "color", color: "#111827" },
+          motion: { entrance: "fade", exit: "zoom-out" },
+          templateSnapshot: null,
+        },
+      },
+    });
+    session.dispatch({
+      type: "document.edit",
+      action: {
+        type: "insertCensorSegment",
+        segment: {
+          schemaVersion: 1,
+          id: censorId,
+          sourceWordIds: ["word-1"],
+          sourceStartSec: 14,
+          sourceEndSec: 14.5,
+          treatment: "beep",
+          paddingSec: 0.1,
+          beepSettings: { frequencyHz: 1_000, levelDb: -12 },
+          captionMaskPolicy: null,
+          suggestionFingerprint: "a".repeat(64),
+          policyVersion: "profanity-v1",
+          enabled: true,
+        },
+      },
+    });
+    session.dispatch({
+      type: "document.edit",
+      action: {
+        type: "insertMediaMotion",
+        motion: {
+          schemaVersion: 1,
+          id: motionId,
+          target: { kind: "scene_block", sceneBlockId: sceneId },
+          startSec: 4,
+          endSec: 6,
+          entrance: "scale-in",
+          exit: "fade",
+          enabled: true,
+        },
+      },
+    });
+
+    expect(session.getSnapshot().document).toMatchObject({
+      sceneBlocks: [{ id: sceneId }],
+      censorSegments: [{ id: censorId }],
+      mediaMotions: [{ id: motionId }],
+    });
+    session.dispatch({ type: "history.undo" });
+    expect(session.getSnapshot().document.mediaMotions).toEqual([]);
+    session.dispatch({ type: "history.redo" });
+    expect(session.getSnapshot().document.mediaMotions[0]?.id).toBe(motionId);
   });
 
   test("gesture completion prevents later edits from coalescing", () => {

@@ -11,7 +11,7 @@ import {
   type SocialPublicationAction,
 } from "@narriflow/validators";
 import { structuredSocialPublicationMetrics } from "./social-publication-observability";
-import { SOCIAL_PUBLICATION_CAPABILITY_VERSIONS } from "./social-publication-config";
+import { SOCIAL_PROVIDER_API_VERSIONS } from "./social-publication-config";
 import { socialOAuthService } from "./social-oauth.service";
 
 const DEFAULT_PROCESSING_DEADLINE_MS = 24 * 60 * 60_000;
@@ -98,6 +98,7 @@ function assertPlatformUrl(platform: SocialPlatform, raw: string | null | undefi
   const hosts: Record<SocialPlatform, readonly string[]> = {
     youtube_shorts: ["youtube.com", "youtu.be"],
     instagram_reels: ["instagram.com"],
+    facebook_reels: ["facebook.com", "fb.watch"],
     tiktok: ["tiktok.com"],
     linkedin: ["linkedin.com"],
     x: ["x.com", "twitter.com"],
@@ -214,7 +215,7 @@ export async function validateSocialPublicationEvidence(input: {
 		/^\d+$/.test(reference)
 	) {
 		const response = await request(
-			`https://graph.facebook.com/${SOCIAL_PUBLICATION_CAPABILITY_VERSIONS.instagram_reels}/${encodeURIComponent(reference)}?${new URLSearchParams({ fields: "id,owner,permalink", access_token: input.accessToken })}`,
+			`https://graph.facebook.com/${SOCIAL_PROVIDER_API_VERSIONS.instagram_reels}/${encodeURIComponent(reference)}?${new URLSearchParams({ fields: "id,owner,permalink", access_token: input.accessToken })}`,
 			{ signal: AbortSignal.timeout(10_000) },
 		).catch(() => null);
 		if (response?.ok) {

@@ -3,7 +3,7 @@
 import { memo, useRef, useEffect, useCallback, useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { Box, Flex, Input, Text, Textarea, Checkbox } from "@chakra-ui/react";
-import { Combine, Copy, Plus, Scissors, Trash2, Undo2 } from "lucide-react";
+import { Combine, Copy, Plus, PanelsTopLeft, Scissors, Trash2, Undo2 } from "lucide-react";
 import { toaster } from "@narriflow/ui";
 import { editedToSource, sourceToEdited, userErrorMessage } from "@narriflow/validators";
 import type {
@@ -25,6 +25,7 @@ import {
   type UtteranceWordSource,
 } from "./transcript-selection";
 import { subtitleParagraphGroups } from "./subtitle-lines";
+import { sceneTextContent } from "./scene-fonts";
 
 // ─── Pause threshold (seconds) ──────────────────────────────────────────────
 
@@ -724,6 +725,8 @@ function SelectionToolbar({
   onRevert,
   onCopy,
   onCreateClip,
+  onInsertScene,
+  canInsertScene,
 }: {
   top: number;
   left: number;
@@ -733,6 +736,8 @@ function SelectionToolbar({
   onRevert: () => void;
   onCopy: () => void;
   onCreateClip: () => void;
+  onInsertScene: () => void;
+  canInsertScene: boolean;
 }) {
   return (
     <Flex
@@ -763,6 +768,7 @@ function SelectionToolbar({
           <ToolbarBtn icon={<Trash2 size={13} />} label="Delete" onClick={onDelete} />
           <Box w="1px" h="16px" bg="studio.border" mx="2px" />
           <ToolbarBtn icon={<Copy size={13} />} label="Copy" onClick={onCopy} />
+          {canInsertScene && <ToolbarBtn icon={<PanelsTopLeft size={13} />} label="Insert scene" onClick={onInsertScene} />}
           <Box w="1px" h="16px" bg="studio.border" mx="2px" />
           <ToolbarBtn
             icon={<Scissors size={13} />}
@@ -791,6 +797,10 @@ export function TranscriptPanel() {
     revertDeletedRange,
     clipInfo,
     setTranscriptSelectionRange,
+    insertSceneBlock,
+    baseEditedToComposite,
+    sceneWriteCapabilities,
+    sceneFonts,
   } = useStudio();
   const router = useRouter();
 
@@ -1026,6 +1036,24 @@ export function TranscriptPanel() {
       navigator.clipboard.writeText(text).catch(() => {});
     }
   }, [utteranceWordSources]);
+
+  const handleInsertScene = useCallback(() => {
+    const current = selectionRef.current;
+    if (!current || !sceneWriteCapabilities.cards) return;
+    const range = selectedWordsToSourceRange(current.words);
+    if (!range) return;
+    const anchorSec = baseEditedToComposite(sourceToEdited(editedTimeMap, range.startSec));
+    insertSceneBlock({
+      id: crypto.randomUUID(),
+      schemaVersion: 1,
+      anchorSec,
+      durationSec: 3,
+      content: sceneTextContent("New chapter", sceneFonts),
+      motion: { entrance: "fade", exit: "fade" },
+      templateSnapshot: null,
+    });
+    dismissSelection();
+  }, [baseEditedToComposite, dismissSelection, editedTimeMap, insertSceneBlock, sceneFonts, sceneWriteCapabilities.cards]);
 
   // ─── Create clip from selection (Vizard-parity Phase B step 14) ─────────
   //
@@ -1295,6 +1323,8 @@ export function TranscriptPanel() {
             onRevert={handleRevertSelection}
             onCopy={handleCopySelection}
             onCreateClip={handleCreateClip}
+            onInsertScene={handleInsertScene}
+            canInsertScene={sceneWriteCapabilities.cards}
           />
         )}
       </Box>

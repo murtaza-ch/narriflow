@@ -2,7 +2,8 @@ import { Box, Flex, Grid, Image, Stack, Text } from "@chakra-ui/react";
 import { ArrowLeft, AudioLines, ImageIcon, LayoutTemplate, MessageSquareText, Shapes, Type } from "lucide-react";
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { brandProfileService, BrandProfileNotFoundError } from "@narriflow/services";
+import { brandProfileService, BrandProfileNotFoundError, sceneTemplateService } from "@narriflow/services";
+import { sceneTemplateDefinitionSchema } from "@narriflow/validators";
 import { Button } from "@narriflow/ui/components/button";
 import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { MediaWell } from "@narriflow/ui/components/media-well";
@@ -10,6 +11,7 @@ import { PageHeader } from "@narriflow/ui/components/page-header";
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
 import { formatDuration } from "@/lib/format";
 import LegacyTemplatePage from "../../settings/brand-templates/[id]/page";
+import { SceneTemplateManager, type SceneTemplateCard } from "./scene-template-manager";
 
 const SECTIONS = ["identity", "styles", "assets", "scenes", "audio", "voice"] as const;
 type Section = (typeof SECTIONS)[number];
@@ -38,6 +40,12 @@ export default async function BrandProfilePage({ params, searchParams }: {
     return LegacyTemplatePage({ params: Promise.resolve({ id }) });
   }
   const section: Section = SECTIONS.includes(query.section as Section) ? query.section as Section : "identity";
+  const sceneRows = section === "scenes" ? await sceneTemplateService.list(scope, profile.id) : [];
+  const sceneCards: SceneTemplateCard[] = sceneRows.flatMap((scene) => {
+    const definition = sceneTemplateDefinitionSchema.safeParse(scene.definition);
+    if (!definition.success || (scene.role !== "intro" && scene.role !== "inline" && scene.role !== "outro")) return [];
+    return [{ id: scene.id, name: scene.name, role: scene.role, revision: scene.revision, fingerprint: scene.fingerprint, definition: definition.data, isDefault: profile.defaultIntroSceneTemplateId === scene.id || profile.defaultOutroSceneTemplateId === scene.id }];
+  });
 
   return (
     <Stack gap="8">
@@ -64,7 +72,7 @@ export default async function BrandProfilePage({ params, searchParams }: {
         {section === "identity" && <IdentitySection profile={profile} />}
         {section === "styles" && <StylesSection profile={profile} selectedTemplateId={query.template} />}
         {section === "assets" && <AssetsSection profile={profile} />}
-        {section === "scenes" && <ScenesSection />}
+        {section === "scenes" && <ScenesSection profileId={profile.id} scenes={sceneCards} fonts={profile.fonts} canManageDefaults={actor.pricingTier === "business"} />}
         {section === "audio" && <AudioSection profile={profile} />}
         {section === "voice" && <VoiceSection profile={profile} />}
       </Box>
@@ -159,15 +167,11 @@ function AssetsSection({ profile }: { profile: Profile }) {
   );
 }
 
-function ScenesSection() {
+function ScenesSection({ profileId, scenes, fonts, canManageDefaults }: { profileId: string; scenes: SceneTemplateCard[]; fonts: Profile["fonts"]; canManageDefaults: boolean }) {
   return (
     <Stack gap="7">
       <SectionHeader index="04" icon={<Type size={18} />} title="Scene templates" description="Bounded intros, outros, and cards will live here without creating a second editor." />
-      <Box layerStyle="blueprint" borderTopWidth="1px" borderBottomWidth="1px" borderColor="border" p={{ base: "5", md: "8" }}>
-        <Grid templateColumns={{ base: "1fr", md: "repeat(3, 1fr)" }} gap="6">
-          {["Intro", "Card", "Outro"].map((label, index) => <Stack key={label} gap="3" ps="4" borderInlineStartWidth="3px" borderColor={index === 1 ? "accent.solid" : "border.control"}><Text textStyle="data" color="fg.subtle">0{index + 1}</Text><Text textStyle="title" fontSize="20px">{label}</Text><Text fontSize="12.5px" color="fg.muted">Defined here, inserted later through the Clip Editor Document.</Text></Stack>)}
-        </Grid>
-      </Box>
+      <SceneTemplateManager profileId={profileId} scenes={scenes} fonts={fonts.map((font) => ({ id: font.id, family: font.family, fingerprint: font.fingerprint, missing: font.missing }))} canManageDefaults={canManageDefaults} />
     </Stack>
   );
 }

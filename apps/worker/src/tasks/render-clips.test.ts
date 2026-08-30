@@ -44,6 +44,7 @@ import {
   remapSceneCutsForCutPlan,
   resolvePipAnalysis,
   resolveRenderTimingForClip,
+  sceneAssetOwnerWhere,
 } from "./render-clips";
 import { buildClipCutPlan } from "./cut-plan";
 import type { SplitLayoutSegment } from "./two-up";
@@ -73,6 +74,21 @@ type TestSfxInput = {
   volume: number;
   durationSec?: number;
 };
+
+describe("Scene asset ownership", () => {
+	test("renders personal Creator assets from user ownership and shared Business assets from workspace ownership", () => {
+		expect(sceneAssetOwnerWhere({
+			projectUserId: "project-user",
+			workspaceId: "personal-workspace",
+			workspace: { personalOwnerUserId: "personal-owner", pricingTier: "creator" },
+		})).toEqual({ userId: "personal-owner", workspaceId: null });
+		expect(sceneAssetOwnerWhere({
+			projectUserId: "project-user",
+			workspaceId: "business-workspace",
+			workspace: { personalOwnerUserId: null, pricingTier: "business" },
+		})).toEqual({ workspaceId: "business-workspace" });
+	});
+});
 type AudioTestOptions = {
   studioEdits?: StudioEdits | null;
   music?: TestMusicInput | null;
@@ -202,6 +218,7 @@ function testComposition(params: {
   const transcriptSlice = [...captionTranscript, ...duckingTranscript];
   const result = planClipComposition({
     document: editorDocumentSchema.parse({
+    version: 2,
       clipStartSec: 0,
       clipEndSec: duration,
       captionPreset,
@@ -395,6 +412,7 @@ function buildAudiogramArgs(
   });
   const result = planClipComposition({
     document: editorDocumentSchema.parse({
+    version: 2,
       clipStartSec: 0,
       clipEndSec: params.clipDurationSec,
       captionPreset,
@@ -712,6 +730,7 @@ describe("generateAssFromSlice (caption fidelity)", () => {
 
 test("planned ASS serialization preserves the planner's punctuation filtering and cue boundaries", () => {
   const document = editorDocumentSchema.parse({
+    version: 2,
     clipStartSec: 0,
     clipEndSec: 2,
     captionPreset: { ...preset("karaoke"), punctuation: false },

@@ -8,6 +8,7 @@ import { extname, join } from "node:path";
 import { Readable } from "node:stream";
 import { pipeline as productionPipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
+import { getPrismaClient } from "@narriflow/db/client";
 import {
   automaticLayoutInputFingerprint,
   compositionAssetRef,
@@ -151,6 +152,8 @@ import {
   bindCompositionPlanAudioInputs,
   compileCompositionPlanAudiogram,
   compileCompositionPlanAudioSchedule,
+  compileCompositionPlanInsertedSceneSequence,
+  compileCompositionPlanSceneAudio,
   compileCompositionPlanVideo,
   compileCompositionPlanVisualLayers,
   type BoundCompositionAudioRenderRequest,
@@ -265,6 +268,22 @@ interface WorkflowRunJob {
   };
 }
 
+export function sceneAssetOwnerWhere(input: {
+	projectUserId: string;
+	workspaceId: string | null;
+	workspace: { personalOwnerUserId: string | null; pricingTier: string } | null;
+}) {
+	if (
+		input.workspace?.personalOwnerUserId &&
+		input.workspace.pricingTier !== "business"
+	) {
+		return { userId: input.workspace.personalOwnerUserId, workspaceId: null };
+	}
+	return input.workspaceId
+		? { workspaceId: input.workspaceId }
+		: { userId: input.projectUserId, workspaceId: null };
+}
+
 export type ClipRenderingWorkflowAttempt = Omit<WorkflowAttemptRef, "stage"> & {
   stage: "clip_rendering";
 };
@@ -343,6 +362,7 @@ interface ClipRenderAttemptAdapters {
   };
   composition: {
     compileVideo: typeof compileCompositionPlanVideo;
+    compileSceneAudio: typeof compileCompositionPlanSceneAudio;
     compileVisualLayers: typeof compileCompositionPlanVisualLayers;
   };
   diagnose(input: {
@@ -529,6 +549,7 @@ const productionClipRenderAttemptAdapters: ClipRenderAttemptAdapters = {
   },
   composition: {
     compileVideo: compileCompositionPlanVideo,
+    compileSceneAudio: compileCompositionPlanSceneAudio,
     compileVisualLayers: compileCompositionPlanVisualLayers,
   },
   diagnose: productionRenderDiagnosticAdapter.diagnose,
@@ -2983,6 +3004,7 @@ function buildMusicDuckingSuffix(
  */
 function buildAudioMixFilter(params: {
   audio: BoundCompositionAudioRenderRequest;
+  resolvedSceneAssets?: Readonly<Record<string, { path: string; kind: "image" | "video"; hasAudio: boolean }>>;
   clipDurationSec: number;
   /** Label to read the dialogue/source audio from — defaults to `[0:a]`
    *  (the raw source input). Cut-concat renders pass `[acat]` instead so the
@@ -3099,6 +3121,8 @@ export function buildSingleVideoArgs(params: {
   /** Non-empty `deletedRanges` cut plan (vizard-parity Phase B step 7).
    *  Omitted/uncut: byte-identical to the pre-cut-concat filter graph. */
   cutPlan?: ClipCutPlan | null;
+  resolvedSceneAssets?: Readonly<Record<string, { path: string; kind: "image" | "video"; hasAudio: boolean }>>;
+  resolvedSceneFonts?: Readonly<Record<string, string>>;
 }) {
   assertBoundAudioMatchesPlan(params.composition.plan, params.audio);
   if (params.cutPlan?.isEmpty) {
@@ -3109,9 +3133,7 @@ export function buildSingleVideoArgs(params: {
     );
   }
   const isCut = Boolean(params.cutPlan && !params.cutPlan.isUncut);
-  const clipDurationSec = isCut
-    ? params.cutPlan!.editedDurationSec
-    : params.endSec - params.startSec;
+  const clipDurationSec = params.composition.plan.editedDurationSec;
 
   const cutConcat = isCut
     ? buildCutConcatFilter({
@@ -3149,6 +3171,13 @@ export function buildSingleVideoArgs(params: {
   }
   let nextInputIndex = 1;
   const bgImageInputIndex = usesBackgroundImage ? nextInputIndex++ : null;
+  const sceneAssetRefs = [...new Set(plannedTarget.scenes.flatMap((scene) =>
+    scene.layers.flatMap((layer) => layer.kind === "inserted-scene" && layer.sourceRef ? [layer.sourceRef] : []),
+  ))];
+  const hasInsertedScenes = plannedTarget.scenes.some((scene) =>
+    scene.layers.some((layer) => layer.kind === "inserted-scene"));
+  const sceneInputStartIndex = sceneAssetRefs.length > 0 ? nextInputIndex : null;
+  nextInputIndex += sceneAssetRefs.length;
   const logoInputIndex = plannedLogo ? nextInputIndex++ : null;
   const musicInputIndex = params.audio.music ? nextInputIndex++ : null;
   const sfxInputIndexes = params.audio.soundEffects.map(() => nextInputIndex++);
@@ -3162,8 +3191,23 @@ export function buildSingleVideoArgs(params: {
     outputLabel: "[composition_base]",
     backgroundImageInputIndex: bgImageInputIndex,
     fps: params.probe.fps,
+    resolvedSceneAssets: params.resolvedSceneAssets,
+    resolvedSceneFonts: params.resolvedSceneFonts,
+    sceneInputStartIndex: sceneInputStartIndex ?? undefined,
   });
   filterParts.push(...compiled.filterParts);
+  const sceneAudio = currentRenderAdapters().composition.compileSceneAudio({
+    plan: params.composition.plan,
+    targetId: params.composition.targetId,
+    sourceAudioLabel: audioInputLabel,
+    sceneInputs: sceneAssetRefs.map((sourceRef, index) => ({
+      sourceRef,
+      inputIndex: sceneInputStartIndex! + index,
+      hasAudio: params.resolvedSceneAssets?.[sourceRef]?.hasAudio ?? false,
+    })),
+  });
+  filterParts.push(...sceneAudio.filterParts);
+  const sceneDialogueLabel = hasInsertedScenes ? sceneAudio.outputLabel : null;
   const visual = currentRenderAdapters().composition.compileVisualLayers({
     plan: params.composition.plan,
     targetId: params.composition.targetId,
@@ -3196,6 +3240,14 @@ export function buildSingleVideoArgs(params: {
     args.push("-i", params.background!.imagePath!);
   }
 
+  for (const sourceRef of sceneAssetRefs) {
+    const asset = params.resolvedSceneAssets?.[sourceRef];
+    if (!asset) throw new Error("clip_composition_scene_input_missing");
+    if (asset.kind === "image") args.push("-loop", "1");
+    else args.push("-stream_loop", "-1");
+    args.push("-i", asset.path);
+  }
+
   if (plannedLogo && params.logo) {
     args.push("-i", params.logo.filePath);
   }
@@ -3209,20 +3261,23 @@ export function buildSingleVideoArgs(params: {
     args.push("-i", sfx.path);
   }
 
+  const audioForRender = sceneDialogueLabel
+    ? { ...params.audio, source: { ...params.audio.source, available: true } }
+    : params.audio;
   const hasMixedAudio = Boolean(params.audio.music) || sfxInputIndexes.length > 0;
   if (hasMixedAudio) {
     filterParts.push(
       buildAudioMixFilter({
-        audio: params.audio,
+        audio: audioForRender,
         clipDurationSec,
-        dialogueInputRef: cutConcat ? cutConcat.audioLabel! : undefined,
+        dialogueInputRef: sceneDialogueLabel ?? (cutConcat ? cutConcat.audioLabel! : undefined),
         musicInputIndex,
         sfxInputIndexes,
       }),
     );
-  } else if (audioInputLabel) {
+  } else if (sceneDialogueLabel || audioInputLabel) {
     filterParts.push(
-      `${audioInputLabel}${buildDialogueAudioFilter(params.audio)}[outa]`,
+      `${sceneDialogueLabel ?? audioInputLabel}${buildDialogueAudioFilter(audioForRender)}[outa]`,
     );
   }
 
@@ -3241,7 +3296,7 @@ export function buildSingleVideoArgs(params: {
 
   if (hasMixedAudio) {
     args.push("-map", "[outa]", "-c:a", "aac", "-b:a", "128k", "-shortest");
-  } else if (params.probe.hasAudio) {
+  } else if (sceneDialogueLabel || params.probe.hasAudio) {
     args.push("-map", "[outa]", "-c:a", "aac", "-b:a", "128k");
   } else {
     args.push("-an");
@@ -3288,6 +3343,8 @@ export function buildBrollVideoArgs(params: {
   background?: BackgroundPlan | null;
   /** See `buildSingleVideoArgs` — same cut-concat contract. */
   cutPlan?: ClipCutPlan | null;
+  resolvedSceneAssets?: Readonly<Record<string, { path: string; kind: "image" | "video"; hasAudio: boolean }>>;
+  resolvedSceneFonts?: Readonly<Record<string, string>>;
 }) {
   assertBoundAudioMatchesPlan(params.composition.plan, params.audio);
   if (Object.keys(params.resolvedBrollAssets).length === 0) {
@@ -3323,10 +3380,15 @@ export function buildBrollVideoArgs(params: {
   );
   const bgImageInputIndex = usesBackgroundImage ? 1 : null;
   const bgOffset = usesBackgroundImage ? 1 : 0;
+  const plannedTargetForScenes = params.composition.plan.targets.find((target) => target.id === params.composition.targetId);
+  if (!plannedTargetForScenes) throw new Error("clip_composition_target_missing");
+  const sceneAssetRefs = [...new Set(plannedTargetForScenes.scenes.flatMap((scene) =>
+    scene.layers.flatMap((layer) => layer.kind === "inserted-scene" && layer.sourceRef ? [layer.sourceRef] : []),
+  ))];
+  const hasInsertedScenes = plannedTargetForScenes.scenes.some((scene) =>
+    scene.layers.some((layer) => layer.kind === "inserted-scene"));
   const isCut = Boolean(params.cutPlan && !params.cutPlan.isUncut);
-  const clipDurationSec = isCut
-    ? params.cutPlan!.editedDurationSec
-    : params.endSec - params.startSec;
+  const clipDurationSec = params.composition.plan.editedDurationSec;
 
   const cutConcat = isCut
     ? buildCutConcatFilter({
@@ -3352,6 +3414,11 @@ export function buildBrollVideoArgs(params: {
       fps: params.probe.fps,
       resolvedBrollAssets: params.resolvedBrollAssets,
       brollInputStartIndex: 1 + bgOffset,
+      resolvedSceneAssets: params.resolvedSceneAssets,
+      resolvedSceneFonts: params.resolvedSceneFonts,
+      sceneInputStartIndex: sceneAssetRefs.length > 0
+        ? 1 + bgOffset + Object.keys(params.resolvedBrollAssets).length
+        : undefined,
   });
   const cutawayCount = compiledComposition.brollInputs.length;
   const plannedTarget = params.composition.plan.targets.find(
@@ -3364,8 +3431,20 @@ export function buildBrollVideoArgs(params: {
   if (Boolean(plannedLogo) !== Boolean(params.logo)) {
     throw new Error("clip_composition_logo_asset_mismatch");
   }
-  const logoInputIndex = plannedLogo ? 1 + bgOffset + cutawayCount : null;
+  const logoInputIndex = plannedLogo ? 1 + bgOffset + cutawayCount + sceneAssetRefs.length : null;
   parts.push(...compiledComposition.filterParts);
+  const sceneAudio = currentRenderAdapters().composition.compileSceneAudio({
+    plan: params.composition.plan,
+    targetId: params.composition.targetId,
+    sourceAudioLabel: audioInputLabel,
+    sceneInputs: sceneAssetRefs.map((sourceRef, index) => ({
+      sourceRef,
+      inputIndex: 1 + bgOffset + cutawayCount + index,
+      hasAudio: params.resolvedSceneAssets?.[sourceRef]?.hasAudio ?? false,
+    })),
+  });
+  parts.push(...sceneAudio.filterParts);
+  const sceneDialogueLabel = hasInsertedScenes ? sceneAudio.outputLabel : null;
   const visual = currentRenderAdapters().composition.compileVisualLayers({
     plan: params.composition.plan,
     targetId: params.composition.targetId,
@@ -3413,13 +3492,21 @@ export function buildBrollVideoArgs(params: {
     args.push("-t", windowDurationSec.toFixed(3), "-i", cutaway.path);
   }
 
+  for (const sourceRef of sceneAssetRefs) {
+    const asset = params.resolvedSceneAssets?.[sourceRef];
+    if (!asset) throw new Error("clip_composition_scene_input_missing");
+    if (asset.kind === "image") args.push("-loop", "1");
+    else args.push("-stream_loop", "-1");
+    args.push("-i", asset.path);
+  }
+
   if (plannedLogo && params.logo) args.push("-i", params.logo.filePath);
 
   // Music, then SFX, each consume the next input slot — same order as
   // buildSingleVideoArgs. musicInputIndex is computed unconditionally
   // (even when music is absent) so sfxInputIndexes can be derived from it
   // without duplicating the bgOffset/cutawayCount/logo arithmetic.
-  const musicInputIndex = 1 + bgOffset + cutawayCount + (plannedLogo ? 1 : 0);
+  const musicInputIndex = 1 + bgOffset + cutawayCount + sceneAssetRefs.length + (plannedLogo ? 1 : 0);
   const sfxInputIndexes = params.audio.soundEffects.map(
     (_, i) => musicInputIndex + (params.audio.music ? 1 : 0) + i,
   );
@@ -3431,20 +3518,23 @@ export function buildBrollVideoArgs(params: {
     args.push("-i", sfx.path);
   }
 
+  const audioForRender = sceneDialogueLabel
+    ? { ...params.audio, source: { ...params.audio.source, available: true } }
+    : params.audio;
   const hasMixedAudio = Boolean(params.audio.music) || sfxInputIndexes.length > 0;
   if (hasMixedAudio) {
     parts.push(
       buildAudioMixFilter({
-        audio: params.audio,
+        audio: audioForRender,
         clipDurationSec,
-        dialogueInputRef: cutConcat ? cutConcat.audioLabel! : undefined,
+        dialogueInputRef: sceneDialogueLabel ?? (cutConcat ? cutConcat.audioLabel! : undefined),
         musicInputIndex: params.audio.music ? musicInputIndex : null,
         sfxInputIndexes,
       }),
     );
-  } else if (audioInputLabel) {
+  } else if (sceneDialogueLabel || audioInputLabel) {
     parts.push(
-      `${audioInputLabel}${buildDialogueAudioFilter(params.audio)}[outa]`,
+      `${sceneDialogueLabel ?? audioInputLabel}${buildDialogueAudioFilter(audioForRender)}[outa]`,
     );
   }
 
@@ -3452,7 +3542,7 @@ export function buildBrollVideoArgs(params: {
 
   if (hasMixedAudio) {
     args.push("-map", "[outa]", "-c:a", "aac", "-b:a", "128k", "-shortest");
-  } else if (params.probe.hasAudio) {
+  } else if (sceneDialogueLabel || params.probe.hasAudio) {
     args.push("-map", "[outa]", "-c:a", "aac", "-b:a", "128k");
   } else {
     args.push("-an");
@@ -3612,6 +3702,8 @@ export function buildAudiogramArgs(params: {
   srtPath: string | null;
   logo?: LogoOverlay | null;
   audio: BoundCompositionAudioRenderRequest;
+  resolvedSceneAssets?: Readonly<Record<string, { path: string; kind: "image" | "video"; hasAudio: boolean }>>;
+  resolvedSceneFonts?: Readonly<Record<string, string>>;
   /** See `buildSingleVideoArgs` — same cut-concat contract, applied to the
    *  audio stream only (audiogram sources have no video track). Callers must
    *  pass `clipDurationSec` already set to the plan's edited duration when
@@ -3641,6 +3733,20 @@ export function buildAudiogramArgs(params: {
     params.composition.targetId,
   );
   const { width: W, height: H } = audiogram.canvas;
+  const plannedTarget = params.composition.plan.targets.find(
+    (target) => target.id === params.composition.targetId,
+  );
+  if (!plannedTarget) throw new Error("clip_composition_target_missing");
+  const insertedLayers = plannedTarget.scenes.flatMap((scene) =>
+    scene.layers.filter((layer) => layer.kind === "inserted-scene"),
+  );
+  const hasInsertedScenes = insertedLayers.length > 0;
+  const sceneAssetRefs = [...new Set(insertedLayers.flatMap((layer) => layer.sourceRef ? [layer.sourceRef] : []))];
+  const sourceVisualDurationSec = plannedTarget.scenes.reduce(
+    (maximum, scene) => Math.max(maximum, scene.sourceRange?.endSec ?? 0),
+    0,
+  );
+  const outputDurationSec = params.composition.plan.editedDurationSec;
   if (W !== config.width || H !== config.height) {
     throw new WorkflowWorkerError(
       "invalid_clip_composition_target",
@@ -3670,43 +3776,6 @@ export function buildAudiogramArgs(params: {
   const hasMusicOrSfx =
     Boolean(params.audio.music) || params.audio.soundEffects.length > 0;
 
-  const chain: string[] = cutConcat ? [...cutConcat.filterParts] : [];
-  // With music/SFX AND a real cut, `audioInputLabel` is `[acat]` — a named
-  // filter pad produced by the cut-concat `concat`/`acopy` stage above, not
-  // a raw demuxed stream. Unlike `[0:a]` (which ffmpeg happily fans out to
-  // multiple consumers), a named pad is a single link: feeding it into both
-  // showwaves below AND buildAudioMixFilter's dialogueInputRef without an
-  // explicit split silently rebinds the second consumer to the raw uncut
-  // `[0:a]`, leaking deleted audio into the export (ffmpeg 8.0.1-reproduced).
-  // Split explicitly, same as the no-music/no-sfx branch already does below.
-  const dialogueAudioLabel = cutConcat ? "[dlgsrc]" : audioInputLabel;
-  if (hasMusicOrSfx && cutConcat) {
-    chain.push(`${audioInputLabel}asplit=2[wavesrc][dlgsrc]`);
-  }
-  const waveSourceLabel =
-    hasMusicOrSfx && cutConcat ? "[wavesrc]" : audioInputLabel;
-  chain.push(
-    ...(hasMusicOrSfx
-      ? [
-          `color=c=${bgColor}:s=${W}x${H}:d=${params.clipDurationSec}[bg]`,
-          `${waveSourceLabel}showwaves=s=${W}x${waveHeight}:mode=cline:colors=${waveColor}:rate=25[wave]`,
-          `[bg][wave]overlay=0:(H-h)/2[comp]`,
-        ]
-      : [
-          `color=c=${bgColor}:s=${W}x${H}:d=${params.clipDurationSec}[bg]`,
-          // Split the audio so one branch drives the waveform and the other is
-          // faded and mapped as the output track.
-          `${audioInputLabel}asplit=2[wavesrc][fadesrc]`,
-          `[wavesrc]showwaves=s=${W}x${waveHeight}:mode=cline:colors=${waveColor}:rate=25[wave]`,
-          `[fadesrc]${buildDialogueAudioFilter(params.audio)}[outa]`,
-          `[bg][wave]overlay=0:(H-h)/2[comp]`,
-        ]),
-  );
-
-  const plannedTarget = params.composition.plan.targets.find(
-    (target) => target.id === params.composition.targetId,
-  );
-  if (!plannedTarget) throw new Error("clip_composition_target_missing");
   const plannedLogo = plannedTarget.visualLayers.find(
     (layer) => layer.kind === "logo",
   );
@@ -3714,9 +3783,72 @@ export function buildAudiogramArgs(params: {
     throw new Error("clip_composition_logo_asset_mismatch");
   }
 
-  // Source is input 0. The plan owns visual ordering, so a planned logo is
-  // inserted before the audio-only optional inputs, matching the video path.
-  const logoInputIndex = plannedLogo ? 1 : null;
+  const sceneInputStartIndex = sceneAssetRefs.length > 0 ? 1 : null;
+  const logoInputIndex = plannedLogo ? 1 + sceneAssetRefs.length : null;
+  const musicInputIndex = 1 + sceneAssetRefs.length + (plannedLogo ? 1 : 0);
+  const sfxInputIndexes = params.audio.soundEffects.map(
+    (_, index) => musicInputIndex + (params.audio.music ? 1 : 0) + index,
+  );
+  const chain: string[] = cutConcat ? [...cutConcat.filterParts] : [];
+  let dialogueAudioLabel: string;
+  if (hasInsertedScenes) {
+    if (sourceVisualDurationSec <= 0) throw new Error("invalid_clip_composition_source_scenes");
+    chain.push(
+      `${audioInputLabel}asplit=2[wavesrc][sceneaudiosrc]`,
+      `color=c=${bgColor}:s=${W}x${H}:d=${sourceVisualDurationSec.toFixed(3)}[bg]`,
+      `[wavesrc]showwaves=s=${W}x${waveHeight}:mode=cline:colors=${waveColor}:rate=25[wave]`,
+      `[bg][wave]overlay=0:(H-h)/2[audiogram_source]`,
+    );
+    const sequence = compileCompositionPlanInsertedSceneSequence({
+      plan: params.composition.plan,
+      targetId: params.composition.targetId,
+      baseVideoLabel: "[audiogram_source]",
+      outputLabel: "[comp]",
+      fps: 25,
+      resolvedSceneAssets: params.resolvedSceneAssets,
+      resolvedSceneFonts: params.resolvedSceneFonts,
+      sceneInputStartIndex: sceneInputStartIndex ?? undefined,
+    });
+    chain.push(...sequence.filterParts);
+    const sceneAudio = compileCompositionPlanSceneAudio({
+      plan: params.composition.plan,
+      targetId: params.composition.targetId,
+      sourceAudioLabel: "[sceneaudiosrc]",
+      sceneInputs: sceneAssetRefs.map((sourceRef, index) => ({
+        sourceRef,
+        inputIndex: sceneInputStartIndex! + index,
+        hasAudio: params.resolvedSceneAssets?.[sourceRef]?.hasAudio ?? false,
+      })),
+    });
+    chain.push(...sceneAudio.filterParts);
+    if (!sceneAudio.outputLabel) throw new Error("clip_composition_scene_audio_missing");
+    dialogueAudioLabel = sceneAudio.outputLabel;
+    if (!hasMusicOrSfx) {
+      chain.push(`${dialogueAudioLabel}${buildDialogueAudioFilter(params.audio)}[outa]`);
+    }
+  } else {
+    dialogueAudioLabel = cutConcat ? "[dlgsrc]" : audioInputLabel;
+    if (hasMusicOrSfx && cutConcat) {
+      chain.push(`${audioInputLabel}asplit=2[wavesrc][dlgsrc]`);
+    }
+    const waveSourceLabel = hasMusicOrSfx && cutConcat ? "[wavesrc]" : audioInputLabel;
+    chain.push(
+      ...(hasMusicOrSfx
+        ? [
+            `color=c=${bgColor}:s=${W}x${H}:d=${outputDurationSec.toFixed(3)}[bg]`,
+            `${waveSourceLabel}showwaves=s=${W}x${waveHeight}:mode=cline:colors=${waveColor}:rate=25[wave]`,
+            `[bg][wave]overlay=0:(H-h)/2[comp]`,
+          ]
+        : [
+            `color=c=${bgColor}:s=${W}x${H}:d=${outputDurationSec.toFixed(3)}[bg]`,
+            `${audioInputLabel}asplit=2[wavesrc][fadesrc]`,
+            `[wavesrc]showwaves=s=${W}x${waveHeight}:mode=cline:colors=${waveColor}:rate=25[wave]`,
+            `[fadesrc]${buildDialogueAudioFilter(params.audio)}[outa]`,
+            `[bg][wave]overlay=0:(H-h)/2[comp]`,
+          ]),
+    );
+  }
+
   const visual = currentRenderAdapters().composition.compileVisualLayers({
     plan: params.composition.plan,
     targetId: params.composition.targetId,
@@ -3746,12 +3878,13 @@ export function buildAudiogramArgs(params: {
     params.sourcePath,
   ];
 
-  // Logo, music, then SFX — same order as the video builders.
-  const musicInputIndex = plannedLogo ? 2 : 1;
-  const sfxInputIndexes = params.audio.soundEffects.map(
-    (_, i) => musicInputIndex + (params.audio.music ? 1 : 0) + i,
-  );
-
+  for (const sourceRef of sceneAssetRefs) {
+    const asset = params.resolvedSceneAssets?.[sourceRef];
+    if (!asset) throw new Error("clip_composition_scene_input_missing");
+    if (asset.kind === "image") args.push("-loop", "1");
+    else args.push("-stream_loop", "-1");
+    args.push("-i", asset.path);
+  }
   if (plannedLogo && params.logo) {
     args.push("-i", params.logo.filePath);
   }
@@ -3766,7 +3899,7 @@ export function buildAudiogramArgs(params: {
     chain.push(
       buildAudioMixFilter({
         audio: params.audio,
-        clipDurationSec: params.clipDurationSec,
+        clipDurationSec: outputDurationSec,
         dialogueInputRef: dialogueAudioLabel,
         musicInputIndex: params.audio.music ? musicInputIndex : null,
         sfxInputIndexes,
@@ -3788,7 +3921,7 @@ export function buildAudiogramArgs(params: {
   args.push(
     "-shortest",
     "-t",
-    params.clipDurationSec.toFixed(3),
+    outputDurationSec.toFixed(3),
     "-c:v",
     "libx264",
     "-preset",
@@ -5157,6 +5290,7 @@ async function executeClipRenderAttempt(
         run.projectId,
       );
       const compositionDocument: EditorDocument = {
+        ...editorDocument,
         clipStartSec,
         clipEndSec,
         captionPreset,
@@ -5165,6 +5299,146 @@ async function executeClipRenderAttempt(
         brollUrl: editorDocument.brollUrl,
         deletedRanges,
       };
+      const sceneAssetReferences = [...new Map(
+        compositionDocument.sceneBlocks.flatMap((block) =>
+          block.content.kind === "image" || block.content.kind === "video"
+            ? [[block.content.asset.id, { ...block.content.asset, kind: block.content.kind }] as const]
+            : [],
+        ),
+      ).values()];
+      const sceneFontReferences = [...new Map(
+        compositionDocument.sceneBlocks.flatMap((block) =>
+          block.content.kind === "text" && block.content.fontAsset
+            ? [[block.content.fontAsset.id, {
+                ...block.content.fontAsset,
+                family: block.content.fontFamily,
+              }] as const]
+            : [],
+        ),
+      ).values()];
+      const resolvedSceneAssets: Record<string, { path: string; kind: "image" | "video"; hasAudio: boolean }> = {};
+      const resolvedSceneFonts: Record<string, string> = {};
+      const prisma = sceneAssetReferences.length > 0 || sceneFontReferences.length > 0
+        ? getPrismaClient()
+        : null;
+      if ((sceneAssetReferences.length > 0 || sceneFontReferences.length > 0) && !prisma) {
+        throw new WorkflowWorkerError("scene_asset_database_unavailable", "Scene assets cannot be resolved", "retryable");
+      }
+      const workspace = prisma && run.project.workspaceId
+        ? await prisma.workspace.findUnique({
+            where: { id: run.project.workspaceId },
+            select: { personalOwnerUserId: true, pricingTier: true },
+          })
+        : null;
+      const sceneOwnerWhere = sceneAssetOwnerWhere({
+        projectUserId: run.project.userId,
+        workspaceId: run.project.workspaceId,
+        workspace,
+      });
+      if (sceneAssetReferences.length > 0 && prisma) {
+        const assets = await prisma.visualAsset.findMany({
+          where: {
+            id: { in: sceneAssetReferences.map((asset) => asset.id) },
+            ...sceneOwnerWhere,
+          },
+          select: { id: true, kind: true, fingerprint: true, storageKey: true },
+        });
+        const byId = new Map(assets.map((asset) => [asset.id, asset]));
+        for (const reference of sceneAssetReferences) {
+          const asset = byId.get(reference.id);
+          if (!asset || asset.fingerprint !== reference.fingerprint || asset.kind !== reference.kind) {
+            throw new WorkflowWorkerError("scene_asset_unavailable", "An inserted scene asset is missing or changed", "permanent");
+          }
+          const path = join(tempDir, `scene-${asset.id}${extname(asset.storageKey) || (asset.kind === "image" ? ".png" : ".mp4")}`);
+          await currentRenderAdapters().storage.downloadObjectToFile({
+            key: asset.storageKey,
+            filePath: path,
+            signal: renderStorageSignal(),
+          });
+          const decodable = await currentRenderAdapters().optionalAssets.validateOptionalMedia(path, asset.kind);
+          if (!decodable) throw new WorkflowWorkerError("scene_asset_invalid", "An inserted scene asset is not decodable", "permanent");
+          const sceneProbe = asset.kind === "video" ? await probeSource(path) : null;
+          if (sceneProbe) {
+            const sceneDurationSec = await probeMediaDurationSec(path);
+            const invalidRange = compositionDocument.sceneBlocks.some((block) =>
+              block.content.kind === "video" &&
+              block.content.asset.id === asset.id &&
+              (sceneDurationSec === null || block.content.sourceEndSec > sceneDurationSec + 0.05));
+            if (invalidRange || sceneDurationSec === null) {
+              throw new WorkflowWorkerError("scene_asset_range_invalid", "An inserted video scene exceeds its source duration", "permanent");
+            }
+          }
+          resolvedSceneAssets[compositionAssetRef("visual_asset", `${asset.id}:${asset.fingerprint}`)] = { path, kind: asset.kind, hasAudio: sceneProbe?.hasAudio ?? false };
+        }
+      }
+      if (sceneFontReferences.length > 0 && prisma) {
+        const fonts = await prisma.brandFont.findMany({
+          where: {
+            id: { in: sceneFontReferences.map((font) => font.id) },
+            ...sceneOwnerWhere,
+          },
+          select: {
+            id: true,
+            family: true,
+            fingerprint: true,
+            storageKey: true,
+            format: true,
+          },
+        });
+        const byId = new Map(fonts.map((font) => [font.id, font]));
+        for (const reference of sceneFontReferences) {
+          const font = byId.get(reference.id);
+          if (
+            !font ||
+            font.fingerprint !== reference.fingerprint ||
+            font.family !== reference.family
+          ) {
+            throw new WorkflowWorkerError(
+              "scene_font_unavailable",
+              "An inserted scene font is missing or changed",
+              "permanent",
+            );
+          }
+          const path = join(
+            tempDir,
+            `scene-font-${font.id}.${font.format.toLowerCase()}`,
+          );
+          await currentRenderAdapters().storage.downloadObjectToFile({
+            key: font.storageKey,
+            filePath: path,
+            signal: renderStorageSignal(),
+          });
+          resolvedSceneFonts[
+            compositionAssetRef("brand_font", `${font.id}:${font.fingerprint}`)
+          ] = path;
+        }
+      }
+      const sceneVisualAvailability = Object.fromEntries(
+        compositionDocument.sceneBlocks.flatMap((scene) =>
+          scene.content.kind === "image" || scene.content.kind === "video"
+            ? [[scene.id, {
+                state: "available" as const,
+                ref: compositionAssetRef(
+                  "visual_asset",
+                  `${scene.content.asset.id}:${scene.content.asset.fingerprint}`,
+                ),
+              }]]
+            : [],
+        ),
+      );
+      const sceneFontAvailability = Object.fromEntries(
+        compositionDocument.sceneBlocks.flatMap((scene) =>
+          scene.content.kind === "text" && scene.content.fontAsset
+            ? [[scene.id, {
+                state: "available" as const,
+                ref: compositionAssetRef(
+                  "brand_font",
+                  `${scene.content.fontAsset.id}:${scene.content.fontAsset.fingerprint}`,
+                ),
+              }]]
+            : [],
+        ),
+      );
       const persistedAutoLayout = parseClipAutoLayoutAnalysis(
         clip.autoLayoutAnalysis,
       );
@@ -5224,7 +5498,11 @@ async function executeClipRenderAttempt(
                       state: layoutEngineEnabled ? "missing" : "disabled",
                     },
               },
-              assets: { backgroundImage: { state: "missing" } },
+              assets: {
+                backgroundImage: { state: "missing" },
+                sceneVisuals: sceneVisualAvailability,
+                sceneFonts: sceneFontAvailability,
+              },
               capabilities: {
                 automaticSpeakerLayout: layoutEngineEnabled,
                 automaticSpeakerEngineVersion: "shot-layout-v1",
@@ -6460,6 +6738,8 @@ async function executeClipRenderAttempt(
             },
             assets: {
               backgroundImage,
+              sceneVisuals: sceneVisualAvailability,
+              sceneFonts: sceneFontAvailability,
               ...(studioEdits.music.assetId || studioEdits.music.url
                 ? {
                     music: musicAvailable && musicPlan?.ref
@@ -6756,6 +7036,8 @@ async function executeClipRenderAttempt(
               logo,
               audio: plannedAudio,
               cutPlan,
+              resolvedSceneAssets,
+              resolvedSceneFonts,
             });
 
             const encodeStartedAtMs = currentTimeMs();
@@ -6778,6 +7060,8 @@ async function executeClipRenderAttempt(
                         logo: null,
                         audio: fallbackAudio,
                         cutPlan,
+                        resolvedSceneAssets,
+                        resolvedSceneFonts,
                       })
                   : undefined,
               optionalAssets: audioOptionalAssets,
@@ -6871,6 +7155,8 @@ async function executeClipRenderAttempt(
                   audio: plannedAudio,
                   background: backgroundPlan,
                   cutPlan,
+                  resolvedSceneAssets,
+                  resolvedSceneFonts,
                 })
               : buildSingleVideoArgs({
                   sourcePath,
@@ -6885,6 +7171,8 @@ async function executeClipRenderAttempt(
                   audio: plannedAudio,
                   background: backgroundPlan,
                   cutPlan,
+                  resolvedSceneAssets,
+                  resolvedSceneFonts,
                 });
             const encodeStartedAtMs = currentTimeMs();
             const commandMode = await executeRenderCommandWithOptionalFallback({
@@ -6905,6 +7193,8 @@ async function executeClipRenderAttempt(
                         audio: fallbackAudio ?? plannedAudio,
                         background: fallbackBackgroundPlan,
                         cutPlan,
+                        resolvedSceneAssets,
+                        resolvedSceneFonts,
                       })
                   : undefined,
               optionalAssets: optionalCommandAssets,

@@ -72,7 +72,7 @@ export function assertBrandMutationAllowed(
 export async function assertBrandMutationAllowedWithAnalytics(
   scope: BrandActorScope,
   feature: PlanFeature,
-  assetKind: "profile" | "font",
+  assetKind: "profile" | "font" | "scene",
 ): Promise<void> {
   try {
     assertBrandMutationAllowed(scope, feature);

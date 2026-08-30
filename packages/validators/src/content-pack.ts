@@ -8,6 +8,7 @@ export const clipPlatformTargetSchema = z.enum([
   "tiktok",
   "youtube_shorts",
   "instagram_reels",
+  "facebook_reels",
 ]);
 
 export const generationModeSchema = z.enum(["clip", "caption_only"]);

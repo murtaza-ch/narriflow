@@ -19,6 +19,8 @@ import {
   type ClipAutoLayoutAnalysis,
   type ClipAutoLayoutSegment,
   type EditorDocument,
+  type SceneBlock,
+  type SceneContent,
   type EffectiveLogoSettings,
   type LogoPosition,
   type SpeakerLayerRole,
@@ -196,6 +198,8 @@ export interface ClipCompositionPlanInput {
     readonly soundEffects?: Readonly<
       Record<string, CompositionSoundEffectAvailability>
     >;
+		readonly sceneVisuals?: Readonly<Record<string, CompositionAssetAvailability>>;
+		readonly sceneFonts?: Readonly<Record<string, CompositionAssetAvailability>>;
   };
   readonly capabilities: {
     readonly automaticSpeakerLayout: boolean;
@@ -276,11 +280,25 @@ export interface CompositionAudiogramLayer {
   readonly zIndex: 0;
 }
 
+export interface CompositionInsertedSceneLayer {
+  readonly id: string;
+  readonly kind: "inserted-scene";
+  readonly sceneBlockId: string;
+  readonly content: SceneContent;
+  readonly motion: SceneBlock["motion"];
+  readonly sourceRef: string | null;
+  readonly destination: CompositionRect;
+  readonly rotationDeg: 0;
+  readonly opacity: 1;
+  readonly zIndex: 25;
+}
+
 export type CompositionLayer =
   | CompositionSourceVideoLayer
   | CompositionBackgroundLayer
   | CompositionBrollVideoLayer
-  | CompositionAudiogramLayer;
+  | CompositionAudiogramLayer
+  | CompositionInsertedSceneLayer;
 
 export interface CompositionActiveRange {
   readonly startSec: number;
@@ -388,6 +406,9 @@ export interface CompositionScene {
   readonly id: string;
   readonly startSec: number;
   readonly endSec: number;
+  /** Position in the pre-insertion edited source timeline. Inserted scenes
+   * have no source range; shifted source scenes retain their original range. */
+  readonly sourceRange?: CompositionActiveRange | null;
   readonly layers: readonly CompositionLayer[];
 }
 
@@ -1093,6 +1114,7 @@ function validAutomaticLayoutEvidence(
   ) {
     return null;
   }
+
   return analysis;
 }
 
@@ -1160,6 +1182,136 @@ function addBrollLayers(
     }
   }
   return { ...target, scenes };
+}
+
+function addInsertedSceneBlocks(
+  target: CompositionBaseTargetPlan,
+  blocks: readonly SceneBlock[],
+): CompositionBaseTargetPlan {
+  if (blocks.length === 0) return target;
+  let insertedBeforeSec = 0;
+  const anchored = [...blocks]
+    .sort((left, right) => left.anchorSec - right.anchorSec || left.id.localeCompare(right.id))
+    .map((block) => {
+      const baseAnchorSec = block.anchorSec - insertedBeforeSec;
+      insertedBeforeSec += block.durationSec;
+      return { block, baseAnchorSec };
+    });
+  const boundaries = new Set(target.scenes.flatMap((scene) => [scene.startSec, scene.endSec]));
+  anchored.forEach(({ baseAnchorSec }) => {
+    boundaries.add(baseAnchorSec);
+  });
+  const ordered = [...boundaries].sort((left, right) => left - right);
+  const sourceScenes: CompositionScene[] = [];
+  for (let index = 0; index < ordered.length - 1; index += 1) {
+    const startSec = ordered[index]!;
+    const endSec = ordered[index + 1]!;
+    if (endSec <= startSec) continue;
+    const base = target.scenes.find((scene) => scene.startSec <= startSec && scene.endSec >= endSec);
+    if (!base) continue;
+    const shift = anchored.filter(({ baseAnchorSec }) => baseAnchorSec <= startSec).reduce((sum, { block }) => sum + block.durationSec, 0);
+    sourceScenes.push({
+      ...base,
+      id: `${base.id}:insert-slice:${index}`,
+      startSec: startSec + shift,
+      endSec: endSec + shift,
+      sourceRange: { startSec, endSec },
+    });
+  }
+  const insertedScenes: CompositionScene[] = anchored.map(({ block }) => ({
+    id: `scene:inserted:${target.id}:${block.id}`,
+    startSec: block.anchorSec,
+    endSec: block.anchorSec + block.durationSec,
+    sourceRange: null,
+    layers: [{
+      id: `layer:inserted:${target.id}:${block.id}`,
+      kind: "inserted-scene",
+      sceneBlockId: block.id,
+      content: block.content,
+      motion: block.motion,
+      sourceRef: block.content.kind === "image" || block.content.kind === "video"
+        ? compositionAssetRef("visual_asset", `${block.content.asset.id}:${block.content.asset.fingerprint}`)
+        : null,
+      destination: { x: 0, y: 0, width: target.canvas.width, height: target.canvas.height },
+      rotationDeg: 0,
+      opacity: 1,
+      zIndex: 25,
+    }],
+  }));
+  return {
+    ...target,
+    scenes: [...sourceScenes, ...insertedScenes].sort((left, right) => left.startSec - right.startSec || left.id.localeCompare(right.id)),
+  };
+}
+
+function insertedBaseAnchors(blocks: readonly SceneBlock[]) {
+  let insertedBeforeSec = 0;
+  return [...blocks]
+    .sort((left, right) => left.anchorSec - right.anchorSec || left.id.localeCompare(right.id))
+    .map((block) => {
+      const baseAnchorSec = block.anchorSec - insertedBeforeSec;
+      insertedBeforeSec += block.durationSec;
+      return { block, baseAnchorSec };
+    });
+}
+
+function retimeVisualLayersForInsertedScenes(
+  layers: readonly CompositionVisualLayer[],
+  blocks: readonly SceneBlock[],
+  totalDurationSec: number,
+): CompositionVisualLayer[] {
+  if (blocks.length === 0) return [...layers];
+  const anchors = insertedBaseAnchors(blocks);
+  const shift = (timeSec: number) => anchors
+    .filter(({ baseAnchorSec }) => baseAnchorSec <= timeSec)
+    .reduce((sum, { block }) => sum + block.durationSec, 0);
+  return layers.flatMap((layer) => {
+    if (layer.kind === "logo" || layer.kind === "output-treatment") {
+      return [{ ...layer, activeRange: { startSec: 0, endSec: totalDurationSec } }];
+    }
+    if (layer.kind === "transition") {
+      const fadeInDuration = layer.windows.fadeIn.endSec - layer.windows.fadeIn.startSec;
+      const fadeOutDuration = layer.windows.fadeOut.endSec - layer.windows.fadeOut.startSec;
+      return [{
+        ...layer,
+        activeRange: { startSec: 0, endSec: totalDurationSec },
+        windows: {
+          fadeIn: { startSec: 0, endSec: Math.min(totalDurationSec, fadeInDuration) },
+          fadeOut: { startSec: Math.max(0, totalDurationSec - fadeOutDuration), endSec: totalDurationSec },
+        },
+      }];
+    }
+    const boundaries = [
+      layer.activeRange.startSec,
+      ...anchors
+        .map(({ baseAnchorSec }) => baseAnchorSec)
+        .filter((anchor) => anchor > layer.activeRange.startSec && anchor < layer.activeRange.endSec),
+      layer.activeRange.endSec,
+    ];
+    const slices: CompositionVisualLayer[] = [];
+    boundaries.slice(0, -1).forEach((startSec, index) => {
+      const endSec = boundaries[index + 1]!;
+      const outputRange = {
+        startSec: startSec + shift(startSec),
+        endSec: endSec + shift(Math.max(startSec, endSec - 0.000_001)),
+      };
+      if (outputRange.endSec <= outputRange.startSec) return;
+      if (layer.kind === "caption") {
+        const words = layer.words
+          .filter((word) => word.endSec > startSec && word.startSec < endSec)
+          .map((word) => ({
+            ...word,
+            startSec: word.startSec + shift(word.startSec),
+            endSec: word.endSec + shift(Math.max(word.startSec, word.endSec - 0.000_001)),
+          }));
+        if (words.length === 0) return;
+        slices.push({ ...layer, id: `${layer.id}:scene-slice:${index}`, activeRange: outputRange, words });
+        return;
+      }
+      slices.push({ ...layer, id: `${layer.id}:scene-slice:${index}`, activeRange: outputRange });
+    });
+    return slices;
+  });
 }
 
 function applyCaptionTextTransform(
@@ -1527,6 +1679,9 @@ export function planClipComposition(
         textLayers: input.document.studioEdits.textLayers,
         transition: input.document.studioEdits.transition,
       },
+      ...(input.document.sceneBlocks.length > 0
+        ? { sceneBlocks: input.document.sceneBlocks }
+        : {}),
       assets: input.assets,
       evidence:
         {
@@ -2284,20 +2439,68 @@ export function planClipComposition(
     );
   }
 
+  const totalEditedDurationSec = editedTimeMap.editedDurationSec +
+    input.document.sceneBlocks.reduce((total, block) => total + block.durationSec, 0);
   const targets = baseTargets.map((baseTarget) => {
     const targetInput = input.targets.find(
       (candidate) => candidate.id === baseTarget.id,
     )!;
     return {
-      ...addBrollLayers(baseTarget, brollPlacements),
-      visualLayers: visualLayersForTarget({
-        document: input.document,
-        target: targetInput,
-        editedTimeMap,
-        logo: input.assets.logo,
-      }),
+      ...addInsertedSceneBlocks(
+        addBrollLayers(baseTarget, brollPlacements),
+        input.document.sceneBlocks,
+      ),
+      visualLayers: retimeVisualLayersForInsertedScenes(
+        visualLayersForTarget({
+          document: input.document,
+          target: targetInput,
+          editedTimeMap,
+          logo: input.assets.logo,
+        }),
+        input.document.sceneBlocks,
+        totalEditedDurationSec,
+      ),
     } satisfies CompositionTargetPlan;
   });
+
+  for (const scene of input.document.sceneBlocks) {
+    if (scene.content.kind === "image" || scene.content.kind === "video") {
+      const assetId = scene.content.asset.id;
+      const availability = input.assets.sceneVisuals?.[scene.id] ?? {
+        state: "missing" as const,
+      };
+      if (availability.state !== "available") {
+        const pending = availability.state === "pending";
+        notices.push(...targets.map((target) => ({
+          code: pending ? "scene_asset_pending" : "scene_asset_unavailable",
+          fidelity: pending ? ("pending" as const) : ("degraded" as const),
+          targetId: target.id,
+          sceneId: scene.id,
+          effectiveFallback: target.effectiveMode,
+          userActionPossible: !pending,
+          assetId,
+        })));
+      }
+    }
+    if (scene.content.kind === "text" && scene.content.fontAsset) {
+      const assetId = scene.content.fontAsset.id;
+      const availability = input.assets.sceneFonts?.[scene.id] ?? {
+        state: "missing" as const,
+      };
+      if (availability.state !== "available") {
+        const pending = availability.state === "pending";
+        notices.push(...targets.map((target) => ({
+          code: pending ? "scene_font_pending" : "scene_font_unavailable",
+          fidelity: pending ? ("pending" as const) : ("degraded" as const),
+          targetId: target.id,
+          sceneId: scene.id,
+          effectiveFallback: target.effectiveMode,
+          userActionPossible: !pending,
+          assetId,
+        })));
+      }
+    }
+  }
 
   if (input.assets.logo && input.assets.logo.state !== "available") {
     const pending = input.assets.logo.state === "pending";
@@ -2350,7 +2553,7 @@ export function planClipComposition(
 
   const audioSchedule = buildAudioSchedule(
     input,
-    editedTimeMap.editedDurationSec,
+    totalEditedDurationSec,
     resolvedAudioAssets,
   );
 
@@ -2365,7 +2568,7 @@ export function planClipComposition(
     version: CLIP_COMPOSITION_PLAN_VERSION,
     inputFingerprint,
     fidelity,
-    editedDurationSec: editedTimeMap.editedDurationSec,
+    editedDurationSec: totalEditedDurationSec,
     source: {
       ref: input.source.identity,
       width: input.source.width,

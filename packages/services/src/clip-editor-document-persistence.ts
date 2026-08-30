@@ -44,6 +44,7 @@ export type ClipEditorDocumentPersistenceErrorCode =
   | "clip_not_found"
   | "project_not_found"
   | "corrupt_stored_document"
+  | "unsupported_editor_document_version"
   | "editor_document_invalid"
   | "editor_boundaries_invalid"
   | "editor_document_empty_timeline"
@@ -954,7 +955,7 @@ function toPrismaJson(value: unknown): Prisma.InputJsonValue {
 }
 
 export function encodeClipEditorDocumentForStorage(
-  value: EditorDocument,
+  value: unknown,
   sourceDurationSec: number | null,
 ): {
   startSec: number;
@@ -964,6 +965,10 @@ export function encodeClipEditorDocumentForStorage(
   studioEdits: Prisma.InputJsonValue;
   brollUrl: string | null;
   deletedRanges: Prisma.InputJsonValue;
+  editorDocumentVersion: number;
+  sceneBlocks: Prisma.InputJsonValue;
+  censorSegments: Prisma.InputJsonValue;
+  mediaMotions: Prisma.InputJsonValue;
 } {
   const document = canonicalizeDocument(value, sourceDurationSec);
   return {
@@ -974,6 +979,10 @@ export function encodeClipEditorDocumentForStorage(
     studioEdits: toPrismaJson(document.studioEdits),
     brollUrl: document.brollUrl,
     deletedRanges: toPrismaJson(document.deletedRanges),
+    editorDocumentVersion: document.version,
+    sceneBlocks: toPrismaJson(document.sceneBlocks),
+    censorSegments: toPrismaJson(document.censorSegments),
+    mediaMotions: toPrismaJson(document.mediaMotions),
   };
 }
 
@@ -992,6 +1001,13 @@ function decodeStoredDocument(row: unknown): EditorDocument {
   const studioEdits = Reflect.get(row, "studioEdits");
   const brollUrl = Reflect.get(row, "brollUrl");
   const deletedRanges = Reflect.get(row, "deletedRanges");
+  const editorDocumentVersion = Reflect.get(row, "editorDocumentVersion");
+  const sceneBlocks = Reflect.get(row, "sceneBlocks");
+  const censorSegments = Reflect.get(row, "censorSegments");
+  const mediaMotions = Reflect.get(row, "mediaMotions");
+  if (editorDocumentVersion !== 2) {
+    persistenceError("unsupported_editor_document_version", "Stored Clip Editor Document uses an unsupported version");
+  }
   if (
     typeof startSec !== "number" ||
     typeof endSec !== "number" ||
@@ -1018,6 +1034,10 @@ function decodeStoredDocument(row: unknown): EditorDocument {
     persistenceError("corrupt_stored_document", "Stored Clip Editor Document is malformed");
   }
   const decoded = editorDocumentSchema.safeParse({
+    version: 2,
+    sceneBlocks,
+    censorSegments,
+    mediaMotions,
     clipStartSec: startSec,
     clipEndSec: endSec,
     captionPreset: caption.data,
@@ -1127,6 +1147,10 @@ function prismaDocumentUpdateData(
     studioEdits: toPrismaJson(input.nextDocument.studioEdits),
     brollUrl: input.nextDocument.brollUrl,
     deletedRanges: toPrismaJson(input.nextDocument.deletedRanges),
+    editorDocumentVersion: input.nextDocument.version,
+    sceneBlocks: toPrismaJson(input.nextDocument.sceneBlocks),
+    censorSegments: toPrismaJson(input.nextDocument.censorSegments),
+    mediaMotions: toPrismaJson(input.nextDocument.mediaMotions),
     editorRevision: { increment: 1 },
     status: "edited",
     durationOptimalityScore: input.scores.durationOptimality,

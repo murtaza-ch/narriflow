@@ -16,6 +16,7 @@ import {
 
 function centerDocument() {
   return editorDocumentSchema.parse({
+    version: 2,
     clipStartSec: 10,
     clipEndSec: 20,
     captionPreset: captionPresetSchema.parse({}),
@@ -30,6 +31,7 @@ function centerDocument() {
 
 function fitDocument() {
   return editorDocumentSchema.parse({
+    version: 2,
     clipStartSec: 0,
     clipEndSec: 12,
     captionPreset: captionPresetSchema.parse({}),
@@ -50,6 +52,7 @@ function fitDocument() {
 describe("Clip Composition Plan", () => {
   test("plans one edited-time audio schedule for source, music, ducking, and sound effects", () => {
     const document = editorDocumentSchema.parse({
+    version: 2,
       clipStartSec: 10,
       clipEndSec: 20,
       captionPreset: captionPresetSchema.parse({}),
@@ -170,6 +173,7 @@ describe("Clip Composition Plan", () => {
   test("scales boundary fades for sub-160ms clips so export filters never overlap", () => {
     const result = planClipComposition({
       document: editorDocumentSchema.parse({
+    version: 2,
         clipStartSec: 0,
         clipEndSec: 0.1,
         captionPreset: captionPresetSchema.parse({}),
@@ -217,6 +221,7 @@ describe("Clip Composition Plan", () => {
     };
     const makeDocument = (withVisualEdit: boolean) =>
       editorDocumentSchema.parse({
+    version: 2,
         clipStartSec: 0,
         clipEndSec: 12,
         captionPreset: captionPresetSchema.parse(
@@ -293,6 +298,7 @@ describe("Clip Composition Plan", () => {
 
   test("omits unavailable optional audio independently and scopes stable notices", () => {
     const document = editorDocumentSchema.parse({
+    version: 2,
       clipStartSec: 0,
       clipEndSec: 10,
       captionPreset: captionPresetSchema.parse({}),
@@ -370,6 +376,7 @@ describe("Clip Composition Plan", () => {
 
   test("degrades an available SFX fact whose duration cannot own a stop time", () => {
     const document = editorDocumentSchema.parse({
+    version: 2,
       clipStartSec: 0,
       clipEndSec: 5,
       captionPreset: captionPresetSchema.parse({}),
@@ -440,6 +447,7 @@ describe("Clip Composition Plan", () => {
     }));
     const duration = words.at(-1)!.endSec + 1;
     const document = editorDocumentSchema.parse({
+    version: 2,
       clipStartSec: 0,
       clipEndSec: duration,
       captionPreset: captionPresetSchema.parse({}),
@@ -536,6 +544,7 @@ describe("Clip Composition Plan", () => {
 
   test("plans audio-only input as the existing audiogram and makes unsupported backgrounds explicit", () => {
     const document = editorDocumentSchema.parse({
+    version: 2,
       clipStartSec: 0,
       clipEndSec: 12,
       captionPreset: captionPresetSchema.parse({ highlightColor: "#00FF88" }),
@@ -628,6 +637,7 @@ describe("Clip Composition Plan", () => {
       evidence: { automaticLayout: { state: "missing" as const } },
     });
     const autoDocument = editorDocumentSchema.parse({
+    version: 2,
       ...centerDocument(),
       studioEdits: studioEditsSchema.parse({ framing: { mode: "auto" } }),
     });
@@ -759,6 +769,99 @@ describe("Clip Composition Plan", () => {
     expect(JSON.stringify(first.plan).length).toBeLessThan(16_000);
   });
 
+  test("splices inserted scenes into one contiguous preview and render timeline", () => {
+    const document = editorDocumentSchema.parse({
+    version: 2,
+      ...centerDocument(),
+      sceneBlocks: [
+        { id: "8ab9d330-688f-4574-932c-27ac661245c1", schemaVersion: 1, anchorSec: 0, durationSec: 2, content: { kind: "text", text: "Opening", fontFamily: "Arial", fontAsset: null, color: "#FFFFFF", backgroundColor: "#111827" }, motion: { entrance: "fade", exit: "fade" }, templateSnapshot: null },
+        { id: "d8ab95f8-fc16-4e60-814e-69762a59a99b", schemaVersion: 1, anchorSec: 6, durationSec: 1, content: { kind: "color", color: "#1D4ED8" }, motion: { entrance: "none", exit: "none" }, templateSnapshot: null },
+      ],
+    });
+    const result = planClipComposition({
+      document,
+      source: { identity: "source:scenes", kind: "video", width: 1920, height: 1080 },
+      evidence: { automaticLayout: { state: "missing" } },
+      assets: { backgroundImage: { state: "missing" } },
+      capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v1" },
+      targets: [{ id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 }],
+    });
+    expect(result.status).toBe("ready");
+    if (result.status === "invalid") throw new Error("expected scene plan");
+    expect(result.plan.editedDurationSec).toBe(11);
+    const scenes = result.plan.targets[0]!.scenes;
+    expect(scenes.map((scene) => [scene.startSec, scene.endSec])).toEqual([
+      [0, 2], [2, 6], [6, 7], [7, 11],
+    ]);
+    expect(scenes.filter((scene) => scene.layers[0]?.kind === "inserted-scene")).toHaveLength(2);
+  });
+
+  test("reports frozen Scene media and Brand fonts that cannot be resolved", () => {
+    const imageSceneId = "55ac909b-05d4-4da5-8e93-1656c6fbf03f";
+    const textSceneId = "3db8cd27-ab96-4dd8-a0c9-46228962fc4f";
+    const document = editorDocumentSchema.parse({
+      ...centerDocument(),
+      sceneBlocks: [
+        {
+          id: imageSceneId,
+          schemaVersion: 1,
+          anchorSec: 0,
+          durationSec: 1,
+          content: {
+            kind: "image",
+            asset: {
+              kind: "visual_asset",
+              id: "8e1c60dd-7355-4d20-a807-2ec78106b30e",
+              fingerprint: "a".repeat(64),
+            },
+            fit: "cover",
+            backgroundColor: "#000000",
+          },
+          motion: { entrance: "none", exit: "none" },
+          templateSnapshot: null,
+        },
+        {
+          id: textSceneId,
+          schemaVersion: 1,
+          anchorSec: 2,
+          durationSec: 1,
+          content: {
+            kind: "text",
+            text: "Brand opener",
+            fontFamily: "Brand Display",
+            fontAsset: {
+              kind: "brand_font",
+              id: "578a2ead-ee6a-4b73-a11e-e7f42d7f0a9a",
+              fingerprint: "b".repeat(64),
+            },
+            color: "#FFFFFF",
+            backgroundColor: "#111827",
+          },
+          motion: { entrance: "fade", exit: "fade" },
+          templateSnapshot: null,
+        },
+      ],
+    });
+    const result = planClipComposition({
+      document,
+      source: { identity: "source:missing-scenes", kind: "video", width: 1920, height: 1080 },
+      evidence: { automaticLayout: { state: "missing" } },
+      assets: {
+        backgroundImage: { state: "missing" },
+        sceneVisuals: { [imageSceneId]: { state: "failed" } },
+        sceneFonts: { [textSceneId]: { state: "pending" } },
+      },
+      capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v1" },
+      targets: [{ id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 }],
+    });
+    expect(result.status).toBe("pending");
+    if (result.status === "invalid") throw new Error(result.error.code);
+    expect(result.plan.notices).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "scene_asset_unavailable", sceneId: imageSceneId }),
+      expect.objectContaining({ code: "scene_font_pending", sceneId: textSceneId }),
+    ]));
+  });
+
   test("plans Fit precedence and degrades an unavailable image to the selected color", () => {
     const base = {
       document: fitDocument(),
@@ -841,6 +944,7 @@ describe("Clip Composition Plan", () => {
 
   test("requests missing Auto evidence once and plans target-specific speaker scenes when it arrives", () => {
     const document = editorDocumentSchema.parse({
+    version: 2,
       clipStartSec: 10,
       clipEndSec: 20,
       captionPreset: captionPresetSchema.parse({}),
@@ -991,6 +1095,7 @@ describe("Clip Composition Plan", () => {
 
   test("invalidates Auto evidence when its source identity or relevant window fingerprint is stale", () => {
     const document = editorDocumentSchema.parse({
+    version: 2,
       clipStartSec: 0,
       clipEndSec: 5,
       captionPreset: captionPresetSchema.parse({}),
@@ -1130,6 +1235,7 @@ describe("Clip Composition Plan", () => {
 
   test("applies aspect-specific manual overrides after analysis without freezing caller state", () => {
     const document = editorDocumentSchema.parse({
+    version: 2,
       clipStartSec: 0,
       clipEndSec: 5,
       captionPreset: captionPresetSchema.parse({}),
@@ -1360,6 +1466,7 @@ describe("Clip Composition Plan", () => {
 
   test("deduplicates missing Auto evidence across targets and unrelated edits", () => {
     const document = editorDocumentSchema.parse({
+    version: 2,
       ...centerDocument(),
       studioEdits: studioEditsSchema.parse({ framing: { mode: "auto" } }),
     });
@@ -1381,6 +1488,7 @@ describe("Clip Composition Plan", () => {
     const unrelated = planClipComposition({
       ...input,
       document: editorDocumentSchema.parse({
+    version: 2,
         ...document,
         studioEdits: {
           ...document.studioEdits,
@@ -1422,6 +1530,7 @@ describe("Clip Composition Plan", () => {
 
   test("keeps the validated 64-scene, four-target Automatic boundary bounded", () => {
     const document = editorDocumentSchema.parse({
+    version: 2,
       clipStartSec: 0,
       clipEndSec: 64,
       captionPreset: captionPresetSchema.parse({}),
@@ -1515,6 +1624,7 @@ describe("Clip Composition Plan", () => {
 
   test("plans explicit Split scenes per target with distinct crops and encodable 4:5 tiles", () => {
     const document = editorDocumentSchema.parse({
+    version: 2,
       clipStartSec: 0,
       clipEndSec: 8,
       captionPreset: captionPresetSchema.parse({}),
@@ -1638,6 +1748,7 @@ describe("Clip Composition Plan", () => {
 
   test("plans Screen PiP, face-band, and static fallbacks from one evidence contract", () => {
     const document = editorDocumentSchema.parse({
+    version: 2,
       clipStartSec: 2,
       clipEndSec: 10,
       captionPreset: captionPresetSchema.parse({}),
@@ -1793,6 +1904,7 @@ describe("Clip Composition Plan", () => {
 
   test("rejects Split when exact 4:5 tile geometry or clamped crops duplicate tiles", () => {
     const document = editorDocumentSchema.parse({
+    version: 2,
       clipStartSec: 0,
       clipEndSec: 8,
       captionPreset: captionPresetSchema.parse({}),
@@ -1864,6 +1976,7 @@ describe("Clip Composition Plan", () => {
 
   test("uses a static Screen speaker tile when the face band has no lateral crop room", () => {
     const document = editorDocumentSchema.parse({
+    version: 2,
       clipStartSec: 0,
       clipEndSec: 8,
       captionPreset: captionPresetSchema.parse({}),
@@ -1925,6 +2038,7 @@ describe("Clip Composition Plan", () => {
 
   test("keeps Split failure, stale-evidence, and edited-timeline fallbacks typed", () => {
     const document = editorDocumentSchema.parse({
+    version: 2,
       clipStartSec: 0,
       clipEndSec: 10,
       captionPreset: captionPresetSchema.parse({}),
@@ -2019,6 +2133,7 @@ describe("Clip Composition Plan", () => {
 
   test("keeps Screen PiP gating and unavailable-analysis fallbacks explicit", () => {
     const document = editorDocumentSchema.parse({
+    version: 2,
       clipStartSec: 0,
       clipEndSec: 8,
       captionPreset: captionPresetSchema.parse({}),
@@ -2121,6 +2236,7 @@ describe("Clip Composition Plan", () => {
 
   test("plans resolved B-roll windows as edited-time layers over the existing base composition", () => {
     const document = editorDocumentSchema.parse({
+    version: 2,
       clipStartSec: 10,
       clipEndSec: 20,
       captionPreset: captionPresetSchema.parse({}),
@@ -2189,6 +2305,7 @@ describe("Clip Composition Plan", () => {
 
   test("keeps automatic speaker scenes below B-roll and makes Split fallback truthful for the whole target", () => {
     const automaticDocument = editorDocumentSchema.parse({
+    version: 2,
       clipStartSec: 0,
       clipEndSec: 8,
       captionPreset: captionPresetSchema.parse({}),
@@ -2303,6 +2420,7 @@ describe("Clip Composition Plan", () => {
 
   test("omits failed optional B-roll without degrading the requested base mode", () => {
     const document = editorDocumentSchema.parse({
+    version: 2,
       ...centerDocument(),
       brollUrl: "https://example.com/missing.mp4",
     });
@@ -2339,6 +2457,7 @@ describe("Clip Composition Plan", () => {
 
   test("plans the complete timed visual stack in edited time and omits only an unavailable logo", () => {
     const document = editorDocumentSchema.parse({
+    version: 2,
       clipStartSec: 10,
       clipEndSec: 20,
       captionPreset: captionPresetSchema.parse({

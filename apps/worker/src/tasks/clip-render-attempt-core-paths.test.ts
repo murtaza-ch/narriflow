@@ -94,6 +94,10 @@ function clipFixture(input: {
     studioEdits: input.hasStudioEdit
       ? { sourceAudio: { volume: 100, muted: true } }
       : null,
+		editorDocumentVersion: 2,
+		sceneBlocks: [],
+		censorSegments: [],
+		mediaMotions: [],
     brollCues: null,
     brollUrl: null,
     category: "other",
@@ -827,6 +831,7 @@ function buildBaselineCommands(input: {
     }[output.aspectRatio];
     const planned = planClipComposition({
       document: editorDocumentSchema.parse({
+    version: 2,
         clipStartSec: 0,
         clipEndSec: clipDurationSec,
         captionPreset: captionPresetSchema.parse({}),

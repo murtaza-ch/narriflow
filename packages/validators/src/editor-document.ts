@@ -26,6 +26,21 @@ import {
   transcriptSlicesEqual,
   transcriptUtteranceSchema,
 } from "./transcript";
+import {
+  censorSegmentSchema,
+  mediaMotionSchema,
+  sceneBlockSchema,
+  sceneBlocksEqual,
+  sceneContentSchema,
+  sceneDurationIssue,
+	sceneMotionSchema,
+  sortSceneBlocks,
+  timedEditsEqual,
+  TIMED_EDIT_LIMITS,
+  type SceneBlock,
+  type CensorSegment,
+  type MediaMotion,
+} from "./timed-edits";
 
 // The single editor document (vizard-parity.md Phase A step 2): everything the
 // studio can mutate lives in one value so undo/redo, reset, and the atomic
@@ -33,8 +48,11 @@ import {
 // fragments. Clip boundaries are part of the document so in-studio trim
 // (Phase B step 13) becomes just another undoable mutation.
 
-export const editorDocumentSchema = z
-  .object({
+export const EDITOR_DOCUMENT_VERSION = 2 as const;
+
+const editorDocumentV2Schema = z
+  .strictObject({
+    version: z.literal(EDITOR_DOCUMENT_VERSION),
     clipStartSec: z.number().nonnegative(),
     clipEndSec: z.number().nonnegative(),
     captionPreset: captionPresetSchema,
@@ -42,10 +60,74 @@ export const editorDocumentSchema = z
     studioEdits: studioEditsSchema,
     brollUrl: z.string().url().nullable().default(null),
     deletedRanges: deletedRangesSchema,
+		sceneBlocks: z.array(sceneBlockSchema).max(TIMED_EDIT_LIMITS.sceneBlocks).default([]),
+		censorSegments: z.array(censorSegmentSchema).max(TIMED_EDIT_LIMITS.censorSegments).default([]),
+		mediaMotions: z.array(mediaMotionSchema).max(TIMED_EDIT_LIMITS.mediaMotions).default([]),
   })
   .refine((doc) => doc.clipEndSec > doc.clipStartSec, {
     message: "clipEndSec must be greater than clipStartSec",
+  })
+  .superRefine((doc, context) => {
+    const unique = (values: readonly { id: string }[], path: string) => {
+      if (new Set(values.map((value) => value.id)).size !== values.length) {
+        context.addIssue({ code: "custom", path: [path], message: "ids must be unique" });
+      }
+    };
+    unique(doc.sceneBlocks, "sceneBlocks");
+    unique(doc.censorSegments, "censorSegments");
+    unique(doc.mediaMotions, "mediaMotions");
+
+    const blocks = sortSceneBlocks(doc.sceneBlocks);
+    let insertedBeforeSec = 0;
+    const editedTimeMap = buildEditedTimeMap(doc.deletedRanges, {
+      startSec: doc.clipStartSec,
+      endSec: doc.clipEndSec,
+    });
+    const sourceDurationSec = editedTimeMap.editedDurationSec;
+    for (let index = 0; index < blocks.length; index += 1) {
+      const block = blocks[index]!;
+      const previous = blocks[index - 1];
+      if (previous && block.anchorSec < previous.anchorSec + previous.durationSec) {
+        context.addIssue({ code: "custom", path: ["sceneBlocks", index, "anchorSec"], message: "scene blocks cannot overlap" });
+      }
+      if (block.anchorSec < insertedBeforeSec || block.anchorSec > sourceDurationSec + insertedBeforeSec) {
+        context.addIssue({ code: "custom", path: ["sceneBlocks", index, "anchorSec"], message: "scene anchor is outside the edited timeline" });
+      }
+      insertedBeforeSec += block.durationSec;
+    }
+
+    const sceneIds = new Set(doc.sceneBlocks.map((scene) => scene.id));
+    doc.censorSegments.forEach((segment, index) => {
+      if (segment.sourceStartSec < doc.clipStartSec || segment.sourceEndSec > doc.clipEndSec) {
+        context.addIssue({ code: "custom", path: ["censorSegments", index], message: "censor segment is outside the clip source window" });
+      } else if (!sourceRangeToEdited(editedTimeMap, { startSec: segment.sourceStartSec, endSec: segment.sourceEndSec })) {
+        context.addIssue({ code: "custom", path: ["censorSegments", index], message: "censor segment is fully removed by deleted ranges" });
+      }
+    });
+    const totalEditedDurationSec = sourceDurationSec + doc.sceneBlocks.reduce((sum, scene) => sum + scene.durationSec, 0);
+    const maximumEditedDurationSec = Math.max(sourceDurationSec, TIMED_EDIT_LIMITS.totalEditedDurationSec);
+    if (totalEditedDurationSec > maximumEditedDurationSec + 0.001) {
+      context.addIssue({ code: "custom", path: ["sceneBlocks"], message: `total edited duration cannot exceed ${maximumEditedDurationSec} seconds` });
+    }
+    doc.mediaMotions.forEach((motion, index) => {
+      if (motion.target.kind === "scene_block" && !sceneIds.has(motion.target.sceneBlockId)) {
+        context.addIssue({ code: "custom", path: ["mediaMotions", index, "target"], message: "scene block target does not exist" });
+      }
+      if (motion.endSec > totalEditedDurationSec) {
+        context.addIssue({ code: "custom", path: ["mediaMotions", index], message: "media motion is outside the edited timeline" });
+      }
+    });
+    if (new TextEncoder().encode(JSON.stringify(doc)).byteLength > TIMED_EDIT_LIMITS.documentBytes) {
+      context.addIssue({ code: "custom", message: "editor document exceeds the maximum encoded size" });
+    }
   });
+
+function validatedTimedMutation(current: EditorDocument, candidate: EditorDocument): EditorDocument {
+  const parsed = editorDocumentV2Schema.safeParse(candidate);
+  return parsed.success ? parsed.data : current;
+}
+
+export const editorDocumentSchema = editorDocumentV2Schema;
 
 export type EditorDocument = z.infer<typeof editorDocumentSchema>;
 
@@ -94,6 +176,21 @@ export const editorActionSchema = z.discriminatedUnion("type", [
     transcriptSlice: z.array(transcriptUtteranceSchema),
   }),
   z.object({ type: z.literal("reset"), original: editorDocumentSchema }),
+  z.strictObject({ type: z.literal("insertSceneBlock"), scene: sceneBlockSchema }),
+  z.strictObject({ type: z.literal("moveSceneBlock"), id: z.string().uuid(), anchorSec: z.number().finite().nonnegative() }),
+  z.strictObject({ type: z.literal("trimSceneBlock"), id: z.string().uuid(), durationSec: z.number().finite().min(0.1).max(120) }),
+  z.strictObject({ type: z.literal("duplicateSceneBlock"), id: z.string().uuid(), duplicateId: z.string().uuid() }),
+	z.strictObject({ type: z.literal("replaceSceneBlock"), id: z.string().uuid(), content: sceneContentSchema, durationSec: z.number().finite().min(0.1).max(120).optional() }),
+	z.strictObject({ type: z.literal("updateSceneMotion"), id: z.string().uuid(), motion: sceneMotionSchema }),
+  z.strictObject({ type: z.literal("deleteSceneBlock"), id: z.string().uuid() }),
+  z.strictObject({ type: z.literal("insertCensorSegment"), segment: censorSegmentSchema }),
+  z.strictObject({ type: z.literal("updateCensorSegment"), id: z.string().uuid(), segment: censorSegmentSchema }),
+  z.strictObject({ type: z.literal("removeCensorSegment"), id: z.string().uuid() }),
+  z.strictObject({ type: z.literal("setCensorSegmentEnabled"), id: z.string().uuid(), enabled: z.boolean() }),
+  z.strictObject({ type: z.literal("insertMediaMotion"), motion: mediaMotionSchema }),
+  z.strictObject({ type: z.literal("updateMediaMotion"), id: z.string().uuid(), motion: mediaMotionSchema }),
+  z.strictObject({ type: z.literal("removeMediaMotion"), id: z.string().uuid() }),
+  z.strictObject({ type: z.literal("setMediaMotionEnabled"), id: z.string().uuid(), enabled: z.boolean() }),
 ]);
 
 export type EditorAction = z.infer<typeof editorActionSchema>;
@@ -150,7 +247,34 @@ export function editorDocumentsEqual(
     studioEditsEqual(left.studioEdits, right.studioEdits) &&
     deletedRangesEqual(left.deletedRanges, right.deletedRanges, window) &&
     transcriptSlicesEqual(left.transcriptSlice, right.transcriptSlice)
+    && sceneBlocksEqual(left.sceneBlocks, right.sceneBlocks)
+    && timedEditsEqual(left.censorSegments, right.censorSegments)
+    && timedEditsEqual(left.mediaMotions, right.mediaMotions)
   );
+}
+
+function removeSceneBlock(blocks: readonly SceneBlock[], id: string) {
+  const removed = blocks.find((block) => block.id === id);
+  if (!removed) return null;
+  return {
+    removed,
+    blocks: sortSceneBlocks(blocks
+      .filter((block) => block.id !== id)
+      .map((block) => block.anchorSec > removed.anchorSec
+        ? { ...block, anchorSec: block.anchorSec - removed.durationSec }
+        : block)),
+  };
+}
+
+function insertSceneBlock(blocks: readonly SceneBlock[], scene: SceneBlock) {
+  if (blocks.some((block) => block.id === scene.id)) return null;
+  if (blocks.some((block) => scene.anchorSec > block.anchorSec && scene.anchorSec < block.anchorSec + block.durationSec)) return null;
+  return sortSceneBlocks([
+    ...blocks.map((block) => block.anchorSec >= scene.anchorSec
+      ? { ...block, anchorSec: block.anchorSec + scene.durationSec }
+      : block),
+    scene,
+  ]);
 }
 
 // ─── Text-layer ripple (Phase B hardening, fix 2) ──────────────────────────
@@ -479,6 +603,128 @@ export function applyEditorAction(
         studioEdits,
       };
     }
+    case "insertSceneBlock": {
+      if (!sceneBlockSchema.safeParse(action.scene).success) return doc;
+      if (action.scene.templateSnapshot && doc.sceneBlocks.some((scene) =>
+        scene.anchorSec === action.scene.anchorSec &&
+        scene.templateSnapshot?.fingerprint === action.scene.templateSnapshot?.fingerprint)) {
+        return doc;
+      }
+      const sceneBlocks = insertSceneBlock(doc.sceneBlocks, action.scene);
+      return sceneBlocks ? validatedTimedMutation(doc, { ...doc, sceneBlocks }) : doc;
+    }
+    case "moveSceneBlock": {
+      const removed = removeSceneBlock(doc.sceneBlocks, action.id);
+      if (!removed) return doc;
+      const moved = { ...removed.removed, anchorSec: action.anchorSec };
+      if (!sceneBlockSchema.safeParse(moved).success) return doc;
+      const sceneBlocks = insertSceneBlock(removed.blocks, moved);
+      return sceneBlocks ? validatedTimedMutation(doc, { ...doc, sceneBlocks }) : doc;
+    }
+    case "trimSceneBlock": {
+      const scene = doc.sceneBlocks.find((block) => block.id === action.id);
+      if (!scene || scene.durationSec === action.durationSec || sceneDurationIssue(scene.content, action.durationSec)) return doc;
+      const delta = action.durationSec - scene.durationSec;
+      return validatedTimedMutation(doc, {
+        ...doc,
+        sceneBlocks: sortSceneBlocks(doc.sceneBlocks.map((block) => {
+          if (block.id === action.id) return { ...block, durationSec: action.durationSec };
+          return block.anchorSec > scene.anchorSec
+            ? { ...block, anchorSec: block.anchorSec + delta }
+            : block;
+        })),
+      });
+    }
+    case "duplicateSceneBlock": {
+      const scene = doc.sceneBlocks.find((block) => block.id === action.id);
+      if (!scene) return doc;
+      const copy = { ...structuredClone(scene), id: action.duplicateId, anchorSec: scene.anchorSec + scene.durationSec };
+      const sceneBlocks = insertSceneBlock(doc.sceneBlocks, copy);
+      return sceneBlocks ? validatedTimedMutation(doc, { ...doc, sceneBlocks }) : doc;
+    }
+    case "replaceSceneBlock": {
+      const scene = doc.sceneBlocks.find((block) => block.id === action.id);
+			if (!scene) return doc;
+			const maximumDuration = action.content.kind === "video"
+				? action.content.sourceEndSec - action.content.sourceStartSec
+				: 30;
+			const minimumDuration = action.content.kind === "video" ? 0.1 : 1;
+			const durationSec = Math.min(maximumDuration, Math.max(minimumDuration, action.durationSec ?? scene.durationSec));
+			if (JSON.stringify(scene.content) === JSON.stringify(action.content) && scene.durationSec === durationSec) return doc;
+			const delta = durationSec - scene.durationSec;
+			return validatedTimedMutation(doc, {
+				...doc,
+				sceneBlocks: sortSceneBlocks(doc.sceneBlocks.map((block) => {
+					if (block.id === action.id) return { ...block, content: action.content, durationSec, templateSnapshot: null };
+					return block.anchorSec > scene.anchorSec ? { ...block, anchorSec: block.anchorSec + delta } : block;
+				})),
+			});
+		}
+		case "updateSceneMotion": {
+			const scene = doc.sceneBlocks.find((block) => block.id === action.id);
+			if (!scene || JSON.stringify(scene.motion) === JSON.stringify(action.motion)) return doc;
+			return validatedTimedMutation(doc, {
+				...doc,
+				sceneBlocks: doc.sceneBlocks.map((block) => block.id === action.id
+					? { ...block, motion: action.motion, templateSnapshot: null }
+					: block),
+			});
+    }
+    case "deleteSceneBlock": {
+      const removed = removeSceneBlock(doc.sceneBlocks, action.id);
+      if (!removed) return doc;
+      const mediaMotions = doc.mediaMotions.filter((motion) =>
+        motion.target.kind !== "scene_block" || motion.target.sceneBlockId !== action.id);
+      return validatedTimedMutation(doc, { ...doc, sceneBlocks: removed.blocks, mediaMotions });
+    }
+    case "insertCensorSegment":
+      return doc.censorSegments.some((segment) => segment.id === action.segment.id)
+        ? doc
+        : validatedTimedMutation(doc, { ...doc, censorSegments: [...doc.censorSegments, action.segment] });
+    case "updateCensorSegment": {
+      const current = doc.censorSegments.find((segment) => segment.id === action.id);
+      if (!current) return doc;
+      const next: CensorSegment = { ...action.segment, id: action.id };
+      return JSON.stringify(current) === JSON.stringify(next)
+        ? doc
+        : validatedTimedMutation(doc, { ...doc, censorSegments: doc.censorSegments.map((segment) => segment.id === action.id ? next : segment) });
+    }
+    case "removeCensorSegment":
+      return doc.censorSegments.some((segment) => segment.id === action.id)
+        ? validatedTimedMutation(doc, { ...doc, censorSegments: doc.censorSegments.filter((segment) => segment.id !== action.id) })
+        : doc;
+    case "setCensorSegmentEnabled":
+      return doc.censorSegments.some((segment) => segment.id === action.id && segment.enabled !== action.enabled)
+        ? validatedTimedMutation(doc, { ...doc, censorSegments: doc.censorSegments.map((segment) => segment.id === action.id ? { ...segment, enabled: action.enabled } : segment) })
+        : doc;
+    case "insertMediaMotion": {
+      const targetSceneId = action.motion.target.kind === "scene_block"
+        ? action.motion.target.sceneBlockId
+        : null;
+      return doc.mediaMotions.some((motion) => motion.id === action.motion.id) ||
+        (targetSceneId !== null && !doc.sceneBlocks.some((scene) => scene.id === targetSceneId))
+        ? doc
+        : validatedTimedMutation(doc, { ...doc, mediaMotions: [...doc.mediaMotions, action.motion] });
+    }
+    case "updateMediaMotion": {
+      const current = doc.mediaMotions.find((motion) => motion.id === action.id);
+      const targetSceneId = action.motion.target.kind === "scene_block"
+        ? action.motion.target.sceneBlockId
+        : null;
+      if (!current || (targetSceneId !== null && !doc.sceneBlocks.some((scene) => scene.id === targetSceneId))) return doc;
+      const next: MediaMotion = { ...action.motion, id: action.id };
+      return JSON.stringify(current) === JSON.stringify(next)
+        ? doc
+        : validatedTimedMutation(doc, { ...doc, mediaMotions: doc.mediaMotions.map((motion) => motion.id === action.id ? next : motion) });
+    }
+    case "removeMediaMotion":
+      return doc.mediaMotions.some((motion) => motion.id === action.id)
+        ? validatedTimedMutation(doc, { ...doc, mediaMotions: doc.mediaMotions.filter((motion) => motion.id !== action.id) })
+        : doc;
+    case "setMediaMotionEnabled":
+      return doc.mediaMotions.some((motion) => motion.id === action.id && motion.enabled !== action.enabled)
+        ? validatedTimedMutation(doc, { ...doc, mediaMotions: doc.mediaMotions.map((motion) => motion.id === action.id ? { ...motion, enabled: action.enabled } : motion) })
+        : doc;
     case "reset":
       return action.original;
   }

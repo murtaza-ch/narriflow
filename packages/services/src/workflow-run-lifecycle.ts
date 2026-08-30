@@ -631,6 +631,36 @@ export class WorkflowRunLifecycle {
     }
   }
 
+  /** Admits a run and persists its domain handoff in the same transaction.
+   * Workers can never claim a queued run whose required domain row is still
+   * missing. The project advisory lock preserves the ordinary admission
+   * serialization contract. */
+  async admitWithHandoff<T>(
+    input: AdmitWorkflowRunInput,
+    handoff: (tx: TransactionClient, run: { id: string; created: boolean }) => Promise<T>,
+  ): Promise<{ id: string; created: boolean; handoff: T }> {
+    return this.transaction(async (tx) => {
+      await this.lockAdmissionProject(tx, input.projectId);
+      const existing = await tx.workflowRun.findUnique({
+        where: { projectId_idempotencyKey: { projectId: input.projectId, idempotencyKey: input.idempotencyKey } },
+        select: { id: true },
+      });
+      let admitted: { id: string; created: boolean };
+      if (existing) {
+        admitted = { id: existing.id, created: false };
+      } else {
+        const active = await tx.workflowRun.findFirst({
+          where: { projectId: input.projectId, stage: input.stage, status: { in: ["queued", "running", "waiting"] } },
+          select: { id: true },
+        });
+        if (active) throw new Error("workflow_stage_admission_busy");
+        admitted = await this.admitWithinTransaction(tx, { ...input, contentPackId: input.contentPackId ?? null });
+      }
+      const value = await handoff(tx, admitted);
+      return { ...admitted, handoff: value };
+    });
+  }
+
   async admitTranscript(
     input: AdmitTranscriptWorkflowRunInput,
   ): Promise<{ id: string; created: boolean }> {
@@ -903,6 +933,21 @@ export class WorkflowRunLifecycle {
       LIMIT 1
     `;
     if (owned.length === 0) throw new WorkflowAttemptLost(attempt);
+  }
+
+  /**
+   * Runs a child-artifact mutation while holding the owning WorkflowRun row.
+   * Reapers and takeover claims must acquire the same lock, so the attempt
+   * cannot lose ownership between the fence check and its database writes.
+   */
+  async mutateOwnedAttempt<T>(
+    attempt: WorkflowAttemptRef,
+    operation: (tx: TransactionClient) => Promise<T>,
+  ): Promise<T> {
+    return this.transaction(async (tx) => {
+      await this.fenceChildMutation(tx, attempt, attempt.stage);
+      return operation(tx);
+    });
   }
 
   async beginRenderWorkSet(

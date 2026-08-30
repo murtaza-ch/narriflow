@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
+import { socialProviderAcceptsMedia } from "@narriflow/validators";
 import type { PublishSocialAccount } from "./social-oauth.service";
 import type {
 	PublicationFailureDisposition,
@@ -487,7 +488,7 @@ export function createSocialPublicationAttempt(dependencies: {
 				return settled;
 			}
 			if (
-				platform.capabilities.apiVersion !== loaded.frozen.capabilityVersion
+				platform.capabilities.capabilityVersion !== loaded.frozen.capabilityVersion
 			) {
 				const now = dependencies.clock.now();
 				const submitted =
@@ -564,6 +565,17 @@ export function createSocialPublicationAttempt(dependencies: {
 			try {
 				if (input.signal.aborted)
 					throw new DOMException("Aborted", "AbortError");
+				if (!socialProviderAcceptsMedia({
+					platform: platformInput.platform,
+					aspectRatio: platformInput.media.aspectRatio,
+					durationSec: platformInput.media.durationSec,
+				})) {
+					throw new PublicationPlatformExecutionError(
+						"publication_media_capability_mismatch",
+						"preparation",
+						"Frozen media does not satisfy the provider capability contract",
+					);
+				}
 				const context = {
 					signal: input.signal,
 					providerCall: async () => {

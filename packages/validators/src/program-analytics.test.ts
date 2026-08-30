@@ -49,6 +49,15 @@ describe("program analytics metadata", () => {
     ).toThrow();
   });
 
+  test("rejects URL content even when placed under an allowed metadata key", () => {
+    expect(() =>
+      recordAnalyticsEventSchema.parse({
+        type: "review_opened",
+        metadata: { outcome: "https://review.example/secret-token" },
+      }),
+    ).toThrow();
+  });
+
   test("limits brand-program metadata to identifiers, kind, plan, and outcome", () => {
     expect(
       brandProgramAnalyticsEventSchema.parse({

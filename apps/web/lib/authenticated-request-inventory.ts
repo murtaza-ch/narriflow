@@ -8,6 +8,12 @@ import {
   reusableAssetSoftDeleteSchema,
   visualAssetFinalizeSchema,
   visualAssetUploadSchema,
+  sceneTemplateCreateSchema,
+  sceneTemplateDeleteSchema,
+  sceneTemplateUpdateSchema,
+  applySceneTemplateSchema,
+  createReviewRoundSchema,
+  createExportBundleSchema,
   type WorkspaceCapability,
 } from "@narriflow/validators";
 import { z, type ZodType } from "zod";
@@ -198,6 +204,16 @@ export const browserSessionHonoSurfaces: readonly HonoSurface[] = [
     "processing.consume",
     actorRate("clip-export", 20),
   ),
+  { method: "POST", path: "/projects/:id/export-bundles", capability: "content.download", projectParam: "id", rateLimit: actorRate("export-bundle", 10, 3_600), input: bodyInput(createExportBundleSchema, ["id"]) },
+  { method: "GET", path: "/projects/:id/export-bundles", capability: "content.view", projectParam: "id" },
+  { method: "GET", path: "/projects/:id/campaign-operations", capability: "content.view", projectParam: "id" },
+  { method: "GET", path: "/projects/:id/export-bundles/:bundleId", capability: "content.view", projectParam: "id", input: paramsInput("id", "bundleId") },
+  { method: "GET", path: "/projects/:id/export-bundles/:bundleId/download", capability: "content.download", projectParam: "id", input: paramsInput("id", "bundleId") },
+  { method: "POST", path: "/projects/:id/export-bundles/:bundleId/retry", capability: "content.download", projectParam: "id", rateLimit: actorRate("export-bundle-retry", 10, 3_600), input: paramsInput("id", "bundleId") },
+	{ method: "POST", path: "/projects/:id/campaign-operations/:operationId/retry-export-bundle", capability: "content.download", projectParam: "id", rateLimit: actorRate("export-operation-retry", 10, 3_600), input: paramsInput("id", "operationId") },
+  { method: "POST", path: "/projects/:id/brand-profiles/:profileId/scene-templates/:templateId/apply", capability: "content.edit", projectParam: "id", rateLimit: actorRate("apply-scene-template", 20, 3_600), input: bodyInput(applySceneTemplateSchema, ["id", "profileId", "templateId"]) },
+  { method: "POST", path: "/projects/:id/review-rounds", capability: "review.manage", projectParam: "id", rateLimit: actorRate("review-round", 20, 3_600), input: bodyInput(createReviewRoundSchema, ["id"]) },
+  { method: "POST", path: "/projects/:id/review-rounds/:roundId/revoke", capability: "review.manage", projectParam: "id", input: paramsInput("id", "roundId") },
   project(
     "GET",
     "/projects/:id/clips/:clipId/exports/:exportId",
@@ -242,6 +258,8 @@ export const browserSessionHonoSurfaces: readonly HonoSurface[] = [
     path: "/social/oauth/start/:platform",
     capability: "social.manage",
   },
+  { method: "GET", path: "/social/oauth/facebook-selection/:token", capability: "social.manage" },
+  { method: "POST", path: "/social/oauth/facebook-selection/:token", capability: "social.manage", rateLimit: actorRate("facebook-page-selection", 10, 900) },
   {
     method: "DELETE",
     path: "/social/accounts/:accountId",
@@ -339,6 +357,10 @@ export const browserSessionHonoSurfaces: readonly HonoSurface[] = [
   { method: "PUT", path: "/brand-profiles/:id/membership", capability: "brand.manage", input: bodyInput(brandProfileMembershipSchema, ["id"]) },
   { method: "POST", path: "/brand-profiles/:id/set-default", capability: "brand.manage", input: paramsInput("id") },
   { method: "DELETE", path: "/brand-profiles/:id", capability: "brand.manage", input: bodyInput(brandProfileSoftDeleteSchema, ["id"]) },
+  { method: "GET", path: "/brand-profiles/:id/scene-templates", capability: "content.view", input: paramsInput("id") },
+  { method: "POST", path: "/brand-profiles/:id/scene-templates", capability: "brand.manage", input: bodyInput(sceneTemplateCreateSchema, ["id"]) },
+  { method: "PATCH", path: "/brand-profiles/:id/scene-templates/:templateId", capability: "brand.manage", input: bodyInput(sceneTemplateUpdateSchema, ["id", "templateId"]) },
+  { method: "DELETE", path: "/brand-profiles/:id/scene-templates/:templateId", capability: "brand.manage", input: bodyInput(sceneTemplateDeleteSchema, ["id", "templateId"]) },
   { method: "GET", path: "/visual-assets", capability: "content.view" },
   {
     method: "POST",
@@ -624,6 +646,7 @@ export function matchBrowserSessionHonoSurface(
 ): {
   operationName: string;
   admission: AuthenticatedRequestAdmission;
+  params: Readonly<Record<string, string>>;
   rateLimit?: {
     key(actor: { actorUserId: string; workspaceId: string }): string;
     limit: number;
@@ -637,6 +660,7 @@ export function matchBrowserSessionHonoSurface(
     if (!params) continue;
     return {
       operationName: `${surface.method} ${surface.path}`,
+      params,
       admission: surface.projectParam
         ? {
             kind: "project",

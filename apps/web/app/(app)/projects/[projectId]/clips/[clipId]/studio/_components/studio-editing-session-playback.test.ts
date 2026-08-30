@@ -6,16 +6,33 @@ import {
   type EditorDocument,
 } from "@narriflow/validators";
 import {
+  baseEditedToComposite,
+  compositeToBaseEdited,
   createStudioEditingSession,
   type StudioMediaAdapter,
   type StudioMediaCommand,
   type StudioMediaEvent,
 } from "./studio-editing-session";
 
+test("projects source lanes around an intro and a mid-roll scene", () => {
+  const document = makeDocument();
+  document.sceneBlocks = [
+    { id: crypto.randomUUID(), schemaVersion: 1, anchorSec: 0, durationSec: 3, content: { kind: "color", color: "#111827" }, motion: { entrance: "none", exit: "none" }, templateSnapshot: null },
+    { id: crypto.randomUUID(), schemaVersion: 1, anchorSec: 8, durationSec: 2, content: { kind: "color", color: "#1D4ED8" }, motion: { entrance: "none", exit: "none" }, templateSnapshot: null },
+  ];
+  expect(baseEditedToComposite(document, 0)).toBe(3);
+  expect(baseEditedToComposite(document, 4)).toBe(7);
+  expect(baseEditedToComposite(document, 5)).toBe(10);
+  expect(compositeToBaseEdited(document, 1)).toBe(0);
+  expect(compositeToBaseEdited(document, 8.5)).toBe(5);
+  expect(compositeToBaseEdited(document, 12)).toBe(7);
+});
+
 function makeDocument(
   deletedRanges: Array<{ startSec: number; endSec: number }> = [],
 ): EditorDocument {
   return editorDocumentSchema.parse({
+    version: 2,
     clipStartSec: 10,
     clipEndSec: 40,
     captionPreset: DEFAULT_CAPTION_PRESET,
@@ -46,9 +63,39 @@ class InMemoryMediaAdapter implements StudioMediaAdapter {
   }
 }
 
+class ManualRuntime {
+  nowMs = 0;
+  private nextId = 1;
+  private readonly timers = new Map<number, { callback: () => void; dueAt: number }>();
+
+  now = () => this.nowMs;
+  createId = () => "session";
+  setTimeout = (callback: () => void, delayMs: number) => {
+    const id = this.nextId;
+    this.nextId += 1;
+    this.timers.set(id, { callback, dueAt: this.nowMs + delayMs });
+    return id;
+  };
+  clearTimeout = (id: number) => {
+    this.timers.delete(id);
+  };
+  advance(ms: number) {
+    this.nowMs += ms;
+    for (;;) {
+      const next = [...this.timers.entries()]
+        .filter(([, timer]) => timer.dueAt <= this.nowMs)
+        .sort((left, right) => left[1].dueAt - right[1].dueAt)[0];
+      if (!next) return;
+      this.timers.delete(next[0]);
+      next[1].callback();
+    }
+  }
+}
+
 function makeSession(
   media: InMemoryMediaAdapter,
   ownership: "writer" | "reader" = "writer",
+  runtime = new ManualRuntime(),
 ) {
   const document = makeDocument();
   return createStudioEditingSession(
@@ -84,12 +131,7 @@ function makeSession(
       cloud: {
         loadHead: async () => ({ revision: 1, document }),
       },
-      runtime: {
-        now: () => 0,
-        createId: () => "session",
-        setTimeout: () => 1,
-        clearTimeout: () => undefined,
-      },
+      runtime,
       media,
     },
   );
@@ -284,6 +326,52 @@ describe("StudioEditingSession playback seam", () => {
     expect(session.getSnapshot().playback.editedTimeSec).toBe(10);
     expect(media.commands.slice(commandsBefore)).toEqual([
       { type: "seek", binding, mediaTimeSec: 16 },
+    ]);
+  });
+
+  test("continuous playback pauses source media while an inserted scene owns the shared timeline", async () => {
+    const media = new InMemoryMediaAdapter();
+    const runtime = new ManualRuntime();
+    const session = makeSession(media, "writer", runtime);
+    while (session.getSnapshot().status !== "ready") await Promise.resolve();
+    session.dispatch({
+      type: "document.edit",
+      action: {
+        type: "insertSceneBlock",
+        scene: {
+          schemaVersion: 1,
+          id: "31ddc1dd-838c-4fed-a940-4cbed7a3974b",
+          anchorSec: 5,
+          durationSec: 2,
+          content: { kind: "color", color: "#112233" },
+          motion: { entrance: "fade", exit: "fade" },
+          templateSnapshot: null,
+        },
+      },
+    });
+    const binding = session.getSnapshot().playback.mediaBinding;
+    session.dispatch({ type: "playback.play" });
+    const beforeCrossing = media.commands.length;
+
+    media.emit({ type: "time", binding, mediaTimeSec: 9.1 });
+
+    expect(session.getSnapshot().playback).toMatchObject({
+      editedTimeSec: 5,
+      durationSec: 32,
+      state: "playing",
+    });
+    expect(media.commands.slice(beforeCrossing)).toEqual([
+      { type: "pause", binding },
+      { type: "seek", binding, mediaTimeSec: 9 },
+    ]);
+
+    runtime.advance(1_000);
+    expect(session.getSnapshot().playback.editedTimeSec).toBe(6);
+    runtime.advance(1_000);
+    expect(session.getSnapshot().playback.editedTimeSec).toBe(7);
+    expect(media.commands.slice(-2)).toEqual([
+      { type: "seek", binding, mediaTimeSec: 9 },
+      { type: "play", binding },
     ]);
   });
 

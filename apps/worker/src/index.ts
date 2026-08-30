@@ -22,6 +22,7 @@ import { processPendingClipPreviews } from "./tasks/clip-preview";
 import { processPendingAutoLayoutAnalyses } from "./tasks/auto-layout-analysis";
 import { processDubbingRun } from "./tasks/dubbing";
 import { processIngestJob } from "./tasks/ingest";
+import { expireExportBundles, processExportBundleRun } from "./tasks/export-bundle";
 import {
 	ClipRenderAttempt,
 	type ClipRenderingWorkflowAttempt,
@@ -175,6 +176,20 @@ async function reapStalledRunsIfDue() {
 					level: "info",
 					message: "workflow_events_purged",
 					count: purgedEvents,
+					ts: new Date().toISOString(),
+				}),
+			);
+		}
+		const expiredBundles = await expireExportBundles(
+			new Date(),
+			Number(process.env.EXPORT_BUNDLE_EXPIRY_BATCH_SIZE ?? 100),
+		);
+		if (expiredBundles > 0) {
+			console.log(
+				JSON.stringify({
+					level: "info",
+					message: "export_bundles_expired",
+					count: expiredBundles,
 					ts: new Date().toISOString(),
 				}),
 			);
@@ -440,6 +455,13 @@ const dubbingLoop = createPollLoop("dubbing", async () => {
 	return 1;
 });
 
+const exportBundleLoop = createPollLoop("export_bundle", async () => {
+	const run = await projectService.claimNextWorkflowRun("export_bundle");
+	if (!run) return 0;
+	await executeClaimedWorkflowRun(run, processExportBundleRun);
+	return 1;
+});
+
 // Deadline-sensitive scheduled posts have a dedicated loop. Remote RSS feeds
 // can be slow or unavailable and must never delay a due social publish.
 const publishLoop = createPollLoop("publish", async () => {
@@ -539,6 +561,7 @@ const allLoops: Array<{ loop: PollLoop; intervalMs: number }> = [
 	{ loop: sttResultsLoop, intervalMs: sttResultPollIntervalMs },
 	{ loop: detectionLoop, intervalMs: pollIntervalMs },
 	{ loop: dubbingLoop, intervalMs: pollIntervalMs },
+	{ loop: exportBundleLoop, intervalMs: pollIntervalMs },
 	{ loop: publishLoop, intervalMs: pollIntervalMs },
 	{ loop: autopilotLoop, intervalMs: autopilotPollIntervalMs },
 	{ loop: renderLoop, intervalMs: renderPollIntervalMs },
@@ -610,5 +633,6 @@ void workspaceBillingLoop.tick();
 void ingestLoop.tick();
 void sttLoop.tick();
 void renderLoop.tick();
+void exportBundleLoop.tick();
 void notificationRetryLoop.tick();
 void mediaCleanupLoop.tick();

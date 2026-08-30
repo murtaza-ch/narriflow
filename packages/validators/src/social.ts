@@ -1,10 +1,12 @@
 import { z } from "zod";
 import { clipAspectRatioSchema } from "./clip";
+import { SOCIAL_PROVIDER_CAPABILITIES } from "./social-provider-capabilities";
 
 export const socialPlatformSchema = z.enum([
   "tiktok",
   "youtube_shorts",
   "instagram_reels",
+  "facebook_reels",
   "linkedin",
   "x",
 ]);
@@ -86,12 +88,24 @@ export const scheduleSocialPostSchema = z.object({
   expectedEditorRevision: z.number().int().nonnegative(),
   accountId: z.string().uuid().nullable(),
   platform: socialPlatformSchema,
-  caption: z.string().trim().min(1).max(2200),
+  caption: z.string().trim().min(1).max(5_000),
   aspectRatio: clipAspectRatioSchema,
   resolution: z.enum(["720p", "1080p"]),
   scheduledFor: z.string().datetime(),
   providerSettings: z.record(z.string(), z.unknown()).default({}),
-}).strict();
+}).strict().superRefine((value, context) => {
+  const capability = SOCIAL_PROVIDER_CAPABILITIES[value.platform];
+  if (!capability.aspectRatios.some((ratio) => ratio === value.aspectRatio)) {
+    context.addIssue({ code: "custom", path: ["aspectRatio"], message: "Aspect ratio is not supported by this provider" });
+  }
+  if (value.caption.length > capability.textLimit) {
+    context.addIssue({ code: "custom", path: ["caption"], message: `Caption exceeds the ${capability.textLimit}-character provider limit` });
+  }
+  const thumbnailType = value.providerSettings.thumbnailType;
+  if (typeof thumbnailType === "string" && !capability.thumbnailTypes.some((candidate) => candidate === thumbnailType)) {
+    context.addIssue({ code: "custom", path: ["providerSettings", "thumbnailType"], message: "Thumbnail type is not supported by this provider" });
+  }
+});
 
 export const socialPostMetricsSchema = z.object({
   views: z.number().int().nonnegative().default(0),

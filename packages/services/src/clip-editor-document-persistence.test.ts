@@ -38,6 +38,7 @@ function utterance(text: string, startSec = 10): TranscriptUtterance {
 
 function document(overrides: Partial<EditorDocument> = {}): EditorDocument {
   return editorDocumentSchema.parse({
+    version: 2,
     clipStartSec: 10,
     clipEndSec: 30,
     captionPreset: DEFAULT_CAPTION_PRESET,
@@ -99,6 +100,13 @@ describe("Clip Editor Document Persistence", () => {
         300,
       ),
     ).toEqual(document());
+  });
+
+  test("fails closed when storage contains an unknown future document version", () => {
+    const encoded = encodeClipEditorDocumentForStorage(document(), 300);
+    expect(() => decodeClipEditorDocumentFromStorage({ ...encoded, editorDocumentVersion: 99 }, 300)).toThrow(
+      expect.objectContaining({ code: "unsupported_editor_document_version" }),
+    );
   });
 
   test("canonical no-op performs no write or invalidation", async () => {

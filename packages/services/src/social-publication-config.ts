@@ -1,3 +1,7 @@
+import { SOCIAL_PROVIDER_CAPABILITIES } from "@narriflow/validators";
+
+export { SOCIAL_PROVIDER_CAPABILITIES } from "@narriflow/validators";
+
 export class SocialPublicationConfigurationError extends Error {
 	readonly code = "social_publication_configuration_invalid";
 
@@ -29,13 +33,29 @@ function integer(
 	return value;
 }
 
-export const SOCIAL_PUBLICATION_CAPABILITY_VERSIONS = {
-	youtube_shorts: "v3",
-	instagram_reels: "v24.0",
-	tiktok: "v2",
-	linkedin: "202608",
-	x: "v2",
-} as const;
+export const SOCIAL_PUBLICATION_CAPABILITY_VERSIONS = Object.fromEntries(
+  Object.entries(SOCIAL_PROVIDER_CAPABILITIES).map(([platform, capability]) => [platform, capability.version]),
+) as { [Platform in keyof typeof SOCIAL_PROVIDER_CAPABILITIES]: (typeof SOCIAL_PROVIDER_CAPABILITIES)[Platform]["version"] };
+
+export const SOCIAL_PROVIDER_API_VERSIONS = Object.fromEntries(
+  Object.entries(SOCIAL_PROVIDER_CAPABILITIES).map(([platform, capability]) => [platform, capability.apiVersion]),
+) as { [Platform in keyof typeof SOCIAL_PROVIDER_CAPABILITIES]: (typeof SOCIAL_PROVIDER_CAPABILITIES)[Platform]["apiVersion"] };
+
+export function socialPublicationCapabilityVersion(
+  platform: keyof typeof SOCIAL_PROVIDER_CAPABILITIES,
+) {
+  return SOCIAL_PROVIDER_CAPABILITIES[platform].version;
+}
+
+export function isSocialProviderPublishingEnabled(
+  platform: keyof typeof SOCIAL_PROVIDER_CAPABILITIES,
+  environment: Record<string, string | undefined> = process.env,
+) {
+  if (platform === "facebook_reels") {
+    return environment.FACEBOOK_REELS_PUBLISHING_ENABLED === "1";
+  }
+  return SOCIAL_PROVIDER_CAPABILITIES[platform].publishingEnabledByDefault;
+}
 
 const DEFAULT_LINKEDIN_VERSION_SUNSET_AT = "2027-08-31T23:59:59.000Z";
 const LINKEDIN_STARTUP_GUARD_MS = 30 * 24 * 60 * 60_000;
@@ -251,7 +271,7 @@ export function parseSocialPublicationConfig(
 			youtubeApiVersion: supportedVersion(
 				environment,
 				"YOUTUBE_API_VERSION",
-				SOCIAL_PUBLICATION_CAPABILITY_VERSIONS.youtube_shorts,
+				SOCIAL_PROVIDER_API_VERSIONS.youtube_shorts,
 			),
 			youtubeChunkBytes: divisible(
 				integer(
@@ -267,8 +287,10 @@ export function parseSocialPublicationConfig(
 			metaGraphVersion: supportedVersion(
 				environment,
 				"META_GRAPH_VERSION",
-				SOCIAL_PUBLICATION_CAPABILITY_VERSIONS.instagram_reels,
+				SOCIAL_PROVIDER_API_VERSIONS.instagram_reels,
 			),
+			facebookReelsPublishingEnabled:
+				environment.FACEBOOK_REELS_PUBLISHING_ENABLED === "1",
 			instagramPollAttempts: integer(
 				environment,
 				"INSTAGRAM_CONTAINER_POLL_ATTEMPTS",
@@ -286,7 +308,7 @@ export function parseSocialPublicationConfig(
 			tiktokApiVersion: supportedVersion(
 				environment,
 				"TIKTOK_API_VERSION",
-				SOCIAL_PUBLICATION_CAPABILITY_VERSIONS.tiktok,
+				SOCIAL_PROVIDER_API_VERSIONS.tiktok,
 			),
 			tiktokPollIntervalMs: integer(
 				environment,
@@ -305,7 +327,7 @@ export function parseSocialPublicationConfig(
 			linkedInVersion: supportedVersion(
 				environment,
 				"LINKEDIN_API_VERSION",
-				SOCIAL_PUBLICATION_CAPABILITY_VERSIONS.linkedin,
+				SOCIAL_PROVIDER_API_VERSIONS.linkedin,
 			),
 			linkedInVersionSunsetAt: futureDate(
 				environment,
@@ -317,7 +339,7 @@ export function parseSocialPublicationConfig(
 			xApiVersion: supportedVersion(
 				environment,
 				"X_API_VERSION",
-				SOCIAL_PUBLICATION_CAPABILITY_VERSIONS.x,
+				SOCIAL_PROVIDER_API_VERSIONS.x,
 			),
 			xChunkBytes: integer(
 				environment,

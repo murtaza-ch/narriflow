@@ -7,7 +7,7 @@ import { SocialAccountsPanel } from "./social-accounts-panel";
 export default async function SocialAccountsPage({
   searchParams,
 }: {
-  searchParams: Promise<{ connected?: string; error?: string }>;
+  searchParams: Promise<{ connected?: string; error?: string; facebook_selection?: string }>;
 }) {
   const appUser = await admitWorkspacePage("content.view");
   const [accounts, params] = await Promise.all([
@@ -34,6 +34,7 @@ export default async function SocialAccountsPage({
           accounts={accounts}
           connectedCount={params.connected ? Number(params.connected) : null}
           errorCode={params.error ?? null}
+          facebookSelectionToken={params.facebook_selection ?? null}
           canManage={appUser.workspace.role === "owner" || appUser.workspace.role === "admin"}
         />
       </Box>

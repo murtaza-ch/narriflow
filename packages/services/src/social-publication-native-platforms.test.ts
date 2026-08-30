@@ -19,6 +19,7 @@ const CONTRACT_FIXTURE = (await Bun.file(
 const PLATFORM_SCOPES: Record<SocialPlatform, string[]> = {
 	youtube_shorts: ["https://www.googleapis.com/auth/youtube.upload"],
 	instagram_reels: ["instagram_content_publish"],
+	facebook_reels: ["pages_show_list", "pages_read_engagement", "pages_manage_posts"],
 	tiktok: ["video.publish"],
 	linkedin: ["w_member_social", "r_member_social"],
 	x: ["tweet.write", "media.write", "tweet.read", "users.read"],
@@ -72,7 +73,7 @@ function input(platform: SocialPlatform): PublicationPlatformInput {
 			fileName: "export.mp4",
 			contentType: "video/mp4",
 			sizeBytes: 8,
-			durationSec: 1,
+			durationSec: platform === "facebook_reels" ? 4 : 1,
 			aspectRatio: "9:16",
 		},
 	};
@@ -88,6 +89,7 @@ function harness(
 			attributes?: Record<string, string | number | boolean | undefined>,
 		): void;
 	},
+	facebookReelsPublishingEnabled = false,
 ) {
 	const requests: Array<{ url: string; init?: RequestInit }> = [];
 	let cleanups = 0;
@@ -120,6 +122,7 @@ function harness(
 			youtubeApiVersion: "v3",
 			youtubeChunkBytes: 8,
 			metaGraphVersion: "v24.0",
+			facebookReelsPublishingEnabled,
 			linkedInVersion: "202608",
 			instagramPollAttempts: 2,
 			instagramPollIntervalMs: 1,
@@ -159,6 +162,179 @@ async function publish(
 }
 
 describe("native publication adapters", () => {
+	test("keeps Facebook Reels dark until enabled and then follows the bounded start-upload-finish flow", async () => {
+		const disabled = harness([]);
+		const disabledResult = await disabled.registry.get("facebook_reels").publish(input("facebook_reels"), {
+			signal: new AbortController().signal,
+			checkpoint: async () => undefined,
+		});
+		expect(disabledResult).toMatchObject({ kind: "failed", failure: { code: "facebook_reels_rollout_disabled" } });
+
+		const enabled = harness([
+			json({ video_id: "facebook-video-1", upload_url: "https://rupload.facebook.com/session-1" }),
+			json({ success: true }),
+			json({ success: true }),
+		], false, undefined, true);
+		const checkpoints: string[] = [];
+		const result = await enabled.registry.get("facebook_reels").publish(input("facebook_reels"), {
+			signal: new AbortController().signal,
+			checkpoint: async (operation) => { checkpoints.push(operation.kind); },
+		});
+		expect(result).toMatchObject({
+			kind: "pending",
+			receiptId: "facebook-video-1",
+			operation: {
+				kind: "facebook_reel_processing",
+				state: { videoId: "facebook-video-1" },
+			},
+			submissionStarted: true,
+		});
+		expect(checkpoints).toEqual(["facebook_reel_upload", "facebook_reel_finish_pending", "submission_started"]);
+		expect(enabled.requests.map((request) => request.url)).toEqual([
+			"https://graph.facebook.com/v24.0/provider-account-1/video_reels",
+			"https://rupload.facebook.com/session-1",
+			"https://graph.facebook.com/v24.0/provider-account-1/video_reels",
+		]);
+	});
+
+	test("reconciles Facebook processing without issuing a duplicate publish", async () => {
+		const state = harness([
+			json({
+				status: {
+					video_status: "ready",
+					processing_phase: { status: "complete" },
+					publishing_phase: { status: "complete", publish_status: "published" },
+				},
+			}),
+		], false, undefined, true);
+		const result = await state.registry.get("facebook_reels").reconcile!(
+			input("facebook_reels"),
+			{ kind: "facebook_reel_processing", state: { videoId: "facebook-video-1" } },
+			{ signal: new AbortController().signal, checkpoint: async () => undefined },
+		);
+
+		expect(result).toMatchObject({
+			kind: "accepted",
+			receipt: { receiptId: "facebook-video-1", platformPostId: "facebook-video-1" },
+		});
+		expect(state.requests.map((request) => request.url)).toEqual([
+			"https://graph.facebook.com/v24.0/facebook-video-1?fields=status&access_token=access-token",
+		]);
+	});
+
+	test("reconciles the durable Facebook finish checkpoint after a lost response", async () => {
+		const state = harness([
+			json({
+				status: {
+					video_status: "ready",
+					processing_phase: { status: "complete" },
+					publishing_phase: { status: "complete", publish_status: "published" },
+				},
+			}),
+		], false, undefined, true);
+		const result = await state.registry.get("facebook_reels").reconcile!(
+			input("facebook_reels"),
+			{
+				kind: "submission_started",
+				state: { providerOperation: "facebook_reel_finish", videoId: "facebook-video-1" },
+			},
+			{ signal: new AbortController().signal, checkpoint: async () => undefined },
+		);
+
+		expect(result).toMatchObject({
+			kind: "accepted",
+			receipt: { receiptId: "facebook-video-1", platformPostId: "facebook-video-1" },
+		});
+		expect(state.requests).toHaveLength(1);
+	});
+
+	test("finishes after Meta's pre-publish status when a crash happens before submission", async () => {
+		const state = harness([
+			json({ status: {
+				video_status: "processing",
+				uploading_phase: { status: "complete" },
+				processing_phase: { status: "not_started" },
+				publishing_phase: { status: "not_started" },
+			} }),
+			json({ success: true }),
+		], false, undefined, true);
+		const checkpoints: string[] = [];
+		const result = await state.registry.get("facebook_reels").resume!(
+			input("facebook_reels"),
+			{ kind: "facebook_reel_finish_pending", state: { videoId: "facebook-video-1" } },
+			{ signal: new AbortController().signal, checkpoint: async (operation) => { checkpoints.push(operation.kind); } },
+		);
+
+		expect(result).toMatchObject({ kind: "pending", receiptId: "facebook-video-1", submissionStarted: true });
+		expect(checkpoints).toEqual(["submission_started"]);
+		expect(state.requests.map((request) => request.url)).toEqual([
+			"https://graph.facebook.com/v24.0/facebook-video-1?fields=status&access_token=access-token",
+			"https://graph.facebook.com/v24.0/provider-account-1/video_reels",
+		]);
+	});
+
+	test("keeps a durable Facebook reconciliation key when the finish response is lost", async () => {
+		const state = harness([
+			json({ video_id: "facebook-video-2", upload_url: "https://rupload.facebook.com/session-2" }),
+			json({ success: true }),
+			new Response(null, { status: 504 }),
+		], false, undefined, true);
+		const result = await state.registry.get("facebook_reels").publish(input("facebook_reels"), {
+			signal: new AbortController().signal,
+			checkpoint: async () => undefined,
+		});
+
+		expect(result).toMatchObject({
+			kind: "unknown",
+			code: "facebook_reel_publish_failed",
+			operation: {
+				kind: "facebook_reel_processing",
+				state: { videoId: "facebook-video-2" },
+			},
+		});
+	});
+
+	test("maps Facebook role, token, upload, rate-limit, and processing failures to stable codes", async () => {
+		const missingRole = harness([], false, undefined, true);
+		const withoutRole = input("facebook_reels");
+		withoutRole.account!.scopes = [];
+		expect(await missingRole.registry.get("facebook_reels").publish(withoutRole, {
+			signal: new AbortController().signal,
+			checkpoint: async () => undefined,
+		})).toMatchObject({ kind: "failed", failure: { code: "social_account_scope_missing" } });
+
+		for (const [status, code] of [[401, "facebook_authentication_required"], [403, "facebook_permission_required"], [429, "facebook_rate_limit"]] as const) {
+			const state = harness([new Response(null, { status, headers: status === 429 ? { "retry-after": "30" } : undefined })], false, undefined, true);
+			expect(await state.registry.get("facebook_reels").publish(input("facebook_reels"), {
+				signal: new AbortController().signal,
+				checkpoint: async () => undefined,
+			})).toMatchObject({ kind: "failed", failure: { code } });
+		}
+
+		const upload = harness([
+			json({ video_id: "facebook-video-3", upload_url: "https://rupload.facebook.com/session-3" }),
+			new Response(null, { status: 422 }),
+		], false, undefined, true);
+		expect(await upload.registry.get("facebook_reels").publish(input("facebook_reels"), {
+			signal: new AbortController().signal,
+			checkpoint: async () => undefined,
+		})).toMatchObject({ kind: "failed", failure: { code: "facebook_reel_upload_failed", disposition: "permanent" } });
+
+		const processing = harness([json({ status: { video_status: "processing", processing_phase: { status: "processing" } } })], false, undefined, true);
+		expect(await processing.registry.get("facebook_reels").reconcile!(
+			input("facebook_reels"),
+			{ kind: "facebook_reel_processing", state: { videoId: "facebook-video-3" } },
+			{ signal: new AbortController().signal, checkpoint: async () => undefined },
+		)).toMatchObject({ kind: "pending", receiptId: "facebook-video-3" });
+
+		const rejected = harness([json({ status: { video_status: "error", processing_phase: { status: "failed" } } })], false, undefined, true);
+		expect(await rejected.registry.get("facebook_reels").reconcile!(
+			input("facebook_reels"),
+			{ kind: "facebook_reel_processing", state: { videoId: "facebook-video-4" } },
+			{ signal: new AbortController().signal, checkpoint: async () => undefined },
+		)).toMatchObject({ kind: "failed", failure: { code: "facebook_reel_processing_failed" } });
+	});
+
 	test("preserves the YouTube upload request and receipt", async () => {
 		const state = await publish("youtube_shorts", [
 			json(

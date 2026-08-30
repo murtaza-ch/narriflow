@@ -186,7 +186,8 @@ Notes:
 - `TRIGGER_SECRET_KEY` is not used by the current custom worker polling flow.
 - Native social OAuth requires `SOCIAL_TOKEN_ENCRYPTION_KEY` plus the provider client IDs/secrets listed in the env example. Register `${NEXT_PUBLIC_APP_URL}/api/social/oauth/callback` as the redirect URI in each provider app.
 - Free-project retention must use identical `PROJECT_RETENTION_MODE` and `PROJECT_RETENTION_ENFORCEMENT_STARTED_AT` values in web and worker. Leave the mode at `observe` for at least seven days; enforcement without a valid explicit UTC activation timestamp assigns no deadlines.
-- Expansion writes fail closed. Enable only the release group being deployed with `NARRIFLOW_WRITES_BRAND_PROFILES=1`, `NARRIFLOW_WRITES_VISUAL_ASSETS=1`, `NARRIFLOW_WRITES_BRAND_FONTS=1`, `NARRIFLOW_WRITES_BRAND_KIT_PROJECTION=1`, `NARRIFLOW_WRITES_CAMPAIGN_OPERATIONS=1`, `NARRIFLOW_WRITES_REVIEW_ROOMS=1`, or `NARRIFLOW_WRITES_GENERATED_MEDIA=1`. Disabling a group leaves existing rows readable.
+- Expansion writes fail closed. Enable only the release group being deployed with `NARRIFLOW_WRITES_BRAND_PROFILES=1`, `NARRIFLOW_WRITES_VISUAL_ASSETS=1`, `NARRIFLOW_WRITES_BRAND_FONTS=1`, `NARRIFLOW_WRITES_BRAND_KIT_PROJECTION=1`, `NARRIFLOW_WRITES_CAMPAIGN_OPERATIONS=1`, `NARRIFLOW_WRITES_REVIEW_ROOMS=1`, `NARRIFLOW_WRITES_SCENE_CARDS=1`, `NARRIFLOW_WRITES_SCENE_IMAGES=1`, `NARRIFLOW_WRITES_SCENE_VIDEOS=1`, `NARRIFLOW_WRITES_SCENE_TEMPLATES=1`, or `NARRIFLOW_WRITES_GENERATED_MEDIA=1`. Disabling a group leaves existing rows readable.
+- `EXPORT_BUNDLE_RETENTION_DAYS=7` controls completed ZIP availability and is frozen into each bundle at admission. Accepted values are whole days from 1 through 30.
 
 ### Worker
 

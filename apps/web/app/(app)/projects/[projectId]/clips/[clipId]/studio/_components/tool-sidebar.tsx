@@ -10,6 +10,7 @@ import {
   Music,
   Crop,
   X,
+  PanelsTopLeft,
 } from "lucide-react";
 import { ScoreMeter } from "@narriflow/ui";
 import { formatDuration } from "@/lib/format";
@@ -24,6 +25,7 @@ import { MusicPanel } from "./tool-panels/music-panel";
 import { BrandTemplatePanel } from "./tool-panels/brand-template-panel";
 import { TransitionsPanel } from "./tool-panels/transitions-panel";
 import { LayoutPanel } from "./tool-panels/layout-panel";
+import { ScenesPanel } from "./tool-panels/scenes-panel";
 
 const TOOLS: { id: ToolId; label: string; icon: React.ReactNode }[] = [
   { id: "captions",    label: "Captions",       icon: <Subtitles size={17} /> },
@@ -33,6 +35,7 @@ const TOOLS: { id: ToolId; label: string; icon: React.ReactNode }[] = [
   { id: "text",        label: "Text",           icon: <Type size={17} /> },
   { id: "music",       label: "Music",          icon: <Music size={17} /> },
   { id: "layout",      label: "Layout",         icon: <Crop size={17} /> },
+  { id: "scenes",      label: "Scenes",         icon: <PanelsTopLeft size={17} /> },
 ];
 
 const PANEL_MAP: Record<ToolId, React.ReactNode> = {
@@ -43,6 +46,7 @@ const PANEL_MAP: Record<ToolId, React.ReactNode> = {
   "text":        <TextPanel />,
   "music":       <MusicPanel />,
   "layout":      <LayoutPanel />,
+  "scenes":      <ScenesPanel />,
 };
 
 /** Hairline definition row for the no-selection Inspector view. */

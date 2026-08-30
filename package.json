@@ -22,6 +22,7 @@
     "test:clip-editor-persistence:db": "bun packages/services/scripts/run-clip-editor-persistence-db-tests.ts",
     "test:authenticated-request-policy:db": "bun apps/web/scripts/run-authenticated-request-policy-db-tests.ts",
     "test:brand-profiles:db": "bun packages/services/scripts/run-brand-profile-db-tests.ts",
+    "test:vizard-expansion:db": "bun packages/services/scripts/run-vizard-expansion-db-tests.ts",
     "test:mcp:e2e": "bun --cwd apps/web ../../packages/mcp-core/scripts/e2e-clients.ts",
     "audit:production": "bun audit --production --audit-level=high",
     "clean": "turbo run clean && rm -rf .turbo node_modules"

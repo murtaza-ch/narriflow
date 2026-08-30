@@ -15,6 +15,7 @@ import {
   dubbingService,
   hasFeature,
   isProgramWriteEnabled,
+  isSocialProviderPublishingEnabled,
   isQuotaBlockedMidFlight,
   MAX_INGEST_RETRY_ATTEMPTS,
   presignDownloadUrl,
@@ -877,6 +878,7 @@ export default async function ProjectDetailPage({
               clips={clips}
               posts={socialPosts}
               accounts={socialAccounts}
+              facebookPublishingEnabled={isSocialProviderPublishingEnabled("facebook_reels")}
             />
           ) : null}
         </Tabs.Content>

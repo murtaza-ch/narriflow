@@ -8,6 +8,7 @@ import {
   resolvePricingTier,
   visualAssetFinalizeSchema,
   visualAssetUploadSchema,
+  type SceneBlock,
   type ReusableAssetSoftDeleteInput,
   type VisualAssetFinalizeInput,
   type VisualAssetUploadInput,
@@ -27,6 +28,7 @@ import {
   presignSingleUploadUrl,
 } from "./r2-storage";
 import { analyticsService } from "./analytics.service";
+import { withSerializableTransaction } from "./serializable-transaction";
 
 const execFileAsync = promisify(execFile);
 
@@ -61,9 +63,40 @@ export class VisualAssetIntegrityError extends Error {
 export class VisualAssetReferenceError extends Error {
   readonly code = "visual_asset_in_use";
   constructor() {
-    super("Remove or replace this asset in every Brand Profile before deleting it");
+    super("Remove this asset from every Brand Profile and Scene template before deleting it");
     this.name = "VisualAssetReferenceError";
   }
+}
+
+type SceneVisualAssetRecord = {
+	id: string;
+	kind: "image" | "video";
+	fingerprint: string;
+	durationSec: number | null;
+};
+
+export function assertSceneVisualAssetReferences(
+	scenes: readonly SceneBlock[],
+	assets: readonly SceneVisualAssetRecord[],
+): void {
+	const byId = new Map(assets.map((asset) => [asset.id, asset]));
+	for (const scene of scenes) {
+		if (scene.content.kind !== "image" && scene.content.kind !== "video") continue;
+		const asset = byId.get(scene.content.asset.id);
+		if (
+			!asset ||
+			asset.kind !== scene.content.kind ||
+			asset.fingerprint !== scene.content.asset.fingerprint
+		) {
+			throw new VisualAssetIntegrityError("scene_visual_asset_invalid");
+		}
+		if (
+			scene.content.kind === "video" &&
+			(asset.durationSec === null || scene.content.sourceEndSec > asset.durationSec + 0.001)
+		) {
+			throw new VisualAssetIntegrityError("scene_visual_asset_range_invalid");
+		}
+	}
 }
 
 export function visualAssetKindForContentType(contentType: string): "image" | "video" {
@@ -271,37 +304,83 @@ export class VisualAssetService {
     return Promise.all(rows.map(async (row) => toRow(row, await this.storage.accessUrl(row.storageKey))));
   }
 
+	async assertSceneReferences(scope: BrandActorScope, scenes: readonly SceneBlock[]) {
+		return this.assertSceneReferencesWithPolicy(scope, scenes, false);
+	}
+
+	async assertSceneReferencesWithPolicy(
+		scope: BrandActorScope,
+		scenes: readonly SceneBlock[],
+		allowDeleted: boolean,
+	) {
+		const assetIds = [...new Set(scenes.flatMap((scene) =>
+			scene.content.kind === "image" || scene.content.kind === "video"
+				? [scene.content.asset.id]
+				: [],
+		))];
+		if (assetIds.length === 0) return;
+		const assets = await this.requirePrisma().visualAsset.findMany({
+			where: { id: { in: assetIds }, ...brandOwnerWhere(scope), ...(allowDeleted ? {} : { deletedAt: null }) },
+			select: { id: true, kind: true, fingerprint: true, durationSec: true },
+		});
+		assertSceneVisualAssetReferences(
+			scenes,
+			assets.map((asset) => ({ ...asset, kind: asset.kind as "image" | "video" })),
+		);
+	}
+
+	async resolveSceneReferences(scope: BrandActorScope, scenes: readonly SceneBlock[]) {
+		const assetIds = [...new Set(scenes.flatMap((scene) =>
+			scene.content.kind === "image" || scene.content.kind === "video"
+				? [scene.content.asset.id]
+				: [],
+		))];
+		if (assetIds.length === 0) return [];
+		const rows = await this.requirePrisma().visualAsset.findMany({
+			where: { id: { in: assetIds }, ...brandOwnerWhere(scope) },
+		});
+		return Promise.all(rows.map(async (row) => {
+			const exists = await this.storage.head(row.storageKey).catch(() => null);
+			const accessUrl = exists ? await this.storage.accessUrl(row.storageKey).catch(() => null) : null;
+			return { ...toRow(row, accessUrl), missing: accessUrl === null, insertable: false as const };
+		}));
+	}
+
   async softDelete(scope: BrandActorScope, id: string, input: ReusableAssetSoftDeleteInput) {
     await assertBrandMutationAllowedWithAnalytics(scope, "brand.profiles", "profile");
     const parsed = reusableAssetSoftDeleteSchema.parse(input);
     const prisma = this.requirePrisma();
-    const asset = await prisma.visualAsset.findFirst({
-      where: { id, ...brandOwnerWhere(scope), deletedAt: null },
-      include: { profiles: true },
-    });
-    if (!asset) throw new VisualAssetIntegrityError("visual_asset_not_found");
-    const identityReferences = await prisma.brandProfile.findMany({
-      where: {
-        ...brandOwnerWhere(scope),
-        deletedAt: null,
-        OR: [
-          { visualIdentity: { path: ["primaryLogoAssetId"], equals: id } },
-          { visualIdentity: { path: ["alternateLogoAssetId"], equals: id } },
-        ],
-      },
-      select: { id: true, visualIdentity: true },
-    });
-    if (
-      (asset.profiles.length > 0 || identityReferences.length > 0) &&
-      !parsed.replacementId
-    ) {
-      throw new VisualAssetReferenceError();
-    }
-    const replacement = parsed.replacementId
-      ? await prisma.visualAsset.findFirst({ where: { id: parsed.replacementId, ...brandOwnerWhere(scope), deletedAt: null, kind: asset.kind }, select: { id: true } })
-      : null;
-    if (parsed.replacementId && !replacement) throw new VisualAssetIntegrityError("visual_asset_replacement_invalid");
-    await prisma.$transaction(async (tx) => {
+    await withSerializableTransaction(prisma, async (tx) => {
+      const asset = await tx.visualAsset.findFirst({
+        where: { id, ...brandOwnerWhere(scope), deletedAt: null },
+        include: {
+          profiles: true,
+          sceneTemplates: { where: { deletedAt: null }, select: { id: true } },
+        },
+      });
+      if (!asset) throw new VisualAssetIntegrityError("visual_asset_not_found");
+      if (asset.sceneTemplates.length > 0) throw new VisualAssetReferenceError();
+      const identityReferences = await tx.brandProfile.findMany({
+        where: {
+          ...brandOwnerWhere(scope),
+          deletedAt: null,
+          OR: [
+            { visualIdentity: { path: ["primaryLogoAssetId"], equals: id } },
+            { visualIdentity: { path: ["alternateLogoAssetId"], equals: id } },
+          ],
+        },
+        select: { id: true, visualIdentity: true },
+      });
+      if (
+        (asset.profiles.length > 0 || identityReferences.length > 0) &&
+        !parsed.replacementId
+      ) {
+        throw new VisualAssetReferenceError();
+      }
+      const replacement = parsed.replacementId
+        ? await tx.visualAsset.findFirst({ where: { id: parsed.replacementId, ...brandOwnerWhere(scope), deletedAt: null, kind: asset.kind }, select: { id: true } })
+        : null;
+      if (parsed.replacementId && !replacement) throw new VisualAssetIntegrityError("visual_asset_replacement_invalid");
       if (replacement) {
         for (const membership of asset.profiles) {
           const existing = await tx.brandProfileAsset.findUnique({ where: { profileId_assetId: { profileId: membership.profileId, assetId: replacement.id } }, select: { id: true } });

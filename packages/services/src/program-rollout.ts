@@ -5,6 +5,10 @@ export type ProgramReleaseGroup =
   | "brand_kit_projection"
   | "campaign_operations"
   | "review_rooms"
+  | "scene_cards"
+  | "scene_images"
+  | "scene_videos"
+  | "scene_templates"
   | "generated_media";
 
 const RELEASE_ENV: Record<ProgramReleaseGroup, string> = {
@@ -14,6 +18,10 @@ const RELEASE_ENV: Record<ProgramReleaseGroup, string> = {
   brand_kit_projection: "NARRIFLOW_WRITES_BRAND_KIT_PROJECTION",
   campaign_operations: "NARRIFLOW_WRITES_CAMPAIGN_OPERATIONS",
   review_rooms: "NARRIFLOW_WRITES_REVIEW_ROOMS",
+  scene_cards: "NARRIFLOW_WRITES_SCENE_CARDS",
+  scene_images: "NARRIFLOW_WRITES_SCENE_IMAGES",
+  scene_videos: "NARRIFLOW_WRITES_SCENE_VIDEOS",
+  scene_templates: "NARRIFLOW_WRITES_SCENE_TEMPLATES",
   generated_media: "NARRIFLOW_WRITES_GENERATED_MEDIA",
 };
 
