@@ -1,8 +1,8 @@
-# Add suggestion-first Auto Censor
+# 10 — Add suggestion-first Auto Censor
 
 **What to build:** Detect timed sensitive-word suggestions, let the editor review them, and apply caption mask, beep, or mute through one Clip Editor Document and shared audio plan.
 
-**Blocked by:** [Migrate Brand Kit with Brand Template compatibility](migrate-brand-kit-with-template-compatibility.md), [Extend entitlements, permissions, and program analytics](extend-entitlements-permissions-and-program-analytics.md), and [Version the Clip Editor Document for new timed edits](version-the-editor-document-for-new-timed-edits.md).
+**Blocked by:** [Migrate Brand Kit with Brand Template compatibility](03-migrate-brand-kit-with-template-compatibility.md), [Extend entitlements, permissions, and program analytics](02-extend-entitlements-permissions-and-program-analytics.md), and [Version the Clip Editor Document for new timed edits](05-version-the-editor-document-for-new-timed-edits.md).
 
 **Status:** ready-for-agent
 
@@ -36,4 +36,3 @@
 ## Fresh-task handoff
 
 Implement with `/tdd`, finish with `/code-review`, and run detector, editor, caption, audio, worker, real-media, typecheck, and repository tests.
-

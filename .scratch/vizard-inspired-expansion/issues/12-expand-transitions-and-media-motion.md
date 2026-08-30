@@ -1,8 +1,8 @@
-# Expand transitions and media motion
+# 12 — Expand transitions and media motion
 
 **What to build:** Route current transitions through the Clip Composition Plan, then add the approved transition and media-motion vocabulary with browser and FFmpeg parity.
 
-**Blocked by:** [Version the Clip Editor Document for new timed edits](version-the-editor-document-for-new-timed-edits.md) and [Add reusable and insertable Scene Blocks](add-reusable-and-insertable-scene-blocks.md).
+**Blocked by:** [Version the Clip Editor Document for new timed edits](05-version-the-editor-document-for-new-timed-edits.md) and [Add reusable and insertable Scene Blocks](08-add-reusable-and-insertable-scene-blocks.md).
 
 **Status:** ready-for-agent
 
@@ -35,4 +35,3 @@
 ## Fresh-task handoff
 
 Implement with `/tdd`, finish with `/code-review`, and run composition, adapter, worker, performance, browser, real-media, typecheck, and repository tests.
-

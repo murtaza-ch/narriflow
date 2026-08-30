@@ -1,4 +1,4 @@
-# Extend entitlements, permissions, and program analytics
+# 02 — Extend entitlements, permissions, and program analytics
 
 **What to build:** Add named plan features, review capabilities, rollout controls, and the analytics events needed by every later ticket.
 
@@ -38,4 +38,3 @@
 ## Fresh-task handoff
 
 Implement with `/tdd`, finish with `/code-review`, and run entitlement, permission, analytics, pricing, typecheck, and repository tests.
-

@@ -1,8 +1,8 @@
-# Generate and insert short video
+# 16 — Generate and insert short video
 
 **What to build:** Extend the proven Generated Media Job contract to short video, then insert finalized results as B-roll or video Scene Blocks.
 
-**Blocked by:** [Generate and insert still images](generate-and-insert-still-images.md) and [Add reusable and insertable Scene Blocks](add-reusable-and-insertable-scene-blocks.md).
+**Blocked by:** [Generate and insert still images](09-generate-and-insert-still-images.md) and [Add reusable and insertable Scene Blocks](08-add-reusable-and-insertable-scene-blocks.md).
 
 **Status:** ready-for-agent
 
@@ -39,4 +39,3 @@
 ## Fresh-task handoff
 
 Implement with `/tdd`, use the selected provider's official documentation, finish with `/code-review`, and run provider, usage, real-media, resource, browser, typecheck, and repository tests.
-

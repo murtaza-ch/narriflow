@@ -1,8 +1,8 @@
-# Build selection-scoped campaign actions
+# 11 — Build selection-scoped campaign actions
 
 **What to build:** Expand the Clips selection bar with Brand Profile, style, Scene Template, motion, export, ZIP, review, and scheduling handoffs using Campaign Operation outcomes.
 
-**Blocked by:** [Migrate Brand Kit with Brand Template compatibility](migrate-brand-kit-with-template-compatibility.md), [Establish Campaign Operation and export-bundle lifecycles](establish-campaign-operation-and-export-bundle-lifecycles.md), and [Add reusable and insertable Scene Blocks](add-reusable-and-insertable-scene-blocks.md).
+**Blocked by:** [Migrate Brand Kit with Brand Template compatibility](03-migrate-brand-kit-with-template-compatibility.md), [Establish Campaign Operation and export-bundle lifecycles](04-establish-campaign-operation-and-export-bundle-lifecycles.md), and [Add reusable and insertable Scene Blocks](08-add-reusable-and-insertable-scene-blocks.md).
 
 **Status:** ready-for-agent
 
@@ -36,4 +36,3 @@
 ## Fresh-task handoff
 
 Implement with `/tdd`, finish with `/code-review`, and run focused UI, service, operation, browser, typecheck, and repository tests.
-

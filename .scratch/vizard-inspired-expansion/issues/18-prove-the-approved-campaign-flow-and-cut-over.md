@@ -1,8 +1,8 @@
-# Prove the approved campaign flow and cut over
+# 18 — Prove the approved campaign flow and cut over
 
 **What to build:** Verify the full agency journey, program analytics, migration safety, downgrade behavior, rollback, and documentation before removing rollout warnings or declaring the program complete.
 
-**Blocked by:** [Migrate Brand Kit with Brand Template compatibility](migrate-brand-kit-with-template-compatibility.md), [Build selection-scoped campaign actions](build-selection-scoped-campaign-actions.md), [Enforce Review approval in publishing](enforce-review-approval-in-publishing.md), [Add assisted copy, thumbnails, and bulk scheduling](add-assisted-copy-thumbnails-and-bulk-scheduling.md), [Add suggestion-first Auto Censor](add-suggestion-first-auto-censor.md), [Expand transitions and media motion](expand-transitions-and-media-motion.md), [Generate and insert short video](generate-and-insert-short-video.md), and [Expose stable workflows through versioned API and MCP operations](expose-stable-workflows-through-api-and-mcp.md).
+**Blocked by:** [Migrate Brand Kit with Brand Template compatibility](03-migrate-brand-kit-with-template-compatibility.md), [Build selection-scoped campaign actions](11-build-selection-scoped-campaign-actions.md), [Enforce Review approval in publishing](14-enforce-review-approval-in-publishing.md), [Add assisted copy, thumbnails, and bulk scheduling](15-add-assisted-copy-thumbnails-and-bulk-scheduling.md), [Add suggestion-first Auto Censor](10-add-suggestion-first-auto-censor.md), [Expand transitions and media motion](12-expand-transitions-and-media-motion.md), [Generate and insert short video](16-generate-and-insert-short-video.md), and [Expose stable workflows through versioned API and MCP operations](17-expose-stable-workflows-through-api-and-mcp.md).
 
 **Status:** ready-for-agent
 
@@ -35,4 +35,3 @@
 ## Fresh-task handoff
 
 Execute as a release-proof task with `/code-review` after all dependencies close. Do not mark the program complete while any required rollback, migration, security, browser, or real-media check remains open.
-

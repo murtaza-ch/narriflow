@@ -1,8 +1,8 @@
-# Establish Review Round revisions and secure guest access
+# 06 — Establish Review Round revisions and secure guest access
 
 **What to build:** Add immutable Review Rounds, item membership, token and passcode access, guest identity, comments, decisions, audit, and media authorization before adding the project Review tab.
 
-**Blocked by:** [Establish Brand Profile and Visual Asset ownership](establish-brand-profile-and-visual-asset-ownership.md), [Extend entitlements, permissions, and program analytics](extend-entitlements-permissions-and-program-analytics.md), and [Establish Campaign Operation and export-bundle lifecycles](establish-campaign-operation-and-export-bundle-lifecycles.md).
+**Blocked by:** [Establish Brand Profile and Visual Asset ownership](01-establish-brand-profile-and-visual-asset-ownership.md), [Extend entitlements, permissions, and program analytics](02-extend-entitlements-permissions-and-program-analytics.md), and [Establish Campaign Operation and export-bundle lifecycles](04-establish-campaign-operation-and-export-bundle-lifecycles.md).
 
 **Status:** ready-for-agent
 
@@ -37,4 +37,3 @@
 ## Fresh-task handoff
 
 Implement with `/tdd`, run `/security-best-practices`, finish with `/code-review`, and run database, route, storage, adversarial, typecheck, and repository tests.
-

@@ -1,8 +1,8 @@
-# Add Facebook and a provider capability contract
+# 07 — Add Facebook and a provider capability contract
 
 **What to build:** Extend Meta account connection and Social Publisher with Facebook while centralizing platform limits and thumbnail support in one shared capability contract.
 
-**Blocked by:** [Extend entitlements, permissions, and program analytics](extend-entitlements-permissions-and-program-analytics.md).
+**Blocked by:** [Extend entitlements, permissions, and program analytics](02-extend-entitlements-permissions-and-program-analytics.md).
 
 **Status:** ready-for-agent
 
@@ -35,4 +35,3 @@
 ## Fresh-task handoff
 
 Implement with `/tdd`, use official Meta documentation during execution, finish with `/code-review`, and run provider, OAuth, migration, worker, typecheck, and repository tests.
-

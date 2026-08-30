@@ -1,8 +1,8 @@
-# Migrate Brand Kit with Brand Template compatibility
+# 03 — Migrate Brand Kit with Brand Template compatibility
 
 **What to build:** Backfill compatible Brand Profiles and replace the flat Brand Kit projection while keeping every existing template ID, route, default, snapshot, and service call valid.
 
-**Blocked by:** [Establish Brand Profile and Visual Asset ownership](establish-brand-profile-and-visual-asset-ownership.md).
+**Blocked by:** [Establish Brand Profile and Visual Asset ownership](01-establish-brand-profile-and-visual-asset-ownership.md).
 
 **Status:** ready-for-agent
 
@@ -37,4 +37,3 @@
 ## Fresh-task handoff
 
 Implement with `/tdd`, finish with `/code-review`, and run migration tests, affected service tests, a production build, `bun run typecheck`, and `bun run test`.
-

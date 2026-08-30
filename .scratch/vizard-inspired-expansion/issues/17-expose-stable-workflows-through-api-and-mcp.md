@@ -1,8 +1,8 @@
-# Expose stable workflows through versioned API and MCP operations
+# 17 — Expose stable workflows through versioned API and MCP operations
 
 **What to build:** Add public Business automation only after the corresponding web lifecycles are stable, without changing existing API keys, scopes, endpoints, or MCP tools.
 
-**Blocked by:** [Build selection-scoped campaign actions](build-selection-scoped-campaign-actions.md), [Deliver the Review tab, guest room, and notifications](deliver-review-room-and-notifications.md), [Add assisted copy, thumbnails, and bulk scheduling](add-assisted-copy-thumbnails-and-bulk-scheduling.md), [Add suggestion-first Auto Censor](add-suggestion-first-auto-censor.md), [Expand transitions and media motion](expand-transitions-and-media-motion.md), and [Generate and insert short video](generate-and-insert-short-video.md).
+**Blocked by:** [Build selection-scoped campaign actions](11-build-selection-scoped-campaign-actions.md), [Deliver the Review tab, guest room, and notifications](13-deliver-review-room-and-notifications.md), [Add assisted copy, thumbnails, and bulk scheduling](15-add-assisted-copy-thumbnails-and-bulk-scheduling.md), [Add suggestion-first Auto Censor](10-add-suggestion-first-auto-censor.md), [Expand transitions and media motion](12-expand-transitions-and-media-motion.md), and [Generate and insert short video](16-generate-and-insert-short-video.md).
 
 **Status:** ready-for-agent
 
@@ -36,4 +36,3 @@
 ## Fresh-task handoff
 
 Implement with `/tdd`, finish with `/code-review`, and run API, MCP, scope, idempotency, compatibility, typecheck, and repository tests.
-

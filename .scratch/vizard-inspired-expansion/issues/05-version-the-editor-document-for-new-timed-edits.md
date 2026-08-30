@@ -1,4 +1,4 @@
-# Version the Clip Editor Document for new timed edits
+# 05 — Version the Clip Editor Document for new timed edits
 
 **What to build:** Add empty-by-default Scene Block, Censor Segment, and media-motion document families plus migration and Studio Editing Session support, without enabling new editing UI.
 
@@ -37,4 +37,3 @@
 ## Fresh-task handoff
 
 Implement with `/tdd`, finish with `/code-review`, and run editor-document, Studio Editing Session, composition-plan, typecheck, and repository tests.
-

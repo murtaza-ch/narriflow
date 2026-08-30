@@ -1,4 +1,4 @@
-# Establish Brand Profile and Visual Asset ownership
+# 01 — Establish Brand Profile and Visual Asset ownership
 
 **What to build:** Add the durable Brand Profile, Visual Asset, Brand Font, and profile-membership contracts without changing current Brand Template behavior.
 
@@ -38,4 +38,3 @@
 ## Fresh-task handoff
 
 Implement with `/tdd`, finish with `/code-review`, and run focused validator, service, database, and storage tests plus `bun run typecheck` and `bun run test`.
-

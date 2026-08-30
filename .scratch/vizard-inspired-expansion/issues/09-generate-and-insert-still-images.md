@@ -1,8 +1,8 @@
-# Generate and insert still images
+# 09 — Generate and insert still images
 
 **What to build:** Add durable generated-image jobs, OpenAI image-provider adaptation, moderation, usage reservation and settlement, Visual Asset finalization, and Studio insertion.
 
-**Blocked by:** [Establish Brand Profile and Visual Asset ownership](establish-brand-profile-and-visual-asset-ownership.md), [Extend entitlements, permissions, and program analytics](extend-entitlements-permissions-and-program-analytics.md), and [Version the Clip Editor Document for new timed edits](version-the-editor-document-for-new-timed-edits.md).
+**Blocked by:** [Establish Brand Profile and Visual Asset ownership](01-establish-brand-profile-and-visual-asset-ownership.md), [Extend entitlements, permissions, and program analytics](02-extend-entitlements-permissions-and-program-analytics.md), and [Version the Clip Editor Document for new timed edits](05-version-the-editor-document-for-new-timed-edits.md).
 
 **Status:** ready-for-agent
 
@@ -38,4 +38,3 @@
 ## Fresh-task handoff
 
 Implement with `/tdd`, use official OpenAI documentation during execution, finish with `/code-review`, and run provider, usage, storage, editor, browser, typecheck, and repository tests.
-

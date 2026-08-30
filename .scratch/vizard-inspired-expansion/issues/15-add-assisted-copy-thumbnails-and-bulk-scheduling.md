@@ -1,8 +1,8 @@
-# Add assisted copy, thumbnails, and bulk scheduling
+# 15 — Add assisted copy, thumbnails, and bulk scheduling
 
 **What to build:** Generate reviewed platform copy, prepare provider-supported thumbnails, and schedule selected approved exports through Campaign Operations.
 
-**Blocked by:** [Migrate Brand Kit with Brand Template compatibility](migrate-brand-kit-with-template-compatibility.md), [Build selection-scoped campaign actions](build-selection-scoped-campaign-actions.md), [Enforce Review approval in publishing](enforce-review-approval-in-publishing.md), and [Add Facebook and a provider capability contract](add-facebook-and-provider-capability-contract.md).
+**Blocked by:** [Migrate Brand Kit with Brand Template compatibility](03-migrate-brand-kit-with-template-compatibility.md), [Build selection-scoped campaign actions](11-build-selection-scoped-campaign-actions.md), [Enforce Review approval in publishing](14-enforce-review-approval-in-publishing.md), and [Add Facebook and a provider capability contract](07-add-facebook-and-provider-capability-contract.md).
 
 **Status:** ready-for-agent
 
@@ -37,4 +37,3 @@
 ## Fresh-task handoff
 
 Implement with `/tdd`, finish with `/code-review`, and run content, media, social, calendar, browser, typecheck, and repository tests.
-

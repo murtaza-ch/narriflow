@@ -1,8 +1,8 @@
-# Add reusable and insertable Scene Blocks
+# 08 — Add reusable and insertable Scene Blocks
 
 **What to build:** Deliver single-clip Scene Block editing, reusable Scene Templates, and preview/export parity through the existing Studio and Clip Composition Plan.
 
-**Blocked by:** [Establish Brand Profile and Visual Asset ownership](establish-brand-profile-and-visual-asset-ownership.md), [Migrate Brand Kit with Brand Template compatibility](migrate-brand-kit-with-template-compatibility.md), and [Version the Clip Editor Document for new timed edits](version-the-editor-document-for-new-timed-edits.md).
+**Blocked by:** [Establish Brand Profile and Visual Asset ownership](01-establish-brand-profile-and-visual-asset-ownership.md), [Migrate Brand Kit with Brand Template compatibility](03-migrate-brand-kit-with-template-compatibility.md), and [Version the Clip Editor Document for new timed edits](05-version-the-editor-document-for-new-timed-edits.md).
 
 **Status:** ready-for-agent
 
@@ -35,4 +35,3 @@
 ## Fresh-task handoff
 
 Implement with `/tdd`, finish with `/code-review`, and run document, composition, Studio, worker, real-media, browser, typecheck, and repository tests.
-

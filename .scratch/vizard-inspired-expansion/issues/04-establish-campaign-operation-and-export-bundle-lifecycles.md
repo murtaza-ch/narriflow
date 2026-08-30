@@ -1,8 +1,8 @@
-# Establish Campaign Operation and export-bundle lifecycles
+# 04 — Establish Campaign Operation and export-bundle lifecycles
 
 **What to build:** Add the idempotent selection-operation record, per-item outcomes, and bounded export-bundle worker path before adding new bulk UI.
 
-**Blocked by:** [Extend entitlements, permissions, and program analytics](extend-entitlements-permissions-and-program-analytics.md).
+**Blocked by:** [Extend entitlements, permissions, and program analytics](02-extend-entitlements-permissions-and-program-analytics.md).
 
 **Status:** ready-for-agent
 
@@ -37,4 +37,3 @@
 ## Fresh-task handoff
 
 Implement with `/tdd`, finish with `/code-review`, and run database, workflow lifecycle, storage, real ZIP, typecheck, and repository tests.
-

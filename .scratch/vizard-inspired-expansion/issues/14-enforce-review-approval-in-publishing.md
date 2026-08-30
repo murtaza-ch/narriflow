@@ -1,8 +1,8 @@
-# Enforce Review approval in publishing
+# 14 — Enforce Review approval in publishing
 
 **What to build:** Make Review approval an exact-export scheduling rule with an owner or admin override that requires a reason and leaves an audit trail.
 
-**Blocked by:** [Deliver the Review tab, guest room, and notifications](deliver-review-room-and-notifications.md).
+**Blocked by:** [Deliver the Review tab, guest room, and notifications](13-deliver-review-room-and-notifications.md).
 
 **Status:** ready-for-agent
 
@@ -36,4 +36,3 @@
 ## Fresh-task handoff
 
 Implement with `/tdd`, finish with `/code-review`, and run review, social, calendar, permission, typecheck, and repository tests.
-

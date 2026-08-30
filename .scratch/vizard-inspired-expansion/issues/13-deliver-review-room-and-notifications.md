@@ -1,8 +1,8 @@
-# Deliver the Review tab, guest room, and notifications
+# 13 — Deliver the Review tab, guest room, and notifications
 
 **What to build:** Add the internal Review tab and public guest room over the completed Review Round service, including send, comments, decisions, resubmission, and idempotent notifications.
 
-**Blocked by:** [Build selection-scoped campaign actions](build-selection-scoped-campaign-actions.md) and [Establish Review Round revisions and secure guest access](establish-review-round-revisions-and-guest-access.md).
+**Blocked by:** [Build selection-scoped campaign actions](11-build-selection-scoped-campaign-actions.md) and [Establish Review Round revisions and secure guest access](06-establish-review-round-revisions-and-guest-access.md).
 
 **Status:** ready-for-agent
 
@@ -36,4 +36,3 @@
 ## Fresh-task handoff
 
 Implement with `/tdd`, finish with `/code-review`, and run route, notification, browser, accessibility, typecheck, and repository tests.
-

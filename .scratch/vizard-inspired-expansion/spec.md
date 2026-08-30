@@ -146,31 +146,32 @@ Analytics metadata may contain stable IDs, counts, platform, outcome, duration b
 
 The list below is topological. A later ticket may start only after every linked blocker closes. Refer to tickets by these names rather than by list position.
 
-1. [Establish Brand Profile and Visual Asset ownership](issues/establish-brand-profile-and-visual-asset-ownership.md)
-2. [Extend entitlements, permissions, and program analytics](issues/extend-entitlements-permissions-and-program-analytics.md)
-3. Complete the existing [Move timed visual layers into the shared plan](../clip-composition-plan/issues/07-move-timed-visual-layers-into-plan.md) and [Plan the edited-time audio schedule end to end](../clip-composition-plan/issues/08-plan-edited-time-audio-schedule.md) prerequisites.
-4. [Migrate Brand Kit with Brand Template compatibility](issues/migrate-brand-kit-with-template-compatibility.md)
-5. [Establish Campaign Operation and export-bundle lifecycles](issues/establish-campaign-operation-and-export-bundle-lifecycles.md)
-6. [Version the Clip Editor Document for new timed edits](issues/version-the-editor-document-for-new-timed-edits.md)
-7. [Establish Review Round revisions and secure guest access](issues/establish-review-round-revisions-and-guest-access.md)
-8. [Add Facebook and a provider capability contract](issues/add-facebook-and-provider-capability-contract.md)
-9. [Add reusable and insertable Scene Blocks](issues/add-reusable-and-insertable-scene-blocks.md)
-10. [Generate and insert still images](issues/generate-and-insert-still-images.md)
-11. [Add suggestion-first Auto Censor](issues/add-suggestion-first-auto-censor.md)
-12. [Build selection-scoped campaign actions](issues/build-selection-scoped-campaign-actions.md)
-13. [Expand transitions and media motion](issues/expand-transitions-and-media-motion.md)
-14. [Deliver the Review tab, guest room, and notifications](issues/deliver-review-room-and-notifications.md)
-15. [Enforce Review approval in publishing](issues/enforce-review-approval-in-publishing.md)
-16. [Add assisted copy, thumbnails, and bulk scheduling](issues/add-assisted-copy-thumbnails-and-bulk-scheduling.md)
-17. [Generate and insert short video](issues/generate-and-insert-short-video.md)
-18. [Expose stable workflows through versioned API and MCP operations](issues/expose-stable-workflows-through-api-and-mcp.md)
-19. [Prove the approved campaign flow and cut over](issues/prove-the-approved-campaign-flow-and-cut-over.md)
+Ticket 05 also requires the existing [Move timed visual layers into the shared plan](../clip-composition-plan/issues/07-move-timed-visual-layers-into-plan.md) and [Plan the edited-time audio schedule end to end](../clip-composition-plan/issues/08-plan-edited-time-audio-schedule.md) tickets.
+
+1. [Establish Brand Profile and Visual Asset ownership](issues/01-establish-brand-profile-and-visual-asset-ownership.md)
+2. [Extend entitlements, permissions, and program analytics](issues/02-extend-entitlements-permissions-and-program-analytics.md)
+3. [Migrate Brand Kit with Brand Template compatibility](issues/03-migrate-brand-kit-with-template-compatibility.md)
+4. [Establish Campaign Operation and export-bundle lifecycles](issues/04-establish-campaign-operation-and-export-bundle-lifecycles.md)
+5. [Version the Clip Editor Document for new timed edits](issues/05-version-the-editor-document-for-new-timed-edits.md)
+6. [Establish Review Round revisions and secure guest access](issues/06-establish-review-round-revisions-and-guest-access.md)
+7. [Add Facebook and a provider capability contract](issues/07-add-facebook-and-provider-capability-contract.md)
+8. [Add reusable and insertable Scene Blocks](issues/08-add-reusable-and-insertable-scene-blocks.md)
+9. [Generate and insert still images](issues/09-generate-and-insert-still-images.md)
+10. [Add suggestion-first Auto Censor](issues/10-add-suggestion-first-auto-censor.md)
+11. [Build selection-scoped campaign actions](issues/11-build-selection-scoped-campaign-actions.md)
+12. [Expand transitions and media motion](issues/12-expand-transitions-and-media-motion.md)
+13. [Deliver the Review tab, guest room, and notifications](issues/13-deliver-review-room-and-notifications.md)
+14. [Enforce Review approval in publishing](issues/14-enforce-review-approval-in-publishing.md)
+15. [Add assisted copy, thumbnails, and bulk scheduling](issues/15-add-assisted-copy-thumbnails-and-bulk-scheduling.md)
+16. [Generate and insert short video](issues/16-generate-and-insert-short-video.md)
+17. [Expose stable workflows through versioned API and MCP operations](issues/17-expose-stable-workflows-through-api-and-mcp.md)
+18. [Prove the approved campaign flow and cut over](issues/18-prove-the-approved-campaign-flow-and-cut-over.md)
 
 ## Release sequence
 
 ### Foundation
 
-Complete [Establish Brand Profile and Visual Asset ownership](issues/establish-brand-profile-and-visual-asset-ownership.md), [Extend entitlements, permissions, and program analytics](issues/extend-entitlements-permissions-and-program-analytics.md), [Establish Campaign Operation and export-bundle lifecycles](issues/establish-campaign-operation-and-export-bundle-lifecycles.md), and [Version the editor document for new timed edits](issues/version-the-editor-document-for-new-timed-edits.md).
+Complete [Establish Brand Profile and Visual Asset ownership](issues/01-establish-brand-profile-and-visual-asset-ownership.md), [Extend entitlements, permissions, and program analytics](issues/02-extend-entitlements-permissions-and-program-analytics.md), [Establish Campaign Operation and export-bundle lifecycles](issues/04-establish-campaign-operation-and-export-bundle-lifecycles.md), and [Version the editor document for new timed edits](issues/05-version-the-editor-document-for-new-timed-edits.md).
 
 ### Client delivery
 
