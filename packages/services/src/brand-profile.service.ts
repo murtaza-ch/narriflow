@@ -145,6 +145,34 @@ function requirePrisma() {
   return prisma;
 }
 
+function templateMembershipOwnerWhere(
+  scope: BrandActorScope,
+): Prisma.BrandTemplateWhereInput {
+  return resolveBrandOwner(scope).workspaceId
+    ? { workspaceId: scope.workspaceId }
+    : {
+        OR: [
+          { workspaceId: scope.workspaceId },
+          { workspaceId: null, userId: scope.workspaceOwnerUserId },
+        ],
+      };
+}
+
+function audioMembershipOwnerWhere(
+  scope: BrandActorScope,
+): Prisma.AudioAssetWhereInput {
+  const curated = { workspaceId: null, userId: null };
+  return resolveBrandOwner(scope).workspaceId
+    ? { OR: [{ workspaceId: scope.workspaceId }, curated] }
+    : {
+        OR: [
+          { workspaceId: scope.workspaceId },
+          { workspaceId: null, userId: scope.workspaceOwnerUserId },
+          curated,
+        ],
+      };
+}
+
 const profileInclude = {
   templates: { orderBy: { position: "asc" as const }, include: { template: true } },
   assets: { orderBy: { position: "asc" as const }, include: { asset: true } },
@@ -328,7 +356,7 @@ export class BrandProfileService {
       const logoAssetIds = await requireOwnedLogoAssets(tx, scope, identity);
       let template: BrandTemplate | null = null;
       if (parsed.defaultTemplateId) {
-        template = await tx.brandTemplate.findFirst({ where: { id: parsed.defaultTemplateId, isBuiltIn: false, deletedAt: null, OR: [{ workspaceId: scope.workspaceId }, { userId: scope.workspaceOwnerUserId }] } });
+        template = await tx.brandTemplate.findFirst({ where: { id: parsed.defaultTemplateId, isBuiltIn: false, deletedAt: null, ...templateMembershipOwnerWhere(scope) } });
         if (!template) throw new BrandProfileMembershipError();
       }
       const profile = await tx.brandProfile.create({ data: {
@@ -446,7 +474,7 @@ export class BrandProfileService {
       if (!profile) throw new BrandProfileNotFoundError();
       const owner = brandOwnerWhere(scope);
       if (parsed.kind === "template") {
-        const resource = await tx.brandTemplate.findFirst({ where: { id: parsed.resourceId, isBuiltIn: false, deletedAt: null, OR: [{ workspaceId: scope.workspaceId }, { userId: scope.workspaceOwnerUserId }] }, select: { id: true } });
+        const resource = await tx.brandTemplate.findFirst({ where: { id: parsed.resourceId, isBuiltIn: false, deletedAt: null, ...templateMembershipOwnerWhere(scope) }, select: { id: true } });
         if (!resource) throw new BrandProfileMembershipError();
         const existingMembership = await tx.brandProfileTemplate.findUnique({
           where: { templateId: resource.id },
@@ -468,7 +496,7 @@ export class BrandProfileService {
         if (!resource) throw new BrandProfileMembershipError();
         await tx.brandProfileFont.upsert({ where: { profileId_role: { profileId, role: parsed.role } }, create: { profileId, fontId: resource.id, role: parsed.role, position: parsed.position }, update: { fontId: resource.id, position: parsed.position } });
       } else {
-        const resource = await tx.audioAsset.findFirst({ where: { id: parsed.resourceId, deletedAt: null, OR: [{ userId: null }, { workspaceId: scope.workspaceId }, { userId: scope.workspaceOwnerUserId }] }, select: { id: true } });
+        const resource = await tx.audioAsset.findFirst({ where: { id: parsed.resourceId, deletedAt: null, ...audioMembershipOwnerWhere(scope) }, select: { id: true } });
         if (!resource) throw new BrandProfileMembershipError();
         await tx.brandProfileAudio.upsert({ where: { profileId_audioId: { profileId, audioId: resource.id } }, create: { profileId, audioId: resource.id, position: parsed.position }, update: { position: parsed.position } });
       }

@@ -190,6 +190,80 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     ).toMatchObject({ defaultTemplateId: template.id });
   });
 
+  test("keeps template and audio membership inside the current workspace", async () => {
+    const first = await workspaceFixture("membership-workspace-a");
+    const secondWorkspace = await prisma.workspace.create({
+      data: {
+        name: "Brand membership workspace B",
+        ownerUserId: first.user.id,
+        pricingTier: "business",
+        members: { create: { userId: first.user.id, role: "owner" } },
+      },
+    });
+    const secondScope = {
+      ...first.scope,
+      workspaceId: secondWorkspace.id,
+    };
+    const foreignTemplate = await prisma.brandTemplate.create({
+      data: {
+        userId: first.user.id,
+        workspaceId: first.workspace.id,
+        name: "Workspace A style",
+        captionPreset: DEFAULT_CAPTION_PRESET,
+      },
+    });
+    const foreignAudio = await prisma.audioAsset.create({
+      data: {
+        kind: "music",
+        userId: first.user.id,
+        workspaceId: first.workspace.id,
+        storageKey: `workspaces/${first.workspace.id}/audio-assets/foreign.mp3`,
+        title: "Workspace A audio",
+        durationSec: 12,
+      },
+    });
+    const curatedAudio = await prisma.audioAsset.create({
+      data: {
+        kind: "music",
+        storageKey: `audio-assets/curated-${randomUUID()}.mp3`,
+        title: "Curated audio",
+        durationSec: 12,
+      },
+    });
+    await expect(
+      brandProfileService.create(secondScope, {
+        name: "Cross workspace default",
+        slug: "cross-workspace-default",
+        defaultTemplateId: foreignTemplate.id,
+      }),
+    ).rejects.toBeInstanceOf(BrandProfileMembershipError);
+    const profile = await brandProfileService.create(secondScope, {
+      name: "Workspace B profile",
+      slug: "workspace-b-profile",
+    });
+    await expect(
+      brandProfileService.setMembership(secondScope, profile.id, {
+        kind: "template",
+        resourceId: foreignTemplate.id,
+        position: 0,
+      }),
+    ).rejects.toBeInstanceOf(BrandProfileMembershipError);
+    await expect(
+      brandProfileService.setMembership(secondScope, profile.id, {
+        kind: "audio",
+        resourceId: foreignAudio.id,
+        position: 0,
+      }),
+    ).rejects.toBeInstanceOf(BrandProfileMembershipError);
+    await expect(
+      brandProfileService.setMembership(secondScope, profile.id, {
+        kind: "audio",
+        resourceId: curatedAudio.id,
+        position: 0,
+      }),
+    ).resolves.toMatchObject({ id: profile.id });
+  });
+
   test("stops project profile writes when the projection rollout is disabled", async () => {
     process.env.NARRIFLOW_WRITES_BRAND_KIT_PROJECTION = "0";
     try {
