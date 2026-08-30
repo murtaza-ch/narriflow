@@ -150,6 +150,39 @@ export const captionPresetSchema = z.object({
 
 export type CaptionPreset = z.infer<typeof captionPresetSchema>;
 
+/** Field-aware equality for canonical caption presets. */
+export function captionPresetsEqual(
+  left: CaptionPreset,
+  right: CaptionPreset,
+): boolean {
+  return (
+    left === right ||
+    (left.fontName === right.fontName &&
+      left.emojis === right.emojis &&
+      left.visible === right.visible &&
+      left.punctuation === right.punctuation &&
+      left.primaryColor === right.primaryColor &&
+      left.outlineColor === right.outlineColor &&
+      left.outlineWidth === right.outlineWidth &&
+      left.shadow === right.shadow &&
+      left.bold === right.bold &&
+      left.position === right.position &&
+      left.highlightColor === right.highlightColor &&
+      left.animation === right.animation &&
+      left.fontSize === right.fontSize &&
+      left.positionX === right.positionX &&
+      left.positionY === right.positionY &&
+      left.backgroundColor === right.backgroundColor &&
+      left.backgroundOpacity === right.backgroundOpacity &&
+      left.highlightBoxColor === right.highlightBoxColor &&
+      left.highlightBoxOpacity === right.highlightBoxOpacity &&
+      left.glowColor === right.glowColor &&
+      left.glowIntensity === right.glowIntensity &&
+      left.textTransform === right.textTransform &&
+      left.letterSpacing === right.letterSpacing)
+  );
+}
+
 /**
  * The canonical caption preset built entirely from the schema defaults.
  * Derived via `captionPresetSchema.parse({})` so it can never drift from the

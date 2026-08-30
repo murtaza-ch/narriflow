@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-import { captionPresetSchema, type CaptionPreset } from "./caption-preset";
+import { captionPresetsEqual, captionPresetSchema } from "./caption-preset";
 import {
   buildEditedTimeMap,
   deletedRangesSchema,
@@ -16,14 +16,16 @@ import {
   type SourceRange,
 } from "./edit-ranges";
 import {
+  studioEditsEqual,
   studioEditsSchema,
-  type StudioEdits,
   type StudioSfxPlacement,
   type StudioTextLayer,
   type StudioSpeakerLayoutOverride,
 } from "./studio-edits";
-import { transcriptUtteranceSchema } from "./transcript";
-import type { TranscriptUtterance, TranscriptWord } from "./transcript";
+import {
+  transcriptSlicesEqual,
+  transcriptUtteranceSchema,
+} from "./transcript";
 
 // The single editor document (vizard-parity.md Phase A step 2): everything the
 // studio can mutate lives in one value so undo/redo, reset, and the atomic
@@ -108,156 +110,6 @@ function arraysEqual<T>(
   if (left === right) return true;
   if (left.length !== right.length) return false;
   return left.every((item, index) => itemEqual(item, right[index]!));
-}
-
-function captionPresetsEqual(left: CaptionPreset, right: CaptionPreset): boolean {
-  return (
-    left === right ||
-    (left.fontName === right.fontName &&
-      left.emojis === right.emojis &&
-      left.visible === right.visible &&
-      left.punctuation === right.punctuation &&
-      left.primaryColor === right.primaryColor &&
-      left.outlineColor === right.outlineColor &&
-      left.outlineWidth === right.outlineWidth &&
-      left.shadow === right.shadow &&
-      left.bold === right.bold &&
-      left.position === right.position &&
-      left.highlightColor === right.highlightColor &&
-      left.animation === right.animation &&
-      left.fontSize === right.fontSize &&
-      left.positionX === right.positionX &&
-      left.positionY === right.positionY &&
-      left.backgroundColor === right.backgroundColor &&
-      left.backgroundOpacity === right.backgroundOpacity &&
-      left.highlightBoxColor === right.highlightBoxColor &&
-      left.highlightBoxOpacity === right.highlightBoxOpacity &&
-      left.glowColor === right.glowColor &&
-      left.glowIntensity === right.glowIntensity &&
-      left.textTransform === right.textTransform &&
-      left.letterSpacing === right.letterSpacing)
-  );
-}
-
-function transcriptWordsEqual(left: TranscriptWord, right: TranscriptWord): boolean {
-  return (
-    left === right ||
-    (left.word === right.word &&
-      left.startSec === right.startSec &&
-      left.endSec === right.endSec &&
-      left.confidence === right.confidence)
-  );
-}
-
-function transcriptUtterancesEqual(
-  left: TranscriptUtterance,
-  right: TranscriptUtterance,
-): boolean {
-  return (
-    left === right ||
-    (left.index === right.index &&
-      left.speaker === right.speaker &&
-      left.speakerLabel === right.speakerLabel &&
-      left.startSec === right.startSec &&
-      left.endSec === right.endSec &&
-      left.text === right.text &&
-      left.confidence === right.confidence &&
-      arraysEqual(left.words, right.words, transcriptWordsEqual))
-  );
-}
-
-function transcriptSlicesEqual(
-  left: readonly TranscriptUtterance[],
-  right: readonly TranscriptUtterance[],
-): boolean {
-  return arraysEqual(left, right, transcriptUtterancesEqual);
-}
-
-function studioEditsEqual(left: StudioEdits, right: StudioEdits): boolean {
-  if (left === right) return true;
-  if (
-    left.transition.type !== right.transition.type ||
-    left.transition.durationSec !== right.transition.durationSec ||
-    left.music.url !== right.music.url ||
-    left.music.title !== right.music.title ||
-    left.music.volume !== right.music.volume ||
-    left.music.startOffsetSec !== right.music.startOffsetSec ||
-    left.music.fadeInSec !== right.music.fadeInSec ||
-    left.music.fadeOutSec !== right.music.fadeOutSec ||
-    left.music.assetId !== right.music.assetId ||
-    left.music.ducking !== right.music.ducking ||
-    left.sourceAudio.volume !== right.sourceAudio.volume ||
-    left.sourceAudio.muted !== right.sourceAudio.muted ||
-    left.logo.enabled !== right.logo.enabled ||
-    left.logo.position !== right.logo.position ||
-    left.logo.opacity !== right.logo.opacity ||
-    left.logo.scalePct !== right.logo.scalePct ||
-    left.background.mode !== right.background.mode ||
-    left.background.color !== right.background.color ||
-    left.background.imageUrl !== right.background.imageUrl ||
-    left.framing.mode !== right.framing.mode
-  ) {
-    return false;
-  }
-  if (
-    !arraysEqual(left.textLayers, right.textLayers, (a, b) =>
-      a === b ||
-      (a.id === b.id &&
-        a.text === b.text &&
-        a.startSec === b.startSec &&
-        a.endSec === b.endSec &&
-        a.positionX === b.positionX &&
-        a.positionY === b.positionY &&
-        a.fontName === b.fontName &&
-        a.fontSize === b.fontSize &&
-        a.color === b.color &&
-        a.backgroundColor === b.backgroundColor &&
-        a.backgroundOpacity === b.backgroundOpacity &&
-        a.bold === b.bold &&
-        a.outlineColor === b.outlineColor &&
-        a.outlineWidth === b.outlineWidth),
-    )
-  ) {
-    return false;
-  }
-  if (
-    !arraysEqual(left.sfx, right.sfx, (a, b) =>
-      a === b ||
-      (a.id === b.id &&
-        a.assetId === b.assetId &&
-        a.title === b.title &&
-        a.startSec === b.startSec &&
-        a.volume === b.volume),
-    )
-  ) {
-    return false;
-  }
-  return arraysEqual(
-    left.speakerLayoutOverrides,
-    right.speakerLayoutOverrides,
-    (a, b) =>
-      a === b ||
-      (a.id === b.id &&
-        a.aspectRatio === b.aspectRatio &&
-        a.startSec === b.startSec &&
-        a.endSec === b.endSec &&
-        a.layout === b.layout &&
-        arraysEqual(
-          a.layers,
-          b.layers,
-          (leftLayer, rightLayer) =>
-            leftLayer === rightLayer ||
-            (leftLayer.role === rightLayer.role &&
-              leftLayer.frameX === rightLayer.frameX &&
-              leftLayer.frameY === rightLayer.frameY &&
-              leftLayer.frameWidth === rightLayer.frameWidth &&
-              leftLayer.frameHeight === rightLayer.frameHeight &&
-              leftLayer.rotationDeg === rightLayer.rotationDeg &&
-              leftLayer.cropCxNorm === rightLayer.cropCxNorm &&
-              leftLayer.cropCyNorm === rightLayer.cropCyNorm &&
-              leftLayer.cropZoom === rightLayer.cropZoom),
-        )),
-  );
 }
 
 /** Compares deleted footage by its normalized domain meaning. */

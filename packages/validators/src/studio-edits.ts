@@ -6,7 +6,10 @@ import {
   type EditedTimeMap,
 } from "./edit-ranges";
 import type { TranscriptUtterance } from "./transcript";
-import { studioSpeakerLayoutOverrideSchema } from "./speaker-layout-overrides";
+import {
+  speakerLayoutOverridesEqual,
+  studioSpeakerLayoutOverrideSchema,
+} from "./speaker-layout-overrides";
 
 const hexColorSchema = z.string().regex(/^#[0-9A-Fa-f]{6}$/);
 
@@ -460,6 +463,89 @@ export type { StudioSpeakerLayoutOverride, SpeakerLayerTransform } from "./speak
 export type StudioSfxPlacement = z.infer<typeof studioSfxPlacementSchema>;
 export type StudioEdits = z.infer<typeof studioEditsSchema>;
 export type UpdateClipStudioEdits = z.infer<typeof updateClipStudioEditsSchema>;
+
+function studioTextLayersEqual(
+  left: readonly StudioTextLayer[],
+  right: readonly StudioTextLayer[],
+): boolean {
+  if (left === right) return true;
+  if (left.length !== right.length) return false;
+  return left.every((layer, index) => {
+    const candidate = right[index]!;
+    return (
+      layer === candidate ||
+      (layer.id === candidate.id &&
+        layer.text === candidate.text &&
+        layer.startSec === candidate.startSec &&
+        layer.endSec === candidate.endSec &&
+        layer.positionX === candidate.positionX &&
+        layer.positionY === candidate.positionY &&
+        layer.fontName === candidate.fontName &&
+        layer.fontSize === candidate.fontSize &&
+        layer.color === candidate.color &&
+        layer.backgroundColor === candidate.backgroundColor &&
+        layer.backgroundOpacity === candidate.backgroundOpacity &&
+        layer.bold === candidate.bold &&
+        layer.outlineColor === candidate.outlineColor &&
+        layer.outlineWidth === candidate.outlineWidth)
+    );
+  });
+}
+
+function studioSfxPlacementsEqual(
+  left: readonly StudioSfxPlacement[],
+  right: readonly StudioSfxPlacement[],
+): boolean {
+  if (left === right) return true;
+  if (left.length !== right.length) return false;
+  return left.every((placement, index) => {
+    const candidate = right[index]!;
+    return (
+      placement === candidate ||
+      (placement.id === candidate.id &&
+        placement.assetId === candidate.assetId &&
+        placement.title === candidate.title &&
+        placement.startSec === candidate.startSec &&
+        placement.volume === candidate.volume)
+    );
+  });
+}
+
+/** Field-aware equality for canonical Studio edit values. */
+export function studioEditsEqual(
+  left: StudioEdits,
+  right: StudioEdits,
+): boolean {
+  if (left === right) return true;
+  return (
+    left.transition.type === right.transition.type &&
+    left.transition.durationSec === right.transition.durationSec &&
+    left.music.url === right.music.url &&
+    left.music.title === right.music.title &&
+    left.music.volume === right.music.volume &&
+    left.music.startOffsetSec === right.music.startOffsetSec &&
+    left.music.fadeInSec === right.music.fadeInSec &&
+    left.music.fadeOutSec === right.music.fadeOutSec &&
+    left.music.assetId === right.music.assetId &&
+    left.music.ducking === right.music.ducking &&
+    left.sourceAudio.volume === right.sourceAudio.volume &&
+    left.sourceAudio.muted === right.sourceAudio.muted &&
+    left.logo.enabled === right.logo.enabled &&
+    left.logo.position === right.logo.position &&
+    left.logo.opacity === right.logo.opacity &&
+    left.logo.scalePct === right.logo.scalePct &&
+    left.background.mode === right.background.mode &&
+    left.background.color === right.background.color &&
+    left.background.imageUrl === right.background.imageUrl &&
+    left.framing.mode === right.framing.mode &&
+    studioTextLayersEqual(left.textLayers, right.textLayers) &&
+    studioSfxPlacementsEqual(left.sfx, right.sfx) &&
+    speakerLayoutOverridesEqual(
+      left.speakerLayoutOverrides,
+      right.speakerLayoutOverrides,
+    )
+  );
+}
 
 export type EffectiveFramingMode = "auto" | "center" | "fit" | "split" | "screen";
 

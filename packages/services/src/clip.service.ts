@@ -1424,6 +1424,30 @@ export class ClipService {
             }),
           );
         },
+        onAdoptionOutcome(outcome, context) {
+          console.warn(
+            JSON.stringify({
+              level: outcome === "succeeded" ? "info" : "warn",
+              message: "clip_duplicate_adoption_outcome",
+              clipId,
+              newClipId,
+              outcome,
+              ...context,
+            }),
+          );
+        },
+        onCompensationOutcome(outcome, context) {
+          console.warn(
+            JSON.stringify({
+              level: outcome === "released" ? "info" : "warn",
+              message: "clip_duplicate_compensation_outcome",
+              clipId,
+              newClipId,
+              outcome,
+              ...context,
+            }),
+          );
+        },
         async release(objectKeys, claimId) {
           await prisma.mediaCleanupObligation.updateMany({
             where: {

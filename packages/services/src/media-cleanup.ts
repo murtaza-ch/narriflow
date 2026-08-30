@@ -208,7 +208,7 @@ export class DurableMediaCopyClaimLost extends Error {
 }
 
 export interface DurableMediaCopyAdoptionStore {
-  deleteMany(input: {
+  updateMany(input: {
     where: {
       claimId: string;
       claimExpiresAt: { gt: Date };
@@ -219,10 +219,31 @@ export interface DurableMediaCopyAdoptionStore {
         objectKey: string;
       }>;
     };
+    data: {
+      completedAt: Date;
+      claimId: null;
+      claimExpiresAt: null;
+      failureCode: null;
+    };
   }): Promise<{ count: number }>;
+  count(input: {
+    where: {
+      completedAt: { not: null };
+      OR: Array<{
+        origin: MediaCleanupOrigin;
+        cleanupClass: MediaCleanupClass;
+        objectKey: string;
+      }>;
+    };
+  }): Promise<number>;
 }
 
-/** Must run inside the same transaction that persists the copied references. */
+/**
+ * Must run inside the same transaction that persists the copied references.
+ * Completed obligations remain as durable idempotency receipts. A zero-row
+ * settlement is accepted only when every stable destination identity already
+ * has such a receipt; a partial settlement means ownership was lost.
+ */
 export async function adoptDurableMediaCopies<T>(
   store: DurableMediaCopyAdoptionStore,
   copied: readonly DurableMediaCopyPlan<T>[],
@@ -230,19 +251,30 @@ export async function adoptDurableMediaCopies<T>(
   now: Date,
 ): Promise<void> {
   if (copied.length === 0) return;
-  const settled = await store.deleteMany({
+  const identities = copied.map((plan) => ({
+    origin: plan.origin,
+    cleanupClass: plan.cleanupClass,
+    objectKey: plan.objectKey,
+  }));
+  const settled = await store.updateMany({
     where: {
       claimId,
       claimExpiresAt: { gt: now },
       completedAt: null,
-      OR: copied.map((plan) => ({
-        origin: plan.origin,
-        cleanupClass: plan.cleanupClass,
-        objectKey: plan.objectKey,
-      })),
+      OR: identities,
+    },
+    data: {
+      completedAt: now,
+      claimId: null,
+      claimExpiresAt: null,
+      failureCode: null,
     },
   });
-  if (settled.count !== copied.length) {
+  if (settled.count === copied.length) return;
+  const adopted = await store.count({
+    where: { completedAt: { not: null }, OR: identities },
+  });
+  if (adopted !== copied.length) {
     throw new DurableMediaCopyClaimLost();
   }
 }
@@ -276,6 +308,14 @@ export async function runDurableMediaCopies<T, TResult>(input: {
   release(objectKeys: readonly string[], claimId: string): Promise<void>;
   onCopyFailure?(plan: DurableMediaCopyPlan<T>, error: unknown): void;
   onReleaseFailure?(error: unknown): void;
+  onAdoptionOutcome?(
+    outcome: "succeeded" | "failed",
+    context: { copiedObjectCount: number; plannedObjectCount: number },
+  ): void;
+  onCompensationOutcome?(
+    outcome: "released" | "release_failed",
+    context: { releasedObjectCount: number },
+  ): void;
   heartbeatScheduler?: MediaCleanupHeartbeatScheduler;
   now?: () => Date;
 }): Promise<TResult> {
@@ -287,20 +327,6 @@ export async function runDurableMediaCopies<T, TResult>(input: {
   const now = input.now ?? (() => new Date());
   const heartbeatScheduler =
     input.heartbeatScheduler ?? defaultHeartbeatScheduler;
-  const admitted = await admitMediaCleanupObligations(
-    input.store,
-    input.plans.map(({ sourceKey: _sourceKey, value: _value, ...plan }) => plan),
-    {
-      heldClaim: {
-        claimId: input.claimId,
-        claimExpiresAt: input.claimExpiresAt,
-      },
-    },
-  );
-  if (admitted !== input.plans.length) {
-    throw new Error("media_copy_compensation_admission_conflict");
-  }
-
   let claimLost = false;
   let heartbeatInFlight: Promise<void> | null = null;
   const renew = async () => {
@@ -313,6 +339,24 @@ export async function runDurableMediaCopies<T, TResult>(input: {
     });
     if (!renewed) throw new DurableMediaCopyClaimLost();
   };
+  const admitted = await admitMediaCleanupObligations(
+    input.store,
+    input.plans.map(({ sourceKey: _sourceKey, value: _value, ...plan }) => plan),
+    {
+      heldClaim: {
+        claimId: input.claimId,
+        claimExpiresAt: input.claimExpiresAt,
+      },
+    },
+  );
+  if (admitted !== input.plans.length) {
+    try {
+      await renew();
+    } catch {
+      throw new Error("media_copy_compensation_admission_conflict");
+    }
+  }
+
   const stopHeartbeat =
     input.plans.length === 0
       ? () => undefined
@@ -356,11 +400,21 @@ export async function runDurableMediaCopies<T, TResult>(input: {
     if (objectKeys.length === 0) return;
     try {
       await input.release(objectKeys, input.claimId);
+      try {
+        input.onCompensationOutcome?.("released", {
+          releasedObjectCount: objectKeys.length,
+        });
+      } catch {
+        // Diagnostics cannot change compensation ownership.
+      }
     } catch (error) {
       // The held obligations recover after claim expiry even when eager release
       // is unavailable, so release failure must not corrupt the action result.
       try {
         input.onReleaseFailure?.(error);
+        input.onCompensationOutcome?.("release_failed", {
+          releasedObjectCount: objectKeys.length,
+        });
       } catch {
         // Diagnostics cannot change compensation ownership.
       }
@@ -371,8 +425,24 @@ export async function runDurableMediaCopies<T, TResult>(input: {
   try {
     result = await input.adopt(copied, input.claimId, now());
   } catch (error) {
+    try {
+      input.onAdoptionOutcome?.("failed", {
+        copiedObjectCount: copied.length,
+        plannedObjectCount: input.plans.length,
+      });
+    } catch {
+      // Diagnostics cannot change compensation ownership.
+    }
     await release(input.plans.map((plan) => plan.objectKey));
     throw error;
+  }
+  try {
+    input.onAdoptionOutcome?.("succeeded", {
+      copiedObjectCount: copied.length,
+      plannedObjectCount: input.plans.length,
+    });
+  } catch {
+    // Diagnostics cannot change compensation ownership.
   }
 
   const copiedKeys = new Set(copied.map((plan) => plan.objectKey));

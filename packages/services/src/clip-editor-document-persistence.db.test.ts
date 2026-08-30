@@ -7,206 +7,57 @@ import {
   setDefaultTimeout,
   test,
 } from "bun:test";
-import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
 import {
   DEFAULT_CAPTION_PRESET,
   captionPresetSchema,
   editorDocumentSchema,
   studioEditsSchema,
-  type EditorDocument,
 } from "@narriflow/validators";
-import { Pool } from "pg";
 import {
   ClipEditorRevisionConflictError,
   createClipEditorDocumentPersistence,
-  encodeClipEditorDocumentForStorage,
   prismaClipEditorDocumentStore,
   type ClipEditorDocumentStore,
 } from "./clip-editor-document-persistence";
-import { ClipService } from "./clip.service";
+import {
+  addClipPersistenceFixtureClip,
+  clipPersistenceDbTestEnabled,
+  clipPersistenceEditorDocument,
+  createClipPersistenceFixture,
+  openClipPersistenceTestDatabase,
+} from "./clip-persistence-db-test-support";
 import { prismaMediaCleanupStore } from "./media-cleanup";
 
-const databaseUrl = process.env.CLIP_EDITOR_PERSISTENCE_TEST_DATABASE_URL;
-const databaseSchema = process.env.CLIP_EDITOR_PERSISTENCE_TEST_DATABASE_SCHEMA;
-const enabled =
-  process.env.ALLOW_CLIP_EDITOR_PERSISTENCE_DB_TESTS === "1" && Boolean(databaseUrl);
-const dbDescribe = enabled ? describe : describe.skip;
+const dbDescribe = clipPersistenceDbTestEnabled ? describe : describe.skip;
 
 setDefaultTimeout(180_000);
 
-function assertSafeDatabase(url: string) {
-  const parsed = new URL(url);
-  const local = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
-  const namedTestDatabase = parsed.pathname.toLowerCase().includes("test");
-  const isolatedSchema = databaseSchema?.startsWith("clip_editor_persistence_test_");
-  if (!local && !namedTestDatabase && !isolatedSchema) {
-    throw new Error("Clip Editor Document Persistence DB tests require isolation");
-  }
-}
-
-function editorDocument(overrides: Partial<EditorDocument> = {}) {
-  return editorDocumentSchema.parse({
-    clipStartSec: 10,
-    clipEndSec: 30,
-    captionPreset: DEFAULT_CAPTION_PRESET,
-    transcriptSlice: [],
-    studioEdits: studioEditsSchema.parse(undefined),
-    brollUrl: null,
-    deletedRanges: [],
-    ...overrides,
-  });
-}
+const editorDocument = clipPersistenceEditorDocument;
 
 dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
   let prisma: PrismaClient;
-  let pool: Pool;
-  let priorPrisma: PrismaClient | undefined;
-  const prismaGlobal = globalThis as unknown as {
-    narriflowPrismaClient?: PrismaClient;
-  };
+  let testDatabase: Awaited<ReturnType<typeof openClipPersistenceTestDatabase>>;
 
   beforeAll(async () => {
-    if (!databaseUrl) throw new Error("database URL is required");
-    assertSafeDatabase(databaseUrl);
-    pool = new Pool({ connectionString: databaseUrl, max: 8 });
-    prisma = new PrismaClient({
-      adapter: new PrismaPg(pool, databaseSchema ? { schema: databaseSchema } : undefined),
-      transactionOptions: { maxWait: 120_000, timeout: 120_000 },
-    });
-    priorPrisma = prismaGlobal.narriflowPrismaClient;
-    prismaGlobal.narriflowPrismaClient = prisma;
+    testDatabase = await openClipPersistenceTestDatabase();
+    prisma = testDatabase.prisma;
   });
 
   afterAll(async () => {
-    prismaGlobal.narriflowPrismaClient = priorPrisma;
-    await prisma?.$disconnect();
-    await pool?.end();
+    await testDatabase?.close();
   });
 
   async function fixture() {
-    const suffix = randomUUID();
-    const user = await prisma.user.create({
-      data: {
-        clerkId: `clip-editor-persistence-db-test:${suffix}`,
-        primaryEmail: `clip-editor-${suffix}@example.test`,
-      },
-    });
-    const workspace = await prisma.workspace.create({
-      data: {
-        name: "Clip editor persistence DB test",
-        ownerUserId: user.id,
-        personalOwnerUserId: user.id,
-      },
-    });
-    const project = await prisma.project.create({
-      data: {
-        title: "Clip editor persistence fixture",
-        sourceMediaUrl: "r2://test/source.mp4",
-        sourceStorageKey: `projects/${suffix}/source.mp4`,
-        sourceDurationSeconds: 300,
-        userId: user.id,
-        workspaceId: workspace.id,
-        createdByUserId: user.id,
-      },
-    });
-    const workflowRun = await prisma.workflowRun.create({
-      data: {
-        projectId: project.id,
-        idempotencyKey: `clip-editor-persistence:${suffix}`,
-        stage: "moment_detection",
-        status: "completed",
-        lifecycleVersion: 2,
-      },
-    });
-    const document = editorDocument();
-    const storedDocument = encodeClipEditorDocumentForStorage(
-      document,
-      project.sourceDurationSeconds,
-    );
-    const clip = await prisma.clip.create({
-      data: {
-        projectId: project.id,
-        workflowRunId: workflowRun.id,
-        index: 0,
-        ...storedDocument,
-        hookText: "Persistence fixture",
-        reasoning: "Fixture",
-        category: "hook",
-        viralityScore: 70,
-        hookStrengthScore: 70,
-        emotionalIntensityScore: 70,
-        pacingScore: 70,
-        durationOptimalityScore: 70,
-        tiktokScore: 70,
-        youtubeScore: 70,
-        instagramScore: 70,
-        llmProvider: "test",
-        llmModel: "test",
-        previewStorageKey: `projects/${project.id}/clips/preview.mp4`,
-        previewStartSec: 6,
-        previewDurationSec: 28,
-        layoutAnalysis: { version: 1 },
-        autoLayoutAnalysis: { version: 1 },
-        splitLayoutAnalysis: { version: 1 },
-      },
-    });
-    await prisma.clipRender.create({
-      data: {
-        clipId: clip.id,
-        aspectRatio: "ratio_9_16",
-        status: "completed",
-        storageKey: `projects/${project.id}/renders/current.mp4`,
-      },
-    });
-    return { user, project, workflowRun, clip, document };
+    return createClipPersistenceFixture(prisma);
   }
 
   async function addClip(
     fixtureState: Awaited<ReturnType<typeof fixture>>,
     index: number,
-    document: EditorDocument,
+    document: ReturnType<typeof editorDocument>,
   ) {
-    const storedDocument = encodeClipEditorDocumentForStorage(
-      document,
-      fixtureState.project.sourceDurationSeconds,
-    );
-    const clip = await prisma.clip.create({
-      data: {
-        projectId: fixtureState.project.id,
-        workflowRunId: fixtureState.workflowRun.id,
-        index,
-        ...storedDocument,
-        hookText: `Persistence fixture ${index}`,
-        reasoning: "Fixture",
-        category: "hook",
-        viralityScore: 70,
-        hookStrengthScore: 70,
-        emotionalIntensityScore: 70,
-        pacingScore: 70,
-        durationOptimalityScore: 70,
-        tiktokScore: 70,
-        youtubeScore: 70,
-        instagramScore: 70,
-        llmProvider: "test",
-        llmModel: "test",
-        previewStorageKey: `projects/${fixtureState.project.id}/clips/preview-${index}.mp4`,
-        previewStartSec: 6,
-        previewDurationSec: 28,
-        layoutAnalysis: { version: 1 },
-        autoLayoutAnalysis: { version: 1 },
-        splitLayoutAnalysis: { version: 1 },
-      },
-    });
-    await prisma.clipRender.create({
-      data: {
-        clipId: clip.id,
-        aspectRatio: "ratio_9_16",
-        status: "completed",
-        storageKey: `projects/${fixtureState.project.id}/renders/current-${index}.mp4`,
-      },
-    });
-    return clip;
+    return addClipPersistenceFixtureClip(prisma, fixtureState, index, document);
   }
 
   test("document, revision, original, render retirement, and cleanup commit together", async () => {
@@ -852,178 +703,4 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
     });
   });
 
-  test("a committed duplicate adopts every successful copy in the same transaction", async () => {
-    const f = await fixture();
-    const copied: Array<{ sourceKey: string; destinationKey: string }> = [];
-    const service = new ClipService({
-      clipDuplicationStorageAdapter: {
-        async copy(input) {
-          copied.push(input);
-        },
-      },
-    });
-
-    const duplicate = await service.duplicateClip(
-      f.user.id,
-      f.project.id,
-      f.clip.id,
-    );
-    const storedDuplicate = await prisma.clip.findUniqueOrThrow({
-      where: { id: duplicate.id },
-      include: { renders: true },
-    });
-
-    expect(copied).toHaveLength(2);
-    expect(storedDuplicate.previewStorageKey).toBe(
-      copied.find((item) => item.sourceKey === f.clip.previewStorageKey)
-        ?.destinationKey,
-    );
-    expect(storedDuplicate.renders.map((render) => render.storageKey)).toEqual([
-      copied.find((item) => item.sourceKey.includes("/renders/current.mp4"))
-        ?.destinationKey,
-    ]);
-    expect(
-      await prisma.mediaCleanupObligation.count({
-        where: {
-          origin: "clip_duplicate_compensation",
-          clipId: duplicate.id,
-        },
-      }),
-    ).toBe(0);
-  });
-
-  test("partial duplicate copies adopt only successful media and release the rest for cleanup", async () => {
-    const f = await fixture();
-    const service = new ClipService({
-      clipDuplicationStorageAdapter: {
-        async copy(input) {
-          if (input.sourceKey === f.clip.previewStorageKey) {
-            throw new Error("injected preview copy failure");
-          }
-        },
-      },
-    });
-
-    const duplicate = await service.duplicateClip(
-      f.user.id,
-      f.project.id,
-      f.clip.id,
-    );
-
-    expect(duplicate.hasPreview).toBe(false);
-    expect(duplicate.renderVariants).toHaveLength(1);
-    expect(
-      await prisma.mediaCleanupObligation.findMany({
-        where: {
-          origin: "clip_duplicate_compensation",
-          clipId: duplicate.id,
-        },
-        select: {
-          cleanupClass: true,
-          claimId: true,
-          completedAt: true,
-        },
-      }),
-    ).toEqual([
-      {
-        cleanupClass: "preview_proxy",
-        claimId: null,
-        completedAt: null,
-      },
-    ]);
-  });
-
-  test("a duplicate persistence failure releases all copied destinations without creating a Clip", async () => {
-    const f = await fixture();
-    const copied: string[] = [];
-    const service = new ClipService({
-      clipDuplicationStorageAdapter: {
-        async copy({ destinationKey }) {
-          copied.push(destinationKey);
-        },
-      },
-    });
-    const suffix = randomUUID().replaceAll("-", "");
-    const functionName = `duplicate_insert_failure_${suffix}`;
-    const triggerName = `duplicate_insert_failure_${suffix}`;
-    await pool.query(`
-      CREATE FUNCTION "${functionName}"() RETURNS trigger AS $$
-      BEGIN
-        RAISE EXCEPTION 'duplicate_insert_failure';
-      END;
-      $$ LANGUAGE plpgsql;
-      CREATE TRIGGER "${triggerName}"
-      BEFORE INSERT ON "Clip"
-      FOR EACH ROW EXECUTE FUNCTION "${functionName}"();
-    `);
-    try {
-      await expect(
-        service.duplicateClip(f.user.id, f.project.id, f.clip.id),
-      ).rejects.toMatchObject({ code: "clip_duplicate_failed" });
-    } finally {
-      await pool.query(`
-        DROP TRIGGER IF EXISTS "${triggerName}" ON "Clip";
-        DROP FUNCTION IF EXISTS "${functionName}"();
-      `);
-    }
-
-    expect(copied).toHaveLength(2);
-    expect(
-      await prisma.clip.count({ where: { projectId: f.project.id } }),
-    ).toBe(1);
-    expect(
-      await prisma.mediaCleanupObligation.findMany({
-        where: {
-          origin: "clip_duplicate_compensation",
-          projectId: f.project.id,
-        },
-        select: { objectKey: true, claimId: true, completedAt: true },
-        orderBy: { objectKey: "asc" },
-      }),
-    ).toEqual(
-      [...copied]
-        .sort()
-        .map((objectKey) => ({ objectKey, claimId: null, completedAt: null })),
-    );
-  });
-
-  test("concurrent duplicate requests never expose winning media to cleanup", async () => {
-    const f = await fixture();
-    const service = new ClipService({
-      clipDuplicationStorageAdapter: { copy: async () => undefined },
-    });
-
-    const outcomes = await Promise.allSettled([
-      service.duplicateClip(f.user.id, f.project.id, f.clip.id),
-      service.duplicateClip(f.user.id, f.project.id, f.clip.id),
-    ]);
-    const winners = outcomes.flatMap((outcome) =>
-      outcome.status === "fulfilled" ? [outcome.value] : [],
-    );
-    expect(winners.length).toBeGreaterThanOrEqual(1);
-
-    const winningRows = await prisma.clip.findMany({
-      where: { id: { in: winners.map((winner) => winner.id) } },
-      select: {
-        previewStorageKey: true,
-        renders: { select: { storageKey: true } },
-      },
-    });
-    const winningKeys = winningRows
-      .flatMap((winner) => [
-        winner.previewStorageKey,
-        ...winner.renders.map((render) => render.storageKey),
-      ])
-      .filter((key): key is string => Boolean(key));
-    const cleanupKeys = await prisma.mediaCleanupObligation.findMany({
-      where: {
-        origin: "clip_duplicate_compensation",
-        projectId: f.project.id,
-      },
-      select: { objectKey: true },
-    });
-    expect(cleanupKeys.map((item) => item.objectKey)).not.toContainAnyValues(
-      winningKeys,
-    );
-  });
 });

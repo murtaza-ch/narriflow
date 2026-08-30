@@ -66,16 +66,19 @@ try {
     DATABASE_URL: migrationUrl.toString(),
     DIRECT_URL: migrationUrl.toString(),
   });
-  await run(
-    ["bun", "test", "packages/services/src/clip-editor-document-persistence.db.test.ts"],
-    {
+  const testEnv = {
       ALLOW_CLIP_EDITOR_PERSISTENCE_DB_TESTS: "1",
       DATABASE_URL: testUrl.toString(),
       DIRECT_URL: testUrl.toString(),
       CLIP_EDITOR_PERSISTENCE_TEST_DATABASE_URL: testUrl.toString(),
       CLIP_EDITOR_PERSISTENCE_TEST_DATABASE_SCHEMA: schema,
-    },
-  );
+  };
+  for (const testFile of [
+    "packages/services/src/clip-editor-document-persistence.db.test.ts",
+    "packages/services/src/clip-duplicate-media.db.test.ts",
+  ]) {
+    await run(["bun", "test", testFile], testEnv);
+  }
 } finally {
   if (process.env.CLIP_EDITOR_PERSISTENCE_TEST_KEEP_SCHEMA !== "1") {
     await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);

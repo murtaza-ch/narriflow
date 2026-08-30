@@ -26,4 +26,5 @@
 ## Completion evidence — 2026-08-30
 
 - Clip duplication now uses the durable copy/adoption protocol through an injectable production storage seam; no best-effort rollback path remains.
-- The persistence PostgreSQL gate proves full adoption, partial adoption, persistence failure recovery, and concurrent winning-key safety (18 tests, 70 assertions). Authenticated Chrome also duplicated a rendered Clip and successfully deleted the disposable copy.
+- The persistence PostgreSQL gate now runs separate document-persistence and duplicate-media suites. Together they prove full, partial, and zero-copy adoption; persistence failure after one and two successful copies; expired-claim interruption recovery; and concurrent winning-key safety (21 tests, 81 assertions).
+- Stable same-claim admission retry and repeated adoption settlement are idempotent. Bounded structured diagnostics record adoption and compensation outcomes without object keys or provider errors. Authenticated Chrome also duplicated a rendered Clip and successfully deleted the disposable copy.

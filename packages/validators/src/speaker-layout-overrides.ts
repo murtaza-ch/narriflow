@@ -86,6 +86,50 @@ export type StudioSpeakerLayoutOverride = z.infer<
   typeof studioSpeakerLayoutOverrideSchema
 >;
 
+function speakerLayerTransformsEqual(
+  left: SpeakerLayerTransform,
+  right: SpeakerLayerTransform,
+): boolean {
+  return (
+    left === right ||
+    (left.role === right.role &&
+      left.frameX === right.frameX &&
+      left.frameY === right.frameY &&
+      left.frameWidth === right.frameWidth &&
+      left.frameHeight === right.frameHeight &&
+      left.rotationDeg === right.rotationDeg &&
+      left.cropCxNorm === right.cropCxNorm &&
+      left.cropCyNorm === right.cropCyNorm &&
+      left.cropZoom === right.cropZoom)
+  );
+}
+
+/** Order-sensitive equality for canonical manual speaker-layout scenes. */
+export function speakerLayoutOverridesEqual(
+  left: readonly StudioSpeakerLayoutOverride[],
+  right: readonly StudioSpeakerLayoutOverride[],
+): boolean {
+  if (left === right) return true;
+  if (left.length !== right.length) return false;
+  return left.every((override, index) => {
+    const candidate = right[index]!;
+    if (override === candidate) return true;
+    if (
+      override.id !== candidate.id ||
+      override.aspectRatio !== candidate.aspectRatio ||
+      override.startSec !== candidate.startSec ||
+      override.endSec !== candidate.endSec ||
+      override.layout !== candidate.layout ||
+      override.layers.length !== candidate.layers.length
+    ) {
+      return false;
+    }
+    return override.layers.every((layer, layerIndex) =>
+      speakerLayerTransformsEqual(layer, candidate.layers[layerIndex]!),
+    );
+  });
+}
+
 export interface ResolvedSpeakerLayoutScene {
   startSec: number;
   endSec: number;
