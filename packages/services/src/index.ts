@@ -32,6 +32,7 @@ export {
   BrandProfileService,
   BrandProfileConflictError,
   BrandProfileMembershipError,
+  BrandProfileMissingAssetError,
   BrandProfileNotFoundError,
   BrandProfileReferenceError,
   buildBrandProfileSnapshot,
@@ -57,6 +58,7 @@ export {
 } from "./brand-font.service";
 export {
   assertBrandMutationAllowed,
+  assertBrandMutationAllowedWithAnalytics,
   brandOwnerStoragePrefix,
   brandOwnerWhere,
   resolveBrandOwner,

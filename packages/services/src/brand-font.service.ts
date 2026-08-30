@@ -12,7 +12,7 @@ import {
   type ReusableAssetSoftDeleteInput,
 } from "@narriflow/validators";
 import {
-  assertBrandMutationAllowed,
+  assertBrandMutationAllowedWithAnalytics,
   brandOwnerStoragePrefix,
   brandOwnerWhere,
   resolveBrandOwner,
@@ -127,7 +127,7 @@ export class BrandFontService {
   private requirePrisma = requirePrisma;
 
   async presignUpload(scope: BrandActorScope, input: BrandFontUploadInput) {
-    assertBrandMutationAllowed(scope, "brand.customFonts");
+    await assertBrandMutationAllowedWithAnalytics(scope, "brand.customFonts", "font");
     const parsed = brandFontUploadSchema.parse(input);
     if (!isR2Configured()) throw new Error("R2 configuration is missing");
     const format = formatForContentType(parsed.contentType);
@@ -166,7 +166,7 @@ export class BrandFontService {
   }
 
   private async finalizeVerifiedUpload(scope: BrandActorScope, input: BrandFontFinalizeInput) {
-    assertBrandMutationAllowed(scope, "brand.customFonts");
+    await assertBrandMutationAllowedWithAnalytics(scope, "brand.customFonts", "font");
     const parsed = brandFontFinalizeSchema.parse(input);
     if (!parsed.key.startsWith(brandOwnerStoragePrefix(scope, "brand-fonts"))) throw new BrandFontIntegrityError("brand_font_key_forbidden");
     const prisma = this.requirePrisma();
@@ -218,7 +218,7 @@ export class BrandFontService {
   }
 
   async softDelete(scope: BrandActorScope, id: string, input: ReusableAssetSoftDeleteInput) {
-    assertBrandMutationAllowed(scope, "brand.customFonts");
+    await assertBrandMutationAllowedWithAnalytics(scope, "brand.customFonts", "font");
     const parsed = reusableAssetSoftDeleteSchema.parse(input);
     const prisma = this.requirePrisma();
     const font = await prisma.brandFont.findFirst({ where: { id, ...brandOwnerWhere(scope), deletedAt: null }, include: { profiles: { select: { id: true } } } });

@@ -13,7 +13,7 @@ import {
   type VisualAssetUploadInput,
 } from "@narriflow/validators";
 import {
-  assertBrandMutationAllowed,
+  assertBrandMutationAllowedWithAnalytics,
   brandOwnerStoragePrefix,
   brandOwnerWhere,
   resolveBrandOwner,
@@ -32,6 +32,12 @@ const execFileAsync = promisify(execFile);
 
 export interface VisualMediaProbe {
   kind: "image" | "video";
+  contentType:
+    | "image/png"
+    | "image/jpeg"
+    | "image/webp"
+    | "video/mp4"
+    | "video/quicktime";
   width: number;
   height: number;
   durationSec: number | null;
@@ -73,6 +79,7 @@ export function assertFinalizedVisualObject(
   if (object.contentType !== declared.contentType) throw new VisualAssetIntegrityError("visual_asset_mime_mismatch");
   if (object.sizeBytes !== declared.sizeBytes) throw new VisualAssetIntegrityError("visual_asset_size_mismatch");
   if (!probe || probe.width <= 0 || probe.height <= 0) throw new VisualAssetIntegrityError("visual_asset_probe_failed");
+  if (probe.contentType !== declared.contentType) throw new VisualAssetIntegrityError("visual_asset_mime_mismatch");
   if (probe.kind !== visualAssetKindForContentType(declared.contentType)) throw new VisualAssetIntegrityError("visual_asset_kind_mismatch");
 }
 
@@ -86,19 +93,40 @@ function extensionForVisual(contentType: string) {
   } as Record<string, string>)[contentType] ?? "bin";
 }
 
-async function productionProbe(key: string, contentType: string): Promise<VisualMediaProbe | null> {
+async function productionProbe(key: string): Promise<VisualMediaProbe | null> {
   try {
     const url = await presignDownloadUrl({ key, expiresIn: 300 });
     const { stdout } = await execFileAsync("ffprobe", [
       "-v", "error", "-select_streams", "v:0",
-      "-show_entries", "stream=width,height,duration", "-of", "json", url,
+      "-show_entries", "stream=codec_name,width,height,duration:format=format_name:format_tags=major_brand", "-of", "json", url,
     ], { timeout: 20_000, maxBuffer: 1024 * 1024 });
-    const parsed = JSON.parse(stdout) as { streams?: Array<{ width?: number; height?: number; duration?: string }> };
+    const parsed = JSON.parse(stdout) as {
+      streams?: Array<{
+        codec_name?: string;
+        width?: number;
+        height?: number;
+        duration?: string;
+      }>;
+      format?: { format_name?: string; tags?: { major_brand?: string } };
+    };
     const stream = parsed.streams?.[0];
     if (!stream?.width || !stream.height) return null;
+    const contentType = stream.codec_name === "png"
+      ? "image/png"
+      : stream.codec_name === "mjpeg"
+        ? "image/jpeg"
+        : stream.codec_name === "webp"
+          ? "image/webp"
+          : parsed.format?.format_name?.split(",").some((name) => name === "mov" || name === "mp4")
+            ? parsed.format.tags?.major_brand?.trim().toLowerCase() === "qt"
+              ? "video/quicktime"
+              : "video/mp4"
+            : null;
+    if (!contentType) return null;
     const duration = Number(stream.duration);
     return {
       kind: visualAssetKindForContentType(contentType),
+      contentType,
       width: stream.width,
       height: stream.height,
       durationSec: Number.isFinite(duration) && duration >= 0 ? duration : null,
@@ -155,7 +183,7 @@ export class VisualAssetService {
   constructor(private readonly storage: VisualAssetStorage = productionStorage) {}
 
   async presignUpload(scope: BrandActorScope, input: VisualAssetUploadInput) {
-    assertBrandMutationAllowed(scope, "brand.profiles");
+    await assertBrandMutationAllowedWithAnalytics(scope, "brand.profiles", "profile");
     const parsed = visualAssetUploadSchema.parse(input);
     if (!isR2Configured()) throw new Error("R2 configuration is missing");
     const key = `${brandOwnerStoragePrefix(scope, "visual-assets")}${randomUUID()}.${extensionForVisual(parsed.contentType)}`;
@@ -193,7 +221,7 @@ export class VisualAssetService {
   }
 
   private async finalizeVerifiedUpload(scope: BrandActorScope, input: VisualAssetFinalizeInput) {
-    assertBrandMutationAllowed(scope, "brand.profiles");
+    await assertBrandMutationAllowedWithAnalytics(scope, "brand.profiles", "profile");
     const parsed = visualAssetFinalizeSchema.parse(input);
     if (!parsed.key.startsWith(brandOwnerStoragePrefix(scope, "visual-assets"))) {
       throw new VisualAssetIntegrityError("visual_asset_key_forbidden");
@@ -244,7 +272,7 @@ export class VisualAssetService {
   }
 
   async softDelete(scope: BrandActorScope, id: string, input: ReusableAssetSoftDeleteInput) {
-    assertBrandMutationAllowed(scope, "brand.profiles");
+    await assertBrandMutationAllowedWithAnalytics(scope, "brand.profiles", "profile");
     const parsed = reusableAssetSoftDeleteSchema.parse(input);
     const prisma = this.requirePrisma();
     const asset = await prisma.visualAsset.findFirst({

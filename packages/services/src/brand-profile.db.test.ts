@@ -7,11 +7,14 @@ import { Pool } from "pg";
 import {
   BrandProfileConflictError,
   BrandProfileMembershipError,
+  BrandProfileMissingAssetError,
   BrandProfileNotFoundError,
+  BrandProfileService,
   brandProfileService,
 } from "./brand-profile.service";
 import { BrandAccessError } from "./brand-ownership";
 import { projectService } from "./project.service";
+import { ProgramWriteDisabledError } from "./program-rollout";
 import {
   VisualAssetReferenceError,
   VisualAssetService,
@@ -29,6 +32,7 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
   let prisma: PrismaClient;
   let pool: Pool;
   let priorPrisma: PrismaClient | undefined;
+  let priorProjectionWrites: string | undefined;
   const prismaGlobal = globalThis as unknown as { narriflowPrismaClient?: PrismaClient };
 
   beforeAll(() => {
@@ -37,10 +41,17 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     prisma = new PrismaClient({ adapter: new PrismaPg(pool, databaseSchema ? { schema: databaseSchema } : undefined) });
     priorPrisma = prismaGlobal.narriflowPrismaClient;
     prismaGlobal.narriflowPrismaClient = prisma;
+    priorProjectionWrites = process.env.NARRIFLOW_WRITES_BRAND_KIT_PROJECTION;
+    process.env.NARRIFLOW_WRITES_BRAND_KIT_PROJECTION = "1";
   });
 
   afterAll(async () => {
     prismaGlobal.narriflowPrismaClient = priorPrisma;
+    if (priorProjectionWrites === undefined) {
+      delete process.env.NARRIFLOW_WRITES_BRAND_KIT_PROJECTION;
+    } else {
+      process.env.NARRIFLOW_WRITES_BRAND_KIT_PROJECTION = priorProjectionWrites;
+    }
     await prisma?.$disconnect();
     await pool?.end();
   });
@@ -109,6 +120,113 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     });
     expect(frozen.brandProfileId).toBe(profile.id);
     expect(frozen.brandProfileSnapshot).toMatchObject({ profileId: profile.id });
+  });
+
+  test("persists a member style as the profile default", async () => {
+    const fixture = await workspaceFixture("default-style");
+    const profile = await brandProfileService.create(fixture.scope, {
+      name: "Default style",
+      slug: "default-style",
+    });
+    const template = await prisma.brandTemplate.create({
+      data: {
+        workspaceId: fixture.workspace.id,
+        name: "Editorial",
+        captionPreset: DEFAULT_CAPTION_PRESET,
+      },
+    });
+    const withMembership = await brandProfileService.setMembership(
+      fixture.scope,
+      profile.id,
+      { kind: "template", resourceId: template.id, position: 0 },
+    );
+    const updated = await brandProfileService.update(fixture.scope, profile.id, {
+      revision: withMembership.revision,
+      defaultTemplateId: template.id,
+    });
+    expect(updated.defaultTemplateId).toBe(template.id);
+  });
+
+  test("stops project profile writes when the projection rollout is disabled", async () => {
+    process.env.NARRIFLOW_WRITES_BRAND_KIT_PROJECTION = "0";
+    try {
+      await expect(
+        brandProfileService.resolveForProject(
+          {
+            actorUserId: randomUUID(),
+            workspaceId: randomUUID(),
+            workspaceOwnerUserId: randomUUID(),
+            role: "owner",
+            status: "active",
+            pricingTier: "business",
+            isPersonalWorkspace: false,
+          },
+          { profileId: randomUUID() },
+        ),
+      ).rejects.toBeInstanceOf(ProgramWriteDisabledError);
+    } finally {
+      process.env.NARRIFLOW_WRITES_BRAND_KIT_PROJECTION = "1";
+    }
+  });
+
+  test("blocks new application when identity storage is missing", async () => {
+    const fixture = await workspaceFixture("missing-object");
+    const asset = await prisma.visualAsset.create({
+      data: {
+        workspaceId: fixture.workspace.id,
+        createdByUserId: fixture.user.id,
+        title: "Missing logo",
+        kind: "image",
+        storageKey: `workspaces/${fixture.workspace.id}/visual-assets/missing.png`,
+        contentType: "image/png",
+        sizeBytes: 128,
+        width: 64,
+        height: 64,
+        fingerprint: "d".repeat(64),
+      },
+    });
+    const profile = await brandProfileService.create(fixture.scope, {
+      name: "Missing storage",
+      slug: "missing-storage",
+      identity: {
+        primaryColor: "#FFFFFF",
+        secondaryColor: "#111522",
+        accentColor: null,
+        primaryLogoAssetId: asset.id,
+        alternateLogoAssetId: null,
+      },
+    });
+    const service = new BrandProfileService();
+    (
+      service as unknown as {
+        requirePrisma: () => PrismaClient;
+        objectExists: () => Promise<boolean>;
+      }
+    ).requirePrisma = () => prisma;
+    (
+      service as unknown as { objectExists: () => Promise<boolean> }
+    ).objectExists = async () => false;
+    await expect(
+      service.resolveForProject(fixture.scope, { profileId: profile.id }),
+    ).rejects.toBeInstanceOf(BrandProfileMissingAssetError);
+  });
+
+  test("records entitlement-blocked profile mutations", async () => {
+    const fixture = await workspaceFixture("blocked-analytics");
+    await expect(
+      brandProfileService.create(
+        { ...fixture.scope, pricingTier: "free" },
+        { name: "Blocked", slug: "blocked" },
+      ),
+    ).rejects.toBeInstanceOf(BrandAccessError);
+    expect(
+      await prisma.programAnalyticsEvent.count({
+        where: {
+          workspaceId: fixture.workspace.id,
+          type: "brand_premium_mutation_blocked",
+        },
+      }),
+    ).toBe(1);
   });
 
   test("deduplicates fingerprints per owner, conceals other tenants, and replaces live references before deletion", async () => {
@@ -203,7 +321,13 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
         return { contentType: "image/png", sizeBytes: 128 };
       },
       async probe() {
-        return { kind: "image", width: 64, height: 64, durationSec: null };
+        return {
+          kind: "image",
+          contentType: "image/png",
+          width: 64,
+          height: 64,
+          durationSec: null,
+        };
       },
       async fingerprint() {
         return fingerprint;

@@ -8,6 +8,7 @@ import { EmptyState } from "@narriflow/ui/components/empty-state";
 import { MediaWell } from "@narriflow/ui/components/media-well";
 import { PageHeader } from "@narriflow/ui/components/page-header";
 import { admitWorkspacePage } from "@/lib/authenticated-request-page";
+import { formatDuration } from "@/lib/format";
 import LegacyTemplatePage from "../../settings/brand-templates/[id]/page";
 
 const SECTIONS = ["identity", "styles", "assets", "scenes", "audio", "voice"] as const;
@@ -175,7 +176,7 @@ function AudioSection({ profile }: { profile: Profile }) {
   return (
     <Stack gap="7">
       <SectionHeader index="05" icon={<AudioLines size={18} />} title="Audio references" description="The existing Audio Asset library stays authoritative; profiles only reference rows." />
-      {profile.audio.length === 0 ? <EmptyState icon={<AudioLines size={18} />} title="No referenced audio" description="Attach existing music or sound effects without copying their storage or metadata." /> : <Stack gap="0" borderTopWidth="1px" borderColor="border">{profile.audio.map((audio, index) => <Flex key={audio.id} align="center" gap="4" py="4" borderBottomWidth="1px" borderColor="border.subtle"><Text textStyle="data" color="fg.subtle">{String(index + 1).padStart(2, "0")}</Text><Text fontSize="13px" fontWeight="600" flex="1">{audio.title}</Text><Text textStyle="eyebrow" color="fg.subtle">{audio.kind}</Text><Text textStyle="data" color="fg.timecode">{Math.round(audio.durationSec)}s</Text></Flex>)}</Stack>}
+      {profile.audio.length === 0 ? <EmptyState icon={<AudioLines size={18} />} title="No referenced audio" description="Attach existing music or sound effects without copying their storage or metadata." /> : <Stack gap="0" borderTopWidth="1px" borderColor="border">{profile.audio.map((audio, index) => <Flex key={audio.id} align="center" gap="4" py="4" borderBottomWidth="1px" borderColor="border.subtle"><Text textStyle="data" color="fg.subtle">{String(index + 1).padStart(2, "0")}</Text><Text fontSize="13px" fontWeight="600" flex="1">{audio.title}</Text><Text textStyle="eyebrow" color="fg.subtle">{audio.kind}</Text><Text textStyle="data" color="fg.timecode">{formatDuration(audio.durationSec)}</Text></Flex>)}</Stack>}
     </Stack>
   );
 }

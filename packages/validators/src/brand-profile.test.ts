@@ -4,6 +4,7 @@ import {
   brandFontUploadSchema,
   brandProfileCreateSchema,
   brandProfileMembershipSchema,
+  brandProfileProjectApplicationSchema,
   brandProfileUpdateSchema,
   visualAssetFinalizeSchema,
   visualAssetUploadSchema,
@@ -63,5 +64,20 @@ describe("Brand Profile contracts", () => {
   test("uses typed profile membership roles", () => {
     expect(brandProfileMembershipSchema.parse({ kind: "font", resourceId: "4d119c8d-acde-4d95-82a4-0e61210e61db", role: "display", position: 0 }).role).toBe("display");
     expect(() => brandProfileMembershipSchema.parse({ kind: "font", resourceId: "4d119c8d-acde-4d95-82a4-0e61210e61db", role: "logo", position: 0 })).toThrow();
+  });
+
+  test("strictly validates project profile application identifiers", () => {
+    const input = {
+      projectId: "f9f090ac-fb8f-4d6a-a9d7-c30f1283d98d",
+      profileId: "31a08ed5-b5ec-4caf-aeb7-458c3226797e",
+      templateId: null,
+    };
+    expect(brandProfileProjectApplicationSchema.parse(input)).toEqual(input);
+    expect(() =>
+      brandProfileProjectApplicationSchema.parse({
+        ...input,
+        profileId: "not-a-profile-id",
+      }),
+    ).toThrow();
   });
 });

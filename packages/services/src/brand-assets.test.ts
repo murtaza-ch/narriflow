@@ -61,9 +61,11 @@ describe("visual object verification", () => {
   test("rejects missing, MIME-mismatched, size-mismatched, and failed probes", () => {
     const declared = { contentType: "image/png" as const, sizeBytes: 128 };
     expect(() => assertFinalizedVisualObject(declared, null, null)).toThrow();
-    expect(() => assertFinalizedVisualObject(declared, { contentType: "image/jpeg", sizeBytes: 128 }, { kind: "image", width: 1, height: 1, durationSec: null })).toThrow();
-    expect(() => assertFinalizedVisualObject(declared, { contentType: "image/png", sizeBytes: 127 }, { kind: "image", width: 1, height: 1, durationSec: null })).toThrow();
+    const validProbe = { kind: "image" as const, contentType: "image/png" as const, width: 1, height: 1, durationSec: null };
+    expect(() => assertFinalizedVisualObject(declared, { contentType: "image/jpeg", sizeBytes: 128 }, validProbe)).toThrow();
+    expect(() => assertFinalizedVisualObject(declared, { contentType: "image/png", sizeBytes: 127 }, validProbe)).toThrow();
     expect(() => assertFinalizedVisualObject(declared, { contentType: "image/png", sizeBytes: 128 }, null)).toThrow();
+    expect(() => assertFinalizedVisualObject(declared, { contentType: "image/png", sizeBytes: 128 }, { ...validProbe, contentType: "image/jpeg" })).toThrow();
   });
 });
 

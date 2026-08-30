@@ -14,6 +14,7 @@ import {
   clipService,
   dubbingService,
   hasFeature,
+  isProgramWriteEnabled,
   isQuotaBlockedMidFlight,
   MAX_INGEST_RETRY_ATTEMPTS,
   presignDownloadUrl,
@@ -209,6 +210,7 @@ export default async function ProjectDetailPage({
   // picker degrades exactly the way the worker's render-time gate does.
   const can1080pExport = hasFeature(pricingTier, "export.1080p");
   const canApplyBrandProfile =
+    isProgramWriteEnabled("brand_kit_projection") &&
     hasFeature(pricingTier, "brand.profiles") &&
     workspaceAllowsCapability(
       { role: appUser.role, status: appUser.status },

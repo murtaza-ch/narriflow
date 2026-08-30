@@ -4,9 +4,10 @@ import { randomUUID } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import {
-  executeWorkspaceAction,
-  executeProjectAction,
-  authenticatedActionResultError,
+	executeWorkspaceAction,
+	executeProjectAction,
+	executeProjectActionWithInput,
+	authenticatedActionResultError,
 } from "@/lib/authenticated-request-action";
 import {
 	clipService,
@@ -23,7 +24,11 @@ import {
 	QuotaExceededError,
 	UploadTooLongError,
 } from "@narriflow/services";
-import { type ClipAspectRatio, userErrorMessage } from "@narriflow/validators";
+import {
+	brandProfileProjectApplicationSchema,
+	type ClipAspectRatio,
+	userErrorMessage,
+} from "@narriflow/validators";
 
 /** True for plan-limit errors that should send the user to the upgrade view. */
 function isPlanLimitError(error: unknown): boolean {
@@ -217,26 +222,36 @@ export async function queueTranscriptionFormAction(formData: FormData) {
 export const queueGenerationFormAction = queueTranscriptionFormAction;
 
 export async function applyProjectBrandProfileFormAction(formData: FormData) {
-	const projectId = String(formData.get("projectId") ?? "");
-	const profileId = String(formData.get("profileId") ?? "");
-	const templateId = String(formData.get("templateId") ?? "") || null;
-	if (!projectId || !profileId) throw new Error("Project and Brand Profile are required");
-	return executeProjectAction(projectId, "content.edit", async (appUser) => {
-		await brandProfileService.applyToProject(
-			{
-				actorUserId: appUser.actorUserId,
-				workspaceId: appUser.workspaceId,
-				workspaceOwnerUserId: appUser.workspaceOwnerUserId,
-				role: appUser.role,
-				status: appUser.status,
-				pricingTier: appUser.pricingTier,
-				isPersonalWorkspace: appUser.isPersonalWorkspace,
-			},
-			projectId,
-			{ profileId, templateId },
-		);
-		revalidatePath(`/projects/${projectId}`);
-	});
+	const input = {
+		projectId: String(formData.get("projectId") ?? ""),
+		profileId: String(formData.get("profileId") ?? ""),
+		templateId: String(formData.get("templateId") ?? "") || null,
+	};
+	return executeProjectActionWithInput(
+		input.projectId,
+		"content.edit",
+		input,
+		brandProfileProjectApplicationSchema,
+		async (appUser, parsedInput) => {
+			await brandProfileService.applyToProject(
+				{
+					actorUserId: appUser.actorUserId,
+					workspaceId: appUser.workspaceId,
+					workspaceOwnerUserId: appUser.workspaceOwnerUserId,
+					role: appUser.role,
+					status: appUser.status,
+					pricingTier: appUser.pricingTier,
+					isPersonalWorkspace: appUser.isPersonalWorkspace,
+				},
+				parsedInput.projectId,
+				{
+					profileId: parsedInput.profileId,
+					templateId: parsedInput.templateId,
+				},
+			);
+			revalidatePath(`/projects/${parsedInput.projectId}`);
+		},
+	);
 }
 
 export async function regenerateClipsFormAction(formData: FormData) {

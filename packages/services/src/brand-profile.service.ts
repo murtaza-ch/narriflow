@@ -20,13 +20,14 @@ import {
 } from "@narriflow/validators";
 import {
   assertBrandApplicationAllowed,
-  assertBrandMutationAllowed,
+  assertBrandMutationAllowedWithAnalytics,
   brandOwnerWhere,
   resolveBrandOwner,
   type BrandActorScope,
 } from "./brand-ownership";
 import { analyticsService } from "./analytics.service";
-import { presignDownloadUrl } from "./r2-storage";
+import { assertProgramWriteEnabled } from "./program-rollout";
+import { headObject, presignDownloadUrl } from "./r2-storage";
 
 export class BrandProfileNotFoundError extends Error {
   readonly code = "brand_profile_not_found";
@@ -57,6 +58,14 @@ export class BrandProfileMembershipError extends Error {
   constructor() {
     super("The selected resource does not belong to this Brand Profile owner");
     this.name = "BrandProfileMembershipError";
+  }
+}
+
+export class BrandProfileMissingAssetError extends Error {
+  readonly code = "brand_profile_asset_missing";
+  constructor() {
+    super("Replace missing Brand Profile assets before applying this profile");
+    this.name = "BrandProfileMissingAssetError";
   }
 }
 
@@ -185,8 +194,18 @@ async function recordBrandEvent(
   });
 }
 
+async function brandObjectExists(key: string) {
+  try {
+    await headObject(key);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 async function safeAccessUrl(key: string) {
   try {
+    if (!(await brandObjectExists(key))) return null;
     return await presignDownloadUrl({ key });
   } catch {
     return null;
@@ -264,6 +283,7 @@ async function toAggregate(profile: ProfileAggregate) {
 
 export class BrandProfileService {
   private requirePrisma = requirePrisma;
+  private objectExists = brandObjectExists;
 
   async list(scope: BrandActorScope, input?: BrandProfileListInput) {
     const parsed = brandProfileListSchema.parse(input ?? {});
@@ -299,7 +319,7 @@ export class BrandProfileService {
   }
 
   async create(scope: BrandActorScope, input: BrandProfileCreateInput) {
-    assertBrandMutationAllowed(scope, "brand.profiles");
+    await assertBrandMutationAllowedWithAnalytics(scope, "brand.profiles", "profile");
     const parsed = brandProfileCreateSchema.parse(input);
     const prisma = this.requirePrisma();
     const owner = resolveBrandOwner(scope);
@@ -351,7 +371,7 @@ export class BrandProfileService {
   }
 
   async update(scope: BrandActorScope, id: string, input: BrandProfileUpdateInput) {
-    assertBrandMutationAllowed(scope, "brand.profiles");
+    await assertBrandMutationAllowedWithAnalytics(scope, "brand.profiles", "profile");
     const parsed = brandProfileUpdateSchema.parse(input);
     const prisma = this.requirePrisma();
     const current = await prisma.brandProfile.findFirst({
@@ -369,6 +389,20 @@ export class BrandProfileService {
     if (parsed.identity !== undefined) data.visualIdentity = parsed.identity as Prisma.InputJsonValue;
     if (parsed.voice !== undefined) data.voiceGuidance = parsed.voice as Prisma.InputJsonValue;
     if (parsed.approvalRule !== undefined) data.approvalRule = parsed.approvalRule;
+    if (parsed.defaultTemplateId !== undefined) {
+      if (parsed.defaultTemplateId) {
+        const membership = await prisma.brandProfileTemplate.findFirst({
+          where: {
+            profileId: id,
+            templateId: parsed.defaultTemplateId,
+            template: { deletedAt: null },
+          },
+          select: { id: true },
+        });
+        if (!membership) throw new BrandProfileMembershipError();
+      }
+      data.defaultTemplateId = parsed.defaultTemplateId;
+    }
     const result = await prisma.$transaction(async (tx) => {
       const updated = await tx.brandProfile.updateMany({ where: { id, revision: parsed.revision, ...brandOwnerWhere(scope), deletedAt: null }, data });
       if (updated.count === 0 || !nextLogoAssetIds) return updated;
@@ -400,7 +434,11 @@ export class BrandProfileService {
   }
 
   async setMembership(scope: BrandActorScope, profileId: string, input: BrandProfileMembershipInput) {
-    assertBrandMutationAllowed(scope, input.kind === "font" ? "brand.customFonts" : "brand.profiles");
+    await assertBrandMutationAllowedWithAnalytics(
+      scope,
+      input.kind === "font" ? "brand.customFonts" : "brand.profiles",
+      input.kind === "font" ? "font" : "profile",
+    );
     const parsed = brandProfileMembershipSchema.parse(input);
     const prisma = this.requirePrisma();
     await prisma.$transaction(async (tx) => {
@@ -430,7 +468,7 @@ export class BrandProfileService {
   }
 
   async setDefault(scope: BrandActorScope, id: string) {
-    assertBrandMutationAllowed(scope, "brand.profiles");
+    await assertBrandMutationAllowedWithAnalytics(scope, "brand.profiles", "profile");
     const prisma = this.requirePrisma();
     const profile = await prisma.brandProfile.findFirst({ where: { id, ...brandOwnerWhere(scope), deletedAt: null }, select: { id: true } });
     if (!profile) throw new BrandProfileNotFoundError();
@@ -440,7 +478,7 @@ export class BrandProfileService {
   }
 
   async softDelete(scope: BrandActorScope, id: string, input: BrandProfileSoftDeleteInput) {
-    assertBrandMutationAllowed(scope, "brand.profiles");
+    await assertBrandMutationAllowedWithAnalytics(scope, "brand.profiles", "profile");
     const parsed = brandProfileSoftDeleteSchema.parse(input);
     const prisma = this.requirePrisma();
     const profile = await prisma.brandProfile.findFirst({ where: { id, revision: parsed.revision, ...brandOwnerWhere(scope), deletedAt: null }, include: { defaultForUsers: { select: { id: true } }, defaultForWorkspaces: { select: { id: true } } } });
@@ -450,6 +488,7 @@ export class BrandProfileService {
   }
 
   async resolveForProject(scope: BrandActorScope, input: { profileId: string; templateId?: string | null }) {
+    assertProgramWriteEnabled("brand_kit_projection");
     try {
       assertBrandApplicationAllowed(scope);
     } catch (error) {
@@ -469,6 +508,30 @@ export class BrandProfileService {
     const prisma = this.requirePrisma();
     const profile = await prisma.brandProfile.findFirst({ where: { id: input.profileId, ...brandOwnerWhere(scope), deletedAt: null }, include: { templates: { include: { template: true } } } });
     if (!profile) throw new BrandProfileNotFoundError();
+    const identity = brandVisualIdentitySchema.parse(profile.visualIdentity);
+    const logoAssetIds = [
+      identity.primaryLogoAssetId,
+      identity.alternateLogoAssetId,
+    ].filter((assetId): assetId is string => Boolean(assetId));
+    if (logoAssetIds.length > 0) {
+      const assets = await prisma.visualAsset.findMany({
+        where: {
+          id: { in: [...new Set(logoAssetIds)] },
+          ...brandOwnerWhere(scope),
+          deletedAt: null,
+          kind: "image",
+        },
+        select: { storageKey: true },
+      });
+      if (
+        assets.length !== new Set(logoAssetIds).size ||
+        (await Promise.all(
+          assets.map((asset) => this.objectExists(asset.storageKey)),
+        )).some((exists) => !exists)
+      ) {
+        throw new BrandProfileMissingAssetError();
+      }
+    }
     const selectedId = resolveProfileStyleSelection({ requestedTemplateId: input.templateId ?? null, defaultTemplateId: profile.defaultTemplateId, memberTemplateIds: profile.templates.map((membership) => membership.templateId) });
     const selected = selectedId ? profile.templates.find((membership) => membership.templateId === selectedId)?.template ?? null : null;
     return {

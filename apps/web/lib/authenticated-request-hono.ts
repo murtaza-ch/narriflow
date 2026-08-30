@@ -15,6 +15,7 @@ import {
   authenticatedRequestHttpFailure,
   normalizeAuthenticatedErrorResponse,
 } from "./authenticated-request-http";
+import { parseAuthenticatedJsonBody } from "./authenticated-request-input";
 
 const ACTOR_KEY = "authenticatedRequestActor";
 const PROJECT_KEY = "authenticatedRequestProject";
@@ -137,12 +138,11 @@ export async function authenticatedRequestHonoMiddleware(
                 if (queryValue !== undefined) value[name] = queryValue;
               }
               if (declaration.input?.body) {
-                value.body = await c.req.raw
-                  .clone()
-                  .json()
-                  .catch(() =>
-                    declaration.input?.body === "optional" ? {} : null,
-                  );
+                const rawBody = await c.req.raw.clone().text();
+                value.body = parseAuthenticatedJsonBody(
+                  rawBody,
+                  declaration.input.body === "optional",
+                );
               }
               return value;
             },

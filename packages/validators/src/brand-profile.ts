@@ -137,6 +137,14 @@ export const brandProfileSoftDeleteSchema = z
   })
   .strict();
 
+export const brandProfileProjectApplicationSchema = z
+  .object({
+    projectId: idSchema,
+    profileId: idSchema,
+    templateId: idSchema.nullable(),
+  })
+  .strict();
+
 export const reusableAssetSoftDeleteSchema = z
   .object({ replacementId: idSchema.nullable().optional() })
   .strict();
@@ -152,4 +160,7 @@ export type BrandFontUploadInput = z.infer<typeof brandFontUploadSchema>;
 export type BrandFontFinalizeInput = z.infer<typeof brandFontFinalizeSchema>;
 export type BrandProfileMembershipInput = z.infer<typeof brandProfileMembershipSchema>;
 export type BrandProfileSoftDeleteInput = z.infer<typeof brandProfileSoftDeleteSchema>;
+export type BrandProfileProjectApplicationInput = z.infer<
+  typeof brandProfileProjectApplicationSchema
+>;
 export type ReusableAssetSoftDeleteInput = z.infer<typeof reusableAssetSoftDeleteSchema>;

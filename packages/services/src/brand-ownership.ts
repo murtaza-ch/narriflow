@@ -1,9 +1,11 @@
 import {
+  resolvePricingTier,
   workspaceAllowsCapability,
   type WorkspaceAccessRole,
   type WorkspaceAccessStatus,
 } from "@narriflow/validators";
 import { hasFeature, type PlanFeature } from "./plan-features";
+import { analyticsService } from "./analytics.service";
 
 export interface BrandActorScope {
   actorUserId: string;
@@ -58,6 +60,30 @@ export function assertBrandMutationAllowed(
   }
   if (!hasFeature(scope.pricingTier, feature)) {
     throw new BrandAccessError("brand_entitlement_required");
+  }
+}
+
+export async function assertBrandMutationAllowedWithAnalytics(
+  scope: BrandActorScope,
+  feature: PlanFeature,
+  assetKind: "profile" | "font",
+): Promise<void> {
+  try {
+    assertBrandMutationAllowed(scope, feature);
+  } catch (error) {
+    if (error instanceof BrandAccessError) {
+      await analyticsService.recordBrandProgramEventBestEffort({
+        type: "brand_premium_mutation_blocked",
+        workspaceId: scope.workspaceId,
+        actorUserId: scope.actorUserId,
+        metadata: {
+          assetKind,
+          planTier: resolvePricingTier(scope.pricingTier),
+          outcome: "blocked",
+        },
+      });
+    }
+    throw error;
   }
 }
 
