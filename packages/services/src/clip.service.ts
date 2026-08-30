@@ -1449,7 +1449,7 @@ export class ClipService {
           );
         },
         async release(objectKeys, claimId) {
-          await prisma.mediaCleanupObligation.updateMany({
+          const released = await prisma.mediaCleanupObligation.updateMany({
             where: {
               origin: "clip_duplicate_compensation",
               objectKey: { in: [...objectKeys] },
@@ -1463,6 +1463,7 @@ export class ClipService {
               failureCode: "duplicate_compensation_released",
             },
           });
+          return released.count;
         },
         async adopt(copied, claimId, fencedAt) {
           const copiedRenders = copied.flatMap((plan) =>

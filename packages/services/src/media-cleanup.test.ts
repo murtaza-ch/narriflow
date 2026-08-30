@@ -270,6 +270,7 @@ describe("Media Cleanup", () => {
             expect(obligation?.claimId).toBe(claimId);
             obligations.set(objectKey, { ...obligation, released: true });
           }
+          return objectKeys.length;
         },
         onAdoptionOutcome(outcome, context) {
           adoptionOutcomes.push(
@@ -323,7 +324,9 @@ describe("Media Cleanup", () => {
         async adopt() {
           return undefined;
         },
-        async release() {},
+        async release() {
+          return 0;
+        },
       }),
     ).rejects.toThrow("media_copy_compensation_admission_conflict");
     expect(copyCalls).toBe(0);
@@ -358,7 +361,7 @@ describe("Media Cleanup", () => {
         copyCalls += 1;
       },
       adopt: async () => "adopted",
-      release: async () => undefined,
+      release: async () => 0,
     });
 
     expect(result).toBe("adopted");
@@ -385,6 +388,7 @@ describe("Media Cleanup", () => {
       },
       async release() {
         releaseCalls += 1;
+        return 0;
       },
     });
 
@@ -435,7 +439,9 @@ describe("Media Cleanup", () => {
           adoptCalls += 1;
           return undefined;
         },
-        async release() {},
+        async release() {
+          return 0;
+        },
       }),
     ).rejects.toBeInstanceOf(DurableMediaCopyClaimLost);
     expect(adoptCalls).toBe(0);
@@ -494,7 +500,8 @@ describe("Media Cleanup", () => {
         calls += 1;
         return { count: calls === 1 ? 1 : 0 };
       },
-      async count() {
+      async count(input: { where: { failureCode: string } }) {
+        expect(input.where.failureCode).toBe("duplicate_media_adopted");
         return 1;
       },
     };
@@ -515,6 +522,35 @@ describe("Media Cleanup", () => {
         new Date("2026-08-29T00:00:00.000Z"),
       ),
     ).resolves.toBeUndefined();
+  });
+
+  test("a cleanup-completed obligation cannot satisfy adoption replay", async () => {
+    await expect(
+      adoptDurableMediaCopies(
+        {
+          async updateMany() {
+            return { count: 0 };
+          },
+          async count(input) {
+            expect(input.where.failureCode).toBe("duplicate_media_adopted");
+            return 0;
+          },
+        },
+        [
+          {
+            origin: "clip_duplicate_compensation",
+            cleanupClass: "mutable_render",
+            projectId: "project-1",
+            clipId: "clip-copy",
+            sourceKey: "source/render.mp4",
+            objectKey: "destination/render.mp4",
+            value: null,
+          },
+        ],
+        "stale-claim",
+        new Date("2026-08-29T00:00:00.000Z"),
+      ),
+    ).rejects.toBeInstanceOf(DurableMediaCopyClaimLost);
   });
 
   test("successful duplicate adoption retires copied obligations and releases only failed copies", async () => {
@@ -556,6 +592,7 @@ describe("Media Cleanup", () => {
       },
       async release(objectKeys) {
         released.push(...objectKeys);
+        return objectKeys.length;
       },
       onAdoptionOutcome(outcome) {
         adoptionOutcomes.push(outcome);
@@ -570,6 +607,45 @@ describe("Media Cleanup", () => {
     expect(released).toEqual(["destination/failed.mp4"]);
     expect(adoptionOutcomes).toEqual(["succeeded"]);
     expect(compensationOutcomes).toEqual(["released"]);
+  });
+
+  test("a short compensation settlement reports release failure", async () => {
+    const outcomes: string[] = [];
+    let releaseFailures = 0;
+    await expect(
+      runDurableMediaCopies({
+        store: { createMany: async (input) => ({ count: input.data.length }) },
+        plans: [
+          {
+            origin: "clip_duplicate_compensation",
+            cleanupClass: "mutable_render",
+            projectId: "project-1",
+            clipId: "clip-copy",
+            sourceKey: "source/render.mp4",
+            objectKey: "destination/render.mp4",
+            value: null,
+          },
+        ],
+        claimId: "lost-release-claim",
+        claimExpiresAt: new Date("2026-08-29T00:15:00.000Z"),
+        leaseMs: 60_000,
+        heartbeatMs: 20_000,
+        renew: async () => true,
+        copy: async () => {
+          throw new Error("ambiguous copy");
+        },
+        adopt: async () => "clip-created",
+        release: async () => 0,
+        onReleaseFailure() {
+          releaseFailures += 1;
+        },
+        onCompensationOutcome(outcome, context) {
+          outcomes.push(`${outcome}:${context.releasedObjectCount}`);
+        },
+      }),
+    ).resolves.toBe("clip-created");
+    expect(releaseFailures).toBe(1);
+    expect(outcomes).toEqual(["release_failed:0"]);
   });
 
   test("deletes the exact recorded object and settles the current claim", async () => {

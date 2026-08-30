@@ -207,6 +207,8 @@ export class DurableMediaCopyClaimLost extends Error {
   }
 }
 
+const DURABLE_MEDIA_COPY_ADOPTED = "duplicate_media_adopted";
+
 export interface DurableMediaCopyAdoptionStore {
   updateMany(input: {
     where: {
@@ -223,12 +225,13 @@ export interface DurableMediaCopyAdoptionStore {
       completedAt: Date;
       claimId: null;
       claimExpiresAt: null;
-      failureCode: null;
+      failureCode: typeof DURABLE_MEDIA_COPY_ADOPTED;
     };
   }): Promise<{ count: number }>;
   count(input: {
     where: {
       completedAt: { not: null };
+      failureCode: typeof DURABLE_MEDIA_COPY_ADOPTED;
       OR: Array<{
         origin: MediaCleanupOrigin;
         cleanupClass: MediaCleanupClass;
@@ -267,12 +270,16 @@ export async function adoptDurableMediaCopies<T>(
       completedAt: now,
       claimId: null,
       claimExpiresAt: null,
-      failureCode: null,
+      failureCode: DURABLE_MEDIA_COPY_ADOPTED,
     },
   });
   if (settled.count === copied.length) return;
   const adopted = await store.count({
-    where: { completedAt: { not: null }, OR: identities },
+    where: {
+      completedAt: { not: null },
+      failureCode: DURABLE_MEDIA_COPY_ADOPTED,
+      OR: identities,
+    },
   });
   if (adopted !== copied.length) {
     throw new DurableMediaCopyClaimLost();
@@ -281,8 +288,8 @@ export async function adoptDurableMediaCopies<T>(
 
 /**
  * Runs remote copies behind provisional cleanup obligations. The producer's
- * adoption callback must commit references and remove the copied obligations
- * atomically. If adoption fails, every planned destination remains durable and
+ * adoption callback must commit references and complete the copied obligations
+ * with adoption receipts atomically. If adoption fails, every planned destination remains durable and
  * is released for Media Cleanup; ambiguous copy failures are treated the same
  * way because the provider may have written bytes before returning an error.
  */
@@ -305,7 +312,7 @@ export async function runDurableMediaCopies<T, TResult>(input: {
     claimId: string,
     fencedAt: Date,
   ): Promise<TResult>;
-  release(objectKeys: readonly string[], claimId: string): Promise<void>;
+  release(objectKeys: readonly string[], claimId: string): Promise<number>;
   onCopyFailure?(plan: DurableMediaCopyPlan<T>, error: unknown): void;
   onReleaseFailure?(error: unknown): void;
   onAdoptionOutcome?(
@@ -399,10 +406,13 @@ export async function runDurableMediaCopies<T, TResult>(input: {
   const release = async (objectKeys: readonly string[]) => {
     if (objectKeys.length === 0) return;
     try {
-      await input.release(objectKeys, input.claimId);
+      const releasedCount = await input.release(objectKeys, input.claimId);
+      if (releasedCount !== objectKeys.length) {
+        throw new DurableMediaCopyClaimLost();
+      }
       try {
         input.onCompensationOutcome?.("released", {
-          releasedObjectCount: objectKeys.length,
+          releasedObjectCount: releasedCount,
         });
       } catch {
         // Diagnostics cannot change compensation ownership.
@@ -412,8 +422,12 @@ export async function runDurableMediaCopies<T, TResult>(input: {
       // is unavailable, so release failure must not corrupt the action result.
       try {
         input.onReleaseFailure?.(error);
+      } catch {
+        // Diagnostics cannot change compensation ownership.
+      }
+      try {
         input.onCompensationOutcome?.("release_failed", {
-          releasedObjectCount: objectKeys.length,
+          releasedObjectCount: 0,
         });
       } catch {
         // Diagnostics cannot change compensation ownership.
