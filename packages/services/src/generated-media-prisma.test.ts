@@ -176,9 +176,12 @@ function publicationPrisma(
 		claimId: "00000000-0000-4000-8000-000000000402",
 		ownerWorkspaceId: reserveScope.workspaceId,
 		providerUsageUnits: 1,
+		resultReference:
+			"generated-media/provider-results/00000000-0000-4000-8000-000000000401.png",
 		moderationOutcome: "passed",
 		attemptCount: 1,
-		stagedStorageKey: "generated-media/attempt.png",
+		stagedStorageKey:
+			"generated-media/assets/workspace/00000000-0000-4000-8000-000000000201/job-1/attempt-1.png",
 		stagedContentType: "image/png",
 		stagedSizeBytes: 128n,
 		stagedWidth: 1024,
@@ -212,6 +215,7 @@ function publicationPrisma(
 	let assetCreateCalls = 0;
 	let jobUpdate: Record<string, unknown> | null = null;
 	const analyticsRows: Array<Record<string, unknown>> = [];
+	const cleanupAdmissions: unknown[] = [];
 	const tx = {
 		generatedMediaJob: {
 			findFirst: async () => job,
@@ -243,6 +247,12 @@ function publicationPrisma(
 				return data;
 			},
 		},
+		mediaCleanupObligation: {
+			createMany: async (input: unknown) => {
+				cleanupAdmissions.push(input);
+				return { count: 2 };
+			},
+		},
 	};
 	const prisma = {
 		$transaction: async (operation: (client: typeof tx) => Promise<unknown>) =>
@@ -259,6 +269,7 @@ function publicationPrisma(
 		assetCreateCalls: () => assetCreateCalls,
 		jobUpdate: () => jobUpdate,
 		analyticsRows,
+		cleanupAdmissions,
 		collidingAsset,
 		createdAsset,
 	};
@@ -425,6 +436,120 @@ describe("Prisma generated-media store", () => {
 		expect(claimedId).toBe(eligible.id);
 	});
 
+	test("adopts the exact upload obligation in the staged-reference transaction", async () => {
+		const now = new Date("2026-08-31T12:00:00.000Z");
+		const events: unknown[] = [];
+		const tx = {
+			generatedMediaJob: {
+				async updateMany(input: unknown) {
+					events.push({ stage: input });
+					return { count: 1 };
+				},
+			},
+			mediaCleanupObligation: {
+				async updateMany(input: unknown) {
+					events.push({ adopt: input });
+					return { count: 1 };
+				},
+				async count() {
+					return 0;
+				},
+			},
+		};
+		const prisma = {
+			async $transaction(operation: (client: typeof tx) => Promise<unknown>) {
+				return operation(tx);
+			},
+		} as unknown as PrismaClient;
+		const store = createPrismaGeneratedMediaStore(prisma);
+		const storageKey =
+			"generated-media/assets/workspace/00000000-0000-4000-8000-000000000201/job-1/attempt-1.png";
+
+		await store.stageAsset({
+			claim: {
+				jobId: "00000000-0000-4000-8000-000000000401",
+				claimId: "00000000-0000-4000-8000-000000000402",
+			} as Parameters<typeof store.stageAsset>[0]["claim"],
+			asset: {
+				storageKey,
+				contentType: "image/png",
+				sizeBytes: 128,
+				width: 1024,
+				height: 1536,
+				durationSec: null,
+				hasAudio: null,
+				videoCodec: null,
+				audioCodec: null,
+				fingerprint: "a".repeat(64),
+			},
+			now,
+		});
+
+		expect(events).toHaveLength(2);
+		expect(events[1]).toEqual({
+			adopt: expect.objectContaining({
+				where: expect.objectContaining({
+					origin: "generated_media_ingestion",
+					cleanupClass: "generated_media_asset_upload",
+					objectKey: storageKey,
+				}),
+				data: expect.objectContaining({
+					failureCode: "generated_media_asset_referenced",
+				}),
+			}),
+		});
+	});
+
+	test("adopts stored provider evidence in the result-reference transaction", async () => {
+		const now = new Date("2026-08-31T12:00:00.000Z");
+		const events: string[] = [];
+		const reference =
+			"generated-media/provider-results/00000000-0000-4000-8000-000000000401.png";
+		const tx = {
+			generatedMediaJob: {
+				async updateMany() {
+					events.push("reference");
+					return { count: 1 };
+				},
+			},
+			mediaCleanupObligation: {
+				async createMany() {
+					events.push("admit");
+					return { count: 1 };
+				},
+				async updateMany() {
+					events.push("adopt");
+					return { count: 1 };
+				},
+				async count() {
+					return 0;
+				},
+			},
+		};
+		const prisma = {
+			async $transaction(operation: (client: typeof tx) => Promise<unknown>) {
+				return operation(tx);
+			},
+		} as unknown as PrismaClient;
+		const store = createPrismaGeneratedMediaStore(prisma);
+
+		await store.recordProviderResult({
+			claim: {
+				jobId: "00000000-0000-4000-8000-000000000401",
+				claimId: "00000000-0000-4000-8000-000000000402",
+				projectId: "00000000-0000-4000-8000-000000000101",
+				clipId: null,
+			} as Parameters<typeof store.recordProviderResult>[0]["claim"],
+			providerReference: "provider-request-1",
+			resultReference: reference,
+			moderation: { outcome: "passed" },
+			usageUnits: 1,
+			now,
+		});
+
+		expect(events).toEqual(["reference", "admit", "adopt"]);
+	});
+
 	test("reuses an identical uploaded asset as the exact generated job result", async () => {
 		const fixture = publicationPrisma("uploaded");
 		expect(fixture.store.terminalAnalyticsDelivery).toBe("transactional");
@@ -449,6 +574,31 @@ describe("Prisma generated-media store", () => {
 			stagedFingerprint: "a".repeat(64),
 		});
 		expect(fixture.analyticsRows).toHaveLength(1);
+		expect(fixture.cleanupAdmissions).toEqual([
+			{
+				data: [
+					{
+						origin: "generated_media_ingestion",
+						cleanupClass: "generated_media_redundant_asset",
+						projectId: "00000000-0000-4000-8000-000000000101",
+						clipId: null,
+						objectKey:
+							"generated-media/assets/workspace/00000000-0000-4000-8000-000000000201/job-1/attempt-1.png",
+						nextAttemptAt: fixture.now,
+					},
+					{
+						origin: "generated_media_ingestion",
+						cleanupClass: "generated_media_consumed_provider_result",
+						projectId: "00000000-0000-4000-8000-000000000101",
+						clipId: null,
+						objectKey:
+							"generated-media/provider-results/00000000-0000-4000-8000-000000000401.png",
+						nextAttemptAt: fixture.now,
+					},
+				],
+				skipDuplicates: true,
+			},
+		]);
 		expect(fixture.analyticsRows[0]).toMatchObject({
 			projectId: "00000000-0000-4000-8000-000000000101",
 			clipId: null,

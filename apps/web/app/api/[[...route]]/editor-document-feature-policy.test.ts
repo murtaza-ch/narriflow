@@ -14,6 +14,22 @@ import {
 const censorId = "57e59b57-3f0e-4f1c-9617-43b85cc02114";
 const motionId = "9d1eae40-6a82-44f1-8f11-c1ecbe381f27";
 const sceneId = "f95f9c39-06c3-4768-a488-673064b7e631";
+const placementId = "2adf79cc-35b2-4de5-85dc-c9ed197763e4";
+
+const brollPlacement = {
+	id: placementId,
+	asset: {
+		kind: "visual_asset" as const,
+		id: "8ab9d330-688f-4574-932c-27ac661245c1",
+		fingerprint: "a".repeat(64),
+	},
+	provenance: "uploaded" as const,
+	mediaKind: "image" as const,
+	startSec: 0,
+	endSec: 5,
+	sourceStartSec: null,
+	sourceEndSec: null,
+};
 
 function document(overrides: Partial<EditorDocument> = {}): EditorDocument {
   return editorDocumentSchema.parse({
@@ -47,7 +63,7 @@ const censorSegment = {
 const mediaMotion = {
   schemaVersion: 1 as const,
   id: motionId,
-  target: { kind: "broll" as const },
+	target: { kind: "broll" as const, placementId },
   startSec: 0,
   endSec: 5,
   entrance: "pan-left" as const,
@@ -159,7 +175,11 @@ describe("editorDocumentFeatureMutationError", () => {
       editorDocumentFeatureMutationError(
         "free",
         current,
-        document({ sceneBlocks: current.sceneBlocks, mediaMotions: [mediaMotion] }),
+		document({
+			brollPlacements: [brollPlacement],
+			sceneBlocks: current.sceneBlocks,
+			mediaMotions: [mediaMotion],
+		}),
       )?.error,
     ).toBe("motion_feature_unavailable");
     expect(
@@ -176,6 +196,7 @@ describe("editorDocumentFeatureMutationError", () => {
       studioEdits: studioEditsSchema.parse({
         transition: { type: "zoom-in", durationSec: 0.4 },
       }),
+		brollPlacements: [brollPlacement],
       mediaMotions: [mediaMotion],
       sceneBlocks: [scene],
     });
@@ -184,6 +205,7 @@ describe("editorDocumentFeatureMutationError", () => {
         ...current.studioEdits,
         transition: { type: "none", durationSec: 0.4 },
       }),
+		brollPlacements: [brollPlacement],
       mediaMotions: [{ ...mediaMotion, enabled: false }],
       sceneBlocks: [{ ...scene, motion: { entrance: "none", exit: "none" } }],
     });
@@ -255,6 +277,7 @@ describe("editorDocumentFeatureMutationError", () => {
         "creator",
         document(),
         document({
+			brollPlacements: [brollPlacement],
           mediaMotions: [
             {
               ...mediaMotion,

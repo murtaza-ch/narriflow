@@ -10,6 +10,7 @@ import {
 } from "@narriflow/services";
 import {
   assertReviewSameOrigin,
+  readRateLimitedReviewAccessRequest,
   readReviewJsonBody,
   reviewPublicFailureStatus,
 } from "./review-public-http";
@@ -39,10 +40,11 @@ export async function POST(request: Request, context: Context) {
     const { token, review = [] } = await context.params;
     const action = review[0] ?? "access";
     if (action === "access") {
+      const access = await readRateLimitedReviewAccessRequest(request);
       const session = await reviewService.authenticate(
         token,
-        await readReviewJsonBody(request),
-        request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown",
+        access.input,
+        access.source,
         sessionSecret(),
       );
       const response = NextResponse.json({ ok: true });

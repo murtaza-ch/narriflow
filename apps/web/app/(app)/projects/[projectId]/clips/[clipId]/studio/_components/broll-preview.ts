@@ -1,4 +1,7 @@
-import { planBrollWindow } from "@narriflow/validators";
+import {
+	planBrollWindow,
+	type EditedTimeMap,
+} from "@narriflow/validators";
 
 /**
  * The renderer's manual B-roll path probes the downloaded asset before it
@@ -26,6 +29,16 @@ export function manualBrollPreviewWindow(
       : DEFAULT_BROLL_PREVIEW_DURATION_SEC;
 
   return planBrollWindow(clipDurationSec, duration);
+}
+
+export function manualBrollPreviewWindowForEditedTimeMap(
+	editedTimeMap: Pick<EditedTimeMap, "editedDurationSec">,
+	assetDurationSec: number | null | undefined,
+): ManualBrollPreviewWindow | null {
+	return manualBrollPreviewWindow(
+		editedTimeMap.editedDurationSec,
+		assetDurationSec,
+	);
 }
 
 export function isBrollPreviewActive(

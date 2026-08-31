@@ -17,10 +17,13 @@ import { headObject } from "./r2-storage";
 import { withSerializableTransaction } from "./serializable-transaction";
 import {
   MediaCleanupAdoptionLost,
+  MediaCleanupClaimLost,
   adoptHeldMediaCleanupObligations,
   admitMediaCleanupObligations,
+  renewHeldMediaCleanupObligations,
 } from "./media-cleanup";
 import {
+  THUMBNAIL_EXTRACTION_CLAIM_LEASE_MS,
   ThumbnailExtractionError,
   createThumbnailExtractionService,
   type ExtractedThumbnailAsset,
@@ -30,11 +33,10 @@ import {
 } from "./thumbnail-extraction.service";
 import { workspaceService } from "./workspace.service";
 
-const CLAIM_LEASE_MS = 2 * 60_000;
 const MAX_ATTEMPTS = 3;
 const THUMBNAIL_CLEANUP_IDENTITY = {
-  origin: "visual_asset_upload" as const,
-  cleanupClass: "unfinalized_visual_asset_upload" as const,
+  origin: "thumbnail_extraction" as const,
+  cleanupClass: "thumbnail_extraction_output" as const,
 };
 
 function thumbnailAdoptionReceipt(jobId: string) {
@@ -222,7 +224,9 @@ export function createPrismaThumbnailExtractionStore(options: {
             status: "processing",
             attempts: { increment: 1 },
             claimId,
-            claimExpiresAt: new Date(input.now.getTime() + CLAIM_LEASE_MS),
+            claimExpiresAt: new Date(
+              input.now.getTime() + THUMBNAIL_EXTRACTION_CLAIM_LEASE_MS,
+            ),
             errorCode: null,
             updatedAt: input.now,
           },
@@ -299,6 +303,49 @@ export function createPrismaThumbnailExtractionStore(options: {
             "thumbnail_output_ownership_lost",
             "Thumbnail output cleanup ownership was lost",
           );
+        }
+      });
+    },
+
+    async renewOutput(input) {
+      await withSerializableTransaction(prisma, async (tx) => {
+        const renewedJob = await tx.thumbnailExtractionJob.updateMany({
+          where: {
+            id: input.jobId,
+            status: "processing",
+            claimId: input.claimId,
+            claimExpiresAt: { gt: input.now },
+          },
+          data: {
+            claimExpiresAt: input.claimExpiresAt,
+            updatedAt: input.now,
+          },
+        });
+        if (renewedJob.count !== 1) {
+          throw new ThumbnailExtractionError(
+            "thumbnail_claim_lost",
+            "Thumbnail extraction ownership was lost",
+          );
+        }
+        try {
+          await renewHeldMediaCleanupObligations(
+            tx.mediaCleanupObligation,
+            [{
+              ...THUMBNAIL_CLEANUP_IDENTITY,
+              objectKey: input.destinationStorageKey,
+            }],
+            input.claimId,
+            input.now,
+            input.claimExpiresAt,
+          );
+        } catch (error) {
+          if (error instanceof MediaCleanupClaimLost) {
+            throw new ThumbnailExtractionError(
+              "thumbnail_output_ownership_lost",
+              "Thumbnail output cleanup ownership was lost",
+            );
+          }
+          throw error;
         }
       });
     },

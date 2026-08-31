@@ -7,6 +7,12 @@ export interface CampaignSelectionStorage {
   removeItem(key: string): void;
 }
 
+export type CampaignReviewCandidate = {
+  id: string;
+  clipId: string;
+  variants: ReadonlyArray<{ id: string }>;
+};
+
 type StoredCampaignSelection = {
   version: 1;
   projectId: string;
@@ -80,6 +86,40 @@ export function restoreCampaignSelection(
   const restored = stored.clipIds.filter((clipId) => available.has(clipId));
   persistCampaignSelection(storage, projectId, restored);
   return new Set(restored);
+}
+
+/**
+ * Resolves the durable Clips selection into the latest review-ready export
+ * supplied for each selected clip. Review owns export/variant edits after
+ * this one-time handoff; callers must not continuously reapply this result.
+ */
+export function restoreCampaignReviewSelection(
+  storage: CampaignSelectionStorage,
+  projectId: string,
+  availableClipIds: Iterable<string>,
+  candidates: ReadonlyArray<CampaignReviewCandidate>,
+): {
+  exportIds: Set<string>;
+  variantIdsByExport: Map<string, Set<string>>;
+} {
+  const selectedClipIds = restoreCampaignSelection(
+    storage,
+    projectId,
+    availableClipIds,
+  );
+  const selectedCandidates = candidates.filter((candidate) =>
+    selectedClipIds.has(candidate.clipId),
+  );
+
+  return {
+    exportIds: new Set(selectedCandidates.map((candidate) => candidate.id)),
+    variantIdsByExport: new Map(
+      selectedCandidates.map((candidate) => [
+        candidate.id,
+        new Set(candidate.variants.map((variant) => variant.id)),
+      ]),
+    ),
+  };
 }
 
 export function clearCampaignSelection(

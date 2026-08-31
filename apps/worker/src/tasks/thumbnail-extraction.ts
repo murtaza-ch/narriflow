@@ -25,15 +25,20 @@ interface ThumbnailFrameDependencies {
   createTempDirectory(): Promise<string>;
   removeTempDirectory(path: string): Promise<void>;
   sourceUrl(key: string): Promise<string>;
-  runFfmpeg(binary: string, args: string[]): Promise<void>;
-  probe(path: string): Promise<{
+  runFfmpeg(binary: string, args: string[], signal: AbortSignal): Promise<void>;
+  probe(path: string, signal: AbortSignal): Promise<{
     width: number;
     height: number;
     contentType: "image/jpeg";
   } | null>;
   fileSize(path: string): Promise<number>;
-  fingerprint(path: string): Promise<string>;
-  upload(input: { key: string; filePath: string; contentType: "image/jpeg" }): Promise<void>;
+  fingerprint(path: string, signal: AbortSignal): Promise<string>;
+  upload(input: {
+    key: string;
+    filePath: string;
+    contentType: "image/jpeg";
+    signal: AbortSignal;
+  }): Promise<void>;
 }
 
 interface ThumbnailFrameRequest {
@@ -41,15 +46,21 @@ interface ThumbnailFrameRequest {
   sourceStorageKey: string;
   sourceTimeSec: number;
   destinationStorageKey: string;
+  signal: AbortSignal;
+  beforeUpload(): Promise<void>;
 }
 
-async function sha256File(path: string) {
+async function sha256File(path: string, signal: AbortSignal) {
   const hash = createHash("sha256");
-  for await (const chunk of createReadStream(path)) hash.update(chunk);
+  for await (const chunk of createReadStream(path)) {
+    signal.throwIfAborted();
+    hash.update(chunk);
+  }
+  signal.throwIfAborted();
   return hash.digest("hex");
 }
 
-async function probeJpeg(path: string) {
+async function probeJpeg(path: string, signal: AbortSignal) {
   try {
     const { stdout } = await execFileAsync(
       process.env.FFPROBE_PATH?.trim() || "ffprobe",
@@ -64,7 +75,7 @@ async function probeJpeg(path: string) {
         "json",
         path,
       ],
-      { timeout: 15_000, maxBuffer: 256 * 1024 },
+      { timeout: 15_000, maxBuffer: 256 * 1024, signal },
     );
     const parsed = JSON.parse(stdout) as {
       streams?: Array<{ codec_name?: string; width?: number; height?: number }>;
@@ -86,10 +97,11 @@ const productionDependencies: ThumbnailFrameDependencies = {
   createTempDirectory: () => mkdtemp(join(tmpdir(), "narriflow-thumbnail-")),
   removeTempDirectory: (path) => rm(path, { recursive: true, force: true }),
   sourceUrl: (key) => presignDownloadUrl({ key, expiresIn: 600 }),
-  async runFfmpeg(binary, args) {
+  async runFfmpeg(binary, args, signal) {
     await execFileAsync(binary, args, {
       timeout: 60_000,
       maxBuffer: 512 * 1024,
+      signal,
     });
   },
   probe: probeJpeg,
@@ -107,10 +119,12 @@ export function createFfmpegThumbnailFrameProcessor(
 ) {
   return {
     async extract(input: ThumbnailFrameRequest) {
+      input.signal.throwIfAborted();
       const directory = await dependencies.createTempDirectory();
       const outputPath = join(directory, "frame.jpg");
       try {
         const sourceUrl = await dependencies.sourceUrl(input.sourceStorageKey);
+        input.signal.throwIfAborted();
         await dependencies.runFfmpeg(
           process.env.FFMPEG_PATH?.trim() || "ffmpeg",
           [
@@ -136,12 +150,15 @@ export function createFfmpegThumbnailFrameProcessor(
             "-y",
             outputPath,
           ],
+          input.signal,
         );
+        input.signal.throwIfAborted();
         const [probe, sizeBytes, fingerprint] = await Promise.all([
-          dependencies.probe(outputPath),
+          dependencies.probe(outputPath, input.signal),
           dependencies.fileSize(outputPath),
-          dependencies.fingerprint(outputPath),
+          dependencies.fingerprint(outputPath, input.signal),
         ]);
+        input.signal.throwIfAborted();
         if (
           !probe ||
           sizeBytes <= 0 ||
@@ -149,10 +166,13 @@ export function createFfmpegThumbnailFrameProcessor(
         ) {
           throw new ThumbnailFrameOutputError();
         }
+        await input.beforeUpload();
+        input.signal.throwIfAborted();
         await dependencies.upload({
           key: input.destinationStorageKey,
           filePath: outputPath,
           contentType: "image/jpeg",
+          signal: input.signal,
         });
         return {
           storageKey: input.destinationStorageKey,

@@ -41,6 +41,20 @@ export interface ExtractedThumbnailAsset {
 
 export type ThumbnailExtractionStatus = "queued" | "processing" | "completed" | "failed";
 
+export const THUMBNAIL_EXTRACTION_CLAIM_LEASE_MS = 2 * 60_000;
+export const THUMBNAIL_EXTRACTION_HEARTBEAT_MS = 40_000;
+
+export interface ThumbnailExtractionHeartbeatScheduler {
+  start(callback: () => Promise<void>, intervalMs: number): () => void;
+}
+
+const defaultThumbnailExtractionHeartbeatScheduler: ThumbnailExtractionHeartbeatScheduler = {
+  start(callback, intervalMs) {
+    const timer = setInterval(() => void callback(), intervalMs);
+    return () => clearInterval(timer);
+  },
+};
+
 export interface ThumbnailExtractionRecord {
   id: string;
   workspaceId: string;
@@ -73,6 +87,13 @@ export interface ThumbnailExtractionStore {
     claimExpiresAt: Date;
     destinationStorageKey: string;
     now: Date;
+  }): Promise<void>;
+  renewOutput(input: {
+    jobId: string;
+    claimId: string;
+    destinationStorageKey: string;
+    now: Date;
+    claimExpiresAt: Date;
   }): Promise<void>;
   complete(input: {
     jobId: string;
@@ -116,6 +137,8 @@ export interface ThumbnailFrameProcessor {
     sourceStorageKey: string;
     sourceTimeSec: number;
     destinationStorageKey: string;
+    signal: AbortSignal;
+    beforeUpload(): Promise<void>;
   }): Promise<ThumbnailFrameProcessorResult>;
 }
 
@@ -187,12 +210,15 @@ export function createThumbnailExtractionService(dependencies: {
   authorize(scope: ThumbnailExtractionScope): Promise<void>;
   authorizeRead?(scope: ThumbnailExtractionScope): Promise<void>;
   diagnostics?: (event: Record<string, unknown>) => void;
+  heartbeatScheduler?: ThumbnailExtractionHeartbeatScheduler;
   createId?: () => string;
   now?: () => Date;
 }) {
   const createId = dependencies.createId ?? randomUUID;
   const now = dependencies.now ?? (() => new Date());
   const diagnostics = dependencies.diagnostics ?? (() => undefined);
+  const heartbeatScheduler =
+    dependencies.heartbeatScheduler ?? defaultThumbnailExtractionHeartbeatScheduler;
 
   return {
     async request(
@@ -292,6 +318,10 @@ export function createThumbnailExtractionService(dependencies: {
       const claimed = await dependencies.store.claimNext({ now: now() });
       if (!claimed) return null;
       const destinationStorageKey = thumbnailOutputStorageKey(claimed);
+      const operationController = new AbortController();
+      let claimLoss: ThumbnailExtractionError | null = null;
+      let renewalInFlight: Promise<void> | null = null;
+      let stopHeartbeat: () => void = () => undefined;
       try {
         if (!claimed.claimId || !claimed.claimExpiresAt) {
           throw new ThumbnailExtractionError(
@@ -299,19 +329,81 @@ export function createThumbnailExtractionService(dependencies: {
             "Thumbnail extraction ownership was lost",
           );
         }
+        const claimId = claimed.claimId;
+        const loseClaim = (error: unknown) => {
+          claimLoss ??= new ThumbnailExtractionError(
+            "thumbnail_claim_lost",
+            error instanceof Error
+              ? error.message
+              : "Thumbnail extraction ownership was lost",
+          );
+          operationController.abort(claimLoss);
+          return claimLoss;
+        };
+        const renewOwnership = async () => {
+          while (renewalInFlight) {
+            await renewalInFlight.catch(() => undefined);
+          }
+          if (claimLoss) throw claimLoss;
+          const renewedAt = now();
+          const renewal = dependencies.store
+            .renewOutput({
+              jobId: claimed.id,
+              claimId,
+              destinationStorageKey,
+              now: renewedAt,
+              claimExpiresAt: new Date(
+                renewedAt.getTime() + THUMBNAIL_EXTRACTION_CLAIM_LEASE_MS,
+              ),
+            })
+            .catch((error) => {
+              throw loseClaim(error);
+            });
+          renewalInFlight = renewal;
+          try {
+            await renewal;
+          } finally {
+            if (renewalInFlight === renewal) renewalInFlight = null;
+          }
+        };
         await dependencies.store.prepareOutput({
           jobId: claimed.id,
-          claimId: claimed.claimId,
+          claimId,
           claimExpiresAt: claimed.claimExpiresAt,
           destinationStorageKey,
           now: now(),
         });
-        const output = await dependencies.processor.extract({
-          jobId: claimed.id,
-          sourceStorageKey: claimed.sourceStorageKey,
-          sourceTimeSec: claimed.sourceTimeMs / 1_000,
-          destinationStorageKey,
-        });
+        stopHeartbeat = heartbeatScheduler.start(async () => {
+          if (renewalInFlight || claimLoss) return;
+          await renewOwnership().catch(() => undefined);
+        }, THUMBNAIL_EXTRACTION_HEARTBEAT_MS);
+        let output: ThumbnailFrameProcessorResult | null = null;
+        let processorError: unknown;
+        try {
+          output = await dependencies.processor.extract({
+            jobId: claimed.id,
+            sourceStorageKey: claimed.sourceStorageKey,
+            sourceTimeSec: claimed.sourceTimeMs / 1_000,
+            destinationStorageKey,
+            signal: operationController.signal,
+            beforeUpload: renewOwnership,
+          });
+        } catch (error) {
+          processorError = error;
+        } finally {
+          stopHeartbeat();
+          stopHeartbeat = () => undefined;
+          const activeRenewal = renewalInFlight as Promise<void> | null;
+          await activeRenewal?.catch(() => undefined);
+        }
+        if (claimLoss) throw claimLoss;
+        if (processorError) throw processorError;
+        if (!output) {
+          throw new ThumbnailExtractionError(
+            "thumbnail_output_invalid",
+            "The extracted thumbnail failed integrity checks",
+          );
+        }
         if (
           output.storageKey !== destinationStorageKey ||
           output.contentType !== "image/jpeg" ||
@@ -325,10 +417,11 @@ export function createThumbnailExtractionService(dependencies: {
             "The extracted thumbnail failed integrity checks",
           );
         }
+        await renewOwnership();
         const settledAt = now();
         const completed = await dependencies.store.complete({
           jobId: claimed.id,
-          claimId: claimed.claimId!,
+          claimId,
           asset: {
             id: createId(),
             workspaceId: claimed.workspaceId,
@@ -383,6 +476,8 @@ export function createThumbnailExtractionService(dependencies: {
           errorCode: code,
         });
         return view(failed, null);
+      } finally {
+        stopHeartbeat();
       }
     },
 
@@ -537,7 +632,9 @@ export function createInMemoryThumbnailExtractionStore(input: {
         status: "processing" as const,
         attempts: candidate.attempts + 1,
         claimId: randomUUID(),
-        claimExpiresAt: new Date(claim.now.getTime() + 2 * 60_000),
+        claimExpiresAt: new Date(
+          claim.now.getTime() + THUMBNAIL_EXTRACTION_CLAIM_LEASE_MS,
+        ),
         updatedAt: claim.now,
       };
       jobs.set(next.id, next);
@@ -570,6 +667,36 @@ export function createInMemoryThumbnailExtractionStore(input: {
         claimId: input.claimId,
         claimExpiresAt: input.claimExpiresAt,
         status: "held",
+      });
+    },
+    async renewOutput(input) {
+      const current = jobs.get(input.jobId);
+      const obligation = outputObligations.get(input.destinationStorageKey);
+      if (
+        !current ||
+        current.status !== "processing" ||
+        current.claimId !== input.claimId ||
+        !current.claimExpiresAt ||
+        current.claimExpiresAt <= input.now ||
+        !obligation ||
+        obligation.status !== "held" ||
+        obligation.claimId !== input.claimId ||
+        !obligation.claimExpiresAt ||
+        obligation.claimExpiresAt <= input.now
+      ) {
+        throw new ThumbnailExtractionError(
+          "thumbnail_claim_lost",
+          "Thumbnail extraction ownership was lost",
+        );
+      }
+      jobs.set(current.id, {
+        ...current,
+        claimExpiresAt: input.claimExpiresAt,
+        updatedAt: input.now,
+      });
+      outputObligations.set(input.destinationStorageKey, {
+        ...obligation,
+        claimExpiresAt: input.claimExpiresAt,
       });
     },
     async complete(update) {

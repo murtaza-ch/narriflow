@@ -289,6 +289,295 @@ describe("Business automation workflow interface", () => {
     });
   });
 
+  test("fails closed when a dependency returns an invented lifecycle state", async () => {
+    const automation = createBusinessAutomation(dependencies({
+      async applyCampaignMotion() {
+        return {
+          operationId: jobId,
+          action: "apply_motion",
+          status: "invented",
+          replayed: false,
+        };
+      },
+    }));
+
+    await expect(
+      automation.applyCampaignMotion(
+        actor,
+        projectId,
+        idempotencyKey,
+        {
+          clips: [{ clipId, expectedEditorRevision: 1 }],
+          change: {
+            scope: "clip_transition",
+            transition: { type: "wipe-left", durationSec: 0.4 },
+          },
+        },
+      ),
+    ).rejects.toThrow("business_automation_projection_invalid");
+  });
+
+  test("fails closed when a Campaign Operation omits required facts", async () => {
+    const automation = createBusinessAutomation(dependencies({
+      async applyCampaignMotion() {
+        return {
+          operationId: jobId,
+          action: "apply_motion",
+          status: "completed",
+        };
+      },
+    }));
+
+    await expect(
+      automation.applyCampaignMotion(
+        actor,
+        projectId,
+        idempotencyKey,
+        {
+          clips: [{ clipId, expectedEditorRevision: 1 }],
+          change: {
+            scope: "clip_transition",
+            transition: { type: "wipe-left", durationSec: 0.4 },
+          },
+        },
+      ),
+    ).rejects.toThrow("business_automation_projection_invalid");
+  });
+
+  test("fails closed when a required nullable timestamp is omitted", async () => {
+    const automation = createBusinessAutomation(dependencies({
+      async applyCampaignMotion() {
+        return {
+          operationId: jobId,
+          status: "completed",
+          requestedCount: 0,
+          counts: { succeeded: 0, unchanged: 0, stale: 0, ineligible: 0, failed: 0 },
+          items: [],
+          createdAt: null,
+          replayed: false,
+        };
+      },
+    }));
+
+    await expect(
+      automation.applyCampaignMotion(
+        actor,
+        projectId,
+        idempotencyKey,
+        {
+          clips: [{ clipId, expectedEditorRevision: 1 }],
+          change: {
+            scope: "clip_transition",
+            transition: { type: "wipe-left", durationSec: 0.4 },
+          },
+        },
+      ),
+    ).rejects.toThrow("business_automation_projection_invalid");
+  });
+
+  test("fails closed when a required nullable string is omitted", async () => {
+    const automation = createBusinessAutomation(dependencies({
+      async applyCampaignMotion() {
+        return {
+          operationId: jobId,
+          status: "completed",
+          requestedCount: 1,
+          counts: { succeeded: 1, unchanged: 0, stale: 0, ineligible: 0, failed: 0 },
+          items: [{
+            requestedClipId: clipId,
+            expectedEditorRevision: 1,
+            status: "succeeded",
+            settledAt: null,
+          }],
+          createdAt: null,
+          completedAt: null,
+          replayed: false,
+        };
+      },
+    }));
+
+    await expect(
+      automation.applyCampaignMotion(
+        actor,
+        projectId,
+        idempotencyKey,
+        {
+          clips: [{ clipId, expectedEditorRevision: 1 }],
+          change: {
+            scope: "clip_transition",
+            transition: { type: "wipe-left", durationSec: 0.4 },
+          },
+        },
+      ),
+    ).rejects.toThrow("business_automation_projection_invalid");
+  });
+
+  test("fails closed when Thumbnail Extraction omits its asset field", async () => {
+    const automation = createBusinessAutomation(dependencies({
+      async getThumbnailExtraction() {
+        return {
+          id: jobId,
+          status: "queued",
+          attempts: 0,
+          platform: "youtube_shorts",
+          exportVariantId: clipId,
+          sourceTimeMs: 0,
+          errorCode: null,
+          replayed: false,
+        };
+      },
+    }));
+
+    await expect(
+      automation.getThumbnailExtraction(actor, projectId, jobId),
+    ).rejects.toThrow("business_automation_projection_invalid");
+  });
+
+  test("fails closed when a Campaign Operation omits its item collection", async () => {
+    const automation = createBusinessAutomation(dependencies({
+      async applyCampaignMotion() {
+        return {
+          operationId: jobId,
+          status: "completed",
+          requestedCount: 0,
+          counts: { succeeded: 0, unchanged: 0, stale: 0, ineligible: 0, failed: 0 },
+          createdAt: null,
+          completedAt: null,
+          replayed: false,
+        };
+      },
+    }));
+
+    await expect(
+      automation.applyCampaignMotion(
+        actor,
+        projectId,
+        idempotencyKey,
+        {
+          clips: [{ clipId, expectedEditorRevision: 1 }],
+          change: {
+            scope: "clip_transition",
+            transition: { type: "wipe-left", durationSec: 0.4 },
+          },
+        },
+      ),
+    ).rejects.toThrow("business_automation_projection_invalid");
+  });
+
+  test("fails closed when a Review Round omits its notification collection", async () => {
+    const automation = createBusinessAutomation(dependencies({
+      async listReviewRounds() {
+        return {
+          project: { id: projectId },
+          rounds: [{
+            id: jobId,
+            revision: 1,
+            status: "open",
+            approvalRequired: true,
+            allowDownloads: false,
+            sentAt: null,
+            expiresAt: null,
+            revokedAt: null,
+            supersededAt: null,
+            decision: null,
+            decidedAt: null,
+            newerWorkAvailable: false,
+            items: [],
+            createdAt: null,
+            updatedAt: null,
+          }],
+        };
+      },
+    }));
+
+    await expect(
+      automation.listReviewRounds(actor, projectId),
+    ).rejects.toThrow("business_automation_projection_invalid");
+  });
+
+  test("fails closed when a campaign preview omits a nullable revision", async () => {
+    const automation = createBusinessAutomation(dependencies({
+      async previewCampaignEditorAction() {
+        return {
+          action: "apply_style",
+          requestedCount: 1,
+          counts: { eligible: 1, unchanged: 0, stale: 0, ineligible: 0 },
+          items: [{
+            clipId,
+            expectedEditorRevision: 1,
+            status: "eligible",
+            code: null,
+          }],
+        };
+      },
+    }));
+
+    await expect(
+      automation.previewCampaignEditorAction(actor, projectId, {
+        action: "apply_style",
+        input: {
+          templateId: jobId,
+          templateFingerprint: "a".repeat(64),
+          clips: [{ clipId, expectedEditorRevision: 1 }],
+        },
+      }),
+    ).rejects.toThrow("business_automation_projection_invalid");
+  });
+
+  test("fails closed when assisted copy omits nullable content", async () => {
+    const automation = createBusinessAutomation(dependencies({
+      async getAssistedCopy() {
+        return {
+          id: jobId,
+          clipId,
+          platform: "youtube_shorts",
+          status: "generating",
+          revision: 1,
+          confirmed: false,
+          moderationOutcome: "pending",
+          modelAlias: null,
+          promptVersion: null,
+          guidanceSkipped: false,
+          errorCode: null,
+          replayed: false,
+        };
+      },
+    }));
+
+    await expect(
+      automation.getAssistedCopy(actor, projectId, jobId),
+    ).rejects.toThrow("business_automation_projection_invalid");
+  });
+
+  test("fails closed when Generated Media omits nullable duration", async () => {
+    const automation = createBusinessAutomation(dependencies({
+      async getGeneratedMedia() {
+        return {
+          id: jobId,
+          projectId,
+          clipId: null,
+          kind: "image",
+          status: "queued",
+          aspectRatio: "9:16",
+          style: "editorial",
+          resultAssetId: null,
+          insertionCount: 0,
+          lastInsertionKind: null,
+          lastInsertedAt: null,
+          errorCode: null,
+          moderation: { outcome: "pending" },
+          createdAt: null,
+          updatedAt: null,
+          replayed: false,
+        };
+      },
+    }));
+
+    await expect(
+      automation.getGeneratedMedia(actor, jobId),
+    ).rejects.toThrow("business_automation_projection_invalid");
+  });
+
   test("returns generated-media status without provider controls, sources, or URLs", async () => {
     const automation = createBusinessAutomation(dependencies());
     const result = await automation.submitGeneratedMedia(actor, {
@@ -433,6 +722,71 @@ describe("Business automation workflow interface", () => {
     expect(scopes).toHaveLength(1);
   });
 
+  test("reads the owned Campaign Operation after mutation and preserves replay", async () => {
+    let admissions = 0;
+    const reads: Array<{ workspaceId: string; projectId: string; operationId: string }> = [];
+    const unused = async () => {
+      throw new Error("unused campaign mutation");
+    };
+    const production = createProductionBusinessAutomation({}, {
+      campaignOperationGateway: {
+        async applyMotionSelected() {
+          admissions += 1;
+          return {
+            operationId: jobId,
+            status: "completed",
+            requestedCount: 1,
+            counts: { succeeded: 1, unchanged: 0, stale: 0, ineligible: 0, failed: 0 },
+            replayed: admissions > 1,
+          };
+        },
+        applyProjectBrandProfileSelected: unused,
+        applyStyleSelected: unused,
+        applySceneTemplate: unused,
+        async getOperation(scope, operationId) {
+          reads.push({ ...scope, operationId });
+          return {
+            id: operationId,
+            action: "apply_motion",
+            status: "completed",
+            requestedCount: 1,
+            succeededCount: 1,
+            unchangedCount: 0,
+            staleCount: 0,
+            ineligibleCount: 0,
+            failedCount: 0,
+            items: [{
+              requestedClipId: clipId,
+              expectedEditorRevision: 1,
+              status: "succeeded",
+              errorCode: null,
+              settledAt: new Date("2026-08-31T00:00:01.000Z"),
+            }],
+            createdAt: new Date("2026-08-31T00:00:00.000Z"),
+            completedAt: new Date("2026-08-31T00:00:01.000Z"),
+          };
+        },
+      },
+    });
+    const input = {
+      clips: [{ clipId, expectedEditorRevision: 1 }],
+      change: {
+        scope: "clip_transition" as const,
+        transition: { type: "wipe-left" as const, durationSec: 0.4 },
+      },
+    };
+
+    const first = await production.applyCampaignMotion(actor, projectId, idempotencyKey, input);
+    const replay = await production.applyCampaignMotion(actor, projectId, idempotencyKey, input);
+
+    expect(first).toMatchObject({ operationId: jobId, replayed: false });
+    expect(replay).toMatchObject({ operationId: jobId, replayed: true });
+    expect(reads).toEqual([
+      { workspaceId, projectId, operationId: jobId },
+      { workspaceId, projectId, operationId: jobId },
+    ]);
+  });
+
   test("keeps existing job status readable when generation writes are rolled back", async () => {
     const production = createProductionBusinessAutomation(
       {
@@ -489,5 +843,69 @@ describe("Business automation workflow interface", () => {
       aspectRatio: "1:1",
       style: "minimal",
     })).rejects.toMatchObject({ code: "generated_media_not_configured" });
+  });
+
+  test("reads the durable Generated Media job after Studio admission and preserves replay", async () => {
+    let admissions = 0;
+    const statusReads: Array<{ workspaceId: string; jobId: string }> = [];
+    const durableJob = {
+      id: jobId,
+      workspaceId,
+      projectId,
+      clipId: null,
+      kind: "image" as const,
+      status: "queued" as const,
+      provider: "private-provider",
+      model: "private-model",
+      promptOrigin: { kind: "manual" as const, sourceIds: [] },
+      aspectRatio: "1:1" as const,
+      style: "minimal" as const,
+      durationSec: null,
+      resultAssetId: null,
+      insertionCount: 0,
+      lastInsertionKind: null,
+      lastInsertedAt: null,
+      errorCode: null,
+      moderation: { outcome: "pending" as const },
+      createdAt: "2026-08-31T00:00:00.000Z",
+      updatedAt: "2026-08-31T00:00:00.000Z",
+      replayed: false,
+    };
+    const production = createProductionBusinessAutomation({}, {
+      generatedMediaStudioService: {
+        async submitAutomation(scope) {
+          admissions += 1;
+          expect(scope.workspaceId).toBe(workspaceId);
+          return { ...durableJob, replayed: admissions > 1 };
+        },
+      },
+      generatedMediaStatusStore: {
+        async get(scope, requestedJobId) {
+          statusReads.push({ workspaceId: scope.workspaceId, jobId: requestedJobId });
+          return durableJob;
+        },
+      },
+    });
+    const request = {
+      idempotencyKey,
+      projectId,
+      clipId: null,
+      kind: "image" as const,
+      prompt: "A clean product still",
+      includeDerivedContext: false,
+      promptOrigin: { kind: "manual" as const, sourceIds: [] },
+      aspectRatio: "1:1" as const,
+      style: "minimal" as const,
+    };
+
+    const first = await production.submitGeneratedMedia(actor, request);
+    const replay = await production.submitGeneratedMedia(actor, request);
+
+    expect(first).toMatchObject({ jobId, replayed: false });
+    expect(replay).toMatchObject({ jobId, replayed: true });
+    expect(statusReads).toEqual([
+      { workspaceId, jobId },
+      { workspaceId, jobId },
+    ]);
   });
 });

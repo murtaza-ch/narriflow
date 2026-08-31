@@ -619,9 +619,6 @@ describe("GeneratedMediaService", () => {
 			status: "reconciliation_required",
 			errorCode: "generated_media_malformed_output",
 		});
-		expect(await store.referencedStorageKeys("generated-media/provider-results/")).toEqual(
-			new Set([resultReference]),
-		);
 		expect((await service.usageSummary(scope)).image.settlement).toEqual({
 			reservedUnits: 1,
 			finalizedUnits: 0,
@@ -674,9 +671,6 @@ describe("GeneratedMediaService", () => {
 			finalizedUnits: 0,
 			releasedUnits: 0,
 		});
-		expect(await store.referencedStorageKeys("generated-media/provider-results/")).toEqual(
-			new Set([resultReference]),
-		);
 		now = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000 + 1);
 		expect(await store.purgeExpiredPrompts(now, 100)).toBe(1);
 	});

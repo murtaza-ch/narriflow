@@ -12,6 +12,8 @@ import {
   createMediaCleanupWorker,
   createInMemoryMediaCleanupStore,
   defaultMediaCleanupConfig,
+  parseMediaCleanupClass,
+  parseMediaCleanupOrigin,
   planRetiredClipMediaCleanup,
   runDurableMediaCopies,
   type MediaCleanupAdmissionStore,
@@ -37,6 +39,15 @@ function seed(overrides: Record<string, unknown> = {}) {
 }
 
 describe("Media Cleanup", () => {
+  test("parses the persisted Thumbnail Extraction cleanup vocabulary", () => {
+    expect(parseMediaCleanupOrigin("thumbnail_extraction")).toBe(
+      "thumbnail_extraction",
+    );
+    expect(parseMediaCleanupClass("thumbnail_extraction_output")).toBe(
+      "thumbnail_extraction_output",
+    );
+  });
+
   test("admission deduplicates work and can hold provisional compensation", async () => {
     const captured: Parameters<MediaCleanupAdmissionStore["createMany"]>[0][] = [];
     const store: MediaCleanupAdmissionStore = {
@@ -897,6 +908,50 @@ describe("Media Cleanup", () => {
     expect(deleted.sort()).toEqual([attemptKey, unsettledFinalKey].sort());
     expect(deleted).not.toContain(adoptedFinalKey);
     expect(deleted.some((key) => key.includes("clip-exports"))).toBe(false);
+  });
+
+  test("executes generated-media and expired-bundle deletion only from exact obligations", async () => {
+    const now = new Date("2026-08-31T00:00:00.000Z");
+    const generatedKey =
+      "generated-media/assets/workspace/workspace-1/job-1/attempt-1.png";
+    const expiredBundleKey =
+      "projects/project-1/campaign-operations/operation-1/completed/attempt-1.zip";
+    const store = createInMemoryMediaCleanupStore([
+      seed({
+        id: "generated-cleanup",
+        origin: "generated_media_ingestion",
+        projectId: "project-1",
+        clipId: "clip-1",
+        cleanupClass: "generated_media_redundant_asset",
+        objectKey: generatedKey,
+      }),
+      seed({
+        id: "expired-bundle-cleanup",
+        origin: "export_bundle_expiry",
+        projectId: "project-1",
+        clipId: null,
+        cleanupClass: "expired_export_bundle",
+        objectKey: expiredBundleKey,
+      }),
+    ]);
+    const deleted: string[] = [];
+    const worker = createMediaCleanupWorker({
+      store,
+      storage: { deleteExact: async (key) => void deleted.push(key) },
+      now: () => now,
+      createId: (() => {
+        let value = 0;
+        return () => `claim-${++value}`;
+      })(),
+      config: defaultMediaCleanupConfig(),
+    });
+
+    expect(await worker.processDue()).toEqual({
+      claimed: 2,
+      completed: 2,
+      retried: 0,
+    });
+    expect(deleted.sort()).toEqual([expiredBundleKey, generatedKey].sort());
   });
 
   test("provider not-found is idempotent success", async () => {

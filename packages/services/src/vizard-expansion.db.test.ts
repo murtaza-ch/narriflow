@@ -54,7 +54,13 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
   beforeAll(() => {
     if (!databaseUrl) throw new Error("Vizard expansion test database is required");
     pool = new Pool({ connectionString: databaseUrl, max: 12 });
-    prisma = new PrismaClient({ adapter: new PrismaPg(pool, databaseSchema ? { schema: databaseSchema } : undefined) });
+    prisma = new PrismaClient({
+      adapter: new PrismaPg(
+        pool,
+        databaseSchema ? { schema: databaseSchema } : undefined,
+      ),
+      transactionOptions: { maxWait: 10_000, timeout: 30_000 },
+    });
     priorPrisma = prismaGlobal.narriflowPrismaClient;
     prismaGlobal.narriflowPrismaClient = prisma;
   });
@@ -1045,11 +1051,47 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
     );
     expect(stale.counts.stale).toBe(1);
 
-    const withBroll = await clipEditorDocumentPersistence.mutateDocument({
+		const brollAsset = await prisma.visualAsset.create({
+			data: {
+				workspaceId: current.workspace.id,
+				createdByUserId: current.user.id,
+				title: "Campaign motion still",
+				kind: "image",
+				storageKey: `fixtures/${randomUUID()}/campaign-motion.png`,
+				contentType: "image/png",
+				sizeBytes: 64n,
+				width: 1080,
+				height: 1920,
+				fingerprint: "a".repeat(64),
+				provenance: "generated",
+			},
+		});
+		const placementId = randomUUID();
+		const withBroll = await clipEditorDocumentPersistence.mutateDocument({
       actorUserId: current.user.id,
       projectId: current.project.id,
       clipId: current.clip.id,
-      intent: { kind: "set_broll_url", brollUrl: "https://media.example.test/manual-broll.mp4" },
+			intent: {
+				kind: "replace",
+				baseRevision: afterTransition.revision,
+				document: applyEditorAction(afterTransition.document, {
+					type: "insertBrollPlacement",
+					placement: {
+						id: placementId,
+						asset: {
+							kind: "visual_asset",
+							id: brollAsset.id,
+							fingerprint: brollAsset.fingerprint,
+						},
+						provenance: "generated",
+						mediaKind: "image",
+						startSec: 1,
+						endSec: 3,
+						sourceStartSec: null,
+						sourceEndSec: null,
+					},
+				}),
+			},
     });
     const brollMotion = await campaignOperationService.applyMotionSelected(
       { ...scope, idempotencyKey: randomUUID() },
@@ -1069,16 +1111,23 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
     });
     expect(afterBroll.document.mediaMotions).toEqual([
       expect.objectContaining({
-        target: { kind: "broll" },
+			target: { kind: "broll", placementId },
         entrance: "ken-burns-in",
         exit: "fade",
       }),
     ]);
-    const clearedBroll = await clipEditorDocumentPersistence.mutateDocument({
+		const clearedBroll = await clipEditorDocumentPersistence.mutateDocument({
       actorUserId: current.user.id,
       projectId: current.project.id,
       clipId: current.clip.id,
-      intent: { kind: "set_broll_url", brollUrl: null },
+			intent: {
+				kind: "replace",
+				baseRevision: afterBroll.revision,
+				document: applyEditorAction(afterBroll.document, {
+					type: "deleteBrollPlacement",
+					id: placementId,
+				}),
+			},
     });
     const staleMissingTarget = await campaignOperationService.applyMotionSelected(
       { ...scope, idempotencyKey: randomUUID() },
@@ -1597,6 +1646,43 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
     );
 
     expect(created.notificationIds).toEqual([]);
+    expect(await prisma.campaignOperation.findFirst({
+      where: {
+        workspaceId: current.workspace.id,
+        projectId: current.project.id,
+        action: "create_review",
+        idempotencyKey: created.id,
+      },
+      select: {
+        status: true,
+        requestedCount: true,
+        succeededCount: true,
+        items: {
+          select: {
+            requestedClipId: true,
+            expectedEditorRevision: true,
+            exportId: true,
+            status: true,
+            result: true,
+          },
+        },
+      },
+    })).toEqual({
+      status: "completed",
+      requestedCount: 1,
+      succeededCount: 1,
+      items: [{
+        requestedClipId: current.clip.id,
+        expectedEditorRevision: 3,
+        exportId: current.clipExport.id,
+        status: "succeeded",
+        result: {
+          reviewRoundId: created.id,
+          exportId: current.clipExport.id,
+          selectedVariantCount: 1,
+        },
+      }],
+    });
     expect(await prisma.reviewNotification.count({
       where: { reviewRoundId: created.id },
     })).toBe(0);
@@ -1737,6 +1823,80 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
     })).toBe(1);
   });
 
+  test("rate limits valid guest credentials before updating reviewer identity", async () => {
+    const current = await fixture("review-valid-access-rate-limit");
+    const variant = current.clipExport.variants[0]!;
+    const passcode = "bounded-review-passcode";
+    const email = "bounded-reviewer@example.test";
+    const source = "203.0.113.30";
+    const created = await reviewService.createRound(
+      {
+        actorUserId: current.user.id,
+        workspaceId: current.workspace.id,
+        projectId: current.project.id,
+        pricingTier: "business",
+      },
+      {
+        title: "Rate-limited client round",
+        message: null,
+        passcode,
+        expiresAt: null,
+        allowDownloads: false,
+        approvalRequired: true,
+        items: [{
+          clipId: current.clip.id,
+          exportId: current.clipExport.id,
+          expectedEditorRevision: 3,
+          variantIds: [variant.id],
+          required: true,
+        }],
+      },
+    );
+
+    for (let attempt = 1; attempt <= 8; attempt += 1) {
+      await expect(reviewService.authenticate(
+        created.token,
+        {
+          identity: `Approved reviewer ${attempt}`,
+          email,
+          passcode,
+        },
+        source,
+        sessionSecret,
+      )).resolves.toBeString();
+    }
+
+    const rejectedIdentity = "Must never reach durable state";
+    const error = await reviewService.authenticate(
+      created.token,
+      { identity: rejectedIdentity, email, passcode },
+      source,
+      sessionSecret,
+    ).catch((caught) => caught);
+
+    expect(error).toBeInstanceOf(ReviewServiceError);
+    expect(error).toMatchObject({
+      code: "review_access_rate_limited",
+      message: "Too many review access attempts",
+    });
+    for (const privateValue of [
+      created.token,
+      created.id,
+      current.project.id,
+      rejectedIdentity,
+      email,
+      passcode,
+      source,
+    ]) {
+      expect(`${error.name}:${error.message}:${JSON.stringify(error)}`).not
+        .toContain(privateValue);
+    }
+    expect(await prisma.reviewGuest.findMany({
+      where: { reviewRoundId: created.id },
+      select: { displayName: true },
+    })).toEqual([{ displayName: "Approved reviewer 8" }]);
+  });
+
   test("revokes replayed guest sessions, isolates media IDs, and serializes opposite decisions", async () => {
     const current = await fixture("review-security");
     const foreign = await fixture("review-foreign");
@@ -1750,14 +1910,21 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
       approvalRequired: true,
       items: [{ clipId: current.clip.id, exportId: current.clipExport.id, expectedEditorRevision: 3, variantIds: [variant.id], required: true }],
     });
-    await expect(reviewService.authenticate(created.token, { identity: "Client", email: "client@example.test", passcode: "wrong-passcode" }, "203.0.113.10", sessionSecret)).rejects.toMatchObject({ code: "review_access_invalid" });
+    const invalidAccess = await reviewService.authenticate(created.token, { identity: "Client", email: "client@example.test", passcode: "wrong-passcode" }, "203.0.113.10", sessionSecret).catch((caught) => caught);
+    expect(invalidAccess).toMatchObject({
+      code: "review_access_invalid",
+      message: "Review access is invalid or expired",
+    });
+    for (const privateValue of [created.token, created.id, current.project.id, "wrong-passcode", "client@example.test"]) {
+      expect(`${invalidAccess.name}:${invalidAccess.message}:${JSON.stringify(invalidAccess)}`).not.toContain(privateValue);
+    }
     const firstSession = await reviewService.authenticate(created.token, { identity: "Client", email: "client@example.test", passcode: "review-secret" }, "203.0.113.10", sessionSecret);
     const secondSession = await reviewService.authenticate(created.token, { identity: "Client updated", email: "CLIENT@example.test", passcode: "review-secret" }, "203.0.113.10", sessionSecret);
 		const additionalSessions = [];
-		for (let index = 0; index < 10; index += 1) {
+		for (let index = 0; index < 1; index += 1) {
 			additionalSessions.push(await reviewService.authenticate(created.token, { identity: `Reviewer ${index + 1}`, email: `reviewer-${index + 1}@example.test`, passcode: "review-secret" }, "203.0.113.10", sessionSecret));
 		}
-		expect(additionalSessions).toHaveLength(10);
+		expect(additionalSessions).toHaveLength(1);
     await expect(reviewService.readRound(firstSession, sessionSecret)).rejects.toMatchObject({ code: "review_session_invalid" });
     const snapshot = await reviewService.readRound(secondSession, sessionSecret);
     const item = snapshot.round.items[0]!;

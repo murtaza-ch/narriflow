@@ -62,7 +62,7 @@ import {
 import { InteractiveSpeakerLayer } from "./interactive-speaker-layer";
 import {
   brollPreviewLocalTime,
-  manualBrollPreviewWindow,
+	manualBrollPreviewWindowForEditedTimeMap,
   type ManualBrollPreviewWindow,
 } from "./broll-preview";
 import {
@@ -421,7 +421,6 @@ export function VideoPreview() {
     setStudioEdits,
     endCoalesce,
     isPlaying,
-    duration,
     brandLogo,
     layoutAnalysis,
     layoutAnalysisFailure,
@@ -576,9 +575,12 @@ export function VideoPreview() {
   const brollWindow = useMemo(
     () =>
       brollUrl
-        ? manualBrollPreviewWindow(duration, activeBrollAsset?.durationSec)
+			? manualBrollPreviewWindowForEditedTimeMap(
+				editedTimeMap,
+				activeBrollAsset?.durationSec,
+			)
         : null,
-    [activeBrollAsset?.durationSec, brollUrl, duration],
+		[activeBrollAsset?.durationSec, brollUrl, editedTimeMap],
   );
   const handleBrollDuration = useCallback(
     (durationSec: number) => {

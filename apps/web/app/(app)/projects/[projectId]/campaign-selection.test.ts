@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   clearCampaignSelection,
   persistCampaignSelection,
+  restoreCampaignReviewSelection,
   restoreCampaignSelection,
   type CampaignSelectionStorage,
 } from "./campaign-selection";
@@ -68,5 +69,62 @@ describe("campaign clip selection", () => {
     persistCampaignSelection(storage, "project-a", ["clip-a"]);
     clearCampaignSelection(storage);
     expect(storage.value).toBeNull();
+  });
+
+  test("maps the current clip selection to each latest review-ready export and all formats", () => {
+    const storage = memoryStorage();
+    persistCampaignSelection(storage, "project-a", [
+      "clip-selected-b",
+      "clip-selected-a",
+      "clip-without-export",
+    ]);
+
+    expect(
+      restoreCampaignReviewSelection(
+        storage,
+        "project-a",
+        [
+          "clip-selected-a",
+          "clip-selected-b",
+          "clip-unselected",
+          "clip-without-export",
+        ],
+        [
+          {
+            id: "export-a",
+            clipId: "clip-selected-a",
+            variants: [
+              { id: "variant-a-vertical" },
+              { id: "variant-a-square" },
+            ],
+          },
+          {
+            id: "export-unselected",
+            clipId: "clip-unselected",
+            variants: [{ id: "variant-unselected" }],
+          },
+          {
+            id: "export-b",
+            clipId: "clip-selected-b",
+            variants: [{ id: "variant-b-wide" }],
+          },
+        ],
+      ),
+    ).toEqual({
+      exportIds: new Set(["export-a", "export-b"]),
+      variantIdsByExport: new Map([
+        ["export-a", new Set(["variant-a-vertical", "variant-a-square"])],
+        ["export-b", new Set(["variant-b-wide"])],
+      ]),
+    });
+    expect(JSON.parse(storage.value ?? "null")).toEqual({
+      version: 1,
+      projectId: "project-a",
+      clipIds: [
+        "clip-selected-a",
+        "clip-selected-b",
+        "clip-without-export",
+      ],
+    });
   });
 });

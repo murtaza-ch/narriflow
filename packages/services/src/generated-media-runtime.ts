@@ -10,7 +10,6 @@ import {
 import {
 	generatedMediaAssetIngestor,
 	createGeneratedMediaProviderResultStore,
-	reconcileGeneratedMediaOrphans,
 	r2GeneratedMediaObjectStorage,
 	type GeneratedMediaObjectStorage,
 } from "./generated-media-ingestion";
@@ -141,37 +140,13 @@ export function createGeneratedMediaRuntime(input: {
 	};
 	const objectStorage =
 		input.objectStorage ?? (isR2Configured() ? r2GeneratedMediaObjectStorage : null);
-	const maintenance = async (signal?: AbortSignal) => {
+	const maintenance = async (_signal?: AbortSignal) => {
 		const maintenanceStore = store();
 		const promptsPurged = await maintenanceStore.purgeExpiredPrompts(new Date(), 100);
-		if (!objectStorage) {
-			return { promptsPurged, objectsDeleted: 0, objectFailures: 0 };
-		}
-		const minimumAgeMs = 24 * 60 * 60 * 1000;
-		const [providerResults, assets] = await Promise.all([
-			reconcileGeneratedMediaOrphans({
-				storage: objectStorage,
-				store: maintenanceStore,
-				prefix: "generated-media/provider-results/",
-				now: new Date(),
-				minimumAgeMs,
-				limit: 100,
-				signal,
-			}),
-			reconcileGeneratedMediaOrphans({
-				storage: objectStorage,
-				store: maintenanceStore,
-				prefix: "generated-media/assets/",
-				now: new Date(),
-				minimumAgeMs,
-				limit: 100,
-				signal,
-			}),
-		]);
 		return {
 			promptsPurged,
-			objectsDeleted: providerResults.deleted + assets.deleted,
-			objectFailures: providerResults.failed + assets.failed,
+			objectsDeleted: 0,
+			objectFailures: 0,
 		};
 	};
 	const usageSummary = (scope: BrandActorScope) => {

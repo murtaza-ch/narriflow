@@ -1,7 +1,9 @@
 import {
   brandFontFinalizeSchema,
+  businessAutomationUuidSchema,
   brandFontUploadSchema,
   brandProfileCreateSchema,
+  brandProfileBrowserListQuerySchema,
   brandProfileMembershipSchema,
   brandProfileSoftDeleteSchema,
   brandProfileUpdateSchema,
@@ -27,6 +29,7 @@ import {
   requestThumbnailExtractionSchema,
   bulkScheduleSchema,
   generatedMediaStudioSubmitSchema,
+  generatedMediaStudioListQuerySchema,
   generatedMediaEditorInsertionSchema,
   generatedMediaBrollPlaybackSchema,
   type WorkspaceCapability,
@@ -53,7 +56,7 @@ interface HonoSurface {
   };
 }
 
-const uuidInput = z.string().uuid();
+const uuidInput = businessAutomationUuidSchema;
 const bodyInput = (schema: ZodType, params: readonly string[] = []) => ({
   schema: z.object({
     ...Object.fromEntries(params.map((name) => [name, uuidInput])),
@@ -198,11 +201,7 @@ export const browserSessionHonoSurfaces: readonly HonoSurface[] = [
     capability: "content.view",
     projectParam: "id",
     input: {
-      schema: z.object({
-        id: uuidInput,
-        clipId: uuidInput.optional(),
-        limit: z.coerce.number().int().min(1).max(100).optional(),
-      }).strict(),
+      schema: generatedMediaStudioListQuerySchema,
       params: ["id"],
       query: ["clipId", "limit"],
     },
@@ -458,10 +457,7 @@ export const browserSessionHonoSurfaces: readonly HonoSurface[] = [
     path: "/brand-profiles",
     capability: "content.view",
     input: {
-      schema: z.object({
-        limit: z.coerce.number().int().min(1).max(100).optional(),
-        query: z.string().trim().max(100).optional(),
-      }).strict(),
+      schema: brandProfileBrowserListQuerySchema,
       query: ["limit", "query"],
     },
   },

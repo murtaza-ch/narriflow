@@ -177,6 +177,31 @@ export function brollQueryForClip(
 
 // --- Placement: single window (manual/studio pick) --------------------------
 
+/** Stable identity used only by the one URL-backed manual B-roll placement. */
+export const MANUAL_BROLL_COMPOSITION_ID = "manual-url";
+
+/**
+ * The persisted motion request cannot depend on browser-only or worker-probed
+ * media metadata. Give the URL-backed target one deterministic window derived
+ * from the edited source duration; the composition planner clamps that request
+ * when a short optional asset resolves to a smaller active range.
+ */
+export function manualBrollMotionWindow(
+	editedDurationSec: number,
+): { startSec: number; endSec: number } | null {
+	return planBrollWindow(editedDurationSec, 3.5);
+}
+
+export function activeManualBrollMotionWindow(input: {
+	brollUrl: string | null | undefined;
+	assetBackedPlacementCount: number;
+	editedDurationSec: number;
+}): { startSec: number; endSec: number } | null {
+	return input.brollUrl && input.assetBackedPlacementCount === 0
+		? manualBrollMotionWindow(input.editedDurationSec)
+		: null;
+}
+
 /**
  * Plans a single B-roll cutaway window inside the clip: a short segment placed
  * after the hook, bounded by a *specific* asset's own duration. Used for the

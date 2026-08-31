@@ -1,4 +1,7 @@
-import { ReviewServiceError } from "@narriflow/services";
+import {
+  enforceReviewAccessSourceRateLimit,
+  ReviewServiceError,
+} from "@narriflow/services";
 
 export const MAX_REVIEW_BODY_BYTES = 32 * 1024;
 
@@ -35,6 +38,18 @@ export async function readReviewJsonBody(request: Request) {
       "Review request body is invalid",
     );
   }
+}
+
+export async function readRateLimitedReviewAccessRequest(
+  request: Request,
+  admitSource: (source: string) => Promise<void> =
+    enforceReviewAccessSourceRateLimit,
+) {
+  const source =
+    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ||
+    "unknown";
+  await admitSource(source);
+  return { source, input: await readReviewJsonBody(request) };
 }
 
 export function reviewPublicFailureStatus(code: string) {

@@ -35,6 +35,7 @@ import {
 } from "react";
 import { formatDate, formatDateTime, formatDuration, formatTimecode } from "@/lib/format";
 import { authenticatedRequestFailureMessage } from "@/lib/authenticated-request-browser";
+import { restoreCampaignReviewSelection } from "./campaign-selection";
 import { ReviewAuditHistory } from "./review-audit-history";
 import { createReviewBrowserIntents } from "./review-browser-intents";
 import type { ReviewCreationAccess } from "./review-creation-access";
@@ -237,10 +238,12 @@ export function isReviewResubmissionAvailable(
 
 export function ReviewPanel({
   projectId,
+  availableClipIds,
   creationAccess,
   canManageReview,
 }: {
   projectId: string;
+  availableClipIds: string[];
   creationAccess: ReviewCreationAccess;
   canManageReview: boolean;
 }) {
@@ -270,6 +273,7 @@ export function ReviewPanel({
   const [mentionRecipientIds, setMentionRecipientIds] = useState<Set<string>>(new Set());
   const noticeRef = useRef<HTMLDivElement | null>(null);
   const approvalDefaultInitializedRef = useRef(false);
+  const campaignSelectionInitializedProjectRef = useRef<string | null>(null);
   const browserIntentsRef = useRef<ReturnType<
     typeof createReviewBrowserIntents
   > | null>(null);
@@ -288,13 +292,24 @@ export function ReviewPanel({
     if (!response.ok) throw new Error(failureMessage(payload, "Review rounds could not be loaded."));
     const workspace = payload as ReviewWorkspace;
     setData(workspace);
+    if (campaignSelectionInitializedProjectRef.current !== projectId) {
+      const restored = restoreCampaignReviewSelection(
+        window.sessionStorage,
+        projectId,
+        availableClipIds,
+        workspace.candidates,
+      );
+      campaignSelectionInitializedProjectRef.current = projectId;
+      setSelectedExports(restored.exportIds);
+      setSelectedVariants(restored.variantIdsByExport);
+    }
     setTitle((current) => current || `${workspace.project.title} — client review`);
     if (!approvalDefaultInitializedRef.current) {
       approvalDefaultInitializedRef.current = true;
       setApprovalRequired(workspace.project.approvalRequired);
     }
     setDiscussionRoundId((current) => current ?? workspace.rounds[0]?.id ?? null);
-  }, [endpoint]);
+  }, [availableClipIds, endpoint, projectId]);
 
   useEffect(() => {
     let active = true;

@@ -2,6 +2,7 @@ import {
   CLIP_COMPOSITION_PLAN_VERSION,
 	compositionAssetRef,
   evaluateCompositionMotion,
+  evaluateCompositionTransition,
   type ClipCompositionPlan,
   type ClipCompositionPlanResult,
   type CompositionBrollAvailability,
@@ -16,6 +17,7 @@ import {
 import {
   censorBeepEnvelopeAt,
   duckingGainMultiplierAt,
+	MANUAL_BROLL_COMPOSITION_ID,
 	type BrollPlacement,
 	type SceneBlock,
 } from "@narriflow/validators";
@@ -158,7 +160,7 @@ export function manualBrollAvailabilityForPlan(input: {
     state: "available",
     placements: [
       {
-        id: "manual",
+		id: MANUAL_BROLL_COMPOSITION_ID,
         ref: input.ref,
 				mediaKind: "video",
         startSec: input.window.startSec,
@@ -604,76 +606,51 @@ export function plannedCompositionMotionStyle(
   };
 }
 
-function transitionCoverageAt(
-  layer: CompositionTransitionVisualLayer,
-  timeSec: number,
-): number {
-  const { fadeIn, fadeOut } = layer.windows;
-  if (timeSec <= fadeIn.endSec) {
-    const duration = Math.max(0.000_001, fadeIn.endSec - fadeIn.startSec);
-    return Math.max(0, Math.min(1, 1 - (timeSec - fadeIn.startSec) / duration));
-  }
-  if (timeSec >= fadeOut.startSec) {
-    const duration = Math.max(0.000_001, fadeOut.endSec - fadeOut.startSec);
-    return Math.max(0, Math.min(1, (timeSec - fadeOut.startSec) / duration));
-  }
-  return 0;
-}
-
 export function plannedCompositionTransitionState(
   layer: CompositionTransitionVisualLayer,
   editedTimeSec: number,
   reducedMotion: boolean,
 ) {
-  if (reducedMotion) {
-    return {
-      family: layer.effect.family,
-      active: false,
-      reducedMotion: true,
-      overlayOpacity: 0,
-      overlayClipPath: "none",
-      mediaTransform: "none",
-    };
+  if (layer.effect.version !== 1) {
+    throw new Error("unsupported_clip_composition_transition_version");
   }
-  const coverage = transitionCoverageAt(layer, editedTimeSec);
-  const progress = 1 - coverage;
-  let overlayOpacity = 0;
+  const state = evaluateCompositionTransition(layer.effect, editedTimeSec, {
+    reducedMotion,
+  });
   let overlayClipPath = "none";
-  let mediaTransform = "none";
-  if (layer.effect.family === "fade" || layer.effect.family === "cross-dissolve") {
-    overlayOpacity = coverage;
-  } else if (layer.effect.family === "wipe") {
-    overlayOpacity = coverage > 0 ? 1 : 0;
-    const hiddenPct = progress * 100;
-    overlayClipPath = layer.effect.direction === "left"
-      ? `inset(0 0 0 ${hiddenPct}%)`
-      : layer.effect.direction === "right"
-        ? `inset(0 ${hiddenPct}% 0 0)`
-        : layer.effect.direction === "up"
-          ? `inset(${hiddenPct}% 0 0 0)`
-          : `inset(0 0 ${hiddenPct}% 0)`;
-  } else if (layer.effect.family === "slide") {
-    const amount = coverage * 100;
-    const x = layer.effect.direction === "left"
-      ? amount
-      : layer.effect.direction === "right"
-        ? -amount
-        : 0;
-    const y = layer.effect.direction === "up"
-      ? amount
-      : layer.effect.direction === "down"
-        ? -amount
-        : 0;
-    mediaTransform = `translate(${x}%, ${y}%)`;
-  } else {
-    const from = layer.effect.direction === "in" ? 0.88 : 1.12;
-    mediaTransform = `scale(${from + (1 - from) * progress})`;
+  if (state.overlayMask) {
+    const top = (state.overlayMask.y / layer.effect.canvas.height) * 100;
+    const right =
+      ((layer.effect.canvas.width -
+        state.overlayMask.x -
+        state.overlayMask.width) /
+        layer.effect.canvas.width) * 100;
+    const bottom =
+      ((layer.effect.canvas.height -
+        state.overlayMask.y -
+        state.overlayMask.height) /
+        layer.effect.canvas.height) * 100;
+    const left = (state.overlayMask.x / layer.effect.canvas.width) * 100;
+    overlayClipPath = `inset(${top}% ${right}% ${bottom}% ${left}%)`;
   }
+  const xPct = (state.translateXPx / layer.effect.canvas.width) * 100;
+  const yPct = (state.translateYPx / layer.effect.canvas.height) * 100;
+  const hasTranslation = state.translateXPx !== 0 || state.translateYPx !== 0;
+  const hasScale = state.scale !== 1;
+  const mediaTransform = [
+    hasTranslation ? `translate(${xPct}%, ${yPct}%)` : "",
+    hasScale ? `scale(${state.scale})` : "",
+  ].filter(Boolean).join(" ") || "none";
+  const active =
+    (state.overlayOpacity > 0 &&
+      (!state.overlayMask || state.overlayMaskSizePx > 0)) ||
+    hasTranslation ||
+    hasScale;
   return {
     family: layer.effect.family,
-    active: coverage > 0,
-    reducedMotion: false,
-    overlayOpacity,
+    active: reducedMotion ? false : active,
+    reducedMotion,
+    overlayOpacity: state.overlayOpacity,
     overlayClipPath,
     mediaTransform,
   };
@@ -774,6 +751,9 @@ function assertVisualLayers(
       layer.zIndex < previousZIndex
     ) {
       throw new Error("invalid_clip_composition_visual_layers");
+    }
+    if (layer.kind === "transition" && layer.effect.version !== 1) {
+      throw new Error("unsupported_clip_composition_transition_version");
     }
     if (
       layer.kind === "transition" &&

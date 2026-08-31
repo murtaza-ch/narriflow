@@ -76,6 +76,11 @@ export const brandProfileListSchema = z
   })
   .strict();
 
+export const brandProfileBrowserListQuerySchema = z.strictObject({
+  limit: z.coerce.number().int().min(1).max(100).optional(),
+  query: z.string().trim().max(100).optional(),
+});
+
 export const visualAssetContentTypeSchema = z.enum([
   "image/png",
   "image/jpeg",

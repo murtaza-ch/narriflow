@@ -9,7 +9,7 @@ import { formatDuration } from "@/lib/format";
 import { useStudio } from "../studio-shell";
 import {
   DEFAULT_BROLL_PREVIEW_DURATION_SEC,
-  manualBrollPreviewWindow,
+	manualBrollPreviewWindowForEditedTimeMap,
 } from "../broll-preview";
 import { GeneratedMediaStudioPanel } from "./generated-media-studio-panel";
 import {
@@ -157,6 +157,7 @@ function BrollBrowser() {
     aspectRatio,
     brollUrl,
     brollPreviewAsset,
+		editedTimeMap,
     setBrollUrl,
     setBrollPreviewAsset,
     seekTo,
@@ -194,12 +195,12 @@ function BrollBrowser() {
   const selectedWindow = useMemo(
     () =>
       brollUrl
-        ? manualBrollPreviewWindow(
-            clipInfo.duration,
+			? manualBrollPreviewWindowForEditedTimeMap(
+				editedTimeMap,
             selectedAsset?.durationSec,
           )
         : null,
-    [brollUrl, clipInfo.duration, selectedAsset?.durationSec],
+		[brollUrl, editedTimeMap, selectedAsset?.durationSec],
   );
 
   // Use the exact detection cues consumed by the worker. Existing clips with

@@ -3,6 +3,14 @@ import {
   applyProjectBrandProfileSelectedSchema,
   applySceneTemplateSchema,
   applyStyleSelectedSchema,
+  businessAutomationAssistedCopyStatusSchema,
+  businessAutomationBulkScheduleStatusSchema,
+  businessAutomationCampaignOperationStatusSchema,
+  businessAutomationCampaignPreviewSchema,
+  businessAutomationGeneratedMediaStatusSchema,
+  businessAutomationReviewRoundCreatedSchema,
+  businessAutomationReviewRoundListSchema,
+  businessAutomationThumbnailStatusSchema,
   brandProfileListSchema,
   bulkScheduleAutomationSchema,
   createReviewRoundAutomationSchema,
@@ -41,6 +49,21 @@ import type { BusinessAutomationActorContext } from "./business-automation-acces
 import type { WorkspaceActorContext } from "./workspace.service";
 
 type UnknownRecord = Record<string, unknown>;
+
+function exactAutomationProjection<T>(
+  schema: {
+    safeParse(value: unknown):
+      | { success: true; data: T }
+      | { success: false };
+  },
+  value: unknown,
+): T {
+  const parsed = schema.safeParse(value);
+  if (!parsed.success) {
+    throw new Error("business_automation_projection_invalid");
+  }
+  return parsed.data;
+}
 
 export interface BusinessAutomationDependencies {
   listBrandProfiles(
@@ -135,20 +158,33 @@ function record(value: unknown): UnknownRecord {
 }
 
 function iso(value: unknown) {
-  if (value instanceof Date) return value.toISOString();
-  return typeof value === "string" ? value : null;
+  if (value === null) return null;
+  if (value instanceof Date) {
+    return Number.isNaN(value.getTime()) ? undefined : value.toISOString();
+  }
+  return typeof value === "string" ? value : undefined;
 }
 
 function string(value: unknown) {
-  return typeof value === "string" ? value : null;
+  if (value === null) return null;
+  return typeof value === "string" ? value : undefined;
 }
 
 function number(value: unknown) {
-  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function nullableNumber(value: unknown) {
+  if (value === null) return null;
+  return number(value);
 }
 
 function boolean(value: unknown) {
-  return value === true;
+  return typeof value === "boolean" ? value : undefined;
+}
+
+function array(value: unknown): unknown[] | undefined {
+  return Array.isArray(value) ? value : undefined;
 }
 
 function safeBrandProfile(value: unknown) {
@@ -171,11 +207,11 @@ function safeBrandProfile(value: unknown) {
 function campaignStatus(value: unknown) {
   const operation = record(value);
   const counts = record(operation.counts);
-  const items = Array.isArray(operation.items) ? operation.items : [];
-  return {
+  const items = array(operation.items);
+  return exactAutomationProjection(businessAutomationCampaignOperationStatusSchema, {
     operationId: string(operation.operationId) ?? string(operation.id),
     action: string(operation.action),
-    status: string(operation.status) ?? "unknown",
+    status: string(operation.status),
     requestedCount: number(operation.requestedCount),
     counts: {
       succeeded: number(counts.succeeded ?? operation.succeededCount),
@@ -184,15 +220,12 @@ function campaignStatus(value: unknown) {
       ineligible: number(counts.ineligible ?? operation.ineligibleCount),
       failed: number(counts.failed ?? operation.failedCount),
     },
-    items: items.map((entry) => {
+    items: items?.map((entry) => {
       const item = record(entry);
       return {
         clipId: string(item.requestedClipId) ?? string(item.clipId),
-        expectedEditorRevision:
-          typeof item.expectedEditorRevision === "number"
-            ? item.expectedEditorRevision
-            : null,
-        status: string(item.status) ?? "unknown",
+        expectedEditorRevision: nullableNumber(item.expectedEditorRevision),
+        status: string(item.status),
         errorCode: string(item.errorCode),
         settledAt: iso(item.settledAt),
       };
@@ -200,14 +233,14 @@ function campaignStatus(value: unknown) {
     createdAt: iso(operation.createdAt),
     completedAt: iso(operation.completedAt),
     replayed: boolean(operation.replayed),
-  };
+  });
 }
 
 function campaignPreview(value: unknown) {
   const preview = record(value);
   const counts = record(preview.counts);
-  const items = Array.isArray(preview.items) ? preview.items : [];
-  return {
+  const items = array(preview.items);
+  return exactAutomationProjection(businessAutomationCampaignPreviewSchema, {
     action: string(preview.action),
     requestedCount: number(preview.requestedCount),
     counts: {
@@ -216,20 +249,17 @@ function campaignPreview(value: unknown) {
       stale: number(counts.stale),
       ineligible: number(counts.ineligible),
     },
-    items: items.map((itemValue) => {
+    items: items?.map((itemValue) => {
       const item = record(itemValue);
       return {
         clipId: string(item.clipId),
         expectedEditorRevision: number(item.expectedEditorRevision),
-        currentEditorRevision:
-          typeof item.currentEditorRevision === "number"
-            ? item.currentEditorRevision
-            : null,
-        status: string(item.status) ?? "ineligible",
+        currentEditorRevision: nullableNumber(item.currentEditorRevision),
+        status: string(item.status),
         code: string(item.code),
       };
     }),
-  };
+  });
 }
 
 function campaignCatalog(value: unknown) {
@@ -290,19 +320,17 @@ function campaignCatalog(value: unknown) {
 
 function reviewStatus(value: unknown) {
   const view = record(value);
-  const rounds = Array.isArray(view.rounds) ? view.rounds : [];
-  return {
+  const rounds = array(view.rounds);
+  return exactAutomationProjection(businessAutomationReviewRoundListSchema, {
     projectId: string(record(view.project).id),
-    rounds: rounds.map((entry) => {
+    rounds: rounds?.map((entry) => {
       const round = record(entry);
-      const items = Array.isArray(round.items) ? round.items : [];
-      const notifications = Array.isArray(round.notifications)
-        ? round.notifications
-        : [];
+      const items = array(round.items);
+      const notifications = array(round.notifications);
       return {
         roundId: string(round.id),
         revision: number(round.revision),
-        status: string(round.status) ?? "unknown",
+        status: string(round.status),
         approvalRequired: boolean(round.approvalRequired),
         allowDownloads: boolean(round.allowDownloads),
         sentAt: iso(round.sentAt),
@@ -312,7 +340,7 @@ function reviewStatus(value: unknown) {
         decision: string(round.decision),
         decidedAt: iso(round.decidedAt),
         newerWorkAvailable: boolean(round.newerWorkAvailable),
-        items: items.map((itemValue) => {
+        items: items?.map((itemValue) => {
           const item = record(itemValue);
           return {
             itemId: string(item.id),
@@ -324,11 +352,11 @@ function reviewStatus(value: unknown) {
             newerWorkAvailable: boolean(item.newerWorkAvailable),
           };
         }),
-        notificationStatus: notifications.map((notificationValue) => {
+        notificationStatus: notifications?.map((notificationValue) => {
           const notification = record(notificationValue);
           return {
             kind: string(notification.kind),
-            status: string(notification.status) ?? "unknown",
+            status: string(notification.status),
             attemptCount: number(notification.attemptCount),
             failureCode: string(notification.failureCode),
             sentAt: iso(notification.sentAt),
@@ -338,50 +366,56 @@ function reviewStatus(value: unknown) {
         updatedAt: iso(round.updatedAt),
       };
     }),
-  };
+  });
 }
 
 function reviewCreated(value: unknown) {
   const round = record(value);
-  return {
+  return exactAutomationProjection(businessAutomationReviewRoundCreatedSchema, {
     roundId: string(round.id),
     revision: number(round.revision),
     createdAt: iso(round.createdAt),
     replayed: boolean(round.replayed),
-  };
+  });
 }
 
 function assistedCopyStatus(value: unknown) {
   const draft = record(value);
-  return {
+  return exactAutomationProjection(businessAutomationAssistedCopyStatusSchema, {
     draftId: string(draft.id),
     clipId: string(draft.clipId),
     platform: string(draft.platform),
-    status: string(draft.status) ?? "unknown",
+    status: string(draft.status),
     revision: number(draft.revision),
-    content: draft.content ?? null,
+    content: draft.content,
     confirmed: boolean(draft.confirmed),
-    moderationOutcome: string(draft.moderationOutcome) ?? "unknown",
+    moderationOutcome: string(draft.moderationOutcome),
     modelAlias: string(draft.modelAlias),
     promptVersion: string(draft.promptVersion),
     guidanceSkipped: boolean(draft.guidanceSkipped),
     errorCode: string(draft.errorCode),
     replayed: boolean(draft.replayed),
-  };
+  });
 }
 
 function thumbnailStatus(value: unknown) {
   const job = record(value);
-  const asset = job.asset === null ? null : record(job.asset);
-  return {
+  const asset = job.asset === null
+    ? null
+    : job.asset && typeof job.asset === "object" && !Array.isArray(job.asset)
+      ? record(job.asset)
+      : undefined;
+  return exactAutomationProjection(businessAutomationThumbnailStatusSchema, {
     jobId: string(job.id),
-    status: string(job.status) ?? "unknown",
+    status: string(job.status),
     attempts: number(job.attempts),
     platform: string(job.platform),
     exportVariantId: string(job.exportVariantId),
     sourceTimeMs: number(job.sourceTimeMs),
     errorCode: string(job.errorCode),
-    asset: asset
+    asset: asset === undefined
+      ? undefined
+      : asset
       ? {
           id: string(asset.id),
           title: string(asset.title),
@@ -393,59 +427,58 @@ function thumbnailStatus(value: unknown) {
         }
       : null,
     replayed: boolean(job.replayed),
-  };
+  });
 }
 
 function bulkScheduleStatus(value: unknown) {
   const operation = record(value);
   const counts = record(operation.counts);
-  const items = Array.isArray(operation.items) ? operation.items : [];
-  return {
+  const items = array(operation.items);
+  return exactAutomationProjection(businessAutomationBulkScheduleStatusSchema, {
     operationId: string(operation.operationId),
-    status: string(operation.status) ?? "unknown",
+    status: string(operation.status),
     counts: {
       scheduled: number(counts.scheduled),
       failed: number(counts.failed),
     },
-    items: items.map((itemValue) => {
+    items: items?.map((itemValue) => {
       const item = record(itemValue);
       return {
         itemKey: string(item.itemKey),
         clipId: string(item.clipId),
         accountId: string(item.accountId),
-        status: string(item.status) ?? "unknown",
+        status: string(item.status),
         postId: string(item.postId),
         scheduledFor: iso(item.scheduledFor),
         errorCode: string(item.errorCode),
       };
     }),
     replayed: boolean(operation.replayed),
-  };
+  });
 }
 
 function generatedMediaStatus(value: unknown) {
   const job = record(value);
   const moderation = record(job.moderation);
-  return {
+  return exactAutomationProjection(businessAutomationGeneratedMediaStatusSchema, {
     jobId: string(job.id),
     projectId: string(job.projectId),
     clipId: string(job.clipId),
     kind: string(job.kind),
-    status: string(job.status) ?? "unknown",
+    status: string(job.status),
     aspectRatio: string(job.aspectRatio),
     style: string(job.style),
-    durationSec:
-      typeof job.durationSec === "number" ? job.durationSec : null,
+    durationSec: nullableNumber(job.durationSec),
     resultAssetId: string(job.resultAssetId),
     insertionCount: number(job.insertionCount),
     lastInsertionKind: string(job.lastInsertionKind),
     lastInsertedAt: iso(job.lastInsertedAt),
     errorCode: string(job.errorCode),
-    moderationOutcome: string(moderation.outcome) ?? "pending",
+    moderationOutcome: string(moderation.outcome),
     createdAt: iso(job.createdAt),
     updatedAt: iso(job.updatedAt),
     replayed: boolean(job.replayed),
-  };
+  });
 }
 
 export function createBusinessAutomation(
@@ -472,14 +505,15 @@ export function createBusinessAutomation(
       input: unknown,
     ) {
       const parsed = applyMotionSelectedSchema.parse(input);
-      return campaignStatus(
-        await dependencies.applyCampaignMotion(
+      return campaignStatus({
+        ...record(await dependencies.applyCampaignMotion(
           actor,
           projectId,
           idempotencyKey,
           parsed,
-        ),
-      );
+        )),
+        action: "apply_motion",
+      });
     },
 
     async applyCampaignBrandProfile(
@@ -489,12 +523,15 @@ export function createBusinessAutomation(
       input: unknown,
     ) {
       const parsed = applyProjectBrandProfileSelectedSchema.parse(input);
-      return campaignStatus(await dependencies.applyCampaignBrandProfile(
-        actor,
-        projectId,
-        idempotencyKey,
-        parsed,
-      ));
+      return campaignStatus({
+        ...record(await dependencies.applyCampaignBrandProfile(
+          actor,
+          projectId,
+          idempotencyKey,
+          parsed,
+        )),
+        action: "apply_brand_profile",
+      });
     },
 
     async applyCampaignStyle(
@@ -504,12 +541,15 @@ export function createBusinessAutomation(
       input: unknown,
     ) {
       const parsed = applyStyleSelectedSchema.parse(input);
-      return campaignStatus(await dependencies.applyCampaignStyle(
-        actor,
-        projectId,
-        idempotencyKey,
-        parsed,
-      ));
+      return campaignStatus({
+        ...record(await dependencies.applyCampaignStyle(
+          actor,
+          projectId,
+          idempotencyKey,
+          parsed,
+        )),
+        action: "apply_style",
+      });
     },
 
     async applyCampaignSceneTemplate(
@@ -521,14 +561,17 @@ export function createBusinessAutomation(
       input: unknown,
     ) {
       const parsed = applySceneTemplateSchema.parse(input);
-      return campaignStatus(await dependencies.applyCampaignSceneTemplate(
-        actor,
-        projectId,
-        profileId,
-        templateId,
-        idempotencyKey,
-        parsed,
-      ));
+      return campaignStatus({
+        ...record(await dependencies.applyCampaignSceneTemplate(
+          actor,
+          projectId,
+          profileId,
+          templateId,
+          idempotencyKey,
+          parsed,
+        )),
+        action: "apply_scene_template",
+      });
     },
 
     async previewCampaignEditorAction(
@@ -558,7 +601,7 @@ export function createBusinessAutomation(
       projectId: string,
     ) {
       return (await dependencies.listCampaignOperations(actor, projectId)).map(
-        campaignStatus,
+        (operation) => campaignStatus({ ...record(operation), replayed: false }),
       );
     },
 
@@ -694,20 +737,47 @@ function thumbnailRuntime() {
 export function createProductionBusinessAutomation(
   env: Readonly<Record<string, string | undefined>> = process.env,
   options: {
+    campaignOperationGateway?: Pick<
+      typeof campaignOperationService,
+      | "applyMotionSelected"
+      | "applyProjectBrandProfileSelected"
+      | "applyStyleSelected"
+      | "applySceneTemplate"
+      | "getOperation"
+    >;
     generatedMediaStatusStore?: Pick<GeneratedMediaStore, "get">;
+    generatedMediaStudioService?: Pick<
+      ReturnType<typeof getGeneratedMediaStudioService>,
+      "submitAutomation"
+    >;
     bulkSchedulingRuntime?: Pick<
       ReturnType<typeof createProductionBulkSchedulingRuntime>,
       "schedule"
     >;
   } = {},
 ) {
+  const campaignGateway =
+    options.campaignOperationGateway ?? campaignOperationService;
+  async function completeCampaignMutation(
+    actor: WorkspaceActorContext,
+    projectId: string,
+    admission: Promise<{ operationId: string; replayed: boolean }>,
+  ) {
+    const admitted = await admission;
+    const operation = await campaignGateway.getOperation(
+      { workspaceId: actor.workspaceId, projectId },
+      admitted.operationId,
+    );
+    return { ...operation, replayed: admitted.replayed };
+  }
+
   return createBusinessAutomation({
     listBrandProfiles: (actor, input) =>
       brandProfileService.list(brandScope(actor), input),
     getBrandProfile: (actor, profileId) =>
       brandProfileService.get(brandScope(actor), profileId),
     applyCampaignMotion: (actor, projectId, idempotencyKey, input) =>
-      campaignOperationService.applyMotionSelected(
+      completeCampaignMutation(actor, projectId, campaignGateway.applyMotionSelected(
         {
           actorUserId: actor.userId,
           workspaceId: actor.workspaceId,
@@ -718,25 +788,25 @@ export function createProductionBusinessAutomation(
           idempotencyKey,
         },
         input,
-      ),
+      )),
     applyCampaignBrandProfile: (actor, projectId, idempotencyKey, input) =>
-      campaignOperationService.applyProjectBrandProfileSelected(
+      completeCampaignMutation(actor, projectId, campaignGateway.applyProjectBrandProfileSelected(
         {
           ...brandScope(actor),
           projectId,
           idempotencyKey,
         },
         input,
-      ),
+      )),
     applyCampaignStyle: (actor, projectId, idempotencyKey, input) =>
-      campaignOperationService.applyStyleSelected(
+      completeCampaignMutation(actor, projectId, campaignGateway.applyStyleSelected(
         {
           ...brandScope(actor),
           projectId,
           idempotencyKey,
         },
         input,
-      ),
+      )),
     applyCampaignSceneTemplate: (
       actor,
       projectId,
@@ -744,7 +814,7 @@ export function createProductionBusinessAutomation(
       templateId,
       idempotencyKey,
       input,
-    ) => campaignOperationService.applySceneTemplate(
+    ) => completeCampaignMutation(actor, projectId, campaignGateway.applySceneTemplate(
       {
         ...brandScope(actor),
         projectId,
@@ -753,7 +823,7 @@ export function createProductionBusinessAutomation(
       profileId,
       templateId,
       input,
-    ),
+    )),
     previewCampaignEditorAction: (actor, projectId, input) =>
       campaignOperationService.previewEditorAction(
         { ...brandScope(actor), projectId },
@@ -818,12 +888,22 @@ export function createProductionBusinessAutomation(
         },
         input,
       ),
-    submitGeneratedMedia(actor, input) {
-			const runtime = getGeneratedMediaRuntime();
-			if (!runtime.available || !runtime.service) {
-				throw new GeneratedMediaError("generated_media_not_configured");
-			}
-      return getGeneratedMediaStudioService().submitAutomation(brandScope(actor), input);
+    async submitGeneratedMedia(actor, input) {
+      if (!options.generatedMediaStudioService) {
+				const runtime = getGeneratedMediaRuntime();
+				if (!runtime.available || !runtime.service) {
+					throw new GeneratedMediaError("generated_media_not_configured");
+				}
+      }
+      const scope = brandScope(actor);
+      const admitted = await (
+        options.generatedMediaStudioService ?? getGeneratedMediaStudioService()
+      ).submitAutomation(scope, input);
+      const store =
+        options.generatedMediaStatusStore ?? createPrismaGeneratedMediaStore();
+      const job = await store.get(scope, admitted.id);
+      if (!job) throw new GeneratedMediaError("generated_media_not_found");
+      return { ...job, replayed: admitted.replayed };
     },
     async getGeneratedMedia(actor, jobId) {
       const store =

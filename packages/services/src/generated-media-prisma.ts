@@ -24,6 +24,13 @@ import {
 } from "./generated-media";
 import { generationUsageAvailability } from "./generation-usage";
 import { generatedMediaLatencyBucket } from "./generated-media-analytics";
+import {
+	adoptGeneratedMediaAssetUpload,
+	adoptGeneratedMediaProviderResult,
+	generatedMediaProviderResultObligation,
+	generatedMediaRetirementObligation,
+} from "./generated-media-cleanup";
+import { admitMediaCleanupObligations } from "./media-cleanup";
 import { withSerializableTransaction } from "./serializable-transaction";
 
 type PrismaJob = GeneratedMediaJob & {
@@ -232,6 +239,34 @@ async function recordTerminalAnalytics(
 			createdAt: input.now,
 		},
 	});
+}
+
+async function adoptStoredProviderResult(
+	tx: Prisma.TransactionClient,
+	input: {
+		projectId: string;
+		clipId: string | null;
+		resultReference: string;
+		now: Date;
+	},
+) {
+	const obligation = generatedMediaProviderResultObligation(
+		input.resultReference,
+		input.now,
+	);
+	if (!obligation) return;
+	await admitMediaCleanupObligations(tx.mediaCleanupObligation, [
+		{
+			...obligation,
+			projectId: input.projectId,
+			clipId: input.clipId,
+		},
+	]);
+	await adoptGeneratedMediaProviderResult(
+		tx.mediaCleanupObligation,
+		input.resultReference,
+		input.now,
+	);
 }
 
 export function createPrismaGeneratedMediaStore(
@@ -690,26 +725,34 @@ export function createPrismaGeneratedMediaStore(
 			});
 		},
 		async recordProviderResult(input) {
-			const result = await prisma.generatedMediaJob.updateMany({
-				where: {
-					id: input.claim.jobId,
-					claimId: input.claim.claimId,
-					status: "running",
-				},
-				data: {
-					providerReference: input.providerReference,
+			await withSerializableTransaction(prisma, async (tx) => {
+				const result = await tx.generatedMediaJob.updateMany({
+					where: {
+						id: input.claim.jobId,
+						claimId: input.claim.claimId,
+						status: "running",
+					},
+					data: {
+						providerReference: input.providerReference,
+						resultReference: input.resultReference,
+						providerUsageUnits: input.usageUnits,
+						moderationOutcome: input.moderation.outcome,
+						moderationStage: input.moderation.stage,
+						moderationCategories: input.moderation.categories
+							? ([...input.moderation.categories] as Prisma.InputJsonValue)
+							: undefined,
+						errorCode: null,
+						updatedAt: input.now,
+					},
+				});
+				if (result.count !== 1) throw new GeneratedMediaClaimLost();
+				await adoptStoredProviderResult(tx, {
+					projectId: input.claim.projectId,
+					clipId: input.claim.clipId,
 					resultReference: input.resultReference,
-					providerUsageUnits: input.usageUnits,
-					moderationOutcome: input.moderation.outcome,
-					moderationStage: input.moderation.stage,
-					moderationCategories: input.moderation.categories
-						? ([...input.moderation.categories] as Prisma.InputJsonValue)
-						: undefined,
-					errorCode: null,
-					updatedAt: input.now,
-				},
+					now: input.now,
+				});
 			});
-			if (result.count !== 1) throw new GeneratedMediaClaimLost();
 		},
 		async markWaiting(input) {
 			const result = await prisma.generatedMediaJob.updateMany({
@@ -742,38 +785,48 @@ export function createPrismaGeneratedMediaStore(
 			if (result.count !== 1) throw new GeneratedMediaClaimLost();
 		},
 		async markReconciliationRequired(input) {
-			const result = await prisma.generatedMediaJob.updateMany({
-				where: {
-					id: input.claim.jobId,
-					claimId: input.claim.claimId,
-					status: "running",
-				},
-				data: {
-					status: "reconciliation_required",
-					providerReference: input.providerReference,
-					resultReference: input.resultReference,
-					providerUsageUnits: input.usageUnits,
-					...(input.moderation
-						? {
-								moderationOutcome: input.moderation.outcome,
-								moderationStage: input.moderation.stage,
-								moderationCategories: input.moderation.categories
-									? ([...input.moderation.categories] as Prisma.InputJsonValue)
-									: undefined,
-							}
-						: {}),
-					nextPollAt: null,
-					errorCode: input.errorCode,
-					promptDeleteAfter: new Date(
-						input.now.getTime() + input.promptRetentionMs,
-					),
-					claimId: null,
-					claimOwner: null,
-					claimExpiresAt: null,
-					updatedAt: input.now,
-				},
+			await withSerializableTransaction(prisma, async (tx) => {
+				const result = await tx.generatedMediaJob.updateMany({
+					where: {
+						id: input.claim.jobId,
+						claimId: input.claim.claimId,
+						status: "running",
+					},
+					data: {
+						status: "reconciliation_required",
+						providerReference: input.providerReference,
+						resultReference: input.resultReference,
+						providerUsageUnits: input.usageUnits,
+						...(input.moderation
+							? {
+									moderationOutcome: input.moderation.outcome,
+									moderationStage: input.moderation.stage,
+									moderationCategories: input.moderation.categories
+										? ([...input.moderation.categories] as Prisma.InputJsonValue)
+										: undefined,
+								}
+							: {}),
+						nextPollAt: null,
+						errorCode: input.errorCode,
+						promptDeleteAfter: new Date(
+							input.now.getTime() + input.promptRetentionMs,
+						),
+						claimId: null,
+						claimOwner: null,
+						claimExpiresAt: null,
+						updatedAt: input.now,
+					},
+				});
+				if (result.count !== 1) throw new GeneratedMediaClaimLost();
+				if (input.resultReference) {
+					await adoptStoredProviderResult(tx, {
+						projectId: input.claim.projectId,
+						clipId: input.claim.clipId,
+						resultReference: input.resultReference,
+						now: input.now,
+					});
+				}
 			});
-			if (result.count !== 1) throw new GeneratedMediaClaimLost();
 		},
 		async markRetry(input) {
 			const result = await prisma.generatedMediaJob.updateMany({
@@ -847,27 +900,34 @@ export function createPrismaGeneratedMediaStore(
 			});
 		},
 		async stageAsset(input) {
-			const result = await prisma.generatedMediaJob.updateMany({
-				where: {
-					id: input.claim.jobId,
-					claimId: input.claim.claimId,
-					status: "running",
-				},
-				data: {
-					stagedStorageKey: input.asset.storageKey,
-					stagedContentType: input.asset.contentType,
-					stagedSizeBytes: BigInt(input.asset.sizeBytes),
-					stagedWidth: input.asset.width,
-					stagedHeight: input.asset.height,
-					stagedDurationSec: input.asset.durationSec,
-					stagedHasAudio: input.asset.hasAudio,
-					stagedVideoCodec: input.asset.videoCodec,
-					stagedAudioCodec: input.asset.audioCodec,
-					stagedFingerprint: input.asset.fingerprint,
-					updatedAt: input.now,
-				},
+			await withSerializableTransaction(prisma, async (tx) => {
+				const result = await tx.generatedMediaJob.updateMany({
+					where: {
+						id: input.claim.jobId,
+						claimId: input.claim.claimId,
+						status: "running",
+					},
+					data: {
+						stagedStorageKey: input.asset.storageKey,
+						stagedContentType: input.asset.contentType,
+						stagedSizeBytes: BigInt(input.asset.sizeBytes),
+						stagedWidth: input.asset.width,
+						stagedHeight: input.asset.height,
+						stagedDurationSec: input.asset.durationSec,
+						stagedHasAudio: input.asset.hasAudio,
+						stagedVideoCodec: input.asset.videoCodec,
+						stagedAudioCodec: input.asset.audioCodec,
+						stagedFingerprint: input.asset.fingerprint,
+						updatedAt: input.now,
+					},
+				});
+				if (result.count !== 1) throw new GeneratedMediaClaimLost();
+				await adoptGeneratedMediaAssetUpload(
+					tx.mediaCleanupObligation,
+					input.asset.storageKey,
+					input.now,
+				);
 			});
-			if (result.count !== 1) throw new GeneratedMediaClaimLost();
 		},
 		async publishAsset(input) {
 			return withSerializableTransaction(prisma, async (tx) => {
@@ -919,6 +979,27 @@ export function createPrismaGeneratedMediaStore(
 						provenance: "generated",
 					},
 				});
+				const cleanup = [
+					asset.storageKey !== staged.storageKey
+						? generatedMediaRetirementObligation({
+								kind: "redundant_asset",
+								projectId: job.projectId,
+								clipId: job.clipId,
+								objectKey: staged.storageKey,
+								now: input.now,
+							})
+						: null,
+					job.resultReference
+						? generatedMediaRetirementObligation({
+								kind: "consumed_provider_result",
+								projectId: job.projectId,
+								clipId: job.clipId,
+								objectKey: job.resultReference,
+								now: input.now,
+							})
+						: null,
+				].filter((entry): entry is NonNullable<typeof entry> => entry !== null);
+				await admitMediaCleanupObligations(tx.mediaCleanupObligation, cleanup);
 				await tx.generationUsageReservation.update({
 					where: { jobId: job.id },
 					data: {
@@ -1004,33 +1085,6 @@ export function createPrismaGeneratedMediaStore(
 				data: { promptCiphertext: null },
 			});
 			return result.count;
-		},
-		async referencedStorageKeys(prefix) {
-			const [rows, assets] = await Promise.all([
-				prisma.generatedMediaJob.findMany({
-					where: {
-						OR: [
-							{ stagedStorageKey: { startsWith: prefix } },
-							{ resultReference: { startsWith: prefix } },
-						],
-					},
-					select: { stagedStorageKey: true, resultReference: true },
-				}),
-				prisma.visualAsset.findMany({
-					where: { storageKey: { startsWith: prefix } },
-					select: { storageKey: true },
-				}),
-			]);
-			return new Set(
-				[
-					...rows.flatMap((row) =>
-						[row.stagedStorageKey, row.resultReference].filter(
-							(value): value is string => Boolean(value),
-						),
-					),
-					...assets.map((asset) => asset.storageKey),
-				],
-			);
 		},
 	};
 }

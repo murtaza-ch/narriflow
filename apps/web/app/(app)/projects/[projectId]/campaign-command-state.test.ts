@@ -18,6 +18,9 @@ function clip(id: string, ready: boolean, revision = 1, brollUrl: string | null 
     id,
     editorRevision: revision,
     brollUrl,
+		durationSec: 20,
+		editedDurationSec: 20,
+		brollPlacements: [],
     renderVariants: ready
       ? [
           {
@@ -267,6 +270,33 @@ describe("campaign command state", () => {
       ],
     });
   });
+
+	test("uses the post-delete duration when previewing URL-backed motion eligibility", () => {
+		const urlClip = {
+			...clip("short-after-cuts", true, 4, "https://media.example.test/a.mp4"),
+			editedDurationSec: 11.9,
+		};
+		const state = deriveCampaignCommandState({
+			clips: [urlClip],
+			selectedIds: new Set([urlClip.id]),
+			defaultAspectRatio: "9:16",
+			actionAvailability: {
+				exports: true,
+				creative: true,
+				motion: true,
+				review: false,
+				scheduling: false,
+			},
+			approvalRequired: false,
+		});
+
+		expect(state.selectedItems).toEqual([{
+			clipId: urlClip.id,
+			expectedEditorRevision: 4,
+			hasManualBroll: false,
+		}]);
+		expect(canSubmitCampaignMotion(state, "manual_broll")).toBe(false);
+	});
 
   test("treats an asset-backed bounded placement as manual B-roll", () => {
     const placed = {

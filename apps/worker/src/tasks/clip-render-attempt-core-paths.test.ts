@@ -1404,6 +1404,38 @@ test("ClipRenderAttempt skips analysis for Center, Fit, B-roll-short-circuited, 
   }
 });
 
+test("ClipRenderAttempt keeps URL-backed motion on the stable manual B-roll target", async () => {
+	const harness = createCoreRenderPathTracer({
+		topology: "single-video",
+		clipWindow: { startSec: 0, endSec: 20 },
+		clipOverrides: {
+			studioEdits: { framing: { mode: "center" } },
+			brollUrl: "https://media.example/broll.mp4",
+			mediaMotions: [{
+				schemaVersion: 1,
+				id: "2adf79cc-35b2-4de5-85dc-c9ed197763e4",
+				target: { kind: "broll_url" },
+				startSec: 5.6,
+				endSec: 9.1,
+				entrance: "pan-left",
+				exit: "scale-out",
+				enabled: true,
+			}],
+		},
+		brollDurationSec: 20,
+	});
+
+	await expect(harness.clipRenderAttempt.execute({
+		attempt: harness.attempt,
+		signal: new AbortController().signal,
+	})).resolves.toMatchObject({ status: "completed", succeeded: 1, failed: 0 });
+	const command = harness.commands.find((candidate) =>
+		candidate.outputVariantIds.includes("variant-9x16"));
+	const graph = command?.args[command.args.indexOf("-filter_complex") + 1] ?? "";
+	expect(graph).toContain("overlay=0:0:enable='between(t,5.6,9.1)'");
+	expect(graph).toContain("scale=w='trunc(1080*");
+});
+
 test("ClipRenderAttempt omits an unavailable brand logo and diagnoses the fallback", async () => {
   const harness = createCoreRenderPathTracer({
     topology: "single-video",

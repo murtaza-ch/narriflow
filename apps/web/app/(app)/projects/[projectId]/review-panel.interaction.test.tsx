@@ -12,6 +12,9 @@ const commentId = "40000000-0000-4000-8000-000000000006";
 const exportId = "40000000-0000-4000-8000-000000000007";
 const clipId = "40000000-0000-4000-8000-000000000008";
 const variantId = "40000000-0000-4000-8000-000000000009";
+const unselectedExportId = "40000000-0000-4000-8000-000000000010";
+const unselectedClipId = "40000000-0000-4000-8000-000000000011";
+const unselectedVariantId = "40000000-0000-4000-8000-000000000012";
 
 const browser = new Window({
   url: `http://localhost:3000/projects/${projectId}?tab=review`,
@@ -151,6 +154,7 @@ async function renderPanel(options: {
       <ChakraProvider value={system}>
         <ReviewPanel
           projectId={projectId}
+          availableClipIds={[clipId, unselectedClipId]}
           canManageReview={options.canManageReview}
           creationAccess={
             options.creationAccess ??
@@ -195,6 +199,98 @@ afterAll(() => {
 });
 
 describe("ReviewPanel mutation authorization", () => {
+  test("preselects the Clips campaign handoff once without overwriting explicit review edits", async () => {
+    const current = workspace();
+    current.candidates = [
+      {
+        id: exportId,
+        clipId,
+        editorRevision: 3,
+        createdAt: "2026-08-31T12:00:00.000Z",
+        clip: {
+          title: "Selected campaign clip",
+          index: 0,
+          startSec: 0,
+          endSec: 30,
+          editorRevision: 3,
+        },
+        variants: [
+          {
+            id: variantId,
+            aspectRatio: "ratio_9_16",
+            resolution: "1080p",
+            durationSec: 30,
+            status: "completed",
+          },
+        ],
+      },
+      {
+        id: unselectedExportId,
+        clipId: unselectedClipId,
+        editorRevision: 2,
+        createdAt: "2026-08-31T12:00:00.000Z",
+        clip: {
+          title: "Unselected campaign clip",
+          index: 1,
+          startSec: 30,
+          endSec: 50,
+          editorRevision: 2,
+        },
+        variants: [
+          {
+            id: unselectedVariantId,
+            aspectRatio: "ratio_1_1",
+            resolution: "1080p",
+            durationSec: 20,
+            status: "completed",
+          },
+        ],
+      },
+    ];
+    browser.sessionStorage.setItem(
+      "narriflow:campaign-clip-selection:v1",
+      JSON.stringify({ version: 1, projectId, clipIds: [clipId] }),
+    );
+    let loadCount = 0;
+    globalThis.fetch = mock(async (request, init) => {
+      const url = String(request);
+      if ((init?.method ?? "GET") === "GET") {
+        loadCount += 1;
+        return Response.json(current);
+      }
+      if (url === `/api/projects/${projectId}/review-rounds/${roundId}/resend`) {
+        return Response.json({ notificationIds: [] });
+      }
+      throw new Error(`Unexpected request: ${init?.method ?? "GET"} ${url}`);
+    }) as typeof fetch;
+
+    const container = await renderPanel({ canManageReview: true });
+    const candidateInputs = () =>
+      [...container.querySelectorAll('input[type="checkbox"]')].filter(
+        (entry) =>
+          entry.closest("label")?.textContent?.includes("campaign clip"),
+      ) as HTMLInputElement[];
+
+    expect(candidateInputs().map((input) => input.checked)).toEqual([
+      true,
+      false,
+    ]);
+
+    await act(async () => {
+      candidateInputs()[0]?.click();
+      await browser.happyDOM.waitUntilComplete();
+    });
+    expect(candidateInputs()[0]?.checked).toBe(false);
+
+    await act(async () => {
+      button(container, "Resend")?.click();
+      await browser.happyDOM.waitUntilComplete();
+    });
+
+    expect(loadCount).toBe(2);
+    expect(candidateInputs()[0]?.checked).toBe(false);
+  });
+
   test("retains review creation state and its key after a malformed success response", async () => {
     const current = workspace();
     current.candidates = [

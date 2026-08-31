@@ -1,5 +1,3 @@
-import { z } from "zod";
-
 import {
   BusinessAutomationAccessError,
   BUSINESS_AUTOMATION_FAILURE_MESSAGE,
@@ -10,12 +8,15 @@ import {
   type WorkspaceApiKeyScope,
   type createBusinessAutomation,
 } from "@narriflow/services";
-import type { WorkspaceCapability } from "@narriflow/validators";
+import {
+  businessAutomationUuidSchema,
+  type WorkspaceCapability,
+} from "@narriflow/validators";
+import { ZodError } from "zod";
 
 const MAX_REQUEST_BYTES = 256 * 1024;
 const API_KEY_RATE_LIMIT = 300;
 const API_KEY_RATE_WINDOW_SECONDS = 60;
-const uuidSchema = z.string().uuid();
 
 type BusinessAutomation = ReturnType<typeof createBusinessAutomation>;
 
@@ -107,7 +108,7 @@ async function readJson(request: Request) {
 }
 
 function id(value: string | undefined, name: string) {
-  const parsed = uuidSchema.safeParse(value);
+  const parsed = businessAutomationUuidSchema.safeParse(value);
   if (!parsed.success) {
     throw new BusinessApiRequestError(
       "request_invalid",
@@ -154,7 +155,7 @@ function safeError(error: unknown) {
   if (error instanceof BusinessAutomationAccessError) {
     return json({ error: error.code, message: error.message }, 403);
   }
-  const validationIssues = error instanceof z.ZodError
+  const validationIssues = error instanceof ZodError
     ? error.issues
     : error && typeof error === "object" && "issues" in error &&
         Array.isArray(error.issues)

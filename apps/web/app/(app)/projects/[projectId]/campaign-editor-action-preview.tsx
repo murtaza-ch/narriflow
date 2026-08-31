@@ -6,6 +6,7 @@ import { AlertTriangle, Check, LayoutTemplate, Palette, Sparkles } from "lucide-
 import { Button } from "@narriflow/ui/components/button";
 import { Spinner } from "@narriflow/ui";
 import { userErrorMessage } from "@narriflow/validators";
+import { formatFractionalDuration } from "@/lib/format";
 import {
   buildApplyProjectBrandProfileSelectedInput,
   buildApplySceneTemplateSelectedInput,
@@ -628,11 +629,11 @@ export function CampaignEditorActionPreview({
               <Box>
                 <Text textStyle="title" fontSize="sm">{selectedScene.name}</Text>
                 <Text fontSize="xs" color="fg.muted" mt="0.5">
-                  {selectedScene.contentKind} · {selectedScene.durationSec.toFixed(1)}s per clip
+                  {selectedScene.contentKind} · {formatFractionalDuration(selectedScene.durationSec, 1)} per clip
                 </Text>
               </Box>
               <Text textStyle="data" color="fg.timecode">
-                +{(selectedScene.durationSec * state.selectedCount).toFixed(1)}s
+                +{formatFractionalDuration(selectedScene.durationSec * state.selectedCount, 1)}
               </Text>
             </Flex>
           ) : null}

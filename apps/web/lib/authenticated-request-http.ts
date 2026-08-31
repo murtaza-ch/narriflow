@@ -65,8 +65,10 @@ export async function normalizeAuthenticatedErrorResponse(
           ];
         })
     : undefined;
+  const expectedDomainFailure =
+    response.headers.get("x-narriflow-error-contract") === "expected-v1";
   const body =
-    response.status >= 500
+    response.status >= 500 && !expectedDomainFailure
       ? {
           error: "internal_error",
           message: "Something went wrong. Try again or contact support.",
@@ -79,6 +81,7 @@ export async function normalizeAuthenticatedErrorResponse(
           requestId,
         };
   const headers = new Headers(response.headers);
+  headers.delete("X-Narriflow-Error-Contract");
   headers.set("X-Request-ID", requestId);
   headers.set("Content-Type", "application/json; charset=UTF-8");
   return new Response(JSON.stringify(body), {

@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { captionPresetsEqual, captionPresetSchema } from "./caption-preset";
+import { activeManualBrollMotionWindow } from "./broll";
 import {
   buildEditedTimeMap,
   deletedRangesSchema,
@@ -148,6 +149,11 @@ const editorDocumentV2Schema = z
       endSec: doc.clipEndSec,
     });
     const sourceDurationSec = editedTimeMap.editedDurationSec;
+		const manualBrollWindow = activeManualBrollMotionWindow({
+			brollUrl: doc.brollUrl,
+			assetBackedPlacementCount: doc.brollPlacements.length,
+			editedDurationSec: sourceDurationSec,
+		});
     const orderedBroll = [...doc.brollPlacements].sort(
       (left, right) => left.startSec - right.startSec || left.id.localeCompare(right.id),
     );
@@ -182,6 +188,9 @@ const editorDocumentV2Schema = z
 
     const sceneIds = new Set(doc.sceneBlocks.map((scene) => scene.id));
     const sceneById = new Map(doc.sceneBlocks.map((scene) => [scene.id, scene]));
+		const brollById = new Map(
+			doc.brollPlacements.map((placement) => [placement.id, placement]),
+		);
     doc.censorSegments.forEach((segment, index) => {
       if (segment.sourceStartSec < doc.clipStartSec || segment.sourceEndSec > doc.clipEndSec) {
         context.addIssue({ code: "custom", path: ["censorSegments", index], message: "censor segment is outside the clip source window" });
@@ -212,6 +221,43 @@ const editorDocumentV2Schema = z
           });
         }
       }
+			if (motion.target.kind === "broll") {
+				const placement = brollById.get(motion.target.placementId);
+				if (!placement) {
+					context.addIssue({
+						code: "custom",
+						path: ["mediaMotions", index, "target"],
+						message: "B-roll placement target does not exist",
+					});
+				} else if (
+					motion.startSec < placement.startSec ||
+					motion.endSec > placement.endSec
+				) {
+					context.addIssue({
+						code: "custom",
+						path: ["mediaMotions", index],
+						message: "B-roll media motion must stay inside its placement",
+					});
+				}
+			}
+			if (motion.target.kind === "broll_url") {
+				if (!manualBrollWindow) {
+					context.addIssue({
+						code: "custom",
+						path: ["mediaMotions", index, "target"],
+						message: "manual B-roll URL target is not active",
+					});
+				} else if (
+					Math.abs(motion.startSec - manualBrollWindow.startSec) > 0.001 ||
+					Math.abs(motion.endSec - manualBrollWindow.endSec) > 0.001
+				) {
+					context.addIssue({
+						code: "custom",
+						path: ["mediaMotions", index],
+						message: "manual B-roll URL motion must use its canonical window",
+					});
+				}
+			}
       if (motion.endSec > totalEditedDurationSec) {
         context.addIssue({ code: "custom", path: ["mediaMotions", index], message: "media motion is outside the edited timeline" });
       }
@@ -223,9 +269,11 @@ const editorDocumentV2Schema = z
     const enabledByTarget = new Map<string, typeof doc.mediaMotions>();
     doc.mediaMotions.forEach((motion) => {
       if (!motion.enabled) return;
-      const key = motion.target.kind === "broll"
-        ? "broll"
-        : `scene:${motion.target.sceneBlockId}`;
+			const key = motion.target.kind === "broll"
+				? `broll:${motion.target.placementId}`
+				: motion.target.kind === "broll_url"
+					? "broll-url"
+					: `scene:${motion.target.sceneBlockId}`;
       enabledByTarget.set(key, [...(enabledByTarget.get(key) ?? []), motion]);
     });
     for (const [target, motions] of enabledByTarget) {
@@ -233,6 +281,14 @@ const editorDocumentV2Schema = z
         left.startSec - right.startSec || left.id.localeCompare(right.id));
       ordered.forEach((motion, index) => {
         const previous = ordered[index - 1];
+				if (previous && target.startsWith("broll:")) {
+          context.addIssue({
+            code: "custom",
+            path: ["mediaMotions"],
+            message: "only one enabled media motion is allowed per B-roll placement",
+          });
+          return;
+        }
         if (
           previous &&
           (target.startsWith("scene:") || motion.startSec < previous.endSec)
@@ -766,6 +822,88 @@ function rebaseBrollPlacements(
   return changed ? rebased : (placements as BrollPlacement[]);
 }
 
+function rebaseBrollMediaMotions(
+	motions: readonly MediaMotion[],
+	previousPlacements: readonly BrollPlacement[],
+	nextPlacements: readonly BrollPlacement[],
+	oldMap: EditedTimeMap,
+	newMap: EditedTimeMap,
+	brollUrl: string | null,
+): MediaMotion[] {
+	if (motions.every((motion) =>
+		motion.target.kind !== "broll" && motion.target.kind !== "broll_url")) {
+		return motions as MediaMotion[];
+	}
+	const previousById = new Map(
+		previousPlacements.map((placement) => [placement.id, placement]),
+	);
+	const nextById = new Map(
+		nextPlacements.map((placement) => [placement.id, placement]),
+	);
+	let changed = false;
+	const rebased: MediaMotion[] = [];
+	for (const motion of motions) {
+		if (motion.target.kind === "broll_url") {
+			const window = activeManualBrollMotionWindow({
+				brollUrl,
+				assetBackedPlacementCount: nextPlacements.length,
+				editedDurationSec: newMap.editedDurationSec,
+			});
+			if (!window) {
+				changed = true;
+				continue;
+			}
+			if (
+				motion.startSec === window.startSec &&
+				motion.endSec === window.endSec
+			) {
+				rebased.push(motion);
+			} else {
+				changed = true;
+				rebased.push({ ...motion, ...window });
+			}
+			continue;
+		}
+		if (motion.target.kind !== "broll") {
+			rebased.push(motion);
+			continue;
+		}
+		const previousPlacement = previousById.get(motion.target.placementId);
+		const nextPlacement = nextById.get(motion.target.placementId);
+		if (!previousPlacement || !nextPlacement) {
+			changed = true;
+			continue;
+		}
+		const projected = sourceRangeToEdited(newMap, {
+			startSec: Math.max(
+				newMap.clipStartSec,
+				editedToSource(oldMap, motion.startSec),
+			),
+			endSec: Math.min(
+				newMap.clipEndSec,
+				editedToSource(oldMap, motion.endSec),
+			),
+		});
+		if (!projected) {
+			changed = true;
+			continue;
+		}
+		const startSec = Math.max(nextPlacement.startSec, projected.startSec);
+		const endSec = Math.min(nextPlacement.endSec, projected.endSec);
+		if (endSec - startSec < 0.001) {
+			changed = true;
+			continue;
+		}
+		if (startSec === motion.startSec && endSec === motion.endSec) {
+			rebased.push(motion);
+			continue;
+		}
+		changed = true;
+		rebased.push({ ...motion, startSec, endSec });
+	}
+	return changed ? rebased : (motions as MediaMotion[]);
+}
+
 function rebaseDocumentTimelineEdits(
   doc: EditorDocument,
   oldWindow: ClipWindow,
@@ -775,6 +913,11 @@ function rebaseDocumentTimelineEdits(
 ) {
   const oldMap = buildEditedTimeMap(oldDeletedRanges, oldWindow);
   const newMap = buildEditedTimeMap(newDeletedRanges, newWindow);
+	const brollPlacements = rebaseBrollPlacements(
+		doc.brollPlacements,
+		oldMap,
+		newMap,
+	);
   return {
     studioEdits: rebaseStudioEdits(
       doc,
@@ -783,11 +926,15 @@ function rebaseDocumentTimelineEdits(
       newWindow,
       newDeletedRanges,
     ),
-    brollPlacements: rebaseBrollPlacements(
-      doc.brollPlacements,
-      oldMap,
-      newMap,
-    ),
+		brollPlacements,
+		mediaMotions: rebaseBrollMediaMotions(
+			doc.mediaMotions,
+			doc.brollPlacements,
+			brollPlacements,
+			oldMap,
+			newMap,
+			doc.brollUrl,
+		),
   };
 }
 
@@ -863,7 +1010,15 @@ export function applyEditorAction(
     case "setBrollUrl":
       return action.brollUrl === doc.brollUrl
         ? doc
-        : { ...doc, brollUrl: action.brollUrl };
+				: {
+						...doc,
+						brollUrl: action.brollUrl,
+						mediaMotions: action.brollUrl
+							? doc.mediaMotions
+							: doc.mediaMotions.filter(
+								(motion) => motion.target.kind !== "broll_url",
+							),
+					};
     case "insertBrollPlacement":
       return doc.brollPlacements.some((placement) => placement.id === action.placement.id) ||
         !brollPlacementSchema.safeParse(action.placement).success
@@ -874,6 +1029,9 @@ export function applyEditorAction(
               (left, right) =>
                 left.startSec - right.startSec || left.id.localeCompare(right.id),
             ),
+						mediaMotions: doc.mediaMotions.filter(
+							(motion) => motion.target.kind !== "broll_url",
+						),
           });
     case "replaceBrollPlacement": {
       const current = doc.brollPlacements.find(
@@ -904,6 +1062,11 @@ export function applyEditorAction(
             brollPlacements: doc.brollPlacements.filter(
               (placement) => placement.id !== action.id,
             ),
+						mediaMotions: doc.mediaMotions.filter(
+							(motion) =>
+								motion.target.kind !== "broll" ||
+								motion.target.placementId !== action.id,
+						),
           })
         : doc;
     case "deleteRange": {

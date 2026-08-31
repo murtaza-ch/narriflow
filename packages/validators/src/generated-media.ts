@@ -188,6 +188,12 @@ export const generatedMediaListSchema = z.strictObject({
 	limit: z.number().int().min(1).max(100).default(40),
 });
 
+export const generatedMediaStudioListQuerySchema = z.strictObject({
+	id: z.string().uuid(),
+	clipId: z.string().uuid().optional(),
+	limit: z.coerce.number().int().min(1).max(100).optional(),
+});
+
 /**
  * Resolves one immutable asset reference already stored in a Clip document.
  * The short-lived access URL is server-produced and intentionally absent

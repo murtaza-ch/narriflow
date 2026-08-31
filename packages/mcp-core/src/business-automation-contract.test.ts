@@ -214,6 +214,15 @@ test("REST v1 and MCP execute the same scene mutation and expose its settled ite
       ineligible: 0,
       failed: 0,
     },
+    items: [{
+      requestedClipId: clipId,
+      expectedEditorRevision: 3,
+      status: "succeeded",
+      errorCode: null,
+      settledAt: completedAt,
+    }],
+    createdAt: new Date("2026-08-31T11:59:59.000Z"),
+    completedAt,
     replayed: false,
   };
   const listFixture = {

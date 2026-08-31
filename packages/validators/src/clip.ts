@@ -8,6 +8,7 @@ export {
 import { brollCuesArraySchema } from "./broll";
 import { captionPresetSchema } from "./caption-preset";
 import { clipPlatformTargetSchema } from "./content-pack";
+import { brollPlacementSchema } from "./editor-document";
 import { studioEditsSchema } from "./studio-edits";
 import { transcriptUtteranceSchema } from "./transcript";
 
@@ -184,6 +185,7 @@ export const clipSnapshotSchema = z.object({
   startSec: z.number().nonnegative(),
   endSec: z.number().nonnegative(),
   durationSec: z.number().positive(),
+	editedDurationSec: z.number().finite().nonnegative(),
   title: z.string().nullable(),
   hookText: z.string().min(1),
   payoffText: z.string().nullable(),
@@ -203,6 +205,7 @@ export const clipSnapshotSchema = z.object({
   renderVariants: z.array(clipRenderVariantSchema),
   captionPreset: captionPresetSchema.nullable().optional(),
   brollUrl: z.string().nullable().optional(),
+	brollPlacements: z.array(brollPlacementSchema),
   brollCues: brollCuesArraySchema.optional(),
   studioEdits: studioEditsSchema.optional(),
   // Whether the worker has cut this clip's lightweight 540p preview proxy

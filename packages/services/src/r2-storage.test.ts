@@ -15,6 +15,7 @@ import {
   collectUploadedParts,
   collectExactKeyMultipartUploads,
   completeMultipartUpload,
+  copyObject,
   createMultipartUpload,
   deleteObject,
   downloadObjectToFile,
@@ -264,6 +265,13 @@ test("R2 object operations reject a pre-aborted signal before storage access", a
   ).rejects.toBe(reason);
   await expect(
     deleteObject("test/clip-render-attempt/aborted/delete.mp4", {
+      signal: controller.signal,
+    }),
+  ).rejects.toBe(reason);
+  await expect(
+    copyObject({
+      sourceKey: "test/clip-render-attempt/aborted/source.mp4",
+      destinationKey: "test/clip-render-attempt/aborted/copy.mp4",
       signal: controller.signal,
     }),
   ).rejects.toBe(reason);
