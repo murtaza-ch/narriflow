@@ -7,6 +7,7 @@ import {
   brandProfileSoftDeleteSchema,
   brandProfileUpdateSchema,
   brandTemplateSnapshotSchema,
+  brandProfileSnapshotSchema,
   brandVisualIdentitySchema,
   brandVoiceGuidanceSchema,
   resolvePricingTier,
@@ -94,7 +95,9 @@ type SnapshotTemplate = Pick<
   | "accentColor"
 >;
 
-function templateSnapshot(template: SnapshotTemplate): BrandTemplateSnapshot {
+export function buildBrandTemplateSnapshot(
+  template: SnapshotTemplate,
+): BrandTemplateSnapshot {
   return brandTemplateSnapshotSchema.parse({
     templateId: template.id,
     captionPreset: template.captionPreset,
@@ -112,7 +115,7 @@ export function buildBrandProfileSnapshot(
   profile: SnapshotProfile,
   template: SnapshotTemplate | null,
 ) {
-  return {
+  return brandProfileSnapshotSchema.parse({
     version: 1 as const,
     profileId: profile.id,
     profileRevision: profile.revision,
@@ -120,8 +123,8 @@ export function buildBrandProfileSnapshot(
     identity: brandVisualIdentitySchema.parse(profile.visualIdentity),
     voice: brandVoiceGuidanceSchema.parse(profile.voiceGuidance),
     approvalRule: profile.approvalRule,
-    style: template ? templateSnapshot(template) : null,
-  };
+    style: template ? buildBrandTemplateSnapshot(template) : null,
+  });
 }
 
 export function resolveProfileStyleSelection(input: {
@@ -578,7 +581,7 @@ export class BrandProfileService {
       profileId: profile.id,
       profileSnapshot: buildBrandProfileSnapshot(profile, selected),
       templateId: selected?.id ?? null,
-      templateSnapshot: selected ? templateSnapshot(selected) : null,
+      templateSnapshot: selected ? buildBrandTemplateSnapshot(selected) : null,
     };
   }
 

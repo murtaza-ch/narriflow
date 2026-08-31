@@ -247,6 +247,7 @@ function createCoreRenderPathTracer(input: {
   const commands: CommandProbe[] = [];
   const uploadedVariantIds: string[] = [];
   const persistedVariantIds: string[] = [];
+  const persistedVariantDurations = new Map<string, number>();
   const mutationVariantIds: string[] = [];
   const diagnostics: Array<{
     message: string;
@@ -632,7 +633,7 @@ function createCoreRenderPathTracer(input: {
           persistedSplitLayouts.push(failure);
           return true;
         },
-        completeClipRenderVariant: async (variantId) => {
+        completeClipRenderVariant: async (variantId, completion) => {
           mutationVariantIds.push(variantId);
           if (input.rejectPersistenceForVariantIds?.includes(variantId)) {
             throw new Error("Injected guarded persistence rejection");
@@ -643,6 +644,7 @@ function createCoreRenderPathTracer(input: {
           }
           states.set(variantId, "completed");
           persistedVariantIds.push(variantId);
+          persistedVariantDurations.set(variantId, completion.durationSec);
           return { persisted: true };
         },
         failClipRenderVariant: async (variantId, code, disposition) => {
@@ -742,6 +744,7 @@ function createCoreRenderPathTracer(input: {
     failureDispositions,
     mutationVariantIds,
     persistedVariantIds,
+    persistedVariantDurations,
     persistedAutoLayouts,
     persistedSplitLayouts,
     persistedScreenLayouts,
@@ -986,6 +989,89 @@ for (const fixture of topologyFixtures) {
     });
   });
 }
+
+test("ClipRenderAttempt persists the composite Scene duration for latest and frozen export variants", async () => {
+  const sceneBlocks = [
+    {
+      id: "8ab9d330-688f-4574-932c-27ac661245c1",
+      schemaVersion: 1,
+      anchorSec: 0,
+      durationSec: 3,
+      content: { kind: "color", color: "#111827" },
+      motion: { entrance: "none", exit: "none" },
+      templateSnapshot: null,
+    },
+    {
+      id: "d8ab95f8-fc16-4e60-814e-69762a59a99b",
+      schemaVersion: 1,
+      anchorSec: 10,
+      durationSec: 3,
+      content: { kind: "color", color: "#1D4ED8" },
+      motion: { entrance: "none", exit: "none" },
+      templateSnapshot: null,
+    },
+  ];
+  const clipWindow = { startSec: 0, endSec: 19.23 };
+  const harness = createCoreRenderPathTracer({
+    topology: "single-video",
+    clipWindow,
+    clipOverrides: { sceneBlocks },
+    variants: [
+      { id: "variant-latest", aspectRatio: "ratio_9_16" },
+      {
+        id: "variant-export",
+        aspectRatio: "ratio_9_16",
+        exportVariant: { exportId: "export-frozen", watermark: false },
+        clipSnapshot: clipFixture({
+          hasStudioEdit: false,
+          overrides: { ...clipWindow, sceneBlocks },
+        }),
+      },
+    ],
+  });
+
+  await expect(
+    harness.clipRenderAttempt.execute({
+      attempt: harness.attempt,
+      signal: new AbortController().signal,
+    }),
+  ).resolves.toMatchObject({ status: "completed", succeeded: 2 });
+  expect(Object.fromEntries(harness.persistedVariantDurations)).toEqual({
+    "variant-latest": 25.23,
+    "variant-export": 25.23,
+  });
+});
+
+test("ClipRenderAttempt keeps source-duration parity when the composition has no Scene Blocks", async () => {
+  const clipWindow = { startSec: 0, endSec: 19.23 };
+  const harness = createCoreRenderPathTracer({
+    topology: "single-video",
+    clipWindow,
+    variants: [
+      { id: "variant-latest", aspectRatio: "ratio_9_16" },
+      {
+        id: "variant-export",
+        aspectRatio: "ratio_9_16",
+        exportVariant: { exportId: "export-frozen", watermark: false },
+        clipSnapshot: clipFixture({
+          hasStudioEdit: false,
+          overrides: clipWindow,
+        }),
+      },
+    ],
+  });
+
+  await expect(
+    harness.clipRenderAttempt.execute({
+      attempt: harness.attempt,
+      signal: new AbortController().signal,
+    }),
+  ).resolves.toMatchObject({ status: "completed", succeeded: 2 });
+  expect(Object.fromEntries(harness.persistedVariantDurations)).toEqual({
+    "variant-latest": 19.23,
+    "variant-export": 19.23,
+  });
+});
 
 test("ClipRenderAttempt isolates resource probe failure from rendering and settlement", async () => {
   const harness = createCoreRenderPathTracer({

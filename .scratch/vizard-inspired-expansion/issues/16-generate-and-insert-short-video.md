@@ -4,7 +4,9 @@
 
 **Blocked by:** [Generate and insert still images](09-generate-and-insert-still-images.md) and [Add reusable and insertable Scene Blocks](08-add-reusable-and-insertable-scene-blocks.md).
 
-**Status:** ready-for-agent
+**Status:** in-progress — entry gate closed
+
+**Remaining evidence:** Select and register an approved video adapter only after image production evidence exists, then prove provider-specific errors, real-media transcode/export/delete behavior, Studio history, resource budgets, and cohort rollout.
 
 **Specification:** [Generated B-roll and visual assets](../features/generated-media.md)
 
@@ -16,11 +18,11 @@
 ## Observable acceptance criteria
 
 - [ ] The provider adapter implements asynchronous submit, waiting, poll, cancellation where supported, and normalized usage.
-- [ ] Video options are bounded to supported aspect ratios and durations and validated before usage reservation.
-- [ ] Completed output is guarded, probed, fingerprinted, and saved as a Visual Asset with duration and audio metadata.
+- [x] Video options are bounded to supported aspect ratios and durations and validated before usage reservation.
+- [x] Completed output is guarded, probed, fingerprinted, and saved as a Visual Asset with duration and audio metadata.
 - [ ] Studio inserts video at the playhead, replaces selected B-roll, saves it to a Brand Profile, and preserves editor history and export preparation.
-- [ ] Generated video never becomes new project source media or starts moment detection.
-- [ ] Unknown provider outcomes, long waiting, late completion after cancellation, and duplicate callbacks reconcile without double charge or duplicate asset.
+- [x] Generated video never becomes new project source media or starts moment detection.
+- [x] Unknown provider outcomes, long waiting, late completion after cancellation, and duplicate callbacks reconcile without double charge or duplicate asset.
 
 ## Tests and failure injection
 
@@ -28,13 +30,19 @@
 - [ ] Real-media tests cover codec normalization, duration, aspect ratio, optional audio, preview, four-target export, and asset deletion.
 - [ ] Resource tests enforce download, probe, transcode, storage, polling, and worker concurrency budgets.
 
+## Shared lifecycle evidence — 31 August 2026
+
+- The provider-neutral lifecycle tests cover bounded video input, asynchronous waiting and polling, cancellation, safe poll retry, late completion, unknown outcomes, duplicate settlement, usage retention, and nonblocking `reconciliation_required` jobs without starting ingest or moment detection.
+- The guarded ingestion contract records probed video duration, dimensions, codecs, and optional-audio metadata, but only with deterministic fake-provider fixtures. The shared 102-test/314-assertion generated-media gate and 24-test/315-assertion disposable-schema Vizard gate are green.
+- No generated-video provider or model has been approved or registered. There are no provider-specific, real-media transcode/export/delete, resource-budget, browser, live-provider, or deployed cohort results; the entry gate and every corresponding checkbox remain closed.
+
 ## Rollout
 
 - [ ] Enable for internal accounts, then a capped Pro cohort, then Business. Keep independent image and video controls.
 
 ## Scope boundaries
 
-- [ ] Do not generate long-form source media, clone faces or voices, or expose a raw provider catalog.
+- [x] Do not generate long-form source media, clone faces or voices, or expose a raw provider catalog.
 
 ## Fresh-task handoff
 

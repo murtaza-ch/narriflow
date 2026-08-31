@@ -2,8 +2,19 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  EXPORT_BUNDLE_CLEANUP_HOLD_MS,
+  adoptExportBundlePublication,
+  admitExportBundleCleanup,
+  exportBundleStorageKeys,
+  planExportBundleCleanup,
+} from "@narriflow/services";
 import { exportBundleManifestSchema, MAX_EXPORT_BUNDLE_INPUT_BYTES } from "@narriflow/validators";
-import { createExportBundleArchive, expireExportBundles, exportBundleStorageKeys, runExportBundlePipeline } from "./export-bundle";
+import {
+  createExportBundleArchive,
+  expireExportBundles,
+  runExportBundlePipeline,
+} from "./export-bundle";
 
 const directories: string[] = [];
 afterEach(async () => Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true }))));
@@ -17,6 +28,101 @@ describe("export bundle archive", () => {
       finalKey: "projects/project-1/campaign-operations/operation-1/completed/attempt-1.zip",
     });
     expect(first.finalKey).not.toBe(second.finalKey);
+  });
+
+  test("admits both attempt-scoped bundle objects behind a conservative producer hold", async () => {
+    const now = new Date("2026-08-31T00:00:00.000Z");
+    const plan = planExportBundleCleanup(
+      "project-1",
+      "operation-1",
+      "attempt-1",
+      now,
+    );
+    const captured: unknown[] = [];
+
+    await admitExportBundleCleanup(
+      {
+        async createMany(input) {
+          captured.push(input);
+          return { count: input.data.length };
+        },
+      },
+      plan,
+    );
+
+    expect(plan.claimExpiresAt).toEqual(
+      new Date(now.getTime() + EXPORT_BUNDLE_CLEANUP_HOLD_MS),
+    );
+    expect(plan.obligations).toEqual([
+      {
+        origin: "export_bundle_attempt",
+        cleanupClass: "export_bundle_attempt",
+        projectId: "project-1",
+        objectKey:
+          "projects/project-1/campaign-operations/operation-1/attempts/attempt-1.zip",
+      },
+      {
+        origin: "export_bundle_attempt",
+        cleanupClass: "export_bundle_unsettled_publication",
+        projectId: "project-1",
+        objectKey:
+          "projects/project-1/campaign-operations/operation-1/completed/attempt-1.zip",
+      },
+    ]);
+    expect(captured).toEqual([
+      {
+        data: plan.obligations.map((obligation) => ({
+          ...obligation,
+          clipId: null,
+          claimId: "attempt-1",
+          claimExpiresAt: plan.claimExpiresAt,
+        })),
+        skipDuplicates: true,
+      },
+    ]);
+  });
+
+  test("adopts only the exact final bundle object under the live workflow attempt", async () => {
+    const plan = planExportBundleCleanup(
+      "project-1",
+      "operation-1",
+      "attempt-1",
+      new Date("2026-08-31T00:00:00.000Z"),
+    );
+    const updates: unknown[] = [];
+
+    await adoptExportBundlePublication(
+      {
+        async updateMany(input) {
+          updates.push(input);
+          return { count: 1 };
+        },
+        async count() {
+          return 0;
+        },
+      },
+      plan,
+      new Date("2026-08-31T00:01:00.000Z"),
+    );
+
+    expect(updates).toEqual([
+      expect.objectContaining({
+        where: expect.objectContaining({
+          claimId: "attempt-1",
+          OR: [
+            {
+              origin: "export_bundle_attempt",
+              cleanupClass: "export_bundle_unsettled_publication",
+              objectKey:
+                "projects/project-1/campaign-operations/operation-1/completed/attempt-1.zip",
+            },
+          ],
+        }),
+        data: expect.objectContaining({
+          failureCode: "export_bundle_published",
+        }),
+      }),
+    ]);
   });
 
   test("creates a real zip containing frozen names and a URL-free manifest", async () => {

@@ -51,6 +51,7 @@ function input(platform: SocialPlatform): PublicationPlatformInput {
 			tiktokPrivacyLevel: "PUBLIC_TO_EVERYONE",
 			mediaDurationSec: 1,
 			videoCoverTimestampMs: 500,
+			thumbnailSourceTimeMs: 750,
 		},
 		account: {
 			id: "account-1",
@@ -361,6 +362,110 @@ describe("native publication adapters", () => {
 		expect(state.cleanupCount()).toBe(1);
 	});
 
+	test("sets the frozen custom thumbnail after YouTube returns the video id", async () => {
+		const request = Object.assign(input("youtube_shorts"), {
+			thumbnail: {
+				storageKey: "private/thumbnail.jpg",
+				fileName: "thumbnail.jpg",
+				contentType: "image/jpeg" as const,
+				sizeBytes: 6,
+				fingerprint: "b".repeat(64),
+				sourceTimeMs: null,
+			},
+		});
+		const state = harness([
+			json({}, { headers: { Location: "https://youtube-upload.example/session" } }),
+			json({ id: "youtube-video-with-thumbnail" }),
+			json({ items: [{ default: { url: "https://youtube.example/thumb.jpg" } }] }),
+		]);
+
+		const result = await state.registry.get("youtube_shorts").publish(request, {
+			signal: new AbortController().signal,
+			checkpoint: async () => undefined,
+		});
+
+		expect(result).toMatchObject({
+			kind: "accepted",
+			receipt: { receiptId: "youtube-video-with-thumbnail" },
+		});
+		expect(state.requests.map(({ url }) => url)).toEqual([
+			"https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status",
+			"https://youtube-upload.example/session",
+			"https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId=youtube-video-with-thumbnail&uploadType=media",
+		]);
+		expect(state.requests[2]!.init).toMatchObject({
+			method: "POST",
+			headers: {
+				Authorization: "Bearer access-token",
+				"Content-Type": "image/jpeg",
+				"Content-Length": "6",
+			},
+		});
+		expect(state.requests[2]!.init?.body).toBeInstanceOf(Blob);
+		expect(state.cleanupCount()).toBe(2);
+	});
+
+	test("replays a YouTube thumbnail checkpoint without uploading the video again", async () => {
+		const request = Object.assign(input("youtube_shorts"), {
+			thumbnail: {
+				storageKey: "private/thumbnail.jpg",
+				fileName: "thumbnail.jpg",
+				contentType: "image/jpeg" as const,
+				sizeBytes: 6,
+				fingerprint: "b".repeat(64),
+				sourceTimeMs: null,
+			},
+		});
+		const state = harness([
+			json({ items: [{ default: { url: "https://youtube.example/thumb.jpg" } }] }),
+		]);
+
+		const result = await state.registry.get("youtube_shorts").reconcile!(
+			request,
+			{
+				kind: "youtube_thumbnail_set",
+				state: { videoId: "youtube-video-with-thumbnail" },
+			},
+			{
+				signal: new AbortController().signal,
+				checkpoint: async () => undefined,
+			},
+		);
+
+		expect(result).toMatchObject({
+			kind: "accepted",
+			receipt: { receiptId: "youtube-video-with-thumbnail" },
+		});
+		expect(state.requests.map(({ url }) => url)).toEqual([
+			"https://www.googleapis.com/upload/youtube/v3/thumbnails/set?videoId=youtube-video-with-thumbnail&uploadType=media",
+		]);
+		expect(state.cleanupCount()).toBe(1);
+	});
+
+	test("rejects a custom YouTube thumbnail outside the shared object contract", async () => {
+		const request = Object.assign(input("youtube_shorts"), {
+			thumbnail: {
+				storageKey: "private/thumbnail.jpg",
+				fileName: "thumbnail.jpg",
+				contentType: "image/jpeg" as const,
+				sizeBytes: 2 * 1024 * 1024 + 1,
+				fingerprint: "b".repeat(64),
+				sourceTimeMs: null,
+			},
+		});
+		const state = harness([]);
+
+		await expect(state.registry.get("youtube_shorts").publish(
+			request,
+			{ signal: new AbortController().signal, checkpoint: async () => undefined },
+		)).resolves.toMatchObject({
+			kind: "failed",
+			failure: { code: "youtube_thumbnail_invalid", disposition: "permanent" },
+		});
+		expect(state.requests).toHaveLength(0);
+		expect(state.cleanupCount()).toBe(0);
+	});
+
 	test("retains an accepted YouTube receipt when the final resource reports processing failure", async () => {
 		const state = await publish("youtube_shorts", [
 			json({}, { headers: { Location: "https://youtube-upload.example/session" } }),
@@ -448,6 +553,29 @@ describe("native publication adapters", () => {
 		expect(String(state.requests[2]!.init?.body)).toContain(
 			"share_to_feed=false",
 		);
+		expect(String(state.requests[2]!.init?.body)).toContain("thumb_offset=750");
+	});
+
+	test("omits Instagram thumb_offset when the provider first frame is selected", async () => {
+		const state = harness([
+			json({ id: "instagram-user-1" }),
+			json({ data: [{ quota_usage: 1, config: { quota_total: 50 } }] }),
+			json({ id: "container-default-frame" }),
+			json({ status_code: "FINISHED" }),
+			json({ id: "instagram-post-default-frame" }),
+			json({ permalink: "https://instagram.example/reel/default-frame" }),
+		]);
+		const request = input("instagram_reels");
+		delete request.providerSettings.thumbnailSourceTimeMs;
+		delete request.providerSettings.videoCoverTimestampMs;
+
+		const result = await state.registry.get("instagram_reels").publish(request, {
+			signal: new AbortController().signal,
+			checkpoint: async () => undefined,
+		});
+
+		expect(result).toMatchObject({ kind: "accepted" });
+		expect(String(state.requests[2]!.init?.body)).not.toContain("thumb_offset");
 	});
 
 	test("preserves TikTok creator settings, upload, and accepted receipt", async () => {
@@ -497,7 +625,40 @@ describe("native publication adapters", () => {
 			"submission_started",
 			"submission_started",
 		]);
+		expect(JSON.parse(String(state.requests[1]!.init?.body))).toMatchObject({
+			post_info: { video_cover_timestamp_ms: 750 },
+		});
 		expect(state.cleanupCount()).toBe(1);
+	});
+
+	test("omits TikTok video_cover_timestamp_ms when the provider first frame is selected", async () => {
+		const state = harness([
+			json({
+				data: {
+					creator_username: "creator",
+					privacy_level_options: ["PUBLIC_TO_EVERYONE"],
+				},
+			}),
+			json({
+				data: {
+					upload_url: "https://tiktok-upload.example/default-frame",
+					publish_id: "publish-default-frame",
+				},
+			}),
+			new Response(null, { status: 204 }),
+		]);
+		const request = input("tiktok");
+		delete request.providerSettings.thumbnailSourceTimeMs;
+		delete request.providerSettings.videoCoverTimestampMs;
+
+		const result = await state.registry.get("tiktok").publish(request, {
+			signal: new AbortController().signal,
+			checkpoint: async () => undefined,
+		});
+		const init = JSON.parse(String(state.requests[1]!.init?.body));
+
+		expect(result).toMatchObject({ kind: "pending" });
+		expect(init.post_info).not.toHaveProperty("video_cover_timestamp_ms");
 	});
 
 	test("preserves LinkedIn multipart upload and post receipt", async () => {

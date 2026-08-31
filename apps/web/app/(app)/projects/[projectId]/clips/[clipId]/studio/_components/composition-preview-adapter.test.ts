@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { planClipComposition } from "@narriflow/composition-plan";
+import {
+	compositionAssetRef,
+  planClipComposition,
+  resolveCompositionMotion,
+} from "@narriflow/composition-plan";
 import {
   captionPresetSchema,
   editorDocumentSchema,
@@ -8,6 +12,7 @@ import {
 import {
   adoptCompositionPreview,
   adoptCompositionPreviewResult,
+	assetBackedBrollForPlan,
   compositionNoticeText,
   compositionNoticeEntries,
   compositionNoticeTexts,
@@ -17,7 +22,11 @@ import {
   plannedCompositionAudioState,
   plannedCompositionUsesStackedStage,
   plannedCompositionFrameStyle,
+  plannedCompositionMotionStyle,
+  plannedCompositionTransitionState,
   plannedCompositionVideoStyle,
+	frozenVisualReferencesForPreview,
+	sceneVisualAssetsForPlan,
 } from "./composition-preview-adapter";
 
 function centerPlan() {
@@ -46,6 +55,115 @@ function centerPlan() {
 }
 
 describe("composition preview adapter", () => {
+	test("resolves inserted Scene media through its exact frozen identity", () => {
+		const asset = {
+			kind: "visual_asset" as const,
+			id: "22222222-2222-4222-8222-222222222222",
+			fingerprint: "a".repeat(64),
+		};
+		const scene = {
+			schemaVersion: 1 as const,
+			id: "11111111-1111-4111-8111-111111111111",
+			anchorSec: 2,
+			durationSec: 3,
+			content: {
+				kind: "image" as const,
+				asset,
+				fit: "cover" as const,
+				backgroundColor: "#000000",
+			},
+			motion: { entrance: "none" as const, exit: "none" as const },
+			templateSnapshot: null,
+		};
+		const key = `${asset.id}:${asset.fingerprint}`;
+		const resolved = sceneVisualAssetsForPlan([scene], {
+			[key]: {
+				assetId: asset.id,
+				fingerprint: asset.fingerprint,
+				state: "deleted",
+				accessUrl: "https://media.example.test/fresh-scene-url",
+			},
+		});
+
+		const ref = compositionAssetRef("visual_asset", key);
+		expect(resolved.availability).toEqual({
+			[scene.id]: {
+				state: "available",
+				ref,
+			},
+		});
+		expect(resolved.mediaByRef).toEqual({
+			[ref]: {
+				assetKey: key,
+				accessUrl: "https://media.example.test/fresh-scene-url",
+				mediaKind: "image",
+			},
+		});
+		expect(frozenVisualReferencesForPreview([], [scene])).toEqual([{
+			assetId: asset.id,
+			fingerprint: asset.fingerprint,
+			mediaKind: "image",
+		}]);
+	});
+
+	test("resolves each immutable B-roll placement independently and retains deleted refs", () => {
+		const image = {
+			id: "11111111-1111-4111-8111-111111111111",
+			asset: {
+				kind: "visual_asset" as const,
+				id: "22222222-2222-4222-8222-222222222222",
+				fingerprint: "a".repeat(64),
+			},
+			provenance: "generated" as const,
+			mediaKind: "image" as const,
+			startSec: 1,
+			endSec: 3,
+			sourceStartSec: null,
+			sourceEndSec: null,
+		};
+		const stale = {
+			...image,
+			id: "33333333-3333-4333-8333-333333333333",
+			asset: {
+				...image.asset,
+				id: "44444444-4444-4444-8444-444444444444",
+				fingerprint: "b".repeat(64),
+			},
+			startSec: 4,
+			endSec: 6,
+		};
+		const resolved = assetBackedBrollForPlan([image, stale], {
+			[`${image.asset.id}:${image.asset.fingerprint}`]: {
+				assetId: image.asset.id,
+				fingerprint: image.asset.fingerprint,
+				state: "deleted",
+				accessUrl: "https://media.example.test/fresh-signed-image",
+			},
+			[`${stale.asset.id}:${stale.asset.fingerprint}`]: {
+				assetId: stale.asset.id,
+				fingerprint: "c".repeat(64),
+				state: "available",
+				accessUrl: "https://media.example.test/wrong-object",
+			},
+		});
+
+		expect(resolved.availability).toMatchObject({
+			state: "available",
+			placements: [{ id: image.id, mediaKind: "image" }],
+			unavailablePlacements: [{
+				id: stale.id,
+				reason: "fingerprint_stale",
+			}],
+		});
+		expect(Object.values(resolved.mediaByRef)).toEqual([{
+			assetKey: `${image.asset.id}:${image.asset.fingerprint}`,
+			accessUrl: "https://media.example.test/fresh-signed-image",
+			mediaKind: "image",
+			sourceStartSec: null,
+			sourceEndSec: null,
+		}]);
+	});
+
   test("keeps every active scoped fallback accessible", () => {
     const context = {
       requestedMode: "fit" as const,
@@ -110,6 +228,7 @@ describe("composition preview adapter", () => {
         gain: 0.65,
         muted: false,
       },
+      dialogueTreatments: [],
       music: {
         sourceRef: "music:one",
         activeRange: { startSec: 0, endSec: 8 },
@@ -145,7 +264,8 @@ describe("composition preview adapter", () => {
       music: state.music ? { ...state.music, volume: undefined } : null,
     }).toEqual({
       scheduleFingerprint: "audio:fingerprint",
-      source: { muted: false, volume: 0.65, outputGain: 1 },
+      source: { muted: false, volume: 0.65, outputGain: 1, envelope: 1 },
+      beep: null,
       music: {
         sourceRef: "music:one",
         timelineTimeSec: 0.5,
@@ -182,6 +302,7 @@ describe("composition preview adapter", () => {
         gain: 1,
         muted: false,
       },
+      dialogueTreatments: [],
       music: null,
       soundEffects: [],
     };
@@ -194,6 +315,69 @@ describe("composition preview adapter", () => {
       2 / 3,
       8,
     );
+  });
+
+  test("uses the planned censor interval and beep envelope without touching music", () => {
+    const schedule = {
+      fingerprint: "audio:censor",
+      outputFades: {
+        fadeIn: { startSec: 0, endSec: 0 },
+        fadeOut: { startSec: 4, endSec: 4 },
+      },
+      source: {
+        sourceRef: "source:censor",
+        available: true,
+        activeRange: { startSec: 0, endSec: 4 },
+        gain: 0.8,
+        muted: false,
+      },
+      dialogueTreatments: [
+        { kind: "mute" as const, activeRange: { startSec: 1, endSec: 2 } },
+        {
+          kind: "beep" as const,
+          activeRange: { startSec: 2, endSec: 3 },
+          frequencyHz: 900,
+          gain: 0.25,
+          fades: { fadeInSec: 0.1, fadeOutSec: 0.1 },
+        },
+      ],
+      music: {
+        sourceRef: "music:one",
+        activeRange: { startSec: 0, endSec: 4 },
+        gain: 0.4,
+        startOffsetSec: 0,
+        sourceDurationSec: 4,
+        loop: true as const,
+        fades: {
+          fadeIn: { startSec: 0, endSec: 0 },
+          fadeOut: { startSec: 4, endSec: 4 },
+        },
+        ducking: {
+          enabled: false,
+          windows: [],
+          duckedGainFraction: 0.3,
+          attackSec: 0.25,
+          releaseSec: 0.4,
+        },
+      },
+      soundEffects: [],
+    };
+
+    expect(plannedCompositionAudioState(schedule, 1.5)).toMatchObject({
+      source: { muted: true, volume: 0, envelope: 0 },
+      beep: null,
+      music: { volume: 0.4 },
+    });
+    const attack = plannedCompositionAudioState(schedule, 2.05);
+    expect(attack).toMatchObject({
+      source: { muted: true, volume: 0 },
+      beep: { frequencyHz: 900 },
+      music: { volume: 0.4 },
+    });
+    expect(attack.beep?.volume).toBeCloseTo(0.125, 8);
+    expect(plannedCompositionAudioState(schedule, 2.5)).toMatchObject({
+      beep: { frequencyHz: 900, volume: 0.25 },
+    });
   });
 
   test("adopts an audio-only audiogram without pretending its background will render", () => {
@@ -297,8 +481,11 @@ describe("composition preview adapter", () => {
         {
           id: "manual",
           ref: "broll:cutaway",
+          mediaKind: "video",
           startSec: 2,
           endSec: 4,
+          sourceStartSec: 0,
+          sourceEndSec: 2,
         },
       ],
     });
@@ -393,6 +580,65 @@ describe("composition preview adapter", () => {
     expect(() =>
       adoptCompositionPreview({ ...centerPlan(), version: 99 } as never, "9:16", 0),
     ).toThrow("unsupported_clip_composition_plan_version");
+  });
+
+  test("rejects an unknown media-motion version before preview adoption", () => {
+    const base = editorDocumentSchema.parse({
+      version: 2,
+      clipStartSec: 0,
+      clipEndSec: 2,
+      captionPreset: captionPresetSchema.parse({}),
+      transcriptSlice: [],
+      studioEdits: studioEditsSchema.parse({ framing: { mode: "center" } }),
+      brollUrl: null,
+      deletedRanges: [],
+      sceneBlocks: [{
+        id: "11111111-1111-4111-8111-111111111111",
+        schemaVersion: 1,
+        anchorSec: 0,
+        durationSec: 1,
+        content: {
+          kind: "text",
+          text: "Opening",
+          fontFamily: "Archivo",
+          fontAsset: null,
+          color: "#FFFFFF",
+          backgroundColor: "#111827",
+        },
+        motion: { entrance: "fade", exit: "none" },
+        templateSnapshot: null,
+      }],
+    });
+    const result = planClipComposition({
+      document: base,
+      source: { identity: "preview:motion-version", kind: "video", width: 1920, height: 1080 },
+      evidence: { automaticLayout: { state: "missing" } },
+      assets: { backgroundImage: { state: "missing" } },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+      targets: [{ id: "9:16", aspectRatio: "9:16", width: 1080, height: 1920 }],
+    });
+    if (result.status === "invalid") throw new Error(result.error.code);
+    const target = result.plan.targets[0]!;
+    const invalid = {
+      ...result.plan,
+      targets: [{
+        ...target,
+        scenes: target.scenes.map((scene) => ({
+          ...scene,
+          layers: scene.layers.map((layer) =>
+            layer.kind === "inserted-scene" && layer.motion
+              ? { ...layer, motion: { ...layer.motion, version: 2 } }
+              : layer),
+        })),
+      }],
+    };
+
+    expect(() => adoptCompositionPreview(invalid as never, "9:16", 0)).toThrow(
+      "unsupported_clip_composition_motion_version",
+    );
   });
 
   test("rejects invalid source geometry before browser adoption", () => {
@@ -531,6 +777,89 @@ describe("composition preview adapter", () => {
     });
   });
 
+  test("translates the resolved target motion and honors reduced-motion preview", () => {
+    const motion = resolveCompositionMotion({
+      motion: { entrance: "pan-left", exit: "scale-out" },
+      activeRange: { startSec: 2, endSec: 4 },
+      clippingBounds: { x: 0, y: 0, width: 100, height: 200 },
+    });
+    if (!motion) throw new Error("expected motion");
+
+    expect(plannedCompositionMotionStyle(motion, 2, false)).toMatchObject({
+      opacity: 1,
+      transform: "translate(8%, 0%) scale(1)",
+      transformOrigin: "50% 50%",
+    });
+    expect(plannedCompositionMotionStyle(motion, 2, true)).toMatchObject({
+      opacity: 1,
+      transform: "translate(0%, 0%) scale(1)",
+      reducedMotion: true,
+    });
+  });
+
+  test("composes planner-owned Ken Burns crop with a separate scale phase once", () => {
+    const motion = resolveCompositionMotion({
+      motion: { entrance: "ken-burns-in", exit: "scale-out" },
+      activeRange: { startSec: 0, endSec: 2 },
+      clippingBounds: { x: 0, y: 0, width: 100, height: 200 },
+    });
+    if (!motion) throw new Error("expected motion");
+
+    expect(plannedCompositionMotionStyle(motion, 1, false).transform).toBe(
+      "translate(0%, 0%) scale(1.1363636363636365)",
+    );
+    expect(plannedCompositionMotionStyle(motion, 2, false).transform).toBe(
+      "translate(0%, 0%) scale(1.2272727272727275)",
+    );
+  });
+
+  test("translates every planned transition family and disables it for reduced motion", () => {
+    const cases = [
+      ["cross-dissolve", "cross-dissolve"],
+      ["wipe-left", "wipe"],
+      ["slide-up", "slide"],
+      ["zoom-out", "zoom"],
+    ] as const;
+    for (const [type, family] of cases) {
+      const result = planClipComposition({
+        document: editorDocumentSchema.parse({
+          version: 2,
+          clipStartSec: 0,
+          clipEndSec: 2,
+          captionPreset: captionPresetSchema.parse({}),
+          transcriptSlice: [],
+          studioEdits: studioEditsSchema.parse({
+            framing: { mode: "center" },
+            transition: { type, durationSec: 0.4 },
+          }),
+          brollUrl: null,
+          deletedRanges: [],
+        }),
+        source: { identity: `transition:${type}`, kind: "video", width: 1920, height: 1080 },
+        evidence: { automaticLayout: { state: "missing" } },
+        assets: { backgroundImage: { state: "missing" } },
+        capabilities: {
+          automaticSpeakerLayout: true,
+          automaticSpeakerEngineVersion: "shot-layout-v1",
+        },
+        targets: [{ id: "9:16", aspectRatio: "9:16", width: 1080, height: 1920 }],
+      });
+      if (result.status === "invalid") throw new Error(result.error.code);
+      const layer = result.plan.targets[0]!.visualLayers.find(
+        (candidate) => candidate.kind === "transition",
+      );
+      if (layer?.kind !== "transition") throw new Error("missing transition");
+      expect(plannedCompositionTransitionState(layer, 0, false)).toMatchObject({
+        family,
+        active: true,
+      });
+      expect(plannedCompositionTransitionState(layer, 0, true)).toMatchObject({
+        active: false,
+        reducedMotion: true,
+      });
+    }
+  });
+
   test("mounts the secondary tile only for a two-layer planned scene", () => {
     const single = adoptCompositionPreview(centerPlan(), "9:16", 0);
     const splitSingle = {
@@ -572,7 +901,15 @@ describe("composition preview adapter", () => {
         broll: {
           state: "available",
           placements: [
-            { id: "manual", ref: "broll:manual", startSec: 2, endSec: 4 },
+            {
+              id: "manual",
+              ref: "broll:manual",
+              mediaKind: "video",
+              startSec: 2,
+              endSec: 4,
+              sourceStartSec: 0,
+              sourceEndSec: 2,
+            },
           ],
         },
       },
@@ -586,12 +923,12 @@ describe("composition preview adapter", () => {
 
     expect(
       adoptCompositionPreview(result.plan, "9:16", 1).layers.some(
-        (layer) => layer.kind === "broll-video",
+        (layer) => layer.kind === "broll-media",
       ),
     ).toBe(false);
     expect(
       adoptCompositionPreview(result.plan, "9:16", 2).layers.find(
-        (layer) => layer.kind === "broll-video",
+        (layer) => layer.kind === "broll-media",
       ),
     ).toMatchObject({
       sourceRef: "broll:manual",
@@ -600,7 +937,7 @@ describe("composition preview adapter", () => {
     });
     expect(
       adoptCompositionPreview(result.plan, "9:16", 4).layers.some(
-        (layer) => layer.kind === "broll-video",
+        (layer) => layer.kind === "broll-media",
       ),
     ).toBe(false);
   });

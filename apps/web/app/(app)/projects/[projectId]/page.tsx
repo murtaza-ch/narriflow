@@ -11,6 +11,7 @@ import { admitProjectPage } from "@/lib/authenticated-request-page";
 import {
   analyticsService,
   brandProfileService,
+  campaignActionRolloutFromEnv,
   clipService,
   dubbingService,
   hasFeature,
@@ -18,10 +19,13 @@ import {
   isSocialProviderPublishingEnabled,
   isQuotaBlockedMidFlight,
   MAX_INGEST_RETRY_ATTEMPTS,
+  motionRolloutFromEnv,
   presignDownloadUrl,
   projectService,
+  reviewApprovalService,
   socialOAuthService,
   socialService,
+  workspaceService,
 } from "@narriflow/services";
 import {
   BRAND_DEFAULT_CAPTION_PRESET_ID,
@@ -54,6 +58,8 @@ import { ContentSuitePanel } from "./content-suite-panel";
 import { AnalyticsPanel } from "./analytics-panel";
 import { DubbingPanel } from "./dubbing-panel";
 import { SocialSchedulingPanel } from "./social-scheduling-panel";
+import { ReviewPanel } from "./review-panel";
+import { resolveReviewCreationAccess } from "./review-creation-access";
 import { RetryIngestButton } from "./render-clips-button";
 import { AdvancedClipSettings } from "./advanced-clip-settings";
 import { STATUS_CONFIG } from "../_lib/status";
@@ -174,6 +180,8 @@ export default async function ProjectDetailPage({
     workflowHistory,
     usage,
     brandProfiles,
+    approvalPolicy,
+    workspace,
   ] = await Promise.all([
     activeTab === "transcript"
       ? projectService.getTranscriptSnapshot(appUser.workspaceOwnerUserId, projectId,
@@ -202,6 +210,15 @@ export default async function ProjectDetailPage({
     activeTab === "clips"
       ? brandProfileService.list(brandScope)
       : Promise.resolve([]),
+    activeTab === "clips"
+      ? reviewApprovalService.inspectProjectPolicy({
+          workspaceId: appUser.workspaceId,
+          projectId,
+        })
+      : Promise.resolve({ approvalRequired: false }),
+    activeTab === "publish"
+      ? workspaceService.getWorkspace(appUser.actorUserId, appUser.workspaceId)
+      : Promise.resolve(null),
   ]);
   const transcript = fullTranscript ?? transcriptStatus;
   const pricingTier = usage.tier;
@@ -210,6 +227,19 @@ export default async function ProjectDetailPage({
   // `pricingTier === "free"` check — so the render popover's resolution
   // picker degrades exactly the way the worker's render-time gate does.
   const can1080pExport = hasFeature(pricingTier, "export.1080p");
+  const campaignActionRollout = campaignActionRolloutFromEnv();
+  const motionRollout = motionRolloutFromEnv();
+  const approvalRequired = approvalPolicy.approvalRequired;
+  const campaignActionAvailability = {
+    exports: campaignActionRollout.exports,
+    creative: campaignActionRollout.creative,
+    motion: campaignActionRollout.creative && motionRollout.campaignApply,
+    review:
+      campaignActionRollout.review && hasFeature(pricingTier, "review.rooms"),
+    scheduling:
+      campaignActionRollout.scheduling &&
+      hasFeature(pricingTier, "campaign.operations"),
+  };
   const canApplyBrandProfile =
     isProgramWriteEnabled("brand_kit_projection") &&
     hasFeature(pricingTier, "brand.profiles") &&
@@ -217,6 +247,19 @@ export default async function ProjectDetailPage({
       { role: appUser.role, status: appUser.status },
       "content.edit",
     );
+  const canManagePublishing = workspaceAllowsCapability(
+    { role: appUser.role, status: appUser.status },
+    "publishing.manage",
+  );
+  const canManageReview = workspaceAllowsCapability(
+    { role: appUser.role, status: appUser.status },
+    "review.manage",
+  );
+  const reviewCreationAccess = resolveReviewCreationAccess({
+    canManageReview,
+    hasReviewRooms: hasFeature(pricingTier, "review.rooms"),
+    writesEnabled: isProgramWriteEnabled("review_rooms"),
+  });
 
   const isIngestReady = snapshot.project.ingestStatus === "ready";
   const isIngestFailed = snapshot.project.ingestStatus === "failed";
@@ -832,6 +875,12 @@ export default async function ProjectDetailPage({
                 mode={generationMode}
                 isFreeTier={pricingTier === "free"}
                 can1080pExport={can1080pExport}
+                campaignOperationsEnabled={hasFeature(
+                  pricingTier,
+                  "campaign.operations",
+                )}
+                actionAvailability={campaignActionAvailability}
+                approvalRequired={approvalRequired}
                 defaultAspectRatio={clipsDefaultAspectRatio}
                 sourceVideoUrl={sourceVideoUrl}
               />
@@ -870,6 +919,17 @@ export default async function ProjectDetailPage({
           ) : null}
         </Tabs.Content>
 
+        {/* REVIEW */}
+        <Tabs.Content value="review" pt="6">
+          {activeTab === "review" ? (
+            <ReviewPanel
+              projectId={projectId}
+              canManageReview={canManageReview}
+              creationAccess={reviewCreationAccess}
+            />
+          ) : null}
+        </Tabs.Content>
+
         {/* PUBLISH */}
         <Tabs.Content value="publish" pt="6">
           {activeTab === "publish" ? (
@@ -879,6 +939,30 @@ export default async function ProjectDetailPage({
               posts={socialPosts}
               accounts={socialAccounts}
               facebookPublishingEnabled={isSocialProviderPublishingEnabled("facebook_reels")}
+              canManagePublishing={canManagePublishing}
+              canOverrideApproval={workspaceAllowsCapability(
+                {
+                  role: appUser.role,
+                  status: appUser.status,
+                },
+                "review.override",
+              )}
+              workspaceTimezone={workspace?.timezone ?? "UTC"}
+              assistedCopyEnabled={
+                canManagePublishing &&
+                isProgramWriteEnabled("assisted_copy") &&
+                hasFeature(pricingTier, "publishing.assistedCopy")
+              }
+              thumbnailExtractionEnabled={
+                canManagePublishing &&
+                isProgramWriteEnabled("thumbnail_extraction") &&
+                hasFeature(pricingTier, "publishing.customThumbnails")
+              }
+              bulkSchedulingEnabled={
+                canManagePublishing &&
+                isProgramWriteEnabled("bulk_scheduling") &&
+                hasFeature(pricingTier, "campaign.operations")
+              }
             />
           ) : null}
         </Tabs.Content>

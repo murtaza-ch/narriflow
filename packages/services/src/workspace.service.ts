@@ -3,8 +3,10 @@ import type { PricingTier, WorkspaceRole, WorkspaceStatus } from "@prisma/client
 
 import { getPrismaClient } from "@narriflow/db/client";
 import {
+  WORKSPACE_API_KEY_SCOPES,
   roleHasWorkspaceCapability,
   workspaceAllowsCapability,
+  type WorkspaceApiKeyScope,
   type WorkspaceCapability,
 } from "@narriflow/validators";
 import { hasFeature } from "./plan-features";
@@ -24,6 +26,7 @@ export interface WorkspaceActorContext {
   role: WorkspaceRole;
   status: WorkspaceStatus;
   pricingTier: PricingTier;
+  isPersonalWorkspace: boolean;
 }
 
 export interface WorkspaceApiKeyPrincipal {
@@ -34,15 +37,8 @@ export interface WorkspaceApiKeyPrincipal {
   scopes: string[];
 }
 
-export const WORKSPACE_API_KEY_SCOPES = [
-  "projects:read",
-  "exports:read",
-  "usage:read",
-  "autopilot:read",
-  "autopilot:write",
-] as const;
-
-export type WorkspaceApiKeyScope = (typeof WORKSPACE_API_KEY_SCOPES)[number];
+export { WORKSPACE_API_KEY_SCOPES } from "@narriflow/validators";
+export type { WorkspaceApiKeyScope } from "@narriflow/validators";
 
 export type WorkspaceOperationErrorCode =
   | "workspace_name_invalid"
@@ -262,6 +258,7 @@ export class WorkspaceService {
             ownerUserId: true,
             status: true,
             pricingTier: true,
+            personalOwnerUserId: true,
           },
         },
       },
@@ -276,6 +273,7 @@ export class WorkspaceService {
       role: membership.role,
       status: membership.workspace.status,
       pricingTier: membership.workspace.pricingTier,
+      isPersonalWorkspace: membership.workspace.personalOwnerUserId !== null,
     };
     if (!workspaceAllowsCapability(context, capability)) throw new Error("Forbidden");
     return context;
@@ -595,6 +593,31 @@ export class WorkspaceService {
       where: { id: keyId, workspaceId, revokedAt: null },
       data: { revokedAt: new Date() },
     });
+  }
+
+  async getActiveApiKeyPrincipal(
+    apiKeyId: string,
+  ): Promise<WorkspaceApiKeyPrincipal | null> {
+    const key = await requiredPrisma().apiKey.findUnique({
+      where: { id: apiKeyId },
+      select: {
+        id: true,
+        userId: true,
+        createdByUserId: true,
+        workspaceId: true,
+        name: true,
+        scopes: true,
+        revokedAt: true,
+      },
+    });
+    if (!key || key.revokedAt || !key.workspaceId) return null;
+    return {
+      apiKeyId: key.id,
+      userId: key.createdByUserId ?? key.userId,
+      workspaceId: key.workspaceId,
+      name: key.name,
+      scopes: key.scopes,
+    };
   }
 
   async authenticateApiKey(secret: string): Promise<WorkspaceApiKeyPrincipal | null> {

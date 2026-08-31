@@ -182,11 +182,12 @@ Minimum values for the current clips workflow:
 Notes:
 
 - `CLERK_WEBHOOK_SECRET`, `RESEND_API_KEY`, and `NARRIFLOW_EMAIL_FROM` are only required if you are exercising the Clerk webhook and email path locally.
-- `ASSEMBLYAI_API_KEY` and `OPENAI_API_KEY` are listed in the web example because many deployments share one secret set, but the web app does not use them directly in the current worker-driven generation flow.
+- `OPENAI_API_KEY` is used by web-side assisted-copy generation and generated-media admission as well as the worker image adapter. Generated-media admission also requires the configured image model and independent prompt encryption/fingerprint keys. `ASSEMBLYAI_API_KEY` remains worker-only but is listed because many deployments share one secret set.
 - `TRIGGER_SECRET_KEY` is not used by the current custom worker polling flow.
 - Native social OAuth requires `SOCIAL_TOKEN_ENCRYPTION_KEY` plus the provider client IDs/secrets listed in the env example. Register `${NEXT_PUBLIC_APP_URL}/api/social/oauth/callback` as the redirect URI in each provider app.
 - Free-project retention must use identical `PROJECT_RETENTION_MODE` and `PROJECT_RETENTION_ENFORCEMENT_STARTED_AT` values in web and worker. Leave the mode at `observe` for at least seven days; enforcement without a valid explicit UTC activation timestamp assigns no deadlines.
-- Expansion writes fail closed. Enable only the release group being deployed with `NARRIFLOW_WRITES_BRAND_PROFILES=1`, `NARRIFLOW_WRITES_VISUAL_ASSETS=1`, `NARRIFLOW_WRITES_BRAND_FONTS=1`, `NARRIFLOW_WRITES_BRAND_KIT_PROJECTION=1`, `NARRIFLOW_WRITES_CAMPAIGN_OPERATIONS=1`, `NARRIFLOW_WRITES_REVIEW_ROOMS=1`, `NARRIFLOW_WRITES_SCENE_CARDS=1`, `NARRIFLOW_WRITES_SCENE_IMAGES=1`, `NARRIFLOW_WRITES_SCENE_VIDEOS=1`, `NARRIFLOW_WRITES_SCENE_TEMPLATES=1`, or `NARRIFLOW_WRITES_GENERATED_MEDIA=1`. Disabling a group leaves existing rows readable.
+- Expansion writes fail closed. The following are top-level release groups for local orientation, not the complete ordered-stage inventory: `NARRIFLOW_WRITES_BRAND_PROFILES=1`, `NARRIFLOW_WRITES_VISUAL_ASSETS=1`, `NARRIFLOW_WRITES_BRAND_FONTS=1`, `NARRIFLOW_WRITES_BRAND_KIT_PROJECTION=1`, `NARRIFLOW_WRITES_CAMPAIGN_OPERATIONS=1`, `NARRIFLOW_WRITES_REVIEW_ROOMS=1`, `NARRIFLOW_WRITES_SCENE_CARDS=1`, `NARRIFLOW_WRITES_SCENE_IMAGES=1`, `NARRIFLOW_WRITES_SCENE_VIDEOS=1`, `NARRIFLOW_WRITES_SCENE_TEMPLATES=1`, `NARRIFLOW_WRITES_GENERATED_MEDIA=1`, `NARRIFLOW_WRITES_ASSISTED_COPY=1`, `NARRIFLOW_WRITES_THUMBNAIL_EXTRACTION=1`, and `NARRIFLOW_WRITES_BULK_SCHEDULING=1`. Generated images additionally require `NARRIFLOW_WRITES_GENERATED_IMAGES=1`; keep `NARRIFLOW_WRITES_GENERATED_VIDEOS=0` until an approved adapter passes the provider and real-media gates. Disabling a group leaves existing rows readable. The ordered Censor, Motion, Campaign, Review, approval-cohort, and media-kind controls and every rollback drill are authoritative in [`docs/runbooks/vizard-expansion-cutover.md`](docs/runbooks/vizard-expansion-cutover.md).
+- Review guest reads, feedback mutations, and notification admission/delivery have independent fail-closed controls: `NARRIFLOW_READS_REVIEW_GUEST`, `NARRIFLOW_WRITES_REVIEW_FEEDBACK`, and `NARRIFLOW_WRITES_REVIEW_NOTIFICATIONS`. Approval defaults to exact-export enforcement; `NARRIFLOW_REVIEW_APPROVAL_MODE=warn` records bounded would-block warnings, while optional Workspace and Project UUID cohorts stage enforcement without creating synthetic approval or override evidence.
 - `EXPORT_BUNDLE_RETENTION_DAYS=7` controls completed ZIP availability and is frozen into each bundle at admission. Accepted values are whole days from 1 through 30.
 
 ### Worker
@@ -351,8 +352,8 @@ Run this after `DATABASE_URL` is configured:
 bun install
 export DATABASE_URL="postgresql://user:password@localhost:5432/narriflow?schema=public"
 export DIRECT_URL="$DATABASE_URL"
-bun --cwd packages/db run prisma:migrate:dev
-bun --cwd packages/db run prisma:generate
+bun run --cwd packages/db prisma:migrate:dev
+bun run --cwd packages/db prisma:generate
 ```
 
 Important:
@@ -368,11 +369,11 @@ Important:
 Run the apps in separate terminals:
 
 ```bash
-bun --cwd apps/web run dev
+bun run --cwd apps/web dev
 ```
 
 ```bash
-bun --cwd apps/worker run dev
+bun run --cwd apps/worker dev
 ```
 
 Or run both through Turbo (the optional stdio MCP server is excluded):

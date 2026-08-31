@@ -1,4 +1,7 @@
-import type { SocialPlatform } from "@narriflow/validators";
+import {
+	socialProviderAcceptsCustomThumbnail,
+	type SocialPlatform,
+} from "@narriflow/validators";
 import type {
 	PublicationOperationPhase,
 	PublicationPlatform,
@@ -26,7 +29,7 @@ export type NativePublicationDependencies = {
 	fetch: typeof fetch;
 	media: {
 		materialize(
-			input: PublicationPlatformInput["media"],
+			input: PublicationPlatformInput["media"] | NonNullable<PublicationPlatformInput["thumbnail"]>,
 		): Promise<NativePublicationMedia>;
 		createScopedAccess(
 			input: PublicationPlatformInput["media"],
@@ -706,6 +709,64 @@ function youtubeReceipt(resource: YouTubeVideoResource): PublicationPlatformResu
 	};
 }
 
+function assertYouTubeThumbnail(input: PublicationPlatformInput) {
+	if (!input.thumbnail) return;
+	if (!socialProviderAcceptsCustomThumbnail({
+		platform: "youtube_shorts",
+		contentType: input.thumbnail.contentType,
+		sizeBytes: input.thumbnail.sizeBytes,
+	})) {
+		throw new PublicationPlatformConfigurationError(
+			"youtube_thumbnail_invalid",
+			"YouTube custom thumbnails must satisfy the configured image contract",
+		);
+	}
+}
+
+async function setYouTubeThumbnail(
+	dependencies: NativePublicationDependencies,
+	input: PublicationPlatformInput,
+	context: PublicationPlatformContext,
+	resource: YouTubeVideoResource,
+): Promise<PublicationPlatformResult> {
+	if (!input.thumbnail) return youtubeReceipt(resource);
+	assertYouTubeThumbnail(input);
+	const account = requireAccount(input, "youtube_shorts");
+	const videoId = resource.id!;
+	await context.checkpoint({
+		kind: "youtube_thumbnail_set",
+		state: { videoId },
+	});
+	const thumbnail = await dependencies.media.materialize(input.thumbnail);
+	try {
+		await context.providerCall?.();
+		const response = await dependencies.fetch(
+			`https://www.googleapis.com/upload/youtube/${dependencies.config.youtubeApiVersion}/thumbnails/set?${new URLSearchParams({ videoId, uploadType: "media" })}`,
+			{
+				method: "POST",
+				headers: {
+					Authorization: `Bearer ${account.accessToken}`,
+					"Content-Type": input.thumbnail.contentType,
+					"Content-Length": String(input.thumbnail.sizeBytes),
+				},
+				body: await thumbnail.blob(),
+				signal: context.signal,
+			},
+		);
+		if (!response.ok) {
+			throw new ProviderHttpError(
+				await youtubeFailureCode(response, "youtube_thumbnail_set_failed"),
+				"submission",
+				response.status,
+				retryAfterMs(response, dependencies.clock.now()),
+			);
+		}
+		return youtubeReceipt(resource);
+	} finally {
+		await cleanupMaterializedMedia(thumbnail, input);
+	}
+}
+
 function youtubeUploadedBytes(range: string | null) {
 	if (!range) return 0;
 	const match = /^bytes=0-(\d+)$/.exec(range.trim());
@@ -786,7 +847,7 @@ async function continueYoutubeUpload(
 						null,
 					);
 				}
-				return youtubeReceipt(video);
+					return setYouTubeThumbnail(dependencies, input, context, video);
 			}
 			if (status.status === 404) {
 				return {
@@ -847,7 +908,7 @@ async function continueYoutubeUpload(
 						null,
 					);
 				}
-				return youtubeReceipt(video);
+					return setYouTubeThumbnail(dependencies, input, context, video);
 			}
 			if (response.status !== 308) {
 				throw new ProviderHttpError(
@@ -901,9 +962,10 @@ function youtubePlatform(
 			apiVersion: `youtube-${dependencies.config.youtubeApiVersion}`,
 			maxProviderCalls: 100,
 		},
-		publish(input, context) {
-			return withNativeOutcome(async (markSubmitted) => {
-				const account = requireAccount(input, "youtube_shorts");
+			publish(input, context) {
+				return withNativeOutcome(async (markSubmitted) => {
+					assertYouTubeThumbnail(input);
+					const account = requireAccount(input, "youtube_shorts");
 				requireScopes(account, this.capabilities.requiredScopes);
 				const settings = metadata(input);
 				const videoTitle = stringSetting(settings, ["title"], title(input))!;
@@ -993,10 +1055,20 @@ function youtubePlatform(
 				);
 			});
 		},
-		reconcile(input, operation, context) {
-			return withNativeOutcome(async (markSubmitted) => {
-				markSubmitted();
-				return continueYoutubeUpload(
+			reconcile(input, operation, context) {
+				return withNativeOutcome(async (markSubmitted) => {
+					markSubmitted();
+					if (operation.kind === "youtube_thumbnail_set") {
+						const videoId = operationString(operation.state, "videoId");
+						if (!videoId) {
+							throw new PublicationPlatformConfigurationError(
+								"youtube_thumbnail_checkpoint_invalid",
+								"The YouTube thumbnail checkpoint is incomplete",
+							);
+						}
+						return setYouTubeThumbnail(dependencies, input, context, { id: videoId });
+					}
+					return continueYoutubeUpload(
 					dependencies,
 					input,
 					context,
@@ -1108,8 +1180,21 @@ function instagramPlatform(
 						"Instagram Reel media facts or caption are invalid",
 					);
 				}
-				const settings = metadata(input);
-				const accountSettings = accountMetadata(input);
+					const settings = metadata(input);
+					const thumbnailSourceTimeMs = settings.thumbnailSourceTimeMs;
+					if (
+						thumbnailSourceTimeMs !== undefined &&
+						(typeof thumbnailSourceTimeMs !== "number" ||
+							!Number.isSafeInteger(thumbnailSourceTimeMs) ||
+							thumbnailSourceTimeMs < 0 ||
+							thumbnailSourceTimeMs > input.media.durationSec * 1_000)
+					) {
+						throw new PublicationPlatformConfigurationError(
+							"instagram_thumbnail_offset_invalid",
+							"The selected Instagram Reel frame is outside the frozen video",
+						);
+					}
+					const accountSettings = accountMetadata(input);
 				const userId = stringSetting(
 					accountSettings,
 					["igUserId"],
@@ -1169,10 +1254,13 @@ function instagramPlatform(
 							media_type: "REELS",
 							video_url: mediaUrl,
 							caption: input.caption,
-							share_to_feed: String(
-								booleanSetting(settings, ["shareToFeed"], true),
-							),
-							access_token: account.accessToken,
+								share_to_feed: String(
+									booleanSetting(settings, ["shareToFeed"], true),
+								),
+								...(typeof thumbnailSourceTimeMs === "number"
+									? { thumb_offset: String(thumbnailSourceTimeMs) }
+									: {}),
+								access_token: account.accessToken,
 						}),
 						signal: context.signal,
 					},
@@ -1606,7 +1694,11 @@ function tiktokPlatform(
 							"The selected TikTok privacy setting is no longer available",
 						);
 					}
-					const coverTimestamp = Number(settings.videoCoverTimestampMs ?? 1_000);
+					const coverTimestampValue =
+						settings.thumbnailSourceTimeMs ?? settings.videoCoverTimestampMs;
+					const coverTimestamp = coverTimestampValue === undefined
+						? null
+						: Number(coverTimestampValue);
 					const mediaDurationSec = input.media.durationSec;
 					const maximumDurationSec = creator.data?.max_video_post_duration_sec;
 					const disableComment = booleanSetting(settings, ["disableComment"], false);
@@ -1625,11 +1717,12 @@ function tiktokPlatform(
 					if (
 						input.media.sizeBytes <= 0 ||
 						input.caption.length > 2_200 ||
-						!Number.isFinite(coverTimestamp) ||
-						coverTimestamp < 0 ||
+						(coverTimestamp !== null && !Number.isFinite(coverTimestamp)) ||
+						(coverTimestamp !== null && coverTimestamp < 0) ||
 						!Number.isFinite(mediaDurationSec) ||
 						mediaDurationSec <= 0 ||
-						coverTimestamp > mediaDurationSec * 1_000 ||
+						(coverTimestamp !== null &&
+							coverTimestamp > mediaDurationSec * 1_000) ||
 						(maximumDurationSec !== undefined &&
 							mediaDurationSec > maximumDurationSec)
 					) {
@@ -1671,7 +1764,9 @@ function tiktokPlatform(
 									disable_comment: disableComment,
 									disable_duet: disableDuet,
 									disable_stitch: disableStitch,
-									video_cover_timestamp_ms: coverTimestamp,
+									...(coverTimestamp === null
+										? {}
+										: { video_cover_timestamp_ms: coverTimestamp }),
 									is_aigc: booleanSetting(settings, ["isAigc", "madeWithAi"]),
 								},
 								source_info: {
@@ -1710,7 +1805,9 @@ function tiktokPlatform(
 							disableComment,
 							disableDuet,
 							disableStitch,
-							videoCoverTimestampMs: coverTimestamp,
+							...(coverTimestamp === null
+								? {}
+								: { videoCoverTimestampMs: coverTimestamp }),
 							isAigc: booleanSetting(settings, ["isAigc", "madeWithAi"]),
 						},
 					});

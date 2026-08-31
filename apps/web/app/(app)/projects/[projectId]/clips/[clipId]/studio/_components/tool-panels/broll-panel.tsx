@@ -11,6 +11,11 @@ import {
   DEFAULT_BROLL_PREVIEW_DURATION_SEC,
   manualBrollPreviewWindow,
 } from "../broll-preview";
+import { GeneratedMediaStudioPanel } from "./generated-media-studio-panel";
+import {
+  nextBrollInspectorModeForKey,
+  type BrollInspectorMode,
+} from "./generated-media-studio-model";
 
 interface BrollResult {
   id: number;
@@ -89,6 +94,64 @@ function validatePublicHttpUrl(raw: string): string | null {
 }
 
 export function BRollPanel() {
+  const [mode, setMode] = useState<BrollInspectorMode>("browse");
+  return (
+    <Stack gap="0" h="100%">
+      <Flex
+        role="tablist"
+        aria-label="B-roll media source"
+        px="12px"
+        pt="10px"
+        gap="0"
+        borderBottomWidth="1px"
+        borderColor="studio.border"
+      >
+        {(["browse", "generate"] as const).map((candidate) => {
+          const selected = mode === candidate;
+          return (
+            <Box
+              key={candidate}
+              as="button"
+              id={`broll-${candidate}-tab`}
+              role="tab"
+              aria-selected={selected}
+              aria-controls={`broll-${candidate}-panel`}
+              tabIndex={selected ? 0 : -1}
+              flex="1"
+              py="8px"
+              borderBottomWidth="2px"
+              borderColor={selected ? "studio.accent" : "transparent"}
+              color={selected ? "studio.fg" : "studio.fgMuted"}
+              textStyle="eyebrow"
+              cursor="pointer"
+              onClick={() => setMode(candidate)}
+              onKeyDown={(event) => {
+                const next = nextBrollInspectorModeForKey(mode, event.key);
+                if (!next) return;
+                event.preventDefault();
+                setMode(next);
+                document.getElementById(`broll-${next}-tab`)?.focus();
+              }}
+            >
+              {candidate === "browse" ? "Browse" : "Generate"}
+            </Box>
+          );
+        })}
+      </Flex>
+      <Box
+        id={`broll-${mode}-panel`}
+        role="tabpanel"
+        aria-labelledby={`broll-${mode}-tab`}
+        flex="1"
+        minH="0"
+      >
+        {mode === "browse" ? <BrollBrowser /> : <GeneratedMediaStudioPanel />}
+      </Box>
+    </Stack>
+  );
+}
+
+function BrollBrowser() {
   const {
     clipInfo,
     aspectRatio,

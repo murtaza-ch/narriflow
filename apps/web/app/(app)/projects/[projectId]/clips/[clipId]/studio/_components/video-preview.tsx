@@ -10,7 +10,7 @@ import {
   screenLayoutInputFingerprint,
   splitLayoutInputFingerprint,
   type CompositionBackgroundLayer,
-  type CompositionBrollVideoLayer,
+	type CompositionBrollMediaLayer,
   type CompositionCaptionVisualLayer,
   type CompositionLogoVisualLayer,
   type CompositionOutputTreatmentVisualLayer,
@@ -32,6 +32,7 @@ import {
 import {
   clipAspectRatioOptions,
   editedToSource,
+  generatedMediaBrollPlaybackResultSchema,
   resolveEffectiveFramingMode,
   resolveEffectiveLogoSettings,
   SCREEN_LAYOUT_ENGINE_VERSION,
@@ -51,6 +52,7 @@ import { InteractiveCaptionOverlay } from "./interactive-caption-overlay";
 import { hexToRgba } from "./caption-style-engine";
 import { InteractiveTextLayer } from "./interactive-text-layer";
 import { SfxPreviewTrack } from "./sfx-preview-track";
+import { CensorBeepPreview } from "./censor-beep-preview";
 import { SplitSecondaryTile, type SplitSecondaryTileCropRect } from "./split-secondary-tile";
 import type { NormalizedCropRect } from "./normalized-crop";
 import {
@@ -65,14 +67,20 @@ import {
 } from "./broll-preview";
 import {
   adoptCompositionPreviewResult,
+  assetBackedBrollForPlan,
   compositionInvalidText,
   compositionNoticeEntries,
   manualBrollAvailabilityForPlan,
   plannedCompositionFrameStyle,
+  plannedCompositionMotionStyle,
   plannedCompositionAudioState,
   plannedCompositionSourceDimensions,
   plannedCompositionUsesStackedStage,
+  plannedCompositionTransitionState,
   plannedCompositionVideoStyle,
+	frozenVisualReferencesForPreview,
+	sceneVisualAssetsForPlan,
+  type PreviewBrollAssetResolution,
 } from "./composition-preview-adapter";
 import { compositionCapabilities } from "./composition-capabilities";
 import {
@@ -84,6 +92,7 @@ import { applyCompositionPlanQaFixture } from "./composition-plan-qa-fixture";
 
 /** After this long with no metadata yet, hint that the source is just large. */
 const SLOW_LOAD_HINT_MS = 10_000;
+const FROZEN_VISUAL_URL_REFRESH_MS = 45 * 60 * 1_000;
 
 /** Absolute-position styles for the 3x3 `LogoPosition` grid, mirroring
  *  `buildLogoOverlayPosition` in render-clips.ts (left/right/center-x,
@@ -228,33 +237,58 @@ const PILL_STYLES = {
   userSelect: "none",
 } as const;
 
+function usePrefersReducedMotion(): boolean {
+  const [reduced, setReduced] = useState(false);
+  useEffect(() => {
+    const query = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const update = () => setReduced(query.matches);
+    update();
+    query.addEventListener("change", update);
+    return () => query.removeEventListener("change", update);
+  }, []);
+  return reduced;
+}
+
 function BrollPreviewLayer({
   src,
   poster,
+	mediaKind,
   window,
+	sourceRange,
   currentTime,
   isPlaying,
   onDuration,
   onAvailabilityChange,
+  motionStyle,
 }: {
   src: string;
   poster: string | null;
+	mediaKind: "image" | "video";
   window: ManualBrollPreviewWindow;
+	sourceRange: { startSec: number; endSec: number } | null;
   currentTime: number;
   isPlaying: boolean;
-  onDuration: (durationSec: number) => void;
+	onDuration?: (durationSec: number) => void;
   onAvailabilityChange: (state: "available" | "failed") => void;
+  motionStyle?: React.CSSProperties;
 }) {
   const ref = useRef<HTMLVideoElement>(null);
-  const localTime = brollPreviewLocalTime(currentTime, window);
+	const localTime =
+		(sourceRange?.startSec ?? 0) + brollPreviewLocalTime(currentTime, window);
 
   useEffect(() => {
     const video = ref.current;
-    if (!video) return;
+		if (!video || mediaKind !== "video") return;
     if (video.readyState >= HTMLMediaElement.HAVE_METADATA) {
       const bounded = Math.min(
         Math.max(0, localTime),
-        Math.max(0, video.duration - 0.05),
+			Math.max(
+				0,
+				Math.min(
+					video.duration,
+					sourceRange?.endSec ?? video.duration,
+				) - 0.05,
+			),
       );
       if (Math.abs(video.currentTime - bounded) > 0.16) {
         video.currentTime = bounded;
@@ -267,7 +301,7 @@ function BrollPreviewLayer({
     } else {
       video.pause();
     }
-  }, [isPlaying, localTime]);
+	}, [isPlaying, localTime, mediaKind, sourceRange?.endSec]);
 
   return (
     <Box
@@ -277,35 +311,60 @@ function BrollPreviewLayer({
       bg="black"
       pointerEvents="none"
       aria-label="B-roll preview"
+      style={motionStyle}
     >
-      {/* Decorative cutaway: spoken captions remain in the interactive
-          overlay above this layer, so this video intentionally has no track. */}
-      <video
-        ref={ref}
-        src={src}
-        poster={poster ?? undefined}
-        muted
-        playsInline
-        preload="metadata"
-        onLoadedMetadata={(event) => {
-          onAvailabilityChange("available");
-          const durationSec = event.currentTarget.duration;
-          if (Number.isFinite(durationSec) && durationSec > 0) {
-            onDuration(durationSec);
-          }
-          event.currentTarget.currentTime = Math.min(
-            localTime,
-            Math.max(0, durationSec - 0.05),
-          );
-        }}
-        onError={() => onAvailabilityChange("failed")}
-        style={{
-          width: "100%",
-          height: "100%",
-          objectFit: "cover",
-          display: "block",
-        }}
-      />
+			{mediaKind === "image" ? (
+				<img
+					src={src}
+					alt=""
+					onLoad={() => onAvailabilityChange("available")}
+					onError={() => onAvailabilityChange("failed")}
+					style={{
+						width: "100%",
+						height: "100%",
+						objectFit: "cover",
+						display: "block",
+					}}
+				/>
+			) : (
+				// Decorative cutaway: dialogue stays on the source layer, so this
+				// video intentionally has no track.
+				<video
+					ref={ref}
+					src={src}
+					poster={poster ?? undefined}
+					muted
+					playsInline
+					preload="metadata"
+					onLoadedMetadata={(event) => {
+						const durationSec = event.currentTarget.duration;
+						if (
+							!Number.isFinite(durationSec) ||
+							durationSec <= 0 ||
+							(sourceRange && sourceRange.endSec > durationSec + 0.001)
+						) {
+							onAvailabilityChange("failed");
+							return;
+						}
+						onAvailabilityChange("available");
+						onDuration?.(durationSec);
+						event.currentTarget.currentTime = Math.min(
+							localTime,
+							Math.max(
+								0,
+								Math.min(durationSec, sourceRange?.endSec ?? durationSec) - 0.05,
+							),
+						);
+					}}
+					onError={() => onAvailabilityChange("failed")}
+					style={{
+						width: "100%",
+						height: "100%",
+						objectFit: "cover",
+						display: "block",
+					}}
+				/>
+			)}
       <Flex
         position="absolute"
         top="8px"
@@ -331,6 +390,7 @@ function BrollPreviewLayer({
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export function VideoPreview() {
+  const prefersReducedMotion = usePrefersReducedMotion();
   const {
     editorDocument,
     clipInfo,
@@ -350,7 +410,6 @@ export function VideoPreview() {
     activeOffsetSec,
     brollUrl,
     brollPreviewAsset,
-    visualAssets,
 		sceneFonts,
     setBrollPreviewAsset,
     editedTimeMap,
@@ -489,6 +548,25 @@ export function VideoPreview() {
     : brollMediaProbe.url === brollUrl
       ? brollMediaProbe.state
       : "pending";
+	const [brollAssetResolutions, setBrollAssetResolutions] = useState<
+		Record<string, PreviewBrollAssetResolution>
+	>({});
+	const [frozenVisualRefreshEpoch, setFrozenVisualRefreshEpoch] = useState(0);
+	const frozenVisualReferences = useMemo(
+		() => frozenVisualReferencesForPreview(
+			editorDocument.brollPlacements,
+			editorDocument.sceneBlocks,
+		),
+		[editorDocument.brollPlacements, editorDocument.sceneBlocks],
+	);
+	const assetBackedBroll = useMemo(
+		() =>
+			assetBackedBrollForPlan(
+				editorDocument.brollPlacements,
+				brollAssetResolutions,
+			),
+		[editorDocument.brollPlacements, brollAssetResolutions],
+	);
   const handleBrollAvailability = useCallback(
     (state: "available" | "failed") => {
       if (brollUrl) setBrollMediaProbe({ url: brollUrl, state });
@@ -652,19 +730,14 @@ export function VideoPreview() {
   const [sceneFontLoadState, setSceneFontLoadState] = useState<
     Record<string, "pending" | "available" | "failed">
   >({});
-  const sceneVisualAvailability = useMemo(() => Object.fromEntries(
-    editorDocument.sceneBlocks.flatMap((scene) => {
-      if (scene.content.kind !== "image" && scene.content.kind !== "video") return [];
-      const assetReference = scene.content.asset;
-      const asset = visualAssets.find((candidate) =>
-        candidate.id === assetReference.id &&
-        candidate.fingerprint === assetReference.fingerprint,
-      );
-      return [[scene.id, asset?.accessUrl
-        ? { state: "available" as const, ref: compositionAssetRef("visual_asset", `${asset.id}:${asset.fingerprint}`) }
-        : { state: "failed" as const }]];
-    }),
-  ), [editorDocument.sceneBlocks, visualAssets]);
+	const sceneVisualAssets = useMemo(
+		() => sceneVisualAssetsForPlan(
+			editorDocument.sceneBlocks,
+			brollAssetResolutions,
+		),
+		[editorDocument.sceneBlocks, brollAssetResolutions],
+	);
+	const sceneVisualAvailability = sceneVisualAssets.availability;
   const sceneFontAvailability = useMemo(() => Object.fromEntries(
     editorDocument.sceneBlocks.flatMap((scene) => {
       if (scene.content.kind !== "text" || !scene.content.fontAsset) return [];
@@ -840,16 +913,18 @@ export function VideoPreview() {
         soundEffects: soundEffectAvailability,
 			sceneVisuals: sceneVisualAvailability,
 			sceneFonts: sceneFontAvailability,
-        ...(brollUrl
-          ? {
-              broll: manualBrollAvailabilityForPlan({
-                url: brollUrl,
-                ref: compositionAssetRef("broll", brollUrl),
-                window: brollWindow,
-                mediaState: brollMediaState,
-              }),
-            }
-          : {}),
+		...(editorDocument.brollPlacements.length > 0
+			? { broll: assetBackedBroll.availability }
+			: brollUrl
+				? {
+						broll: manualBrollAvailabilityForPlan({
+							url: brollUrl,
+							ref: compositionAssetRef("broll", brollUrl),
+							window: brollWindow,
+							mediaState: brollMediaState,
+						}),
+					}
+				: {}),
         ...(brandLogo && effectiveLogo
           ? brandLogo.url
             ? {
@@ -894,7 +969,8 @@ export function VideoPreview() {
     automaticLayoutAnalysis,
     brollUrl,
     brollMediaState,
-    brollWindow,
+		brollWindow,
+		assetBackedBroll.availability,
     brandLogo,
     effectiveLogo,
     clipInfo.can1080pExport,
@@ -952,8 +1028,8 @@ export function VideoPreview() {
     [compositionPreview],
   );
   useEffect(() => {
-    setSourceAudioEnvelope(plannedAudioState?.source.outputGain ?? 1);
-  }, [plannedAudioState?.source.outputGain, setSourceAudioEnvelope]);
+    setSourceAudioEnvelope(plannedAudioState?.source.envelope ?? 1);
+  }, [plannedAudioState?.source.envelope, setSourceAudioEnvelope]);
   useEffect(
     () => () => setSourceAudioEnvelope(1),
     [setSourceAudioEnvelope],
@@ -962,19 +1038,29 @@ export function VideoPreview() {
     (layer): layer is CompositionBackgroundLayer => layer.kind === "background",
   );
   const plannedBrollLayer = compositionPreview?.layers.find(
-    (layer): layer is CompositionBrollVideoLayer =>
-      layer.kind === "broll-video",
+		(layer): layer is CompositionBrollMediaLayer =>
+			layer.kind === "broll-media",
   );
+	const assetBackedBrollMedia = plannedBrollLayer
+		? assetBackedBroll.mediaByRef[plannedBrollLayer.sourceRef]
+		: undefined;
+	const plannedBrollMedia = assetBackedBrollMedia
+		? assetBackedBrollMedia
+		: editorDocument.brollPlacements.length === 0 && brollUrl
+			? {
+					assetKey: null,
+					accessUrl: brollUrl,
+					mediaKind: "video" as const,
+					sourceStartSec: plannedBrollLayer?.sourceRange?.startSec ?? 0,
+					sourceEndSec: plannedBrollLayer?.sourceRange?.endSec ?? null,
+				}
+			: null;
   const plannedInsertedScene = compositionPreview?.layers.find(
     (layer): layer is CompositionInsertedSceneLayer => layer.kind === "inserted-scene",
   );
-  const insertedSceneAssetReference = (() => {
-    const content = plannedInsertedScene?.content;
-    return content?.kind === "image" || content?.kind === "video" ? content.asset : null;
-  })();
-  const insertedSceneAsset = insertedSceneAssetReference
-    ? visualAssets.find((asset) => asset.id === insertedSceneAssetReference.id && asset.fingerprint === insertedSceneAssetReference.fingerprint)
-    : null;
+	const insertedSceneAsset = plannedInsertedScene?.sourceRef
+		? sceneVisualAssets.mediaByRef[plannedInsertedScene.sourceRef] ?? null
+		: null;
   const insertedSceneFontReference = plannedInsertedScene?.content.kind === "text"
     ? plannedInsertedScene.content.fontAsset
     : null;
@@ -985,34 +1071,22 @@ export function VideoPreview() {
       )
     : null;
   const insertedSceneVideoRef = useRef<HTMLVideoElement | null>(null);
-  const insertedSceneMotionStyle = (() => {
-    if (!plannedInsertedScene || !compositionPreview) return undefined;
-    const durationSec = Math.max(0.001, compositionPreview.sceneEndSec - compositionPreview.sceneStartSec);
-    const edgeSec = Math.min(0.35, durationSec / 2);
-    const localSec = Math.max(0, Math.min(durationSec, currentTime - compositionPreview.sceneStartSec));
-    const entranceProgress = Math.max(0, Math.min(1, localSec / edgeSec));
-    const exitRemaining = Math.max(0, Math.min(1, (durationSec - localSec) / edgeSec));
-    const entrance = plannedInsertedScene.motion.entrance;
-    const exit = plannedInsertedScene.motion.exit;
-    const opacity =
-      (entrance === "fade" ? entranceProgress : 1) *
-      (exit === "fade" ? exitRemaining : 1);
-    const translateY = entrance === "slide-up"
-      ? (1 - entranceProgress) * 100
-      : exit === "slide-down"
-        ? (1 - exitRemaining) * 100
-        : 0;
-    const scale = entrance === "zoom-in"
-      ? 0.92 + 0.08 * entranceProgress
-      : exit === "zoom-out"
-        ? 0.92 + 0.08 * exitRemaining
-        : 1;
-    return {
-      opacity,
-      transform: `translateY(${translateY}%) scale(${scale})`,
-      transformOrigin: "center",
-    };
-  })();
+  const insertedSceneMotion = plannedInsertedScene?.motion
+    ? plannedCompositionMotionStyle(
+        plannedInsertedScene.motion,
+        currentTime,
+        prefersReducedMotion,
+      )
+    : null;
+  const insertedSceneMotionStyle: React.CSSProperties | undefined =
+    insertedSceneMotion
+      ? {
+          opacity: insertedSceneMotion.opacity,
+          transform: insertedSceneMotion.transform,
+          transformOrigin: insertedSceneMotion.transformOrigin,
+          overflow: insertedSceneMotion.overflow,
+        }
+      : undefined;
   useEffect(() => {
     const node = insertedSceneVideoRef.current;
     const content = plannedInsertedScene?.content;
@@ -1032,6 +1106,45 @@ export function VideoPreview() {
   }, [compositionPreview, currentTime, isPlaying, plannedInsertedScene]);
   const activeBrollWindow = plannedBrollLayer?.activeRange ?? null;
   const brollActive = Boolean(plannedBrollLayer);
+  const plannedBrollMotion = plannedBrollLayer?.motion
+    ? plannedCompositionMotionStyle(
+        plannedBrollLayer.motion,
+        currentTime,
+        prefersReducedMotion,
+      )
+    : null;
+  const plannedBrollMotionStyle: React.CSSProperties | undefined =
+    plannedBrollMotion
+      ? {
+          opacity: plannedBrollMotion.opacity,
+          transform: plannedBrollMotion.transform,
+          transformOrigin: plannedBrollMotion.transformOrigin,
+          overflow: plannedBrollMotion.overflow,
+        }
+      : undefined;
+	const handlePlannedBrollAvailability = useCallback(
+		(state: "available" | "failed") => {
+			if (!plannedBrollMedia?.assetKey) {
+				handleBrollAvailability(state);
+				return;
+			}
+			if (state !== "failed") return;
+			setBrollAssetResolutions((current) => {
+				const resolution = current[plannedBrollMedia.assetKey!];
+				return resolution
+					? {
+							...current,
+							[plannedBrollMedia.assetKey!]: {
+								assetId: resolution.assetId,
+								fingerprint: resolution.fingerprint,
+								state: "storage_unavailable",
+							},
+						}
+					: current;
+			});
+		},
+		[handleBrollAvailability, plannedBrollMedia],
+	);
   const plannedTextLayers = compositionPreview?.layers.filter(
     (layer): layer is CompositionTextVisualLayer => layer.kind === "text",
   ) ?? [];
@@ -1049,19 +1162,18 @@ export function VideoPreview() {
     (layer): layer is CompositionOutputTreatmentVisualLayer =>
       layer.kind === "output-treatment",
   );
-  const transitionOverlayOpacity = (() => {
-    if (!plannedTransitionLayer) return 0;
-    const { fadeIn, fadeOut } = plannedTransitionLayer.windows;
-    if (currentTime <= fadeIn.endSec) {
-      const durationSec = Math.max(0.001, fadeIn.endSec - fadeIn.startSec);
-      return Math.max(0, Math.min(1, 1 - (currentTime - fadeIn.startSec) / durationSec));
-    }
-    if (currentTime >= fadeOut.startSec) {
-      const durationSec = Math.max(0.001, fadeOut.endSec - fadeOut.startSec);
-      return Math.max(0, Math.min(1, (currentTime - fadeOut.startSec) / durationSec));
-    }
-    return 0;
-  })();
+  const plannedTransitionState = plannedTransitionLayer
+    ? plannedCompositionTransitionState(
+        plannedTransitionLayer,
+        currentTime,
+        prefersReducedMotion,
+      )
+    : null;
+  const reducedMotionActive = prefersReducedMotion && Boolean(
+    plannedInsertedScene?.motion ||
+      plannedBrollLayer?.motion ||
+      plannedTransitionLayer,
+  );
   const plannedSourceDims = compositionPlanResult?.status === "invalid"
     ? null
     : compositionPlanResult?.plan.source ?? null;
@@ -1306,10 +1418,100 @@ export function VideoPreview() {
     return () => clearTimeout(timeoutId);
   }, [activeVideoUrl, videoLoaded, loadError, retryNonce]);
 
-  // Music/SFX library — stale presigned URL resolution (vizard-parity.md).
-  // Runs on mount and whenever `music.assetId` changes; deliberately does
-  // NOT write the result into `studioEdits`; this is purely a preview-side
-  // lookup whose pending/failed state feeds the shared plan.
+	useEffect(() => {
+		const refresh = () => setFrozenVisualRefreshEpoch((epoch) => epoch + 1);
+		const intervalId = window.setInterval(
+			refresh,
+			FROZEN_VISUAL_URL_REFRESH_MS,
+		);
+		const refreshWhenVisible = () => {
+			if (document.visibilityState === "visible") refresh();
+		};
+		document.addEventListener("visibilitychange", refreshWhenVisible);
+		return () => {
+			window.clearInterval(intervalId);
+			document.removeEventListener("visibilitychange", refreshWhenVisible);
+		};
+	}, []);
+
+	// Resolve each immutable B-roll or Scene asset reference from the current
+	// server document. Signed URLs stay preview-only and are refreshed before
+	// their one-hour expiry without dirtying the editor document.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: the epoch deliberately refreshes transient signed URLs without changing frozen identities.
+	useEffect(() => {
+		const references = new Map(
+			frozenVisualReferences.map((reference) => [
+				`${reference.assetId}:${reference.fingerprint}`,
+				reference,
+			]),
+		);
+		setBrollAssetResolutions((current) => Object.fromEntries(
+			[...references].map(([key, reference]) => [
+				key,
+				current[key] ?? {
+					assetId: reference.assetId,
+					fingerprint: reference.fingerprint,
+					state: "pending" as const,
+				},
+			]),
+		));
+		if (references.size === 0) return;
+
+		const controller = new AbortController();
+		for (const [key, reference] of references) {
+			const query = new URLSearchParams({
+				fingerprint: reference.fingerprint,
+				mediaKind: reference.mediaKind,
+			});
+			void fetch(
+				`/api/projects/${clipInfo.projectId}/clips/${clipInfo.id}/generated-media/assets/${reference.assetId}/playback?${query}`,
+				{ signal: controller.signal },
+			)
+				.then(async (response) => {
+					if (!response.ok) {
+						return {
+							assetId: reference.assetId,
+							fingerprint: reference.fingerprint,
+							state: response.status === 404
+								? ("missing" as const)
+								: ("storage_unavailable" as const),
+						};
+					}
+					const parsed = generatedMediaBrollPlaybackResultSchema.safeParse(
+						await response.json(),
+					);
+					return parsed.success
+						? parsed.data
+						: {
+								assetId: reference.assetId,
+								fingerprint: reference.fingerprint,
+								state: "storage_unavailable" as const,
+							};
+				})
+				.catch((_error: unknown) =>
+					controller.signal.aborted
+						? null
+						: {
+								assetId: reference.assetId,
+								fingerprint: reference.fingerprint,
+								state: "storage_unavailable" as const,
+							},
+				)
+				.then((resolution) => {
+					if (!resolution || controller.signal.aborted) return;
+					setBrollAssetResolutions((current) =>
+						key in current ? { ...current, [key]: resolution } : current,
+					);
+				});
+		}
+		return () => controller.abort();
+	}, [
+		clipInfo.id,
+		clipInfo.projectId,
+		frozenVisualReferences,
+		frozenVisualRefreshEpoch,
+	]);
+
   useEffect(() => {
     const assetId = studioEdits.music.assetId;
     if (!assetId) {
@@ -1686,6 +1888,11 @@ export function VideoPreview() {
             maxWidth: "100%",
             height: videoH > videoW ? "100%" : "auto",
             width: videoH <= videoW ? "100%" : "auto",
+            transform:
+              plannedTransitionState?.mediaTransform !== "none"
+                ? plannedTransitionState?.mediaTransform
+                : undefined,
+            transformOrigin: "center",
           }}
           bg={activeSpeakerScene?.overrideId ? "black" : "studio.subtle"}
           overflow="hidden"
@@ -1725,6 +1932,27 @@ export function VideoPreview() {
                 <Text key={item.key}>{item.text}</Text>
               ))}
             </Flex>
+          ) : null}
+
+          {reducedMotionActive ? (
+            <Text
+              position="absolute"
+              bottom="8px"
+              left="8px"
+              zIndex={40}
+              px="7px"
+              py="3px"
+              bg="studio.surface/92"
+              borderWidth="1px"
+              borderColor="studio.borderStrong"
+              borderRadius="l1"
+              color="studio.fgMuted"
+              textStyle="eyebrow"
+              fontSize="9px"
+              pointerEvents="none"
+            >
+              Reduced motion preview
+            </Text>
           ) : null}
 
           {/* Graphite ghost stage while no video is ready to show */}
@@ -1996,7 +2224,7 @@ export function VideoPreview() {
             </Box>
           )}
 
-          {brollUrl ? (
+			{brollUrl && editorDocument.brollPlacements.length === 0 ? (
             <video
               key={`broll-probe:${brollUrl}`}
               src={brollUrl}
@@ -2017,15 +2245,18 @@ export function VideoPreview() {
             />
           ) : null}
 
-          {brollUrl && activeBrollWindow && brollActive ? (
-            <BrollPreviewLayer
-              src={brollUrl}
-              poster={activeBrollAsset?.posterUrl ?? null}
-              window={activeBrollWindow}
-              currentTime={currentTime}
-              isPlaying={isPlaying}
-              onDuration={handleBrollDuration}
-              onAvailabilityChange={handleBrollAvailability}
+			{plannedBrollMedia && activeBrollWindow && brollActive ? (
+				<BrollPreviewLayer
+					src={plannedBrollMedia.accessUrl}
+					poster={plannedBrollMedia.assetKey ? null : (activeBrollAsset?.posterUrl ?? null)}
+					mediaKind={plannedBrollMedia.mediaKind}
+					window={activeBrollWindow}
+					sourceRange={plannedBrollLayer?.sourceRange ?? null}
+					currentTime={currentTime}
+					isPlaying={isPlaying}
+					onDuration={plannedBrollMedia.assetKey ? undefined : handleBrollDuration}
+					onAvailabilityChange={handlePlannedBrollAvailability}
+              motionStyle={plannedBrollMotionStyle}
             />
           ) : null}
 
@@ -2073,6 +2304,11 @@ export function VideoPreview() {
               style={{ display: "none" }}
             />
           ) : null}
+
+          <CensorBeepPreview
+            beep={plannedAudioState?.beep ?? null}
+            isPlaying={isPlaying}
+          />
 
           {/* One-shot SFX placements (vizard-parity.md "Music/SFX library") —
               best-effort preview, see sfx-preview-track.tsx. Keyed on the
@@ -2168,12 +2404,15 @@ export function VideoPreview() {
             />
           ) : null}
 
-          {plannedTransitionLayer && transitionOverlayOpacity > 0 ? (
+          {plannedTransitionLayer &&
+          plannedTransitionState &&
+          plannedTransitionState.overlayOpacity > 0 ? (
             <Box
               position="absolute"
               inset="0"
               bg={plannedTransitionLayer.color}
-              opacity={transitionOverlayOpacity}
+              opacity={plannedTransitionState.overlayOpacity}
+              clipPath={plannedTransitionState.overlayClipPath}
               pointerEvents="none"
               zIndex={30}
               aria-hidden="true"

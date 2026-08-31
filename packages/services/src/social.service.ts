@@ -214,6 +214,10 @@ export class SocialService {
     const scheduledFor = new Date(parsed.scheduledFor);
     const intent = await socialPublicationScheduling.schedule({
       actorUserId: workspaceContext.actorUserId,
+      approvalPrincipal: {
+        kind: "browser",
+        actorUserId: workspaceContext.actorUserId,
+      },
       ownerUserId: userId,
       workspaceId: workspaceContext.workspaceId,
       projectId,
@@ -227,6 +231,7 @@ export class SocialService {
       resolution: parsed.resolution,
       scheduledFor,
       providerSettings: parsed.providerSettings as Prisma.JsonObject,
+      approvalOverrideReason: parsed.approvalOverrideReason,
     });
 
     const row = await prisma.socialPost.findUnique({

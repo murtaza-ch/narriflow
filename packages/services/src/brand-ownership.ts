@@ -27,18 +27,43 @@ export class BrandAccessError extends Error {
   }
 }
 
-export function resolveBrandOwner(scope: BrandActorScope): {
-  userId: string | null;
-  workspaceId: string | null;
-} {
-  return scope.isPersonalWorkspace && scope.pricingTier !== "business"
-    ? { userId: scope.workspaceOwnerUserId, workspaceId: null }
-    : { userId: null, workspaceId: scope.workspaceId };
+export type BrandOwner =
+  | { userId: string; workspaceId: null }
+  | { userId: null; workspaceId: string };
+
+export type BrandOwnerWhere = { userId: string } | { workspaceId: string };
+
+export function resolveBrandOwnerForWorkspace(input: {
+  workspaceId: string;
+  personalOwnerUserId: string | null;
+}): BrandOwner {
+  return input.personalOwnerUserId
+    ? { userId: input.personalOwnerUserId, workspaceId: null }
+    : { userId: null, workspaceId: input.workspaceId };
+}
+
+export function resolveBrandOwner(scope: BrandActorScope): BrandOwner {
+  return resolveBrandOwnerForWorkspace({
+    workspaceId: scope.workspaceId,
+    personalOwnerUserId: scope.isPersonalWorkspace ? scope.workspaceOwnerUserId : null,
+  });
+}
+
+export function brandOwnerWhereForWorkspace(input: {
+  workspaceId: string;
+  personalOwnerUserId: string | null;
+}): BrandOwnerWhere {
+  const owner = resolveBrandOwnerForWorkspace(input);
+  return owner.userId !== null
+    ? { userId: owner.userId }
+    : { workspaceId: owner.workspaceId };
 }
 
 export function brandOwnerWhere(scope: BrandActorScope) {
-  const owner = resolveBrandOwner(scope);
-  return owner.workspaceId ? { workspaceId: owner.workspaceId } : { userId: owner.userId! };
+  return brandOwnerWhereForWorkspace({
+    workspaceId: scope.workspaceId,
+    personalOwnerUserId: scope.isPersonalWorkspace ? scope.workspaceOwnerUserId : null,
+  });
 }
 
 export function brandOwnerStoragePrefix(

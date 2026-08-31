@@ -11,20 +11,15 @@ import { createMcpHandler } from "@modelcontextprotocol/server";
 import { workspaceService } from "@narriflow/services";
 
 import { getPrismaClient } from "../../db/src";
-import { buildNarriflowMcpServer } from "../src";
+import {
+  buildNarriflowMcpServer,
+  NARRIFLOW_MCP_TOOL_NAMES,
+} from "../src";
 
 const repoRoot = resolve(import.meta.dir, "../../..");
 const webRoot = join(repoRoot, "apps/web");
 const stdioEntry = join(repoRoot, "apps/mcp/src/index.ts");
-const expectedTools = [
-  "narriflow_create_rss_autopilot_rule",
-  "narriflow_get_project",
-  "narriflow_get_workspace_usage",
-  "narriflow_list_autopilot_rules",
-  "narriflow_list_projects",
-  "narriflow_list_workspaces",
-  "narriflow_run_autopilot_rule_now",
-];
+const expectedTools = [...NARRIFLOW_MCP_TOOL_NAMES];
 
 function progress(message: string) {
   process.stdout.write(`[mcp-e2e] ${message}\n`);
@@ -230,7 +225,7 @@ async function main() {
 
   const key = await workspaceService.createApiKey(actorUserId, workspace.id, {
     name: `mcp-e2e-${Date.now()}`,
-    scopes: ["projects:read", "usage:read", "autopilot:read"],
+    scopes: ["projects:read", "usage:read", "autopilot:read", "brand:read"],
   });
   let keyRevoked = false;
   let web: ChildProcess | null = null;
@@ -339,6 +334,33 @@ async function main() {
       arguments: { workspaceId: workspace.id },
     });
     assert.equal(rules.isError, undefined);
+
+    const brandProfiles = await modern.client.callTool({
+      name: "narriflow_list_brand_profiles",
+      arguments: { workspaceId: workspace.id },
+    });
+    assert.equal(brandProfiles.isError, undefined);
+
+    const deniedReviewRead = await modern.client.callTool({
+      name: "narriflow_list_review_rounds",
+      arguments: { workspaceId: workspace.id, projectId: crypto.randomUUID() },
+    });
+    assert.equal(deniedReviewRead.isError, true);
+    assert.match(textContent(deniedReviewRead), /requires the review:read scope/);
+
+    const deniedPublishingMutation = await modern.client.callTool({
+      name: "narriflow_recheck_social_publication",
+      arguments: {
+        workspaceId: workspace.id,
+        socialPostId: crypto.randomUUID(),
+        reason: "Verify least-privilege scope enforcement",
+      },
+    });
+    assert.equal(deniedPublishingMutation.isError, true);
+    assert.match(
+      textContent(deniedPublishingMutation),
+      /requires the publishing:write scope/,
+    );
 
     const deniedWrite = await modern.client.callTool({
       name: "narriflow_run_autopilot_rule_now",
@@ -472,9 +494,16 @@ async function main() {
       );
     }
 
-    await Promise.all(clients.splice(0).map((client) => client.close()));
     await workspaceService.revokeApiKey(actorUserId, workspace.id, key.id);
     keyRevoked = true;
+
+    const revokedStdio = await stdio.callTool({
+      name: "narriflow_list_workspaces",
+    });
+    assert.equal(revokedStdio.isError, true);
+    assert.match(textContent(revokedStdio), /API key is invalid or revoked/);
+    progress("stdio API-key revocation without restart: passed");
+
     const revoked = await fetch(mcpUrl, {
       method: "POST",
       headers: {
@@ -498,6 +527,7 @@ async function main() {
     });
     assert.equal(revoked.status, 401);
     progress("API-key revocation: passed");
+    await Promise.all(clients.splice(0).map((client) => client.close()));
     progress("all requested MCP end-to-end checks passed");
   } finally {
     await Promise.all(clients.splice(0).map((client) => client.close().catch(() => undefined)));

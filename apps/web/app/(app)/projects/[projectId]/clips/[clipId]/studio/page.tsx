@@ -3,8 +3,10 @@ import { admitProjectPage } from "@/lib/authenticated-request-page";
 import { executeProjectAction } from "@/lib/authenticated-request-action";
 import {
   clipService,
+  autoCensorRolloutFromEnv,
   hasFeature,
   isProgramWriteEnabled,
+  motionRolloutFromEnv,
   projectService,
   presignDownloadUrl,
   visualAssetService,
@@ -51,6 +53,8 @@ export default async function StudioPage({
   if (!snapshot.project) notFound();
 
   const scenesEntitled = hasFeature(pricingTier, "brand.scenes");
+  const autoCensorRollout = autoCensorRolloutFromEnv();
+  const motionRollout = motionRolloutFromEnv();
   const sceneWriteCapabilities = {
     cards: scenesEntitled && isProgramWriteEnabled("scene_cards"),
     images: scenesEntitled && isProgramWriteEnabled("scene_images"),
@@ -102,12 +106,12 @@ export default async function StudioPage({
       ? brandProfileService.get(appUser, snapshot.project.brandProfileId).catch(() => null)
       : Promise.resolve(null),
   ]);
-	const [retainedVisualAssets, retainedSceneFonts] = scenesEntitled
-		? await Promise.all([
-			visualAssetService.resolveSceneReferences(appUser, editorDoc.document.sceneBlocks),
-			brandFontService.resolveSceneReferences(appUser, editorDoc.document.sceneBlocks),
-		])
-		: [[], []];
+	// Frozen document references remain readable after a plan downgrade or a
+	// write-rollout rollback. Only the active picker/new insertions are gated.
+	const [retainedVisualAssets, retainedSceneFonts] = await Promise.all([
+		visualAssetService.resolveSceneReferences(appUser, editorDoc.document.sceneBlocks),
+		brandFontService.resolveSceneReferences(appUser, editorDoc.document.sceneBlocks),
+	]);
 	const visualAssets = [...new Map<string, StudioVisualAsset>([
 		...retainedVisualAssets.map((asset) => [asset.id, asset as StudioVisualAsset] as const),
 		...activeVisualAssets.map((asset) => [asset.id, { ...asset, missing: asset.accessUrl === null, insertable: true }] as const),
@@ -268,6 +272,15 @@ export default async function StudioPage({
 		sceneFonts={sceneFonts}
       sceneTemplates={sceneTemplates}
       sceneWriteCapabilities={sceneWriteCapabilities}
+      autoCensorPolicy={{
+        locale: snapshot.project.languageCode ?? "en",
+        brandTerms: activeProfile?.voice.blockedTerms ?? [],
+        canPersist: hasFeature(pricingTier, "editor.censoring"),
+        rollout: autoCensorRollout,
+        freePreviewLimit: autoCensorRollout.freePreviewLimit,
+      }}
+      canPersistMotion={hasFeature(pricingTier, "editor.motion")}
+      motionRollout={motionRollout}
     />
   );
 }

@@ -964,6 +964,7 @@ export function encodeClipEditorDocumentForStorage(
   transcriptSlice: Prisma.InputJsonValue;
   studioEdits: Prisma.InputJsonValue;
   brollUrl: string | null;
+  brollPlacements: Prisma.InputJsonValue;
   deletedRanges: Prisma.InputJsonValue;
   editorDocumentVersion: number;
   sceneBlocks: Prisma.InputJsonValue;
@@ -978,6 +979,7 @@ export function encodeClipEditorDocumentForStorage(
     transcriptSlice: toPrismaJson(document.transcriptSlice),
     studioEdits: toPrismaJson(document.studioEdits),
     brollUrl: document.brollUrl,
+    brollPlacements: toPrismaJson(document.brollPlacements),
     deletedRanges: toPrismaJson(document.deletedRanges),
     editorDocumentVersion: document.version,
     sceneBlocks: toPrismaJson(document.sceneBlocks),
@@ -1000,6 +1002,7 @@ function decodeStoredDocument(row: unknown): EditorDocument {
   const transcriptSlice = Reflect.get(row, "transcriptSlice");
   const studioEdits = Reflect.get(row, "studioEdits");
   const brollUrl = Reflect.get(row, "brollUrl");
+  const brollPlacements = Reflect.get(row, "brollPlacements");
   const deletedRanges = Reflect.get(row, "deletedRanges");
   const editorDocumentVersion = Reflect.get(row, "editorDocumentVersion");
   const sceneBlocks = Reflect.get(row, "sceneBlocks");
@@ -1044,6 +1047,7 @@ function decodeStoredDocument(row: unknown): EditorDocument {
     transcriptSlice: transcript.data.transcriptSlice,
     studioEdits: studio.data,
     brollUrl,
+    brollPlacements,
     deletedRanges: ranges.data,
   });
   if (!decoded.success) {
@@ -1146,6 +1150,7 @@ function prismaDocumentUpdateData(
     transcriptSlice: toPrismaJson(input.nextDocument.transcriptSlice),
     studioEdits: toPrismaJson(input.nextDocument.studioEdits),
     brollUrl: input.nextDocument.brollUrl,
+    brollPlacements: toPrismaJson(input.nextDocument.brollPlacements),
     deletedRanges: toPrismaJson(input.nextDocument.deletedRanges),
     editorDocumentVersion: input.nextDocument.version,
     sceneBlocks: toPrismaJson(input.nextDocument.sceneBlocks),
@@ -1180,6 +1185,131 @@ function prismaDocumentUpdateData(
   };
 }
 
+async function commitPrismaClipEditorDocumentInTransaction(
+  transaction: Prisma.TransactionClient,
+  input: ClipEditorDocumentCommit,
+): Promise<ClipEditorDocumentStoredState | null> {
+  const guarded = await transaction.clip.updateMany({
+    where: {
+      id: input.scope.clipId,
+      projectId: input.scope.projectId,
+      editorRevision: input.expectedRevision,
+      project: { userId: input.scope.actorUserId },
+    },
+    data: prismaDocumentUpdateData(input),
+  });
+  if (guarded.count !== 1) return null;
+
+  await transaction.clipRender.deleteMany({
+    where: { clipId: input.scope.clipId, exportVariantId: null },
+  });
+  if (input.cleanupIntents.length > 0) {
+    await admitMediaCleanupObligations(
+      transaction.mediaCleanupObligation,
+      input.cleanupIntents,
+    );
+  }
+  const row = await transaction.clip.findUniqueOrThrow({
+    where: { id: input.scope.clipId },
+    include: prismaClipInclude,
+  });
+  return decodePrismaState(row);
+}
+
+function prismaTransactionDocumentStore(
+  transaction: Prisma.TransactionClient,
+): ClipEditorDocumentStore {
+  return {
+    async read(scope) {
+      const row = await transaction.clip.findFirst({
+        where: {
+          id: scope.clipId,
+          projectId: scope.projectId,
+          project: { userId: scope.actorUserId },
+        },
+        include: prismaClipInclude,
+      });
+      return row ? decodePrismaState(row) : null;
+    },
+    async confirmRevision(scope, expectedRevision) {
+      const count = await transaction.clip.count({
+        where: {
+          id: scope.clipId,
+          projectId: scope.projectId,
+          editorRevision: expectedRevision,
+          project: { userId: scope.actorUserId },
+        },
+      });
+      return count === 1;
+    },
+    commit(input) {
+      return commitPrismaClipEditorDocumentInTransaction(transaction, input);
+    },
+    async readProjectSelection() {
+      persistenceError(
+        "persistence_unavailable",
+        "Project selection is unavailable inside a companion transaction",
+      );
+    },
+    async commitProjectSelection() {
+      persistenceError(
+        "persistence_unavailable",
+        "Project selection is unavailable inside a companion transaction",
+      );
+    },
+  };
+}
+
+/**
+ * Package-internal seam for a domain command that must settle atomically with
+ * one canonical Clip Editor Document mutation. The planner is synchronous:
+ * remote work and mutable lookups belong before this call, inside the caller's
+ * existing transaction. Document validation, revision fencing, original
+ * capture, invalidation, and cleanup admission remain owned here.
+ *
+ * This helper is intentionally not re-exported from the services barrel.
+ */
+export async function mutatePrismaClipEditorDocumentInTransaction<T>(
+  transaction: Prisma.TransactionClient,
+  input: {
+    scope: ClipEditorDocumentScope;
+    expectedRevision: number;
+    plan: (
+      state: ClipEditorDocumentStoredState,
+    ) => { nextDocument: EditorDocument; value: T };
+  },
+): Promise<{
+  mutation: ClipEditorDocumentMutationResult;
+  value: T;
+} | null> {
+  const store = prismaTransactionDocumentStore(transaction);
+  const stored = await store.read(input.scope);
+  if (!stored) return null;
+  const state = canonicalizeStoredState(stored);
+  if (state.revision !== input.expectedRevision) {
+    throw new ClipEditorRevisionConflictError(state.revision);
+  }
+  const planned = input.plan(state);
+  if (
+    planned &&
+    typeof planned === "object" &&
+    "then" in planned &&
+    typeof planned.then === "function"
+  ) {
+    throw new TypeError("Clip Editor Document transaction planners must be synchronous");
+  }
+  const persistence = createClipEditorDocumentPersistence({ store });
+  const mutation = await persistence.mutateDocument({
+    ...input.scope,
+    intent: {
+      kind: "replace",
+      baseRevision: input.expectedRevision,
+      document: planned.nextDocument,
+    },
+  });
+  return { mutation, value: planned.value };
+}
+
 class ProjectSelectionRevisionChanged extends Error {}
 
 export const prismaClipEditorDocumentStore: ClipEditorDocumentStore = {
@@ -1209,33 +1339,11 @@ export const prismaClipEditorDocumentStore: ClipEditorDocumentStore = {
 
   async commit(input) {
     const prisma = requirePrisma();
-    return prisma.$transaction(async (tx) => {
-      const guarded = await tx.clip.updateMany({
-        where: {
-          id: input.scope.clipId,
-          projectId: input.scope.projectId,
-          editorRevision: input.expectedRevision,
-          project: { userId: input.scope.actorUserId },
-        },
-        data: prismaDocumentUpdateData(input),
-      });
-      if (guarded.count !== 1) return null;
-
-      await tx.clipRender.deleteMany({
-        where: { clipId: input.scope.clipId, exportVariantId: null },
-      });
-      if (input.cleanupIntents.length > 0) {
-        await admitMediaCleanupObligations(
-          tx.mediaCleanupObligation,
-          input.cleanupIntents,
-        );
-      }
-      const row = await tx.clip.findUniqueOrThrow({
-        where: { id: input.scope.clipId },
-        include: prismaClipInclude,
-      });
-      return decodePrismaState(row);
-    }, { isolationLevel: "ReadCommitted", timeout: 30_000, maxWait: 10_000 });
+    return prisma.$transaction(
+      (transaction) =>
+        commitPrismaClipEditorDocumentInTransaction(transaction, input),
+      { isolationLevel: "ReadCommitted", timeout: 30_000, maxWait: 10_000 },
+    );
   },
 
   async readProjectSelection(scope) {

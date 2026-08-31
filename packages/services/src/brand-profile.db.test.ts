@@ -18,6 +18,8 @@ import { projectService } from "./project.service";
 import { ProgramWriteDisabledError } from "./program-rollout";
 import { sceneTemplateService } from "./scene-template.service";
 import {
+  VISUAL_ASSET_UPLOAD_CLEANUP_SKEW_SECONDS,
+  VISUAL_ASSET_UPLOAD_URL_TTL_SECONDS,
   VisualAssetReferenceError,
   VisualAssetService,
   visualAssetService,
@@ -649,6 +651,14 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
       title: "Replay",
       provenance: "uploaded" as const,
     };
+    await prisma.mediaCleanupObligation.create({
+      data: {
+        origin: "visual_asset_upload",
+        cleanupClass: "unfinalized_visual_asset_upload",
+        objectKey: key,
+        nextAttemptAt: new Date(Date.now() + 60 * 60 * 1000),
+      },
+    });
 
     const created = await service.finalizeUpload(fixture.scope, input);
     const replay = await service.finalizeUpload(fixture.scope, input);
@@ -656,6 +666,150 @@ dbDescribe("Brand Profile PostgreSQL contracts", () => {
     expect(replay.id).toBe(created.id);
     expect(replay.replayed).toBe(true);
     expect(objectReads).toBe(1);
+  });
+
+  test("defers presigned upload cleanup beyond URL expiry and adopts it atomically", async () => {
+    const fixture = await workspaceFixture("asset-upload-cleanup");
+    const startedAt = new Date("2026-08-31T00:00:00.000Z");
+    const signedAt = new Date("2026-08-31T00:00:02.000Z");
+    const times = [startedAt, signedAt];
+    const fingerprint = "d".repeat(64);
+    let signedTtl: number | undefined;
+    const service = new VisualAssetService(
+      {
+        async presign(input) {
+          signedTtl = input.expiresInSeconds;
+          return "https://upload.example.test";
+        },
+        async head() {
+          return { contentType: "image/png", sizeBytes: 128 };
+        },
+        async probe() {
+          return {
+            kind: "image",
+            contentType: "image/png",
+            width: 64,
+            height: 64,
+            durationSec: null,
+          };
+        },
+        async fingerprint() {
+          return fingerprint;
+        },
+        async accessUrl() {
+          return "https://download.example.test";
+        },
+      },
+      () => times.shift() ?? signedAt,
+    );
+    (
+      service as unknown as { requirePrisma: () => PrismaClient }
+    ).requirePrisma = () => prisma;
+
+    const grant = await service.presignUpload(fixture.scope, {
+      contentType: "image/png",
+      sizeBytes: 128,
+    });
+    const obligation = await prisma.mediaCleanupObligation.findUniqueOrThrow({
+      where: {
+        origin_cleanupClass_objectKey: {
+          origin: "visual_asset_upload",
+          cleanupClass: "unfinalized_visual_asset_upload",
+          objectKey: grant.key,
+        },
+      },
+    });
+    const expiresAt = new Date(
+      startedAt.getTime() + VISUAL_ASSET_UPLOAD_URL_TTL_SECONDS * 1000,
+    );
+    expect(signedTtl).toBe(VISUAL_ASSET_UPLOAD_URL_TTL_SECONDS);
+    expect(grant.expiresAt).toBe(expiresAt.toISOString());
+    expect(obligation.nextAttemptAt).toEqual(
+      new Date(
+        signedAt.getTime() +
+          (VISUAL_ASSET_UPLOAD_URL_TTL_SECONDS +
+            VISUAL_ASSET_UPLOAD_CLEANUP_SKEW_SECONDS) *
+            1000,
+      ),
+    );
+    expect(obligation.nextAttemptAt.getTime()).toBeGreaterThan(
+      expiresAt.getTime(),
+    );
+
+    const asset = await service.finalizeUpload(fixture.scope, {
+      key: grant.key,
+      contentType: "image/png",
+      sizeBytes: 128,
+      fingerprint,
+      title: "Cleanup-owned upload",
+      provenance: "uploaded",
+    });
+    expect(asset.fingerprint).toBe(fingerprint);
+    expect(
+      await prisma.mediaCleanupObligation.findUniqueOrThrow({
+        where: { id: obligation.id },
+      }),
+    ).toMatchObject({
+      completedAt: expect.any(Date),
+      failureCode: "visual_asset_adopted",
+      claimId: null,
+    });
+  });
+
+  test("rejects Visual Asset finalization after exact-key cleanup has claimed the upload", async () => {
+    const fixture = await workspaceFixture("asset-upload-claim-race");
+    const fingerprint = "e".repeat(64);
+    const key = `workspaces/${fixture.workspace.id}/visual-assets/claimed.png`;
+    await prisma.mediaCleanupObligation.create({
+      data: {
+        origin: "visual_asset_upload",
+        cleanupClass: "unfinalized_visual_asset_upload",
+        objectKey: key,
+        attemptCount: 1,
+        claimId: randomUUID(),
+        claimExpiresAt: new Date(Date.now() + 60_000),
+      },
+    });
+    const service = new VisualAssetService({
+      async presign() {
+        return "https://upload.example.test";
+      },
+      async head() {
+        return { contentType: "image/png", sizeBytes: 128 };
+      },
+      async probe() {
+        return {
+          kind: "image",
+          contentType: "image/png",
+          width: 64,
+          height: 64,
+          durationSec: null,
+        };
+      },
+      async fingerprint() {
+        return fingerprint;
+      },
+      async accessUrl() {
+        return "https://download.example.test";
+      },
+    });
+    (
+      service as unknown as { requirePrisma: () => PrismaClient }
+    ).requirePrisma = () => prisma;
+
+    await expect(
+      service.finalizeUpload(fixture.scope, {
+        key,
+        contentType: "image/png",
+        sizeBytes: 128,
+        fingerprint,
+        title: "Claimed upload",
+        provenance: "uploaded",
+      }),
+    ).rejects.toMatchObject({ code: "visual_asset_upload_ownership_lost" });
+    expect(
+      await prisma.visualAsset.count({ where: { storageKey: key } }),
+    ).toBe(0);
   });
 
   test("backfill is bounded, resumable, idempotent, and leaves built-ins, deleted templates, and old Project reads unchanged", async () => {

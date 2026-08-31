@@ -2,16 +2,40 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "@prisma/client";
-import { editorDocumentSchema, applyEditorAction } from "@narriflow/validators";
+import {
+  DEFAULT_CAPTION_PRESET,
+  applyEditorAction,
+  editorDocumentSchema,
+  recordAnalyticsEventSchema,
+} from "@narriflow/validators";
 import { Pool } from "pg";
 import { CampaignOperationError, CampaignOperationService, campaignOperationService } from "./campaign-operation.service";
 import { clipEditorDocumentPersistence } from "./clip-editor-document-persistence";
-import { ReviewServiceError, reviewService } from "./review.service";
+import {
+  ReviewService,
+  ReviewServiceError,
+  reviewService,
+} from "./review.service";
+import { createReviewRolloutPolicy } from "./review-rollout";
 import { sceneTemplateService } from "./scene-template.service";
 import { socialOAuthService } from "./social-oauth.service";
 import { visualAssetService } from "./visual-asset.service";
 import { BrandFontReferenceError, brandFontService } from "./brand-font.service";
 import { clipExportService } from "./clip-export.service";
+import {
+  buildBrandProfileSnapshot,
+  buildBrandTemplateSnapshot,
+} from "./brand-profile.service";
+import { AnalyticsService } from "./analytics.service";
+import { createPrismaBulkSchedulingStore } from "./bulk-scheduling.prisma";
+import { GeneratedMediaInsertionService } from "./generated-media-insertion";
+import { createPrismaGeneratedMediaInsertionStore } from "./generated-media-insertion.prisma";
+import {
+  GeneratedMediaService,
+  createGeneratedMediaPromptProtection,
+  type GeneratedMediaProvider,
+} from "./generated-media";
+import { createPrismaGeneratedMediaStore } from "./generated-media-prisma";
 
 const databaseUrl = process.env.VIZARD_EXPANSION_TEST_DATABASE_URL;
 const databaseSchema = process.env.VIZARD_EXPANSION_TEST_DATABASE_SCHEMA;
@@ -111,6 +135,810 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
     return { user, workspace, project, clip, clipExport };
   }
 
+	test("atomically persists an idempotent generated-image placement and editor revision", async () => {
+		const current = await fixture("generated-media-insertion");
+		const asset = await prisma.visualAsset.create({
+			data: {
+				workspaceId: current.workspace.id,
+				createdByUserId: current.user.id,
+				title: "Generated campaign still",
+				kind: "image",
+				storageKey: `fixtures/${randomUUID()}/generated.png`,
+				contentType: "image/png",
+				sizeBytes: 64n,
+				width: 1080,
+				height: 1920,
+				fingerprint: "a".repeat(64),
+				provenance: "generated",
+			},
+		});
+		const job = await prisma.generatedMediaJob.create({
+			data: {
+				workspaceId: current.workspace.id,
+				projectId: current.project.id,
+				clipId: current.clip.id,
+				actorUserId: current.user.id,
+				ownerWorkspaceId: current.workspace.id,
+				kind: "image",
+				status: "completed",
+				idempotencyKey: randomUUID(),
+				requestFingerprint: "b".repeat(64),
+				provider: "test",
+					model: "configured-image-model",
+					promptFingerprint: "c".repeat(64),
+					promptKeyVersion: "test-primary",
+				promptOriginKind: "manual",
+				promptOriginSourceIds: [],
+				aspectRatio: "9:16",
+				style: "editorial",
+				resultAssetId: asset.id,
+				stagedFingerprint: asset.fingerprint,
+				completedAt: new Date(),
+			},
+		});
+		await prisma.clipRender.create({
+			data: {
+				clipId: current.clip.id,
+				aspectRatio: "ratio_9_16",
+				status: "completed",
+				storageKey: `fixtures/${randomUUID()}/stale-render.mp4`,
+			},
+		});
+		const service = new GeneratedMediaInsertionService({
+			store: createPrismaGeneratedMediaInsertionStore(prisma),
+			now: () => new Date("2026-08-31T12:00:00.000Z"),
+		});
+		const request = {
+			idempotencyKey: randomUUID(),
+			jobId: job.id,
+			projectId: current.project.id,
+			clipId: current.clip.id,
+			baseRevision: 3,
+			action: {
+				kind: "insert_broll" as const,
+				placementId: randomUUID(),
+				startSec: 1,
+				endSec: 3,
+			},
+		};
+		const actor = {
+			actorUserId: current.user.id,
+			workspaceId: current.workspace.id,
+			workspaceOwnerUserId: current.user.id,
+			role: "owner" as const,
+			status: "active" as const,
+			pricingTier: "business",
+			isPersonalWorkspace: false,
+		};
+
+		const inserted = await service.insert(actor, request);
+		const replay = await service.insert(actor, request);
+		const [storedClip, storedJob, commands, renderCount, cleanupCount] =
+			await Promise.all([
+				prisma.clip.findUniqueOrThrow({ where: { id: current.clip.id } }),
+				prisma.generatedMediaJob.findUniqueOrThrow({ where: { id: job.id } }),
+				prisma.generatedMediaInsertion.count({ where: { jobId: job.id } }),
+				prisma.clipRender.count({
+					where: { clipId: current.clip.id, exportVariantId: null },
+				}),
+				prisma.mediaCleanupObligation.count({
+					where: { clipId: current.clip.id, cleanupClass: "mutable_render" },
+				}),
+			]);
+
+		expect(inserted).toMatchObject({ revision: 4, replayed: false });
+		expect(replay).toEqual({ ...inserted, replayed: true });
+		expect(storedClip.editorRevision).toBe(4);
+		expect(editorDocumentSchema.parse({
+			...inserted.document,
+			brollPlacements: storedClip.brollPlacements,
+		}).brollPlacements).toEqual(inserted.document.brollPlacements);
+		expect(storedJob).toMatchObject({
+			insertionCount: 1,
+			lastInsertionKind: "broll",
+		});
+		expect({ commands, renderCount, cleanupCount }).toEqual({
+			commands: 1,
+			renderCount: 0,
+			cleanupCount: 1,
+		});
+	});
+
+	test("atomically admits one Free image trial and retains its billing row after Project deletion", async () => {
+		const current = await fixture("generated-media-quota-retention");
+		const store = createPrismaGeneratedMediaStore(prisma);
+		const provider: GeneratedMediaProvider = {
+			alias: "test-image",
+			async submit() {
+				throw new Error("provider must not run during admission");
+			},
+			async poll() {
+				throw new Error("provider must not run during admission");
+			},
+			async cancel() {
+				return { state: "unsupported" };
+			},
+			async retrieve() {
+				throw new Error("provider must not run during admission");
+			},
+		};
+		const now = new Date("2026-08-31T12:00:00.000Z");
+		const service = new GeneratedMediaService({
+			store,
+			providers: new Map([[provider.alias, provider]]),
+			config: {
+				image: {
+					enabled: true,
+					provider: provider.alias,
+					model: "fixture-model",
+					maxConcurrency: 1,
+					usageUnits: 1,
+					dailyUsageLimit: 5,
+					dailyAbuseLimit: 10,
+					maxOutputBytes: 1024,
+				},
+				video: { enabled: false, reason: "entry_gate_closed" },
+			},
+			promptProtection: createGeneratedMediaPromptProtection({
+				activeKeyVersion: "test-primary",
+				encryptionKeys: {
+					"test-primary": "test-encryption-key-with-at-least-32-characters",
+				},
+				fingerprintKey: "test-fingerprint-key-with-at-least-32-characters",
+			}),
+			now: () => now,
+		});
+		const actor = {
+			actorUserId: current.user.id,
+			workspaceId: current.workspace.id,
+			workspaceOwnerUserId: current.user.id,
+			role: "owner" as const,
+			status: "active" as const,
+			pricingTier: "free",
+			isPersonalWorkspace: false,
+		};
+		const command = (idempotencyKey: string) => ({
+			idempotencyKey,
+			projectId: current.project.id,
+			clipId: current.clip.id,
+			kind: "image" as const,
+			prompt: "A quiet studio",
+			derivedContext: null,
+			promptOrigin: { kind: "manual" as const, sourceIds: [] },
+			aspectRatio: "9:16" as const,
+			style: "editorial" as const,
+		});
+
+		const outcomes = await Promise.allSettled([
+			service.submit(actor, command(randomUUID())),
+			service.submit(actor, command(randomUUID())),
+		]);
+		const admitted = outcomes.find((outcome) => outcome.status === "fulfilled");
+		expect(outcomes.filter((outcome) => outcome.status === "fulfilled")).toHaveLength(1);
+		expect(outcomes.filter((outcome) => outcome.status === "rejected")).toMatchObject([
+			{ reason: { code: "generated_media_usage_exhausted" } },
+		]);
+		if (!admitted || admitted.status !== "fulfilled") throw new Error("trial missing");
+
+		await prisma.project.delete({ where: { id: current.project.id } });
+		expect(await store.get(actor, admitted.value.id)).toMatchObject({
+			projectId: current.project.id,
+			clipId: null,
+		});
+		expect((await service.usageSummary(actor)).image).toMatchObject({
+			allowance: { committedUnits: 1, availableUnits: 0 },
+			settlement: { reservedUnits: 1 },
+		});
+	});
+
+	test("allows separate jobs to settle onto the same generated Visual Asset", async () => {
+		const current = await fixture("generated-media-shared-result");
+		const asset = await prisma.visualAsset.create({
+			data: {
+				workspaceId: current.workspace.id,
+				createdByUserId: current.user.id,
+				title: "Shared generated still",
+				kind: "image",
+				storageKey: `fixtures/${randomUUID()}/shared.png`,
+				contentType: "image/png",
+				sizeBytes: 64n,
+				width: 1080,
+				height: 1920,
+				fingerprint: randomUUID().replaceAll("-", "").padEnd(64, "0"),
+				provenance: "generated",
+			},
+		});
+		const base = {
+			workspaceId: current.workspace.id,
+			projectId: current.project.id,
+			clipId: current.clip.id,
+			actorUserId: current.user.id,
+			ownerWorkspaceId: current.workspace.id,
+			kind: "image",
+			status: "completed",
+			requestFingerprint: "a".repeat(64),
+			provider: "fixture-provider",
+			model: "fixture-model",
+			promptFingerprint: "b".repeat(64),
+			promptKeyVersion: "test-primary",
+			promptOriginKind: "manual",
+			promptOriginSourceIds: [],
+			aspectRatio: "9:16",
+			style: "editorial",
+			resultAssetId: asset.id,
+			completedAt: new Date(),
+		};
+
+		await prisma.generatedMediaJob.createMany({
+			data: [
+				{ ...base, idempotencyKey: randomUUID() },
+				{ ...base, idempotencyKey: randomUUID() },
+			],
+		});
+
+		expect(
+			await prisma.generatedMediaJob.count({ where: { resultAssetId: asset.id } }),
+		).toBe(2);
+	});
+
+	test("claims another Workspace after a capped tenant fills the first queue page", async () => {
+		const capped = await fixture("generated-media-capped-claim");
+		const eligible = await fixture("generated-media-eligible-claim");
+		const store = createPrismaGeneratedMediaStore(prisma);
+		const now = new Date("2026-08-31T12:00:00.000Z");
+		const queueEpoch = new Date("2000-01-01T00:00:00.000Z");
+		const activeId = randomUUID();
+		const eligibleId = randomUUID();
+		const cappedQueuedIds = Array.from({ length: 25 }, () => randomUUID());
+		const job = (input: {
+			id: string;
+			workspaceId: string;
+			projectId: string;
+			actorUserId: string;
+			status: "queued" | "waiting";
+			createdAt: Date;
+			providerReference?: string;
+			nextPollAt?: Date;
+		}) => ({
+			id: input.id,
+			workspaceId: input.workspaceId,
+			projectId: input.projectId,
+			actorUserId: input.actorUserId,
+			ownerWorkspaceId: input.workspaceId,
+			kind: "image",
+			status: input.status,
+			idempotencyKey: randomUUID(),
+			requestFingerprint: randomUUID().replaceAll("-", "").padEnd(64, "0"),
+			provider: "fixture-provider",
+			model: "fixture-model",
+			promptCiphertext: "protected-prompt",
+			promptFingerprint: randomUUID().replaceAll("-", "").padEnd(64, "0"),
+			promptKeyVersion: "test-primary",
+			promptOriginKind: "manual",
+			promptOriginSourceIds: [],
+			aspectRatio: "9:16",
+			style: "editorial",
+			providerReference: input.providerReference,
+			nextAttemptAt: now,
+			nextPollAt: input.nextPollAt,
+			createdAt: input.createdAt,
+			updatedAt: input.createdAt,
+		});
+		await prisma.generatedMediaJob.createMany({
+			data: [
+				job({
+					id: activeId,
+					workspaceId: capped.workspace.id,
+					projectId: capped.project.id,
+					actorUserId: capped.user.id,
+					status: "waiting",
+					providerReference: "capped-provider-operation",
+					nextPollAt: new Date(now.getTime() + 60_000),
+					createdAt: new Date(queueEpoch.getTime() - 1_000),
+				}),
+				...cappedQueuedIds.map((id, index) =>
+					job({
+						id,
+						workspaceId: capped.workspace.id,
+						projectId: capped.project.id,
+						actorUserId: capped.user.id,
+						status: "queued",
+						createdAt: new Date(queueEpoch.getTime() + index),
+					}),
+				),
+				job({
+					id: eligibleId,
+					workspaceId: eligible.workspace.id,
+					projectId: eligible.project.id,
+					actorUserId: eligible.user.id,
+					status: "queued",
+					createdAt: new Date(queueEpoch.getTime() + 100),
+				}),
+			],
+		});
+		const dayStart = new Date("2026-08-31T00:00:00.000Z");
+		const dayEnd = new Date("2026-09-01T00:00:00.000Z");
+		await prisma.generationUsageReservation.createMany({
+			data: [activeId, ...cappedQueuedIds, eligibleId].map((jobId, index) => ({
+				jobId,
+				workspaceId:
+					index <= cappedQueuedIds.length
+						? capped.workspace.id
+						: eligible.workspace.id,
+				kind: "image",
+				reservedUnits: 1,
+				usagePolicy: "metered",
+				allowancePeriod: "calendar_day_utc",
+				allowanceLimitUnits: 20,
+				allowanceStartedAt: dayStart,
+				allowanceEndsAt: dayEnd,
+				dailyAbuseLimitUnits: 40,
+				dailyAbuseStartedAt: dayStart,
+				dailyAbuseEndsAt: dayEnd,
+				createdAt: now,
+				updatedAt: now,
+			})),
+		});
+
+		const claim = await store.claimNext({
+			workerId: "fixture-worker",
+			now,
+			leaseMs: 60_000,
+			enabledKinds: ["image"],
+			maxConcurrency: { image: 1 },
+		});
+
+		expect(claim).toMatchObject({
+			jobId: eligibleId,
+			workspaceId: eligible.workspace.id,
+		});
+	});
+
+  test("records campaign lifecycle analytics exactly once and reports the approved interval", async () => {
+    const current = await fixture("program-analytics");
+    const windowStart = new Date(Date.now() - 60_000);
+    const renderRun = await prisma.workflowRun.create({
+      data: {
+        projectId: current.project.id,
+        idempotencyKey: `analytics-render:${randomUUID()}`,
+        stage: "clip_rendering",
+        status: "running",
+        progress: 50,
+        lifecycleVersion: 2,
+        requestedCount: 2,
+      },
+    });
+    await prisma.workflowRun.update({
+      where: { id: renderRun.id },
+      data: {
+        status: "partial",
+        progress: 100,
+        succeededCount: 1,
+        failedCount: 1,
+      },
+    });
+    await prisma.workflowRun.update({
+      where: { id: renderRun.id },
+      data: { progress: 100 },
+    });
+
+    const override = await prisma.reviewApprovalOverride.create({
+      data: {
+        workspaceId: current.workspace.id,
+        projectId: current.project.id,
+        actorUserId: current.user.id,
+        idempotencyKey: randomUUID(),
+        requestFingerprint: "b".repeat(64),
+        exportIds: [current.clipExport.id],
+        reason: "Approved analytics fixture exception",
+      },
+    });
+    const socialPost = await prisma.socialPost.create({
+      data: {
+        workspaceId: current.workspace.id,
+        projectId: current.project.id,
+        createdByUserId: current.user.id,
+        clipId: current.clip.id,
+        reviewApprovalOverrideId: override.id,
+        platform: "youtube_shorts",
+        status: "scheduled",
+        clientIdempotencyKey: randomUUID(),
+        immutableRequestHash: "c".repeat(64),
+        caption: "Content-free analytics fixture",
+        scheduledFor: new Date(Date.now() + 3_600_000),
+      },
+    });
+    const firstReviewRound = await prisma.reviewRound.create({
+      data: {
+        workspaceId: current.workspace.id,
+        projectId: current.project.id,
+        createdByUserId: current.user.id,
+        revision: 1,
+        status: "superseded",
+        title: "Analytics review round 1",
+        accessTokenHash: randomUUID().replaceAll("-", "").padEnd(64, "0"),
+        supersededAt: new Date(),
+      },
+    });
+    await prisma.reviewRound.create({
+      data: {
+        workspaceId: current.workspace.id,
+        projectId: current.project.id,
+        createdByUserId: current.user.id,
+        previousRoundId: firstReviewRound.id,
+        revision: 2,
+        status: "approved",
+        title: "Analytics review round 2",
+        accessTokenHash: randomUUID().replaceAll("-", "").padEnd(64, "0"),
+        decision: "approved",
+        decidedAt: new Date(),
+      },
+    });
+    const publicationVariant = current.clipExport.variants[0]!;
+    const frozenPublication = await prisma.frozenPublicationState.create({
+      data: {
+        socialPostId: socialPost.id,
+        clipExportId: current.clipExport.id,
+        clipExportVariantId: publicationVariant.id,
+        platform: "youtube_shorts",
+        editorRevision: current.clip.editorRevision,
+        exportFingerprint: current.clipExport.fingerprint,
+        storageKey: publicationVariant.storageKey,
+        sizeBytes: publicationVariant.sizeBytes,
+        durationSec: publicationVariant.durationSec,
+        aspectRatio: publicationVariant.aspectRatio,
+        caption: socialPost.caption,
+        providerSettings: {},
+        capabilityVersion: "analytics-fixture-v1",
+        scheduledFor: socialPost.scheduledFor!,
+        mediaReadyAt: new Date(),
+      },
+    });
+    const attemptNow = new Date();
+    await prisma.socialPublicationAttempt.create({
+      data: {
+        socialPostId: socialPost.id,
+        frozenStateId: frozenPublication.id,
+        attemptNumber: 1,
+        idempotencyKey: `analytics-attempt:${randomUUID()}`,
+        phase: "failed",
+        outcome: "failed",
+        failureCode: "fixture_provider_failure",
+        nextActionAt: attemptNow,
+        processingDeadline: new Date(attemptNow.getTime() + 60_000),
+        reconciliationDeadline: new Date(attemptNow.getTime() + 120_000),
+        terminalAt: attemptNow,
+      },
+    });
+    await prisma.generatedMediaJob.createMany({
+      data: ["failed", "rejected"].map((status) => ({
+        workspaceId: current.workspace.id,
+        projectId: current.project.id,
+        clipId: current.clip.id,
+        actorUserId: current.user.id,
+        ownerWorkspaceId: current.workspace.id,
+        kind: "image",
+        status,
+        idempotencyKey: randomUUID(),
+        requestFingerprint: randomUUID().replaceAll("-", "").padEnd(64, "0"),
+        provider: "fixture-provider",
+        model: "fixture-model",
+        promptFingerprint: randomUUID().replaceAll("-", "").padEnd(64, "0"),
+        promptKeyVersion: "test-primary",
+        promptOriginKind: "manual",
+        promptOriginSourceIds: [],
+        aspectRatio: "9:16",
+        style: "editorial",
+			moderationOutcome: status === "rejected" ? "rejected" : "passed",
+        errorCode:
+          status === "rejected" ? "generated_media_rejected" : "provider_failed",
+        completedAt: new Date(),
+      })),
+    });
+    const store = createPrismaBulkSchedulingStore(prisma);
+    const idempotencyKey = randomUUID();
+    let executions = 0;
+    const open = () =>
+      store.open({
+        actorUserId: current.user.id,
+        workspaceId: current.workspace.id,
+        projectId: current.project.id,
+        idempotencyKey,
+        requestFingerprint: "a".repeat(64),
+        requestedCount: 2,
+        async execute(operationId) {
+          executions += 1;
+          return {
+            operationId,
+            status: "partial",
+            counts: { scheduled: 1, failed: 1 },
+            items: [
+              {
+                itemKey: "scheduled",
+                clipId: current.clip.id,
+                accountId: randomUUID(),
+                status: "scheduled",
+                postId: socialPost.id,
+                scheduledFor: new Date(Date.now() + 3_600_000).toISOString(),
+                errorCode: null,
+              },
+              {
+                itemKey: "failed",
+                clipId: current.clip.id,
+                accountId: randomUUID(),
+                status: "failed",
+                postId: null,
+                scheduledFor: null,
+                errorCode: "fixture_failed",
+              },
+            ],
+          };
+        },
+      });
+    const first = await open();
+    const replay = await open();
+    expect(first.replayed).toBe(false);
+    expect(replay.replayed).toBe(true);
+    expect(executions).toBe(1);
+    const operationId = first.result.operationId;
+    expect(
+      await prisma.campaignOperationItem.findFirst({
+        where: { operationId, itemKey: "scheduled" },
+        select: { reviewApprovalOverrideId: true },
+      }),
+    ).toEqual({ reviewApprovalOverrideId: override.id });
+    await prisma.campaignOperation.update({
+      where: { id: operationId },
+      data: { completedAt: new Date() },
+    });
+
+    const events = await prisma.projectAnalyticsEvent.findMany({
+      where: {
+        projectId: current.project.id,
+        type: {
+          in: [
+            "clips_ready",
+            "campaign_operation_started",
+            "campaign_operation_completed",
+            "campaign_scheduled",
+          ],
+        },
+      },
+      orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+    });
+    expect(events.map((event) => event.type).sort()).toEqual([
+      "campaign_operation_completed",
+      "campaign_operation_started",
+      "campaign_scheduled",
+      "clips_ready",
+    ]);
+    for (const event of events) {
+      expect(() =>
+        recordAnalyticsEventSchema.parse({
+          type: event.type,
+          clipId: event.clipId,
+          platform: event.platform,
+          metadata: event.metadata,
+        }),
+      ).not.toThrow();
+    }
+    expect(
+      events.find((event) => event.type === "campaign_scheduled")?.metadata,
+    ).toMatchObject({
+      selectedCount: 2,
+      scheduledCount: 1,
+      failedCount: 1,
+      approvalOverrides: 1,
+      outcome: "partial",
+    });
+
+    const report = await new AnalyticsService().getCampaignCompletionIntervalReport({
+      windowStart,
+      windowEnd: new Date(Date.now() + 60_000),
+      workspaceIds: [current.workspace.id],
+    });
+    expect(report).toMatchObject({
+      eligibleProjects: 1,
+      scheduledProjects: 1,
+      completionRate: 1,
+      scheduledDeliverables: 1,
+      approvalOverrides: 1,
+      overriddenProjects: 1,
+      approvalOverrideProjectRate: 1,
+      reviewRevisions: {
+        projectsWithRounds: 1,
+        median: 2,
+        p90: 2,
+      },
+      publicationAttempts: {
+        terminal: 1,
+        succeeded: 0,
+        failed: 1,
+        needsAttention: 0,
+        failureRate: 1,
+        byPlatform: [
+          {
+            platform: "youtube_shorts",
+            terminal: 1,
+            succeeded: 0,
+            failed: 1,
+            needsAttention: 0,
+            failureRate: 1,
+          },
+        ],
+      },
+      generatedProviderOutcomes: {
+        terminal: 2,
+        completed: 0,
+        failed: 1,
+        rejected: 1,
+        failureRate: 0.5,
+        rejectionRate: 0.5,
+        byProviderKind: [
+          {
+            providerAlias: "fixture-provider",
+            kind: "image",
+            terminal: 2,
+            completed: 0,
+            failed: 1,
+            rejected: 1,
+            failureRate: 0.5,
+            rejectionRate: 0.5,
+          },
+        ],
+      },
+    });
+    expect(report.durationSeconds.median).toBeGreaterThanOrEqual(0);
+    expect(report.durationSeconds.p90).toBeGreaterThanOrEqual(
+      report.durationSeconds.median ?? 0,
+    );
+  });
+
+  test("enforces coherent durable thumbnail evidence on Social Posts", async () => {
+    const current = await fixture("thumbnail-evidence");
+    const fingerprint = "d".repeat(64);
+    const asset = await prisma.visualAsset.create({
+      data: {
+        workspaceId: current.workspace.id,
+        createdByUserId: current.user.id,
+        title: "Frozen campaign thumbnail",
+        kind: "image",
+        storageKey: `fixtures/${randomUUID()}/thumbnail.jpg`,
+        contentType: "image/jpeg",
+        sizeBytes: 1_024n,
+        width: 1_080,
+        height: 1_920,
+        fingerprint,
+        provenance: "generated",
+      },
+    });
+    const base = {
+      workspaceId: current.workspace.id,
+      projectId: current.project.id,
+      createdByUserId: current.user.id,
+      clipId: current.clip.id,
+      platform: "youtube_shorts" as const,
+      status: "scheduled" as const,
+      immutableRequestHash: "e".repeat(64),
+      caption: "Approved fixture copy",
+    };
+
+    await expect(Promise.resolve(prisma.socialPost.create({
+      data: {
+        ...base,
+        clientIdempotencyKey: randomUUID(),
+        thumbnailAssetId: asset.id,
+        thumbnailFingerprint: fingerprint,
+      },
+    }))).resolves.toMatchObject({
+      thumbnailAssetId: asset.id,
+      thumbnailFingerprint: fingerprint,
+    });
+    await expect(Promise.resolve(prisma.socialPost.create({
+      data: {
+        ...base,
+        clientIdempotencyKey: randomUUID(),
+        thumbnailAssetId: asset.id,
+        thumbnailFingerprint: null,
+      },
+    }))).rejects.toBeDefined();
+    await expect(Promise.resolve(prisma.socialPost.create({
+      data: {
+        ...base,
+        clientIdempotencyKey: randomUUID(),
+        thumbnailAssetId: null,
+        thumbnailFingerprint: fingerprint,
+      },
+    }))).rejects.toBeDefined();
+  });
+
+  test("rejects nullable generated-media duration, quota, and insertion evidence", async () => {
+    const current = await fixture("generated-media-evidence");
+    const base = {
+      workspaceId: current.workspace.id,
+      projectId: current.project.id,
+      clipId: current.clip.id,
+      actorUserId: current.user.id,
+      ownerWorkspaceId: current.workspace.id,
+      requestFingerprint: "1".repeat(64),
+      provider: "fixture-provider",
+	      model: "fixture-model",
+	      promptFingerprint: "2".repeat(64),
+	      promptKeyVersion: "test-primary",
+      promptOriginKind: "manual",
+      promptOriginSourceIds: [],
+      aspectRatio: "9:16",
+      style: "natural",
+    };
+
+    await expect(Promise.resolve(prisma.generatedMediaJob.create({
+      data: {
+        ...base,
+        idempotencyKey: randomUUID(),
+        kind: "video",
+        durationSec: null,
+      },
+    }))).rejects.toBeDefined();
+    await expect(Promise.resolve(prisma.generatedMediaJob.create({
+      data: {
+        ...base,
+        idempotencyKey: randomUUID(),
+        kind: "image",
+        durationSec: null,
+        insertionCount: 1,
+        lastInsertionKind: null,
+        lastInsertedAt: new Date(),
+      },
+    }))).rejects.toBeDefined();
+		await expect(Promise.resolve(prisma.generatedMediaJob.create({
+			data: {
+				...base,
+				idempotencyKey: randomUUID(),
+				kind: "image",
+				durationSec: null,
+				promptKeyVersion: "",
+			},
+		}))).rejects.toBeDefined();
+		const usageJob = await prisma.generatedMediaJob.create({
+			data: {
+				...base,
+				idempotencyKey: randomUUID(),
+				kind: "image",
+				durationSec: null,
+			},
+		});
+		const dayStart = new Date("2026-08-31T00:00:00.000Z");
+		const dayEnd = new Date("2026-09-01T00:00:00.000Z");
+		const usageBase = {
+			jobId: usageJob.id,
+			workspaceId: current.workspace.id,
+			kind: "image",
+			reservedUnits: 1,
+			allowanceLimitUnits: 20,
+			dailyAbuseLimitUnits: 40,
+			dailyAbuseStartedAt: dayStart,
+			dailyAbuseEndsAt: dayEnd,
+		};
+		await expect(Promise.resolve(prisma.generationUsageReservation.create({
+			data: {
+				...usageBase,
+				usagePolicy: "metered",
+				allowancePeriod: "calendar_day_utc",
+				allowanceStartedAt: dayStart,
+				allowanceEndsAt: null,
+			},
+		}))).rejects.toBeDefined();
+		await expect(Promise.resolve(prisma.generationUsageReservation.create({
+			data: {
+				...usageBase,
+				usagePolicy: "trial_metered",
+				allowancePeriod: "calendar_day_utc",
+				allowanceStartedAt: dayStart,
+				allowanceEndsAt: dayEnd,
+			},
+		}))).rejects.toBeDefined();
+  });
+
   test("settles duplicate and partial Render selected admission with stable item counts", async () => {
     const current = await fixture("render-selected");
     const missingClipId = randomUUID();
@@ -140,6 +968,417 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
       [current.clip.id, "succeeded", null],
       [missingClipId, "ineligible", "campaign_clip_not_found"],
     ].sort());
+  });
+
+  test("applies selected motion with durable idempotency, revision fencing, and target eligibility", async () => {
+    const current = await fixture("campaign-motion");
+    const missingClipId = randomUUID();
+    const idempotencyKey = randomUUID();
+    const scope = {
+      actorUserId: current.user.id,
+      workspaceId: current.workspace.id,
+      projectId: current.project.id,
+      pricingTier: "business" as const,
+      role: "owner" as const,
+      status: "active" as const,
+      idempotencyKey,
+    };
+    const request = {
+      change: {
+        scope: "clip_transition" as const,
+        transition: { type: "wipe-left" as const, durationSec: 0.55 },
+      },
+      clips: [
+        { clipId: current.clip.id, expectedEditorRevision: 3 },
+        { clipId: missingClipId, expectedEditorRevision: 0 },
+      ],
+    };
+
+    const first = await campaignOperationService.applyMotionSelected(scope, request);
+    const replay = await campaignOperationService.applyMotionSelected(scope, request);
+    expect(first).toMatchObject({
+      status: "partial",
+      replayed: false,
+      counts: { succeeded: 1, unchanged: 0, stale: 0, ineligible: 1, failed: 0 },
+    });
+    expect(replay).toMatchObject({ operationId: first.operationId, replayed: true });
+    const operation = await prisma.campaignOperation.findUniqueOrThrow({
+      where: { id: first.operationId },
+      include: { items: true },
+    });
+    expect(operation.validatedOptions).toEqual({ change: request.change });
+    expect(operation.items.map((item) => [item.requestedClipId, item.status, item.errorCode]).sort()).toEqual([
+      [current.clip.id, "succeeded", null],
+      [missingClipId, "ineligible", "campaign_clip_not_found"],
+    ].sort());
+    const afterTransition = await clipEditorDocumentPersistence.readDocument({
+      actorUserId: current.user.id,
+      projectId: current.project.id,
+      clipId: current.clip.id,
+    });
+    expect(afterTransition.revision).toBe(4);
+    expect(afterTransition.document.studioEdits.transition).toEqual(request.change.transition);
+
+    const equivalent = await campaignOperationService.applyMotionSelected(
+      { ...scope, idempotencyKey: randomUUID() },
+      {
+        ...request,
+        clips: [{ clipId: current.clip.id, expectedEditorRevision: 3 }],
+      },
+    );
+    expect(equivalent.counts).toEqual({
+      succeeded: 0,
+      unchanged: 1,
+      stale: 0,
+      ineligible: 0,
+      failed: 0,
+    });
+    const stale = await campaignOperationService.applyMotionSelected(
+      { ...scope, idempotencyKey: randomUUID() },
+      {
+        change: {
+          scope: "clip_transition",
+          transition: { type: "zoom-in", durationSec: 0.4 },
+        },
+        clips: [{ clipId: current.clip.id, expectedEditorRevision: 3 }],
+      },
+    );
+    expect(stale.counts.stale).toBe(1);
+
+    const withBroll = await clipEditorDocumentPersistence.mutateDocument({
+      actorUserId: current.user.id,
+      projectId: current.project.id,
+      clipId: current.clip.id,
+      intent: { kind: "set_broll_url", brollUrl: "https://media.example.test/manual-broll.mp4" },
+    });
+    const brollMotion = await campaignOperationService.applyMotionSelected(
+      { ...scope, idempotencyKey: randomUUID() },
+      {
+        change: {
+          scope: "manual_broll",
+          motion: { entrance: "ken-burns-in", exit: "fade" },
+        },
+        clips: [{ clipId: current.clip.id, expectedEditorRevision: withBroll.revision }],
+      },
+    );
+    expect(brollMotion.counts.succeeded).toBe(1);
+    const afterBroll = await clipEditorDocumentPersistence.readDocument({
+      actorUserId: current.user.id,
+      projectId: current.project.id,
+      clipId: current.clip.id,
+    });
+    expect(afterBroll.document.mediaMotions).toEqual([
+      expect.objectContaining({
+        target: { kind: "broll" },
+        entrance: "ken-burns-in",
+        exit: "fade",
+      }),
+    ]);
+    const clearedBroll = await clipEditorDocumentPersistence.mutateDocument({
+      actorUserId: current.user.id,
+      projectId: current.project.id,
+      clipId: current.clip.id,
+      intent: { kind: "set_broll_url", brollUrl: null },
+    });
+    const staleMissingTarget = await campaignOperationService.applyMotionSelected(
+      { ...scope, idempotencyKey: randomUUID() },
+      {
+        change: {
+          scope: "manual_broll",
+          motion: { entrance: "fade", exit: "none" },
+        },
+        clips: [{ clipId: current.clip.id, expectedEditorRevision: afterBroll.revision }],
+      },
+    );
+    expect(staleMissingTarget.counts.stale).toBe(1);
+    const ineligibleMissingTarget = await campaignOperationService.applyMotionSelected(
+      { ...scope, idempotencyKey: randomUUID() },
+      {
+        change: {
+          scope: "manual_broll",
+          motion: { entrance: "fade", exit: "none" },
+        },
+        clips: [{ clipId: current.clip.id, expectedEditorRevision: clearedBroll.revision }],
+      },
+    );
+    expect(ineligibleMissingTarget.counts.ineligible).toBe(1);
+
+    await expect(
+      campaignOperationService.applyMotionSelected(
+        { ...scope, idempotencyKey, pricingTier: "creator" },
+        request,
+      ),
+    ).rejects.toMatchObject({ code: "campaign_operation_feature_unavailable" });
+    await expect(
+      campaignOperationService.applyMotionSelected(
+        { ...scope, idempotencyKey: randomUUID(), role: "viewer" },
+        request,
+      ),
+    ).rejects.toMatchObject({ code: "campaign_operation_forbidden" });
+    await expect(
+      campaignOperationService.applyMotionSelected(scope, {
+        ...request,
+        change: {
+          scope: "clip_transition",
+          transition: { type: "fade", durationSec: 0.4 },
+        },
+      }),
+    ).rejects.toMatchObject({ code: "campaign_operation_idempotency_conflict" });
+  });
+
+  test("applies the frozen Project Brand Profile and member styles through durable editor revisions", async () => {
+    const current = await fixture("campaign-style");
+    const profile = await prisma.brandProfile.create({
+      data: {
+        workspaceId: current.workspace.id,
+        name: "Northstar",
+        slug: `northstar-${randomUUID()}`,
+        visualIdentity: {},
+        voiceGuidance: {},
+        createdByUserId: current.user.id,
+        updatedByUserId: current.user.id,
+      },
+    });
+    const firstStyle = await prisma.brandTemplate.create({
+      data: {
+        workspaceId: current.workspace.id,
+        createdByUserId: current.user.id,
+        name: "Launch captions",
+        captionPreset: {
+          ...DEFAULT_CAPTION_PRESET,
+          fontName: "Archivo",
+          primaryColor: "#F8FAFC",
+          highlightColor: "#5B6CFF",
+        },
+        primaryColor: "#F8FAFC",
+        secondaryColor: "#111522",
+        accentColor: "#5B6CFF",
+        profileMembership: { create: { profileId: profile.id, position: 0 } },
+      },
+    });
+    const secondStyle = await prisma.brandTemplate.create({
+      data: {
+        workspaceId: current.workspace.id,
+        createdByUserId: current.user.id,
+        name: "Quiet captions",
+        captionPreset: {
+          ...DEFAULT_CAPTION_PRESET,
+          fontName: "Arial",
+          primaryColor: "#111522",
+          highlightColor: "#F0B429",
+        },
+        primaryColor: "#FFFFFF",
+        secondaryColor: "#111522",
+        accentColor: "#F0B429",
+        profileMembership: { create: { profileId: profile.id, position: 1 } },
+      },
+    });
+    await prisma.brandProfile.update({
+      where: { id: profile.id },
+      data: { defaultTemplateId: firstStyle.id },
+    });
+    const frozenStyle = buildBrandTemplateSnapshot(firstStyle);
+    const frozenProfile = buildBrandProfileSnapshot(profile, firstStyle);
+    await prisma.project.update({
+      where: { id: current.project.id },
+      data: {
+        brandProfileId: profile.id,
+        brandTemplateId: firstStyle.id,
+        brandProfileSnapshot: frozenProfile,
+        brandSnapshot: frozenStyle,
+      },
+    });
+
+    const initial = await clipEditorDocumentPersistence.readDocument({
+      actorUserId: current.user.id,
+      projectId: current.project.id,
+      clipId: current.clip.id,
+    });
+    const overridden = await clipEditorDocumentPersistence.mutateDocument({
+      actorUserId: current.user.id,
+      projectId: current.project.id,
+      clipId: current.clip.id,
+      intent: {
+        kind: "replace",
+        baseRevision: initial.revision,
+        document: applyEditorAction(initial.document, {
+          type: "setStudioEdits",
+          studioEdits: {
+            ...initial.document.studioEdits,
+            logo: {
+              enabled: false,
+              position: "top-left",
+              opacity: 40,
+              scalePct: 8,
+            },
+          },
+        }),
+      },
+    });
+    const scope = {
+      actorUserId: current.user.id,
+      workspaceId: current.workspace.id,
+      workspaceOwnerUserId: current.user.id,
+      role: "owner" as const,
+      status: "active" as const,
+      pricingTier: "business" as const,
+      isPersonalWorkspace: false,
+      projectId: current.project.id,
+      idempotencyKey: randomUUID(),
+    };
+    const catalog = await campaignOperationService.getEditorActionCatalog(scope);
+    expect(catalog.profile).toMatchObject({
+      id: profile.id,
+      name: "Northstar",
+      currentStyle: { id: firstStyle.id, name: "Launch captions" },
+    });
+    expect(catalog.styles.map((style) => style.id)).toEqual([
+      firstStyle.id,
+      secondStyle.id,
+    ]);
+
+    const missingClipId = randomUUID();
+    const brandRequest = {
+      profileFingerprint: catalog.profile!.fingerprint,
+      styleFingerprint: catalog.profile!.styleFingerprint,
+      clips: [
+        { clipId: current.clip.id, expectedEditorRevision: overridden.revision },
+        { clipId: missingClipId, expectedEditorRevision: 0 },
+      ],
+    };
+    const brandPreview = await campaignOperationService.previewEditorAction(
+      scope,
+      { action: "apply_brand_profile", input: brandRequest },
+    );
+    expect(brandPreview.counts).toEqual({
+      eligible: 1,
+      unchanged: 0,
+      stale: 0,
+      ineligible: 1,
+    });
+    expect(brandPreview.items.map((item) => [item.clipId, item.status, item.code]).sort())
+      .toEqual([
+        [current.clip.id, "eligible", null],
+        [missingClipId, "ineligible", "campaign_clip_not_found"],
+      ].sort());
+    const applied = await campaignOperationService.applyProjectBrandProfileSelected(
+      scope,
+      brandRequest,
+    );
+    const replay = await campaignOperationService.applyProjectBrandProfileSelected(
+      scope,
+      brandRequest,
+    );
+    expect(applied).toMatchObject({
+      status: "partial",
+      replayed: false,
+      counts: {
+        succeeded: 1,
+        unchanged: 0,
+        stale: 0,
+        ineligible: 1,
+        failed: 0,
+      },
+    });
+    expect(replay).toMatchObject({ operationId: applied.operationId, replayed: true });
+    const afterBrand = await clipEditorDocumentPersistence.readDocument({
+      actorUserId: current.user.id,
+      projectId: current.project.id,
+      clipId: current.clip.id,
+    });
+    expect(afterBrand.document.captionPreset.fontName).toBe("Archivo");
+    expect(afterBrand.document.studioEdits.logo).toEqual({
+      enabled: true,
+      position: null,
+      opacity: null,
+      scalePct: null,
+    });
+    const brandOperation = await prisma.campaignOperation.findUniqueOrThrow({
+      where: { id: applied.operationId },
+      include: { items: true },
+    });
+    expect(brandOperation.validatedOptions).toMatchObject({
+      profileId: profile.id,
+      profileFingerprint: catalog.profile!.fingerprint,
+      templateId: firstStyle.id,
+      styleFingerprint: catalog.profile!.styleFingerprint,
+    });
+    expect(brandOperation.items.find((item) => item.clipId === current.clip.id)?.result)
+      .toMatchObject({
+        profileFingerprint: catalog.profile!.fingerprint,
+        styleFingerprint: catalog.profile!.styleFingerprint,
+      });
+
+    const styleCatalog = catalog.styles.find((style) => style.id === secondStyle.id)!;
+    const styleApplied = await campaignOperationService.applyStyleSelected(
+      { ...scope, idempotencyKey: randomUUID() },
+      {
+        templateId: secondStyle.id,
+        templateFingerprint: styleCatalog.fingerprint,
+        clips: [{ clipId: current.clip.id, expectedEditorRevision: afterBrand.revision }],
+      },
+    );
+    expect(styleApplied.counts.succeeded).toBe(1);
+    const afterStyle = await clipEditorDocumentPersistence.readDocument({
+      actorUserId: current.user.id,
+      projectId: current.project.id,
+      clipId: current.clip.id,
+    });
+    expect(afterStyle.document.captionPreset).toMatchObject({
+      fontName: "Arial",
+      highlightColor: "#F0B429",
+    });
+    expect(afterStyle.document.studioEdits.logo).toEqual(
+      afterBrand.document.studioEdits.logo,
+    );
+
+    const stale = await campaignOperationService.applyStyleSelected(
+      { ...scope, idempotencyKey: randomUUID() },
+      {
+        templateId: firstStyle.id,
+        templateFingerprint: catalog.styles[0]!.fingerprint,
+        clips: [{ clipId: current.clip.id, expectedEditorRevision: afterBrand.revision }],
+      },
+    );
+    expect(stale.counts.stale).toBe(1);
+    const stalePreview = await campaignOperationService.previewEditorAction(
+      scope,
+      {
+        action: "apply_style",
+        input: {
+          templateId: firstStyle.id,
+          templateFingerprint: catalog.styles[0]!.fingerprint,
+          clips: [{ clipId: current.clip.id, expectedEditorRevision: afterBrand.revision }],
+        },
+      },
+    );
+    expect(stalePreview.items).toEqual([
+      expect.objectContaining({
+        clipId: current.clip.id,
+        status: "stale",
+        currentEditorRevision: afterStyle.revision,
+      }),
+    ]);
+    await expect(
+      campaignOperationService.applyStyleSelected(
+        { ...scope, idempotencyKey: randomUUID(), role: "viewer" },
+        {
+          templateId: firstStyle.id,
+          templateFingerprint: catalog.styles[0]!.fingerprint,
+          clips: [{ clipId: current.clip.id, expectedEditorRevision: afterStyle.revision }],
+        },
+      ),
+    ).rejects.toMatchObject({ code: "campaign_operation_forbidden" });
+    await expect(
+      campaignOperationService.applyStyleSelected(
+        { ...scope, idempotencyKey: randomUUID(), pricingTier: "creator" },
+        {
+          templateId: firstStyle.id,
+          templateFingerprint: catalog.styles[0]!.fingerprint,
+          clips: [{ clipId: current.clip.id, expectedEditorRevision: afterStyle.revision }],
+        },
+      ),
+    ).rejects.toMatchObject({ code: "campaign_operation_feature_unavailable" });
   });
 
   test("freezes bundle revisions and variants while excluding stale and missing clips", async () => {
@@ -250,7 +1489,7 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
       status: "failed",
       requestedCount: 1,
       failedCount: 1,
-      items: { create: { requestedClipId: current.clip.id, clipId: current.clip.id, expectedEditorRevision: 3, status: "failed", errorCode: "campaign_render_admission_failed" } },
+      items: { create: { itemKey: current.clip.id, requestedClipId: current.clip.id, clipId: current.clip.id, expectedEditorRevision: 3, status: "failed", errorCode: "campaign_render_admission_failed" } },
     } });
     const execute = async (clipIds: string[]) => ({ workflowRunId: randomUUID(), acceptedAt: new Date().toISOString(), initialSeq: 1, clipCount: clipIds.length, variantCount: 1, resolution: "1080p" as const });
     const outcomes = await Promise.allSettled([0, 1].map(() => campaignOperationService.retryRenderSelected({
@@ -314,6 +1553,189 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 			globalThis.fetch = originalFetch;
 		}
 	});
+
+  test("pauses Review seams without corrupting a durable round and resumes delivery", async () => {
+    const current = await fixture("review-rollout");
+    await prisma.user.update({
+      where: { id: current.user.id },
+      data: { emailVerifiedAt: new Date() },
+    });
+    const rolloutEnv: Record<string, string | undefined> = {
+      NARRIFLOW_WRITES_REVIEW_ROOMS: "1",
+      NARRIFLOW_READS_REVIEW_GUEST: "1",
+      NARRIFLOW_WRITES_REVIEW_FEEDBACK: "1",
+      NARRIFLOW_WRITES_REVIEW_NOTIFICATIONS: "0",
+    };
+    const service = new ReviewService(createReviewRolloutPolicy(rolloutEnv));
+    const variant = current.clipExport.variants[0]!;
+    const dataSecret = "d".repeat(64);
+    const created = await service.createRound(
+      {
+        actorUserId: current.user.id,
+        workspaceId: current.workspace.id,
+        projectId: current.project.id,
+        pricingTier: "business",
+      },
+      {
+        title: "Durable staged round",
+        message: null,
+        passcode: null,
+        expiresAt: null,
+        allowDownloads: false,
+        approvalRequired: true,
+        recipientEmails: ["client@example.test"],
+        sourceRoundId: null,
+        items: [{
+          clipId: current.clip.id,
+          exportId: current.clipExport.id,
+          expectedEditorRevision: 3,
+          variantIds: [variant.id],
+          required: true,
+        }],
+      },
+      { accessSecret: "a".repeat(64), dataSecret },
+    );
+
+    expect(created.notificationIds).toEqual([]);
+    expect(await prisma.reviewNotification.count({
+      where: { reviewRoundId: created.id },
+    })).toBe(0);
+    expect(await prisma.reviewAuditEvent.count({
+      where: {
+        reviewRoundId: created.id,
+        kind: "notification_admission_suppressed",
+      },
+    })).toBe(1);
+
+    const session = await service.authenticate(
+      created.token,
+      { identity: "Client", email: "client@example.test", passcode: null },
+      "203.0.113.20",
+      sessionSecret,
+    );
+    const snapshot = await service.readRound(session, sessionSecret);
+    const item = snapshot.round.items[0]!;
+    const comment = await service.addComment(session, sessionSecret, {
+      itemId: item.id,
+      parentId: null,
+      body: "Keep this feedback through the pause.",
+      timestampSec: null,
+    });
+    await service.decide(session, sessionSecret, {
+      itemId: item.id,
+      decision: "changes_requested",
+      reason: "Revise the opening.",
+    });
+    const reviewer = await prisma.reviewRecipient.findFirstOrThrow({
+      where: { reviewRoundId: created.id, role: "reviewer" },
+      select: { id: true },
+    });
+    const internal = await service.addInternalComment(
+      {
+        actorUserId: current.user.id,
+        workspaceId: current.workspace.id,
+        projectId: current.project.id,
+      },
+      created.id,
+      {
+        itemId: item.id,
+        parentId: comment.id,
+        body: "We will revise this.",
+        timestampSec: null,
+        mentionRecipientIds: [reviewer.id],
+      },
+    );
+    expect(internal.notificationIds).toEqual([]);
+    expect(await prisma.reviewNotification.count({
+      where: { reviewRoundId: created.id },
+    })).toBe(0);
+
+    const preservedBeforePause = {
+      rounds: await prisma.reviewRound.count({ where: { id: created.id } }),
+      guests: await prisma.reviewGuest.count({
+        where: { reviewRoundId: created.id },
+      }),
+      comments: await prisma.reviewComment.count({
+        where: { reviewRoundId: created.id },
+      }),
+      decisions: await prisma.reviewDecision.count({
+        where: { reviewRoundId: created.id },
+      }),
+    };
+    rolloutEnv.NARRIFLOW_READS_REVIEW_GUEST = "0";
+    await expect(service.readRound(session, sessionSecret)).rejects.toMatchObject({
+      code: "review_access_temporarily_unavailable",
+      message: "Review access is temporarily unavailable",
+    });
+    expect({
+      rounds: await prisma.reviewRound.count({ where: { id: created.id } }),
+      guests: await prisma.reviewGuest.count({
+        where: { reviewRoundId: created.id },
+      }),
+      comments: await prisma.reviewComment.count({
+        where: { reviewRoundId: created.id },
+      }),
+      decisions: await prisma.reviewDecision.count({
+        where: { reviewRoundId: created.id },
+      }),
+    }).toEqual(preservedBeforePause);
+
+    rolloutEnv.NARRIFLOW_READS_REVIEW_GUEST = "1";
+    expect((await service.readRound(session, sessionSecret)).round.id).toBe(
+      created.id,
+    );
+    rolloutEnv.NARRIFLOW_WRITES_REVIEW_FEEDBACK = "0";
+    await expect(service.addComment(session, sessionSecret, {
+      itemId: item.id,
+      parentId: null,
+      body: "Blocked while feedback is paused.",
+      timestampSec: null,
+    })).rejects.toMatchObject({
+      code: "review_feedback_temporarily_unavailable",
+    });
+    expect((await service.readRound(session, sessionSecret)).round.comments)
+      .toHaveLength(preservedBeforePause.comments);
+
+    rolloutEnv.NARRIFLOW_WRITES_REVIEW_ROOMS = "0";
+    await expect(service.createRound(
+      {
+        actorUserId: current.user.id,
+        workspaceId: current.workspace.id,
+        projectId: current.project.id,
+        pricingTier: "business",
+      },
+      {},
+    )).rejects.toMatchObject({ code: "program_write_disabled" });
+    expect((await service.readRound(session, sessionSecret)).round.id).toBe(
+      created.id,
+    );
+
+    await expect(service.resendRound(
+      {
+        actorUserId: current.user.id,
+        workspaceId: current.workspace.id,
+        projectId: current.project.id,
+      },
+      created.id,
+      randomUUID(),
+    )).rejects.toMatchObject({
+      code: "review_notifications_temporarily_unavailable",
+    });
+    rolloutEnv.NARRIFLOW_WRITES_REVIEW_NOTIFICATIONS = "1";
+    const resent = await service.resendRound(
+      {
+        actorUserId: current.user.id,
+        workspaceId: current.workspace.id,
+        projectId: current.project.id,
+      },
+      created.id,
+      randomUUID(),
+    );
+    expect(resent.notificationIds).toHaveLength(1);
+    expect(await prisma.reviewNotification.count({
+      where: { reviewRoundId: created.id },
+    })).toBe(1);
+  });
 
   test("revokes replayed guest sessions, isolates media IDs, and serializes opposite decisions", async () => {
     const current = await fixture("review-security");
@@ -533,6 +1955,25 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
     expect(twice).toBe(once);
 
     const latestTemplate = await prisma.sceneTemplate.findUniqueOrThrow({ where: { id: template.id } });
+    const scenePreview = await campaignOperationService.previewEditorAction(
+      { ...scope, projectId: current.project.id },
+      {
+        action: "apply_scene_template",
+        profileId: profile.id,
+        templateId: template.id,
+        input: {
+          templateFingerprint: latestTemplate.fingerprint,
+          placement: "start",
+          clips: [{ clipId: current.clip.id, expectedEditorRevision: 3 }],
+        },
+      },
+    );
+    expect(scenePreview.counts).toEqual({
+      eligible: 1,
+      unchanged: 0,
+      stale: 0,
+      ineligible: 0,
+    });
     const applied = await campaignOperationService.applySceneTemplate({
       ...scope,
       projectId: current.project.id,
@@ -553,6 +1994,20 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
       clips: [{ clipId: current.clip.id, expectedEditorRevision: 4 }],
     });
     expect(reapplied.counts).toEqual({ succeeded: 0, unchanged: 1, stale: 0, ineligible: 0, failed: 0 });
+    const equivalentPreview = await campaignOperationService.previewEditorAction(
+      { ...scope, projectId: current.project.id },
+      {
+        action: "apply_scene_template",
+        profileId: profile.id,
+        templateId: template.id,
+        input: {
+          templateFingerprint: latestTemplate.fingerprint,
+          placement: "start",
+          clips: [{ clipId: current.clip.id, expectedEditorRevision: 3 }],
+        },
+      },
+    );
+    expect(equivalentPreview.counts.unchanged).toBe(1);
     const persisted = await clipEditorDocumentPersistence.readDocument({ actorUserId: current.user.id, projectId: current.project.id, clipId: current.clip.id });
     expect(persisted.document.sceneBlocks).toHaveLength(1);
 
@@ -579,10 +2034,38 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
     expect(reappliedAtEnd.counts.unchanged).toBe(1);
     const finalDocument = await clipEditorDocumentPersistence.readDocument({ actorUserId: current.user.id, projectId: current.project.id, clipId: current.clip.id });
     expect(finalDocument.document.sceneBlocks).toHaveLength(2);
+    const frozenBrollPlacement = {
+      id: randomUUID(),
+      asset: {
+        kind: "visual_asset" as const,
+        id: retainedAsset.id,
+        fingerprint: retainedAsset.fingerprint,
+      },
+      provenance: "generated" as const,
+      mediaKind: "image" as const,
+      startSec: 2,
+      endSec: 5,
+      sourceStartSec: null,
+      sourceEndSec: null,
+    };
+    const documentWithBroll = editorDocumentSchema.parse({
+      ...finalDocument.document,
+      brollPlacements: [frozenBrollPlacement],
+    });
+    const persistedBroll = await clipEditorDocumentPersistence.mutateDocument({
+      actorUserId: current.user.id,
+      projectId: current.project.id,
+      clipId: current.clip.id,
+      intent: {
+        kind: "replace",
+        baseRevision: finalDocument.revision,
+        document: documentWithBroll,
+      },
+    });
     const createdExport = await clipExportService.create(
       current.project.id,
       current.clip.id,
-      { expectedRevision: finalDocument.revision, aspectRatios: ["9:16"], resolution: "1080p" },
+      { expectedRevision: persistedBroll.revision, aspectRatios: ["9:16"], resolution: "1080p" },
       randomUUID(),
       { workspaceId: current.workspace.id, actorUserId: current.user.id },
     );
@@ -592,5 +2075,8 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
     });
     expect(Reflect.get(render.clipSnapshot as object, "editorDocumentVersion")).toBe(2);
     expect(Reflect.get(render.clipSnapshot as object, "sceneBlocks")).toHaveLength(2);
+    expect(Reflect.get(render.clipSnapshot as object, "brollPlacements")).toEqual([
+      frozenBrollPlacement,
+    ]);
   });
 });

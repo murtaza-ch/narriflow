@@ -6,6 +6,8 @@ import {
 	assertUploadProviderLifecyclePrerequisite,
 	getWorkflowRunLifecycle,
 	getSocialPublicationRuntime,
+	getGeneratedMediaRuntime,
+	createProductionThumbnailExtractionService,
 	projectService,
 	projectRetentionService,
 	purgeExpiredProjectSources,
@@ -29,6 +31,7 @@ import {
 } from "./tasks/render-clips";
 import { parseWorkerRenderConfig } from "./render-config";
 import { processDueSocialPosts } from "./tasks/social-publisher";
+import { ffmpegThumbnailFrameProcessor } from "./tasks/thumbnail-extraction";
 import { parseWorkspaceBillingPollInterval } from "./workspace-billing-config";
 import {
 	processSubmittedTranscriptResults,
@@ -36,11 +39,17 @@ import {
 } from "./tasks/transcribe";
 import {
 	notifyExpiringProject,
+	reportReviewNotificationWorkerConfiguration,
+	resolveReviewNotificationWorkerConfiguration,
 	retryPendingNotifications,
+	reviewNotificationWorkerHealth,
 } from "./notifications";
 
 const port = Number(process.env.PORT || 0);
 const workerShutdown = new AbortController();
+const reviewNotificationConfiguration =
+	resolveReviewNotificationWorkerConfiguration();
+reportReviewNotificationWorkerConfiguration(reviewNotificationConfiguration);
 assertUploadProviderLifecyclePrerequisite(process.env);
 billingService.validateConfiguration({ surface: "worker" });
 getSocialPublicationRuntime();
@@ -70,6 +79,10 @@ const maxConsecutivePollFailures = Number(
 	process.env.WORKER_MAX_CONSECUTIVE_POLL_FAILURES ?? "20",
 );
 const renderConfig = parseWorkerRenderConfig();
+const generatedMediaRuntime = getGeneratedMediaRuntime();
+const thumbnailExtractionService = createProductionThumbnailExtractionService(
+	ffmpegThumbnailFrameProcessor,
+);
 
 // Preview proxies are short ffmpeg cuts, but "short" is ~12s each and a batch
 // runs them in sequence — roughly a minute of CPU+network per tick.
@@ -91,6 +104,15 @@ const notificationRetryPollIntervalMs = Number(
 );
 const mediaCleanupPollIntervalMs = Number(
 	process.env.MEDIA_CLEANUP_POLL_INTERVAL_MS ?? "10000",
+);
+const generatedMediaPollIntervalMs = Number(
+	process.env.GENERATED_MEDIA_POLL_INTERVAL_MS ?? String(pollIntervalMs),
+);
+const generatedMediaMaintenancePollIntervalMs = Number(
+	process.env.GENERATED_MEDIA_MAINTENANCE_POLL_INTERVAL_MS ?? String(5 * 60 * 1000),
+);
+const thumbnailExtractionPollIntervalMs = Number(
+	process.env.THUMBNAIL_EXTRACTION_POLL_INTERVAL_MS ?? String(pollIntervalMs),
 );
 const workspaceBillingPollIntervalMs = parseWorkspaceBillingPollInterval(
 	process.env.WORKSPACE_BILLING_POLL_INTERVAL_MS,
@@ -524,7 +546,10 @@ const autoLayoutLoop = createPollLoop("auto_layout", async () => {
  *  pending/expired-lease claim, so this loop is safe across worker replicas. */
 const notificationRetryLoop = createPollLoop("notification_retry", async () => {
 	const startedAtMs = Date.now();
-	const result = await retryPendingNotifications(notificationRetryBatchSize);
+	const result = await retryPendingNotifications(
+		notificationRetryBatchSize,
+		reviewNotificationConfiguration,
+	);
 	if (result.claimed > 0) {
 		console.warn(
 			JSON.stringify({
@@ -550,6 +575,36 @@ const mediaCleanupLoop = createPollLoop("media_cleanup", async () => {
 	return result.claimed;
 });
 
+const generatedMediaLoop = createPollLoop("generated_media", async () => {
+	return generatedMediaRuntime.processNext(workerShutdown.signal);
+});
+
+const generatedMediaMaintenanceLoop = createPollLoop(
+	"generated_media_maintenance",
+	async () => {
+		const result = await generatedMediaRuntime.maintenance(workerShutdown.signal);
+		if (
+			result.promptsPurged > 0 ||
+			result.objectsDeleted > 0 ||
+			result.objectFailures > 0
+		) {
+			console.warn(
+				JSON.stringify({
+					level: result.objectFailures > 0 ? "warn" : "info",
+					message: "generated_media_maintenance",
+					...result,
+				}),
+			);
+		}
+		return result.promptsPurged + result.objectsDeleted;
+	},
+);
+
+const thumbnailExtractionLoop = createPollLoop(
+	"thumbnail_extraction",
+	async () => ((await thumbnailExtractionService.processNext()) ? 1 : 0),
+);
+
 const allLoops: Array<{ loop: PollLoop; intervalMs: number }> = [
 	{ loop: maintenanceLoop, intervalMs: 60 * 1000 },
 	{ loop: uploadSessionMaintenanceLoop, intervalMs: 30 * 1000 },
@@ -569,19 +624,40 @@ const allLoops: Array<{ loop: PollLoop; intervalMs: number }> = [
 	{ loop: autoLayoutLoop, intervalMs: autoLayoutPollIntervalMs },
 	{ loop: notificationRetryLoop, intervalMs: notificationRetryPollIntervalMs },
 	{ loop: mediaCleanupLoop, intervalMs: mediaCleanupPollIntervalMs },
+	{ loop: generatedMediaLoop, intervalMs: generatedMediaPollIntervalMs },
+	{
+		loop: thumbnailExtractionLoop,
+		intervalMs: thumbnailExtractionPollIntervalMs,
+	},
+	{
+		loop: generatedMediaMaintenanceLoop,
+		intervalMs: generatedMediaMaintenancePollIntervalMs,
+	},
 ];
 
 const server = createServer(async (req, res) => {
 	if (req.url === "/health") {
-		res.writeHead(200, { "content-type": "application/json" });
+		const reviewNotifications = reviewNotificationWorkerHealth(
+			reviewNotificationConfiguration,
+		);
+		res.writeHead(reviewNotifications.ready ? 200 : 503, {
+			"content-type": "application/json",
+		});
 		res.end(
 			JSON.stringify({
-				ok: true,
+				ok: reviewNotifications.ready,
 				service: "narriflow-worker",
 				render: {
 					enabled: renderConfig.clipRenderAttemptEnabled,
 					lifecycleVersion: 2,
 				},
+				generatedMedia: {
+					enabled: generatedMediaRuntime.available,
+					image: generatedMediaRuntime.config.image.enabled,
+					video: generatedMediaRuntime.config.video.enabled,
+				},
+				thumbnailExtraction: { enabled: true },
+				reviewNotifications,
 				queue: {
 					processedCount,
 					loops: Object.fromEntries(
@@ -636,3 +712,6 @@ void renderLoop.tick();
 void exportBundleLoop.tick();
 void notificationRetryLoop.tick();
 void mediaCleanupLoop.tick();
+void generatedMediaLoop.tick();
+void thumbnailExtractionLoop.tick();
+void generatedMediaMaintenanceLoop.tick();

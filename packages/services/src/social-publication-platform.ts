@@ -88,6 +88,14 @@ export type PublicationPlatformInput = {
     durationSec: number;
     aspectRatio: ClipAspectRatio;
   };
+	thumbnail?: {
+		storageKey: string;
+		fileName: string;
+		contentType: "image/jpeg" | "image/png";
+		sizeBytes: number;
+		fingerprint: string;
+		sourceTimeMs: number | null;
+	} | null;
 };
 
 export type PublicationPlatformContext = {

@@ -21,6 +21,7 @@ function currentDocument() {
     transcriptSlice: [],
     studioEdits: studioEditsSchema.parse(undefined),
     brollUrl: null,
+		brollPlacements: [],
     deletedRanges: [],
 		sceneBlocks: [],
 		censorSegments: [],
@@ -39,6 +40,259 @@ const colorScene = (id: string, anchorSec: number, durationSec = 2) => ({
 });
 
 describe("Clip Editor Document v2", () => {
+	test("persists bounded asset-backed B-roll without changing clip duration", () => {
+		const base = editorDocumentSchema.parse(currentDocument());
+		const placement = {
+			id: "2adf79cc-35b2-4de5-85dc-c9ed197763e4",
+			asset: {
+				kind: "visual_asset" as const,
+				id: "8ab9d330-688f-4574-932c-27ac661245c1",
+				fingerprint: "a".repeat(64),
+			},
+			provenance: "generated" as const,
+			mediaKind: "image" as const,
+			startSec: 3,
+			endSec: 6,
+			sourceStartSec: null,
+			sourceEndSec: null,
+		};
+
+		const history = applyWithHistory(createEditorHistory(base), {
+			type: "insertBrollPlacement",
+			placement,
+		});
+
+		expect(history.past).toHaveLength(1);
+		expect(history.present.brollPlacements).toEqual([placement]);
+		expect(history.present.clipEndSec - history.present.clipStartSec).toBe(20);
+		expect(undoEditor(history).present.brollPlacements).toEqual([]);
+	});
+
+	test("replaces and deletes one selected B-roll placement as atomic history actions", () => {
+		const placementId = "2adf79cc-35b2-4de5-85dc-c9ed197763e4";
+		const initial = editorDocumentSchema.parse({
+			...currentDocument(),
+			brollPlacements: [{
+				id: placementId,
+				asset: {
+					kind: "visual_asset",
+					id: "8ab9d330-688f-4574-932c-27ac661245c1",
+					fingerprint: "a".repeat(64),
+				},
+				provenance: "uploaded",
+				mediaKind: "image",
+				startSec: 3,
+				endSec: 6,
+				sourceStartSec: null,
+				sourceEndSec: null,
+			}],
+		});
+		const replacement = {
+			kind: "visual_asset" as const,
+			id: "d8ab95f8-fc16-4e60-814e-69762a59a99b",
+			fingerprint: "b".repeat(64),
+		};
+		let history = applyWithHistory(createEditorHistory(initial), {
+			type: "replaceBrollPlacement",
+			id: placementId,
+			asset: replacement,
+			provenance: "generated",
+			mediaKind: "video",
+			sourceStartSec: 1,
+			sourceEndSec: 4,
+		});
+		expect(history.present.brollPlacements).toEqual([{
+			...initial.brollPlacements[0],
+			asset: replacement,
+			provenance: "generated",
+			mediaKind: "video",
+			sourceStartSec: 1,
+			sourceEndSec: 4,
+		}]);
+		expect(history.past).toHaveLength(1);
+
+		history = applyWithHistory(history, {
+			type: "deleteBrollPlacement",
+			id: placementId,
+		});
+		expect(history.present.brollPlacements).toEqual([]);
+		expect(history.past).toHaveLength(2);
+		expect(undoEditor(history).present.brollPlacements[0]?.asset).toEqual(replacement);
+	});
+
+	test("rejects overlapping, out-of-range, or incoherent B-roll placements", () => {
+		const image = {
+			id: "2adf79cc-35b2-4de5-85dc-c9ed197763e4",
+			asset: {
+				kind: "visual_asset" as const,
+				id: "8ab9d330-688f-4574-932c-27ac661245c1",
+				fingerprint: "a".repeat(64),
+			},
+			provenance: "generated" as const,
+			mediaKind: "image" as const,
+			startSec: 3,
+			endSec: 6,
+			sourceStartSec: null,
+			sourceEndSec: null,
+		};
+		expect(editorDocumentSchema.safeParse({
+			...currentDocument(),
+			brollPlacements: [image, { ...image, id: crypto.randomUUID(), startSec: 5 }],
+		}).success).toBe(false);
+		expect(editorDocumentSchema.safeParse({
+			...currentDocument(),
+			brollPlacements: [{ ...image, endSec: 21 }],
+		}).success).toBe(false);
+		expect(editorDocumentSchema.safeParse({
+			...currentDocument(),
+			brollPlacements: [{ ...image, sourceStartSec: 0, sourceEndSec: 3 }],
+		}).success).toBe(false);
+		expect(editorDocumentSchema.safeParse({
+			...currentDocument(),
+			brollPlacements: [{
+				...image,
+				mediaKind: "video",
+				sourceStartSec: 0,
+				sourceEndSec: 2,
+			}],
+		}).success).toBe(false);
+	});
+
+	test("Scene Blocks extend the timeline while still B-roll remains bounded overlay", () => {
+		const base = editorDocumentSchema.parse({
+			...currentDocument(),
+			brollPlacements: [{
+				id: "2adf79cc-35b2-4de5-85dc-c9ed197763e4",
+				asset: {
+					kind: "visual_asset",
+					id: "8ab9d330-688f-4574-932c-27ac661245c1",
+					fingerprint: "a".repeat(64),
+				},
+				provenance: "generated",
+				mediaKind: "image",
+				startSec: 3,
+				endSec: 6,
+				sourceStartSec: null,
+				sourceEndSec: null,
+			}],
+		});
+		const withScene = applyEditorAction(base, {
+			type: "insertSceneBlock",
+			scene: colorScene("d8ab95f8-fc16-4e60-814e-69762a59a99b", 6, 3),
+		});
+
+		expect(base.clipEndSec - base.clipStartSec).toBe(20);
+		expect(base.brollPlacements[0]).toMatchObject({ startSec: 3, endSec: 6 });
+		expect(
+			withScene.clipEndSec - withScene.clipStartSec +
+				withScene.sceneBlocks.reduce((sum, scene) => sum + scene.durationSec, 0),
+		).toBe(23);
+	});
+
+	test("rebases asset-backed B-roll with source footage after ripple deletion", () => {
+		const base = editorDocumentSchema.parse({
+			...currentDocument(),
+			brollPlacements: [{
+				id: "2adf79cc-35b2-4de5-85dc-c9ed197763e4",
+				asset: {
+					kind: "visual_asset",
+					id: "8ab9d330-688f-4574-932c-27ac661245c1",
+					fingerprint: "a".repeat(64),
+				},
+				provenance: "generated",
+				mediaKind: "image",
+				startSec: 8,
+				endSec: 12,
+				sourceStartSec: null,
+				sourceEndSec: null,
+			}],
+		});
+
+		const deleted = applyEditorAction(base, {
+			type: "deleteRange",
+			range: { startSec: 12, endSec: 14 },
+		});
+
+		expect(deleted.brollPlacements[0]).toMatchObject({ startSec: 6, endSec: 10 });
+		expect(editorDocumentSchema.safeParse(deleted).success).toBe(true);
+	});
+
+  test("accepts the approved Scene media-motion vocabulary and rejects removed aliases", () => {
+    const entrances = [
+      "none",
+      "fade",
+      "scale-in",
+      "pan-left",
+      "pan-right",
+      "pan-up",
+      "pan-down",
+      "ken-burns-in",
+    ] as const;
+    const exits = [
+      "none",
+      "fade",
+      "scale-out",
+      "pan-left",
+      "pan-right",
+      "pan-up",
+      "pan-down",
+      "ken-burns-out",
+    ] as const;
+    for (const [index, entrance] of entrances.entries()) {
+      const exit = exits[index]!;
+      expect(editorDocumentSchema.parse({
+        ...currentDocument(),
+        sceneBlocks: [{
+          ...colorScene(crypto.randomUUID(), 0),
+          motion: { entrance, exit },
+        }],
+      }).sceneBlocks[0]?.motion).toEqual({ entrance, exit });
+    }
+    expect(() => editorDocumentSchema.parse({
+      ...currentDocument(),
+      sceneBlocks: [{
+        ...colorScene(crypto.randomUUID(), 0),
+        motion: { entrance: "zoom-in", exit: "slide-down" },
+      }],
+    })).toThrow();
+  });
+
+  test("blocks unbounded or overlapping animated-media schedules before save", () => {
+    const mediaMotion = (index: number, entrance: "fade" | "none" = "fade") => ({
+      schemaVersion: 1 as const,
+      id: crypto.randomUUID(),
+      target: { kind: "broll" as const },
+      startSec: index * 0.5,
+      endSec: index * 0.5 + 0.5,
+      entrance,
+      exit: "none" as const,
+      enabled: true,
+    });
+    expect(editorDocumentSchema.safeParse({
+      ...currentDocument(),
+      mediaMotions: Array.from({ length: 32 }, (_, index) => mediaMotion(index)),
+    }).success).toBe(true);
+    expect(editorDocumentSchema.safeParse({
+      ...currentDocument(),
+      mediaMotions: Array.from({ length: 33 }, (_, index) => mediaMotion(index)),
+    }).error?.issues).toContainEqual(expect.objectContaining({
+      message: "animated media cannot exceed 32 placements",
+    }));
+    expect(editorDocumentSchema.safeParse({
+      ...currentDocument(),
+      mediaMotions: [
+        mediaMotion(0),
+        { ...mediaMotion(1), startSec: 0.25, endSec: 0.75 },
+      ],
+    }).error?.issues).toContainEqual(expect.objectContaining({
+      message: "enabled media motions cannot overlap on one target",
+    }));
+    expect(editorDocumentSchema.safeParse({
+      ...currentDocument(),
+      mediaMotions: Array.from({ length: 33 }, (_, index) =>
+        mediaMotion(index, "none")),
+    }).success).toBe(true);
+  });
   test("accepts only the current strict document version", () => {
 		const current = currentDocument();
 		expect(editorDocumentSchema.parse(current)).toEqual(current);
@@ -155,6 +409,52 @@ describe("Clip Editor Document v2", () => {
     expect(deleted.sceneBlocks.find((scene) => scene.id === duplicateId)?.anchorSec).toBe(6);
   });
 
+  test("keeps explicit Scene media motion attached through Scene timeline edits", () => {
+    const first = colorScene("8ab9d330-688f-4574-932c-27ac661245c1", 2, 2);
+    const second = colorScene("d8ab95f8-fc16-4e60-814e-69762a59a99b", 6, 2);
+    const base = editorDocumentSchema.parse({
+      ...currentDocument(),
+      sceneBlocks: [first, second],
+      mediaMotions: [{
+        schemaVersion: 1,
+        id: "2adf79cc-35b2-4de5-85dc-c9ed197763e4",
+        target: { kind: "scene_block", sceneBlockId: second.id },
+        startSec: 6,
+        endSec: 8,
+        entrance: "fade",
+        exit: "scale-out",
+        enabled: true,
+      }],
+    });
+
+    const moved = applyEditorAction(base, {
+      type: "moveSceneBlock",
+      id: second.id,
+      anchorSec: 7,
+    });
+    expect(moved.mediaMotions[0]).toMatchObject({ startSec: 7, endSec: 9 });
+
+    const trimmed = applyEditorAction(moved, {
+      type: "trimSceneBlock",
+      id: second.id,
+      durationSec: 3,
+    });
+    expect(trimmed.mediaMotions[0]).toMatchObject({ startSec: 7, endSec: 10 });
+
+    const intro = colorScene("a3196d76-b71d-4b93-8812-7435b9e17faf", 0, 1);
+    const inserted = applyEditorAction(trimmed, {
+      type: "insertSceneBlock",
+      scene: intro,
+    });
+    expect(inserted.mediaMotions[0]).toMatchObject({ startSec: 8, endSec: 11 });
+
+    const deleted = applyEditorAction(inserted, {
+      type: "deleteSceneBlock",
+      id: first.id,
+    });
+    expect(deleted.mediaMotions[0]).toMatchObject({ startSec: 6, endSec: 9 });
+  });
+
   test("censor and media-motion edits are strict, toggleable, undoable, redoable, and no-op stable", () => {
     const scene = colorScene("8ab9d330-688f-4574-932c-27ac661245c1", 20, 2);
     const base = editorDocumentSchema.parse({
@@ -206,5 +506,44 @@ describe("Clip Editor Document v2", () => {
       censorSegments: [{ ...censor, sourceStartSec: 15, sourceEndSec: 16 }],
       deletedRanges: [{ startSec: 14, endSec: 17 }],
     })).toThrow();
+  });
+
+  test("applies reviewed Censor Segments as one undoable document edit", () => {
+    const base = editorDocumentSchema.parse(currentDocument());
+    const makeSegment = (id: string, treatment: "beep" | "caption_mask") => ({
+      schemaVersion: 1 as const,
+      id,
+      sourceWordIds: [`word:${id}`],
+      sourceStartSec: 12,
+      sourceEndSec: 12.4,
+      treatment,
+      paddingSec: 0.08,
+      beepSettings: treatment === "beep" ? { frequencyHz: 1_000, levelDb: -12 } : null,
+      captionMaskPolicy: treatment === "caption_mask"
+        ? { replacement: "asterisks" as const, preservePunctuation: true }
+        : null,
+      suggestionFingerprint: id.replaceAll("-", "").slice(0, 32),
+      policyVersion: "auto-censor:v1",
+      enabled: true,
+    });
+    const first = makeSegment("dbb670b3-e28a-4514-bf2d-63e56608a4d0", "beep");
+    const second = makeSegment("2adf79cc-35b2-4de5-85dc-c9ed197763e4", "caption_mask");
+
+    const applied = applyWithHistory(createEditorHistory(base), {
+      type: "applyCensorSegments",
+      segments: [first, second],
+    });
+
+    expect(applied.past).toHaveLength(1);
+    expect(applied.present.censorSegments).toEqual([first, second]);
+    expect(undoEditor(applied).present.censorSegments).toEqual([]);
+    expect(redoEditor(undoEditor(applied)).present.censorSegments).toEqual([
+      first,
+      second,
+    ]);
+    expect(applyEditorAction(applied.present, {
+      type: "applyCensorSegments",
+      segments: [first],
+    })).toBe(applied.present);
   });
 });

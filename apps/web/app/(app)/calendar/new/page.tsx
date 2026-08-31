@@ -16,7 +16,12 @@ export default async function NewCalendarPostPage() {
   return (
     <Stack gap="8" maxW="760px">
       <PageHeader eyebrow="Calendar" title="Schedule a workspace clip" description="Choose an existing clip, then select a connected account and publish time. Narriflow freezes and prepares the exact revision." actions={<Button variant="outline" asChild><Link href="/calendar">Cancel</Link></Button>} />
-      <CalendarPostForm clips={options.clips} accounts={options.accounts} timezone={workspace?.timezone ?? "UTC"} />
+      <CalendarPostForm
+        clips={options.clips}
+        accounts={options.accounts}
+        timezone={workspace?.timezone ?? "UTC"}
+        canOverrideApproval={appUser.workspace.role === "owner" || appUser.workspace.role === "admin"}
+      />
     </Stack>
   );
 }

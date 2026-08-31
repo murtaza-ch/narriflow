@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   DEFAULT_CAPTION_PRESET,
+	applyEditorAction,
   editorDocumentSchema,
   editorDocumentsEqual,
   studioEditsSchema,
@@ -39,7 +40,7 @@ function makeTimedDocument(): EditorDocument {
       anchorSec: 4,
       durationSec: 2,
       content: { kind: "color", color: "#111827" },
-      motion: { entrance: "fade", exit: "zoom-out" },
+      motion: { entrance: "fade", exit: "scale-out" },
       templateSnapshot: null,
     }],
     censorSegments: [{
@@ -314,6 +315,129 @@ test("checkpoints every timed-edit family without narrowing the document", async
   expect(cloud.saves[0]?.document).toEqual(timed);
   cloud.acknowledge(0, 4);
   expect(await checkpoint).toEqual({ kind: "cloud-current", revision: 4 });
+});
+
+test("adopts one server-committed generated placement as one undoable cloud-current step", async () => {
+  const runtime = new ManualRuntime();
+  const cloud = new ControlledCloud(3, makeDocument());
+  const session = await makeSession(cloud, runtime);
+  expect(await session.perform({ type: "prepare-external-commit" })).toEqual({
+    kind: "external-commit-prepared",
+    revision: 3,
+  });
+	const placement = {
+      id: "00000000-0000-4000-8000-000000000001",
+      asset: {
+        kind: "visual_asset",
+        id: "00000000-0000-4000-8000-000000000002",
+        fingerprint: "a".repeat(64),
+      },
+      provenance: "generated",
+      mediaKind: "image",
+      startSec: 2,
+      endSec: 5,
+      sourceStartSec: null,
+      sourceEndSec: null,
+	} as const;
+	const action = { type: "insertBrollPlacement", placement } as const;
+	const inserted = applyEditorAction(makeDocument(), action);
+	expect(session.dispatch({
+		type: "document.edit",
+		action: { type: "setBrollUrl", brollUrl: "https://cdn.example.com/race.mp4" },
+	})).toEqual({ accepted: false, reason: "starting" });
+  cloud.setHead(4, inserted);
+
+  expect(await session.perform({
+    type: "adopt-external-document-edit",
+    baseRevision: 3,
+		committedRevision: 4,
+		action,
+    document: inserted,
+  })).toEqual({ kind: "external-document-edit-adopted", revision: 4 });
+  expect(session.getSnapshot()).toMatchObject({
+    document: { brollPlacements: [{ id: "00000000-0000-4000-8000-000000000001" }] },
+    history: { canUndo: true, canRedo: false },
+    cloud: { state: "current", revision: 4, dirty: false },
+  });
+  runtime.advance(5_000);
+  expect(cloud.saves).toHaveLength(0);
+
+  session.dispatch({ type: "history.undo" });
+  runtime.advance(1_500);
+  await waitUntil(() => cloud.saves.length === 1);
+  expect(cloud.saves[0]).toMatchObject({
+    baseRevision: 4,
+    document: { brollPlacements: [] },
+  });
+  cloud.acknowledge(0, 5);
+  await waitForSnapshot(session, (snapshot) => snapshot.cloud.state === "current");
+
+  session.dispatch({ type: "history.redo" });
+  runtime.advance(1_500);
+  await waitUntil(() => cloud.saves.length === 2);
+  expect(cloud.saves[1]).toMatchObject({
+    baseRevision: 5,
+    document: { brollPlacements: [{ id: "00000000-0000-4000-8000-000000000001" }] },
+  });
+});
+
+test("checkpoints before locking an external mutation and refuses conflict or degraded ownership", async () => {
+  const cloud = new ControlledCloud(3, makeDocument());
+  const session = await makeSession(cloud);
+  session.dispatch({
+    type: "document.edit",
+    action: { type: "setBrollUrl", brollUrl: "https://cdn.example.com/local.mp4" },
+  });
+
+	const preparation = session.perform({ type: "prepare-external-commit" });
+  await waitUntil(() => cloud.saves.length === 1);
+	cloud.acknowledge(0, 4);
+	expect(await preparation).toEqual({
+		kind: "external-commit-prepared",
+		revision: 4,
+	});
+	expect(session.getSnapshot().status).toBe("starting");
+	expect(await session.perform({ type: "abort-external-commit" })).toEqual({
+		kind: "external-commit-aborted",
+	});
+	expect(session.getSnapshot().status).toBe("ready");
+
+	const degraded = await makeSession(new ControlledCloud(3, makeDocument()), new ManualRuntime(), "degraded");
+	expect(await degraded.perform({ type: "prepare-external-commit" })).toEqual({
+		kind: "cloud-blocked",
+		reason: "read-only",
+	});
+});
+
+test("verifies the exact external editor action and converges a mismatched response", async () => {
+	const cloud = new ControlledCloud(3, makeDocument());
+	const session = await makeSession(cloud);
+	const action = {
+		type: "setBrollUrl",
+		brollUrl: "https://cdn.example.com/server.mp4",
+	} as const;
+	const inserted = applyEditorAction(makeDocument(), action);
+	expect(await session.perform({ type: "prepare-external-commit" })).toEqual({
+		kind: "external-commit-prepared",
+		revision: 3,
+	});
+	cloud.setHead(4, inserted);
+	expect(await session.perform({
+		type: "adopt-external-document-edit",
+		baseRevision: 3,
+		committedRevision: 4,
+		action: { type: "setBrollUrl", brollUrl: "https://cdn.example.com/tampered.mp4" },
+		document: inserted,
+	})).toEqual({
+		kind: "cloud-blocked",
+		reason: "semantic-rejection",
+		code: "external_document_mismatch",
+	});
+	expect(session.getSnapshot()).toMatchObject({
+		status: "ready",
+		document: { brollUrl: "https://cdn.example.com/server.mp4" },
+		cloud: { revision: 4, dirty: false },
+	});
 });
 
 test("ignores an older document-generation response and serializes one latest follow-up", async () => {

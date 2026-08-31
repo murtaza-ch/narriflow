@@ -38,6 +38,33 @@ function makeUtterance(
 }
 
 describe("studioEditsSchema (source audio + music fades)", () => {
+  test("accepts the complete bounded transition vocabulary and rejects obsolete aliases", () => {
+    const types = [
+      "none",
+      "fade",
+      "fade-black",
+      "dip-white",
+      "cross-dissolve",
+      "wipe-left",
+      "wipe-right",
+      "wipe-up",
+      "wipe-down",
+      "slide-left",
+      "slide-right",
+      "slide-up",
+      "slide-down",
+      "zoom-in",
+      "zoom-out",
+    ] as const;
+    for (const type of types) {
+      expect(studioEditsSchema.parse({
+        transition: { type, durationSec: 0.4 },
+      }).transition.type).toBe(type);
+    }
+    expect(() => studioEditsSchema.parse({
+      transition: { type: "crossfade", durationSec: 0.4 },
+    })).toThrow();
+  });
   test("parse({}) defaults sourceAudio to unmuted 100 and music fades to 0", () => {
     const parsed = studioEditsSchema.parse({});
     expect(parsed.sourceAudio).toEqual({ volume: 100, muted: false });

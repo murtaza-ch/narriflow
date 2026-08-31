@@ -261,6 +261,287 @@ describe("authenticated request inventory", () => {
     }).success).toBe(false);
   });
 
+  test("authenticates, authorizes, bounds, and validates selected motion before routing", () => {
+    const projectId = "11111111-1111-4111-8111-111111111111";
+    const clipId = "22222222-2222-4222-8222-222222222222";
+    const route = matchBrowserSessionHonoSurface(
+      "POST",
+      `/projects/${projectId}/campaign-operations/apply-motion`,
+    );
+    expect(route).toMatchObject({
+      admission: {
+        kind: "project",
+        projectId,
+        capability: "content.edit",
+      },
+      rateLimit: { limit: 20, windowSeconds: 3_600 },
+      input: { body: "required", params: ["id"] },
+    });
+    expect(
+      route?.rateLimit?.key({
+        actorUserId: "actor-a",
+        workspaceId: "workspace-a",
+      }),
+    ).toBe("apply-motion-selected:actor-a");
+    expect(
+      route?.input?.schema.safeParse({
+        id: projectId,
+        body: {
+          change: {
+            scope: "clip_transition",
+            transition: { type: "slide-right", durationSec: 0.4 },
+          },
+          clips: [{ clipId, expectedEditorRevision: 8 }],
+        },
+      }).success,
+    ).toBe(true);
+    expect(
+      route?.input?.schema.safeParse({
+        id: projectId,
+        body: {
+          change: {
+            scope: "clip_transition",
+            transition: { type: "arbitrary-patch", durationSec: 0.4 },
+          },
+          clips: [{ clipId, expectedEditorRevision: 8 }],
+        },
+      }).success,
+    ).toBe(false);
+  });
+
+  test("admits the public Studio generated-media submission shape", () => {
+    const projectId = "11111111-1111-4111-8111-111111111111";
+    const clipId = "22222222-2222-4222-8222-222222222222";
+    const route = matchBrowserSessionHonoSurface(
+      "POST",
+      `/projects/${projectId}/generated-media/jobs`,
+    );
+
+    expect(route).toMatchObject({
+      admission: {
+        kind: "project",
+        projectId,
+        capability: "processing.consume",
+      },
+      rateLimit: { limit: 20, windowSeconds: 3_600 },
+    });
+    expect(
+      route?.input?.schema.safeParse({
+        id: projectId,
+        body: {
+          idempotencyKey: "33333333-3333-4333-8333-333333333333",
+          projectId,
+          clipId,
+          kind: "image",
+          prompt: "A quiet studio at first light",
+          promptOrigin: { kind: "manual", sourceIds: [] },
+          includeDerivedContext: false,
+		  sourceRevision: null,
+          aspectRatio: "9:16",
+          style: "editorial",
+          durationSec: null,
+          title: null,
+        },
+      }).success,
+    ).toBe(true);
+  });
+
+	test("requires download capability for generated result attachments", () => {
+		const projectId = "11111111-1111-4111-8111-111111111111";
+		const jobId = "22222222-2222-4222-8222-222222222222";
+		const route = matchBrowserSessionHonoSurface(
+			"GET",
+			`/projects/${projectId}/generated-media/jobs/${jobId}/download`,
+		);
+
+		expect(route).toMatchObject({
+			admission: {
+				kind: "project",
+				projectId,
+				capability: "content.download",
+			},
+			params: { id: projectId, jobId },
+			input: { params: ["id", "jobId"] },
+		});
+	});
+
+  test("keeps brand and style Campaign Operations project-scoped and strictly revision fenced", () => {
+    const projectId = "11111111-1111-4111-8111-111111111111";
+    const clipId = "22222222-2222-4222-8222-222222222222";
+    const templateId = "33333333-3333-4333-8333-333333333333";
+    const fingerprint = "a".repeat(64);
+    const catalog = matchBrowserSessionHonoSurface(
+      "GET",
+      `/projects/${projectId}/campaign-operations/editor-action-catalog`,
+    );
+    expect(catalog).toMatchObject({
+      admission: {
+        kind: "project",
+        projectId,
+        capability: "content.view",
+      },
+      input: { params: ["id"] },
+    });
+    const preview = matchBrowserSessionHonoSurface(
+      "POST",
+      `/projects/${projectId}/campaign-operations/preview-editor-action`,
+    );
+    expect(preview).toMatchObject({
+      admission: {
+        kind: "project",
+        projectId,
+        capability: "content.view",
+      },
+      rateLimit: { limit: 60, windowSeconds: 60 },
+    });
+    expect(
+      preview?.input?.schema.safeParse({
+        id: projectId,
+        body: {
+          action: "apply_style",
+          input: {
+            templateId,
+            templateFingerprint: fingerprint,
+            clips: [{ clipId, expectedEditorRevision: 5 }],
+          },
+        },
+      }).success,
+    ).toBe(true);
+
+    const brand = matchBrowserSessionHonoSurface(
+      "POST",
+      `/projects/${projectId}/campaign-operations/apply-brand-profile`,
+    );
+    expect(brand).toMatchObject({
+      admission: {
+        kind: "project",
+        projectId,
+        capability: "content.edit",
+      },
+      rateLimit: { limit: 20, windowSeconds: 3_600 },
+    });
+    expect(
+      brand?.input?.schema.safeParse({
+        id: projectId,
+        body: {
+          profileFingerprint: fingerprint,
+          styleFingerprint: null,
+          clips: [{ clipId, expectedEditorRevision: 5 }],
+        },
+      }).success,
+    ).toBe(true);
+    expect(
+      brand?.input?.schema.safeParse({
+        id: projectId,
+        body: {
+          profileId: templateId,
+          profileFingerprint: fingerprint,
+          styleFingerprint: null,
+          clips: [{ clipId, expectedEditorRevision: 5 }],
+        },
+      }).success,
+    ).toBe(false);
+
+    const style = matchBrowserSessionHonoSurface(
+      "POST",
+      `/projects/${projectId}/campaign-operations/apply-style`,
+    );
+    expect(style).toMatchObject({
+      admission: {
+        kind: "project",
+        projectId,
+        capability: "content.edit",
+      },
+      rateLimit: { limit: 20, windowSeconds: 3_600 },
+    });
+    expect(
+      style?.input?.schema.safeParse({
+        id: projectId,
+        body: {
+          templateId,
+          templateFingerprint: fingerprint,
+          clips: [{ clipId, expectedEditorRevision: 5 }],
+        },
+      }).success,
+    ).toBe(true);
+  });
+
+  test("keeps durable publishing-preparation reads available with content-view access", () => {
+    const projectId = "11111111-1111-4111-8111-111111111111";
+    const draftId = "22222222-2222-4222-8222-222222222222";
+    const jobId = "33333333-3333-4333-8333-333333333333";
+    const history = matchBrowserSessionHonoSurface(
+      "GET",
+      `/projects/${projectId}/assisted-copy`,
+    );
+
+    expect(history).toMatchObject({
+      admission: {
+        kind: "project",
+        projectId,
+        capability: "content.view",
+      },
+      input: { params: ["id"], query: ["platform"] },
+    });
+    expect(
+      history?.input?.schema.safeParse({
+        id: projectId,
+        platform: "youtube_shorts",
+      }).success,
+    ).toBe(true);
+    expect(
+      history?.input?.schema.safeParse({ id: projectId, platform: "youtube" })
+        .success,
+    ).toBe(false);
+
+    expect(
+      matchBrowserSessionHonoSurface(
+        "GET",
+        `/projects/${projectId}/assisted-copy/${draftId}`,
+      ),
+    ).toMatchObject({
+      admission: {
+        kind: "project",
+        projectId,
+        capability: "content.view",
+      },
+    });
+    expect(
+      matchBrowserSessionHonoSurface(
+        "GET",
+        `/projects/${projectId}/thumbnail-extractions/${jobId}`,
+      ),
+    ).toMatchObject({
+      admission: {
+        kind: "project",
+        projectId,
+        capability: "content.view",
+      },
+    });
+    const thumbnailHistory = matchBrowserSessionHonoSurface(
+      "GET",
+      `/projects/${projectId}/thumbnail-extractions`,
+    );
+    expect(thumbnailHistory).toMatchObject({
+      admission: {
+        kind: "project",
+        projectId,
+        capability: "content.view",
+      },
+      input: {
+        params: ["id"],
+        query: ["platform", "exportVariantIds"],
+      },
+    });
+    expect(
+      thumbnailHistory?.input?.schema.safeParse({
+        id: projectId,
+        platform: "tiktok",
+        exportVariantIds: jobId,
+      }).success,
+    ).toBe(true);
+  });
+
   test("keeps independent trust models out of browser-session policy", () => {
     expect(isIndependentTrustHonoSurface("POST", "/webhooks/stripe")).toBe(
       true,
@@ -321,6 +602,7 @@ describe("authenticated request inventory", () => {
       await Promise.all([
         "app/api/[[...route]]/route.ts",
         "app/api/[[...route]]/brand-profile-routes.ts",
+        "app/api/[[...route]]/generated-media-http.ts",
       ].map((module) => Bun.file(new URL(module, webRoot)).text()))
     ).join("\n");
     const registered = source.matchAll(
@@ -351,6 +633,8 @@ describe("authenticated request inventory", () => {
       "/brand-profiles",
       "/visual-assets",
       "/brand-fonts",
+      "/projects/:id/generated-media/",
+			"/projects/:id/clips/:clipId/generated-media/",
     ];
     const expected = [
       ...browserSessionHonoSurfaces.filter(

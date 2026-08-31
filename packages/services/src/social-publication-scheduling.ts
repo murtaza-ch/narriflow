@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { Prisma } from "@prisma/client";
+import { Prisma, type PrismaClient } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
 	clipAspectRatioFromDb,
@@ -8,6 +8,7 @@ import {
 	type ClipRenderResolution,
 	type SocialPlatform,
 } from "@narriflow/validators";
+import { brandOwnerWhereForWorkspace } from "./brand-ownership";
 import { clipExportService } from "./clip-export.service";
 import { accessibleProjectWhere } from "./project-retention.service";
 import {
@@ -15,6 +16,10 @@ import {
 	socialPublicationCapabilityVersion,
 } from "./social-publication-config";
 import { workspaceService } from "./workspace.service";
+import {
+	reviewApprovalService,
+	type ReviewApprovalPrincipal,
+} from "./review-approval.service";
 
 export type FrozenPublicationState = {
 	clipExportId: string;
@@ -31,6 +36,7 @@ export type FrozenPublicationState = {
 	platform: SocialPlatform;
 	capabilityVersion: string;
 	scheduledFor: Date;
+	reviewApprovalOverrideId: string | null;
 };
 
 export type PublicationIntentStatus =
@@ -48,6 +54,10 @@ export type PublicationIntent = {
 	immutableRequestHash: string;
 	status: PublicationIntentStatus;
 	submissionEligible: boolean;
+	assistedCopyDraftId: string | null;
+	assistedCopyRevision: number | null;
+	thumbnailAssetId: string | null;
+	thumbnailFingerprint: string | null;
 	frozen: FrozenPublicationState;
 	createdAt: Date;
 	updatedAt: Date;
@@ -55,6 +65,7 @@ export type PublicationIntent = {
 
 export type SchedulePublicationInput = {
 	actorUserId: string;
+	approvalPrincipal: ReviewApprovalPrincipal;
 	ownerUserId: string;
 	workspaceId: string;
 	projectId: string;
@@ -68,6 +79,12 @@ export type SchedulePublicationInput = {
 	resolution: ClipRenderResolution;
 	scheduledFor: Date;
 	providerSettings: Prisma.JsonObject;
+	approvalOverrideReason: string | null;
+	requiredExportVariantId?: string | null;
+	assistedCopyDraftId?: string | null;
+	assistedCopyRevision?: number | null;
+	thumbnailAssetId?: string | null;
+	thumbnailFingerprint?: string | null;
 };
 
 export type PublicationFreezeResult =
@@ -117,6 +134,13 @@ export class PublicationIntentStateError extends Error {
 	}
 }
 
+export function publicationThumbnailOwnerWhere(input: {
+	workspaceId: string;
+	personalOwnerUserId: string | null;
+}) {
+	return brandOwnerWhereForWorkspace(input);
+}
+
 function canonicalJson(value: unknown): string {
 	if (Array.isArray(value)) {
 		return `[${value.map(canonicalJson).join(",")}]`;
@@ -146,6 +170,12 @@ export function publicationIntentHash(input: SchedulePublicationInput): string {
 				resolution: input.resolution,
 				scheduledFor: input.scheduledFor.toISOString(),
 				providerSettings: input.providerSettings,
+				approvalOverrideReason: input.approvalOverrideReason,
+				requiredExportVariantId: input.requiredExportVariantId ?? null,
+				assistedCopyDraftId: input.assistedCopyDraftId ?? null,
+				assistedCopyRevision: input.assistedCopyRevision ?? null,
+					thumbnailAssetId: input.thumbnailAssetId ?? null,
+					thumbnailFingerprint: input.thumbnailFingerprint ?? null,
 			}),
 		)
 		.digest("hex");
@@ -164,13 +194,24 @@ export function createSocialPublicationScheduling(dependencies: {
 }) {
 	return {
 		async schedule(
-			input: SchedulePublicationInput,
-		): Promise<PublicationIntent> {
+				input: SchedulePublicationInput,
+			): Promise<PublicationIntent> {
 			await dependencies.authorize({
 				actorUserId: input.actorUserId,
 				workspaceId: input.workspaceId,
 				permission: "publishing.manage",
 			});
+			if (
+				Boolean(input.thumbnailAssetId) !== Boolean(input.thumbnailFingerprint) ||
+				(input.thumbnailFingerprint !== null &&
+					input.thumbnailFingerprint !== undefined &&
+					!/^[0-9a-f]{64}$/.test(input.thumbnailFingerprint))
+			) {
+				throw new PublicationIntentStateError(
+					"publication_thumbnail_evidence_incomplete",
+					"A selected thumbnail requires an immutable asset fingerprint",
+				);
+			}
 			const immutableRequestHash = publicationIntentHash(input);
 			return dependencies.store.open({
 				workspaceId: input.workspaceId,
@@ -199,6 +240,10 @@ export function createSocialPublicationScheduling(dependencies: {
 						immutableRequestHash,
 						status: ready ? "scheduled" : "preparing_video",
 						submissionEligible: ready,
+						assistedCopyDraftId: input.assistedCopyDraftId ?? null,
+						assistedCopyRevision: input.assistedCopyRevision ?? null,
+							thumbnailAssetId: input.thumbnailAssetId ?? null,
+							thumbnailFingerprint: input.thumbnailFingerprint ?? null,
 						frozen: frozen.state,
 						createdAt: now,
 						updatedAt: now,
@@ -424,6 +469,10 @@ function toPublicationIntent(row: PublicationIntentRow): PublicationIntent {
 			frozen.storageKey !== null &&
 			frozen.sizeBytes !== null &&
 			frozen.durationSec !== null,
+		assistedCopyDraftId: row.assistedCopyDraftId,
+		assistedCopyRevision: row.assistedCopyRevision,
+		thumbnailAssetId: row.thumbnailAssetId,
+		thumbnailFingerprint: row.thumbnailFingerprint,
 		frozen: {
 			clipExportId: frozen.clipExportId,
 			clipExportVariantId: frozen.clipExportVariantId,
@@ -444,6 +493,7 @@ function toPublicationIntent(row: PublicationIntentRow): PublicationIntent {
 			platform: frozen.platform,
 			capabilityVersion: frozen.capabilityVersion,
 			scheduledFor: frozen.scheduledFor,
+			reviewApprovalOverrideId: row.reviewApprovalOverrideId,
 		},
 		createdAt: row.createdAt,
 		updatedAt: row.updatedAt,
@@ -540,6 +590,12 @@ export const prismaPublicationSchedulingStore: PublicationSchedulingStore = {
 							projectId: candidate.projectId,
 							clipId: candidate.clipId,
 							socialAccountId: candidate.frozen.socialAccountId,
+							reviewApprovalOverrideId:
+								candidate.frozen.reviewApprovalOverrideId,
+							assistedCopyDraftId: candidate.assistedCopyDraftId,
+							assistedCopyRevision: candidate.assistedCopyRevision,
+								thumbnailAssetId: candidate.thumbnailAssetId,
+								thumbnailFingerprint: candidate.thumbnailFingerprint,
 							platform: candidate.frozen.platform,
 							status: candidate.status,
 							clientIdempotencyKey: candidate.clientIdempotencyKey,
@@ -694,12 +750,54 @@ export const prismaPublicationSchedulingStore: PublicationSchedulingStore = {
 	},
 };
 
-export function createProductionSocialPublicationScheduling() {
+
+export function createProductionSocialPublicationScheduling(
+	options: {
+		prisma?: PrismaClient;
+		store?: PublicationSchedulingStore;
+		authorize?: (input: {
+			actorUserId: string;
+			workspaceId: string;
+			permission: "publishing.manage";
+		}) => Promise<void>;
+		prepareExport?: (
+			projectId: string,
+			clipId: string,
+			input: {
+				expectedRevision: number;
+				aspectRatios: ClipAspectRatio[];
+				resolution: ClipRenderResolution;
+			},
+			idempotencyKey: string,
+			workspaceContext: { workspaceId: string; actorUserId: string },
+		) => Promise<{ export: { id: string } }>;
+		authorizeExactExports?: (input: {
+			principal: ReviewApprovalPrincipal;
+			workspaceId: string;
+			projectId: string;
+			exportIds: string[];
+			idempotencyKey: string;
+			overrideReason: string | null;
+		}) => Promise<{ overrideAuditId: string | null }>;
+		createId?: () => string;
+		now?: () => Date;
+	} = {},
+) {
+	const prepareExport =
+		options.prepareExport ??
+		((...args: Parameters<typeof clipExportService.create>) =>
+			clipExportService.create(...args));
+	const authorizeExactExports =
+		options.authorizeExactExports ??
+		((input: Parameters<typeof reviewApprovalService.authorizeExactExports>[0]) =>
+			reviewApprovalService.authorizeExactExports(input));
 	return createSocialPublicationScheduling({
-		store: prismaPublicationSchedulingStore,
-		authorize: async ({ actorUserId, workspaceId, permission }) => {
-			await workspaceService.requireActor(actorUserId, workspaceId, permission);
-		},
+		store: options.store ?? prismaPublicationSchedulingStore,
+		authorize:
+			options.authorize ??
+			(async ({ actorUserId, workspaceId, permission }) => {
+				await workspaceService.requireActor(actorUserId, workspaceId, permission);
+			}),
 		async freeze(input) {
 			if (!isSocialProviderPublishingEnabled(input.platform)) {
 				throw new PublicationIntentStateError(
@@ -707,7 +805,7 @@ export function createProductionSocialPublicationScheduling() {
 					"Publishing for this provider is not enabled yet",
 				);
 			}
-			const prisma = requirePrisma();
+			const prisma = options.prisma ?? requirePrisma();
 			const project = await prisma.project.findFirst({
 				where: {
 					id: input.projectId,
@@ -720,6 +818,17 @@ export function createProductionSocialPublicationScheduling() {
 				throw new PublicationIntentStateError(
 					"project_not_found",
 					"Project not found",
+				);
+			}
+			if (
+				(input.assistedCopyDraftId === null ||
+					input.assistedCopyDraftId === undefined) !==
+				(input.assistedCopyRevision === null ||
+					input.assistedCopyRevision === undefined)
+			) {
+				throw new PublicationIntentStateError(
+					"publication_copy_reference_incomplete",
+					"The assisted-copy audit reference is incomplete",
 				);
 			}
 			const clip = await prisma.clip.findFirst({
@@ -756,33 +865,85 @@ export function createProductionSocialPublicationScheduling() {
 				}
 			}
 
-			const requested = await clipExportService.create(
-				input.projectId,
-				input.clipId,
-				{
-					expectedRevision: input.expectedEditorRevision,
-					aspectRatios: [input.aspectRatio],
-					resolution: input.resolution,
-				},
-				`social:${input.workspaceId}:${input.clientIdempotencyKey}`,
-				{
-					workspaceId: input.workspaceId,
-					actorUserId: input.actorUserId,
-				},
-			);
-			const row = await prisma.clipExport.findUniqueOrThrow({
-				where: { id: requested.export.id },
-				include: {
-					variants: {
-						where: { aspectRatio: clipAspectRatioToDb[input.aspectRatio] },
-					},
-				},
-			});
+			const row = input.requiredExportVariantId
+				? await prisma.clipExport.findFirst({
+						where: {
+							workspaceId: input.workspaceId,
+							projectId: input.projectId,
+							clipId: input.clipId,
+							editorRevision: input.expectedEditorRevision,
+							resolution: input.resolution,
+							variants: {
+								some: {
+									id: input.requiredExportVariantId,
+									aspectRatio: clipAspectRatioToDb[input.aspectRatio],
+									resolution: input.resolution,
+									status: "completed",
+									storageKey: { not: null },
+									sizeBytes: { not: null },
+									durationSec: { not: null },
+								},
+							},
+						},
+						include: {
+							variants: {
+								where: {
+									id: input.requiredExportVariantId,
+									aspectRatio: clipAspectRatioToDb[input.aspectRatio],
+									resolution: input.resolution,
+									status: "completed",
+									storageKey: { not: null },
+									sizeBytes: { not: null },
+									durationSec: { not: null },
+								},
+							},
+						},
+					})
+				: await prepareExport(
+						input.projectId,
+						input.clipId,
+						{
+							expectedRevision: input.expectedEditorRevision,
+							aspectRatios: [input.aspectRatio],
+							resolution: input.resolution,
+						},
+						`social:${input.workspaceId}:${input.clientIdempotencyKey}`,
+						{
+							workspaceId: input.workspaceId,
+							actorUserId: input.actorUserId,
+						},
+					).then(({ export: prepared }) =>
+						prisma.clipExport.findUniqueOrThrow({
+							where: { id: prepared.id },
+							include: {
+								variants: {
+									where: {
+										aspectRatio: clipAspectRatioToDb[input.aspectRatio],
+									},
+								},
+							},
+						}),
+					);
+			if (!row) {
+				throw new PublicationIntentStateError(
+					"publication_export_variant_mismatch",
+					"The publication request does not match the selected immutable export",
+				);
+			}
 			const variant = row.variants[0];
 			if (!variant) {
 				throw new PublicationIntentStateError(
 					"publication_export_variant_missing",
 					"The exact Clip Export Variant could not be prepared",
+				);
+			}
+			if (
+				input.requiredExportVariantId &&
+				variant.id !== input.requiredExportVariantId
+			) {
+				throw new PublicationIntentStateError(
+					"publication_export_variant_mismatch",
+					"The publication request does not match the selected immutable export",
 				);
 			}
 			if (variant.status === "failed") {
@@ -791,6 +952,64 @@ export function createProductionSocialPublicationScheduling() {
 					"The exact Clip Export Variant failed to render",
 				);
 			}
+			if (input.assistedCopyDraftId && input.assistedCopyRevision) {
+				const copy = await prisma.assistedCopyDraft.findFirst({
+					where: {
+						id: input.assistedCopyDraftId,
+						workspaceId: input.workspaceId,
+						projectId: input.projectId,
+						clipId: input.clipId,
+						platform: input.platform,
+						status: "completed",
+						revision: input.assistedCopyRevision,
+						confirmedAt: { not: null },
+					},
+					select: { id: true },
+				});
+				if (!copy) {
+					throw new PublicationIntentStateError(
+						"publication_copy_unconfirmed",
+						"Confirm the current assisted-copy revision before scheduling",
+					);
+				}
+			}
+			if (input.thumbnailAssetId) {
+				const workspace = await prisma.workspace.findUniqueOrThrow({
+					where: { id: input.workspaceId },
+					select: { personalOwnerUserId: true },
+				});
+				const thumbnail = await prisma.visualAsset.findFirst({
+					where: {
+						id: input.thumbnailAssetId,
+						deletedAt: null,
+						...publicationThumbnailOwnerWhere({
+							workspaceId: input.workspaceId,
+							personalOwnerUserId: workspace.personalOwnerUserId,
+						}),
+					},
+						select: { id: true, fingerprint: true },
+					});
+					if (!thumbnail) {
+					throw new PublicationIntentStateError(
+						"publication_thumbnail_unavailable",
+						"The selected thumbnail is unavailable",
+						);
+					}
+					if (thumbnail.fingerprint !== input.thumbnailFingerprint) {
+						throw new PublicationIntentStateError(
+							"publication_thumbnail_fingerprint_mismatch",
+							"The selected thumbnail no longer matches the frozen asset fingerprint",
+						);
+					}
+			}
+			const approval = await authorizeExactExports({
+				principal: input.approvalPrincipal,
+				workspaceId: input.workspaceId,
+				projectId: input.projectId,
+				exportIds: [row.id],
+				idempotencyKey: input.clientIdempotencyKey,
+				overrideReason: input.approvalOverrideReason,
+			});
 			const state: FrozenPublicationState = {
 				clipExportId: row.id,
 				clipExportVariantId: variant.id,
@@ -813,6 +1032,7 @@ export function createProductionSocialPublicationScheduling() {
 						? "publication-webhook-v1"
 						: socialPublicationCapabilityVersion(input.platform),
 				scheduledFor: input.scheduledFor,
+				reviewApprovalOverrideId: approval.overrideAuditId,
 			};
 			return {
 				kind:
@@ -824,7 +1044,7 @@ export function createProductionSocialPublicationScheduling() {
 				state,
 			};
 		},
-		createId: randomUUID,
-		now: () => new Date(),
+		createId: options.createId ?? randomUUID,
+		now: options.now ?? (() => new Date()),
 	});
 }

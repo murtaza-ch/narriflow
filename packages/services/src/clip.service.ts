@@ -87,7 +87,10 @@ import {
   type ClipPreviewPeaks,
 } from "./clip-preview-storage";
 import { analyticsService } from "./analytics.service";
-import { clipExportService } from "./clip-export.service";
+import {
+  clipExportService,
+  editorDocumentExportFeatureError,
+} from "./clip-export.service";
 import { hasFeature } from "./billing.service";
 import { accessibleProjectWhere } from "./project-retention.service";
 import { workspaceService } from "./workspace.service";
@@ -1936,7 +1939,7 @@ export class ClipService {
     resolution: ClipRenderResolution = "1080p",
   ) {
     const prisma = requirePrisma();
-    await workspaceService.requireActor(
+    const actor = await workspaceService.requireActor(
       workspaceContext.actorUserId,
       workspaceContext.workspaceId,
       "processing.consume",
@@ -1979,6 +1982,42 @@ export class ClipService {
     }
 
     const clipIdsToRender = clipsToRender.map((clip) => clip.id);
+    if (
+      !hasFeature(actor.pricingTier, "editor.censoring") ||
+      !hasFeature(actor.pricingTier, "editor.motion")
+    ) {
+      const documents = await prisma.clip.findMany({
+        where: { projectId, id: { in: clipIdsToRender } },
+        select: {
+          id: true,
+          startSec: true,
+          endSec: true,
+          captionPreset: true,
+          transcriptSlice: true,
+          studioEdits: true,
+          brollUrl: true,
+          deletedRanges: true,
+          editorDocumentVersion: true,
+          sceneBlocks: true,
+          censorSegments: true,
+          mediaMotions: true,
+          project: { select: { sourceDurationSeconds: true } },
+        },
+      });
+      for (const row of documents) {
+        const document = decodeClipEditorDocumentFromStorage(
+          row,
+          row.project.sourceDurationSeconds,
+        );
+        const featureError = editorDocumentExportFeatureError(
+          actor.pricingTier,
+          document,
+        );
+        if (featureError) {
+          throw new ClipActionError(featureError.code, featureError.message);
+        }
+      }
+    }
     const existingRenderVariants = await prisma.clipRender.findMany({
       where: {
         clipId: { in: clipIdsToRender },
@@ -2731,6 +2770,10 @@ export class ClipService {
     const clips = await prisma.clip.findMany({
       where: {
         previewStorageKey: null,
+        // Preview generation only understands the current Editor Document.
+        // Filtering here prevents an unsupported/corrupt local row from
+        // starving every valid preview candidate in the worker poll loop.
+        editorDocumentVersion: 2,
         project: {
           ...accessibleProjectWhere(),
           sourceStorageKey: { not: null },
@@ -2749,6 +2792,10 @@ export class ClipService {
         studioEdits: true,
         brollUrl: true,
         deletedRanges: true,
+        editorDocumentVersion: true,
+        sceneBlocks: true,
+        censorSegments: true,
+        mediaMotions: true,
         project: {
           select: { sourceStorageKey: true, sourceDurationSeconds: true },
         },

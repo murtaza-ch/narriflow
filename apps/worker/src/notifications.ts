@@ -1,5 +1,7 @@
 import {
+  createReviewRolloutPolicy,
   decideAutoRetry,
+  createProductionReviewNotificationDelivery,
   INGEST_AUTO_RETRY_MAX_ATTEMPTS,
   INGEST_RETRIES_EXHAUSTED_CODE,
   notificationService,
@@ -11,6 +13,30 @@ import {
 } from "@narriflow/services";
 
 const DEFAULT_WORKER_APP_BASE_URL = "http://localhost:3000";
+const REVIEW_NOTIFICATION_CONFIGURATION_FAILURE =
+  "review_notification_worker_configuration_invalid" as const;
+
+type ReviewNotificationConfigurationField =
+  | "WORKER_APP_BASE_URL"
+  | "REVIEW_ACCESS_SECRET"
+  | "REVIEW_SESSION_SECRET"
+  | "RESEND_API_KEY";
+
+export type ReviewNotificationWorkerConfiguration =
+  | { enabled: false; ready: true }
+  | {
+      enabled: true;
+      ready: false;
+      failureCode: typeof REVIEW_NOTIFICATION_CONFIGURATION_FAILURE;
+      invalidFields: ReviewNotificationConfigurationField[];
+    }
+  | {
+      enabled: true;
+      ready: true;
+      appBaseUrl: string;
+      accessSecret: string;
+      dataSecret: string;
+    };
 
 function log(
   level: "warn" | "error",
@@ -40,15 +66,18 @@ function isLoopbackHostname(hostname: string): boolean {
   );
 }
 
-export function getWorkerAppBaseUrl(): string | null {
+export function getWorkerAppBaseUrl(options: { report?: boolean } = {}): string | null {
+  const report = options.report ?? true;
   const configured = process.env.WORKER_APP_BASE_URL?.trim();
   const isProduction = process.env.NODE_ENV === "production";
 
   if (!configured) {
     if (isProduction) {
-      log("error", "worker_app_base_url_missing", {
-        action: "notification_send_skipped",
-      });
+      if (report) {
+        log("error", "worker_app_base_url_missing", {
+          action: "notification_send_skipped",
+        });
+      }
       return null;
     }
     return DEFAULT_WORKER_APP_BASE_URL;
@@ -64,15 +93,81 @@ export function getWorkerAppBaseUrl(): string | null {
     }
     return url.origin;
   } catch {
-    log(isProduction ? "error" : "warn", "worker_app_base_url_invalid", {
-      configured,
-      action: isProduction
-        ? "notification_send_skipped"
-        : "localhost_fallback_used",
-      ...(isProduction ? {} : { fallback: DEFAULT_WORKER_APP_BASE_URL }),
-    });
+    if (report) {
+      log(isProduction ? "error" : "warn", "worker_app_base_url_invalid", {
+        configured,
+        action: isProduction
+          ? "notification_send_skipped"
+          : "localhost_fallback_used",
+        ...(isProduction ? {} : { fallback: DEFAULT_WORKER_APP_BASE_URL }),
+      });
+    }
     return isProduction ? null : DEFAULT_WORKER_APP_BASE_URL;
   }
+}
+
+export function resolveReviewNotificationWorkerConfiguration(
+  env: Readonly<Record<string, string | undefined>> = process.env,
+  resolveBaseUrl: () => string | null = () =>
+    getWorkerAppBaseUrl({ report: false }),
+): ReviewNotificationWorkerConfiguration {
+  if (!createReviewRolloutPolicy(env).isEnabled("notification_admission")) {
+    return { enabled: false, ready: true };
+  }
+
+  const appBaseUrl = resolveBaseUrl();
+  const accessSecret = env.REVIEW_ACCESS_SECRET?.trim() ?? "";
+  const dataSecret = env.REVIEW_SESSION_SECRET?.trim() ?? "";
+  const resendApiKey = env.RESEND_API_KEY?.trim() ?? "";
+  const invalidFields: ReviewNotificationConfigurationField[] = [];
+  if (!appBaseUrl) invalidFields.push("WORKER_APP_BASE_URL");
+  if (accessSecret.length < 32) invalidFields.push("REVIEW_ACCESS_SECRET");
+  if (dataSecret.length < 32) invalidFields.push("REVIEW_SESSION_SECRET");
+  if (!resendApiKey) invalidFields.push("RESEND_API_KEY");
+  if (invalidFields.length > 0) {
+    return {
+      enabled: true,
+      ready: false,
+      failureCode: REVIEW_NOTIFICATION_CONFIGURATION_FAILURE,
+      invalidFields,
+    };
+  }
+
+  return {
+    enabled: true,
+    ready: true,
+    appBaseUrl: appBaseUrl!,
+    accessSecret,
+    dataSecret,
+  };
+}
+
+export function reviewNotificationWorkerHealth(
+  configuration: ReviewNotificationWorkerConfiguration,
+) {
+  return {
+    enabled: configuration.enabled,
+    ready: configuration.ready,
+    failureCode:
+      configuration.enabled && !configuration.ready
+        ? configuration.failureCode
+        : null,
+  };
+}
+
+export function reportReviewNotificationWorkerConfiguration(
+  configuration: ReviewNotificationWorkerConfiguration,
+  write: (message: string) => void = (message) => console.error(message),
+): void {
+  if (!configuration.enabled || configuration.ready) return;
+  write(
+    JSON.stringify({
+      level: "error",
+      message: configuration.failureCode,
+      invalidFields: configuration.invalidFields,
+      action: "review_notification_delivery_paused",
+    }),
+  );
 }
 
 export function getProjectDeepLink(projectId: string): string | null {
@@ -97,11 +192,41 @@ export function buildRetryNotificationInput(
   return deepLink ? { deepLink } : null;
 }
 
-export async function retryPendingNotifications(limit: number) {
-  return notificationService.resendPendingNotifications(
+export async function retryPendingNotifications(
+  limit: number,
+  reviewConfiguration = resolveReviewNotificationWorkerConfiguration(),
+) {
+  const result = await notificationService.resendPendingNotifications(
     limit,
     buildRetryNotificationInput,
   );
+  if (!reviewConfiguration.enabled || !reviewConfiguration.ready) {
+    return result;
+  }
+  const reviewResults = await createProductionReviewNotificationDelivery({
+    appBaseUrl: reviewConfiguration.appBaseUrl,
+    accessSecret: reviewConfiguration.accessSecret,
+    dataSecret: reviewConfiguration.dataSecret,
+  }).processDue(limit);
+  return {
+    ...result,
+    scanned: result.scanned + reviewResults.length,
+    claimed:
+      result.claimed +
+      reviewResults.filter(
+        (entry) =>
+          entry.status !== "already_claimed" && entry.status !== "not_found",
+      ).length,
+    sent:
+      result.sent +
+      reviewResults.filter((entry) => entry.status === "sent").length,
+    pending:
+      result.pending +
+      reviewResults.filter((entry) => entry.status === "pending").length,
+    failed:
+      result.failed +
+      reviewResults.filter((entry) => entry.status === "failed").length,
+  };
 }
 
 export async function notifyTerminalOutcome(input: {

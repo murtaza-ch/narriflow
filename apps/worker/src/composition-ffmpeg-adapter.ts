@@ -2,9 +2,11 @@ import {
   CLIP_COMPOSITION_PLAN_VERSION,
   compositionAssetRef,
   type ClipCompositionPlan,
-  type CompositionBrollVideoLayer,
+	type CompositionBrollMediaLayer,
   type CompositionInsertedSceneLayer,
+  type CompositionMotionPhase,
   type CompositionRect,
+  type CompositionResolvedMotion,
   type CompositionTargetPlan,
   type CompositionVisualLayer,
 } from "@narriflow/composition-plan";
@@ -104,6 +106,31 @@ export function compileCompositionPlanAudioSchedule(plan: ClipCompositionPlan) {
   ) {
     throw new Error("invalid_clip_composition_audio_schedule");
   }
+  let treatmentCursor = 0;
+  for (const treatment of schedule.dialogueTreatments) {
+    const durationSec =
+      treatment.activeRange.endSec - treatment.activeRange.startSec;
+    if (
+      !validRange(treatment.activeRange) ||
+      treatment.activeRange.startSec < treatmentCursor - 0.000_001 ||
+      (treatment.kind === "beep" &&
+        (!Number.isFinite(treatment.frequencyHz) ||
+          treatment.frequencyHz < 200 ||
+          treatment.frequencyHz > 2_000 ||
+          !Number.isFinite(treatment.gain) ||
+          treatment.gain <= 0 ||
+          treatment.gain > 1 ||
+          !Number.isFinite(treatment.fades.fadeInSec) ||
+          !Number.isFinite(treatment.fades.fadeOutSec) ||
+          treatment.fades.fadeInSec < 0 ||
+          treatment.fades.fadeOutSec < 0 ||
+          treatment.fades.fadeInSec + treatment.fades.fadeOutSec >
+            durationSec + 0.000_001))
+    ) {
+      throw new Error("invalid_clip_composition_audio_schedule");
+    }
+    treatmentCursor = treatment.activeRange.endSec;
+  }
   return {
     scheduleFingerprint: schedule.fingerprint,
     outputFades: schedule.outputFades,
@@ -113,6 +140,13 @@ export function compileCompositionPlanAudioSchedule(plan: ClipCompositionPlan) {
       gain: schedule.source.gain,
       muted: schedule.source.muted,
     },
+    dialogueTreatments: schedule.dialogueTreatments.map((treatment) => ({
+      ...treatment,
+      activeRange: { ...treatment.activeRange },
+      ...(treatment.kind === "beep"
+        ? { fades: { ...treatment.fades } }
+        : {}),
+    })),
     music: music
       ? {
           sourceRef: music.sourceRef,
@@ -222,52 +256,142 @@ export function compileCompositionPlanSceneAudio(input: {
   return { filterParts: parts, outputLabel: "[composition_scene_audio]" };
 }
 
-function insertedSceneMotionFilters(input: {
-  motion: CompositionInsertedSceneLayer["motion"];
-  durationSec: number;
+function motionNumber(value: number): string {
+  return value.toFixed(7).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+function phaseScalar(
+  phase: CompositionMotionPhase,
+  property: "opacity" | "scale" | "translateXPx" | "translateYPx",
+  offsetSec: number,
+): string {
+  const start = phase.range.startSec - offsetSec;
+  const end = phase.range.endSec - offsetSec;
+  const duration = end - start;
+  const from = phase.from[property];
+  const to = phase.to[property];
+  return `${motionNumber(from)}+(${motionNumber(to - from)})*((t-${motionNumber(start)})/${motionNumber(duration)})`;
+}
+
+function motionScalarExpression(
+  motion: CompositionResolvedMotion,
+  property: "opacity" | "scale" | "translateXPx" | "translateYPx",
+  offsetSec: number,
+): string {
+  let expression = motionNumber(motion.resting[property]);
+  if (motion.entrance) {
+    const start = motion.entrance.range.startSec - offsetSec;
+    const end = motion.entrance.range.endSec - offsetSec;
+    expression = `if(lt(t,${motionNumber(start)}),${motionNumber(motion.entrance.from[property])},if(lte(t,${motionNumber(end)}),${phaseScalar(motion.entrance, property, offsetSec)},${expression}))`;
+  }
+  if (motion.exit) {
+    const start = motion.exit.range.startSec - offsetSec;
+    const end = motion.exit.range.endSec - offsetSec;
+    expression = `if(lt(t,${motionNumber(start)}),${expression},if(lte(t,${motionNumber(end)}),${phaseScalar(motion.exit, property, offsetSec)},${motionNumber(motion.exit.to[property])}))`;
+  }
+  return expression;
+}
+
+function cropPropertyExpression(
+  motion: CompositionResolvedMotion,
+  property: keyof CompositionRect,
+  offsetSec: number,
+): string {
+  const bounds = motion.clippingBounds;
+  const value = (state: CompositionMotionPhase["from"]) => state.crop?.[property] ?? bounds[property];
+  let expression = motionNumber(motion.resting.crop?.[property] ?? bounds[property]);
+  if (motion.entrance) {
+    const phase = motion.entrance;
+    const start = phase.range.startSec - offsetSec;
+    const end = phase.range.endSec - offsetSec;
+    const duration = end - start;
+    const from = value(phase.from);
+    const to = value(phase.to);
+    const interpolation = `${motionNumber(from)}+(${motionNumber(to - from)})*((t-${motionNumber(start)})/${motionNumber(duration)})`;
+    expression = `if(lt(t,${motionNumber(start)}),${motionNumber(from)},if(lte(t,${motionNumber(end)}),${interpolation},${expression}))`;
+  }
+  if (motion.exit) {
+    const phase = motion.exit;
+    const start = phase.range.startSec - offsetSec;
+    const end = phase.range.endSec - offsetSec;
+    const duration = end - start;
+    const from = value(phase.from);
+    const to = value(phase.to);
+    const interpolation = `${motionNumber(from)}+(${motionNumber(to - from)})*((t-${motionNumber(start)})/${motionNumber(duration)})`;
+    expression = `if(lt(t,${motionNumber(start)}),${expression},if(lte(t,${motionNumber(end)}),${interpolation},${motionNumber(to)}))`;
+  }
+  return expression;
+}
+
+function assertCompositionMotion(
+  motion: CompositionResolvedMotion,
+  width: number,
+  height: number,
+): void {
+  if (
+    motion.version !== 1 ||
+    motion.activeRange.endSec <= motion.activeRange.startSec ||
+    motion.clippingBounds.x !== 0 ||
+    motion.clippingBounds.y !== 0 ||
+    motion.clippingBounds.width !== width ||
+    motion.clippingBounds.height !== height
+  ) {
+    throw new Error("invalid_clip_composition_motion");
+  }
+  for (const phase of [motion.entrance, motion.exit]) {
+    if (!phase) continue;
+    if (
+      phase.range.startSec < motion.activeRange.startSec ||
+      phase.range.endSec <= phase.range.startSec ||
+      phase.range.endSec > motion.activeRange.endSec ||
+      ![phase.from, phase.to].every((state) =>
+        [state.opacity, state.scale, state.translateXPx, state.translateYPx].every(Number.isFinite))
+    ) {
+      throw new Error("invalid_clip_composition_motion");
+    }
+  }
+}
+
+function compositionMotionFilters(input: {
+  motion: CompositionResolvedMotion | null;
+  offsetSec: number;
   width: number;
   height: number;
   backgroundColor: string;
 }) {
-  const duration = input.durationSec;
-  const edge = Math.min(0.35, duration / 2);
+  if (!input.motion) return "";
+  assertCompositionMotion(input.motion, input.width, input.height);
   const filters: string[] = [];
-  if (input.motion.entrance === "fade") {
-    filters.push(`fade=t=in:st=0:d=${edge.toFixed(3)}`);
-  }
-  if (input.motion.exit === "fade") {
-    filters.push(`fade=t=out:st=${Math.max(0, duration - edge).toFixed(3)}:d=${edge.toFixed(3)}`);
-  }
-
-  const slidesIn = input.motion.entrance === "slide-up";
-  const slidesOut = input.motion.exit === "slide-down";
-  if (slidesIn || slidesOut) {
-    const center = input.height;
-    const entrance = slidesIn
-      ? `if(lt(t,${edge.toFixed(3)}),(t/${edge.toFixed(3)})*${center},${center})`
-      : `${center}`;
-    const y = slidesOut
-      ? `if(gt(t,${Math.max(0, duration - edge).toFixed(3)}),${center}+((t-${Math.max(0, duration - edge).toFixed(3)})/${edge.toFixed(3)})*${center},${entrance})`
-      : entrance;
+  const phases = [input.motion.entrance, input.motion.exit].filter(
+    (phase): phase is CompositionMotionPhase => phase !== null,
+  );
+  if (phases.some((phase) => phase.family === "ken-burns")) {
     filters.push(
-      `pad=${input.width}:${input.height * 3}:0:${input.height}:color=0x${input.backgroundColor.slice(1)}`,
-      `crop=${input.width}:${input.height}:0:'${y}'`,
+      `crop=w='${cropPropertyExpression(input.motion, "width", input.offsetSec)}':h='${cropPropertyExpression(input.motion, "height", input.offsetSec)}':x='${cropPropertyExpression(input.motion, "x", input.offsetSec)}':y='${cropPropertyExpression(input.motion, "y", input.offsetSec)}':eval=frame`,
+      `scale=${input.width}:${input.height}:eval=frame`,
     );
   }
-
-  const zoomsIn = input.motion.entrance === "zoom-in";
-  const zoomsOut = input.motion.exit === "zoom-out";
-  if (zoomsIn || zoomsOut) {
-    const entrance = zoomsIn
-      ? `if(lt(t,${edge.toFixed(3)}),0.920000+0.080000*(t/${edge.toFixed(3)}),1)`
-      : "1";
-    const factor = zoomsOut
-      ? `if(gt(t,${Math.max(0, duration - edge).toFixed(3)}),1-0.080000*((t-${Math.max(0, duration - edge).toFixed(3)})/${edge.toFixed(3)}),${entrance})`
-      : entrance;
+  if (phases.some((phase) => phase.family === "scale")) {
+    const factor = motionScalarExpression(input.motion, "scale", input.offsetSec);
     filters.push(
-      `scale=w='iw*(${factor})':h='ih*(${factor})':eval=frame`,
-      `pad=${input.width}:${input.height}:(ow-iw)/2:(oh-ih)/2:color=0x${input.backgroundColor.slice(1)}:eval=frame`,
-      `crop=${input.width}:${input.height}`,
+      `scale=w='trunc(${input.width}*(${factor})/2)*2':h='trunc(${input.height}*(${factor})/2)*2':eval=frame`,
+      `pad=w='max(iw,${input.width})':h='max(ih,${input.height})':x='(ow-iw)/2':y='(oh-ih)/2':color=0x${input.backgroundColor.slice(1)}:eval=frame`,
+      `crop=${input.width}:${input.height}:(iw-${input.width})/2:(ih-${input.height})/2`,
+    );
+  }
+  if (phases.some((phase) => phase.family === "pan")) {
+    const x = motionScalarExpression(input.motion, "translateXPx", input.offsetSec);
+    const y = motionScalarExpression(input.motion, "translateYPx", input.offsetSec);
+    filters.push(
+      `pad=${input.width * 3}:${input.height * 3}:${input.width}:${input.height}:color=0x${input.backgroundColor.slice(1)}`,
+      `crop=${input.width}:${input.height}:x='${input.width}-(${x})':y='${input.height}-(${y})'`,
+    );
+  }
+  for (const phase of phases.filter((candidate) => candidate.family === "fade")) {
+    const start = phase.range.startSec - input.offsetSec;
+    const duration = phase.range.endSec - phase.range.startSec;
+    filters.push(
+      `fade=t=${phase.from.opacity < phase.to.opacity ? "in" : "out"}:st=${start.toFixed(3)}:d=${duration.toFixed(3)}`,
     );
   }
   return filters.length ? `,${filters.join(",")},setsar=1` : "";
@@ -329,6 +453,71 @@ function textLayerFilter(
   );
 }
 
+function transitionValueExpression(input: {
+  fadeIn: { startSec: number; endSec: number };
+  fadeOut: { startSec: number; endSec: number };
+  introFrom: number;
+  resting: number;
+  outroTo: number;
+}): string {
+  const introDuration = input.fadeIn.endSec - input.fadeIn.startSec;
+  const outroDuration = input.fadeOut.endSec - input.fadeOut.startSec;
+  const intro = `${motionNumber(input.introFrom)}+(${motionNumber(input.resting - input.introFrom)})*((t-${motionNumber(input.fadeIn.startSec)})/${motionNumber(introDuration)})`;
+  const outro = `${motionNumber(input.resting)}+(${motionNumber(input.outroTo - input.resting)})*((t-${motionNumber(input.fadeOut.startSec)})/${motionNumber(outroDuration)})`;
+  return `if(lt(t,${motionNumber(input.fadeIn.endSec)}),${intro},if(lt(t,${motionNumber(input.fadeOut.startSec)}),${motionNumber(input.resting)},if(lte(t,${motionNumber(input.fadeOut.endSec)}),${outro},${motionNumber(input.outroTo)})))`;
+}
+
+function transitionVisualFilter(
+  layer: Extract<CompositionVisualLayer, { kind: "transition" }>,
+): string {
+  const width = layer.effect.canvas.width;
+  const height = layer.effect.canvas.height;
+  if (layer.effect.family === "fade" || layer.effect.family === "cross-dissolve") {
+    return (
+      `fade=t=in:st=${layer.windows.fadeIn.startSec.toFixed(3)}:d=${(layer.windows.fadeIn.endSec - layer.windows.fadeIn.startSec).toFixed(3)}:color=${layer.color},` +
+      `fade=t=out:st=${layer.windows.fadeOut.startSec.toFixed(3)}:d=${(layer.windows.fadeOut.endSec - layer.windows.fadeOut.startSec).toFixed(3)}:color=${layer.color}`
+    );
+  }
+  if (layer.effect.family === "wipe") {
+    const fraction = transitionValueExpression({
+      ...layer.windows,
+      introFrom: 0,
+      resting: 1,
+      outroTo: 0,
+    });
+    const horizontal = layer.effect.direction === "left" || layer.effect.direction === "right";
+    const cropWidth = horizontal ? `max(2,trunc(${width}*(${fraction})/2)*2)` : `${width}`;
+    const cropHeight = horizontal ? `${height}` : `max(2,trunc(${height}*(${fraction})/2)*2)`;
+    const cropX = layer.effect.direction === "left" ? `${width}-out_w` : "0";
+    const cropY = layer.effect.direction === "up" ? `${height}-out_h` : "0";
+    const padX = layer.effect.direction === "left" ? `${width}-iw` : "0";
+    const padY = layer.effect.direction === "up" ? `${height}-ih` : "0";
+    return `crop=w='${cropWidth}':h='${cropHeight}':x='${cropX}':y='${cropY}':eval=frame,pad=${width}:${height}:x='${padX}':y='${padY}':color=${layer.color}:eval=frame`;
+  }
+  if (layer.effect.family === "slide") {
+    const direction = layer.effect.direction;
+    const introX = direction === "left" ? width : direction === "right" ? -width : 0;
+    const outroX = direction === "left" ? -width : direction === "right" ? width : 0;
+    const introY = direction === "up" ? height : direction === "down" ? -height : 0;
+    const outroY = direction === "up" ? -height : direction === "down" ? height : 0;
+    const x = transitionValueExpression({ ...layer.windows, introFrom: introX, resting: 0, outroTo: outroX });
+    const y = transitionValueExpression({ ...layer.windows, introFrom: introY, resting: 0, outroTo: outroY });
+    return `pad=${width * 3}:${height * 3}:${width}:${height}:color=${layer.color},crop=${width}:${height}:x='${width}-(${x})':y='${height}-(${y})'`;
+  }
+  const zoomsIn = layer.effect.direction === "in";
+  const factor = transitionValueExpression({
+    ...layer.windows,
+    introFrom: zoomsIn ? 0.88 : 1.12,
+    resting: 1,
+    outroTo: zoomsIn ? 1.12 : 0.88,
+  });
+  return (
+    `scale=w='trunc(${width}*(${factor})/2)*2':h='trunc(${height}*(${factor})/2)*2':eval=frame,` +
+    `pad=w='max(iw,${width})':h='max(ih,${height})':x='(ow-iw)/2':y='(oh-ih)/2':color=${layer.color}:eval=frame,` +
+    `crop=${width}:${height}:(iw-${width})/2:(ih-${height})/2`
+  );
+}
+
 /** Translates the target's already-ordered visual schedule into FFmpeg syntax.
  * It does not inspect the editor document or select timing, precedence,
  * entitlement, geometry, or optional-media fallbacks. */
@@ -377,6 +566,8 @@ export function compileCompositionPlanVisualLayers(input: {
         !validWindow(fadeIn) ||
         !validWindow(fadeOut) ||
         fadeIn.endSec > fadeOut.startSec
+        || layer.effect.canvas.width !== target.canvas.width
+        || layer.effect.canvas.height !== target.canvas.height
       ) {
         throw new Error("invalid_clip_composition_transition_windows");
       }
@@ -427,12 +618,8 @@ export function compileCompositionPlanVisualLayers(input: {
       });
     } else if (layer.kind === "transition") {
       stages.push((source, output) => {
-        const duration = layer.windows.fadeIn.endSec - layer.windows.fadeIn.startSec;
         return {
-          parts: [
-            `${source}fade=t=in:st=${layer.windows.fadeIn.startSec.toFixed(3)}:d=${duration.toFixed(3)}:color=${layer.color},` +
-              `fade=t=out:st=${layer.windows.fadeOut.startSec.toFixed(3)}:d=${(layer.windows.fadeOut.endSec - layer.windows.fadeOut.startSec).toFixed(3)}:color=${layer.color}${output}`,
-          ],
+          parts: [`${source}${transitionVisualFilter(layer)}${output}`],
         };
       });
     } else if (layer.kind === "output-treatment") {
@@ -513,7 +700,11 @@ function plannedCompositionBrollPlacements(
   sourceRef: string;
   startSec: number;
   endSec: number;
+	mediaKind: "image" | "video";
+	sourceStartSec: number | null;
+	sourceEndSec: number | null;
   audio: "source";
+  motion: CompositionResolvedMotion | null;
 }> {
   if (plan.version !== CLIP_COMPOSITION_PLAN_VERSION) {
     throw new Error("unsupported_clip_composition_plan_version");
@@ -523,12 +714,12 @@ function plannedCompositionBrollPlacements(
 
   const fragments = new Map<
     string,
-    { layer: CompositionBrollVideoLayer; ranges: Array<[number, number]> }
+		{ layer: CompositionBrollMediaLayer; ranges: Array<[number, number]> }
   >();
   for (const scene of target.scenes) {
     const active = scene.layers.filter(
-      (layer): layer is CompositionBrollVideoLayer =>
-        layer.kind === "broll-video",
+			(layer): layer is CompositionBrollMediaLayer =>
+				layer.kind === "broll-media",
     );
     if (active.length > 1) {
       throw new Error("invalid_clip_composition_broll_overlap");
@@ -560,6 +751,8 @@ function plannedCompositionBrollPlacements(
           existing.layer.sourceRef !== layer.sourceRef ||
           existing.layer.activeRange.startSec !== layer.activeRange.startSec ||
           existing.layer.activeRange.endSec !== layer.activeRange.endSec
+					|| existing.layer.mediaKind !== layer.mediaKind
+					|| JSON.stringify(existing.layer.sourceRange) !== JSON.stringify(layer.sourceRange)
         ) {
           throw new Error("invalid_clip_composition_broll_layer");
         }
@@ -591,7 +784,11 @@ function plannedCompositionBrollPlacements(
         sourceRef: layer.sourceRef,
         startSec: layer.activeRange.startSec,
         endSec: layer.activeRange.endSec,
+				mediaKind: layer.mediaKind,
+				sourceStartSec: layer.sourceRange?.startSec ?? null,
+				sourceEndSec: layer.sourceRange?.endSec ?? null,
         audio: layer.audio,
+        motion: layer.motion,
       };
     })
     .sort((left, right) => left.startSec - right.startSec);
@@ -685,9 +882,9 @@ export function compileCompositionPlanInsertedSceneSequence(input: {
     const color = inserted.content.kind === "color"
       ? inserted.content.color
       : inserted.content.backgroundColor;
-    const motionFilters = insertedSceneMotionFilters({
+    const motionFilters = compositionMotionFilters({
       motion: inserted.motion,
-      durationSec: duration,
+      offsetSec: scene.startSec,
       width: target.canvas.width,
       height: target.canvas.height,
       backgroundColor: color,
@@ -738,7 +935,7 @@ export function compileCompositionPlanVideo(input: {
   trailingChain?: string;
   backgroundImageInputIndex?: number | null;
   fps?: number;
-  resolvedBrollAssets?: Readonly<Record<string, string>>;
+	resolvedBrollAssets?: Readonly<Record<string, { path: string; kind: "image" | "video" }>>;
   brollInputStartIndex?: number;
   resolvedSceneAssets?: Readonly<Record<string, { path: string; kind: "image" | "video" }>>;
   resolvedSceneFonts?: Readonly<Record<string, string>>;
@@ -749,9 +946,12 @@ export function compileCompositionPlanVideo(input: {
   brollInputs: Array<{
     sourceRef: string;
     path: string;
+		kind: "image" | "video";
     inputIndex: number;
     startSec: number;
     endSec: number;
+		sourceStartSec: number | null;
+		sourceEndSec: number | null;
   }>;
   sceneInputs: Array<{ sourceRef: string; path: string; kind: "image" | "video"; inputIndex: number }>;
 } {
@@ -809,7 +1009,7 @@ export function compileCompositionPlanVideo(input: {
     const brollRanges = new Map<string, { startSec: number; endSec: number }>();
     for (const scene of sourceScenes) {
       for (const layer of scene.layers) {
-        if (layer.kind !== "broll-video") continue;
+				if (layer.kind !== "broll-media") continue;
         const current = brollRanges.get(layer.id);
         brollRanges.set(layer.id, {
           startSec: Math.min(current?.startSec ?? scene.startSec, scene.startSec),
@@ -820,7 +1020,7 @@ export function compileCompositionPlanVideo(input: {
     const normalizedSourceScenes = sourceScenes.map((scene) => ({
       ...scene,
       layers: scene.layers.map((layer) =>
-        layer.kind === "broll-video"
+				layer.kind === "broll-media"
           ? { ...layer, activeRange: brollRanges.get(layer.id)! }
           : layer,
       ),
@@ -868,18 +1068,25 @@ export function compileCompositionPlanVideo(input: {
     throw new Error("clip_composition_broll_input_index_missing");
   }
   const brollInputs = brollPlacements.map((placement, index) => {
-    const path = input.resolvedBrollAssets?.[placement.sourceRef];
-    if (!path) throw new Error("clip_composition_broll_input_missing");
+		const asset = input.resolvedBrollAssets?.[placement.sourceRef];
+		if (!asset || asset.kind !== placement.mediaKind) {
+			throw new Error("clip_composition_broll_input_missing");
+		}
     return {
       sourceRef: placement.sourceRef,
-      path,
+			path: asset.path,
+			kind: asset.kind,
       inputIndex: input.brollInputStartIndex! + index,
       startSec: placement.startSec,
       endSec: placement.endSec,
+			sourceStartSec: placement.sourceStartSec,
+			sourceEndSec: placement.sourceEndSec,
+      motion: placement.motion,
     };
   });
   const baseOutputLabel =
     brollInputs.length > 0 ? "[composition_base]" : input.outputLabel;
+  const publicBrollInputs = brollInputs.map(({ motion: _motion, ...asset }) => asset);
   const trailingSuffix = input.trailingChain ? `,${input.trailingChain}` : "";
   const baseSuffix = brollInputs.length === 0 ? trailingSuffix : "";
   const finalize = (result: {
@@ -887,7 +1094,7 @@ export function compileCompositionPlanVideo(input: {
     backgroundImageInputRequired: boolean;
   }) => {
     if (brollInputs.length === 0) {
-      return { ...result, brollInputs, sceneInputs };
+      return { ...result, brollInputs: publicBrollInputs, sceneInputs };
     }
     let current = baseOutputLabel;
     brollInputs.forEach((asset, index) => {
@@ -896,17 +1103,24 @@ export function compileCompositionPlanVideo(input: {
         index === brollInputs.length - 1
           ? input.outputLabel
           : `[composition_broll_stage_${index}]`;
+      const motionFilters = compositionMotionFilters({
+        motion: asset.motion,
+        offsetSec: asset.startSec,
+        width: plannedTarget.canvas.width,
+        height: plannedTarget.canvas.height,
+        backgroundColor: "#000000",
+      });
       result.filterParts.push(
         `[${asset.inputIndex}:v]scale=${plannedTarget.canvas.width}:${plannedTarget.canvas.height}:` +
           `force_original_aspect_ratio=increase,crop=${plannedTarget.canvas.width}:` +
-          `${plannedTarget.canvas.height},setpts=PTS-STARTPTS+${asset.startSec}/TB,` +
+          `${plannedTarget.canvas.height}${motionFilters},setpts=PTS-STARTPTS+${asset.startSec}/TB,` +
           `format=yuv420p${layer}`,
         `${current}${layer}overlay=0:0:enable='between(t,${asset.startSec},${asset.endSec})'` +
           `${index === brollInputs.length - 1 ? trailingSuffix : ""}${next}`,
       );
       current = next;
     });
-    return { ...result, brollInputs, sceneInputs };
+    return { ...result, brollInputs: publicBrollInputs, sceneInputs };
   };
   const target = baseOnlyTarget(plannedTarget);
   if (

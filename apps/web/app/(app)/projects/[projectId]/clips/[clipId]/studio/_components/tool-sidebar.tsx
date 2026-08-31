@@ -23,7 +23,7 @@ import { BRollPanel } from "./tool-panels/broll-panel";
 import { TextPanel } from "./tool-panels/text-panel";
 import { MusicPanel } from "./tool-panels/music-panel";
 import { BrandTemplatePanel } from "./tool-panels/brand-template-panel";
-import { TransitionsPanel } from "./tool-panels/transitions-panel";
+import { MotionPanel } from "./tool-panels/transitions-panel";
 import { LayoutPanel } from "./tool-panels/layout-panel";
 import { ScenesPanel } from "./tool-panels/scenes-panel";
 
@@ -31,7 +31,7 @@ const TOOLS: { id: ToolId; label: string; icon: React.ReactNode }[] = [
   { id: "captions",    label: "Captions",       icon: <Subtitles size={17} /> },
   { id: "brand",       label: "Brand template", icon: <LayoutGrid size={17} /> },
   { id: "broll",       label: "B-Roll",         icon: <Clapperboard size={17} /> },
-  { id: "transitions", label: "Transitions",    icon: <Shuffle size={17} /> },
+  { id: "transitions", label: "Motion",         icon: <Shuffle size={17} /> },
   { id: "text",        label: "Text",           icon: <Type size={17} /> },
   { id: "music",       label: "Music",          icon: <Music size={17} /> },
   { id: "layout",      label: "Layout",         icon: <Crop size={17} /> },
@@ -42,7 +42,7 @@ const PANEL_MAP: Record<ToolId, React.ReactNode> = {
   "captions":    <CaptionsPanel />,
   "brand":       <BrandTemplatePanel />,
   "broll":       <BRollPanel />,
-  "transitions": <TransitionsPanel />,
+  "transitions": <MotionPanel />,
   "text":        <TextPanel />,
   "music":       <MusicPanel />,
   "layout":      <LayoutPanel />,

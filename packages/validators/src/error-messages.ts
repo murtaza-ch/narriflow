@@ -204,6 +204,14 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 		"Reconnect the selected social account before creating a new scheduled post.",
 	publication_capability_version_mismatch:
 		"This post was prepared for an older publishing adapter. Create a new scheduled post.",
+	review_approval_required:
+		"This exact export still needs client approval before it can be scheduled.",
+	review_override_forbidden:
+		"Only a Workspace owner or admin can override client approval.",
+	review_override_conflict:
+		"This approval override was already used for a different scheduling request. Start a new request.",
+	review_approval_target_invalid:
+		"The export selected for publishing no longer belongs to this project. Refresh and try again.",
 	project_deletion_incomplete:
 		"We couldn't fully remove this project's files. Please try deleting again.",
 	ingest_retries_exhausted:
@@ -242,6 +250,44 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 		"That selection is too close to the edge of the transcript to create a clip. Select a bit more and try again.",
 	clip_create_from_selection_failed:
 		"We couldn't create a clip from that selection. Please try again.",
+	campaign_clip_not_found:
+		"This clip is no longer in the project. Refresh the selection.",
+	campaign_clip_stale:
+		"This clip changed after it was selected. Refresh before applying the campaign action again.",
+	campaign_editor_document_invalid:
+		"This clip's saved edit cannot be read safely. Open it in Studio to repair the edit before applying a campaign action.",
+	auto_censor_feature_unavailable:
+		"Saving and exporting censor treatments requires Creator or above.",
+	motion_feature_unavailable:
+		"Saving and exporting motion requires Creator or above.",
+	campaign_motion_target_missing:
+		"This clip has no manual B-roll to animate.",
+	campaign_motion_document_limit:
+		"This clip already has the maximum supported motion complexity.",
+	campaign_motion_apply_failed:
+		"Motion couldn't be applied to this clip. Open it in Studio to review the edit.",
+	campaign_project_brand_profile_missing:
+		"Choose a Project Brand Profile before applying it to selected clips.",
+	campaign_project_brand_profile_invalid:
+		"The Project Brand Profile snapshot is invalid. Reapply the profile at project level, then try again.",
+	campaign_brand_profile_stale:
+		"The Project Brand Profile changed after this preview. Refresh and review it again.",
+	campaign_style_not_member:
+		"That style is no longer part of the Project Brand Profile. Choose another style.",
+	campaign_style_stale:
+		"That style changed after this preview. Refresh and review it again.",
+	campaign_style_apply_failed:
+		"The style couldn't be applied to this clip. Open it in Studio to review the edit.",
+	scene_template_document_limit:
+		"This scene would exceed the clip's editor limits. Open the clip in Studio to make room.",
+	scene_template_fingerprint_stale:
+		"This Scene Template changed after the preview. Refresh and review it again.",
+	campaign_operation_feature_unavailable:
+		"Selection-scoped campaign actions require Pro or Business.",
+	campaign_operation_forbidden:
+		"Your Workspace role cannot apply this campaign action.",
+	campaign_operation_idempotency_conflict:
+		"This action was already submitted with different settings. Start a new action.",
 	clip_has_scheduled_posts:
 		"This clip has scheduled or publishing social posts. Cancel them in Publish, then delete the clip.",
 	// Extend as new codes appear.

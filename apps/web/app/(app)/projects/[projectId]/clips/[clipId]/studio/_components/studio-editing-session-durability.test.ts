@@ -155,7 +155,7 @@ function makeTimedDocument(brollUrl: string | null = null): EditorDocument {
       anchorSec: 4,
       durationSec: 2,
       content: { kind: "color", color: "#111827" },
-      motion: { entrance: "fade", exit: "zoom-out" },
+      motion: { entrance: "fade", exit: "scale-out" },
       templateSnapshot: null,
     }],
     censorSegments: [{

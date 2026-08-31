@@ -4,5 +4,6 @@ export {
   generationFailed,
   noClipsFound,
   projectExpiring,
+  reviewNotification,
   type NotificationEmailTemplate,
 } from "./templates";

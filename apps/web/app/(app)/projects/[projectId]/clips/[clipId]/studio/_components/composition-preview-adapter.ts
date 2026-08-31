@@ -1,5 +1,7 @@
 import {
   CLIP_COMPOSITION_PLAN_VERSION,
+	compositionAssetRef,
+  evaluateCompositionMotion,
   type ClipCompositionPlan,
   type ClipCompositionPlanResult,
   type CompositionBrollAvailability,
@@ -7,9 +9,16 @@ import {
   type CompositionLayer,
   type CompositionMode,
   type CompositionNotice,
+  type CompositionResolvedMotion,
+  type CompositionTransitionVisualLayer,
   type CompositionVisualLayer,
 } from "@narriflow/composition-plan";
-import { duckingGainMultiplierAt } from "@narriflow/validators";
+import {
+  censorBeepEnvelopeAt,
+  duckingGainMultiplierAt,
+	type BrollPlacement,
+	type SceneBlock,
+} from "@narriflow/validators";
 
 function rangeContains(
   range: { startSec: number; endSec: number },
@@ -49,6 +58,12 @@ export function plannedCompositionAudioState(
 ) {
   const timeSec = Math.max(0, editedTimeSec);
   const outputGain = fadeEnvelopeAt(schedule.outputFades, timeSec);
+  const dialogueTreatment = schedule.dialogueTreatments.find(
+    (treatment) =>
+      timeSec >= treatment.activeRange.startSec &&
+      timeSec < treatment.activeRange.endSec,
+  );
+  const sourceEnvelope = outputGain * (dialogueTreatment === undefined ? 1 : 0);
   const music = schedule.music;
   let plannedMusic: {
     sourceRef: string;
@@ -97,10 +112,25 @@ export function plannedCompositionAudioState(
   return {
     scheduleFingerprint: schedule.fingerprint,
     source: {
-      muted: schedule.source.muted || !schedule.source.available,
-      volume: schedule.source.gain * outputGain,
+      muted:
+        schedule.source.muted ||
+        !schedule.source.available ||
+        dialogueTreatment !== undefined,
+      volume:
+        schedule.source.gain * sourceEnvelope,
       outputGain,
+      envelope: sourceEnvelope,
     },
+    beep:
+      dialogueTreatment?.kind === "beep"
+        ? {
+            frequencyHz: dialogueTreatment.frequencyHz,
+            volume:
+              dialogueTreatment.gain *
+              censorBeepEnvelopeAt(dialogueTreatment, timeSec) *
+              outputGain,
+          }
+        : null,
     music: plannedMusic,
     soundEffects: schedule.soundEffects
       .filter((effect) => rangeContains(effect.activeRange, timeSec))
@@ -130,11 +160,193 @@ export function manualBrollAvailabilityForPlan(input: {
       {
         id: "manual",
         ref: input.ref,
+				mediaKind: "video",
         startSec: input.window.startSec,
         endSec: input.window.endSec,
+				sourceStartSec: 0,
+				sourceEndSec: input.window.endSec - input.window.startSec,
       },
     ],
   };
+}
+
+export type PreviewBrollAssetResolution = {
+	assetId: string;
+	fingerprint: string;
+	state:
+		| "pending"
+		| "available"
+		| "deleted"
+		| "missing"
+		| "fingerprint_stale"
+		| "storage_unavailable";
+	accessUrl?: string | null;
+};
+
+export type PreviewFrozenVisualReference = {
+	assetId: string;
+	fingerprint: string;
+	mediaKind: "image" | "video";
+};
+
+function frozenVisualKey(reference: { id: string; fingerprint: string }) {
+	return `${reference.id}:${reference.fingerprint}`;
+}
+
+export function frozenVisualReferencesForPreview(
+	placements: readonly BrollPlacement[],
+	scenes: readonly SceneBlock[],
+): PreviewFrozenVisualReference[] {
+	const references = new Map<string, PreviewFrozenVisualReference>();
+	for (const placement of placements) {
+		const key = frozenVisualKey(placement.asset);
+		references.set(key, {
+			assetId: placement.asset.id,
+			fingerprint: placement.asset.fingerprint,
+			mediaKind: placement.mediaKind,
+		});
+	}
+	for (const scene of scenes) {
+		if (scene.content.kind !== "image" && scene.content.kind !== "video") continue;
+		const key = frozenVisualKey(scene.content.asset);
+		references.set(key, {
+			assetId: scene.content.asset.id,
+			fingerprint: scene.content.asset.fingerprint,
+			mediaKind: scene.content.kind,
+		});
+	}
+	return [...references.values()];
+}
+
+export function sceneVisualAssetsForPlan(
+	scenes: readonly SceneBlock[],
+	resolutions: Readonly<Record<string, PreviewBrollAssetResolution>>,
+) {
+	const availability: Record<
+		string,
+		| { state: "pending" | "failed" }
+		| { state: "available"; ref: string }
+	> = {};
+	const mediaByRef: Record<
+		string,
+		{
+			assetKey: string;
+			accessUrl: string;
+			mediaKind: "image" | "video";
+		}
+	> = {};
+	for (const scene of scenes) {
+		if (scene.content.kind !== "image" && scene.content.kind !== "video") continue;
+		const key = frozenVisualKey(scene.content.asset);
+		const resolution = resolutions[key];
+		if (!resolution || resolution.state === "pending") {
+			availability[scene.id] = { state: "pending" };
+			continue;
+		}
+		if (
+			resolution.assetId !== scene.content.asset.id ||
+			resolution.fingerprint !== scene.content.asset.fingerprint ||
+			!resolution.accessUrl ||
+			(resolution.state !== "available" && resolution.state !== "deleted")
+		) {
+			availability[scene.id] = { state: "failed" };
+			continue;
+		}
+		const ref = compositionAssetRef("visual_asset", key);
+		availability[scene.id] = { state: "available", ref };
+		mediaByRef[ref] = {
+			assetKey: key,
+			accessUrl: resolution.accessUrl,
+			mediaKind: scene.content.kind,
+		};
+	}
+	return { availability, mediaByRef };
+}
+
+export function assetBackedBrollForPlan(
+	placements: readonly BrollPlacement[],
+	resolutions: Readonly<Record<string, PreviewBrollAssetResolution>>,
+) {
+  const available: Array<{
+    placement: BrollPlacement;
+		assetKey: string;
+    ref: string;
+		accessUrl: string;
+	}> = [];
+	const unavailablePlacements: Array<{
+		id: string;
+		reason:
+			| "pending"
+			| "missing"
+			| "fingerprint_stale"
+			| "storage_unavailable";
+	}> = [];
+	for (const placement of placements) {
+		const key = `${placement.asset.id}:${placement.asset.fingerprint}`;
+		const resolution = resolutions[key];
+		if (!resolution || resolution.state === "pending") {
+			unavailablePlacements.push({ id: placement.id, reason: "pending" });
+			continue;
+		}
+		if (
+			resolution.assetId !== placement.asset.id ||
+			resolution.fingerprint !== placement.asset.fingerprint
+		) {
+			unavailablePlacements.push({
+				id: placement.id,
+				reason: "fingerprint_stale",
+			});
+			continue;
+		}
+		if (
+			(resolution.state === "available" || resolution.state === "deleted") &&
+			resolution.accessUrl
+		) {
+      available.push({
+        placement,
+				assetKey: key,
+        ref: compositionAssetRef("visual_asset", key),
+				accessUrl: resolution.accessUrl,
+			});
+			continue;
+		}
+    unavailablePlacements.push({
+      id: placement.id,
+      reason:
+        resolution.state === "deleted" || resolution.state === "available"
+          ? "storage_unavailable"
+          : resolution.state,
+    });
+	}
+	return {
+		availability: placements.length === 0
+			? undefined
+			: {
+					state: "available" as const,
+					placements: available.map(({ placement, ref }) => ({
+						id: placement.id,
+						ref,
+						mediaKind: placement.mediaKind,
+						startSec: placement.startSec,
+						endSec: placement.endSec,
+						sourceStartSec: placement.sourceStartSec,
+						sourceEndSec: placement.sourceEndSec,
+					})),
+					unavailablePlacements,
+				},
+		mediaByRef: Object.fromEntries(
+			available.map(({ placement, assetKey, ref, accessUrl }) => [
+        ref,
+        {
+					assetKey,
+          accessUrl,
+					mediaKind: placement.mediaKind,
+					sourceStartSec: placement.sourceStartSec,
+					sourceEndSec: placement.sourceEndSec,
+				},
+			]),
+		),
+	};
 }
 
 const COMPOSITION_NOTICE_COPY: Readonly<Record<string, string>> = {
@@ -180,6 +392,11 @@ const COMPOSITION_NOTICE_COPY: Readonly<Record<string, string>> = {
   screen_broll_conflict: "B-roll uses single-speaker framing for this whole clip.",
   broll_asset_pending: "Checking B-roll media… Showing the base composition for now.",
   broll_asset_unavailable: "B-roll is unavailable. Showing the base composition.",
+	broll_asset_deleted: "This B-roll was removed from the library but remains available in this edit.",
+	broll_asset_missing: "A B-roll asset is missing. Showing the source for that range.",
+	broll_asset_fingerprint_stale: "A B-roll asset changed. Replace it to restore that range.",
+	broll_asset_storage_unavailable: "B-roll storage is temporarily unavailable for one range.",
+	broll_asset_source_range_invalid: "A B-roll video no longer covers its saved source range.",
   logo_asset_pending: "Checking logo media…",
   logo_asset_unavailable: "Logo media is unavailable. Showing the rest of the composition.",
   music_asset_pending: "Checking music… The clip remains available without it.",
@@ -191,7 +408,11 @@ const COMPOSITION_NOTICE_COPY: Readonly<Record<string, string>> = {
 	scene_asset_pending: "Checking the inserted Scene asset… Export is paused until it is available.",
 	scene_asset_unavailable: "An inserted Scene asset is unavailable. Replace or remove this Scene before exporting.",
 	scene_font_pending: "Checking the inserted Scene font… Export is paused until it is available.",
-	scene_font_unavailable: "An inserted Scene font is unavailable. Replace the font or remove this Scene before exporting.",
+  scene_font_unavailable: "An inserted Scene font is unavailable. Replace the font or remove this Scene before exporting.",
+  motion_scene_transition_conflict:
+    "The clip transition controls this boundary, so the conflicting media entrance is omitted.",
+  censor_segment_stale:
+    "A censor segment no longer matches the corrected transcript. Disable, delete, or scan again before export.",
   audio_only_background_unsupported:
     "Audiograms use the standard waveform background. Remove the background choice to clear this notice.",
 };
@@ -344,6 +565,120 @@ export function plannedCompositionVideoStyle(
   };
 }
 
+export function plannedCompositionMotionStyle(
+  motion: CompositionResolvedMotion,
+  editedTimeSec: number,
+  reducedMotion: boolean,
+) {
+  if (motion.version !== 1) {
+    throw new Error("unsupported_clip_composition_motion_version");
+  }
+  const state = evaluateCompositionMotion(motion, editedTimeSec, {
+    reducedMotion,
+  });
+  const width = motion.clippingBounds.width;
+  const height = motion.clippingBounds.height;
+  if (
+    width <= 0 ||
+    height <= 0 ||
+    ![
+      state.opacity,
+      state.scale,
+      state.translateXPx,
+      state.translateYPx,
+    ].every(Number.isFinite)
+  ) {
+    throw new Error("invalid_clip_composition_motion");
+  }
+  const crop = state.crop ?? motion.clippingBounds;
+  const cropScale = Math.max(width / crop.width, height / crop.height);
+  const originX = ((crop.x + crop.width / 2 - motion.clippingBounds.x) / width) * 100;
+  const originY = ((crop.y + crop.height / 2 - motion.clippingBounds.y) / height) * 100;
+  return {
+    opacity: state.opacity,
+    transform: `translate(${(state.translateXPx / width) * 100}%, ${(state.translateYPx / height) * 100}%) scale(${state.scale * cropScale})`,
+    transformOrigin: `${originX}% ${originY}%`,
+    overflow: "hidden" as const,
+    animated: state.animated,
+    reducedMotion,
+  };
+}
+
+function transitionCoverageAt(
+  layer: CompositionTransitionVisualLayer,
+  timeSec: number,
+): number {
+  const { fadeIn, fadeOut } = layer.windows;
+  if (timeSec <= fadeIn.endSec) {
+    const duration = Math.max(0.000_001, fadeIn.endSec - fadeIn.startSec);
+    return Math.max(0, Math.min(1, 1 - (timeSec - fadeIn.startSec) / duration));
+  }
+  if (timeSec >= fadeOut.startSec) {
+    const duration = Math.max(0.000_001, fadeOut.endSec - fadeOut.startSec);
+    return Math.max(0, Math.min(1, (timeSec - fadeOut.startSec) / duration));
+  }
+  return 0;
+}
+
+export function plannedCompositionTransitionState(
+  layer: CompositionTransitionVisualLayer,
+  editedTimeSec: number,
+  reducedMotion: boolean,
+) {
+  if (reducedMotion) {
+    return {
+      family: layer.effect.family,
+      active: false,
+      reducedMotion: true,
+      overlayOpacity: 0,
+      overlayClipPath: "none",
+      mediaTransform: "none",
+    };
+  }
+  const coverage = transitionCoverageAt(layer, editedTimeSec);
+  const progress = 1 - coverage;
+  let overlayOpacity = 0;
+  let overlayClipPath = "none";
+  let mediaTransform = "none";
+  if (layer.effect.family === "fade" || layer.effect.family === "cross-dissolve") {
+    overlayOpacity = coverage;
+  } else if (layer.effect.family === "wipe") {
+    overlayOpacity = coverage > 0 ? 1 : 0;
+    const hiddenPct = progress * 100;
+    overlayClipPath = layer.effect.direction === "left"
+      ? `inset(0 0 0 ${hiddenPct}%)`
+      : layer.effect.direction === "right"
+        ? `inset(0 ${hiddenPct}% 0 0)`
+        : layer.effect.direction === "up"
+          ? `inset(${hiddenPct}% 0 0 0)`
+          : `inset(0 0 ${hiddenPct}% 0)`;
+  } else if (layer.effect.family === "slide") {
+    const amount = coverage * 100;
+    const x = layer.effect.direction === "left"
+      ? amount
+      : layer.effect.direction === "right"
+        ? -amount
+        : 0;
+    const y = layer.effect.direction === "up"
+      ? amount
+      : layer.effect.direction === "down"
+        ? -amount
+        : 0;
+    mediaTransform = `translate(${x}%, ${y}%)`;
+  } else {
+    const from = layer.effect.direction === "in" ? 0.88 : 1.12;
+    mediaTransform = `scale(${from + (1 - from) * progress})`;
+  }
+  return {
+    family: layer.effect.family,
+    active: coverage > 0,
+    reducedMotion: false,
+    overlayOpacity,
+    overlayClipPath,
+    mediaTransform,
+  };
+}
+
 export function plannedCompositionUsesStackedStage(
   preview: ReturnType<typeof adoptCompositionPreview>,
 ): boolean {
@@ -402,6 +737,20 @@ function assertLayerGeometry(
       throw new Error("invalid_clip_composition_source_crop");
     }
   }
+  if (
+		(layer.kind === "broll-media" || layer.kind === "inserted-scene") &&
+    layer.motion
+  ) {
+    if (
+      layer.motion.clippingBounds.x !== layer.destination.x ||
+      layer.motion.clippingBounds.y !== layer.destination.y ||
+      layer.motion.clippingBounds.width !== layer.destination.width ||
+      layer.motion.clippingBounds.height !== layer.destination.height
+    ) {
+      throw new Error("invalid_clip_composition_motion");
+    }
+    plannedCompositionMotionStyle(layer.motion, layer.motion.activeRange.startSec, true);
+  }
 }
 
 function assertVisualLayers(
@@ -425,6 +774,13 @@ function assertVisualLayers(
       layer.zIndex < previousZIndex
     ) {
       throw new Error("invalid_clip_composition_visual_layers");
+    }
+    if (
+      layer.kind === "transition" &&
+      (layer.effect.canvas.width !== canvas.width ||
+        layer.effect.canvas.height !== canvas.height)
+    ) {
+      throw new Error("invalid_clip_composition_transition_geometry");
     }
     previousZIndex = layer.zIndex;
   }

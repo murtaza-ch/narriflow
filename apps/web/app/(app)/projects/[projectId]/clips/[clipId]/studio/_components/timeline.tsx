@@ -62,6 +62,7 @@ import {
 } from "./word-chips";
 import { labelForTimelineSegment } from "./subtitle-lines";
 import { manualBrollPreviewWindow } from "./broll-preview";
+import { buildBrollTimelineCutaways } from "./broll-timeline-model";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -1838,6 +1839,9 @@ export function Timeline() {
     clipInfo,
     brollUrl,
     brollPreviewAsset,
+		brollPlacements,
+		selectedBrollPlacementId,
+		setSelectedBrollPlacementId,
     sceneBlocks,
     baseEditedToComposite,
 		baseEditedRangeToComposite,
@@ -1862,7 +1866,7 @@ export function Timeline() {
     [activeBrollAsset?.durationSec, baseDuration, brollUrl],
   );
   const automaticBrollCutaways = useMemo(() => {
-    if (brollUrl) return [];
+		if (brollUrl || brollPlacements.length > 0) return [];
     const fallbackQuery =
       clipInfo.brollCues[0]?.query.trim() ||
       brollQueryForClip(clipInfo.title, null);
@@ -1871,10 +1875,18 @@ export function Timeline() {
       clipInfo.brollCues,
       fallbackQuery,
     );
-  }, [baseDuration, brollUrl, clipInfo.brollCues, clipInfo.title]);
-	const brollTimelineCutaways = manualBrollWindow
-    ? [{ ...manualBrollWindow, query: "Selected stock clip", manual: true }]
-    : automaticBrollCutaways.map((cutaway) => ({ ...cutaway, manual: false }));
+	}, [
+		baseDuration,
+		brollPlacements.length,
+		brollUrl,
+		clipInfo.brollCues,
+		clipInfo.title,
+	]);
+	const brollTimelineCutaways = buildBrollTimelineCutaways({
+		placements: brollPlacements,
+		manualWindow: manualBrollWindow,
+		automatic: automaticBrollCutaways,
+	});
 	const brollTimelineFragments = brollTimelineCutaways.flatMap((cutaway, cutawayIndex) =>
 		baseEditedRangeToComposite(cutaway.startSec, cutaway.endSec).map((range, rangeIndex) => ({
 			...cutaway,
@@ -1882,7 +1894,7 @@ export function Timeline() {
 			baseEndSec: range.baseEndSec,
 			compositeStartSec: range.startSec,
 			compositeEndSec: range.endSec,
-			renderId: `${cutawayIndex}:${rangeIndex}`,
+			renderId: `${cutaway.placementId ?? cutawayIndex}:${rangeIndex}`,
 		})));
 	const hasBrollLane = brollTimelineFragments.length > 0;
 
@@ -2558,6 +2570,9 @@ export function Timeline() {
               >
 				{brollTimelineFragments.map((cutaway, index) => {
 					const left = cutaway.compositeStartSec * TIMELINE_PX_PER_SEC;
+					const selected =
+						cutaway.placementId !== null &&
+						cutaway.placementId === selectedBrollPlacementId;
                   const width = Math.max(
                     2,
 							(cutaway.compositeEndSec - cutaway.compositeStartSec) * TIMELINE_PX_PER_SEC,
@@ -2567,6 +2582,7 @@ export function Timeline() {
                     <Flex
 							key={cutaway.renderId}
                       as="button"
+							aria-pressed={cutaway.placementId ? selected : undefined}
 							aria-label={`${cutaway.manual ? "B-roll" : `Automatic B-roll ${index + 1}`}, ${formatTimecode(cutaway.baseStartSec)} to ${formatTimecode(cutaway.baseEndSec)}`}
                       title={cutaway.query}
                       position="absolute"
@@ -2579,16 +2595,17 @@ export function Timeline() {
                       minW="0"
                       overflow="hidden"
                       borderRadius="l1"
-                      bg={cutaway.manual ? "studio.accent/18" : "studio.raised"}
+							bg={selected ? "studio.accent/28" : cutaway.manual ? "studio.accent/18" : "studio.raised"}
                       borderWidth="1px"
                       borderStyle={cutaway.manual ? "solid" : "dashed"}
-                      borderColor={cutaway.manual ? "studio.accent" : "studio.borderStrong"}
+							borderColor={selected || cutaway.manual ? "studio.accent" : "studio.borderStrong"}
                       color={cutaway.manual ? "studio.accentFg" : "studio.fgMuted"}
                       cursor="pointer"
                       _hover={{ borderColor: "studio.accent", color: "studio.accentFg" }}
                       transition="border-color 120ms ease, color 120ms ease"
                       onClick={(event) => {
                         event.stopPropagation();
+								setSelectedBrollPlacementId(cutaway.placementId);
 								seekTo(cutaway.compositeStartSec);
                       }}
                     >
@@ -2783,7 +2800,7 @@ export function Timeline() {
           ) : null}
           {hasBrollLane ? (
             <TimelineLaneLabel
-              label={brollUrl ? "B-ROLL" : "AUTO"}
+				label={brollUrl || brollPlacements.length > 0 ? "B-ROLL" : "AUTO"}
               top={brollTrackTop}
               height={BROLL_TRACK_HEIGHT}
             />

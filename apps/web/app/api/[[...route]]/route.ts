@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { handle } from "hono/vercel";
 import {
   authenticatedHonoActor,
@@ -52,9 +52,21 @@ import {
   resolvePricingTier,
   type CreateExportBundleInput,
   type CreateReviewRoundInput,
+  type InternalReviewCommentInput,
   type ApplySceneTemplateInput,
+  type ApplyMotionSelectedInput,
+  type ApplyProjectBrandProfileSelectedInput,
+  type ApplyStyleSelectedInput,
+  type PreviewCampaignEditorActionInput,
+  type GenerateAssistedCopyRequest,
+  type ConfirmAssistedCopyRequest,
+  type ListAssistedCopyRequest,
+  type ListThumbnailExtractionsInput,
+  type RequestThumbnailExtractionInput,
+  type BulkScheduleRequest,
   type EditorDocument,
   type SceneBlock,
+  reviewIdempotencyKeySchema,
 } from "@narriflow/validators";
 import {
   audioAssetService,
@@ -103,6 +115,11 @@ import {
   CampaignOperationError,
   reviewService,
   ReviewServiceError,
+  createProductionReviewNotificationDelivery,
+  ReviewApprovalRequiredError,
+  ReviewOverrideForbiddenError,
+  ReviewApprovalOverrideConflictError,
+  ReviewApprovalTargetError,
   visualAssetService,
   VisualAssetIntegrityError,
   brandFontService,
@@ -110,6 +127,14 @@ import {
   ProgramWriteDisabledError,
   hasFeature,
   isProgramWriteEnabled,
+  AssistedCopyError,
+  AssistedCopyProviderConfigurationError,
+  createProductionAssistedCopyService,
+  ThumbnailExtractionError,
+  createProductionThumbnailExtractionService,
+  BulkSchedulingError,
+  createProductionBulkSchedulingRuntime,
+  getGeneratedMediaStudioService,
 } from "@narriflow/services";
 import {
   resolveCanonicalAppOrigin,
@@ -120,13 +145,47 @@ import { createStripeWebhookHttpRoutes } from "./stripe-webhook-http";
 import { createWorkspaceBillingHttpRoutes } from "./workspace-billing-routes";
 import { clipEditorPersistenceHttpError } from "./editor-persistence-http";
 import { clipDeleteHttpError } from "./clip-delete-http";
+import {
+  editorDocumentFeatureMutationError,
+  studioMotionPatchFeatureError,
+} from "./editor-document-feature-policy";
 import { createBrandProfileRoutes } from "./brand-profile-routes";
+import { createGeneratedMediaStudioRoutes } from "./generated-media-http";
 
 export const runtime = "nodejs";
 // Content-suite generation makes a synchronous LLM call that can take ~30s.
 export const maxDuration = 60;
 
 const app = new Hono().basePath("/api");
+
+function reviewDeliveryRuntime(requestUrl: string) {
+  const accessSecret = process.env.REVIEW_ACCESS_SECRET?.trim();
+  const dataSecret = process.env.REVIEW_SESSION_SECRET?.trim();
+  if (
+    !accessSecret ||
+    accessSecret.length < 32 ||
+    !dataSecret ||
+    dataSecret.length < 32
+  ) {
+    throw new ReviewServiceError(
+      "review_delivery_configuration_invalid",
+      "Review delivery is not configured",
+    );
+  }
+  const appBaseUrl = resolveCanonicalAppOrigin({
+    configuredOrigin: process.env.NEXT_PUBLIC_APP_URL,
+    environment: process.env.NODE_ENV,
+    requestUrl,
+  });
+  return {
+    secrets: { accessSecret, dataSecret },
+    delivery: createProductionReviewNotificationDelivery({
+      appBaseUrl,
+      accessSecret,
+      dataSecret,
+    }),
+  };
+}
 
 function sceneDocumentMutationError(pricingTier: string, current: EditorDocument, next: EditorDocument) {
   const currentById = new Map(current.sceneBlocks.map((scene) => [scene.id, scene]));
@@ -238,6 +297,15 @@ app.route(
   }),
 );
 
+app.route(
+  "/",
+  createGeneratedMediaStudioRoutes({
+    getActor: (context) => authenticatedHonoActor(context),
+    getInput: (context) => authenticatedHonoInput(context),
+    getService: getGeneratedMediaStudioService,
+  }),
+);
+
 function errorMessage(error: unknown) {
   if (
     !error ||
@@ -256,6 +324,33 @@ function socialPublicationErrorStatus(error: SocialPublicationRecoveryError) {
   if (error.code === "social_publication_not_found") return 404 as const;
   if (error.code === "social_publication_reference_invalid") return 400 as const;
   return 409 as const;
+}
+
+function publishingPreparationError(c: Context, error: unknown) {
+  if (error instanceof ProgramWriteDisabledError) {
+    return c.json({ error: error.code, message: error.message }, 503);
+  }
+  const code =
+    error instanceof AssistedCopyError ||
+    error instanceof ThumbnailExtractionError ||
+    error instanceof BulkSchedulingError ||
+    error instanceof AssistedCopyProviderConfigurationError
+      ? error.code
+      : "publishing_preparation_failed";
+  const message =
+    error instanceof Error
+      ? error.message
+      : "The publishing preparation request could not be completed";
+  const status = code.includes("not_found")
+    ? 404
+    : code.includes("conflict") || code.includes("in_progress")
+      ? 409
+      : code.includes("feature_unavailable") || code.includes("forbidden")
+        ? 403
+        : code.includes("unconfigured") || code.includes("configuration")
+          ? 503
+          : 400;
+  return c.json({ error: code, message }, status);
 }
 
 function getOAuthOrigin(requestUrl: string) {
@@ -919,6 +1014,23 @@ app.patch("/projects/:id/clips/:clipId", async (c) => {
         ? updateClipStudioEditsSchema.safeParse(payload)
         : null;
     if (studioEditsParsed?.success) {
+      const current = await clipService.getClipEditorDocument(
+        appUser.workspaceOwnerUserId,
+        projectId,
+        clipId,
+      );
+      const featureError = editorDocumentFeatureMutationError(
+        appUser.pricingTier,
+        current.document,
+        {
+          ...current.document,
+          studioEdits: studioEditsParsed.data.studioEdits,
+        },
+      );
+      if (featureError) return c.json(
+        { error: featureError.error, message: featureError.message },
+        featureError.status,
+      );
       await clipEditorDocumentPersistence.mutateDocument({
         actorUserId: appUser.actorUserId,
         projectId,
@@ -1168,6 +1280,15 @@ app.put("/projects/:id/clips/:clipId/editor", async (c) => {
       projectId,
       c.req.param("clipId"),
     );
+    const featureError = editorDocumentFeatureMutationError(
+      appUser.pricingTier,
+      current.document,
+      parsed.data.document,
+    );
+    if (featureError) return c.json(
+      { error: featureError.error, message: featureError.message },
+      featureError.status,
+    );
     const sceneError = sceneDocumentMutationError(appUser.pricingTier, current.document, parsed.data.document);
     if (sceneError) return c.json({ error: sceneError.error, message: sceneError.message }, sceneError.status);
     const changedScenes = changedSceneBlocks(current.document, parsed.data.document);
@@ -1255,6 +1376,15 @@ app.post("/projects/:id/clips/:clipId/editor/reset", async (c) => {
 
   try {
     const current = await clipService.getClipEditorDocument(appUser.workspaceOwnerUserId, projectId, c.req.param("clipId"));
+    const featureError = editorDocumentFeatureMutationError(
+      appUser.pricingTier,
+      current.document,
+      current.original,
+    );
+    if (featureError) return c.json(
+      { error: featureError.error, message: featureError.message },
+      featureError.status,
+    );
     const sceneError = sceneDocumentMutationError(appUser.pricingTier, current.document, current.original);
     if (sceneError) return c.json({ error: sceneError.error, message: sceneError.message }, sceneError.status);
     const mutation = await clipEditorDocumentPersistence.mutateDocument({
@@ -1405,6 +1535,13 @@ app.post("/projects/:id/clips/render", async (c) => {
       : await execute();
     return c.json(result, 202);
   } catch (error) {
+    if (
+      error instanceof ClipActionError &&
+      (error.code === "auto_censor_feature_unavailable" ||
+        error.code === "motion_feature_unavailable")
+    ) {
+      return c.json({ error: error.code, message: error.message }, 403);
+    }
     return c.json(
       { error: "clip_render_failed", message: errorMessage(error) },
       400,
@@ -1436,6 +1573,469 @@ app.get("/projects/:id/campaign-operations", async (c) => {
   const appUser = authenticatedHonoActor(c);
   const projectId = c.req.param("id");
   return c.json({ operations: await campaignOperationService.listOperations({ workspaceId: appUser.workspaceId, projectId }) }, 200);
+});
+
+app.get("/projects/:id/campaign-operations/editor-action-catalog", async (c) => {
+  const appUser = authenticatedHonoActor(c);
+  const projectId = c.req.param("id");
+  try {
+    return c.json(
+      await campaignOperationService.getEditorActionCatalog({
+        actorUserId: appUser.actorUserId,
+        workspaceId: appUser.workspaceId,
+        workspaceOwnerUserId: appUser.workspaceOwnerUserId,
+        role: appUser.role,
+        status: appUser.status,
+        pricingTier: appUser.pricingTier,
+        isPersonalWorkspace: appUser.isPersonalWorkspace,
+        projectId,
+      }),
+      200,
+    );
+  } catch (error) {
+    const code =
+      error instanceof CampaignOperationError
+        ? error.code
+        : "campaign_editor_catalog_failed";
+    return c.json(
+      {
+        error: code,
+        message:
+          error instanceof CampaignOperationError
+            ? error.message
+            : "Campaign editor actions could not be loaded",
+      },
+      code.includes("forbidden") ? 403 : code.includes("not_found") ? 404 : 400,
+    );
+  }
+});
+
+app.post("/projects/:id/campaign-operations/preview-editor-action", async (c) => {
+  const appUser = authenticatedHonoActor(c);
+  const { id: projectId, body } = authenticatedHonoInput<{
+    id: string;
+    body: PreviewCampaignEditorActionInput;
+  }>(c);
+  try {
+    return c.json(
+      await campaignOperationService.previewEditorAction(
+        {
+          actorUserId: appUser.actorUserId,
+          workspaceId: appUser.workspaceId,
+          workspaceOwnerUserId: appUser.workspaceOwnerUserId,
+          role: appUser.role,
+          status: appUser.status,
+          pricingTier: appUser.pricingTier,
+          isPersonalWorkspace: appUser.isPersonalWorkspace,
+          projectId,
+        },
+        body,
+      ),
+      200,
+    );
+  } catch (error) {
+    const code =
+      error instanceof CampaignOperationError
+        ? error.code
+        : "campaign_editor_preview_failed";
+    return c.json(
+      {
+        error: code,
+        message:
+          error instanceof CampaignOperationError
+            ? error.message
+            : "The campaign action preview could not be completed",
+      },
+      code.includes("stale") ? 409 : code.includes("forbidden") ? 403 : 400,
+    );
+  }
+});
+
+app.post("/projects/:id/campaign-operations/apply-brand-profile", async (c) => {
+  const appUser = authenticatedHonoActor(c);
+  const { id: projectId, body } = authenticatedHonoInput<{
+    id: string;
+    body: ApplyProjectBrandProfileSelectedInput;
+  }>(c);
+  const idempotencyKey = c.req.header("idempotency-key")?.trim() ?? "";
+  if (!idempotencyKey || idempotencyKey.length > 128) {
+    return c.json(
+      { error: "invalid_input", message: "Invalid idempotency-key header" },
+      400,
+    );
+  }
+  try {
+    return c.json(
+      await campaignOperationService.applyProjectBrandProfileSelected(
+        {
+          actorUserId: appUser.actorUserId,
+          workspaceId: appUser.workspaceId,
+          workspaceOwnerUserId: appUser.workspaceOwnerUserId,
+          role: appUser.role,
+          status: appUser.status,
+          pricingTier: appUser.pricingTier,
+          isPersonalWorkspace: appUser.isPersonalWorkspace,
+          projectId,
+          idempotencyKey,
+        },
+        body,
+      ),
+      200,
+    );
+  } catch (error) {
+    if (error instanceof ProgramWriteDisabledError) {
+      return c.json({ error: error.code, message: error.message }, 503);
+    }
+    const code =
+      error instanceof CampaignOperationError
+        ? error.code
+        : "campaign_brand_profile_apply_failed";
+    return c.json(
+      {
+        error: code,
+        message:
+          error instanceof CampaignOperationError
+            ? error.message
+            : "The Project Brand Profile could not be applied",
+      },
+      code.includes("stale") || code.includes("conflict")
+        ? 409
+        : code.includes("forbidden") || code.includes("feature_unavailable")
+          ? 403
+          : 400,
+    );
+  }
+});
+
+app.post("/projects/:id/campaign-operations/apply-style", async (c) => {
+  const appUser = authenticatedHonoActor(c);
+  const { id: projectId, body } = authenticatedHonoInput<{
+    id: string;
+    body: ApplyStyleSelectedInput;
+  }>(c);
+  const idempotencyKey = c.req.header("idempotency-key")?.trim() ?? "";
+  if (!idempotencyKey || idempotencyKey.length > 128) {
+    return c.json(
+      { error: "invalid_input", message: "Invalid idempotency-key header" },
+      400,
+    );
+  }
+  try {
+    return c.json(
+      await campaignOperationService.applyStyleSelected(
+        {
+          actorUserId: appUser.actorUserId,
+          workspaceId: appUser.workspaceId,
+          workspaceOwnerUserId: appUser.workspaceOwnerUserId,
+          role: appUser.role,
+          status: appUser.status,
+          pricingTier: appUser.pricingTier,
+          isPersonalWorkspace: appUser.isPersonalWorkspace,
+          projectId,
+          idempotencyKey,
+        },
+        body,
+      ),
+      200,
+    );
+  } catch (error) {
+    if (error instanceof ProgramWriteDisabledError) {
+      return c.json({ error: error.code, message: error.message }, 503);
+    }
+    const code =
+      error instanceof CampaignOperationError
+        ? error.code
+        : "campaign_style_apply_failed";
+    return c.json(
+      {
+        error: code,
+        message:
+          error instanceof CampaignOperationError
+            ? error.message
+            : "The style preset could not be applied",
+      },
+      code.includes("stale") || code.includes("conflict")
+        ? 409
+        : code.includes("forbidden") || code.includes("feature_unavailable")
+          ? 403
+          : 400,
+    );
+  }
+});
+
+app.post("/projects/:id/campaign-operations/apply-motion", async (c) => {
+  const appUser = authenticatedHonoActor(c);
+  const { id: projectId, body } = authenticatedHonoInput<{
+    id: string;
+    body: ApplyMotionSelectedInput;
+  }>(c);
+  const idempotencyKey = c.req.header("idempotency-key")?.trim() ?? "";
+  if (!idempotencyKey || idempotencyKey.length > 128) {
+    return c.json(
+      { error: "invalid_input", message: "Invalid idempotency-key header" },
+      400,
+    );
+  }
+  try {
+    const result = await campaignOperationService.applyMotionSelected(
+      {
+        actorUserId: appUser.actorUserId,
+        workspaceId: appUser.workspaceId,
+        projectId,
+        pricingTier: resolvePricingTier(appUser.pricingTier),
+        role: appUser.role,
+        status: appUser.status,
+        idempotencyKey,
+      },
+      body,
+    );
+    return c.json(result, 200);
+  } catch (error) {
+    if (error instanceof ProgramWriteDisabledError) {
+      return c.json({ error: error.code, message: error.message }, 503);
+    }
+    const code =
+      error instanceof CampaignOperationError
+        ? error.code
+        : "campaign_motion_apply_failed";
+    const status = code.includes("conflict")
+      ? 409
+      : code.includes("forbidden") || code.includes("feature_unavailable")
+        ? 403
+        : 400;
+    return c.json(
+      {
+        error: code,
+        message:
+          error instanceof CampaignOperationError
+            ? error.message
+            : "Motion could not be applied to the selected clips",
+      },
+      status,
+    );
+  }
+});
+
+app.post("/projects/:id/assisted-copy", async (c) => {
+  const actor = authenticatedHonoActor(c);
+  const { id: projectId, body } = authenticatedHonoInput<{
+    id: string;
+    body: GenerateAssistedCopyRequest;
+  }>(c);
+  try {
+    const result = await createProductionAssistedCopyService().generate(
+      {
+        actorUserId: actor.actorUserId,
+        workspaceId: actor.workspaceId,
+        projectId,
+      },
+      body,
+    );
+    return c.json(result, result.replayed ? 200 : 201);
+  } catch (error) {
+    return publishingPreparationError(c, error);
+  }
+});
+
+app.get("/projects/:id/assisted-copy", async (c) => {
+  const actor = authenticatedHonoActor(c);
+  const { id: projectId, platform } = authenticatedHonoInput<
+    { id: string } & ListAssistedCopyRequest
+  >(c);
+  try {
+    return c.json(
+      {
+        drafts: await createProductionAssistedCopyService().listLatest(
+          {
+            actorUserId: actor.actorUserId,
+            workspaceId: actor.workspaceId,
+            projectId,
+          },
+          platform,
+        ),
+      },
+      200,
+    );
+  } catch (error) {
+    return publishingPreparationError(c, error);
+  }
+});
+
+app.get("/projects/:id/assisted-copy/:draftId", async (c) => {
+  const actor = authenticatedHonoActor(c);
+  const { id: projectId, draftId } = authenticatedHonoInput<{
+    id: string;
+    draftId: string;
+  }>(c);
+  try {
+    return c.json(
+      await createProductionAssistedCopyService().get(
+        {
+          actorUserId: actor.actorUserId,
+          workspaceId: actor.workspaceId,
+          projectId,
+        },
+        draftId,
+      ),
+      200,
+    );
+  } catch (error) {
+    return publishingPreparationError(c, error);
+  }
+});
+
+app.post("/projects/:id/assisted-copy/:draftId/confirm", async (c) => {
+  const actor = authenticatedHonoActor(c);
+  const { id: projectId, draftId, body } = authenticatedHonoInput<{
+    id: string;
+    draftId: string;
+    body: ConfirmAssistedCopyRequest;
+  }>(c);
+  try {
+    return c.json(
+      await createProductionAssistedCopyService().confirm(
+        {
+          actorUserId: actor.actorUserId,
+          workspaceId: actor.workspaceId,
+          projectId,
+        },
+        draftId,
+        body,
+      ),
+      200,
+    );
+  } catch (error) {
+    return publishingPreparationError(c, error);
+  }
+});
+
+function thumbnailExtractionApiRuntime() {
+  return createProductionThumbnailExtractionService({
+    async extract() {
+      throw new ThumbnailExtractionError(
+        "thumbnail_worker_required",
+        "Thumbnail extraction must run in the media worker",
+      );
+    },
+  });
+}
+
+app.post("/projects/:id/thumbnail-extractions", async (c) => {
+  const actor = authenticatedHonoActor(c);
+  const { id: projectId, body } = authenticatedHonoInput<{
+    id: string;
+    body: RequestThumbnailExtractionInput;
+  }>(c);
+  try {
+    const result = await thumbnailExtractionApiRuntime().request(
+      {
+        actorUserId: actor.actorUserId,
+        workspaceId: actor.workspaceId,
+        projectId,
+      },
+      body,
+    );
+    return c.json(result, 202);
+  } catch (error) {
+    return publishingPreparationError(c, error);
+  }
+});
+
+app.get("/projects/:id/thumbnail-extractions", async (c) => {
+  const actor = authenticatedHonoActor(c);
+  const { id: projectId, platform, exportVariantIds } =
+    authenticatedHonoInput<
+      { id: string } & ListThumbnailExtractionsInput
+    >(c);
+  try {
+    return c.json(
+      {
+        jobs: await thumbnailExtractionApiRuntime().listLatest(
+          {
+            actorUserId: actor.actorUserId,
+            workspaceId: actor.workspaceId,
+            projectId,
+          },
+          { platform, exportVariantIds },
+        ),
+      },
+      200,
+    );
+  } catch (error) {
+    return publishingPreparationError(c, error);
+  }
+});
+
+app.get("/projects/:id/thumbnail-extractions/:jobId", async (c) => {
+  const actor = authenticatedHonoActor(c);
+  const { id: projectId, jobId } = authenticatedHonoInput<{
+    id: string;
+    jobId: string;
+  }>(c);
+  try {
+    return c.json(
+      await thumbnailExtractionApiRuntime().get(
+        {
+          actorUserId: actor.actorUserId,
+          workspaceId: actor.workspaceId,
+          projectId,
+        },
+        jobId,
+      ),
+      200,
+    );
+  } catch (error) {
+    return publishingPreparationError(c, error);
+  }
+});
+
+app.post("/projects/:id/thumbnail-extractions/:jobId/retry", async (c) => {
+  const actor = authenticatedHonoActor(c);
+  const { id: projectId, jobId } = authenticatedHonoInput<{
+    id: string;
+    jobId: string;
+  }>(c);
+  try {
+    return c.json(
+      await thumbnailExtractionApiRuntime().retry(
+        {
+          actorUserId: actor.actorUserId,
+          workspaceId: actor.workspaceId,
+          projectId,
+        },
+        jobId,
+      ),
+      202,
+    );
+  } catch (error) {
+    return publishingPreparationError(c, error);
+  }
+});
+
+app.post("/projects/:id/bulk-schedules", async (c) => {
+  const actor = authenticatedHonoActor(c);
+  const { id: projectId, body } = authenticatedHonoInput<{
+    id: string;
+    body: BulkScheduleRequest;
+  }>(c);
+  try {
+    const result = await createProductionBulkSchedulingRuntime().schedule(
+      {
+        actorUserId: actor.actorUserId,
+        ownerUserId: actor.workspaceOwnerUserId,
+        workspaceId: actor.workspaceId,
+        projectId,
+        approvalPrincipal: {
+          kind: "browser",
+          actorUserId: actor.actorUserId,
+        },
+      },
+      body,
+    );
+    return c.json(result, result.replayed ? 200 : 201);
+  } catch (error) {
+    return publishingPreparationError(c, error);
+  }
 });
 
 app.get("/projects/:id/export-bundles/:bundleId", async (c) => {
@@ -1523,14 +2123,269 @@ app.post("/projects/:id/brand-profiles/:profileId/scene-templates/:templateId/ap
 app.post("/projects/:id/review-rounds", async (c) => {
   const appUser = authenticatedHonoActor(c);
   const { id, body } = authenticatedHonoInput<{ id: string; body: CreateReviewRoundInput }>(c);
+  const idempotencyKey = reviewIdempotencyKeySchema.safeParse(
+    c.req.header("idempotency-key")?.trim(),
+  );
+  if (!idempotencyKey.success) {
+    return c.json(
+      { error: "invalid_input", message: "Invalid idempotency-key header" },
+      400,
+    );
+  }
   try {
-    return c.json(await reviewService.createRound({ actorUserId: appUser.actorUserId, workspaceId: appUser.workspaceId, projectId: id, pricingTier: resolvePricingTier(appUser.pricingTier) }, body), 201);
+    const runtime = reviewDeliveryRuntime(c.req.url);
+    const created = await reviewService.createRound(
+      {
+        actorUserId: appUser.actorUserId,
+        workspaceId: appUser.workspaceId,
+        projectId: id,
+        pricingTier: resolvePricingTier(appUser.pricingTier),
+        idempotencyKey: idempotencyKey.data,
+      },
+      body,
+      runtime.secrets,
+    );
+    const delivery = await Promise.all(
+      created.notificationIds.map((notificationId) =>
+        runtime.delivery.deliver(notificationId),
+      ),
+    );
+    return c.json({ ...created, delivery }, 201);
   } catch (error) {
     if (error instanceof ProgramWriteDisabledError) return c.json({ error: error.code, message: error.message }, 503);
     const code = error instanceof ReviewServiceError ? error.code : "review_round_create_failed";
-    return c.json({ error: code, message: error instanceof ReviewServiceError ? error.message : "Review round could not be created" }, code.includes("stale") ? 409 : code.includes("not_found") ? 404 : 400);
+    return c.json({ error: code, message: error instanceof ReviewServiceError ? error.message : "Review round could not be created" }, code.includes("stale") || code.includes("superseded") || code.includes("conflict") ? 409 : code.includes("not_found") ? 404 : 400);
   }
 });
+
+app.get("/projects/:id/review-rounds", async (c) => {
+  const appUser = authenticatedHonoActor(c);
+  const { id } = authenticatedHonoInput<{ id: string }>(c);
+  try {
+    const runtime = reviewDeliveryRuntime(c.req.url);
+    return c.json(
+      await reviewService.internalWorkspaceView(
+        appUser.workspaceId,
+        id,
+        runtime.secrets.dataSecret,
+      ),
+      200,
+    );
+  } catch (error) {
+    const code =
+      error instanceof ReviewServiceError
+        ? error.code
+        : "review_rounds_read_failed";
+    return c.json(
+      {
+        error: code,
+        message:
+          error instanceof ReviewServiceError
+            ? error.message
+            : "Review rounds could not be loaded",
+      },
+      code.includes("not_found") ? 404 : 400,
+    );
+  }
+});
+
+app.post("/projects/:id/review-rounds/:roundId/comments", async (c) => {
+  const appUser = authenticatedHonoActor(c);
+  const { id, roundId, body } = authenticatedHonoInput<{
+    id: string;
+    roundId: string;
+    body: InternalReviewCommentInput;
+  }>(c);
+  try {
+    const runtime = reviewDeliveryRuntime(c.req.url);
+    const result = await reviewService.addInternalComment(
+      {
+        actorUserId: appUser.actorUserId,
+        workspaceId: appUser.workspaceId,
+        projectId: id,
+      },
+      roundId,
+      body,
+    );
+    const delivery = await Promise.all(
+      result.notificationIds.map((notificationId) =>
+        runtime.delivery.deliver(notificationId),
+      ),
+    );
+    return c.json({ ...result, delivery }, 201);
+  } catch (error) {
+    const code =
+      error instanceof ReviewServiceError
+        ? error.code
+        : "review_comment_create_failed";
+    return c.json(
+      {
+        error: code,
+        message:
+          error instanceof ReviewServiceError
+            ? error.message
+            : "Review comment could not be created",
+      },
+      code.includes("temporarily_unavailable")
+        ? 503
+        : code.includes("closed")
+          ? 409
+          : code.includes("not_found")
+            ? 404
+            : 400,
+    );
+  }
+});
+
+async function updateReviewCommentResolution(c: Context, resolved: boolean) {
+  const appUser = authenticatedHonoActor(c);
+  const { id, roundId, commentId } = authenticatedHonoInput<{
+    id: string;
+    roundId: string;
+    commentId: string;
+  }>(c);
+  try {
+    return c.json(
+      await reviewService.resolveComment(
+        {
+          actorUserId: appUser.actorUserId,
+          workspaceId: appUser.workspaceId,
+          projectId: id,
+        },
+        roundId,
+        commentId,
+        resolved,
+      ),
+      200,
+    );
+  } catch (error) {
+    const code =
+      error instanceof ReviewServiceError
+        ? error.code
+        : "review_comment_update_failed";
+    return c.json(
+      {
+        error: code,
+        message:
+          error instanceof ReviewServiceError
+            ? error.message
+            : "Review comment could not be updated",
+      },
+      code.includes("not_found") ? 404 : 400,
+    );
+  }
+}
+
+app.post(
+  "/projects/:id/review-rounds/:roundId/comments/:commentId/resolve",
+  (c) => updateReviewCommentResolution(c, true),
+);
+app.post(
+  "/projects/:id/review-rounds/:roundId/comments/:commentId/reopen",
+  (c) => updateReviewCommentResolution(c, false),
+);
+
+app.post("/projects/:id/review-rounds/:roundId/resend", async (c) => {
+  const appUser = authenticatedHonoActor(c);
+  const { id, roundId, body } = authenticatedHonoInput<{
+    id: string;
+    roundId: string;
+    body: { idempotencyKey: string };
+  }>(c);
+  try {
+    const runtime = reviewDeliveryRuntime(c.req.url);
+    const result = await reviewService.resendRound(
+      {
+        actorUserId: appUser.actorUserId,
+        workspaceId: appUser.workspaceId,
+        projectId: id,
+      },
+      roundId,
+      body.idempotencyKey,
+    );
+    const delivery = await Promise.all(
+      result.notificationIds.map((notificationId) =>
+        runtime.delivery.deliver(notificationId),
+      ),
+    );
+    return c.json({ ...result, delivery }, 200);
+  } catch (error) {
+    const code =
+      error instanceof ReviewServiceError
+        ? error.code
+        : "review_round_resend_failed";
+    return c.json(
+      {
+        error: code,
+        message:
+          error instanceof ReviewServiceError
+            ? error.message
+            : "Review round could not be resent",
+      },
+      code.includes("temporarily_unavailable")
+        ? 503
+        : code.includes("closed")
+          ? 409
+          : code.includes("not_found")
+            ? 404
+            : 400,
+    );
+  }
+});
+
+app.post(
+  "/projects/:id/review-rounds/:roundId/notifications/:notificationId/retry",
+  async (c) => {
+    const appUser = authenticatedHonoActor(c);
+    const { id, roundId, notificationId, body } = authenticatedHonoInput<{
+      id: string;
+      roundId: string;
+      notificationId: string;
+      body: { idempotencyKey: string };
+    }>(c);
+    try {
+      const runtime = reviewDeliveryRuntime(c.req.url);
+      const result = await reviewService.retryNotification(
+        {
+          actorUserId: appUser.actorUserId,
+          workspaceId: appUser.workspaceId,
+          projectId: id,
+        },
+        roundId,
+        notificationId,
+        body.idempotencyKey,
+      );
+      return c.json(
+        {
+          ...result,
+          delivery: await runtime.delivery.deliver(result.notificationId),
+        },
+        200,
+      );
+    } catch (error) {
+      const code =
+        error instanceof ReviewServiceError
+          ? error.code
+          : "review_notification_retry_failed";
+      return c.json(
+        {
+          error: code,
+          message:
+            error instanceof ReviewServiceError
+              ? error.message
+              : "Review notification could not be retried",
+        },
+        code.includes("temporarily_unavailable")
+          ? 503
+          : code.includes("not_found")
+            ? 404
+            : code.includes("retryable")
+              ? 409
+              : 400,
+      );
+    }
+  },
+);
 
 app.post("/projects/:id/review-rounds/:roundId/revoke", async (c) => {
   const appUser = authenticatedHonoActor(c);
@@ -1577,9 +2432,12 @@ app.post("/projects/:id/clips/:clipId/exports", async (c) => {
     }
     if (error instanceof ClipExportError) {
       const unavailable = error.code === "scene_asset_unavailable" || error.code === "scene_font_unavailable";
+      const featureUnavailable =
+        error.code === "auto_censor_feature_unavailable" ||
+        error.code === "motion_feature_unavailable";
       return c.json(
         { error: error.code, message: errorMessage(error) },
-        unavailable ? 422 : 404,
+        featureUnavailable ? 403 : unavailable ? 422 : 404,
       );
     }
     console.warn(
@@ -1623,9 +2481,16 @@ app.post("/projects/:id/clips/:clipId/exports/:exportId/retry", async (c) => {
   } catch (error) {
     if (!(error instanceof ClipExportError)) throw error;
     const code = error.code;
+    const featureUnavailable =
+      code === "auto_censor_feature_unavailable" ||
+      code === "motion_feature_unavailable";
     return c.json(
       { error: code, message: error.message },
-      code === "scene_asset_unavailable" || code === "scene_font_unavailable" ? 422 : 400,
+      featureUnavailable
+        ? 403
+        : code === "scene_asset_unavailable" || code === "scene_font_unavailable"
+          ? 422
+          : 400,
     );
   }
 });
@@ -1714,6 +2579,14 @@ app.post("/projects/:id/clips/apply-studio-edits", async (c) => {
   if (!parsed.success) {
     return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
   }
+  const featureError = studioMotionPatchFeatureError(
+    appUser.pricingTier,
+    parsed.data.patches,
+  );
+  if (featureError) return c.json(
+    { error: featureError.error, message: featureError.message },
+    featureError.status,
+  );
   try {
     const result = await clipEditorDocumentPersistence.mutateProjectSelection({
       actorUserId: appUser.actorUserId,
@@ -2029,6 +2902,31 @@ app.post("/projects/:id/social-posts", async (c) => {
     );
     return c.json(post, 201);
   } catch (error) {
+    if (error instanceof ReviewApprovalRequiredError) {
+      return c.json(
+        {
+          error: error.code,
+          message: userErrorMessage(error.code),
+          items: error.items,
+        },
+        409,
+      );
+    }
+    if (error instanceof ReviewOverrideForbiddenError) {
+      return c.json(
+        { error: error.code, message: userErrorMessage(error.code) },
+        403,
+      );
+    }
+    if (
+      error instanceof ReviewApprovalOverrideConflictError ||
+      error instanceof ReviewApprovalTargetError
+    ) {
+      return c.json(
+        { error: error.code, message: userErrorMessage(error.code) },
+        409,
+      );
+    }
     if (
       error instanceof PublicationIntentConflictError ||
       error instanceof PublicationIntentStateError

@@ -261,6 +261,9 @@ enum AnalyticsEventType {
   campaign_scheduled
   generated_asset_completed
   generated_asset_inserted
+  assisted_copy_generated
+  assisted_copy_confirmed
+  thumbnail_prepared
   brand_profile_created
   brand_profile_applied
   visual_asset_upload_succeeded
@@ -284,6 +287,7 @@ enum VisualAssetKind {
 enum VisualAssetProvenance {
   uploaded
   generated
+  extracted
 }
 
 enum BrandProfileAssetRole {
@@ -309,69 +313,73 @@ enum BrandFontRole {
 }
 
 model Project {
-  id                      String                  @id @default(uuid()) @db.Uuid
-  title                   String
-  sourceMediaUrl          String
-  sourceType              SourceType              @default(upload)
-  sourceProvider          String?
-  sourceInput             String?
-  sourceStorageKey        String?
-  sourceMimeType          String?
-  sourceSizeBytes         BigInt?
-  sourceDurationSeconds   Int?
-  languageCode            String?
-  ingestStatus            IngestStatus            @default(pending)
-  ingestErrorCode         String?
-  ingestCompletedAt       DateTime?
-  userId                  String                  @db.Uuid
-  workspaceId             String                  @db.Uuid
-  createdByUserId         String?                 @db.Uuid
-  updatedByUserId         String?                 @db.Uuid
-  folderId                String?                 @db.Uuid
-  brandTemplateId         String?                 @db.Uuid
-  brandSnapshot           Json?
-  brandProfileId          String?                 @db.Uuid
-  brandProfileSnapshot    Json?
+  id                       String                    @id @default(uuid()) @db.Uuid
+  title                    String
+  sourceMediaUrl           String
+  sourceType               SourceType                @default(upload)
+  sourceProvider           String?
+  sourceInput              String?
+  sourceStorageKey         String?
+  sourceMimeType           String?
+  sourceSizeBytes          BigInt?
+  sourceDurationSeconds    Int?
+  languageCode             String?
+  ingestStatus             IngestStatus              @default(pending)
+  ingestErrorCode          String?
+  ingestCompletedAt        DateTime?
+  userId                   String                    @db.Uuid
+  workspaceId              String                    @db.Uuid
+  createdByUserId          String?                   @db.Uuid
+  updatedByUserId          String?                   @db.Uuid
+  folderId                 String?                   @db.Uuid
+  brandTemplateId          String?                   @db.Uuid
+  brandSnapshot            Json?
+  brandProfileId           String?                   @db.Uuid
+  brandProfileSnapshot     Json?
   // Client-minted commit token: concurrent Step-1 double-submits collapse in
   // the database, not the UI.
-  commitToken             String?                 @unique @db.Uuid
-  notifyOnComplete        Boolean                 @default(true)
-  retentionPolicyKey      String?
-  expiresAt               DateTime?
-  purgeStartedAt          DateTime?
-  purgeLeaseExpiresAt     DateTime?
-  purgeRetryAt            DateTime?
-  purgeAttemptCount       Int                     @default(0)
-  purgeDeletedObjectCount Int                     @default(0)
-  purgeDeletedBytes       BigInt                  @default(0)
-  purgeStorageVerifiedAt  DateTime?
-  purgeLastError          String?
+  commitToken              String?                   @unique @db.Uuid
+  notifyOnComplete         Boolean                   @default(true)
+  retentionPolicyKey       String?
+  expiresAt                DateTime?
+  purgeStartedAt           DateTime?
+  purgeLeaseExpiresAt      DateTime?
+  purgeRetryAt             DateTime?
+  purgeAttemptCount        Int                       @default(0)
+  purgeDeletedObjectCount  Int                       @default(0)
+  purgeDeletedBytes        BigInt                    @default(0)
+  purgeStorageVerifiedAt   DateTime?
+  purgeLastError           String?
   /// Monotonic allocator for WorkflowEvent.seq. Updated in the same
   /// transaction as lifecycle transitions and event insertion.
-  workflowEventSeq        Int                     @default(0)
-  createdAt               DateTime                @default(now())
-  updatedAt               DateTime                @updatedAt
-  contentPacks            ContentPack[]
-  ingestJobs              IngestJob[]
-  transcript              Transcript?
-  clips                   Clip[]
-  user                    User                    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  workspace               Workspace               @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  folder                  WorkspaceFolder?        @relation(fields: [folderId], references: [id], onDelete: SetNull)
-  brandTemplate           BrandTemplate?          @relation(fields: [brandTemplateId], references: [id], onDelete: SetNull)
-  brandProfile            BrandProfile?           @relation(fields: [brandProfileId], references: [id], onDelete: SetNull)
-  workflowRuns            WorkflowRun[]
-  workflowEvents          WorkflowEvent[]
-  contentAssets           ContentAsset[]
-  socialPosts             SocialPost[]
-  socialPostMetrics       SocialPostMetric[]
-  analyticsEvents         ProjectAnalyticsEvent[]
-  clipDubs                ClipDub[]
-  autopilotEpisodes       AutopilotEpisode[]
-  notificationLedgers     NotificationLedger[]
-  clipExports             ClipExport[]
-  campaignOperations      CampaignOperation[]
-  reviewRounds            ReviewRound[]
+  workflowEventSeq         Int                       @default(0)
+  createdAt                DateTime                  @default(now())
+  updatedAt                DateTime                  @updatedAt
+  contentPacks             ContentPack[]
+  ingestJobs               IngestJob[]
+  transcript               Transcript?
+  clips                    Clip[]
+  user                     User                      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace                Workspace                 @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  folder                   WorkspaceFolder?          @relation(fields: [folderId], references: [id], onDelete: SetNull)
+  brandTemplate            BrandTemplate?            @relation(fields: [brandTemplateId], references: [id], onDelete: SetNull)
+  brandProfile             BrandProfile?             @relation(fields: [brandProfileId], references: [id], onDelete: SetNull)
+  workflowRuns             WorkflowRun[]
+  workflowEvents           WorkflowEvent[]
+  contentAssets            ContentAsset[]
+  socialPosts              SocialPost[]
+  socialPostMetrics        SocialPostMetric[]
+  analyticsEvents          ProjectAnalyticsEvent[]
+  clipDubs                 ClipDub[]
+  autopilotEpisodes        AutopilotEpisode[]
+  notificationLedgers      NotificationLedger[]
+  clipExports              ClipExport[]
+  campaignOperations       CampaignOperation[]
+  reviewRounds             ReviewRound[]
+  reviewApprovalOverrides  ReviewApprovalOverride[]
+  generatedMediaInsertions GeneratedMediaInsertion[]
+  assistedCopyDrafts       AssistedCopyDraft[]
+  thumbnailExtractionJobs  ThumbnailExtractionJob[]
 
   @@index([userId, createdAt])
   @@index([userId, ingestStatus, createdAt])
@@ -494,8 +502,8 @@ model WorkflowRun {
   createdAt             DateTime  @default(now())
   updatedAt             DateTime  @updatedAt
 
-  project        Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  contentPack    ContentPack? @relation(fields: [contentPackId], references: [id], onDelete: SetNull)
+  project        Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  contentPack    ContentPack?  @relation(fields: [contentPackId], references: [id], onDelete: SetNull)
   renderVariants ClipRender[]
   exportBundle   ExportBundle?
 
@@ -676,42 +684,48 @@ model WorkflowEvent {
 }
 
 model User {
-  id                         String                      @id @default(uuid()) @db.Uuid
-  clerkId                    String                      @unique
-  primaryEmail               String?                     @unique
-  emailVerifiedAt            DateTime?
-  firstName                  String?
-  lastName                   String?
-  imageUrl                   String?
-  onboardingCompletedAt      DateTime?
-  lastSignInAt               DateTime?
-  defaultBrandTemplateId     String?                     @db.Uuid
-  defaultBrandProfileId      String?                     @db.Uuid
-  deletedAt                  DateTime?
-  createdAt                  DateTime                    @default(now())
-  updatedAt                  DateTime                    @updatedAt
-  authIdentities             AuthIdentity[]
-  apiKeys                    ApiKey[]
-  ownedWorkspaces            Workspace[]                 @relation("WorkspaceOwner")
-  personalWorkspace          Workspace?                  @relation("PersonalWorkspaceOwner")
-  projects                   Project[]
-  autopilotRules             AutopilotRule[]
-  socialAccounts             SocialAccount[]
-  socialOAuthStates          SocialOAuthState[]
-  workspaceMemberships       WorkspaceMember[]
-  brandTemplates             BrandTemplate[]             @relation("UserBrandTemplates")
-  defaultBrandTemplate       BrandTemplate?              @relation("UserDefaultBrandTemplate", fields: [defaultBrandTemplateId], references: [id], onDelete: SetNull)
-  brandProfiles              BrandProfile[]              @relation("UserBrandProfiles")
-  defaultBrandProfile        BrandProfile?               @relation("UserDefaultBrandProfile", fields: [defaultBrandProfileId], references: [id], onDelete: SetNull)
-  createdBrandProfiles       BrandProfile[]              @relation("BrandProfilesCreatedBy")
-  updatedBrandProfiles       BrandProfile[]              @relation("BrandProfilesUpdatedBy")
-  visualAssets               VisualAsset[]               @relation("UserVisualAssets")
-  createdVisualAssets        VisualAsset[]               @relation("VisualAssetsCreatedBy")
-  brandFonts                 BrandFont[]                 @relation("UserBrandFonts")
-  confirmedBrandFonts        BrandFont[]                 @relation("BrandFontLicenseConfirmedBy")
-  audioAssets                AudioAsset[]
-  audioAssetFavorites        AudioAssetFavorite[]
-  publicationManualDecisions PublicationManualDecision[]
+  id                            String                      @id @default(uuid()) @db.Uuid
+  clerkId                       String                      @unique
+  primaryEmail                  String?                     @unique
+  emailVerifiedAt               DateTime?
+  firstName                     String?
+  lastName                      String?
+  imageUrl                      String?
+  onboardingCompletedAt         DateTime?
+  lastSignInAt                  DateTime?
+  defaultBrandTemplateId        String?                     @db.Uuid
+  defaultBrandProfileId         String?                     @db.Uuid
+  deletedAt                     DateTime?
+  createdAt                     DateTime                    @default(now())
+  updatedAt                     DateTime                    @updatedAt
+  authIdentities                AuthIdentity[]
+  apiKeys                       ApiKey[]
+  ownedWorkspaces               Workspace[]                 @relation("WorkspaceOwner")
+  personalWorkspace             Workspace?                  @relation("PersonalWorkspaceOwner")
+  projects                      Project[]
+  autopilotRules                AutopilotRule[]
+  socialAccounts                SocialAccount[]
+  socialOAuthStates             SocialOAuthState[]
+  workspaceMemberships          WorkspaceMember[]
+  brandTemplates                BrandTemplate[]             @relation("UserBrandTemplates")
+  defaultBrandTemplate          BrandTemplate?              @relation("UserDefaultBrandTemplate", fields: [defaultBrandTemplateId], references: [id], onDelete: SetNull)
+  brandProfiles                 BrandProfile[]              @relation("UserBrandProfiles")
+  defaultBrandProfile           BrandProfile?               @relation("UserDefaultBrandProfile", fields: [defaultBrandProfileId], references: [id], onDelete: SetNull)
+  createdBrandProfiles          BrandProfile[]              @relation("BrandProfilesCreatedBy")
+  updatedBrandProfiles          BrandProfile[]              @relation("BrandProfilesUpdatedBy")
+  visualAssets                  VisualAsset[]               @relation("UserVisualAssets")
+  createdVisualAssets           VisualAsset[]               @relation("VisualAssetsCreatedBy")
+  brandFonts                    BrandFont[]                 @relation("UserBrandFonts")
+  confirmedBrandFonts           BrandFont[]                 @relation("BrandFontLicenseConfirmedBy")
+  audioAssets                   AudioAsset[]
+  audioAssetFavorites           AudioAssetFavorite[]
+  publicationManualDecisions    PublicationManualDecision[]
+  reviewApprovalOverrides       ReviewApprovalOverride[]
+  generatedMediaJobsActor       GeneratedMediaJob[]         @relation("GeneratedMediaJobActor")
+  generatedMediaJobsOwner       GeneratedMediaJob[]         @relation("GeneratedMediaJobUserOwner")
+  generatedMediaInsertionsActor GeneratedMediaInsertion[]   @relation("GeneratedMediaInsertionActor")
+  assistedCopyDraftsActor       AssistedCopyDraft[]         @relation("AssistedCopyDraftActor")
+  thumbnailExtractionJobsActor  ThumbnailExtractionJob[]    @relation("ThumbnailExtractionJobActor")
 
   @@index([clerkId])
 }
@@ -731,31 +745,38 @@ model Workspace {
   createdAt              DateTime        @default(now())
   updatedAt              DateTime        @updatedAt
 
-  owner                      User                        @relation("WorkspaceOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
-  personalOwner              User?                       @relation("PersonalWorkspaceOwner", fields: [personalOwnerUserId], references: [id], onDelete: Cascade)
-  defaultBrandTemplate       BrandTemplate?              @relation("WorkspaceDefaultBrandTemplate", fields: [defaultBrandTemplateId], references: [id], onDelete: SetNull)
-  defaultBrandProfile        BrandProfile?               @relation("WorkspaceDefaultBrandProfile", fields: [defaultBrandProfileId], references: [id], onDelete: SetNull)
-  members                    WorkspaceMember[]
-  invites                    WorkspaceInvite[]
-  projects                   Project[]
-  uploadSessions             UploadSession[]
-  folders                    WorkspaceFolder[]
-  autopilotRules             AutopilotRule[]
-  apiKeys                    ApiKey[]
-  socialAccounts             SocialAccount[]
-  socialOAuthStates          SocialOAuthState[]
-  brandTemplates             BrandTemplate[]
-  brandProfiles              BrandProfile[]              @relation("WorkspaceBrandProfiles")
-  visualAssets               VisualAsset[]
-  brandFonts                 BrandFont[]
-  audioAssets                AudioAsset[]
-  audioAssetFavorites        AudioAssetFavorite[]
-  clipExports                ClipExport[]
-  campaignOperations         CampaignOperation[]
-  reviewRounds               ReviewRound[]
-  socialPosts                SocialPost[]
-  publicationManualDecisions PublicationManualDecision[]
-  billingAccount             WorkspaceBillingAccount?
+  owner                       User                         @relation("WorkspaceOwner", fields: [ownerUserId], references: [id], onDelete: Cascade)
+  personalOwner               User?                        @relation("PersonalWorkspaceOwner", fields: [personalOwnerUserId], references: [id], onDelete: Cascade)
+  defaultBrandTemplate        BrandTemplate?               @relation("WorkspaceDefaultBrandTemplate", fields: [defaultBrandTemplateId], references: [id], onDelete: SetNull)
+  defaultBrandProfile         BrandProfile?                @relation("WorkspaceDefaultBrandProfile", fields: [defaultBrandProfileId], references: [id], onDelete: SetNull)
+  members                     WorkspaceMember[]
+  invites                     WorkspaceInvite[]
+  projects                    Project[]
+  uploadSessions              UploadSession[]
+  folders                     WorkspaceFolder[]
+  autopilotRules              AutopilotRule[]
+  apiKeys                     ApiKey[]
+  socialAccounts              SocialAccount[]
+  socialOAuthStates           SocialOAuthState[]
+  brandTemplates              BrandTemplate[]
+  brandProfiles               BrandProfile[]               @relation("WorkspaceBrandProfiles")
+  visualAssets                VisualAsset[]
+  brandFonts                  BrandFont[]
+  audioAssets                 AudioAsset[]
+  audioAssetFavorites         AudioAssetFavorite[]
+  clipExports                 ClipExport[]
+  campaignOperations          CampaignOperation[]
+  reviewRounds                ReviewRound[]
+  socialPosts                 SocialPost[]
+  publicationManualDecisions  PublicationManualDecision[]
+  reviewApprovalOverrides     ReviewApprovalOverride[]
+  generatedMediaJobs          GeneratedMediaJob[]          @relation("GeneratedMediaJobWorkspace")
+  generatedMediaInsertions    GeneratedMediaInsertion[]
+  ownedGeneratedMediaJobs     GeneratedMediaJob[]          @relation("GeneratedMediaJobWorkspaceOwner")
+  generationUsageReservations GenerationUsageReservation[]
+  assistedCopyDrafts          AssistedCopyDraft[]
+  thumbnailExtractionJobs     ThumbnailExtractionJob[]
+  billingAccount              WorkspaceBillingAccount?
 
   @@index([ownerUserId])
   @@index([status, pricingTier])
@@ -1077,6 +1098,7 @@ model Clip {
   transcriptSlice Json
   captionPreset   Json?
   brollUrl        String?
+  brollPlacements Json         @default("[]")
   studioEdits     Json?
 
   // Studio editor document (docs/plans/vizard-parity.md Phase A): optimistic-
@@ -1085,13 +1107,13 @@ model Clip {
   // revision-zero snapshot captured on first save — Reset-to-original
   // restores from it, so later boundary/transcript writes can never destroy
   // the starting point.
-  editorRevision Int   @default(0)
-  editorDocumentVersion Int @default(2)
-  deletedRanges  Json?
-  editorOriginal Json?
-  sceneBlocks    Json @default("[]")
-  censorSegments Json @default("[]")
-  mediaMotions   Json @default("[]")
+  editorRevision        Int   @default(0)
+  editorDocumentVersion Int   @default(2)
+  deletedRanges         Json?
+  editorOriginal        Json?
+  sceneBlocks           Json  @default("[]")
+  censorSegments        Json  @default("[]")
+  mediaMotions          Json  @default("[]")
 
   // LLM-suggested B-roll cutaway moments produced by the clip-detection call:
   // [{ atSec, query, reason }], atSec relative to the clip's own start. Without
@@ -1159,14 +1181,17 @@ model Clip {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  project         Project                 @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  renders         ClipRender[]
-  socialPosts     SocialPost[]
-  analyticsEvents ProjectAnalyticsEvent[]
-  dubs            ClipDub[]
-  exports         ClipExport[]
-  campaignOperationItems CampaignOperationItem[]
-  reviewRoundItems ReviewRoundItem[]
+  project                  Project                   @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  renders                  ClipRender[]
+  socialPosts              SocialPost[]
+  analyticsEvents          ProjectAnalyticsEvent[]
+  dubs                     ClipDub[]
+  exports                  ClipExport[]
+  campaignOperationItems   CampaignOperationItem[]
+  reviewRoundItems         ReviewRoundItem[]
+  generatedMediaJobs       GeneratedMediaJob[]
+  generatedMediaInsertions GeneratedMediaInsertion[]
+  assistedCopyDrafts       AssistedCopyDraft[]
 
   @@unique([projectId, workflowRunId, index])
   @@index([projectId, viralityScore(sort: Desc)])
@@ -1302,39 +1327,40 @@ model ClipExportVariant {
   export                  ClipExport               @relation(fields: [exportId], references: [id], onDelete: Cascade)
   render                  ClipRender?
   frozenPublicationStates FrozenPublicationState[]
+  thumbnailExtractionJobs ThumbnailExtractionJob[]
 
   @@unique([exportId, aspectRatio])
   @@index([exportId, status])
 }
 
 model CampaignOperation {
-  id                 String   @id @default(uuid()) @db.Uuid
-  workspaceId        String   @db.Uuid
-  projectId          String   @db.Uuid
-  actorUserId        String   @db.Uuid
+  id                 String    @id @default(uuid()) @db.Uuid
+  workspaceId        String    @db.Uuid
+  projectId          String    @db.Uuid
+  actorUserId        String    @db.Uuid
   action             String
   idempotencyKey     String
   requestFingerprint String
   validatedOptions   Json
   pricingTier        String
-  status             String   @default("running")
+  status             String    @default("running")
   requestedCount     Int
-  succeededCount     Int      @default(0)
-  unchangedCount     Int      @default(0)
-  staleCount         Int      @default(0)
-  ineligibleCount    Int      @default(0)
-  failedCount        Int      @default(0)
-  retryOfId          String?  @unique @db.Uuid
-  workflowRunId      String?  @db.Uuid
-  claimToken         String?  @db.Uuid
+  succeededCount     Int       @default(0)
+  unchangedCount     Int       @default(0)
+  staleCount         Int       @default(0)
+  ineligibleCount    Int       @default(0)
+  failedCount        Int       @default(0)
+  retryOfId          String?   @unique @db.Uuid
+  workflowRunId      String?   @db.Uuid
+  claimToken         String?   @db.Uuid
   leaseExpiresAt     DateTime?
-  createdAt          DateTime @default(now())
+  createdAt          DateTime  @default(now())
   completedAt        DateTime?
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  project   Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  retryOf   CampaignOperation? @relation("CampaignOperationRetries", fields: [retryOfId], references: [id], onDelete: SetNull)
-  retries   CampaignOperation[] @relation("CampaignOperationRetries")
+  workspace Workspace               @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project                 @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  retryOf   CampaignOperation?      @relation("CampaignOperationRetries", fields: [retryOfId], references: [id], onDelete: SetNull)
+  retries   CampaignOperation[]     @relation("CampaignOperationRetries")
   items     CampaignOperationItem[]
   bundle    ExportBundle?
 
@@ -1343,35 +1369,39 @@ model CampaignOperation {
 }
 
 model CampaignOperationItem {
-  id                     String   @id @default(uuid()) @db.Uuid
-  operationId            String   @db.Uuid
-  clipId                 String?  @db.Uuid
-  requestedClipId        String   @db.Uuid
-  expectedEditorRevision Int?
-  exportId               String?  @db.Uuid
-  status                 String   @default("pending")
-  errorCode              String?
-  result                 Json?
-  claimToken             String?
-  leaseExpiresAt         DateTime?
-  createdAt              DateTime @default(now())
-  settledAt              DateTime?
+  id                       String    @id @default(uuid()) @db.Uuid
+  operationId              String    @db.Uuid
+  itemKey                  String
+  clipId                   String?   @db.Uuid
+  requestedClipId          String    @db.Uuid
+  expectedEditorRevision   Int?
+  exportId                 String?   @db.Uuid
+  reviewApprovalOverrideId String?   @db.Uuid
+  status                   String    @default("pending")
+  errorCode                String?
+  result                   Json?
+  claimToken               String?
+  leaseExpiresAt           DateTime?
+  createdAt                DateTime  @default(now())
+  settledAt                DateTime?
 
-  operation CampaignOperation @relation(fields: [operationId], references: [id], onDelete: Cascade)
-  clip      Clip?             @relation(fields: [clipId], references: [id], onDelete: SetNull)
-  export    ClipExport?       @relation(fields: [exportId], references: [id], onDelete: SetNull)
+  operation              CampaignOperation       @relation(fields: [operationId], references: [id], onDelete: Cascade)
+  clip                   Clip?                   @relation(fields: [clipId], references: [id], onDelete: SetNull)
+  export                 ClipExport?             @relation(fields: [exportId], references: [id], onDelete: SetNull)
+  reviewApprovalOverride ReviewApprovalOverride? @relation(fields: [reviewApprovalOverrideId], references: [id], onDelete: SetNull)
 
-  @@unique([operationId, requestedClipId])
+  @@unique([operationId, itemKey])
   @@index([clipId])
   @@index([exportId])
+  @@index([reviewApprovalOverrideId])
   @@index([operationId, status, leaseExpiresAt])
 }
 
 model ExportBundle {
-  id                String   @id @default(uuid()) @db.Uuid
-  operationId       String   @unique @db.Uuid
-  workflowRunId     String   @unique @db.Uuid
-  status            String   @default("queued")
+  id                String    @id @default(uuid()) @db.Uuid
+  operationId       String    @unique @db.Uuid
+  workflowRunId     String    @unique @db.Uuid
+  status            String    @default("queued")
   attemptStorageKey String?
   storageKey        String?
   manifest          Json
@@ -1379,65 +1409,132 @@ model ExportBundle {
   checksumSha256    String?
   expiresAt         DateTime?
   errorCode         String?
-  createdAt         DateTime @default(now())
+  createdAt         DateTime  @default(now())
   completedAt       DateTime?
 
   operation   CampaignOperation @relation(fields: [operationId], references: [id], onDelete: Cascade)
-  workflowRun WorkflowRun      @relation(fields: [workflowRunId], references: [id], onDelete: Cascade)
+  workflowRun WorkflowRun       @relation(fields: [workflowRunId], references: [id], onDelete: Cascade)
 
   @@index([status, createdAt])
 }
 
 model ReviewRound {
-  id                String   @id @default(uuid()) @db.Uuid
-  workspaceId       String   @db.Uuid
-  projectId         String   @db.Uuid
-  createdByUserId   String   @db.Uuid
-  revision          Int
-  status            String   @default("open")
-  title             String
-  message           String?
-  accessTokenHash   String   @unique
-  passcodeHash      String?
-  allowDownloads    Boolean  @default(false)
-  approvalRequired  Boolean  @default(true)
-  sentAt            DateTime @default(now())
-  expiresAt         DateTime?
-  revokedAt         DateTime?
-  supersededAt      DateTime?
-  decision          String?
-  decidedAt         DateTime?
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  id               String    @id @default(uuid()) @db.Uuid
+  workspaceId      String    @db.Uuid
+  projectId        String    @db.Uuid
+  createdByUserId  String    @db.Uuid
+  previousRoundId  String?   @unique @db.Uuid
+  revision         Int
+  status           String    @default("open")
+  title            String
+  message          String?
+  accessTokenHash  String    @unique
+  passcodeHash     String?
+  allowDownloads   Boolean   @default(false)
+  approvalRequired Boolean   @default(true)
+  sentAt           DateTime  @default(now())
+  expiresAt        DateTime?
+  revokedAt        DateTime?
+  supersededAt     DateTime?
+  decision         String?
+  decidedAt        DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
-  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  project   Project   @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  items     ReviewRoundItem[]
-  comments  ReviewComment[]
-  decisions ReviewDecision[]
-  guests    ReviewGuest[]
-  auditEvents ReviewAuditEvent[]
+  workspace     Workspace            @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project       Project              @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  items         ReviewRoundItem[]
+  comments      ReviewComment[]
+  decisions     ReviewDecision[]
+  guests        ReviewGuest[]
+  auditEvents   ReviewAuditEvent[]
+  recipients    ReviewRecipient[]
+  notifications ReviewNotification[]
+  previousRound ReviewRound?         @relation("ReviewRoundResubmission", fields: [previousRoundId], references: [id], onDelete: SetNull)
+  nextRound     ReviewRound?         @relation("ReviewRoundResubmission")
 
   @@unique([projectId, revision])
   @@index([workspaceId, createdAt(sort: Desc)])
   @@index([status, expiresAt])
 }
 
-model ReviewRoundItem {
+model ReviewRecipient {
   id             String   @id @default(uuid()) @db.Uuid
   reviewRoundId  String   @db.Uuid
-  clipId         String   @db.Uuid
-  exportId       String   @db.Uuid
-  editorRevision Int
-  position       Int
-  selectedVariantIds Json
-  required       Boolean  @default(true)
-  currentDecision String?
+  role           String
+  emailHash      String
+  emailEncrypted String
   createdAt      DateTime @default(now())
 
-  reviewRound ReviewRound @relation(fields: [reviewRoundId], references: [id], onDelete: Cascade)
-  clip        Clip        @relation(fields: [clipId], references: [id], onDelete: Restrict)
-  export      ClipExport  @relation(fields: [exportId], references: [id], onDelete: Restrict)
+  reviewRound   ReviewRound          @relation(fields: [reviewRoundId], references: [id], onDelete: Cascade)
+  notifications ReviewNotification[]
+
+  @@unique([reviewRoundId, role, emailHash])
+  @@index([reviewRoundId, role])
+}
+
+model ReviewNotification {
+  id                String    @id @default(uuid()) @db.Uuid
+  reviewRoundId     String    @db.Uuid
+  recipientId       String    @db.Uuid
+  kind              String
+  sourceKey         String
+  status            String    @default("pending")
+  attemptCount      Int       @default(0)
+  nextAttemptAt     DateTime  @default(now())
+  claimId           String?   @unique @db.Uuid
+  leaseExpiresAt    DateTime?
+  providerMessageId String?
+  failureCode       String?
+  sentAt            DateTime?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  reviewRound ReviewRound     @relation(fields: [reviewRoundId], references: [id], onDelete: Cascade)
+  recipient   ReviewRecipient @relation(fields: [recipientId], references: [id], onDelete: Cascade)
+
+  @@unique([reviewRoundId, recipientId, kind, sourceKey])
+  @@index([status, nextAttemptAt, leaseExpiresAt])
+  @@index([reviewRoundId, createdAt])
+}
+
+model ReviewApprovalOverride {
+  id                 String   @id @default(uuid()) @db.Uuid
+  workspaceId        String   @db.Uuid
+  projectId          String   @db.Uuid
+  actorUserId        String   @db.Uuid
+  idempotencyKey     String   @db.Uuid
+  requestFingerprint String
+  exportIds          Json
+  reason             String
+  createdAt          DateTime @default(now())
+
+  workspace     Workspace               @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project       Project                 @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  actor         User                    @relation(fields: [actorUserId], references: [id], onDelete: Restrict)
+  socialPosts   SocialPost[]
+  campaignItems CampaignOperationItem[]
+
+  @@unique([workspaceId, idempotencyKey])
+  @@index([projectId, createdAt])
+  @@index([actorUserId, createdAt])
+}
+
+model ReviewRoundItem {
+  id                 String   @id @default(uuid()) @db.Uuid
+  reviewRoundId      String   @db.Uuid
+  clipId             String   @db.Uuid
+  exportId           String   @db.Uuid
+  editorRevision     Int
+  position           Int
+  selectedVariantIds Json
+  required           Boolean  @default(true)
+  currentDecision    String?
+  createdAt          DateTime @default(now())
+
+  reviewRound ReviewRound      @relation(fields: [reviewRoundId], references: [id], onDelete: Cascade)
+  clip        Clip             @relation(fields: [clipId], references: [id], onDelete: Cascade)
+  export      ClipExport       @relation(fields: [exportId], references: [id], onDelete: Cascade)
   comments    ReviewComment[]
   decisions   ReviewDecision[]
 
@@ -1446,46 +1543,46 @@ model ReviewRoundItem {
 }
 
 model ReviewComment {
-  id            String   @id @default(uuid()) @db.Uuid
-  reviewRoundId String   @db.Uuid
-  itemId        String?  @db.Uuid
-  parentId      String?  @db.Uuid
-  authorKind    String
-  authorName    String
+  id              String    @id @default(uuid()) @db.Uuid
+  reviewRoundId   String    @db.Uuid
+  itemId          String?   @db.Uuid
+  parentId        String?   @db.Uuid
+  authorKind      String
+  authorName      String
   authorGrantHash String
-  authorGuestId String?  @db.Uuid
-  body          String
-  timestampSec  Float?
-  resolvedAt    DateTime?
-  editedAt      DateTime?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  authorGuestId   String?   @db.Uuid
+  body            String
+  timestampSec    Float?
+  resolvedAt      DateTime?
+  editedAt        DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
 
-  reviewRound ReviewRound @relation(fields: [reviewRoundId], references: [id], onDelete: Cascade)
+  reviewRound ReviewRound      @relation(fields: [reviewRoundId], references: [id], onDelete: Cascade)
   item        ReviewRoundItem? @relation(fields: [itemId], references: [id], onDelete: Cascade)
-  authorGuest ReviewGuest? @relation(fields: [authorGuestId], references: [id], onDelete: SetNull)
-  parent      ReviewComment? @relation("ReviewCommentThread", fields: [parentId], references: [id], onDelete: Cascade)
-  replies     ReviewComment[] @relation("ReviewCommentThread")
+  authorGuest ReviewGuest?     @relation(fields: [authorGuestId], references: [id], onDelete: SetNull)
+  parent      ReviewComment?   @relation("ReviewCommentThread", fields: [parentId], references: [id], onDelete: Cascade)
+  replies     ReviewComment[]  @relation("ReviewCommentThread")
 
   @@index([reviewRoundId, createdAt])
   @@index([parentId])
 }
 
 model ReviewDecision {
-  id            String   @id @default(uuid()) @db.Uuid
-  reviewRoundId String   @db.Uuid
-  itemId        String?  @db.Uuid
-  actorGuestId  String?  @db.Uuid
+  id            String    @id @default(uuid()) @db.Uuid
+  reviewRoundId String    @db.Uuid
+  itemId        String?   @db.Uuid
+  actorGuestId  String?   @db.Uuid
   decision      String
   actorKind     String
   actorName     String
   reason        String?
   supersededAt  DateTime?
-  createdAt     DateTime @default(now())
+  createdAt     DateTime  @default(now())
 
-  reviewRound ReviewRound @relation(fields: [reviewRoundId], references: [id], onDelete: Cascade)
+  reviewRound ReviewRound      @relation(fields: [reviewRoundId], references: [id], onDelete: Cascade)
   item        ReviewRoundItem? @relation(fields: [itemId], references: [id], onDelete: Cascade)
-  actorGuest  ReviewGuest? @relation(fields: [actorGuestId], references: [id], onDelete: SetNull)
+  actorGuest  ReviewGuest?     @relation(fields: [actorGuestId], references: [id], onDelete: SetNull)
 
   @@index([reviewRoundId, createdAt(sort: Desc)])
 }
@@ -1500,7 +1597,7 @@ model ReviewGuest {
   firstSeenAt      DateTime @default(now())
   lastSeenAt       DateTime @default(now())
 
-  reviewRound ReviewRound @relation(fields: [reviewRoundId], references: [id], onDelete: Cascade)
+  reviewRound ReviewRound        @relation(fields: [reviewRoundId], references: [id], onDelete: Cascade)
   comments    ReviewComment[]
   decisions   ReviewDecision[]
   auditEvents ReviewAuditEvent[]
@@ -1518,7 +1615,7 @@ model ReviewAuditEvent {
   metadata      Json?
   createdAt     DateTime @default(now())
 
-  reviewRound ReviewRound @relation(fields: [reviewRoundId], references: [id], onDelete: Cascade)
+  reviewRound ReviewRound  @relation(fields: [reviewRoundId], references: [id], onDelete: Cascade)
   guest       ReviewGuest? @relation(fields: [guestId], references: [id], onDelete: SetNull)
 
   @@index([reviewRoundId, createdAt])
@@ -1615,40 +1712,40 @@ model BrandTemplate {
 }
 
 model BrandProfile {
-  id                String    @id @default(uuid()) @db.Uuid
-  userId            String?   @db.Uuid
-  workspaceId       String?   @db.Uuid
-  createdByUserId   String    @db.Uuid
-  updatedByUserId   String    @db.Uuid
-  name              String
-  slug              String
-  visualIdentity    Json
-  voiceGuidance     Json
-  approvalRule      String    @default("none")
-  defaultTemplateId String?   @db.Uuid
-  defaultIntroSceneTemplateId String? @db.Uuid
-  defaultOutroSceneTemplateId String? @db.Uuid
-  isCompatibility   Boolean   @default(false)
-  revision          Int       @default(1)
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
-  deletedAt         DateTime?
+  id                          String    @id @default(uuid()) @db.Uuid
+  userId                      String?   @db.Uuid
+  workspaceId                 String?   @db.Uuid
+  createdByUserId             String    @db.Uuid
+  updatedByUserId             String    @db.Uuid
+  name                        String
+  slug                        String
+  visualIdentity              Json
+  voiceGuidance               Json
+  approvalRule                String    @default("none")
+  defaultTemplateId           String?   @db.Uuid
+  defaultIntroSceneTemplateId String?   @db.Uuid
+  defaultOutroSceneTemplateId String?   @db.Uuid
+  isCompatibility             Boolean   @default(false)
+  revision                    Int       @default(1)
+  createdAt                   DateTime  @default(now())
+  updatedAt                   DateTime  @updatedAt
+  deletedAt                   DateTime?
 
-  user                 User?                  @relation("UserBrandProfiles", fields: [userId], references: [id], onDelete: Cascade)
-  workspace            Workspace?             @relation("WorkspaceBrandProfiles", fields: [workspaceId], references: [id], onDelete: Cascade)
-  createdBy            User                   @relation("BrandProfilesCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
-  updatedBy            User                   @relation("BrandProfilesUpdatedBy", fields: [updatedByUserId], references: [id], onDelete: Restrict)
-  defaultTemplate      BrandTemplate?         @relation("BrandProfileDefaultTemplate", fields: [defaultTemplateId], references: [id], onDelete: SetNull)
-  templates            BrandProfileTemplate[]
-  assets               BrandProfileAsset[]
-  fonts                BrandProfileFont[]
-  audio                BrandProfileAudio[]
-  projects             Project[]
-  defaultForUsers      User[]                 @relation("UserDefaultBrandProfile")
-  defaultForWorkspaces Workspace[]            @relation("WorkspaceDefaultBrandProfile")
-  sceneTemplates        SceneTemplate[]
-  defaultIntroSceneTemplate SceneTemplate? @relation("BrandProfileDefaultIntroScene", fields: [defaultIntroSceneTemplateId], references: [id], onDelete: SetNull)
-  defaultOutroSceneTemplate SceneTemplate? @relation("BrandProfileDefaultOutroScene", fields: [defaultOutroSceneTemplateId], references: [id], onDelete: SetNull)
+  user                      User?                  @relation("UserBrandProfiles", fields: [userId], references: [id], onDelete: Cascade)
+  workspace                 Workspace?             @relation("WorkspaceBrandProfiles", fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdBy                 User                   @relation("BrandProfilesCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  updatedBy                 User                   @relation("BrandProfilesUpdatedBy", fields: [updatedByUserId], references: [id], onDelete: Restrict)
+  defaultTemplate           BrandTemplate?         @relation("BrandProfileDefaultTemplate", fields: [defaultTemplateId], references: [id], onDelete: SetNull)
+  templates                 BrandProfileTemplate[]
+  assets                    BrandProfileAsset[]
+  fonts                     BrandProfileFont[]
+  audio                     BrandProfileAudio[]
+  projects                  Project[]
+  defaultForUsers           User[]                 @relation("UserDefaultBrandProfile")
+  defaultForWorkspaces      Workspace[]            @relation("WorkspaceDefaultBrandProfile")
+  sceneTemplates            SceneTemplate[]
+  defaultIntroSceneTemplate SceneTemplate?         @relation("BrandProfileDefaultIntroScene", fields: [defaultIntroSceneTemplateId], references: [id], onDelete: SetNull)
+  defaultOutroSceneTemplate SceneTemplate?         @relation("BrandProfileDefaultOutroScene", fields: [defaultOutroSceneTemplateId], references: [id], onDelete: SetNull)
 
   @@unique([workspaceId, slug])
   @@unique([userId, slug])
@@ -1670,52 +1767,274 @@ model BrandProfileTemplate {
 }
 
 model VisualAsset {
-  id              String                @id @default(uuid()) @db.Uuid
-  userId          String?               @db.Uuid
-  workspaceId     String?               @db.Uuid
-  createdByUserId String                @db.Uuid
-  title           String
-  kind            VisualAssetKind
-  storageKey      String                @unique
-  contentType     String
-  sizeBytes       BigInt
-  width           Int
-  height          Int
-  durationSec     Float?
-  fingerprint     String
-  provenance      VisualAssetProvenance @default(uploaded)
-  createdAt       DateTime              @default(now())
-  updatedAt       DateTime              @updatedAt
-  deletedAt       DateTime?
+  id                    String                @id @default(uuid()) @db.Uuid
+  userId                String?               @db.Uuid
+  workspaceId           String?               @db.Uuid
+  createdByUserId       String                @db.Uuid
+  title                 String
+  kind                  VisualAssetKind
+  storageKey            String                @unique
+  contentType           String
+  sizeBytes             BigInt
+  width                 Int
+  height                Int
+  durationSec           Float?
+  hasAudio              Boolean?
+  videoCodec            String?
+  audioCodec            String?
+  fingerprint           String
+  provenance            VisualAssetProvenance @default(uploaded)
+  sourceExportVariantId String?               @db.Uuid
+  sourceTimeMs          Int?
+  createdAt             DateTime              @default(now())
+  updatedAt             DateTime              @updatedAt
+  deletedAt             DateTime?
 
-  user      User?               @relation("UserVisualAssets", fields: [userId], references: [id], onDelete: Cascade)
-  workspace Workspace?          @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  createdBy User                @relation("VisualAssetsCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
-  profiles  BrandProfileAsset[]
-  sceneTemplates SceneTemplate[]
+  user                     User?                     @relation("UserVisualAssets", fields: [userId], references: [id], onDelete: Cascade)
+  workspace                Workspace?                @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdBy                User                      @relation("VisualAssetsCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  profiles                 BrandProfileAsset[]
+  sceneTemplates           SceneTemplate[]
+  generatedMediaJobs       GeneratedMediaJob[]
+  generatedMediaInsertions GeneratedMediaInsertion[]
+  thumbnailExtractionJobs  ThumbnailExtractionJob[]  @relation("ThumbnailExtractionResult")
+  socialPostThumbnails     SocialPost[]              @relation("SocialPostThumbnail")
 
-  @@unique([workspaceId, fingerprint])
-  @@unique([userId, fingerprint])
+  @@unique([sourceExportVariantId, sourceTimeMs])
   @@index([workspaceId, deletedAt, createdAt])
   @@index([userId, deletedAt, createdAt])
+  @@index([sourceExportVariantId])
+}
+
+model GeneratedMediaJob {
+  id                    String    @id @default(uuid()) @db.Uuid
+  workspaceId           String    @db.Uuid
+  projectId             String    @db.Uuid
+  clipId                String?   @db.Uuid
+  actorUserId           String    @db.Uuid
+  ownerUserId           String?   @db.Uuid
+  ownerWorkspaceId      String?   @db.Uuid
+  kind                  String
+  status                String    @default("queued")
+  idempotencyKey        String    @db.Uuid
+  requestFingerprint    String
+  provider              String
+  model                 String
+  promptCiphertext      String?   @db.Text
+  promptFingerprint     String
+  promptKeyVersion      String
+  promptDeleteAfter     DateTime?
+  promptOriginKind      String
+  promptOriginSourceIds Json
+  aspectRatio           String
+  style                 String
+  durationSec           Float?
+  seed                  Int?
+  title                 String?
+  providerReference     String?
+  resultReference       String?
+  providerUsageUnits    Int?
+  moderationOutcome     String    @default("pending")
+  moderationStage       String?
+  moderationCategories  Json?
+  attemptCount          Int       @default(0)
+  claimId               String?   @unique @db.Uuid
+  claimOwner            String?
+  claimExpiresAt        DateTime?
+  submissionStartedAt   DateTime?
+  nextAttemptAt         DateTime  @default(now())
+  nextPollAt            DateTime?
+  cancelRequestedAt     DateTime?
+  errorCode             String?
+  stagedStorageKey      String?   @unique
+  stagedContentType     String?
+  stagedSizeBytes       BigInt?
+  stagedWidth           Int?
+  stagedHeight          Int?
+  stagedDurationSec     Float?
+  stagedHasAudio        Boolean?
+  stagedVideoCodec      String?
+  stagedAudioCodec      String?
+  stagedFingerprint     String?
+  resultAssetId         String?   @db.Uuid
+  insertionCount        Int       @default(0)
+  lastInsertionKind     String?
+  lastInsertedAt        DateTime?
+  completedAt           DateTime?
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+
+  workspace      Workspace                   @relation("GeneratedMediaJobWorkspace", fields: [workspaceId], references: [id], onDelete: Cascade)
+  clip           Clip?                       @relation(fields: [clipId], references: [id], onDelete: SetNull)
+  actor          User                        @relation("GeneratedMediaJobActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+  ownerUser      User?                       @relation("GeneratedMediaJobUserOwner", fields: [ownerUserId], references: [id], onDelete: SetNull)
+  ownerWorkspace Workspace?                  @relation("GeneratedMediaJobWorkspaceOwner", fields: [ownerWorkspaceId], references: [id], onDelete: SetNull)
+  resultAsset    VisualAsset?                @relation(fields: [resultAssetId], references: [id], onDelete: SetNull)
+  usage          GenerationUsageReservation?
+  insertions     GeneratedMediaInsertion[]
+
+  @@unique([workspaceId, idempotencyKey])
+  @@index([workspaceId, projectId, createdAt(sort: Desc)])
+  @@index([status, nextAttemptAt, claimExpiresAt, createdAt])
+  @@index([status, nextPollAt])
+  @@index([provider, kind, status])
+  @@index([promptDeleteAfter])
+  @@index([resultAssetId])
+}
+
+model GeneratedMediaInsertion {
+  id                 String                @id @default(uuid()) @db.Uuid
+  workspaceId        String                @db.Uuid
+  projectId          String                @db.Uuid
+  clipId             String                @db.Uuid
+  jobId              String                @db.Uuid
+  actorUserId        String                @db.Uuid
+  assetId            String                @db.Uuid
+  assetFingerprint   String
+  assetProvenance    VisualAssetProvenance
+  idempotencyKey     String                @db.Uuid
+  requestFingerprint String
+  kind               String
+  targetId           String                @db.Uuid
+  editorRevision     Int
+  documentSnapshot   Json
+  createdAt          DateTime              @default(now())
+
+  workspace Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project   Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  clip      Clip              @relation(fields: [clipId], references: [id], onDelete: Cascade)
+  job       GeneratedMediaJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  actor     User              @relation("GeneratedMediaInsertionActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+  asset     VisualAsset       @relation(fields: [assetId], references: [id], onDelete: Restrict)
+
+  @@unique([workspaceId, idempotencyKey])
+  @@index([clipId, editorRevision])
+  @@index([jobId, createdAt])
+  @@index([assetId])
+}
+
+model GenerationUsageReservation {
+  id             String    @id @default(uuid()) @db.Uuid
+  jobId          String    @unique @db.Uuid
+  workspaceId    String    @db.Uuid
+  kind           String
+  reservedUnits  Int
+  finalizedUnits Int       @default(0)
+  releasedUnits  Int       @default(0)
+  status         String    @default("reserved")
+  usagePolicy    String
+  allowancePeriod String
+  allowanceLimitUnits Int
+  allowanceStartedAt DateTime?
+  allowanceEndsAt DateTime?
+  dailyAbuseLimitUnits Int
+  dailyAbuseStartedAt DateTime
+  dailyAbuseEndsAt DateTime
+  finalizedAt    DateTime?
+  releasedAt     DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  job       GeneratedMediaJob @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  workspace Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, kind, status])
+  @@index([workspaceId, kind, createdAt])
+  @@index([status, updatedAt])
+}
+
+model AssistedCopyDraft {
+  id                   String         @id @default(uuid()) @db.Uuid
+  workspaceId          String         @db.Uuid
+  projectId            String         @db.Uuid
+  clipId               String         @db.Uuid
+  actorUserId          String         @db.Uuid
+  sourceDraftId        String?        @db.Uuid
+  idempotencyKey       String         @db.Uuid
+  requestFingerprint   String
+  platform             SocialPlatform
+  status               String         @default("generating")
+  revision             Int            @default(1)
+  content              Json?
+  confirmedAt          DateTime?
+  modelAlias           String?
+  promptVersion        String
+  moderationOutcome    String         @default("pending")
+  errorCode            String?
+  brandProfileId       String?        @db.Uuid
+  brandProfileRevision Int?
+  guidanceSkipped      Boolean        @default(false)
+  inputTokens          Int?
+  outputTokens         Int?
+  generationDeadline   DateTime
+  createdAt            DateTime       @default(now())
+  updatedAt            DateTime       @updatedAt
+
+  workspace     Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project       Project             @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  clip          Clip                @relation(fields: [clipId], references: [id], onDelete: Cascade)
+  actor         User                @relation("AssistedCopyDraftActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+  sourceDraft   AssistedCopyDraft?  @relation("AssistedCopyRegeneration", fields: [sourceDraftId], references: [id], onDelete: SetNull)
+  regenerations AssistedCopyDraft[] @relation("AssistedCopyRegeneration")
+  socialPosts   SocialPost[]
+
+  @@unique([workspaceId, idempotencyKey])
+  @@index([workspaceId, projectId, createdAt(sort: Desc)])
+  @@index([clipId, platform, createdAt(sort: Desc)])
+  @@index([status, generationDeadline])
+  @@index([sourceDraftId])
+}
+
+model ThumbnailExtractionJob {
+  id                 String         @id @default(uuid()) @db.Uuid
+  workspaceId        String         @db.Uuid
+  projectId          String         @db.Uuid
+  actorUserId        String         @db.Uuid
+  idempotencyKey     String         @db.Uuid
+  requestFingerprint String
+  platform           SocialPlatform
+  exportVariantId    String         @db.Uuid
+  sourceStorageKey   String
+  sourceTimeMs       Int
+  title              String
+  status             String         @default("queued")
+  attempts           Int            @default(0)
+  claimId            String?        @unique @db.Uuid
+  claimExpiresAt     DateTime?
+  assetId            String?        @db.Uuid
+  errorCode          String?
+  createdAt          DateTime       @default(now())
+  updatedAt          DateTime       @updatedAt
+
+  workspace     Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project       Project           @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  actor         User              @relation("ThumbnailExtractionJobActor", fields: [actorUserId], references: [id], onDelete: Restrict)
+  exportVariant ClipExportVariant @relation(fields: [exportVariantId], references: [id], onDelete: Cascade)
+  asset         VisualAsset?      @relation("ThumbnailExtractionResult", fields: [assetId], references: [id], onDelete: SetNull)
+
+  @@unique([workspaceId, projectId, idempotencyKey])
+  @@index([workspaceId, projectId, createdAt(sort: Desc)])
+  @@index([status, claimExpiresAt, createdAt])
+  @@index([exportVariantId, sourceTimeMs])
+  @@index([assetId])
 }
 
 model SceneTemplate {
-  id              String   @id @default(uuid()) @db.Uuid
-  profileId       String   @db.Uuid
-  sourceAssetId   String?  @db.Uuid
-  createdByUserId String   @db.Uuid
+  id              String    @id @default(uuid()) @db.Uuid
+  profileId       String    @db.Uuid
+  sourceAssetId   String?   @db.Uuid
+  createdByUserId String    @db.Uuid
   name            String
-  role            String   @default("inline")
+  role            String    @default("inline")
   definition      Json
   fingerprint     String
-  revision        Int      @default(1)
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  revision        Int       @default(1)
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
   deletedAt       DateTime?
 
-  profile     BrandProfile @relation(fields: [profileId], references: [id], onDelete: Cascade)
-  sourceAsset VisualAsset? @relation(fields: [sourceAssetId], references: [id], onDelete: Restrict)
+  profile                 BrandProfile   @relation(fields: [profileId], references: [id], onDelete: Cascade)
+  sourceAsset             VisualAsset?   @relation(fields: [sourceAssetId], references: [id], onDelete: Restrict)
   defaultIntroForProfiles BrandProfile[] @relation("BrandProfileDefaultIntroScene")
   defaultOutroForProfiles BrandProfile[] @relation("BrandProfileDefaultOutroScene")
 
@@ -1848,36 +2167,44 @@ model AudioAssetFavorite {
 }
 
 model SocialPost {
-  id                   String                         @id @default(uuid()) @db.Uuid
-  projectId            String                         @db.Uuid
-  workspaceId          String?                        @db.Uuid
-  createdByUserId      String?                        @db.Uuid
-  clipId               String?                        @db.Uuid
-  socialAccountId      String?                        @db.Uuid
-  platform             SocialPlatform
-  status               SocialPostStatus               @default(scheduled)
-  clientIdempotencyKey String
-  immutableRequestHash String
-  caption              String
-  aspectRatio          ClipAspectRatio?
-  scheduledFor         DateTime?
-  postedAt             DateTime?
-  externalUrl          String?
-  errorCode            String?
-  errorDisposition     PublicationFailureDisposition?
-  nextAttemptAt        DateTime?
-  metadata             Json?
-  createdAt            DateTime                       @default(now())
-  updatedAt            DateTime                       @updatedAt
+  id                       String                         @id @default(uuid()) @db.Uuid
+  projectId                String                         @db.Uuid
+  workspaceId              String?                        @db.Uuid
+  createdByUserId          String?                        @db.Uuid
+  clipId                   String?                        @db.Uuid
+  socialAccountId          String?                        @db.Uuid
+  reviewApprovalOverrideId String?                        @db.Uuid
+  assistedCopyDraftId      String?                        @db.Uuid
+  assistedCopyRevision     Int?
+  thumbnailAssetId         String?                        @db.Uuid
+  thumbnailFingerprint     String?
+  platform                 SocialPlatform
+  status                   SocialPostStatus               @default(scheduled)
+  clientIdempotencyKey     String
+  immutableRequestHash     String
+  caption                  String
+  aspectRatio              ClipAspectRatio?
+  scheduledFor             DateTime?
+  postedAt                 DateTime?
+  externalUrl              String?
+  errorCode                String?
+  errorDisposition         PublicationFailureDisposition?
+  nextAttemptAt            DateTime?
+  metadata                 Json?
+  createdAt                DateTime                       @default(now())
+  updatedAt                DateTime                       @updatedAt
 
-  project             Project                     @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  workspace           Workspace?                  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  clip                Clip?                       @relation(fields: [clipId], references: [id], onDelete: SetNull)
-  socialAccount       SocialAccount?              @relation(fields: [socialAccountId], references: [id], onDelete: SetNull)
-  metrics             SocialPostMetric[]
-  frozenState         FrozenPublicationState?
-  publicationAttempts SocialPublicationAttempt[]
-  manualDecisions     PublicationManualDecision[]
+  project                Project                     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  workspace              Workspace?                  @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  clip                   Clip?                       @relation(fields: [clipId], references: [id], onDelete: SetNull)
+  socialAccount          SocialAccount?              @relation(fields: [socialAccountId], references: [id], onDelete: SetNull)
+  metrics                SocialPostMetric[]
+  frozenState            FrozenPublicationState?
+  publicationAttempts    SocialPublicationAttempt[]
+  manualDecisions        PublicationManualDecision[]
+  reviewApprovalOverride ReviewApprovalOverride?     @relation(fields: [reviewApprovalOverrideId], references: [id], onDelete: SetNull)
+  assistedCopyDraft      AssistedCopyDraft?          @relation(fields: [assistedCopyDraftId], references: [id], onDelete: SetNull)
+  thumbnailAsset         VisualAsset?                @relation("SocialPostThumbnail", fields: [thumbnailAssetId], references: [id], onDelete: Restrict)
 
   @@unique([workspaceId, clientIdempotencyKey])
   @@index([projectId, scheduledFor])
@@ -1885,6 +2212,9 @@ model SocialPost {
   @@index([status, scheduledFor])
   @@index([clipId])
   @@index([socialAccountId])
+  @@index([reviewApprovalOverrideId])
+  @@index([assistedCopyDraftId])
+  @@index([thumbnailAssetId])
 }
 
 model FrozenPublicationState {

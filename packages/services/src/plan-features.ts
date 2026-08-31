@@ -11,6 +11,7 @@ export type PlanFeature =
   | "editor.censoring"
   | "editor.motion"
   | "publishing.assistedCopy"
+	| "publishing.customThumbnails"
   | "campaign.operations"
   | "export.bundles"
   | "review.rooms"
@@ -29,6 +30,7 @@ const PLAN_FEATURES: Record<PricingTier, Record<PlanFeature, boolean>> = {
     "editor.censoring": false,
     "editor.motion": false,
     "publishing.assistedCopy": false,
+		"publishing.customThumbnails": false,
     "campaign.operations": false,
     "export.bundles": false,
     "review.rooms": false,
@@ -46,6 +48,7 @@ const PLAN_FEATURES: Record<PricingTier, Record<PlanFeature, boolean>> = {
     "editor.censoring": true,
     "editor.motion": true,
     "publishing.assistedCopy": true,
+		"publishing.customThumbnails": false,
     "campaign.operations": false,
     "export.bundles": false,
     "review.rooms": false,
@@ -63,6 +66,7 @@ const PLAN_FEATURES: Record<PricingTier, Record<PlanFeature, boolean>> = {
     "editor.censoring": true,
     "editor.motion": true,
     "publishing.assistedCopy": true,
+		"publishing.customThumbnails": true,
     "campaign.operations": true,
     "export.bundles": true,
     "review.rooms": false,
@@ -80,6 +84,7 @@ const PLAN_FEATURES: Record<PricingTier, Record<PlanFeature, boolean>> = {
     "editor.censoring": true,
     "editor.motion": true,
     "publishing.assistedCopy": true,
+		"publishing.customThumbnails": true,
     "campaign.operations": true,
     "export.bundles": true,
     "review.rooms": true,

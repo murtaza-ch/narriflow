@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
+  AUTO_CENSOR_POLICY_VERSION,
+  autoCensorWordId,
   captionPresetSchema,
   clipAutoLayoutAnalysisSchema,
   editorDocumentSchema,
@@ -9,7 +11,9 @@ import {
 import {
   automaticLayoutInputFingerprint,
   CLIP_COMPOSITION_MAX_SERIALIZED_BYTES,
+  evaluateCompositionMotion,
   planClipComposition,
+  resolveCompositionMotion,
   screenLayoutInputFingerprint,
   splitLayoutInputFingerprint,
 } from "./clip-composition-plan";
@@ -137,6 +141,7 @@ describe("Clip Composition Plan", () => {
         gain: 0.65,
         muted: false,
       },
+      dialogueTreatments: [],
       music: {
         sourceRef: "music:bed",
         activeRange: { startSec: 0, endSec: 8 },
@@ -168,6 +173,230 @@ describe("Clip Composition Plan", () => {
         },
       ],
     });
+  });
+
+  test("plans caption masking through the shared cue model without rewriting transcript text", () => {
+    const transcriptWord = {
+      word: "damn!",
+      startSec: 1,
+      endSec: 1.5,
+      confidence: 0.99,
+    };
+    const sourceWordId = autoCensorWordId({
+      utteranceIndex: 0,
+      wordIndex: 0,
+      word: transcriptWord,
+      locale: "en",
+    });
+    const document = editorDocumentSchema.parse({
+      version: 2,
+      clipStartSec: 0,
+      clipEndSec: 3,
+      captionPreset: captionPresetSchema.parse({ textTransform: "none" }),
+      transcriptSlice: [{
+        index: 0,
+        speaker: 0,
+        speakerLabel: "Speaker 1",
+        startSec: 1,
+        endSec: 1.5,
+        text: "damn!",
+        confidence: 0.99,
+        words: [transcriptWord],
+      }],
+      studioEdits: studioEditsSchema.parse({ framing: { mode: "center" } }),
+      brollUrl: null,
+      deletedRanges: [],
+      censorSegments: [{
+        schemaVersion: 1,
+        id: "dbb670b3-e28a-4514-bf2d-63e56608a4d0",
+        sourceWordIds: [sourceWordId],
+        sourceStartSec: 1,
+        sourceEndSec: 1.5,
+        treatment: "caption_mask",
+        paddingSec: 0.08,
+        beepSettings: null,
+        captionMaskPolicy: {
+          replacement: "asterisks",
+          preservePunctuation: true,
+        },
+        suggestionFingerprint: "a".repeat(32),
+        policyVersion: AUTO_CENSOR_POLICY_VERSION,
+        enabled: true,
+      }],
+    });
+
+    const result = planClipComposition({
+      document,
+      source: {
+        identity: "source:caption-mask",
+        kind: "video",
+        width: 1920,
+        height: 1080,
+        hasAudio: true,
+      },
+      evidence: { automaticLayout: { state: "missing" } },
+      assets: { backgroundImage: { state: "missing" } },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+      targets: [
+        { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },
+      ],
+    });
+
+    if (result.status === "invalid") throw new Error(result.error.code);
+    const caption = result.plan.targets[0]!.visualLayers.find(
+      (layer) => layer.kind === "caption",
+    );
+    expect(caption?.kind === "caption" ? caption.words[0]?.text : null).toBe("****!");
+    expect(document.transcriptSlice[0]?.words[0]?.word).toBe("damn!");
+    expect(result.plan.audioSchedule.dialogueTreatments).toEqual([]);
+  });
+
+  test("surfaces a privacy-safe stale Censor Segment notice after transcript correction", () => {
+    const originalWord = {
+      word: "damn",
+      startSec: 1,
+      endSec: 1.4,
+      confidence: 0.9,
+    };
+    const oldWordId = autoCensorWordId({
+      utteranceIndex: 0,
+      wordIndex: 0,
+      word: originalWord,
+    });
+    const document = editorDocumentSchema.parse({
+      version: 2,
+      clipStartSec: 0,
+      clipEndSec: 3,
+      captionPreset: captionPresetSchema.parse({}),
+      transcriptSlice: [{
+        index: 0,
+        speaker: 0,
+        speakerLabel: "Speaker 1",
+        startSec: 1,
+        endSec: 1.4,
+        text: "fixed",
+        confidence: 0.9,
+        words: [{ ...originalWord, word: "fixed" }],
+      }],
+      studioEdits: studioEditsSchema.parse({ framing: { mode: "center" } }),
+      brollUrl: null,
+      deletedRanges: [],
+      censorSegments: [{
+        schemaVersion: 1,
+        id: "dbb670b3-e28a-4514-bf2d-63e56608a4d0",
+        sourceWordIds: [oldWordId],
+        sourceStartSec: 1,
+        sourceEndSec: 1.4,
+        treatment: "mute",
+        paddingSec: 0.08,
+        beepSettings: null,
+        captionMaskPolicy: null,
+        suggestionFingerprint: "a".repeat(32),
+        policyVersion: AUTO_CENSOR_POLICY_VERSION,
+        enabled: true,
+      }],
+    });
+    const result = planClipComposition({
+      document,
+      source: {
+        identity: "source:stale-censor",
+        kind: "video",
+        width: 1920,
+        height: 1080,
+        hasAudio: true,
+      },
+      evidence: { automaticLayout: { state: "missing" } },
+      assets: { backgroundImage: { state: "missing" } },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+      targets: [{ id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 }],
+    });
+    if (result.status === "invalid") throw new Error(result.error.code);
+
+    expect(result.plan.notices).toContainEqual(expect.objectContaining({
+      code: "censor_segment_stale",
+      fidelity: "degraded",
+      userActionPossible: true,
+    }));
+    expect(JSON.stringify(result.plan.notices)).not.toContain("damn");
+    expect(JSON.stringify(result.plan.notices)).not.toContain("fixed");
+  });
+
+  test("plans normalized beep and mute intervals on the shared edited audio schedule", () => {
+    const makeSegment = (
+      id: string,
+      treatment: "beep" | "mute",
+      startSec: number,
+      endSec: number,
+    ) => ({
+      schemaVersion: 1 as const,
+      id,
+      sourceWordIds: [`word:${id}`],
+      sourceStartSec: startSec,
+      sourceEndSec: endSec,
+      treatment,
+      paddingSec: 0,
+      beepSettings: treatment === "beep" ? { frequencyHz: 900, levelDb: -12 } : null,
+      captionMaskPolicy: null,
+      suggestionFingerprint: null,
+      policyVersion: AUTO_CENSOR_POLICY_VERSION,
+      enabled: true,
+    });
+    const document = editorDocumentSchema.parse({
+      version: 2,
+      clipStartSec: 10,
+      clipEndSec: 14,
+      captionPreset: captionPresetSchema.parse({}),
+      transcriptSlice: [],
+      studioEdits: studioEditsSchema.parse({ framing: { mode: "center" } }),
+      brollUrl: null,
+      deletedRanges: [],
+      sceneBlocks: [{
+        schemaVersion: 1,
+        id: "8ab9d330-688f-4574-932c-27ac661245c1",
+        anchorSec: 2,
+        durationSec: 1,
+        content: { kind: "color", color: "#111827" },
+        motion: { entrance: "none", exit: "none" },
+        templateSnapshot: null,
+      }],
+      censorSegments: [
+        makeSegment("dbb670b3-e28a-4514-bf2d-63e56608a4d0", "beep", 10.5, 12.5),
+        makeSegment("2adf79cc-35b2-4de5-85dc-c9ed197763e4", "mute", 11.5, 13),
+      ],
+    });
+    const result = planClipComposition({
+      document,
+      source: {
+        identity: "source:censor-audio",
+        kind: "video",
+        width: 1920,
+        height: 1080,
+        hasAudio: true,
+      },
+      evidence: { automaticLayout: { state: "missing" } },
+      assets: { backgroundImage: { state: "missing" } },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+      targets: [
+        { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },
+      ],
+    });
+
+    if (result.status === "invalid") throw new Error(result.error.code);
+    expect(result.plan.editedDurationSec).toBe(5);
+    expect(result.plan.audioSchedule.dialogueTreatments).toMatchObject([
+      { kind: "beep", activeRange: { startSec: 0.5, endSec: 1.5 }, frequencyHz: 900 },
+      { kind: "mute", activeRange: { startSec: 1.5, endSec: 2 } },
+      { kind: "mute", activeRange: { startSec: 3, endSec: 4 } },
+    ]);
   });
 
   test("scales boundary fades for sub-160ms clips so export filters never overlap", () => {
@@ -270,8 +499,11 @@ describe("Clip Composition Plan", () => {
                     {
                       id: "visual-only",
                       ref: "broll:visual-only",
+										mediaKind: "video" as const,
                       startSec: 2,
                       endSec: 5,
+										sourceStartSec: 0,
+										sourceEndSec: 3,
                     },
                   ],
                 },
@@ -2262,8 +2494,11 @@ describe("Clip Composition Plan", () => {
             {
               id: "manual-1",
               ref: "broll:manual-1",
+							mediaKind: "video",
               startSec: 2,
               endSec: 5.5,
+							sourceStartSec: 0,
+							sourceEndSec: 3.5,
             },
           ],
         },
@@ -2286,22 +2521,84 @@ describe("Clip Composition Plan", () => {
       scene.layers.map((layer) => layer.kind),
     ])).toEqual([
       [0, 2, ["source-video"]],
-      [2, 5.5, ["source-video", "broll-video"]],
+      [2, 5.5, ["source-video", "broll-media"]],
       [5.5, 8, ["source-video"]],
     ]);
     expect(result.plan.targets[0]?.scenes[1]?.layers[1]).toEqual({
       id: "layer:broll:manual-1:vertical",
-      kind: "broll-video",
+      kind: "broll-media",
       sourceRef: "broll:manual-1",
+			mediaKind: "video",
+			sourceRange: { startSec: 0, endSec: 3.5 },
       activeRange: { startSec: 2, endSec: 5.5 },
       destination: { x: 0, y: 0, width: 1080, height: 1920 },
       fit: "cover",
       rotationDeg: 0,
       opacity: 1,
       zIndex: 20,
+      motion: null,
       audio: "source",
     });
   });
+
+	test("keeps an available still placement when another immutable asset is unavailable", () => {
+		const document = editorDocumentSchema.parse({
+			version: 2,
+			clipStartSec: 0,
+			clipEndSec: 10,
+			captionPreset: captionPresetSchema.parse({}),
+			transcriptSlice: [],
+			studioEdits: studioEditsSchema.parse({ framing: { mode: "center" } }),
+			deletedRanges: [],
+		});
+		const result = planClipComposition({
+			document,
+			source: { identity: "source:asset-broll", kind: "video", width: 1920, height: 1080 },
+			evidence: { automaticLayout: { state: "missing" } },
+			assets: {
+				backgroundImage: { state: "missing" },
+				broll: {
+					state: "available",
+					placements: [{
+						id: "still-placement",
+						ref: "visual_asset:still:fingerprint",
+						mediaKind: "image",
+						startSec: 2,
+						endSec: 5,
+						sourceStartSec: null,
+						sourceEndSec: null,
+					}],
+					unavailablePlacements: [{
+						id: "stale-placement",
+						reason: "fingerprint_stale",
+					}],
+				},
+			},
+			capabilities: {
+				automaticSpeakerLayout: true,
+				automaticSpeakerEngineVersion: "shot-layout-v1",
+			},
+			targets: [{ id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 }],
+		});
+
+		expect(result.status).toBe("ready");
+		if (result.status === "invalid") throw new Error(result.error.code);
+		expect(result.plan.editedDurationSec).toBe(10);
+		expect(result.plan.targets[0]?.scenes[1]?.layers[1]).toMatchObject({
+			kind: "broll-media",
+			mediaKind: "image",
+			sourceRange: null,
+		});
+		expect(result.plan.notices).toContainEqual({
+			code: "broll_asset_fingerprint_stale",
+			fidelity: "degraded",
+			targetId: "vertical",
+			sceneId: null,
+			placementId: "stale-placement",
+			effectiveFallback: "center",
+			userActionPossible: true,
+		});
+	});
 
   test("keeps automatic speaker scenes below B-roll and makes Split fallback truthful for the whole target", () => {
     const automaticDocument = editorDocumentSchema.parse({
@@ -2368,7 +2665,15 @@ describe("Clip Composition Plan", () => {
         broll: {
           state: "available" as const,
           placements: [
-            { id: "cutaway", ref: "broll:cutaway", startSec: 2, endSec: 6 },
+			{
+				id: "cutaway",
+				ref: "broll:cutaway",
+				mediaKind: "video",
+				startSec: 2,
+				endSec: 6,
+				sourceStartSec: 0,
+				sourceEndSec: 4,
+			},
           ],
         },
       },
@@ -2401,7 +2706,7 @@ describe("Clip Composition Plan", () => {
     expect(automatic.plan.targets[0]?.scenes).toHaveLength(4);
     expect(automatic.plan.targets[0]?.scenes[1]?.layers).toMatchObject([
       { kind: "source-video", speaker: { role: "single" } },
-      { kind: "broll-video", sourceRef: "broll:cutaway" },
+			{ kind: "broll-media", sourceRef: "broll:cutaway", mediaKind: "video" },
     ]);
     expect(split.plan.evidenceRequests).toEqual([]);
     expect(split.plan.targets[0]?.effectiveMode).toBe("auto");
@@ -2634,6 +2939,289 @@ describe("Clip Composition Plan", () => {
       fidelity: "degraded",
       targetId: "vertical",
       sceneId: null,
+      effectiveFallback: "center",
+      userActionPossible: true,
+    });
+  });
+
+  test("resolves every approved clip transition into canonical target geometry", () => {
+    const transitions = [
+      ["fade", "fade", null],
+      ["fade-black", "fade", null],
+      ["dip-white", "fade", null],
+      ["cross-dissolve", "cross-dissolve", null],
+      ["wipe-left", "wipe", "left"],
+      ["wipe-right", "wipe", "right"],
+      ["wipe-up", "wipe", "up"],
+      ["wipe-down", "wipe", "down"],
+      ["slide-left", "slide", "left"],
+      ["slide-right", "slide", "right"],
+      ["slide-up", "slide", "up"],
+      ["slide-down", "slide", "down"],
+      ["zoom-in", "zoom", "in"],
+      ["zoom-out", "zoom", "out"],
+    ] as const;
+    for (const [type, family, direction] of transitions) {
+      const result = planClipComposition({
+        document: editorDocumentSchema.parse({
+          ...centerDocument(),
+          clipStartSec: 0,
+          clipEndSec: 0.5,
+          deletedRanges: [],
+          studioEdits: studioEditsSchema.parse({
+            framing: { mode: "center" },
+            transition: { type, durationSec: 0.4 },
+          }),
+        }),
+        source: {
+          identity: `source:transition:${type}`,
+          kind: "video",
+          width: 1920,
+          height: 1080,
+        },
+        evidence: { automaticLayout: { state: "missing" } },
+        assets: { backgroundImage: { state: "missing" } },
+        capabilities: {
+          automaticSpeakerLayout: true,
+          automaticSpeakerEngineVersion: "shot-layout-v1",
+        },
+        targets: [
+          { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },
+        ],
+      });
+      if (result.status === "invalid") throw new Error(result.error.code);
+      const layer = result.plan.targets[0]!.visualLayers.find(
+        (candidate) => candidate.kind === "transition",
+      );
+      expect(layer).toMatchObject({
+        kind: "transition",
+        transition: type,
+        effect: {
+          family,
+          direction,
+          canvas: { width: 1080, height: 1920 },
+        },
+        windows: {
+          fadeIn: { startSec: 0, endSec: 0.25 },
+          fadeOut: { startSec: 0.25, endSec: 0.5 },
+        },
+      });
+    }
+  });
+
+  test("resolves Scene and B-roll motion once and evaluates a static reduced-motion state", () => {
+    const sceneId = "8ab9d330-688f-4574-932c-27ac661245c1";
+    const imageId = "141b738e-f106-4da1-b670-8b71ff7f0a58";
+    const fingerprint = "a".repeat(64);
+    const document = editorDocumentSchema.parse({
+      ...centerDocument(),
+      clipStartSec: 0,
+      clipEndSec: 6,
+      deletedRanges: [],
+      studioEdits: studioEditsSchema.parse({ framing: { mode: "center" } }),
+      brollUrl: "https://example.com/cutaway.mp4",
+      sceneBlocks: [{
+        id: sceneId,
+        schemaVersion: 1,
+        anchorSec: 0,
+        durationSec: 2,
+        content: {
+          kind: "image",
+          asset: { kind: "visual_asset", id: imageId, fingerprint },
+          fit: "cover",
+          backgroundColor: "#111827",
+        },
+        motion: { entrance: "ken-burns-in", exit: "fade" },
+        templateSnapshot: null,
+      }],
+      mediaMotions: [{
+        schemaVersion: 1,
+        id: "2adf79cc-35b2-4de5-85dc-c9ed197763e4",
+        target: { kind: "broll" },
+        startSec: 3,
+        endSec: 6,
+        entrance: "pan-left",
+        exit: "scale-out",
+        enabled: true,
+      }],
+    });
+    const result = planClipComposition({
+      document,
+      source: { identity: "source:motion", kind: "video", width: 1920, height: 1080 },
+      evidence: { automaticLayout: { state: "missing" } },
+      assets: {
+        backgroundImage: { state: "missing" },
+        broll: {
+          state: "available",
+			placements: [{
+				id: "manual",
+				ref: "broll:manual",
+				mediaKind: "video",
+				startSec: 3,
+				endSec: 6,
+				sourceStartSec: 0,
+				sourceEndSec: 3,
+			}],
+        },
+        sceneVisuals: { [sceneId]: { state: "available", ref: "scene:image" } },
+      },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+      targets: [{ id: "small", aspectRatio: "9:16", width: 100, height: 200 }],
+    });
+    if (result.status === "invalid") throw new Error(result.error.code);
+    const inserted = result.plan.targets[0]!.scenes
+      .flatMap((scene) => scene.layers)
+      .find((layer) => layer.kind === "inserted-scene");
+    if (inserted?.kind !== "inserted-scene" || !inserted.motion) {
+      throw new Error("missing resolved Scene motion");
+    }
+    expect(inserted.motion).toMatchObject({
+      version: 1,
+      activeRange: { startSec: 0, endSec: 2 },
+      clippingBounds: { x: 0, y: 0, width: 100, height: 200 },
+      entrance: {
+        family: "ken-burns",
+        range: { startSec: 0, endSec: 0.5 },
+        from: { crop: { x: 0, y: 0, width: 100, height: 200 } },
+        to: { crop: { x: 6, y: 12, width: 88, height: 176 } },
+      },
+      exit: {
+        family: "fade",
+        range: { startSec: 1.5, endSec: 2 },
+      },
+    });
+    expect(evaluateCompositionMotion(inserted.motion, 1, { reducedMotion: true }))
+      .toMatchObject({
+        animated: false,
+        opacity: 1,
+        scale: 1,
+        crop: { x: 6, y: 12, width: 88, height: 176 },
+      });
+
+    const broll = result.plan.targets[0]!.scenes
+      .flatMap((scene) => scene.layers)
+		.find((layer) => layer.kind === "broll-media");
+		expect(broll?.kind === "broll-media" ? broll.motion : null).toMatchObject({
+      activeRange: { startSec: 3, endSec: 6 },
+      entrance: { family: "pan", direction: "left" },
+      exit: { family: "scale" },
+    });
+  });
+
+  test("keeps Ken Burns crop and scale phases orthogonal across mixed edges", () => {
+    const motion = resolveCompositionMotion({
+      motion: { entrance: "ken-burns-in", exit: "scale-out" },
+      activeRange: { startSec: 0, endSec: 2 },
+      clippingBounds: { x: 0, y: 0, width: 100, height: 200 },
+    });
+    if (!motion) throw new Error("expected resolved motion");
+
+    expect(evaluateCompositionMotion(motion, 1)).toMatchObject({
+      scale: 1,
+      crop: { x: 6, y: 12, width: 88, height: 176 },
+    });
+    expect(evaluateCompositionMotion(motion, 2)).toMatchObject({
+      scale: 1.08,
+      crop: { x: 6, y: 12, width: 88, height: 176 },
+    });
+  });
+
+  test("resolves every media-motion direction at exact short-interval boundaries", () => {
+    const entrances = [
+      ["fade", "fade", null],
+      ["scale-in", "scale", "in"],
+      ["pan-left", "pan", "left"],
+      ["pan-right", "pan", "right"],
+      ["pan-up", "pan", "up"],
+      ["pan-down", "pan", "down"],
+      ["ken-burns-in", "ken-burns", "in"],
+    ] as const;
+    const exits = [
+      ["fade", "fade", null],
+      ["scale-out", "scale", "out"],
+      ["pan-left", "pan", "left"],
+      ["pan-right", "pan", "right"],
+      ["pan-up", "pan", "up"],
+      ["pan-down", "pan", "down"],
+      ["ken-burns-out", "ken-burns", "out"],
+    ] as const;
+    for (const [entrance, family, direction] of entrances) {
+      const motion = resolveCompositionMotion({
+        motion: { entrance, exit: "fade" },
+        activeRange: { startSec: 2, endSec: 2.2 },
+        clippingBounds: { x: 0, y: 0, width: 100, height: 200 },
+      });
+      expect(motion?.entrance).toMatchObject({
+        family,
+        direction,
+        range: { startSec: 2, endSec: 2.1 },
+      });
+      expect(evaluateCompositionMotion(motion!, 2).animated).toBe(true);
+    }
+    for (const [exit, family, direction] of exits) {
+      const motion = resolveCompositionMotion({
+        motion: { entrance: "fade", exit },
+        activeRange: { startSec: 2, endSec: 2.2 },
+        clippingBounds: { x: 0, y: 0, width: 100, height: 200 },
+      });
+      expect(motion?.exit).toMatchObject({
+        family,
+        direction,
+        range: { startSec: 2.1, endSec: 2.2 },
+      });
+      expect(evaluateCompositionMotion(motion!, 2.2).animated).toBe(true);
+    }
+    expect(resolveCompositionMotion({
+      motion: { entrance: "none", exit: "none" },
+      activeRange: { startSec: 2, endSec: 2.2 },
+      clippingBounds: { x: 0, y: 0, width: 100, height: 200 },
+    })).toBeNull();
+  });
+
+  test("suppresses a conflicting Scene entrance with one typed plan notice", () => {
+    const sceneId = "8ab9d330-688f-4574-932c-27ac661245c1";
+    const result = planClipComposition({
+      document: editorDocumentSchema.parse({
+        ...centerDocument(),
+        clipStartSec: 0,
+        clipEndSec: 3,
+        deletedRanges: [],
+        studioEdits: studioEditsSchema.parse({
+          framing: { mode: "center" },
+          transition: { type: "fade", durationSec: 0.4 },
+        }),
+        sceneBlocks: [{
+          id: sceneId,
+          schemaVersion: 1,
+          anchorSec: 0,
+          durationSec: 1,
+          content: { kind: "color", color: "#111827" },
+          motion: { entrance: "fade", exit: "none" },
+          templateSnapshot: null,
+        }],
+      }),
+      source: { identity: "source:conflict", kind: "video", width: 1920, height: 1080 },
+      evidence: { automaticLayout: { state: "missing" } },
+      assets: { backgroundImage: { state: "missing" } },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+      targets: [{ id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 }],
+    });
+    if (result.status === "invalid") throw new Error(result.error.code);
+    const inserted = result.plan.targets[0]!.scenes[0]!.layers.find(
+      (layer) => layer.kind === "inserted-scene",
+    );
+    expect(inserted?.kind === "inserted-scene" ? inserted.motion : "missing").toBeNull();
+    expect(result.plan.notices).toContainEqual({
+      code: "motion_scene_transition_conflict",
+      fidelity: "degraded",
+      targetId: "vertical",
+      sceneId,
       effectiveFallback: "center",
       userActionPossible: true,
     });
