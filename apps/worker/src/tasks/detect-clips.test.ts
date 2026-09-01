@@ -7,6 +7,7 @@ import {
 import {
   buildMarketCompliantClipCandidates,
   buildCaptionOnlyTranscriptSlice,
+  classifyOpenAiHttpFailure,
   resolveCandidateCountTarget,
   formatTimestamp,
   formatTranscriptForLlm,
@@ -48,6 +49,29 @@ function makeUtterances(durationSec: number): TranscriptUtterance[] {
 }
 
 describe("clip detection helpers", () => {
+  test("treats exhausted OpenAI credits as permanent, not a rate limit", () => {
+    expect(
+      classifyOpenAiHttpFailure(429, {
+        error: {
+          type: "insufficient_quota",
+          code: "credit_balance_exhausted",
+        },
+      }),
+    ).toEqual({
+      code: "openai_quota_exhausted",
+      disposition: "permanent",
+    });
+
+    expect(
+      classifyOpenAiHttpFailure(429, {
+        error: { type: "rate_limit_error", code: "rate_limit_exceeded" },
+      }),
+    ).toEqual({
+      code: "openai_request_failed",
+      disposition: "retryable",
+    });
+  });
+
   test("formats one-hour-plus timestamps with absolute seconds and HH:MM:SS", () => {
     const utterances = [
       {

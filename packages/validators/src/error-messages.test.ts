@@ -11,6 +11,13 @@ describe("userErrorMessage", () => {
     );
   });
 
+  test("explains how to recover from exhausted OpenAI credits", () => {
+    const message = userErrorMessage("openai_quota_exhausted");
+    expect(message).toBe(USER_ERROR_MESSAGES.openai_quota_exhausted);
+    expect(message).toContain("no credits");
+    expect(message).toContain("then retry detection");
+  });
+
   test("distinguishes invalid clip lengths from retryable edit contention", () => {
     const invalid = userErrorMessage("editor_boundaries_invalid");
     const contention = userErrorMessage("retryable_contention");

@@ -23,9 +23,10 @@ import {
   clipLayoutAnalysisFailureSchema,
   clipRenderResolutionSchema,
   clipTitleSuggestionsLlmResponseSchema,
-  contentPackSchema,
-  DEFAULT_CAPTION_PRESET,
-  getCaptionPresetById,
+	contentPackSchema,
+	DEFAULT_CAPTION_PRESET,
+	EDITOR_DOCUMENT_VERSION,
+	getCaptionPresetById,
   getEffectiveClipTiming,
   isBrandDefaultCaptionPresetId,
   normalizeTranscriptSliceForClip,
@@ -941,16 +942,20 @@ export class ClipService {
     );
 
     const detectedClipRows = clips.map((clip, i) => {
-      const editorDocument = encodeClipEditorDocumentForStorage(
-        {
-          clipStartSec: clip.startSec,
-          clipEndSec: clip.endSec,
+		const editorDocument = encodeClipEditorDocumentForStorage(
+			{
+				version: EDITOR_DOCUMENT_VERSION,
+				clipStartSec: clip.startSec,
+				clipEndSec: clip.endSec,
           captionPreset: resolvedCaptionPreset ?? DEFAULT_CAPTION_PRESET,
           transcriptSlice: clip.transcriptSlice,
           studioEdits: studioEditsSchema.parse(undefined),
-          brollUrl: null,
-          deletedRanges: [],
-        },
+				brollUrl: null,
+				deletedRanges: [],
+				sceneBlocks: [],
+				censorSegments: [],
+				mediaMotions: [],
+			},
         project?.sourceDurationSeconds ?? null,
       );
       return {
@@ -1662,16 +1667,20 @@ export class ClipService {
     const studioEditsForNewClip = planStudioEditsForClipFromSelection(
       sourceDocument.studioEdits,
     );
-    const selectionDocument = encodeClipEditorDocumentForStorage(
-      {
-        clipStartSec: plan.startSec,
+	const selectionDocument = encodeClipEditorDocumentForStorage(
+		{
+			version: EDITOR_DOCUMENT_VERSION,
+			clipStartSec: plan.startSec,
         clipEndSec: plan.endSec,
         captionPreset: sourceDocument.captionPreset,
         transcriptSlice: plan.transcriptSlice,
         studioEdits: studioEditsForNewClip ?? studioEditsSchema.parse(undefined),
-        brollUrl: sourceDocument.brollUrl,
-        deletedRanges: [],
-      },
+			brollUrl: sourceDocument.brollUrl,
+			deletedRanges: [],
+			sceneBlocks: [],
+			censorSegments: [],
+			mediaMotions: [],
+		},
       project.sourceDurationSeconds,
     );
 

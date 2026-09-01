@@ -230,6 +230,8 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 	// suite, which previously fell through to the generic message.
 	openai_not_configured:
 		"AI features aren't configured on this server yet. Add an OpenAI API key and try again.",
+	openai_quota_exhausted:
+		"Clip detection is paused because the OpenAI API account has no credits. Add credits, then retry detection.",
 	openai_request_failed:
 		"Our AI provider didn't respond. Please try again in a moment.",
 	openai_bad_output:

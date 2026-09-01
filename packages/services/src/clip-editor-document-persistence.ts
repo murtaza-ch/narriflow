@@ -955,8 +955,8 @@ function toPrismaJson(value: unknown): Prisma.InputJsonValue {
 }
 
 export function encodeClipEditorDocumentForStorage(
-  value: unknown,
-  sourceDurationSec: number | null,
+	value: EditorDocument,
+	sourceDurationSec: number | null,
 ): {
   startSec: number;
   endSec: number;

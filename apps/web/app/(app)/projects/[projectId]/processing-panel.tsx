@@ -1,6 +1,12 @@
 "use client";
 
-import { type ReactNode, useOptimistic, useState, useTransition } from "react";
+import {
+	type ReactNode,
+	useEffect,
+	useOptimistic,
+	useState,
+	useTransition,
+} from "react";
 import Link from "next/link";
 import { Box, Flex, Stack, Text } from "@chakra-ui/react";
 import { Button } from "@narriflow/ui/components/button";
@@ -188,10 +194,23 @@ export interface ProcessingPanelProps {
  */
 export function ProcessingPanel(props: ProcessingPanelProps) {
   const { latestByStage } = useProjectEvents();
-  // Stable across re-renders (not regenerated on every SSE-driven update) —
-  // only read at form submission time.
-  const [regenerateIdempotencyKey] = useState(() => crypto.randomUUID());
-  const [transcribeRetryKey] = useState(() => crypto.randomUUID());
+  const [regenerateIdempotencyKey, setRegenerateIdempotencyKey] = useState(() =>
+    crypto.randomUUID(),
+  );
+  const [transcribeRetryKey, setTranscribeRetryKey] = useState(() =>
+    crypto.randomUUID(),
+  );
+  const liveDetectionRunId = latestByStage.moment_detection?.workflowRunId;
+  const liveTranscriptRunId = latestByStage.stt?.workflowRunId;
+
+  // One key belongs to one admitted run. Rotate when SSE reports a different
+  // run so a deliberate retry cannot resolve to the previous terminal row.
+  useEffect(() => {
+    if (liveDetectionRunId) setRegenerateIdempotencyKey(crypto.randomUUID());
+  }, [liveDetectionRunId]);
+  useEffect(() => {
+    if (liveTranscriptRunId) setTranscribeRetryKey(crypto.randomUUID());
+  }, [liveTranscriptRunId]);
 
   const isIngestFailed = props.ingestStatus === "failed";
   const ingestStageWordLive = liveIngestStageWord(latestByStage, props.ingestStatus);

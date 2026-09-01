@@ -955,6 +955,50 @@ function isRetryableStatus(status: number): boolean {
   return status === 429 || status >= 500;
 }
 
+type OpenAiErrorPayload = {
+  error?: {
+    code?: string | null;
+    message?: string;
+    type?: string | null;
+  };
+};
+
+const OPENAI_QUOTA_ERROR_MARKERS = new Set([
+  "credit_balance_exhausted",
+  "insufficient_quota",
+]);
+
+export function classifyOpenAiHttpFailure(
+  status: number,
+  payload: OpenAiErrorPayload | null,
+): { code: string; disposition: "retryable" | "permanent" } {
+  const providerCode = payload?.error?.code ?? null;
+  const providerType = payload?.error?.type ?? null;
+  const quotaExhausted =
+    (providerCode !== null && OPENAI_QUOTA_ERROR_MARKERS.has(providerCode)) ||
+    (providerType !== null && OPENAI_QUOTA_ERROR_MARKERS.has(providerType));
+
+  if (status === 429 && quotaExhausted) {
+    return { code: "openai_quota_exhausted", disposition: "permanent" };
+  }
+
+  return {
+    code: "openai_request_failed",
+    disposition: workflowHttpFailureDisposition(status),
+  };
+}
+
+async function isRetryableOpenAiResponse(response: Response): Promise<boolean> {
+  if (!isRetryableStatus(response.status)) return false;
+  if (response.status !== 429) return true;
+
+  const payload = (await response
+    .clone()
+    .json()
+    .catch(() => null)) as OpenAiErrorPayload | null;
+  return classifyOpenAiHttpFailure(response.status, payload).disposition === "retryable";
+}
+
 /** ±20% jitter so concurrent chunks/workers don't retry in lockstep. */
 function jitter(ms: number): number {
   return Math.round(ms * (0.9 + Math.random() * 0.2));
@@ -979,7 +1023,7 @@ async function fetchWithRetry(
         ...init,
         signal: AbortSignal.timeout(options.timeoutMs),
       });
-      if (attempt >= maxRetries || !isRetryableStatus(response.status)) {
+      if (attempt >= maxRetries || !(await isRetryableOpenAiResponse(response))) {
         return response;
       }
       log("info", "openai_fetch_retry", {
@@ -1077,17 +1121,22 @@ async function callOpenAI(
       input_tokens?: number;
       output_tokens?: number;
     };
-    error?: { message?: string };
+    error?: {
+      code?: string | null;
+      message?: string;
+      type?: string | null;
+    };
   } | null;
 
   if (!response.ok || !payload) {
     const message =
       payload?.error?.message ??
       `OpenAI request failed with status ${response.status}`;
+    const failure = classifyOpenAiHttpFailure(response.status, payload);
     throw new WorkflowWorkerError(
-      "openai_request_failed",
+      failure.code,
       message,
-      workflowHttpFailureDisposition(response.status),
+      failure.disposition,
     );
   }
 
