@@ -3489,6 +3489,7 @@ export function buildBrollVideoArgs(params: {
       0.1,
       cutaway.endSec - cutaway.startSec,
     );
+    if (cutaway.kind === "image") args.push("-loop", "1");
     args.push("-t", windowDurationSec.toFixed(3), "-i", cutaway.path);
   }
 
@@ -5299,13 +5300,16 @@ async function executeClipRenderAttempt(
         brollUrl: editorDocument.brollUrl,
         deletedRanges,
       };
-      const sceneAssetReferences = [...new Map(
-        compositionDocument.sceneBlocks.flatMap((block) =>
+      const sceneAssetReferences = [...new Map([
+        ...compositionDocument.sceneBlocks.flatMap((block) =>
           block.content.kind === "image" || block.content.kind === "video"
             ? [[block.content.asset.id, { ...block.content.asset, kind: block.content.kind }] as const]
             : [],
         ),
-      ).values()];
+        ...studioEdits.visualBroll.map((placement) =>
+          [placement.asset.id, { ...placement.asset, kind: "image" as const }] as const,
+        ),
+      ]).values()];
       const sceneFontReferences = [...new Map(
         compositionDocument.sceneBlocks.flatMap((block) =>
           block.content.kind === "text" && block.content.fontAsset
@@ -6656,7 +6660,7 @@ async function executeClipRenderAttempt(
         ...(logo
           ? [{ assetClass: "logo" as const, failureCode: "brand_logo_command_failed" }]
           : []),
-        ...(brollPlan
+        ...(brollPlan || studioEdits.visualBroll.length > 0
           ? [{ assetClass: "broll" as const, failureCode: "broll_command_failed" }]
           : []),
         ...(musicPlan
@@ -6701,7 +6705,10 @@ async function executeClipRenderAttempt(
             soundEffects?: boolean;
           } = {},
         ) => {
-          const brollAvailable = availability.broll ?? Boolean(brollPlan);
+          const visualBrollAvailable = studioEdits.visualBroll.every((placement) =>
+            Boolean(resolvedSceneAssets[compositionAssetRef("visual_asset", `${placement.asset.id}:${placement.asset.fingerprint}`)]),
+          );
+          const brollAvailable = availability.broll ?? (Boolean(brollPlan) || visualBrollAvailable);
           const logoAvailable = availability.logo ?? Boolean(brandLogo);
           const musicAvailable = availability.music ?? Boolean(musicPlan);
           const soundEffectsAvailable =
@@ -6770,7 +6777,20 @@ async function executeClipRenderAttempt(
                   ];
                 }),
               ),
-              ...(brollPlan && brollAvailable
+              ...(studioEdits.visualBroll.length > 0 && brollAvailable
+                ? {
+                    broll: {
+                      state: "available" as const,
+                      placements: studioEdits.visualBroll.map((placement) => ({
+                        id: placement.id,
+                        ref: compositionAssetRef("visual_asset", `${placement.asset.id}:${placement.asset.fingerprint}`),
+                        kind: "image" as const,
+                        startSec: placement.startSec,
+                        endSec: placement.endSec,
+                      })),
+                    },
+                  }
+                : brollPlan && brollAvailable
                 ? {
                     broll: {
                       state: "available" as const,
@@ -6782,7 +6802,7 @@ async function executeClipRenderAttempt(
                       })),
                     },
                   }
-                : userBrollUrl || brollPlan
+                : userBrollUrl || brollPlan || studioEdits.visualBroll.length > 0
                   ? { broll: { state: "failed" as const } }
                   : {}),
               ...(brandLogo && logoAvailable && plannedLogoSettings
@@ -7137,10 +7157,17 @@ async function executeClipRenderAttempt(
             targetId: output.clipRenderId,
           };
           try {
-            const resolvedBrollAssets = Object.fromEntries(
-              plan?.cutaways.map((cutaway) => [cutaway.ref, cutaway.path]) ?? [],
-            );
-            const ffmpegArgs = plan
+            const resolvedBrollAssets = {
+              ...Object.fromEntries(
+                plan?.cutaways.map((cutaway) => [cutaway.ref, cutaway.path]) ?? [],
+              ),
+              ...Object.fromEntries(studioEdits.visualBroll.flatMap((placement) => {
+                const ref = compositionAssetRef("visual_asset", `${placement.asset.id}:${placement.asset.fingerprint}`);
+                const asset = resolvedSceneAssets[ref];
+                return asset ? [[ref, asset.path] as const] : [];
+              })),
+            };
+            const ffmpegArgs = Object.keys(resolvedBrollAssets).length > 0
               ? buildBrollVideoArgs({
                   sourcePath,
                   resolvedBrollAssets,

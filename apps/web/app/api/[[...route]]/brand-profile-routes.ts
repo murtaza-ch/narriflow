@@ -14,6 +14,11 @@ import type {
   SceneTemplateUpdateInput,
 } from "@narriflow/validators";
 import {
+  createGeneratedImageSchema,
+  generatedMediaJobIdSchema,
+  listGeneratedMediaJobsSchema,
+} from "@narriflow/validators";
+import {
   assertProgramWriteEnabled,
   brandFontService,
   brandProfileService,
@@ -21,9 +26,13 @@ import {
   BrandProfileNotFoundError,
   ProgramWriteDisabledError,
   visualAssetService,
+  VisualAssetReferenceError,
   sceneTemplateService,
   SceneTemplateError,
   type BrandActorScope,
+  generatedMediaService,
+  GeneratedMediaJobError,
+  GeneratedMediaProviderError,
 } from "@narriflow/services";
 import { authenticatedHonoInput } from "@/lib/authenticated-request-hono";
 
@@ -32,6 +41,24 @@ interface BrandProfileRouteDependencies {
 }
 
 function failure(error: unknown, fallback: string) {
+  if (error instanceof GeneratedMediaJobError) {
+    const status = error.code === "generated_media_job_not_found"
+      ? 404 as const
+      : error.code === "generated_media_idempotency_conflict"
+        ? 409 as const
+        : error.code === "generated_media_entitlement_required" || error.code === "generated_media_forbidden"
+          ? 403 as const
+          : error.code === "generated_media_daily_limit_reached" || error.code === "generated_media_trial_limit_reached" || error.code === "generated_media_concurrency_limit_reached"
+            ? 429 as const
+            : 400 as const;
+    return { status, body: { error: error.code, message: error.message } };
+  }
+  if (error instanceof GeneratedMediaProviderError) {
+    return { status: 503 as const, body: { error: error.code, message: "Image generation is temporarily unavailable." } };
+  }
+  if (error instanceof VisualAssetReferenceError) {
+    return { status: 409 as const, body: { error: error.code, message: error.message } };
+  }
   if (error instanceof BrandProfileNotFoundError) return { status: 404 as const, body: { error: error.code } };
   if (error instanceof BrandProfileConflictError) return { status: 409 as const, body: { error: error.code, message: error.message } };
   if (error instanceof ProgramWriteDisabledError) return { status: 503 as const, body: { error: error.code, message: error.message } };
@@ -170,6 +197,69 @@ export function createBrandProfileRoutes(dependencies: BrandProfileRouteDependen
       return c.json({ ok: true }, 200);
     } catch (error) {
       const result = failure(error, "visual_asset_delete_failed");
+      return c.json(result.body, result.status);
+    }
+  });
+
+  app.get("/projects/:projectId/generated-media/jobs", async (c) => {
+    try {
+      const input = authenticatedHonoInput<{
+        projectId: string;
+        clipId?: string;
+      }>(c);
+      const query = listGeneratedMediaJobsSchema.parse(input);
+      const actor = dependencies.getActor(c);
+      const [jobs, usage] = await Promise.all([
+        generatedMediaService.list(actor, input.projectId, query.clipId),
+        generatedMediaService.usageSummary(actor),
+      ]);
+      return c.json({ jobs, usage }, 200);
+    } catch (error) {
+      const result = failure(error, "generated_media_list_failed");
+      return c.json(result.body, result.status);
+    }
+  });
+
+  app.post("/projects/:projectId/generated-media/jobs", async (c) => {
+    const { projectId, body } = authenticatedHonoInput<{ projectId: string; body: unknown }>(c);
+    try {
+      assertProgramWriteEnabled("generated_media");
+      const input = createGeneratedImageSchema.parse(body);
+      if (input.projectId !== projectId) throw new GeneratedMediaJobError("generated_media_origin_not_found");
+      return c.json(await generatedMediaService.create(dependencies.getActor(c), input), 202);
+    } catch (error) {
+      const result = failure(error, "generated_media_create_failed");
+      return c.json(result.body, result.status);
+    }
+  });
+
+  app.get("/projects/:projectId/generated-media/jobs/:id", async (c) => {
+    const { projectId, id } = authenticatedHonoInput<{ projectId: string; id: string }>(c);
+    try {
+      return c.json(await generatedMediaService.get(dependencies.getActor(c), generatedMediaJobIdSchema.parse(id), projectId), 200);
+    } catch (error) {
+      const result = failure(error, "generated_media_read_failed");
+      return c.json(result.body, result.status);
+    }
+  });
+
+  app.post("/projects/:projectId/generated-media/jobs/:id/cancel", async (c) => {
+    const { projectId, id } = authenticatedHonoInput<{ projectId: string; id: string }>(c);
+    try {
+      return c.json(await generatedMediaService.cancel(dependencies.getActor(c), generatedMediaJobIdSchema.parse(id), projectId), 200);
+    } catch (error) {
+      const result = failure(error, "generated_media_cancel_failed");
+      return c.json(result.body, result.status);
+    }
+  });
+
+  app.delete("/projects/:projectId/generated-media/jobs/:id/result", async (c) => {
+    const { projectId, id } = authenticatedHonoInput<{ projectId: string; id: string }>(c);
+    try {
+      await generatedMediaService.deleteResult(dependencies.getActor(c), generatedMediaJobIdSchema.parse(id), projectId);
+      return c.json({ ok: true }, 200);
+    } catch (error) {
+      const result = failure(error, "generated_media_delete_failed");
       return c.json(result.body, result.status);
     }
   });

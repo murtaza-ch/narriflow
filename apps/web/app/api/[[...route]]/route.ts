@@ -170,6 +170,19 @@ function introducedSceneReferences(current: EditorDocument, next: EditorDocument
     return JSON.stringify(previousAsset) !== JSON.stringify(nextAsset);
   });
 }
+
+function introducedVisualAssetIds(current: EditorDocument, next: EditorDocument): string[] {
+  const ids = (document: EditorDocument) => [
+    ...document.sceneBlocks.flatMap((scene) =>
+      scene.content.kind === "image" || scene.content.kind === "video"
+        ? [scene.content.asset.id]
+        : [],
+    ),
+    ...document.studioEdits.visualBroll.map((placement) => placement.asset.id),
+  ];
+  const currentIds = new Set(ids(current));
+  return [...new Set(ids(next).filter((id) => !currentIds.has(id)))];
+}
 app.use("*", authenticatedRequestHonoMiddleware);
 billingService.validateConfiguration({ surface: "web" });
 
@@ -1172,9 +1185,11 @@ app.put("/projects/:id/clips/:clipId/editor", async (c) => {
     if (sceneError) return c.json({ error: sceneError.error, message: sceneError.message }, sceneError.status);
     const changedScenes = changedSceneBlocks(current.document, parsed.data.document);
     const introducedScenes = introducedSceneReferences(current.document, parsed.data.document);
+    const introducedAssetIds = introducedVisualAssetIds(current.document, parsed.data.document);
     await Promise.all([
       visualAssetService.assertSceneReferencesWithPolicy(appUser, changedScenes, true),
       visualAssetService.assertSceneReferences(appUser, introducedScenes),
+      visualAssetService.assertVisualBrollReferences(appUser, parsed.data.document.studioEdits.visualBroll),
       brandFontService.assertSceneReferences(appUser, projectId, changedScenes, { allowDeleted: true, requireActiveProfile: false }),
       brandFontService.assertSceneReferences(appUser, projectId, introducedScenes, { allowDeleted: false, requireActiveProfile: true }),
     ]);
@@ -1188,6 +1203,11 @@ app.put("/projects/:id/clips/:clipId/editor", async (c) => {
         document: parsed.data.document,
       },
     });
+    await visualAssetService.recordGeneratedInsertionsBestEffort(
+      appUser,
+      projectId,
+      introducedAssetIds,
+    );
     const clip = await clipService.getClipSnapshot(
       appUser.workspaceOwnerUserId,
       projectId,

@@ -81,5 +81,52 @@ describe("program analytics metadata", () => {
         metadata: { profileId: crypto.randomUUID(), profileName: "secret" },
       }),
     ).toThrow();
+
+    expect(
+      brandProgramAnalyticsEventSchema.parse({
+        type: "generated_asset_completed",
+        workspaceId: crypto.randomUUID(),
+        actorUserId: crypto.randomUUID(),
+        metadata: {
+          generatedMediaJobId: crypto.randomUUID(),
+          assetId: crypto.randomUUID(),
+          assetKind: "image",
+          aspectRatio: "9:16",
+          planTier: "creator",
+          outcome: "succeeded",
+        },
+      }).type,
+    ).toBe("generated_asset_completed");
+    expect(() =>
+      brandProgramAnalyticsEventSchema.parse({
+        type: "generated_asset_completed",
+        workspaceId: crypto.randomUUID(),
+        actorUserId: crypto.randomUUID(),
+        metadata: { prompt: "private transcript context" },
+      }),
+    ).toThrow();
+
+    expect(
+      brandProgramAnalyticsEventSchema.parse({
+        type: "generated_asset_settled",
+        workspaceId: crypto.randomUUID(),
+        actorUserId: crypto.randomUUID(),
+        projectId: crypto.randomUUID(),
+        metadata: {
+          generatedMediaJobId: crypto.randomUUID(),
+          assetKind: "image",
+          aspectRatio: "16:9",
+          planTier: "business",
+          outcome: "failed",
+          providerAlias: "openai",
+          modelAlias: "gpt-image-2",
+          lifecycleStatus: "rejected",
+          latencyBucket: "10_to_30s",
+          retryCount: 1,
+          moderationOutcome: "rejected",
+          usageUnits: 0,
+        },
+      }).type,
+    ).toBe("generated_asset_settled");
   });
 });

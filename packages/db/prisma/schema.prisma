@@ -260,6 +260,7 @@ enum AnalyticsEventType {
   campaign_approved
   campaign_scheduled
   generated_asset_completed
+  generated_asset_settled
   generated_asset_inserted
   brand_profile_created
   brand_profile_applied
@@ -284,6 +285,28 @@ enum VisualAssetKind {
 enum VisualAssetProvenance {
   uploaded
   generated
+}
+
+enum GeneratedMediaJobStatus {
+  queued
+  running
+  waiting
+  completed
+  failed
+  rejected
+  cancelled
+}
+
+enum GeneratedMediaUsageStatus {
+  reserved
+  finalized
+  released
+}
+
+enum GeneratedMediaPromptOrigin {
+  transcript_selection
+  broll_cue
+  manual
 }
 
 enum BrandProfileAssetRole {
@@ -366,6 +389,7 @@ model Project {
   socialPosts             SocialPost[]
   socialPostMetrics       SocialPostMetric[]
   analyticsEvents         ProjectAnalyticsEvent[]
+  generatedMediaJobs      GeneratedMediaJob[]
   clipDubs                ClipDub[]
   autopilotEpisodes       AutopilotEpisode[]
   notificationLedgers     NotificationLedger[]
@@ -707,6 +731,8 @@ model User {
   updatedBrandProfiles       BrandProfile[]              @relation("BrandProfilesUpdatedBy")
   visualAssets               VisualAsset[]               @relation("UserVisualAssets")
   createdVisualAssets        VisualAsset[]               @relation("VisualAssetsCreatedBy")
+  createdGeneratedMediaJobs  GeneratedMediaJob[]         @relation("GeneratedMediaJobsCreatedBy")
+  generatedMediaUsage        GeneratedMediaUsageReservation[]
   brandFonts                 BrandFont[]                 @relation("UserBrandFonts")
   confirmedBrandFonts        BrandFont[]                 @relation("BrandFontLicenseConfirmedBy")
   audioAssets                AudioAsset[]
@@ -747,6 +773,8 @@ model Workspace {
   brandTemplates             BrandTemplate[]
   brandProfiles              BrandProfile[]              @relation("WorkspaceBrandProfiles")
   visualAssets               VisualAsset[]
+  generatedMediaJobs         GeneratedMediaJob[]
+  generatedMediaUsage        GeneratedMediaUsageReservation[]
   brandFonts                 BrandFont[]
   audioAssets                AudioAsset[]
   audioAssetFavorites        AudioAssetFavorite[]
@@ -1167,6 +1195,7 @@ model Clip {
   exports         ClipExport[]
   campaignOperationItems CampaignOperationItem[]
   reviewRoundItems ReviewRoundItem[]
+  generatedMediaJobs GeneratedMediaJob[]
 
   @@unique([projectId, workflowRunId, index])
   @@index([projectId, viralityScore(sort: Desc)])
@@ -1693,11 +1722,91 @@ model VisualAsset {
   createdBy User                @relation("VisualAssetsCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
   profiles  BrandProfileAsset[]
   sceneTemplates SceneTemplate[]
+  generatedMediaJobs GeneratedMediaJob[]
 
   @@unique([workspaceId, fingerprint])
   @@unique([userId, fingerprint])
   @@index([workspaceId, deletedAt, createdAt])
   @@index([userId, deletedAt, createdAt])
+}
+
+model GeneratedMediaJob {
+  id                    String                       @id @default(uuid()) @db.Uuid
+  workspaceId           String                       @db.Uuid
+  projectId             String                       @db.Uuid
+  clipId                String?                      @db.Uuid
+  createdByUserId       String                       @db.Uuid
+  workspaceOwnerUserId  String                       @db.Uuid
+  actorRole             String
+  actorStatus           String
+  pricingTier           String
+  isPersonalWorkspace   Boolean
+  mediaKind             String                       @default("image")
+  idempotencyKey        String
+  requestFingerprint    String
+  protectedPrompt       String                       @db.Text
+  promptFingerprint     String
+  promptOrigin          GeneratedMediaPromptOrigin
+  sourceStartSec        Float?
+  sourceEndSec          Float?
+  sourceCueAtSec        Float?
+  aspectRatio           String
+  style                 String
+  title                 String
+  status                GeneratedMediaJobStatus      @default(queued)
+  moderationStatus      String                       @default("pending")
+  usageStatus           GeneratedMediaUsageStatus    @default(reserved)
+  usageReservationId    String                       @unique
+  provider              String
+  providerModel         String
+  providerRef           String?
+  providerUsageImages   Int?
+  providerResultContentType String?
+  resultAssetId         String?                      @db.Uuid
+  attempt               Int                          @default(0)
+  retryAt               DateTime?
+  claimId               String?                      @db.Uuid
+  claimExpiresAt        DateTime?
+  errorCode             String?
+  outcomeUnknown        Boolean                      @default(false)
+  insertedAt            DateTime?
+  brandSavedAt          DateTime?
+  promptExpiresAt       DateTime
+  createdAt             DateTime                     @default(now())
+  updatedAt             DateTime                     @updatedAt
+
+  workspace   Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  project     Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  clip        Clip?       @relation(fields: [clipId], references: [id], onDelete: SetNull)
+  createdBy   User        @relation("GeneratedMediaJobsCreatedBy", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  resultAsset VisualAsset? @relation(fields: [resultAssetId], references: [id], onDelete: SetNull)
+
+  @@unique([workspaceId, idempotencyKey])
+  @@index([status, retryAt, claimExpiresAt, createdAt])
+  @@index([workspaceId, createdAt])
+  @@index([projectId, clipId, createdAt])
+  @@index([resultAssetId])
+  @@index([promptExpiresAt])
+}
+
+model GeneratedMediaUsageReservation {
+  id            String                    @id @default(uuid()) @db.Uuid
+  jobId         String                    @unique @db.Uuid
+  workspaceId   String                    @db.Uuid
+  actorUserId   String                    @db.Uuid
+  policy        String
+  status        GeneratedMediaUsageStatus @default(reserved)
+  reservedUnits Int                       @default(1)
+  actualUnits   Int?
+  reason        String?
+  createdAt     DateTime                  @default(now())
+  settledAt     DateTime?
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  actor     User      @relation(fields: [actorUserId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, status, createdAt])
+  @@index([actorUserId, createdAt])
 }
 
 model SceneTemplate {

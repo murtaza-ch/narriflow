@@ -2303,6 +2303,54 @@ describe("Clip Composition Plan", () => {
     });
   });
 
+  test("plans a generated still as a B-roll image layer without provider URLs in the document", () => {
+    const document = editorDocumentSchema.parse({
+      version: 2,
+      clipStartSec: 0,
+      clipEndSec: 10,
+      captionPreset: captionPresetSchema.parse({}),
+      transcriptSlice: [],
+      studioEdits: studioEditsSchema.parse({
+        framing: { mode: "center" },
+        visualBroll: [{
+          id: "00000000-0000-4000-8000-000000000001",
+          asset: {
+            kind: "visual_asset",
+            id: "00000000-0000-4000-8000-000000000002",
+            fingerprint: "a".repeat(64),
+          },
+          startSec: 2,
+          endSec: 6,
+          fit: "cover",
+        }],
+      }),
+      brollUrl: null,
+      deletedRanges: [],
+    });
+    const result = planClipComposition({
+      document,
+      source: { identity: "source:generated-still", kind: "video", width: 1920, height: 1080 },
+      evidence: { automaticLayout: { state: "missing" } },
+      assets: {
+        backgroundImage: { state: "missing" },
+        broll: {
+          state: "available",
+          placements: [{ id: "generated-1", ref: "visual_asset:still", kind: "image", startSec: 2, endSec: 6 }],
+        },
+      },
+      capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v1" },
+      targets: [{ id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 }],
+    });
+
+    expect(result.status).toBe("ready");
+    if (result.status === "invalid") throw new Error(result.error.code);
+    expect(result.plan.targets[0]?.scenes[1]?.layers[1]).toMatchObject({
+      kind: "broll-image",
+      sourceRef: "visual_asset:still",
+      activeRange: { startSec: 2, endSec: 6 },
+    });
+  });
+
   test("keeps automatic speaker scenes below B-roll and makes Split fallback truthful for the whole target", () => {
     const automaticDocument = editorDocumentSchema.parse({
     version: 2,

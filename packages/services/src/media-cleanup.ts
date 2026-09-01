@@ -7,13 +7,15 @@ import { classifyR2StorageError, deleteObject } from "./r2-storage";
 export type MediaCleanupOrigin =
   | "clip_editor_document_persistence"
   | "detected_clip_replacement"
-  | "clip_duplicate_compensation";
+  | "clip_duplicate_compensation"
+  | "generated_media_publication";
 
 export type MediaCleanupClass =
   | "mutable_render"
   | "preview_proxy"
   | "preview_peaks"
-  | "dub_media";
+  | "dub_media"
+  | "generated_asset";
 
 export interface MediaCleanupObligationInput {
   origin: MediaCleanupOrigin;
@@ -646,6 +648,7 @@ export function createMediaCleanupWorker(input: {
   now?: () => Date;
   createId?: () => string;
   random?: () => number;
+  isProtected?: (claim: ClaimedMediaCleanup) => Promise<boolean>;
 }) {
   const config = validateMediaCleanupConfig(input.config);
   const now = input.now ?? (() => new Date());
@@ -730,6 +733,16 @@ export function createMediaCleanupWorker(input: {
           stopScheduledHeartbeat();
         };
         try {
+          if (await input.isProtected?.(claim)) {
+            stopHeartbeat();
+            await heartbeatInFlight;
+            if (claimLost) throw new MediaCleanupClaimLost();
+            const settled = await input.store.complete({ id: claim.id, claimId: claim.claimId, now: now() });
+            if (!settled) throw new MediaCleanupClaimLost();
+            completed += 1;
+            record({ phase: "settle", outcome: "completed", failureCode: "object_adopted" });
+            continue;
+          }
           await input.storage.deleteExact(claim.objectKey, {
             signal: operationController.signal,
           });
@@ -931,7 +944,8 @@ function cleanupClass(value: string): MediaCleanupClass {
     value === "mutable_render" ||
     value === "preview_proxy" ||
     value === "preview_peaks" ||
-    value === "dub_media"
+    value === "dub_media" ||
+    value === "generated_asset"
   ) {
     return value;
   }
@@ -942,7 +956,8 @@ function cleanupOrigin(value: string): MediaCleanupOrigin {
   if (
     value === "clip_editor_document_persistence" ||
     value === "detected_clip_replacement" ||
-    value === "clip_duplicate_compensation"
+    value === "clip_duplicate_compensation" ||
+    value === "generated_media_publication"
   ) {
     return value;
   }
@@ -1078,5 +1093,12 @@ export const mediaCleanupWorker = createMediaCleanupWorker({
     },
   },
   config: mediaCleanupConfigFromEnv(),
+  async isProtected(claim) {
+    if (claim.cleanupClass !== "generated_asset") return false;
+    return Boolean(await requirePrisma().visualAsset.findFirst({
+      where: { storageKey: claim.objectKey, deletedAt: null },
+      select: { id: true },
+    }));
+  },
   diagnostics,
 });

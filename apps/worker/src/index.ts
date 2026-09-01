@@ -11,6 +11,9 @@ import {
 	purgeExpiredProjectSources,
 	purgeOldWebhookDeliveryLogs,
 	purgeOldWorkflowEvents,
+	generatedMediaService,
+	purgeExpiredGeneratedMediaPrompts,
+	reconcileOrphanGeneratedMediaReservations,
 	uploadSessionService,
 	WorkflowAttemptLost,
 	workflowAttemptRef,
@@ -91,6 +94,9 @@ const notificationRetryPollIntervalMs = Number(
 );
 const mediaCleanupPollIntervalMs = Number(
 	process.env.MEDIA_CLEANUP_POLL_INTERVAL_MS ?? "10000",
+);
+const generatedMediaPollIntervalMs = Number(
+	process.env.GENERATED_MEDIA_POLL_INTERVAL_MS ?? "2500",
 );
 const workspaceBillingPollIntervalMs = parseWorkspaceBillingPollInterval(
 	process.env.WORKSPACE_BILLING_POLL_INTERVAL_MS,
@@ -180,6 +186,8 @@ async function reapStalledRunsIfDue() {
 				}),
 			);
 		}
+		await purgeExpiredGeneratedMediaPrompts();
+		await reconcileOrphanGeneratedMediaReservations();
 		const expiredBundles = await expireExportBundles(
 			new Date(),
 			Number(process.env.EXPORT_BUNDLE_EXPIRY_BATCH_SIZE ?? 100),
@@ -550,6 +558,11 @@ const mediaCleanupLoop = createPollLoop("media_cleanup", async () => {
 	return result.claimed;
 });
 
+const generatedMediaLoop = createPollLoop("generated_media", async () => {
+	const jobs = await generatedMediaService.processDue(1);
+	return jobs.length;
+});
+
 const allLoops: Array<{ loop: PollLoop; intervalMs: number }> = [
 	{ loop: maintenanceLoop, intervalMs: 60 * 1000 },
 	{ loop: uploadSessionMaintenanceLoop, intervalMs: 30 * 1000 },
@@ -569,6 +582,7 @@ const allLoops: Array<{ loop: PollLoop; intervalMs: number }> = [
 	{ loop: autoLayoutLoop, intervalMs: autoLayoutPollIntervalMs },
 	{ loop: notificationRetryLoop, intervalMs: notificationRetryPollIntervalMs },
 	{ loop: mediaCleanupLoop, intervalMs: mediaCleanupPollIntervalMs },
+	{ loop: generatedMediaLoop, intervalMs: generatedMediaPollIntervalMs },
 ];
 
 const server = createServer(async (req, res) => {

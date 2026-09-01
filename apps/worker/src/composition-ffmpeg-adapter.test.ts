@@ -961,6 +961,7 @@ describe("composition FFmpeg adapter", () => {
       {
         sourceRef: "broll:cutaway",
         path: "/tmp/cutaway.mp4",
+        kind: "video",
         inputIndex: 1,
         startSec: 1.5,
         endSec: 4,

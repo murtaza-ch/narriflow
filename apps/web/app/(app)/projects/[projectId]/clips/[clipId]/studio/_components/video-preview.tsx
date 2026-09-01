@@ -11,6 +11,7 @@ import {
   splitLayoutInputFingerprint,
   type CompositionBackgroundLayer,
   type CompositionBrollVideoLayer,
+  type CompositionBrollImageLayer,
   type CompositionCaptionVisualLayer,
   type CompositionLogoVisualLayer,
   type CompositionOutputTreatmentVisualLayer,
@@ -413,6 +414,27 @@ export function VideoPreview() {
       | { state: "missing" | "pending" | "failed" }
       | { state: "available"; ref: string }
     >({ state: "missing" });
+	const visualBrollAvailability = useMemo(() => {
+		if (studioEdits.visualBroll.length === 0) return undefined;
+		const placements = studioEdits.visualBroll.map((placement) => {
+			const asset = visualAssets.find((candidate) =>
+				candidate.id === placement.asset.id &&
+				candidate.fingerprint === placement.asset.fingerprint &&
+				candidate.kind === "image" &&
+				candidate.accessUrl,
+			);
+			return asset ? {
+				id: placement.id,
+				ref: compositionAssetRef("visual_asset", `${asset.id}:${asset.fingerprint}`),
+				kind: "image" as const,
+				startSec: placement.startSec,
+				endSec: placement.endSec,
+			} : null;
+		});
+		return placements.every((placement) => placement !== null)
+			? { state: "available" as const, placements: placements.filter((placement) => placement !== null) }
+			: { state: "failed" as const };
+	}, [studioEdits.visualBroll, visualAssets]);
   const containerRef = useRef<HTMLDivElement>(null);
   const videoContainerRef = useRef<HTMLDivElement>(null);
   const mainVideoRef = useRef<HTMLVideoElement | null>(null);
@@ -840,7 +862,9 @@ export function VideoPreview() {
         soundEffects: soundEffectAvailability,
 			sceneVisuals: sceneVisualAvailability,
 			sceneFonts: sceneFontAvailability,
-        ...(brollUrl
+        ...(visualBrollAvailability
+			? { broll: visualBrollAvailability }
+			: brollUrl
           ? {
               broll: manualBrollAvailabilityForPlan({
                 url: brollUrl,
@@ -895,6 +919,7 @@ export function VideoPreview() {
     brollUrl,
     brollMediaState,
     brollWindow,
+		visualBrollAvailability,
     brandLogo,
     effectiveLogo,
     clipInfo.can1080pExport,
@@ -962,9 +987,14 @@ export function VideoPreview() {
     (layer): layer is CompositionBackgroundLayer => layer.kind === "background",
   );
   const plannedBrollLayer = compositionPreview?.layers.find(
-    (layer): layer is CompositionBrollVideoLayer =>
-      layer.kind === "broll-video",
+    (layer): layer is CompositionBrollVideoLayer | CompositionBrollImageLayer =>
+      layer.kind === "broll-video" || layer.kind === "broll-image",
   );
+	const plannedVisualBrollAsset = plannedBrollLayer?.kind === "broll-image"
+		? visualAssets.find((asset) =>
+			plannedBrollLayer.sourceRef === compositionAssetRef("visual_asset", `${asset.id}:${asset.fingerprint}`),
+		)
+		: null;
   const plannedInsertedScene = compositionPreview?.layers.find(
     (layer): layer is CompositionInsertedSceneLayer => layer.kind === "inserted-scene",
   );
@@ -2028,6 +2058,16 @@ export function VideoPreview() {
               onAvailabilityChange={handleBrollAvailability}
             />
           ) : null}
+
+			{plannedBrollLayer?.kind === "broll-image" && plannedVisualBrollAsset?.accessUrl ? (
+				<Box position="absolute" inset="0" zIndex="20" overflow="hidden" bg="studio.canvas">
+					<img
+						src={plannedVisualBrollAsset.accessUrl}
+						alt=""
+						style={{ width: "100%", height: "100%", objectFit: "cover" }}
+					/>
+				</Box>
+			) : null}
 
           {plannedInsertedScene ? (
             <Flex key={plannedInsertedScene.sceneBlockId} position="absolute" inset="0" zIndex="24" align="center" justify="center" overflow="hidden" bg={plannedInsertedScene.content.kind === "color" ? plannedInsertedScene.content.color : plannedInsertedScene.content.kind === "text" ? plannedInsertedScene.content.backgroundColor : plannedInsertedScene.content.backgroundColor} style={insertedSceneMotionStyle}>

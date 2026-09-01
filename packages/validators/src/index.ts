@@ -18,6 +18,7 @@ export * from "./edit-ranges";
 export * from "./editor-document";
 export * from "./error-messages";
 export * from "./ingest";
+export * from "./generated-media";
 export * from "./language";
 export * from "./link-providers";
 export * from "./logo-overlay";

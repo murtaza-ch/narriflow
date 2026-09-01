@@ -92,6 +92,7 @@ export interface CompositionBrollPlacement {
   readonly ref: string;
   readonly startSec: number;
   readonly endSec: number;
+  readonly kind?: "video" | "image";
 }
 
 export type CompositionBrollAvailability =
@@ -267,6 +268,21 @@ export interface CompositionBrollVideoLayer {
   readonly audio: "source";
 }
 
+export interface CompositionBrollImageLayer {
+  readonly id: string;
+  readonly kind: "broll-image";
+  readonly sourceRef: string;
+  readonly activeRange: {
+    readonly startSec: number;
+    readonly endSec: number;
+  };
+  readonly destination: CompositionRect;
+  readonly fit: "cover";
+  readonly rotationDeg: 0;
+  readonly opacity: 1;
+  readonly zIndex: number;
+}
+
 export interface CompositionAudiogramLayer {
   readonly id: string;
   readonly kind: "audiogram";
@@ -297,6 +313,7 @@ export type CompositionLayer =
   | CompositionSourceVideoLayer
   | CompositionBackgroundLayer
   | CompositionBrollVideoLayer
+  | CompositionBrollImageLayer
   | CompositionAudiogramLayer
   | CompositionInsertedSceneLayer;
 
@@ -1148,36 +1165,38 @@ function addBrollLayers(
         (placement) =>
           placement.startSec <= startSec && placement.endSec >= endSec,
       );
+      const brollLayer: CompositionBrollVideoLayer | CompositionBrollImageLayer | null = !active
+        ? null
+        : active.kind === "image"
+          ? {
+              id: `layer:broll:${active.id}:${target.id}`,
+              kind: "broll-image",
+              sourceRef: active.ref,
+              activeRange: { startSec: active.startSec, endSec: active.endSec },
+              destination: { x: 0, y: 0, width: target.canvas.width, height: target.canvas.height },
+              fit: "cover",
+              rotationDeg: 0,
+              opacity: 1,
+              zIndex: 20,
+            }
+          : {
+              id: `layer:broll:${active.id}:${target.id}`,
+              kind: "broll-video",
+              sourceRef: active.ref,
+              activeRange: { startSec: active.startSec, endSec: active.endSec },
+              destination: { x: 0, y: 0, width: target.canvas.width, height: target.canvas.height },
+              fit: "cover",
+              rotationDeg: 0,
+              opacity: 1,
+              zIndex: 20,
+              audio: "source",
+            };
       scenes.push({
         ...baseScene,
         id: `${baseScene.id}:slice:${scenes.length}`,
         startSec,
         endSec,
-        layers: active
-          ? [
-              ...baseScene.layers,
-              {
-                id: `layer:broll:${active.id}:${target.id}`,
-                kind: "broll-video",
-                sourceRef: active.ref,
-                activeRange: {
-                  startSec: active.startSec,
-                  endSec: active.endSec,
-                },
-                destination: {
-                  x: 0,
-                  y: 0,
-                  width: target.canvas.width,
-                  height: target.canvas.height,
-                },
-                fit: "cover",
-                rotationDeg: 0,
-                opacity: 1,
-                zIndex: 20,
-                audio: "source",
-              },
-            ]
-          : baseScene.layers,
+        layers: brollLayer ? [...baseScene.layers, brollLayer] : baseScene.layers,
       });
     }
   }

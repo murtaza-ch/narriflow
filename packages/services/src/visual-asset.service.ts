@@ -6,15 +6,20 @@ import { getPrismaClient } from "@narriflow/db/client";
 import {
   reusableAssetSoftDeleteSchema,
   resolvePricingTier,
+  sceneBlockSchema,
+  studioEditsSchema,
   visualAssetFinalizeSchema,
   visualAssetUploadSchema,
+  workspaceAllowsCapability,
   type SceneBlock,
+  type StudioVisualBrollPlacement,
   type ReusableAssetSoftDeleteInput,
   type VisualAssetFinalizeInput,
   type VisualAssetUploadInput,
 } from "@narriflow/validators";
 import {
   assertBrandMutationAllowedWithAnalytics,
+  BrandAccessError,
   brandOwnerStoragePrefix,
   brandOwnerWhere,
   resolveBrandOwner,
@@ -63,7 +68,7 @@ export class VisualAssetIntegrityError extends Error {
 export class VisualAssetReferenceError extends Error {
   readonly code = "visual_asset_in_use";
   constructor() {
-    super("Remove this asset from every Brand Profile and Scene template before deleting it");
+    super("Remove this asset from every Clip, Brand Profile, and Scene template before deleting it");
     this.name = "VisualAssetReferenceError";
   }
 }
@@ -97,6 +102,43 @@ export function assertSceneVisualAssetReferences(
 			throw new VisualAssetIntegrityError("scene_visual_asset_range_invalid");
 		}
 	}
+}
+
+export function assertVisualBrollAssetReferences(
+  placements: readonly StudioVisualBrollPlacement[],
+  assets: readonly SceneVisualAssetRecord[],
+): void {
+  const byId = new Map(assets.map((asset) => [asset.id, asset]));
+  for (const placement of placements) {
+    const asset = byId.get(placement.asset.id);
+    if (
+      !asset ||
+      asset.kind !== "image" ||
+      asset.fingerprint !== placement.asset.fingerprint
+    ) {
+      throw new VisualAssetIntegrityError("visual_broll_asset_invalid");
+    }
+  }
+}
+
+export function visualAssetIsReferencedByClipStorage(
+  assetId: string,
+  stored: { studioEdits: unknown; sceneBlocks: unknown },
+): boolean {
+  const studioEdits = studioEditsSchema.safeParse(stored.studioEdits ?? {});
+  if (
+    studioEdits.success &&
+    studioEdits.data.visualBroll.some((placement) => placement.asset.id === assetId)
+  ) {
+    return true;
+  }
+  if (!Array.isArray(stored.sceneBlocks)) return false;
+  return stored.sceneBlocks.some((value) => {
+    const scene = sceneBlockSchema.safeParse(value);
+    return scene.success &&
+      (scene.data.content.kind === "image" || scene.data.content.kind === "video") &&
+      scene.data.content.asset.id === assetId;
+  });
 }
 
 export function visualAssetKindForContentType(contentType: string): "image" | "video" {
@@ -346,8 +388,99 @@ export class VisualAssetService {
 		}));
 	}
 
+  async assertVisualBrollReferences(
+    scope: BrandActorScope,
+    placements: readonly StudioVisualBrollPlacement[],
+  ) {
+    const assetIds = [...new Set(placements.map((placement) => placement.asset.id))];
+    if (assetIds.length === 0) return;
+    const assets = await this.requirePrisma().visualAsset.findMany({
+      where: { id: { in: assetIds }, ...brandOwnerWhere(scope), deletedAt: null },
+      select: { id: true, kind: true, fingerprint: true, durationSec: true },
+    });
+    assertVisualBrollAssetReferences(
+      placements,
+      assets.map((asset) => ({ ...asset, kind: asset.kind as "image" | "video" })),
+    );
+  }
+
+  async resolveVisualBrollReferences(
+    scope: BrandActorScope,
+    placements: readonly StudioVisualBrollPlacement[],
+  ) {
+    const assetIds = [...new Set(placements.map((placement) => placement.asset.id))];
+    if (assetIds.length === 0) return [];
+    const rows = await this.requirePrisma().visualAsset.findMany({
+      where: { id: { in: assetIds }, ...brandOwnerWhere(scope) },
+    });
+    return Promise.all(rows.map(async (row) => {
+      const exists = await this.storage.head(row.storageKey).catch(() => null);
+      const accessUrl = exists ? await this.storage.accessUrl(row.storageKey).catch(() => null) : null;
+      return { ...toRow(row, accessUrl), missing: accessUrl === null, insertable: false as const };
+    }));
+  }
+
+  async recordGeneratedInsertionsBestEffort(
+    scope: BrandActorScope,
+    projectId: string,
+    assetIds: readonly string[],
+  ) {
+    if (assetIds.length === 0) return;
+    try {
+      const jobs = await this.requirePrisma().generatedMediaJob.findMany({
+        where: {
+          workspaceId: scope.workspaceId,
+          resultAssetId: { in: [...new Set(assetIds)] },
+          status: "completed",
+        },
+        select: { id: true, resultAssetId: true, aspectRatio: true },
+      });
+      await this.requirePrisma().generatedMediaJob.updateMany({
+        where: { id: { in: jobs.map((job) => job.id) }, insertedAt: null },
+        data: { insertedAt: new Date() },
+      });
+      await Promise.all(jobs.map((job) => analyticsService.recordBrandProgramEventBestEffort({
+        type: "generated_asset_inserted",
+        workspaceId: scope.workspaceId,
+        actorUserId: scope.actorUserId,
+        projectId,
+        metadata: {
+          generatedMediaJobId: job.id,
+          assetId: job.resultAssetId ?? undefined,
+          assetKind: "image",
+          aspectRatio: job.aspectRatio as "9:16" | "16:9" | "1:1",
+          planTier: resolvePricingTier(scope.pricingTier),
+          outcome: "succeeded",
+        },
+      })));
+    } catch {
+      console.warn(JSON.stringify({
+        level: "warn",
+        message: "generated_asset_insertion_analytics_failed",
+        workspaceId: scope.workspaceId,
+        projectId,
+      }));
+    }
+  }
+
   async softDelete(scope: BrandActorScope, id: string, input: ReusableAssetSoftDeleteInput) {
     await assertBrandMutationAllowedWithAnalytics(scope, "brand.profiles", "profile");
+    return this.softDeleteOwned(scope, id, input, false);
+  }
+
+  async softDeleteGenerated(scope: BrandActorScope, id: string, input: ReusableAssetSoftDeleteInput) {
+    if (!workspaceAllowsCapability({ role: scope.role, status: scope.status }, "content.edit")) {
+      throw new BrandAccessError("brand_forbidden");
+    }
+    return this.softDeleteOwned(scope, id, input, true);
+  }
+
+  private async softDeleteOwned(
+    scope: BrandActorScope,
+    id: string,
+    input: ReusableAssetSoftDeleteInput,
+    generatedOnly: boolean,
+  ) {
     const parsed = reusableAssetSoftDeleteSchema.parse(input);
     const prisma = this.requirePrisma();
     await withSerializableTransaction(prisma, async (tx) => {
@@ -359,7 +492,17 @@ export class VisualAssetService {
         },
       });
       if (!asset) throw new VisualAssetIntegrityError("visual_asset_not_found");
+      if (generatedOnly && asset.provenance !== "generated") {
+        throw new VisualAssetIntegrityError("visual_asset_not_generated");
+      }
       if (asset.sceneTemplates.length > 0) throw new VisualAssetReferenceError();
+      const clipDocuments = await tx.clip.findMany({
+        where: { project: { workspaceId: scope.workspaceId } },
+        select: { studioEdits: true, sceneBlocks: true },
+      });
+      if (clipDocuments.some((document) => visualAssetIsReferencedByClipStorage(id, document))) {
+        throw new VisualAssetReferenceError();
+      }
       const identityReferences = await tx.brandProfile.findMany({
         where: {
           ...brandOwnerWhere(scope),

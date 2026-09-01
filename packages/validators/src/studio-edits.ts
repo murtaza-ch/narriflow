@@ -10,6 +10,7 @@ import {
   speakerLayoutOverridesEqual,
   studioSpeakerLayoutOverrideSchema,
 } from "./speaker-layout-overrides";
+import { visualAssetReferenceSchema } from "./timed-edits";
 
 const hexColorSchema = z.string().regex(/^#[0-9A-Fa-f]{6}$/);
 
@@ -418,6 +419,17 @@ export const studioSfxPlacementSchema = z.object({
   volume: z.number().min(0).max(100).default(80),
 });
 
+export const studioVisualBrollPlacementSchema = z.strictObject({
+  id: z.string().uuid(),
+  asset: visualAssetReferenceSchema,
+  startSec: z.number().finite().min(0).max(60 * 60 * 12),
+  endSec: z.number().finite().min(0).max(60 * 60 * 12),
+  fit: z.enum(["cover", "contain"]),
+}).refine((placement) => placement.endSec > placement.startSec, {
+  message: "endSec must be greater than startSec",
+  path: ["endSec"],
+});
+
 export const studioEditsSchema = z
   .object({
     textLayers: z.array(studioTextLayerSchema).max(12).default([]),
@@ -435,6 +447,19 @@ export const studioEditsSchema = z
       .max(64)
       .default([]),
     sfx: z.array(studioSfxPlacementSchema).max(20).default([]),
+    visualBroll: z.array(studioVisualBrollPlacementSchema).max(20).default([]),
+  })
+  .superRefine((edits, context) => {
+    const ordered = [...edits.visualBroll].sort((left, right) => left.startSec - right.startSec);
+    if (new Set(ordered.map((placement) => placement.id)).size !== ordered.length) {
+      context.addIssue({ code: "custom", path: ["visualBroll"], message: "visual B-roll ids must be unique" });
+    }
+    ordered.forEach((placement, index) => {
+      const previous = ordered[index - 1];
+      if (previous && placement.startSec < previous.endSec) {
+        context.addIssue({ code: "custom", path: ["visualBroll", index], message: "visual B-roll windows cannot overlap" });
+      }
+    });
   })
   .default({
     textLayers: [],
@@ -446,6 +471,7 @@ export const studioEditsSchema = z
     framing: STUDIO_FRAMING_DEFAULT,
     speakerLayoutOverrides: [],
     sfx: [],
+    visualBroll: [],
   });
 
 export const updateClipStudioEditsSchema = z.object({
@@ -461,6 +487,7 @@ export type StudioBackground = z.infer<typeof studioBackgroundSchema>;
 export type StudioFraming = z.infer<typeof studioFramingSchema>;
 export type { StudioSpeakerLayoutOverride, SpeakerLayerTransform } from "./speaker-layout-overrides";
 export type StudioSfxPlacement = z.infer<typeof studioSfxPlacementSchema>;
+export type StudioVisualBrollPlacement = z.infer<typeof studioVisualBrollPlacementSchema>;
 export type StudioEdits = z.infer<typeof studioEditsSchema>;
 export type UpdateClipStudioEdits = z.infer<typeof updateClipStudioEditsSchema>;
 
@@ -511,6 +538,25 @@ function studioSfxPlacementsEqual(
   });
 }
 
+function studioVisualBrollEqual(
+  left: readonly StudioVisualBrollPlacement[],
+  right: readonly StudioVisualBrollPlacement[],
+) {
+  if (left === right) return true;
+  if (left.length !== right.length) return false;
+  return left.every((placement, index) => {
+    const candidate = right[index]!;
+    return placement === candidate || (
+      placement.id === candidate.id &&
+      placement.asset.id === candidate.asset.id &&
+      placement.asset.fingerprint === candidate.asset.fingerprint &&
+      placement.startSec === candidate.startSec &&
+      placement.endSec === candidate.endSec &&
+      placement.fit === candidate.fit
+    );
+  });
+}
+
 /** Field-aware equality for canonical Studio edit values. */
 export function studioEditsEqual(
   left: StudioEdits,
@@ -540,6 +586,7 @@ export function studioEditsEqual(
     left.framing.mode === right.framing.mode &&
     studioTextLayersEqual(left.textLayers, right.textLayers) &&
     studioSfxPlacementsEqual(left.sfx, right.sfx) &&
+    studioVisualBrollEqual(left.visualBroll, right.visualBroll) &&
     speakerLayoutOverridesEqual(
       left.speakerLayoutOverrides,
       right.speakerLayoutOverrides,

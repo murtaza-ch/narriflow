@@ -14,6 +14,8 @@ import {
   applySceneTemplateSchema,
   createReviewRoundSchema,
   createExportBundleSchema,
+  createGeneratedImageSchema,
+  listGeneratedMediaJobsSchema,
   type WorkspaceCapability,
 } from "@narriflow/validators";
 import { z, type ZodType } from "zod";
@@ -371,6 +373,28 @@ export const browserSessionHonoSurfaces: readonly HonoSurface[] = [
   },
   { method: "POST", path: "/visual-assets", capability: "brand.manage", input: bodyInput(visualAssetFinalizeSchema) },
   { method: "DELETE", path: "/visual-assets/:id", capability: "brand.manage", input: optionalBodyInput(reusableAssetSoftDeleteSchema, ["id"]) },
+  {
+    method: "GET",
+    path: "/projects/:projectId/generated-media/jobs",
+    capability: "content.view",
+    projectParam: "projectId",
+    input: {
+      schema: listGeneratedMediaJobsSchema,
+      params: ["projectId"],
+      query: ["clipId"],
+    },
+  },
+  {
+    method: "POST",
+    path: "/projects/:projectId/generated-media/jobs",
+    capability: "content.edit",
+    projectParam: "projectId",
+    rateLimit: actorRate("generated-image-create", 10),
+    input: bodyInput(createGeneratedImageSchema, ["projectId"]),
+  },
+  { method: "GET", path: "/projects/:projectId/generated-media/jobs/:id", capability: "content.view", projectParam: "projectId", input: paramsInput("projectId", "id") },
+  { method: "POST", path: "/projects/:projectId/generated-media/jobs/:id/cancel", capability: "content.edit", projectParam: "projectId", input: paramsInput("projectId", "id") },
+  { method: "DELETE", path: "/projects/:projectId/generated-media/jobs/:id/result", capability: "content.edit", projectParam: "projectId", input: paramsInput("projectId", "id") },
   { method: "GET", path: "/brand-fonts", capability: "content.view" },
   {
     method: "POST",

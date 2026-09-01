@@ -3,6 +3,7 @@ import {
   compositionAssetRef,
   type ClipCompositionPlan,
   type CompositionBrollVideoLayer,
+  type CompositionBrollImageLayer,
   type CompositionInsertedSceneLayer,
   type CompositionRect,
   type CompositionTargetPlan,
@@ -514,6 +515,7 @@ function plannedCompositionBrollPlacements(
   startSec: number;
   endSec: number;
   audio: "source";
+  kind: "image" | "video";
 }> {
   if (plan.version !== CLIP_COMPOSITION_PLAN_VERSION) {
     throw new Error("unsupported_clip_composition_plan_version");
@@ -523,12 +525,12 @@ function plannedCompositionBrollPlacements(
 
   const fragments = new Map<
     string,
-    { layer: CompositionBrollVideoLayer; ranges: Array<[number, number]> }
+    { layer: CompositionBrollVideoLayer | CompositionBrollImageLayer; ranges: Array<[number, number]> }
   >();
   for (const scene of target.scenes) {
     const active = scene.layers.filter(
-      (layer): layer is CompositionBrollVideoLayer =>
-        layer.kind === "broll-video",
+      (layer): layer is CompositionBrollVideoLayer | CompositionBrollImageLayer =>
+        layer.kind === "broll-video" || layer.kind === "broll-image",
     );
     if (active.length > 1) {
       throw new Error("invalid_clip_composition_broll_overlap");
@@ -542,7 +544,7 @@ function plannedCompositionBrollPlacements(
       if (
         layer.sourceRef.length === 0 ||
         layer.fit !== "cover" ||
-        layer.audio !== "source" ||
+        (layer.kind === "broll-video" && layer.audio !== "source") ||
         layer.destination.x !== 0 ||
         layer.destination.y !== 0 ||
         layer.destination.width !== target.canvas.width ||
@@ -557,7 +559,8 @@ function plannedCompositionBrollPlacements(
       const existing = fragments.get(layer.id);
       if (existing) {
         if (
-          existing.layer.sourceRef !== layer.sourceRef ||
+        existing.layer.sourceRef !== layer.sourceRef ||
+          existing.layer.kind !== layer.kind ||
           existing.layer.activeRange.startSec !== layer.activeRange.startSec ||
           existing.layer.activeRange.endSec !== layer.activeRange.endSec
         ) {
@@ -591,7 +594,8 @@ function plannedCompositionBrollPlacements(
         sourceRef: layer.sourceRef,
         startSec: layer.activeRange.startSec,
         endSec: layer.activeRange.endSec,
-        audio: layer.audio,
+        audio: "source" as const,
+		kind: layer.kind === "broll-image" ? "image" as const : "video" as const,
       };
     })
     .sort((left, right) => left.startSec - right.startSec);
@@ -752,6 +756,7 @@ export function compileCompositionPlanVideo(input: {
     inputIndex: number;
     startSec: number;
     endSec: number;
+    kind: "image" | "video";
   }>;
   sceneInputs: Array<{ sourceRef: string; path: string; kind: "image" | "video"; inputIndex: number }>;
 } {
@@ -876,6 +881,7 @@ export function compileCompositionPlanVideo(input: {
       inputIndex: input.brollInputStartIndex! + index,
       startSec: placement.startSec,
       endSec: placement.endSec,
+		kind: placement.kind,
     };
   });
   const baseOutputLabel =

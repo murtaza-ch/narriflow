@@ -350,6 +350,8 @@ describe("authenticated request inventory", () => {
       "/billing/",
       "/brand-profiles",
       "/visual-assets",
+      "/generated-media",
+      "/projects/:projectId/generated-media",
       "/brand-fonts",
     ];
     const expected = [

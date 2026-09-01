@@ -493,6 +493,10 @@ export class BrandProfileService {
         const resource = await tx.visualAsset.findFirst({ where: { id: parsed.resourceId, ...owner, deletedAt: null }, select: { id: true } });
         if (!resource) throw new BrandProfileMembershipError();
         await tx.brandProfileAsset.upsert({ where: { profileId_assetId: { profileId, assetId: resource.id } }, create: { profileId, assetId: resource.id, role: parsed.role, position: parsed.position }, update: { role: parsed.role, position: parsed.position } });
+        await tx.generatedMediaJob.updateMany({
+          where: { resultAssetId: resource.id, brandSavedAt: null },
+          data: { brandSavedAt: new Date() },
+        });
       } else if (parsed.kind === "font") {
         const resource = await tx.brandFont.findFirst({ where: { id: parsed.resourceId, ...owner, deletedAt: null }, select: { id: true } });
         if (!resource) throw new BrandProfileMembershipError();

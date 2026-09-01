@@ -1099,3 +1099,28 @@ export async function putJson(params: {
 
   return { key: params.key };
 }
+
+export async function putObjectBytes(params: {
+  key: string;
+  bytes: Uint8Array;
+  contentType: string;
+  metadata?: Record<string, string>;
+  signal?: AbortSignal;
+}) {
+  params.signal?.throwIfAborted();
+  await projectStorageDeadline(params.key);
+  const client = getClient();
+  const { bucket } = getR2Config();
+  await client.send(
+    new PutObjectCommand({
+      Bucket: bucket,
+      Key: params.key,
+      Body: params.bytes,
+      ContentLength: params.bytes.byteLength,
+      ContentType: params.contentType,
+      Metadata: sanitizeObjectMetadata(params.metadata),
+    }),
+    { abortSignal: params.signal },
+  );
+  return { key: params.key };
+}

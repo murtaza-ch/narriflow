@@ -11,6 +11,7 @@ import {
   sceneTemplateService,
   brandFontService,
   brandProfileService,
+  generatedImageCapability,
 } from "@narriflow/services";
 import { brandTemplateSnapshotSchema, getEffectiveClipTiming, sceneTemplateDefinitionSchema,
 } from "@narriflow/validators";
@@ -51,6 +52,8 @@ export default async function StudioPage({
   if (!snapshot.project) notFound();
 
   const scenesEntitled = hasFeature(pricingTier, "brand.scenes");
+  const generatedImagesCapability = generatedImageCapability(appUser);
+  const generatedImagesEntitled = generatedImagesCapability.available;
   const sceneWriteCapabilities = {
     cards: scenesEntitled && isProgramWriteEnabled("scene_cards"),
     images: scenesEntitled && isProgramWriteEnabled("scene_images"),
@@ -94,7 +97,7 @@ export default async function StudioPage({
           expiresIn: 3600,
         }).catch(() => null)
       : Promise.resolve(null),
-    scenesEntitled ? visualAssetService.list(appUser) : Promise.resolve([]),
+    scenesEntitled || generatedImagesEntitled ? visualAssetService.list(appUser) : Promise.resolve([]),
     scenesEntitled && snapshot.project.brandProfileId
       ? sceneTemplateService.list(appUser, snapshot.project.brandProfileId)
       : Promise.resolve([]),
@@ -102,14 +105,16 @@ export default async function StudioPage({
       ? brandProfileService.get(appUser, snapshot.project.brandProfileId).catch(() => null)
       : Promise.resolve(null),
   ]);
-	const [retainedVisualAssets, retainedSceneFonts] = scenesEntitled
-		? await Promise.all([
-			visualAssetService.resolveSceneReferences(appUser, editorDoc.document.sceneBlocks),
-			brandFontService.resolveSceneReferences(appUser, editorDoc.document.sceneBlocks),
-		])
-		: [[], []];
+	const [retainedSceneVisualAssets, retainedBrollVisualAssets, retainedSceneFonts] = await Promise.all([
+		visualAssetService.resolveSceneReferences(appUser, editorDoc.document.sceneBlocks),
+		visualAssetService.resolveVisualBrollReferences(appUser, editorDoc.document.studioEdits.visualBroll),
+		scenesEntitled
+			? brandFontService.resolveSceneReferences(appUser, editorDoc.document.sceneBlocks)
+			: Promise.resolve([]),
+	]);
 	const visualAssets = [...new Map<string, StudioVisualAsset>([
-		...retainedVisualAssets.map((asset) => [asset.id, asset as StudioVisualAsset] as const),
+		...retainedSceneVisualAssets.map((asset) => [asset.id, asset as StudioVisualAsset] as const),
+		...retainedBrollVisualAssets.map((asset) => [asset.id, asset as StudioVisualAsset] as const),
 		...activeVisualAssets.map((asset) => [asset.id, { ...asset, missing: asset.accessUrl === null, insertable: true }] as const),
 	]).values()];
 	const activeSceneFonts: StudioSceneFont[] = (activeProfile?.fonts ?? []).map((font) => ({
@@ -265,9 +270,11 @@ export default async function StudioPage({
       layoutAnalysisFailure={editorDoc.layoutAnalysisFailure}
       compositionPlanQaFixture={compositionPlanQaFixture}
       visualAssets={visualAssets}
+		brandProfileId={snapshot.project.brandProfileId}
 		sceneFonts={sceneFonts}
       sceneTemplates={sceneTemplates}
       sceneWriteCapabilities={sceneWriteCapabilities}
+      generatedImagesCapability={generatedImagesCapability}
     />
   );
 }

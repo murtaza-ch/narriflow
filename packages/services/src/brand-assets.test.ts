@@ -8,6 +8,8 @@ import {
 import {
   assertFinalizedVisualObject,
   assertSceneVisualAssetReferences,
+  assertVisualBrollAssetReferences,
+  visualAssetIsReferencedByClipStorage,
   visualAssetKindForContentType,
 } from "./visual-asset.service";
 import {
@@ -95,6 +97,47 @@ describe("visual object verification", () => {
     expect(() => assertSceneVisualAssetReferences([{ ...scene, content: { ...scene.content, sourceEndSec: 999 } }], [asset])).toThrow();
     expect(() => assertSceneVisualAssetReferences([scene], [{ ...asset, fingerprint: "b".repeat(64) }])).toThrow();
     expect(() => assertSceneVisualAssetReferences([scene], [{ ...asset, kind: "image", durationSec: null }])).toThrow();
+  });
+
+  test("binds generated B-roll to an owned image with the exact fingerprint", () => {
+    const assetId = crypto.randomUUID();
+    const placement = {
+      id: crypto.randomUUID(),
+      asset: { kind: "visual_asset" as const, id: assetId, fingerprint: "a".repeat(64) },
+      startSec: 2,
+      endSec: 5,
+      fit: "cover" as const,
+    };
+    const asset = { id: assetId, kind: "image" as const, fingerprint: "a".repeat(64), durationSec: null };
+
+    expect(() => assertVisualBrollAssetReferences([placement], [asset])).not.toThrow();
+    expect(() => assertVisualBrollAssetReferences([placement], [{ ...asset, fingerprint: "b".repeat(64) }])).toThrow();
+    expect(() => assertVisualBrollAssetReferences([placement], [{ ...asset, kind: "video" as const }])).toThrow();
+  });
+
+  test("detects generated B-roll and Scene references in stored Clip documents", () => {
+    const assetId = crypto.randomUUID();
+    expect(visualAssetIsReferencedByClipStorage(assetId, {
+      studioEdits: {
+        visualBroll: [{
+          id: crypto.randomUUID(),
+          asset: { kind: "visual_asset", id: assetId, fingerprint: "a".repeat(64) },
+          startSec: 1,
+          endSec: 3,
+          fit: "cover",
+        }],
+      },
+      sceneBlocks: [],
+    })).toBe(true);
+    expect(visualAssetIsReferencedByClipStorage(assetId, {
+      studioEdits: null,
+      sceneBlocks: [{
+        id: crypto.randomUUID(), schemaVersion: 1, anchorSec: 0, durationSec: 2,
+        content: { kind: "image", asset: { kind: "visual_asset", id: assetId, fingerprint: "a".repeat(64) }, fit: "cover", backgroundColor: "#000000" },
+        motion: { entrance: "none", exit: "none" }, templateSnapshot: null,
+      }],
+    })).toBe(true);
+    expect(visualAssetIsReferencedByClipStorage(assetId, { studioEdits: null, sceneBlocks: [] })).toBe(false);
   });
 });
 

@@ -279,9 +279,27 @@ export {
 } from "./program-rollout";
 export {
   generationAccessForTier,
+  generatedImageCapability,
+  type GeneratedImageCapability,
   type GeneratedMediaKind,
   type GenerationUsagePolicy,
 } from "./generation-usage";
+export {
+  generatedMediaService,
+  GeneratedMediaService,
+} from "./generated-media.service";
+export {
+  getGeneratedImageUsageSummary,
+  type GeneratedImageUsageSummary,
+} from "./generated-media-usage-ledger";
+export {
+  GeneratedMediaJobError,
+  GeneratedMediaProviderError,
+  type GeneratedMediaJobStatus,
+  type GeneratedMediaUsageStatus,
+} from "./generated-media";
+export { purgeExpiredGeneratedMediaPrompts } from "./generated-media-prisma-store";
+export { reconcileOrphanGeneratedMediaReservations } from "./generated-media-usage-ledger";
 export {
   socialService,
   SocialService } from "./social.service";
@@ -335,6 +353,7 @@ export {
   presignDownloadUrl,
   presignSingleUploadUrl,
   putFileFromPath,
+  putObjectBytes,
   putJson,
   ProjectStorageUnavailableError,
   type R2ObjectSummary,

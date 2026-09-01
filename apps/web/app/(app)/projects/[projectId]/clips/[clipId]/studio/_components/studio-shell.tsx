@@ -393,9 +393,13 @@ interface StudioState {
   brollPreviewAsset: StudioBrollPreviewAsset | null;
   sceneBlocks: readonly SceneBlock[];
   visualAssets: readonly StudioVisualAsset[];
+  brandProfileId: string | null;
+	registerVisualAsset: (asset: StudioVisualAsset) => void;
+	unregisterVisualAsset: (assetId: string) => void;
 	sceneFonts: readonly StudioSceneFont[];
   sceneTemplates: readonly StudioSceneTemplate[];
   sceneWriteCapabilities: Readonly<{ cards: boolean; images: boolean; videos: boolean; templates: boolean }>;
+  generatedImagesCapability: Readonly<{ available: boolean; reason: "available" | "rollout_disabled" | "trial_disabled" | "tier_not_enabled" | "entitlement_required" }>;
   /** 'blocked' is a distinct terminal state from 'error': it means autosave
    *  has permanently stopped (a 409/422 that a reload is needed to clear),
    *  as opposed to 'error''s transient/retryable failure. */
@@ -710,9 +714,11 @@ interface StudioShellProps {
    *  and export block without corrupting a Clip Editor Document. */
   compositionPlanQaFixture?: CompositionPlanQaFixture | null;
   visualAssets?: StudioVisualAsset[];
+	brandProfileId?: string | null;
 	sceneFonts?: StudioSceneFont[];
   sceneTemplates?: StudioSceneTemplate[];
   sceneWriteCapabilities?: Readonly<{ cards: boolean; images: boolean; videos: boolean; templates: boolean }>;
+  generatedImagesCapability?: Readonly<{ available: boolean; reason: "available" | "rollout_disabled" | "trial_disabled" | "tier_not_enabled" | "entitlement_required" }>;
 }
 
 export function StudioShell({
@@ -743,13 +749,25 @@ export function StudioShell({
   layoutAnalysisFailure: initialLayoutAnalysisFailure = null,
   compositionPlanQaFixture = null,
   visualAssets = [],
+	brandProfileId = null,
 	sceneFonts = [],
   sceneTemplates = [],
   sceneWriteCapabilities = { cards: false, images: false, videos: false, templates: false },
+  generatedImagesCapability = { available: false, reason: "rollout_disabled" },
 }: StudioShellProps) {
   const isViewportTooSmall = useIsViewportBelow(STUDIO_MIN_VIEWPORT_WIDTH);
   const [brollPreviewAsset, setBrollPreviewAsset] =
     useState<StudioBrollPreviewAsset | null>(null);
+	const [studioVisualAssets, setStudioVisualAssets] = useState(visualAssets);
+	const registerVisualAsset = useCallback((asset: StudioVisualAsset) => {
+		setStudioVisualAssets((current) => [
+			asset,
+			...current.filter((candidate) => candidate.id !== asset.id),
+		]);
+	}, []);
+	const unregisterVisualAsset = useCallback((assetId: string) => {
+		setStudioVisualAssets((current) => current.filter((candidate) => candidate.id !== assetId));
+	}, []);
   const [layoutAnalysis, setLayoutAnalysis] =
     useState<ClipLayoutAnalysis | null>(initialLayoutAnalysis);
   const [splitLayoutAnalysis, setSplitLayoutAnalysis] =
@@ -2056,7 +2074,7 @@ export function StudioShell({
     layoutMode, showShortcuts, timelineZoom, selectedSegmentId, transcriptSelectionRange,
     captionPreset, captionSelected, selectedTextLayerId, transcriptOnly, segments, studioEdits, brollUrl,
     brollPreviewAsset,
-    sceneBlocks: doc.sceneBlocks, visualAssets, sceneFonts, sceneTemplates, sceneWriteCapabilities,
+    sceneBlocks: doc.sceneBlocks, visualAssets: studioVisualAssets, brandProfileId, registerVisualAsset, unregisterVisualAsset, sceneFonts, sceneTemplates, sceneWriteCapabilities, generatedImagesCapability,
     saveState: displayedSaveState, isDocDirty, exportState, compositionPlanStatus,
     resetState, canUndo, canRedo, canReset,
     editorDocument: doc,

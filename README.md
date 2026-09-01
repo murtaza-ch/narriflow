@@ -182,7 +182,7 @@ Minimum values for the current clips workflow:
 Notes:
 
 - `CLERK_WEBHOOK_SECRET`, `RESEND_API_KEY`, and `NARRIFLOW_EMAIL_FROM` are only required if you are exercising the Clerk webhook and email path locally.
-- `ASSEMBLYAI_API_KEY` and `OPENAI_API_KEY` are listed in the web example because many deployments share one secret set, but the web app does not use them directly in the current worker-driven generation flow.
+- Generated stills require `OPENAI_API_KEY`, `OPENAI_IMAGE_MODEL=gpt-image-2`, and the same `GENERATED_MEDIA_PROMPT_ENCRYPTION_KEY` in web and worker. The web process protects prompts and admits durable jobs; the worker submits them and publishes the result.
 - `TRIGGER_SECRET_KEY` is not used by the current custom worker polling flow.
 - Native social OAuth requires `SOCIAL_TOKEN_ENCRYPTION_KEY` plus the provider client IDs/secrets listed in the env example. Register `${NEXT_PUBLIC_APP_URL}/api/social/oauth/callback` as the redirect URI in each provider app.
 - Free-project retention must use identical `PROJECT_RETENTION_MODE` and `PROJECT_RETENTION_ENFORCEMENT_STARTED_AT` values in web and worker. Leave the mode at `observe` for at least seven days; enforcement without a valid explicit UTC activation timestamp assigns no deadlines.
@@ -212,6 +212,9 @@ Useful runtime settings:
 - `ASSEMBLYAI_POLL_INTERVAL_MS=5000`
 - `ASSEMBLYAI_POLL_TIMEOUT_MS=7200000`
 - `OPENAI_CLIP_MODEL=gpt-5.4-mini`
+- `OPENAI_IMAGE_MODEL=gpt-image-2` and `OPENAI_IMAGE_QUALITY=medium` for Studio still generation.
+- `GENERATED_MEDIA_PROMPT_ENCRYPTION_KEY` must match the web value. Generate one with `openssl rand -base64 32`.
+- Unknown generated-image outcomes are inspected and explicitly settled with `bun run --cwd packages/services generated-media:operator -- --workspace <uuid> --job <uuid>`; reconciliation additionally requires `--decision`, `--actor`, and `--reason`.
 - `OPENAI_CLIP_REASONING_EFFORT=medium`
 - `OPENAI_TTS_MODEL=gpt-4o-mini-tts` and `OPENAI_DUB_TRANSLATION_MODEL=gpt-5.4-mini` for voiceover dubbing.
 - `ASSEMBLYAI_KEYTERMS_PROMPT=comma,separated,terms` to opt into deployment-specific names or brands. Terms are trimmed, deduplicated, limited to six words each, and capped at the Universal-2-safe 200-term limit; Narriflow sends no built-in demo vocabulary.

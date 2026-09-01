@@ -2,15 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Flex, Text, Stack, Input, SimpleGrid } from "@chakra-ui/react";
-import { Search, Film, Check, X, Link2, AlertTriangle, Play } from "lucide-react";
+import { Search, Film, Check, X, AlertTriangle, Play, Sparkles } from "lucide-react";
 import { Spinner } from "@narriflow/ui";
 import { brollQueryForClip, planBrollCutaways } from "@narriflow/validators";
 import { formatDuration } from "@/lib/format";
 import { useStudio } from "../studio-shell";
-import {
-  DEFAULT_BROLL_PREVIEW_DURATION_SEC,
-  manualBrollPreviewWindow,
-} from "../broll-preview";
+import { manualBrollPreviewWindow } from "../broll-preview";
+import { GeneratedImagesPanel } from "./generated-images-panel";
 
 interface BrollResult {
   id: number;
@@ -31,62 +29,6 @@ const INPUT_RESET = {
   boxShadow: "none",
   caretColor: "var(--chakra-colors-studio-accent)",
 } as const;
-
-/**
- * Fix 14: a custom B-roll URL used to go straight into the document
- * unvalidated — a non-public URL (localhost, a private IP, etc.) would only
- * get caught server-side by `assertPublicHttpUrl` when the autosave PUT
- * landed, and that rejection previously surfaced as a bare 500 that wedged
- * autosave entirely (see route.ts's new UnsafeUrlError -> 422 mapping).
- * Catching it here, before dispatch, avoids the round-trip entirely for the
- * common case. This mirrors the STRUCTURAL half of the server's check
- * (packages/services/src/url-guard.ts's `assertPublicHttpUrl`) — scheme,
- * credentials, and literal private/reserved IPs/hostnames — since a DNS
- * lookup (catching a hostname that RESOLVES to a private address) can only
- * happen server-side. This is a UX pre-check, not a security boundary; the
- * server remains the source of truth.
- */
-function validatePublicHttpUrl(raw: string): string | null {
-  let url: URL;
-  try {
-    url = new URL(raw);
-  } catch {
-    return "Enter a valid URL.";
-  }
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    return "URL must start with http:// or https://.";
-  }
-  if (url.username || url.password) {
-    return "URL can't include credentials.";
-  }
-  const hostname = url.hostname.replace(/^\[|\]$/g, "").replace(/\.+$/, "").toLowerCase();
-  if (hostname === "localhost" || hostname.endsWith(".localhost") || hostname.endsWith(".local")) {
-    return "That host isn't reachable — use a public URL.";
-  }
-  const ipv4 = hostname.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
-  if (ipv4) {
-    const a = Number(ipv4[1]);
-    const b = Number(ipv4[2]);
-    const isPrivateIpv4 =
-      a === 0 ||
-      a === 10 ||
-      a === 127 ||
-      (a === 100 && b >= 64 && b <= 127) ||
-      (a === 169 && b === 254) ||
-      (a === 172 && b >= 16 && b <= 31) ||
-      (a === 192 && b === 0) ||
-      (a === 192 && b === 168) ||
-      (a === 198 && (b === 18 || b === 19)) ||
-      a >= 224;
-    if (isPrivateIpv4) {
-      return "That host isn't reachable — use a public URL.";
-    }
-  }
-  if (hostname === "::1" || hostname === "::") {
-    return "That host isn't reachable — use a public URL.";
-  }
-  return null;
-}
 
 export function BRollPanel() {
   const {
@@ -116,13 +58,12 @@ export function BRollPanel() {
     [clipInfo.brollCues, clipInfo.title],
   );
 
-  const [sourceMode, setSourceMode] = useState<"stock" | "url">("stock");
+  const [sourceMode, setSourceMode] = useState<"stock" | "generate">("stock");
   const [query, setQuery] = useState(derivedQuery ?? "");
   const [results, setResults] = useState<BrollResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [configured, setConfigured] = useState(true);
-  const [customUrl, setCustomUrl] = useState(brollUrl ?? "");
   const [previewId, setPreviewId] = useState<number | null>(null);
   const didInit = useRef(false);
 
@@ -185,10 +126,6 @@ export function BRollPanel() {
     if (query.trim()) void runSearch(query);
   }, [query, runSearch]);
 
-  useEffect(() => {
-    setCustomUrl(brollUrl ?? "");
-  }, [brollUrl]);
-
   // Dispatches through the editor document reducer (undoable, autosaved in
   // the background) instead of PATCHing directly — the applied URL is
   // validated server-side (assertPublicHttpUrl) when the autosave PUT lands;
@@ -212,34 +149,12 @@ export function BRollPanel() {
     [setBrollPreviewAsset, setBrollUrl],
   );
 
-  const applyCustomUrl = useCallback(() => {
-    const trimmed = customUrl.trim();
-    if (!trimmed) {
-      apply(null);
-      return;
-    }
-    const validationError = validatePublicHttpUrl(trimmed);
-    if (validationError) {
-      setError(validationError);
-      return;
-    }
-    setError(null);
-    setBrollUrl(trimmed);
-    setBrollPreviewAsset({
-      url: trimmed,
-      durationSec: DEFAULT_BROLL_PREVIEW_DURATION_SEC,
-      posterUrl: null,
-      authorName: null,
-      pageUrl: null,
-    });
-  }, [apply, customUrl, setBrollPreviewAsset, setBrollUrl]);
-
   return (
     <Stack gap="0" h="100%">
       <Flex gap="6px" p="12px" pb="8px">
         {([
           { id: "stock", label: "Stock library", icon: <Film size={12} /> },
-          { id: "url", label: "Paste URL", icon: <Link2 size={12} /> },
+          { id: "generate", label: "Generate", icon: <Sparkles size={12} /> },
         ] as const).map((source) => {
           const active = sourceMode === source.id;
           return (
@@ -270,7 +185,10 @@ export function BRollPanel() {
         })}
       </Flex>
 
-      {sourceMode === "stock" ? (
+      {sourceMode === "generate" ? (
+        <GeneratedImagesPanel />
+      ) : (
+      <>
       <Box px="12px" pb="8px">
         <Flex
           align="center"
@@ -311,58 +229,6 @@ export function BRollPanel() {
           )}
         </Flex>
       </Box>
-      ) : (
-      <Box px="12px" pb="8px">
-        <Text textStyle="eyebrow" color="studio.fgMuted" mb="6px">
-          Custom B-roll URL
-        </Text>
-        <Flex
-          align="center"
-          gap="8px"
-          px="10px"
-          h="34px"
-          borderRadius="l2"
-          bg="studio.subtle"
-          borderWidth="1px"
-          borderColor="studio.borderControl"
-          _focusWithin={{ borderColor: "studio.ring" }}
-          transition="border-color 120ms ease"
-        >
-          <Box color="studio.fgSubtle" flexShrink={0}>
-            <Link2 size={13} />
-          </Box>
-          <Input
-            aria-label="Custom B-roll URL"
-            placeholder="https://example.com/cutaway.mp4"
-            value={customUrl}
-            onChange={(event) => setCustomUrl(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Enter") applyCustomUrl();
-            }}
-            size="xs"
-            flex="1"
-            fontSize="12px"
-            color="studio.fg"
-            css={INPUT_RESET}
-            _placeholder={{ color: "studio.fgSubtle" }}
-          />
-          <Box
-            as="button"
-            aria-label="Apply custom B-roll URL"
-            color="studio.fgMuted"
-            cursor="pointer"
-            _hover={{ color: "studio.fg" }}
-            transition="color 120ms ease"
-            onClick={applyCustomUrl}
-          >
-            <Check size={13} />
-          </Box>
-        </Flex>
-        <Text mt="5px" fontSize="10px" color="studio.fgSubtle">
-          Public MP4 links only. The URL is checked again when the clip saves.
-        </Text>
-      </Box>
-      )}
 
       {/* Selected indicator — success stripe + label, never hue alone */}
       {brollUrl ? (
@@ -463,7 +329,6 @@ export function BRollPanel() {
       ) : null}
 
       {/* Results */}
-      {sourceMode === "stock" ? (
       <Box flex="1" overflowY="auto" px="12px" pb="12px">
         {!configured ? (
           <EmptyHint text="Stock B-roll search isn't available on your workspace yet." />
@@ -584,10 +449,7 @@ export function BRollPanel() {
           </SimpleGrid>
         )}
       </Box>
-      ) : (
-        <Box flex="1" overflowY="auto" px="12px" pb="12px">
-          <EmptyHint text="Paste a public video URL above, then press Enter or the checkmark to apply it." />
-        </Box>
+      </>
       )}
     </Stack>
   );
