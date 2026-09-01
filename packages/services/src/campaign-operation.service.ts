@@ -42,7 +42,6 @@ import {
 import { hasFeature } from "./plan-features";
 import {
   assertCampaignActionWriteEnabled,
-  assertCampaignMotionWriteEnabled,
   assertProgramWriteEnabled,
   campaignActionWriteEnabled,
 } from "./program-rollout";
@@ -154,10 +153,12 @@ type CampaignMotionActorScope = {
   role: WorkspaceAccessRole;
   status: WorkspaceAccessStatus;
   idempotencyKey: string;
+  retryOfId?: string;
 };
 type CampaignBrandActorScope = BrandActorScope & {
   projectId: string;
   idempotencyKey: string;
+  retryOfId?: string;
 };
 
 type SelectedEditorAction = "apply_brand_profile" | "apply_style";
@@ -171,6 +172,77 @@ type CampaignMotionMutation =
   | { status: "ineligible"; code: "campaign_motion_target_missing" }
   | { status: "failed"; code: "campaign_motion_document_limit" }
   | { status: "changed"; document: EditorDocument };
+
+async function assertCampaignEditorRetry(input: {
+  workspaceId: string;
+  projectId: string;
+  action: "apply_brand_profile" | "apply_style" | "apply_scene_template" | "apply_motion";
+  retryOfId?: string;
+  clips: SelectedEditorItem[];
+}): Promise<void> {
+  if (!input.retryOfId) return;
+  const source = await requirePrisma().campaignOperation.findFirst({
+    where: {
+      id: input.retryOfId,
+      workspaceId: input.workspaceId,
+      projectId: input.projectId,
+      action: input.action,
+    },
+    include: {
+      items: {
+        select: {
+          requestedClipId: true,
+          expectedEditorRevision: true,
+          status: true,
+        },
+      },
+      retries: { select: { id: true }, take: 1 },
+    },
+  });
+  if (!source) {
+    throw new CampaignOperationError(
+      "campaign_operation_not_found",
+      "The source campaign operation was not found",
+    );
+  }
+  if (source.retries.length > 0) {
+    throw new CampaignOperationError(
+      "campaign_operation_already_retried",
+      "This campaign operation already has a retry",
+    );
+  }
+  const sourceItems = new Map(
+    source.items.map((item) => [item.requestedClipId, item]),
+  );
+  const invalid = input.clips.some((clip) => {
+    const sourceItem = sourceItems.get(clip.clipId);
+    if (!sourceItem) return true;
+    if (sourceItem.status === "failed") return false;
+    return !(
+      sourceItem.status === "stale" &&
+      sourceItem.expectedEditorRevision !== null &&
+      clip.expectedEditorRevision !== sourceItem.expectedEditorRevision
+    );
+  });
+  if (invalid) {
+    throw new CampaignOperationError(
+      "campaign_operation_no_retryable_items",
+      "A retry may include only failed items or stale items with refreshed revisions",
+    );
+  }
+}
+
+async function throwIfCampaignRetryAlreadyExists(retryOfId?: string) {
+  if (
+    retryOfId &&
+    (await requirePrisma().campaignOperation.count({ where: { retryOfId } })) > 0
+  ) {
+    throw new CampaignOperationError(
+      "campaign_operation_already_retried",
+      "This campaign operation already has a retry",
+    );
+  }
+}
 
 /**
  * Plans one selected motion mutation through the same Editor Document reducer
@@ -448,7 +520,12 @@ export class CampaignOperationService {
   private async applySelectedEditorDocumentChange(
     scope: Pick<
       CampaignBrandActorScope,
-      "actorUserId" | "workspaceId" | "projectId" | "pricingTier" | "idempotencyKey"
+      | "actorUserId"
+      | "workspaceId"
+      | "projectId"
+      | "pricingTier"
+      | "idempotencyKey"
+      | "retryOfId"
     >,
     input: {
       action: SelectedEditorAction;
@@ -481,6 +558,15 @@ export class CampaignOperationService {
         return { ...campaignOperationSnapshot(replay), replayed: true };
       }
     }
+    if (!replay) {
+      await assertCampaignEditorRetry({
+        workspaceId: scope.workspaceId,
+        projectId: scope.projectId,
+        action: input.action,
+        retryOfId: scope.retryOfId,
+        clips: input.clips,
+      });
+    }
 
     const clips = await prisma.clip.findMany({
       where: {
@@ -505,6 +591,7 @@ export class CampaignOperationService {
             validatedOptions: input.validatedOptions,
             pricingTier: scope.pricingTier,
             requestedCount: input.clips.length,
+            retryOfId: scope.retryOfId ?? null,
             items: {
               create: input.clips.map((clip) => ({
                 requestedClipId: clip.clipId,
@@ -526,6 +613,7 @@ export class CampaignOperationService {
         ) {
           throw error;
         }
+        await throwIfCampaignRetryAlreadyExists(scope.retryOfId);
         const raced = await prisma.campaignOperation.findUnique({
           where: {
             workspaceId_projectId_action_idempotencyKey: {
@@ -586,16 +674,16 @@ export class CampaignOperationService {
           clipId: requested.clipId,
         });
         const next = input.change(current.document);
-        if (next === current.document) {
+        if (current.revision !== requested.expectedEditorRevision) {
+          status = "stale";
+          errorCode = "campaign_clip_stale";
+        } else if (next === current.document) {
           status = "unchanged";
           errorCode = null;
           result = {
             editorRevision: current.revision,
             ...input.resultReference,
           };
-        } else if (current.revision !== requested.expectedEditorRevision) {
-          status = "stale";
-          errorCode = "campaign_clip_stale";
         } else {
           const mutation = await clipEditorDocumentPersistence.mutateDocument({
             actorUserId: scope.actorUserId,
@@ -1194,6 +1282,7 @@ export class CampaignOperationService {
     > | null = null;
     let clips: SelectedEditorItem[];
     let placement: "start" | "end" | null = null;
+    let motionChange: ApplyMotionSelectedInput["change"] | null = null;
 
     if (request.action === "apply_brand_profile") {
       const resolved = await resolveProjectBrandProfileSelection(
@@ -1208,7 +1297,7 @@ export class CampaignOperationService {
       change = (document) =>
         applyCampaignStyleChange(document, resolved.style, false);
       clips = request.input.clips;
-    } else {
+    } else if (request.action === "apply_scene_template") {
       clips = request.input.clips;
       placement = request.input.placement;
       try {
@@ -1233,6 +1322,10 @@ export class CampaignOperationService {
           "The Scene Template changed after preview",
         );
       }
+      change = (document) => document;
+    } else {
+      clips = request.input.clips;
+      motionChange = request.input.change;
       change = (document) => document;
     }
 
@@ -1269,8 +1362,19 @@ export class CampaignOperationService {
           projectId: scope.projectId,
           clipId: selected.clipId,
         });
+        if (current.revision !== selected.expectedEditorRevision) {
+          items.push({
+            clipId: selected.clipId,
+            expectedEditorRevision: selected.expectedEditorRevision,
+            currentEditorRevision: current.revision,
+            status: "stale",
+            code: "campaign_clip_stale",
+          });
+          continue;
+        }
         let next: EditorDocument;
         let equivalent = false;
+        let ineligibleCode: string | null = null;
         if (sceneTemplate && placement) {
           const sourceDurationSec = buildEditedTimeMap(
             current.document.deletedRanges,
@@ -1303,6 +1407,20 @@ export class CampaignOperationService {
                   anchorSec: placement === "start" ? 0 : totalDurationSec,
                 },
               });
+        } else if (motionChange) {
+          const planned = applyCampaignMotionChange(
+            current.document,
+            motionChange,
+          );
+          equivalent = planned.status === "unchanged";
+          if (planned.status === "changed") {
+            next = planned.document;
+          } else {
+            next = current.document;
+            if (planned.status === "ineligible" || planned.status === "failed") {
+              ineligibleCode = planned.code;
+            }
+          }
         } else {
           next = change(current.document);
           equivalent = next === current.document;
@@ -1316,21 +1434,13 @@ export class CampaignOperationService {
             status: "unchanged",
             code: null,
           });
-        } else if (current.revision !== selected.expectedEditorRevision) {
-          items.push({
-            clipId: selected.clipId,
-            expectedEditorRevision: selected.expectedEditorRevision,
-            currentEditorRevision: current.revision,
-            status: "stale",
-            code: "campaign_clip_stale",
-          });
-        } else if (next === current.document) {
+        } else if (ineligibleCode || next === current.document) {
           items.push({
             clipId: selected.clipId,
             expectedEditorRevision: selected.expectedEditorRevision,
             currentEditorRevision: current.revision,
             status: "ineligible",
-            code: "scene_template_document_limit",
+            code: ineligibleCode ?? "scene_template_document_limit",
           });
         } else {
           items.push({
@@ -1391,6 +1501,7 @@ export class CampaignOperationService {
         profileFingerprint: resolved.profileFingerprint,
         styleFingerprint: resolved.styleFingerprint,
         clips,
+        retryOfId: scope.retryOfId ?? null,
       }),
       validatedOptions: {
         profileId: resolved.profile.profileId,
@@ -1430,6 +1541,7 @@ export class CampaignOperationService {
         templateId: resolved.style.templateId,
         templateFingerprint: resolved.templateFingerprint,
         clips,
+        retryOfId: scope.retryOfId ?? null,
       }),
       validatedOptions: {
         profileId: resolved.profileId,
@@ -1447,7 +1559,11 @@ export class CampaignOperationService {
   }
 
   async applySceneTemplate(
-    scope: BrandActorScope & { projectId: string; idempotencyKey: string },
+    scope: BrandActorScope & {
+      projectId: string;
+      idempotencyKey: string;
+      retryOfId?: string;
+    },
     profileId: string,
     templateId: string,
     value: unknown,
@@ -1464,6 +1580,7 @@ export class CampaignOperationService {
       templateFingerprint: input.templateFingerprint,
       placement: input.placement,
       clips: orderedClips,
+      retryOfId: scope.retryOfId ?? null,
     });
     const prisma = requirePrisma();
     const replay = await prisma.campaignOperation.findUnique({
@@ -1477,6 +1594,15 @@ export class CampaignOperationService {
       if (replay.status !== "running") {
         return { ...campaignOperationSnapshot(replay), replayed: true };
       }
+    }
+    if (!replay) {
+      await assertCampaignEditorRetry({
+        workspaceId: scope.workspaceId,
+        projectId: scope.projectId,
+        action: "apply_scene_template",
+        retryOfId: scope.retryOfId,
+        clips: orderedClips,
+      });
     }
     const clips = await prisma.clip.findMany({
       where: {
@@ -1500,6 +1626,7 @@ export class CampaignOperationService {
 					validatedOptions: { profileId, templateId, templateFingerprint: input.templateFingerprint, placement: input.placement },
 					pricingTier: scope.pricingTier,
           requestedCount: orderedClips.length,
+          retryOfId: scope.retryOfId ?? null,
           items: {
             create: orderedClips.map((clip) => ({
               requestedClipId: clip.clipId,
@@ -1514,6 +1641,7 @@ export class CampaignOperationService {
       });
     } catch (error) {
       if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== "P2002") throw error;
+      await throwIfCampaignRetryAlreadyExists(scope.retryOfId);
       const raced = await prisma.campaignOperation.findUnique({
         where: { workspaceId_projectId_action_idempotencyKey: { workspaceId: scope.workspaceId, projectId: scope.projectId, action: "apply_scene_template", idempotencyKey: scope.idempotencyKey } },
       });
@@ -1555,13 +1683,13 @@ export class CampaignOperationService {
             (input.placement === "start"
               ? Math.abs(scene.anchorSec) <= 0.001
               : Math.abs(scene.anchorSec + scene.durationSec - totalDurationSec) <= 0.001));
-        if (existing) {
+        if (current.revision !== requested.expectedEditorRevision) {
+          status = "stale";
+          errorCode = "campaign_clip_stale";
+        } else if (existing) {
           status = "unchanged";
           errorCode = null;
           result = { editorRevision: current.revision, sceneBlockId: existing.id };
-        } else if (current.revision !== requested.expectedEditorRevision) {
-          status = "stale";
-          errorCode = "campaign_clip_stale";
         } else {
           const anchorSec = input.placement === "start"
             ? 0
@@ -1662,7 +1790,6 @@ export class CampaignOperationService {
     }
 
     const input = applyMotionSelectedSchema.parse(value);
-    assertCampaignMotionWriteEnabled(input.change);
     const orderedClips = [...input.clips].sort((left, right) =>
       left.clipId.localeCompare(right.clipId),
     );
@@ -1670,6 +1797,7 @@ export class CampaignOperationService {
       action: "apply_motion",
       change: input.change,
       clips: orderedClips,
+      retryOfId: scope.retryOfId ?? null,
     });
     const prisma = requirePrisma();
     const replay = await prisma.campaignOperation.findUnique({
@@ -1692,6 +1820,15 @@ export class CampaignOperationService {
       if (replay.status !== "running") {
         return { ...campaignOperationSnapshot(replay), replayed: true };
       }
+    }
+    if (!replay) {
+      await assertCampaignEditorRetry({
+        workspaceId: scope.workspaceId,
+        projectId: scope.projectId,
+        action: "apply_motion",
+        retryOfId: scope.retryOfId,
+        clips: orderedClips,
+      });
     }
 
     const clips = await prisma.clip.findMany({
@@ -1719,6 +1856,7 @@ export class CampaignOperationService {
             validatedOptions: { change: input.change },
             pricingTier: scope.pricingTier,
             requestedCount: orderedClips.length,
+            retryOfId: scope.retryOfId ?? null,
             items: {
               create: orderedClips.map((clip) => ({
                 requestedClipId: clip.clipId,
@@ -1740,6 +1878,7 @@ export class CampaignOperationService {
         ) {
           throw error;
         }
+        await throwIfCampaignRetryAlreadyExists(scope.retryOfId);
         const raced = await prisma.campaignOperation.findUnique({
           where: {
             workspaceId_projectId_action_idempotencyKey: {
@@ -1800,13 +1939,13 @@ export class CampaignOperationService {
           clipId: requested.clipId,
         });
         const planned = applyCampaignMotionChange(current.document, input.change);
-        if (planned.status === "unchanged") {
+        if (current.revision !== requested.expectedEditorRevision) {
+          status = "stale";
+          errorCode = "campaign_clip_stale";
+        } else if (planned.status === "unchanged") {
           status = "unchanged";
           errorCode = null;
           result = { editorRevision: current.revision };
-        } else if (current.revision !== requested.expectedEditorRevision) {
-          status = "stale";
-          errorCode = "campaign_clip_stale";
         } else if (planned.status === "ineligible" || planned.status === "failed") {
           status = planned.status;
           errorCode = planned.code;

@@ -212,17 +212,21 @@ export default async function ProjectDetailPage({
   // picker degrades exactly the way the worker's render-time gate does.
   const can1080pExport = hasFeature(pricingTier, "export.1080p");
   const campaignActionRollout = campaignActionRolloutFromEnv();
-  const campaignActionAvailability = {
-    exports: campaignActionRollout.exports,
-    creative: campaignActionRollout.creative,
-    motion:
-      campaignActionRollout.creative &&
-      hasFeature(pricingTier, "editor.motion"),
-  };
   const campaignOperationsEnabled = hasFeature(
     pricingTier,
     "campaign.operations",
   );
+  const campaignActionAvailability = {
+    exports:
+      campaignActionRollout.exports &&
+      campaignOperationsEnabled &&
+      hasFeature(pricingTier, "export.bundles"),
+    creative: campaignActionRollout.creative && campaignOperationsEnabled,
+    motion:
+      campaignActionRollout.creative &&
+      campaignOperationsEnabled &&
+      hasFeature(pricingTier, "editor.motion"),
+  };
   const canApplyBrandProfile =
     isProgramWriteEnabled("brand_kit_projection") &&
     hasFeature(pricingTier, "brand.profiles") &&

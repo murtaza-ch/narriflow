@@ -44,7 +44,6 @@ import {
   type CampaignCommandState,
   type CampaignEditorRetryIntent,
   type CampaignEditorRetryRequest,
-  deriveCampaignMotionDialogState,
 } from "./campaign-command-state";
 import {
   CampaignEditorActionPreview,
@@ -82,6 +81,23 @@ type CampaignOperation = {
     expiresAt: string | null;
     errorCode: string | null;
   } | null;
+};
+
+type MotionPreflight = {
+  requestedCount: number;
+  counts: {
+    eligible: number;
+    unchanged: number;
+    stale: number;
+    ineligible: number;
+  };
+  items: Array<{
+    clipId: string;
+    expectedEditorRevision: number;
+    currentEditorRevision: number | null;
+    status: "eligible" | "unchanged" | "stale" | "ineligible";
+    code: string | null;
+  }>;
 };
 
 const TRANSITION_OPTIONS: ReadonlyArray<{
@@ -147,6 +163,8 @@ function actionLabel(state: CampaignCommandState) {
   switch (state.primary) {
     case "export_bundle":
       return `Build ZIP (${state.selectedCount})`;
+    case "render_selected":
+      return `Render selected (${state.selectedCount})`;
     default:
       return `Prepare exports (${state.attentionItems.length})`;
   }
@@ -280,6 +298,7 @@ export function CampaignCommandBar({
   const [retryIntent, setRetryIntent] =
     useState<CampaignEditorRetryIntent | null>(null);
   const [previewingBundle, setPreviewingBundle] = useState(false);
+  const [previewingRender, setPreviewingRender] = useState(false);
   const [previewingMotion, setPreviewingMotion] = useState(false);
   const [editorActionKind, setEditorActionKind] =
     useState<CampaignEditorActionKind | null>(null);
@@ -294,6 +313,10 @@ export function CampaignCommandBar({
     "fade",
   );
   const [motionExit, setMotionExit] = useState<ManualBrollMotion["exit"]>("fade");
+  const [motionPreflight, setMotionPreflight] = useState<MotionPreflight | null>(null);
+  const [motionPreflightState, setMotionPreflightState] = useState<
+    "idle" | "loading" | "ready" | "error"
+  >("idle");
 
   const clipsById = useMemo(
     () =>
@@ -324,10 +347,20 @@ export function CampaignCommandBar({
       transitionType,
     ],
   );
-  const motionDialogState = useMemo(
-    () => deriveCampaignMotionDialogState(state, motionScope),
-    [motionScope, state],
+  const motionPreflightInput = useMemo(
+    () => buildApplyMotionSelectedInput(motionChange, state.selectedItems),
+    [motionChange, state.selectedItems],
   );
+  const motionPreflightKey = useMemo(
+    () => JSON.stringify(motionPreflightInput),
+    [motionPreflightInput],
+  );
+  const motionAttentionCount = motionPreflight
+    ? motionPreflight.counts.stale + motionPreflight.counts.ineligible
+    : 0;
+  const canSubmitMotion =
+    motionPreflightState === "ready" &&
+    (motionPreflight?.counts.eligible ?? 0) > 0;
   const editorRetryRequest = useMemo(
     () =>
       operation
@@ -363,6 +396,50 @@ export function CampaignCommandBar({
       clearInterval(timer);
     };
   }, [drawerOpen, operation, projectId]);
+
+  useEffect(() => {
+    if (!drawerOpen || !previewingMotion) {
+      setMotionPreflightState("idle");
+      setMotionPreflight(null);
+      return;
+    }
+    const controller = new AbortController();
+    setMotionPreflightState("loading");
+    setMotionPreflight(null);
+    setError(null);
+    void fetch(
+      `/api/projects/${projectId}/campaign-operations/preview-editor-action`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          action: "apply_motion",
+          input: JSON.parse(motionPreflightKey),
+        }),
+        signal: controller.signal,
+      },
+    )
+      .then(async (response) => {
+        const payload = (await response.json().catch(() => null)) as
+          | (MotionPreflight & { message?: string })
+          | null;
+        if (!response.ok || !payload?.counts || !payload.items) {
+          throw new Error(payload?.message || "Motion preflight could not be completed.");
+        }
+        setMotionPreflight(payload);
+        setMotionPreflightState("ready");
+      })
+      .catch((preflightError: unknown) => {
+        if (controller.signal.aborted) return;
+        setMotionPreflightState("error");
+        setError(
+          preflightError instanceof Error
+            ? preflightError.message
+            : "Motion preflight could not be completed.",
+        );
+      });
+    return () => controller.abort();
+  }, [drawerOpen, motionPreflightKey, previewingMotion, projectId]);
 
   async function createBundle() {
     if (
@@ -405,6 +482,7 @@ export function CampaignCommandBar({
         return;
       }
       setPreviewingBundle(false);
+      setPreviewingRender(false);
       setPreviewingMotion(false);
       setEditorActionKind(null);
       setRetryIntent(null);
@@ -481,6 +559,18 @@ export function CampaignCommandBar({
     setOperation(null);
     setRetryIntent(null);
     setPreviewingBundle(true);
+    setPreviewingRender(false);
+    setPreviewingMotion(false);
+    setEditorActionKind(null);
+    setDrawerOpen(true);
+  }
+
+  function openRenderPreview() {
+    setError(null);
+    setOperation(null);
+    setRetryIntent(null);
+    setPreviewingBundle(false);
+    setPreviewingRender(true);
     setPreviewingMotion(false);
     setEditorActionKind(null);
     setDrawerOpen(true);
@@ -491,6 +581,7 @@ export function CampaignCommandBar({
     setOperation(null);
     setRetryIntent(null);
     setPreviewingBundle(false);
+    setPreviewingRender(false);
     setPreviewingMotion(true);
     setEditorActionKind(null);
     setDrawerOpen(true);
@@ -501,6 +592,7 @@ export function CampaignCommandBar({
     setOperation(null);
     setRetryIntent(null);
     setPreviewingBundle(false);
+    setPreviewingRender(false);
     setPreviewingMotion(false);
     setEditorActionKind(kind);
     setDrawerOpen(true);
@@ -560,7 +652,7 @@ export function CampaignCommandBar({
       submitting ||
       !campaignOperationsEnabled ||
       !state.availableActions.includes("apply_motion") ||
-      !motionDialogState.canSubmit
+      !canSubmitMotion
     ) {
       return;
     }
@@ -576,7 +668,7 @@ export function CampaignCommandBar({
             "idempotency-key": crypto.randomUUID(),
           },
           body: JSON.stringify(
-            buildApplyMotionSelectedInput(motionChange, state.selectedItems),
+            motionPreflightInput,
           ),
         },
       );
@@ -661,6 +753,7 @@ export function CampaignCommandBar({
           headers: {
             "content-type": "application/json",
             "idempotency-key": crypto.randomUUID(),
+            "campaign-retry-of": operation.id,
           },
           body: JSON.stringify(editorRetryRequest.input),
         },
@@ -733,6 +826,14 @@ export function CampaignCommandBar({
   }
 
   const menuItems = [
+    ...(state.primary !== "render_selected"
+      ? [{
+          value: "render",
+          label: "Render all selected",
+          icon: <Film size={14} />,
+          onSelect: openRenderPreview,
+        }]
+      : []),
     ...(state.availableActions.includes("apply_brand_profile")
       ? [
           {
@@ -826,6 +927,17 @@ export function CampaignCommandBar({
             size="sm"
             defaultAspectRatio={defaultAspectRatio}
           />
+        ) : state.primary === "render_selected" ? (
+          <RenderClipsButton
+            projectId={projectId}
+            disabled={false}
+            buttonLabel={actionLabel(state)}
+            isFreeTier={isFreeTier}
+            can1080pExport={can1080pExport}
+            clipIds={state.selectedClipIds}
+            size="sm"
+            defaultAspectRatio={defaultAspectRatio}
+          />
         ) : state.primary ? (
           <Button size="sm" onClick={runPrimary}>
             <Archive size={13} />
@@ -864,6 +976,8 @@ export function CampaignCommandBar({
                   <Drawer.Title textStyle="title" fontSize="lg">
                     {previewingBundle
                       ? "Review bundle"
+                      : previewingRender
+                        ? "Render selected"
                       : editorActionKind === "brand_profile"
                         ? "Project Brand Profile"
                         : editorActionKind === "style"
@@ -885,6 +999,35 @@ export function CampaignCommandBar({
                     campaignOperationsEnabled={campaignOperationsEnabled}
                     onApplied={receiveEditorActionResult}
                   />
+                ) : previewingRender ? (
+                  <Stack gap="4">
+                    <Box>
+                      <Text fontSize="sm" color="fg">
+                        Queue new render variants for all {state.selectedCount} selected
+                        {state.selectedCount === 1 ? " clip" : " clips"}.
+                      </Text>
+                      <Text fontSize="xs" color="fg.muted" mt="1">
+                        Choose any supported aspect ratio and resolution. Existing ready exports remain immutable.
+                      </Text>
+                    </Box>
+                    <Stack gap="0" borderTopWidth="1px" borderColor="border.subtle">
+                      {state.selectedItems.map((item, index) => (
+                        <Flex
+                          key={item.clipId}
+                          align="center"
+                          justify="space-between"
+                          py="2.5"
+                          borderBottomWidth="1px"
+                          borderColor="border.subtle"
+                        >
+                          <Text fontSize="sm">Clip {index + 1}</Text>
+                          <Text textStyle="data" fontSize="11px" color="fg.muted">
+                            revision {item.expectedEditorRevision}
+                          </Text>
+                        </Flex>
+                      ))}
+                    </Stack>
+                  </Stack>
                 ) : previewingBundle ? (
                   <Stack gap="5">
                     <Box>
@@ -1087,13 +1230,22 @@ export function CampaignCommandBar({
                           Revision check
                         </Text>
                         <Text textStyle="data" fontSize="11px" color="fg.muted">
-                          {motionDialogState.eligibleCount} eligible · {motionDialogState.attentionCount} attention
+                          {motionPreflightState === "loading"
+                            ? "Checking current revisions…"
+                            : `${motionPreflight?.counts.eligible ?? 0} eligible · ${motionAttentionCount} attention`}
                         </Text>
                       </Flex>
                       <Stack gap="0" borderTopWidth="1px" borderColor="border.subtle">
-                        {state.selectedItems.map((item, index) => {
-                          const missing =
-                            motionScope === "manual_broll" && !item.hasManualBroll;
+                        {motionPreflightState === "loading" ? (
+                          <Flex align="center" gap="2" py="3">
+                            <Spinner size="xs" />
+                            <Text fontSize="xs" color="fg.muted">
+                              Reading the current Editor Documents…
+                            </Text>
+                          </Flex>
+                        ) : null}
+                        {motionPreflight?.items.map((item, index) => {
+                          const attention = item.status === "stale" || item.status === "ineligible";
                           return (
                             <Flex
                               key={item.clipId}
@@ -1104,22 +1256,22 @@ export function CampaignCommandBar({
                               borderColor="border.subtle"
                             >
                               <Flex align="center" gap="2">
-                                {missing ? (
+                                {attention ? (
                                   <AlertTriangle size={13} />
                                 ) : (
                                   <Check size={13} color="var(--chakra-colors-success-fg)" />
                                 )}
                                 <Box>
                                   <Text fontSize="sm">Clip {index + 1}</Text>
-                                  {missing ? (
+                                  {item.code ? (
                                     <Text fontSize="xs" color="fg.muted">
-                                      No manual B-roll target
+                                      {userErrorMessage(item.code)}
                                     </Text>
                                   ) : null}
                                 </Box>
                               </Flex>
                               <Text textStyle="data" fontSize="11px" color="fg.muted">
-                                revision {item.expectedEditorRevision}
+                                {item.status} · revision {item.currentEditorRevision ?? "—"}
                               </Text>
                             </Flex>
                           );
@@ -1146,7 +1298,7 @@ export function CampaignCommandBar({
                           </Text>
                         </Box>
                       </Flex>
-                    ) : motionDialogState.attentionCount > 0 ? (
+                    ) : motionAttentionCount > 0 ? (
                       <Flex
                         align="flex-start"
                         gap="2"
@@ -1157,9 +1309,9 @@ export function CampaignCommandBar({
                       >
                         <AlertTriangle size={14} />
                         <Text fontSize="xs">
-                          {motionDialogState.eligibleCount === 0
-                            ? "Add manual B-roll to at least one selected clip before applying motion."
-                            : "Clips without manual B-roll will be recorded as ineligible; eligible clips still apply."}
+                          {(motionPreflight?.counts.eligible ?? 0) === 0
+                            ? "Resolve the stale or ineligible clips before applying this motion."
+                            : "Stale and ineligible clips will be recorded exactly as shown; eligible clips still apply."}
                         </Text>
                       </Flex>
                     ) : null}
@@ -1300,7 +1452,19 @@ export function CampaignCommandBar({
                 <Button variant="ghost" size="sm" onClick={() => setDrawerOpen(false)}>
                   Close
                 </Button>
-                {editorActionKind ? null : previewingBundle ? (
+                {editorActionKind ? null : previewingRender ? (
+                  <RenderClipsButton
+                    projectId={projectId}
+                    disabled={false}
+                    buttonLabel="Choose formats"
+                    isFreeTier={isFreeTier}
+                    can1080pExport={can1080pExport}
+                    clipIds={state.selectedClipIds}
+                    size="sm"
+                    defaultAspectRatio={defaultAspectRatio}
+                    onQueued={() => setDrawerOpen(false)}
+                  />
+                ) : previewingBundle ? (
                   <Button
                     size="sm"
                     disabled={submitting || state.readyItems.length === 0}
@@ -1313,7 +1477,7 @@ export function CampaignCommandBar({
                   campaignOperationsEnabled ? (
                     <Button
                       size="sm"
-                      disabled={submitting || !motionDialogState.canSubmit}
+                      disabled={submitting || !canSubmitMotion}
                       onClick={applySelectedMotion}
                     >
                       {submitting ? <Spinner size="xs" /> : <WandSparkles size={14} />}

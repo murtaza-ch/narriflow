@@ -75,13 +75,6 @@ export function assertCampaignActionWriteEnabled(
   }
 }
 
-export function assertCampaignMotionWriteEnabled(
-  _change: unknown,
-  rollout?: CampaignActionRollout,
-): void {
-  assertCampaignActionWriteEnabled("apply_motion", rollout);
-}
-
 export class ProgramWriteDisabledError extends Error {
   readonly code = "program_write_disabled";
 

@@ -72,23 +72,6 @@ export const applyStyleSelectedSchema = z.strictObject({
   clips: campaignSelectedClipsSchema,
 });
 
-export const previewCampaignEditorActionSchema = z.discriminatedUnion("action", [
-  z.strictObject({
-    action: z.literal("apply_brand_profile"),
-    input: applyProjectBrandProfileSelectedSchema,
-  }),
-  z.strictObject({
-    action: z.literal("apply_style"),
-    input: applyStyleSelectedSchema,
-  }),
-  z.strictObject({
-    action: z.literal("apply_scene_template"),
-    profileId: z.string().uuid(),
-    templateId: z.string().uuid(),
-    input: applySceneTemplateSchema,
-  }),
-]);
-
 export const applyMotionSelectedSchema = z.strictObject({
   change: z.discriminatedUnion("scope", [
     z.strictObject({
@@ -105,6 +88,27 @@ export const applyMotionSelectedSchema = z.strictObject({
   ]),
   clips: campaignSelectedClipsSchema,
 });
+
+export const previewCampaignEditorActionSchema = z.discriminatedUnion("action", [
+  z.strictObject({
+    action: z.literal("apply_brand_profile"),
+    input: applyProjectBrandProfileSelectedSchema,
+  }),
+  z.strictObject({
+    action: z.literal("apply_style"),
+    input: applyStyleSelectedSchema,
+  }),
+  z.strictObject({
+    action: z.literal("apply_scene_template"),
+    profileId: z.string().uuid(),
+    templateId: z.string().uuid(),
+    input: applySceneTemplateSchema,
+  }),
+  z.strictObject({
+    action: z.literal("apply_motion"),
+    input: applyMotionSelectedSchema,
+  }),
+]);
 
 export const exportBundleManifestSchema = z.strictObject({
   schemaVersion: z.literal(1),

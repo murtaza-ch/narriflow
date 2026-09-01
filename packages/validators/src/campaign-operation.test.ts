@@ -3,6 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   applyMotionSelectedSchema,
   campaignOperationActionSchema,
+  previewCampaignEditorActionSchema,
 } from "./campaign-operation";
 
 const clipId = "10000000-0000-4000-8000-000000000001";
@@ -64,5 +65,20 @@ describe("selection-scoped campaign operation schemas", () => {
     expect(campaignOperationActionSchema.parse("apply_motion")).toBe(
       "apply_motion",
     );
+  });
+
+  test("accepts motion through the shared editor-action preflight contract", () => {
+    expect(
+      previewCampaignEditorActionSchema.parse({
+        action: "apply_motion",
+        input: {
+          change: {
+            scope: "clip_transition",
+            transition: { type: "fade", durationSec: 0.35 },
+          },
+          clips: [{ clipId, expectedEditorRevision: 7 }],
+        },
+      }),
+    ).toMatchObject({ action: "apply_motion" });
   });
 });

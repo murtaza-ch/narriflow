@@ -145,6 +145,33 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
   test("persists revision-fenced motion with partial truth and idempotent replay", async () => {
     const current = await fixture("campaign-motion");
     const missingClipId = randomUUID();
+    const preflightScope = {
+      actorUserId: current.user.id,
+      workspaceId: current.workspace.id,
+      workspaceOwnerUserId: current.user.id,
+      projectId: current.project.id,
+      pricingTier: "business",
+      role: "owner" as const,
+      status: "active" as const,
+      isPersonalWorkspace: false,
+    };
+    const preflight = await campaignOperationService.previewEditorAction(
+      preflightScope,
+      {
+        action: "apply_motion",
+        input: {
+          change: {
+            scope: "clip_transition",
+            transition: { type: "none", durationSec: 0.4 },
+          },
+          clips: [{ clipId: current.clip.id, expectedEditorRevision: 2 }],
+        },
+      },
+    );
+    expect(preflight).toMatchObject({
+      counts: { stale: 1, eligible: 0 },
+      items: [{ clipId: current.clip.id, status: "stale" }],
+    });
     const scope = {
       actorUserId: current.user.id,
       workspaceId: current.workspace.id,
@@ -213,6 +240,71 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
       },
     );
     expect(stale.counts).toMatchObject({ stale: 1, succeeded: 0 });
+
+    const source = await prisma.campaignOperation.findUniqueOrThrow({
+      where: { id: stale.operationId },
+    });
+    const retry = await campaignOperationService.applyMotionSelected(
+      {
+        ...scope,
+        idempotencyKey: randomUUID(),
+        retryOfId: source.id,
+      },
+      {
+        change: {
+          scope: "clip_transition",
+          transition: { type: "dip-white", durationSec: 0.4 },
+        },
+        clips: [{ clipId: current.clip.id, expectedEditorRevision: 4 }],
+      },
+    );
+    expect(
+      await prisma.campaignOperation.findUniqueOrThrow({
+        where: { id: retry.operationId },
+        select: { retryOfId: true },
+      }),
+    ).toEqual({ retryOfId: source.id });
+    await expect(
+      campaignOperationService.applyMotionSelected(
+        {
+          ...scope,
+          idempotencyKey: (
+            await prisma.campaignOperation.findUniqueOrThrow({
+              where: { id: retry.operationId },
+              select: { idempotencyKey: true },
+            })
+          ).idempotencyKey,
+          retryOfId: source.id,
+        },
+        {
+          change: {
+            scope: "clip_transition",
+            transition: { type: "dip-white", durationSec: 0.4 },
+          },
+          clips: [{ clipId: current.clip.id, expectedEditorRevision: 4 }],
+        },
+      ),
+    ).resolves.toMatchObject({ operationId: retry.operationId, replayed: true });
+    await expect(
+      campaignOperationService.applyMotionSelected(
+        {
+          ...scope,
+          idempotencyKey: (
+            await prisma.campaignOperation.findUniqueOrThrow({
+              where: { id: retry.operationId },
+              select: { idempotencyKey: true },
+            })
+          ).idempotencyKey,
+        },
+        {
+          change: {
+            scope: "clip_transition",
+            transition: { type: "dip-white", durationSec: 0.4 },
+          },
+          clips: [{ clipId: current.clip.id, expectedEditorRevision: 4 }],
+        },
+      ),
+    ).rejects.toMatchObject({ code: "campaign_operation_idempotency_conflict" });
   });
 
   test("freezes bundle revisions and variants while excluding stale and missing clips", async () => {

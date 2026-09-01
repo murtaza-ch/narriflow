@@ -277,7 +277,6 @@ export {
 } from "./auto-censor.service";
 export {
   assertCampaignActionWriteEnabled,
-  assertCampaignMotionWriteEnabled,
   assertProgramWriteEnabled,
   campaignActionRolloutFromEnv,
   campaignActionWriteEnabled,

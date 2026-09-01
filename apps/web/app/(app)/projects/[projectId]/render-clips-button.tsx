@@ -50,6 +50,7 @@ export function RenderClipsButton({
   clipIds,
   size = "sm",
   defaultAspectRatio,
+  onQueued,
 }: {
   projectId: string;
   disabled: boolean;
@@ -76,6 +77,7 @@ export function RenderClipsButton({
    *  of whatever the pack's own default says). Falls back to "9:16" when
    *  omitted. */
   defaultAspectRatio?: ClipAspectRatio;
+  onQueued?(): void;
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -128,6 +130,7 @@ export function RenderClipsButton({
       }
 
       setIsOpen(false);
+      onQueued?.();
       startTransition(() => {
         router.refresh();
       });

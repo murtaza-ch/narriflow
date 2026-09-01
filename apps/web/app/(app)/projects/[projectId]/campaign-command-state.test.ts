@@ -71,9 +71,21 @@ describe("campaign command state", () => {
       defaultAspectRatio: "9:16",
       actionAvailability: { exports: false, creative: false, motion: false },
     });
-    expect(closed.primary).toBeNull();
-    expect(closed.availableActions).toEqual([]);
+    expect(closed.primary).toBe("render_selected");
+    expect(closed.availableActions).toEqual(["render_selected"]);
     expect(closed.selectedClipIds).toEqual(["ready"]);
+  });
+
+  test("keeps rerender available after every selected export is ready", () => {
+    const state = deriveCampaignCommandState({
+      clips: [clip("ready", true, 1)],
+      selectedIds: new Set(["ready"]),
+      defaultAspectRatio: "9:16",
+      actionAvailability: { exports: true, creative: true, motion: true },
+    });
+
+    expect(state.primary).toBe("export_bundle");
+    expect(state.availableActions).toContain("render_selected");
   });
 
   test("builds every creative action from the same revision fences", () => {

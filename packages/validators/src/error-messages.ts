@@ -246,6 +246,16 @@ export const USER_ERROR_MESSAGES: Record<string, string> = {
 		"We couldn't create a clip from that selection. Please try again.",
 	clip_has_scheduled_posts:
 		"This clip has scheduled or publishing social posts. Cancel them in Publish, then delete the clip.",
+	campaign_motion_target_missing:
+		"This clip has no manual B-roll target. Add B-roll in Studio, then try again.",
+	campaign_motion_document_limit:
+		"This motion would exceed the clip's Editor Document limits. Adjust the clip in Studio first.",
+	scene_template_document_limit:
+		"This scene would exceed the clip's Editor Document limits. Adjust the clip in Studio first.",
+	campaign_clip_stale:
+		"This clip changed after selection. Refresh the project before retrying it.",
+	campaign_clip_not_found:
+		"This clip is no longer in the project. Refresh the project to update the selection.",
 	// Extend as new codes appear.
 };
 

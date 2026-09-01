@@ -7,9 +7,13 @@ import type {
   ClipSnapshot,
 } from "@narriflow/validators";
 
-export type CampaignPrimaryAction = "prepare_exports" | "export_bundle";
+export type CampaignPrimaryAction =
+  | "prepare_exports"
+  | "export_bundle"
+  | "render_selected";
 
 export type CampaignAvailableAction =
+  | "render_selected"
   | "export_bundle"
   | "apply_brand_profile"
   | "apply_style"
@@ -250,6 +254,7 @@ export function deriveCampaignCommandState(input: {
     else attentionItems.push({ ...item, code: "export_required" });
   }
   const availableActions: CampaignAvailableAction[] = [
+    "render_selected",
     ...(input.actionAvailability.exports ? (["export_bundle"] as const) : []),
     ...(input.actionAvailability.creative
       ? ([
@@ -277,7 +282,7 @@ export function deriveCampaignCommandState(input: {
           ? "prepare_exports"
           : availableActions.includes("export_bundle")
             ? "export_bundle"
-            : null,
+            : "render_selected",
     availableActions,
     readyItems,
     attentionItems,

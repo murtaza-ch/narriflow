@@ -136,6 +136,15 @@ export const maxDuration = 60;
 
 const app = new Hono().basePath("/api");
 
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+function parseCampaignRetryOfId(value: string | undefined): string | null | undefined {
+  if (value === undefined) return undefined;
+  const retryOfId = value.trim();
+  return UUID_PATTERN.test(retryOfId) ? retryOfId : null;
+}
+
 function sceneDocumentMutationError(pricingTier: string, current: EditorDocument, next: EditorDocument) {
   const currentById = new Map(current.sceneBlocks.map((scene) => [scene.id, scene]));
   const nextById = new Map(next.sceneBlocks.map((scene) => [scene.id, scene]));
@@ -1551,9 +1560,16 @@ app.post("/projects/:id/campaign-operations/apply-brand-profile", async (c) => {
     body: ApplyProjectBrandProfileSelectedInput;
   }>(c);
   const idempotencyKey = c.req.header("idempotency-key")?.trim() ?? "";
+  const retryOfId = parseCampaignRetryOfId(c.req.header("campaign-retry-of"));
   if (!idempotencyKey || idempotencyKey.length > 128) {
     return c.json(
       { error: "invalid_input", message: "Invalid idempotency-key header" },
+      400,
+    );
+  }
+  if (retryOfId === null) {
+    return c.json(
+      { error: "invalid_input", message: "Invalid campaign-retry-of header" },
       400,
     );
   }
@@ -1570,6 +1586,7 @@ app.post("/projects/:id/campaign-operations/apply-brand-profile", async (c) => {
           isPersonalWorkspace: appUser.isPersonalWorkspace,
           projectId,
           idempotencyKey,
+          retryOfId,
         },
         body,
       ),
@@ -1591,7 +1608,7 @@ app.post("/projects/:id/campaign-operations/apply-brand-profile", async (c) => {
             ? error.message
             : "The Project Brand Profile could not be applied",
       },
-      code.includes("stale") || code.includes("conflict")
+      code.includes("stale") || code.includes("conflict") || code.includes("already_retried")
         ? 409
         : code.includes("forbidden") || code.includes("feature_unavailable")
           ? 403
@@ -1607,9 +1624,16 @@ app.post("/projects/:id/campaign-operations/apply-style", async (c) => {
     body: ApplyStyleSelectedInput;
   }>(c);
   const idempotencyKey = c.req.header("idempotency-key")?.trim() ?? "";
+  const retryOfId = parseCampaignRetryOfId(c.req.header("campaign-retry-of"));
   if (!idempotencyKey || idempotencyKey.length > 128) {
     return c.json(
       { error: "invalid_input", message: "Invalid idempotency-key header" },
+      400,
+    );
+  }
+  if (retryOfId === null) {
+    return c.json(
+      { error: "invalid_input", message: "Invalid campaign-retry-of header" },
       400,
     );
   }
@@ -1626,6 +1650,7 @@ app.post("/projects/:id/campaign-operations/apply-style", async (c) => {
           isPersonalWorkspace: appUser.isPersonalWorkspace,
           projectId,
           idempotencyKey,
+          retryOfId,
         },
         body,
       ),
@@ -1647,7 +1672,7 @@ app.post("/projects/:id/campaign-operations/apply-style", async (c) => {
             ? error.message
             : "The style preset could not be applied",
       },
-      code.includes("stale") || code.includes("conflict")
+      code.includes("stale") || code.includes("conflict") || code.includes("already_retried")
         ? 409
         : code.includes("forbidden") || code.includes("feature_unavailable")
           ? 403
@@ -1663,9 +1688,16 @@ app.post("/projects/:id/campaign-operations/apply-motion", async (c) => {
     body: ApplyMotionSelectedInput;
   }>(c);
   const idempotencyKey = c.req.header("idempotency-key")?.trim() ?? "";
+  const retryOfId = parseCampaignRetryOfId(c.req.header("campaign-retry-of"));
   if (!idempotencyKey || idempotencyKey.length > 128) {
     return c.json(
       { error: "invalid_input", message: "Invalid idempotency-key header" },
+      400,
+    );
+  }
+  if (retryOfId === null) {
+    return c.json(
+      { error: "invalid_input", message: "Invalid campaign-retry-of header" },
       400,
     );
   }
@@ -1680,6 +1712,7 @@ app.post("/projects/:id/campaign-operations/apply-motion", async (c) => {
           role: appUser.role,
           status: appUser.status,
           idempotencyKey,
+          retryOfId,
         },
         body,
       ),
@@ -1693,7 +1726,7 @@ app.post("/projects/:id/campaign-operations/apply-motion", async (c) => {
       error instanceof CampaignOperationError
         ? error.code
         : "campaign_motion_apply_failed";
-    const status = code.includes("conflict")
+    const status = code.includes("conflict") || code.includes("already_retried")
       ? 409
       : code.includes("forbidden") || code.includes("feature_unavailable")
         ? 403
@@ -1770,8 +1803,12 @@ app.post("/projects/:id/brand-profiles/:profileId/scene-templates/:templateId/ap
     body: ApplySceneTemplateInput;
   }>(c);
   const idempotencyKey = c.req.header("idempotency-key")?.trim() ?? "";
+  const retryOfId = parseCampaignRetryOfId(c.req.header("campaign-retry-of"));
   if (!idempotencyKey || idempotencyKey.length > 128) {
     return c.json({ error: "invalid_input" }, 400);
+  }
+  if (retryOfId === null) {
+    return c.json({ error: "invalid_input", message: "Invalid campaign-retry-of header" }, 400);
   }
   try {
     const result = await campaignOperationService.applySceneTemplate({
@@ -1784,12 +1821,13 @@ app.post("/projects/:id/brand-profiles/:profileId/scene-templates/:templateId/ap
       isPersonalWorkspace: appUser.isPersonalWorkspace,
       projectId: id,
       idempotencyKey,
+      retryOfId,
     }, profileId, templateId, body);
     return c.json(result, 200);
   } catch (error) {
     if (error instanceof ProgramWriteDisabledError) return c.json({ error: error.code, message: error.message }, 503);
     const code = error instanceof CampaignOperationError ? error.code : "scene_template_apply_failed";
-    return c.json({ error: code, message: error instanceof CampaignOperationError ? error.message : "Scene template could not be applied" }, code.includes("conflict") ? 409 : 400);
+    return c.json({ error: code, message: error instanceof CampaignOperationError ? error.message : "Scene template could not be applied" }, code.includes("conflict") || code.includes("already_retried") ? 409 : 400);
   }
 });
 

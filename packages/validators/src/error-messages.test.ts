@@ -2,6 +2,13 @@ import { describe, expect, test } from "bun:test";
 import { hasUserErrorMessage, userErrorMessage, USER_ERROR_MESSAGES } from ".";
 
 describe("userErrorMessage", () => {
+  test("explains selection-scoped campaign attention states", () => {
+    expect(userErrorMessage("campaign_motion_target_missing")).toBe(
+      "This clip has no manual B-roll target. Add B-roll in Studio, then try again.",
+    );
+    expect(userErrorMessage("campaign_clip_stale")).toContain("changed");
+  });
+
   test("returns friendly copy for a known code", () => {
     expect(userErrorMessage("quota_exceeded")).toBe(
       USER_ERROR_MESSAGES.quota_exceeded,
