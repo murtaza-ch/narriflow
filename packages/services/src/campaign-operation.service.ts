@@ -2,7 +2,6 @@ import { createHash, randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
-	activeManualBrollMotionWindow,
   clipAspectRatioFromDb,
   applyProjectBrandProfileSelectedSchema,
   applyStyleSelectedSchema,
@@ -23,7 +22,6 @@ import {
   type ApplyStyleSelectedInput,
   type BrandTemplateSnapshot,
   type EditorDocument,
-	type MediaMotion,
   type PricingTier,
   type ExportBundleManifest,
   type WorkspaceAccessRole,
@@ -174,21 +172,6 @@ type CampaignMotionMutation =
   | { status: "failed"; code: "campaign_motion_document_limit" }
   | { status: "changed"; document: EditorDocument };
 
-type CampaignBrollMotionTarget = Extract<
-	MediaMotion["target"],
-	{ kind: "broll" | "broll_url" }
->;
-
-function brollMotionMatchesTarget(
-	motion: MediaMotion,
-	target: CampaignBrollMotionTarget,
-): boolean {
-	return target.kind === "broll_url"
-		? motion.target.kind === "broll_url"
-		: motion.target.kind === "broll" &&
-			motion.target.placementId === target.placementId;
-}
-
 /**
  * Plans one selected motion mutation through the same Editor Document reducer
  * used by Studio. Keeping this pure makes equivalence, target eligibility,
@@ -213,50 +196,28 @@ export function applyCampaignMotionChange(
       : { status: "changed", document: next };
   }
 
-	const editedDurationSec = buildEditedTimeMap(document.deletedRanges, {
-		startSec: document.clipStartSec,
-		endSec: document.clipEndSec,
-	}).editedDurationSec;
-	const manualUrlWindow = activeManualBrollMotionWindow({
-		brollUrl: document.brollUrl,
-		assetBackedPlacementCount: document.brollPlacements.length,
-		editedDurationSec,
-	});
-	const targets = document.brollPlacements.length > 0
-		? document.brollPlacements.map((placement) => ({
-				target: { kind: "broll" as const, placementId: placement.id },
-				startSec: placement.startSec,
-				endSec: placement.endSec,
-			}))
-		: manualUrlWindow
-			? [{
-					target: { kind: "broll_url" as const },
-					...manualUrlWindow,
-				}]
-			: [];
-	if (targets.length === 0) {
+  if (!document.brollUrl && document.brollPlacements.length === 0) {
     return { status: "ineligible", code: "campaign_motion_target_missing" };
   }
   const brollMotions = document.mediaMotions.filter(
-		(motion) =>
-			motion.target.kind === "broll" || motion.target.kind === "broll_url",
+    (motion) => motion.target.kind === "broll",
   );
   const removeMotion = change.motion.entrance === "none" && change.motion.exit === "none";
+  const totalDurationSec =
+    buildEditedTimeMap(document.deletedRanges, {
+      startSec: document.clipStartSec,
+      endSec: document.clipEndSec,
+    }).editedDurationSec +
+    document.sceneBlocks.reduce((total, scene) => total + scene.durationSec, 0);
+  const existing = brollMotions[0];
   const equivalent = removeMotion
     ? brollMotions.length === 0
-    : brollMotions.length === targets.length &&
-			targets.every((target) => {
-				const matches = brollMotions.filter(
-					(motion) => brollMotionMatchesTarget(motion, target.target),
-				);
-				const existing = matches[0];
-				return matches.length === 1 &&
-					existing?.enabled === true &&
-					Math.abs(existing.startSec - target.startSec) <= 0.001 &&
-					Math.abs(existing.endSec - target.endSec) <= 0.001 &&
-					existing.entrance === change.motion.entrance &&
-					existing.exit === change.motion.exit;
-			});
+    : brollMotions.length === 1 &&
+      existing?.enabled === true &&
+      Math.abs(existing.startSec) <= 0.001 &&
+      Math.abs(existing.endSec - totalDurationSec) <= 0.001 &&
+      existing.entrance === change.motion.entrance &&
+      existing.exit === change.motion.exit;
   if (equivalent) return { status: "unchanged", document };
 
   let next = document;
@@ -269,29 +230,22 @@ export function applyCampaignMotionChange(
       : { status: "changed", document: next };
   }
 
-	for (const target of targets) {
-		const existing = brollMotions.find(
-			(motion) => brollMotionMatchesTarget(motion, target.target),
-		);
-		const inserted = applyEditorAction(next, {
-			type: "insertMediaMotion",
-			motion: {
-				schemaVersion: 1,
-				id: existing?.id ?? createId(),
-				target: target.target,
-				startSec: target.startSec,
-				endSec: target.endSec,
-				entrance: change.motion.entrance,
-				exit: change.motion.exit,
-				enabled: true,
-			},
-		});
-		if (inserted === next) {
-			return { status: "failed", code: "campaign_motion_document_limit" };
-		}
-		next = inserted;
-	}
-	return { status: "changed", document: next };
+  const inserted = applyEditorAction(next, {
+    type: "insertMediaMotion",
+    motion: {
+      schemaVersion: 1,
+      id: existing?.id ?? createId(),
+      target: { kind: "broll" },
+      startSec: 0,
+      endSec: totalDurationSec,
+      entrance: change.motion.entrance,
+      exit: change.motion.exit,
+      enabled: true,
+    },
+  });
+  return inserted === next
+    ? { status: "failed", code: "campaign_motion_document_limit" }
+    : { status: "changed", document: inserted };
 }
 
 const INHERITED_STUDIO_LOGO = {
@@ -902,51 +856,6 @@ export class CampaignOperationService {
         retries: { select: { id: true, status: true, createdAt: true } },
       },
     });
-  }
-
-  async getOperation(
-    scope: { workspaceId: string; projectId: string },
-    operationId: string,
-  ) {
-    const operation = await requirePrisma().campaignOperation.findFirst({
-      where: {
-        id: operationId,
-        workspaceId: scope.workspaceId,
-        projectId: scope.projectId,
-      },
-      select: {
-        id: true,
-        action: true,
-        status: true,
-        requestedCount: true,
-        succeededCount: true,
-        unchangedCount: true,
-        staleCount: true,
-        ineligibleCount: true,
-        failedCount: true,
-        createdAt: true,
-        completedAt: true,
-        items: {
-          orderBy: { requestedClipId: "asc" },
-          select: {
-            id: true,
-            requestedClipId: true,
-            clipId: true,
-            expectedEditorRevision: true,
-            status: true,
-            errorCode: true,
-            settledAt: true,
-          },
-        },
-      },
-    });
-    if (!operation) {
-      throw new CampaignOperationError(
-        "campaign_operation_not_found",
-        "Campaign operation was not found",
-      );
-    }
-    return operation;
   }
 
   async getExportBundle(scope: { workspaceId: string; projectId: string }, bundleId: string) {

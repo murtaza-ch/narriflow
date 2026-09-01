@@ -17,7 +17,6 @@ export const campaignOperationActionSchema = z.enum([
   "apply_style",
   "apply_scene_template",
   "apply_motion",
-  "create_review",
 ]);
 
 export const campaignOperationItemStatusSchema = z.enum([

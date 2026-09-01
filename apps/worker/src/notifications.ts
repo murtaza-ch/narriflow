@@ -157,7 +157,7 @@ export function reviewNotificationWorkerHealth(
 
 export function reportReviewNotificationWorkerConfiguration(
   configuration: ReviewNotificationWorkerConfiguration,
-  write: (message: string) => void = (message) => console.warn(message),
+  write: (message: string) => void = (message) => console.error(message),
 ): void {
   if (!configuration.enabled || configuration.ready) return;
   write(

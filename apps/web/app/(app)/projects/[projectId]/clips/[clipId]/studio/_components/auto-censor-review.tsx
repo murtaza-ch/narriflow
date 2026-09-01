@@ -25,7 +25,6 @@ import {
   type AutoCensorTreatment,
   type CensorSegment,
 } from "@narriflow/validators";
-import { formatFractionalDurationRange } from "@/lib/format";
 import { useStudio } from "./studio-shell";
 import {
   availableAutoCensorTreatments,
@@ -409,10 +408,7 @@ export function AutoCensorReview({
                               <Flex gap="2" mt="1" wrap="wrap">
                                 <Text textStyle="data" fontSize="10px" color="studio.timecode">
                                   {suggestion.wordSourceRange
-                                    ? formatFractionalDurationRange(
-                                        suggestion.wordSourceRange.startSec,
-                                        suggestion.wordSourceRange.endSec,
-                                      )
+                                    ? `${suggestion.wordSourceRange.startSec.toFixed(2)}–${suggestion.wordSourceRange.endSec.toFixed(2)}s`
                                     : "No word timing"}
                                 </Text>
                                 <Text textStyle="eyebrow" fontSize="9px" color="studio.fgMuted">
@@ -483,10 +479,7 @@ export function AutoCensorReview({
                             <Checkbox.Control />
                           </Checkbox.Root>
                           <Text textStyle="data" fontSize="10px" color="studio.timecode" minW="74px">
-                            {formatFractionalDurationRange(
-                              segment.sourceStartSec,
-                              segment.sourceEndSec,
-                            )}
+                            {segment.sourceStartSec.toFixed(2)}–{segment.sourceEndSec.toFixed(2)}s
                           </Text>
                           {!autoCensorSegmentIsCurrent(segment, scanInput.transcript) ? (
                             <Text fontSize="10px" color="danger.fg">

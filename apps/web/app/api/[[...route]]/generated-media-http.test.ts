@@ -92,15 +92,6 @@ function setup(overrides: Partial<GeneratedMediaStudioRouteDependencies> = {}) {
 		...overrides,
 	};
 	const app = new Hono();
-	app.onError((_error, c) =>
-		c.json(
-			{
-				error: "internal_error",
-				message: "Something went wrong. Try again or contact support.",
-			},
-			500,
-		),
-	);
 	app.route("/", createGeneratedMediaStudioRoutes(dependencies));
 	return {
 		app,
@@ -230,7 +221,7 @@ describe("generated-media Studio HTTP routes", () => {
 		expect(calls[0]).toMatchObject({ name: "insert", args: [expect.anything(), insertion] });
 	});
 
-	test("leaves unknown failures to the authenticated internal-error boundary", async () => {
+	test("never reflects unknown provider failures into the response", async () => {
 		const { app, setInput } = setup({
 			getService: () => ({
 				list: async () => {
@@ -240,56 +231,11 @@ describe("generated-media Studio HTTP routes", () => {
 		});
 		setInput({ id: ids.project, limit: 20 });
 		const response = await app.request(`/projects/${ids.project}/generated-media/jobs`);
-		const payload = await response.json();
-		const body = JSON.stringify(payload);
+		const body = JSON.stringify(await response.json());
 
-		expect(response.status).toBe(500);
-		expect(payload).toEqual({
-			error: "internal_error",
-			message: "Something went wrong. Try again or contact support.",
-		});
+		expect(response.status).toBe(503);
 		expect(body).not.toContain("provider payload");
 		expect(body).not.toContain("signed.example");
-	});
-
-	test("does not advertise retry for an idempotency-key conflict", async () => {
-		const { app, setInput } = setup({
-			getService: () => ({
-				submit: async () => {
-					throw new GeneratedMediaError(
-						"generated_media_idempotency_conflict",
-					);
-				},
-			} as never),
-		});
-		setInput({
-			id: ids.project,
-			body: {
-				idempotencyKey: crypto.randomUUID(),
-				projectId: ids.project,
-				clipId: null,
-				kind: "image",
-				prompt: "a bounded prompt",
-				includeDerivedContext: false,
-				promptOrigin: { kind: "manual", sourceIds: [] },
-				aspectRatio: "9:16",
-				sourceRevision: null,
-				style: "editorial",
-				durationSec: null,
-				title: null,
-			},
-		});
-
-		const response = await app.request(
-			`/projects/${ids.project}/generated-media/jobs`,
-			{ method: "POST" },
-		);
-
-		expect(response.status).toBe(409);
-		expect(await response.json()).toMatchObject({
-			error: "generated_media_idempotency_conflict",
-			retryable: false,
-		});
 	});
 
 	test("returns a stable quota response without reflecting the customer prompt", async () => {
@@ -321,14 +267,9 @@ describe("generated-media Studio HTTP routes", () => {
 			`/projects/${ids.project}/generated-media/jobs`,
 			{ method: "POST" },
 		);
-		const payload = await response.json();
-		const body = JSON.stringify(payload);
+		const body = JSON.stringify(await response.json());
 		expect(response.status).toBe(429);
-		expect(payload).toEqual({
-			error: "generated_media_usage_exhausted",
-			message: "Generated-media usage is exhausted for this period.",
-			retryable: false,
-		});
+		expect(body).toContain("generated_media_usage_exhausted");
 		expect(body).not.toContain("private customer prompt");
 	});
 
@@ -371,8 +312,6 @@ describe("generated-media Studio HTTP routes", () => {
 		expect(response.status).toBe(409);
 		expect(await response.json()).toEqual({
 			error: "generated_media_prompt_source_revision_conflict",
-			message: "The selected transcript changed. Review it again before generating.",
-			retryable: true,
 			currentRevision: 9,
 		});
 	});

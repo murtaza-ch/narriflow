@@ -1,19 +1,8 @@
-import {
-	activeManualBrollMotionWindow,
-	MANUAL_BROLL_COMPOSITION_ID,
-  mediaMotionReleased,
-  SCENE_MOTION_ENTRANCES,
-  SCENE_MOTION_EXITS,
-  STUDIO_TRANSITION_TYPES,
-  transitionMotionReleased,
-} from "@narriflow/validators";
 import type {
   AutoCensorTreatment,
-  MotionRolloutState,
   SceneMotion,
   StudioTransition,
 } from "@narriflow/validators";
-import { formatDuration } from "@/lib/format";
 
 export type StudioAutoCensorRollout = Readonly<{
   scan: boolean;
@@ -22,7 +11,56 @@ export type StudioAutoCensorRollout = Readonly<{
   beep: boolean;
 }>;
 
-export type StudioMotionRollout = MotionRolloutState;
+export type StudioMotionRollout = Readonly<{
+  legacyTransitions: boolean;
+  crossDissolve: boolean;
+  directionalWipe: boolean;
+  directionalSlide: boolean;
+  zoom: boolean;
+  mediaFadeScale: boolean;
+  panKenBurns: boolean;
+  campaignApply: boolean;
+}>;
+
+const TRANSITIONS: readonly StudioTransition["type"][] = [
+  "none",
+  "fade",
+  "fade-black",
+  "dip-white",
+  "cross-dissolve",
+  "wipe-left",
+  "wipe-right",
+  "wipe-up",
+  "wipe-down",
+  "slide-left",
+  "slide-right",
+  "slide-up",
+  "slide-down",
+  "zoom-in",
+  "zoom-out",
+];
+
+const ENTRANCES: readonly SceneMotion["entrance"][] = [
+  "none",
+  "fade",
+  "scale-in",
+  "pan-left",
+  "pan-right",
+  "pan-up",
+  "pan-down",
+  "ken-burns-in",
+];
+
+const EXITS: readonly SceneMotion["exit"][] = [
+  "none",
+  "fade",
+  "scale-out",
+  "pan-left",
+  "pan-right",
+  "pan-up",
+  "pan-down",
+  "ken-burns-out",
+];
 
 export function availableAutoCensorTreatments(
   rollout: StudioAutoCensorRollout,
@@ -47,49 +85,45 @@ export function boundedAutoCensorPreview<T>(
   return suggestions.slice(0, limit);
 }
 
-export function brollMotionTargets(
-	placements: readonly {
-		id: string;
-		mediaKind: "image" | "video";
-		startSec: number;
-		endSec: number;
-	}[],
-) {
-	return placements.map((placement, index) => ({
-		id: `broll:${placement.id}`,
-		placementId: placement.id,
-		label: `B-roll ${index + 1} · ${placement.mediaKind} · ${formatDuration(placement.startSec)}–${formatDuration(placement.endSec)}`,
-		startSec: placement.startSec,
-		endSec: placement.endSec,
-	}));
+export function hasManualBrollTarget(
+  brollUrl: string | null | undefined,
+  brollPlacements: readonly unknown[],
+): boolean {
+  return Boolean(brollUrl) || brollPlacements.length > 0;
 }
 
-export function manualUrlBrollMotionTarget(
-	brollUrl: string | null | undefined,
-	editedDurationSec: number,
-	hasAssetBackedPlacements: boolean,
-) {
-	const window = activeManualBrollMotionWindow({
-		brollUrl,
-		assetBackedPlacementCount: hasAssetBackedPlacements ? 1 : 0,
-		editedDurationSec,
-	});
-	return window
-		? {
-				id: `broll:${MANUAL_BROLL_COMPOSITION_ID}`,
-				label: `Manual URL B-roll · ${formatDuration(window.startSec)}–${formatDuration(window.endSec)}`,
-				...window,
-			}
-		: null;
+function transitionReleased(
+  value: StudioTransition["type"],
+  rollout: StudioMotionRollout,
+): boolean {
+  if (value === "none") return true;
+  if (value === "fade" || value === "fade-black" || value === "dip-white") {
+    return rollout.legacyTransitions;
+  }
+  if (value === "cross-dissolve") return rollout.crossDissolve;
+  if (value.startsWith("wipe-")) return rollout.directionalWipe;
+  if (value.startsWith("slide-")) return rollout.directionalSlide;
+  return rollout.zoom;
 }
 
 export function availableStudioTransitions(
   rollout: StudioMotionRollout,
   saved: StudioTransition["type"],
 ): StudioTransition["type"][] {
-  return STUDIO_TRANSITION_TYPES.filter(
-    (value) => transitionMotionReleased(value, rollout) || value === saved,
+  return TRANSITIONS.filter(
+    (value) => transitionReleased(value, rollout) || value === saved,
   );
+}
+
+function mediaMotionReleased(
+  value: SceneMotion["entrance"] | SceneMotion["exit"],
+  rollout: StudioMotionRollout,
+): boolean {
+  if (value === "none") return true;
+  if (value === "fade" || value.startsWith("scale-")) {
+    return rollout.mediaFadeScale;
+  }
+  return rollout.panKenBurns;
 }
 
 export function availableSceneMotionValues(
@@ -107,9 +141,7 @@ export function availableSceneMotionValues(
   phase: "entrance" | "exit",
   saved: SceneMotion["entrance"] | SceneMotion["exit"],
 ) {
-  const values = phase === "entrance"
-    ? SCENE_MOTION_ENTRANCES
-    : SCENE_MOTION_EXITS;
+  const values = phase === "entrance" ? ENTRANCES : EXITS;
   return values.filter(
     (value) => mediaMotionReleased(value, rollout) || value === saved,
   );

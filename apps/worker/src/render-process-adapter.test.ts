@@ -7,19 +7,6 @@ import { ProductionRenderProcessAdapter } from "./render-process-adapter";
 
 const adapter = new ProductionRenderProcessAdapter();
 
-async function waitForPidExit(pid: number, timeoutMs = 2_000): Promise<void> {
-  const deadlineAt = Date.now() + timeoutMs;
-  while (Date.now() < deadlineAt) {
-    try {
-      process.kill(pid, 0);
-    } catch {
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  throw new Error(`Process ${pid} remained visible after termination`);
-}
-
 test("process adapter rejects a pre-aborted request without spawning", async () => {
   const controller = new AbortController();
   const reason = new DOMException("cancelled", "AbortError");
@@ -171,7 +158,7 @@ test("process adapter reaps descendants when the root exits during TERM escalati
     });
 
     childPid = Number(await readFile(childPidPath, "utf8"));
-    await waitForPidExit(childPid);
+    expect(() => process.kill(childPid!, 0)).toThrow();
     expect(diagnostics).toContainEqual(
       expect.objectContaining({ operation: "timeout" }),
     );

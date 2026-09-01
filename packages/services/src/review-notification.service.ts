@@ -1,16 +1,18 @@
 import { randomUUID } from "node:crypto";
 import { getPrismaClient } from "@narriflow/db/client";
 import { reviewNotification, sendEmail } from "@narriflow/email/worker";
-import type {
-  ReviewNotificationKind as ReviewNotificationKindContract,
-} from "@narriflow/validators";
 import {
   decryptReviewEmail,
   deriveReviewAccessToken,
 } from "./review.service";
 import { reviewRolloutPolicy } from "./review-rollout";
 
-export type ReviewNotificationKind = ReviewNotificationKindContract;
+export type ReviewNotificationKind =
+  | "round_sent"
+  | "round_resent"
+  | "first_changes_requested"
+  | "all_approved"
+  | "mention";
 
 export type ReviewNotificationStatus =
   | "pending"

@@ -29,33 +29,6 @@ const transcript = [
 ] as const;
 
 describe("scanAutoCensor", () => {
-  test("ships versioned profanity and identity-slur policies by locale", () => {
-    const scan = (locale: string, word: string) =>
-      scanAutoCensor({
-        documentRevision: 1,
-        locale,
-        clipWindow: { startSec: 0, endSec: 1 },
-        transcript: [{
-          index: 0,
-          startSec: 0,
-          endSec: 1,
-          words: [{ word, startSec: 0.1, endSec: 0.5, confidence: 1 }],
-        }],
-        defaultTreatment: "beep",
-      }).suggestions[0];
-
-    expect(scan("en-US", "asshole")?.policySource.category).toBe("profanity");
-    expect(scan("es-MX", "mierda")?.policySource.category).toBe("profanity");
-    expect(scan("fr-FR", "putain")?.policySource.category).toBe("profanity");
-    expect(scan("de-DE", "arschloch")?.policySource.category).toBe("profanity");
-    expect(scan("pt-BR", "caralho")?.policySource.category).toBe("profanity");
-    expect(scan("it-IT", "stronzo")?.policySource.category).toBe("profanity");
-    expect(scan("en-US", "faggot")?.policySource.category).toBe(
-      "identity_slur",
-    );
-    expect(scan("nl-NL", "asshole")).toBeUndefined();
-  });
-
   test("combines locale, Brand Profile, and project policy over corrected Unicode words", () => {
     const input = {
       documentRevision: 7,

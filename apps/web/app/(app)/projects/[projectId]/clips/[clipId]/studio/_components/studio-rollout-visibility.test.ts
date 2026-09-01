@@ -4,9 +4,8 @@ import {
   availableAutoCensorTreatments,
   availableSceneMotionValues,
   availableStudioTransitions,
-	brollMotionTargets,
-	manualUrlBrollMotionTarget,
   boundedAutoCensorPreview,
+  hasManualBrollTarget,
 } from "./studio-rollout-visibility";
 
 describe("Studio rollout visibility", () => {
@@ -80,50 +79,11 @@ describe("Studio rollout visibility", () => {
     ]);
   });
 
-  test("offers every asset-backed B-roll placement as its own exact-range motion target", () => {
-		const placements = [
-			{ id: "first", startSec: 1.25, endSec: 3.5, mediaKind: "image" as const },
-			{ id: "second", startSec: 5, endSec: 8, mediaKind: "video" as const },
-		];
-		expect(brollMotionTargets(placements)).toEqual([
-			{
-				id: "broll:first",
-				placementId: "first",
-				label: "B-roll 1 · image · 0:01–0:03",
-				startSec: 1.25,
-				endSec: 3.5,
-			},
-			{
-				id: "broll:second",
-				placementId: "second",
-				label: "B-roll 2 · video · 0:05–0:08",
-				startSec: 5,
-				endSec: 8,
-			},
-		]);
-		expect(brollMotionTargets([])).toEqual([]);
+  test("offers the aggregate B-roll motion target for bounded placements", () => {
+    expect(hasManualBrollTarget(null, [])).toBe(false);
+    expect(hasManualBrollTarget("https://media.example.test/manual.mp4", [])).toBe(
+      true,
+    );
+    expect(hasManualBrollTarget(null, [{ id: "placement" }])).toBe(true);
   });
-
-	test("offers the one URL-backed manual B-roll target on its canonical window", () => {
-		expect(manualUrlBrollMotionTarget(null, 20, false)).toBeNull();
-		expect(
-			manualUrlBrollMotionTarget(
-				"https://media.example.test/manual.mp4",
-				20,
-				false,
-			),
-		).toEqual({
-			id: "broll:manual-url",
-			label: "Manual URL B-roll · 0:05–0:09",
-			startSec: 5.6,
-			endSec: 9.1,
-		});
-		expect(
-			manualUrlBrollMotionTarget(
-				"https://media.example.test/manual.mp4",
-				20,
-				true,
-			),
-		).toBeNull();
-	});
 });

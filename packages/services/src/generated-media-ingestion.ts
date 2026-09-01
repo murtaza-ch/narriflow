@@ -6,19 +6,12 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 
 import {
+	deleteObject,
 	headObject,
+	listObjectsByPrefix,
 	putFileFromPath,
 	readObjectBytes,
 } from "./r2-storage";
-import {
-	admitMediaCleanupObligations,
-	prismaMediaCleanupAdmissionStore,
-	type MediaCleanupAdmissionStore,
-} from "./media-cleanup";
-import {
-	generatedMediaAssetUploadObligation,
-	generatedMediaProviderResultObligation,
-} from "./generated-media-cleanup";
 import {
 	guardedFetch,
 	readResponseBodyBounded,
@@ -27,6 +20,7 @@ import {
 import type {
 	GeneratedMediaAssetDraft,
 	GeneratedMediaAssetIngestor,
+	GeneratedMediaStore,
 } from "./generated-media";
 import type { GeneratedMediaProviderResultStore } from "./openai-image-provider";
 
@@ -56,6 +50,10 @@ export interface GeneratedMediaObjectStorage {
 		maxBytes: number,
 		signal?: AbortSignal,
 	): Promise<{ bytes: Uint8Array; contentType: string }>;
+	delete(key: string, signal?: AbortSignal): Promise<void>;
+	list(prefix: string): Promise<
+		Array<{ key: string; sizeBytes: number; lastModified: Date | null }>
+	>;
 }
 
 export class GeneratedMediaIngestionError extends Error {
@@ -73,7 +71,6 @@ export class GeneratedMediaIngestionError extends Error {
 			| "generated_media_normalization_failed"
 			| "generated_media_attempt_object_conflict"
 			| "generated_media_storage_unavailable"
-			| "generated_media_cleanup_admission_failed"
 			| "generated_media_upload_failed",
 	) {
 		super(code);
@@ -138,8 +135,6 @@ function extension(contentType: GeneratedMediaAssetDraft["contentType"]) {
 
 export function createGeneratedMediaAssetIngestor(input: {
 	storage: GeneratedMediaObjectStorage;
-	cleanupStore: MediaCleanupAdmissionStore;
-	now?: () => Date;
 	probe: (input: {
 		bytes: Uint8Array;
 		contentType: GeneratedMediaAssetDraft["contentType"];
@@ -157,7 +152,6 @@ export function createGeneratedMediaAssetIngestor(input: {
 	fetchRemote?: typeof guardedFetch;
 }): GeneratedMediaAssetIngestor {
 	const fetchRemote = input.fetchRemote ?? guardedFetch;
-	const now = input.now ?? (() => new Date());
 	return {
 		async ingest(request) {
 			let bytes: Uint8Array;
@@ -292,20 +286,6 @@ export function createGeneratedMediaAssetIngestor(input: {
 				/\.(?:bin|media)$/i,
 				`.${extension(sniffed)}`,
 			);
-			try {
-				await admitMediaCleanupObligations(input.cleanupStore, [
-					generatedMediaAssetUploadObligation({
-						projectId: request.projectId,
-						clipId: request.clipId,
-						objectKey: requestedKey,
-						now: now(),
-					}),
-				]);
-			} catch {
-				throw new GeneratedMediaIngestionError(
-					"generated_media_cleanup_admission_failed",
-				);
-			}
 			let existing: Awaited<ReturnType<GeneratedMediaObjectStorage["head"]>>;
 			try {
 				existing = await input.storage.head(requestedKey, request.signal);
@@ -339,6 +319,7 @@ export function createGeneratedMediaAssetIngestor(input: {
 						signal: request.signal,
 					});
 				} catch {
+					await input.storage.delete(requestedKey, request.signal).catch(() => undefined);
 					throw new GeneratedMediaIngestionError("generated_media_upload_failed");
 				}
 			}
@@ -510,12 +491,19 @@ export const r2GeneratedMediaObjectStorage: GeneratedMediaObjectStorage = {
 		if (!head.contentType) throw new Error("Generated media object has no content type");
 		return { bytes, contentType: head.contentType };
 	},
+	async delete(key, signal) {
+		await deleteObject(key, { signal });
+	},
+	async list(prefix) {
+		return (await listObjectsByPrefix(prefix)).map((object) => ({
+			...object,
+			lastModified: object.lastModified ?? null,
+		}));
+	},
 };
 
 export function createGeneratedMediaProviderResultStore(
 	storage: GeneratedMediaObjectStorage = r2GeneratedMediaObjectStorage,
-	cleanupStore: MediaCleanupAdmissionStore = prismaMediaCleanupAdmissionStore,
-	now: () => Date = () => new Date(),
 ): GeneratedMediaProviderResultStore {
 	const referenceFor = (requestId: string) =>
 		`generated-media/provider-results/${requestId}.png`;
@@ -523,9 +511,6 @@ export function createGeneratedMediaProviderResultStore(
 		referenceFor,
 		async put(input) {
 			const key = referenceFor(input.requestId);
-			const cleanup = generatedMediaProviderResultObligation(key, now());
-			if (!cleanup) throw new Error("Generated media result cleanup key is invalid");
-			await admitMediaCleanupObligations(cleanupStore, [cleanup]);
 			const fingerprint = createHash("sha256").update(input.bytes).digest("hex");
 			const matches = (
 				value: Awaited<ReturnType<GeneratedMediaObjectStorage["head"]>>,
@@ -568,9 +553,43 @@ export function createGeneratedMediaProviderResultStore(
 	};
 }
 
+export async function reconcileGeneratedMediaOrphans(input: {
+	storage: GeneratedMediaObjectStorage;
+	store: Pick<GeneratedMediaStore, "referencedStorageKeys">;
+	prefix: string;
+	now: Date;
+	minimumAgeMs: number;
+	limit: number;
+	signal?: AbortSignal;
+}) {
+	const [objects, referenced] = await Promise.all([
+		input.storage.list(input.prefix),
+		input.store.referencedStorageKeys(input.prefix),
+	]);
+	const candidates = objects
+		.filter(
+			(object) =>
+				!referenced.has(object.key) &&
+				Boolean(object.lastModified) &&
+				input.now.getTime() - object.lastModified!.getTime() >= input.minimumAgeMs,
+		)
+		.slice(0, Math.max(0, Math.min(1000, input.limit)));
+	let deleted = 0;
+	let failed = 0;
+	for (const object of candidates) {
+		input.signal?.throwIfAborted();
+		try {
+			await input.storage.delete(object.key, input.signal);
+			deleted += 1;
+		} catch {
+			failed += 1;
+		}
+	}
+	return { scanned: objects.length, deleted, failed };
+}
+
 export const generatedMediaAssetIngestor = createGeneratedMediaAssetIngestor({
 	storage: r2GeneratedMediaObjectStorage,
-	cleanupStore: prismaMediaCleanupAdmissionStore,
 	probe: probeGeneratedMedia,
 	normalizeImage: normalizeGeneratedImageAspectRatio,
 });

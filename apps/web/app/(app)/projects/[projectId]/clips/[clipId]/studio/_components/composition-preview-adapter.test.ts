@@ -479,7 +479,7 @@ describe("composition preview adapter", () => {
       state: "available",
       placements: [
         {
-			id: "manual-url",
+          id: "manual",
           ref: "broll:cutaway",
           mediaKind: "video",
           startSec: 2,
@@ -857,66 +857,7 @@ describe("composition preview adapter", () => {
         active: false,
         reducedMotion: true,
       });
-      const outbound = plannedCompositionTransitionState(layer, 1.8, false);
-      if (type === "wipe-left") {
-        expect(outbound.overlayClipPath).toBe("inset(0% 50% 0% 0%)");
-      }
-      if (type === "slide-up") {
-        expect(outbound.mediaTransform).toBe("translate(0%, -50%)");
-      }
-      if (type === "zoom-out") {
-        expect(outbound.mediaTransform).toBe("scale(0.94)");
-      }
     }
-  });
-
-  test("rejects an unknown resolved-transition version before preview adoption", () => {
-    const result = planClipComposition({
-      document: editorDocumentSchema.parse({
-        version: 2,
-        clipStartSec: 0,
-        clipEndSec: 2,
-        captionPreset: captionPresetSchema.parse({}),
-        transcriptSlice: [],
-        studioEdits: studioEditsSchema.parse({
-          framing: { mode: "center" },
-          transition: { type: "slide-left", durationSec: 0.4 },
-        }),
-        brollUrl: null,
-        deletedRanges: [],
-      }),
-      source: {
-        identity: "transition:unknown-version",
-        kind: "video",
-        width: 1920,
-        height: 1080,
-      },
-      evidence: { automaticLayout: { state: "missing" } },
-      assets: { backgroundImage: { state: "missing" } },
-      capabilities: {
-        automaticSpeakerLayout: true,
-        automaticSpeakerEngineVersion: "shot-layout-v1",
-      },
-      targets: [
-        { id: "9:16", aspectRatio: "9:16", width: 1080, height: 1920 },
-      ],
-    });
-    if (result.status === "invalid") throw new Error(result.error.code);
-    const target = result.plan.targets[0]!;
-    const invalid = {
-      ...result.plan,
-      targets: [{
-        ...target,
-        visualLayers: target.visualLayers.map((layer) =>
-          layer.kind === "transition"
-            ? { ...layer, effect: { ...layer.effect, version: 2 } }
-            : layer,
-        ),
-      }],
-    };
-    expect(() => adoptCompositionPreview(invalid as never, "9:16", 0)).toThrow(
-      "unsupported_clip_composition_transition_version",
-    );
   });
 
   test("mounts the secondary tile only for a two-layer planned scene", () => {
@@ -961,7 +902,7 @@ describe("composition preview adapter", () => {
           state: "available",
           placements: [
             {
-				id: "manual-url",
+              id: "manual",
               ref: "broll:manual",
               mediaKind: "video",
               startSec: 2,

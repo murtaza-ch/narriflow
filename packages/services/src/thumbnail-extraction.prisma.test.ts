@@ -42,83 +42,6 @@ function job(status: "processing" | "completed", assetId: string | null) {
 }
 
 describe("Prisma thumbnail extraction output adoption", () => {
-  test("renews the live job and its exact cleanup hold in one transaction", async () => {
-    const renewedAt = new Date("2026-08-31T10:01:00.000Z");
-    const renewedUntil = new Date("2026-08-31T10:03:00.000Z");
-    const calls: string[] = [];
-    let inTransaction = false;
-    const fake = {
-      thumbnailExtractionJob: {
-        updateMany: async (input: {
-          where: Record<string, unknown>;
-          data: Record<string, unknown>;
-        }) => {
-          expect(inTransaction).toBe(true);
-          expect(input).toEqual({
-            where: {
-              id: ids.job,
-              status: "processing",
-              claimId: ids.claim,
-              claimExpiresAt: { gt: renewedAt },
-            },
-            data: {
-              claimExpiresAt: renewedUntil,
-              updatedAt: renewedAt,
-            },
-          });
-          calls.push("job");
-          return { count: 1 };
-        },
-      },
-      mediaCleanupObligation: {
-        updateMany: async (input: {
-          where: Record<string, unknown>;
-          data: Record<string, unknown>;
-        }) => {
-          expect(inTransaction).toBe(true);
-          expect(input).toEqual({
-            where: {
-              claimId: ids.claim,
-              claimExpiresAt: { gt: renewedAt },
-              completedAt: null,
-              attemptCount: 0,
-              OR: [{
-                origin: "thumbnail_extraction",
-                cleanupClass: "thumbnail_extraction_output",
-                objectKey: destinationStorageKey,
-              }],
-            },
-            data: {
-              claimExpiresAt: renewedUntil,
-              nextAttemptAt: renewedUntil,
-            },
-          });
-          calls.push("cleanup");
-          return { count: 1 };
-        },
-      },
-      $transaction: async (operation: (tx: unknown) => Promise<unknown>) => {
-        inTransaction = true;
-        try {
-          return await operation(fake);
-        } finally {
-          inTransaction = false;
-        }
-      },
-    } as unknown as PrismaClient;
-    const store = createPrismaThumbnailExtractionStore({ prisma: fake });
-
-    await store.renewOutput({
-      jobId: ids.job,
-      claimId: ids.claim,
-      destinationStorageKey,
-      now: renewedAt,
-      claimExpiresAt: renewedUntil,
-    });
-
-    expect(calls).toEqual(["job", "cleanup"]);
-  });
-
   test("admits before object publication and adopts the exact key in the asset/job transaction", async () => {
     let inTransaction = false;
     let cleanupAdmitted = false;
@@ -165,8 +88,6 @@ describe("Prisma thumbnail extraction output adoption", () => {
           expect(inTransaction).toBe(true);
           expect(input.data).toEqual([
             expect.objectContaining({
-              origin: "thumbnail_extraction",
-              cleanupClass: "thumbnail_extraction_output",
               objectKey: destinationStorageKey,
               claimId: ids.claim,
             }),
@@ -174,22 +95,10 @@ describe("Prisma thumbnail extraction output adoption", () => {
           cleanupAdmitted = true;
           return { count: 1 };
         },
-        updateMany: async (input: {
-          where: Record<string, unknown>;
-          data: { completedAt?: Date };
-        }) => {
+        updateMany: async (input: { data: { completedAt?: Date } }) => {
           expect(inTransaction).toBe(true);
           expect(assetCreated).toBe(true);
           expect(jobCompleted).toBe(true);
-          expect(input.where).toMatchObject({
-            claimId: ids.claim,
-            completedAt: null,
-            OR: [{
-              origin: "thumbnail_extraction",
-              cleanupClass: "thumbnail_extraction_output",
-              objectKey: destinationStorageKey,
-            }],
-          });
           expect(input.data.completedAt).toEqual(now);
           cleanupAdopted = true;
           return { count: 1 };
@@ -339,15 +248,9 @@ describe("Prisma thumbnail extraction output adoption", () => {
       },
       mediaCleanupObligation: {
         updateMany: async (input: {
-          where: Record<string, unknown>;
           data: { completedAt?: Date; claimId?: string | null; nextAttemptAt?: Date };
         }) => {
           expect(input.data.completedAt).toBeUndefined();
-          expect(input.where).toMatchObject({
-            origin: "thumbnail_extraction",
-            cleanupClass: "thumbnail_extraction_output",
-            objectKey: destinationStorageKey,
-          });
           expect(input.data).toMatchObject({ claimId: null, nextAttemptAt: now });
           released = true;
           return { count: 1 };

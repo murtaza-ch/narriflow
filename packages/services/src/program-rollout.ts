@@ -1,11 +1,6 @@
-import {
-  mediaMotionReleased,
-  transitionMotionReleased,
-} from "@narriflow/validators";
 import type {
   ApplyMotionSelectedInput,
   AutoCensorTreatment,
-  MotionRolloutState,
   SceneMotion,
   StudioTransition,
 } from "@narriflow/validators";
@@ -75,7 +70,16 @@ export function autoCensorTreatmentWriteEnabled(
   return false;
 }
 
-export type MotionRollout = MotionRolloutState;
+export type MotionRollout = Readonly<{
+  legacyTransitions: boolean;
+  crossDissolve: boolean;
+  directionalWipe: boolean;
+  directionalSlide: boolean;
+  zoom: boolean;
+  mediaFadeScale: boolean;
+  panKenBurns: boolean;
+  campaignApply: boolean;
+}>;
 
 /** Zoom follows the directional transition families and precedes media
  * animation. It has distinct geometry and therefore gets its own switch and
@@ -116,7 +120,56 @@ export function studioTransitionWriteEnabled(
   transition: StudioTransition["type"],
   rollout: MotionRollout = motionRolloutFromEnv(),
 ): boolean {
-  return transitionMotionReleased(transition, rollout);
+  if (transition === "none") return true;
+  if (
+    transition === "fade" ||
+    transition === "fade-black" ||
+    transition === "dip-white"
+  ) {
+    return rollout.legacyTransitions;
+  }
+  if (transition === "cross-dissolve") return rollout.crossDissolve;
+  if (
+    transition === "wipe-left" ||
+    transition === "wipe-right" ||
+    transition === "wipe-up" ||
+    transition === "wipe-down"
+  ) {
+    return rollout.directionalWipe;
+  }
+  if (
+    transition === "slide-left" ||
+    transition === "slide-right" ||
+    transition === "slide-up" ||
+    transition === "slide-down"
+  ) {
+    return rollout.directionalSlide;
+  }
+  if (transition === "zoom-in" || transition === "zoom-out") {
+    return rollout.zoom;
+  }
+  return false;
+}
+
+function mediaMotionValueWriteEnabled(
+  value: SceneMotion["entrance"] | SceneMotion["exit"],
+  rollout: MotionRollout,
+): boolean {
+  if (value === "none") return true;
+  if (value === "fade" || value === "scale-in" || value === "scale-out") {
+    return rollout.mediaFadeScale;
+  }
+  if (
+    value === "pan-left" ||
+    value === "pan-right" ||
+    value === "pan-up" ||
+    value === "pan-down" ||
+    value === "ken-burns-in" ||
+    value === "ken-burns-out"
+  ) {
+    return rollout.panKenBurns;
+  }
+  return false;
 }
 
 export function sceneMotionWriteEnabled(
@@ -124,8 +177,8 @@ export function sceneMotionWriteEnabled(
   rollout: MotionRollout = motionRolloutFromEnv(),
 ): boolean {
   return (
-    mediaMotionReleased(motion.entrance, rollout) &&
-    mediaMotionReleased(motion.exit, rollout)
+    mediaMotionValueWriteEnabled(motion.entrance, rollout) &&
+    mediaMotionValueWriteEnabled(motion.exit, rollout)
   );
 }
 

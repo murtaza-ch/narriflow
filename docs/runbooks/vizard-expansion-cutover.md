@@ -327,18 +327,17 @@ cannot be decoded or whose deterministic result write cannot be proven. Do not
 submit a replacement, release usage, attach an asset manually, or change the
 row to `waiting`; escalate with the content-safe job ID and error code.
 
-Generated-media maintenance purges encrypted prompt material only after
-`promptDeleteAfter`, in batches of 100. Object cleanup is separate and never
-scans a bucket prefix: before writing an asset or deterministic provider result,
-the producer admits a delayed, exact-key `MediaCleanupObligation`; the job or
-Visual Asset transaction adopts that obligation when the key becomes durable.
-Deduped asset bytes and consumed provider results become immediate exact-key
-obligations before their durable references are removed. Only the bounded Media
-Cleanup worker deletes objects. A deterministic result held by
-`reconciliation_required` remains adopted and cannot be claimed. Keep both
-prompt maintenance and the Media Cleanup worker running when every generated-
-media write/provider flag is off; rollback must stop new writes without losing
-reconciliation or cleanup.
+Maintenance purges encrypted prompt material only after `promptDeleteAfter`, in
+batches of 100. It compares R2 keys below
+`generated-media/provider-results/` and `generated-media/assets/` with durable
+job and Visual Asset references, then deletes at most 100 unreferenced objects
+per prefix that are at least 24 hours old. Monitor the structured
+`generated_media_maintenance` event; a non-zero `objectFailures` is an incident,
+not permission to remove database references. A deterministic result reference
+held by `reconciliation_required` remains a durable reference and is excluded
+from orphan deletion. Maintenance is deliberately available when every
+generated-media write and provider flag is off; do not gate or stop its loop as
+part of rollback.
 
 ### Generated-media quota and prompt-protection configuration
 
@@ -391,26 +390,24 @@ retried through
 operation retry route; the retry freezes only retryable failed items. Do not
 reuse a stale mutable Clip revision or substitute a newer export.
 
-The worker expiry pass scans at most 500 expired completed bundles per call
-(`EXPORT_BUNDLE_EXPIRY_BATCH_SIZE` defaults to 100). In one transaction it
-admits an exact-key `expired_export_bundle` obligation, marks the row `expired`,
-and clears `storageKey`; it never deletes storage itself. The bounded Media
-Cleanup worker later deletes only that recorded key and retries failures with
-its normal lease and backoff policy.
+The worker expiry cleanup scans at most 500 expired completed bundles per call
+(`EXPORT_BUNDLE_EXPIRY_BATCH_SIZE` defaults to 100), deletes the published R2
+object first, then marks the row `expired` and clears its storage key. Failed
+deletes emit `export_bundle_expiry_delete_failed` and leave the row/object
+linked for the next bounded attempt.
 
 Before an Export Bundle worker writes remote bytes, its owning Workflow Attempt
 admits two durable exact-key `MediaCleanupObligation` rows: the staging key and
-that attempt's would-be publication key. The producer renews both 24-hour holds
-every eight hours while it downloads, archives, uploads, and copies; losing
-either hold aborts active I/O and prevents later stages. It renews both keys
-again immediately before each upload or copy and, inside the publication
-transaction, before adopting the final key with `ExportBundle.storageKey`.
-Normal completion releases the staging obligation for the Media Cleanup worker
-instead of deleting storage in the producer. If the process crashes, the most
-recent hold expires before Media Cleanup can claim either recorded exact key in
-batches of 25. A missing object is idempotent success; a failed delete remains
-due with bounded backoff. There is no prefix sweep and no cleanup obligation is
-admitted for immutable Clip Export objects.
+that attempt's would-be publication key. Both stay held by the producer for 24
+hours, which is longer than the bounded bundle build. Publishing adopts the
+final-key obligation in the same database transaction that stores
+`ExportBundle.storageKey`; the adopted receipt is never claimable. Normal
+success/failure deletes the attempt-scoped object and settles its obligation.
+If the process crashes at any remote stage, the hold expires and the Media
+Cleanup worker claims only those recorded exact keys in batches of 25. A
+missing object is idempotent success; a failed delete remains due with bounded
+backoff. There is no prefix sweep and no cleanup obligation is admitted for
+immutable Clip Export objects.
 
 ### Visual Assets
 
@@ -464,19 +461,15 @@ Do not scan or delete the Visual Asset prefix manually.
 Extracted thumbnails use the same exact-key cleanup ledger with a shorter,
 worker-owned lease. Before FFmpeg uploads an extracted JPEG, the claimed
 `ThumbnailExtractionJob` admits a held
-`thumbnail_extraction` / `thumbnail_extraction_output` obligation for that
+`visual_asset_upload` / `unfinalized_visual_asset_upload` obligation for that
 attempt's deterministic key
 `visual-assets/extracted/{workspaceId}/{jobId}/attempt-{attempt}.jpg`.
-The worker atomically renews the two-minute job and cleanup leases every 40
-seconds through FFmpeg, probing, and upload, and renews once more immediately
-before the object write and transactional adoption. An uncertain or lost
-renewal aborts active work and prevents settlement. Completion creates the
-extracted Visual Asset, completes the job, and adopts that exact obligation in
-one serializable transaction. A normal failure releases the obligation
-immediately; a worker crash leaves it held only until the last renewed lease
-expires. The next claim uses a new attempt key, so it never races cleanup of the
-abandoned object. Diagnose an orphan by the exact job ID and object key; never
-sweep `visual-assets/extracted/` by prefix.
+Completion creates the extracted Visual Asset, completes the job, and adopts
+that exact obligation in one serializable transaction. A normal failure
+releases the obligation immediately; a worker crash leaves it held only until
+the extraction claim expires. The next claim uses a new attempt key, so it
+never races cleanup of the abandoned object. Diagnose an orphan by the exact
+job ID and object key; never sweep `visual-assets/extracted/` by prefix.
 
 ### Assisted-copy unknown outcomes
 

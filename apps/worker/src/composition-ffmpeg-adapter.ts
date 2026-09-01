@@ -6,9 +6,7 @@ import {
   type CompositionInsertedSceneLayer,
   type CompositionMotionPhase,
   type CompositionRect,
-  type CompositionResolvedTransition,
   type CompositionResolvedMotion,
-  type CompositionTransitionState,
   type CompositionTargetPlan,
   type CompositionVisualLayer,
 } from "@narriflow/composition-plan";
@@ -455,89 +453,69 @@ function textLayerFilter(
   );
 }
 
-type TransitionScalarProperty = keyof CompositionTransitionState;
-
-function transitionValueExpression(
-  effect: CompositionResolvedTransition,
-  property: TransitionScalarProperty,
-): string {
-  const introDuration = effect.entrance.range.endSec - effect.entrance.range.startSec;
-  const outroDuration = effect.exit.range.endSec - effect.exit.range.startSec;
-  const introFrom = effect.entrance.from[property];
-  const introTo = effect.entrance.to[property];
-  const resting = effect.resting[property];
-  const outroFrom = effect.exit.from[property];
-  const outroTo = effect.exit.to[property];
-  const intro = `${motionNumber(introFrom)}+(${motionNumber(introTo - introFrom)})*((t-${motionNumber(effect.entrance.range.startSec)})/${motionNumber(introDuration)})`;
-  const outro = `${motionNumber(outroFrom)}+(${motionNumber(outroTo - outroFrom)})*((t-${motionNumber(effect.exit.range.startSec)})/${motionNumber(outroDuration)})`;
-  return `if(lt(t,${motionNumber(effect.entrance.range.endSec)}),${intro},if(lt(t,${motionNumber(effect.exit.range.startSec)}),${motionNumber(resting)},if(lte(t,${motionNumber(effect.exit.range.endSec)}),${outro},${motionNumber(outroTo)})))`;
-}
-
-function transitionPropertyVaries(
-  effect: CompositionResolvedTransition,
-  property: TransitionScalarProperty,
-): boolean {
-  const values = [
-    effect.entrance.from[property],
-    effect.entrance.to[property],
-    effect.resting[property],
-    effect.exit.from[property],
-    effect.exit.to[property],
-  ];
-  return values.some((value) => value !== values[0]);
+function transitionValueExpression(input: {
+  fadeIn: { startSec: number; endSec: number };
+  fadeOut: { startSec: number; endSec: number };
+  introFrom: number;
+  resting: number;
+  outroTo: number;
+}): string {
+  const introDuration = input.fadeIn.endSec - input.fadeIn.startSec;
+  const outroDuration = input.fadeOut.endSec - input.fadeOut.startSec;
+  const intro = `${motionNumber(input.introFrom)}+(${motionNumber(input.resting - input.introFrom)})*((t-${motionNumber(input.fadeIn.startSec)})/${motionNumber(introDuration)})`;
+  const outro = `${motionNumber(input.resting)}+(${motionNumber(input.outroTo - input.resting)})*((t-${motionNumber(input.fadeOut.startSec)})/${motionNumber(outroDuration)})`;
+  return `if(lt(t,${motionNumber(input.fadeIn.endSec)}),${intro},if(lt(t,${motionNumber(input.fadeOut.startSec)}),${motionNumber(input.resting)},if(lte(t,${motionNumber(input.fadeOut.endSec)}),${outro},${motionNumber(input.outroTo)})))`;
 }
 
 function transitionVisualFilter(
   layer: Extract<CompositionVisualLayer, { kind: "transition" }>,
 ): string {
-  const { effect } = layer;
-  const { width, height } = effect.canvas;
-  const filters: string[] = [];
-  if (transitionPropertyVaries(effect, "overlayOpacity")) {
-    filters.push(
-      `fade=t=in:st=${effect.entrance.range.startSec.toFixed(3)}:d=${(effect.entrance.range.endSec - effect.entrance.range.startSec).toFixed(3)}:color=${layer.color}`,
-      `fade=t=out:st=${effect.exit.range.startSec.toFixed(3)}:d=${(effect.exit.range.endSec - effect.exit.range.startSec).toFixed(3)}:color=${layer.color}`,
+  const width = layer.effect.canvas.width;
+  const height = layer.effect.canvas.height;
+  if (layer.effect.family === "fade" || layer.effect.family === "cross-dissolve") {
+    return (
+      `fade=t=in:st=${layer.windows.fadeIn.startSec.toFixed(3)}:d=${(layer.windows.fadeIn.endSec - layer.windows.fadeIn.startSec).toFixed(3)}:color=${layer.color},` +
+      `fade=t=out:st=${layer.windows.fadeOut.startSec.toFixed(3)}:d=${(layer.windows.fadeOut.endSec - layer.windows.fadeOut.startSec).toFixed(3)}:color=${layer.color}`
     );
   }
-  if (effect.mask) {
-    const overlaySize = transitionValueExpression(effect, "overlayMaskSizePx");
-    const axisSize = effect.mask.axis === "horizontal" ? width : height;
-    const visibleSize = `max(${effect.mask.pixelDivisor},trunc((${axisSize}-(${overlaySize}))/${effect.mask.pixelDivisor})*${effect.mask.pixelDivisor})`;
-    const cropWidth = effect.mask.axis === "horizontal" ? visibleSize : `${width}`;
-    const cropHeight = effect.mask.axis === "vertical" ? visibleSize : `${height}`;
-    const anchoredAtEnd = effect.mask.overlayEdge === "start";
-    const cropX = effect.mask.axis === "horizontal" && anchoredAtEnd ? `${width}-out_w` : "0";
-    const cropY = effect.mask.axis === "vertical" && anchoredAtEnd ? `${height}-out_h` : "0";
-    const padX = effect.mask.axis === "horizontal" && anchoredAtEnd ? `${width}-iw` : "0";
-    const padY = effect.mask.axis === "vertical" && anchoredAtEnd ? `${height}-ih` : "0";
-    filters.push(
-      `crop=w='${cropWidth}':h='${cropHeight}':x='${cropX}':y='${cropY}':eval=frame`,
-      `pad=${width}:${height}:x='${padX}':y='${padY}':color=${layer.color}:eval=frame`,
-    );
+  if (layer.effect.family === "wipe") {
+    const fraction = transitionValueExpression({
+      ...layer.windows,
+      introFrom: 0,
+      resting: 1,
+      outroTo: 0,
+    });
+    const horizontal = layer.effect.direction === "left" || layer.effect.direction === "right";
+    const cropWidth = horizontal ? `max(2,trunc(${width}*(${fraction})/2)*2)` : `${width}`;
+    const cropHeight = horizontal ? `${height}` : `max(2,trunc(${height}*(${fraction})/2)*2)`;
+    const cropX = layer.effect.direction === "left" ? `${width}-out_w` : "0";
+    const cropY = layer.effect.direction === "up" ? `${height}-out_h` : "0";
+    const padX = layer.effect.direction === "left" ? `${width}-iw` : "0";
+    const padY = layer.effect.direction === "up" ? `${height}-ih` : "0";
+    return `crop=w='${cropWidth}':h='${cropHeight}':x='${cropX}':y='${cropY}':eval=frame,pad=${width}:${height}:x='${padX}':y='${padY}':color=${layer.color}:eval=frame`;
   }
-  if (
-    transitionPropertyVaries(effect, "translateXPx") ||
-    transitionPropertyVaries(effect, "translateYPx")
-  ) {
-    const x = transitionValueExpression(effect, "translateXPx");
-    const y = transitionValueExpression(effect, "translateYPx");
-    filters.push(
-      `pad=${width * 3}:${height * 3}:${width}:${height}:color=${layer.color}`,
-      `crop=${width}:${height}:x='${width}-(${x})':y='${height}-(${y})'`,
-    );
+  if (layer.effect.family === "slide") {
+    const direction = layer.effect.direction;
+    const introX = direction === "left" ? width : direction === "right" ? -width : 0;
+    const outroX = direction === "left" ? -width : direction === "right" ? width : 0;
+    const introY = direction === "up" ? height : direction === "down" ? -height : 0;
+    const outroY = direction === "up" ? -height : direction === "down" ? height : 0;
+    const x = transitionValueExpression({ ...layer.windows, introFrom: introX, resting: 0, outroTo: outroX });
+    const y = transitionValueExpression({ ...layer.windows, introFrom: introY, resting: 0, outroTo: outroY });
+    return `pad=${width * 3}:${height * 3}:${width}:${height}:color=${layer.color},crop=${width}:${height}:x='${width}-(${x})':y='${height}-(${y})'`;
   }
-  if (transitionPropertyVaries(effect, "scale")) {
-    const factor = transitionValueExpression(effect, "scale");
-    filters.push(
-      `scale=w='trunc(${width}*(${factor})/2)*2':h='trunc(${height}*(${factor})/2)*2':eval=frame`,
-      `pad=w='max(iw,${width})':h='max(ih,${height})':x='(ow-iw)/2':y='(oh-ih)/2':color=${layer.color}:eval=frame`,
-      `crop=${width}:${height}:(iw-${width})/2:(ih-${height})/2`,
-    );
-  }
-  if (filters.length === 0) {
-    throw new Error("invalid_clip_composition_transition_effect");
-  }
-  return filters.join(",");
+  const zoomsIn = layer.effect.direction === "in";
+  const factor = transitionValueExpression({
+    ...layer.windows,
+    introFrom: zoomsIn ? 0.88 : 1.12,
+    resting: 1,
+    outroTo: zoomsIn ? 1.12 : 0.88,
+  });
+  return (
+    `scale=w='trunc(${width}*(${factor})/2)*2':h='trunc(${height}*(${factor})/2)*2':eval=frame,` +
+    `pad=w='max(iw,${width})':h='max(ih,${height})':x='(ow-iw)/2':y='(oh-ih)/2':color=${layer.color}:eval=frame,` +
+    `crop=${width}:${height}:(iw-${width})/2:(ih-${height})/2`
+  );
 }
 
 /** Translates the target's already-ordered visual schedule into FFmpeg syntax.
@@ -578,68 +556,20 @@ export function compileCompositionPlanVisualLayers(input: {
       throw new Error("invalid_clip_composition_visual_layers");
     }
     if (layer.kind === "transition") {
-      if (layer.effect.version !== 1) {
-        throw new Error("unsupported_clip_composition_transition_version");
-      }
-      const { entrance, exit } = layer.effect;
-      const validWindow = (window: typeof entrance.range) =>
+      const { fadeIn, fadeOut } = layer.windows;
+      const validWindow = (window: typeof fadeIn) =>
         window.startSec >= layer.activeRange.startSec &&
         window.endSec > window.startSec &&
         window.endSec <= layer.activeRange.endSec &&
         window.endSec <= input.plan.editedDurationSec;
-      const states = [
-        entrance.from,
-        entrance.to,
-        layer.effect.resting,
-        exit.from,
-        exit.to,
-      ];
-      const validState = (state: CompositionTransitionState) =>
-        Object.values(state).every(Number.isFinite) &&
-        state.overlayOpacity >= 0 &&
-        state.overlayOpacity <= 1 &&
-        state.overlayMaskSizePx >= 0 &&
-        state.scale > 0;
-      const maskAxisSize = layer.effect.mask?.axis === "horizontal"
-        ? target.canvas.width
-        : target.canvas.height;
-      const opacityVaries = transitionPropertyVaries(
-        layer.effect,
-        "overlayOpacity",
-      );
-      const exactOpacityPrimitive = layer.effect.mask
-        ? states.every((state) => state.overlayOpacity === 1)
-        : opacityVaries
-          ? entrance.from.overlayOpacity === 1 &&
-            entrance.to.overlayOpacity === 0 &&
-            layer.effect.resting.overlayOpacity === 0 &&
-            exit.from.overlayOpacity === 0 &&
-            exit.to.overlayOpacity === 1
-          : states.every((state) => state.overlayOpacity === 0);
-      const exactInactivePrimitives =
-        (layer.effect.mask !== null ||
-          states.every((state) => state.overlayMaskSizePx === 0)) &&
-        (transitionPropertyVaries(layer.effect, "translateXPx") ||
-          states.every((state) => state.translateXPx === 0)) &&
-        (transitionPropertyVaries(layer.effect, "translateYPx") ||
-          states.every((state) => state.translateYPx === 0)) &&
-        (transitionPropertyVaries(layer.effect, "scale") ||
-          states.every((state) => state.scale === 1));
       if (
-        !validWindow(entrance.range) ||
-        !validWindow(exit.range) ||
-        entrance.range.endSec > exit.range.startSec ||
-        layer.effect.canvas.width !== target.canvas.width ||
-        layer.effect.canvas.height !== target.canvas.height ||
-        states.some((state) => !validState(state)) ||
-        !exactOpacityPrimitive ||
-        !exactInactivePrimitives ||
-        (layer.effect.mask !== null &&
-          states.some(
-            (state) => state.overlayMaskSizePx > maskAxisSize - layer.effect.mask!.pixelDivisor,
-          ))
+        !validWindow(fadeIn) ||
+        !validWindow(fadeOut) ||
+        fadeIn.endSec > fadeOut.startSec
+        || layer.effect.canvas.width !== target.canvas.width
+        || layer.effect.canvas.height !== target.canvas.height
       ) {
-        throw new Error("invalid_clip_composition_transition_effect");
+        throw new Error("invalid_clip_composition_transition_windows");
       }
     }
     previousZIndex = layer.zIndex;

@@ -2,14 +2,6 @@ import { z } from "zod";
 
 export const reviewIdempotencyKeySchema = z.string().uuid();
 
-export const reviewNotificationKindSchema = z.enum([
-  "round_sent",
-  "round_resent",
-  "first_changes_requested",
-  "all_approved",
-  "mention",
-]);
-
 export const reviewSelectedVariantIdsSchema = z.array(z.string().uuid()).min(1).max(4);
 
 export const createReviewRoundSchema = z.strictObject({
@@ -120,9 +112,6 @@ export const reviewRoundCreateResponseSchema = z
   });
 
 export type CreateReviewRoundInput = z.infer<typeof createReviewRoundSchema>;
-export type ReviewNotificationKind = z.infer<
-  typeof reviewNotificationKindSchema
->;
 export type CreateReviewRoundAutomationInput = z.infer<
   typeof createReviewRoundAutomationSchema
 >;

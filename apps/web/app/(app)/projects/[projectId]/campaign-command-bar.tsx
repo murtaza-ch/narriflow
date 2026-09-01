@@ -40,7 +40,6 @@ import type {
   StudioTransition,
 } from "@narriflow/validators";
 import { userErrorMessage } from "@narriflow/validators";
-import { formatFractionalDuration } from "@/lib/format";
 import { RenderClipsButton } from "./render-clips-button";
 import {
   buildApplyMotionSelectedInput,
@@ -285,7 +284,7 @@ function MotionSelectionPreview({
         color="fg.muted"
       >
         {change.scope === "clip_transition"
-          ? `${formatFractionalDuration(change.transition.durationSec)} · clip boundary`
+          ? `${change.transition.durationSec.toFixed(2)}s · clip boundary`
           : "0.50s phases · manual B-roll"}
       </Text>
     </Flex>
@@ -1075,7 +1074,7 @@ export function CampaignCommandBar({
                               Duration
                             </Text>
                             <Text textStyle="data" fontSize="11px" color="fg.timecode">
-                              {formatFractionalDuration(transitionDurationSec)}
+                              {transitionDurationSec.toFixed(2)}s
                             </Text>
                           </Flex>
                           <Slider.Root

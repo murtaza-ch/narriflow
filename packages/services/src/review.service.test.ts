@@ -1,9 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
   deriveReviewRoundStatus,
-  enforceReviewAccessFailureRateLimit,
-  enforceReviewAccessSourceRateLimit,
-  enforceReviewAccessTokenAndIdentityRateLimits,
   hashReviewAccessToken,
   hashReviewPasscode,
   issueReviewSession,
@@ -48,23 +45,6 @@ function brandProfileSnapshot(
   };
 }
 
-function memoryReviewRateLimiter() {
-  const counts = new Map<string, number>();
-  return {
-    counts,
-    enforce: async (key: string, limit: number) => {
-      const count = (counts.get(key) ?? 0) + 1;
-      counts.set(key, count);
-      if (count > limit) {
-        throw new ReviewServiceError(
-          "review_access_rate_limited",
-          "Too many review access attempts",
-        );
-      }
-    },
-  };
-}
-
 describe("review guest security primitives", () => {
   const secret = "s".repeat(64);
 
@@ -88,124 +68,6 @@ describe("review guest security primitives", () => {
     expect(hash.startsWith("$argon2id$")).toBe(true);
     expect(await verifyReviewPasscode("correct horse battery staple", hash)).toBe(true);
     expect(await verifyReviewPasscode("wrong", hash)).toBe(false);
-  });
-
-  test("admits all 50 intended reviewers behind one corporate source", async () => {
-    const { counts, enforce } = memoryReviewRateLimiter();
-    const tokenHash = hashReviewAccessToken("fanout-review-token");
-    const source = "shared-corporate-source";
-
-    for (let reviewer = 1; reviewer <= 50; reviewer += 1) {
-      await enforceReviewAccessSourceRateLimit(source, enforce);
-      await expect(
-        enforceReviewAccessTokenAndIdentityRateLimits(
-          {
-            tokenHash,
-            identity: `reviewer-${reviewer}@example.test`,
-            identitySecret: "s".repeat(64),
-          },
-          enforce,
-        ),
-      ).resolves.toBeUndefined();
-    }
-
-    expect(counts.get(`review-access-token:${tokenHash}`)).toBe(50);
-    expect(
-      [...counts.entries()].filter(([key]) =>
-        key.startsWith(`review-access-identity:${tokenHash}:`),
-      ),
-    ).toHaveLength(50);
-    expect(
-      [...counts.entries()].find(([key]) =>
-        key.startsWith("review-access-source:"),
-      )?.[1],
-    ).toBe(50);
-    expect(
-      [...counts.keys()].some((key) =>
-        key.includes("shared-corporate-source") ||
-        key.includes("reviewer-1@example.test"),
-      ),
-    ).toBe(false);
-  });
-
-  test("bounds one public source even when an attacker rotates random tokens", async () => {
-    const { enforce } = memoryReviewRateLimiter();
-
-    for (let attempt = 1; attempt <= 128; attempt += 1) {
-      await enforceReviewAccessSourceRateLimit("rotating-token-source", enforce);
-    }
-    await expect(
-      enforceReviewAccessSourceRateLimit("rotating-token-source", enforce),
-    ).rejects.toMatchObject({ code: "review_access_rate_limited" });
-  });
-
-  test("keeps failed source-token attempts and each identity at eight while bounding the token at 64", async () => {
-    const { enforce } = memoryReviewRateLimiter();
-    const identitySecret = "s".repeat(64);
-    const sourceTokenHash = hashReviewAccessToken("source-bound-token");
-
-    for (let attempt = 1; attempt <= 8; attempt += 1) {
-      await enforceReviewAccessFailureRateLimit(
-        {
-          tokenHash: sourceTokenHash,
-          source: "one-source",
-        },
-        enforce,
-      );
-    }
-    await expect(
-      enforceReviewAccessFailureRateLimit(
-        {
-          tokenHash: sourceTokenHash,
-          source: "one-source",
-        },
-        enforce,
-      ),
-    ).rejects.toMatchObject({ code: "review_access_rate_limited" });
-
-    const identityTokenHash = hashReviewAccessToken("identity-bound-token");
-    for (let attempt = 1; attempt <= 8; attempt += 1) {
-      await enforceReviewAccessTokenAndIdentityRateLimits(
-        {
-          tokenHash: identityTokenHash,
-          identity: "same-reviewer@example.test",
-          identitySecret,
-        },
-        enforce,
-      );
-    }
-    await expect(
-      enforceReviewAccessTokenAndIdentityRateLimits(
-        {
-          tokenHash: identityTokenHash,
-          identity: "same-reviewer@example.test",
-          identitySecret,
-        },
-        enforce,
-      ),
-    ).rejects.toMatchObject({ code: "review_access_rate_limited" });
-
-    const globalTokenHash = hashReviewAccessToken("globally-bounded-token");
-    for (let attempt = 1; attempt <= 64; attempt += 1) {
-      await enforceReviewAccessTokenAndIdentityRateLimits(
-        {
-          tokenHash: globalTokenHash,
-          identity: `global-reviewer-${attempt}@example.test`,
-          identitySecret,
-        },
-        enforce,
-      );
-    }
-    await expect(
-      enforceReviewAccessTokenAndIdentityRateLimits(
-        {
-          tokenHash: globalTokenHash,
-          identity: "global-reviewer-65@example.test",
-          identitySecret,
-        },
-        enforce,
-      ),
-    ).rejects.toMatchObject({ code: "review_access_rate_limited" });
   });
 
   test("derives terminal and decision states without mutating the stored round", () => {
@@ -346,35 +208,6 @@ describe("Review staged controls", () => {
       crypto.randomUUID(),
     )).rejects.toMatchObject({
       code: "review_notifications_temporarily_unavailable",
-    });
-  });
-
-  test("denies round creation before durable work when the Campaign review stage is paused", async () => {
-    const service = new ReviewService(
-      createReviewRolloutPolicy({
-        NARRIFLOW_WRITES_REVIEW_ROOMS: "1",
-      }),
-      {
-        render: true,
-        exports: true,
-        creative: true,
-        delivery: true,
-        review: false,
-        scheduling: false,
-      },
-    );
-
-    await expect(
-      service.createRound(
-        {
-          ...scope,
-          pricingTier: "business",
-        },
-        {},
-      ),
-    ).rejects.toMatchObject({
-      code: "program_write_disabled",
-      group: "campaign_operations",
     });
   });
 

@@ -1,8 +1,4 @@
 import { z } from "zod";
-import {
-  SCENE_MOTION_ENTRANCES,
-  SCENE_MOTION_EXITS,
-} from "./motion-policy";
 
 const hexColorSchema = z.string().regex(/^#[0-9A-Fa-f]{6}$/);
 const boundedTimeSchema = z.number().finite().min(0).max(60 * 60 * 12);
@@ -31,8 +27,26 @@ export const brandFontReferenceSchema = z.strictObject({
 });
 
 export const sceneMotionSchema = z.strictObject({
-  entrance: z.enum(SCENE_MOTION_ENTRANCES),
-  exit: z.enum(SCENE_MOTION_EXITS),
+  entrance: z.enum([
+    "none",
+    "fade",
+    "scale-in",
+    "pan-left",
+    "pan-right",
+    "pan-up",
+    "pan-down",
+    "ken-burns-in",
+  ]),
+  exit: z.enum([
+    "none",
+    "fade",
+    "scale-out",
+    "pan-left",
+    "pan-right",
+    "pan-up",
+    "pan-down",
+    "ken-burns-out",
+  ]),
 });
 
 export const sceneContentSchema = z.discriminatedUnion("kind", [
@@ -142,17 +156,13 @@ export const mediaMotionSchema = z.strictObject({
   schemaVersion: z.literal(1),
   id: z.string().uuid(),
   target: z.discriminatedUnion("kind", [
-    z.strictObject({
-      kind: z.literal("broll"),
-      placementId: z.string().uuid(),
-    }),
-		z.strictObject({ kind: z.literal("broll_url") }),
+    z.strictObject({ kind: z.literal("broll") }),
     z.strictObject({ kind: z.literal("scene_block"), sceneBlockId: z.string().uuid() }),
   ]),
   startSec: boundedTimeSchema,
   endSec: boundedTimeSchema,
-  entrance: z.enum(SCENE_MOTION_ENTRANCES),
-  exit: z.enum(SCENE_MOTION_EXITS),
+  entrance: z.enum(["none", "fade", "scale-in", "pan-left", "pan-right", "pan-up", "pan-down", "ken-burns-in"]),
+  exit: z.enum(["none", "fade", "scale-out", "pan-left", "pan-right", "pan-up", "pan-down", "ken-burns-out"]),
   enabled: z.boolean().default(true),
 }).refine((motion) => motion.endSec > motion.startSec, {
   message: "endSec must be greater than startSec",

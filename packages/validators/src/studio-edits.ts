@@ -1,6 +1,5 @@
 import { z } from "zod";
 import { logoPositionSchema } from "./logo-position";
-import { STUDIO_TRANSITION_TYPES } from "./motion-policy";
 import {
   sourceRangeToEdited,
   sourceToEdited,
@@ -52,7 +51,23 @@ export const studioTextLayerSchema = z
   );
 
 export const studioTransitionSchema = z.object({
-  type: z.enum(STUDIO_TRANSITION_TYPES).default("none"),
+  type: z.enum([
+    "none",
+    "fade",
+    "fade-black",
+    "dip-white",
+    "cross-dissolve",
+    "wipe-left",
+    "wipe-right",
+    "wipe-up",
+    "wipe-down",
+    "slide-left",
+    "slide-right",
+    "slide-up",
+    "slide-down",
+    "zoom-in",
+    "zoom-out",
+  ]).default("none"),
   durationSec: z.number().min(0.1).max(2).default(0.4),
 });
 

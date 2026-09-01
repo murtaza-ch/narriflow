@@ -11,147 +11,140 @@ import {
   admitExportBundleCleanup,
   copyObject,
   currentWorkflowAttempt,
+  deleteObject,
   downloadObjectToFile,
-  EXPORT_BUNDLE_CLEANUP_HOLD_MS,
   exportBundleStorageKeys,
   getWorkflowRunLifecycle,
   planExportBundleCleanup,
   putFileFromPath,
-  releaseExportBundleCleanup,
-  renewExportBundleCleanup,
-  retireExpiredExportBundle,
   rethrowWorkflowAttemptLost,
   workflowFailureFromUnknown,
+  type ExportBundleCleanupPlan,
+  type MediaCleanupObligationIdentity,
+  type MediaCleanupObligationInput,
 } from "@narriflow/services";
 import { exportBundleManifestSchema, type ExportBundleManifest } from "@narriflow/validators";
-
-interface ExportBundleHeartbeatScheduler {
-  start(callback: () => Promise<void>, intervalMs: number): () => void;
-}
-
-const defaultExportBundleHeartbeatScheduler: ExportBundleHeartbeatScheduler = {
-  start(callback, intervalMs) {
-    const timer = setInterval(() => void callback(), intervalMs);
-    return () => clearInterval(timer);
-  },
-};
-
-const EXPORT_BUNDLE_CLEANUP_HEARTBEAT_MS =
-  EXPORT_BUNDLE_CLEANUP_HOLD_MS / 3;
 
 export async function createExportBundleArchive(input: {
   outputPath: string;
   manifest: ExportBundleManifest;
   files: Array<{ path: string; name: string }>;
-  signal?: AbortSignal;
 }) {
-  input.signal?.throwIfAborted();
   const output = createWriteStream(input.outputPath, { flags: "wx" });
   const archive = archiver("zip", { zlib: { level: 6 } });
-  const completion = pipeline(archive, output, { signal: input.signal });
+  const completion = pipeline(archive, output);
   archive.append(`${JSON.stringify(input.manifest, null, 2)}\n`, { name: "manifest.json" });
-  for (const file of input.files) {
-    input.signal?.throwIfAborted();
-    archive.append(createReadStream(file.path), { name: file.name });
-  }
+  for (const file of input.files) archive.append(createReadStream(file.path), { name: file.name });
   await archive.finalize();
   await completion;
-  input.signal?.throwIfAborted();
   return stat(input.outputPath);
 }
 
-async function hashFile(path: string, signal?: AbortSignal) {
+async function hashFile(path: string) {
   const digest = createHash("sha256");
-  for await (const chunk of createReadStream(path)) {
-    signal?.throwIfAborted();
-    digest.update(chunk);
-  }
-  signal?.throwIfAborted();
+  for await (const chunk of createReadStream(path)) digest.update(chunk);
   return digest.digest("hex");
+}
+
+type ExportBundleCleanupRetirementStore = {
+  updateMany(input: {
+    where: MediaCleanupObligationIdentity & {
+      claimId: string;
+      completedAt: null;
+    };
+    data:
+      | {
+          completedAt: Date;
+          claimId: null;
+          claimExpiresAt: null;
+          failureCode: "storage_deleted";
+        }
+      | {
+          nextAttemptAt: Date;
+          claimId: null;
+          claimExpiresAt: null;
+          failureCode: "export_bundle_eager_delete_failed";
+        };
+  }): Promise<{ count: number }>;
+};
+
+async function retireExportBundleObject(input: {
+  store: ExportBundleCleanupRetirementStore;
+  plan: ExportBundleCleanupPlan;
+  obligation: MediaCleanupObligationInput;
+  remove(): Promise<void>;
+  now: Date;
+}): Promise<void> {
+  const identity = {
+    origin: input.obligation.origin,
+    cleanupClass: input.obligation.cleanupClass,
+    objectKey: input.obligation.objectKey,
+  };
+  try {
+    await input.remove();
+    await input.store.updateMany({
+      where: {
+        ...identity,
+        claimId: input.plan.attemptId,
+        completedAt: null,
+      },
+      data: {
+        completedAt: input.now,
+        claimId: null,
+        claimExpiresAt: null,
+        failureCode: "storage_deleted",
+      },
+    });
+  } catch {
+    // A failed/ambiguous eager deletion is recoverable: release the exact-key
+    // obligation immediately. If this DB update also fails, the conservative
+    // producer hold eventually expires and the same worker recovers it.
+    await input.store
+      .updateMany({
+        where: {
+          ...identity,
+          claimId: input.plan.attemptId,
+          completedAt: null,
+        },
+        data: {
+          nextAttemptAt: input.now,
+          claimId: null,
+          claimExpiresAt: null,
+          failureCode: "export_bundle_eager_delete_failed",
+        },
+      })
+      .catch(() => undefined);
+  }
 }
 
 export async function runExportBundlePipeline<TArchive>(input: {
   entries: ReadonlyArray<{ variantId: string; name: string; sizeBytes: number }>;
   signal?: AbortSignal;
-  heartbeatMs?: number;
-  heartbeatScheduler?: ExportBundleHeartbeatScheduler;
-  renewCleanup(): Promise<void>;
-  download(
-    entry: { variantId: string; name: string; sizeBytes: number },
-    index: number,
-    signal: AbortSignal,
-  ): Promise<{ path: string; sizeBytes: number }>;
-  archive(
-    files: Array<{ path: string; name: string }>,
-    signal: AbortSignal,
-  ): Promise<TArchive>;
-  upload(archive: TArchive, signal: AbortSignal): Promise<void>;
+  download(entry: { variantId: string; name: string; sizeBytes: number }, index: number): Promise<{ path: string; sizeBytes: number }>;
+  archive(files: Array<{ path: string; name: string }>): Promise<TArchive>;
+  upload(archive: TArchive): Promise<void>;
   assertOwnership(): Promise<void>;
-  publish(signal: AbortSignal): Promise<void>;
-  settle(archive: TArchive, signal: AbortSignal): Promise<void>;
+  publish(): Promise<void>;
+  settle(archive: TArchive): Promise<void>;
 }) {
-  const operationController = new AbortController();
-  const abortFromCaller = () => operationController.abort(input.signal?.reason);
-  if (input.signal?.aborted) abortFromCaller();
-  else input.signal?.addEventListener("abort", abortFromCaller, { once: true });
-  const operationSignal = operationController.signal;
-  let renewalFailure: unknown;
-  let renewalInFlight: Promise<void> | null = null;
-  const renewCleanup = async () => {
-    while (renewalInFlight) {
-      await renewalInFlight.catch(() => undefined);
+  const files: Array<{ path: string; name: string }> = [];
+  for (const [index, entry] of input.entries.entries()) {
+    input.signal?.throwIfAborted();
+    const downloaded = await input.download(entry, index);
+    if (downloaded.sizeBytes !== entry.sizeBytes) {
+      throw new Error("export_bundle_variant_size_mismatch");
     }
-    if (renewalFailure) throw renewalFailure;
-    operationSignal.throwIfAborted();
-    const renewal = input.renewCleanup().catch((error) => {
-      renewalFailure ??= error;
-      operationController.abort(error);
-      throw error;
-    });
-    renewalInFlight = renewal;
-    try {
-      await renewal;
-    } finally {
-      if (renewalInFlight === renewal) renewalInFlight = null;
-    }
-  };
-  const heartbeatScheduler =
-    input.heartbeatScheduler ?? defaultExportBundleHeartbeatScheduler;
-  const stopHeartbeat = heartbeatScheduler.start(async () => {
-    if (renewalInFlight || renewalFailure) return;
-    await renewCleanup().catch(() => undefined);
-  }, input.heartbeatMs ?? EXPORT_BUNDLE_CLEANUP_HEARTBEAT_MS);
-  try {
-    const files: Array<{ path: string; name: string }> = [];
-    for (const [index, entry] of input.entries.entries()) {
-      operationSignal.throwIfAborted();
-      const downloaded = await input.download(entry, index, operationSignal);
-      if (downloaded.sizeBytes !== entry.sizeBytes) {
-        throw new Error("export_bundle_variant_size_mismatch");
-      }
-      files.push({ path: downloaded.path, name: entry.name });
-    }
-    operationSignal.throwIfAborted();
-    const archive = await input.archive(files, operationSignal);
-    operationSignal.throwIfAborted();
-    await renewCleanup();
-    operationSignal.throwIfAborted();
-    await input.upload(archive, operationSignal);
-    await input.assertOwnership();
-    await renewCleanup();
-    operationSignal.throwIfAborted();
-    await input.publish(operationSignal);
-    await input.assertOwnership();
-    await renewCleanup();
-    operationSignal.throwIfAborted();
-    await input.settle(archive, operationSignal);
-    return archive;
-  } finally {
-    stopHeartbeat();
-    const activeRenewal = renewalInFlight as Promise<void> | null;
-    await activeRenewal?.catch(() => undefined);
-    input.signal?.removeEventListener("abort", abortFromCaller);
+    files.push({ path: downloaded.path, name: entry.name });
   }
+  input.signal?.throwIfAborted();
+  const archive = await input.archive(files);
+  input.signal?.throwIfAborted();
+  await input.upload(archive);
+  await input.assertOwnership();
+  await input.publish();
+  await input.assertOwnership();
+  await input.settle(archive);
+  return archive;
 }
 
 export async function processExportBundleRun(run: { id: string; projectId: string; attemptId: string | null }, signal?: AbortSignal) {
@@ -203,55 +196,30 @@ export async function processExportBundleRun(run: { id: string; projectId: strin
     await runExportBundlePipeline({
       entries,
       signal,
-      renewCleanup: async () => {
-        await renewExportBundleCleanup(
-          prisma.mediaCleanupObligation,
-          cleanupPlan,
-          new Date(),
-        );
-      },
-      download: async (entry, _index, operationSignal) => {
+      download: async (entry) => {
         const path = join(directory, `${entry.variantId}.mp4`);
-        await downloadObjectToFile({
-          key: byId.get(entry.variantId)!,
-          filePath: path,
-          signal: operationSignal,
-        });
+        await downloadObjectToFile({ key: byId.get(entry.variantId)!, filePath: path, signal });
         const downloaded = await stat(path);
         return { path, sizeBytes: downloaded.size };
       },
-      archive: async (files, operationSignal) => {
-        const archiveInfo = await createExportBundleArchive({
-          outputPath: archivePath,
-          manifest,
-          files,
-          signal: operationSignal,
-        });
-        return {
-          archiveInfo,
-          checksumSha256: await hashFile(archivePath, operationSignal),
-        };
+      archive: async (files) => {
+        const archiveInfo = await createExportBundleArchive({ outputPath: archivePath, manifest, files });
+        return { archiveInfo, checksumSha256: await hashFile(archivePath) };
       },
-      upload: async (_archive, operationSignal) => {
-        await putFileFromPath({ key: attemptKey, filePath: archivePath, contentType: "application/zip", metadata: { operation_id: bundle.operationId, workflow_attempt_id: run.attemptId! }, signal: operationSignal });
+      upload: async () => {
+        await putFileFromPath({ key: attemptKey, filePath: archivePath, contentType: "application/zip", metadata: { operation_id: bundle.operationId, workflow_attempt_id: run.attemptId! }, signal });
       },
       assertOwnership: () => lifecycle.assertOwnership(attempt),
-      publish: async (operationSignal) => {
-        await copyObject({
-          sourceKey: attemptKey,
-          destinationKey: finalKey,
-          signal: operationSignal,
-        });
+      publish: async () => {
+        await copyObject({ sourceKey: attemptKey, destinationKey: finalKey });
         finalPublished = true;
       },
-      settle: async ({ archiveInfo, checksumSha256 }, operationSignal) => {
-        operationSignal.throwIfAborted();
+      settle: async ({ archiveInfo, checksumSha256 }) => {
         await lifecycle.mutateOwnedAttempt(attempt, async (tx) => {
-          const adoptionNow = new Date();
           await adoptExportBundlePublication(
             tx.mediaCleanupObligation,
             cleanupPlan,
-            adoptionNow,
+            new Date(),
           );
           await tx.campaignOperationItem.updateMany({ where: { operationId: bundle.operationId, status: "pending" }, data: { status: "succeeded", settledAt: new Date(), errorCode: null } });
           await tx.exportBundle.update({ where: { id: bundle.id }, data: { status: "completed", attemptStorageKey: null, storageKey: finalKey, sizeBytes: BigInt(archiveInfo.size), checksumSha256, completedAt: new Date(), errorCode: null } });
@@ -261,27 +229,36 @@ export async function processExportBundleRun(run: { id: string; projectId: strin
       },
     });
     await lifecycle.completeStage(attempt);
-    await releaseExportBundleCleanup(
-      prisma.mediaCleanupObligation,
-      cleanupPlan,
-      [cleanupPlan.obligations[0]],
-      new Date(),
-    ).catch(() => undefined);
+    await retireExportBundleObject({
+      store: prisma.mediaCleanupObligation,
+      plan: cleanupPlan,
+      obligation: cleanupPlan.obligations[0],
+      remove: async () => {
+        await deleteObject(attemptKey, { signal });
+      },
+      now: new Date(),
+    });
   } catch (error) {
     if (finalPublished && !bundleSettled) {
-      await releaseExportBundleCleanup(
-        prisma.mediaCleanupObligation,
-        cleanupPlan,
-        [cleanupPlan.obligations[1]],
-        new Date(),
-      ).catch(() => undefined);
+      await retireExportBundleObject({
+        store: prisma.mediaCleanupObligation,
+        plan: cleanupPlan,
+        obligation: cleanupPlan.obligations[1],
+        remove: async () => {
+          await deleteObject(finalKey);
+        },
+        now: new Date(),
+      });
     }
-    await releaseExportBundleCleanup(
-      prisma.mediaCleanupObligation,
-      cleanupPlan,
-      [cleanupPlan.obligations[0]],
-      new Date(),
-    ).catch(() => undefined);
+    await retireExportBundleObject({
+      store: prisma.mediaCleanupObligation,
+      plan: cleanupPlan,
+      obligation: cleanupPlan.obligations[0],
+      remove: async () => {
+        await deleteObject(attemptKey);
+      },
+      now: new Date(),
+    });
     rethrowWorkflowAttemptLost(error);
     if (!bundleSettled) {
       await lifecycle.mutateOwnedAttempt(attempt, async (tx) => {
@@ -297,13 +274,9 @@ export async function processExportBundleRun(run: { id: string; projectId: strin
 }
 
 type ExportBundleExpiryDependencies = {
-	findExpired(now: Date, take: number): Promise<
-		Array<{ id: string; projectId: string; storageKey: string }>
-	>;
-	retire(
-		bundle: { id: string; projectId: string; storageKey: string },
-		now: Date,
-	): Promise<number>;
+	findExpired(now: Date, take: number): Promise<Array<{ id: string; storageKey: string }>>;
+	removeObject(storageKey: string): Promise<void>;
+	markExpired(bundle: { id: string; storageKey: string }): Promise<number>;
 };
 
 export async function expireExportBundles(
@@ -316,26 +289,28 @@ export async function expireExportBundles(
 	const runtime: ExportBundleExpiryDependencies = dependencies ?? {
 		findExpired: async (expiresBefore, take) => (await prisma!.exportBundle.findMany({
 			where: { status: "completed", expiresAt: { lte: expiresBefore }, storageKey: { not: null } },
-			select: { id: true, storageKey: true, operation: { select: { projectId: true } } },
+			select: { id: true, storageKey: true },
 			orderBy: { expiresAt: "asc" },
 			take,
-		})).map((bundle) => ({
-			id: bundle.id,
-			projectId: bundle.operation.projectId,
-			storageKey: bundle.storageKey!,
-		})),
-		retire: async (bundle, retiredAt) => prisma!.$transaction((tx) =>
-			retireExpiredExportBundle(tx, bundle, retiredAt),
-		),
+		})).map((bundle) => ({ id: bundle.id, storageKey: bundle.storageKey! })),
+		removeObject: async (storageKey) => {
+			await deleteObject(storageKey);
+		},
+		markExpired: async (bundle) => (await prisma!.exportBundle.updateMany({
+			where: { id: bundle.id, status: "completed", storageKey: bundle.storageKey },
+			data: { status: "expired", storageKey: null },
+		})).count,
 	};
 	const expired = await runtime.findExpired(now, Math.max(1, Math.min(batchSize, 500)));
   let removed = 0;
   for (const bundle of expired) {
     try {
-			removed += await runtime.retire(bundle, now);
+			await runtime.removeObject(bundle.storageKey);
     } catch (error) {
-      console.warn(JSON.stringify({ level: "warn", message: "export_bundle_expiry_retirement_failed", bundleId: bundle.id, error: error instanceof Error ? error.message : String(error) }));
+      console.warn(JSON.stringify({ level: "warn", message: "export_bundle_expiry_delete_failed", bundleId: bundle.id, error: error instanceof Error ? error.message : String(error) }));
+      continue;
     }
+		removed += await runtime.markExpired(bundle);
   }
   return removed;
 }

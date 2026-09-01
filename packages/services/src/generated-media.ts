@@ -411,8 +411,6 @@ export interface GeneratedMediaAssetIngestor {
 	ingest(input: {
 		jobId: string;
 		attemptId: string;
-		projectId: string;
-		clipId: string | null;
 		storageKey: string;
 		kind: GeneratedMediaKind;
 		aspectRatio: GeneratedMediaAspectRatio;
@@ -588,6 +586,7 @@ export interface GeneratedMediaStore {
 		now: Date;
 	}): Promise<GeneratedMediaJobView | null>;
 	purgeExpiredPrompts(now: Date, limit: number): Promise<number>;
+	referencedStorageKeys(prefix: string): Promise<ReadonlySet<string>>;
 }
 
 export function createInMemoryGeneratedMediaStore(): GeneratedMediaStore {
@@ -1006,6 +1005,13 @@ export function createInMemoryGeneratedMediaStore(): GeneratedMediaStore {
 				purged += 1;
 			}
 			return purged;
+		},
+		async referencedStorageKeys(prefix) {
+			return new Set(
+				[...jobs.values()]
+					.flatMap((job) => [job.stagedAsset?.storageKey, job.resultReference])
+					.filter((key): key is string => Boolean(key?.startsWith(prefix))),
+			);
 		},
 	};
 }
@@ -1598,8 +1604,6 @@ export class GeneratedMediaWorker {
 			asset = await this.dependencies.ingestor.ingest({
 				jobId: claim.jobId,
 				attemptId: claim.claimId,
-				projectId: claim.projectId,
-				clipId: claim.clipId,
 				storageKey: storageKeyForGeneratedMedia(
 					claim,
 					source.kind === "inline"
@@ -1623,7 +1627,6 @@ export class GeneratedMediaWorker {
 					: "generated_media_ingestion_failed";
 			if (
 				code === "generated_media_upload_failed" ||
-				code === "generated_media_cleanup_admission_failed" ||
 				code === "generated_media_result_download_failed" ||
 				code === "generated_media_storage_unavailable"
 			) {

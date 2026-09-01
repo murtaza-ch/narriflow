@@ -9,10 +9,7 @@ export type MediaCleanupOrigin =
   | "detected_clip_replacement"
   | "clip_duplicate_compensation"
   | "visual_asset_upload"
-  | "export_bundle_attempt"
-  | "export_bundle_expiry"
-  | "generated_media_ingestion"
-  | "thumbnail_extraction";
+  | "export_bundle_attempt";
 
 export type MediaCleanupClass =
   | "mutable_render"
@@ -21,13 +18,7 @@ export type MediaCleanupClass =
   | "dub_media"
   | "unfinalized_visual_asset_upload"
   | "export_bundle_attempt"
-  | "export_bundle_unsettled_publication"
-  | "expired_export_bundle"
-  | "generated_media_asset_upload"
-  | "generated_media_provider_result"
-  | "generated_media_redundant_asset"
-  | "generated_media_consumed_provider_result"
-  | "thumbnail_extraction_output";
+  | "export_bundle_unsettled_publication";
 
 export interface MediaCleanupObligationIdentity {
   origin: MediaCleanupOrigin;
@@ -309,99 +300,6 @@ export interface HeldMediaCleanupAdoptionStore {
       OR: MediaCleanupObligationIdentity[];
     };
   }): Promise<number>;
-}
-
-export interface HeldMediaCleanupReleaseStore {
-  updateMany(input: {
-    where: {
-      claimId: string;
-      completedAt: null;
-      OR: MediaCleanupObligationIdentity[];
-    };
-    data: {
-      nextAttemptAt: Date;
-      claimId: null;
-      claimExpiresAt: null;
-      failureCode: string;
-    };
-  }): Promise<{ count: number }>;
-}
-
-export interface HeldMediaCleanupRenewalStore {
-  updateMany(input: {
-    where: {
-      claimId: string;
-      claimExpiresAt: { gt: Date };
-      completedAt: null;
-      attemptCount: 0;
-      OR: MediaCleanupObligationIdentity[];
-    };
-    data: {
-      claimExpiresAt: Date;
-      nextAttemptAt: Date;
-    };
-  }): Promise<{ count: number }>;
-}
-
-/** Extends a producer hold only while every exact obligation remains unattempted. */
-export async function renewHeldMediaCleanupObligations(
-  store: HeldMediaCleanupRenewalStore,
-  identities: readonly MediaCleanupObligationIdentity[],
-  claimId: string,
-  now: Date,
-  claimExpiresAt: Date,
-): Promise<void> {
-  const unique = [
-    ...new Map(
-      identities.map((identity) => [
-        `${identity.origin}\u0000${identity.cleanupClass}\u0000${identity.objectKey}`,
-        identity,
-      ]),
-    ).values(),
-  ];
-  if (unique.length === 0) return;
-  const renewed = await store.updateMany({
-    where: {
-      claimId,
-      claimExpiresAt: { gt: now },
-      completedAt: null,
-      attemptCount: 0,
-      OR: unique,
-    },
-    data: {
-      claimExpiresAt,
-      nextAttemptAt: claimExpiresAt,
-    },
-  });
-  if (renewed.count !== unique.length) throw new MediaCleanupClaimLost();
-}
-
-/**
- * Ends a producer hold without touching object storage. A zero count means a
- * cleanup worker or adoption already won the fenced obligation.
- */
-export async function releaseHeldMediaCleanupObligations(
-  store: HeldMediaCleanupReleaseStore,
-  identities: readonly MediaCleanupObligationIdentity[],
-  claimId: string,
-  now: Date,
-  failureCode: string,
-): Promise<number> {
-  if (identities.length === 0) return 0;
-  const released = await store.updateMany({
-    where: {
-      claimId,
-      completedAt: null,
-      OR: [...identities],
-    },
-    data: {
-      nextAttemptAt: now,
-      claimId: null,
-      claimExpiresAt: null,
-      failureCode,
-    },
-  });
-  return released.count;
 }
 
 /** Atomically adopts every exact object held by a live producer claim. */
@@ -1169,13 +1067,7 @@ function requirePrisma() {
   return prisma;
 }
 
-export const prismaMediaCleanupAdmissionStore: MediaCleanupAdmissionStore = {
-  createMany(input) {
-    return requirePrisma().mediaCleanupObligation.createMany(input);
-  },
-};
-
-export function parseMediaCleanupClass(value: string): MediaCleanupClass {
+function cleanupClass(value: string): MediaCleanupClass {
   if (
     value === "mutable_render" ||
     value === "preview_proxy" ||
@@ -1183,29 +1075,20 @@ export function parseMediaCleanupClass(value: string): MediaCleanupClass {
     value === "dub_media" ||
     value === "unfinalized_visual_asset_upload" ||
     value === "export_bundle_attempt" ||
-    value === "export_bundle_unsettled_publication" ||
-    value === "expired_export_bundle" ||
-    value === "generated_media_asset_upload" ||
-    value === "generated_media_provider_result" ||
-    value === "generated_media_redundant_asset" ||
-    value === "generated_media_consumed_provider_result" ||
-    value === "thumbnail_extraction_output"
+    value === "export_bundle_unsettled_publication"
   ) {
     return value;
   }
   throw new Error("Unknown media cleanup class");
 }
 
-export function parseMediaCleanupOrigin(value: string): MediaCleanupOrigin {
+function cleanupOrigin(value: string): MediaCleanupOrigin {
   if (
     value === "clip_editor_document_persistence" ||
     value === "detected_clip_replacement" ||
     value === "clip_duplicate_compensation" ||
     value === "visual_asset_upload" ||
-    value === "export_bundle_attempt" ||
-    value === "export_bundle_expiry" ||
-    value === "generated_media_ingestion" ||
-    value === "thumbnail_extraction"
+    value === "export_bundle_attempt"
   ) {
     return value;
   }
@@ -1262,10 +1145,10 @@ export const prismaMediaCleanupStore: MediaCleanupStore = {
         if (won.count === 1) {
           claimed.push({
             id: candidate.id,
-            origin: parseMediaCleanupOrigin(candidate.origin),
+            origin: cleanupOrigin(candidate.origin),
             projectId: candidate.projectId,
             clipId: candidate.clipId,
-            cleanupClass: parseMediaCleanupClass(candidate.cleanupClass),
+            cleanupClass: cleanupClass(candidate.cleanupClass),
             objectKey: candidate.objectKey,
             attemptCount: candidate.attemptCount + 1,
             claimId,

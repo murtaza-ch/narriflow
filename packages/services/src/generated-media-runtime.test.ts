@@ -12,7 +12,7 @@ describe("generated media runtime", () => {
 		expect(runtime.worker).toBeNull();
 	});
 
-	test("keeps prompt retention active without sweeping or deleting object storage", async () => {
+	test("keeps prompt retention and orphan cleanup active when every write provider is disabled", async () => {
 		let purgeCalls = 0;
 		const durableStore = createInMemoryGeneratedMediaStore();
 		const store = {
@@ -23,13 +23,7 @@ describe("generated media runtime", () => {
 			},
 		};
 		const deleted: string[] = [];
-		let listCalls = 0;
-		const objectStorage: GeneratedMediaObjectStorage & {
-			delete(key: string): Promise<void>;
-			list(prefix: string): Promise<
-				Array<{ key: string; sizeBytes: number; lastModified: Date }>
-			>;
-		} = {
+		const objectStorage: GeneratedMediaObjectStorage = {
 			async head() {
 				return null;
 			},
@@ -41,7 +35,6 @@ describe("generated media runtime", () => {
 				deleted.push(key);
 			},
 			async list(prefix) {
-				listCalls += 1;
 				return [
 					{
 						key: `${prefix}orphan`,
@@ -80,12 +73,11 @@ describe("generated media runtime", () => {
 		});
 		await expect(runtime.maintenance()).resolves.toEqual({
 			promptsPurged: 1,
-			objectsDeleted: 0,
+			objectsDeleted: 2,
 			objectFailures: 0,
 		});
 		expect(purgeCalls).toBe(1);
-		expect(listCalls).toBe(0);
-		expect(deleted).toEqual([]);
+		expect(deleted).toHaveLength(2);
 	});
 
 	test("refuses enabled generation without independent prompt-protection keys", () => {

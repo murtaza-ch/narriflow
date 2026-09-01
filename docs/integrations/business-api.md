@@ -134,7 +134,7 @@ Submit a generated still image:
   "clipId": null,
   "kind": "image",
   "prompt": "A clean editorial product backdrop",
-  "includeDerivedContext": false,
+  "derivedContext": null,
   "promptOrigin": { "kind": "manual", "sourceIds": [] },
   "aspectRatio": "1:1",
   "style": "minimal",

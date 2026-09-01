@@ -7,8 +7,7 @@ import {
 } from "./edit-ranges";
 
 export const AUTO_CENSOR_DETECTOR_VERSION = 1 as const;
-export const AUTO_CENSOR_POLICY_VERSION =
-  "auto-censor:multilingual-2026-08-31:v2";
+export const AUTO_CENSOR_POLICY_VERSION = "auto-censor:en-2026-08-31:v1";
 export const AUTO_CENSOR_DEFAULT_PADDING_SEC = 0.08;
 export const AUTO_CENSOR_DEFAULT_BEEP = {
   frequencyHz: 1_000,
@@ -21,15 +20,10 @@ export type AutoCensorPolicySourceKind =
   | "built_in"
   | "brand_profile"
   | "project";
-export type AutoCensorPolicyCategory =
-  | "profanity"
-  | "identity_slur"
-  | "custom";
 
 export interface AutoCensorTerm {
   readonly phrase: string;
   readonly treatment?: AutoCensorTreatment;
-  readonly category?: AutoCensorPolicyCategory;
 }
 
 export interface AutoCensorTranscriptWord {
@@ -63,8 +57,6 @@ export interface AutoCensorSuggestion {
   readonly policySource: {
     readonly kind: AutoCensorPolicySourceKind;
     readonly id: string;
-    /** The matched category only. The policy library itself is never returned. */
-    readonly category: AutoCensorPolicyCategory;
   };
   readonly sourceWordIds: readonly string[];
   /** Padded, clip-clamped source interval used by scan review. */
@@ -92,69 +84,12 @@ export interface AutoCensorScanResult {
   readonly suggestions: readonly AutoCensorSuggestion[];
 }
 
-const profanity = (phrase: string): AutoCensorTerm => ({
-  phrase,
-  category: "profanity",
-});
-const identitySlur = (phrase: string): AutoCensorTerm => ({
-  phrase,
-  category: "identity_slur",
-});
-
-/**
- * Curated, bounded first-release policies. Keep this data private to the
- * detector: the UI sees only categories for transcript matches and never a
- * browsable/exportable library. Unsupported locales deliberately have no
- * built-in matches instead of silently applying an English policy.
- */
 const BUILT_IN_TERMS: Readonly<Record<string, readonly AutoCensorTerm[]>> = {
   en: [
-    ...[
-      "damn",
-      "fuck",
-      "fucking",
-      "shit",
-      "bullshit",
-      "bitch",
-      "bastard",
-      "asshole",
-      "dick",
-      "piss",
-      "crap",
-      "motherfucker",
-    ].map(profanity),
-    ...[
-      "nigger",
-      "nigga",
-      "faggot",
-      "retard",
-      "chink",
-      "kike",
-      "spic",
-      "tranny",
-    ].map(identitySlur),
-  ],
-  es: [
-    ...["mierda", "joder", "puta", "puto", "cabrón", "coño", "gilipollas"].map(
-      profanity,
-    ),
-    ...["maricón", "sudaca"].map(identitySlur),
-  ],
-  fr: [
-    ...["merde", "putain", "connard", "salope", "enculé"].map(profanity),
-    ...["pédé", "bougnoule"].map(identitySlur),
-  ],
-  de: [
-    ...["scheiße", "verfickt", "arschloch", "hurensohn"].map(profanity),
-    ...["schwuchtel", "kanake"].map(identitySlur),
-  ],
-  pt: [
-    ...["merda", "porra", "caralho", "puta", "filho da puta"].map(profanity),
-    ...["viado", "bicha"].map(identitySlur),
-  ],
-  it: [
-    ...["merda", "cazzo", "stronzo", "puttana"].map(profanity),
-    ...["frocio", "terrone"].map(identitySlur),
+    { phrase: "damn" },
+    { phrase: "fuck" },
+    { phrase: "fucking" },
+    { phrase: "shit" },
   ],
 };
 
@@ -230,7 +165,6 @@ interface ResolvedTerm {
   readonly treatment: AutoCensorTreatment;
   readonly source: AutoCensorPolicySourceKind;
   readonly sourceId: string;
-  readonly category: AutoCensorPolicyCategory;
   readonly priority: number;
 }
 
@@ -291,9 +225,8 @@ function resolveTerms(input: AutoCensorScanInput, locale: string): ResolvedTerm[
         source: entry.source,
         sourceId:
           entry.source === "built_in"
-            ? `built-in:${locale}:v2`
+            ? `built-in:${locale}:v1`
             : `${entry.source}:${stableHex(normalizedPhrase)}`,
-        category: term.category ?? "custom",
         priority: entry.priority,
       };
       const current = byPhrase.get(normalizedPhrase);
@@ -417,11 +350,7 @@ export function scanAutoCensor(input: AutoCensorScanInput): AutoCensorScanResult
     return {
       fingerprint,
       policyVersion: AUTO_CENSOR_POLICY_VERSION,
-      policySource: {
-        kind: term.source,
-        id: term.sourceId,
-        category: term.category,
-      },
+      policySource: { kind: term.source, id: term.sourceId },
       sourceWordIds,
       sourceRange,
       wordSourceRange,

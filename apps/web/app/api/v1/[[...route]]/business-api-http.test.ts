@@ -186,8 +186,6 @@ describe("Business REST v1", () => {
             ineligibleCount: 0,
             failedCount: 0,
             items: [],
-            createdAt: null,
-            completedAt: null,
             validatedOptions: { private: true },
             claimToken: "must-not-leak",
             replayed: false,

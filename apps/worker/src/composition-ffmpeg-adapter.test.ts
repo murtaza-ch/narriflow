@@ -15,7 +15,6 @@ import {
   captionPresetSchema,
   clipAutoLayoutAnalysisSchema,
   editorDocumentSchema,
-	MANUAL_BROLL_COMPOSITION_ID,
   studioEditsSchema,
   type StudioTransition,
 } from "@narriflow/validators";
@@ -323,7 +322,6 @@ function planScreen() {
 }
 
 function planBroll(withMotion = false) {
-	const placementId = "2adf79cc-35b2-4de5-85dc-c9ed197763e4";
   const result = planClipComposition({
     document: editorDocumentSchema.parse({
     version: 2,
@@ -332,27 +330,13 @@ function planBroll(withMotion = false) {
       captionPreset: captionPresetSchema.parse({}),
       transcriptSlice: [],
       studioEdits: studioEditsSchema.parse({ framing: { mode: "center" } }),
-		brollUrl: null,
-		brollPlacements: [{
-			id: placementId,
-			asset: {
-				kind: "visual_asset",
-				id: "8ab9d330-688f-4574-932c-27ac661245c1",
-				fingerprint: "a".repeat(64),
-			},
-			provenance: "uploaded",
-			mediaKind: "video",
-			startSec: 1.5,
-			endSec: 4,
-			sourceStartSec: 0,
-			sourceEndSec: 2.5,
-		}],
+      brollUrl: "https://example.com/cutaway.mp4",
       deletedRanges: [],
       mediaMotions: withMotion
         ? [{
             schemaVersion: 1,
             id: "2adf79cc-35b2-4de5-85dc-c9ed197763e4",
-			target: { kind: "broll", placementId },
+            target: { kind: "broll" },
             startSec: 1.5,
             endSec: 4,
             entrance: "pan-left",
@@ -369,7 +353,7 @@ function planBroll(withMotion = false) {
         state: "available",
         placements: [
 					{
-						id: placementId,
+						id: "cutaway",
 						ref: "broll:cutaway",
 						mediaKind: "video",
 						startSec: 1.5,
@@ -388,55 +372,6 @@ function planBroll(withMotion = false) {
   });
   if (result.status === "invalid") throw new Error(result.error.code);
   return result.plan;
-}
-
-function planUrlBrollMotion() {
-	const result = planClipComposition({
-		document: editorDocumentSchema.parse({
-			version: 2,
-			clipStartSec: 0,
-			clipEndSec: 20,
-			captionPreset: captionPresetSchema.parse({}),
-			transcriptSlice: [],
-			studioEdits: studioEditsSchema.parse({ framing: { mode: "center" } }),
-			brollUrl: "https://media.example.test/manual.mp4",
-			deletedRanges: [],
-			mediaMotions: [{
-				schemaVersion: 1,
-				id: "2adf79cc-35b2-4de5-85dc-c9ed197763e4",
-				target: { kind: "broll_url" },
-				startSec: 5.6,
-				endSec: 9.1,
-				entrance: "pan-right",
-				exit: "scale-out",
-				enabled: true,
-			}],
-		}),
-		source: { identity: "source:url-key", kind: "video", width: 1920, height: 1080 },
-		evidence: { automaticLayout: { state: "missing" } },
-		assets: {
-			backgroundImage: { state: "missing" },
-			broll: {
-				state: "available",
-				placements: [{
-					id: MANUAL_BROLL_COMPOSITION_ID,
-					ref: "broll:manual-url",
-					mediaKind: "video",
-					startSec: 5.6,
-					endSec: 9.1,
-					sourceStartSec: 0,
-					sourceEndSec: 3.5,
-				}],
-			},
-		},
-		capabilities: {
-			automaticSpeakerLayout: true,
-			automaticSpeakerEngineVersion: "shot-layout-v1",
-		},
-		targets: [{ id: "variant-1", aspectRatio: "9:16", width: 1080, height: 1920 }],
-	});
-	if (result.status === "invalid") throw new Error(result.error.code);
-	return result.plan;
 }
 
 function planVisualStack(input: {
@@ -836,7 +771,7 @@ describe("composition FFmpeg adapter", () => {
     ).toThrow("invalid_clip_composition_visual_destination");
   });
 
-  test("rejects resolved transition phases that overlap or cross the exact plan end", () => {
+  test("rejects transition windows that overlap or cross the exact plan end", () => {
     const plan = planVisualStack();
     const target = plan.targets[0]!;
     const transition = target.visualLayers.find(
@@ -850,19 +785,9 @@ describe("composition FFmpeg adapter", () => {
           layer.id === transition.id
             ? {
                 ...transition,
-                effect: {
-                  ...transition.effect,
-                  entrance: {
-                    ...transition.effect.entrance,
-                    range: { startSec: 0, endSec: 0.5 },
-                  },
-                  exit: {
-                    ...transition.effect.exit,
-                    range: {
-                      startSec: plan.editedDurationSec - 0.25,
-                      endSec: plan.editedDurationSec + 0.001,
-                    },
-                  },
+                windows: {
+                  fadeIn: { startSec: 0, endSec: 0.5 },
+                  fadeOut: { startSec: plan.editedDurationSec - 0.25, endSec: plan.editedDurationSec + 0.001 },
                 },
               }
             : layer,
@@ -877,7 +802,7 @@ describe("composition FFmpeg adapter", () => {
         outputLabel: "[outv]",
         logoInputIndex: 1,
       }),
-    ).toThrow("invalid_clip_composition_transition_effect");
+    ).toThrow("invalid_clip_composition_transition_windows");
   });
 
   test("translates every planned transition family without re-deriving timing", () => {
@@ -897,49 +822,6 @@ describe("composition FFmpeg adapter", () => {
       });
       expect(compiled.filterParts.join(";")).toContain(marker);
     }
-  });
-
-  test("translates exact planner-owned outbound transforms instead of the transition label", () => {
-    const base = planVisualStack({
-      transition: { type: "slide-up", durationSec: 0.4 },
-    });
-    const target = base.targets[0]!;
-    const transition = target.visualLayers.find(
-      (layer) => layer.kind === "transition",
-    );
-    if (transition?.kind !== "transition") throw new Error("missing transition");
-    const plan = {
-      ...base,
-      targets: [{
-        ...target,
-        visualLayers: target.visualLayers.map((layer) =>
-          layer.id === transition.id
-            ? {
-                ...transition,
-                effect: {
-                  ...transition.effect,
-                  direction: "down" as const,
-                  exit: {
-                    ...transition.effect.exit,
-                    to: {
-                      ...transition.effect.exit.to,
-                      translateYPx: -777,
-                    },
-                  },
-                },
-              }
-            : layer,
-        ),
-      }],
-    };
-    const compiled = compileCompositionPlanVisualLayers({
-      plan,
-      targetId: "variant-1",
-      inputLabel: "[composition_base]",
-      outputLabel: "[outv]",
-      logoInputIndex: 1,
-    });
-    expect(compiled.filterParts.join(";")).toContain("+(-777)*((t-4.6)/0.4)");
   });
   test("compiles the Center plan's exact crop without choosing geometry", () => {
     expect(
@@ -999,33 +881,6 @@ describe("composition FFmpeg adapter", () => {
         brollInputStartIndex: 1,
       }),
     ).toThrow("invalid_clip_composition_motion");
-  });
-
-  test("rejects an unknown resolved-transition version before command construction", () => {
-    const plan = planVisualStack({
-      transition: { type: "slide-left", durationSec: 0.4 },
-    });
-    const target = plan.targets[0]!;
-    const invalid = {
-      ...plan,
-      targets: [{
-        ...target,
-        visualLayers: target.visualLayers.map((layer) =>
-          layer.kind === "transition"
-            ? { ...layer, effect: { ...layer.effect, version: 2 } }
-            : layer,
-        ),
-      }],
-    };
-    expect(() =>
-      compileCompositionPlanVisualLayers({
-        plan: invalid as never,
-        targetId: "variant-1",
-        inputLabel: "[composition_base]",
-        outputLabel: "[outv]",
-        logoInputIndex: 1,
-      }),
-    ).toThrow("unsupported_clip_composition_transition_version");
   });
 
   test("rejects invalid source geometry before command construction", () => {
@@ -1425,27 +1280,6 @@ describe("composition FFmpeg adapter", () => {
     expect(graph).toContain("pad=3240:5760:1080:1920");
     expect(graph).toContain("overlay=0:0:enable='between(t,1.5,4)'");
   });
-
-	test("compiles URL-backed B-roll motion from the stable manual target", () => {
-		const compiled = compileCompositionPlanVideo({
-			plan: planUrlBrollMotion(),
-			targetId: "variant-1",
-			videoInputLabel: "[0:v]",
-			outputLabel: "[stage0]",
-			resolvedBrollAssets: {
-				"broll:manual-url": { path: "/tmp/manual.mp4", kind: "video" },
-			},
-			brollInputStartIndex: 1,
-		});
-		expect(compiled.brollInputs).toEqual([expect.objectContaining({
-			sourceRef: "broll:manual-url",
-			startSec: 5.6,
-			endSec: 9.1,
-		})]);
-		const graph = compiled.filterParts.join(";");
-		expect(graph).toContain("overlay=0:0:enable='between(t,5.6,9.1)'");
-		expect(graph).toContain("scale=w='trunc(1080*");
-	});
 
   test("compiles mixed Ken Burns and scale edges without applying crop zoom twice", () => {
     const { plan, imageRef, videoRef, fontRef } = planInsertedScenes();

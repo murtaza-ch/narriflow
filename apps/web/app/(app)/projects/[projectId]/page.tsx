@@ -258,8 +258,7 @@ export default async function ProjectDetailPage({
   const reviewCreationAccess = resolveReviewCreationAccess({
     canManageReview,
     hasReviewRooms: hasFeature(pricingTier, "review.rooms"),
-    writesEnabled:
-      isProgramWriteEnabled("review_rooms") && campaignActionRollout.review,
+    writesEnabled: isProgramWriteEnabled("review_rooms"),
   });
 
   const isIngestReady = snapshot.project.ingestStatus === "ready";
@@ -925,7 +924,6 @@ export default async function ProjectDetailPage({
           {activeTab === "review" ? (
             <ReviewPanel
               projectId={projectId}
-              availableClipIds={clips.map((clip) => clip.id)}
               canManageReview={canManageReview}
               creationAccess={reviewCreationAccess}
             />

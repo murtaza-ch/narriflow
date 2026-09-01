@@ -20,37 +20,20 @@ import {
   type WorkspaceCapability,
 } from "@narriflow/services";
 import {
-  businessAutomationAssistedCopyOutputSchema,
-  businessAutomationAssistedCopyStatusSchema,
-  businessAutomationApplyBrandInputSchema,
-  businessAutomationApplyMotionInputSchema,
-  businessAutomationApplySceneInputSchema,
-  businessAutomationApplyStyleInputSchema,
-  businessAutomationBulkScheduleOutputSchema,
-  businessAutomationBulkScheduleInputSchema,
-  businessAutomationCampaignOperationListOutputSchema,
-  businessAutomationCampaignOperationOutputSchema,
-  businessAutomationCampaignPreviewOutputSchema,
-  businessAutomationDataOutputSchema,
-  businessAutomationGenerateAssistedCopyInputSchema,
-  businessAutomationGetAssistedCopyInputSchema,
-  businessAutomationGetBrandProfileInputSchema,
-  businessAutomationGetGeneratedMediaInputSchema,
-  businessAutomationGetThumbnailInputSchema,
-  businessAutomationGeneratedMediaOutputSchema,
-  businessAutomationListBrandProfilesInputSchema,
-  businessAutomationPreviewCampaignInputSchema,
-  businessAutomationProjectInputSchema,
-  businessAutomationRequestThumbnailInputSchema,
-  businessAutomationCreateReviewInputSchema,
-  businessAutomationReviewRoundCreatedOutputSchema,
-  businessAutomationReviewRoundListOutputSchema,
-  businessAutomationThumbnailOutputSchema,
-  businessAutomationSubmitGeneratedMediaInputSchema,
-  businessAutomationWorkspaceInputSchema,
+  applyMotionSelectedSchema,
+  applyProjectBrandProfileSelectedSchema,
+  applySceneTemplateSchema,
+  applyStyleSelectedSchema,
   BRAND_DEFAULT_CAPTION_PRESET_ID,
+  brandProfileListSchema,
+  bulkScheduleAutomationSchema,
   confirmSocialPublicationSchema,
   contentPackSchema,
+  createReviewRoundAutomationSchema,
+  generateAssistedCopySchema,
+  generatedMediaAutomationSubmitSchema,
+  previewCampaignEditorActionSchema,
+  requestThumbnailExtractionSchema,
 } from "@narriflow/validators";
 import * as z from "zod/v4";
 
@@ -131,21 +114,183 @@ export interface NarriflowMcpDependencies {
   ) => Promise<WorkspaceApiKeyPrincipal | null>;
 }
 
-const workspaceInput = businessAutomationWorkspaceInputSchema.shape;
-const dataOutputSchema = businessAutomationDataOutputSchema;
-const campaignOperationOutputSchema =
-  businessAutomationCampaignOperationOutputSchema;
-const campaignOperationListOutputSchema =
-  businessAutomationCampaignOperationListOutputSchema;
-const campaignPreviewOutputSchema = businessAutomationCampaignPreviewOutputSchema;
-const reviewRoundListOutputSchema = businessAutomationReviewRoundListOutputSchema;
-const assistedCopyStatusSchema = businessAutomationAssistedCopyStatusSchema;
-const reviewRoundCreatedOutputSchema =
-  businessAutomationReviewRoundCreatedOutputSchema;
-const assistedCopyOutputSchema = businessAutomationAssistedCopyOutputSchema;
-const thumbnailOutputSchema = businessAutomationThumbnailOutputSchema;
-const generatedMediaOutputSchema = businessAutomationGeneratedMediaOutputSchema;
-const bulkScheduleOutputSchema = businessAutomationBulkScheduleOutputSchema;
+const workspaceInput = {
+  workspaceId: z.string().uuid().optional().describe(
+    "Narriflow workspace ID. Omit to use the personal workspace with OAuth or the key-bound workspace with an API key.",
+  ),
+};
+
+const dataOutputSchema = z.object({ data: z.unknown() });
+
+const campaignOperationStatusSchema = z.object({
+  operationId: z.string().uuid().nullable(),
+  action: z.string().nullable(),
+  status: z.string(),
+  requestedCount: z.number().int().nonnegative(),
+  counts: z.object({
+    succeeded: z.number().int().nonnegative(),
+    unchanged: z.number().int().nonnegative(),
+    stale: z.number().int().nonnegative(),
+    ineligible: z.number().int().nonnegative(),
+    failed: z.number().int().nonnegative(),
+  }),
+  items: z.array(z.object({
+    clipId: z.string().uuid().nullable(),
+    expectedEditorRevision: z.number().int().nonnegative().nullable(),
+    status: z.string(),
+    errorCode: z.string().nullable(),
+    settledAt: z.string().datetime().nullable(),
+  })),
+  createdAt: z.string().datetime().nullable(),
+  completedAt: z.string().datetime().nullable(),
+  replayed: z.boolean(),
+});
+
+const campaignOperationOutputSchema = z.object({
+  data: campaignOperationStatusSchema,
+});
+const campaignOperationListOutputSchema = z.object({
+  data: z.array(campaignOperationStatusSchema),
+});
+const campaignPreviewOutputSchema = z.object({
+  data: z.object({
+    action: z.string().nullable(),
+    requestedCount: z.number().int().nonnegative(),
+    counts: z.object({
+      eligible: z.number().int().nonnegative(),
+      unchanged: z.number().int().nonnegative(),
+      stale: z.number().int().nonnegative(),
+      ineligible: z.number().int().nonnegative(),
+    }),
+    items: z.array(z.object({
+      clipId: z.string().uuid().nullable(),
+      expectedEditorRevision: z.number().int().nonnegative(),
+      currentEditorRevision: z.number().int().nonnegative().nullable(),
+      status: z.string(),
+      code: z.string().nullable(),
+    })),
+  }),
+});
+
+const reviewRoundStatusSchema = z.object({
+  roundId: z.string().uuid().nullable(),
+  revision: z.number().int().nonnegative(),
+  status: z.string(),
+  approvalRequired: z.boolean(),
+  allowDownloads: z.boolean(),
+  sentAt: z.string().datetime().nullable(),
+  expiresAt: z.string().datetime().nullable(),
+  revokedAt: z.string().datetime().nullable(),
+  supersededAt: z.string().datetime().nullable(),
+  decision: z.string().nullable(),
+  decidedAt: z.string().datetime().nullable(),
+  newerWorkAvailable: z.boolean(),
+  items: z.array(z.object({
+    itemId: z.string().uuid().nullable(),
+    clipId: z.string().uuid().nullable(),
+    exportId: z.string().uuid().nullable(),
+    editorRevision: z.number().int().nonnegative(),
+    required: z.boolean(),
+    currentDecision: z.string().nullable(),
+    newerWorkAvailable: z.boolean(),
+  })),
+  notificationStatus: z.array(z.object({
+    kind: z.string().nullable(),
+    status: z.string(),
+    attemptCount: z.number().int().nonnegative(),
+    failureCode: z.string().nullable(),
+    sentAt: z.string().datetime().nullable(),
+  })),
+  createdAt: z.string().datetime().nullable(),
+  updatedAt: z.string().datetime().nullable(),
+});
+
+const reviewRoundListOutputSchema = z.object({
+  data: z.object({
+    projectId: z.string().uuid().nullable(),
+    rounds: z.array(reviewRoundStatusSchema),
+  }),
+});
+
+const assistedCopyStatusSchema = z.object({
+  draftId: z.string().uuid().nullable(),
+  clipId: z.string().uuid().nullable(),
+  platform: z.string().nullable(),
+  status: z.string(),
+  revision: z.number().int().nonnegative(),
+  content: z.unknown().nullable(),
+  confirmed: z.boolean(),
+  moderationOutcome: z.string(),
+  modelAlias: z.string().nullable(),
+  promptVersion: z.string().nullable(),
+  guidanceSkipped: z.boolean(),
+  errorCode: z.string().nullable(),
+  replayed: z.boolean(),
+});
+
+const thumbnailStatusSchema = z.object({
+  jobId: z.string().uuid().nullable(),
+  status: z.string(),
+  attempts: z.number().int().nonnegative(),
+  platform: z.string().nullable(),
+  exportVariantId: z.string().uuid().nullable(),
+  sourceTimeMs: z.number().int().nonnegative(),
+  errorCode: z.string().nullable(),
+  asset: z.unknown().nullable(),
+  replayed: z.boolean(),
+});
+
+const generatedMediaStatusSchema = z.object({
+  jobId: z.string().uuid().nullable(),
+  projectId: z.string().uuid().nullable(),
+  clipId: z.string().uuid().nullable(),
+  kind: z.string().nullable(),
+  status: z.string(),
+  aspectRatio: z.string().nullable(),
+  style: z.string().nullable(),
+  durationSec: z.number().nonnegative().nullable(),
+  resultAssetId: z.string().uuid().nullable(),
+  insertionCount: z.number().int().nonnegative(),
+  lastInsertionKind: z.string().nullable(),
+  lastInsertedAt: z.string().datetime().nullable(),
+  errorCode: z.string().nullable(),
+  moderationOutcome: z.string(),
+  createdAt: z.string().datetime().nullable(),
+  updatedAt: z.string().datetime().nullable(),
+  replayed: z.boolean(),
+});
+
+const reviewRoundCreatedOutputSchema = z.object({
+  data: z.object({
+    roundId: z.string().uuid().nullable(),
+    revision: z.number().int().nonnegative(),
+    createdAt: z.string().datetime().nullable(),
+    replayed: z.boolean(),
+  }),
+});
+const assistedCopyOutputSchema = z.object({ data: assistedCopyStatusSchema });
+const thumbnailOutputSchema = z.object({ data: thumbnailStatusSchema });
+const generatedMediaOutputSchema = z.object({ data: generatedMediaStatusSchema });
+const bulkScheduleOutputSchema = z.object({
+  data: z.object({
+    operationId: z.string().uuid().nullable(),
+    status: z.string(),
+    counts: z.object({
+      scheduled: z.number().int().nonnegative(),
+      failed: z.number().int().nonnegative(),
+    }),
+    items: z.array(z.object({
+      itemKey: z.string().uuid().nullable(),
+      clipId: z.string().uuid().nullable(),
+      accountId: z.string().uuid().nullable(),
+      status: z.string(),
+      postId: z.string().uuid().nullable(),
+      scheduledFor: z.string().datetime().nullable(),
+      errorCode: z.string().nullable(),
+    })),
+    replayed: z.boolean(),
+  }),
+});
 
 const readOnlyAnnotations = {
   readOnlyHint: true,
@@ -674,7 +819,7 @@ export function buildNarriflowMcpServer(
       title: "List brand profiles",
       description:
         "List workspace brand profiles without returning signed asset or font URLs.",
-      inputSchema: businessAutomationListBrandProfilesInputSchema,
+      inputSchema: brandProfileListSchema.extend(workspaceInput),
       outputSchema: dataOutputSchema,
       annotations: readOnlyAnnotations,
     },
@@ -699,7 +844,10 @@ export function buildNarriflowMcpServer(
       title: "Get brand profile",
       description:
         "Get one profile owned by the selected Workspace tenant without signed asset or font URLs.",
-      inputSchema: businessAutomationGetBrandProfileInputSchema,
+      inputSchema: z.strictObject({
+        ...workspaceInput,
+        profileId: z.string().uuid(),
+      }),
       outputSchema: dataOutputSchema,
       annotations: readOnlyAnnotations,
     },
@@ -719,7 +867,10 @@ export function buildNarriflowMcpServer(
       title: "List campaign operations",
       description:
         "Read typed status for durable, selection-scoped campaign operations.",
-      inputSchema: businessAutomationProjectInputSchema,
+      inputSchema: z.strictObject({
+        ...workspaceInput,
+        projectId: z.string().uuid(),
+      }),
       outputSchema: campaignOperationListOutputSchema,
       annotations: readOnlyAnnotations,
     },
@@ -739,7 +890,11 @@ export function buildNarriflowMcpServer(
       title: "Apply campaign motion",
       description:
         "Apply a validated transition or manual B-roll motion to explicitly revision-fenced clips.",
-      inputSchema: businessAutomationApplyMotionInputSchema,
+      inputSchema: applyMotionSelectedSchema.extend({
+        ...workspaceInput,
+        projectId: z.string().uuid(),
+        idempotencyKey: z.string().uuid(),
+      }),
       outputSchema: campaignOperationOutputSchema,
       annotations: idempotentMutationAnnotations,
     },
@@ -765,7 +920,10 @@ export function buildNarriflowMcpServer(
       title: "Get campaign editor-action catalog",
       description:
         "Read the frozen project brand plus eligible styles and intro or outro scenes without media URLs.",
-      inputSchema: businessAutomationProjectInputSchema,
+      inputSchema: z.strictObject({
+        ...workspaceInput,
+        projectId: z.string().uuid(),
+      }),
       outputSchema: dataOutputSchema,
       annotations: readOnlyAnnotations,
     },
@@ -785,7 +943,11 @@ export function buildNarriflowMcpServer(
       title: "Preview campaign editor action",
       description:
         "Preview eligibility, unchanged clips, and revision conflicts for a high-level campaign action without returning editor patches.",
-      inputSchema: businessAutomationPreviewCampaignInputSchema,
+      inputSchema: z.strictObject({
+        ...workspaceInput,
+        projectId: z.string().uuid(),
+        request: previewCampaignEditorActionSchema,
+      }),
       outputSchema: campaignPreviewOutputSchema,
       annotations: readOnlyAnnotations,
     },
@@ -805,7 +967,11 @@ export function buildNarriflowMcpServer(
       title: "Apply campaign brand profile",
       description:
         "Apply the project-frozen brand profile to explicitly revision-fenced clips without accepting a profile override.",
-      inputSchema: businessAutomationApplyBrandInputSchema,
+      inputSchema: applyProjectBrandProfileSelectedSchema.extend({
+        ...workspaceInput,
+        projectId: z.string().uuid(),
+        idempotencyKey: z.string().uuid(),
+      }),
       outputSchema: campaignOperationOutputSchema,
       annotations: idempotentMutationAnnotations,
     },
@@ -835,7 +1001,11 @@ export function buildNarriflowMcpServer(
       title: "Apply campaign style",
       description:
         "Apply one owned Brand Template to explicitly revision-fenced clips.",
-      inputSchema: businessAutomationApplyStyleInputSchema,
+      inputSchema: applyStyleSelectedSchema.extend({
+        ...workspaceInput,
+        projectId: z.string().uuid(),
+        idempotencyKey: z.string().uuid(),
+      }),
       outputSchema: campaignOperationOutputSchema,
       annotations: idempotentMutationAnnotations,
     },
@@ -861,7 +1031,13 @@ export function buildNarriflowMcpServer(
       title: "Apply campaign scene template",
       description:
         "Insert one owned intro or outro Scene Template into explicitly revision-fenced clips.",
-      inputSchema: businessAutomationApplySceneInputSchema,
+      inputSchema: applySceneTemplateSchema.safeExtend({
+        ...workspaceInput,
+        projectId: z.string().uuid(),
+        profileId: z.string().uuid(),
+        templateId: z.string().uuid(),
+        idempotencyKey: z.string().uuid(),
+      }),
       outputSchema: campaignOperationOutputSchema,
       annotations: idempotentMutationAnnotations,
     },
@@ -900,7 +1076,10 @@ export function buildNarriflowMcpServer(
       title: "List review rounds",
       description:
         "Read review decisions and notification status without guest tokens, passcodes, recipients, or comments.",
-      inputSchema: businessAutomationProjectInputSchema,
+      inputSchema: z.strictObject({
+        ...workspaceInput,
+        projectId: z.string().uuid(),
+      }),
       outputSchema: reviewRoundListOutputSchema,
       annotations: readOnlyAnnotations,
     },
@@ -920,7 +1099,10 @@ export function buildNarriflowMcpServer(
       title: "Create review round",
       description:
         "Create or replay a revision-fenced review round. The result never returns its guest access token or passcode.",
-      inputSchema: businessAutomationCreateReviewInputSchema,
+      inputSchema: createReviewRoundAutomationSchema.extend({
+        ...workspaceInput,
+        projectId: z.string().uuid(),
+      }),
       outputSchema: reviewRoundCreatedOutputSchema,
       annotations: {
         ...idempotentMutationAnnotations,
@@ -944,7 +1126,10 @@ export function buildNarriflowMcpServer(
       title: "Generate assisted copy",
       description:
         "Generate or replay platform-specific campaign copy through the same guarded workflow used by the web app.",
-      inputSchema: businessAutomationGenerateAssistedCopyInputSchema,
+      inputSchema: generateAssistedCopySchema.extend({
+        ...workspaceInput,
+        projectId: z.string().uuid(),
+      }),
       outputSchema: assistedCopyOutputSchema,
       annotations: {
         ...idempotentMutationAnnotations,
@@ -969,7 +1154,11 @@ export function buildNarriflowMcpServer(
     {
       title: "Get assisted copy",
       description: "Read typed status for one workspace-owned assisted-copy draft.",
-      inputSchema: businessAutomationGetAssistedCopyInputSchema,
+      inputSchema: z.strictObject({
+        ...workspaceInput,
+        projectId: z.string().uuid(),
+        draftId: z.string().uuid(),
+      }),
       outputSchema: assistedCopyOutputSchema,
       annotations: readOnlyAnnotations,
     },
@@ -991,7 +1180,10 @@ export function buildNarriflowMcpServer(
       title: "Request thumbnail extraction",
       description:
         "Create or replay a durable thumbnail extraction job from an owned export variant.",
-      inputSchema: businessAutomationRequestThumbnailInputSchema,
+      inputSchema: requestThumbnailExtractionSchema.extend({
+        ...workspaceInput,
+        projectId: z.string().uuid(),
+      }),
       outputSchema: thumbnailOutputSchema,
       annotations: idempotentMutationAnnotations,
     },
@@ -1016,7 +1208,11 @@ export function buildNarriflowMcpServer(
       title: "Get thumbnail extraction",
       description:
         "Read typed status for one workspace-owned extraction job without storage keys or signed URLs.",
-      inputSchema: businessAutomationGetThumbnailInputSchema,
+      inputSchema: z.strictObject({
+        ...workspaceInput,
+        projectId: z.string().uuid(),
+        jobId: z.string().uuid(),
+      }),
       outputSchema: thumbnailOutputSchema,
       annotations: readOnlyAnnotations,
     },
@@ -1036,7 +1232,10 @@ export function buildNarriflowMcpServer(
       title: "Schedule campaign",
       description:
         "Validate approval, revision, account, copy, thumbnail, and export ownership before scheduling a campaign batch.",
-      inputSchema: businessAutomationBulkScheduleInputSchema,
+      inputSchema: bulkScheduleAutomationSchema.extend({
+        ...workspaceInput,
+        projectId: z.string().uuid(),
+      }),
       outputSchema: bulkScheduleOutputSchema,
       annotations: {
         ...idempotentMutationAnnotations,
@@ -1060,7 +1259,7 @@ export function buildNarriflowMcpServer(
       title: "Submit generated media",
       description:
         "Submit or replay a high-level image or enabled short-video generation job without provider or model controls.",
-      inputSchema: businessAutomationSubmitGeneratedMediaInputSchema,
+      inputSchema: generatedMediaAutomationSubmitSchema.safeExtend(workspaceInput),
       outputSchema: generatedMediaOutputSchema,
       annotations: {
         ...idempotentMutationAnnotations,
@@ -1084,7 +1283,10 @@ export function buildNarriflowMcpServer(
       title: "Get generated-media job",
       description:
         "Read typed status for a workspace-owned job without prompts, source text, provider controls, payloads, or signed URLs.",
-      inputSchema: businessAutomationGetGeneratedMediaInputSchema,
+      inputSchema: z.strictObject({
+        ...workspaceInput,
+        jobId: z.string().uuid(),
+      }),
       outputSchema: generatedMediaOutputSchema,
       annotations: readOnlyAnnotations,
     },

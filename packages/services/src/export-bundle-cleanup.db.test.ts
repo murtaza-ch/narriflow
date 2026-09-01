@@ -186,21 +186,16 @@ dbDescribe("Export Bundle cleanup PostgreSQL contract", () => {
       claimId: null,
     });
 
-    const crashedAttempt = await prisma.mediaCleanupObligation.findFirstOrThrow({
+    await prisma.mediaCleanupObligation.updateMany({
       where: {
         origin: "export_bundle_attempt",
         cleanupClass: "export_bundle_attempt",
         objectKey: plan.obligations[0].objectKey,
       },
+      data: { claimExpiresAt: new Date(Date.now() - 1_000) },
     });
-    const crashRecoveryAt = new Date(
-      Math.max(
-        crashedAttempt.claimExpiresAt?.getTime() ?? 0,
-        crashedAttempt.nextAttemptAt.getTime(),
-      ) + 1,
-    );
     const claimed = await prismaMediaCleanupStore.claimDue({
-      now: crashRecoveryAt,
+      now: new Date(),
       limit: 100,
       leaseMs: 60_000,
       createId: randomUUID,

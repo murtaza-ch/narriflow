@@ -1,11 +1,11 @@
-import {
-	activeManualBrollMotionWindow,
-  type ApplyMotionSelectedInput,
-  type ApplyProjectBrandProfileSelectedInput,
-  type ApplySceneTemplateInput,
-  type ApplyStyleSelectedInput,
-  type ClipAspectRatio,
-  type ClipSnapshot,
+import type {
+  ApplyMotionSelectedInput,
+  ApplyProjectBrandProfileSelectedInput,
+  ApplySceneTemplateInput,
+  ApplyStyleSelectedInput,
+  BrollPlacement,
+  ClipAspectRatio,
+  ClipSnapshot,
 } from "@narriflow/validators";
 
 export type CampaignPrimaryAction =
@@ -31,14 +31,8 @@ export type CampaignActionAvailability = Readonly<{
   scheduling: boolean;
 }>;
 
-type CampaignClip = Pick<
-	ClipSnapshot,
-	| "id"
-	| "editorRevision"
-	| "brollUrl"
-	| "brollPlacements"
-	| "editedDurationSec"
-> & {
+type CampaignClip = Pick<ClipSnapshot, "id" | "editorRevision" | "brollUrl"> & {
+  brollPlacements?: readonly BrollPlacement[];
   renderVariants: Array<
     Pick<
       ClipSnapshot["renderVariants"][number],
@@ -334,14 +328,7 @@ export function deriveCampaignCommandState(input: {
       clipId: clip.id,
       expectedEditorRevision: clip.editorRevision,
       hasManualBroll:
-				clip.brollPlacements.length > 0 ||
-				Boolean(
-					activeManualBrollMotionWindow({
-						brollUrl: clip.brollUrl,
-						assetBackedPlacementCount: clip.brollPlacements.length,
-						editedDurationSec: clip.editedDurationSec,
-					}),
-				),
+        Boolean(clip.brollUrl) || (clip.brollPlacements?.length ?? 0) > 0,
     })),
     primary,
     availableActions,

@@ -40,130 +40,6 @@ const colorScene = (id: string, anchorSec: number, durationSec = 2) => ({
 });
 
 describe("Clip Editor Document v2", () => {
-	test("keeps one URL-backed B-roll motion on its canonical target window", () => {
-		const motion = {
-			schemaVersion: 1 as const,
-			id: "2adf79cc-35b2-4de5-85dc-c9ed197763e4",
-			target: { kind: "broll_url" as const },
-			startSec: 5.6,
-			endSec: 9.1,
-			entrance: "fade" as const,
-			exit: "scale-out" as const,
-			enabled: true,
-		};
-		const document = editorDocumentSchema.parse({
-			...currentDocument(),
-			brollUrl: "https://media.example.test/manual.mp4",
-			mediaMotions: [motion],
-		});
-		expect(document.mediaMotions).toEqual([motion]);
-		expect(editorDocumentSchema.safeParse({
-			...currentDocument(),
-			mediaMotions: [motion],
-		}).error?.issues).toContainEqual(expect.objectContaining({
-			message: "manual B-roll URL target is not active",
-		}));
-		expect(editorDocumentSchema.safeParse({
-			...currentDocument(),
-			brollUrl: "https://media.example.test/manual.mp4",
-			mediaMotions: [{ ...motion, endSec: 9 }],
-		}).error?.issues).toContainEqual(expect.objectContaining({
-			message: "manual B-roll URL motion must use its canonical window",
-		}));
-
-		const cleared = applyEditorAction(document, {
-			type: "setBrollUrl",
-			brollUrl: null,
-		});
-		expect(cleared.mediaMotions).toEqual([]);
-		const superseded = applyEditorAction(document, {
-			type: "insertBrollPlacement",
-			placement: {
-				id: "d8ab95f8-fc16-4e60-814e-69762a59a99b",
-				asset: {
-					kind: "visual_asset",
-					id: "8ab9d330-688f-4574-932c-27ac661245c1",
-					fingerprint: "a".repeat(64),
-				},
-				provenance: "generated",
-				mediaKind: "image",
-				startSec: 1,
-				endSec: 4,
-				sourceStartSec: null,
-				sourceEndSec: null,
-			},
-		});
-		expect(superseded.brollPlacements).toHaveLength(1);
-		expect(superseded.mediaMotions).toEqual([]);
-	});
-
-	test("requires B-roll motions to target one existing placement and stay inside it", () => {
-		const placement = {
-			id: "2adf79cc-35b2-4de5-85dc-c9ed197763e4",
-			asset: {
-				kind: "visual_asset" as const,
-				id: "8ab9d330-688f-4574-932c-27ac661245c1",
-				fingerprint: "a".repeat(64),
-			},
-			provenance: "generated" as const,
-			mediaKind: "image" as const,
-			startSec: 3,
-			endSec: 6,
-			sourceStartSec: null,
-			sourceEndSec: null,
-		};
-		const motion = {
-			schemaVersion: 1 as const,
-			id: "d8ab95f8-fc16-4e60-814e-69762a59a99b",
-			target: { kind: "broll" as const, placementId: placement.id },
-			startSec: placement.startSec,
-			endSec: placement.endSec,
-			entrance: "fade" as const,
-			exit: "scale-out" as const,
-			enabled: true,
-		};
-
-		expect(editorDocumentSchema.safeParse({
-			...currentDocument(),
-			brollPlacements: [placement],
-			mediaMotions: [motion],
-		}).success).toBe(true);
-		expect(editorDocumentSchema.safeParse({
-			...currentDocument(),
-			brollPlacements: [placement],
-			mediaMotions: [{ ...motion, target: { kind: "broll" } }],
-		}).success).toBe(false);
-		expect(editorDocumentSchema.safeParse({
-			...currentDocument(),
-			brollPlacements: [placement],
-			mediaMotions: [{
-				...motion,
-				target: { kind: "broll", placementId: crypto.randomUUID() },
-			}],
-		}).error?.issues).toContainEqual(expect.objectContaining({
-			message: "B-roll placement target does not exist",
-		}));
-		expect(editorDocumentSchema.safeParse({
-			...currentDocument(),
-			brollPlacements: [placement],
-			mediaMotions: [{ ...motion, startSec: 2.9 }],
-		}).error?.issues).toContainEqual(expect.objectContaining({
-			message: "B-roll media motion must stay inside its placement",
-		}));
-
-		const document = editorDocumentSchema.parse({
-			...currentDocument(),
-			brollPlacements: [placement],
-			mediaMotions: [motion],
-		});
-		const deleted = applyEditorAction(document, {
-			type: "deleteBrollPlacement",
-			id: placement.id,
-		});
-		expect(deleted.brollPlacements).toEqual([]);
-		expect(deleted.mediaMotions).toEqual([]);
-	});
-
 	test("persists bounded asset-backed B-roll without changing clip duration", () => {
 		const base = editorDocumentSchema.parse(currentDocument());
 		const placement = {
@@ -314,11 +190,10 @@ describe("Clip Editor Document v2", () => {
 	});
 
 	test("rebases asset-backed B-roll with source footage after ripple deletion", () => {
-		const placementId = "2adf79cc-35b2-4de5-85dc-c9ed197763e4";
 		const base = editorDocumentSchema.parse({
 			...currentDocument(),
 			brollPlacements: [{
-				id: placementId,
+				id: "2adf79cc-35b2-4de5-85dc-c9ed197763e4",
 				asset: {
 					kind: "visual_asset",
 					id: "8ab9d330-688f-4574-932c-27ac661245c1",
@@ -331,16 +206,6 @@ describe("Clip Editor Document v2", () => {
 				sourceStartSec: null,
 				sourceEndSec: null,
 			}],
-			mediaMotions: [{
-				schemaVersion: 1,
-				id: "d8ab95f8-fc16-4e60-814e-69762a59a99b",
-				target: { kind: "broll", placementId },
-				startSec: 8,
-				endSec: 12,
-				entrance: "fade",
-				exit: "scale-out",
-				enabled: true,
-			}],
 		});
 
 		const deleted = applyEditorAction(base, {
@@ -349,7 +214,6 @@ describe("Clip Editor Document v2", () => {
 		});
 
 		expect(deleted.brollPlacements[0]).toMatchObject({ startSec: 6, endSec: 10 });
-		expect(deleted.mediaMotions[0]).toMatchObject({ startSec: 6, endSec: 10 });
 		expect(editorDocumentSchema.safeParse(deleted).success).toBe(true);
 	});
 
@@ -394,75 +258,39 @@ describe("Clip Editor Document v2", () => {
   });
 
   test("blocks unbounded or overlapping animated-media schedules before save", () => {
-		const placementId = "2adf79cc-35b2-4de5-85dc-c9ed197763e4";
-		const placement = {
-			id: placementId,
-			asset: {
-				kind: "visual_asset" as const,
-				id: "8ab9d330-688f-4574-932c-27ac661245c1",
-				fingerprint: "a".repeat(64),
-			},
-			provenance: "generated" as const,
-			mediaKind: "image" as const,
-			startSec: 0,
-			endSec: 20,
-			sourceStartSec: null,
-			sourceEndSec: null,
-		};
-    const mediaMotion = (
-      index: number,
-      entrance: "fade" | "none" = "fade",
-      targetPlacementId = placementId,
-    ) => ({
+    const mediaMotion = (index: number, entrance: "fade" | "none" = "fade") => ({
       schemaVersion: 1 as const,
       id: crypto.randomUUID(),
-		target: { kind: "broll" as const, placementId: targetPlacementId },
+      target: { kind: "broll" as const },
       startSec: index * 0.5,
       endSec: index * 0.5 + 0.5,
       entrance,
       exit: "none" as const,
       enabled: true,
     });
-    const distinctPlacements = (count: number) => Array.from(
-      { length: count },
-      (_, index) => ({
-        ...placement,
-        id: crypto.randomUUID(),
-        startSec: index * 0.5,
-        endSec: index * 0.5 + 0.5,
-      }),
-    );
-    const thirtyTwoPlacements = distinctPlacements(32);
     expect(editorDocumentSchema.safeParse({
       ...currentDocument(),
-		brollPlacements: thirtyTwoPlacements,
-      mediaMotions: thirtyTwoPlacements.map((candidate, index) =>
-        mediaMotion(index, "fade", candidate.id)),
+      mediaMotions: Array.from({ length: 32 }, (_, index) => mediaMotion(index)),
     }).success).toBe(true);
-    const thirtyThreePlacements = distinctPlacements(33);
     expect(editorDocumentSchema.safeParse({
       ...currentDocument(),
-		brollPlacements: thirtyThreePlacements,
-      mediaMotions: thirtyThreePlacements.map((candidate, index) =>
-        mediaMotion(index, "fade", candidate.id)),
+      mediaMotions: Array.from({ length: 33 }, (_, index) => mediaMotion(index)),
     }).error?.issues).toContainEqual(expect.objectContaining({
       message: "animated media cannot exceed 32 placements",
     }));
     expect(editorDocumentSchema.safeParse({
       ...currentDocument(),
-		brollPlacements: [placement],
       mediaMotions: [
         mediaMotion(0),
         { ...mediaMotion(1), startSec: 0.25, endSec: 0.75 },
       ],
     }).error?.issues).toContainEqual(expect.objectContaining({
-      message: "only one enabled media motion is allowed per B-roll placement",
+      message: "enabled media motions cannot overlap on one target",
     }));
     expect(editorDocumentSchema.safeParse({
       ...currentDocument(),
-		brollPlacements: thirtyThreePlacements,
-      mediaMotions: thirtyThreePlacements.map((candidate, index) =>
-        mediaMotion(index, "none", candidate.id)),
+      mediaMotions: Array.from({ length: 33 }, (_, index) =>
+        mediaMotion(index, "none")),
     }).success).toBe(true);
   });
   test("accepts only the current strict document version", () => {
@@ -501,7 +329,7 @@ describe("Clip Editor Document v2", () => {
     const invalidMotion = {
       schemaVersion: 1 as const,
       id: crypto.randomUUID(),
-		target: { kind: "broll" as const, placementId: crypto.randomUUID() },
+      target: { kind: "broll" as const },
       startSec: 0,
       endSec: 999,
       entrance: "ken-burns-in" as const,

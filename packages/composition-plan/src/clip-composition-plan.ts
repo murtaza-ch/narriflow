@@ -11,7 +11,6 @@ import {
   emojiForWord,
   extractSpeechWordIntervals,
   formatCaptionWord,
-	MANUAL_BROLL_COMPOSITION_ID,
   maskCaptionWord,
   resolveCensorAudioIntervals,
   resolveMusicFadeWindows,
@@ -411,46 +410,6 @@ export interface CompositionLogoVisualLayer {
   readonly zIndex: 50;
 }
 
-export interface CompositionTransitionState {
-  /** Opacity of the planner-owned solid transition color. For a wipe, the
-   * mask below bounds that color; for a fade it covers the full canvas. */
-  readonly overlayOpacity: number;
-  /** Size of the solid-color mask along its resolved axis. The mask's other
-   * dimension is the complete target canvas. */
-  readonly overlayMaskSizePx: number;
-  readonly translateXPx: number;
-  readonly translateYPx: number;
-  readonly scale: number;
-}
-
-export interface CompositionTransitionPhase {
-  readonly range: CompositionActiveRange;
-  readonly from: CompositionTransitionState;
-  readonly to: CompositionTransitionState;
-}
-
-export interface CompositionResolvedTransition {
-  readonly version: 1;
-  readonly family: "fade" | "cross-dissolve" | "wipe" | "slide" | "zoom";
-  readonly direction: "left" | "right" | "up" | "down" | "in" | "out" | null;
-  readonly canvas: { readonly width: number; readonly height: number };
-  /** A resolved target-space solid-color mask. Null means the color covers
-   * the complete canvas whenever overlayOpacity is non-zero. */
-  readonly mask: {
-    readonly axis: "horizontal" | "vertical";
-    readonly overlayEdge: "start" | "end";
-    readonly pixelDivisor: 2;
-  } | null;
-  readonly entrance: CompositionTransitionPhase;
-  readonly resting: CompositionTransitionState;
-  readonly exit: CompositionTransitionPhase;
-}
-
-export interface CompositionEvaluatedTransition extends CompositionTransitionState {
-  readonly overlayMask: CompositionRect | null;
-  readonly animated: boolean;
-}
-
 export interface CompositionTransitionVisualLayer {
   readonly id: string;
   readonly kind: "transition";
@@ -461,7 +420,15 @@ export interface CompositionTransitionVisualLayer {
     "none"
   >;
   readonly color: "black" | "white";
-  readonly effect: CompositionResolvedTransition;
+  readonly effect: {
+    readonly family: "fade" | "cross-dissolve" | "wipe" | "slide" | "zoom";
+    readonly direction: "left" | "right" | "up" | "down" | "in" | "out" | null;
+    readonly canvas: { readonly width: number; readonly height: number };
+  };
+  readonly windows: {
+    readonly fadeIn: CompositionActiveRange;
+    readonly fadeOut: CompositionActiveRange;
+  };
   readonly rotationDeg: 0;
   readonly opacity: 1;
   readonly zIndex: 60;
@@ -1455,10 +1422,7 @@ function addBrollLayers(
         ? [...motions]
             .filter((motion) =>
               motion.enabled &&
-							((motion.target.kind === "broll" &&
-								motion.target.placementId === active.id) ||
-								(motion.target.kind === "broll_url" &&
-									active.id === MANUAL_BROLL_COMPOSITION_ID)) &&
+              motion.target.kind === "broll" &&
               motion.startSec < active.endSec &&
               motion.endSec > active.startSec)
             .sort((left, right) =>
@@ -1637,21 +1601,14 @@ function retimeVisualLayersForInsertedScenes(
       return [{ ...layer, activeRange: { startSec: 0, endSec: totalDurationSec } }];
     }
     if (layer.kind === "transition") {
-      const entranceDuration = layer.effect.entrance.range.endSec - layer.effect.entrance.range.startSec;
-      const exitDuration = layer.effect.exit.range.endSec - layer.effect.exit.range.startSec;
+      const fadeInDuration = layer.windows.fadeIn.endSec - layer.windows.fadeIn.startSec;
+      const fadeOutDuration = layer.windows.fadeOut.endSec - layer.windows.fadeOut.startSec;
       return [{
         ...layer,
         activeRange: { startSec: 0, endSec: totalDurationSec },
-        effect: {
-          ...layer.effect,
-          entrance: {
-            ...layer.effect.entrance,
-            range: { startSec: 0, endSec: Math.min(totalDurationSec, entranceDuration) },
-          },
-          exit: {
-            ...layer.effect.exit,
-            range: { startSec: Math.max(0, totalDurationSec - exitDuration), endSec: totalDurationSec },
-          },
+        windows: {
+          fadeIn: { startSec: 0, endSec: Math.min(totalDurationSec, fadeInDuration) },
+          fadeOut: { startSec: Math.max(0, totalDurationSec - fadeOutDuration), endSec: totalDurationSec },
         },
       }];
     }
@@ -1829,20 +1786,10 @@ function captionLayersForTarget(input: {
   return layers;
 }
 
-const transitionRestingState = (): CompositionTransitionState => ({
-  overlayOpacity: 0,
-  overlayMaskSizePx: 0,
-  translateXPx: 0,
-  translateYPx: 0,
-  scale: 1,
-});
-
 function transitionEffect(
   transition: Exclude<EditorDocument["studioEdits"]["transition"]["type"], "none">,
   target: CompositionTarget,
-  durationSec: number,
-  transitionDurationSec: number,
-): CompositionResolvedTransition {
+): CompositionTransitionVisualLayer["effect"] {
   const direction = transition.match(/-(left|right|up|down|in|out)$/)?.[1] as
     | "left"
     | "right"
@@ -1860,143 +1807,10 @@ function transitionEffect(
         : transition.startsWith("zoom-")
           ? "zoom"
           : "fade";
-  const range = {
-    entrance: { startSec: 0, endSec: transitionDurationSec },
-    exit: {
-      startSec: Math.max(0, durationSec - transitionDurationSec),
-      endSec: durationSec,
-    },
-  };
-  let resting = transitionRestingState();
-  let entranceFrom = { ...resting };
-  let exitTo = { ...resting };
-  let mask: CompositionResolvedTransition["mask"] = null;
-
-  if (family === "fade" || family === "cross-dissolve") {
-    entranceFrom = { ...entranceFrom, overlayOpacity: 1 };
-    exitTo = { ...exitTo, overlayOpacity: 1 };
-  } else if (family === "wipe") {
-    const horizontal = direction === "left" || direction === "right";
-    const axisSize = horizontal ? target.width : target.height;
-    resting = { ...resting, overlayOpacity: 1 };
-    entranceFrom = {
-      ...resting,
-      overlayMaskSizePx: Math.max(0, axisSize - 2),
-    };
-    exitTo = { ...entranceFrom };
-    mask = {
-      axis: horizontal ? "horizontal" : "vertical",
-      overlayEdge:
-        direction === "left" || direction === "up" ? "start" : "end",
-      pixelDivisor: 2,
-    };
-  } else if (family === "slide") {
-    const x = direction === "left"
-      ? target.width
-      : direction === "right"
-        ? -target.width
-        : 0;
-    const y = direction === "up"
-      ? target.height
-      : direction === "down"
-        ? -target.height
-        : 0;
-    entranceFrom = { ...resting, translateXPx: x, translateYPx: y };
-    exitTo = {
-      ...resting,
-      translateXPx: x === 0 ? 0 : -x,
-      translateYPx: y === 0 ? 0 : -y,
-    };
-  } else {
-    const zoomsIn = direction === "in";
-    entranceFrom = { ...resting, scale: zoomsIn ? 0.88 : 1.12 };
-    exitTo = { ...resting, scale: zoomsIn ? 1.12 : 0.88 };
-  }
-
   return {
-    version: 1,
     family,
     direction: direction ?? null,
     canvas: { width: target.width, height: target.height },
-    mask,
-    entrance: { range: range.entrance, from: entranceFrom, to: resting },
-    resting,
-    exit: { range: range.exit, from: resting, to: exitTo },
-  };
-}
-
-function interpolateTransitionState(
-  from: CompositionTransitionState,
-  to: CompositionTransitionState,
-  progress: number,
-): CompositionTransitionState {
-  const mix = (left: number, right: number) =>
-    roundedMotionNumber(left + (right - left) * progress);
-  return {
-    overlayOpacity: mix(from.overlayOpacity, to.overlayOpacity),
-    overlayMaskSizePx: mix(from.overlayMaskSizePx, to.overlayMaskSizePx),
-    translateXPx: mix(from.translateXPx, to.translateXPx),
-    translateYPx: mix(from.translateYPx, to.translateYPx),
-    scale: mix(from.scale, to.scale),
-  };
-}
-
-/** Evaluates the exact target-space transition resolved by the plan. Browser
- * preview uses this function directly; renderer adapters translate the same
- * phase endpoints into their native expression syntax. */
-export function evaluateCompositionTransition(
-  effect: CompositionResolvedTransition,
-  timeSec: number,
-  options: { readonly reducedMotion?: boolean } = {},
-): CompositionEvaluatedTransition {
-  const phase = options.reducedMotion
-    ? null
-    : [effect.entrance, effect.exit].find(
-        (candidate) =>
-          timeSec >= candidate.range.startSec && timeSec <= candidate.range.endSec,
-      ) ?? null;
-  const duration = phase ? phase.range.endSec - phase.range.startSec : 0;
-  const progress = phase
-    ? duration <= 0
-      ? 1
-      : clampUnit((timeSec - phase.range.startSec) / duration)
-    : 0;
-  const evaluated = phase
-    ? interpolateTransitionState(phase.from, phase.to, progress)
-    : { ...effect.resting };
-  if (!effect.mask) {
-    return { ...evaluated, overlayMask: null, animated: phase !== null };
-  }
-
-  const axisSize = effect.mask.axis === "horizontal"
-    ? effect.canvas.width
-    : effect.canvas.height;
-  const visibleSize = Math.max(
-    effect.mask.pixelDivisor,
-    Math.floor(
-      (axisSize - Math.max(0, Math.min(axisSize, evaluated.overlayMaskSizePx))) /
-        effect.mask.pixelDivisor,
-    ) * effect.mask.pixelDivisor,
-  );
-  const overlaySize = axisSize - visibleSize;
-  const overlayMask = effect.mask.axis === "horizontal"
-    ? {
-        x: effect.mask.overlayEdge === "start" ? 0 : effect.canvas.width - overlaySize,
-        y: 0,
-        width: overlaySize,
-        height: effect.canvas.height,
-      }
-    : {
-        x: 0,
-        y: effect.mask.overlayEdge === "start" ? 0 : effect.canvas.height - overlaySize,
-        width: effect.canvas.width,
-        height: overlaySize,
-      };
-  return {
-    ...evaluated,
-    overlayMaskSizePx: overlaySize,
-    overlayMask,
-    animated: phase !== null,
   };
 }
 
@@ -2096,12 +1910,14 @@ function visualLayersForTarget(input: {
         destination,
         transition: transition.type,
         color: transition.type === "dip-white" ? "white" : "black",
-        effect: transitionEffect(
-          transition.type,
-          target,
-          duration,
-          transitionDuration,
-        ),
+        effect: transitionEffect(transition.type, target),
+        windows: {
+          fadeIn: { startSec: 0, endSec: transitionDuration },
+          fadeOut: {
+            startSec: Math.max(0, duration - transitionDuration),
+            endSec: duration,
+          },
+        },
         rotationDeg: 0,
         opacity: 1,
         zIndex: 60,

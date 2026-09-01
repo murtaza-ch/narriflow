@@ -403,7 +403,7 @@ export class GeneratedMediaStudioService {
 		return generatedMediaBrollPlaybackResultSchema.parse(result);
 	}
 
-	private async admitResolved(
+	private async submitResolved(
 		scope: BrandActorScope,
 		request: GeneratedMediaAutomationSubmit,
 		sourceRevision?: number | null,
@@ -423,16 +423,17 @@ export class GeneratedMediaStudioService {
 			derivedContext,
 			seed: null,
 		});
-		return this.dependencies.submit(scope, resolvedRequest);
+		const job = await this.dependencies.submit(scope, resolvedRequest);
+		return publicJob(job, null);
 	}
 
 	async submit(scope: BrandActorScope, input: GeneratedMediaStudioSubmitInput) {
 		const { sourceRevision, ...request } = generatedMediaStudioSubmitSchema.parse(input);
-		return publicJob(await this.admitResolved(scope, request, sourceRevision), null);
+		return this.submitResolved(scope, request, sourceRevision);
 	}
 
 	async submitAutomation(scope: BrandActorScope, input: unknown) {
-		return this.admitResolved(
+		return this.submitResolved(
 			scope,
 			generatedMediaAutomationSubmitSchema.parse(input),
 		);

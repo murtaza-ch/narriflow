@@ -33,7 +33,7 @@
 ## Shared lifecycle evidence — 31 August 2026
 
 - The provider-neutral lifecycle tests cover bounded video input, asynchronous waiting and polling, cancellation, safe poll retry, late completion, unknown outcomes, duplicate settlement, usage retention, and nonblocking `reconciliation_required` jobs without starting ingest or moment detection.
-- The guarded ingestion contract records probed video duration, dimensions, codecs, and optional-audio metadata, but only with deterministic fake-provider fixtures. The shared 162-test/443-assertion generated-media and OpenAI gate and 25-test/340-assertion disposable-schema Vizard gate are green.
+- The guarded ingestion contract records probed video duration, dimensions, codecs, and optional-audio metadata, but only with deterministic fake-provider fixtures. The shared 102-test/314-assertion generated-media gate and 24-test/315-assertion disposable-schema Vizard gate are green.
 - No generated-video provider or model has been approved or registered. There are no provider-specific, real-media transcode/export/delete, resource-budget, browser, live-provider, or deployed cohort results; the entry gate and every corresponding checkbox remain closed.
 
 ## Rollout

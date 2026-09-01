@@ -11,30 +11,6 @@ import { applyCampaignMotionChange } from "./campaign-operation.service";
 
 const existingMotionId = "20000000-0000-4000-8000-000000000001";
 const replacementMotionId = "20000000-0000-4000-8000-000000000002";
-const placementId = "20000000-0000-4000-8000-000000000003";
-
-function brollPlacement(
-	id = placementId,
-	startSec = 1,
-	endSec = 4,
-) {
-	return {
-		id,
-		asset: {
-			kind: "visual_asset" as const,
-			id: id === placementId
-				? "20000000-0000-4000-8000-000000000004"
-				: "20000000-0000-4000-8000-000000000007",
-			fingerprint: "a".repeat(64),
-		},
-		provenance: "generated" as const,
-		mediaKind: "image" as const,
-		startSec,
-		endSec,
-		sourceStartSec: null,
-		sourceEndSec: null,
-	};
-}
 
 function document(overrides: Partial<EditorDocument> = {}): EditorDocument {
   return editorDocumentSchema.parse({
@@ -91,66 +67,47 @@ describe("applyCampaignMotionChange", () => {
     expect(planned).toEqual({ status: "unchanged", document: current });
   });
 
-	test("applies motion to the current URL-backed manual B-roll target", () => {
+  test("marks manual B-roll motion ineligible when the document has no target", () => {
     const planned = applyCampaignMotionChange(
-		document({
-			clipStartSec: 0,
-			clipEndSec: 20,
-			brollUrl: "https://media.example.test/manual.mp4",
-			brollPlacements: [],
-		}),
+      document({ brollUrl: null }),
       {
         scope: "manual_broll",
         motion: { entrance: "fade", exit: "scale-out" },
       },
-		() => replacementMotionId,
     );
-		expect(planned.status).toBe("changed");
-		if (planned.status !== "changed") throw new Error("expected a changed plan");
-		expect(planned.document.mediaMotions).toEqual([{
-			schemaVersion: 1,
-			id: replacementMotionId,
-			target: { kind: "broll_url" },
-			startSec: 5.6,
-			endSec: 9.1,
-			entrance: "fade",
-			exit: "scale-out",
-			enabled: true,
-		}]);
-	});
-
-	test("marks manual B-roll motion ineligible when neither target contract exists", () => {
-		const planned = applyCampaignMotionChange(
-			document({ brollUrl: null, brollPlacements: [] }),
-			{
-				scope: "manual_broll",
-				motion: { entrance: "fade", exit: "scale-out" },
-			},
-		);
     expect(planned).toEqual({
       status: "ineligible",
       code: "campaign_motion_target_missing",
     });
   });
 
-  test("applies one exact-range motion to every asset-backed B-roll placement", () => {
-    const secondMotionId = "20000000-0000-4000-8000-000000000005";
-    const secondPlacementId = "20000000-0000-4000-8000-000000000006";
+  test("accepts an asset-backed bounded placement as a manual B-roll target", () => {
     const current = document({
       brollUrl: null,
       brollPlacements: [
-		brollPlacement(),
-		brollPlacement(secondPlacementId, 6, 9),
+        {
+          id: "20000000-0000-4000-8000-000000000003",
+          asset: {
+            kind: "visual_asset",
+            id: "20000000-0000-4000-8000-000000000004",
+            fingerprint: "a".repeat(64),
+          },
+          provenance: "generated",
+          mediaKind: "image",
+          startSec: 1,
+          endSec: 4,
+          sourceStartSec: null,
+          sourceEndSec: null,
+        },
       ],
     });
-	let createCount = 0;
     const planned = applyCampaignMotionChange(
       current,
       {
         scope: "manual_broll",
         motion: { entrance: "fade", exit: "scale-out" },
       },
-		() => [replacementMotionId, secondMotionId][createCount++]!,
+      () => replacementMotionId,
     );
 
     expect(planned.status).toBe("changed");
@@ -159,34 +116,35 @@ describe("applyCampaignMotionChange", () => {
       {
         schemaVersion: 1,
         id: replacementMotionId,
-		target: { kind: "broll", placementId },
-		startSec: 1,
-		endSec: 4,
+        target: { kind: "broll" },
+        startSec: 0,
+        endSec: 10,
         entrance: "fade",
         exit: "scale-out",
         enabled: true,
       },
-	  {
-		schemaVersion: 1,
-		id: secondMotionId,
-		target: { kind: "broll", placementId: secondPlacementId },
-		startSec: 6,
-		endSec: 9,
-		entrance: "fade",
-		exit: "scale-out",
-		enabled: true,
-	  },
     ]);
   });
 
-  test("replaces a placement motion in place without changing its target or range", () => {
+  test("replaces the one manual B-roll schedule over the exact edited duration", () => {
     const current = document({
-		brollPlacements: [brollPlacement()],
+      deletedRanges: [{ startSec: 12, endSec: 14 }],
+      sceneBlocks: [
+        {
+          schemaVersion: 1,
+          id: "30000000-0000-4000-8000-000000000001",
+          anchorSec: 3,
+          durationSec: 2,
+          content: { kind: "color", color: "#111827" },
+          motion: { entrance: "none", exit: "none" },
+          templateSnapshot: null,
+        },
+      ],
       mediaMotions: [
         {
           schemaVersion: 1,
           id: existingMotionId,
-			target: { kind: "broll", placementId },
+          target: { kind: "broll" },
           startSec: 1,
           endSec: 4,
           entrance: "fade",
@@ -210,9 +168,10 @@ describe("applyCampaignMotionChange", () => {
       {
         schemaVersion: 1,
         id: existingMotionId,
-		target: { kind: "broll", placementId },
-		startSec: 1,
-		endSec: 4,
+        target: { kind: "broll" },
+        startSec: 0,
+        // 10s source - 2s deletion + 2s inserted Scene Block.
+        endSec: 10,
         entrance: "ken-burns-in",
         exit: "pan-left",
         enabled: true,
@@ -222,14 +181,13 @@ describe("applyCampaignMotionChange", () => {
 
   test("treats none / none as an idempotent clear", () => {
     const current = document({
-		brollPlacements: [brollPlacement()],
       mediaMotions: [
         {
           schemaVersion: 1,
           id: existingMotionId,
-			target: { kind: "broll", placementId },
-			startSec: 1,
-			endSec: 4,
+          target: { kind: "broll" },
+          startSec: 0,
+          endSec: 10,
           entrance: "fade",
           exit: "none",
           enabled: true,

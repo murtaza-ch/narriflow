@@ -947,12 +947,9 @@ export function buildCopySource(bucket: string, key: string): string {
 export async function copyObject(params: {
   sourceKey: string;
   destinationKey: string;
-  signal?: AbortSignal;
 }) {
-  params.signal?.throwIfAborted();
   await projectStorageDeadline(params.sourceKey);
   await projectStorageDeadline(params.destinationKey);
-  params.signal?.throwIfAborted();
   const client = getClient();
   const { bucket } = getR2Config();
 
@@ -962,7 +959,6 @@ export async function copyObject(params: {
       CopySource: buildCopySource(bucket, params.sourceKey),
       Key: params.destinationKey,
     }),
-    { abortSignal: params.signal },
   );
 
   return { key: params.destinationKey };

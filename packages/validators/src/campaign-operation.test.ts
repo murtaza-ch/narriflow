@@ -90,12 +90,6 @@ describe("applyMotionSelectedSchema", () => {
   test("registers apply_motion in the durable action vocabulary", () => {
     expect(campaignOperationActionSchema.parse("apply_motion")).toBe("apply_motion");
   });
-
-  test("registers review creation in the durable action vocabulary", () => {
-    expect(campaignOperationActionSchema.parse("create_review")).toBe(
-      "create_review",
-    );
-  });
 });
 
 describe("selection-scoped campaign styling schemas", () => {

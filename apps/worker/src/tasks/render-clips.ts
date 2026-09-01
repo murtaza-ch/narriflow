@@ -70,7 +70,6 @@ import {
   clipRenderResolutionSchema,
   formatCaptionWord,
   getEffectiveClipTiming,
-	MANUAL_BROLL_COMPOSITION_ID,
   normalizeTranscriptSliceForClip,
   parseClipAutoLayoutAnalysis,
   parseClipSplitLayoutAnalysis,
@@ -6992,17 +6991,12 @@ async function executeClipRenderAttempt(
             soundEffects?: boolean;
           } = {},
         ) => {
-					const manualBrollRef = userBrollUrl
-						? compositionAssetRef("broll", userBrollUrl)
-						: null;
 					const requestedBroll = documentBrollAvailability ??
 						(brollPlan
 							? {
 									state: "available" as const,
 									placements: brollPlan.cutaways.map((cutaway, index) => ({
-										id: manualBrollRef && cutaway.ref === manualBrollRef
-											? MANUAL_BROLL_COMPOSITION_ID
-											: `cutaway-${index}`,
+										id: `cutaway-${index}`,
 										ref: cutaway.ref,
 										mediaKind: "video" as const,
 										startSec: cutaway.window.startSec,

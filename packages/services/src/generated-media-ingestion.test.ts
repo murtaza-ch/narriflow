@@ -6,6 +6,7 @@ import {
 	createGeneratedMediaProviderResultStore,
 	normalizeGeneratedImageAspectRatio,
 	probeGeneratedMedia,
+	reconcileGeneratedMediaOrphans,
 	type GeneratedMediaObjectStorage,
 } from "./generated-media-ingestion";
 
@@ -33,10 +34,6 @@ function portraitPngBytes() {
 function createStorage(): GeneratedMediaObjectStorage & {
 	puts: string[];
 	deletes: string[];
-	delete(key: string): Promise<void>;
-	list(prefix: string): Promise<
-		Array<{ key: string; sizeBytes: number; lastModified: Date }>
-	>;
 } {
 	const objects = new Map<
 		string,
@@ -87,42 +84,23 @@ function createStorage(): GeneratedMediaObjectStorage & {
 const baseInput = {
 	jobId: "00000000-0000-4000-8000-000000000001",
 	attemptId: "00000000-0000-4000-8000-000000000002",
-	projectId: "00000000-0000-4000-8000-000000000003",
-	clipId: "00000000-0000-4000-8000-000000000004",
 	storageKey:
-		"generated-media/assets/workspace/00000000-0000-4000-8000-000000000003/job/attempt.png",
+		"workspaces/00000000-0000-4000-8000-000000000003/visual-assets/generated/job/attempt.png",
 	kind: "image" as const,
 	aspectRatio: "9:16" as const,
 	requestedDurationSec: null,
 	maxOutputBytes: 1024,
 };
 
-const cleanupStore = {
-	async createMany(input: { data: unknown[] }) {
-		return { count: input.data.length };
-	},
-};
-
 describe("generated media ingestion", () => {
 	test("adopts a deterministic provider result when storage commits before losing the response", async () => {
 		const storage = createStorage();
-		const events: string[] = [];
 		const committedPut = storage.put.bind(storage);
 		storage.put = async (input) => {
-			events.push(`put:${input.key}`);
 			await committedPut(input);
 			throw new Error("storage response lost after commit");
 		};
-		const results = createGeneratedMediaProviderResultStore(
-			storage,
-			{
-				async createMany(input) {
-					events.push(`admit:${input.data[0]?.objectKey}`);
-					return { count: input.data.length };
-				},
-			},
-			() => new Date("2026-08-31T00:00:00.000Z"),
-		);
+		const results = createGeneratedMediaProviderResultStore(storage);
 
 		await expect(
 			results.put({
@@ -134,10 +112,6 @@ describe("generated media ingestion", () => {
 			"generated-media/provider-results/00000000-0000-4000-8000-000000000017.png",
 		);
 		expect(storage.puts).toHaveLength(1);
-		expect(events).toEqual([
-			"admit:generated-media/provider-results/00000000-0000-4000-8000-000000000017.png",
-			"put:generated-media/provider-results/00000000-0000-4000-8000-000000000017.png",
-		]);
 	});
 
 	test("normalizes the OpenAI portrait canvas to the requested 9:16 asset", async () => {
@@ -157,7 +131,6 @@ describe("generated media ingestion", () => {
 		const storage = createStorage();
 		const ingestor = createGeneratedMediaAssetIngestor({
 			storage,
-			cleanupStore,
 			probe: probeGeneratedMedia,
 			normalizeImage: normalizeGeneratedImageAspectRatio,
 		});
@@ -179,7 +152,6 @@ describe("generated media ingestion", () => {
 		const storage = createStorage();
 		const ingestor = createGeneratedMediaAssetIngestor({
 			storage,
-			cleanupStore,
 			probe: async () => ({
 				kind: "image",
 				contentType: "image/png",
@@ -209,7 +181,6 @@ describe("generated media ingestion", () => {
 	test("rejects private result URLs before fetching", async () => {
 		const ingestor = createGeneratedMediaAssetIngestor({
 			storage: createStorage(),
-			cleanupStore,
 			probe: async () => null,
 		});
 
@@ -225,7 +196,6 @@ describe("generated media ingestion", () => {
 		const storage = createStorage();
 		const ingestor = createGeneratedMediaAssetIngestor({
 			storage,
-			cleanupStore,
 			probe: async () => ({
 				kind: "image",
 				contentType: "image/png",
@@ -260,7 +230,6 @@ describe("generated media ingestion", () => {
 		]);
 		const ingestor = createGeneratedMediaAssetIngestor({
 			storage: createStorage(),
-			cleanupStore,
 			probe: async () => ({
 				kind: "video",
 				contentType: "video/mp4",
@@ -290,7 +259,6 @@ describe("generated media ingestion", () => {
 		]);
 		const ingestor = createGeneratedMediaAssetIngestor({
 			storage: createStorage(),
-			cleanupStore,
 			probe: async () => ({
 				kind: "video",
 				contentType: "video/mp4",
@@ -327,7 +295,6 @@ describe("generated media ingestion", () => {
 		};
 		const ingestor = createGeneratedMediaAssetIngestor({
 			storage,
-			cleanupStore,
 			probe: async () => ({
 				kind: "image",
 				contentType: "image/png",
@@ -349,23 +316,14 @@ describe("generated media ingestion", () => {
 		expect(storage.puts).toHaveLength(0);
 	});
 
-	test("admits exact-key cleanup before an ambiguous upload without deleting it", async () => {
+	test("attempts cleanup when an attempt-scoped upload crashes", async () => {
 		const storage = createStorage();
-		const events: string[] = [];
 		storage.put = async (input) => {
 			storage.puts.push(input.key);
-			events.push(`put:${input.key}`);
 			throw new Error("connection reset after upload");
 		};
 		const ingestor = createGeneratedMediaAssetIngestor({
 			storage,
-			cleanupStore: {
-				async createMany(input) {
-					events.push(`admit:${input.data[0]?.objectKey}`);
-					return { count: input.data.length };
-				},
-			},
-			now: () => new Date("2026-08-31T00:00:00.000Z"),
 			probe: async () => ({
 				kind: "image",
 				contentType: "image/png",
@@ -385,11 +343,37 @@ describe("generated media ingestion", () => {
 			}),
 		).rejects.toMatchObject({ code: "generated_media_upload_failed" });
 		expect(storage.puts).toHaveLength(1);
-		expect(events).toEqual([
-			`admit:${baseInput.storageKey}`,
-			`put:${baseInput.storageKey}`,
-		]);
-		expect(storage.deletes).toEqual([]);
+		expect(storage.deletes).toEqual(storage.puts);
 	});
 
+	test("deletes only old unreferenced attempt objects", async () => {
+		const storage = createStorage();
+		const referenced = "generated-media/provider-results/referenced.png";
+		const orphan = "generated-media/provider-results/orphan.png";
+		for (const key of [referenced, orphan]) {
+			await storage.put({
+				key,
+				bytes: pngBytes(),
+				contentType: "image/png",
+				metadata: {},
+			});
+		}
+
+		const result = await reconcileGeneratedMediaOrphans({
+			storage,
+			store: {
+				async referencedStorageKeys() {
+					return new Set([referenced]);
+				},
+			},
+			prefix: "generated-media/provider-results/",
+			now: new Date("2026-08-31T00:00:00.000Z"),
+			minimumAgeMs: 60_000,
+			limit: 10,
+		});
+
+		expect(result).toEqual({ scanned: 2, deleted: 1, failed: 0 });
+		expect(storage.deletes).toContain(orphan);
+		expect(storage.deletes).not.toContain(referenced);
+	});
 });

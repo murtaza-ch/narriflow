@@ -22,12 +22,7 @@ import {
   type PricingTier,
 } from "@narriflow/validators";
 import { hasFeature } from "./plan-features";
-import {
-  assertCampaignActionWriteEnabled,
-  campaignActionRolloutFromEnv,
-  ProgramWriteDisabledError,
-  type CampaignActionRollout,
-} from "./program-rollout";
+import { ProgramWriteDisabledError } from "./program-rollout";
 import { checkRateLimit } from "./rate-limit";
 import { presignDownloadUrl } from "./r2-storage";
 import { frozenProjectApprovalRequired } from "./review-project-policy";
@@ -39,15 +34,7 @@ import {
 const REVIEW_SESSION_TTL_SEC = 12 * 60 * 60;
 const REVIEW_COMMENT_EDIT_WINDOW_MS = 15 * 60_000;
 const REVIEW_ACCESS_WINDOW_MS = 15 * 60_000;
-// The public source bucket is token-independent so rotating capabilities does
-// not bypass it. It still leaves room for a 50-recipient round behind one NAT.
-const REVIEW_ACCESS_PUBLIC_SOURCE_LIMIT = 128;
-const REVIEW_ACCESS_SOURCE_TOKEN_LIMIT = 8;
-const REVIEW_ACCESS_IDENTITY_LIMIT = 8;
-// One round admits at most 50 notified reviewers. Keep a small retry margin
-// while still bounding distributed attempts against the shared capability.
-const REVIEW_ACCESS_TOKEN_LIMIT = 64;
-const REVIEW_TRANSACTION_TIMEOUT_MS = 30_000;
+const REVIEW_ACCESS_LIMIT = 8;
 const ARGON2ID_ALGORITHM = 2 as const;
 const localAccessAttempts = new Map<string, { count: number; resetAt: number }>();
 
@@ -313,59 +300,6 @@ async function enforceReviewRateLimit(key: string, limit: number, windowMs: numb
   if (!distributed.allowed) throw new ReviewServiceError("review_access_rate_limited", "Too many review requests");
 }
 
-type ReviewAccessRateLimitEnforcer = (
-  key: string,
-  limit: number,
-  windowMs: number,
-) => Promise<void>;
-
-export async function enforceReviewAccessSourceRateLimit(
-  source: string,
-  enforce: ReviewAccessRateLimitEnforcer = enforceReviewRateLimit,
-) {
-  const sourceHash = createHash("sha256").update(source).digest("hex");
-  await enforce(
-    `review-access-source:${sourceHash}`,
-    REVIEW_ACCESS_PUBLIC_SOURCE_LIMIT,
-    REVIEW_ACCESS_WINDOW_MS,
-  );
-}
-
-export async function enforceReviewAccessTokenAndIdentityRateLimits(
-  input: {
-    tokenHash: string;
-    identity: string;
-    identitySecret: string;
-  },
-  enforce: ReviewAccessRateLimitEnforcer = enforceReviewRateLimit,
-) {
-  const identityHash = createHmac("sha256", input.identitySecret)
-    .update(input.identity.trim().toLowerCase())
-    .digest("hex");
-  await enforce(
-    `review-access-identity:${input.tokenHash}:${identityHash}`,
-    REVIEW_ACCESS_IDENTITY_LIMIT,
-    REVIEW_ACCESS_WINDOW_MS,
-  );
-  await enforce(
-    `review-access-token:${input.tokenHash}`,
-    REVIEW_ACCESS_TOKEN_LIMIT,
-    REVIEW_ACCESS_WINDOW_MS,
-  );
-}
-
-export async function enforceReviewAccessFailureRateLimit(
-  input: { tokenHash: string; source: string },
-  enforce: ReviewAccessRateLimitEnforcer = enforceReviewRateLimit,
-) {
-  const sourceHash = createHash("sha256").update(input.source).digest("hex");
-  await enforce(
-    `review-access-source-token-failure:${input.tokenHash}:${sourceHash}`,
-    REVIEW_ACCESS_SOURCE_TOKEN_LIMIT,
-    REVIEW_ACCESS_WINDOW_MS,
-  );
-}
-
 async function withSerializableRetry<T>(operation: () => Promise<T>): Promise<T> {
   let lastError: unknown;
   for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -454,8 +388,6 @@ export function verifyReviewSession(value: string, secret: string, now = new Dat
 export class ReviewService {
   constructor(
     private readonly rolloutPolicy: ReviewRolloutPolicy = reviewRolloutPolicy,
-    private readonly campaignRollout: CampaignActionRollout =
-      campaignActionRolloutFromEnv(),
   ) {}
 
   private assertCreationEnabled() {
@@ -503,7 +435,6 @@ export class ReviewService {
     secrets?: { accessSecret: string; dataSecret: string },
   ) {
     this.assertCreationEnabled();
-    assertCampaignActionWriteEnabled("create_review", this.campaignRollout);
     const notificationAdmissionEnabled = this.rolloutPolicy.isEnabled(
       "notification_admission",
     );
@@ -511,13 +442,12 @@ export class ReviewService {
       throw new ReviewServiceError("review_feature_unavailable", "Review rooms are not available on this plan");
     }
     const parsed = createReviewRoundSchema.parse(input);
-    const requestFingerprint = reviewRoundAutomationFingerprint({
-      workspaceId: scope.workspaceId,
-      projectId: scope.projectId,
-      request: parsed,
-    });
     const automationFingerprint = scope.idempotencyKey
-      ? requestFingerprint
+      ? reviewRoundAutomationFingerprint({
+          workspaceId: scope.workspaceId,
+          projectId: scope.projectId,
+          request: parsed,
+        })
       : null;
     if (scope.idempotencyKey && !secrets) {
       throw new ReviewServiceError(
@@ -742,43 +672,6 @@ export class ReviewService {
               },
               select: { id: true, revision: true, createdAt: true },
             });
-            await tx.campaignOperation.create({
-              data: {
-                workspaceId: scope.workspaceId,
-                projectId: scope.projectId,
-                actorUserId: scope.actorUserId,
-                action: "create_review",
-                idempotencyKey: roundId,
-                requestFingerprint,
-                validatedOptions: {
-                  reviewRoundId: created.id,
-                  approvalRequired,
-                  allowDownloads: parsed.allowDownloads,
-                  recipientCount: reviewerEmails.length,
-                },
-                pricingTier: scope.pricingTier,
-                status: "completed",
-                requestedCount: parsed.items.length,
-                succeededCount: parsed.items.length,
-                completedAt: now,
-                items: {
-                  create: parsed.items.map((item) => ({
-                    itemKey: item.clipId,
-                    requestedClipId: item.clipId,
-                    clipId: item.clipId,
-                    expectedEditorRevision: item.expectedEditorRevision,
-                    exportId: item.exportId,
-                    status: "succeeded",
-                    result: {
-                      reviewRoundId: created.id,
-                      exportId: item.exportId,
-                      selectedVariantCount: item.variantIds.length,
-                    },
-                    settledAt: now,
-                  })),
-                },
-              },
-            });
             const reviewerRecipients = recipientSeeds.filter(
               (recipient) => recipient.role === "reviewer",
             );
@@ -834,10 +727,7 @@ export class ReviewService {
             });
             return created;
           },
-            {
-              isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-              timeout: REVIEW_TRANSACTION_TIMEOUT_MS,
-            },
+            { isolationLevel: Prisma.TransactionIsolationLevel.Serializable },
           ),
       );
     } catch (error) {
@@ -868,36 +758,20 @@ export class ReviewService {
     this.assertGuestReadEnabled();
     const parsed = reviewGuestAccessSchema.parse(input);
     const tokenHash = hashReviewAccessToken(rawToken);
-    await enforceReviewAccessTokenAndIdentityRateLimits({
-      tokenHash,
-      identity: parsed.email,
-      identitySecret: secret,
-    });
-    const rejectAccess = async (): Promise<never> => {
-      await enforceReviewAccessFailureRateLimit({
-        tokenHash,
-        source: rateLimitKey,
-      });
+    const sourceHash = createHash("sha256").update(rateLimitKey).digest("hex");
+    const rejectAccess = async () => {
+      await enforceReviewRateLimit(`review-access-source:${tokenHash}:${sourceHash}`, REVIEW_ACCESS_LIMIT, REVIEW_ACCESS_WINDOW_MS);
+      await enforceReviewRateLimit(`review-access-token:${tokenHash}`, REVIEW_ACCESS_LIMIT, REVIEW_ACCESS_WINDOW_MS);
       throw new ReviewServiceError("review_access_invalid", "Review access is invalid or expired");
     };
     const round = await requirePrisma().reviewRound.findUnique({ where: { accessTokenHash: tokenHash }, select: { id: true, projectId: true, accessTokenHash: true, passcodeHash: true, status: true, expiresAt: true, revokedAt: true } });
-    if (!round) {
+    if (!round || round.revokedAt || round.status !== "open" || (round.expiresAt && round.expiresAt <= new Date())) {
 			return rejectAccess();
     }
     const expectedToken = Buffer.from(round.accessTokenHash, "hex");
     const actualToken = Buffer.from(tokenHash, "hex");
     if (expectedToken.length !== actualToken.length || !timingSafeEqual(expectedToken, actualToken)) {
 			return rejectAccess();
-    }
-    if (
-      round.revokedAt ||
-      round.status !== "open" ||
-      (round.expiresAt && round.expiresAt <= new Date())
-    ) {
-      throw new ReviewServiceError(
-        "review_access_invalid",
-        "Review access is invalid or expired",
-      );
     }
     if (round.passcodeHash && (!parsed.passcode || !(await verifyReviewPasscode(parsed.passcode, round.passcodeHash)))) {
 			return rejectAccess();
@@ -930,10 +804,7 @@ export class ReviewService {
         });
       }
       return row;
-    }, {
-      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-      timeout: REVIEW_TRANSACTION_TIMEOUT_MS,
-    }));
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
     return issueReviewSession({ roundId: round.id, guestId: guest.id, grant: round.accessTokenHash.slice(0, 32), identity: guest.displayName, subject }, secret);
   }
 
@@ -1080,10 +951,7 @@ export class ReviewService {
       if (eligible.count !== 1) throw new ReviewServiceError("review_comment_delete_forbidden", "This comment can no longer be deleted");
       await tx.reviewAuditEvent.create({ data: { reviewRoundId: round.id, guestId: claims.guestId, kind: "comment_deleted", targetId: comment.id } });
       return { deleted: true };
-    }, {
-      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-      timeout: REVIEW_TRANSACTION_TIMEOUT_MS,
-    }));
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
   }
 
   async decide(session: string, secret: string, input: unknown) {
@@ -1184,10 +1052,7 @@ export class ReviewService {
         }
       }
       return decision;
-    }, {
-      isolationLevel: Prisma.TransactionIsolationLevel.Serializable,
-      timeout: REVIEW_TRANSACTION_TIMEOUT_MS,
-    }));
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }));
   }
 
   async addInternalComment(

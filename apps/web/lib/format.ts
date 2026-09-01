@@ -72,29 +72,6 @@ export function formatDuration(seconds: number): string {
   return `${m}:${ss}`;
 }
 
-/** Formats a short duration with a stable fractional precision and seconds unit. */
-export function formatFractionalDuration(
-  seconds: number,
-  fractionDigits = 2,
-): string {
-  const safeSeconds = Number.isFinite(seconds) ? Math.max(0, seconds) : 0;
-  const safeDigits = Number.isFinite(fractionDigits)
-    ? Math.min(3, Math.max(0, Math.trunc(fractionDigits)))
-    : 2;
-  return `${safeSeconds.toFixed(safeDigits)}s`;
-}
-
-/** Formats a fractional second range without repeating the unit. */
-export function formatFractionalDurationRange(
-  startSeconds: number,
-  endSeconds: number,
-  fractionDigits = 2,
-): string {
-  const start = formatFractionalDuration(startSeconds, fractionDigits);
-  const end = formatFractionalDuration(endSeconds, fractionDigits);
-  return `${start.slice(0, -1)}–${end}`;
-}
-
 /**
  * Formats a fixed-width `HH:MM:SS` timecode: `00:00:42`.
  *

@@ -10,14 +10,11 @@ import type {
   SceneMotion,
   StudioTransition,
 } from "@narriflow/validators";
-import { buildEditedTimeMap } from "@narriflow/validators";
-import { formatFractionalDuration } from "@/lib/format";
 import { useStudio } from "../studio-shell";
 import {
   availableSceneMotionValues,
   availableStudioTransitions,
-	brollMotionTargets,
-	manualUrlBrollMotionTarget,
+  hasManualBrollTarget,
 } from "../studio-rollout-visibility";
 
 const TRANSITIONS: ReadonlyArray<{
@@ -239,60 +236,24 @@ export function MotionPanel() {
     () => availableStudioTransitions(studio.motionRollout, "none"),
     [studio.motionRollout],
   );
-	const mediaTargets = useMemo(() => [
-		...(() => {
-			const durationSec = buildEditedTimeMap(
-				studio.editorDocument.deletedRanges,
-				{
-					startSec: studio.editorDocument.clipStartSec,
-					endSec: studio.editorDocument.clipEndSec,
-				},
-			).editedDurationSec;
-			const target = manualUrlBrollMotionTarget(
-				studio.brollUrl,
-				durationSec,
-				studio.brollPlacements.length > 0,
-			);
-			return target ? [{ ...target, kind: "broll_url" as const }] : [];
-		})(),
-		...brollMotionTargets(studio.brollPlacements).map((target) => ({
-			...target,
-			kind: "broll" as const,
-		})),
+  const mediaTargets = useMemo(() => [
+    ...(hasManualBrollTarget(studio.brollUrl, studio.brollPlacements)
+      ? [{ id: "broll", label: "Manual B-roll" }]
+      : []),
     ...studio.sceneBlocks.map((scene, index) => ({
       id: scene.id,
-			kind: "scene_block" as const,
-			sceneBlockId: scene.id,
-			startSec: scene.anchorSec,
-			endSec: scene.anchorSec + scene.durationSec,
       label: scene.content.kind === "text"
         ? `Text card · ${scene.content.text.slice(0, 24)}`
         : `Scene ${index + 1} · ${scene.content.kind}`,
     })),
-	], [
-		studio.brollPlacements,
-		studio.brollUrl,
-		studio.editorDocument.clipEndSec,
-		studio.editorDocument.clipStartSec,
-		studio.editorDocument.deletedRanges,
-		studio.sceneBlocks,
-	]);
+  ], [studio.brollPlacements, studio.brollUrl, studio.sceneBlocks]);
   const [targetId, setTargetId] = useState<string>(mediaTargets[0]?.id ?? "");
-	const selectedTarget = mediaTargets.find((target) => target.id === targetId) ?? null;
-	const targetScene = selectedTarget?.kind === "scene_block"
-		? studio.sceneBlocks.find((scene) => scene.id === selectedTarget.sceneBlockId) ?? null
-		: null;
-	const explicitMotion = selectedTarget
-		? studio.editorDocument.mediaMotions.find((candidate) =>
-			candidate.target.kind === "broll"
-				? selectedTarget.kind === "broll" &&
-					candidate.target.placementId === selectedTarget.placementId
-				: candidate.target.kind === "broll_url"
-					? selectedTarget.kind === "broll_url"
-					: selectedTarget.kind === "scene_block" &&
-					candidate.target.sceneBlockId === selectedTarget.sceneBlockId,
-		)
-		: undefined;
+  const targetScene = studio.sceneBlocks.find((scene) => scene.id === targetId) ?? null;
+  const explicitMotion = studio.editorDocument.mediaMotions.find((candidate) =>
+    candidate.target.kind === "broll"
+      ? targetId === "broll"
+      : candidate.target.sceneBlockId === targetId,
+  );
   const savedMotion = explicitMotion ?? targetScene?.motion ?? {
     entrance: "none" as const,
     exit: "none" as const,
@@ -405,17 +366,19 @@ export function MotionPanel() {
       studio.updateSceneMotion(targetScene.id, { entrance, exit });
       return;
     }
-		if (!selectedTarget) return;
+    const activeRange = targetScene
+      ? {
+          startSec: targetScene.anchorSec,
+          endSec: targetScene.anchorSec + targetScene.durationSec,
+        }
+      : { startSec: 0, endSec: studio.duration };
     const motionValue: MediaMotion = {
       schemaVersion: 1,
       id: explicitMotion?.id ?? crypto.randomUUID(),
-      target: selectedTarget.kind === "scene_block"
-				? { kind: "scene_block", sceneBlockId: selectedTarget.sceneBlockId }
-				: selectedTarget.kind === "broll_url"
-					? { kind: "broll_url" }
-					: { kind: "broll", placementId: selectedTarget.placementId },
-			startSec: selectedTarget.startSec,
-			endSec: selectedTarget.endSec,
+      target: targetScene
+        ? { kind: "scene_block", sceneBlockId: targetScene.id }
+        : { kind: "broll" },
+      ...activeRange,
       entrance,
       exit,
       enabled: true,
@@ -483,7 +446,7 @@ export function MotionPanel() {
           <Box>
             <Flex justify="space-between" mb="8px">
               <Text textStyle="eyebrow" color="studio.fgMuted">Duration</Text>
-              <Text textStyle="data" fontSize="11px" color="studio.timecode">{formatFractionalDuration(duration)}</Text>
+              <Text textStyle="data" fontSize="11px" color="studio.timecode">{duration.toFixed(2)}s</Text>
             </Flex>
             <Slider.Root
               value={[duration]}

@@ -1,14 +1,13 @@
 # Vizard-inspired expansion completion evidence
 
-Evidence captured on 31 August 2026 against fixed base revision
-`8e2e7056d88502a360522f4748556595b10209a3` through the final integrated
-branch revision.
+Evidence captured on 31 August 2026 against base revision
+`8e2e7056d88502a360522f4748556595b10209a3` plus the shared uncommitted program
+worktree.
 
 **Release decision: not ready for cutover.** Ticket 18 remains in progress. A
-connected local Business flow, passing repository gates, and probed four-ratio
-media do not prove the two-profile agency journey, generated video, deployed
-rollouts, provider delivery, full plan/status compatibility, live REST/MCP
-clients, or release metrics.
+working Review subflow and passing focused suites do not prove the complete
+Business agency journey, generated video, all rollback/readability paths, real
+media, or release metrics.
 
 ## Acceptance matrix
 
@@ -21,9 +20,9 @@ clients, or release metrics.
 | Existing projects, Brand Templates, share links, direct Instagram, Calendar, exports, API, and MCP remain compatible | Partial | Additive migrations, the Vizard disposable-schema suite, authenticated inventory tests, and Social Publication tests passed | Run the complete compatibility matrix uncached against the final integrated worktree and exercise REST plus MCP with real least-privilege credentials |
 | Free, Creator, Pro, Business, downgrade, pending-payment, and restricted states follow approved rules | Partial | Central entitlement and Workspace capability tests cover the matrix; Chrome proved a non-Business Review creation lock with existing Review history still readable | Exercise every plan/status through the final UI and service mutations, including downgrade readability and generation-usage behavior |
 | Program analytics compute clips-ready to approved-and-scheduled without sensitive metadata | Proven | Transactional migration triggers emit idempotent `clips_ready`, Campaign Operation started/completed, and bounded `campaign_scheduled` events. The cohort-aware aggregate report returns completion, Review revision, override, publication-failure, and generated-provider failure/rejection guardrails without IDs or content. Its tested operator command executed successfully against the local cohort | Record the fixed real baseline and post-release windows before cutover; this operational evidence is a separate verification gate |
-| Every rollout control has a tested rollback that stops writes and keeps reads | Partial | Local policy, service, worker, and disposable-schema tests prove fail-closed ordering. Real Chrome write-off drills additionally preserved generated jobs/assets/B-roll/Scenes, Review rounds/comments/decisions/audit/guest access, confirmed copy, thumbnail history, and the cancelled Social Post while stopping their corresponding new writes. The expanded disposable migration/ownership gate is 25/25 with 340 assertions | Record every per-control rollback/readability drill against the deployed revision. Local proof establishes the control contract; it is not evidence that operators executed the cutover matrix |
-| Operations, Review Rounds, generated jobs, bundles, assets, and notifications have reconciliation runbooks and bounded cleanup | Proven | The [cutover runbook](../runbooks/vizard-expansion-cutover.md) documents content-safe diagnosis, idempotent recovery, retention, and bounded cleanup. Presigned Visual Asset keys are admitted beyond URL expiry plus skew and adopted transactionally before any cleanup claim. Thumbnail extraction renews its joint job/exact-key lease through FFmpeg, probing, upload, and adoption. Export Bundle renews both exact-key holds through archive construction and before upload, copy, and transactional adoption. Claim loss aborts active I/O; only the bounded Media Cleanup worker deletes objects. Focused worker/service tests and disposable-schema gates prove the races and receipts | Keep normal queue/cleanup monitoring in the deployed cutover; no implementation ownership gap remains |
-| `CONTEXT.md`, pricing, internal runbooks, and public REST/MCP docs match shipped behavior | Proven | Glossary names Export Bundle, Review Notification, and Review Approval Override; pricing advertises generated still images and no longer claims generated video; REST/MCP inventories, exact-key cleanup ownership, lease renewal, rollback, and cutover procedures match the shipped contracts. The final fixed-reference Standards and Spec reviews found no remaining mismatch | Revalidate deployment-specific origins, credentials, and operator links during cutover; no shipped-documentation mismatch remains |
+| Every rollout control has a tested rollback that stops writes and keeps reads | Partial | Local policy, service, worker, and disposable-schema tests prove fail-closed ordering. Real Chrome write-off drills additionally preserved generated jobs/assets/B-roll/Scenes, Review rounds/comments/decisions/audit/guest access, confirmed copy, thumbnail history, and the cancelled Social Post while stopping their corresponding new writes. The expanded disposable migration/ownership gate is 24/24 with 316 assertions | Record every per-control rollback/readability drill against the deployed revision. Local proof establishes the control contract; it is not evidence that operators executed the cutover matrix |
+| Operations, Review Rounds, generated jobs, bundles, assets, and notifications have reconciliation runbooks and bounded cleanup | Proven | The [cutover runbook](../runbooks/vizard-expansion-cutover.md) documents content-safe diagnosis, idempotent recovery, retention, and bounded cleanup. Presigned Visual Asset keys are admitted for exact-key cleanup beyond URL expiry plus skew and adopted transactionally before any cleanup claim; Export Bundle attempt/final keys are admitted before remote writes, the final key is adopted with its database reference, and a crashed producer becomes claimable after a conservative hold. Focused worker tests and both disposable-schema gates prove the races and receipts | Keep normal queue/cleanup monitoring in the deployed cutover; no implementation ownership gap remains |
+| `CONTEXT.md`, pricing, internal runbooks, and public REST/MCP docs match shipped behavior | Partial | Glossary names Export Bundle, Review Notification, and Review Approval Override; pricing advertises generated still images and no longer claims generated video; REST/MCP inventories and cutover procedures are documented | Re-audit the final integrated revision after the remaining release defects and migration-chain repair land; documentation cannot be marked proven against a moving worktree |
 
 ## Review and approval browser evidence
 
@@ -73,24 +72,25 @@ still not the required full two-Brand-Profile Business agency journey.
 
 | Gate | Result |
 | --- | --- |
-| Review validators, services, rollout, public HTTP, audit, browser intents, and panels | 69 passed, 0 failed, 265 assertions across 10 files |
+| Review validators, service, approval, notification, roles, public HTTP, internal tab, audit, and panel | 42 passed, 0 failed |
+| Review staged policy/service/public-panel rerun | 36 passed, 0 failed, 113 assertions |
 | Authenticated inventory plus Social scheduling/publication attempt | 39 passed, 0 failed |
-| Generated-media lifecycle and Studio contract | 162 passed, 0 failed, 443 assertions across 21 generated-media and OpenAI-focused files covering service, atomic Prisma quota/idempotency admission, claim fairness, prompt protection, config, runtime/maintenance, OpenAI image adaptation, guarded ingestion, exact-result insertion, Studio projection, Brand Profile membership, and deletion protection |
-| `bun run test:vizard-expansion:db` | 25 passed, 0 failed, 340 assertions across the ordered Vizard contract (18/184), Export Bundle cleanup (1/9), stable-ownership migration (2/18), stable-ownership runtime (2/111), and project lifecycle/evidence repair (2/18), after applying the full disposable migration chain through the latest additive repair |
+| Generated-media lifecycle and Studio contract | 102 passed, 0 failed, 314 assertions across service, atomic Prisma quota/idempotency admission, claim fairness, prompt protection, config, runtime/maintenance, OpenAI image adaptation, guarded ingestion, exact-result insertion, Studio projection, Brand Profile membership, and deletion protection |
+| `bun run test:vizard-expansion:db` | 24 passed, 0 failed, 316 assertions across the ordered Vizard contract (17/160), Export Bundle cleanup (1/9), stable-ownership migration (2/18), stable-ownership runtime (2/111), and project lifecycle/evidence repair (2/18), after applying the full disposable migration chain through the latest additive repair |
 | `bun run test:brand-profiles:db` | 13 passed, 0 failed, 60 assertions, including upload-grant cleanup timing, atomic Visual Asset adoption/replay, and the active-cleanup race |
-| Exact-key cleanup ownership and heartbeat contracts | 77 passed, 4 R2 integration-contract skips, 0 failed across Thumbnail Extraction, Export Bundle, Media Cleanup, and R2 boundaries |
+| Media Cleanup and Export Bundle focused tests | 39 passed, 0 failed, 122 assertions |
 | `bun run typecheck` | Passed across all 12 packages |
-| `bun run lint` | Passed across 916 files |
+| `bun run lint` | Passed across 907 files |
 | Pricing regression | 9 passed, 0 failed |
 | Program analytics guardrail validator and operator | 20 passed, 0 failed; validators/services typechecks and targeted Biome passed; the content-safe CLI executed against a fixed local UTC window |
 | Mandatory disposable PostgreSQL gates | Workflow 60/60, Upload Session 2/2, Workspace Billing 9/9, Social Publication 13/13, Clip Editor Persistence plus duplicate-media compensation 22/22, Authenticated Request Policy 3/3, Brand Profiles 13/13, and the Vizard gate above all passed from clean isolated schemas |
-| `bun run test` after final integration | Passed uncached across all seven active package test tasks; the web suite passed 675 tests (5 DB-only skips, 2,830 assertions) and the worker suite passed 609 tests (2,208 assertions) including real FFmpeg fixtures |
+| `bun run test` after final integration | Passed uncached across all seven active package test tasks; the web suite passed 664 tests (5 DB-only skips) and the worker suite passed 599 tests including real FFmpeg fixtures |
 | `bun run audit:production` | Passed at the high-severity threshold |
 | `bun run build` after final integration | Passed uncached across all 12 packages; Next produced the production route manifest for 50 static/dynamic routes |
 | Live REST/MCP client E2E | Not run |
 | Representative real-media outputs | Partial: all four corrected revision-8 objects were downloaded from storage and ffprobed. They are H.264/AAC at 1080×1920, 1080×1080, 1920×1080, and 1080×1350; each is 25.222199 seconds with exact DB byte-size agreement. Generated-video output remains unavailable. |
 | Baseline and post-release metrics | Not available |
-| Final fixed-reference `/code-review` | Parallel Standards and Spec reviews completed against base `8e2e705`; every finding was fixed and both final re-reviews are clean |
+| Final fixed-reference `/code-review` | Pending against base `8e2e705` after the integrated implementation commit |
 
 Focused commands:
 
@@ -169,7 +169,9 @@ release gates.
 4. Record every staged rollback/readability drill against the deployed
    revision; the local control and bounded-cleanup contracts are green, but
    synthetic evidence is not an operator cutover record.
-5. Run the missing two-profile and selection-scoped Brand/Scene portion of the
-   Business agency journey, the full plan/status compatibility matrix, live
-   least-privilege REST/MCP clients, generated-video real media, and final
-   provider delivery against the released revision.
+5. Run the full Business agency journey, compatibility matrix, production
+   build, real REST/MCP clients, and representative real-media exports against
+   the final integrated revision.
+6. Run `/code-review` from a fixed reference only after the program worktree is
+   stable. Resolve every standards/spec finding before changing the release
+   decision.

@@ -55,32 +55,6 @@ describe("authenticated request HTTP translation", () => {
     });
   });
 
-  test("preserves marked safe domain failures at 5xx", async () => {
-    const response = await normalizeAuthenticatedErrorResponse(
-      Response.json(
-        {
-          error: "generated_media_not_configured",
-          message: "Generated media is temporarily unavailable.",
-          retryable: true,
-        },
-        {
-          status: 503,
-          headers: { "X-Narriflow-Error-Contract": "expected-v1" },
-        },
-      ),
-      "request-http-domain-1",
-    );
-
-    expect(response.status).toBe(503);
-    expect(response.headers.get("x-narriflow-error-contract")).toBeNull();
-    expect(await response.json()).toEqual({
-      error: "generated_media_not_configured",
-      message: "Generated media is temporarily unavailable.",
-      retryable: true,
-      requestId: "request-http-domain-1",
-    });
-  });
-
   test("does not change successful responses", async () => {
     const success = Response.json({ ok: true }, { status: 202 });
     expect(

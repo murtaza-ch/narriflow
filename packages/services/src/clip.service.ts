@@ -11,7 +11,6 @@ import {
   CLIP_TITLE_SUGGESTION_COUNT,
   LEGACY_DEFAULT_CAPTION_PRESET_ID,
   brollCuesArraySchema,
-	buildEditedTimeMap,
   buildTranscriptSliceForWindow,
   captionPresetSchema,
   clipAspectRatioDbSchema,
@@ -310,18 +309,6 @@ function toClipRenderVariantSnapshot(render: ClipRender): ClipRenderVariant {
   };
 }
 
-export function projectClipCampaignMotionFields(
-	document: EditorDocument,
-): Pick<ClipSnapshot, "brollPlacements" | "editedDurationSec"> {
-	return {
-		brollPlacements: document.brollPlacements,
-		editedDurationSec: buildEditedTimeMap(document.deletedRanges, {
-			startSec: document.clipStartSec,
-			endSec: document.clipEndSec,
-		}).editedDurationSec,
-	};
-}
-
 function toClipSnapshot(clip: ClipWithRenders): ClipSnapshot {
   const editorDocument = decodeClipEditorDocumentFromStorage(
     clip,
@@ -350,7 +337,6 @@ function toClipSnapshot(clip: ClipWithRenders): ClipSnapshot {
     startSec: effective.startSec,
     endSec: effective.endSec,
     durationSec: Math.round(effective.durationSec * 10) / 10,
-		...projectClipCampaignMotionFields(editorDocument),
     title: clip.title,
     hookText: clip.hookText,
     payoffText: clip.payoffText,

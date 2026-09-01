@@ -2,8 +2,6 @@ import { describe, expect, test } from "bun:test";
 import {
   brollQueryForClip,
   dominantPexelsOrientation,
-	MANUAL_BROLL_COMPOSITION_ID,
-	manualBrollMotionWindow,
   pexelsOrientationForAspectRatio,
   planBrollCutaways,
   planBrollWindow,
@@ -85,12 +83,6 @@ describe("pexelsOrientationForAspectRatio / dominantPexelsOrientation", () => {
 });
 
 describe("planBrollWindow (single-cutaway manual pick)", () => {
-	test("defines one durable URL target and deterministic motion request window", () => {
-		expect(MANUAL_BROLL_COMPOSITION_ID).toBe("manual-url");
-		expect(manualBrollMotionWindow(40)).toEqual({ startSec: 11.2, endSec: 14.7 });
-		expect(manualBrollMotionWindow(8)).toBeNull();
-	});
-
   test("returns null for clips that are too short", () => {
     expect(planBrollWindow(8, 10)).toBeNull();
   });

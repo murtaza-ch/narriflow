@@ -5,7 +5,6 @@ import {
   captionPresetSchema,
   clipAutoLayoutAnalysisSchema,
   editorDocumentSchema,
-	MANUAL_BROLL_COMPOSITION_ID,
   MAX_DUCKING_WINDOWS,
   studioEditsSchema,
 } from "@narriflow/validators";
@@ -13,7 +12,6 @@ import {
   automaticLayoutInputFingerprint,
   CLIP_COMPOSITION_MAX_SERIALIZED_BYTES,
   evaluateCompositionMotion,
-  evaluateCompositionTransition,
   planClipComposition,
   resolveCompositionMotion,
   screenLayoutInputFingerprint,
@@ -2908,9 +2906,9 @@ describe("Clip Composition Plan", () => {
     ]);
     expect(available.plan.targets[1]?.visualLayers.at(-2)).toMatchObject({
       kind: "transition",
-      effect: {
-        entrance: { range: { startSec: 0, endSec: 0.5 } },
-        exit: { range: { startSec: 7.5, endSec: 8 } },
+      windows: {
+        fadeIn: { startSec: 0, endSec: 0.5 },
+        fadeOut: { startSec: 7.5, endSec: 8 },
       },
     });
     expect(available.plan.targets[1]?.visualLayers.at(-1)).toMatchObject({
@@ -3002,131 +3000,18 @@ describe("Clip Composition Plan", () => {
           family,
           direction,
           canvas: { width: 1080, height: 1920 },
-          entrance: { range: { startSec: 0, endSec: 0.25 } },
-          exit: { range: { startSec: 0.25, endSec: 0.5 } },
+        },
+        windows: {
+          fadeIn: { startSec: 0, endSec: 0.25 },
+          fadeOut: { startSec: 0.25, endSec: 0.5 },
         },
       });
     }
   });
 
-  test("resolves exact transition masks and transforms for both clip boundaries", () => {
-    const planTransition = (
-      type: "fade" | "wipe-left" | "slide-up" | "zoom-in",
-    ) => {
-      const result = planClipComposition({
-        document: editorDocumentSchema.parse({
-          ...centerDocument(),
-          clipStartSec: 0,
-          clipEndSec: 2,
-          deletedRanges: [],
-          studioEdits: studioEditsSchema.parse({
-            framing: { mode: "center" },
-            transition: { type, durationSec: 0.4 },
-          }),
-        }),
-        source: {
-          identity: `source:resolved-transition:${type}`,
-          kind: "video",
-          width: 1920,
-          height: 1080,
-        },
-        evidence: { automaticLayout: { state: "missing" } },
-        assets: { backgroundImage: { state: "missing" } },
-        capabilities: {
-          automaticSpeakerLayout: true,
-          automaticSpeakerEngineVersion: "shot-layout-v1",
-        },
-        targets: [
-          { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },
-        ],
-      });
-      if (result.status === "invalid") throw new Error(result.error.code);
-      const layer = result.plan.targets[0]!.visualLayers.find(
-        (candidate) => candidate.kind === "transition",
-      );
-      if (layer?.kind !== "transition") throw new Error("missing transition");
-      return layer;
-    };
-
-    const resting = {
-      overlayOpacity: 0,
-      overlayMaskSizePx: 0,
-      translateXPx: 0,
-      translateYPx: 0,
-      scale: 1,
-    };
-
-    expect(planTransition("fade").effect).toMatchObject({
-      version: 1,
-      mask: null,
-      entrance: {
-        range: { startSec: 0, endSec: 0.4 },
-        from: { ...resting, overlayOpacity: 1 },
-        to: resting,
-      },
-      resting,
-      exit: {
-        range: { startSec: 1.6, endSec: 2 },
-        from: resting,
-        to: { ...resting, overlayOpacity: 1 },
-      },
-    });
-
-    expect(planTransition("wipe-left").effect).toMatchObject({
-      version: 1,
-      mask: {
-        axis: "horizontal",
-        overlayEdge: "start",
-        pixelDivisor: 2,
-      },
-      entrance: {
-        from: { ...resting, overlayOpacity: 1, overlayMaskSizePx: 1078 },
-        to: { ...resting, overlayOpacity: 1 },
-      },
-      resting: { ...resting, overlayOpacity: 1 },
-      exit: {
-        from: { ...resting, overlayOpacity: 1 },
-        to: { ...resting, overlayOpacity: 1, overlayMaskSizePx: 1078 },
-      },
-    });
-
-    expect(planTransition("slide-up").effect).toMatchObject({
-      entrance: {
-        from: { ...resting, translateYPx: 1920 },
-        to: resting,
-      },
-      resting,
-      exit: {
-        from: resting,
-        to: { ...resting, translateYPx: -1920 },
-      },
-    });
-
-    const zoom = planTransition("zoom-in");
-    expect(zoom.effect).toMatchObject({
-      entrance: {
-        from: { ...resting, scale: 0.88 },
-        to: resting,
-      },
-      resting,
-      exit: {
-        from: resting,
-        to: { ...resting, scale: 1.12 },
-      },
-    });
-    expect(evaluateCompositionTransition(zoom.effect, 1.8)).toMatchObject({
-      translateXPx: 0,
-      translateYPx: 0,
-      scale: 1.06,
-      animated: true,
-    });
-  });
-
   test("resolves Scene and B-roll motion once and evaluates a static reduced-motion state", () => {
     const sceneId = "8ab9d330-688f-4574-932c-27ac661245c1";
     const imageId = "141b738e-f106-4da1-b670-8b71ff7f0a58";
-		const brollPlacementId = "20000000-0000-4000-8000-000000000001";
-		const brollAssetId = "20000000-0000-4000-8000-000000000002";
     const fingerprint = "a".repeat(64);
     const document = editorDocumentSchema.parse({
       ...centerDocument(),
@@ -3134,17 +3019,7 @@ describe("Clip Composition Plan", () => {
       clipEndSec: 6,
       deletedRanges: [],
       studioEdits: studioEditsSchema.parse({ framing: { mode: "center" } }),
-		brollUrl: null,
-		brollPlacements: [{
-			id: brollPlacementId,
-			asset: { kind: "visual_asset", id: brollAssetId, fingerprint },
-			provenance: "uploaded",
-			mediaKind: "video",
-			startSec: 3,
-			endSec: 6,
-			sourceStartSec: 0,
-			sourceEndSec: 3,
-		}],
+      brollUrl: "https://example.com/cutaway.mp4",
       sceneBlocks: [{
         id: sceneId,
         schemaVersion: 1,
@@ -3162,7 +3037,7 @@ describe("Clip Composition Plan", () => {
       mediaMotions: [{
         schemaVersion: 1,
         id: "2adf79cc-35b2-4de5-85dc-c9ed197763e4",
-		target: { kind: "broll", placementId: brollPlacementId },
+        target: { kind: "broll" },
         startSec: 3,
         endSec: 6,
         entrance: "pan-left",
@@ -3179,7 +3054,7 @@ describe("Clip Composition Plan", () => {
         broll: {
           state: "available",
 			placements: [{
-				id: brollPlacementId,
+				id: "manual",
 				ref: "broll:manual",
 				mediaKind: "video",
 				startSec: 3,
@@ -3235,126 +3110,6 @@ describe("Clip Composition Plan", () => {
       exit: { family: "scale" },
     });
   });
-
-	test("attaches B-roll motion only to the placement named by its target", () => {
-		const firstPlacementId = "20000000-0000-4000-8000-000000000001";
-		const secondPlacementId = "20000000-0000-4000-8000-000000000002";
-		const placement = (id: string, assetId: string, startSec: number, endSec: number) => ({
-			id,
-			asset: { kind: "visual_asset" as const, id: assetId, fingerprint: "a".repeat(64) },
-			provenance: "generated" as const,
-			mediaKind: "image" as const,
-			startSec,
-			endSec,
-			sourceStartSec: null,
-			sourceEndSec: null,
-		});
-		const document = editorDocumentSchema.parse({
-			...centerDocument(),
-			brollPlacements: [
-				placement(firstPlacementId, "20000000-0000-4000-8000-000000000003", 1, 3),
-				placement(secondPlacementId, "20000000-0000-4000-8000-000000000004", 4, 6),
-			],
-			mediaMotions: [{
-				schemaVersion: 1,
-				id: "20000000-0000-4000-8000-000000000005",
-				target: { kind: "broll", placementId: secondPlacementId },
-				startSec: 4,
-				endSec: 6,
-				entrance: "pan-right",
-				exit: "fade",
-				enabled: true,
-			}],
-		});
-		const result = planClipComposition({
-			document,
-			source: { identity: "source:placement-motion", kind: "video", width: 1920, height: 1080 },
-			evidence: { automaticLayout: { state: "missing" } },
-			assets: {
-				backgroundImage: { state: "missing" },
-				broll: {
-					state: "available",
-					placements: [
-						{ id: firstPlacementId, ref: "broll:first", mediaKind: "image", startSec: 1, endSec: 3, sourceStartSec: null, sourceEndSec: null },
-						{ id: secondPlacementId, ref: "broll:second", mediaKind: "image", startSec: 4, endSec: 6, sourceStartSec: null, sourceEndSec: null },
-					],
-				},
-			},
-			capabilities: {
-				automaticSpeakerLayout: true,
-				automaticSpeakerEngineVersion: "shot-layout-v1",
-			},
-			targets: [{ id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 }],
-		});
-		if (result.status === "invalid") throw new Error(result.error.code);
-		const brollLayers = result.plan.targets[0]!.scenes
-			.flatMap((scene) => scene.layers)
-			.filter((layer) => layer.kind === "broll-media");
-		expect(brollLayers.find((layer) => layer.sourceRef === "broll:first")?.motion).toBeNull();
-		expect(brollLayers.find((layer) => layer.sourceRef === "broll:second")?.motion)
-			.toMatchObject({ entrance: { family: "pan", direction: "right" } });
-	});
-
-	test("attaches URL-backed motion only to the stable manual composition target", () => {
-		const document = editorDocumentSchema.parse({
-			...centerDocument(),
-			clipStartSec: 0,
-			clipEndSec: 20,
-			deletedRanges: [],
-			brollUrl: "https://media.example.test/manual.mp4",
-			mediaMotions: [{
-				schemaVersion: 1,
-				id: "20000000-0000-4000-8000-000000000001",
-				target: { kind: "broll_url" },
-				startSec: 5.6,
-				endSec: 9.1,
-				entrance: "ken-burns-in",
-				exit: "fade",
-				enabled: true,
-			}],
-		});
-		const planForPlacement = (id: string) => planClipComposition({
-			document,
-			source: { identity: "source:url-motion", kind: "video", width: 1920, height: 1080 },
-			evidence: { automaticLayout: { state: "missing" } },
-			assets: {
-				backgroundImage: { state: "missing" },
-				broll: {
-					state: "available",
-					placements: [{
-						id,
-						ref: "broll:url",
-						mediaKind: "video",
-						startSec: 5.6,
-						endSec: 9.1,
-						sourceStartSec: 0,
-						sourceEndSec: 3.5,
-					}],
-				},
-			},
-			capabilities: {
-				automaticSpeakerLayout: true,
-				automaticSpeakerEngineVersion: "shot-layout-v1",
-			},
-			targets: [{ id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 }],
-		});
-		const manual = planForPlacement(MANUAL_BROLL_COMPOSITION_ID);
-		if (manual.status === "invalid") throw new Error(manual.error.code);
-		const manualLayer = manual.plan.targets[0]!.scenes
-			.flatMap((scene) => scene.layers)
-			.find((layer) => layer.kind === "broll-media");
-		expect(manualLayer?.motion).toMatchObject({
-			activeRange: { startSec: 5.6, endSec: 9.1 },
-			entrance: { family: "ken-burns" },
-		});
-
-		const automatic = planForPlacement("automatic-cutaway-0");
-		if (automatic.status === "invalid") throw new Error(automatic.error.code);
-		const automaticLayer = automatic.plan.targets[0]!.scenes
-			.flatMap((scene) => scene.layers)
-			.find((layer) => layer.kind === "broll-media");
-		expect(automaticLayer?.motion).toBeNull();
-	});
 
   test("keeps Ken Burns crop and scale phases orthogonal across mixed edges", () => {
     const motion = resolveCompositionMotion({
