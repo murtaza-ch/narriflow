@@ -56,7 +56,6 @@ export const CLIP_TRANSITION_TYPES = [
   "fade",
   "fade-black",
   "dip-white",
-  "cross-dissolve",
   "wipe-left",
   "wipe-right",
   "wipe-up",

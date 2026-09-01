@@ -85,6 +85,7 @@ import {
   type PreviewAudioAssetResolutionMap,
 } from "./preview-audio-asset-resolution";
 import { applyCompositionPlanQaFixture } from "./composition-plan-qa-fixture";
+import { applyStudioMotionPreview } from "./studio-editing-session";
 
 /** After this long with no metadata yet, hint that the source is just large. */
 const SLOW_LOAD_HINT_MS = 10_000;
@@ -381,6 +382,7 @@ export function VideoPreview() {
   const prefersReducedMotion = usePrefersReducedMotion();
   const {
     editorDocument,
+    motionPreview,
     clipInfo,
     aspectRatio, setAspectRatio,
     layoutMode, setLayoutMode,
@@ -421,6 +423,10 @@ export function VideoPreview() {
     reportCompositionPlanStatus,
     compositionPlanQaFixture,
   } = useStudio();
+  const previewEditorDocument = useMemo(
+    () => applyStudioMotionPreview(editorDocument, motionPreview),
+    [editorDocument, motionPreview],
+  );
 
   // Effective logo settings for THIS clip — studioEdits.logo overrides
   // merged over the project brand snapshot's defaults, via the exact same
@@ -788,7 +794,7 @@ export function VideoPreview() {
     );
     if (!target) return null;
     const result = planClipComposition({
-      document: editorDocument,
+      document: previewEditorDocument,
       source: {
         identity: compositionSourceIdentity,
         kind: clipInfo.sourceKind,
@@ -962,6 +968,7 @@ export function VideoPreview() {
     backgroundImageAvailability,
     compositionSourceIdentity,
     editorDocument,
+    previewEditorDocument,
     automaticLayoutAnalysis,
     brollUrl,
     brollMediaState,

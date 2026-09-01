@@ -35,6 +35,7 @@ import {
   downloadObjectToFile as productionDownloadObjectToFile,
   guardedFetch as productionGuardedFetch,
   hasFeature,
+  motionRenderAnalyticsMetadata,
   presignDownloadUrl as productionPresignDownloadUrl,
   projectService as productionProjectService,
   putFileFromPath as productionPutFileFromPath,
@@ -46,6 +47,7 @@ import {
   workflowFailureFromUnknown,
   workflowHttpFailureDisposition,
   type GuardedFetchOptions,
+  type MotionRenderAnalyticsMetadata,
   type RenderWorkSetOutcome,
   type WorkflowAttemptRef,
 } from "@narriflow/services";
@@ -4236,6 +4238,7 @@ async function uploadRenderedOutput(params: {
    *  shared multi-output encode the same value is reported for every output
    *  it covered. */
   encodeMs?: number;
+  motionAnalytics: MotionRenderAnalyticsMetadata;
 }): Promise<boolean> {
   const deleteProvisionalObject = async (reason: string) => {
     try {
@@ -4316,6 +4319,7 @@ async function uploadRenderedOutput(params: {
           storageKey: params.output.storageKey,
           sizeBytes: Number(outputStat.size),
           durationSec: params.clipDurationSec,
+          motionAnalytics: params.motionAnalytics,
         },
       ),
     discard: deleteProvisionalObject,
@@ -4542,8 +4546,36 @@ async function executeClipRenderAttempt(
   // uploads before deleting tempDir (their source files live there).
   let uploadQueueRef: { drain: () => Promise<void> } | null = null;
   let settlementStarted = false;
+  const motionAnalyticsByRenderId = new Map<
+    string,
+    MotionRenderAnalyticsMetadata
+  >();
 
   try {
+    // Freeze the document-derived baseline before any source I/O. Source
+    // resolution and probing can fail before composition planning, but those
+    // failures still belong in motion outcome analytics. Planner notices
+    // enrich this baseline later when planning is reached.
+    for (const render of pendingRenders) {
+      const storedClip = render.clipSnapshot ?? render.clip;
+      try {
+        const editorDocument = decodeClipEditorDocumentFromStorage(
+          storedClip,
+          frozenState.sourceDurationSeconds,
+        );
+        motionAnalyticsByRenderId.set(
+          render.id,
+          motionRenderAnalyticsMetadata(editorDocument, {
+            applyScope: "clip",
+            renderOutcome: "completed",
+          }),
+        );
+      } catch {
+        // Keep document corruption on its existing post-source failure path.
+        // There is no trustworthy motion payload to classify here.
+      }
+    }
+
     // `sourcePath` is what every ffmpeg builder receives as input: a presigned
     // URL in ranged mode (see RENDER_SOURCE_URL_TTL_SEC above), or the local
     // download in fallback/download mode. All builders seek with -ss before
@@ -4679,6 +4711,7 @@ async function executeClipRenderAttempt(
         clipDurationSec: number;
         brollCredits?: string | null;
         encodeMs: number;
+        motionAnalytics: MotionRenderAnalyticsMetadata;
       },
     ) => {
       uploadQueue.schedule(async () => {
@@ -4690,6 +4723,7 @@ async function executeClipRenderAttempt(
             clipDurationSec: params.clipDurationSec,
             brollCredits: params.brollCredits,
             encodeMs: params.encodeMs,
+            motionAnalytics: params.motionAnalytics,
           });
           if (persisted) renderedVariantCount += 1;
         } catch (error) {
@@ -4712,6 +4746,7 @@ async function executeClipRenderAttempt(
               output.clipRenderId,
               errorCode,
               disposition,
+              { ...params.motionAnalytics, renderOutcome: "failed" },
             );
           const persistenceFailure =
             error instanceof RenderPersistenceFailure ? error : null;
@@ -4747,6 +4782,10 @@ async function executeClipRenderAttempt(
         storedClip,
         frozenState.sourceDurationSeconds,
       );
+      let motionAnalytics = motionRenderAnalyticsMetadata(editorDocument, {
+        applyScope: "clip",
+        renderOutcome: "completed",
+      });
       // Export-bound rows carry a complete frozen rendering snapshot. This
       // metadata view deliberately excludes document decoding: every
       // document-owned field above crossed the canonical persistence codec.
@@ -4953,6 +4992,9 @@ async function executeClipRenderAttempt(
           watermark: render.exportVariant?.watermark ?? applyWatermark,
         };
       });
+      for (const output of outputs) {
+        motionAnalyticsByRenderId.set(output.clipRenderId, motionAnalytics);
+      }
 
       // Claim the variants before every terminal branch. Lifecycle failure
       // settlement is fenced to rows owned by this render attempt; failing a
@@ -4983,6 +5025,7 @@ async function executeClipRenderAttempt(
               output.clipRenderId,
               "clip_cut_plan_empty",
               "permanent",
+              { ...motionAnalytics, renderOutcome: "failed" },
             ),
           ),
         );
@@ -6995,6 +7038,16 @@ async function executeClipRenderAttempt(
           ).length,
         });
         compositionPlan = planned.plan;
+        motionAnalytics = motionRenderAnalyticsMetadata(compositionDocument, {
+          applyScope: "clip",
+          fallbackCodes: planned.plan.notices
+            .map((notice) => notice.code)
+            .filter((code) => code.includes("motion")),
+          renderOutcome: "completed",
+        });
+        for (const output of outputs) {
+          motionAnalyticsByRenderId.set(output.clipRenderId, motionAnalytics);
+        }
         plannedAudio = bindCompositionPlanAudioInputs(
           compileCompositionPlanAudioSchedule(compositionPlan),
           {
@@ -7149,6 +7202,7 @@ async function executeClipRenderAttempt(
             scheduleUpload(output, {
               clipDurationSec,
               encodeMs: encodeDurationMs,
+              motionAnalytics,
             });
           } catch (error) {
             rethrowWorkflowAttemptLost(error);
@@ -7164,6 +7218,7 @@ async function executeClipRenderAttempt(
               error instanceof WorkflowFailure
                 ? error.disposition
                 : "retryable",
+              { ...motionAnalytics, renderOutcome: "failed" },
             );
 
             log("error", "clip_render_variant_failed", {
@@ -7289,6 +7344,7 @@ async function executeClipRenderAttempt(
               brollCredits:
                 commandMode === "primary" ? brollCredits : null,
               encodeMs: encodeDurationMs,
+              motionAnalytics,
             });
           } catch (error) {
             rethrowWorkflowAttemptLost(error);
@@ -7306,6 +7362,7 @@ async function executeClipRenderAttempt(
               renderFailure
                 ? renderFailure.disposition
                 : "retryable",
+              { ...motionAnalytics, renderOutcome: "failed" },
             );
             log("error", "clip_render_variant_failed", {
               workflowRunId: run.id,
@@ -7424,6 +7481,12 @@ async function executeClipRenderAttempt(
         clipRenderId,
         code,
         failure.disposition,
+        motionAnalyticsByRenderId.has(clipRenderId)
+          ? {
+              ...motionAnalyticsByRenderId.get(clipRenderId)!,
+              renderOutcome: "failed",
+            }
+          : undefined,
       );
     }
 

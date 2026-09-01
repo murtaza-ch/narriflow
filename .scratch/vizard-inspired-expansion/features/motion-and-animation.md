@@ -19,10 +19,15 @@ Keep the current whole-clip transitions:
 
 Add:
 
-- Cross Dissolve
 - Wipe Left, Right, Up, and Down
 - Slide Left, Right, Up, and Down
 - Zoom In and Zoom Out
+
+Cross Dissolve is intentionally deferred. Narriflow currently exports one
+standalone clip at a time and has no adjacent-clip timeline, so there is no
+second visual stream to dissolve against. Presenting an opacity fade as a
+cross dissolve would make preview/export parity technically true but the
+product behavior false. Add it only with an adjacent-clip composition model.
 
 Add media motion for Scene Block images, videos, text cards, and manual B-roll:
 
@@ -94,7 +99,7 @@ The web and FFmpeg adapters translate the plan. They do not calculate separate c
 
 1. Add validator support and plan fixtures while keeping existing transition output unchanged.
 2. Move current transitions through the Clip Composition Plan.
-3. Add Cross Dissolve, then directional wipe and slide.
+3. Add directional wipe and slide.
 4. Add media fade and scale, then pan and Ken Burns.
 5. Enable selection-scoped apply after single-clip behavior is stable.
 
@@ -109,4 +114,3 @@ The web and FFmpeg adapters translate the plan. They do not calculate separate c
 ## Out of scope
 
 - A keyframe editor, third-party motion templates, arbitrary easing editors, animated captions beyond the existing caption engine, or motion-graphics generation.
-

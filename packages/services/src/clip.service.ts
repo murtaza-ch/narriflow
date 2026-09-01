@@ -28,6 +28,7 @@ import {
 	EDITOR_DOCUMENT_VERSION,
 	getCaptionPresetById,
   getEffectiveClipTiming,
+  editorDocumentUsesMotion,
   isBrandDefaultCaptionPresetId,
   normalizeTranscriptSliceForClip,
   parseClipAutoLayoutAnalysis,
@@ -306,6 +307,70 @@ function toClipRenderVariantSnapshot(render: ClipRender): ClipRenderVariant {
     resolution,
   };
 }
+
+export function motionRenderAnalyticsMetadata(
+  document: Pick<EditorDocument, "studioEdits" | "sceneBlocks" | "mediaMotions">,
+  options: {
+    applyScope: "clip" | "selected";
+    fallbackCodes?: readonly string[];
+    renderOutcome: "completed" | "failed";
+  },
+) {
+  const families = new Set<string>();
+  const durations: number[] = [];
+  let targetCount = 0;
+  if (document.studioEdits.transition.type !== "none") {
+    families.add(`transition:${document.studioEdits.transition.type}`);
+    durations.push(document.studioEdits.transition.durationSec);
+    targetCount += 1;
+  }
+  for (const scene of document.sceneBlocks) {
+    const active = [scene.motion.entrance, scene.motion.exit].filter(
+      (family) => family !== "none",
+    );
+    if (active.length === 0) continue;
+    active.forEach((family) => {
+      families.add(`media:${family}`);
+    });
+    durations.push(scene.motion.durationSec);
+    targetCount += 1;
+  }
+  for (const motion of document.mediaMotions) {
+    if (!motion.enabled) continue;
+    const active = [motion.entrance, motion.exit].filter(
+      (family) => family !== "none",
+    );
+    if (active.length === 0) continue;
+    active.forEach((family) => {
+      families.add(`media:${family}`);
+    });
+    durations.push(motion.durationSec);
+    targetCount += 1;
+  }
+  const longestDuration = Math.max(0, ...durations);
+  return {
+    motionFamily: [...families].sort(),
+    durationBucket:
+      longestDuration === 0
+        ? "none"
+        : longestDuration <= 0.35
+          ? "short"
+          : longestDuration <= 0.75
+            ? "standard"
+            : "long",
+    targetCount,
+    applyScope: options.applyScope,
+    fallbackCode:
+      options.fallbackCodes && options.fallbackCodes.length > 0
+        ? [...new Set(options.fallbackCodes)].sort()
+        : ["none"],
+    renderOutcome: options.renderOutcome,
+  };
+}
+
+export type MotionRenderAnalyticsMetadata = ReturnType<
+  typeof motionRenderAnalyticsMetadata
+>;
 
 function toClipSnapshot(clip: ClipWithRenders): ClipSnapshot {
   const editorDocument = decodeClipEditorDocumentFromStorage(
@@ -1986,13 +2051,32 @@ export class ClipService {
       ? { projectId, id: { in: clipIds } }
       : { projectId };
 
-    const clipsToRender = await prisma.clip.findMany({
-      where: whereClause,
-      select: { id: true },
-    });
+    const clipsToRender = await prisma.clip.findMany({ where: whereClause });
 
     if (clipsToRender.length === 0) {
       throw new Error("no clips available for rendering");
+    }
+
+    const workspaceTier = resolvePricingTier(
+      (
+        await prisma.workspace.findUnique({
+          where: { id: workspaceContext.workspaceId },
+          select: { pricingTier: true },
+        })
+      )?.pricingTier,
+    );
+    if (
+      !hasFeature(workspaceTier, "editor.motion") &&
+      clipsToRender.some((clip) =>
+        editorDocumentUsesMotion(
+          decodeClipEditorDocumentFromStorage(clip, null),
+        ),
+      )
+    ) {
+      throw new ClipActionError(
+        "motion_feature_unavailable",
+        "Motion export is available on Creator and above",
+      );
     }
 
     const clipIdsToRender = clipsToRender.map((clip) => clip.id);
@@ -2291,6 +2375,7 @@ export class ClipService {
       storageKey: string;
       sizeBytes: number;
       durationSec: number;
+      motionAnalytics?: MotionRenderAnalyticsMetadata;
     },
   ): Promise<{ persisted: boolean }> {
     const prisma = requirePrisma();
@@ -2302,7 +2387,11 @@ export class ClipService {
     const render = await prisma.clipRender.findUnique({
       where: { id: clipRenderId },
       include: {
-        clip: { select: { projectId: true } },
+        clip: {
+          select: {
+            projectId: true,
+          },
+        },
         exportVariant: { select: { id: true, exportId: true } },
       },
     });
@@ -2371,6 +2460,30 @@ export class ClipService {
           }),
         );
       });
+    if (input.motionAnalytics && input.motionAnalytics.targetCount > 0) {
+      await analyticsService
+        .recordProjectEvent({
+          projectId: render.clip.projectId,
+          clipId: render.clipId,
+          type: "motion_render_outcome",
+          metadata: {
+            aspectRatio: render.aspectRatio,
+            ...input.motionAnalytics,
+            renderOutcome: "completed",
+          },
+        })
+        .catch((error) => {
+          console.warn(
+            JSON.stringify({
+              level: "warn",
+              message: "motion_render_analytics_record_failed",
+              projectId: render.clip.projectId,
+              clipId: render.clipId,
+              error: error instanceof Error ? error.message : String(error),
+            }),
+          );
+        });
+    }
 
     // Incremental delivery: nudge the project's live stream as soon as this
     // individual clip's render lands, instead of only on the run's overall
@@ -2385,6 +2498,7 @@ export class ClipService {
     clipRenderId: string,
     errorCode: string,
     disposition: "retryable" | "permanent" = "retryable",
+    motionAnalytics?: MotionRenderAnalyticsMetadata,
   ) {
     const prisma = requirePrisma();
     const attempt = currentWorkflowAttempt();
@@ -2395,7 +2509,12 @@ export class ClipService {
 
     const render = await prisma.clipRender.findUnique({
       where: { id: clipRenderId },
-      select: { exportVariantId: true },
+      select: {
+        aspectRatio: true,
+        clipId: true,
+        exportVariantId: true,
+        clip: { select: { projectId: true } },
+      },
     });
 
     const persisted =
@@ -2426,6 +2545,30 @@ export class ClipService {
         select: { exportId: true },
       });
       await clipExportService.syncAggregate(variant.exportId);
+    }
+    if (persisted && render && motionAnalytics && motionAnalytics.targetCount > 0) {
+      await analyticsService
+        .recordProjectEvent({
+          projectId: render.clip.projectId,
+          clipId: render.clipId,
+          type: "motion_render_outcome",
+          metadata: {
+            aspectRatio: render.aspectRatio,
+            ...motionAnalytics,
+            renderOutcome: "failed",
+          },
+        })
+        .catch((error) => {
+          console.warn(
+            JSON.stringify({
+              level: "warn",
+              message: "motion_render_analytics_record_failed",
+              projectId: render.clip.projectId,
+              clipId: render.clipId,
+              error: error instanceof Error ? error.message : String(error),
+            }),
+          );
+        });
     }
   }
 

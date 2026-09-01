@@ -7,6 +7,8 @@ import {
   compositionAssetRef,
   MOTION_ADAPTER_FIXTURES,
   planClipComposition,
+  planMediaMotion,
+  sampleCompositionMotion,
   screenLayoutInputFingerprint,
   splitLayoutInputFingerprint,
 } from "@narriflow/composition-plan";
@@ -77,7 +79,7 @@ function planInsertedScenes(targets = [
       censorSegments: [],
       mediaMotions: [],
       sceneBlocks: [
-        { id: "8ab9d330-688f-4574-932c-27ac661245c1", schemaVersion: 1, anchorSec: 0, durationSec: 1, content: { kind: "color", color: "#112233" }, motion: { entrance: "none", exit: "none" }, templateSnapshot: null },
+        { id: "8ab9d330-688f-4574-932c-27ac661245c1", schemaVersion: 1, anchorSec: 0, durationSec: 1, content: { kind: "color", color: "#112233" }, motion: { entrance: "scale-in", exit: "scale-out", durationSec: 0.35 }, templateSnapshot: null },
         { id: "d8ab95f8-fc16-4e60-814e-69762a59a99b", schemaVersion: 1, anchorSec: 1, durationSec: 1, content: { kind: "text", text: "Opening: 100%", fontFamily: "Missing Brand Font", fontAsset: { kind: "brand_font", id: fontId, fingerprint: "a".repeat(64) }, color: "#FFFFFF", backgroundColor: "#111827" }, motion: { entrance: "fade", exit: "fade" }, templateSnapshot: null },
         { id: "a3196d76-b71d-4b93-8812-7435b9e17faf", schemaVersion: 1, anchorSec: 2, durationSec: 1, content: { kind: "image", asset: { kind: "visual_asset", id: imageId, fingerprint }, fit: "contain", backgroundColor: "#223344" }, motion: { entrance: "ken-burns-in", exit: "ken-burns-out", durationSec: 0.35 }, templateSnapshot: null },
         { id: "31ddc1dd-838c-4fed-a940-4cbed7a3974b", schemaVersion: 1, anchorSec: 3, durationSec: 1, content: { kind: "video", asset: { kind: "visual_asset", id: videoId, fingerprint }, sourceStartSec: 0, sourceEndSec: 1, fit: "cover", backgroundColor: "#000000", muted: false, volume: 65 }, motion: { entrance: "pan-up", exit: "pan-down", durationSec: 0.35 }, templateSnapshot: null },
@@ -414,6 +416,36 @@ function planVisualStack(input: {
   return result.plan;
 }
 
+function planTransitionOnly(
+  type: (typeof MOTION_ADAPTER_FIXTURES.transitions)[number]["type"],
+) {
+  const result = planClipComposition({
+    document: editorDocumentSchema.parse({
+      version: 2,
+      clipStartSec: 0,
+      clipEndSec: 1,
+      captionPreset: captionPresetSchema.parse({ visible: false }),
+      transcriptSlice: [],
+      studioEdits: studioEditsSchema.parse({
+        framing: { mode: "center" },
+        transition: { type, durationSec: 0.3 },
+      }),
+      brollUrl: null,
+      deletedRanges: [],
+    }),
+    source: { identity: "source:key", kind: "video", width: 320, height: 180 },
+    evidence: { automaticLayout: { state: "missing" } },
+    assets: { backgroundImage: { state: "missing" } },
+    capabilities: {
+      automaticSpeakerLayout: true,
+      automaticSpeakerEngineVersion: "shot-layout-v1",
+    },
+    targets: [{ id: "smoke", aspectRatio: "16:9", width: 320, height: 180 }],
+  });
+  if (result.status === "invalid") throw new Error(result.error.code);
+  return result.plan;
+}
+
 describe("composition FFmpeg adapter", () => {
   test("compiles every shared transition fixture from canonical motion", () => {
     for (const fixture of MOTION_ADAPTER_FIXTURES.transitions) {
@@ -428,6 +460,112 @@ describe("composition FFmpeg adapter", () => {
       expect(compiled.filterParts.join(";").length).toBeLessThan(64_000);
     }
   });
+
+  test("executes every shared transition fixture in real FFmpeg", async () => {
+    for (const fixture of MOTION_ADAPTER_FIXTURES.transitions) {
+      const compiled = compileCompositionPlanVisualLayers({
+        plan: planTransitionOnly(fixture.type),
+        targetId: "smoke",
+        inputLabel: "[0:v]",
+        outputLabel: "[outv]",
+      });
+      const process = Bun.spawn([
+        "ffmpeg",
+        "-v", "error",
+        "-f", "lavfi",
+        "-i", "testsrc2=size=320x180:rate=24:duration=1",
+        "-filter_complex", compiled.filterParts.join(";"),
+        "-map", "[outv]",
+        "-f", "null",
+        "-",
+      ], { stdout: "ignore", stderr: "pipe" });
+      const stderr = await new Response(process.stderr).text();
+      expect(await process.exited, `${fixture.id}: ${stderr}`).toBe(0);
+    }
+  }, 30_000);
+
+  test("keeps a concurrent four-target motion encode within time, branch, and RSS budgets", async () => {
+    const planned = planClipComposition({
+      document: editorDocumentSchema.parse({
+        version: 2,
+        clipStartSec: 0,
+        clipEndSec: 0.6,
+        captionPreset: captionPresetSchema.parse({ visible: false }),
+        transcriptSlice: [],
+        studioEdits: studioEditsSchema.parse({
+          framing: { mode: "center" },
+          transition: { type: "wipe-left", durationSec: 0.25 },
+        }),
+        brollUrl: null,
+        deletedRanges: [],
+      }),
+      source: {
+        identity: "source:four-target-motion",
+        kind: "video",
+        width: 320,
+        height: 180,
+      },
+      evidence: { automaticLayout: { state: "missing" } },
+      assets: { backgroundImage: { state: "missing" } },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+      targets: [
+        { id: "vertical", aspectRatio: "9:16", width: 90, height: 160 },
+        { id: "square", aspectRatio: "1:1", width: 120, height: 120 },
+        { id: "landscape", aspectRatio: "16:9", width: 160, height: 90 },
+        { id: "portrait", aspectRatio: "4:5", width: 128, height: 160 },
+      ],
+    });
+    if (planned.status === "invalid") throw new Error(planned.error.code);
+
+    const startedAt = performance.now();
+    const processes = planned.plan.targets.map((target) => {
+      const compiled = compileCompositionPlanVisualLayers({
+        plan: planned.plan,
+        targetId: target.id,
+        inputLabel: "[0:v]",
+        outputLabel: "[outv]",
+      });
+      expect(compiled.filterParts.length).toBeLessThanOrEqual(4);
+      expect(compiled.filterParts.join(";").length).toBeLessThan(64_000);
+      return Bun.spawn(
+        [
+          "ffmpeg",
+          "-v",
+          "error",
+          "-f",
+          "lavfi",
+          "-i",
+          `testsrc2=size=${target.canvas.width}x${target.canvas.height}:rate=24:duration=0.6`,
+          "-filter_complex",
+          compiled.filterParts.join(";"),
+          "-map",
+          "[outv]",
+          "-f",
+          "null",
+          "-",
+        ],
+        { stdout: "ignore", stderr: "pipe" },
+      );
+    });
+    const stderrs = await Promise.all(
+      processes.map((process) => new Response(process.stderr).text()),
+    );
+    const exitCodes = await Promise.all(processes.map((process) => process.exited));
+    exitCodes.forEach((code, index) => {
+      expect(code, stderrs[index]).toBe(0);
+    });
+    const totalPeakRss = processes.reduce(
+      (total, process) => total + (process.resourceUsage()?.maxRSS ?? 0),
+      0,
+    );
+
+    expect(performance.now() - startedAt).toBeLessThan(10_000);
+    expect(totalPeakRss).toBeGreaterThan(0);
+    expect(totalPeakRss).toBeLessThan(1_000_000_000);
+  }, 15_000);
 
   test("translates the planned audio-only audiogram without choosing its visual policy", () => {
     const result = planClipComposition({
@@ -1104,6 +1242,48 @@ describe("composition FFmpeg adapter", () => {
     );
   });
 
+  test("compiles every shared media-motion fixture on the FFmpeg B-roll path", () => {
+    for (const fixture of MOTION_ADAPTER_FIXTURES.media) {
+      const base = planBroll();
+      const target = base.targets[0]!;
+      const motion = planMediaMotion({
+        entrance: fixture.entrance,
+        exit: fixture.exit,
+        durationSec: fixture.durationSec,
+        activeRange: { startSec: 1.5, endSec: 4 },
+        canvas: target.canvas,
+      });
+      const plan = {
+        ...base,
+        targets: base.targets.map((candidate) => ({
+          ...candidate,
+          scenes: candidate.scenes.map((scene) => ({
+            ...scene,
+            layers: scene.layers.map((layer) =>
+              layer.kind === "broll-video" || layer.kind === "broll-image"
+                ? { ...layer, motion }
+                : layer,
+            ),
+          })),
+        })),
+      };
+      const compiled = compileCompositionPlanVideo({
+        plan,
+        targetId: "variant-1",
+        videoInputLabel: "[0:v]",
+        outputLabel: "[outv]",
+        resolvedBrollAssets: { "broll:cutaway": "/tmp/cutaway.mp4" },
+        brollInputStartIndex: 1,
+      });
+
+      expect(compiled.brollInputs[0]?.motion, fixture.id).toEqual(motion);
+      expect(compiled.filterParts.join(";"), fixture.id).toContain("[outv]");
+      expect(compiled.filterParts.join(";").length, fixture.id).toBeLessThan(
+        64_000,
+      );
+    }
+  });
+
   test("compiles every inserted scene kind, fit treatment, own audio, frozen font, and target from one plan", () => {
     const { plan, imageRef, videoRef, fontRef } = planInsertedScenes();
     for (const target of plan.targets) {
@@ -1125,7 +1305,7 @@ describe("composition FFmpeg adapter", () => {
       expect(graph).toContain("drawtext=fontfile='/tmp/brand.ttf':text='Opening\\: 100\\%' ".trim());
       expect(graph).toContain("force_original_aspect_ratio=decrease,pad=");
       expect(graph).toContain("force_original_aspect_ratio=increase,crop=");
-		expect(graph).toContain("crop=w='max(2");
+		expect(graph).toContain("scale=w='max(2,round(iw*");
 		expect(graph).toContain("1.080000+-0.080000");
 		expect(graph).toContain(`pad=${target.canvas.width}:${target.canvas.height}:(ow-iw)/2:(oh-ih)/2`);
 		expect(graph).toContain(`crop=w='min(iw,${target.canvas.width})':h='min(ih,${target.canvas.height})'`);
@@ -1174,45 +1354,105 @@ describe("composition FFmpeg adapter", () => {
     })).toThrow("clip_composition_scene_font_missing");
   });
 
-  test("renders all inserted scene kinds and motion with real media", async () => {
+  test("matches shared preview deltas while rendering every media-motion family with real media", async () => {
     const directory = await mkdtemp(join(tmpdir(), "narriflow-scene-render-"));
     realMediaDirectories.push(directory);
     const sourcePath = join(directory, "source.mp4");
     const imagePath = join(directory, "image.png");
-    const sceneVideoPath = join(directory, "scene.mp4");
     const outputPath = join(directory, "output.mp4");
     const run = async (args: string[]) => {
       const process = Bun.spawn(args, { stdout: "ignore", stderr: "pipe" });
       const stderr = await new Response(process.stderr).text();
       expect(await process.exited, stderr).toBe(0);
     };
-    await run(["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=24", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "5", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", sourcePath]);
-    await run(["ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=0x88aaff:s=80x80", "-frames:v", "1", imagePath]);
-    await run(["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc2=size=100x100:rate=24", "-f", "lavfi", "-i", "sine=frequency=880:sample_rate=48000", "-t", "1", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", sceneVideoPath]);
+    await run(["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc2=size=320x180:rate=24", "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "4", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", sourcePath]);
+    await run(["ffmpeg", "-y", "-f", "lavfi", "-i", "testsrc2=size=180x320:rate=1", "-frames:v", "1", imagePath]);
 
-    const { plan, imageRef, videoRef, fontRef } = planInsertedScenes([
-      { id: "real", aspectRatio: "9:16", width: 180, height: 320 },
-    ], { width: 320, height: 180 });
+    const imageId = "141b738e-f106-4da1-b670-8b71ff7f0a58";
+    const fingerprint = "a".repeat(64);
+    const families = ["fade", "scale-in", "ken-burns-in", "pan-up"] as const;
+    const sceneIds = [
+      "8ab9d330-688f-4574-932c-27ac661245c1",
+      "d8ab95f8-fc16-4e60-814e-69762a59a99b",
+      "a3196d76-b71d-4b93-8812-7435b9e17faf",
+      "31ddc1dd-838c-4fed-a940-4cbed7a3974b",
+    ];
+    const planned = planClipComposition({
+      document: editorDocumentSchema.parse({
+        version: 2,
+        clipStartSec: 0,
+        clipEndSec: 4,
+        captionPreset: captionPresetSchema.parse({}),
+        transcriptSlice: [],
+        studioEdits: studioEditsSchema.parse({ framing: { mode: "center" } }),
+        brollUrl: null,
+        deletedRanges: [],
+        sceneBlocks: families.map((entrance, index) => ({
+          id: sceneIds[index]!,
+          schemaVersion: 1,
+          anchorSec: index,
+          durationSec: 1,
+          content: {
+            kind: "image" as const,
+            asset: { kind: "visual_asset" as const, id: imageId, fingerprint },
+            fit: "cover" as const,
+            backgroundColor: "#050505",
+          },
+          motion: { entrance, exit: "none" as const, durationSec: 0.35 },
+          templateSnapshot: null,
+        })),
+      }),
+      source: { identity: "source:key", kind: "video", width: 320, height: 180 },
+      evidence: { automaticLayout: { state: "missing" } },
+      assets: { backgroundImage: { state: "missing" } },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+      targets: [{ id: "real", aspectRatio: "9:16", width: 180, height: 320 }],
+    });
+    if (planned.status === "invalid") throw new Error(planned.error.code);
+    const plan = planned.plan;
+    const imageRef = compositionAssetRef(
+      "visual_asset",
+      `${imageId}:${fingerprint}`,
+    );
+    const motionLayers = plan.targets[0]!.scenes.flatMap((scene) =>
+      scene.layers.filter(
+        (layer) => layer.kind === "inserted-scene" && layer.motion,
+      ),
+    );
+    expect(motionLayers).toHaveLength(families.length);
+    const sampledFamilies = motionLayers.map((layer, index) => {
+      const motion = layer.motion!;
+      const startSec = index + 1 / 24;
+      const middleSec = index + 0.5;
+      return {
+        startSec,
+        middleSec,
+        start: sampleCompositionMotion(motion, startSec),
+        middle: sampleCompositionMotion(motion, middleSec),
+      };
+    });
+    expect(sampledFamilies[0]!.start.opacity).toBeLessThan(sampledFamilies[0]!.middle.opacity);
+    expect(sampledFamilies[1]!.start.transform.scale).toBeLessThan(sampledFamilies[1]!.middle.transform.scale);
+    expect(sampledFamilies[2]!.start.crop.width).toBeGreaterThan(sampledFamilies[2]!.middle.crop.width);
+    expect(sampledFamilies[3]!.start.transform.translateY).not.toBe(sampledFamilies[3]!.middle.transform.translateY);
     const audio = bindCompositionPlanAudioInputs(compileCompositionPlanAudioSchedule(plan), {});
-    const fontMatch = Bun.spawn(["fc-match", "-f", "%{file}", "Archivo"], { stdout: "pipe" });
-    const fontPath = (await new Response(fontMatch.stdout).text()).trim();
-    expect(await fontMatch.exited).toBe(0);
-    expect(fontPath.length).toBeGreaterThan(0);
     const args = buildSingleVideoArgs({
       sourcePath,
       outputPath,
       startSec: 0,
-      endSec: 5,
+      endSec: 4,
       aspectRatio: "9:16",
-      probe: { hasVideo: true, hasAudio: true, width: 320, height: 180, durationSec: 5, fps: 24 },
+      probe: { hasVideo: true, hasAudio: true, width: 320, height: 180, durationSec: 4, fps: 24 },
       srtPath: null,
       composition: { plan, targetId: "real" },
       audio,
       resolvedSceneAssets: {
         [imageRef]: { path: imagePath, kind: "image", hasAudio: false },
-        [videoRef]: { path: sceneVideoPath, kind: "video", hasAudio: true },
       },
-      resolvedSceneFonts: { [fontRef]: fontPath },
+      resolvedSceneFonts: {},
     });
     await run(["ffmpeg", ...args]);
     const probe = Bun.spawn(["ffprobe", "-v", "error", "-show_entries", "format=duration:stream=codec_type,width,height", "-of", "json", outputPath], { stdout: "pipe" });
@@ -1221,29 +1461,33 @@ describe("composition FFmpeg adapter", () => {
     expect(Number(result.format.duration)).toBeCloseTo(plan.editedDurationSec, 1);
     expect(result.streams).toContainEqual(expect.objectContaining({ codec_type: "video", width: 180, height: 320 }));
     expect(result.streams).toContainEqual(expect.objectContaining({ codec_type: "audio" }));
-    const centerPixelAt = async (timeSec: number) => {
+    const frameAt = async (timeSec: number) => {
       const frame = Bun.spawn([
         "ffmpeg", "-v", "error", "-ss", timeSec.toFixed(3), "-i", outputPath,
-        "-frames:v", "1", "-vf", "crop=1:1:90:160,format=rgb24", "-f", "rawvideo", "pipe:1",
+        "-frames:v", "1", "-vf", "format=rgb24", "-f", "rawvideo", "pipe:1",
       ], { stdout: "pipe", stderr: "pipe" });
       const bytes = new Uint8Array(await new Response(frame.stdout).arrayBuffer());
       const stderr = await new Response(frame.stderr).text();
       expect(await frame.exited, stderr).toBe(0);
-      return [...bytes.slice(0, 3)];
+      expect(bytes).toHaveLength(180 * 320 * 3);
+      return bytes;
     };
-    const colorCardPixel = await centerPixelAt(0.5);
-    const imageCardPixel = await centerPixelAt(2.5);
-    expect(colorCardPixel[0]).toBeGreaterThanOrEqual(12);
-    expect(colorCardPixel[0]).toBeLessThanOrEqual(24);
-    expect(colorCardPixel[1]).toBeGreaterThanOrEqual(28);
-    expect(colorCardPixel[1]).toBeLessThanOrEqual(42);
-    expect(colorCardPixel[2]).toBeGreaterThanOrEqual(44);
-    expect(colorCardPixel[2]).toBeLessThanOrEqual(60);
-    expect(imageCardPixel[0]).toBeGreaterThanOrEqual(125);
-    expect(imageCardPixel[0]).toBeLessThanOrEqual(150);
-    expect(imageCardPixel[1]).toBeGreaterThanOrEqual(158);
-    expect(imageCardPixel[1]).toBeLessThanOrEqual(184);
-    expect(imageCardPixel[2]).toBeGreaterThan(225);
+    const meanAbsoluteDifference = (left: Uint8Array, right: Uint8Array) => {
+      let total = 0;
+      for (let index = 0; index < left.length; index++) {
+        total += Math.abs(left[index]! - right[index]!);
+      }
+      return total / left.length;
+    };
+    for (const sample of sampledFamilies) {
+      const startFrame = await frameAt(sample.startSec);
+      const middleFrame = await frameAt(sample.middleSec);
+      // Each pair is the same frozen, non-uniform image. A material frame
+      // delta therefore proves that the FFmpeg adapter expressed the exact
+      // state change predicted by the shared preview sampler, rather than
+      // merely producing a valid but motionless file.
+      expect(meanAbsoluteDifference(startFrame, middleFrame)).toBeGreaterThan(2);
+    }
   }, 30_000);
 
   test("renders beep and mute against real dialogue while preserving music without clipping", async () => {

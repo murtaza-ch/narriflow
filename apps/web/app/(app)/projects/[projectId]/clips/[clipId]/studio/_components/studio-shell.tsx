@@ -86,7 +86,7 @@ import {
   useStudioEditingSession,
   useStudioSessionSelector,
 } from "./studio-editing-session-react";
-import { baseEditedRangeToCompositeRanges, baseEditedToComposite, compositeToBaseEdited, insertedSceneAtCompositeTime, type StudioSessionSnapshot } from "./studio-editing-session";
+import { baseEditedRangeToCompositeRanges, baseEditedToComposite, compositeToBaseEdited, insertedSceneAtCompositeTime, type StudioMotionPreview, type StudioSessionSnapshot } from "./studio-editing-session";
 import { DraftRecoveryDialog } from "./draft-recovery-dialog";
 import { StudioWriteLeaseOverlay } from "./studio-write-lease-overlay";
 import {
@@ -441,6 +441,8 @@ interface StudioState {
 interface StudioContextValue extends StudioState {
   /** Current immutable Clip Editor Document projection owned by the session. */
   editorDocument: EditorDocument;
+  motionPreview: StudioSessionSnapshot["preview"]["motion"];
+  setMotionPreview: (motion: StudioMotionPreview | null) => void;
   editorRevision: number;
   baseEditedToComposite: (timeSec: number) => number;
 	baseEditedRangeToComposite: (startSec: number, endSec: number) => ReturnType<typeof baseEditedRangeToCompositeRanges>;
@@ -638,7 +640,6 @@ interface StudioContextValue extends StudioState {
 	replaceSceneBlock: (id: string, content: SceneContent, durationSec?: number) => void;
 	updateSceneMotion: (id: string, motion: SceneMotion) => void;
   upsertMediaMotion: (motion: MediaMotion) => void;
-  removeMediaMotion: (id: string) => void;
   deleteSceneBlock: (id: string) => void;
   setCensorSegments: (segments: CensorSegment[]) => boolean;
   updateProjectCensorTerms: (terms: string[]) => Promise<unknown>;
@@ -1071,6 +1072,9 @@ export function StudioShell({
   const captionPreset = doc.captionPreset;
   const studioEdits = doc.studioEdits;
   const brollUrl = doc.brollUrl;
+  const setMotionPreview = useCallback((motion: StudioMotionPreview | null) => {
+    studioSession.dispatch({ type: "preview.set-motion", motion });
+  }, [studioSession]);
 
   // Derived from `doc.transcriptSlice`/`doc.clipStartSec`/`doc.clipEndSec`
   // via the exact same pure effective-timing computation studio/page.tsx
@@ -1325,9 +1329,6 @@ export function StudioShell({
         ? { type: "updateMediaMotion", id: motion.id, motion }
         : { type: "insertMediaMotion", motion },
     });
-  }, [studioSession]);
-  const removeMediaMotion = useCallback((id: string) => {
-    studioSession.dispatch({ type: "document.edit", action: { type: "removeMediaMotion", id } });
   }, [studioSession]);
   const deleteSceneBlock = useCallback((id: string) => {
     studioSession.dispatch({ type: "document.edit", action: { type: "deleteSceneBlock", id } });
@@ -2135,6 +2136,8 @@ export function StudioShell({
     saveState: displayedSaveState, isDocDirty, exportState, compositionPlanStatus,
     resetState, canUndo, canRedo, canReset,
     editorDocument: doc,
+    motionPreview: preview.motion,
+    setMotionPreview,
     editorRevision: cloud.revision,
     baseEditedToComposite: (timeSec) => baseEditedToComposite(doc, timeSec),
 		baseEditedRangeToComposite: (startSec, endSec) => baseEditedRangeToCompositeRanges(doc, startSec, endSec),
@@ -2158,7 +2161,7 @@ export function StudioShell({
     togglePlay, seekTo, splitAtPlayhead, deleteSelectedSegment, handleSave, handleExport,
     reportCompositionPlanStatus, compositionPlanQaFixture,
     handleUndo, handleRedo, handleReset, commitTrim, trimHandlesDisabled,
-		insertSceneBlock, moveSceneBlock, trimSceneBlock, duplicateSceneBlock, replaceSceneBlock, updateSceneMotion, upsertMediaMotion, removeMediaMotion, deleteSceneBlock,
+		insertSceneBlock, moveSceneBlock, trimSceneBlock, duplicateSceneBlock, replaceSceneBlock, updateSceneMotion, upsertMediaMotion, deleteSceneBlock,
     setCensorSegments, updateProjectCensorTerms, recordAutoCensorEvent,
   };
 

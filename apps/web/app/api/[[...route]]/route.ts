@@ -123,6 +123,10 @@ import {
   safeSocialRedirectPath,
 } from "@/lib/safe-redirect";
 import { censorDocumentMutationError } from "@/lib/censor-document-mutation";
+import {
+  motionDocumentExportError,
+  motionDocumentMutationError,
+} from "@/lib/motion-document-mutation";
 import { createUploadSessionHttpRoutes } from "./upload-session-http";
 import { createStripeWebhookHttpRoutes } from "./stripe-webhook-http";
 import { createWorkspaceBillingHttpRoutes } from "./workspace-billing-routes";
@@ -1191,6 +1195,8 @@ app.put("/projects/:id/clips/:clipId/editor", async (c) => {
     );
     const sceneError = sceneDocumentMutationError(appUser.pricingTier, current.document, parsed.data.document);
     if (sceneError) return c.json({ error: sceneError.error, message: sceneError.message }, sceneError.status);
+    const motionError = motionDocumentMutationError(appUser.pricingTier, current.document, parsed.data.document);
+    if (motionError) return c.json({ error: motionError.error, message: motionError.message }, motionError.status);
     const censorError = censorDocumentMutationError(appUser.pricingTier, current.document, parsed.data.document);
     if (censorError) return c.json({ error: censorError.error, message: censorError.message }, censorError.status);
     const changedScenes = changedSceneBlocks(current.document, parsed.data.document);
@@ -1435,6 +1441,12 @@ app.post("/projects/:id/clips/render", async (c) => {
       : await execute();
     return c.json(result, 202);
   } catch (error) {
+    if (
+      error instanceof ClipActionError &&
+      error.code === "motion_feature_unavailable"
+    ) {
+      return c.json({ error: error.code, message: error.message }, 403);
+    }
     return c.json(
       { error: "clip_render_failed", message: errorMessage(error) },
       400,
@@ -1857,6 +1869,16 @@ app.post("/projects/:id/clips/:clipId/exports", async (c) => {
       (segment: CensorSegment) =>
         segment.enabled && isCensorSegmentStale(segment, editor.document.transcriptSlice),
     ).length;
+    const motionError = motionDocumentExportError(
+      appUser.pricingTier,
+      editor.document,
+    );
+    if (motionError) {
+      return c.json(
+        { error: motionError.error, message: motionError.message },
+        motionError.status,
+      );
+    }
     if (staleCount > 0) {
       await autoCensorService.recordEvent(
         appUser,
@@ -1936,7 +1958,11 @@ app.post("/projects/:id/clips/:clipId/exports/:exportId/retry", async (c) => {
     const code = error.code;
     return c.json(
       { error: code, message: error.message },
-      code === "scene_asset_unavailable" || code === "scene_font_unavailable" ? 422 : 400,
+      code === "motion_feature_unavailable"
+        ? 403
+        : code === "scene_asset_unavailable" || code === "scene_font_unavailable"
+          ? 422
+          : 400,
     );
   }
 });

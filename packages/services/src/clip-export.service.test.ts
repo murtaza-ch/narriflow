@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { editorDocumentSchema } from "@narriflow/validators";
 import {
+  assertMotionExportEntitlement,
   assertSceneExportReferenceRows,
   buildClipExportFingerprint,
   clipExportDownloadFileName,
@@ -9,6 +10,33 @@ import {
   hashClipShareToken,
   sceneExportOwnerWhere,
 } from "./clip-export.service";
+
+describe("clip export motion entitlement", () => {
+  const motionDocument = editorDocumentSchema.parse({
+    version: 2,
+    clipStartSec: 0,
+    clipEndSec: 10,
+    captionPreset: {},
+    transcriptSlice: [],
+    studioEdits: {
+      transition: { type: "slide-left", durationSec: 0.35 },
+    },
+    brollUrl: null,
+    deletedRanges: [],
+  });
+
+  test("blocks a frozen motion snapshot after a workspace downgrades", () => {
+    expect(() => assertMotionExportEntitlement("free", motionDocument)).toThrow(
+      expect.objectContaining({ code: "motion_feature_unavailable" }),
+    );
+  });
+
+  test("allows the same frozen snapshot on an entitled tier", () => {
+    expect(() =>
+      assertMotionExportEntitlement("creator", motionDocument),
+    ).not.toThrow();
+  });
+});
 
 describe("clip export fingerprint", () => {
   test("is stable across caller ordering and duplicate aspect ratios", () => {

@@ -11,7 +11,7 @@
 ## Observable acceptance criteria
 
 - [x] Current Cut, Fade, Fade to Black, and Dip White resolve through the shared plan without visible regression.
-- [x] Cross Dissolve, directional wipe, directional slide, and zoom transitions use canonical timing and geometry.
+- [x] Directional wipe, directional slide, and zoom transitions use canonical timing and geometry. Cross Dissolve is deferred until the composition model has an adjacent clip to dissolve against.
 - [x] Fade, scale, pan, and Ken Burns entrance or exit apply to Scene Blocks, manual B-roll, and text cards.
 - [x] The planner owns conflicts, clamping, precedence, target geometry, and typed fallback notices.
 - [x] Reduced-motion preview displays a static state without changing saved or rendered motion.
@@ -26,7 +26,7 @@
 
 ## Rollout
 
-- [x] Shadow current transitions, then enable new families one at a time in the order defined by the feature spec.
+- [x] Under the pre-production policy, remove the old transition path atomically and enable the fully tested families without dual rendering.
 
 ## Scope boundaries
 

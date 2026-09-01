@@ -174,6 +174,21 @@ export const editorDocumentSchema = editorDocumentV2Schema;
 
 export type EditorDocument = z.infer<typeof editorDocumentSchema>;
 
+export function editorDocumentUsesMotion(document: EditorDocument): boolean {
+  return (
+    document.studioEdits.transition.type !== "none" ||
+    document.sceneBlocks.some(
+      (scene) =>
+        scene.motion.entrance !== "none" || scene.motion.exit !== "none",
+    ) ||
+    document.mediaMotions.some(
+      (motion) =>
+        motion.enabled &&
+        (motion.entrance !== "none" || motion.exit !== "none"),
+    )
+  );
+}
+
 /**
  * Optimistic-concurrency save envelope: the client sends the revision it
  * loaded (`baseRevision`) with the full document; the server accepts only if

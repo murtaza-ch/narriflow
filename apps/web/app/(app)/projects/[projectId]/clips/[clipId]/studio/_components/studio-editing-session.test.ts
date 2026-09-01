@@ -6,7 +6,7 @@ import {
   studioEditsSchema,
   type EditorDocument,
 } from "@narriflow/validators";
-import { baseEditedRangeToCompositeRanges, createStudioEditingSession } from "./studio-editing-session";
+import { applyStudioMotionPreview, baseEditedRangeToCompositeRanges, createStudioEditingSession } from "./studio-editing-session";
 import type { TimelineSegment } from "./studio-types";
 
 function makeDocument(): EditorDocument {
@@ -35,6 +35,22 @@ function makeSession() {
 }
 
 describe("StudioEditingSession document and history seam", () => {
+  test("owns ephemeral motion preview without cloning or dirtying the document", () => {
+    const session = makeSession();
+    const documentBefore = session.getSnapshot().document;
+    expect(session.dispatch({
+      type: "preview.set-motion",
+      motion: { kind: "transition", transition: { type: "wipe-left", durationSec: 0.4 } },
+    })).toEqual({ accepted: true });
+    const snapshot = session.getSnapshot();
+    expect(snapshot.document).toBe(documentBefore);
+    expect(snapshot.cloud.dirty).toBe(false);
+    expect(applyStudioMotionPreview(snapshot.document as EditorDocument, snapshot.preview.motion).studioEdits.transition).toEqual({
+      type: "wipe-left",
+      durationSec: 0.4,
+    });
+  });
+
 	test("splits source-backed ranges around intro and midroll scenes", () => {
 		const document = editorDocumentSchema.parse({
 			...makeDocument(),

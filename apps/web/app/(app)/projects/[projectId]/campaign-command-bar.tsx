@@ -37,6 +37,11 @@ import type {
   StudioTransition,
 } from "@narriflow/validators";
 import { userErrorMessage } from "@narriflow/validators";
+import {
+  MOTION_ENTRANCE_OPTIONS as ENTRANCE_OPTIONS,
+  MOTION_EXIT_OPTIONS as EXIT_OPTIONS,
+  TRANSITION_OPTIONS,
+} from "@/lib/motion-options";
 import { RenderClipsButton } from "./render-clips-button";
 import {
   buildApplyMotionSelectedInput,
@@ -115,55 +120,6 @@ type BundlePreflight = {
     estimatedSizeBytes: number;
   }>;
 };
-
-const TRANSITION_OPTIONS: ReadonlyArray<{
-  value: StudioTransition["type"];
-  label: string;
-}> = [
-  { value: "none", label: "Cut" },
-  { value: "fade", label: "Fade" },
-  { value: "cross-dissolve", label: "Cross dissolve" },
-  { value: "fade-black", label: "Fade to black" },
-  { value: "dip-white", label: "Dip white" },
-  { value: "wipe-left", label: "Wipe left" },
-  { value: "wipe-right", label: "Wipe right" },
-  { value: "wipe-up", label: "Wipe up" },
-  { value: "wipe-down", label: "Wipe down" },
-  { value: "slide-left", label: "Slide left" },
-  { value: "slide-right", label: "Slide right" },
-  { value: "slide-up", label: "Slide up" },
-  { value: "slide-down", label: "Slide down" },
-  { value: "zoom-in", label: "Zoom in" },
-  { value: "zoom-out", label: "Zoom out" },
-];
-
-const ENTRANCE_OPTIONS: ReadonlyArray<{
-  value: ManualBrollMotion["entrance"];
-  label: string;
-}> = [
-  { value: "none", label: "None" },
-  { value: "fade", label: "Fade in" },
-  { value: "scale-in", label: "Scale in" },
-  { value: "pan-left", label: "Pan left" },
-  { value: "pan-right", label: "Pan right" },
-  { value: "pan-up", label: "Pan up" },
-  { value: "pan-down", label: "Pan down" },
-  { value: "ken-burns-in", label: "Ken Burns in" },
-];
-
-const EXIT_OPTIONS: ReadonlyArray<{
-  value: ManualBrollMotion["exit"];
-  label: string;
-}> = [
-  { value: "none", label: "None" },
-  { value: "fade", label: "Fade out" },
-  { value: "scale-out", label: "Scale out" },
-  { value: "pan-left", label: "Pan left" },
-  { value: "pan-right", label: "Pan right" },
-  { value: "pan-up", label: "Pan up" },
-  { value: "pan-down", label: "Pan down" },
-  { value: "ken-burns-out", label: "Ken Burns out" },
-];
 
 function transitionLabel(type: StudioTransition["type"]) {
   return TRANSITION_OPTIONS.find((option) => option.value === type)?.label ?? type;

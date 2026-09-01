@@ -5,55 +5,23 @@ import Link from "next/link";
 import { Box, Flex, NativeSelect, Slider, Stack, Text } from "@chakra-ui/react";
 import { Layers, Move, Sparkles, Zap } from "lucide-react";
 import { toaster } from "@narriflow/ui";
-import type { MediaMotion, SceneMotion, StudioEdits } from "@narriflow/validators";
+import type { MediaMotion, SceneMotion } from "@narriflow/validators";
+import {
+  MOTION_ENTRANCE_OPTIONS,
+  MOTION_EXIT_OPTIONS,
+  TRANSITION_OPTIONS,
+} from "@/lib/motion-options";
 import { useStudio } from "../studio-shell";
 
-type TransitionType = StudioEdits["transition"]["type"];
 type MotionTab = "transition" | "media";
 
-const TRANSITIONS: ReadonlyArray<{
-  id: TransitionType;
-  label: string;
-  family: "cut" | "fade" | "wipe" | "slide" | "zoom";
-}> = [
-  { id: "none", label: "Cut", family: "cut" },
-  { id: "fade", label: "Fade", family: "fade" },
-  { id: "cross-dissolve", label: "Dissolve", family: "fade" },
-  { id: "fade-black", label: "Fade black", family: "fade" },
-  { id: "dip-white", label: "Dip white", family: "fade" },
-  { id: "wipe-left", label: "Wipe left", family: "wipe" },
-  { id: "wipe-right", label: "Wipe right", family: "wipe" },
-  { id: "wipe-up", label: "Wipe up", family: "wipe" },
-  { id: "wipe-down", label: "Wipe down", family: "wipe" },
-  { id: "slide-left", label: "Slide left", family: "slide" },
-  { id: "slide-right", label: "Slide right", family: "slide" },
-  { id: "slide-up", label: "Slide up", family: "slide" },
-  { id: "slide-down", label: "Slide down", family: "slide" },
-  { id: "zoom-in", label: "Zoom in", family: "zoom" },
-  { id: "zoom-out", label: "Zoom out", family: "zoom" },
-];
-
-const ENTRANCES: ReadonlyArray<{ id: SceneMotion["entrance"]; label: string }> = [
-  { id: "none", label: "None" },
-  { id: "fade", label: "Fade" },
-  { id: "scale-in", label: "Scale in" },
-  { id: "pan-left", label: "Pan left" },
-  { id: "pan-right", label: "Pan right" },
-  { id: "pan-up", label: "Pan up" },
-  { id: "pan-down", label: "Pan down" },
-  { id: "ken-burns-in", label: "Ken Burns in" },
-];
-
-const EXITS: ReadonlyArray<{ id: SceneMotion["exit"]; label: string }> = [
-  { id: "none", label: "None" },
-  { id: "fade", label: "Fade" },
-  { id: "scale-out", label: "Scale out" },
-  { id: "pan-left", label: "Pan left" },
-  { id: "pan-right", label: "Pan right" },
-  { id: "pan-up", label: "Pan up" },
-  { id: "pan-down", label: "Pan down" },
-  { id: "ken-burns-out", label: "Ken Burns out" },
-];
+const TRANSITIONS = TRANSITION_OPTIONS.map((option) => ({
+  id: option.value,
+  label: option.shortLabel,
+  family: option.family,
+}));
+const ENTRANCES = MOTION_ENTRANCE_OPTIONS.map((option) => ({ id: option.value, label: option.label }));
+const EXITS = MOTION_EXIT_OPTIONS.map((option) => ({ id: option.value, label: option.label }));
 
 function PresetPreview({ family }: { family: (typeof TRANSITIONS)[number]["family"] }) {
   return (
@@ -120,7 +88,7 @@ function SecondaryButton({ children, disabled = false, onClick }: { children: Re
 
 export function TransitionsPanel() {
   const studio = useStudio();
-  const { studioEdits, setStudioEdits, clipInfo, editorDocument } = studio;
+  const { studioEdits, setStudioEdits, clipInfo, editorDocument, setMotionPreview } = studio;
   const [tab, setTab] = useState<MotionTab>("transition");
   const [selected, setSelected] = useState(studioEdits.transition.type);
   const [duration, setDuration] = useState(studioEdits.transition.durationSec);
@@ -153,7 +121,33 @@ export function TransitionsPanel() {
   }
 
   function applyMediaMotion() {
-    if (!target || !canPersist) return;
+    if (!target) return;
+    if (!canPersist) {
+      if (target.kind === "scene") {
+        setMotionPreview({
+          kind: "scene",
+          sceneBlockId: target.id,
+          motion: { entrance: mediaEntrance, exit: mediaExit, durationSec: mediaDuration },
+        });
+      } else {
+        const totalDuration = clipInfo.duration + studio.sceneBlocks.reduce((sum, scene) => sum + scene.durationSec, 0);
+        const previewMotion: MediaMotion = {
+          schemaVersion: 1,
+          id: brollMotion?.id ?? crypto.randomUUID(),
+          target: { kind: "broll" },
+          startSec: 0,
+          endSec: Math.max(0.1, totalDuration),
+          entrance: mediaEntrance,
+          exit: mediaExit,
+          durationSec: mediaDuration,
+          enabled: true,
+        };
+        setMotionPreview({ kind: "broll", motion: previewMotion });
+      }
+      toaster.create({ type: "info", title: "Previewing motion", description: "Upgrade to Creator to save and export it." });
+      return;
+    }
+    setMotionPreview(null);
     if (target.kind === "scene") {
       studio.updateSceneMotion(target.id, { entrance: mediaEntrance, exit: mediaExit, durationSec: mediaDuration });
     } else {
@@ -172,6 +166,17 @@ export function TransitionsPanel() {
       studio.upsertMediaMotion(motion);
     }
     toaster.create({ type: "success", title: "Media motion applied" });
+  }
+
+  function applyTransitionToClip() {
+    const transition = { type: selected, durationSec: duration };
+    if (!canPersist) {
+      setMotionPreview({ kind: "transition", transition });
+      toaster.create({ type: "info", title: "Previewing transition", description: "Upgrade to Creator to save and export it." });
+      return;
+    }
+    setMotionPreview(null);
+    setStudioEdits((previous) => ({ ...previous, transition }));
   }
 
   async function handleApplyToAll() {
@@ -223,7 +228,7 @@ export function TransitionsPanel() {
             </Box>
           </Box>
           <DurationControl value={duration} max={1.5} onChange={setDuration} label="Transition duration" />
-          <SecondaryButton disabled={!canPersist} onClick={() => setStudioEdits((previous) => ({ ...previous, transition: { type: selected, durationSec: duration } }))}><Zap size={13} /> Apply to this clip</SecondaryButton>
+          <SecondaryButton onClick={applyTransitionToClip}><Zap size={13} /> {canPersist ? "Apply to this clip" : "Preview on this clip"}</SecondaryButton>
           <SecondaryButton disabled={!canPersist || applyState === "applying"} onClick={handleApplyToAll}>
             <Layers size={13} />{applyState === "applying" ? "Applying…" : applyState === "applied" ? "Applied to all clips" : applyState === "error" ? "Try apply to all again" : "Apply to all clips"}
           </SecondaryButton>
@@ -240,7 +245,7 @@ export function TransitionsPanel() {
                 <Box flex="1"><Text textStyle="eyebrow" color="studio.fgMuted" mb="7px">Exit</Text><NativeSelect.Root size="sm"><NativeSelect.Field aria-label="Exit motion" value={mediaExit} onChange={(event) => setMediaExit(event.currentTarget.value as SceneMotion["exit"])} bg="studio.subtle" borderColor="studio.borderStrong">{EXITS.map((motion) => <option key={motion.id} value={motion.id}>{motion.label}</option>)}</NativeSelect.Field><NativeSelect.Indicator /></NativeSelect.Root></Box>
               </Flex>
               <DurationControl value={mediaDuration} max={2} onChange={setMediaDuration} label="Motion duration" />
-              <SecondaryButton disabled={!canPersist} onClick={applyMediaMotion}><Sparkles size={13} /> Apply media motion</SecondaryButton>
+              <SecondaryButton onClick={applyMediaMotion}><Sparkles size={13} /> {canPersist ? "Apply media motion" : "Preview media motion"}</SecondaryButton>
             </>
       ) : (
             <Box layerStyle="well" p="14px"><Text fontSize="12px" color="studio.fg" fontWeight="600">No media target yet</Text><Text mt="4px" fontSize="10.5px" color="studio.fgMuted" lineHeight="1.45">Add manual B-roll or a Scene Block, then return here to animate it.</Text></Box>

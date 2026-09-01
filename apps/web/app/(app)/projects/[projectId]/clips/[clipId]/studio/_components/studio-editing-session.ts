@@ -9,6 +9,9 @@ import {
   type EditedTimeMap,
   type EditorAction,
   type EditorDocument,
+  type MediaMotion,
+  type SceneMotion,
+  type StudioTransition,
   type TranscriptUtterance,
 } from "@narriflow/validators";
 import {
@@ -165,6 +168,7 @@ export type StudioSessionIntent =
   | { type: "history.redo" }
   | { type: "preview.set-source-fallback"; enabled: boolean }
   | { type: "preview.set-source-audio-envelope"; gain: number }
+  | { type: "preview.set-motion"; motion: StudioMotionPreview | null }
   | { type: "playback.seek"; editedTimeSec: number }
   | { type: "playback.play" }
   | { type: "playback.pause" }
@@ -300,10 +304,46 @@ export interface StudioPreviewSnapshot {
   waveformPeaksUrl: string | null;
   automaticLayout: DeepReadonly<ClipAutoLayoutAnalysis> | null;
   automaticLayoutStatus: "available" | "pending" | "failed";
+  motion: DeepReadonly<StudioMotionPreview> | null;
   activeAsset:
     | { kind: "proxy"; url: string; offsetSec: number }
     | { kind: "source"; url: string; offsetSec: 0 }
     | { kind: "unavailable"; url: null; offsetSec: 0 };
+}
+
+export type StudioMotionPreview =
+  | { kind: "transition"; transition: StudioTransition }
+  | { kind: "scene"; sceneBlockId: string; motion: SceneMotion }
+  | { kind: "broll"; motion: MediaMotion };
+
+export function applyStudioMotionPreview(
+  document: EditorDocument,
+  preview: DeepReadonly<StudioMotionPreview> | null,
+): EditorDocument {
+  if (!preview) return document;
+  if (preview.kind === "transition") {
+    return {
+      ...document,
+      studioEdits: { ...document.studioEdits, transition: preview.transition },
+    };
+  }
+  if (preview.kind === "scene") {
+    return {
+      ...document,
+      sceneBlocks: document.sceneBlocks.map((scene) =>
+        scene.id === preview.sceneBlockId
+          ? { ...scene, motion: preview.motion }
+          : scene,
+      ),
+    };
+  }
+  return {
+    ...document,
+    mediaMotions: [
+      ...document.mediaMotions.filter((motion) => motion.target.kind !== "broll"),
+      preview.motion,
+    ],
+  };
 }
 
 export interface StudioMediaBinding {
@@ -504,6 +544,7 @@ export function studioPreviewSnapshotsEqual(
     left.waveformPeaksUrl === right.waveformPeaksUrl &&
     left.automaticLayout === right.automaticLayout &&
     left.automaticLayoutStatus === right.automaticLayoutStatus &&
+    left.motion === right.motion &&
     left.activeAsset.kind === right.activeAsset.kind &&
     left.activeAsset.url === right.activeAsset.url &&
     left.activeAsset.offsetSec === right.activeAsset.offsetSec
@@ -654,6 +695,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
   private mediaOffsetSec = 0;
   private mediaAudioFingerprint: string | null = null;
   private sourceAudioEnvelope = 1;
+  private motionPreview: DeepReadonly<StudioMotionPreview> | null = null;
   private unsubscribeMedia: (() => void) | null = null;
   private pendingMediaSeekSourceSec: number | null = null;
   private pendingCompositeSeekTimeSec: number | null = null;
@@ -813,6 +855,16 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
         this.sourceAudioEnvelope = next;
         this.reconcileMediaAudio();
       }
+      return { accepted: true };
+    }
+    if (intent.type === "preview.set-motion") {
+      if (this.projection.status === "closed") {
+        return { accepted: false, reason: "closed" };
+      }
+      this.motionPreview = intent.motion
+        ? deepFreeze(structuredClone(intent.motion))
+        : null;
+      this.publish();
       return { accepted: true };
     }
     if (!this.snapshot.capabilities.mutate) {
@@ -1815,6 +1867,7 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
         : this.automaticLayoutPollFailed
           ? "failed"
           : "pending",
+      motion: this.motionPreview,
       activeAsset,
     });
   }

@@ -140,8 +140,8 @@ describe("Clip Composition Plan", () => {
           schemaVersion: 1,
           id: "10000000-0000-4000-8000-000000000002",
           target: { kind: "broll" },
-          startSec: 0,
-          endSec: 5,
+          startSec: 2.5,
+          endSec: 3.5,
           entrance: "pan-left",
           exit: "ken-burns-out",
           durationSec: 0.5,
@@ -206,9 +206,9 @@ describe("Clip Composition Plan", () => {
       kind: "broll-video",
       activeRange: { startSec: 2, endSec: 4 },
       motion: {
-        activeRange: { startSec: 2, endSec: 4 },
-        entrance: { range: { startSec: 2, endSec: 2.5 } },
-        exit: { range: { startSec: 3.5, endSec: 4 } },
+        activeRange: { startSec: 2.5, endSec: 3.5 },
+        entrance: { range: { startSec: 2.5, endSec: 3 } },
+        exit: { range: { startSec: 3, endSec: 3.5 } },
       },
     });
     expect(result.plan.notices).toContainEqual({
@@ -896,7 +896,10 @@ describe("Clip Composition Plan", () => {
     const autoDocument = editorDocumentSchema.parse({
     version: 2,
       ...centerDocument(),
-      studioEdits: studioEditsSchema.parse({ framing: { mode: "auto" } }),
+      studioEdits: studioEditsSchema.parse({
+        framing: { mode: "auto" },
+        transition: { type: "wipe-left", durationSec: 0.4 },
+      }),
     });
     const pending = planClipComposition({
       ...base,
@@ -1786,6 +1789,7 @@ describe("Clip Composition Plan", () => {
   });
 
   test("keeps the validated 64-scene, four-target Automatic boundary bounded", () => {
+    const startedAt = performance.now();
     const document = editorDocumentSchema.parse({
     version: 2,
       clipStartSec: 0,
@@ -1870,6 +1874,7 @@ describe("Clip Composition Plan", () => {
     });
 
     expect(result.status).toBe("ready");
+    expect(performance.now() - startedAt).toBeLessThan(1_000);
     if (result.status === "invalid") throw new Error(result.error.code);
     expect(result.plan.targets.map((target) => target.scenes.length)).toEqual([
       64, 64, 64, 64,
@@ -1877,6 +1882,15 @@ describe("Clip Composition Plan", () => {
     expect(new TextEncoder().encode(JSON.stringify(result.plan)).byteLength).toBeLessThanOrEqual(
       CLIP_COMPOSITION_MAX_SERIALIZED_BYTES,
     );
+    const compiledMotionTargets = result.plan.targets.map((target) => {
+      const transition = target.visualLayers.find(
+        (layer) => layer.kind === "transition",
+      );
+      expect(transition?.motion.entrance).not.toBeNull();
+      expect(transition?.motion.exit).not.toBeNull();
+      return transition;
+    });
+    expect(compiledMotionTargets).toHaveLength(4);
   });
 
   test("plans explicit Split scenes per target with distinct crops and encodable 4:5 tiles", () => {

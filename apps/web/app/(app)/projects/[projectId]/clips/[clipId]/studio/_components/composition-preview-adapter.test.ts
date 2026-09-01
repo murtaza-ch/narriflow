@@ -71,6 +71,59 @@ describe("composition preview adapter", () => {
     ).toThrow("unsupported_composition_motion_version");
   });
 
+  test("adopts every shared transition and media fixture", () => {
+    for (const fixture of MOTION_ADAPTER_FIXTURES.transitions) {
+      const document = editorDocumentSchema.parse({
+        version: 2,
+        clipStartSec: 0,
+        clipEndSec: 3,
+        captionPreset: captionPresetSchema.parse({}),
+        transcriptSlice: [],
+        studioEdits: studioEditsSchema.parse({
+          transition: { type: fixture.type, durationSec: fixture.durationSec },
+        }),
+        brollUrl: null,
+        deletedRanges: [],
+      });
+      const result = planClipComposition({
+        document,
+        source: { identity: "preview:fixture", kind: "video", width: fixture.target.width, height: fixture.target.height },
+        evidence: { automaticLayout: { state: "missing" } },
+        assets: { backgroundImage: { state: "missing" } },
+        capabilities: { automaticSpeakerLayout: true, automaticSpeakerEngineVersion: "shot-layout-v1" },
+        targets: [{ id: fixture.target.id, aspectRatio: fixture.target.id === "vertical" ? "9:16" : fixture.target.id === "square" ? "1:1" : "16:9", width: fixture.target.width, height: fixture.target.height }],
+      });
+      if (result.status === "invalid") throw new Error(result.error.code);
+      const motion = result.plan.targets[0]!.visualLayers.find((layer) => layer.kind === "transition")?.motion;
+      if (fixture.type === "none") {
+        expect(motion).toBeUndefined();
+        continue;
+      }
+      expect(motion).toBeDefined();
+      expect(adoptCompositionMotion(motion!, 0, false).reducedMotion).toBe(false);
+    }
+
+    for (const fixture of MOTION_ADAPTER_FIXTURES.media) {
+      const motion = planMediaMotion({
+        entrance: fixture.entrance,
+        exit: fixture.exit,
+        durationSec: fixture.durationSec,
+        activeRange: fixture.activeRange,
+        canvas: fixture.target,
+      });
+      const sample = adoptCompositionMotion(
+        motion,
+        fixture.activeRange.startSec,
+        false,
+      );
+      expect(Number.isFinite(sample.opacity)).toBe(true);
+      expect(adoptCompositionMotion(motion, fixture.activeRange.startSec, true)).toEqual({
+        ...motion.restingState,
+        reducedMotion: true,
+      });
+    }
+  });
+
   test("keeps every active scoped fallback accessible", () => {
     const context = {
       requestedMode: "fit" as const,

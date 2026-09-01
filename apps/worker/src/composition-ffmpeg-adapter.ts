@@ -356,6 +356,9 @@ function compositionMotionFilters(input: {
     motionValueExpression({ motion: input.motion!, timeOffsetSec: offset, resting, read });
   const filters: string[] = [];
   const alpha = input.alpha ? ":alpha=1" : "";
+  const backgroundColor = input.backgroundColor.startsWith("#")
+    ? `0x${input.backgroundColor.slice(1)}`
+    : input.backgroundColor;
   for (const window of [input.motion.entrance, input.motion.exit]) {
     if (!window || window.from.opacity === window.to.opacity) continue;
     const type = window.from.opacity < window.to.opacity ? "in" : "out";
@@ -368,9 +371,13 @@ function compositionMotionFilters(input: {
   );
   if (cropChanged) {
     const crop = input.motion.restingState.crop;
+    const cropWidth = expr(crop.width, (state) => state.crop.width);
+    const cropHeight = expr(crop.height, (state) => state.crop.height);
+    const cropX = expr(crop.x, (state) => state.crop.x);
+    const cropY = expr(crop.y, (state) => state.crop.y);
     filters.push(
-      `crop=w='max(2,${expr(crop.width, (state) => state.crop.width)})':h='max(2,${expr(crop.height, (state) => state.crop.height)})':x='${expr(crop.x, (state) => state.crop.x)}':y='${expr(crop.y, (state) => state.crop.y)}'`,
-      `scale=${input.width}:${input.height}:eval=frame`,
+      `scale=w='max(2,round(iw*${input.width}/(${cropWidth})/2)*2)':h='max(2,round(ih*${input.height}/(${cropHeight})/2)*2)':eval=frame`,
+      `crop=${input.width}:${input.height}:x='max(0,(${cropX})*${input.width}/(${cropWidth}))':y='max(0,(${cropY})*${input.height}/(${cropHeight}))'`,
     );
   }
   const transformChanged = states.some(
@@ -388,14 +395,14 @@ function compositionMotionFilters(input: {
     );
     if (largeTranslation) {
       filters.push(
-        `pad=${input.width * 3}:${input.height * 3}:${input.width}:${input.height}:color=${input.alpha ? "black@0" : `0x${input.backgroundColor.slice(1)}`}`,
+        `pad=${input.width * 3}:${input.height * 3}:${input.width}:${input.height}:color=${input.alpha ? "black@0" : backgroundColor}`,
         `crop=${input.width}:${input.height}:x='${input.width}-(${x})':y='${input.height}-(${y})'`,
       );
     } else {
       filters.push(
         `scale=w='max(2,round(iw*(${scale})/2)*2)':h='max(2,round(ih*(${scale})/2)*2)':eval=frame`,
         `crop=w='min(iw,${input.width})':h='min(ih,${input.height})':x='max(0,(iw-${input.width})/2-(${x}))':y='max(0,(ih-${input.height})/2-(${y}))'`,
-        `pad=${input.width}:${input.height}:(ow-iw)/2:(oh-ih)/2:color=${input.alpha ? "black@0" : `0x${input.backgroundColor.slice(1)}`}`,
+        `pad=${input.width}:${input.height}:(ow-iw)/2:(oh-ih)/2:color=${input.alpha ? "black@0" : backgroundColor}`,
       );
     }
   }
@@ -404,9 +411,18 @@ function compositionMotionFilters(input: {
   );
   if (clipChanged) {
     const clip = input.motion.restingState.clip;
+    const clipX = expr(clip.x, (state) => state.clip.x);
+    const clipY = expr(clip.y, (state) => state.clip.y);
+    const clipWidth = expr(clip.width, (state) => state.clip.width);
+    const clipHeight = expr(clip.height, (state) => state.clip.height);
+    const color = input.alpha
+      ? "black@0"
+      : backgroundColor;
     filters.push(
-      `crop=w='max(2,${expr(clip.width, (state) => state.clip.width)})':h='max(2,${expr(clip.height, (state) => state.clip.height)})':x='${expr(clip.x, (state) => state.clip.x)}':y='${expr(clip.y, (state) => state.clip.y)}'`,
-      `pad=${input.width}:${input.height}:x='${expr(clip.x, (state) => state.clip.x)}':y='${expr(clip.y, (state) => state.clip.y)}':color=${input.alpha ? "black@0" : `0x${input.backgroundColor.slice(1)}`}:eval=frame`,
+      `drawbox=x=0:y=0:w='max(0,${clipX})':h=${input.height}:color=${color}:t=fill`,
+      `drawbox=x='min(${input.width},(${clipX})+(${clipWidth}))':y=0:w='max(0,${input.width}-((${clipX})+(${clipWidth})))':h=${input.height}:color=${color}:t=fill`,
+      `drawbox=x=0:y=0:w=${input.width}:h='max(0,${clipY})':color=${color}:t=fill`,
+      `drawbox=x=0:y='min(${input.height},(${clipY})+(${clipHeight}))':w=${input.width}:h='max(0,${input.height}-((${clipY})+(${clipHeight})))':color=${color}:t=fill`,
     );
   }
   return filters.length ? `,${filters.join(",")},setsar=1` : "";
@@ -573,8 +589,9 @@ export function compileCompositionPlanVisualLayers(input: {
           height: target.canvas.height,
           backgroundColor: layer.color,
         });
+        const motionChain = motion.startsWith(",") ? motion.slice(1) : motion;
         return {
-          parts: [`${source}${motion || ",null"}${output}`],
+          parts: [`${source}${motionChain || "null"}${output}`],
         };
       });
     } else if (layer.kind === "output-treatment") {

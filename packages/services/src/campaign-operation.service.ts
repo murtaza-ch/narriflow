@@ -50,6 +50,7 @@ import {
 import { presignDownloadUrl } from "./r2-storage";
 import { sceneTemplateService, SceneTemplateError } from "./scene-template.service";
 import { getWorkflowRunLifecycle } from "./workflow-run-lifecycle";
+import { analyticsService } from "./analytics.service";
 
 export class CampaignOperationError extends Error {
   constructor(readonly code: string, message: string) {
@@ -2202,6 +2203,46 @@ export class CampaignOperationService {
         completedAt: new Date(),
       },
     });
+    if (affected > 0) {
+      const families =
+        input.change.scope === "clip_transition"
+          ? [`transition:${input.change.transition.type}`]
+          : [input.change.motion.entrance, input.change.motion.exit]
+              .filter((family) => family !== "none")
+              .map((family) => `media:${family}`);
+      const durationSec =
+        input.change.scope === "clip_transition"
+          ? input.change.transition.durationSec
+          : input.change.motion.durationSec;
+      await analyticsService
+        .recordProjectEvent({
+          projectId: scope.projectId,
+          type: "motion_applied",
+          metadata: {
+            motionFamily: [...new Set(families)].sort(),
+            durationBucket:
+              durationSec <= 0.35
+                ? "short"
+                : durationSec <= 0.75
+                  ? "standard"
+                  : "long",
+            targetCount: affected,
+            applyScope: "selected",
+            fallbackCode: ["none"],
+          },
+        })
+        .catch((error) => {
+          console.warn(
+            JSON.stringify({
+              level: "warn",
+              message: "motion_apply_analytics_record_failed",
+              projectId: scope.projectId,
+              campaignOperationId: settled.id,
+              error: error instanceof Error ? error.message : String(error),
+            }),
+          );
+        });
+    }
     return { ...campaignOperationSnapshot(settled), replayed: false };
   }
 }

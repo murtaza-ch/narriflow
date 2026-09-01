@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   clipService,
+  type MotionRenderAnalyticsMetadata,
   type RenderWorkSetOutcome,
   WorkflowAttemptLost,
   WorkflowFailure,
@@ -88,6 +89,7 @@ function createOrdinaryTracer(input: {
   exportBound?: boolean;
   workspaceDirectory?: string;
   downloadFixturePath?: string;
+  motionTransition?: boolean;
 }) {
   const attempt: ClipRenderingWorkflowAttempt = {
     workflowRunId: "10000000-0000-0000-0000-000000000051",
@@ -119,7 +121,9 @@ function createOrdinaryTracer(input: {
       transcriptSlice: [],
       deletedRanges: null,
       captionPreset: null,
-      studioEdits: null,
+      studioEdits: input.motionTransition
+        ? { transition: { type: "slide-left", durationSec: 0.35 } }
+        : null,
 		editorDocumentVersion: 2,
 		sceneBlocks: [],
 		censorSegments: [],
@@ -143,6 +147,7 @@ function createOrdinaryTracer(input: {
     message: string;
     context?: Record<string, unknown>;
   }> = [];
+  const failureMotionAnalytics: MotionRenderAnalyticsMetadata[] = [];
   let variantState:
     | "pending"
     | "rendering"
@@ -361,8 +366,14 @@ function createOrdinaryTracer(input: {
           objectReferences.push(completion.storageKey);
           return { persisted: true };
         },
-        failClipRenderVariant: async (_variantId, code, disposition) => {
+        failClipRenderVariant: async (
+          _variantId,
+          code,
+          disposition,
+          motionAnalytics,
+        ) => {
           actions.push(`variant_failure:${code}:${disposition}`);
+          if (motionAnalytics) failureMotionAnalytics.push(motionAnalytics);
           if (input.failureWriteRejects) throw injectedError;
           variantState = "failed";
         },
@@ -454,6 +465,7 @@ function createOrdinaryTracer(input: {
     clipRenderAttempt,
     deletedKeys,
     diagnostics,
+    failureMotionAnalytics,
     injectedError,
     objectReferences,
     settlementCalls: () => settlementCalls,
@@ -1755,6 +1767,7 @@ test("ClipRenderAttempt records a retryable failure when ranged probing and down
     },
     sourceFailures: ["ranged_probe", "download"],
     sourceMode: "ranged",
+    motionTransition: true,
   });
 
   await expect(
@@ -1768,6 +1781,13 @@ test("ClipRenderAttempt records a retryable failure when ranged probing and down
   );
   expect(harness.actions).not.toContain("command");
   expect(harness.actions).not.toContain("upload");
+  expect(harness.failureMotionAnalytics).toEqual([
+    expect.objectContaining({
+      motionFamily: ["transition:slide-left"],
+      targetCount: 1,
+      renderOutcome: "failed",
+    }),
+  ]);
   expect(harness.diagnostics).toContainEqual({
     message: "clip_render_source_operation_failed",
     context: expect.objectContaining({

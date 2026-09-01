@@ -7,11 +7,13 @@ import {
   clipAspectRatioOptions,
   clipAspectRatioToDb,
   clipRenderResolutionSchema,
+  editorDocumentUsesMotion,
   type ClipAspectRatio,
   type ClipExportSnapshot,
   type ClipExportStatus,
   type ClipRenderResolution,
   type EditorDocument,
+  type PricingTier,
   resolvePricingTier,
 } from "@narriflow/validators";
 import { deriveClipExportAggregate } from "./clip-export-aggregate";
@@ -47,6 +49,21 @@ export class ClipExportRevisionConflictError extends ClipExportError {
   constructor(readonly currentRevision: number) {
     super("editor_revision_conflict", "The clip changed before export started");
     this.name = "ClipExportRevisionConflictError";
+  }
+}
+
+export function assertMotionExportEntitlement(
+  pricingTier: PricingTier,
+  document: EditorDocument,
+): void {
+  if (
+    !hasFeature(pricingTier, "editor.motion") &&
+    editorDocumentUsesMotion(document)
+  ) {
+    throw new ClipExportError(
+      "motion_feature_unavailable",
+      "Motion export is available on Creator and above",
+    );
   }
 }
 
@@ -537,11 +554,16 @@ export class ClipExportService {
     if (!frozenSnapshot) {
       throw new ClipExportError("export_snapshot_missing", "Export snapshot is missing");
     }
+    const frozenDocument = decodeClipEditorDocumentFromStorage(
+      frozenSnapshot,
+      owned.project.sourceDurationSeconds,
+    );
+    assertMotionExportEntitlement(
+      resolvePricingTier(owned.project.workspace?.pricingTier),
+      frozenDocument,
+    );
     await assertSceneExportAvailability(
-      decodeClipEditorDocumentFromStorage(
-        frozenSnapshot,
-        owned.project.sourceDurationSeconds,
-      ),
+      frozenDocument,
       sceneExportOwnerWhere({
         projectUserId: owned.project.userId,
         workspaceId: owned.project.workspaceId,

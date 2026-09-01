@@ -243,6 +243,8 @@ enum AutopilotInitialImportMode {
 
 enum AnalyticsEventType {
   render_completed
+  motion_applied
+  motion_render_outcome
   download_opened
   social_scheduled
   social_cancelled

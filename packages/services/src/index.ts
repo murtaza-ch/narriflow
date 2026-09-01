@@ -87,6 +87,7 @@ export {
   ClipActionError,
   CLIP_TITLE_SYSTEM_PROMPT,
   buildClipTitleUserPrompt,
+  motionRenderAnalyticsMetadata,
   computeDurationOptimality,
   computePacingScore,
   computePlatformScore,
@@ -95,6 +96,7 @@ export {
   type ClipPendingPreview,
   type ClipPendingAutoLayoutAnalysis,
   type ClipDuplicationStorageAdapter,
+  type MotionRenderAnalyticsMetadata,
 } from "./clip.service";
 export {
   campaignOperationService,

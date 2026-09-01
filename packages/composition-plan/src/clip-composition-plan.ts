@@ -1294,8 +1294,7 @@ function transitionMotionProperty(
   if (
     type === "fade" ||
     type === "fade-black" ||
-    type === "dip-white" ||
-    type === "cross-dissolve"
+    type === "dip-white"
   ) {
     return "opacity";
   }
@@ -1429,7 +1428,7 @@ function applyTargetMediaMotion(input: {
       }
       return {
         ...layer,
-        activeRange,
+        activeRange: plannedRange,
         motion:
           settings.entrance === "none" && settings.exit === "none"
             ? null

@@ -127,10 +127,6 @@ function transitionStates(
 } {
   const resting = state(canvas);
   if (type === "none") return { entrance: null, exit: null };
-  if (type === "cross-dissolve") {
-    const hidden = state(canvas, { opacity: 0 });
-    return { entrance: [hidden, resting], exit: [resting, hidden] };
-  }
   if (type === "fade" || type === "fade-black" || type === "dip-white") {
     const solid = state(canvas);
     const clear = state(canvas, { opacity: 0 });
@@ -199,74 +195,42 @@ export function planTransitionMotion(input: {
   };
 }
 
-function mediaEntranceStates(
-  family: MediaEntrance,
+function mediaMotionStates(
+  family: MediaEntrance | MediaExit,
+  phase: "entrance" | "exit",
   canvas: Canvas,
+  resting: CompositionMotionState,
 ): readonly [CompositionMotionState, CompositionMotionState] | null {
-  const resting = state(canvas);
   if (family === "none") return null;
-  if (family === "fade") return [state(canvas, { opacity: 0 }), resting];
-  if (family === "scale-in") {
-    return [
-      state(canvas, {
-        transform: { translateX: 0, translateY: 0, scale: 0.88 },
-      }),
-      resting,
-    ];
+  if (family === "fade") {
+    const hidden = { ...resting, opacity: 0 };
+    return phase === "entrance" ? [hidden, resting] : [resting, hidden];
   }
-  if (family === "ken-burns-in") {
-    return [resting, state(canvas, { crop: centeredCrop(canvas, 0.88) })];
+  if (family === "scale-in" || family === "scale-out") {
+    const scaled = {
+      ...resting,
+      transform: { ...resting.transform, scale: 0.88 },
+    };
+    return phase === "entrance" ? [scaled, resting] : [resting, scaled];
+  }
+  if (family === "ken-burns-in" || family === "ken-burns-out") {
+    const uncropped = state(canvas);
+    return phase === "entrance" ? [uncropped, resting] : [resting, uncropped];
   }
   const direction = family.slice("pan-".length) as "left" | "right" | "up" | "down";
   const vector = directionVector(direction, {
     width: Math.round(canvas.width * 0.08),
     height: Math.round(canvas.height * 0.08),
   });
-  return [
-    state(canvas, {
-      transform: {
-        translateX: -vector.x,
-        translateY: -vector.y,
-        scale: 1.08,
-      },
-    }),
-    resting,
-  ];
-}
-
-function mediaExitStates(
-  family: MediaExit,
-  canvas: Canvas,
-): readonly [CompositionMotionState, CompositionMotionState] | null {
-  const resting = state(canvas);
-  if (family === "none") return null;
-  if (family === "fade") return [resting, state(canvas, { opacity: 0 })];
-  if (family === "scale-out") {
-    return [
-      resting,
-      state(canvas, {
-        transform: { translateX: 0, translateY: 0, scale: 0.88 },
-      }),
-    ];
-  }
-  if (family === "ken-burns-out") {
-    return [state(canvas, { crop: centeredCrop(canvas, 0.88) }), resting];
-  }
-  const direction = family.slice("pan-".length) as "left" | "right" | "up" | "down";
-  const vector = directionVector(direction, {
-    width: Math.round(canvas.width * 0.08),
-    height: Math.round(canvas.height * 0.08),
-  });
-  return [
-    resting,
-    state(canvas, {
-      transform: {
-        translateX: vector.x,
-        translateY: vector.y,
-        scale: 1.08,
-      },
-    }),
-  ];
+  const translated = {
+    ...resting,
+    transform: {
+      translateX: phase === "entrance" ? -vector.x : vector.x,
+      translateY: phase === "entrance" ? -vector.y : vector.y,
+      scale: 1.08,
+    },
+  };
+  return phase === "entrance" ? [translated, resting] : [resting, translated];
 }
 
 function centeredCrop(canvas: Canvas, fraction: number): CompositionMotionRect {
@@ -287,7 +251,10 @@ export function planMediaMotion(input: {
   readonly activeRange: CompositionMotionRange;
   readonly canvas: Canvas;
 }): CompositionMotionPlan {
-  const restingState = state(input.canvas);
+  const restingState =
+    input.entrance === "ken-burns-in" || input.exit === "ken-burns-out"
+      ? state(input.canvas, { crop: centeredCrop(input.canvas, 0.88) })
+      : state(input.canvas);
   return {
     version: COMPOSITION_MOTION_VERSION,
     activeRange: input.activeRange,
@@ -295,8 +262,8 @@ export function planMediaMotion(input: {
     ...windows(
       input.activeRange,
       input.durationSec,
-      mediaEntranceStates(input.entrance, input.canvas),
-      mediaExitStates(input.exit, input.canvas),
+      mediaMotionStates(input.entrance, "entrance", input.canvas, restingState),
+      mediaMotionStates(input.exit, "exit", input.canvas, restingState),
     ),
   };
 }

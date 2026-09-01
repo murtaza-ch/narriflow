@@ -45,7 +45,6 @@ describe("studioEditsSchema (source audio + music fades)", () => {
       "fade",
       "fade-black",
       "dip-white",
-      "cross-dissolve",
       "wipe-left",
       "wipe-right",
       "wipe-up",
