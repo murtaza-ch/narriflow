@@ -41,6 +41,7 @@ interface HonoSurface {
     body?: "required" | "optional";
     params?: readonly string[];
     query?: readonly string[];
+    headers?: Readonly<Record<string, string>>;
   };
 }
 
@@ -66,6 +67,43 @@ const paramsInput = (...params: string[]) => ({
     Object.fromEntries(params.map((name) => [name, uuidInput])),
   ).strict(),
   params,
+});
+const idempotentBodyInput = (
+  schema: ZodType,
+  params: readonly string[],
+) => ({
+  schema: z.object({
+    ...Object.fromEntries(params.map((name) => [name, uuidInput])),
+    body: schema,
+    idempotencyKey: z.string().trim().min(1).max(128),
+  }).strict(),
+  body: "required" as const,
+  params,
+  headers: { idempotencyKey: "idempotency-key" },
+});
+const campaignMutationInput = (
+  schema: ZodType,
+  params: readonly string[],
+) => {
+  const input = idempotentBodyInput(schema, params);
+  return {
+    ...input,
+    schema: input.schema.extend({
+      retryOfId: z.string().trim().uuid().optional(),
+    }),
+    headers: {
+      idempotencyKey: "idempotency-key",
+      retryOfId: "campaign-retry-of",
+    },
+  };
+};
+const idempotentParamsInput = (...params: string[]) => ({
+  schema: z.object({
+    ...Object.fromEntries(params.map((name) => [name, uuidInput])),
+    idempotencyKey: z.string().trim().min(1).max(128),
+  }).strict(),
+  params,
+  headers: { idempotencyKey: "idempotency-key" },
 });
 
 const project = (
@@ -210,19 +248,19 @@ export const browserSessionHonoSurfaces: readonly HonoSurface[] = [
     "processing.consume",
     actorRate("clip-export", 20),
   ),
-  { method: "POST", path: "/projects/:id/export-bundles", capability: "content.download", projectParam: "id", rateLimit: actorRate("export-bundle", 10, 3_600), input: bodyInput(createExportBundleSchema, ["id"]) },
+  { method: "POST", path: "/projects/:id/export-bundles", capability: "content.download", projectParam: "id", rateLimit: actorRate("export-bundle", 10, 3_600), input: idempotentBodyInput(createExportBundleSchema, ["id"]) },
   { method: "GET", path: "/projects/:id/export-bundles", capability: "content.view", projectParam: "id" },
   { method: "GET", path: "/projects/:id/campaign-operations", capability: "content.view", projectParam: "id" },
   { method: "GET", path: "/projects/:id/campaign-operations/editor-action-catalog", capability: "content.view", projectParam: "id", input: paramsInput("id") },
   { method: "POST", path: "/projects/:id/campaign-operations/preview-editor-action", capability: "content.view", projectParam: "id", rateLimit: actorRate("preview-campaign-editor-action", 60), input: bodyInput(previewCampaignEditorActionSchema, ["id"]) },
-  { method: "POST", path: "/projects/:id/campaign-operations/apply-brand-profile", capability: "content.edit", projectParam: "id", rateLimit: actorRate("apply-brand-profile-selected", 20, 3_600), input: bodyInput(applyProjectBrandProfileSelectedSchema, ["id"]) },
-  { method: "POST", path: "/projects/:id/campaign-operations/apply-style", capability: "content.edit", projectParam: "id", rateLimit: actorRate("apply-style-selected", 20, 3_600), input: bodyInput(applyStyleSelectedSchema, ["id"]) },
-  { method: "POST", path: "/projects/:id/campaign-operations/apply-motion", capability: "content.edit", projectParam: "id", rateLimit: actorRate("apply-motion-selected", 20, 3_600), input: bodyInput(applyMotionSelectedSchema, ["id"]) },
+  { method: "POST", path: "/projects/:id/campaign-operations/apply-brand-profile", capability: "content.edit", projectParam: "id", rateLimit: actorRate("apply-brand-profile-selected", 20, 3_600), input: campaignMutationInput(applyProjectBrandProfileSelectedSchema, ["id"]) },
+  { method: "POST", path: "/projects/:id/campaign-operations/apply-style", capability: "content.edit", projectParam: "id", rateLimit: actorRate("apply-style-selected", 20, 3_600), input: campaignMutationInput(applyStyleSelectedSchema, ["id"]) },
+  { method: "POST", path: "/projects/:id/campaign-operations/apply-motion", capability: "content.edit", projectParam: "id", rateLimit: actorRate("apply-motion-selected", 20, 3_600), input: campaignMutationInput(applyMotionSelectedSchema, ["id"]) },
   { method: "GET", path: "/projects/:id/export-bundles/:bundleId", capability: "content.view", projectParam: "id", input: paramsInput("id", "bundleId") },
   { method: "GET", path: "/projects/:id/export-bundles/:bundleId/download", capability: "content.download", projectParam: "id", input: paramsInput("id", "bundleId") },
-  { method: "POST", path: "/projects/:id/export-bundles/:bundleId/retry", capability: "content.download", projectParam: "id", rateLimit: actorRate("export-bundle-retry", 10, 3_600), input: paramsInput("id", "bundleId") },
-	{ method: "POST", path: "/projects/:id/campaign-operations/:operationId/retry-export-bundle", capability: "content.download", projectParam: "id", rateLimit: actorRate("export-operation-retry", 10, 3_600), input: paramsInput("id", "operationId") },
-  { method: "POST", path: "/projects/:id/brand-profiles/:profileId/scene-templates/:templateId/apply", capability: "content.edit", projectParam: "id", rateLimit: actorRate("apply-scene-template", 20, 3_600), input: bodyInput(applySceneTemplateSchema, ["id", "profileId", "templateId"]) },
+  { method: "POST", path: "/projects/:id/export-bundles/:bundleId/retry", capability: "content.download", projectParam: "id", rateLimit: actorRate("export-bundle-retry", 10, 3_600), input: idempotentParamsInput("id", "bundleId") },
+	{ method: "POST", path: "/projects/:id/campaign-operations/:operationId/retry-export-bundle", capability: "content.download", projectParam: "id", rateLimit: actorRate("export-operation-retry", 10, 3_600), input: idempotentParamsInput("id", "operationId") },
+  { method: "POST", path: "/projects/:id/brand-profiles/:profileId/scene-templates/:templateId/apply", capability: "content.edit", projectParam: "id", rateLimit: actorRate("apply-scene-template", 20, 3_600), input: campaignMutationInput(applySceneTemplateSchema, ["id", "profileId", "templateId"]) },
   { method: "POST", path: "/projects/:id/review-rounds", capability: "review.manage", projectParam: "id", rateLimit: actorRate("review-round", 20, 3_600), input: bodyInput(createReviewRoundSchema, ["id"]) },
   { method: "POST", path: "/projects/:id/review-rounds/:roundId/revoke", capability: "review.manage", projectParam: "id", input: paramsInput("id", "roundId") },
   project(

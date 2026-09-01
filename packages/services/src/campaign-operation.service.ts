@@ -11,6 +11,7 @@ import {
   brandProfileSnapshotSchema,
   brandTemplateSnapshotSchema,
   buildEditedTimeMap,
+  CAMPAIGN_OPERATION_ITEM_CONCURRENCY,
   createExportBundleSchema,
   exportBundleManifestSchema,
   previewCampaignEditorActionSchema,
@@ -155,6 +156,16 @@ type CampaignMotionActorScope = {
   idempotencyKey: string;
   retryOfId?: string;
 };
+type CampaignBundleActorScope = {
+  actorUserId: string;
+  workspaceId: string;
+  projectId: string;
+  pricingTier: PricingTier;
+  role: WorkspaceAccessRole;
+  status: WorkspaceAccessStatus;
+  idempotencyKey: string;
+  retryOfId?: string;
+};
 type CampaignBrandActorScope = BrandActorScope & {
   projectId: string;
   idempotencyKey: string;
@@ -172,6 +183,30 @@ type CampaignMotionMutation =
   | { status: "ineligible"; code: "campaign_motion_target_missing" }
   | { status: "failed"; code: "campaign_motion_document_limit" }
   | { status: "changed"; document: EditorDocument };
+
+function* boundedCampaignOperationItems<T>(items: T[]): Generator<T> {
+  for (
+    let offset = 0;
+    offset < items.length;
+    offset += CAMPAIGN_OPERATION_ITEM_CONCURRENCY
+  ) {
+    yield* items.slice(offset, offset + CAMPAIGN_OPERATION_ITEM_CONCURRENCY);
+  }
+}
+
+function assertCampaignBundleAllowed(scope: CampaignBundleActorScope) {
+  if (
+    !workspaceAllowsCapability(
+      { role: scope.role, status: scope.status },
+      "content.download",
+    )
+  ) {
+    throw new CampaignOperationError(
+      "campaign_operation_forbidden",
+      "Export bundles cannot be created with this Workspace role",
+    );
+  }
+}
 
 async function assertCampaignEditorRetry(input: {
   workspaceId: string;
@@ -648,7 +683,9 @@ export class CampaignOperationService {
       },
       data: { status: "pending", claimToken: null, leaseExpiresAt: null },
     });
-    for (const requested of input.clips.filter((clip) => knownIds.has(clip.clipId))) {
+    for (const requested of boundedCampaignOperationItems(
+      input.clips.filter((clip) => knownIds.has(clip.clipId)),
+    )) {
       const claimToken = randomUUID();
       const claimed = await prisma.campaignOperationItem.updateMany({
         where: {
@@ -962,8 +999,9 @@ export class CampaignOperationService {
     return presignDownloadUrl({ key: bundle.storageKey, expiresIn: 60, fileName: `narriflow-export-${bundleId}.zip` });
   }
 
-  async retryExportBundle(scope: { actorUserId: string; workspaceId: string; projectId: string; pricingTier: PricingTier; idempotencyKey: string }, bundleId: string) {
+  async retryExportBundle(scope: CampaignBundleActorScope, bundleId: string) {
 		assertCampaignActionWriteEnabled("export_bundle");
+		assertCampaignBundleAllowed(scope);
 		const bundle = await requirePrisma().exportBundle.findFirst({
       where: { id: bundleId, operation: { workspaceId: scope.workspaceId, projectId: scope.projectId, action: "export_bundle" } },
 			select: { operationId: true },
@@ -972,8 +1010,9 @@ export class CampaignOperationService {
 		return this.retryExportBundleOperation(scope, bundle.operationId);
 	}
 
-	async retryExportBundleOperation(scope: { actorUserId: string; workspaceId: string; projectId: string; pricingTier: PricingTier; idempotencyKey: string }, operationId: string) {
+	async retryExportBundleOperation(scope: CampaignBundleActorScope, operationId: string) {
 		assertCampaignActionWriteEnabled("export_bundle");
+		assertCampaignBundleAllowed(scope);
 		const source = await requirePrisma().campaignOperation.findFirst({
 			where: { id: operationId, workspaceId: scope.workspaceId, projectId: scope.projectId, action: "export_bundle" },
 			include: { items: true, retries: { select: { id: true }, take: 1 } },
@@ -992,15 +1031,20 @@ export class CampaignOperationService {
 		});
   }
 
-  async createExportBundle(scope: { actorUserId: string; workspaceId: string; projectId: string; pricingTier: PricingTier; idempotencyKey: string; retryOfId?: string }, value: unknown): Promise<{ operationId: string; workflowRunId: string; manifest: ExportBundleManifest; replayed: boolean }> {
+  async createExportBundle(scope: CampaignBundleActorScope, value: unknown): Promise<{ operationId: string; workflowRunId: string; manifest: ExportBundleManifest; replayed: boolean }> {
     assertCampaignActionWriteEnabled("export_bundle");
+    assertCampaignBundleAllowed(scope);
     if (!hasFeature(scope.pricingTier, "export.bundles")) throw new CampaignOperationError("export_bundle_feature_unavailable", "Export bundles are not available on this plan");
     const input = createExportBundleSchema.parse(value);
     const expiresAt = new Date(Date.now() + exportBundleRetentionMs());
     if (new Set(input.clips.map((clip) => clip.clipId)).size !== input.clips.length) {
       throw new CampaignOperationError("export_bundle_duplicate_clip", "A clip can appear only once in an export bundle");
     }
-    const requestFingerprint = fingerprint({ action: "export_bundle", ...input });
+    const requestFingerprint = fingerprint({
+      action: "export_bundle",
+      retryOfId: scope.retryOfId ?? null,
+      ...input,
+    });
     const prisma = requirePrisma();
     const replay = await prisma.campaignOperation.findUnique({
       where: { workspaceId_projectId_action_idempotencyKey: { workspaceId: scope.workspaceId, projectId: scope.projectId, action: "export_bundle", idempotencyKey: scope.idempotencyKey } },
@@ -1657,7 +1701,9 @@ export class CampaignOperationService {
       where: { operationId: operation.id, status: "processing", leaseExpiresAt: { lte: now } },
       data: { status: "pending", claimToken: null, leaseExpiresAt: null },
     });
-    for (const requested of orderedClips.filter((clip) => knownIds.has(clip.clipId))) {
+    for (const requested of boundedCampaignOperationItems(
+      orderedClips.filter((clip) => knownIds.has(clip.clipId)),
+    )) {
       const claimToken = randomUUID();
       const claimed = await prisma.campaignOperationItem.updateMany({
         where: { operationId: operation.id, requestedClipId: requested.clipId, status: "pending" },
@@ -1913,7 +1959,9 @@ export class CampaignOperationService {
       },
       data: { status: "pending", claimToken: null, leaseExpiresAt: null },
     });
-    for (const requested of orderedClips.filter((clip) => knownIds.has(clip.clipId))) {
+    for (const requested of boundedCampaignOperationItems(
+      orderedClips.filter((clip) => knownIds.has(clip.clipId)),
+    )) {
       const claimToken = randomUUID();
       const claimed = await prisma.campaignOperationItem.updateMany({
         where: {

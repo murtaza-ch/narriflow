@@ -317,11 +317,26 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
       status: "queued",
       lifecycleVersion: 2,
     }, select: { id: true } }));
+    await expect(bundleService.createExportBundle({
+      actorUserId: current.user.id,
+      workspaceId: current.workspace.id,
+      projectId: current.project.id,
+      pricingTier: "business",
+      role: "editor",
+      status: "restricted",
+      idempotencyKey: randomUUID(),
+    }, {
+      clips: [{ clipId: current.clip.id, expectedEditorRevision: 3 }],
+      aspectRatios: ["9:16"],
+      resolution: "1080p",
+    })).rejects.toMatchObject({ code: "campaign_operation_forbidden" });
     const result = await bundleService.createExportBundle({
       actorUserId: current.user.id,
       workspaceId: current.workspace.id,
       projectId: current.project.id,
       pricingTier: "business",
+      role: "owner",
+      status: "active",
       idempotencyKey: randomUUID(),
     }, {
       clips: [
@@ -342,6 +357,8 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
       workspaceId: current.workspace.id,
       projectId: current.project.id,
       pricingTier: "business",
+      role: "owner",
+      status: "active",
       idempotencyKey: randomUUID(),
     }, { clips: [{ clipId: current.clip.id, expectedEditorRevision: 3 }], aspectRatios: ["9:16"], resolution: "1080p" })).rejects.toMatchObject({ code: "export_bundle_empty" });
 
@@ -352,6 +369,8 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
       workspaceId: exactRevision.workspace.id,
       projectId: exactRevision.project.id,
       pricingTier: "business",
+      role: "owner",
+      status: "active",
       idempotencyKey: randomUUID(),
     }, { clips: [{ clipId: exactRevision.clip.id, expectedEditorRevision: 3 }], aspectRatios: ["9:16"], resolution: "1080p" })).rejects.toMatchObject({ code: "export_bundle_empty" });
   });
@@ -367,6 +386,8 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 			workspaceId: current.workspace.id,
 			projectId: current.project.id,
 			pricingTier: "business",
+			role: "owner",
+			status: "active",
 			idempotencyKey: sourceKey,
 		}, {
 			clips: [{ clipId: current.clip.id, expectedEditorRevision: 3 }],
@@ -394,6 +415,8 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
 			workspaceId: current.workspace.id,
 			projectId: current.project.id,
 			pricingTier: "business",
+			role: "owner",
+			status: "active",
 			idempotencyKey: randomUUID(),
 		}, source.id);
 		const retry = await prisma.campaignOperation.findUniqueOrThrow({ where: { id: retried.operationId } });

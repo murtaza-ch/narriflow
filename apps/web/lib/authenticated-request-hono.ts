@@ -137,6 +137,12 @@ export async function authenticatedRequestHonoMiddleware(
                 const queryValue = c.req.query(name);
                 if (queryValue !== undefined) value[name] = queryValue;
               }
+              for (const [name, header] of Object.entries(
+                declaration.input?.headers ?? {},
+              )) {
+                const headerValue = c.req.header(header);
+                if (headerValue !== undefined) value[name] = headerValue;
+              }
               if (declaration.input?.body) {
                 const rawBody = await c.req.raw.clone().text();
                 value.body = parseAuthenticatedJsonBody(

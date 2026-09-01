@@ -261,6 +261,43 @@ describe("authenticated request inventory", () => {
     }).success).toBe(false);
   });
 
+  test("admits campaign idempotency and retry headers through typed policy input", () => {
+    const declaration = matchBrowserSessionHonoSurface(
+      "POST",
+      "/projects/11111111-1111-4111-8111-111111111111/campaign-operations/apply-motion",
+    );
+    const valid = {
+      id: "11111111-1111-4111-8111-111111111111",
+      idempotencyKey: "campaign-submit-1",
+      retryOfId: "22222222-2222-4222-8222-222222222222",
+      body: {
+        change: {
+          scope: "clip_transition",
+          transition: { type: "fade", durationSec: 0.4 },
+        },
+        clips: [{
+          clipId: "33333333-3333-4333-8333-333333333333",
+          expectedEditorRevision: 2,
+        }],
+      },
+    };
+    expect(declaration?.input?.headers).toEqual({
+      idempotencyKey: "idempotency-key",
+      retryOfId: "campaign-retry-of",
+    });
+    expect(declaration?.input?.schema.safeParse(valid).success).toBe(true);
+    expect(
+      declaration?.input?.schema.safeParse({ ...valid, retryOfId: "not-a-uuid" })
+        .success,
+    ).toBe(false);
+    expect(
+      declaration?.input?.schema.safeParse({
+        ...valid,
+        idempotencyKey: undefined,
+      }).success,
+    ).toBe(false);
+  });
+
   test("keeps independent trust models out of browser-session policy", () => {
     expect(isIndependentTrustHonoSurface("POST", "/webhooks/stripe")).toBe(
       true,

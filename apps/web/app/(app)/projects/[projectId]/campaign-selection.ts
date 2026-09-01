@@ -1,3 +1,5 @@
+import { CAMPAIGN_SELECTION_LIMIT } from "@narriflow/validators";
+
 export const CAMPAIGN_SELECTION_STORAGE_KEY =
   "narriflow:campaign-clip-selection:v1";
 
@@ -17,7 +19,7 @@ function normalizeClipIds(clipIds: Iterable<string>): string[] {
   return [...new Set(clipIds)]
     .filter((clipId) => typeof clipId === "string" && clipId.length > 0)
     .sort()
-    .slice(0, 100);
+    .slice(0, CAMPAIGN_SELECTION_LIMIT);
 }
 
 function readStoredSelection(
@@ -31,7 +33,7 @@ function readStoredSelection(
       value.version !== 1 ||
       typeof value.projectId !== "string" ||
       !Array.isArray(value.clipIds) ||
-      value.clipIds.length > 100 ||
+      value.clipIds.length > CAMPAIGN_SELECTION_LIMIT ||
       value.clipIds.some((clipId) => typeof clipId !== "string")
     ) {
       clearCampaignSelection(storage);

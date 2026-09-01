@@ -11,6 +11,8 @@ import { applySceneTemplateSchema } from "./scene-template";
 // single-part publication copy is limited to 5 GiB. Four GiB leaves room for
 // the manifest and ZIP metadata while keeping disk use predictable.
 export const MAX_EXPORT_BUNDLE_INPUT_BYTES = 4 * 1024 * 1024 * 1024;
+export const CAMPAIGN_SELECTION_LIMIT = 100;
+export const CAMPAIGN_OPERATION_ITEM_CONCURRENCY = 1;
 
 export const campaignOperationActionSchema = z.enum([
   "render_selected",
@@ -36,7 +38,7 @@ export const createExportBundleSchema = z.strictObject({
   clips: z.array(z.strictObject({
     clipId: z.string().uuid(),
     expectedEditorRevision: z.number().int().nonnegative(),
-  })).min(1).max(100),
+  })).min(1).max(CAMPAIGN_SELECTION_LIMIT),
   aspectRatios: z.array(clipAspectRatioSchema).min(1).max(4),
   resolution: clipRenderResolutionSchema,
 });
@@ -50,7 +52,7 @@ const campaignSelectedClipsSchema = z
     }),
   )
   .min(1)
-  .max(100)
+  .max(CAMPAIGN_SELECTION_LIMIT)
   .superRefine((clips, context) => {
     if (new Set(clips.map((clip) => clip.clipId)).size !== clips.length) {
       context.addIssue({

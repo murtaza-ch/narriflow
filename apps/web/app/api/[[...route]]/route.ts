@@ -136,15 +136,6 @@ export const maxDuration = 60;
 
 const app = new Hono().basePath("/api");
 
-const UUID_PATTERN =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-
-function parseCampaignRetryOfId(value: string | undefined): string | null | undefined {
-  if (value === undefined) return undefined;
-  const retryOfId = value.trim();
-  return UUID_PATTERN.test(retryOfId) ? retryOfId : null;
-}
-
 function sceneDocumentMutationError(pricingTier: string, current: EditorDocument, next: EditorDocument) {
   const currentById = new Map(current.sceneBlocks.map((scene) => [scene.id, scene]));
   const nextById = new Map(next.sceneBlocks.map((scene) => [scene.id, scene]));
@@ -1453,11 +1444,13 @@ app.post("/projects/:id/clips/render", async (c) => {
 
 app.post("/projects/:id/export-bundles", async (c) => {
   const appUser = authenticatedHonoActor(c);
-  const { id, body } = authenticatedHonoInput<{ id: string; body: CreateExportBundleInput }>(c);
-  const idempotencyKey = c.req.header("idempotency-key")?.trim() ?? "";
-  if (!idempotencyKey || idempotencyKey.length > 128) return c.json({ error: "invalid_input", message: "Invalid idempotency-key header" }, 400);
+  const { id, body, idempotencyKey } = authenticatedHonoInput<{
+    id: string;
+    body: CreateExportBundleInput;
+    idempotencyKey: string;
+  }>(c);
   try {
-    return c.json(await campaignOperationService.createExportBundle({ actorUserId: appUser.actorUserId, workspaceId: appUser.workspaceId, projectId: id, pricingTier: resolvePricingTier(appUser.pricingTier), idempotencyKey }, body), 202);
+    return c.json(await campaignOperationService.createExportBundle({ actorUserId: appUser.actorUserId, workspaceId: appUser.workspaceId, projectId: id, pricingTier: resolvePricingTier(appUser.pricingTier), role: appUser.role, status: appUser.status, idempotencyKey }, body), 202);
   } catch (error) {
     if (error instanceof ProgramWriteDisabledError) return c.json({ error: error.code, message: error.message }, 503);
     const code = error instanceof CampaignOperationError ? error.code : "export_bundle_failed";
@@ -1555,24 +1548,12 @@ app.post("/projects/:id/campaign-operations/preview-editor-action", async (c) =>
 
 app.post("/projects/:id/campaign-operations/apply-brand-profile", async (c) => {
   const appUser = authenticatedHonoActor(c);
-  const { id: projectId, body } = authenticatedHonoInput<{
+  const { id: projectId, body, idempotencyKey, retryOfId } = authenticatedHonoInput<{
     id: string;
     body: ApplyProjectBrandProfileSelectedInput;
+    idempotencyKey: string;
+    retryOfId?: string;
   }>(c);
-  const idempotencyKey = c.req.header("idempotency-key")?.trim() ?? "";
-  const retryOfId = parseCampaignRetryOfId(c.req.header("campaign-retry-of"));
-  if (!idempotencyKey || idempotencyKey.length > 128) {
-    return c.json(
-      { error: "invalid_input", message: "Invalid idempotency-key header" },
-      400,
-    );
-  }
-  if (retryOfId === null) {
-    return c.json(
-      { error: "invalid_input", message: "Invalid campaign-retry-of header" },
-      400,
-    );
-  }
   try {
     return c.json(
       await campaignOperationService.applyProjectBrandProfileSelected(
@@ -1619,24 +1600,12 @@ app.post("/projects/:id/campaign-operations/apply-brand-profile", async (c) => {
 
 app.post("/projects/:id/campaign-operations/apply-style", async (c) => {
   const appUser = authenticatedHonoActor(c);
-  const { id: projectId, body } = authenticatedHonoInput<{
+  const { id: projectId, body, idempotencyKey, retryOfId } = authenticatedHonoInput<{
     id: string;
     body: ApplyStyleSelectedInput;
+    idempotencyKey: string;
+    retryOfId?: string;
   }>(c);
-  const idempotencyKey = c.req.header("idempotency-key")?.trim() ?? "";
-  const retryOfId = parseCampaignRetryOfId(c.req.header("campaign-retry-of"));
-  if (!idempotencyKey || idempotencyKey.length > 128) {
-    return c.json(
-      { error: "invalid_input", message: "Invalid idempotency-key header" },
-      400,
-    );
-  }
-  if (retryOfId === null) {
-    return c.json(
-      { error: "invalid_input", message: "Invalid campaign-retry-of header" },
-      400,
-    );
-  }
   try {
     return c.json(
       await campaignOperationService.applyStyleSelected(
@@ -1683,24 +1652,12 @@ app.post("/projects/:id/campaign-operations/apply-style", async (c) => {
 
 app.post("/projects/:id/campaign-operations/apply-motion", async (c) => {
   const appUser = authenticatedHonoActor(c);
-  const { id: projectId, body } = authenticatedHonoInput<{
+  const { id: projectId, body, idempotencyKey, retryOfId } = authenticatedHonoInput<{
     id: string;
     body: ApplyMotionSelectedInput;
+    idempotencyKey: string;
+    retryOfId?: string;
   }>(c);
-  const idempotencyKey = c.req.header("idempotency-key")?.trim() ?? "";
-  const retryOfId = parseCampaignRetryOfId(c.req.header("campaign-retry-of"));
-  if (!idempotencyKey || idempotencyKey.length > 128) {
-    return c.json(
-      { error: "invalid_input", message: "Invalid idempotency-key header" },
-      400,
-    );
-  }
-  if (retryOfId === null) {
-    return c.json(
-      { error: "invalid_input", message: "Invalid campaign-retry-of header" },
-      400,
-    );
-  }
   try {
     return c.json(
       await campaignOperationService.applyMotionSelected(
@@ -1757,11 +1714,9 @@ app.get("/projects/:id/export-bundles/:bundleId", async (c) => {
 
 app.post("/projects/:id/export-bundles/:bundleId/retry", async (c) => {
   const appUser = authenticatedHonoActor(c);
-  const { id: projectId, bundleId } = authenticatedHonoInput<{ id: string; bundleId: string }>(c);
-  const idempotencyKey = c.req.header("idempotency-key")?.trim() ?? "";
-  if (!idempotencyKey || idempotencyKey.length > 128) return c.json({ error: "invalid_input", message: "Invalid idempotency-key header" }, 400);
+  const { id: projectId, bundleId, idempotencyKey } = authenticatedHonoInput<{ id: string; bundleId: string; idempotencyKey: string }>(c);
   try {
-    return c.json(await campaignOperationService.retryExportBundle({ actorUserId: appUser.actorUserId, workspaceId: appUser.workspaceId, projectId, pricingTier: resolvePricingTier(appUser.pricingTier), idempotencyKey }, bundleId), 202);
+    return c.json(await campaignOperationService.retryExportBundle({ actorUserId: appUser.actorUserId, workspaceId: appUser.workspaceId, projectId, pricingTier: resolvePricingTier(appUser.pricingTier), role: appUser.role, status: appUser.status, idempotencyKey }, bundleId), 202);
   } catch (error) {
     const code = error instanceof CampaignOperationError ? error.code : "export_bundle_retry_failed";
     return c.json({ error: code, message: error instanceof CampaignOperationError ? error.message : "Export bundle could not be retried" }, code.includes("already_retried") || code.includes("conflict") ? 409 : code.includes("not_found") ? 404 : 400);
@@ -1770,11 +1725,9 @@ app.post("/projects/:id/export-bundles/:bundleId/retry", async (c) => {
 
 app.post("/projects/:id/campaign-operations/:operationId/retry-export-bundle", async (c) => {
 	const appUser = authenticatedHonoActor(c);
-	const { id: projectId, operationId } = authenticatedHonoInput<{ id: string; operationId: string }>(c);
-	const idempotencyKey = c.req.header("idempotency-key")?.trim() ?? "";
-	if (!idempotencyKey || idempotencyKey.length > 128) return c.json({ error: "invalid_input", message: "Invalid idempotency-key header" }, 400);
+	const { id: projectId, operationId, idempotencyKey } = authenticatedHonoInput<{ id: string; operationId: string; idempotencyKey: string }>(c);
 	try {
-		return c.json(await campaignOperationService.retryExportBundleOperation({ actorUserId: appUser.actorUserId, workspaceId: appUser.workspaceId, projectId, pricingTier: resolvePricingTier(appUser.pricingTier), idempotencyKey }, operationId), 202);
+		return c.json(await campaignOperationService.retryExportBundleOperation({ actorUserId: appUser.actorUserId, workspaceId: appUser.workspaceId, projectId, pricingTier: resolvePricingTier(appUser.pricingTier), role: appUser.role, status: appUser.status, idempotencyKey }, operationId), 202);
 	} catch (error) {
 		const code = error instanceof CampaignOperationError ? error.code : "export_bundle_retry_failed";
 		return c.json({ error: code, message: error instanceof CampaignOperationError ? error.message : "Export bundle could not be retried" }, code.includes("already_retried") || code.includes("conflict") ? 409 : code.includes("not_found") ? 404 : 400);
@@ -1796,20 +1749,14 @@ app.get("/projects/:id/export-bundles/:bundleId/download", async (c) => {
 
 app.post("/projects/:id/brand-profiles/:profileId/scene-templates/:templateId/apply", async (c) => {
   const appUser = authenticatedHonoActor(c);
-  const { id, profileId, templateId, body } = authenticatedHonoInput<{
+  const { id, profileId, templateId, body, idempotencyKey, retryOfId } = authenticatedHonoInput<{
     id: string;
     profileId: string;
     templateId: string;
     body: ApplySceneTemplateInput;
+    idempotencyKey: string;
+    retryOfId?: string;
   }>(c);
-  const idempotencyKey = c.req.header("idempotency-key")?.trim() ?? "";
-  const retryOfId = parseCampaignRetryOfId(c.req.header("campaign-retry-of"));
-  if (!idempotencyKey || idempotencyKey.length > 128) {
-    return c.json({ error: "invalid_input" }, 400);
-  }
-  if (retryOfId === null) {
-    return c.json({ error: "invalid_input", message: "Invalid campaign-retry-of header" }, 400);
-  }
   try {
     const result = await campaignOperationService.applySceneTemplate({
       actorUserId: appUser.actorUserId,
