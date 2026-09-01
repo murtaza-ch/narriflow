@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { brandTemplateSnapshotSchema } from "./brand-template";
 
 const idSchema = z.string().uuid();
 const fingerprintSchema = z.string().regex(/^[a-f0-9]{64}$/i);
@@ -29,6 +30,17 @@ export const brandApprovalRuleSchema = z.enum([
   "none",
   "approval_required",
 ]);
+
+export const brandProfileSnapshotSchema = z.strictObject({
+  version: z.literal(1),
+  profileId: idSchema,
+  profileRevision: z.number().int().positive(),
+  name: z.string().trim().min(1).max(80),
+  identity: brandVisualIdentitySchema,
+  voice: brandVoiceGuidanceSchema,
+  approvalRule: brandApprovalRuleSchema,
+  style: brandTemplateSnapshotSchema.nullable(),
+});
 
 export const brandProfileCreateSchema = z
   .object({

@@ -54,6 +54,10 @@ import {
   type CreateExportBundleInput,
   type CreateReviewRoundInput,
   type ApplySceneTemplateInput,
+  type ApplyMotionSelectedInput,
+  type ApplyProjectBrandProfileSelectedInput,
+  type ApplyStyleSelectedInput,
+  type PreviewCampaignEditorActionInput,
   type EditorDocument,
   type SceneBlock,
   type CensorSegment,
@@ -1462,6 +1466,249 @@ app.get("/projects/:id/campaign-operations", async (c) => {
   const appUser = authenticatedHonoActor(c);
   const projectId = c.req.param("id");
   return c.json({ operations: await campaignOperationService.listOperations({ workspaceId: appUser.workspaceId, projectId }) }, 200);
+});
+
+app.get("/projects/:id/campaign-operations/editor-action-catalog", async (c) => {
+  const appUser = authenticatedHonoActor(c);
+  const projectId = c.req.param("id");
+  try {
+    return c.json(
+      await campaignOperationService.getEditorActionCatalog({
+        actorUserId: appUser.actorUserId,
+        workspaceId: appUser.workspaceId,
+        workspaceOwnerUserId: appUser.workspaceOwnerUserId,
+        role: appUser.role,
+        status: appUser.status,
+        pricingTier: appUser.pricingTier,
+        isPersonalWorkspace: appUser.isPersonalWorkspace,
+        projectId,
+      }),
+      200,
+    );
+  } catch (error) {
+    const code =
+      error instanceof CampaignOperationError
+        ? error.code
+        : "campaign_editor_catalog_failed";
+    return c.json(
+      {
+        error: code,
+        message:
+          error instanceof CampaignOperationError
+            ? error.message
+            : "Campaign editor actions could not be loaded",
+      },
+      code.includes("forbidden") ? 403 : code.includes("not_found") ? 404 : 400,
+    );
+  }
+});
+
+app.post("/projects/:id/campaign-operations/preview-editor-action", async (c) => {
+  const appUser = authenticatedHonoActor(c);
+  const { id: projectId, body } = authenticatedHonoInput<{
+    id: string;
+    body: PreviewCampaignEditorActionInput;
+  }>(c);
+  try {
+    return c.json(
+      await campaignOperationService.previewEditorAction(
+        {
+          actorUserId: appUser.actorUserId,
+          workspaceId: appUser.workspaceId,
+          workspaceOwnerUserId: appUser.workspaceOwnerUserId,
+          role: appUser.role,
+          status: appUser.status,
+          pricingTier: appUser.pricingTier,
+          isPersonalWorkspace: appUser.isPersonalWorkspace,
+          projectId,
+        },
+        body,
+      ),
+      200,
+    );
+  } catch (error) {
+    const code =
+      error instanceof CampaignOperationError
+        ? error.code
+        : "campaign_editor_preview_failed";
+    return c.json(
+      {
+        error: code,
+        message:
+          error instanceof CampaignOperationError
+            ? error.message
+            : "The campaign action preview could not be completed",
+      },
+      code.includes("stale") ? 409 : code.includes("forbidden") ? 403 : 400,
+    );
+  }
+});
+
+app.post("/projects/:id/campaign-operations/apply-brand-profile", async (c) => {
+  const appUser = authenticatedHonoActor(c);
+  const { id: projectId, body } = authenticatedHonoInput<{
+    id: string;
+    body: ApplyProjectBrandProfileSelectedInput;
+  }>(c);
+  const idempotencyKey = c.req.header("idempotency-key")?.trim() ?? "";
+  if (!idempotencyKey || idempotencyKey.length > 128) {
+    return c.json(
+      { error: "invalid_input", message: "Invalid idempotency-key header" },
+      400,
+    );
+  }
+  try {
+    return c.json(
+      await campaignOperationService.applyProjectBrandProfileSelected(
+        {
+          actorUserId: appUser.actorUserId,
+          workspaceId: appUser.workspaceId,
+          workspaceOwnerUserId: appUser.workspaceOwnerUserId,
+          role: appUser.role,
+          status: appUser.status,
+          pricingTier: appUser.pricingTier,
+          isPersonalWorkspace: appUser.isPersonalWorkspace,
+          projectId,
+          idempotencyKey,
+        },
+        body,
+      ),
+      200,
+    );
+  } catch (error) {
+    if (error instanceof ProgramWriteDisabledError) {
+      return c.json({ error: error.code, message: error.message }, 503);
+    }
+    const code =
+      error instanceof CampaignOperationError
+        ? error.code
+        : "campaign_brand_profile_apply_failed";
+    return c.json(
+      {
+        error: code,
+        message:
+          error instanceof CampaignOperationError
+            ? error.message
+            : "The Project Brand Profile could not be applied",
+      },
+      code.includes("stale") || code.includes("conflict")
+        ? 409
+        : code.includes("forbidden") || code.includes("feature_unavailable")
+          ? 403
+          : 400,
+    );
+  }
+});
+
+app.post("/projects/:id/campaign-operations/apply-style", async (c) => {
+  const appUser = authenticatedHonoActor(c);
+  const { id: projectId, body } = authenticatedHonoInput<{
+    id: string;
+    body: ApplyStyleSelectedInput;
+  }>(c);
+  const idempotencyKey = c.req.header("idempotency-key")?.trim() ?? "";
+  if (!idempotencyKey || idempotencyKey.length > 128) {
+    return c.json(
+      { error: "invalid_input", message: "Invalid idempotency-key header" },
+      400,
+    );
+  }
+  try {
+    return c.json(
+      await campaignOperationService.applyStyleSelected(
+        {
+          actorUserId: appUser.actorUserId,
+          workspaceId: appUser.workspaceId,
+          workspaceOwnerUserId: appUser.workspaceOwnerUserId,
+          role: appUser.role,
+          status: appUser.status,
+          pricingTier: appUser.pricingTier,
+          isPersonalWorkspace: appUser.isPersonalWorkspace,
+          projectId,
+          idempotencyKey,
+        },
+        body,
+      ),
+      200,
+    );
+  } catch (error) {
+    if (error instanceof ProgramWriteDisabledError) {
+      return c.json({ error: error.code, message: error.message }, 503);
+    }
+    const code =
+      error instanceof CampaignOperationError
+        ? error.code
+        : "campaign_style_apply_failed";
+    return c.json(
+      {
+        error: code,
+        message:
+          error instanceof CampaignOperationError
+            ? error.message
+            : "The style preset could not be applied",
+      },
+      code.includes("stale") || code.includes("conflict")
+        ? 409
+        : code.includes("forbidden") || code.includes("feature_unavailable")
+          ? 403
+          : 400,
+    );
+  }
+});
+
+app.post("/projects/:id/campaign-operations/apply-motion", async (c) => {
+  const appUser = authenticatedHonoActor(c);
+  const { id: projectId, body } = authenticatedHonoInput<{
+    id: string;
+    body: ApplyMotionSelectedInput;
+  }>(c);
+  const idempotencyKey = c.req.header("idempotency-key")?.trim() ?? "";
+  if (!idempotencyKey || idempotencyKey.length > 128) {
+    return c.json(
+      { error: "invalid_input", message: "Invalid idempotency-key header" },
+      400,
+    );
+  }
+  try {
+    return c.json(
+      await campaignOperationService.applyMotionSelected(
+        {
+          actorUserId: appUser.actorUserId,
+          workspaceId: appUser.workspaceId,
+          projectId,
+          pricingTier: resolvePricingTier(appUser.pricingTier),
+          role: appUser.role,
+          status: appUser.status,
+          idempotencyKey,
+        },
+        body,
+      ),
+      200,
+    );
+  } catch (error) {
+    if (error instanceof ProgramWriteDisabledError) {
+      return c.json({ error: error.code, message: error.message }, 503);
+    }
+    const code =
+      error instanceof CampaignOperationError
+        ? error.code
+        : "campaign_motion_apply_failed";
+    const status = code.includes("conflict")
+      ? 409
+      : code.includes("forbidden") || code.includes("feature_unavailable")
+        ? 403
+        : 400;
+    return c.json(
+      {
+        error: code,
+        message:
+          error instanceof CampaignOperationError
+            ? error.message
+            : "Motion could not be applied to the selected clips",
+      },
+      status,
+    );
+  }
 });
 
 app.get("/projects/:id/export-bundles/:bundleId", async (c) => {

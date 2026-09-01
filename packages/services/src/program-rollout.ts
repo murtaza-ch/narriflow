@@ -31,6 +31,57 @@ const RELEASE_ENV: Record<ProgramReleaseGroup, string> = {
   auto_censor_beep: "NARRIFLOW_WRITES_AUTO_CENSOR_BEEP",
 };
 
+export type CampaignActionRollout = Readonly<{
+  render: boolean;
+  exports: boolean;
+  creative: boolean;
+  review: false;
+  scheduling: false;
+}>;
+
+export type CampaignRolloutAction =
+  | "render_selected"
+  | "export_bundle"
+  | "apply_brand_profile"
+  | "apply_style"
+  | "apply_scene_template"
+  | "apply_motion";
+
+export function campaignActionRolloutFromEnv(
+  env: Record<string, string | undefined> = process.env,
+): CampaignActionRollout {
+  const parent = env.NARRIFLOW_WRITES_CAMPAIGN_OPERATIONS === "1";
+  const render = parent && env.NARRIFLOW_WRITES_CAMPAIGN_RENDER === "1";
+  const exports = render && env.NARRIFLOW_WRITES_CAMPAIGN_EXPORTS === "1";
+  const creative = exports && env.NARRIFLOW_WRITES_CAMPAIGN_CREATIVE === "1";
+  return { render, exports, creative, review: false, scheduling: false };
+}
+
+export function campaignActionWriteEnabled(
+  action: CampaignRolloutAction,
+  rollout: CampaignActionRollout = campaignActionRolloutFromEnv(),
+): boolean {
+  if (action === "render_selected") return rollout.render;
+  if (action === "export_bundle") return rollout.exports;
+  return rollout.creative;
+}
+
+export function assertCampaignActionWriteEnabled(
+  action: CampaignRolloutAction,
+  rollout?: CampaignActionRollout,
+): void {
+  if (!campaignActionWriteEnabled(action, rollout)) {
+    throw new ProgramWriteDisabledError("campaign_operations");
+  }
+}
+
+export function assertCampaignMotionWriteEnabled(
+  _change: unknown,
+  rollout?: CampaignActionRollout,
+): void {
+  assertCampaignActionWriteEnabled("apply_motion", rollout);
+}
+
 export class ProgramWriteDisabledError extends Error {
   readonly code = "program_write_disabled";
 

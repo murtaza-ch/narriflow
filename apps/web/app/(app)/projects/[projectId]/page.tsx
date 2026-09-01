@@ -12,6 +12,7 @@ import {
   analyticsService,
   brandProfileService,
   clipService,
+  campaignActionRolloutFromEnv,
   dubbingService,
   hasFeature,
   isProgramWriteEnabled,
@@ -210,6 +211,18 @@ export default async function ProjectDetailPage({
   // `pricingTier === "free"` check — so the render popover's resolution
   // picker degrades exactly the way the worker's render-time gate does.
   const can1080pExport = hasFeature(pricingTier, "export.1080p");
+  const campaignActionRollout = campaignActionRolloutFromEnv();
+  const campaignActionAvailability = {
+    exports: campaignActionRollout.exports,
+    creative: campaignActionRollout.creative,
+    motion:
+      campaignActionRollout.creative &&
+      hasFeature(pricingTier, "editor.motion"),
+  };
+  const campaignOperationsEnabled = hasFeature(
+    pricingTier,
+    "campaign.operations",
+  );
   const canApplyBrandProfile =
     isProgramWriteEnabled("brand_kit_projection") &&
     hasFeature(pricingTier, "brand.profiles") &&
@@ -835,6 +848,8 @@ export default async function ProjectDetailPage({
                 can1080pExport={can1080pExport}
                 defaultAspectRatio={clipsDefaultAspectRatio}
                 sourceVideoUrl={sourceVideoUrl}
+                actionAvailability={campaignActionAvailability}
+                campaignOperationsEnabled={campaignOperationsEnabled}
               />
             </Stack>
           )) : null}

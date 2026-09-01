@@ -3,23 +3,49 @@ import { Prisma } from "@prisma/client";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
   clipAspectRatioFromDb,
+  applyProjectBrandProfileSelectedSchema,
+  applyStyleSelectedSchema,
   applyEditorAction,
+  applyMotionSelectedSchema,
   applySceneTemplateSchema,
+  brandProfileSnapshotSchema,
+  brandTemplateSnapshotSchema,
   buildEditedTimeMap,
   createExportBundleSchema,
   exportBundleManifestSchema,
+  previewCampaignEditorActionSchema,
+  sceneTemplateDefinitionSchema,
   type ClipAspectRatio,
   type ClipRenderResolution,
+  type ApplyMotionSelectedInput,
+  type ApplyProjectBrandProfileSelectedInput,
+  type ApplyStyleSelectedInput,
+  type BrandTemplateSnapshot,
+  type EditorDocument,
   type PricingTier,
   type ExportBundleManifest,
+  type WorkspaceAccessRole,
+  type WorkspaceAccessStatus,
+  workspaceAllowsCapability,
 } from "@narriflow/validators";
-import { assertBrandApplicationAllowed, type BrandActorScope } from "./brand-ownership";
+import {
+  assertBrandApplicationAllowed,
+  BrandAccessError,
+  type BrandActorScope,
+} from "./brand-ownership";
+import { brandTemplateService } from "./brand-template.service";
 import {
   clipEditorDocumentPersistence,
+  ClipEditorDocumentPersistenceError,
   ClipEditorRevisionConflictError,
 } from "./clip-editor-document-persistence";
 import { hasFeature } from "./plan-features";
-import { assertProgramWriteEnabled, isProgramWriteEnabled } from "./program-rollout";
+import {
+  assertCampaignActionWriteEnabled,
+  assertCampaignMotionWriteEnabled,
+  assertProgramWriteEnabled,
+  campaignActionWriteEnabled,
+} from "./program-rollout";
 import { presignDownloadUrl } from "./r2-storage";
 import { sceneTemplateService, SceneTemplateError } from "./scene-template.service";
 import { getWorkflowRunLifecycle } from "./workflow-run-lifecycle";
@@ -39,6 +65,28 @@ function requirePrisma() {
 
 function fingerprint(value: unknown) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
+}
+
+function assertCampaignBrandApplicationAllowed(scope: CampaignBrandActorScope) {
+  if (!hasFeature(scope.pricingTier as PricingTier, "campaign.operations")) {
+    throw new CampaignOperationError(
+      "campaign_operation_feature_unavailable",
+      "Selection-scoped brand actions require Pro or Business",
+    );
+  }
+  try {
+    assertBrandApplicationAllowed(scope);
+  } catch (error) {
+    if (error instanceof BrandAccessError) {
+      throw new CampaignOperationError(
+        error.code === "brand_forbidden"
+          ? "campaign_operation_forbidden"
+          : "campaign_operation_feature_unavailable",
+        error.message,
+      );
+    }
+    throw error;
+  }
 }
 
 export function exportBundleRetentionMs(
@@ -96,6 +144,271 @@ type CampaignOperationSnapshot = {
   failedCount: number;
 };
 type ApplySceneTemplateResult = ReturnType<typeof campaignOperationSnapshot> & { replayed: boolean };
+type ApplyMotionSelectedResult = ReturnType<typeof campaignOperationSnapshot> & { replayed: boolean };
+type ApplyCampaignStyleResult = ReturnType<typeof campaignOperationSnapshot> & { replayed: boolean };
+type CampaignMotionActorScope = {
+  actorUserId: string;
+  workspaceId: string;
+  projectId: string;
+  pricingTier: PricingTier;
+  role: WorkspaceAccessRole;
+  status: WorkspaceAccessStatus;
+  idempotencyKey: string;
+};
+type CampaignBrandActorScope = BrandActorScope & {
+  projectId: string;
+  idempotencyKey: string;
+};
+
+type SelectedEditorAction = "apply_brand_profile" | "apply_style";
+type SelectedEditorItem = {
+  clipId: string;
+  expectedEditorRevision: number;
+};
+
+type CampaignMotionMutation =
+  | { status: "unchanged"; document: EditorDocument }
+  | { status: "ineligible"; code: "campaign_motion_target_missing" }
+  | { status: "failed"; code: "campaign_motion_document_limit" }
+  | { status: "changed"; document: EditorDocument };
+
+/**
+ * Plans one selected motion mutation through the same Editor Document reducer
+ * used by Studio. Keeping this pure makes equivalence, target eligibility,
+ * and document-limit rejection independently testable; persistence remains a
+ * single revision-guarded replace in the Campaign Operation service.
+ */
+export function applyCampaignMotionChange(
+  document: EditorDocument,
+  change: ApplyMotionSelectedInput["change"],
+  createId: () => string = randomUUID,
+): CampaignMotionMutation {
+  if (change.scope === "clip_transition") {
+    if (JSON.stringify(document.studioEdits.transition) === JSON.stringify(change.transition)) {
+      return { status: "unchanged", document };
+    }
+    const next = applyEditorAction(document, {
+      type: "setStudioEdits",
+      studioEdits: { ...document.studioEdits, transition: change.transition },
+    });
+    return next === document
+      ? { status: "failed", code: "campaign_motion_document_limit" }
+      : { status: "changed", document: next };
+  }
+
+  if (!document.brollUrl) {
+    return { status: "ineligible", code: "campaign_motion_target_missing" };
+  }
+  const brollMotions = document.mediaMotions.filter(
+    (motion) => motion.target.kind === "broll",
+  );
+  const removeMotion = change.motion.entrance === "none" && change.motion.exit === "none";
+  const totalDurationSec =
+    buildEditedTimeMap(document.deletedRanges, {
+      startSec: document.clipStartSec,
+      endSec: document.clipEndSec,
+    }).editedDurationSec +
+    document.sceneBlocks.reduce((total, scene) => total + scene.durationSec, 0);
+  const existing = brollMotions[0];
+  const equivalent = removeMotion
+    ? brollMotions.length === 0
+    : brollMotions.length === 1 &&
+      existing?.enabled === true &&
+      Math.abs(existing.startSec) <= 0.001 &&
+      Math.abs(existing.endSec - totalDurationSec) <= 0.001 &&
+      existing.entrance === change.motion.entrance &&
+      existing.exit === change.motion.exit;
+  if (equivalent) return { status: "unchanged", document };
+
+  let next = document;
+  for (const motion of brollMotions) {
+    next = applyEditorAction(next, { type: "removeMediaMotion", id: motion.id });
+  }
+  if (removeMotion) {
+    return next === document
+      ? { status: "unchanged", document }
+      : { status: "changed", document: next };
+  }
+
+  const inserted = applyEditorAction(next, {
+    type: "insertMediaMotion",
+    motion: {
+      schemaVersion: 1,
+      id: existing?.id ?? createId(),
+      target: { kind: "broll" },
+      startSec: 0,
+      endSec: totalDurationSec,
+      entrance: change.motion.entrance,
+      exit: change.motion.exit,
+      enabled: true,
+    },
+  });
+  return inserted === next
+    ? { status: "failed", code: "campaign_motion_document_limit" }
+    : { status: "changed", document: inserted };
+}
+
+const INHERITED_STUDIO_LOGO = {
+  enabled: true,
+  position: null,
+  opacity: null,
+  scalePct: null,
+} as const;
+
+/**
+ * Applies the exact Brand Template reducer policy used by single-clip Studio:
+ * template caption fields win, while the clip's hand-positioned caption X/Y
+ * and font size remain local. Applying the Project Brand Profile additionally
+ * clears per-clip logo presentation overrides so the Project's frozen logo
+ * snapshot is authoritative again.
+ */
+export function applyCampaignStyleChange(
+  document: EditorDocument,
+  style: BrandTemplateSnapshot | null,
+  resetLogoToProject: boolean,
+): EditorDocument {
+  let next = document;
+  if (style) {
+    const captionPreset = {
+      ...document.captionPreset,
+      ...style.captionPreset,
+      positionX: document.captionPreset.positionX,
+      positionY: document.captionPreset.positionY,
+      fontSize: document.captionPreset.fontSize,
+    };
+    // Studio preserves clip-local caption coordinates. JSON transport omits
+    // absent optional coordinates; the service reducer must produce the same
+    // canonical value before writing directly through Prisma.
+    if (captionPreset.positionX === undefined) delete captionPreset.positionX;
+    if (captionPreset.positionY === undefined) delete captionPreset.positionY;
+    next = applyEditorAction(document, {
+      type: "setCaptionPreset",
+      captionPreset,
+    });
+  }
+  if (resetLogoToProject) {
+    next = applyEditorAction(next, {
+      type: "setStudioEdits",
+      studioEdits: { ...next.studioEdits, logo: INHERITED_STUDIO_LOGO },
+    });
+  }
+  return next;
+}
+
+async function resolveProjectBrandProfileSelection(
+  scope: Pick<CampaignBrandActorScope, "workspaceId" | "projectId">,
+  input: ApplyProjectBrandProfileSelectedInput,
+) {
+  const project = await requirePrisma().project.findFirst({
+    where: { id: scope.projectId, workspaceId: scope.workspaceId },
+    select: {
+      brandProfileId: true,
+      brandProfileSnapshot: true,
+      brandSnapshot: true,
+    },
+  });
+  if (!project) {
+    throw new CampaignOperationError(
+      "campaign_project_not_found",
+      "Project was not found",
+    );
+  }
+  if (!project.brandProfileId || project.brandProfileSnapshot == null) {
+    throw new CampaignOperationError(
+      "campaign_project_brand_profile_missing",
+      "This Project does not have a Brand Profile",
+    );
+  }
+  const profile = brandProfileSnapshotSchema.safeParse(
+    project.brandProfileSnapshot,
+  );
+  const style = project.brandSnapshot == null
+    ? { success: true as const, data: null }
+    : brandTemplateSnapshotSchema.safeParse(project.brandSnapshot);
+  if (!profile.success || !style.success) {
+    throw new CampaignOperationError(
+      "campaign_project_brand_profile_invalid",
+      "The Project Brand Profile snapshot is invalid",
+    );
+  }
+  if (
+    profile.data.profileId !== project.brandProfileId ||
+    JSON.stringify(profile.data.style) !== JSON.stringify(style.data)
+  ) {
+    throw new CampaignOperationError(
+      "campaign_project_brand_profile_invalid",
+      "The Project profile and style snapshots do not match",
+    );
+  }
+  const profileFingerprint = fingerprint(profile.data);
+  const styleFingerprint = style.data ? fingerprint(style.data) : null;
+  if (
+    profileFingerprint !== input.profileFingerprint ||
+    styleFingerprint !== input.styleFingerprint
+  ) {
+    throw new CampaignOperationError(
+      "campaign_brand_profile_stale",
+      "The Project Brand Profile changed after preview",
+    );
+  }
+  return {
+    profile: profile.data,
+    style: style.data,
+    profileFingerprint,
+    styleFingerprint,
+  };
+}
+
+async function resolveMemberStyleSelection(
+  scope: Pick<CampaignBrandActorScope, "workspaceId" | "projectId">,
+  input: ApplyStyleSelectedInput,
+) {
+  const prisma = requirePrisma();
+  const project = await prisma.project.findFirst({
+    where: { id: scope.projectId, workspaceId: scope.workspaceId },
+    select: { brandProfileId: true },
+  });
+  if (!project) {
+    throw new CampaignOperationError(
+      "campaign_project_not_found",
+      "Project was not found",
+    );
+  }
+  if (!project.brandProfileId) {
+    throw new CampaignOperationError(
+      "campaign_project_brand_profile_missing",
+      "Choose a Project Brand Profile before applying a style",
+    );
+  }
+  const membership = await prisma.brandProfileTemplate.findFirst({
+    where: {
+      profileId: project.brandProfileId,
+      templateId: input.templateId,
+      profile: { deletedAt: null },
+      template: { deletedAt: null },
+    },
+    include: { template: true },
+  });
+  if (!membership) {
+    throw new CampaignOperationError(
+      "campaign_style_not_member",
+      "The selected style is not a member of this Project Brand Profile",
+    );
+  }
+  const style = brandTemplateService.buildSnapshot(membership.template);
+  const templateFingerprint = fingerprint(style);
+  if (templateFingerprint !== input.templateFingerprint) {
+    throw new CampaignOperationError(
+      "campaign_style_stale",
+      "The selected style changed after preview",
+    );
+  }
+  return {
+    profileId: project.brandProfileId,
+    style,
+    templateFingerprint,
+  };
+}
 
 function campaignOperationSnapshot(operation: CampaignOperationSnapshot) {
   return {
@@ -132,6 +445,237 @@ export class CampaignOperationService {
       : null;
   }
 
+  private async applySelectedEditorDocumentChange(
+    scope: Pick<
+      CampaignBrandActorScope,
+      "actorUserId" | "workspaceId" | "projectId" | "pricingTier" | "idempotencyKey"
+    >,
+    input: {
+      action: SelectedEditorAction;
+      clips: SelectedEditorItem[];
+      requestFingerprint: string;
+      validatedOptions: Prisma.InputJsonValue;
+      resultReference: Prisma.InputJsonObject;
+      change(document: EditorDocument): EditorDocument;
+    },
+  ): Promise<ApplyCampaignStyleResult> {
+    const prisma = requirePrisma();
+    const replay = await prisma.campaignOperation.findUnique({
+      where: {
+        workspaceId_projectId_action_idempotencyKey: {
+          workspaceId: scope.workspaceId,
+          projectId: scope.projectId,
+          action: input.action,
+          idempotencyKey: scope.idempotencyKey,
+        },
+      },
+    });
+    if (replay) {
+      if (replay.requestFingerprint !== input.requestFingerprint) {
+        throw new CampaignOperationError(
+          "campaign_operation_idempotency_conflict",
+          "Idempotency key was reused with different input",
+        );
+      }
+      if (replay.status !== "running") {
+        return { ...campaignOperationSnapshot(replay), replayed: true };
+      }
+    }
+
+    const clips = await prisma.clip.findMany({
+      where: {
+        id: { in: input.clips.map((clip) => clip.clipId) },
+        projectId: scope.projectId,
+        project: { workspaceId: scope.workspaceId },
+      },
+      select: { id: true },
+    });
+    const knownIds = new Set(clips.map((clip) => clip.id));
+    let operation: CampaignOperationSnapshot | undefined = replay ?? undefined;
+    if (!operation) {
+      try {
+        operation = await prisma.campaignOperation.create({
+          data: {
+            workspaceId: scope.workspaceId,
+            projectId: scope.projectId,
+            actorUserId: scope.actorUserId,
+            action: input.action,
+            idempotencyKey: scope.idempotencyKey,
+            requestFingerprint: input.requestFingerprint,
+            validatedOptions: input.validatedOptions,
+            pricingTier: scope.pricingTier,
+            requestedCount: input.clips.length,
+            items: {
+              create: input.clips.map((clip) => ({
+                requestedClipId: clip.clipId,
+                clipId: knownIds.has(clip.clipId) ? clip.clipId : null,
+                expectedEditorRevision: clip.expectedEditorRevision,
+                status: knownIds.has(clip.clipId) ? "pending" : "ineligible",
+                errorCode: knownIds.has(clip.clipId)
+                  ? null
+                  : "campaign_clip_not_found",
+                settledAt: knownIds.has(clip.clipId) ? null : new Date(),
+              })),
+            },
+          },
+        });
+      } catch (error) {
+        if (
+          !(error instanceof Prisma.PrismaClientKnownRequestError) ||
+          error.code !== "P2002"
+        ) {
+          throw error;
+        }
+        const raced = await prisma.campaignOperation.findUnique({
+          where: {
+            workspaceId_projectId_action_idempotencyKey: {
+              workspaceId: scope.workspaceId,
+              projectId: scope.projectId,
+              action: input.action,
+              idempotencyKey: scope.idempotencyKey,
+            },
+          },
+        });
+        if (!raced || raced.requestFingerprint !== input.requestFingerprint) {
+          throw new CampaignOperationError(
+            "campaign_operation_idempotency_conflict",
+            "Idempotency key was reused with different input",
+          );
+        }
+        return this.applySelectedEditorDocumentChange(scope, input);
+      }
+    }
+    if (!operation) {
+      throw new CampaignOperationError(
+        "campaign_operation_admission_failed",
+        "Campaign operation could not be admitted",
+      );
+    }
+
+    await prisma.campaignOperationItem.updateMany({
+      where: {
+        operationId: operation.id,
+        status: "processing",
+        leaseExpiresAt: { lte: new Date() },
+      },
+      data: { status: "pending", claimToken: null, leaseExpiresAt: null },
+    });
+    for (const requested of input.clips.filter((clip) => knownIds.has(clip.clipId))) {
+      const claimToken = randomUUID();
+      const claimed = await prisma.campaignOperationItem.updateMany({
+        where: {
+          operationId: operation.id,
+          requestedClipId: requested.clipId,
+          status: "pending",
+        },
+        data: {
+          status: "processing",
+          claimToken,
+          leaseExpiresAt: new Date(Date.now() + 10 * 60_000),
+        },
+      });
+      if (claimed.count !== 1) continue;
+
+      let status = "failed";
+      let errorCode: string | null = "campaign_style_apply_failed";
+      let result: Prisma.InputJsonValue | typeof Prisma.JsonNull = Prisma.JsonNull;
+      try {
+        const current = await clipEditorDocumentPersistence.readDocument({
+          actorUserId: scope.actorUserId,
+          projectId: scope.projectId,
+          clipId: requested.clipId,
+        });
+        const next = input.change(current.document);
+        if (next === current.document) {
+          status = "unchanged";
+          errorCode = null;
+          result = {
+            editorRevision: current.revision,
+            ...input.resultReference,
+          };
+        } else if (current.revision !== requested.expectedEditorRevision) {
+          status = "stale";
+          errorCode = "campaign_clip_stale";
+        } else {
+          const mutation = await clipEditorDocumentPersistence.mutateDocument({
+            actorUserId: scope.actorUserId,
+            projectId: scope.projectId,
+            clipId: requested.clipId,
+            intent: {
+              kind: "replace",
+              baseRevision: current.revision,
+              document: next,
+            },
+          });
+          status = mutation.noop ? "unchanged" : "succeeded";
+          errorCode = null;
+          result = {
+            editorRevision: mutation.revision,
+            ...input.resultReference,
+          };
+        }
+      } catch (error) {
+        if (error instanceof ClipEditorRevisionConflictError) {
+          status = "stale";
+          errorCode = "campaign_clip_stale";
+        }
+      }
+      await prisma.campaignOperationItem.updateMany({
+        where: {
+          operationId: operation.id,
+          requestedClipId: requested.clipId,
+          status: "processing",
+          claimToken,
+        },
+        data: {
+          status,
+          errorCode,
+          result,
+          settledAt: new Date(),
+          claimToken: null,
+          leaseExpiresAt: null,
+        },
+      });
+    }
+
+    const grouped = await prisma.campaignOperationItem.groupBy({
+      by: ["status"],
+      where: { operationId: operation.id },
+      _count: { _all: true },
+    });
+    const count = (status: string) =>
+      grouped.find((entry) => entry.status === status)?._count._all ?? 0;
+    if (count("pending") + count("processing") > 0) {
+      const running = await prisma.campaignOperation.findUniqueOrThrow({
+        where: { id: operation.id },
+      });
+      return { ...campaignOperationSnapshot(running), replayed: replay !== null };
+    }
+    const counts = {
+      succeeded: count("succeeded"),
+      unchanged: count("unchanged"),
+      stale: count("stale"),
+      ineligible: count("ineligible"),
+      failed: count("failed"),
+    };
+    const settled = await prisma.campaignOperation.update({
+      where: { id: operation.id },
+      data: {
+        status:
+          counts.stale + counts.ineligible + counts.failed > 0
+            ? "partial"
+            : "completed",
+        succeededCount: counts.succeeded,
+        unchangedCount: counts.unchanged,
+        staleCount: counts.stale,
+        ineligibleCount: counts.ineligible,
+        failedCount: counts.failed,
+        completedAt: new Date(),
+      },
+    });
+    return { ...campaignOperationSnapshot(settled), replayed: false };
+  }
+
   async renderSelected(input: {
     actorUserId: string;
     workspaceId: string;
@@ -148,7 +692,7 @@ export class CampaignOperationService {
     // Recording the pre-existing render-selected path is a rollout concern,
     // not a paid entitlement. With recording disabled, preserve its exact
     // response and availability on every plan.
-    if (!isProgramWriteEnabled("campaign_operations")) {
+    if (!campaignActionWriteEnabled("render_selected")) {
       return input.execute(normalizedIds);
     }
     const requestFingerprint = fingerprint({ action: "render_selected", clipIds: normalizedIds, aspectRatios: input.aspectRatios ?? null, resolution: input.resolution, retryOfId: input.retryOfId ?? null });
@@ -247,6 +791,7 @@ export class CampaignOperationService {
     resolution: ClipRenderResolution;
     execute(clipIds: string[]): Promise<RenderResult>;
   }) {
+    assertCampaignActionWriteEnabled("render_selected");
     const source = await requirePrisma().campaignOperation.findFirst({
       where: {
         id: input.sourceOperationId,
@@ -330,6 +875,7 @@ export class CampaignOperationService {
   }
 
   async retryExportBundle(scope: { actorUserId: string; workspaceId: string; projectId: string; pricingTier: PricingTier; idempotencyKey: string }, bundleId: string) {
+		assertCampaignActionWriteEnabled("export_bundle");
 		const bundle = await requirePrisma().exportBundle.findFirst({
       where: { id: bundleId, operation: { workspaceId: scope.workspaceId, projectId: scope.projectId, action: "export_bundle" } },
 			select: { operationId: true },
@@ -339,6 +885,7 @@ export class CampaignOperationService {
 	}
 
 	async retryExportBundleOperation(scope: { actorUserId: string; workspaceId: string; projectId: string; pricingTier: PricingTier; idempotencyKey: string }, operationId: string) {
+		assertCampaignActionWriteEnabled("export_bundle");
 		const source = await requirePrisma().campaignOperation.findFirst({
 			where: { id: operationId, workspaceId: scope.workspaceId, projectId: scope.projectId, action: "export_bundle" },
 			include: { items: true, retries: { select: { id: true }, take: 1 } },
@@ -358,7 +905,7 @@ export class CampaignOperationService {
   }
 
   async createExportBundle(scope: { actorUserId: string; workspaceId: string; projectId: string; pricingTier: PricingTier; idempotencyKey: string; retryOfId?: string }, value: unknown): Promise<{ operationId: string; workflowRunId: string; manifest: ExportBundleManifest; replayed: boolean }> {
-    assertProgramWriteEnabled("campaign_operations");
+    assertCampaignActionWriteEnabled("export_bundle");
     if (!hasFeature(scope.pricingTier, "export.bundles")) throw new CampaignOperationError("export_bundle_feature_unavailable", "Export bundles are not available on this plan");
     const input = createExportBundleSchema.parse(value);
     const expiresAt = new Date(Date.now() + exportBundleRetentionMs());
@@ -473,18 +1020,441 @@ export class CampaignOperationService {
     }
   }
 
+  async getEditorActionCatalog(
+    scope: BrandActorScope & { projectId: string },
+  ) {
+    if (
+      !workspaceAllowsCapability(
+        { role: scope.role, status: scope.status },
+        "content.view",
+      )
+    ) {
+      throw new CampaignOperationError(
+        "campaign_operation_forbidden",
+        "Campaign styles cannot be viewed with this Workspace role",
+      );
+    }
+    const project = await requirePrisma().project.findFirst({
+      where: { id: scope.projectId, workspaceId: scope.workspaceId },
+      select: {
+        brandProfileId: true,
+        brandProfileSnapshot: true,
+        brandSnapshot: true,
+        brandProfile: {
+          select: {
+            id: true,
+            deletedAt: true,
+            defaultTemplateId: true,
+            defaultIntroSceneTemplateId: true,
+            defaultOutroSceneTemplateId: true,
+            templates: {
+              where: { template: { deletedAt: null } },
+              orderBy: [{ position: "asc" }, { templateId: "asc" }],
+              include: { template: true },
+            },
+            sceneTemplates: {
+              where: {
+                deletedAt: null,
+                role: { in: ["intro", "outro"] },
+              },
+              orderBy: [{ role: "asc" }, { name: "asc" }],
+              select: {
+                id: true,
+                name: true,
+                role: true,
+                definition: true,
+                fingerprint: true,
+              },
+            },
+          },
+        },
+      },
+    });
+    if (!project) {
+      throw new CampaignOperationError(
+        "campaign_project_not_found",
+        "Project was not found",
+      );
+    }
+
+    const profile = project.brandProfileSnapshot == null
+      ? null
+      : brandProfileSnapshotSchema.safeParse(project.brandProfileSnapshot);
+    const currentStyle = project.brandSnapshot == null
+      ? null
+      : brandTemplateSnapshotSchema.safeParse(project.brandSnapshot);
+    if (profile && !profile.success) {
+      throw new CampaignOperationError(
+        "campaign_project_brand_profile_invalid",
+        "The Project Brand Profile snapshot is invalid",
+      );
+    }
+    if (currentStyle && !currentStyle.success) {
+      throw new CampaignOperationError(
+        "campaign_project_brand_profile_invalid",
+        "The Project style snapshot is invalid",
+      );
+    }
+    const frozenProfile = profile?.data ?? null;
+    const frozenStyle = currentStyle?.data ?? null;
+    if (
+      frozenProfile &&
+      JSON.stringify(frozenProfile.style) !== JSON.stringify(frozenStyle)
+    ) {
+      throw new CampaignOperationError(
+        "campaign_project_brand_profile_invalid",
+        "The Project profile and style snapshots do not match",
+      );
+    }
+
+    const liveProfile =
+      project.brandProfileId &&
+      project.brandProfile?.id === project.brandProfileId &&
+      project.brandProfile.deletedAt == null
+        ? project.brandProfile
+        : null;
+    const styles = (liveProfile?.templates ?? []).flatMap((membership) => {
+      const parsed = brandTemplateSnapshotSchema.safeParse(
+        brandTemplateService.buildSnapshot(membership.template),
+      );
+      if (!parsed.success || !parsed.data.templateId) return [];
+      return [{
+        id: parsed.data.templateId,
+        name: membership.template.name,
+        fingerprint: fingerprint(parsed.data),
+        fontName: parsed.data.captionPreset.fontName,
+        captionPosition: parsed.data.captionPreset.position,
+        primaryColor: parsed.data.primaryColor,
+        secondaryColor: parsed.data.secondaryColor,
+        accentColor: parsed.data.accentColor,
+        current: parsed.data.templateId === frozenStyle?.templateId,
+      }];
+    });
+    const scenes = (liveProfile?.sceneTemplates ?? []).flatMap((scene) => {
+      const definition = sceneTemplateDefinitionSchema.safeParse(scene.definition);
+      if (!definition.success || (scene.role !== "intro" && scene.role !== "outro")) {
+        return [];
+      }
+      return [{
+        id: scene.id,
+        name: scene.name,
+        role: scene.role,
+        fingerprint: scene.fingerprint,
+        durationSec: definition.data.durationSec,
+        contentKind: definition.data.content.kind,
+        isDefault:
+          scene.id === liveProfile?.defaultIntroSceneTemplateId ||
+          scene.id === liveProfile?.defaultOutroSceneTemplateId,
+      }];
+    });
+    const currentStyleName = styles.find((style) => style.current)?.name ??
+      (frozenStyle ? "Frozen project style" : null);
+    return {
+      profile: frozenProfile
+        ? {
+            id: frozenProfile.profileId,
+            name: frozenProfile.name,
+            fingerprint: fingerprint(frozenProfile),
+            styleFingerprint: frozenStyle ? fingerprint(frozenStyle) : null,
+            currentStyle: frozenStyle
+              ? {
+                  id: frozenStyle.templateId,
+                  name: currentStyleName,
+                  fontName: frozenStyle.captionPreset.fontName,
+                  primaryColor: frozenStyle.primaryColor,
+                  secondaryColor: frozenStyle.secondaryColor,
+                }
+              : null,
+          }
+        : null,
+      styles,
+      scenes,
+    };
+  }
+
+  async previewEditorAction(
+    scope: BrandActorScope & { projectId: string },
+    value: unknown,
+  ) {
+    if (
+      !workspaceAllowsCapability(
+        { role: scope.role, status: scope.status },
+        "content.view",
+      )
+    ) {
+      throw new CampaignOperationError(
+        "campaign_operation_forbidden",
+        "Campaign actions cannot be previewed with this Workspace role",
+      );
+    }
+    const request = previewCampaignEditorActionSchema.parse(value);
+    let change: (document: EditorDocument) => EditorDocument;
+    let sceneTemplate: Awaited<
+      ReturnType<typeof sceneTemplateService.freezeForInsertion>
+    > | null = null;
+    let clips: SelectedEditorItem[];
+    let placement: "start" | "end" | null = null;
+
+    if (request.action === "apply_brand_profile") {
+      const resolved = await resolveProjectBrandProfileSelection(
+        scope,
+        request.input,
+      );
+      change = (document) =>
+        applyCampaignStyleChange(document, resolved.style, true);
+      clips = request.input.clips;
+    } else if (request.action === "apply_style") {
+      const resolved = await resolveMemberStyleSelection(scope, request.input);
+      change = (document) =>
+        applyCampaignStyleChange(document, resolved.style, false);
+      clips = request.input.clips;
+    } else {
+      clips = request.input.clips;
+      placement = request.input.placement;
+      try {
+        sceneTemplate = await sceneTemplateService.freezeForInsertion(
+          scope,
+          request.profileId,
+          request.templateId,
+          { id: randomUUID(), anchorSec: 0 },
+        );
+      } catch (error) {
+        if (error instanceof SceneTemplateError) {
+          throw new CampaignOperationError(error.code, error.message);
+        }
+        throw error;
+      }
+      if (
+        sceneTemplate.templateSnapshot?.fingerprint !==
+        request.input.templateFingerprint
+      ) {
+        throw new CampaignOperationError(
+          "scene_template_fingerprint_stale",
+          "The Scene Template changed after preview",
+        );
+      }
+      change = (document) => document;
+    }
+
+    const known = await requirePrisma().clip.findMany({
+      where: {
+        id: { in: clips.map((clip) => clip.clipId) },
+        projectId: scope.projectId,
+        project: { workspaceId: scope.workspaceId },
+      },
+      select: { id: true },
+    });
+    const knownIds = new Set(known.map((clip) => clip.id));
+    const items: Array<{
+      clipId: string;
+      expectedEditorRevision: number;
+      currentEditorRevision: number | null;
+      status: "eligible" | "unchanged" | "stale" | "ineligible";
+      code: string | null;
+    }> = [];
+    for (const selected of clips) {
+      if (!knownIds.has(selected.clipId)) {
+        items.push({
+          clipId: selected.clipId,
+          expectedEditorRevision: selected.expectedEditorRevision,
+          currentEditorRevision: null,
+          status: "ineligible",
+          code: "campaign_clip_not_found",
+        });
+        continue;
+      }
+      try {
+        const current = await clipEditorDocumentPersistence.readDocument({
+          actorUserId: scope.actorUserId,
+          projectId: scope.projectId,
+          clipId: selected.clipId,
+        });
+        let next: EditorDocument;
+        let equivalent = false;
+        if (sceneTemplate && placement) {
+          const sourceDurationSec = buildEditedTimeMap(
+            current.document.deletedRanges,
+            {
+              startSec: current.document.clipStartSec,
+              endSec: current.document.clipEndSec,
+            },
+          ).editedDurationSec;
+          const totalDurationSec =
+            sourceDurationSec +
+            current.document.sceneBlocks.reduce(
+              (total, scene) => total + scene.durationSec,
+              0,
+            );
+          equivalent = current.document.sceneBlocks.some((scene) =>
+            scene.templateSnapshot?.fingerprint ===
+              sceneTemplate?.templateSnapshot?.fingerprint &&
+            (placement === "start"
+              ? Math.abs(scene.anchorSec) <= 0.001
+              : Math.abs(
+                  scene.anchorSec + scene.durationSec - totalDurationSec,
+                ) <= 0.001));
+          next = equivalent
+            ? current.document
+            : applyEditorAction(current.document, {
+                type: "insertSceneBlock",
+                scene: {
+                  ...sceneTemplate,
+                  id: randomUUID(),
+                  anchorSec: placement === "start" ? 0 : totalDurationSec,
+                },
+              });
+        } else {
+          next = change(current.document);
+          equivalent = next === current.document;
+        }
+
+        if (equivalent) {
+          items.push({
+            clipId: selected.clipId,
+            expectedEditorRevision: selected.expectedEditorRevision,
+            currentEditorRevision: current.revision,
+            status: "unchanged",
+            code: null,
+          });
+        } else if (current.revision !== selected.expectedEditorRevision) {
+          items.push({
+            clipId: selected.clipId,
+            expectedEditorRevision: selected.expectedEditorRevision,
+            currentEditorRevision: current.revision,
+            status: "stale",
+            code: "campaign_clip_stale",
+          });
+        } else if (next === current.document) {
+          items.push({
+            clipId: selected.clipId,
+            expectedEditorRevision: selected.expectedEditorRevision,
+            currentEditorRevision: current.revision,
+            status: "ineligible",
+            code: "scene_template_document_limit",
+          });
+        } else {
+          items.push({
+            clipId: selected.clipId,
+            expectedEditorRevision: selected.expectedEditorRevision,
+            currentEditorRevision: current.revision,
+            status: "eligible",
+            code: null,
+          });
+        }
+      } catch (error) {
+        const code =
+          error instanceof ClipEditorDocumentPersistenceError &&
+          (error.code === "clip_not_found" || error.code === "project_not_found")
+            ? "campaign_clip_not_found"
+            : "campaign_editor_document_invalid";
+        items.push({
+          clipId: selected.clipId,
+          expectedEditorRevision: selected.expectedEditorRevision,
+          currentEditorRevision: null,
+          status: "ineligible",
+          code,
+        });
+      }
+    }
+    const count = (status: (typeof items)[number]["status"]) =>
+      items.filter((item) => item.status === status).length;
+    return {
+      action: request.action,
+      requestedCount: items.length,
+      counts: {
+        eligible: count("eligible"),
+        unchanged: count("unchanged"),
+        stale: count("stale"),
+        ineligible: count("ineligible"),
+      },
+      items,
+    };
+  }
+
+  async applyProjectBrandProfileSelected(
+    scope: CampaignBrandActorScope,
+    value: unknown,
+  ): Promise<ApplyCampaignStyleResult> {
+    assertCampaignActionWriteEnabled("apply_brand_profile");
+    assertProgramWriteEnabled("brand_kit_projection");
+    assertCampaignBrandApplicationAllowed(scope);
+    const input = applyProjectBrandProfileSelectedSchema.parse(value);
+    const resolved = await resolveProjectBrandProfileSelection(scope, input);
+    const clips = [...input.clips].sort((left, right) =>
+      left.clipId.localeCompare(right.clipId),
+    );
+    return this.applySelectedEditorDocumentChange(scope, {
+      action: "apply_brand_profile",
+      clips,
+      requestFingerprint: fingerprint({
+        action: "apply_brand_profile",
+        profileFingerprint: resolved.profileFingerprint,
+        styleFingerprint: resolved.styleFingerprint,
+        clips,
+      }),
+      validatedOptions: {
+        profileId: resolved.profile.profileId,
+        profileFingerprint: resolved.profileFingerprint,
+        templateId: resolved.style?.templateId ?? null,
+        styleFingerprint: resolved.styleFingerprint,
+      },
+      resultReference: {
+        profileId: resolved.profile.profileId,
+        profileFingerprint: resolved.profileFingerprint,
+        templateId: resolved.style?.templateId ?? null,
+        styleFingerprint: resolved.styleFingerprint,
+      },
+      change: (document) =>
+        applyCampaignStyleChange(document, resolved.style, true),
+    });
+  }
+
+  async applyStyleSelected(
+    scope: CampaignBrandActorScope,
+    value: unknown,
+  ): Promise<ApplyCampaignStyleResult> {
+    assertCampaignActionWriteEnabled("apply_style");
+    assertProgramWriteEnabled("brand_kit_projection");
+    assertCampaignBrandApplicationAllowed(scope);
+    const input = applyStyleSelectedSchema.parse(value);
+    const resolved = await resolveMemberStyleSelection(scope, input);
+    const clips = [...input.clips].sort((left, right) =>
+      left.clipId.localeCompare(right.clipId),
+    );
+    return this.applySelectedEditorDocumentChange(scope, {
+      action: "apply_style",
+      clips,
+      requestFingerprint: fingerprint({
+        action: "apply_style",
+        profileId: resolved.profileId,
+        templateId: resolved.style.templateId,
+        templateFingerprint: resolved.templateFingerprint,
+        clips,
+      }),
+      validatedOptions: {
+        profileId: resolved.profileId,
+        templateId: resolved.style.templateId,
+        templateFingerprint: resolved.templateFingerprint,
+      },
+      resultReference: {
+        profileId: resolved.profileId,
+        templateId: resolved.style.templateId,
+        templateFingerprint: resolved.templateFingerprint,
+      },
+      change: (document) =>
+        applyCampaignStyleChange(document, resolved.style, false),
+    });
+  }
+
   async applySceneTemplate(
     scope: BrandActorScope & { projectId: string; idempotencyKey: string },
     profileId: string,
     templateId: string,
     value: unknown,
   ): Promise<ApplySceneTemplateResult> {
-    assertProgramWriteEnabled("campaign_operations");
+    assertCampaignActionWriteEnabled("apply_scene_template");
     assertProgramWriteEnabled("scene_templates");
-    if (!hasFeature(scope.pricingTier as PricingTier, "campaign.operations")) {
-      throw new CampaignOperationError("campaign_operation_feature_unavailable", "Campaign operations are not available on this plan");
-    }
-    assertBrandApplicationAllowed(scope);
+    assertCampaignBrandApplicationAllowed(scope);
     const input = applySceneTemplateSchema.parse(value);
     const orderedClips = [...input.clips].sort((left, right) => left.clipId.localeCompare(right.clipId));
     const requestFingerprint = fingerprint({
@@ -606,7 +1576,7 @@ export class CampaignOperationService {
           } else {
             const next = applyEditorAction(current.document, { type: "insertSceneBlock", scene });
             if (next === current.document) {
-              status = "failed";
+              status = "ineligible";
               errorCode = "scene_template_document_limit";
             } else {
               const mutation = await clipEditorDocumentPersistence.mutateDocument({
@@ -657,6 +1627,258 @@ export class CampaignOperationService {
       where: { id: operation.id },
       data: {
 				status: counts.stale + counts.ineligible + counts.failed > 0 ? "partial" : "completed",
+        succeededCount: counts.succeeded,
+        unchangedCount: counts.unchanged,
+        staleCount: counts.stale,
+        ineligibleCount: counts.ineligible,
+        failedCount: counts.failed,
+        completedAt: new Date(),
+      },
+    });
+    return { ...campaignOperationSnapshot(settled), replayed: false };
+  }
+
+  async applyMotionSelected(
+    scope: CampaignMotionActorScope,
+    value: unknown,
+  ): Promise<ApplyMotionSelectedResult> {
+    assertCampaignActionWriteEnabled("apply_motion");
+    if (
+      !workspaceAllowsCapability(
+        { role: scope.role, status: scope.status },
+        "content.edit",
+      )
+    ) {
+      throw new CampaignOperationError(
+        "campaign_operation_forbidden",
+        "Motion cannot be applied with this Workspace role",
+      );
+    }
+    if (!hasFeature(scope.pricingTier, "campaign.operations")) {
+      throw new CampaignOperationError(
+        "campaign_operation_feature_unavailable",
+        "Applying motion to selected clips requires Pro or Business",
+      );
+    }
+
+    const input = applyMotionSelectedSchema.parse(value);
+    assertCampaignMotionWriteEnabled(input.change);
+    const orderedClips = [...input.clips].sort((left, right) =>
+      left.clipId.localeCompare(right.clipId),
+    );
+    const requestFingerprint = fingerprint({
+      action: "apply_motion",
+      change: input.change,
+      clips: orderedClips,
+    });
+    const prisma = requirePrisma();
+    const replay = await prisma.campaignOperation.findUnique({
+      where: {
+        workspaceId_projectId_action_idempotencyKey: {
+          workspaceId: scope.workspaceId,
+          projectId: scope.projectId,
+          action: "apply_motion",
+          idempotencyKey: scope.idempotencyKey,
+        },
+      },
+    });
+    if (replay) {
+      if (replay.requestFingerprint !== requestFingerprint) {
+        throw new CampaignOperationError(
+          "campaign_operation_idempotency_conflict",
+          "Idempotency key was reused with different input",
+        );
+      }
+      if (replay.status !== "running") {
+        return { ...campaignOperationSnapshot(replay), replayed: true };
+      }
+    }
+
+    const clips = await prisma.clip.findMany({
+      where: {
+        id: { in: orderedClips.map((clip) => clip.clipId) },
+        projectId: scope.projectId,
+        project: { workspaceId: scope.workspaceId },
+      },
+      select: { id: true },
+    });
+    const knownIds = new Set(clips.map((clip) => clip.id));
+    let operation: CampaignOperationSnapshot | undefined = replay ?? undefined;
+    if (!operation) {
+      try {
+        operation = await prisma.campaignOperation.create({
+          data: {
+            workspaceId: scope.workspaceId,
+            projectId: scope.projectId,
+            actorUserId: scope.actorUserId,
+            action: "apply_motion",
+            idempotencyKey: scope.idempotencyKey,
+            requestFingerprint,
+            // This durable audit payload contains only the validated motion
+            // vocabulary. It never captures clip text, titles, or asset URLs.
+            validatedOptions: { change: input.change },
+            pricingTier: scope.pricingTier,
+            requestedCount: orderedClips.length,
+            items: {
+              create: orderedClips.map((clip) => ({
+                requestedClipId: clip.clipId,
+                clipId: knownIds.has(clip.clipId) ? clip.clipId : null,
+                expectedEditorRevision: clip.expectedEditorRevision,
+                status: knownIds.has(clip.clipId) ? "pending" : "ineligible",
+                errorCode: knownIds.has(clip.clipId)
+                  ? null
+                  : "campaign_clip_not_found",
+                settledAt: knownIds.has(clip.clipId) ? null : new Date(),
+              })),
+            },
+          },
+        });
+      } catch (error) {
+        if (
+          !(error instanceof Prisma.PrismaClientKnownRequestError) ||
+          error.code !== "P2002"
+        ) {
+          throw error;
+        }
+        const raced = await prisma.campaignOperation.findUnique({
+          where: {
+            workspaceId_projectId_action_idempotencyKey: {
+              workspaceId: scope.workspaceId,
+              projectId: scope.projectId,
+              action: "apply_motion",
+              idempotencyKey: scope.idempotencyKey,
+            },
+          },
+        });
+        if (!raced || raced.requestFingerprint !== requestFingerprint) {
+          throw new CampaignOperationError(
+            "campaign_operation_idempotency_conflict",
+            "Idempotency key was reused with different input",
+          );
+        }
+        return this.applyMotionSelected(scope, value);
+      }
+    }
+    if (!operation) {
+      throw new CampaignOperationError(
+        "campaign_operation_admission_failed",
+        "Campaign operation could not be admitted",
+      );
+    }
+
+    await prisma.campaignOperationItem.updateMany({
+      where: {
+        operationId: operation.id,
+        status: "processing",
+        leaseExpiresAt: { lte: new Date() },
+      },
+      data: { status: "pending", claimToken: null, leaseExpiresAt: null },
+    });
+    for (const requested of orderedClips.filter((clip) => knownIds.has(clip.clipId))) {
+      const claimToken = randomUUID();
+      const claimed = await prisma.campaignOperationItem.updateMany({
+        where: {
+          operationId: operation.id,
+          requestedClipId: requested.clipId,
+          status: "pending",
+        },
+        data: {
+          status: "processing",
+          claimToken,
+          leaseExpiresAt: new Date(Date.now() + 10 * 60_000),
+        },
+      });
+      if (claimed.count !== 1) continue;
+
+      let status = "failed";
+      let errorCode: string | null = "campaign_motion_apply_failed";
+      let result: Prisma.InputJsonValue | typeof Prisma.JsonNull = Prisma.JsonNull;
+      try {
+        const current = await clipEditorDocumentPersistence.readDocument({
+          actorUserId: scope.actorUserId,
+          projectId: scope.projectId,
+          clipId: requested.clipId,
+        });
+        const planned = applyCampaignMotionChange(current.document, input.change);
+        if (planned.status === "unchanged") {
+          status = "unchanged";
+          errorCode = null;
+          result = { editorRevision: current.revision };
+        } else if (current.revision !== requested.expectedEditorRevision) {
+          status = "stale";
+          errorCode = "campaign_clip_stale";
+        } else if (planned.status === "ineligible" || planned.status === "failed") {
+          status = planned.status;
+          errorCode = planned.code;
+        } else {
+          const mutation = await clipEditorDocumentPersistence.mutateDocument({
+            actorUserId: scope.actorUserId,
+            projectId: scope.projectId,
+            clipId: requested.clipId,
+            intent: {
+              kind: "replace",
+              baseRevision: current.revision,
+              document: planned.document,
+            },
+          });
+          status = mutation.noop ? "unchanged" : "succeeded";
+          errorCode = null;
+          result = { editorRevision: mutation.revision };
+        }
+      } catch (error) {
+        if (error instanceof ClipEditorRevisionConflictError) {
+          status = "stale";
+          errorCode = "campaign_clip_stale";
+        }
+      }
+      await prisma.campaignOperationItem.updateMany({
+        where: {
+          operationId: operation.id,
+          requestedClipId: requested.clipId,
+          status: "processing",
+          claimToken,
+        },
+        data: {
+          status,
+          errorCode,
+          result,
+          settledAt: new Date(),
+          claimToken: null,
+          leaseExpiresAt: null,
+        },
+      });
+    }
+
+    const grouped = await prisma.campaignOperationItem.groupBy({
+      by: ["status"],
+      where: { operationId: operation.id },
+      _count: { _all: true },
+    });
+    const count = (status: string) =>
+      grouped.find((entry) => entry.status === status)?._count._all ?? 0;
+    if (count("pending") + count("processing") > 0) {
+      const running = await prisma.campaignOperation.findUniqueOrThrow({
+        where: { id: operation.id },
+      });
+      return { ...campaignOperationSnapshot(running), replayed: replay !== null };
+    }
+    const counts = {
+      succeeded: count("succeeded"),
+      unchanged: count("unchanged"),
+      stale: count("stale"),
+      ineligible: count("ineligible"),
+      failed: count("failed"),
+    };
+    const affected = counts.succeeded + counts.unchanged;
+    const settled = await prisma.campaignOperation.update({
+      where: { id: operation.id },
+      data: {
+        status:
+          counts.stale + counts.ineligible + counts.failed === 0
+            ? "completed"
+            : affected === 0 && counts.failed > 0
+              ? "failed"
+              : "partial",
         succeededCount: counts.succeeded,
         unchangedCount: counts.unchanged,
         staleCount: counts.stale,

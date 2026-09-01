@@ -142,6 +142,79 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
     ].sort());
   });
 
+  test("persists revision-fenced motion with partial truth and idempotent replay", async () => {
+    const current = await fixture("campaign-motion");
+    const missingClipId = randomUUID();
+    const scope = {
+      actorUserId: current.user.id,
+      workspaceId: current.workspace.id,
+      projectId: current.project.id,
+      pricingTier: "business" as const,
+      role: "owner" as const,
+      status: "active" as const,
+      idempotencyKey: randomUUID(),
+    };
+    const request = {
+      change: {
+        scope: "clip_transition" as const,
+        transition: { type: "fade-black" as const, durationSec: 0.55 },
+      },
+      clips: [
+        { clipId: current.clip.id, expectedEditorRevision: 3 },
+        { clipId: missingClipId, expectedEditorRevision: 0 },
+      ],
+    };
+
+    const first = await campaignOperationService.applyMotionSelected(scope, request);
+    const replay = await campaignOperationService.applyMotionSelected(scope, request);
+    expect(first).toMatchObject({
+      status: "partial",
+      replayed: false,
+      counts: {
+        succeeded: 1,
+        unchanged: 0,
+        stale: 0,
+        ineligible: 1,
+        failed: 0,
+      },
+    });
+    expect(replay).toMatchObject({ operationId: first.operationId, replayed: true });
+
+    const persisted = await clipEditorDocumentPersistence.readDocument({
+      actorUserId: current.user.id,
+      projectId: current.project.id,
+      clipId: current.clip.id,
+    });
+    expect(persisted).toMatchObject({
+      revision: 4,
+      document: {
+        studioEdits: {
+          transition: { type: "fade-black", durationSec: 0.55 },
+        },
+      },
+    });
+    const operation = await prisma.campaignOperation.findUniqueOrThrow({
+      where: { id: first.operationId },
+      include: { items: true },
+    });
+    expect(operation.items.map((item) => [item.requestedClipId, item.status, item.errorCode]).sort()).toEqual([
+      [current.clip.id, "succeeded", null],
+      [missingClipId, "ineligible", "campaign_clip_not_found"],
+    ].sort());
+
+    const stale = await campaignOperationService.applyMotionSelected(
+      { ...scope, idempotencyKey: randomUUID() },
+      {
+        change: {
+          scope: "clip_transition",
+          transition: { type: "dip-white", durationSec: 0.4 },
+        },
+        clips: [{ clipId: current.clip.id, expectedEditorRevision: 3 }],
+      },
+    );
+    expect(stale.counts).toMatchObject({ stale: 1, succeeded: 0 });
+  });
+
   test("freezes bundle revisions and variants while excluding stale and missing clips", async () => {
     const current = await fixture("bundle-freeze");
     const missingClipId = randomUUID();

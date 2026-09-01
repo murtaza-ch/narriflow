@@ -470,7 +470,17 @@ export function ClipRow({ clip, projectId, rank, compact, selected, onToggleSele
       ps="4"
       pe="1"
       transition="background 120ms ease"
-      _hover={{ bg: "bg.subtle" }}
+      bg={selected ? "accent.subtle" : undefined}
+      _before={{
+        content: '""',
+        position: "absolute",
+        insetBlock: "0",
+        insetInlineStart: "0",
+        w: "3px",
+        bg: selected ? "accent.solid" : "transparent",
+        transition: "background 120ms ease",
+      }}
+      _hover={{ bg: selected ? "accent.subtle" : "bg.subtle" }}
     >
       <Flex gap="3" align="flex-start">
         {!isCaptionOnly && (

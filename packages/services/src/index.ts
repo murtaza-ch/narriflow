@@ -276,9 +276,14 @@ export {
   AutoCensorService,
 } from "./auto-censor.service";
 export {
+  assertCampaignActionWriteEnabled,
+  assertCampaignMotionWriteEnabled,
   assertProgramWriteEnabled,
+  campaignActionRolloutFromEnv,
+  campaignActionWriteEnabled,
   isProgramWriteEnabled,
   ProgramWriteDisabledError,
+  type CampaignActionRollout,
   type ProgramReleaseGroup,
 } from "./program-rollout";
 export {

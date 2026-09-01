@@ -1,5 +1,11 @@
 import { z } from "zod";
 import { clipAspectRatioSchema, clipRenderResolutionSchema } from "./clip";
+import { studioTransitionSchema } from "./studio-edits";
+import {
+  mediaMotionEntranceSchema,
+  mediaMotionExitSchema,
+} from "./timed-edits";
+import { applySceneTemplateSchema } from "./scene-template";
 
 // The worker materializes every input plus the ZIP on one volume, and R2's
 // single-part publication copy is limited to 5 GiB. Four GiB leaves room for
@@ -11,7 +17,9 @@ export const campaignOperationActionSchema = z.enum([
   "export_bundle",
   "schedule_selected",
   "apply_brand_profile",
+  "apply_style",
   "apply_scene_template",
+  "apply_motion",
 ]);
 
 export const campaignOperationItemStatusSchema = z.enum([
@@ -31,6 +39,71 @@ export const createExportBundleSchema = z.strictObject({
   })).min(1).max(100),
   aspectRatios: z.array(clipAspectRatioSchema).min(1).max(4),
   resolution: clipRenderResolutionSchema,
+});
+
+const campaignFingerprintSchema = z.string().regex(/^[a-f0-9]{64}$/i);
+const campaignSelectedClipsSchema = z
+  .array(
+    z.strictObject({
+      clipId: z.string().uuid(),
+      expectedEditorRevision: z.number().int().nonnegative(),
+    }),
+  )
+  .min(1)
+  .max(100)
+  .superRefine((clips, context) => {
+    if (new Set(clips.map((clip) => clip.clipId)).size !== clips.length) {
+      context.addIssue({
+        code: "custom",
+        message: "A clip can appear only once",
+      });
+    }
+  });
+
+export const applyProjectBrandProfileSelectedSchema = z.strictObject({
+  profileFingerprint: campaignFingerprintSchema,
+  styleFingerprint: campaignFingerprintSchema.nullable(),
+  clips: campaignSelectedClipsSchema,
+});
+
+export const applyStyleSelectedSchema = z.strictObject({
+  templateId: z.string().uuid(),
+  templateFingerprint: campaignFingerprintSchema,
+  clips: campaignSelectedClipsSchema,
+});
+
+export const previewCampaignEditorActionSchema = z.discriminatedUnion("action", [
+  z.strictObject({
+    action: z.literal("apply_brand_profile"),
+    input: applyProjectBrandProfileSelectedSchema,
+  }),
+  z.strictObject({
+    action: z.literal("apply_style"),
+    input: applyStyleSelectedSchema,
+  }),
+  z.strictObject({
+    action: z.literal("apply_scene_template"),
+    profileId: z.string().uuid(),
+    templateId: z.string().uuid(),
+    input: applySceneTemplateSchema,
+  }),
+]);
+
+export const applyMotionSelectedSchema = z.strictObject({
+  change: z.discriminatedUnion("scope", [
+    z.strictObject({
+      scope: z.literal("clip_transition"),
+      transition: studioTransitionSchema,
+    }),
+    z.strictObject({
+      scope: z.literal("manual_broll"),
+      motion: z.strictObject({
+        entrance: mediaMotionEntranceSchema,
+        exit: mediaMotionExitSchema,
+      }),
+    }),
+  ]),
+  clips: campaignSelectedClipsSchema,
 });
 
 export const exportBundleManifestSchema = z.strictObject({
@@ -66,3 +139,11 @@ export const exportBundleManifestSchema = z.strictObject({
 
 export type ExportBundleManifest = z.infer<typeof exportBundleManifestSchema>;
 export type CreateExportBundleInput = z.infer<typeof createExportBundleSchema>;
+export type ApplyMotionSelectedInput = z.infer<typeof applyMotionSelectedSchema>;
+export type ApplyProjectBrandProfileSelectedInput = z.infer<
+  typeof applyProjectBrandProfileSelectedSchema
+>;
+export type ApplyStyleSelectedInput = z.infer<typeof applyStyleSelectedSchema>;
+export type PreviewCampaignEditorActionInput = z.infer<
+  typeof previewCampaignEditorActionSchema
+>;

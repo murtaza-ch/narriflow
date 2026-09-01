@@ -29,6 +29,28 @@ export const sceneMotionSchema = z.strictObject({
   exit: z.enum(["none", "fade", "slide-down", "zoom-out"]),
 });
 
+export const mediaMotionEntranceSchema = z.enum([
+  "none",
+  "fade",
+  "scale-in",
+  "pan-left",
+  "pan-right",
+  "pan-up",
+  "pan-down",
+  "ken-burns-in",
+]);
+
+export const mediaMotionExitSchema = z.enum([
+  "none",
+  "fade",
+  "scale-out",
+  "pan-left",
+  "pan-right",
+  "pan-up",
+  "pan-down",
+  "ken-burns-out",
+]);
+
 export const sceneContentSchema = z.discriminatedUnion("kind", [
   z.strictObject({
     kind: z.literal("video"),
@@ -141,8 +163,8 @@ export const mediaMotionSchema = z.strictObject({
   ]),
   startSec: boundedTimeSchema,
   endSec: boundedTimeSchema,
-  entrance: z.enum(["none", "fade", "scale-in", "pan-left", "pan-right", "pan-up", "pan-down", "ken-burns-in"]),
-  exit: z.enum(["none", "fade", "scale-out", "pan-left", "pan-right", "pan-up", "pan-down", "ken-burns-out"]),
+  entrance: mediaMotionEntranceSchema,
+  exit: mediaMotionExitSchema,
   enabled: z.boolean().default(true),
 }).refine((motion) => motion.endSec > motion.startSec, {
   message: "endSec must be greater than startSec",
