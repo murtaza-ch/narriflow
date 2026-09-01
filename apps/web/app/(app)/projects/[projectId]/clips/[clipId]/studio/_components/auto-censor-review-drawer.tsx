@@ -17,6 +17,7 @@ import { formatTimecode } from "@/lib/format";
 import { useStudio } from "./studio-shell";
 import {
   autoCensorResultCountBucket,
+  autoCensorSourceSpanKey,
   buildReviewedCensorSegments,
   type AutoCensorReviewDecision,
 } from "./auto-censor-review-model";
@@ -95,8 +96,10 @@ export function AutoCensorReviewDrawer({ onClose }: { onClose: () => void }) {
     updateProjectCensorTerms,
     recordAutoCensorEvent,
   } = useStudio();
-  const firstTreatment = (Object.keys(autoCensorPolicy.treatments) as AutoCensorTreatment[])
-    .find((treatment) => autoCensorPolicy.treatments[treatment]) ?? "caption_mask";
+  const availableTreatment = (Object.keys(autoCensorPolicy.treatments) as AutoCensorTreatment[])
+    .find((treatment) => autoCensorPolicy.treatments[treatment]);
+  const firstTreatment = availableTreatment ?? "caption_mask";
+  const hasWritableTreatment = availableTreatment !== undefined;
   const [defaultTreatment, setDefaultTreatment] = useState<AutoCensorTreatment>(firstTreatment);
   const [suggestions, setSuggestions] = useState<AutoCensorSuggestion[]>([]);
   const [decisions, setDecisions] = useState<AutoCensorReviewDecision[]>([]);
@@ -106,12 +109,23 @@ export function AutoCensorReviewDrawer({ onClose }: { onClose: () => void }) {
   const [termDraft, setTermDraft] = useState("");
   const [savingTerms, setSavingTerms] = useState(false);
 
+  const recordEventBestEffort = (input: Parameters<typeof recordAutoCensorEvent>[0]) => {
+    void recordAutoCensorEvent(input).catch(() => {
+      console.warn(JSON.stringify({
+        level: "warn",
+        message: "auto_censor_analytics_failed",
+        eventType: input.type,
+      }));
+    });
+  };
+
   const runScan = (terms: readonly string[] = projectTerms, treatment = defaultTreatment) => {
-    void recordAutoCensorEvent({ type: "auto_censor_scan_started" });
+    recordEventBestEffort({ type: "auto_censor_scan_started" });
     const result = detectAutoCensorSuggestions({
       documentRevision: editorRevision,
       locale: autoCensorPolicy.locale,
       clipWindow,
+      deletedRanges: editorDocument.deletedRanges,
       transcript: utterances,
       brandTerms: autoCensorPolicy.brandTerms,
       projectTerms: terms,
@@ -121,15 +135,21 @@ export function AutoCensorReviewDrawer({ onClose }: { onClose: () => void }) {
     setSuggestions(result);
     setDecisions(result.map((suggestion) => {
       const applied = editorDocument.censorSegments.find(
-        (segment) => segment.suggestionFingerprint === suggestion.fingerprint,
+        (segment) => autoCensorSourceSpanKey(segment.sourceWordIds) ===
+          autoCensorSourceSpanKey(suggestion.sourceWordIds),
       );
+      const treatmentForSuggestion = suggestion.timingLimitation
+        ? "caption_mask"
+        : treatment;
       return {
         fingerprint: suggestion.fingerprint,
-        selected: suggestion.timingLimitation === null && !applied,
-        treatment: applied?.treatment ?? (suggestion.timingLimitation ? "caption_mask" : treatment),
+        selected: suggestion.timingLimitation === null &&
+          !applied &&
+          autoCensorPolicy.treatments[treatmentForSuggestion],
+        treatment: applied?.treatment ?? treatmentForSuggestion,
       };
     }));
-    void recordAutoCensorEvent({
+    recordEventBestEffort({
       type: "auto_censor_scan_completed",
       resultCountBucket: autoCensorResultCountBucket(result.length),
     });
@@ -146,22 +166,30 @@ export function AutoCensorReviewDrawer({ onClose }: { onClose: () => void }) {
     () => new Map(decisions.map((decision) => [decision.fingerprint, decision])),
     [decisions],
   );
-  const appliedFingerprints = useMemo(
-    () => new Set(editorDocument.censorSegments.flatMap((segment) =>
-      segment.suggestionFingerprint ? [segment.suggestionFingerprint] : [],
+  const suggestionByFingerprint = useMemo(
+    () => new Map(suggestions.map((suggestion) => [suggestion.fingerprint, suggestion])),
+    [suggestions],
+  );
+  const appliedSourceSpans = useMemo(
+    () => new Set(editorDocument.censorSegments.map((segment) =>
+      autoCensorSourceSpanKey(segment.sourceWordIds),
     )),
     [editorDocument.censorSegments],
   );
   const visibleSuggestions = useMemo(() => {
-    const normalizedQuery = query.trim().toLocaleLowerCase(autoCensorPolicy.locale);
+    const normalizedQuery = query.trim().toLocaleLowerCase();
     return suggestions.filter((suggestion) =>
       (sourceFilter === "all" || suggestion.policySource === sourceFilter) &&
-      (!normalizedQuery || suggestion.matchedText.toLocaleLowerCase(autoCensorPolicy.locale).includes(normalizedQuery)),
+      (!normalizedQuery || suggestion.matchedText.toLocaleLowerCase().includes(normalizedQuery)),
     );
-  }, [autoCensorPolicy.locale, query, sourceFilter, suggestions]);
-  const selectedCount = decisions.filter((decision) =>
-    decision.selected && !appliedFingerprints.has(decision.fingerprint),
-  ).length;
+  }, [query, sourceFilter, suggestions]);
+  const selectedCount = suggestions.filter((suggestion) => {
+    const decision = decisionByFingerprint.get(suggestion.fingerprint);
+    return decision?.selected &&
+      suggestion.timingLimitation === null &&
+      autoCensorPolicy.treatments[decision.treatment] &&
+      !appliedSourceSpans.has(autoCensorSourceSpanKey(suggestion.sourceWordIds));
+  }).length;
 
   const updateDecision = (
     fingerprint: string,
@@ -211,11 +239,13 @@ export function AutoCensorReviewDrawer({ onClose }: { onClose: () => void }) {
         createId: () => crypto.randomUUID(),
       });
       if (result.applied.length === 0) return;
-      setCensorSegments(result.segments);
+      if (!setCensorSegments(result.segments)) {
+        throw new Error("auto_censor_document_rejected");
+      }
       const staleCount = editorDocument.censorSegments.filter((segment) =>
         isCensorSegmentStale(segment, utterances),
       ).length;
-      void recordAutoCensorEvent({
+      recordEventBestEffort({
         type: "auto_censor_applied",
         selectedCount: result.applied.length,
         captionMaskCount: result.applied.filter((segment) => segment.treatment === "caption_mask").length,
@@ -313,9 +343,14 @@ export function AutoCensorReviewDrawer({ onClose }: { onClose: () => void }) {
               <Search size={13} />
               <Input aria-label="Filter sensitive word matches" value={query} onChange={(event) => setQuery(event.target.value)} border="0" p="0" h="32px" fontSize="12px" placeholder="Filter matches" />
             </Flex>
-            <TreatmentSelect value={defaultTreatment} availability={autoCensorPolicy.treatments} onChange={(value) => {
+            <TreatmentSelect disabled={!hasWritableTreatment} value={defaultTreatment} availability={autoCensorPolicy.treatments} onChange={(value) => {
               setDefaultTreatment(value);
-              setDecisions((current) => current.map((decision) => ({ ...decision, treatment: value })));
+              setDecisions((current) => current.map((decision) => ({
+                ...decision,
+                treatment: suggestionByFingerprint.get(decision.fingerprint)?.timingLimitation
+                  ? "caption_mask"
+                  : value,
+              })));
             }} />
           </Flex>
           <Flex gap="5px" flexWrap="wrap">
@@ -353,7 +388,11 @@ export function AutoCensorReviewDrawer({ onClose }: { onClose: () => void }) {
             <Flex gap="4px">
               <Button size="xs" variant="ghost" onClick={() => setDecisions((current) => current.map((decision) => ({
                 ...decision,
-                selected: !appliedFingerprints.has(decision.fingerprint),
+                selected: suggestionByFingerprint.get(decision.fingerprint)?.timingLimitation === null &&
+                  autoCensorPolicy.treatments[decision.treatment] &&
+                  !appliedSourceSpans.has(autoCensorSourceSpanKey(
+                    suggestionByFingerprint.get(decision.fingerprint)?.sourceWordIds ?? [],
+                  )),
               })))}>Select all</Button>
               <Button size="xs" variant="ghost" onClick={() => setDecisions((current) => current.map((decision) => ({ ...decision, selected: false })))}>Clear</Button>
             </Flex>
@@ -367,10 +406,13 @@ export function AutoCensorReviewDrawer({ onClose }: { onClose: () => void }) {
             </Stack>
           ) : visibleSuggestions.map((suggestion) => {
             const decision = decisionByFingerprint.get(suggestion.fingerprint)!;
-            const alreadyApplied = appliedFingerprints.has(suggestion.fingerprint);
+            const alreadyApplied = appliedSourceSpans.has(
+              autoCensorSourceSpanKey(suggestion.sourceWordIds),
+            );
+            const treatmentUnavailable = !autoCensorPolicy.treatments[decision.treatment];
             return (
               <Flex key={suggestion.fingerprint} px="20px" py="12px" gap="10px" borderBottomWidth="1px" borderColor="studio.border" borderLeftWidth="3px" borderLeftColor={decision.selected ? "studio.accent" : "studio.border"}>
-                <Checkbox.Root disabled={alreadyApplied} checked={decision.selected} onCheckedChange={(event) => updateDecision(suggestion.fingerprint, { selected: Boolean(event.checked) })} mt="2px">
+                <Checkbox.Root disabled={alreadyApplied || treatmentUnavailable || suggestion.timingLimitation !== null} checked={decision.selected} onCheckedChange={(event) => updateDecision(suggestion.fingerprint, { selected: Boolean(event.checked) })} mt="2px">
                   <Checkbox.HiddenInput /><Checkbox.Control />
                 </Checkbox.Root>
                 <Box minW="0" flex="1">
@@ -381,7 +423,7 @@ export function AutoCensorReviewDrawer({ onClose }: { onClose: () => void }) {
                   <Text fontSize="11px" color="studio.fgMuted" lineClamp="2">{suggestion.contextBefore} <Text as="span" color="studio.fg" fontWeight="700">{suggestion.matchedText}</Text> {suggestion.contextAfter}</Text>
                   <Flex mt="7px" align="center" justify="space-between" gap="8px">
                     <Text textStyle="eyebrow" color="studio.fgSubtle">{alreadyApplied ? "Applied · " : ""}{sourceLabel(suggestion.policySource)} · {suggestion.confidence === null ? "No confidence" : `${Math.round(suggestion.confidence * 100)}%`}</Text>
-                    <TreatmentSelect disabled={alreadyApplied} value={decision.treatment} availability={autoCensorPolicy.treatments} onChange={(value) => updateDecision(suggestion.fingerprint, { treatment: value })} />
+                    <TreatmentSelect disabled={alreadyApplied || !hasWritableTreatment || suggestion.timingLimitation !== null} value={decision.treatment} availability={autoCensorPolicy.treatments} onChange={(value) => updateDecision(suggestion.fingerprint, { treatment: value, selected: true })} />
                   </Flex>
                   {suggestion.timingLimitation && <Text mt="5px" fontSize="10px" color="studio.accentFg">Audio unavailable — caption mask only</Text>}
                 </Box>
@@ -412,7 +454,8 @@ export function AutoCensorReviewDrawer({ onClose }: { onClose: () => void }) {
 
         <Box px="20px" py="14px" borderTopWidth="1px" borderColor="studio.borderStrong" bg="studio.raised">
           {!autoCensorPolicy.canApply && <Text mb="8px" fontSize="11px" color="studio.fgMuted">Preview is free. Upgrade to Creator to save censor edits.</Text>}
-          <Button w="100%" colorPalette="accent" disabled={!autoCensorPolicy.canApply || selectedCount === 0} onClick={apply}>
+          {autoCensorPolicy.canApply && !hasWritableTreatment && <Text mb="8px" fontSize="11px" color="studio.fgMuted">Scanning is available. Applying censor edits is temporarily unavailable.</Text>}
+          <Button w="100%" colorPalette="accent" disabled={!autoCensorPolicy.canApply || !hasWritableTreatment || selectedCount === 0} onClick={apply}>
             Apply {selectedCount > 0 ? selectedCount : "selected"} {selectedCount === 1 ? "edit" : "edits"}
           </Button>
         </Box>

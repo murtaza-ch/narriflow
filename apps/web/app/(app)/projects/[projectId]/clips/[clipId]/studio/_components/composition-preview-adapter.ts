@@ -119,24 +119,39 @@ export function plannedCompositionAudioState(
       volume: Math.max(0, Math.min(1, volume * outputGain)),
     };
   }
+  const soundEffects = schedule.soundEffects
+    .filter((effect) => rangeContains(effect.activeRange, timeSec))
+    .map((effect) => ({
+      id: effect.id,
+      sourceRef: effect.sourceRef,
+      localTimeSec: timeSec - effect.activeRange.startSec,
+      volume: effect.gain * outputGain,
+    }));
+  const peakGainSum =
+    sourceEnvelopeGain * schedule.source.gain +
+    (beep?.volume ?? 0) +
+    (plannedMusic?.volume ?? 0) +
+    soundEffects.reduce((sum, effect) => sum + effect.volume, 0);
+  // The browser plays media elements and the oscillator through separate
+  // output nodes, so it cannot share FFmpeg's final limiter. While a beep is
+  // active, apply conservative shared headroom across every audible branch;
+  // an isolated tone remains at its exact configured level.
+  const mixGain = beep && peakGainSum > 0.95 ? 0.95 / peakGainSum : 1;
   return {
     scheduleFingerprint: schedule.fingerprint,
+    mixGain,
     source: {
       muted: schedule.source.muted || !schedule.source.available,
-      volume: schedule.source.gain * sourceEnvelopeGain,
+      volume: schedule.source.gain * sourceEnvelopeGain * mixGain,
       outputGain,
-      envelopeGain: sourceEnvelopeGain,
+      envelopeGain: sourceEnvelopeGain * mixGain,
     },
-    beep,
-    music: plannedMusic,
-    soundEffects: schedule.soundEffects
-      .filter((effect) => rangeContains(effect.activeRange, timeSec))
-      .map((effect) => ({
-        id: effect.id,
-        sourceRef: effect.sourceRef,
-        localTimeSec: timeSec - effect.activeRange.startSec,
-        volume: effect.gain * outputGain,
-      })),
+    beep: beep ? { ...beep, volume: beep.volume * mixGain } : null,
+    music: plannedMusic ? { ...plannedMusic, volume: plannedMusic.volume * mixGain } : null,
+    soundEffects: soundEffects.map((effect) => ({
+      ...effect,
+      volume: effect.volume * mixGain,
+    })),
   };
 }
 

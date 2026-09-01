@@ -48,7 +48,7 @@ describe("Auto Censor review apply", () => {
       canApply: false,
       treatments: { caption_mask: true, mute: true, beep: true },
       paddingSec: 0.06,
-      createId: crypto.randomUUID,
+      createId: () => crypto.randomUUID(),
     })).toThrow("auto_censor_entitlement_required");
     expect(buildReviewedCensorSegments({
       suggestions: [suggestion],
@@ -57,7 +57,32 @@ describe("Auto Censor review apply", () => {
       canApply: true,
       treatments: { caption_mask: true, mute: true, beep: false },
       paddingSec: 0.06,
-      createId: crypto.randomUUID,
+      createId: () => crypto.randomUUID(),
+    }).applied).toEqual([]);
+  });
+
+  test("does not reapply the same source words after the document revision changes", () => {
+    expect(buildReviewedCensorSegments({
+      suggestions: [{ ...suggestion, fingerprint: "b".repeat(64) }],
+      decisions: [{ fingerprint: "b".repeat(64), selected: true, treatment: "beep" }],
+      existing: [{
+        schemaVersion: 1,
+        id: "c0d3a3bb-beb8-4ea4-be74-bc3387cc1ea4",
+        sourceWordIds: [...suggestion.sourceWordIds],
+        sourceStartSec: 1,
+        sourceEndSec: 1.3,
+        treatment: "beep",
+        paddingSec: 0.06,
+        beepSettings: { frequencyHz: 1_000, levelDb: -8 },
+        captionMaskPolicy: null,
+        suggestionFingerprint: "a".repeat(64),
+        policyVersion: AUTO_CENSOR_POLICY_VERSION,
+        enabled: true,
+      }],
+      canApply: true,
+      treatments: { caption_mask: true, mute: true, beep: true },
+      paddingSec: 0.06,
+      createId: () => crypto.randomUUID(),
     }).applied).toEqual([]);
   });
 });

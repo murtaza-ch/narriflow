@@ -11,6 +11,10 @@ export interface AutoCensorReviewDecision {
   readonly treatment: AutoCensorTreatment;
 }
 
+export function autoCensorSourceSpanKey(sourceWordIds: readonly string[]): string {
+  return sourceWordIds.join("\u0000");
+}
+
 export function autoCensorResultCountBucket(count: number) {
   if (count <= 0) return "zero" as const;
   if (count <= 5) return "one_to_five" as const;
@@ -32,12 +36,16 @@ export function buildReviewedCensorSegments(input: {
   const existingFingerprints = new Set(
     input.existing.flatMap((segment) => segment.suggestionFingerprint ? [segment.suggestionFingerprint] : []),
   );
+  const existingSourceSpans = new Set(
+    input.existing.map((segment) => autoCensorSourceSpanKey(segment.sourceWordIds)),
+  );
   const applied = input.suggestions.flatMap((suggestion) => {
     const decision = decisions.get(suggestion.fingerprint);
     if (
       !decision?.selected ||
       !input.treatments[decision.treatment] ||
       existingFingerprints.has(suggestion.fingerprint) ||
+      existingSourceSpans.has(autoCensorSourceSpanKey(suggestion.sourceWordIds)) ||
       suggestion.sourceStartSec === null ||
       suggestion.sourceEndSec === null
     ) {

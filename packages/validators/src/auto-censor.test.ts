@@ -90,10 +90,70 @@ describe("detectAutoCensorSuggestions", () => {
       { text: "ＦＵＣＫ,", source: "built_in", wordCount: 1 },
       { text: "launch leak", source: "project", wordCount: 2 },
     ]);
+    expect(result[1]?.contextAfter).toBe("now");
+  });
+
+  test("lets a rejected overlap yield to the next non-overlapping match", () => {
+    const result = detectAutoCensorSuggestions({
+      documentRevision: 1,
+      locale: "en",
+      clipWindow: { startSec: 0, endSec: 4 },
+      transcript: [{
+        index: 0,
+        speakerLabel: "Speaker 1",
+        startSec: 0,
+        endSec: 4,
+        text: "alpha beta gamma delta",
+        confidence: 0.9,
+        words: [
+          { word: "alpha", startSec: 0, endSec: 0.4, confidence: 0.9 },
+          { word: "beta", startSec: 0.5, endSec: 0.9, confidence: 0.9 },
+          { word: "gamma", startSec: 1, endSec: 1.4, confidence: 0.9 },
+          { word: "delta", startSec: 1.5, endSec: 1.9, confidence: 0.9 },
+        ],
+      }],
+      brandTerms: [],
+      projectTerms: ["alpha beta", "beta gamma", "gamma delta"],
+      defaultTreatment: "mute",
+      paddingSec: 0,
+    });
+
+    expect(result.map((suggestion) => suggestion.matchedText)).toEqual([
+      "alpha beta",
+      "gamma delta",
+    ]);
+  });
+
+  test("accepts provider locale codes and omits words removed from the edit", () => {
+    const result = detectAutoCensorSuggestions({
+      documentRevision: 4,
+      locale: "en_us",
+      clipWindow: { startSec: 0, endSec: 3 },
+      deletedRanges: [{ startSec: 0.8, endSec: 1.5 }],
+      transcript: [{
+        index: 0,
+        speakerLabel: "Speaker 1",
+        startSec: 0,
+        endSec: 3,
+        text: "well FUCK then",
+        confidence: 0.9,
+        words: [
+          { word: "well", startSec: 0.2, endSec: 0.5, confidence: 0.9 },
+          { word: "FUCK", startSec: 0.9, endSec: 1.3, confidence: 0.9 },
+          { word: "then", startSec: 1.6, endSec: 1.9, confidence: 0.9 },
+        ],
+      }],
+      brandTerms: [],
+      projectTerms: [],
+      defaultTreatment: "beep",
+      paddingSec: 0.06,
+    });
+
+    expect(result).toEqual([]);
   });
 
   test("limits an untimed match to caption masking", () => {
-    const [suggestion] = detectAutoCensorSuggestions({
+    const scan = (defaultTreatment: "beep" | "mute") => detectAutoCensorSuggestions({
       documentRevision: 1,
       locale: "en",
       clipWindow: { startSec: 0, endSec: 8 },
@@ -113,9 +173,10 @@ describe("detectAutoCensorSuggestions", () => {
       ],
       brandTerms: [],
       projectTerms: [],
-      defaultTreatment: "beep",
+      defaultTreatment,
       paddingSec: 0.1,
-    });
+    })[0]!;
+    const suggestion = scan("beep");
 
     expect(suggestion).toMatchObject({
       treatment: "caption_mask",
@@ -125,6 +186,7 @@ describe("detectAutoCensorSuggestions", () => {
       audioStartSec: null,
       audioEndSec: null,
     });
+    expect(scan("mute").fingerprint).toBe(suggestion.fingerprint);
   });
 
   test("classifies a built-in slur separately from profanity", () => {
@@ -177,7 +239,7 @@ describe("detectAutoCensorSuggestions", () => {
     expect(after.fingerprint).not.toBe(before.fingerprint);
   });
 
-  test("keeps a suggestion fingerprint stable across revision and review-setting changes", () => {
+  test("includes revision and review settings in a deterministic suggestion fingerprint", () => {
     const scan = (documentRevision: number, defaultTreatment: "beep" | "mute", paddingSec: number) =>
       detectAutoCensorSuggestions({
         documentRevision,
@@ -198,7 +260,8 @@ describe("detectAutoCensorSuggestions", () => {
         paddingSec,
       })[0]!.fingerprint;
 
-    expect(scan(2, "beep", 0.04)).toBe(scan(7, "mute", 0.12));
+    expect(scan(2, "beep", 0.04)).toBe(scan(2, "beep", 0.04));
+    expect(scan(2, "beep", 0.04)).not.toBe(scan(7, "mute", 0.12));
   });
 
   test("marks an applied segment stale when a referenced transcript word changes", () => {

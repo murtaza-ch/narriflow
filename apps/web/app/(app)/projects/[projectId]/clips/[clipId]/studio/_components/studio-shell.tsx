@@ -636,7 +636,7 @@ interface StudioContextValue extends StudioState {
 	replaceSceneBlock: (id: string, content: SceneContent, durationSec?: number) => void;
 	updateSceneMotion: (id: string, motion: SceneMotion) => void;
   deleteSceneBlock: (id: string) => void;
-  setCensorSegments: (segments: CensorSegment[]) => void;
+  setCensorSegments: (segments: CensorSegment[]) => boolean;
   updateProjectCensorTerms: (terms: string[]) => Promise<unknown>;
   recordAutoCensorEvent: (input: AutoCensorAnalyticsInput) => Promise<unknown>;
 }
@@ -1315,10 +1315,12 @@ export function StudioShell({
     studioSession.dispatch({ type: "document.edit", action: { type: "deleteSceneBlock", id } });
   }, [studioSession]);
   const setCensorSegments = useCallback((segments: CensorSegment[]) => {
-    studioSession.dispatch({
+    const before = studioSession.getSnapshot().document;
+    const receipt = studioSession.dispatch({
       type: "document.edit",
       action: { type: "setCensorSegments", segments },
     });
+    return receipt.accepted && studioSession.getSnapshot().document !== before;
   }, [studioSession]);
 
   const setSegments = useCallback((next: TimelineSegment[]) => {

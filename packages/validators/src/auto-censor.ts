@@ -1,4 +1,10 @@
-import { buildEditedTimeMap, sourceRangeToEdited, type ClipWindow, type SourceRange } from "./edit-ranges";
+import {
+  buildEditedTimeMap,
+  sourceRangeToEdited,
+  type ClipWindow,
+  type EditedTimeMap,
+  type SourceRange,
+} from "./edit-ranges";
 import type { CensorSegment, SceneBlock } from "./timed-edits";
 import { z } from "zod";
 
@@ -78,6 +84,7 @@ export interface DetectAutoCensorSuggestionsInput {
   readonly documentRevision: number;
   readonly locale: string;
   readonly clipWindow: { readonly startSec: number; readonly endSec: number };
+  readonly deletedRanges?: readonly SourceRange[];
   readonly transcript: readonly AutoCensorTranscriptUtterance[];
   readonly brandTerms: readonly string[];
   readonly projectTerms: readonly string[];
@@ -161,12 +168,44 @@ function normalizeToken(value: string, locale: string): string {
     .replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, "");
 }
 
+function normalizeLocaleTag(locale: string): string {
+  const candidate = locale.trim().replaceAll("_", "-");
+  try {
+    return Intl.getCanonicalLocales(candidate)[0] ?? "und";
+  } catch {
+    return "und";
+  }
+}
+
 function roundMillis(value: number): number {
   return Math.round(value * 1_000) / 1_000;
 }
 
 function roundSix(value: number): number {
   return Math.round(value * 1_000_000) / 1_000_000;
+}
+
+/** Audio envelopes retain microsecond-scale intervals. The shared visual
+ * mapper intentionally rounds to milliseconds, which can collapse a very
+ * short beep; this mapper keeps the same cut semantics without that display-
+ * oriented rounding. */
+function sourceRangeToEditedForAudio(
+  map: EditedTimeMap,
+  range: SourceRange,
+): SourceRange | null {
+  const mapPoint = (sourceSec: number) => {
+    if (map.segments.length === 0) return 0;
+    for (const segment of map.segments) {
+      if (sourceSec < segment.sourceStartSec) return segment.editedStartSec;
+      if (sourceSec <= segment.sourceEndSec) {
+        return segment.editedStartSec + (sourceSec - segment.sourceStartSec);
+      }
+    }
+    return map.editedDurationSec;
+  };
+  const startSec = mapPoint(range.startSec);
+  const endSec = mapPoint(range.endSec);
+  return endSec > startSec ? { startSec, endSec } : null;
 }
 
 function segmentGraphemes(value: string): string[] {
@@ -224,8 +263,8 @@ function retimeCensorIntervalForScenes(
   return boundaries.slice(0, -1).map((startSec, index) => {
     const endSec = boundaries[index + 1]!;
     return {
-      startSec: roundMillis(startSec + shiftAt(startSec)),
-      endSec: roundMillis(
+      startSec: roundSix(startSec + shiftAt(startSec)),
+      endSec: roundSix(
         endSec + shiftAt(Math.max(startSec, endSec - 0.000_001)),
       ),
     };
@@ -255,7 +294,7 @@ export function normalizeCensorAudioSchedule(
         segment.sourceEndSec + segment.paddingSec,
       ),
     };
-    const editedRange = sourceRangeToEdited(editedTimeMap, sourceRange);
+    const editedRange = sourceRangeToEditedForAudio(editedTimeMap, sourceRange);
     if (!editedRange) return [];
     const policy = segment.treatment === "mute"
       ? ({ treatment: "mute" as const })
@@ -282,7 +321,7 @@ export function normalizeCensorAudioSchedule(
   for (let index = 0; index < boundaries.length - 1; index += 1) {
     const startSec = boundaries[index]!;
     const endSec = boundaries[index + 1]!;
-    if (endSec - startSec < 0.001) continue;
+    if (endSec <= startSec) continue;
     const active = prepared
       .filter((entry) => entry.startSec < endSec && entry.endSec > startSec)
       .sort((left, right) => left.id.localeCompare(right.id));
@@ -291,7 +330,7 @@ export function normalizeCensorAudioSchedule(
     const previous = atomic[atomic.length - 1];
     if (
       previous &&
-      Math.abs(previous.endSec - startSec) < 0.001 &&
+      previous.endSec === startSec &&
       sameCensorIntervalPolicy(previous.policy, winner.policy)
     ) {
       previous.endSec = endSec;
@@ -301,13 +340,13 @@ export function normalizeCensorAudioSchedule(
   }
   return atomic.map(({ startSec, endSec, policy }) => {
     if (policy.treatment === "mute") {
-      return { startSec: roundMillis(startSec), endSec: roundMillis(endSec), treatment: "mute" };
+      return { startSec: roundSix(startSec), endSec: roundSix(endSec), treatment: "mute" };
     }
     const durationSec = endSec - startSec;
-    const fadeSec = roundMillis(Math.min(0.015, durationSec / 2));
+    const fadeSec = roundSix(Math.min(0.015, durationSec / 2));
     return {
-      startSec: roundMillis(startSec),
-      endSec: roundMillis(endSec),
+      startSec: roundSix(startSec),
+      endSec: roundSix(endSec),
       treatment: "beep",
       frequencyHz: policy.frequencyHz,
       gain: policy.gain,
@@ -359,15 +398,24 @@ export function isCensorSegmentStale(
 export function detectAutoCensorSuggestions(
   input: DetectAutoCensorSuggestionsInput,
 ): AutoCensorSuggestion[] {
+  const locale = normalizeLocaleTag(input.locale);
+  const editedTimeMap = buildEditedTimeMap([...(input.deletedRanges ?? [])], input.clipWindow);
   const words = input.transcript.flatMap((utterance) =>
-    utterance.words.map((word, wordIndex) => ({
-      utterance,
-      word,
-      wordIndex,
-      normalized: normalizeToken(word.word, input.locale),
-    })),
+    utterance.words.flatMap((word, wordIndex) => {
+      const removed = word.startSec !== null && word.endSec !== null &&
+        sourceRangeToEdited(editedTimeMap, {
+          startSec: word.startSec,
+          endSec: word.endSec,
+        }) === null;
+      return removed ? [] : [{
+        utterance,
+        word,
+        wordIndex,
+        normalized: normalizeToken(word.word, locale),
+      }];
+    }),
   );
-  const localeKey = input.locale.toLocaleLowerCase().split(/[-_]/)[0] ?? "en";
+  const localeKey = locale.toLocaleLowerCase().split("-")[0] ?? "en";
   const policyTerms: AutoCensorPolicyTerm[] = [
     ...(BUILT_IN_POLICY[localeKey] ?? BUILT_IN_POLICY.en ?? []).map((term) => ({
       ...term,
@@ -388,7 +436,7 @@ export function detectAutoCensorSuggestions(
     const tokens = term.value
       .trim()
       .split(/\s+/)
-      .map((token) => normalizeToken(token, input.locale))
+      .map((token) => normalizeToken(token, locale))
       .filter(Boolean);
     return tokens.length > 0 ? [{ ...term, tokens }] : [];
   });
@@ -417,13 +465,15 @@ export function detectAutoCensorSuggestions(
       sourcePriority[right.term.source] - sourcePriority[left.term.source] ||
       left.term.value.localeCompare(right.term.value),
   );
-  const selected = candidates.filter((candidate, index, all) => {
+  const selected: typeof candidates = [];
+  for (const candidate of candidates) {
     const candidateEnd = candidate.flatIndex + candidate.span.length;
-    return !all.slice(0, index).some((earlier) => {
+    const overlaps = selected.some((earlier) => {
       const earlierEnd = earlier.flatIndex + earlier.span.length;
       return candidate.flatIndex < earlierEnd && candidateEnd > earlier.flatIndex;
     });
-  });
+    if (!overlaps) selected.push(candidate);
+  }
 
   return selected.map(({ flatIndex, span, term }) => {
     const first = span[0]!;
@@ -454,12 +504,18 @@ export function detectAutoCensorSuggestions(
           Math.min(input.clipWindow.endSec, sourceEndSec! + input.paddingSec),
         )
       : null;
+    const treatment: AutoCensorTreatment = timed
+      ? input.defaultTreatment
+      : "caption_mask";
     const fingerprint = hash64(
       JSON.stringify({
+        documentRevision: input.documentRevision,
         policyVersion: AUTO_CENSOR_POLICY_VERSION,
         policySource: term.source,
         policyTerm: term.tokens,
         sourceWordIds,
+        treatment,
+        paddingSec: input.paddingSec,
       }),
     );
     const confidences = span
@@ -476,7 +532,7 @@ export function detectAutoCensorSuggestions(
           .map((entry) => entry.word.word)
           .join(" "),
         contextAfter: words
-          .slice(flatIndex + 1, flatIndex + 4)
+          .slice(flatIndex + span.length, flatIndex + span.length + 3)
           .map((entry) => entry.word.word)
           .join(" "),
         sourceWordIds,
@@ -485,7 +541,7 @@ export function detectAutoCensorSuggestions(
         audioStartSec,
         audioEndSec,
         confidence: confidences.length > 0 ? Math.min(...confidences) : null,
-        treatment: timed ? input.defaultTreatment : ("caption_mask" as const),
+        treatment,
         timingLimitation: timed ? null : ("caption_only" as const),
       };
   });

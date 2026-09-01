@@ -114,4 +114,70 @@ describe("normalizeCensorAudioSchedule", () => {
       { startSec: 3, endSec: 4 },
     ]);
   });
+
+  test("preserves a sub-millisecond beep with a bounded envelope", () => {
+    const schedule = normalizeCensorAudioSchedule({
+      clipWindow: { startSec: 0, endSec: 1 },
+      deletedRanges: [],
+      segments: [{
+        schemaVersion: 1,
+        id: "30000000-0000-4000-8000-000000000001",
+        sourceWordIds: ["word:short"],
+        sourceStartSec: 0.25,
+        sourceEndSec: 0.2505,
+        treatment: "beep",
+        paddingSec: 0,
+        beepSettings: { frequencyHz: 1_000, levelDb: -8 },
+        captionMaskPolicy: null,
+        suggestionFingerprint: "c".repeat(64),
+        policyVersion: "auto-censor-2026-09-01.1",
+        enabled: true,
+      }],
+    });
+
+    expect(schedule).toHaveLength(1);
+    expect(schedule[0]).toMatchObject({
+      startSec: 0.25,
+      endSec: 0.2505,
+      treatment: "beep",
+      fadeInSec: 0.00025,
+      fadeOutSec: 0.00025,
+    });
+  });
+
+  test("preserves sub-millisecond precision when an unrelated Scene Block is present", () => {
+    const schedule = normalizeCensorAudioSchedule({
+      clipWindow: { startSec: 0, endSec: 1 },
+      deletedRanges: [],
+      sceneBlocks: [{
+        schemaVersion: 1,
+        id: "40000000-0000-4000-8000-000000000001",
+        anchorSec: 0.75,
+        durationSec: 0.1,
+        content: { kind: "color", color: "#000000" },
+        motion: { entrance: "none", exit: "none" },
+        templateSnapshot: null,
+      }],
+      segments: [{
+        schemaVersion: 1,
+        id: "50000000-0000-4000-8000-000000000001",
+        sourceWordIds: ["word:short-with-scene"],
+        sourceStartSec: 0.25,
+        sourceEndSec: 0.2505,
+        treatment: "mute",
+        paddingSec: 0,
+        beepSettings: null,
+        captionMaskPolicy: null,
+        suggestionFingerprint: "d".repeat(64),
+        policyVersion: "auto-censor-2026-09-01.1",
+        enabled: true,
+      }],
+    });
+
+    expect(schedule).toEqual([{
+      startSec: 0.25,
+      endSec: 0.2505,
+      treatment: "mute",
+    }]);
+  });
 });

@@ -10,6 +10,7 @@ import {
   undoEditor,
 } from "./editor-document";
 import { DEFAULT_CAPTION_PRESET } from "./caption-preset";
+import { AUTO_CENSOR_POLICY_VERSION } from "./auto-censor";
 import { studioEditsSchema } from "./studio-edits";
 
 function currentDocument() {
@@ -205,7 +206,56 @@ describe("Clip Editor Document v2", () => {
       ...deletedScene,
       censorSegments: [{ ...censor, sourceStartSec: 15, sourceEndSec: 16 }],
       deletedRanges: [{ startSec: 14, endSec: 17 }],
-    })).toThrow();
+    })).not.toThrow();
+  });
+
+  test("keeps deleted censors valid, removes outside segments, and clamps trim overlaps", () => {
+    const makeCensor = (id: string, sourceStartSec: number) => ({
+      schemaVersion: 1 as const,
+      id,
+      sourceWordIds: [`word:${id}`],
+      sourceStartSec,
+      sourceEndSec: sourceStartSec + 0.4,
+      treatment: "mute" as const,
+      paddingSec: 0.06,
+      beepSettings: null,
+      captionMaskPolicy: null,
+      suggestionFingerprint: "d".repeat(64),
+      policyVersion: AUTO_CENSOR_POLICY_VERSION,
+      enabled: true,
+    });
+    const removedByCut = makeCensor("40000000-0000-4000-8000-000000000001", 12);
+    const keptByTrim = makeCensor("40000000-0000-4000-8000-000000000002", 24);
+    const clampedByTrim = {
+      ...makeCensor("40000000-0000-4000-8000-000000000003", 19.8),
+      sourceEndSec: 20.2,
+    };
+    const base = editorDocumentSchema.parse({
+      ...currentDocument(),
+      censorSegments: [removedByCut, keptByTrim, clampedByTrim],
+    });
+    const cut = applyEditorAction(base, {
+      type: "setDeletedRanges",
+      ranges: [{ startSec: 11.5, endSec: 12.5 }],
+    });
+    expect(() => editorDocumentSchema.parse(cut)).not.toThrow();
+    expect(cut.censorSegments).toHaveLength(3);
+
+    const trimmed = applyEditorAction(cut, {
+      type: "trimClip",
+      startSec: 20,
+      endSec: 30,
+      transcriptSlice: [],
+    });
+    expect(() => editorDocumentSchema.parse(trimmed)).not.toThrow();
+    expect(trimmed.censorSegments.map((segment) => segment.id)).toEqual([
+      keptByTrim.id,
+      clampedByTrim.id,
+    ]);
+    expect(trimmed.censorSegments[1]).toMatchObject({
+      sourceStartSec: 20,
+      sourceEndSec: 20.2,
+    });
   });
 
   test("applies a reviewed censor batch as one undo entry", () => {

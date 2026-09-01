@@ -2844,7 +2844,7 @@ function buildAudioFadeChain(
 }
 
 /**
- * Builds a `volume=` filter fragment for the source/dialogue track from
+ * Builds a gain filter fragment for the source/dialogue track from
  * `studioEdits.sourceAudio`, or `null` when it's a no-op (unity gain, not
  * muted) — callers must skip appending it entirely in that case (the "unity
  * fast path") so untouched clips keep producing the exact same filter graph
@@ -2857,12 +2857,12 @@ function buildSourceGainFilter(
   const censorWindows = audio.censors
     .map(
       (censor) =>
-        `between(t,${censor.startSec.toFixed(3)},${censor.endSec.toFixed(3)})`,
+        `between(t,${censor.startSec.toFixed(6)},${censor.endSec.toFixed(6)})`,
     )
     .join("+");
   if (censorWindows) {
     const gain = sourceAudio.muted ? 0 : sourceAudio.gain;
-    return `volume='if(${censorWindows},0,${gain.toFixed(6)})':eval=frame`;
+    return `aeval=exprs='if(${censorWindows},0,val(ch)*${gain.toFixed(6)})':c=same`;
   }
   if (sourceAudio.muted) return "volume=0.000";
   if (sourceAudio.gain === 1) return null;
@@ -2892,14 +2892,17 @@ function buildCensorBeepAudioFilter(params: {
   const prefix = params.label.replace(/[[\]]/g, "");
   const toneLabel = `[${prefix}_tone]`;
   const delayedLabel = `[${prefix}_delayed]`;
+  // FFmpeg's sine source emits at 1/8 peak amplitude. Compensate here so
+  // levelDb means the same thing in export as it does in the Web Audio preview.
+  const ffmpegSineSourcePeak = 1 / 8;
   const tone = [
-    `sine=frequency=${params.censor.frequencyHz}:sample_rate=48000:duration=${durationSec.toFixed(3)}`,
-    `volume=${params.censor.gain.toFixed(6)}`,
-    `afade=t=in:st=0:d=${params.censor.fadeInSec.toFixed(3)}`,
-    `afade=t=out:st=${fadeOutStartSec.toFixed(3)}:d=${params.censor.fadeOutSec.toFixed(3)}`,
+    `sine=frequency=${params.censor.frequencyHz}:sample_rate=48000:duration=${durationSec.toFixed(6)}`,
+    `volume=${(params.censor.gain / ffmpegSineSourcePeak).toFixed(6)}`,
+    `afade=t=in:st=0:d=${params.censor.fadeInSec.toFixed(6)}`,
+    `afade=t=out:st=${fadeOutStartSec.toFixed(6)}:d=${params.censor.fadeOutSec.toFixed(6)}`,
   ].join(",");
   const delayed = params.censor.startSec > 0
-    ? `anullsrc=channel_layout=mono:sample_rate=48000:d=${params.censor.startSec.toFixed(3)}[${prefix}_silence];${tone}${toneLabel};[${prefix}_silence]${toneLabel}concat=n=2:v=0:a=1${delayedLabel}`
+    ? `anullsrc=channel_layout=mono:sample_rate=48000:d=${params.censor.startSec.toFixed(6)}[${prefix}_silence];${tone}${toneLabel};[${prefix}_silence]${toneLabel}concat=n=2:v=0:a=1${delayedLabel}`
     : `${tone}${delayedLabel}`;
   return `${delayed};${delayedLabel}${[
     "apad",

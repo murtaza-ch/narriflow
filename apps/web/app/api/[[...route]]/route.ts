@@ -118,6 +118,7 @@ import {
   resolveCanonicalAppOrigin,
   safeSocialRedirectPath,
 } from "@/lib/safe-redirect";
+import { censorDocumentMutationError } from "@/lib/censor-document-mutation";
 import { createUploadSessionHttpRoutes } from "./upload-session-http";
 import { createStripeWebhookHttpRoutes } from "./stripe-webhook-http";
 import { createWorkspaceBillingHttpRoutes } from "./workspace-billing-routes";
@@ -146,37 +147,6 @@ function sceneDocumentMutationError(pricingTier: string, current: EditorDocument
     return scene.content.kind === "video" && !isProgramWriteEnabled("scene_videos");
   });
   return disabled ? { status: 503 as const, error: "program_write_disabled", message: "This scene type is temporarily read-only" } : null;
-}
-
-function censorDocumentMutationError(
-  pricingTier: string,
-  current: EditorDocument,
-  next: EditorDocument,
-) {
-  const currentById = new Map(current.censorSegments.map((segment) => [segment.id, segment]));
-  const changedNext = next.censorSegments.filter(
-    (segment) => JSON.stringify(currentById.get(segment.id)) !== JSON.stringify(segment),
-  );
-  const removed = current.censorSegments.some(
-    (segment) => !next.censorSegments.some((candidate) => candidate.id === segment.id),
-  );
-  if (changedNext.length === 0 && !removed) return null;
-  if (!hasFeature(pricingTier, "editor.censoring")) {
-    return { status: 403 as const, error: "censor_feature_unavailable", message: "Auto Censor is available on Creator and above" };
-  }
-  const disabled = changedNext
-    .filter((segment) => segment.enabled)
-    .find((segment) => {
-      const group = segment.treatment === "caption_mask"
-        ? "auto_censor_caption_masks"
-        : segment.treatment === "mute"
-          ? "auto_censor_mute"
-          : "auto_censor_beep";
-      return !isProgramWriteEnabled(group);
-    });
-  return disabled
-    ? { status: 503 as const, error: "program_write_disabled", message: "This Auto Censor treatment is temporarily read-only" }
-    : null;
 }
 
 function changedSceneBlocks(current: EditorDocument, next: EditorDocument): SceneBlock[] {

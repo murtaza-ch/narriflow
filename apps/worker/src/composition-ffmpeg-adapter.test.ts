@@ -643,11 +643,55 @@ describe("composition FFmpeg adapter", () => {
     });
     const graph = args[args.indexOf("-filter_complex") + 1]!;
 
-    expect(graph).toContain("between(t,1.000,1.500)");
-    expect(graph).toContain("between(t,3.000,3.400)");
-    expect(graph).toContain("sine=frequency=1000:sample_rate=48000:duration=0.500");
-    expect(graph).toContain("afade=t=in:st=0:d=0.015");
+    expect(graph).toContain("between(t,1.000000,1.500000)");
+    expect(graph).toContain("between(t,3.000000,3.400000)");
+    expect(graph).toContain("sine=frequency=1000:sample_rate=48000:duration=0.500000");
+    expect(graph).toContain("afade=t=in:st=0:d=0.015000");
     expect(graph).toContain("alimiter=limit=0.950:level=disabled");
+  });
+
+  test("preserves a sub-millisecond censor interval and fades in the FFmpeg graph", () => {
+    const base = planCenter();
+    const plan = {
+      ...base,
+      audioSchedule: {
+        ...base.audioSchedule,
+        fingerprint: "audio:sub-ms-censor",
+        censors: [{
+          startSec: 0.25,
+          endSec: 0.2505,
+          treatment: "beep" as const,
+          frequencyHz: 1_000,
+          gain: 0.4,
+          fadeInSec: 0.00025,
+          fadeOutSec: 0.00025,
+        }],
+      },
+    };
+    const audio = bindCompositionPlanAudioInputs(
+      compileCompositionPlanAudioSchedule(plan),
+      {},
+    );
+    const args = buildSingleVideoArgs({
+      sourcePath: "/tmp/source.mp4",
+      outputPath: "/tmp/output.mp4",
+      startSec: 0,
+      endSec: 5,
+      aspectRatio: "9:16",
+      probe: { hasVideo: true, hasAudio: true, width: 1920, height: 1080, durationSec: 5, fps: 30 },
+      srtPath: null,
+      composition: { plan, targetId: "variant-1" },
+      audio,
+    });
+    const graph = args[args.indexOf("-filter_complex") + 1]!;
+
+    expect(graph).toContain(
+      "aeval=exprs='if(between(t,0.250000,0.250500),0,val(ch)*1.000000)':c=same",
+    );
+    expect(graph).toContain("between(t,0.250000,0.250500)");
+    expect(graph).toContain("duration=0.000500");
+    expect(graph).toContain("afade=t=in:st=0:d=0.000250");
+    expect(graph).toContain("afade=t=out:st=0.000250:d=0.000250");
   });
 
   test("compiles the planner's complete visual order without re-reading editor policy", () => {
@@ -1270,12 +1314,104 @@ describe("composition FFmpeg adapter", () => {
     const dialogueBefore = amplitude(440, 0.5, 0.8);
     const musicBefore = amplitude(220, 0.5, 0.8);
     const beepAmplitude = amplitude(1_000, 1.15, 1.35);
-    expect(beepAmplitude).toBeGreaterThan(0.04);
-    expect(beepAmplitude).toBeLessThan(0.06);
+    const expectedBeepAmplitude = 10 ** (-8 / 20);
+    expect(beepAmplitude).toBeGreaterThan(expectedBeepAmplitude - 0.04);
+    expect(beepAmplitude).toBeLessThan(expectedBeepAmplitude + 0.04);
     expect(amplitude(440, 1.15, 1.35)).toBeLessThan(dialogueBefore * 0.15);
     expect(amplitude(440, 2.1, 2.4)).toBeLessThan(dialogueBefore * 0.15);
     expect(amplitude(220, 1.15, 1.35)).toBeGreaterThan(musicBefore * 0.5);
     expect(amplitude(220, 2.1, 2.4)).toBeGreaterThan(musicBefore * 0.5);
     expect(samples.reduce((peak, sample) => Math.max(peak, Math.abs(sample)), 0)).toBeLessThanOrEqual(0.95);
+  }, 30_000);
+
+  test("mutes a sub-millisecond dialogue window at decoded sample precision", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "narriflow-censor-sub-ms-"));
+    realMediaDirectories.push(directory);
+    const sourcePath = join(directory, "source.mkv");
+    const outputPath = join(directory, "output.mkv");
+    const run = async (args: string[]) => {
+      const process = Bun.spawn(args, { stdout: "ignore", stderr: "pipe" });
+      const stderr = await new Response(process.stderr).text();
+      expect(await process.exited, stderr).toBe(0);
+    };
+    await run([
+      "ffmpeg", "-y",
+      "-f", "lavfi", "-i", "color=c=black:s=160x90:r=24:d=0.5",
+      "-f", "lavfi", "-i", "aevalsrc=0.5:sample_rate=48000:d=0.5",
+      "-c:v", "libx264", "-pix_fmt", "yuv420p",
+      "-c:a", "pcm_f32le", sourcePath,
+    ]);
+    const planned = planClipComposition({
+      document: editorDocumentSchema.parse({
+        version: 2,
+        clipStartSec: 0,
+        clipEndSec: 0.5,
+        captionPreset: captionPresetSchema.parse({}),
+        transcriptSlice: [],
+        studioEdits: studioEditsSchema.parse({ framing: { mode: "center" } }),
+        brollUrl: null,
+        deletedRanges: [],
+        censorSegments: [{
+          schemaVersion: 1,
+          id: "42650dd9-6f3c-44ec-986c-2fdd5c69d984",
+          sourceWordIds: ["word:sub-ms"],
+          sourceStartSec: 0.25,
+          sourceEndSec: 0.2505,
+          treatment: "mute",
+          paddingSec: 0,
+          beepSettings: null,
+          captionMaskPolicy: null,
+          suggestionFingerprint: null,
+          policyVersion: "fixture-v1",
+          enabled: true,
+        }],
+      }),
+      source: { identity: "source:sub-ms", kind: "video", width: 160, height: 90, hasAudio: true },
+      evidence: { automaticLayout: { state: "missing" } },
+      capabilities: {
+        automaticSpeakerLayout: true,
+        automaticSpeakerEngineVersion: "shot-layout-v1",
+      },
+      assets: { backgroundImage: { state: "missing" } },
+      targets: [{ id: "real", aspectRatio: "16:9", width: 160, height: 90 }],
+    });
+    if (planned.status === "invalid") throw new Error(planned.error.code);
+    const audio = bindCompositionPlanAudioInputs(
+      compileCompositionPlanAudioSchedule(planned.plan),
+      {},
+    );
+    const args = buildSingleVideoArgs({
+      sourcePath,
+      outputPath,
+      startSec: 0,
+      endSec: 0.5,
+      aspectRatio: "16:9",
+      probe: { hasVideo: true, hasAudio: true, width: 160, height: 90, durationSec: 0.5, fps: 24 },
+      srtPath: null,
+      composition: { plan: planned.plan, targetId: "real" },
+      audio,
+    });
+    const audioCodecIndex = args.indexOf("-c:a");
+    args[audioCodecIndex + 1] = "pcm_f32le";
+    const audioBitrateIndex = args.indexOf("-b:a");
+    args.splice(audioBitrateIndex, 2);
+    await run(["ffmpeg", ...args]);
+
+    const decode = Bun.spawn([
+      "ffmpeg", "-v", "error", "-i", outputPath,
+      "-ac", "1", "-ar", "48000", "-f", "f32le", "pipe:1",
+    ], { stdout: "pipe", stderr: "pipe" });
+    const bytes = await new Response(decode.stdout).arrayBuffer();
+    const decodeError = await new Response(decode.stderr).text();
+    expect(await decode.exited, decodeError).toBe(0);
+    const samples = new Float32Array(bytes);
+    const peak = (startSample: number, endSample: number) =>
+      samples.slice(startSample, endSample)
+        .reduce((maximum, sample) => Math.max(maximum, Math.abs(sample)), 0);
+    const muteStart = Math.round(0.25 * 48_000);
+    const muteEnd = Math.round(0.2505 * 48_000);
+    expect(peak(muteStart, muteEnd)).toBeLessThan(0.001);
+    expect(peak(muteStart - 48, muteStart)).toBeGreaterThan(0.4);
+    expect(peak(muteEnd, muteEnd + 48)).toBeGreaterThan(0.4);
   }, 30_000);
 });

@@ -146,6 +146,7 @@ describe("composition preview adapter", () => {
       music: state.music ? { ...state.music, volume: undefined } : null,
     }).toEqual({
       scheduleFingerprint: "audio:fingerprint",
+      mixGain: 1,
       source: { muted: false, volume: 0.65, outputGain: 1, envelopeGain: 1 },
       beep: null,
       music: {
@@ -251,6 +252,66 @@ describe("composition preview adapter", () => {
       source: { volume: 0.8, envelopeGain: 1 },
       beep: null,
     });
+  });
+
+  test("applies shared preview headroom while a beep mixes with loud music and SFX", () => {
+    const schedule = {
+      fingerprint: "audio:censor-headroom",
+      outputFades: {
+        fadeIn: { startSec: 0, endSec: 0 },
+        fadeOut: { startSec: 3, endSec: 3 },
+      },
+      source: {
+        sourceRef: "source:one",
+        available: true,
+        activeRange: { startSec: 0, endSec: 3 },
+        gain: 1,
+        muted: false,
+      },
+      music: {
+        sourceRef: "music:one",
+        activeRange: { startSec: 0, endSec: 3 },
+        gain: 1,
+        startOffsetSec: 0,
+        sourceDurationSec: 3,
+        loop: true as const,
+        fades: {
+          fadeIn: { startSec: 0, endSec: 0 },
+          fadeOut: { startSec: 3, endSec: 3 },
+        },
+        ducking: {
+          enabled: false,
+          windows: [],
+          duckedGainFraction: 0.3,
+          attackSec: 0.25,
+          releaseSec: 0.4,
+        },
+      },
+      soundEffects: [{
+        id: "sting",
+        sourceRef: "sfx:one",
+        activeRange: { startSec: 0, endSec: 3 },
+        gain: 1,
+      }],
+      censors: [{
+        startSec: 1,
+        endSec: 2,
+        treatment: "beep" as const,
+        frequencyHz: 1_000,
+        gain: 0.5,
+        fadeInSec: 0,
+        fadeOutSec: 0,
+      }],
+    };
+
+    const state = plannedCompositionAudioState(schedule, 1.5);
+    expect(state.mixGain).toBeCloseTo(0.38, 8);
+    expect(
+      (state.beep?.volume ?? 0) +
+      (state.music?.volume ?? 0) +
+      state.soundEffects.reduce((sum, effect) => sum + effect.volume, 0),
+    ).toBeCloseTo(0.95, 8);
+    expect(state.source.envelopeGain).toBe(0);
   });
 
   test("adopts an audio-only audiogram without pretending its background will render", () => {

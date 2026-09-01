@@ -100,8 +100,6 @@ const editorDocumentV2Schema = z
     doc.censorSegments.forEach((segment, index) => {
       if (segment.sourceStartSec < doc.clipStartSec || segment.sourceEndSec > doc.clipEndSec) {
         context.addIssue({ code: "custom", path: ["censorSegments", index], message: "censor segment is outside the clip source window" });
-      } else if (!sourceRangeToEdited(editedTimeMap, { startSec: segment.sourceStartSec, endSec: segment.sourceEndSec })) {
-        context.addIssue({ code: "custom", path: ["censorSegments", index], message: "censor segment is fully removed by deleted ranges" });
       }
     });
     const totalEditedDurationSec = sourceDurationSec + doc.sceneBlocks.reduce((sum, scene) => sum + scene.durationSec, 0);
@@ -472,6 +470,19 @@ function rebaseStudioEdits(
   return { ...doc.studioEdits, textLayers, sfx, speakerLayoutOverrides };
 }
 
+function clampCensorSegmentsToWindow(
+  segments: readonly CensorSegment[],
+  window: ClipWindow,
+): CensorSegment[] {
+  return segments.flatMap((segment) => {
+    const sourceStartSec = Math.max(segment.sourceStartSec, window.startSec);
+    const sourceEndSec = Math.min(segment.sourceEndSec, window.endSec);
+    return sourceEndSec > sourceStartSec
+      ? [{ ...segment, sourceStartSec, sourceEndSec }]
+      : [];
+  });
+}
+
 /** Pure reducer: every studio mutation flows through here. */
 export function applyEditorAction(
   doc: EditorDocument,
@@ -568,6 +579,7 @@ export function applyEditorAction(
         clipEndSec: action.endSec,
         deletedRanges,
         studioEdits,
+        censorSegments: clampCensorSegmentsToWindow(doc.censorSegments, newWindow),
       };
     }
     case "trimClip": {
@@ -605,6 +617,7 @@ export function applyEditorAction(
         transcriptSlice: action.transcriptSlice,
         deletedRanges,
         studioEdits,
+        censorSegments: clampCensorSegmentsToWindow(doc.censorSegments, newWindow),
       };
     }
     case "insertSceneBlock": {
