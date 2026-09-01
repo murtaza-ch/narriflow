@@ -55,15 +55,6 @@ export type PublicationAttemptSeed = {
 		nextAttemptAt?: Date | null;
 		externalUrl?: string | null;
 		errorCode?: string | null;
-		thumbnailFingerprint?: string | null;
-		thumbnail?: {
-			storageKey: string;
-			contentType: "image/jpeg" | "image/png";
-			sizeBytes: number;
-			fingerprint: string;
-			sourceTimeMs: number | null;
-			deletedAt?: Date | null;
-		} | null;
 	};
 	frozen: FrozenPublicationState;
 	attempt: {
@@ -548,25 +539,15 @@ export function createSocialPublicationAttempt(dependencies: {
 				scheduledFor: loaded.frozen.scheduledFor,
 				providerSettings: loaded.frozen.providerSettings,
 				account,
-					media: {
+				media: {
 					storageKey: loaded.frozen.storageKey!,
 					fileName: `social-${loaded.frozen.clipExportVariantId}.mp4`,
 					contentType: "video/mp4" as const,
 					sizeBytes: loaded.frozen.sizeBytes!,
 					durationSec: loaded.frozen.durationSec!,
-						aspectRatio: loaded.frozen.aspectRatio,
-					},
-					thumbnail: loaded.socialPost.thumbnail
-						? {
-								storageKey: loaded.socialPost.thumbnail.storageKey,
-								fileName: `thumbnail-${loaded.socialPost.id}.${loaded.socialPost.thumbnail.contentType === "image/png" ? "png" : "jpg"}`,
-								contentType: loaded.socialPost.thumbnail.contentType,
-								sizeBytes: loaded.socialPost.thumbnail.sizeBytes,
-								fingerprint: loaded.socialPost.thumbnail.fingerprint,
-								sourceTimeMs: loaded.socialPost.thumbnail.sourceTimeMs,
-							}
-						: null,
-				};
+					aspectRatio: loaded.frozen.aspectRatio,
+				},
+			};
 			let submissionCheckpointed =
 				loaded.attempt.phase === "submission_started" ||
 				loaded.attempt.phase === "processing" ||
@@ -584,20 +565,6 @@ export function createSocialPublicationAttempt(dependencies: {
 			try {
 				if (input.signal.aborted)
 					throw new DOMException("Aborted", "AbortError");
-				const frozenThumbnailFingerprint =
-					loaded.socialPost.thumbnailFingerprint ?? null;
-				const frozenThumbnail = loaded.socialPost.thumbnail ?? null;
-				if (
-					(frozenThumbnailFingerprint === null) !== (frozenThumbnail === null) ||
-					(frozenThumbnail !== null &&
-						frozenThumbnailFingerprint !== frozenThumbnail.fingerprint)
-				) {
-					throw new PublicationPlatformExecutionError(
-						"publication_thumbnail_evidence_invalid",
-						"preparation",
-						"The frozen thumbnail reference no longer matches its durable asset",
-					);
-				}
 				if (!socialProviderAcceptsMedia({
 					platform: platformInput.platform,
 					aspectRatio: platformInput.media.aspectRatio,
@@ -885,8 +852,7 @@ export function createSocialPublicationAttempt(dependencies: {
 							disposition:
 								error instanceof PublicationProviderCallBudgetError ||
 								(error instanceof PublicationPlatformExecutionError &&
-									(error.code === "publication_frozen_media_missing" ||
-										error.code === "publication_thumbnail_evidence_invalid"))
+									error.code === "publication_frozen_media_missing")
 									? "permanent"
 									: "safe_retry",
 							retryAfterMs: null,
@@ -904,10 +870,9 @@ export function createSocialPublicationAttempt(dependencies: {
 					outcome: settled.kind,
 					disposition: submissionCheckpointed
 						? "attention"
-							: error instanceof PublicationProviderCallBudgetError ||
-								(error instanceof PublicationPlatformExecutionError &&
-									(error.code === "publication_frozen_media_missing" ||
-										error.code === "publication_thumbnail_evidence_invalid"))
+						: error instanceof PublicationProviderCallBudgetError ||
+							(error instanceof PublicationPlatformExecutionError &&
+								error.code === "publication_frozen_media_missing")
 							? "permanent"
 							: "safe_retry",
 					errorCode: code,
@@ -1228,7 +1193,7 @@ export function createInMemorySocialPublicationAttemptStore(
 }
 
 const publicationAttemptInclude = {
-	socialPost: { include: { thumbnailAsset: true } },
+	socialPost: true,
 	frozenState: true,
 	claims: { orderBy: { createdAt: "desc" as const } },
 	receipt: true,
@@ -1283,7 +1248,7 @@ function rowToLoadedAttempt(
 			null)
 		: null;
 	return {
-			socialPost: {
+		socialPost: {
 			id: row.socialPost.id,
 			workspaceId: row.socialPost.workspaceId!,
 			projectId: row.socialPost.projectId,
@@ -1292,19 +1257,8 @@ function rowToLoadedAttempt(
 			scheduledFor: row.socialPost.scheduledFor!,
 			nextAttemptAt: row.socialPost.nextAttemptAt,
 			externalUrl: row.socialPost.externalUrl,
-				errorCode: row.socialPost.errorCode,
-				thumbnailFingerprint: row.socialPost.thumbnailFingerprint,
-				thumbnail: row.socialPost.thumbnailAsset
-					? {
-							storageKey: row.socialPost.thumbnailAsset.storageKey,
-							contentType: row.socialPost.thumbnailAsset.contentType as "image/jpeg" | "image/png",
-							sizeBytes: Number(row.socialPost.thumbnailAsset.sizeBytes),
-								fingerprint: row.socialPost.thumbnailAsset.fingerprint,
-								sourceTimeMs: row.socialPost.thumbnailAsset.sourceTimeMs,
-								deletedAt: row.socialPost.thumbnailAsset.deletedAt,
-						}
-					: null,
-			},
+			errorCode: row.socialPost.errorCode,
+		},
 		frozen: {
 			clipExportId: row.frozenState.clipExportId,
 			clipExportVariantId: row.frozenState.clipExportVariantId,
@@ -1335,8 +1289,6 @@ function rowToLoadedAttempt(
 			platform: row.frozenState.platform,
 			capabilityVersion: row.frozenState.capabilityVersion,
 			scheduledFor: row.frozenState.scheduledFor,
-			reviewApprovalOverrideId:
-				row.socialPost.reviewApprovalOverrideId,
 		},
 		attempt: {
 			id: row.id,

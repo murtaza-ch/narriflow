@@ -28,35 +28,18 @@ export const workspaceInviteActionSchema = z
   })
   .strict();
 
-export const WORKSPACE_API_KEY_SCOPES = [
+export const workspaceApiKeyScopeSchema = z.enum([
   "projects:read",
   "exports:read",
   "usage:read",
   "autopilot:read",
   "autopilot:write",
-  "publishing:read",
-  "publishing:write",
-  "brand:read",
-  "brand:write",
-  "campaign:operate",
-  "review:read",
-  "review:write",
-  "publishing:prepare",
-  "generated-media:submit",
-] as const;
-
-export type WorkspaceApiKeyScope = (typeof WORKSPACE_API_KEY_SCOPES)[number];
-
-export const workspaceApiKeyScopeSchema = z.enum(WORKSPACE_API_KEY_SCOPES);
+]);
 
 export const workspaceApiKeyActionSchema = z
   .object({
     name: z.string().trim().min(1).max(80),
-    scopes: z
-      .array(workspaceApiKeyScopeSchema)
-      .min(1)
-      .max(WORKSPACE_API_KEY_SCOPES.length)
-      .optional(),
+    scopes: z.array(workspaceApiKeyScopeSchema).min(1).max(5).optional(),
   })
   .strict();
 

@@ -29,9 +29,7 @@ import { socialOAuthService } from "./social-oauth.service";
 import { structuredSocialPublicationMetrics } from "./social-publication-observability";
 import { createYouTubeReceiptEnricher } from "./youtube-receipt-enrichment";
 
-async function materializeMedia(
-	input: PublicationPlatformInput["media"] | NonNullable<PublicationPlatformInput["thumbnail"]>,
-) {
+async function materializeMedia(input: PublicationPlatformInput["media"]) {
 	const directory = await mkdtemp(join(tmpdir(), "narriflow-publication-"));
 	const path = join(directory, input.fileName);
 	try {

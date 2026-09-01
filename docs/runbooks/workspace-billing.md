@@ -14,7 +14,7 @@ Deploy database migrations before web or worker code. For this cutover the requi
 6. `20260828150000_reusable_customer_operation_key`
 7. `20260828160000_typed_checkout_outcome`
 
-Run `bun run --cwd packages/db prisma:generate`, then `prisma migrate deploy` with `packages/db/.env`. Start web and worker only after deployment succeeds.
+Run `bun --cwd packages/db run prisma:generate`, then `prisma migrate deploy` with `packages/db/.env`. Start web and worker only after deployment succeeds.
 
 Stripe SDK requests and webhook fixtures are pinned to API version `2026-07-29.dahlia`, the version represented by the installed Stripe SDK. The Stripe webhook endpoint must use the same version. Upgrade the SDK, pinned API version, fixtures, and endpoint together.
 

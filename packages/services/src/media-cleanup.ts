@@ -7,30 +7,20 @@ import { classifyR2StorageError, deleteObject } from "./r2-storage";
 export type MediaCleanupOrigin =
   | "clip_editor_document_persistence"
   | "detected_clip_replacement"
-  | "clip_duplicate_compensation"
-  | "visual_asset_upload"
-  | "export_bundle_attempt";
+  | "clip_duplicate_compensation";
 
 export type MediaCleanupClass =
   | "mutable_render"
   | "preview_proxy"
   | "preview_peaks"
-  | "dub_media"
-  | "unfinalized_visual_asset_upload"
-  | "export_bundle_attempt"
-  | "export_bundle_unsettled_publication";
+  | "dub_media";
 
-export interface MediaCleanupObligationIdentity {
+export interface MediaCleanupObligationInput {
   origin: MediaCleanupOrigin;
   cleanupClass: MediaCleanupClass;
-  objectKey: string;
-}
-
-export interface MediaCleanupObligationInput
-  extends MediaCleanupObligationIdentity {
   projectId?: string | null;
   clipId?: string | null;
-  nextAttemptAt?: Date;
+  objectKey: string;
 }
 
 export interface MediaCleanupAdmissionStore {
@@ -41,7 +31,6 @@ export interface MediaCleanupAdmissionStore {
       projectId: string | null;
       clipId: string | null;
       objectKey: string;
-      nextAttemptAt?: Date;
       claimId?: string;
       claimExpiresAt?: Date;
     }>;
@@ -199,141 +188,11 @@ export async function admitMediaCleanupObligations(
       projectId: obligation.projectId ?? null,
       clipId: obligation.clipId ?? null,
       objectKey: obligation.objectKey,
-      ...(obligation.nextAttemptAt
-        ? { nextAttemptAt: obligation.nextAttemptAt }
-        : {}),
       ...(options.heldClaim ?? {}),
     })),
     skipDuplicates: true,
   });
   return result.count;
-}
-
-export class MediaCleanupAdoptionLost extends Error {
-  constructor() {
-    super("media cleanup adoption ownership lost");
-    this.name = "MediaCleanupAdoptionLost";
-  }
-}
-
-export interface UnclaimedMediaCleanupAdoptionStore {
-  updateMany(input: {
-    where: MediaCleanupObligationIdentity & {
-      completedAt: null;
-      attemptCount: 0;
-      claimId: null;
-      claimExpiresAt: null;
-    };
-    data: {
-      completedAt: Date;
-      claimId: null;
-      claimExpiresAt: null;
-      failureCode: string;
-    };
-  }): Promise<{ count: number }>;
-  count(input: {
-    where: MediaCleanupObligationIdentity & {
-      completedAt: { not: null };
-      failureCode: string;
-    };
-  }): Promise<number>;
-}
-
-/**
- * Atomically transfers an exact upload object from Cleanup to its durable DB
- * reference. Once Cleanup has ever started, adoption is rejected: a provider
- * delete can succeed even when its response is ambiguous, so an expired or
- * released cleanup claim is not proof that the object still exists.
- */
-export async function adoptUnclaimedMediaCleanupObligation(
-  store: UnclaimedMediaCleanupAdoptionStore,
-  identity: MediaCleanupObligationIdentity,
-  now: Date,
-  receipt: string,
-): Promise<"adopted" | "replayed"> {
-  const adopted = await store.updateMany({
-    where: {
-      ...identity,
-      completedAt: null,
-      attemptCount: 0,
-      claimId: null,
-      claimExpiresAt: null,
-    },
-    data: {
-      completedAt: now,
-      claimId: null,
-      claimExpiresAt: null,
-      failureCode: receipt,
-    },
-  });
-  if (adopted.count === 1) return "adopted";
-  const replayed = await store.count({
-    where: {
-      ...identity,
-      completedAt: { not: null },
-      failureCode: receipt,
-    },
-  });
-  if (replayed === 1) return "replayed";
-  throw new MediaCleanupAdoptionLost();
-}
-
-export interface HeldMediaCleanupAdoptionStore {
-  updateMany(input: {
-    where: {
-      claimId: string;
-      claimExpiresAt: { gt: Date };
-      completedAt: null;
-      OR: MediaCleanupObligationIdentity[];
-    };
-    data: {
-      completedAt: Date;
-      claimId: null;
-      claimExpiresAt: null;
-      failureCode: string;
-    };
-  }): Promise<{ count: number }>;
-  count(input: {
-    where: {
-      completedAt: { not: null };
-      failureCode: string;
-      OR: MediaCleanupObligationIdentity[];
-    };
-  }): Promise<number>;
-}
-
-/** Atomically adopts every exact object held by a live producer claim. */
-export async function adoptHeldMediaCleanupObligations(
-  store: HeldMediaCleanupAdoptionStore,
-  identities: readonly MediaCleanupObligationIdentity[],
-  claimId: string,
-  now: Date,
-  receipt: string,
-): Promise<void> {
-  if (identities.length === 0) return;
-  const adopted = await store.updateMany({
-    where: {
-      claimId,
-      claimExpiresAt: { gt: now },
-      completedAt: null,
-      OR: [...identities],
-    },
-    data: {
-      completedAt: now,
-      claimId: null,
-      claimExpiresAt: null,
-      failureCode: receipt,
-    },
-  });
-  if (adopted.count === identities.length) return;
-  const replayed = await store.count({
-    where: {
-      completedAt: { not: null },
-      failureCode: receipt,
-      OR: [...identities],
-    },
-  });
-  if (replayed !== identities.length) throw new MediaCleanupAdoptionLost();
 }
 
 export interface DurableMediaCopyPlan<T> extends MediaCleanupObligationInput {
@@ -1072,10 +931,7 @@ function cleanupClass(value: string): MediaCleanupClass {
     value === "mutable_render" ||
     value === "preview_proxy" ||
     value === "preview_peaks" ||
-    value === "dub_media" ||
-    value === "unfinalized_visual_asset_upload" ||
-    value === "export_bundle_attempt" ||
-    value === "export_bundle_unsettled_publication"
+    value === "dub_media"
   ) {
     return value;
   }
@@ -1086,9 +942,7 @@ function cleanupOrigin(value: string): MediaCleanupOrigin {
   if (
     value === "clip_editor_document_persistence" ||
     value === "detected_clip_replacement" ||
-    value === "clip_duplicate_compensation" ||
-    value === "visual_asset_upload" ||
-    value === "export_bundle_attempt"
+    value === "clip_duplicate_compensation"
   ) {
     return value;
   }

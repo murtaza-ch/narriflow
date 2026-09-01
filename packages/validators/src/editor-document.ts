@@ -33,13 +33,11 @@ import {
   sceneBlocksEqual,
   sceneContentSchema,
   sceneDurationIssue,
-  sceneMotionSchema,
+	sceneMotionSchema,
   sortSceneBlocks,
   timedEditsEqual,
   TIMED_EDIT_LIMITS,
-  visualAssetReferenceSchema,
   type SceneBlock,
-  type SceneMotion,
   type CensorSegment,
   type MediaMotion,
 } from "./timed-edits";
@@ -52,63 +50,6 @@ import {
 
 export const EDITOR_DOCUMENT_VERSION = 2 as const;
 
-export const EDITOR_BROLL_PLACEMENT_LIMIT = 64;
-
-export const brollPlacementSchema = z
-  .strictObject({
-    id: z.string().uuid(),
-    asset: visualAssetReferenceSchema,
-    provenance: z.enum(["uploaded", "generated", "extracted"]),
-    mediaKind: z.enum(["image", "video"]),
-    startSec: z.number().finite().nonnegative(),
-    endSec: z.number().finite().positive(),
-    sourceStartSec: z.number().finite().nonnegative().nullable(),
-    sourceEndSec: z.number().finite().positive().nullable(),
-  })
-  .superRefine((placement, context) => {
-    if (placement.endSec <= placement.startSec) {
-      context.addIssue({
-        code: "custom",
-        path: ["endSec"],
-        message: "endSec must be greater than startSec",
-      });
-    }
-    if (
-      placement.mediaKind === "image" &&
-      (placement.sourceStartSec !== null || placement.sourceEndSec !== null)
-    ) {
-      context.addIssue({
-        code: "custom",
-        path: ["sourceStartSec"],
-        message: "image B-roll cannot have a source range",
-      });
-    }
-    if (placement.mediaKind === "video") {
-      if (
-        placement.sourceStartSec === null ||
-        placement.sourceEndSec === null ||
-        placement.sourceEndSec <= placement.sourceStartSec
-      ) {
-        context.addIssue({
-          code: "custom",
-          path: ["sourceEndSec"],
-          message: "video B-roll requires a valid source range",
-        });
-      } else if (
-        placement.endSec - placement.startSec >
-        placement.sourceEndSec - placement.sourceStartSec + 0.001
-      ) {
-        context.addIssue({
-          code: "custom",
-          path: ["sourceEndSec"],
-          message: "video B-roll cannot exceed its source range",
-        });
-      }
-    }
-  });
-
-export type BrollPlacement = z.infer<typeof brollPlacementSchema>;
-
 const editorDocumentV2Schema = z
   .strictObject({
     version: z.literal(EDITOR_DOCUMENT_VERSION),
@@ -118,10 +59,6 @@ const editorDocumentV2Schema = z
     transcriptSlice: z.array(transcriptUtteranceSchema),
     studioEdits: studioEditsSchema,
     brollUrl: z.string().url().nullable().default(null),
-    brollPlacements: z
-      .array(brollPlacementSchema)
-      .max(EDITOR_BROLL_PLACEMENT_LIMIT)
-      .default([]),
     deletedRanges: deletedRangesSchema,
 		sceneBlocks: z.array(sceneBlockSchema).max(TIMED_EDIT_LIMITS.sceneBlocks).default([]),
 		censorSegments: z.array(censorSegmentSchema).max(TIMED_EDIT_LIMITS.censorSegments).default([]),
@@ -139,7 +76,6 @@ const editorDocumentV2Schema = z
     unique(doc.sceneBlocks, "sceneBlocks");
     unique(doc.censorSegments, "censorSegments");
     unique(doc.mediaMotions, "mediaMotions");
-    unique(doc.brollPlacements, "brollPlacements");
 
     const blocks = sortSceneBlocks(doc.sceneBlocks);
     let insertedBeforeSec = 0;
@@ -148,26 +84,6 @@ const editorDocumentV2Schema = z
       endSec: doc.clipEndSec,
     });
     const sourceDurationSec = editedTimeMap.editedDurationSec;
-    const orderedBroll = [...doc.brollPlacements].sort(
-      (left, right) => left.startSec - right.startSec || left.id.localeCompare(right.id),
-    );
-    orderedBroll.forEach((placement, index) => {
-      const previous = orderedBroll[index - 1];
-      if (placement.endSec > sourceDurationSec + 0.001) {
-        context.addIssue({
-          code: "custom",
-          path: ["brollPlacements", index, "endSec"],
-          message: "B-roll placement is outside the edited source timeline",
-        });
-      }
-      if (previous && placement.startSec < previous.endSec) {
-        context.addIssue({
-          code: "custom",
-          path: ["brollPlacements", index, "startSec"],
-          message: "B-roll placements cannot overlap",
-        });
-      }
-    });
     for (let index = 0; index < blocks.length; index += 1) {
       const block = blocks[index]!;
       const previous = blocks[index - 1];
@@ -181,7 +97,6 @@ const editorDocumentV2Schema = z
     }
 
     const sceneIds = new Set(doc.sceneBlocks.map((scene) => scene.id));
-    const sceneById = new Map(doc.sceneBlocks.map((scene) => [scene.id, scene]));
     doc.censorSegments.forEach((segment, index) => {
       if (segment.sourceStartSec < doc.clipStartSec || segment.sourceEndSec > doc.clipEndSec) {
         context.addIssue({ code: "custom", path: ["censorSegments", index], message: "censor segment is outside the clip source window" });
@@ -198,111 +113,10 @@ const editorDocumentV2Schema = z
       if (motion.target.kind === "scene_block" && !sceneIds.has(motion.target.sceneBlockId)) {
         context.addIssue({ code: "custom", path: ["mediaMotions", index, "target"], message: "scene block target does not exist" });
       }
-      if (motion.target.kind === "scene_block") {
-        const scene = sceneById.get(motion.target.sceneBlockId);
-        if (
-          scene &&
-          (motion.startSec < scene.anchorSec ||
-            motion.endSec > scene.anchorSec + scene.durationSec)
-        ) {
-          context.addIssue({
-            code: "custom",
-            path: ["mediaMotions", index],
-            message: "scene media motion must stay inside its Scene Block",
-          });
-        }
-      }
       if (motion.endSec > totalEditedDurationSec) {
         context.addIssue({ code: "custom", path: ["mediaMotions", index], message: "media motion is outside the edited timeline" });
       }
     });
-    const motionIsAnimated = (motion: {
-      entrance: SceneMotion["entrance"];
-      exit: SceneMotion["exit"];
-    }) => motion.entrance !== "none" || motion.exit !== "none";
-    const enabledByTarget = new Map<string, typeof doc.mediaMotions>();
-    doc.mediaMotions.forEach((motion) => {
-      if (!motion.enabled) return;
-      const key = motion.target.kind === "broll"
-        ? "broll"
-        : `scene:${motion.target.sceneBlockId}`;
-      enabledByTarget.set(key, [...(enabledByTarget.get(key) ?? []), motion]);
-    });
-    for (const [target, motions] of enabledByTarget) {
-      const ordered = [...motions].sort((left, right) =>
-        left.startSec - right.startSec || left.id.localeCompare(right.id));
-      ordered.forEach((motion, index) => {
-        const previous = ordered[index - 1];
-        if (
-          previous &&
-          (target.startsWith("scene:") || motion.startSec < previous.endSec)
-        ) {
-          context.addIssue({
-            code: "custom",
-            path: ["mediaMotions"],
-            message: "enabled media motions cannot overlap on one target",
-          });
-        }
-      });
-    }
-    const explicitSceneTargets = new Set(
-      doc.mediaMotions.flatMap((motion) =>
-        motion.enabled && motion.target.kind === "scene_block"
-          ? [motion.target.sceneBlockId]
-          : []),
-    );
-    const animatedIntervals = [
-      ...doc.mediaMotions.flatMap((motion) =>
-        motion.enabled && motionIsAnimated(motion)
-          ? [{ startSec: motion.startSec, endSec: motion.endSec }]
-          : []),
-      ...doc.sceneBlocks.flatMap((scene) =>
-        !explicitSceneTargets.has(scene.id) && motionIsAnimated(scene.motion)
-          ? [{
-              startSec: scene.anchorSec,
-              endSec: scene.anchorSec + scene.durationSec,
-            }]
-          : []),
-    ];
-    if (animatedIntervals.length > TIMED_EDIT_LIMITS.animatedMedia) {
-      context.addIssue({
-        code: "custom",
-        path: ["mediaMotions"],
-        message: `animated media cannot exceed ${TIMED_EDIT_LIMITS.animatedMedia} placements`,
-      });
-    }
-    const transitionDuration = doc.studioEdits.transition.type === "none"
-      ? 0
-      : Math.min(doc.studioEdits.transition.durationSec, totalEditedDurationSec / 2);
-    const animationIntervals = [
-      ...animatedIntervals,
-      ...(transitionDuration > 0
-        ? [
-            { startSec: 0, endSec: transitionDuration },
-            {
-              startSec: totalEditedDurationSec - transitionDuration,
-              endSec: totalEditedDurationSec,
-            },
-          ]
-        : []),
-    ];
-    const events = animationIntervals.flatMap((range) => [
-      { timeSec: range.startSec, delta: 1 },
-      { timeSec: range.endSec, delta: -1 },
-    ]).sort((left, right) => left.timeSec - right.timeSec || left.delta - right.delta);
-    let simultaneous = 0;
-    let maximumSimultaneous = 0;
-    for (const event of events) {
-      simultaneous += event.delta;
-      maximumSimultaneous = Math.max(maximumSimultaneous, simultaneous);
-    }
-    if (maximumSimultaneous > TIMED_EDIT_LIMITS.simultaneousAnimatedLayers) {
-      context.addIssue({
-        code: "custom",
-        path: ["mediaMotions"],
-        message: `simultaneous animated layers cannot exceed ${TIMED_EDIT_LIMITS.simultaneousAnimatedLayers}`,
-      });
-    }
     if (new TextEncoder().encode(JSON.stringify(doc)).byteLength > TIMED_EDIT_LIMITS.documentBytes) {
       context.addIssue({ code: "custom", message: "editor document exceeds the maximum encoded size" });
     }
@@ -351,23 +165,6 @@ export const editorActionSchema = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("setStudioEdits"), studioEdits: studioEditsSchema }),
   z.object({ type: z.literal("setBrollUrl"), brollUrl: z.string().url().nullable() }),
-  z.strictObject({
-    type: z.literal("insertBrollPlacement"),
-    placement: brollPlacementSchema,
-  }),
-  z.strictObject({
-    type: z.literal("replaceBrollPlacement"),
-    id: z.string().uuid(),
-    asset: visualAssetReferenceSchema,
-    provenance: z.enum(["uploaded", "generated", "extracted"]),
-    mediaKind: z.enum(["image", "video"]),
-    sourceStartSec: z.number().finite().nonnegative().nullable(),
-    sourceEndSec: z.number().finite().positive().nullable(),
-  }),
-  z.strictObject({
-    type: z.literal("deleteBrollPlacement"),
-    id: z.string().uuid(),
-  }),
   z.object({ type: z.literal("deleteRange"), range: sourceRangeSchema }),
   z.object({ type: z.literal("revertRange"), range: sourceRangeSchema }),
   z.object({ type: z.literal("setDeletedRanges"), ranges: deletedRangesSchema }),
@@ -387,13 +184,6 @@ export const editorActionSchema = z.discriminatedUnion("type", [
 	z.strictObject({ type: z.literal("updateSceneMotion"), id: z.string().uuid(), motion: sceneMotionSchema }),
   z.strictObject({ type: z.literal("deleteSceneBlock"), id: z.string().uuid() }),
   z.strictObject({ type: z.literal("insertCensorSegment"), segment: censorSegmentSchema }),
-  z.strictObject({
-    type: z.literal("applyCensorSegments"),
-    segments: z
-      .array(censorSegmentSchema)
-      .min(1)
-      .max(TIMED_EDIT_LIMITS.censorSegments),
-  }),
   z.strictObject({ type: z.literal("updateCensorSegment"), id: z.string().uuid(), segment: censorSegmentSchema }),
   z.strictObject({ type: z.literal("removeCensorSegment"), id: z.string().uuid() }),
   z.strictObject({ type: z.literal("setCensorSegmentEnabled"), id: z.string().uuid(), enabled: z.boolean() }),
@@ -417,26 +207,6 @@ function arraysEqual<T>(
   if (left === right) return true;
   if (left.length !== right.length) return false;
   return left.every((item, index) => itemEqual(item, right[index]!));
-}
-
-export function brollPlacementsEqual(
-  left: readonly BrollPlacement[],
-  right: readonly BrollPlacement[],
-): boolean {
-  return arraysEqual(
-    left,
-    right,
-    (a, b) =>
-      a.id === b.id &&
-      a.asset.id === b.asset.id &&
-      a.asset.fingerprint === b.asset.fingerprint &&
-      a.provenance === b.provenance &&
-      a.mediaKind === b.mediaKind &&
-      a.startSec === b.startSec &&
-      a.endSec === b.endSec &&
-      a.sourceStartSec === b.sourceStartSec &&
-      a.sourceEndSec === b.sourceEndSec,
-  );
 }
 
 /** Compares deleted footage by its normalized domain meaning. */
@@ -467,8 +237,7 @@ export function editorDocumentsEqual(
   if (
     left.clipStartSec !== right.clipStartSec ||
     left.clipEndSec !== right.clipEndSec ||
-    left.brollUrl !== right.brollUrl ||
-    !brollPlacementsEqual(left.brollPlacements, right.brollPlacements)
+    left.brollUrl !== right.brollUrl
   ) {
     return false;
   }
@@ -506,48 +275,6 @@ function insertSceneBlock(blocks: readonly SceneBlock[], scene: SceneBlock) {
       : block),
     scene,
   ]);
-}
-
-function rebaseSceneMediaMotions(
-  motions: readonly MediaMotion[],
-  previousScenes: readonly SceneBlock[],
-  nextScenes: readonly SceneBlock[],
-): MediaMotion[] {
-  const previousById = new Map(previousScenes.map((scene) => [scene.id, scene]));
-  const nextById = new Map(nextScenes.map((scene) => [scene.id, scene]));
-  return motions.flatMap((motion) => {
-    if (motion.target.kind !== "scene_block") return [motion];
-    const previous = previousById.get(motion.target.sceneBlockId);
-    const next = nextById.get(motion.target.sceneBlockId);
-    if (!previous || !next) return [];
-    const startsAtSceneStart = Math.abs(motion.startSec - previous.anchorSec) < 0.001;
-    const endsAtSceneEnd = Math.abs(
-      motion.endSec - (previous.anchorSec + previous.durationSec),
-    ) < 0.001;
-    if (startsAtSceneStart && endsAtSceneEnd) {
-      return [{
-        ...motion,
-        startSec: next.anchorSec,
-        endSec: next.anchorSec + next.durationSec,
-      }];
-    }
-    const durationSec = Math.min(
-      motion.endSec - motion.startSec,
-      next.durationSec,
-    );
-    const preferredOffset = endsAtSceneEnd
-      ? next.durationSec - durationSec
-      : motion.startSec - previous.anchorSec;
-    const startOffset = Math.max(
-      0,
-      Math.min(preferredOffset, next.durationSec - durationSec),
-    );
-    return [{
-      ...motion,
-      startSec: next.anchorSec + startOffset,
-      endSec: next.anchorSec + startOffset + durationSec,
-    }];
-  });
 }
 
 // ─── Text-layer ripple (Phase B hardening, fix 2) ──────────────────────────
@@ -711,86 +438,6 @@ function rebaseSpeakerLayoutOverrides(
   return changed ? rebased : overrides;
 }
 
-/** Asset-backed B-roll is anchored to the base edited source timeline. Keep
- * placements attached to the same source footage when cuts or boundaries
- * move that timeline; fully removed placements disappear with their source. */
-function rebaseBrollPlacements(
-  placements: readonly BrollPlacement[],
-  oldMap: EditedTimeMap,
-  newMap: EditedTimeMap,
-): BrollPlacement[] {
-  if (placements.length === 0) return placements as BrollPlacement[];
-  let changed = false;
-  const rebased: BrollPlacement[] = [];
-  for (const placement of placements) {
-    const originalSourceStart = editedToSource(oldMap, placement.startSec);
-    const originalSourceEnd = editedToSource(oldMap, placement.endSec);
-    const clampedSource = {
-      startSec: Math.max(newMap.clipStartSec, originalSourceStart),
-      endSec: Math.min(newMap.clipEndSec, originalSourceEnd),
-    };
-    const edited = sourceRangeToEdited(newMap, clampedSource);
-    if (!edited || edited.endSec - edited.startSec < 0.1) {
-      changed = true;
-      continue;
-    }
-    const durationSec = edited.endSec - edited.startSec;
-    let sourceStartSec = placement.sourceStartSec;
-    let sourceEndSec = placement.sourceEndSec;
-    if (
-      placement.mediaKind === "video" &&
-      sourceStartSec !== null &&
-      sourceEndSec !== null
-    ) {
-      const removedFromStartSec = Math.max(
-        0,
-        sourceToEdited(oldMap, clampedSource.startSec) - placement.startSec,
-      );
-      sourceStartSec = Math.min(sourceEndSec, sourceStartSec + removedFromStartSec);
-      sourceEndSec = Math.min(sourceEndSec, sourceStartSec + durationSec);
-      if (sourceEndSec - sourceStartSec < durationSec - 0.001) {
-        changed = true;
-        continue;
-      }
-    }
-    const next: BrollPlacement = {
-      ...placement,
-      startSec: edited.startSec,
-      endSec: edited.endSec,
-      sourceStartSec,
-      sourceEndSec,
-    };
-    if (!brollPlacementsEqual([placement], [next])) changed = true;
-    rebased.push(next);
-  }
-  return changed ? rebased : (placements as BrollPlacement[]);
-}
-
-function rebaseDocumentTimelineEdits(
-  doc: EditorDocument,
-  oldWindow: ClipWindow,
-  oldDeletedRanges: SourceRange[],
-  newWindow: ClipWindow,
-  newDeletedRanges: SourceRange[],
-) {
-  const oldMap = buildEditedTimeMap(oldDeletedRanges, oldWindow);
-  const newMap = buildEditedTimeMap(newDeletedRanges, newWindow);
-  return {
-    studioEdits: rebaseStudioEdits(
-      doc,
-      oldWindow,
-      oldDeletedRanges,
-      newWindow,
-      newDeletedRanges,
-    ),
-    brollPlacements: rebaseBrollPlacements(
-      doc.brollPlacements,
-      oldMap,
-      newMap,
-    ),
-  };
-}
-
 /** Applies `rebaseTextLayers`/`rebaseSfxPlacements` to `doc.studioEdits` and
  *  folds the result back into a (possibly-unchanged-reference)
  *  `studioEdits`, so callers can spread it into the next document without an
@@ -864,48 +511,6 @@ export function applyEditorAction(
       return action.brollUrl === doc.brollUrl
         ? doc
         : { ...doc, brollUrl: action.brollUrl };
-    case "insertBrollPlacement":
-      return doc.brollPlacements.some((placement) => placement.id === action.placement.id) ||
-        !brollPlacementSchema.safeParse(action.placement).success
-        ? doc
-        : validatedTimedMutation(doc, {
-            ...doc,
-            brollPlacements: [...doc.brollPlacements, action.placement].sort(
-              (left, right) =>
-                left.startSec - right.startSec || left.id.localeCompare(right.id),
-            ),
-          });
-    case "replaceBrollPlacement": {
-      const current = doc.brollPlacements.find(
-        (placement) => placement.id === action.id,
-      );
-      if (!current) return doc;
-      const replacement: BrollPlacement = {
-        ...current,
-        asset: action.asset,
-        provenance: action.provenance,
-        mediaKind: action.mediaKind,
-        sourceStartSec: action.sourceStartSec,
-        sourceEndSec: action.sourceEndSec,
-      };
-      if (!brollPlacementSchema.safeParse(replacement).success) return doc;
-      if (brollPlacementsEqual([current], [replacement])) return doc;
-      return validatedTimedMutation(doc, {
-        ...doc,
-        brollPlacements: doc.brollPlacements.map((placement) =>
-          placement.id === action.id ? replacement : placement,
-        ),
-      });
-    }
-    case "deleteBrollPlacement":
-      return doc.brollPlacements.some((placement) => placement.id === action.id)
-        ? validatedTimedMutation(doc, {
-            ...doc,
-            brollPlacements: doc.brollPlacements.filter(
-              (placement) => placement.id !== action.id,
-            ),
-          })
-        : doc;
     case "deleteRange": {
       const window = documentWindow(doc);
       const deletedRanges = normalizeDeletedRanges(
@@ -916,40 +521,22 @@ export function applyEditorAction(
       // Fix 2: a delete can shift every kept frame after it — rebase any
       // text layers so their edited-timeline timing keeps pointing at the
       // same underlying footage (see rebaseTextLayers's doc comment).
-      const timelineEdits = rebaseDocumentTimelineEdits(
-        doc,
-        window,
-        doc.deletedRanges,
-        window,
-        deletedRanges,
-      );
-      return { ...doc, deletedRanges, ...timelineEdits };
+      const studioEdits = rebaseStudioEdits(doc, window, doc.deletedRanges, window, deletedRanges);
+      return { ...doc, deletedRanges, studioEdits };
     }
     case "revertRange": {
       const window = documentWindow(doc);
       const deletedRanges = subtractDeletedRange(doc.deletedRanges, action.range, window);
       if (deletedRangesEqual(deletedRanges, doc.deletedRanges, window)) return doc;
-      const timelineEdits = rebaseDocumentTimelineEdits(
-        doc,
-        window,
-        doc.deletedRanges,
-        window,
-        deletedRanges,
-      );
-      return { ...doc, deletedRanges, ...timelineEdits };
+      const studioEdits = rebaseStudioEdits(doc, window, doc.deletedRanges, window, deletedRanges);
+      return { ...doc, deletedRanges, studioEdits };
     }
     case "setDeletedRanges": {
       const window = documentWindow(doc);
       const deletedRanges = normalizeDeletedRanges(action.ranges, window);
       if (deletedRangesEqual(deletedRanges, doc.deletedRanges, window)) return doc;
-      const timelineEdits = rebaseDocumentTimelineEdits(
-        doc,
-        window,
-        doc.deletedRanges,
-        window,
-        deletedRanges,
-      );
-      return { ...doc, deletedRanges, ...timelineEdits };
+      const studioEdits = rebaseStudioEdits(doc, window, doc.deletedRanges, window, deletedRanges);
+      return { ...doc, deletedRanges, studioEdits };
     }
     case "setClipBoundaries": {
       if (action.startSec === doc.clipStartSec && action.endSec === doc.clipEndSec) {
@@ -964,7 +551,7 @@ export function applyEditorAction(
       // every text layer's rebased edited position too — same rebase used
       // by the delete/revert branches, just against the new window as well
       // as any deletedRanges renormalization it forced.
-      const timelineEdits = rebaseDocumentTimelineEdits(
+      const studioEdits = rebaseStudioEdits(
         doc,
         oldWindow,
         doc.deletedRanges,
@@ -976,7 +563,7 @@ export function applyEditorAction(
         clipStartSec: action.startSec,
         clipEndSec: action.endSec,
         deletedRanges,
-        ...timelineEdits,
+        studioEdits,
       };
     }
     case "trimClip": {
@@ -1000,7 +587,7 @@ export function applyEditorAction(
       const oldWindow = documentWindow(doc);
       const newWindow = { startSec: action.startSec, endSec: action.endSec };
       const deletedRanges = normalizeDeletedRanges(doc.deletedRanges, newWindow);
-      const timelineEdits = rebaseDocumentTimelineEdits(
+      const studioEdits = rebaseStudioEdits(
         doc,
         oldWindow,
         doc.deletedRanges,
@@ -1013,7 +600,7 @@ export function applyEditorAction(
         clipEndSec: action.endSec,
         transcriptSlice: action.transcriptSlice,
         deletedRanges,
-        ...timelineEdits,
+        studioEdits,
       };
     }
     case "insertSceneBlock": {
@@ -1024,17 +611,7 @@ export function applyEditorAction(
         return doc;
       }
       const sceneBlocks = insertSceneBlock(doc.sceneBlocks, action.scene);
-      return sceneBlocks
-        ? validatedTimedMutation(doc, {
-            ...doc,
-            sceneBlocks,
-            mediaMotions: rebaseSceneMediaMotions(
-              doc.mediaMotions,
-              doc.sceneBlocks,
-              sceneBlocks,
-            ),
-          })
-        : doc;
+      return sceneBlocks ? validatedTimedMutation(doc, { ...doc, sceneBlocks }) : doc;
     }
     case "moveSceneBlock": {
       const removed = removeSceneBlock(doc.sceneBlocks, action.id);
@@ -1042,36 +619,20 @@ export function applyEditorAction(
       const moved = { ...removed.removed, anchorSec: action.anchorSec };
       if (!sceneBlockSchema.safeParse(moved).success) return doc;
       const sceneBlocks = insertSceneBlock(removed.blocks, moved);
-      return sceneBlocks
-        ? validatedTimedMutation(doc, {
-            ...doc,
-            sceneBlocks,
-            mediaMotions: rebaseSceneMediaMotions(
-              doc.mediaMotions,
-              doc.sceneBlocks,
-              sceneBlocks,
-            ),
-          })
-        : doc;
+      return sceneBlocks ? validatedTimedMutation(doc, { ...doc, sceneBlocks }) : doc;
     }
     case "trimSceneBlock": {
       const scene = doc.sceneBlocks.find((block) => block.id === action.id);
       if (!scene || scene.durationSec === action.durationSec || sceneDurationIssue(scene.content, action.durationSec)) return doc;
       const delta = action.durationSec - scene.durationSec;
-      const sceneBlocks = sortSceneBlocks(doc.sceneBlocks.map((block) => {
-        if (block.id === action.id) return { ...block, durationSec: action.durationSec };
-        return block.anchorSec > scene.anchorSec
-          ? { ...block, anchorSec: block.anchorSec + delta }
-          : block;
-      }));
       return validatedTimedMutation(doc, {
         ...doc,
-        sceneBlocks,
-        mediaMotions: rebaseSceneMediaMotions(
-          doc.mediaMotions,
-          doc.sceneBlocks,
-          sceneBlocks,
-        ),
+        sceneBlocks: sortSceneBlocks(doc.sceneBlocks.map((block) => {
+          if (block.id === action.id) return { ...block, durationSec: action.durationSec };
+          return block.anchorSec > scene.anchorSec
+            ? { ...block, anchorSec: block.anchorSec + delta }
+            : block;
+        })),
       });
     }
     case "duplicateSceneBlock": {
@@ -1079,17 +640,7 @@ export function applyEditorAction(
       if (!scene) return doc;
       const copy = { ...structuredClone(scene), id: action.duplicateId, anchorSec: scene.anchorSec + scene.durationSec };
       const sceneBlocks = insertSceneBlock(doc.sceneBlocks, copy);
-      return sceneBlocks
-        ? validatedTimedMutation(doc, {
-            ...doc,
-            sceneBlocks,
-            mediaMotions: rebaseSceneMediaMotions(
-              doc.mediaMotions,
-              doc.sceneBlocks,
-              sceneBlocks,
-            ),
-          })
-        : doc;
+      return sceneBlocks ? validatedTimedMutation(doc, { ...doc, sceneBlocks }) : doc;
     }
     case "replaceSceneBlock": {
       const scene = doc.sceneBlocks.find((block) => block.id === action.id);
@@ -1101,14 +652,12 @@ export function applyEditorAction(
 			const durationSec = Math.min(maximumDuration, Math.max(minimumDuration, action.durationSec ?? scene.durationSec));
 			if (JSON.stringify(scene.content) === JSON.stringify(action.content) && scene.durationSec === durationSec) return doc;
 			const delta = durationSec - scene.durationSec;
-			const sceneBlocks = sortSceneBlocks(doc.sceneBlocks.map((block) => {
-				if (block.id === action.id) return { ...block, content: action.content, durationSec, templateSnapshot: null };
-				return block.anchorSec > scene.anchorSec ? { ...block, anchorSec: block.anchorSec + delta } : block;
-			}));
 			return validatedTimedMutation(doc, {
 				...doc,
-				sceneBlocks,
-				mediaMotions: rebaseSceneMediaMotions(doc.mediaMotions, doc.sceneBlocks, sceneBlocks),
+				sceneBlocks: sortSceneBlocks(doc.sceneBlocks.map((block) => {
+					if (block.id === action.id) return { ...block, content: action.content, durationSec, templateSnapshot: null };
+					return block.anchorSec > scene.anchorSec ? { ...block, anchorSec: block.anchorSec + delta } : block;
+				})),
 			});
 		}
 		case "updateSceneMotion": {
@@ -1126,45 +675,12 @@ export function applyEditorAction(
       if (!removed) return doc;
       const mediaMotions = doc.mediaMotions.filter((motion) =>
         motion.target.kind !== "scene_block" || motion.target.sceneBlockId !== action.id);
-      return validatedTimedMutation(doc, {
-        ...doc,
-        sceneBlocks: removed.blocks,
-        mediaMotions: rebaseSceneMediaMotions(
-          mediaMotions,
-          doc.sceneBlocks,
-          removed.blocks,
-        ),
-      });
+      return validatedTimedMutation(doc, { ...doc, sceneBlocks: removed.blocks, mediaMotions });
     }
     case "insertCensorSegment":
       return doc.censorSegments.some((segment) => segment.id === action.segment.id)
         ? doc
         : validatedTimedMutation(doc, { ...doc, censorSegments: [...doc.censorSegments, action.segment] });
-    case "applyCensorSegments": {
-      const existingIds = new Set(doc.censorSegments.map((segment) => segment.id));
-      const existingFingerprints = new Set(
-        doc.censorSegments.flatMap((segment) =>
-          segment.suggestionFingerprint ? [segment.suggestionFingerprint] : []),
-      );
-      const additions = action.segments.filter(
-        (segment, index) =>
-          !existingIds.has(segment.id) &&
-          (!segment.suggestionFingerprint ||
-            !existingFingerprints.has(segment.suggestionFingerprint)) &&
-          action.segments.findIndex((candidate) => candidate.id === segment.id) === index &&
-          (!segment.suggestionFingerprint ||
-            action.segments.findIndex(
-              (candidate) =>
-                candidate.suggestionFingerprint === segment.suggestionFingerprint,
-            ) === index),
-      );
-      return additions.length === 0
-        ? doc
-        : validatedTimedMutation(doc, {
-            ...doc,
-            censorSegments: [...doc.censorSegments, ...additions],
-          });
-    }
     case "updateCensorSegment": {
       const current = doc.censorSegments.find((segment) => segment.id === action.id);
       if (!current) return doc;

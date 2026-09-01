@@ -8,71 +8,10 @@ import { Button } from "@narriflow/ui/components/button";
 import { Checkbox } from "@narriflow/ui/components/checkbox";
 import { Spinner } from "@narriflow/ui/components/spinner";
 import { createApiKeyAction, revokeApiKeyAction } from "../actions";
-import type { WorkspaceApiKeyScope } from "@narriflow/validators";
 import {
   authenticatedActionResultMessage,
   isAuthenticatedActionFailure,
 } from "@/lib/authenticated-request-browser";
-import { resolveWorkspaceApiKeyScopes } from "./api-key-scope-selection";
-
-const readScopeOptions: ReadonlyArray<{
-  scope: WorkspaceApiKeyScope;
-  label: string;
-  detail: string;
-}> = [
-  {
-    scope: "publishing:read",
-    label: "Publication recovery",
-    detail: "Inspect existing social publication attempts and outcomes.",
-  },
-  {
-    scope: "brand:read",
-    label: "Brand profiles",
-    detail: "Read brand identity, voice, and owned asset metadata.",
-  },
-  {
-    scope: "review:read",
-    label: "Review status",
-    detail: "Read round, approval, and notification status without guest secrets.",
-  },
-];
-
-const mutationScopeOptions: ReadonlyArray<{
-  scope: WorkspaceApiKeyScope;
-  label: string;
-  detail: string;
-}> = [
-  {
-    scope: "autopilot:write",
-    label: "RSS autopilot",
-    detail: "Create rules and mark existing rules due.",
-  },
-  {
-    scope: "publishing:write",
-    label: "Publication recovery",
-    detail: "Confirm, recheck, or explicitly republish uncertain attempts.",
-  },
-  {
-    scope: "campaign:operate",
-    label: "Campaign operations",
-    detail: "Run revision-fenced actions on explicitly selected clips.",
-  },
-  {
-    scope: "review:write",
-    label: "Review delivery",
-    detail: "Create idempotent review rounds and queue notifications.",
-  },
-  {
-    scope: "publishing:prepare",
-    label: "Publishing preparation",
-    detail: "Generate copy, extract thumbnails, and schedule approved batches.",
-  },
-  {
-    scope: "generated-media:submit",
-    label: "Generated media",
-    detail: "Submit high-level generation jobs and read their status.",
-  },
-];
 
 export function ApiKeysPanel({
   keys,
@@ -84,9 +23,7 @@ export function ApiKeysPanel({
   const router = useRouter();
   const [name, setName] = useState("");
   const [secret, setSecret] = useState<string | null>(null);
-  const [selectedScopes, setSelectedScopes] = useState<Set<WorkspaceApiKeyScope>>(
-    () => new Set(),
-  );
+  const [allowAutopilotWrites, setAllowAutopilotWrites] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
 
@@ -96,7 +33,13 @@ export function ApiKeysPanel({
     startTransition(async () => {
       const result = await createApiKeyAction({
         name,
-        scopes: resolveWorkspaceApiKeyScopes(selectedScopes),
+        scopes: [
+          "projects:read",
+          "exports:read",
+          "usage:read",
+          "autopilot:read",
+          ...(allowAutopilotWrites ? ["autopilot:write"] : []),
+        ],
       });
       if (!result.ok) {
         return setError(authenticatedActionResultMessage(result, "The API key could not be created."));
@@ -104,15 +47,6 @@ export function ApiKeysPanel({
       setName("");
       setSecret(result.key.secret);
       router.refresh();
-    });
-  }
-
-  function toggleScope(scope: WorkspaceApiKeyScope, checked: boolean) {
-    setSelectedScopes((current) => {
-      const next = new Set(current);
-      if (checked) next.add(scope);
-      else next.delete(scope);
-      return next;
     });
   }
 
@@ -143,51 +77,9 @@ export function ApiKeysPanel({
           {!isBusiness ? <Text fontSize="13px" color="fg.muted">API key creation requires an active Business workspace. Upgrade from Subscription, or review the MCP guide before upgrading.</Text> : (
             <Stack gap="3">
               <Flex gap="3" direction={{ base: "column", md: "row" }}><Input value={name} onChange={(event) => setName(event.target.value)} placeholder="Key name, e.g. Claude Desktop" maxLength={80} required /><Button type="submit" size="sm" disabled={pending}>{pending ? <Spinner size="xs" /> : <Plus size={14} />}Create key</Button></Flex>
-              <Box borderTopWidth="1px" borderColor="border.subtle" pt="4">
-                <Text textStyle="eyebrow" color="fg.subtle" mb="2">
-                  Included by default
-                </Text>
-                <Text fontSize="12px" color="fg.muted" lineHeight="1.6">
-                  Projects, exports, usage, and RSS autopilot are read-only. Add only the access this client needs.
-                </Text>
-              </Box>
-              <Flex gap="6" direction={{ base: "column", lg: "row" }} align="start">
-                <Stack gap="3" flex="1" width="full">
-                  <Text textStyle="eyebrow" color="fg.subtle">Additional reads</Text>
-                  {readScopeOptions.map((option) => (
-                    <Checkbox
-                      key={option.scope}
-                      checked={selectedScopes.has(option.scope)}
-                      onCheckedChange={(checked) => toggleScope(option.scope, checked)}
-                    >
-                      <Stack gap="0.5">
-                        <Text fontSize="13px" fontWeight="550">{option.label}</Text>
-                        <Text fontSize="11px" color="fg.subtle" lineHeight="1.45">{option.detail}</Text>
-                      </Stack>
-                    </Checkbox>
-                  ))}
-                </Stack>
-                <Stack gap="3" flex="1" width="full">
-                  <Text textStyle="eyebrow" color="fg.subtle">Mutations</Text>
-                  {mutationScopeOptions.map((option) => (
-                    <Checkbox
-                      key={option.scope}
-                      checked={selectedScopes.has(option.scope)}
-                      onCheckedChange={(checked) => toggleScope(option.scope, checked)}
-                    >
-                      <Stack gap="0.5">
-                        <Text fontSize="13px" fontWeight="550">{option.label}</Text>
-                        <Text fontSize="11px" color="fg.subtle" lineHeight="1.45">{option.detail}</Text>
-                      </Stack>
-                    </Checkbox>
-                  ))}
-                  <Box borderTopWidth="1px" borderColor="border.subtle" pt="2">
-                    <Text fontSize="11px" color="fg.disabled" lineHeight="1.45">
-                      Brand write is reserved for a future version; no public brand mutation is available yet.
-                    </Text>
-                  </Box>
-                </Stack>
-              </Flex>
+              <Checkbox checked={allowAutopilotWrites} onCheckedChange={setAllowAutopilotWrites}>
+                Allow this key to create and run RSS autopilot rules
+              </Checkbox>
             </Stack>
           )}
           {error ? <Text fontSize="12px" color="danger.fg">{error}</Text> : null}

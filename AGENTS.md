@@ -59,6 +59,6 @@ Channel both "measure twice, cut once" and YAGNI. Fight scope creep. Honor the d
 
 ## DB
 
-- Generate client: `bun run --cwd packages/db prisma:generate`.
+- Generate client: `bun --cwd packages/db run prisma:generate`.
 - Migrations under `packages/db/prisma/migrations`; apply with `prisma migrate deploy`.
 - Pending migrations must be applied before deploying code that uses them.

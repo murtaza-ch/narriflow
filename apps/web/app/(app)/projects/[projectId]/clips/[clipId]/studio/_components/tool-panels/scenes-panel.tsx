@@ -176,8 +176,8 @@ export function ScenesPanel() {
 									</Flex>
 								</>}
 								<Flex gap="2" wrap="wrap">
-									{selectField("Entrance motion", scene.motion.entrance, ["none", "fade", "scale-in", "pan-left", "pan-right", "pan-up", "pan-down", "ken-burns-in"], (entrance) => studio.updateSceneMotion(scene.id, { ...scene.motion, entrance: entrance as SceneMotion["entrance"] }))}
-									{selectField("Exit motion", scene.motion.exit, ["none", "fade", "scale-out", "pan-left", "pan-right", "pan-up", "pan-down", "ken-burns-out"], (exit) => studio.updateSceneMotion(scene.id, { ...scene.motion, exit: exit as SceneMotion["exit"] }))}
+									{selectField("Entrance motion", scene.motion.entrance, ["none", "fade", "slide-up", "zoom-in"], (entrance) => studio.updateSceneMotion(scene.id, { ...scene.motion, entrance: entrance as SceneMotion["entrance"] }))}
+									{selectField("Exit motion", scene.motion.exit, ["none", "fade", "slide-down", "zoom-out"], (exit) => studio.updateSceneMotion(scene.id, { ...scene.motion, exit: exit as SceneMotion["exit"] }))}
 								</Flex>
 							</Stack>
 						)}

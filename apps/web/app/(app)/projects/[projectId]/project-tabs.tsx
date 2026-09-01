@@ -103,15 +103,6 @@ export function ProjectTabs({
           Dubbing
         </Tabs.Trigger>
         <Tabs.Trigger
-          value="review"
-          color="fg.muted"
-          flexShrink={0}
-          whiteSpace="nowrap"
-          _selected={{ color: "fg" }}
-        >
-          Review
-        </Tabs.Trigger>
-        <Tabs.Trigger
           value="publish"
           color="fg.muted"
           flexShrink={0}

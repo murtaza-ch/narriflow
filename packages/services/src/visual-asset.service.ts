@@ -28,18 +28,9 @@ import {
   presignSingleUploadUrl,
 } from "./r2-storage";
 import { analyticsService } from "./analytics.service";
-import {
-  MediaCleanupAdoptionLost,
-  adoptUnclaimedMediaCleanupObligation,
-  admitMediaCleanupObligations,
-} from "./media-cleanup";
 import { withSerializableTransaction } from "./serializable-transaction";
 
 const execFileAsync = promisify(execFile);
-
-export const VISUAL_ASSET_UPLOAD_URL_TTL_SECONDS = 60 * 60;
-export const VISUAL_ASSET_UPLOAD_CLEANUP_SKEW_SECONDS = 5 * 60;
-const VISUAL_ASSET_CLEANUP_RECEIPT = "visual_asset_adopted";
 
 export interface VisualMediaProbe {
   kind: "image" | "video";
@@ -55,11 +46,7 @@ export interface VisualMediaProbe {
 }
 
 export interface VisualAssetStorage {
-  presign(input: {
-    key: string;
-    contentType: string;
-    expiresInSeconds: number;
-  }): Promise<string>;
+  presign(input: { key: string; contentType: string }): Promise<string>;
   head(key: string): Promise<{ contentType: string | null; sizeBytes: number | null } | null>;
   probe(key: string, contentType: string): Promise<VisualMediaProbe | null>;
   fingerprint(key: string): Promise<string>;
@@ -183,12 +170,8 @@ async function productionProbe(key: string): Promise<VisualMediaProbe | null> {
 }
 
 const productionStorage: VisualAssetStorage = {
-  async presign({ key, contentType, expiresInSeconds }) {
-    return presignSingleUploadUrl({
-      key,
-      contentType,
-      expiresIn: expiresInSeconds,
-    });
+  async presign({ key, contentType }) {
+    return presignSingleUploadUrl({ key, contentType });
   },
   async head(key) {
     try {
@@ -221,7 +204,7 @@ function toRow(asset: VisualAsset, accessUrl: string | null, replayed = false) {
     height: asset.height,
     durationSec: asset.durationSec,
     fingerprint: asset.fingerprint,
-    provenance: asset.provenance as "uploaded" | "generated" | "extracted",
+    provenance: asset.provenance as "uploaded" | "generated",
     accessUrl,
     replayed,
     createdAt: asset.createdAt.toISOString(),
@@ -230,56 +213,14 @@ function toRow(asset: VisualAsset, accessUrl: string | null, replayed = false) {
 
 export class VisualAssetService {
   private requirePrisma = requirePrisma;
-  constructor(
-    private readonly storage: VisualAssetStorage = productionStorage,
-    private readonly now: () => Date = () => new Date(),
-  ) {}
+  constructor(private readonly storage: VisualAssetStorage = productionStorage) {}
 
   async presignUpload(scope: BrandActorScope, input: VisualAssetUploadInput) {
     await assertBrandMutationAllowedWithAnalytics(scope, "brand.profiles", "profile");
     const parsed = visualAssetUploadSchema.parse(input);
-    if (this.storage === productionStorage && !isR2Configured()) {
-      throw new Error("R2 configuration is missing");
-    }
+    if (!isR2Configured()) throw new Error("R2 configuration is missing");
     const key = `${brandOwnerStoragePrefix(scope, "visual-assets")}${randomUUID()}.${extensionForVisual(parsed.contentType)}`;
-    const signingStartedAt = this.now();
-    const uploadUrl = await this.storage.presign({
-      key,
-      contentType: parsed.contentType,
-      expiresInSeconds: VISUAL_ASSET_UPLOAD_URL_TTL_SECONDS,
-    });
-    const signingCompletedAt = this.now();
-    const cleanupDueAt = new Date(
-      signingCompletedAt.getTime() +
-        (VISUAL_ASSET_UPLOAD_URL_TTL_SECONDS +
-          VISUAL_ASSET_UPLOAD_CLEANUP_SKEW_SECONDS) *
-          1000,
-    );
-    const admitted = await admitMediaCleanupObligations(
-      this.requirePrisma().mediaCleanupObligation,
-      [
-        {
-          origin: "visual_asset_upload",
-          cleanupClass: "unfinalized_visual_asset_upload",
-          objectKey: key,
-          nextAttemptAt: cleanupDueAt,
-        },
-      ],
-    );
-    if (admitted !== 1) {
-      throw new VisualAssetIntegrityError(
-        "visual_asset_upload_admission_conflict",
-      );
-    }
-    return {
-      key,
-      contentType: parsed.contentType,
-      uploadUrl,
-      expiresAt: new Date(
-        signingStartedAt.getTime() +
-          VISUAL_ASSET_UPLOAD_URL_TTL_SECONDS * 1000,
-      ).toISOString(),
-    };
+    return { key, contentType: parsed.contentType, uploadUrl: await this.storage.presign({ key, contentType: parsed.contentType }) };
   }
 
   async finalizeUpload(scope: BrandActorScope, input: VisualAssetFinalizeInput) {
@@ -321,30 +262,7 @@ export class VisualAssetService {
     const prisma = this.requirePrisma();
     const ownerWhere = brandOwnerWhere(scope);
     const existing = await prisma.visualAsset.findFirst({ where: { ...ownerWhere, fingerprint: parsed.fingerprint, deletedAt: null } });
-    if (existing) {
-      if (existing.storageKey === parsed.key) {
-        try {
-          await adoptUnclaimedMediaCleanupObligation(
-            prisma.mediaCleanupObligation,
-            {
-              origin: "visual_asset_upload",
-              cleanupClass: "unfinalized_visual_asset_upload",
-              objectKey: parsed.key,
-            },
-            this.now(),
-            VISUAL_ASSET_CLEANUP_RECEIPT,
-          );
-        } catch (error) {
-          if (error instanceof MediaCleanupAdoptionLost) {
-            throw new VisualAssetIntegrityError(
-              "visual_asset_upload_ownership_lost",
-            );
-          }
-          throw error;
-        }
-      }
-      return toRow(existing, await this.storage.accessUrl(existing.storageKey), true);
-    }
+    if (existing) return toRow(existing, await this.storage.accessUrl(existing.storageKey), true);
 
     const [object, probe, fingerprint] = await Promise.all([
       this.storage.head(parsed.key),
@@ -355,57 +273,23 @@ export class VisualAssetService {
     if (fingerprint !== parsed.fingerprint) throw new VisualAssetIntegrityError("visual_asset_fingerprint_mismatch");
     const owner = resolveBrandOwner(scope);
     try {
-      const settled = await withSerializableTransaction(prisma, async (tx) => {
-        const replay = await tx.visualAsset.findFirst({
-          where: {
-            ...ownerWhere,
-            fingerprint,
-            deletedAt: null,
-          },
-        });
-        if (replay) return { asset: replay, replayed: true };
-        try {
-          await adoptUnclaimedMediaCleanupObligation(
-            tx.mediaCleanupObligation,
-            {
-              origin: "visual_asset_upload",
-              cleanupClass: "unfinalized_visual_asset_upload",
-              objectKey: parsed.key,
-            },
-            this.now(),
-            VISUAL_ASSET_CLEANUP_RECEIPT,
-          );
-        } catch (error) {
-          if (error instanceof MediaCleanupAdoptionLost) {
-            throw new VisualAssetIntegrityError(
-              "visual_asset_upload_ownership_lost",
-            );
-          }
-          throw error;
-        }
-        const asset = await tx.visualAsset.create({
-          data: {
-            ...owner,
-            createdByUserId: scope.actorUserId,
-            title: parsed.title,
-            kind: probe.kind as VisualAssetKind,
-            storageKey: parsed.key,
-            contentType: parsed.contentType,
-            sizeBytes: BigInt(parsed.sizeBytes),
-            width: probe.width,
-            height: probe.height,
-            durationSec: probe.durationSec,
-            fingerprint,
-            provenance: parsed.provenance,
-          },
-        });
-        return { asset, replayed: false };
+      const created = await prisma.visualAsset.create({
+        data: {
+          ...owner,
+          createdByUserId: scope.actorUserId,
+          title: parsed.title,
+          kind: probe.kind as VisualAssetKind,
+          storageKey: parsed.key,
+          contentType: parsed.contentType,
+          sizeBytes: BigInt(parsed.sizeBytes),
+          width: probe.width,
+          height: probe.height,
+          durationSec: probe.durationSec,
+          fingerprint,
+          provenance: parsed.provenance,
+        },
       });
-      return toRow(
-        settled.asset,
-        await this.storage.accessUrl(settled.asset.storageKey),
-        settled.replayed,
-      );
+      return toRow(created, await this.storage.accessUrl(created.storageKey));
     } catch (error) {
       if ((error as { code?: string }).code !== "P2002") throw error;
       const replay = await prisma.visualAsset.findFirst({ where: { ...ownerWhere, fingerprint, deletedAt: null } });

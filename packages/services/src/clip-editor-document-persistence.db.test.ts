@@ -28,7 +28,6 @@ import {
   openClipPersistenceTestDatabase,
 } from "./clip-persistence-db-test-support";
 import { prismaMediaCleanupStore } from "./media-cleanup";
-import { ClipService } from "./clip.service";
 
 const dbDescribe = clipPersistenceDbTestEnabled ? describe : describe.skip;
 
@@ -60,28 +59,6 @@ dbDescribe("Clip Editor Document Persistence PostgreSQL invariants", () => {
   ) {
     return addClipPersistenceFixtureClip(prisma, fixtureState, index, document);
   }
-
-  test("preview candidates decode the complete current editor document", async () => {
-    const f = await fixture();
-    await prisma.$transaction([
-      prisma.project.update({
-        where: { id: f.project.id },
-        data: { ingestStatus: "ready" },
-      }),
-      prisma.clip.update({
-        where: { id: f.clip.id },
-        data: { previewStorageKey: null, previewStartSec: null, previewDurationSec: null },
-      }),
-    ]);
-
-    const candidates = await new ClipService().getClipsNeedingPreview(10);
-
-    expect(candidates.map((candidate) => candidate.id)).toContain(f.clip.id);
-    expect(candidates.find((candidate) => candidate.id === f.clip.id)).toMatchObject({
-      startSec: f.document.clipStartSec,
-      endSec: f.document.clipEndSec,
-    });
-  });
 
   test("document, revision, original, render retirement, and cleanup commit together", async () => {
     const f = await fixture();

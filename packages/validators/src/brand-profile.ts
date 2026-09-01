@@ -1,5 +1,4 @@
 import { z } from "zod";
-import { brandTemplateSnapshotSchema } from "./brand-template";
 
 const idSchema = z.string().uuid();
 const fingerprintSchema = z.string().regex(/^[a-f0-9]{64}$/i);
@@ -30,22 +29,6 @@ export const brandApprovalRuleSchema = z.enum([
   "none",
   "approval_required",
 ]);
-
-/**
- * Immutable Brand Profile value frozen onto a Project. Defining the persisted
- * shape here lets campaign previews, service application, reviews, and copy
- * generation fail closed on one contract instead of probing untyped JSON.
- */
-export const brandProfileSnapshotSchema = z.strictObject({
-  version: z.literal(1),
-  profileId: idSchema,
-  profileRevision: z.number().int().positive(),
-  name: z.string().trim().min(1).max(80),
-  identity: brandVisualIdentitySchema,
-  voice: brandVoiceGuidanceSchema,
-  approvalRule: brandApprovalRuleSchema,
-  style: brandTemplateSnapshotSchema.nullable(),
-});
 
 export const brandProfileCreateSchema = z
   .object({
@@ -168,7 +151,6 @@ export const reusableAssetSoftDeleteSchema = z
 
 export type BrandVoiceGuidance = z.infer<typeof brandVoiceGuidanceSchema>;
 export type BrandVisualIdentity = z.infer<typeof brandVisualIdentitySchema>;
-export type BrandProfileSnapshot = z.infer<typeof brandProfileSnapshotSchema>;
 export type BrandProfileCreateInput = z.infer<typeof brandProfileCreateSchema>;
 export type BrandProfileUpdateInput = z.infer<typeof brandProfileUpdateSchema>;
 export type BrandProfileListInput = z.infer<typeof brandProfileListSchema>;

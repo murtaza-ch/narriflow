@@ -13,7 +13,6 @@ import {
   createInMemoryClipEditorDocumentStore,
   decodeClipEditorDocumentFromStorage,
   encodeClipEditorDocumentForStorage,
-	mutatePrismaClipEditorDocumentInTransaction,
   type ClipEditorDocumentDiagnostics,
   type ClipEditorDocumentStoredState,
 } from "./clip-editor-document-persistence";
@@ -88,117 +87,6 @@ function setup(state = stored()) {
 }
 
 describe("Clip Editor Document Persistence", () => {
-	test("transaction companions receive canonical window, evidence, and cleanup invalidation", async () => {
-		const seed = stored();
-		const next = document({ clipStartSec: 12, clipEndSec: 32 });
-		let updateData: Record<string, unknown> | null = null;
-		let rendersRetired = false;
-		let cleanupData: Array<{ cleanupClass: string }> = [];
-		const row = {
-			id: seed.clipId,
-			projectId: seed.projectId,
-			editorRevision: seed.revision,
-			editorOriginal: null,
-			startSec: seed.document.clipStartSec,
-			endSec: seed.document.clipEndSec,
-			captionPreset: seed.document.captionPreset,
-			transcriptSlice: seed.document.transcriptSlice,
-			studioEdits: seed.document.studioEdits,
-			brollUrl: seed.document.brollUrl,
-			brollPlacements: seed.document.brollPlacements,
-			deletedRanges: seed.document.deletedRanges,
-			editorDocumentVersion: seed.document.version,
-			sceneBlocks: seed.document.sceneBlocks,
-			censorSegments: seed.document.censorSegments,
-			mediaMotions: seed.document.mediaMotions,
-			viralityScore: seed.viralityScore,
-			status: seed.status,
-			previewStorageKey: seed.preview.storageKey,
-			previewStartSec: seed.preview.startSec,
-			previewDurationSec: seed.preview.durationSec,
-			layoutAnalysis: seed.evidence.screen,
-			autoLayoutAnalysis: seed.evidence.automatic,
-			splitLayoutAnalysis: seed.evidence.split,
-			durationOptimalityScore: seed.scores.durationOptimality,
-			tiktokScore: seed.scores.tiktok,
-			youtubeScore: seed.scores.youtube,
-			instagramScore: seed.scores.instagram,
-			project: {
-				userId: seed.actorUserId,
-				sourceDurationSeconds: seed.sourceDurationSec,
-				sourceStorageKey: seed.sourceStorageKey,
-				transcript: { utterancesJson: seed.sourceTranscript },
-			},
-			renders: seed.mutableRenders,
-		};
-		const transaction = {
-			clip: {
-				findFirst: async () => row,
-				count: async () => 1,
-				updateMany: async ({ data }: { data: Record<string, unknown> }) => {
-					updateData = data;
-					return { count: 1 };
-				},
-				findUniqueOrThrow: async () => ({
-					...row,
-					editorRevision: 4,
-					startSec: 12,
-					endSec: 32,
-					editorOriginal: seed.document,
-					previewStorageKey: null,
-					previewStartSec: null,
-					previewDurationSec: null,
-					layoutAnalysis: null,
-					autoLayoutAnalysis: null,
-					splitLayoutAnalysis: null,
-					renders: [],
-				}),
-			},
-			clipRender: {
-				deleteMany: async () => {
-					rendersRetired = true;
-					return { count: 1 };
-				},
-			},
-			mediaCleanupObligation: {
-				createMany: async ({ data }: { data: Array<{ cleanupClass: string }> }) => {
-					cleanupData = data;
-					return { count: data.length };
-				},
-			},
-		} as never;
-
-		const result = await mutatePrismaClipEditorDocumentInTransaction(
-			transaction,
-			{
-				scope: {
-					actorUserId: seed.actorUserId,
-					projectId: seed.projectId,
-					clipId: seed.clipId,
-				},
-				expectedRevision: seed.revision,
-				plan: () => ({ nextDocument: next, value: "planned" }),
-			},
-		);
-
-		expect(result).toMatchObject({
-			mutation: { revision: 4, document: { clipStartSec: 12, clipEndSec: 32 } },
-			value: "planned",
-		});
-		expect(updateData).toMatchObject({
-			previewStorageKey: null,
-			layoutAnalysis: expect.anything(),
-			autoLayoutAnalysis: expect.anything(),
-			splitLayoutAnalysis: expect.anything(),
-		});
-		expect(rendersRetired).toBe(true);
-		expect(cleanupData.map((item) => item.cleanupClass).sort()).toEqual([
-			"mutable_render",
-			"preview_peaks",
-			"preview_proxy",
-		]);
-	});
-
   test("the storage codec round-trips canonical creation values and owns null defaults", () => {
     const encoded = encodeClipEditorDocumentForStorage(document(), 300);
     expect(
@@ -213,28 +101,6 @@ describe("Clip Editor Document Persistence", () => {
       ),
     ).toEqual(document());
   });
-
-	test("the storage codec reopens exact asset-backed B-roll placements", () => {
-		const placement = {
-			id: "2adf79cc-35b2-4de5-85dc-c9ed197763e4",
-			asset: {
-				kind: "visual_asset" as const,
-				id: "8ab9d330-688f-4574-932c-27ac661245c1",
-				fingerprint: "a".repeat(64),
-			},
-			provenance: "generated" as const,
-			mediaKind: "image" as const,
-			startSec: 3,
-			endSec: 6,
-			sourceStartSec: null,
-			sourceEndSec: null,
-		};
-		const expected = document({ brollPlacements: [placement] });
-		const encoded = encodeClipEditorDocumentForStorage(expected, 300);
-
-		expect(encoded.brollPlacements).toEqual([placement]);
-		expect(decodeClipEditorDocumentFromStorage(encoded, 300)).toEqual(expected);
-	});
 
   test("fails closed when storage contains an unknown future document version", () => {
     const encoded = encodeClipEditorDocumentForStorage(document(), 300);

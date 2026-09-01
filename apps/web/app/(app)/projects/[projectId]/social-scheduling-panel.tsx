@@ -4,8 +4,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, useTransition,
 } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Box, Flex, Grid, Stack, Text, Textarea } from "@chakra-ui/react";
-import { AlertTriangle, CalendarClock, Check, CheckCircle2, LockKeyhole, RefreshCw, Repeat2, Send, X,
+import { Box, Flex, Grid, Stack, Text } from "@chakra-ui/react";
+import { AlertTriangle, CalendarClock, Check, CheckCircle2, RefreshCw, Repeat2, Send, X,
 } from "lucide-react";
 import { Button } from "@narriflow/ui/components/button";
 import { Checkbox } from "@narriflow/ui/components/checkbox";
@@ -34,7 +34,6 @@ import {
   SOCIAL_PLATFORM_LABELS as platformLabels,
   type SocialPostTone,
 } from "@/lib/social-post-status";
-import { PublishingPreparationPanel } from "./publishing-preparation-panel";
 
 const platforms = Object.keys(platformLabels) as SocialPlatform[];
 
@@ -137,24 +136,12 @@ export function SocialSchedulingPanel({
   posts,
   accounts,
   facebookPublishingEnabled,
-  canManagePublishing,
-  canOverrideApproval,
-  workspaceTimezone,
-  assistedCopyEnabled,
-  thumbnailExtractionEnabled,
-  bulkSchedulingEnabled,
 }: {
   projectId: string;
   clips: ClipSnapshot[];
   posts: SocialPostSnapshot[];
   accounts: SocialAccountSnapshot[];
   facebookPublishingEnabled: boolean;
-  canManagePublishing: boolean;
-  canOverrideApproval: boolean;
-  workspaceTimezone: string;
-  assistedCopyEnabled: boolean;
-  thumbnailExtractionEnabled: boolean;
-  bulkSchedulingEnabled: boolean;
 }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
@@ -173,8 +160,6 @@ export function SocialSchedulingPanel({
   const [scheduledFor, setScheduledFor] = useState("");
   const [notice, setNotice] = useState<Notice | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const [showApprovalOverride, setShowApprovalOverride] = useState(false);
-  const [approvalOverrideReason, setApprovalOverrideReason] = useState("");
   const [recoveryForm, setRecoveryForm] = useState<RecoveryForm | null>(null);
   const noticeRef = useRef<HTMLDivElement | null>(null);
   const selectedAccount =
@@ -354,13 +339,6 @@ export function SocialSchedulingPanel({
   }, [platformAccounts]);
 
   async function schedulePost() {
-    if (!canManagePublishing) {
-      setNotice({
-        tone: "danger",
-        text: "Publishing changes require workspace publishing access.",
-      });
-      return;
-    }
     if (submitting) {
       return;
     }
@@ -373,13 +351,6 @@ export function SocialSchedulingPanel({
       setNotice({
         tone: "danger",
         text: `Connect a ${platformLabels[platform]} account before scheduling.`,
-      });
-      return;
-    }
-    if (showApprovalOverride && !approvalOverrideReason.trim()) {
-      setNotice({
-        tone: "danger",
-        text: "Add a short audit reason for the approval override.",
       });
       return;
     }
@@ -417,9 +388,6 @@ export function SocialSchedulingPanel({
       resolution,
       scheduledFor: scheduledAt.toISOString(),
       providerSettings,
-      approvalOverrideReason: showApprovalOverride
-        ? approvalOverrideReason.trim()
-        : null,
     };
     const intentKeys = createPublicationIntentKeyStore({
       storage: window.sessionStorage,
@@ -443,9 +411,6 @@ export function SocialSchedulingPanel({
           resolution,
           scheduledFor: scheduledAt.toISOString(),
           providerSettings,
-          approvalOverrideReason: showApprovalOverride
-            ? approvalOverrideReason.trim()
-            : null,
         }),
       });
       if (!response.ok) {
@@ -454,9 +419,6 @@ export function SocialSchedulingPanel({
           error?: string;
         } | null;
         console.error("schedule_post_failed", response.status, payload);
-        if (payload?.error === "review_approval_required" && canOverrideApproval) {
-          setShowApprovalOverride(true);
-        }
         setNotice({
           tone: "danger",
           text: actionErrorText(payload, "Could not schedule post."),
@@ -490,13 +452,6 @@ export function SocialSchedulingPanel({
   }
 
   async function cancelPost(postId: string) {
-    if (!canManagePublishing) {
-      setNotice({
-        tone: "danger",
-        text: "Publishing changes require workspace publishing access.",
-      });
-      return;
-    }
     if (submitting) {
       return;
     }
@@ -550,13 +505,6 @@ export function SocialSchedulingPanel({
   }
 
   async function submitRecovery(post: SocialPostSnapshot) {
-    if (!canManagePublishing) {
-      setNotice({
-        tone: "danger",
-        text: "Publishing changes require workspace publishing access.",
-      });
-      return;
-    }
     if (!recoveryForm || recoveryForm.postId !== post.id || submitting) return;
     const reason = recoveryForm.reason.trim();
     if (!reason) {
@@ -638,19 +586,7 @@ export function SocialSchedulingPanel({
   }
 
   return (
-    <>
-      <PublishingPreparationPanel
-        projectId={projectId}
-        clips={clips}
-        accounts={accounts}
-        workspaceTimezone={workspaceTimezone}
-        assistedCopyEnabled={canManagePublishing && assistedCopyEnabled}
-        thumbnailExtractionEnabled={
-          canManagePublishing && thumbnailExtractionEnabled
-        }
-        bulkSchedulingEnabled={canManagePublishing && bulkSchedulingEnabled}
-      />
-      <Box id="social-publishing" layerStyle="band">
+    <Box id="social-publishing" layerStyle="band">
       <Stack gap="4">
         <Box>
           <Text textStyle="eyebrow" color="fg.subtle">
@@ -660,25 +596,6 @@ export function SocialSchedulingPanel({
           Freeze a clip revision, caption, account, and delivery settings before publication.
           </Text>
         </Box>
-
-        {!canManagePublishing ? (
-          <Flex
-            role="note"
-            align="flex-start"
-            gap="2"
-            borderTopWidth="1px"
-            borderBottomWidth="1px"
-            borderColor="border.subtle"
-            py="3"
-            color="fg.muted"
-          >
-            <LockKeyhole size={14} aria-hidden />
-            <Text fontSize="xs">
-              Publishing is view-only. Existing schedules, delivery state, and
-              audit outcomes remain available.
-            </Text>
-          </Flex>
-        ) : null}
 
         <Grid
           templateColumns={{
@@ -759,7 +676,7 @@ export function SocialSchedulingPanel({
             />
           </Box>
 
-          {canManagePublishing ? <Box>
+          <Box>
             <Button
               size="sm"
               w={{ base: "full", lg: "auto" }}
@@ -776,49 +693,8 @@ export function SocialSchedulingPanel({
               {submitting ? <Spinner size="xs" /> : <CalendarClock size={14} />}
               <Text ms="1.5">{submitting ? "Scheduling…" : "Schedule"}</Text>
             </Button>
-          </Box> : null}
+          </Box>
         </Grid>
-
-        {canManagePublishing && canOverrideApproval ? (
-          <Stack gap="2" borderTopWidth="1px" borderColor="border.subtle" pt="3">
-            <Button
-              size="xs"
-              variant="ghost"
-              alignSelf="flex-start"
-              onClick={() =>
-                setShowApprovalOverride((current) => {
-                  if (current) setApprovalOverrideReason("");
-                  return !current;
-                })
-              }
-            >
-              {showApprovalOverride
-                ? "Remove approval override"
-                : "Schedule with an approval override"}
-            </Button>
-            {showApprovalOverride ? (
-              <Box maxW="640px">
-                <Text textStyle="eyebrow" color="fg.subtle" mb="1">
-                  Audit reason
-                </Text>
-                <Textarea
-                  value={approvalOverrideReason}
-                  onChange={(event) =>
-                    setApprovalOverrideReason(event.target.value.slice(0, 500))
-                  }
-                  rows={3}
-                  maxLength={500}
-                  placeholder="Explain why this export must publish before client approval"
-                  aria-label="Approval override audit reason"
-                  borderColor="border.control"
-                />
-                <Text mt="1" fontSize="11px" color="fg.subtle">
-                  Owners and admins only. The reason is retained with the publication audit.
-                </Text>
-              </Box>
-            ) : null}
-          </Stack>
-        ) : null}
 
         {notice ? (
           <Flex
@@ -951,7 +827,7 @@ export function SocialSchedulingPanel({
                       </Text>
                     </a>
                   ) : null}
-                  {canManagePublishing && recoveryForm?.postId === post.id ? (
+                  {recoveryForm?.postId === post.id ? (
                     <Stack
                       mt="2"
                       p="3"
@@ -1106,7 +982,7 @@ export function SocialSchedulingPanel({
                     </Stack>
                   ) : null}
                 </Box>
-                {canManagePublishing && post.allowedActions.includes("cancel") ? (
+                {post.allowedActions.includes("cancel") ? (
                   <Button
                     size="xs"
                     variant="ghost"
@@ -1117,7 +993,7 @@ export function SocialSchedulingPanel({
                     <X size={12} />
                     <Text ms="1">Cancel</Text>
                   </Button>
-                ) : canManagePublishing && post.status === "needs_attention" ? (
+                ) : post.status === "needs_attention" ? (
                   <Flex gap="1" flexShrink={0} wrap="wrap" justify="flex-end">
                     {post.allowedActions.includes("recheck") ? (
                       <Button
@@ -1201,7 +1077,6 @@ export function SocialSchedulingPanel({
           />
         )}
       </Stack>
-      </Box>
-    </>
+    </Box>
   );
 }

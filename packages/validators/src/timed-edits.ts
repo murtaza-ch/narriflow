@@ -7,8 +7,6 @@ export const TIMED_EDIT_LIMITS = {
   sceneBlocks: 64,
   censorSegments: 256,
   mediaMotions: 128,
-  animatedMedia: 32,
-  simultaneousAnimatedLayers: 4,
   documentBytes: 512 * 1024,
   totalEditedDurationSec: 120,
 } as const;
@@ -27,26 +25,8 @@ export const brandFontReferenceSchema = z.strictObject({
 });
 
 export const sceneMotionSchema = z.strictObject({
-  entrance: z.enum([
-    "none",
-    "fade",
-    "scale-in",
-    "pan-left",
-    "pan-right",
-    "pan-up",
-    "pan-down",
-    "ken-burns-in",
-  ]),
-  exit: z.enum([
-    "none",
-    "fade",
-    "scale-out",
-    "pan-left",
-    "pan-right",
-    "pan-up",
-    "pan-down",
-    "ken-burns-out",
-  ]),
+  entrance: z.enum(["none", "fade", "slide-up", "zoom-in"]),
+  exit: z.enum(["none", "fade", "slide-down", "zoom-out"]),
 });
 
 export const sceneContentSchema = z.discriminatedUnion("kind", [

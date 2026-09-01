@@ -1,84 +1,26 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import {
   autopilotService,
-  authorizeBusinessAutomation,
-  BUSINESS_AUTOMATION_FAILURE_MESSAGE,
-  BusinessAutomationAccessError,
-  businessAutomationDomainErrorCode,
   clipService,
-  createProductionBusinessAutomation,
   hasFeature,
   projectService,
   socialService,
   SocialPublicationRecoveryError,
   workspaceService,
-  type BusinessAutomation,
-  type BusinessAutomationActorContext,
-  type BusinessAutomationPrincipal,
-  type WorkspaceApiKeyScope,
-  type WorkspaceApiKeyPrincipal,
   type WorkspaceCapability,
 } from "@narriflow/services";
 import {
-  applyMotionSelectedSchema,
-  applyProjectBrandProfileSelectedSchema,
-  applySceneTemplateSchema,
-  applyStyleSelectedSchema,
   BRAND_DEFAULT_CAPTION_PRESET_ID,
-  brandProfileListSchema,
-  bulkScheduleAutomationSchema,
   confirmSocialPublicationSchema,
   contentPackSchema,
-  createReviewRoundAutomationSchema,
-  generateAssistedCopySchema,
-  generatedMediaAutomationSubmitSchema,
-  previewCampaignEditorActionSchema,
-  requestThumbnailExtractionSchema,
 } from "@narriflow/validators";
 import * as z from "zod/v4";
 
 export const NARRIFLOW_MCP_SERVER_NAME = "narriflow";
-export const NARRIFLOW_MCP_SERVER_VERSION = "0.3.0";
-
-/**
- * Stable public tool inventory. The live-client gate imports this list and
- * compares it with both HTTP and stdio discovery so adding a tool cannot leave
- * the executable integration contract behind.
- */
-export const NARRIFLOW_MCP_TOOL_NAMES = [
-  "narriflow_confirm_social_publication",
-  "narriflow_create_rss_autopilot_rule",
-  "narriflow_get_project",
-  "narriflow_get_social_publication",
-  "narriflow_get_workspace_usage",
-  "narriflow_list_autopilot_rules",
-  "narriflow_list_projects",
-  "narriflow_list_workspaces",
-  "narriflow_run_autopilot_rule_now",
-  "narriflow_publish_social_publication_again",
-  "narriflow_recheck_social_publication",
-  "narriflow_list_brand_profiles",
-  "narriflow_get_brand_profile",
-  "narriflow_list_campaign_operations",
-  "narriflow_apply_campaign_motion",
-  "narriflow_get_campaign_editor_action_catalog",
-  "narriflow_preview_campaign_editor_action",
-  "narriflow_apply_campaign_brand_profile",
-  "narriflow_apply_campaign_style",
-  "narriflow_apply_campaign_scene_template",
-  "narriflow_list_review_rounds",
-  "narriflow_create_review_round",
-  "narriflow_generate_assisted_copy",
-  "narriflow_get_assisted_copy",
-  "narriflow_request_thumbnail_extraction",
-  "narriflow_get_thumbnail_extraction",
-  "narriflow_schedule_campaign",
-  "narriflow_submit_generated_media",
-  "narriflow_get_generated_media_job",
-] as const;
+export const NARRIFLOW_MCP_SERVER_VERSION = "0.2.0";
 
 export const NARRIFLOW_MCP_INSTRUCTIONS =
-  "Start with narriflow_list_workspaces and use the returned workspaceId for later calls. Narriflow data and billing are workspace-scoped. Read tools are safe; call write tools only when the user clearly asks. Business workflow mutations require caller idempotency keys and are safe to retry with the exact same request. Never request or expose review guest credentials, signed media URLs, raw editor patches, or provider controls. Rechecking a social publication inspects its existing provider operation and never submits a new post. Confirming publication requires evidence. Publishing again creates a new attempt and requires explicit duplicate-risk acknowledgement. MCP workspace access requires an active Business plan, and media processing still consumes the workspace's monthly minute quota.";
+  "Start with narriflow_list_workspaces and use the returned workspaceId for later calls. Narriflow data and billing are workspace-scoped. Read tools are safe; call write tools only when the user clearly asks. Rechecking a social publication inspects its existing provider operation and never submits a new post. Confirming publication requires evidence. Publishing again creates a new attempt and requires explicit duplicate-risk acknowledgement. MCP workspace access requires an active Business plan, and media processing still consumes the workspace's monthly minute quota.";
 
 export type NarriflowMcpPrincipal =
   | {
@@ -96,24 +38,6 @@ export type NarriflowMcpPrincipal =
       scopes: string[];
     };
 
-type AutomationAccessInput = {
-  requestedWorkspaceId?: string;
-  requiredScope: WorkspaceApiKeyScope;
-  capability: WorkspaceCapability;
-  integration: "mcp";
-};
-
-export interface NarriflowMcpDependencies {
-  automation?: BusinessAutomation;
-  authorize?: (
-    principal: BusinessAutomationPrincipal,
-    input: AutomationAccessInput,
-  ) => Promise<BusinessAutomationActorContext>;
-  revalidateApiKey?: (
-    apiKeyId: string,
-  ) => Promise<WorkspaceApiKeyPrincipal | null>;
-}
-
 const workspaceInput = {
   workspaceId: z.string().uuid().optional().describe(
     "Narriflow workspace ID. Omit to use the personal workspace with OAuth or the key-bound workspace with an API key.",
@@ -122,185 +46,8 @@ const workspaceInput = {
 
 const dataOutputSchema = z.object({ data: z.unknown() });
 
-const campaignOperationStatusSchema = z.object({
-  operationId: z.string().uuid().nullable(),
-  action: z.string().nullable(),
-  status: z.string(),
-  requestedCount: z.number().int().nonnegative(),
-  counts: z.object({
-    succeeded: z.number().int().nonnegative(),
-    unchanged: z.number().int().nonnegative(),
-    stale: z.number().int().nonnegative(),
-    ineligible: z.number().int().nonnegative(),
-    failed: z.number().int().nonnegative(),
-  }),
-  items: z.array(z.object({
-    clipId: z.string().uuid().nullable(),
-    expectedEditorRevision: z.number().int().nonnegative().nullable(),
-    status: z.string(),
-    errorCode: z.string().nullable(),
-    settledAt: z.string().datetime().nullable(),
-  })),
-  createdAt: z.string().datetime().nullable(),
-  completedAt: z.string().datetime().nullable(),
-  replayed: z.boolean(),
-});
-
-const campaignOperationOutputSchema = z.object({
-  data: campaignOperationStatusSchema,
-});
-const campaignOperationListOutputSchema = z.object({
-  data: z.array(campaignOperationStatusSchema),
-});
-const campaignPreviewOutputSchema = z.object({
-  data: z.object({
-    action: z.string().nullable(),
-    requestedCount: z.number().int().nonnegative(),
-    counts: z.object({
-      eligible: z.number().int().nonnegative(),
-      unchanged: z.number().int().nonnegative(),
-      stale: z.number().int().nonnegative(),
-      ineligible: z.number().int().nonnegative(),
-    }),
-    items: z.array(z.object({
-      clipId: z.string().uuid().nullable(),
-      expectedEditorRevision: z.number().int().nonnegative(),
-      currentEditorRevision: z.number().int().nonnegative().nullable(),
-      status: z.string(),
-      code: z.string().nullable(),
-    })),
-  }),
-});
-
-const reviewRoundStatusSchema = z.object({
-  roundId: z.string().uuid().nullable(),
-  revision: z.number().int().nonnegative(),
-  status: z.string(),
-  approvalRequired: z.boolean(),
-  allowDownloads: z.boolean(),
-  sentAt: z.string().datetime().nullable(),
-  expiresAt: z.string().datetime().nullable(),
-  revokedAt: z.string().datetime().nullable(),
-  supersededAt: z.string().datetime().nullable(),
-  decision: z.string().nullable(),
-  decidedAt: z.string().datetime().nullable(),
-  newerWorkAvailable: z.boolean(),
-  items: z.array(z.object({
-    itemId: z.string().uuid().nullable(),
-    clipId: z.string().uuid().nullable(),
-    exportId: z.string().uuid().nullable(),
-    editorRevision: z.number().int().nonnegative(),
-    required: z.boolean(),
-    currentDecision: z.string().nullable(),
-    newerWorkAvailable: z.boolean(),
-  })),
-  notificationStatus: z.array(z.object({
-    kind: z.string().nullable(),
-    status: z.string(),
-    attemptCount: z.number().int().nonnegative(),
-    failureCode: z.string().nullable(),
-    sentAt: z.string().datetime().nullable(),
-  })),
-  createdAt: z.string().datetime().nullable(),
-  updatedAt: z.string().datetime().nullable(),
-});
-
-const reviewRoundListOutputSchema = z.object({
-  data: z.object({
-    projectId: z.string().uuid().nullable(),
-    rounds: z.array(reviewRoundStatusSchema),
-  }),
-});
-
-const assistedCopyStatusSchema = z.object({
-  draftId: z.string().uuid().nullable(),
-  clipId: z.string().uuid().nullable(),
-  platform: z.string().nullable(),
-  status: z.string(),
-  revision: z.number().int().nonnegative(),
-  content: z.unknown().nullable(),
-  confirmed: z.boolean(),
-  moderationOutcome: z.string(),
-  modelAlias: z.string().nullable(),
-  promptVersion: z.string().nullable(),
-  guidanceSkipped: z.boolean(),
-  errorCode: z.string().nullable(),
-  replayed: z.boolean(),
-});
-
-const thumbnailStatusSchema = z.object({
-  jobId: z.string().uuid().nullable(),
-  status: z.string(),
-  attempts: z.number().int().nonnegative(),
-  platform: z.string().nullable(),
-  exportVariantId: z.string().uuid().nullable(),
-  sourceTimeMs: z.number().int().nonnegative(),
-  errorCode: z.string().nullable(),
-  asset: z.unknown().nullable(),
-  replayed: z.boolean(),
-});
-
-const generatedMediaStatusSchema = z.object({
-  jobId: z.string().uuid().nullable(),
-  projectId: z.string().uuid().nullable(),
-  clipId: z.string().uuid().nullable(),
-  kind: z.string().nullable(),
-  status: z.string(),
-  aspectRatio: z.string().nullable(),
-  style: z.string().nullable(),
-  durationSec: z.number().nonnegative().nullable(),
-  resultAssetId: z.string().uuid().nullable(),
-  insertionCount: z.number().int().nonnegative(),
-  lastInsertionKind: z.string().nullable(),
-  lastInsertedAt: z.string().datetime().nullable(),
-  errorCode: z.string().nullable(),
-  moderationOutcome: z.string(),
-  createdAt: z.string().datetime().nullable(),
-  updatedAt: z.string().datetime().nullable(),
-  replayed: z.boolean(),
-});
-
-const reviewRoundCreatedOutputSchema = z.object({
-  data: z.object({
-    roundId: z.string().uuid().nullable(),
-    revision: z.number().int().nonnegative(),
-    createdAt: z.string().datetime().nullable(),
-    replayed: z.boolean(),
-  }),
-});
-const assistedCopyOutputSchema = z.object({ data: assistedCopyStatusSchema });
-const thumbnailOutputSchema = z.object({ data: thumbnailStatusSchema });
-const generatedMediaOutputSchema = z.object({ data: generatedMediaStatusSchema });
-const bulkScheduleOutputSchema = z.object({
-  data: z.object({
-    operationId: z.string().uuid().nullable(),
-    status: z.string(),
-    counts: z.object({
-      scheduled: z.number().int().nonnegative(),
-      failed: z.number().int().nonnegative(),
-    }),
-    items: z.array(z.object({
-      itemKey: z.string().uuid().nullable(),
-      clipId: z.string().uuid().nullable(),
-      accountId: z.string().uuid().nullable(),
-      status: z.string(),
-      postId: z.string().uuid().nullable(),
-      scheduledFor: z.string().datetime().nullable(),
-      errorCode: z.string().nullable(),
-    })),
-    replayed: z.boolean(),
-  }),
-});
-
 const readOnlyAnnotations = {
   readOnlyHint: true,
-  destructiveHint: false,
-  idempotentHint: true,
-  openWorldHint: false,
-} as const;
-
-const idempotentMutationAnnotations = {
-  readOnlyHint: false,
   destructiveHint: false,
   idempotentHint: true,
   openWorldHint: false,
@@ -313,29 +60,13 @@ function success(data: unknown) {
   };
 }
 
-function exactAssistedCopyStatus(data: unknown) {
-  return assistedCopyStatusSchema.parse(data);
-}
-
 function failure(error: unknown) {
-  const accessError = error instanceof BusinessAutomationAccessError ? error : null;
-  const domainCode = businessAutomationDomainErrorCode(error);
   const apiKeyScope = error instanceof Error && error.message.startsWith("This API key requires");
   const workspaceBoundary =
     error instanceof Error && error.message === "This API key is bound to a different workspace";
   const billingBoundary = error instanceof Error && error.message.startsWith("Narriflow MCP ");
   const payload = error instanceof SocialPublicationRecoveryError
     ? { error: error.code, message: error.message }
-    : accessError
-      ? {
-          error: `mcp_${accessError.code}`,
-          message: accessError.message,
-        }
-    : domainCode
-      ? {
-          error: domainCode,
-          message: BUSINESS_AUTOMATION_FAILURE_MESSAGE,
-        }
     : apiKeyScope
       ? { error: "mcp_api_key_scope_required", message: error.message }
       : workspaceBoundary
@@ -361,48 +92,36 @@ async function runTool(operation: () => Promise<unknown>) {
   }
 }
 
-async function revalidateMcpPrincipal(
-  principal: NarriflowMcpPrincipal,
-  revalidateApiKey: NonNullable<NarriflowMcpDependencies["revalidateApiKey"]> =
-    (apiKeyId) => workspaceService.getActiveApiKeyPrincipal(apiKeyId),
-): Promise<NarriflowMcpPrincipal> {
-  if (principal.kind === "oauth") return principal;
-  const current = await revalidateApiKey(principal.apiKeyId);
-  if (
-    !current ||
-    current.apiKeyId !== principal.apiKeyId ||
-    current.userId !== principal.userId ||
-    current.workspaceId !== principal.workspaceId
-  ) {
-    throw new BusinessAutomationAccessError(
-      "api_key_invalid",
-      "API key is invalid or revoked",
-    );
+function requireApiKeyScope(principal: NarriflowMcpPrincipal, requiredScope: string) {
+  if (principal.kind === "api_key" && !principal.scopes.includes(requiredScope)) {
+    throw new Error(`This API key requires the ${requiredScope} scope`);
   }
-  return {
-    ...principal,
-    scopes: [...current.scopes],
-  };
 }
 
 async function requireWorkspace(
   principal: NarriflowMcpPrincipal,
   requestedWorkspaceId: string | undefined,
   capability: WorkspaceCapability,
-  apiKeyScope: WorkspaceApiKeyScope,
-  authorize: NarriflowMcpDependencies["authorize"] = authorizeBusinessAutomation,
-  revalidateApiKey?: NarriflowMcpDependencies["revalidateApiKey"],
+  apiKeyScope: string,
 ) {
-  const currentPrincipal = await revalidateMcpPrincipal(
-    principal,
-    revalidateApiKey,
-  );
-  return authorize(currentPrincipal, {
-    requestedWorkspaceId,
-    requiredScope: apiKeyScope,
-    capability,
-    integration: "mcp",
-  });
+  requireApiKeyScope(principal, apiKeyScope);
+
+  if (
+    principal.kind === "api_key" &&
+    requestedWorkspaceId &&
+    requestedWorkspaceId !== principal.workspaceId
+  ) {
+    throw new Error("This API key is bound to a different workspace");
+  }
+
+  const workspaceId = principal.kind === "api_key"
+    ? principal.workspaceId
+    : requestedWorkspaceId ?? await workspaceService.getPersonalWorkspaceId(principal.userId);
+  const actor = await workspaceService.requireActor(principal.userId, workspaceId, capability);
+  if (actor.status !== "active" || !hasFeature(actor.pricingTier, "integrations.mcp")) {
+    throw new Error("Narriflow MCP workspace access requires an active Business plan");
+  }
+  return actor;
 }
 
 function logMutation(tool: string, principal: NarriflowMcpPrincipal, workspaceId: string) {
@@ -444,25 +163,7 @@ function buildDefaultContentPack(input: {
   });
 }
 
-export function buildNarriflowMcpServer(
-  principal: NarriflowMcpPrincipal,
-  dependencies: NarriflowMcpDependencies = {},
-) {
-  const automation =
-    dependencies.automation ?? createProductionBusinessAutomation();
-  const requireCurrentWorkspace = (
-    requestedWorkspaceId: string | undefined,
-    capability: WorkspaceCapability,
-    apiKeyScope: WorkspaceApiKeyScope,
-  ) => requireWorkspace(
-    principal,
-    requestedWorkspaceId,
-    capability,
-    apiKeyScope,
-    dependencies.authorize,
-    dependencies.revalidateApiKey,
-  );
-  const requireAutomationWorkspace = requireCurrentWorkspace;
+export function buildNarriflowMcpServer(principal: NarriflowMcpPrincipal) {
   const server = new McpServer(
     { name: NARRIFLOW_MCP_SERVER_NAME, version: NARRIFLOW_MCP_SERVER_VERSION },
     {
@@ -493,7 +194,8 @@ export function buildNarriflowMcpServer(
       },
     },
     async ({ socialPostId, reason, evidenceKind, providerReference, externalUrl, workspaceId }) => runTool(async () => {
-      const actor = await requireCurrentWorkspace(
+      const actor = await requireWorkspace(
+        principal,
         workspaceId,
         "publishing.manage",
         "publishing:write",
@@ -537,7 +239,8 @@ export function buildNarriflowMcpServer(
       },
     },
     async (input) => runTool(async () => {
-      const actor = await requireCurrentWorkspace(
+      const actor = await requireWorkspace(
+        principal,
         input.workspaceId,
         "content.edit",
         "autopilot:write",
@@ -570,7 +273,7 @@ export function buildNarriflowMcpServer(
       annotations: readOnlyAnnotations,
     },
     async ({ projectId, workspaceId }) => runTool(async () => {
-      const actor = await requireCurrentWorkspace(workspaceId, "content.view", "projects:read");
+      const actor = await requireWorkspace(principal, workspaceId, "content.view", "projects:read");
       const project = await projectService.getProjectSnapshot(
         principal.userId,
         projectId,
@@ -599,7 +302,8 @@ export function buildNarriflowMcpServer(
       annotations: readOnlyAnnotations,
     },
     async ({ socialPostId, workspaceId }) => runTool(async () => {
-      const actor = await requireCurrentWorkspace(
+      const actor = await requireWorkspace(
+        principal,
         workspaceId,
         "content.view",
         "publishing:read",
@@ -618,7 +322,7 @@ export function buildNarriflowMcpServer(
       annotations: readOnlyAnnotations,
     },
     async ({ workspaceId }) => runTool(async () => {
-      const actor = await requireCurrentWorkspace(workspaceId, "content.view", "usage:read");
+      const actor = await requireWorkspace(principal, workspaceId, "content.view", "usage:read");
       return projectService.getUsageSummary(actor.workspaceOwnerUserId, actor.workspaceId);
     }),
   );
@@ -633,7 +337,7 @@ export function buildNarriflowMcpServer(
       annotations: readOnlyAnnotations,
     },
     async ({ workspaceId }) => runTool(async () => {
-      const actor = await requireCurrentWorkspace(workspaceId, "content.view", "autopilot:read");
+      const actor = await requireWorkspace(principal, workspaceId, "content.view", "autopilot:read");
       return autopilotService.listRules(actor.workspaceOwnerUserId, actor.workspaceId);
     }),
   );
@@ -652,7 +356,7 @@ export function buildNarriflowMcpServer(
       annotations: readOnlyAnnotations,
     },
     async ({ workspaceId, limit, cursor }) => runTool(async () => {
-      const actor = await requireCurrentWorkspace(workspaceId, "content.view", "projects:read");
+      const actor = await requireWorkspace(principal, workspaceId, "content.view", "projects:read");
       return projectService.listProjectsWithStatsPage(principal.userId, {
         limit,
         cursor: cursor ?? null,
@@ -670,36 +374,27 @@ export function buildNarriflowMcpServer(
       annotations: readOnlyAnnotations,
     },
     async () => runTool(async () => {
-      const currentPrincipal = await revalidateMcpPrincipal(
-        principal,
-        dependencies.revalidateApiKey,
-      );
-      if (currentPrincipal.kind === "api_key") {
+      if (principal.kind === "api_key") {
         const actor = await workspaceService.requireActor(
-          currentPrincipal.userId,
-          currentPrincipal.workspaceId,
+          principal.userId,
+          principal.workspaceId,
           "content.view",
         );
-        const workspace = await workspaceService.getWorkspace(
-          currentPrincipal.userId,
-          currentPrincipal.workspaceId,
-        );
+        const workspace = await workspaceService.getWorkspace(principal.userId, principal.workspaceId);
         return workspace ? [{
           ...workspace,
           role: actor.role,
           mcpEnabled: actor.status === "active" && hasFeature(actor.pricingTier, "integrations.mcp"),
         }] : [];
       }
-      const memberships = await workspaceService.listAccessibleWorkspaces(
-        currentPrincipal.userId,
-      );
+      const memberships = await workspaceService.listAccessibleWorkspaces(principal.userId);
       return memberships.map(({ role, workspace }) => ({
         id: workspace.id,
         name: workspace.name,
         role,
         status: workspace.status,
         pricingTier: workspace.pricingTier,
-        isPersonal: workspace.personalOwnerUserId === currentPrincipal.userId,
+        isPersonal: workspace.personalOwnerUserId === principal.userId,
         mcpEnabled:
           workspace.status === "active" && hasFeature(workspace.pricingTier, "integrations.mcp"),
       }));
@@ -724,7 +419,8 @@ export function buildNarriflowMcpServer(
       },
     },
     async ({ ruleId, workspaceId }) => runTool(async () => {
-      const actor = await requireCurrentWorkspace(
+      const actor = await requireWorkspace(
+        principal,
         workspaceId,
         "content.edit",
         "autopilot:write",
@@ -759,7 +455,8 @@ export function buildNarriflowMcpServer(
       },
     },
     async ({ socialPostId, reason, duplicateRiskAcknowledged, workspaceId }) => runTool(async () => {
-      const actor = await requireCurrentWorkspace(
+      const actor = await requireWorkspace(
+        principal,
         workspaceId,
         "publishing.manage",
         "publishing:write",
@@ -794,7 +491,8 @@ export function buildNarriflowMcpServer(
       },
     },
     async ({ socialPostId, reason, workspaceId }) => runTool(async () => {
-      const actor = await requireCurrentWorkspace(
+      const actor = await requireWorkspace(
+        principal,
         workspaceId,
         "publishing.manage",
         "publishing:write",
@@ -810,493 +508,6 @@ export function buildNarriflowMcpServer(
         socialPostId,
         { reason },
       );
-    }),
-  );
-
-  server.registerTool(
-    "narriflow_list_brand_profiles",
-    {
-      title: "List brand profiles",
-      description:
-        "List workspace brand profiles without returning signed asset or font URLs.",
-      inputSchema: brandProfileListSchema.extend(workspaceInput),
-      outputSchema: dataOutputSchema,
-      annotations: readOnlyAnnotations,
-    },
-    async ({ workspaceId, cursor, limit, query, includeDeleted }) => runTool(async () => {
-      const actor = await requireAutomationWorkspace(
-        workspaceId,
-        "content.view",
-        "brand:read",
-      );
-      return automation.listBrandProfiles(actor, {
-        cursor,
-        limit,
-        query,
-        includeDeleted,
-      });
-    }),
-  );
-
-  server.registerTool(
-    "narriflow_get_brand_profile",
-    {
-      title: "Get brand profile",
-      description:
-        "Get one profile owned by the selected Workspace tenant without signed asset or font URLs.",
-      inputSchema: z.strictObject({
-        ...workspaceInput,
-        profileId: z.string().uuid(),
-      }),
-      outputSchema: dataOutputSchema,
-      annotations: readOnlyAnnotations,
-    },
-    async ({ workspaceId, profileId }) => runTool(async () => {
-      const actor = await requireAutomationWorkspace(
-        workspaceId,
-        "content.view",
-        "brand:read",
-      );
-      return automation.getBrandProfile(actor, profileId);
-    }),
-  );
-
-  server.registerTool(
-    "narriflow_list_campaign_operations",
-    {
-      title: "List campaign operations",
-      description:
-        "Read typed status for durable, selection-scoped campaign operations.",
-      inputSchema: z.strictObject({
-        ...workspaceInput,
-        projectId: z.string().uuid(),
-      }),
-      outputSchema: campaignOperationListOutputSchema,
-      annotations: readOnlyAnnotations,
-    },
-    async ({ workspaceId, projectId }) => runTool(async () => {
-      const actor = await requireAutomationWorkspace(
-        workspaceId,
-        "content.view",
-        "campaign:operate",
-      );
-      return automation.listCampaignOperations(actor, projectId);
-    }),
-  );
-
-  server.registerTool(
-    "narriflow_apply_campaign_motion",
-    {
-      title: "Apply campaign motion",
-      description:
-        "Apply a validated transition or manual B-roll motion to explicitly revision-fenced clips.",
-      inputSchema: applyMotionSelectedSchema.extend({
-        ...workspaceInput,
-        projectId: z.string().uuid(),
-        idempotencyKey: z.string().uuid(),
-      }),
-      outputSchema: campaignOperationOutputSchema,
-      annotations: idempotentMutationAnnotations,
-    },
-    async ({ workspaceId, projectId, idempotencyKey, change, clips }) => runTool(async () => {
-      const actor = await requireAutomationWorkspace(
-        workspaceId,
-        "content.edit",
-        "campaign:operate",
-      );
-      logMutation("narriflow_apply_campaign_motion", principal, actor.workspaceId);
-      return automation.applyCampaignMotion(
-        actor,
-        projectId,
-        idempotencyKey,
-        { change, clips },
-      );
-    }),
-  );
-
-  server.registerTool(
-    "narriflow_get_campaign_editor_action_catalog",
-    {
-      title: "Get campaign editor-action catalog",
-      description:
-        "Read the frozen project brand plus eligible styles and intro or outro scenes without media URLs.",
-      inputSchema: z.strictObject({
-        ...workspaceInput,
-        projectId: z.string().uuid(),
-      }),
-      outputSchema: dataOutputSchema,
-      annotations: readOnlyAnnotations,
-    },
-    async ({ workspaceId, projectId }) => runTool(async () => {
-      const actor = await requireAutomationWorkspace(
-        workspaceId,
-        "content.view",
-        "campaign:operate",
-      );
-      return automation.getCampaignEditorActionCatalog(actor, projectId);
-    }),
-  );
-
-  server.registerTool(
-    "narriflow_preview_campaign_editor_action",
-    {
-      title: "Preview campaign editor action",
-      description:
-        "Preview eligibility, unchanged clips, and revision conflicts for a high-level campaign action without returning editor patches.",
-      inputSchema: z.strictObject({
-        ...workspaceInput,
-        projectId: z.string().uuid(),
-        request: previewCampaignEditorActionSchema,
-      }),
-      outputSchema: campaignPreviewOutputSchema,
-      annotations: readOnlyAnnotations,
-    },
-    async ({ workspaceId, projectId, request }) => runTool(async () => {
-      const actor = await requireAutomationWorkspace(
-        workspaceId,
-        "content.view",
-        "campaign:operate",
-      );
-      return automation.previewCampaignEditorAction(actor, projectId, request);
-    }),
-  );
-
-  server.registerTool(
-    "narriflow_apply_campaign_brand_profile",
-    {
-      title: "Apply campaign brand profile",
-      description:
-        "Apply the project-frozen brand profile to explicitly revision-fenced clips without accepting a profile override.",
-      inputSchema: applyProjectBrandProfileSelectedSchema.extend({
-        ...workspaceInput,
-        projectId: z.string().uuid(),
-        idempotencyKey: z.string().uuid(),
-      }),
-      outputSchema: campaignOperationOutputSchema,
-      annotations: idempotentMutationAnnotations,
-    },
-    async ({ workspaceId, projectId, idempotencyKey, ...input }) => runTool(async () => {
-      const actor = await requireAutomationWorkspace(
-        workspaceId,
-        "content.edit",
-        "campaign:operate",
-      );
-      logMutation(
-        "narriflow_apply_campaign_brand_profile",
-        principal,
-        actor.workspaceId,
-      );
-      return automation.applyCampaignBrandProfile(
-        actor,
-        projectId,
-        idempotencyKey,
-        input,
-      );
-    }),
-  );
-
-  server.registerTool(
-    "narriflow_apply_campaign_style",
-    {
-      title: "Apply campaign style",
-      description:
-        "Apply one owned Brand Template to explicitly revision-fenced clips.",
-      inputSchema: applyStyleSelectedSchema.extend({
-        ...workspaceInput,
-        projectId: z.string().uuid(),
-        idempotencyKey: z.string().uuid(),
-      }),
-      outputSchema: campaignOperationOutputSchema,
-      annotations: idempotentMutationAnnotations,
-    },
-    async ({ workspaceId, projectId, idempotencyKey, ...input }) => runTool(async () => {
-      const actor = await requireAutomationWorkspace(
-        workspaceId,
-        "content.edit",
-        "campaign:operate",
-      );
-      logMutation("narriflow_apply_campaign_style", principal, actor.workspaceId);
-      return automation.applyCampaignStyle(
-        actor,
-        projectId,
-        idempotencyKey,
-        input,
-      );
-    }),
-  );
-
-  server.registerTool(
-    "narriflow_apply_campaign_scene_template",
-    {
-      title: "Apply campaign scene template",
-      description:
-        "Insert one owned intro or outro Scene Template into explicitly revision-fenced clips.",
-      inputSchema: applySceneTemplateSchema.safeExtend({
-        ...workspaceInput,
-        projectId: z.string().uuid(),
-        profileId: z.string().uuid(),
-        templateId: z.string().uuid(),
-        idempotencyKey: z.string().uuid(),
-      }),
-      outputSchema: campaignOperationOutputSchema,
-      annotations: idempotentMutationAnnotations,
-    },
-    async ({
-      workspaceId,
-      projectId,
-      profileId,
-      templateId,
-      idempotencyKey,
-      ...input
-    }) => runTool(async () => {
-      const actor = await requireAutomationWorkspace(
-        workspaceId,
-        "content.edit",
-        "campaign:operate",
-      );
-      logMutation(
-        "narriflow_apply_campaign_scene_template",
-        principal,
-        actor.workspaceId,
-      );
-      return automation.applyCampaignSceneTemplate(
-        actor,
-        projectId,
-        profileId,
-        templateId,
-        idempotencyKey,
-        input,
-      );
-    }),
-  );
-
-  server.registerTool(
-    "narriflow_list_review_rounds",
-    {
-      title: "List review rounds",
-      description:
-        "Read review decisions and notification status without guest tokens, passcodes, recipients, or comments.",
-      inputSchema: z.strictObject({
-        ...workspaceInput,
-        projectId: z.string().uuid(),
-      }),
-      outputSchema: reviewRoundListOutputSchema,
-      annotations: readOnlyAnnotations,
-    },
-    async ({ workspaceId, projectId }) => runTool(async () => {
-      const actor = await requireAutomationWorkspace(
-        workspaceId,
-        "content.view",
-        "review:read",
-      );
-      return automation.listReviewRounds(actor, projectId);
-    }),
-  );
-
-  server.registerTool(
-    "narriflow_create_review_round",
-    {
-      title: "Create review round",
-      description:
-        "Create or replay a revision-fenced review round. The result never returns its guest access token or passcode.",
-      inputSchema: createReviewRoundAutomationSchema.extend({
-        ...workspaceInput,
-        projectId: z.string().uuid(),
-      }),
-      outputSchema: reviewRoundCreatedOutputSchema,
-      annotations: {
-        ...idempotentMutationAnnotations,
-        openWorldHint: true,
-      },
-    },
-    async ({ workspaceId, projectId, ...input }) => runTool(async () => {
-      const actor = await requireAutomationWorkspace(
-        workspaceId,
-        "review.manage",
-        "review:write",
-      );
-      logMutation("narriflow_create_review_round", principal, actor.workspaceId);
-      return automation.createReviewRound(actor, projectId, input);
-    }),
-  );
-
-  server.registerTool(
-    "narriflow_generate_assisted_copy",
-    {
-      title: "Generate assisted copy",
-      description:
-        "Generate or replay platform-specific campaign copy through the same guarded workflow used by the web app.",
-      inputSchema: generateAssistedCopySchema.extend({
-        ...workspaceInput,
-        projectId: z.string().uuid(),
-      }),
-      outputSchema: assistedCopyOutputSchema,
-      annotations: {
-        ...idempotentMutationAnnotations,
-        openWorldHint: true,
-      },
-    },
-    async ({ workspaceId, projectId, ...input }) => runTool(async () => {
-      const actor = await requireAutomationWorkspace(
-        workspaceId,
-        "publishing.manage",
-        "publishing:prepare",
-      );
-      logMutation("narriflow_generate_assisted_copy", principal, actor.workspaceId);
-      return exactAssistedCopyStatus(
-        await automation.generateAssistedCopy(actor, projectId, input),
-      );
-    }),
-  );
-
-  server.registerTool(
-    "narriflow_get_assisted_copy",
-    {
-      title: "Get assisted copy",
-      description: "Read typed status for one workspace-owned assisted-copy draft.",
-      inputSchema: z.strictObject({
-        ...workspaceInput,
-        projectId: z.string().uuid(),
-        draftId: z.string().uuid(),
-      }),
-      outputSchema: assistedCopyOutputSchema,
-      annotations: readOnlyAnnotations,
-    },
-    async ({ workspaceId, projectId, draftId }) => runTool(async () => {
-      const actor = await requireAutomationWorkspace(
-        workspaceId,
-        "content.view",
-        "publishing:prepare",
-      );
-      return exactAssistedCopyStatus(
-        await automation.getAssistedCopy(actor, projectId, draftId),
-      );
-    }),
-  );
-
-  server.registerTool(
-    "narriflow_request_thumbnail_extraction",
-    {
-      title: "Request thumbnail extraction",
-      description:
-        "Create or replay a durable thumbnail extraction job from an owned export variant.",
-      inputSchema: requestThumbnailExtractionSchema.extend({
-        ...workspaceInput,
-        projectId: z.string().uuid(),
-      }),
-      outputSchema: thumbnailOutputSchema,
-      annotations: idempotentMutationAnnotations,
-    },
-    async ({ workspaceId, projectId, ...input }) => runTool(async () => {
-      const actor = await requireAutomationWorkspace(
-        workspaceId,
-        "publishing.manage",
-        "publishing:prepare",
-      );
-      logMutation(
-        "narriflow_request_thumbnail_extraction",
-        principal,
-        actor.workspaceId,
-      );
-      return automation.requestThumbnailExtraction(actor, projectId, input);
-    }),
-  );
-
-  server.registerTool(
-    "narriflow_get_thumbnail_extraction",
-    {
-      title: "Get thumbnail extraction",
-      description:
-        "Read typed status for one workspace-owned extraction job without storage keys or signed URLs.",
-      inputSchema: z.strictObject({
-        ...workspaceInput,
-        projectId: z.string().uuid(),
-        jobId: z.string().uuid(),
-      }),
-      outputSchema: thumbnailOutputSchema,
-      annotations: readOnlyAnnotations,
-    },
-    async ({ workspaceId, projectId, jobId }) => runTool(async () => {
-      const actor = await requireAutomationWorkspace(
-        workspaceId,
-        "content.view",
-        "publishing:prepare",
-      );
-      return automation.getThumbnailExtraction(actor, projectId, jobId);
-    }),
-  );
-
-  server.registerTool(
-    "narriflow_schedule_campaign",
-    {
-      title: "Schedule campaign",
-      description:
-        "Validate approval, revision, account, copy, thumbnail, and export ownership before scheduling a campaign batch.",
-      inputSchema: bulkScheduleAutomationSchema.extend({
-        ...workspaceInput,
-        projectId: z.string().uuid(),
-      }),
-      outputSchema: bulkScheduleOutputSchema,
-      annotations: {
-        ...idempotentMutationAnnotations,
-        openWorldHint: true,
-      },
-    },
-    async ({ workspaceId, projectId, ...input }) => runTool(async () => {
-      const actor = await requireAutomationWorkspace(
-        workspaceId,
-        "publishing.manage",
-        "publishing:prepare",
-      );
-      logMutation("narriflow_schedule_campaign", principal, actor.workspaceId);
-      return automation.bulkSchedule(actor, projectId, input);
-    }),
-  );
-
-  server.registerTool(
-    "narriflow_submit_generated_media",
-    {
-      title: "Submit generated media",
-      description:
-        "Submit or replay a high-level image or enabled short-video generation job without provider or model controls.",
-      inputSchema: generatedMediaAutomationSubmitSchema.safeExtend(workspaceInput),
-      outputSchema: generatedMediaOutputSchema,
-      annotations: {
-        ...idempotentMutationAnnotations,
-        openWorldHint: true,
-      },
-    },
-    async ({ workspaceId, ...input }) => runTool(async () => {
-      const actor = await requireAutomationWorkspace(
-        workspaceId,
-        "content.edit",
-        "generated-media:submit",
-      );
-      logMutation("narriflow_submit_generated_media", principal, actor.workspaceId);
-      return automation.submitGeneratedMedia(actor, input);
-    }),
-  );
-
-  server.registerTool(
-    "narriflow_get_generated_media_job",
-    {
-      title: "Get generated-media job",
-      description:
-        "Read typed status for a workspace-owned job without prompts, source text, provider controls, payloads, or signed URLs.",
-      inputSchema: z.strictObject({
-        ...workspaceInput,
-        jobId: z.string().uuid(),
-      }),
-      outputSchema: generatedMediaOutputSchema,
-      annotations: readOnlyAnnotations,
-    },
-    async ({ workspaceId, jobId }) => runTool(async () => {
-      const actor = await requireAutomationWorkspace(
-        workspaceId,
-        "content.view",
-        "generated-media:submit",
-      );
-      return automation.getGeneratedMedia(actor, jobId);
     }),
   );
 

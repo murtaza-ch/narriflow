@@ -16,7 +16,6 @@ import {
   screenLayoutInputFingerprint,
   splitLayoutInputFingerprint,
   type ClipCompositionPlan,
-	type CompositionBrollAvailability,
   type CompositionCaptionVisualLayer,
   type CompositionEvidenceAvailability,
   type CompositionMode,
@@ -29,7 +28,6 @@ import {
   assertPublicHttpUrl,
   assertResponseContentLength,
   audioAssetService as productionAudioAssetService,
-  brandOwnerWhereForWorkspace,
   clipService as productionClipService,
   createByteLimitTransform,
   decodeClipEditorDocumentFromStorage,
@@ -83,7 +81,6 @@ import {
 } from "@narriflow/validators";
 import type {
   BrandTemplateSnapshot,
-	BrollPlacement,
   CaptionPreset,
   ClipAspectRatio,
   ClipAutoLayoutAnalysis,
@@ -274,117 +271,17 @@ interface WorkflowRunJob {
 export function sceneAssetOwnerWhere(input: {
 	projectUserId: string;
 	workspaceId: string | null;
-	workspace: { personalOwnerUserId: string | null } | null;
+	workspace: { personalOwnerUserId: string | null; pricingTier: string } | null;
 }) {
-	return input.workspaceId && input.workspace
-		? brandOwnerWhereForWorkspace({
-			workspaceId: input.workspaceId,
-			personalOwnerUserId: input.workspace.personalOwnerUserId,
-		})
-		: { userId: input.projectUserId };
-}
-
-export type DocumentBrollAssetCandidate = {
-	assetId: string;
-	fingerprint: string;
-	mediaKind: "image" | "video";
-	deleted: boolean;
-	object:
-		| { state: "available"; path: string; durationSec: number | null }
-		| { state: "missing" | "storage_unavailable" };
-};
-
-/**
- * Freezes the render adapter boundary for durable B-roll references. Each
- * placement is adopted independently so one stale or missing object never
- * suppresses another healthy placement.
- */
-export function adoptDocumentBrollAssets(
-	placements: readonly BrollPlacement[],
-	candidates: readonly DocumentBrollAssetCandidate[],
-) {
-	const byId = new Map(candidates.map((candidate) => [candidate.assetId, candidate]));
-	const available: Extract<
-		CompositionBrollAvailability,
-		{ state: "available" }
-	>["placements"][number][] = [];
-	const unavailablePlacements: NonNullable<
-		Extract<
-			CompositionBrollAvailability,
-			{ state: "available" }
-		>["unavailablePlacements"]
-	>[number][] = [];
-	const resolvedAssets: Record<
-		string,
-		{ path: string; kind: "image" | "video" }
-	> = {};
-	const retainedDeletedPlacementIds: string[] = [];
-
-	for (const placement of placements) {
-		const candidate = byId.get(placement.asset.id);
-		if (!candidate) {
-			unavailablePlacements.push({ id: placement.id, reason: "missing" });
-			continue;
-		}
-		if (
-			candidate.fingerprint !== placement.asset.fingerprint ||
-			candidate.mediaKind !== placement.mediaKind
-		) {
-			unavailablePlacements.push({
-				id: placement.id,
-				reason: "fingerprint_stale",
-			});
-			continue;
-		}
-		if (candidate.object.state !== "available") {
-			unavailablePlacements.push({
-				id: placement.id,
-				reason: candidate.object.state,
-			});
-			continue;
-		}
-		if (
-			placement.mediaKind === "video" &&
-			(candidate.object.durationSec === null ||
-				placement.sourceStartSec === null ||
-				placement.sourceEndSec === null ||
-				placement.sourceEndSec > candidate.object.durationSec + 0.05)
-		) {
-			unavailablePlacements.push({
-				id: placement.id,
-				reason: "source_range_invalid",
-			});
-			continue;
-		}
-		const ref = compositionAssetRef(
-			"visual_asset",
-			`${candidate.assetId}:${candidate.fingerprint}`,
-		);
-		resolvedAssets[ref] = {
-			path: candidate.object.path,
-			kind: candidate.mediaKind,
-		};
-		available.push({
-			id: placement.id,
-			ref,
-			mediaKind: placement.mediaKind,
-			startSec: placement.startSec,
-			endSec: placement.endSec,
-			sourceStartSec: placement.sourceStartSec,
-			sourceEndSec: placement.sourceEndSec,
-		});
-		if (candidate.deleted) retainedDeletedPlacementIds.push(placement.id);
+	if (
+		input.workspace?.personalOwnerUserId &&
+		input.workspace.pricingTier !== "business"
+	) {
+		return { userId: input.workspace.personalOwnerUserId, workspaceId: null };
 	}
-
-	return {
-		availability: {
-			state: "available" as const,
-			placements: available,
-			unavailablePlacements,
-		},
-		resolvedAssets,
-		retainedDeletedPlacementIds,
-	};
+	return input.workspaceId
+		? { workspaceId: input.workspaceId }
+		: { userId: input.projectUserId, workspaceId: null };
 }
 
 export type ClipRenderingWorkflowAttempt = Omit<WorkflowAttemptRef, "stage"> & {
@@ -2961,15 +2858,6 @@ function buildSourceGainFilter(
   return `volume=${sourceAudio.gain.toFixed(3)}`;
 }
 
-function buildDialogueTreatmentFilters(
-  audio: BoundCompositionAudioRenderRequest,
-): string[] {
-  return audio.dialogueTreatments.map(
-    (treatment) =>
-      `volume=0:enable='gte(t,${treatment.activeRange.startSec.toFixed(3)})*lt(t,${treatment.activeRange.endSec.toFixed(3)})'`,
-  );
-}
-
 /**
  * The dialogue-only (no music) audio chain: optional source gain/mute, then
  * the fixed boundary click-guard fade. Used by every build*Args call site
@@ -2980,11 +2868,7 @@ function buildDialogueAudioFilter(
 ): string {
   const gainFilter = buildSourceGainFilter(audio.source);
   const fadeChain = buildAudioFadeChain(audio.outputFades);
-  return [
-    ...(gainFilter ? [gainFilter] : []),
-    ...buildDialogueTreatmentFilters(audio),
-    fadeChain,
-  ].join(",");
+  return gainFilter ? `${gainFilter},${fadeChain}` : fadeChain;
 }
 
 /**
@@ -3149,36 +3033,14 @@ function buildAudioMixFilter(params: {
     // applied here on the dialogue branch (before amix) same as the
     // no-music path.
     const dialogueGainFilter = buildSourceGainFilter(params.audio.source);
-    const dialogueTreatmentFilters = buildDialogueTreatmentFilters(params.audio);
-    const dialogueFilters = [
-      ...(dialogueGainFilter ? [dialogueGainFilter] : []),
-      ...dialogueTreatmentFilters,
-    ];
     const label = "[maina]";
     branchFilters.push(
-      `${dialogueInputRef}atrim=duration=${duration.toFixed(3)},asetpts=PTS-STARTPTS${
-        dialogueFilters.length > 0 ? `,${dialogueFilters.join(",")}` : ""
-      }${label}`,
+      dialogueGainFilter
+        ? `${dialogueInputRef}atrim=duration=${duration.toFixed(3)},asetpts=PTS-STARTPTS,${dialogueGainFilter}${label}`
+        : `${dialogueInputRef}atrim=duration=${duration.toFixed(3)},asetpts=PTS-STARTPTS${label}`,
     );
     branchLabels.push(label);
   }
-
-  params.audio.dialogueTreatments
-    .filter((treatment) => treatment.kind === "beep")
-    .forEach((treatment, index) => {
-      const intervalDuration =
-        treatment.activeRange.endSec - treatment.activeRange.startSec;
-      const delayMs = Math.round(treatment.activeRange.startSec * 1_000);
-      const label = `[censorbeep${index}a]`;
-      branchFilters.push(
-        `sine=frequency=${treatment.frequencyHz}:sample_rate=48000:duration=${intervalDuration.toFixed(3)},` +
-          `afade=t=in:st=0:d=${treatment.fades.fadeInSec.toFixed(3)},` +
-          `afade=t=out:st=${Math.max(0, intervalDuration - treatment.fades.fadeOutSec).toFixed(3)}:d=${treatment.fades.fadeOutSec.toFixed(3)},` +
-          `volume=${treatment.gain.toFixed(6)},adelay=${delayMs}:all=1,aresample=async=1:first_pts=0,` +
-          `apad,atrim=duration=${duration.toFixed(3)}${label}`,
-      );
-      branchLabels.push(label);
-    });
 
   if (params.audio.music && params.musicInputIndex != null) {
     const plan = params.audio.music;
@@ -3221,14 +3083,9 @@ function buildAudioMixFilter(params: {
     return `${branchFilters[0]};${branchLabels[0]}${fadeChain}[outa]`;
   }
 
-  const limiter = params.audio.dialogueTreatments.some(
-    (treatment) => treatment.kind === "beep",
-  )
-    ? "alimiter=limit=0.950,"
-    : "";
   return [
     ...branchFilters,
-    `${branchLabels.join("")}amix=inputs=${branchLabels.length}:duration=first:dropout_transition=0:normalize=0,${limiter}${fadeChain}[outa]`,
+    `${branchLabels.join("")}amix=inputs=${branchLabels.length}:duration=first:dropout_transition=0:normalize=0,${fadeChain}[outa]`,
   ].join(";");
 }
 
@@ -3407,10 +3264,7 @@ export function buildSingleVideoArgs(params: {
   const audioForRender = sceneDialogueLabel
     ? { ...params.audio, source: { ...params.audio.source, available: true } }
     : params.audio;
-  const hasMixedAudio =
-    Boolean(params.audio.music) ||
-    sfxInputIndexes.length > 0 ||
-    params.audio.dialogueTreatments.some((treatment) => treatment.kind === "beep");
+  const hasMixedAudio = Boolean(params.audio.music) || sfxInputIndexes.length > 0;
   if (hasMixedAudio) {
     filterParts.push(
       buildAudioMixFilter({
@@ -3471,9 +3325,7 @@ export function buildSingleVideoArgs(params: {
  */
 export function buildBrollVideoArgs(params: {
   sourcePath: string;
-	resolvedBrollAssets: Readonly<
-		Record<string, { path: string; kind: "image" | "video" }>
-	>;
+  resolvedBrollAssets: Readonly<Record<string, string>>;
   outputPath: string;
   startSec: number;
   endSec: number;
@@ -3533,13 +3385,6 @@ export function buildBrollVideoArgs(params: {
   const sceneAssetRefs = [...new Set(plannedTargetForScenes.scenes.flatMap((scene) =>
     scene.layers.flatMap((layer) => layer.kind === "inserted-scene" && layer.sourceRef ? [layer.sourceRef] : []),
   ))];
-	const plannedBrollInputCount = new Set(
-		plannedTargetForScenes.scenes.flatMap((scene) =>
-			scene.layers.flatMap((layer) =>
-				layer.kind === "broll-media" ? [layer.id] : [],
-			),
-		),
-	).size;
   const hasInsertedScenes = plannedTargetForScenes.scenes.some((scene) =>
     scene.layers.some((layer) => layer.kind === "inserted-scene"));
   const isCut = Boolean(params.cutPlan && !params.cutPlan.isUncut);
@@ -3572,7 +3417,7 @@ export function buildBrollVideoArgs(params: {
       resolvedSceneAssets: params.resolvedSceneAssets,
       resolvedSceneFonts: params.resolvedSceneFonts,
       sceneInputStartIndex: sceneAssetRefs.length > 0
-			? 1 + bgOffset + plannedBrollInputCount
+        ? 1 + bgOffset + Object.keys(params.resolvedBrollAssets).length
         : undefined,
   });
   const cutawayCount = compiledComposition.brollInputs.length;
@@ -3644,37 +3489,7 @@ export function buildBrollVideoArgs(params: {
       0.1,
       cutaway.endSec - cutaway.startSec,
     );
-		if (cutaway.kind === "image") {
-			args.push(
-				"-loop",
-				"1",
-				"-t",
-				windowDurationSec.toFixed(3),
-				"-i",
-				cutaway.path,
-			);
-		} else {
-			if (
-				cutaway.sourceStartSec === null ||
-				cutaway.sourceEndSec === null ||
-				cutaway.sourceEndSec - cutaway.sourceStartSec + 0.001 <
-					windowDurationSec
-			) {
-				throw new WorkflowWorkerError(
-					"broll_source_range_invalid",
-					"A B-roll video does not cover its planned placement",
-					"permanent",
-				);
-			}
-			args.push(
-				"-ss",
-				cutaway.sourceStartSec.toFixed(3),
-				"-t",
-				windowDurationSec.toFixed(3),
-				"-i",
-				cutaway.path,
-			);
-		}
+    args.push("-t", windowDurationSec.toFixed(3), "-i", cutaway.path);
   }
 
   for (const sourceRef of sceneAssetRefs) {
@@ -3706,10 +3521,7 @@ export function buildBrollVideoArgs(params: {
   const audioForRender = sceneDialogueLabel
     ? { ...params.audio, source: { ...params.audio.source, available: true } }
     : params.audio;
-  const hasMixedAudio =
-    Boolean(params.audio.music) ||
-    sfxInputIndexes.length > 0 ||
-    params.audio.dialogueTreatments.some((treatment) => treatment.kind === "beep");
+  const hasMixedAudio = Boolean(params.audio.music) || sfxInputIndexes.length > 0;
   if (hasMixedAudio) {
     parts.push(
       buildAudioMixFilter({
@@ -3962,9 +3774,7 @@ export function buildAudiogramArgs(params: {
   // gate) both mix into the OUTPUT track only, never the waveform — the
   // waveform always visualizes the raw dialogue signal.
   const hasMusicOrSfx =
-    Boolean(params.audio.music) ||
-    params.audio.soundEffects.length > 0 ||
-    params.audio.dialogueTreatments.some((treatment) => treatment.kind === "beep");
+    Boolean(params.audio.music) || params.audio.soundEffects.length > 0;
 
   const plannedLogo = plannedTarget.visualLayers.find(
     (layer) => layer.kind === "logo",
@@ -4367,8 +4177,7 @@ async function uploadRenderedOutput(params: {
   workflowRunId: string;
   projectId: string;
   output: PendingRenderOutput;
-  /** Exact composite timeline duration used to bound this encoded output. */
-  renderedDurationSec: number;
+  clipDurationSec: number;
   /** Compact JSON-encoded Pexels attribution for any B-roll used in this
    *  render, so crediting is possible after the fact. There's no dedicated
    *  DB column reachable without a migration or editing clip.service.ts (out
@@ -4460,7 +4269,7 @@ async function uploadRenderedOutput(params: {
         {
           storageKey: params.output.storageKey,
           sizeBytes: Number(outputStat.size),
-          durationSec: params.renderedDurationSec,
+          durationSec: params.clipDurationSec,
         },
       ),
     discard: deleteProvisionalObject,
@@ -4821,7 +4630,7 @@ async function executeClipRenderAttempt(
     const scheduleUpload = (
       output: PendingRenderOutput,
       params: {
-        renderedDurationSec: number;
+        clipDurationSec: number;
         brollCredits?: string | null;
         encodeMs: number;
       },
@@ -4832,7 +4641,7 @@ async function executeClipRenderAttempt(
             workflowRunId: run.id,
             projectId: run.projectId,
             output,
-            renderedDurationSec: params.renderedDurationSec,
+            clipDurationSec: params.clipDurationSec,
             brollCredits: params.brollCredits,
             encodeMs: params.encodeMs,
           });
@@ -5185,7 +4994,6 @@ async function executeClipRenderAttempt(
         currentRenderConfig().brollEnabled;
       const userBrollUrl = editorDocument.brollUrl;
       if (
-				editorDocument.brollPlacements.length === 0 &&
         (brollEnabled || userBrollUrl) &&
         probe.hasVideo &&
         clipDurationSec >= 12
@@ -5498,7 +5306,6 @@ async function executeClipRenderAttempt(
             : [],
         ),
       ).values()];
-			const documentBrollReferences = compositionDocument.brollPlacements;
       const sceneFontReferences = [...new Map(
         compositionDocument.sceneBlocks.flatMap((block) =>
           block.content.kind === "text" && block.content.fontAsset
@@ -5510,29 +5317,17 @@ async function executeClipRenderAttempt(
         ),
       ).values()];
       const resolvedSceneAssets: Record<string, { path: string; kind: "image" | "video"; hasAudio: boolean }> = {};
-			const resolvedDocumentBrollAssets: Record<
-				string,
-				{ path: string; kind: "image" | "video" }
-			> = {};
-			let documentBrollAvailability: CompositionBrollAvailability | undefined;
       const resolvedSceneFonts: Record<string, string> = {};
-			const prisma = sceneAssetReferences.length > 0 ||
-				sceneFontReferences.length > 0 ||
-				documentBrollReferences.length > 0
+      const prisma = sceneAssetReferences.length > 0 || sceneFontReferences.length > 0
         ? getPrismaClient()
         : null;
-			if (
-				(sceneAssetReferences.length > 0 ||
-					sceneFontReferences.length > 0 ||
-					documentBrollReferences.length > 0) &&
-				!prisma
-			) {
+      if ((sceneAssetReferences.length > 0 || sceneFontReferences.length > 0) && !prisma) {
         throw new WorkflowWorkerError("scene_asset_database_unavailable", "Scene assets cannot be resolved", "retryable");
       }
       const workspace = prisma && run.project.workspaceId
         ? await prisma.workspace.findUnique({
             where: { id: run.project.workspaceId },
-            select: { personalOwnerUserId: true },
+            select: { personalOwnerUserId: true, pricingTier: true },
           })
         : null;
       const sceneOwnerWhere = sceneAssetOwnerWhere({
@@ -5540,91 +5335,6 @@ async function executeClipRenderAttempt(
         workspaceId: run.project.workspaceId,
         workspace,
       });
-			if (documentBrollReferences.length > 0 && prisma) {
-				const assets = await prisma.visualAsset.findMany({
-					where: {
-						id: { in: documentBrollReferences.map((placement) => placement.asset.id) },
-						...sceneOwnerWhere,
-					},
-					select: {
-						id: true,
-						kind: true,
-						fingerprint: true,
-						storageKey: true,
-						deletedAt: true,
-					},
-				});
-				const candidates: DocumentBrollAssetCandidate[] = [];
-				for (const asset of assets) {
-					let object: DocumentBrollAssetCandidate["object"] = {
-						state: "missing",
-					};
-					const exactIdentityIsReferenced = documentBrollReferences.some(
-						(placement) =>
-							placement.asset.id === asset.id &&
-							placement.asset.fingerprint === asset.fingerprint &&
-							placement.mediaKind === asset.kind,
-					);
-					if (exactIdentityIsReferenced) {
-						const path = join(
-							tempDir,
-							`broll-asset-${asset.id}${
-								extname(asset.storageKey) ||
-								(asset.kind === "image" ? ".png" : ".mp4")
-							}`,
-						);
-						try {
-							await currentRenderAdapters().storage.downloadObjectToFile({
-								key: asset.storageKey,
-								filePath: path,
-								signal: renderStorageSignal(),
-							});
-							const decodable =
-								await currentRenderAdapters().optionalAssets.validateOptionalMedia(
-									path,
-									asset.kind,
-								);
-							object = decodable
-								? {
-										state: "available",
-										path,
-										durationSec:
-											asset.kind === "video"
-												? await probeMediaDurationSec(path)
-												: null,
-									}
-								: { state: "missing" };
-						} catch (error) {
-							rethrowRenderControlFlow(error);
-							object = { state: "storage_unavailable" };
-						}
-					}
-					candidates.push({
-						assetId: asset.id,
-						fingerprint: asset.fingerprint,
-						mediaKind: asset.kind,
-						deleted: asset.deletedAt !== null,
-						object,
-					});
-				}
-				const adopted = adoptDocumentBrollAssets(
-					documentBrollReferences,
-					candidates,
-				);
-				Object.assign(resolvedDocumentBrollAssets, adopted.resolvedAssets);
-				documentBrollAvailability = adopted.availability;
-				for (const placementId of adopted.retainedDeletedPlacementIds) {
-					const placement = documentBrollReferences.find(
-						(candidate) => candidate.id === placementId,
-					);
-					log("info", "clip_broll_deleted_asset_retained", {
-						workflowRunId: run.id,
-						clipId: clip.id,
-						placementId,
-						assetId: placement?.asset.id,
-					});
-				}
-			}
       if (sceneAssetReferences.length > 0 && prisma) {
         const assets = await prisma.visualAsset.findMany({
           where: {
@@ -6946,7 +6656,7 @@ async function executeClipRenderAttempt(
         ...(logo
           ? [{ assetClass: "logo" as const, failureCode: "brand_logo_command_failed" }]
           : []),
-				...(brollPlan || Object.keys(resolvedDocumentBrollAssets).length > 0
+        ...(brollPlan
           ? [{ assetClass: "broll" as const, failureCode: "broll_command_failed" }]
           : []),
         ...(musicPlan
@@ -6991,25 +6701,7 @@ async function executeClipRenderAttempt(
             soundEffects?: boolean;
           } = {},
         ) => {
-					const requestedBroll = documentBrollAvailability ??
-						(brollPlan
-							? {
-									state: "available" as const,
-									placements: brollPlan.cutaways.map((cutaway, index) => ({
-										id: `cutaway-${index}`,
-										ref: cutaway.ref,
-										mediaKind: "video" as const,
-										startSec: cutaway.window.startSec,
-										endSec: cutaway.window.endSec,
-										sourceStartSec: 0,
-										sourceEndSec:
-											cutaway.window.endSec - cutaway.window.startSec,
-									})),
-								}
-							: userBrollUrl
-								? ({ state: "failed" } as const)
-								: undefined);
-					const brollAvailable = availability.broll ?? true;
+          const brollAvailable = availability.broll ?? Boolean(brollPlan);
           const logoAvailable = availability.logo ?? Boolean(brandLogo);
           const musicAvailable = availability.music ?? Boolean(musicPlan);
           const soundEffectsAvailable =
@@ -7078,13 +6770,21 @@ async function executeClipRenderAttempt(
                   ];
                 }),
               ),
-								...(requestedBroll
-									? {
-											broll: brollAvailable
-												? requestedBroll
-												: ({ state: "failed" } as const),
-										}
-									: {}),
+              ...(brollPlan && brollAvailable
+                ? {
+                    broll: {
+                      state: "available" as const,
+                      placements: brollPlan.cutaways.map((cutaway, index) => ({
+                        id: `cutaway-${index}`,
+                        ref: cutaway.ref,
+                        startSec: cutaway.window.startSec,
+                        endSec: cutaway.window.endSec,
+                      })),
+                    },
+                  }
+                : userBrollUrl || brollPlan
+                  ? { broll: { state: "failed" as const } }
+                  : {}),
               ...(brandLogo && logoAvailable && plannedLogoSettings
                 ? {
                     logo: {
@@ -7148,17 +6848,6 @@ async function executeClipRenderAttempt(
           throw new WorkflowWorkerError(
             planned.error.code,
             `Clip Composition Plan rejected ${planned.error.code}`,
-            "permanent",
-          );
-        }
-        if (
-          planned.plan.notices.some(
-            (notice) => notice.code === "censor_segment_stale",
-          )
-        ) {
-          throw new WorkflowWorkerError(
-            "censor_segment_stale",
-            "A censor segment no longer matches the corrected transcript",
             "permanent",
           );
         }
@@ -7393,7 +7082,7 @@ async function executeClipRenderAttempt(
             // upload-failure variant marking both live in `scheduleUpload`;
             // this catch now only ever sees ENCODE failures.
             scheduleUpload(output, {
-              renderedDurationSec: compositionForOutput.plan.editedDurationSec,
+              clipDurationSec,
               encodeMs: encodeDurationMs,
             });
           } catch (error) {
@@ -7426,7 +7115,7 @@ async function executeClipRenderAttempt(
         }
       } else {
         // Every video output is compiled from the shared composition plan.
-				const plan = brollPlan;
+        const plan = brollPlan;
         const brollCredits =
           plan && plan.credits.length > 0 ? JSON.stringify(plan.credits) : null;
         for (const output of outputs) {
@@ -7449,14 +7138,9 @@ async function executeClipRenderAttempt(
           };
           try {
             const resolvedBrollAssets = Object.fromEntries(
-							plan?.cutaways.map((cutaway) => [
-								cutaway.ref,
-								{ path: cutaway.path, kind: "video" as const },
-							]) ?? [],
+              plan?.cutaways.map((cutaway) => [cutaway.ref, cutaway.path]) ?? [],
             );
-							Object.assign(resolvedBrollAssets, resolvedDocumentBrollAssets);
-							const hasResolvedBroll = Object.keys(resolvedBrollAssets).length > 0;
-							const ffmpegArgs = hasResolvedBroll
+            const ffmpegArgs = plan
               ? buildBrollVideoArgs({
                   sourcePath,
                   resolvedBrollAssets,
@@ -7529,7 +7213,7 @@ async function executeClipRenderAttempt(
             // Bounded background upload — see `scheduleUpload`. This catch
             // now only ever sees encode/build failures.
             scheduleUpload(output, {
-              renderedDurationSec: compositionForOutput.plan.editedDurationSec,
+              clipDurationSec,
               brollCredits:
                 commandMode === "primary" ? brollCredits : null,
               encodeMs: encodeDurationMs,

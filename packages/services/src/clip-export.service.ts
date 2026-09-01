@@ -17,10 +17,6 @@ import {
 import { deriveClipExportAggregate } from "./clip-export-aggregate";
 export { deriveClipExportAggregate } from "./clip-export-aggregate";
 import { hasFeature } from "./billing.service";
-import {
-  brandOwnerWhereForWorkspace,
-  type BrandOwnerWhere,
-} from "./brand-ownership";
 import { accessibleProjectWhere } from "./project-retention.service";
 import { headObject, presignDownloadUrl } from "./r2-storage";
 import { workspaceService } from "./workspace.service";
@@ -88,7 +84,7 @@ export function buildClipExportFingerprint(input: {
   return createHash("sha256")
     .update(
       JSON.stringify({
-        contract: "clip-export-v2",
+        contract: "clip-export-v1",
         editorRevision: input.editorRevision,
         aspectRatios: normalizeAspectRatios(input.aspectRatios),
         resolution: input.resolution,
@@ -126,7 +122,6 @@ function frozenClipSnapshot(clip: {
   transcriptSlice: Prisma.JsonValue;
   captionPreset: Prisma.JsonValue | null;
   brollUrl: string | null;
-  brollPlacements: Prisma.JsonValue;
   brollCues: Prisma.JsonValue | null;
   studioEdits: Prisma.JsonValue | null;
   deletedRanges: Prisma.JsonValue | null;
@@ -153,7 +148,6 @@ function frozenClipSnapshot(clip: {
     transcriptSlice: document.transcriptSlice,
     captionPreset: document.captionPreset,
     brollUrl: document.brollUrl,
-    brollPlacements: document.brollPlacements,
     brollCues: clip.brollCues ?? Prisma.JsonNull,
     studioEdits: document.studioEdits,
     deletedRanges: document.deletedRanges,
@@ -268,16 +262,18 @@ const exportInclude = {
   variants: { orderBy: { createdAt: "asc" as const } },
 };
 
-type SceneExportOwner = BrandOwnerWhere;
+type SceneExportOwner =
+  | { workspaceId: string }
+  | { userId: string; workspaceId: null };
 
 export function sceneExportOwnerWhere(input: {
+  projectUserId: string;
   workspaceId: string;
-  workspace: { personalOwnerUserId: string | null };
+  workspace: { personalOwnerUserId: string | null; pricingTier: string };
 }): SceneExportOwner {
-  return brandOwnerWhereForWorkspace({
-    workspaceId: input.workspaceId,
-    personalOwnerUserId: input.workspace.personalOwnerUserId,
-  });
+  return input.workspace.personalOwnerUserId && input.workspace.pricingTier !== "business"
+    ? { userId: input.workspace.personalOwnerUserId, workspaceId: null }
+    : { workspaceId: input.workspaceId };
 }
 
 async function assertSceneExportAvailability(
@@ -361,47 +357,6 @@ export function assertSceneExportReferenceRows(
   }
 }
 
-export interface EditorDocumentExportFeatureError {
-  readonly code:
-    | "auto_censor_feature_unavailable"
-    | "motion_feature_unavailable";
-  readonly message: string;
-}
-
-/** Shared admission policy for both mutable renders and immutable exports. */
-export function editorDocumentExportFeatureError(
-  pricingTier: string,
-  document: EditorDocument,
-): EditorDocumentExportFeatureError | null {
-  if (
-    !hasFeature(pricingTier, "editor.censoring") &&
-    document.censorSegments.some((segment) => segment.enabled)
-  ) {
-    return {
-      code: "auto_censor_feature_unavailable",
-      message: "Censor treatments require Creator or above to export",
-    };
-  }
-  const hasMotion =
-    document.studioEdits.transition.type !== "none" ||
-    document.sceneBlocks.some(
-      (scene) =>
-        scene.motion.entrance !== "none" || scene.motion.exit !== "none",
-    ) ||
-    document.mediaMotions.some(
-      (motion) =>
-        motion.enabled &&
-        (motion.entrance !== "none" || motion.exit !== "none"),
-    );
-  if (!hasFeature(pricingTier, "editor.motion") && hasMotion) {
-    return {
-      code: "motion_feature_unavailable",
-      message: "Motion requires Creator or above to export",
-    };
-  }
-  return null;
-}
-
 export class ClipExportService {
   async create(
     projectId: string,
@@ -429,6 +384,7 @@ export class ClipExportService {
       include: {
         project: {
           select: {
+            userId: true,
             workspaceId: true,
             sourceDurationSeconds: true,
             workspace: { select: { personalOwnerUserId: true, pricingTier: true } },
@@ -445,13 +401,10 @@ export class ClipExportService {
       clip,
       clip.project.sourceDurationSeconds,
     );
-    const featureError = editorDocumentExportFeatureError(tier, document);
-    if (featureError) {
-      throw new ClipExportError(featureError.code, featureError.message);
-    }
     await assertSceneExportAvailability(
       document,
       sceneExportOwnerWhere({
+        projectUserId: clip.project.userId,
         workspaceId: clip.project.workspaceId,
         workspace: clip.project.workspace,
       }),
@@ -566,6 +519,7 @@ export class ClipExportService {
       include: {
         project: {
           select: {
+            userId: true,
             workspaceId: true,
             sourceDurationSeconds: true,
             workspace: { select: { personalOwnerUserId: true, pricingTier: true } },
@@ -583,20 +537,13 @@ export class ClipExportService {
     if (!frozenSnapshot) {
       throw new ClipExportError("export_snapshot_missing", "Export snapshot is missing");
     }
-    const frozenDocument = decodeClipEditorDocumentFromStorage(
-      frozenSnapshot,
-      owned.project.sourceDurationSeconds,
-    );
-    const featureError = editorDocumentExportFeatureError(
-      owned.project.workspace.pricingTier,
-      frozenDocument,
-    );
-    if (featureError) {
-      throw new ClipExportError(featureError.code, featureError.message);
-    }
     await assertSceneExportAvailability(
-      frozenDocument,
+      decodeClipEditorDocumentFromStorage(
+        frozenSnapshot,
+        owned.project.sourceDurationSeconds,
+      ),
       sceneExportOwnerWhere({
+        projectUserId: owned.project.userId,
         workspaceId: owned.project.workspaceId,
         workspace: owned.project.workspace,
       }),

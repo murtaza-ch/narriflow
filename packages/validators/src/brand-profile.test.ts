@@ -5,7 +5,6 @@ import {
   brandProfileCreateSchema,
   brandProfileMembershipSchema,
   brandProfileProjectApplicationSchema,
-  brandProfileSnapshotSchema,
   brandProfileUpdateSchema,
   visualAssetFinalizeSchema,
   visualAssetUploadSchema,
@@ -14,33 +13,6 @@ import {
 const fingerprint = "a".repeat(64);
 
 describe("Brand Profile contracts", () => {
-  test("validates the immutable project profile snapshot, including its frozen style", () => {
-    const parsed = brandProfileSnapshotSchema.parse({
-      version: 1,
-      profileId: "10000000-0000-4000-8000-000000000001",
-      profileRevision: 4,
-      name: "Northstar",
-      identity: {},
-      voice: {},
-      approvalRule: "approval_required",
-      style: {
-        templateId: "20000000-0000-4000-8000-000000000002",
-        captionPreset: {},
-        logoStorageKey: null,
-        logoPosition: "bot-right",
-        logoOpacity: 80,
-        logoScalePct: 15,
-        primaryColor: "#FFFFFF",
-        secondaryColor: "#00FF88",
-        accentColor: null,
-      },
-    });
-
-    expect(parsed.profileRevision).toBe(4);
-    expect(parsed.style?.captionPreset.fontName).toBeTruthy();
-    expect(() => brandProfileSnapshotSchema.parse({ ...parsed, arbitrary: true })).toThrow();
-  });
-
   test("normalizes identity and voice guidance at creation", () => {
     const parsed = brandProfileCreateSchema.parse({
       name: "  Northstar Coffee  ",

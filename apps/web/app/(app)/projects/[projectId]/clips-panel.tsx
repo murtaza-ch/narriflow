@@ -15,16 +15,7 @@ import { SegmentedControl } from "@narriflow/ui/components/segmented-control";
 import { Filter } from "lucide-react";
 import { computeClipRanks } from "@/lib/project-state";
 import { ClipRow } from "./clip-row";
-import { CampaignCommandBar } from "./campaign-command-bar";
-import {
-  deriveCampaignCommandState,
-  type CampaignActionAvailability,
-} from "./campaign-command-state";
-import {
-  clearCampaignSelection,
-  persistCampaignSelection,
-  restoreCampaignSelection,
-} from "./campaign-selection";
+import { RenderClipsButton } from "./render-clips-button";
 
 const durationItems = [
   { value: "all", label: "All durations" },
@@ -81,9 +72,6 @@ export function ClipsPanel({
   can1080pExport,
   defaultAspectRatio,
   sourceVideoUrl,
-  actionAvailability,
-  approvalRequired = false,
-  campaignOperationsEnabled = false,
 }: {
   clips: ClipSnapshot[];
   projectId: string;
@@ -104,9 +92,6 @@ export function ClipsPanel({
    *  defaulting to 9:16. Caption-only always renders 16:9 regardless of
    *  this value (see the RenderClipsButton call below). */
   defaultAspectRatio: ClipAspectRatio;
-  actionAvailability: CampaignActionAvailability;
-  approvalRequired?: boolean;
-  campaignOperationsEnabled?: boolean;
 }) {
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [durationFilter, setDurationFilter] = useState("all");
@@ -115,30 +100,8 @@ export function ClipsPanel({
   const [sort, setSort] = useState<SortKey>("virality");
   const [density, setDensity] = useState<"comfortable" | "compact">("compact");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-  const [selectionRestored, setSelectionRestored] = useState(false);
   const [activeRailId, setActiveRailId] = useState<string | null>(null);
   const rowRefs = useRef(new Map<string, HTMLDivElement>());
-  const availableClipIdsKey = useMemo(
-    () => clips.map((clip) => clip.id).sort().join(","),
-    [clips],
-  );
-
-  useEffect(() => {
-    setSelectionRestored(false);
-    setSelectedIds(
-      restoreCampaignSelection(
-        window.sessionStorage,
-        projectId,
-        availableClipIdsKey ? availableClipIdsKey.split(",") : [],
-      ),
-    );
-    setSelectionRestored(true);
-  }, [availableClipIdsKey, projectId]);
-
-  useEffect(() => {
-    if (!selectionRestored) return;
-    persistCampaignSelection(window.sessionStorage, projectId, selectedIds);
-  }, [projectId, selectedIds, selectionRestored]);
 
   // Immutable virality rank — the clip's position in [viralityScore desc,
   // index asc] ordering, computed ONCE from the full, unfiltered clip list.
@@ -186,23 +149,6 @@ export function ClipsPanel({
   );
 
   const sortedClips = useMemo(() => sortClips(filteredClips, sort), [filteredClips, sort]);
-  const campaignState = useMemo(
-    () =>
-      deriveCampaignCommandState({
-        clips,
-        selectedIds,
-        defaultAspectRatio,
-        actionAvailability,
-        approvalRequired,
-      }),
-    [
-      approvalRequired,
-      actionAvailability,
-      clips,
-      defaultAspectRatio,
-      selectedIds,
-    ],
-  );
 
   const hasActiveFilters =
     categoryFilter !== "all" ||
@@ -241,11 +187,6 @@ export function ClipsPanel({
       }
       return next;
     });
-  }
-
-  function clearSelection() {
-    clearCampaignSelection(window.sessionStorage);
-    setSelectedIds(new Set());
   }
 
   // Scrollspy for the left jump rail — highlights the row nearest the top
@@ -383,8 +324,8 @@ export function ClipsPanel({
             </Popover.Root>
           </Flex>
 
-          {/* Selection is project-scoped and the command bar owns the view's
-              one solid, state-aware campaign action. */}
+          {/* Bulk selection — the only bulk action is Render selected. The
+              view's single solid ultramarine button. */}
           <Flex align="center" gap="2" flexShrink={0}>
             <Checkbox
               checked={allVisibleSelected}
@@ -395,14 +336,19 @@ export function ClipsPanel({
                 {selectedIds.size > 0 ? `${selectedIds.size} selected` : "Select all"}
               </Text>
             </Checkbox>
-            <CampaignCommandBar
+            {/* Always the "clip" mode's default — caption-only returns its
+                own, bulk-toolbar-free view above (`mode === "caption_only"`
+                early return) and never reaches this button, so its
+                mandatory 16:9 render is untouched by this preselect. */}
+            <RenderClipsButton
               projectId={projectId}
-              state={campaignState}
-              defaultAspectRatio={defaultAspectRatio}
+              disabled={selectedIds.size === 0}
+              buttonLabel={`Render selected${selectedIds.size > 0 ? ` (${selectedIds.size})` : ""}`}
               isFreeTier={isFreeTier}
               can1080pExport={can1080pExport}
-              campaignOperationsEnabled={campaignOperationsEnabled}
-              onClear={clearSelection}
+              clipIds={[...selectedIds]}
+              size="sm"
+              defaultAspectRatio={defaultAspectRatio}
             />
           </Flex>
         </Flex>

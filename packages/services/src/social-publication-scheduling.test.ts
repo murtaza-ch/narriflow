@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import {
 	createInMemoryPublicationSchedulingStore,
 	createSocialPublicationScheduling,
-	publicationThumbnailOwnerWhere,
 	PublicationIntentConflictError,
 	type FrozenPublicationState,
 } from "./social-publication-scheduling";
@@ -22,12 +21,10 @@ const readyState: FrozenPublicationState = {
 	platform: "youtube_shorts",
 	capabilityVersion: "youtube-2026-08",
 	scheduledFor: new Date("2026-08-29T10:00:00.000Z"),
-	reviewApprovalOverrideId: null,
 };
 
 const baseInput = {
 	actorUserId: "actor-1",
-	approvalPrincipal: { kind: "browser" as const, actorUserId: "actor-1" },
 	ownerUserId: "owner-1",
 	workspaceId: "workspace-1",
 	projectId: "project-1",
@@ -41,25 +38,9 @@ const baseInput = {
 	resolution: "1080p" as const,
 	scheduledFor: new Date("2026-08-29T10:00:00.000Z"),
 	providerSettings: { privacy: "public" },
-	approvalOverrideReason: null,
 };
 
 describe("Social Publication scheduling", () => {
-	test("freezes a personal Business thumbnail from stable user ownership", () => {
-		expect(
-			publicationThumbnailOwnerWhere({
-				workspaceId: "personal-workspace",
-				personalOwnerUserId: "owner-1",
-			}),
-		).toEqual({ userId: "owner-1" });
-		expect(
-			publicationThumbnailOwnerWhere({
-				workspaceId: "team-workspace",
-				personalOwnerUserId: null,
-			}),
-		).toEqual({ workspaceId: "team-workspace" });
-	});
-
 	test("replays one immutable publication intent", async () => {
 		const store = createInMemoryPublicationSchedulingStore();
 		let freezes = 0;
@@ -91,34 +72,6 @@ describe("Social Publication scheduling", () => {
 		});
 		expect(await store.count()).toBe(1);
 		expect(freezes).toBe(1);
-	});
-
-	test("freezes exact export, assisted-copy, and thumbnail audit references", async () => {
-		const scheduling = createSocialPublicationScheduling({
-			store: createInMemoryPublicationSchedulingStore(),
-			authorize: async () => undefined,
-			freeze: async () => ({ kind: "ready", state: readyState }),
-			createId: () => "social-post-audited",
-			now: () => new Date("2026-08-28T10:00:00.000Z"),
-		});
-
-		const result = await scheduling.schedule({
-			...baseInput,
-			clientIdempotencyKey: "schedule-intent-audited",
-			requiredExportVariantId: "variant-1",
-			assistedCopyDraftId: "copy-1",
-			assistedCopyRevision: 3,
-			thumbnailAssetId: "thumbnail-1",
-			thumbnailFingerprint: "c".repeat(64),
-		});
-
-		expect(result).toMatchObject({
-			assistedCopyDraftId: "copy-1",
-			assistedCopyRevision: 3,
-			thumbnailAssetId: "thumbnail-1",
-			thumbnailFingerprint: "c".repeat(64),
-			frozen: { clipExportVariantId: "variant-1" },
-		});
 	});
 
 	test("replays the original intent after its scheduled time without freezing again", async () => {

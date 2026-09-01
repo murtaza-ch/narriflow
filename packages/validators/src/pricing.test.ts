@@ -6,7 +6,6 @@ import {
   paidPricingTierSchema,
   processingMinutesFromSeconds,
   PRICING_TABLE,
-  PRICING_FEATURES,
   isProcessingQuotaExceeded,
   resolvePricingTier,
 } from ".";
@@ -94,17 +93,5 @@ describe("billing (checkout request + pricing table)", () => {
       // Pricing-table minutes match the enforced quota.
       expect(info.minutes).toBe(MONTHLY_PROCESSING_MINUTE_LIMITS[tier]);
     }
-  });
-
-  test("advertises generated still images without claiming unavailable generated video", () => {
-    expect(PRICING_FEATURES.creator).toContain(
-      "Generated still images with usage metering",
-    );
-    expect(PRICING_FEATURES.pro).toContain(
-      "Campaign operations and export bundles",
-    );
-    expect(PRICING_FEATURES.pro.join(" ").toLowerCase()).not.toContain(
-      "generated video",
-    );
   });
 });

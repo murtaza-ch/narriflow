@@ -5,7 +5,6 @@ import {
   normalizeWorkspaceApiKeyInput,
   normalizeWorkspaceName,
   roleHasWorkspaceCapability,
-  WORKSPACE_API_KEY_SCOPES,
   WorkspaceOperationError,
   workspaceAllowsCapability,
   type WorkspaceCapability,
@@ -120,31 +119,6 @@ describe("workspace administration failures", () => {
         scopes: ["billing:write"],
       }),
     ).toThrow(expect.objectContaining({ code: "workspace_api_scope_invalid" }));
-  });
-
-  test("keeps legacy scopes and adds explicit workflow scopes", () => {
-    expect(WORKSPACE_API_KEY_SCOPES).toEqual([
-      "projects:read",
-      "exports:read",
-      "usage:read",
-      "autopilot:read",
-      "autopilot:write",
-      "publishing:read",
-      "publishing:write",
-      "brand:read",
-      "brand:write",
-      "campaign:operate",
-      "review:read",
-      "review:write",
-      "publishing:prepare",
-      "generated-media:submit",
-    ]);
-    expect(
-      normalizeWorkspaceApiKeyInput("business", {
-        name: "Production orchestrator",
-        scopes: [...WORKSPACE_API_KEY_SCOPES],
-      }).scopes,
-    ).toEqual([...WORKSPACE_API_KEY_SCOPES]);
   });
 
   test("duplicate-membership refusal is typed for the action mapper", () => {

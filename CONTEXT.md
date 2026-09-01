@@ -93,7 +93,7 @@ A persistent execution record for bringing source media into a project before po
 _Avoid_: Workflow run, upload task
 
 **Media Cleanup**:
-The durable execution module that owns exact-key removal of unreferenced private media after an approved producer durably admits cleanup ownership. It owns idempotent obligation admission, provisional producer and copy-compensation holds, fenced claims, renewal, storage outcome classification, bounded retry, settlement, and identifier-safe diagnostics. Clip Editor Document Persistence, detected Clip replacement, Clip duplication, Visual Asset upload admission, and Export Bundle execution still own the decision and transaction that create or adopt cleanup intent.
+The durable execution module that owns exact-key removal of unreferenced private media after an approved producer commits its database state. It owns idempotent obligation admission, provisional copy-compensation holds, fenced claims, renewal, storage outcome classification, bounded retry, settlement, and identifier-safe diagnostics. Clip Editor Document Persistence, detected Clip replacement, and Clip duplication still own the decision and transaction that create or adopt cleanup intent.
 _Avoid_: Editor Media Cleanup, best-effort delete, cleanup callback
 
 ## Brand and delivery
@@ -142,21 +142,9 @@ _Avoid_: Brand Template, saved clip, preset video
 One idempotent request to apply a selection-scoped action to project clips, with an outcome recorded for each selected item.
 _Avoid_: Workflow Run, bulk job, campaign
 
-**Export Bundle**:
-An expiring archive of exact Clip Export variants selected through one Campaign Operation.
-_Avoid_: Latest exports, download folder, render batch
-
 **Review Round**:
 An immutable client submission containing selected Clip Export revisions, guest access policy, comments, and approval decisions.
 _Avoid_: Share link, project snapshot, approval request
-
-**Review Notification**:
-A durable promise to notify one Review Round recipient about a specific review event, including its delivery and retry outcome.
-_Avoid_: Email send, toast, reminder job
-
-**Review Approval Override**:
-An audited owner or admin exception that authorizes publishing an exact set of Clip Exports without the normally required client approval.
-_Avoid_: Approval, bypass flag, publish permission
 
 **Generated Media Job**:
 One metered provider request that may produce a Visual Asset after moderation and usage settlement.

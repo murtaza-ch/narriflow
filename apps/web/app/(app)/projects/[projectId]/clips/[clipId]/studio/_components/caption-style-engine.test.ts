@@ -95,15 +95,13 @@ function withMockedDom<T>(
 
 describe("warmCaptionFonts", () => {
   test("is a safe no-op under SSR (no `document` global)", () => {
-    const globals = globalThis as unknown as { document?: unknown };
-    const originalDocument = globals.document;
-    globals.document = undefined;
-    try {
-      expect(typeof document).toBe("undefined");
-      expect(() => warmCaptionFonts()).not.toThrow();
-    } finally {
-      globals.document = originalDocument;
-    }
+    // This suite runs under plain `bun test` with no DOM shim, so `document`
+    // is genuinely undefined here — this exercises the real SSR guard, not a
+    // simulation of it. Must run before any test below installs a fake
+    // `document`, or it would trivially pass via the idempotency flag instead
+    // of the SSR check this is meant to cover.
+    expect(typeof document).toBe("undefined");
+    expect(() => warmCaptionFonts()).not.toThrow();
   });
 
   test("loads every registered weight for every family, then is idempotent on repeat calls", () => {

@@ -16,7 +16,6 @@ const PROGRAM_FEATURES: PlanFeature[] = [
   "editor.censoring",
   "editor.motion",
   "publishing.assistedCopy",
-	"publishing.customThumbnails",
   "campaign.operations",
   "export.bundles",
   "review.rooms",
@@ -87,7 +86,6 @@ describe("hasFeature (PLAN_FEATURES matrix)", () => {
       "campaign.operations",
       "export.bundles",
       "generated.video",
-		"publishing.customThumbnails",
     ] as const) {
       expect(hasFeature("creator", feature)).toBe(false);
       expect(hasFeature("pro", feature)).toBe(true);

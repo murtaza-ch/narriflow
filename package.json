@@ -14,7 +14,7 @@
     "build": "turbo run build",
     "lint": "biome check .",
     "typecheck": "turbo run typecheck",
-    "test": "bun -e 'console.log(\"Fast tests exclude disposable-schema PostgreSQL invariants; run all test:*:db commands separately.\")' && turbo run test",
+    "test": "bun -e 'console.log(\"Fast tests exclude disposable-schema PostgreSQL invariants; run the six test:*:db commands separately.\")' && turbo run test",
     "test:workflow:db": "bun packages/services/scripts/run-workflow-db-tests.ts",
     "test:upload-session:db": "bun packages/services/scripts/run-upload-session-db-tests.ts",
     "test:workspace-billing:db": "bun packages/services/scripts/run-workspace-billing-db-tests.ts",
@@ -24,7 +24,6 @@
     "test:brand-profiles:db": "bun packages/services/scripts/run-brand-profile-db-tests.ts",
     "test:vizard-expansion:db": "bun packages/services/scripts/run-vizard-expansion-db-tests.ts",
     "test:mcp:e2e": "bun --cwd apps/web ../../packages/mcp-core/scripts/e2e-clients.ts",
-    "report:vizard-analytics": "bun --env-file packages/db/.env packages/services/scripts/report-vizard-expansion-analytics.ts",
     "audit:production": "bun audit --production --audit-level=high",
     "clean": "turbo run clean && rm -rf .turbo node_modules"
   },

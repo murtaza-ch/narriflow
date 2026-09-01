@@ -58,25 +58,6 @@ describe("Workspace administration request boundaries", () => {
     ).toBe(false);
   });
 
-  test("accepts the complete Business automation scope vocabulary", () => {
-    expect(
-      workspaceApiKeyActionSchema.safeParse({
-        name: "Campaign automation",
-        scopes: [
-          "publishing:read",
-          "publishing:write",
-          "brand:read",
-          "brand:write",
-          "campaign:operate",
-          "review:read",
-          "review:write",
-          "publishing:prepare",
-          "generated-media:submit",
-        ],
-      }).success,
-    ).toBe(true);
-  });
-
   test("requires a name for creation but permits a preserved checkout retry", () => {
     expect(
       businessWorkspaceCheckoutActionSchema.safeParse({

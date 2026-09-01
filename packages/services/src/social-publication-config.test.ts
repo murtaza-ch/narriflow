@@ -39,7 +39,7 @@ describe("Social Publication configuration", () => {
       publishingEnabledByDefault: false,
       requiredScopes: ["pages_show_list", "pages_read_engagement", "pages_manage_posts"],
     });
-		expect(socialPublicationCapabilityVersion("facebook_reels")).toBe("facebook-reels-v2");
+    expect(socialPublicationCapabilityVersion("facebook_reels")).toBe("facebook-reels-2026-08-31");
     expect(isSocialProviderPublishingEnabled("facebook_reels", {})).toBe(false);
     expect(isSocialProviderPublishingEnabled("facebook_reels", { FACEBOOK_REELS_PUBLISHING_ENABLED: "1" })).toBe(true);
   });

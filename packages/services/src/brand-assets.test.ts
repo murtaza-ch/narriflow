@@ -2,10 +2,8 @@ import { describe, expect, test } from "bun:test";
 import {
   assertBrandApplicationAllowed,
   assertBrandMutationAllowed,
-  brandOwnerWhereForWorkspace,
   brandOwnerStoragePrefix,
   resolveBrandOwner,
-  resolveBrandOwnerForWorkspace,
 } from "./brand-ownership";
 import {
   assertFinalizedVisualObject,
@@ -28,69 +26,21 @@ const personalScope = {
 };
 
 describe("brand ownership", () => {
-	test("keeps personal Brand ownership stable across plan transitions", () => {
-		for (const pricingTier of ["creator", "pro", "business", "free"]) {
-			expect(resolveBrandOwner({ ...personalScope, pricingTier })).toEqual({
-				userId: "owner",
-				workspaceId: null,
-			});
-		}
-	});
+  test("stores Creator profiles in personal ownership and Business profiles in workspace ownership", () => {
+    expect(resolveBrandOwner(personalScope)).toEqual({ userId: "owner", workspaceId: null });
+    expect(resolveBrandOwner({ ...personalScope, pricingTier: "business", isPersonalWorkspace: false })).toEqual({ userId: null, workspaceId: "personal-workspace" });
+  });
 
-  test("keeps team Brand ownership stable across plan transitions", () => {
-		for (const pricingTier of ["business", "pro", "free"]) {
-			expect(
-				resolveBrandOwner({ ...personalScope, pricingTier, isPersonalWorkspace: false }),
-			).toEqual({ userId: null, workspaceId: "personal-workspace" });
-		}
-	});
-
-	test("uses non-overlapping tenant upload prefixes", () => {
-		expect(brandOwnerStoragePrefix(personalScope, "visual-assets")).toBe("visual-assets/owner/");
-		expect(
-			brandOwnerStoragePrefix(
-				{ ...personalScope, pricingTier: "business" },
-				"brand-fonts",
-			),
-		).toBe("brand-fonts/owner/");
-		expect(brandOwnerStoragePrefix({ ...personalScope, pricingTier: "business", isPersonalWorkspace: false }, "brand-fonts")).toBe("workspaces/personal-workspace/brand-fonts/");
-	});
+  test("uses non-overlapping tenant upload prefixes", () => {
+    expect(brandOwnerStoragePrefix(personalScope, "visual-assets")).toBe("visual-assets/owner/");
+    expect(brandOwnerStoragePrefix({ ...personalScope, pricingTier: "business", isPersonalWorkspace: false }, "brand-fonts")).toBe("workspaces/personal-workspace/brand-fonts/");
+  });
 
   test("enforces brand.manage, active workspace status, and plan entitlement", () => {
     expect(() => assertBrandMutationAllowed(personalScope, "brand.profiles")).not.toThrow();
     expect(() => assertBrandMutationAllowed({ ...personalScope, role: "viewer" }, "brand.profiles")).toThrow();
     expect(() => assertBrandMutationAllowed({ ...personalScope, status: "restricted" }, "brand.profiles")).toThrow();
     expect(() => assertBrandMutationAllowed({ ...personalScope, pricingTier: "free" }, "brand.profiles")).toThrow();
-  });
-
-  test("resolves database Workspace facts without plan input", () => {
-    expect(
-      resolveBrandOwnerForWorkspace({
-        workspaceId: "personal-workspace",
-        personalOwnerUserId: "owner",
-      }),
-    ).toEqual({ userId: "owner", workspaceId: null });
-    expect(
-      resolveBrandOwnerForWorkspace({
-        workspaceId: "team-workspace",
-        personalOwnerUserId: null,
-      }),
-    ).toEqual({ userId: null, workspaceId: "team-workspace" });
-  });
-
-  test("builds a stable owner filter from database Workspace facts", () => {
-    expect(
-      brandOwnerWhereForWorkspace({
-        workspaceId: "personal-workspace",
-        personalOwnerUserId: "owner",
-      }),
-    ).toEqual({ userId: "owner" });
-    expect(
-      brandOwnerWhereForWorkspace({
-        workspaceId: "team-workspace",
-        personalOwnerUserId: null,
-      }),
-    ).toEqual({ workspaceId: "team-workspace" });
   });
 
   test("allows active editors to apply profiles but blocks downgrade and free application", () => {

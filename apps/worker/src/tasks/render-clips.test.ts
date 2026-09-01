@@ -10,9 +10,6 @@ import {
   compileCompositionPlanAudioSchedule,
 } from "../composition-ffmpeg-adapter";
 import {
-  decodeClipEditorDocumentFromStorage,
-} from "@narriflow/services";
-import {
   captionPresetSchema,
   computeSpeechWindows,
   editorDocumentSchema,
@@ -33,7 +30,6 @@ import {
   buildTransitionFilter,
   clipRenderAttemptStorageKey,
   applySpeakerLayoutOverridesToSegments,
-	adoptDocumentBrollAssets,
   decidePipUsage,
   decideScreenFallback,
   decideSplitFallback,
@@ -61,227 +57,6 @@ type VisualTestOptions = {
   resolution?: "720p" | "1080p";
   watermark?: boolean;
 };
-
-test("render boundary keeps healthy B-roll beside stale and invalid placements", () => {
-	const imageAssetId = "11111111-1111-4111-8111-111111111111";
-	const videoAssetId = "22222222-2222-4222-8222-222222222222";
-	const staleAssetId = "33333333-3333-4333-8333-333333333333";
-	const imageFingerprint = "a".repeat(64);
-	const videoFingerprint = "b".repeat(64);
-	const adopted = adoptDocumentBrollAssets(
-		[
-			{
-				id: "44444444-4444-4444-8444-444444444444",
-				asset: {
-					kind: "visual_asset",
-					id: imageAssetId,
-					fingerprint: imageFingerprint,
-				},
-				provenance: "generated",
-				mediaKind: "image",
-				startSec: 1,
-				endSec: 3,
-				sourceStartSec: null,
-				sourceEndSec: null,
-			},
-			{
-				id: "55555555-5555-4555-8555-555555555555",
-				asset: {
-					kind: "visual_asset",
-					id: videoAssetId,
-					fingerprint: videoFingerprint,
-				},
-				provenance: "generated",
-				mediaKind: "video",
-				startSec: 4,
-				endSec: 6,
-				sourceStartSec: 2,
-				sourceEndSec: 4,
-			},
-			{
-				id: "66666666-6666-4666-8666-666666666666",
-				asset: {
-					kind: "visual_asset",
-					id: staleAssetId,
-					fingerprint: "c".repeat(64),
-				},
-				provenance: "generated",
-				mediaKind: "image",
-				startSec: 7,
-				endSec: 9,
-				sourceStartSec: null,
-				sourceEndSec: null,
-			},
-		],
-		[
-			{
-				assetId: imageAssetId,
-				fingerprint: imageFingerprint,
-				mediaKind: "image",
-				deleted: true,
-				object: { state: "available", path: "/tmp/image.png", durationSec: null },
-			},
-			{
-				assetId: videoAssetId,
-				fingerprint: videoFingerprint,
-				mediaKind: "video",
-				deleted: false,
-				object: { state: "available", path: "/tmp/video.mp4", durationSec: 8 },
-			},
-			{
-				assetId: staleAssetId,
-				fingerprint: "d".repeat(64),
-				mediaKind: "image",
-				deleted: false,
-				object: { state: "missing" },
-			},
-		],
-	);
-
-	expect(adopted.availability).toMatchObject({
-		state: "available",
-		placements: [
-			{ mediaKind: "image", sourceStartSec: null, sourceEndSec: null },
-			{ mediaKind: "video", sourceStartSec: 2, sourceEndSec: 4 },
-		],
-		unavailablePlacements: [
-			{
-				id: "66666666-6666-4666-8666-666666666666",
-				reason: "fingerprint_stale",
-			},
-		],
-	});
-	expect(Object.values(adopted.resolvedAssets)).toEqual([
-		{ path: "/tmp/image.png", kind: "image" },
-		{ path: "/tmp/video.mp4", kind: "video" },
-	]);
-	expect(adopted.retainedDeletedPlacementIds).toEqual([
-		"44444444-4444-4444-8444-444444444444",
-	]);
-});
-
-test("frozen Editor Document v2 carries exact B-roll placements into the composition plan", () => {
-  const imageAssetId = "11111111-1111-4111-8111-111111111111";
-  const videoAssetId = "22222222-2222-4222-8222-222222222222";
-  const imageFingerprint = "a".repeat(64);
-  const videoFingerprint = "b".repeat(64);
-  const placements = [
-    {
-      id: "33333333-3333-4333-8333-333333333333",
-      asset: {
-        kind: "visual_asset" as const,
-        id: imageAssetId,
-        fingerprint: imageFingerprint,
-      },
-      provenance: "generated" as const,
-      mediaKind: "image" as const,
-      startSec: 1,
-      endSec: 3,
-      sourceStartSec: null,
-      sourceEndSec: null,
-    },
-    {
-      id: "44444444-4444-4444-8444-444444444444",
-      asset: {
-        kind: "visual_asset" as const,
-        id: videoAssetId,
-        fingerprint: videoFingerprint,
-      },
-      provenance: "generated" as const,
-      mediaKind: "video" as const,
-      startSec: 5,
-      endSec: 8,
-      sourceStartSec: 1.25,
-      sourceEndSec: 4.25,
-    },
-  ];
-  const document = decodeClipEditorDocumentFromStorage(
-    {
-      editorDocumentVersion: 2,
-      startSec: 0,
-      endSec: 10,
-      captionPreset: {},
-      transcriptSlice: [],
-      studioEdits: { framing: { mode: "center" } },
-      brollUrl: null,
-      brollPlacements: placements,
-      deletedRanges: [],
-      sceneBlocks: [],
-      censorSegments: [],
-      mediaMotions: [],
-    },
-    10,
-  );
-  const adopted = adoptDocumentBrollAssets(document.brollPlacements, [
-    {
-      assetId: imageAssetId,
-      fingerprint: imageFingerprint,
-      mediaKind: "image",
-      deleted: false,
-      object: { state: "available", path: "/tmp/generated-still.png", durationSec: null },
-    },
-    {
-      assetId: videoAssetId,
-      fingerprint: videoFingerprint,
-      mediaKind: "video",
-      deleted: false,
-      object: { state: "available", path: "/tmp/generated-video.mp4", durationSec: 8 },
-    },
-  ]);
-  const planned = planClipComposition({
-    document,
-    source: {
-      identity: "source:frozen-export",
-      kind: "video",
-      width: 1920,
-      height: 1080,
-      hasAudio: true,
-    },
-    evidence: { automaticLayout: { state: "missing" } },
-    assets: {
-      backgroundImage: { state: "missing" },
-      broll: adopted.availability,
-    },
-    capabilities: {
-      automaticSpeakerLayout: true,
-      automaticSpeakerEngineVersion: "shot-layout-v1",
-    },
-    targets: [
-      { id: "vertical", aspectRatio: "9:16", width: 1080, height: 1920 },
-    ],
-  });
-
-  expect(document).toMatchObject({ version: 2, brollPlacements: placements });
-  expect(planned.status).toBe("ready");
-  if (planned.status === "invalid") throw new Error(planned.error.code);
-  const imageRef = Object.entries(adopted.resolvedAssets).find(
-    ([, asset]) => asset.kind === "image",
-  )?.[0];
-  const videoRef = Object.entries(adopted.resolvedAssets).find(
-    ([, asset]) => asset.kind === "video",
-  )?.[0];
-  const brollLayers = planned.plan.targets[0]?.scenes.flatMap((scene) =>
-    scene.layers.filter((layer) => layer.kind === "broll-media"),
-  );
-  expect(brollLayers).toEqual([
-    expect.objectContaining({
-      sourceRef: imageRef,
-      mediaKind: "image",
-      sourceRange: null,
-      activeRange: { startSec: 1, endSec: 3 },
-    }),
-    expect.objectContaining({
-      sourceRef: videoRef,
-      mediaKind: "video",
-      sourceRange: { startSec: 1.25, endSec: 4.25 },
-      activeRange: { startSec: 5, endSec: 8 },
-    }),
-  ]);
-  expect(Object.values(adopted.resolvedAssets)).toEqual([
-    { path: "/tmp/generated-still.png", kind: "image" },
-    { path: "/tmp/generated-video.mp4", kind: "video" },
-  ]);
-});
 type TestMusicInput = {
   path: string;
   ref?: string;
@@ -301,16 +76,16 @@ type TestSfxInput = {
 };
 
 describe("Scene asset ownership", () => {
-	test("renders personal assets from stable user ownership across plan changes and team assets from workspace ownership", () => {
+	test("renders personal Creator assets from user ownership and shared Business assets from workspace ownership", () => {
 		expect(sceneAssetOwnerWhere({
 			projectUserId: "project-user",
 			workspaceId: "personal-workspace",
-			workspace: { personalOwnerUserId: "personal-owner" },
-		})).toEqual({ userId: "personal-owner" });
+			workspace: { personalOwnerUserId: "personal-owner", pricingTier: "creator" },
+		})).toEqual({ userId: "personal-owner", workspaceId: null });
 		expect(sceneAssetOwnerWhere({
 			projectUserId: "project-user",
 			workspaceId: "business-workspace",
-			workspace: { personalOwnerUserId: null },
+			workspace: { personalOwnerUserId: null, pricingTier: "business" },
 		})).toEqual({ workspaceId: "business-workspace" });
 	});
 });
@@ -344,10 +119,7 @@ function testComposition(params: {
   watermark?: boolean;
   brollCutaways?: Array<{
     path: string;
-		kind?: "image" | "video";
     window: { startSec: number; endSec: number };
-		sourceStartSec?: number;
-		sourceEndSec?: number;
   }>;
 }): TestSingleVideoArgs["composition"] {
   const canvas = {
@@ -512,18 +284,8 @@ function testComposition(params: {
               placements: params.brollCutaways.map((cutaway, index) => ({
                 id: `cutaway-${index}`,
                 ref: `broll:test:${index}`,
-						mediaKind: cutaway.kind ?? "video",
                 startSec: cutaway.window.startSec,
                 endSec: cutaway.window.endSec,
-						sourceStartSec:
-							(cutaway.kind ?? "video") === "video"
-								? (cutaway.sourceStartSec ?? 0)
-								: null,
-						sourceEndSec:
-							(cutaway.kind ?? "video") === "video"
-								? (cutaway.sourceEndSec ??
-									cutaway.window.endSec - cutaway.window.startSec)
-								: null,
               })),
             },
           }
@@ -728,10 +490,7 @@ function buildBrollVideoArgs(
   params: Omit<TestBrollVideoArgs, "composition" | "resolvedBrollAssets"> & {
     cutaways: Array<{
       path: string;
-			kind?: "image" | "video";
       window: { startSec: number; endSec: number };
-			sourceStartSec?: number;
-			sourceEndSec?: number;
     }>;
     composition?: TestBrollVideoArgs["composition"];
   },
@@ -745,7 +504,7 @@ function buildBrollVideoArgs(
     resolvedBrollAssets: Object.fromEntries(
       cutaways.map((cutaway, index) => [
         `broll:test:${index}`,
-				{ path: cutaway.path, kind: cutaway.kind ?? "video" },
+        cutaway.path,
       ]),
     ),
     composition,
@@ -2070,63 +1829,6 @@ describe("buildBrollVideoArgs (B-roll cutaway)", () => {
     expect(graph).toContain("[0:a:0]afade=t=in");
     expect(args).toContain("[outa]");
   });
-
-	test("loops a still input for exactly its bounded placement", () => {
-		const args = buildBrollVideoArgs({
-			sourcePath: "/tmp/src.mp4",
-			cutaways: [{
-				path: "/tmp/generated-still.png",
-				kind: "image",
-				window: { startSec: 2, endSec: 5 },
-			}],
-			outputPath: "/tmp/out.mp4",
-			startSec: 0,
-			endSec: 10,
-			aspectRatio: "9:16",
-			probe,
-			srtPath: null,
-		});
-		const stillInput = args.indexOf("/tmp/generated-still.png");
-		expect(args.slice(stillInput - 5, stillInput + 1)).toEqual([
-			"-loop",
-			"1",
-			"-t",
-			"3.000",
-			"-i",
-			"/tmp/generated-still.png",
-		]);
-		expect(args[args.indexOf("-filter_complex") + 1]).toContain(
-			"overlay=0:0:enable='between(t,2,5)'",
-		);
-	});
-
-	test("seeks a video B-roll input to its frozen source range", () => {
-		const args = buildBrollVideoArgs({
-			sourcePath: "/tmp/src.mp4",
-			cutaways: [{
-				path: "/tmp/generated-video.mp4",
-				kind: "video",
-				window: { startSec: 2, endSec: 5 },
-				sourceStartSec: 1.25,
-				sourceEndSec: 4.25,
-			}],
-			outputPath: "/tmp/out.mp4",
-			startSec: 0,
-			endSec: 10,
-			aspectRatio: "9:16",
-			probe,
-			srtPath: null,
-		});
-		const videoInput = args.indexOf("/tmp/generated-video.mp4");
-		expect(args.slice(videoInput - 5, videoInput + 1)).toEqual([
-			"-ss",
-			"1.250",
-			"-t",
-			"3.000",
-			"-i",
-			"/tmp/generated-video.mp4",
-		]);
-	});
 
   test("throws when called with zero cutaways", () => {
     expect(() =>

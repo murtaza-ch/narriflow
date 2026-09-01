@@ -6,7 +6,6 @@ import {
   clipExportDownloadFileName,
   clipExportVariantStorageKey,
   deriveClipExportAggregate,
-  editorDocumentExportFeatureError,
   hashClipShareToken,
   sceneExportOwnerWhere,
 } from "./clip-export.service";
@@ -79,59 +78,6 @@ describe("clip export aggregate state", () => {
 });
 
 describe("clip export storage and sharing", () => {
-  test("blocks paid censor and motion at every export admission boundary", () => {
-    const base = editorDocumentSchema.parse({
-      version: 2,
-      clipStartSec: 0,
-      clipEndSec: 5,
-      captionPreset: {},
-      transcriptSlice: [],
-      studioEdits: {},
-      brollUrl: null,
-      deletedRanges: [],
-    });
-    const censored = editorDocumentSchema.parse({
-      ...base,
-      censorSegments: [{
-        schemaVersion: 1,
-        id: "57e59b57-3f0e-4f1c-9617-43b85cc02114",
-        sourceWordIds: ["word:0:0:aabbccdd"],
-        sourceStartSec: 1,
-        sourceEndSec: 1.3,
-        treatment: "mute",
-        paddingSec: 0.08,
-        beepSettings: null,
-        captionMaskPolicy: null,
-        suggestionFingerprint: "a".repeat(32),
-        policyVersion: "auto-censor:test:v1",
-        enabled: true,
-      }],
-    });
-    const motion = editorDocumentSchema.parse({
-      ...base,
-      studioEdits: {
-        ...base.studioEdits,
-        transition: { type: "wipe-right", durationSec: 0.4 },
-      },
-    });
-
-    expect(editorDocumentExportFeatureError("free", censored)?.code)
-      .toBe("auto_censor_feature_unavailable");
-    expect(editorDocumentExportFeatureError("free", motion)?.code)
-      .toBe("motion_feature_unavailable");
-    expect(editorDocumentExportFeatureError("creator", censored)).toBeNull();
-    expect(editorDocumentExportFeatureError("creator", motion)).toBeNull();
-    expect(
-      editorDocumentExportFeatureError("free", {
-        ...censored,
-        censorSegments: censored.censorSegments.map((segment) => ({
-          ...segment,
-          enabled: false,
-        })),
-      }),
-    ).toBeNull();
-  });
-
   test("blocks export admission when a frozen Scene file identity is unavailable", () => {
     const visualId = "11111111-1111-4111-8111-111111111111";
     const fontId = "22222222-2222-4222-8222-222222222222";
@@ -172,14 +118,16 @@ describe("clip export storage and sharing", () => {
     expect(() => assertSceneExportReferenceRows(document, visuals, [])).toThrow("unavailable Brand font");
   });
 
-	test("resolves Scene export ownership from personal versus team workspace identity", () => {
-		expect(sceneExportOwnerWhere({
-			workspaceId: "personal-workspace",
-			workspace: { personalOwnerUserId: "owner" },
-		})).toEqual({ userId: "owner" });
-		expect(sceneExportOwnerWhere({
-			workspaceId: "shared-workspace",
-      workspace: { personalOwnerUserId: null },
+  test("uses personal Brand ownership for Creator exports and workspace ownership for Business", () => {
+    expect(sceneExportOwnerWhere({
+      projectUserId: "project-user",
+      workspaceId: "personal-workspace",
+      workspace: { personalOwnerUserId: "owner", pricingTier: "creator" },
+    })).toEqual({ userId: "owner", workspaceId: null });
+    expect(sceneExportOwnerWhere({
+      projectUserId: "project-user",
+      workspaceId: "shared-workspace",
+      workspace: { personalOwnerUserId: null, pricingTier: "business" },
     })).toEqual({ workspaceId: "shared-workspace" });
   });
 

@@ -20,7 +20,6 @@ import {
 } from "@narriflow/composition-plan";
 import {
   getEffectiveClipTiming,
-	generatedMediaEditorInsertionResultSchema,
   clipAutoLayoutMatchesInputs,
   editedToSource,
   deletedRangesEqual,
@@ -50,8 +49,6 @@ import {
   type SceneBlock,
   type SceneContent,
 	type SceneMotion,
-  type CensorSegment,
-  type MediaMotion,
   type SceneTemplateDefinition,
 } from "@narriflow/validators";
 import { TopBar } from "./top-bar";
@@ -107,17 +104,6 @@ import {
   isAuthenticatedActionFailure,
   type BrowserRequestFailure,
 } from "@/lib/authenticated-request-browser";
-import {
-  availableAutoCensorTreatments,
-  availableSceneMotionValues,
-  availableStudioTransitions,
-  type StudioAutoCensorRollout,
-  type StudioMotionRollout,
-} from "./studio-rollout-visibility";
-import {
-	editorActionForGeneratedMediaInsertion,
-	type GeneratedMediaInsertionIntent,
-} from "./tool-panels/generated-media-actions";
 
 class StudioExportRequestError extends Error {
   constructor(
@@ -405,10 +391,6 @@ interface StudioState {
    *  the editor document; this lightweight companion lets preview/timeline
    *  match the renderer's duration-bounded placement immediately. */
   brollPreviewAsset: StudioBrollPreviewAsset | null;
-  /** Durable asset-backed manual B-roll. References stay immutable in the
-   * editor document; preview and render adapters resolve short-lived URLs. */
-  brollPlacements: EditorDocument["brollPlacements"];
-	selectedBrollPlacementId: string | null;
   sceneBlocks: readonly SceneBlock[];
   visualAssets: readonly StudioVisualAsset[];
 	sceneFonts: readonly StudioSceneFont[];
@@ -437,16 +419,6 @@ interface StudioState {
 interface StudioContextValue extends StudioState {
   /** Current immutable Clip Editor Document projection owned by the session. */
   editorDocument: EditorDocument;
-  editorRevision: number;
-  autoCensorPolicy: Readonly<{
-    locale: string;
-    brandTerms: readonly string[];
-    canPersist: boolean;
-    rollout: StudioAutoCensorRollout;
-    freePreviewLimit: number;
-  }>;
-  canPersistMotion: boolean;
-  motionRollout: StudioMotionRollout;
   baseEditedToComposite: (timeSec: number) => number;
 	baseEditedRangeToComposite: (startSec: number, endSec: number) => ReturnType<typeof baseEditedRangeToCompositeRanges>;
   compositeToBaseEdited: (timeSec: number) => number;
@@ -600,11 +572,6 @@ interface StudioContextValue extends StudioState {
   ) => void;
   setBrollUrl: (url: string | null, coalesceKey?: string) => void;
   setBrollPreviewAsset: (asset: StudioBrollPreviewAsset | null) => void;
-  setSelectedBrollPlacementId: (id: string | null) => void;
-	checkpointEditorRevision: () => Promise<number>;
-	commitGeneratedMediaInsertion: (
-		intent: GeneratedMediaInsertionIntent,
-	) => Promise<void>;
   /** Breaks the document's coalesce chain without recording an undo step —
    *  wire to `onValueChangeEnd` of every slider that passes a coalesceKey
    *  (and pointer-up of the caption-resize drag) so the NEXT gesture never
@@ -647,12 +614,6 @@ interface StudioContextValue extends StudioState {
   duplicateSceneBlock: (id: string) => void;
 	replaceSceneBlock: (id: string, content: SceneContent, durationSec?: number) => void;
 	updateSceneMotion: (id: string, motion: SceneMotion) => void;
-  applyCensorSegments: (segments: readonly CensorSegment[]) => void;
-  updateCensorSegment: (id: string, segment: CensorSegment) => void;
-  setCensorSegmentEnabled: (id: string, enabled: boolean) => void;
-  deleteCensorSegment: (id: string) => void;
-  upsertMediaMotion: (motion: MediaMotion) => void;
-  deleteMediaMotion: (id: string) => void;
   deleteSceneBlock: (id: string) => void;
 }
 
@@ -752,15 +713,6 @@ interface StudioShellProps {
 	sceneFonts?: StudioSceneFont[];
   sceneTemplates?: StudioSceneTemplate[];
   sceneWriteCapabilities?: Readonly<{ cards: boolean; images: boolean; videos: boolean; templates: boolean }>;
-  autoCensorPolicy?: Readonly<{
-    locale: string;
-    brandTerms: readonly string[];
-    canPersist: boolean;
-    rollout: StudioAutoCensorRollout;
-    freePreviewLimit: number;
-  }>;
-  canPersistMotion?: boolean;
-  motionRollout?: StudioMotionRollout;
 }
 
 export function StudioShell({
@@ -794,34 +746,10 @@ export function StudioShell({
 	sceneFonts = [],
   sceneTemplates = [],
   sceneWriteCapabilities = { cards: false, images: false, videos: false, templates: false },
-  autoCensorPolicy = {
-    locale: "en",
-    brandTerms: [],
-    canPersist: false,
-    rollout: { scan: false, captionMask: false, mute: false, beep: false },
-    freePreviewLimit: 10,
-  },
-  canPersistMotion = false,
-  motionRollout = {
-    legacyTransitions: false,
-    crossDissolve: false,
-    directionalWipe: false,
-    directionalSlide: false,
-    zoom: false,
-    mediaFadeScale: false,
-    panKenBurns: false,
-    campaignApply: false,
-  },
 }: StudioShellProps) {
   const isViewportTooSmall = useIsViewportBelow(STUDIO_MIN_VIEWPORT_WIDTH);
   const [brollPreviewAsset, setBrollPreviewAsset] =
     useState<StudioBrollPreviewAsset | null>(null);
-	const [selectedBrollPlacementId, setSelectedBrollPlacementId] = useState<
-		string | null
-	>(null);
-	const generatedInsertionCommands = useRef(
-		new Map<string, { idempotencyKey: string; targetId: string }>(),
-	);
   const [layoutAnalysis, setLayoutAnalysis] =
     useState<ClipLayoutAnalysis | null>(initialLayoutAnalysis);
   const [splitLayoutAnalysis, setSplitLayoutAnalysis] =
@@ -1095,16 +1023,6 @@ export function StudioShell({
   const captionPreset = doc.captionPreset;
   const studioEdits = doc.studioEdits;
   const brollUrl = doc.brollUrl;
-	useEffect(() => {
-		if (
-			selectedBrollPlacementId &&
-			!doc.brollPlacements.some(
-				(placement) => placement.id === selectedBrollPlacementId,
-			)
-		) {
-			setSelectedBrollPlacementId(null);
-		}
-	}, [doc.brollPlacements, selectedBrollPlacementId]);
 
   // Derived from `doc.transcriptSlice`/`doc.clipStartSec`/`doc.clipEndSec`
   // via the exact same pure effective-timing computation studio/page.tsx
@@ -1306,23 +1224,13 @@ export function StudioShell({
     ) => {
       const current = getStudioDocument().studioEdits;
       const next = typeof updater === "function" ? updater(current) : updater;
-      if (
-        JSON.stringify(current.transition) !== JSON.stringify(next.transition) &&
-        next.transition.type !== "none" &&
-        (!canPersistMotion ||
-          !availableStudioTransitions(motionRollout, "none").includes(
-            next.transition.type,
-          ))
-      ) {
-        return;
-      }
       studioSession.dispatch({
         type: "document.edit",
         action: { type: "setStudioEdits", studioEdits: next },
         coalesceKey,
       });
     },
-    [canPersistMotion, getStudioDocument, motionRollout, studioSession],
+    [getStudioDocument, studioSession],
   );
 
   // Fix 8b: gesture end (slider pointer-up, resize-drag pointer-up) breaks
@@ -1341,106 +1249,6 @@ export function StudioShell({
   }, [studioSession],
   );
 
-	const commitGeneratedMediaInsertion = useCallback(
-		async (intent: GeneratedMediaInsertionIntent) => {
-			const signature = JSON.stringify(intent);
-			const command = generatedInsertionCommands.current.get(signature) ?? {
-				idempotencyKey: crypto.randomUUID(),
-				targetId:
-					intent.kind === "broll" && intent.replacePlacementId
-						? intent.replacePlacementId
-						: crypto.randomUUID(),
-			};
-			generatedInsertionCommands.current.set(signature, command);
-			const prepared = await studioSession.perform({
-				type: "prepare-external-commit",
-			});
-			if (prepared.kind !== "external-commit-prepared") {
-				throw new Error("Studio must be saved and actively writable before insertion");
-			}
-			const action =
-				intent.kind === "scene_block"
-					? {
-							kind: "insert_scene_block" as const,
-							sceneBlockId: command.targetId,
-							anchorSec: intent.anchorSec,
-							durationSec: intent.durationSec,
-						}
-					: intent.replacePlacementId
-						? {
-								kind: "replace_broll" as const,
-								targetPlacementId: intent.replacePlacementId,
-							}
-						: {
-								kind: "insert_broll" as const,
-								placementId: command.targetId,
-								startSec: intent.startSec,
-								endSec: intent.endSec,
-							};
-			try {
-				const response = await fetch(
-					`/api/projects/${clipInfo.projectId}/generated-media/jobs/${intent.jobId}/insertions`,
-					{
-						method: "POST",
-						headers: { "content-type": "application/json" },
-						body: JSON.stringify({
-							idempotencyKey: command.idempotencyKey,
-							jobId: intent.jobId,
-							projectId: clipInfo.projectId,
-							clipId: clipInfo.id,
-							baseRevision: prepared.revision,
-							action,
-						}),
-					},
-				);
-				if (!response.ok) {
-					await studioSession.perform({ type: "abort-external-commit" });
-					if (response.status === 409) {
-						await studioSession.perform({ type: "resume" });
-					}
-					throw new Error("Generated media insertion was not accepted");
-				}
-				const parsed = generatedMediaEditorInsertionResultSchema.safeParse(
-					await response.json(),
-				);
-				if (!parsed.success) {
-					await studioSession.perform({ type: "abort-external-commit" });
-					throw new Error("Generated media insertion response is invalid");
-				}
-				const editorAction = editorActionForGeneratedMediaInsertion(
-					intent,
-					parsed.data,
-				);
-				const adopted = await studioSession.perform({
-					type: "adopt-external-document-edit",
-					baseRevision: prepared.revision,
-					committedRevision: parsed.data.revision,
-					action: editorAction,
-					document: parsed.data.document,
-				});
-				if (adopted.kind !== "external-document-edit-adopted") {
-					throw new Error("Generated media insertion could not be adopted");
-				}
-				generatedInsertionCommands.current.delete(signature);
-				if (parsed.data.kind === "broll") {
-					setSelectedBrollPlacementId(parsed.data.targetId);
-				}
-			} catch (error) {
-				await studioSession.perform({ type: "abort-external-commit" });
-				throw error;
-			}
-		},
-		[clipInfo.id, clipInfo.projectId, studioSession],
-	);
-
-	const checkpointEditorRevision = useCallback(async () => {
-		const checkpoint = await studioSession.perform({ type: "checkpoint-cloud" });
-		if (checkpoint.kind !== "cloud-current") {
-			throw new Error("Studio changes must be saved before using prompt context");
-		}
-		return checkpoint.revision;
-	}, [studioSession]);
-
   const insertSceneBlock = useCallback((scene: SceneBlock) => {
     studioSession.dispatch({ type: "document.edit", action: { type: "insertSceneBlock", scene } });
   }, [studioSession]);
@@ -1457,92 +1265,8 @@ export function StudioShell({
 		studioSession.dispatch({ type: "document.edit", action: { type: "replaceSceneBlock", id, content, ...(durationSec === undefined ? {} : { durationSec }) } });
   }, [studioSession]);
 	const updateSceneMotion = useCallback((id: string, motion: SceneMotion) => {
-		const removesMotion = motion.entrance === "none" && motion.exit === "none";
-		if (
-			!removesMotion &&
-			(!canPersistMotion ||
-				!availableSceneMotionValues(motionRollout, "entrance", "none").includes(
-					motion.entrance,
-				) ||
-				!availableSceneMotionValues(motionRollout, "exit", "none").includes(
-					motion.exit,
-				))
-		) return;
 		studioSession.dispatch({ type: "document.edit", action: { type: "updateSceneMotion", id, motion } });
-	}, [canPersistMotion, motionRollout, studioSession]);
-  const applyCensorSegments = useCallback((segments: readonly CensorSegment[]) => {
-    const released = availableAutoCensorTreatments(autoCensorPolicy.rollout);
-    if (
-      !autoCensorPolicy.canPersist ||
-      segments.length === 0 ||
-      segments.some((segment) => !released.includes(segment.treatment))
-    ) return;
-    studioSession.dispatch({
-      type: "document.edit",
-      action: { type: "applyCensorSegments", segments: [...segments] },
-    });
-  }, [autoCensorPolicy, studioSession]);
-  const updateCensorSegment = useCallback((id: string, segment: CensorSegment) => {
-    if (
-      !autoCensorPolicy.canPersist ||
-      !availableAutoCensorTreatments(autoCensorPolicy.rollout).includes(
-        segment.treatment,
-      )
-    ) return;
-    studioSession.dispatch({
-      type: "document.edit",
-      action: { type: "updateCensorSegment", id, segment },
-    });
-  }, [autoCensorPolicy, studioSession]);
-  const setCensorSegmentEnabled = useCallback((id: string, enabled: boolean) => {
-    const segment = getStudioDocument().censorSegments.find(
-      (candidate) => candidate.id === id,
-    );
-    if (
-      !segment ||
-      (enabled &&
-        (!autoCensorPolicy.canPersist ||
-          !availableAutoCensorTreatments(autoCensorPolicy.rollout).includes(
-            segment.treatment,
-          )))
-    ) return;
-    studioSession.dispatch({
-      type: "document.edit",
-      action: { type: "setCensorSegmentEnabled", id, enabled },
-    });
-  }, [autoCensorPolicy, getStudioDocument, studioSession]);
-  const deleteCensorSegment = useCallback((id: string) => {
-    studioSession.dispatch({
-      type: "document.edit",
-      action: { type: "removeCensorSegment", id },
-    });
-  }, [studioSession]);
-  const upsertMediaMotion = useCallback((motion: MediaMotion) => {
-    if (
-      !canPersistMotion ||
-      !availableSceneMotionValues(motionRollout, "entrance", "none").includes(
-        motion.entrance,
-      ) ||
-      !availableSceneMotionValues(motionRollout, "exit", "none").includes(
-        motion.exit,
-      )
-    ) return;
-    const exists = getStudioDocument().mediaMotions.some(
-      (candidate) => candidate.id === motion.id,
-    );
-    studioSession.dispatch({
-      type: "document.edit",
-      action: exists
-        ? { type: "updateMediaMotion", id: motion.id, motion }
-        : { type: "insertMediaMotion", motion },
-    });
-  }, [canPersistMotion, getStudioDocument, motionRollout, studioSession]);
-  const deleteMediaMotion = useCallback((id: string) => {
-    studioSession.dispatch({
-      type: "document.edit",
-      action: { type: "removeMediaMotion", id },
-    });
-  }, [studioSession]);
+	}, [studioSession]);
   const deleteSceneBlock = useCallback((id: string) => {
     studioSession.dispatch({ type: "document.edit", action: { type: "deleteSceneBlock", id } });
   }, [studioSession]);
@@ -2332,16 +2056,10 @@ export function StudioShell({
     layoutMode, showShortcuts, timelineZoom, selectedSegmentId, transcriptSelectionRange,
     captionPreset, captionSelected, selectedTextLayerId, transcriptOnly, segments, studioEdits, brollUrl,
     brollPreviewAsset,
-    brollPlacements: doc.brollPlacements,
-		selectedBrollPlacementId,
     sceneBlocks: doc.sceneBlocks, visualAssets, sceneFonts, sceneTemplates, sceneWriteCapabilities,
     saveState: displayedSaveState, isDocDirty, exportState, compositionPlanStatus,
     resetState, canUndo, canRedo, canReset,
     editorDocument: doc,
-    editorRevision: revision,
-    autoCensorPolicy,
-    canPersistMotion,
-    motionRollout,
     baseEditedToComposite: (timeSec) => baseEditedToComposite(doc, timeSec),
 		baseEditedRangeToComposite: (startSec, endSec) => baseEditedRangeToCompositeRanges(doc, startSec, endSec),
     compositeToBaseEdited: (timeSec) => compositeToBaseEdited(doc, timeSec),
@@ -2359,15 +2077,12 @@ export function StudioShell({
     setLayoutMode, setShowShortcuts, setTimelineZoom,
     setSelectedSegmentId, setTranscriptSelectionRange, setCaptionPreset, selectCaption, deselectCaption,
     selectTextLayer, deselectTextLayer,
-		setTranscriptOnly, setSegments, setStudioEdits, setBrollUrl, setBrollPreviewAsset,
-		setSelectedBrollPlacementId, checkpointEditorRevision, commitGeneratedMediaInsertion, endCoalesce,
+    setTranscriptOnly, setSegments, setStudioEdits, setBrollUrl, setBrollPreviewAsset, endCoalesce,
     revertDeletedRange,
     togglePlay, seekTo, splitAtPlayhead, deleteSelectedSegment, handleSave, handleExport,
     reportCompositionPlanStatus, compositionPlanQaFixture,
     handleUndo, handleRedo, handleReset, commitTrim, trimHandlesDisabled,
 		insertSceneBlock, moveSceneBlock, trimSceneBlock, duplicateSceneBlock, replaceSceneBlock, updateSceneMotion, deleteSceneBlock,
-    applyCensorSegments, updateCensorSegment, setCensorSegmentEnabled,
-    deleteCensorSegment, upsertMediaMotion, deleteMediaMotion,
   };
 
   return (

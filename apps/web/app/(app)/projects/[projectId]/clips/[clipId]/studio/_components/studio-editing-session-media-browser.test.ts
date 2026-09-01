@@ -5,7 +5,7 @@ import type {
   StudioMediaEvent,
 } from "./studio-editing-session";
 
-class FakeVideoElement {
+class FakeVideoElement extends EventTarget {
   src = "";
   currentTime = 0;
   playbackRate = 1;
@@ -15,21 +15,6 @@ class FakeVideoElement {
   loadCount = 0;
   playCount = 0;
   pauseCount = 0;
-  private readonly listeners = new Map<string, Set<() => void>>();
-
-  addEventListener(type: string, listener: () => void): void {
-    const listeners = this.listeners.get(type) ?? new Set();
-    listeners.add(listener);
-    this.listeners.set(type, listeners);
-  }
-
-  removeEventListener(type: string, listener: () => void): void {
-    this.listeners.get(type)?.delete(listener);
-  }
-
-  emit(type: string): void {
-    for (const listener of this.listeners.get(type) ?? []) listener();
-  }
 
   load(): void {
     this.loadCount += 1;
@@ -38,13 +23,13 @@ class FakeVideoElement {
   async play(): Promise<void> {
     this.playCount += 1;
     this.paused = false;
-    this.emit("play");
+    this.dispatchEvent(new Event("play"));
   }
 
   pause(): void {
     this.pauseCount += 1;
     this.paused = true;
-    this.emit("pause");
+    this.dispatchEvent(new Event("pause"));
   }
 
   removeAttribute(name: string): void {
@@ -75,7 +60,7 @@ test("browser media adapter translates commands and HTML media events", async ()
   });
   expect(video.src).toBe("https://cdn.example.com/proxy.mp4");
   expect(video.loadCount).toBe(1);
-  video.emit("loadedmetadata");
+  video.dispatchEvent(new Event("loadedmetadata"));
   expect(video.currentTime).toBe(7);
   expect(video.playbackRate).toBe(1.5);
   expect(video.muted).toBe(true);
@@ -84,9 +69,9 @@ test("browser media adapter translates commands and HTML media events", async ()
   adapter.command({ type: "play", binding });
   await Promise.resolve();
   video.currentTime = 8;
-  video.emit("timeupdate");
+  video.dispatchEvent(new Event("timeupdate"));
   adapter.command({ type: "seek", binding, mediaTimeSec: 11 });
-  video.emit("seeked");
+  video.dispatchEvent(new Event("seeked"));
   adapter.command({ type: "set-rate", binding, rate: 2 });
   adapter.command({ type: "pause", binding });
 
@@ -123,7 +108,7 @@ test("browser media adapter keeps commands issued while metadata loads", () => {
   adapter.command({ type: "set-audio", binding, muted: true, volume: 0.4 });
   adapter.command({ type: "pause", binding });
 
-  video.emit("loadedmetadata");
+  video.dispatchEvent(new Event("loadedmetadata"));
 
   expect(video.currentTime).toBe(12);
   expect(video.playbackRate).toBe(1.75);
@@ -158,7 +143,7 @@ test("browser media adapter ignores a load-transition pause before a playing swa
     muted: false,
     volume: 1,
   });
-  video.emit("pause");
+  video.dispatchEvent(new Event("pause"));
   expect(events).toEqual([]);
 
   adapter.command({
@@ -171,7 +156,7 @@ test("browser media adapter ignores a load-transition pause before a playing swa
     muted: false,
     volume: 1,
   });
-  video.emit("loadedmetadata");
+  video.dispatchEvent(new Event("loadedmetadata"));
   await Promise.resolve();
 
   expect(video.src).toBe("https://cdn.example.com/proxy-b.mp4");

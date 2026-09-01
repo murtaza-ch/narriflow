@@ -30,7 +30,6 @@ export async function scheduleWorkspacePostAction(input: {
 	scheduledLocal: string;
 	aspectRatio: ClipAspectRatio;
 	resolution: "720p" | "1080p";
-	approvalOverrideReason?: string | null;
 }) {
 	try {
 		return await executeProjectAction(
@@ -60,7 +59,6 @@ export async function scheduleWorkspacePostAction(input: {
 				aspectRatio: ratioMap[input.aspectRatio],
 				resolution: input.resolution,
 				providerSettings: {},
-				approvalOverrideReason: input.approvalOverrideReason?.trim() || null,
 			},
 			{ workspaceId: appUser.workspaceId, actorUserId: appUser.actorUserId },
 		);

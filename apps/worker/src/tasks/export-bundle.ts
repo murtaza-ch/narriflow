@@ -7,21 +7,14 @@ import { pipeline } from "node:stream/promises";
 import archiver from "archiver";
 import { getPrismaClient } from "@narriflow/db/client";
 import {
-  adoptExportBundlePublication,
-  admitExportBundleCleanup,
   copyObject,
   currentWorkflowAttempt,
   deleteObject,
   downloadObjectToFile,
-  exportBundleStorageKeys,
   getWorkflowRunLifecycle,
-  planExportBundleCleanup,
   putFileFromPath,
   rethrowWorkflowAttemptLost,
   workflowFailureFromUnknown,
-  type ExportBundleCleanupPlan,
-  type MediaCleanupObligationIdentity,
-  type MediaCleanupObligationInput,
 } from "@narriflow/services";
 import { exportBundleManifestSchema, type ExportBundleManifest } from "@narriflow/validators";
 
@@ -46,75 +39,12 @@ async function hashFile(path: string) {
   return digest.digest("hex");
 }
 
-type ExportBundleCleanupRetirementStore = {
-  updateMany(input: {
-    where: MediaCleanupObligationIdentity & {
-      claimId: string;
-      completedAt: null;
-    };
-    data:
-      | {
-          completedAt: Date;
-          claimId: null;
-          claimExpiresAt: null;
-          failureCode: "storage_deleted";
-        }
-      | {
-          nextAttemptAt: Date;
-          claimId: null;
-          claimExpiresAt: null;
-          failureCode: "export_bundle_eager_delete_failed";
-        };
-  }): Promise<{ count: number }>;
-};
-
-async function retireExportBundleObject(input: {
-  store: ExportBundleCleanupRetirementStore;
-  plan: ExportBundleCleanupPlan;
-  obligation: MediaCleanupObligationInput;
-  remove(): Promise<void>;
-  now: Date;
-}): Promise<void> {
-  const identity = {
-    origin: input.obligation.origin,
-    cleanupClass: input.obligation.cleanupClass,
-    objectKey: input.obligation.objectKey,
+export function exportBundleStorageKeys(projectId: string, operationId: string, attemptId: string) {
+  const prefix = `projects/${projectId}/campaign-operations/${operationId}`;
+  return {
+    attemptKey: `${prefix}/attempts/${attemptId}.zip`,
+    finalKey: `${prefix}/completed/${attemptId}.zip`,
   };
-  try {
-    await input.remove();
-    await input.store.updateMany({
-      where: {
-        ...identity,
-        claimId: input.plan.attemptId,
-        completedAt: null,
-      },
-      data: {
-        completedAt: input.now,
-        claimId: null,
-        claimExpiresAt: null,
-        failureCode: "storage_deleted",
-      },
-    });
-  } catch {
-    // A failed/ambiguous eager deletion is recoverable: release the exact-key
-    // obligation immediately. If this DB update also fails, the conservative
-    // producer hold eventually expires and the same worker recovers it.
-    await input.store
-      .updateMany({
-        where: {
-          ...identity,
-          claimId: input.plan.attemptId,
-          completedAt: null,
-        },
-        data: {
-          nextAttemptAt: input.now,
-          claimId: null,
-          claimExpiresAt: null,
-          failureCode: "export_bundle_eager_delete_failed",
-        },
-      })
-      .catch(() => undefined);
-  }
 }
 
 export async function runExportBundlePipeline<TArchive>(input: {
@@ -174,20 +104,10 @@ export async function processExportBundleRun(run: { id: string; projectId: strin
   // lease after copying can then remove only its own object, never the object
   // published by a winning takeover attempt.
   const { attemptKey, finalKey } = exportBundleStorageKeys(run.projectId, bundle.operationId, run.attemptId);
-  const cleanupPlan = planExportBundleCleanup(
-    run.projectId,
-    bundle.operationId,
-    run.attemptId,
-    new Date(),
-  );
   let finalPublished = false;
   let bundleSettled = false;
   try {
     await lifecycle.mutateOwnedAttempt(attempt, async (tx) => {
-      await admitExportBundleCleanup(
-        tx.mediaCleanupObligation,
-        cleanupPlan,
-      );
       await tx.exportBundle.update({ where: { id: bundle.id }, data: { status: "building", attemptStorageKey: attemptKey, errorCode: null } });
       await tx.campaignOperationItem.updateMany({ where: { operationId: bundle.operationId, status: "failed", errorCode: "export_bundle_build_failed" }, data: { status: "pending", errorCode: null, settledAt: null } });
       await tx.campaignOperation.update({ where: { id: bundle.operationId }, data: { status: "running", succeededCount: 0, failedCount: 0, completedAt: null } });
@@ -216,11 +136,6 @@ export async function processExportBundleRun(run: { id: string; projectId: strin
       },
       settle: async ({ archiveInfo, checksumSha256 }) => {
         await lifecycle.mutateOwnedAttempt(attempt, async (tx) => {
-          await adoptExportBundlePublication(
-            tx.mediaCleanupObligation,
-            cleanupPlan,
-            new Date(),
-          );
           await tx.campaignOperationItem.updateMany({ where: { operationId: bundle.operationId, status: "pending" }, data: { status: "succeeded", settledAt: new Date(), errorCode: null } });
           await tx.exportBundle.update({ where: { id: bundle.id }, data: { status: "completed", attemptStorageKey: null, storageKey: finalKey, sizeBytes: BigInt(archiveInfo.size), checksumSha256, completedAt: new Date(), errorCode: null } });
 					await tx.campaignOperation.update({ where: { id: bundle.operationId }, data: { status: manifest.excluded.length ? "partial" : "completed", succeededCount: manifest.included.length, failedCount: 0, completedAt: new Date() } });
@@ -229,36 +144,12 @@ export async function processExportBundleRun(run: { id: string; projectId: strin
       },
     });
     await lifecycle.completeStage(attempt);
-    await retireExportBundleObject({
-      store: prisma.mediaCleanupObligation,
-      plan: cleanupPlan,
-      obligation: cleanupPlan.obligations[0],
-      remove: async () => {
-        await deleteObject(attemptKey, { signal });
-      },
-      now: new Date(),
-    });
+    await deleteObject(attemptKey, { signal }).catch(() => {});
   } catch (error) {
     if (finalPublished && !bundleSettled) {
-      await retireExportBundleObject({
-        store: prisma.mediaCleanupObligation,
-        plan: cleanupPlan,
-        obligation: cleanupPlan.obligations[1],
-        remove: async () => {
-          await deleteObject(finalKey);
-        },
-        now: new Date(),
-      });
+      await deleteObject(finalKey).catch(() => {});
     }
-    await retireExportBundleObject({
-      store: prisma.mediaCleanupObligation,
-      plan: cleanupPlan,
-      obligation: cleanupPlan.obligations[0],
-      remove: async () => {
-        await deleteObject(attemptKey);
-      },
-      now: new Date(),
-    });
+    await deleteObject(attemptKey).catch(() => {});
     rethrowWorkflowAttemptLost(error);
     if (!bundleSettled) {
       await lifecycle.mutateOwnedAttempt(attempt, async (tx) => {

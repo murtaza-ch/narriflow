@@ -189,15 +189,6 @@ export type StudioSessionOperation =
     }
   | { type: "checkpoint-cloud" }
   | { type: "prepare-cloud-revision" }
-  | { type: "prepare-external-commit" }
-  | { type: "abort-external-commit" }
-  | {
-      type: "adopt-external-document-edit";
-      baseRevision: number;
-      committedRevision: number;
-      action: SynchronousEditorAction;
-      document: EditorDocument;
-    }
   | { type: "take-over" }
   | { type: "resolve-conflict"; choice: "device" | "cloud" }
   | { type: "reset-to-original" }
@@ -226,9 +217,6 @@ export type StudioOperationResult =
       convergence: "current" | "merged" | "conflict";
     }
   | { kind: "cloud-prepared"; revision: number }
-  | { kind: "external-commit-prepared"; revision: number }
-  | { kind: "external-commit-aborted" }
-  | { kind: "external-document-edit-adopted"; revision: number }
   | {
       kind: "cloud-blocked";
       reason:
@@ -637,7 +625,6 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
   private unsubscribeOnline: (() => void) | null = null;
   private resetInProgress = false;
   private cloudRefreshGeneration = 0;
-  private externalCommitBaseRevision: number | null = null;
   private readonly sourceUrl: string | null;
   private readonly sourcePurged: boolean;
   private readonly automaticLayoutSourceIdentity: string | null;
@@ -948,150 +935,6 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
         segments: operation.segments,
       });
       return { kind: "trimmed" };
-    }
-    if (operation.type === "prepare-external-commit") {
-      if (
-        this.externalCommitBaseRevision !== null &&
-        this.projection.status === "starting"
-      ) {
-        return {
-          kind: "external-commit-prepared",
-          revision: this.externalCommitBaseRevision,
-        };
-      }
-      if (
-        this.projection.status !== "ready" ||
-        this.projection.ownership.kind !== "writer"
-      ) {
-        return { kind: "cloud-blocked", reason: "read-only" };
-      }
-      const prepared = await this.waitForCloudCurrent("prepare");
-      if (prepared.kind !== "cloud-prepared") return prepared;
-      if (
-        this.projection.status !== "ready" ||
-        this.projection.ownership.kind !== "writer" ||
-        this.projection.cloud.state !== "current" ||
-        this.projection.cloud.dirty ||
-        this.cloudAttempt !== null ||
-        !editorDocumentsEqual(this.unified.doc.present, this.cloudDocument) ||
-        prepared.revision !== this.cloudRevision
-      ) {
-        return { kind: "cloud-blocked", reason: "unresolved-conflict" };
-      }
-      this.clearCloudTimers();
-      this.externalCommitBaseRevision = this.cloudRevision;
-      this.projection = { ...this.projection, status: "starting" };
-      this.publish();
-      return {
-        kind: "external-commit-prepared",
-        revision: this.cloudRevision,
-      };
-    }
-    if (operation.type === "abort-external-commit") {
-      if (this.externalCommitBaseRevision === null) {
-        return { kind: "unavailable", reason: "invalid-state" };
-      }
-      this.externalCommitBaseRevision = null;
-      this.projection = { ...this.projection, status: "ready" };
-      this.publish();
-      return { kind: "external-commit-aborted" };
-    }
-    if (operation.type === "adopt-external-document-edit") {
-      if (
-        this.projection.ownership.kind !== "writer" ||
-        (this.projection.status !== "ready" &&
-          this.projection.status !== "starting")
-      ) {
-        return { kind: "cloud-blocked", reason: "read-only" };
-      }
-      if (
-        this.projection.status === "ready" &&
-        operation.committedRevision === this.cloudRevision &&
-        editorDocumentsEqual(operation.document, this.cloudDocument) &&
-        editorDocumentsEqual(this.unified.doc.present, this.cloudDocument)
-      ) {
-        return {
-          kind: "external-document-edit-adopted",
-          revision: this.cloudRevision,
-        };
-      }
-      if (
-        this.externalCommitBaseRevision === null ||
-        this.projection.status !== "starting" ||
-        this.projection.cloud.state !== "current" ||
-        this.projection.cloud.dirty ||
-        this.cloudAttempt !== null ||
-        !editorDocumentsEqual(this.unified.doc.present, this.cloudDocument)
-      ) {
-        return { kind: "cloud-blocked", reason: "unresolved-conflict" };
-      }
-      if (
-        operation.baseRevision !== this.externalCommitBaseRevision ||
-        operation.baseRevision !== this.cloudRevision ||
-        operation.committedRevision !== operation.baseRevision + 1
-      ) {
-        this.externalCommitBaseRevision = null;
-        this.projection = { ...this.projection, status: "ready" };
-        this.publish();
-        if (operation.committedRevision > this.cloudRevision) {
-          await this.refreshCloudHeadAndConverge({
-            kind: "revision-conflict",
-            minimumRevision: operation.committedRevision,
-          });
-        }
-        return { kind: "cloud-blocked", reason: "revision-conflict" };
-      }
-      const nextDocument = ownDocument(operation.document);
-      const nextUnified = applyUnifiedEditorAction(this.unified, {
-        kind: "document",
-        action: structuredClone(operation.action),
-      });
-      if (!editorDocumentsEqual(nextUnified.doc.present, nextDocument)) {
-        this.externalCommitBaseRevision = null;
-        this.projection = { ...this.projection, status: "ready" };
-        this.publish();
-        await this.refreshCloudHeadAndConverge({
-          kind: "revision-conflict",
-          minimumRevision: operation.committedRevision,
-        });
-        return {
-          kind: "cloud-blocked",
-          reason: "semantic-rejection",
-          code: "external_document_mismatch",
-        };
-      }
-      const previousDocument = this.cloudDocument;
-      this.unified = nextUnified;
-      deepFreeze(this.unified.doc.present);
-      this.cloudDocument = nextDocument;
-      this.cloudRevision = operation.committedRevision;
-      this.documentVersion += 1;
-      this.externalCommitBaseRevision = null;
-      this.cloudDirtySince = null;
-      this.cloudAttempt = null;
-      this.clearCloudTimers();
-      this.retireDerivedAssetsForAcknowledgedChange(
-        previousDocument,
-        nextDocument,
-      );
-      this.projection = {
-        ...this.projection,
-        status: "ready",
-        cloud: {
-          state: "current",
-          revision: this.cloudRevision,
-          dirty: false,
-          rejectionCode: null,
-        },
-      };
-      this.reconcilePlaybackAfterDocumentChange();
-      this.scheduleDeviceDraftWrite();
-      this.publish();
-      this.settleCloudWaiters();
-      return {
-        kind: "external-document-edit-adopted",
-        revision: this.cloudRevision,
-      };
     }
     if (operation.type === "resume") {
       if (!this.dependencies || this.projection.status !== "ready") {

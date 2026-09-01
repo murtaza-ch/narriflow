@@ -6,13 +6,9 @@ import {
   reviewService,
   ReviewServiceError,
   ProgramWriteDisabledError,
-  hashReviewSessionGrant,
 } from "@narriflow/services";
-import {
-  assertReviewSameOrigin,
-  readReviewJsonBody,
-  reviewPublicFailureStatus,
-} from "./review-public-http";
+
+const MAX_BODY_BYTES = 32 * 1024;
 
 function sessionSecret() {
   const secret = process.env.REVIEW_SESSION_SECRET?.trim();
@@ -24,10 +20,31 @@ function cookieName(token: string) {
   return `nf_review_${hashReviewAccessToken(token).slice(0, 12)}`;
 }
 
+function assertSameOrigin(request: Request) {
+  const origin = request.headers.get("origin");
+  if (!origin || origin !== new URL(request.url).origin) {
+    throw new ReviewServiceError("review_origin_invalid", "Review request origin is invalid");
+  }
+}
+
+async function body(request: Request) {
+  const length = Number(request.headers.get("content-length") ?? "0");
+  if (length > MAX_BODY_BYTES) throw new ReviewServiceError("review_request_too_large", "Review request is too large");
+  const text = await request.text();
+  if (Buffer.byteLength(text, "utf8") > MAX_BODY_BYTES) {
+    throw new ReviewServiceError("review_request_too_large", "Review request is too large");
+  }
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    throw new ReviewServiceError("review_request_invalid", "Review request body is invalid");
+  }
+}
+
 function failure(error: unknown) {
   if (error instanceof ProgramWriteDisabledError) return NextResponse.json({ error: error.code, message: error.message }, { status: 503 });
   const code = error instanceof ReviewServiceError ? error.code : "review_request_failed";
-  const status = reviewPublicFailureStatus(code);
+  const status = code.endsWith("not_found") ? 404 : code.includes("rate_limited") ? 429 : code.includes("closed") ? 409 : code.includes("forbidden") ? 403 : 400;
   return NextResponse.json({ error: code, message: error instanceof ReviewServiceError ? error.message : "Review request failed" }, { status });
 }
 
@@ -35,13 +52,13 @@ type Context = { params: Promise<{ token: string; review?: string[] }> };
 
 export async function POST(request: Request, context: Context) {
   try {
-    assertReviewSameOrigin(request);
+    assertSameOrigin(request);
     const { token, review = [] } = await context.params;
     const action = review[0] ?? "access";
     if (action === "access") {
       const session = await reviewService.authenticate(
         token,
-        await readReviewJsonBody(request),
+        await body(request),
         request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || "unknown",
         sessionSecret(),
       );
@@ -57,8 +74,8 @@ export async function POST(request: Request, context: Context) {
     }
     const session = (await cookies()).get(cookieName(token))?.value;
     if (!session) throw new ReviewServiceError("review_session_invalid", "Review session is missing");
-    if (action === "comments") return NextResponse.json(await reviewService.addComment(session, sessionSecret(), await readReviewJsonBody(request)), { status: 201 });
-    if (action === "decision") return NextResponse.json(await reviewService.decide(session, sessionSecret(), await readReviewJsonBody(request)), { status: 201 });
+    if (action === "comments") return NextResponse.json(await reviewService.addComment(session, sessionSecret(), await body(request)), { status: 201 });
+    if (action === "decision") return NextResponse.json(await reviewService.decide(session, sessionSecret(), await body(request)), { status: 201 });
     throw new ReviewServiceError("review_route_not_found", "Review route was not found");
   } catch (error) {
     return failure(error);
@@ -80,43 +97,15 @@ export async function GET(_request: Request, context: Context) {
     }
     if (review.length === 0) {
       const { round, claims } = await reviewService.readRound(session, sessionSecret());
-      const status = deriveReviewRoundStatus(round);
-      const grantHash = hashReviewSessionGrant(claims.subject);
-      const commentsWithReplies = new Set(
-        round.comments
-          .map((comment) => comment.parentId)
-          .filter((value): value is string => value !== null),
-      );
-      const now = Date.now();
-      const requiredItems = round.items.filter((item) => item.required);
       return NextResponse.json({
         round: {
           id: round.id,
           title: round.title,
           message: round.message,
           revision: round.revision,
-          status,
-          responsesOpen:
-            round.status === "open" &&
-            round.revokedAt === null &&
-            (!round.expiresAt || round.expiresAt > new Date()) &&
-            round.decision !== "approved",
-          sentAt: round.sentAt,
-          expiresAt: round.expiresAt,
-          projectTitle: round.project.title,
-          workspaceName: round.project.workspace.name,
+          status: deriveReviewRoundStatus(round),
           allowDownloads: round.allowDownloads,
           approvalRequired: round.approvalRequired,
-          campaignDecision: round.decision,
-          progress: {
-            approved: requiredItems.filter(
-              (item) => item.currentDecision === "approved",
-            ).length,
-            changesRequested: requiredItems.filter(
-              (item) => item.currentDecision === "changes_requested",
-            ).length,
-            required: requiredItems.length,
-          },
           items: round.items.map((item) => {
             const selected = new Set(Array.isArray(item.selectedVariantIds) ? item.selectedVariantIds.filter((value): value is string => typeof value === "string") : []);
             return {
@@ -124,7 +113,6 @@ export async function GET(_request: Request, context: Context) {
               position: item.position,
               required: item.required,
               currentDecision: item.currentDecision,
-              title: item.clip.title || `Clip ${item.clip.index + 1}`,
               export: {
                 id: item.export.id,
                 editorRevision: item.export.editorRevision,
@@ -139,20 +127,9 @@ export async function GET(_request: Request, context: Context) {
             authorName: comment.authorName,
             body: comment.body,
             timestampSec: comment.timestampSec,
-            authorKind: comment.authorKind,
             resolvedAt: comment.resolvedAt,
             editedAt: comment.editedAt,
             createdAt: comment.createdAt,
-            isOwn: comment.authorGrantHash === grantHash,
-            canEdit:
-              status === "open" &&
-              comment.authorGrantHash === grantHash &&
-              now - comment.createdAt.getTime() <= 15 * 60_000,
-            canDelete:
-              status === "open" &&
-              comment.authorGrantHash === grantHash &&
-              !commentsWithReplies.has(comment.id) &&
-              now - comment.createdAt.getTime() <= 15 * 60_000,
           })),
           reviewer: claims.identity,
         },
@@ -166,12 +143,12 @@ export async function GET(_request: Request, context: Context) {
 
 export async function PATCH(request: Request, context: Context) {
   try {
-    assertReviewSameOrigin(request);
+    assertSameOrigin(request);
     const { token, review = [] } = await context.params;
     if (review[0] !== "comments" || !review[1]) throw new ReviewServiceError("review_route_not_found", "Review route was not found");
     const session = (await cookies()).get(cookieName(token))?.value;
     if (!session) throw new ReviewServiceError("review_session_invalid", "Review session is missing");
-    return NextResponse.json(await reviewService.editComment(session, sessionSecret(), review[1], await readReviewJsonBody(request)));
+    return NextResponse.json(await reviewService.editComment(session, sessionSecret(), review[1], await body(request)));
   } catch (error) {
     return failure(error);
   }
@@ -179,7 +156,7 @@ export async function PATCH(request: Request, context: Context) {
 
 export async function DELETE(request: Request, context: Context) {
   try {
-    assertReviewSameOrigin(request);
+    assertSameOrigin(request);
     const { token, review = [] } = await context.params;
     if (review[0] !== "comments" || !review[1]) throw new ReviewServiceError("review_route_not_found", "Review route was not found");
     const session = (await cookies()).get(cookieName(token))?.value;

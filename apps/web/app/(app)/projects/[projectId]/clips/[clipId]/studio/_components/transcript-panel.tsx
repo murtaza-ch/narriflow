@@ -3,7 +3,7 @@
 import { memo, useRef, useEffect, useCallback, useState, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import { Box, Flex, Input, Text, Textarea, Checkbox } from "@chakra-ui/react";
-import { Combine, Copy, Plus, PanelsTopLeft, Scissors, ShieldAlert, Trash2, Undo2 } from "lucide-react";
+import { Combine, Copy, Plus, PanelsTopLeft, Scissors, Trash2, Undo2 } from "lucide-react";
 import { toaster } from "@narriflow/ui";
 import { editedToSource, sourceToEdited, userErrorMessage } from "@narriflow/validators";
 import type {
@@ -26,7 +26,6 @@ import {
 } from "./transcript-selection";
 import { subtitleParagraphGroups } from "./subtitle-lines";
 import { sceneTextContent } from "./scene-fonts";
-import { AutoCensorReview } from "./auto-censor-review";
 
 // ─── Pause threshold (seconds) ──────────────────────────────────────────────
 
@@ -802,8 +801,6 @@ export function TranscriptPanel() {
     baseEditedToComposite,
     sceneWriteCapabilities,
     sceneFonts,
-    autoCensorPolicy,
-    editorDocument,
   } = useStudio();
   const router = useRouter();
 
@@ -815,7 +812,6 @@ export function TranscriptPanel() {
   );
   const [selection, setSelection] = useState<TranscriptSelectionState | null>(null);
   const [viewMode, setViewMode] = useState<TranscriptViewMode>("word");
-  const [autoCensorOpen, setAutoCensorOpen] = useState(false);
   const [creatingClip, setCreatingClip] = useState(false);
   // Synchronous re-entrancy guard for handleCreateClip: both the toolbar
   // button and the ⇧⌘C shortcut call it, and `creatingClip` state alone
@@ -1206,30 +1202,6 @@ export function TranscriptPanel() {
             </Checkbox.Label>
           </Checkbox.Root>
         </Flex>
-        {autoCensorPolicy.rollout.scan ||
-        editorDocument.censorSegments.length > 0 ? (
-          <Flex
-            as="button"
-            align="center"
-            justify="center"
-            gap="6px"
-            h="30px"
-            borderWidth="1px"
-            borderColor="studio.borderStrong"
-            borderRadius="l1"
-            bg="studio.subtle"
-            color="studio.fg"
-            fontSize="11px"
-            fontWeight="600"
-            onClick={() => setAutoCensorOpen(true)}
-            _hover={{ borderColor: "studio.accent", color: "studio.accentFg" }}
-          >
-            <ShieldAlert size={13} />
-            {autoCensorPolicy.rollout.scan
-              ? "Find sensitive words"
-              : "Censor segments"}
-          </Flex>
-        ) : null}
         <Flex
           role="group"
           aria-label="Transcript editing view"
@@ -1356,7 +1328,6 @@ export function TranscriptPanel() {
           />
         )}
       </Box>
-      <AutoCensorReview open={autoCensorOpen} onOpenChange={setAutoCensorOpen} />
     </Box>
   );
 }
