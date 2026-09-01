@@ -43,7 +43,7 @@ export interface GeneratedImageUsageSummary {
   reserved: number;
   finalized: number;
   remaining: number;
-  trial: { enabled: boolean; consumed: boolean } | null;
+  trial: { consumed: boolean } | null;
 }
 
 export async function getGeneratedImageUsageSummary(
@@ -71,9 +71,7 @@ export async function getGeneratedImageUsageSummary(
     reserved,
     finalized,
     remaining: Math.max(0, limits.daily - used),
-    trial: policy === "trial_metered"
-      ? { enabled: environment.GENERATED_IMAGE_FREE_TRIAL_ENABLED === "true", consumed: used > 0 }
-      : null,
+    trial: policy === "trial_metered" ? { consumed: used > 0 } : null,
   };
 }
 

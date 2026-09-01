@@ -10,7 +10,7 @@ import {
   GeneratedMediaJobError,
 } from "./generated-media";
 import { prismaGeneratedMediaStore } from "./generated-media-prisma-store";
-import { createGeneratedMediaPromptProtection } from "./generated-media-prompt-protection";
+import { generatedMediaPromptProtectionFromEnv } from "./generated-media-prompt-protection";
 import { createProductionGeneratedMediaPublisher } from "./generated-media-production-publisher";
 import { createPrismaGenerationUsageLedger, getGeneratedImageUsageSummary } from "./generated-media-usage-ledger";
 import { generatedImageCapability } from "./generation-usage";
@@ -31,9 +31,7 @@ function createProductionModule(environment: NodeJS.ProcessEnv = process.env) {
     provider: openAiImageProviderFromEnv(environment),
     publisher: createProductionGeneratedMediaPublisher(environment),
     usage: createPrismaGenerationUsageLedger(environment),
-    promptProtection: createGeneratedMediaPromptProtection(
-      environment.GENERATED_MEDIA_PROMPT_ENCRYPTION_KEY ?? "",
-    ),
+    promptProtection: generatedMediaPromptProtectionFromEnv(environment),
     ids: randomUUID,
     maxAttempts: boundedInteger(environment.GENERATED_IMAGE_MAX_ATTEMPTS, 4, 1, 10),
     maxPromptCharacters: boundedInteger(environment.GENERATED_IMAGE_MAX_PROMPT_CHARACTERS, 4_000, 64, 20_000),

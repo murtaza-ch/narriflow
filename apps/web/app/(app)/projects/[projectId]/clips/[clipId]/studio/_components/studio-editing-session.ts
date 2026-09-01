@@ -3052,7 +3052,6 @@ class StudioEditingSessionImplementation implements StudioEditingSession {
     const dependencies = this.dependencies;
     if (!dependencies) return "unavailable";
     if (
-      draft.formatVersion === 2 &&
       draft.ownershipGeneration === ownershipGeneration &&
       draft.writerId === this.writerId
     ) {

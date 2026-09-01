@@ -20,6 +20,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { Spinner, toaster } from "@narriflow/ui";
+import type { GeneratedImageUsageSummary } from "@narriflow/services";
 import type { StudioVisualAsset } from "../studio-shell";
 import { useStudio } from "../studio-shell";
 import { createGeneratedImagesBrowserApi } from "./generated-images-browser";
@@ -51,15 +52,6 @@ interface GeneratedJob {
     createdAt: string;
   };
   createdAt: string;
-}
-
-interface GeneratedImageUsageSummary {
-  policy: "trial_metered" | "metered";
-  dailyLimit: number;
-  reserved: number;
-  finalized: number;
-  remaining: number;
-  trial: { enabled: boolean; consumed: boolean } | null;
 }
 
 const STYLES: Array<{ id: Style; label: string }> = [
@@ -353,10 +345,8 @@ export function GeneratedImagesPanel() {
   const limitExhausted = usage?.remaining === 0;
 
   const unavailableCopy = generatedImagesCapability.reason === "rollout_disabled"
-    ? "Image generation is currently in a controlled rollout. Existing jobs and assets remain available below."
-    : generatedImagesCapability.reason === "trial_disabled"
-      ? "The free image trial is not enabled for this workspace."
-      : "Image generation is not enabled for this workspace plan yet.";
+    ? "Image generation is disabled for this deployment. Existing jobs and assets remain available below."
+    : "Image generation is not included in this workspace plan.";
 
   return (
     <Stack gap="0" h="100%" overflowY="auto">

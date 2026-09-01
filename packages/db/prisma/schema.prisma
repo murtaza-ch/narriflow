@@ -9,7 +9,6 @@ datasource db {
 
 enum PricingTier {
   free
-  starter
   creator
   pro
   business
@@ -1657,7 +1656,6 @@ model BrandProfile {
   defaultTemplateId String?   @db.Uuid
   defaultIntroSceneTemplateId String? @db.Uuid
   defaultOutroSceneTemplateId String? @db.Uuid
-  isCompatibility   Boolean   @default(false)
   revision          Int       @default(1)
   createdAt         DateTime  @default(now())
   updatedAt         DateTime  @updatedAt

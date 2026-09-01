@@ -22,7 +22,7 @@ export function generationAccessForTier(
 
 export type GeneratedImageCapability = {
   available: boolean;
-  reason: "available" | "rollout_disabled" | "trial_disabled" | "tier_not_enabled" | "entitlement_required";
+  reason: "available" | "rollout_disabled" | "entitlement_required";
   usage: GenerationUsagePolicy;
 };
 
@@ -36,19 +36,5 @@ export function generatedImageCapability(
   if (!isProgramWriteEnabled("generated_media", environment)) {
     return { available: false, reason: "rollout_disabled", usage: access.usage };
   }
-  const internalUsers = new Set((environment.GENERATED_IMAGE_INTERNAL_USER_IDS ?? "")
-    .split(",").map((value) => value.trim()).filter(Boolean));
-  if (internalUsers.has(scope.actorUserId)) return { available: true, reason: "available", usage: access.usage };
-  const tier = resolvePricingTier(scope.pricingTier);
-  if (tier === "free") {
-    return environment.GENERATED_IMAGE_FREE_TRIAL_ENABLED === "true"
-      ? { available: true, reason: "available", usage: access.usage }
-      : { available: false, reason: "trial_disabled", usage: access.usage };
-  }
-  // Closed by default: release to paid tiers is always an explicit deployment choice.
-  const allowedTiers = new Set((environment.GENERATED_IMAGE_ALLOWED_TIERS ?? "")
-    .split(",").map((value) => value.trim()).filter(Boolean));
-  return allowedTiers.has(tier)
-    ? { available: true, reason: "available", usage: access.usage }
-    : { available: false, reason: "tier_not_enabled", usage: access.usage };
+  return { available: true, reason: "available", usage: access.usage };
 }

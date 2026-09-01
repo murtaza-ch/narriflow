@@ -318,62 +318,6 @@ test("recovers a conflict-free Device Draft before accepting mutations", async (
   expect(snapshot.capabilities.mutate).toBe(true);
 });
 
-test("lazily upgrades a readable version-one Device Draft after ownership is resolved", async () => {
-  const cloud = makeDocument();
-  const legacy: StudioDraftRecord = {
-    formatVersion: 1,
-    key: "project:clip",
-    projectId: "project",
-    clipId: "clip",
-    baseRevision: 3,
-    baseDocument: cloud,
-    document: makeDocument("https://cdn.example.com/legacy.mp4"),
-    updatedAt: 100,
-    writerId: "legacy-writer",
-    ownershipGeneration: 0,
-  };
-  let upgraded: StudioDraftRecord | null = null;
-  const session = createStudioEditingSession(
-    {
-      projectId: "project",
-      clipId: "clip",
-      cloudRevision: 3,
-      document: cloud,
-      segments: [],
-    },
-    {
-      drafts: {
-        load: async () => legacy,
-        write: async (record) => {
-          upgraded = record;
-          return "written";
-        },
-        remove: async () => "removed",
-      },
-      coordination: {
-        start: async () => ({ kind: "writer", generation: 4 }),
-        takeOver: async () => ({ kind: "acquired", generation: 5, forced: false }),
-        close: () => undefined,
-      },
-      cloud: { loadHead: async () => ({ revision: 3, document: cloud }) },
-      runtime: {
-        now: () => 300,
-        createId: () => "writer-current",
-        setTimeout: () => 1,
-        clearTimeout: () => undefined,
-      },
-    },
-  );
-
-  await waitForSnapshot(session, (value) => value.status === "ready");
-  expect(upgraded).toMatchObject({
-    formatVersion: 2,
-    ownershipGeneration: 4,
-    writerId: "writer-current",
-    document: { brollUrl: "https://cdn.example.com/legacy.mp4" },
-  });
-});
-
 test("re-fences a recovered version-two draft before the new writer becomes editable", async () => {
   const cloud = makeDocument();
   const prior: StudioDraftRecord = {
@@ -1084,7 +1028,7 @@ test("refuses cooperative handoff when the newest Device Draft checkpoint fails"
   });
 });
 
-test("loses write ownership when lazy draft fencing reports a newer generation", async () => {
+test("loses write ownership when draft fencing reports a newer generation", async () => {
   const cloud = makeDocument();
   const session = createStudioEditingSession(
     {
@@ -1097,7 +1041,7 @@ test("loses write ownership when lazy draft fencing reports a newer generation",
     {
       drafts: {
         load: async () => ({
-          formatVersion: 1,
+          formatVersion: 2,
           key: "project:clip",
           projectId: "project",
           clipId: "clip",

@@ -29,7 +29,7 @@
 
 ## Rollout
 
-- [x] Dark-run job and usage state, enable internal generation, then Creator and above with bounded concurrency.
+- [x] Enable the generated-media write group for entitled plans with bounded per-workspace usage and concurrency.
 
 ## Scope boundaries
 

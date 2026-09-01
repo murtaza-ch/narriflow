@@ -30,7 +30,6 @@ export const MAX_UPLOAD_LENGTH_SECONDS: Record<PricingTier, number> = {
 };
 
 export function resolvePricingTier(value: string | null | undefined): PricingTier {
-  if (value === "starter") return "creator";
   const parsed = pricingTierSchema.safeParse(value);
   return parsed.success ? parsed.data : "free";
 }

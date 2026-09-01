@@ -84,15 +84,11 @@ describe("local editor draft recovery", () => {
     expect(await loadEditorDraft(draft.projectId, draft.clipId)).toBeNull();
   });
 
-  test("normalizes a version-one record without discarding its document", () => {
+  test("rejects drafts that do not use the current format", () => {
     const current = makeDraft();
-    const { formatVersion: _formatVersion, ownershipGeneration: _generation, ...legacy } =
-      current;
-    expect(parseStoredEditorDraft(legacy)).toEqual({
-      ...legacy,
-      formatVersion: 1,
-      ownershipGeneration: 0,
-    });
+    expect(parseStoredEditorDraft({ ...current, formatVersion: 1 })).toBeNull();
+    const { formatVersion: _formatVersion, ...unversioned } = current;
+    expect(parseStoredEditorDraft(unversioned)).toBeNull();
   });
 
   test("rejects a Device Draft write from an older ownership generation", async () => {

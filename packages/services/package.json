@@ -26,7 +26,6 @@
     "billing:operator": "bun scripts/workspace-billing-operator.ts",
     "generated-media:operator": "bun scripts/generated-media-operator.ts",
     "social-publication:operator": "bun scripts/social-publication-operator.ts",
-    "brand-profiles:backfill": "bun scripts/backfill-brand-profiles.ts",
     "clean": "rm -rf dist"
   },
   "dependencies": {

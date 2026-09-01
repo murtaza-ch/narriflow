@@ -43,8 +43,8 @@ describe("hasFeature (PLAN_FEATURES matrix)", () => {
     }
   });
 
-  test("normalizes the legacy starter tier before checking entitlements", () => {
-    expect(hasFeature("starter", "export.1080p")).toBe(true);
+  test("fails closed for removed pricing tiers", () => {
+    expect(hasFeature("starter", "export.1080p")).toBe(false);
     expect(hasFeature("starter", "integrations.mcp")).toBe(false);
   });
 
@@ -97,9 +97,9 @@ describe("hasFeature (PLAN_FEATURES matrix)", () => {
     expect(hasFeature("pro", "review.rooms")).toBe(false);
   });
 
-  test("unknown tiers fail closed and starter has Creator capabilities", () => {
+  test("unknown and removed tiers fail closed", () => {
     expect(hasFeature("enterprise", "brand.profiles")).toBe(false);
-    expect(hasFeature("starter", "brand.profiles")).toBe(true);
+    expect(hasFeature("starter", "brand.profiles")).toBe(false);
     expect(hasFeature("starter", "campaign.operations")).toBe(false);
   });
 });

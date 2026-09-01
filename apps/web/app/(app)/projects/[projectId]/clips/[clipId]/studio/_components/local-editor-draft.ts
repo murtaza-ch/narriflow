@@ -13,7 +13,7 @@ export const EDITOR_LEASE_TTL_MS = 8_000;
 export const EDITOR_LEASE_HEARTBEAT_MS = 2_500;
 
 export interface StoredEditorDraft {
-  formatVersion: 1 | 2;
+  formatVersion: 2;
   key: string;
   projectId: string;
   clipId: string;
@@ -156,11 +156,8 @@ export function parseStoredEditorDraft(value: unknown): StoredEditorDraft | null
   const baseRevision = value.baseRevision;
   const updatedAt = value.updatedAt;
   const writerId = value.writerId;
-  const formatVersion = value.formatVersion === undefined ? 1 : value.formatVersion;
-  const ownershipGeneration =
-    formatVersion === 1 && value.ownershipGeneration === undefined
-      ? 0
-      : value.ownershipGeneration;
+  const formatVersion = value.formatVersion;
+  const ownershipGeneration = value.ownershipGeneration;
   const baseDocument = editorDocumentSchema.safeParse(value.baseDocument);
   const document = editorDocumentSchema.safeParse(value.document);
   if (
@@ -173,7 +170,7 @@ export function parseStoredEditorDraft(value: unknown): StoredEditorDraft | null
     typeof updatedAt !== "number" ||
     !Number.isFinite(updatedAt) ||
     typeof writerId !== "string" ||
-    (formatVersion !== 1 && formatVersion !== 2) ||
+    formatVersion !== 2 ||
     typeof ownershipGeneration !== "number" ||
     !Number.isInteger(ownershipGeneration) ||
     ownershipGeneration < 0 ||

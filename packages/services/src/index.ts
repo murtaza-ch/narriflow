@@ -36,7 +36,6 @@ export {
   BrandProfileNotFoundError,
   BrandProfileReferenceError,
   buildBrandProfileSnapshot,
-  compatibilityProfileSlug,
   resolveProfileStyleSelection,
 } from "./brand-profile.service";
 export {

@@ -11,7 +11,7 @@
 ## Observable acceptance criteria
 
 - [x] `PlanFeature` contains explicit capabilities for brand profiles, custom fonts, scenes, censoring, motion, assisted copy, campaign operations, export bundles, review rooms, generated images, and generated video.
-- [x] The tier matrix follows the program packaging and has an explicit compatibility answer for legacy `starter` values.
+- [x] The tier matrix follows the program packaging and fails closed for values outside the current Free, Creator, Pro, and Business tiers.
 - [x] Workspace capabilities add `review.manage` for owner, admin, and editor and `review.override` for owner and admin.
 - [x] Server helpers distinguish entitlement from separately metered generation usage.
 - [x] Typed analytics events cover the approved campaign interval and cross-feature guardrails.
@@ -20,7 +20,7 @@
 
 ## Tests and failure injection
 
-- [x] Matrix tests cover every tier and every feature, including unknown and legacy tier values.
+- [x] Matrix tests cover every current tier and every feature, including unknown and removed tier values.
 - [x] Role and workspace-status tests cover active, pending-payment, restricted, downgrade, and owner-only override.
 - [x] Analytics tests prove allowed metadata and reject sensitive keys recursively.
 - [x] Rollout tests prove disabled creation does not break old project, export, asset, or review reads.

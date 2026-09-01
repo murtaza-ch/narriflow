@@ -78,7 +78,7 @@ describe("project retention policy", () => {
     expect(
       retentionTransitionForTierChange({
         previousTier: "free",
-        nextTier: "starter",
+        nextTier: "creator",
         effectiveAt: new Date("2026-08-25T10:00:00.000Z"),
         config: { mode: "enforce", activationAt: ACTIVATION },
       }),

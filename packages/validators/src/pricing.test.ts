@@ -16,7 +16,7 @@ describe("pricing tiers", () => {
     expect(resolvePricingTier(undefined)).toBe("free");
     expect(resolvePricingTier("enterprise")).toBe("free");
     expect(resolvePricingTier("creator")).toBe("creator");
-    expect(resolvePricingTier("starter")).toBe("creator");
+    expect(resolvePricingTier("starter")).toBe("free");
   });
 
   test("limits increase monotonically with tier", () => {

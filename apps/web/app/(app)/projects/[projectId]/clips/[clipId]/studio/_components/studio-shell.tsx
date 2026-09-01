@@ -13,6 +13,7 @@ import { useRouter } from "next/navigation";
 import { Box, Button, Flex, Heading, Stack, Text } from "@chakra-ui/react";
 import { Monitor } from "lucide-react";
 import { toaster } from "@narriflow/ui";
+import type { GeneratedImageCapability } from "@narriflow/services";
 import {
   compositionAssetRef,
   screenLayoutInputFingerprint,
@@ -399,7 +400,7 @@ interface StudioState {
 	sceneFonts: readonly StudioSceneFont[];
   sceneTemplates: readonly StudioSceneTemplate[];
   sceneWriteCapabilities: Readonly<{ cards: boolean; images: boolean; videos: boolean; templates: boolean }>;
-  generatedImagesCapability: Readonly<{ available: boolean; reason: "available" | "rollout_disabled" | "trial_disabled" | "tier_not_enabled" | "entitlement_required" }>;
+  generatedImagesCapability: Readonly<Pick<GeneratedImageCapability, "available" | "reason">>;
   /** 'blocked' is a distinct terminal state from 'error': it means autosave
    *  has permanently stopped (a 409/422 that a reload is needed to clear),
    *  as opposed to 'error''s transient/retryable failure. */
@@ -718,7 +719,7 @@ interface StudioShellProps {
 	sceneFonts?: StudioSceneFont[];
   sceneTemplates?: StudioSceneTemplate[];
   sceneWriteCapabilities?: Readonly<{ cards: boolean; images: boolean; videos: boolean; templates: boolean }>;
-  generatedImagesCapability?: Readonly<{ available: boolean; reason: "available" | "rollout_disabled" | "trial_disabled" | "tier_not_enabled" | "entitlement_required" }>;
+  generatedImagesCapability?: Readonly<Pick<GeneratedImageCapability, "available" | "reason">>;
 }
 
 export function StudioShell({

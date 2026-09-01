@@ -31,22 +31,17 @@ describe("generation access", () => {
     });
   });
 
-  test("keeps rollout closed until an internal user or tier is explicitly enabled", () => {
+  test("admits entitled plans when the production write group is enabled", () => {
     expect(generatedImageCapability(scope, { NARRIFLOW_WRITES_GENERATED_MEDIA: "1" })).toMatchObject({
-      available: false,
-      reason: "tier_not_enabled",
+      available: true,
+      reason: "available",
     });
-    expect(generatedImageCapability(scope, {
-      NARRIFLOW_WRITES_GENERATED_MEDIA: "1",
-      GENERATED_IMAGE_INTERNAL_USER_IDS: "user-1",
-    })).toMatchObject({ available: true, reason: "available" });
-    expect(generatedImageCapability(scope, {
-      NARRIFLOW_WRITES_GENERATED_MEDIA: "1",
-      GENERATED_IMAGE_ALLOWED_TIERS: "creator",
-    })).toMatchObject({ available: true, reason: "available" });
+    expect(generatedImageCapability(
+      { ...scope, pricingTier: "free" },
+      { NARRIFLOW_WRITES_GENERATED_MEDIA: "1" },
+    )).toMatchObject({ available: true, reason: "available", usage: "trial_metered" });
     expect(generatedImageCapability(scope, {
       NARRIFLOW_WRITES_GENERATED_MEDIA: "0",
-      GENERATED_IMAGE_ALLOWED_TIERS: "creator",
     })).toMatchObject({ available: false, reason: "rollout_disabled" });
   });
 });

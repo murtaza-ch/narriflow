@@ -135,10 +135,6 @@ export function resolveProfileStyleSelection(input: {
   return selected;
 }
 
-export function compatibilityProfileSlug() {
-  return "migrated-brand-kit";
-}
-
 function requirePrisma() {
   const prisma = getPrismaClient();
   if (!prisma) throw new Error("Database client unavailable");
@@ -252,7 +248,6 @@ async function toAggregate(profile: ProfileAggregate) {
     defaultTemplateId: profile.defaultTemplateId,
     defaultIntroSceneTemplateId: profile.defaultIntroSceneTemplateId,
     defaultOutroSceneTemplateId: profile.defaultOutroSceneTemplateId,
-    isCompatibility: profile.isCompatibility,
     createdAt: profile.createdAt.toISOString(),
     updatedAt: profile.updatedAt.toISOString(),
     templates: profile.templates.map(({ template, position }) => ({
@@ -635,59 +630,6 @@ export class BrandProfileService {
     return membership?.profileId ?? null;
   }
 
-  async backfillCompatibilityProfiles(input: { cursor?: string; batchSize?: number; observe?: boolean } = {}) {
-    const prisma = this.requirePrisma();
-    const batchSize = Math.max(1, Math.min(500, input.batchSize ?? 100));
-    const templates = await prisma.brandTemplate.findMany({
-      where: { isBuiltIn: false, deletedAt: null },
-      orderBy: { id: "asc" },
-      take: batchSize,
-      ...(input.cursor ? { cursor: { id: input.cursor }, skip: 1 } : {}),
-      include: {
-        workspace: { select: { ownerUserId: true, personalOwnerUserId: true, defaultBrandTemplateId: true } },
-        user: { select: { defaultBrandTemplateId: true } },
-      },
-    });
-    if (input.observe) {
-      return { processedTemplates: templates.length, attachedTemplates: 0, createdProfiles: 0, nextCursor: templates.at(-1)?.id ?? null, done: templates.length < batchSize };
-    }
-    let attachedTemplates = 0;
-    let createdProfiles = 0;
-    for (const template of templates) {
-      const personalOwnerId = template.workspace?.personalOwnerUserId ?? (template.workspaceId ? null : template.userId);
-      const workspaceId = personalOwnerId ? null : template.workspaceId;
-      const userId = personalOwnerId;
-      const actorUserId = template.createdByUserId ?? personalOwnerId ?? template.workspace?.ownerUserId;
-      if (!actorUserId || (!workspaceId && !userId)) continue;
-      const existing = await prisma.brandProfile.findFirst({ where: { ...(workspaceId ? { workspaceId } : { userId }), slug: compatibilityProfileSlug() } });
-      const profile = existing ?? await prisma.brandProfile.create({ data: {
-        workspaceId,
-        userId,
-        createdByUserId: actorUserId,
-        updatedByUserId: actorUserId,
-        name: "Migrated brand kit",
-        slug: compatibilityProfileSlug(),
-        visualIdentity: brandVisualIdentitySchema.parse({}) as Prisma.InputJsonValue,
-        voiceGuidance: brandVoiceGuidanceSchema.parse({}) as Prisma.InputJsonValue,
-        defaultTemplateId: template.id,
-        isCompatibility: true,
-      } });
-      if (!existing) createdProfiles += 1;
-      const existingMembership = await prisma.brandProfileTemplate.findUnique({ where: { templateId: template.id }, select: { profileId: true } });
-      if (!existingMembership) {
-        const position = await prisma.brandProfileTemplate.count({ where: { profileId: profile.id } });
-        await prisma.brandProfileTemplate.create({ data: { profileId: profile.id, templateId: template.id, position } });
-        attachedTemplates += 1;
-      }
-      const ownerDefaultTemplateId = template.workspace?.defaultBrandTemplateId ?? template.user?.defaultBrandTemplateId ?? null;
-      if (ownerDefaultTemplateId === template.id) {
-        await prisma.brandProfile.update({ where: { id: profile.id }, data: { defaultTemplateId: template.id } });
-        if (workspaceId) await prisma.workspace.update({ where: { id: workspaceId }, data: { defaultBrandProfileId: profile.id } });
-        else await prisma.user.update({ where: { id: userId! }, data: { defaultBrandProfileId: profile.id } });
-      }
-    }
-    return { processedTemplates: templates.length, attachedTemplates, createdProfiles, nextCursor: templates.at(-1)?.id ?? null, done: templates.length < batchSize };
-  }
 }
 
 export const brandProfileService = new BrandProfileService();
