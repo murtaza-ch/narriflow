@@ -330,6 +330,49 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
       aspectRatios: ["9:16"],
       resolution: "1080p",
     })).rejects.toMatchObject({ code: "campaign_operation_forbidden" });
+    await expect(bundleService.getExportBundleDownload({
+      workspaceId: current.workspace.id,
+      projectId: current.project.id,
+      role: "editor",
+      status: "restricted",
+    }, randomUUID())).rejects.toMatchObject({
+      code: "campaign_operation_forbidden",
+    });
+    const preflight = await bundleService.previewExportBundle({
+      workspaceId: current.workspace.id,
+      projectId: current.project.id,
+      pricingTier: "business",
+      role: "owner",
+      status: "active",
+    }, {
+      clips: [
+        { clipId: current.clip.id, expectedEditorRevision: 3 },
+        { clipId: missingClipId, expectedEditorRevision: 0 },
+      ],
+      aspectRatios: ["9:16", "1:1"],
+      resolution: "1080p",
+    });
+    expect(preflight).toMatchObject({
+      requestedCount: 2,
+      counts: { eligible: 1, stale: 0, ineligible: 1 },
+      items: [
+        {
+          clipId: current.clip.id,
+          currentEditorRevision: 3,
+          exportEditorRevision: 3,
+          status: "eligible",
+          code: null,
+          aspectRatios: ["9:16", "1:1"],
+        },
+        {
+          clipId: missingClipId,
+          currentEditorRevision: null,
+          status: "ineligible",
+          code: "campaign_clip_not_found",
+        },
+      ],
+    });
+    expect(preflight.estimatedSizeBytes).toBeGreaterThan(0);
     const result = await bundleService.createExportBundle({
       actorUserId: current.user.id,
       workspaceId: current.workspace.id,
@@ -352,6 +395,25 @@ dbDescribe("Vizard expansion PostgreSQL contracts", () => {
     expect(JSON.stringify(result.manifest)).not.toContain("http");
 
     await prisma.clip.update({ where: { id: current.clip.id }, data: { editorRevision: 4 } });
+    await expect(bundleService.previewExportBundle({
+      workspaceId: current.workspace.id,
+      projectId: current.project.id,
+      pricingTier: "business",
+      role: "owner",
+      status: "active",
+    }, {
+      clips: [{ clipId: current.clip.id, expectedEditorRevision: 3 }],
+      aspectRatios: ["9:16"],
+      resolution: "1080p",
+    })).resolves.toMatchObject({
+      counts: { eligible: 0, stale: 1, ineligible: 0 },
+      items: [{
+        clipId: current.clip.id,
+        currentEditorRevision: 4,
+        status: "stale",
+        code: "campaign_clip_stale",
+      }],
+    });
     await expect(bundleService.createExportBundle({
       actorUserId: current.user.id,
       workspaceId: current.workspace.id,

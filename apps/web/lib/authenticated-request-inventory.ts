@@ -249,6 +249,7 @@ export const browserSessionHonoSurfaces: readonly HonoSurface[] = [
     actorRate("clip-export", 20),
   ),
   { method: "POST", path: "/projects/:id/export-bundles", capability: "content.download", projectParam: "id", rateLimit: actorRate("export-bundle", 10, 3_600), input: idempotentBodyInput(createExportBundleSchema, ["id"]) },
+  { method: "POST", path: "/projects/:id/export-bundles/preview", capability: "content.download", projectParam: "id", rateLimit: actorRate("export-bundle-preview", 60), input: bodyInput(createExportBundleSchema, ["id"]) },
   { method: "GET", path: "/projects/:id/export-bundles", capability: "content.view", projectParam: "id" },
   { method: "GET", path: "/projects/:id/campaign-operations", capability: "content.view", projectParam: "id" },
   { method: "GET", path: "/projects/:id/campaign-operations/editor-action-catalog", capability: "content.view", projectParam: "id", input: paramsInput("id") },

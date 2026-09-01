@@ -18,6 +18,7 @@ import {
   sceneTemplateDefinitionSchema,
   type ClipAspectRatio,
   type ClipRenderResolution,
+  type CreateExportBundleInput,
   type ApplyMotionSelectedInput,
   type ApplyProjectBrandProfileSelectedInput,
   type ApplyStyleSelectedInput,
@@ -166,6 +167,10 @@ type CampaignBundleActorScope = {
   idempotencyKey: string;
   retryOfId?: string;
 };
+type CampaignBundleAccessScope = Pick<
+  CampaignBundleActorScope,
+  "workspaceId" | "projectId" | "role" | "status"
+>;
 type CampaignBrandActorScope = BrandActorScope & {
   projectId: string;
   idempotencyKey: string;
@@ -194,7 +199,7 @@ function* boundedCampaignOperationItems<T>(items: T[]): Generator<T> {
   }
 }
 
-function assertCampaignBundleAllowed(scope: CampaignBundleActorScope) {
+function assertCampaignBundleAllowed(scope: CampaignBundleAccessScope) {
   if (
     !workspaceAllowsCapability(
       { role: scope.role, status: scope.status },
@@ -206,6 +211,100 @@ function assertCampaignBundleAllowed(scope: CampaignBundleActorScope) {
       "Export bundles cannot be created with this Workspace role",
     );
   }
+}
+
+async function resolveExportBundleSelection(
+  scope: Pick<CampaignBundleAccessScope, "workspaceId" | "projectId">,
+  input: CreateExportBundleInput,
+) {
+  const clips = await requirePrisma().clip.findMany({
+    where: {
+      projectId: scope.projectId,
+      id: { in: input.clips.map((clip) => clip.clipId) },
+      project: { workspaceId: scope.workspaceId },
+    },
+    select: {
+      id: true,
+      title: true,
+      editorRevision: true,
+      exports: {
+        where: { status: "ready", resolution: input.resolution },
+        orderBy: { createdAt: "desc" },
+        take: 1,
+        include: {
+          variants: {
+            where: {
+              status: "completed",
+              storageKey: { not: null },
+              sizeBytes: { gt: 0 },
+            },
+          },
+        },
+      },
+    },
+  });
+  const clipsById = new Map(clips.map((clip) => [clip.id, clip]));
+  const resolved = input.clips.map((expected) => {
+    const clip = clipsById.get(expected.clipId);
+    const frozen = clip?.exports[0];
+    const variants = frozen
+      ? frozen.variants
+          .filter((variant) =>
+            input.aspectRatios.includes(
+              clipAspectRatioFromDb[variant.aspectRatio],
+            ),
+          )
+          .sort(
+            (left, right) =>
+              input.aspectRatios.indexOf(
+                clipAspectRatioFromDb[left.aspectRatio],
+              ) -
+              input.aspectRatios.indexOf(
+                clipAspectRatioFromDb[right.aspectRatio],
+              ),
+          )
+      : [];
+    const code = !clip
+      ? "campaign_clip_not_found"
+      : clip.editorRevision !== expected.expectedEditorRevision
+        ? "campaign_clip_stale"
+        : !frozen ||
+            frozen.editorRevision !== expected.expectedEditorRevision ||
+            variants.length === 0
+          ? "export_variant_unavailable"
+          : null;
+    return {
+      expected,
+      clip: clip ?? null,
+      frozen: frozen ?? null,
+      variants,
+      status: code === null ? ("eligible" as const) : code === "campaign_clip_stale" ? ("stale" as const) : ("ineligible" as const),
+      code,
+    };
+  });
+  return {
+    clipsById,
+    eligible: resolved.flatMap((item) =>
+      item.status === "eligible" && item.clip && item.frozen
+        ? [{ clip: item.clip, frozen: item.frozen, variants: item.variants }]
+        : [],
+    ),
+    items: resolved.map((item) => ({
+      clipId: item.expected.clipId,
+      expectedEditorRevision: item.expected.expectedEditorRevision,
+      currentEditorRevision: item.clip?.editorRevision ?? null,
+      exportEditorRevision: item.frozen?.editorRevision ?? null,
+      status: item.status,
+      code: item.code,
+      aspectRatios: item.variants.map(
+        (variant) => clipAspectRatioFromDb[variant.aspectRatio],
+      ),
+      estimatedSizeBytes: item.variants.reduce(
+        (total, variant) => total + Number(variant.sizeBytes),
+        0,
+      ),
+    })),
+  };
 }
 
 async function assertCampaignEditorRetry(input: {
@@ -988,7 +1087,8 @@ export class CampaignOperationService {
     return bundle;
   }
 
-  async getExportBundleDownload(scope: { workspaceId: string; projectId: string }, bundleId: string) {
+  async getExportBundleDownload(scope: CampaignBundleAccessScope, bundleId: string) {
+    assertCampaignBundleAllowed(scope);
     const bundle = await requirePrisma().exportBundle.findFirst({
       where: { id: bundleId, operation: { workspaceId: scope.workspaceId, projectId: scope.projectId } },
       select: { status: true, storageKey: true, expiresAt: true },
@@ -997,6 +1097,38 @@ export class CampaignOperationService {
     if (bundle.expiresAt && bundle.expiresAt <= new Date()) throw new CampaignOperationError("export_bundle_expired", "Export bundle has expired");
     if (bundle.status !== "completed" || !bundle.storageKey) throw new CampaignOperationError("export_bundle_not_ready", "Export bundle is not ready for download");
     return presignDownloadUrl({ key: bundle.storageKey, expiresIn: 60, fileName: `narriflow-export-${bundleId}.zip` });
+  }
+
+  async previewExportBundle(
+    scope: CampaignBundleAccessScope & { pricingTier: PricingTier },
+    value: unknown,
+  ) {
+    assertCampaignActionWriteEnabled("export_bundle");
+    assertCampaignBundleAllowed(scope);
+    if (!hasFeature(scope.pricingTier, "export.bundles")) {
+      throw new CampaignOperationError(
+        "export_bundle_feature_unavailable",
+        "Export bundles are not available on this plan",
+      );
+    }
+    const input = createExportBundleSchema.parse(value);
+    const selection = await resolveExportBundleSelection(scope, input);
+    const counts = selection.items.reduce(
+      (result, item) => {
+        result[item.status] += 1;
+        return result;
+      },
+      { eligible: 0, stale: 0, ineligible: 0 },
+    );
+    return {
+      requestedCount: input.clips.length,
+      counts,
+      estimatedSizeBytes: selection.items.reduce(
+        (total, item) => total + item.estimatedSizeBytes,
+        0,
+      ),
+      items: selection.items,
+    };
   }
 
   async retryExportBundle(scope: CampaignBundleActorScope, bundleId: string) {
@@ -1065,21 +1197,8 @@ export class CampaignOperationService {
       const claimed = await prisma.campaignOperation.updateMany({ where: { id: replay.id, status: "running", claimToken: null }, data: { claimToken: operationClaimToken, leaseExpiresAt: new Date(Date.now() + 10 * 60_000) } });
       if (claimed.count !== 1) throw new CampaignOperationError("campaign_operation_in_progress", "Campaign operation is already in progress");
     }
-    const clips = await prisma.clip.findMany({
-      where: { projectId: scope.projectId, id: { in: input.clips.map((clip) => clip.clipId) }, project: { workspaceId: scope.workspaceId } },
-      select: { id: true, title: true, editorRevision: true, exports: { where: { status: "ready", resolution: input.resolution }, orderBy: { createdAt: "desc" }, take: 1, include: { variants: { where: { status: "completed", storageKey: { not: null }, sizeBytes: { gt: 0 } } } } } },
-    });
-    const clipsById = new Map(clips.map((clip) => [clip.id, clip]));
-    const eligible = input.clips.flatMap((expected) => {
-      const clip = clipsById.get(expected.clipId);
-      if (!clip) return [];
-      const frozen = clip.exports[0];
-      if (clip.editorRevision !== expected.expectedEditorRevision || !frozen || frozen.editorRevision !== expected.expectedEditorRevision) return [];
-      const variants = frozen.variants
-        .filter((variant) => input.aspectRatios.includes(clipAspectRatioFromDb[variant.aspectRatio]))
-        .sort((a, b) => input.aspectRatios.indexOf(clipAspectRatioFromDb[a.aspectRatio]) - input.aspectRatios.indexOf(clipAspectRatioFromDb[b.aspectRatio]));
-      return variants.length ? [{ clip, frozen, variants }] : [];
-    });
+    const selection = await resolveExportBundleSelection(scope, input);
+    const { clipsById, eligible } = selection;
     const names = allocateBundleFileNames(eligible.map(({ clip, variants }) => ({ clipId: clip.id, title: clip.title, variants: variants.map((variant) => ({ id: variant.id, aspectRatio: clipAspectRatioFromDb[variant.aspectRatio] })) })));
     let operation: { id: string; createdAt: Date } | undefined = replay ? { id: replay.id, createdAt: replay.createdAt } : undefined;
     if (!operation) try {
@@ -1096,7 +1215,9 @@ export class CampaignOperationService {
           const selected = eligible.find(({ clip }) => clip.id === item.clipId);
           const named = names.find((entry) => entry.clipId === item.clipId);
           const known = clipsById.get(item.clipId);
-          const code = !known ? "campaign_clip_not_found" : known.editorRevision !== item.expectedEditorRevision ? "campaign_clip_stale" : "export_variant_unavailable";
+          const code = selection.items.find(
+            (candidate) => candidate.clipId === item.clipId,
+          )?.code ?? "export_variant_unavailable";
           return { requestedClipId: item.clipId, clipId: known ? item.clipId : null, expectedEditorRevision: item.expectedEditorRevision, exportId: selected?.frozen.id ?? null, status: selected ? "pending" : code === "campaign_clip_stale" ? "stale" : "ineligible", errorCode: selected ? null : code, result: selected ? { files: named?.files ?? [] } : Prisma.JsonNull, settledAt: selected ? null : new Date() };
         }) },
       } });
@@ -1115,7 +1236,12 @@ export class CampaignOperationService {
       files: variants.map((variant) => ({ variantId: variant.id, aspectRatio: clipAspectRatioFromDb[variant.aspectRatio], name: names.find((entry) => entry.clipId === clip.id)!.files.find((file) => file.variantId === variant.id)!.name, sizeBytes: Number(variant.sizeBytes) })),
     }));
     const includedIds = new Set(included.map((item) => item.clipId));
-    const excluded = input.clips.filter((item) => !includedIds.has(item.clipId)).map((item) => ({ clipId: item.clipId, code: !clips.some((clip) => clip.id === item.clipId) ? "campaign_clip_not_found" : clips.find((clip) => clip.id === item.clipId)?.editorRevision !== item.expectedEditorRevision ? "campaign_clip_stale" : "export_variant_unavailable" }));
+    const excluded = selection.items
+      .filter((item) => !includedIds.has(item.clipId))
+      .map((item) => ({
+        clipId: item.clipId,
+        code: item.code ?? "export_variant_unavailable",
+      }));
     if (included.length === 0) {
       await prisma.campaignOperation.updateMany({ where: { id: operation.id, claimToken: operationClaimToken }, data: { status: "failed", staleCount: excluded.filter((item) => item.code === "campaign_clip_stale").length, ineligibleCount: excluded.filter((item) => item.code !== "campaign_clip_stale").length, completedAt: new Date(), claimToken: null, leaseExpiresAt: null } });
       throw new CampaignOperationError("export_bundle_empty", "No selected exports are available for this bundle");

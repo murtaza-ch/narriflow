@@ -1458,6 +1458,37 @@ app.post("/projects/:id/export-bundles", async (c) => {
   }
 });
 
+app.post("/projects/:id/export-bundles/preview", async (c) => {
+  const appUser = authenticatedHonoActor(c);
+  const { id, body } = authenticatedHonoInput<{
+    id: string;
+    body: CreateExportBundleInput;
+  }>(c);
+  try {
+    return c.json(await campaignOperationService.previewExportBundle({
+      workspaceId: appUser.workspaceId,
+      projectId: id,
+      pricingTier: resolvePricingTier(appUser.pricingTier),
+      role: appUser.role,
+      status: appUser.status,
+    }, body), 200);
+  } catch (error) {
+    if (error instanceof ProgramWriteDisabledError) {
+      return c.json({ error: error.code, message: error.message }, 503);
+    }
+    const code = error instanceof CampaignOperationError
+      ? error.code
+      : "export_bundle_preview_failed";
+    const status = code === "campaign_operation_forbidden" ? 403 : 400;
+    return c.json({
+      error: code,
+      message: error instanceof CampaignOperationError
+        ? error.message
+        : "Export bundle availability could not be checked",
+    }, status);
+  }
+});
+
 app.get("/projects/:id/export-bundles", async (c) => {
   const appUser = authenticatedHonoActor(c);
   const projectId = c.req.param("id");
@@ -1738,11 +1769,11 @@ app.get("/projects/:id/export-bundles/:bundleId/download", async (c) => {
   const appUser = authenticatedHonoActor(c);
   const { id: projectId, bundleId } = authenticatedHonoInput<{ id: string; bundleId: string }>(c);
   try {
-    const url = await campaignOperationService.getExportBundleDownload({ workspaceId: appUser.workspaceId, projectId }, bundleId);
+    const url = await campaignOperationService.getExportBundleDownload({ workspaceId: appUser.workspaceId, projectId, role: appUser.role, status: appUser.status }, bundleId);
     return c.redirect(url, 307);
   } catch (error) {
     const code = error instanceof CampaignOperationError ? error.code : "export_bundle_download_failed";
-    const status = code === "export_bundle_not_found" ? 404 : code === "export_bundle_expired" ? 410 : code === "export_bundle_not_ready" ? 409 : 400;
+    const status = code === "campaign_operation_forbidden" ? 403 : code === "export_bundle_not_found" ? 404 : code === "export_bundle_expired" ? 410 : code === "export_bundle_not_ready" ? 409 : 400;
     return c.json({ error: code, message: error instanceof CampaignOperationError ? error.message : "Export bundle could not be downloaded" }, status);
   }
 });

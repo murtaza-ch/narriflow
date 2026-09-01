@@ -100,6 +100,22 @@ type MotionPreflight = {
   }>;
 };
 
+type BundlePreflight = {
+  requestedCount: number;
+  counts: { eligible: number; stale: number; ineligible: number };
+  estimatedSizeBytes: number;
+  items: Array<{
+    clipId: string;
+    expectedEditorRevision: number;
+    currentEditorRevision: number | null;
+    exportEditorRevision: number | null;
+    status: "eligible" | "stale" | "ineligible";
+    code: string | null;
+    aspectRatios: ClipAspectRatio[];
+    estimatedSizeBytes: number;
+  }>;
+};
+
 const TRANSITION_OPTIONS: ReadonlyArray<{
   value: StudioTransition["type"];
   label: string;
@@ -183,6 +199,30 @@ function operationTitle(action: string | undefined) {
     default:
       return "Export bundle";
   }
+}
+
+function formatBundleSize(bytes: number) {
+  if (bytes === 0) return "0 KB";
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.ceil(bytes / 1024))} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function bundleAttentionMessage(item: BundlePreflight["items"][number]) {
+  if (item.code === "campaign_clip_stale") {
+    return item.currentEditorRevision === null
+      ? "The clip is no longer available"
+      : `Revision changed to ${item.currentEditorRevision}`;
+  }
+  if (item.code === "campaign_clip_not_found") {
+    return "The clip is no longer available";
+  }
+  if (
+    item.exportEditorRevision !== null &&
+    item.exportEditorRevision !== item.expectedEditorRevision
+  ) {
+    return `Ready export is revision ${item.exportEditorRevision}; render revision ${item.expectedEditorRevision}`;
+  }
+  return "The requested export is not ready";
 }
 
 function campaignEditorRetryEndpoint(
@@ -317,6 +357,10 @@ export function CampaignCommandBar({
   const [motionPreflightState, setMotionPreflightState] = useState<
     "idle" | "loading" | "ready" | "error"
   >("idle");
+  const [bundlePreflight, setBundlePreflight] = useState<BundlePreflight | null>(null);
+  const [bundlePreflightState, setBundlePreflightState] = useState<
+    "idle" | "loading" | "ready" | "error"
+  >("idle");
 
   const clipsById = useMemo(
     () =>
@@ -354,6 +398,23 @@ export function CampaignCommandBar({
   const motionPreflightKey = useMemo(
     () => JSON.stringify(motionPreflightInput),
     [motionPreflightInput],
+  );
+  const bundlePreflightInput = useMemo(
+    () => ({
+      clips: state.selectedItems.map(
+        ({ clipId, expectedEditorRevision }) => ({
+          clipId,
+          expectedEditorRevision,
+        }),
+      ),
+      aspectRatios: [defaultAspectRatio],
+      resolution,
+    }),
+    [defaultAspectRatio, resolution, state.selectedItems],
+  );
+  const bundlePreflightKey = useMemo(
+    () => JSON.stringify(bundlePreflightInput),
+    [bundlePreflightInput],
   );
   const motionAttentionCount = motionPreflight
     ? motionPreflight.counts.stale + motionPreflight.counts.ineligible
@@ -441,10 +502,51 @@ export function CampaignCommandBar({
     return () => controller.abort();
   }, [drawerOpen, motionPreflightKey, previewingMotion, projectId]);
 
+  useEffect(() => {
+    if (!drawerOpen || !previewingBundle) {
+      setBundlePreflightState("idle");
+      setBundlePreflight(null);
+      return;
+    }
+    const controller = new AbortController();
+    setBundlePreflightState("loading");
+    setBundlePreflight(null);
+    setError(null);
+    void fetch(`/api/projects/${projectId}/export-bundles/preview`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: bundlePreflightKey,
+      signal: controller.signal,
+    })
+      .then(async (response) => {
+        const payload = (await response.json().catch(() => null)) as
+          | (BundlePreflight & { message?: string })
+          | null;
+        if (!response.ok || !payload?.counts || !payload.items) {
+          throw new Error(
+            payload?.message || "Bundle availability could not be checked.",
+          );
+        }
+        setBundlePreflight(payload);
+        setBundlePreflightState("ready");
+      })
+      .catch((preflightError: unknown) => {
+        if (controller.signal.aborted) return;
+        setBundlePreflightState("error");
+        setError(
+          preflightError instanceof Error
+            ? preflightError.message
+            : "Bundle availability could not be checked.",
+        );
+      });
+    return () => controller.abort();
+  }, [bundlePreflightKey, drawerOpen, previewingBundle, projectId]);
+
   async function createBundle() {
     if (
       submitting ||
-      state.readyItems.length === 0 ||
+      bundlePreflightState !== "ready" ||
+      (bundlePreflight?.counts.eligible ?? 0) === 0 ||
       !state.availableActions.includes("export_bundle")
     ) return;
     setSubmitting(true);
@@ -456,11 +558,7 @@ export function CampaignCommandBar({
           "content-type": "application/json",
           "idempotency-key": crypto.randomUUID(),
         },
-        body: JSON.stringify({
-          clips: state.readyItems,
-          aspectRatios: [defaultAspectRatio],
-          resolution,
-        }),
+        body: bundlePreflightKey,
       });
       const payload = (await response.json().catch(() => null)) as
         | {
@@ -490,7 +588,7 @@ export function CampaignCommandBar({
         id: payload.operationId,
         action: "export_bundle",
         status: "running",
-        requestedCount: state.readyItems.length,
+        requestedCount: state.selectedItems.length,
         succeededCount: 0,
         unchangedCount: 0,
         staleCount: 0,
@@ -501,7 +599,7 @@ export function CampaignCommandBar({
             id: item.clipId,
             requestedClipId: item.clipId,
             expectedEditorRevision:
-              state.readyItems.find((candidate) => candidate.clipId === item.clipId)
+              state.selectedItems.find((candidate) => candidate.clipId === item.clipId)
                 ?.expectedEditorRevision ?? null,
             status: "pending",
             errorCode: null,
@@ -510,7 +608,7 @@ export function CampaignCommandBar({
             id: item.clipId,
             requestedClipId: item.clipId,
             expectedEditorRevision:
-              state.readyItems.find((candidate) => candidate.clipId === item.clipId)
+              state.selectedItems.find((candidate) => candidate.clipId === item.clipId)
                 ?.expectedEditorRevision ?? null,
             status: "ineligible",
             errorCode: item.code,
@@ -1032,14 +1130,25 @@ export function CampaignCommandBar({
                   <Stack gap="5">
                     <Box>
                       <Text fontSize="sm" color="fg">
-                        {state.readyItems.length} exact export
-                        {state.readyItems.length === 1 ? "" : "s"} will be frozen into one ZIP.
+                        {bundlePreflightState === "loading"
+                          ? "Checking the selected export revisions…"
+                          : `${bundlePreflight?.counts.eligible ?? 0} exact export${bundlePreflight?.counts.eligible === 1 ? "" : "s"} will be frozen into one ZIP.`}
                       </Text>
                       <Text fontSize="xs" color="fg.muted" mt="1">
-                        {defaultAspectRatio} · {resolution} · current editor revisions
+                        {defaultAspectRatio} · {resolution}
+                        {bundlePreflight
+                          ? ` · about ${formatBundleSize(bundlePreflight.estimatedSizeBytes)}`
+                          : " · server preflight"}
                       </Text>
                     </Box>
-                    {state.attentionItems.length > 0 ? (
+                    {bundlePreflightState === "loading" ? (
+                      <Flex align="center" gap="2" color="fg.muted">
+                        <Spinner size="xs" />
+                        <Text fontSize="xs">Verifying revisions and immutable files</Text>
+                      </Flex>
+                    ) : null}
+                    {bundlePreflight &&
+                    bundlePreflight.counts.stale + bundlePreflight.counts.ineligible > 0 ? (
                       <Flex
                         align="flex-start"
                         gap="2"
@@ -1050,13 +1159,13 @@ export function CampaignCommandBar({
                       >
                         <AlertTriangle size={14} />
                         <Text fontSize="xs">
-                          {state.attentionItems.length} selected clip
-                          {state.attentionItems.length === 1 ? " needs" : "s need"} an export first and will not be included.
+                          {bundlePreflight.counts.stale + bundlePreflight.counts.ineligible} selected clip
+                          {bundlePreflight.counts.stale + bundlePreflight.counts.ineligible === 1 ? " needs" : "s need"} attention and will not be included.
                         </Text>
                       </Flex>
                     ) : null}
                     <Stack gap="0" borderTopWidth="1px" borderColor="border.subtle">
-                      {state.readyItems.map((item, index) => (
+                      {bundlePreflight?.items.map((item) => (
                         <Flex
                           key={item.clipId}
                           align="center"
@@ -1066,11 +1175,26 @@ export function CampaignCommandBar({
                           borderColor="border.subtle"
                         >
                           <Flex align="center" gap="2">
-                            <Check size={13} color="var(--chakra-colors-success-fg)" />
-                            <Text fontSize="sm">Clip {index + 1}</Text>
+                            {item.status === "eligible" ? (
+                              <Check size={13} color="var(--chakra-colors-success-fg)" />
+                            ) : (
+                              <AlertTriangle size={13} />
+                            )}
+                            <Box>
+                              <Text fontSize="sm">
+                                Clip {clipsById.get(item.clipId) ?? "—"}
+                              </Text>
+                              <Text fontSize="xs" color="fg.muted">
+                                {item.status === "eligible"
+                                  ? `${item.aspectRatios.join(", ")} · ${formatBundleSize(item.estimatedSizeBytes)}`
+                                  : bundleAttentionMessage(item)}
+                              </Text>
+                            </Box>
                           </Flex>
                           <Text textStyle="data" fontSize="11px" color="fg.muted">
-                            revision {item.expectedEditorRevision}
+                            {item.status === "stale" && item.currentEditorRevision !== null
+                              ? `${item.expectedEditorRevision} → ${item.currentEditorRevision}`
+                              : `revision ${item.expectedEditorRevision}`}
                           </Text>
                         </Flex>
                       ))}
@@ -1467,7 +1591,11 @@ export function CampaignCommandBar({
                 ) : previewingBundle ? (
                   <Button
                     size="sm"
-                    disabled={submitting || state.readyItems.length === 0}
+                    disabled={
+                      submitting ||
+                      bundlePreflightState !== "ready" ||
+                      (bundlePreflight?.counts.eligible ?? 0) === 0
+                    }
                     onClick={createBundle}
                   >
                     {submitting ? <Spinner size="xs" /> : <ChevronRight size={14} />}
